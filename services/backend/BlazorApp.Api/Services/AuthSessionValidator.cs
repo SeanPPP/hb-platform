@@ -2,13 +2,23 @@ using System.Security.Claims;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Services.MobileDeviceActivation;
 using BlazorApp.Shared.Models;
+using SqlSugar;
 
 namespace BlazorApp.Api.Services
 {
     public interface IAuthSessionValidator
     {
         Task<bool> IsAccessSessionActiveAsync(string userGuid, ClaimsPrincipal principal);
+
+        Task<AuthWebSessionValidationResult> ValidateWebAccessSessionAsync(
+            string userGuid,
+            string? sessionId,
+            CancellationToken cancellationToken = default);
     }
+
+    public sealed record AuthWebSessionValidationResult(
+        bool IsValid,
+        IReadOnlyList<string> ActiveRoleNames);
 
     public sealed class AuthSessionValidator(
         SqlSugarContext dbContext,
@@ -61,6 +71,67 @@ namespace BlazorApp.Api.Services
 
             // access token 必须绑定仍有效的 RefreshToken 会话；被挤下线后这里立即失效。
             return activeSession != null;
+        }
+
+        public async Task<AuthWebSessionValidationResult> ValidateWebAccessSessionAsync(
+            string userGuid,
+            string? sessionId,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(userGuid) || string.IsNullOrWhiteSpace(sessionId))
+            {
+                return new AuthWebSessionValidationResult(false, Array.Empty<string>());
+            }
+
+            var now = DateTime.UtcNow;
+            // 一次查询实时校验用户、会话和角色；角色条件留在 LEFT JOIN 内，无角色不等于会话失效。
+            var rows = await dbContext.Db
+                .Queryable<User, RefreshToken, UserRole, Role>(
+                    (user, session, userRole, role) => new JoinQueryInfos(
+                        JoinType.Inner,
+                        user.UserGUID == session.UserGUID
+                            && session.RefreshTokenGUID == sessionId
+                            && !session.IsRevoked
+                            && !session.IsDeleted
+                            && session.ExpiresAt >= now,
+                        JoinType.Left,
+                        user.UserGUID == userRole.UserGUID
+                            && !userRole.IsDeleted,
+                        JoinType.Left,
+                        userRole.RoleGUID == role.RoleGUID
+                            && role.IsActive
+                            && !role.IsDeleted))
+                .Where((user, session, userRole, role) =>
+                    user.UserGUID == userGuid
+                    && user.IsActive
+                    && !user.IsDeleted)
+                .Select((user, session, userRole, role) => new AuthWebSessionRoleRow
+                {
+                    UserGuid = user.UserGUID,
+                    RoleName = role.RoleName,
+                })
+                .ToListAsync(cancellationToken);
+
+            if (rows.Count == 0)
+            {
+                return new AuthWebSessionValidationResult(false, Array.Empty<string>());
+            }
+
+            var activeRoleNames = rows
+                .Select(row => row.RoleName)
+                .Where(roleName => !string.IsNullOrWhiteSpace(roleName))
+                .Select(roleName => roleName!)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+
+            return new AuthWebSessionValidationResult(true, activeRoleNames);
+        }
+
+        private sealed class AuthWebSessionRoleRow
+        {
+            public string UserGuid { get; set; } = string.Empty;
+
+            public string? RoleName { get; set; }
         }
     }
 }

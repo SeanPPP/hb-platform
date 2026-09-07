@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import { Alert, Button, Input, Pagination, Segmented, Skeleton, Tag, Tooltip } from 'antd'
+import { Alert, Button, Input, Pagination, Skeleton, Tag, Tooltip } from 'antd'
 import { CloseOutlined, FullscreenExitOutlined, FullscreenOutlined, SearchOutlined } from '@ant-design/icons'
 import { useKeepAliveContext } from 'keepalive-for-react'
 import { useLocation, useNavigate } from 'react-router-dom'
@@ -8,12 +8,20 @@ import { MetricPair, ReportControls, useReportText } from '../ReportWorkbench/Re
 import { growth, reportPeriod } from '../ReportWorkbench/logic'
 import { useReportQuery, type ReportQueryState } from '../ReportWorkbench/useReportQuery'
 import { applyKeyword, emptySelection, initialDetailState, resizeColumns, selectDimension, sumProductPage } from './logic'
-import { fetchSalesDetailSection, sectionQuery, type ReportSection, type SalesDetailPage, type SalesDetailQuery, type SalesDetailRow } from './reportService'
+import { fetchSalesDetailReport, type ReportSection, type SalesDetailPage, type SalesDetailQuery, type SalesDetailReport, type SalesDetailRow } from './reportService'
 import styles from './styles.module.css'
 
 type MetricKey = 'revenue' | 'grossProfit' | 'grossMarginRate' | 'orderCount' | 'averageTransaction' | 'quantity' | 'averageUnitPrice' | 'share' | 'chinaShare'
 type PanelKey = 'suppliers' | 'branches' | 'products'
 type Sort = { key: MetricKey; ascending: boolean }
+type SectionState = ReportQueryState<SalesDetailPage> & { data?: SalesDetailPage }
+
+function projectSection(state: ReportQueryState<SalesDetailReport> & { data?: SalesDetailReport }, section: ReportSection): SectionState {
+  const data = state.data?.[section]
+  return { ...state, data, snapshot: state.snapshot
+    ? { ...state.snapshot, data: data ?? { rows: [], total: 0 } }
+    : undefined }
+}
 
 function GrowthCell({ current, previous, compare }: { current: number; previous: number | null; compare: boolean }) {
   const text = useReportText()
@@ -56,12 +64,9 @@ export default function SalesDetailAnalysisV2() {
   const [keywordDraft, setKeywordDraft] = useState('')
   const [composing, setComposing] = useState(false)
   const [supplierSearch, setSupplierSearch] = useState('')
-  const [metricView, setMetricView] = useState('profit')
   const [expanded, setExpanded] = useState<PanelKey | null>(null)
   const [widths, setWidths] = useState([28, 27, 45])
-  const [refresh, setRefresh] = useState<Record<ReportSection, number>>({ suppliers: 0, branches: 0, products: 0, summary: 0 })
-  const retrySection = (section: ReportSection) => setRefresh(value => ({ ...value, [section]: value[section] + 1 }))
-  const refreshAll = () => setRefresh(value => ({ suppliers: value.suppliers + 1, branches: value.branches + 1, products: value.products + 1, summary: value.summary + 1 }))
+  const [bundleRefresh, setBundleRefresh] = useState(0)
   const [sorts, setSorts] = useState<Record<'suppliers' | 'branches', Sort>>({ suppliers: { key: 'revenue', ascending: false }, branches: { key: 'revenue', ascending: false } })
   const grid = useRef<HTMLDivElement>(null)
   const drag = useRef<{ divider: number; startX: number; widths: number[]; width: number }>()
@@ -88,30 +93,28 @@ export default function SalesDetailAnalysisV2() {
     window.addEventListener('keydown', handle)
     return () => window.removeEventListener('keydown', handle)
   }, [])
-  useEffect(() => { grid.current?.querySelectorAll(`.${styles.scroll}`).forEach(node => { node.scrollLeft = 0 }) }, [metricView])
-
   const branches = useMemo(() => access.managedStoreCodes?.() ?? undefined, [access])
   const allowed = !!currentUser && (branches === undefined || branches.length > 0)
   const period = useMemo(() => reportPeriod(dates), [dates])
   const query: SalesDetailQuery = { ...period, kind, branchCodes: branches, selectedBranchCode: selection.branch,
     selectedSupplierCode: selection.supplier, selectedProductCode: selection.product, search: selection.keyword || undefined,
     pageIndex: selection.page, pageSize: selection.pageSize }
-  const key = (section: ReportSection) => JSON.stringify([currentUser?.userGUID, branches, sectionQuery(section, query)])
-  const options = { active, enabled: allowed }
-  const suppliers = useReportQuery(key('suppliers'), signal => fetchSalesDetailSection('suppliers', query, signal), { ...options, refresh: refresh.suppliers, metricId: 'sales-detail-suppliers' })
-  const stores = useReportQuery(key('branches'), signal => fetchSalesDetailSection('branches', query, signal), { ...options, refresh: refresh.branches, metricId: 'sales-detail-branches' })
-  const products = useReportQuery(key('products'), signal => fetchSalesDetailSection('products', query, signal), { ...options, refresh: refresh.products, metricId: 'sales-detail-products' })
-  const summary = useReportQuery(key('summary'), signal => fetchSalesDetailSection('summary', query, signal), { ...options, refresh: refresh.summary, metricId: 'sales-detail-summary' })
-  const loading = suppliers.loading || stores.loading || products.loading || summary.loading
+  // 分页也读取四栏同一次快照，避免供应商归属变更后将新商品页拼到旧汇总上。
+  const bundleKey = JSON.stringify([currentUser?.userGUID, branches, query])
+  const bundle = useReportQuery<SalesDetailReport>(
+    `sales-detail:bundle:${bundleKey}`,
+    signal => fetchSalesDetailReport(query, signal),
+    { active, enabled: allowed, refresh: bundleRefresh, metricId: 'sales-detail-whole-page' },
+  )
+  const suppliers = projectSection(bundle, 'suppliers')
+  const stores = projectSection(bundle, 'branches')
+  const summary = projectSection(bundle, 'summary')
+  const products = projectSection(bundle, 'products')
+  const loading = bundle.loading
+  const retrySection = (_section: ReportSection) => setBundleRefresh(value => value + 1)
+  const refreshAll = () => setBundleRefresh(value => value + 1)
   const total = summary.data?.summary ?? summary.data?.rows[0]
   const pageTotal = products.data ? products.data.summary ?? sumProductPage(products.data.rows) : undefined
-  const versions = new Set([suppliers, stores, products, summary].filter(item => item.data).map(item => item.snapshot?.cacheVersion).filter(Boolean))
-  const mismatch = versions.size > 1
-  const syncAttempt = useRef(0)
-  useEffect(() => { syncAttempt.current = 0 }, [dates, kind, selection.supplier, selection.branch, selection.product, selection.keyword])
-  useEffect(() => {
-    if (!loading && mismatch && syncAttempt.current < 2) { syncAttempt.current++; refreshAll() }
-  }, [loading, mismatch])
   useEffect(() => {
     if (products.data && selection.page > Math.max(1, Math.ceil(products.data.total / selection.pageSize)))
       setSelection(value => ({ ...value, page: Math.max(1, Math.ceil(products.data!.total / value.pageSize)) }))
@@ -123,10 +126,16 @@ export default function SalesDetailAnalysisV2() {
   const previous: Record<MetricKey, keyof SalesDetailRow> = { revenue: 'compareRevenue', grossProfit: 'compareGrossProfit', grossMarginRate: 'compareGrossMarginRate',
     orderCount: 'compareOrderCount', averageTransaction: 'compareAverageTransaction', quantity: 'compareQuantity', averageUnitPrice: 'compareAverageUnitPrice', share: 'compareShare', chinaShare: 'compareChinaShare' }
   const metrics = (panel: PanelKey): MetricKey[] => {
-    const sales: MetricKey[] = panel === 'products' ? ['revenue', 'quantity', 'averageUnitPrice'] : ['revenue', 'orderCount', 'averageTransaction']
+    const sales: MetricKey[] = ['revenue', 'quantity', 'averageUnitPrice']
     const profit: MetricKey[] = ['grossProfit', 'grossMarginRate']
-    return [...(metricView === 'profit' ? [...profit, ...sales] : [...sales, ...profit]), ...(panel === 'suppliers' ? ['share' as const, ...(kind === 'china' ? ['chinaShare' as const] : [])] : [])]
+    const shares: MetricKey[] = panel === 'suppliers' ? ['share', ...(kind === 'china' ? ['chinaShare' as const] : [])] : []
+    return [...sales, ...shares, ...profit]
   }
+  const metricLabel = (panel: PanelKey, field: MetricKey) => panel !== 'products' && field === 'quantity'
+    ? text('商品数量', 'Product quantity')
+    : panel !== 'products' && field === 'averageUnitPrice'
+      ? text('商品均价', 'Average product price')
+      : labels[field]
   const metric = (row: SalesDetailRow, field: MetricKey) => <MetricPair current={row[field]} previous={row[previous[field]] as number | null}
     compare={dates.compare} revenue={row.revenue} compareRevenue={row.compareRevenue} costMetric={field === 'grossMarginRate' || field === 'grossProfit'} format={field.includes('Share') || field === 'share' || field === 'grossMarginRate' ? 'rate' : field === 'quantity' || field === 'orderCount' ? 'integer' : 'money'} />
   const pick = (dimension: 'supplier' | 'branch' | 'product', row: SalesDetailRow) => {
@@ -151,13 +160,16 @@ export default function SalesDetailAnalysisV2() {
   })
   const supplierRows = sortedRows('suppliers', (suppliers.data?.rows ?? []).filter(row => `${row.name} ${row.code}`.toLowerCase().includes(supplierSearch.trim().toLowerCase())))
   const storeRows = sortedRows('branches', stores.data?.rows ?? [])
-  const productRows = products.data?.rows ?? []
+  // 后端保证全量分页顺序；前端再排序当前页，兼容缓存或旧接口返回的非确定顺序。
+  const productRows = [...(products.data?.rows ?? [])].sort((left, right) => right.quantity - left.quantity
+    || (right.compareQuantity ?? 0) - (left.compareQuantity ?? 0)
+    || left.code.localeCompare(right.code))
   const table = (panel: PanelKey, rows: SalesDetailRow[]) => {
     const dimension = panel === 'suppliers' ? 'supplier' : panel === 'branches' ? 'branch' : 'product'
     return <table className={styles.table}><thead><tr><th>{panel === 'products' ? text('货号 / 商品名称', 'Item / Product') : panel === 'suppliers' ? text('供应商 / 编码', 'Supplier / Code') : text('分店名称', 'Store')}</th>
       {metrics(panel).map(field => <th key={field} aria-sort={panel !== 'products' && sorts[panel].key === field ? sorts[panel].ascending ? 'ascending' : 'descending' : undefined}>
-        <Tooltip title={field === 'share' ? text(kind === 'china' ? '分母：所选分店的国内供应商全量营业额，不受商品选择影响' : '分母：所选分店的全部营业额，不受商品选择影响', 'Denominator: all revenue in the selected store scope; not narrowed by product selection') : field === 'chinaShare' ? text('分母：所选分店的全部营业额', 'Denominator: all revenue in the selected store scope') : field === 'orderCount' ? text('沿用移动端客单数；无法去重的跨供应商汇总显示 —，不累加冒充客单', 'Uses mobile report transactions. Cross-supplier totals are not added as distinct baskets.') : undefined}>
-          {panel === 'products' ? <span>{labels[field]}</span> : <button onClick={() => setSorts(value => ({ ...value, [panel]: { key: field, ascending: value[panel].key === field ? !value[panel].ascending : false } }))}>{labels[field]} ↕</button>}
+        <Tooltip title={field === 'share' ? text(kind === 'china' ? '分母：所选分店的国内供应商全量营业额，不受商品选择影响' : '分母：所选分店的全部营业额，不受商品选择影响', 'Denominator: all revenue in the selected store scope; not narrowed by product selection') : field === 'chinaShare' ? text('分母：所选分店的全部营业额', 'Denominator: all revenue in the selected store scope') : undefined}>
+          {panel === 'products' ? <span>{metricLabel(panel, field)}</span> : <button onClick={() => setSorts(value => ({ ...value, [panel]: { key: field, ascending: value[panel].key === field ? !value[panel].ascending : false } }))}>{metricLabel(panel, field)} ↕</button>}
         </Tooltip></th>)}<th>{text('增长率', 'Growth')}</th></tr></thead>
       <tbody>{rows.map((row, index) => <tr key={row.code} className={selection[dimension] === row.code ? styles.selected : ''}>
         <td><button data-code={row.code} aria-pressed={selection[dimension] === row.code} className={styles.nameButton} onClick={() => pick(dimension, row)} title={`${row.name} · ${row.code}`}>
@@ -175,15 +187,14 @@ export default function SalesDetailAnalysisV2() {
     onPointerUp={() => { drag.current = undefined }} onPointerCancel={() => { drag.current = undefined }} />
   const hasFilters = !!(selection.supplier || selection.branch || selection.product || selection.keyword)
 
-  return <main className={`${styles.page} ${metricView === 'profit' ? styles.profitView : ''}`} data-report="sales-detail">
+  return <main className={styles.page} data-report="sales-detail">
     <div className={styles.heading}><div><span className={styles.eyebrow}>SALES EXPLORER</span><h1>{text('销售明细', 'Sales detail')}</h1><p>{text('供应商、分店与商品双向联动，从任意一栏开始分析。', 'Explore from any supplier, store or product.')}</p></div>
       <Button onClick={() => navigate(`/executive-sales-intelligence/overview?branch=${encodeURIComponent(selection.branch ?? '')}&startDate=${dates.startDate}&endDate=${dates.endDate}&compare=${dates.compare}&compareMode=${dates.compareMode}`)}>{text('营业额报告', 'Revenue report')}</Button></div>
     <ReportControls value={dates} onChange={value => { setDates(value); setSelection(current => ({ ...current, page: 1 })) }} onRefresh={refreshAll} loading={loading} />
     <div className={styles.tabsLine}><div role="tablist" aria-label={text('供应商类别', 'Supplier type')} className={styles.tabs}>
       {(['australia', 'china'] as const).map(value => <button role="tab" key={value} aria-selected={kind === value} onClick={() => switchKind(value)}>{value === 'china' ? text('HB 仓库 · 国内供应商', 'HB warehouse · China') : text('澳洲供应商', 'Australian suppliers')}</button>)}
-    </div><Segmented value={metricView} options={[{ value: 'sales', label: text('销售指标', 'Sales') }, { value: 'profit', label: text('毛利指标', 'Profit') }]} onChange={setMetricView} /></div>
+    </div></div>
     {!allowed && <Alert type="warning" message={text('当前账号没有可查询的分店范围', 'No stores are available for this account')} />}
-    {mismatch && <Alert type="info" message={text('统计版本正在对齐；各栏暂不可作为同批次对账。', 'Aligning snapshot versions. Do not reconcile panels until aligned.')} />}
     {summary.error && <Alert type="warning" message={summary.error} action={<Button onClick={() => retrySection('summary')}>{text('重试汇总', 'Retry totals')}</Button>} />}
     <section className={styles.summary} aria-label={text('全量筛选汇总', 'All matching totals')} data-testid="detail-summary">
       {(['revenue', 'orderCount', 'averageTransaction', 'grossProfit', 'grossMarginRate'] as MetricKey[]).map(field => <div key={field}>

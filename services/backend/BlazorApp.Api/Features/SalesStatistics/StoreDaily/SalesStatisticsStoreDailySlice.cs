@@ -32,7 +32,7 @@ namespace BlazorApp.Api.Services
 
     public async Task UpdateStoreStatistics(DateTime? date = null)
     {
-        var targetDate = (date ?? DateTime.Now).Date;
+        var targetDate = (date ?? SalesStatisticsBusinessDate.Today()).Date;
         try
         {
             _logger.LogInformation("开始更新分店统计数据: {Date}", targetDate);
@@ -105,7 +105,7 @@ namespace BlazorApp.Api.Services
     {
         try
         {
-            var previousDay = DateTime.Now.AddDays(-1).Date;
+            var previousDay = SalesStatisticsBusinessDate.Today().AddDays(-1);
 
             _logger.LogInformation("开始全量刷新前一天数据: {Date}", previousDay);
 
@@ -129,7 +129,7 @@ namespace BlazorApp.Api.Services
     {
         try
         {
-            var currentDay = DateTime.Now.Date;
+            var currentDay = SalesStatisticsBusinessDate.Today();
 
             _logger.LogInformation("开始全量刷新当天数据: {Date}", currentDay);
 

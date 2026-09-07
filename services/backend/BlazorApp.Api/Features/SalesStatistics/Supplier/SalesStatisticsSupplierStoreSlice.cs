@@ -52,14 +52,14 @@ internal sealed class SalesStatisticsSupplierStoreSlice : SalesStatisticsSliceBa
         List<string>? branchCodes = null,
         List<string>? supplierCodes = null) =>
         RebuildDerivedSupplierStoreStatisticsAsync(
-            _context, _posmContext, _logger, (date ?? DateTime.Now.Date).Date, branchCodes, supplierCodes);
+            _context, _posmContext, _logger, (date ?? SalesStatisticsBusinessDate.Today()).Date, branchCodes, supplierCodes);
 
     public Task UpdateChinaSupplierStoreStatistics(
         DateTime? date = null,
         List<string>? branchCodes = null,
         List<string>? supplierCodes = null) =>
         RebuildDerivedSupplierStoreStatisticsAsync(
-            _context, _posmContext, _logger, (date ?? DateTime.Now.Date).Date, branchCodes, supplierCodes);
+            _context, _posmContext, _logger, (date ?? SalesStatisticsBusinessDate.Today()).Date, branchCodes, supplierCodes);
 
     internal static Task UpdateAustralianSupplierStoreStatisticsWithContext(
         SqlSugarContext context,
@@ -69,7 +69,7 @@ internal sealed class SalesStatisticsSupplierStoreSlice : SalesStatisticsSliceBa
         List<string>? branchCodes,
         List<string>? supplierCodes) =>
         RebuildDerivedSupplierStoreStatisticsAsync(
-            context, posmContext, logger, (date ?? DateTime.Now.Date).Date, branchCodes, supplierCodes);
+            context, posmContext, logger, (date ?? SalesStatisticsBusinessDate.Today()).Date, branchCodes, supplierCodes);
 
     internal static Task UpdateChinaSupplierStoreStatisticsWithContext(
         SqlSugarContext context,
@@ -79,5 +79,5 @@ internal sealed class SalesStatisticsSupplierStoreSlice : SalesStatisticsSliceBa
         List<string>? branchCodes,
         List<string>? supplierCodes) =>
         RebuildDerivedSupplierStoreStatisticsAsync(
-            context, posmContext, logger, (date ?? DateTime.Now.Date).Date, branchCodes, supplierCodes);
+            context, posmContext, logger, (date ?? SalesStatisticsBusinessDate.Today()).Date, branchCodes, supplierCodes);
 }

@@ -71,7 +71,7 @@ internal sealed class SalesStatisticsProductStoreDailyCommandWriter
                     context,
                     input.TargetDate,
                     expectedJobId);
-                if (expectedJobId.HasValue && input.TargetDate.Date < DateTime.Today)
+                if (expectedJobId.HasValue && SalesStatisticsBusinessDate.IsHistorical(input.TargetDate))
                 {
                     // 历史日期的队列恢复只修复销售事实；沿用旧快照的成本，不能按恢复当天的进价重算毛利。
                     var previousRows = await context.Db.Queryable<ProductStoreDailySalesStatistic>()

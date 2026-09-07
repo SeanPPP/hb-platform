@@ -37,9 +37,6 @@ public class PermissionAuthorizationHandlerTests
         roleService
             .Setup(service => service.UserHasPermissionAsync("user-1", Permissions.LocalPurchase.View))
             .ReturnsAsync(ApiResponse<bool>.OK(false));
-        roleService
-            .Setup(service => service.UserHasPermissionAsync("user-1", "LocalInvocie.View"))
-            .ReturnsAsync(ApiResponse<bool>.OK(false));
         var handler = CreateHandler(roleService);
         var requirement = new PermissionRequirement(Permissions.LocalPurchase.View);
         var context = new AuthorizationHandlerContext(
@@ -59,9 +56,6 @@ public class PermissionAuthorizationHandlerTests
         var roleService = new Mock<IRoleService>();
         roleService
             .Setup(service => service.UserHasPermissionAsync("user-1", Permissions.LocalPurchase.View))
-            .ReturnsAsync(ApiResponse<bool>.OK(false));
-        roleService
-            .Setup(service => service.UserHasPermissionAsync("user-1", "LocalInvocie.View"))
             .ReturnsAsync(ApiResponse<bool>.OK(true));
         var handler = CreateHandler(roleService);
         var requirement = new PermissionRequirement(Permissions.LocalPurchase.View);
@@ -78,10 +72,6 @@ public class PermissionAuthorizationHandlerTests
             service => service.UserHasPermissionAsync("user-1", Permissions.LocalPurchase.View),
             Times.Once
         );
-        roleService.Verify(
-            service => service.UserHasPermissionAsync("user-1", "LocalInvocie.View"),
-            Times.Once
-        );
     }
 
     [Fact]
@@ -90,9 +80,6 @@ public class PermissionAuthorizationHandlerTests
         var roleService = new Mock<IRoleService>();
         roleService
             .Setup(service => service.UserHasPermissionAsync("user-1", Permissions.System.ViewAppDownloads))
-            .ReturnsAsync(ApiResponse<bool>.OK(false));
-        roleService
-            .Setup(service => service.UserHasPermissionAsync("user-1", Permissions.System.ManageAppDownloads))
             .ReturnsAsync(ApiResponse<bool>.OK(true));
         var handler = CreateHandler(roleService);
         var requirement = new PermissionRequirement(Permissions.System.ViewAppDownloads);
@@ -109,10 +96,6 @@ public class PermissionAuthorizationHandlerTests
             service => service.UserHasPermissionAsync("user-1", Permissions.System.ViewAppDownloads),
             Times.Once
         );
-        roleService.Verify(
-            service => service.UserHasPermissionAsync("user-1", Permissions.System.ManageAppDownloads),
-            Times.Once
-        );
     }
 
     [Fact]
@@ -121,9 +104,6 @@ public class PermissionAuthorizationHandlerTests
         var roleService = new Mock<IRoleService>();
         roleService
             .Setup(service => service.UserHasPermissionAsync("user-1", Permissions.Warehouse.ManageProducts))
-            .ReturnsAsync(ApiResponse<bool>.OK(false));
-        roleService
-            .Setup(service => service.UserHasPermissionAsync("user-1", Permissions.Warehouse.Manage))
             .ReturnsAsync(ApiResponse<bool>.OK(true));
         var handler = CreateHandler(roleService);
         var requirement = new PermissionRequirement(Permissions.Warehouse.ManageProducts);
@@ -138,10 +118,6 @@ public class PermissionAuthorizationHandlerTests
         Assert.True(context.HasSucceeded);
         roleService.Verify(
             service => service.UserHasPermissionAsync("user-1", Permissions.Warehouse.ManageProducts),
-            Times.Once
-        );
-        roleService.Verify(
-            service => service.UserHasPermissionAsync("user-1", Permissions.Warehouse.Manage),
             Times.Once
         );
     }
@@ -168,10 +144,6 @@ public class PermissionAuthorizationHandlerTests
             service => service.UserHasPermissionAsync("user-1", Permissions.LocalPurchase.View),
             Times.Once
         );
-        roleService.Verify(
-            service => service.UserHasPermissionAsync("user-1", "LocalInvocie.View"),
-            Times.Once
-        );
     }
 
     [Fact]
@@ -183,9 +155,6 @@ public class PermissionAuthorizationHandlerTests
                 service.UserHasPermissionAsync("user-1", Permissions.LocalPurchase.View)
             )
             .ReturnsAsync(ApiResponse<bool>.OK(true))
-            .ReturnsAsync(ApiResponse<bool>.OK(false));
-        roleService
-            .Setup(service => service.UserHasPermissionAsync("user-1", "LocalInvocie.View"))
             .ReturnsAsync(ApiResponse<bool>.OK(false));
 
         var handler = CreateHandler(roleService);
@@ -220,11 +189,8 @@ public class PermissionAuthorizationHandlerTests
         var handler = CreateHandler(roleService);
 
         roleService
-            .Setup(service => service.UserHasRoleAsync("user-1", "Admin"))
-            .ReturnsAsync(ApiResponse<bool>.OK(true));
-        roleService
             .Setup(service => service.UserHasPermissionAsync("user-1", It.IsAny<string>()))
-            .ReturnsAsync(ApiResponse<bool>.OK(false));
+            .ReturnsAsync(ApiResponse<bool>.OK(true));
 
         var requirement = new PermissionRequirement("Unseeded.Permission");
         var context = new AuthorizationHandlerContext(
@@ -236,11 +202,11 @@ public class PermissionAuthorizationHandlerTests
         await handler.HandleAsync(context);
 
         Assert.True(context.HasSucceeded);
-        roleService.Verify(service => service.UserHasRoleAsync("user-1", "Admin"), Times.Once);
         roleService.Verify(
             service => service.UserHasPermissionAsync("user-1", It.IsAny<string>()),
-            Times.Never
+            Times.Once
         );
+        roleService.Verify(service => service.UserHasRoleAsync(It.IsAny<string>(), It.IsAny<string>()), Times.Never);
     }
 
     [Theory]
@@ -251,15 +217,12 @@ public class PermissionAuthorizationHandlerTests
         var roleService = new Mock<IRoleService>();
         var handler = CreateHandler(roleService);
         roleService
-            .Setup(service => service.UserHasRoleAsync("user-1", roleName))
-            .ReturnsAsync(ApiResponse<bool>.OK(true));
-        roleService
             .Setup(service => service.UserHasPermissionAsync("user-1", It.IsAny<string>()))
-            .ReturnsAsync(ApiResponse<bool>.OK(false));
+            .ReturnsAsync(ApiResponse<bool>.OK(true));
         var requirement = new PermissionRequirement(Permissions.PosTerminal.Audit.View);
         var context = new AuthorizationHandlerContext(
             new[] { requirement },
-            CreateUser(),
+            CreateUser(new Claim(ClaimTypes.Role, roleName)),
             resource: null
         );
 
@@ -268,8 +231,9 @@ public class PermissionAuthorizationHandlerTests
         Assert.True(context.HasSucceeded);
         roleService.Verify(
             service => service.UserHasPermissionAsync("user-1", It.IsAny<string>()),
-            Times.Never
+            Times.Once
         );
+        roleService.Verify(service => service.UserHasRoleAsync(It.IsAny<string>(), It.IsAny<string>()), Times.Never);
     }
 
     [Fact]

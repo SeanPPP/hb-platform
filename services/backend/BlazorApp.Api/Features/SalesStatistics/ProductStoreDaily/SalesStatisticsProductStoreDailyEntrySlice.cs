@@ -26,7 +26,7 @@ namespace BlazorApp.Api.Services
 
     public async Task UpdateProductStoreDailyStatistics(DateTime? date = null)
     {
-        var targetDate = (date ?? DateTime.Now.Date).Date;
+        var targetDate = (date ?? SalesStatisticsBusinessDate.Today()).Date;
         if (targetDate.Year == 2025)
         {
             // 2025 双来源统计必须同时切换两张日表，不能留下新旧口径混合的中间状态。
@@ -273,7 +273,7 @@ namespace BlazorApp.Api.Services
     public async Task RefreshRecentProductStoreDailyStatistics(int days = 7)
     {
         var safeDays = Math.Max(1, days);
-        var endDate = DateTime.Now.Date;
+        var endDate = SalesStatisticsBusinessDate.Today();
         var startDate = endDate.AddDays(-(safeDays - 1));
 
         for (var date = startDate; date <= endDate; date = date.AddDays(1))

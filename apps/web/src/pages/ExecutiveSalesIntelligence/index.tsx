@@ -18,13 +18,12 @@ import {
   getRevenueTrend,
   makeRevenueQueryScope,
   parseRevenueOverviewSearch,
+  sortRevenueBranchesByRevenue,
 } from './RevenueReport/logic'
 import {
-  fetchRevenueBranches,
-  fetchRevenueHourly,
-  fetchRevenueWeekly,
+  fetchRevenueReportSnapshot,
+  type RevenueReportSnapshot,
 } from './RevenueReport/revenueReportService'
-import type { RevenueBranch, RevenueHourly, RevenueWeeklyNode } from './RevenueReport/types'
 import styles from './styles.module.css'
 
 const INITIAL_BRANCH_COUNT = 8
@@ -46,11 +45,7 @@ export default function ExecutiveSalesIntelligence() {
     initialQuery.branchCode ? { branchCode: initialQuery.branchCode, branchName: initialQuery.branchCode } : null,
   )
   const [showAllBranches, setShowAllBranches] = useState(false)
-  const [branchRefresh, setBranchRefresh] = useState(0)
-  const [hourlyRefresh, setHourlyRefresh] = useState(0)
-  const [weeklyRefresh, setWeeklyRefresh] = useState(0)
-  const [weeklyNearViewport, setWeeklyNearViewport] = useState(false)
-  const weeklyPanelRef = useRef<HTMLElement>(null)
+  const [refresh, setRefresh] = useState(0)
 
   const managedStoreCodes = useMemo(() => {
     const codes = access.managedStoreCodes()
@@ -65,40 +60,14 @@ export default function ExecutiveSalesIntelligence() {
   const hourlyScope = makeRevenueQueryScope(currentUser?.userGUID, hourlyBranchCodes)
   const hasStoreScope = Boolean(currentUser) && (managedStoreCodes == null || managedStoreCodes.length > 0)
 
-  const branchQuery = useReportQuery<RevenueBranch[]>(
-    `revenue:branches:${queryScope}:${periodKey}`,
-    signal => fetchRevenueBranches(period, managedStoreCodes, signal),
-    { active, enabled: hasStoreScope, refresh: branchRefresh, metricId: 'revenue-branches' },
+  const reportQuery = useReportQuery<RevenueReportSnapshot>(
+    `revenue:whole-page:${queryScope}:${hourlyScope}:${periodKey}`,
+    signal => fetchRevenueReportSnapshot(period, managedStoreCodes, hourlyBranchCodes, signal),
+    { active, enabled: hasStoreScope, refresh, metricId: 'revenue-whole-page' },
   )
-  const hourlyQuery = useReportQuery<RevenueHourly[]>(
-    `revenue:hourly:${hourlyScope}:${periodKey}`,
-    signal => fetchRevenueHourly(period, hourlyBranchCodes, signal),
-    { active, enabled: hasStoreScope, refresh: hourlyRefresh, metricId: 'revenue-hourly' },
-  )
-  const weeklyEnabled = hasStoreScope && (weeklyNearViewport
-    || (!branchQuery.loading && branchQuery.data !== undefined)
-    || Boolean(branchQuery.error))
-  const weeklyQuery = useReportQuery<RevenueWeeklyNode[]>(
-    `revenue:weekly:${hourlyScope}:${periodKey}`,
-    signal => fetchRevenueWeekly(period, hourlyBranchCodes, signal),
-    { active, enabled: weeklyEnabled, refresh: weeklyRefresh, metricId: 'revenue-weekly' },
-  )
-
-  useEffect(() => {
-    if (!active || weeklyNearViewport || !weeklyPanelRef.current) return
-    if (typeof IntersectionObserver === 'undefined') {
-      setWeeklyNearViewport(true)
-      return
-    }
-    const observer = new IntersectionObserver(entries => {
-      if (entries.some(entry => entry.isIntersecting)) {
-        setWeeklyNearViewport(true)
-        observer.disconnect()
-      }
-    })
-    observer.observe(weeklyPanelRef.current)
-    return () => observer.disconnect()
-  }, [active, weeklyNearViewport])
+  const branchQuery = { ...reportQuery, data: reportQuery.data?.branches }
+  const hourlyQuery = { ...reportQuery, data: reportQuery.data?.hourly }
+  const weeklyQuery = { ...reportQuery, data: reportQuery.data?.weekly }
 
   useEffect(() => {
     if (!active) return
@@ -109,7 +78,18 @@ export default function ExecutiveSalesIntelligence() {
     setSelectedBranch(incoming.branchCode ? { branchCode: incoming.branchCode, branchName: incoming.branchCode } : null)
   }, [active, location.search])
 
-  const branches = branchQuery.data ?? []
+  const branches = useMemo(
+    () => sortRevenueBranchesByRevenue(branchQuery.data ?? []),
+    [branchQuery.data],
+  )
+  // 核心 KPI、排行和周层级同源于 StoreSales；总体 comparePeriodPending 也可能只由小时缺口触发。
+  const coreComparePending = selection.compare && reportQuery.data?.weeklyComparePending === true
+  const hourlyCurrentPending = reportQuery.data?.hourlyCurrentPending === true
+  const hourlyComparePending = selection.compare && reportQuery.data?.hourlyComparePending === true
+  const weeklyComparePending = selection.compare && reportQuery.data?.weeklyComparePending === true
+  const coreCompareAvailable = selection.compare && !coreComparePending
+  const hourlyCompareAvailable = selection.compare && !hourlyComparePending
+  const weeklyCompareAvailable = selection.compare && !weeklyComparePending
   useEffect(() => {
     if (!selectedBranch || !branchQuery.data) return
     const match = branchQuery.data.find(branch => normalizeCode(branch.branchCode) === normalizeCode(selectedBranch.branchCode))
@@ -118,19 +98,19 @@ export default function ExecutiveSalesIntelligence() {
     }
   }, [branchQuery.data, selectedBranch])
   const summary = useMemo(
-    () => getRevenueSummary(branches, selectedBranch?.branchCode ?? null, selection.compare),
-    [branches, selectedBranch?.branchCode, selection.compare],
+    () => getRevenueSummary(branches, selectedBranch?.branchCode ?? null, coreCompareAvailable),
+    [branches, selectedBranch?.branchCode, coreCompareAvailable],
   )
   const hourlyRows = useMemo(
-    () => aggregateHourlyRows(hourlyQuery.data ?? [], selection.compare),
-    [hourlyQuery.data, selection.compare],
+    () => aggregateHourlyRows(hourlyQuery.data ?? [], hourlyCompareAvailable),
+    [hourlyQuery.data, hourlyCompareAvailable],
   )
   const visibleBranches = showAllBranches ? branches : branches.slice(0, INITIAL_BRANCH_COUNT)
   const hasBranchMetrics = branchQuery.data !== undefined && branches.length > 0 && !branchQuery.error
     && (!selectedBranch || branches.some(branch => normalizeCode(branch.branchCode) === normalizeCode(selectedBranch.branchCode)))
   const selectedDate = selection.startDate === selection.endDate ? selection.startDate : null
-  const allLoading = branchQuery.loading || hourlyQuery.loading || (weeklyEnabled && weeklyQuery.loading)
-  const anySlow = branchQuery.slow || hourlyQuery.slow || weeklyQuery.slow
+  const allLoading = reportQuery.loading
+  const anySlow = reportQuery.slow
   const scopeLabel = selectedBranch?.branchName || text('全部门店', 'All branches')
   const localizeTrend = (trend: ReturnType<typeof getRevenueTrend>) => ({
     ...trend,
@@ -147,21 +127,23 @@ export default function ExecutiveSalesIntelligence() {
         ? text('暂无业绩数据', 'No performance data')
         : !selection.compare
           ? text('自动对比已暂停', 'Comparison paused')
+          : coreComparePending
+            ? text('同期统计未齐', 'Comparison snapshot incomplete')
           : selectedBranch
             ? revenueTrend.text
             : text(`${summary.decliningBranches} 家门店需关注`, `${summary.decliningBranches} branches need attention`)
   const signalDetail = !hasBranchMetrics
     ? '—'
     : selection.compare
-      ? selectedBranch
-        ? text(`订单同比 ${orderTrend.text} · 客单价同比 ${aovTrend.text}`, `Orders ${orderTrend.text} · AOV ${aovTrend.text}`)
-        : text(`${branches.length - summary.decliningBranches - summary.newBranches} 家增长或持平 · ${summary.newBranches} 家无同期`, `${branches.length - summary.decliningBranches - summary.newBranches} growing or flat · ${summary.newBranches} new`)
+      ? coreComparePending
+        ? text('本期业绩已显示；同期完成后再计算同比。', 'Current performance is shown; comparison trends will follow when ready.')
+        : selectedBranch
+          ? text(`订单同比 ${orderTrend.text} · 客单价同比 ${aovTrend.text}`, `Orders ${orderTrend.text} · AOV ${aovTrend.text}`)
+          : text(`${branches.length - summary.decliningBranches - summary.newBranches} 家增长或持平 · ${summary.newBranches} 家无同期`, `${branches.length - summary.decliningBranches - summary.newBranches} growing or flat · ${summary.newBranches} new`)
       : text('开启自动对比后显示同期趋势', 'Enable comparison to see trends')
 
   const refreshAllSections = () => {
-    setBranchRefresh(value => value + 1)
-    setHourlyRefresh(value => value + 1)
-    setWeeklyRefresh(value => value + 1)
+    setRefresh(value => value + 1)
   }
 
   const commitFilters = (nextSelection: DateSelection, nextBranch: { branchCode: string; branchName: string } | null) => {
@@ -225,23 +207,28 @@ export default function ExecutiveSalesIntelligence() {
         {!hasStoreScope
           ? text('未发送营业额查询。', 'No revenue query was sent.')
           : anySlow
-          ? text('查询已超过 3 秒，统计数据仍在准备，可继续浏览已完成区域。', 'The query has taken over 3 seconds. Completed sections remain available.')
-          : branchQuery.cached
+          ? text('查询已超过 3 秒，整页统计快照仍在读取。', 'The query has taken over 3 seconds. The whole-page snapshot is still loading.')
+          : reportQuery.cached
             ? text('已显示 30 秒内缓存，可手动刷新。', 'Showing the 30-second cache. Refresh to query again.')
-            : branchQuery.durationMs != null
-              ? text(`核心接口返回 ${Math.round(branchQuery.durationMs)} ms`, `Core API returned in ${Math.round(branchQuery.durationMs)} ms`)
-              : text('各数据区域分批独立加载；周层级在核心返回或进入视口后启动。', 'Data sections load independently in stages; the weekly hierarchy starts after core data or entering the viewport.')}
+            : reportQuery.durationMs != null
+              ? text(`整页快照返回 ${Math.round(reportQuery.durationMs)} ms`, `Whole-page snapshot returned in ${Math.round(reportQuery.durationMs)} ms`)
+              : text('门店、时段与周层级从同一统计快照加载。', 'Branches, hourly data and weekly hierarchy load from one snapshot.')}
       </div>
+
+      {coreComparePending && (
+        <Alert className={styles.scopeAlert} type="info" showIcon
+          message={text('同期门店统计尚未齐全；本期业绩正常显示，同比暂显示 —。', 'Branch comparison statistics are incomplete. Current performance remains visible and comparisons show —.')} />
+      )}
 
       <section className={styles.summaryGrid} aria-label={text('核心业绩', 'Key metrics')}>
         <MetricCard label={text('销售额', 'Revenue')} value={formatAud(hasBranchMetrics ? summary.revenue : null)}
-          previous={selection.compare && hasBranchMetrics ? `${text('同期', 'Previous')} ${formatAud(summary.revenueLY)}` : '—'}
+          previous={coreCompareAvailable && hasBranchMetrics ? `${text('同期', 'Previous')} ${formatAud(summary.revenueLY)}` : '—'}
           trend={revenueTrend} caption={scopeLabel} loading={branchQuery.loading && !branchQuery.data} />
         <MetricCard label={text('订单数', 'Orders')} value={formatInteger(hasBranchMetrics ? summary.orders : null)}
-          previous={selection.compare && hasBranchMetrics ? `${text('同期', 'Previous')} ${formatInteger(summary.ordersLY)}` : '—'}
+          previous={coreCompareAvailable && hasBranchMetrics ? `${text('同期', 'Previous')} ${formatInteger(summary.ordersLY)}` : '—'}
           trend={orderTrend} caption={scopeLabel} loading={branchQuery.loading && !branchQuery.data} />
         <MetricCard label={text('客单价', 'AOV')} value={formatAud(hasBranchMetrics ? summary.aov : null, 2)}
-          previous={selection.compare && hasBranchMetrics ? `${text('同期', 'Previous')} ${formatAud(summary.aovLY, 2)}` : '—'}
+          previous={coreCompareAvailable && hasBranchMetrics ? `${text('同期', 'Previous')} ${formatAud(summary.aovLY, 2)}` : '—'}
           trend={aovTrend} caption={text('销售额 ÷ 订单数', 'Revenue ÷ orders')} loading={branchQuery.loading && !branchQuery.data} />
         <article className={styles.metricCard}>
           <span className={styles.metricLabel}>{text('经营信号', 'Business signal')}</span>
@@ -273,7 +260,7 @@ export default function ExecutiveSalesIntelligence() {
             </Button>
           </div>
           {branchQuery.error ? (
-            <SectionError message={branchQuery.error} text={text} onRetry={() => setBranchRefresh(value => value + 1)} />
+            <SectionError message={branchQuery.error} text={text} onRetry={refreshAllSections} />
           ) : branchQuery.loading && !branchQuery.data ? (
             <TableSkeleton />
           ) : visibleBranches.length === 0 ? (
@@ -306,12 +293,12 @@ export default function ExecutiveSalesIntelligence() {
                             <strong>{branch.branchName}</strong><small>{branch.branchCode}</small>
                           </button>
                         </th>
-                        <td><ValuePair current={formatAud(branch.revenue)} previous={selection.compare ? formatAud(branch.revenueLY) : '—'} /></td>
-                        <td>{renderTrend(branch.revenue, selection.compare ? branch.revenueLY : null)}</td>
-                        <td><ValuePair current={formatInteger(branch.orderCount)} previous={selection.compare ? formatInteger(branch.orderCountLY) : '—'} /></td>
-                        <td>{renderTrend(branch.orderCount, selection.compare ? branch.orderCountLY : null)}</td>
-                        <td><ValuePair current={formatAud(branch.aov, 2)} previous={selection.compare ? formatAud(branch.aovLY, 2) : '—'} /></td>
-                        <td>{renderTrend(branch.aov, selection.compare ? branch.aovLY : null)}</td>
+                        <td><ValuePair current={formatAud(branch.revenue)} previous={coreCompareAvailable ? formatAud(branch.revenueLY) : '—'} /></td>
+                        <td>{renderTrend(branch.revenue, coreCompareAvailable ? branch.revenueLY : null)}</td>
+                        <td><ValuePair current={formatInteger(branch.orderCount)} previous={coreCompareAvailable ? formatInteger(branch.orderCountLY) : '—'} /></td>
+                        <td>{renderTrend(branch.orderCount, coreCompareAvailable ? branch.orderCountLY : null)}</td>
+                        <td><ValuePair current={formatAud(branch.aov, 2)} previous={coreCompareAvailable ? formatAud(branch.aovLY, 2) : '—'} /></td>
+                        <td>{renderTrend(branch.aov, coreCompareAvailable ? branch.aovLY : null)}</td>
                         <td><button type="button" className={styles.detailButton} onClick={() => openSalesDetail(branch.branchCode)}>
                           {text('销售明细', 'Sales detail')} <RightOutlined aria-hidden="true" />
                         </button></td>
@@ -333,8 +320,15 @@ export default function ExecutiveSalesIntelligence() {
             <div><h2>{text('时段表现', 'Hourly performance')}</h2><p>{scopeLabel} · {text('销售密度', 'Sales density')}</p></div>
             {selectedBranch && <Button type="link" onClick={() => commitFilters(selection, null)}>{text('全部门店', 'All branches')}</Button>}
           </div>
+          {(hourlyCurrentPending || hourlyComparePending) && (
+            <Alert className={styles.sectionAlert} type="info" showIcon message={hourlyCurrentPending
+              ? hourlyComparePending
+                ? text('本期与同期时段统计尚未齐全；已返回的本期时段继续显示，同比暂显示 —。', 'Current and comparison hourly statistics are incomplete. Available current-hour data remains visible and comparisons show —.')
+                : text('本期时段统计尚未齐全；已返回的真实时段继续显示。', 'Current hourly statistics are incomplete; available current-hour data remains visible.')
+              : text('同期时段统计尚未齐全；本期时段正常显示，同比暂显示 —。', 'Hourly comparison statistics are incomplete. Current hourly data remains visible and comparisons show —.')} />
+          )}
           {hourlyQuery.error ? (
-            <SectionError message={hourlyQuery.error} text={text} onRetry={() => setHourlyRefresh(value => value + 1)} />
+            <SectionError message={hourlyQuery.error} text={text} onRetry={refreshAllSections} />
           ) : hourlyQuery.loading && !hourlyQuery.data ? (
             <TableSkeleton compact />
           ) : hourlyRows.length === 0 ? (
@@ -349,8 +343,8 @@ export default function ExecutiveSalesIntelligence() {
                 <tbody>{hourlyRows.map(row => (
                   <tr key={row.hour} className={row.isPeak ? styles.peakRow : undefined}>
                     <th scope="row">{row.hour}</th><td className={styles.numeric}>{formatAud(row.revenue)}</td>
-                    <td className={`${styles.numeric} ${styles.mutedValue}`}>{formatAud(row.revenueLY)}</td>
-                    <td>{renderTrend(row.revenue, row.revenueLY)}</td>
+                    <td className={`${styles.numeric} ${styles.mutedValue}`}>{formatAud(hourlyCompareAvailable ? row.revenueLY : null)}</td>
+                    <td>{renderTrend(row.revenue, hourlyCompareAvailable ? row.revenueLY : null)}</td>
                     <td><div className={styles.progressCell}><progress value={row.percentage} max={100}>{row.percentage}%</progress><span>{row.percentage}%</span></div></td>
                   </tr>
                 ))}</tbody>
@@ -360,20 +354,24 @@ export default function ExecutiveSalesIntelligence() {
         </article>
       </section>
 
-      <section ref={weeklyPanelRef} className={styles.panel} aria-labelledby="weekly-revenue-title">
+      <section className={styles.panel} aria-labelledby="weekly-revenue-title">
         <div className={styles.panelHeader}>
           <div><h2 id="weekly-revenue-title">{text('周业绩层级', 'Weekly performance hierarchy')}</h2>
             <p>{text('展开周与分店，再选择周、分店或日期联动上方分析。', 'Expand weeks and branches, then select a week, branch or date to update the analysis above.')}</p></div>
           <span className={styles.panelStatus}>{selection.startDate} — {selection.endDate} · {scopeLabel}</span>
         </div>
+        {weeklyComparePending && (
+          <Alert className={styles.sectionAlert} type="info" showIcon
+            message={text('同期周统计尚未齐全；本期周层级正常显示，同比暂显示 —。', 'Weekly comparison statistics are incomplete. Current hierarchy remains visible and comparisons show —.')} />
+        )}
         {weeklyQuery.error ? (
-          <SectionError message={weeklyQuery.error} text={text} onRetry={() => setWeeklyRefresh(value => value + 1)} />
+          <SectionError message={weeklyQuery.error} text={text} onRetry={refreshAllSections} />
         ) : weeklyQuery.loading && !weeklyQuery.data ? (
           <TableSkeleton />
         ) : !weeklyQuery.data?.length ? (
           <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={text('所选范围暂无周业绩数据', 'No weekly data in this range')} />
         ) : (
-          <RevenueWeeklyHierarchy data={weeklyQuery.data} compare={selection.compare}
+          <RevenueWeeklyHierarchy data={weeklyQuery.data} compare={weeklyCompareAvailable}
             selectedBranchCode={selectedBranch?.branchCode ?? null} selectedDate={selectedDate}
             queryRange={{ startDate: selection.startDate, endDate: selection.endDate }}
             onSelectWeek={updateRange} onSelectBranch={selectBranch}

@@ -487,7 +487,7 @@ namespace BlazorApp.Api.Services
                         () => UpdateHourlyStatisticsWithContext(context, posmContext, logger, date, null)
                     );
                     // 当天与 2025 日期都由商品入口原子发布分店表，不能提前独立替换。
-                    if (date.Year != 2025 && date.Date != DateTime.Today)
+                    if (date.Year != 2025 && !SalesStatisticsBusinessDate.IsToday(date))
                     {
                         await RunStep(
                             SalesStatisticType.StoreSales,
@@ -629,7 +629,7 @@ internal async Task UpdateDailyStatisticsWithContext(
     try
     {
         var date = string.IsNullOrEmpty(dateStr)
-            ? DateTime.Now.Date
+            ? SalesStatisticsBusinessDate.Today()
             : DateTime.Parse(dateStr).Date;
 
         logger.LogInformation("开始更新每日统计数据: {Date}", date);

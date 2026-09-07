@@ -346,7 +346,7 @@ namespace BlazorApp.Api.Controllers
             var days = Math.Clamp(request?.Days ?? 7, 1, MaxProductStoreDailyBatchDays);
             try
             {
-                var endDate = DateTime.Now.Date;
+                var endDate = SalesStatisticsBusinessDate.Today();
                 var dates = EnumerateDates(endDate.AddDays(-(days - 1)), endDate);
                 var result = await _productStoreDailyQueue.EnqueueAsync(
                     dates,
@@ -685,7 +685,7 @@ namespace BlazorApp.Api.Controllers
 
             try
             {
-                var endDate = (request.EndDate ?? DateTime.Now.Date).Date;
+                var endDate = (request.EndDate ?? SalesStatisticsBusinessDate.Today()).Date;
                 var startDate = endDate.AddDays(-(request.Days - 1));
                 var result = await _productStoreDailyQueue.EnqueueYearBackfillAsync(
                     EnumerateDates(startDate, endDate),
@@ -711,7 +711,7 @@ namespace BlazorApp.Api.Controllers
             [FromQuery] DateTime? endDate
         )
         {
-            var end = (endDate ?? DateTime.Now.Date).Date;
+            var end = (endDate ?? SalesStatisticsBusinessDate.Today()).Date;
             var start = (startDate ?? end.AddDays(-13)).Date;
             if (start > end)
             {

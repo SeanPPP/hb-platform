@@ -21,7 +21,7 @@ internal sealed class SalesStatisticsProductStoreDailySourceReader
         DateTime date,
         Func<Task<List<StoreSalesStatistic>>> loadStoreStatisticsAsync)
     {
-        if (date.Date != DateTime.Today || date.Year == 2025)
+        if (!SalesStatisticsBusinessDate.IsToday(date) || date.Year == 2025)
             throw new ArgumentException("营业中快照只接受当天非 2025 日期", nameof(date));
         if (posmContext.Db.Ado.Transaction != null)
             throw new InvalidOperationException("当天统计快照必须独立持有 POSM 只读事务");

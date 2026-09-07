@@ -41,7 +41,7 @@ namespace BlazorApp.Api.Services
     )
     {
         var targetDate = date.Date;
-        var useCurrentDaySnapshot = targetDate == DateTime.Today && targetDate.Year != 2025
+        var useCurrentDaySnapshot = SalesStatisticsBusinessDate.IsToday(targetDate) && targetDate.Year != 2025
             && atomicStoreStatistics == null && preloadedPosmSnapshot == null
             && validateSourceWatermarkBeforeCommitAsync == null;
         DateTime? currentDaySourceWatermark = null;
