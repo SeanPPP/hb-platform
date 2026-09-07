@@ -140,6 +140,7 @@ public sealed class SalesDashboardCostStatusTests
     }
 
     [SalesCostBackfillSqlServerFact]
+    [Trait("Category", "SQL")]
     public async Task SqlServer完整报表入口保留商品分店与供应商成本状态()
     {
         var baseConnectionString = Environment.GetEnvironmentVariable(

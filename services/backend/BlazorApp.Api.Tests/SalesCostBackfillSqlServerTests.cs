@@ -24,6 +24,7 @@ public sealed class SalesCostBackfillSqlServerFactAttribute : FactAttribute
     }
 }
 
+[Trait("Category", "SQL")]
 public sealed class SalesCostBackfillSqlServerTests
 {
     [SalesCostBackfillSqlServerFact]

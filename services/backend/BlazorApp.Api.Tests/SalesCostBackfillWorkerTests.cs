@@ -71,6 +71,7 @@ public sealed class SalesCostBackfillWorkerTests
 }
 
 [Collection("SalesCostBackfillSqlServer")]
+[Trait("Category", "SQL")]
 public sealed class SalesCostBackfillWorkerSqlServerTests
 {
     [SalesCostBackfillSqlServerFact]
