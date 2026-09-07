@@ -98,6 +98,7 @@
     "babel-preset-expo": "~54.0.10",
     "eslint": "^9.39.1",
     "eslint-config-expo": "~10.0.0",
+    "test-renderer": "1.2.0",
     "tsx": "^4.21.0",
     "typescript": "~5.9.2"
   },
