@@ -431,3 +431,21 @@ assert.equal(supplierBranchRows[0]?.grossProfit, 12);
 assert.equal(supplierBranchRows[0]?.compareGrossProfit, 0);
 assert.equal(supplierBranchRows[0]?.grossMarginRate, 0.12);
 assert.equal(supplierBranchRows[0]?.compareGrossMarginRate, 0);
+
+// 订单数与商品数量刻意不同，验证供应商均价始终以商品数量为分母。
+for (const normalize of [normalizeSupplierRows, normalizeSupplierBranchRows]) {
+  const [metrics] = normalize([{ supplierCode: "test", branchCode: "test", totalAmount: 120, compareTotalAmount: 75, totalQuantity: 30, compareTotalQuantity: 15, orderCount: 6, compareOrderCount: 3, averageTransaction: 20, compareAverageTransaction: 25 }]);
+  assert.equal(metrics.totalQuantity, 30);
+  assert.equal(metrics.compareTotalQuantity, 15);
+  assert.equal(metrics.averagePrice, 4);
+  assert.equal(metrics.compareAveragePrice, 5);
+  const [zero] = normalize([{ TotalAmount: 10, TotalQuantity: 0, CompareTotalQuantity: 0 }]);
+  assert.equal(zero.averagePrice, null, "零数量均价不应出现 Infinity 或误用客单价");
+  assert.equal(zero.compareAveragePrice, null);
+  const [missingCompare] = normalize([{ TotalAmount: 10, TotalQuantity: 2 }]);
+  assert.equal(missingCompare.compareTotalQuantity, null, "缺失同期数量不伪造为零");
+  assert.equal(missingCompare.compareAveragePrice, null);
+  const [returns] = normalize([{ TotalAmount: -10, TotalQuantity: -2, CompareTotalAmount: 12, CompareTotalQuantity: 3 }]);
+  assert.equal(returns.averagePrice, 5);
+  assert.equal(returns.compareAveragePrice, 4);
+}

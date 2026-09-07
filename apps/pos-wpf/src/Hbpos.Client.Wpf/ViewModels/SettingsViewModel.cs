@@ -1028,6 +1028,9 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         await RunBusyAsync(async () =>
         {
             ClearLinklyTestStatus();
+            SetLinklyTestStatusOverride(string.Format(
+                System.Globalization.CultureInfo.CurrentCulture,
+                T("settings.linkly.cloudBackend.pairing"), terminal.DisplayName));
             LinklyCloudTerminalPairResponse result;
             try
             {
@@ -1036,7 +1039,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
                     terminal.TerminalId,
                     pairCode);
             }
-            catch
+            catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
             {
                 // 超时、断网和服务端错误都不能假定配对没有生效；先标记未知并刷新权威目录，
                 // 绝不以同一 Pair Code 自动重放请求。
@@ -1050,7 +1053,16 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
                     // 刷新失败时保留 Unknown，避免把不可证明的配对显示成 Ready。
                 }
 
-                throw;
+                // 失败原因必须留在配对操作旁；传输中断不能当作配对码已被拒绝。
+                LogLinklyCloudSettings($"pair terminal failed error={ex.GetType().Name}");
+                var reason = ex is System.Net.Http.HttpRequestException { StatusCode: not null }
+                    ? ex.Message
+                    : T("settings.linkly.cloudBackend.pairUnconfirmed");
+                var message = string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                    T("settings.linkly.cloudBackend.pairFailed"), terminal.DisplayName, reason);
+                SetLinklyTestStatusOverride(message);
+                SetStatusOverride(message);
+                return;
             }
 
             var pairedTerminal = terminal with
@@ -1077,6 +1089,10 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
                 // 先拿到服务端持久选择，再更新本地 Ready 项，避免 SelectionChanged 重复发送 PUT。
                 ReplaceLinklyCloudTerminal(pairedTerminal, selectReplacement: false);
                 ApplyPersistedLinklyCloudSelection(selection.TerminalId, selection.Revision);
+                var message = string.Format(System.Globalization.CultureInfo.CurrentCulture,
+                    T("settings.linkly.cloudBackend.pairedAndSelected"), terminal.DisplayName);
+                SetLinklyTestStatusOverride(message);
+                SetStatusOverride(message);
             }
             catch
             {

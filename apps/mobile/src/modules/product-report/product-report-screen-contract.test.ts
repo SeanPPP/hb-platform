@@ -399,12 +399,12 @@ assert.ok(productBranchRowEnd > productBranchRowStart, "商品分店行必须存
 
 assertSourceOrder(
   supplierHeader,
-  ["styles.supplierGrowthColumn", "styles.supplierShareColumn", "styles.supplierCountColumn", "productReport.metrics.aov", "styles.grossProfitColumn", "styles.grossMarginColumn"],
+  ["styles.supplierGrowthColumn", "styles.supplierShareColumn", "styles.supplierCountColumn", "productReport.metrics.productAveragePrice", "styles.grossProfitColumn", "styles.grossMarginColumn"],
   "供应商主表毛利列必须位于所有经营字段之后",
 );
 assertSourceOrder(
   source.slice(supplierRowStart, productRowStart),
-  ["renderGrowthCell", "styles.supplierShareColumn", "styles.supplierCountColumn", "item.averageTransaction", "renderGrossProfitCell", "renderGrossMarginCell"],
+  ["renderGrowthCell", "styles.supplierShareColumn", "styles.supplierCountColumn", "item.averagePrice", "renderGrossProfitCell", "renderGrossMarginCell"],
   "供应商主表行必须与表头保持相同列顺序",
 );
 assertSourceOrder(
@@ -431,12 +431,12 @@ assertSourceOrder(
 );
 assertSourceOrder(
   drilldownHeader.slice(supplierBranchHeaderStart, drilldownHeaderEnd),
-  ["productReport.metrics.growthRate", "productReport.metrics.orders", "productReport.metrics.aov", "styles.grossProfitColumn", "styles.grossMarginColumn"],
+  ["productReport.metrics.growthRate", "productReport.metrics.productQuantity", "productReport.metrics.productAveragePrice", "styles.grossProfitColumn", "styles.grossMarginColumn"],
   "供应商分店表毛利列必须位于所有经营字段之后",
 );
 assertSourceOrder(
   source.slice(supplierBranchRowStart, productBranchRowStart),
-  ["renderGrowthCell", "styles.countColumn", "row.averageTransaction", "renderGrossProfitCell", "renderGrossMarginCell"],
+  ["renderGrowthCell", "styles.countColumn", "row.averagePrice", "renderGrossProfitCell", "renderGrossMarginCell"],
   "供应商分店行必须与表头保持相同列顺序",
 );
 assertSourceOrder(
@@ -489,3 +489,9 @@ assert.match(
 );
 
 console.log("product-report-screen-contract.test.ts: ok");
+
+for (const language of ["zh", "en"]) {
+  const copy = JSON.parse(readFileSync(join(directory, `../../locales/${language}/common.json`), "utf8"));
+  assert.ok(copy.productReport.metrics.productQuantity, "商品数量文案必须位于 productReport.metrics 分组");
+  assert.ok(copy.productReport.metrics.productAveragePrice, "商品均价文案必须位于 productReport.metrics 分组");
+}

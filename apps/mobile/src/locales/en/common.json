@@ -222,6 +222,8 @@
       "rowNumber": "#"
     },
     "metrics": {
+      "productQuantity": "Product qty",
+      "productAveragePrice": "Avg product price",
       "revenue": "Revenue",
       "totalShare": "Total share",
       "supplierShare": "Revenue share",
