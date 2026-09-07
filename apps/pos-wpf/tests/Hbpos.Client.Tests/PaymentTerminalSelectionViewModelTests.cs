@@ -109,6 +109,33 @@ public sealed class PaymentTerminalSelectionViewModelTests
         }
     }
 
+    [Fact]
+    public async Task RefreshLinklyCloudTerminalsAsync_keeps_empty_or_failed_active_directory_visible_and_retryable()
+    {
+        var (setup, proxy) = CreateSetup(
+            new LinklyCloudTerminalListResponse(
+                "Sandbox",
+                null,
+                3,
+                [],
+                "Active"));
+        using var viewModel = CreateViewModel(setup);
+
+        proxy.ListException = new TaskCanceledException("Linkly directory request timed out.");
+        await viewModel.RefreshLinklyCloudTerminalsAsync();
+
+        Assert.True(viewModel.IsLinklyCloudTerminalSelectorVisible);
+        Assert.False(viewModel.CanSwitchLinklyCloudTerminal);
+        Assert.Contains("timed out", viewModel.LinklyCloudTerminalStatusText, StringComparison.OrdinalIgnoreCase);
+
+        proxy.ListException = null;
+        await viewModel.RefreshLinklyCloudTerminalsAsync();
+
+        Assert.True(viewModel.IsLinklyCloudTerminalSelectorVisible);
+        Assert.Equal("No ready Linkly Cloud terminal is available.", viewModel.LinklyCloudTerminalStatusText);
+        Assert.Equal(2, proxy.ListCalls);
+    }
+
     private static PaymentViewModel CreateViewModel(ICardTerminalSetupService setup)
     {
         return new PaymentViewModel(
@@ -143,6 +170,8 @@ public sealed class PaymentTerminalSelectionViewModelTests
 
         public int ListCalls { get; private set; }
 
+        public Exception? ListException { get; set; }
+
         public Guid? LastSelectedTerminalId { get; private set; }
 
         public long? LastExpectedRevision { get; private set; }
@@ -161,6 +190,11 @@ public sealed class PaymentTerminalSelectionViewModelTests
         private Task<LinklyCloudTerminalListResponse> List()
         {
             ListCalls++;
+            if (ListException is not null)
+            {
+                throw ListException;
+            }
+
             return Task.FromResult(Directory);
         }
 

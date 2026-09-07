@@ -284,7 +284,15 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
     public IReadOnlyList<PosCartLineSnapshot> SelectedProductLines => _selectedProductLines;
     public bool IsSquareRefundProcessing =>
         SelectedAttempt is { } attempt && HasSquareRefundPaymentEvidence(attempt);
-    public bool CanShowSupervisorResolution => HasSelection && !IsSquareRefundProcessing;
+    public bool CanShowSupervisorResolution =>
+        SelectedAttempt is { } attempt && IsSupervisorResolutionAllowed(attempt);
+    public bool CanShowRecoveryOnlyGuidance =>
+        SelectedAttempt is { } attempt &&
+        !IsSquareRefundProcessing &&
+        !IsSupervisorResolutionAllowed(attempt);
+    public string RecoveryOnlyGuidanceMessage => T(
+        "cardRecovery.center.recoverOnly",
+        "This transaction cannot be manually finalized. Use Recover to retry this saved transaction. Refresh and Back remain available; do not submit another card payment.");
     public string SquareRefundProcessingMessage => T(
         "cardRecovery.center.squareRefund.processing",
         "Square refund is already processing. Use Recover to check the latest status. Do not submit another refund.");
@@ -840,6 +848,8 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(SelectedReferenceText));
         OnPropertyChanged(nameof(IsSquareRefundProcessing));
         OnPropertyChanged(nameof(CanShowSupervisorResolution));
+        OnPropertyChanged(nameof(CanShowRecoveryOnlyGuidance));
+        OnPropertyChanged(nameof(RecoveryOnlyGuidanceMessage));
         OnPropertyChanged(nameof(SquareRefundProcessingMessage));
         OnPropertyChanged(nameof(ResolutionSectionTitleText));
         OnPropertyChanged(nameof(ResolutionInstructionsText));
@@ -851,7 +861,22 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
     private async Task RefreshListCoreAsync(string? actionMessage = null)
     {
         var selectedKey = SelectedAttempt?.Key ?? SelectedRow?.Key;
-        var items = await _recoveryService.ListOpenAsync(_session);
+        var loadResult = _recoveryService is ICardRecoveryQueueLoader queueLoader
+            ? await queueLoader.LoadOpenQueueAsync(_session)
+            : new CardRecoveryQueueLoadResult(
+                await _recoveryService.ListOpenAsync(_session),
+                []);
+        var failedProviders = loadResult.FailedProviders.ToHashSet();
+        // 某 provider 读取失败时保留它最后一次成功展示的快照；只有成功读取的 provider
+        // 才能用本次结果替换，避免把“加载失败”误报成“队列已清空”。
+        var items = OpenAttempts
+            .Where(item => failedProviders.Contains(item.Processor))
+            .Concat(loadResult.Items)
+            .GroupBy(item => item.Key)
+            .Select(group => group.Last())
+            .OrderByDescending(item => item.UpdatedAt)
+            .ThenByDescending(item => item.CreatedAt)
+            .ToArray();
         OpenAttempts.Clear();
         foreach (var item in items)
         {
@@ -867,10 +892,28 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(OpenCountText));
         OnPropertyChanged(nameof(HasOpenAttempts));
         OnPropertyChanged(nameof(HasNoOpenAttempts));
-        _openCountChanged?.Invoke(OpenAttempts.Count);
+        // 部分结果不能覆盖 shell 中上一次完整计数，否则首次失败会把未知 provider 误报为 0。
+        if (loadResult.IsComplete)
+        {
+            _openCountChanged?.Invoke(OpenAttempts.Count);
+        }
+        var providerWarning = failedProviders.Count == 0
+            ? null
+            : string.Format(
+                GetCulture(),
+                T(
+                    "cardRecovery.center.status.providerRefreshFailed",
+                    "{0} could not be refreshed. Last known transactions remain visible. Use Refresh to retry."),
+                string.Join(", ", failedProviders.Select(provider => MapChannel(provider))));
         if (actionMessage is not null)
         {
-            SetLiteralStatus(actionMessage);
+            SetLiteralStatus(providerWarning is null
+                ? actionMessage
+                : $"{actionMessage} {providerWarning}");
+        }
+        else if (providerWarning is not null)
+        {
+            SetLiteralStatus(providerWarning);
         }
         else if (OpenAttempts.Count == 0)
         {

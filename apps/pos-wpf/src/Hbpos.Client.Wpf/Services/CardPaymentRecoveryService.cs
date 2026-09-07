@@ -329,7 +329,8 @@ public sealed class CardPaymentRecoveryService(
     ILocalizationService? localization = null,
     ILinklyTerminalClient? linklyTerminalClient = null,
     FinancialSupervisorAuditReplayService? supervisorAuditReplay = null,
-    ISharedHeldOrderRepository? sharedHeldOrderRepository = null) : ICardPaymentRecoveryService
+    ISharedHeldOrderRepository? sharedHeldOrderRepository = null,
+    ILinklyCloudTerminalClient? cloudTerminalClient = null) : ICardPaymentRecoveryService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -397,7 +398,8 @@ public sealed class CardPaymentRecoveryService(
                 cancellationToken);
         }
 
-        if (mode != LinklyConnectionMode.CloudBackendAsync && mode != LinklyConnectionMode.LocalIp)
+        if (mode != LinklyConnectionMode.CloudBackendAsync && mode != LinklyConnectionMode.LocalIp &&
+            mode != LinklyConnectionMode.CloudDirectSync)
         {
             return CardPaymentRecoveryResult.None;
         }
@@ -649,7 +651,7 @@ public sealed class CardPaymentRecoveryService(
                 }
 
                 var pendingMode = ResolveAttemptConnectionMode(attempt, mode);
-                if (pendingMode == LinklyConnectionMode.LocalIp)
+                if (pendingMode is LinklyConnectionMode.LocalIp or LinklyConnectionMode.CloudDirectSync)
                 {
                     var authorization = new PaymentAuthorizationResult(
                         true,
@@ -692,6 +694,13 @@ public sealed class CardPaymentRecoveryService(
         }
 
         var attemptMode = ResolveAttemptConnectionMode(attempt, mode);
+        // 中文注释：直连没有后端 acknowledge 协议；已完成订单不能因保留 session 再次查询或开账。
+        if (attemptMode == LinklyConnectionMode.CloudDirectSync &&
+            attempt.Status == LocalCardPaymentAttemptStatus.OrderCompleted)
+        {
+            return CardPaymentRecoveryResult.None;
+        }
+
         if (attempt.Status == LocalCardPaymentAttemptStatus.Approved)
         {
             // Approved 是已持久化的金融事实；直接续跑订单/草稿恢复，禁止迟到的远端失败结果覆盖它。
@@ -705,7 +714,7 @@ public sealed class CardPaymentRecoveryService(
                     PaymentSupervisorDetails: BuildPaymentSupervisorDetails(attempt));
             }
 
-            if (attemptMode == LinklyConnectionMode.LocalIp)
+            if (attemptMode is LinklyConnectionMode.LocalIp or LinklyConnectionMode.CloudDirectSync)
             {
                 var authorization = new PaymentAuthorizationResult(
                     true,
@@ -771,9 +780,9 @@ public sealed class CardPaymentRecoveryService(
             return CardPaymentRecoveryResult.None;
         }
 
-        if (attemptMode == LinklyConnectionMode.LocalIp)
+        if (attemptMode is LinklyConnectionMode.LocalIp or LinklyConnectionMode.CloudDirectSync)
         {
-            return await RecoverLatestLocalIpAsync(cart, session, settings, attempt, cancellationToken);
+            return await RecoverClientTransactionAsync(cart, session, settings, attempt, cancellationToken);
         }
 
         if (attemptMode != LinklyConnectionMode.CloudBackendAsync)
@@ -1363,7 +1372,7 @@ public sealed class CardPaymentRecoveryService(
         _ => CardPaymentSupervisorDecision.ContinueWaiting
     };
 
-    private async Task<CardPaymentRecoveryResult> RecoverLatestLocalIpAsync(
+    private async Task<CardPaymentRecoveryResult> RecoverClientTransactionAsync(
         PosCartService cart,
         PosSessionState currentSession,
         CardTerminalSettings settings,
@@ -1385,7 +1394,10 @@ public sealed class CardPaymentRecoveryService(
                 PaymentSupervisorDetails: BuildLegacyPaymentSupervisorDetails(attempt));
         }
 
-        if (linklyTerminalClient is null)
+        var directCloud = ResolveAttemptConnectionMode(attempt, settings.LinklyConnectionMode) == LinklyConnectionMode.CloudDirectSync;
+        if (directCloud
+            ? cloudTerminalClient is null || string.IsNullOrWhiteSpace(attempt.SessionId)
+            : linklyTerminalClient is null)
         {
             LogRecoveryResult(settings, attempt, null, CardPaymentRecoveryOutcome.Unknown, "local-client-unavailable");
             return new CardPaymentRecoveryResult(
@@ -1419,7 +1431,7 @@ public sealed class CardPaymentRecoveryService(
                     cart,
                     currentSession,
                     settings,
-                    LinklyConnectionMode.LocalIp,
+                    directCloud ? LinklyConnectionMode.CloudDirectSync : LinklyConnectionMode.LocalIp,
                     winner,
                     CancellationToken.None)
                 : new CardPaymentRecoveryResult(
@@ -1439,13 +1451,14 @@ public sealed class CardPaymentRecoveryService(
         PaymentAuthorizationResult authorization;
         try
         {
-            // LocalIp 断电恢复只依赖 EFT-Client 的 GetLast，不存在后端 session acknowledge。
-            authorization = await linklyTerminalClient.RecoverLastTransactionAsync(
-                attempt.Amount,
-                draft?.Session ?? currentSession,
-                settings,
-                txnRef,
-                cancellationToken);
+            // 中文注释：按交易冻结的模式只查询原交易；直连使用持久化的 session，禁止重发扣款。
+            authorization = directCloud
+                ? await cloudTerminalClient!.RecoverTransactionAsync(
+                    attempt.Amount, draft?.Session ?? currentSession,
+                    settings with { LinklyConnectionMode = LinklyConnectionMode.CloudDirectSync },
+                    attempt.SessionId!, txnRef, cancellationToken)
+                : await linklyTerminalClient!.RecoverLastTransactionAsync(
+                    attempt.Amount, draft?.Session ?? currentSession, settings, txnRef, cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException and not OutOfMemoryException and not StackOverflowException)
         {
@@ -2360,7 +2373,7 @@ public sealed class CardPaymentRecoveryService(
         }
 
         CardPaymentRecoveryResult result;
-        if (mode == LinklyConnectionMode.LocalIp)
+        if (mode is LinklyConnectionMode.LocalIp or LinklyConnectionMode.CloudDirectSync)
         {
             var authorization = new PaymentAuthorizationResult(
                 true,
@@ -4921,6 +4934,28 @@ public sealed class CardPaymentRecoveryService(
         LocalCardPaymentAttempt attempt,
         PaymentAuthorizationResult authorization)
     {
+        if (ResolveAttemptConnectionMode(attempt, LinklyConnectionMode.LocalIp) == LinklyConnectionMode.CloudDirectSync &&
+            authorization.Reference?.StartsWith("ANZCLOUD:", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            if (!LinklyLocalTxnRef.TryNormalizeHistoricalReference(attempt.TxnRef, out var expectedTxnRef))
+            {
+                return false;
+            }
+
+            var refundReference = NormalizeOptional(authorization.CardTransactions?.FirstOrDefault()?.RefundReference);
+            var expectedReference = refundReference is null
+                ? $"ANZCLOUD:{expectedTxnRef}"
+                : $"ANZCLOUD:{expectedTxnRef}:{refundReference}";
+            if (!string.Equals(authorization.Reference, expectedReference, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            // 直连付款引用包含渠道前缀及可选退款凭据；先完整核对，再仅对校验副本规范化。
+            // 原响应仍用于落单，且下面继续验证所有 TxnRef、交易类型和金额，不能忽略冲突字段。
+            authorization = authorization with { Reference = expectedTxnRef };
+        }
+
         return LinklyLocalTransactionIdentity.Matches(
             attempt.TxnRef,
             attempt.TxnType,

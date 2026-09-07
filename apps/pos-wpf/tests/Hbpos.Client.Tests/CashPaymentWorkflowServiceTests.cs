@@ -3182,7 +3182,10 @@ public sealed class CashPaymentWorkflowServiceTests
         Assert.Equal(1, settingsProvider.GetSettingsCalls);
         Assert.Equal(CardProcessorKind.Linkly, terminal.LastSettings?.Processor);
         Assert.Equal(LinklyConnectionMode.CloudDirectSync, terminal.LastSettings?.LinklyConnectionMode);
-        Assert.Empty(linklyAttempts.Attempts);
+        var attempt = Assert.Single(linklyAttempts.Attempts);
+        Assert.Equal(LinklyConnectionMode.CloudDirectSync.ToString(), attempt.ConnectionMode);
+        Assert.Equal(LinklyLocalTxnRef.Create('P', attempt.AttemptGuid.ToString("D")), attempt.TxnRef);
+        Assert.Contains("\"cardAmount\":10", attempt.OrderDraftJson, StringComparison.OrdinalIgnoreCase);
         Assert.Empty(squareAttempts.Attempts);
     }
 

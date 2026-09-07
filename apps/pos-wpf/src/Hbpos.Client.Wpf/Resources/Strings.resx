@@ -1229,6 +1229,8 @@
   <data name="cardRecovery.center.status.recoverNoResult" xml:space="preserve"><value>The selected transaction is no longer open.</value></data>
   <data name="cardRecovery.center.status.resolveNoResult" xml:space="preserve"><value>The resolution returned no message.</value></data>
   <data name="cardRecovery.center.status.refreshFailed" xml:space="preserve"><value>Could not refresh card transactions. {0}</value></data>
+  <data name="cardRecovery.center.status.providerRefreshFailed" xml:space="preserve"><value>{0} could not be refreshed. Last known transactions remain visible. Use Refresh to retry.</value></data>
+  <data name="cardRecovery.center.recoverOnly" xml:space="preserve"><value>This transaction cannot be manually finalized. Use Recover to retry this saved transaction. Refresh and Back remain available; do not submit another card payment.</value></data>
   <data name="cardRecovery.center.status.recoverFailed" xml:space="preserve"><value>Could not check the selected transaction. {0}</value></data>
   <data name="cardRecovery.center.status.resolveFailed" xml:space="preserve"><value>Could not save the supervisor decision. {0}</value></data>
   <data name="cardRecovery.center.status.draftHandoffFailed" xml:space="preserve"><value>The recovery result was saved, but the payment draft could not be handed off safely. Run recovery again before taking another payment or refund. {0}</value></data>
@@ -1285,6 +1287,7 @@
   <data name="payment.linklyTerminal.title" xml:space="preserve"><value>LINKLY CARD TERMINAL</value></data>
   <data name="payment.linklyTerminal.none" xml:space="preserve"><value>No terminal selected</value></data>
   <data name="payment.linklyTerminal.noneReady" xml:space="preserve"><value>No ready Linkly Cloud terminal is available.</value></data>
+  <data name="payment.linklyTerminal.refreshFailed" xml:space="preserve"><value>Unable to refresh Linkly Cloud terminals. Try Refresh again.</value></data>
   <data name="payment.linklyTerminal.display" xml:space="preserve"><value>Lane {0} · {1}</value></data>
   <data name="payment.linklyTerminal.switchBlocked" xml:space="preserve"><value>The terminal cannot be switched while a card payment is active or unresolved.</value></data>
   <data name="payment.linklyTerminal.selected" xml:space="preserve"><value>Payments will use {0}.</value></data>

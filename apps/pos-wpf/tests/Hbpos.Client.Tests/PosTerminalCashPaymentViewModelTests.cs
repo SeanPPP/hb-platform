@@ -21,6 +21,40 @@ public sealed class PosTerminalCashPaymentViewModelTests
 {
 
     [Fact]
+    public async Task Approved_card_persistence_log_failure_preserves_visible_recovery_and_does_not_escape()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-PERSIST-LOG", "Persistence log failure", "930PERSISTLOG", PriceSourceKind.StoreRetailPrice, 10m));
+        var workflow = new FakeCashPaymentWorkflowService
+        {
+            TenderToAdd = new PaymentTender(PaymentMethodKind.Card, 10m, "APPROVED"),
+            ThrowOnComplete = new CardPaymentPersistenceUnknownException(Guid.NewGuid(), "Recover approved order",
+                new PersistenceRecoveryLogProbeException())
+        };
+        var viewModel = new PaymentViewModel(cart, workflow, Session, openCardRecoveryCenter: () => { });
+        void FailAuditLog(string line)
+        {
+            if (line.Contains(nameof(PersistenceRecoveryLogProbeException), StringComparison.Ordinal))
+                throw new IOException("audit sink unavailable");
+        }
+        ConsoleLog.LineWritten += FailAuditLog;
+        try
+        {
+            Assert.Null(await Record.ExceptionAsync(() => viewModel.SelectCardCommand.ExecuteAsync(null)));
+            Assert.True(viewModel.IsCardPaymentRecoveryRequired);
+            Assert.True(viewModel.IsPaymentInteractionLocked);
+            Assert.True(viewModel.OpenCardRecoveryCenterCommand.CanExecute(null));
+            Assert.Single(viewModel.PaymentTenders);
+        }
+        finally
+        {
+            ConsoleLog.LineWritten -= FailAuditLog;
+        }
+    }
+
+    private sealed class PersistenceRecoveryLogProbeException : IOException;
+
+    [Fact]
     public async Task Pos_terminal_card_recovery_status_opens_center_and_displays_queue_count()
     {
         var opened = false;
@@ -411,6 +445,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
+    [Trait("Category", "Performance")]
     public async Task Pos_terminal_catalog_match_refresh_keeps_ui_enqueue_under_50ms_for_100k_items()
     {
         var index = new LocalSellableItemIndex();
@@ -430,6 +465,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
+    [Trait("Category", "Performance")]
     public async Task Pos_terminal_catalog_match_refresh_does_not_block_ui_heartbeat_when_search_is_slow()
     {
         var item = CreateItem("SKU-SLOW", "Slow Catalog", "930SLOW", PriceSourceKind.StoreRetailPrice, 1m);
@@ -468,6 +504,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
+    [Trait("Category", "Performance")]
     public async Task Pos_terminal_manual_search_keeps_heartbeat_running_and_never_adds_a_stale_result()
     {
         var index = new LocalSellableItemIndex();
@@ -3608,7 +3645,12 @@ public sealed class PosTerminalCashPaymentViewModelTests
         {
             TenderToAdd = new PaymentTender(PaymentMethodKind.Voucher, 2m, "VOUCHER-146C")
         };
-        var viewModel = new PaymentViewModel(cart, workflow, Session);
+        var openRecoveryCenterCalls = 0;
+        var viewModel = new PaymentViewModel(
+            cart,
+            workflow,
+            Session,
+            openCardRecoveryCenter: () => openRecoveryCenterCalls++);
         PaymentCompletedEventArgs? completed = null;
         viewModel.PaymentCompleted += (_, args) => completed = args;
 
@@ -3630,6 +3672,13 @@ public sealed class PosTerminalCashPaymentViewModelTests
         await viewModel.SelectCardCommand.ExecuteAsync(null);
 
         Assert.True(viewModel.IsPaymentInteractionLocked);
+        Assert.True(viewModel.IsCardPaymentRecoveryRequired);
+        Assert.Null(viewModel.CardPaymentErrorOverlay);
+        Assert.Equal(((CardPaymentPersistenceUnknownException)workflow.ThrowOnComplete).OrderGuid,
+            viewModel.CreateCardPaymentHandoffRequest().RecoveryOrderGuid);
+        Assert.True(viewModel.OpenCardRecoveryCenterCommand.CanExecute(null));
+        viewModel.OpenCardRecoveryCenterCommand.Execute(null);
+        Assert.Equal(1, openRecoveryCenterCalls);
         Assert.Equal("The card was approved, but POS could not safely save the order.", viewModel.StatusMessage);
         Assert.Null(completed);
         Assert.Single(cart.Lines);
@@ -4432,7 +4481,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         viewModel.CancelCommand.Execute(null);
 
         Assert.True(viewModel.IsCancelPaymentVisible);
-        Assert.True(viewModel.CancelCommand.CanExecute(null));
+        Assert.False(viewModel.CancelCommand.CanExecute(null));
 
         workflow.AddTenderResult.SetResult(PaymentTenderAttemptResult.Success(
             new PaymentTender(PaymentMethodKind.Card, 10m, "CARD-LATE-APPROVED"),
@@ -4446,7 +4495,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
-    public async Task Payment_page_allows_second_cancel_during_late_card_approval_and_skips_tender()
+    public async Task Payment_page_second_cancel_cannot_discard_late_card_approval()
     {
         var cart = new PosCartService();
         cart.AddItem(CreateItem("SKU-157", "Late Card Tea", "930157", PriceSourceKind.StoreRetailPrice, 10m));
@@ -4468,18 +4517,17 @@ public sealed class PosTerminalCashPaymentViewModelTests
         Assert.True(viewModel.IsCancelPaymentVisible);
         Assert.False(viewModel.SelectCardCommand.CanExecute(null));
         Assert.False(viewModel.ConfirmPaymentCommand.CanExecute(null));
-        Assert.True(viewModel.CancelCommand.CanExecute(null));
-
-        viewModel.CancelCommand.Execute(null);
+        Assert.False(viewModel.CancelCommand.CanExecute(null));
 
         workflow.AddTenderResult.SetResult(PaymentTenderAttemptResult.Success(
             new PaymentTender(PaymentMethodKind.Card, 10m, "CARD-LATE"),
             "payment.status.cardTenderAdded"));
         await paymentTask;
 
-        Assert.Empty(viewModel.PaymentTenders);
+        var tender = Assert.Single(viewModel.PaymentTenders);
+        Assert.Equal(PaymentMethodKind.Card, tender.Method);
         Assert.False(viewModel.IsCancelPaymentVisible);
-        Assert.Equal("payment.status.cardCancelled", viewModel.StatusMessage);
+        Assert.Equal("payment.status.cardTenderAdded", viewModel.StatusMessage);
     }
 
     [Fact]

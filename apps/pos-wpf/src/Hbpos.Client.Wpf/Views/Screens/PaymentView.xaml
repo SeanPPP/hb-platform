@@ -1020,9 +1020,7 @@
                                         <MultiDataTrigger>
                                             <MultiDataTrigger.Conditions>
                                                 <Condition Binding="{Binding IsPaymentInteractionLocked}" Value="True" />
-                                                <Condition Binding="{Binding CardPaymentErrorOverlay.PrimaryActionKind}"
-                                                           Value="{x:Static vm:CardPaymentErrorOverlayPrimaryActionKind.RecoverPrevious}" />
-                                                <Condition Binding="{Binding CardPaymentErrorOverlay.HasPrimaryAction}" Value="False" />
+                                                <Condition Binding="{Binding IsCardPaymentRecoveryRequired}" Value="True" />
                                             </MultiDataTrigger.Conditions>
                                             <Setter Property="Visibility" Value="Visible" />
                                         </MultiDataTrigger>
