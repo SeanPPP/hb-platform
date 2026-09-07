@@ -107,7 +107,7 @@ exit 0
     CI_SQL_CAPTURE: capture,
     HB_TEST_SQLSERVER_CONNECTION: connection,
     CONTAINER_MUTATION_SQLSERVER_TEST_CONNECTION: connection,
-    COST_BACKFILL_SQLSERVER_TEST_CONNECTION: connection,
+    COST_BACKFILL_SQLSERVER_TEST_CONNECTION: connection.replace("localhost,1433", "127.0.0.1,11439"),
     LOCAL_PURCHASE_DASHBOARD_SQLSERVER_TEST_CONNECTION: connection,
     PREORDER_SQLSERVER_TEST_CONNECTION: connection,
     SET_CHILD_PURCHASE_PRICE_SQLSERVER_TEST_CONNECTION: connection,
@@ -123,8 +123,14 @@ exit 0
   ]) {
     const workflow = readFileSync(join(repositoryRoot, ".github/workflows/pr-ci.yml"), "utf8");
     const weeklyJob = workflow.slice(workflow.indexOf("  weekly_sql:"), workflow.indexOf("  weekly_performance:"));
-    assert.match(weeklyJob, new RegExp(`^      ${missingVariable}: Server=localhost,1433;`, "m"),
+    const endpoint = missingVariable === "COST_BACKFILL_SQLSERVER_TEST_CONNECTION"
+      ? "127.0.0.1,11439" : "localhost,1433";
+    assert.ok(weeklyJob.includes(`      ${missingVariable}: Server=${endpoint};`),
       "GitHub weekly 必须为测试提供专用 SQL Server 容器连接");
+    if (missingVariable === "COST_BACKFILL_SQLSERVER_TEST_CONNECTION") {
+      assert.match(weeklyJob, /^          - 11439:1433$/m,
+        "成本回填测试的专用端口必须映射到临时 CI SQL Server 容器");
+    }
     const missingResult = run(weeklySqlScript, {
       ...baseEnv,
       [missingVariable]: "",
@@ -145,5 +151,5 @@ exit 0
     readFileSync(capture, "utf8"),
     /CONTAINER_MUTATION_SQLSERVER_TEST_CONNECTION=Server=localhost,1433/,
   );
-  assert.match(readFileSync(capture, "utf8"), /COST_BACKFILL_SQLSERVER_TEST_CONNECTION=Server=localhost,1433/);
+  assert.match(readFileSync(capture, "utf8"), /COST_BACKFILL_SQLSERVER_TEST_CONNECTION=Server=127\.0\.0\.1,11439/);
 });

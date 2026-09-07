@@ -481,6 +481,8 @@ jobs:
           MSSQL_SA_PASSWORD: HbCi_2026!Safe_Only
         ports:
           - 1433:1433
+          # 成本回填测试只允许此专用端口，继续保留测试中的本机隔离保护。
+          - 11439:1433
     env:
       CI_SQL_PASSWORD: HbCi_2026!Safe_Only
       LOCAL_PURCHASE_DASHBOARD_SQLSERVER_TEST_CONNECTION: Server=localhost,1433;User Id=sa;Password=HbCi_2026!Safe_Only;Encrypt=False;TrustServerCertificate=True;Connect Timeout=30
@@ -490,7 +492,7 @@ jobs:
       # 跨连接锁与成本回填测试读取独立变量；缺失会被 xUnit 跳过并触发 TRX 失败关闭。
       HB_TEST_SQLSERVER_CONNECTION: Server=localhost,1433;User Id=sa;Password=HbCi_2026!Safe_Only;Encrypt=False;TrustServerCertificate=True;Connect Timeout=30
       CONTAINER_MUTATION_SQLSERVER_TEST_CONNECTION: Server=localhost,1433;User Id=sa;Password=HbCi_2026!Safe_Only;Encrypt=False;TrustServerCertificate=True;Connect Timeout=30
-      COST_BACKFILL_SQLSERVER_TEST_CONNECTION: Server=localhost,1433;User Id=sa;Password=HbCi_2026!Safe_Only;Encrypt=False;TrustServerCertificate=True;Connect Timeout=30
+      COST_BACKFILL_SQLSERVER_TEST_CONNECTION: Server=127.0.0.1,11439;User Id=sa;Password=HbCi_2026!Safe_Only;Encrypt=False;TrustServerCertificate=True;Connect Timeout=30
       DEVICE_ACTIVATION_SQLSERVER_TEST_CONNECTION: Server=localhost,1433;User Id=sa;Password=HbCi_2026!Safe_Only;Encrypt=False;TrustServerCertificate=True;Connect Timeout=30
       HBWEB_SCHEMA_SQLSERVER_TEST_CONNECTION: Server=localhost,1433;User Id=sa;Password=HbCi_2026!Safe_Only;Encrypt=False;TrustServerCertificate=True;Connect Timeout=30
     steps:
