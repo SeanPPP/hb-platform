@@ -1287,7 +1287,7 @@ namespace BlazorApp.Api.Services.React
                     var costWriteback = new SetChildPurchasePriceService(localDb);
 
                     // 普通多码（Type2）的成本可以由同维度主商品确定，但 HQ 分店行仍需稳定的本地投影身份。
-                    // 只在本次已锁定的精确目标组内补齐纯 Type2 商品；Type1 或混合关系继续走严格完整性校验。
+                    // 只在本次已锁定的精确目标组内补齐纯 Type2，或首次发送到 HQ 的纯 Type1 套装。
                     var activeSetRows = new List<ProductSetCode>();
                     foreach (var codeBatch in activeProductCodes.Chunk(HqCodeBatchSize))
                     {
@@ -1308,10 +1308,33 @@ namespace BlazorApp.Api.Services.React
                         .Where(group => group.All(row => row.SetType == 2))
                         .Select(group => group.Key)
                         .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    // 本地新建只初始化启用门店，HQ 首次发送却覆盖全部 HQ 分店；
+                    // 仅允许类型一致的新套装补齐缺少的投影，已有套装和混合关系仍严格校验。
+                    var newSetProductCodes = products
+                        .Where(product =>
+                            product.ProductType == 1
+                            && NormalizeCode(product.ProductCode) != null
+                            && !existingHqProductCodesForScope.Contains(
+                                NormalizeCode(product.ProductCode)!
+                            )
+                        )
+                        .Select(product => NormalizeCode(product.ProductCode)!)
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    var newType1ProductCodes = activeSetRows
+                        .Where(row => !string.IsNullOrWhiteSpace(row.ProductCode))
+                        .GroupBy(row => row.ProductCode.Trim(), StringComparer.OrdinalIgnoreCase)
+                        .Where(group =>
+                            newSetProductCodes.Contains(group.Key)
+                            && group.All(row => row.SetType == 1)
+                        )
+                        .Select(group => group.Key);
+                    var repairableProductCodes = type2OnlyProductCodes
+                        .Union(newType1ProductCodes, StringComparer.OrdinalIgnoreCase)
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
                     var repairGroups = exactStoreGroups
                         .Where(group =>
                             group.ProductCode != null
-                            && type2OnlyProductCodes.Contains(group.ProductCode)
+                            && repairableProductCodes.Contains(group.ProductCode)
                         )
                         .ToList();
 
@@ -1352,7 +1375,7 @@ namespace BlazorApp.Api.Services.React
                             })
                             .Where(item =>
                                 item.ProductCode != null
-                                && type2OnlyProductCodes.Contains(item.ProductCode)
+                                && repairableProductCodes.Contains(item.ProductCode)
                             )
                             .ToDictionary(
                                 item => item.ProductCode!,
@@ -1362,8 +1385,13 @@ namespace BlazorApp.Api.Services.React
                                 StringComparer.OrdinalIgnoreCase
                             );
                         // Repair 内部按商品编码构造 SQL IN 条件；沿用 HQ 查询批次，避免大批量推送超过 SQL Server 参数上限。
-                        foreach (var repairProductBatch in repairProductCodes.Chunk(HqCodeBatchSize))
+                        // Type1 必须有有效全局主成本；纯 Type2 继续允许仅有门店主成本，分组后分别调用原有门禁。
+                        foreach (var repairProductBatch in repairProductCodes
+                            .GroupBy(productCode => type2OnlyProductCodes.Contains(productCode))
+                            .SelectMany(group => group.Chunk(HqCodeBatchSize)))
                         {
+                            var allowType2StoreParentPurchasePrice =
+                                type2OnlyProductCodes.Contains(repairProductBatch[0]);
                             var batchProductCodes = repairProductBatch.ToHashSet(
                                 StringComparer.OrdinalIgnoreCase
                             );
@@ -1386,7 +1414,7 @@ namespace BlazorApp.Api.Services.React
                                     batchPurchasePrices,
                                     ResolveSetChildPurchasePriceActor(null),
                                     exactStoreGroups: batchGroups,
-                                    allowType2StoreParentPurchasePrice: true
+                                    allowType2StoreParentPurchasePrice: allowType2StoreParentPurchasePrice
                                 );
                             if (repair.Failures.Count > 0)
                             {
