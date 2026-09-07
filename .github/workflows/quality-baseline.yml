@@ -3,25 +3,7 @@ name: 质量基线
 run-name: 质量基线 · ${{ github.event_name }} · ${{ github.ref_name }}
 
 on:
-  pull_request:
-    paths:
-      - "services/backend/**"
-      - "apps/web/**"
-      - "apps/pos-ipad/**"
-      - "apps/pos-handheld/**"
-      - "packages/pos-*/**"
-      - "scripts/pos-shared/**"
-      - "patches/**"
-      - "package.json"
-      - "package-lock.json"
-      - "eslint.config.mjs"
-      - "tsconfig.pos-packages.json"
-      - ".github/workflows/quality-baseline.yml"
-      - "scripts/performance/**"
-      - "scripts/test-all.sh"
-      - "quality-baseline-budget.json"
-      - "web-bundle-budget.json"
-      - "global.json"
+  # PR 的质量采集与预算门禁已并入 pr-ci，主分支保留独立且可比较的基线。
   push:
     branches: [main]
     paths:

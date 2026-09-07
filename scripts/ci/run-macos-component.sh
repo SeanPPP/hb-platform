@@ -66,13 +66,18 @@ if [[ "$xcode_version_line" != "Xcode $required_xcode_version" ]]; then
   exit 1
 fi
 
+# Weekly 只验证 CI 构建；真实发布构建仍由 EAS 负责上传 Sentry sourcemap。
+if [[ "$profile" == "weekly" ]]; then
+  echo "Weekly CI 已禁用 Sentry sourcemap 自动上传。"
+fi
+
 case "$component" in
   pos-ipad-native)
     npm ci --no-audit --no-fund
     npm run prebuild:ios --workspace=@hb/pos-ipad -- --clean
     node scripts/ci/test-inventory.mjs --app pos-ipad --run native
     if [[ "$profile" == "weekly" ]]; then
-      xcodebuild \
+      SENTRY_DISABLE_AUTO_UPLOAD=true xcodebuild \
         -workspace apps/pos-ipad/ios/HBPOS.xcworkspace \
         -scheme HBPOS \
         -configuration Debug \
@@ -91,7 +96,7 @@ case "$component" in
     npm run prebuild:ios --workspace=@hb/pos-handheld -- --clean
     node scripts/ci/test-inventory.mjs --app pos-handheld --run native
     if [[ "$profile" == "weekly" ]]; then
-      xcodebuild \
+      SENTRY_DISABLE_AUTO_UPLOAD=true xcodebuild \
         -workspace apps/pos-handheld/ios/HBPOSMobile.xcworkspace \
         -scheme HBPOSMobile \
         -configuration Debug \

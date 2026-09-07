@@ -419,6 +419,12 @@ function main(argv = process.argv.slice(2), env = process.env) {
     webBundleReport,
   );
   console.log(`MetricBatchV1 已生成：${batch.events.length} 个质量/性能事件`);
+  // artifact 的通配下载可能只拿到部分 lane；保留诊断报告，同时明确阻止门禁假绿。
+  const rejectedLanes = laneReport.filter((lane) => lane.conclusion !== "accepted");
+  if (rejectedLanes.length > 0) {
+    console.error(`质量结果不完整或失败：${rejectedLanes.map((lane) => `${lane.lane}=${lane.errorCode}`).join(", ")}`);
+    process.exitCode = 1;
+  }
 }
 
 const isMain =
