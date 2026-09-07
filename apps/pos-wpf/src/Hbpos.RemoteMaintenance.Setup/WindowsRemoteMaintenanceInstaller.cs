@@ -25,8 +25,30 @@ public interface IRemoteMaintenanceServiceControl
 
 public sealed class WindowsRemoteMaintenanceCommandRunner : IRemoteMaintenanceCommandRunner
 {
-    public async Task<int> RunAsync(string fileName, string arguments, CancellationToken cancellationToken) =>
-        (await RunWithOutputAsync(fileName, arguments, cancellationToken)).ExitCode;
+    public async Task<int> RunAsync(string fileName, string arguments, CancellationToken cancellationToken)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromMinutes(3));
+        // 静默安装会派生常驻托盘进程。只需退出码的命令不重定向输出，
+        // 避免后台进程继承管道后一直没有 EOF，导致安装已完成却等待超时。
+        using var process = new Process { StartInfo = new ProcessStartInfo(fileName, arguments)
+        {
+            UseShellExecute = false, CreateNoWindow = true,
+            WorkingDirectory = Path.GetDirectoryName(Path.GetFullPath(fileName))!
+        }};
+        cancellationToken.ThrowIfCancellationRequested();
+        process.Start();
+        try
+        {
+            await process.WaitForExitAsync(timeout.Token);
+            return process.ExitCode;
+        }
+        catch (OperationCanceledException)
+        {
+            if (!process.HasExited) process.Kill(entireProcessTree: true);
+            throw;
+        }
+    }
 
     public async Task<RemoteMaintenanceCommandResult> RunWithOutputAsync(string fileName, string arguments, CancellationToken cancellationToken)
     {
