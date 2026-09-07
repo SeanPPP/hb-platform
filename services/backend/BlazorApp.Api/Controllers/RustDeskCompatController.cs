@@ -17,6 +17,7 @@ namespace BlazorApp.Api.Controllers;
 public sealed class RustDeskCompatController : ControllerBase
 {
     private const string CompanyAddressBookGuid = "hb-company-devices";
+    private const string PersonalAddressBookGuid = "hb-personal-empty";
     private const string CompanyDeviceGroupName = "公司设备";
     private const string BearerPrefix = "Bearer ";
 
@@ -233,7 +234,7 @@ public sealed class RustDeskCompatController : ControllerBase
     public async Task<IActionResult> PersonalAddressBook(CancellationToken cancellationToken)
     {
         var required = await RequireUserAsync(cancellationToken);
-        return required.Failure ?? Ok(new { guid = CompanyAddressBookGuid });
+        return required.Failure ?? Ok(new { guid = PersonalAddressBookGuid });
     }
 
     [HttpPost("ab/settings")]
@@ -247,7 +248,12 @@ public sealed class RustDeskCompatController : ControllerBase
     public async Task<IActionResult> SharedAddressBookProfiles(CancellationToken cancellationToken)
     {
         var required = await RequireUserAsync(cancellationToken);
-        return required.Failure ?? Ok(new { total = 0, data = Array.Empty<object>() });
+        // 官方客户端仅在共享地址簿连接路径使用 peer.password；rule=1 表示只读。
+        return required.Failure ?? Ok(new
+        {
+            total = 1,
+            data = new[] { new { guid = CompanyAddressBookGuid, name = CompanyDeviceGroupName, rule = 1, info = new { } } },
+        });
     }
 
     [HttpPost("ab/peers")]
@@ -263,21 +269,19 @@ public sealed class RustDeskCompatController : ControllerBase
             return required.Failure;
         }
 
-        if (!string.Equals(ab, CompanyAddressBookGuid, StringComparison.Ordinal)
+        var isPersonal = string.Equals(ab, PersonalAddressBookGuid, StringComparison.Ordinal);
+        if ((!isPersonal && !string.Equals(ab, CompanyAddressBookGuid, StringComparison.Ordinal))
             || current < 1 || pageSize is < 1 or > 100)
         {
             return BadRequest(new { error = "Invalid address book request" });
         }
 
+        if (isPersonal) return Ok(new { total = 0, data = Array.Empty<RustDeskPeer>() });
+
         try
         {
-            var peers = await _service.GetPeersAsync(required.User!, cancellationToken);
-            var total = peers.Count;
-            var data = peers
-                .Skip((int)Math.Min(int.MaxValue, ((long)current - 1) * pageSize))
-                .Take(pageSize)
-                .ToArray();
-            return Ok(new { total, data });
+            var peers = await _service.GetAddressBookPeersAsync(required.User!, current, pageSize, cancellationToken);
+            return Ok(new { total = peers.Total, data = peers.Data });
         }
         catch (InvalidOperationException ex)
         {
@@ -303,6 +307,9 @@ public sealed class RustDeskCompatController : ControllerBase
         {
             return required.Failure;
         }
+
+        if (string.Equals(guid, PersonalAddressBookGuid, StringComparison.Ordinal))
+            return Ok(Array.Empty<object>());
 
         if (!string.Equals(guid, CompanyAddressBookGuid, StringComparison.Ordinal))
         {

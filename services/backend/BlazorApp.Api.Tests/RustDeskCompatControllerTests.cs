@@ -21,6 +21,32 @@ namespace BlazorApp.Api.Tests;
 public sealed class RustDeskCompatControllerTests
 {
     [Fact]
+    public async Task Company_address_book_is_shared_read_only_and_separate_from_personal()
+    {
+        await using var host = await RustDeskTestHost.StartAsync(new FakeRustDeskCompatService());
+        host.Client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr");
+
+        using var personal = await host.Client.PostAsync("/api/rustdesk/api/ab/personal", null);
+        using var shared = await host.Client.PostAsync("/api/rustdesk/api/ab/shared/profiles?current=1&pageSize=100", null);
+        var personalGuid = (await personal.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("guid").GetString();
+        var profiles = await shared.Content.ReadFromJsonAsync<JsonElement>();
+
+        Assert.Equal(1, profiles.GetProperty("total").GetInt32());
+        var company = profiles.GetProperty("data")[0];
+        Assert.Equal("hb-company-devices", company.GetProperty("guid").GetString());
+        Assert.NotEqual(personalGuid, company.GetProperty("guid").GetString());
+        Assert.Equal(1, company.GetProperty("rule").GetInt32());
+        Assert.Equal("公司设备", company.GetProperty("name").GetString());
+        Assert.True(shared.Headers.CacheControl?.NoStore);
+
+        using var peers = await host.Client.PostAsync($"/api/rustdesk/api/ab/peers?ab={personalGuid}", null);
+        var personalPeers = await peers.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(0, personalPeers.GetProperty("total").GetInt32());
+        Assert.Empty(personalPeers.GetProperty("data").EnumerateArray());
+    }
+
+    [Fact]
     public async Task Login_returns_rustdesk_access_token_contract_without_echoing_password()
     {
         var service = new FakeRustDeskCompatService();
@@ -120,15 +146,15 @@ public sealed class RustDeskCompatControllerTests
     }
 
     [Fact]
-    public async Task Peers_are_paged_and_never_include_password_or_hash()
+    public async Task Shared_peers_are_paged_and_include_only_the_requested_page_password()
     {
         var service = new FakeRustDeskCompatService
         {
             Peers = new[]
             {
-                new RustDeskPeer("1", "", "", "Windows", "One", []),
-                new RustDeskPeer("2", "", "", "Windows", "Two", []),
-                new RustDeskPeer("3", "", "", "Windows", "Three", []),
+                new RustDeskPeer("1", "", "", "Windows", "One", []) { Password = "other-page-one" },
+                new RustDeskPeer("2", "", "", "Windows", "Two", []) { Password = "other-page-two" },
+                new RustDeskPeer("3", "", "", "Windows", "Three", []) { Password = "test-device-password" },
             },
         };
         await using var host = await RustDeskTestHost.StartAsync(service);
@@ -144,8 +170,50 @@ public sealed class RustDeskCompatControllerTests
         Assert.Equal(3, json.GetProperty("total").GetInt32());
         Assert.Single(json.GetProperty("data").EnumerateArray());
         Assert.Equal("3", json.GetProperty("data")[0].GetProperty("id").GetString());
-        Assert.DoesNotContain("password", text, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("test-device-password", json.GetProperty("data")[0].GetProperty("password").GetString());
+        Assert.DoesNotContain("other-page", text);
+        Assert.True(response.Headers.CacheControl?.NoStore);
         Assert.DoesNotContain("hash", text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("/api/rustdesk/api/ab/peers?ab=hb-company-devices", true)]
+    [InlineData("/api/rustdesk/api/ab/shared/profiles", true)]
+    [InlineData("/api/rustdesk/api/ab", false)]
+    public async Task Address_book_credentials_require_dedicated_session(string path, bool post)
+    {
+        var service = new FakeRustDeskCompatService
+        {
+            Peers = [new RustDeskPeer("1", "", "", "Windows", "One", []) { Password = "private-test-value" }],
+        };
+        await using var host = await RustDeskTestHost.StartAsync(service);
+        foreach (var token in new string?[] { null, "ordinary-hb-token", "revoked-session" })
+        {
+            host.Client.DefaultRequestHeaders.Authorization = token is null ? null : new AuthenticationHeaderValue("Bearer", token);
+            using var response = post ? await host.Client.PostAsync(path, null) : await host.Client.GetAsync(path);
+            Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+            Assert.DoesNotContain("private-test-value", await response.Content.ReadAsStringAsync());
+        }
+        Assert.Equal(0, service.CredentialReads);
+    }
+
+    [Theory]
+    [InlineData("/api/rustdesk/api/peers", false)]
+    [InlineData("/api/rustdesk/api/ab", false)]
+    [InlineData("/api/rustdesk/api/ab/tags/hb-company-devices", true)]
+    public async Task Other_lists_do_not_request_or_return_address_book_passwords(string path, bool post)
+    {
+        var service = new FakeRustDeskCompatService
+        {
+            Peers = [new RustDeskPeer("1", "", "", "Windows", "One", []) { Password = "private-test-value" }],
+        };
+        await using var host = await RustDeskTestHost.StartAsync(service);
+        host.Client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr");
+        using var response = post ? await host.Client.PostAsync(path, null) : await host.Client.GetAsync(path);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.DoesNotContain("password", await response.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("private-test-value", await response.Content.ReadAsStringAsync());
+        Assert.Equal(0, service.CredentialReads);
     }
 
     [Fact]
@@ -381,6 +449,7 @@ public sealed class RustDeskCompatControllerTests
     {
         public RustDeskLoginRequest? LastLoginRequest { get; private set; }
         public int AuthenticateCalls { get; private set; }
+        public int CredentialReads { get; private set; }
         public bool ThrowNotReady { get; init; }
         public IReadOnlyList<RustDeskPeer> Peers { get; init; } =
             new[] { new RustDeskPeer("1", "", "", "Windows", "Company POS", []) };
@@ -424,7 +493,16 @@ public sealed class RustDeskCompatControllerTests
                 throw new InvalidOperationException("database secret");
             }
 
-            return Task.FromResult(Peers);
+            return Task.FromResult<IReadOnlyList<RustDeskPeer>>(Peers.Select(peer => peer with { Password = null }).ToArray());
+        }
+
+        public Task<RustDeskPeerPage> GetAddressBookPeersAsync(
+            RustDeskAuthenticatedUser user, int current, int pageSize, CancellationToken cancellationToken)
+        {
+            if (ThrowNotReady) throw new InvalidOperationException("database secret");
+            CredentialReads++;
+            return Task.FromResult(new RustDeskPeerPage(Peers.Count,
+                Peers.Skip((int)Math.Min(int.MaxValue, ((long)current - 1) * pageSize)).Take(pageSize).ToArray()));
         }
     }
 }

@@ -1,11 +1,12 @@
 using System.Security.Cryptography;
 using System.Text;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Security;
 using BlazorApp.Api.Utils;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HBweb;
-using BlazorApp.Shared.Models.POSM;
 using SqlSugar;
+using Microsoft.Extensions.Options;
 
 namespace BlazorApp.Api.Services.RustDeskCompat;
 
@@ -22,8 +23,6 @@ public sealed class RustDeskCompatService : IRustDeskCompatService
     private const int MaxUsernameLength = 100;
     private const int MaxPasswordLength = 256;
     private const int MaxRustdeskIdLength = 100;
-    private const int EnabledDeviceStatus = 1;
-    private const string PosDeviceType = "POS";
     private const string WindowsDeviceSystem = "Windows";
     private const string SchemaNotReadyMessage = "RustDesk 专用数据库尚未准备就绪。";
     private static readonly string[] AdministratorRoles =
@@ -33,16 +32,25 @@ public sealed class RustDeskCompatService : IRustDeskCompatService
     private readonly POSMSqlSugarContext _posmContext;
     private readonly RustDeskCompatSchemaReadiness _schemaReadiness;
     private readonly TimeProvider _timeProvider;
+    private readonly RemoteMaintenanceSecretProtector _secretProtector;
+    private readonly IOptions<RemoteMaintenanceOptions> _remoteMaintenanceOptions;
+    private readonly ILogger<RustDeskCompatService> _logger;
 
     public RustDeskCompatService(
         SqlSugarContext dbContext,
         POSMSqlSugarContext posmContext,
         RustDeskCompatSchemaReadiness schemaReadiness,
+        RemoteMaintenanceSecretProtector secretProtector,
+        IOptions<RemoteMaintenanceOptions> remoteMaintenanceOptions,
+        ILogger<RustDeskCompatService> logger,
         TimeProvider? timeProvider = null)
     {
         _dbContext = dbContext;
         _posmContext = posmContext;
         _schemaReadiness = schemaReadiness;
+        _secretProtector = secretProtector;
+        _remoteMaintenanceOptions = remoteMaintenanceOptions;
+        _logger = logger;
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
@@ -138,7 +146,19 @@ public sealed class RustDeskCompatService : IRustDeskCompatService
 
     public async Task<IReadOnlyList<RustDeskPeer>> GetPeersAsync(
         RustDeskAuthenticatedUser user,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken) =>
+        (await GetPeerPageAsync(user, null, 100, cancellationToken)).Data;
+
+    public Task<RustDeskPeerPage> GetAddressBookPeersAsync(
+        RustDeskAuthenticatedUser user, int current, int pageSize, CancellationToken cancellationToken)
+    {
+        if (current < 1 || pageSize is < 1 or > 100)
+            throw new ArgumentOutOfRangeException(nameof(current), "Invalid address book page");
+        return GetPeerPageAsync(user, current, pageSize, cancellationToken);
+    }
+
+    private async Task<RustDeskPeerPage> GetPeerPageAsync(
+        RustDeskAuthenticatedUser user, int? current, int pageSize, CancellationToken cancellationToken)
     {
         await EnsureReadyAsync(cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
@@ -147,7 +167,7 @@ public sealed class RustDeskCompatService : IRustDeskCompatService
         var activeUser = await GetActiveUserAsync(user.UserGuid, cancellationToken);
         if (activeUser is null
             || !await IsActiveAdministratorAsync(activeUser.UserGUID, cancellationToken))
-            return [];
+            return new(0, []);
 
         var managed = await _dbContext.Db.Queryable<RustDeskManagedDevice>()
             .Where(x => !x.IsDisabled && x.RustdeskId != "")
@@ -158,6 +178,7 @@ public sealed class RustDeskCompatService : IRustDeskCompatService
             })
             .ToListAsync();
         var peers = new List<RustDeskPeer>(managed.Count);
+        var credentialSources = new Dictionary<string, RemoteMaintenanceDevice>(StringComparer.OrdinalIgnoreCase);
         var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var device in managed)
         {
@@ -180,69 +201,120 @@ public sealed class RustDeskCompatService : IRustDeskCompatService
                 Id = x.Id,
                 DeviceRegistrationId = x.DeviceRegistrationId,
                 HardwareId = x.HardwareId,
-                StoreCode = x.StoreCode,
-                DeviceCode = x.DeviceCode,
-                ComputerName = x.ComputerName,
+                RegisteredAtUtc = x.RegisteredAtUtc,
                 RustdeskId = x.RustdeskId,
             })
             .ToListAsync();
-        var hardwareIds = snapshots
-            .Select(x => NormalizeBounded(x.HardwareId, 100))
-            .Where(x => !string.IsNullOrWhiteSpace(x))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-        if (hardwareIds.Length == 0) return SortPeers(peers);
+        var registrations = await RemoteMaintenanceRegistrationResolver.ResolveAsync(_posmContext, snapshots, cancellationToken);
 
-        // SQL Server 参数上限约 2100；硬件号列表按 1000 分批，避免大批量通讯录请求失败。
-        var registrations = new List<POSM_设备注册信息表>();
-        foreach (var batch in hardwareIds.Chunk(1000))
+        // 名称按当前注册身份联查分店，避免重注册或分店改名后继续展示远程维护的旧快照。
+        var storeCodes = registrations.Values.Select(x => NormalizeBounded(x.分店代码, 50))
+            .Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var stores = new List<Store>();
+        foreach (var batch in storeCodes.Chunk(1000))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var batchRows = await _posmContext.Db.Queryable<POSM_设备注册信息表>()
-                .Where(x => batch.Contains(x.设备硬件识别码))
-                .Select(x => new POSM_设备注册信息表
-                {
-                    ID = x.ID,
-                    设备硬件识别码 = x.设备硬件识别码,
-                    设备状态 = x.设备状态,
-                    设备类型 = x.设备类型,
-                    设备系统 = x.设备系统,
-                })
-                .OrderByDescending(x => x.ID)
-                .ToListAsync();
-            registrations.AddRange(batchRows);
+            stores.AddRange(await _dbContext.Db.Queryable<Store>()
+                .Where(x => !x.IsDeleted && batch.Contains(x.StoreCode))
+                .Select(x => new Store { StoreCode = x.StoreCode, StoreName = x.StoreName })
+                .ToListAsync());
         }
-        var latestRegistrations = registrations
-            .GroupBy(x => NormalizeBounded(x.设备硬件识别码, 100), StringComparer.OrdinalIgnoreCase)
-            .Select(x => x.OrderByDescending(row => row.ID).First())
-            .Where(IsEnabledWindowsPos)
-            .ToDictionary(x => NormalizeBounded(x.设备硬件识别码, 100), StringComparer.OrdinalIgnoreCase);
+        var storeNames = stores.GroupBy(x => NormalizeBounded(x.StoreCode, 50), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(x => x.Key, x => NormalizeDisplay(x.First().StoreName), StringComparer.OrdinalIgnoreCase);
 
-        foreach (var snapshot in snapshots)
+        var candidates = snapshots.Where(snapshot => registrations.ContainsKey(snapshot.Id));
+        foreach (var group in candidates.GroupBy(x => NormalizeBounded(x.RustdeskId, MaxRustdeskIdLength), StringComparer.OrdinalIgnoreCase))
         {
-            var hardwareId = NormalizeBounded(snapshot.HardwareId, 100);
-            if (string.IsNullOrWhiteSpace(hardwareId)
-                || !latestRegistrations.TryGetValue(hardwareId, out var registration)
-                || registration.ID != snapshot.DeviceRegistrationId)
+            // 重复 RustDesk ID 无法唯一绑定设备名称及凭据，整组拒绝，避免无序选中错误的 POS。
+            if (group.Count() != 1)
+            {
+                _logger.LogWarning("RustDesk duplicate POS identity excluded. RustdeskId={RustdeskId}", group.Key);
                 continue;
+            }
+            var snapshot = group.First();
+            var registration = registrations[snapshot.Id];
 
             var id = NormalizeBounded(snapshot.RustdeskId, MaxRustdeskIdLength);
             if (string.IsNullOrWhiteSpace(id) || !ids.Add(id)) continue;
-            var hostname = NormalizeDisplay(snapshot.ComputerName);
-            var username = NormalizeDisplay(snapshot.DeviceCode);
-            var tags = string.IsNullOrWhiteSpace(snapshot.StoreCode)
+            var storeCode = NormalizeBounded(registration.分店代码, 50);
+            var storeName = storeNames.GetValueOrDefault(storeCode);
+            var deviceCode = NormalizeBounded(registration.系统设备编号, 50);
+            // RustDesk 卡片拼接 username@hostname；用完整显示名和空用户名避免重复设备代码。
+            var displayName = string.Join(" ", new[]
+            {
+                string.IsNullOrWhiteSpace(storeName) ? storeCode : storeName,
+                string.IsNullOrWhiteSpace(deviceCode) ? id : deviceCode,
+            }.Where(x => !string.IsNullOrWhiteSpace(x)));
+            var tags = string.IsNullOrWhiteSpace(storeCode)
                 ? Array.Empty<string>()
-                : [snapshot.StoreCode];
+                : [storeCode];
             peers.Add(new RustDeskPeer(
                 id,
-                username,
-                hostname,
+                "",
+                displayName,
                 WindowsDeviceSystem,
-                hostname,
+                displayName,
                 tags));
+            credentialSources.Add(id, snapshot);
         }
 
-        return SortPeers(peers);
+        return await CompletePeerPageAsync(peers, credentialSources, activeUser.UserGUID, current, pageSize, cancellationToken);
+    }
+
+    private async Task<RustDeskPeerPage> CompletePeerPageAsync(
+        List<RustDeskPeer> peers, Dictionary<string, RemoteMaintenanceDevice> credentialSources,
+        string actor, int? current, int pageSize, CancellationToken cancellationToken)
+    {
+        var sorted = SortPeers(peers);
+        // 普通列表只返回元数据；共享通讯录先排序分页，再读取本页的有效 POS 密文。
+        if (current is null) return new(sorted.Length, sorted);
+        var page = sorted.Skip((int)Math.Min(int.MaxValue, ((long)current.Value - 1) * pageSize))
+            .Take(pageSize).ToArray();
+        if (!_remoteMaintenanceOptions.Value.Enabled) return new(sorted.Length, page);
+        var sourceIds = page.Where(peer => credentialSources.ContainsKey(peer.Id))
+            .Select(peer => credentialSources[peer.Id].Id).ToArray();
+        if (sourceIds.Length == 0) return new(sorted.Length, page);
+
+        cancellationToken.ThrowIfCancellationRequested();
+        var credentials = await _dbContext.Db.Queryable<RemoteMaintenanceDevice>()
+            .Where(x => sourceIds.Contains(x.Id) && !x.IsDeleted)
+            .Select(x => new RemoteMaintenanceDevice
+            {
+                Id = x.Id, RustdeskId = x.RustdeskId, DeviceRegistrationId = x.DeviceRegistrationId,
+                CredentialCiphertext = x.CredentialCiphertext,
+            }).ToListAsync();
+        var byId = credentials.ToDictionary(x => x.Id);
+        for (var index = 0; index < page.Length; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var peer = page[index];
+            if (!credentialSources.TryGetValue(peer.Id, out var source)
+                || !byId.TryGetValue(source.Id, out var credential)
+                || credential.DeviceRegistrationId != source.DeviceRegistrationId
+                || !string.Equals(NormalizeBounded(credential.RustdeskId, MaxRustdeskIdLength), peer.Id, StringComparison.OrdinalIgnoreCase))
+                continue;
+            page[index] = peer with { Password = ReadAddressBookPassword(credential, actor) };
+        }
+        return new(sorted.Length, page);
+    }
+
+    private string? ReadAddressBookPassword(RemoteMaintenanceDevice device, string actor)
+    {
+        if (string.IsNullOrWhiteSpace(device.CredentialCiphertext)) return null;
+        try
+        {
+            // 1.4.9 共享地址簿使用原始密码；客户端收到目标 salt/challenge 后自行完成认证。
+            var password = _secretProtector.UnprotectPassword(device.CredentialCiphertext);
+            if (string.IsNullOrEmpty(password)) return null;
+            _logger.LogInformation("RustDesk address book credential synchronized. DeviceId={DeviceId}, Actor={Actor}", device.Id, actor);
+            return password;
+        }
+        catch (CryptographicException)
+        {
+            // 单台设备凭据损坏时继续显示设备，但不下发任何密文或错误详情。
+            _logger.LogWarning("RustDesk address book credential unavailable. DeviceId={DeviceId}", device.Id);
+            return null;
+        }
     }
 
     private async Task EnsureReadyAsync(CancellationToken cancellationToken)
@@ -280,11 +352,6 @@ public sealed class RustDeskCompatService : IRustDeskCompatService
 
     private static RustDeskAuthenticatedUser ToAuthenticatedUser(User user) =>
         new(user.UserGUID, user.Username, string.IsNullOrWhiteSpace(user.FullName) ? user.Username : user.FullName);
-
-    private static bool IsEnabledWindowsPos(POSM_设备注册信息表 registration) =>
-        registration.设备状态 == EnabledDeviceStatus
-        && string.Equals(registration.设备类型, PosDeviceType, StringComparison.OrdinalIgnoreCase)
-        && string.Equals(registration.设备系统, WindowsDeviceSystem, StringComparison.OrdinalIgnoreCase);
 
     private static string GenerateToken() =>
         Convert.ToBase64String(RandomNumberGenerator.GetBytes(TokenBytes))
