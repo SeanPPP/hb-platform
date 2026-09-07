@@ -2973,6 +2973,8 @@
   <data name="cardRecovery.center.status.recoverNoResult" xml:space="preserve"><value>所选交易已不在待处理列表中。</value></data>
   <data name="cardRecovery.center.status.resolveNoResult" xml:space="preserve"><value>结案操作没有返回消息。</value></data>
   <data name="cardRecovery.center.status.refreshFailed" xml:space="preserve"><value>刷新卡交易失败。{0}</value></data>
+  <data name="cardRecovery.center.status.providerRefreshFailed" xml:space="preserve"><value>{0} 刷新失败。已保留上次成功读取的交易，请点击“刷新”重试。</value></data>
+  <data name="cardRecovery.center.recoverOnly" xml:space="preserve"><value>此交易不能手工结案。请使用“查询所选交易”重试这笔已保存的交易；“刷新”和“返回”仍可使用，请勿再次刷卡。</value></data>
   <data name="cardRecovery.center.status.recoverFailed" xml:space="preserve"><value>查询所选交易失败。{0}</value></data>
   <data name="cardRecovery.center.status.resolveFailed" xml:space="preserve"><value>保存主管决定失败。{0}</value></data>
   <data name="cardRecovery.center.status.draftHandoffFailed" xml:space="preserve"><value>恢复结果已保存，但付款草稿未能安全交接。再次收款或退款前，请重新运行恢复。{0}</value></data>
@@ -3029,6 +3031,7 @@
   <data name="payment.linklyTerminal.title" xml:space="preserve"><value>LINKLY 刷卡机</value></data>
   <data name="payment.linklyTerminal.none" xml:space="preserve"><value>尚未选择刷卡机</value></data>
   <data name="payment.linklyTerminal.noneReady" xml:space="preserve"><value>当前没有已就绪的 Linkly Cloud 刷卡机。</value></data>
+  <data name="payment.linklyTerminal.refreshFailed" xml:space="preserve"><value>无法刷新 Linkly Cloud 刷卡机目录，请重试。</value></data>
   <data name="payment.linklyTerminal.display" xml:space="preserve"><value>Lane {0} · {1}</value></data>
   <data name="payment.linklyTerminal.switchBlocked" xml:space="preserve"><value>刷卡交易进行中或结果未决时不能切换刷卡机。</value></data>
   <data name="payment.linklyTerminal.selected" xml:space="preserve"><value>后续付款将使用 {0}。</value></data>

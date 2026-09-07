@@ -37,7 +37,7 @@ public partial class PaymentView : UserControl
             {
                 await viewModel.RefreshLinklyCloudTerminalsAsync();
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
             {
                 // 目录加载失败由 VM 展示；Loaded 事件不得让付款页崩溃。
                 ConsoleLog.WriteError(
@@ -56,14 +56,36 @@ public partial class PaymentView : UserControl
             return;
         }
 
-        await viewModel.SelectLinklyCloudTerminalAsync(terminal);
+        try
+        {
+            await viewModel.SelectLinklyCloudTerminalAsync(terminal);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            // 中文注释：SelectionChanged 是 async void，网络取消或 HTTP 异常必须止于页面事件边界。
+            ConsoleLog.WriteError(
+                "Payment",
+                $"select linkly terminal event failed error={ex.GetType().Name} message={ex.Message}",
+                exception: ex);
+        }
     }
 
     private async void RefreshLinklyCloudTerminals_Click(object sender, RoutedEventArgs e)
     {
         if (DataContext is PaymentViewModel viewModel)
         {
-            await viewModel.RefreshLinklyCloudTerminalsAsync();
+            try
+            {
+                await viewModel.RefreshLinklyCloudTerminalsAsync();
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+            {
+                // 中文注释：刷新按钮属于 async void 事件，普通取消/HTTP 错误不能升级为 WPF 未处理异常。
+                ConsoleLog.WriteError(
+                    "Payment",
+                    $"refresh linkly terminal event failed error={ex.GetType().Name} message={ex.Message}",
+                    exception: ex);
+            }
         }
     }
 

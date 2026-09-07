@@ -391,9 +391,25 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
                 : SelectedLinklyCloudTerminalText;
             RaiseLinklyCloudTerminalProperties();
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (OperationCanceledException ex)
         {
-            LinklyCloudTerminalStatusText = ex.Message;
+            LinklyCloudTerminalStatusText = GetLinklyTerminalErrorText(
+                ex,
+                "payment.linklyTerminal.refreshFailed",
+                "Unable to refresh Linkly Cloud terminals. Try Refresh again.");
+            ConsoleLog.WriteError(
+                "Payment",
+                $"load linkly cloud terminal directory canceled error={ex.GetType().Name} message={ex.Message}",
+                exception: ex);
+        }
+        catch (Exception ex) when (
+            ex is not OutOfMemoryException &&
+            ex is not StackOverflowException)
+        {
+            LinklyCloudTerminalStatusText = GetLinklyTerminalErrorText(
+                ex,
+                "payment.linklyTerminal.refreshFailed",
+                "Unable to refresh Linkly Cloud terminals. Try Refresh again.");
             ConsoleLog.WriteError(
                 "Payment",
                 $"load linkly cloud terminal directory failed error={ex.GetType().Name} message={ex.Message}",
@@ -443,10 +459,27 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
                 TerminalText("payment.linklyTerminal.selected", "Payments will use {0}."),
                 terminal.DisplayName);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (OperationCanceledException ex)
         {
             RestorePersistedLinklyCloudTerminal();
-            LinklyCloudTerminalStatusText = ex.Message;
+            LinklyCloudTerminalStatusText = GetLinklyTerminalErrorText(
+                ex,
+                "payment.linklyTerminal.refreshFailed",
+                "Unable to refresh Linkly Cloud terminals. Try Refresh again.");
+            ConsoleLog.WriteError(
+                "Payment",
+                $"select linkly cloud terminal canceled error={ex.GetType().Name} message={ex.Message}",
+                exception: ex);
+        }
+        catch (Exception ex) when (
+            ex is not OutOfMemoryException &&
+            ex is not StackOverflowException)
+        {
+            RestorePersistedLinklyCloudTerminal();
+            LinklyCloudTerminalStatusText = GetLinklyTerminalErrorText(
+                ex,
+                "payment.linklyTerminal.refreshFailed",
+                "Unable to refresh Linkly Cloud terminals. Try Refresh again.");
             ConsoleLog.WriteError(
                 "Payment",
                 $"select linkly cloud terminal failed error={ex.GetType().Name} message={ex.Message}",
@@ -502,6 +535,13 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             : translated;
     }
 
+    private string GetLinklyTerminalErrorText(Exception exception, string key, string fallback)
+    {
+        return string.IsNullOrWhiteSpace(exception.Message)
+            ? TerminalText(key, fallback)
+            : exception.Message;
+    }
+
     internal bool IsShuttingDown => Volatile.Read(ref _shutdownStarted) == 1;
 
     public ObservableCollection<CartLine> CartLines { get; } = [];
@@ -513,7 +553,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     public long? LinklyCloudSelectionRevision { get; private set; }
 
     public bool IsLinklyCloudTerminalSelectorVisible =>
-        _isLinklyCloudBackendTerminalMode && LinklyCloudTerminals.Count > 0;
+        _isLinklyCloudBackendTerminalMode;
 
     public bool CanSwitchLinklyCloudTerminal =>
         IsLinklyCloudTerminalSelectorVisible &&
@@ -613,6 +653,9 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     public string StatusMessage => _statusTextOverride ?? T(_statusKey);
 
     public bool IsPaymentInteractionEnabled => !IsPaymentInteractionLocked && !_cardSession.HasUnknownResult;
+
+    // 中文注释：恢复入口必须独立于错误遮罩；订单锁定时即使遮罩已关闭也要能继续核对已批准卡款。
+    public bool IsCardPaymentRecoveryRequired => _cardSession.HasUnknownResult;
 
     // 普通支付状态隐藏取消入口，避免将取消误用为返回收银页。
     public bool IsCancelPaymentVisible => IsCardPaymentInProgress || _cardSession.IsAwaitingLateResult;
@@ -909,6 +952,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     internal void OnCardResultUnknownRecoveryChanged(bool required)
     {
+        OnPropertyChanged(nameof(IsCardPaymentRecoveryRequired));
         OnPropertyChanged(nameof(CanSwitchLinklyCloudTerminal));
         if (required)
         {
@@ -1684,15 +1728,6 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             return;
         }
 
-        if (isCard && _cardSession.ShouldDiscardLateResult)
-        {
-            _cardSession.SetCancellationStatus(wasManuallyCancelled: true);
-            _cardSession.ResetManualCancellationState();
-            NotifyPaymentCommandStates();
-            await ReleaseVoucherTendersAfterCardFailureAsync();
-            return;
-        }
-
         if (!result.Succeeded || result.Tender is null)
         {
             OperationAuditEvents.RecordAction(
@@ -2159,26 +2194,35 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         }
         catch (CardPaymentPersistenceUnknownException ex)
         {
-            var correlation = OperationAuditEvents.CreateCorrelation();
-            OperationAuditEvents.RecordAction(
-                _operationAuditLogger,
-                operationType,
-                "RequiresReview",
-                Session,
-                before,
-                reasonCode: "CARD_PERSISTENCE_UNKNOWN",
-                safeMessage: ex.InnerException?.GetType().Name ?? ex.GetType().Name,
-                paymentMethod: FormatPaymentMethods(tenderSnapshot),
-                paymentAmount: tenderSnapshot.Sum(tender => tender.Amount),
-                orderGuid: ex.OrderGuid.ToString("D"),
-                correlationId: correlation.CorrelationId,
-                traceId: correlation.TraceId);
-            ConsoleLog.WriteError(
-                "OperationAudit",
-                $"approved card order persistence unknown operation={operationType} error={ex.InnerException?.GetType().Name ?? ex.GetType().Name}",
-                new ApplicationLogContext(TraceId: correlation.TraceId),
-                ex);
+            _cardSession.SetPersistenceRecoveryOrder(ex.OrderGuid);
+            // 中文注释：先保留付款锁与恢复入口，诊断写入失败不能丢失已批准卡款的待恢复状态。
             SetCurrentCardRecoveryRequired(true, ex.Message);
+            try
+            {
+                var correlation = OperationAuditEvents.CreateCorrelation();
+                OperationAuditEvents.RecordAction(
+                    _operationAuditLogger,
+                    operationType,
+                    "RequiresReview",
+                    Session,
+                    before,
+                    reasonCode: "CARD_PERSISTENCE_UNKNOWN",
+                    safeMessage: ex.InnerException?.GetType().Name ?? ex.GetType().Name,
+                    paymentMethod: FormatPaymentMethods(tenderSnapshot),
+                    paymentAmount: tenderSnapshot.Sum(tender => tender.Amount),
+                    orderGuid: ex.OrderGuid.ToString("D"),
+                    correlationId: correlation.CorrelationId,
+                    traceId: correlation.TraceId);
+                ConsoleLog.WriteError(
+                    "OperationAudit",
+                    $"approved card order persistence unknown operation={operationType} error={ex.InnerException?.GetType().Name ?? ex.GetType().Name}",
+                    new ApplicationLogContext(TraceId: correlation.TraceId),
+                    ex);
+            }
+            catch (Exception logException) when (logException is not OutOfMemoryException and not StackOverflowException)
+            {
+                // 诊断失败仍保留交易、金额及冻结订单身份，用户可从原页面重试恢复。
+            }
             return;
         }
         catch (PaymentUploadFailedException ex)
@@ -3018,20 +3062,6 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
                 paymentMethod: PaymentMethodKind.Card.ToString());
             return;
         }
-
-        if (_cardSession.IsAwaitingLateResult)
-        {
-            _cardSession.ShouldDiscardLateResult = true;
-            OperationAuditEvents.RecordAction(
-                _operationAuditLogger,
-                OperationAuditTypes.PaymentCancel,
-                "Succeeded",
-                Session,
-                OperationAuditEvents.CaptureCart(_cart.Lines),
-                reasonCode: "CARD_LATE_RESULT_DISCARD",
-                paymentMethod: PaymentMethodKind.Card.ToString());
-            NotifyPaymentCommandStates();
-        }
     }
 
     private static string? FormatPaymentMethods(IReadOnlyList<PaymentTender> tenders)
@@ -3045,8 +3075,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     private bool CanCancelPayment()
     {
-        return IsCardPaymentInProgress ||
-            _cardSession.IsAwaitingLateResult;
+        // 中文注释：人工取消只允许中断仍在等待的终端调用；晚到结果窗口不能再次取消并丢弃已批准款项。
+        return IsCardPaymentInProgress;
     }
 
     internal bool IsCurrentPaymentEntry(int paymentEntryVersion)

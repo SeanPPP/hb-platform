@@ -18,7 +18,7 @@ using Hbpos.Contracts.Orders;
 namespace Hbpos.Client.Tests;
 
 [CollectionDefinition(Name, DisableParallelization = true)]
-public sealed class WpfViewLifecycleTestCollection
+public sealed class WpfViewLifecycleTestCollection : ICollectionFixture<PaymentViewRuntimeStaTestHost>
 {
     public const string Name = nameof(WpfViewLifecycleTestCollection);
 }
@@ -26,28 +26,28 @@ public sealed class WpfViewLifecycleTestCollection
 [Collection(WpfViewLifecycleTestCollection.Name)]
 public sealed class WpfViewLifecycleTests
 {
+    private readonly PaymentViewRuntimeStaTestHost _staHost;
+
+    public WpfViewLifecycleTests(PaymentViewRuntimeStaTestHost staHost)
+    {
+        _staHost = staHost;
+    }
+
     [Fact]
     public async Task Views_subscribe_only_while_loaded_and_loaded_cycles_are_idempotent()
     {
-        await RunOnStaDispatcherAsync(() =>
+        await _staHost.RunAsync(_ =>
         {
-            var application = CreateTestApplication();
-            try
-            {
-                VerifySettingsViewLifecycle();
-                VerifyTransactionHistoryViewLifecycle();
-                VerifyTransactionHistoryOrderDetailsLayout();
-                VerifyTransactionHistoryDisabledDetailsReason();
-                VerifyPaymentViewLifecycle();
-                VerifyDailyCloseCashCountDialogBindings();
-                VerifyDailyCloseCashWorkspaceRuntime();
-                VerifyPosTerminalTouchLayout();
-                VerifyUnloadedViewInstancesAreCollectible();
-            }
-            finally
-            {
-                application.Shutdown();
-            }
+            VerifySettingsViewLifecycle();
+            VerifyTransactionHistoryViewLifecycle();
+            VerifyTransactionHistoryOrderDetailsLayout();
+            VerifyTransactionHistoryDisabledDetailsReason();
+            VerifyPaymentViewLifecycle();
+            VerifyDailyCloseCashCountDialogBindings();
+            VerifyDailyCloseCashWorkspaceRuntime();
+            VerifyPosTerminalTouchLayout();
+            VerifyUnloadedViewInstancesAreCollectible();
+            return Task.CompletedTask;
         });
     }
 
@@ -829,27 +829,6 @@ public sealed class WpfViewLifecycleTests
         return new SettingsViewModel(setupService);
     }
 
-    private static Application CreateTestApplication()
-    {
-        var application = new Application
-        {
-            ShutdownMode = ShutdownMode.OnExplicitShutdown
-        };
-        application.Resources.MergedDictionaries.Add(new ResourceDictionary
-        {
-            Source = new Uri(
-                "pack://application:,,,/MaterialDesignThemes.Wpf;component/Themes/MaterialDesign3.Defaults.xaml",
-                UriKind.Absolute)
-        });
-        application.Resources.MergedDictionaries.Add(new ResourceDictionary
-        {
-            Source = new Uri(
-                "pack://application:,,,/Hbpos.Client.Wpf;component/Themes/PosTheme.xaml",
-                UriKind.Absolute)
-        });
-        return application;
-    }
-
     private static void RaiseLoaded(FrameworkElement view) =>
         view.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent, view));
 
@@ -909,46 +888,6 @@ public sealed class WpfViewLifecycleTests
         {
             GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
             GC.WaitForPendingFinalizers();
-        }
-    }
-
-    private static async Task RunOnStaDispatcherAsync(Action action)
-    {
-        var dispatcherReady = new TaskCompletionSource<Dispatcher>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var thread = new Thread(() =>
-        {
-            try
-            {
-                var dispatcher = Dispatcher.CurrentDispatcher;
-                SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext(dispatcher));
-                dispatcherReady.TrySetResult(dispatcher);
-                Dispatcher.Run();
-            }
-            catch (Exception ex)
-            {
-                dispatcherReady.TrySetException(ex);
-            }
-        })
-        {
-            IsBackground = true,
-            Name = "Hbpos.Client.Tests.WpfViewLifecycleDispatcher"
-        };
-        thread.SetApartmentState(ApartmentState.STA);
-        thread.Start();
-
-        var dispatcher = await dispatcherReady.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        try
-        {
-            await dispatcher.InvokeAsync(action, DispatcherPriority.Normal).Task;
-        }
-        finally
-        {
-            if (!dispatcher.HasShutdownStarted)
-            {
-                dispatcher.BeginInvokeShutdown(DispatcherPriority.Send);
-            }
-
-            Assert.True(thread.Join(TimeSpan.FromSeconds(5)), "WPF Dispatcher thread did not shut down.");
         }
     }
 

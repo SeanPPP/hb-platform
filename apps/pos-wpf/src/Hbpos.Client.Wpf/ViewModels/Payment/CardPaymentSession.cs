@@ -21,7 +21,6 @@ internal sealed class CardPaymentSession
     private Task _shutdownCancellationTask = Task.CompletedTask;
     private bool _cardPaymentCancellationRequested;
     private bool _awaitingLateCardResultAfterManualCancel;
-    private bool _discardLateCardResultAfterManualCancel;
     private bool _cardPaymentResultUnknownRequiresRecovery;
     private CardPaymentHandoffCandidate? _cardPaymentHandoffCandidate;
     private bool _cardPaymentHandoffQualificationPending;
@@ -50,6 +49,15 @@ internal sealed class CardPaymentSession
     public CardRecoveryAttemptKey? RecoveryAttemptKey => _recoveryAttemptKey;
 
     public Guid? RecoveryOrderGuid => _recoveryOrderGuid;
+
+    public void SetPersistenceRecoveryOrder(Guid orderGuid)
+    {
+        // 中文注释：落盘未知后保留工作流冻结的订单身份，恢复成功只能解除该订单的付款页锁。
+        if (orderGuid != Guid.Empty)
+        {
+            _recoveryOrderGuid = orderGuid;
+        }
+    }
 
     // ── State accessors (used by PaymentViewModel) ──
 
@@ -88,7 +96,6 @@ internal sealed class CardPaymentSession
         _recoveryOrderGuid = null;
         _cardPaymentCancellationRequested = false;
         _awaitingLateCardResultAfterManualCancel = false;
-        _discardLateCardResultAfterManualCancel = false;
         _activeCardPaymentCts?.Dispose();
         _activeCardPaymentCts = new CancellationTokenSource();
         _vm.IsCardPaymentInProgress = true;
@@ -144,7 +151,6 @@ internal sealed class CardPaymentSession
 
         _cardPaymentCancellationRequested = true;
         _awaitingLateCardResultAfterManualCancel = true;
-        _discardLateCardResultAfterManualCancel = false;
         _manuallyCancelledCardPaymentCts = _activeCardPaymentCts;
         _activeCardPaymentCts.Cancel();
         _vm.IsCardPaymentInProgress = false;
@@ -222,13 +228,6 @@ internal sealed class CardPaymentSession
     public void ResetManualCancellationState()
     {
         _awaitingLateCardResultAfterManualCancel = false;
-        _discardLateCardResultAfterManualCancel = false;
-    }
-
-    public bool ShouldDiscardLateResult
-    {
-        get => _discardLateCardResultAfterManualCancel;
-        set => _discardLateCardResultAfterManualCancel = value;
     }
 
     // ── Exception handling ──

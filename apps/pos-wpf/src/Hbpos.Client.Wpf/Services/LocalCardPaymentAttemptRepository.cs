@@ -1882,7 +1882,9 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
               AND (
                     Status NOT IN ($TerminalStatus1, $TerminalStatus2, $TerminalStatus3, $TerminalStatus4, $TerminalStatus5, $TerminalStatus6)
                     OR {{FinalFailureAwaitingAcknowledgementSql}}
-                    OR (Status = $OrderCompletedStatus AND AcknowledgedAt IS NULL AND SessionId IS NOT NULL)
+                    -- 直连 session 只用于查询原交易，不需要后端 acknowledge；已完成订单必须退出异常队列。
+                    OR (Status = $OrderCompletedStatus AND AcknowledgedAt IS NULL AND SessionId IS NOT NULL
+                        AND ConnectionMode <> 'CloudDirectSync' COLLATE NOCASE)
                     OR (
                         ResponseCode IN ($SupervisorPaidCode, $SupervisorNotPaidCode)
                         AND AcknowledgedAt IS NULL
@@ -2081,7 +2083,8 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
                         OperationKind = 'Sale'
                         AND (
                             Status NOT IN ($TerminalStatus1, $TerminalStatus2, $TerminalStatus3, $TerminalStatus4, $TerminalStatus5, $TerminalStatus6)
-                            OR (Status = $OrderCompletedStatus AND AcknowledgedAt IS NULL AND SessionId IS NOT NULL)
+                            OR (Status = $OrderCompletedStatus AND AcknowledgedAt IS NULL AND SessionId IS NOT NULL
+                                AND ConnectionMode <> 'CloudDirectSync' COLLATE NOCASE)
                             OR (
                                 ResponseCode IN ($SupervisorPaidCode, $SupervisorNotPaidCode)
                                 AND AcknowledgedAt IS NULL

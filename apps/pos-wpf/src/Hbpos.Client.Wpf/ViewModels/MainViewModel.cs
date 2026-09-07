@@ -2793,9 +2793,25 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             }
 
             var cachedCashPayment = _screenNavigator.CachedCashPaymentScreen;
+            var paymentRecoveryIdentity = cachedCashPayment?.CreateCardPaymentHandoffRequest();
+            var recoveredPaymentKey = selectedKey.Processor switch
+            {
+                CardProcessorKind.Linkly => $"CARD_ATTEMPT:{selectedKey.AttemptGuid:N}",
+                CardProcessorKind.Square => $"SQUARE_ATTEMPT:{selectedKey.AttemptGuid:N}",
+                _ => null
+            };
+            // 中文注释：批准后的落盘异常只有冻结订单身份；补单须同时匹配订单和所选 attempt 的付款证据。
+            var completedPersistenceOrder = cachedCashPayment?.IsCardPaymentRecoveryRequired == true &&
+                paymentRecoveryIdentity?.RecoveryOrderGuid is { } recoveryOrderGuid &&
+                recoveryOrderGuid != Guid.Empty &&
+                recoveredPaymentKey is not null &&
+                result.Order?.OrderGuid == recoveryOrderGuid &&
+                result.Order.Payments.Any(payment =>
+                    payment.Method == PaymentMethodKind.Card &&
+                    string.Equals(payment.IdempotencyKey, recoveredPaymentKey, StringComparison.Ordinal));
             if (cachedCashPayment is not null &&
                 ReferenceEquals(cachedCashPayment, CashPayment) &&
-                cachedCashPayment.CreateCardPaymentHandoffRequest().RecoveryAttemptKey == selectedKey)
+                (paymentRecoveryIdentity?.RecoveryAttemptKey == selectedKey || completedPersistenceOrder))
             {
                 // 只有核心购物车和 tender 都确认清空后，付款页才会释放同 key 锁；失败时继续 fail-closed。
                 await ExecuteCardRecoveryPostResultStepAsync(
