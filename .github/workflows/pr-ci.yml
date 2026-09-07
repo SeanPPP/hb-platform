@@ -52,6 +52,7 @@ jobs:
       profile: ${{ steps.plan.outputs.profile }}
       budget_seconds: ${{ steps.plan.outputs.budget_seconds }}
       components: ${{ steps.plan.outputs.components }}
+      quality_lanes: ${{ steps.plan.outputs.quality_lanes }}
       linux_node_matrix: ${{ steps.plan.outputs.linux_node_matrix }}
       linux_dotnet_matrix: ${{ steps.plan.outputs.linux_dotnet_matrix }}
       windows_matrix: ${{ steps.plan.outputs.windows_matrix }}
@@ -65,7 +66,7 @@ jobs:
         with:
           node-version: 24
       - name: 验证 CI 编排器
-        run: node --test scripts/ci/*.test.mjs
+        run: node --test scripts/ci/*.test.mjs scripts/performance/*.test.mjs
       - name: 验证 RustDesk 回滚端口保护
         run: python3 -B -m unittest discover -s scripts/ops/rustdesk -p test_cutover.py
       - name: 生成按路径执行矩阵
@@ -115,8 +116,52 @@ jobs:
             apps/web/package-lock.json
             apps/mobile/package-lock.json
             apps/supplier-order-extension/package-lock.json
+      - name: 记录组件质量计时起点
+        if: contains(fromJSON(needs.plan.outputs.quality_lanes), matrix.component)
+        run: >-
+          node scripts/performance/quality-lane.mjs start
+          --lane '${{ matrix.component }}'
+          --state '.artifacts/quality-baseline/${{ matrix.component }}.state.json'
       - name: 执行 Node 组件门禁
+        id: verify
         run: ./scripts/ci/run-node-component.sh '${{ matrix.component }}'
+      - name: 复用 Web 构建采集包体
+        if: matrix.component == 'web'
+        run: >-
+          node scripts/performance/collect-web-bundle.mjs
+          --dist apps/web/dist
+          --output .artifacts/quality-baseline/web-bundle.json
+      - name: 记录组件质量结果
+        if: always() && contains(fromJSON(needs.plan.outputs.quality_lanes), matrix.component)
+        env:
+          QUALITY_JOB_STATUS: ${{ job.status }}
+          QUALITY_VERIFICATION_OUTCOME: ${{ steps.verify.outcome }}
+        run: >-
+          node scripts/performance/quality-lane.mjs finish
+          --lane '${{ matrix.component }}'
+          --state '.artifacts/quality-baseline/${{ matrix.component }}.state.json'
+          --output '.artifacts/quality-baseline/${{ matrix.component }}.json'
+          --job-status "$QUALITY_JOB_STATUS"
+          --verification-outcome "$QUALITY_VERIFICATION_OUTCOME"
+          --summary "$GITHUB_STEP_SUMMARY"
+      - name: 上传组件质量结果
+        if: always() && contains(fromJSON(needs.plan.outputs.quality_lanes), matrix.component)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: quality-lane-${{ github.run_id }}-${{ matrix.component }}
+          path: .artifacts/quality-baseline/${{ matrix.component }}.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+      - name: 上传 Web 包体明细
+        if: always() && matrix.component == 'web' && steps.verify.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: quality-web-bundle-${{ github.run_id }}
+          path: .artifacts/quality-baseline/web-bundle.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
 
   linux_dotnet:
     name: PR CI / .NET / ${{ matrix.component }}
@@ -138,8 +183,35 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: package-lock.json
+      - name: 记录 Backend 质量计时起点
+        if: matrix.component == 'backend'
+        run: >-
+          node scripts/performance/quality-lane.mjs start
+          --lane backend --state .artifacts/quality-baseline/backend.state.json
       - name: 执行 .NET 组件门禁
+        id: verify
         run: ./scripts/ci/run-dotnet-component.sh '${{ matrix.component }}'
+      - name: 记录 Backend 质量结果
+        if: always() && matrix.component == 'backend'
+        env:
+          QUALITY_JOB_STATUS: ${{ job.status }}
+          QUALITY_VERIFICATION_OUTCOME: ${{ steps.verify.outcome }}
+        run: >-
+          node scripts/performance/quality-lane.mjs finish
+          --lane backend --state .artifacts/quality-baseline/backend.state.json
+          --output .artifacts/quality-baseline/backend.json
+          --job-status "$QUALITY_JOB_STATUS"
+          --verification-outcome "$QUALITY_VERIFICATION_OUTCOME"
+          --summary "$GITHUB_STEP_SUMMARY"
+      - name: 上传 Backend 质量结果
+        if: always() && matrix.component == 'backend'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: quality-lane-${{ github.run_id }}-${{ matrix.component }}
+          path: .artifacts/quality-baseline/backend.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
       - name: 上传 .NET 测试结果
         if: always() && matrix.component != 'noop'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -301,6 +373,65 @@ jobs:
             docker rm --force "$CI_SCHEMA_SQL_CONTAINER_NAME"
           fi
 
+  quality_report:
+    name: PR CI / Quality budget
+    needs: [plan, linux_node, linux_dotnet]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      # 无质量组件时仍返回真实 noop，required 不接受模糊的 skipped 结果。
+      - name: 无质量组件时跳过采集
+        if: needs.plan.result != 'success' || needs.plan.outputs.quality_lanes == '[]'
+        run: echo 'quality_report=noop'
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        if: needs.plan.result == 'success' && needs.plan.outputs.quality_lanes != '[]'
+      - name: 下载组件质量结果
+        if: needs.plan.result == 'success' && needs.plan.outputs.quality_lanes != '[]'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: quality-lane-${{ github.run_id }}-*
+          path: .artifacts/quality-baseline/lanes
+          merge-multiple: true
+      - name: 下载 Web 包体明细
+        if: needs.plan.result == 'success' && contains(fromJSON(needs.plan.outputs.quality_lanes), 'web')
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: quality-web-bundle-${{ github.run_id }}
+          path: .artifacts/quality-baseline/web-bundle
+      - name: 汇总复用的质量结果
+        if: always() && needs.plan.result == 'success' && needs.plan.outputs.quality_lanes != '[]'
+        env:
+          QUALITY_EXPECTED_LANES: ${{ needs.plan.outputs.quality_lanes }}
+        run: >-
+          node scripts/performance/build-metric-batch.mjs
+          --results-dir .artifacts/quality-baseline/lanes
+          --web-bundle-file .artifacts/quality-baseline/web-bundle/web-bundle.json
+          --output .artifacts/quality-baseline/metric-batch-v1.json
+          --summary "$GITHUB_STEP_SUMMARY"
+      - name: 执行质量预算门禁
+        if: always() && needs.plan.result == 'success' && needs.plan.outputs.quality_lanes != '[]'
+        run: >-
+          node scripts/performance/compare-json-budget.mjs
+          --budget quality-baseline-budget.json
+          --actual .artifacts/quality-baseline/metric-batch-v1.json
+          --selected-lanes '${{ needs.plan.outputs.quality_lanes }}'
+          --output .artifacts/quality-baseline/budget-report.json
+          --summary "$GITHUB_STEP_SUMMARY"
+      - name: 保存质量报告
+        if: always() && needs.plan.result == 'success' && needs.plan.outputs.quality_lanes != '[]'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: quality-baseline-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .artifacts/quality-baseline/lanes/*.json
+            .artifacts/quality-baseline/web-bundle/*.json
+            .artifacts/quality-baseline/metric-batch-v1.json
+            .artifacts/quality-baseline/budget-report.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
   required:
     # 分支保护只接受 PR 事件的稳定检查名；手动/定时运行不得伪造同名成功检查。
     name: >-
@@ -316,6 +447,7 @@ jobs:
       - macos
       - android
       - schema_sql
+      - quality_report
     runs-on: ubuntu-24.04
     timeout-minutes: 1
     steps:
@@ -332,7 +464,7 @@ jobs:
           CI_RUN_ATTEMPT: ${{ github.run_attempt }}
           CI_RUN_BUDGET_SECONDS: ${{ needs.plan.outputs.budget_seconds }}
           CI_JOB_RESULTS: >-
-            {"plan":"${{ needs.plan.result }}","linux_node":"${{ needs.linux_node.result }}","linux_dotnet":"${{ needs.linux_dotnet.result }}","windows":"${{ needs.windows.result }}","macos":"${{ needs.macos.result }}","android":"${{ needs.android.result }}","schema_sql":"${{ needs.schema_sql.result }}"}
+            {"plan":"${{ needs.plan.result }}","linux_node":"${{ needs.linux_node.result }}","linux_dotnet":"${{ needs.linux_dotnet.result }}","windows":"${{ needs.windows.result }}","macos":"${{ needs.macos.result }}","android":"${{ needs.android.result }}","schema_sql":"${{ needs.schema_sql.result }}","quality_report":"${{ needs.quality_report.result }}"}
         run: node scripts/ci/required-gate.mjs
 
   weekly_sql:
@@ -355,6 +487,10 @@ jobs:
       PREORDER_SQLSERVER_TEST_CONNECTION: Server=localhost,1433;User Id=sa;Password=HbCi_2026!Safe_Only;Encrypt=False;TrustServerCertificate=True;Connect Timeout=30
       SET_CHILD_PURCHASE_PRICE_SQLSERVER_TEST_CONNECTION: Server=localhost,1433;User Id=sa;Password=HbCi_2026!Safe_Only;Encrypt=False;TrustServerCertificate=True;Connect Timeout=30
       STORE_PRICE_TRANSFER_SQLSERVER_TEST_CONNECTION: Server=localhost,1433;User Id=sa;Password=HbCi_2026!Safe_Only;Encrypt=False;TrustServerCertificate=True;Connect Timeout=30
+      # 跨连接锁与成本回填测试读取独立变量；缺失会被 xUnit 跳过并触发 TRX 失败关闭。
+      HB_TEST_SQLSERVER_CONNECTION: Server=localhost,1433;User Id=sa;Password=HbCi_2026!Safe_Only;Encrypt=False;TrustServerCertificate=True;Connect Timeout=30
+      CONTAINER_MUTATION_SQLSERVER_TEST_CONNECTION: Server=localhost,1433;User Id=sa;Password=HbCi_2026!Safe_Only;Encrypt=False;TrustServerCertificate=True;Connect Timeout=30
+      COST_BACKFILL_SQLSERVER_TEST_CONNECTION: Server=localhost,1433;User Id=sa;Password=HbCi_2026!Safe_Only;Encrypt=False;TrustServerCertificate=True;Connect Timeout=30
       DEVICE_ACTIVATION_SQLSERVER_TEST_CONNECTION: Server=localhost,1433;User Id=sa;Password=HbCi_2026!Safe_Only;Encrypt=False;TrustServerCertificate=True;Connect Timeout=30
       HBWEB_SCHEMA_SQLSERVER_TEST_CONNECTION: Server=localhost,1433;User Id=sa;Password=HbCi_2026!Safe_Only;Encrypt=False;TrustServerCertificate=True;Connect Timeout=30
     steps:
