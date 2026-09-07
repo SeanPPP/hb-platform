@@ -117,7 +117,12 @@ public sealed class LocalSupplierInvoiceBatchUpdateJobServiceTests
     {
         var hqService = new Mock<ILocalSupplierInvoiceHqProductSyncService>();
         hqService
-            .Setup(service => service.UpdateHqProductsAsync("invoice-1", It.IsAny<UpdateHqProductsRequest>(), "tester"))
+            .Setup(service => service.UpdateHqProductsAsync(
+                "invoice-1",
+                It.IsAny<UpdateHqProductsRequest>(),
+                null,
+                "tester",
+                It.IsAny<int>()))
             .ReturnsAsync(ApiResponse<UpdateHqProductsResult>.OK(new UpdateHqProductsResult { Updated = 3 }));
 
         var service = CreateService(hqService: hqService);
@@ -131,6 +136,272 @@ public sealed class LocalSupplierInvoiceBatchUpdateJobServiceTests
     }
 
     [Fact]
+    public async Task StartUpdateHqProductsJobAsync_业务处理超过锁预算仍成功且不重放()
+    {
+        long timestamp = 0;
+        var clock = new Mock<TimeProvider> { CallBase = true };
+        clock.SetupGet(provider => provider.TimestampFrequency).Returns(1_000);
+        clock.Setup(provider => provider.GetTimestamp()).Returns(() => Interlocked.Read(ref timestamp));
+        var hqService = new Mock<ILocalSupplierInvoiceHqProductSyncService>(MockBehavior.Strict);
+        hqService.Setup(service => service.UpdateHqProductsAsync(
+                "invoice-1", It.IsAny<UpdateHqProductsRequest>(), null, "tester", 10_000))
+            .ReturnsAsync(() =>
+            {
+                // 成功获得本地锁后，正常业务即使耗时超过 60 秒也不能被竞争预算取消或重放。
+                Interlocked.Exchange(ref timestamp, 90_000);
+                return ApiResponse<UpdateHqProductsResult>.OK(new UpdateHqProductsResult { Total = 2, Updated = 2 });
+            });
+        var service = CreateService(hqService: hqService, timeProvider: clock.Object);
+        var started = await service.StartUpdateHqProductsJobAsync("invoice-1", BuildHqRequest(), "tester");
+        var completed = await WaitForHqJobAsync(service, started.JobId);
+        Assert.Equal(LocalSupplierInvoiceBatchUpdateJobStatusConstants.Succeeded, completed.Status);
+        Assert.Equal(2, completed.Result?.Updated);
+        Assert.Equal(TimeSpan.FromSeconds(90), clock.Object.GetElapsedTime(0));
+        hqService.Verify(service => service.UpdateHqProductsAsync(
+            "invoice-1", It.IsAny<UpdateHqProductsRequest>(), null, "tester", 10_000), Times.Once);
+    }
+
+    [Fact]
+    public async Task StartUpdateHqProductsJobAsync_成本锁冲突后重试并使用全新请求()
+    {
+        var responses = new Queue<ApiResponse<UpdateHqProductsResult>>([
+            ApiResponse<UpdateHqProductsResult>.Error(
+                "成本锁繁忙",
+                "HQ_UPDATE_COST_LOCK_BUSY",
+                new UpdateHqProductsResult { Total = 2 }),
+            ApiResponse<UpdateHqProductsResult>.OK(new UpdateHqProductsResult { Updated = 2 }),
+        ]);
+        var capturedRequests = new List<UpdateHqProductsRequest>();
+        var lockWaitMilliseconds = new List<int>();
+        var hqService = new Mock<ILocalSupplierInvoiceHqProductSyncService>(MockBehavior.Strict);
+        hqService
+            .Setup(service => service.UpdateHqProductsAsync(
+                "invoice-1",
+                It.IsAny<UpdateHqProductsRequest>(),
+                null,
+                "tester",
+                It.IsAny<int>()))
+            .Callback<string, UpdateHqProductsRequest, string?, string, int>((_, request, _, _, lockWait) =>
+            {
+                capturedRequests.Add(request);
+                lockWaitMilliseconds.Add(lockWait);
+                if (capturedRequests.Count == 1)
+                    request.DetailGuids[0] = "mutated-only-on-first-attempt";
+            })
+            .ReturnsAsync(() => responses.Dequeue());
+
+        var service = CreateService(hqService: hqService);
+        var started = await service.StartUpdateHqProductsJobAsync("invoice-1", BuildHqRequest(), "tester");
+        var completed = await WaitForHqJobAsync(service, started.JobId);
+
+        Assert.Equal(LocalSupplierInvoiceBatchUpdateJobStatusConstants.Succeeded, completed.Status);
+        Assert.Equal(2, completed.Result?.Updated);
+        Assert.Equal(2, capturedRequests.Count);
+        Assert.NotSame(capturedRequests[0], capturedRequests[1]);
+        Assert.Equal(["detail-1", "detail-2"], capturedRequests[1].DetailGuids);
+        Assert.Equal(2, lockWaitMilliseconds.Count);
+        Assert.All(lockWaitMilliseconds, value => Assert.InRange(value, 1, 10_000));
+    }
+
+    [Fact]
+    public async Task StartUpdateHqProductsJobAsync_重试等待前释放上一次scope()
+    {
+        TrackingScopeFactory? scopeFactory = null;
+        var scopeWasReleasedBeforeSecondAttempt = false;
+        var attempt = 0;
+        var hqService = new Mock<ILocalSupplierInvoiceHqProductSyncService>(MockBehavior.Strict);
+        hqService
+            .Setup(service => service.UpdateHqProductsAsync(
+                "invoice-1",
+                It.IsAny<UpdateHqProductsRequest>(),
+                null,
+                "tester",
+                It.IsAny<int>()))
+            .Callback<string, UpdateHqProductsRequest, string?, string, int>((_, _, _, _, _) =>
+            {
+                attempt++;
+                if (attempt == 2)
+                    scopeWasReleasedBeforeSecondAttempt = scopeFactory!.Scopes[0].Disposed;
+            })
+            .ReturnsAsync(() => attempt == 1
+                ? ApiResponse<UpdateHqProductsResult>.Error(
+                    "成本锁繁忙",
+                    "HQ_UPDATE_COST_LOCK_BUSY",
+                    new UpdateHqProductsResult { Total = 1 })
+                : ApiResponse<UpdateHqProductsResult>.OK(new UpdateHqProductsResult { Updated = 1 }));
+
+        var service = CreateService(
+            hqService: hqService,
+            scopeFactoryFactory: provider => scopeFactory = new TrackingScopeFactory(
+                provider.GetRequiredService<IServiceScopeFactory>()));
+        var started = await service.StartUpdateHqProductsJobAsync("invoice-1", BuildHqRequest(), "tester");
+        var completed = await WaitForHqJobAsync(service, started.JobId);
+
+        Assert.Equal(LocalSupplierInvoiceBatchUpdateJobStatusConstants.Succeeded, completed.Status);
+        Assert.True(scopeWasReleasedBeforeSecondAttempt);
+        Assert.Equal(2, scopeFactory!.Scopes.Count);
+    }
+
+    [Fact]
+    public async Task StartUpdateHqProductsJobAsync_成本锁预算耗尽后不再发起新尝试()
+    {
+        var timeProvider = new SequenceTimeProvider(
+            TimeSpan.FromMilliseconds(1),
+            TimeSpan.FromSeconds(61)
+        );
+        var hqService = new Mock<ILocalSupplierInvoiceHqProductSyncService>(MockBehavior.Strict);
+        hqService
+            .Setup(service => service.UpdateHqProductsAsync(
+                "invoice-1",
+                It.IsAny<UpdateHqProductsRequest>(),
+                null,
+                "tester",
+                It.IsAny<int>()))
+            .ReturnsAsync(ApiResponse<UpdateHqProductsResult>.Error(
+                "成本锁繁忙",
+                "HQ_UPDATE_COST_LOCK_BUSY",
+                new UpdateHqProductsResult { Total = 6 }));
+
+        var service = CreateService(hqService: hqService, timeProvider: timeProvider);
+        var started = await service.StartUpdateHqProductsJobAsync("invoice-1", BuildHqRequest(), "tester");
+        var completed = await WaitForHqJobAsync(service, started.JobId);
+
+        Assert.Equal(LocalSupplierInvoiceBatchUpdateJobStatusConstants.Failed, completed.Status);
+        Assert.Equal("商品更新繁忙，等待其他成本操作超时，本次未更新 HQ 商品", completed.Message);
+        Assert.Equal(6, completed.Result?.Total);
+        hqService.Verify(service => service.UpdateHqProductsAsync(
+            "invoice-1",
+            It.IsAny<UpdateHqProductsRequest>(),
+            null,
+            "tester",
+            It.IsAny<int>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task StartUpdateHqProductsJobAsync_最后一次尝试只使用剩余预算并保留busy结果()
+    {
+        var timeProvider = new SequenceTimeProvider(
+            TimeSpan.FromMilliseconds(1),
+            TimeSpan.FromMilliseconds(1),
+            TimeSpan.FromMilliseconds(1),
+            TimeSpan.FromMilliseconds(1),
+            TimeSpan.FromSeconds(59.5),
+            TimeSpan.FromSeconds(59.5),
+            TimeSpan.FromSeconds(60)
+        );
+        var lockWaitMilliseconds = new List<int>();
+        var hqService = new Mock<ILocalSupplierInvoiceHqProductSyncService>(MockBehavior.Strict);
+        hqService
+            .Setup(service => service.UpdateHqProductsAsync(
+                "invoice-1",
+                It.IsAny<UpdateHqProductsRequest>(),
+                null,
+                "tester",
+                It.IsAny<int>()))
+            .Callback<string, UpdateHqProductsRequest, string?, string, int>((_, _, _, _, lockWait) =>
+                lockWaitMilliseconds.Add(lockWait))
+            .ReturnsAsync(ApiResponse<UpdateHqProductsResult>.Error(
+                "成本锁繁忙",
+                "HQ_UPDATE_COST_LOCK_BUSY",
+                new UpdateHqProductsResult { Total = 6 }));
+
+        var service = CreateService(hqService: hqService, timeProvider: timeProvider);
+        var started = await service.StartUpdateHqProductsJobAsync("invoice-1", BuildHqRequest(), "tester");
+        var completed = await WaitForHqJobAsync(service, started.JobId);
+
+        Assert.Equal(LocalSupplierInvoiceBatchUpdateJobStatusConstants.Failed, completed.Status);
+        Assert.Equal(6, completed.Result?.Total);
+        Assert.Equal(2, lockWaitMilliseconds.Count);
+        Assert.Equal(10_000, lockWaitMilliseconds[0]);
+        Assert.InRange(lockWaitMilliseconds[1], 1, 1_000);
+    }
+
+    [Fact]
+    public async Task StartUpdateHqProductsJobAsync_普通错误不重试()
+    {
+        var hqService = new Mock<ILocalSupplierInvoiceHqProductSyncService>(MockBehavior.Strict);
+        hqService
+            .Setup(service => service.UpdateHqProductsAsync(
+                "invoice-1",
+                It.IsAny<UpdateHqProductsRequest>(),
+                null,
+                "tester",
+                It.IsAny<int>()))
+            .ReturnsAsync(ApiResponse<UpdateHqProductsResult>.Error("参数错误", "VALIDATION_ERROR", new UpdateHqProductsResult()));
+
+        var service = CreateService(hqService: hqService);
+        var started = await service.StartUpdateHqProductsJobAsync("invoice-1", BuildHqRequest(), "tester");
+        var completed = await WaitForHqJobAsync(service, started.JobId);
+
+        Assert.Equal(LocalSupplierInvoiceBatchUpdateJobStatusConstants.Failed, completed.Status);
+        Assert.Equal("参数错误", completed.Message);
+        hqService.Verify(service => service.UpdateHqProductsAsync(
+            "invoice-1",
+            It.IsAny<UpdateHqProductsRequest>(),
+            null,
+            "tester",
+            It.IsAny<int>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task StartUpdateHqProductsJobAsync_部分HQ成功结果不重试()
+    {
+        var hqService = new Mock<ILocalSupplierInvoiceHqProductSyncService>(MockBehavior.Strict);
+        hqService
+            .Setup(service => service.UpdateHqProductsAsync(
+                "invoice-1",
+                It.IsAny<UpdateHqProductsRequest>(),
+                null,
+                "tester",
+                It.IsAny<int>()))
+            .ReturnsAsync(ApiResponse<UpdateHqProductsResult>.FailWithData(
+                new UpdateHqProductsResult { Updated = 1 },
+                "HQ 部分更新失败",
+                "HQ_UPDATE_COST_LOCK_BUSY"));
+
+        var service = CreateService(hqService: hqService);
+        var started = await service.StartUpdateHqProductsJobAsync("invoice-1", BuildHqRequest(), "tester");
+        var completed = await WaitForHqJobAsync(service, started.JobId);
+
+        Assert.Equal(LocalSupplierInvoiceBatchUpdateJobStatusConstants.Failed, completed.Status);
+        Assert.Equal(1, completed.Result?.Updated);
+        Assert.Equal("HQ 部分更新失败", completed.Message);
+        hqService.Verify(service => service.UpdateHqProductsAsync(
+            "invoice-1",
+            It.IsAny<UpdateHqProductsRequest>(),
+            null,
+            "tester",
+            It.IsAny<int>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task StartUpdateHqProductsJobAsync_取消异常不重试()
+    {
+        var hqService = new Mock<ILocalSupplierInvoiceHqProductSyncService>(MockBehavior.Strict);
+        hqService
+            .Setup(service => service.UpdateHqProductsAsync(
+                "invoice-1",
+                It.IsAny<UpdateHqProductsRequest>(),
+                null,
+                "tester",
+                It.IsAny<int>()))
+            .ThrowsAsync(new OperationCanceledException("已取消"));
+
+        var service = CreateService(hqService: hqService);
+        var started = await service.StartUpdateHqProductsJobAsync("invoice-1", BuildHqRequest(), "tester");
+        var completed = await WaitForHqJobAsync(service, started.JobId);
+
+        Assert.Equal(LocalSupplierInvoiceBatchUpdateJobStatusConstants.Failed, completed.Status);
+        Assert.Contains("已取消", completed.Message);
+        hqService.Verify(service => service.UpdateHqProductsAsync(
+            "invoice-1",
+            It.IsAny<UpdateHqProductsRequest>(),
+            null,
+            "tester",
+            It.IsAny<int>()), Times.Once);
+    }
+
+    [Fact]
     public async Task StartUpdateHqProductsJobAsync_指定审计操作者后向后台同步传递GUID和姓名()
     {
         var hqService = new Mock<ILocalSupplierInvoiceHqProductSyncService>(MockBehavior.Strict);
@@ -139,7 +410,8 @@ public sealed class LocalSupplierInvoiceBatchUpdateJobServiceTests
                 "invoice-1",
                 It.IsAny<UpdateHqProductsRequest>(),
                 "actor-guid-1",
-                "审计操作员"
+                "审计操作员",
+                It.IsAny<int>()
             ))
             .ReturnsAsync(ApiResponse<UpdateHqProductsResult>.OK(new UpdateHqProductsResult { Updated = 1 }));
 
@@ -165,7 +437,12 @@ public sealed class LocalSupplierInvoiceBatchUpdateJobServiceTests
         );
         var hqService = new Mock<ILocalSupplierInvoiceHqProductSyncService>();
         hqService
-            .Setup(service => service.UpdateHqProductsAsync("invoice-1", It.IsAny<UpdateHqProductsRequest>(), "tester"))
+            .Setup(service => service.UpdateHqProductsAsync(
+                "invoice-1",
+                It.IsAny<UpdateHqProductsRequest>(),
+                null,
+                "tester",
+                It.IsAny<int>()))
             .Returns(release.Task);
 
         var service = CreateService(hqService: hqService);
@@ -178,7 +455,12 @@ public sealed class LocalSupplierInvoiceBatchUpdateJobServiceTests
 
         release.SetResult(ApiResponse<UpdateHqProductsResult>.OK(new UpdateHqProductsResult { Updated = 1 }));
         await WaitForHqJobAsync(service, first.JobId);
-        hqService.Verify(service => service.UpdateHqProductsAsync("invoice-1", It.IsAny<UpdateHqProductsRequest>(), "tester"), Times.Once);
+        hqService.Verify(service => service.UpdateHqProductsAsync(
+            "invoice-1",
+            It.IsAny<UpdateHqProductsRequest>(),
+            null,
+            "tester",
+            It.IsAny<int>()), Times.Once);
     }
 
     [Fact]
@@ -189,7 +471,12 @@ public sealed class LocalSupplierInvoiceBatchUpdateJobServiceTests
         );
         var hqService = new Mock<ILocalSupplierInvoiceHqProductSyncService>();
         hqService
-            .Setup(service => service.UpdateHqProductsAsync("invoice-1", It.IsAny<UpdateHqProductsRequest>(), "tester"))
+            .Setup(service => service.UpdateHqProductsAsync(
+                "invoice-1",
+                It.IsAny<UpdateHqProductsRequest>(),
+                null,
+                "tester",
+                It.IsAny<int>()))
             .Returns(release.Task);
 
         var service = CreateService(hqService: hqService);
@@ -205,7 +492,12 @@ public sealed class LocalSupplierInvoiceBatchUpdateJobServiceTests
 
         release.SetResult(ApiResponse<UpdateHqProductsResult>.OK(new UpdateHqProductsResult { Updated = 1 }));
         await WaitForHqJobAsync(service, first.JobId);
-        hqService.Verify(service => service.UpdateHqProductsAsync("invoice-1", It.IsAny<UpdateHqProductsRequest>(), "tester"), Times.Once);
+        hqService.Verify(service => service.UpdateHqProductsAsync(
+            "invoice-1",
+            It.IsAny<UpdateHqProductsRequest>(),
+            null,
+            "tester",
+            It.IsAny<int>()), Times.Once);
     }
 
     [Fact]
@@ -213,7 +505,12 @@ public sealed class LocalSupplierInvoiceBatchUpdateJobServiceTests
     {
         var hqService = new Mock<ILocalSupplierInvoiceHqProductSyncService>();
         hqService
-            .Setup(service => service.UpdateHqProductsAsync("invoice-1", It.IsAny<UpdateHqProductsRequest>(), "tester"))
+            .Setup(service => service.UpdateHqProductsAsync(
+                "invoice-1",
+                It.IsAny<UpdateHqProductsRequest>(),
+                null,
+                "tester",
+                It.IsAny<int>()))
             .ThrowsAsync(new InvalidOperationException("HQ 连接超时"));
 
         var service = CreateService(hqService: hqService);
@@ -366,7 +663,9 @@ public sealed class LocalSupplierInvoiceBatchUpdateJobServiceTests
 
     private static LocalSupplierInvoiceBatchUpdateJobService CreateService(
         Mock<ILocalSupplierInvoicesReactService>? storeService = null,
-        Mock<ILocalSupplierInvoiceHqProductSyncService>? hqService = null
+        Mock<ILocalSupplierInvoiceHqProductSyncService>? hqService = null,
+        TimeProvider? timeProvider = null,
+        Func<IServiceProvider, IServiceScopeFactory>? scopeFactoryFactory = null
     )
     {
         var services = new ServiceCollection();
@@ -374,10 +673,76 @@ public sealed class LocalSupplierInvoiceBatchUpdateJobServiceTests
         services.AddScoped(_ => hqService?.Object ?? Mock.Of<ILocalSupplierInvoiceHqProductSyncService>());
         var provider = services.BuildServiceProvider();
 
+        var scopeFactory = scopeFactoryFactory?.Invoke(provider)
+            ?? provider.GetRequiredService<IServiceScopeFactory>();
         return new LocalSupplierInvoiceBatchUpdateJobService(
-            provider.GetRequiredService<IServiceScopeFactory>(),
-            NullLogger<LocalSupplierInvoiceBatchUpdateJobService>.Instance
+            scopeFactory,
+            NullLogger<LocalSupplierInvoiceBatchUpdateJobService>.Instance,
+            timeProvider
         );
+    }
+
+    private sealed class SequenceTimeProvider(params TimeSpan[] elapsedValues) : TimeProvider
+    {
+        private readonly Queue<long> _timestamps = new(
+            new[] { 0L }.Concat(elapsedValues.Select(value => (long)value.TotalMilliseconds))
+        );
+        private long _lastTimestamp;
+
+        public override long TimestampFrequency => 1_000;
+
+        public override long GetTimestamp()
+        {
+            if (_timestamps.TryDequeue(out var timestamp))
+                _lastTimestamp = timestamp;
+            return _lastTimestamp;
+        }
+
+        public override ITimer CreateTimer(
+            TimerCallback callback,
+            object? state,
+            TimeSpan dueTime,
+            TimeSpan period
+        )
+        {
+            // 测试中的重试等待立即推进；下一次 GetElapsedTime 从队列读取推进后的预算。
+            callback(state);
+            return new ImmediateTimer();
+        }
+
+        private sealed class ImmediateTimer : ITimer
+        {
+            public bool Change(TimeSpan dueTime, TimeSpan period) => true;
+
+            public void Dispose() { }
+
+            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class TrackingScopeFactory(IServiceScopeFactory inner) : IServiceScopeFactory
+    {
+        public List<TrackingScope> Scopes { get; } = new();
+
+        public IServiceScope CreateScope()
+        {
+            var scope = new TrackingScope(inner.CreateScope());
+            Scopes.Add(scope);
+            return scope;
+        }
+    }
+
+    private sealed class TrackingScope(IServiceScope inner) : IServiceScope
+    {
+        public bool Disposed { get; private set; }
+
+        public IServiceProvider ServiceProvider => inner.ServiceProvider;
+
+        public void Dispose()
+        {
+            Disposed = true;
+            inner.Dispose();
+        }
     }
 
     private static UpdateToStorePricesRequest BuildStoreRequest()
