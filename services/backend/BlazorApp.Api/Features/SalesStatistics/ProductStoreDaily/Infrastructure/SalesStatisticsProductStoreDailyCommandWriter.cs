@@ -1,4 +1,5 @@
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HBweb;
 using BlazorApp.Shared.Models.POSM;
@@ -27,37 +28,11 @@ internal sealed class SalesStatisticsProductStoreDailyCommandWriter
         Guid? expectedJobId = null,
         Func<Task>? validateExecutionOwnershipBeforeCommitAsync = null)
     {
-        var status = await SalesStatisticsProductStoreDailyStateSlice.BuildProductStatisticStatusAsync(
-            context,
-            input.TargetDate,
-            build.Statistics,
-            build.Diagnostics,
-            input.LastSourceUploadTime,
-            build.SupplementalReturnAdjustments,
-            atomicStoreStatistics
-        );
-        if (build.Statistics.Count == 0 && input.RawRows.Count > 0)
-        {
-            status = new SalesStatisticsProductStoreDailyStateSlice.ProductStatisticStatusResult(
-                SalesStatisticRefreshStatus.Failed,
-                $"商品分店每日统计存在 {input.RawRows.Count} 条来源记录，但没有可写入的有效分店商品: {input.TargetDate:yyyy-MM-dd}");
-        }
-        if (atomicStoreStatistics != null && status.Status == SalesStatisticRefreshStatus.Failed)
-            throw new InvalidOperationException(status.ErrorMessage ?? "2025 商品分店每日统计业务校验失败");
-        if (atomicStoreStatistics != null && status.Status == SalesStatisticRefreshStatus.Fresh
-            && !string.IsNullOrWhiteSpace(atomicSuccessStatusOverride))
-        {
-            status = new SalesStatisticsProductStoreDailyStateSlice.ProductStatisticStatusResult(
-                atomicSuccessStatusOverride,
-                status.ErrorMessage,
-                status.SourceProductVersion
-            );
-        }
-
         var effectiveSourceWatermark = sourceWatermarkOverride ?? input.LastSourceUploadTime;
         SupplierStoreStatisticBuildResult? supplierBuild = null;
         string? productVersion = null;
         ProductStoreDailyBatchFence? capturedBatchFence = null;
+        SalesStatisticsProductStoreDailyStateSlice.ProductStatisticStatusResult status = null!;
 
         if (validateSourceWatermarkBeforeCommitAsync != null)
             await validateSourceWatermarkBeforeCommitAsync();
@@ -67,17 +42,100 @@ internal sealed class SalesStatisticsProductStoreDailyCommandWriter
             beginAsync: () => context.Db.Ado.BeginTranAsync(),
             workAsync: async () =>
             {
+                // 日期锁必须是事务中的第一个业务动作；Backfill 也调用同一 helper，避免绕过写入互斥。
+                await SalesStatisticsCostWriteLock.AcquireAsync(context.Db, input.TargetDate);
                 await SalesStatisticsProductStoreDailyStateSlice.FenceProductStatisticExecutionOwnerAsync(
                     context,
                     input.TargetDate,
                     expectedJobId);
-                if (expectedJobId.HasValue && SalesStatisticsBusinessDate.IsHistorical(input.TargetDate))
+
+                // 先在日期锁内读旧行，再取得全局成本闸；整日上万商品不能逐项往返获取锁。
+                var previousRows = await context.Db.Queryable<ProductStoreDailySalesStatistic>()
+                    .Where(row => row.Date >= input.TargetDate.Date && row.Date < input.TargetDate.Date.AddDays(1))
+                    .With(SqlWith.UpdLock)
+                    .ToListAsync();
+                var productCodes = SetChildPurchasePriceMutationLock.NormalizeProductCodes(
+                    input.RawRows.Select(row => row.ProductCode)
+                        .Concat(previousRows.Select(row => row.ProductCode)));
+                if (productCodes.Count > 0)
+                {
+                    await SetChildPurchasePriceMutationLock.AcquireAllAsync(context.Db);
+
+                    // 成本表必须在业务锁内重读；POSM/HBSales 原明细和销售金额仍沿用锁外快照，
+                    // 仅替换会受商品/分店成本写入影响的三张成本来源表。
+                    var branchCodes = input.RawRows
+                        .Select(row => SalesStatisticsCodeRules.ResolveBranchCode(
+                            row.BranchCode,
+                            row.DeviceCode,
+                            input.DeviceBranchMap))
+                        .Concat(previousRows.Select(row => row.BranchCode))
+                        .Where(code => !string.IsNullOrWhiteSpace(code))
+                        .Select(code => code!.Trim())
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                    var storeCosts = await SalesStatisticsProductStoreDailySourceReader
+                        .LoadStoreCostsInBatchesAsync(
+                            context,
+                            productCodes,
+                            branchCodes,
+                            includeInactive: input.TargetDate.Date < SalesStatisticsBusinessDate.Today());
+                    var productCosts = await context.Db.Queryable<Product>()
+                        .Where(product => product.ProductCode != null
+                            && productCodes.Contains(product.ProductCode)
+                            && product.IsDeleted == false)
+                        .Select(product => new ProductCostRow
+                        {
+                            ProductCode = product.ProductCode,
+                            PurchasePrice = product.PurchasePrice,
+                        })
+                        .ToListAsync();
+                    var warehouseCosts = await context.Db.Queryable<WarehouseProduct>()
+                        .Where(product => productCodes.Contains(product.ProductCode)
+                            && product.IsDeleted == false)
+                        .Select(product => new WarehouseCostRow
+                        {
+                            ProductCode = product.ProductCode,
+                            ImportPrice = product.ImportPrice,
+                        })
+                        .ToListAsync();
+                    input = input with
+                    {
+                        StoreCosts = storeCosts,
+                        ProductCosts = productCosts,
+                        WarehouseCosts = warehouseCosts,
+                    };
+                    build = new SalesStatisticsProductStoreDailyBuilder().Build(input);
+                }
+                if (input.TargetDate.Date < SalesStatisticsBusinessDate.Today())
                 {
                     // 历史日期的队列恢复只修复销售事实；沿用旧快照的成本，不能按恢复当天的进价重算毛利。
-                    var previousRows = await context.Db.Queryable<ProductStoreDailySalesStatistic>()
-                        .Where(row => row.Date >= input.TargetDate.Date && row.Date < input.TargetDate.Date.AddDays(1))
-                        .With(SqlWith.UpdLock).ToListAsync();
                     PreserveHistoricalCostSnapshots(build.Statistics, previousRows);
+                }
+
+                status = await SalesStatisticsProductStoreDailyStateSlice.BuildProductStatisticStatusAsync(
+                    context,
+                    input.TargetDate,
+                    build.Statistics,
+                    build.Diagnostics,
+                    input.LastSourceUploadTime,
+                    build.SupplementalReturnAdjustments,
+                    atomicStoreStatistics);
+                if (build.Statistics.Count == 0 && input.RawRows.Count > 0)
+                {
+                    status = new SalesStatisticsProductStoreDailyStateSlice.ProductStatisticStatusResult(
+                        SalesStatisticRefreshStatus.Failed,
+                        $"商品分店每日统计存在 {input.RawRows.Count} 条来源记录，但没有可写入的有效分店商品: {input.TargetDate:yyyy-MM-dd}");
+                }
+                if (atomicStoreStatistics != null && status.Status == SalesStatisticRefreshStatus.Failed)
+                    throw new InvalidOperationException(status.ErrorMessage ?? "2025 商品分店每日统计业务校验失败");
+                if (atomicStoreStatistics != null && status.Status == SalesStatisticRefreshStatus.Fresh
+                    && !string.IsNullOrWhiteSpace(atomicSuccessStatusOverride))
+                {
+                    status = new SalesStatisticsProductStoreDailyStateSlice.ProductStatisticStatusResult(
+                        atomicSuccessStatusOverride,
+                        status.ErrorMessage,
+                        status.SourceProductVersion
+                    );
                 }
                 if (atomicStoreStatistics != null)
                 {
@@ -186,22 +244,127 @@ internal sealed class SalesStatisticsProductStoreDailyCommandWriter
         foreach (var row in rebuilt)
         {
             previousByKey.TryGetValue((row.Date.Date, row.BranchCode, row.SupplierCode, row.ProductCode), out var old);
-            row.UnitCostSnapshot = old?.UnitCostSnapshot;
-            row.CostSource = old?.CostSource ?? "Missing";
-            if (old != null && old.TotalQuantity == row.TotalQuantity && old.TotalAmount == row.TotalAmount)
+            var rebuiltIsOpenItem = IsOpenItemCostSource(row.CostSource);
+            var rebuiltHasCredibleCost = row.CostSource != "Missing"
+                && (row.TotalCost.HasValue || row.UnitCostSnapshot.HasValue);
+
+            if (IsOpenItemIdentityConflict(row.CostSource))
             {
-                // 未变动的销售行原样保留落库精度及历史成本缺口。
-                row.TotalCost = old.TotalCost;
-                row.GrossProfit = old.GrossProfit;
-                row.GrossMarginRate = old.GrossMarginRate;
+                // 混合身份已无法证明是同一开放商品，不能落入普通商品分支沿用旧单价。
+                ClearCost(row);
                 continue;
             }
-            // 新发现的历史行没有可信成本快照时保持缺失；数量修正只使用已有的历史单价。
-            row.TotalCost = old?.UnitCostSnapshot * row.TotalQuantity;
-            row.GrossProfit = row.TotalCost.HasValue ? row.TotalAmount - row.TotalCost.Value : null;
-            row.GrossMarginRate = row.TotalAmount > 0 && row.GrossProfit.HasValue
-                ? row.GrossProfit.Value / row.TotalAmount : null;
+
+            // OpenItem 的成本来自本次读取到的原明细价格。历史事实变化时必须重新按明细
+            // 逐行求和，不能沿用旧的“单价 × 净数量”近似。
+            if (rebuiltIsOpenItem)
+            {
+                if (!rebuiltHasCredibleCost && old != null
+                    && IsTrustedOpenItemCostSource(old.CostSource)
+                    && old.TotalCost.HasValue
+                    && old.GrossProfit.HasValue
+                    && IsMissingOriginalSaleEvidence(row.CostSource)
+                    && SameOpenItemFacts(row, old))
+                {
+                    // 仅“原始销售明细缺失”允许保留已审计旧 OpenItem 成本；原价冲突即使
+                    // 销售数量和金额未变，也必须留下缺口，不能掩盖新的原价证据问题。
+                    RestoreHistoricalDerived(row, old);
+                    continue;
+                }
+                if (!rebuiltHasCredibleCost)
+                    ClearCost(row);
+                continue;
+            }
+
+            if (old == null)
+            {
+                // 新行只有来源明确时才能补齐成本；测试/旧快照中的裸 UnitCost 不构成证据。
+                if (!rebuiltHasCredibleCost)
+                    ClearCost(row);
+                continue;
+            }
+
+            if (old.TotalCost.HasValue
+                && SameSalesFacts(row, old))
+            {
+                // 事实未变化时，完整旧派生值就是历史快照；即使旧快照没有单价，也不能
+                // 让当天成本表的当前值覆盖已经审计过的历史金额。
+                RestoreHistoricalDerived(row, old);
+                continue;
+            }
+
+            if (old.UnitCostSnapshot is > 0)
+            {
+                // 普通商品历史单价优先；事实数量变化时只按历史单价派生新总成本，
+                // 不复制已过期的 TotalCost/GrossProfit。
+                row.UnitCostSnapshot = old.UnitCostSnapshot;
+                row.CostSource = old.CostSource;
+                // 普通商品事实变化时沿用历史快照单价，避免按当前进价重算历史毛利。
+                row.TotalCost = old.UnitCostSnapshot * row.TotalQuantity;
+                row.GrossProfit = row.TotalCost.HasValue ? row.TotalAmount - row.TotalCost.Value : null;
+                row.GrossMarginRate = row.TotalAmount > 0 && row.GrossProfit.HasValue
+                    ? row.GrossProfit.Value / row.TotalAmount : null;
+                continue;
+            }
+
+            if (!rebuiltHasCredibleCost)
+                ClearCost(row);
         }
+    }
+
+    private static bool IsOpenItemCostSource(string? costSource) =>
+        costSource?.StartsWith("OpenItem", StringComparison.OrdinalIgnoreCase) == true;
+
+    private static bool IsTrustedOpenItemCostSource(string? costSource) =>
+        string.Equals(costSource, "OpenItem", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(costSource, "OpenItemOriginalPrice", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsMissingOriginalSaleEvidence(string? costSource) =>
+        costSource?.Contains("MissingOriginalSale", StringComparison.OrdinalIgnoreCase) == true;
+
+    private static bool IsOpenItemIdentityConflict(string? costSource) =>
+        string.Equals(costSource, "IdentityConflict", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(costSource, "OpenItemIdentityConflict", StringComparison.OrdinalIgnoreCase);
+
+    private static bool SameSalesFacts(
+        ProductStoreDailySalesStatistic rebuilt,
+        ProductStoreDailySalesStatistic previous) =>
+        rebuilt.TotalQuantity == previous.TotalQuantity
+        && rebuilt.OrderCount == previous.OrderCount
+        && Math.Round(rebuilt.TotalAmount, 4, MidpointRounding.AwayFromZero)
+            == Math.Round(previous.TotalAmount, 4, MidpointRounding.AwayFromZero);
+
+    private static bool SameOpenItemFacts(
+        ProductStoreDailySalesStatistic rebuilt,
+        ProductStoreDailySalesStatistic previous) =>
+        SameSalesFacts(rebuilt, previous)
+        && rebuilt.LastSourceUploadTime == previous.LastSourceUploadTime;
+
+    private static void RestoreHistoricalDerived(
+        ProductStoreDailySalesStatistic row,
+        ProductStoreDailySalesStatistic old)
+    {
+        row.UnitCostSnapshot = old.UnitCostSnapshot;
+        row.CostSource = old.CostSource;
+        row.TotalCost = old.TotalCost;
+        // 旧行可能只保存 TotalCost；补齐缺失 derived，但保留合法的 0 值和已有值。
+        row.GrossProfit = old.GrossProfit ?? row.TotalAmount - old.TotalCost!.Value;
+        row.GrossMarginRate = old.GrossMarginRate
+            ?? (row.TotalAmount > 0m && row.GrossProfit.HasValue
+                ? row.GrossProfit.Value / row.TotalAmount
+                : null);
+    }
+
+    private static void ClearCost(ProductStoreDailySalesStatistic row, string? costSource = null)
+    {
+        row.UnitCostSnapshot = null;
+        row.TotalCost = null;
+        row.GrossProfit = null;
+        row.GrossMarginRate = null;
+        // 清理成本时保留领域层给出的异常原因，避免把身份/原价冲突伪装成普通 Missing。
+        row.CostSource = string.IsNullOrWhiteSpace(costSource)
+            ? string.IsNullOrWhiteSpace(row.CostSource) ? "Missing" : row.CostSource
+            : costSource;
     }
 
 }

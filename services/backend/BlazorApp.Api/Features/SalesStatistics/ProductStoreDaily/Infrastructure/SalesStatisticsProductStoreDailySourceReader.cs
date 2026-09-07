@@ -52,7 +52,8 @@ internal sealed class SalesStatisticsProductStoreDailySourceReader
         ILogger logger,
         DateTime date,
         IReadOnlyList<ProductStoreDailySourceRow>? preloadedHBSalesRows,
-        Posm2025DailySnapshot? preloadedPosmSnapshot)
+        Posm2025DailySnapshot? preloadedPosmSnapshot,
+        IReadOnlyCollection<string>? costProductCodes = null)
     {
         var targetDate = date.Date;
         var nextDate = targetDate.AddDays(1);
@@ -70,7 +71,7 @@ internal sealed class SalesStatisticsProductStoreDailySourceReader
                     nextDate)
             : new List<ProductStoreDailySourceRow>();
         if (targetDate.Year == 2025)
-            await ValidateAndResolveHBSalesRowsAsync(context, hbSalesRows, targetDate);
+            await ValidateAndResolveHBSalesRowsAsync(context, hbSalesContext, hbSalesRows, targetDate);
 
         var lastSourceUploadTime = SalesStatisticsProductStoreDailyDomainRules.GetLatestSourceTime(
             posmWatermark,
@@ -105,6 +106,12 @@ internal sealed class SalesStatisticsProductStoreDailySourceReader
                 SupplierCode = detail.SupplierCode,
                 ProductName = detail.ProductName,
                 Barcode = detail.Barcode,
+                Price = detail.Price,
+                Subtotal = detail.Subtotal,
+                OriginalUnitPrice = detail.Price,
+                OriginalSubtotal = detail.Subtotal,
+                PriceLookupCode = detail.Barcode,
+                OriginalSaleQuantity = detail.Quantity,
                 Quantity = detail.Quantity ?? 0m,
                 ActualAmount = detail.ActualAmount ?? 0m,
                 DetailLastUploadTime = detail.LastUploadTime,
@@ -122,6 +129,10 @@ internal sealed class SalesStatisticsProductStoreDailySourceReader
                 detailGuidSet
             );
         var rawRows = detailRows.Concat(supplementalReturnRows).Concat(hbSalesRows).ToList();
+        await ResolveAuthoritativeOpenItemCatalogAsync(
+            context,
+            rawRows,
+            includeInactive: targetDate.Date < SalesStatisticsBusinessDate.Today());
         var orderAmountMaps = preloadedPosmSnapshot == null
             ? await SalesStatisticsProductStoreDailySourceQueries.LoadOrderAmountMapsAsync(
                 posmContext,
@@ -159,6 +170,15 @@ internal sealed class SalesStatisticsProductStoreDailySourceReader
             );
         var productCodes = rawRows.Select(row => row.ProductCode)
             .Where(code => !string.IsNullOrWhiteSpace(code)).Select(code => code!).Distinct().ToList();
+        var costProductCodeSet = costProductCodes?
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Select(code => code.Trim())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var costLookupProductCodes = costProductCodeSet == null
+            ? productCodes
+            : productCodes
+                .Where(code => costProductCodeSet.Contains(code.Trim()))
+                .ToList();
         var posmSupplierMapping = await LoadPosmSupplierMappingInBatchesAsync(
             posmContext,
             rawRows.Where(row => !row.IsHBSalesSource && string.IsNullOrWhiteSpace(row.SupplierCode))
@@ -178,13 +198,19 @@ internal sealed class SalesStatisticsProductStoreDailySourceReader
                 deviceBranchMap
             ))
             .Where(code => !string.IsNullOrWhiteSpace(code)).Distinct().ToList();
-        var storeCosts = await LoadStoreCostsInBatchesAsync(context, productCodes, branchCodes);
-        var productCosts = productCodes.Count == 0 ? new List<ProductCostRow>() : await context.Db.Queryable<Product>()
-            .Where(product => product.ProductCode != null && productCodes.Contains(product.ProductCode) && product.IsDeleted == false)
+        // 成本回填可以只传入当前缺口商品，避免每天为 1 万个销售商品加载跨店价格与发票单位；
+        // rawRows、供应商/分店身份和金额分摊仍始终使用完整商品集合，保持销售事实不变。
+        var storeCosts = await LoadStoreCostsInBatchesAsync(
+            context,
+            costLookupProductCodes,
+            branchCodes,
+            includeInactive: targetDate.Date < SalesStatisticsBusinessDate.Today());
+        var productCosts = costLookupProductCodes.Count == 0 ? new List<ProductCostRow>() : await context.Db.Queryable<Product>()
+            .Where(product => product.ProductCode != null && costLookupProductCodes.Contains(product.ProductCode) && product.IsDeleted == false)
             .Select(product => new ProductCostRow { ProductCode = product.ProductCode, PurchasePrice = product.PurchasePrice })
             .ToListAsync();
-        var warehouseCosts = productCodes.Count == 0 ? new List<WarehouseCostRow>() : await context.Db.Queryable<WarehouseProduct>()
-            .Where(product => productCodes.Contains(product.ProductCode) && product.IsDeleted == false)
+        var warehouseCosts = costLookupProductCodes.Count == 0 ? new List<WarehouseCostRow>() : await context.Db.Queryable<WarehouseProduct>()
+            .Where(product => costLookupProductCodes.Contains(product.ProductCode) && product.IsDeleted == false)
             .Select(product => new WarehouseCostRow { ProductCode = product.ProductCode, ImportPrice = product.ImportPrice })
             .ToListAsync();
 
@@ -196,11 +222,16 @@ internal sealed class SalesStatisticsProductStoreDailySourceReader
 
     private static async Task ValidateAndResolveHBSalesRowsAsync(
         SqlSugarContext context,
+        HBSalesRecordSqlSugarContext? hbSalesContext,
         List<ProductStoreDailySourceRow> hbSalesRows,
         DateTime targetDate)
     {
         hbSalesRows.RemoveAll(row => row.Quantity == 0m && row.ActualAmount == 0m);
-        await ResolveMissingHBSalesProductCodesAsync(context, hbSalesRows);
+        await ResolveMissingHBSalesProductCodesAsync(
+            context,
+            hbSalesRows,
+            includeInactive: targetDate.Date < SalesStatisticsBusinessDate.Today());
+        await ResolveHBSalesReturnOriginalRowsAsync(hbSalesContext, hbSalesRows);
         var invalidRows = hbSalesRows.Where(row => string.IsNullOrWhiteSpace(row.BranchCode)
                 || string.IsNullOrWhiteSpace(row.ProductCode))
             .ToList();
@@ -216,17 +247,216 @@ internal sealed class SalesStatisticsProductStoreDailySourceReader
             $"2025 HBSales 存在 {invalidRows.Count} 条非零来源行缺少{string.Join("或", missingFields)}，不能替换双表统计: {targetDate:yyyy-MM-dd}");
     }
 
+    private static bool IsOpenItemLookupCode(params string?[] values) => values.Any(value =>
+        string.Equals(value?.Trim(), "OPENITEM", StringComparison.OrdinalIgnoreCase));
+
+    private static async Task ResolveHBSalesReturnOriginalRowsAsync(
+        HBSalesRecordSqlSugarContext? context,
+        IReadOnlyList<ProductStoreDailySourceRow> rows)
+    {
+        var returnRows = rows.Where(row => row.DocumentType?.Trim() is "3" or "4").ToList();
+        foreach (var row in returnRows)
+            row.OriginalSaleCostEvidence = false;
+        // 预加载快照可能没有 HBSales 上下文；此时保留缺口，不能把退货行当前的
+        // B单价误当成原销售原价。后续带上下文的完整入口才能补做唯一原单关联。
+        if (context == null)
+            return;
+        var originalOrderNumbers = returnRows
+            .Select(row => row.OriginalHBSalesOrderNumber?.Trim())
+            .Where(number => !string.IsNullOrWhiteSpace(number))
+            .Select(number => number!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (originalOrderNumbers.Count == 0)
+            return;
+
+        var originalRows = await context.Db.Queryable<SalesOrderDetailRecord>()
+            .Where(detail => detail.B销售单号 != null && originalOrderNumbers.Contains(detail.B销售单号))
+            .Select(detail => new
+            {
+                detail.B销售单号,
+                detail.ID,
+                detail.B退货码,
+                detail.B产品编号,
+                detail.B条形码,
+                detail.B单价,
+                detail.B原价合计金额,
+                detail.B数量,
+                detail.B单位,
+            })
+            .ToListAsync();
+
+        foreach (var row in returnRows)
+        {
+            var orderNumber = row.OriginalHBSalesOrderNumber?.Trim();
+            if (string.IsNullOrWhiteSpace(orderNumber))
+                continue;
+            var candidates = originalRows.Where(original =>
+                string.Equals(original.B销售单号?.Trim(), orderNumber, StringComparison.OrdinalIgnoreCase));
+            var returnCode = row.HBSalesReturnCode?.Trim();
+            var openItemLookup = IsOpenItemLookupCode(row.ProductCode, row.Barcode, row.PriceLookupCode);
+            if (!string.IsNullOrWhiteSpace(returnCode))
+            {
+                candidates = candidates.Where(original =>
+                    string.Equals(original.B退货码?.Trim(), returnCode, StringComparison.OrdinalIgnoreCase));
+            }
+            else
+            {
+                // 没有退货码时必须通过产品编号/条码同时唯一匹配，不能只按名称或价格猜原单。
+                candidates = candidates.Where(original =>
+                    (openItemLookup
+                        || string.IsNullOrWhiteSpace(row.ProductCode)
+                        || string.Equals(original.B产品编号?.Trim(), row.ProductCode.Trim(), StringComparison.OrdinalIgnoreCase))
+                    && (string.IsNullOrWhiteSpace(row.Barcode)
+                        || string.Equals(original.B条形码?.Trim(), row.Barcode.Trim(), StringComparison.OrdinalIgnoreCase)));
+            }
+            var matches = candidates.ToList();
+            if (matches.Count != 1)
+                continue;
+            var original = matches[0];
+            if (!openItemLookup
+                && !string.IsNullOrWhiteSpace(row.ProductCode)
+                && !string.IsNullOrWhiteSpace(original.B产品编号)
+                && !string.Equals(original.B产品编号.Trim(), row.ProductCode.Trim(), StringComparison.OrdinalIgnoreCase))
+                continue;
+            row.HBSalesUnitPrice = original.B单价;
+            row.HBSalesOriginalAmount = original.B原价合计金额;
+            row.OriginalUnitPrice = original.B单价;
+            row.OriginalSubtotal = original.B原价合计金额;
+            row.OriginalSaleQuantity = original.B数量;
+            row.PricingUnit = original.B单位;
+            row.OriginalSaleCostEvidence = true;
+            if (string.IsNullOrWhiteSpace(row.PriceLookupCode)
+                && IsOpenItemLookupCode(original.B条形码))
+                row.PriceLookupCode = "OPENITEM";
+        }
+    }
+
+    private static async Task ResolveAuthoritativeOpenItemCatalogAsync(
+        SqlSugarContext context,
+        IReadOnlyList<ProductStoreDailySourceRow> rows,
+        bool includeInactive = false)
+    {
+        var productCodes = rows
+            .Where(row => !string.IsNullOrWhiteSpace(row.ProductCode))
+            .Select(row => row.ProductCode!.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var lookupCodes = rows
+            .Where(row => string.IsNullOrWhiteSpace(row.ProductCode))
+            .SelectMany(row => new[] { row.Barcode, row.PriceLookupCode })
+            .Where(value => IsOpenItemLookupCode(value))
+            .Select(value => value!.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (productCodes.Count == 0 && lookupCodes.Count == 0)
+            return;
+
+        var catalogRows = new List<(string ProductCode, string Barcode)>();
+        foreach (var batch in productCodes.Chunk(StoreCostProductQueryBatchSize))
+        {
+            var productQuery = context.Db.Queryable<Product>()
+                .Where(product => product.IsDeleted == false
+                    && product.ProductCode != null
+                    && product.Barcode != null
+                    && batch.Contains(product.ProductCode))
+                .WhereIF(!includeInactive, product => product.IsActive);
+            var candidates = await productQuery
+                .Select(product => new
+                {
+                    product.ProductCode,
+                    product.Barcode,
+                })
+                .ToListAsync();
+            catalogRows.AddRange(candidates
+                .Where(candidate => !string.IsNullOrWhiteSpace(candidate.ProductCode)
+                    && !string.IsNullOrWhiteSpace(candidate.Barcode))
+                .Select(candidate => (candidate.ProductCode!.Trim(), candidate.Barcode!.Trim())));
+        }
+
+        var lookupCatalogRows = new List<(string ProductCode, string Barcode)>();
+        foreach (var batch in lookupCodes.Chunk(StoreCostProductQueryBatchSize))
+        {
+            var batchValues = batch.ToList();
+            var productQuery = context.Db.Queryable<Product>()
+                .Where(product => product.IsDeleted == false
+                    && product.ProductCode != null
+                    && product.Barcode != null
+                    && batchValues.Contains(product.Barcode))
+                .WhereIF(!includeInactive, product => product.IsActive);
+            var candidates = await productQuery
+                .Select(product => new
+                {
+                    product.ProductCode,
+                    product.Barcode,
+                })
+                .ToListAsync();
+            lookupCatalogRows.AddRange(candidates
+                .Where(candidate => !string.IsNullOrWhiteSpace(candidate.ProductCode)
+                    && !string.IsNullOrWhiteSpace(candidate.Barcode))
+                .Select(candidate => (candidate.ProductCode!.Trim(), candidate.Barcode!.Trim())));
+        }
+
+        var openItemCatalogCodes = catalogRows
+            .Where(candidate => IsOpenItemLookupCode(candidate.Barcode))
+            .Select(candidate => candidate.ProductCode)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in rows.Where(row => !string.IsNullOrWhiteSpace(row.ProductCode)
+            && string.IsNullOrWhiteSpace(row.Barcode)
+            && string.IsNullOrWhiteSpace(row.PriceLookupCode)
+            && openItemCatalogCodes.Contains(row.ProductCode!.Trim())))
+        {
+            // 仅以当前 Product 目录的精确 ProductCode -> Barcode=OPENITEM 关系确认，
+            // 解决 G006243 一类历史明细缺 Barcode 的情况，不根据名称或货号推断。
+            row.PriceLookupCode = "OPENITEM";
+        }
+
+        var lookupCandidates = lookupCatalogRows
+            .GroupBy(candidate => candidate.Barcode, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Select(candidate => candidate.ProductCode)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList(),
+                StringComparer.OrdinalIgnoreCase);
+        foreach (var row in rows.Where(row => string.IsNullOrWhiteSpace(row.ProductCode)))
+        {
+            var candidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var lookup in new[] { row.Barcode, row.PriceLookupCode }
+                .Where(value => IsOpenItemLookupCode(value))
+                .Select(value => value!.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                if (lookupCandidates.TryGetValue(lookup, out var codes))
+                    candidates.UnionWith(codes);
+            }
+
+            // 只能把唯一权威目录商品编码写回来源；0 个或多个候选都保留缺口，
+            // 绝不创造 OPENITEM synthetic 分组键。
+            var canonicalCode = SalesStatisticsProductStoreDailyDomainRules
+                .ResolveUniqueCanonicalProductCode(candidates);
+            if (!string.IsNullOrWhiteSpace(canonicalCode))
+                row.ProductCode = canonicalCode;
+        }
+    }
+
     internal static async Task<List<StoreCostRow>> LoadStoreCostsInBatchesAsync(
     SqlSugarContext context,
     IReadOnlyCollection<string> productCodes,
-    IReadOnlyCollection<string> branchCodes
+    IReadOnlyCollection<string> branchCodes,
+    bool includeInactive = false
 )
 {
     if (productCodes.Count == 0 || branchCodes.Count == 0)
         return new List<StoreCostRow>();
 
-    var normalizedBranchCodes = branchCodes.Distinct(StringComparer.Ordinal).ToList();
+    // branchCodes 仅用于保证调用方仍可传入目标分店；回退需要同时看到其它有效分店。
+    // 查询仍按商品编码分批，避免把全表加载进内存。
     var rows = new List<StoreCostRow>();
+    var invoiceDetailTableName = context.Db.EntityMaintenance
+        .GetTableName(typeof(StoreLocalSupplierInvoiceDetails));
+    var hasInvoiceDetailTable = context.Db.DbMaintenance.GetTableInfoList(false)
+        .Any(table => string.Equals(table.Name, invoiceDetailTableName, StringComparison.OrdinalIgnoreCase));
     foreach (var productCodeBatch in productCodes
         .Distinct(StringComparer.Ordinal)
         .Chunk(StoreCostProductQueryBatchSize))
@@ -234,24 +464,67 @@ internal sealed class SalesStatisticsProductStoreDailySourceReader
         // 超大 IN 条件在 460 万行分店价格表上会导致 SQL Server 优化和并发超时；
         // 小批量查询继续命中现有 ProductCode + StoreCode 索引，统计口径保持不变。
         var batch = productCodeBatch.ToList();
-        var batchRows = await context.Db.Queryable<StoreRetailPrice>()
+        var storePriceQuery = context.Db.Queryable<StoreRetailPrice>()
             .Where(p =>
                 p.ProductCode != null
                 && p.StoreCode != null
                 && batch.Contains(p.ProductCode)
-                && normalizedBranchCodes.Contains(p.StoreCode)
                 && p.SupplierCode != null
-                && p.IsDeleted == false
-                && p.IsActive == true
-            )
+                && p.IsDeleted == false)
+            .WhereIF(!includeInactive, p => p.IsActive);
+        var batchRows = await storePriceQuery
             .Select(p => new StoreCostRow
             {
                 StoreCode = p.StoreCode,
                 SupplierCode = p.SupplierCode,
                 ProductCode = p.ProductCode,
+                IsActive = p.IsActive,
                 PurchasePrice = p.PurchasePrice,
             })
             .ToListAsync();
+
+        // StoreRetailPrice 本身没有单位列，使用同一分店/供应商/商品的进货明细单位
+        // 作为实际计价单位来源；多个不同单位时保持未知，禁止跨店猜测。
+        List<StoreCostRow> unitRows;
+        if (hasInvoiceDetailTable)
+        {
+            unitRows = await context.Db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .Where(detail => detail.ProductCode != null
+                    && detail.StoreCode != null
+                    && detail.SupplierCode != null
+                    && detail.Unit != null
+                    && detail.Unit.Trim() != ""
+                    && batch.Contains(detail.ProductCode)
+                    && detail.IsDeleted == false)
+                .Select(detail => new StoreCostRow
+                {
+                    StoreCode = detail.StoreCode,
+                    SupplierCode = detail.SupplierCode,
+                    ProductCode = detail.ProductCode,
+                    PricingUnit = detail.Unit,
+                    PricingUnitKnown = true,
+                })
+                .ToListAsync();
+        }
+        else
+        {
+            unitRows = [];
+        }
+        var unitsByKey = unitRows
+            .GroupBy(row => $"{row.StoreCode?.Trim()}|{row.SupplierCode?.Trim()}|{row.ProductCode?.Trim()}", StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Select(row => row.PricingUnit!.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+                StringComparer.OrdinalIgnoreCase);
+        foreach (var row in batchRows)
+        {
+            var key = $"{row.StoreCode?.Trim()}|{row.SupplierCode?.Trim()}|{row.ProductCode?.Trim()}";
+            if (unitsByKey.TryGetValue(key, out var units) && units.Count == 1)
+            {
+                row.PricingUnit = units[0];
+                row.PricingUnitKnown = true;
+            }
+        }
         rows.AddRange(batchRows);
     }
 
@@ -336,6 +609,15 @@ internal static async Task<List<ProductStoreDailySourceRow>> LoadHBSalesProductS
                 SupplierCode = detail.B供应商ID,
                 ProductName = detail.B商品名,
                 Barcode = detail.B条形码,
+                HBSalesUnitPrice = detail.B单价,
+                HBSalesOriginalAmount = detail.B原价合计金额,
+                OriginalUnitPrice = detail.B单价,
+                OriginalSubtotal = detail.B原价合计金额,
+                PricingUnit = detail.B单位,
+                PriceLookupCode = detail.B条形码,
+                OriginalSaleQuantity = detail.B数量,
+                OriginalHBSalesOrderNumber = main.B原销售单号,
+                HBSalesReturnCode = detail.B退货码,
                 Quantity = detail.B数量 ?? 0m,
                 ActualAmount = detail.B合计金额 ?? 0m,
                 // HBSales 使用明细/主表的最后修改时间；创建时间仅作为旧记录的可靠回退。
@@ -381,7 +663,8 @@ internal static async Task<List<ProductStoreDailySourceRow>> LoadHBSalesProductS
 
 internal static async Task ResolveMissingHBSalesProductCodesAsync(
     SqlSugarContext context,
-    IReadOnlyList<ProductStoreDailySourceRow> hbSalesRows
+    IReadOnlyList<ProductStoreDailySourceRow> hbSalesRows,
+    bool includeInactive = false
 )
 {
     var rowsToResolve = hbSalesRows
@@ -467,16 +750,17 @@ internal static async Task ResolveMissingHBSalesProductCodesAsync(
     {
         // 只查询当前缺码行携带的货号/条码，分批限制 IN 条件大小，避免不受控参数量。
         var batch = lookupCodeBatch.ToList();
-        var productRows = await context.Db.Queryable<Product>()
+        var productQuery = context.Db.Queryable<Product>()
             .Where(product =>
                 product.IsDeleted == false
-                && product.IsActive
                 && product.ProductCode != null
                 && (
                     (product.ItemNumber != null && batch.Contains(product.ItemNumber))
                     || (product.Barcode != null && batch.Contains(product.Barcode))
                 )
             )
+            .WhereIF(!includeInactive, product => product.IsActive);
+        var productRows = await productQuery
             .Select(product => new { product.ItemNumber, product.Barcode, product.ProductCode })
             .ToListAsync();
         foreach (var product in productRows)
@@ -490,14 +774,15 @@ internal static async Task ResolveMissingHBSalesProductCodesAsync(
     {
         // ProductSetCode 和 StoreMultiCodeProduct 都以条码为强键，后者还必须匹配分店。
         var batch = barcodeBatch.ToList();
-        var productSetCodeRows = await context.Db.Queryable<ProductSetCode>()
+        var productSetCodeQuery = context.Db.Queryable<ProductSetCode>()
             .Where(setCode =>
                 setCode.IsDeleted == false
-                && setCode.IsActive
                 && setCode.ProductCode != null
                 && setCode.SetBarcode != null
                 && batch.Contains(setCode.SetBarcode)
             )
+            .WhereIF(!includeInactive, setCode => setCode.IsActive);
+        var productSetCodeRows = await productSetCodeQuery
             .Select(setCode => new { setCode.SetBarcode, setCode.ProductCode })
             .ToListAsync();
         foreach (var setCode in productSetCodeRows)
@@ -505,15 +790,16 @@ internal static async Task ResolveMissingHBSalesProductCodesAsync(
             AddGlobalCandidate(setCode.SetBarcode, setCode.ProductCode);
         }
 
-        var storeMultiCodeRows = await context.Db.Queryable<StoreMultiCodeProduct>()
+        var storeMultiCodeQuery = context.Db.Queryable<StoreMultiCodeProduct>()
             .Where(multiCode =>
                 multiCode.IsDeleted == false
-                && multiCode.IsActive
                 && multiCode.StoreCode != null
                 && multiCode.ProductCode != null
                 && multiCode.MultiBarcode != null
                 && batch.Contains(multiCode.MultiBarcode)
             )
+            .WhereIF(!includeInactive, multiCode => multiCode.IsActive);
+        var storeMultiCodeRows = await storeMultiCodeQuery
             .Select(multiCode => new
             {
                 multiCode.StoreCode,

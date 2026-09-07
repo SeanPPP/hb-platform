@@ -506,6 +506,11 @@ public partial class SalesDashboardReactService
             AverageUnitPrice = row.CurrentQuantity > 0 ? row.CurrentSalesAmount / row.CurrentQuantity : 0,
             AverageOriginalPrice = null,
             OrderCount = row.CurrentOrderCount,
+            CostStatus = GetCostStatus(
+                row.CurrentStatisticRowCount,
+                row.CurrentCostedRowCount,
+                row.CurrentGrossProfitRowCount
+            ),
             GrossProfit = GetCompleteGrossProfit(
                 row.CurrentGrossProfit,
                 row.CurrentStatisticRowCount,
@@ -518,6 +523,11 @@ public partial class SalesDashboardReactService
             AverageUnitPriceLY = row.CompareQuantity > 0 ? row.CompareSalesAmount / row.CompareQuantity : 0,
             AverageOriginalPriceLY = null,
             OrderCountLY = row.CompareOrderCount,
+            CompareCostStatus = GetCostStatus(
+                row.CompareStatisticRowCount,
+                row.CompareCostedRowCount,
+                row.CompareGrossProfitRowCount
+            ),
             GrossProfitLY = GetCompleteGrossProfit(
                 row.CompareGrossProfit,
                 row.CompareStatisticRowCount,

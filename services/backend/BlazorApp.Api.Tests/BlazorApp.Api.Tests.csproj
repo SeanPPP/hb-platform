@@ -43,6 +43,7 @@
     <Compile Include="DeviceRegistrationReactServiceTests.cs" />
     <Compile Include="DeviceActivationCodeManagementTests.cs" />
     <Compile Include="RemoteMaintenanceContractTests.cs" />
+    <Compile Include="RemoteMaintenancePrepareTests.cs" />
     <Compile Include="RustDeskCompatControllerTests.cs" />
     <Compile Include="RustDeskCompatServiceTests.cs" />
     <Compile Include="RustDeskClientSchemaTests.cs" />
@@ -102,6 +103,13 @@
     <Compile Include="SalesStatisticsAlignmentBackgroundRecalculateServiceTests.cs" />
     <Compile Include="SalesStatisticsAlignmentServiceTests.cs" />
     <Compile Include="SalesStatisticsJobServiceTests.cs" />
+    <Compile Include="HqPurchasePriceSyncGuardTests.cs" />
+    <Compile Include="SalesCostBackfillTests.cs" />
+    <Compile Include="SalesCostBackfillWorkerTests.cs" />
+    <Compile Include="SalesDashboardCostStatusTests.cs" />
+    <Compile Include="SalesStatisticsProductStoreDailyCommandWriterTests.cs" />
+    <Compile Include="SalesStatisticsProductStoreDailyCostRulesTests.cs" />
+    <Compile Include="SalesCostBackfillSqlServerTests.cs" />
     <Compile Include="SalesStatisticsBusinessDateTests.cs" />
     <Compile Include="SalesDetailLookupReuseTests.cs" />
     <Compile Include="RevenueReportSnapshotTests.cs" />

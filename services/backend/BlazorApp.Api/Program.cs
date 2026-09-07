@@ -363,6 +363,8 @@ builder.Services.AddScoped<ScheduledTaskLogService>();
 builder.Services.AddScoped<ScheduledTaskRetryService>();
 builder.Services.AddScoped<ScheduledTaskRuntimeControlService>();
 builder.Services.AddScoped<ScheduledTaskLeaseService>();
+builder.Services.AddScoped<SalesCostBackfillService>();
+builder.Services.AddHostedService<SalesCostBackfillWorker>();
 builder.Services.AddScoped<SalesStatisticsAlignmentService>();
 builder.Services.Configure<ScheduledTaskOptions>(
     builder.Configuration.GetSection("ScheduledTasks")

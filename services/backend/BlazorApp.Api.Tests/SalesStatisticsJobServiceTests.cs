@@ -1819,7 +1819,8 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
         var driftInserted = 0;
         _localDb.Aop.OnLogExecuting = (sql, _) =>
         {
-            if (!sql.Contains("Product", StringComparison.OrdinalIgnoreCase)
+            if ((!sql.Contains("FROM `Product`", StringComparison.OrdinalIgnoreCase)
+                    && !sql.Contains("FROM \"Product\"", StringComparison.OrdinalIgnoreCase))
                 || Interlocked.Exchange(ref driftInserted, 1) != 0)
             {
                 return;
@@ -1863,6 +1864,7 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
             _localDb.Aop.OnLogExecuting = null;
         }
 
+        Assert.Equal(1, driftInserted);
         var oldStore = await _localDb.Queryable<StoreSalesStatistic>()
             .Where(row => row.Date == targetDate && row.BranchCode == "1004")
             .FirstAsync();

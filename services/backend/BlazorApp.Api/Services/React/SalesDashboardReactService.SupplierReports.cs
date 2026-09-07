@@ -329,10 +329,12 @@ public partial class SalesDashboardReactService
             TotalAmount = current.TotalAmount, TotalQuantity = current.TotalQuantity, OrderCount = current.OrderCount, StoreCount = current.StoreCount,
             AverageTransaction = current.OrderCount > 0 ? current.TotalAmount / current.OrderCount : 0,
             GrossProfit = profit, GrossMarginRate = CalculateGrossMarginRate(current.TotalAmount, profit),
+            CostStatus = GetCostStatus(current.StatisticRowCount, current.CostedRowCount, current.GrossProfitRowCount),
             CompareTotalAmount = hasCompare ? compare.TotalAmount : null, CompareOrderCount = hasCompare ? compare.OrderCount : null,
             CompareAverageTransaction = hasCompare ? (compare.OrderCount > 0 ? compare.TotalAmount / compare.OrderCount : 0) : null,
             TotalAmountGrowth = hasCompare ? CalculateGrowth(current.TotalAmount, compare.TotalAmount) : null,
             CompareGrossProfit = compareProfit, CompareGrossMarginRate = hasCompare ? CalculateGrossMarginRate(compare.TotalAmount, compareProfit) : null,
+            CompareCostStatus = hasCompare ? GetCostStatus(compare.StatisticRowCount, compare.CostedRowCount, compare.GrossProfitRowCount) : NoActivityCostStatus,
         };
     }
 
@@ -343,6 +345,7 @@ public partial class SalesDashboardReactService
         AverageTransaction = row.AverageTransaction, GrossProfit = row.GrossProfit, GrossMarginRate = row.GrossMarginRate,
         CompareTotalAmount = row.CompareTotalAmount, CompareOrderCount = row.CompareOrderCount, CompareAverageTransaction = row.CompareAverageTransaction,
         TotalAmountGrowth = row.TotalAmountGrowth, CompareGrossProfit = row.CompareGrossProfit, CompareGrossMarginRate = row.CompareGrossMarginRate,
+        CostStatus = row.CostStatus, CompareCostStatus = row.CompareCostStatus,
     };
 
     private SupplierStoreSalesDto ToSupplierStore(DateRangeDto range, SupplierRollupReadRow current, SupplierRollupReadRow compare,
@@ -356,6 +359,7 @@ public partial class SalesDashboardReactService
             OrderCount = row.OrderCount, AverageTransaction = row.AverageTransaction, GrossProfit = row.GrossProfit, GrossMarginRate = row.GrossMarginRate,
             CompareTotalAmount = row.CompareTotalAmount, CompareOrderCount = row.CompareOrderCount, CompareAverageTransaction = row.CompareAverageTransaction,
             TotalAmountGrowth = row.TotalAmountGrowth, CompareGrossProfit = row.CompareGrossProfit, CompareGrossMarginRate = row.CompareGrossMarginRate,
+            CostStatus = row.CostStatus, CompareCostStatus = row.CompareCostStatus,
         };
     }
 
@@ -366,5 +370,6 @@ public partial class SalesDashboardReactService
         OrderCount = row.OrderCount, AverageTransaction = row.AverageTransaction, GrossProfit = row.GrossProfit, GrossMarginRate = row.GrossMarginRate,
         CompareTotalAmount = row.CompareTotalAmount, CompareOrderCount = row.CompareOrderCount, CompareAverageTransaction = row.CompareAverageTransaction,
         TotalAmountGrowth = row.TotalAmountGrowth, CompareGrossProfit = row.CompareGrossProfit, CompareGrossMarginRate = row.CompareGrossMarginRate,
+        CostStatus = row.CostStatus, CompareCostStatus = row.CompareCostStatus,
     };
 }

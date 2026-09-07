@@ -47,15 +47,20 @@ internal static class SalesStatisticsProductStoreDailySourceQueries
                 ReturnAmount = returnRow.ReturnAmount,
                 ReturnCreatedTime = returnRow.CreatedTime,
                 ReturnUpdatedTime = returnRow.UpdatedTime,
+                OriginalOrderGuid = returnRow.OriginalOrderGuid,
                 order.OrderGuid,
                 order.BranchCode,
                 order.DeviceCode,
                 order.OrderTime,
                 OrderLastUploadTime = order.LastUploadTime,
                 DetailProductCode = detail.ProductCode,
+                OriginalDetailOrderGuid = detail.OrderGuid,
                 detail.SupplierCode,
                 detail.ProductName,
                 detail.Barcode,
+                DetailPrice = detail.Price,
+                DetailSubtotal = detail.Subtotal,
+                OriginalDetailQuantity = detail.Quantity,
             })
             .ToListAsync();
 
@@ -64,8 +69,20 @@ internal static class SalesStatisticsProductStoreDailySourceQueries
                 string.IsNullOrWhiteSpace(row.ReturnDetailGuid)
                 || !detailGuidSet.Contains(row.ReturnDetailGuid)
             )
-            .Select(row => new ProductStoreDailySourceRow
+            .Select(row =>
             {
+                var originalIdentityMatches = string.Equals(
+                        row.OriginalOrderGuid?.Trim(),
+                        row.OriginalDetailOrderGuid?.Trim(),
+                        StringComparison.OrdinalIgnoreCase)
+                    && (string.IsNullOrWhiteSpace(row.ReturnProductCode)
+                        || string.IsNullOrWhiteSpace(row.DetailProductCode)
+                        || string.Equals(
+                            row.ReturnProductCode.Trim(),
+                            row.DetailProductCode.Trim(),
+                            StringComparison.OrdinalIgnoreCase));
+                return new ProductStoreDailySourceRow
+                {
                 Date = row.OrderTime!.Value.Date,
                 OrderGuid = row.OrderGuid,
                 DetailGuid = row.ReturnDetailGuid,
@@ -78,11 +95,19 @@ internal static class SalesStatisticsProductStoreDailySourceQueries
                 SupplierCode = row.SupplierCode,
                 ProductName = row.ProductName,
                 Barcode = row.Barcode,
+                Price = originalIdentityMatches ? row.DetailPrice : null,
+                Subtotal = originalIdentityMatches ? row.DetailSubtotal : null,
+                OriginalUnitPrice = originalIdentityMatches ? row.DetailPrice : null,
+                OriginalSubtotal = originalIdentityMatches ? row.DetailSubtotal : null,
+                PriceLookupCode = row.Barcode,
+                OriginalSaleQuantity = row.OriginalDetailQuantity,
+                OriginalSaleCostEvidence = originalIdentityMatches,
                 Quantity = -Math.Abs(row.ReturnQuantity ?? 0m),
                 ActualAmount = -Math.Abs(row.ReturnAmount ?? 0m),
                 DetailLastUploadTime = row.ReturnUpdatedTime ?? row.ReturnCreatedTime,
                 SourceCreatedAt = row.ReturnCreatedTime,
                 SourceUpdatedAt = row.ReturnUpdatedTime,
+                };
             })
             .ToList();
     }
@@ -266,6 +291,12 @@ internal static class SalesStatisticsProductStoreDailySourceQueries
                 SupplierCode = detail.SupplierCode,
                 ProductName = detail.ProductName,
                 Barcode = detail.Barcode,
+                Price = detail.Price,
+                Subtotal = detail.Subtotal,
+                OriginalUnitPrice = detail.Price,
+                OriginalSubtotal = detail.Subtotal,
+                PriceLookupCode = detail.Barcode,
+                OriginalSaleQuantity = detail.Quantity,
                 Quantity = detail.Quantity ?? 0m,
                 ActualAmount = detail.ActualAmount ?? 0m,
                 DetailLastUploadTime = detail.LastUploadTime,

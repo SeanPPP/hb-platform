@@ -62,6 +62,10 @@ internal sealed class DataSyncIncrementalStore : DataSyncSliceBase
                     var totalProductUpdated = 0;
                     var totalErrors = 0;
                     var pageNumber = 1;
+                    var existingProductsByCode = (await LocalContext.Db.Queryable<Product>().ToListAsync())
+                        .Where(product => !string.IsNullOrWhiteSpace(product.ProductCode))
+                        .GroupBy(product => product.ProductCode!.Trim(), StringComparer.OrdinalIgnoreCase)
+                        .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
                     // 有效、停用和软删除的本地 Type1 都受 GUID 与规范化父子业务键保护。
                     var protectedType1 = await DataSyncProductProtectionRules.GetAllType1ProtectionAsync(LocalContext.Db);
                     var auditProductCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -95,6 +99,27 @@ internal sealed class DataSyncIncrementalStore : DataSyncSliceBase
                             var localProducts = hqProductsBatch
                                 .Select(hqProduct => Mapper.Map<Product>(hqProduct))
                                 .ToList();
+                            foreach (var product in localProducts)
+                            {
+                                if (string.IsNullOrWhiteSpace(product.ProductCode))
+                                {
+                                    continue;
+                                }
+
+                                var productCode = product.ProductCode.Trim();
+                                if (!existingProductsByCode.TryGetValue(productCode, out var existing))
+                                {
+                                    continue;
+                                }
+
+                                // 旧增量入口直接 Storageable 写 Product，沿用普通商品成本保护。
+                                product.PurchasePrice = HqPurchasePriceSyncGuard.PreservePositiveForOrdinaryProduct(
+                                    existing.PurchasePrice,
+                                    product.PurchasePrice,
+                                    existing.ProductType,
+                                    product.ProductType
+                                );
+                            }
                             var pageAuditProductCodes = new HashSet<string>(
                                 localProducts
                                     .Where(product => !string.IsNullOrWhiteSpace(product.ProductCode))
@@ -132,6 +157,13 @@ internal sealed class DataSyncIncrementalStore : DataSyncSliceBase
 
                             totalProductAdded += productInsertResult;
                             totalProductUpdated += productUpdateResult;
+                            foreach (var product in localProducts)
+                            {
+                                if (!string.IsNullOrWhiteSpace(product.ProductCode))
+                                {
+                                    existingProductsByCode[product.ProductCode.Trim()] = product;
+                                }
+                            }
 
                             Logger.LogInformation(
                                 $"第 {pageNumber} 批商品字典增量同步完成 - Product新增: {productInsertResult}, 更新: {productUpdateResult}"
