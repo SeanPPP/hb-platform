@@ -1422,12 +1422,12 @@ export function ProductReportScreen({
           </View>
         ) : null}
         <View style={styles.supplierCountColumn}>
-          <TableCell numeric style={styles.strongText}>{formatCount(item.orderCount)}</TableCell>
-          <TableCell numeric style={styles.muted}>{formatCount(item.compareOrderCount)}</TableCell>
+          <TableCell numeric style={styles.strongText}>{formatCount(item.totalQuantity)}</TableCell>
+          <TableCell numeric style={styles.muted}>{item.compareTotalQuantity === null ? "—" : formatCount(item.compareTotalQuantity)}</TableCell>
         </View>
         <View style={styles.supplierMoneyColumn}>
-          <TableCell numeric style={styles.strongText}>{formatMoney(item.averageTransaction)}</TableCell>
-          <TableCell numeric style={styles.muted}>{formatMoney(item.compareAverageTransaction)}</TableCell>
+          <TableCell numeric style={styles.strongText}>{formatNullableMoney(item.averagePrice)}</TableCell>
+          <TableCell numeric style={styles.muted}>{formatNullableMoney(item.compareAveragePrice)}</TableCell>
         </View>
         {renderGrossProfitCell(item.grossProfit, item.compareGrossProfit)}
         {renderGrossMarginCell(item.grossMarginRate, item.compareGrossMarginRate)}
@@ -1882,10 +1882,10 @@ function SupplierTableHeader({ kind, scrollX }: { kind: SupplierReportKind; scro
         </View>
       ) : null}
       <View style={styles.supplierCountColumn}>
-        <TableCell numeric style={styles.headerText}>{t("productReport.metrics.orders")}</TableCell>
+        <TableCell numeric style={styles.headerText}>{t("productReport.metrics.productQuantity")}</TableCell>
       </View>
       <View style={styles.supplierMoneyColumn}>
-        <TableCell numeric style={styles.headerText}>{t("productReport.metrics.aov")}</TableCell>
+        <TableCell numeric style={styles.headerText}>{t("productReport.metrics.productAveragePrice")}</TableCell>
       </View>
       <View style={styles.grossProfitColumn}>
         <TableCell numeric style={styles.headerText}>{t("productReport.metrics.grossProfit")}</TableCell>
@@ -2171,10 +2171,10 @@ function BranchDrilldownModal({
                         <TableCell numeric style={styles.headerText}>{t("productReport.metrics.growthRate")}</TableCell>
                       </View>
                       <View style={styles.countColumn}>
-                        <TableCell numeric style={styles.headerText}>{t("productReport.metrics.orders")}</TableCell>
+                        <TableCell numeric style={styles.headerText}>{t("productReport.metrics.productQuantity")}</TableCell>
                       </View>
                       <View style={styles.moneyColumn}>
-                        <TableCell numeric style={styles.headerText}>{t("productReport.metrics.aov")}</TableCell>
+                        <TableCell numeric style={styles.headerText}>{t("productReport.metrics.productAveragePrice")}</TableCell>
                       </View>
                       <View style={styles.grossProfitColumn}>
                         <TableCell numeric style={styles.headerText}>{t("productReport.metrics.grossProfit")}</TableCell>
@@ -2257,12 +2257,12 @@ function SupplierBranchRow({
       </View>
       {renderGrowthCell(row.revenue, row.compareRevenue)}
       <View style={styles.countColumn}>
-        <TableCell numeric style={styles.strongText}>{formatCount(row.orderCount)}</TableCell>
-        <TableCell numeric style={styles.muted}>{formatCount(row.compareOrderCount)}</TableCell>
+        <TableCell numeric style={styles.strongText}>{formatCount(row.totalQuantity)}</TableCell>
+        <TableCell numeric style={styles.muted}>{row.compareTotalQuantity === null ? "—" : formatCount(row.compareTotalQuantity)}</TableCell>
       </View>
       <View style={styles.moneyColumn}>
-        <TableCell numeric style={styles.strongText}>{formatMoney(row.averageTransaction)}</TableCell>
-        <TableCell numeric style={styles.muted}>{formatMoney(row.compareAverageTransaction)}</TableCell>
+        <TableCell numeric style={styles.strongText}>{formatNullableMoney(row.averagePrice)}</TableCell>
+        <TableCell numeric style={styles.muted}>{formatNullableMoney(row.compareAveragePrice)}</TableCell>
       </View>
       {renderGrossProfitCell(row.grossProfit, row.compareGrossProfit)}
       {renderGrossMarginCell(row.grossMarginRate, row.compareGrossMarginRate)}

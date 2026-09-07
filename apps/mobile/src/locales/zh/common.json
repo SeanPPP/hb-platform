@@ -222,6 +222,8 @@
       "rowNumber": "#"
     },
     "metrics": {
+      "productQuantity": "商品数量",
+      "productAveragePrice": "商品均价",
       "revenue": "营业额",
       "totalShare": "总占比",
       "supplierShare": "营业额占比",

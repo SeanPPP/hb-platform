@@ -116,6 +116,9 @@ export interface SupplierReportRow {
   grossMarginRate: number | null;
   compareGrossMarginRate: number | null;
   totalQuantity: number;
+  compareTotalQuantity: number | null;
+  averagePrice: number | null;
+  compareAveragePrice: number | null;
   storeCount: number;
   orderCount: number;
   compareOrderCount: number;
@@ -163,6 +166,9 @@ export interface SupplierBranchBreakdownRow {
   grossMarginRate: number | null;
   compareGrossMarginRate: number | null;
   totalQuantity: number;
+  compareTotalQuantity: number | null;
+  averagePrice: number | null;
+  compareAveragePrice: number | null;
   orderCount: number;
   compareOrderCount: number;
   averageTransaction: number;
@@ -432,6 +438,8 @@ export function normalizeSupplierRows(payload: unknown): SupplierReportRow[] {
     const orderCount = asNumber(pick(item, "orderCount", "OrderCount", "transactions", "Transactions"));
     const compareRevenue = asNumber(pick(item, "compareTotalAmount", "CompareTotalAmount", "revenueLY", "RevenueLY"));
     const compareOrderCount = asNumber(pick(item, "compareOrderCount", "CompareOrderCount", "orderCountLY", "OrderCountLY"));
+    const totalQuantity = asNumber(pick(item, "totalQuantity", "TotalQuantity"));
+    const compareTotalQuantity = asNullableNumber(pick(item, "compareTotalQuantity", "CompareTotalQuantity", "totalQuantityLY", "TotalQuantityLY"));
     return {
       id: supplierCode || String(index),
       supplierCode,
@@ -460,6 +468,10 @@ export function normalizeSupplierRows(payload: unknown): SupplierReportRow[] {
       ),
       totalQuantity: asNumber(pick(item, "totalQuantity", "TotalQuantity")),
       storeCount: asNumber(pick(item, "storeCount", "StoreCount")),
+      compareTotalQuantity,
+      // 商品均价使用商品数量，不能使用客单价。
+      averagePrice: totalQuantity !== 0 ? revenue / totalQuantity : null,
+      compareAveragePrice: compareTotalQuantity !== null && compareTotalQuantity !== 0 ? compareRevenue / compareTotalQuantity : null,
       orderCount,
       compareOrderCount,
       averageTransaction: asNumber(
@@ -623,6 +635,8 @@ export function normalizeSupplierBranchRows(payload: unknown): SupplierBranchBre
     const orderCount = asNumber(pick(item, "orderCount", "OrderCount"));
     const compareRevenue = asNumber(pick(item, "compareTotalAmount", "CompareTotalAmount", "revenueLY", "RevenueLY"));
     const compareOrderCount = asNumber(pick(item, "compareOrderCount", "CompareOrderCount"));
+    const totalQuantity = asNumber(pick(item, "totalQuantity", "TotalQuantity"));
+    const compareTotalQuantity = asNullableNumber(pick(item, "compareTotalQuantity", "CompareTotalQuantity", "totalQuantityLY", "TotalQuantityLY"));
     return {
       id: `${branchCode}-${supplierCode || index}`,
       branchCode,
@@ -652,6 +666,10 @@ export function normalizeSupplierBranchRows(payload: unknown): SupplierBranchBre
         )
       ),
       totalQuantity: asNumber(pick(item, "totalQuantity", "TotalQuantity")),
+      compareTotalQuantity,
+      // 商品均价使用商品数量，不能使用客单价。
+      averagePrice: totalQuantity !== 0 ? revenue / totalQuantity : null,
+      compareAveragePrice: compareTotalQuantity !== null && compareTotalQuantity !== 0 ? compareRevenue / compareTotalQuantity : null,
       orderCount,
       compareOrderCount,
       averageTransaction: asNumber(
