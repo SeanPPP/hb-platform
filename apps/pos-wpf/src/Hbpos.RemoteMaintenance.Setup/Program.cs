@@ -113,6 +113,10 @@ public static class Program
                 state.ClientVersion).GetAwaiter().GetResult();
             return Emit(true, "configure", operationId, 0);
         }
+        catch (RemoteMaintenanceSetupException ex)
+        {
+            return Emit(false, args[3], operationId, (int)ex.Error);
+        }
         catch
         {
             // helper 输出只含阶段与退出码，绝不暴露密码、token、异常原文或命令行参数。
