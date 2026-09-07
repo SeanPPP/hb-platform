@@ -85,3 +85,41 @@ test('POS 的原有 Metro 验证迁入单次安装的 Node lane，失败仍立�
     rmSync(temporaryRoot, { recursive: true, force: true })
   }
 })
+
+test('质量汇总 CLI 对部分 artifact 缺失或失败返回非零，并保留诊断报告', () => {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), 'hb-ci-quality-missing-'))
+  const result = {
+    schemaVersion: 'QualityLaneResultV1', lane: 'backend',
+    startedAtUtc: '2026-09-08T00:00:00.000Z', finishedAtUtc: '2026-09-08T00:00:01.000Z',
+    durationMs: 1000, conclusion: 'accepted',
+  }
+  try {
+    for (const mode of ['missing', 'failed']) {
+      const resultsDir = join(temporaryRoot, mode)
+      mkdirSync(resultsDir)
+      writeFileSync(join(resultsDir, 'backend.json'), JSON.stringify(result))
+      if (mode === 'failed') {
+        writeFileSync(join(resultsDir, 'pos-ipad.json'), JSON.stringify({
+          ...result, lane: 'pos-ipad', conclusion: 'failed', errorCode: 'verification_failed',
+        }))
+      }
+      const output = join(temporaryRoot, `${mode}.json`)
+      const child = spawnSync(process.execPath, [
+        'scripts/performance/build-metric-batch.mjs', '--results-dir', resultsDir, '--output', output,
+      ], {
+        cwd: root, encoding: 'utf8',
+        env: {
+          ...process.env, QUALITY_EXPECTED_LANES: '["backend","pos-ipad"]',
+          GITHUB_REPOSITORY: 'SeanPPP/hb-platform', GITHUB_EVENT_NAME: 'pull_request',
+          GITHUB_REF: 'refs/pull/87/merge', GITHUB_SHA: 'a'.repeat(40),
+          GITHUB_WORKFLOW: 'PR CI', GITHUB_RUN_ID: 'test-quality-missing', GITHUB_RUN_ATTEMPT: '1',
+        },
+      })
+      assert.equal(child.status, 1, `${mode}: ${child.stdout}\n${child.stderr}`)
+      assert.ok(JSON.parse(readFileSync(output, 'utf8')).events.length > 0)
+      assert.match(child.stderr, /pos-ipad/)
+    }
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true })
+  }
+})
