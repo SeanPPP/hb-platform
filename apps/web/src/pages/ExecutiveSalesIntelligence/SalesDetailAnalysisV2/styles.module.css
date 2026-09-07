@@ -74,7 +74,6 @@
 .expanded { height:650px; }
 .expanded .table { width:100%; }
 .expanded .nameText { width:180px!important; }
-.profitView .panel:not([data-panel=products]) .nameText { width:84px; }
 .slow { color:#805c20; background:#fff9e9; padding:8px 12px; font-size:11px; }
 .empty { display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:230px; gap:15px; padding:18px; color:var(--muted); white-space:normal; }
 .skeleton { padding:24px 16px; }
@@ -82,7 +81,7 @@
 .foot { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; color:var(--muted); font-size:10px; padding-top:15px; }
 .page button:focus-visible,.page [tabindex]:focus-visible { outline:2px solid #1673cf; outline-offset:2px; }
 @media(min-width:1600px) { .panel { height:660px; } .nameText { width:130px; } }
-@media(max-width:1280px) { .page { padding:16px; } .profitView .panel:not([data-panel=products]) .nameText { width:64px; } .table td,.table th { padding-left:8px; padding-right:8px; } .panelHeader { padding:10px; } .panelHeader h2 { font-size:13px; } .summary strong { font-size:21px!important; } .legend { display:none; } }
-@media(max-width:960px) { .grid { grid-template-columns:minmax(0,1fr); gap:14px; } .resizer { display:none; } .panel { height:440px; } .profitView .panel:not([data-panel=products]) .nameText { width:130px; } .tabsLine { flex-wrap:wrap; gap:10px; padding-bottom:10px; } }
+@media(max-width:1280px) { .page { padding:16px; } .table td,.table th { padding-left:8px; padding-right:8px; } .panelHeader { padding:10px; } .panelHeader h2 { font-size:13px; } .summary strong { font-size:21px!important; } .legend { display:none; } }
+@media(max-width:960px) { .grid { grid-template-columns:minmax(0,1fr); gap:14px; } .resizer { display:none; } .panel { height:440px; } .tabsLine { flex-wrap:wrap; gap:10px; padding-bottom:10px; } }
 @media(max-width:600px) { .page { padding:14px 10px; } .heading { align-items:flex-start; } .heading h1 { font-size:23px; } .heading p { font-size:11px; line-height:1.6; max-width:220px; } .heading :global(.ant-btn) { font-size:11px; padding-inline:8px; } .tabs { gap:18px; } .tabs button { font-size:12px; } .summary { grid-template-columns:1fr 1fr; row-gap:18px; } .summary > div { border:0; padding-left:10px!important; } .summary > div:nth-child(2n) { border-left:1px solid var(--line); } .summary > div:last-child { grid-column:1 / -1; } .scope { padding-block:12px; } .panel { height:450px; } .panel[data-panel=products] .nameText { width:100px; } .pageSummary { grid-template-columns:repeat(3,1fr); } .pageSummary > span:first-child { grid-column:1/-1; } .pageSummary > span:first-child small { display:inline; margin-left:8px; } .expanded { height:600px; } }
 @media(prefers-reduced-motion:reduce) { .page * { animation:none!important; transition:none!important; scroll-behavior:auto!important; } }

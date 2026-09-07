@@ -21,6 +21,7 @@ namespace BlazorApp.Api.Services.React
         private const string TaskFull = "SyncStoreRetailPricesFull";
         private const string TaskIncremental = "SyncStoreRetailPricesIncremental";
         private const string DatabaseLockResource = "StoreRetailPrice_HQ_FULL_SYNC_SWAP";
+        private const int ShadowRestoreBatchSize = 1000;
         private static readonly SemaphoreSlim SyncLock = new(1, 1);
 
         private readonly SqlSugarContext _localContext;
@@ -103,6 +104,9 @@ namespace BlazorApp.Api.Services.React
                     {
                         // 影子表切换会同时改变全部门店主成本；总闸必须覆盖切换和所有派生成本回写。
                         var lockScope = await SetChildPurchasePriceMutationLock.AcquireAllAsync(db);
+                        // 影子表装载耗时较长，锁内重新读取正式表成本并修正影子表，避免旧快照覆盖并发回填。
+                        var existingPurchasePrices = await CaptureExistingPurchasePricesAsync(db);
+                        await RestoreExistingPurchasePricesAsync(db, existingPurchasePrices);
                         var affectedGroups = await QueryStoreRetailPriceGroupsAsync(db);
                         await SwitchShadowTableAsync(db, syncRunId);
                         affectedGroups.AddRange(await QueryStoreRetailPriceGroupsAsync(db));
@@ -494,7 +498,8 @@ namespace BlazorApp.Api.Services.React
         private async Task<int> CopyHqToTableByKeysetAsync(
             ISqlSugarClient targetDb,
             List<string> targetStoreCodes,
-            string tableName
+            string tableName,
+            StoreRetailPricePurchasePriceSnapshot? existingPurchasePrices = null
         )
         {
             var lastId = 0;
@@ -518,6 +523,7 @@ namespace BlazorApp.Api.Services.React
                     }
 
                     var localBatch = hqBatch.Select(MapHqRetailPrice).ToList();
+                    ApplyExistingPurchasePriceGuard(localBatch, existingPurchasePrices);
                     await targetDb.Fastest<StoreRetailPrice>()
                         .AS(tableName)
                         .PageSize(_options.WriteBatchSize)
@@ -547,6 +553,10 @@ namespace BlazorApp.Api.Services.React
             {
                 // 指定分店全量会删除旧主成本；用总闸避免未纳入新快照的旧商品绕过产品锁。
                 var lockScope = await SetChildPurchasePriceMutationLock.AcquireAllAsync(db);
+                var existingPurchasePrices = await CaptureExistingPurchasePricesAsync(
+                    db,
+                    targetStoreCodes
+                );
                 var affectedGroups = await QueryStoreRetailPriceGroupsAsync(db, targetStoreCodes);
                 foreach (var storeChunk in targetStoreCodes.Chunk(1000))
                 {
@@ -556,7 +566,12 @@ namespace BlazorApp.Api.Services.React
                         .ExecuteCommandAsync();
                 }
 
-                inserted = await CopyHqToTableByKeysetAsync(db, targetStoreCodes, "StoreRetailPrice");
+                inserted = await CopyHqToTableByKeysetAsync(
+                    db,
+                    targetStoreCodes,
+                    "StoreRetailPrice",
+                    existingPurchasePrices
+                );
                 affectedGroups.AddRange(await QueryStoreRetailPriceGroupsAsync(db, targetStoreCodes));
                 await RecalculateStoreGroupsLockedAsync(db, lockScope, affectedGroups);
                 await db.Ado.CommitTranAsync();
@@ -613,6 +628,10 @@ namespace BlazorApp.Api.Services.React
 
                 if (current is not null)
                 {
+                    incoming.PurchasePrice = HqPurchasePriceSyncGuard.PreservePositive(
+                        current.PurchasePrice,
+                        incoming.PurchasePrice
+                    );
                     // HQ 的 HGUID 是跨供应商变更最稳定的同步键，优先用它恢复旧行，避免重复主键插入。
                     // 正确的成本快照不能刷新审计字段，否则会制造无效的同步更新记录。
                     if (!HasHqSyncDifference(current, incoming))
@@ -833,6 +852,133 @@ namespace BlazorApp.Api.Services.React
             }
 
             return existing;
+        }
+
+        internal static async Task<StoreRetailPricePurchasePriceSnapshot> CaptureExistingPurchasePricesAsync(
+            ISqlSugarClient db,
+            IReadOnlyCollection<string>? storeCodes = null
+        )
+        {
+            var query = db.Queryable<StoreRetailPrice>()
+                .Where(row => row.PurchasePrice > 0);
+            if (storeCodes?.Count > 0)
+            {
+                var stores = storeCodes.ToList();
+                query = query.Where(row => row.StoreCode != null && stores.Contains(row.StoreCode));
+            }
+
+            return new StoreRetailPricePurchasePriceSnapshot(await query.ToListAsync());
+        }
+
+        internal static void ApplyExistingPurchasePriceGuard(
+            IReadOnlyCollection<StoreRetailPrice> incomingRows,
+            StoreRetailPricePurchasePriceSnapshot? existingPurchasePrices
+        )
+        {
+            if (existingPurchasePrices is null)
+            {
+                return;
+            }
+
+            foreach (var incoming in incomingRows)
+            {
+                var existing = existingPurchasePrices.Resolve(incoming);
+                incoming.PurchasePrice = HqPurchasePriceSyncGuard.PreservePositive(
+                    existing,
+                    incoming.PurchasePrice
+                );
+            }
+        }
+
+        private static async Task RestoreExistingPurchasePricesAsync(
+            ISqlSugarClient db,
+            StoreRetailPricePurchasePriceSnapshot existingPurchasePrices
+        )
+        {
+            var shadowRows = await db.Queryable<StoreRetailPrice>()
+                .AS(ShadowTableName)
+                .Where(row => row.PurchasePrice == null || row.PurchasePrice <= 0)
+                .ToListAsync();
+            var updates = new List<StoreRetailPrice>();
+            foreach (var shadowRow in shadowRows)
+            {
+                var existing = existingPurchasePrices.Resolve(shadowRow);
+                var guarded = HqPurchasePriceSyncGuard.PreservePositive(
+                    existing,
+                    shadowRow.PurchasePrice
+                );
+                if (guarded != shadowRow.PurchasePrice)
+                {
+                    shadowRow.PurchasePrice = guarded;
+                    updates.Add(shadowRow);
+                }
+            }
+
+            foreach (var batch in updates.Chunk(ShadowRestoreBatchSize))
+            {
+                await db.Updateable(batch.ToList())
+                    .AS(ShadowTableName)
+                    .UpdateColumns(row => new { row.PurchasePrice })
+                    .ExecuteCommandAsync();
+            }
+        }
+
+        internal sealed class StoreRetailPricePurchasePriceSnapshot
+        {
+            private const char KeySeparator = '\u001f';
+            private readonly Dictionary<string, decimal?> _byUuid;
+            private readonly Dictionary<string, decimal?> _byBusinessKey;
+
+            public StoreRetailPricePurchasePriceSnapshot(IEnumerable<StoreRetailPrice> rows)
+            {
+                _byUuid = rows
+                    .Where(row => !string.IsNullOrWhiteSpace(row.UUID))
+                    .GroupBy(row => row.UUID.Trim(), StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(
+                        group => group.Key,
+                        group => group.First().PurchasePrice,
+                        StringComparer.OrdinalIgnoreCase
+                    );
+                _byBusinessKey = rows
+                    .Select(row => (Key: BuildBusinessKey(row), Row: row))
+                    .Where(item => item.Key != null)
+                    .GroupBy(item => item.Key!, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(
+                        group => group.Key,
+                        group => group.First().Row.PurchasePrice,
+                        StringComparer.OrdinalIgnoreCase
+                    );
+            }
+
+            public decimal? Resolve(StoreRetailPrice incoming)
+            {
+                if (!string.IsNullOrWhiteSpace(incoming.UUID)
+                    && _byUuid.TryGetValue(incoming.UUID.Trim(), out var byUuid))
+                {
+                    return byUuid;
+                }
+
+                var key = BuildBusinessKey(incoming);
+                return key != null && _byBusinessKey.TryGetValue(key, out var byBusinessKey)
+                    ? byBusinessKey
+                    : null;
+            }
+
+            private static string? BuildBusinessKey(StoreRetailPrice row)
+            {
+                if (string.IsNullOrWhiteSpace(row.StoreCode)
+                    || string.IsNullOrWhiteSpace(row.ProductCode))
+                {
+                    return null;
+                }
+
+                return string.Join(
+                    KeySeparator,
+                    row.StoreCode.Trim(),
+                    row.ProductCode.Trim(),
+                    row.SupplierCode?.Trim() ?? string.Empty
+                );
+            }
         }
 
         private static string BuildIncomingDedupKey(StoreRetailPrice value)

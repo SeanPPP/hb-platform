@@ -194,7 +194,7 @@ namespace BlazorApp.Api.Services
     {
         try
         {
-            var targetDate = (date ?? DateTime.Now.Date).Date;
+            var targetDate = (date ?? SalesStatisticsBusinessDate.Today()).Date;
             var nextDate = targetDate.AddDays(1);
             var targetBranchCodes = SalesStatisticsCodeRules.NormalizeBranchCodes(branchCodes);
             var targetSupplierCodes = SalesStatisticsCodeRules.NormalizeSupplierCodes(

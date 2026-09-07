@@ -9,6 +9,7 @@ import {
   getRevenueTrend,
   makeRevenueQueryScope,
   parseRevenueOverviewSearch,
+  sortRevenueBranchesByRevenue,
 } from './logic'
 import type { RevenueBranch, RevenueHourly, RevenueWeeklyNode } from './types'
 
@@ -29,6 +30,17 @@ assert.deepEqual(getRevenueSummary(branches, null, true), {
 })
 assert.equal(getRevenueSummary(branches, 'b-02', true).revenue, 200, '分店代码匹配应忽略空格与大小写')
 assert.equal(getRevenueSummary(branches, null, false).revenueLY, null, '关闭对比后不得伪造同期零值')
+const unsortedBranches: RevenueBranch[] = [
+  { ...branches[0]!, rank: 3, branchCode: 'C03', revenue: 50 },
+  { ...branches[1]!, rank: 2, branchCode: 'B02', revenue: 100 },
+  { ...branches[1]!, rank: 1, branchCode: 'A01', revenue: 100 },
+]
+assert.deepEqual(
+  sortRevenueBranchesByRevenue(unsortedBranches).map(branch => [branch.branchCode, branch.rank]),
+  [['A01', 1], ['B02', 2], ['C03', 3]],
+  '分店必须按本期营业额降序，同额沿用原排名并重新生成连续名次',
+)
+assert.deepEqual(unsortedBranches.map(branch => branch.rank), [3, 2, 1], '排序不得修改接口原始数据')
 assert.deepEqual(getRevenueTrend(10, 0), { text: 'new', tone: 'neutral' })
 assert.deepEqual(getRevenueTrend(0, 0), { text: '0.0%', tone: 'neutral' })
 assert.deepEqual(getRevenueTrend(9, null), { text: '—', tone: 'neutral' })

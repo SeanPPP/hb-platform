@@ -145,6 +145,34 @@ namespace BlazorApp.Api.Interfaces.React
             CancellationToken cancellationToken = default
         );
 
+        /// <summary>
+        /// 在同一完整统计快照中读取销售明细各栏，避免逐栏重复查询。
+        /// </summary>
+        Task<ProductReportResponseDto<SalesDetailReportDto>> GetSalesDetailReportAsync(
+            DateRangeDto dateRange,
+            SalesDetailKind kind,
+            List<string>? branchCodes = null,
+            string? selectedBranchCode = null,
+            string? selectedSupplierCode = null,
+            string? selectedProductCode = null,
+            string? search = null,
+            int pageIndex = 1,
+            int pageSize = 20,
+            IReadOnlyCollection<SalesDetailSection>? sections = null,
+            CancellationToken cancellationToken = default
+        );
+
+        /// <summary>
+        /// 一次读取营业额、分店、时段及周层级，读取过程不触发统计重建。
+        /// </summary>
+        Task<BlazorApp.Api.Services.React.RevenueReportSnapshotDto> GetRevenueReportSnapshotAsync(
+            DateRangeDto dateRange,
+            List<string>? branchCodes = null,
+            List<string>? focusBranchCodes = null,
+            int? topN = null,
+            CancellationToken cancellationToken = default
+        );
+
         Task<
             List<AustralianSupplierStoreSalesDetailDto>
         > GetAustralianSupplierStoreSalesDetailsAsync(

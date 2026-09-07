@@ -63,6 +63,42 @@ public partial class SalesDashboardReactService
         public decimal CompareChinaRevenue { get; set; }
     }
 
+    // 只在一次三栏完整读取内复用目录和 POSM 映射；请求结束后随上下文释放，避免跨请求读到旧映射。
+    private sealed class SalesDetailLookupContext
+    {
+        private readonly SalesDashboardReactService _service;
+        private readonly DateRangeDto _range;
+        private readonly List<string>? _branches;
+        private Task<ProductSalesChinaCatalog>? _chinaCatalog;
+        private Task<Dictionary<string, string>>? _chinaSupplierProductMap;
+
+        public SalesDetailLookupContext(SalesDashboardReactService service, DateRangeDto range, List<string>? branches)
+        {
+            _service = service;
+            _range = range;
+            _branches = branches;
+        }
+
+        public Task<ProductSalesChinaCatalog> GetChinaCatalogAsync()
+        {
+            return _chinaCatalog ??= _service.GetProductSalesChinaCatalogAsync();
+        }
+
+        public Task<Dictionary<string, string>> GetChinaSupplierProductMapAsync()
+        {
+            return _chinaSupplierProductMap ??= LoadChinaSupplierProductMapAsync();
+        }
+
+        private async Task<Dictionary<string, string>> LoadChinaSupplierProductMapAsync()
+        {
+            if (_branches is { Count: 0 })
+                return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            // 只读取两期和分店范围内实际出现的旧 200 商品，避免跨库传输全目录映射。
+            var products = await _service.GetReportLegacyChinaProductCodesAsync(_range, _branches ?? new());
+            return (await _service.ReadReportChinaSupplierMappingsAsync(products, includeAllSupplierCodes: false)).ProductMap;
+        }
+    }
+
     public async Task<SalesDetailSectionResultDto> GetSalesDetailColumnsAsync(
         DateRangeDto dateRange,
         SalesDetailKind kind,
@@ -239,6 +275,7 @@ public partial class SalesDashboardReactService
 
         // 每栏忽略自身的选择条件，以保留可反查候选。
         var factBranchCodes = section == SalesDetailSection.Branches ? authorizedBranches : selectedBranch;
+        var lookups = new SalesDetailLookupContext(this, range, factBranchCodes);
         var factSupplier = section == SalesDetailSection.Suppliers ? null : NormalizeValue(selectedSupplierCode);
         var factProduct = section == SalesDetailSection.Products ? null : NormalizeValue(selectedProductCode);
         var factSearch = section is SalesDetailSection.Products or SalesDetailSection.Summary ? search : null;
@@ -257,7 +294,7 @@ public partial class SalesDashboardReactService
             && (section is SalesDetailSection.Suppliers or SalesDetailSection.Branches))
         {
             return await BuildSalesDetailRollupSectionAsync(
-                range, kind, section, factBranchCodes, factSupplier, pageIndex, pageSize, cancellationToken
+                range, kind, section, factBranchCodes, factSupplier, pageIndex, pageSize, lookups, cancellationToken
             );
         }
         if (_useSupplierRollups && productCodes == null && factSearch == null && section == SalesDetailSection.Summary)
@@ -268,7 +305,7 @@ public partial class SalesDashboardReactService
         if (section == SalesDetailSection.Summary)
         {
             return await BuildSalesDetailSummaryAsync(
-                range, kind, factBranchCodes, factSupplier, productCodes, factSearch, pageIndex, pageSize, cancellationToken
+                range, kind, factBranchCodes, factSupplier, productCodes, factSearch, pageIndex, pageSize, lookups, cancellationToken
             );
         }
 
@@ -277,32 +314,37 @@ public partial class SalesDashboardReactService
         if (section == SalesDetailSection.Products)
         {
             var productPage = await QuerySalesDetailProductPageAsync(
-                range, kind, factBranchCodes, factSupplier, productCodes, factSearch, pageIndex, pageSize, cancellationToken
+                range, kind, factBranchCodes, factSupplier, productCodes, factSearch, pageIndex, pageSize, lookups, cancellationToken
             );
             productPageCodes = productPage.Codes;
             productTotal = productPage.Total;
         }
         var current = await QuerySalesDetailFactsAsync(
-            range.StartDate.Date, range.EndDate.Date, kind, factBranchCodes, factSupplier, productPageCodes, factSearch, cancellationToken
+            range.StartDate.Date, range.EndDate.Date, kind, factBranchCodes, factSupplier, productPageCodes, factSearch, lookups, cancellationToken
         );
         var compare = HasCompare(range)
             ? await QuerySalesDetailFactsAsync(
                 range.CompareStartDate!.Value.Date, range.CompareEndDate!.Value.Date,
-                kind, factBranchCodes, factSupplier, productPageCodes, factSearch, cancellationToken
+                kind, factBranchCodes, factSupplier, productPageCodes, factSearch, lookups, cancellationToken
             )
             : new List<SalesDetailFactRow>();
 
         var buckets = AggregateSalesDetailFacts(current, compare, section);
-        await FillSalesDetailNamesAsync(buckets, section, kind, cancellationToken);
+        await FillSalesDetailNamesAsync(buckets, section, kind, lookups, cancellationToken);
 
         SalesDetailDenominator? denominator = null;
         if (section == SalesDetailSection.Suppliers)
-            denominator = await QuerySalesDetailDenominatorAsync(range, factBranchCodes, cancellationToken);
+            denominator = await QuerySalesDetailDenominatorAsync(range, factBranchCodes, lookups, cancellationToken);
 
-        var rows = buckets
-            .OrderByDescending(row => row.Revenue)
-            .ThenByDescending(row => row.CompareRevenue)
-            .ThenBy(row => row.Code, StringComparer.OrdinalIgnoreCase)
+        // 商品必须在完整结果集分页后仍按数量排序；供应商和分店继续按营业额排序。
+        var orderedBuckets = section == SalesDetailSection.Products
+            ? buckets.OrderByDescending(row => row.Quantity)
+                .ThenByDescending(row => row.CompareQuantity)
+                .ThenBy(row => row.Code, StringComparer.OrdinalIgnoreCase)
+            : buckets.OrderByDescending(row => row.Revenue)
+                .ThenByDescending(row => row.CompareRevenue)
+                .ThenBy(row => row.Code, StringComparer.OrdinalIgnoreCase);
+        var rows = orderedBuckets
             .Select(row => ToSalesDetailRow(row, section, kind, denominator, HasCompare(range)))
             .ToList();
 
@@ -344,6 +386,7 @@ public partial class SalesDashboardReactService
         string? supplier,
         int pageIndex,
         int pageSize,
+        SalesDetailLookupContext lookups,
         CancellationToken cancellationToken
     )
     {
@@ -374,9 +417,9 @@ public partial class SalesDashboardReactService
             var bucket = CreateSalesDetailRollupBucket(row, true, byBranch);
             buckets.Add(bucket);
         }
-        await FillSalesDetailNamesAsync(buckets, section, kind, cancellationToken);
+        await FillSalesDetailNamesAsync(buckets, section, kind, lookups, cancellationToken);
         var denominator = section == SalesDetailSection.Suppliers
-            ? await QuerySalesDetailDenominatorAsync(range, branches, cancellationToken)
+            ? await QuerySalesDetailDenominatorAsync(range, branches, lookups, cancellationToken)
             : null;
         var rows = buckets.OrderByDescending(row => row.Revenue).ThenBy(row => row.Code, StringComparer.OrdinalIgnoreCase)
             .Select(row => ToSalesDetailRow(row, section, kind, denominator, HasCompare(range))).ToList();
@@ -518,12 +561,13 @@ public partial class SalesDashboardReactService
         string? search,
         int pageIndex,
         int pageSize,
+        SalesDetailLookupContext lookups,
         CancellationToken cancellationToken
     )
     {
-        var current = await QuerySalesDetailFactsAsync(range.StartDate.Date, range.EndDate.Date, kind, branches, supplier, productCodes, search, cancellationToken);
+        var current = await QuerySalesDetailFactsAsync(range.StartDate.Date, range.EndDate.Date, kind, branches, supplier, productCodes, search, lookups, cancellationToken);
         var compare = HasCompare(range)
-            ? await QuerySalesDetailFactsAsync(range.CompareStartDate!.Value.Date, range.CompareEndDate!.Value.Date, kind, branches, supplier, productCodes, search, cancellationToken)
+            ? await QuerySalesDetailFactsAsync(range.CompareStartDate!.Value.Date, range.CompareEndDate!.Value.Date, kind, branches, supplier, productCodes, search, lookups, cancellationToken)
             : new List<SalesDetailFactRow>();
         var buckets = AggregateSalesDetailFacts(current, compare, SalesDetailSection.Summary);
         var summary = SumSalesDetailRows(
@@ -555,6 +599,7 @@ public partial class SalesDashboardReactService
         string? supplierCode,
         IReadOnlyCollection<string>? productCodes,
         string? search,
+        SalesDetailLookupContext lookups,
         CancellationToken cancellationToken
     )
     {
@@ -564,10 +609,10 @@ public partial class SalesDashboardReactService
         if (productCodes != null && productCodes.Count == 0)
             return new List<SalesDetailFactRow>();
 
-        var chinaCatalog = await GetProductSalesChinaCatalogAsync();
+        var chinaCatalog = await lookups.GetChinaCatalogAsync();
         var chinaCodes = chinaCatalog.Codes;
         var chinaMap = kind == SalesDetailKind.China
-            ? await GetChinaSupplierProductMapAsync()
+            ? await lookups.GetChinaSupplierProductMapAsync()
             : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var query = _context.Db.Queryable<ProductStoreDailySalesStatistic>()
             .Where(row => row.Date >= start && row.Date <= end);
@@ -579,9 +624,9 @@ public partial class SalesDashboardReactService
         // 供应商代码/旧 200 商品集合统一用 JSON 集合连接，避免超过 SQL Server 2100 参数。
         query = ApplySalesDetailKindScope(query, kind, supplierCode, chinaCodes, chinaMap);
 
-        query = await ApplySalesDetailSearchFilterAsync(query, kind, search, cancellationToken);
+        query = await ApplySalesDetailSearchFilterAsync(query, kind, search, lookups, cancellationToken);
 
-        var rows = await query
+        var factsQuery = query
             .GroupBy(row => new { row.SupplierCode, row.BranchCode, row.ProductCode })
             .Select(group => new SalesDetailFactRow
             {
@@ -597,8 +642,8 @@ public partial class SalesDashboardReactService
                 StatisticRowCount = SqlFunc.AggregateCount(group.ProductCode),
                 CostedRowCount = SqlFunc.AggregateCount(group.TotalCost),
                 GrossProfitRowCount = SqlFunc.AggregateCount(group.GrossProfit),
-            })
-            .ToListAsync(cancellationToken);
+            });
+        var rows = await ReadSalesDetailQueryAsync(factsQuery, kind, cancellationToken);
 
         return rows
             .Select(row =>
@@ -619,6 +664,7 @@ public partial class SalesDashboardReactService
         ISugarQueryable<ProductStoreDailySalesStatistic> query,
         SalesDetailKind kind,
         string? search,
+        SalesDetailLookupContext lookups,
         CancellationToken cancellationToken
     )
     {
@@ -636,8 +682,8 @@ public partial class SalesDashboardReactService
                     StringComparer.OrdinalIgnoreCase)
             : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         // 澳洲口径也要支持历史中国供应商名称反查 200；目录含软删/停用代码。
-        var chinaCatalog = await GetProductSalesChinaCatalogAsync();
-        var chinaMap = await GetChinaSupplierProductMapAsync();
+        var chinaCatalog = await lookups.GetChinaCatalogAsync();
+        var chinaMap = await lookups.GetChinaSupplierProductMapAsync();
         for (var tokenIndex = 0; tokenIndex < tokens.Length; tokenIndex++)
         {
             var token = tokens[tokenIndex];
@@ -765,12 +811,13 @@ public partial class SalesDashboardReactService
         string? search,
         int pageIndex,
         int pageSize,
+        SalesDetailLookupContext lookups,
         CancellationToken cancellationToken
     )
     {
         var currentQuery = await BuildSalesDetailProductStatisticQueryAsync(
             range.StartDate.Date, range.EndDate.Date, kind, branches, supplierCode, allowedProductCodes
-            , search, cancellationToken
+            , search, lookups, cancellationToken
         );
         var periods = new List<ISugarQueryable<ProductReportProductAggregateRow>>
         {
@@ -781,7 +828,7 @@ public partial class SalesDashboardReactService
             var compareQuery = await BuildSalesDetailProductStatisticQueryAsync(
                 range.CompareStartDate!.Value.Date, range.CompareEndDate!.Value.Date,
                 kind, branches, supplierCode, allowedProductCodes
-                , search, cancellationToken
+                , search, lookups, cancellationToken
             );
             periods.Add(BuildProductReportProductAggregateQuery(compareQuery, 1));
         }
@@ -810,15 +857,29 @@ public partial class SalesDashboardReactService
                 CompareGrossProfitRowCount = SqlFunc.AggregateSum(SqlFunc.IIF(row.Period == 1, row.GrossProfitRowCount, 0)),
             }).MergeTable();
         cancellationToken.ThrowIfCancellationRequested();
-        var total = await combined.CountAsync(cancellationToken);
-        var pageRows = await combined
-            .OrderBy(row => row.CurrentSalesAmount, OrderByType.Desc)
-            .OrderBy(row => row.CompareSalesAmount, OrderByType.Desc)
+        var total = (await ReadSalesDetailQueryAsync(
+            combined.Clone().Select(row => SqlFunc.AggregateCount(1)), kind, cancellationToken)).Single();
+        // 排序必须发生在数据库 Skip/Take 之前，保证跨页按本期数量全量降序。
+        var pageQuery = combined
+            .OrderBy(row => row.CurrentQuantity, OrderByType.Desc)
+            .OrderBy(row => row.CompareQuantity, OrderByType.Desc)
             .OrderBy(row => row.ProductCode, OrderByType.Asc)
             .Skip((pageIndex - 1) * pageSize)
-            .Take(pageSize)
-            .ToListAsync(cancellationToken);
+            .Take(pageSize);
+        var pageRows = await ReadSalesDetailQueryAsync(pageQuery, kind, cancellationToken);
         return (pageRows.Select(row => row.ProductCode).ToHashSet(StringComparer.OrdinalIgnoreCase), total);
+    }
+
+    private Task<List<T>> ReadSalesDetailQueryAsync<T>(
+        ISugarQueryable<T> query, SalesDetailKind kind, CancellationToken cancellationToken)
+    {
+        if (kind != SalesDetailKind.China || _context.Db.CurrentConnectionConfig.DbType != DbType.SqlServer)
+            return query.ToListAsync(cancellationToken);
+
+        // OPENJSON 默认低估映射集合，容易逐行重复解析上万商品；哈希连接让集合一次参与匹配。
+        // 仅调整国内三栏读取的执行计划，仍沿用原参数、分页、取消令牌和外层快照事务。
+        var sql = query.ToSql();
+        return _context.Db.Ado.SqlQueryAsync<T>(sql.Key + " OPTION (RECOMPILE, HASH JOIN)", sql.Value.ToArray(), cancellationToken);
     }
 
     private async Task<ISugarQueryable<ProductStoreDailySalesStatistic>> BuildSalesDetailProductStatisticQueryAsync(
@@ -829,13 +890,14 @@ public partial class SalesDashboardReactService
         string? supplierCode,
         IReadOnlyCollection<string>? allowedProductCodes,
         string? search,
+        SalesDetailLookupContext lookups,
         CancellationToken cancellationToken
     )
     {
-        var chinaCatalog = await GetProductSalesChinaCatalogAsync();
+        var chinaCatalog = await lookups.GetChinaCatalogAsync();
         var chinaCodes = chinaCatalog.Codes;
         var chinaMap = kind == SalesDetailKind.China
-            ? await GetChinaSupplierProductMapAsync()
+            ? await lookups.GetChinaSupplierProductMapAsync()
             : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var query = _context.Db.Queryable<ProductStoreDailySalesStatistic>()
             .Where(row => row.Date >= start && row.Date <= end);
@@ -847,7 +909,7 @@ public partial class SalesDashboardReactService
             query = query.Where(row => list.Contains(row.ProductCode));
         }
         query = ApplySalesDetailKindScope(query, kind, supplierCode, chinaCodes, chinaMap);
-        query = await ApplySalesDetailSearchFilterAsync(query, kind, search, cancellationToken);
+        query = await ApplySalesDetailSearchFilterAsync(query, kind, search, lookups, cancellationToken);
         return query;
     }
 
@@ -907,6 +969,7 @@ public partial class SalesDashboardReactService
         List<SalesDetailBucket> buckets,
         SalesDetailSection section,
         SalesDetailKind kind,
+        SalesDetailLookupContext lookups,
         CancellationToken cancellationToken
     )
     {
@@ -916,7 +979,7 @@ public partial class SalesDashboardReactService
             if (kind == SalesDetailKind.China)
             {
                 // 三栏需展示期间历史名称，不能因供应商已软删而退化成代码。
-                var catalog = await GetProductSalesChinaCatalogAsync();
+                var catalog = await lookups.GetChinaCatalogAsync();
                 names = buckets.ToDictionary(
                     bucket => bucket.Code,
                     bucket => catalog.Names.GetValueOrDefault(bucket.Code, bucket.Code),
@@ -967,6 +1030,7 @@ public partial class SalesDashboardReactService
     private async Task<SalesDetailDenominator> QuerySalesDetailDenominatorAsync(
         DateRangeDto range,
         List<string>? branches,
+        SalesDetailLookupContext lookups,
         CancellationToken cancellationToken
     )
     {
@@ -989,8 +1053,8 @@ public partial class SalesDashboardReactService
             }
             return rollupResult;
         }
-        var currentAustralia = await QuerySalesDetailFactsAsync(range.StartDate.Date, range.EndDate.Date, SalesDetailKind.Australia, branches, null, null, null, cancellationToken);
-        var currentChina = await QuerySalesDetailFactsAsync(range.StartDate.Date, range.EndDate.Date, SalesDetailKind.China, branches, null, null, null, cancellationToken);
+        var currentAustralia = await QuerySalesDetailFactsAsync(range.StartDate.Date, range.EndDate.Date, SalesDetailKind.Australia, branches, null, null, null, lookups, cancellationToken);
+        var currentChina = await QuerySalesDetailFactsAsync(range.StartDate.Date, range.EndDate.Date, SalesDetailKind.China, branches, null, null, null, lookups, cancellationToken);
         var result = new SalesDetailDenominator
         {
             // AU 查询已包含直接中国编码归并后的 200 行，China 仅作为拆分分子。
@@ -999,8 +1063,8 @@ public partial class SalesDashboardReactService
         };
         if (HasCompare(range))
         {
-            var compareAustralia = await QuerySalesDetailFactsAsync(range.CompareStartDate!.Value.Date, range.CompareEndDate!.Value.Date, SalesDetailKind.Australia, branches, null, null, null, cancellationToken);
-            var compareChina = await QuerySalesDetailFactsAsync(range.CompareStartDate.Value.Date, range.CompareEndDate.Value.Date, SalesDetailKind.China, branches, null, null, null, cancellationToken);
+            var compareAustralia = await QuerySalesDetailFactsAsync(range.CompareStartDate!.Value.Date, range.CompareEndDate!.Value.Date, SalesDetailKind.Australia, branches, null, null, null, lookups, cancellationToken);
+            var compareChina = await QuerySalesDetailFactsAsync(range.CompareStartDate.Value.Date, range.CompareEndDate.Value.Date, SalesDetailKind.China, branches, null, null, null, lookups, cancellationToken);
             result.CompareAllRevenue = compareAustralia.Sum(row => row.Revenue);
             result.CompareChinaRevenue = compareChina.Sum(row => row.Revenue);
         }
@@ -1036,12 +1100,12 @@ public partial class SalesDashboardReactService
             GrossMarginRate = CalculateGrossMarginRate(bucket.Revenue, currentGrossProfit),
             CompareGrossMarginRate = hasCompare ? CalculateGrossMarginRate(bucket.CompareRevenue, compareGrossProfit) : null,
         };
-        if (section == SalesDetailSection.Products)
-        {
-            row.AverageUnitPrice = bucket.Quantity > 0 ? bucket.Revenue / bucket.Quantity : null;
-            row.CompareAverageUnitPrice = hasCompare && bucket.CompareQuantity > 0 ? bucket.CompareRevenue / bucket.CompareQuantity : null;
-        }
-        else
+        // 三栏都展示商品数量和商品均价，供应商/分店仍保留客单字段供汇总接口兼容。
+        row.AverageUnitPrice = bucket.Quantity > 0 ? bucket.Revenue / bucket.Quantity : null;
+        row.CompareAverageUnitPrice = hasCompare && bucket.CompareQuantity > 0
+            ? bucket.CompareRevenue / bucket.CompareQuantity
+            : null;
+        if (section != SalesDetailSection.Products)
         {
             row.AverageTransaction = bucket.ProductCodes.Count == 1 && bucket.OrderCount > 0
                 ? bucket.Revenue / bucket.OrderCount

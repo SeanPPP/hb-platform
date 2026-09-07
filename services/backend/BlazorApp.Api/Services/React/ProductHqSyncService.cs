@@ -3337,6 +3337,15 @@ namespace BlazorApp.Api.Services.React
 
         private async Task SyncFullWithShadowAsync(ISqlSugarClient db, HqProductSyncResult result)
         {
+            // 影子表会替换整张 Product；先保存 Web 正数成本，避免 HQ 空成本在全量切换时抹掉它。
+            var existingProducts = await db.Queryable<Product>()
+                .Where(row => row.ProductCode != null)
+                .ToListAsync();
+            var existingProductsByCode = existingProducts
+                .Where(row => NormalizeCode(row.ProductCode) != null)
+                .GroupBy(row => NormalizeCode(row.ProductCode)!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+
             var syncRunId = await db.Ado.SqlQuerySingleAsync<long>(
                 """
                 DECLARE @SyncRunId BIGINT;
@@ -3349,7 +3358,16 @@ namespace BlazorApp.Api.Services.React
             );
 
             var hqRows = await QueryActiveHqProductsAsync();
-            var products = hqRows.Select(MapNewProduct).ToList();
+            var products = hqRows
+                .Select(row =>
+                {
+                    var code = NormalizeCode(row.H商品编码);
+                    return MapNewProduct(
+                        row,
+                        code != null ? existingProductsByCode.GetValueOrDefault(code) : null
+                    );
+                })
+                .ToList();
             foreach (var batch in products.Chunk(WriteBatchSize))
             {
                 await db.Fastest<Product>()
@@ -3819,7 +3837,10 @@ namespace BlazorApp.Api.Services.React
                 .ToList();
         }
 
-        private Product MapNewProduct(DIC_商品信息字典表 hqRow)
+        private Product MapNewProduct(
+            DIC_商品信息字典表 hqRow,
+            Product? existing = null
+        )
         {
             var product = _mapper.Map<Product>(hqRow);
             product.UUID = NormalizeCode(hqRow.HGUID) ?? UuidHelper.GenerateUuid7();
@@ -3828,6 +3849,12 @@ namespace BlazorApp.Api.Services.React
             product.IsDeleted = false;
             product.CreatedAt = hqRow.FGC_CreateDate == default ? DateTime.UtcNow : hqRow.FGC_CreateDate;
             product.UpdatedAt = DateTime.UtcNow;
+            product.PurchasePrice = HqPurchasePriceSyncGuard.PreservePositiveForOrdinaryProduct(
+                existing?.PurchasePrice,
+                product.PurchasePrice,
+                existing?.ProductType,
+                product.ProductType
+            );
             return product;
         }
 
@@ -3836,6 +3863,8 @@ namespace BlazorApp.Api.Services.React
             var uuid = local.UUID;
             var createdAt = local.CreatedAt;
             var createdBy = local.CreatedBy;
+            var existingPurchasePrice = local.PurchasePrice;
+            var existingProductType = local.ProductType;
             _mapper.Map(hqRow, local);
             local.UUID = uuid;
             local.ProductCode = NormalizeCode(hqRow.H商品编码);
@@ -3844,6 +3873,12 @@ namespace BlazorApp.Api.Services.React
             local.EnglishName = Truncate(hqRow.H大写名称, 200);
             local.IsDeleted = false;
             local.UpdatedAt = DateTime.UtcNow;
+            local.PurchasePrice = HqPurchasePriceSyncGuard.PreservePositiveForOrdinaryProduct(
+                existingPurchasePrice,
+                local.PurchasePrice,
+                existingProductType,
+                local.ProductType
+            );
         }
 
         private ProductSetCode MapNewProductSetCode(DIC_一品多码表 hqRow)
@@ -4190,11 +4225,16 @@ namespace BlazorApp.Api.Services.React
             StoreRetailPrice local
         )
         {
+            var existingPurchasePrice = local.PurchasePrice;
             local.StoreCode = NormalizeCode(hqRow.H分店代码);
             local.ProductCode = NormalizeCode(hqRow.H商品编码);
             local.StoreProductCode = NormalizeCode(hqRow.H分店商品编码);
             local.SupplierCode = NormalizeCode(hqRow.H供应商编码);
-            local.PurchasePrice = hqRow.H进货价;
+            // 分店主成本供套装/多码重算读取；只保护已有正数，不触碰子项成本字段。
+            local.PurchasePrice = HqPurchasePriceSyncGuard.PreservePositive(
+                existingPurchasePrice,
+                hqRow.H进货价
+            );
             local.StoreRetailPriceValue = hqRow.H分店零售价;
             local.DiscountRate = hqRow.H折扣率;
             local.IsActive = hqRow.H使用状态;

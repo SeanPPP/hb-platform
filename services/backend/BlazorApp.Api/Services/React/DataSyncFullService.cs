@@ -92,18 +92,8 @@ namespace BlazorApp.Api.Services.React
                 );
                 var total = await hqCountDb.Queryable<DIC_商品信息字典表>().CountAsync();
                 var pages = (int)Math.Ceiling(total / (double)hqBatchSize);
-                var initialProducts = await _localContext.Db.Queryable<Product>()
-                    .Where(item => item.ProductCode != null)
-                    .Select(item => new { item.UUID, item.ProductCode })
-                    .ToListAsync();
-                var existingByCode = initialProducts
-                    .Where(item => !string.IsNullOrWhiteSpace(item.ProductCode))
-                    .GroupBy(item => item.ProductCode!, StringComparer.OrdinalIgnoreCase)
-                    .ToDictionary(
-                        group => group.Key,
-                        group => group.First().UUID,
-                        StringComparer.OrdinalIgnoreCase
-                    );
+                List<Product> initialProducts = new();
+                var existingByCode = new Dictionary<string, Product>(StringComparer.OrdinalIgnoreCase);
                 var hqCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var batchAuditCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var batchBeforeSnapshots = new Dictionary<
@@ -115,6 +105,21 @@ namespace BlazorApp.Api.Services.React
 
                 var transaction = await _localContext.Db.Ado.UseTranAsync(async () =>
                 {
+                    // 旧全量入口也会改写 Product；旧成本快照必须在同一总锁内读取并持续到提交。
+                    _ = await SetChildPurchasePriceMutationLock.AcquireAllAsync(
+                        _localContext.Db
+                    );
+                    initialProducts = await _localContext.Db.Queryable<Product>()
+                        .Where(item => item.ProductCode != null)
+                        .ToListAsync();
+                    foreach (var product in initialProducts)
+                    {
+                        if (!string.IsNullOrWhiteSpace(product.ProductCode))
+                        {
+                            existingByCode[product.ProductCode.Trim()] = product;
+                        }
+                    }
+
                     for (var page = 1; page <= pages; page++)
                     {
                         using var hqDb = HqSqlSugarContext.CreateConcurrentConnection(
@@ -161,9 +166,15 @@ namespace BlazorApp.Api.Services.React
                             hqCodes.Add(productCode);
                             item.UpdatedAt = occurredAtUtc;
                             item.UpdatedBy = auditActorName;
-                            if (existingByCode.TryGetValue(productCode, out var existingUuid))
+                            if (existingByCode.TryGetValue(productCode, out var existing))
                             {
-                                item.UUID = existingUuid;
+                                item.PurchasePrice = HqPurchasePriceSyncGuard.PreservePositiveForOrdinaryProduct(
+                                    existing.PurchasePrice,
+                                    item.PurchasePrice,
+                                    existing.ProductType,
+                                    item.ProductType
+                                );
+                                item.UUID = existing.UUID;
                                 toUpdate.Add(item);
                             }
                             else
@@ -171,8 +182,8 @@ namespace BlazorApp.Api.Services.React
                                 item.CreatedAt = occurredAtUtc;
                                 item.CreatedBy = auditActorName;
                                 toInsert.Add(item);
-                                existingByCode[productCode] = item.UUID;
                             }
+                            existingByCode[productCode] = item;
                         }
 
                         using (SqlSugarAuditScope.PreserveExplicitAuditFields())

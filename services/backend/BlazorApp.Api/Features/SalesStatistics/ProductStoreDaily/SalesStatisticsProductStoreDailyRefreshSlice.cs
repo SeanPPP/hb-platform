@@ -16,6 +16,15 @@ namespace BlazorApp.Api.Services
     {
         private readonly SalesStatisticsProductStoreDailySupportSlice _productSupport;
 
+        /// <summary>失败状态写入的 CAS 基线，防止旧刷新覆盖后来发布的状态。</summary>
+        internal sealed record ProductStatisticFailureFence(
+            string Status,
+            string? SourceProductVersion,
+            Guid? JobId,
+            DateTime? LastAggregatedAtUtc,
+            DateTime? CompletedAtUtc,
+            DateTime? LastSourceUploadTime);
+
         public SalesStatisticsProductStoreDailyRefreshSlice(
             SalesStatisticsSliceContext shared,
             SalesStatisticsProductStoreDailySupportSlice productSupport)
@@ -37,11 +46,13 @@ namespace BlazorApp.Api.Services
         string? atomicSuccessStatusOverride = null,
         Posm2025DailySnapshot? preloadedPosmSnapshot = null,
         Guid? expectedJobId = null,
-        Func<Task>? validateExecutionOwnershipBeforeCommitAsync = null
+        Func<Task>? validateExecutionOwnershipBeforeCommitAsync = null,
+        ProductStatisticFailureFence? initialProductStateFence = null
     )
     {
         var targetDate = date.Date;
-        var useCurrentDaySnapshot = targetDate == DateTime.Today && targetDate.Year != 2025
+        initialProductStateFence ??= await CaptureProductStatisticFailureFenceAsync(context, targetDate);
+        var useCurrentDaySnapshot = SalesStatisticsBusinessDate.IsToday(targetDate) && targetDate.Year != 2025
             && atomicStoreStatistics == null && preloadedPosmSnapshot == null
             && validateSourceWatermarkBeforeCommitAsync == null;
         DateTime? currentDaySourceWatermark = null;
@@ -100,7 +111,8 @@ namespace BlazorApp.Api.Services
             {
                 await Persist2025AtomicFailureStatesAsync(
                     context, logger, targetDate, currentDaySourceWatermark, ex,
-                    expectedJobId, validateExecutionOwnershipBeforeCommitAsync);
+                    expectedJobId, validateExecutionOwnershipBeforeCommitAsync,
+                    expectedProductStateFence: initialProductStateFence);
             }
             else if (atomicStoreStatistics == null)
             {
@@ -112,7 +124,8 @@ namespace BlazorApp.Api.Services
                         targetDate,
                         ex,
                         expectedJobId,
-                        validateExecutionOwnershipBeforeCommitAsync);
+                        validateExecutionOwnershipBeforeCommitAsync,
+                        initialProductStateFence);
                 }
                 catch (Exception stateException)
                 {
@@ -151,6 +164,7 @@ namespace BlazorApp.Api.Services
     )
     {
         var targetDate = date.Date;
+        var initialProductStateFence = await CaptureProductStatisticFailureFenceAsync(context, targetDate);
         DateTime? effectiveSourceWatermark = null;
         try
         {
@@ -268,7 +282,8 @@ namespace BlazorApp.Api.Services
                 deferHBSalesStabilityToBatchEnd ? ProvisionalFreshStatus : null,
                 preloadedPosmSnapshot,
                 expectedJobId,
-                validateExecutionOwnershipAsync
+                validateExecutionOwnershipAsync,
+                initialProductStateFence
             );
             logger.LogInformation("2025 Runner product build 完成: {Date}, {ElapsedMilliseconds}ms", targetDate, productBuildStopwatch.ElapsedMilliseconds);
             return persistResult ?? throw new InvalidOperationException(
@@ -283,7 +298,8 @@ namespace BlazorApp.Api.Services
                 effectiveSourceWatermark,
                 ex,
                 expectedJobId,
-                validateExecutionOwnershipAsync
+                validateExecutionOwnershipAsync,
+                expectedProductStateFence: initialProductStateFence
             );
             throw;
         }
@@ -297,9 +313,16 @@ namespace BlazorApp.Api.Services
         Exception originalException,
         Guid? expectedJobId = null,
         Func<Task>? validateExecutionOwnershipAsync = null,
-        ProductStoreDailyBatchFence? expectedBatchFence = null
+        ProductStoreDailyBatchFence? expectedBatchFence = null,
+        ProductStatisticFailureFence? expectedProductStateFence = null
     )
     {
+        if (SalesStatisticsCostWriteLock.IsBusy(originalException))
+        {
+            logger.LogWarning(originalException, "2025 双表统计失败由成本日期锁忙导致，仅记录不覆盖失败状态: {Date}", targetDate);
+            return;
+        }
+        expectedProductStateFence ??= ToProductStatisticFailureFence(expectedBatchFence);
         try
         {
             // 主统计事务已回滚或尚未开始；此处独立事务保证商品、分店及两类供应商 Failed 状态成对提交。
@@ -307,6 +330,15 @@ namespace BlazorApp.Api.Services
                 beginAsync: () => context.Db.Ado.BeginTranAsync(),
                 workAsync: async () =>
                 {
+                    await SalesStatisticsCostWriteLock.AcquireAsync(context.Db, targetDate);
+                    if (!await IsProductStatisticFailureFenceCurrentAsync(
+                            context, targetDate, expectedProductStateFence))
+                    {
+                        logger.LogWarning(
+                            "2025 统计失败状态基线已变化，仅记录不覆盖新状态: {Date}",
+                            targetDate);
+                        return;
+                    }
                     await SalesStatisticsProductStoreDailyStateSlice.FenceProductStatisticExecutionOwnerAsync(
                         context,
                         targetDate,
@@ -376,6 +408,14 @@ namespace BlazorApp.Api.Services
         }
         catch (Exception stateException)
         {
+            if (SalesStatisticsCostWriteLock.IsBusy(stateException))
+            {
+                logger.LogWarning(
+                    stateException,
+                    "2025 双表统计失败状态写入遇到成本日期锁忙，仅记录不覆盖失败状态: {Date}",
+                    targetDate);
+                return;
+            }
             // 状态持久化失败只补充日志；调用方必须仍收到最初的业务或事务异常。
             logger.LogError(
                 stateException,
@@ -386,45 +426,120 @@ namespace BlazorApp.Api.Services
         }
     }
 
-    private static Task PersistProductStatisticFailureAsync(
+    private static async Task PersistProductStatisticFailureAsync(
         SqlSugarContext context,
         ILogger logger,
         DateTime targetDate,
         Exception originalException,
         Guid? expectedJobId,
-        Func<Task>? validateExecutionOwnershipAsync)
+        Func<Task>? validateExecutionOwnershipAsync,
+        ProductStatisticFailureFence? expectedProductStateFence)
     {
-        if (!expectedJobId.HasValue)
+        if (SalesStatisticsCostWriteLock.IsBusy(originalException))
         {
-            return SalesStatisticsProductStoreDailyStateSlice.UpsertProductStatisticStateAsync(
-                context,
-                targetDate,
-                new SalesStatisticsProductStoreDailyStateSlice.ProductStatisticStatusResult(
-                    SalesStatisticRefreshStatus.Failed,
-                    originalException.Message),
-                null);
+            logger.LogWarning(originalException, "商品统计刷新失败由成本日期锁忙导致，仅记录不覆盖失败状态: {Date}", targetDate);
+            return;
         }
 
-        return SalesStatisticsTransactionExecutor.ExecuteAsync(
-            beginAsync: () => context.Db.Ado.BeginTranAsync(),
-            workAsync: async () =>
-            {
-                await SalesStatisticsProductStoreDailyStateSlice.FenceProductStatisticExecutionOwnerAsync(
-                    context, targetDate, expectedJobId);
-                if (validateExecutionOwnershipAsync != null)
-                    await validateExecutionOwnershipAsync();
-                await SalesStatisticsProductStoreDailyStateSlice.UpsertProductStatisticStateAsync(
-                    context,
-                    targetDate,
-                    new SalesStatisticsProductStoreDailyStateSlice.ProductStatisticStatusResult(
-                        SalesStatisticRefreshStatus.Failed,
-                        originalException.Message),
-                    null);
-            },
-            commitAsync: () => context.Db.Ado.CommitTranAsync(),
-            rollbackAsync: () => context.Db.Ado.RollbackTranAsync(),
-            logger: logger,
-            operationName: "商品分店每日统计失败状态写入");
+        try
+        {
+            await SalesStatisticsTransactionExecutor.ExecuteAsync(
+                beginAsync: () => context.Db.Ado.BeginTranAsync(),
+                workAsync: async () =>
+                {
+                    await SalesStatisticsCostWriteLock.AcquireAsync(context.Db, targetDate);
+                    if (!await IsProductStatisticFailureFenceCurrentAsync(
+                            context, targetDate, expectedProductStateFence))
+                    {
+                        logger.LogWarning(
+                            "商品统计失败状态基线已变化，仅记录不覆盖新状态: {Date}",
+                            targetDate);
+                        return;
+                    }
+                    await SalesStatisticsProductStoreDailyStateSlice.FenceProductStatisticExecutionOwnerAsync(
+                        context, targetDate, expectedJobId);
+                    if (validateExecutionOwnershipAsync != null)
+                        await validateExecutionOwnershipAsync();
+                    await SalesStatisticsProductStoreDailyStateSlice.UpsertProductStatisticStateAsync(
+                        context,
+                        targetDate,
+                        new SalesStatisticsProductStoreDailyStateSlice.ProductStatisticStatusResult(
+                            SalesStatisticRefreshStatus.Failed,
+                            originalException.Message),
+                        null);
+                },
+                commitAsync: () => context.Db.Ado.CommitTranAsync(),
+                rollbackAsync: () => context.Db.Ado.RollbackTranAsync(),
+                logger: logger,
+                operationName: "商品分店每日统计失败状态写入");
+        }
+        catch (Exception stateException) when (SalesStatisticsCostWriteLock.IsBusy(stateException))
+        {
+            logger.LogWarning(
+                stateException,
+                "商品统计失败状态写入遇到成本日期锁忙，仅记录不覆盖失败状态: {Date}",
+                targetDate);
+        }
+    }
+
+    private static async Task<ProductStatisticFailureFence?> CaptureProductStatisticFailureFenceAsync(
+        SqlSugarContext context,
+        DateTime targetDate)
+    {
+        var normalizedDate = targetDate.Date;
+        var state = await context.Db.Queryable<SalesStatisticRefreshState>()
+            .Where(item => item.StatisticType == SalesStatisticType.ProductStoreDaily
+                && item.Date >= normalizedDate
+                && item.Date < normalizedDate.AddDays(1))
+            .FirstAsync();
+        return state == null
+            ? null
+            : new ProductStatisticFailureFence(
+                state.Status,
+                state.SourceProductVersion,
+                state.JobId,
+                state.LastAggregatedAtUtc,
+                state.CompletedAtUtc,
+                state.LastSourceUploadTime);
+    }
+
+    private static async Task<bool> IsProductStatisticFailureFenceCurrentAsync(
+        SqlSugarContext context,
+        DateTime targetDate,
+        ProductStatisticFailureFence? expected)
+    {
+        var normalizedDate = targetDate.Date;
+        var state = await context.Db.Queryable<SalesStatisticRefreshState>()
+            .Where(item => item.StatisticType == SalesStatisticType.ProductStoreDaily
+                && item.Date >= normalizedDate
+                && item.Date < normalizedDate.AddDays(1))
+            .With(SqlWith.UpdLock)
+            .FirstAsync();
+        if (expected == null)
+            return state == null;
+        return state != null
+            && state.Status == expected.Status
+            && state.SourceProductVersion == expected.SourceProductVersion
+            && state.JobId == expected.JobId
+            && state.LastAggregatedAtUtc == expected.LastAggregatedAtUtc
+            && state.CompletedAtUtc == expected.CompletedAtUtc
+            && state.LastSourceUploadTime == expected.LastSourceUploadTime;
+    }
+
+    private static ProductStatisticFailureFence? ToProductStatisticFailureFence(
+        ProductStoreDailyBatchFence? expectedBatchFence)
+    {
+        var productFence = expectedBatchFence?.States
+            .SingleOrDefault(item => item.StatisticType == SalesStatisticType.ProductStoreDaily);
+        return productFence == null
+            ? null
+            : new ProductStatisticFailureFence(
+                ProvisionalFreshStatus,
+                productFence.SourceProductVersion,
+                productFence.JobId,
+                productFence.LastAggregatedAtUtc,
+                productFence.CompletedAtUtc,
+                productFence.LastSourceUploadTime);
     }
 
     internal static string ResolveBranchCode(

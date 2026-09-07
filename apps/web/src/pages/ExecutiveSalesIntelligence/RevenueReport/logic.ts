@@ -38,6 +38,15 @@ function normalizeCode(value: string | null | undefined): string {
   return value?.trim().toLocaleLowerCase('en-AU') ?? ''
 }
 
+/** 排名必须基于本期营业额的完整结果集，接口顺序只用于同额时保持稳定。 */
+export function sortRevenueBranchesByRevenue(branches: RevenueBranch[]): RevenueBranch[] {
+  return [...branches]
+    .sort((left, right) => right.revenue - left.revenue
+      || left.rank - right.rank
+      || left.branchCode.localeCompare(right.branchCode))
+    .map((branch, index) => ({ ...branch, rank: index + 1 }))
+}
+
 export function getRevenueTrend(current: number | null | undefined, previous: number | null | undefined): RevenueTrend {
   if (current == null || previous == null || !Number.isFinite(current) || !Number.isFinite(previous)) {
     return { text: '—', tone: 'neutral' }

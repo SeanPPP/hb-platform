@@ -82,21 +82,11 @@ namespace BlazorApp.Api.Authorization
             {
                 using var scope = _serviceScopeFactory.CreateScope();
                 var roleService = scope.ServiceProvider.GetRequiredService<IRoleService>();
-
-                if (await UserHasAnyRoleAsync(roleService, userId, Permissions.SuperAdminRoleNames))
+                // 权限别名和管理员角色在 RoleService 的同一条 EXISTS 查询中解析，避免每个别名和每个管理员角色各发一次 SQL。
+                var result = await roleService.UserHasPermissionAsync(userId, requirement.Permission);
+                if (result.Data)
                 {
                     context.Succeed(requirement);
-                    return;
-                }
-
-                foreach (var permission in Permissions.GetEquivalentPermissionCodes(requirement.Permission))
-                {
-                    var result = await roleService.UserHasPermissionAsync(userId, permission);
-                    if (result.Data)
-                    {
-                        context.Succeed(requirement);
-                        return;
-                    }
                 }
             }
             catch (Exception ex)
@@ -108,24 +98,6 @@ namespace BlazorApp.Api.Authorization
                     requirement.Permission
                 );
             }
-        }
-
-        private static async Task<bool> UserHasAnyRoleAsync(
-            IRoleService roleService,
-            string userId,
-            params string[] roleNames
-        )
-        {
-            foreach (var roleName in roleNames)
-            {
-                var roleResult = await roleService.UserHasRoleAsync(userId, roleName);
-                if (roleResult.Data)
-                {
-                    return true;
-                }
-            }
-
-            return false;
         }
 
         private static bool IsServiceApiToken(ClaimsPrincipal user)

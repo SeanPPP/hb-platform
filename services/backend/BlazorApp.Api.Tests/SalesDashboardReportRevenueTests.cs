@@ -5295,7 +5295,7 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
     }
 
     [Fact]
-    public async Task SalesDetailColumns_澳洲口径归并直接中国编码且份额分母不重复()
+    public async Task SalesDetailColumns_澳洲口径归并直接中国编码且商品分页按数量降序()
     {
         var date = new DateTime(2026, 7, 1);
         await SeedStoreAsync("S1", "分店一");
@@ -5308,7 +5308,7 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         await SeedSupplierMappingAsync("P-CN-LEGACY", "200", "CN-ONE");
         await SeedProductStoreDailySalesAsync(date, "S1", "AUS-ONE", "P-AU", "澳洲商品", 60m, 6, 3);
         await SeedProductStoreDailySalesAsync(date, "S1", "200", "P-CN-LEGACY", "国内旧编码", 20m, 2, 1);
-        await SeedProductStoreDailySalesAsync(date, "S1", "CN-ONE", "P-CN-DIRECT", "国内直接编码", 20m, 2, 1);
+        await SeedProductStoreDailySalesAsync(date, "S1", "CN-ONE", "P-CN-DIRECT", "国内直接编码", 20m, 20, 1);
         var range = new DateRangeDto { StartDate = date, EndDate = date };
         var service = CreateService();
 
@@ -5318,6 +5318,8 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         );
         var domesticAustraliaRow = Assert.Single(australia.Rows, row => row.Code == "200");
         Assert.Equal(40m, domesticAustraliaRow.Revenue);
+        Assert.Equal(22, domesticAustraliaRow.Quantity);
+        Assert.Equal(40m / 22m, domesticAustraliaRow.AverageUnitPrice);
         Assert.Equal(0.4m, domesticAustraliaRow.Share);
         Assert.Equal(100m, australia.Summary!.Revenue);
 
@@ -5328,8 +5330,18 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         var domesticChinaRow = Assert.Single(china.Rows, row => row.Code == "CN-ONE");
         Assert.Equal(40m, domesticChinaRow.Revenue);
         Assert.Equal("中国供应商", domesticChinaRow.Name);
+        Assert.Equal(22, domesticChinaRow.Quantity);
+        Assert.Equal(40m / 22m, domesticChinaRow.AverageUnitPrice);
         Assert.Equal(1m, domesticChinaRow.Share);
         Assert.Equal(0.4m, domesticChinaRow.ChinaShare);
+
+        var branches = await service.GetSalesDetailColumnsAsync(
+            range, SalesDetailKind.Australia, SalesDetailSection.Branches,
+            branchCodes: new List<string> { "S1" }, selectedBranchCode: "S1"
+        );
+        var branch = Assert.Single(branches.Rows);
+        Assert.Equal(28, branch.Quantity);
+        Assert.Equal(100m / 28m, branch.AverageUnitPrice);
 
         var products = await service.GetSalesDetailColumnsAsync(
             range, SalesDetailKind.Australia, SalesDetailSection.Products,
@@ -5342,8 +5354,9 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
             branchCodes: new List<string> { "S1" }, selectedBranchCode: "S1", pageIndex: 1, pageSize: 1
         );
         var topProduct = Assert.Single(topProductPage.Rows);
-        Assert.Equal("P-AU", topProduct.Code);
-        Assert.Equal(60m, topProduct.Revenue);
+        Assert.Equal("P-CN-DIRECT", topProduct.Code);
+        Assert.Equal(20, topProduct.Quantity);
+        Assert.Equal(20m, topProduct.Revenue);
         Assert.Equal(3, topProductPage.Total);
     }
 
