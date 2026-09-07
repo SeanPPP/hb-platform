@@ -33,4 +33,17 @@ public sealed class ServiceRegistrationTimeoutTests
         Assert.Equal(LinklyTimeoutConstants.HttpTimeout, factory.CreateClient(nameof(ILinklyBackendTerminalClient)).Timeout);
         Assert.Equal(LinklyTimeoutConstants.HttpTimeout, factory.CreateClient(nameof(ICardTerminalClient)).Timeout);
     }
+
+    [Fact]
+    public void AddHbposClientServices_reuses_one_linkly_backend_client_for_terminal_selection_and_payment()
+    {
+        var services = new ServiceCollection();
+        services.AddHbposClientServices(new AppStartupOptions([], PreviewMode: true, InitialScreen: null, InitialCulture: null));
+
+        using var provider = services.BuildServiceProvider();
+
+        Assert.Same(
+            provider.GetRequiredService<ILinklyBackendTerminalClient>(),
+            provider.GetRequiredService<ILinklyBackendTerminalClient>());
+    }
 }

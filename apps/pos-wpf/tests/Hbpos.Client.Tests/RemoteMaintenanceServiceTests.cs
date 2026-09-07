@@ -258,6 +258,49 @@ public sealed class RemoteMaintenanceServiceTests
         }
     }
 
+    [Theory]
+    [InlineData(503, "REMOTE_MAINTENANCE_DISABLED", "serverDisabled")]
+    [InlineData(503, "REMOTE_MAINTENANCE_NOT_READY", "serverNotReady")]
+    [InlineData(400, "REMOTE_MAINTENANCE_GATEWAY_INVALID", "serverConfigurationInvalid")]
+    [InlineData(401, "REMOTE_MAINTENANCE_INTERNAL_AUTH_REQUIRED", "serverAuthorizationFailed")]
+    [InlineData(503, "REMOTE_MAINTENANCE_GATEWAY_UNAVAILABLE", "serverUnavailable")]
+    [InlineData(404, null, "endpointUnavailable")]
+    [InlineData(405, null, "endpointUnavailable")]
+    [InlineData(401, "DEVICE_AUTH_INVALID", "authorizationExpired")]
+    [InlineData(403, null, "authorizationExpired")]
+    [InlineData(503, "unknown-private-error", "preparationFailed")]
+    public async Task Preparation_failure_identifies_the_action_without_exposing_server_details(
+        int statusCode, string? code, string expectedResult)
+    {
+        using var fixture = new Fixture();
+        fixture.Api.PrepareFailure = new RemoteMaintenanceApiException("private server details", statusCode, code);
+
+        var result = await fixture.Service.InstallAsync(fixture.Session);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal("settings.remoteMaintenance.result." + expectedResult, result.Message);
+        Assert.Equal(0, fixture.Downloader.VerifiedCount);
+        Assert.Empty(fixture.Launcher.Stages);
+        Assert.Empty(fixture.Api.CommittedOperations);
+    }
+
+    [Theory]
+    [InlineData(false, "connectionFailed")]
+    [InlineData(true, "preparationTimedOut")]
+    public async Task Preparation_transport_failure_provides_a_retry_action(bool timedOut, string expectedResult)
+    {
+        using var fixture = new Fixture();
+        fixture.Api.PrepareFailure = timedOut
+            ? new TaskCanceledException("private timeout details")
+            : new HttpRequestException("private connection details");
+
+        var result = await fixture.Service.InstallAsync(fixture.Session);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal("settings.remoteMaintenance.result." + expectedResult, result.Message);
+        Assert.Empty(fixture.Launcher.Stages);
+    }
+
     private sealed class RecordingProgress(List<RemoteMaintenanceStage> stages) : IProgress<RemoteMaintenanceStage>
     {
         public void Report(RemoteMaintenanceStage value) => stages.Add(value);
@@ -332,6 +375,7 @@ public sealed class RemoteMaintenanceServiceTests
 
         public sealed class FakeApi : IRemoteMaintenanceApiClient
         {
+            public Exception? PrepareFailure { get; set; }
             public Exception? CommitFailure { get; set; }
             public List<Guid> PreparedOperations { get; } = [];
             public List<Guid> CommittedOperations { get; } = [];
@@ -340,6 +384,7 @@ public sealed class RemoteMaintenanceServiceTests
             public Task<RemoteMaintenancePrepareResponse> PrepareAsync(RemoteMaintenancePrepareRequest request, CancellationToken cancellationToken = default)
             {
                 PreparedOperations.Add(request.OperationId);
+                if (PrepareFailure is not null) throw PrepareFailure;
                 return Task.FromResult(new RemoteMaintenancePrepareResponse(request.OperationId, Guid.NewGuid(), Manifest.Config, Manifest.Artifacts));
             }
             public Task<Stream> DownloadArtifactAsync(string downloadUrl, CancellationToken cancellationToken = default) => throw new NotSupportedException();

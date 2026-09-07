@@ -3,6 +3,7 @@ using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.ViewModels;
 using Hbpos.Contracts.Catalog;
+using Hbpos.Contracts.Cashiers;
 using Hbpos.Contracts.Orders;
 
 namespace Hbpos.Client.Tests;
@@ -32,6 +33,31 @@ public sealed class CardPaymentHandoffQualificationTests
         var candidate = CardPaymentHandoffQualification.SelectCandidate([matching], request);
 
         Assert.Equal(new CardPaymentHandoffCandidate(matching.Processor, matching.AttemptGuid), candidate);
+    }
+
+    [Fact]
+    public void SelectCandidate_accepts_json_round_tripped_equivalent_cashier_session()
+    {
+        var cashierSession = new CashierSessionDto(
+            "C001",
+            "USER-001",
+            "Cashier",
+            "S001",
+            "D001",
+            ["Manager", "User"],
+            ["Permissions.PosTerminal.Payment.TakeCard"],
+            ["S001"],
+            IsSuperAdmin: false,
+            IsOfflineCached: false,
+            IsEmergencyOverride: false,
+            AuthorizationToken: "authorization-token",
+            AuthorizationExpiresAtUtc: DateTimeOffset.Parse("2026-08-22T09:01:00+10:00"));
+        var request = CreateRequest(session: Session with { CashierSession = cashierSession });
+        var matching = CreateQueueItem(AttemptGuid, SerializeDraft(request));
+
+        var candidate = CardPaymentHandoffQualification.SelectCandidate([matching], request);
+
+        Assert.Equal(new CardPaymentHandoffCandidate(CardProcessorKind.Linkly, AttemptGuid), candidate);
     }
 
     [Theory]
@@ -108,7 +134,8 @@ public sealed class CardPaymentHandoffQualificationTests
         bool includeIdentity = true,
         CardProcessorKind processor = CardProcessorKind.Linkly,
         Guid? attemptGuid = null,
-        Guid? orderGuid = null)
+        Guid? orderGuid = null,
+        PosSessionState? session = null)
     {
         var snapshot = new PosCartSnapshot(
         [
@@ -128,7 +155,7 @@ public sealed class CardPaymentHandoffQualificationTests
                 "Store price")
         ]);
         return new CardPaymentHandoffRequest(
-            Session,
+            session ?? Session,
             snapshot,
             [],
             10m,

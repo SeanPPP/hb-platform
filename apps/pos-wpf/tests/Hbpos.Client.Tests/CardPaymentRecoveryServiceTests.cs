@@ -321,6 +321,187 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.NotNull(attempts.AcknowledgedAt);
     }
 
+    [Fact]
+    public async Task RecoverLatestAsync_cloud_approved_dto_uses_top_level_reference_and_preserves_card_details()
+    {
+        var attempt = CreateAttempt(sessionId: "SESSION-CARD-DTO", txnRef: "TXN-CARD-DTO");
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            Status = CreateStatus(
+                "Completed",
+                sessionId: "SESSION-CARD-DTO",
+                txnRef: "TXN-CARD-DTO",
+                responseCode: null,
+                responseText: null,
+                transactionSuccess: true) with
+            {
+                // 实时白名单 DTO 的金额以分为单位；TxnRef 缺失时必须沿用顶层交易引用。
+                CardTransaction = CreateCloudCardTransaction(amountCents: 1000, txnRef: null)
+            }
+        };
+        var service = CreateService(attempts, orders, backend);
+
+        var result = await service.RecoverLatestAsync(new PosCartService(), Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.OrderCompleted, result.Outcome);
+        Assert.Equal(1, orders.SaveCount);
+        Assert.Equal(1, backend.AcknowledgeCallCount);
+        Assert.Equal(LocalCardPaymentAttemptStatus.OrderCompleted, attempts.Status);
+        Assert.Equal("00", attempts.ResponseCode);
+        Assert.Equal("APPROVED", attempts.ResponseText);
+        var payment = Assert.Single(Assert.IsType<LocalOrder>(result.Order).Payments);
+        var transaction = Assert.Single(payment.CardTransactions!);
+        Assert.Equal("TXN-CARD-DTO", transaction.TxnRef);
+        Assert.Equal("AUTH-CARD-DTO", transaction.AuthCode);
+        Assert.Equal("VISA", transaction.CardType);
+        Assert.Equal("00", transaction.ResponseCode);
+        Assert.Equal("APPROVED", transaction.ResponseText);
+        Assert.Equal(10m, transaction.Amount);
+    }
+
+    [Theory]
+    [InlineData(999L, null)]
+    [InlineData(null, null)]
+    [InlineData(1000L, "BAD-CARD-DTO-REF")]
+    public async Task RecoverLatestAsync_cloud_approved_incomplete_or_conflicting_dto_stays_unknown_without_save_or_ack(
+        long? amountCents,
+        string? transactionTxnRef)
+    {
+        var attempt = CreateAttempt(sessionId: "SESSION-CARD-DTO-BAD", txnRef: "TXN-CARD-DTO-BAD");
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            Status = CreateStatus(
+                "Completed",
+                sessionId: "SESSION-CARD-DTO-BAD",
+                txnRef: "TXN-CARD-DTO-BAD",
+                responseCode: "00",
+                responseText: "APPROVED",
+                transactionSuccess: true) with
+            {
+                CardTransaction = CreateCloudCardTransaction(amountCents, transactionTxnRef)
+            }
+        };
+        var service = CreateService(attempts, orders, backend);
+
+        var result = await service.RecoverLatestAsync(new PosCartService(), Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.Outcome);
+        Assert.Equal(0, orders.SaveCount);
+        Assert.Equal(0, backend.AcknowledgeCallCount);
+    }
+
+    [Theory]
+    [InlineData("", null, null)]
+    [InlineData("", 999L, null)]
+    [InlineData("{invalid", null, null)]
+    [InlineData("{invalid", 1000L, "BAD-CARD-DTO-REF")]
+    public async Task RecoverLatestAsync_cloud_unverifiable_dto_without_draft_does_not_persist_approval(
+        string draftJson,
+        long? amountCents,
+        string? transactionTxnRef)
+    {
+        var attempt = CreateAttempt(sessionId: "SESSION-CARD-DTO-NO-DRAFT", txnRef: "TXN-CARD-DTO-NO-DRAFT") with
+        {
+            OrderDraftJson = draftJson
+        };
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            Status = CreateStatus(
+                "Completed",
+                attempt.SessionId!,
+                attempt.TxnRef,
+                responseCode: "00",
+                responseText: "APPROVED",
+                transactionSuccess: true) with
+            {
+                CardTransaction = CreateCloudCardTransaction(amountCents, transactionTxnRef)
+            }
+        };
+        var service = CreateService(attempts, orders, backend);
+
+        var result = await service.RecoverLatestAsync(new PosCartService(), Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.Outcome);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Recovering, attempts.Status);
+        Assert.Equal(0, orders.SaveCount);
+        Assert.Equal(0, backend.AcknowledgeCallCount);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("{invalid")]
+    public async Task RecoverLatestAsync_cloud_verified_dto_without_draft_preserves_approval_for_review(string draftJson)
+    {
+        var attempt = CreateAttempt(sessionId: "SESSION-CARD-DTO-REVIEW", txnRef: "TXN-CARD-DTO-REVIEW") with
+        {
+            OrderDraftJson = draftJson
+        };
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            Status = CreateStatus(
+                "Completed",
+                attempt.SessionId!,
+                attempt.TxnRef,
+                responseCode: null,
+                responseText: null,
+                transactionSuccess: true) with
+            {
+                CardTransaction = CreateCloudCardTransaction(amountCents: 1000, txnRef: null)
+            }
+        };
+        var service = CreateService(attempts, orders, backend);
+
+        var result = await service.RecoverLatestAsync(new PosCartService(), Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.Outcome);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Approved, attempts.Status);
+        Assert.Equal("00", attempts.ResponseCode);
+        Assert.Equal("APPROVED", attempts.ResponseText);
+        Assert.Equal(0, orders.SaveCount);
+        Assert.Equal(0, backend.AcknowledgeCallCount);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_cloud_approved_dto_draft_card_amount_mismatch_stays_unknown_without_save_or_ack()
+    {
+        var draft = CreateDraft(actualAmount: 9m, cardAmount: 9m);
+        var attempt = CreateAttempt(
+            sessionId: "SESSION-CARD-DTO-DRAFT",
+            txnRef: "TXN-CARD-DTO-DRAFT",
+            amount: 10m,
+            draft: draft);
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            Status = CreateStatus(
+                "Completed",
+                sessionId: "SESSION-CARD-DTO-DRAFT",
+                txnRef: "TXN-CARD-DTO-DRAFT",
+                responseCode: "00",
+                responseText: "APPROVED",
+                transactionSuccess: true) with
+            {
+                CardTransaction = CreateCloudCardTransaction(amountCents: 1000, txnRef: null)
+            }
+        };
+        var service = CreateService(attempts, orders, backend);
+
+        var result = await service.RecoverLatestAsync(new PosCartService(), Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.Outcome);
+        Assert.Equal(0, orders.SaveCount);
+        Assert.Equal(0, backend.AcknowledgeCallCount);
+    }
+
     [Theory]
     [InlineData("Cancelled", "17", "CANCELLED")]
     [InlineData("Completed", "05", "DECLINED")]
@@ -7565,6 +7746,24 @@ public sealed class CardPaymentRecoveryServiceTests
             DateTimeOffset.UtcNow,
             amount,
             "MERCHANT COPY");
+    }
+
+    private static LinklyCloudBackendCardTransactionDto CreateCloudCardTransaction(
+        long? amountCents,
+        string? txnRef)
+    {
+        return new LinklyCloudBackendCardTransactionDto(
+            txnRef,
+            null,
+            "AUTH-CARD-DTO",
+            "VISA",
+            "****1111",
+            "MERCHANT-CARD-DTO",
+            "00",
+            "APPROVED",
+            "42",
+            DateTimeOffset.Parse("2026-06-05T10:01:00+10:00"),
+            amountCents);
     }
 
     private static LocalSquarePaymentAttempt CreateSquareAttempt(
