@@ -113,11 +113,15 @@ internal sealed class ProductWarehouseBatchCreationSlice
                 .Where(c => !string.IsNullOrWhiteSpace(c))
                 .Distinct()
                 .ToList();
-            // 编码完整时只锁本批商品；只有需要生成或按货号解析编码时才以全局锁兜底。
+            // 编码完整时只占用本批商品身份：Update 总闸与无关普通成本 Shared 锁兼容，
+            // 但会让同一商品的并发新建和主档身份变更互斥；缺少编码仍需全局锁兜底。
             var setChildPurchasePriceLock = items.All(item =>
                 !string.IsNullOrWhiteSpace(item.ProductCode)
             )
-                ? await SetChildPurchasePriceMutationLock.AcquireProductsAsync(_context.Db, codes)
+                ? await SetChildPurchasePriceMutationLock.AcquireProductIdentitiesWithinBudgetAsync(
+                    _context.Db,
+                    codes
+                )
                 : await SetChildPurchasePriceMutationLock.AcquireAllAsync(_context.Db);
             var itemNumbers = items
                 .Select(i => i.ItemNumber)

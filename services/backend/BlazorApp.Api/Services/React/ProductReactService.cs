@@ -1082,8 +1082,14 @@ namespace BlazorApp.Api.Services.React
                 var auditBatchGuid = Guid.NewGuid();
                 var auditOccurredAtUtc = DateTime.UtcNow;
 
-                await _db.Ado.UseTranAsync(async () =>
+                var createTransaction = await _db.Ado.UseTranAsync(async () =>
                 {
+                    // 商品主档新建会占用商品编码这一身份；Update 总闸与普通成本 Shared 兼容，
+                    // 但会阻止同一商品被另一身份变更并发写入。
+                    await SetChildPurchasePriceMutationLock.AcquireProductIdentitiesWithinBudgetAsync(
+                        _db,
+                        new[] { product.ProductCode }
+                    );
                     var beforeSnapshots = await CaptureProductSnapshotsAsync(
                         new[] { product.ProductCode ?? string.Empty }
                     );
@@ -1144,6 +1150,11 @@ namespace BlazorApp.Api.Services.React
                         auditOccurredAtUtc
                     );
                 });
+                if (!createTransaction.IsSuccess)
+                {
+                    throw createTransaction.ErrorException
+                        ?? new InvalidOperationException("创建商品事务失败");
+                }
 
                 var resultDto = await GetByIdAsync(product.ProductCode);
                 return resultDto;
@@ -1188,7 +1199,8 @@ namespace BlazorApp.Api.Services.React
                 {
                     var codeChangeTransaction = await _db.Ado.UseTranAsync(async () =>
                     {
-                        var lockScope = await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                        // 改码同时占用旧、新商品编码，避免两个身份变更交叉写入。
+                        var lockScope = await SetChildPurchasePriceMutationLock.AcquireProductIdentitiesWithinBudgetAsync(
                             _db,
                             new[] { productCode, newProductCode! }
                         );
@@ -1243,7 +1255,8 @@ namespace BlazorApp.Api.Services.React
 
                 var updateTransaction = await _db.Ado.UseTranAsync(async () =>
                 {
-                    var lockScope = await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                    // 商品主档编辑可修改供应商、货号和条码，因此也作为身份变更互斥。
+                    var lockScope = await SetChildPurchasePriceMutationLock.AcquireProductIdentitiesWithinBudgetAsync(
                         _db,
                         new[] { productCode }
                     );
@@ -1600,7 +1613,9 @@ namespace BlazorApp.Api.Services.React
                     SetChildPurchasePriceLockScope? lockScope = null;
                     if (productCodes.Count > 0)
                     {
-                        lockScope = await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                        // 批量主档更新允许修改本地供应商，必须与同商品身份变更互斥；
+                        // Update 总闸仍允许无关商品的普通成本 Shared 锁并行。
+                        lockScope = await SetChildPurchasePriceMutationLock.AcquireProductIdentitiesWithinBudgetAsync(
                             _db,
                             productCodes
                         );

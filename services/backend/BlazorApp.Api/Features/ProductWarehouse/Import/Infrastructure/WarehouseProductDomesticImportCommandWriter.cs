@@ -50,9 +50,13 @@ internal sealed class WarehouseProductDomesticImportCommandWriter : ProductWareh
             _context.Db.Ado.BeginTran();
             var now = DateTime.Now;
             var codes = executionPlan.ProductCodes;
-            // 国内导入会同时写主成本、套装关系和门店价格，必须先取产品锁再读取最新状态。
+            // 国内导入还可能补建 Product 主档，需以身份锁避免相同商品的新建/主档变更交叉写入；
+            // Update 总闸不会阻塞无关商品的普通成本 Shared 锁。
             var setChildPurchasePriceLock =
-                await SetChildPurchasePriceMutationLock.AcquireProductsAsync(_context.Db, codes);
+                await SetChildPurchasePriceMutationLock.AcquireProductIdentitiesWithinBudgetAsync(
+                    _context.Db,
+                    codes
+                );
             var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(codes);
 
             // ===== 批量预加载数据（避免 N+1 问题）=====

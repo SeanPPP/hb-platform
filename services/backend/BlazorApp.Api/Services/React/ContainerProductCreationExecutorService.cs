@@ -19,6 +19,8 @@ namespace BlazorApp.Api.Services.React
         private readonly IProductWarehouseReactService _productWarehouseService;
         private readonly ILogger<ContainerProductCreationExecutorService> _logger;
         private readonly IWarehouseProductChangeHistoryService _changeHistoryService;
+        private const int ProductCreationLockAttemptCount = 6;
+        private static readonly TimeSpan ProductCreationLockRetryBudget = TimeSpan.FromSeconds(60);
 
         public ContainerProductCreationExecutorService(
             SqlSugarContext context,
@@ -57,6 +59,64 @@ namespace BlazorApp.Api.Services.React
             string? actorUserGuid,
             string? updatedBy,
             CancellationToken cancellationToken = default
+        )
+        {
+            // 整柜提交由一个外层事务保证创建、价格和完成状态原子性，不能在中途重试。
+            if (request.SubmitContainer)
+            {
+                return await ExecuteOnceAsync(request, actorUserGuid, updatedBy, cancellationToken);
+            }
+
+            var retryStopwatch = System.Diagnostics.Stopwatch.StartNew();
+            for (var attempt = 1; attempt <= ProductCreationLockAttemptCount; attempt++)
+            {
+                try
+                {
+                    // 每次尝试都从入口重读货柜行并重建候选，禁止复用等锁前的身份快照。
+                    return await ExecuteOnceAsync(request, actorUserGuid, updatedBy, cancellationToken);
+                }
+                catch (RetryableProductCreationLockConflictException conflict)
+                {
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        return AddProductCreationErrors(
+                            conflict.Result,
+                            conflict.Candidates,
+                            "PRODUCT_CREATION_CANCELLED",
+                            "商品创建已取消，未重试"
+                        );
+                    }
+
+                    if (
+                        attempt == ProductCreationLockAttemptCount
+                        || retryStopwatch.Elapsed >= ProductCreationLockRetryBudget
+                    )
+                    {
+                        return AddProductCreationErrors(
+                            conflict.Result,
+                            conflict.Candidates,
+                            SetChildPurchasePriceMutationLock.BusyErrorCode,
+                            "商品创建繁忙，等待其他商品操作超时，本次未创建新商品"
+                        );
+                    }
+
+                    _logger.LogInformation(
+                        conflict,
+                        "货柜创建新商品遇到商品锁冲突，已确认回滚后重试: {OperationId}, {Attempt}",
+                        request.OperationId,
+                        attempt
+                    );
+                }
+            }
+
+            throw new InvalidOperationException("商品创建重试流程未返回结果");
+        }
+
+        private async Task<ContainerProductCreationResultDto> ExecuteOnceAsync(
+            ContainerProductCreationJobRequestDto request,
+            string? actorUserGuid,
+            string? updatedBy,
+            CancellationToken cancellationToken
         )
         {
             var result = new ContainerProductCreationResultDto();
@@ -129,7 +189,9 @@ namespace BlazorApp.Api.Services.React
                 // 已持有货柜锁，再按稳定商品编码取锁并读取、写入主成本、关系和门店投影。
                 submitSetChildPurchasePriceLock = productCodes.Count == 0
                     ? await SetChildPurchasePriceMutationLock.AcquireAllAsync(_context.Db)
-                    : await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                    // 批量建档内部同样获取身份锁；外层不得持 Shared 再升级为 Update，
+                    // 否则会与已经等待同一商品身份锁的事务形成反向等待。
+                    : await SetChildPurchasePriceMutationLock.AcquireProductIdentitiesWithinBudgetAsync(
                         _context.Db,
                         productCodes
                     );
@@ -289,11 +351,21 @@ namespace BlazorApp.Api.Services.React
 
             if (createItems.Count > 0)
             {
+                var normalCreationTransactionStarted = false;
+                var normalCreationCommitAttempted = false;
                 try
                 {
+                    if (!isSubmitContainer)
+                    {
+                        // 普通 job 由本执行器持有整批事务，锁失败时才能明确回滚后安全重试。
+                        await _context.Db.Ado.BeginTranAsync();
+                        normalCreationTransactionStarted = true;
+                    }
+
                     var batchResult = await _productWarehouseService.BatchCreateAsync(
                         createItems,
-                        useTransaction: !isSubmitContainer,
+                        // 普通 job 已在本方法开始事务；整柜提交沿用既有外层事务。
+                        useTransaction: false,
                         // 保留整柜事务边界，同时将 job 捕获的真实操作人写入审计字段。
                         updatedBy: effectiveUpdatedBy,
                         auditSource: "ContainerSubmit",
@@ -303,6 +375,16 @@ namespace BlazorApp.Api.Services.React
                     );
                     if (!batchResult.Success)
                     {
+                        if (
+                            !isSubmitContainer
+                            && !await TryRollbackNormalProductCreationTransactionAsync(
+                                request.OperationId
+                            )
+                        )
+                        {
+                            return AddProductCreationUnknownStateError(result, createItems, sourceRows);
+                        }
+                        normalCreationTransactionStarted = false;
                         foreach (var error in batchResult.Errors)
                         {
                             AddError(result, null, null, null, "WAREHOUSE_BATCH_FAILED", error);
@@ -312,6 +394,15 @@ namespace BlazorApp.Api.Services.React
                             await FinalizeSubmitResultAsync(containerGuid, isSubmitContainer, result),
                             submitTransactionStarted
                         );
+                    }
+
+                    if (!isSubmitContainer)
+                    {
+                        // Commit 一旦开始便不能断言结果未写入，后续异常绝不进入自动重试。
+                        normalCreationCommitAttempted = true;
+                        await _context.Db.Ado.CommitTranAsync();
+                        normalCreationTransactionStarted = false;
+                        normalCreationCommitAttempted = false;
                     }
 
                     var skippedItemNumbers = batchResult.SkippedItems
@@ -353,11 +444,68 @@ namespace BlazorApp.Api.Services.React
                     }
                 }
                 catch (Exception ex)
-                    when (
-                        !ContainerMutationLock.TryResolveConflict(ex, out _)
-                        && !SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _)
-                    )
                 {
+                    if (!isSubmitContainer && normalCreationCommitAttempted)
+                    {
+                        _logger.LogError(
+                            ex,
+                            "货柜创建新商品提交状态未知，禁止自动重试: {OperationId}",
+                            request.OperationId
+                        );
+                        return AddProductCreationUnknownStateError(result, createItems, sourceRows);
+                    }
+
+                    if (
+                        !isSubmitContainer
+                        && normalCreationTransactionStarted
+                        && !await TryRollbackNormalProductCreationTransactionAsync(request.OperationId)
+                    )
+                    {
+                        return AddProductCreationUnknownStateError(result, createItems, sourceRows);
+                    }
+
+                    if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out var lockConflict))
+                    {
+                        if (
+                            !isSubmitContainer
+                            && (lockConflict?.ResultCode == -2 || ContainsCancellation(ex))
+                        )
+                        {
+                            return AddProductCreationErrors(
+                                result,
+                                BuildProductCreationCandidates(createItems, sourceRows),
+                                "PRODUCT_CREATION_CANCELLED",
+                                "商品创建已取消，未重试"
+                            );
+                        }
+
+                        if (!isSubmitContainer && IsRetryableProductCreationLockConflict(lockConflict))
+                        {
+                            throw new RetryableProductCreationLockConflictException(
+                                ex,
+                                result,
+                                BuildProductCreationCandidates(createItems, sourceRows)
+                            );
+                        }
+
+                        if (!isSubmitContainer)
+                        {
+                            return AddProductCreationErrors(
+                                result,
+                                BuildProductCreationCandidates(createItems, sourceRows),
+                                "WAREHOUSE_BATCH_EXCEPTION",
+                                ex.Message
+                            );
+                        }
+
+                        throw;
+                    }
+
+                    if (ContainerMutationLock.TryResolveConflict(ex, out _))
+                    {
+                        throw;
+                    }
+
                     _logger.LogError(ex, "货柜创建新商品批量写入失败: {OperationId}", request.OperationId);
                     AddError(result, null, null, null, "WAREHOUSE_BATCH_EXCEPTION", ex.Message);
                 }
@@ -2046,6 +2194,91 @@ namespace BlazorApp.Api.Services.React
             });
         }
 
+        private async Task<bool> TryRollbackNormalProductCreationTransactionAsync(
+            string? operationId
+        )
+        {
+            try
+            {
+                await _context.Db.Ado.RollbackTranAsync();
+                return true;
+            }
+            catch (Exception rollbackException)
+            {
+                _logger.LogError(
+                    rollbackException,
+                    "货柜创建新商品回滚失败，无法确认是否写入，禁止自动重试: {OperationId}",
+                    operationId
+                );
+                return false;
+            }
+        }
+
+        private static bool ContainsCancellation(Exception exception)
+        {
+            for (var current = exception; current != null; current = current.InnerException)
+            {
+                if (current is OperationCanceledException)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool IsRetryableProductCreationLockConflict(
+            SetChildPurchasePriceLockException? conflict
+        ) => conflict?.ResultCode is -1 or -3;
+
+        private static List<ProductCreationCandidate> BuildProductCreationCandidates(
+            IEnumerable<CreateItemDto> createItems,
+            IReadOnlyDictionary<string, ContainerProductCreationSourceRow> sourceRows
+        ) => createItems
+            .Select(item =>
+            {
+                sourceRows.TryGetValue(item.ProductCode ?? string.Empty, out var sourceRow);
+                return new ProductCreationCandidate(
+                    item.ProductCode,
+                    item.ItemNumber,
+                    sourceRow?.DetailHguid
+                );
+            })
+            .ToList();
+
+        private static ContainerProductCreationResultDto AddProductCreationUnknownStateError(
+            ContainerProductCreationResultDto result,
+            IEnumerable<CreateItemDto> createItems,
+            IReadOnlyDictionary<string, ContainerProductCreationSourceRow> sourceRows
+        ) => AddProductCreationErrors(
+            result,
+            BuildProductCreationCandidates(createItems, sourceRows),
+            "PRODUCT_CREATION_STATE_UNKNOWN",
+            "商品创建提交或回滚状态未知，请查询后重试"
+        );
+
+        private static ContainerProductCreationResultDto AddProductCreationErrors(
+            ContainerProductCreationResultDto result,
+            IEnumerable<ProductCreationCandidate> candidates,
+            string reasonCode,
+            string message
+        )
+        {
+            foreach (var candidate in candidates)
+            {
+                AddError(
+                    result,
+                    candidate.ProductCode,
+                    candidate.ItemNumber,
+                    candidate.DetailHguid,
+                    reasonCode,
+                    message
+                );
+            }
+
+            return FinalizeResult(result);
+        }
+
         private enum ContainerProductCreationProductType
         {
             Normal,
@@ -2071,6 +2304,29 @@ namespace BlazorApp.Api.Services.React
             public string? ImageUrl { get; set; }
             public int? DomesticProductType { get; set; }
             public string? WarehouseCategoryGUID { get; set; }
+        }
+
+        private sealed record ProductCreationCandidate(
+            string? ProductCode,
+            string? ItemNumber,
+            string? DetailHguid
+        );
+
+        private sealed class RetryableProductCreationLockConflictException : Exception
+        {
+            internal RetryableProductCreationLockConflictException(
+                Exception innerException,
+                ContainerProductCreationResultDto result,
+                List<ProductCreationCandidate> candidates
+            )
+                : base("货柜创建新商品等待商品锁超时", innerException)
+            {
+                Result = result;
+                Candidates = candidates;
+            }
+
+            internal ContainerProductCreationResultDto Result { get; }
+            internal List<ProductCreationCandidate> Candidates { get; }
         }
 
         private sealed class ContainerProductUpdateSource
