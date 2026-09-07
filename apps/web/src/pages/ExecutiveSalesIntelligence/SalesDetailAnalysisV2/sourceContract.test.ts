@@ -18,7 +18,7 @@ assert.ok(page.includes("!active || !location.pathname.endsWith('/sales-detail-v
 assert.ok(!page.includes('getBranchSalesAggregate'), '旧分店聚合口径不可继续使用')
 assert.ok(!page.includes('storeCount'), '分店数不可冒充客单数')
 assert.ok(page.includes("const sales: MetricKey[] = ['revenue', 'quantity', 'averageUnitPrice']"), '供应商、分店和商品统一展示营业额、商品数量与商品均价')
-assert.ok(page.includes("return [...sales, ...shares, ...profit]"), '份额等其他字段必须固定排在毛利字段前')
+assert.ok(page.includes("return [...sales, ...shares, 'growth', ...profit]"), '份额和增长率必须排在毛利字段前，毛利额和毛利率固定在最后两列')
 assert.ok(!page.includes('setMetricView'), '固定列顺序后不得保留会移动毛利列的视图切换')
 assert.ok(page.includes("text('商品数量', 'Product quantity')"), '供应商和分店必须明确标注商品数量')
 assert.ok(page.includes("text('商品均价', 'Average product price')"), '供应商和分店必须明确标注商品均价')

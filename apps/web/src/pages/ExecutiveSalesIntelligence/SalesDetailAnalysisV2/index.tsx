@@ -125,11 +125,12 @@ export default function SalesDetailAnalysisV2() {
     averageUnitPrice: text('均价', 'Unit price'), share: text('营业额占比', 'Revenue share'), chinaShare: text('中国货占比', 'China share') }
   const previous: Record<MetricKey, keyof SalesDetailRow> = { revenue: 'compareRevenue', grossProfit: 'compareGrossProfit', grossMarginRate: 'compareGrossMarginRate',
     orderCount: 'compareOrderCount', averageTransaction: 'compareAverageTransaction', quantity: 'compareQuantity', averageUnitPrice: 'compareAverageUnitPrice', share: 'compareShare', chinaShare: 'compareChinaShare' }
-  const metrics = (panel: PanelKey): MetricKey[] => {
+  const metrics = (panel: PanelKey): (MetricKey | 'growth')[] => {
     const sales: MetricKey[] = ['revenue', 'quantity', 'averageUnitPrice']
     const profit: MetricKey[] = ['grossProfit', 'grossMarginRate']
     const shares: MetricKey[] = panel === 'suppliers' ? ['share', ...(kind === 'china' ? ['chinaShare' as const] : [])] : []
-    return [...sales, ...shares, ...profit]
+    // 表头与数据共用列顺序，毛利额和毛利率固定放在增长率之后。
+    return [...sales, ...shares, 'growth', ...profit]
   }
   const metricLabel = (panel: PanelKey, field: MetricKey) => panel !== 'products' && field === 'quantity'
     ? text('商品数量', 'Product quantity')
@@ -167,15 +168,17 @@ export default function SalesDetailAnalysisV2() {
   const table = (panel: PanelKey, rows: SalesDetailRow[]) => {
     const dimension = panel === 'suppliers' ? 'supplier' : panel === 'branches' ? 'branch' : 'product'
     return <table className={styles.table}><thead><tr><th>{panel === 'products' ? text('货号 / 商品名称', 'Item / Product') : panel === 'suppliers' ? text('供应商 / 编码', 'Supplier / Code') : text('分店名称', 'Store')}</th>
-      {metrics(panel).map(field => <th key={field} aria-sort={panel !== 'products' && sorts[panel].key === field ? sorts[panel].ascending ? 'ascending' : 'descending' : undefined}>
+      {metrics(panel).map(field => field === 'growth' ? <th key={field}>{text('增长率', 'Growth')}</th> : <th key={field} aria-sort={panel !== 'products' && sorts[panel].key === field ? sorts[panel].ascending ? 'ascending' : 'descending' : undefined}>
         <Tooltip title={field === 'share' ? text(kind === 'china' ? '分母：所选分店的国内供应商全量营业额，不受商品选择影响' : '分母：所选分店的全部营业额，不受商品选择影响', 'Denominator: all revenue in the selected store scope; not narrowed by product selection') : field === 'chinaShare' ? text('分母：所选分店的全部营业额', 'Denominator: all revenue in the selected store scope') : undefined}>
           {panel === 'products' ? <span>{metricLabel(panel, field)}</span> : <button onClick={() => setSorts(value => ({ ...value, [panel]: { key: field, ascending: value[panel].key === field ? !value[panel].ascending : false } }))}>{metricLabel(panel, field)} ↕</button>}
-        </Tooltip></th>)}<th>{text('增长率', 'Growth')}</th></tr></thead>
+        </Tooltip></th>)}</tr></thead>
       <tbody>{rows.map((row, index) => <tr key={row.code} className={selection[dimension] === row.code ? styles.selected : ''}>
         <td><button data-code={row.code} aria-pressed={selection[dimension] === row.code} className={styles.nameButton} onClick={() => pick(dimension, row)} title={`${row.name} · ${row.code}`}>
           {panel === 'products' ? row.productImage ? <img src={row.productImage} alt="" loading="lazy" onError={event => { event.currentTarget.style.visibility = 'hidden' }} /> : <span className={styles.imagePlaceholder}>▦</span> : <span className={styles.rank}>{String(index + 1).padStart(2, '0')}</span>}
           <span className={styles.nameText}>{panel === 'products' && <small>{row.itemNumber || row.code}</small>}<strong>{row.name || row.code}</strong>{panel === 'suppliers' && <small>{row.code}</small>}</span>
-        </button></td>{metrics(panel).map(field => <td key={field} data-metric={field}>{metric(row, field)}</td>)}<td><GrowthCell current={row.revenue} previous={row.compareRevenue} compare={dates.compare} /></td>
+        </button></td>{metrics(panel).map(field => <td key={field} data-metric={field}>{field === 'growth'
+          ? <GrowthCell current={row.revenue} previous={row.compareRevenue} compare={dates.compare} />
+          : metric(row, field)}</td>)}
       </tr>)}</tbody></table>
   }
   const resizer = (divider: number) => <div role="separator" tabIndex={0} aria-orientation="vertical" aria-label={text('调整报表列宽', 'Resize report columns')}
