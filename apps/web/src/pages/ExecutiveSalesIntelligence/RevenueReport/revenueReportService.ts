@@ -14,10 +14,23 @@ interface RevenueEnvelope<T> {
   cacheVersion?: string | null
 }
 
-function unwrapRevenueSnapshot<T>(payload: RevenueEnvelope<T[]> | T[]): ReportSnapshot<T[]> {
-  if (Array.isArray(payload)) return { data: payload, statisticStatus: 'Fresh' }
+export interface RevenueReportSnapshot {
+  branches: RevenueBranch[]
+  hourly: RevenueHourly[]
+  weekly: RevenueWeeklyNode[]
+  currentPeriodPending?: boolean
+  comparePeriodPending?: boolean
+  hourlyCurrentPending?: boolean
+  hourlyComparePending?: boolean
+  weeklyComparePending?: boolean
+}
+
+function unwrapRevenueSnapshot(payload: RevenueEnvelope<RevenueReportSnapshot>): ReportSnapshot<RevenueReportSnapshot> {
   if (payload.success === false) throw new Error(payload.message || '营业额数据加载失败')
-  const data = Array.isArray(payload.data) ? payload.data : []
+  const data = payload.data
+  if (!data || !Array.isArray(data.branches) || !Array.isArray(data.hourly) || !Array.isArray(data.weekly)) {
+    throw new Error('营业额快照响应不完整')
+  }
   return {
     data,
     statisticStatus: payload.statisticStatus || (payload.statisticsPending ? 'Pending' : 'Fresh'),
@@ -27,52 +40,17 @@ function unwrapRevenueSnapshot<T>(payload: RevenueEnvelope<T[]> | T[]): ReportSn
   }
 }
 
-function queryOptions(period: ReportPeriod, branchCodes: string[] | null, signal: AbortSignal) {
-  return {
-    signal,
-    params: {
-      ...period,
-      branchCodes: branchCodes ?? undefined,
-    },
-  }
-}
-
-export async function fetchRevenueBranches(
+/** 排名、时段与周层级一次读取，保证整页来自同一统计快照。 */
+export async function fetchRevenueReportSnapshot(
   period: ReportPeriod,
   branchCodes: string[] | null,
+  focusBranchCodes: string[] | null,
   signal: AbortSignal,
-): Promise<ReportSnapshot<RevenueBranch[]>> {
-  const options = queryOptions(period, branchCodes, signal)
-  const payload = await request.get<RevenueEnvelope<RevenueBranch[]> | RevenueBranch[]>(
-    '/api/react/v1/dashboard/executive-branch-performance',
-    {
-      ...options,
-      params: { ...options.params, topN: 100 },
-    },
-  )
-  return unwrapRevenueSnapshot(payload)
-}
-
-export async function fetchRevenueHourly(
-  period: ReportPeriod,
-  branchCodes: string[] | null,
-  signal: AbortSignal,
-): Promise<ReportSnapshot<RevenueHourly[]>> {
-  const payload = await request.get<RevenueEnvelope<RevenueHourly[]> | RevenueHourly[]>(
-    '/api/react/v1/dashboard/executive-hourly-traffic',
-    queryOptions(period, branchCodes, signal),
-  )
-  return unwrapRevenueSnapshot(payload)
-}
-
-export async function fetchRevenueWeekly(
-  period: ReportPeriod,
-  branchCodes: string[] | null,
-  signal: AbortSignal,
-): Promise<ReportSnapshot<RevenueWeeklyNode[]>> {
-  const payload = await request.get<RevenueEnvelope<RevenueWeeklyNode[]> | RevenueWeeklyNode[]>(
-    '/api/react/v1/dashboard/weekly-performance-hierarchy',
-    queryOptions(period, branchCodes, signal),
+): Promise<ReportSnapshot<RevenueReportSnapshot>> {
+  const payload = await request.get<RevenueEnvelope<RevenueReportSnapshot>>(
+    '/api/react/v1/dashboard/revenue-report-snapshot',
+    { signal, params: { ...period, branchCodes: branchCodes ?? undefined,
+      focusBranchCodes: focusBranchCodes ?? undefined, topN: 100 } },
   )
   return unwrapRevenueSnapshot(payload)
 }

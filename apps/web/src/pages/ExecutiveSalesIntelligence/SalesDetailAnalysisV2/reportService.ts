@@ -29,6 +29,12 @@ export interface SalesDetailRow {
   compareChinaShare: number | null
 }
 export interface SalesDetailPage { rows: SalesDetailRow[]; total: number; summary?: SalesDetailRow }
+export interface SalesDetailReport {
+  summary?: SalesDetailPage
+  suppliers?: SalesDetailPage
+  branches?: SalesDetailPage
+  products?: SalesDetailPage
+}
 export interface SalesDetailQuery extends ReportPeriod {
   kind: SupplierKind
   branchCodes?: string[]
@@ -75,17 +81,38 @@ export function sectionQuery(section: ReportSection, query: SalesDetailQuery) {
   return params
 }
 
-export async function fetchSalesDetailSection(section: ReportSection, query: SalesDetailQuery, signal: AbortSignal): Promise<ReportSnapshot<SalesDetailPage>> {
-  const raw = record(await request<unknown>('/api/react/v1/dashboard/sales-detail-columns', {
-    signal, params: sectionQuery(section, query),
-  }))
-  if (field(raw, 'success') === false) throw new Error(String(field(raw, 'message') || '报表加载失败'))
-  const data = record(field(raw, 'data'))
+function normalizeSalesDetailPage(value: unknown): SalesDetailPage | undefined {
+  if (value == null) return undefined
+  const data = record(value)
   const rows = field(data, 'rows')
   const summary = field(data, 'summary')
-  return { data: { rows: Array.isArray(rows) ? rows.map(normalizeSalesDetailRow) : [],
-    total: nullable(field(data, 'total')) ?? 0, summary: summary ? normalizeSalesDetailRow(summary) : undefined },
-    statisticStatus: String(field(raw, 'statisticStatus') ?? 'Pending'),
+  return { rows: Array.isArray(rows) ? rows.map(normalizeSalesDetailRow) : [],
+    total: nullable(field(data, 'total')) ?? 0, summary: summary ? normalizeSalesDetailRow(summary) : undefined }
+}
+
+/** 完整页面一次读取同一快照；商品翻页时仅请求 products，避免重算其他三栏。 */
+export async function fetchSalesDetailReport(query: SalesDetailQuery, signal: AbortSignal,
+  sections?: ReportSection[]): Promise<ReportSnapshot<SalesDetailReport>> {
+  const params: Record<string, unknown> = { ...query }
+  if (sections?.length) params.sections = sections
+  const raw = record(await request<unknown>('/api/react/v1/dashboard/sales-detail-report', {
+    signal, params,
+  }))
+  if (field(raw, 'success') === false) throw new Error(String(field(raw, 'message') || '报表加载失败'))
+  const statisticStatus = String(field(raw, 'statisticStatus') ?? 'Pending')
+  const data = record(field(raw, 'data'))
+  const requested = sections?.length ? sections : ['summary', 'suppliers', 'branches', 'products'] satisfies ReportSection[]
+  const report: SalesDetailReport = {}
+  if (statisticStatus.toLowerCase() === 'fresh') {
+    for (const section of requested) {
+      const page = normalizeSalesDetailPage(field(data, section))
+      if (page) report[section] = page
+      else if (field(raw, 'cacheVersion') === 'no-access') report[section] = { rows: [], total: 0 }
+      else throw new Error(`报表响应缺少 ${section} 数据`)
+    }
+  }
+  return { data: report,
+    statisticStatus,
     statisticMessage: field(raw, 'statisticMessage') as string | undefined,
     statisticUpdatedAt: field(raw, 'statisticUpdatedAt') as string | undefined,
     cacheVersion: field(raw, 'cacheVersion') as string | undefined }

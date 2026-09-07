@@ -78,6 +78,12 @@ internal sealed class DataSyncStorePricesStore : DataSyncSliceBase
 
                 try
                 {
+                    // 旧全量入口会删除并重建 StoreRetailPrice；先在成本业务锁内保存 Web 正数成本，
+                    // 确保 HQ 的 0/null 不会覆盖现有普通商品主成本，也与成本回填互斥。
+                    _ = await SetChildPurchasePriceMutationLock.AcquireAllAsync(db);
+                    var existingPurchasePrices = await StoreRetailPriceHqSyncService
+                        .CaptureExistingPurchasePricesAsync(db, selectedStoreCodes);
+
                     // 根据是否指定分店来决定删除策略
                     if (selectedStoreCodes?.Any() == true)
                     {
@@ -105,6 +111,10 @@ internal sealed class DataSyncStorePricesStore : DataSyncSliceBase
                     // 转换数据 - 使用AutoMapper
                     Logger.LogInformation("🔄 开始转换数据格式 (使用AutoMapper)...");
                     var localRetailPrices = Mapper.Map<List<StoreRetailPrice>>(hqRetailPrices);
+                    StoreRetailPriceHqSyncService.ApplyExistingPurchasePriceGuard(
+                        localRetailPrices,
+                        existingPurchasePrices
+                    );
                     Logger.LogInformation(
                         $"✅ 数据转换完成，共 {localRetailPrices.Count:N0} 条记录"
                     );

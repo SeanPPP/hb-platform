@@ -256,7 +256,7 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
     [Fact]
     public async Task UpdateCurrentHourStatistics_重试应通过完成商品快照各派生一次供应商汇总()
     {
-        var date = DateTime.Now.Date;
+        var date = SalesStatisticsBusinessDate.Today();
         var australianDeleteCount = 0;
         var chinaDeleteCount = 0;
         var storeDeleteCount = 0;
@@ -317,7 +317,7 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
     [Fact]
     public async Task UpdateProductStoreDailyStatistics_当天使用一致快照且新上传不取消已完成统计()
     {
-        var date = DateTime.Today;
+        var date = SalesStatisticsBusinessDate.Today();
         await SeedSaleAsync("TODAY-SNAPSHOT", "TODAY-SNAPSHOT-DETAIL", "P-TODAY", "1004",
             date.AddHours(9), 2, 250m, "112");
         await SeedStoreSalesStatisticAsync(date, "1004", 1m, 1);
@@ -363,7 +363,7 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
     [Fact]
     public async Task UpdateProductStoreDailyStatistics_当天派生写入失败回滚营业额和商品()
     {
-        var date = DateTime.Today;
+        var date = SalesStatisticsBusinessDate.Today();
         await SeedSaleAsync("TODAY-ROLLBACK", "TODAY-ROLLBACK-DETAIL", "P-TODAY-ROLLBACK", "1004",
             date.AddHours(9), 2, 250m, "112");
         await SeedStoreSalesStatisticAsync(date, "1004", 1m, 1);
@@ -1819,7 +1819,8 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
         var driftInserted = 0;
         _localDb.Aop.OnLogExecuting = (sql, _) =>
         {
-            if (!sql.Contains("Product", StringComparison.OrdinalIgnoreCase)
+            if ((!sql.Contains("FROM `Product`", StringComparison.OrdinalIgnoreCase)
+                    && !sql.Contains("FROM \"Product\"", StringComparison.OrdinalIgnoreCase))
                 || Interlocked.Exchange(ref driftInserted, 1) != 0)
             {
                 return;
@@ -1863,6 +1864,7 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
             _localDb.Aop.OnLogExecuting = null;
         }
 
+        Assert.Equal(1, driftInserted);
         var oldStore = await _localDb.Queryable<StoreSalesStatistic>()
             .Where(row => row.Date == targetDate && row.BranchCode == "1004")
             .FirstAsync();

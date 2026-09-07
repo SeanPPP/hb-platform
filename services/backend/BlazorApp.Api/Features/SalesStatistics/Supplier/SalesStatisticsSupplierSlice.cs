@@ -25,7 +25,7 @@ namespace BlazorApp.Api.Services
     {
         try
         {
-            var targetStartDate = startDate ?? DateTime.Now.Date;
+            var targetStartDate = startDate ?? SalesStatisticsBusinessDate.Today();
             var targetEndDate = endDate ?? targetStartDate;
             var targetEndExclusive = targetEndDate.AddDays(1);
 

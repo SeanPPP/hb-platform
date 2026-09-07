@@ -409,6 +409,12 @@ namespace BlazorApp.Shared.DTOs
         /// 同期毛利率；任一参与统计行缺少成本时为 null
         /// </summary>
         public decimal? CompareGrossMarginRate { get; set; }
+
+        /// <summary>当前期成本状态：Complete、Missing 或 NoActivity。</summary>
+        public string CostStatus { get; set; } = "NoActivity";
+
+        /// <summary>同期成本状态：Complete、Missing 或 NoActivity。</summary>
+        public string CompareCostStatus { get; set; } = "NoActivity";
     }
 
     /// <summary>
@@ -501,6 +507,12 @@ namespace BlazorApp.Shared.DTOs
         /// 同期毛利率；任一参与统计行缺少成本时为 null
         /// </summary>
         public decimal? CompareGrossMarginRate { get; set; }
+
+        /// <summary>当前期成本状态：Complete、Missing 或 NoActivity。</summary>
+        public string CostStatus { get; set; } = "NoActivity";
+
+        /// <summary>同期成本状态：Complete、Missing 或 NoActivity。</summary>
+        public string CompareCostStatus { get; set; } = "NoActivity";
     }
 
     /// <summary>
@@ -598,6 +610,12 @@ namespace BlazorApp.Shared.DTOs
         /// 同期毛利率；任一参与统计行缺少成本时为 null
         /// </summary>
         public decimal? CompareGrossMarginRate { get; set; }
+
+        /// <summary>当前期成本状态：Complete、Missing 或 NoActivity。</summary>
+        public string CostStatus { get; set; } = "NoActivity";
+
+        /// <summary>同期成本状态：Complete、Missing 或 NoActivity。</summary>
+        public string CompareCostStatus { get; set; } = "NoActivity";
     }
 
     /// <summary>
@@ -655,6 +673,12 @@ namespace BlazorApp.Shared.DTOs
         /// 销售额增长率
         /// </summary>
         public decimal? TotalAmountGrowth { get; set; }
+
+        /// <summary>当前期成本状态：Complete、Missing 或 NoActivity。</summary>
+        public string CostStatus { get; set; } = "NoActivity";
+
+        /// <summary>同期成本状态：Complete、Missing 或 NoActivity。</summary>
+        public string CompareCostStatus { get; set; } = "NoActivity";
     }
 
     /// <summary>
@@ -828,6 +852,12 @@ namespace BlazorApp.Shared.DTOs
         /// 同期毛利率；任一参与统计行缺少成本时为 null
         /// </summary>
         public decimal? GrossMarginRateLY { get; set; }
+
+        /// <summary>当前期成本状态：Complete、Missing 或 NoActivity。</summary>
+        public string CostStatus { get; set; } = "NoActivity";
+
+        /// <summary>同期成本状态：Complete、Missing 或 NoActivity。</summary>
+        public string CompareCostStatus { get; set; } = "NoActivity";
     }
 
     /// <summary>
@@ -899,6 +929,12 @@ namespace BlazorApp.Shared.DTOs
         /// 对比期毛利率；任一参与统计行缺少成本时为 null
         /// </summary>
         public decimal? CompareGrossMarginRate { get; set; }
+
+        /// <summary>当前期成本状态：Complete、Missing 或 NoActivity。</summary>
+        public string CostStatus { get; set; } = "NoActivity";
+
+        /// <summary>同期成本状态：Complete、Missing 或 NoActivity。</summary>
+        public string CompareCostStatus { get; set; } = "NoActivity";
     }
 
     /// <summary>
@@ -995,6 +1031,12 @@ namespace BlazorApp.Shared.DTOs
         /// 同期毛利率；任一参与统计行缺少成本时为 null
         /// </summary>
         public decimal? CompareGrossMarginRate { get; set; }
+
+        /// <summary>当前期成本状态：Complete、Missing 或 NoActivity。</summary>
+        public string CostStatus { get; set; } = "NoActivity";
+
+        /// <summary>同期成本状态：Complete、Missing 或 NoActivity。</summary>
+        public string CompareCostStatus { get; set; } = "NoActivity";
     }
 
     /// <summary>

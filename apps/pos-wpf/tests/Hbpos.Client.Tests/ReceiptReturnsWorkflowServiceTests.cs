@@ -91,10 +91,12 @@ public sealed class ReceiptReturnsWorkflowServiceTests
         var releaseLookup = new TaskCompletionSource<OrderReturnContextDto?>(TaskCreationOptions.RunContinuationsAsynchronously);
         var remote = new FakeRemoteOrderHistoryService
         {
-            ReturnContextAsync = async (_, cancellationToken) =>
+            ReturnContextAsync = (_, _) =>
             {
                 lookupStarted.TrySetResult();
-                return await releaseLookup.Task.WaitAsync(cancellationToken);
+                // 本测试用闸门单独验证 UI 优先级的持有范围，避免与 2 秒业务 deadline 竞争。
+                // 超时取消由 CancelsSlowRemoteAtDedicatedDeadline 测试独立覆盖。
+                return releaseLookup.Task;
             }
         };
         var uiPriority = new UiPriorityCoordinator(
@@ -103,18 +105,17 @@ public sealed class ReceiptReturnsWorkflowServiceTests
         var service = CreateService(remote, uiPriorityCoordinator: uiPriority);
 
         var lookupTask = service.LookupOrderAsync(CreateOnlineSession(), orderGuid.ToString("D"));
-        await lookupStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await lookupStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
         Assert.True(uiPriority.IsUiActive);
         var waitForIdleTask = uiPriority.WaitForUiIdleAsync();
-        await Task.Delay(20);
         Assert.False(waitForIdleTask.IsCompleted);
 
         releaseLookup.SetResult(new OrderReturnContextDto(
             CreateRemoteOrder(orderGuid, lineGuid, quantity: 1m, actualAmount: 10m),
             []));
-        var result = await lookupTask.WaitAsync(TimeSpan.FromSeconds(1));
-        await waitForIdleTask.WaitAsync(TimeSpan.FromSeconds(1));
+        var result = await lookupTask.WaitAsync(TimeSpan.FromSeconds(30));
+        await waitForIdleTask.WaitAsync(TimeSpan.FromSeconds(30));
 
         Assert.NotNull(result.Order);
         Assert.False(uiPriority.IsUiActive);

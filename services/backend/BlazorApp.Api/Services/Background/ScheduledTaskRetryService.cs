@@ -238,7 +238,7 @@ namespace BlazorApp.Api.Services.Background
 
                     case TaskType.FullRefreshPreviousMonth:
                         {
-                            var previousMonth = DateTime.Now.AddMonths(-1).ToString("yyyy-MM");
+                            var previousMonth = SalesStatisticsBusinessDate.Today().AddMonths(-1).ToString("yyyy-MM");
                             await _statisticsJobService.BatchFullRefreshByMonths(
                                 parameters.StartYearMonth ?? previousMonth,
                                 parameters.EndYearMonth ?? previousMonth,

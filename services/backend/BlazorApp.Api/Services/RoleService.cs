@@ -1807,69 +1807,58 @@ namespace BlazorApp.Api.Services
             try
             {
                 var db = _context.Db;
+                var superAdminRoleNames = Permissions.SuperAdminRoleNames.ToArray();
+                // 直接权限沿用原来的 OrdinalIgnoreCase 语义；ToLower 让 SQLite 也不依赖默认排序规则。
+                var equivalentPermissionCodes = Permissions
+                    .GetEquivalentPermissionCodes(permission)
+                    .Distinct(StringComparer.Ordinal)
+                    .ToArray();
+                var equivalentPermissionCodesLower = equivalentPermissionCodes
+                    .Select(code => code.ToLowerInvariant())
+                    .Distinct(StringComparer.Ordinal)
+                    .ToArray();
 
-                var superAdminRoleNames = Permissions.SuperAdminRoleNames.ToList();
-                var hasSuperAdminRole = await db.Queryable<UserRole>()
-                    .InnerJoin<User>((ur, u) => ur.UserGUID == u.UserGUID)
-                    .InnerJoin<Role>((ur, u, r) => ur.RoleGUID == r.RoleGUID)
-                    .Where(
-                        (ur, u, r) =>
-                            ur.UserGUID == userGuid
-                            && !ur.IsDeleted
-                            && u.IsActive
-                            && !u.IsDeleted
-                            && r.IsActive
-                            && !r.IsDeleted
-                            && superAdminRoleNames.Contains(r.RoleName)
+                // 所有分支都挂在同一个活动用户锚点下，并由一个 EXISTS 查询完成，避免管理员、直接权限、角色权限分别往返数据库。
+                var hasPermission = await db.Queryable<User>()
+                    .Where(user =>
+                        user.UserGUID == userGuid
+                        && user.IsActive
+                        && !user.IsDeleted
                     )
-                    .AnyAsync();
-
-                if (hasSuperAdminRole)
-                {
-                    return ApiResponse<bool>.OK(true, "Admin 默认拥有所有权限");
-                }
-
-                var equivalentPermissionCodes = Permissions.GetEquivalentPermissionCodes(permission)
-                    .ToList();
-                if (!equivalentPermissionCodes.Any())
-                {
-                    return ApiResponse<bool>.OK(false, "用户没有该权限");
-                }
-
-                var directPermissionCodes = await db.Queryable<SysUserPermission>()
-                    .InnerJoin<User>((up, u) => up.UserGuid == u.UserGUID)
-                    .Where(
-                        (up, u) =>
-                            up.UserGuid == userGuid
-                            && !up.IsDeleted
-                            && u.IsActive
-                            && !u.IsDeleted
-                    )
-                    .Select((up, u) => up.PermissionCode)
-                    .ToListAsync();
-
-                if (Permissions.ExpandPermissionCodes(directPermissionCodes)
-                    .Any(code => equivalentPermissionCodes.Contains(code, StringComparer.OrdinalIgnoreCase)))
-                {
-                    return ApiResponse<bool>.OK(true, "用户拥有该权限");
-                }
-
-                // 链路: User -> UserRole -> Role -> SysRolePermission
-                // 只要有一个角色拥有该权限即可
-                var hasPermission = await db.Queryable<UserRole>()
-                    .InnerJoin<User>((ur, u) => ur.UserGUID == u.UserGUID)
-                    .InnerJoin<Role>((ur, u, r) => ur.RoleGUID == r.RoleGUID)
-                    .InnerJoin<SysRolePermission>((ur, u, r, rp) => ur.RoleGUID == rp.RoleGuid)
-                    .Where(
-                        (ur, u, r, rp) =>
-                            ur.UserGUID == userGuid
-                            && !ur.IsDeleted
-                            && u.IsActive
-                            && !u.IsDeleted
-                            && r.IsActive
-                            && !r.IsDeleted
-                            && !rp.IsDeleted
-                            && equivalentPermissionCodes.Contains(rp.PermissionCode)
+                    .Where(user =>
+                        SqlFunc.Subqueryable<UserRole>()
+                            .InnerJoin<Role>((ur, role) => ur.RoleGUID == role.RoleGUID)
+                            .Where(
+                                (ur, role) =>
+                                    ur.UserGUID == user.UserGUID
+                                    && !ur.IsDeleted
+                                    && role.IsActive
+                                    && !role.IsDeleted
+                                    && superAdminRoleNames.Contains(role.RoleName)
+                            )
+                            .Any()
+                        || SqlFunc.Subqueryable<SysUserPermission>()
+                            .Where(up =>
+                                up.UserGuid == user.UserGUID
+                                && !up.IsDeleted
+                                && equivalentPermissionCodesLower.Contains(up.PermissionCode.ToLower())
+                            )
+                            .Any()
+                        || SqlFunc.Subqueryable<UserRole>()
+                            .InnerJoin<Role>((ur, role) => ur.RoleGUID == role.RoleGUID)
+                            .InnerJoin<SysRolePermission>(
+                                (ur, role, rolePermission) => ur.RoleGUID == rolePermission.RoleGuid
+                            )
+                            .Where(
+                                (ur, role, rolePermission) =>
+                                    ur.UserGUID == user.UserGUID
+                                    && !ur.IsDeleted
+                                    && role.IsActive
+                                    && !role.IsDeleted
+                                    && !rolePermission.IsDeleted
+                                    && equivalentPermissionCodes.Contains(rolePermission.PermissionCode)
+                            )
+                            .Any()
                     )
                     .AnyAsync();
 

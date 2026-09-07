@@ -222,6 +222,137 @@ public sealed class RoleServicePermissionTests : IDisposable
     }
 
     [Fact]
+    public async Task UserHasPermissionAsync_DirectPermissionComparisonIsCaseInsensitive()
+    {
+        await SeedUserWithRoleAsync("user-1", "role-user", "User");
+        await InsertUserPermissionAsync("user-1", "rEpOrTs.vIeW");
+
+        var result = await CreateService().UserHasPermissionAsync("user-1", Permissions.Reports.View);
+
+        Assert.True(result.Data);
+    }
+
+    [Theory]
+    [InlineData("Admin")]
+    [InlineData("管理员")]
+    [InlineData("SuperAdmin")]
+    [InlineData("超级管理员")]
+    public async Task UserHasPermissionAsync_AllSuperAdminAliasesImplicitlyGrantAnyPermission(
+        string roleName
+    )
+    {
+        await SeedUserWithRoleAsync("user-1", "role-admin", roleName);
+
+        var result = await CreateService().UserHasPermissionAsync("user-1", "Unseeded.Permission");
+
+        Assert.True(result.Data);
+    }
+
+    [Fact]
+    public async Task UserHasPermissionAsync_WarehouseManagerDoesNotImplicitlyGrantPermission()
+    {
+        await SeedUserWithRoleAsync("user-1", "role-warehouse", "WarehouseManager");
+
+        var result = await CreateService().UserHasPermissionAsync("user-1", "Unseeded.Permission");
+
+        Assert.False(result.Data);
+    }
+
+    [Fact]
+    public async Task UserHasPermissionAsync_UsesOneSqlExistenceQueryForAllGrantSources()
+    {
+        await SeedUserWithRoleAsync("user-1", "role-user", "User");
+        await InsertUserPermissionAsync("user-1", Permissions.Reports.View);
+
+        var selectCount = 0;
+        _db.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (sql.TrimStart().StartsWith("SELECT", StringComparison.OrdinalIgnoreCase))
+            {
+                selectCount++;
+            }
+        };
+
+        var result = await CreateService().UserHasPermissionAsync("user-1", Permissions.Reports.View);
+
+        Assert.True(result.Data);
+        Assert.Equal(1, selectCount);
+    }
+
+    [Fact]
+    public async Task UserHasPermissionAsync_RevokeIsVisibleOnNextCallWithoutCaching()
+    {
+        await SeedUserWithRoleAsync("user-1", "role-user", "User");
+        await InsertRolePermissionAsync("role-user", Permissions.Reports.View);
+        var service = CreateService();
+
+        Assert.True((await service.UserHasPermissionAsync("user-1", Permissions.Reports.View)).Data);
+
+        await _db.Updateable<SysRolePermission>()
+            .SetColumns(item => item.IsDeleted == true)
+            .Where(item => item.RoleGuid == "role-user")
+            .ExecuteCommandAsync();
+
+        Assert.False((await service.UserHasPermissionAsync("user-1", Permissions.Reports.View)).Data);
+    }
+
+    [Fact]
+    public async Task UserHasPermissionAsync_IgnoresInactiveAndDeletedGrantLinks()
+    {
+        await SeedUserWithRoleAsync("user-1", "role-user", "User");
+        await InsertRolePermissionAsync("role-user", Permissions.Reports.View);
+        var service = CreateService();
+
+        await _db.Updateable<UserRole>()
+            .SetColumns(item => item.IsDeleted == true)
+            .Where(item => item.UserGUID == "user-1")
+            .ExecuteCommandAsync();
+        Assert.False((await service.UserHasPermissionAsync("user-1", Permissions.Reports.View)).Data);
+
+        await _db.Updateable<UserRole>()
+            .SetColumns(item => item.IsDeleted == false)
+            .Where(item => item.UserGUID == "user-1")
+            .ExecuteCommandAsync();
+        await _db.Updateable<Role>()
+            .SetColumns(item => item.IsActive == false)
+            .Where(item => item.RoleGUID == "role-user")
+            .ExecuteCommandAsync();
+        Assert.False((await service.UserHasPermissionAsync("user-1", Permissions.Reports.View)).Data);
+
+        await _db.Updateable<Role>()
+            .SetColumns(item => item.IsActive == true)
+            .Where(item => item.RoleGUID == "role-user")
+            .ExecuteCommandAsync();
+        await _db.Updateable<SysRolePermission>()
+            .SetColumns(item => item.IsDeleted == true)
+            .Where(item => item.RoleGuid == "role-user")
+            .ExecuteCommandAsync();
+        Assert.False((await service.UserHasPermissionAsync("user-1", Permissions.Reports.View)).Data);
+    }
+
+    [Fact]
+    public async Task UserHasPermissionAsync_IgnoresDeletedDirectPermissionAndInactiveUser()
+    {
+        await SeedUserWithRoleAsync("user-1", "role-user", "User");
+        await InsertUserPermissionAsync("user-1", Permissions.Reports.View);
+        var service = CreateService();
+
+        Assert.True((await service.UserHasPermissionAsync("user-1", Permissions.Reports.View)).Data);
+
+        await _db.Updateable<SysUserPermission>()
+            .SetColumns(item => item.IsDeleted == true)
+            .Where(item => item.UserGuid == "user-1")
+            .ExecuteCommandAsync();
+        Assert.False((await service.UserHasPermissionAsync("user-1", Permissions.Reports.View)).Data);
+
+        await _db.Updateable<User>()
+            .SetColumns(item => item.IsActive == false)
+            .Where(item => item.UserGUID == "user-1")
+            .ExecuteCommandAsync();
+        Assert.False((await service.UserHasPermissionAsync("user-1", Permissions.Reports.View)).Data);
+    }
+
+    [Fact]
     public async Task UserHasExactPermissionAsync_ReportsView别名不能授予ProductMovementView()
     {
         await SeedUserWithRoleAsync("user-1", "role-user", "User");

@@ -281,6 +281,23 @@ namespace BlazorApp.Api.Services.React
     /// </summary>
     public partial class SalesDashboardReactService : ISalesDashboardReactService
     {
+        private const string CompleteCostStatus = "Complete";
+        private const string MissingCostStatus = "Missing";
+        private const string NoActivityCostStatus = "NoActivity";
+
+        /// <summary>
+        /// 统计行、成本覆盖行和毛利覆盖行必须完整对齐才算 Complete；因此实际零毛利仍可为 Complete，
+        /// 而没有统计行的期间才是 NoActivity。TotalCost 有值即可覆盖 OpenItem 的空 UnitCostSnapshot。
+        /// </summary>
+        private static string GetCostStatus(int statisticRowCount, int costedRowCount, int grossProfitRowCount)
+        {
+            if (statisticRowCount <= 0)
+                return NoActivityCostStatus;
+            return statisticRowCount == costedRowCount && statisticRowCount == grossProfitRowCount
+                ? CompleteCostStatus
+                : MissingCostStatus;
+        }
+
         private readonly SqlSugarContext _context;
         private readonly POSMSqlSugarContext _posmContext;
         private readonly IMapper _mapper;
@@ -1086,6 +1103,7 @@ namespace BlazorApp.Api.Services.React
                         AverageTransaction = item.OrderCount > 0 ? item.TotalAmount / item.OrderCount : 0,
                         StoreCount = item.StoreCount,
                         CompareTotalAmount = hasCompare ? compare.TotalAmount : null,
+                        CostStatus = GetCostStatus(item.StatisticRowCount, item.CostedRowCount, item.GrossProfitRowCount),
                         GrossProfit = GetCompleteGrossProfit(
                             item.GrossProfit,
                             item.StatisticRowCount,
@@ -1097,6 +1115,7 @@ namespace BlazorApp.Api.Services.React
 
                     if (hasCompare)
                     {
+                        dto.CompareCostStatus = GetCostStatus(compare.StatisticRowCount, compare.CostedRowCount, compare.GrossProfitRowCount);
                         dto.CompareOrderCount = compare.OrderCount;
                         dto.CompareAverageTransaction =
                             compare.OrderCount > 0 ? compare.TotalAmount / compare.OrderCount : 0;
@@ -1360,6 +1379,7 @@ namespace BlazorApp.Api.Services.React
                         AverageTransaction = item.OrderCount > 0 ? item.TotalAmount / item.OrderCount : 0,
                         StoreCount = item.StoreCount,
                         CompareTotalAmount = hasCompare ? compare.TotalAmount : null,
+                        CostStatus = GetCostStatus(item.StatisticRowCount, item.CostedRowCount, item.GrossProfitRowCount),
                         GrossProfit = GetCompleteGrossProfit(
                             item.GrossProfit,
                             item.StatisticRowCount,
@@ -1371,6 +1391,7 @@ namespace BlazorApp.Api.Services.React
 
                     if (hasCompare)
                     {
+                        dto.CompareCostStatus = GetCostStatus(compare.StatisticRowCount, compare.CostedRowCount, compare.GrossProfitRowCount);
                         dto.CompareOrderCount = compare.OrderCount;
                         dto.CompareAverageTransaction =
                             compare.OrderCount > 0 ? compare.TotalAmount / compare.OrderCount : 0;
@@ -1629,6 +1650,7 @@ namespace BlazorApp.Api.Services.React
                             OrderCount = orderCount,
                             AverageTransaction =
                                 orderCount > 0 ? item.TotalAmount / orderCount : 0,
+                            CostStatus = GetCostStatus(item.StatisticRowCount, item.CostedRowCount, item.GrossProfitRowCount),
                             GrossProfit = GetCompleteGrossProfit(
                                 item.GrossProfit,
                                 item.StatisticRowCount,
@@ -1640,6 +1662,7 @@ namespace BlazorApp.Api.Services.React
 
                         if (hasCompare)
                         {
+                            dto.CompareCostStatus = GetCostStatus(compare.StatisticRowCount, compare.CostedRowCount, compare.GrossProfitRowCount);
                             dto.CompareTotalAmount = compare.TotalAmount;
                             dto.CompareOrderCount = compare.OrderCount;
                             dto.CompareAverageTransaction =
@@ -1889,6 +1912,8 @@ namespace BlazorApp.Api.Services.React
                             SupplierName = item.SupplierName,
                             TotalAmount = totalAmount,
                             TotalQuantity = totalQuantity,
+                            // 旧门店供应商明细没有成本快照；已有业务行必须明确标记为缺成本。
+                            CostStatus = MissingCostStatus,
                         };
 
                         if (
@@ -1903,6 +1928,11 @@ namespace BlazorApp.Api.Services.React
 
                             dto.CompareTotalAmount =
                                 supplierCompareAmount + (compareTotalAmount ?? 0);
+                            // 字典命中代表同期存在业务行，金额为零或负数也不能当作无活动。
+                            dto.CompareCostStatus = compareDict.ContainsKey(item.SupplierCode)
+                                || (item.SupplierCode == "200" && chinaCompareDict.ContainsKey(item.BranchCode))
+                                ? MissingCostStatus
+                                : NoActivityCostStatus;
                             dto.TotalAmountGrowth = CalculateGrowth(
                                 totalAmount,
                                 dto.CompareTotalAmount ?? 0
@@ -2501,6 +2531,9 @@ namespace BlazorApp.Api.Services.React
                             AverageUnitPrice = x is { Quantity: > 0 } ? x.SalesAmount / x.Quantity : 0,
                             AverageOriginalPrice = null,
                             OrderCount = x?.OrderCount ?? 0,
+                            CostStatus = x == null
+                                ? NoActivityCostStatus
+                                : GetCostStatus(x.StatisticRowCount, x.CostedRowCount, x.GrossProfitRowCount),
                             GrossProfit = x == null
                                 ? null
                                 : GetCompleteGrossProfit(
@@ -2517,6 +2550,11 @@ namespace BlazorApp.Api.Services.React
 
                         if (compareData != null)
                         {
+                            result.CompareCostStatus = GetCostStatus(
+                                compareData.StatisticRowCount,
+                                compareData.CostedRowCount,
+                                compareData.GrossProfitRowCount
+                            );
                             result.QuantityLY = compareData.Quantity;
                             result.DiscountedQuantityLY = 0;
                             result.SalesAmountLY = compareData.SalesAmount;
@@ -2739,6 +2777,16 @@ namespace BlazorApp.Api.Services.React
                                 current is { Quantity: > 0 } ? current.SalesAmount / current.Quantity : 0,
                             CompareAverageUnitPrice =
                                 compare is { Quantity: > 0 } ? compare.SalesAmount / compare.Quantity : 0,
+                            CostStatus = GetCostStatus(
+                                current?.StatisticRowCount ?? 0,
+                                current?.CostedRowCount ?? 0,
+                                current?.GrossProfitRowCount ?? 0
+                            ),
+                            CompareCostStatus = GetCostStatus(
+                                compare?.StatisticRowCount ?? 0,
+                                compare?.CostedRowCount ?? 0,
+                                compare?.GrossProfitRowCount ?? 0
+                            ),
                             GrossProfit = current == null
                                 ? null
                                 : GetCompleteGrossProfit(
@@ -3050,6 +3098,7 @@ namespace BlazorApp.Api.Services.React
                             OrderCount = orderCount,
                             AverageTransaction =
                                 orderCount > 0 ? item.TotalAmount / orderCount : 0,
+                            CostStatus = GetCostStatus(item.StatisticRowCount, item.CostedRowCount, item.GrossProfitRowCount),
                             GrossProfit = GetCompleteGrossProfit(
                                 item.GrossProfit,
                                 item.StatisticRowCount,
@@ -3061,6 +3110,7 @@ namespace BlazorApp.Api.Services.React
 
                         if (hasCompare)
                         {
+                            dto.CompareCostStatus = GetCostStatus(compare.StatisticRowCount, compare.CostedRowCount, compare.GrossProfitRowCount);
                             dto.CompareTotalAmount = compare.TotalAmount;
                             dto.CompareOrderCount = compare.OrderCount;
                             dto.CompareAverageTransaction =
@@ -6359,6 +6409,11 @@ namespace BlazorApp.Api.Services.React
                             : 0,
                         AverageOriginalPrice = null,
                         OrderCount = row.CurrentOrderCount,
+                        CostStatus = GetCostStatus(
+                            row.CurrentStatisticRowCount,
+                            row.CurrentCostedRowCount,
+                            row.CurrentGrossProfitRowCount
+                        ),
                         GrossProfit = hasCurrentData
                             ? GetCompleteGrossProfit(
                                 row.CurrentGrossProfit,
@@ -6375,6 +6430,11 @@ namespace BlazorApp.Api.Services.React
                             : 0,
                         AverageOriginalPriceLY = null,
                         OrderCountLY = row.CompareOrderCount,
+                        CompareCostStatus = GetCostStatus(
+                            row.CompareStatisticRowCount,
+                            row.CompareCostedRowCount,
+                            row.CompareGrossProfitRowCount
+                        ),
                         GrossProfitLY = hasCompareData
                             ? GetCompleteGrossProfit(
                                 row.CompareGrossProfit,
@@ -8013,7 +8073,8 @@ namespace BlazorApp.Api.Services.React
                 states
                     .OrderBy(state => state.Date)
                     .Select(state =>
-                        $"{state.Date:yyyyMMdd}:{state.Status}:{state.LastAggregatedAtUtc?.Ticks ?? 0}:{state.CompletedAtUtc?.Ticks ?? 0}"
+                        // 成本回填复用持久化 SourceProductVersion；即使统计时间未变化，成本变化也必须淘汰旧缓存。
+                        $"{state.Date:yyyyMMdd}:{state.Status}:{state.LastAggregatedAtUtc?.Ticks ?? 0}:{state.CompletedAtUtc?.Ticks ?? 0}:{state.SourceProductVersion}"
                     )
             );
             var cacheVersion = Convert.ToHexString(

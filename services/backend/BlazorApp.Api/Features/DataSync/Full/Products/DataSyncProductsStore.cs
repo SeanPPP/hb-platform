@@ -55,15 +55,18 @@ internal sealed class DataSyncProductsStore : DataSyncSliceBase
                         LocalContext.Db
                     );
                     // 事务内先批量预取旧快照，确保清空重建与历史写入使用同一事务。
-                    var existingProductCodes = await LocalContext
+                    var existingProducts = await LocalContext
                         .Db.Queryable<Product>()
                         .Where(item => item.ProductCode != null)
-                        .Select(item => item.ProductCode)
                         .ToListAsync();
+                    var existingProductsByCode = existingProducts
+                        .Where(item => !string.IsNullOrWhiteSpace(item.ProductCode))
+                        .GroupBy(item => item.ProductCode!.Trim(), StringComparer.OrdinalIgnoreCase)
+                        .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
                     var auditProductCodes = new HashSet<string>(
-                        existingProductCodes
-                            .Where(code => !string.IsNullOrWhiteSpace(code))
-                            .Select(code => code!.Trim()),
+                        existingProducts
+                            .Where(product => !string.IsNullOrWhiteSpace(product.ProductCode))
+                            .Select(product => product.ProductCode!.Trim()),
                         StringComparer.OrdinalIgnoreCase
                     );
                     var beforeSnapshots = await ChangeHistoryService.CaptureSnapshotsAsync(
@@ -119,7 +122,19 @@ internal sealed class DataSyncProductsStore : DataSyncSliceBase
                             {
                                 if (!string.IsNullOrWhiteSpace(product.ProductCode))
                                 {
-                                    auditProductCodes.Add(product.ProductCode.Trim());
+                                    var productCode = product.ProductCode.Trim();
+                                    product.ProductCode = productCode;
+                                    if (existingProductsByCode.TryGetValue(productCode, out var existing))
+                                    {
+                                        product.PurchasePrice = HqPurchasePriceSyncGuard.PreservePositiveForOrdinaryProduct(
+                                            existing.PurchasePrice,
+                                            product.PurchasePrice,
+                                            existing.ProductType,
+                                            product.ProductType
+                                        );
+                                    }
+                                    existingProductsByCode[productCode] = product;
+                                    auditProductCodes.Add(productCode);
                                 }
                             }
 

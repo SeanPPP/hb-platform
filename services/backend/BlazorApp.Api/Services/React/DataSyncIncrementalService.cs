@@ -1370,16 +1370,9 @@ namespace BlazorApp.Api.Services.React
                 var errors = 0;
                 var syncBatchGuid = Guid.NewGuid();
 
-                var existingProducts = await _localContext
-                    .Db.Queryable<Product>()
-                    .Select(x => x.ProductCode)
-                    .ToListAsync();
-                var existingCodes = new HashSet<string>(
-                    existingProducts
-                        .Where(code => !string.IsNullOrWhiteSpace(code))
-                        .Select(code => code!),
-                    StringComparer.OrdinalIgnoreCase
-                );
+                List<Product> existingProducts = new();
+                var existingProductsByCode = new Dictionary<string, Product>(StringComparer.OrdinalIgnoreCase);
+                var existingCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var auditedProductCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var beforeSnapshots =
                     new Dictionary<string, WarehouseProductChangeSnapshotDto>(
@@ -1389,6 +1382,18 @@ namespace BlazorApp.Api.Services.React
                 var transactionResult = await _localContext.Db.Ado.UseTranAsync(async () =>
                 {
                     // 所有分页复用同一个本地事务，确保业务数据和历史记录要么一起提交，要么一起回滚。
+                    _ = await SetChildPurchasePriceMutationLock.AcquireAllAsync(_localContext.Db);
+                    // 旧快照必须在成本业务锁内读取，避免并发回填后又被 HQ 空成本覆盖。
+                    existingProducts = await _localContext.Db.Queryable<Product>().ToListAsync();
+                    foreach (var product in existingProducts)
+                    {
+                        if (!string.IsNullOrWhiteSpace(product.ProductCode))
+                        {
+                            var productCode = product.ProductCode.Trim();
+                            existingProductsByCode[productCode] = product;
+                            existingCodes.Add(productCode);
+                        }
+                    }
                     for (var page = 1; page <= pages; page++)
                     {
                         var skip = (page - 1) * hqBatchSize;
@@ -1405,6 +1410,27 @@ namespace BlazorApp.Api.Services.React
                             continue;
 
                         var localBatch = _mapper.Map<List<Product>>(batch);
+                        foreach (var item in localBatch)
+                        {
+                            if (string.IsNullOrWhiteSpace(item.ProductCode))
+                            {
+                                continue;
+                            }
+
+                            var productCode = item.ProductCode.Trim();
+                            if (!existingProductsByCode.TryGetValue(productCode, out var existing))
+                            {
+                                continue;
+                            }
+
+                            // 旧增量入口也直接写 Product，必须与统一 HQ 同步使用相同的普通商品成本保护。
+                            item.PurchasePrice = HqPurchasePriceSyncGuard.PreservePositiveForOrdinaryProduct(
+                                existing.PurchasePrice,
+                                item.PurchasePrice,
+                                existing.ProductType,
+                                item.ProductType
+                            );
+                        }
 
                         var toInsert = localBatch
                             .Where(x => !existingCodes.Contains(x.ProductCode!))
@@ -1469,6 +1495,13 @@ namespace BlazorApp.Api.Services.React
                             if (!string.IsNullOrWhiteSpace(item.ProductCode))
                             {
                                 existingCodes.Add(item.ProductCode!);
+                            }
+                        }
+                        foreach (var item in localBatch)
+                        {
+                            if (!string.IsNullOrWhiteSpace(item.ProductCode))
+                            {
+                                existingProductsByCode[item.ProductCode.Trim()] = item;
                             }
                         }
                         _logger.LogInformation(

@@ -1287,7 +1287,7 @@ namespace BlazorApp.Api.Services.React
                     var costWriteback = new SetChildPurchasePriceService(localDb);
 
                     // 普通多码（Type2）的成本可以由同维度主商品确定，但 HQ 分店行仍需稳定的本地投影身份。
-                    // 只在本次已锁定的精确目标组内补齐纯 Type2 商品；Type1 或混合关系继续走严格完整性校验。
+                    // 只在本次已锁定的精确目标组内补齐纯 Type2，或首次发送到 HQ 的纯 Type1 套装。
                     var activeSetRows = new List<ProductSetCode>();
                     foreach (var codeBatch in activeProductCodes.Chunk(HqCodeBatchSize))
                     {
@@ -1308,10 +1308,33 @@ namespace BlazorApp.Api.Services.React
                         .Where(group => group.All(row => row.SetType == 2))
                         .Select(group => group.Key)
                         .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    // 本地新建只初始化启用门店，HQ 首次发送却覆盖全部 HQ 分店；
+                    // 仅允许类型一致的新套装补齐缺少的投影，已有套装和混合关系仍严格校验。
+                    var newSetProductCodes = products
+                        .Where(product =>
+                            product.ProductType == 1
+                            && NormalizeCode(product.ProductCode) != null
+                            && !existingHqProductCodesForScope.Contains(
+                                NormalizeCode(product.ProductCode)!
+                            )
+                        )
+                        .Select(product => NormalizeCode(product.ProductCode)!)
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    var newType1ProductCodes = activeSetRows
+                        .Where(row => !string.IsNullOrWhiteSpace(row.ProductCode))
+                        .GroupBy(row => row.ProductCode.Trim(), StringComparer.OrdinalIgnoreCase)
+                        .Where(group =>
+                            newSetProductCodes.Contains(group.Key)
+                            && group.All(row => row.SetType == 1)
+                        )
+                        .Select(group => group.Key);
+                    var repairableProductCodes = type2OnlyProductCodes
+                        .Union(newType1ProductCodes, StringComparer.OrdinalIgnoreCase)
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
                     var repairGroups = exactStoreGroups
                         .Where(group =>
                             group.ProductCode != null
-                            && type2OnlyProductCodes.Contains(group.ProductCode)
+                            && repairableProductCodes.Contains(group.ProductCode)
                         )
                         .ToList();
 
@@ -1352,7 +1375,7 @@ namespace BlazorApp.Api.Services.React
                             })
                             .Where(item =>
                                 item.ProductCode != null
-                                && type2OnlyProductCodes.Contains(item.ProductCode)
+                                && repairableProductCodes.Contains(item.ProductCode)
                             )
                             .ToDictionary(
                                 item => item.ProductCode!,
@@ -1362,8 +1385,13 @@ namespace BlazorApp.Api.Services.React
                                 StringComparer.OrdinalIgnoreCase
                             );
                         // Repair 内部按商品编码构造 SQL IN 条件；沿用 HQ 查询批次，避免大批量推送超过 SQL Server 参数上限。
-                        foreach (var repairProductBatch in repairProductCodes.Chunk(HqCodeBatchSize))
+                        // Type1 必须有有效全局主成本；纯 Type2 继续允许仅有门店主成本，分组后分别调用原有门禁。
+                        foreach (var repairProductBatch in repairProductCodes
+                            .GroupBy(productCode => type2OnlyProductCodes.Contains(productCode))
+                            .SelectMany(group => group.Chunk(HqCodeBatchSize)))
                         {
+                            var allowType2StoreParentPurchasePrice =
+                                type2OnlyProductCodes.Contains(repairProductBatch[0]);
                             var batchProductCodes = repairProductBatch.ToHashSet(
                                 StringComparer.OrdinalIgnoreCase
                             );
@@ -1386,7 +1414,7 @@ namespace BlazorApp.Api.Services.React
                                     batchPurchasePrices,
                                     ResolveSetChildPurchasePriceActor(null),
                                     exactStoreGroups: batchGroups,
-                                    allowType2StoreParentPurchasePrice: true
+                                    allowType2StoreParentPurchasePrice: allowType2StoreParentPurchasePrice
                                 );
                             if (repair.Failures.Count > 0)
                             {
@@ -3309,6 +3337,15 @@ namespace BlazorApp.Api.Services.React
 
         private async Task SyncFullWithShadowAsync(ISqlSugarClient db, HqProductSyncResult result)
         {
+            // 影子表会替换整张 Product；先保存 Web 正数成本，避免 HQ 空成本在全量切换时抹掉它。
+            var existingProducts = await db.Queryable<Product>()
+                .Where(row => row.ProductCode != null)
+                .ToListAsync();
+            var existingProductsByCode = existingProducts
+                .Where(row => NormalizeCode(row.ProductCode) != null)
+                .GroupBy(row => NormalizeCode(row.ProductCode)!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+
             var syncRunId = await db.Ado.SqlQuerySingleAsync<long>(
                 """
                 DECLARE @SyncRunId BIGINT;
@@ -3321,7 +3358,16 @@ namespace BlazorApp.Api.Services.React
             );
 
             var hqRows = await QueryActiveHqProductsAsync();
-            var products = hqRows.Select(MapNewProduct).ToList();
+            var products = hqRows
+                .Select(row =>
+                {
+                    var code = NormalizeCode(row.H商品编码);
+                    return MapNewProduct(
+                        row,
+                        code != null ? existingProductsByCode.GetValueOrDefault(code) : null
+                    );
+                })
+                .ToList();
             foreach (var batch in products.Chunk(WriteBatchSize))
             {
                 await db.Fastest<Product>()
@@ -3791,7 +3837,10 @@ namespace BlazorApp.Api.Services.React
                 .ToList();
         }
 
-        private Product MapNewProduct(DIC_商品信息字典表 hqRow)
+        private Product MapNewProduct(
+            DIC_商品信息字典表 hqRow,
+            Product? existing = null
+        )
         {
             var product = _mapper.Map<Product>(hqRow);
             product.UUID = NormalizeCode(hqRow.HGUID) ?? UuidHelper.GenerateUuid7();
@@ -3800,6 +3849,12 @@ namespace BlazorApp.Api.Services.React
             product.IsDeleted = false;
             product.CreatedAt = hqRow.FGC_CreateDate == default ? DateTime.UtcNow : hqRow.FGC_CreateDate;
             product.UpdatedAt = DateTime.UtcNow;
+            product.PurchasePrice = HqPurchasePriceSyncGuard.PreservePositiveForOrdinaryProduct(
+                existing?.PurchasePrice,
+                product.PurchasePrice,
+                existing?.ProductType,
+                product.ProductType
+            );
             return product;
         }
 
@@ -3808,6 +3863,8 @@ namespace BlazorApp.Api.Services.React
             var uuid = local.UUID;
             var createdAt = local.CreatedAt;
             var createdBy = local.CreatedBy;
+            var existingPurchasePrice = local.PurchasePrice;
+            var existingProductType = local.ProductType;
             _mapper.Map(hqRow, local);
             local.UUID = uuid;
             local.ProductCode = NormalizeCode(hqRow.H商品编码);
@@ -3816,6 +3873,12 @@ namespace BlazorApp.Api.Services.React
             local.EnglishName = Truncate(hqRow.H大写名称, 200);
             local.IsDeleted = false;
             local.UpdatedAt = DateTime.UtcNow;
+            local.PurchasePrice = HqPurchasePriceSyncGuard.PreservePositiveForOrdinaryProduct(
+                existingPurchasePrice,
+                local.PurchasePrice,
+                existingProductType,
+                local.ProductType
+            );
         }
 
         private ProductSetCode MapNewProductSetCode(DIC_一品多码表 hqRow)
@@ -4162,11 +4225,16 @@ namespace BlazorApp.Api.Services.React
             StoreRetailPrice local
         )
         {
+            var existingPurchasePrice = local.PurchasePrice;
             local.StoreCode = NormalizeCode(hqRow.H分店代码);
             local.ProductCode = NormalizeCode(hqRow.H商品编码);
             local.StoreProductCode = NormalizeCode(hqRow.H分店商品编码);
             local.SupplierCode = NormalizeCode(hqRow.H供应商编码);
-            local.PurchasePrice = hqRow.H进货价;
+            // 分店主成本供套装/多码重算读取；只保护已有正数，不触碰子项成本字段。
+            local.PurchasePrice = HqPurchasePriceSyncGuard.PreservePositive(
+                existingPurchasePrice,
+                hqRow.H进货价
+            );
             local.StoreRetailPriceValue = hqRow.H分店零售价;
             local.DiscountRate = hqRow.H折扣率;
             local.IsActive = hqRow.H使用状态;

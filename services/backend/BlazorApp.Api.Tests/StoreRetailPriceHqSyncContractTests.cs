@@ -767,7 +767,8 @@ public class StoreRetailPriceHqSyncContractTests
 
         var task = (Task<int>)method.Invoke(
             service,
-            new object[] { targetDb, targetStoreCodes, tableName }
+            // 反射调用需显式补齐可选的成本保护快照参数，Type.Missing 沿用方法默认值。
+            new object[] { targetDb, targetStoreCodes, tableName, Type.Missing }
         )!;
         return await task;
     }

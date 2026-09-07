@@ -8,19 +8,12 @@ internal sealed class SalesStatisticsProductStoreDailyBuilder
 {
     internal ProductStoreDailyRefreshBuildResult Build(ProductStoreDailyRefreshInput input)
     {
-        var storeCostMap = input.StoreCosts
-            .Where(row => !string.IsNullOrWhiteSpace(row.StoreCode)
-                && !string.IsNullOrWhiteSpace(row.SupplierCode)
-                && !string.IsNullOrWhiteSpace(row.ProductCode))
-            .GroupBy(row => $"{row.StoreCode}|{row.SupplierCode}|{row.ProductCode}")
-            .ToDictionary(group => group.Key,
-                group => group.Select(row => row.PurchasePrice).FirstOrDefault(price => price is > 0));
         var productCostMap = input.ProductCosts.Where(row => !string.IsNullOrWhiteSpace(row.ProductCode))
-            .GroupBy(row => row.ProductCode!)
+            .GroupBy(row => row.ProductCode!.Trim(), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key,
                 group => group.Select(row => row.PurchasePrice).FirstOrDefault(price => price is > 0));
         var warehouseCostMap = input.WarehouseCosts.Where(row => !string.IsNullOrWhiteSpace(row.ProductCode))
-            .GroupBy(row => row.ProductCode)
+            .GroupBy(row => row.ProductCode.Trim(), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key,
                 group => group.Select(row => row.ImportPrice).FirstOrDefault(price => price is > 0));
         // POSM 明细必须按订单支付金额分摊；HBSales 与补充退货行继续使用自身金额。
@@ -50,7 +43,7 @@ internal sealed class SalesStatisticsProductStoreDailyBuilder
                     null
                 ),
                 row.Row.ProductCode!.Trim()))
-            .Select(group => BuildStatistic(group, storeCostMap, productCostMap, warehouseCostMap, input.LastSourceUploadTime))
+            .Select(group => BuildStatistic(group, input.StoreCosts, productCostMap, warehouseCostMap, input.LastSourceUploadTime))
             .ToList();
         var returnAdjustments = resolvedRows.Where(row => input.SupplementalReturnRows.Contains(row.Row))
             .GroupBy(row => row.BranchCode, StringComparer.OrdinalIgnoreCase)
@@ -82,7 +75,7 @@ internal sealed class SalesStatisticsProductStoreDailyBuilder
 
     private static ProductStoreDailySalesStatistic BuildStatistic(
         IGrouping<ProductStoreDailyGroupKey, ProductStoreDailyResolvedRow> group,
-        Dictionary<string, decimal?> storeCostMap,
+        IReadOnlyList<StoreCostRow> storeCosts,
         Dictionary<string, decimal?> productCostMap,
         Dictionary<string, decimal?> warehouseCostMap,
         DateTime? lastSourceUploadTime)
@@ -91,17 +84,21 @@ internal sealed class SalesStatisticsProductStoreDailyBuilder
         var sourceQuantity = group.Sum(row => row.Row.Quantity);
         var quantity = (int)sourceQuantity;
         var totalAmount = group.Sum(row => row.StatisticAmount);
-        // 成本优先级保持分店价、商品进价、仓库进价，缺失时不伪造成本。
-        var unitCost = SalesStatisticsProductStoreDailyDomainRules.ResolveUnitCost(
+        var sourceRows = group.Select(row => row.Row).ToList();
+        // 成本按来源逐行解析：OpenItem 使用原明细价格，普通商品才进入成本表优先级。
+        var cost = SalesStatisticsProductStoreDailyDomainRules.ResolveCost(
+            sourceRows,
             group.Key.BranchCode,
             group.Key.SupplierCode,
             group.Key.ProductCode,
-            storeCostMap,
+            storeCosts,
             productCostMap,
             warehouseCostMap,
-            out var costSource
+            sourceRows.Select(row => row.PricingUnit)
+                .FirstOrDefault(unit => !string.IsNullOrWhiteSpace(unit))
         );
-        var totalCost = unitCost.HasValue ? unitCost.Value * quantity : (decimal?)null;
+        var unitCost = cost.UnitCost;
+        var totalCost = cost.TotalCost;
         var grossProfit = totalCost.HasValue ? totalAmount - totalCost.Value : (decimal?)null;
         return new ProductStoreDailySalesStatistic
         {
@@ -118,7 +115,7 @@ internal sealed class SalesStatisticsProductStoreDailyBuilder
             TotalCost = totalCost,
             GrossProfit = grossProfit,
             GrossMarginRate = totalAmount > 0m && grossProfit.HasValue ? grossProfit.Value / totalAmount : null,
-            CostSource = costSource,
+            CostSource = cost.CostSource,
             LastSourceUploadTime = group.SelectMany(row => new[] { row.Row.OrderLastUploadTime, row.Row.DetailLastUploadTime })
                 .Where(value => value.HasValue).Select(value => value!.Value)
                 .DefaultIfEmpty(lastSourceUploadTime ?? DateTime.MinValue).Max(),

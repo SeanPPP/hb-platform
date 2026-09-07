@@ -483,12 +483,35 @@ internal sealed class DataSyncStorePricesConcurrentStore : DataSyncSliceBase
                 """
                 DECLARE @lockResult int;
                 EXEC @lockResult = sp_getapplock
+                    @Resource = N'HB:SetChildPurchasePrice:Gate',
+                    @LockMode = N'Exclusive',
+                    @LockOwner = N'Transaction',
+                    @LockTimeout = 30000;
+                IF @lockResult < 0
+                    THROW 51000, '无法获取商品成本总闸', 1;
+
+                EXEC @lockResult = sp_getapplock
                     @Resource = N'DataSync:StoreRetailPrice:FullReplace',
                     @LockMode = N'Exclusive',
                     @LockOwner = N'Transaction',
                     @LockTimeout = 30000;
                 IF @lockResult < 0
                     THROW 51000, '无法获取分店零售价同步锁', 1;
+
+                -- HQ 的空值或非正数不是可信成本。删除 live 行之前先把相同
+                -- 分店、商品、供应商的现有正数进价写回 staging，防止全量替换抹掉成本。
+                UPDATE staged
+                SET staged.[PurchasePrice] = target.[PurchasePrice]
+                FROM #DataSyncStorePrices AS staged
+                INNER JOIN [StoreRetailPrice] AS target WITH (UPDLOCK, HOLDLOCK)
+                    ON target.[StoreCode] = staged.[StoreCode]
+                    AND target.[ProductCode] = staged.[ProductCode]
+                    AND (
+                        target.[SupplierCode] = staged.[SupplierCode]
+                        OR (target.[SupplierCode] IS NULL AND staged.[SupplierCode] IS NULL)
+                    )
+                WHERE target.[PurchasePrice] > 0
+                    AND (staged.[PurchasePrice] IS NULL OR staged.[PurchasePrice] <= 0);
 
                 DELETE target
                 FROM [StoreRetailPrice] AS target

@@ -51,7 +51,7 @@ namespace BlazorApp.Api.Services
         try
         {
             // 获取当前时间
-            var now = DateTime.Now;
+            var now = SalesStatisticsBusinessDate.Now();
             var currentHour = now.Hour;
             var currentDate = now.Date;
 
@@ -92,7 +92,7 @@ namespace BlazorApp.Api.Services
         {
             // 确定目标日期
             var date = string.IsNullOrEmpty(dateStr)
-                ? DateTime.Now.Date
+                ? SalesStatisticsBusinessDate.Today()
                 : DateTime.Parse(dateStr).Date;
 
             _logger.LogInformation("开始更新每日统计数据: {Date}", date);

@@ -534,6 +534,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
                 .Select(index => CreateItem($"SKU-OLD-{index}", $"Old Result {index:D6}", $"930OLD{index:D6}", PriceSourceKind.StoreRetailPrice, 1m))
                 .Append(newItem));
         var oldSearchStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var continueOldSearch = new ManualResetEventSlim(false);
         var oldSearchProgress = -1;
         index.SearchProgressForTests = (query, progress) =>
         {
@@ -546,7 +547,8 @@ public sealed class PosTerminalCashPaymentViewModelTests
             if (progress == 0)
             {
                 oldSearchStarted.TrySetResult();
-                Thread.Sleep(200);
+                // 等新输入确实取消旧查询后再继续，避免依赖 CI 线程能在固定延时内获调度。
+                continueOldSearch.Wait();
             }
         };
         using var viewModel = new PosTerminalViewModel(
@@ -558,9 +560,21 @@ public sealed class PosTerminalCashPaymentViewModelTests
             IsMatchesPopupOpen = true
         };
 
-        viewModel.ScanText = "old";
-        await oldSearchStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
-        viewModel.ScanText = "new result";
+        try
+        {
+            viewModel.ScanText = "old";
+            await oldSearchStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            var oldCancellation = Assert.IsType<CancellationTokenSource>(typeof(PosTerminalViewModel)
+                .GetField("_matchesRefreshCts", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                .GetValue(viewModel));
+            viewModel.ScanText = "new result";
+            await WaitUntilAsync(() => oldCancellation.IsCancellationRequested);
+        }
+        finally
+        {
+            // 断言失败也释放真实索引线程，防止污染同一分组的后续测试。
+            continueOldSearch.Set();
+        }
         await WaitUntilAsync(() => viewModel.Matches.Count == 1 && viewModel.Matches[0].DisplayName == newItem.DisplayName);
 
         Assert.InRange(Volatile.Read(ref oldSearchProgress), 0, 255);

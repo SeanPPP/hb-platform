@@ -113,6 +113,11 @@ internal class StoreCostRow
     public string? StoreCode { get; set; }
     public string? SupplierCode { get; set; }
     public string? ProductCode { get; set; }
+    /// <summary>价格表没有单位列时为空；有单位的来源只允许同单位回退。</summary>
+    public string? PricingUnit { get; set; }
+    public bool PricingUnitKnown { get; set; }
+    /// <summary>历史日期允许使用已停用但未删除的当前分店成本；跨店回退仍要求有效行。</summary>
+    public bool IsActive { get; set; } = true;
     public decimal? PurchasePrice { get; set; }
 }
 
@@ -163,6 +168,22 @@ internal class ProductStoreDailySourceRow
     public string? SupplierCode { get; set; }
     public string? ProductName { get; set; }
     public string? Barcode { get; set; }
+    /// <summary>POSM/HBSales 原明细价格证据，不使用销售额倒推普通商品成本。</summary>
+    public decimal? OriginalUnitPrice { get; set; }
+    public decimal? OriginalSubtotal { get; set; }
+    public string? PricingUnit { get; set; }
+    // 保留来源字段别名，便于旧快照/测试构造数据时明确表达来源。
+    public decimal? Price { get; set; }
+    public decimal? Subtotal { get; set; }
+    public decimal? HBSalesUnitPrice { get; set; }
+    public decimal? HBSalesOriginalAmount { get; set; }
+    public string? PriceLookupCode { get; set; }
+    /// <summary>原销售明细数量；退货行的 Quantity 是退货量，不能拿来反推原价。</summary>
+    public decimal? OriginalSaleQuantity { get; set; }
+    /// <summary>退货成本是否已关联到唯一且身份一致的原销售明细。</summary>
+    public bool OriginalSaleCostEvidence { get; set; } = true;
+    public string? OriginalHBSalesOrderNumber { get; set; }
+    public string? HBSalesReturnCode { get; set; }
     public decimal Quantity { get; set; }
     public decimal ActualAmount { get; set; }
     public DateTime? DetailLastUploadTime { get; set; }
