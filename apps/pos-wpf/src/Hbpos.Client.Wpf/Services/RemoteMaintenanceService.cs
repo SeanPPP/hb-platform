@@ -259,7 +259,10 @@ public sealed class RemoteMaintenanceService(
                 stage is RemoteMaintenanceStage.Preparing or RemoteMaintenanceStage.DownloadingRustDesk or
                     RemoteMaintenanceStage.DownloadingStatusAgent or RemoteMaintenanceStage.Registering)
             {
-                return new RemoteMaintenanceProvisionResult(false, FailureMessage(stage), await GetSafeStatusAsync());
+                return new RemoteMaintenanceProvisionResult(false,
+                    stage == RemoteMaintenanceStage.Preparing
+                        ? "settings.remoteMaintenance.result.preparationTimedOut"
+                        : FailureMessage(stage), await GetSafeStatusAsync());
             }
             throw;
         }
@@ -282,7 +285,16 @@ public sealed class RemoteMaintenanceService(
                 false,
                 ex switch
                 {
+                    // 先按已知错误码区分服务端问题；中心鉴权失败不能引导用户重新激活 POS。
+                    // 仅映射固定资源键，未知错误仍保留阶段提示，避免透传服务器原文。
+                    RemoteMaintenanceApiException { Code: "REMOTE_MAINTENANCE_DISABLED" } => "settings.remoteMaintenance.result.serverDisabled",
+                    RemoteMaintenanceApiException { Code: "REMOTE_MAINTENANCE_NOT_READY" } => "settings.remoteMaintenance.result.serverNotReady",
+                    RemoteMaintenanceApiException { Code: "REMOTE_MAINTENANCE_GATEWAY_INVALID" } => "settings.remoteMaintenance.result.serverConfigurationInvalid",
+                    RemoteMaintenanceApiException { Code: "REMOTE_MAINTENANCE_INTERNAL_AUTH_REQUIRED" } => "settings.remoteMaintenance.result.serverAuthorizationFailed",
+                    RemoteMaintenanceApiException { Code: "REMOTE_MAINTENANCE_GATEWAY_UNAVAILABLE" } => "settings.remoteMaintenance.result.serverUnavailable",
                     RemoteMaintenanceApiException { StatusCode: 401 or 403 } => "settings.remoteMaintenance.result.authorizationExpired",
+                    RemoteMaintenanceApiException { StatusCode: 404 or 405 } when stage == RemoteMaintenanceStage.Preparing => "settings.remoteMaintenance.result.endpointUnavailable",
+                    System.Net.Http.HttpRequestException when stage == RemoteMaintenanceStage.Preparing => "settings.remoteMaintenance.result.connectionFailed",
                     System.ComponentModel.Win32Exception { NativeErrorCode: 1223 } => "settings.remoteMaintenance.result.uacCanceled",
                     FileNotFoundException when stage is RemoteMaintenanceStage.DownloadedInstalling or RemoteMaintenanceStage.Configuring => "settings.remoteMaintenance.result.componentsMissing",
                     InvalidDataException when stage is RemoteMaintenanceStage.DownloadingRustDesk or RemoteMaintenanceStage.DownloadingStatusAgent => "settings.remoteMaintenance.result.downloadVerificationFailed",

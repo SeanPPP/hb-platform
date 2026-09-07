@@ -413,13 +413,20 @@ public static class ServiceRegistration
             client.Timeout = LinklyTimeoutPolicy.HttpTimeout;
         });
         services.AddSingleton<ILinklyCloudTerminalClient, LinklyCloudTerminalClient>();
-        services.AddHttpClient<ILinklyBackendTerminalClient, LinklyBackendTerminalClient>(client =>
+        services.AddHttpClient(nameof(ILinklyBackendTerminalClient), client =>
         {
             client.BaseAddress = initialApiAddress;
             client.Timeout = LinklyTimeoutPolicy.HttpTimeout;
         })
         .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
+        // 付款页选择与实际扣款必须共享同一终端目录及 revision，避免首笔交易使用另一个冷缓存实例。
+        services.AddSingleton<ILinklyBackendTerminalClient>(sp => new LinklyBackendTerminalClient(
+            sp.GetRequiredService<IHttpClientFactory>().CreateClient(nameof(ILinklyBackendTerminalClient)),
+            sp.GetRequiredService<ILinklyTerminalDialogService>(),
+            localization: sp.GetRequiredService<ILocalizationService>(),
+            paymentAttemptContextAccessor: sp.GetRequiredService<ILinklyPaymentAttemptContextAccessor>(),
+            bankReceiptPrinter: sp.GetRequiredService<ILinklyBankReceiptPrinter>()));
         services.AddHttpClient(LinklyBackendReceiptPrintedNotifier.HttpClientName, client =>
         {
             client.BaseAddress = initialApiAddress;

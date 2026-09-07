@@ -1832,7 +1832,9 @@ public sealed class SettingsViewModelTests
         Assert.Equal("123456", service.LastBackendPairCode);
         Assert.Equal(5, service.LastBackendSelectionExpectedRevision);
         Assert.Equal(6, viewModel.LinklyCloudSelectionRevision);
-        Assert.Equal("Terminal paired.", viewModel.LinklyTestStatusMessage);
+        Assert.Contains("Front Counter is paired and selected", viewModel.LinklyTestStatusMessage, StringComparison.Ordinal);
+        Assert.Contains("Test Logon", viewModel.LinklyTestStatusMessage, StringComparison.Ordinal);
+        Assert.Contains("Enable", viewModel.LinklyTestStatusMessage, StringComparison.Ordinal);
         Assert.False(viewModel.HasSavedLinklyCloudSecret);
     }
 
@@ -1934,8 +1936,10 @@ public sealed class SettingsViewModelTests
         Assert.Equal(8, viewModel.LinklyCloudSelectionRevision);
     }
 
-    [Fact]
-    public async Task CloudBackendAsync_pair_failure_clears_pair_code_and_keeps_unknown_when_refresh_fails()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CloudBackendAsync_pair_failure_clears_pair_code_and_keeps_unknown_when_refresh_fails(bool serverRejected)
     {
         var terminalId = Guid.Parse("aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb");
         var service = new FakeCardTerminalSetupService(
@@ -1945,7 +1949,9 @@ public sealed class SettingsViewModelTests
                 "Production", terminalId, 3,
                 [new LinklyCloudTerminalSummary(terminalId, 1, "Front", "Unpaired", false, false, null, null)],
                 "Draft"),
-            LinklyCloudTerminalPairException = new HttpRequestException("pair timeout")
+            LinklyCloudTerminalPairException = serverRejected
+                ? new HttpRequestException("Complete the previous transaction first.", null, System.Net.HttpStatusCode.Conflict)
+                : new HttpRequestException("pair timeout")
         };
         var viewModel = new SettingsViewModel(service);
         await viewModel.LoadAsync();
@@ -1958,6 +1964,11 @@ public sealed class SettingsViewModelTests
         Assert.Equal(1, service.BackendPairCallCount);
         Assert.Equal("Unknown", viewModel.SelectedLinklyCloudTerminal?.PairingState);
         Assert.False(viewModel.SelectedLinklyCloudTerminal!.IsReady);
+        Assert.Contains("Front", viewModel.LinklyTestStatusMessage, StringComparison.Ordinal);
+        Assert.Contains(serverRejected ? "Complete the previous transaction first." : "could not be confirmed",
+            viewModel.LinklyTestStatusMessage, StringComparison.Ordinal);
+        Assert.Equal(viewModel.StatusMessage, viewModel.LinklyTestStatusMessage);
+        Assert.DoesNotContain("123456", viewModel.LinklyTestStatusMessage, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -2583,6 +2594,42 @@ public sealed class SettingsViewModelTests
         localization.SetCulture("en-US");
         Assert.Contains("installation did not complete", viewModel.RemoteMaintenanceProgressText);
         Assert.Equal(viewModel.RemoteMaintenanceProgressText, viewModel.StatusMessage);
+    }
+
+    [Theory]
+    [InlineData("serverDisabled")]
+    [InlineData("serverNotReady")]
+    [InlineData("serverConfigurationInvalid")]
+    [InlineData("serverAuthorizationFailed")]
+    [InlineData("serverUnavailable")]
+    [InlineData("endpointUnavailable")]
+    [InlineData("connectionFailed")]
+    [InlineData("preparationTimedOut")]
+    public async Task Remote_maintenance_failure_is_localized_in_both_status_surfaces(string failure)
+    {
+        var localization = new LocalizationService();
+        localization.SetCulture("zh-CN");
+        var key = "settings.remoteMaintenance.result." + failure;
+        var remoteService = new FakeRemoteMaintenanceService();
+        remoteService.InstallResult = new(false, key, remoteService.Status);
+        using var viewModel = new SettingsViewModel(new FakeCardTerminalSetupService(), localization,
+            remoteMaintenanceService: remoteService);
+
+        await viewModel.InstallRemoteMaintenanceCommand.ExecuteAsync(null);
+
+        var chinese = viewModel.RemoteMaintenanceProgressText;
+        Assert.NotEmpty(chinese);
+        Assert.DoesNotContain("settings.", chinese);
+        Assert.Equal(chinese, viewModel.StatusMessage);
+        Assert.False(viewModel.IsRemoteMaintenanceInstalling);
+        Assert.True(viewModel.InstallRemoteMaintenanceCommand.CanExecute(null));
+
+        localization.SetCulture("en-US");
+        Assert.NotEmpty(viewModel.RemoteMaintenanceProgressText);
+        Assert.DoesNotContain("settings.", viewModel.RemoteMaintenanceProgressText);
+        Assert.NotEqual(chinese, viewModel.RemoteMaintenanceProgressText);
+        Assert.Equal(viewModel.RemoteMaintenanceProgressText, viewModel.StatusMessage);
+        Assert.Equal(1, remoteService.InstallCallCount);
     }
 
     private sealed class RemoteMaintenanceUiContext : SynchronizationContext

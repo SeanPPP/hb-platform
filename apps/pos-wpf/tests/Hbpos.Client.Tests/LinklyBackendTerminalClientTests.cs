@@ -11,6 +11,185 @@ namespace Hbpos.Client.Tests;
 [Collection(GlobalLoggingTestCollection.Name)]
 public sealed class LinklyBackendTerminalClientTests
 {
+    [Theory]
+    [InlineData(false, null)]
+    [InlineData(false, "CLOUD-EVIDENCE-001")]
+    [InlineData(true, null)]
+    public async Task Cloud_payment_uses_sanitized_transaction_evidence(bool refund, string? cardTxnRef)
+    {
+        var submitted = 0;
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            if (request.RequestUri!.AbsolutePath.EndsWith("/active", StringComparison.Ordinal))
+                return new HttpResponseMessage(HttpStatusCode.NotFound);
+            if (request.Method == HttpMethod.Post && request.RequestUri.AbsolutePath.EndsWith("/transactions", StringComparison.Ordinal))
+                submitted++;
+            return JsonResponse(SanitizedTransactionSessionJson(100, cardTxnRef));
+        });
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+
+        var result = refund
+            ? await client.RefundAsync(1m, CreateSession(), CreateSettings(), "ANZCLOUD:original:RFN-ORIGINAL")
+            : await client.PurchaseAsync(1m, CreateSession(), CreateSettings());
+
+        Assert.True(result.Approved);
+        Assert.False(result.ResultUnknown);
+        Assert.Equal(1m, result.AuthorizedAmount);
+        var transaction = Assert.Single(result.CardTransactions!);
+        Assert.Equal("CLOUD-EVIDENCE-001", transaction.TxnRef);
+        Assert.Equal("00", transaction.ResponseCode);
+        Assert.Equal("APPROVED", transaction.ResponseText);
+        Assert.Equal("AUTH-001", transaction.AuthCode);
+        Assert.Equal("RFN-001", transaction.RefundReference);
+        Assert.Equal(1m, transaction.Amount);
+        Assert.Equal(1, submitted);
+    }
+
+    [Theory]
+    [InlineData(99L, null, "CLOUD-EVIDENCE-001")]
+    [InlineData(null, null, "CLOUD-EVIDENCE-001")]
+    [InlineData(-100L, null, "CLOUD-EVIDENCE-001")]
+    [InlineData(100L, "OTHER-TRANSACTION", "CLOUD-EVIDENCE-001")]
+    [InlineData(100L, null, null)]
+    public async Task Cloud_payment_keeps_unverifiable_sanitized_evidence_unknown(
+        long? amountCents, string? cardTxnRef, string? sessionTxnRef)
+    {
+        var handler = new StubHttpMessageHandler(request =>
+            request.RequestUri!.AbsolutePath.EndsWith("/active", StringComparison.Ordinal)
+                ? new HttpResponseMessage(HttpStatusCode.NotFound)
+                : JsonResponse(SanitizedTransactionSessionJson(amountCents, cardTxnRef, sessionTxnRef)));
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+
+        var result = await client.PurchaseAsync(1m, CreateSession(), CreateSettings());
+
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
+    }
+
+    [Fact]
+    public async Task Cloud_payment_keeps_final_decline_despite_approved_sanitized_evidence()
+    {
+        var handler = new StubHttpMessageHandler(request =>
+            request.RequestUri!.AbsolutePath.EndsWith("/active", StringComparison.Ordinal)
+                ? new HttpResponseMessage(HttpStatusCode.NotFound)
+                : JsonResponse(SanitizedTransactionSessionJson(100, null, transactionSuccess: false)));
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+
+        var result = await client.PurchaseAsync(1m, CreateSession(), CreateSettings());
+
+        Assert.False(result.Approved);
+    }
+
+    [Theory]
+    [InlineData("05", null)]
+    [InlineData("00", "05")]
+    public async Task Cloud_payment_keeps_conflicting_success_evidence_unknown(string cardCode, string? protectedCode)
+    {
+        var handler = new StubHttpMessageHandler(request =>
+            request.RequestUri!.AbsolutePath.EndsWith("/active", StringComparison.Ordinal)
+                ? new HttpResponseMessage(HttpStatusCode.NotFound)
+                : JsonResponse(SanitizedTransactionSessionJson(100, null, cardCode: cardCode, protectedCode: protectedCode)));
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+
+        var result = await client.PurchaseAsync(1m, CreateSession(), CreateSettings());
+
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
+    }
+
+    private static string SanitizedTransactionSessionJson(
+        long? amountCents, string? cardTxnRef,
+        string? sessionTxnRef = "CLOUD-EVIDENCE-001", bool transactionSuccess = true,
+        string cardCode = "00", string? protectedCode = null)
+    {
+        // 复现状态接口：成功位及安全明细齐全，外层响应码为空，不能由测试桩补造通知金额。
+        return JsonSerializer.Serialize(new
+        {
+            success = true,
+            data = new
+            {
+                environment = "Sandbox", storeCode = "S01", deviceCode = "TERM-1",
+                sessionId = "cloud-evidence-session", status = "Completed", txnRef = sessionTxnRef,
+                responseCode = protectedCode, responseText = (string?)null, transactionSuccess,
+                lastHttpStatus = 200, notifications = Array.Empty<object>(),
+                cardTransaction = new LinklyCloudBackendCardTransactionDto(
+                    cardTxnRef, "RFN-001", "AUTH-001", "VISA", "************1111", "MID-001",
+                    cardCode, "APPROVED", "123456", null, amountCents)
+            }
+        }, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+    }
+
+    [Theory]
+    [InlineData("pair", "en-US", "awaiting confirmation", "new pair code")]
+    [InlineData("logon", "en-US", "awaiting confirmation", "new pair code")]
+    [InlineData("status", "en-US", "awaiting confirmation", "new pair code")]
+    [InlineData("pair", "zh-CN", "尚未由 POS 确认", "更换配对码不能解除占用")]
+    [InlineData("logon", "zh-CN", "尚未由 POS 确认", "更换配对码不能解除占用")]
+    [InlineData("status", "zh-CN", "尚未由 POS 确认", "更换配对码不能解除占用")]
+    public async Task Setup_conflict_explains_unacknowledged_transaction_without_retrying(
+        string operation, string culture, string reason, string nextStep)
+    {
+        var requests = 0;
+        var handler = new StubHttpMessageHandler(_ =>
+        {
+            requests++;
+            return JsonResponse(JsonSerializer.Serialize(new
+            {
+                success = false,
+                errorCode = operation == "pair" ? "LINKLY_CLOUD_TERMINAL_SESSION_ACTIVE" : "LINKLY_CLOUD_BACKEND_ACTIVE_TRANSACTION",
+                message = "An active Linkly Cloud transaction already exists for this terminal."
+            }), HttpStatusCode.Conflict);
+        });
+        var localization = new LocalizationService();
+        localization.SetCulture(culture);
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService(), localization);
+
+        string? message;
+        if (operation == "pair")
+        {
+            var exception = await Assert.ThrowsAnyAsync<HttpRequestException>(() =>
+                client.PairTerminalAsync(CardTerminalEnvironment.Sandbox, Guid.NewGuid(), "123456"));
+            Assert.Equal(HttpStatusCode.Conflict, exception.StatusCode);
+            message = exception.Message;
+        }
+        else
+        {
+            var result = operation == "logon"
+                ? await client.TestConnectionAsync(CardTerminalEnvironment.Sandbox)
+                : await client.TestTransactionStatusAsync(CardTerminalEnvironment.Sandbox);
+            Assert.False(result.Succeeded);
+            message = result.Message;
+        }
+
+        Assert.Contains(reason, message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(nextStep, message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("123456", message, StringComparison.Ordinal);
+        Assert.Equal(1, requests);
+    }
+
+    [Theory]
+    [InlineData("LINKLY_CLOUD_BACKEND_PAIR_REJECTED", "new 6-digit pair code")]
+    [InlineData("LINKLY_CLOUD_BACKEND_PAIR_REQUEST_INVALID", "terminal, environment and 6-digit pair code")]
+    [InlineData("LINKLY_CLOUD_BACKEND_PAIR_TIMEOUT", "could not be confirmed")]
+    [InlineData("LINKLY_CLOUD_BACKEND_PAIR_CREDENTIAL_MISSING", "Web Admin")]
+    [InlineData("LINKLY_CLOUD_BACKEND_PAIR_IN_PROGRESS", "Wait for it to finish")]
+    [InlineData("UNRECOGNIZED_ERROR", "Specific server explanation")]
+    public async Task Pair_failure_distinguishes_rejection_timeout_credentials_and_busy(string errorCode, string expected)
+    {
+        var handler = new StubHttpMessageHandler(_ => JsonResponse(JsonSerializer.Serialize(new
+        {
+            success = false, errorCode, message = "Specific server explanation"
+        }), HttpStatusCode.BadRequest));
+        var localization = new LocalizationService();
+        localization.SetCulture("en-US");
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService(), localization);
+
+        var exception = await Assert.ThrowsAnyAsync<HttpRequestException>(() =>
+            client.PairTerminalAsync(CardTerminalEnvironment.Sandbox, Guid.NewGuid(), "123456"));
+
+        Assert.Contains(expected, exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public async Task GetTerminalsAsync_returns_safe_terminal_directory_and_caches_selection()
     {

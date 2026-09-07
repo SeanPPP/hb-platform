@@ -244,7 +244,7 @@ public sealed class LinklyBackendTerminalClient(
                 return new LinklyConnectionTestResult(logon.Succeeded, logon.Message);
             }
 
-            var message = TryReadLogonTestMessage(result.Content) ??
+            var message = ReadSetupFailureMessage(result.StatusCode, result.Content) ?? TryReadLogonTestMessage(result.Content) ??
                 string.Format(
                     CultureInfo.InvariantCulture,
                     T("linkly.backend.logonTestHttpFailed", "ANZ Linkly Cloud logon test failed with HTTP {0}."),
@@ -255,7 +255,7 @@ public sealed class LinklyBackendTerminalClient(
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or LinklyBackendHttpException or JsonException)
         {
             Log($"logon test failed environment={environment} error={ex.GetType().Name}");
-            return new LinklyConnectionTestResult(false, T("linkly.backend.communicationFailed", "ANZ Linkly Cloud backend communication failed."));
+            return new LinklyConnectionTestResult(false, T("settings.linkly.cloudBackend.testCommunicationFailed", "Test incomplete. Check the network and terminal screen before retrying."));
         }
     }
 
@@ -275,7 +275,7 @@ public sealed class LinklyBackendTerminalClient(
 
             if (!response.IsSuccessStatusCode)
             {
-                var message = TryReadStatusTestMessage(response.Content) ??
+                var message = ReadSetupFailureMessage(response.StatusCode, response.Content) ?? TryReadStatusTestMessage(response.Content) ??
                     string.Format(
                         CultureInfo.InvariantCulture,
                         T("linkly.backend.statusTestHttpFailed", "ANZ Linkly Cloud transaction status test failed with HTTP {0}."),
@@ -297,7 +297,7 @@ public sealed class LinklyBackendTerminalClient(
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or LinklyBackendHttpException or JsonException)
         {
             Log($"transaction status test failed environment={environment} error={ex.GetType().Name}");
-            return new LinklyConnectionTestResult(false, T("linkly.backend.communicationFailed", "ANZ Linkly Cloud backend communication failed."));
+            return new LinklyConnectionTestResult(false, T("settings.linkly.cloudBackend.testCommunicationFailed", "Test incomplete. Check the network and terminal screen before retrying."));
         }
     }
 
@@ -2287,7 +2287,7 @@ public sealed class LinklyBackendTerminalClient(
         public bool IsSuccessStatusCode => (int)StatusCode is >= 200 and <= 299;
     }
 
-    private static async Task<T> ReadTerminalApiResultAsync<T>(
+    private async Task<T> ReadTerminalApiResultAsync<T>(
         HttpResponseMessage response,
         CancellationToken cancellationToken)
     {
@@ -2308,7 +2308,7 @@ public sealed class LinklyBackendTerminalClient(
         if (!response.IsSuccessStatusCode)
         {
             throw new LinklyBackendHttpException(
-                result?.Message ?? $"Linkly backend request failed with HTTP {(int)response.StatusCode}.",
+                ReadSetupFailureMessage(response.StatusCode, content) ?? result?.Message ?? $"Linkly backend request failed with HTTP {(int)response.StatusCode}.",
                 response.StatusCode,
                 result?.ErrorCode);
         }
@@ -2316,12 +2316,44 @@ public sealed class LinklyBackendTerminalClient(
         if (result?.Success != true || result.Data is null)
         {
             throw new LinklyBackendHttpException(
-                result?.Message ?? "Linkly backend returned a failure response.",
+                ReadSetupFailureMessage(response.StatusCode, content) ?? result?.Message ?? "Linkly backend returned a failure response.",
                 response.StatusCode,
                 result?.ErrorCode);
         }
 
         return result.Data;
+    }
+
+    private string? ReadSetupFailureMessage(HttpStatusCode statusCode, string content)
+    {
+        string? errorCode = null;
+        try
+        {
+            errorCode = JsonSerializer.Deserialize<ApiResult<JsonElement>>(content, JsonOptions)?.ErrorCode;
+        }
+        catch (JsonException)
+        {
+            // 非 JSON 网关响应仍按 HTTP 状态提供操作建议，不能误判为配对码错误。
+        }
+
+        // 仅解释设置操作的明确错误码；不改变交易重试、选择版本及终端占用保护。
+        var key = errorCode switch
+        {
+            "LINKLY_CLOUD_BACKEND_ACTIVE_TRANSACTION" or "LINKLY_CLOUD_TERMINAL_SESSION_ACTIVE" => "operationBlocked",
+            "LINKLY_CLOUD_BACKEND_PAIR_IN_PROGRESS" or "LINKLY_CLOUD_TERMINAL_PAIRING_CONFLICT" => "pairInProgress",
+            "LINKLY_CLOUD_BACKEND_PAIR_REJECTED" => "pairRejected",
+            "LINKLY_CLOUD_BACKEND_PAIR_REQUEST_INVALID" => "pairRequestInvalid",
+            "LINKLY_CLOUD_BACKEND_PAIR_CREDENTIAL_MISSING" or "LINKLY_CLOUD_CREDENTIAL_NOT_CONFIGURED" or
+                "LINKLY_CLOUD_TERMINAL_CREDENTIAL_REENTRY_REQUIRED" or "LINKLY_CLOUD_TERMINAL_CREDENTIAL_UNAVAILABLE" => "credentialsRequired",
+            "LINKLY_CLOUD_BACKEND_PAIR_TIMEOUT" or "LINKLY_CLOUD_BACKEND_PAIR_UPSTREAM_FAILED" or
+                "LINKLY_CLOUD_BACKEND_PAIR_PERSISTENCE_FAILED" => "pairUnconfirmed",
+            "LINKLY_CLOUD_TERMINAL_NOT_READY" => "pairBeforeSelect",
+            "LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT" => "selectionChanged",
+            "LINKLY_CLOUD_TERMINAL_ASSIGNED" => "assignedElsewhere",
+            "LINKLY_CLOUD_TERMINAL_NOT_FOUND" => "terminalUnavailable",
+            _ => statusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden ? "permissionRequired" : null
+        };
+        return key is null ? null : T($"settings.linkly.cloudBackend.{key}", string.Empty);
     }
 
     private static async Task<LinklyCloudBackendSessionResponse> ReadApiResultAsync(
@@ -2529,17 +2561,7 @@ public sealed class LinklyBackendTerminalClient(
         var transaction = ToCardTransaction(transactionResult, amount, receiptText);
         var approved = IsCompletedOrPendingSuccess(status) &&
             transactionResult.Succeeded;
-        // 后端会在提交后才分配并持久化 TxnRef；批准结果必须带真实引用和真实金额，不能用本地临时跟踪号补造。
-        var persistedTxnRef = NormalizeOptional(status.TxnRef);
-        var terminalTxnRef = NormalizeOptional(transactionResult.TxnRef);
-        var hasConflictingTerminalReference = !string.IsNullOrWhiteSpace(persistedTxnRef) &&
-            !string.IsNullOrWhiteSpace(terminalTxnRef) &&
-            !string.Equals(persistedTxnRef, terminalTxnRef, StringComparison.Ordinal);
-        var expectedAmount = decimal.Round(requestedAmount, 2, MidpointRounding.AwayFromZero);
-        if (approved && (hasConflictingTerminalReference ||
-                         amount is null ||
-                         decimal.Round(amount.Value, 2, MidpointRounding.AwayFromZero) != expectedAmount ||
-                         string.IsNullOrWhiteSpace(terminalTxnRef)))
+        if (approved && !IsTransactionResultVerified(status, transactionResult, requestedAmount))
         {
             return new PaymentAuthorizationResult(false, null, "ANZ Linkly Cloud result could not be verified.", ResultUnknown: true);
         }
@@ -2597,7 +2619,34 @@ public sealed class LinklyBackendTerminalClient(
         public string? LastFailureMessage { get; set; }
     }
 
-    private static CardTransactionDto ToCardTransaction(
+    internal static bool IsTransactionResultVerified(
+        LinklyCloudBackendSessionResponse status,
+        LinklyCloudTransactionResult result,
+        decimal requestedAmount)
+    {
+        // 实时收款与自动恢复共用证据校验，绝不能用请求/草稿金额补造终端批准金额。
+        var persistedTxnRef = NormalizeOptional(status.TxnRef);
+        var terminalTxnRef = NormalizeOptional(result.TxnRef);
+        if (string.IsNullOrWhiteSpace(terminalTxnRef) ||
+            (persistedTxnRef is not null && !string.Equals(persistedTxnRef, terminalTxnRef, StringComparison.Ordinal)) ||
+            result.Amount is not decimal amount || amount < 0m ||
+            decimal.Round(amount, 2, MidpointRounding.AwayFromZero) !=
+            decimal.Round(requestedAmount, 2, MidpointRounding.AwayFromZero))
+        {
+            return false;
+        }
+
+        // 安全明细也不能覆盖会话已保护的结果，避免混用不同终态的金额与批准码。
+        var card = status.CardTransaction;
+        return card is null ||
+            ((NormalizeOptional(result.ResponseCode) is not string resultCode || LinklyApprovalResponseCodes.IsApproved(resultCode)) &&
+             (NormalizeOptional(status.ResponseCode) is not string code ||
+              string.Equals(code, NormalizeOptional(card.ResponseCode), StringComparison.OrdinalIgnoreCase)) &&
+             (NormalizeOptional(status.ResponseText) is not string text ||
+              string.Equals(text, NormalizeOptional(card.ResponseText), StringComparison.OrdinalIgnoreCase)));
+    }
+
+    internal static CardTransactionDto ToCardTransaction(
         LinklyCloudTransactionResult response,
         decimal? amount,
         string? receiptText)
@@ -2619,13 +2668,33 @@ public sealed class LinklyBackendTerminalClient(
             NormalizeOptional(response.RefundReference));
     }
 
-    private static LinklyCloudTransactionResult ReadTransactionResult(
+    internal static LinklyCloudTransactionResult ReadTransactionResult(
         LinklyCloudBackendSessionResponse status,
         decimal requestedAmount,
         string requestedTxnRef)
     {
         var protectedResponseCode = NormalizeOptional(status.ResponseCode);
         var protectedResponseText = NormalizeOptional(status.ResponseText);
+        if (status.CardTransaction is { } card)
+        {
+            // 状态接口已提供白名单化的权威明细；不再依赖原始通知的嵌套格式，也不回填请求金额。
+            var responseCode = protectedResponseCode ?? NormalizeOptional(card.ResponseCode);
+            return new LinklyCloudTransactionResult(
+                status.SessionId,
+                IsSuccessfulTransaction(status.TransactionSuccess, responseCode, notificationSuccess: null),
+                NormalizeOptional(card.TxnRef) ?? NormalizeOptional(status.TxnRef),
+                NormalizeOptional(card.AuthCode),
+                NormalizeOptional(card.CardType),
+                null,
+                NormalizeOptional(card.MaskedCardNumber),
+                NormalizeOptional(card.MerchantId),
+                responseCode,
+                protectedResponseText ?? NormalizeOptional(card.ResponseText),
+                NormalizeOptional(card.Stan),
+                card.AmountCents is long cents ? cents / 100m : null,
+                NormalizeOptional(card.Rfn) ?? TryReadRefundReference(status, null));
+        }
+
         var notifications = status.Notifications ?? [];
         var fallbackRefundReference = TryReadRefundReference(status, null);
         var transactionNotification = string.IsNullOrWhiteSpace(protectedResponseCode)
@@ -3977,7 +4046,7 @@ public sealed class LinklyBackendTerminalClient(
     private sealed class LinklyBackendHttpException(
         string message,
         HttpStatusCode httpStatus,
-        string? errorCode = null) : HttpRequestException(message)
+        string? errorCode = null) : HttpRequestException(message, inner: null, statusCode: httpStatus)
     {
         public HttpStatusCode HttpStatus { get; } = httpStatus;
 
