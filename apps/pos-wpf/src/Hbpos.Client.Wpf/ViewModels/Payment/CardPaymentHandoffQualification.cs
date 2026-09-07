@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
+using Hbpos.Contracts.Cashiers;
 
 namespace Hbpos.Client.Wpf.ViewModels;
 
@@ -92,5 +93,40 @@ internal static class CardPaymentHandoffQualification
         string.Equals(left.StoreCode, right.StoreCode, StringComparison.OrdinalIgnoreCase) &&
         string.Equals(left.DeviceCode, right.DeviceCode, StringComparison.OrdinalIgnoreCase) &&
         string.Equals(left.CashierId, right.CashierId, StringComparison.Ordinal) &&
-        Equals(left.CashierSession, right.CashierSession);
+        CashierSessionsMatch(left.CashierSession, right.CashierSession);
+
+    private static bool CashierSessionsMatch(CashierSessionDto? left, CashierSessionDto? right)
+    {
+        if (ReferenceEquals(left, right))
+        {
+            return true;
+        }
+
+        if (left is null || right is null)
+        {
+            return false;
+        }
+
+        // JSON 往返会创建新的数组实例；按内容比较，仍严格拒绝任何收银身份或授权漂移。
+        return string.Equals(left.CashierId, right.CashierId, StringComparison.Ordinal) &&
+            string.Equals(left.UserGuid, right.UserGuid, StringComparison.Ordinal) &&
+            string.Equals(left.CashierName, right.CashierName, StringComparison.Ordinal) &&
+            string.Equals(left.StoreCode, right.StoreCode, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(left.DeviceCode, right.DeviceCode, StringComparison.OrdinalIgnoreCase) &&
+            SequencesMatch(left.Roles, right.Roles) &&
+            SequencesMatch(left.PermissionCodes, right.PermissionCodes) &&
+            SequencesMatch(left.AllowedStoreCodes, right.AllowedStoreCodes) &&
+            left.IsSuperAdmin == right.IsSuperAdmin &&
+            left.IsOfflineCached == right.IsOfflineCached &&
+            left.IsEmergencyOverride == right.IsEmergencyOverride &&
+            string.Equals(left.AuthorizationToken, right.AuthorizationToken, StringComparison.Ordinal) &&
+            left.AuthorizationExpiresAtUtc == right.AuthorizationExpiresAtUtc &&
+            string.Equals(left.EmergencyGrantId, right.EmergencyGrantId, StringComparison.Ordinal);
+    }
+
+    private static bool SequencesMatch(
+        IReadOnlyList<string>? left,
+        IReadOnlyList<string>? right) =>
+        ReferenceEquals(left, right) ||
+        (left is not null && right is not null && left.SequenceEqual(right, StringComparer.Ordinal));
 }

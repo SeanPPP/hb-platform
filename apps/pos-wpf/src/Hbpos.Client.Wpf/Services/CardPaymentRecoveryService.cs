@@ -922,6 +922,40 @@ public sealed class CardPaymentRecoveryService(
 
         if (IsApproved(status))
         {
+            if (status.CardTransaction is not null)
+            {
+                var transactionResult = LinklyBackendTerminalClient.ReadTransactionResult(
+                    status,
+                    Math.Abs(attempt.Amount),
+                    attempt.TxnRef ?? string.Empty);
+                var isAttemptAmountVerified = LinklyBackendTerminalClient.IsTransactionResultVerified(
+                    status,
+                    transactionResult,
+                    Math.Abs(attempt.Amount));
+                var isDraftAmountVerified = draft is null || LinklyBackendTerminalClient.IsTransactionResultVerified(
+                    status,
+                    transactionResult,
+                    Math.Abs(draft.CardAmount));
+                if (!transactionResult.Succeeded || !isAttemptAmountVerified || !isDraftAmountVerified)
+                {
+                    // 先核验支付证据，即使草稿缺失也不能持久化未经验证的批准状态、保存订单或确认 session。
+                    LogRecoveryResult(settings, attempt, status, CardPaymentRecoveryOutcome.Unknown, "approved-transaction-evidence-mismatch");
+                    return new CardPaymentRecoveryResult(
+                        CardPaymentRecoveryOutcome.Unknown,
+                        T("cardRecovery.linkly.unknown", "The previous card result cannot be confirmed. Ask a supervisor to confirm the Linkly backend status before continuing."),
+                        DialogDetails: BuildDialogDetails(attempt, status),
+                        PaymentSupervisorDetails: BuildPaymentSupervisorDetails(attempt));
+                }
+
+                // 统一使用解析后的响应码、文案与终端引用；旧服务端没有 DTO 时继续走原有兼容路径。
+                status = status with
+                {
+                    TxnRef = NormalizeOptional(transactionResult.TxnRef) ?? status.TxnRef,
+                    ResponseCode = NormalizeOptional(transactionResult.ResponseCode) ?? status.ResponseCode,
+                    ResponseText = NormalizeOptional(transactionResult.ResponseText) ?? status.ResponseText
+                };
+            }
+
             if (draft is null)
             {
                 return await PersistInvalidRecoveredDraftAsync(
@@ -5164,6 +5198,18 @@ public sealed class CardPaymentRecoveryService(
         LinklyCloudBackendSessionResponse status,
         decimal amount)
     {
+        if (status.CardTransaction is not null)
+        {
+            var transactionResult = LinklyBackendTerminalClient.ReadTransactionResult(
+                status,
+                Math.Abs(amount),
+                attempt.TxnRef ?? string.Empty);
+            return LinklyBackendTerminalClient.ToCardTransaction(
+                transactionResult,
+                transactionResult.Amount,
+                status.ReceiptText);
+        }
+
         return new CardTransactionDto(
             "ANZ",
             status.TxnRef ?? attempt.TxnRef ?? status.SessionId,
