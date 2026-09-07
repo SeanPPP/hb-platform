@@ -56,7 +56,7 @@
 .positive { color:#147451; }
 .negative { color:#b7393d; }
 .muted { color:var(--muted); }
-.table td:last-child { font-size:11px; }
+.table td[data-metric=growth] { font-size:11px; }
 .panelFooter { border-top:1px solid var(--line); min-height:40px; padding:10px; display:flex; align-items:center; justify-content:space-between; gap:8px; flex-shrink:0; color:var(--muted); font-size:10px; background:#fafcfe; }
 .productFooter { width:100%; min-width:0; }
 .productFooter :global(.ant-pagination) { display:flex; justify-content:flex-end; flex-wrap:wrap; align-items:center; margin-top:10px; font-size:11px; gap:2px; }
