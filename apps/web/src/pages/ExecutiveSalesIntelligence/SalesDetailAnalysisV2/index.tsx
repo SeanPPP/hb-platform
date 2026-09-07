@@ -11,7 +11,7 @@ import { applyKeyword, emptySelection, initialDetailState, resizeColumns, select
 import { fetchSalesDetailReport, type ReportSection, type SalesDetailPage, type SalesDetailQuery, type SalesDetailReport, type SalesDetailRow } from './reportService'
 import styles from './styles.module.css'
 
-type MetricKey = 'revenue' | 'grossProfit' | 'grossMarginRate' | 'orderCount' | 'averageTransaction' | 'quantity' | 'averageUnitPrice' | 'share' | 'chinaShare'
+type MetricKey = 'revenue' | 'grossProfit' | 'grossMarginRate' | 'quantity' | 'averageUnitPrice' | 'share' | 'chinaShare'
 type PanelKey = 'suppliers' | 'branches' | 'products'
 type Sort = { key: MetricKey; ascending: boolean }
 type SectionState = ReportQueryState<SalesDetailPage> & { data?: SalesDetailPage }
@@ -113,6 +113,7 @@ export default function SalesDetailAnalysisV2() {
   const loading = bundle.loading
   const retrySection = (_section: ReportSection) => setBundleRefresh(value => value + 1)
   const refreshAll = () => setBundleRefresh(value => value + 1)
+  // 顶部销量与均价使用服务端全量筛选汇总，不能由当前商品页或各行均价推算。
   const total = summary.data?.summary ?? summary.data?.rows[0]
   const pageTotal = products.data ? products.data.summary ?? sumProductPage(products.data.rows) : undefined
   useEffect(() => {
@@ -121,10 +122,10 @@ export default function SalesDetailAnalysisV2() {
   }, [products.data, selection.page, selection.pageSize])
 
   const labels: Record<MetricKey, string> = { revenue: text('营业额', 'Revenue'), grossProfit: text('毛利额', 'Gross profit'), grossMarginRate: text('毛利率', 'Margin'),
-    orderCount: text('客单数', 'Transactions'), averageTransaction: text('客单价', 'Basket value'), quantity: text('数量', 'Quantity'),
+    quantity: text('数量', 'Quantity'),
     averageUnitPrice: text('均价', 'Unit price'), share: text('营业额占比', 'Revenue share'), chinaShare: text('中国货占比', 'China share') }
   const previous: Record<MetricKey, keyof SalesDetailRow> = { revenue: 'compareRevenue', grossProfit: 'compareGrossProfit', grossMarginRate: 'compareGrossMarginRate',
-    orderCount: 'compareOrderCount', averageTransaction: 'compareAverageTransaction', quantity: 'compareQuantity', averageUnitPrice: 'compareAverageUnitPrice', share: 'compareShare', chinaShare: 'compareChinaShare' }
+    quantity: 'compareQuantity', averageUnitPrice: 'compareAverageUnitPrice', share: 'compareShare', chinaShare: 'compareChinaShare' }
   const metrics = (panel: PanelKey): (MetricKey | 'growth')[] => {
     const sales: MetricKey[] = ['revenue', 'quantity', 'averageUnitPrice']
     const profit: MetricKey[] = ['grossProfit', 'grossMarginRate']
@@ -132,13 +133,13 @@ export default function SalesDetailAnalysisV2() {
     // 表头与数据共用列顺序，毛利额和毛利率固定放在增长率之后。
     return [...sales, ...shares, 'growth', ...profit]
   }
-  const metricLabel = (panel: PanelKey, field: MetricKey) => panel !== 'products' && field === 'quantity'
+  const metricLabel = (panel: PanelKey | 'summary', field: MetricKey) => panel !== 'products' && field === 'quantity'
     ? text('商品数量', 'Product quantity')
     : panel !== 'products' && field === 'averageUnitPrice'
       ? text('商品均价', 'Average product price')
       : labels[field]
   const metric = (row: SalesDetailRow, field: MetricKey) => <MetricPair current={row[field]} previous={row[previous[field]] as number | null}
-    compare={dates.compare} revenue={row.revenue} compareRevenue={row.compareRevenue} costMetric={field === 'grossMarginRate' || field === 'grossProfit'} format={field.includes('Share') || field === 'share' || field === 'grossMarginRate' ? 'rate' : field === 'quantity' || field === 'orderCount' ? 'integer' : 'money'} />
+    compare={dates.compare} revenue={row.revenue} compareRevenue={row.compareRevenue} costMetric={field === 'grossMarginRate' || field === 'grossProfit'} format={field.includes('Share') || field === 'share' || field === 'grossMarginRate' ? 'rate' : field === 'quantity' ? 'integer' : 'money'} />
   const pick = (dimension: 'supplier' | 'branch' | 'product', row: SalesDetailRow) => {
     selectedNames.current[`${dimension}:${row.code}`] = row.name
     setSelection(value => selectDimension(value, dimension, row.code))
@@ -200,8 +201,8 @@ export default function SalesDetailAnalysisV2() {
     {!allowed && <Alert type="warning" message={text('当前账号没有可查询的分店范围', 'No stores are available for this account')} />}
     {summary.error && <Alert type="warning" message={summary.error} action={<Button onClick={() => retrySection('summary')}>{text('重试汇总', 'Retry totals')}</Button>} />}
     <section className={styles.summary} aria-label={text('全量筛选汇总', 'All matching totals')} data-testid="detail-summary">
-      {(['revenue', 'orderCount', 'averageTransaction', 'grossProfit', 'grossMarginRate'] as MetricKey[]).map(field => <div key={field}>
-        <span>{field === 'revenue' ? text(hasFilters ? '当前筛选营业额' : '当前标签营业额', 'Matching revenue') : labels[field]}</span>
+      {(['revenue', 'quantity', 'averageUnitPrice', 'grossProfit', 'grossMarginRate'] as MetricKey[]).map(field => <div key={field}>
+        <span>{field === 'revenue' ? text(hasFilters ? '当前筛选营业额' : '当前标签营业额', 'Matching revenue') : metricLabel('summary', field)}</span>
         {total ? metric(total, field) : <strong className={styles.pendingTotal}>—</strong>}
       </div>)}
     </section>
@@ -235,7 +236,7 @@ export default function SalesDetailAnalysisV2() {
             onChange={(page, pageSize) => setSelection(value => ({ ...value, page: value.pageSize === pageSize ? page : 1, pageSize }))} />
         </div>}>{table('products', productRows)}</Panel>
     </div>
-    <div className={styles.foot}><span>{text('移动端报告同源统计 · 客单数 — 表示当前范围无法可靠去重', 'Mobile report statistics · — transactions means no reliable distinct-basket total')}</span>
+    <div className={styles.foot}><span>{text('移动端报告同源统计 · 商品数量含退货抵减 · 商品均价 = 营业额 ÷ 商品数量（数量 ≤ 0 时显示 —）', 'Mobile report statistics · Product quantity is net of returns · Average product price = revenue ÷ product quantity (— when quantity ≤ 0)')}</span>
       <span>{summary.snapshot?.statisticUpdatedAt ? `${text('统计水位', 'Snapshot')} ${new Date(summary.snapshot.statisticUpdatedAt).toLocaleString()}` : text('按完整统计快照读取', 'Reading complete snapshots')}</span></div>
   </main>
 }
