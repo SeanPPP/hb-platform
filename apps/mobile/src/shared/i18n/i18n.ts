@@ -1,3 +1,7 @@
+import wpfVersionsZh from "@/locales/zh/wpfVersions.json";
+import wpfVersionsEn from "@/locales/en/wpfVersions.json";
+import appDownloadsZh from "@/locales/zh/appDownloads.json";
+import appDownloadsEn from "@/locales/en/appDownloads.json";
 import i18n from "i18next";
 import { initReactI18next } from "react-i18next";
 import commonEn from "@/locales/en/common.json";
@@ -54,6 +58,8 @@ import {
 const resources = {
   zh: {
     common: commonZh,
+    wpfVersions: wpfVersionsZh,
+    appDownloads: appDownloadsZh,
     attendance: attendanceZh,
     login: loginZh,
     home: homeZh,
@@ -78,6 +84,8 @@ const resources = {
   },
   en: {
     common: commonEn,
+    wpfVersions: wpfVersionsEn,
+    appDownloads: appDownloadsEn,
     attendance: attendanceEn,
     login: loginEn,
     home: homeEn,
@@ -124,7 +132,7 @@ if (!i18n.isInitialized) {
     lng: DEFAULT_APP_LANGUAGE,
     fallbackLng: DEFAULT_APP_LANGUAGE,
     defaultNS: "common",
-    ns: ["common", "advertisements", "attendance", "login", "home", "cart", "domesticPurchase", "deviceManagement", "employeeProfile", "employeeProfileReview", "installmentOrders", "localSupplierInvoices", "orders", "promotions", "preorder", "seasonalCards", "settings", "storeVouchers", "productQuery", "userManagement", "warehouse", "workbench"],
+    ns: ["appDownloads", "wpfVersions", "common", "advertisements", "attendance", "login", "home", "cart", "domesticPurchase", "deviceManagement", "employeeProfile", "employeeProfileReview", "installmentOrders", "localSupplierInvoices", "orders", "promotions", "preorder", "seasonalCards", "settings", "storeVouchers", "productQuery", "userManagement", "warehouse", "workbench"],
     interpolation: {
       escapeValue: false,
     },

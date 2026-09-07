@@ -56,7 +56,9 @@
     "employeeProfile": "Employee",
     "employeeProfileReview": "Profile Review",
     "deviceManagement": "Devices",
-    "settings": "Settings"
+    "settings": "Settings",
+    "appDownloads": "App Downloads",
+    "wpfVersions": "WPF Versions"
   },
   "language": {
     "title": "Language",
@@ -252,6 +254,7 @@
       "emptySupplierBranches": "No supplier branch data",
       "emptyProductSearch": "No matching product details",
       "costPending": "Cost pending",
+      "costNoActivity": "No activity",
       "loading": "Loading...",
       "error": "Failed to load. Please try again."
     },

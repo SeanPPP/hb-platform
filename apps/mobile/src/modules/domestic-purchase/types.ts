@@ -101,17 +101,59 @@ export interface CreateDomesticProductBatchRequest {
   supplierCode: string;
   prefixCode?: string;
   prefixName?: string;
-  items: Array<{
-    productName?: string;
-    productType: ProductCreationType;
-    privateLabelPrice?: number | null;
-  }>;
+  items: CreateDomesticProductBatchItem[];
+}
+
+export interface CreateDomesticProductBatchItem {
+  productName?: string;
+  productType: ProductCreationType;
+  privateLabelPrice?: number | null;
+  setQuantity?: number | null;
+  setPrice?: number | null;
+  createCount?: number;
+  subItems?: CreateDomesticProductBatchItem[];
+}
+
+export interface CreateDomesticProductBatchResult {
+  batchNumber: string;
+  totalCreated: number;
+  normalProductCount: number;
+  setProductCount: number;
+}
+
+export interface DomesticSetTemplateSummary {
+  templateId: string;
+  supplierCode: string;
+  templateName: string;
+  setProductName: string;
+  isEnabled: boolean;
+  setQuantity: number;
+  updatedAt?: string;
+}
+
+export interface DomesticSetTemplateDetail extends DomesticSetTemplateSummary {
+  subItems: {
+    productName: string;
+    privateLabelPrice: number;
+    sortOrder: number;
+  }[];
+}
+
+export interface SaveDomesticSetTemplateRequest {
+  supplierCode: string;
+  templateName: string;
+  setProductName: string;
+  isEnabled?: boolean;
+  subItems: {
+    productName: string;
+    privateLabelPrice: number;
+  }[];
 }
 
 export interface UpdateDomesticProductBatchItemsRequest {
-  items: Array<{
+  items: {
     productCode: string;
     productName?: string | null;
     privateLabelPrice?: number | null;
-  }>;
+  }[];
 }

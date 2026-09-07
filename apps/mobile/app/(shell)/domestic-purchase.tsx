@@ -1,9 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ElementRef } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   FlatList,
-  InputAccessoryView,
-  Keyboard,
-  Platform,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -17,7 +14,6 @@ import {
   Button,
   Card,
   Divider,
-  Menu,
   Modal,
   Portal,
   SegmentedButtons,
@@ -34,27 +30,21 @@ import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { resolveLocaleTag } from "@/shared/i18n/types";
 import { useAuthStore } from "@/store/auth-store";
 import {
-  createDomesticProductBatch,
   exportDomesticProductBatch,
   fetchDomesticProductBatchDetail,
   fetchDomesticProductBatches,
-  fetchDomesticSuppliers,
-  fetchProductPrefixes,
   updateDomesticProductBatchItems,
 } from "@/modules/domestic-purchase/api";
+import { CreateBatchModal } from "@/modules/domestic-purchase/CreateBatchModal";
 import { DomesticProductList } from "@/modules/domestic-purchase/DomesticProductList";
 import type {
   DomesticProductBatch,
   DomesticProductBatchDetail,
   DomesticProductBatchItem,
-  DomesticSupplierOption,
-  ProductPrefixOption,
 } from "@/modules/domestic-purchase/types";
 import { ProductCreationType } from "@/modules/domestic-purchase/types";
 
 const PAGE_SIZE = 20;
-const CREATE_COUNT_ACCESSORY_ID = "domestic-purchase-create-count-accessory";
-const CREATE_PRICE_ACCESSORY_ID = "domestic-purchase-create-price-accessory";
 
 type DomesticPurchaseTab = "creation" | "products";
 
@@ -161,26 +151,6 @@ export default function DomesticPurchaseScreen() {
   const [detailSaving, setDetailSaving] = useState(false);
 
   const [createVisible, setCreateVisible] = useState(false);
-  const [suppliers, setSuppliers] = useState<DomesticSupplierOption[]>([]);
-  const [prefixes, setPrefixes] = useState<ProductPrefixOption[]>([]);
-  const [supplierMenuVisible, setSupplierMenuVisible] = useState(false);
-  const [prefixMenuVisible, setPrefixMenuVisible] = useState(false);
-  const [selectedSupplier, setSelectedSupplier] = useState<DomesticSupplierOption | null>(null);
-  const [selectedPrefix, setSelectedPrefix] = useState<ProductPrefixOption | null>(null);
-  const [createCount, setCreateCount] = useState("5");
-  const [privateLabelPrice, setPrivateLabelPrice] = useState("");
-  const privateLabelPriceInputRef = useRef<ElementRef<typeof TextInput>>(null);
-
-  const focusPrivateLabelPriceInput = useCallback(() => {
-    privateLabelPriceInputRef.current?.focus();
-  }, []);
-
-  const finishPrivateLabelPriceEditing = useCallback(() => {
-    // 触摸“完成”时先主动失焦，再兜底收起键盘，避免 accessory 残留。
-    privateLabelPriceInputRef.current?.blur();
-    Keyboard.dismiss();
-  }, []);
-
   const getErrorMessage = useCallback((error: unknown, fallbackKey: string) => (
     resolveLocalizedErrorMessage(error, {
       language,
@@ -216,14 +186,6 @@ export default function DomesticPurchaseScreen() {
     [getErrorMessage, hasAccess]
   );
 
-  const loadSuppliers = useCallback(async () => {
-    try {
-      setSuppliers(await fetchDomesticSuppliers());
-    } catch (error) {
-      setSnackbar(getErrorMessage(error, "messages.loadSuppliersFailed"));
-    }
-  }, [getErrorMessage]);
-
   useFocusEffect(
     useCallback(() => {
       if (activeTab === "creation") {
@@ -231,12 +193,6 @@ export default function DomesticPurchaseScreen() {
       }
     }, [activeTab, loadBatches])
   );
-
-  useEffect(() => {
-    if (createVisible) {
-      void loadSuppliers();
-    }
-  }, [createVisible, loadSuppliers]);
 
   const openDetail = useCallback(
     async (batch: DomesticProductBatch) => {
@@ -260,71 +216,6 @@ export default function DomesticPurchaseScreen() {
     },
     [getErrorMessage]
   );
-
-  const resetCreateForm = useCallback(() => {
-    setSelectedSupplier(null);
-    setSelectedPrefix(null);
-    setPrefixes([]);
-    setCreateCount("5");
-    setPrivateLabelPrice("");
-    setSupplierMenuVisible(false);
-    setPrefixMenuVisible(false);
-  }, []);
-
-  const handleSupplierSelect = useCallback(
-    async (supplier: DomesticSupplierOption) => {
-      setSelectedSupplier(supplier);
-      setSelectedPrefix(null);
-      setSupplierMenuVisible(false);
-      try {
-        setPrefixes(await fetchProductPrefixes(supplier.supplierCode));
-      } catch (error) {
-        setSnackbar(getErrorMessage(error, "messages.loadPrefixesFailed"));
-      }
-    },
-    [getErrorMessage]
-  );
-
-  const handleCreate = useCallback(async () => {
-    if (!selectedSupplier) {
-      setSnackbar(t("messages.selectSupplier"));
-      return;
-    }
-
-    const count = Number(createCount);
-    if (!Number.isInteger(count) || count < 1 || count > 100) {
-      setSnackbar(t("messages.invalidCount"));
-      return;
-    }
-
-    const price = privateLabelPrice.trim() ? Number(privateLabelPrice) : null;
-    if (price != null && (!Number.isFinite(price) || price < 0)) {
-      setSnackbar(t("messages.invalidPrice"));
-      return;
-    }
-
-    setBusy(true);
-    try {
-      await createDomesticProductBatch({
-        supplierCode: selectedSupplier.supplierCode,
-        prefixCode: selectedPrefix?.prefixCode || selectedPrefix?.prefixName,
-        prefixName: selectedPrefix?.prefixName || selectedPrefix?.prefixCode,
-        items: Array.from({ length: count }, () => ({
-          productName: "",
-          productType: ProductCreationType.Normal,
-          privateLabelPrice: price,
-        })),
-      });
-      setSnackbar(t("messages.createSuccess"));
-      setCreateVisible(false);
-      resetCreateForm();
-      await loadBatches(1, "replace");
-    } catch (error) {
-      setSnackbar(getErrorMessage(error, "messages.createFailed"));
-    } finally {
-      setBusy(false);
-    }
-  }, [createCount, getErrorMessage, loadBatches, privateLabelPrice, resetCreateForm, selectedPrefix, selectedSupplier, t]);
 
   const handleExport = useCallback(
     async (batchNumber: string) => {
@@ -566,139 +457,32 @@ export default function DomesticPurchaseScreen() {
         <DomesticProductList />
       )}
 
-      <Portal>
-        <Modal
-          visible={createVisible}
-          onDismiss={() => {
-            setCreateVisible(false);
-            resetCreateForm();
-          }}
-          contentContainerStyle={styles.modal}
-        >
-          <Text variant="titleMedium" style={styles.modalTitle}>
-            {t("create.title")}
-          </Text>
-          <Menu
-            visible={supplierMenuVisible}
-            onDismiss={() => setSupplierMenuVisible(false)}
-            anchor={
-              <Button mode="outlined" onPress={() => setSupplierMenuVisible(true)} style={styles.fullButton}>
-                {selectedSupplier
-                  ? `${selectedSupplier.supplierCode} - ${selectedSupplier.supplierName}`
-                  : t("create.selectSupplier")}
-              </Button>
-            }
-          >
-            <ScrollView style={styles.menuScroll}>
-              {suppliers.map((supplier) => (
-                <Menu.Item
-                  key={supplier.supplierCode}
-                  title={`${supplier.supplierCode} - ${supplier.supplierName}`}
-                  onPress={() => handleSupplierSelect(supplier)}
-                />
-              ))}
-            </ScrollView>
-          </Menu>
-          <Menu
-            visible={prefixMenuVisible}
-            onDismiss={() => setPrefixMenuVisible(false)}
-            anchor={
-              <Button
-                mode="outlined"
-                onPress={() => setPrefixMenuVisible(true)}
-                disabled={!selectedSupplier}
-                style={styles.fullButton}
-              >
-                {selectedPrefix?.prefixName || selectedPrefix?.prefixCode || t("create.selectPrefix")}
-              </Button>
-            }
-          >
-            <ScrollView style={styles.menuScroll}>
-              <Menu.Item
-                title={t("create.noPrefix")}
-                onPress={() => {
-                  setSelectedPrefix(null);
-                  setPrefixMenuVisible(false);
-                }}
-              />
-              {prefixes.map((prefix) => (
-                <Menu.Item
-                  key={`${prefix.prefixCode}-${prefix.prefixName}`}
-                  title={prefix.prefixDescription ? `${prefix.prefixName} - ${prefix.prefixDescription}` : prefix.prefixName}
-                  onPress={() => {
-                    setSelectedPrefix(prefix);
-                    setPrefixMenuVisible(false);
-                  }}
-                />
-              ))}
-            </ScrollView>
-          </Menu>
-          <TextInput
-            mode="outlined"
-            label={t("create.count")}
-            value={createCount}
-            keyboardType="number-pad"
-            returnKeyType={Platform.OS === "ios" ? "next" : undefined}
-            inputAccessoryViewID={Platform.OS === "ios" ? CREATE_COUNT_ACCESSORY_ID : undefined}
-            onSubmitEditing={Platform.OS === "ios" ? focusPrivateLabelPriceInput : undefined}
-            onChangeText={setCreateCount}
-            style={styles.input}
-          />
-          <TextInput
-            ref={(input: ElementRef<typeof TextInput> | null) => {
-              // Paper 输入框叠加了原生与组件 ref 类型，回调仅保留后续聚焦所需的句柄。
-              privateLabelPriceInputRef.current = input;
-            }}
-            mode="outlined"
-            label={t("create.privateLabelPrice")}
-            value={privateLabelPrice}
-            keyboardType="decimal-pad"
-            returnKeyType={Platform.OS === "ios" ? "done" : undefined}
-            inputAccessoryViewID={Platform.OS === "ios" ? CREATE_PRICE_ACCESSORY_ID : undefined}
-            onSubmitEditing={Platform.OS === "ios" ? finishPrivateLabelPriceEditing : undefined}
-            onChangeText={setPrivateLabelPrice}
-            style={styles.input}
-          />
-          <Text variant="bodySmall" style={styles.inputHelpText}>
-            {t("create.privateLabelPriceHelp")}
-          </Text>
-          {/* iOS 数字键盘没有提交键，补充“下一步/完成”保证创建流程可继续。 */}
-          {Platform.OS === "ios" ? (
-            <>
-              <InputAccessoryView nativeID={CREATE_COUNT_ACCESSORY_ID}>
-                <View style={styles.keyboardAccessory}>
-                  <Button
-                    compact
-                    contentStyle={styles.keyboardAccessoryButton}
-                    textColor="#0958D9"
-                    onPress={focusPrivateLabelPriceInput}
-                  >
-                    {t("create.next")}
-                  </Button>
-                </View>
-              </InputAccessoryView>
-              <InputAccessoryView nativeID={CREATE_PRICE_ACCESSORY_ID}>
-                <View style={styles.keyboardAccessory}>
-                  <Button
-                    compact
-                    contentStyle={styles.keyboardAccessoryButton}
-                    textColor="#0958D9"
-                    onPress={finishPrivateLabelPriceEditing}
-                  >
-                    {t("create.done")}
-                  </Button>
-                </View>
-              </InputAccessoryView>
-            </>
-          ) : null}
-          <View style={styles.modalActions}>
-            <Button onPress={() => setCreateVisible(false)}>{t("actions.cancel")}</Button>
-            <Button mode="contained" loading={busy} disabled={busy} onPress={handleCreate}>
-              {t("actions.confirmCreate")}
-            </Button>
-          </View>
-        </Modal>
+      {createVisible ? <CreateBatchModal
+        onDismiss={() => setCreateVisible(false)}
+        onReturnToList={() => {
+          setCreateVisible(false);
+          void loadBatches(1, "replace");
+        }}
+        onCreated={(result, supplier, prefix) => {
+          setCreateVisible(false);
+          setSnackbar(t(result.batchNumber ? "messages.createSuccess" : "wizard.createdWithoutBatch"));
+          void loadBatches(1, "replace");
+          if (result.batchNumber) {
+            void openDetail({
+              batchNumber: result.batchNumber,
+              supplierCode: supplier.supplierCode,
+              supplierName: supplier.supplierName,
+              prefixCode: prefix?.prefixCode,
+              normalCount: result.normalProductCount,
+              setCount: result.setProductCount,
+              totalCount: result.totalCreated,
+              createdAt: new Date().toISOString(),
+            });
+          }
+        }}
+      /> : null}
 
+      <Portal>
         <Modal
           visible={detailVisible}
           onDismiss={() => {
@@ -889,54 +673,12 @@ const styles = StyleSheet.create({
   loadMoreButton: {
     marginTop: 6,
   },
-  modal: {
-    margin: 18,
-    padding: 16,
-    borderRadius: 8,
-    backgroundColor: "#FFFFFF",
-  },
   detailModal: {
     margin: 14,
     padding: 14,
     borderRadius: 8,
     backgroundColor: "#FFFFFF",
     maxHeight: "86%",
-  },
-  modalTitle: {
-    fontWeight: "700",
-    marginBottom: 12,
-  },
-  fullButton: {
-    marginTop: 8,
-    alignItems: "stretch",
-  },
-  menuScroll: {
-    maxHeight: 300,
-  },
-  input: {
-    marginTop: 10,
-  },
-  keyboardAccessory: {
-    minHeight: 44,
-    paddingHorizontal: 8,
-    alignItems: "flex-end",
-    justifyContent: "center",
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "#D0D5DD",
-    backgroundColor: "#F6F7F9",
-  },
-  keyboardAccessoryButton: {
-    minHeight: 44,
-  },
-  inputHelpText: {
-    marginTop: 4,
-    color: "#667085",
-  },
-  modalActions: {
-    marginTop: 14,
-    flexDirection: "row",
-    justifyContent: "flex-end",
-    gap: 8,
   },
   detailHeader: {
     flexDirection: "row",

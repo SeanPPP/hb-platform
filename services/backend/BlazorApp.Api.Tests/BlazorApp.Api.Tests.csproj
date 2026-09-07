@@ -72,6 +72,7 @@
     <Compile Include="UserStorePosTerminalPermissionContractTests.cs" />
     <Compile Include="UserStorePosTerminalPermissionServiceTests.cs" />
     <Compile Include="NavigationServiceTests.cs" />
+    <Compile Include="VersionManagementNavigationTests.cs" />
     <Compile Include="ControllerAuthorizationMetadataTests.cs" />
     <Compile Include="PermissionAuthorizationHandlerTests.cs" />
     <Compile Include="RoleServicePermissionTests.cs" />
