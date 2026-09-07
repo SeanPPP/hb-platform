@@ -34,6 +34,7 @@ namespace BlazorApp.Api.Services
             public string Icon { get; init; } = string.Empty;
             public string? Permission { get; init; }
             public IReadOnlyCollection<string>? AnyPermissions { get; init; }
+            public bool RequireAdmin { get; init; }
             public int Order { get; init; }
         }
 
@@ -336,6 +337,24 @@ namespace BlazorApp.Api.Services
             },
             new()
             {
+                RouteName = "app-downloads",
+                TitleKey = "tabs.appDownloads",
+                Icon = "download-outline",
+                Permission = Permissions.System.ViewAppDownloads,
+                RequireAdmin = true,
+                Order = 59,
+            },
+            new()
+            {
+                RouteName = "wpf-versions",
+                TitleKey = "tabs.wpfVersions",
+                Icon = "microsoft-windows",
+                Permission = Permissions.System.ViewAppDownloads,
+                RequireAdmin = true,
+                Order = 59,
+            },
+            new()
+            {
                 RouteName = "settings",
                 TitleKey = "tabs.settings",
                 Icon = "account-circle-outline",
@@ -554,6 +573,12 @@ namespace BlazorApp.Api.Services
             NavigationPermissionContext context
         )
         {
+            // 版本管理属于系统管理员入口，单独授予下载权限不能开放移动端菜单。
+            if (node.RequireAdmin && !context.IsAdmin)
+            {
+                return false;
+            }
+
             if (string.IsNullOrEmpty(node.Permission) && (node.AnyPermissions == null || node.AnyPermissions.Count == 0))
             {
                 return true;

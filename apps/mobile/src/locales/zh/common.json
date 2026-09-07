@@ -56,7 +56,9 @@
     "employeeProfile": "员工",
     "employeeProfileReview": "资料审核",
     "deviceManagement": "设备管理",
-    "settings": "设置"
+    "settings": "设置",
+    "appDownloads": "App 下载",
+    "wpfVersions": "WPF 版本管理"
   },
   "language": {
     "title": "语言",
@@ -252,6 +254,7 @@
       "emptySupplierBranches": "暂无分店数据",
       "emptyProductSearch": "没有匹配的商品明细",
       "costPending": "成本待补全",
+      "costNoActivity": "无交易活动",
       "loading": "加载中...",
       "error": "加载失败，请稍后重试"
     },

@@ -47,7 +47,9 @@
     "users": "Employees",
     "employeeProfile": "My profile",
     "employeeProfileReview": "Profile reviews",
-    "deviceManagement": "Device management"
+    "deviceManagement": "Device management",
+    "appDownloads": "App Downloads",
+    "wpfVersions": "WPF Versions"
   },
   "allFunctions": {
     "title": "All tools",

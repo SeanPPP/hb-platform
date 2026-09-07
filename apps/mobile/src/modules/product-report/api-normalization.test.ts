@@ -124,6 +124,39 @@ const freshSupplierSnapshot = normalizeSupplierReportSnapshot({
 assert.equal(freshSupplierSnapshot.isComplete, true);
 assert.equal(freshSupplierSnapshot.data.length, 1);
 
+const costStatusSupplierSnapshot = normalizeSupplierReportSnapshot({
+  statisticStatus: "Fresh",
+  statisticUpdatedAt: "2026-09-01T00:00:00.000Z",
+  cacheVersion: "v-cost-status",
+  data: [
+    { SupplierCode: "COMPLETE", TotalAmount: 0, CostStatus: "Complete", GrossProfit: 0 },
+    { SupplierCode: "MISSING", TotalAmount: 100, CostStatus: "Missing" },
+    { SupplierCode: "NO-ACTIVITY", TotalAmount: 0, CostStatus: "NoActivity" },
+  ],
+});
+assert.deepEqual(
+  costStatusSupplierSnapshot.data.map((row) => row.costStatus),
+  ["Complete", "Missing", "NoActivity"],
+  "供应商成本状态必须保留 Complete、Missing、NoActivity 三态，真实零毛利不能退化为 Missing",
+);
+
+const legacyCostStatusProductSnapshot = normalizeProductReportProductPageSnapshot({
+  statisticStatus: "Fresh",
+  statisticUpdatedAt: "2026-09-01T00:00:00.000Z",
+  cacheVersion: "v-cost-legacy",
+  data: {
+    data: [
+      { ProductCode: "ACTIVE", SalesAmount: 12 },
+      { ProductCode: "EMPTY", SalesAmount: 0 },
+    ],
+    total: 2,
+    pageIndex: 1,
+    pageSize: 20,
+  },
+});
+assert.equal(legacyCostStatusProductSnapshot.data.rows[0]?.costStatus, "Missing");
+assert.equal(legacyCostStatusProductSnapshot.data.rows[1]?.costStatus, "NoActivity");
+
 const legacySupplierSnapshot = normalizeSupplierReportSnapshot([{ SupplierCode: "LEGACY", TotalAmount: 20 }]);
 assert.equal(legacySupplierSnapshot.isComplete, false, "旧裸 data 响应缺完整性元数据时必须 fail-closed");
 assert.equal(legacySupplierSnapshot.statisticStatus, "Pending");
@@ -448,4 +481,6 @@ for (const normalize of [normalizeSupplierRows, normalizeSupplierBranchRows]) {
   const [returns] = normalize([{ TotalAmount: -10, TotalQuantity: -2, CompareTotalAmount: 12, CompareTotalQuantity: 3 }]);
   assert.equal(returns.averagePrice, 5);
   assert.equal(returns.compareAveragePrice, 4);
+  const [quantityOnly] = normalize([{ CompareTotalQuantity: 2, CompareTotalAmount: 0, CompareOrderCount: 0 }]);
+  assert.equal(quantityOnly.compareCostStatus, "Missing", "旧接口仅有同期数量时也存在业务活动，不能标记为无交易");
 }

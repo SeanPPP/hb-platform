@@ -1,13 +1,17 @@
 import type {
   CreateDomesticProductBatchRequest,
+  CreateDomesticProductBatchResult,
   DomesticProductBatch,
   DomesticProductBatchDetail,
   DomesticProductBatchItem,
   DomesticProductListItem,
   DomesticProductListQuery,
   DomesticProductListResult,
+  DomesticSetTemplateDetail,
+  DomesticSetTemplateSummary,
   DomesticSupplierOption,
   ProductPrefixOption,
+  SaveDomesticSetTemplateRequest,
   UpdateDomesticProductBatchItemsRequest,
   UpdateDomesticProductRequest,
 } from "@/modules/domestic-purchase/types";
@@ -94,6 +98,10 @@ function asBoolean(value: unknown): boolean {
   return false;
 }
 
+function asBooleanOrDefault(value: unknown, fallback: boolean): boolean {
+  return value === undefined || value === null ? fallback : asBoolean(value);
+}
+
 function toNumber(value: unknown, fallback = 0) {
   return asNumber(value, fallback);
 }
@@ -133,12 +141,125 @@ function normalizeBatchItem(raw: unknown): DomesticProductBatchItem {
     setPrice: asNullableNumber(pick(item, "setPrice", "SetPrice")),
     parentItemNumber: (pick(
       item,
-      "parentProductCode",
+      "parentHBProductNo",
+      "ParentHBProductNo",
       "parentItemNumber",
-      "ParentProductCode",
-      "ParentItemNumber"
+      "ParentItemNumber",
+      // 旧接口曾只返回关系记录编码，作为最后兼容回退；不能抢在父 HB 货号前。
+      "parentProductCode",
+      "ParentProductCode"
     ) ?? null) as string | null,
   };
+}
+
+export function normalizeCreateDomesticProductBatchResult(raw: unknown): CreateDomesticProductBatchResult {
+  const item = asRecord(raw) ?? {};
+  return {
+    batchNumber: asString(pick(item, "batchNumber", "BatchNumber")),
+    totalCreated: asNumber(pick(item, "totalCreated", "TotalCreated", "totalCount", "TotalCount")),
+    normalProductCount: asNumber(
+      pick(item, "normalProductCount", "NormalProductCount", "normalCount", "NormalCount")
+    ),
+    setProductCount: asNumber(
+      pick(item, "setProductCount", "SetProductCount", "setCount", "SetCount")
+    ),
+  };
+}
+
+function normalizeDomesticSetTemplateSubItem(raw: unknown, index: number) {
+  const item = asRecord(raw) ?? {};
+  return {
+    productName: asString(pick(item, "productName", "ProductName", "subItemProductName", "SubItemProductName")),
+    privateLabelPrice: asNumber(
+      pick(item, "privateLabelPrice", "PrivateLabelPrice"),
+      0
+    ),
+    sortOrder: asNumber(pick(item, "sortOrder", "SortOrder", "sequence", "Sequence"), index + 1),
+  };
+}
+
+export function normalizeDomesticSetTemplateSummary(raw: unknown): DomesticSetTemplateSummary {
+  const item = asRecord(raw) ?? {};
+  const rawSubItems = pick(item, "subItems", "SubItems", "items", "Items");
+  const fallbackSetQuantity = Array.isArray(rawSubItems) ? rawSubItems.length : 0;
+  const enabledValue = pick(item, "isEnabled", "IsEnabled");
+  return {
+    templateId: asString(pick(item, "templateId", "TemplateId", "id", "Id", "templateGuid", "TemplateGuid")),
+    supplierCode: asString(pick(item, "supplierCode", "SupplierCode")),
+    templateName: asString(pick(item, "templateName", "TemplateName", "name", "Name")),
+    setProductName: asString(pick(item, "setProductName", "SetProductName", "productName", "ProductName")),
+    isEnabled: asBooleanOrDefault(
+      enabledValue === undefined ? pick(item, "isActive", "IsActive") : enabledValue,
+      true
+    ),
+    setQuantity: asNumber(
+      pick(item, "setQuantity", "SetQuantity", "subItemCount", "SubItemCount", "itemCount", "ItemCount"),
+      fallbackSetQuantity
+    ),
+    updatedAt: (() => {
+      const value = pick(item, "updatedAt", "UpdatedAt", "updatedTime", "UpdatedTime");
+      return value === undefined ? undefined : asString(value) || undefined;
+    })(),
+  };
+}
+
+export function normalizeDomesticSetTemplateDetail(raw: unknown): DomesticSetTemplateDetail {
+  const item = asRecord(raw) ?? {};
+  const rawSubItems = pick(item, "subItems", "SubItems", "items", "Items");
+  return {
+    ...normalizeDomesticSetTemplateSummary(item),
+    subItems: Array.isArray(rawSubItems)
+      ? rawSubItems.map((subItem, index) => normalizeDomesticSetTemplateSubItem(subItem, index))
+      : [],
+  };
+}
+
+function getTemplatePayloadItems(payload: unknown): unknown[] {
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+  const root = asRecord(payload) ?? {};
+  const items = pick(root, "items", "Items");
+  return Array.isArray(items) ? items : [];
+}
+
+export function normalizeDomesticSetTemplatesResponse(
+  payload: unknown,
+  supplierCode?: string
+): DomesticSetTemplateSummary[] {
+  const expectedSupplierCode = supplierCode?.trim();
+  return getTemplatePayloadItems(payload)
+    .map(normalizeDomesticSetTemplateSummary)
+    .filter(
+      (template) =>
+        Boolean(template.templateId) &&
+        template.isEnabled &&
+        (!expectedSupplierCode || template.supplierCode === expectedSupplierCode)
+    );
+}
+
+function requireSupplierCode(supplierCode: string) {
+  const normalizedSupplierCode = supplierCode.trim();
+  if (!normalizedSupplierCode) {
+    throw new Error("供应商不能为空");
+  }
+  return normalizedSupplierCode;
+}
+
+function rejectTemplateScope() {
+  const error = new Error("套装模板不属于当前供应商或已停用") as Error & { code?: string };
+  error.code = "DOMESTIC_SET_TEMPLATE_SCOPE_MISMATCH";
+  return error;
+}
+
+function ensureEnabledTemplateForSupplier(
+  template: DomesticSetTemplateDetail,
+  supplierCode: string
+) {
+  if (template.supplierCode !== supplierCode || !template.isEnabled) {
+    throw rejectTemplateScope();
+  }
+  return template;
 }
 
 function normalizeSupplier(raw: unknown): DomesticSupplierOption {
@@ -248,10 +369,63 @@ export async function fetchDomesticProductBatchDetail(batchNumber: string): Prom
   };
 }
 
-export async function createDomesticProductBatch(payload: CreateDomesticProductBatchRequest) {
+export async function createDomesticProductBatch(
+  payload: CreateDomesticProductBatchRequest
+): Promise<CreateDomesticProductBatchResult> {
   const apiClient = await getApiClient();
-  const response = await apiClient.post(`${CREATION_BASE_PATH}/batch`, payload);
-  return response.data;
+  // 创建没有幂等键，禁止登录恢复逻辑自动重放此 POST。
+  const response = await apiClient.post(`${CREATION_BASE_PATH}/batch`, payload, {
+    headers: { "X-Skip-Auth-Recovery": "1" },
+  });
+  // batchNumber 允许为空：服务端已经完成创建时，不能因响应字段缺失而诱发重发。
+  return normalizeCreateDomesticProductBatchResult(response.data);
+}
+
+export async function fetchDomesticSetTemplates(
+  supplierCode: string
+): Promise<DomesticSetTemplateSummary[]> {
+  const normalizedSupplierCode = requireSupplierCode(supplierCode);
+  const apiClient = await getApiClient();
+  const response = await apiClient.get(`${CREATION_BASE_PATH}/templates`, {
+    params: { supplierCode: normalizedSupplierCode, includeInactive: false },
+  });
+  return normalizeDomesticSetTemplatesResponse(response.data, normalizedSupplierCode);
+}
+
+export async function fetchDomesticSetTemplate(
+  templateId: string,
+  supplierCode: string
+): Promise<DomesticSetTemplateDetail> {
+  const normalizedSupplierCode = requireSupplierCode(supplierCode);
+  const normalizedTemplateId = templateId.trim();
+  if (!normalizedTemplateId) {
+    throw new Error("模板编号不能为空");
+  }
+
+  const apiClient = await getApiClient();
+  const response = await apiClient.get(
+    `${CREATION_BASE_PATH}/templates/${encodeURIComponent(normalizedTemplateId)}`,
+    { params: { supplierCode: normalizedSupplierCode } }
+  );
+  return ensureEnabledTemplateForSupplier(
+    normalizeDomesticSetTemplateDetail(response.data),
+    normalizedSupplierCode
+  );
+}
+
+export async function saveDomesticSetTemplate(
+  payload: SaveDomesticSetTemplateRequest
+): Promise<DomesticSetTemplateDetail> {
+  const normalizedSupplierCode = requireSupplierCode(payload.supplierCode);
+  const apiClient = await getApiClient();
+  const response = await apiClient.post(`${CREATION_BASE_PATH}/templates`, payload, {
+    headers: { "X-Skip-Auth-Recovery": "1" },
+  });
+  const template = normalizeDomesticSetTemplateDetail(response.data);
+  if (template.supplierCode !== normalizedSupplierCode) {
+    throw rejectTemplateScope();
+  }
+  return template;
 }
 
 export async function updateDomesticProductBatchItems(

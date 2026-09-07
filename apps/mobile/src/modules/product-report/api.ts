@@ -14,6 +14,7 @@ export interface ProductReportRequestOptions {
 }
 
 export type ProductReportStatisticStatus = "Fresh" | "Pending" | "Stale" | "Failed";
+export type ProductReportCostStatus = "Complete" | "Missing" | "NoActivity";
 
 export interface ProductReportSnapshot<T> {
   data: T;
@@ -124,6 +125,8 @@ export interface SupplierReportRow {
   compareOrderCount: number;
   averageTransaction: number;
   compareAverageTransaction: number;
+  costStatus: ProductReportCostStatus;
+  compareCostStatus: ProductReportCostStatus;
 }
 
 export interface ProductReportProductRow {
@@ -144,6 +147,8 @@ export interface ProductReportProductRow {
   compareAverageUnitPrice: number;
   orderCount: number;
   compareOrderCount: number;
+  costStatus: ProductReportCostStatus;
+  compareCostStatus: ProductReportCostStatus;
 }
 
 export interface ProductReportProductPage {
@@ -173,6 +178,8 @@ export interface SupplierBranchBreakdownRow {
   compareOrderCount: number;
   averageTransaction: number;
   compareAverageTransaction: number;
+  costStatus: ProductReportCostStatus;
+  compareCostStatus: ProductReportCostStatus;
 }
 
 export interface ProductBranchBreakdownRow {
@@ -190,6 +197,8 @@ export interface ProductBranchBreakdownRow {
   compareGrossMarginRate: number | null;
   averageUnitPrice: number;
   compareAverageUnitPrice: number;
+  costStatus: ProductReportCostStatus;
+  compareCostStatus: ProductReportCostStatus;
 }
 
 async function getApiClient() {
@@ -242,6 +251,17 @@ function asNullableNumber(value: unknown): number | null {
     return Number.isFinite(parsed) ? parsed : null;
   }
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function normalizeCostStatus(value: unknown, hasActivity: boolean): ProductReportCostStatus {
+  switch (asString(value).trim().toLowerCase()) {
+    case "complete": return "Complete";
+    case "missing": return "Missing";
+    case "noactivity": return "NoActivity";
+    default:
+      // 兼容旧接口：只有存在业务信号时才显示缺成本，避免把空同期误报为成本缺失。
+      return hasActivity ? "Missing" : "NoActivity";
+  }
 }
 
 function getRows(payload: unknown): unknown[] {
@@ -435,11 +455,11 @@ export function normalizeSupplierRows(payload: unknown): SupplierReportRow[] {
     const item = asRecord(raw) ?? {};
     const supplierCode = asString(pick(item, "supplierCode", "SupplierCode"), `supplier-${index}`);
     const revenue = asNumber(pick(item, "totalAmount", "TotalAmount", "revenue", "Revenue"));
+    const totalQuantity = asNumber(pick(item, "totalQuantity", "TotalQuantity"));
+    const compareTotalQuantity = asNullableNumber(pick(item, "compareTotalQuantity", "CompareTotalQuantity", "totalQuantityLY", "TotalQuantityLY"));
     const orderCount = asNumber(pick(item, "orderCount", "OrderCount", "transactions", "Transactions"));
     const compareRevenue = asNumber(pick(item, "compareTotalAmount", "CompareTotalAmount", "revenueLY", "RevenueLY"));
     const compareOrderCount = asNumber(pick(item, "compareOrderCount", "CompareOrderCount", "orderCountLY", "OrderCountLY"));
-    const totalQuantity = asNumber(pick(item, "totalQuantity", "TotalQuantity"));
-    const compareTotalQuantity = asNullableNumber(pick(item, "compareTotalQuantity", "CompareTotalQuantity", "totalQuantityLY", "TotalQuantityLY"));
     return {
       id: supplierCode || String(index),
       supplierCode,
@@ -467,11 +487,13 @@ export function normalizeSupplierRows(payload: unknown): SupplierReportRow[] {
         )
       ),
       totalQuantity: asNumber(pick(item, "totalQuantity", "TotalQuantity")),
-      storeCount: asNumber(pick(item, "storeCount", "StoreCount")),
       compareTotalQuantity,
-      // 商品均价使用商品数量，不能使用客单价。
+      // 商品均价使用销量口径，不能复用以订单数为分母的客单价。
       averagePrice: totalQuantity !== 0 ? revenue / totalQuantity : null,
-      compareAveragePrice: compareTotalQuantity !== null && compareTotalQuantity !== 0 ? compareRevenue / compareTotalQuantity : null,
+      compareAveragePrice: compareTotalQuantity !== null && compareTotalQuantity !== 0
+        ? compareRevenue / compareTotalQuantity
+        : null,
+      storeCount: asNumber(pick(item, "storeCount", "StoreCount")),
       orderCount,
       compareOrderCount,
       averageTransaction: asNumber(
@@ -481,6 +503,14 @@ export function normalizeSupplierRows(payload: unknown): SupplierReportRow[] {
       compareAverageTransaction: asNumber(
         pick(item, "compareAverageTransaction", "CompareAverageTransaction", "aovLY", "AovLY"),
         compareOrderCount > 0 ? compareRevenue / compareOrderCount : 0
+      ),
+      costStatus: normalizeCostStatus(
+        pick(item, "costStatus", "CostStatus"),
+        revenue !== 0 || totalQuantity !== 0 || orderCount !== 0,
+      ),
+      compareCostStatus: normalizeCostStatus(
+        pick(item, "compareCostStatus", "CompareCostStatus"),
+        compareRevenue !== 0 || compareOrderCount !== 0 || (compareTotalQuantity ?? 0) !== 0,
       ),
     };
   });
@@ -494,13 +524,15 @@ export function normalizeProductPage(payload: unknown): ProductReportProductPage
     const item = asRecord(raw) ?? {};
     const productCode = asString(pick(item, "productCode", "ProductCode"), `product-${index}`);
     const salesAmount = asNumber(pick(item, "salesAmount", "SalesAmount", "amount", "Amount"));
+    const quantity = asNumber(pick(item, "quantity", "Quantity"));
+    const orderCount = asNumber(pick(item, "orderCount", "OrderCount"));
     return {
       id: productCode || String(index),
       productCode,
       itemNumber: asString(pick(item, "itemNumber", "ItemNumber", "barcode", "Barcode")),
       productImage: asString(pick(item, "productImage", "ProductImage"), "") || null,
       productName: asString(pick(item, "productName", "ProductName")),
-      quantity: asNumber(pick(item, "quantity", "Quantity")),
+      quantity,
       compareQuantity: asNumber(pick(item, "compareQuantity", "CompareQuantity", "quantityLY", "QuantityLY")),
       salesAmount,
       compareSalesAmount: asNumber(
@@ -530,8 +562,18 @@ export function normalizeProductPage(payload: unknown): ProductReportProductPage
       compareAverageUnitPrice: asNumber(
         pick(item, "compareAverageUnitPrice", "CompareAverageUnitPrice", "averageUnitPriceLY", "AverageUnitPriceLY")
       ),
-      orderCount: asNumber(pick(item, "orderCount", "OrderCount")),
+      orderCount,
       compareOrderCount: asNumber(pick(item, "compareOrderCount", "CompareOrderCount", "orderCountLY", "OrderCountLY")),
+      costStatus: normalizeCostStatus(
+        pick(item, "costStatus", "CostStatus"),
+        salesAmount !== 0 || quantity !== 0 || orderCount !== 0,
+      ),
+      compareCostStatus: normalizeCostStatus(
+        pick(item, "compareCostStatus", "CompareCostStatus"),
+        asNumber(pick(item, "compareSalesAmount", "CompareSalesAmount", "salesAmountLY", "SalesAmountLY")) !== 0
+          || asNumber(pick(item, "compareQuantity", "CompareQuantity", "quantityLY", "QuantityLY")) !== 0
+          || asNumber(pick(item, "compareOrderCount", "CompareOrderCount", "orderCountLY", "OrderCountLY")) !== 0,
+      ),
     };
   });
 
@@ -665,11 +707,13 @@ export function normalizeSupplierBranchRows(payload: unknown): SupplierBranchBre
           "GrossProfitRateLY"
         )
       ),
-      totalQuantity: asNumber(pick(item, "totalQuantity", "TotalQuantity")),
+      totalQuantity,
       compareTotalQuantity,
-      // 商品均价使用商品数量，不能使用客单价。
+      // 商品均价使用销量口径，不能复用以订单数为分母的客单价。
       averagePrice: totalQuantity !== 0 ? revenue / totalQuantity : null,
-      compareAveragePrice: compareTotalQuantity !== null && compareTotalQuantity !== 0 ? compareRevenue / compareTotalQuantity : null,
+      compareAveragePrice: compareTotalQuantity !== null && compareTotalQuantity !== 0
+        ? compareRevenue / compareTotalQuantity
+        : null,
       orderCount,
       compareOrderCount,
       averageTransaction: asNumber(
@@ -679,6 +723,14 @@ export function normalizeSupplierBranchRows(payload: unknown): SupplierBranchBre
       compareAverageTransaction: asNumber(
         pick(item, "compareAverageTransaction", "CompareAverageTransaction"),
         compareOrderCount > 0 ? compareRevenue / compareOrderCount : 0
+      ),
+      costStatus: normalizeCostStatus(
+        pick(item, "costStatus", "CostStatus"),
+        revenue !== 0 || totalQuantity !== 0 || orderCount !== 0,
+      ),
+      compareCostStatus: normalizeCostStatus(
+        pick(item, "compareCostStatus", "CompareCostStatus"),
+        compareRevenue !== 0 || compareOrderCount !== 0 || (compareTotalQuantity ?? 0) !== 0,
       ),
     };
   });
@@ -694,13 +746,14 @@ export function normalizeProductBranchRows(payload: unknown): ProductBranchBreak
     const compareSalesAmount = asNumber(
       pick(item, "compareSalesAmount", "CompareSalesAmount", "salesAmountLY", "SalesAmountLY")
     );
+    const discountedQuantity = asNumber(pick(item, "discountedQuantity", "DiscountedQuantity"));
     return {
       id: branchCode || String(index),
       branchCode,
       branchName: asString(pick(item, "branchName", "BranchName", "storeName", "StoreName"), branchCode),
       quantity,
       compareQuantity,
-      discountedQuantity: asNumber(pick(item, "discountedQuantity", "DiscountedQuantity")),
+      discountedQuantity,
       salesAmount,
       compareSalesAmount,
       grossProfit: asNullableNumber(pick(item, "grossProfit", "GrossProfit")),
@@ -730,6 +783,14 @@ export function normalizeProductBranchRows(payload: unknown): ProductBranchBreak
       compareAverageUnitPrice: asNumber(
         pick(item, "compareAverageUnitPrice", "CompareAverageUnitPrice", "averageUnitPriceLY", "AverageUnitPriceLY"),
         compareQuantity > 0 ? compareSalesAmount / compareQuantity : 0
+      ),
+      costStatus: normalizeCostStatus(
+        pick(item, "costStatus", "CostStatus"),
+        salesAmount !== 0 || quantity !== 0 || discountedQuantity !== 0,
+      ),
+      compareCostStatus: normalizeCostStatus(
+        pick(item, "compareCostStatus", "CompareCostStatus"),
+        compareSalesAmount !== 0 || compareQuantity !== 0,
       ),
     };
   });

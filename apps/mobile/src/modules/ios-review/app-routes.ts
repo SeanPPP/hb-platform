@@ -75,8 +75,21 @@ interface AppRouteStateHolder {
   current: AppRouteState;
 }
 
+interface ReviewDomesticSetTemplate {
+  templateId: string;
+  supplierCode: string;
+  templateName: string;
+  setProductName: string;
+  isEnabled: boolean;
+  setQuantity: number;
+  updatedAt: string;
+  subItems: JsonRecord[];
+}
+
 const stateHolders = new WeakMap<ReviewDataStore, AppRouteStateHolder>();
 const attendanceRouteStates = new WeakMap<AppRouteState, ReviewAttendanceRouteState>();
+// 模板是审核模式自己的持久化快照；按 AppRouteState 隔离，避免不同审核数据仓库互相污染。
+const domesticSetTemplateStates = new WeakMap<AppRouteState, ReviewDomesticSetTemplate[]>();
 const IOS_REVIEW_MANAGER_SEGMENT_LIMIT = 3;
 const IOS_REVIEW_ATTENDANCE_QR_DEVICE_CODE = "IOS-REVIEW-POS-001";
 const IOS_REVIEW_ATTENDANCE_QR_LIFETIME_MS = 30_000;
@@ -1034,6 +1047,150 @@ function getHolder(dataStore: ReviewDataStore) {
   return holder;
 }
 
+function getDomesticSetTemplates(state: AppRouteState) {
+  let templates = domesticSetTemplateStates.get(state);
+  if (!templates) {
+    templates = [];
+    domesticSetTemplateStates.set(state, templates);
+  }
+  return templates;
+}
+
+function createReviewDomesticCode(state: AppRouteState, kind: string) {
+  return nextId(state, `REV-DOMESTIC-${kind}`);
+}
+
+function createReviewDomesticBarcode(state: AppRouteState) {
+  const sequence = nextId(state, "REV-BARCODE").replace(/\D/g, "");
+  return `933${sequence.padStart(10, "0").slice(-10)}`;
+}
+
+function asPositiveInteger(value: unknown, fallback: number) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number > 0 ? number : fallback;
+}
+
+function createReviewDomesticProduct(
+  state: AppRouteState,
+  supplierCode: string,
+  item: JsonRecord,
+  productType: 0 | 1,
+) {
+  const productCode = createReviewDomesticCode(state, productType === 1 ? "SET" : "NORMAL");
+  const hbProductNo = createReviewDomesticCode(state, productType === 1 ? "HB-SET" : "HB-NORMAL");
+  const barcode = createReviewDomesticBarcode(state);
+  const productName = String(item.productName ?? "");
+  return {
+    productCode,
+    supplierCode,
+    supplierName: String(item.supplierName ?? "Review Supplier"),
+    productName,
+    englishProductName: productName,
+    hbProductNo,
+    barcode,
+    productSpecification: "Review demo specification",
+    productType,
+    domesticPrice: item.setPrice ?? null,
+    oemPrice: item.privateLabelPrice ?? null,
+    importPrice: null,
+    packingQuantity: null,
+    unitVolume: null,
+    middlePackQuantity: null,
+    productImage: null,
+    isActive: true,
+  };
+}
+
+function createReviewDomesticBatch(
+  state: AppRouteState,
+  dataStore: ReviewDataStore,
+  payload: JsonRecord,
+) {
+  const supplierCode = String(payload.supplierCode ?? "").trim();
+  const inputItems = Array.isArray(payload.items) ? payload.items : [];
+  const normalItems: JsonRecord[] = [];
+  const setItems: JsonRecord[] = [];
+  const createdParents: JsonRecord[] = [];
+  const detailItems: JsonRecord[] = [];
+
+  for (const rawItem of inputItems) {
+    const item = asRecord(rawItem);
+    if (Number(item.productType) === 1) setItems.push(item);
+    else normalItems.push(item);
+  }
+
+  for (const item of normalItems) {
+    const product = createReviewDomesticProduct(state, supplierCode, item, 0);
+    state.domesticProducts.unshift(product);
+    const created = {
+      ...product,
+      privateLabelPrice: item.privateLabelPrice ?? null,
+      setQuantity: null,
+      setPrice: null,
+      subItems: [],
+    };
+    createdParents.push(created);
+    detailItems.push({ ...created, subItems: undefined });
+  }
+
+  for (const item of setItems) {
+    const createCount = asPositiveInteger(item.createCount, 1);
+    const subItems = Array.isArray(item.subItems) ? item.subItems : [];
+    for (let copyIndex = 0; copyIndex < createCount; copyIndex++) {
+      const product = createReviewDomesticProduct(state, supplierCode, item, 1);
+      state.domesticProducts.unshift(product);
+      const createdSubItems: JsonRecord[] = [];
+      const created = {
+        ...product,
+        privateLabelPrice: item.privateLabelPrice ?? null,
+        setQuantity: item.setQuantity ?? subItems.length,
+        setPrice: item.setPrice ?? null,
+        subItems: createdSubItems,
+      };
+      createdParents.push(created);
+      detailItems.push({ ...created, subItems: undefined });
+
+      for (let subIndex = 0; subIndex < subItems.length; subIndex++) {
+        const subItem = asRecord(subItems[subIndex]);
+        const subProductCode = createReviewDomesticCode(state, "SET-ITEM");
+        const subHbProductNo = createReviewDomesticCode(state, "HB-SET-ITEM");
+        const subBarcode = createReviewDomesticBarcode(state);
+        const subProductName = String(subItem.productName ?? "");
+        const createdSubItem = {
+          productCode: subProductCode,
+          hbProductNo: subHbProductNo,
+          barcode: subBarcode,
+          productName: subProductName,
+          productType: 2,
+          privateLabelPrice: subItem.privateLabelPrice ?? null,
+          parentProductCode: product.productCode,
+          parentHBProductNo: product.hbProductNo,
+        };
+        createdSubItems.push(createdSubItem);
+        detailItems.push(createdSubItem);
+      }
+    }
+  }
+
+  const batchNumber = nextId(state, "REV-BATCH");
+  const batch = {
+    batchNumber,
+    supplierCode,
+    supplierName: String(payload.supplierName ?? "Review Supplier"),
+    prefixCode: payload.prefixCode ?? null,
+    normalProductCount: normalItems.length,
+    setProductCount: createdParents.filter((item) => Number(item.productType) === 1).length,
+    totalCount: detailItems.length,
+    totalCreated: detailItems.length,
+    createdTime: state.now,
+    createdBy: "App Review Demo",
+    items: detailItems,
+  };
+  state.domesticBatches.unshift(batch);
+  mirrorCreate(state, dataStore, "domesticPurchase", batchNumber, batchNumber);
+  return { batch, createdParents };
+}
+
 function mirrorCreate(
   state: AppRouteState,
   dataStore: ReviewDataStore,
@@ -1918,6 +2075,74 @@ export function registerIosReviewAppRoutes(
   register(
     transport,
     ["GET"],
+    "/v1/domestic-product-creation/templates",
+    ({ query }) => {
+      const supplierCode = (query.get("supplierCode") ?? "").trim();
+      return {
+        // 与真实接口默认行为一致：审核列表只暴露当前供应商的启用模板。
+        data: clone(
+          getDomesticSetTemplates(state()).filter(
+            (template) => template.isEnabled && template.supplierCode === supplierCode,
+          ),
+        ),
+      };
+    },
+  );
+  register(
+    transport,
+    ["GET"],
+    /^\/v1\/domestic-product-creation\/templates\/([^/]+)$/i,
+    ({ match, query }) => {
+      const templateId = decodeURIComponent(match?.[1] ?? "");
+      const supplierCode = (query.get("supplierCode") ?? "").trim();
+      const template = getDomesticSetTemplates(state()).find(
+        (item) =>
+          item.templateId === templateId &&
+          item.supplierCode === supplierCode &&
+          item.isEnabled,
+      );
+      if (!template) {
+        throw new Error(`IOS_REVIEW_DOMESTIC_SET_TEMPLATE_NOT_FOUND: ${templateId}`);
+      }
+      return { data: clone(template) };
+    },
+  );
+  register(
+    transport,
+    ["POST"],
+    "/v1/domestic-product-creation/templates",
+    ({ body }) => {
+      const current = state();
+      const payload = asRecord(body);
+      const rawSubItems = Array.isArray(payload.subItems) ? payload.subItems : [];
+      const now = current.now;
+      const template: ReviewDomesticSetTemplate = {
+        templateId: nextId(current, "REV-TEMPLATE"),
+        supplierCode: String(payload.supplierCode ?? "").trim(),
+        templateName: String(payload.templateName ?? "").trim(),
+        setProductName: String(payload.setProductName ?? "").trim(),
+        isEnabled: payload.isEnabled === false ? false : true,
+        setQuantity: rawSubItems.length,
+        updatedAt: now,
+        // 每次保存都建立新的数组和子项对象，后续重复应用不会共享可变引用。
+        subItems: rawSubItems.map((rawItem, index) => {
+          const item = asRecord(rawItem);
+          return {
+            productName: String(item.productName ?? ""),
+            privateLabelPrice: Number(item.privateLabelPrice ?? 0),
+            sortOrder: Number.isFinite(Number(item.sortOrder))
+              ? Number(item.sortOrder)
+              : index,
+          };
+        }),
+      };
+      getDomesticSetTemplates(current).unshift(template);
+      return { data: clone(template), status: 201 };
+    },
+  );
+  register(
+    transport,
+    ["GET"],
     /^\/v1\/domestic-product-creation\/batch\/([^/]+)$/i,
     ({ match }) => {
       const id = decodeURIComponent(match?.[1] ?? "");
@@ -1931,26 +2156,8 @@ export function registerIosReviewAppRoutes(
     ["POST"],
     "/v1/domestic-product-creation/batch",
     ({ body }) => {
-      const current = state();
-      const payload = asRecord(body);
-      const batch = {
-        ...payload,
-        batchNumber: String(
-          payload.batchNumber ?? nextId(current, "REV-BATCH"),
-        ),
-        createdTime: current.now,
-        createdBy: "App Review Demo",
-        items: Array.isArray(payload.items) ? payload.items : [],
-      };
-      current.domesticBatches.unshift(batch);
-      mirrorCreate(
-        current,
-        dataStore,
-        "domesticPurchase",
-        batch.batchNumber,
-        batch.batchNumber,
-      );
-      return { data: clone(batch), status: 201 };
+      const result = createReviewDomesticBatch(state(), dataStore, asRecord(body));
+      return { data: clone(result.batch), status: 201 };
     },
   );
   register(

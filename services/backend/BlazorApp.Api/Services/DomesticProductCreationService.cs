@@ -113,6 +113,22 @@ namespace BlazorApp.Api.Services
         {
             try
             {
+                // 在生成批次号、分配套装列表和访问数据库前计算展开量，防止异常套数耗尽内存。
+                const int maxCreatedItems = 10_000;
+                long expandedItemCount = 0;
+                foreach (var item in request.Items)
+                {
+                    expandedItemCount += string.IsNullOrEmpty(item.ParentItemNumber) && item.ProductType == 1
+                        ? (long)Math.Max(item.CreateCount.GetValueOrDefault(1), 1) * (1L + item.SubItems.Count)
+                        : 1;
+                    if (expandedItemCount > maxCreatedItems)
+                    {
+                        return ApiResponse<CreateDomesticProductBatchResponse>.Error(
+                            "单批商品及套装子项合计不能超过 10000 条，请拆分批次创建",
+                            "CREATE_BATCH_LIMIT_EXCEEDED");
+                    }
+                }
+
                 var batchNumber = await GenerateBatchNumberAsync();
                 var auditBatchGuid = Guid.NewGuid();
                 var currentUser = ResolveActorName();

@@ -34,6 +34,7 @@ import {
   getProductReportCacheVersionState,
   getProductReportCacheVersionSyncDecision,
   type ProductBranchBreakdownRow,
+  type ProductReportCostStatus,
   type ProductReportProductPage,
   type ProductReportProductRow,
   type ProductReportSnapshot,
@@ -95,6 +96,8 @@ interface ProductPageSummary {
   compareGrossProfit: number | null;
   currentGrossMarginRate: number | null;
   compareGrossMarginRate: number | null;
+  currentCostStatus: ProductReportCostStatus;
+  compareCostStatus: ProductReportCostStatus;
 }
 
 const MAIN_REPORT_CACHE_VERSION_REFETCH_LIMIT = 2;
@@ -126,9 +129,23 @@ function formatNullableMoney(value: number | null) {
   return value === null ? "—" : formatMoney(value);
 }
 
-function formatGrossMarginRate(value: number | null, costPendingLabel: string) {
+function formatGrossMarginRate(
+  value: number | null,
+  costStatus: ProductReportCostStatus,
+  costPendingLabel: string,
+  noActivityLabel: string,
+) {
   // 后端统一返回 0-1 比率（例如 0.4 = 40%），展示层再换算为百分比。
-  return value === null ? costPendingLabel : `${(value * 100).toFixed(1)}%`;
+  if (costStatus === "NoActivity") return noActivityLabel;
+  if (costStatus === "Missing") return costPendingLabel;
+  // Complete 但销售额为零时毛利率按数学定义为空值，不代表成本缺失。
+  return value === null ? "—" : `${(value * 100).toFixed(1)}%`;
+}
+
+function mergeCostStatuses(statuses: readonly ProductReportCostStatus[]): ProductReportCostStatus {
+  if (statuses.some((status) => status === "Missing")) return "Missing";
+  if (statuses.some((status) => status === "Complete")) return "Complete";
+  return "NoActivity";
 }
 
 function formatShare(value: number, denominator: number) {
@@ -225,6 +242,7 @@ function ProductPageSummaryCard({
 }) {
   const { t } = useAppTranslation("common");
   const costPendingLabel = t("productReport.states.costPending");
+  const noActivityLabel = t("productReport.states.costNoActivity");
   const metrics = [
     {
       key: "sales",
@@ -241,8 +259,8 @@ function ProductPageSummaryCard({
     {
       key: "grossMargin",
       label: t("productReport.metrics.grossMarginRate"),
-      current: formatGrossMarginRate(summary.currentGrossMarginRate, costPendingLabel),
-      compare: formatGrossMarginRate(summary.compareGrossMarginRate, costPendingLabel),
+      current: formatGrossMarginRate(summary.currentGrossMarginRate, summary.currentCostStatus, costPendingLabel, noActivityLabel),
+      compare: formatGrossMarginRate(summary.compareGrossMarginRate, summary.compareCostStatus, costPendingLabel, noActivityLabel),
     },
   ];
 
@@ -876,16 +894,14 @@ export function ProductReportScreen({
   const productPageSummary = useMemo<ProductPageSummary>(() => {
     const currentSales = productRows.reduce((sum, row) => sum + row.salesAmount, 0);
     const compareSales = productRows.reduce((sum, row) => sum + row.compareSalesAmount, 0);
-    const hasCurrentGrossProfit = productRows.length > 0
-      && productRows.every((row) => row.grossProfit !== null);
-    const hasCompareGrossProfit = productRows.length > 0
-      && productRows.every((row) => row.compareGrossProfit !== null);
-    const currentGrossProfit = hasCurrentGrossProfit
-      ? productRows.reduce((sum, row) => sum + (row.grossProfit ?? 0), 0)
-      : null;
-    const compareGrossProfit = hasCompareGrossProfit
-      ? productRows.reduce((sum, row) => sum + (row.compareGrossProfit ?? 0), 0)
-      : null;
+    const currentCostStatus = mergeCostStatuses(productRows.map((row) => row.costStatus));
+    const compareCostStatus = mergeCostStatuses(productRows.map((row) => row.compareCostStatus));
+    const currentGrossProfit = currentCostStatus === "Missing"
+      ? null
+      : productRows.reduce((sum, row) => sum + (row.grossProfit ?? 0), 0);
+    const compareGrossProfit = compareCostStatus === "Missing"
+      ? null
+      : productRows.reduce((sum, row) => sum + (row.compareGrossProfit ?? 0), 0);
 
     return {
       currentSales,
@@ -896,6 +912,8 @@ export function ProductReportScreen({
         currentSales > 0 && currentGrossProfit !== null ? currentGrossProfit / currentSales : null,
       compareGrossMarginRate:
         compareSales > 0 && compareGrossProfit !== null ? compareGrossProfit / compareSales : null,
+      currentCostStatus,
+      compareCostStatus,
     };
   }, [productRows]);
   const productPageCount = Math.max(1, Math.ceil(productTotal / PRODUCT_PAGE_SIZE));
@@ -905,6 +923,7 @@ export function ProductReportScreen({
   const productTableBodyHeight = Math.max(380, sectionScreenHeight - 184);
   const growthNewLabel = t("productReport.metrics.newGrowth");
   const costPendingLabel = t("productReport.states.costPending");
+  const costNoActivityLabel = t("productReport.states.costNoActivity");
 
   const renderGrowthCell = (current: number, compare: number, columnStyle?: StyleProp<ViewStyle>) => {
     const tone = getGrowthTone(current, compare);
@@ -931,11 +950,13 @@ export function ProductReportScreen({
   const renderGrossMarginCell = (
     current: number | null,
     compare: number | null,
+    currentStatus: ProductReportCostStatus,
+    compareStatus: ProductReportCostStatus,
     columnStyle?: StyleProp<ViewStyle>
   ) => (
     <View style={[styles.grossMarginColumn, columnStyle]}>
-      <TableCell numeric style={styles.strongText}>{formatGrossMarginRate(current, costPendingLabel)}</TableCell>
-      <TableCell numeric style={styles.muted}>{formatGrossMarginRate(compare, costPendingLabel)}</TableCell>
+      <TableCell numeric style={styles.strongText}>{formatGrossMarginRate(current, currentStatus, costPendingLabel, costNoActivityLabel)}</TableCell>
+      <TableCell numeric style={styles.muted}>{formatGrossMarginRate(compare, compareStatus, costPendingLabel, costNoActivityLabel)}</TableCell>
     </View>
   );
 
@@ -1430,7 +1451,7 @@ export function ProductReportScreen({
           <TableCell numeric style={styles.muted}>{formatNullableMoney(item.compareAveragePrice)}</TableCell>
         </View>
         {renderGrossProfitCell(item.grossProfit, item.compareGrossProfit)}
-        {renderGrossMarginCell(item.grossMarginRate, item.compareGrossMarginRate)}
+        {renderGrossMarginCell(item.grossMarginRate, item.compareGrossMarginRate, item.costStatus, item.compareCostStatus)}
       </View>
     );
   };
@@ -1484,7 +1505,7 @@ export function ProductReportScreen({
       </View>
       {renderGrowthCell(item.salesAmount, item.compareSalesAmount, styles.productGrowthColumn)}
       {renderGrossProfitCell(item.grossProfit, item.compareGrossProfit)}
-      {renderGrossMarginCell(item.grossMarginRate, item.compareGrossMarginRate)}
+      {renderGrossMarginCell(item.grossMarginRate, item.compareGrossMarginRate, item.costStatus, item.compareCostStatus)}
     </Pressable>
   );
 
@@ -1805,6 +1826,7 @@ export function ProductReportScreen({
         kind={drilldownKind}
         growthNewLabel={growthNewLabel}
         costPendingLabel={costPendingLabel}
+        costNoActivityLabel={costNoActivityLabel}
         onFirstDataVisibilityChange={updateDrilldownFirstDataVisibility}
       />
     </View>
@@ -2027,6 +2049,7 @@ function BranchDrilldownModal({
   kind,
   growthNewLabel,
   costPendingLabel,
+  costNoActivityLabel,
   onFirstDataVisibilityChange,
   snapshotNotice,
 }: {
@@ -2045,6 +2068,7 @@ function BranchDrilldownModal({
   kind: "supplier" | "product" | null;
   growthNewLabel: string;
   costPendingLabel: string;
+  costNoActivityLabel: string;
   onFirstDataVisibilityChange: (visible: boolean) => void;
   snapshotNotice?: string;
 }) {
@@ -2098,10 +2122,15 @@ function BranchDrilldownModal({
       <TableCell numeric style={styles.muted}>{formatNullableMoney(compare)}</TableCell>
     </View>
   );
-  const renderGrossMarginCell = (current: number | null, compare: number | null) => (
+  const renderGrossMarginCell = (
+    current: number | null,
+    compare: number | null,
+    currentStatus: ProductReportCostStatus,
+    compareStatus: ProductReportCostStatus,
+  ) => (
     <View style={styles.grossMarginColumn}>
-      <TableCell numeric style={styles.strongText}>{formatGrossMarginRate(current, costPendingLabel)}</TableCell>
-      <TableCell numeric style={styles.muted}>{formatGrossMarginRate(compare, costPendingLabel)}</TableCell>
+      <TableCell numeric style={styles.strongText}>{formatGrossMarginRate(current, currentStatus, costPendingLabel, costNoActivityLabel)}</TableCell>
+      <TableCell numeric style={styles.muted}>{formatGrossMarginRate(compare, compareStatus, costPendingLabel, costNoActivityLabel)}</TableCell>
     </View>
   );
   return (
@@ -2236,7 +2265,12 @@ function SupplierBranchRow({
   rowNumber: number;
   renderGrowthCell: (current: number, compare: number, columnStyle?: StyleProp<ViewStyle>) => ReactNode;
   renderGrossProfitCell: (current: number | null, compare: number | null) => ReactNode;
-  renderGrossMarginCell: (current: number | null, compare: number | null) => ReactNode;
+  renderGrossMarginCell: (
+    current: number | null,
+    compare: number | null,
+    currentStatus: ProductReportCostStatus,
+    compareStatus: ProductReportCostStatus,
+  ) => ReactNode;
   rowRef?: RefObject<View | null>;
   scrollX: Animated.Value;
 }) {
@@ -2265,7 +2299,7 @@ function SupplierBranchRow({
         <TableCell numeric style={styles.muted}>{formatNullableMoney(row.compareAveragePrice)}</TableCell>
       </View>
       {renderGrossProfitCell(row.grossProfit, row.compareGrossProfit)}
-      {renderGrossMarginCell(row.grossMarginRate, row.compareGrossMarginRate)}
+      {renderGrossMarginCell(row.grossMarginRate, row.compareGrossMarginRate, row.costStatus, row.compareCostStatus)}
     </View>
   );
 }
@@ -2283,7 +2317,12 @@ function ProductBranchRow({
   rowNumber: number;
   renderGrowthCell: (current: number, compare: number, columnStyle?: StyleProp<ViewStyle>) => ReactNode;
   renderGrossProfitCell: (current: number | null, compare: number | null) => ReactNode;
-  renderGrossMarginCell: (current: number | null, compare: number | null) => ReactNode;
+  renderGrossMarginCell: (
+    current: number | null,
+    compare: number | null,
+    currentStatus: ProductReportCostStatus,
+    compareStatus: ProductReportCostStatus,
+  ) => ReactNode;
   rowRef?: RefObject<View | null>;
   scrollX: Animated.Value;
 }) {
@@ -2312,7 +2351,7 @@ function ProductBranchRow({
       </View>
       {renderGrowthCell(row.salesAmount, row.compareSalesAmount, styles.productBranchGrowthColumn)}
       {renderGrossProfitCell(row.grossProfit, row.compareGrossProfit)}
-      {renderGrossMarginCell(row.grossMarginRate, row.compareGrossMarginRate)}
+      {renderGrossMarginCell(row.grossMarginRate, row.compareGrossMarginRate, row.costStatus, row.compareCostStatus)}
     </View>
   );
 }
