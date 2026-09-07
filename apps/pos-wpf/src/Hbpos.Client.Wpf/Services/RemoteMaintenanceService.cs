@@ -94,6 +94,10 @@ public sealed class RemoteMaintenanceService(
                     await GetStatusAsync(cancellationToken));
             }
 
+            // 先核验正式安装目录和随 POS 发布的组件，避免下载完成后才发现无法安装。
+            // 已登记的恢复流程仍按原 journal 继续，不重新下载安装包。
+            uacHelperLauncher.ValidateInstallation(_helperPath);
+
             operationId = existing?.State is RemoteMaintenanceOperationState.Prepared or RemoteMaintenanceOperationState.InstalledPendingCommit
                 ? existing.OperationId
                 : Guid.NewGuid();
@@ -178,6 +182,11 @@ public sealed class RemoteMaintenanceService(
             var helperCode = await uacHelperLauncher.RunAsync(_helperPath, _journalPath, operationId, "install", cancellationToken);
             if (helperCode != 0)
             {
+                // 提权后二次检查使用固定退出码；不把异常原文或敏感参数带入界面。
+                if (helperCode is (int)RemoteMaintenanceSetupError.InstallationLocationInvalid or
+                    (int)RemoteMaintenanceSetupError.ComponentsMissing or
+                    (int)RemoteMaintenanceSetupError.InstallationPermissionsInvalid)
+                    throw new RemoteMaintenanceSetupException((RemoteMaintenanceSetupError)helperCode);
                 throw new InvalidOperationException("远程维护 UAC 安装未完成。");
             }
             // helper 以管理员身份运行，直接由它读取 RustDesk ID 并回写 journal；普通用户
@@ -285,6 +294,9 @@ public sealed class RemoteMaintenanceService(
                 false,
                 ex switch
                 {
+                    RemoteMaintenanceSetupException { Error: RemoteMaintenanceSetupError.InstallationLocationInvalid } => "settings.remoteMaintenance.result.installationLocationInvalid",
+                    RemoteMaintenanceSetupException { Error: RemoteMaintenanceSetupError.ComponentsMissing } => "settings.remoteMaintenance.result.componentsMissing",
+                    RemoteMaintenanceSetupException { Error: RemoteMaintenanceSetupError.InstallationPermissionsInvalid } => "settings.remoteMaintenance.result.installationPermissionsInvalid",
                     // 先按已知错误码区分服务端问题；中心鉴权失败不能引导用户重新激活 POS。
                     // 仅映射固定资源键，未知错误仍保留阶段提示，避免透传服务器原文。
                     RemoteMaintenanceApiException { Code: "REMOTE_MAINTENANCE_DISABLED" } => "settings.remoteMaintenance.result.serverDisabled",

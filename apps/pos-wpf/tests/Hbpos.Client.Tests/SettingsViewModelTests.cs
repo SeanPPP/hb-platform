@@ -2605,6 +2605,9 @@ public sealed class SettingsViewModelTests
     [InlineData("endpointUnavailable")]
     [InlineData("connectionFailed")]
     [InlineData("preparationTimedOut")]
+    [InlineData("installationLocationInvalid")]
+    [InlineData("installationPermissionsInvalid")]
+    [InlineData("componentsMissing")]
     public async Task Remote_maintenance_failure_is_localized_in_both_status_surfaces(string failure)
     {
         var localization = new LocalizationService();

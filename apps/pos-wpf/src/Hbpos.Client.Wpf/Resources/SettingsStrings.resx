@@ -267,7 +267,7 @@
   <data name="settings.remoteMaintenance.install" xml:space="preserve"><value>Install remote maintenance</value></data>
   <data name="settings.remoteMaintenance.restore" xml:space="preserve"><value>Check and restore</value></data>
   <data name="settings.remoteMaintenance.localStatus" xml:space="preserve"><value>Local service status</value></data>
-  <data name="settings.remoteMaintenance.installHint" xml:space="preserve"><value>Downloads and verifies the required programs in the background, then requests Windows administrator approval (UAC). Once configured, the services run independently in the background.</value></data>
+  <data name="settings.remoteMaintenance.installHint" xml:space="preserve"><value>No separate RustDesk installation is needed. 1. Select Install remote maintenance. 2. Wait for the checks and downloads. 3. Select Yes in each Windows approval window (enter administrator credentials if asked). Keep POS open until configuration finishes.</value></data>
   <data name="settings.remoteMaintenance.progress.preparing" xml:space="preserve"><value>Getting remote maintenance installation details. Please wait…</value></data>
   <data name="settings.remoteMaintenance.progress.downloadingRustDesk" xml:space="preserve"><value>Downloading and verifying RustDesk in the background (1/2)…</value></data>
   <data name="settings.remoteMaintenance.progress.downloadingStatusAgent" xml:space="preserve"><value>Downloading and verifying the status service in the background (2/2)…</value></data>
@@ -288,7 +288,9 @@
   <data name="settings.remoteMaintenance.result.installationFailed" xml:space="preserve"><value>Required programs downloaded and verified, but installation did not complete. Check the POS installation folder and Windows installation permissions, then retry.</value></data>
   <data name="settings.remoteMaintenance.result.registrationFailed" xml:space="preserve"><value>Programs installed, but device registration did not complete. Check your connection and retry recovery.</value></data>
   <data name="settings.remoteMaintenance.result.uacCanceled" xml:space="preserve"><value>Windows installation approval was canceled. Retry and select Yes in the approval window.</value></data>
-  <data name="settings.remoteMaintenance.result.componentsMissing" xml:space="preserve"><value>POS is missing remote maintenance installation components. Repair it using the complete POS installer and retry.</value></data>
+  <data name="settings.remoteMaintenance.result.componentsMissing" xml:space="preserve"><value>POS is missing remote maintenance installation components. Close POS, use the complete HB POS installer to repair the installation in its default Program Files folder, then reopen POS and select Install remote maintenance. No separate RustDesk download is needed.</value></data>
+  <data name="settings.remoteMaintenance.result.installationLocationInvalid" xml:space="preserve"><value>This POS is running outside the required installation folder. Close POS, run the complete HB POS installer, keep its default Program Files folder, then open the installed POS and select Install remote maintenance.</value></data>
+  <data name="settings.remoteMaintenance.result.installationPermissionsInvalid" xml:space="preserve"><value>The POS installation folder does not meet Windows security requirements. Ask an administrator to repair HB POS using the complete installer in its default Program Files folder, then reopen POS and retry.</value></data>
   <data name="settings.remoteMaintenance.status.notInstalled" xml:space="preserve"><value>Not installed</value></data>
   <data name="settings.remoteMaintenance.status.running" xml:space="preserve"><value>Running</value></data>
   <data name="settings.remoteMaintenance.status.starting" xml:space="preserve"><value>Starting</value></data>
