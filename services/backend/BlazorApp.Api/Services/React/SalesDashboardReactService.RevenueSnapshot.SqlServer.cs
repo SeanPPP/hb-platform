@@ -27,7 +27,7 @@ public partial class SalesDashboardReactService
     private async Task<RevenueSnapshotReadBatch> ReadRevenueSnapshotBatchAsync(
         DateRangeDto dateRange,
         IReadOnlyCollection<string> branchCodes,
-        IReadOnlyCollection<string> focusBranchCodes,
+        IReadOnlyCollection<string>? focusBranchCodes,
         bool includeActiveStores,
         CancellationToken cancellationToken
     )
@@ -77,7 +77,9 @@ public partial class SalesDashboardReactService
 
             var storeScope = Scope("[BranchCode]", branchCodes, "Branch");
             // focus 只能进一步收窄授权范围；不传 focus 时仍受原分店范围约束。
-            var hourlyScope = storeScope + Scope("[BranchCode]", focusBranchCodes, "Focus");
+            var hourlyScope = focusBranchCodes is { Count: 0 }
+                ? " AND 1 = 0"
+                : storeScope + Scope("[BranchCode]", focusBranchCodes ?? Array.Empty<string>(), "Focus");
             Parameter("@Start", dateRange.StartDate.Date, System.Data.DbType.Date);
             Parameter("@End", dateRange.EndDate.Date.AddDays(1), System.Data.DbType.Date);
             Parameter("@CompareStart", dateRange.CompareStartDate?.Date ?? dateRange.StartDate.Date, System.Data.DbType.Date);

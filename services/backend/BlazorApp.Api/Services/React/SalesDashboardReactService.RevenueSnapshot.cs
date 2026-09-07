@@ -83,8 +83,13 @@ public partial class SalesDashboardReactService
         var normalizedFocusBranches = NormalizeBranchCodes(focusBranchCodes);
         if (branchCodes != null && normalizedBranches.Count == 0)
             return new RevenueReportSnapshotDto { StatisticStatus = SalesStatisticRefreshStatus.Fresh };
-        if (focusBranchCodes != null && normalizedFocusBranches.Count == 0)
-            return new RevenueReportSnapshotDto { StatisticStatus = SalesStatisticRefreshStatus.Fresh };
+        if (branchCodes != null && focusBranchCodes != null)
+        {
+            var authorized = normalizedBranches.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            normalizedFocusBranches = normalizedFocusBranches.Where(authorized.Contains).ToList();
+        }
+        // null 表示未聚焦；空集合表示聚焦范围已无授权门店，只清空分时与周层级，保留授权排行。
+        var focusScope = focusBranchCodes == null ? null : normalizedFocusBranches;
 
         var startDate = dateRange.StartDate.Date;
         var endDate = dateRange.EndDate.Date;
@@ -93,7 +98,7 @@ public partial class SalesDashboardReactService
         var cacheKey = BuildRevenueSnapshotCacheKey(
             dateRange,
             normalizedBranches,
-            normalizedFocusBranches,
+            focusScope,
             topN
         );
         var useSqlServerBatch = _context.Db.CurrentConnectionConfig.DbType == SqlSugar.DbType.SqlServer;
@@ -111,7 +116,7 @@ public partial class SalesDashboardReactService
                 var batch = await ReadRevenueSnapshotBatchAsync(
                     dateRange,
                     normalizedBranches,
-                    normalizedFocusBranches,
+                    focusScope,
                     branchCodes == null,
                     cancellationToken
                 );
@@ -141,7 +146,7 @@ public partial class SalesDashboardReactService
                 endDate,
                 compareStartDate,
                 compareEndDate,
-                null,
+                focusScope,
                 storeRows,
                 hourlyCoverageRows
             );
@@ -165,16 +170,7 @@ public partial class SalesDashboardReactService
 
             if (!useSqlServerBatch)
             {
-                var hourlyScope = focusBranchCodes == null
-                    ? normalizedBranches
-                    : normalizedFocusBranches;
-                if (branchCodes != null && focusBranchCodes != null)
-                {
-                    var authorized = normalizedBranches.ToHashSet(StringComparer.OrdinalIgnoreCase);
-                    hourlyScope = normalizedFocusBranches
-                        .Where(authorized.Contains)
-                        .ToList();
-                }
+                var hourlyScope = focusScope ?? normalizedBranches;
                 storeRows = await ReadRevenueStoreRowsAsync(
                     startDate,
                     endDate,
@@ -213,7 +209,7 @@ public partial class SalesDashboardReactService
                 endDate,
                 compareStartDate,
                 compareEndDate,
-                focusBranchCodes == null ? null : normalizedFocusBranches,
+                focusScope,
                 storeRows,
                 hourlyCoverageRows
             );
@@ -304,7 +300,7 @@ public partial class SalesDashboardReactService
     private static string BuildRevenueSnapshotCacheKey(
         DateRangeDto dateRange,
         IReadOnlyCollection<string> branchCodes,
-        IReadOnlyCollection<string> focusBranchCodes,
+        IReadOnlyCollection<string>? focusBranchCodes,
         int? topN
     )
     {
@@ -314,7 +310,9 @@ public partial class SalesDashboardReactService
 
         return $"RevenueReportSnapshot_{dateRange.StartDate:yyyyMMdd}_{dateRange.EndDate:yyyyMMdd}_"
             + $"{dateRange.CompareStartDate:yyyyMMdd}_{dateRange.CompareEndDate:yyyyMMdd}_"
-            + $"{dateRange.CompareMode}_{ScopeKey(branchCodes)}_{ScopeKey(focusBranchCodes)}_{topN?.ToString() ?? "all"}";
+            + $"{dateRange.CompareMode}_{ScopeKey(branchCodes)}_"
+            + $"{(focusBranchCodes == null ? "all" : focusBranchCodes.Count == 0 ? "none" : ScopeKey(focusBranchCodes))}_"
+            + $"{topN?.ToString() ?? "all"}";
     }
 
     private async Task<List<RevenueSnapshotRefreshRow>> ReadRevenueSnapshotRefreshRowsAsync(
@@ -374,6 +372,9 @@ public partial class SalesDashboardReactService
 
         bool IsHourlyComplete(DateTime date)
         {
+            // 无可见聚焦门店时不需要分时统计，不能让无关门店的刷新状态挡住授权排行。
+            if (hourlyBranchCodes is { Count: 0 })
+                return true;
             var hourlyStateComplete = lookup.TryGetValue((SalesStatisticType.HourlySales, date.Date), out var hourlyState)
                 && string.Equals(hourlyState.Status, SalesStatisticRefreshStatus.Fresh, StringComparison.OrdinalIgnoreCase)
                 && hourlyState.LastAggregatedAtUtc.HasValue

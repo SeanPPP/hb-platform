@@ -13,6 +13,8 @@ using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
+using Moq.Protected;
+using System.Data.Common;
 using SqlSugar;
 using Xunit;
 
@@ -117,6 +119,108 @@ public sealed class RevenueReportSnapshotTests : IDisposable
         public decimal TotalAmount { get; set; }
         public int? OrderCount { get; set; }
         public int? Period { get; set; }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task 空focus保留授权排行且与未筛选缓存隔离(bool emptyFirst)
+    {
+        var day = new DateTime(2026, 9, 7);
+        await SeedStoreAsync(day, "S1", "一店", 100m, 5);
+        await SeedHourlyAsync(day, 9, "S1", 100m, 5);
+        await SeedFreshStateAsync(day, SalesStatisticType.StoreSales);
+        await SeedFreshStateAsync(day, SalesStatisticType.HourlySales);
+        var range = new DateRangeDto { StartDate = day, EndDate = day };
+
+        foreach (var empty in new[] { emptyFirst, !emptyFirst, emptyFirst })
+        {
+            var result = await _service.GetRevenueReportSnapshotAsync(
+                range, new List<string> { "S1" }, empty ? new List<string>() : null);
+            Assert.Equal(100m, Assert.Single(result.Branches).Revenue);
+            Assert.False(result.StatisticsPending);
+            if (empty)
+            {
+                Assert.Empty(result.Hourly);
+                Assert.Empty(result.Weekly);
+            }
+            else
+            {
+                Assert.Equal(100m, Assert.Single(result.Hourly).Revenue);
+                Assert.NotEmpty(result.Weekly);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task SQLServer聚焦单店后新发布水位立即替换旧缓存()
+    {
+        var day = new DateTime(2026, 9, 7);
+        var published = new DateTime(2026, 9, 7, 3, 0, 0, DateTimeKind.Utc);
+        var revenue = 100m;
+        // 通过真实批次读取代码消费五个压缩结果集，复现两家授权门店、只聚焦一家的 SQL Server 路径。
+        var command = new Mock<DbCommand>();
+        command.SetupAllProperties();
+        using var parametersOwner = new Microsoft.Data.SqlClient.SqlCommand();
+        command.Protected().Setup<DbParameterCollection>("DbParameterCollection").Returns(parametersOwner.Parameters);
+        command.Protected().Setup<DbParameter>("CreateDbParameter").Returns(() => new Microsoft.Data.SqlClient.SqlParameter());
+        command.Protected().Setup<Task<DbDataReader>>("ExecuteDbDataReaderAsync",
+            ItExpr.IsAny<System.Data.CommandBehavior>(), ItExpr.IsAny<CancellationToken>())
+            .Returns(() => Task.FromResult<DbDataReader>(CreateBatchReader()));
+        var connection = new Mock<DbConnection>();
+        connection.SetupGet(value => value.State).Returns(System.Data.ConnectionState.Open);
+        connection.Protected().Setup<DbCommand>("CreateDbCommand").Returns(command.Object);
+        var ado = new Mock<IAdo>();
+        ado.SetupGet(value => value.Transaction).Returns(new Mock<DbTransaction>().Object);
+        ado.SetupGet(value => value.Connection).Returns(connection.Object);
+        var db = new Mock<ISqlSugarClient>();
+        db.SetupGet(value => value.Ado).Returns(ado.Object);
+        db.SetupGet(value => value.CurrentConnectionConfig).Returns(new ConnectionConfig { DbType = DbType.SqlServer });
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = new SalesDashboardReactService(CreateSqlSugarContext(db.Object),
+            CreatePosmSqlSugarContext(_posmDb), Mock.Of<IMapper>(),
+            NullLogger<SalesDashboardReactService>.Instance, cache);
+        var range = new DateRangeDto { StartDate = day, EndDate = day };
+        var branches = new List<string> { "S1", "S2" };
+        var focus = new List<string> { "S1" };
+
+        var first = await service.GetRevenueReportSnapshotAsync(range, branches, focus);
+        Assert.False(first.StatisticsPending);
+        Assert.Equal(100m, Assert.Single(first.Hourly).Revenue);
+        published = published.AddMinutes(30);
+        revenue = 150m;
+        parametersOwner.Parameters.Clear();
+        var updated = await service.GetRevenueReportSnapshotAsync(range, branches, focus);
+        Assert.False(updated.StatisticsPending);
+        Assert.NotEqual(first.CacheVersion, updated.CacheVersion);
+        Assert.Equal(150m, Assert.Single(updated.Hourly).Revenue);
+        Assert.Equal(150m, updated.Branches.Single(row => row.BranchCode == "S1").Revenue);
+
+        DbDataReader CreateBatchReader()
+        {
+            var payloads = new object[]
+            {
+                new[] { SalesStatisticType.StoreSales, SalesStatisticType.HourlySales }.Select(type => new
+                { StatisticType = type, Date = day, Status = "Fresh", LastAggregatedAtUtc = published, CompletedAtUtc = published }),
+                new[] {
+                    new { Date = day, BranchCode = "S1", BranchName = "一店", TotalAmount = revenue, OrderCount = 5 },
+                    new { Date = day, BranchCode = "S2", BranchName = "二店", TotalAmount = 40m, OrderCount = 2 } },
+                new[] { new { Date = day, BranchCode = "S1", Hour = 9, TotalAmount = revenue, OrderCount = 5, Period = 0 } },
+                Array.Empty<object>(),
+                new[] { new { Date = day, BranchCode = "S1" } },
+            };
+            var tables = payloads.Select(payload =>
+            {
+                using var buffer = new MemoryStream();
+                using (var gzip = new GZipStream(buffer, CompressionLevel.Fastest, leaveOpen: true))
+                    gzip.Write(Encoding.Unicode.GetBytes(JsonSerializer.Serialize(payload)));
+                var table = new DataTable();
+                table.Columns.Add("Data", typeof(byte[]));
+                table.Rows.Add(buffer.ToArray());
+                return table;
+            }).ToArray();
+            return new System.Data.DataTableReader(tables);
+        }
     }
 
     [Fact]
