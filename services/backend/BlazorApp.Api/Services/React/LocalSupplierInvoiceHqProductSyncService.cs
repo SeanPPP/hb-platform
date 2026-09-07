@@ -219,15 +219,28 @@ namespace BlazorApp.Api.Services.React
             actorName
         );
 
+        public Task<ApiResponse<UpdateHqProductsResult>> UpdateHqProductsAsync(
+            string invoiceGuid,
+            UpdateHqProductsRequest? request,
+            string? actorUserGuid,
+            string actorName,
+            int lockWaitMilliseconds
+        ) => UpdateHqProductsAsyncCore(
+            invoiceGuid, request, actorName, actorUserGuid, actorName, lockWaitMilliseconds
+        );
+
         private async Task<ApiResponse<UpdateHqProductsResult>> UpdateHqProductsAsyncCore(
             string invoiceGuid,
             UpdateHqProductsRequest? request,
             string updatedBy,
             string? actorUserGuid,
-            string actorName
+            string actorName,
+            int lockWaitMilliseconds = 10_000
         )
         {
             var result = new UpdateHqProductsResult();
+            if (lockWaitMilliseconds < 0 || lockWaitMilliseconds > 10_000)
+                return ApiResponse<UpdateHqProductsResult>.Error("锁等待预算必须在0至10000毫秒之间", "VALIDATION_ERROR", result);
             // HQ字段更新直接写总部价格表，入口先兜底空payload，避免异常绕过可展示的失败结果。
             if (request == null)
                 return ApiResponse<UpdateHqProductsResult>.Error("请求参数不能为空", "VALIDATION_ERROR", result);
@@ -334,10 +347,39 @@ namespace BlazorApp.Api.Services.React
                 var auditBatchGuid = Guid.NewGuid();
                 var hbwebCreatedBeforeLocalTransaction = result.HbwebCreated;
                 var relationRepair = new SetChildStoreRelationRepairResult();
+                // 预解析不持有事务，避免等待业务锁时用共享行锁阻挡先持锁的写入者。
+                var initialProducts = await ResolveHqUpdateProductsAsync(db, header, details);
                 await db.Ado.BeginTranAsync();
                 try
                 {
-                    var childCostLockScope = await SetChildPurchasePriceMutationLock.AcquireAllAsync(db);
+                    SetChildPurchasePriceLockScope childCostLockScope;
+                    List<Product?>? lockedProducts;
+                    var lockStopwatch = Stopwatch.StartNew();
+                    try
+                    {
+                        (childCostLockScope, lockedProducts) = await AcquireHqUpdateCostLockAsync(
+                            db, header, details, initialProducts, lockWaitMilliseconds
+                        );
+                    }
+                    catch (SetChildPurchasePriceLockException ex) when (ex.ResultCode is -1 or -3)
+                    {
+                        // 只有获锁阶段且回滚成功，才允许后台任务重试；此时尚无本地业务写入或 HQ 写入。
+                        // 回滚异常必须继续向外传播，不能把提交状态不明的请求标成可重试。
+                        await db.Ado.RollbackTranAsync();
+                        _logger.LogWarning(
+                            "更新HQ商品等待成本锁 InvoiceGuid={InvoiceGuid} Resource={Resource} ProductCount={ProductCount} WaitMs={WaitMs} ResultCode={ResultCode} Stage=LocalLock",
+                            invoiceGuid, ex.Resource, details.Count, lockStopwatch.ElapsedMilliseconds, ex.ResultCode
+                        );
+                        return ApiResponse<UpdateHqProductsResult>.Error(
+                            "商品更新繁忙，等待其他成本操作超时，本次未更新 HQ 商品",
+                            "HQ_UPDATE_COST_LOCK_BUSY",
+                            result
+                        );
+                    }
+                    _logger.LogInformation(
+                        "更新HQ商品已获取成本锁 InvoiceGuid={InvoiceGuid} LockAll={LockAll} ProductCount={ProductCount} WaitMs={WaitMs} Stage=LocalLock",
+                        invoiceGuid, childCostLockScope.LocksAllProducts, details.Count, lockStopwatch.ElapsedMilliseconds
+                    );
                     var localPreparationStopwatch = Stopwatch.StartNew();
                     for (var index = 0; index < details.Count; index++)
                     {
@@ -347,7 +389,8 @@ namespace BlazorApp.Api.Services.React
                             detail,
                             updatedBy,
                             result,
-                            candidateProductCodes[index]
+                            candidateProductCodes[index],
+                            lockedProducts?[index]
                         );
                         if (prepared != null)
                             updateItems.Add(prepared);
@@ -561,17 +604,74 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
+        /// <summary>
+        /// 已有商品使用共享总闸和商品锁；匹配必须在锁内重读。
+        /// 新商品及身份变化退回原全局保护，先释放事务，绝不在商品锁上升级总闸。
+        /// </summary>
+        private async Task<(SetChildPurchasePriceLockScope Scope, List<Product?>? Products)> AcquireHqUpdateCostLockAsync(
+            ISqlSugarClient db,
+            StoreLocalSupplierInvoice header,
+            List<StoreLocalSupplierInvoiceDetails> details,
+            List<Product?> products,
+            int lockWaitMilliseconds
+        )
+        {
+            var lockStopwatch = Stopwatch.StartNew();
+            var remainingBudget = () => (int)Math.Max(0L, lockWaitMilliseconds - lockStopwatch.ElapsedMilliseconds);
+            if (products.All(product => !string.IsNullOrWhiteSpace(product?.ProductCode)))
+            {
+                var scope = await SetChildPurchasePriceMutationLock.AcquireProductsWithinBudgetAsync(
+                    db, products.Select(product => product!.ProductCode), remainingBudget()
+                );
+                var lockedProducts = await ResolveHqUpdateProductsAsync(db, header, details);
+                var identitiesUnchanged = products.Zip(lockedProducts).All(pair =>
+                    pair.Second != null && string.Equals(
+                        pair.First!.ProductCode?.Trim(), pair.Second.ProductCode?.Trim(), StringComparison.OrdinalIgnoreCase
+                    )
+                );
+                if (identitiesUnchanged)
+                {
+                    scope.EnsureCovers(db, lockedProducts.Select(product => product!.ProductCode));
+                    return (scope, lockedProducts);
+                }
+
+                await db.Ado.RollbackTranAsync();
+                await db.Ado.BeginTranAsync();
+            }
+
+            var allScope = await SetChildPurchasePriceMutationLock.AcquireAllWithinBudgetAsync(db, remainingBudget());
+            // 全局锁内继续调用原准备方法逐条匹配，保留同批重复货号复用新建商品的行为。
+            return (allScope, null);
+        }
+
+        private static async Task<List<Product?>> ResolveHqUpdateProductsAsync(
+            ISqlSugarClient db,
+            StoreLocalSupplierInvoice header,
+            IEnumerable<StoreLocalSupplierInvoiceDetails> details
+        )
+        {
+            var products = new List<Product?>();
+            foreach (var detail in details)
+            {
+                products.Add(await FindExistingProductAsync(
+                    db, detail.ProductCode, header.SupplierCode ?? detail.SupplierCode, detail.ItemNumber, detail.Barcode
+                ));
+            }
+            return products;
+        }
+
         private async Task<PreparedSyncItem?> PrepareLocalProductForHqUpdateAsync(
             StoreLocalSupplierInvoice header,
             StoreLocalSupplierInvoiceDetails detail,
             string updatedBy,
             UpdateHqProductsResult result,
-            string generatedProductCode
+            string generatedProductCode,
+            Product? lockedProduct = null
         )
         {
             var db = _context.Db;
             var now = DateTime.UtcNow;
-            var product = await FindExistingProductAsync(
+            var product = lockedProduct ?? await FindExistingProductAsync(
                 db,
                 detail.ProductCode,
                 header.SupplierCode ?? detail.SupplierCode,

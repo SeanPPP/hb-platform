@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using BlazorApp.Api.Services.React;
 using SqlSugar;
 using Xunit;
@@ -54,6 +55,289 @@ public sealed class SetChildPurchasePriceSqlServerIntegrationTests
                 out _
             )
         );
+    }
+
+    [SetChildPurchasePriceSqlServerFact]
+    [Trait("Category", "SQL")]
+    public async Task AcquireProductsWithinBudgetAsync_SqlServer不同商品可并行获取()
+    {
+        var connectionString = Environment.GetEnvironmentVariable(ConnectionEnvironmentVariable);
+        Assert.False(string.IsNullOrWhiteSpace(connectionString));
+
+        var suffix = Guid.NewGuid().ToString("N").ToUpperInvariant();
+        var firstCode = $"BUDGET-A-{suffix}";
+        var secondCode = $"BUDGET-B-{suffix}";
+        using var firstDb = CreateClient(connectionString);
+        using var secondDb = CreateClient(connectionString);
+        var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        async Task AcquireAndCommitAsync(ISqlSugarClient db, string productCode)
+        {
+            await start.Task;
+            await db.Ado.BeginTranAsync();
+            try
+            {
+                await SetChildPurchasePriceMutationLock.AcquireProductsWithinBudgetAsync(
+                    db,
+                    new[] { productCode },
+                    totalWaitMilliseconds: 1_000
+                );
+                await Task.Delay(100);
+                await db.Ado.CommitTranAsync();
+            }
+            catch
+            {
+                await db.Ado.RollbackTranAsync();
+                throw;
+            }
+        }
+
+        var firstTask = AcquireAndCommitAsync(firstDb, firstCode);
+        var secondTask = AcquireAndCommitAsync(secondDb, secondCode);
+        start.SetResult();
+
+        await Task.WhenAll(firstTask, secondTask).WaitAsync(TimeSpan.FromSeconds(15));
+    }
+
+    [SetChildPurchasePriceSqlServerFact]
+    [Trait("Category", "SQL")]
+    public async Task AcquireProductsWithinBudgetAsync_SqlServer同商品阻塞并抛出原锁异常()
+    {
+        var connectionString = Environment.GetEnvironmentVariable(ConnectionEnvironmentVariable);
+        Assert.False(string.IsNullOrWhiteSpace(connectionString));
+
+        var productCode = $"BUDGET-BUSY-{Guid.NewGuid():N}".ToUpperInvariant();
+        using var firstDb = CreateClient(connectionString);
+        using var secondDb = CreateClient(connectionString);
+        await firstDb.Ado.BeginTranAsync();
+        await secondDb.Ado.BeginTranAsync();
+        try
+        {
+            await SetChildPurchasePriceMutationLock.AcquireProductsWithinBudgetAsync(
+                firstDb,
+                new[] { productCode },
+                totalWaitMilliseconds: 1_000
+            );
+
+            var startedAt = Stopwatch.StartNew();
+            var exception = await Assert.ThrowsAsync<SetChildPurchasePriceLockException>(() =>
+                SetChildPurchasePriceMutationLock.AcquireProductsWithinBudgetAsync(
+                    secondDb,
+                    new[] { productCode },
+                    totalWaitMilliseconds: 250
+                )
+            );
+
+            Assert.True(exception.Resource.EndsWith(productCode, StringComparison.Ordinal));
+            Assert.True(startedAt.Elapsed < TimeSpan.FromSeconds(3));
+        }
+        finally
+        {
+            await secondDb.Ado.RollbackTranAsync();
+            await firstDb.Ado.RollbackTranAsync();
+        }
+    }
+
+    [SetChildPurchasePriceSqlServerFact]
+    [Trait("Category", "SQL")]
+    public async Task AcquireProductsWithinBudgetAsync_SqlServer总闸阻塞并抛出原锁异常()
+    {
+        var connectionString = Environment.GetEnvironmentVariable(ConnectionEnvironmentVariable);
+        Assert.False(string.IsNullOrWhiteSpace(connectionString));
+
+        var productCode = $"BUDGET-GATE-{Guid.NewGuid():N}".ToUpperInvariant();
+        using var firstDb = CreateClient(connectionString);
+        using var secondDb = CreateClient(connectionString);
+        await firstDb.Ado.BeginTranAsync();
+        await secondDb.Ado.BeginTranAsync();
+        try
+        {
+            await SetChildPurchasePriceMutationLock.AcquireAllWithinBudgetAsync(
+                firstDb,
+                totalWaitMilliseconds: 1_000
+            );
+
+            var startedAt = Stopwatch.StartNew();
+            var exception = await Assert.ThrowsAsync<SetChildPurchasePriceLockException>(() =>
+                SetChildPurchasePriceMutationLock.AcquireProductsWithinBudgetAsync(
+                    secondDb,
+                    new[] { productCode },
+                    totalWaitMilliseconds: 250
+                )
+            );
+
+            Assert.Equal("HB:SetChildPurchasePrice:Gate", exception.Resource);
+            Assert.True(startedAt.Elapsed < TimeSpan.FromSeconds(3));
+        }
+        finally
+        {
+            await secondDb.Ado.RollbackTranAsync();
+            await firstDb.Ado.RollbackTranAsync();
+        }
+    }
+
+    [SetChildPurchasePriceSqlServerFact]
+    [Trait("Category", "SQL")]
+    public async Task AcquireProductsWithinBudgetAsync_SqlServer总预算覆盖总闸和多个商品锁等待()
+    {
+        var connectionString = Environment.GetEnvironmentVariable(ConnectionEnvironmentVariable);
+        Assert.False(string.IsNullOrWhiteSpace(connectionString));
+
+        var suffix = Guid.NewGuid().ToString("N").ToUpperInvariant();
+        var firstCode = $"BUDGET-TOTAL-A-{suffix}";
+        var blockedCode = $"BUDGET-TOTAL-B-{suffix}";
+        using var productHolderDb = CreateClient(connectionString);
+        using var gateHolderDb = CreateClient(connectionString);
+        using var waitingDb = CreateClient(connectionString);
+        using var releasedProductDb = CreateClient(connectionString);
+        await productHolderDb.Ado.BeginTranAsync();
+        await gateHolderDb.Ado.BeginTranAsync();
+        await waitingDb.Ado.BeginTranAsync();
+        try
+        {
+            var productLockResult = await TryAcquireAsync(
+                productHolderDb,
+                "HB:SetChildPurchasePrice:Product:" + blockedCode,
+                "Exclusive"
+            );
+            Assert.True(productLockResult >= 0);
+            await SetChildPurchasePriceMutationLock.AcquireAllWithinBudgetAsync(
+                gateHolderDb,
+                totalWaitMilliseconds: 1_000
+            );
+
+            var startedAt = Stopwatch.StartNew();
+            var acquireTask = SetChildPurchasePriceMutationLock.AcquireProductsWithinBudgetAsync(
+                waitingDb,
+                new[] { blockedCode, firstCode },
+                totalWaitMilliseconds: 600
+            );
+
+            await Task.Delay(300);
+            await gateHolderDb.Ado.RollbackTranAsync();
+
+            var exception = await Assert.ThrowsAsync<SetChildPurchasePriceLockException>(() =>
+                acquireTask
+            );
+
+            Assert.True(exception.Resource.EndsWith(blockedCode, StringComparison.Ordinal));
+            // 总闸已等待约300ms，剩余预算约300ms；逐锁各自使用600ms的实现将约耗时900ms。
+            Assert.True(startedAt.Elapsed < TimeSpan.FromMilliseconds(800));
+
+            // A 已在 B 阻塞前取得；全有或全无入口失败后由调用方回滚，A 才应被释放。
+            await waitingDb.Ado.RollbackTranAsync();
+            await releasedProductDb.Ado.BeginTranAsync();
+            await SetChildPurchasePriceMutationLock.AcquireProductsWithinBudgetAsync(
+                releasedProductDb,
+                new[] { firstCode },
+                totalWaitMilliseconds: 0
+            );
+            await releasedProductDb.Ado.RollbackTranAsync();
+        }
+        finally
+        {
+            if (waitingDb.Ado.Transaction != null)
+            {
+                await waitingDb.Ado.RollbackTranAsync();
+            }
+            if (gateHolderDb.Ado.Transaction != null)
+            {
+                await gateHolderDb.Ado.RollbackTranAsync();
+            }
+            if (releasedProductDb.Ado.Transaction != null)
+            {
+                await releasedProductDb.Ado.RollbackTranAsync();
+            }
+            await productHolderDb.Ado.RollbackTranAsync();
+        }
+    }
+
+    [SetChildPurchasePriceSqlServerFact]
+    [Trait("Category", "SQL")]
+    public async Task AcquireProductsWithinBudgetAsync_SqlServer反向输入按稳定顺序获取且不死锁()
+    {
+        var connectionString = Environment.GetEnvironmentVariable(ConnectionEnvironmentVariable);
+        Assert.False(string.IsNullOrWhiteSpace(connectionString));
+
+        var suffix = Guid.NewGuid().ToString("N").ToUpperInvariant();
+        var firstCode = $"BUDGET-ORDER-A-{suffix}";
+        var secondCode = $"BUDGET-ORDER-B-{suffix}";
+        using var firstDb = CreateClient(connectionString);
+        using var secondDb = CreateClient(connectionString);
+        var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        async Task AcquireAndCommitAsync(ISqlSugarClient db, string[] productCodes)
+        {
+            await start.Task;
+            await db.Ado.BeginTranAsync();
+            try
+            {
+                await SetChildPurchasePriceMutationLock.AcquireProductsWithinBudgetAsync(
+                    db,
+                    productCodes,
+                    totalWaitMilliseconds: 2_000
+                );
+                await Task.Delay(100);
+                await db.Ado.CommitTranAsync();
+            }
+            catch
+            {
+                await db.Ado.RollbackTranAsync();
+                throw;
+            }
+        }
+
+        var firstTask = AcquireAndCommitAsync(firstDb, new[] { firstCode, secondCode });
+        var secondTask = AcquireAndCommitAsync(secondDb, new[] { secondCode, firstCode });
+        start.SetResult();
+
+        await Task.WhenAll(firstTask, secondTask).WaitAsync(TimeSpan.FromSeconds(15));
+    }
+
+    [SetChildPurchasePriceSqlServerFact]
+    [Trait("Category", "SQL")]
+    public async Task AcquireProductsWithinBudgetAsync_SqlServer提交和回滚都会释放商品锁()
+    {
+        var connectionString = Environment.GetEnvironmentVariable(ConnectionEnvironmentVariable);
+        Assert.False(string.IsNullOrWhiteSpace(connectionString));
+
+        var productCode = $"BUDGET-RELEASE-{Guid.NewGuid():N}".ToUpperInvariant();
+        using var firstDb = CreateClient(connectionString);
+        using var secondDb = CreateClient(connectionString);
+        using var thirdDb = CreateClient(connectionString);
+        using var fourthDb = CreateClient(connectionString);
+
+        await firstDb.Ado.BeginTranAsync();
+        await SetChildPurchasePriceMutationLock.AcquireProductsWithinBudgetAsync(
+            firstDb,
+            new[] { productCode },
+            totalWaitMilliseconds: 0
+        );
+        await firstDb.Ado.CommitTranAsync();
+
+        await secondDb.Ado.BeginTranAsync();
+        await SetChildPurchasePriceMutationLock.AcquireProductsWithinBudgetAsync(
+            secondDb,
+            new[] { productCode },
+            totalWaitMilliseconds: 0
+        );
+        await secondDb.Ado.CommitTranAsync();
+
+        await thirdDb.Ado.BeginTranAsync();
+        await SetChildPurchasePriceMutationLock.AcquireProductsWithinBudgetAsync(
+            thirdDb,
+            new[] { productCode },
+            totalWaitMilliseconds: 0
+        );
+        await thirdDb.Ado.RollbackTranAsync();
+
+        await fourthDb.Ado.BeginTranAsync();
+        await SetChildPurchasePriceMutationLock.AcquireProductsWithinBudgetAsync(
+            fourthDb,
+            new[] { productCode },
+            totalWaitMilliseconds: 0
+        );
+        await fourthDb.Ado.RollbackTranAsync();
     }
 
     [SetChildPurchasePriceSqlServerFact]

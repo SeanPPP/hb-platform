@@ -27,6 +27,11 @@ namespace BlazorApp.Api.Services.React
     public class LocalSupplierInvoiceBatchUpdateJobService : ILocalSupplierInvoiceBatchUpdateJobService
     {
         private static readonly TimeSpan DefaultCompletedRetention = TimeSpan.FromMinutes(45);
+        private static readonly TimeSpan HqLockRetryBudget = TimeSpan.FromSeconds(60);
+        private static readonly TimeSpan HqLockRetryDelay = TimeSpan.FromMilliseconds(250);
+        private const int MaxHqLockWaitMilliseconds = 10_000;
+        private const string HqUpdateCostLockBusyCode = "HQ_UPDATE_COST_LOCK_BUSY";
+        private const string HqLockRetryTimeoutMessage = "商品更新繁忙，等待其他成本操作超时，本次未更新 HQ 商品";
 
         private readonly ConcurrentDictionary<string, JobState<UpdateToStorePricesResultDto>> _storePriceJobs = new();
         private readonly ConcurrentDictionary<string, JobState<UpdateHqProductsResult>> _hqProductJobs = new();
@@ -426,27 +431,105 @@ namespace BlazorApp.Api.Services.React
             string actorName
         )
         {
+            var startedTimestamp = _timeProvider.GetTimestamp();
+            var attempt = 0;
+            UpdateHqProductsResult? lastBusyResult = null;
             try
             {
-                using var scope = _serviceScopeFactory.CreateScope();
-                var service = scope.ServiceProvider.GetRequiredService<ILocalSupplierInvoiceHqProductSyncService>();
-                // 旧入口不传 GUID 时保留原三参数调用，避免破坏既有实现和测试替身。
-                var response = string.IsNullOrWhiteSpace(actorUserGuid)
-                    ? await service.UpdateHqProductsAsync(invoiceGuid, request, actorName)
-                    : await service.UpdateHqProductsAsync(invoiceGuid, request, actorUserGuid, actorName);
-                var result = response.Data ?? response.Details as UpdateHqProductsResult;
-                CompleteJob(
-                    jobState,
-                    response.Success
-                        ? LocalSupplierInvoiceBatchUpdateJobStatusConstants.Succeeded
-                        : LocalSupplierInvoiceBatchUpdateJobStatusConstants.Failed,
-                    result,
-                    response.Message
-                );
+                while (true)
+                {
+                    var remainingBudget = HqLockRetryBudget - GetElapsed(startedTimestamp);
+                    if (remainingBudget <= TimeSpan.Zero)
+                    {
+                        CompleteJob(
+                            jobState,
+                            LocalSupplierInvoiceBatchUpdateJobStatusConstants.Failed,
+                            lastBusyResult ?? new UpdateHqProductsResult(),
+                            HqLockRetryTimeoutMessage
+                        );
+                        return;
+                    }
+
+                    attempt++;
+                    var lockWaitMilliseconds = Math.Clamp(
+                        (int)Math.Ceiling(remainingBudget.TotalMilliseconds),
+                        1,
+                        MaxHqLockWaitMilliseconds
+                    );
+                    ApiResponse<UpdateHqProductsResult> response;
+
+                    // 每次尝试独立创建 scope 和 request；scope 必须在重试等待前释放，避免持有数据库连接或事务。
+                    using (_logger.BeginScope(new Dictionary<string, object?>
+                    {
+                        ["JobId"] = jobState.JobId,
+                        ["InvoiceGuid"] = invoiceGuid,
+                        ["Attempt"] = attempt,
+                        ["Elapsed"] = GetElapsed(startedTimestamp),
+                    }))
+                    {
+                        using var scope = _serviceScopeFactory.CreateScope();
+                        var service = scope.ServiceProvider.GetRequiredService<ILocalSupplierInvoiceHqProductSyncService>();
+                        response = await service.UpdateHqProductsAsync(
+                            invoiceGuid,
+                            CloneUpdateHqProductsRequest(request),
+                            actorUserGuid,
+                            actorName,
+                            lockWaitMilliseconds
+                        );
+                    }
+
+                    var result = response.Data ?? response.Details as UpdateHqProductsResult;
+                    if (IsRetryableHqLockBusy(response, result))
+                    {
+                        lastBusyResult = result;
+                        remainingBudget = HqLockRetryBudget - GetElapsed(startedTimestamp);
+                        if (remainingBudget <= TimeSpan.Zero)
+                        {
+                            CompleteJob(
+                                jobState,
+                                LocalSupplierInvoiceBatchUpdateJobStatusConstants.Failed,
+                                result ?? new UpdateHqProductsResult(),
+                                HqLockRetryTimeoutMessage
+                            );
+                            return;
+                        }
+
+                        var delay = remainingBudget < HqLockRetryDelay
+                            ? remainingBudget
+                            : HqLockRetryDelay;
+                        _logger.LogWarning(
+                            "更新HQ商品遇到成本锁冲突，将重试。JobId={JobId}, InvoiceGuid={InvoiceGuid}, Attempt={Attempt}, Elapsed={Elapsed}, Delay={Delay}",
+                            jobState.JobId,
+                            invoiceGuid,
+                            attempt,
+                            GetElapsed(startedTimestamp),
+                            delay
+                        );
+                        await Task.Delay(delay, _timeProvider);
+                        continue;
+                    }
+
+                    CompleteJob(
+                        jobState,
+                        response.Success
+                            ? LocalSupplierInvoiceBatchUpdateJobStatusConstants.Succeeded
+                            : LocalSupplierInvoiceBatchUpdateJobStatusConstants.Failed,
+                        result,
+                        response.Message
+                    );
+                    return;
+                }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "执行更新HQ商品 job 失败: {JobId}", jobState.JobId);
+                _logger.LogError(
+                    ex,
+                    "执行更新HQ商品 job 失败: JobId={JobId}, InvoiceGuid={InvoiceGuid}, Attempt={Attempt}, Elapsed={Elapsed}",
+                    jobState.JobId,
+                    invoiceGuid,
+                    attempt,
+                    GetElapsed(startedTimestamp)
+                );
                 CompleteJob(
                     jobState,
                     LocalSupplierInvoiceBatchUpdateJobStatusConstants.Failed,
@@ -458,6 +541,45 @@ namespace BlazorApp.Api.Services.React
                     ex.Message
                 );
             }
+        }
+
+        private TimeSpan GetElapsed(long startedTimestamp)
+        {
+            var elapsed = _timeProvider.GetElapsedTime(startedTimestamp);
+            return elapsed < TimeSpan.Zero ? TimeSpan.Zero : elapsed;
+        }
+
+        private static bool IsRetryableHqLockBusy(
+            ApiResponse<UpdateHqProductsResult> response,
+            UpdateHqProductsResult? result
+        )
+        {
+            return !response.Success
+                && string.Equals(response.Code, HqUpdateCostLockBusyCode, StringComparison.Ordinal)
+                && result is not null
+                && result.HqExisting == 0
+                && result.Skipped == 0
+                && result.Failed == 0
+                && result.Errors is { Count: 0 }
+                && !HasHqWriteCounts(result);
+        }
+
+        private static bool HasHqWriteCounts(UpdateHqProductsResult? result)
+        {
+            return result is not null
+                && (result.HbwebCreated > 0
+                    || result.HqCreated > 0
+                    || result.HqSynced > 0
+                    || result.HqPurchasePricesUpdated > 0
+                    || result.Updated > 0
+                    || result.HqRetailPricesUpdated > 0
+                    || result.HqAutoPricingUpdated > 0
+                    || result.HqSpecialProductsUpdated > 0
+                    || result.HqDiscountRatesUpdated > 0
+                    || result.HqProductSetCodesCreated > 0
+                    || result.HqProductSetCodesUpdated > 0
+                    || result.HqStoreMultiCodesCreated > 0
+                    || result.HqStoreMultiCodesUpdated > 0);
         }
 
         private void CompleteJob<T>(

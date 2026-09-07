@@ -23,6 +23,33 @@ internal static class SetChildPurchasePriceMutationLock
     ) => AcquireAsync(db, productCodes, lockAll: false);
 
     /// <summary>
+    /// 在共享总等待预算内获取全量业务锁。调用方负责在失败时回滚事务。
+    /// </summary>
+    internal static Task<SetChildPurchasePriceLockScope> AcquireAllWithinBudgetAsync(
+        ISqlSugarClient db,
+        int totalWaitMilliseconds
+    ) => AcquireWithinBudgetAsync(
+        db,
+        Array.Empty<string?>(),
+        lockAll: true,
+        totalWaitMilliseconds: totalWaitMilliseconds
+    );
+
+    /// <summary>
+    /// 在共享总等待预算内按规范稳定顺序获取商品业务锁。调用方负责在失败时回滚事务。
+    /// </summary>
+    internal static Task<SetChildPurchasePriceLockScope> AcquireProductsWithinBudgetAsync(
+        ISqlSugarClient db,
+        IEnumerable<string?> productCodes,
+        int totalWaitMilliseconds
+    ) => AcquireWithinBudgetAsync(
+        db,
+        productCodes,
+        lockAll: false,
+        totalWaitMilliseconds: totalWaitMilliseconds
+    );
+
+    /// <summary>
     /// 为允许字段级部分成功的入口一次获取共享总闸，再按稳定顺序尝试商品锁。
     /// 所有商品共用等待预算；旧的全有或全无入口保持不变。
     /// </summary>
@@ -151,6 +178,67 @@ internal static class SetChildPurchasePriceMutationLock
         }
 
         return new SetChildPurchasePriceLockScope(db, lockAll, normalizedCodes);
+    }
+
+    private static async Task<SetChildPurchasePriceLockScope> AcquireWithinBudgetAsync(
+        ISqlSugarClient db,
+        IEnumerable<string?> productCodes,
+        bool lockAll,
+        int totalWaitMilliseconds
+    )
+    {
+        if (db.Ado.Transaction == null)
+        {
+            throw new InvalidOperationException("套装子项成本业务锁必须在数据库事务内获取");
+        }
+        if (totalWaitMilliseconds < 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(totalWaitMilliseconds),
+                "共享锁等待预算不能小于0"
+            );
+        }
+
+        var normalizedCodes = NormalizeProductCodes(productCodes);
+        if (!lockAll && normalizedCodes.Count == 0)
+        {
+            throw new ArgumentException("按商品获取套装子项成本锁时，商品编码不能为空", nameof(productCodes));
+        }
+
+        if (db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+        {
+            var waitStopwatch = Stopwatch.StartNew();
+            await AcquireDatabaseResourceWithTimeoutAsync(
+                db,
+                GateResource,
+                lockAll ? "Exclusive" : "Shared",
+                GetRemainingWaitMilliseconds(waitStopwatch, totalWaitMilliseconds)
+            );
+
+            if (!lockAll)
+            {
+                foreach (var productCode in normalizedCodes)
+                {
+                    await AcquireDatabaseResourceWithTimeoutAsync(
+                        db,
+                        ProductResourcePrefix + productCode,
+                        "Exclusive",
+                        GetRemainingWaitMilliseconds(waitStopwatch, totalWaitMilliseconds)
+                    );
+                }
+            }
+        }
+
+        return new SetChildPurchasePriceLockScope(db, lockAll, normalizedCodes);
+    }
+
+    private static int GetRemainingWaitMilliseconds(
+        Stopwatch waitStopwatch,
+        int totalWaitMilliseconds
+    )
+    {
+        var elapsedMilliseconds = (long)waitStopwatch.Elapsed.TotalMilliseconds;
+        return (int)Math.Max(0L, (long)totalWaitMilliseconds - elapsedMilliseconds);
     }
 
     private static async Task AcquireDatabaseResourceAsync(

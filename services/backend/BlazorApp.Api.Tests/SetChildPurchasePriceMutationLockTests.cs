@@ -7,6 +7,72 @@ namespace BlazorApp.Api.Tests;
 public sealed class SetChildPurchasePriceMutationLockTests
 {
     [Fact]
+    public async Task AcquireAllWithinBudgetAsync_SQLite事务内零预算仍返回全量锁范围()
+    {
+        using var db = CreateSqliteClient();
+        await db.Ado.BeginTranAsync();
+        try
+        {
+            var result = await SetChildPurchasePriceMutationLock.AcquireAllWithinBudgetAsync(
+                db,
+                totalWaitMilliseconds: 0
+            );
+
+            Assert.True(result.LocksAllProducts);
+            result.EnsureCovers(db, new[] { "A", "B" });
+        }
+        finally
+        {
+            await db.Ado.RollbackTranAsync();
+        }
+    }
+
+    [Fact]
+    public async Task AcquireProductsWithinBudgetAsync_SQLite按稳定顺序规范商品并拒绝负预算()
+    {
+        using var db = CreateSqliteClient();
+        await db.Ado.BeginTranAsync();
+        try
+        {
+            await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+                SetChildPurchasePriceMutationLock.AcquireProductsWithinBudgetAsync(
+                    db,
+                    new[] { " b ", "A", "a" },
+                    totalWaitMilliseconds: -1
+                )
+            );
+
+            var result = await SetChildPurchasePriceMutationLock.AcquireProductsWithinBudgetAsync(
+                db,
+                new[] { " b ", "A", "a" },
+                totalWaitMilliseconds: 0
+            );
+
+            Assert.False(result.LocksAllProducts);
+            result.EnsureCovers(db, new[] { "A", "B" });
+            Assert.Throws<InvalidOperationException>(() => result.EnsureCovers(db, new[] { "C" }));
+        }
+        finally
+        {
+            await db.Ado.RollbackTranAsync();
+        }
+    }
+
+    [Fact]
+    public async Task AcquireProductsWithinBudgetAsync_事务外拒绝获取锁()
+    {
+        using var db = CreateSqliteClient();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            SetChildPurchasePriceMutationLock.AcquireProductsWithinBudgetAsync(
+                db,
+                new[] { "A" },
+                totalWaitMilliseconds: 0
+            )
+        );
+    }
+
+    [Fact]
     public void CanContinuePartialLockFailure_仅安全的锁请求失败可在原事务继续()
     {
         Assert.True(
@@ -160,4 +226,14 @@ public sealed class SetChildPurchasePriceMutationLockTests
         Assert.Equal(expectedMatched, matched);
         Assert.Equal(expectedResultCode, resultCode);
     }
+
+    private static SqlSugarClient CreateSqliteClient() => new(
+        new ConnectionConfig
+        {
+            ConnectionString = "DataSource=:memory:",
+            DbType = DbType.Sqlite,
+            IsAutoCloseConnection = false,
+            InitKeyType = InitKeyType.Attribute,
+        }
+    );
 }
