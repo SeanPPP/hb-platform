@@ -336,28 +336,36 @@ public sealed class WindowsRemoteMaintenanceInstaller(
     {
         var path = Path.Combine(AppContext.BaseDirectory, "Hbpos.RemoteStatus.exe");
         EnsureProtectedProgramPath(path);
-        if (!File.Exists(path)) throw new FileNotFoundException("WPF 安装目录缺少状态服务程序。");
+        if (!File.Exists(path)) throw new RemoteMaintenanceSetupException(RemoteMaintenanceSetupError.ComponentsMissing);
         return path;
     }
-    private static void EnsureProtectedProgramPath(string path)
+    internal static void EnsureProtectedProgramPath(string path)
     {
         if (!Path.GetFullPath(path).StartsWith(ProgramRoot.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException("远程维护程序必须安装到受保护的 Program Files 目录。");
-        EnsureNoReparsePoints(path);
+            throw new RemoteMaintenanceSetupException(RemoteMaintenanceSetupError.InstallationLocationInvalid);
+        try { EnsureNoReparsePoints(path); }
+        catch (InvalidDataException)
+        { throw new RemoteMaintenanceSetupException(RemoteMaintenanceSetupError.InstallationPermissionsInvalid); }
         var writeRights = FileSystemRights.Write | FileSystemRights.Delete | FileSystemRights.DeleteSubdirectoriesAndFiles |
             FileSystemRights.ChangePermissions | FileSystemRights.TakeOwnership;
         for (var current = Path.GetFullPath(path); current.Length >= ProgramRoot.Length; current = Path.GetDirectoryName(current)!)
         {
             if (!File.Exists(current) && !Directory.Exists(current)) continue;
-            FileSystemSecurity security = Directory.Exists(current)
-                ? new DirectoryInfo(current).GetAccessControl() : new FileInfo(current).GetAccessControl();
+            FileSystemSecurity security;
+            try
+            {
+                security = Directory.Exists(current)
+                    ? new DirectoryInfo(current).GetAccessControl() : new FileInfo(current).GetAccessControl();
+            }
+            catch (Exception ex) when (ex is UnauthorizedAccessException or System.Security.SecurityException)
+            { throw new RemoteMaintenanceSetupException(RemoteMaintenanceSetupError.InstallationPermissionsInvalid); }
             foreach (FileSystemAccessRule rule in security.GetAccessRules(true, true, typeof(SecurityIdentifier)))
             {
                 if (rule.AccessControlType != AccessControlType.Allow || (rule.PropagationFlags & PropagationFlags.InheritOnly) != 0 ||
                     (rule.FileSystemRights & writeRights) == 0) continue;
                 var sid = rule.IdentityReference.Value;
                 if (sid is not ("S-1-5-18" or "S-1-5-32-544" or "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"))
-                    throw new InvalidDataException("程序目录允许非管理员写入，拒绝提权安装。");
+                    throw new RemoteMaintenanceSetupException(RemoteMaintenanceSetupError.InstallationPermissionsInvalid);
             }
         }
     }

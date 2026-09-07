@@ -7,6 +7,46 @@ namespace Hbpos.Client.Tests;
 [Collection(ShutdownTimingTestCollection.Name)]
 public sealed class RemoteMaintenanceServiceTests
 {
+    [Theory]
+    [InlineData(RemoteMaintenanceSetupError.ComponentsMissing, "componentsMissing")]
+    [InlineData(RemoteMaintenanceSetupError.InstallationLocationInvalid, "installationLocationInvalid")]
+    [InlineData(RemoteMaintenanceSetupError.InstallationPermissionsInvalid, "installationPermissionsInvalid")]
+    public async Task Invalid_install_environment_stops_before_prepare_download_and_uac(RemoteMaintenanceSetupError error, string message)
+    {
+        using var fixture = new Fixture();
+        fixture.Launcher.ValidationFailure = new RemoteMaintenanceSetupException(error);
+        fixture.Launcher.InstallWritesId = true;
+        var stages = new List<RemoteMaintenanceStage>();
+
+        var result = await fixture.Service.InstallAsync(fixture.Session, progress: new RecordingProgress(stages));
+
+        Assert.Empty(fixture.Api.PreparedOperations);
+        Assert.Equal(0, fixture.Downloader.VerifiedCount);
+        Assert.Empty(fixture.Launcher.Stages);
+        Assert.Equal(new[] { RemoteMaintenanceStage.Preparing }, stages);
+        Assert.False(result.Succeeded);
+        Assert.Equal("settings.remoteMaintenance.result." + message, result.Message);
+    }
+
+    [Theory]
+    [InlineData(RemoteMaintenanceSetupError.ComponentsMissing, "componentsMissing")]
+    [InlineData(RemoteMaintenanceSetupError.InstallationLocationInvalid, "installationLocationInvalid")]
+    [InlineData(RemoteMaintenanceSetupError.InstallationPermissionsInvalid, "installationPermissionsInvalid")]
+    public async Task Elevated_precheck_failure_keeps_specific_install_guidance(RemoteMaintenanceSetupError error, string message)
+    {
+        using var fixture = new Fixture();
+        fixture.Launcher.InstallExitCode = (int)error;
+
+        var result = await fixture.Service.InstallAsync(fixture.Session);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal("settings.remoteMaintenance.result." + message, result.Message);
+        Assert.Empty(fixture.Api.CommittedOperations);
+        var cleanup = Assert.Single(fixture.Launcher.FailClosedRequests);
+        Assert.False(cleanup.RustDeskInstalled);
+        Assert.False(cleanup.StatusAgentInstalled);
+    }
+
     [Fact]
     public async Task Fresh_install_reads_id_written_by_elevated_helper_before_commit()
     {
@@ -19,6 +59,7 @@ public sealed class RemoteMaintenanceServiceTests
         Assert.Equal("settings.remoteMaintenance.result.configured", result.Message);
         Assert.Equal("rustdesk-123", fixture.Api.CommittedRustdeskIds.Single());
         Assert.Equal(new[] { "install", "configure" }, fixture.Launcher.Stages);
+        Assert.Equal(1, fixture.Launcher.ValidationCount);
     }
 
     [Fact]
@@ -56,6 +97,7 @@ public sealed class RemoteMaintenanceServiceTests
         Assert.Empty(fixture.Launcher.Stages.Where(x => x == "install"));
         Assert.Equal(new[] { "configure" }, fixture.Launcher.Stages);
         Assert.Equal(operationId, fixture.Api.CommittedOperations.Single());
+        Assert.Equal(0, fixture.Launcher.ValidationCount);
     }
 
     [Fact]
@@ -72,6 +114,7 @@ public sealed class RemoteMaintenanceServiceTests
         Assert.Equal("settings.remoteMaintenance.result.serviceRestored", result.Message);
         Assert.Equal(new[] { "configure" }, fixture.Launcher.Stages);
         Assert.Equal(operationId, fixture.Launcher.OperationIds.Single());
+        Assert.Equal(0, fixture.Launcher.ValidationCount);
     }
 
     [Fact]
@@ -424,6 +467,14 @@ public sealed class RemoteMaintenanceServiceTests
 
         public sealed class FakeLauncher(RemoteMaintenanceJournal journal) : IRemoteMaintenanceUacHelperLauncher
         {
+            public Exception? ValidationFailure { get; set; }
+            public int ValidationCount { get; private set; }
+            public void ValidateInstallation(string helperPath)
+            {
+                ValidationCount++;
+                if (ValidationFailure is not null) throw ValidationFailure;
+            }
+
             public Action<string>? BeforeStage { get; set; }
             public List<string> Stages { get; } = [];
             public List<Guid> OperationIds { get; } = [];
