@@ -450,11 +450,13 @@ public sealed class InstallmentOrdersControllerTests : IDisposable
             ))
             .ReturnsAsync((string _, string permission) =>
                 ApiResponse<bool>.OK(
-                    permissionGranted
-                    && permission.Equals(
-                        Permissions.InstallmentOrders.View,
-                        StringComparison.OrdinalIgnoreCase
-                    )
+                    // RoleService 已在统一权限查询中处理管理员隐式授权，测试替身保持同一契约。
+                    superAdminGranted
+                    || (permissionGranted
+                        && permission.Equals(
+                            Permissions.InstallmentOrders.View,
+                            StringComparison.OrdinalIgnoreCase
+                        ))
                 )
             );
         return roleService;
