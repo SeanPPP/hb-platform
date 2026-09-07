@@ -43,6 +43,7 @@
     <Compile Include="DeviceRegistrationReactServiceTests.cs" />
     <Compile Include="DeviceActivationCodeManagementTests.cs" />
     <Compile Include="RemoteMaintenanceContractTests.cs" />
+    <Compile Include="RemoteMaintenancePrepareTests.cs" />
     <Compile Include="RustDeskCompatControllerTests.cs" />
     <Compile Include="RustDeskCompatServiceTests.cs" />
     <Compile Include="RustDeskClientSchemaTests.cs" />
