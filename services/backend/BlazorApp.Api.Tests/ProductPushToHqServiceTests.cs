@@ -1790,6 +1790,146 @@ public sealed class ProductPushToHqServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task PushToHqAsync_首次新Type1套装缺少HQ门店投影_补齐按零售价比例分摊并幂等()
+    {
+        await SeedNewType1ProductWithMissingHqStoreAsync();
+        var service = CreateService();
+
+        var first = await service.PushToHqAsync(new PushProductsToHqRequest
+        {
+            ProductCodes = new List<string> { "NEW-SET-1" },
+        });
+
+        Assert.True(first.Success, first.Message);
+        var localRows = await _localDb.Queryable<StoreMultiCodeProduct>()
+            .Where(row => row.ProductCode == "NEW-SET-1" && !row.IsDeleted)
+            .ToListAsync();
+        Assert.Equal(6, localRows.Count);
+        Assert.Equal(2, localRows.Count(row => row.StoreCode == "S03"));
+        Assert.Equal(4.8m, localRows.Single(row => row.StoreCode == "S03" && row.MultiCodeProductCode == "NEW-SET-1-A").PurchasePrice);
+        Assert.Equal(7.2m, localRows.Single(row => row.StoreCode == "S03" && row.MultiCodeProductCode == "NEW-SET-1-B").PurchasePrice);
+
+        var hqRows = await _hqDb.Queryable<DIC_分店一品多码表>()
+            .Where(row => row.H商品编码 == "NEW-SET-1")
+            .ToListAsync();
+        Assert.Equal(6, hqRows.Count);
+        Assert.Equal(4.8m, hqRows.Single(row => row.H分店代码 == "S03" && row.H多码商品编码 == "NEW-SET-1-A").H进货价);
+        Assert.Equal(7.2m, hqRows.Single(row => row.H分店代码 == "S03" && row.H多码商品编码 == "NEW-SET-1-B").H进货价);
+
+        var second = await service.PushToHqAsync(new PushProductsToHqRequest
+        {
+            ProductCodes = new List<string> { "NEW-SET-1" },
+        });
+
+        Assert.True(second.Success, second.Message);
+        Assert.Equal(6, await _localDb.Queryable<StoreMultiCodeProduct>()
+            .Where(row => row.ProductCode == "NEW-SET-1" && !row.IsDeleted)
+            .CountAsync());
+        Assert.Equal(6, await _hqDb.Queryable<DIC_分店一品多码表>()
+            .Where(row => row.H商品编码 == "NEW-SET-1")
+            .CountAsync());
+    }
+
+    [Fact]
+    public async Task PushToHqAsync_已有HQ的Type1套装缺少门店投影_仍拒绝且不改HQ()
+    {
+        await SeedNewType1ProductWithMissingHqStoreAsync();
+        var service = CreateService();
+        var first = await service.PushToHqAsync(new PushProductsToHqRequest
+        {
+            ProductCodes = new List<string> { "NEW-SET-1" },
+        });
+        Assert.True(first.Success, first.Message);
+
+        await _localDb.Deleteable<StoreMultiCodeProduct>()
+            .Where(row =>
+                row.StoreCode == "S03"
+                && row.ProductCode == "NEW-SET-1"
+                && row.MultiCodeProductCode == "NEW-SET-1-B"
+            )
+            .ExecuteCommandAsync();
+
+        var response = await service.PushToHqAsync(new PushProductsToHqRequest
+        {
+            ProductCodes = new List<string> { "NEW-SET-1" },
+        });
+
+        Assert.False(response.Success);
+        Assert.Contains("门店子项不完整", response.Message);
+        Assert.Equal(6, await _hqDb.Queryable<DIC_分店一品多码表>()
+            .Where(row => row.H商品编码 == "NEW-SET-1")
+            .CountAsync());
+        Assert.Equal(5, await _localDb.Queryable<StoreMultiCodeProduct>()
+            .Where(row => row.ProductCode == "NEW-SET-1" && !row.IsDeleted)
+            .CountAsync());
+    }
+
+    [Fact]
+    public async Task PushToHqAsync_新Type1套装目标门店存在软删除投影_拒绝且不复活()
+    {
+        await SeedNewType1ProductWithMissingHqStoreAsync();
+        await _localDb.Insertable(new StoreMultiCodeProduct
+        {
+            UUID = "new-set-1-s03-tombstone",
+            StoreCode = "S03",
+            ProductCode = "NEW-SET-1",
+            MultiCodeProductCode = "NEW-SET-1-B",
+            StoreMultiCodeProductCode = "S03NEW-SET-1-B",
+            IsActive = false,
+            IsDeleted = true,
+        }).ExecuteCommandAsync();
+
+        var response = await CreateService().PushToHqAsync(new PushProductsToHqRequest
+        {
+            ProductCodes = new List<string> { "NEW-SET-1" },
+        });
+
+        Assert.False(response.Success);
+        Assert.Contains("已停用或软删除，未自动复活", response.Message);
+        Assert.Equal(0, await _hqDb.Queryable<DIC_商品信息字典表>()
+            .Where(row => row.H商品编码 == "NEW-SET-1")
+            .CountAsync());
+        var tombstone = await _localDb.Queryable<StoreMultiCodeProduct>()
+            .SingleAsync(row => row.UUID == "new-set-1-s03-tombstone");
+        Assert.True(tombstone.IsDeleted);
+        Assert.False(tombstone.IsActive);
+    }
+
+    [Fact]
+    public async Task PushToHqAsync_新Type1套装HQ插入语句失败_本地补齐随事务回滚()
+    {
+        await SeedNewType1ProductWithMissingHqStoreAsync();
+        // 验证 HQ 写入语句失败时回滚本地新增关系；此例不覆盖两个数据库的提交阶段故障。
+        _hqDb.Ado.ExecuteCommand(
+            """
+            CREATE TRIGGER fail_hq_new_type1_product
+            BEFORE INSERT ON "DIC_商品信息字典表"
+            WHEN NEW."H商品编码" = 'NEW-SET-1'
+            BEGIN
+                SELECT RAISE(ABORT, 'forced hq new type1 product failure');
+            END
+            """
+        );
+
+        var response = await CreateService().PushToHqAsync(new PushProductsToHqRequest
+        {
+            ProductCodes = new List<string> { "NEW-SET-1" },
+        });
+
+        Assert.False(response.Success);
+        Assert.Contains("forced hq new type1 product failure", response.Message);
+        Assert.Equal(0, await _hqDb.Queryable<DIC_商品信息字典表>()
+            .Where(row => row.H商品编码 == "NEW-SET-1")
+            .CountAsync());
+        Assert.Equal(4, await _localDb.Queryable<StoreMultiCodeProduct>()
+            .Where(row => row.ProductCode == "NEW-SET-1" && !row.IsDeleted)
+            .CountAsync());
+        Assert.Equal(0, await _localDb.Queryable<StoreMultiCodeProduct>()
+            .Where(row => row.ProductCode == "NEW-SET-1" && row.StoreCode == "S03")
+            .CountAsync());
+    }
+
+    [Fact]
     public async Task PushToHqAsync_只推全局套装字段时不受无关门店投影缺失阻断()
     {
         await SeedProductGraphAsync();
@@ -3431,6 +3571,117 @@ public sealed class ProductPushToHqServiceTests : IDisposable
             IsDeleted = false,
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow,
+        }).ExecuteCommandAsync();
+    }
+
+    private async Task SeedNewType1ProductWithMissingHqStoreAsync()
+    {
+        await _hqDb.Insertable(new[]
+        {
+            new HqBranch { BranchCode = "S01", BranchName = "一店" },
+            new HqBranch { BranchCode = "S02", BranchName = "二店" },
+            new HqBranch { BranchCode = "S03", BranchName = "三店" },
+        }).ExecuteCommandAsync();
+
+        await _localDb.Insertable(new Product
+        {
+            UUID = "product-new-set-1",
+            ProductCode = "NEW-SET-1",
+            LocalSupplierCode = "SUP-NEW-SET",
+            ItemNumber = "NEW-SET-1-ITEM",
+            Barcode = "952700000101",
+            ProductName = "新套装测试商品",
+            ProductType = 1,
+            PurchasePrice = 12m,
+            RetailPrice = 20m,
+            IsActive = true,
+            IsAutoPricing = true,
+            IsSpecialProduct = false,
+            IsDeleted = false,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        }).ExecuteCommandAsync();
+
+        await _localDb.Insertable(new[]
+        {
+            new ProductSetCode
+            {
+                SetCodeId = "new-set-1-a",
+                ProductCode = "NEW-SET-1",
+                SetProductCode = "NEW-SET-1-A",
+                SetItemNumber = "NEW-SET-1-A",
+                SetBarcode = "952700000102",
+                SetRetailPrice = 4m,
+                SetQuantity = 1,
+                SetType = 1,
+                IsActive = true,
+                IsDeleted = false,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            },
+            new ProductSetCode
+            {
+                SetCodeId = "new-set-1-b",
+                ProductCode = "NEW-SET-1",
+                SetProductCode = "NEW-SET-1-B",
+                SetItemNumber = "NEW-SET-1-B",
+                SetBarcode = "952700000103",
+                SetRetailPrice = 6m,
+                SetQuantity = 1,
+                SetType = 1,
+                IsActive = true,
+                IsDeleted = false,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            },
+        }).ExecuteCommandAsync();
+
+        await _localDb.Insertable(new[]
+        {
+            new StoreMultiCodeProduct
+            {
+                UUID = "new-set-1-s01-a",
+                StoreCode = "S01",
+                ProductCode = "NEW-SET-1",
+                MultiCodeProductCode = "NEW-SET-1-A",
+                StoreMultiCodeProductCode = "S01NEW-SET-1-A",
+                MultiCodeRetailPrice = 4m,
+                IsActive = true,
+                IsDeleted = false,
+            },
+            new StoreMultiCodeProduct
+            {
+                UUID = "new-set-1-s01-b",
+                StoreCode = "S01",
+                ProductCode = "NEW-SET-1",
+                MultiCodeProductCode = "NEW-SET-1-B",
+                StoreMultiCodeProductCode = "S01NEW-SET-1-B",
+                MultiCodeRetailPrice = 6m,
+                IsActive = true,
+                IsDeleted = false,
+            },
+            new StoreMultiCodeProduct
+            {
+                UUID = "new-set-1-s02-a",
+                StoreCode = "S02",
+                ProductCode = "NEW-SET-1",
+                MultiCodeProductCode = "NEW-SET-1-A",
+                StoreMultiCodeProductCode = "S02NEW-SET-1-A",
+                MultiCodeRetailPrice = 4m,
+                IsActive = true,
+                IsDeleted = false,
+            },
+            new StoreMultiCodeProduct
+            {
+                UUID = "new-set-1-s02-b",
+                StoreCode = "S02",
+                ProductCode = "NEW-SET-1",
+                MultiCodeProductCode = "NEW-SET-1-B",
+                StoreMultiCodeProductCode = "S02NEW-SET-1-B",
+                MultiCodeRetailPrice = 6m,
+                IsActive = true,
+                IsDeleted = false,
+            },
         }).ExecuteCommandAsync();
     }
 
