@@ -195,7 +195,8 @@ public sealed class RemoteMaintenanceService
         // 只更新 prepare 所有的列，避免把并发 heartbeat 的 sequence/lastSeen 用旧对象覆盖。
         var prepared = await _dbContext.Db.Updateable<RemoteMaintenanceDevice>()
             .SetColumns(x => new RemoteMaintenanceDevice { HardwareId = hardwareId, StoreCode = Normalize(registration.分店代码, 50) ?? string.Empty, DeviceCode = Normalize(registration.系统设备编号, 100) ?? string.Empty, ComputerName = computerName, LastOperationId = request.OperationId })
-            .Where(x => x.Id == row.Id && !x.IsDeleted && (!x.LastOperationId.HasValue || x.LastOperationId == request.OperationId))
+            // 显式判空避免 SqlSugar 翻译 !HasValue 时丢失 OR；保留同一操作重试的并发保护。
+            .Where(x => x.Id == row.Id && !x.IsDeleted && (x.LastOperationId == null || x.LastOperationId == request.OperationId))
             .ExecuteCommandAsync();
         if (prepared != 1) return RemoteMaintenanceResult<RemoteMaintenancePrepareResponseDto>.Fail("REMOTE_MAINTENANCE_OPERATION_CONFLICT", "设备登记正在被其他操作处理");
         var response = new RemoteMaintenancePrepareResponseDto
