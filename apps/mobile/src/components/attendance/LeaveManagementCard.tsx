@@ -278,7 +278,7 @@ export function LeaveManagementCard({
 
   return (
     <>
-      <Card mode="elevated" style={styles.card}>
+      <Card mode="outlined" style={styles.card}>
         <Card.Title
           title={t("tabs.leaveManagement")}
           subtitle={
@@ -531,7 +531,7 @@ const styles = StyleSheet.create({
   cameraModal: {
     alignSelf: "center",
     backgroundColor: "#FFFFFF",
-    borderRadius: 12,
+    borderRadius: 16,
     gap: 12,
     padding: 16,
     width: "92%",
@@ -545,7 +545,11 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   card: {
-    borderRadius: 8,
+    backgroundColor: "#FFFFFF",
+    borderColor: "#E4E7EC",
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    elevation: 0,
   },
   content: {
     gap: 10,
@@ -574,7 +578,7 @@ const styles = StyleSheet.create({
   modalContainer: {
     alignSelf: "center",
     backgroundColor: "#FFFFFF",
-    borderRadius: 12,
+    borderRadius: 16,
     padding: 20,
     width: "88%",
   },
@@ -588,7 +592,7 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   muted: {
-    color: "#6B7280",
+    color: "#475467",
   },
   previewImage: {
     alignSelf: "flex-start",

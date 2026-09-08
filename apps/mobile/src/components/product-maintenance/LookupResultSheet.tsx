@@ -88,15 +88,15 @@ const styles = StyleSheet.create({
   modal: {
     marginHorizontal: 16,
     padding: 16,
-    borderRadius: 14,
-    backgroundColor: "#fff",
+    borderRadius: 16,
+    backgroundColor: "#FFFFFF",
     maxHeight: "75%",
   },
   title: {
     fontWeight: "700",
   },
   subtitle: {
-    color: "#666",
+    color: "#475467",
     marginTop: 4,
     marginBottom: 12,
   },
@@ -109,7 +109,7 @@ const styles = StyleSheet.create({
     gap: 6,
     paddingVertical: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#E3E3E3",
+    borderBottomColor: "#E4E7EC",
   },
   itemBody: {
     flex: 1,
@@ -117,7 +117,7 @@ const styles = StyleSheet.create({
     paddingTop: 5,
   },
   meta: {
-    color: "#666",
+    color: "#475467",
   },
   actions: {
     flexDirection: "row",

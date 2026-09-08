@@ -32,6 +32,8 @@ import {
   type SelectionListItem,
 } from "@/components/ui/SelectionListModal";
 import { StorePickerModal } from "@/components/ui/StorePickerModal";
+import { BUSINESS_UI } from "@/components/ui/business-ui";
+import { HB_COLORS } from "@/shared/theme/tokens";
 import {
   applyUploadedAssetToDraft,
   getAdvertisementUploadFeedback,
@@ -825,11 +827,13 @@ export function AdvertisementsScreen() {
           />
         }
       >
-        <Surface style={styles.hero}>
-          <Text variant="headlineSmall">{t("title")}</Text>
+        <View style={styles.pageHeading}>
+          <Text variant="headlineSmall" style={BUSINESS_UI.title}>{t("title")}</Text>
           <Text variant="bodyMedium" style={styles.subtitle}>
             {t("subtitle")}
           </Text>
+        </View>
+        <Surface style={styles.hero} elevation={0}>
           <View style={styles.filterRow}>
             <TextInput
               mode="outlined"
@@ -905,27 +909,25 @@ export function AdvertisementsScreen() {
           <View style={styles.list}>
             {items.map((item) => (
               <Card key={item.id || item.objectKey || item.title} mode="outlined" style={styles.card}>
-                <Card.Content>
+                <Card.Content style={styles.cardContent}>
                   <View style={styles.cardHeader}>
+                    {item.mediaType === "image" && item.mediaUrl ? (
+                      <Image source={{ uri: item.mediaUrl }} style={styles.cardPreview} resizeMode="cover" />
+                    ) : (
+                      <View style={styles.cardVideo}>
+                        <Text variant="labelSmall" style={styles.cardMeta}>{t("labels.videoSelected")}</Text>
+                      </View>
+                    )}
                     <View style={styles.cardTitleBlock}>
-                      <Text variant="titleMedium">{item.title || "--"}</Text>
+                      <Text variant="titleMedium" style={BUSINESS_UI.sectionTitle}>{item.title || "--"}</Text>
                       <Text variant="bodySmall" style={styles.cardMeta}>
                         {t(`mediaTypes.${item.mediaType}`)} · {formatDateTime(item.effectiveStart, localeTag)}
                       </Text>
+                      <Chip compact style={styles.statusChip}>{item.isEnabled ? t("statuses.enabled") : t("statuses.disabled")}</Chip>
                     </View>
-                    <Chip compact>{item.isEnabled ? t("statuses.enabled") : t("statuses.disabled")}</Chip>
                   </View>
 
-                  {item.mediaType === "image" && item.mediaUrl ? (
-                    <Image source={{ uri: item.mediaUrl }} style={styles.previewImage} resizeMode="cover" />
-                  ) : (
-                    <Surface style={styles.videoPlaceholder}>
-                      <Text variant="bodyMedium">{t("labels.videoSelected")}</Text>
-                      <Text variant="bodySmall" style={styles.cardMeta}>
-                        {item.originalFileName || item.mediaUrl || "--"}
-                      </Text>
-                    </Surface>
-                  )}
+                  {item.mediaType !== "image" || !item.mediaUrl ? <Text variant="bodySmall" style={styles.cardMeta}>{item.originalFileName || item.mediaUrl || "--"}</Text> : null}
 
                   <Text variant="bodyMedium" style={styles.cardDescription}>
                     {item.description || t("labels.noDescription")}
@@ -1001,7 +1003,7 @@ export function AdvertisementsScreen() {
         </Surface>
       </ScrollView>
 
-      <StorePickerModal
+      <StorePickerModal presentation="sheet"
         visible={selectedStorePicker === "filter"}
         stores={stores}
         selectedStoreCode={effectiveFilterStoreCode}
@@ -1020,6 +1022,7 @@ export function AdvertisementsScreen() {
       <Portal>
         <Modal
           visible={editorVisible}
+          style={{ justifyContent: "flex-end" }}
           onDismiss={() => {
             setEditorVisible(false);
             setEditingId(null);
@@ -1027,10 +1030,10 @@ export function AdvertisementsScreen() {
           }}
           contentContainerStyle={styles.modalContainer}
         >
-          <ScrollView contentContainerStyle={styles.modalContent}>
-            <Text variant="titleLarge">
+            <Text variant="titleLarge" style={styles.editorTitle}>
               {editingId ? t("editor.editTitle") : t("editor.createTitle")}
             </Text>
+          <ScrollView contentContainerStyle={styles.modalContent} keyboardShouldPersistTaps="handled">
             <Text variant="bodyMedium" style={styles.subtitle}>
               {t("editor.subtitle")}
             </Text>
@@ -1256,9 +1259,11 @@ export function AdvertisementsScreen() {
               </HelperText>
             </Surface>
 
-            <View style={styles.actionsRow}>
+          </ScrollView>
+            <View style={[styles.actionsRow, styles.editorFooter]}>
               <Button
                 mode="outlined"
+                contentStyle={BUSINESS_UI.buttonContent}
                 onPress={() => {
                   setEditorVisible(false);
                   setEditingId(null);
@@ -1270,17 +1275,17 @@ export function AdvertisementsScreen() {
               <Button
                 mode="contained"
                 onPress={onSubmit}
+                contentStyle={BUSINESS_UI.buttonContent}
                 loading={saveMutation.isPending}
                 disabled={saveMutation.isPending || uploadMutation.isPending}
               >
                 {t("common:actions.save")}
               </Button>
             </View>
-          </ScrollView>
         </Modal>
       </Portal>
 
-      <StorePickerModal
+      <StorePickerModal presentation="sheet"
         visible={selectedStorePicker === "form"}
         stores={stores}
         selectedStoreCode={null}
@@ -1294,7 +1299,7 @@ export function AdvertisementsScreen() {
         }}
       />
 
-      <SelectionListModal
+      <SelectionListModal presentation="sheet"
         visible={mediaTypePickerVisible}
         title={t("fields.mediaType")}
         cancelLabel={t("common:actions.cancel")}
@@ -1402,8 +1407,13 @@ const styles = StyleSheet.create({
     textAlign: "right",
   },
   card: {
-    borderRadius: 8,
+    ...BUSINESS_UI.section,
   },
+  cardContent: { paddingTop: 12, paddingBottom: 12 },
+  cardPreview: { width: 76, height: 76, borderRadius: 8, backgroundColor: HB_COLORS.surfaceMuted },
+  cardVideo: { width: 76, minHeight: 76, borderRadius: 8, backgroundColor: HB_COLORS.surfaceMuted, justifyContent: "center", padding: 8 },
+  statusChip: { alignSelf: "flex-start" },
+  pageHeading: { gap: 4 },
   cardActions: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -1420,7 +1430,7 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   cardMeta: {
-    color: "#666666",
+    color: HB_COLORS.textSecondary,
   },
   cardTitleBlock: {
     flex: 1,
@@ -1459,9 +1469,7 @@ const styles = StyleSheet.create({
     minWidth: 160,
   },
   hero: {
-    borderRadius: 8,
-    gap: 12,
-    padding: 16,
+    ...BUSINESS_UI.filterGroup,
   },
   list: {
     gap: 12,
@@ -1480,13 +1488,18 @@ const styles = StyleSheet.create({
   modalContainer: {
     alignSelf: "center",
     backgroundColor: "#FFFFFF",
-    borderRadius: 8,
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
     maxHeight: "90%",
-    padding: 20,
-    width: "92%",
+    width: "100%",
+    maxWidth: 680,
   },
+  editorTitle: { ...BUSINESS_UI.sectionTitle, fontSize: 20, lineHeight: 28, padding: 16 },
+  editorFooter: { ...BUSINESS_UI.footer, paddingBottom: 28 },
   modalContent: {
     gap: 12,
+    paddingHorizontal: 16,
+    paddingBottom: 16,
   },
   paginationActions: {
     flexDirection: "row",
@@ -1508,8 +1521,7 @@ const styles = StyleSheet.create({
     width: "100%",
   },
   safeArea: {
-    backgroundColor: "#F5F5F5",
-    flex: 1,
+    ...BUSINESS_UI.screen,
   },
   segmentRow: {
     gap: 8,

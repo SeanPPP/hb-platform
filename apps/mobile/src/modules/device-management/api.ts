@@ -93,9 +93,9 @@ function normalizeDevice(raw: unknown): DeviceManagementDevice | null {
     return null;
   }
 
-  const id =
-    asString(pick(record, "id", "Id", "deviceId", "DeviceId", "deviceGUID", "DeviceGUID")) ??
-    asString(pick(record, "hardwareId", "HardwareId"));
+  const rawRegistrationId = pick(record, "id", "Id", "deviceId", "DeviceId");
+  const registrationId = asOptionalNumber(rawRegistrationId);
+  const id = asString(rawRegistrationId) ?? asString(pick(record, "hardwareId", "HardwareId"));
 
   if (!id) {
     return null;
@@ -103,6 +103,7 @@ function normalizeDevice(raw: unknown): DeviceManagementDevice | null {
 
   return {
     id,
+    registrationId: registrationId && Number.isSafeInteger(registrationId) && registrationId > 0 ? registrationId : undefined,
     hardwareId: asString(pick(record, "hardwareId", "HardwareId")) ?? "",
     systemDeviceNumber: asString(pick(record, "systemDeviceNumber", "SystemDeviceNumber")),
     deviceNumber: asString(pick(record, "deviceNumber", "DeviceNumber")),
@@ -117,6 +118,14 @@ function normalizeDevice(raw: unknown): DeviceManagementDevice | null {
     lastSeenAt: asString(pick(record, "lastSeenAt", "LastSeenAt", "lastOnlineAt", "LastOnlineAt")),
     createdAt: asString(pick(record, "createdAt", "CreatedAt")),
     updatedAt: asString(pick(record, "updatedAt", "UpdatedAt", "lastModified", "LastModified")),
+    allowTransactions: asBoolean(pick(record, "allowTransactions", "AllowTransactions", "是否允许交易"), true),
+    remark: asString(pick(record, "remark", "Remark", "remarks", "Remarks", "备注")) ?? null,
+    isOnline: asBoolean(pick(record, "isOnline", "IsOnline", "是否在线")),
+    lastHeartbeatAt: asString(pick(record, "lastHeartbeatAt", "LastHeartbeatAt", "最后心跳时间")) ?? null,
+    currentCashierName: asString(pick(record, "currentCashierName", "CurrentCashierName", "当前收银员姓名")) ?? null,
+    cashierLoginAt: asString(pick(record, "cashierLoginAt", "CashierLoginAt", "收银员登录时间")) ?? null,
+    createdBy: asString(pick(record, "createdBy", "CreatedBy", "创建人")) ?? null,
+    lastModifiedBy: asString(pick(record, "lastModifiedBy", "LastModifiedBy", "最后修改人")) ?? null,
   };
 }
 
@@ -172,8 +181,12 @@ export async function fetchDeviceManagementDevices(
 }
 
 async function postDeviceAction(id: string | number, action: "activate" | "disable" | "lock") {
+  const numericId = typeof id === "number" ? id : Number(id);
+  if (!Number.isSafeInteger(numericId) || numericId <= 0) {
+    throw new Error("DEVICE_REGISTRATION_ID_INVALID");
+  }
   const apiClient = await getApiClient();
-  await apiClient.post(`/mobile/device-management/${encodeURIComponent(String(id))}/${action}`);
+  await apiClient.post(`/mobile/device-management/${numericId}/${action}`);
 }
 
 export function activateDevice(id: string | number) {

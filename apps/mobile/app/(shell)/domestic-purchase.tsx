@@ -594,11 +594,11 @@ export default function DomesticPurchaseScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: "#F6F7F9",
+    backgroundColor: "#F4F6F8",
   },
   header: {
     paddingHorizontal: 16,
-    paddingTop: 10,
+    paddingTop: 12,
     paddingBottom: 10,
     flexDirection: "row",
     alignItems: "center",
@@ -617,7 +617,8 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   listContent: {
-    padding: 12,
+    padding: 16,
+    paddingTop: 12,
     paddingBottom: 24,
   },
   emptyContent: {
@@ -630,7 +631,8 @@ const styles = StyleSheet.create({
   },
   batchCard: {
     marginBottom: 10,
-    borderRadius: 8,
+    borderRadius: 12,
+    borderColor: "#E4E7EC",
     backgroundColor: "#FFFFFF",
   },
   batchCardContent: {
@@ -676,7 +678,7 @@ const styles = StyleSheet.create({
   detailModal: {
     margin: 14,
     padding: 14,
-    borderRadius: 8,
+    borderRadius: 18,
     backgroundColor: "#FFFFFF",
     maxHeight: "86%",
   },

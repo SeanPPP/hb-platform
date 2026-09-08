@@ -15,6 +15,7 @@ import {
   TextInput,
 } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { BUSINESS_UI } from "@/components/ui/business-ui";
 import { EmptyState } from "@/components/ui/EmptyState";
 import {
   deleteEmployeeProfileImageApi,
@@ -65,6 +66,7 @@ import {
 } from "@/modules/employee-profile/identity-photo-expiry";
 import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
+import { HB_COLORS, HB_RADIUS, HB_SPACING } from "@/shared/theme/tokens";
 import { resolveLocaleTag } from "@/shared/i18n/types";
 import { useAuthStore } from "@/store/auth-store";
 
@@ -772,16 +774,20 @@ export default function EmployeeProfileScreen() {
           {getErrorMessage(profileQuery.error, "messages.loadFailed")}
         </HelperText>
 
+      </ScrollView>
+
+      <Surface style={styles.saveFooter} elevation={3}>
         <Button
           mode="contained"
           onPress={() => void handleSave()}
           loading={saveMutation.isPending}
           disabled={saveMutation.isPending || savingImageKind !== null}
           style={styles.saveButton}
+          contentStyle={BUSINESS_UI.buttonContent}
         >
           {t("actions.savePersonal")}
         </Button>
-      </ScrollView>
+      </Surface>
 
       <Snackbar visible={snackbarVisible} onDismiss={() => setSnackbarVisible(false)}>
         {snackbarMessage}
@@ -793,7 +799,7 @@ export default function EmployeeProfileScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#F5F7FA",
+    backgroundColor: HB_COLORS.background,
   },
   centered: {
     flex: 1,
@@ -803,29 +809,30 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
   },
   content: {
-    paddingHorizontal: 14,
-    paddingTop: 4,
-    paddingBottom: 20,
-    gap: 14,
+    ...BUSINESS_UI.content,
+    paddingBottom: 96,
   },
   subtitle: {
     textAlign: "center",
-    color: "#667085",
+    color: HB_COLORS.textSecondary,
   },
   card: {
-    padding: 18,
-    borderRadius: 18,
-    gap: 12,
+    ...BUSINESS_UI.section,
+    padding: HB_SPACING.md,
+    gap: HB_SPACING.sm,
   },
   heroAvatar: {
-    backgroundColor: "#111827",
+    backgroundColor: HB_COLORS.action,
   },
   heroCard: {
     alignItems: "center",
-    borderRadius: 18,
+    backgroundColor: HB_COLORS.white,
+    borderColor: HB_COLORS.outlineMuted,
+    borderRadius: HB_RADIUS.surface,
+    borderWidth: StyleSheet.hairlineWidth,
     flexDirection: "row",
-    gap: 16,
-    padding: 18,
+    gap: HB_SPACING.md,
+    padding: HB_SPACING.md,
   },
   heroCopy: {
     flex: 1,
@@ -842,16 +849,16 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   pendingSnapshot: {
-    gap: 6,
-    padding: 12,
-    borderRadius: 12,
-    backgroundColor: "#F0F4F8",
+    gap: HB_SPACING.xs,
+    padding: HB_SPACING.sm,
+    borderRadius: HB_RADIUS.control,
+    backgroundColor: HB_COLORS.surfaceMuted,
   },
   identityPreview: {
     width: "100%",
     height: 180,
-    borderRadius: 14,
-    backgroundColor: "#E9EDF3",
+    borderRadius: HB_RADIUS.surface,
+    backgroundColor: HB_COLORS.surfaceMuted,
   },
   readonlyGrid: {
     gap: 12,
@@ -860,13 +867,11 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   metaText: {
-    color: "#667085",
+    color: HB_COLORS.textSecondary,
   },
   segmentBlock: {
     gap: 8,
   },
-  saveButton: {
-    marginTop: 4,
-    marginBottom: 10,
-  },
+  saveFooter: BUSINESS_UI.footer,
+  saveButton: BUSINESS_UI.button,
 });

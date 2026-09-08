@@ -12,6 +12,8 @@ export interface DeviceManagementQuery {
 
 export interface DeviceManagementDevice {
   id: string;
+  /** 后端设备注册表的整数主键；硬件 ID 仅用于展示，绝不能用于写入路由。 */
+  registrationId?: number;
   hardwareId: string;
   systemDeviceNumber?: string;
   deviceNumber?: string;
@@ -21,6 +23,14 @@ export interface DeviceManagementDevice {
   storeCode?: string;
   storeName?: string;
   status: DeviceStatus;
+  allowTransactions?: boolean;
+  remark?: string | null;
+  isOnline?: boolean;
+  lastHeartbeatAt?: string | null;
+  currentCashierName?: string | null;
+  cashierLoginAt?: string | null;
+  createdBy?: string | null;
+  lastModifiedBy?: string | null;
   appVersion?: string;
   platform?: string;
   lastSeenAt?: string;

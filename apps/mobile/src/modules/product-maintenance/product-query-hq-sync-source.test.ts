@@ -68,7 +68,7 @@ assert.match(
 );
 assert.match(
   productQuerySource,
-  /const retailPrice = codeType === "set" \? parseDecimalInput\(retailPriceInput\) : null;[\s\S]*?retailPrice,[\s\S]*?isActive: true,/,
+  /const retailPrice\s*=\s*codeType === "set"\s*\?\s*parseDecimalInput\(retailPriceInput\)\s*:\s*null;[\s\S]*?retailPrice,[\s\S]*?isActive:\s*true,/,
   "新增套装必须收集并携带零售价"
 );
 assert.match(
@@ -87,28 +87,28 @@ assert.match(
 );
 assert.match(
   createSubmitSource,
-  /catch \(error\) \{\n        setSnackbarMessage\(getErrorMessage\(error, "createProduct\.messages\.refreshFailedAfterCreate"\)\);/,
+  /catch \(error\) \{\s*setSnackbarMessage\(\s*getErrorMessage\(\s*error,\s*"createProduct\.messages\.refreshFailedAfterCreate",?\s*\),\s*\);/,
   "有分店时创建后的详情回读失败必须明确提示，不能因已有 HQ operation 而静默"
 );
 
 assert.match(
   productQuerySource,
-  /const loadedDetailStoreCodeRef = useRef<string \| null>\(null\);[\s\S]*?const activeDetailProductCodeRef = useRef<string \| null>\(null\);[\s\S]*?useEffect\(\(\) => \{[\s\S]*?isProductMaintenanceStoreScopeCurrent\(loadedDetailStoreCodeRef\.current, selectedStoreCode\)[\s\S]*?discardStaleDetailForStoreChange\(activeProductCode\);/,
+  /const loadedDetailStoreCodeRef\s*=\s*useRef<string \| null>\(null\);[\s\S]*?const activeDetailProductCodeRef\s*=\s*useRef<string \| null>\(null\);[\s\S]*?useEffect\(\(\) => \{[\s\S]*?isProductMaintenanceStoreScopeCurrent\(\s*loadedDetailStoreCodeRef\.current,\s*selectedStoreCode,?\s*\)[\s\S]*?discardStaleDetailForStoreChange\(activeProductCode\);/,
   "其他 tab 改变全局分店后，商品页必须使旧分店详情失效"
 );
 assert.match(
   productQuerySource,
-  /const ensureCurrentDetailStoreScope = useCallback\([\s\S]*?discardStaleDetailForStoreChange\(sourceDetail\.productCode\);[\s\S]*?void loadDetail\(sourceDetail\.productCode, selectedStoreCode\);/,
+  /const ensureCurrentDetailStoreScope\s*=\s*useCallback\([\s\S]*?discardStaleDetailForStoreChange\(sourceDetail\.productCode\);[\s\S]*?void loadDetail\(sourceDetail\.productCode, selectedStoreCode\);/,
   "分店不一致的 mutation 必须清理旧详情并按当前分店回读"
 );
 assert.match(
   productQuerySource,
-  /if \(!ensureCurrentDetailStoreScope\(sourceDetail, sourceDetail\.storePrice\.storeCode\)\) \{\n        return null;/,
+  /if \(\s*!ensureCurrentDetailStoreScope\(\s*sourceDetail,\s*sourceDetail\.storePrice\.storeCode,?\s*\)\s*\) \{\s*return null;/,
   "门店价格保存前必须确认 UUID 属于当前分店"
 );
 assert.match(
   productQuerySource,
-  /if \(!ensureCurrentDetailStoreScope\(detail, target\.storeCode\)\) \{\n        return;/,
+  /if \(\s*!ensureCurrentDetailStoreScope\(\s*detail,\s*target\.storeCode,?\s*\)\s*\) \{\s*return;/,
   "多码保存前必须确认目标行属于当前分店"
 );
 
