@@ -281,6 +281,8 @@ function main() {
   emit('profile', options.profile)
   emit('budget_seconds', budget.budgetSeconds)
   emit('components', [...selected])
+  // 质量报告复用已选组件的结果，避免启动第二套 build/test 或等待未执行的组件。
+  emit('quality_lanes', ['backend', 'web', 'pos-ipad', 'pos-handheld'].filter((component) => selected.has(component)))
   emit('linux_node_matrix', matrices.linuxNode)
   emit('linux_dotnet_matrix', matrices.linuxDotnet)
   emit('windows_matrix', matrices.windows)
