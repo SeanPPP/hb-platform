@@ -92,6 +92,9 @@ export interface AccessControl {
   canDeletePrice: boolean;
   canViewDeviceRegistration: boolean;
   canManageDeviceRegistration: boolean;
+  canManageDeviceActivationCodes: boolean;
+  canManageMobileDeviceActivationCodes: boolean;
+  canManageEmergencyLoginGrants: boolean;
   canViewEmployeeProfiles: boolean;
   canViewAttendancePersonal: boolean;
   canViewAttendanceManagement: boolean;

@@ -564,7 +564,8 @@ namespace BlazorApp.Api.Services
                 Permissions.System.ViewAppDownloads,
                 Permissions.System.ManageAppDownloads,
                 Permissions.PosTerminal.Audit.View,
-                Permissions.DeviceRegistration.ActivationCodes.Manage
+                Permissions.DeviceRegistration.ActivationCodes.Manage,
+                Permissions.DeviceRegistration.MobileActivationCodes.Manage
             );
         }
 
@@ -791,6 +792,7 @@ namespace BlazorApp.Api.Services
             if (string.Equals(permission, Permissions.DeviceRegistration.View, StringComparison.OrdinalIgnoreCase))
             {
                 codes.Add(Permissions.DeviceRegistration.ActivationCodes.Manage);
+                codes.Add(Permissions.DeviceRegistration.MobileActivationCodes.Manage);
             }
 
             return codes;

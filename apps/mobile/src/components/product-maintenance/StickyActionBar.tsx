@@ -48,7 +48,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     backgroundColor: "#fff",
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "#E3E3E3",
+    borderTopColor: "#E4E7EC",
   },
   actions: {
     flexDirection: "row",

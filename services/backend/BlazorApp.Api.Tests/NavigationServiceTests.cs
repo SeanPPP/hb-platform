@@ -596,6 +596,16 @@ public class NavigationServiceTests
     }
 
     [Fact]
+    public void BuildAppMenu_ShowsDeviceManagementWithMobileActivationCodePermission()
+    {
+        var user = CreateUser(new Claim("permission", Permissions.DeviceRegistration.MobileActivationCodes.Manage));
+
+        var menu = _service.BuildAppMenu(user);
+
+        Assert.Contains(menu, item => item.RouteName == "device-management");
+    }
+
+    [Fact]
     public void BuildMenu_ShowsAppDownloadsWithAppDownloadsPermission()
     {
         var user = CreateUser(

@@ -745,7 +745,7 @@ export function ScheduleManagementCard({
 
   return (
     <>
-      <Card mode="elevated" style={styles.card}>
+      <Card mode="outlined" style={styles.card}>
         <Card.Title
           title={t("sections.scheduleManagement")}
           subtitle={storeLabel}
@@ -826,7 +826,7 @@ export function ScheduleManagementCard({
               onPress={onPublishWeek}
               loading={isBusy}
               disabled={isBusy}
-              buttonColor="#EA580C"
+              buttonColor="#0958D9"
               textColor="#FFFFFF"
             >
               {t("actions.publishWeek")}
@@ -886,7 +886,7 @@ export function ScheduleManagementCard({
                   onPress={onPublishWeek}
                   loading={isBusy}
                   disabled={isBusy}
-                  buttonColor="#EA580C"
+                  buttonColor="#0958D9"
                   textColor="#FFFFFF"
                 >
                   {t("actions.publishWeek")}
@@ -911,8 +911,8 @@ export function ScheduleManagementCard({
 
 const styles = StyleSheet.create({
   activeShift: {
-    backgroundColor: "#F3F4F6",
-    borderLeftColor: "#34D399",
+    backgroundColor: "#EEF4FF",
+    borderLeftColor: "#1677FF",
   },
   bodyCell: {
     borderColor: "#E5E7EB",
@@ -924,7 +924,11 @@ const styles = StyleSheet.create({
     width: CELL_WIDTH,
   },
   card: {
-    borderRadius: 8,
+    backgroundColor: "#FFFFFF",
+    borderColor: "#E4E7EC",
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    elevation: 0,
   },
   content: {
     gap: 12,
@@ -993,7 +997,7 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   fullscreenRoot: {
-    backgroundColor: "#F5F7FB",
+    backgroundColor: "#F4F6F8",
     flex: 1,
   },
   fullscreenTable: {
@@ -1007,20 +1011,20 @@ const styles = StyleSheet.create({
     minWidth: 220,
   },
   headerCell: {
-    backgroundColor: "#F3F4F6",
-    borderColor: "#E5E7EB",
+    backgroundColor: "#F2F4F7",
+    borderColor: "#E4E7EC",
     borderRightWidth: StyleSheet.hairlineWidth,
     gap: 2,
     padding: 8,
     width: CELL_WIDTH,
   },
   muted: {
-    color: "#6B7280",
+    color: "#475467",
   },
   publishPanel: {
     alignItems: "center",
-    backgroundColor: "#FFF7ED",
-    borderColor: "#FDBA74",
+    backgroundColor: "#EEF4FF",
+    borderColor: "#B2D2FF",
     borderRadius: 8,
     borderWidth: StyleSheet.hairlineWidth,
     flexDirection: "row",
@@ -1029,14 +1033,14 @@ const styles = StyleSheet.create({
     padding: 12,
   },
   publishSubtitle: {
-    color: "#9A3412",
+    color: "#475467",
   },
   publishText: {
     flex: 1,
     gap: 2,
   },
   publishTitle: {
-    color: "#C2410C",
+    color: "#0958D9",
   },
   quickShiftRow: {
     alignItems: "center",
@@ -1110,7 +1114,7 @@ const styles = StyleSheet.create({
   },
   tableWrap: {
     backgroundColor: "#FFFFFF",
-    borderColor: "#E5E7EB",
+    borderColor: "#E4E7EC",
     borderRadius: 12,
     borderWidth: StyleSheet.hairlineWidth,
     overflow: "hidden",
@@ -1127,10 +1131,10 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   timeOptionSelected: {
-    backgroundColor: "#FFEDD5",
+    backgroundColor: "#EAF2FF",
   },
   timeOptionTextSelected: {
-    color: "#C2410C",
+    color: "#0958D9",
   },
   timePicker: {
     flex: 1,

@@ -24,6 +24,9 @@ import {
   useDeviceManagementMutations,
 } from "@/modules/device-management/hooks";
 import { DEVICE_STATUS, getDeviceStatusKey, type DeviceStatusKey } from "@/modules/device-management/status";
+import { ActivationCodePanel, DeviceEditSheet, EmergencyLoginSheet } from "@/modules/device-management/admin-sheets";
+import { isDeviceRegistrationId } from "@/modules/device-management/admin-types";
+import { PERMISSIONS } from "@/shared/utils/access";
 import type {
   AppDeviceOnlineState,
   AppDeviceStatus,
@@ -39,7 +42,7 @@ type StatusFilter = "all" | "pendingConfirmation" | "active" | "disabled" | "loc
 type DeviceSystemFilter = "all" | "Android" | "iOS" | "Windows" | "Mac";
 type DeviceTypeFilter = "all" | "Mobile" | "PDA" | "POS" | "Admin";
 type DeviceAction = "activate" | "disable" | "lock";
-type DeviceManagementViewMode = "registered" | "appUsage";
+type DeviceManagementViewMode = "registered" | "appUsage" | "activation";
 type DeviceRow = DeviceManagementDevice & {
   systemDeviceNumber?: string | null;
   deviceNumber?: string | null;
@@ -56,6 +59,10 @@ const PAGE_SIZE = 20;
 
 function getDeviceKey(item: DeviceRow) {
   return String(item.id);
+}
+
+function getRegistrationId(item: DeviceRow) {
+  return isDeviceRegistrationId(item.registrationId) ? item.registrationId : null;
 }
 
 function getDeviceTitle(item: DeviceRow, fallback: string) {
@@ -166,6 +173,7 @@ function getStatusStyle(statusKey: DeviceStatusKey) {
 export default function DeviceManagementScreen() {
   const { t, language } = useAppTranslation(["deviceManagement", "common"]);
   const access = useAuthStore((state) => state.access);
+  const userGuid = useAuthStore((state) => state.user?.userGuid ?? state.user?.userGUID ?? null);
 
   if (!access.canViewDeviceRegistration) {
     return (
@@ -178,6 +186,11 @@ export default function DeviceManagementScreen() {
   return (
     <DeviceManagementAdminContent
       canManageDeviceRegistration={access.canManageDeviceRegistration}
+      canViewLegacyDeviceRegistration={access.canManageDeviceRegistration || access.hasPermission(PERMISSIONS.DeviceRegistration.View)}
+      canManageDeviceActivationCodes={access.canManageDeviceActivationCodes}
+      canManageMobileDeviceActivationCodes={access.canManageMobileDeviceActivationCodes}
+      canManageEmergencyLoginGrants={access.canManageEmergencyLoginGrants}
+      userGuid={userGuid}
       language={language}
       t={t}
     />
@@ -186,15 +199,25 @@ export default function DeviceManagementScreen() {
 
 function DeviceManagementAdminContent({
   canManageDeviceRegistration,
+  canViewLegacyDeviceRegistration,
+  canManageDeviceActivationCodes,
+  canManageMobileDeviceActivationCodes,
+  canManageEmergencyLoginGrants,
+  userGuid,
   language,
   t,
 }: {
   canManageDeviceRegistration: boolean;
+  canViewLegacyDeviceRegistration: boolean;
+  canManageDeviceActivationCodes: boolean;
+  canManageMobileDeviceActivationCodes: boolean;
+  canManageEmergencyLoginGrants: boolean;
+  userGuid: string | null;
   language: string;
   t: ReturnType<typeof useAppTranslation>["t"];
 }) {
   const { stores, isLoading: storesLoading } = useStores();
-  const [viewMode, setViewMode] = useState<DeviceManagementViewMode>("registered");
+  const [selectedViewMode, setViewMode] = useState<DeviceManagementViewMode>(canViewLegacyDeviceRegistration ? "registered" : "activation");
   const [filtersVisible, setFiltersVisible] = useState(false);
   const [storePickerVisible, setStorePickerVisible] = useState(false);
   const [resumeFiltersAfterStorePicker, setResumeFiltersAfterStorePicker] = useState(false);
@@ -204,6 +227,11 @@ function DeviceManagementAdminContent({
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [deviceSystemFilter, setDeviceSystemFilter] = useState<DeviceSystemFilter>("all");
   const [deviceTypeFilter, setDeviceTypeFilter] = useState<DeviceTypeFilter>("all");
+  const canManageActivation = canManageDeviceActivationCodes || canManageMobileDeviceActivationCodes;
+  // 权限变化当帧即切换有效视图，不能先请求一次无权访问的设备列表。
+  const viewMode: DeviceManagementViewMode = !canViewLegacyDeviceRegistration
+    ? "activation"
+    : selectedViewMode === "activation" && !canManageActivation ? "registered" : selectedViewMode;
   const [pageNumber, setPageNumber] = useState(1);
   const [pagedDevices, setPagedDevices] = useState<DeviceRow[]>([]);
   const [appOnlineFilter, setAppOnlineFilter] = useState<AppDeviceOnlineState>("all");
@@ -211,6 +239,12 @@ function DeviceManagementAdminContent({
   const [pagedAppDevices, setPagedAppDevices] = useState<AppDeviceStatus[]>([]);
   const [busyDeviceKey, setBusyDeviceKey] = useState<string | null>(null);
   const [snackbarMessage, setSnackbarMessage] = useState("");
+  const [editingRegistrationId, setEditingRegistrationId] = useState<number | null>(null);
+  const [emergencyVisible, setEmergencyVisible] = useState(false);
+  useEffect(() => {
+    if (!canManageDeviceRegistration) setEditingRegistrationId(null);
+    if (!canManageEmergencyLoginGrants) setEmergencyVisible(false);
+  }, [canManageDeviceRegistration, canManageEmergencyLoginGrants]);
 
   const managedStore = useMemo(
     () => stores.find((store) => store.storeCode === managedStoreCode) ?? null,
@@ -249,9 +283,9 @@ function DeviceManagementAdminContent({
     [deviceSystemFilter, managedStoreCode, trimmedKeyword]
   );
 
-  const devicesQuery = useDeviceManagementDevices(query, viewMode === "registered");
-  const appStatusesQuery = useAppDeviceStatuses(appStatusQueryParams, viewMode === "appUsage");
-  const appSummaryQuery = useAppDeviceStatusSummary(appSummaryQueryParams, viewMode === "appUsage");
+  const devicesQuery = useDeviceManagementDevices(query, canViewLegacyDeviceRegistration && viewMode === "registered");
+  const appStatusesQuery = useAppDeviceStatuses(appStatusQueryParams, canViewLegacyDeviceRegistration && viewMode === "appUsage");
+  const appSummaryQuery = useAppDeviceStatusSummary(appSummaryQueryParams, canViewLegacyDeviceRegistration && viewMode === "appUsage");
   const { activateMutation, disableMutation, lockMutation } = useDeviceManagementMutations();
   const devices = pagedDevices;
   const appDevices = pagedAppDevices;
@@ -407,6 +441,11 @@ function DeviceManagementAdminContent({
   const runDeviceAction = useCallback(
     (action: DeviceAction, item: DeviceRow) => {
       const deviceKey = getDeviceKey(item);
+      const registrationId = getRegistrationId(item);
+      if (!registrationId) {
+        setSnackbarMessage(t("messages.invalidRegistrationId"));
+        return;
+      }
       const deviceTitle = getDeviceTitle(item, t("fields.unnamedDevice"));
       const actionLabel = t(`actions.${action}`);
       const mutation =
@@ -423,10 +462,10 @@ function DeviceManagementAdminContent({
             onPress: () => {
               void (async () => {
 	                try {
-	                  setBusyDeviceKey(deviceKey);
-	                  setPageNumber(1);
-	                  await mutation.mutateAsync({
-	                    id: item.id,
+                  setBusyDeviceKey(deviceKey);
+                  setPageNumber(1);
+                  await mutation.mutateAsync({
+                    id: registrationId,
 	                  });
                   setSnackbarMessage(t(`messages.${action}Success`));
                 } catch (error) {
@@ -477,6 +516,10 @@ function DeviceManagementAdminContent({
               <Text variant="bodyMedium">{t("fields.storeValue", { value: storeName })}</Text>
               <Text variant="bodyMedium">{t("fields.deviceTypeValue", { value: item.deviceType || item.platform || t("common:na") })}</Text>
               <Text variant="bodyMedium">{t("fields.deviceSystemValue", { value: item.deviceSystem || item.platform || item.appVersion || t("common:na") })}</Text>
+              <Text variant="bodyMedium">{t("fields.onlineValue", { value: item.isOnline ? t("appUsage.online") : t("appUsage.offline") })}</Text>
+              <Text variant="bodyMedium">{t("fields.cashierValue", { value: item.currentCashierName || t("common:na") })}</Text>
+              <Text variant="bodyMedium">{t("fields.transactionValue", { value: item.allowTransactions ? t("fields.transactionAllowed") : t("fields.transactionBlocked") })}</Text>
+              {item.remark ? <Text variant="bodySmall" style={styles.secondaryText}>{t("fields.remarkValue", { value: item.remark })}</Text> : null}
               {updatedAt ? (
                 <Text variant="bodySmall" style={styles.secondaryText}>
                   {t("fields.updatedAtValue", { value: updatedAt })}
@@ -493,10 +536,19 @@ function DeviceManagementAdminContent({
               <View style={styles.actionRow}>
                 <Button
                   compact
+                  mode="outlined"
+                  icon="pencil-outline"
+                  disabled={!getRegistrationId(item)}
+                  onPress={() => setEditingRegistrationId(getRegistrationId(item))}
+                >
+                  {t("actions.edit")}
+                </Button>
+                <Button
+                  compact
                   mode={item.status === DEVICE_STATUS.ACTIVE ? "outlined" : "contained-tonal"}
                   icon="play-circle-outline"
                   loading={isBusy && activateMutation.isPending}
-                  disabled={isBusy}
+                  disabled={isBusy || !getRegistrationId(item)}
                   onPress={() => runDeviceAction("activate", item)}
                 >
                   {t("actions.activate")}
@@ -506,7 +558,7 @@ function DeviceManagementAdminContent({
                   mode="outlined"
                   icon="pause-circle-outline"
                   loading={isBusy && disableMutation.isPending}
-                  disabled={isBusy}
+                  disabled={isBusy || !getRegistrationId(item)}
                   onPress={() => runDeviceAction("disable", item)}
                 >
                   {t("actions.disable")}
@@ -516,7 +568,7 @@ function DeviceManagementAdminContent({
                   mode="outlined"
                   icon="lock-outline"
                   loading={isBusy && lockMutation.isPending}
-                  disabled={isBusy}
+                  disabled={isBusy || !getRegistrationId(item)}
                   onPress={() => runDeviceAction("lock", item)}
                 >
                   {t("actions.lock")}
@@ -530,7 +582,9 @@ function DeviceManagementAdminContent({
     [
       activateMutation.isPending,
       busyDeviceKey,
+      canManageDeviceRegistration,
       disableMutation.isPending,
+      setEditingRegistrationId,
       language,
       lockMutation.isPending,
       runDeviceAction,
@@ -601,6 +655,38 @@ function DeviceManagementAdminContent({
   const currentError = isAppUsageView ? appStatusesQuery.error : devicesQuery.error;
   const currentPageNumber = isAppUsageView ? appPageNumber : pageNumber;
 
+  if (viewMode === "activation") {
+    return (
+      <SafeAreaView style={styles.screen} edges={["top", "left", "right"]}>
+        <View style={styles.activationScreen}>
+          <SegmentedButtons
+            value={viewMode}
+            onValueChange={(value) => setViewMode(value as DeviceManagementViewMode)}
+            buttons={[
+              ...(canViewLegacyDeviceRegistration ? [{ value: "registered", label: t("views.registered") }, { value: "appUsage", label: t("views.appUsage") }] : []),
+              ...(canManageActivation ? [{ value: "activation", label: t("views.activation") }] : []),
+            ]}
+          />
+          {canManageDeviceActivationCodes || canManageMobileDeviceActivationCodes ? (
+            <ActivationCodePanel
+              canManagePos={canManageDeviceActivationCodes}
+              canManageMobile={canManageMobileDeviceActivationCodes}
+              userGuid={userGuid}
+              language={language}
+              t={t}
+              onMessage={setSnackbarMessage}
+            />
+          ) : (
+            <EmptyState title={t("activation.noAccessTitle")} description={t("activation.noAccessDescription")} />
+          )}
+        </View>
+        <Snackbar visible={Boolean(snackbarMessage)} onDismiss={() => setSnackbarMessage("")} duration={3000}>
+          {snackbarMessage}
+        </Snackbar>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.screen} edges={["top", "left", "right"]}>
       <FlatList<DeviceManagementListRow>
@@ -627,8 +713,8 @@ function DeviceManagementAdminContent({
               value={viewMode}
               onValueChange={(value) => setViewMode(value as DeviceManagementViewMode)}
               buttons={[
-                { value: "registered", label: t("views.registered") },
-                { value: "appUsage", label: t("views.appUsage") },
+                ...(canViewLegacyDeviceRegistration ? [{ value: "registered", label: t("views.registered") }, { value: "appUsage", label: t("views.appUsage") }] : []),
+                ...(canManageActivation ? [{ value: "activation", label: t("views.activation") }] : []),
               ]}
             />
 
@@ -771,6 +857,7 @@ function DeviceManagementAdminContent({
 
       <StorePickerModal
         visible={storePickerVisible}
+        presentation="sheet"
         stores={stores}
         selectedStoreCode={managedStoreCode}
         title={t("common:labels.selectStore")}
@@ -780,6 +867,39 @@ function DeviceManagementAdminContent({
         onDismiss={closeStorePicker}
         onSelectStore={handleSelectStore}
       />
+
+      {canManageEmergencyLoginGrants && viewMode === "registered" ? (
+        <View style={styles.emergencyTrigger}>
+          <Button
+            mode="outlined"
+            icon="shield-alert-outline"
+            disabled={!managedStoreCode}
+            onPress={() => setEmergencyVisible(true)}
+          >
+            {t("emergency.title")}
+          </Button>
+          {!managedStoreCode ? <Text variant="bodySmall" style={styles.secondaryText}>{t("emergency.selectStore")}</Text> : null}
+        </View>
+      ) : null}
+
+      <DeviceEditSheet
+        visible={canManageDeviceRegistration && editingRegistrationId !== null}
+        registrationId={editingRegistrationId}
+        language={language}
+        t={t}
+        onDismiss={() => setEditingRegistrationId(null)}
+        onSaved={handleRefresh}
+        onMessage={setSnackbarMessage}
+      />
+      {canManageEmergencyLoginGrants ? <EmergencyLoginSheet
+        visible={emergencyVisible && canManageEmergencyLoginGrants}
+        storeCode={managedStoreCode}
+        userGuid={userGuid}
+        language={language}
+        t={t}
+        onDismiss={() => setEmergencyVisible(false)}
+        onMessage={setSnackbarMessage}
+      /> : null}
 
       <Portal>
         <Modal
@@ -903,6 +1023,11 @@ function DeviceManagementAdminContent({
 }
 
 const styles = StyleSheet.create({
+  activationScreen: {
+    flex: 1,
+    gap: 12,
+    padding: 16,
+  },
   actionRow: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -919,6 +1044,16 @@ const styles = StyleSheet.create({
   },
   deviceCardContent: {
     gap: 12,
+  },
+  emergencyTrigger: {
+    backgroundColor: "#FFFFFF",
+    borderColor: "#E5E7EB",
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: 6,
+    marginBottom: 12,
+    marginHorizontal: 16,
+    padding: 12,
   },
   disabledChip: {
     backgroundColor: "#FEE2E2",

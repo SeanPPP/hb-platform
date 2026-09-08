@@ -104,7 +104,7 @@ export function AvailabilityForm({
   );
 
   return (
-    <Card mode="elevated" style={styles.card}>
+    <Card mode="outlined" style={styles.card}>
       <Card.Title title={t("sections.availability")} />
       <Card.Content style={styles.content}>
         <View style={styles.formGrid}>
@@ -192,7 +192,11 @@ const styles = StyleSheet.create({
     justifyContent: "flex-end",
   },
   card: {
-    borderRadius: 8,
+    backgroundColor: "#FFFFFF",
+    borderColor: "#E4E7EC",
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    elevation: 0,
   },
   content: {
     gap: 12,
@@ -202,8 +206,9 @@ const styles = StyleSheet.create({
   },
   itemRow: {
     alignItems: "center",
-    borderColor: "#E5E7EB",
-    borderRadius: 6,
+    backgroundColor: "#FCFCFD",
+    borderColor: "#E4E7EC",
+    borderRadius: 8,
     borderWidth: StyleSheet.hairlineWidth,
     flexDirection: "row",
     paddingLeft: 10,
@@ -215,7 +220,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   muted: {
-    color: "#6B7280",
+    color: "#475467",
   },
   timeInput: {
     flex: 1,

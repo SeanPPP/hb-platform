@@ -928,12 +928,12 @@ export default function Orders() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#F6F8FB",
+    backgroundColor: "#F4F6F8",
   },
   headerRow: {
     paddingHorizontal: 16,
-    paddingTop: 0,
-    paddingBottom: 0,
+    paddingTop: 8,
+    paddingBottom: 8,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
@@ -960,8 +960,8 @@ const styles = StyleSheet.create({
   },
   listContent: {
     paddingHorizontal: 16,
-    paddingTop: 0,
-    paddingBottom: 0,
+    paddingTop: 4,
+    paddingBottom: 20,
     gap: 12,
     flexGrow: 1,
   },
@@ -985,7 +985,8 @@ const styles = StyleSheet.create({
   },
   orderCard: {
     backgroundColor: "#FFFFFF",
-    borderRadius: 18,
+    borderRadius: 12,
+    borderColor: "#E4E7EC",
   },
   orderCardContent: {
     gap: 14,
@@ -1112,7 +1113,7 @@ const styles = StyleSheet.create({
     marginHorizontal: 16,
     marginVertical: 84,
     backgroundColor: "#FFFFFF",
-    borderRadius: 20,
+    borderRadius: 16,
     overflow: "hidden",
   },
   filtersModalScroll: {
@@ -1138,7 +1139,7 @@ const styles = StyleSheet.create({
     marginHorizontal: 16,
     marginVertical: 84,
     backgroundColor: "#FFFFFF",
-    borderRadius: 20,
+    borderRadius: 16,
     maxHeight: "78%",
     overflow: "hidden",
     padding: 16,
@@ -1166,9 +1167,9 @@ const styles = StyleSheet.create({
   },
   storePickerRow: {
     minHeight: 56,
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: "#E2E8F0",
+    borderColor: "#E4E7EC",
     backgroundColor: "#FFFFFF",
     flexDirection: "row",
     alignItems: "center",
@@ -1198,7 +1199,7 @@ const styles = StyleSheet.create({
     marginVertical: 36,
     marginHorizontal: 12,
     backgroundColor: "#FFFFFF",
-    borderRadius: 24,
+    borderRadius: 16,
     overflow: "hidden",
   },
   detailLoadingWrap: {
