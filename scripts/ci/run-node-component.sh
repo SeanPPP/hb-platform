@@ -33,12 +33,15 @@ case "$component" in
     npm run typecheck --workspace=@hb/pos-ipad
     npm run lint --workspace=@hb/pos-ipad
     npm run test:ci --workspace=@hb/pos-ipad
+    # PR 的质量基线复用本任务；保留原质量任务独有的 Expo/Metro 打包检查。
+    npm run verify:metro-bundle --workspace=@hb/pos-ipad
     ;;
   pos-handheld)
     npm ci --no-audit --no-fund
     npm run typecheck --workspace=@hb/pos-handheld
     npm run lint --workspace=@hb/pos-handheld
     npm run test:ci --workspace=@hb/pos-handheld
+    npm run verify:metro-bundle --workspace=@hb/pos-handheld
     ;;
   supplier-extension)
     npm --prefix apps/supplier-order-extension ci --no-audit --no-fund

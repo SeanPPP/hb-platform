@@ -53,6 +53,13 @@ public sealed class LocalSupplierInvoiceHqConcurrencySqlServerTests
         finally { await blocker.Ado.RollbackTranAsync(); }
     }
 
+    private static UpdateToStorePricesFields NewProductUpdateFields() => new()
+    {
+        UpdatePurchasePrice = true,
+        UpdateRetailPrice = true,
+        UpdateIsAutoPricing = true,
+    };
+
     [SetChildPurchasePriceSqlServerFact]
     [Trait("Category", "SQL")]
     public async Task 同商品锁超时_确认回滚且HQ零写入_释放后重试成功()
@@ -183,7 +190,7 @@ public sealed class LocalSupplierInvoiceHqConcurrencySqlServerTests
         scope.Local.Aop.OnLogExecuting = (sql, parameters) =>
         {
             if (sql.Contains("sp_getapplock", StringComparison.OrdinalIgnoreCase)
-                && parameters.Any(parameter => Convert.ToString(parameter.Value) == "Exclusive"))
+                && parameters.Any(parameter => Convert.ToString(parameter.Value) == "HB:SetChildPurchasePrice:Gate"))
                 waitingGate.TrySetResult();
         };
         var update = scope.Service.UpdateHqProductsAsync("invoice-new", request, null, "tester", 5_000);
@@ -195,6 +202,390 @@ public sealed class LocalSupplierInvoiceHqConcurrencySqlServerTests
         Assert.Equal(0, result.Data!.HbwebCreated);
         Assert.Equal(1, await fixture.Local.Queryable<Product>().CountAsync());
         Assert.Equal(1, await fixture.Hq.Queryable<DIC_商品信息字典表>().CountAsync());
+    }
+
+    [SetChildPurchasePriceSqlServerFact]
+    [Trait("Category", "SQL")]
+    public async Task 同批重复新货号条码明细_只创建一个本地商品且价格不重复()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var request = await fixture.SeedAsync("invoice-duplicate-batch", 0, 28);
+        await fixture.Local.Insertable(new[]
+        {
+            Fixture.Detail("invoice-duplicate-batch", "D0", null, "ITEM-DUP", "9300000000100"),
+            Fixture.Detail("invoice-duplicate-batch", "D1", null, "ITEM-DUP", "9300000000100"),
+        }).ExecuteCommandAsync();
+        request.DetailGuids = ["D0", "D1"];
+        request.UpdateFields = NewProductUpdateFields();
+
+        using var scope = fixture.OpenService();
+        var response = await scope.Service.UpdateHqProductsAsync(
+            "invoice-duplicate-batch", request, null, "tester", 500
+        );
+
+        Assert.True(response.Success, response.Message);
+        var result = Assert.IsType<UpdateHqProductsResult>(response.Data);
+        Assert.Equal(2, result.Total);
+        Assert.Equal(1, result.HbwebCreated);
+        Assert.Equal(1, result.HqCreated);
+        Assert.Equal(56, result.Updated);
+        Assert.Equal(56, result.HqPurchasePricesUpdated);
+        Assert.Equal(56, result.HqRetailPricesUpdated);
+        Assert.Equal(56, result.HqAutoPricingUpdated);
+        Assert.Equal(0, result.Failed);
+
+        var products = await fixture.Local.Queryable<Product>().ToListAsync();
+        var product = Assert.Single(products);
+        Assert.Equal("ITEM-DUP", product.ItemNumber);
+        Assert.Equal("9300000000100", product.Barcode);
+        Assert.Equal(7m, product.PurchasePrice);
+        Assert.Equal(11m, product.RetailPrice);
+
+        var localPrices = await fixture.Local.Queryable<StoreRetailPrice>().ToListAsync();
+        Assert.Equal(28, localPrices.Count);
+        Assert.All(localPrices, price =>
+        {
+            Assert.Equal(product.ProductCode, price.ProductCode);
+            Assert.Equal(7m, price.PurchasePrice);
+            Assert.Equal(11m, price.StoreRetailPriceValue);
+        });
+
+        var hqProduct = Assert.Single(await fixture.Hq.Queryable<DIC_商品信息字典表>().ToListAsync());
+        Assert.Equal(product.ProductCode, hqProduct.H商品编码);
+        var hqPrices = await fixture.Hq.Queryable<DIC_商品零售价表>().ToListAsync();
+        Assert.Equal(28, hqPrices.Count);
+        Assert.All(hqPrices, price =>
+        {
+            Assert.Equal(product.ProductCode, price.H商品编码);
+            Assert.Equal(7m, price.H进货价);
+            Assert.Equal(11m, price.H分店零售价);
+        });
+    }
+
+    [SetChildPurchasePriceSqlServerFact]
+    [Trait("Category", "SQL")]
+    public async Task 两张单据并发同一新商品_最终只创建一个本地商品()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var firstRequest = await fixture.SeedAsync("invoice-concurrent-a", 0, 28);
+        await fixture.Local.Insertable(Fixture.Invoice("invoice-concurrent-b")).ExecuteCommandAsync();
+        await fixture.Local.Insertable(new[]
+        {
+            Fixture.Detail("invoice-concurrent-a", "D-A", null, "ITEM-CONCURRENT", "9300000000200"),
+            Fixture.Detail("invoice-concurrent-b", "D-B", null, "ITEM-CONCURRENT", "9300000000200"),
+        }).ExecuteCommandAsync();
+        firstRequest.DetailGuids = ["D-A"];
+        firstRequest.UpdateFields = NewProductUpdateFields();
+        var secondRequest = new UpdateHqProductsRequest
+        {
+            DetailGuids = ["D-B"],
+            TargetStoreCodes = firstRequest.TargetStoreCodes,
+            UpdateFields = NewProductUpdateFields(),
+        };
+
+        using var firstScope = fixture.OpenService();
+        using var secondScope = fixture.OpenService();
+        using var releaseFirstPreparation = new ManualResetEventSlim(false);
+        using var releaseSecondHq = new ManualResetEventSlim(false);
+        var firstGateAcquired = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondWaitingForGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<ApiResponse<UpdateHqProductsResult>>? firstTask = null;
+        Task<ApiResponse<UpdateHqProductsResult>>? secondTask = null;
+
+        firstScope.Local.Aop.OnLogExecuted = (sql, parameters) =>
+        {
+            if (sql.Contains("sp_getapplock", StringComparison.OrdinalIgnoreCase)
+                && parameters.Any(parameter => Convert.ToString(parameter.Value) == "HB:SetChildPurchasePrice:Gate")
+                && parameters.Any(parameter => Convert.ToString(parameter.Value) == "Update")
+                && firstGateAcquired.TrySetResult())
+            {
+                // 第一请求已持有身份总闸但尚未写入/提交本地商品，先让第二请求进入等待。
+                if (!releaseFirstPreparation.Wait(TimeSpan.FromSeconds(20)))
+                    throw new TimeoutException("等待放行第一请求本地事务超时");
+            }
+        };
+        secondScope.Local.Aop.OnLogExecuting = (sql, parameters) =>
+        {
+            if (sql.Contains("sp_getapplock", StringComparison.OrdinalIgnoreCase)
+                && parameters.Any(parameter => Convert.ToString(parameter.Value) == "HB:SetChildPurchasePrice:Gate")
+                && parameters.Any(parameter => Convert.ToString(parameter.Value) == "Update"))
+            {
+                secondWaitingForGate.TrySetResult();
+            }
+        };
+        secondScope.Hq.Aop.OnLogExecuting = (_, _) =>
+        {
+            // 两次本地提交的竞态是本测试目标；HQ SQLite 写入顺序化，避免混入独立 HQ 并发问题。
+            if (firstTask is { IsCompleted: false }
+                && !releaseSecondHq.Wait(TimeSpan.FromSeconds(20)))
+            {
+                throw new TimeoutException("等待第一请求 HQ 写入完成超时");
+            }
+        };
+
+        try
+        {
+            firstTask = firstScope.Service.UpdateHqProductsAsync(
+                "invoice-concurrent-a", firstRequest, null, "tester", 5_000
+            );
+            await firstGateAcquired.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            secondTask = secondScope.Service.UpdateHqProductsAsync(
+                "invoice-concurrent-b", secondRequest, null, "tester", 5_000
+            );
+            await secondWaitingForGate.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            releaseFirstPreparation.Set();
+            var firstResponse = await firstTask;
+            releaseSecondHq.Set();
+            var secondResponse = await secondTask;
+
+            Assert.True(firstResponse.Success, firstResponse.Message);
+            Assert.True(secondResponse.Success, secondResponse.Message);
+            Assert.Equal(1, firstResponse.Data!.HbwebCreated + secondResponse.Data!.HbwebCreated);
+            Assert.Equal(1, firstResponse.Data.HqCreated + secondResponse.Data.HqCreated);
+            Assert.Equal(56, firstResponse.Data.HqPurchasePricesUpdated + secondResponse.Data.HqPurchasePricesUpdated);
+            Assert.Equal(0, firstResponse.Data.Failed + secondResponse.Data.Failed);
+
+            var products = await fixture.Local.Queryable<Product>().ToListAsync();
+            var product = Assert.Single(products);
+            Assert.Equal("ITEM-CONCURRENT", product.ItemNumber);
+            Assert.Equal("9300000000200", product.Barcode);
+            Assert.Equal(7m, product.PurchasePrice);
+            Assert.Equal(11m, product.RetailPrice);
+            Assert.Equal(28, await fixture.Local.Queryable<StoreRetailPrice>()
+                .Where(price => price.ProductCode == product.ProductCode).CountAsync());
+            Assert.Equal(1, await fixture.Hq.Queryable<DIC_商品信息字典表>()
+                .Where(hqProduct => hqProduct.H商品编码 == product.ProductCode).CountAsync());
+            Assert.Equal(28, await fixture.Hq.Queryable<DIC_商品零售价表>()
+                .Where(price => price.H商品编码 == product.ProductCode).CountAsync());
+        }
+        finally
+        {
+            releaseFirstPreparation.Set();
+            releaseSecondHq.Set();
+            if (firstTask != null) await firstTask;
+            if (secondTask != null) await secondTask;
+        }
+    }
+
+    [SetChildPurchasePriceSqlServerFact]
+    [Trait("Category", "SQL")]
+    public async Task 全局维护独占锁期间新建商品应锁忙且本地与HQ均零写入()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var request = await fixture.SeedAsync("invoice-new-global-exclusive", 0, 1);
+        await fixture.Local.Insertable(Fixture.Detail(
+            "invoice-new-global-exclusive", "D0", null, "ITEM-GLOBAL", "9300000000300"
+        )).ExecuteCommandAsync();
+        request.DetailGuids = ["D0"];
+
+        using var blocker = fixture.OpenLocal();
+        await blocker.Ado.BeginTranAsync();
+        await SetChildPurchasePriceMutationLock.AcquireAllAsync(blocker);
+        try
+        {
+            using var scope = fixture.OpenService();
+            var response = await scope.Service.UpdateHqProductsAsync(
+                "invoice-new-global-exclusive", request, null, "tester", 500
+            );
+
+            Assert.False(response.Success);
+            Assert.Equal("HQ_UPDATE_COST_LOCK_BUSY", response.Code);
+            var result = Assert.IsType<UpdateHqProductsResult>(response.Details);
+            Assert.Equal(1, result.Total);
+            Assert.Equal(0, result.HbwebCreated);
+            Assert.Equal(0, result.HqCreated);
+            Assert.Equal(0, result.Updated);
+            Assert.Equal(0, result.HqPurchasePricesUpdated);
+            Assert.Null(scope.Local.Ado.Transaction);
+            Assert.Equal(0, await fixture.Local.Queryable<Product>().CountAsync());
+            Assert.Equal(0, await fixture.Local.Queryable<StoreRetailPrice>().CountAsync());
+            Assert.Equal(0, await fixture.Hq.Queryable<DIC_商品信息字典表>().CountAsync());
+            Assert.Equal(0, await fixture.Hq.Queryable<DIC_商品零售价表>().CountAsync());
+        }
+        finally { await blocker.Ado.RollbackTranAsync(); }
+    }
+
+    [SetChildPurchasePriceSqlServerFact]
+    [Trait("Category", "SQL")]
+    public async Task 新商品GateU被另一身份写入阻塞_释放后复用先建商品()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var request = await fixture.SeedAsync("invoice-new-identity-writer", 0, 1);
+        await fixture.Local.Insertable(Fixture.Detail(
+            "invoice-new-identity-writer", "D0", null, "ITEM-IDENTITY", "9300000000400"
+        )).ExecuteCommandAsync();
+        request.DetailGuids = ["D0"];
+
+        using var blocker = fixture.OpenLocal();
+        await blocker.Ado.BeginTranAsync();
+        await SetChildPurchasePriceMutationLock.AcquireProductIdentitiesWithinBudgetAsync(
+            blocker, ["P-CREATED-FIRST"], 5_000
+        );
+        using var scope = fixture.OpenService();
+        var waitingGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        scope.Local.Aop.OnLogExecuting = (sql, parameters) =>
+        {
+            if (sql.Contains("sp_getapplock", StringComparison.OrdinalIgnoreCase)
+                && parameters.Any(parameter => Convert.ToString(parameter.Value) == "HB:SetChildPurchasePrice:Gate")
+                && parameters.Any(parameter => Convert.ToString(parameter.Value) == "Update"))
+            {
+                waitingGate.TrySetResult();
+            }
+        };
+        var update = scope.Service.UpdateHqProductsAsync(
+            "invoice-new-identity-writer", request, null, "tester", 5_000
+        );
+        await waitingGate.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await blocker.Insertable(Fixture.Product("P-CREATED-FIRST", "ITEM-IDENTITY", "9300000000400"))
+            .ExecuteCommandAsync();
+        // 另一身份完成新商品写入时应同时留下本地分店价格投影；本请求只负责复用该身份。
+        await blocker.Insertable(new StoreRetailPrice
+        {
+            UUID = "price-P-CREATED-FIRST",
+            StoreCode = "S00",
+            ProductCode = "P-CREATED-FIRST",
+            StoreProductCode = "S00P-CREATED-FIRST",
+            SupplierCode = "SUP",
+            PurchasePrice = 7m,
+            StoreRetailPriceValue = 11m,
+            IsActive = true,
+            IsAutoPricing = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await blocker.Ado.CommitTranAsync();
+
+        var response = await update.WaitAsync(TimeSpan.FromSeconds(15));
+        Assert.True(response.Success, response.Message);
+        Assert.Equal(0, response.Data!.HbwebCreated);
+        Assert.Equal(1, response.Data.HqCreated);
+        Assert.Equal(1, response.Data.HqPurchasePricesUpdated);
+        Assert.Equal(1, await fixture.Local.Queryable<Product>()
+            .Where(product => product.ProductCode == "P-CREATED-FIRST").CountAsync());
+        Assert.Equal(1, await fixture.Hq.Queryable<DIC_商品信息字典表>()
+            .Where(product => product.H商品编码 == "P-CREATED-FIRST").CountAsync());
+        Assert.Equal(1, await fixture.Local.Queryable<StoreRetailPrice>()
+            .Where(price => price.ProductCode == "P-CREATED-FIRST").CountAsync());
+        Assert.Equal(1, await fixture.Hq.Queryable<DIC_商品零售价表>()
+            .Where(price => price.H商品编码 == "P-CREATED-FIRST").CountAsync());
+    }
+
+    [SetChildPurchasePriceSqlServerFact]
+    [Trait("Category", "SQL")]
+    public async Task 新建两个单品_无关商品持成本锁时应完成两商品二十八店成本零售价写入()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var request = await fixture.SeedAsync("invoice-new-unrelated-lock", 0, 28);
+        await fixture.Local.Insertable(new[]
+        {
+            // 两条明细都没有 ProductCode，必须由本次业务调用创建本地商品。
+            Fixture.Detail("invoice-new-unrelated-lock", "D0", null, "ITEM0", "9300000000000"),
+            Fixture.Detail("invoice-new-unrelated-lock", "D1", null, "ITEM1", "9300000000001"),
+        }).ExecuteCommandAsync();
+        request.DetailGuids = ["D0", "D1"];
+        request.UpdateFields = new UpdateToStorePricesFields
+        {
+            UpdatePurchasePrice = true,
+            UpdateRetailPrice = true,
+            UpdateIsAutoPricing = true,
+        };
+
+        using var blocker = fixture.OpenLocal();
+        await blocker.Ado.BeginTranAsync();
+        await SetChildPurchasePriceMutationLock.AcquireProductsAsync(blocker, ["UNRELATED"]);
+        try
+        {
+            // 无关商品锁必须保持到业务返回，才能证明新商品路径没有被它错误阻塞。
+            using var scope = fixture.OpenService();
+            var response = await scope.Service.UpdateHqProductsAsync(
+                "invoice-new-unrelated-lock", request, null, "tester", 500
+            );
+
+            Assert.True(response.Success, response.Message);
+            var result = Assert.IsType<UpdateHqProductsResult>(response.Data);
+            Assert.Equal(2, result.Total);
+            Assert.Equal(2, result.HbwebCreated);
+            Assert.Equal(2, result.HqCreated);
+            Assert.Equal(56, result.Updated);
+            Assert.Equal(56, result.HqPurchasePricesUpdated);
+            Assert.Equal(56, result.HqRetailPricesUpdated);
+            Assert.Equal(56, result.HqAutoPricingUpdated);
+            Assert.Equal(0, result.Failed);
+
+            var details = await fixture.Local.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .Where(detail => detail.InvoiceGUID == "invoice-new-unrelated-lock")
+                .OrderBy(detail => detail.DetailGUID)
+                .ToListAsync();
+            Assert.Equal(2, details.Count);
+            Assert.Equal(new[] { "D0", "D1" }, details.Select(detail => detail.DetailGUID).ToArray());
+            Assert.All(details, detail =>
+            {
+                // HQ 更新只在内存中补齐商品编码；本次业务不回写进货单明细的 ProductCode。
+                Assert.Null(detail.ProductCode);
+                Assert.Equal(7m, detail.PurchasePrice);
+                Assert.Equal(5m, detail.LastPurchasePrice);
+                Assert.Equal(11m, detail.RetailPrice);
+            });
+
+            var products = await fixture.Local.Queryable<Product>()
+                .OrderBy(product => product.ItemNumber)
+                .ToListAsync();
+            Assert.Equal(2, products.Count);
+            Assert.Equal(new[] { "ITEM0", "ITEM1" }, products.Select(product => product.ItemNumber).ToArray());
+            Assert.All(products, product =>
+            {
+                Assert.Equal("SUP", product.LocalSupplierCode);
+                Assert.Equal(7m, product.PurchasePrice);
+                Assert.Equal(11m, product.RetailPrice);
+                Assert.True(product.IsAutoPricing);
+                Assert.True(product.IsActive);
+                Assert.False(product.IsDeleted);
+            });
+
+            var localPrices = await fixture.Local.Queryable<StoreRetailPrice>().ToListAsync();
+            Assert.Equal(56, localPrices.Count);
+            Assert.Equal(28, localPrices.Select(price => price.StoreCode).Distinct().Count());
+            Assert.Equal(2, localPrices.Select(price => price.ProductCode).Distinct().Count());
+            Assert.All(localPrices, price =>
+            {
+                Assert.Equal("SUP", price.SupplierCode);
+                Assert.Equal(7m, price.PurchasePrice);
+                Assert.Equal(11m, price.StoreRetailPriceValue);
+                Assert.True(price.IsAutoPricing);
+                Assert.True(price.IsActive);
+                Assert.False(price.IsDeleted);
+            });
+            Assert.All(localPrices.GroupBy(price => price.ProductCode), group => Assert.Equal(28, group.Count()));
+
+            var hqProducts = await fixture.Hq.Queryable<DIC_商品信息字典表>().ToListAsync();
+            Assert.Equal(2, hqProducts.Count);
+            Assert.Equal(new[] { "ITEM0", "ITEM1" }, hqProducts.OrderBy(product => product.H货号)
+                .Select(product => product.H货号).ToArray());
+            Assert.All(hqProducts, product =>
+            {
+                Assert.Equal("SUP", product.H供货商编码);
+                Assert.Equal(7m, product.H进货价);
+                Assert.Equal(11m, product.H零售价);
+                Assert.True(product.H是否自动定价);
+                Assert.True(product.H使用状态);
+            });
+
+            var hqPrices = await fixture.Hq.Queryable<DIC_商品零售价表>().ToListAsync();
+            Assert.Equal(56, hqPrices.Count);
+            Assert.Equal(28, hqPrices.Select(price => price.H分店代码).Distinct().Count());
+            Assert.Equal(2, hqPrices.Select(price => price.H商品编码).Distinct().Count());
+            Assert.All(hqPrices, price =>
+            {
+                Assert.Equal("SUP", price.H供应商编码);
+                Assert.Equal(7m, price.H进货价);
+                Assert.Equal(11m, price.H分店零售价);
+                Assert.True(price.H是否自动定价);
+                Assert.True(price.H使用状态);
+            });
+            Assert.All(hqPrices.GroupBy(price => price.H商品编码), group => Assert.Equal(28, group.Count()));
+        }
+        finally { await blocker.Ado.RollbackTranAsync(); }
     }
 
     [SetChildPurchasePriceSqlServerFact]
@@ -261,6 +652,15 @@ public sealed class LocalSupplierInvoiceHqConcurrencySqlServerTests
         });
         internal ServiceScope OpenService() => new(OpenLocal(), OpenHq());
 
+        internal static StoreLocalSupplierInvoice Invoice(string invoiceGuid) => WithDates(new StoreLocalSupplierInvoice
+        {
+            InvoiceGUID = invoiceGuid,
+            StoreCode = "S00",
+            SupplierCode = "SUP",
+            InvoiceNo = invoiceGuid,
+            IsDeleted = false,
+        });
+
         internal async Task<UpdateHqProductsRequest> SeedAsync(string invoiceGuid, int productCount, int storeCount)
         {
             var storeCodes = Enumerable.Range(0, storeCount).Select(index => $"S{index:00}").ToList();
@@ -326,7 +726,7 @@ public sealed class LocalSupplierInvoiceHqConcurrencySqlServerTests
     private sealed class ServiceScope : IDisposable
     {
         internal SqlSugarClient Local { get; }
-        private SqlSugarClient Hq { get; }
+        internal SqlSugarClient Hq { get; }
         internal LocalSupplierInvoiceHqProductSyncService Service { get; }
         internal ServiceScope(SqlSugarClient local, SqlSugarClient hq)
         {

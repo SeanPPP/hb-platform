@@ -34,14 +34,24 @@ namespace BlazorApp.Api.Features.LocalSupplierInvoices
             await db.Ado.BeginTranAsync();
             try
             {
-                // 新建商品必须走总闸；已有商品按稳定排序的父商品编码加锁。
+                // 新建商品必须走总闸；改货号会改变主档身份，使用身份互斥锁防止同一商品并发改码。
+                // 纯价格和多码写入仍使用 Shared，避免无关成本操作互相阻塞。
+                var requiresProductIdentityLock = plan.InitialData.Details.Any(detail =>
+                    LocalSupplierInvoicesProductExecutionPlan.GetSavedAction(detail)
+                    == DetailAction.UpdateItemNumber
+                );
                 var lockScope = plan.RequiresAllProductsLock
                     ? await SetChildPurchasePriceMutationLock.AcquireAllAsync(db)
                     : plan.InitialProductCodes.Count > 0
-                        ? await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
-                            db,
-                            plan.InitialProductCodes
-                        )
+                        ? requiresProductIdentityLock
+                            ? await SetChildPurchasePriceMutationLock.AcquireProductIdentitiesWithinBudgetAsync(
+                                db,
+                                plan.InitialProductCodes
+                            )
+                            : await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                                db,
+                                plan.InitialProductCodes
+                            )
                         : null;
 
                 // 锁内重新读取所有执行身份和写入来源，禁止使用等待锁前的快照作决定。

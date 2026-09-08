@@ -115,8 +115,8 @@ public sealed class RemoteMaintenanceService
         cancellationToken.ThrowIfCancellationRequested();
         var row = await _dbContext.Db.Queryable<RemoteMaintenanceDevice>().FirstAsync(x => x.Id == id && !x.IsDeleted);
         if (row is null) return RemoteMaintenanceResult<RemoteMaintenanceCredentialResponseDto>.Fail("REMOTE_MAINTENANCE_DEVICE_NOT_FOUND", "远程维护设备不存在");
-        var registration = await ResolveEnabledWindowsPosAsync(row.HardwareId, cancellationToken);
-        if (registration is null || registration.ID != row.DeviceRegistrationId)
+        var registrations = await RemoteMaintenanceRegistrationResolver.ResolveAsync(_posmContext, [row], cancellationToken);
+        if (!registrations.ContainsKey(row.Id))
             return RemoteMaintenanceResult<RemoteMaintenanceCredentialResponseDto>.Fail("REMOTE_MAINTENANCE_DEVICE_DISABLED", "设备已停用或重新登记");
         if (string.IsNullOrWhiteSpace(row.CredentialCiphertext)) return RemoteMaintenanceResult<RemoteMaintenanceCredentialResponseDto>.Fail("REMOTE_MAINTENANCE_CREDENTIAL_NOT_READY", "设备尚未提交远程维护密码");
         try
@@ -283,8 +283,8 @@ public sealed class RemoteMaintenanceService
         var tokenHash = Hash(monitorToken);
         var row = await _dbContext.Db.Queryable<RemoteMaintenanceDevice>().FirstAsync(x => x.Id == deviceId && !x.IsDeleted);
         if (row is null || string.IsNullOrWhiteSpace(row.MonitorTokenHash) || !FixedTimeEquals(row.MonitorTokenHash, tokenHash)) return RemoteMaintenanceResult<object>.Fail("REMOTE_MAINTENANCE_TOKEN_INVALID", "monitor token 无效");
-        var registration = await ResolveEnabledWindowsPosAsync(row.HardwareId, cancellationToken);
-        if (registration is null || registration.ID != row.DeviceRegistrationId) return RemoteMaintenanceResult<object>.Fail("REMOTE_MAINTENANCE_DEVICE_DISABLED", "设备已失效");
+        var registrations = await RemoteMaintenanceRegistrationResolver.ResolveAsync(_posmContext, [row], cancellationToken);
+        if (!registrations.ContainsKey(row.Id)) return RemoteMaintenanceResult<object>.Fail("REMOTE_MAINTENANCE_DEVICE_DISABLED", "设备已失效");
         var now = EnsureUtc(_utcNow());
         if (request.Sequence <= row.LastAcceptedSequence) return RemoteMaintenanceResult<object>.Fail("REMOTE_MAINTENANCE_SEQUENCE_REJECTED", "心跳 sequence 必须严格递增");
         if (row.LastAcceptedAtUtc.HasValue && now - EnsureUtc(row.LastAcceptedAtUtc.Value) < TimeSpan.FromSeconds(Math.Max(1, _options.Value.HeartbeatMinIntervalSeconds))) return RemoteMaintenanceResult<object>.Fail("REMOTE_MAINTENANCE_RATE_LIMITED", "心跳过于频繁");

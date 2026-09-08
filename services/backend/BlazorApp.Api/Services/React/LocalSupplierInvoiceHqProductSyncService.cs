@@ -358,7 +358,7 @@ namespace BlazorApp.Api.Services.React
                     try
                     {
                         (childCostLockScope, lockedProducts) = await AcquireHqUpdateCostLockAsync(
-                            db, header, details, initialProducts, lockWaitMilliseconds
+                            db, header, details, initialProducts, candidateProductCodes, lockWaitMilliseconds
                         );
                     }
                     catch (SetChildPurchasePriceLockException ex) when (ex.ResultCode is -1 or -3)
@@ -367,8 +367,8 @@ namespace BlazorApp.Api.Services.React
                         // 回滚异常必须继续向外传播，不能把提交状态不明的请求标成可重试。
                         await db.Ado.RollbackTranAsync();
                         _logger.LogWarning(
-                            "更新HQ商品等待成本锁 InvoiceGuid={InvoiceGuid} Resource={Resource} ProductCount={ProductCount} WaitMs={WaitMs} ResultCode={ResultCode} Stage=LocalLock",
-                            invoiceGuid, ex.Resource, details.Count, lockStopwatch.ElapsedMilliseconds, ex.ResultCode
+                            "更新HQ商品等待成本锁 InvoiceGuid={InvoiceGuid} Resource={Resource} ProductCount={ProductCount} InitialNewProductCount={InitialNewProductCount} WaitMs={WaitMs} ResultCode={ResultCode} Stage=LocalLock",
+                            invoiceGuid, ex.Resource, details.Count, initialProducts.Count(product => product == null), lockStopwatch.ElapsedMilliseconds, ex.ResultCode
                         );
                         return ApiResponse<UpdateHqProductsResult>.Error(
                             "商品更新繁忙，等待其他成本操作超时，本次未更新 HQ 商品",
@@ -390,6 +390,7 @@ namespace BlazorApp.Api.Services.React
                             updatedBy,
                             result,
                             candidateProductCodes[index],
+                            childCostLockScope,
                             lockedProducts?[index]
                         );
                         if (prepared != null)
@@ -605,43 +606,50 @@ namespace BlazorApp.Api.Services.React
         }
 
         /// <summary>
-        /// 已有商品使用共享总闸和商品锁；匹配必须在锁内重读。
-        /// 新商品及身份变化退回原全局保护，先释放事务，绝不在商品锁上升级总闸。
+        /// 已有商品使用共享总闸，新商品使用身份总闸；两者均按编码锁住实际商品。
+        /// 匹配变化时先释放整个事务再重新规划，绝不在已持商品锁上追加乱序锁或升级总闸。
         /// </summary>
         private async Task<(SetChildPurchasePriceLockScope Scope, List<Product?>? Products)> AcquireHqUpdateCostLockAsync(
             ISqlSugarClient db,
             StoreLocalSupplierInvoice header,
             List<StoreLocalSupplierInvoiceDetails> details,
             List<Product?> products,
+            List<string> candidateProductCodes,
             int lockWaitMilliseconds
         )
         {
             var lockStopwatch = Stopwatch.StartNew();
             var remainingBudget = () => (int)Math.Max(0L, lockWaitMilliseconds - lockStopwatch.ElapsedMilliseconds);
-            if (products.All(product => !string.IsNullOrWhiteSpace(product?.ProductCode)))
+            while (true)
             {
-                var scope = await SetChildPurchasePriceMutationLock.AcquireProductsWithinBudgetAsync(
-                    db, products.Select(product => product!.ProductCode), remainingBudget()
-                );
+                var hasNewProducts = products.Any(product => string.IsNullOrWhiteSpace(product?.ProductCode));
+                var productCodes = products.Select(product => product?.ProductCode);
+                var scope = hasNewProducts
+                    ? await SetChildPurchasePriceMutationLock.AcquireProductIdentitiesWithinBudgetAsync(
+                        db, productCodes.Concat(candidateProductCodes), remainingBudget())
+                    : await SetChildPurchasePriceMutationLock.AcquireProductsWithinBudgetAsync(
+                        db, productCodes, remainingBudget());
                 var lockedProducts = await ResolveHqUpdateProductsAsync(db, header, details);
                 var identitiesUnchanged = products.Zip(lockedProducts).All(pair =>
-                    pair.Second != null && string.Equals(
-                        pair.First!.ProductCode?.Trim(), pair.Second.ProductCode?.Trim(), StringComparison.OrdinalIgnoreCase
+                    string.Equals(
+                        pair.First?.ProductCode?.Trim(), pair.Second?.ProductCode?.Trim(), StringComparison.OrdinalIgnoreCase
                     )
                 );
                 if (identitiesUnchanged)
                 {
-                    scope.EnsureCovers(db, lockedProducts.Select(product => product!.ProductCode));
+                    // 候选编码预先纳入锁集，同批重复货号后续复用首条新建商品时仍受保护。
+                    scope.EnsureCovers(db, hasNewProducts
+                        ? lockedProducts.Select(product => product?.ProductCode).Concat(candidateProductCodes)
+                        : lockedProducts.Select(product => product!.ProductCode));
                     return (scope, lockedProducts);
                 }
 
                 await db.Ado.RollbackTranAsync();
+                products = lockedProducts;
                 await db.Ado.BeginTranAsync();
+                if (remainingBudget() == 0)
+                    throw new SetChildPurchasePriceLockException("HB:SetChildPurchasePrice:IdentityChanged", -1);
             }
-
-            var allScope = await SetChildPurchasePriceMutationLock.AcquireAllWithinBudgetAsync(db, remainingBudget());
-            // 全局锁内继续调用原准备方法逐条匹配，保留同批重复货号复用新建商品的行为。
-            return (allScope, null);
         }
 
         private static async Task<List<Product?>> ResolveHqUpdateProductsAsync(
@@ -666,6 +674,7 @@ namespace BlazorApp.Api.Services.React
             string updatedBy,
             UpdateHqProductsResult result,
             string generatedProductCode,
+            SetChildPurchasePriceLockScope lockScope,
             Product? lockedProduct = null
         )
         {
@@ -679,6 +688,8 @@ namespace BlazorApp.Api.Services.React
                 detail.Barcode
             );
 
+            // 动态匹配只可复用本次已锁住的商品；任何旁路写入引入的新身份都必须回滚，不能越界写入。
+            lockScope.EnsureCovers(db, new[] { product?.ProductCode ?? generatedProductCode });
             var isNewProduct = product == null;
             if (product == null)
             {

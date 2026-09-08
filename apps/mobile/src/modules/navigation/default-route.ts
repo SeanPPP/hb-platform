@@ -19,6 +19,8 @@ export type AppTabPath =
   | "/(shell)/employee-profile"
   | "/(shell)/employee-profile-review"
   | "/(shell)/device-management"
+  | "/(shell)/app-downloads"
+  | "/(shell)/wpf-versions"
   | "/(shell)/settings";
 
 export const TAB_PATHS: Record<string, AppTabPath> = {
@@ -42,6 +44,8 @@ export const TAB_PATHS: Record<string, AppTabPath> = {
   "employee-profile": "/(shell)/employee-profile",
   "employee-profile-review": "/(shell)/employee-profile-review",
   "device-management": "/(shell)/device-management",
+  "app-downloads": "/(shell)/app-downloads",
+  "wpf-versions": "/(shell)/wpf-versions",
   settings: "/(shell)/settings",
 };
 
@@ -49,6 +53,8 @@ export const SUPPORTED_TAB_ROUTE_NAMES = new Set(Object.keys(TAB_PATHS));
 export const SETTINGS_FALLBACK_ROUTE_NAME = "settings";
 
 const DEVICE_MODE_BLOCKED_ROUTE_NAMES = new Set([
+  "app-downloads",
+  "wpf-versions",
   "attendance-personal",
   "attendance-management",
   "employee-profile-review",

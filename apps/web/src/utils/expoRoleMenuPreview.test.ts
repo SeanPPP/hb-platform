@@ -94,6 +94,8 @@ assertArrayEqual(
     'employee-profile-review',
     'device-management',
     'reports',
+    'app-downloads',
+    'wpf-versions',
     'settings',
   ],
   'HbwebExpo 预览路由应与后端 FullAppMenu 及移动端默认路由保持完整一致',
@@ -275,8 +277,8 @@ const implicitAdminPreview = buildExpoUserMenuPreview({
 })
 assertEqual(
   implicitAdminPreview.visibleRoutes.length,
-  completePreview.allRoutes.length,
-  '隐式全权限用户应看到完整移动端菜单',
+  completePreview.allRoutes.filter((route) => !route.requireAdmin).length,
+  '隐式全权限不等同于管理员身份，不能开放版本管理入口',
 )
 assertEqual(
   implicitAdminPreview.allRoutes.every(

@@ -9,7 +9,7 @@ const workflowPath = resolve(repositoryRoot, ".github/workflows/quality-baseline
 const budgetPath = resolve(repositoryRoot, "quality-baseline-budget.json");
 const bundleBudgetPath = resolve(repositoryRoot, "web-bundle-budget.json");
 
-test("quality-baseline workflow 覆盖 PR/main/nightly、路径 lane 与 always 上报", () => {
+test("quality-baseline workflow 覆盖 main/nightly，PR 由现有组件任务采集质量结果", () => {
   assert.ok(existsSync(workflowPath), "必须新增 quality-baseline workflow");
   const workflow = readFileSync(workflowPath, "utf8");
   assert.deepEqual(
@@ -18,7 +18,7 @@ test("quality-baseline workflow 覆盖 PR/main/nightly、路径 lane 与 always 
     "性能脚本与客户端 lane 必须统一使用支持 node:sqlite 的 Node 24",
   );
 
-  assert.match(workflow, /pull_request:/);
+  assert.doesNotMatch(workflow, /^  pull_request:/m);
   assert.match(workflow, /push:[\s\S]*branches:\s*\[main\]/);
   assert.match(workflow, /schedule:[\s\S]*cron:/);
   for (const path of [

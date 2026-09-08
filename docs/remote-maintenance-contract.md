@@ -56,7 +56,7 @@
 { "password": "random-password" }
 ```
 
-密码在中心持久化时使用独立 DataProtection purpose 加密，随机生成；数据库和列表永远不返回明文。只有该 endpoint 返回明文，并且每次读取都写入不含密码、token 或其他 secret 的管理员审计事件。
+密码在中心持久化时使用独立 DataProtection purpose 加密，随机生成；数据库和普通设备列表不返回明文。该 endpoint 可供管理员单次读取；RustDesk 专用管理员会话还可通过共享公司通讯录的 `POST /api/rustdesk/api/ab/peers?ab=hb-company-devices` 同步设备 `password`，用于官方客户端自动认证。两种读取均写入不含密码、token 或其他 secret 的管理员审计事件。同步只适用于当前合法的 Windows POS 登记；已安装设备可通过已消费开通码的完整换店证据链关联到新分店身份，关闭远程维护功能时停止下发；完整协议与客户端验收见 [RustDesk 公司通讯录 runbook](runbooks/rustdesk-ios-company-login.md)。
 
 ### 管理员读取 manifest
 
@@ -168,7 +168,7 @@ POS 端还必须从原始 `Authorization: Bearer <deviceAuthorizationCode>` 重�
 }
 ```
 
-服务端仅接受严格大于持久化 `lastAcceptedSequence` 的 sequence。重复或乱序请求返回冲突/无效 sequence，不能刷新 `lastSeenAtUtc`；token hash 恒时比较，设备必须仍有效且未吊销，接口限频。心跳只更新 agent/service/sequence/lastSeen 字段，保留 commit 登记的 RustDesk ID 与客户端版本。只保存该设备最新快照（不产生心跳历史）。成功心跳以服务端 UTC 接收时间作为 `lastSeenAtUtc`。
+服务端仅接受严格大于持久化 `lastAcceptedSequence` 的 sequence。重复或乱序请求返回冲突/无效 sequence，不能刷新 `lastSeenAtUtc`；token hash 恒时比较，设备必须仍有效且未吊销，接口限频。心跳只更新 agent/service/sequence/lastSeen 字段，保留 commit 登记的 RustDesk ID 与客户端版本。只保存该设备最新快照（不产生心跳历史）。成功心跳以服务端 UTC 接收时间作为 `lastSeenAtUtc`。 开通码换店后，既有安装的心跳与管理员凭据读取使用同一严格关联解析：正常路径保持最大登记 ID 匹配；跨身份路径必须证明同一硬件从旧分店/设备代码到新登记 ID 的完整 Rebind 链，核对最终授权哈希及启用状态。此过程不迁移安装行、不更新 monitor token，也不放宽 prepare/commit/下载的设备鉴权。
 
 ## 权限、审计与配置
 

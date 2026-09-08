@@ -575,12 +575,16 @@ namespace BlazorApp.Api.Services
                 var batchGuid = Guid.NewGuid();
                 var actorName = ResolveActorName();
 
-                // 事务开始后先按请求商品获取业务锁；后续所有源数据均在锁内重新读取。
+                // 批量创建会写入商品编码、货号、条码和供应商身份；使用 Update 总闸
+                // 避免同一身份被并发建档或编辑，同时不阻塞无关商品的普通成本 Shared 锁。
                 var productCodes = request.Items.Select(x => x.ProductCode).ToList();
                 var itemNumbers = request.Items.Select(x => x.ItemNumber).ToList();
                 var lockProductCodes = SetChildPurchasePriceMutationLock.NormalizeProductCodes(productCodes);
                 var lockScope = lockProductCodes.Count > 0
-                    ? await SetChildPurchasePriceMutationLock.AcquireProductsAsync(_db, lockProductCodes)
+                    ? await SetChildPurchasePriceMutationLock.AcquireProductIdentitiesWithinBudgetAsync(
+                        _db,
+                        lockProductCodes
+                    )
                     : null;
 
                 _logger.LogDebug("执行二次检查，商品编码数: {CodeCount}，货号数: {ItemCount}",

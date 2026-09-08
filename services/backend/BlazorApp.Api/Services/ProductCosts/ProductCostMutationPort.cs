@@ -28,6 +28,14 @@ internal static class ProductCostMutationLock
             )
         );
 
+    /// <summary>仓库建档与 HQ 新商品共用身份锁，普通商品成本事务仍可并行。</summary>
+    internal static async Task<ProductCostMutationLockScope> AcquireProductIdentitiesWithinBudgetAsync(
+        ISqlSugarClient db,
+        IEnumerable<string?> productCodes,
+        int totalWaitMilliseconds = 10_000
+    ) => new(await React.SetChildPurchasePriceMutationLock.AcquireProductIdentitiesWithinBudgetAsync(
+        db, productCodes, totalWaitMilliseconds));
+
     internal static bool TryResolveConflict(
         Exception? exception,
         out Exception? conflict

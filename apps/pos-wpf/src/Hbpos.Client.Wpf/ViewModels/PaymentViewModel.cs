@@ -272,9 +272,9 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         CancelCommand = new RelayCommand(CancelPayment, CanCancelPayment);
         BackToPosCommand = new RelayCommand(BackToPos, CanBackToPos);
         ShowInstallmentCenterCommand = new AsyncRelayCommand(ShowInstallmentCenterAsync, CanShowInstallmentCenter);
-        OpenCardRecoveryCenterCommand = new RelayCommand(
-            () => _navigationActions.OpenCardRecoveryCenter?.Invoke(),
-            () => !IsShuttingDown && _navigationActions.OpenCardRecoveryCenter is not null);
+        OpenCardRecoveryCenterCommand = new AsyncRelayCommand(
+            _cardSession.OpenRecoveryCenterAsync,
+            _cardSession.CanOpenRecoveryCenter);
         CloseCardPaymentErrorOverlayCommand = new RelayCommand(CloseCardPaymentErrorOverlay);
         CardPaymentErrorPrimaryActionCommand = new AsyncRelayCommand(
             ExecuteCardPaymentErrorPrimaryActionAsync,
@@ -610,7 +610,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     public IRelayCommand ShowInstallmentCenterCommand { get; }
 
-    public IRelayCommand OpenCardRecoveryCenterCommand { get; }
+    public IAsyncRelayCommand OpenCardRecoveryCenterCommand { get; }
 
     public IRelayCommand CloseCardPaymentErrorOverlayCommand { get; }
 

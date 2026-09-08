@@ -23,6 +23,35 @@ namespace BlazorApp.Api.Tests
 {
     public class DomesticProductCreationControllerTests
     {
+        [Theory]
+        [InlineData(int.MaxValue, 0, 1)]
+        [InlineData(10_001, 0, 1)]
+        [InlineData(5_001, 1, 1)]
+        [InlineData(2_501, 1, 2)]
+        public async Task CreateBatchAsync_展开总量超限应在访问数据库前拒绝(
+            int createCount, int childCount, int parentRows)
+        {
+            // 未初始化服务没有数据库依赖；超限请求必须在任何取号、查询或写入前返回。
+            var service = (DomesticProductCreationService)RuntimeHelpers.GetUninitializedObject(
+                typeof(DomesticProductCreationService));
+            var result = await service.CreateBatchAsync(new CreateDomesticProductBatchRequest
+            {
+                SupplierCode = "LIMIT",
+                Items = Enumerable.Range(0, parentRows).Select(_ => new CreateBatchItemDto
+                {
+                    ProductType = 1,
+                    CreateCount = createCount,
+                    SubItems = Enumerable.Range(0, childCount).Select(_ => new CreateBatchItemDto
+                    {
+                        ProductType = 2,
+                    }).ToList(),
+                }).ToList(),
+            });
+
+            Assert.False(result.Success);
+            Assert.Equal("CREATE_BATCH_LIMIT_EXCEEDED", result.ErrorCode);
+        }
+
         [Fact]
         public void CreateBatchItemDto_ProductName_IsOptional()
         {

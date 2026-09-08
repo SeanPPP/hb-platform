@@ -12,6 +12,7 @@ export interface ExpoAppMenuDefinition {
   zhTitle: string
   enTitle: string
   fixed?: boolean
+  requireAdmin?: boolean
 }
 
 export interface ExpoAppVisibleRoute extends ExpoAppMenuDefinition {
@@ -150,6 +151,8 @@ const TAB_PATHS: Record<string, string> = {
   'employee-profile': '/(shell)/employee-profile',
   'employee-profile-review': '/(shell)/employee-profile-review',
   'device-management': '/(shell)/device-management',
+  'app-downloads': '/(shell)/app-downloads',
+  'wpf-versions': '/(shell)/wpf-versions',
   settings: '/(shell)/settings',
 }
 
@@ -173,6 +176,8 @@ const ROUTE_LABELS: Record<string, Pick<ExpoAppMenuDefinition, 'zhTitle' | 'enTi
   'employee-profile': { zhTitle: '员工', enTitle: 'Employee' },
   'employee-profile-review': { zhTitle: '员工资料审核', enTitle: 'Employee Profile Review' },
   'device-management': { zhTitle: '设备管理', enTitle: 'Devices' },
+  'app-downloads': { zhTitle: 'App 下载', enTitle: 'App Downloads' },
+  'wpf-versions': { zhTitle: 'WPF 版本管理', enTitle: 'WPF Versions' },
   settings: { zhTitle: '设置', enTitle: 'Settings' },
 }
 
@@ -338,6 +343,24 @@ const EXPO_APP_MENU_DEFINITIONS: ExpoAppMenuDefinition[] = [
     ...ROUTE_LABELS.reports,
   },
   {
+    routeName: 'app-downloads',
+    titleKey: 'tabs.appDownloads',
+    icon: 'download-outline',
+    permissionCodes: [],
+    requireAdmin: true,
+    order: 59,
+    ...ROUTE_LABELS['app-downloads'],
+  },
+  {
+    routeName: 'wpf-versions',
+    titleKey: 'tabs.wpfVersions',
+    icon: 'microsoft-windows',
+    permissionCodes: [],
+    requireAdmin: true,
+    order: 59,
+    ...ROUTE_LABELS['wpf-versions'],
+  },
+  {
     routeName: 'settings',
     titleKey: 'tabs.settings',
     icon: 'account-circle-outline',
@@ -438,14 +461,14 @@ function buildExpoRoute(
 ): ExpoAppVisibleRoute {
   const anyPermission = definition.permissionCodes.length > 1
   const acceptedPermissionCodes = getAcceptedPermissionCodes(definition)
-  const visible =
+  const visible = definition.requireAdmin ? access.isAdmin :
     definition.fixed ||
     definition.permissionCodes.length === 0 ||
     acceptedPermissionCodes.some((permissionCode) => access.hasPermission(permissionCode))
   const direct = acceptedPermissionCodes.some((permissionCode) =>
     includesPermission(explicitPermissionCodeSet, permissionCode),
   )
-  const locked = Boolean(definition.fixed || readOnly)
+  const locked = Boolean(definition.fixed || definition.requireAdmin || readOnly)
 
   return {
     ...definition,
@@ -479,6 +502,7 @@ function buildExpoUserRoute(
     assignablePermissionCodeSet,
     inheritedSources,
     implicitAllPermissions,
+    isSuperAdmin,
     readOnly,
   }: {
     inheritedPermissionCodeSet: ReadonlySet<string>
@@ -486,13 +510,15 @@ function buildExpoUserRoute(
     assignablePermissionCodeSet: ReadonlySet<string>
     inheritedSources: ExpoMenuInheritedSource[]
     implicitAllPermissions: boolean
+    isSuperAdmin: boolean
     readOnly: boolean
   },
 ): ExpoAppVisibleRoute {
   const acceptedPermissionCodes = getAcceptedPermissionCodes(definition)
   const inherited = hasAnyPermission(inheritedPermissionCodeSet, acceptedPermissionCodes)
   const direct = hasAnyPermission(directPermissionCodeSet, acceptedPermissionCodes)
-  const visible =
+  // 管理员页面不能通过直接权限或普通角色的隐式全权限开放。
+  const visible = definition.requireAdmin ? isSuperAdmin :
     Boolean(definition.fixed) ||
     definition.permissionCodes.length === 0 ||
     implicitAllPermissions ||
@@ -506,8 +532,8 @@ function buildExpoUserRoute(
       includesPermission(directPermissionCodeSet, permissionCode) &&
       includesPermission(assignablePermissionCodeSet, permissionCode),
   )
-  const canAdd = Boolean(!visible && !readOnly && addPermissionCode)
-  const canRemove = Boolean(visible && !readOnly && removablePermissionCodes.length > 0)
+  const canAdd = Boolean(!definition.requireAdmin && !visible && !readOnly && addPermissionCode)
+  const canRemove = Boolean(!definition.requireAdmin && visible && !readOnly && removablePermissionCodes.length > 0)
   const roleSources = uniquePermissionCodes(
     inheritedSources
       .filter((source) => {
@@ -586,6 +612,7 @@ export function buildExpoUserMenuPreview({
         assignablePermissionCodeSet,
         inheritedSources,
         implicitAllPermissions: hasImplicitAllPermissions,
+        isSuperAdmin,
         readOnly: isReadOnly,
       }),
     )

@@ -49,7 +49,7 @@ internal sealed class SalesStatisticsProductStoreDailyCommandWriter
                     input.TargetDate,
                     expectedJobId);
 
-                // 先在日期锁内读旧行，再取得全局成本闸；整日上万商品不能逐项往返获取锁。
+                // 日期锁保护整日替换；成本只锁本日新旧记录实际引用的商品，不能阻塞无关新商品建档。
                 var previousRows = await context.Db.Queryable<ProductStoreDailySalesStatistic>()
                     .Where(row => row.Date >= input.TargetDate.Date && row.Date < input.TargetDate.Date.AddDays(1))
                     .With(SqlWith.UpdLock)
@@ -59,7 +59,8 @@ internal sealed class SalesStatisticsProductStoreDailyCommandWriter
                         .Concat(previousRows.Select(row => row.ProductCode)));
                 if (productCodes.Count > 0)
                 {
-                    await SetChildPurchasePriceMutationLock.AcquireAllAsync(context.Db);
+                    // 一次 SQL 批量按规范顺序取锁，兼顾上万商品的往返开销和商品级隔离。
+                    await SetChildPurchasePriceMutationLock.AcquireProductsInBatchWithinBudgetAsync(context.Db, productCodes);
 
                     // 成本表必须在业务锁内重读；POSM/HBSales 原明细和销售金额仍沿用锁外快照，
                     // 仅替换会受商品/分店成本写入影响的三张成本来源表。

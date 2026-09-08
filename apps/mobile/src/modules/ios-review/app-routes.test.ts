@@ -372,7 +372,7 @@ async function run() {
   );
   assert.equal(
     (await request("GET", "/Roles/permissions")).some(
-      (category: { permissions?: Array<{ name?: string }> }) =>
+      (category: { permissions?: { name?: string }[] }) =>
         category.permissions?.some(
           (permission) => permission.name === "Users.Create",
         ),
@@ -381,13 +381,13 @@ async function run() {
     "Review 权限管理目录必须展示创建员工能力",
   );
 
-  const readContracts: Array<{
+  const readContracts: {
     name: string;
     method: Method;
     path: string;
     body?: unknown;
     assertData(data: any): void;
-  }> = [
+  }[] = [
     {
       name: "home products",
       method: "POST",
@@ -545,6 +545,144 @@ async function run() {
     contract.assertData(data);
   }
 
+  const domesticCreationPayload = {
+    supplierCode: "REVIEW-CN-A",
+    prefixCode: "RVA",
+    prefixName: "审核供应商 A",
+    items: [
+      { productName: "普通商品 1", productType: 0, privateLabelPrice: 1.1 },
+      { productName: "普通商品 2", productType: 0, privateLabelPrice: 1.2 },
+      ...Array.from({ length: 3 }, (_, setIndex) => ({
+        productName: `套装 ${setIndex + 1}`,
+        productType: 1,
+        privateLabelPrice: 3 + setIndex,
+        setQuantity: 2,
+        setPrice: 6 + setIndex,
+        createCount: 1,
+        subItems: [
+          { productName: `套装 ${setIndex + 1} 子项 1`, productType: 2, privateLabelPrice: 1.1 },
+          { productName: `套装 ${setIndex + 1} 子项 2`, productType: 2, privateLabelPrice: 1.2 },
+        ],
+      })),
+    ],
+  };
+  const domesticCreation = await request(
+    "POST",
+    "/v1/domestic-product-creation/batch",
+    domesticCreationPayload,
+  );
+  assert.equal(domesticCreation.totalCreated, 11, "2 普通 + 3 套各 2 子项必须返回 11 条创建记录");
+  assert.equal(domesticCreation.normalProductCount, 2);
+  assert.equal(domesticCreation.setProductCount, 3);
+  const domesticBatchNumber = domesticCreation.batchNumber;
+  assert.ok(domesticBatchNumber);
+
+  const domesticBatchDetail = await request(
+    "GET",
+    `/v1/domestic-product-creation/batch/${encodeURIComponent(domesticBatchNumber)}`,
+  );
+  assert.equal(domesticBatchDetail.items.length, 11, "批次详情必须完整回读父项和子项");
+  assert.equal(new Set(domesticBatchDetail.items.map((item: any) => item.productCode)).size, 11, "父子记录必须使用独立真实主键");
+  assert.equal(new Set(domesticBatchDetail.items.map((item: any) => item.hbProductNo)).size, 11, "父子记录必须使用独立货号");
+  assert.equal(new Set(domesticBatchDetail.items.map((item: any) => item.barcode)).size, 11, "父子记录必须使用独立条码");
+  const createdSets = domesticBatchDetail.items.filter((item: any) => item.productType === 1);
+  const createdSubItems = domesticBatchDetail.items.filter((item: any) => item.productType === 2);
+  assert.equal(createdSets.length, 3);
+  assert.equal(createdSubItems.length, 6);
+  for (const setItem of createdSets) {
+    const children = createdSubItems.filter((item: any) => item.parentHBProductNo === setItem.hbProductNo);
+    assert.equal(children.length, 2, "每个套装父货号必须准确关联两个子项");
+    assert.ok(children.every((item: any) => item.parentProductCode === setItem.productCode));
+  }
+
+  const templateA = await request("POST", "/v1/domestic-product-creation/templates", {
+    supplierCode: "REVIEW-CN-A",
+    templateName: "审核模板 A",
+    setProductName: "审核礼盒 A",
+    subItems: [
+      { productName: "A 子项 1", privateLabelPrice: 1.5 },
+      { productName: "A 子项 2", privateLabelPrice: 2.5 },
+    ],
+  });
+  const templateDisabled = await request("POST", "/v1/domestic-product-creation/templates", {
+    supplierCode: "REVIEW-CN-A",
+    templateName: "审核模板停用",
+    setProductName: "停用礼盒",
+    isEnabled: false,
+    subItems: [{ productName: "停用子项", privateLabelPrice: 9 }],
+  });
+  const templateB = await request("POST", "/v1/domestic-product-creation/templates", {
+    supplierCode: "REVIEW-CN-B",
+    templateName: "审核模板 B",
+    setProductName: "审核礼盒 B",
+    subItems: [{ productName: "B 子项", privateLabelPrice: 3.5 }],
+  });
+  assert.notEqual(templateA.templateId, templateB.templateId);
+  assert.equal(templateA.setQuantity, 2);
+
+  const templatesForA = await request(
+    "GET",
+    "/v1/domestic-product-creation/templates",
+    undefined,
+    { supplierCode: "REVIEW-CN-A", includeInactive: true },
+  );
+  assert.deepEqual(templatesForA.map((item: any) => item.templateId), [templateA.templateId], "列表必须隔离供应商并过滤停用模板");
+  const templatesForB = await request(
+    "GET",
+    "/v1/domestic-product-creation/templates",
+    undefined,
+    { supplierCode: "REVIEW-CN-B" },
+  );
+  assert.deepEqual(templatesForB.map((item: any) => item.templateId), [templateB.templateId]);
+  const templateDetail = await request(
+    "GET",
+    `/v1/domestic-product-creation/templates/${encodeURIComponent(templateA.templateId)}`,
+    undefined,
+    { supplierCode: "REVIEW-CN-A" },
+  );
+  assert.equal(templateDetail.subItems.length, 2);
+  await assert.rejects(
+    () => request("GET", `/v1/domestic-product-creation/templates/${templateA.templateId}`, undefined, { supplierCode: "REVIEW-CN-B" }),
+    /IOS_REVIEW_DOMESTIC_SET_TEMPLATE_NOT_FOUND/,
+    "模板详情不得跨供应商读取",
+  );
+  await assert.rejects(
+    () => request("GET", `/v1/domestic-product-creation/templates/${templateDisabled.templateId}`, undefined, { supplierCode: "REVIEW-CN-A" }),
+    /IOS_REVIEW_DOMESTIC_SET_TEMPLATE_NOT_FOUND/,
+    "模板详情不得读取停用模板",
+  );
+
+  // 同一模板重复应用时，返回的快照和生成的父子记录都必须互不共享引用或主键。
+  const firstTemplateRead = await request(
+    "GET",
+    `/v1/domestic-product-creation/templates/${templateA.templateId}`,
+    undefined,
+    { supplierCode: "REVIEW-CN-A" },
+  );
+  firstTemplateRead.subItems[0].productName = "只改第一份快照";
+  const secondTemplateRead = await request(
+    "GET",
+    `/v1/domestic-product-creation/templates/${templateA.templateId}`,
+    undefined,
+    { supplierCode: "REVIEW-CN-A" },
+  );
+  assert.equal(secondTemplateRead.subItems[0].productName, "A 子项 1", "模板重复应用不得共享可变子项快照");
+
+  const repeatedTemplateBatch = await request("POST", "/v1/domestic-product-creation/batch", {
+    supplierCode: "REVIEW-CN-A",
+    items: [
+      { productName: "重复应用 A", productType: 1, createCount: 1, subItems: secondTemplateRead.subItems },
+      { productName: "重复应用 B", productType: 1, createCount: 1, subItems: secondTemplateRead.subItems },
+    ],
+  });
+  const repeatedDetail = await request(
+    "GET",
+    `/v1/domestic-product-creation/batch/${encodeURIComponent(repeatedTemplateBatch.batchNumber)}`,
+  );
+  assert.equal(repeatedDetail.items.length, 6);
+  assert.equal(new Set(repeatedDetail.items.map((item: any) => item.productCode)).size, 6, "模板重复应用必须生成独立父子主键");
+  assert.equal(new Set(repeatedDetail.items.map((item: any) => item.barcode)).size, 6, "模板重复应用必须生成独立父子条码");
+
   await assert.rejects(
     () => request("POST", "/react/v1/store-users", {
       username: "review_missing_password",
@@ -676,10 +814,10 @@ async function run() {
     "筛选结果顺序必须稳定",
   );
 
-  const rejectedInstallmentFilters: Array<{
+  const rejectedInstallmentFilters: {
     label: string;
     body: Record<string, unknown>;
-  }> = [
+  }[] = [
     { label: "分店", body: { branchCode: "REV999" } },
     { label: "状态", body: { status: 2 } },
     { label: "客户姓名", body: { customerName: "不存在客户" } },

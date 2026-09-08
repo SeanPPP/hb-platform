@@ -22,6 +22,7 @@ import {
 } from "@/modules/employee-profile-review/access";
 import { getEmployeeProfileReviewRequestsApi } from "@/modules/employee-profile-review/api";
 import { AppNavigationAccessProvider } from "@/modules/navigation/access-context";
+import { canAccessVersionManagement, filterVersionManagementRoutes } from "@/modules/navigation/version-management-access";
 
 export const unstable_settings = {
   initialRouteName: "workbench",
@@ -51,6 +52,8 @@ export default function ShellLayout() {
     (state) => state.access.canViewAttendanceManagement
   );
   const canCreateOrder = useAuthStore((state) => state.access.canCreateOrder);
+  const isAdmin = useAuthStore((state) => state.access.isAdmin);
+  const versionManagementAllowed = canAccessVersionManagement({ isAdmin, isAuthenticated, sessionKind });
   const isWarehouseStaffOnly = useAuthStore((state) => state.access.isWarehouseStaffOnly);
   const hasRestored = useRef(false);
   const shellMounted = useRef(true);
@@ -269,18 +272,19 @@ export default function ShellLayout() {
     [currentUser?.permissions, currentUser?.roleNames, navigationItems, sessionKind]
   );
   const orderedVisibleRouteNames = useMemo(
-    () => filterEmployeeProfileReviewRouteNames(
+    () => filterVersionManagementRoutes(filterEmployeeProfileReviewRouteNames(
       getVisibleTabRouteNames({
         routeNames: accountRouteNames,
         isDeviceMode,
         canViewAttendanceManagement,
       }),
       employeeProfileReviewAccess.allowed
-    ),
+    ), versionManagementAllowed),
     [
       accountRouteNames,
       canViewAttendanceManagement,
       employeeProfileReviewAccess.allowed,
+      versionManagementAllowed,
       isDeviceMode,
     ]
   );

@@ -677,6 +677,8 @@ public sealed class ProductReactServiceHqSyncTests : IDisposable
         );
 
         Assert.False(response.Success);
+        // UseTranAsync 失败必须原样进入失败分支，不能在回滚后查询不到商品而掩盖根因。
+        Assert.Contains("history insert failed", response.Message);
         Assert.Null(
             await _localDb.Queryable<Product>()
                 .FirstAsync(item => item.ProductCode == "P-AUDIT-ROLLBACK")

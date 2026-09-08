@@ -116,7 +116,7 @@ assert.match(pickerSource, /style=\{styles\.storeModalList\}/);
 assert.match(pickerSource, /contentContainerStyle=\{styles\.storeModalListContent\}/);
 
 assert.match(source, /function formatNullableMoney\(value: number \| null\)/);
-assert.match(source, /function formatGrossMarginRate\(value: number \| null, costPendingLabel: string\)/);
+assert.match(source, /function formatGrossMarginRate\([\s\S]*?costStatus: ProductReportCostStatus[\s\S]*?costPendingLabel: string/);
 assert.match(source, /\(value \* 100\)\.toFixed\(1\)/, "毛利率 0.4 必须显示为 40.0%，不能显示成 0.4%");
 assert.match(source, /productReport\.states\.costPending/);
 assert.match(source, /styles\.rowNumberColumn/);
@@ -124,6 +124,8 @@ assert.match(source, /rowNumber: \(supplierPage - 1\) \* SUPPLIER_PAGE_SIZE \+ i
 assert.match(source, /rowNumber: \(productPage - 1\) \* PRODUCT_PAGE_SIZE \+ index \+ 1/);
 assert.match(source, /grossProfit/);
 assert.match(source, /grossMarginRate/);
+assert.match(source, /costStatus/);
+assert.match(source, /compareCostStatus/);
 assert.match(source, /showsHorizontalScrollIndicator>/, "宽表必须显示水平滚动提示，让毛利字段可发现");
 assert.match(source, /reports\.metrics\.current[\s\S]*?productReport\.metrics\.compare/, "双行数值必须明确标注本期与同期");
 assert.match(source, /accessibilityRole="button"[\s\S]*?productReport\.drilldown\.product/, "商品行必须明确提供可点击的分店下钻入口");

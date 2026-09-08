@@ -16,6 +16,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using SqlSugar;
@@ -110,6 +111,180 @@ public sealed class ContainerProductCreationServiceTests : IDisposable
         Assert.Equal(3.4m, warehouseProduct.OEMPrice);
         Assert.Equal(1.2m, storeRetailPrice.PurchasePrice);
         Assert.Equal(3.4m, storeRetailPrice.StoreRetailPriceValue);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_商品锁冲突回滚后重试耗尽时逐条返回繁忙且不创建()
+    {
+        await InsertContainerDetailAsync("D-BUSY-1", "C-BUSY", "P-BUSY-1", "普通商品", 1.2m, 3.4m);
+        await InsertContainerDetailAsync("D-BUSY-2", "C-BUSY", "P-BUSY-2", "普通商品", 1.2m, 3.4m);
+        await InsertDomesticProductAsync("P-BUSY-1", "HB-BUSY-1", "繁忙商品一", "Busy Product One", 0);
+        await InsertDomesticProductAsync("P-BUSY-2", "HB-BUSY-2", "繁忙商品二", "Busy Product Two", 0);
+        var warehouseService = new Mock<IProductWarehouseReactService>();
+        warehouseService
+            .Setup(service => service.BatchCreateAsync(
+                It.IsAny<List<CreateItemDto>>(),
+                false,
+                It.IsAny<string?>(),
+                "ContainerSubmit",
+                "C-BUSY",
+                It.IsAny<Guid?>(),
+                It.IsAny<string?>()
+            ))
+            .ThrowsAsync(new SetChildPurchasePriceLockException("test", -1));
+
+        var result = await CreateService(warehouseService: warehouseService.Object).ExecuteAsync(
+            new ContainerProductCreationJobRequestDto
+            {
+                OperationId = "op-busy",
+                ContainerGuid = "C-BUSY",
+                DetailHguids = new List<string> { "D-BUSY-1", "D-BUSY-2" },
+            }
+        );
+
+        Assert.Equal(2, result.FailedCount);
+        Assert.All(result.Errors, error =>
+        {
+            Assert.Equal(SetChildPurchasePriceMutationLock.BusyErrorCode, error.ReasonCode);
+            Assert.Equal("商品创建繁忙，等待其他商品操作超时，本次未创建新商品", error.Message);
+        });
+        Assert.Contains(result.Errors, error => error.DetailHguid == "D-BUSY-1");
+        Assert.Contains(result.Errors, error => error.DetailHguid == "D-BUSY-2");
+        Assert.Equal(0, await _db.Queryable<Product>().CountAsync());
+        warehouseService.Verify(
+            service => service.BatchCreateAsync(
+                It.IsAny<List<CreateItemDto>>(),
+                false,
+                It.IsAny<string?>(),
+                "ContainerSubmit",
+                "C-BUSY",
+                It.IsAny<Guid?>(),
+                It.IsAny<string?>()
+            ),
+            Times.Exactly(6)
+        );
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_商品锁取消时不重试并逐条返回取消()
+    {
+        await InsertContainerDetailAsync("D-CANCELLED", "C-CANCELLED", "P-CANCELLED", "普通商品", 1.2m, 3.4m);
+        await InsertDomesticProductAsync("P-CANCELLED", "HB-CANCELLED", "取消商品", "Cancelled Product", 0);
+        var warehouseService = new Mock<IProductWarehouseReactService>();
+        warehouseService
+            .Setup(service => service.BatchCreateAsync(
+                It.IsAny<List<CreateItemDto>>(),
+                false,
+                It.IsAny<string?>(),
+                "ContainerSubmit",
+                "C-CANCELLED",
+                It.IsAny<Guid?>(),
+                It.IsAny<string?>()
+            ))
+            .ThrowsAsync(new SetChildPurchasePriceLockException("test", -2));
+
+        var result = await CreateService(warehouseService: warehouseService.Object).ExecuteAsync(
+            new ContainerProductCreationJobRequestDto
+            {
+                OperationId = "op-cancelled",
+                ContainerGuid = "C-CANCELLED",
+                DetailHguids = new List<string> { "D-CANCELLED" },
+            }
+        );
+
+        var error = Assert.Single(result.Errors);
+        Assert.Equal("PRODUCT_CREATION_CANCELLED", error.ReasonCode);
+        Assert.Equal("商品创建已取消，未重试", error.Message);
+        Assert.Equal(1, result.FailedCount);
+        warehouseService.Verify(
+            service => service.BatchCreateAsync(
+                It.IsAny<List<CreateItemDto>>(),
+                false,
+                It.IsAny<string?>(),
+                "ContainerSubmit",
+                "C-CANCELLED",
+                It.IsAny<Guid?>(),
+                It.IsAny<string?>()
+            ),
+            Times.Once
+        );
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_商品锁冲突后复读其他创建者完成的商品并跳过()
+    {
+        await InsertContainerDetailAsync("D-REREAD", "C-REREAD", "P-REREAD", "普通商品", 1.2m, 3.4m);
+        await InsertDomesticProductAsync("P-REREAD", "HB-REREAD", "复读商品", "Reread Product", 0);
+        var insertedByOtherCreator = false;
+        var retryLogger = new CallbackLogger<ContainerProductCreationExecutorService>(() =>
+        {
+            if (insertedByOtherCreator)
+            {
+                return;
+            }
+
+            insertedByOtherCreator = true;
+            _db.Insertable(new Product
+            {
+                UUID = "LP-P-REREAD",
+                ProductCode = "P-REREAD",
+                ItemNumber = "HB-REREAD",
+                ProductName = "复读商品",
+                EnglishName = "Reread Product",
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommand();
+            _db.Insertable(new WarehouseProduct
+            {
+                ProductCode = "P-REREAD",
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommand();
+        });
+        var warehouseService = new Mock<IProductWarehouseReactService>();
+        warehouseService
+            .Setup(service => service.BatchCreateAsync(
+                It.IsAny<List<CreateItemDto>>(),
+                false,
+                It.IsAny<string?>(),
+                "ContainerSubmit",
+                "C-REREAD",
+                It.IsAny<Guid?>(),
+                It.IsAny<string?>()
+            ))
+            .ThrowsAsync(new SetChildPurchasePriceLockException("test", -1));
+
+        var result = await CreateService(
+            warehouseService: warehouseService.Object,
+            logger: retryLogger
+        ).ExecuteAsync(
+            new ContainerProductCreationJobRequestDto
+            {
+                OperationId = "op-reread",
+                ContainerGuid = "C-REREAD",
+                DetailHguids = new List<string> { "D-REREAD" },
+            }
+        );
+
+        Assert.True(insertedByOtherCreator);
+        Assert.Equal(0, result.CreatedCount);
+        Assert.Equal(0, result.FailedCount);
+        var skipped = Assert.Single(result.Skipped);
+        Assert.Equal("DUPLICATE_PRODUCT_CODE", skipped.ReasonCode);
+        Assert.Equal("P-REREAD", skipped.ProductCode);
+        Assert.Equal(1, await _db.Queryable<Product>().Where(item => item.ProductCode == "P-REREAD").CountAsync());
+        warehouseService.Verify(
+            service => service.BatchCreateAsync(
+                It.IsAny<List<CreateItemDto>>(),
+                false,
+                It.IsAny<string?>(),
+                "ContainerSubmit",
+                "C-REREAD",
+                It.IsAny<Guid?>(),
+                It.IsAny<string?>()
+            ),
+            Times.Once
+        );
     }
 
     [Fact]
@@ -2677,7 +2852,9 @@ public sealed class ContainerProductCreationServiceTests : IDisposable
     }
 
     private ContainerProductCreationExecutorService CreateService(
-        IWarehouseProductChangeHistoryService? historyService = null
+        IWarehouseProductChangeHistoryService? historyService = null,
+        IProductWarehouseReactService? warehouseService = null,
+        ILogger<ContainerProductCreationExecutorService>? logger = null
     )
     {
         var configuration = new ConfigurationBuilder().Build();
@@ -2687,7 +2864,7 @@ public sealed class ContainerProductCreationServiceTests : IDisposable
             NullLogger<ItemBarcodeService>.Instance,
             configuration
         );
-        var warehouseService = new ProductWarehouseReactService(
+        warehouseService ??= new ProductWarehouseReactService(
             context,
             CreateHqSqlSugarContext(),
             NullLogger<ProductWarehouseReactService>.Instance,
@@ -2702,7 +2879,7 @@ public sealed class ContainerProductCreationServiceTests : IDisposable
             context,
             CreateHBSalesSqlSugarContext(_hbSalesDb),
             warehouseService,
-            NullLogger<ContainerProductCreationExecutorService>.Instance,
+            logger ?? NullLogger<ContainerProductCreationExecutorService>.Instance,
             historyService ?? Mock.Of<IWarehouseProductChangeHistoryService>()
         );
     }
@@ -2831,5 +3008,28 @@ public sealed class ContainerProductCreationServiceTests : IDisposable
         public Task<string?> WaitForActorUserGuidAsync() => _actorUserGuidReceived.Task;
 
         public void Release() => _release.TrySetResult();
+    }
+
+    private sealed class CallbackLogger<T>(Action onInformation) : ILogger<T>
+    {
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter
+        )
+            where TState : notnull
+        {
+            if (logLevel == LogLevel.Information)
+            {
+                onInformation();
+            }
+        }
     }
 }

@@ -2,6 +2,8 @@ import type { AppNavigationMenuItem } from "../navigation/types";
 
 // 工作台是客户端安全壳，不属于业务菜单；真实员工敏感资料也不得进入离线审核菜单。
 export const IOS_REVIEW_EXCLUDED_ROUTE_NAMES = [
+  "app-downloads",
+  "wpf-versions",
   "employee-profile-review",
   "workbench",
 ] as const;
