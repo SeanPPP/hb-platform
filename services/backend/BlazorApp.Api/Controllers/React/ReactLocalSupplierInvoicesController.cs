@@ -952,7 +952,8 @@ namespace BlazorApp.Api.Controllers.React
                 code = result.ErrorCode,
                 details = result.Details ?? result.Data,
             };
-            return result.ErrorCode == SetChildPurchasePriceMutationLock.BusyErrorCode
+            // 获锁阶段确认零写入的专用码也属于成本冲突，兼容同步调用方的 409 语义。
+            return result.ErrorCode is SetChildPurchasePriceMutationLock.BusyErrorCode or "STORE_UPDATE_COST_LOCK_BUSY"
                 ? StatusCode(StatusCodes.Status409Conflict, error)
                 : BadRequest(error);
         }

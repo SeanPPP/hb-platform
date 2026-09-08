@@ -163,7 +163,7 @@ namespace BlazorApp.Api.Services.Background
             // 计算到下一个每日任务执行时间的时间间隔
             var nextDaily = CalculateNextDailyRun(now);
             _dailyTimer = new Timer(
-                async _ => await ExecuteDailyTask(),
+                async _ => await ExecuteDailyTask(automatic: true),
                 null,
                 nextDaily,
                 TimeSpan.FromDays(1)
@@ -434,7 +434,8 @@ namespace BlazorApp.Api.Services.Background
                 {
                     var statisticsJobService =
                         serviceProvider.GetRequiredService<SalesStatisticsJobService>();
-                    await statisticsJobService.FullRefreshCurrentDay();
+                    // 半小时刷新只处理当天；最近七日历史由每日夜间任务补算，避免重复占用商品成本锁。
+                    await statisticsJobService.FullRefreshCurrentDay(automatic: true, includeHistorical: false);
 
                     // 本实例统计完成后立即清理看板缓存；其他实例通过成功时间版本自动绕过旧缓存。
                     var dashboardCacheWarmer =
@@ -582,7 +583,7 @@ namespace BlazorApp.Api.Services.Background
         /// 执行每日全量刷新任务
         /// 全量刷新当天的统计数据
         /// </summary>
-        private async Task ExecuteDailyTask()
+        private async Task ExecuteDailyTask(bool automatic)
         {
             if (!await IsCurrentInstanceSchedulerEnabledAsync("每日全量刷新任务"))
             {
@@ -614,7 +615,8 @@ namespace BlazorApp.Api.Services.Background
                     var statisticsJobService =
                         scope.ServiceProvider.GetRequiredService<SalesStatisticsJobService>();
                     await statisticsJobService.FullRefreshPreviousDay();
-                    await statisticsJobService.FullRefreshCurrentDay();
+                    // 昨天的完整统计刚完成，滚动补算从前天开始，避免重复更新同一批商品。
+                    await statisticsJobService.FullRefreshCurrentDay(automatic, firstHistoricalDayOffset: 2);
 
                     if (taskLog != null)
                         await taskLogService.LogTaskSuccessAsync(taskLog.Id);
@@ -845,7 +847,7 @@ namespace BlazorApp.Api.Services.Background
         public async Task TriggerDailyTaskManually()
         {
             _logger.LogInformation("手动触发每日全量刷新任务");
-            await ExecuteDailyTask();
+            await ExecuteDailyTask(automatic: false);
         }
 
         /// <summary>

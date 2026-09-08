@@ -1,14 +1,18 @@
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using AutoMapper;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
+using BlazorApp.Shared.Models.HBweb;
 using BlazorApp.Shared.Models.HqEntities;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.DependencyInjection;
+using Moq;
 using SqlSugar;
 using Xunit;
 
@@ -59,6 +63,146 @@ public sealed class LocalSupplierInvoiceHqConcurrencySqlServerTests
         UpdateRetailPrice = true,
         UpdateIsAutoPricing = true,
     };
+
+    [SetChildPurchasePriceSqlServerFact]
+    [Trait("Category", "SQL")]
+    public async Task 真实分店价格入口同商品锁冲突时返回专用码且零写入_释放后同请求成功()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var request = await fixture.SeedAsync("invoice-store-price-busy", 1, 1);
+        var dto = new UpdateToStorePricesRequest
+        {
+            InvoiceGuid = "invoice-store-price-busy",
+            DetailGuids = request.DetailGuids.ToList(),
+            TargetStoreCodes = request.TargetStoreCodes.ToList(),
+            UpdateFields = NewProductUpdateFields(),
+        };
+        var beforeProduct = await fixture.Local.Queryable<Product>()
+            .SingleAsync(product => product.ProductCode == "P0");
+        var beforePrices = await fixture.Local.Queryable<StoreRetailPrice>()
+            .Where(price => price.ProductCode == "P0")
+            .ToListAsync();
+
+        using var blocker = fixture.OpenLocal();
+        await blocker.Ado.BeginTranAsync();
+        await SetChildPurchasePriceMutationLock.AcquireProductsAsync(blocker, ["P0"]);
+        try
+        {
+            using var scope = fixture.OpenService();
+            var failed = await scope.ReactService.UpdateDetailsToStorePricesAsync(
+                dto,
+                "tester",
+                100);
+
+            Assert.False(failed.Success);
+            Assert.Equal("STORE_UPDATE_COST_LOCK_BUSY", failed.Code);
+            var zero = Assert.IsType<UpdateToStorePricesResultDto>(failed.Details);
+            Assert.Equal(0, zero.Inserted);
+            Assert.Equal(0, zero.Updated);
+            Assert.Equal(0, zero.UpdatedPurchasePrices);
+            Assert.Equal(0, zero.Skipped);
+            Assert.Equal(0, zero.Failed);
+            Assert.Empty(zero.Errors);
+            Assert.Null(scope.Local.Ado.Transaction);
+            Assert.Equal(beforeProduct.PurchasePrice, (await fixture.Local.Queryable<Product>()
+                .SingleAsync(product => product.ProductCode == "P0")).PurchasePrice);
+            Assert.Equal(beforePrices.Count, await fixture.Local.Queryable<StoreRetailPrice>()
+                .Where(price => price.ProductCode == "P0")
+                .CountAsync());
+
+            await blocker.Ado.RollbackTranAsync();
+            var succeeded = await scope.ReactService.UpdateDetailsToStorePricesAsync(
+                dto,
+                "tester",
+                100);
+            Assert.True(succeeded.Success, succeeded.Message);
+            Assert.Equal(1, succeeded.Data!.Inserted);
+            Assert.Equal(1, succeeded.Data.UpdatedPurchasePrices);
+            Assert.Equal(0, succeeded.Data.Failed);
+        }
+        finally
+        {
+            if (blocker.Ado.Transaction != null)
+                await blocker.Ado.RollbackTranAsync();
+        }
+
+        var product = await fixture.Local.Queryable<Product>()
+            .SingleAsync(item => item.ProductCode == "P0");
+        Assert.Equal(7m, product.PurchasePrice);
+        var price = await fixture.Local.Queryable<StoreRetailPrice>()
+            .SingleAsync(item => item.ProductCode == "P0" && item.StoreCode == "S00");
+        Assert.Equal(7m, price.PurchasePrice);
+        Assert.Equal(11m, price.StoreRetailPriceValue);
+    }
+
+    [SetChildPurchasePriceSqlServerFact]
+    [Trait("Category", "SQL")]
+    public async Task 真实分店价格批量锁第二商品失败时回滚首商品_第三连接可重新取得首锁()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var request = await fixture.SeedAsync("invoice-store-price-batch-busy", 2, 1);
+        var dto = new UpdateToStorePricesRequest
+        {
+            InvoiceGuid = "invoice-store-price-batch-busy",
+            DetailGuids = request.DetailGuids.ToList(),
+            TargetStoreCodes = request.TargetStoreCodes.ToList(),
+            UpdateFields = NewProductUpdateFields(),
+        };
+
+        using var blocker = fixture.OpenLocal();
+        await blocker.Ado.BeginTranAsync();
+        await SetChildPurchasePriceMutationLock.AcquireProductsAsync(blocker, ["P1"]);
+        try
+        {
+            using var scope = fixture.OpenService();
+            var failed = await scope.ReactService.UpdateDetailsToStorePricesAsync(
+                dto,
+                "tester",
+                100);
+            Assert.False(failed.Success);
+            Assert.Equal("STORE_UPDATE_COST_LOCK_BUSY", failed.Code);
+            Assert.IsType<UpdateToStorePricesResultDto>(failed.Details);
+            Assert.Null(scope.Local.Ado.Transaction);
+            Assert.Equal(0, await fixture.Local.Queryable<StoreRetailPrice>().CountAsync());
+            Assert.All(
+                await fixture.Local.Queryable<Product>().OrderBy(product => product.ProductCode).ToListAsync(),
+                product => Assert.Equal(5m, product.PurchasePrice));
+
+            using var third = fixture.OpenLocal();
+            await third.Ado.BeginTranAsync();
+            try
+            {
+                await SetChildPurchasePriceMutationLock.AcquireProductsWithinBudgetAsync(
+                    third,
+                    ["P0"],
+                    0);
+            }
+            finally
+            {
+                await third.Ado.RollbackTranAsync();
+            }
+
+            await blocker.Ado.RollbackTranAsync();
+            var succeeded = await scope.ReactService.UpdateDetailsToStorePricesAsync(
+                dto,
+                "tester",
+                100);
+            Assert.True(succeeded.Success, succeeded.Message);
+            Assert.Equal(2, succeeded.Data!.Inserted);
+            Assert.Equal(2, succeeded.Data.UpdatedPurchasePrices);
+            Assert.Equal(0, succeeded.Data.Failed);
+        }
+        finally
+        {
+            if (blocker.Ado.Transaction != null)
+                await blocker.Ado.RollbackTranAsync();
+        }
+
+        Assert.Equal(2, await fixture.Local.Queryable<StoreRetailPrice>().CountAsync());
+        Assert.All(
+            await fixture.Local.Queryable<Product>().ToListAsync(),
+            product => Assert.Equal(7m, product.PurchasePrice));
+    }
 
     [SetChildPurchasePriceSqlServerFact]
     [Trait("Category", "SQL")]
@@ -620,7 +764,14 @@ public sealed class LocalSupplierInvoiceHqConcurrencySqlServerTests
 
         internal static async Task<Fixture> CreateAsync()
         {
-            var fixture = new Fixture(Environment.GetEnvironmentVariable("SET_CHILD_PURCHASE_PRICE_SQLSERVER_TEST_CONNECTION")!);
+            var configured = Environment.GetEnvironmentVariable("SET_CHILD_PURCHASE_PRICE_SQLSERVER_TEST_CONNECTION");
+            Assert.False(string.IsNullOrWhiteSpace(configured));
+            var dataSource = new SqlConnectionStringBuilder(configured!).DataSource.Trim();
+            Assert.True(
+                new[] { "127.0.0.1,14337", "localhost,14337", "127.0.0.1,1433", "localhost,1433" }
+                    .Contains(dataSource, StringComparer.OrdinalIgnoreCase),
+                $"SQL Server 集成测试只允许本地 Docker，实际 DataSource={dataSource}");
+            var fixture = new Fixture(configured!);
             using var admin = new SqlConnection(fixture._adminConnection);
             await admin.OpenAsync();
             using var create = admin.CreateCommand();
@@ -709,7 +860,6 @@ public sealed class LocalSupplierInvoiceHqConcurrencySqlServerTests
         public async ValueTask DisposeAsync()
         {
             Local?.Dispose(); Hq?.Dispose();
-            SqlConnection.ClearAllPools();
             using var admin = new SqlConnection(_adminConnection);
             await admin.OpenAsync();
             using var cleanup = admin.CreateCommand();
@@ -728,11 +878,22 @@ public sealed class LocalSupplierInvoiceHqConcurrencySqlServerTests
         internal SqlSugarClient Local { get; }
         internal SqlSugarClient Hq { get; }
         internal LocalSupplierInvoiceHqProductSyncService Service { get; }
+        internal LocalSupplierInvoicesReactService ReactService { get; }
         internal ServiceScope(SqlSugarClient local, SqlSugarClient hq)
         {
             Local = local; Hq = hq;
             Service = new LocalSupplierInvoiceHqProductSyncService(Context<SqlSugarContext>(local), Context<HqSqlSugarContext>(hq),
                 NullLogger<LocalSupplierInvoiceHqProductSyncService>.Instance, WarehouseProductChangeHistoryTestDouble.CreateNoop());
+            var autoPricing = new Mock<IAutoPricingService>();
+            autoPricing.Setup(service => service.GetAllActiveStrategiesAsync())
+                .ReturnsAsync(new List<PricingStrategy>());
+            ReactService = new LocalSupplierInvoicesReactService(
+                Context<SqlSugarContext>(local),
+                Context<HqSqlSugarContext>(hq),
+                Mock.Of<IMapper>(),
+                NullLogger<LocalSupplierInvoicesReactService>.Instance,
+                autoPricing.Object,
+                WarehouseProductChangeHistoryTestDouble.CreateNoop());
         }
         private static T Context<T>(ISqlSugarClient db)
         {

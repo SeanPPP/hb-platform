@@ -2625,6 +2625,28 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task UpdateDetailsToStorePricesAsync_显式锁等待预算仍使用同一分店更新路径()
+        {
+            await SeedExecutablePriceUpdateAsync();
+
+            var result = await CreateService().UpdateDetailsToStorePricesAsync(
+                new UpdateToStorePricesRequest
+                {
+                    InvoiceGuid = "invoice-execute",
+                    DetailGuids = ["detail-price"],
+                    TargetStoreCodes = ["S01"],
+                    UpdateFields = new UpdateToStorePricesFields { UpdatePurchasePrice = true },
+                },
+                "tester",
+                250
+            );
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(1, result.Data?.Updated);
+            Assert.Equal(1, result.Data?.UpdatedPurchasePrices);
+        }
+
+        [Fact]
         public async Task UpdateDetailsToStorePricesAsync_Type1与Type2同键冲突时回滚主成本更新()
         {
             await SeedExecutablePriceUpdateAsync();
