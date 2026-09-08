@@ -1,5 +1,6 @@
 import { useRouter } from "expo-router";
 import { BUSINESS_UI } from "@/components/ui/business-ui";
+import { BusinessSheet } from "@/components/ui/BusinessSheet";
 import { HB_COLORS } from "@/shared/theme/tokens";
 import {
   View,
@@ -19,8 +20,6 @@ import {
   Text,
   Checkbox,
   Snackbar,
-  Portal,
-  Modal,
 } from "react-native-paper";
 import { useState, useEffect, useRef } from "react";
 import {
@@ -157,6 +156,7 @@ export default function Login() {
   const [apiHost, setApiHost] = useState(getCurrentApiHost());
   const [apiHostDraft, setApiHostDraft] = useState(getCurrentApiHost());
   const [apiHostModalVisible, setApiHostModalVisible] = useState(false);
+  const [apiHostError, setApiHostError] = useState("");
   const [activationVisible, setActivationVisible] = useState(false);
   const [activationMode, setActivationMode] = useState<MobileDeviceActivationMode>("redeem");
   const reviewBuildEnabled = isIosReviewBuildEnabled(getIosReviewBuildContext());
@@ -309,8 +309,8 @@ export default function Login() {
   async function handleSaveApiHost() {
     const normalizedHost = normalizeApiHost(apiHostDraft);
     if (!normalizedHost) {
-      setError(t("apiHost.empty"));
-      setSnackbarVisible(true);
+      // 原生弹窗内显示校验提示，避免被弹窗遮住页面 Snackbar。
+      setApiHostError(t("apiHost.empty"));
       return;
     }
 
@@ -476,6 +476,7 @@ export default function Login() {
   );
   const openApiHostSettings = () => {
     setApiHostDraft(apiHost);
+    setApiHostError("");
     setApiHostModalVisible(true);
   };
   const handleUsernameChange = (value: string) => {
@@ -792,15 +793,22 @@ export default function Login() {
         </View>
       </ScrollView>
 
-      <Portal>
-        <Modal
-          visible={apiHostModalVisible}
-          onDismiss={() => setApiHostModalVisible(false)}
-          style={{ justifyContent: "flex-end" }}
-          contentContainerStyle={styles.apiHostModal}
-        >
-          <Text style={styles.apiHostModalTitle}>{t("apiHost.title")}</Text>
-          <Text style={styles.apiHostModalDescription}>{t("apiHost.description")}</Text>
+      <BusinessSheet
+        visible={apiHostModalVisible}
+        title={t("apiHost.title")}
+        subtitle={t("apiHost.description")}
+        onDismiss={() => setApiHostModalVisible(false)}
+        footer={
+          <View style={styles.apiHostModalActions}>
+            <Button mode="text" textColor="#555" onPress={() => setApiHostModalVisible(false)}>
+              {t("common:actions.cancel")}
+            </Button>
+            <Button mode="contained" buttonColor={BRAND_RED} onPress={handleSaveApiHost}>
+              {t("common:actions.save")}
+            </Button>
+          </View>
+        }
+      >
           <View style={styles.apiHostCurrentBox}>
             <Text style={styles.apiHostLabel}>{t("apiHost.current")}</Text>
             <Text style={styles.apiHostValue} numberOfLines={1}>{apiHost}</Text>
@@ -827,7 +835,10 @@ export default function Login() {
           <TextInput
             label={t("apiHost.inputLabel")}
             value={apiHostDraft}
-            onChangeText={setApiHostDraft}
+            onChangeText={(value) => {
+              setApiHostDraft(value);
+              setApiHostError("");
+            }}
             mode="outlined"
             autoCapitalize="none"
             autoCorrect={false}
@@ -835,16 +846,8 @@ export default function Login() {
             outlineColor="#E0E0E0"
             activeOutlineColor={BRAND_RED}
           />
-          <View style={styles.apiHostModalActions}>
-            <Button mode="text" textColor="#555" onPress={() => setApiHostModalVisible(false)}>
-              {t("common:actions.cancel")}
-            </Button>
-            <Button mode="contained" buttonColor={BRAND_RED} onPress={handleSaveApiHost}>
-              {t("common:actions.save")}
-            </Button>
-          </View>
-        </Modal>
-      </Portal>
+          {apiHostError ? <Text accessibilityRole="alert" style={{ color: HB_COLORS.danger }}>{apiHostError}</Text> : null}
+      </BusinessSheet>
 
       <DeviceActivationDialog
         visible={activationVisible}
@@ -1020,28 +1023,6 @@ const styles = StyleSheet.create({
   apiHostPresetButton: {
     borderColor: BRAND_RED,
     borderRadius: 12,
-  },
-  apiHostModal: {
-    backgroundColor: "#FFFFFF",
-    borderTopLeftRadius: 18,
-    borderTopRightRadius: 18,
-    width: "100%",
-    maxWidth: 680,
-    alignSelf: "center",
-    padding: 16,
-    paddingBottom: 28,
-  },
-  apiHostModalTitle: {
-    color: "#222",
-    fontSize: 18,
-    fontWeight: "800",
-    marginBottom: 8,
-  },
-  apiHostModalDescription: {
-    color: "#666",
-    fontSize: 13,
-    lineHeight: 19,
-    marginBottom: 16,
   },
   apiHostModalActions: {
     flexDirection: "row",
