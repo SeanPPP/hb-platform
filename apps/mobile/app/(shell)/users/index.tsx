@@ -39,6 +39,8 @@ import { validatePasswordValue, validateStoreUserForm } from "@/modules/users/va
 import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { PERMISSIONS } from "@/shared/utils/access";
+import { BUSINESS_UI } from "@/components/ui/business-ui";
+import { HB_COLORS, HB_RADIUS, HB_SPACING } from "@/shared/theme/tokens";
 import { useAuthStore } from "@/store/auth-store";
 
 type StatusFilter = "all" | "active" | "disabled";
@@ -640,6 +642,12 @@ export default function UsersScreen() {
               ) : null}
             </View>
 
+            {item.roleNames.length ? (
+              <View style={styles.roleChips} accessibilityLabel={t("accessManagement.tabs.roles")}>
+                {item.roleNames.map((roleName) => <Chip compact key={roleName}>{roleName}</Chip>)}
+              </View>
+            ) : null}
+
             <View style={styles.actionRow}>
               <Button compact mode="outlined" icon="account-details-outline" onPress={() => openStaffDetail(item)}>
                 {t("actions.viewDetails")}
@@ -937,6 +945,7 @@ export default function UsersScreen() {
 
       <StorePickerModal
         visible={storePickerVisible}
+        presentation="sheet"
         stores={stores}
         selectedStoreCode={managedStoreCode}
         title={t("common:labels.selectStore")}
@@ -983,9 +992,7 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
   },
   filterPanel: {
-    backgroundColor: "#FFFFFF",
-    borderColor: "#E5E7EB",
-    borderRadius: 12,
+    ...BUSINESS_UI.filterGroup,
     borderWidth: StyleSheet.hairlineWidth,
     gap: 10,
     padding: 12,
@@ -1009,7 +1016,7 @@ const styles = StyleSheet.create({
   },
   listContent: {
     gap: 12,
-    padding: 16,
+    padding: HB_SPACING.md,
     paddingBottom: 112,
   },
   loadingWrap: {
@@ -1026,7 +1033,7 @@ const styles = StyleSheet.create({
     color: "#B45309",
   },
   screen: {
-    backgroundColor: "#F5F7FB",
+    backgroundColor: HB_COLORS.background,
     flex: 1,
   },
   searchbar: {
@@ -1062,8 +1069,10 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
   },
   userCard: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 12,
+    backgroundColor: HB_COLORS.white,
+    borderColor: HB_COLORS.outlineMuted,
+    borderRadius: HB_RADIUS.surface,
+    borderWidth: StyleSheet.hairlineWidth,
   },
   userCardContent: {
     gap: 12,
@@ -1077,6 +1086,11 @@ const styles = StyleSheet.create({
   userTitleWrap: {
     flex: 1,
     gap: 2,
+  },
+  roleChips: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
   },
   viewOnlyChip: {
     backgroundColor: "#FEF3C7",

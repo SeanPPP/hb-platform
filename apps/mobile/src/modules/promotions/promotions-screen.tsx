@@ -17,6 +17,9 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { StorePickerModal } from "@/components/ui/StorePickerModal";
+import { BusinessSheet } from "@/components/ui/BusinessSheet";
+import { BUSINESS_UI } from "@/components/ui/business-ui";
+import { HB_COLORS } from "@/shared/theme/tokens";
 import {
   copyPromotionToStore,
   createPromotion,
@@ -380,7 +383,7 @@ export function PromotionsScreen() {
     <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
       <View style={styles.header}>
         <View style={styles.headerText}>
-          <Text variant="headlineSmall">{t("title")}</Text>
+          <Text variant="headlineSmall" style={BUSINESS_UI.title}>{t("title")}</Text>
           <Text variant="bodyMedium" style={styles.mutedText}>
             {t("subtitle", { store: selectedStoreLabel })}
           </Text>
@@ -436,7 +439,7 @@ export function PromotionsScreen() {
         </ScrollView>
       )}
 
-      <StorePickerModal
+      <StorePickerModal presentation="sheet"
         visible={storePickerVisible}
         stores={stores}
         selectedStoreCode={selectedStoreCode}
@@ -454,6 +457,7 @@ export function PromotionsScreen() {
         visible={formVisible}
         formValues={formValues}
         saving={saving}
+        feedback={snackbar}
         storeLabel={selectedStoreLabel}
         t={t}
         onChange={setFormValues}
@@ -472,6 +476,7 @@ export function PromotionsScreen() {
       <Portal>
         <Modal
           visible={Boolean(copySource)}
+          style={{ justifyContent: "flex-end" }}
           onDismiss={() => setCopySource(null)}
           contentContainerStyle={styles.modal}
         >
@@ -499,6 +504,7 @@ function PromotionFormModal({
   visible,
   formValues,
   saving,
+  feedback,
   storeLabel,
   t,
   onChange,
@@ -511,6 +517,7 @@ function PromotionFormModal({
   visible: boolean;
   formValues: PromotionFormValues;
   saving: boolean;
+  feedback?: string;
   storeLabel: string;
   t: (key: string, options?: Record<string, unknown>) => string;
   onChange: (values: PromotionFormValues) => void;
@@ -522,12 +529,22 @@ function PromotionFormModal({
 }) {
   const products = formValues.products ?? [];
   return (
-    <Portal>
-      <Modal visible={visible} onDismiss={onDismiss} contentContainerStyle={styles.formModal}>
-        <ScrollView keyboardShouldPersistTaps="handled">
-          <Text variant="titleLarge" style={styles.formTitle}>
-            {formValues.id ? t("form.editTitle") : t("form.createTitle")}
-          </Text>
+    <BusinessSheet
+      visible={visible}
+      title={formValues.id ? t("form.editTitle") : t("form.createTitle")}
+      onDismiss={onDismiss}
+      footer={
+        <View style={{ gap: 8 }}>
+        {feedback ? <Text accessibilityRole="alert" style={{ color: HB_COLORS.danger }}>{feedback}</Text> : null}
+        <View style={styles.formFooter}>
+          <Button onPress={onDismiss}>{t("common:actions.cancel")}</Button>
+          <Button mode="contained" loading={saving} onPress={onSave} contentStyle={BUSINESS_UI.buttonContent}>
+            {t("common:actions.save")}
+          </Button>
+        </View>
+        </View>
+      }
+    >
           <Text variant="bodyMedium" style={styles.mutedText}>
             {t("form.storeReadonly", { store: storeLabel })}
           </Text>
@@ -625,20 +642,12 @@ function PromotionFormModal({
               <IconButton icon="delete-outline" onPress={() => onRemoveProduct(index)} />
             </View>
           ))}
-          <View style={styles.modalActions}>
-            <Button onPress={onDismiss}>{t("common:actions.cancel")}</Button>
-            <Button mode="contained" loading={saving} onPress={onSave}>
-              {t("common:actions.save")}
-            </Button>
-          </View>
-        </ScrollView>
-      </Modal>
-    </Portal>
+    </BusinessSheet>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: "#F7F8FA" },
+  safeArea: BUSINESS_UI.screen,
   header: {
     alignItems: "center",
     flexDirection: "row",
@@ -656,13 +665,13 @@ const styles = StyleSheet.create({
   searchInput: { flex: 1, backgroundColor: "#FFFFFF" },
   content: { gap: 12, padding: 16, paddingBottom: 32 },
   loading: { marginTop: 48 },
-  card: { backgroundColor: "#FFFFFF", borderRadius: 8 },
+  card: BUSINESS_UI.section,
   cardContent: { gap: 10 },
   tagRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   scopeChip: { borderRadius: 8 },
   scopeChipText: { fontWeight: "700" },
-  metricRow: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
-  mutedText: { color: "#666666" },
+  metricRow: { flexDirection: "row", flexWrap: "wrap", gap: 12, backgroundColor: HB_COLORS.surfaceMuted, borderRadius: 8, padding: 10 },
+  mutedText: { color: HB_COLORS.textSecondary },
   cardActions: { flexDirection: "row", justifyContent: "flex-end" },
   pagination: {
     alignItems: "center",
@@ -674,9 +683,12 @@ const styles = StyleSheet.create({
   modal: {
     alignSelf: "center",
     backgroundColor: "#FFFFFF",
-    borderRadius: 8,
-    padding: 20,
-    width: "88%",
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+    padding: 16,
+    paddingBottom: 28,
+    width: "100%",
+    maxWidth: 680,
   },
   modalText: { marginTop: 8 },
   modalActions: {
@@ -686,15 +698,7 @@ const styles = StyleSheet.create({
     gap: 8,
     marginTop: 16,
   },
-  formModal: {
-    alignSelf: "center",
-    backgroundColor: "#FFFFFF",
-    borderRadius: 8,
-    maxHeight: "90%",
-    padding: 20,
-    width: "92%",
-  },
-  formTitle: { marginBottom: 8 },
+  formFooter: { flexDirection: "row", justifyContent: "flex-end", gap: 8 },
   input: { backgroundColor: "#FFFFFF", marginTop: 10 },
   twoColumn: { flexDirection: "row", gap: 8, marginTop: 10 },
   flexInput: { backgroundColor: "#FFFFFF", flex: 1 },

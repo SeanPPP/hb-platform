@@ -1,4 +1,7 @@
 import { useRouter } from "expo-router";
+import { BUSINESS_UI } from "@/components/ui/business-ui";
+import { BusinessSheet } from "@/components/ui/BusinessSheet";
+import { HB_COLORS } from "@/shared/theme/tokens";
 import {
   View,
   StyleSheet,
@@ -17,8 +20,6 @@ import {
   Text,
   Checkbox,
   Snackbar,
-  Portal,
-  Modal,
 } from "react-native-paper";
 import { useState, useEffect, useRef } from "react";
 import {
@@ -61,8 +62,9 @@ import {
 } from "@/modules/ios-review/config";
 
 const REMEMBERED_USERNAME_KEY = "remembered_username";
-const BRAND_RED = "#E53935";
-const BRAND_BG = "#F5F5F5";
+// 复用登录页现有颜色入口，使三种登录方式保持相同的业务蓝色。
+const BRAND_RED = HB_COLORS.brand;
+const BRAND_BG = HB_COLORS.background;
 type LoginMode = "device" | "deviceAccount" | "user";
 
 const { height: SCREEN_HEIGHT } = Dimensions.get("window");
@@ -154,6 +156,7 @@ export default function Login() {
   const [apiHost, setApiHost] = useState(getCurrentApiHost());
   const [apiHostDraft, setApiHostDraft] = useState(getCurrentApiHost());
   const [apiHostModalVisible, setApiHostModalVisible] = useState(false);
+  const [apiHostError, setApiHostError] = useState("");
   const [activationVisible, setActivationVisible] = useState(false);
   const [activationMode, setActivationMode] = useState<MobileDeviceActivationMode>("redeem");
   const reviewBuildEnabled = isIosReviewBuildEnabled(getIosReviewBuildContext());
@@ -306,8 +309,8 @@ export default function Login() {
   async function handleSaveApiHost() {
     const normalizedHost = normalizeApiHost(apiHostDraft);
     if (!normalizedHost) {
-      setError(t("apiHost.empty"));
-      setSnackbarVisible(true);
+      // 原生弹窗内显示校验提示，避免被弹窗遮住页面 Snackbar。
+      setApiHostError(t("apiHost.empty"));
       return;
     }
 
@@ -473,6 +476,7 @@ export default function Login() {
   );
   const openApiHostSettings = () => {
     setApiHostDraft(apiHost);
+    setApiHostError("");
     setApiHostModalVisible(true);
   };
   const handleUsernameChange = (value: string) => {
@@ -789,14 +793,22 @@ export default function Login() {
         </View>
       </ScrollView>
 
-      <Portal>
-        <Modal
-          visible={apiHostModalVisible}
-          onDismiss={() => setApiHostModalVisible(false)}
-          contentContainerStyle={styles.apiHostModal}
-        >
-          <Text style={styles.apiHostModalTitle}>{t("apiHost.title")}</Text>
-          <Text style={styles.apiHostModalDescription}>{t("apiHost.description")}</Text>
+      <BusinessSheet
+        visible={apiHostModalVisible}
+        title={t("apiHost.title")}
+        subtitle={t("apiHost.description")}
+        onDismiss={() => setApiHostModalVisible(false)}
+        footer={
+          <View style={styles.apiHostModalActions}>
+            <Button mode="text" textColor="#555" onPress={() => setApiHostModalVisible(false)}>
+              {t("common:actions.cancel")}
+            </Button>
+            <Button mode="contained" buttonColor={BRAND_RED} onPress={handleSaveApiHost}>
+              {t("common:actions.save")}
+            </Button>
+          </View>
+        }
+      >
           <View style={styles.apiHostCurrentBox}>
             <Text style={styles.apiHostLabel}>{t("apiHost.current")}</Text>
             <Text style={styles.apiHostValue} numberOfLines={1}>{apiHost}</Text>
@@ -823,7 +835,10 @@ export default function Login() {
           <TextInput
             label={t("apiHost.inputLabel")}
             value={apiHostDraft}
-            onChangeText={setApiHostDraft}
+            onChangeText={(value) => {
+              setApiHostDraft(value);
+              setApiHostError("");
+            }}
             mode="outlined"
             autoCapitalize="none"
             autoCorrect={false}
@@ -831,16 +846,8 @@ export default function Login() {
             outlineColor="#E0E0E0"
             activeOutlineColor={BRAND_RED}
           />
-          <View style={styles.apiHostModalActions}>
-            <Button mode="text" textColor="#555" onPress={() => setApiHostModalVisible(false)}>
-              {t("common:actions.cancel")}
-            </Button>
-            <Button mode="contained" buttonColor={BRAND_RED} onPress={handleSaveApiHost}>
-              {t("common:actions.save")}
-            </Button>
-          </View>
-        </Modal>
-      </Portal>
+          {apiHostError ? <Text accessibilityRole="alert" style={{ color: HB_COLORS.danger }}>{apiHostError}</Text> : null}
+      </BusinessSheet>
 
       <DeviceActivationDialog
         visible={activationVisible}
@@ -878,10 +885,10 @@ const styles = StyleSheet.create({
   },
   // 语言切换
   langSwitch: {
-    backgroundColor: "rgba(255,255,255,0.25)",
-    borderRadius: 18,
+    backgroundColor: "rgba(255,255,255,0.16)",
+    borderRadius: 8,
     paddingHorizontal: 14,
-    paddingVertical: 6,
+    paddingVertical: 10,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.4)",
   },
@@ -894,37 +901,32 @@ const styles = StyleSheet.create({
   // 品牌区
   brandSection: {
     backgroundColor: BRAND_RED,
-    paddingTop: IS_SMALL_SCREEN ? 50 : 80,
-    paddingBottom: IS_SMALL_SCREEN ? 30 : 50,
-    borderBottomLeftRadius: 36,
-    borderBottomRightRadius: 36,
+    paddingTop: IS_SMALL_SCREEN ? 40 : 54,
+    paddingBottom: 28,
+    borderBottomLeftRadius: 18,
+    borderBottomRightRadius: 18,
     alignItems: "center",
   },
   logoCircle: {
-    width: IS_SMALL_SCREEN ? 72 : 100,
-    height: IS_SMALL_SCREEN ? 72 : 100,
-    borderRadius: IS_SMALL_SCREEN ? 36 : 50,
+    width: 64,
+    height: 64,
+    borderRadius: 16,
     backgroundColor: "#FFFFFF",
     justifyContent: "center",
     alignItems: "center",
     marginBottom: IS_SMALL_SCREEN ? 10 : 16,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.25,
-    shadowRadius: 12,
-    elevation: 10,
   },
   logoText: {
-    fontSize: IS_SMALL_SCREEN ? 32 : 42,
-    fontWeight: "900",
+    fontSize: 28,
+    fontWeight: "800",
     color: BRAND_RED,
     letterSpacing: 3,
   },
   brandTitle: {
-    fontSize: IS_SMALL_SCREEN ? 22 : 26,
-    fontWeight: "800",
+    fontSize: 24,
+    lineHeight: 32,
+    fontWeight: "700",
     color: "#FFFFFF",
-    letterSpacing: 2,
     marginBottom: 6,
   },
   brandSubtitle: {
@@ -934,18 +936,10 @@ const styles = StyleSheet.create({
   },
   pageScrollContent: { flexGrow: 1 },
   // 表单区
-  formSection: { flexGrow: 1, justifyContent: "center", paddingBottom: 20, paddingHorizontal: 24, paddingTop: 24 },
+  formSection: { flexGrow: 1, justifyContent: "center", alignSelf: "center", width: "100%", maxWidth: 560, paddingBottom: 20, paddingHorizontal: 16, paddingTop: 20 },
   formCard: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 16,
-    padding: 24,
-    borderLeftWidth: 4,
-    borderLeftColor: BRAND_RED,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 2,
+    ...BUSINESS_UI.section,
+    padding: 16,
   },
   privacyFooter: {
     alignItems: "center",
@@ -968,7 +962,7 @@ const styles = StyleSheet.create({
     flex: 1,
     borderColor: BRAND_RED,
   },
-  input: { marginBottom: 14, backgroundColor: "#FAFAFA" },
+  input: { marginBottom: 14, backgroundColor: HB_COLORS.white },
   deviceCard: { gap: 12 },
   deviceTitle: {
     color: "#222",
@@ -981,8 +975,8 @@ const styles = StyleSheet.create({
     lineHeight: 19,
   },
   deviceInfoBox: {
-    backgroundColor: "#FFF7F6",
-    borderColor: "#F2D7D5",
+    backgroundColor: HB_COLORS.surfaceMuted,
+    borderColor: HB_COLORS.outlineMuted,
     borderRadius: 12,
     borderWidth: 1,
     gap: 6,
@@ -1010,7 +1004,7 @@ const styles = StyleSheet.create({
     lineHeight: 19,
   },
   apiHostCurrentBox: {
-    borderColor: "#F2D7D5",
+    borderColor: HB_COLORS.outlineMuted,
     borderRadius: 12,
     borderWidth: 1,
     marginBottom: 14,
@@ -1030,32 +1024,14 @@ const styles = StyleSheet.create({
     borderColor: BRAND_RED,
     borderRadius: 12,
   },
-  apiHostModal: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 16,
-    marginHorizontal: 24,
-    padding: 20,
-  },
-  apiHostModalTitle: {
-    color: "#222",
-    fontSize: 18,
-    fontWeight: "800",
-    marginBottom: 8,
-  },
-  apiHostModalDescription: {
-    color: "#666",
-    fontSize: 13,
-    lineHeight: 19,
-    marginBottom: 16,
-  },
   apiHostModalActions: {
     flexDirection: "row",
     gap: 8,
     justifyContent: "flex-end",
   },
   checkboxLabel: { fontSize: 14, color: "#555" },
-  button: { marginTop: 6, borderRadius: 14 },
+  button: { marginTop: 6, borderRadius: 8 },
   buttonContent: { height: 50 },
-  buttonLabel: { fontSize: 17, fontWeight: "700", letterSpacing: 2 },
+  buttonLabel: { fontSize: 16, fontWeight: "700" },
   snackbar: { bottom: 40 },
 });

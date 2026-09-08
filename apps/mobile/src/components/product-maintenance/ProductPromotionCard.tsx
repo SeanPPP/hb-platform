@@ -49,7 +49,7 @@ export function ProductPromotionCard({ items }: ProductPromotionCardProps) {
 
 const styles = StyleSheet.create({
   card: {
-    borderRadius: 8,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: "#FFD591",
     backgroundColor: "#FFF7E6",

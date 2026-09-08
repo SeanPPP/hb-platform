@@ -1249,7 +1249,7 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
       >
         <View style={styles.header}>
           <View style={styles.headerText}>
-            <Text variant="headlineSmall">{screenTitle}</Text>
+            <Text variant="headlineSmall" style={styles.screenTitle}>{screenTitle}</Text>
             <Text variant="bodyMedium" style={styles.muted}>
               {selectedStoreName || selectedStoreCode || t("subtitle")}
             </Text>
@@ -1613,6 +1613,7 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
       </Snackbar>
       <StorePickerModal
         visible={storePickerVisible}
+        presentation="sheet"
         stores={sectionStores}
         selectedStoreCode={selectedStoreCode}
         title={t("common:labels.selectStore")}
@@ -1635,7 +1636,7 @@ const styles = StyleSheet.create({
     padding: 20,
   },
   container: {
-    backgroundColor: "#F7F8FA",
+    backgroundColor: "#F4F6F8",
     flex: 1,
   },
   cameraContainer: {
@@ -1683,8 +1684,9 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   content: {
-    gap: 12,
-    padding: 16,
+    gap: 16,
+    paddingHorizontal: 16,
+    paddingTop: 12,
     paddingBottom: 32,
   },
   errorText: {
@@ -1700,15 +1702,22 @@ const styles = StyleSheet.create({
   headerText: {
     flex: 1,
   },
+  screenTitle: {
+    color: "#101828",
+    fontWeight: "700",
+  },
   inlineLoading: {
     alignItems: "center",
     padding: 20,
   },
   muted: {
-    color: "#6B7280",
+    color: "#475467",
   },
   sectionTabs: {
-    marginTop: 2,
+    backgroundColor: "#EEF2F6",
+    borderRadius: 10,
+    marginTop: 0,
+    padding: 4,
   },
   storePickerButtonContent: {
     justifyContent: "flex-start",

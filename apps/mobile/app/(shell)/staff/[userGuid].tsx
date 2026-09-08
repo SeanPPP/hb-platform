@@ -17,6 +17,7 @@ import {
 } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { WeeklyScheduleTable } from "@/components/attendance/WeeklyScheduleTable";
+import { BUSINESS_UI } from "@/components/ui/business-ui";
 import { EmptyState } from "@/components/ui/EmptyState";
 import {
   StaffAttendanceEndpointUnavailableError,
@@ -31,6 +32,7 @@ import { validatePasswordValue } from "@/modules/users/validation";
 import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { resolveLocaleTag } from "@/shared/i18n/types";
+import { HB_COLORS, HB_RADIUS, HB_SPACING } from "@/shared/theme/tokens";
 
 type DetailTab = "personal" | "schedule" | "records";
 
@@ -845,7 +847,7 @@ export default function StaffDetailScreen() {
 const styles = StyleSheet.create({
   activeChip: {
     alignSelf: "flex-start",
-    backgroundColor: "#D1FAE5",
+    backgroundColor: "#DFF7E8",
   },
   centered: {
     alignItems: "center",
@@ -853,40 +855,39 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   container: {
-    backgroundColor: "#F5F7FB",
+    backgroundColor: HB_COLORS.background,
     flex: 1,
   },
   content: {
-    gap: 14,
-    padding: 16,
-    paddingBottom: 28,
+    ...BUSINESS_UI.content,
+    gap: HB_SPACING.sm,
+    paddingBottom: HB_SPACING.xl,
   },
   detailCopy: {
     flex: 1,
     gap: 2,
   },
   detailIcon: {
-    backgroundColor: "#EEF2F6",
+    backgroundColor: HB_COLORS.surfaceMuted,
   },
   detailRow: {
     alignItems: "center",
     flexDirection: "row",
-    gap: 12,
+    gap: HB_SPACING.sm,
   },
   dialogContent: {
     gap: 12,
   },
   heroAvatar: {
-    backgroundColor: "#111827",
+    backgroundColor: HB_COLORS.action,
   },
   heroCard: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 12,
+    ...BUSINESS_UI.section,
   },
   heroContent: {
     alignItems: "center",
     flexDirection: "row",
-    gap: 16,
+    gap: HB_SPACING.md,
   },
   heroCopy: {
     flex: 1,
@@ -894,18 +895,18 @@ const styles = StyleSheet.create({
   },
   inactiveChip: {
     alignSelf: "flex-start",
-    backgroundColor: "#FEE2E2",
+    backgroundColor: "#FDECEC",
   },
   muted: {
-    color: "#6B7280",
+    color: HB_COLORS.textSecondary,
   },
   recordCard: {
-    backgroundColor: "#F8FAFC",
-    borderColor: "#E5E7EB",
-    borderRadius: 10,
+    backgroundColor: HB_COLORS.surface,
+    borderColor: HB_COLORS.outlineMuted,
+    borderRadius: HB_RADIUS.control,
     borderWidth: StyleSheet.hairlineWidth,
-    gap: 10,
-    padding: 12,
+    gap: HB_SPACING.xs,
+    padding: HB_SPACING.sm,
   },
   recordHeader: {
     alignItems: "flex-start",
@@ -924,19 +925,18 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   recordMetaValue: {
-    color: "#111827",
+    color: HB_COLORS.textPrimary,
   },
   sectionCard: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 12,
+    ...BUSINESS_UI.section,
   },
   sectionContent: {
-    gap: 14,
+    gap: HB_SPACING.sm,
   },
   segmentTabs: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 8,
+    gap: HB_SPACING.xs,
   },
   stateCardContent: {
     alignItems: "center",

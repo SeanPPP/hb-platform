@@ -83,6 +83,65 @@ assertEqual(
   "DeviceRegistration.Manage enables device management action capability"
 );
 
+const posActivationAccess = buildAccess(
+  createUser([PERMISSIONS.DeviceRegistration.ActivationCodesManage])
+);
+
+assertEqual(
+  posActivationAccess.canManageDeviceActivationCodes,
+  true,
+  "DeviceRegistration.ActivationCodes.Manage enables POS activation codes only"
+);
+
+assertEqual(
+  posActivationAccess.canViewDeviceRegistration,
+  true,
+  "POS activation-code permission enables the device management entrance"
+);
+
+assertEqual(
+  posActivationAccess.canManageMobileDeviceActivationCodes,
+  false,
+  "POS activation-code permission does not enable mobile activation codes"
+);
+
+const mobileActivationAccess = buildAccess(
+  createUser([PERMISSIONS.DeviceRegistration.MobileActivationCodesManage])
+);
+
+assertEqual(
+  mobileActivationAccess.canManageMobileDeviceActivationCodes,
+  true,
+  "DeviceRegistration.MobileActivationCodes.Manage enables mobile activation codes only"
+);
+
+assertEqual(
+  mobileActivationAccess.canViewDeviceRegistration,
+  true,
+  "mobile activation-code permission enables the device management entrance"
+);
+
+assertEqual(
+  buildAccess(createUser([PERMISSIONS.DeviceRegistration.Manage])).canManageEmergencyLoginGrants,
+  false,
+  "device management alone cannot create an emergency login grant"
+);
+
+assertEqual(
+  buildAccess(createUser([PERMISSIONS.System.ManageSettings])).canManageEmergencyLoginGrants,
+  false,
+  "system settings alone cannot create an emergency login grant"
+);
+
+assertEqual(
+  buildAccess(createUser([
+    PERMISSIONS.DeviceRegistration.Manage,
+    PERMISSIONS.System.ManageSettings,
+  ])).canManageEmergencyLoginGrants,
+  true,
+  "emergency login grants require both device management and system settings"
+);
+
 const attendancePersonalAccess = buildAccess(
   createUser([PERMISSIONS.Attendance.ScheduleViewSelf])
 );

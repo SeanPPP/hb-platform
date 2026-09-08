@@ -1121,6 +1121,7 @@ export default function LocalSupplierInvoicesScreen() {
       </Portal>
 
       <StorePickerModal
+        presentation="sheet"
         visible={storePickerVisible}
         stores={stores}
         selectedStoreCode={draftFilters.storeCode ?? null}
@@ -1309,12 +1310,13 @@ export default function LocalSupplierInvoicesScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: "#F6F7F9",
+    backgroundColor: "#F4F6F8",
   },
   container: {
-    gap: 12,
+    gap: 16,
     padding: 16,
-    paddingBottom: 32,
+    paddingTop: 12,
+    paddingBottom: 24,
   },
   header: {
     gap: 4,
@@ -1328,7 +1330,7 @@ const styles = StyleSheet.create({
   filterPanel: {
     backgroundColor: "#FFFFFF",
     borderColor: "#E4E7EC",
-    borderRadius: 8,
+    borderRadius: 12,
     borderWidth: 1,
     gap: 12,
     padding: 12,
@@ -1385,7 +1387,8 @@ const styles = StyleSheet.create({
   },
   invoiceCard: {
     backgroundColor: "#FFFFFF",
-    borderRadius: 8,
+    borderRadius: 12,
+    borderColor: "#E4E7EC",
   },
   invoiceContent: {
     gap: 8,
@@ -1453,7 +1456,7 @@ const styles = StyleSheet.create({
   modal: {
     alignSelf: "center",
     backgroundColor: "#FFFFFF",
-    borderRadius: 8,
+    borderRadius: 18,
     maxHeight: "92%",
     padding: 12,
     width: "94%",
@@ -1485,9 +1488,9 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
   },
   detailRow: {
-    backgroundColor: "#F9FAFB",
+    backgroundColor: "#FFFFFF",
     borderColor: "#EAECF0",
-    borderRadius: 8,
+    borderRadius: 10,
     borderWidth: 1,
     flexDirection: "row",
     gap: 10,
@@ -1544,7 +1547,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 8,
-    paddingTop: 4,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: "#EAECF0",
   },
   pickerModal: {
     alignSelf: "center",

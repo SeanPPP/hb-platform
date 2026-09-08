@@ -33,6 +33,7 @@ import {
   Text,
   TouchableRipple,
 } from "react-native-paper";
+import { BUSINESS_UI } from "@/components/ui/business-ui";
 import { EmptyState } from "@/components/ui/EmptyState";
 import {
   useAccessRoleCatalog,
@@ -76,6 +77,7 @@ import type {
   UserAccessStoreState,
 } from "./access-management-types";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
+import { HB_COLORS, HB_RADIUS, HB_SPACING } from "@/shared/theme/tokens";
 import { PERMISSIONS } from "@/shared/utils/access";
 import { useAuthStore } from "@/store/auth-store";
 
@@ -1379,16 +1381,18 @@ export default function AccessManagementScreen() {
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: "#F4F6F8" },
+  safeArea: BUSINESS_UI.screen,
   body: { flex: 1 },
   header: {
     minHeight: 56,
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#FFFFFF",
-    paddingRight: 12,
+    backgroundColor: HB_COLORS.white,
+    borderBottomColor: HB_COLORS.outlineMuted,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    paddingRight: HB_SPACING.sm,
   },
-  headerTitle: { flex: 1 },
+  headerTitle: { ...BUSINESS_UI.sectionTitle, flex: 1 },
   centerState: {
     flex: 1,
     alignItems: "center",
@@ -1396,57 +1400,57 @@ const styles = StyleSheet.create({
     gap: 12,
     padding: 24,
   },
-  scrollContent: { gap: 12, padding: 12, paddingBottom: 28 },
-  identityCard: { borderRadius: 10, backgroundColor: "#FFFFFF" },
-  identityContent: { flexDirection: "row", alignItems: "center", gap: 12 },
-  avatar: { backgroundColor: "#111827" },
+  scrollContent: { ...BUSINESS_UI.content, paddingBottom: HB_SPACING.xl },
+  identityCard: BUSINESS_UI.section,
+  identityContent: { flexDirection: "row", alignItems: "center", gap: HB_SPACING.sm },
+  avatar: { backgroundColor: HB_COLORS.action },
   identityText: { flex: 1, gap: 2 },
-  sectionCard: { borderRadius: 10, backgroundColor: "#FFFFFF" },
-  cardContent: { gap: 8 },
-  sectionContent: { gap: 10, paddingTop: 4 },
-  roleSearch: { backgroundColor: "#F8FAFC" },
-  sectionNotice: { color: "#5E6B78", paddingVertical: 20, textAlign: "center" },
+  sectionCard: BUSINESS_UI.section,
+  cardContent: { ...BUSINESS_UI.sectionContent, gap: HB_SPACING.xs },
+  sectionContent: { gap: HB_SPACING.xs, paddingTop: HB_SPACING.xxs },
+  roleSearch: { backgroundColor: HB_COLORS.surfaceMuted },
+  sectionNotice: { color: HB_COLORS.textSecondary, paddingVertical: HB_SPACING.lg, textAlign: "center" },
   helperText: {
-    color: "#5E6B78",
-    backgroundColor: "#F8FAFC",
-    padding: 10,
-    borderRadius: 8,
+    color: HB_COLORS.textSecondary,
+    backgroundColor: HB_COLORS.surfaceMuted,
+    padding: HB_SPACING.sm,
+    borderRadius: HB_RADIUS.control,
   },
   itemRow: {
-    gap: 8,
-    paddingVertical: 10,
+    gap: HB_SPACING.xs,
+    paddingVertical: HB_SPACING.sm,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "#D8DEE6",
+    borderTopColor: HB_COLORS.outlineMuted,
   },
-  itemHeader: { flexDirection: "row", alignItems: "center", gap: 8 },
+  itemHeader: { flexDirection: "row", alignItems: "center", gap: HB_SPACING.xs },
   itemText: { flex: 1, gap: 2 },
   labelRow: {
     flexDirection: "row",
     alignItems: "center",
     flexWrap: "wrap",
-    gap: 6,
+    gap: HB_SPACING.xs,
   },
   selectionRow: {
     minHeight: 58,
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
-    paddingVertical: 8,
+    gap: HB_SPACING.sm,
+    paddingVertical: HB_SPACING.xs,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "#D8DEE6",
+    borderTopColor: HB_COLORS.outlineMuted,
   },
   storeStateButtons: { width: "100%" },
   compactSegmentLabel: { fontSize: 13 },
-  permissionGroup: { gap: 6, paddingTop: 8 },
+  permissionGroup: { gap: HB_SPACING.xs, paddingTop: HB_SPACING.xs },
   permissionRow: {
     minHeight: 58,
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
-    paddingVertical: 8,
+    gap: HB_SPACING.sm,
+    paddingVertical: HB_SPACING.xs,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "#D8DEE6",
+    borderTopColor: HB_COLORS.outlineMuted,
   },
-  saveButton: { alignSelf: "stretch", marginTop: 4 },
-  secondaryText: { color: "#5E6B78" },
+  saveButton: { ...BUSINESS_UI.button, alignSelf: "stretch", marginTop: HB_SPACING.xxs },
+  secondaryText: { color: HB_COLORS.textSecondary },
 });

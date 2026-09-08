@@ -67,15 +67,17 @@ export function LabelPrintCard({
 
 const styles = StyleSheet.create({
   card: {
-    borderRadius: 8,
-    backgroundColor: "#FFFDF7",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E4E7EC",
+    backgroundColor: "#FFFFFF",
   },
   content: {
-    paddingVertical: 8,
+    paddingVertical: 12,
   },
   actions: {
     flexDirection: "row",
-    gap: 8,
+    gap: 6,
   },
   button: {
     flex: 1,

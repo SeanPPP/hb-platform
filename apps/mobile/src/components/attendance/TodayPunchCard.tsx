@@ -80,7 +80,6 @@ export function TodayPunchCard({
   const cardSubtitle =
     subtitle ?? selectedDate ?? today?.workDate ?? t("common:loading");
   const display = useMemo(() => buildAttendanceTodayDisplay(today), [today]);
-  const primarySchedule = today?.schedules[0];
   const statusLabel = useMemo(
     () => t(`today.status.${resolveAttendanceTodayStatus(today, allowPunch)}`),
     [allowPunch, t, today],
@@ -118,7 +117,7 @@ export function TodayPunchCard({
         : t("today.dailyRecords.alertNoSchedule");
 
   return (
-    <Card mode="elevated" style={styles.card}>
+    <Card mode="outlined" style={styles.card}>
       <Card.Content style={styles.content}>
         <View style={styles.heroCard}>
           <View style={styles.heroHeader}>
@@ -427,7 +426,11 @@ export function TodayPunchCard({
 
 const styles = StyleSheet.create({
   card: {
-    borderRadius: 8,
+    backgroundColor: "#FFFFFF",
+    borderColor: "#E4E7EC",
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    elevation: 0,
   },
   content: {
     gap: 12,
@@ -472,12 +475,12 @@ const styles = StyleSheet.create({
   heroCard: {
     alignItems: "center",
     backgroundColor: "#FFFFFF",
-    borderColor: "#D8DEE6",
+    borderColor: "#E4E7EC",
     borderRadius: 12,
     borderWidth: StyleSheet.hairlineWidth,
     gap: 12,
-    paddingHorizontal: 18,
-    paddingVertical: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 16,
   },
   heroHeader: {
     alignItems: "center",
@@ -491,8 +494,8 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   metaCard: {
-    backgroundColor: "#EEF2F6",
-    borderRadius: 10,
+    backgroundColor: "#F2F4F7",
+    borderRadius: 8,
     flex: 1,
     gap: 4,
     paddingHorizontal: 12,
@@ -529,12 +532,12 @@ const styles = StyleSheet.create({
   },
   punchButton: {
     alignItems: "center",
-    backgroundColor: "#050505",
-    borderRadius: 14,
+    alignSelf: "stretch",
+    backgroundColor: "#0958D9",
+    borderRadius: 8,
     justifyContent: "center",
-    minHeight: 124,
-    paddingHorizontal: 24,
-    width: 164,
+    minHeight: 52,
+    paddingHorizontal: 16,
   },
   punchButtonDisabled: {
     backgroundColor: "#9CA3AF",
@@ -601,7 +604,7 @@ const styles = StyleSheet.create({
   },
   recordsCard: {
     backgroundColor: "#FFFFFF",
-    borderColor: "#D8DEE6",
+    borderColor: "#E4E7EC",
     borderRadius: 12,
     borderWidth: StyleSheet.hairlineWidth,
     gap: 12,
@@ -631,7 +634,7 @@ const styles = StyleSheet.create({
     padding: 10,
   },
   sessionCard: {
-    borderColor: "#D8DEE6",
+    borderColor: "#E4E7EC",
     borderRadius: 10,
     borderWidth: StyleSheet.hairlineWidth,
     gap: 9,

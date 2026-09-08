@@ -7,11 +7,18 @@ import { ActivityIndicator, Button, Card, IconButton, Menu, Modal, Portal, Searc
 import { SafeAreaView } from "react-native-safe-area-context";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingOverlay } from "@/components/ui/LoadingOverlay";
-import { CameraScanModeSelector } from "@/components/ui/CameraScanModeSelector";
+import { CameraScanSheet } from "@/components/ui/CameraScanSheet";
 import { NumericInputModal } from "@/components/product-maintenance/NumericInputModal";
 import { hasVisibleTabRoute } from "@/modules/navigation/default-route";
 import { useAppNavigationStore } from "@/modules/navigation/store";
 import { useCameraScan, type CameraScanMode } from "@/modules/scanner/use-camera-scan";
+import {
+  createCameraSheetSession,
+  isCameraSheetSessionActive,
+  reduceCameraSheetSession,
+  type CameraSheetSession,
+  type CameraSheetSessionEvent,
+} from "@/modules/scanner/camera-sheet-session";
 import { useHidBarcodeScanner } from "@/modules/scanner/use-hid-barcode-scanner";
 import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
@@ -99,6 +106,18 @@ interface PendingProductLocationUnbindState {
 
 interface PendingRetailPriceSyncState {
   retailPrice: string;
+}
+
+interface WarehouseCameraScanSession {
+  id: number;
+  sheetGeneration: number;
+  mode: CameraScanMode;
+  target: ScannerTarget;
+}
+
+interface CameraResultSummary {
+  title: string;
+  detail: string;
 }
 
 const LOCATION_LETTER_OPTIONS = Array.from({ length: 26 }, (_, index) => String.fromCharCode(65 + index));
@@ -327,6 +346,9 @@ export default function WarehouseScreen() {
   const currentProductCodeRef = useRef<string | null>(null);
   const locationCodeGroupLookupRequestRef = useRef(0);
   const defaultLocationLookupRequestRef = useRef(0);
+  const cameraScanSessionIdRef = useRef(0);
+  const activeCameraScanSessionRef = useRef<WarehouseCameraScanSession | null>(null);
+  const cameraSheetSessionRef = useRef<CameraSheetSession>(createCameraSheetSession("single"));
   const [photoPermission, requestPhotoPermission] = useCameraPermissions();
   const [segment, setSegment] = useState<SegmentValue>("product");
   const [scannerTarget, setScannerTarget] = useState<ScannerTarget>("product");
@@ -396,7 +418,9 @@ export default function WarehouseScreen() {
     slot: false,
   });
   const [editingLocationGuid, setEditingLocationGuid] = useState<string | null>(null);
-  const [scannerVisible, setScannerVisible] = useState(false);
+  const [cameraSheetSession, setCameraSheetSession] = useState<CameraSheetSession>(() => createCameraSheetSession("single"));
+  const [suspendedCameraScan, setSuspendedCameraScan] = useState<WarehouseCameraScanSession | null>(null);
+  const [cameraResultSummary, setCameraResultSummary] = useState<CameraResultSummary | null>(null);
   const [photoVisible, setPhotoVisible] = useState(false);
   const navigationItems = useAppNavigationStore((state) => state.items);
 
@@ -467,7 +491,77 @@ export default function WarehouseScreen() {
     return parsed;
   }, [getErrorMessage, t]);
 
+  const isCameraTargetContextActive = useCallback((target: ScannerTarget) => {
+    if (target === "product") {
+      return segment === "product" && !productLocationModalVisible && !bindModalVisible;
+    }
+    if (target === "location") {
+      return segment === "location" && !bindModalVisible;
+    }
+    if (target === "productLocation") {
+      return segment === "product" && productLocationModalVisible;
+    }
+    return bindModalVisible;
+  }, [bindModalVisible, productLocationModalVisible, segment]);
+
+  const updateCameraSheetSession = useCallback((event: CameraSheetSessionEvent, mode: CameraScanMode) => {
+    const next = reduceCameraSheetSession(cameraSheetSessionRef.current, event, mode);
+    cameraSheetSessionRef.current = next;
+    setCameraSheetSession(next);
+    return next;
+  }, []);
+
+  const invalidateCameraScanSession = useCallback(() => {
+    cameraScanSessionIdRef.current += 1;
+    activeCameraScanSessionRef.current = null;
+    setSuspendedCameraScan(null);
+    setCameraResultSummary(null);
+    updateCameraSheetSession({ type: "dismiss" }, cameraScanMode);
+  }, [cameraScanMode, updateCameraSheetSession]);
+
+  const beginCameraScanSession = useCallback((target: ScannerTarget, mode: CameraScanMode) => {
+    const sheetSession = updateCameraSheetSession({ type: "open" }, mode);
+    const session: WarehouseCameraScanSession = {
+      id: cameraScanSessionIdRef.current + 1,
+      sheetGeneration: sheetSession.generation,
+      target,
+      mode,
+    };
+    cameraScanSessionIdRef.current = session.id;
+    activeCameraScanSessionRef.current = session;
+    setSuspendedCameraScan(null);
+    setCameraResultSummary(null);
+    setScannerTarget(target);
+    setCameraScanMode(mode);
+  }, [updateCameraSheetSession]);
+
+  const suspendCameraForResult = useCallback((session: WarehouseCameraScanSession) => {
+    updateCameraSheetSession({ type: "capture", generation: session.sheetGeneration }, session.mode);
+    setSuspendedCameraScan(session);
+  }, [updateCameraSheetSession]);
+
+  const resumeSuspendedCameraScan = useCallback((candidate = suspendedCameraScan) => {
+    // 新目标、主动关闭或页面失焦已递增会话号；迟到结果不能改写新会话的可见状态。
+    if (!candidate || candidate.id !== cameraScanSessionIdRef.current) {
+      return;
+    }
+    const canResume = Boolean(
+      candidate.mode === "continuous"
+      && cameraScanMode === "continuous"
+      && candidate.target === scannerTarget
+      && isFocused
+      && isCameraTargetContextActive(candidate.target)
+    );
+    updateCameraSheetSession(
+      { type: "foreground-complete", focused: canResume, generation: candidate.sheetGeneration },
+      candidate.mode,
+    );
+    setSuspendedCameraScan(null);
+  }, [cameraScanMode, isCameraTargetContextActive, isFocused, scannerTarget, suspendedCameraScan, updateCameraSheetSession]);
+
   const cameraScanDisabled =
+    !isFocused ||
+    !cameraSheetSession.visible ||
     cameraScanMode === "continuous" &&
     scannerTarget === "productLocation" &&
     Boolean(pendingStorageLocationBind);
@@ -476,62 +570,68 @@ export default function WarehouseScreen() {
     ignoreWhileProcessing: cameraScanMode === "continuous",
     resetKey: [
       cameraScanMode,
+      cameraSheetSession.generation,
       scannerTarget,
       segment,
       pendingStorageLocationBind ? "pending-location-bind" : "ready",
     ].join(":"),
     suppressRepeatsUntilChange: cameraScanMode === "continuous",
     onBarcode: async (barcode) => {
-      if (cameraScanMode === "single") {
-        // 单次扫码仍沿用原弹窗体验，命中后立即关闭再分发到当前目标。
-        setScannerVisible(false);
+      const session = activeCameraScanSessionRef.current;
+      if (
+        !isFocused ||
+        !session ||
+        session.id !== cameraScanSessionIdRef.current ||
+        !isCameraSheetSessionActive(cameraSheetSessionRef.current, session.sheetGeneration)
+      ) {
+        return;
       }
-      if (scannerTarget === "productLocation") {
+      // React Native Modal 覆盖 Portal；结果出现前必须卸载相机，不能只禁用扫码回调。
+      suspendCameraForResult(session);
+      if (session.target === "productLocation") {
         updateProductLocationLookupKeyword(barcode);
-        await handleLookupLocationsForProductScan(barcode);
+        const requiresForeground = await handleLookupLocationsForProductScan(barcode, true);
+        if (!requiresForeground) resumeSuspendedCameraScan(session);
         return;
       }
 
-      if (scannerTarget === "location") {
+      if (session.target === "location") {
         setLocationKeyword(barcode);
-        await handleLookupLocationsByKeyword(barcode);
+        const requiresForeground = await handleLookupLocationsByKeyword(barcode, true);
+        if (!requiresForeground) resumeSuspendedCameraScan(session);
         return;
       }
 
-      if (scannerTarget === "bindProduct") {
+      if (session.target === "bindProduct") {
         setBindProductKeyword(barcode);
-        await handleLookupBindProducts(barcode);
+        const requiresForeground = await handleLookupBindProducts(barcode, true);
+        if (!requiresForeground) resumeSuspendedCameraScan(session);
         return;
       }
 
       setProductKeyword(barcode);
-      await handleLookupProduct(barcode);
+      const requiresForeground = await handleLookupProduct(barcode, true);
+      if (!requiresForeground) resumeSuspendedCameraScan(session);
     },
   });
   const openCameraScanner = useCallback((target: ScannerTarget) => {
-    setScannerTarget(target);
-    setScannerVisible(cameraScanMode === "single");
-  }, [cameraScanMode]);
+    beginCameraScanSession(target, cameraScanMode);
+  }, [beginCameraScanSession, cameraScanMode]);
   const handleCameraScanModeChange = useCallback((mode: CameraScanMode) => {
-    setCameraScanMode(mode);
-    if (mode === "continuous") {
-      setScannerVisible(false);
-      setScannerTarget(segment === "location" ? "location" : "product");
-    }
-  }, [segment]);
+    // 模式切换本身也是新会话，旧异步结果不能把相机重新打开。
+    beginCameraScanSession(scannerTarget, mode);
+  }, [beginCameraScanSession, scannerTarget]);
   const handleSegmentChange = useCallback((value: string) => {
     const nextSegment = value as SegmentValue;
+    invalidateCameraScanSession();
     setSegment(nextSegment);
-    if (cameraScanMode === "continuous") {
-      setScannerTarget(nextSegment === "location" ? "location" : "product");
-    }
-  }, [cameraScanMode]);
+    setScannerTarget(nextSegment === "location" ? "location" : "product");
+  }, [invalidateCameraScanSession]);
   const restoreDefaultScannerTarget = useCallback(() => {
-    if (cameraScanMode === "continuous") {
-      // 关闭局部扫码流后，连续相机回到当前主分段的默认扫码目标。
-      setScannerTarget(segment === "location" ? "location" : "product");
-    }
-  }, [cameraScanMode, segment]);
+    // 离开局部目标会废弃该会话，迟到的扫码查询绝不能覆盖页面上的结果或重新打开相机。
+    invalidateCameraScanSession();
+    setScannerTarget(segment === "location" ? "location" : "product");
+  }, [invalidateCameraScanSession, segment]);
   const closeProductLocationModal = useCallback(() => {
     setProductLocationModalVisible(false);
     restoreDefaultScannerTarget();
@@ -663,11 +763,11 @@ export default function WarehouseScreen() {
     void loadDefaultUnusedLocations({ clearSelection: true });
   }, [loadDefaultUnusedLocations]);
 
-  const handleLookupProduct = useCallback(async (value?: string) => {
+  const handleLookupProduct = useCallback(async (value?: string, fromCamera = false): Promise<boolean> => {
     const keyword = (value ?? productKeyword).trim();
     if (!keyword) {
       setSnackbar(t("messages.keywordRequired"));
-      return;
+      return true;
     }
 
     setBusy(true);
@@ -681,8 +781,20 @@ export default function WarehouseScreen() {
       } else {
         applyProduct(null);
       }
+      if (fromCamera) {
+        const first = items[0];
+        setCameraResultSummary({
+          title: first?.productName || first?.productCode || t("product.noResultsTitle"),
+          detail: first ? `${first.itemNumber || first.productCode} · ${first.barcode || "--"}` : t("product.noResultsDescription"),
+        });
+      }
+      return items.length > 1;
     } catch (error) {
       setSnackbar(getErrorMessage(error, "messages.lookupFailed"));
+      if (fromCamera) {
+        setCameraResultSummary({ title: t("messages.lookupFailed"), detail: keyword });
+      }
+      return false;
     } finally {
       setBusy(false);
     }
@@ -693,12 +805,14 @@ export default function WarehouseScreen() {
     try {
       const detail = await getWarehouseProduct(productCode);
       applyProduct(detail);
+      // 候选商品已由用户明确选择，仍有效的连续扫码会话才回到取景框。
+      resumeSuspendedCameraScan();
     } catch (error) {
       setSnackbar(getErrorMessage(error, "messages.lookupFailed"));
     } finally {
       setBusy(false);
     }
-  }, [applyProduct, t]);
+  }, [applyProduct, resumeSuspendedCameraScan, t]);
 
   const handleSaveProductPatch = useCallback(async (
     patch: Partial<typeof productForm>,
@@ -918,17 +1032,23 @@ export default function WarehouseScreen() {
       return;
     }
     setPendingStorageLocationBind(null);
-  }, [busy]);
+    // 取消存货位确认后仍在原商品货位弹层内，恢复前会再次核验会话、目标和前台状态。
+    resumeSuspendedCameraScan();
+  }, [busy, resumeSuspendedCameraScan]);
 
-  const handleLookupLocationsForProductScan = useCallback(async (barcode: string) => {
+  const handleLookupLocationsForProductScan = useCallback(async (barcode: string, fromCamera = false): Promise<boolean> => {
+    // 连续相机下一帧开始前清掉旧结果，避免失败时仍显示上一笔货位摘要。
+    if (fromCamera) {
+      setCameraResultSummary(null);
+    }
     if (productLocationBindingRef.current || pendingStorageLocationBind) {
       // 确认弹窗打开后不再接收后台扫码，避免替换用户正在确认的货位。
-      return;
+      return true;
     }
     const keyword = barcode.trim();
     if (!keyword) {
       setSnackbar(t("messages.keywordRequired"));
-      return;
+      return true;
     }
 
     const requestId = productLocationLookupRequestRef.current + 1;
@@ -936,26 +1056,38 @@ export default function WarehouseScreen() {
     productLocationLookupKeywordRef.current = keyword;
     setBusy(true);
     let autoBindLocation: WarehouseLocation | null = null;
+    let action: ReturnType<typeof getProductLocationLookupAction> = "showResults";
+    let firstMatch: WarehouseLocation | undefined;
     try {
       const items = await lookupLocations(keyword);
       if (requestId !== productLocationLookupRequestRef.current || productLocationLookupKeywordRef.current.trim() !== keyword) {
-        return;
+        return true;
       }
 
       setLocationMatches(items);
-      const matchedLocation = items[0];
-      const action = getProductLocationLookupAction({
+      firstMatch = items[0];
+      action = getProductLocationLookupAction({
         source: "scan",
         matchCount: items.length,
-        locationType: matchedLocation?.locationType,
-        productCount: matchedLocation?.productCount,
+        locationType: firstMatch?.locationType,
+        productCount: firstMatch?.productCount,
       });
-      if (action !== "showResults" && matchedLocation) {
-        autoBindLocation = matchedLocation;
+      if (action !== "showResults" && firstMatch) {
+        autoBindLocation = firstMatch;
+      }
+      if (fromCamera) {
+        setCameraResultSummary({
+          title: firstMatch?.locationCode || t("product.noLocation"),
+          detail: firstMatch?.locationBarcode || keyword,
+        });
       }
     } catch (error) {
       if (requestId === productLocationLookupRequestRef.current) {
-        setSnackbar(getErrorMessage(error, "messages.locationLookupFailed"));
+        const message = getErrorMessage(error, "messages.locationLookupFailed");
+        setSnackbar(message);
+        if (fromCamera) {
+          setCameraResultSummary({ title: message, detail: keyword });
+        }
       }
     } finally {
       if (requestId === productLocationLookupRequestRef.current) {
@@ -964,7 +1096,11 @@ export default function WarehouseScreen() {
     }
     if (autoBindLocation && requestId === productLocationLookupRequestRef.current) {
       await handleRequestBindLocation(autoBindLocation);
+      // 自动绑定会离开商品货位上下文；存货位确认要给前景确认框让位。
+      return action === "bind" || action === "confirm";
     }
+    // 多候选必须让用户选择；空结果和配货位已占用则在相机内显示真实摘要并继续识别。
+    return action === "showResults" && Boolean(firstMatch);
   }, [getErrorMessage, handleRequestBindLocation, pendingStorageLocationBind, t]);
 
   const handleConfirmUnbindProductLocation = useCallback(async () => {
@@ -1077,11 +1213,11 @@ export default function WarehouseScreen() {
     }
   }, [applyProduct, product, t]);
 
-  const handleLookupLocationsByKeyword = useCallback(async (value?: string) => {
+  const handleLookupLocationsByKeyword = useCallback(async (value?: string, fromCamera = false): Promise<boolean> => {
     const keyword = (value ?? locationKeyword).trim();
     if (!keyword) {
       await loadDefaultUnusedLocations({ clearSelection: true });
-      return;
+      return false;
     }
 
     setBusy(true);
@@ -1091,20 +1227,32 @@ export default function WarehouseScreen() {
     try {
       const items = await lookupLocations(keyword);
       if (requestId !== defaultLocationLookupRequestRef.current) {
-        return;
+        return false;
       }
       setLocationResults(items);
       if (items.length === 1) {
         const detail = await getLocationDetail(items[0].locationGuid);
         if (requestId !== defaultLocationLookupRequestRef.current) {
-          return;
+          return false;
         }
         applyLocationDetail(detail);
       } else {
         applyLocationDetail(null);
       }
+      if (fromCamera) {
+        const first = items[0];
+        setCameraResultSummary({
+          title: first?.locationCode || t("location.noResultsTitle"),
+          detail: first?.locationBarcode || t("location.noResultsDescription"),
+        });
+      }
+      return items.length > 1;
     } catch (error) {
       setSnackbar(getErrorMessage(error, "messages.locationLookupFailed"));
+      if (fromCamera) {
+        setCameraResultSummary({ title: t("messages.locationLookupFailed"), detail: keyword });
+      }
+      return false;
     } finally {
       setBusy(false);
     }
@@ -1147,6 +1295,13 @@ export default function WarehouseScreen() {
       await handleLookupProduct(barcode);
     },
   });
+
+  useEffect(() => {
+    if (!isFocused) {
+      // 页面失焦后所有相机回调均视为过期；返回页面需要用户重新明确开启扫码。
+      invalidateCameraScanSession();
+    }
+  }, [invalidateCameraScanSession, isFocused]);
 
   const pauseHiddenScannerFocus = useCallback(() => {
     if (resumeHiddenScannerFocusTimerRef.current) {
@@ -1197,12 +1352,14 @@ export default function WarehouseScreen() {
     try {
       const detail = await getLocationDetail(locationGuid);
       applyLocationDetail(detail);
+      // 多货位结果被选择后才恢复连续扫码；直接命中会保持详情可见。
+      resumeSuspendedCameraScan();
     } catch (error) {
       setSnackbar(getErrorMessage(error, "messages.locationLookupFailed"));
     } finally {
       setBusy(false);
     }
-  }, [applyLocationDetail, t]);
+  }, [applyLocationDetail, resumeSuspendedCameraScan, t]);
 
   const resolveLocationCodeGroupParts = useCallback(async (
     parts: WarehouseLocationCodeParts,
@@ -1372,11 +1529,11 @@ export default function WarehouseScreen() {
     setBindModalVisible(true);
   }, [cameraScanMode, selectedLocation, t]);
 
-  const handleLookupBindProducts = useCallback(async (value?: string) => {
+  const handleLookupBindProducts = useCallback(async (value?: string, fromCamera = false): Promise<boolean> => {
     const keyword = (value ?? bindProductKeyword).trim();
     if (!keyword) {
       setSnackbar(t("messages.keywordRequired"));
-      return;
+      return true;
     }
 
     setBusy(true);
@@ -1391,8 +1548,20 @@ export default function WarehouseScreen() {
         setSelectedBindProduct(null);
         setBindInitialQuantity("0");
       }
+      if (fromCamera) {
+        const first = items[0];
+        setCameraResultSummary({
+          title: first?.productName || first?.productCode || t("location.bindModalNoResults"),
+          detail: first ? `${first.itemNumber || first.productCode} · ${first.barcode || "--"}` : keyword,
+        });
+      }
+      return items.length > 0;
     } catch (error) {
       setSnackbar(getErrorMessage(error, "messages.lookupFailed"));
+      if (fromCamera) {
+        setCameraResultSummary({ title: t("messages.lookupFailed"), detail: keyword });
+      }
+      return false;
     } finally {
       setBusy(false);
     }
@@ -1672,14 +1841,19 @@ export default function WarehouseScreen() {
           <Button mode="contained" onPress={() => void cameraScan.requestPermission()}>{t("camera.grantPermission")}</Button>
         </View>
       )}
+      {cameraResultSummary ? (
+        <View style={styles.cameraResultSummary}>
+          <View style={styles.cameraResultText}>
+            <Text variant="labelLarge" numberOfLines={1}>{cameraResultSummary.title}</Text>
+            <Text variant="bodySmall" style={styles.secondaryText} numberOfLines={1}>{cameraResultSummary.detail}</Text>
+          </View>
+          <Button compact mode="outlined" onPress={invalidateCameraScanSession}>
+            {t("common:actions.viewDetail")}
+          </Button>
+        </View>
+      ) : null}
     </>
   );
-  const renderInlineCameraScanner = () => (
-    <View style={styles.inlineCameraBlock}>
-      {renderCameraScanner()}
-    </View>
-  );
-
   const renderContainerEntry = () => canViewContainers ? (
     <Card mode="contained" style={[styles.containerEntryCard, isPdaProductLayout ? styles.containerEntryCardCompact : null]}>
       <Card.Content style={styles.containerEntryContent}>
@@ -1741,12 +1915,6 @@ export default function WarehouseScreen() {
         ]}
         style={[styles.segmented, isPdaProductLayout ? styles.segmentedCompact : null]}
       />
-      <CameraScanModeSelector
-        value={cameraScanMode}
-        onChange={handleCameraScanModeChange}
-        style={styles.scanModeSelector}
-      />
-
       <ScrollView contentContainerStyle={[styles.content, isPdaProductLayout ? styles.contentCompact : null]}>
         {segment === "product" ? (
           <>
@@ -1772,8 +1940,6 @@ export default function WarehouseScreen() {
                 onPress={() => openCameraScanner("product")}
               />
             </View>
-            {cameraScanMode === "continuous" && scannerTarget === "product" ? renderInlineCameraScanner() : null}
-
             {!product && productMatches.length === 0 ? (
               <EmptyState
                 title={hasProductLookup ? t("product.noResultsTitle") : t("product.emptyTitle")}
@@ -1985,8 +2151,6 @@ export default function WarehouseScreen() {
                 ) : null}
               </View>
             </View>
-            {cameraScanMode === "continuous" && scannerTarget === "location" ? renderInlineCameraScanner() : null}
-
             {defaultLocationLoading && !hasLocationLookup && locationResults.length === 0 ? (
               <View style={styles.inlineLoadingState}>
                 <ActivityIndicator size="small" />
@@ -2168,13 +2332,6 @@ export default function WarehouseScreen() {
       </ScrollView>
 
       <Portal>
-        <Modal visible={scannerVisible && cameraScanMode === "single"} onDismiss={() => setScannerVisible(false)} contentContainerStyle={styles.modal}>
-          <Text variant="titleMedium" style={styles.modalTitle}>
-            {scannerTarget === "bindProduct" ? t("location.bindModalScanTitle") : t("camera.scanTitle")}
-          </Text>
-          {renderCameraScanner()}
-        </Modal>
-
         <Modal visible={photoVisible} onDismiss={() => setPhotoVisible(false)} contentContainerStyle={styles.modal}>
           <Text variant="titleMedium" style={styles.modalTitle}>{t("camera.photoTitle")}</Text>
           {photoPermission?.granted ? (
@@ -2310,8 +2467,6 @@ export default function WarehouseScreen() {
                 onPress={() => openCameraScanner("productLocation")}
               />
             </View>
-            {cameraScanMode === "continuous" && scannerTarget === "productLocation" ? renderInlineCameraScanner() : null}
-
             {productLocationBindFeedback ? (
               <Text variant="bodySmall" style={styles.productLocationBindFeedback}>
                 {productLocationBindFeedback}
@@ -2469,8 +2624,6 @@ export default function WarehouseScreen() {
                 onPress={() => openCameraScanner("bindProduct")}
               />
             </View>
-            {cameraScanMode === "continuous" && scannerTarget === "bindProduct" ? renderInlineCameraScanner() : null}
-
             <View style={styles.bindHintCard}>
               <Text variant="labelSmall" style={styles.infoTileLabel}>
                 {t("location.bindModalQuantityTitle")}
@@ -2634,6 +2787,16 @@ export default function WarehouseScreen() {
 
       </Portal>
 
+      <CameraScanSheet
+        visible={cameraSheetSession.visible}
+        title={scannerTarget === "bindProduct" ? t("location.bindModalScanTitle") : t("camera.scanTitle")}
+        mode={cameraScanMode}
+        onModeChange={handleCameraScanModeChange}
+        onDismiss={invalidateCameraScanSession}
+      >
+        {renderCameraScanner()}
+      </CameraScanSheet>
+
       {numericInputModal ? (
         <NumericInputModal
           visible
@@ -2664,11 +2827,11 @@ export default function WarehouseScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: "#F8FAFC",
+    backgroundColor: "#F4F6F8",
   },
   header: {
     paddingHorizontal: 16,
-    paddingTop: 8,
+    paddingTop: 12,
     paddingBottom: 12,
   },
   headerCompact: {
@@ -2684,14 +2847,11 @@ const styles = StyleSheet.create({
     marginHorizontal: 12,
     marginBottom: 8,
   },
-  scanModeSelector: {
-    marginHorizontal: 16,
-    marginBottom: 8,
-  },
   content: {
     padding: 16,
-    gap: 12,
-    paddingBottom: 56,
+    paddingTop: 12,
+    gap: 16,
+    paddingBottom: 32,
   },
   contentCompact: {
     paddingHorizontal: 10,
@@ -2728,7 +2888,9 @@ const styles = StyleSheet.create({
   },
   card: {
     backgroundColor: "#fff",
-    borderRadius: 18,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E4E7EC",
   },
   cardCompact: {
     borderRadius: 10,
@@ -2737,7 +2899,9 @@ const styles = StyleSheet.create({
     marginHorizontal: 16,
     marginBottom: 12,
     backgroundColor: "#fff",
-    borderRadius: 18,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E4E7EC",
   },
   containerEntryCardCompact: {
     marginHorizontal: 10,
@@ -2770,7 +2934,7 @@ const styles = StyleSheet.create({
   productImage: {
     width: 112,
     height: 112,
-    borderRadius: 16,
+    borderRadius: 8,
     backgroundColor: "#F1F5F9",
   },
   productImageCompact: {
@@ -2838,7 +3002,7 @@ const styles = StyleSheet.create({
     width: "48%",
     minWidth: 150,
     backgroundColor: "#F8FAFC",
-    borderRadius: 14,
+    borderRadius: 8,
     paddingHorizontal: 12,
     paddingVertical: 10,
     gap: 4,
@@ -2936,7 +3100,7 @@ const styles = StyleSheet.create({
     gap: 12,
     paddingVertical: 10,
     paddingHorizontal: 10,
-    borderRadius: 14,
+    borderRadius: 8,
     backgroundColor: "#FFFFFF",
     borderWidth: 1,
     borderColor: "#E2E8F0",
@@ -2960,7 +3124,7 @@ const styles = StyleSheet.create({
     gap: 4,
     paddingHorizontal: 12,
     paddingVertical: 10,
-    borderRadius: 12,
+    borderRadius: 8,
     backgroundColor: "#F8FAFC",
     borderWidth: 1,
     borderColor: "#E2E8F0",
@@ -3004,12 +3168,19 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     overflow: "hidden",
   },
-  inlineCameraBlock: {
+  cameraResultSummary: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
     padding: 10,
-    borderRadius: 12,
-    backgroundColor: "#fff",
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
+    backgroundColor: "#EEF4FF",
+    borderTopWidth: 1,
+    borderTopColor: "#B2CCFF",
+  },
+  cameraResultText: {
+    flex: 1,
+    gap: 2,
+    minWidth: 0,
   },
   permissionBlock: {
     gap: 10,
@@ -3043,7 +3214,7 @@ const styles = StyleSheet.create({
   },
   compactProductCard: {
     backgroundColor: "#FFFFFF",
-    borderRadius: 16,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: "#E2E8F0",
     padding: 12,
@@ -3084,7 +3255,7 @@ const styles = StyleSheet.create({
   },
   locationCandidateCard: {
     backgroundColor: "#F8FAFC",
-    borderRadius: 14,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: "#E2E8F0",
     paddingHorizontal: 12,
@@ -3117,7 +3288,7 @@ const styles = StyleSheet.create({
   binCard: {
     flexDirection: "row",
     backgroundColor: "#FFFFFF",
-    borderRadius: 18,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: "#E2E8F0",
     overflow: "hidden",
@@ -3170,8 +3341,8 @@ const styles = StyleSheet.create({
   },
   bottomSheetContainer: {
     backgroundColor: "#FFFFFF",
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
     alignSelf: "stretch",
     height: "54%",
     paddingHorizontal: 16,
@@ -3203,7 +3374,7 @@ const styles = StyleSheet.create({
   },
   bindHintCard: {
     backgroundColor: "#F8FAFC",
-    borderRadius: 14,
+    borderRadius: 8,
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderWidth: 1,
@@ -3227,7 +3398,7 @@ const styles = StyleSheet.create({
   },
   bindResultCard: {
     backgroundColor: "#FFFFFF",
-    borderRadius: 14,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: "#CBD5E1",
     padding: 10,

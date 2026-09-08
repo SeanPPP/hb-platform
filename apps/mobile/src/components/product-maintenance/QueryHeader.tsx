@@ -59,18 +59,19 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     gap: 8,
-    paddingHorizontal: 12,
-    paddingTop: 0,
-    paddingBottom: 0,
+    minHeight: 48,
+    paddingHorizontal: 16,
+    paddingTop: 4,
+    paddingBottom: 4,
   },
   storeLabel: {
-    color: "#667085",
+    color: "#475467",
   },
   storeButton: {
     flex: 1,
   },
   storeLabelSelectable: {
-    color: "#2563EB",
+    color: "#0958D9",
   },
   actions: {
     flexDirection: "row",

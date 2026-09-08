@@ -737,8 +737,9 @@ const styles = StyleSheet.create({
     paddingTop: 8,
     paddingBottom: 10,
     backgroundColor: "#FFFFFF",
-    borderBottomColor: "#EAECF0",
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderColor: "#E4E7EC",
+    borderWidth: 1,
+    borderRadius: 12,
     gap: 8,
   },
   filterHeader: {
@@ -778,7 +779,8 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   listContent: {
-    padding: 12,
+    padding: 16,
+    paddingTop: 12,
     paddingBottom: 24,
   },
   emptyContent: {
@@ -791,7 +793,8 @@ const styles = StyleSheet.create({
   },
   productCard: {
     marginBottom: 10,
-    borderRadius: 8,
+    borderRadius: 12,
+    borderColor: "#E4E7EC",
     backgroundColor: "#FFFFFF",
   },
   productCardContent: {
@@ -873,7 +876,7 @@ const styles = StyleSheet.create({
   supplierModal: {
     margin: 14,
     padding: 14,
-    borderRadius: 8,
+    borderRadius: 18,
     backgroundColor: "#FFFFFF",
     maxHeight: "82%",
   },
@@ -898,7 +901,7 @@ const styles = StyleSheet.create({
   },
   editModal: {
     margin: 14,
-    borderRadius: 8,
+    borderRadius: 18,
     backgroundColor: "#FFFFFF",
     maxHeight: "90%",
   },
