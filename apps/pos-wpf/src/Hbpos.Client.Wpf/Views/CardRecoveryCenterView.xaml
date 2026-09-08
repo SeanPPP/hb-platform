@@ -423,6 +423,19 @@
 
                             <Border Margin="0,12,0,0"
                                     Padding="12,10"
+                                    Background="#FFFFFAEC"
+                                    BorderBrush="#FFE9C46A"
+                                    BorderThickness="1"
+                                    CornerRadius="6"
+                                    Visibility="{Binding CanShowRecoveryOnlyGuidance, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                <TextBlock Text="{Binding RecoveryOnlyGuidanceMessage}"
+                                           Foreground="{StaticResource PosMutedForegroundBrush}"
+                                           FontSize="12"
+                                           TextWrapping="Wrap" />
+                            </Border>
+
+                            <Border Margin="0,12,0,0"
+                                    Padding="12,10"
                                     Background="#FFF3F7FC"
                                     BorderBrush="{StaticResource PosBorderBrush}"
                                     BorderThickness="1"

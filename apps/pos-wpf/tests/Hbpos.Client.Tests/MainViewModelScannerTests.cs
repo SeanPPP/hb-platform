@@ -5347,6 +5347,64 @@ public sealed class MainViewModelScannerTests
         Assert.Equal("SKU-UNKNOWN-BACK", cart.Lines[0].ProductCode);
     }
 
+    [Theory]
+    [InlineData(CardProcessorKind.Linkly, true, true, true)]
+    [InlineData(CardProcessorKind.Linkly, false, true, true)]
+    [InlineData(CardProcessorKind.Linkly, true, false, true)]
+    [InlineData(CardProcessorKind.Linkly, true, true, false)]
+    [InlineData(CardProcessorKind.Square, true, true, true)]
+    [InlineData(CardProcessorKind.Square, false, true, true)]
+    [InlineData(CardProcessorKind.Square, true, false, true)]
+    [InlineData(CardProcessorKind.Square, true, true, false)]
+    public async Task Card_recovery_after_persistence_failure_unlocks_only_matching_order_and_attempt(
+        CardProcessorKind processor, bool matchesOrder, bool matchesAttempt, bool matchesProvider)
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("1042", "SKU-PERSIST-RECOVER", "930PERSISTRECOVER"));
+        var recovery = new FakeCardPaymentRecoveryService { OpenItems = [] };
+        var viewModel = CreateAuthorizedMainViewModelWithPaymentWorkflow(cart,
+            new CashCheckoutService(), new FakeLocalOrderRepository(), new FakeSyncQueueRepository(),
+            new UnknownCardTerminalClient(), recovery);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        viewModel.Session = viewModel.Session with
+        {
+            CashierSession = CreateCashierSession(Permissions.PosTerminal.Payment.TakeCard, Permissions.PosTerminal.Payment.View)
+        };
+        viewModel.ShowCashPaymentCommand.Execute(null);
+        var payment = Assert.IsType<PaymentViewModel>(viewModel.CurrentScreen);
+        var selectedKey = new CardRecoveryAttemptKey(processor, Guid.NewGuid());
+        var expectedOrderGuid = Guid.NewGuid();
+        GetCardPaymentSession(payment).SetPersistenceRecoveryOrder(expectedOrderGuid);
+        payment.SetCurrentCardRecoveryRequired(true, "Save requires recovery");
+        payment.PaymentTenders.Add(new PaymentTender(PaymentMethodKind.Card, 10m, "BANK-APPROVED"));
+        Assert.True(payment.OpenCardRecoveryCenterCommand.CanExecute(null));
+        payment.OpenCardRecoveryCenterCommand.Execute(null);
+        await WaitUntilAsync(() => viewModel.CurrentScreen is CardRecoveryCenterViewModel);
+        var order = CreateReceiptPrintOrder(PaymentMethodKind.Card);
+        var paymentKeyPrefix = (processor == CardProcessorKind.Linkly) == matchesProvider ? "CARD_ATTEMPT" : "SQUARE_ATTEMPT";
+        order = order with
+        {
+            OrderGuid = matchesOrder ? expectedOrderGuid : Guid.NewGuid(),
+            Payments = [order.Payments.Single() with
+            {
+                IdempotencyKey = $"{paymentKeyPrefix}:{(matchesAttempt ? selectedKey.AttemptGuid : Guid.NewGuid()):N}"
+            }]
+        };
+
+        await InvokeHandleCardRecoveryCenterResultAsync(viewModel, selectedKey,
+            new CardPaymentRecoveryResult(CardPaymentRecoveryOutcome.OrderCompleted, "Recovered", Order: order));
+
+        var completed = matchesOrder && matchesAttempt && matchesProvider;
+        Assert.Equal(!completed, payment.IsPaymentInteractionLocked);
+        Assert.Equal(!completed, payment.IsCardPaymentRecoveryRequired);
+        Assert.Equal(completed, cart.IsEmpty);
+        Assert.Equal(completed ? 0 : 1, payment.PaymentTenders.Count);
+        if (completed)
+        {
+            Assert.Same(viewModel.PosTerminal, viewModel.CurrentScreen);
+        }
+    }
+
     [Fact]
     public async Task Card_recovery_center_order_completed_for_current_unknown_key_clears_payment_when_pending_sync_refresh_fails()
     {

@@ -2032,7 +2032,8 @@ public sealed class CashPaymentWorkflowService(
 
         var mode = CardTerminalSettings.NormalizeLinklyConnectionMode(settings.LinklyConnectionMode);
         if (settings.Processor != CardProcessorKind.Linkly ||
-            (!isRefund && mode != LinklyConnectionMode.CloudBackendAsync && mode != LinklyConnectionMode.LocalIp))
+            (!isRefund && mode != LinklyConnectionMode.CloudBackendAsync &&
+             mode != LinklyConnectionMode.LocalIp && mode != LinklyConnectionMode.CloudDirectSync))
         {
             return (null, false, false);
         }
@@ -2085,7 +2086,7 @@ public sealed class CashPaymentWorkflowService(
                 ? mode == LinklyConnectionMode.LocalIp
                     ? LinklyLocalTxnRef.Create('R', attemptGuid.ToString("D"))
                     : BuildRefundTxnRef(referenceText)
-                : mode == LinklyConnectionMode.LocalIp
+                : mode is LinklyConnectionMode.LocalIp or LinklyConnectionMode.CloudDirectSync
                     ? LinklyLocalTxnRef.Create('P', attemptGuid.ToString("D"))
                     : null,
             settings.Processor.ToString(),
