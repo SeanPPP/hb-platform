@@ -361,6 +361,98 @@ public sealed class CardRecoveryCenterTests
     }
 
     [Fact]
+    public async Task Coordinator_LoadOpenQueueAsync_linkly_failure_keeps_square_items_and_reports_provider()
+    {
+        var linklyRepository = new FakeLinklyAttemptRepository
+        {
+            OpenAttemptsException = new IOException("linkly local store unavailable")
+        };
+        var squareAttempt = CreateSquareAttempt(
+            Guid.Parse("30000000-0000-0000-0000-000000000045"),
+            LocalSquarePaymentAttemptStatus.Recovering,
+            "Sale",
+            "C001",
+            DateTimeOffset.Parse("2026-06-05T09:02:00+10:00"));
+        var coordinator = new CardPaymentRecoveryCoordinator(
+            new FakeSettingsProvider(CardProcessorKind.Linkly),
+            CreateLinklyService(linklyRepository),
+            CreateSquareService(new FakeSquareAttemptRepository(squareAttempt)));
+
+        var result = await coordinator.LoadOpenQueueAsync(Session);
+
+        var item = Assert.Single(result.Items);
+        Assert.Equal(squareAttempt.AttemptGuid, item.AttemptGuid);
+        Assert.Equal(CardProcessorKind.Square, item.Processor);
+        Assert.Equal([CardProcessorKind.Linkly], result.FailedProviders);
+    }
+
+    [Fact]
+    public async Task Coordinator_LoadOpenQueueAsync_both_provider_failures_are_exposed_instead_of_reported_as_empty_success()
+    {
+        var linklyRepository = new FakeLinklyAttemptRepository
+        {
+            OpenAttemptsException = new IOException("linkly local store unavailable")
+        };
+        var squareRepository = new FakeSquareAttemptRepository
+        {
+            OpenAttemptsException = new IOException("square local store unavailable")
+        };
+        var coordinator = new CardPaymentRecoveryCoordinator(
+            new FakeSettingsProvider(CardProcessorKind.Linkly),
+            CreateLinklyService(linklyRepository),
+            CreateSquareService(squareRepository));
+
+        var result = await coordinator.LoadOpenQueueAsync(Session);
+
+        Assert.Empty(result.Items);
+        Assert.Equal(
+            [CardProcessorKind.Linkly, CardProcessorKind.Square],
+            result.FailedProviders);
+    }
+
+    [Fact]
+    public async Task Coordinator_ListOpenAsync_provider_failure_preserves_fail_closed_legacy_semantics()
+    {
+        var linklyRepository = new FakeLinklyAttemptRepository
+        {
+            OpenAttemptsException = new IOException("linkly local store unavailable")
+        };
+        var coordinator = new CardPaymentRecoveryCoordinator(
+            new FakeSettingsProvider(CardProcessorKind.Linkly),
+            CreateLinklyService(linklyRepository),
+            CreateSquareService(new FakeSquareAttemptRepository()));
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => coordinator.ListOpenAsync(Session));
+
+        Assert.Contains("Linkly", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Coordinator_LoadOpenQueueAsync_internal_provider_timeout_is_reported_as_partial_failure()
+    {
+        var linklyRepository = new FakeLinklyAttemptRepository
+        {
+            OpenAttemptsException = new OperationCanceledException("provider timeout")
+        };
+        var squareAttempt = CreateSquareAttempt(
+            Guid.Parse("30000000-0000-0000-0000-000000000046"),
+            LocalSquarePaymentAttemptStatus.Recovering,
+            "Sale",
+            "C001",
+            DateTimeOffset.Parse("2026-06-05T09:03:00+10:00"));
+        var coordinator = new CardPaymentRecoveryCoordinator(
+            new FakeSettingsProvider(CardProcessorKind.Linkly),
+            CreateLinklyService(linklyRepository),
+            CreateSquareService(new FakeSquareAttemptRepository(squareAttempt)));
+
+        var result = await coordinator.LoadOpenQueueAsync(Session);
+
+        Assert.Equal([CardProcessorKind.Linkly], result.FailedProviders);
+        Assert.Equal(squareAttempt.AttemptGuid, Assert.Single(result.Items).AttemptGuid);
+    }
+
+    [Fact]
     public async Task Coordinator_RecoverAsync_routes_by_key_provider_regardless_of_settings()
     {
         var linklyService = CreateLinklyService(new FakeLinklyAttemptRepository());
@@ -1465,6 +1557,8 @@ public sealed class CardRecoveryCenterTests
 
         public LocalFinancialSupervisorResolution? LastPaymentJournal { get; private set; }
 
+        public Exception? OpenAttemptsException { get; set; }
+
         public Task<LocalCardPaymentAttempt?> GetAttemptAsync(
             Guid attemptGuid,
             CancellationToken cancellationToken = default)
@@ -1478,7 +1572,9 @@ public sealed class CardRecoveryCenterTests
             string deviceCode,
             string environment,
             CancellationToken cancellationToken = default) =>
-            Task.FromResult<IReadOnlyList<LocalCardPaymentAttempt>>(_attempts);
+            OpenAttemptsException is null
+                ? Task.FromResult<IReadOnlyList<LocalCardPaymentAttempt>>(_attempts)
+                : Task.FromException<IReadOnlyList<LocalCardPaymentAttempt>>(OpenAttemptsException);
 
         public Task<IReadOnlyList<LocalCardPaymentAttempt>> GetOpenRefundAttemptsAsync(
             string storeCode,
@@ -1592,6 +1688,8 @@ public sealed class CardRecoveryCenterTests
 
         public Exception? MarkOrderCompletedException { get; set; }
 
+        public Exception? OpenAttemptsException { get; set; }
+
         public bool TerminalizeResult { get; set; } = true;
 
         public Task<IReadOnlyList<LocalSquarePaymentAttempt>> GetOpenAttemptsAsync(
@@ -1599,8 +1697,10 @@ public sealed class CardRecoveryCenterTests
             string deviceCode,
             string environment,
             CancellationToken cancellationToken = default) =>
-            Task.FromResult<IReadOnlyList<LocalSquarePaymentAttempt>>(
-                _attempts.Where(attempt => attempt.Status != LocalSquarePaymentAttemptStatus.Abandoned).ToArray());
+            OpenAttemptsException is null
+                ? Task.FromResult<IReadOnlyList<LocalSquarePaymentAttempt>>(
+                    _attempts.Where(attempt => attempt.Status != LocalSquarePaymentAttemptStatus.Abandoned).ToArray())
+                : Task.FromException<IReadOnlyList<LocalSquarePaymentAttempt>>(OpenAttemptsException);
 
         public Task<LocalSquarePaymentAttempt?> GetAttemptAsync(
             Guid attemptGuid,

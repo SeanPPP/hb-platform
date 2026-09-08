@@ -34,6 +34,22 @@ public sealed record CardRecoveryQueueItem(
     public CardRecoveryAttemptKey Key => new(Processor, AttemptGuid);
 }
 
+// 恢复中心需要区分“某 provider 没有未结记录”和“某 provider 本次加载失败”。
+// Items 只包含本次成功读取的 provider；界面必须保留失败 provider 的最后已知快照。
+public sealed record CardRecoveryQueueLoadResult(
+    IReadOnlyList<CardRecoveryQueueItem> Items,
+    IReadOnlyList<CardProcessorKind> FailedProviders)
+{
+    public bool IsComplete => FailedProviders.Count == 0;
+}
+
+public interface ICardRecoveryQueueLoader
+{
+    Task<CardRecoveryQueueLoadResult> LoadOpenQueueAsync(
+        PosSessionState session,
+        CancellationToken cancellationToken = default);
+}
+
 // 恢复中心统一的三态主管决定；仅作为定点结案命令，不落库、不是持久化状态枚举。
 public enum CardRecoverySupervisorDecision
 {

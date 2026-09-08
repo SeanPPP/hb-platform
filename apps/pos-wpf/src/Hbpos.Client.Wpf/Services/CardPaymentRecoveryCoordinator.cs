@@ -6,7 +6,9 @@ public sealed class CardPaymentRecoveryCoordinator(
     ICardTerminalSettingsProvider settingsProvider,
     CardPaymentRecoveryService linklyRecoveryService,
     ISquarePaymentRecoveryService squareRecoveryService,
-    FinancialSupervisorAuditReplayService? supervisorAuditReplay = null) : ICardPaymentRecoveryService
+    FinancialSupervisorAuditReplayService? supervisorAuditReplay = null) :
+    ICardPaymentRecoveryService,
+    ICardRecoveryQueueLoader
 {
     public async Task<CardPaymentRecoveryResult> RecoverLatestAsync(
         PosCartService cart,
@@ -94,16 +96,63 @@ public sealed class CardPaymentRecoveryCoordinator(
         PosSessionState session,
         CancellationToken cancellationToken = default)
     {
+        var result = await LoadOpenQueueAsync(session, cancellationToken);
+        if (!result.IsComplete)
+        {
+            // 兼容调用方没有部分加载诊断能力；继续 fail-closed，避免把缺失 provider 误计为零。
+            throw new InvalidOperationException(
+                $"Card recovery queue could not refresh {string.Join(", ", result.FailedProviders)}.");
+        }
+
+        return result.Items;
+    }
+
+    public async Task<CardRecoveryQueueLoadResult> LoadOpenQueueAsync(
+        PosSessionState session,
+        CancellationToken cancellationToken = default)
+    {
         await ReplaySupervisorAuditAsync(cancellationToken);
         // 双 provider 队列：同时列出 Linkly 与 Square 的未结 attempt，全局按更新时间排序，
-        // 使配置切换后另一 provider 的历史异常仍然可见。
-        var linklyItems = await linklyRecoveryService.ListOpenAsync(session, cancellationToken);
-        var squareItems = await squareRecoveryService.ListOpenAsync(session, cancellationToken);
-        return linklyItems
-            .Concat(squareItems)
+        // 并隔离单一 provider 的读取故障，避免健康 provider 的恢复入口一起消失。
+        var linklyLoad = LoadProviderAsync(
+            CardProcessorKind.Linkly,
+            () => linklyRecoveryService.ListOpenAsync(session, cancellationToken),
+            cancellationToken);
+        var squareLoad = LoadProviderAsync(
+            CardProcessorKind.Square,
+            () => squareRecoveryService.ListOpenAsync(session, cancellationToken),
+            cancellationToken);
+        await Task.WhenAll(linklyLoad, squareLoad);
+
+        var results = new[] { await linklyLoad, await squareLoad };
+        var items = results
+            .Where(result => result.Succeeded)
+            .SelectMany(result => result.Items)
             .OrderByDescending(item => item.UpdatedAt)
             .ThenByDescending(item => item.CreatedAt)
             .ToArray();
+        var failedProviders = results
+            .Where(result => !result.Succeeded)
+            .Select(result => result.Processor)
+            .ToArray();
+        return new CardRecoveryQueueLoadResult(items, failedProviders);
+    }
+
+    private static async Task<CardRecoveryProviderLoad> LoadProviderAsync(
+        CardProcessorKind processor,
+        Func<Task<IReadOnlyList<CardRecoveryQueueItem>>> loadAsync,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return new CardRecoveryProviderLoad(processor, true, await loadAsync());
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            // provider 自己产生的超时只影响该 provider；调用方明确取消时仍须传播取消。
+            cancellationToken.ThrowIfCancellationRequested();
+            return new CardRecoveryProviderLoad(processor, false, []);
+        }
     }
 
     public async Task<CardPaymentRecoveryResult> RecoverAsync(
@@ -197,4 +246,9 @@ public sealed class CardPaymentRecoveryCoordinator(
             await supervisorAuditReplay.ReplayPendingAsync(cancellationToken);
         }
     }
+
+    private sealed record CardRecoveryProviderLoad(
+        CardProcessorKind Processor,
+        bool Succeeded,
+        IReadOnlyList<CardRecoveryQueueItem> Items);
 }
