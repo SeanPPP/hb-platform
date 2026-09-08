@@ -325,7 +325,13 @@ public sealed class ProductWarehouseArchitectureContractTests
             );
             Assert.Equal(1, CountOccurrences(body, "BeginTran()"));
             Assert.Equal(1, CountOccurrences(body, "CommitTran()"));
-            Assert.Equal(1, CountOccurrences(body, "RollbackTran()"));
+            // 单商品创建在身份锁内复查编码与货号，两条拒绝路径必须先回滚；
+            // 加上异常路径共三处回滚，仍只拥有一个事务。
+            var expectedRollbackCount = transactionMethod.Path.EndsWith(
+                "/WarehouseProductSingleCreationCommandWriter.cs",
+                StringComparison.Ordinal
+            ) ? 3 : 1;
+            Assert.Equal(expectedRollbackCount, CountOccurrences(body, "RollbackTran()"));
             Assert.False(
                 Regex.IsMatch(
                     body,

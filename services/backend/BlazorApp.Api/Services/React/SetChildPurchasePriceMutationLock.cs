@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using SqlSugar;
 
 namespace BlazorApp.Api.Services.React;
@@ -48,6 +49,90 @@ internal static class SetChildPurchasePriceMutationLock
         lockAll: false,
         totalWaitMilliseconds: totalWaitMilliseconds
     );
+
+    /// <summary>
+    /// 商品新建及身份变更使用 Update 总闸：与普通成本写入的 Shared 兼容，
+    /// 与其他身份变更及全局维护互斥；已有编码和预生成编码仍须全部持有商品独占锁。
+    /// </summary>
+    internal static Task<SetChildPurchasePriceLockScope> AcquireProductIdentitiesWithinBudgetAsync(
+        ISqlSugarClient db,
+        IEnumerable<string?> productCodes,
+        int totalWaitMilliseconds = LockTimeoutMilliseconds
+    ) => AcquireWithinBudgetAsync(
+        db,
+        productCodes,
+        lockAll: false,
+        totalWaitMilliseconds: totalWaitMilliseconds,
+        lockIdentities: true
+    );
+
+    /// <summary>
+    /// 大批量统计仍按商品保护成本，但一次往返即可获取全部锁，避免为上万商品改持全局独占锁。
+    /// 失败时可能已经持有部分锁，调用方必须回滚整个事务，不能继续发布统计。
+    /// </summary>
+    internal static async Task<SetChildPurchasePriceLockScope> AcquireProductsInBatchWithinBudgetAsync(
+        ISqlSugarClient db,
+        IEnumerable<string?> productCodes,
+        int totalWaitMilliseconds = LockTimeoutMilliseconds
+    )
+    {
+        if (db.Ado.Transaction == null)
+            throw new InvalidOperationException("套装子项成本业务锁必须在数据库事务内获取");
+        if (totalWaitMilliseconds < 0)
+            throw new ArgumentOutOfRangeException(nameof(totalWaitMilliseconds));
+        var normalizedCodes = NormalizeProductCodes(productCodes);
+        if (normalizedCodes.Count == 0)
+            throw new ArgumentException("按商品获取套装子项成本锁时，商品编码不能为空", nameof(productCodes));
+
+        if (db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+        {
+            var waitStopwatch = Stopwatch.StartNew();
+            await AcquireDatabaseResourceWithTimeoutAsync(db, GateResource, "Shared", totalWaitMilliseconds);
+            System.Data.DataTable result;
+            try
+            {
+                // OPENJSON 的数组下标保留 .NET 已规范化的序列；不能按数据库区域排序重新排列锁。
+                result = await db.Ado.GetDataTableAsync(
+                    """
+                    DECLARE @StartedAt datetime2 = SYSUTCDATETIME();
+                    DECLARE @Code nvarchar(4000), @LockResource nvarchar(255), @Result int = 0, @Remaining int;
+                    DECLARE ProductLockCursor CURSOR LOCAL FAST_FORWARD FOR
+                        SELECT [value] FROM OPENJSON(@ProductCodesJson) ORDER BY CONVERT(int, [key]);
+                    OPEN ProductLockCursor;
+                    FETCH NEXT FROM ProductLockCursor INTO @Code;
+                    WHILE @@FETCH_STATUS = 0
+                    BEGIN
+                        SET @LockResource = @ProductResourcePrefix + @Code;
+                        SET @Remaining = @TotalWaitMilliseconds - DATEDIFF(millisecond, @StartedAt, SYSUTCDATETIME());
+                        IF @Remaining < 0 SET @Remaining = 0;
+                        EXEC @Result = sys.sp_getapplock
+                            @Resource = @LockResource,
+                            @LockMode = N'Exclusive',
+                            @LockOwner = N'Transaction',
+                            @LockTimeout = @Remaining;
+                        IF @Result < 0 BREAK;
+                        FETCH NEXT FROM ProductLockCursor INTO @Code;
+                    END;
+                    CLOSE ProductLockCursor;
+                    DEALLOCATE ProductLockCursor;
+                    SELECT @Result AS ResultCode, @LockResource AS Resource;
+                    """,
+                    new SugarParameter("@ProductCodesJson", JsonSerializer.Serialize(normalizedCodes)) { Size = -1 },
+                    new SugarParameter("@ProductResourcePrefix", ProductResourcePrefix),
+                    new SugarParameter("@TotalWaitMilliseconds", GetRemainingWaitMilliseconds(waitStopwatch, totalWaitMilliseconds))
+                );
+            }
+            catch (Exception ex) when (TryResolveAcquireConflictResultCode(ex, out _))
+            {
+                TryResolveAcquireConflictResultCode(ex, out var resultCode);
+                throw new SetChildPurchasePriceLockException(ProductResourcePrefix + "Batch", resultCode, ex);
+            }
+            var code = Convert.ToInt32(result.Rows[0]["ResultCode"]);
+            if (code < 0)
+                throw new SetChildPurchasePriceLockException(Convert.ToString(result.Rows[0]["Resource"])!, code);
+        }
+        return new SetChildPurchasePriceLockScope(db, false, normalizedCodes);
+    }
 
     /// <summary>
     /// 为允许字段级部分成功的入口一次获取共享总闸，再按稳定顺序尝试商品锁。
@@ -184,7 +269,8 @@ internal static class SetChildPurchasePriceMutationLock
         ISqlSugarClient db,
         IEnumerable<string?> productCodes,
         bool lockAll,
-        int totalWaitMilliseconds
+        int totalWaitMilliseconds,
+        bool lockIdentities = false
     )
     {
         if (db.Ado.Transaction == null)
@@ -211,7 +297,7 @@ internal static class SetChildPurchasePriceMutationLock
             await AcquireDatabaseResourceWithTimeoutAsync(
                 db,
                 GateResource,
-                lockAll ? "Exclusive" : "Shared",
+                lockAll ? "Exclusive" : lockIdentities ? "Update" : "Shared",
                 GetRemainingWaitMilliseconds(waitStopwatch, totalWaitMilliseconds)
             );
 

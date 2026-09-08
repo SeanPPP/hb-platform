@@ -24,6 +24,354 @@ public sealed class SetChildPurchasePriceSqlServerIntegrationTests
     private const string ConnectionEnvironmentVariable =
         "SET_CHILD_PURCHASE_PRICE_SQLSERVER_TEST_CONNECTION";
 
+    [SetChildPurchasePriceSqlServerFact]
+    [Trait("Category", "SQL")]
+    public async Task 商品身份写入_允许无关成本并行且排斥同商品其他身份及全局维护()
+    {
+        var connection = Environment.GetEnvironmentVariable(ConnectionEnvironmentVariable)!;
+        using var identity = CreateClient(connection);
+        using var competitor = CreateClient(connection);
+        var code = "IDENTITY-" + Guid.NewGuid().ToString("N").ToUpperInvariant();
+        await identity.Ado.BeginTranAsync();
+        try
+        {
+            await SetChildPurchasePriceMutationLock.AcquireProductIdentitiesWithinBudgetAsync(identity, [code], 500);
+
+            // 无关成本事务可以真实获锁并提交，同商品仍须等待其商品独占锁。
+            await competitor.Ado.BeginTranAsync();
+            await SetChildPurchasePriceMutationLock.AcquireProductsWithinBudgetAsync(competitor, [code + "-OTHER"], 500);
+            await competitor.Ado.CommitTranAsync();
+            await competitor.Ado.BeginTranAsync();
+            var sameProduct = await Assert.ThrowsAsync<SetChildPurchasePriceLockException>(() =>
+                SetChildPurchasePriceMutationLock.AcquireProductsWithinBudgetAsync(competitor, [code], 100));
+            Assert.EndsWith(code, sameProduct.Resource);
+            await competitor.Ado.RollbackTranAsync();
+
+            // 即使编码不同，身份写入之间仍互斥；全局维护也不能穿过身份保护。
+            await competitor.Ado.BeginTranAsync();
+            var otherIdentity = await Assert.ThrowsAsync<SetChildPurchasePriceLockException>(() =>
+                SetChildPurchasePriceMutationLock.AcquireProductIdentitiesWithinBudgetAsync(competitor, [code + "-OTHER"], 100));
+            Assert.Equal("HB:SetChildPurchasePrice:Gate", otherIdentity.Resource);
+            await competitor.Ado.RollbackTranAsync();
+            await competitor.Ado.BeginTranAsync();
+            var global = await Assert.ThrowsAsync<SetChildPurchasePriceLockException>(() =>
+                SetChildPurchasePriceMutationLock.AcquireAllWithinBudgetAsync(competitor, 100));
+            Assert.Equal("HB:SetChildPurchasePrice:Gate", global.Resource);
+        }
+        finally
+        {
+            await competitor.Ado.RollbackTranAsync();
+            await identity.Ado.RollbackTranAsync();
+        }
+
+        // 回滚释放身份闸门与商品锁，后续请求可继续处理同一商品。
+        await competitor.Ado.BeginTranAsync();
+        try
+        {
+            await SetChildPurchasePriceMutationLock.AcquireProductIdentitiesWithinBudgetAsync(competitor, [code], 500);
+            await competitor.Ado.CommitTranAsync();
+        }
+        catch
+        {
+            await competitor.Ado.RollbackTranAsync();
+            throw;
+        }
+    }
+
+    [SetChildPurchasePriceSqlServerFact]
+    [Trait("Category", "SQL")]
+    public async Task AcquireProductsInBatchWithinBudgetAsync_SqlServer五千商品批次允许无关身份U和成本S完成()
+    {
+        var connectionString = Environment.GetEnvironmentVariable(ConnectionEnvironmentVariable);
+        Assert.False(string.IsNullOrWhiteSpace(connectionString));
+
+        var suffix = Guid.NewGuid().ToString("N").ToUpperInvariant();
+        var batchCodes = Enumerable.Range(0, 5_000)
+            .Select(index => $"BATCH-{suffix}-{index:D4}")
+            .ToArray();
+        var unrelatedIdentityCode = $"BATCH-IDENTITY-{suffix}";
+        var unrelatedCostCode = $"BATCH-COST-{suffix}";
+        using var batchDb = CreateClient(connectionString);
+        using var tailDb = CreateClient(connectionString);
+        using var identityDb = CreateClient(connectionString);
+        using var costDb = CreateClient(connectionString);
+
+        await batchDb.Ado.BeginTranAsync();
+        try
+        {
+            var scope = await SetChildPurchasePriceMutationLock.AcquireProductsInBatchWithinBudgetAsync(
+                batchDb,
+                batchCodes,
+                totalWaitMilliseconds: 10_000
+            );
+
+            Assert.False(scope.LocksAllProducts);
+            scope.EnsureCovers(batchDb, batchCodes);
+
+            await tailDb.Ado.BeginTranAsync();
+            try
+            {
+                // 明确争用批次尾部编码，防止 JSON 参数或 OPENJSON 游标只处理前缀。
+                var tailException = await Assert.ThrowsAsync<SetChildPurchasePriceLockException>(() =>
+                    SetChildPurchasePriceMutationLock.AcquireProductsWithinBudgetAsync(
+                        tailDb,
+                        new[] { batchCodes[^1] },
+                        totalWaitMilliseconds: 250
+                    ));
+                Assert.True(tailException.Resource.EndsWith(batchCodes[^1], StringComparison.Ordinal));
+                Assert.True(tailException.ResultCode < 0);
+            }
+            finally
+            {
+                if (tailDb.Ado.Transaction != null)
+                    await tailDb.Ado.RollbackTranAsync();
+            }
+
+            // 批量统计只持 Shared 总闸和批次商品 X 锁；无关身份 U 与无关成本 S 必须可继续。
+            await identityDb.Ado.BeginTranAsync();
+            try
+            {
+                await SetChildPurchasePriceMutationLock.AcquireProductIdentitiesWithinBudgetAsync(
+                    identityDb,
+                    new[] { unrelatedIdentityCode },
+                    totalWaitMilliseconds: 1_000
+                );
+                await identityDb.Ado.CommitTranAsync();
+            }
+            finally
+            {
+                if (identityDb.Ado.Transaction != null)
+                    await identityDb.Ado.RollbackTranAsync();
+            }
+
+            await costDb.Ado.BeginTranAsync();
+            try
+            {
+                await SetChildPurchasePriceMutationLock.AcquireProductsWithinBudgetAsync(
+                    costDb,
+                    new[] { unrelatedCostCode },
+                    totalWaitMilliseconds: 1_000
+                );
+                await costDb.Ado.CommitTranAsync();
+            }
+            finally
+            {
+                if (costDb.Ado.Transaction != null)
+                    await costDb.Ado.RollbackTranAsync();
+            }
+        }
+        finally
+        {
+            if (batchDb.Ado.Transaction != null)
+                await batchDb.Ado.RollbackTranAsync();
+        }
+    }
+
+    [SetChildPurchasePriceSqlServerFact]
+    [Trait("Category", "SQL")]
+    public async Task AcquireProductsInBatchWithinBudgetAsync_SqlServer同商品与全局独占仍阻塞()
+    {
+        var connectionString = Environment.GetEnvironmentVariable(ConnectionEnvironmentVariable);
+        Assert.False(string.IsNullOrWhiteSpace(connectionString));
+
+        var suffix = Guid.NewGuid().ToString("N").ToUpperInvariant();
+        var productCode = $"BATCH-BUSY-{suffix}";
+        using var productHolderDb = CreateClient(connectionString);
+        using var productWaiterDb = CreateClient(connectionString);
+        using var globalHolderDb = CreateClient(connectionString);
+        using var globalWaiterDb = CreateClient(connectionString);
+        await productHolderDb.Ado.BeginTranAsync();
+        await productWaiterDb.Ado.BeginTranAsync();
+        await globalHolderDb.Ado.BeginTranAsync();
+        await globalWaiterDb.Ado.BeginTranAsync();
+        try
+        {
+            await SetChildPurchasePriceMutationLock.AcquireProductsInBatchWithinBudgetAsync(
+                productHolderDb,
+                new[] { productCode },
+                totalWaitMilliseconds: 0
+            );
+            var sameProduct = await Assert.ThrowsAsync<SetChildPurchasePriceLockException>(() =>
+                SetChildPurchasePriceMutationLock.AcquireProductsInBatchWithinBudgetAsync(
+                    productWaiterDb,
+                    new[] { productCode },
+                    totalWaitMilliseconds: 250
+                ));
+            Assert.True(sameProduct.Resource.EndsWith(productCode, StringComparison.Ordinal));
+            Assert.True(sameProduct.ResultCode < 0);
+            await productWaiterDb.Ado.RollbackTranAsync();
+            await productWaiterDb.Ado.BeginTranAsync();
+            await productHolderDb.Ado.RollbackTranAsync();
+            await productHolderDb.Ado.BeginTranAsync();
+
+            await SetChildPurchasePriceMutationLock.AcquireAllAsync(globalHolderDb);
+            var global = await Assert.ThrowsAsync<SetChildPurchasePriceLockException>(() =>
+                SetChildPurchasePriceMutationLock.AcquireProductsInBatchWithinBudgetAsync(
+                    globalWaiterDb,
+                    new[] { $"BATCH-GLOBAL-{suffix}" },
+                    totalWaitMilliseconds: 250
+                ));
+            Assert.Equal("HB:SetChildPurchasePrice:Gate", global.Resource);
+            Assert.True(global.ResultCode < 0);
+        }
+        finally
+        {
+            if (globalWaiterDb.Ado.Transaction != null)
+                await globalWaiterDb.Ado.RollbackTranAsync();
+            if (globalHolderDb.Ado.Transaction != null)
+                await globalHolderDb.Ado.RollbackTranAsync();
+            if (productWaiterDb.Ado.Transaction != null)
+                await productWaiterDb.Ado.RollbackTranAsync();
+            if (productHolderDb.Ado.Transaction != null)
+                await productHolderDb.Ado.RollbackTranAsync();
+        }
+    }
+
+    [SetChildPurchasePriceSqlServerFact]
+    [Trait("Category", "SQL")]
+    public async Task AcquireProductsInBatchWithinBudgetAsync_SqlServer预算冲突回滚后不覆盖未获锁商品()
+    {
+        var connectionString = Environment.GetEnvironmentVariable(ConnectionEnvironmentVariable);
+        Assert.False(string.IsNullOrWhiteSpace(connectionString));
+
+        var suffix = Guid.NewGuid().ToString("N").ToUpperInvariant();
+        var availableCode = $"BATCH-A-{suffix}";
+        var blockedCode = $"BATCH-Z-{suffix}";
+        using var holderDb = CreateClient(connectionString);
+        using var waiterDb = CreateClient(connectionString);
+        using var verifyDb = CreateClient(connectionString);
+
+        await holderDb.Ado.BeginTranAsync();
+        await waiterDb.Ado.BeginTranAsync();
+        try
+        {
+            await SetChildPurchasePriceMutationLock.AcquireProductsInBatchWithinBudgetAsync(
+                holderDb,
+                new[] { blockedCode },
+                totalWaitMilliseconds: 0
+            );
+
+            // 规范顺序保证 A 先拿到锁，Z 冲突后整批失败；调用方必须回滚以释放 A。
+            var exception = await Assert.ThrowsAsync<SetChildPurchasePriceLockException>(() =>
+                SetChildPurchasePriceMutationLock.AcquireProductsInBatchWithinBudgetAsync(
+                    waiterDb,
+                    new[] { blockedCode, availableCode },
+                    totalWaitMilliseconds: 250
+                ));
+            Assert.True(exception.Resource.EndsWith(blockedCode, StringComparison.Ordinal));
+            Assert.True(exception.ResultCode < 0);
+
+            await waiterDb.Ado.RollbackTranAsync();
+            await holderDb.Ado.RollbackTranAsync();
+
+            await verifyDb.Ado.BeginTranAsync();
+            try
+            {
+                await SetChildPurchasePriceMutationLock.AcquireProductsInBatchWithinBudgetAsync(
+                    verifyDb,
+                    new[] { availableCode },
+                    totalWaitMilliseconds: 0
+                );
+                await verifyDb.Ado.RollbackTranAsync();
+            }
+            finally
+            {
+                if (verifyDb.Ado.Transaction != null)
+                    await verifyDb.Ado.RollbackTranAsync();
+            }
+        }
+        finally
+        {
+            if (waiterDb.Ado.Transaction != null)
+                await waiterDb.Ado.RollbackTranAsync();
+            if (holderDb.Ado.Transaction != null)
+                await holderDb.Ado.RollbackTranAsync();
+            if (verifyDb.Ado.Transaction != null)
+                await verifyDb.Ado.RollbackTranAsync();
+        }
+    }
+
+    [SetChildPurchasePriceSqlServerFact]
+    [Trait("Category", "SQL")]
+    public async Task AcquireProductsInBatchWithinBudgetAsync_SqlServer回滚释放批次商品锁()
+    {
+        var connectionString = Environment.GetEnvironmentVariable(ConnectionEnvironmentVariable);
+        Assert.False(string.IsNullOrWhiteSpace(connectionString));
+
+        var suffix = Guid.NewGuid().ToString("N").ToUpperInvariant();
+        var codes = new[] { $"BATCH-RELEASE-A-{suffix}", $"BATCH-RELEASE-B-{suffix}" };
+        using var holderDb = CreateClient(connectionString);
+        using var successorDb = CreateClient(connectionString);
+
+        await holderDb.Ado.BeginTranAsync();
+        try
+        {
+            var scope = await SetChildPurchasePriceMutationLock.AcquireProductsInBatchWithinBudgetAsync(
+                holderDb,
+                codes,
+                totalWaitMilliseconds: 0
+            );
+            scope.EnsureCovers(holderDb, codes);
+            await holderDb.Ado.RollbackTranAsync();
+
+            await successorDb.Ado.BeginTranAsync();
+            try
+            {
+                var successorScope = await SetChildPurchasePriceMutationLock.AcquireProductsInBatchWithinBudgetAsync(
+                    successorDb,
+                    codes,
+                    totalWaitMilliseconds: 0
+                );
+                successorScope.EnsureCovers(successorDb, codes);
+                await successorDb.Ado.CommitTranAsync();
+            }
+            finally
+            {
+                if (successorDb.Ado.Transaction != null)
+                    await successorDb.Ado.RollbackTranAsync();
+            }
+        }
+        finally
+        {
+            if (holderDb.Ado.Transaction != null)
+                await holderDb.Ado.RollbackTranAsync();
+        }
+    }
+
+    [SetChildPurchasePriceSqlServerFact]
+    [Trait("Category", "SQL")]
+    public async Task AcquireProductIdentitiesWithinBudgetAsync_SqlServer同一事务U锁可重入()
+    {
+        var connectionString = Environment.GetEnvironmentVariable(ConnectionEnvironmentVariable);
+        Assert.False(string.IsNullOrWhiteSpace(connectionString));
+
+        var productCode = $"IDENTITY-REENTER-{Guid.NewGuid():N}".ToUpperInvariant();
+        using var db = CreateClient(connectionString);
+        await db.Ado.BeginTranAsync();
+        try
+        {
+            var first = await SetChildPurchasePriceMutationLock.AcquireProductIdentitiesWithinBudgetAsync(
+                db,
+                new[] { productCode },
+                totalWaitMilliseconds: 500
+            );
+            var second = await SetChildPurchasePriceMutationLock.AcquireProductIdentitiesWithinBudgetAsync(
+                db,
+                new[] { productCode },
+                totalWaitMilliseconds: 500
+            );
+
+            first.EnsureCovers(db, new[] { productCode });
+            second.EnsureCovers(db, new[] { productCode });
+            await db.Ado.RollbackTranAsync();
+        }
+        finally
+        {
+            if (db.Ado.Transaction != null)
+                await db.Ado.RollbackTranAsync();
+        }
+    }
+
     [Fact]
     public void NormalizeProductCodes_忽略大小写空白重复并稳定排序()
     {

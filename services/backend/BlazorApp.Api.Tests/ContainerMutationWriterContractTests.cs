@@ -378,11 +378,22 @@ public sealed class ContainerMutationWriterContractTests
         );
         Assert.Contains("result.Failed.Add(", assignMethod);
 
-        foreach (var method in new[] { executeMethod, updateExistingMethod, finalizeMethod })
+        foreach (var method in new[] { updateExistingMethod, finalizeMethod })
         {
             Assert.Contains(containerConflictFilter, method);
             Assert.Contains(productConflictFilter, method);
         }
+        // 普通创建现在显式回滚并重试；整柜提交仍须在商品/货柜锁冲突时向外抛出，
+        // 不能要求它继续采用旧 catch filter 的源码形式。
+        AssertInOrderFrom(
+            executeMethod,
+            "catch (Exception ex)",
+            "if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out var lockConflict))",
+            "throw new RetryableProductCreationLockConflictException(",
+            "throw;",
+            "if (ContainerMutationLock.TryResolveConflict(ex, out _))",
+            "throw;"
+        );
         Assert.Contains("WAREHOUSE_BATCH_EXCEPTION", executeMethod);
         Assert.Contains("UPDATE_EXISTING_PRODUCTS_FAILED", updateExistingMethod);
         Assert.Contains("COMPLETE_CONTAINER_FAILED", finalizeMethod);
