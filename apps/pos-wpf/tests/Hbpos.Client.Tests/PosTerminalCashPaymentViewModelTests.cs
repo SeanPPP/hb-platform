@@ -5502,6 +5502,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var attemptGuid = Guid.Parse("10000000-0000-0000-0000-000000000174");
         var orderGuid = Guid.Parse("20000000-0000-0000-0000-000000000174");
         var recoveryKey = new CardRecoveryAttemptKey(CardProcessorKind.Linkly, attemptGuid);
+        var qualificationRequests = 0;
         var qualificationStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var qualificationResult = new TaskCompletionSource<CardPaymentHandoffCandidate?>(TaskCreationOptions.RunContinuationsAsynchronously);
         var openCenterCalls = 0;
@@ -5513,6 +5514,11 @@ public sealed class PosTerminalCashPaymentViewModelTests
             prepareCardPaymentHandoffAsync: _ =>
             {
                 qualificationStarted.TrySetResult(true);
+                // 关闭后的入口会重新查询；旧请求的迟到结果不得成为新请求的结果。
+                if (++qualificationRequests > 1)
+                {
+                    return Task.FromResult<CardPaymentHandoffCandidate?>(null);
+                }
                 return qualificationResult.Task;
             },
             handoffCardPaymentAsync: (_, _) =>
@@ -5586,6 +5592,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var attemptGuid = Guid.Parse("10000000-0000-0000-0000-000000000175");
         var orderGuid = Guid.Parse("20000000-0000-0000-0000-000000000175");
         var recoveryKey = new CardRecoveryAttemptKey(CardProcessorKind.Linkly, attemptGuid);
+        var qualificationRequests = 0;
         var qualificationStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var qualificationResult = new TaskCompletionSource<CardPaymentHandoffCandidate?>(TaskCreationOptions.RunContinuationsAsynchronously);
         var openCenterCalls = 0;
@@ -5597,6 +5604,11 @@ public sealed class PosTerminalCashPaymentViewModelTests
             prepareCardPaymentHandoffAsync: _ =>
             {
                 qualificationStarted.TrySetResult(true);
+                // 关闭后的入口会重新查询；旧请求的迟到异常只属于旧一代资格。
+                if (++qualificationRequests > 1)
+                {
+                    return Task.FromResult<CardPaymentHandoffCandidate?>(null);
+                }
                 return qualificationResult.Task;
             },
             handoffCardPaymentAsync: (_, _) =>
@@ -5846,6 +5858,130 @@ public sealed class PosTerminalCashPaymentViewModelTests
         viewModel.OpenCardRecoveryCenterCommand.Execute(null);
 
         Assert.True(opened);
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    [InlineData(false, true)]
+    public async Task Payment_page_open_recovery_after_closing_overlay_requires_successful_handoff(
+        bool handoffSucceeds,
+        bool usePrimaryAction)
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("RECOVERY-ENTRY", "Recovery Entry Tea", "930ENTRY", PriceSourceKind.StoreRetailPrice, 10m));
+        var attemptKey = new CardRecoveryAttemptKey(CardProcessorKind.Linkly, Guid.NewGuid());
+        var workflow = new FakeCashPaymentWorkflowService
+        {
+            AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously)
+        };
+        workflow.AddTenderResult.SetResult(new PaymentTenderAttemptResult(
+            false,
+            "payment.card.resultUnknown",
+            CardResult: new CardPaymentResultDisposition(
+                CardPaymentTerminalOutcome.ResultUnknown,
+                CardPaymentErrorKind.ActiveSessionRequiresRecovery,
+                PreserveStatus: true),
+            RecoveryAttemptKey: attemptKey,
+            RecoveryOrderGuid: Guid.NewGuid()));
+        var navigation = new List<string>();
+        var candidate = new CardPaymentHandoffCandidate(attemptKey.Processor, attemptKey.AttemptGuid);
+        using var viewModel = new PaymentViewModel(
+            cart,
+            workflow,
+            Session,
+            onBackToPos: () => navigation.Add("pos"),
+            prepareCardPaymentHandoffAsync: _ => Task.FromResult<CardPaymentHandoffCandidate?>(candidate),
+            handoffCardPaymentAsync: (_, _) => Task.FromResult(handoffSucceeds),
+            openCardRecoveryCenter: () => navigation.Add(cart.IsEmpty ? "recovery-empty" : "recovery-occupied"));
+
+        await viewModel.SelectCardCommand.ExecuteAsync(null);
+        viewModel.CloseCardPaymentErrorOverlayCommand.Execute(null);
+        Assert.Single(cart.Lines);
+        Assert.True(viewModel.IsPaymentInteractionLocked);
+
+        await (usePrimaryAction
+            ? viewModel.CardPaymentErrorPrimaryActionCommand
+            : viewModel.OpenCardRecoveryCenterCommand).ExecuteAsync(null);
+
+        if (handoffSucceeds)
+        {
+            Assert.Equal(new[] { "pos", "recovery-empty" }, navigation);
+            Assert.Empty(cart.Lines);
+            Assert.False(viewModel.IsCardPaymentRecoveryRequired);
+        }
+        else
+        {
+            Assert.Empty(navigation);
+            Assert.Single(cart.Lines);
+            Assert.True(viewModel.IsCardPaymentRecoveryRequired);
+            Assert.True(viewModel.IsPaymentInteractionLocked);
+        }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Payment_page_open_recovery_serializes_requalification_and_handoff(bool delayQualification)
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("RECOVERY-ENTRY-WAIT", "Recovery Entry Tea", "930ENTRYWAIT", PriceSourceKind.StoreRetailPrice, 10m));
+        var attemptKey = new CardRecoveryAttemptKey(CardProcessorKind.Linkly, Guid.NewGuid());
+        var candidate = new CardPaymentHandoffCandidate(attemptKey.Processor, attemptKey.AttemptGuid);
+        var workflow = new FakeCashPaymentWorkflowService
+        {
+            AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously)
+        };
+        workflow.AddTenderResult.SetResult(new PaymentTenderAttemptResult(
+            false,
+            "payment.card.resultUnknown",
+            CardResult: new CardPaymentResultDisposition(
+                CardPaymentTerminalOutcome.ResultUnknown,
+                CardPaymentErrorKind.ActiveSessionRequiresRecovery,
+                PreserveStatus: true),
+            RecoveryAttemptKey: attemptKey,
+            RecoveryOrderGuid: Guid.NewGuid()));
+        var qualification = new TaskCompletionSource<CardPaymentHandoffCandidate?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handoff = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var prepareCalls = 0;
+        var handoffCalls = 0;
+        var centerCalls = 0;
+        using var viewModel = new PaymentViewModel(
+            cart,
+            workflow,
+            Session,
+            prepareCardPaymentHandoffAsync: _ => ++prepareCalls > 1 && delayQualification
+                ? qualification.Task
+                : Task.FromResult<CardPaymentHandoffCandidate?>(candidate),
+            handoffCardPaymentAsync: (_, _) =>
+            {
+                handoffCalls++;
+                return delayQualification ? Task.FromResult(true) : handoff.Task;
+            },
+            openCardRecoveryCenter: () => centerCalls++);
+        await viewModel.SelectCardCommand.ExecuteAsync(null);
+        viewModel.CloseCardPaymentErrorOverlayCommand.Execute(null);
+
+        var opening = viewModel.OpenCardRecoveryCenterCommand.ExecuteAsync(null);
+        Assert.False(viewModel.OpenCardRecoveryCenterCommand.CanExecute(null));
+        Assert.False(viewModel.CardPaymentErrorPrimaryActionCommand.CanExecute(null));
+        Assert.Single(cart.Lines);
+        Assert.True(viewModel.IsPaymentInteractionLocked);
+        // 两个入口即便在检查与执行间交错，也不得重复移交或提前打开中心。
+        await viewModel.CardPaymentErrorPrimaryActionCommand.ExecuteAsync(null);
+        await viewModel.OpenCardRecoveryCenterCommand.ExecuteAsync(null);
+        Assert.Equal(0, centerCalls);
+
+        qualification.TrySetResult(candidate);
+        handoff.TrySetResult(true);
+        await opening.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(2, prepareCalls);
+        Assert.Equal(1, handoffCalls);
+        Assert.Equal(1, centerCalls);
+        Assert.Empty(cart.Lines);
+        Assert.False(viewModel.IsCardPaymentRecoveryRequired);
     }
 
     [Fact]
