@@ -125,7 +125,7 @@ namespace BlazorApp.Api.Services
     /// 全量刷新当天数据
     /// 刷新当天的每日统计、分时统计、分店统计和供应商统计
     /// </summary>
-    public async Task FullRefreshCurrentDay()
+    public async Task FullRefreshCurrentDay(bool automatic = false, bool includeHistorical = true, int firstHistoricalDayOffset = 1)
     {
         try
         {
@@ -135,14 +135,25 @@ namespace BlazorApp.Api.Services
 
             // 当天主刷新也复用带数据库租约的完整路径，避免和手动补算抢同一天。
             var refreshed = await RunLeasedFullRefreshForSingleDateAsync(currentDay, "当天");
-            if (!refreshed)
+            if (!refreshed || !includeHistorical)
             {
                 return;
             }
 
-            // POSM 可能延迟上传，商品统计额外滚动补算最近 7 天。
-            for (var offset = 1; offset < 7; offset++)
+            // POSM 可能延迟上传，商品统计额外滚动补算最近 7 天；历史日只在夜间窗口启动。
+            // 每个日期开始前重新检查，窗口边界到达后保留剩余日期到下一轮；当天主刷新和显式入口不受影响。
+            for (var offset = Math.Clamp(firstHistoricalDayOffset, 1, 7); offset < 7; offset++)
             {
+                if (automatic && !SalesStatisticsHistoricalRefreshWindow.IsOpen(_timeProvider))
+                {
+                    _logger.LogInformation(
+                        "当前时间不在历史商品统计夜间窗口，保留后续历史日待下一窗口: {Date}, RemainingOffset={Offset}",
+                        currentDay,
+                        offset
+                    );
+                    return;
+                }
+
                 await RunLeasedProductStoreDailyRefreshAsync(currentDay.AddDays(-offset));
             }
 

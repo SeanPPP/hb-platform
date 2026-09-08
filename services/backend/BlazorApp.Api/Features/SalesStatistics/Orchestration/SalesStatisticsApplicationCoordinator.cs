@@ -34,7 +34,8 @@ internal sealed class SalesStatisticsApplicationCoordinator :
         ILogger<SalesStatisticsApplicationCoordinator> logger,
         IConfiguration configuration,
         IServiceScopeFactory serviceScopeFactory,
-        HBSalesRecordSqlSugarContext? hbSalesContext = null)
+        HBSalesRecordSqlSugarContext? hbSalesContext = null,
+        TimeProvider? timeProvider = null)
         : this(
             posmContext,
             context,
@@ -42,7 +43,8 @@ internal sealed class SalesStatisticsApplicationCoordinator :
             configuration,
             serviceScopeFactory,
             serviceProvider => serviceProvider.GetRequiredService<ISalesStatisticsRecalculationExecutor>(),
-            hbSalesContext)
+            hbSalesContext,
+            timeProvider)
     {
     }
 
@@ -53,7 +55,8 @@ internal sealed class SalesStatisticsApplicationCoordinator :
         IConfiguration configuration,
         IServiceScopeFactory serviceScopeFactory,
         Func<IServiceProvider, ISalesStatisticsRecalculationExecutor> resolveRecalculationExecutor,
-        HBSalesRecordSqlSugarContext? hbSalesContext = null)
+        HBSalesRecordSqlSugarContext? hbSalesContext = null,
+        TimeProvider? timeProvider = null)
     {
         _posmContext = posmContext;
         var shared = new SalesStatisticsSliceContext(
@@ -66,7 +69,8 @@ internal sealed class SalesStatisticsApplicationCoordinator :
             hbSalesContext,
             configuration.GetValue<int>("ScheduledTasks:MaxConcurrentUpdates", 5),
             configuration.GetValue<int>("ScheduledTasks:MaxDaysForConcurrentUpdate", 365),
-            configuration.GetValue<int>("ScheduledTasks:MaxDaysPerChunk", 7)
+            configuration.GetValue<int>("ScheduledTasks:MaxDaysPerChunk", 7),
+            timeProvider
         );
 
         // 先组装叶子切片，再逐层组装调用方；任何切片都不会反向持有协调器或兼容门面。
@@ -109,7 +113,8 @@ internal sealed class SalesStatisticsApplicationCoordinator :
 
     internal Task FullRefreshPreviousDay() => _storeDaily.FullRefreshPreviousDay();
 
-    internal Task FullRefreshCurrentDay() => _storeDaily.FullRefreshCurrentDay();
+    internal Task FullRefreshCurrentDay(bool automatic = false, bool includeHistorical = true, int firstHistoricalDayOffset = 1) =>
+        _storeDaily.FullRefreshCurrentDay(automatic, includeHistorical, firstHistoricalDayOffset);
 
     internal Task UpdateStoreStatistics(DateTime date, List<string>? branchCodes = null) =>
         _storeDaily.UpdateStoreStatistics(date, branchCodes);

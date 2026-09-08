@@ -1,10 +1,12 @@
 using System.Data;
+using System.Diagnostics;
 using System.Linq;
 using System.Text.Json;
 using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services.ProductCosts;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Helper;
 using BlazorApp.Shared.Models;
@@ -28,6 +30,8 @@ namespace BlazorApp.Api.Features.LocalSupplierInvoices
         private IAutoPricingService _autoPricingService => _dependencies.AutoPricingService;
         private IWarehouseProductChangeHistoryService _changeHistoryService => _dependencies.ChangeHistoryService;
         private ILocalSupplierInvoiceHqProductSyncService? _hqProductSyncService => _dependencies.HqProductSyncService;
+        private const int DefaultCostLockWaitMilliseconds = 10_000;
+        private const string StoreUpdateCostLockBusyCode = "STORE_UPDATE_COST_LOCK_BUSY";
 
         public LocalSupplierInvoicesPricingHandler(LocalSupplierInvoicesDependencies dependencies)
         {
@@ -303,6 +307,15 @@ namespace BlazorApp.Api.Features.LocalSupplierInvoices
             string updatedBy
         )
         {
+            return await UpdateDetailsToStorePricesAsync(dto, updatedBy, DefaultCostLockWaitMilliseconds);
+        }
+
+        public async Task<ApiResponse<UpdateToStorePricesResultDto>> UpdateDetailsToStorePricesAsync(
+            UpdateToStorePricesRequest dto,
+            string updatedBy,
+            int lockWaitMilliseconds
+        )
+        {
             try
             {
                 var db = _context.Db;
@@ -345,12 +358,36 @@ namespace BlazorApp.Api.Features.LocalSupplierInvoices
                 try
                 {
                     // 成本主档、关系与门店投影必须在同一把父商品业务锁下写入，锁内部会按编码排序，避免批量操作互相等待形成死锁。
-                    var lockScope = productCodes.Count == 0
-                        ? null
-                        : await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
-                            db,
-                            productCodes
+                    ProductCostMutationLockScope? lockScope;
+                    var lockStopwatch = Stopwatch.StartNew();
+                    try
+                    {
+                        lockScope = productCodes.Count == 0
+                            ? null
+                            : await SetChildPurchasePriceMutationLock.AcquireProductsWithinBudgetAsync(
+                                db,
+                                productCodes,
+                                Math.Clamp(lockWaitMilliseconds, 1, DefaultCostLockWaitMilliseconds)
+                            );
+                    }
+                    catch (ProductCostMutationLockException ex) when (ex.ResultCode is -1 or -3)
+                    {
+                        // 仅获锁阶段失败且事务回滚成功时返回专用码；此时没有分店业务写入，可由后台 job 安全重试。
+                        await db.Ado.RollbackTranAsync();
+                        _logger.LogWarning(
+                            "更新分店价格等待成本锁 InvoiceGuid={InvoiceGuid} Resource={Resource} ProductCount={ProductCount} WaitMs={WaitMs} ResultCode={ResultCode} Stage=LocalLock",
+                            dto.InvoiceGuid,
+                            ex.Resource,
+                            productCodes.Count,
+                            lockStopwatch.ElapsedMilliseconds,
+                            ex.ResultCode
                         );
+                        return ApiResponse<UpdateToStorePricesResultDto>.Error(
+                            "分店价格更新繁忙，等待其他成本操作超时，本次未更新分店价格",
+                            StoreUpdateCostLockBusyCode,
+                            new UpdateToStorePricesResultDto()
+                        );
+                    }
                     // 业务锁内重新读取明细和两层主成本源，禁止继续使用等待锁之前的实体快照。
                     var details = await db.Queryable<StoreLocalSupplierInvoiceDetails>()
                         .Where(d =>
