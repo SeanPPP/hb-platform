@@ -23,9 +23,10 @@ type CurrentUserApiDto = Omit<CurrentUser, 'stores'> & {
 }
 
 export async function login(payload: LoginRequest) {
-  return request.post<ApiResponse<SessionResponse>>('/api/Auth/session/login', payload, {
+  const response = await request.post<ApiResponse<SessionResponse>>('/api/Auth/session/login', payload, {
     headers: await getClientPublicIpHeaders(),
   })
+  return unwrapApiData(response)
 }
 
 export async function logout() {
