@@ -100,6 +100,10 @@ import { playAttendancePunchSuccessSound } from "@/modules/scanner/scan-sound";
 import { useCameraScan } from "@/modules/scanner/use-camera-scan";
 import type { Store } from "@/modules/shop/types";
 import { useStores } from "@/modules/shop/use-stores";
+import {
+  getPosEnabledStores,
+  resolveScopedStoreCode,
+} from "@/modules/shop/store-scope";
 import { useStoreUsers } from "@/modules/users";
 import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
@@ -202,9 +206,13 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
   const {
     stores,
     selectedStoreCode: rememberedStoreCode,
+    isDeviceMode,
+    deviceBoundStore,
     isHydratingSelection,
     selectStore,
   } = useStores();
+  // 仅限制门店选择；扫码仍按原已分配分店与后端授权校验。
+  const posEnabledStores = useMemo(() => getPosEnabledStores(stores), [stores]);
   const [activeMainTab, setActiveMainTab] = useState<AttendanceMainTab>(
     mode === "management" ? "management" : "personal",
   );
@@ -260,8 +268,8 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
   } = usePunchVerification();
 
   const managerStores = useMemo(
-    () => (access.isAdmin ? stores : stores.filter(isPrimaryStore)),
-    [access.isAdmin, stores],
+    () => (access.isAdmin ? posEnabledStores : posEnabledStores.filter(isPrimaryStore)),
+    [access.isAdmin, posEnabledStores],
   );
   const canViewAttendanceManagement = access.canViewAttendanceManagement;
   const canReviewAttendance = access.canReviewAttendance;
@@ -289,7 +297,7 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
     isManagementTab && activeManagementTab === "holidays";
   const isLeaveManagementTab =
     isManagementTab && activeManagementTab === "leave";
-  const sectionStores = isManagementMode ? managerStores : stores;
+  const sectionStores = isManagementMode ? managerStores : posEnabledStores;
   const employeeWeekStartDate = useMemo(
     () => getWeekStartDate(selectedDate),
     [selectedDate],
@@ -298,23 +306,16 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
 
   useEffect(() => {
     setSelectedStoreCode((current) => {
-      if (
-        current &&
-        sectionStores.some((store) => store.storeCode === current)
-      ) {
-        return current;
-      }
-
-      if (
-        rememberedStoreCode &&
-        sectionStores.some((store) => store.storeCode === rememberedStoreCode)
-      ) {
-        return rememberedStoreCode;
-      }
-
-      return sectionStores[0]?.storeCode;
+      // 设备绑定门店可能没有 POS 启用字段；它仍是查询作用域，但不能混入 Picker 候选。
+      return resolveScopedStoreCode({
+        currentStoreCode: current,
+        persistedStoreCode: rememberedStoreCode,
+        deviceBoundStoreCode: deviceBoundStore?.storeCode,
+        isDeviceMode,
+        stores: sectionStores,
+      }) ?? sectionStores[0]?.storeCode;
     });
-  }, [rememberedStoreCode, sectionStores]);
+  }, [deviceBoundStore?.storeCode, isDeviceMode, rememberedStoreCode, sectionStores]);
 
   useEffect(() => {
     if (mode !== "combined") {
@@ -698,10 +699,8 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
   );
 
   const selectedStore = useMemo(
-    () =>
-      findStoreByCode(sectionStores, selectedStoreCode) ??
-      findStoreByCode(stores, selectedStoreCode),
-    [sectionStores, selectedStoreCode, stores],
+    () => findStoreByCode(stores, selectedStoreCode),
+    [selectedStoreCode, stores],
   );
   const selectedStoreName = useMemo(
     () => selectedStore?.storeName,
@@ -1669,6 +1668,14 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
         presentation="sheet"
         stores={sectionStores}
         selectedStoreCode={selectedStoreCode}
+        renderStoreLabel={(store) => (
+          <View>
+            <Text variant="bodyMedium">{store.storeName || store.storeCode}</Text>
+            <Text variant="bodySmall" style={styles.storePickerCode}>
+              {store.storeCode}
+            </Text>
+          </View>
+        )}
         title={t("common:labels.selectStore")}
         cancelLabel={t("common:actions.cancel")}
         onDismiss={() => setStorePickerVisible(false)}
@@ -1681,6 +1688,9 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
 export default AttendanceScreen;
 
 const styles = StyleSheet.create({
+  storePickerCode: {
+    color: "#6B7280",
+  },
   centered: {
     alignItems: "center",
     flex: 1,
