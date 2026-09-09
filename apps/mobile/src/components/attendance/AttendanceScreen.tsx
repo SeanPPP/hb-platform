@@ -35,7 +35,8 @@ import {
   cancelAvailability,
   createAttendanceHoliday,
   createAttendanceSchedule,
-  createAvailability,
+  createAvailabilityBatch,
+  verifyAvailabilityBatch,
   createMyAttendancePunchAdjustment,
   createManagedLeaveRequest,
   deleteAttendanceHoliday,
@@ -439,15 +440,16 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
   });
 
   const createAvailabilityMutation = useMutation({
-    mutationFn: createAvailability,
-    onSuccess: async () => {
-      await invalidateEmployeeData();
+    mutationFn: createAvailabilityBatch,
+    retry: false,
+    onSuccess: () => {
       showMessage(t("messages.availabilitySaved"));
     },
     onError: (error) =>
       showMessage(
         getErrorMessage(error, "messages.saveFailed"),
       ),
+    onSettled: () => { void invalidateEmployeeData(); },
   });
 
   const updateAvailabilityMutation = useMutation({
@@ -458,14 +460,15 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
       availabilityGuid: string;
       payload: AttendanceAvailabilityPayload;
     }) => updateAvailability(availabilityGuid, payload),
-    onSuccess: async () => {
-      await invalidateEmployeeData();
+    retry: false,
+    onSuccess: () => {
       showMessage(t("messages.availabilitySaved"));
     },
     onError: (error) =>
       showMessage(
         getErrorMessage(error, "messages.saveFailed"),
       ),
+    onSettled: () => { void invalidateEmployeeData(); },
   });
 
   const cancelAvailabilityMutation = useMutation({
@@ -1192,7 +1195,7 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
     !isAuthenticated ||
     !user ||
     isHydratingSelection ||
-    employeeInitialLoading
+    (employeeInitialLoading && !isAvailabilityWeekTab)
   ) {
     return (
       <SafeAreaView style={styles.container} edges={["top", "left", "right"]}>
@@ -1209,7 +1212,7 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
     );
   }
 
-  if (isPersonalTab && employeeLoadError) {
+  if (isPersonalTab && employeeLoadError && !isAvailabilityWeekTab) {
     return (
       <SafeAreaView style={styles.container} edges={["top", "left", "right"]}>
         <View style={styles.centered}>
@@ -1311,11 +1314,13 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
               ]}
               style={styles.sectionTabs}
             />
-            <MonthDatePickerField
-              label={t("datePicker.selectDate")}
-              value={selectedDate}
-              onChange={setSelectedDate}
-            />
+            {isPunchRecordsTab ? (
+              <MonthDatePickerField
+                label={t("datePicker.selectDate")}
+                value={selectedDate}
+                onChange={setSelectedDate}
+              />
+            ) : null}
             {isPunchRecordsTab ? (
               <>
                 <TodayPunchCard
@@ -1355,17 +1360,30 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
             ) : null}
             {isAvailabilityWeekTab ? (
               <>
+                {employeeLoadError ? (
+                  <Text accessibilityRole="alert" style={styles.muted}>
+                    {getErrorMessage(employeeLoadError, "messages.loadFailed")}
+                  </Text>
+                ) : null}
+                {employeeInitialLoading ? <ActivityIndicator /> : null}
                 <AvailabilityForm
+                  key={`${user?.userGuid ?? ""}:${selectedStoreCode ?? ""}`}
                   availability={availabilityQuery.data ?? []}
                   defaultDate={selectedDate}
+                  onWeekChange={setSelectedDate}
                   isBusy={isAvailabilityBusy}
                   onCreate={(payload) =>
-                    createAvailabilityMutation.mutate(
+                    createAvailabilityMutation.mutateAsync(
                       withSelectedStore(payload),
                     )
                   }
+                  onVerify={async (payload) => {
+                    const confirmedDates = await verifyAvailabilityBatch(withSelectedStore(payload));
+                    void invalidateEmployeeData();
+                    return confirmedDates;
+                  }}
                   onUpdate={(availabilityGuid, payload) =>
-                    updateAvailabilityMutation.mutate({
+                    updateAvailabilityMutation.mutateAsync({
                       availabilityGuid,
                       payload: withSelectedStore(payload),
                     })
