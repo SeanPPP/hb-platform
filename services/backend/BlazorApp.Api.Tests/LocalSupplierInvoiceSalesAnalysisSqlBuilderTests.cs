@@ -175,7 +175,10 @@ public class LocalSupplierInvoiceSalesAnalysisSqlBuilderTests
             StringComparison.Ordinal
         );
         Assert.Contains("WHERE rp.PurchaseRank = 1", sql.PagedSql, StringComparison.Ordinal);
-        Assert.Contains("WHERE rp.PurchaseRank = 2", sql.PagedSql, StringComparison.Ordinal);
+        Assert.Contains("LEAD(pda.PurchaseDate) OVER (", sql.PagedSql, StringComparison.Ordinal);
+        Assert.Contains("LEAD(pda.PurchaseQty) OVER (", sql.PagedSql, StringComparison.Ordinal);
+        Assert.DoesNotContain("PreviousPurchases AS (", sql.PagedSql, StringComparison.Ordinal);
+        Assert.DoesNotContain("SalesMetrics AS (", sql.PagedSql, StringComparison.Ordinal);
         Assert.Contains(
             "AND h.StoreCode IN (@StoreCode0)",
             sql.PagedSql,
@@ -220,10 +223,12 @@ public class LocalSupplierInvoiceSalesAnalysisSqlBuilderTests
             StringComparison.Ordinal
         );
         Assert.Contains(
-            "s.Date >= pp.PreviousPurchaseDate AND s.Date < lp.LatestPurchaseDate",
+            "s.Date >= lp.PreviousPurchaseDate AND s.Date < lp.LatestPurchaseDate",
             sql.PagedSql,
             StringComparison.Ordinal
         );
+        Assert.Contains("s.Date >= COALESCE(lp.PreviousPurchaseDate, lp.LatestPurchaseDate)", sql.PagedSql);
+        Assert.Contains("SUM(daily.SalesQty30)", sql.PagedSql);
         Assert.False(LocalSupplierInvoiceSalesAnalysisSqlBuilder.ContainsWriteKeyword(sql.PagedSql));
     }
 
