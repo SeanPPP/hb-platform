@@ -61,6 +61,9 @@ export const PAYMENT_MIN_TOUCH_TARGET = 44;
 const SQUARE_AUTO_RECOVERY_INTERVAL_MS = 2_000;
 const SQUARE_AUTO_RECOVERY_MAX_ATTEMPTS = 45;
 const SQUARE_AUTO_RECOVERY_WINDOW_MS = 90_000;
+const LINKLY_AUTO_RECOVERY_INTERVAL_MS = 2_000;
+const LINKLY_AUTO_RECOVERY_MAX_ATTEMPTS = 89;
+const LINKLY_AUTO_RECOVERY_WINDOW_MS = 180_000;
 
 export type PaymentInstallmentModeIssue = "unavailable";
 
@@ -171,9 +174,10 @@ export function PaymentScreen({
 
   useEffect(() => {
     const attemptId = state.attemptId;
+    const autoRecovery = autoRecoveryPolicy(state.provider);
     if (
       !attemptId ||
-      state.provider !== "square" ||
+      !autoRecovery ||
       state.phase !== "pending" ||
       state.runtimeStatus !== "pending" ||
       !state.allowedActions.recover
@@ -185,9 +189,10 @@ export function PaymentScreen({
     const createdAtMs = canonicalAttemptCreatedAtMs(
       state.attemptCreatedAtIso,
       now,
+      autoRecovery.windowMs,
     );
     if (createdAtMs === null) return;
-    const deadlineAtMs = createdAtMs + SQUARE_AUTO_RECOVERY_WINDOW_MS;
+    const deadlineAtMs = createdAtMs + autoRecovery.windowMs;
     let disposed = false;
     let tickTimer: ReturnType<typeof setTimeout> | null = null;
     let activeController: AbortController | null = null;
@@ -206,12 +211,12 @@ export function PaymentScreen({
         return;
       }
       const nextTickNumber =
-        Math.floor((scheduleNow - createdAtMs) / SQUARE_AUTO_RECOVERY_INTERVAL_MS) +
+        Math.floor((scheduleNow - createdAtMs) / autoRecovery.intervalMs) +
         1;
       const nextTickAtMs =
-        createdAtMs + nextTickNumber * SQUARE_AUTO_RECOVERY_INTERVAL_MS;
+        createdAtMs + nextTickNumber * autoRecovery.intervalMs;
       if (
-        nextTickNumber > SQUARE_AUTO_RECOVERY_MAX_ATTEMPTS ||
+        nextTickNumber > autoRecovery.maxAttempts ||
         nextTickAtMs >= deadlineAtMs
       ) {
         return;
@@ -228,7 +233,7 @@ export function PaymentScreen({
       // 事件循环若跨过了下一个锚点，本 tick 已错过；直接跳到未来锚点，不追赶。
       if (
         tickNow >= deadlineAtMs ||
-        tickNow >= scheduledAtMs + SQUARE_AUTO_RECOVERY_INTERVAL_MS
+        tickNow >= scheduledAtMs + autoRecovery.intervalMs
       ) {
         scheduleNext();
         return;
@@ -237,7 +242,7 @@ export function PaymentScreen({
       if (
         current.attemptId !== attemptId ||
         current.attemptCreatedAtIso !== state.attemptCreatedAtIso ||
-        current.provider !== "square" ||
+        current.provider !== state.provider ||
         current.phase !== "pending" ||
         current.runtimeStatus !== "pending" ||
         current.busy ||
@@ -1577,6 +1582,7 @@ function LinklyControls({
     return null;
   }
   const allowed = new Set(state.linkly.allowedKeys);
+  const interaction = state.linkly.interaction;
   const showSafeKeys =
     state.linkly.status === "in-progress" &&
     state.phase !== "unknown" &&
@@ -1585,24 +1591,56 @@ function LinklyControls({
     <View style={styles.linklyPanel} testID="payment-linkly-controls">
       <Text style={styles.sectionTitle}>{t("terminal.title")}</Text>
       <Text style={styles.inputHint}>{t("terminal.safeOnly")}</Text>
+      {interaction?.displayText ? (
+        <Text style={styles.linklyTerminalHint} testID="payment-linkly-display-text">
+          {interaction.displayText}
+        </Text>
+      ) : null}
+      {interaction?.displayLines.map((line, index) => (
+        <Text
+          key={`${index}-${line}`}
+          style={styles.linklyTerminalHint}
+          testID={`payment-linkly-display-line-${index}`}
+        >
+          {line}
+        </Text>
+      ))}
+      {interaction?.inputType ? (
+        <Text style={styles.linklyTerminalHint} testID="payment-linkly-input-type">
+          {t("terminal.inputRequired")}
+        </Text>
+      ) : null}
+      {interaction?.graphicCode ? (
+        <Text style={styles.linklyTerminalHint} testID="payment-linkly-graphic-code">
+          {t(linklyGraphicCopyKey(interaction.graphicCode))}
+        </Text>
+      ) : null}
+      {interaction?.recoveryAction ? (
+        <Text style={styles.linklyTerminalHint} testID="payment-linkly-recovery-action">
+          {t("terminal.recoveryRequired")}
+        </Text>
+      ) : null}
       {showSafeKeys ? (
         <View style={styles.linklyKeyGrid}>
-          {LINKLY_SAFE_OPERATOR_KEYS.map((key) => (
+          {LINKLY_SAFE_OPERATOR_KEYS.filter((key) =>
+            allowed.has(key) && !(key === "cancel" && allowed.has("ok"))).map((key) => (
             <ActionButton
-              disabled={state.busy || !allowed.has(key)}
+              disabled={state.busy}
               key={key}
-              label={t(linklyKeyCopyKey(key))}
+              label={t(key === "ok" && allowed.has("cancel") ? "terminal.okCancel" : linklyKeyCopyKey(key))}
               onPress={() => {
                 void presenter.sendLinklyKey(key);
               }}
               sound="key"
               testID={`payment-linkly-${key}`}
-              tone="secondary"
+              tone={key === "cancel" || key === "no" ? "danger" : "secondary"}
             />
           ))}
         </View>
       ) : null}
-      {state.linkly.status === "completed" ? (
+      {state.linkly.status === "completed" ||
+      state.linkly.status === "cancelled" ||
+      state.linkly.status === "declined" ? (
         <View style={styles.linklyConfirmation}>
           <ActionButton
             disabled={state.busy}
@@ -2142,6 +2180,7 @@ function canSafelyLeave(state: PaymentPresenterState): boolean {
 function canonicalAttemptCreatedAtMs(
   createdAtIso: string | null,
   nowMs: number,
+  windowMs: number,
 ): number | null {
   if (!createdAtIso) return null;
   const createdAtMs = Date.parse(createdAtIso);
@@ -2154,11 +2193,39 @@ function canonicalAttemptCreatedAtMs(
   }
   if (
     createdAtMs > nowMs ||
-    nowMs >= createdAtMs + SQUARE_AUTO_RECOVERY_WINDOW_MS
+    nowMs >= createdAtMs + windowMs
   ) {
     return null;
   }
   return createdAtMs;
+}
+
+function autoRecoveryPolicy(
+  provider: PaymentPresenterState["provider"],
+): Readonly<{ intervalMs: number; maxAttempts: number; windowMs: number }> | null {
+  if (provider === "square") {
+    return {
+      intervalMs: SQUARE_AUTO_RECOVERY_INTERVAL_MS,
+      maxAttempts: SQUARE_AUTO_RECOVERY_MAX_ATTEMPTS,
+      windowMs: SQUARE_AUTO_RECOVERY_WINDOW_MS,
+    };
+  }
+  if (provider === "linkly-cloud") {
+    return {
+      intervalMs: LINKLY_AUTO_RECOVERY_INTERVAL_MS,
+      maxAttempts: LINKLY_AUTO_RECOVERY_MAX_ATTEMPTS,
+      windowMs: LINKLY_AUTO_RECOVERY_WINDOW_MS,
+    };
+  }
+  return null;
+}
+
+function linklyGraphicCopyKey(graphicCode: string): PaymentCopyKey {
+  const normalized = graphicCode.trim().toLowerCase();
+  if (normalized.includes("card") || normalized.includes("tap")) {
+    return "terminal.graphicCard";
+  }
+  return "terminal.graphicTerminal";
 }
 
 function shortIdentifier(value: string): string {
