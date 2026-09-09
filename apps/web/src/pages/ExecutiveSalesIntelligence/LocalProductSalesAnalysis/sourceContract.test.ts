@@ -55,10 +55,10 @@ for (const token of [
   'canSetCurrentProduct',
   'ProductImage',
   'FlowTrendChart',
-  '本地进货单明细',
-  '授权分店销量排行',
-  '全选筛选结果',
-  '清空选择',
+  'localProductSalesAnalysis.invoiceDetails',
+  'localProductSalesAnalysis.branchRanking',
+  'localProductSalesAnalysis.selectAllFiltered',
+  'common.clearSelection',
   'getCurrentProductAfterCancellation',
   'loadCandidatePage',
   'retrySection',
@@ -139,7 +139,7 @@ assert(page.includes('analysis.sectionErrors.branches'), '分店分段失败必�
 assert(count(page, 'createPageRequestTimeout(PAGE_BOOTSTRAP_TIMEOUT_SECONDS)') === 1, '只有 bootstrap 必须使用 15 秒安全超时')
 assert(count(page, 'createPageRequestTimeout(PAGE_SECTION_TIMEOUT_SECONDS)') === 1, '通用分段请求必须显式使用 8 秒安全超时')
 assert(page.includes('bootstrapGuardRef.current.isCurrent(token)'), 'bootstrap 竞态旧响应必须被 guard 丢弃')
-assert(page.includes('请求超时'), '超时必须给出可重试提示')
+assert(page.includes('localProductSalesAnalysis.errors.timeout'), '超时必须给出可翻译的重试提示')
 
 // 分店钻取键盘可聚焦按钮
 if (!page.includes('className={styles.branchButton}') || page.includes('onClick: () => setSelectedBranchCode')) {
