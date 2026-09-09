@@ -108,6 +108,7 @@
     }
   },
   "scanner": {
+    "waitingForFreshCode": "请继续对准 POS，正在等待刷新的二维码…",
     "title": "扫描 POS 考勤二维码",
     "permissionTitle": "需要相机权限",
     "permissionDescription": "允许使用相机后即可扫描 POS 考勤二维码。",
@@ -308,6 +309,12 @@
   "actions": {
     "scanPunch": "扫码打卡",
     "processingPunch": "处理中...",
+    "punchStages": {
+      "validating": "正在验证二维码…",
+      "locating": "正在获取当前位置…",
+      "saving": "正在提交打卡…",
+      "tracking": "打卡成功，正在完成定位设置…"
+    },
     "clockIn": "上班打卡",
     "clockOut": "下班打卡",
     "addAvailability": "添加时间段",
@@ -388,6 +395,7 @@
     "qrDeviceMismatch": "二维码与已登记的 POS 设备不匹配，请门店刷新二维码",
     "qrStoreForbidden": "你没有二维码所属门店的考勤权限",
     "qrGpsRequired": "打卡需要当前精确 GPS 位置",
+    "qrGpsTimeout": "获取当前位置超时，请移到信号较好的位置后重新扫码。此次尚未提交打卡。",
     "qrNetworkRequired": "手机必须联网后才能提交扫码打卡",
     "qrCameraPermissionRequired": "扫码打卡需要相机权限",
     "qrDayComplete": "今天的上班和下班打卡均已完成",

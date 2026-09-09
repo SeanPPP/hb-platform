@@ -108,6 +108,7 @@
     }
   },
   "scanner": {
+    "waitingForFreshCode": "Keep pointing at the POS. Waiting for the refreshed QR code…",
     "title": "Scan the POS attendance QR code",
     "permissionTitle": "Camera access required",
     "permissionDescription": "Allow camera access to scan the POS attendance QR code.",
@@ -308,6 +309,12 @@
   "actions": {
     "scanPunch": "Scan to punch",
     "processingPunch": "Processing...",
+    "punchStages": {
+      "validating": "Verifying QR code…",
+      "locating": "Getting your current location…",
+      "saving": "Saving attendance…",
+      "tracking": "Attendance saved. Finishing location setup…"
+    },
     "clockIn": "Clock in",
     "clockOut": "Clock out",
     "addAvailability": "Add slot",
@@ -388,6 +395,7 @@
     "qrDeviceMismatch": "The QR code does not match its registered POS device. Ask the store to refresh it.",
     "qrStoreForbidden": "You do not have attendance access to the QR code's store.",
     "qrGpsRequired": "A current precise GPS location is required to punch.",
+    "qrGpsTimeout": "Location timed out. Move to an area with a better signal and scan again. Attendance has not been submitted.",
     "qrNetworkRequired": "Your phone must be online to submit a QR punch.",
     "qrCameraPermissionRequired": "Camera access is required to scan the attendance QR code.",
     "qrDayComplete": "Today's clock-in and clock-out are already complete.",
