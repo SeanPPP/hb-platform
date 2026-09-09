@@ -100,7 +100,10 @@ import { playAttendancePunchSuccessSound } from "@/modules/scanner/scan-sound";
 import { useCameraScan } from "@/modules/scanner/use-camera-scan";
 import type { Store } from "@/modules/shop/types";
 import { useStores } from "@/modules/shop/use-stores";
-import { getPosEnabledStores } from "@/modules/shop/store-scope";
+import {
+  getPosEnabledStores,
+  resolveScopedStoreCode,
+} from "@/modules/shop/store-scope";
 import { useStoreUsers } from "@/modules/users";
 import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
@@ -203,6 +206,8 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
   const {
     stores,
     selectedStoreCode: rememberedStoreCode,
+    isDeviceMode,
+    deviceBoundStore,
     isHydratingSelection,
     selectStore,
   } = useStores();
@@ -301,23 +306,16 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
 
   useEffect(() => {
     setSelectedStoreCode((current) => {
-      if (
-        current &&
-        sectionStores.some((store) => store.storeCode === current)
-      ) {
-        return current;
-      }
-
-      if (
-        rememberedStoreCode &&
-        sectionStores.some((store) => store.storeCode === rememberedStoreCode)
-      ) {
-        return rememberedStoreCode;
-      }
-
-      return sectionStores[0]?.storeCode;
+      // 设备绑定门店可能没有 POS 启用字段；它仍是查询作用域，但不能混入 Picker 候选。
+      return resolveScopedStoreCode({
+        currentStoreCode: current,
+        persistedStoreCode: rememberedStoreCode,
+        deviceBoundStoreCode: deviceBoundStore?.storeCode,
+        isDeviceMode,
+        stores: sectionStores,
+      }) ?? sectionStores[0]?.storeCode;
     });
-  }, [rememberedStoreCode, sectionStores]);
+  }, [deviceBoundStore?.storeCode, isDeviceMode, rememberedStoreCode, sectionStores]);
 
   useEffect(() => {
     if (mode !== "combined") {
@@ -701,8 +699,8 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
   );
 
   const selectedStore = useMemo(
-    () => findStoreByCode(sectionStores, selectedStoreCode),
-    [sectionStores, selectedStoreCode],
+    () => findStoreByCode(stores, selectedStoreCode),
+    [selectedStoreCode, stores],
   );
   const selectedStoreName = useMemo(
     () => selectedStore?.storeName,

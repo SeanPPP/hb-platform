@@ -38,6 +38,29 @@ assertEqual(
 assertEqual(posEnabledStores[0]?.isPrimary, false, "enabled read-only store keeps isPrimary=false");
 assertEqual(posEnabledStores[1]?.isPrimary, true, "enabled manageable store keeps isPrimary=true");
 
+const deviceBoundStoreWithoutPosFlag = {
+  storeCode: "DEVICE_BOUND",
+  storeName: "Device Bound Store",
+};
+const devicePickerStores = getPosEnabledStores([deviceBoundStoreWithoutPosFlag]);
+
+assertEqual(
+  devicePickerStores.length,
+  0,
+  "device-bound store without an explicit POS flag is not added to picker candidates"
+);
+assertEqual(
+  resolveScopedStoreCode({
+    currentStoreCode: null,
+    persistedStoreCode: null,
+    deviceBoundStoreCode: deviceBoundStoreWithoutPosFlag.storeCode,
+    isDeviceMode: true,
+    stores: devicePickerStores,
+  }),
+  "DEVICE_BOUND",
+  "device mode keeps the bound query store even when it is absent from picker candidates"
+);
+
 const manageableAssignedStores = getManageableStoresForSession({
   deviceBoundStore: null,
   isAdmin: false,

@@ -33,6 +33,16 @@ assert.match(
   /<StorePickerModal[\s\S]{0,240}stores=\{sectionStores\}/,
   "考勤 Picker 必须只展示当前页面的 POS 启用候选",
 );
+assert.match(
+  attendanceSource,
+  /resolveScopedStoreCode\(\{[\s\S]{0,360}deviceBoundStoreCode:[\s\S]{0,180}isDeviceMode,[\s\S]{0,180}stores: sectionStores/,
+  "考勤设备模式必须独立保留绑定门店 code，不得被 Picker 候选清空",
+);
+assert.match(
+  attendanceSource,
+  /findStoreByCode\(stores, selectedStoreCode\)/,
+  "考勤当前门店名称必须从原始作用域门店读取",
+);
 
 const manageableStoresStart = usersSource.indexOf("  const manageableStores = useMemo(");
 const selectionEffectStart = usersSource.indexOf("  useEffect(() => {", manageableStoresStart);
