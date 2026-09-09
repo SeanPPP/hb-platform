@@ -38,7 +38,7 @@ using Microsoft.IdentityModel.Tokens; // JWT令牌验证
 // ===================== 应用程序入口点 =====================
 // 创建WebApplicationBuilder实例，读取命令行参数和配置文件
 // 这是ASP.NET Core 6+的新式启动方式，替代了传统的Startup.cs
-// 显式数据库模式仅支持 --schema=migrate、--schema=check 与 --schema=remote-maintenance。
+// 显式数据库模式还承载受目标门禁保护的一次性维护命令，所有模式均禁止启动 HTTP 与后台任务。
 var schemaCommand = SchemaCommand.Parse(args);
 if (schemaCommand.Mode == SchemaCommandMode.Invalid)
 {
@@ -76,6 +76,7 @@ if (schemaCommand.Mode != SchemaCommandMode.Server)
     builder.Services.AddScoped<SchemaMigrationCoordinator>();
     builder.Services.AddScoped<RemoteMaintenanceSchemaMigrator>();
     builder.Services.AddScoped<RustDeskClientSchemaMigrator>();
+    builder.Services.AddScoped<SalesDetailQueryProjectionMaintenanceRunner>();
 
     WebApplication schemaApp;
     try
@@ -93,7 +94,11 @@ if (schemaCommand.Mode != SchemaCommandMode.Server)
         ? await ExecuteRemoteMaintenanceSchemaOperationAsync(schemaApp.Services, schemaCommand.Mode == SchemaCommandMode.RemoteMaintenanceCheck)
         : schemaCommand.Mode is SchemaCommandMode.RustDeskClient or SchemaCommandMode.RustDeskClientCheck
             ? await ExecuteRustDeskClientSchemaOperationAsync(schemaApp.Services, schemaCommand.Mode == SchemaCommandMode.RustDeskClientCheck)
-            : await ExecuteSchemaOperationAsync(schemaApp.Services, schemaCommand.Mode);
+            : schemaCommand.Mode is SchemaCommandMode.SalesDetailProjectionBackfill or SchemaCommandMode.SalesDetailProjectionCheck
+                ? await ExecuteSalesDetailProjectionOperationAsync(
+                    schemaApp.Services,
+                    schemaCommand.Mode == SchemaCommandMode.SalesDetailProjectionCheck)
+                : await ExecuteSchemaOperationAsync(schemaApp.Services, schemaCommand.Mode);
     if (!explicitSchemaResult.Success)
     {
         schemaApp.Logger.LogError(
@@ -1285,6 +1290,42 @@ static async Task<SchemaOperationResult> ExecuteSchemaOperationAsync(
             SchemaExitCodes.DatabaseFailure,
             SchemaDiagnosticCodes.DatabaseFailure
         );
+    }
+    finally
+    {
+        Console.CancelKeyPress -= cancelHandler;
+    }
+}
+
+static async Task<SchemaOperationResult> ExecuteSalesDetailProjectionOperationAsync(
+    IServiceProvider services,
+    bool checkOnly)
+{
+    using var cancellation = new CancellationTokenSource();
+    ConsoleCancelEventHandler cancelHandler = (_, eventArgs) =>
+    {
+        eventArgs.Cancel = true;
+        cancellation.Cancel();
+    };
+    Console.CancelKeyPress += cancelHandler;
+    try
+    {
+        using var scope = services.CreateScope();
+        return await scope.ServiceProvider
+            .GetRequiredService<SalesDetailQueryProjectionMaintenanceRunner>()
+            .RunAsync(checkOnly, cancellation.Token);
+    }
+    catch (OperationCanceledException)
+    {
+        return SchemaOperationResult.Failure(
+            SchemaExitCodes.Cancelled,
+            SchemaDiagnosticCodes.Cancelled);
+    }
+    catch (Exception)
+    {
+        return SchemaOperationResult.Failure(
+            SchemaExitCodes.DatabaseFailure,
+            SchemaDiagnosticCodes.DatabaseFailure);
     }
     finally
     {

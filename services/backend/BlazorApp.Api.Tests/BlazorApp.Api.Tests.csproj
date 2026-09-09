@@ -118,6 +118,7 @@
     <Compile Include="SalesCostBackfillSqlServerTests.cs" />
     <Compile Include="SalesStatisticsBusinessDateTests.cs" />
     <Compile Include="SalesDetailLookupReuseTests.cs" />
+    <Compile Include="SalesDetailQueryProjectionTests.cs" />
     <Compile Include="RevenueReportSnapshotTests.cs" />
     <Compile Include="RevenueReportSnapshotSqlServerIntegrationTests.cs" />
     <Compile Include="SalesDetailReportTests.cs" />

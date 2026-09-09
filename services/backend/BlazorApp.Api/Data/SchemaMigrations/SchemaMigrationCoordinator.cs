@@ -19,6 +19,10 @@ internal sealed class SchemaMigrationCoordinator
     internal const string ProductHqSyncOutboxMigrationId =
         "20260903.001-product-hq-sync-outbox";
     internal const string PricingCurveMigrationId = "20260909.001-pricing-curve";
+    internal const string SalesDetailQueryProjectionMigrationId =
+        "20260909.002-sales-detail-query-projection";
+    internal const string SalesDetailQueryMappingUseMigrationId =
+        "20260909.003-sales-detail-query-mapping-use";
     internal const string PosmMigrationId = "20260827.001-hbweb-posm-baseline";
     internal const string MobileDeviceActivationMigrationId =
         "20260831.001-mobile-device-activation";
@@ -55,6 +59,16 @@ internal sealed class SchemaMigrationCoordinator
         new(
             PricingCurveMigrationId,
             static (runtime, cancellationToken) => runtime.ApplyPricingCurveAsync(cancellationToken)
+        ),
+        new(
+            SalesDetailQueryProjectionMigrationId,
+            static (runtime, cancellationToken) =>
+                runtime.ApplySalesDetailQueryProjectionAsync(cancellationToken)
+        ),
+        new(
+            SalesDetailQueryMappingUseMigrationId,
+            static (runtime, cancellationToken) =>
+                runtime.ApplySalesDetailQueryMappingUseAsync(cancellationToken)
         ),
     ];
 
@@ -189,6 +203,13 @@ internal sealed class SchemaMigrationCoordinator
                 SchemaDiagnosticCodes.PricingCurveIncompatible
             );
         }
+        catch (SalesDetailQueryProjectionSchemaMismatchException)
+        {
+            return SchemaOperationResult.Failure(
+                SchemaExitCodes.SchemaNotReady,
+                SchemaDiagnosticCodes.SalesDetailQueryProjectionIncompatible
+            );
+        }
         catch (ProductHqSyncOutboxSchemaMismatchException)
         {
             return SchemaOperationResult.Failure(
@@ -267,6 +288,13 @@ internal sealed class SchemaMigrationCoordinator
             return SchemaOperationResult.Failure(
                 SchemaExitCodes.SchemaNotReady,
                 SchemaDiagnosticCodes.PricingCurveIncompatible
+            );
+        }
+        catch (SalesDetailQueryProjectionSchemaMismatchException)
+        {
+            return SchemaOperationResult.Failure(
+                SchemaExitCodes.SchemaNotReady,
+                SchemaDiagnosticCodes.SalesDetailQueryProjectionIncompatible
             );
         }
         catch (ProductHqSyncOutboxSchemaMismatchException)
@@ -430,6 +458,7 @@ internal sealed class SchemaMigrationCoordinator
             await VerifyContainerDetailCollaborationAsync(cancellationToken);
             await VerifyProductHqSyncOutboxAsync(cancellationToken);
             await _runtime.VerifyPricingCurveAsync(cancellationToken);
+            await _runtime.VerifySalesDetailQueryProjectionAsync(cancellationToken);
         }
         if (posmApplied)
         {
