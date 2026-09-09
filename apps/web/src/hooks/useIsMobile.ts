@@ -17,12 +17,13 @@ export function resolveIsMobileViewport({ width, height, coarsePointer }: Mobile
   return coarsePointer && height <= PHONE_LANDSCAPE_MAX_HEIGHT
 }
 
-function readMobileViewportSnapshot(): MobileViewportSnapshot {
-  const viewport = window.visualViewport
+export function readMobileViewportSnapshot(): MobileViewportSnapshot {
+  const viewport = document.documentElement
 
   return {
-    width: viewport?.width ?? window.innerWidth,
-    height: viewport?.height ?? window.innerHeight,
+    // 软键盘和输入框自动放大会缩小 visualViewport；设备布局必须使用稳定的布局视口，避免换壳丢焦点。
+    width: viewport.clientWidth || window.innerWidth,
+    height: viewport.clientHeight || window.innerHeight,
     coarsePointer: window.matchMedia('(pointer: coarse)').matches,
   }
 }
@@ -45,7 +46,7 @@ export function useIsMobile() {
       setIsMobile((current) => (current === next ? current : next))
     }
 
-    // 横竖屏和地址栏收起会连续触发布局事件，合并到下一帧避免反复重算。
+    // 横竖屏和窗口调整会连续触发布局事件，合并到下一帧避免反复重算。
     const scheduleUpdate = () => {
       if (frameId !== null) {
         return
@@ -62,7 +63,6 @@ export function useIsMobile() {
     mediaQueries.forEach((mql) => mql.addEventListener('change', scheduleUpdate))
     window.addEventListener('resize', scheduleUpdate)
     window.addEventListener('orientationchange', scheduleUpdate)
-    window.visualViewport?.addEventListener('resize', scheduleUpdate)
     scheduleUpdate()
 
     return () => {
@@ -72,7 +72,6 @@ export function useIsMobile() {
       mediaQueries.forEach((mql) => mql.removeEventListener('change', scheduleUpdate))
       window.removeEventListener('resize', scheduleUpdate)
       window.removeEventListener('orientationchange', scheduleUpdate)
-      window.visualViewport?.removeEventListener('resize', scheduleUpdate)
     }
   }, [])
 
