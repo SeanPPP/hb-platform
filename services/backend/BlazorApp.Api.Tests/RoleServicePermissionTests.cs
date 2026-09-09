@@ -26,6 +26,17 @@ namespace BlazorApp.Api.Tests;
 
 public sealed class RoleServicePermissionTests : IDisposable
 {
+    private static readonly string[] SalesDashboardPermissionCodes =
+    {
+        "SalesDashboard.SalesData.View",
+        "SalesDashboard.SalesDetail.View",
+        "SalesDashboard.CompactBoard.View",
+        "SalesDashboard.ProductMovement.View",
+        "SalesDashboard.WarehouseFlow.View",
+        "SalesDashboard.LocalProductAnalysis.View",
+        "SalesDashboard.PurchaseAmount.View",
+    };
+
     private readonly string _dbPath;
     private readonly SqliteConnection _sqliteConnection;
     private readonly SqlSugarClient _db;
@@ -156,6 +167,99 @@ public sealed class RoleServicePermissionTests : IDisposable
         Assert.DoesNotContain(PermissionSeedData.AllPermissions, seed => seed.Code == "Permissions.PosTerminal.OpenCashDrawer");
         Assert.DoesNotContain(PermissionSeedData.AllPermissions, seed => seed.Code == "Permissions.PosTerminal.DailyClose");
         Assert.DoesNotContain(PermissionSeedData.AllPermissions, seed => seed.Code == "Permissions.PosTerminal.ManageDevices");
+    }
+
+    [Fact]
+    public void PermissionSeedData_IncludesIndependentSalesDashboardPermissions()
+    {
+        var salesSeeds = PermissionSeedData.AllPermissions
+            .Where(seed => SalesDashboardPermissionCodes.Contains(seed.Code))
+            .ToList();
+
+        Assert.Equal(SalesDashboardPermissionCodes.Length, salesSeeds.Count);
+        Assert.All(salesSeeds, seed => Assert.Equal("销售看板", seed.Category));
+        Assert.Equal(
+            SalesDashboardPermissionCodes.OrderBy(code => code),
+            salesSeeds.Select(seed => seed.Code).OrderBy(code => code)
+        );
+    }
+
+    [Fact]
+    public async Task GetPermissionCatalogAsync_MergesBuiltInSalesDashboardPermissionsWithoutSeedRows()
+    {
+        var result = await (await CreateAdminServiceAsync()).GetPermissionCatalogAsync();
+
+        var codes = Assert.IsType<PermissionCatalogDto>(result.Data)
+            .Categories.SelectMany(category => category.Permissions)
+            .Select(permission => permission.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        Assert.All(SalesDashboardPermissionCodes, code => Assert.Contains(code, codes));
+    }
+
+    [Fact]
+    public async Task AssignPermissionsToUserAsync_AdminCanSaveBuiltInPermissionWithoutSeedRow()
+    {
+        await SeedUserWithRoleAsync("user-sales", "role-sales", "User");
+
+        var result = await (await CreateAdminServiceAsync()).AssignPermissionsToUserAsync(
+            "user-sales",
+            new UserPermissionAssignmentDto
+            {
+                Permissions = new List<string> { "SalesDashboard.SalesDetail.View" },
+            }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.True(
+            await _db.Queryable<SysUserPermission>()
+                .AnyAsync(item =>
+                    item.UserGuid == "user-sales"
+                    && item.PermissionCode == "SalesDashboard.SalesDetail.View"
+                    && !item.IsDeleted
+                )
+        );
+    }
+
+    [Fact]
+    public async Task AssignPermissionsToRoleAsync_AdminCanSaveBuiltInPermissionWithoutSeedRow()
+    {
+        await InsertRoleAsync("role-sales", "SalesReader");
+
+        var result = await (await CreateAdminServiceAsync()).AssignPermissionsToRoleAsync(
+            "role-sales",
+            new RolePermissionAssignmentDto
+            {
+                Permissions = new List<string> { "SalesDashboard.SalesData.View" },
+            }
+        );
+
+        Assert.True(result.Success, result.Message);
+        var readback = await (await CreateAdminServiceAsync()).GetRolePermissionsAsync(
+            "role-sales"
+        );
+        Assert.Equal(new[] { "SalesDashboard.SalesData.View" }, readback.Data);
+    }
+
+    [Theory]
+    [InlineData(Permissions.Reports.View)]
+    [InlineData(Permissions.Reports.ProductMovementView)]
+    [InlineData(Permissions.LocalPurchase.View)]
+    public async Task UserHasPermissionAsync_LegacyBroadPermissionDoesNotGrantSalesDashboardPages(
+        string legacyPermission
+    )
+    {
+        await SeedUserWithRoleAsync("user-legacy", "role-legacy", "User");
+        await InsertRolePermissionAsync("role-legacy", legacyPermission);
+        var service = CreateService();
+
+        foreach (var salesPermission in SalesDashboardPermissionCodes)
+        {
+            var result = await service.UserHasPermissionAsync(
+                "user-legacy",
+                salesPermission
+            );
+            Assert.False(result.Data, $"{legacyPermission} 不应授予 {salesPermission}");
+        }
     }
 
     [Theory]
@@ -470,6 +574,7 @@ public sealed class RoleServicePermissionTests : IDisposable
         Assert.Contains(Permissions.Users.View, permissions);
         Assert.Contains(Permissions.Users.Edit, permissions);
         Assert.DoesNotContain(Permissions.Users.Delete, permissions);
+        Assert.All(SalesDashboardPermissionCodes, code => Assert.Contains(code, permissions));
     }
 
     [Fact]

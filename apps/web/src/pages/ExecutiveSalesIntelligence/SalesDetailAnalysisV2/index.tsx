@@ -205,7 +205,7 @@ export default function SalesDetailAnalysisV2() {
 
   return <main className={styles.page} data-report="sales-detail">
     <div className={styles.heading}><div><span className={styles.eyebrow}>SALES EXPLORER</span><h1>{text('销售明细', 'Sales detail')}</h1><p>{text('供应商、分店与商品双向联动，从任意一栏开始分析。', 'Explore from any supplier, store or product.')}</p></div>
-      <Button onClick={() => navigate(`/executive-sales-intelligence/overview?branch=${encodeURIComponent(selection.branch ?? '')}&startDate=${dates.startDate}&endDate=${dates.endDate}&compare=${dates.compare}&compareMode=${dates.compareMode}`)}>{text('营业额报告', 'Revenue report')}</Button></div>
+      {access.canViewSalesData && <Button onClick={() => navigate(`/executive-sales-intelligence/overview?branch=${encodeURIComponent(selection.branch ?? '')}&startDate=${dates.startDate}&endDate=${dates.endDate}&compare=${dates.compare}&compareMode=${dates.compareMode}`)}>{text('营业额报告', 'Revenue report')}</Button>}</div>
     <ReportControls value={dates} onChange={value => { setDates(value); setSelection(current => ({ ...current, page: 1 })) }} onRefresh={refreshAll} loading={loading} />
     <div className={styles.tabsLine}><div role="tablist" aria-label={text('供应商类别', 'Supplier type')} className={styles.tabs}>
       {(['australia', 'china'] as const).map(value => <button role="tab" key={value} aria-selected={kind === value} onClick={() => switchKind(value)}>{value === 'china' ? text('HB 仓库 · 国内供应商', 'HB warehouse · China') : text('澳洲供应商', 'Australian suppliers')}</button>)}

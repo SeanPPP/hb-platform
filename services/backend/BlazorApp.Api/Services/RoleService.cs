@@ -315,6 +315,28 @@ namespace BlazorApp.Api.Services
             return Permissions.IsSuperAdminRole(roleName);
         }
 
+        private static List<string> IncludeBuiltInSalesDashboardPermissionCodes(
+            IEnumerable<string> permissionCodes
+        )
+        {
+            // 常规启动不会全量同步权限表；只把本次七个内建页面权限合并到运行时目录。
+            return permissionCodes
+                .Concat(
+                    PermissionSeedData.SalesDashboardPermissions.Select(permission =>
+                        permission.Code
+                    )
+                )
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        private static bool IsBuiltInSalesDashboardPermission(string permissionCode)
+        {
+            return PermissionSeedData.SalesDashboardPermissions.Any(permission =>
+                permission.Code.Equals(permissionCode, StringComparison.OrdinalIgnoreCase)
+            );
+        }
+
         /// <summary>
         /// 获取角色列表（分页）
         /// </summary>
@@ -1445,26 +1467,45 @@ namespace BlazorApp.Api.Services
                 var db = _context.Db;
                 var permissions = await db.Queryable<SysPermission>().Where(p => !p.IsDeleted).ToListAsync();
 
-                var result = permissions
+                var databasePermissionCodes = permissions
+                    .Select(permission => permission.Code)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var permissionDtos = permissions
+                    .Select(p => new PermissionDto
+                    {
+                        Name = p.Code,
+                        DisplayName = p.Name,
+                        Description = p.Description,
+                        Category = p.Category,
+                        IsSystemPermission = false,
+                        CreatedAt = p.CreatedAt,
+                        CreatedBy = p.CreatedBy,
+                        UpdatedAt = p.UpdatedAt,
+                        UpdatedBy = p.UpdatedBy,
+                    })
+                    .Concat(
+                        PermissionSeedData.SalesDashboardPermissions
+                            .Where(seed => !databasePermissionCodes.Contains(seed.Code))
+                            .Select(seed => new PermissionDto
+                            {
+                                Name = seed.Code,
+                                DisplayName = seed.Name,
+                                Description = seed.Description,
+                                Category = seed.Category,
+                                IsSystemPermission = true,
+                                CreatedAt = DateTime.MinValue,
+                                CreatedBy = "System",
+                            })
+                    );
+
+                var result = permissionDtos
                     .GroupBy(p => p.Category)
                     .Select(g => new PermissionCategoryDto
                     {
                         Category = g.Key,
                         DisplayName = g.Key, // 暂时使用Category作为显示名，实际可以加字典表
                         Description = $"{g.Key}相关权限",
-                        Permissions = g.Select(p => new PermissionDto
-                        {
-                            Name = p.Code,
-                            DisplayName = p.Name,
-                            Description = p.Description,
-                            Category = p.Category,
-                            IsSystemPermission = false, // 从数据库加载的权限默认为自定义权限
-                            CreatedAt = p.CreatedAt,
-                            CreatedBy = p.CreatedBy,
-                            UpdatedAt = p.UpdatedAt,
-                            UpdatedBy = p.UpdatedBy,
-                        })
-                            .ToList(),
+                        Permissions = g.ToList(),
                     })
                     .ToList();
 
@@ -1568,10 +1609,13 @@ namespace BlazorApp.Api.Services
 
                 if (IsSuperAdminRoleName(role.RoleName))
                 {
-                    var allPermissions = await db.Queryable<SysPermission>()
+                    var persistedPermissions = await db.Queryable<SysPermission>()
                         .Where(p => !p.IsDeleted)
                         .Select(p => p.Code)
                         .ToListAsync();
+                    var allPermissions = IncludeBuiltInSalesDashboardPermissionCodes(
+                        persistedPermissions
+                    );
 
                     return ApiResponse<List<string>>.OK(
                         allPermissions.Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
@@ -2005,10 +2049,13 @@ namespace BlazorApp.Api.Services
                 List<string> exactCodes;
                 if (isSuperAdmin)
                 {
-                    permissionCodes = await db.Queryable<SysPermission>()
+                    var persistedPermissionCodes = await db.Queryable<SysPermission>()
                         .Where(item => !item.IsDeleted)
                         .Select(item => item.Code)
                         .ToListAsync();
+                    permissionCodes = IncludeBuiltInSalesDashboardPermissionCodes(
+                        persistedPermissionCodes
+                    );
                     exactCodes = permissionCodes.ToList();
                 }
                 else
@@ -2124,10 +2171,13 @@ namespace BlazorApp.Api.Services
 
                 if (isSuperAdmin)
                 {
-                    inheritedCodes = await db.Queryable<SysPermission>()
+                    var persistedPermissionCodes = await db.Queryable<SysPermission>()
                         .Where(item => !item.IsDeleted)
                         .Select(item => item.Code)
                         .ToListAsync();
+                    inheritedCodes = IncludeBuiltInSalesDashboardPermissionCodes(
+                        persistedPermissionCodes
+                    );
 
                     inheritedSources = roleEntries
                         .Where(item => IsSuperAdminRoleName(item.RoleName))
@@ -2468,6 +2518,9 @@ namespace BlazorApp.Api.Services
                             .Select(item => item.Code)
                             .ToListAsync();
                     var transactionPermissionCodesToWrite = transactionExistingCodes.ToList();
+                    transactionPermissionCodesToWrite.AddRange(
+                        requestedCodes.Where(IsBuiltInSalesDashboardPermission)
+                    );
                     var transactionRestrictedActor = !transactionActor.IsSuperAdmin;
                     var transactionDelegatedPermissionCodes = new HashSet<string>(
                         StringComparer.OrdinalIgnoreCase

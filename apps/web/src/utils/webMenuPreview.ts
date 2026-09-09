@@ -67,8 +67,14 @@ const accessKeyPermissionMap: Partial<Record<keyof AccessControl, string[]>> = {
   canManageWarehouseCategories: [P.Warehouse.ManageCategories, P.Warehouse.Manage],
   canManageWarehouseLocations: [P.Warehouse.ManageLocations, P.Warehouse.Manage],
   canViewReports: [P.Reports.View],
-  canViewSalesIntelligence: [P.Reports.View, P.Reports.ProductMovementView, P.LocalPurchase.View],
-  canViewProductMovementReport: [P.Reports.ProductMovementView, P.Reports.View],
+  canViewSalesIntelligence: [],
+  canViewSalesData: [P.SalesDashboard.SalesDataView],
+  canViewSalesDetail: [P.SalesDashboard.SalesDetailView],
+  canViewCompactSalesBoard: [P.SalesDashboard.CompactBoardView],
+  canViewProductMovementReport: [P.SalesDashboard.ProductMovementView],
+  canViewWarehouseProductFlowAnalysis: [P.SalesDashboard.WarehouseFlowView],
+  canViewLocalProductSalesAnalysis: [P.SalesDashboard.LocalProductAnalysisView],
+  canViewPurchaseAmountDashboard: [P.SalesDashboard.PurchaseAmountView],
   canViewProductSalesAnalysis: [P.Reports.ProductMovementView],
   canViewAustralianSuppliers: [P.AustralianSuppliers.View],
   canViewPosProducts: [P.PosProducts.View, P.PosProducts.Manage],
@@ -135,13 +141,13 @@ const webMenuPreviewRoutes: WebMenuPreviewRoute[] = [
     title: 'menu.executiveSalesIntelligence',
     accessKey: 'canViewSalesIntelligence',
     children: [
-      { path: '/executive-sales-intelligence/overview', title: 'menu.salesData', accessKey: 'canViewReports' },
-      { path: '/executive-sales-intelligence/sales-detail-v2', title: 'menu.salesDetail', accessKey: 'canViewReports' },
-      { path: '/executive-sales-intelligence/compact-sales-board', title: 'menu.compactSalesBoard', accessKey: 'canViewReports' },
+      { path: '/executive-sales-intelligence/overview', title: 'menu.salesData', accessKey: 'canViewSalesData' },
+      { path: '/executive-sales-intelligence/sales-detail-v2', title: 'menu.salesDetail', accessKey: 'canViewSalesDetail' },
+      { path: '/executive-sales-intelligence/compact-sales-board', title: 'menu.compactSalesBoard', accessKey: 'canViewCompactSalesBoard' },
       { path: '/executive-sales-intelligence/product-movement-report', title: 'menu.productMovementReport', accessKey: 'canViewProductMovementReport' },
-      { path: '/executive-sales-intelligence/warehouse-product-flow-analysis', title: 'menu.warehouseProductFlowAnalysis', accessKey: 'canViewProductSalesAnalysis' },
-      { path: '/executive-sales-intelligence/local-product-sales-analysis', title: 'menu.localProductSalesAnalysis', accessKey: 'canManageLocalPurchase' },
-      { path: '/executive-sales-intelligence/purchase-amount-dashboard', title: 'menu.purchaseAmountDashboard', accessKey: 'canManageLocalPurchase' },
+      { path: '/executive-sales-intelligence/warehouse-product-flow-analysis', title: 'menu.warehouseProductFlowAnalysis', accessKey: 'canViewWarehouseProductFlowAnalysis' },
+      { path: '/executive-sales-intelligence/local-product-sales-analysis', title: 'menu.localProductSalesAnalysis', accessKey: 'canViewLocalProductSalesAnalysis' },
+      { path: '/executive-sales-intelligence/purchase-amount-dashboard', title: 'menu.purchaseAmountDashboard', accessKey: 'canViewPurchaseAmountDashboard' },
     ],
   },
   {
@@ -198,7 +204,9 @@ function buildAddPermissionCodes(
   // 中文注释：菜单添加只补最小可见权限，避免只读入口把角色提升成管理权限。
   const primaryPermissionCode = permissionCodes[0]
   const nextCodes = [primaryPermissionCode]
-  if (route.path !== '/dashboard' && !explicitPermissionCodeSet.has(P.Dashboard.View)) {
+  // 销售看板的单页权限已包含后台入口能力，不连带授予工作台。
+  if (route.path !== '/dashboard' && !route.path.startsWith('/executive-sales-intelligence/') &&
+    !explicitPermissionCodeSet.has(P.Dashboard.View)) {
     nextCodes.push(P.Dashboard.View)
   }
 
@@ -227,7 +235,8 @@ function buildPreviewNodes(
   const limitWarehouseStaffNavigation = isWarehouseStaffNavigationLimited(access)
 
   return routes.flatMap((route) => {
-    if (limitWarehouseStaffNavigation && !warehouseStaffVisibleMenuPaths.has(route.path)) {
+    if (limitWarehouseStaffNavigation && !warehouseStaffVisibleMenuPaths.has(route.path) &&
+      route.path !== '/executive-sales-intelligence' && !route.path.startsWith('/executive-sales-intelligence/')) {
       return []
     }
 
