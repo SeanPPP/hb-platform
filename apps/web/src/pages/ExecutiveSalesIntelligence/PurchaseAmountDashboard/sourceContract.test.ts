@@ -16,7 +16,7 @@ assert(
 )
 assert(
   routeSource.includes("title: 'menu.purchaseAmountDashboard'") &&
-    routeSource.includes("accessKey: 'canManageLocalPurchase'"),
+    routeSource.includes("accessKey: 'canViewPurchaseAmountDashboard'"),
   '进货金额看板路由应绑定中英文菜单键和本地进货权限',
 )
 assert(zh.menu.purchaseAmountDashboard === '进货金额看板', '中文菜单名称应为“进货金额看板”')

@@ -14,7 +14,7 @@ namespace BlazorApp.Api.Controllers.React;
 /// </summary>
 [ApiController]
 [Route("api/react/v1/dashboard")]
-[Authorize(Policy = Permissions.Reports.ProductMovementView)]
+[Authorize(Policy = Permissions.SalesDashboard.SalesDataView)]
 public sealed class RevenueReportSnapshotController : ControllerBase
 {
     private readonly ISalesDashboardReactService _service;

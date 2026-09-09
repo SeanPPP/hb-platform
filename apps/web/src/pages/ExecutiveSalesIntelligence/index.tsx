@@ -300,9 +300,9 @@ export default function ExecutiveSalesIntelligence() {
                         <td>{renderTrend(branch.orderCount, coreCompareAvailable ? branch.orderCountLY : null)}</td>
                         <td><ValuePair current={formatAud(branch.aov, 2)} previous={coreCompareAvailable ? formatAud(branch.aovLY, 2) : '—'} /></td>
                         <td>{renderTrend(branch.aov, coreCompareAvailable ? branch.aovLY : null)}</td>
-                        <td><button type="button" className={styles.detailButton} onClick={() => openSalesDetail(branch.branchCode)}>
+                        <td>{access.canViewSalesDetail && <button type="button" className={styles.detailButton} onClick={() => openSalesDetail(branch.branchCode)}>
                           {text('销售明细', 'Sales detail')} <RightOutlined aria-hidden="true" />
-                        </button></td>
+                        </button>}</td>
                       </tr>
                     )
                   })}
