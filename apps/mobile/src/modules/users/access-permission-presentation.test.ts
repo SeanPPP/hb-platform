@@ -196,7 +196,7 @@ const seededCategories = new Set(
     (match) => match[1],
   ),
 );
-assert.equal(seededCategories.size, 36);
+assert.equal(seededCategories.size, 37);
 seededCategories.forEach((category) => {
   assert.notEqual(
     localizeAccessPermissionCategory(category, "en"),
