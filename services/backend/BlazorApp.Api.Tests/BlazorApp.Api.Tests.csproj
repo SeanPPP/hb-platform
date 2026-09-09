@@ -118,6 +118,7 @@
     <Compile Include="SalesDetailLookupReuseTests.cs" />
     <Compile Include="RevenueReportSnapshotTests.cs" />
     <Compile Include="SalesDetailReportTests.cs" />
+    <Compile Include="SalesReportStoreScopeTests.cs" />
     <Compile Include="ProductStoreDailyStatisticQueueServiceTests.cs" />
     <Compile Include="SalesDashboardBestSellersTests.cs" />
     <Compile Include="ProductSalesAnalysisLogicTests.cs" />
