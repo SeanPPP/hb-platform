@@ -511,6 +511,93 @@ public sealed class SalesDetailReportSqlServerIntegrationTests
         Assert.Equal(51012, unpublished.Number);
     }
 
+    [SalesDetailReportSqlServerFact]
+    public async Task 空结果回归_日投影压缩读取无销售事实时返回完整零汇总()
+    {
+        foreach (var compare in new[] { false, true })
+        {
+            await using var fixture = await SalesDetailSqlServerFixture.CreateAsync();
+            await fixture.SeedFreshStateAsync(SeedDate);
+            await fixture.SeedFreshStateAsync(CompareDate);
+            await fixture.SeedStoreAsync("B1", "授权店");
+            await fixture.EnableProjectionAsync(SeedDate, CompareDate);
+
+            // 必须经真实 SQL 的压缩 JSON 读取；普通 reader 会把 DBNull 转成 0，无法复现此回归。
+            var result = await fixture.CreateService().GetSalesDetailReportAsync(
+                Range(SeedDate, compare ? CompareDate : null), SalesDetailKind.Australia,
+                branchCodes: new() { "B1" }, search: "HB246-CC-007");
+
+            Assert.Equal(SalesStatisticRefreshStatus.Fresh, result.StatisticStatus);
+            var summary = result.Data!.Summary!.Summary!;
+            Assert.Equal(0m, summary.Revenue);
+            Assert.Equal(0, summary.Quantity);
+            Assert.Equal(compare ? 0m : (decimal?)null, summary.CompareRevenue);
+            Assert.Equal(compare ? 0 : (int?)null, summary.CompareQuantity);
+            Assert.Null(summary.GrossProfit);
+            Assert.Null(summary.CompareGrossProfit);
+            Assert.Empty(result.Data.Suppliers!.Rows);
+            Assert.Empty(result.Data.Branches!.Rows);
+            Assert.Empty(result.Data.Products!.Rows);
+            Assert.Equal(0, result.Data.Products.Total);
+        }
+    }
+
+    [SalesDetailReportSqlServerFact]
+    public async Task 空结果回归_日投影关键词未命中仍保留供应商分店全量范围()
+    {
+        foreach (var compare in new[] { false, true })
+        {
+            await using var fixture = await SalesDetailSqlServerFixture.CreateAsync();
+            await fixture.SeedFreshStateAsync(SeedDate);
+            await fixture.SeedFreshStateAsync(CompareDate);
+            await fixture.SeedStoreAsync("B1", "授权店");
+            await fixture.SeedLocalSupplierAsync("AUS1", "澳洲供应商");
+            await fixture.SeedFactAsync(SeedDate, "B1", "AUS1", "P-OTHER", 2, 20m, "其他商品",
+                totalCost: null, grossProfit: null, useAmountAsDefaultGrossProfit: false);
+            await fixture.SeedFactAsync(CompareDate, "B1", "AUS1", "P-OTHER", 1, 10m, "其他商品",
+                totalCost: null, grossProfit: null, useAmountAsDefaultGrossProfit: false);
+            await fixture.EnableProjectionAsync(SeedDate, CompareDate);
+
+            var result = await fixture.CreateService().GetSalesDetailReportAsync(
+                Range(SeedDate, compare ? CompareDate : null), SalesDetailKind.Australia,
+                branchCodes: new() { "B1" }, search: "HB246-CC-007");
+
+            Assert.Equal(SalesStatisticRefreshStatus.Fresh, result.StatisticStatus);
+            var summary = result.Data!.Summary!.Summary!;
+            Assert.Equal(0m, summary.Revenue);
+            Assert.Equal(0, summary.Quantity);
+            Assert.Equal(compare ? 0m : (decimal?)null, summary.CompareRevenue);
+            Assert.Null(summary.GrossProfit);
+            Assert.Null(summary.CompareGrossProfit);
+            Assert.Empty(result.Data.Products!.Rows);
+            Assert.Equal(0, result.Data.Products.Total);
+            // 关键词只过滤汇总与商品，不能顺手清空仍有销售的供应商和分店。
+            foreach (var row in new[] { Assert.Single(result.Data.Suppliers!.Rows), Assert.Single(result.Data.Branches!.Rows) })
+            {
+                Assert.Equal(20m, row.Revenue);
+                Assert.Equal(compare ? 10m : (decimal?)null, row.CompareRevenue);
+                Assert.Null(row.GrossProfit);
+                Assert.Null(row.CompareGrossProfit);
+            }
+        }
+    }
+
+    [SalesDetailReportSqlServerFact]
+    public async Task 空结果回归_默认分组汇总六项统计计数为零且利润保持空值()
+    {
+        await using var fixture = await SalesDetailSqlServerFixture.CreateAsync();
+        await fixture.SeedFreshStateAsync(SeedDate);
+        await fixture.SeedFreshStateAsync(CompareDate);
+        await fixture.SeedStoreAsync("B1", "授权店");
+        var json = await fixture.ReadRawReportAsync(Range(SeedDate, CompareDate),
+            SalesDetailKind.Australia, "", null, projected: false);
+        using var results = JsonDocument.Parse(json);
+        var summary = Assert.Single(results.RootElement[1].EnumerateArray());
+        for (var column = 12; column <= 17; column++) Assert.Equal(0, summary[column].GetInt32());
+        Assert.Equal(JsonValueKind.Null, summary[10].ValueKind);
+        Assert.Equal(JsonValueKind.Null, summary[11].ValueKind);
+    }
+
     private static DateRangeDto Range() => Range(SeedDate, null);
 
     private static DateRangeDto Range(DateTime currentDate, DateTime? compareDate)
