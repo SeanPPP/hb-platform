@@ -78,6 +78,7 @@ public static class ServiceRegistration
         services.AddOptions<SharedHeldOrderOptions>();
         services.AddOptions<DeviceActivationOptions>();
         services.AddOptions<RemoteMaintenanceGatewayOptions>();
+        services.AddOptions<AttendanceFaceGatewayOptions>();
         services.AddOptions<SquareTerminalRestOptions>()
             .Validate(
                 options => SquareTerminalRestOptions.IsValidApiVersion(options.ApiVersion),
@@ -111,6 +112,8 @@ public static class ServiceRegistration
                 configuration.GetSection(DeviceActivationOptions.SectionName));
             services.Configure<RemoteMaintenanceGatewayOptions>(
                 configuration.GetSection(RemoteMaintenanceGatewayOptions.SectionName));
+            services.Configure<AttendanceFaceGatewayOptions>(
+                configuration.GetSection(AttendanceFaceGatewayOptions.SectionName));
         }
 
         services.AddScoped<HbposSqlSugarContext>();
@@ -121,6 +124,14 @@ public static class ServiceRegistration
         services.AddScoped<IPosIpadAppReviewAuthorizationBoundary, PosIpadAppReviewAuthorizationBoundary>();
         services.AddScoped<IDeviceService, DeviceService>();
         services.AddHttpClient<IRemoteMaintenanceGateway, RemoteMaintenanceGateway>();
+        services.AddHttpClient<IAttendanceFaceGateway, AttendanceFaceGateway>(client =>
+            client.Timeout = TimeSpan.FromSeconds(30))
+            .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+            {
+                AllowAutoRedirect = false,
+                UseCookies = false
+            });
+        services.AddScoped<IAttendanceFaceActorResolver, AttendanceFaceActorResolver>();
         services.AddScoped<IDeviceActivationCodeService, DeviceActivationCodeService>();
         services.AddScoped<IDeviceAuthorizationService, DeviceAuthorizationService>();
         services.AddScoped<

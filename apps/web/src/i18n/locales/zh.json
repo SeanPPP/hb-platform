@@ -5221,6 +5221,10 @@
             "label": "iPad 更新决策读取器",
             "description": "仅用于 POS API 读取 iPad 更新决策；环境变量为 HBPOS_APP_UPDATE_DECISION_READ_TOKEN。"
           },
+          "attendance-face-gateway": {
+            "label": "iPad 人脸考勤网关",
+            "description": "仅用于 Hbpos API 将 iPad 人脸考勤请求转发到中心；权限范围仅 Attendance.FaceGateway；环境变量为 HBPOS_ATTENDANCE_FACE_GATEWAY_TOKEN。"
+          },
           "quality-ci-reporter": {
             "label": "质量 CI 上报器",
             "description": "仅用于上报性能质量指标；环境变量为 QUALITY_BASELINE_SERVICE_URL / QUALITY_BASELINE_SERVICE_TOKEN。"

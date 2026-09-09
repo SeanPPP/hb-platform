@@ -314,6 +314,9 @@ namespace BlazorApp.Api.Tests
                 Permissions.Attendance.Leave.ReviewManagedStore,
                 Permissions.Attendance.Settings.Edit,
                 Permissions.Attendance.Admin.View,
+                Permissions.Attendance.Face.EnrollManagedStore,
+                Permissions.Attendance.Face.ViewPhotosManagedStore,
+                Permissions.Attendance.Face.ReviewManagedStore,
             };
 
             var seeds = PermissionSeedData.AttendancePermissions.ToList();
@@ -739,7 +742,7 @@ namespace BlazorApp.Api.Tests
             Assert.Equal(firstPassActivePermissionCount, activeRolePermissions.Count);
             Assert.Equal(firstPassActivePermissionSnapshot, secondPassActivePermissionSnapshot);
             Assert.Equal(allPermissionRows.Count, allPermissionRows.Select(item => item.Code).Distinct().Count());
-            Assert.Equal(16, attendanceRows.Count);
+            Assert.Equal(19, attendanceRows.Count);
             Assert.Empty(adminPermissionCodes);
             Assert.All(PermissionSeedData.AttendancePermissions, seed =>
             {

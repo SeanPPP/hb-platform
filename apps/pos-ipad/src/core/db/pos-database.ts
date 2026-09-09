@@ -48,6 +48,10 @@ import {
   SqliteAttendanceSecurityFacade,
   type AttendanceSecurityTerminalScope,
 } from "./sqlite-attendance-security-repository";
+import {
+  SqliteFaceAttendanceRepository,
+  type FaceAttendanceScope,
+} from "./sqlite-face-attendance-repository";
 import { SqliteDailyCloseRepository } from "@hb/pos-db/core/db/sqlite-daily-close-repository";
 import { SqliteOrderSyncStatusRepository } from "@hb/pos-db";
 import {
@@ -309,6 +313,17 @@ export class PosDatabase implements DatabasePort {
       this.connection,
       encryptor,
       terminal,
+      this.nowIso,
+    );
+  }
+
+  /** 人脸考勤只获得自己的 SQLCipher facade，不能接入订单或审计队列。 */
+  public faceAttendance(
+    scope: FaceAttendanceScope,
+  ): SqliteFaceAttendanceRepository {
+    return new SqliteFaceAttendanceRepository(
+      this.connection,
+      scope,
       this.nowIso,
     );
   }

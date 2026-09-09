@@ -12,6 +12,10 @@ export type RuntimeBackgroundWorkPort = Readonly<{
     refreshOnForeground(): Promise<unknown>;
     refreshOnNetworkAvailable(): Promise<unknown>;
   }>;
+  faceAttendance?: Readonly<{
+    refresh(): Promise<void>;
+    sync(): Promise<void>;
+  }>;
 }>;
 
 /**
@@ -30,6 +34,7 @@ export class RuntimeWorkController {
     return this.runWithHardware(
       () => this.services.sync.onApplicationStarted(),
       () => this.services.appUpdates?.refreshOnStartup(),
+      () => this.refreshFaceThenSync(),
     );
   }
 
@@ -37,26 +42,38 @@ export class RuntimeWorkController {
     return this.runWithHardware(
       () => this.services.sync.onForeground(),
       () => this.services.appUpdates?.refreshOnForeground(),
+      () => this.refreshFaceThenSync(),
     );
   }
 
   public async onNetworkChanged(isOnline: boolean): Promise<void> {
-    await this.services.sync.onNetworkChanged(isOnline);
+    const failures: PromiseSettledResult<unknown>[] = [
+      ...(await Promise.allSettled([this.services.sync.onNetworkChanged(isOnline)])),
+    ];
     if (isOnline) {
-      await this.services.appUpdates?.refreshOnNetworkAvailable();
+      // roster/app-update 失败不可堵住独立的人脸耐久队列；各域各自报告状态并继续重试。
+      failures.push(...(await Promise.allSettled([
+        this.services.appUpdates?.refreshOnNetworkAvailable(),
+        this.refreshFaceThenSync(),
+      ])));
     }
+    this.throwFailures(failures);
   }
 
   private async runWithHardware(
     sync: () => Promise<unknown>,
     refreshAppUpdate: () => Promise<unknown> | undefined,
+    faceAttendance: () => Promise<unknown> | undefined,
   ): Promise<void> {
     // 先让同步/审计与外设队列到达稳定点，更新门禁才能读取可信安全快照。
-    await Promise.all([
+    const failures: PromiseSettledResult<unknown>[] = [
+      ...(await Promise.allSettled([
       sync(),
       this.drainHardware(),
-    ]);
-    await refreshAppUpdate();
+      ])),
+    ];
+    failures.push(...(await Promise.allSettled([refreshAppUpdate(), faceAttendance()])));
+    this.throwFailures(failures);
   }
 
   private drainHardware(): Promise<void> {
@@ -72,5 +89,19 @@ export class RuntimeWorkController {
       });
     this.hardwareDrain = drain;
     return drain;
+  }
+
+  private async refreshFaceThenSync(): Promise<void> {
+    const face = this.services.faceAttendance;
+    if (!face) return;
+    // roster 刷新失败仍要 drain 旧队列，但失败必须回传 bridge 记录，不能被随后成功的 sync 覆盖。
+    const refresh = await Promise.allSettled([face.refresh()]);
+    const sync = await Promise.allSettled([face.sync()]);
+    this.throwFailures([...refresh, ...sync]);
+  }
+
+  private throwFailures(results: readonly PromiseSettledResult<unknown>[]): void {
+    const reasons = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+    if (reasons.length > 0) throw new AggregateError(reasons, "Runtime background work failed.");
   }
 }

@@ -97,3 +97,30 @@ test("联网变化只触发同步协调器，不把打印或钱箱与网络状�
     "updates-network",
   ]);
 });
+
+test("任一后台域失败不阻断有旧 device key 的人脸耐久同步", async () => {
+  const calls: string[] = [];
+  const controller = new RuntimeWorkController({
+    sync: { async onApplicationStarted() { throw new Error("order-sync"); }, async onForeground() { throw new Error("order-sync"); }, async onNetworkChanged() { throw new Error("order-sync"); } },
+    fulfilment: { async drainAutomaticQueue() { throw new Error("hardware"); } },
+    appUpdates: { async refreshOnStartup() { throw new Error("ota"); }, async refreshOnForeground() { throw new Error("ota"); }, async refreshOnNetworkAvailable() { throw new Error("ota"); } },
+    faceAttendance: { async refresh() { calls.push("face-refresh"); throw new Error("roster"); }, async sync() { calls.push("face-sync"); } },
+  });
+  await assert.rejects(() => controller.onApplicationStarted(), AggregateError);
+  await assert.rejects(() => controller.onForeground(), AggregateError);
+  await assert.rejects(() => controller.onNetworkChanged(true), AggregateError);
+  assert.deepEqual(calls, ["face-refresh", "face-sync", "face-refresh", "face-sync", "face-refresh", "face-sync"]);
+});
+
+
+test("仅 roster 刷新失败时仍同步人脸队列，并把刷新错误交给 runtime bridge", async () => {
+  const calls: string[] = [];
+  const controller = new RuntimeWorkController({
+    sync: { async onApplicationStarted() { calls.push("order"); }, async onForeground() {}, async onNetworkChanged() {} },
+    fulfilment: { async drainAutomaticQueue() { calls.push("hardware"); } },
+    appUpdates: { async refreshOnStartup() { calls.push("ota"); }, async refreshOnForeground() {}, async refreshOnNetworkAvailable() {} },
+    faceAttendance: { async refresh() { calls.push("face-refresh"); throw new Error("roster"); }, async sync() { calls.push("face-sync"); } },
+  });
+  await assert.rejects(() => controller.onApplicationStarted(), AggregateError);
+  assert.deepEqual(calls, ["order", "hardware", "ota", "face-refresh", "face-sync"]);
+});

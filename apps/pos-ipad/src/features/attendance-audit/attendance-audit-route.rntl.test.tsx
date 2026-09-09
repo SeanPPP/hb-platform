@@ -1,8 +1,19 @@
 import { beforeEach, expect, jest, test } from "@jest/globals";
-import { act, render, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
 import { create } from "zustand";
 
 import AttendanceAuditRoute from "../../../app/attendance-audit";
+
+jest.mock("@/features/attendance-face/face-attendance-screen", () => {
+  const React = jest.requireActual<typeof import("react")>("react");
+  const { Text } = jest.requireActual<typeof import("react-native")>("react-native");
+  return {
+    FaceAttendanceScreen: ({ onShowQr }: { onShowQr: () => void }) =>
+      React.createElement(Text, { testID: "face-screen", onPress: onShowQr }, "face"),
+    FaceAttendanceReturnBar: ({ onPress }: { onPress: () => void }) =>
+      React.createElement(Text, { testID: "open-face", onPress }, "open-face"),
+  };
+});
 
 // 用真实 zustand store 模拟 connectivity：setState 能驱动 React 重渲染。
 type MockShellState = Readonly<{ connectivity: string }>;
@@ -156,6 +167,21 @@ test("网络离线时仍可显示已登记二维码和本机审计", async () =>
     expect(screen.getByTestId("attendance-audit-screen")).toBeTruthy();
   });
   expect(mockSetOnline).toHaveBeenCalledWith(false);
+  await screen.unmount();
+});
+
+test.each([false, true])("人脸名单同步状态 %s 决定默认入口且两种打卡可以互相切换", async (hasSyncedRoster) => {
+  mockRuntime.services.faceAttendance = { state: () => ({ hasSyncedRoster }) };
+  const screen = await render(<AttendanceAuditRoute />);
+  await waitFor(() => {
+    expect(screen.getByTestId(hasSyncedRoster ? "face-screen" : "attendance-audit-screen")).toBeTruthy();
+  });
+  if (hasSyncedRoster) await fireEvent.press(screen.getByTestId("face-screen"));
+  expect(screen.getByTestId("attendance-audit-screen")).toBeTruthy();
+  await fireEvent.press(screen.getByTestId("open-face"));
+  expect(screen.getByTestId("face-screen")).toBeTruthy();
+  await fireEvent.press(screen.getByTestId("face-screen"));
+  expect(screen.getByTestId("attendance-audit-screen")).toBeTruthy();
   await screen.unmount();
 });
 

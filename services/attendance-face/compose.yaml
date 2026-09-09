@@ -1,0 +1,23 @@
+# 本机验收配置；跨容器/服务器访问必须经过自己的 TLS 入口。
+services:
+  attendance-face:
+    build: .
+    restart: unless-stopped
+    environment:
+      ATTENDANCE_FACE_WORKER_TOKEN: ${ATTENDANCE_FACE_WORKER_TOKEN:?set a private worker token}
+      PYTHONDONTWRITEBYTECODE: "1"
+    ports:
+      - "127.0.0.1:8092:8080"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,urllib.request; r=urllib.request.Request('http://127.0.0.1:8080/health/ready',headers={'Authorization':'Bearer '+os.environ['ATTENDANCE_FACE_WORKER_TOKEN']}); urllib.request.urlopen(r,timeout=5).close()"]
+      interval: 30s
+      timeout: 6s
+      retries: 3
+      start_period: 60s

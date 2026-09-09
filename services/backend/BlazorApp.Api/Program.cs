@@ -1034,7 +1034,12 @@ builder.Services.AddScoped<IPreorderGateService>(provider =>
 builder.Services.AddScoped<IStoreProductMaintenanceReactService, StoreProductMaintenanceReactService>();
 builder.Services.AddScoped<IAustralianPublicHolidayProvider, AustralianPublicHolidayProvider>();
 builder.Services.AddScoped<IAttendancePublicHolidaySyncService, AttendancePublicHolidaySyncService>();
-builder.Services.AddScoped<IAttendanceReactService, AttendanceReactService>();
+builder.Services.AddScoped<AttendanceReactService>();
+builder.Services.AddScoped<IAttendanceReactService>(provider => provider.GetRequiredService<AttendanceReactService>());
+builder.Services.AddScoped<IFaceAttendancePunchWriter, FaceAttendancePunchWriter>();
+builder.Services.AddHttpClient("AttendanceFaceRecognition").ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false });
+builder.Services.AddScoped<FaceAttendanceService>();
+builder.Services.AddHostedService<FaceAttendanceWorker>();
 builder.Services.AddScoped<ISeasonalCardRemainingReactService, SeasonalCardRemainingReactService>();
 builder.Services.AddScoped<IPDACartToOrderService, PDACartToOrderService>();
 builder.Services.AddScoped<IPDAWarehouseOrderService, PDAWarehouseOrderService>();

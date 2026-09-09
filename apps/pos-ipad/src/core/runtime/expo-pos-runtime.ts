@@ -1,3 +1,4 @@
+import { CashierSessionInvalidationBus } from "@hb/pos-domain/core/security/cashier-session-invalidation";
 import * as Application from "expo-application";
 import Constants from "expo-constants";
 import * as Crypto from "expo-crypto";
@@ -23,6 +24,13 @@ import {
   HbposAttendanceSecurityApi,
   HbposOperationAuditReadApi,
 } from "../../features/attendance-audit";
+import {
+  FaceAttendanceRuntimeService,
+  HbposFaceAttendanceApi,
+  type FaceAttendanceRuntime,
+} from "../../features/attendance-face";
+import { ExpoFaceMultipartFilePort } from "../../features/attendance-face/face-multipart-file";
+import { cleanupStaleFaceCameraFiles } from "../../features/attendance-face/face-photo-capture";
 import {
   CustomerDisplayAdvertisementCache,
 } from "../../features/customer-display";
@@ -66,9 +74,8 @@ import {
 import { HidScannerRouter } from "../peripherals/scanner";
 import { SecurityApiCredentialProvider } from "../security/api-credential-provider";
 import { CashierAuthenticationService } from "../security/cashier-authentication";
-import { CashierSessionInvalidationBus } from "@hb/pos-domain/core/security/cashier-session-invalidation";
-import { DeviceRegistrationResetCoordinator } from "../security/device-registration-reset";
 import { DeviceRegistrationApiPartitionGuard } from "../security/device-registration-api-partition-guard";
+import { DeviceRegistrationResetCoordinator } from "../security/device-registration-reset";
 import { DeviceSessionCoordinator } from "../security/device-session";
 import { ExpoSecureStoreAdapter } from "../security/expo-secure-store";
 import {
@@ -170,6 +177,7 @@ export type ExpoPosRuntimeServices = PosRuntimeServices &
     scanner: Readonly<{ router: HidScannerRouter }>;
     applicationLog: ApplicationLogRuntime;
     updateIdentity: ExpoPosUpdateIdentity;
+    faceAttendance?: FaceAttendanceRuntime;
   }>;
 
 type ExpoSettingsDevicePresentation = Readonly<{
@@ -876,6 +884,41 @@ async function createExpoPosRuntimeServicesCore(): Promise<ExpoPosRuntimeService
             sha256Hex,
           })
         : null;
+    const faceMultipartFiles = attendanceCredentials ? new ExpoFaceMultipartFilePort() : null;
+    // 相机在回调前崩溃可能留下原始 JPEG；清理失败只留待下次恢复，绝不阻断销售启动。
+    if (attendanceCredentials) cleanupStaleFaceCameraFiles();
+    // 应用崩溃会跳过上传 finally；启动时只清本模块 face-*.jpg 遗留，绝不触及相机其他缓存。
+    await faceMultipartFiles?.cleanupStale();
+    const faceAttendance = attendanceCredentials
+      ? new FaceAttendanceRuntimeService({
+          api: new HbposFaceAttendanceApi(transport, faceMultipartFiles!),
+          repository: database.faceAttendance({
+            storeCode: attendanceCredentials.storeCode,
+            deviceCode: attendanceCredentials.deviceCode,
+            hardwareId: attendanceCredentials.hardwareId,
+          }),
+          scope: attendanceCredentials,
+          now,
+          createGuid: createId,
+          sha256JpegBytes: async (photoBase64) => {
+            const bytes = new Uint8Array(await (await fetch(`data:image/jpeg;base64,${photoBase64}`)).arrayBuffer());
+            const digest = await Crypto.digest(Crypto.CryptoDigestAlgorithm.SHA256, bytes);
+            return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+          },
+          isOnline: () => network.isOnline(),
+          sign: (keyId, canonicalMetadata) =>
+            attendanceSecurity.signFaceHmacSha256(keyId, canonicalMetadata),
+          hasKey: (keyId) => attendanceSecurity.hasFaceHmacKey(keyId),
+          saveKey: (keyId, secretBase64) =>
+            attendanceSecurity.saveFaceHmacKey(keyId, secretBase64),
+          systemUptimeMilliseconds: () =>
+            attendanceSecurity.getSystemUptimeMilliseconds(),
+        })
+      : undefined;
+    // 收银员票据一旦失效，立即撤销本 runtime 的店长能力；订阅在 shutdown 前释放。
+    const unsubscribeFaceManagement = faceAttendance
+      ? cashierSessionInvalidation.subscribe(() => faceAttendance.invalidateManagement())
+      : undefined;
     const composition = createProductionPosRuntimeServices({
       database,
       transport,
@@ -1188,7 +1231,10 @@ async function createExpoPosRuntimeServicesCore(): Promise<ExpoPosRuntimeService
       scanner: Object.freeze({ router: scannerRouter }),
       applicationLog: activeApplicationLog,
       updateIdentity,
+      ...(faceAttendance ? { faceAttendance } : {}),
       shutdown: async () => {
+        unsubscribeFaceManagement?.();
+        await faceAttendance?.dispose();
         releaseClientMetricBinding?.();
         await clientMetricRuntime?.shutdown();
         await shutdownExpoPosRuntimeServices({

@@ -24,6 +24,8 @@ namespace BlazorApp.Api.Services
         private static readonly IReadOnlyDictionary<string, string[]> PurposeScopes =
             new Dictionary<string, string[]>(StringComparer.Ordinal)
             {
+                [ServiceApiTokenPurposes.AttendanceFaceGateway] =
+                    [ServiceApiScopes.AttendanceFaceGateway],
                 [ServiceApiTokenPurposes.MobileOtaPublisher] =
                     [Permissions.System.ManageAppDownloads],
                 [ServiceApiTokenPurposes.PosIpadUpdateDecisionReader] =

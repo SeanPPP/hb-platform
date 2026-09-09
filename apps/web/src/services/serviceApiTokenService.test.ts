@@ -74,7 +74,7 @@ assertEqual(
   'Service Token 创建请求严禁提交 scopes',
 )
 
-for (const purpose of ['quality-ci-reporter', 'deployment-acceptance-reporter'] as const) {
+for (const purpose of ['attendance-face-gateway', 'quality-ci-reporter', 'deployment-acceptance-reporter'] as const) {
   const reporterRequest = buildServiceApiTokenCreateRequest(` ${purpose} `, purpose)
   assertDeepEqual(
     reporterRequest,

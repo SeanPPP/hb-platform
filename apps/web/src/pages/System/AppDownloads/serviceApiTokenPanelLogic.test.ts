@@ -47,6 +47,15 @@ assertEqual(
 assertEqual(
   buildServiceApiTokenEnvSnippet(
     'https://hotbargain.vip/api/',
+    ' hbsvc_face_gateway_token ',
+    'attendance-face-gateway',
+  ),
+  'HBPOS_ATTENDANCE_FACE_GATEWAY_TOKEN=hbsvc_face_gateway_token',
+  '人脸考勤网关 Token 必须输出 Hbpos API 专用环境变量且不得混入通用 Web 凭据',
+)
+assertEqual(
+  buildServiceApiTokenEnvSnippet(
+    'https://hotbargain.vip/api/',
     ' hbsvc_quality_token ',
     'quality-ci-reporter',
   ),
@@ -220,7 +229,7 @@ assertEqual(
   '文本筛选重置必须确认清空受控筛选并关闭下拉框',
 )
 
-for (const purpose of ['quality-ci-reporter', 'deployment-acceptance-reporter']) {
+for (const purpose of ['attendance-face-gateway', 'quality-ci-reporter', 'deployment-acceptance-reporter']) {
   assertEqual(typeSource.includes(`| '${purpose}'`), true, `${purpose} 必须加入前端 purpose 类型白名单`)
   assertEqual(panelSource.includes(`value: '${purpose}'`), true, `${purpose} 必须出现在管理员签发下拉框`)
   assertEqual(
@@ -236,5 +245,15 @@ for (const purpose of ['quality-ci-reporter', 'deployment-acceptance-reporter'])
     `${purpose} 必须提供英文标签和用途说明`,
   )
 }
+assertEqual(
+  zh.system?.appDownloads?.serviceTokens?.purposes?.['attendance-face-gateway']?.description.includes('Attendance.FaceGateway'),
+  true,
+  '人脸考勤网关说明必须明确其唯一权限范围',
+)
+assertEqual(
+  en.system?.appDownloads?.serviceTokens?.purposes?.['attendance-face-gateway']?.description.includes('Attendance.FaceGateway'),
+  true,
+  'Face attendance gateway description must state its only scope',
+)
 
 console.log('serviceApiTokenPanelLogic.test.ts: ok')

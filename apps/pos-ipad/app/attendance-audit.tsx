@@ -1,5 +1,7 @@
 import { Redirect, type Href, useRouter } from "expo-router";
 import { useEffect, useState } from "react";
+import { View } from "react-native";
+
 
 import { usePosRuntime } from "@/core/runtime/pos-runtime-context";
 import {
@@ -8,13 +10,14 @@ import {
   resolveAttendanceAuditRuntimeFactory,
   type AttendanceAuditPresenter,
 } from "@/features/attendance-audit";
+import { FaceAttendanceScreen, FaceAttendanceReturnBar } from "@/features/attendance-face/face-attendance-screen";
 import {
   isActiveCashierBoundToDevice,
   resolveProtectedSalesRouteGate,
   useCashierLoginStore,
 } from "@/features/cashier-login";
-import { usePosShellStore } from "@/ui/shell/pos-shell-store";
 import { BootstrapScreen } from "@/ui/screens/bootstrap-screen";
+import { usePosShellStore } from "@/ui/shell/pos-shell-store";
 
 type AttendanceAuditBinding = Readonly<{
   cashier: object;
@@ -45,6 +48,7 @@ export default function AttendanceAuditRoute() {
   const [binding, setBinding] =
     useState<AttendanceAuditBinding | null>(null);
   const [runtimeUnavailable, setRuntimeUnavailable] = useState(false);
+  const [attendanceView, setAttendanceView] = useState<"face" | "audit">(() => runtime.services?.faceAttendance?.state().hasSyncedRoster ? "face" : "audit");
   const presenter =
     binding?.services === runtime.services &&
     binding.cashier === activeCashier
@@ -145,10 +149,19 @@ export default function AttendanceAuditRoute() {
     return <BootstrapScreen />;
   }
 
+  if (runtime.services?.faceAttendance && attendanceView === "face") {
+    return <FaceAttendanceScreen runtime={runtime.services.faceAttendance}
+      onBack={() => router.dismissTo("/sales" as Href)}
+      onShowQr={() => setAttendanceView("audit")} />;
+  }
+
   return (
+    <View style={{ flex: 1 }}>
+      {runtime.services?.faceAttendance ? <FaceAttendanceReturnBar onPress={() => setAttendanceView("face")} /> : null}
     <AttendanceAuditScreen
       onBack={() => router.dismissTo("/sales" as Href)}
       presenter={presenter}
     />
+    </View>
   );
 }

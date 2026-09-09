@@ -521,6 +521,12 @@ export default function ServiceApiTokensPanel() {
                   ),
                 },
                 {
+                  value: 'attendance-face-gateway',
+                  label: t(
+                    'system.appDownloads.serviceTokens.purposes.attendance-face-gateway.label',
+                  ),
+                },
+                {
                   value: 'quality-ci-reporter',
                   label: t(
                     'system.appDownloads.serviceTokens.purposes.quality-ci-reporter.label',

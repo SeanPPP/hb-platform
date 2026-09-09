@@ -18,7 +18,7 @@ using SqlSugar;
 
 namespace BlazorApp.Api.Services.React
 {
-    public class AttendanceReactService : IAttendanceReactService
+    public partial class AttendanceReactService : IAttendanceReactService
     {
         private const string DefaultStoreTimeZone = StoreTimeZonePolicy.Sydney;
 

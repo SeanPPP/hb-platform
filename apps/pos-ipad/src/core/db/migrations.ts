@@ -5902,6 +5902,75 @@ BEGIN
 END;
 `;
 
+/** 人脸考勤使用独立耐久队列，绝不能与销售或审计 outbox 复用。 */
+const M44 = `
+CREATE TABLE IF NOT EXISTS face_attendance_scope_state (
+  scope_key TEXT PRIMARY KEY,
+  store_code TEXT NOT NULL,
+  device_code TEXT NOT NULL,
+  hardware_id TEXT NOT NULL,
+  roster_version TEXT NULL,
+  roster_synced_at_utc TEXT NULL,
+  server_time_utc TEXT NULL,
+  store_time_zone TEXT NULL,
+  time_anchor_id TEXT NULL,
+  trusted_server_epoch_ms INTEGER NULL,
+  trusted_uptime_ms INTEGER NULL,
+  trusted_boot_epoch_ms INTEGER NULL,
+  face_hmac_key_id TEXT NULL,
+  can_manage INTEGER NOT NULL DEFAULT 0 CHECK (can_manage IN (0, 1)),
+  can_view_photos INTEGER NOT NULL DEFAULT 0 CHECK (can_view_photos IN (0, 1)),
+  can_review INTEGER NOT NULL DEFAULT 0 CHECK (can_review IN (0, 1)),
+  next_local_sequence INTEGER NOT NULL DEFAULT 0 CHECK (next_local_sequence >= 0),
+  updated_at_utc TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS face_attendance_roster (
+  scope_key TEXT NOT NULL REFERENCES face_attendance_scope_state(scope_key) ON DELETE CASCADE,
+  user_guid TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  employee_code TEXT NULL,
+  enrollment_version TEXT NOT NULL,
+  enrollment_status TEXT NOT NULL CHECK (enrollment_status IN ('active', 'revoked', 'none')),
+  last_punch_type TEXT NULL CHECK (last_punch_type IN ('clockIn', 'clockOut')),
+  last_punch_time_utc TEXT NULL,
+  roster_version TEXT NOT NULL,
+  PRIMARY KEY (scope_key, user_guid)
+);
+CREATE TABLE IF NOT EXISTS face_attendance_events (
+  event_guid TEXT PRIMARY KEY,
+  scope_key TEXT NOT NULL REFERENCES face_attendance_scope_state(scope_key) ON DELETE RESTRICT,
+  user_guid TEXT NOT NULL,
+  employee_name TEXT NOT NULL,
+  punch_type TEXT NOT NULL CHECK (punch_type IN ('clockIn', 'clockOut')),
+  occurred_at_utc TEXT NOT NULL,
+  device_observed_at_utc TEXT NOT NULL,
+  local_sequence INTEGER NOT NULL,
+  roster_version TEXT NOT NULL,
+  enrollment_version TEXT NOT NULL,
+  time_anchor_id TEXT NULL,
+  time_trusted INTEGER NOT NULL CHECK (time_trusted IN (0, 1)),
+  photo_sha256 TEXT NOT NULL,
+  key_id TEXT NOT NULL,
+  signature TEXT NOT NULL,
+  photo_base64 TEXT NULL,
+  local_state TEXT NOT NULL CHECK (local_state IN ('pending-upload', 'pending-review', 'confirmed', 'rejected')),
+  server_status TEXT NULL CHECK (server_status IN ('queued', 'verifying', 'verified', 'needsReview', 'rejected')),
+  reason_code TEXT NULL,
+  punch_guid TEXT NULL,
+  received_at_utc TEXT NULL,
+  server_updated_at_utc TEXT NULL,
+  attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+  next_attempt_at_utc TEXT NOT NULL,
+  lease_id TEXT NULL,
+  lease_expires_at_utc TEXT NULL,
+  created_at_utc TEXT NOT NULL,
+  updated_at_utc TEXT NOT NULL,
+  UNIQUE (scope_key, local_sequence)
+);
+CREATE INDEX IF NOT EXISTS ix_face_attendance_events_due
+  ON face_attendance_events (scope_key, local_state, next_attempt_at_utc, local_sequence);
+`;
+
 export const POS_DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   { version: 1, name: "M1_security_and_time", sql: M1 },
   { version: 2, name: "M2_catalog", sql: M2 },
@@ -5946,6 +6015,7 @@ export const POS_DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   { version: 41, name: "M41_shared_held_order_share_request", sql: M41 },
   { version: 42, name: "M42_shared_held_order_claim_wire_version", sql: M42 },
   { version: 43, name: "M43_shared_held_order_publication_wire_version", sql: M43 },
+  { version: 44, name: "M44_face_attendance_local_queue", sql: M44 },
 ];
 
 export async function applyMigrations(

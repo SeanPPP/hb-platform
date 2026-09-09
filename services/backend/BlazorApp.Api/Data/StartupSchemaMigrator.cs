@@ -35,6 +35,7 @@ namespace BlazorApp.Api.Data
             await EnsureAttendanceLocationSchemaAsync(db, logger);
             await EnsureAttendanceQrSchemaAsync(db, logger);
             await EnsureAttendanceWorkSessionSchemaAsync(db, logger);
+            await FaceAttendanceSchemaMigrator.EnsureAsync(db, logger);
             await EnsureServiceApiTokenSchemaAsync(db, logger);
             await BrowserExtensionSessionGrantSchemaMigrator.EnsureAsync(db, logger);
             await EnsureWpfAppReleaseSchemaAsync(db, logger);

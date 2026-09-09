@@ -33,6 +33,9 @@ namespace BlazorApp.Shared.Constants
                 new(Permissions.Attendance.Leave.ReviewManagedStore, "审核管理分店请假申请", "排班考勤", "页面 /pos-admin/schedule-attendance - 审核管理分店请假申请"),
                 new(Permissions.Attendance.Settings.Edit, "编辑考勤设置", "排班考勤", "页面 /pos-admin/schedule-attendance - 编辑考勤设置"),
                 new(Permissions.Attendance.Admin.View, "查看全部考勤管理", "排班考勤", "页面 /pos-admin/schedule-attendance - 查看全部考勤管理"),
+                new(Permissions.Attendance.Face.EnrollManagedStore, "录入管理分店人脸", "排班考勤", "iPad 人脸考勤 - 录入或撤销员工人脸"),
+                new(Permissions.Attendance.Face.ViewPhotosManagedStore, "查看管理分店人脸照片", "排班考勤", "iPad 人脸考勤 - 查看私有考勤照片"),
+                new(Permissions.Attendance.Face.ReviewManagedStore, "审核管理分店人脸考勤", "排班考勤", "iPad 人脸考勤 - 审核待复核事件"),
             };
 
         public static IReadOnlyList<PermissionSeedDefinition> SeasonalCardPermissions { get; } =
@@ -78,6 +81,9 @@ namespace BlazorApp.Shared.Constants
                 Permissions.Attendance.Leave.ApplySelf,
                 Permissions.Attendance.Leave.ViewManagedStore,
                 Permissions.Attendance.Leave.ReviewManagedStore,
+                Permissions.Attendance.Face.EnrollManagedStore,
+                Permissions.Attendance.Face.ViewPhotosManagedStore,
+                Permissions.Attendance.Face.ReviewManagedStore,
                 Permissions.SeasonalCards.Remaining.ViewManagedStore,
                 Permissions.SeasonalCards.Remaining.SubmitManagedStore,
                 Permissions.DeviceRegistration.View,
