@@ -351,6 +351,63 @@ public sealed class AutoPricingServiceTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task 曲线保存回读且非法更新不改变数据库()
+    {
+        var service = new BlazorApp.Api.Services.React.PricingStrategyReactService(CreateSqlSugarContext(_db));
+        var dto = new BlazorApp.Shared.DTOs.CreatePricingStrategyDto
+        {
+            Name = "曲线测试", Details = new()
+            {
+                new() { MinPrice = 10, MaxPrice = 20, StartRate = 4, EndRate = 2.5m,
+                    StartRetailPrice = 39.99m, EndRetailPrice = 49.99m, Algorithm = "ArcUp", CurveBend = .1m }
+            }
+        };
+        var saved = await service.CreateAsync(dto);
+        Assert.True(saved.Success, saved.Message);
+        var id = saved.Data!.Id;
+        Assert.Equal(39.99m, saved.Data.Details.Single().StartRetailPrice);
+        Assert.Equal(.1m, saved.Data.Details.Single().CurveBend);
+        var loaded = (await _service.GetAllActiveStrategiesAsync()).Single(s => s.Id == id);
+        Assert.Equal(49.99m, loaded.Details.Single().EndRetailPrice);
+        dto.Details[0].EndRetailPrice = 9.99m;
+        var invalid = await service.UpdateAsync(id, new() { Name = "不得保存", Details = dto.Details });
+        Assert.False(invalid.Success);
+        Assert.Equal("曲线测试", (await service.GetByIdAsync(id)).Data!.Name);
+        Assert.Equal(49.99m, (await service.GetByIdAsync(id)).Data!.Details.Single().EndRetailPrice);
+    }
+
+    [Fact]
+    public async Task 弧度先向零截断再校验确保保存回读安全()
+    {
+        var service = new BlazorApp.Api.Services.React.PricingStrategyReactService(CreateSqlSugarContext(_db));
+        var result = await service.CreateAsync(new()
+        {
+            Name = "弧度精度", Details = new()
+            { new() { MinPrice = 10, MaxPrice = 20, StartRate = 3.999m, EndRate = 3.4495m,
+                StartRetailPrice = 39.99m, EndRetailPrice = 68.99m, Algorithm = "ArcUp", CurveBend = .37896551m } }
+        });
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(.378965m, result.Data!.Details.Single().CurveBend);
+        var loaded = (await _service.GetAllActiveStrategiesAsync()).Single(s => s.Id == result.Data.Id);
+        Assert.Equal(39.99m, _service.CalculateRetailPrice(10, loaded));
+    }
+
+    [Fact]
+    public async Task 保存明细失败时策略主表也回滚()
+    {
+        var service = new BlazorApp.Api.Services.React.PricingStrategyReactService(CreateSqlSugarContext(_db));
+        var count = _db.Queryable<PricingStrategy>().Count();
+        _db.Ado.ExecuteCommand("CREATE TRIGGER reject_pricing_detail BEFORE INSERT ON PricingStrategyDetail BEGIN SELECT RAISE(ABORT, 'test rejection'); END;");
+        var result = await service.CreateAsync(new()
+        {
+            Name = "必须回滚", Details = new()
+            { new() { MinPrice = 10, MaxPrice = 20, StartRate = 4, EndRate = 2.5m, Algorithm = "Linear" } }
+        });
+        Assert.False(result.Success);
+        Assert.Equal(count, _db.Queryable<PricingStrategy>().Count());
+    }
+
     private List<PricingStrategy> LoadStrategies()
     {
         var strategies = _db.Queryable<PricingStrategy>().ToList();

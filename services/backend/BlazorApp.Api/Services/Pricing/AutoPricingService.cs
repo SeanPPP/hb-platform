@@ -51,135 +51,29 @@ namespace BlazorApp.Api.Services.Pricing
         /// </summary>
         public decimal CalculateRate(decimal purchasePrice, PricingStrategy? strategy)
         {
-            if (strategy == null || strategy.Details == null || !strategy.Details.Any())
-                return 2.5m;
-
-            // 找到匹配的区间
-            // 假设区间是 [Min, Max) 或者闭区间，这里使用 Min <= p <= Max
-            // 如果有重叠，取第一个匹配的
-            var rule = strategy.Details.FirstOrDefault(d =>
-                purchasePrice >= d.MinPrice && purchasePrice <= d.MaxPrice
-            );
-
-            if (rule == null)
-                return 2.5m;
-
-            decimal rate = 1.0m;
-
-            switch (rule.Algorithm?.ToLower())
-            {
-                case "linear": // 线性插值
-                    if (rule.MaxPrice == rule.MinPrice)
-                    {
-                        rate = rule.StartRate;
-                    }
-                    else
-                    {
-                        // rate = start + (end - start) * (p - min) / (max - min)
-                        decimal ratio =
-                            (purchasePrice - rule.MinPrice) / (rule.MaxPrice - rule.MinPrice);
-                        rate = rule.StartRate + (rule.EndRate - rule.StartRate) * ratio;
-                    }
-                    break;
-
-                case "exponential": // 指数插值
-                    if (rule.MaxPrice == rule.MinPrice)
-                    {
-                        rate = rule.StartRate;
-                    }
-                    else
-                    {
-                        // rate = start * (end/start) ^ ratio
-                        // 注意：如果 StartRate 或 EndRate <= 0 会有问题
-                        if (rule.StartRate <= 0 || rule.EndRate <= 0)
-                        {
-                            rate = rule.StartRate; // 降级处理
-                        }
-                        else
-                        {
-                            double ratio =
-                                (double)(purchasePrice - rule.MinPrice)
-                                / (double)(rule.MaxPrice - rule.MinPrice);
-                            double r =
-                                (double)rule.StartRate
-                                * Math.Pow((double)rule.EndRate / (double)rule.StartRate, ratio);
-                            rate = (decimal)r;
-                        }
-                    }
-                    break;
-
-                case "step": // 阶梯/固定
-                default:
-                    rate = rule.StartRate; // 直接使用起始浮率
-                    break;
-            }
-
-            return rate;
+            return CalculateTheoreticalRetail(purchasePrice, strategy) / purchasePrice;
         }
 
-        /// <summary>
-        /// 计算建议零售价
-        /// </summary>
+        private static decimal CalculateTheoreticalRetail(decimal purchasePrice, PricingStrategy? strategy)
+        {
+            if (purchasePrice < 0.1m)
+                throw new ArgumentException("进货价必须至少为 0.10，才能满足尾数及 1.5～5 成率限制");
+            var rule = strategy?.Details?.OrderBy(d => d.MinPrice).FirstOrDefault(d =>
+                purchasePrice >= d.MinPrice && purchasePrice <= d.MaxPrice);
+            if (rule == null)
+            {
+                if (strategy != null) throw new ArgumentException("当前成本不在此定价策略范围内");
+                return purchasePrice * 2.5m;
+            }
+            if (PricingCurveMath.IsCurve(rule.Algorithm))
+                PricingCurveMath.Validate(strategy!.Details, allowLegacyZero: true);
+            return PricingCurveMath.TheoreticalRetail(purchasePrice, rule);
+        }
+
+        /// <summary>计算建议零售价，尾数只能在合法价格集合内调整，不能突破倍率上下限。</summary>
         public decimal CalculateRetailPrice(decimal purchasePrice, PricingStrategy? strategy)
         {
-            var rate = CalculateRate(purchasePrice, strategy);
-            decimal retailPrice = purchasePrice * rate;
-
-            // 兜底保护：零售价不能低于进货价
-            if (retailPrice < purchasePrice)
-            {
-                retailPrice = purchasePrice;
-            }
-
-            // 心理价规则：
-            // - 0.5 倍数出现：小数部分 <= 0.5 调整到 .50；大于 0.5 进位到 .99
-            // - 1 和 2 两个整数保留不变
-            // - 其它整数（3、4、...）若恰好为整数则减少 0.01 到 .99
-            decimal adjusted = retailPrice;
-            if (adjusted <= 0.5m)
-            {
-                adjusted = 0.5m;
-            }
-            else
-            {
-                int integer = (int)Math.Floor(adjusted);
-                decimal frac = adjusted - integer;
-
-                if (frac == 0m)
-                {
-                    if (integer == 1 || integer == 2)
-                    {
-                        adjusted = integer;
-                    }
-                    else
-                    {
-                        adjusted = Math.Round(integer - 0.01m, 2);
-                    }
-                }
-                else if (frac <= 0.5m)
-                {
-                    adjusted = integer + 0.5m;
-                }
-                else
-                {
-                    if ((integer + 1) == 1 || (integer + 1) == 2)
-                    {
-                        adjusted = integer + 1m;
-                    }
-                    else
-                    {
-                        adjusted = integer + 0.99m;
-                    }
-                }
-            }
-
-            // 再次兜底：不低于进货价
-            if (adjusted < purchasePrice)
-            {
-                adjusted = purchasePrice;
-            }
-
-            return Math.Round(adjusted, 2);
+            return PricingCurveMath.AdjustTail(purchasePrice, CalculateTheoreticalRetail(purchasePrice, strategy));
         }
 
         /// <summary>
@@ -222,6 +116,9 @@ namespace BlazorApp.Api.Services.Pricing
                             DetailStartRate = d.StartRate,
                             DetailEndRate = d.EndRate,
                             DetailAlgorithm = d.Algorithm,
+                            DetailStartRetailPrice = d.StartRetailPrice,
+                            DetailEndRetailPrice = d.EndRetailPrice,
+                            DetailCurveBend = d.CurveBend,
                             TargetId = t.Id,
                             TargetType = t.TargetType,
                             TargetCode = t.TargetCode,
@@ -256,6 +153,9 @@ namespace BlazorApp.Api.Services.Pricing
                             StartRate = gg.First().DetailStartRate,
                             EndRate = gg.First().DetailEndRate,
                             Algorithm = gg.First().DetailAlgorithm,
+                            StartRetailPrice = gg.First().DetailStartRetailPrice,
+                            EndRetailPrice = gg.First().DetailEndRetailPrice,
+                            CurveBend = gg.First().DetailCurveBend,
                         })
                         .ToList(),
                     Targets = g.Where(x => x.TargetId != null)

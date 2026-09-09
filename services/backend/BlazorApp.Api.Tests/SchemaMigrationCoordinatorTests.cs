@@ -385,6 +385,7 @@ public sealed class SchemaMigrationCoordinatorTests
             SchemaDatabase.Main,
             SchemaMigrationCoordinator.ProductHqSyncOutboxMigrationId
         );
+        runtime.MarkApplied(SchemaDatabase.Main, SchemaMigrationCoordinator.PricingCurveMigrationId);
         runtime.MarkApplied(SchemaDatabase.Posm, SchemaMigrationCoordinator.PosmMigrationId);
         runtime.MarkApplied(
             SchemaDatabase.Posm,
@@ -781,6 +782,7 @@ public sealed class SchemaMigrationCoordinatorTests
                 "Check:Main:20260902.001-container-detail-query-indexes",
                 "Check:Main:20260903.001-container-detail-collaboration",
                 "Check:Main:20260903.001-product-hq-sync-outbox",
+                "Check:Main:20260909.001-pricing-curve",
                 "Check:Posm:20260827.001-hbweb-posm-baseline",
                 "Check:Posm:20260831.001-mobile-device-activation",
                 "Check:Posm:20260903.001-linkly-multi-terminal",
@@ -929,6 +931,34 @@ public sealed class SchemaMigrationCoordinatorTests
         throw new DirectoryNotFoundException("无法定位 hb-platform 仓库根目录");
     }
 
+    [Fact]
+    public async Task CheckAsync_定价曲线签名漂移时阻止启动且不写库()
+    {
+        var runtime = new FakeSchemaMigrationRuntime { PricingCurveVerifyException = new PricingCurveSchemaMismatchException() };
+        foreach (var step in SchemaMigrationCoordinator.MainMigrationSteps) runtime.MarkApplied(SchemaDatabase.Main, step.MigrationId);
+        foreach (var step in SchemaMigrationCoordinator.PosmMigrationSteps) runtime.MarkApplied(SchemaDatabase.Posm, step.MigrationId);
+        var result = await CreateCoordinator(runtime).CheckAsync(CancellationToken.None);
+        Assert.False(result.Success);
+        Assert.Equal(SchemaDiagnosticCodes.PricingCurveIncompatible, result.DiagnosticCode);
+        Assert.DoesNotContain(runtime.Events, e => e.StartsWith("Apply:") || e.StartsWith("Record:"));
+    }
+
+    [Fact]
+    public async Task MigrateAsync_定价曲线成功后登记且再次执行跳过()
+    {
+        var runtime = new FakeSchemaMigrationRuntime();
+        var coordinator = CreateCoordinator(runtime);
+        Assert.True((await coordinator.MigrateAsync(CancellationToken.None)).Success);
+        var apply = $"Apply:Main:{SchemaMigrationCoordinator.PricingCurveMigrationId}";
+        var record = $"Record:Main:{SchemaMigrationCoordinator.PricingCurveMigrationId}";
+        Assert.True(runtime.Events.IndexOf(apply) < runtime.Events.IndexOf(record));
+        runtime.Events.Clear();
+        Assert.True((await coordinator.MigrateAsync(CancellationToken.None)).Success);
+        Assert.DoesNotContain(apply, runtime.Events);
+        Assert.DoesNotContain(record, runtime.Events);
+        Assert.Contains("VerifyPricingCurve", runtime.Events);
+    }
+
     private sealed class FakeSchemaMigrationRuntime : ISchemaMigrationRuntime
     {
         private readonly HashSet<(SchemaDatabase Database, string MigrationId)> _applied = [];
@@ -941,6 +971,7 @@ public sealed class SchemaMigrationCoordinatorTests
         public Exception? MobileVerifyException { get; init; }
         public Exception? ContainerDetailIndexesVerifyException { get; init; }
         public Exception? ContainerDetailCollaborationVerifyException { get; init; }
+        public Exception? PricingCurveVerifyException { get; init; }
         public Exception? ProductHqOutboxVerifyException { get; init; }
         public Exception? LinklyVerifyException { get; init; }
 
@@ -1019,6 +1050,17 @@ public sealed class SchemaMigrationCoordinatorTests
             SchemaMigrationCoordinator.ContainerDetailCollaborationMigrationId,
             cancellationToken
         );
+
+        public Task ApplyPricingCurveAsync(CancellationToken cancellationToken) =>
+            ApplyAsync(SchemaDatabase.Main, SchemaMigrationCoordinator.PricingCurveMigrationId, cancellationToken);
+
+        public Task VerifyPricingCurveAsync(CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Events.Add("VerifyPricingCurve");
+            if (PricingCurveVerifyException is not null) throw PricingCurveVerifyException;
+            return Task.CompletedTask;
+        }
 
         public Task ApplyProductHqSyncOutboxAsync(CancellationToken cancellationToken) =>
             ApplyAsync(
