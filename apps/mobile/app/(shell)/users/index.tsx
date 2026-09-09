@@ -22,7 +22,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { StorePickerModal } from "@/components/ui/StorePickerModal";
 import type { Store } from "@/modules/shop/types";
 import { getDeviceBoundStoreCode } from "@/modules/shop/device-bound-store-filter";
-import { getManageableStoresForSession, isStoreManageable } from "@/modules/shop/store-scope";
+import { getManageableStoresForSession, getPosEnabledStores, isStoreManageable } from "@/modules/shop/store-scope";
 import { useStores } from "@/modules/shop/use-stores";
 import {
   STORE_STAFF_ROLE,
@@ -94,6 +94,8 @@ export default function UsersScreen() {
     isLoading: storesLoading,
     selectStore,
   } = useStores();
+  // 仅收窄选择候选，设备绑定与店员操作权限继续使用原分店范围。
+  const posEnabledStores = useMemo(() => getPosEnabledStores(stores), [stores]);
   const [managedStoreCode, setManagedStoreCode] = useState<string | null>(null);
   const [storePickerVisible, setStorePickerVisible] = useState(false);
   const [keywordInput, setKeywordInput] = useState("");
@@ -141,12 +143,12 @@ export default function UsersScreen() {
         return deviceBoundStoreCode;
       }
 
-      if (current && stores.some((store) => store.storeCode === current)) {
+      if (current && posEnabledStores.some((store) => store.storeCode === current)) {
         return current;
       }
 
       const selectedAssignedStore = rememberedStoreCode
-        ? stores.find((store) => store.storeCode === rememberedStoreCode)
+        ? posEnabledStores.find((store) => store.storeCode === rememberedStoreCode)
         : null;
       if (selectedAssignedStore) {
         return selectedAssignedStore.storeCode;
@@ -154,7 +156,7 @@ export default function UsersScreen() {
 
       return null;
     });
-  }, [deviceBoundStoreCode, isHydratingSelection, rememberedStoreCode, stores, storesLoading]);
+  }, [deviceBoundStoreCode, isHydratingSelection, rememberedStoreCode, posEnabledStores, storesLoading]);
 
   const managedStore = useMemo(
     () => stores.find((store) => store.storeCode === managedStoreCode) ?? null,
@@ -946,7 +948,7 @@ export default function UsersScreen() {
       <StorePickerModal
         visible={storePickerVisible}
         presentation="sheet"
-        stores={stores}
+        stores={posEnabledStores}
         selectedStoreCode={managedStoreCode}
         title={t("common:labels.selectStore")}
         cancelLabel={t("common:actions.cancel")}
