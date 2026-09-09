@@ -3,6 +3,7 @@ import { Alert, Button, Input, Pagination, Skeleton, Tag, Tooltip } from 'antd'
 import { CloseOutlined, FullscreenExitOutlined, FullscreenOutlined, SearchOutlined } from '@ant-design/icons'
 import { useKeepAliveContext } from 'keepalive-for-react'
 import { useLocation, useNavigate } from 'react-router-dom'
+import { useIsMobile } from '../../../hooks/useIsMobile'
 import { useAuthStore } from '../../../store/auth'
 import { MetricPair, ReportControls, useReportText } from '../ReportWorkbench/ReportControls'
 import { growth, reportPeriod } from '../ReportWorkbench/logic'
@@ -56,7 +57,10 @@ export default function SalesDetailAnalysisV2() {
   const text = useReportText()
   const location = useLocation()
   const navigate = useNavigate()
-  const { active = true } = useKeepAliveContext()
+  const { active: cachedActive } = useKeepAliveContext()
+  const isMobile = useIsMobile()
+  // 手机布局直接渲染页面，没有 KeepAlive；使用与布局相同的判断，避免默认 false 阻止查询。
+  const active = isMobile || cachedActive
   const { access, currentUser } = useAuthStore()
   const initial = useMemo(() => initialDetailState(location.search), [location.search])
   const [dates, setDates] = useState(initial.dates)
