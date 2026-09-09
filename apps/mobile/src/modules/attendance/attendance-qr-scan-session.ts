@@ -6,12 +6,14 @@ export function createAttendanceQrScanSessionGate() {
   let generation = 0;
   let activeGeneration: number | null = null;
   let submitStarted = false;
+  const expiredTokens = new Set<string>();
 
   return {
     begin(): AttendanceQrScanSession {
       generation += 1;
       activeGeneration = generation;
       submitStarted = false;
+      expiredTokens.clear();
       return { generation };
     },
     invalidate() {
@@ -21,8 +23,8 @@ export function createAttendanceQrScanSessionGate() {
     isActive(session: AttendanceQrScanSession) {
       return activeGeneration === session.generation;
     },
-    tryStartSubmitting(session: AttendanceQrScanSession) {
-      if (activeGeneration !== session.generation || submitStarted) {
+    tryStartSubmitting(session: AttendanceQrScanSession, qrToken?: string) {
+      if (activeGeneration !== session.generation || submitStarted || (qrToken && expiredTokens.has(qrToken))) {
         return false;
       }
       submitStarted = true;
@@ -36,6 +38,15 @@ export function createAttendanceQrScanSessionGate() {
     },
     isSubmitting(session: AttendanceQrScanSession) {
       return activeGeneration === session.generation && submitStarted;
+    },
+    resumeAfterExpired(session: AttendanceQrScanSession, qrToken: string) {
+      if (activeGeneration !== session.generation) return false;
+      expiredTokens.add(qrToken);
+      submitStarted = false;
+      return true;
+    },
+    isExpiredToken(qrToken: string) {
+      return expiredTokens.has(qrToken);
     },
   };
 }

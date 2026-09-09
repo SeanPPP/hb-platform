@@ -1,4 +1,5 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
+import * as Location from "expo-location";
 import { useFocusEffect } from "@react-navigation/native";
 import {
   buildApiBaseUrl,
@@ -10,7 +11,10 @@ import type {
 import {
   collectRequiredLocation,
   isRequiredLocationError,
+  RequiredLocationError,
+  type CapturedLocationPayload,
 } from "@/modules/attendance/required-location";
+import { createAttendanceLocationCapture } from "./attendance-location-capture";
 import { isIosReviewSessionActive } from "@/modules/ios-review/session";
 import { reviewAwareFetch } from "@/modules/ios-review/network";
 
@@ -74,10 +78,15 @@ export async function verifyAttendanceNetworkReachability() {
   }
 }
 
-async function collectVerificationState(): Promise<AttendancePunchVerificationState> {
+async function collectVerificationState(options: {
+  collectLocation: () => Promise<CapturedLocationPayload>;
+  networkVerified: boolean;
+}): Promise<AttendancePunchVerificationState> {
   const [networkResult, locationResult] = await Promise.allSettled([
-    verifyAttendanceNetworkReachability(),
-    collectRequiredLocation(),
+    options.networkVerified
+      ? Promise.resolve({ status: "available" as const, reason: "captured" as const, verificationStatus: "online" as const })
+      : verifyAttendanceNetworkReachability(),
+    options.collectLocation(),
   ]);
   const checkedAt = new Date().toISOString();
   const network =
@@ -110,12 +119,13 @@ async function collectVerificationState(): Promise<AttendancePunchVerificationSt
   }
 
   const denied = isRequiredLocationError(locationResult.reason);
+  const timedOut = locationResult.reason?.code === "LOCATION_TIMEOUT";
 
   return {
     checkedAt,
     location: {
       status: denied ? "permissionDenied" : "unavailable",
-      reason: denied ? "permissionDenied" : "unknown",
+      reason: denied ? "permissionDenied" : timedOut ? "timeout" : "unknown",
       permissionStatus: denied ? "denied" : "unavailable",
     },
     network,
@@ -131,34 +141,104 @@ export function usePunchVerification() {
     DEFAULT_VERIFICATION_STATE,
   );
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const locationCaptureRef = useRef<ReturnType<typeof createAttendanceLocationCapture> | null>(null);
+  const verificationRevisionRef = useRef(0);
 
-  const refreshVerification = useCallback(async () => {
+  const stopLocationCapture = useCallback(() => {
+    locationCaptureRef.current?.dispose();
+    locationCaptureRef.current = null;
+  }, []);
+
+  const prewarmLocation = useCallback(() => {
+    stopLocationCapture();
+    if (isIosReviewSessionActive()) return;
+    const capture = createAttendanceLocationCapture({
+      watch: async (onPosition, onError, isActive) => {
+        // 打开扫码只预热已授权定位，不能抢先弹出系统权限框。
+        const permission = await Location.getForegroundPermissionsAsync();
+        if (!isActive()) throw new Error("LOCATION_CANCELLED");
+        if (permission.status !== "granted") throw new RequiredLocationError();
+        return Location.watchPositionAsync({
+          accuracy: Location.Accuracy.High,
+          distanceInterval: 0,
+          timeInterval: 1000,
+        }, onPosition, (reason) => onError(new Error(reason)));
+      },
+    });
+    locationCaptureRef.current = capture;
+    capture.prewarm();
+  }, [stopLocationCapture]);
+
+  const captureCurrentLocation = useCallback(async (isActive: () => boolean): Promise<CapturedLocationPayload> => {
+    if (isIosReviewSessionActive()) return collectRequiredLocation();
+    let permission = await Location.getForegroundPermissionsAsync();
+    if (!isActive()) throw new Error("LOCATION_CANCELLED");
+    if (permission.status !== "granted") {
+      permission = await Location.requestForegroundPermissionsAsync();
+      if (!isActive()) throw new Error("LOCATION_CANCELLED");
+      if (permission.status !== "granted") throw new RequiredLocationError();
+      // 权限交互结束后重新开始本次采集，不能复用授权前的坐标。
+      prewarmLocation();
+    }
+    if (!locationCaptureRef.current) prewarmLocation();
+    const position = await locationCaptureRef.current!.capture();
+    return {
+      locationLatitude: position.coords.latitude,
+      locationLongitude: position.coords.longitude,
+      locationAccuracy: position.coords.accuracy ?? undefined,
+      locationPermissionStatus: "granted",
+      locationCapturedAtUtc: new Date(position.timestamp).toISOString(),
+    };
+  }, [prewarmLocation]);
+
+  const refreshVerification = useCallback(async (options?: { networkVerified?: boolean }) => {
+    const revision = ++verificationRevisionRef.current;
+    const isActive = () => verificationRevisionRef.current === revision;
     setIsRefreshing(true);
     try {
-      const nextState = await collectVerificationState();
-      setVerification(nextState);
+      const nextState = await collectVerificationState({
+        collectLocation: () => captureCurrentLocation(isActive),
+        networkVerified: options?.networkVerified === true,
+      });
+      if (isActive()) setVerification(nextState);
       return nextState;
     } catch {
       const fallbackState: AttendancePunchVerificationState = {
         ...DEFAULT_VERIFICATION_STATE,
         checkedAt: new Date().toISOString(),
       };
-      setVerification(fallbackState);
+      if (isActive()) setVerification(fallbackState);
       return fallbackState;
     } finally {
-      setIsRefreshing(false);
+      if (isActive()) setIsRefreshing(false);
     }
-  }, []);
+  }, [captureCurrentLocation]);
 
   useFocusEffect(
     useCallback(() => {
-      void refreshVerification();
-    }, [refreshVerification]),
+      let active = true;
+      const revision = verificationRevisionRef.current;
+      setIsRefreshing(false);
+      // 页面状态探测不占用扫码流程，也不在每次聚焦时额外发起一次 GPS 请求。
+      void verifyAttendanceNetworkReachability().then((network) => {
+        // 较早的 health 响应不能覆盖扫码请求已经确认的联网状态。
+        if (active) setVerification((current) => (
+          verificationRevisionRef.current === revision ? { ...current, network } : current
+        ));
+      }).catch(() => undefined);
+      return () => {
+        active = false;
+        verificationRevisionRef.current += 1;
+        stopLocationCapture();
+      };
+    }, [stopLocationCapture]),
   );
 
   return {
     verification,
     isRefreshing,
     refreshVerification,
+    prewarmLocation,
+    stopLocationCapture,
   };
 }

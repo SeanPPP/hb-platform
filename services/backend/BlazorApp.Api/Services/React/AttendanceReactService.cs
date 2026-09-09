@@ -356,7 +356,10 @@ namespace BlazorApp.Api.Services.React
                 return ApiResponse<AttendanceTodayDto>.Error("无法识别当前员工", "USER_NOT_FOUND");
             }
 
-            var access = await ResolveRelatedStoreAccessAsync(userGuid, storeCode);
+            var access = await ResolveRelatedStoreAccessAsync(
+                userGuid,
+                storeCode,
+                includeRelatedStoreCodes: true);
             if (!access.Success)
             {
                 return ApiResponse<AttendanceTodayDto>.Error(access.Message, access.ErrorCode);
@@ -364,6 +367,31 @@ namespace BlazorApp.Api.Services.React
 
             var today = (workDate ?? DateTime.Today).Date;
             var tomorrow = today.AddDays(1);
+            // 空范围沿用原语义：不加门店条件；否则加载请求门店与关联门店的并集。
+            var snapshotStoreCodes = access.StoreCodes.Count == 0 || access.RelatedStoreCodes.Count == 0
+                ? new List<string>()
+                : access.StoreCodes
+                    .Concat(access.RelatedStoreCodes)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+            // 先按统一快照范围读取排班，确保一次锁内协调覆盖当前门店和关联门店。
+            var scheduleSnapshots = await _db.Queryable<AttendanceSchedule>()
+                .Where(item =>
+                    !item.IsDeleted
+                    && item.Status == "Active"
+                    && item.UserGuid == userGuid
+                    && item.WorkDate >= today
+                    && item.WorkDate < tomorrow
+                )
+                .WhereIF(snapshotStoreCodes.Count > 0, item => snapshotStoreCodes.Contains(item.StoreCode))
+                .ToListAsync();
+            var holidays = await _db.Queryable<AttendanceStoreHoliday>()
+                .Where(item => !item.IsDeleted && item.HolidayDate >= today && item.HolidayDate < tomorrow)
+                .WhereIF(access.StoreCodes.Count > 0, item => access.StoreCodes.Contains(item.StoreCode))
+                .ToListAsync();
+
+            // GET 会创建/取消派生审批；协调提交后再读取一次统一快照，供两个门店视图共同投影。
+            await ReconcileDerivedApprovalsUnderEmployeeLocksAsync(scheduleSnapshots);
             var schedules = await _db.Queryable<AttendanceSchedule>()
                 .Where(item =>
                     !item.IsDeleted
@@ -372,30 +400,48 @@ namespace BlazorApp.Api.Services.React
                     && item.WorkDate >= today
                     && item.WorkDate < tomorrow
                 )
-                .WhereIF(access.StoreCodes.Count > 0, item => access.StoreCodes.Contains(item.StoreCode))
+                .WhereIF(snapshotStoreCodes.Count > 0, item => snapshotStoreCodes.Contains(item.StoreCode))
                 .ToListAsync();
             var punches = await _db.Queryable<AttendancePunch>()
-                .Where(item => !item.IsDeleted && item.UserGuid == userGuid && item.WorkDate >= today && item.WorkDate < tomorrow)
-                .WhereIF(access.StoreCodes.Count > 0, item => access.StoreCodes.Contains(item.StoreCode))
-                .ToListAsync();
-            var holidays = await _db.Queryable<AttendanceStoreHoliday>()
-                .Where(item => !item.IsDeleted && item.HolidayDate >= today && item.HolidayDate < tomorrow)
-                .WhereIF(access.StoreCodes.Count > 0, item => access.StoreCodes.Contains(item.StoreCode))
+                .Where(item => !item.IsDeleted
+                    && item.UserGuid == userGuid
+                    && item.WorkDate >= today
+                    && item.WorkDate < tomorrow)
+                .WhereIF(snapshotStoreCodes.Count > 0, item => snapshotStoreCodes.Contains(item.StoreCode))
                 .ToListAsync();
 
-            var scheduleDtos = schedules.Select(item => ToDto(item, userGuid)).ToList();
+            var allScheduleDtos = schedules.Select(item => ToDto(item, userGuid)).ToList();
             var punchDtos = punches.Select(item => ToDto(item)).ToList();
-            await PopulateWorkSessionFieldsAsync(scheduleDtos, schedules, punches, punchDtos);
+            await PopulateScheduleDisplayFieldsAsync(allScheduleDtos);
+            await PopulateWorkSessionFieldsAsync(
+                allScheduleDtos,
+                schedules,
+                punches,
+                punchDtos,
+                reconcileDerivedApprovals: false);
+            var scheduleDtos = access.StoreCodes.Count == 0
+                ? allScheduleDtos
+                : allScheduleDtos.Where(item => access.StoreCodes.Contains(
+                    item.StoreCode,
+                    StringComparer.OrdinalIgnoreCase)).ToList();
+            var requestedStorePunchDtos = access.StoreCodes.Count == 0
+                ? punchDtos
+                : punchDtos.Where(item => access.StoreCodes.Contains(
+                    item.StoreCode,
+                    StringComparer.OrdinalIgnoreCase)).ToList();
             var todayDto = new AttendanceTodayDto
             {
                 WorkDate = today,
                 Schedules = scheduleDtos,
-                Punches = punchDtos,
+                Punches = requestedStorePunchDtos,
                 Holidays = holidays.Select(ToDto).ToList(),
                 CanRequestAdjustment = await IsWithinAdjustmentWindowAsync(
                     today,
                     scheduleDtos.FirstOrDefault()?.StoreCode ?? storeCode),
-                StorePunchStates = await BuildRelatedStorePunchStatesAsync(userGuid, today),
+                StorePunchStates = await BuildRelatedStorePunchStatesAsync(
+                    allScheduleDtos,
+                    punches,
+                    access.RelatedStoreCodes),
             };
             return ApiResponse<AttendanceTodayDto>.OK(todayDto);
         }
@@ -708,7 +754,9 @@ namespace BlazorApp.Api.Services.React
                 );
             }
 
-            var storeTimeZone = await ResolveStoreTimeZoneAsync(storeCode, null);
+            var storeTimeZone = store == null || store.IsDeleted
+                ? DefaultStoreTimeZone
+                : ResolveStoreTimeZoneFromStore(store) ?? DefaultStoreTimeZone;
             var punchUtc = DateTime.SpecifyKind(serverNow, DateTimeKind.Utc);
             var punchLocal = ConvertUtcToStoreLocal(punchUtc, storeTimeZone);
             var workDate = punchLocal.Date;
@@ -3334,7 +3382,8 @@ namespace BlazorApp.Api.Services.React
 
         private async Task<StoreAccessResult> ResolveRelatedStoreAccessAsync(
             string userGuid,
-            string? requestedStoreCode
+            string? requestedStoreCode,
+            bool includeRelatedStoreCodes = false
         )
         {
             if (string.IsNullOrWhiteSpace(userGuid))
@@ -3342,24 +3391,28 @@ namespace BlazorApp.Api.Services.React
                 return StoreAccessResult.Forbidden("无法识别当前员工", "USER_NOT_FOUND");
             }
 
+            var relatedStoreCodes = !IsAdmin() || includeRelatedStoreCodes
+                ? await GetRelatedStoreCodesAsync(userGuid)
+                : new List<string>();
             if (IsAdmin())
             {
                 return StoreAccessResult.Allowed(
                     string.IsNullOrWhiteSpace(requestedStoreCode)
                         ? new List<string>()
-                        : new List<string> { requestedStoreCode.Trim() }
+                        : new List<string> { requestedStoreCode.Trim() },
+                    relatedStoreCodes
                 );
             }
 
-            var storeCodes = await GetRelatedStoreCodesAsync(userGuid);
             var requested = requestedStoreCode?.Trim();
-            if (!string.IsNullOrWhiteSpace(requested) && !storeCodes.Contains(requested, StringComparer.OrdinalIgnoreCase))
+            if (!string.IsNullOrWhiteSpace(requested) && !relatedStoreCodes.Contains(requested, StringComparer.OrdinalIgnoreCase))
             {
                 return StoreAccessResult.Forbidden("没有权限访问该分店", "FORBIDDEN_STORE");
             }
 
             return StoreAccessResult.Allowed(
-                string.IsNullOrWhiteSpace(requested) ? storeCodes : new List<string> { requested }
+                string.IsNullOrWhiteSpace(requested) ? relatedStoreCodes : new List<string> { requested },
+                relatedStoreCodes
             );
         }
 
@@ -3407,34 +3460,22 @@ namespace BlazorApp.Api.Services.React
         }
 
         private async Task<List<AttendanceStorePunchStateDto>> BuildRelatedStorePunchStatesAsync(
-            string userGuid,
-            DateTime workDate)
+            List<AttendanceScheduleDto> scheduleDtos,
+            List<AttendancePunch> punches,
+            IReadOnlyCollection<string> relatedStoreCodes)
         {
-            var relatedStoreCodes = await GetRelatedStoreCodesAsync(userGuid);
-            var nextDate = workDate.Date.AddDays(1);
-            var schedules = await _db.Queryable<AttendanceSchedule>()
-                .Where(item =>
-                    !item.IsDeleted
-                    && item.Status == "Active"
-                    && item.UserGuid == userGuid
-                    && item.WorkDate >= workDate.Date
-                    && item.WorkDate < nextDate)
-                .WhereIF(relatedStoreCodes.Count > 0, item => relatedStoreCodes.Contains(item.StoreCode))
-                .ToListAsync();
-            var punches = await _db.Queryable<AttendancePunch>()
-                .Where(item =>
-                    !item.IsDeleted
-                    && item.UserGuid == userGuid
-                    && item.WorkDate >= workDate.Date
-                    && item.WorkDate < nextDate)
-                .WhereIF(relatedStoreCodes.Count > 0, item => relatedStoreCodes.Contains(item.StoreCode))
-                .ToListAsync();
-            var scheduleDtos = schedules.Select(item => ToDto(item, userGuid)).ToList();
-            await PopulateScheduleDisplayFieldsAsync(scheduleDtos);
-            await PopulateWorkSessionFieldsAsync(scheduleDtos, schedules, punches);
-
+            var stateScheduleDtos = relatedStoreCodes.Count == 0
+                ? scheduleDtos
+                : scheduleDtos.Where(item => relatedStoreCodes.Contains(
+                    item.StoreCode,
+                    StringComparer.OrdinalIgnoreCase)).ToList();
+            var statePunches = relatedStoreCodes.Count == 0
+                ? punches
+                : punches.Where(item => relatedStoreCodes.Contains(
+                    item.StoreCode,
+                    StringComparer.OrdinalIgnoreCase)).ToList();
             // 同店可能有多个排班；异常必须按门店 any 聚合，不能被后一个已完成排班覆盖。
-            var states = scheduleDtos
+            var states = stateScheduleDtos
                 .GroupBy(item => item.StoreCode, StringComparer.OrdinalIgnoreCase)
                 .Select(group =>
                 {
@@ -3461,14 +3502,16 @@ namespace BlazorApp.Api.Services.React
                 .ToList();
             var scheduledStores = states.Select(item => item.StoreCode)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var storeNames = await _db.Queryable<Store>()
-                .Where(item => relatedStoreCodes.Contains(item.StoreCode))
-                .ToListAsync();
+            var storeNames = relatedStoreCodes.Count == 0
+                ? new List<Store>()
+                : await _db.Queryable<Store>()
+                    .Where(item => relatedStoreCodes.Contains(item.StoreCode))
+                    .ToListAsync();
             var storeNameMap = storeNames.ToDictionary(
                 item => item.StoreCode,
                 item => item.StoreName,
                 StringComparer.OrdinalIgnoreCase);
-            foreach (var group in punches
+            foreach (var group in statePunches
                 .Where(item => !scheduledStores.Contains(item.StoreCode))
                 .GroupBy(item => item.StoreCode, StringComparer.OrdinalIgnoreCase))
             {
@@ -4414,11 +4457,15 @@ namespace BlazorApp.Api.Services.React
             public string Message { get; private init; } = string.Empty;
             public string? ErrorCode { get; private init; }
             public List<string> StoreCodes { get; private init; } = new();
+            public List<string> RelatedStoreCodes { get; private init; } = new();
 
-            public static StoreAccessResult Allowed(List<string> storeCodes) => new()
+            public static StoreAccessResult Allowed(
+                List<string> storeCodes,
+                List<string>? relatedStoreCodes = null) => new()
             {
                 Success = true,
                 StoreCodes = storeCodes,
+                RelatedStoreCodes = relatedStoreCodes ?? storeCodes,
             };
 
             public static StoreAccessResult Forbidden(string message, string errorCode = "FORBIDDEN") => new()
