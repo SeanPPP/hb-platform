@@ -18,6 +18,7 @@ import type { AuditEventDraft } from "@/core/contracts";
 import type { LocalOrder } from "@hb/pos-domain/core/contracts/order";
 import type { LocalCatalogMatch } from "@/core/db/catalog-repository";
 import type { SensitivePayloadEncryptor } from "@/core/db/sqlite-repositories";
+import type { PaymentAcknowledgementResult, PaymentAcknowledgementRuntimePort } from "@hb/pos-payments-core/features/payments/payment-acknowledgement-service";
 import {
   OperationAuthorizationService,
   type AuthorizedOperationContext,
@@ -359,6 +360,7 @@ test("无票 AddNoReceiptItem 只授权一次并生成独立 opaque grant；两�
   const presenter = await harness.runtime.createPresenter();
   assert.equal(presenter.beginNoReceipt(), true);
   assert.equal(await presenter.addNoReceiptProduct("P1"), true);
+  assert.equal(presenter.selectMethod("card"), true);
   assert.equal(await presenter.addNoReceiptProduct("P2"), true);
   assert.equal(await presenter.confirm(), true);
 
@@ -434,6 +436,118 @@ test("无票 AddNoReceiptItem 只授权一次并生成独立 opaque grant；两�
     ),
     false,
   );
+});
+
+test("在线退款的本地 action/allocation 完成后才确认其耐久支付 attempt", async () => {
+  const harness = createHarness({
+    acknowledgementImpl: async () => undefined,
+  });
+  const presenter = await harness.runtime.createPresenter();
+  assert.equal(presenter.beginNoReceipt(), true);
+  assert.equal(await presenter.addNoReceiptProduct("P1"), true);
+  assert.equal(presenter.selectMethod("card"), true);
+
+  assert.equal(await presenter.confirm(), true);
+
+  const action = harness.ledger.actions()[0];
+  const durableAttemptId = action?.allocations[0]?.durableAttemptId;
+  assert.equal(action?.status, "completed");
+  assert.ok(durableAttemptId);
+  assert.deepEqual(
+    action?.allocations.map((allocation) => ({
+      status: allocation.status,
+      executionKind: allocation.executionKind,
+      externalAttemptKind: allocation.externalAttemptKind,
+      durableAttemptId: allocation.durableAttemptId,
+    })),
+    [{
+      status: "completed",
+      executionKind: "online-refund",
+      externalAttemptKind: "payment-provider",
+      durableAttemptId,
+    }],
+  );
+  assert.deepEqual(harness.acknowledgementCalls, [durableAttemptId]);
+  assert.equal(harness.onlineSubmits.length, 1);
+  assert.equal(harness.onlineRecovers.length, 0);
+});
+
+test("退货 ACK pending 暂停 action；恢复只确认原退款，不重放 provider", async () => {
+  let failOnce = true;
+  const harness = createHarness({
+    acknowledgementImpl: async () => {
+      if (failOnce) {
+        failOnce = false;
+        throw new Error("Linkly acknowledgement unavailable");
+      }
+    },
+  });
+  const presenter = await harness.runtime.createPresenter();
+  assert.equal(presenter.beginNoReceipt(), true);
+  assert.equal(await presenter.addNoReceiptProduct("P1"), true);
+  assert.equal(presenter.selectMethod("card"), true);
+
+  assert.equal(await presenter.confirm(), false);
+
+  assert.equal(presenter.getState().phase, "unknown");
+  assert.equal(harness.ledger.actions()[0]?.status, "unknown");
+  assert.equal(harness.acknowledgementCalls.length, 1);
+  assert.equal(harness.onlineSubmits.length, 1);
+  assert.equal(harness.onlineRecovers.length, 0);
+
+  const recovered = await harness.runtime.createPresenter();
+  assert.equal(await recovered.recoverUnknown(), true);
+  assert.equal(harness.ledger.actions()[0]?.status, "completed");
+  assert.equal(harness.acknowledgementCalls.length, 2);
+  assert.equal(harness.onlineSubmits.length, 1);
+  assert.equal(harness.onlineRecovers.length, 0);
+});
+
+test("退货 ACK 返回缺失结果时暂停 action，不继续提交退款", async () => {
+  const harness = createHarness({
+    acknowledgementImpl: async () => undefined,
+    malformedAcknowledgementResult: true,
+  });
+  const presenter = await harness.runtime.createPresenter();
+  assert.equal(presenter.beginNoReceipt(), true);
+  assert.equal(await presenter.addNoReceiptProduct("P1"), true);
+  assert.equal(presenter.selectMethod("card"), true);
+
+  // ACK 结果不完整时必须停在可恢复状态，不能把下一笔金融动作当作已获确认。
+  assert.equal(await presenter.confirm(), false);
+  assert.equal(presenter.getState().phase, "unknown");
+  assert.equal(harness.ledger.actions()[0]?.status, "unknown");
+  assert.equal(harness.acknowledgementCalls.length, 1);
+  assert.equal(harness.onlineSubmits.length, 1);
+  assert.equal(harness.onlineRecovers.length, 0);
+});
+
+test("Unknown 退货恢复完成后只确认原 durable attempt，不再次 submit", async () => {
+  const harness = createHarness({
+    acknowledgementImpl: async () => undefined,
+    onlineSubmitOutcomes: [
+      { status: "unknown", protectedRecoveryKey: "PROTECTED-RECOVERY" },
+    ],
+  });
+  const first = await harness.runtime.createPresenter();
+  assert.equal(first.beginNoReceipt(), true);
+  assert.equal(await first.addNoReceiptProduct("P1"), true);
+  assert.equal(first.selectMethod("card"), true);
+  assert.equal(await first.confirm(), false);
+  assert.equal(first.getState().phase, "unknown");
+
+  harness.currentCashier.clear();
+  activateCashier(harness.currentCashier, ALL_RETURN_PERMISSIONS);
+  const recovered = await harness.runtime.createPresenter();
+  assert.equal(await recovered.recoverUnknown(), true);
+
+  const action = harness.ledger.actions()[0];
+  assert.equal(action?.status, "completed");
+  assert.deepEqual(harness.acknowledgementCalls, [
+    action?.allocations[0]?.durableAttemptId,
+  ]);
+  assert.equal(harness.onlineSubmits.length, 1);
+  assert.equal(harness.onlineRecovers.length, 1);
 });
 
 test("同一 cashier 新 epoch 自动 hydrate 原 action；显式 Confirm 恢复且不再次 prepare/submit", async () => {
@@ -667,6 +781,9 @@ type HarnessOptions = Readonly<{
   onlineRecoverImpl?(
     input: Record<string, unknown>,
   ): Promise<ReturnAllocationExternalOutcome>;
+  acknowledgementImpl?(attemptId: string): Promise<void>;
+  acknowledgementPending?: boolean;
+  malformedAcknowledgementResult?: boolean;
 }>;
 
 type Harness = ReturnType<typeof createHarness>;
@@ -728,6 +845,18 @@ function createHarness(options: HarnessOptions = {}) {
   const onlineSubmits: Record<string, unknown>[] = [];
   const onlineRecovers: Record<string, unknown>[] = [];
   const onlinePrepares: Record<string, unknown>[] = [];
+  const acknowledgementCalls: string[] = [];
+  const acknowledgements: PaymentAcknowledgementRuntimePort | undefined =
+    options.acknowledgementImpl
+      ? {
+          async acknowledge(attemptId) {
+            acknowledgementCalls.push(attemptId);
+            await options.acknowledgementImpl?.(attemptId);
+            if (options.malformedAcknowledgementResult) return undefined as unknown as PaymentAcknowledgementResult;
+            return { attempt: {} as never, acknowledged: false, pending: options.acknowledgementPending ?? false, errorCode: null };
+          },
+        }
+      : undefined;
   const submitOutcomes = [
     ...(options.onlineSubmitOutcomes ?? []),
   ];
@@ -850,6 +979,7 @@ function createHarness(options: HarnessOptions = {}) {
         };
       },
     },
+    acknowledgements,
     sha256Hex: async (material) =>
       `digest-${material.length}`,
     createId,
@@ -869,6 +999,7 @@ function createHarness(options: HarnessOptions = {}) {
     onlinePrepares,
     onlineSubmits,
     onlineRecovers,
+    acknowledgementCalls,
     recoveryScopes,
   };
 }

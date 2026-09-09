@@ -193,6 +193,7 @@ export type PersistedInstallmentLifecycleAction = Readonly<{
 
 type PersistedInstallmentBlockingOperation =
   | Readonly<{ type: "payment"; action: PersistedInstallmentAction }>
+  | Readonly<{ type: "acknowledgement"; action: PersistedInstallmentAction }>
   | Readonly<{
       type: "lifecycle";
       action: PersistedInstallmentLifecycleAction;
@@ -200,6 +201,9 @@ type PersistedInstallmentBlockingOperation =
 
 export interface InstallmentActionStorePort {
   loadBlocking(
+    terminal: TerminalScope,
+  ): Promise<PersistedInstallmentAction | null>;
+  loadProviderAcknowledgementPending?(
     terminal: TerminalScope,
   ): Promise<PersistedInstallmentAction | null>;
   /**
@@ -327,6 +331,7 @@ export interface InstallmentMutationPaymentPort {
     | Readonly<{ kind: "declined"; allRefundsDeclined?: boolean }>
     | Readonly<{ kind: "unknown" }>
   >;
+  acknowledgeProviderAttempts?(persistedActionId: string): Promise<boolean>;
 }
 
 /**
@@ -364,6 +369,8 @@ export type ProductionInstallmentRuntimeDependencies = Readonly<{
   snapshotRepository?: SqliteInstallmentSnapshotRepository;
   actionStore: InstallmentActionStorePort;
   payments: InstallmentMutationPaymentPort;
+  /** 仅将服务端当前未确认 session 强匹配到旧账本，绝不重放金融操作。 */
+  prepareProviderAcknowledgementRecovery?: () => Promise<void>;
   receiptReprint?: InstallmentReceiptReprintRuntimePort | null;
   voucherIntents: InstallmentVoucherIntentVaultPort;
   sha256Hex(material: string): Promise<string>;
@@ -474,15 +481,18 @@ export function createProductionInstallmentRuntime(
     async hasRecoveryRequired(): Promise<boolean> {
       const lease = input.currentCashier.createLease();
       requireScopedLease(lease, terminal);
-      const [payment, lifecycle] = await Promise.all([
+      await input.prepareProviderAcknowledgementRecovery?.();
+      requireScopedLease(lease, terminal);
+      const [payment, lifecycle, acknowledgement] = await Promise.all([
         input.actionStore.loadBlocking(terminal),
         input.actionStore.loadLifecycleBlocking(terminal),
+        input.actionStore.loadProviderAcknowledgementPending?.(terminal),
       ]);
       requireScopedLease(lease, terminal);
-      if (payment && lifecycle) {
+      if (Number(Boolean(payment)) + Number(Boolean(lifecycle)) + Number(Boolean(acknowledgement)) > 1) {
         throw new Error("Multiple installment actions require recovery.");
       }
-      return payment !== null || lifecycle !== null;
+      return payment !== null || lifecycle !== null || acknowledgement != null;
     },
   });
 }
@@ -1373,19 +1383,25 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
   }
 
   private async loadBlockingOperation(): Promise<PersistedInstallmentBlockingOperation | null> {
-    const [payment, lifecycle] = await Promise.all([
+    await this.context.input.prepareProviderAcknowledgementRecovery?.();
+    requireScopedLease(this.context.lease, this.context.terminal);
+    const [payment, lifecycle, acknowledgement] = await Promise.all([
       this.loadBlockingAction(),
       this.context.input.actionStore.loadLifecycleBlocking(
         this.context.terminal,
       ),
+      this.context.input.actionStore.loadProviderAcknowledgementPending?.(
+        this.context.terminal,
+      ),
     ]);
     requireScopedLease(this.context.lease, this.context.terminal);
-    if (payment && lifecycle) {
+    if (Number(Boolean(payment)) + Number(Boolean(lifecycle)) + Number(Boolean(acknowledgement)) > 1) {
       throw paymentRecoveryError(
         "Multiple persisted installment actions require recovery.",
       );
     }
     if (payment) return Object.freeze({ type: "payment", action: payment });
+    if (acknowledgement) return Object.freeze({ type: "acknowledgement", action: acknowledgement });
     if (lifecycle) {
       return Object.freeze({
         type: "lifecycle",
@@ -1401,6 +1417,9 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
   private recoverBlockingOperation(
     blocking: PersistedInstallmentBlockingOperation,
   ): Promise<InstallmentDetails> {
+    if (blocking.type === "acknowledgement") {
+      return this.recoverAcknowledgementOnly(blocking.action);
+    }
     if (blocking.type === "lifecycle") {
       return this.executePersistedLifecycleAction(blocking.action);
     }
@@ -1892,6 +1911,7 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
           expectedState: persisted.state,
           terminal: this.context.terminal,
         });
+        await this.acknowledgeCompletedAction(persisted.action.actionId);
       } catch {
         throw paymentRecoveryError(
           "Declined payment could not be released from durable recovery.",
@@ -1955,6 +1975,7 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
         expectedState: "BackendPending",
         terminal: this.context.terminal,
       });
+      await this.acknowledgeCompletedAction(persisted.action.actionId);
       requireScopedLease(this.context.lease, this.context.terminal);
       return details;
     } catch (error) {
@@ -2182,6 +2203,7 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
             persisted.state === "Unknown" ? "Unknown" : "ProviderPending",
           terminal: this.context.terminal,
         });
+        await this.acknowledgeCompletedAction(action.actionId);
       } catch (error) {
         throw paymentRecoveryError(
           error instanceof Error
@@ -2534,6 +2556,7 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
       outcome: "success",
     });
     requireScopedLease(this.context.lease, this.context.terminal);
+    await this.acknowledgeCompletedAction(action.actionId);
     return claim.commit.details;
   }
 
@@ -2622,6 +2645,7 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
           expectedState: persisted.state === "Unknown" ? "Unknown" : "ProviderPending",
           terminal: this.context.terminal,
         });
+        await this.acknowledgeCompletedAction(action.actionId);
       } catch (error) {
         throw paymentRecoveryError(error instanceof Error ? error.message : "Declined refund requires recovery.");
       }
@@ -2749,6 +2773,24 @@ class LeaseBoundInstallmentWorkflow implements InstallmentWorkflowPort {
     if (persisted.state !== "BackendPending") throw paymentRecoveryError("Committed cancel action state is invalid.");
     await this.cacheDetails(details);
     await this.context.input.actionStore.complete({ actionId: persisted.action.actionId, expectedState: "BackendPending", terminal: this.context.terminal });
+    await this.acknowledgeCompletedAction(persisted.action.actionId);
+    return details;
+  }
+
+  private async acknowledgeCompletedAction(actionId: string): Promise<void> {
+    const acknowledge = this.context.input.payments.acknowledgeProviderAttempts;
+    if (!acknowledge) return;
+    if (!(await acknowledge.call(this.context.input.payments, actionId))) {
+      throw paymentRecoveryError("Linkly acknowledgement requires recovery.");
+    }
+  }
+
+  private async recoverAcknowledgementOnly(action: PersistedInstallmentAction): Promise<InstallmentDetails> {
+    await this.acknowledgeCompletedAction(action.action.actionId);
+    // 中文注释：ACK-only 恢复只读回填，不得重新提交销售、还款或退款。
+    const details = await this.context.input.api.getDetails(action.action.installmentGuid);
+    if (!details) throw paymentRecoveryError("Completed installment details are unavailable after acknowledgement.");
+    await this.cacheDetails(details);
     return details;
   }
 

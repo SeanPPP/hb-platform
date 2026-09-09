@@ -284,7 +284,7 @@ public sealed class WarehouseProductFlowAnalysisLogicTests
         roleService
             .Setup(x => x.UserHasExactPermissionAsync(
                 "user-1",
-                Permissions.Reports.ProductMovementView
+                Permissions.SalesDashboard.WarehouseFlowView
             ))
             .ReturnsAsync(ApiResponse<bool>.OK(false));
 
@@ -323,7 +323,7 @@ public sealed class WarehouseProductFlowAnalysisLogicTests
 
         var roleService = new Mock<IRoleService>();
         roleService
-            .Setup(x => x.UserHasExactPermissionAsync("user-1", Permissions.Reports.ProductMovementView))
+            .Setup(x => x.UserHasExactPermissionAsync("user-1", Permissions.SalesDashboard.WarehouseFlowView))
             .ReturnsAsync(ApiResponse<bool>.OK(true));
         roleService
             .Setup(x => x.GetUserPermissionSnapshotAsync("user-1"))
@@ -332,8 +332,8 @@ public sealed class WarehouseProductFlowAnalysisLogicTests
                 {
                     UserGuid = "user-1",
                     RoleNames = new List<string> { "超级管理员" },
-                    PermissionCodes = new List<string> { Permissions.Reports.ProductMovementView },
-                    ExactPermissionCodes = new List<string> { Permissions.Reports.ProductMovementView },
+                    PermissionCodes = new List<string> { Permissions.SalesDashboard.WarehouseFlowView },
+                    ExactPermissionCodes = new List<string> { Permissions.SalesDashboard.WarehouseFlowView },
                 }
             ));
 
@@ -366,7 +366,7 @@ public sealed class WarehouseProductFlowAnalysisLogicTests
 
         var roleService = new Mock<IRoleService>();
         roleService
-            .Setup(x => x.UserHasExactPermissionAsync("user-1", Permissions.Reports.ProductMovementView))
+            .Setup(x => x.UserHasExactPermissionAsync("user-1", Permissions.SalesDashboard.WarehouseFlowView))
             .ReturnsAsync(ApiResponse<bool>.OK(true));
         roleService
             .Setup(x => x.GetUserPermissionSnapshotAsync("user-1"))
@@ -376,7 +376,7 @@ public sealed class WarehouseProductFlowAnalysisLogicTests
                     UserGuid = "user-1",
                     RoleNames = new List<string>(),
                     PermissionCodes = new List<string>(),
-                    ExactPermissionCodes = new List<string> { Permissions.Reports.ProductMovementView },
+                    ExactPermissionCodes = new List<string> { Permissions.SalesDashboard.WarehouseFlowView },
                 }
             ));
 

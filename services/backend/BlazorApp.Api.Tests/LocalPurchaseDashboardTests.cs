@@ -461,14 +461,14 @@ public class LocalPurchaseDashboardTests
     [Theory]
     [InlineData(nameof(ReactLocalPurchaseDashboardController.GetDashboard))]
     [InlineData(nameof(ReactLocalPurchaseDashboardController.GetStoreSuppliers))]
-    public void DashboardEndpoints_ShouldRequireLocalPurchaseViewPermission(string methodName)
+    public void DashboardEndpoints_ShouldRequirePurchaseAmountViewPermission(string methodName)
     {
         var method = typeof(ReactLocalPurchaseDashboardController).GetMethod(methodName);
         Assert.NotNull(method);
         var authorize = method!.GetCustomAttribute<AuthorizeAttribute>();
 
         Assert.NotNull(authorize);
-        Assert.Equal(Permissions.LocalPurchase.View, authorize!.Policy);
+        Assert.Equal(Permissions.SalesDashboard.PurchaseAmountView, authorize!.Policy);
     }
 
     [Fact]
@@ -503,10 +503,10 @@ public class LocalPurchaseDashboardTests
     }
 
     [Fact]
-    public void Navigation_ShouldExposeDashboardForLocalPurchaseViewOnly()
+    public void Navigation_ShouldExposeDashboardForPurchaseAmountViewOnly()
     {
         var identity = new ClaimsIdentity(
-            new[] { new Claim("permission", Permissions.LocalPurchase.View) },
+            new[] { new Claim("permission", Permissions.SalesDashboard.PurchaseAmountView) },
             "Test"
         );
 
@@ -522,7 +522,7 @@ public class LocalPurchaseDashboardTests
         );
         Assert.Equal("menu.purchaseAmountDashboard", dashboard.TitleKey);
         Assert.Equal("DollarOutlined", dashboard.Icon);
-        Assert.Equal(Permissions.LocalPurchase.View, dashboard.Permission);
+        Assert.Equal(Permissions.SalesDashboard.PurchaseAmountView, dashboard.Permission);
     }
 
     private static void AssertUsesSargableDateFallback(string sql, string actualDateColumn)

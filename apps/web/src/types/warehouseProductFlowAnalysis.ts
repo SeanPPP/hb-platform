@@ -92,9 +92,13 @@ export interface WarehouseProductFlowOrderRow {
 export interface WarehouseProductFlowShipmentRow {
   shipmentNumber?: string
   orderNumber?: string
+  branchCode?: string
   branchName?: string
+  posEnabled: boolean | null
   shipmentDate?: string
   shippedQuantity: number
+  /** 对应分店在 salesPeriod 内的净销量，不按单张发货单分摊。 */
+  netSalesQuantity: number | null
 }
 
 export interface WarehouseProductFlowDaily {

@@ -44,6 +44,7 @@ import {
   getCurrentProductAfterCancellation,
   isSelected,
   PAGE_BOOTSTRAP_TIMEOUT_SECONDS,
+  PAGE_SECTION_TIMEOUT_SECONDS,
   setLocalProductSalesAnalysisSectionError,
   toFlowTrendData,
   type LocalProductSalesAnalysisBootstrapState,
@@ -240,7 +241,7 @@ export default function LocalProductSalesAnalysisPage() {
 
   const guardedRequest = <T,>(guard: ReturnType<typeof createLatestRequestGuard>, abortRef: { current?: PageRequestTimeout }, start: () => void, call: (signal: AbortSignal) => Promise<{ data: T }>, commit: (data: T) => void, fail: (message: string) => void, settle: () => void) => {
     abortRef.current?.abort()
-    const timeout = createPageRequestTimeout(PAGE_BOOTSTRAP_TIMEOUT_SECONDS)
+    const timeout = createPageRequestTimeout(PAGE_SECTION_TIMEOUT_SECONDS)
     abortRef.current = timeout
     const token = guard.next()
     start()

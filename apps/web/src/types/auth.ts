@@ -55,7 +55,13 @@ export interface AccessControl {
   canManageStore: boolean
   canViewReports: boolean
   canViewSalesIntelligence: boolean
+  canViewSalesData: boolean
+  canViewSalesDetail: boolean
+  canViewCompactSalesBoard: boolean
   canViewProductMovementReport: boolean
+  canViewWarehouseProductFlowAnalysis: boolean
+  canViewLocalProductSalesAnalysis: boolean
+  canViewPurchaseAmountDashboard: boolean
   canViewProductSalesAnalysis: boolean
   canExportData: boolean
   canModifyPrice: boolean

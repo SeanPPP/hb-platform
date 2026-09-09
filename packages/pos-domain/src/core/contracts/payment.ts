@@ -49,6 +49,16 @@ export type PaymentAttempt = Readonly<{
   createdAtIso: string;
   updatedAtIso: string;
   lastErrorCode: string | null;
+  /**
+   * Linkly Cloud 首次提交前冻结的环境。历史 NULL 记录不能安全地确认，必须
+   * 保持待处理，避免把 sandbox/prod 的旧会话交给当前配置。
+   */
+  providerEnvironment?: string | null;
+  /**
+   * provider 已确认最终会话后才写入；它是本地耐久 ACK 队列的完成标记，
+   * 不能改变已经确定的金融结果。
+   */
+  providerAcknowledgedAtIso?: string | null;
   /** 支付恢复所需回单正文；数据库实现必须加密保存，禁止写日志。 */
   receiptText?: string | null;
   /** provider 返回的短响应码，不得包含 PAN、授权码或券码。 */

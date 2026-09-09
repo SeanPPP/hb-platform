@@ -42,6 +42,7 @@ for (const token of [
   'bootstrapGuardRef',
   'createPageRequestTimeout',
   'PAGE_BOOTSTRAP_TIMEOUT_SECONDS',
+  'PAGE_SECTION_TIMEOUT_SECONDS',
   'autoSelectFirst',
   'candidatePageNumber',
   'candidatePageSize',
@@ -134,8 +135,9 @@ assert(page.includes('analysis.sectionErrors.summary'), '汇总分段失败必�
 assert(page.includes('analysis.sectionErrors.invoiceDetails') && page.includes('analysis.sectionErrors.productDaily'), '当前商品分段失败必须按卡片显示错误')
 assert(page.includes('analysis.sectionErrors.branches'), '分店分段失败必须按卡片显示错误')
 
-// 8 秒超时与竞态
-assert(page.includes('createPageRequestTimeout(PAGE_BOOTSTRAP_TIMEOUT_SECONDS)'), '页面请求必须使用统一安全超时')
+// bootstrap 允许更长的完整响应时间，分页、分段重试与钻取仍保持 8 秒交互上限
+assert(count(page, 'createPageRequestTimeout(PAGE_BOOTSTRAP_TIMEOUT_SECONDS)') === 1, '只有 bootstrap 必须使用 15 秒安全超时')
+assert(count(page, 'createPageRequestTimeout(PAGE_SECTION_TIMEOUT_SECONDS)') === 1, '通用分段请求必须显式使用 8 秒安全超时')
 assert(page.includes('bootstrapGuardRef.current.isCurrent(token)'), 'bootstrap 竞态旧响应必须被 guard 丢弃')
 assert(page.includes('请求超时'), '超时必须给出可重试提示')
 

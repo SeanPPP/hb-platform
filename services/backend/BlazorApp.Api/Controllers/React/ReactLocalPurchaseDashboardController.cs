@@ -10,7 +10,7 @@ namespace BlazorApp.Api.Controllers.React
 {
     [ApiController]
     [Route("api/react/v1/local-purchase-dashboard")]
-    [Authorize(Policy = Permissions.LocalPurchase.View)]
+    [Authorize(Policy = Permissions.SalesDashboard.PurchaseAmountView)]
     public class ReactLocalPurchaseDashboardController : ControllerBase
     {
         private readonly ILocalPurchaseDashboardService _service;
@@ -29,7 +29,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpGet]
-        [Authorize(Policy = Permissions.LocalPurchase.View)]
+        [Authorize(Policy = Permissions.SalesDashboard.PurchaseAmountView)]
         public async Task<IActionResult> GetDashboard(
             [FromQuery] string? endMonth,
             CancellationToken cancellationToken
@@ -66,7 +66,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpGet("stores/{storeCode}/suppliers")]
-        [Authorize(Policy = Permissions.LocalPurchase.View)]
+        [Authorize(Policy = Permissions.SalesDashboard.PurchaseAmountView)]
         public async Task<IActionResult> GetStoreSuppliers(
             string storeCode,
             [FromQuery] string? endMonth,

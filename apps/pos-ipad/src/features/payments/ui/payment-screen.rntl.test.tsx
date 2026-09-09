@@ -878,17 +878,19 @@ test("Linkly Pending 仅渲染枚举安全键，点击只传 attemptId 和 key",
   await waitFor(() =>
     expect(screen.getByTestId("payment-linkly-controls")).toBeTruthy(),
   );
+  expect(screen.getByTestId("payment-linkly-display-text")).toHaveTextContent(
+    "PRESENT CARD",
+  );
+  expect(screen.queryByTestId("payment-linkly-cancel")).toBeNull();
   expect(screen.getByTestId("payment-linkly-yes")).toBeTruthy();
-  expect(screen.getByTestId("payment-linkly-authorise")).toBeTruthy();
+  expect(screen.queryByTestId("payment-linkly-authorise")).toBeNull();
   await fireEvent.press(screen.getByTestId("payment-linkly-yes"));
   await waitFor(() => expect(linkly.sendCalls).toHaveLength(1));
   expect(linkly.sendCalls[0]).toEqual({
     attemptId: "attempt-linkly-pending",
     key: "yes",
   });
-  expect(
-    screen.getByTestId("payment-linkly-authorise").props.accessibilityState,
-  ).toEqual({ disabled: true });
+  expect(screen.queryByTestId("payment-linkly-authorise")).toBeNull();
 });
 
 test("Square Pending 按 WPF 节奏自动恢复且卸载后停止轮询", async () => {
@@ -1081,7 +1083,7 @@ test("Square 一秒恢复仍锚定 createdAt 的固定两秒 cadence", async () 
   }
 });
 
-test("Square 慢恢复在 90 秒后不再发起新请求且 Linkly Pending 不受影响", async () => {
+test("Square 慢恢复在 90 秒后不再发起新请求；Linkly Pending 在 2 秒后恢复同一 attempt", async () => {
   jest.useFakeTimers();
   const createdAtIso = "2026-08-09T01:00:00.000Z";
   const createdAtMs = Date.parse(createdAtIso);
@@ -1135,12 +1137,13 @@ test("Square 慢恢复在 90 秒后不再发起新请求且 Linkly Pending 不�
     expect(square.spies.recover).toHaveBeenCalledTimes(callsAtDeadline);
     await squareScreen.unmount();
 
+    jest.setSystemTime(new Date(createdAtMs));
     const linkly = createUiPresenter({
       phase: "pending",
       provider: "linkly-cloud",
       runtimeStatus: "pending",
-      orderGuid: "order-linkly-no-auto-recovery",
-      attemptId: "attempt-linkly-no-auto-recovery",
+      orderGuid: "order-linkly-auto-recovery",
+      attemptId: "attempt-linkly-auto-recovery",
       attemptCreatedAtIso: createdAtIso,
       allowedActions: actions({ recover: true, cancel: true }),
     });
@@ -1152,9 +1155,13 @@ test("Square 慢恢复在 90 秒后不再发起新请求且 Linkly Pending 不�
       />,
     );
     await act(async () => {
-      await jest.advanceTimersByTimeAsync(10_000);
+      await jest.advanceTimersByTimeAsync(2_000);
     });
-    expect(linkly.spies.recover).not.toHaveBeenCalled();
+    expect(linkly.spies.recover).toHaveBeenCalledWith({
+      background: true,
+      deadlineAtMs: createdAtMs + 180_000,
+      signal: expect.any(AbortSignal),
+    });
     await linklyScreen.unmount();
   } finally {
     jest.useRealTimers();
@@ -1687,7 +1694,7 @@ test.each([
     linkly: {
       status: "in-progress",
       errorCode: null,
-      allowedKeys: ["yes", "no", "ok-cancel", "authorise"],
+      allowedKeys: ["yes", "no", "ok", "cancel", "authorise"],
     },
   });
   const screen = await render(
@@ -1703,7 +1710,7 @@ test.each([
     // 动作已经失败且 busy=false 时，不再保留误导性的“正在保存”状态条。
     expect(screen.queryByTestId("payment-status-submitting")).toBeNull();
     expect(screen.getByTestId("payment-runtime-error")).toBeTruthy();
-    expect(screen.getByTestId("payment-linkly-ok-cancel")).toBeTruthy();
+    expect(screen.getByTestId("payment-linkly-ok")).toBeTruthy();
     expect(
       StyleSheet.flatten(
         screen.getByTestId("payment-content-scroll").props
@@ -3354,6 +3361,22 @@ class ScreenLinklyOperator implements LinklyOperatorRuntimePort {
     return this.sendImpl(input.attemptId);
   }
 
+  public async read(input: { attemptId: string; signal?: AbortSignal; deadlineAtMs?: number }): Promise<LinklyOperatorPublicResult> {
+    return {
+      attemptId: input.attemptId,
+      status: "in-progress",
+      errorCode: null,
+      allowedKeys: ["yes"],
+      interaction: {
+        displayText: "PRESENT CARD",
+        displayLines: ["TAP CARD"],
+        inputType: null,
+        graphicCode: null,
+        recoveryAction: null,
+      },
+    };
+  }
+
   public async markReceiptPrinted(
     attemptId: string,
   ): Promise<LinklyOperatorPublicResult> {
@@ -3464,3 +3487,31 @@ function createDeferred<T>() {
   });
   return { promise, reject, resolve };
 }
+
+
+test.each(["zh", "en"] as const)("Linkly 双 OK/Cancel 旗标仅显示一个合并按键（%s）", async (locale) => {
+  const { presenter, spies } = createUiPresenter({
+    phase: "pending", provider: "linkly-cloud", selectedMethod: "linkly-cloud",
+    orderGuid: "order-key-zero", attemptId: "attempt-key-zero", runtimeStatus: "pending",
+    linkly: { status: "in-progress", errorCode: null, allowedKeys: ["ok", "cancel"] },
+  });
+  const screen = await render(<PaymentScreen locale={locale} presenter={presenter} showStatusStrip={false} />);
+  expect(screen.queryByTestId("payment-linkly-cancel")).toBeNull();
+  expect(screen.getByTestId("payment-linkly-ok")).toHaveTextContent(locale === "zh" ? "确认 / 取消" : "OK / Cancel");
+  await fireEvent.press(screen.getByTestId("payment-linkly-ok"));
+  expect(spies.sendLinklyKey).toHaveBeenCalledTimes(1);
+  expect(spies.sendLinklyKey).toHaveBeenCalledWith("ok");
+});
+
+
+test("新收款被活动退货拦截后，显示原退货恢复提示并允许返回", async () => {
+  const onBack = jest.fn();
+  const { presenter } = createUiPresenter({
+    phase: "submitting", busy: false, orderGuid: null, attemptId: null,
+    runtimeErrorCode: "RETURN_RECOVERY_REQUIRED",
+  });
+  const screen = await render(<PaymentScreen locale="zh" onBack={onBack} presenter={presenter} showStatusStrip={false} />);
+  expect(within(screen.getByTestId("payment-runtime-error")).getByText("请返回退货页面恢复原退货，再开始新的收款。")).toBeTruthy();
+  await fireEvent.press(screen.getByTestId("payment-back"));
+  expect(onBack).toHaveBeenCalledTimes(1);
+});

@@ -300,6 +300,11 @@ export interface AttendanceAvailabilityPayload {
   note?: string;
 }
 
+export interface AttendanceAvailabilityBatchPayload
+  extends Omit<AttendanceAvailabilityPayload, "workDate"> {
+  workDates: string[];
+}
+
 export interface AttendanceStoreHoliday {
   holidayGuid: string;
   storeCode: string;
