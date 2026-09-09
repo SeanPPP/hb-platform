@@ -23,6 +23,7 @@ internal static class SchemaDiagnosticCodes
         "SCHEMA_CONTAINER_DETAIL_COLLABORATION_INCOMPATIBLE";
     public const string LinklyMultiTerminalIncompatible =
         "SCHEMA_LINKLY_MULTI_TERMINAL_INCOMPATIBLE";
+    public const string PricingCurveIncompatible = "SCHEMA_PRICING_CURVE_INCOMPATIBLE";
     public const string ProviderUnsupported = "SCHEMA_PROVIDER_UNSUPPORTED";
     public const string DatabaseFailure = "SCHEMA_DATABASE_FAILURE";
     public const string MigrationFailure = "SCHEMA_MIGRATION_FAILURE";

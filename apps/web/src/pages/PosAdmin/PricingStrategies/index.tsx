@@ -1,5 +1,6 @@
 import { PlusOutlined } from '@ant-design/icons'
 import {
+  Alert,
   Button,
   Card,
   Form,
@@ -41,6 +42,9 @@ import {
 } from '../../../utils/latestRequestGuard'
 import { MeasuredTable } from '../../../components/MeasuredTable'
 
+import PricingCurveEditor from './PricingCurveEditor'
+import { curveError, defaultCurve, finalPrice, nodesFromRules, rulesFromNodes } from './pricingCurve'
+
 type DataType = PricingStrategyListDto & { key: string }
 
 export default function PricingStrategiesPage() {
@@ -56,6 +60,7 @@ export default function PricingStrategiesPage() {
   const [storeOptions, setStoreOptions] = useState<{ label: string; value: string }[]>([])
   const [supplierOptions, setSupplierOptions] = useState<{ label: string; value: string }[]>([])
   const [editorOpen, setEditorOpen] = useState(false)
+  const [curveMode, setCurveMode] = useState(true)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editorForm] = Form.useForm()
   const listRequestGuardRef = useRef(createLatestRequestGuard())
@@ -91,8 +96,8 @@ export default function PricingStrategiesPage() {
     }
   }, [loadDetail])
 
-  const algorithmLabel = (v: string) => (v === 'Exponential' ? t('posAdmin.pricing.exponential', '指数') : v === 'Step' ? t('posAdmin.pricing.step', '阶梯') : t('posAdmin.pricing.linear', '线性'))
-  const algorithmColor = (v: string) => (v === 'Exponential' ? 'orange' : v === 'Step' ? 'purple' : 'blue')
+  const algorithmLabel = (v: string) => (v === 'ArcUp' ? '上弧线' : v === 'ArcDown' ? '下弧线' : v === 'Exponential' ? t('posAdmin.pricing.exponential', '指数') : v === 'Step' ? t('posAdmin.pricing.step', '阶梯') : t('posAdmin.pricing.linear', '线性'))
+  const algorithmColor = (v: string) => (v === 'ArcUp' ? 'cyan' : v === 'ArcDown' ? 'geekblue' : v === 'Exponential' ? 'orange' : v === 'Step' ? 'purple' : 'blue')
 
   const expandedRowRender = (record: DataType) => {
     const id = String(record.id)
@@ -224,6 +229,7 @@ export default function PricingStrategiesPage() {
 
   const openCreate = () => {
     setEditingId(null)
+    setCurveMode(true)
     editorForm.resetFields()
     editorForm.setFieldsValue({
       name: '',
@@ -232,7 +238,7 @@ export default function PricingStrategiesPage() {
       isEnabled: true,
       targetsStores: [],
       targetsSuppliers: [],
-      details: [{ minPrice: 0, maxPrice: 0, startRate: 1, endRate: 1, algorithm: 'Linear' }],
+      details: defaultCurve(),
     })
     setEditorOpen(true)
   }
@@ -245,6 +251,7 @@ export default function PricingStrategiesPage() {
         return
       }
       setEditingId(id)
+      setCurveMode(dto.details.length > 0 && dto.details.every(r => r.startRetailPrice != null && r.endRetailPrice != null && ['Linear', 'ArcUp', 'ArcDown'].includes(r.algorithm)))
       const stores = dto.targets.filter((t) => t.targetType === 'Store').map((t) => t.targetCode!).filter(Boolean)
       const suppliers = dto.targets.filter((t) => t.targetType === 'Supplier').map((t) => t.targetCode!).filter(Boolean)
       editorForm.setFieldsValue({
@@ -258,6 +265,9 @@ export default function PricingStrategiesPage() {
           id: r.id,
           minPrice: r.minPrice,
           maxPrice: r.maxPrice,
+          startRetailPrice: r.startRetailPrice,
+          endRetailPrice: r.endRetailPrice,
+          curveBend: r.curveBend,
           startRate: r.startRate,
           endRate: r.endRate,
           algorithm: r.algorithm,
@@ -284,10 +294,17 @@ export default function PricingStrategiesPage() {
         id: r.id,
         minPrice: Number(r.minPrice),
         maxPrice: Number(r.maxPrice),
+        startRetailPrice: r.startRetailPrice,
+        endRetailPrice: r.endRetailPrice,
+        curveBend: r.curveBend,
         startRate: Number(r.startRate),
         endRate: Number(r.endRate),
         algorithm: r.algorithm,
       }))
+      if (curveMode) {
+        const error = curveError(rules)
+        if (error) { message.warning(error); return }
+      }
       const targets: PricingStrategyTargetDto[] = [
         ...(v.targetsStores || []).map((code: string) => ({ targetType: 'Store' as const, targetCode: code })),
         ...(v.targetsSuppliers || []).map((code: string) => ({ targetType: 'Supplier' as const, targetCode: code })),
@@ -297,6 +314,10 @@ export default function PricingStrategiesPage() {
         await createStrategy(payload as CreatePricingStrategyDto)
       } else {
         await updateStrategy(editingId, payload as UpdatePricingStrategyDto)
+      }
+      if (editingId !== null) {
+        setDetailCache((previous) => { const next = { ...previous }; delete next[editingId]; return next })
+        setExpandedRowKeys((previous) => previous.filter((key) => String(key) !== editingId))
       }
       message.success(t('message.saveSuccess', '保存成功'))
       setEditorOpen(false)
@@ -432,7 +453,7 @@ export default function PricingStrategiesPage() {
         }}
       />
 
-      <Modal open={editorOpen} title={editingId === null ? t('posAdmin.pricing.newStrategy', '新建策略') : t('posAdmin.pricing.editStrategy', '编辑策略')} onCancel={() => setEditorOpen(false)} onOk={saveEditor} width={900} forceRender>
+      <Modal open={editorOpen} title={editingId === null ? t('posAdmin.pricing.newStrategy', '新建策略') : t('posAdmin.pricing.editStrategy', '编辑策略')} onCancel={() => setEditorOpen(false)} onOk={saveEditor} width={1100} forceRender>
         <Form form={editorForm} layout="vertical">
           <Space style={{ width: '100%' }} wrap>
             <Form.Item name="name" label={t('posAdmin.pricing.strategyName', '名称')} rules={[{ required: true }]} style={{ width: 300 }}><Input /></Form.Item>
@@ -446,6 +467,15 @@ export default function PricingStrategiesPage() {
             <Form.Item name="targetsStores" label={t('posAdmin.pricing.targetStores', '分店')} style={{ width: 400 }}><Select mode="multiple" options={storeOptions} showSearch optionFilterProp="label" allowClear /></Form.Item>
             <Form.Item name="targetsSuppliers" label={t('posAdmin.pricing.targetSuppliers', '供应商')} style={{ width: 400 }}><Select mode="multiple" options={supplierOptions} showSearch optionFilterProp="label" allowClear /></Form.Item>
           </Space>
+          {curveMode ? <Form.Item name="details" rules={[{ validator: (_, rules) => { const error = curveError(rules || []); return error ? Promise.reject(new Error(error)) : Promise.resolve() } }]}><PricingCurveEditor /></Form.Item> : <>
+          <Alert type="info" showIcon style={{ marginBottom: 12 }} message="原有区间规则" description="已有 Linear 计算已升级为零售价插值。打开时保留现有配置；转换按钮切换为图形编辑，并将节点吸附到合法尾数、应用 1.5～5 成率约束。编辑结果保存后生效。" action={<Button onClick={() => {
+            const old = editorForm.getFieldValue('details') as PricingStrategyRuleDto[]
+            if (!old?.length || old.some((r, i) => i > 0 && (r.minPrice !== old[i - 1].maxPrice || Math.abs(r.minPrice * r.startRate - old[i - 1].maxPrice * old[i - 1].endRate) > .000001))) { message.warning('原有区间不连续，请先对齐相邻成本与售价端点'); return }
+            const converted = rulesFromNodes(nodesFromRules(old).map(n => ({ cost: n.cost, price: finalPrice(n.cost, n.price) })))
+            const error = curveError(converted)
+            if (error) { message.warning(error); return }
+            editorForm.setFieldValue('details', converted); setCurveMode(true)
+          }}>转换为曲线编辑</Button>} />
           <Form.List name="details">
             {(fields, { add, remove }) => (
               <>
@@ -467,6 +497,7 @@ export default function PricingStrategiesPage() {
               </>
             )}
           </Form.List>
+          </>}
         </Form>
       </Modal>
     </Card>
