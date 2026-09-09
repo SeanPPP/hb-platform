@@ -38,7 +38,8 @@
     "系统管理": "系统管理",
     "角色管理": "角色管理",
     "订单管理": "订单管理",
-    "货柜管理": "货柜管理"
+    "货柜管理": "货柜管理",
+    "销售看板": "销售看板"
   },
   "permissions": {
     "Advertisements.Edit": {
@@ -544,6 +545,34 @@
     "Roles.View": {
       "name": "查看角色",
       "description": "页面 /system/roles 与 /system/permissions - 查看角色和权限配置"
+    },
+    "SalesDashboard.CompactBoard.View": {
+      "name": "查看独立销售看板",
+      "description": "查看紧凑布局的分店、供应商和商品销售数据"
+    },
+    "SalesDashboard.LocalProductAnalysis.View": {
+      "name": "查看澳洲本地商品分析",
+      "description": "查看澳洲本地商品的进货与销售表现"
+    },
+    "SalesDashboard.ProductMovement.View": {
+      "name": "查看商品经营分析",
+      "description": "查看商品经营表现和店长动作建议"
+    },
+    "SalesDashboard.PurchaseAmount.View": {
+      "name": "查看进货金额看板",
+      "description": "查看各分店仓库订单、本地供应商进货金额及营业额"
+    },
+    "SalesDashboard.SalesData.View": {
+      "name": "查看销售数据",
+      "description": "查看营业额、订单、客流及分店销售表现"
+    },
+    "SalesDashboard.SalesDetail.View": {
+      "name": "查看销售明细",
+      "description": "按供应商、分店和商品查看销售明细"
+    },
+    "SalesDashboard.WarehouseFlow.View": {
+      "name": "查看仓库商品流转分析",
+      "description": "查看仓库商品的进货、发货和销售流转"
     },
     "SeasonalCards.Remaining.SubmitManagedStore": {
       "name": "提交管理分店季节卡剩余",
