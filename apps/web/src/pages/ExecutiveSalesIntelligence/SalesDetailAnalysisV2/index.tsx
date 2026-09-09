@@ -8,6 +8,7 @@ import { MetricPair, ReportControls, useReportText } from '../ReportWorkbench/Re
 import { growth, reportPeriod } from '../ReportWorkbench/logic'
 import { useReportQuery, type ReportQueryState } from '../ReportWorkbench/useReportQuery'
 import { applyKeyword, emptySelection, initialDetailState, resizeColumns, selectDimension, sumProductPage } from './logic'
+import ProductBranchDrawer from './ProductBranchDrawer'
 import { fetchSalesDetailReport, type ReportSection, type SalesDetailPage, type SalesDetailQuery, type SalesDetailReport, type SalesDetailRow } from './reportService'
 import styles from './styles.module.css'
 
@@ -67,6 +68,7 @@ export default function SalesDetailAnalysisV2() {
   const [expanded, setExpanded] = useState<PanelKey | null>(null)
   const [widths, setWidths] = useState([28, 27, 45])
   const [bundleRefresh, setBundleRefresh] = useState(0)
+  const [drawerProduct, setDrawerProduct] = useState<SalesDetailRow | null>(null)
   const [sorts, setSorts] = useState<Record<'suppliers' | 'branches', Sort>>({ suppliers: { key: 'revenue', ascending: false }, branches: { key: 'revenue', ascending: false } })
   const grid = useRef<HTMLDivElement>(null)
   const drag = useRef<{ divider: number; startX: number; widths: number[]; width: number }>()
@@ -74,6 +76,10 @@ export default function SalesDetailAnalysisV2() {
   const searchClear = useRef(false)
   const appliedSearch = useRef(location.search)
 
+  useEffect(() => {
+    // 抽屉挂载在 body；页面切换或账号变化时关闭，避免覆盖其他保活页面。
+    setDrawerProduct(null)
+  }, [active, currentUser?.userGUID])
   useEffect(() => {
     // KeepAlive 隐藏期间不消费其他页面的 URL；返回相同地址时保留三栏筛选。
     if (!active || !location.pathname.endsWith('/sales-detail-v2') || appliedSearch.current === location.search) return
@@ -174,8 +180,9 @@ export default function SalesDetailAnalysisV2() {
         <Tooltip title={field === 'share' ? text(kind === 'china' ? '分母：所选分店的国内供应商全量营业额，不受商品选择影响' : '分母：所选分店的全部营业额，不受商品选择影响', 'Denominator: all revenue in the selected store scope; not narrowed by product selection') : field === 'chinaShare' ? text('分母：所选分店的全部营业额', 'Denominator: all revenue in the selected store scope') : undefined}>
           {panel === 'products' ? <span>{metricLabel(panel, field)}</span> : <button onClick={() => setSorts(value => ({ ...value, [panel]: { key: field, ascending: value[panel].key === field ? !value[panel].ascending : false } }))}>{metricLabel(panel, field)} ↕</button>}
         </Tooltip></th>)}</tr></thead>
-      <tbody>{rows.map((row, index) => <tr key={row.code} className={selection[dimension] === row.code ? styles.selected : ''}>
-        <td><button data-code={row.code} aria-pressed={selection[dimension] === row.code} className={styles.nameButton} onClick={() => pick(dimension, row)} title={`${row.name} · ${row.code}`}>
+      <tbody>{rows.map((row, index) => <tr key={row.code} className={panel !== 'products' && selection[dimension] === row.code ? styles.selected : ''}>
+        <td><button data-code={row.code} aria-pressed={panel === 'products' ? drawerProduct?.code === row.code : selection[dimension] === row.code} className={styles.nameButton}
+          onClick={() => panel === 'products' ? setDrawerProduct(row) : pick(dimension, row)} title={`${row.name} · ${row.code}`}>
           {panel === 'products' ? row.productImage ? <img src={row.productImage} alt="" loading="lazy" onError={event => { event.currentTarget.style.visibility = 'hidden' }} /> : <span className={styles.imagePlaceholder}>▦</span> : <span className={styles.rank}>{String(index + 1).padStart(2, '0')}</span>}
           <span className={styles.nameText}>{panel === 'products' && <small>{row.itemNumber || row.code}</small>}<strong>{row.name || row.code}</strong>{panel === 'suppliers' && <small>{row.code}</small>}</span>
         </button></td>{metrics(panel).map(field => <td key={field} data-metric={field}>{field === 'growth'
@@ -239,5 +246,7 @@ export default function SalesDetailAnalysisV2() {
     </div>
     <div className={styles.foot}><span>{text('移动端报告同源统计 · 商品数量含退货抵减 · 商品均价 = 营业额 ÷ 商品数量（数量 ≤ 0 时显示 —）', 'Mobile report statistics · Product quantity is net of returns · Average product price = revenue ÷ product quantity (— when quantity ≤ 0)')}</span>
       <span>{summary.snapshot?.statisticUpdatedAt ? `${text('统计水位', 'Snapshot')} ${new Date(summary.snapshot.statisticUpdatedAt).toLocaleString()}` : text('按完整统计快照读取', 'Reading complete snapshots')}</span></div>
+    <ProductBranchDrawer key={currentUser?.userGUID ?? 'anonymous'} open={active && allowed && !!drawerProduct}
+      product={drawerProduct} baseQuery={query} onClose={() => setDrawerProduct(null)} />
   </main>
 }

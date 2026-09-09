@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { applyKeyword, emptySelection, initialDetailState, resizeColumns, selectDimension, sumProductPage } from './logic'
+import { applyKeyword, emptySelection, initialDetailState, productBranchDrawerQuery, resizeColumns, selectDimension, sumProductPage } from './logic'
 import { normalizeSalesDetailRow, sectionQuery, type SalesDetailQuery } from './reportService'
 
 const selected = { ...emptySelection, branch: 'OR', supplier: 'HB215', product: 'P1', page: 3 }
@@ -9,7 +9,21 @@ assert.equal(selectDimension(selected, 'product', 'P2').page, 3)
 assert.equal(applyKeyword(selected, ' 玛索   pen ').product, undefined)
 assert.equal(applyKeyword(selected, ' 玛索   pen ').keyword, '玛索 pen')
 const query: SalesDetailQuery = { kind: 'china', startDate: '2026-09-01', endDate: '2026-09-06', compareMode: 'ByWeek',
+  compareStartDate: '2025-09-02', compareEndDate: '2025-09-07', branchCodes: ['OR', 'S2'],
   selectedBranchCode: 'OR', selectedSupplierCode: 'HB215', selectedProductCode: 'P1', search: '玛索 pen', pageIndex: 3, pageSize: 20 }
+const drawerQuery = productBranchDrawerQuery(query, 'P9')
+assert.equal(drawerQuery.selectedProductCode, 'P9', '抽屉查询必须固定点击商品')
+assert.equal(drawerQuery.selectedBranchCode, undefined, '抽屉查询不得继承主页面分店筛选')
+assert.equal(drawerQuery.search, undefined, '抽屉查询不得继承主页面关键字')
+assert.equal(drawerQuery.selectedSupplierCode, 'HB215', '抽屉查询必须保留当前供应商筛选')
+assert.deepEqual(drawerQuery.branchCodes, query.branchCodes, '抽屉查询必须保留账号可见分店范围')
+assert.equal(drawerQuery.compareStartDate, query.compareStartDate)
+assert.equal(drawerQuery.compareEndDate, query.compareEndDate)
+assert.equal(drawerQuery.kind, 'china')
+assert.equal(query.selectedBranchCode, 'OR', '打开抽屉不得修改主页面筛选和分页')
+assert.equal(query.selectedProductCode, 'P1')
+assert.equal(query.search, '玛索 pen')
+assert.equal(query.pageIndex, 3)
 assert.equal(sectionQuery('suppliers', query).selectedSupplierCode, undefined)
 assert.equal(sectionQuery('suppliers', query).selectedBranchCode, 'OR')
 assert.equal(sectionQuery('suppliers', query).selectedProductCode, 'P1')
