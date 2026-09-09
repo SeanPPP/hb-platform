@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using BlazorApp.Api.Data.SchemaMigrations;
 using Xunit;
 
 namespace BlazorApp.Api.Tests;
@@ -13,6 +14,21 @@ public sealed class SchemaCommandProcessTests
         var result = await RunApiToExitAsync([argument], includeInvalidDatabaseConfiguration: true);
 
         Assert.Equal(22, result.ExitCode);
+        Assert.DoesNotContain("Now listening on:", result.CombinedOutput, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("--schema=sales-detail-projection-backfill")]
+    [InlineData("--schema=sales-detail-projection-check")]
+    public async Task 销售明细投影命令_缺少安全配置时退出2且不启动HTTP(string argument)
+    {
+        var result = await RunApiToExitAsync([argument], includeInvalidDatabaseConfiguration: false);
+
+        Assert.Equal(2, result.ExitCode);
+        Assert.Contains(
+            SchemaDiagnosticCodes.SalesDetailProjectionConfigurationInvalid,
+            result.CombinedOutput,
+            StringComparison.Ordinal);
         Assert.DoesNotContain("Now listening on:", result.CombinedOutput, StringComparison.Ordinal);
     }
 

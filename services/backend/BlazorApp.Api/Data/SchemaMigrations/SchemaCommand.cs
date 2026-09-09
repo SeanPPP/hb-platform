@@ -9,6 +9,8 @@ internal enum SchemaCommandMode
     RemoteMaintenanceCheck,
     RustDeskClient,
     RustDeskClientCheck,
+    SalesDetailProjectionBackfill,
+    SalesDetailProjectionCheck,
     Invalid,
 }
 
@@ -46,6 +48,10 @@ internal sealed record SchemaCommand(SchemaCommandMode Mode, string? Error)
             RemoteMaintenanceCheckArgument => new SchemaCommand(SchemaCommandMode.RemoteMaintenanceCheck, null),
             "--schema=rustdesk-client" => new SchemaCommand(SchemaCommandMode.RustDeskClient, null),
             "--schema=rustdesk-client-check" => new SchemaCommand(SchemaCommandMode.RustDeskClientCheck, null),
+            "--schema=sales-detail-projection-backfill" =>
+                new SchemaCommand(SchemaCommandMode.SalesDetailProjectionBackfill, null),
+            "--schema=sales-detail-projection-check" =>
+                new SchemaCommand(SchemaCommandMode.SalesDetailProjectionCheck, null),
             _ => Invalid("SCHEMA_COMMAND_INVALID"),
         };
     }

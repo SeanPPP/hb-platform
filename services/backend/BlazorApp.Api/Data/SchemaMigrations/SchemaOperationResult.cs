@@ -28,6 +28,16 @@ internal static class SchemaDiagnosticCodes
     public const string DatabaseFailure = "SCHEMA_DATABASE_FAILURE";
     public const string MigrationFailure = "SCHEMA_MIGRATION_FAILURE";
     public const string MigrationLockUnavailable = "SCHEMA_MIGRATION_LOCK_UNAVAILABLE";
+    public const string SalesDetailQueryProjectionIncompatible =
+        "SCHEMA_SALES_DETAIL_QUERY_PROJECTION_INCOMPATIBLE";
+    public const string SalesDetailProjectionConfigurationInvalid =
+        "SALES_DETAIL_PROJECTION_CONFIGURATION_INVALID";
+    public const string SalesDetailProjectionTargetMismatch =
+        "SALES_DETAIL_PROJECTION_TARGET_MISMATCH";
+    public const string SalesDetailProjectionDateFailed =
+        "SALES_DETAIL_PROJECTION_DATE_FAILED";
+    public const string SalesDetailProjectionCoverageMissing =
+        "SALES_DETAIL_PROJECTION_COVERAGE_MISSING";
     public const string Cancelled = "SCHEMA_CANCELLED";
 }
 

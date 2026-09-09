@@ -197,6 +197,11 @@ internal sealed class SalesStatisticsProductStoreDailyCommandWriter
                             && row.Date >= input.TargetDate.Date && row.Date < input.TargetDate.Date.AddDays(1))
                         .ExecuteCommandAsync();
                 }
+                // 投影只消费最终发布状态，并与主统计替换共用事务；缺表或非 SQL Server 直连时保持旧查询流程。
+                await SalesDetailQueryProjection.RefreshDayIfSupportedAsync(
+                    context,
+                    posmContext,
+                    input.TargetDate);
                 if (atomicStoreStatistics != null)
                 {
                     await SalesStatisticsProductStoreDailyStateSlice.UpsertStatisticStateAsync(
