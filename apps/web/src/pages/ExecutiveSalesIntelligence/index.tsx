@@ -48,7 +48,8 @@ export default function ExecutiveSalesIntelligence() {
   const [refresh, setRefresh] = useState(0)
 
   const managedStoreCodes = useMemo(() => {
-    const codes = access.managedStoreCodes()
+    // 销售报表按全部关联分店读取，普通关联分店也可查看销售数据。
+    const codes = access.visibleStoreCodes()
     return codes == null
       ? null
       : [...new Set(codes.map(code => code.trim()).filter(Boolean))].sort((left, right) => left.localeCompare(right))
