@@ -40,6 +40,44 @@ public sealed class SchemaMigrationSqlServerIntegrationTests
         "HBWEB_SCHEMA_SQLSERVER_TEST_CONNECTION";
 
     [SchemaMigrationSqlServerFact]
+    public async Task 定价曲线新增列_保留旧数据且可重复执行并识别签名漂移()
+    {
+        await using var databases = await IsolatedSchemaDatabases.CreateAsync();
+        await ExecuteNonQueryAsync(databases.MainConnectionString,
+            "CREATE TABLE dbo.PricingStrategyDetail (Id int NOT NULL); INSERT dbo.PricingStrategyDetail VALUES (1);");
+        await ExecuteNonQueryAsync(databases.MainConnectionString, PricingCurveSchema.ApplySql);
+        await ExecuteNonQueryAsync(databases.MainConnectionString, PricingCurveSchema.VerifySql);
+        await ExecuteNonQueryAsync(databases.MainConnectionString, PricingCurveSchema.ApplySql);
+        await ExecuteNonQueryAsync(databases.MainConnectionString, """
+IF (SELECT COUNT(*) FROM dbo.PricingStrategyDetail WHERE Id = 1 AND StartRetailPrice IS NULL AND EndRetailPrice IS NULL AND CurveBend IS NULL) <> 1
+    THROW 51712, 'Existing row was changed.', 1;
+ALTER TABLE dbo.PricingStrategyDetail ALTER COLUMN CurveBend decimal(18,5) NULL;
+""");
+        var mismatch = await Assert.ThrowsAsync<SqlException>(() =>
+            ExecuteNonQueryAsync(databases.MainConnectionString, PricingCurveSchema.VerifySql));
+        Assert.Equal(51711, mismatch.Number);
+        var repeated = await Assert.ThrowsAsync<SqlException>(() =>
+            ExecuteNonQueryAsync(databases.MainConnectionString, PricingCurveSchema.ApplySql));
+        Assert.Equal(51711, repeated.Number);
+    }
+
+    [SchemaMigrationSqlServerFact]
+    public async Task 定价曲线已有错误列_迁移在新增其他列之前拒绝()
+    {
+        await using var databases = await IsolatedSchemaDatabases.CreateAsync();
+        await ExecuteNonQueryAsync(databases.MainConnectionString,
+            "CREATE TABLE dbo.PricingStrategyDetail (Id int NOT NULL, CurveBend int NULL);");
+        var mismatch = await Assert.ThrowsAsync<SqlException>(() =>
+            ExecuteNonQueryAsync(databases.MainConnectionString, PricingCurveSchema.ApplySql));
+        Assert.Equal(51711, mismatch.Number);
+        await ExecuteNonQueryAsync(databases.MainConnectionString, """
+IF COL_LENGTH(N'dbo.PricingStrategyDetail', N'StartRetailPrice') IS NOT NULL
+    OR COL_LENGTH(N'dbo.PricingStrategyDetail', N'EndRetailPrice') IS NOT NULL
+    THROW 51712, 'Preflight allowed a partial migration.', 1;
+""");
+    }
+
+    [SchemaMigrationSqlServerFact]
     public async Task 空隔离库_迁移检查并重复迁移_两个账本均保持正确()
     {
         await using var databases = await IsolatedSchemaDatabases.CreateAsync();

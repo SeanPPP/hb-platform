@@ -36,6 +36,9 @@ type AttemptRow = Readonly<{
   protected_payload_ciphertext: unknown;
   created_at_iso: unknown;
   updated_at_iso: unknown;
+  provider_environment: unknown;
+  provider_session_id: unknown;
+  provider_acknowledged_at_iso: unknown;
 }>;
 
 type CashRow = Readonly<{
@@ -141,6 +144,8 @@ const ATTEMPT_KEYS = new Set([
   "createdAtIso",
   "updatedAtIso",
   "lastErrorCode",
+  "providerEnvironment",
+  "providerAcknowledgedAtIso",
   "receiptText",
   "responseCode",
 ]);
@@ -222,6 +227,132 @@ implements InstallmentProviderAttemptStorePort {
     });
   }
 
+  public async get(attemptIdInput: string): Promise<PaymentAttempt | null> {
+    const binding = await this.loadAttemptBinding(attemptIdInput);
+    return binding?.record.attempt ?? null;
+  }
+
+  /**
+   * 旧账本没有冻结环境时，只能由已认证 Linkly 服务端列出的 session 反查。
+   * 这里逐条解密并校验 action/attempt 绑定，拒绝模糊 session 或全历史扫描。
+   */
+  public async findLegacyLinklyAttemptForSession(
+    terminal: Readonly<{ storeCode: string; deviceCode: string }>,
+    sessionIdInput: string,
+    idempotencyKeyInput: string,
+  ): Promise<PaymentAttempt | null> {
+    const storeCode = strictText(terminal.storeCode, "store code", 50);
+    const deviceCode = strictText(terminal.deviceCode, "device code", 128);
+    const sessionId = strictText(sessionIdInput, "Linkly session ID", 2_048);
+    // Linkly notification UID 可省略 UUID 连字符并使用不同大小写；比较其 32 位
+    // 稳定 UUID 形式，仍由本地密文 action/attempt 绑定作第二道校验。
+    const idempotencyKey = normalizedLinklyAttemptUid(idempotencyKeyInput);
+    const rows = await this.connection.getAll<Readonly<{ attempt_id: unknown }>>(
+      `SELECT attempts.attempt_id AS attempt_id
+       FROM installment_provider_attempts attempts
+       INNER JOIN installment_actions actions ON actions.action_id = attempts.action_id
+       WHERE actions.store_code = ? AND actions.device_code = ?
+         AND attempts.provider = 'linkly-cloud'
+         AND lower(replace(attempts.idempotency_key, '-', '')) = ?
+         AND attempts.provider_acknowledged_at_iso IS NULL
+         AND attempts.state IN ('Submitted', 'Pending', 'Unknown', 'Approved', 'Declined', 'Cancelled')`,
+      [storeCode, deviceCode, idempotencyKey],
+    );
+    const matches: PaymentAttempt[] = [];
+    for (const row of rows) {
+      const binding = await this.loadAttemptBinding(String(row.attempt_id));
+      const attempt = binding?.record.attempt;
+      if (
+        attempt &&
+        !attempt.providerEnvironment &&
+        attempt.references.sessionId === sessionId
+      ) matches.push(attempt);
+    }
+    return matches.length === 1 ? matches[0]! : null;
+  }
+
+  /**
+   * 普通首付/还款须等整个 action 完成。唯有取消退款的同一笔 Linkly refund，
+   * 在不可变来源绑定、耐久 Approved 与加密证据齐全后可逐笔 ACK，释放终端给
+   * 后续退款；取消 action 仍未 resolved，因而绝不会放行新业务。
+   */
+  public async canProviderAcknowledged(attempt: PaymentAttempt): Promise<boolean> {
+    if (attempt.provider !== "linkly-cloud" || attempt.state !== "Approved") return false;
+    const binding = await this.loadAttemptBinding(attempt.attemptId);
+    if (!binding || binding.record.attempt.provider !== "linkly-cloud" || binding.record.attempt.state !== "Approved") return false;
+    const material = await this.loadApprovedMaterial(attempt.attemptId);
+    if (!material) return false;
+    if (
+      binding.action.action.kind === "cancel-refund" &&
+      binding.record.attempt.operation === "refund"
+    ) return true;
+    const row = await this.connection.getFirst<Readonly<{ resolution: unknown }>>(
+      `SELECT resolution FROM installment_actions WHERE action_id = ?`,
+      [binding.record.actionId],
+    );
+    return row?.resolution === "Completed";
+  }
+
+  public async markProviderAcknowledged(
+    expectedInput: PaymentAttempt,
+    acknowledgedAtIsoInput: string,
+  ): Promise<boolean> {
+    const acknowledgedAtIso = canonicalIso(acknowledgedAtIsoInput, "provider acknowledgement time");
+    const binding = await this.loadAttemptBinding(expectedInput.attemptId);
+    if (!binding || JSON.stringify(binding.record.attempt) !== JSON.stringify(expectedInput)) return false;
+    const expected = binding.record;
+    if (
+      expected.attempt.provider !== "linkly-cloud" ||
+      !isLinklyFinal(expected.attempt.state) ||
+      expected.attempt.providerAcknowledgedAtIso
+    ) return false;
+    const next: InstallmentProviderAttemptRecord = Object.freeze({
+      ...expected,
+      attempt: Object.freeze({ ...expected.attempt, providerAcknowledgedAtIso: acknowledgedAtIso }),
+    });
+    const ciphertext = await encryptAttempt(this.encryptor, next);
+    const result = await this.connection.run(
+      `UPDATE installment_provider_attempts
+       SET protected_payload_ciphertext = ?, provider_acknowledged_at_iso = ?
+       WHERE attempt_id = ? AND action_id = ? AND provider = 'linkly-cloud'
+         AND state IN ('Approved', 'Declined', 'Cancelled')
+         AND provider_acknowledged_at_iso IS NULL
+         AND state = ? AND updated_at_iso = ?`,
+      [ciphertext, acknowledgedAtIso, expected.attempt.attemptId, expected.actionId, expected.attempt.state, expected.attempt.updatedAtIso],
+    );
+    return result.changes === 1;
+  }
+
+  public async verifyProviderEnvironment(
+    expectedInput: PaymentAttempt,
+    verifiedEnvironmentInput: string,
+  ): Promise<boolean> {
+    const verifiedEnvironment = providerEnvironment(verifiedEnvironmentInput);
+    const binding = await this.loadAttemptBinding(expectedInput.attemptId);
+    if (!binding || JSON.stringify(binding.record.attempt) !== JSON.stringify(expectedInput)) return false;
+    const expected = binding.record;
+    if (
+      expected.attempt.provider !== "linkly-cloud" ||
+      expected.attempt.state === "Created" ||
+      expected.attempt.providerEnvironment
+    ) return false;
+    const next: InstallmentProviderAttemptRecord = Object.freeze({
+      ...expected,
+      attempt: Object.freeze({ ...expected.attempt, providerEnvironment: verifiedEnvironment }),
+    });
+    const ciphertext = await encryptAttempt(this.encryptor, next);
+    const result = await this.connection.run(
+      `UPDATE installment_provider_attempts
+       SET protected_payload_ciphertext = ?, provider_environment = ?,
+           provider_session_id = ?
+       WHERE attempt_id = ? AND action_id = ? AND provider = 'linkly-cloud'
+         AND state = ? AND updated_at_iso = ?
+         AND provider_environment IS NULL`,
+      [ciphertext, verifiedEnvironment, expected.attempt.references.sessionId, expected.attempt.attemptId, expected.actionId, expected.attempt.state, expected.attempt.updatedAtIso],
+    );
+    return result.changes === 1;
+  }
+
   public async bindPlanOrGet(
     candidateInput: InstallmentProviderAttemptPlan,
   ): Promise<InstallmentProviderAttemptPlan> {
@@ -290,8 +421,9 @@ implements InstallmentProviderAttemptStorePort {
               original_tender_evidence_id, source_attempt_id, sequence,
               provider, operation, amount_cents, state, idempotency_key,
               payload_revision, protected_payload_ciphertext,
-              created_at_iso, updated_at_iso
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+              created_at_iso, updated_at_iso, provider_environment,
+              provider_session_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`,
             [
               attempt.attemptId,
               record.actionId,
@@ -308,6 +440,8 @@ implements InstallmentProviderAttemptStorePort {
               item.ciphertext,
               attempt.createdAtIso,
               attempt.updatedAtIso,
+              attempt.providerEnvironment ?? null,
+              attempt.references.sessionId,
             ],
           );
         }
@@ -427,7 +561,7 @@ implements InstallmentProviderAttemptStorePort {
         const result = await transaction.run(
           `UPDATE installment_provider_attempts
            SET state = ?, protected_payload_ciphertext = ?,
-             updated_at_iso = ?
+             updated_at_iso = ?, provider_session_id = ?
            WHERE attempt_id = ? AND action_id = ? AND state = ?
              AND updated_at_iso = ?
              AND protected_payload_ciphertext = ?`,
@@ -435,6 +569,7 @@ implements InstallmentProviderAttemptStorePort {
             next.attempt.state,
             nextCiphertext,
             next.attempt.updatedAtIso,
+            next.attempt.references.sessionId,
             next.attempt.attemptId,
             next.actionId,
             expected.attempt.state,
@@ -1232,6 +1367,12 @@ function normalizeAttemptRecord(
       256,
     ),
     receiptText: optionalReceipt(attemptInput.receiptText),
+    ...(attemptInput.providerEnvironment === null || attemptInput.providerEnvironment === undefined
+      ? {}
+      : { providerEnvironment: providerEnvironment(attemptInput.providerEnvironment) }),
+    ...(attemptInput.providerAcknowledgedAtIso === null || attemptInput.providerAcknowledgedAtIso === undefined
+      ? {}
+      : { providerAcknowledgedAtIso: canonicalIso(attemptInput.providerAcknowledgedAtIso, "provider acknowledgement time") }),
     responseCode: optionalText(
       attemptInput.responseCode,
       "attempt response code",
@@ -1400,7 +1541,17 @@ function attemptRowMatches(
     matches(row.state, attempt.state) &&
     matches(row.idempotency_key, attempt.idempotencyKey) &&
     matches(row.created_at_iso, attempt.createdAtIso) &&
-    matches(row.updated_at_iso, attempt.updatedAtIso)
+    matches(row.updated_at_iso, attempt.updatedAtIso) &&
+    nullableMatches(row.provider_environment, attempt.providerEnvironment ?? null) &&
+    // M44 前的加密记录没有 session projection；只允许旧 Linkly 且未冻结环境
+    // 使用 payload 内的 session 参与强匹配。M44 新记录仍必须逐字段一致。
+    (
+      nullableMatches(row.provider_session_id, attempt.references.sessionId) ||
+      (row.provider_session_id === null &&
+        attempt.provider === "linkly-cloud" &&
+        !attempt.providerEnvironment)
+    ) &&
+    nullableMatches(row.provider_acknowledged_at_iso, attempt.providerAcknowledgedAtIso ?? null)
   );
 }
 
@@ -1466,7 +1617,8 @@ function attemptColumns(): string {
   return `SELECT attempt_id, action_id, payment_guid, source_payment_guid,
     original_tender_evidence_id, source_attempt_id, sequence, provider,
     operation, amount_cents, state, idempotency_key, payload_revision,
-    protected_payload_ciphertext, created_at_iso, updated_at_iso
+    protected_payload_ciphertext, created_at_iso, updated_at_iso,
+    provider_environment, provider_session_id, provider_acknowledged_at_iso
   FROM installment_provider_attempts`;
 }
 
@@ -1525,6 +1677,24 @@ function paymentState(value: unknown): PaymentAttemptState {
     return value;
   }
   throw new TypeError("Payment state is invalid.");
+}
+
+function isLinklyFinal(state: PaymentAttemptState): boolean {
+  return state === "Approved" || state === "Declined" || state === "Cancelled";
+}
+
+function providerEnvironment(value: unknown): string {
+  return strictText(value, "provider environment", 64);
+}
+
+function normalizedLinklyAttemptUid(value: unknown): string {
+  const compact = strictText(value, "Linkly idempotency key", 512)
+    .replaceAll("-", "")
+    .toLowerCase();
+  if (!/^[0-9a-f]{32}$/u.test(compact)) {
+    throw new TypeError("Linkly idempotency key is invalid.");
+  }
+  return compact;
 }
 
 function optionalReceipt(value: unknown): string | null {

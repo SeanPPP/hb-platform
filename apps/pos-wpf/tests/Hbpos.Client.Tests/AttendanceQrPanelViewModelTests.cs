@@ -55,6 +55,54 @@ public sealed class AttendanceQrPanelViewModelTests
     }
 
     [Fact]
+    public async Task Qr_rotates_at_ten_seconds_and_again_at_the_next_expiry_boundary()
+    {
+        var fixture = new Fixture(online: true);
+        using var viewModel = fixture.CreateViewModel();
+        await viewModel.RefreshAsync();
+        var firstToken = viewModel.QrToken;
+
+        fixture.Time.Advance(TimeSpan.FromSeconds(9));
+        await viewModel.TickAsync();
+        Assert.Equal(firstToken, viewModel.QrToken);
+        Assert.Equal(6, viewModel.SecondsRemaining);
+
+        fixture.Time.Advance(TimeSpan.FromSeconds(1));
+        await viewModel.TickAsync();
+        var secondToken = viewModel.QrToken;
+        Assert.NotEqual(firstToken, secondToken);
+        Assert.Equal(15, viewModel.SecondsRemaining);
+
+        fixture.Time.Advance(TimeSpan.FromSeconds(15));
+        await viewModel.TickAsync();
+        Assert.NotEqual(secondToken, viewModel.QrToken);
+        Assert.Equal(15, viewModel.SecondsRemaining);
+    }
+
+    [Fact]
+    public async Task Repeated_ticks_during_early_rotation_do_not_reissue_qr()
+    {
+        var fixture = new Fixture(online: true);
+        using var viewModel = fixture.CreateViewModel();
+        await viewModel.RefreshAsync();
+        var tokenChanges = new List<string?>();
+        viewModel.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName == nameof(AttendanceQrPanelViewModel.QrToken))
+            {
+                tokenChanges.Add(viewModel.QrToken);
+            }
+        };
+
+        fixture.Time.Advance(TimeSpan.FromSeconds(10));
+        await Task.WhenAll(viewModel.TickAsync(), viewModel.TickAsync());
+
+        Assert.Equal(1, tokenChanges.Count(token => token is null));
+        Assert.Equal(1, tokenChanges.Count(token => token is not null));
+        Assert.Equal(15, viewModel.SecondsRemaining);
+    }
+
+    [Fact]
     public async Task Online_to_offline_keeps_signing_and_rotates_after_expiry_with_clear_first()
     {
         var fixture = new Fixture(online: true);
@@ -71,10 +119,11 @@ public sealed class AttendanceQrPanelViewModelTests
         };
 
         fixture.Connectivity.IsOnline = false;
-        fixture.Time.Advance(TimeSpan.FromSeconds(14));
+        // 离线模式也在剩余 5 秒时换码；第 9 秒仍保留旧码，第 10 秒刷新。
+        fixture.Time.Advance(TimeSpan.FromSeconds(9));
         await viewModel.RefreshAsync();
         Assert.Equal(firstToken, viewModel.QrToken);
-        Assert.Equal(1, viewModel.SecondsRemaining);
+        Assert.Equal(6, viewModel.SecondsRemaining);
 
         fixture.Time.Advance(TimeSpan.FromSeconds(1));
         await viewModel.RefreshAsync();

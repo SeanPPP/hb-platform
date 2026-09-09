@@ -199,7 +199,18 @@ public sealed class SalesDetailReportTests : IDisposable
         Assert.Contains("p0.[Barcode]", sql);
         Assert.Contains("[StatisticBarcode] LIKE @sdrSearch0", sql);
         Assert.Contains("pSearch.[Barcode] LIKE @sdrSearch0", sql);
-        Assert.Contains("EXISTS (SELECT 1 FROM [Product] pSearch", sql);
+        Assert.Contains("INTO #SalesDetailProductSearchMatches", sql);
+        Assert.Contains("INTO #SalesDetailSupplierSearchMatches", sql);
+        Assert.Equal(2, CountOccurrences(sql, "FROM [Product] pSearch"));
+        Assert.Equal(2, CountOccurrences(sql, "FROM [ChinaSupplier] cSearch"));
+        Assert.DoesNotContain("EXISTS (SELECT 1 FROM [Product] pSearch", sql);
+        Assert.DoesNotContain("EXISTS (SELECT 1 FROM [ChinaSupplier] cSearch", sql);
+        Assert.Contains("LEFT JOIN #SalesDetailProductSearchMatches pMatch0", sql);
+        Assert.Contains("LEFT JOIN #SalesDetailSupplierSearchMatches cMatch0", sql);
+        Assert.Contains("pMatch0.[ProductCode] IS NOT NULL", sql);
+        Assert.Contains("cMatch0.[SupplierCode] IS NOT NULL", sql);
+        Assert.Contains("INTO #SalesDetailSearchFacts", sql);
+        Assert.Equal(1, CountOccurrences(sql, "INTO #SalesDetailSearchFacts"));
         Assert.Contains("NULLIF(LTRIM(RTRIM(local.[Name])), '')", sql);
         Assert.Contains("THEN 'hotbargain' ELSE f.[AustralianSupplierCode] END", sql);
         Assert.Contains("COUNT([TotalCost]) [CostedRowCount]", sql);
@@ -389,6 +400,14 @@ public sealed class SalesDetailReportTests : IDisposable
     {
         StartDate = start, EndDate = end, CompareStartDate = start, CompareEndDate = end,
     };
+
+    private static int CountOccurrences(string source, string value)
+    {
+        var count = 0;
+        for (var offset = 0; (offset = source.IndexOf(value, offset, StringComparison.Ordinal)) >= 0; offset += value.Length)
+            count++;
+        return count;
+    }
 
     private async Task SeedCatalogAsync(string code, string name)
         => await _localDb.Insertable(new ChinaSupplier { Guid = $"guid-{code}", SupplierCode = code, SupplierName = name }).ExecuteCommandAsync();

@@ -28,13 +28,14 @@ import type {
   WarehouseProductFlowPeriod,
   WarehouseProductFlowPeriods,
   WarehouseProductFlowSelection,
+  WarehouseProductFlowShipmentRow,
   WarehouseProductFlowSummaryData,
 } from '../../../types/warehouseProductFlowAnalysis'
 import { createLatestRequestGuard } from '../../../utils/latestRequestGuard'
 import ProductImage from '../ProductFlowShared/ProductImage'
 import FlowTrendChart from '../ProductFlowShared/FlowTrendChart'
 import { createAllFilteredSelection, createIncludedSelection, isProductSelected, resolveCurrentProductCode, selectFirstCandidate, toggleProductSelection } from '../ProductFlowShared/logic'
-import { buildWarehouseProductFlowCategoryOptions, buildWarehouseProductFlowDefaultPeriods, createWarehouseProductFlowFilter, filterWarehouseProductFlowCategoryOptions, filterWarehouseProductFlowSupplierOptions, isValidWarehouseProductFlowRange } from './logic'
+import { buildWarehouseProductFlowCategoryOptions, buildWarehouseProductFlowDefaultPeriods, createWarehouseProductFlowFilter, filterWarehouseProductFlowCategoryOptions, filterWarehouseProductFlowShipments, filterWarehouseProductFlowSupplierOptions, isValidWarehouseProductFlowRange, sortWarehouseProductFlowBranches, type WarehouseProductFlowPosFilter } from './logic'
 import styles from './index.module.css'
 import { MeasuredTable } from '../../../components/MeasuredTable'
 
@@ -144,7 +145,8 @@ export default function WarehouseProductFlowAnalysisPage() {
   const [activeTab, setActiveTab] = useState<'container' | 'order' | 'shipment'>('container')
   const [containerRows, setContainerRows] = useState<Array<Record<string, unknown>>>([])
   const [orderRows, setOrderRows] = useState<Array<Record<string, unknown>>>([])
-  const [shipmentRows, setShipmentRows] = useState<Array<Record<string, unknown>>>([])
+  const [shipmentRows, setShipmentRows] = useState<Array<WarehouseProductFlowShipmentRow & Record<string, unknown>>>([])
+  const [shipmentPosFilter, setShipmentPosFilter] = useState<WarehouseProductFlowPosFilter>('all')
   const [containerState, setContainerState] = useState<{ loading: boolean; error?: string }>({ loading: false })
   const [orderState, setOrderState] = useState<{ loading: boolean; error?: string }>({ loading: false })
   const [shipmentState, setShipmentState] = useState<{ loading: boolean; error?: string }>({ loading: false })
@@ -179,6 +181,8 @@ export default function WarehouseProductFlowAnalysisPage() {
   const categoryOptions = useMemo(() => buildWarehouseProductFlowCategoryOptions(categoryTree), [categoryTree])
   const visibleCategoryOptions = useMemo(() => filterWarehouseProductFlowCategoryOptions(categoryOptions, categorySearchText), [categoryOptions, categorySearchText])
   const visibleSupplierOptions = useMemo(() => filterWarehouseProductFlowSupplierOptions(supplierOptions, supplierSearchText), [supplierOptions, supplierSearchText])
+  const visibleShipmentRows = useMemo(() => filterWarehouseProductFlowShipments(shipmentRows, shipmentPosFilter), [shipmentRows, shipmentPosFilter])
+  const sortedBranches = useMemo(() => sortWarehouseProductFlowBranches(branches), [branches])
   // 候选顺序以服务端稳定分页为准，前端不得只对当前页再次排序。
   const candidateItems = candidates?.items || []
   const selectedRows = summary?.items || []
@@ -251,7 +255,7 @@ export default function WarehouseProductFlowAnalysisPage() {
     setBranchCode(null); setBranchDaily([])
   }, [currentProductCode])
 
-  // 各区块虽共享完整 periods 契约，但只订阅自己的日期状态，避免改销售日期误刷货柜或订发货数据。
+  // 各区块只订阅所需日期；发货明细额外订阅销售期间，使新增销量列与右侧分店销售保持一致。
   useEffect(() => {
     if (!currentProductCode) return
     const requestId = containerGuard.current.begin(); setContainerState({ loading: true })
@@ -290,7 +294,7 @@ export default function WarehouseProductFlowAnalysisPage() {
       .catch((error) => { if (shipmentGuard.current.isLatest(requestId) && !isAbortError(error)) setShipmentState({ loading: false, error: errorText(error, '发货明细加载失败') }) })
       .finally(() => { if (shipmentGuard.current.isLatest(requestId)) setShipmentState((state) => ({ ...state, loading: false })) })
     return () => shipmentGuard.current.invalidate()
-  }, [consumeForceRefresh, currentProductCode, filter, globalRefreshVersion, orderShipmentRefreshVersion, periods.orderShipmentPeriod.endDate, periods.orderShipmentPeriod.startDate, productRequest])
+  }, [consumeForceRefresh, currentProductCode, filter, globalRefreshVersion, orderShipmentRefreshVersion, periods.orderShipmentPeriod.endDate, periods.orderShipmentPeriod.startDate, periods.salesPeriod.endDate, periods.salesPeriod.startDate, productRequest, salesRefreshVersion])
 
   useEffect(() => {
     if (!currentProductCode) return
@@ -344,6 +348,7 @@ export default function WarehouseProductFlowAnalysisPage() {
 
   const resetFilters = () => {
     setDraftKeyword(''); setDraftCategories([]); setDraftSuppliers([]); setDraftDocument('')
+    setShipmentPosFilter('all')
     setContainerRange(toRange(defaultPeriods.containerPeriod)); setOrderShipmentRange(toRange(defaultPeriods.orderShipmentPeriod)); setSalesRange(toRange(defaultPeriods.salesPeriod))
     setPeriods(defaultPeriods)
     setContainerRefreshVersion((value) => value + 1); setOrderShipmentRefreshVersion((value) => value + 1); setSalesRefreshVersion((value) => value + 1)
@@ -388,9 +393,13 @@ export default function WarehouseProductFlowAnalysisPage() {
     { title: '订单号', dataIndex: 'orderNumber' }, { title: '分店', dataIndex: 'branchName' }, { title: '订单日', dataIndex: 'orderDate' }, { title: '订货量', dataIndex: 'orderedQuantity', align: 'right' },
   ]
   const shipmentColumns: ColumnsType<Record<string, unknown>> = [
-    { title: '发货号 / 订单号', key: 'number', render: (_, row) => row.shipmentNumber || row.orderNumber || '—' }, { title: '分店', dataIndex: 'branchName' }, { title: '出库日', dataIndex: 'shipmentDate' }, { title: '发货量', dataIndex: 'shippedQuantity', align: 'right' },
+    { title: '发货号 / 订单号', key: 'number', render: (_, row) => row.shipmentNumber || row.orderNumber || '—' },
+    { title: '分店', dataIndex: 'branchName', render: (_, row) => row.branchName || row.branchCode || '—' },
+    { title: '出库日', dataIndex: 'shipmentDate' },
+    { title: '发货量', dataIndex: 'shippedQuantity', align: 'right', fixed: 'right', width: 75 },
+    { title: '销量', dataIndex: 'netSalesQuantity', align: 'right', fixed: 'right', width: 70, render: (value) => typeof value === 'number' ? numberFormatter.format(value) : '—' },
   ]
-  const detailData = activeTab === 'container' ? containerRows : activeTab === 'order' ? orderRows : shipmentRows
+  const detailData = activeTab === 'container' ? containerRows : activeTab === 'order' ? orderRows : visibleShipmentRows
   const detailState = activeTab === 'container' ? containerState : activeTab === 'order' ? orderState : shipmentState
   const detailColumns = activeTab === 'container' ? containerColumns : activeTab === 'order' ? orderColumns : shipmentColumns
   const branchColumns: ColumnsType<WarehouseProductFlowBranch> = [
@@ -403,9 +412,11 @@ export default function WarehouseProductFlowAnalysisPage() {
   const queryActiveDetail = () => activeTab === 'container'
     ? applyPeriod('containerPeriod', containerRange, setContainerRefreshVersion)
     : applyPeriod('orderShipmentPeriod', orderShipmentRange, setOrderShipmentRefreshVersion)
-  const restoreActiveDetail = () => activeTab === 'container'
-    ? restorePeriod('containerPeriod', setContainerRange, setContainerRefreshVersion)
-    : restorePeriod('orderShipmentPeriod', setOrderShipmentRange, setOrderShipmentRefreshVersion)
+  const restoreActiveDetail = () => {
+    if (activeTab === 'shipment') setShipmentPosFilter('all')
+    if (activeTab === 'container') restorePeriod('containerPeriod', setContainerRange, setContainerRefreshVersion)
+    else restorePeriod('orderShipmentPeriod', setOrderShipmentRange, setOrderShipmentRefreshVersion)
+  }
   const retryActiveDetail = () => activeTab === 'container'
     ? setContainerRefreshVersion((value) => value + 1)
     : setOrderShipmentRefreshVersion((value) => value + 1)
@@ -447,7 +458,14 @@ export default function WarehouseProductFlowAnalysisPage() {
             <div className={styles.kpis}>{[['货柜进货量', currentMetrics.inboundQuantity], ['分店订货量', currentMetrics.orderedQuantity ?? 0], ['已发分店量', currentMetrics.shippedQuantity], ['分店净销量', currentMetrics.netSalesQuantity]].map(([label, value]) => <div key={String(label)}><span>{label}</span><strong>{numberFormatter.format(Number(value))}</strong></div>)}</div>
             <Tabs activeKey={activeTab} onChange={(key) => setActiveTab(key as 'container' | 'order' | 'shipment')} items={[{ key: 'container', label: '货柜明细' }, { key: 'order', label: '分店订货' }, { key: 'shipment', label: '发货明细' }]} />
             <div className={styles.periodControls}><RangePicker value={activeDetailRange} disabledDate={(date) => date.isAfter(yesterday, 'day')} onChange={setActiveDetailRange} allowClear={false} /><Button type="primary" size="small" onClick={queryActiveDetail}>查询</Button><Button size="small" onClick={restoreActiveDetail}>恢复默认</Button></div>
-            <LocalPanel loading={detailState.loading} error={detailState.error} retry={retryActiveDetail}><MeasuredTable metricId="executive-sales-intelligence.warehouse-product-flow-analysis.table-1" rowKey={(_, index) => `${activeTab}-${index}`} columns={detailColumns} dataSource={detailData} size="small" pagination={false} scroll={{ x: 520 }} /></LocalPanel>
+            {activeTab === 'shipment' ? <>
+              <div className={styles.shipmentFilters}>
+                <label htmlFor="shipment-pos-filter">分店 POS</label>
+                <Select id="shipment-pos-filter" aria-label="分店是否启用 POS" size="small" value={shipmentPosFilter} onChange={setShipmentPosFilter} options={[{ value: 'all', label: '全部分店' }, { value: 'enabled', label: '已启用 POS' }, { value: 'disabled', label: '未启用 POS' }]} />
+              </div>
+              <p className={styles.salesPeriodNote}>销量按分店销售期间统计：{formatPeriodLabel(periods.salesPeriod)}。同一分店的多张发货单显示相同净销量。</p>
+            </> : null}
+            <LocalPanel loading={detailState.loading} error={detailState.error} retry={retryActiveDetail}><MeasuredTable metricId="executive-sales-intelligence.warehouse-product-flow-analysis.table-1" rowKey={(_, index) => `${activeTab}-${index}`} columns={detailColumns} dataSource={detailData} size="small" pagination={false} scroll={{ x: activeTab === 'shipment' ? 600 : 520 }} /></LocalPanel>
             <h3 className={styles.chartTitle}>货柜进货趋势 <small>{formatPeriodLabel(periods.containerPeriod)}</small></h3><LocalPanel loading={containerTrendState.loading} error={containerTrendState.error} retry={() => setContainerRefreshVersion((value) => value + 1)}><QuantityTrend data={containerDaily} firstKey="inboundQuantity" firstLabel="进货量" ariaLabel="当前商品每日货柜进货量趋势" /></LocalPanel>
             <h3 className={styles.chartTitle}>订货 / 发货日趋势 <small>{formatPeriodLabel(periods.orderShipmentPeriod)}</small></h3><LocalPanel loading={orderShipmentTrendState.loading} error={orderShipmentTrendState.error} retry={() => setOrderShipmentRefreshVersion((value) => value + 1)}><QuantityTrend data={orderShipmentDaily} firstKey="orderedQuantity" firstLabel="订货量" secondKey="shippedQuantity" secondLabel="发货量" ariaLabel="当前商品每日订货量与发货量趋势" /></LocalPanel>
           </div>
@@ -456,7 +474,7 @@ export default function WarehouseProductFlowAnalysisPage() {
         <aside className={`${styles.panel} ${styles.rightColumn}`}>
           <div className={styles.sectionHead}><h3>分店销售</h3></div>
           <div className={styles.periodControls}><RangePicker value={salesRange} disabledDate={(date) => date.isAfter(yesterday, 'day')} onChange={(value) => updateRange(setSalesRange, value)} allowClear={false} /><Button type="primary" size="small" onClick={() => applyPeriod('salesPeriod', salesRange, setSalesRefreshVersion)}>查询</Button><Button size="small" onClick={() => restorePeriod('salesPeriod', setSalesRange, setSalesRefreshVersion)}>恢复默认</Button></div>
-          <LocalPanel loading={branchState.loading} error={branchState.error} retry={() => setSalesRefreshVersion((value) => value + 1)}><MeasuredTable metricId="executive-sales-intelligence.warehouse-product-flow-analysis.table-2" rowKey="branchCode" columns={branchColumns} dataSource={branches} size="small" pagination={false} scroll={{ x: 420 }} onRow={(row) => ({ className: branchCode === row.branchCode ? styles.currentBranch : '' })} /></LocalPanel>
+          <LocalPanel loading={branchState.loading} error={branchState.error} retry={() => setSalesRefreshVersion((value) => value + 1)}><MeasuredTable metricId="executive-sales-intelligence.warehouse-product-flow-analysis.table-2" rowKey="branchCode" columns={branchColumns} dataSource={sortedBranches} size="small" pagination={false} scroll={{ x: 420 }} onRow={(row) => ({ className: branchCode === row.branchCode ? styles.currentBranch : '' })} /></LocalPanel>
           <h3 className={styles.chartTitle}>销售日趋势 <small>{formatPeriodLabel(periods.salesPeriod)}</small></h3><LocalPanel loading={salesTrendState.loading} error={salesTrendState.error} retry={() => setSalesRefreshVersion((value) => value + 1)}><FlowTrendChart data={salesDaily} ariaLabel="当前商品每日净销量与平均单价趋势" /></LocalPanel>
           <h3 className={styles.chartTitle}>分店销售趋势{branchCode ? <Tag color="blue">{branches.find((branch) => branch.branchCode === branchCode)?.branchName || branchCode}</Tag> : null}</h3>
           {branchCode ? <LocalPanel loading={branchDailyState.loading} error={branchDailyState.error} retry={() => setSalesRefreshVersion((value) => value + 1)}><FlowTrendChart data={branchDaily} ariaLabel="所选分店每日净销量与平均单价趋势" /></LocalPanel> : <div className={styles.muted}>点击分店查看每日趋势</div>}

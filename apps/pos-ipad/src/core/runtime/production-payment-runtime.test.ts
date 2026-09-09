@@ -243,6 +243,224 @@ test("生产支付 facade 基于当前 cashier 的 TakeCash 权限透传现金�
   assert.equal(presenter.getState().allowedActions.addCash, false);
 });
 
+test("无 Linkly provider 时 return recovery 仍封锁现金金融入口且不触发底层操作", async () => {
+  let cashRepositoryWrites = 0;
+  const runtime = createProductionPaymentRuntime({
+    database: database(),
+    repositories: repositories(null, () => {
+      cashRepositoryWrites += 1;
+    }),
+    encryptor,
+    activeCart: new ActivePricingCartSession(new PricingCart(), () => new PricingCart()),
+    currentCashier: activeCashier(),
+    terminal: { storeCode: "S1", deviceCode: "IPAD-1" },
+    clock: {
+      now: () => new Date("2026-09-09T00:00:00.000Z"),
+      nowIso: () => "2026-09-09T00:00:00.000Z",
+    },
+    createId: idFactory(),
+    connectivity: { async isOnline() { return true; } },
+    bootstrap: bootstrap(() => undefined),
+    hasReturnRecoveryRequired: async () => true,
+    async drainFulfilment() {},
+  });
+  await runtime.initializeRecovery();
+  if (runtime.service.status !== "available") assert.fail("payment runtime should be available");
+  const presenter = runtime.service.createPresenter({
+    checkoutIntentId: "return-blocked-checkout",
+    expectedCartRevision: 0,
+    total: aud(500),
+  });
+  assert.equal(await presenter.initialize(), true);
+  assert.equal(presenter.selectMethod("cash"), true);
+  presenter.setAmountText("5.00");
+  assert.equal(await presenter.submitSelected(), false);
+  assert.equal(presenter.getState().runtimeErrorCode, "RETURN_RECOVERY_REQUIRED");
+  assert.equal(cashRepositoryWrites, 0);
+  presenter.destroy();
+});
+
+test("无 Linkly provider 时 return recovery 也封锁 Square，provider submit/refund/recover 均为零", async () => {
+  const calls = { submit: 0, refund: 0, recover: 0 };
+  const provider = {
+    provider: "square" as const,
+    async submit(source: PaymentAttempt) {
+      calls.submit += 1;
+      return { state: "Unknown" as const, references: source.references, receiptText: null, responseCode: null };
+    },
+    async refund(source: PaymentAttempt) {
+      calls.refund += 1;
+      return { state: "Unknown" as const, references: source.references, receiptText: null, responseCode: null };
+    },
+    async recover(source: PaymentAttempt) {
+      calls.recover += 1;
+      return { state: "Unknown" as const, references: source.references, receiptText: null, responseCode: null };
+    },
+    async cancel(source: PaymentAttempt) {
+      return { state: "Unknown" as const, references: source.references, receiptText: null, responseCode: null };
+    },
+  };
+  const base = bootstrap(() => undefined);
+  const configuredBootstrap = {
+    ...base,
+    providers: {
+      ...base.providers,
+      get() { return provider; },
+      getAvailability(providerName: PaymentProvider) {
+        return { provider: providerName, available: providerName === "square", blocker: null };
+      },
+      listAvailability() {
+        return [
+          { provider: "square" as const, available: true, blocker: null },
+          { provider: "linkly-cloud" as const, available: false, blocker: "LINKLY_CONFIGURATION_MISSING" as const },
+          { provider: "voucher" as const, available: false, blocker: "VOUCHER_CONFIGURATION_DISABLED" as const },
+        ];
+      },
+      listAvailableProviders() { return ["square" as const]; },
+    },
+  } as unknown as PaymentProviderRuntimeBootstrap;
+  const runtime = createProductionPaymentRuntime({
+    database: database(),
+    repositories: repositories(),
+    encryptor,
+    activeCart: new ActivePricingCartSession(new PricingCart(), () => new PricingCart()),
+    currentCashier: activeCashier(),
+    terminal: { storeCode: "S1", deviceCode: "IPAD-1" },
+    clock: { now: () => new Date("2026-09-09T00:00:00.000Z"), nowIso: () => "2026-09-09T00:00:00.000Z" },
+    createId: idFactory(),
+    connectivity: { async isOnline() { return true; } },
+    bootstrap: configuredBootstrap,
+    hasReturnRecoveryRequired: async () => true,
+    async drainFulfilment() {},
+  });
+  await runtime.initializeRecovery();
+  if (runtime.service.status !== "available") assert.fail("payment runtime should be available");
+  const presenter = runtime.service.createPresenter({ checkoutIntentId: "square-return-blocked", expectedCartRevision: 0, total: aud(500) });
+  assert.equal(await presenter.initialize(), true);
+  assert.equal(presenter.selectMethod("square"), true);
+  presenter.setAmountText("5.00");
+  assert.equal(await presenter.submitSelected(), false);
+  assert.equal(presenter.getState().runtimeErrorCode, "RETURN_RECOVERY_REQUIRED");
+  assert.deepEqual(calls, { submit: 0, refund: 0, recover: 0 });
+  presenter.destroy();
+});
+
+test("生产组合冷启动只确认已持久的 Linkly 最终 attempt；成功 marker 后不重放金融动作", async () => {
+  for (const state of ["Approved", "Declined", "Cancelled"] as const) {
+    const harness = productionAcknowledgementHarness({ state });
+    await harness.runtime.initializeRecovery();
+    if (harness.runtime.service.status !== "available") {
+      assert.fail("payment runtime should be available");
+    }
+
+    const first = harness.runtime.service.createPresenter(null);
+    assert.equal(await first.initialize(), true);
+    await first.recover();
+    first.destroy();
+
+    assert.deepEqual(harness.counts(), {
+      acknowledged: 1,
+      financial: 0,
+      reconcile: 0,
+    });
+    assert.ok(harness.current().providerAcknowledgedAtIso);
+
+    // 模拟页面重建：marker 已写时只读原终态，绝不能退回普通支付恢复。
+    const reopened = harness.runtime.service.createPresenter(null);
+    assert.equal(await reopened.initialize(), true);
+    reopened.destroy();
+    assert.deepEqual(harness.counts(), {
+      acknowledged: 1,
+      financial: 0,
+      reconcile: 0,
+    });
+  }
+});
+
+test("生产组合 legacy ACK 只接受原 session/环境，并保留 provider this 绑定", async () => {
+  const matched = productionAcknowledgementHarness({
+    state: "Declined",
+    legacy: true,
+    listedSessionId: "legacy-session-1",
+    listedEnvironment: "Sandbox",
+    reconciledEnvironment: "Sandbox",
+  });
+  await matched.runtime.initializeRecovery();
+  if (matched.runtime.service.status !== "available") {
+    assert.fail("payment runtime should be available");
+  }
+  const recovered = matched.runtime.service.createPresenter(null);
+  assert.equal(await recovered.initialize(), true);
+  await recovered.recover();
+  recovered.destroy();
+  assert.equal(matched.current().providerEnvironment, "Sandbox");
+  assert.deepEqual(matched.counts(), {
+    acknowledged: 1,
+    financial: 0,
+    reconcile: 1,
+  });
+  assert.equal(matched.reconcileThisBound(), true);
+
+  for (const mismatch of [
+    {
+      listedSessionId: "other-terminal-session",
+      listedEnvironment: "Sandbox",
+      reconciledEnvironment: "Sandbox",
+    },
+    {
+      listedSessionId: "legacy-session-1",
+      listedEnvironment: "Production",
+      reconciledEnvironment: "Sandbox",
+    },
+  ]) {
+    const blocked = productionAcknowledgementHarness({
+      state: "Declined",
+      legacy: true,
+      ...mismatch,
+    });
+    await blocked.runtime.initializeRecovery();
+    if (blocked.runtime.service.status !== "available") {
+      assert.fail("payment runtime should be available");
+    }
+    const presenter = blocked.runtime.service.createPresenter(null);
+    assert.equal(await presenter.initialize(), true);
+    presenter.destroy();
+    assert.deepEqual(blocked.counts(), {
+      acknowledged: 0,
+      financial: 0,
+      reconcile: mismatch.listedSessionId === "legacy-session-1" ? 1 : 0,
+    });
+    assert.equal(blocked.current().providerEnvironment, undefined);
+  }
+});
+
+test("legacy discovery 只在 probe/初始化执行一次，普通 presenter read 不重复查询 provider", async () => {
+  const harness = productionAcknowledgementHarness({
+    state: "Declined",
+    legacy: true,
+    listedSessionId: "legacy-session-1",
+    listedEnvironment: "Sandbox",
+    reconciledEnvironment: "Sandbox",
+  });
+  await harness.runtime.initializeRecovery();
+  assert.equal(harness.legacyListCount(), 1);
+  if (harness.runtime.service.status !== "available") assert.fail("payment runtime should be available");
+  const presenter = harness.runtime.service.createPresenter(null);
+  assert.equal(await presenter.initialize(), true);
+  presenter.destroy();
+  assert.equal(harness.legacyListCount(), 1);
+  assert.equal(await harness.runtime.recoveryProbe.hasRecoveryRequired(), true);
+  assert.equal(harness.legacyListCount(), 1);
+});
+
+test("新库没有旧 Linkly 候选时，冷启动不查询后端 active/resumable", async () => {
+  const harness = productionAcknowledgementHarness({ state: "Declined" });
+  await harness.runtime.initializeRecovery();
+  assert.equal(harness.legacyListCount(), 0);
+  await harness.runtime.recoveryProbe.hasRecoveryRequired();
+  assert.equal(harness.legacyListCount(), 0);
+});
+
 test("普通支付展示行只投影可信活动购物车，忽略路由伪造明细", async () => {
   const cart = pricedCart();
   const activeCart = new ActivePricingCartSession(
@@ -1049,6 +1267,7 @@ function durableCloseDatabase(input: Readonly<{
 
 function repositories(
   initialAttempt: PaymentAttempt | null = null,
+  onWrite: () => void = () => undefined,
 ): PosRepositoryBundle {
   const attempts = new Map<string, PaymentAttempt>();
   if (initialAttempt) {
@@ -1068,6 +1287,7 @@ function repositories(
     },
     payments: {
       async insertIfUnblocked(attempt: PaymentAttempt) {
+        onWrite();
         attempts.set(attempt.attemptId, attempt);
         return null;
       },
@@ -1075,6 +1295,7 @@ function repositories(
         _expected: PaymentAttempt,
         next: PaymentAttempt,
       ) {
+        onWrite();
         attempts.set(next.attemptId, next);
         return true;
       },
@@ -1094,6 +1315,204 @@ function repositories(
       },
     } satisfies PaymentAttemptRepositoryPort,
   } as unknown as PosRepositoryBundle;
+}
+
+function productionAcknowledgementHarness(input: Readonly<{
+  state: Extract<PaymentAttempt["state"], "Approved" | "Declined" | "Cancelled">;
+  legacy?: boolean;
+  listedSessionId?: string;
+  listedEnvironment?: string;
+  reconciledEnvironment?: string;
+}>) {
+  let attempt: PaymentAttempt = {
+    attemptId: "linkly-final-attempt",
+    idempotencyKey: "linkly-final-idempotency",
+    orderGuid: "linkly-final-order",
+    provider: "linkly-cloud",
+    ...(input.legacy ? {} : { providerEnvironment: "Sandbox" }),
+    operation: "purchase",
+    amount: aud(1_000),
+    state: input.state,
+    references: {
+      checkoutId: null,
+      paymentId: null,
+      sessionId: "legacy-session-1",
+      txnRef: null,
+      rfn: null,
+      voucherReservationToken: null,
+    },
+    createdAtIso: "2026-09-09T00:00:00.000Z",
+    updatedAtIso: "2026-09-09T00:00:01.000Z",
+    lastErrorCode: null,
+  };
+  let acknowledged = 0;
+  let financial = 0;
+  let reconcile = 0;
+  let legacyList = 0;
+  let reconcileThisBound = false;
+  const provider: {
+    environment: string;
+    acknowledge(): Promise<void>;
+    listUnacknowledgedSessions(): Promise<readonly Readonly<{
+      sessionId: string;
+      environment: string;
+    }>[]>;
+    reconcileLegacy(this: { environment: string }): Promise<Readonly<{
+      environment: string;
+      clientAcknowledgedAt: null;
+    }>>;
+    submit(source: PaymentAttempt): Promise<unknown>;
+    recover(source: PaymentAttempt): Promise<unknown>;
+    cancel(source: PaymentAttempt): Promise<unknown>;
+    refund(source: PaymentAttempt): Promise<unknown>;
+  } = {
+    environment: input.reconciledEnvironment ?? "Sandbox",
+    async acknowledge() {
+      acknowledged += 1;
+    },
+    async listUnacknowledgedSessions() {
+      legacyList += 1;
+      return input.legacy
+          ? [{
+            sessionId: input.listedSessionId ?? "legacy-session-1",
+            environment: input.listedEnvironment ?? "Sandbox",
+            idempotencyKey: attempt.idempotencyKey,
+          }]
+        : [];
+    },
+    async reconcileLegacy(this: { environment: string }) {
+      reconcile += 1;
+      reconcileThisBound = this === provider;
+      return {
+        environment: this.environment,
+        clientAcknowledgedAt: null,
+      };
+    },
+    async submit(source: PaymentAttempt) {
+      financial += 1;
+      return { state: "Unknown" as const, references: source.references, receiptText: null, responseCode: null };
+    },
+    async recover(source: PaymentAttempt) {
+      financial += 1;
+      return { state: "Unknown" as const, references: source.references, receiptText: null, responseCode: null };
+    },
+    async cancel(source: PaymentAttempt) {
+      financial += 1;
+      return { state: "Unknown" as const, references: source.references, receiptText: null, responseCode: null };
+    },
+    async refund(source: PaymentAttempt) {
+      financial += 1;
+      return { state: "Unknown" as const, references: source.references, receiptText: null, responseCode: null };
+    },
+  };
+  const draftStore = {
+    async assertPersisted() {},
+    async findBlockingRecovery() { return null; },
+    async hasLegacyLinklyRecovery() { return input.legacy === true; },
+    async readDraft() { return null; },
+    async findPendingLinklyAcknowledgement() {
+      return attempt.providerEnvironment && !attempt.providerAcknowledgedAtIso
+        ? attempt.attemptId
+        : null;
+    },
+    async findLegacyLinklyAttemptForSession(
+      _scope: unknown,
+      sessionId: string,
+    ) {
+      return input.legacy && sessionId === attempt.references.sessionId
+        ? attempt.attemptId
+        : null;
+    },
+  };
+  const baseDatabase = database();
+  const paymentLedger = {
+    async insertIfUnblocked() { return null; },
+    async compareAndUpdate() { return true; },
+    async get(attemptId: string) {
+      return attemptId === attempt.attemptId ? attempt : null;
+    },
+    async findBlocking() { return null; },
+    async canProviderAcknowledged() { return true; },
+    async markProviderAcknowledged(
+      expected: PaymentAttempt,
+      providerAcknowledgedAtIso: string,
+    ) {
+      if (expected.attemptId !== attempt.attemptId ||
+          attempt.providerAcknowledgedAtIso ||
+          !attempt.providerEnvironment) return false;
+      attempt = { ...attempt, providerAcknowledgedAtIso };
+      return true;
+    },
+    async verifyProviderEnvironment(
+      expected: PaymentAttempt,
+      providerEnvironment: string,
+    ) {
+      if (expected.attemptId !== attempt.attemptId ||
+          attempt.providerEnvironment !== undefined ||
+          providerEnvironment !== provider.environment) return false;
+      attempt = { ...attempt, providerEnvironment };
+      return true;
+    },
+  };
+  const runtime = createProductionPaymentRuntime({
+    database: {
+      ...baseDatabase,
+      paymentDraftRecovery: () => draftStore,
+    } as unknown as PosDatabase,
+    repositories: {
+      orders: {
+        async nextLocalSequence() { return 1; },
+        async getByGuid(orderGuid: string) {
+          return orderGuid === attempt.orderGuid
+            ? {
+                orderGuid,
+                storeCode: "S1",
+                deviceCode: "IPAD-1",
+                state: "Synced",
+                actualAmount: aud(1_000),
+              }
+            : null;
+        },
+        async listLocal() { return []; },
+      },
+      payments: paymentLedger,
+    } as unknown as PosRepositoryBundle,
+    encryptor,
+    activeCart: new ActivePricingCartSession(
+      new PricingCart(),
+      () => new PricingCart(),
+    ),
+    currentCashier: activeCashier(),
+    terminal: { storeCode: "S1", deviceCode: "IPAD-1" },
+    clock: {
+      now: () => new Date("2026-09-09T00:00:00.000Z"),
+      nowIso: () => "2026-09-09T00:00:02.000Z",
+    },
+    createId: idFactory(),
+    connectivity: { async isOnline() { return true; } },
+    bootstrap: {
+      providers: {
+        get() { return provider; },
+        getAvailability(providerName: PaymentProvider) {
+          return { provider: providerName, available: providerName === "linkly-cloud", blocker: null };
+        },
+        listAvailability() { return []; },
+        listAvailableProviders() { return ["linkly-cloud"]; },
+      } as unknown as PaymentProviderRuntimeBootstrap["providers"],
+      configurationAvailability: {} as PaymentProviderRuntimeBootstrap["configurationAvailability"],
+      linklyTerminals: { environment: "Sandbox", port: {} as never },
+      bindVoucherContextProvider() {},
+      createLinklyOperator() { return null; },
+    },
+    async drainFulfilment() {},
+  });
+  return {
+    runtime,
+    current: () => attempt,
+    reconcileThisBound: () => reconcileThisBound,
+    counts: () => ({ acknowledged, financial, reconcile }),
+    legacyListCount: () => legacyList,
+  };
 }
 
 const encryptor: SensitivePayloadEncryptor = {

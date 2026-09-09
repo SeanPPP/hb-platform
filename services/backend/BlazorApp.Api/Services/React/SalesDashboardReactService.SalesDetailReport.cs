@@ -350,6 +350,11 @@ public partial class SalesDashboardReactService
         var sourceBranch = branches is { Count: > 0 }
             ? $" AND s.[BranchCode] IN ({string.Join(",", branches.Select((_, i) => $"@sdrBranch{i}"))})"
             : string.Empty;
+        // 商品抽屉只请求分店栏，可在聚合前缩小事实范围；全量报表仍保留其他商品候选和供应商分母。
+        var sourceProduct = wanted.Count == 1 && wanted.Contains(SalesDetailSection.Branches)
+            && !string.IsNullOrWhiteSpace(selectedProduct)
+            ? " AND LTRIM(RTRIM(s.[ProductCode])) = @sdrSelectedProduct"
+            : string.Empty;
         var fallbackRows = fallbackMap is { Count: > 0 }
             ? string.Join(" UNION ALL ", fallbackMap.Select(item =>
                 $"SELECT '{SqlLiteral(item.Key, true)}' [ProductCode], '{SqlLiteral(item.Value, true)}' [ChinaSupplierCode]"))
@@ -395,7 +400,7 @@ WITH Periods AS
  {joinMapping}
  LEFT JOIN (SELECT [SupplierCode] FROM [ChinaSupplier] WHERE [SupplierCode] IS NOT NULL AND [SupplierCode]<>'' GROUP BY [SupplierCode]) cs
    ON cs.[SupplierCode]=LTRIM(RTRIM(s.[SupplierCode]))
- WHERE s.[Date]>=periods.[StartDate] AND s.[Date]<periods.[EndDate]{sourceBranch}
+ WHERE s.[Date]>=periods.[StartDate] AND s.[Date]<periods.[EndDate]{sourceBranch}{sourceProduct}
 ), NarrowFacts AS
 (
  SELECT [Period], [RawSupplierCode], [ChinaSupplierCode], [AustralianSupplierCode], [BranchCode], [ProductCode],
@@ -431,7 +436,7 @@ WITH Periods AS
         COUNT(s.[GrossProfit]) [GrossProfitRowCount]
  FROM [ProductStoreDailySalesStatistic] s
  CROSS JOIN Periods periods
- WHERE s.[Date]>=periods.[StartDate] AND s.[Date]<periods.[EndDate]{sourceBranch}
+ WHERE s.[Date]>=periods.[StartDate] AND s.[Date]<periods.[EndDate]{sourceBranch}{sourceProduct}
  GROUP BY periods.[Period], LTRIM(RTRIM(COALESCE(s.[SupplierCode],''))),
           LTRIM(RTRIM(COALESCE(s.[BranchCode],''))), LTRIM(RTRIM(COALESCE(s.[ProductCode],'')))
 ), ResolvedFacts AS
@@ -492,13 +497,36 @@ SELECT f.[Period], f.[RawSupplierCode], f.[ChinaSupplierCode], f.[AustralianSupp
 FROM [#SalesDetailFacts] f
 """;
         var factRows = tokens.Length == 0 ? narrowFactRows : wideFactRows;
+        // 商品资料的模糊匹配每个关键词只做一次，避免每条分店事实及每个结果集反复扫描 Product。
+        // 保留按关键词独立的命中集合，让多个关键词仍可分别命中统计名称、供应商和商品资料。
+        var needsProductSearch = tokens.Length > 0
+            && (wanted.Contains(SalesDetailSection.Summary) || wanted.Contains(SalesDetailSection.Products));
+        var productSearchMatches = needsProductSearch
+            ? "SELECT DISTINCT [ProductCode], [TokenIndex] INTO #SalesDetailProductSearchMatches FROM ("
+                + string.Join(" UNION ALL ", tokens.Select((_, i) =>
+                    $"SELECT pSearch.[ProductCode], {i} [TokenIndex] FROM [Product] pSearch WHERE pSearch.[ProductCode] IS NOT NULL AND (pSearch.[Barcode] LIKE @sdrSearch{i} OR pSearch.[ProductName] LIKE @sdrSearch{i} OR pSearch.[EnglishName] LIKE @sdrSearch{i} OR pSearch.[ItemNumber] LIKE @sdrSearch{i} OR pSearch.[LocalSupplierCode] LIKE @sdrSearch{i})"))
+                + ") matches;"
+            : string.Empty;
+        var supplierSearchMatches = needsProductSearch
+            ? "SELECT DISTINCT [SupplierCode], [TokenIndex] INTO #SalesDetailSupplierSearchMatches FROM ("
+                + string.Join(" UNION ALL ", tokens.Select((_, i) =>
+                    $"SELECT cSearch.[SupplierCode], {i} [TokenIndex] FROM [ChinaSupplier] cSearch WHERE cSearch.[SupplierCode] IS NOT NULL AND (cSearch.[SupplierCode] LIKE @sdrSearch{i} OR cSearch.[SupplierName] LIKE @sdrSearch{i})"))
+                + ") matches;"
+            : string.Empty;
+        // 唯一命中键用连接复用，避免 OR 内的相关 EXISTS 被逐条执行，也避免重复资料放大销售数值。
+        var searchJoins = string.Join("\n", tokens.Select((_, i) =>
+            $"LEFT JOIN #SalesDetailProductSearchMatches pMatch{i} ON pMatch{i}.[ProductCode]=f.[ProductCode] AND pMatch{i}.[TokenIndex]={i}\nLEFT JOIN #SalesDetailSupplierSearchMatches cMatch{i} ON cMatch{i}.[SupplierCode]=f.[ChinaSupplierCode] AND cMatch{i}.[TokenIndex]={i}"));
         var searchFilter = string.Join(" AND ", tokens.Select((_, i) =>
-            $"(f.[ProductCode] LIKE @sdrSearch{i} OR f.[StatisticBarcode] LIKE @sdrSearch{i} OR f.[ProductName] LIKE @sdrSearch{i} OR f.[RawSupplierCode] LIKE @sdrSearch{i} OR f.[SupplierCode] LIKE @sdrSearch{i} OR f.[SupplierName] LIKE @sdrSearch{i} OR EXISTS (SELECT 1 FROM [Product] pSearch WHERE pSearch.[ProductCode]=f.[ProductCode] AND (pSearch.[Barcode] LIKE @sdrSearch{i} OR pSearch.[ProductName] LIKE @sdrSearch{i} OR pSearch.[EnglishName] LIKE @sdrSearch{i} OR pSearch.[ItemNumber] LIKE @sdrSearch{i} OR pSearch.[LocalSupplierCode] LIKE @sdrSearch{i})) OR EXISTS (SELECT 1 FROM [ChinaSupplier] cSearch WHERE cSearch.[SupplierCode]=f.[ChinaSupplierCode] AND (cSearch.[SupplierCode] LIKE @sdrSearch{i} OR cSearch.[SupplierName] LIKE @sdrSearch{i})))"));
-        if (searchFilter.Length > 0) searchFilter = " AND " + searchFilter;
+            $"(f.[ProductCode] LIKE @sdrSearch{i} OR f.[StatisticBarcode] LIKE @sdrSearch{i} OR f.[ProductName] LIKE @sdrSearch{i} OR f.[RawSupplierCode] LIKE @sdrSearch{i} OR f.[SupplierCode] LIKE @sdrSearch{i} OR f.[SupplierName] LIKE @sdrSearch{i} OR pMatch{i}.[ProductCode] IS NOT NULL OR cMatch{i}.[SupplierCode] IS NOT NULL)"));
+        // 汇总、商品分页和商品总数共用同一份筛选事实，搜索与目录连接只执行一次。
+        var searchFacts = needsProductSearch
+            ? $"SELECT f.* INTO #SalesDetailSearchFacts FROM ({factRows}) f {searchJoins} WHERE {searchFilter};"
+            : string.Empty;
+        var searchedFactRows = tokens.Length == 0 ? factRows : "SELECT * FROM #SalesDetailSearchFacts";
         var baseSupplier = $"WHERE [SupplierCode] IS NOT NULL{selectedBranchFilter}{productFilter}";
         var baseBranch = $"WHERE [SupplierCode] IS NOT NULL{authorizedBranchFilter}{supplierFilter}{productFilter}";
-        var baseProduct = $"WHERE [SupplierCode] IS NOT NULL{selectedBranchFilter}{supplierFilter}{searchFilter}";
-        var baseSummary = $"WHERE [SupplierCode] IS NOT NULL{selectedBranchFilter}{supplierFilter}{productFilter}{searchFilter}";
+        var baseProduct = $"WHERE [SupplierCode] IS NOT NULL{selectedBranchFilter}{supplierFilter}";
+        var baseSummary = $"WHERE [SupplierCode] IS NOT NULL{selectedBranchFilter}{supplierFilter}{productFilter}";
         var productMultiplicity = (string period) => $"CASE WHEN MIN(CASE WHEN [Period]={period} THEN [ProductCode] END) IS NULL THEN 0 WHEN MIN(CASE WHEN [Period]={period} THEN [ProductCode] END) = MAX(CASE WHEN [Period]={period} THEN [ProductCode] END) THEN 1 ELSE 2 END";
         var supplierName = tokens.Length == 0
             ? $"CASE WHEN @sdrKind=1 THEN COALESCE(NULLIF(LTRIM(RTRIM((SELECT MAX(cName.[SupplierName]) FROM [ChinaSupplier] cName WHERE cName.[SupplierCode]=f.[SupplierCode]))), ''), f.[SupplierCode]) ELSE COALESCE(NULLIF(LTRIM(RTRIM((SELECT MAX(lName.[Name]) FROM [LocalSupplier] lName WHERE lName.[LocalSupplierCode]=f.[SupplierCode] AND lName.[IsDeleted]=0))), ''), CASE WHEN f.[SupplierCode]='{CHINA_LOCAL_SUPPLIER_CODE}' THEN '{CHINA_LOCAL_SUPPLIER_FALLBACK_NAME}' ELSE f.[SupplierCode] END) END"
@@ -518,7 +546,7 @@ SELECT {code} [Code], {name} [Name], MAX([ItemNumber]) [ItemNumber], MAX([Produc
 FROM ({source}) f {whereClause}
 {(string.IsNullOrWhiteSpace(group) ? "" : $"GROUP BY {group}")} {order} {page};
 """;
-        var summary = rowSelect(factRows, baseSummary, "", "'summary'", "'当前筛选汇总'", "");
+        var summary = rowSelect(searchedFactRows, baseSummary, "", "'summary'", "'当前筛选汇总'", "");
         var suppliers = rowSelect(factRows, baseSupplier, "[SupplierCode]", "[SupplierCode]", supplierName, "ORDER BY [Revenue] DESC, [CompareRevenue] DESC, [Code] ASC");
         var branchesSql = rowSelect(factRows, baseBranch, "[BranchCode]", "[BranchCode]", branchName, "ORDER BY [Revenue] DESC, [CompareRevenue] DESC, [Code] ASC");
         var offset = ((long)pageIndex - 1L) * pageSize;
@@ -531,7 +559,7 @@ SELECT [ProductCode], MAX([StatisticProductName]) [StatisticProductName],
        SUM(CASE WHEN [Period]=0 THEN [StatisticRowCount] ELSE 0 END) [StatisticRowCount], SUM(CASE WHEN [Period]=0 THEN [CostedRowCount] ELSE 0 END) [CostedRowCount], SUM(CASE WHEN [Period]=0 THEN [GrossProfitRowCount] ELSE 0 END) [GrossProfitRowCount],
        {(hasCompare ? "SUM(CASE WHEN [Period]=1 THEN [StatisticRowCount] ELSE 0 END)" : "0")} [CompareStatisticRowCount], {(hasCompare ? "SUM(CASE WHEN [Period]=1 THEN [CostedRowCount] ELSE 0 END)" : "0")} [CompareCostedRowCount], {(hasCompare ? "SUM(CASE WHEN [Period]=1 THEN [GrossProfitRowCount] ELSE 0 END)" : "0")} [CompareGrossProfitRowCount],
        {productMultiplicity("0")} [CurrentProductCount], {(hasCompare ? productMultiplicity("1") : "0")} [CompareProductCount]
-FROM ({factRows}) f {baseProduct}
+FROM ({searchedFactRows}) f {baseProduct}
 GROUP BY [ProductCode]
 """;
         var statBranchFilter = branches is { Count: > 0 }
@@ -657,7 +685,8 @@ ORDER BY a.[Quantity] DESC, a.[CompareQuantity] DESC, a.[ProductCode] ASC;
                 : "SELECT 0,0,0,0;";
             return facts + groupingFacts + status + summary + suppliers + branchesSql + products + productCount + denominator + "DROP TABLE #SalesDetailAggregates;DROP TABLE #SalesDetailFacts;";
         }
-        return facts + status + summary + suppliers + branchesSql + products + productCount + denominator + "DROP TABLE #SalesDetailFacts;";
+        return productSearchMatches + supplierSearchMatches + facts + searchFacts + status + summary + suppliers + branchesSql + products + productCount + denominator
+            + "DROP TABLE #SalesDetailFacts;" + (needsProductSearch ? "DROP TABLE #SalesDetailSearchFacts;DROP TABLE #SalesDetailProductSearchMatches;DROP TABLE #SalesDetailSupplierSearchMatches;" : string.Empty);
     }
 
     private static string BuildSalesDetailReportSqlLegacy(bool sqlServer, string? posmDatabase, DateRangeDto range, SalesDetailKind kind,

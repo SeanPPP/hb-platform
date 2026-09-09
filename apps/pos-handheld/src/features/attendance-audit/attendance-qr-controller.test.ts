@@ -180,6 +180,44 @@ test("首次在线登记 A256GCM 密钥、校准可信时间并签发严格 15 �
   ]);
 });
 
+test("二维码在第 10 秒提前轮换，并在下一次 15 秒边界继续轮换", async () => {
+  const fixture = createFixture();
+
+  await fixture.controller.refresh();
+  const firstImage = fixture.controller.getState().qrImageUri;
+
+  fixture.clock.nowMs += 9_000;
+  await fixture.controller.tick();
+  assert.equal(fixture.crypto.issued.length, 1);
+  assert.equal(fixture.controller.getState().qrImageUri, firstImage);
+  assert.equal(fixture.controller.getState().secondsRemaining, 6);
+
+  fixture.clock.nowMs += 1_000;
+  await fixture.controller.tick();
+  const secondImage = fixture.controller.getState().qrImageUri;
+  assert.equal(fixture.crypto.issued.length, 2);
+  assert.notEqual(secondImage, firstImage);
+  assert.equal(fixture.controller.getState().secondsRemaining, 15);
+
+  fixture.clock.nowMs += 15_000;
+  await fixture.controller.tick();
+  assert.equal(fixture.crypto.issued.length, 3);
+  assert.notEqual(fixture.controller.getState().qrImageUri, secondImage);
+});
+
+test("重复 tick 在提前轮换期间只签发一个二维码", async () => {
+  const fixture = createFixture();
+
+  await fixture.controller.refresh();
+  const firstImage = fixture.controller.getState().qrImageUri;
+  fixture.clock.nowMs += 10_000;
+
+  await Promise.all([fixture.controller.tick(), fixture.controller.tick()]);
+
+  assert.equal(fixture.crypto.issued.length, 2);
+  assert.notEqual(fixture.controller.getState().qrImageUri, firstImage);
+});
+
 test("有可信缓存时离线继续轮换；首次离线无缓存绝不显示二维码", async () => {
   const cached = createFixture();
   cached.connectivity.online = false;

@@ -72,6 +72,8 @@ import {
   createAttendanceQrScanSessionGate,
   type AttendanceQrScanSession,
 } from "@/modules/attendance/attendance-qr-scan-session";
+import { completeAttendancePostSave } from "@/modules/attendance/attendance-post-save";
+import { createAttendanceQrPerformance } from "@/modules/attendance/attendance-qr-performance";
 import {
   ensureAttendanceBackgroundLocationPermission,
   hasAttendanceBackgroundLocationPermission,
@@ -93,10 +95,7 @@ import type {
   AttendanceScheduleUpdatePayload,
   AttendanceStoreHolidayPayload,
 } from "@/modules/attendance/types";
-import {
-  usePunchVerification,
-  verifyAttendanceNetworkReachability,
-} from "@/modules/attendance/use-punch-verification";
+import { usePunchVerification } from "@/modules/attendance/use-punch-verification";
 import { playAttendancePunchSuccessSound } from "@/modules/scanner/scan-sound";
 import { useCameraScan } from "@/modules/scanner/use-camera-scan";
 import type { Store } from "@/modules/shop/types";
@@ -229,6 +228,7 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
   const [attendanceScannerPaused, setAttendanceScannerPaused] = useState(false);
   const [attendanceScannerResetNonce, setAttendanceScannerResetNonce] = useState(0);
   const [attendanceScannerSubmitting, setAttendanceScannerSubmitting] = useState(false);
+  const [punchStage, setPunchStage] = useState<"validating" | "locating" | "saving" | "tracking">();
   const [lastQrPunch, setLastQrPunch] = useState<AttendancePunch>();
   const [lastQrTrackingWarning, setLastQrTrackingWarning] = useState("");
   const attendanceScannerSessionGateRef = useRef<
@@ -255,6 +255,8 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
     verification,
     isRefreshing: isRefreshingVerification,
     refreshVerification,
+    prewarmLocation,
+    stopLocationCapture,
   } = usePunchVerification();
 
   const managerStores = useMemo(
@@ -340,7 +342,9 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
   const todayQuery = useQuery({
     queryKey: attendanceKeys.today(selectedStoreCode, selectedDate),
     queryFn: () => getMyAttendanceToday(selectedStoreCode, selectedDate),
-    enabled: Boolean(isAuthenticated && user && isPunchRecordsTab),
+    // 扫码期间统一由 fetchQuery 获取二维码门店状态，切店不能再发起重复的今日请求。
+    enabled: Boolean(isAuthenticated && user && isPunchRecordsTab
+      && (!attendanceScannerSubmitting || punchStage === "tracking")),
   });
   const weekQuery = useQuery({
     queryKey: attendanceKeys.week(selectedStoreCode, employeeWeekStartDate),
@@ -418,9 +422,6 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
 
   const punchMutation = useMutation({
     mutationFn: punchAttendance,
-    onSuccess: async () => {
-      await invalidateEmployeeData();
-    },
   });
 
   const previewPunchAdjustmentMutation = useMutation({
@@ -875,6 +876,7 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
       showLocationPermissionSettingsPrompt();
       return false;
     }
+    prewarmLocation();
     return true;
   };
 
@@ -908,18 +910,22 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
     attendanceScannerSessionGate.invalidate();
     attendanceScannerSessionRef.current = null;
     setAttendanceScannerSubmitting(false);
+    setPunchStage(undefined);
+    stopLocationCapture();
   };
 
   const handleAttendanceQrScan = async (qrToken: string) => {
     const session = attendanceScannerSessionRef.current;
+    const normalizedQrToken = normalizeAttendanceQrTokenInput(qrToken);
     if (!session
         || !attendanceScannerSessionGate.isActive(session)
-        || !attendanceScannerSessionGate.tryStartSubmitting(session)) {
+        || !attendanceScannerSessionGate.tryStartSubmitting(session, normalizedQrToken)) {
       return;
     }
     setAttendanceScannerError("");
     setAttendanceScannerSubmitting(true);
-    const normalizedQrToken = normalizeAttendanceQrTokenInput(qrToken);
+    setPunchStage("validating");
+    const timing = createAttendanceQrPerformance();
     try {
       validateAttendanceQrToken(normalizedQrToken);
     } catch (error) {
@@ -933,20 +939,22 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
 
     hideAttendanceScannerForProcessing();
 
-    const network = await verifyAttendanceNetworkReachability();
-    if (!attendanceScannerSessionGate.isActive(session)) return;
-    if (network.status !== "available") {
-      failAttendanceQrProcessing(session, t("messages.qrNetworkRequired"));
-      return;
-    }
-
     let resolvedQr;
     try {
       // 关键逻辑：客户端不解码身份，只信任后端解密并校验后的门店和设备。
-      resolvedQr = await resolveAttendanceQr(normalizedQrToken);
+      // 首个真实请求立即校验二维码，不能让 health 探测消耗 15 秒有效窗口。
+      resolvedQr = await timing.measure("resolve", () => resolveAttendanceQr(normalizedQrToken));
     } catch (error) {
       if (!attendanceScannerSessionGate.isActive(session)) return;
       const code = getAttendancePunchErrorCode(error);
+      if (code === "ATTENDANCE_QR_EXPIRED"
+          && attendanceScannerSessionGate.resumeAfterExpired(session, normalizedQrToken)) {
+        // 仅明确未提交的过期校验可自动恢复；同一旧码在相机 gate 之前过滤。
+        resetAttendanceScannerUi();
+        setAttendanceScannerError(t("scanner.waitingForFreshCode"));
+        setAttendanceScannerVisible(true);
+        return;
+      }
       // 仅记录阶段与业务错误码，严禁输出二维码 token、请求体或完整响应。
       console.warn("[attendance] qr request failed", { stage: "resolve", code });
       const errorKey = getAttendancePunchErrorKey(code);
@@ -969,13 +977,22 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
       );
       return;
     }
-    await handleSelectStore(qrStore);
-    if (!attendanceScannerSessionGate.isActive(session)) return;
-
     let qrToday;
     try {
       // 必须读取二维码门店的实时状态，不能复用切店前闭包里的 Today 数据。
-      qrToday = await getMyAttendanceToday(qrStore.storeCode, todayDate);
+      qrToday = await timing.measure("today", async () => {
+        const queryKey = attendanceKeys.today(qrStore.storeCode, todayDate);
+        await queryClient.cancelQueries({ queryKey, exact: true });
+        const request = queryClient.fetchQuery({
+          queryKey,
+          queryFn: () => getMyAttendanceToday(qrStore.storeCode, todayDate),
+          staleTime: 0,
+          // 保持原直接请求的失败行为，避免继承全局重试而额外拖长扫码等待。
+          retry: false,
+        });
+        const [, today] = await Promise.all([handleSelectStore(qrStore), request]);
+        return today;
+      });
     } catch (error) {
       if (attendanceScannerSessionGate.isActive(session)) {
         failAttendanceQrProcessing(
@@ -986,11 +1003,7 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
       return;
     }
     if (!attendanceScannerSessionGate.isActive(session)) return;
-    queryClient.setQueryData(
-      attendanceKeys.today(qrStore.storeCode, todayDate),
-      qrToday,
-    );
-
+    setPunchStage("locating");
     let latestVerification: AttendancePunchVerificationState | undefined;
     const preparation = await prepareAttendanceQrPunch(qrToday.nextPunchType, {
       isActive: () => attendanceScannerSessionGate.isActive(session),
@@ -998,7 +1011,8 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
         () => attendanceScannerSessionGate.isActive(session),
       ),
       refreshVerification: async () => {
-        latestVerification = await refreshVerification();
+        // resolve 和 today 的成功响应已证明联网，直接复用本次会话的新鲜定位。
+        latestVerification = await timing.measure("location", () => refreshVerification({ networkVerified: true }));
         return latestVerification;
       },
     });
@@ -1012,7 +1026,9 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
       const messageKey = preparation.status === "backgroundRequired"
         ? "messages.backgroundLocationRequiredForClockIn"
         : preparation.status === "gpsRequired"
-          ? "messages.qrGpsRequired"
+          ? latestVerification?.location.reason === "timeout"
+            ? "messages.qrGpsTimeout"
+            : "messages.qrGpsRequired"
           : "messages.qrNetworkRequired";
       failAttendanceQrProcessing(session, t(messageKey));
       return;
@@ -1020,13 +1036,15 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
 
     let result: AttendancePunchMutationResult;
     try {
-      result = await punchMutation.mutateAsync(
+      stopLocationCapture();
+      setPunchStage("saving");
+      result = await timing.measure("punch", () => punchMutation.mutateAsync(
         buildAttendanceQrPunchPayload(
           normalizedQrToken,
           resolvedQr.punchAuthorizationToken,
           preparation.verification.payload,
         ),
-      );
+      ));
     } catch (error) {
       if (attendanceScannerSessionGate.isActive(session)) {
         const errorKey = getAttendancePunchErrorKey(getAttendancePunchErrorCode(error));
@@ -1038,22 +1056,35 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
       return;
     }
 
-    playAttendancePunchSuccessSound();
-
     let trackingWarning = "";
     try {
-      // 关键逻辑：服务端成功后必须完成纯 tracking 生命周期，不受 UI 会话失效影响。
-      await applyAttendanceTrackingLifecycle(result, qrStore.storeCode, {
-        start: async (storeCode) => {
-          await startAttendanceLocationTracking({
-            storeCode,
-            startedAtUtc: result.serverTimeUtc,
-            workDate: result.workDate,
-            storeTimeZone: result.storeTimeZone,
-            ...(await getAttendanceDeviceContext()),
-          });
+      await completeAttendancePostSave({
+        notifySaved: () => {
+          playAttendancePunchSuccessSound();
+          timing.saved();
+          if (!attendanceScannerSessionGate.isActive(session)) return;
+          setLastQrPunch(result);
+          setLastQrTrackingWarning("");
+          setPunchStage("tracking");
+          showMessage(t("messages.qrPunchSuccess", {
+            punchType: t(`punchTypes.${result.punchType}`, result.punchType),
+          }));
         },
-        stop: stopAttendanceLocationTracking,
+        refresh: () => timing.measure("refresh", invalidateEmployeeData),
+        onRefreshError: () => console.warn("[attendance] saved punch refresh failed"),
+        // 服务端成功后必须完成定位生命周期，不受 UI 会话失效影响。
+        track: () => timing.measure("tracking", () => applyAttendanceTrackingLifecycle(result, qrStore.storeCode, {
+          start: async (storeCode) => {
+            await startAttendanceLocationTracking({
+              storeCode,
+              startedAtUtc: result.serverTimeUtc,
+              workDate: result.workDate,
+              storeTimeZone: result.storeTimeZone,
+              ...(await getAttendanceDeviceContext()),
+            });
+          },
+          stop: stopAttendanceLocationTracking,
+        })),
       });
     } catch (error) {
       trackingWarning = getErrorMessage(
@@ -1066,11 +1097,7 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
     if (!attendanceScannerSessionGate.isActive(session)) return;
 
     closeAttendanceScanner(true);
-    setLastQrPunch(result);
     setLastQrTrackingWarning(trackingWarning);
-    showMessage(t("messages.qrPunchSuccess", {
-      punchType: t(`punchTypes.${result.punchType}`, result.punchType),
-    }));
     if (trackingWarning) showMessage(trackingWarning);
   };
 
@@ -1090,12 +1117,14 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
     setAttendanceScannerError("");
     setAttendanceScannerPaused(false);
     setAttendanceScannerSubmitting(false);
+    setPunchStage(undefined);
     setAttendanceScannerResetNonce((value) => value + 1);
   };
 
   const beginAttendanceScannerSession = () => {
     attendanceScannerSessionRef.current = attendanceScannerSessionGate.begin();
     resetAttendanceScannerUi();
+    prewarmLocation();
   };
 
   const closeAttendanceScanner = (force = false) => {
@@ -1105,6 +1134,7 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
     attendanceScannerSessionRef.current = null;
     setAttendanceScannerVisible(false);
     resetAttendanceScannerUi();
+    stopLocationCapture();
   };
 
   const requestAttendanceCameraPermission = async () => {
@@ -1336,6 +1366,7 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
                 isLoading={todayQuery.isFetching}
                 isVerificationRefreshing={isRefreshingVerification}
                 isPunching={attendanceScannerSubmitting || punchMutation.isPending}
+                processingStage={punchStage}
                 hasAuthorizedStores={stores.length > 0}
                 verification={verification}
                 lastQrPunch={lastQrPunch}
@@ -1557,6 +1588,10 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
               style={styles.cameraView}
               barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
               {...attendanceCameraScan.cameraProps}
+              onBarcodeScanned={(event) => {
+                if (attendanceScannerSessionGate.isExpiredToken(normalizeAttendanceQrTokenInput(event.data))) return;
+                return attendanceCameraScan.cameraProps.onBarcodeScanned(event);
+              }}
             />
           ) : (
             <View style={styles.cameraPermission}>
@@ -1596,7 +1631,7 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
                 </Text>
               )}
               <View style={styles.cameraFrame} />
-              {attendanceScannerError && !attendanceScannerSubmitting ? (
+              {attendanceScannerError && attendanceScannerPaused && !attendanceScannerSubmitting ? (
                 <Button
                   mode="contained"
                   buttonColor="#FFFFFF"

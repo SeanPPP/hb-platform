@@ -153,7 +153,19 @@ function normalizeShipment(raw: unknown): WarehouseProductFlowShipmentRow | null
   const record = asRecord(raw); if (!record) return null
   const shipmentNumber = readString(pick(record, 'shipmentNumber', 'ShipmentNumber'))
   const orderNumber = readString(pick(record, 'orderNumber', 'OrderNumber'))
-  return !shipmentNumber && !orderNumber ? null : { shipmentNumber, orderNumber, branchName: readString(pick(record, 'branchName', 'BranchName')), shipmentDate: normalizeDate(pick(record, 'shipmentDate', 'ShipmentDate')), shippedQuantity: readNumber(pick(record, 'shippedQuantity', 'ShippedQuantity')) }
+  if (!shipmentNumber && !orderNumber) return null
+  const posEnabled = pick(record, 'posEnabled', 'PosEnabled')
+  return {
+    shipmentNumber,
+    orderNumber,
+    branchCode: readString(pick(record, 'branchCode', 'BranchCode')),
+    branchName: readString(pick(record, 'branchName', 'BranchName')),
+    posEnabled: typeof posEnabled === 'boolean' ? posEnabled : null,
+    shipmentDate: normalizeDate(pick(record, 'shipmentDate', 'ShipmentDate')),
+    shippedQuantity: readNumber(pick(record, 'shippedQuantity', 'ShippedQuantity')),
+    // 兼容旧响应时保留未知值，避免把未提供的销量显示为零。
+    netSalesQuantity: readNullableNumber(pick(record, 'netSalesQuantity', 'NetSalesQuantity')),
+  }
 }
 
 function normalizeOptions(raw: unknown): WarehouseProductFlowOptions {

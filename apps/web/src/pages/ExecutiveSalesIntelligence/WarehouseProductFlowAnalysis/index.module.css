@@ -1,4 +1,8 @@
 .page { display: flex; flex-direction: column; gap: 12px; }
+.centerColumn { min-width: 0; }
+.shipmentFilters { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; color: #657185; font-size: 12px; }
+.shipmentFilters :global(.ant-select) { min-width: 140px; }
+.salesPeriodNote { margin: 0 0 10px; color: #657185; font-size: 12px; line-height: 1.6; }
 .toolbar, .stages, .panel { background: #fff; border: 1px solid #e6eaf0; border-radius: 8px; }
 .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 12px; }
 .quickButtons { display: flex; gap: 4px; }
@@ -17,4 +21,4 @@
 :global(.product-flow-image-fallback) { display: grid; place-items: center; color: #98a4b5; }
 :global(.product-flow-chart) { display: block; width: 100%; height: auto; margin-top: 4px; border: 1px solid #edf0f4; border-radius: 6px; background: #fff; outline-offset: 2px; }
 
-.sectionHead { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 16px; }.sectionHead h3 { margin-bottom: 0; }.sectionHead :global(.ant-picker) { min-width: 220px; }.periodControls { display: flex; align-items: center; gap: 6px; margin: 0 0 10px; }.periodControls :global(.ant-picker) { min-width: 230px; flex: 1; }.trendWrap { margin-top: 4px; border: 1px solid #edf0f4; border-radius: 6px; overflow: hidden; }.trendLegend { display: flex; gap: 14px; padding: 8px 10px 0; color: #657185; font-size: 12px; }.trendLegend span { display: inline-flex; align-items: center; gap: 5px; }.trendLegend i { width: 10px; height: 10px; border-radius: 2px; }.primaryLegend { background: #246bfd; }.secondaryLegend { background: #14b8a6; }.trendChart { display: block; width: 100%; height: auto; background: #fff; outline-offset: 2px; }
+.sectionHead { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 16px; }.sectionHead h3 { margin-bottom: 0; }.sectionHead :global(.ant-picker) { min-width: 220px; }.periodControls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }.periodControls :global(.ant-picker) { min-width: 230px; flex: 1; }.trendWrap { margin-top: 4px; border: 1px solid #edf0f4; border-radius: 6px; overflow: hidden; }.trendLegend { display: flex; gap: 14px; padding: 8px 10px 0; color: #657185; font-size: 12px; }.trendLegend span { display: inline-flex; align-items: center; gap: 5px; }.trendLegend i { width: 10px; height: 10px; border-radius: 2px; }.primaryLegend { background: #246bfd; }.secondaryLegend { background: #14b8a6; }.trendChart { display: block; width: 100%; height: auto; background: #fff; outline-offset: 2px; }

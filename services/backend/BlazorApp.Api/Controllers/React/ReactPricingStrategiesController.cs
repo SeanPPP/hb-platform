@@ -82,8 +82,17 @@ namespace BlazorApp.Api.Controllers.React
                 req.SupplierCode,
                 req.StoreCode
             );
-            var retail = _autoPricing.CalculateRetailPrice(req.PurchasePrice, strategy);
-            var rate = _autoPricing.CalculateRate(req.PurchasePrice, strategy);
+            decimal retail;
+            decimal rate;
+            try
+            {
+                retail = _autoPricing.CalculateRetailPrice(req.PurchasePrice, strategy);
+                rate = _autoPricing.CalculateRate(req.PurchasePrice, strategy);
+            }
+            catch (ArgumentException ex)
+            {
+                return Ok(ApiResponse<PricingEvaluateResponse>.Error(ex.Message));
+            }
 
             PricingEvaluateRuleInfo? ruleInfo = null;
             if (strategy?.Details != null)
@@ -100,6 +109,9 @@ namespace BlazorApp.Api.Controllers.React
                         Algorithm = rule.Algorithm,
                         StartRate = rule.StartRate,
                         EndRate = rule.EndRate,
+                        StartRetailPrice = rule.StartRetailPrice,
+                        EndRetailPrice = rule.EndRetailPrice,
+                        CurveBend = rule.CurveBend,
                     };
                 }
             }
@@ -108,6 +120,7 @@ namespace BlazorApp.Api.Controllers.React
             {
                 RetailPrice = retail,
                 Rate = rate,
+                EffectiveRate = retail / req.PurchasePrice,
                 StrategyId = strategy?.Id,
                 Rule = ruleInfo,
             };

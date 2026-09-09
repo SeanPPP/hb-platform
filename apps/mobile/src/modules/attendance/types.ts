@@ -22,6 +22,7 @@ export type AttendanceVerificationReason =
   | "dependencyMissing"
   | "permissionDenied"
   | "networkUnreachable"
+  | "timeout"
   | "unknown";
 
 export type AttendancePunchStatus =

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 3,
   "baseline": "ddcca999b9d6a90e07b7b3d88c5b93a28d0c7b13",
-  "reviewedModuleTopologySha256": "de2db7029f01e40162e3e9f23196d16596c16d7260da590d8ad1e6ad88156fcc",
+  "reviewedModuleTopologySha256": "05b1742ac616512c5d27edaaed3b5c582dac8705b7bcf3405599c1fac657874b",
   "migratedPaths": {
     "pos-domain": [
       "core/contracts/audit-actor.test.ts",
@@ -165,6 +165,18 @@
       "package": "pos-sync",
       "reason": "共享包测试改用只实现 UpdateOperationLeasePort 的测试租约，避免反向依赖 App-local OTA 状态机",
       "requiredAssertion": "更新 transition 等待在途同步，并拒绝 transition 期间的新 drain"
+    },
+    {
+      "path": "features/payments/payment-attempt-service.test.ts",
+      "package": "pos-payments-core",
+      "reason": "共享支付服务新增 Linkly 环境冻结与配置切换恢复回归，测试 provider 显式提供环境以符合新安全合同",
+      "requiredAssertion": "Linkly Created 在 provider 边界冻结环境；后续配置变化的 recover 仍使用原环境"
+    },
+    {
+      "path": "features/returns/adapters/durable-return-execution-orchestrator.test.ts",
+      "package": "pos-domain",
+      "reason": "覆盖首笔退款确认失败后的停止与重启恢复，断言未确认前第二笔零提交且原退款不重放",
+      "requiredAssertion": "首笔卡退款 ACK pending 时暂停后续 allocation，恢复先确认原退款再提交第二笔"
     }
   ],
   "runtimeAdaptations": [
@@ -195,6 +207,62 @@
           "pattern": "src/core/runtime/*.test.ts"
         }
       ]
+    },
+    {
+      "path": "features/payments/payment-attempt-service.ts",
+      "package": "pos-payments-core",
+      "reason": "Linkly 首次提交前冻结环境，旧未决交易只读强匹配后 CAS 冻结再恢复；已有阻塞优先于新提交，停止查询不改写金融状态",
+      "baselineCanonicalRuntimeSha256": "01187d0550a2ad7d1371aa00575202e9e68bd705258e88042795e4d9feef781f",
+      "canonicalRuntimeSha256": "1f8a282d5c8d233bd7c7e33cb45d7a9f955f12634c5c81e67e91f84cc7f70d2a",
+      "canonicalTypeSha256": "c73e4920265dfbc2ac434c9f10bea16733137b8d883afca3a6e26621498ae158",
+      "behaviorTests": [
+        {
+          "workspace": "packages/pos-payments-core",
+          "script": "test",
+          "path": "src/features/payments/payment-attempt-service.test.ts",
+          "pattern": "src/**/*.test.ts"
+        },
+        {
+          "workspace": "apps/pos-ipad",
+          "script": "test:db",
+          "path": "src/core/db/payment-attempt-repository.integration.test.ts",
+          "pattern": "src/core/db/*.test.ts"
+        },
+        {
+          "workspace": "apps/pos-handheld",
+          "script": "test:db",
+          "path": "src/core/db/payment-attempt-repository.integration.test.ts",
+          "pattern": "src/core/db/*.test.ts"
+        }
+      ]
+    },
+    {
+      "path": "features/returns/adapters/durable-return-execution-orchestrator.ts",
+      "package": "pos-domain",
+      "reason": "Linkly 多笔退款在单笔结果与证据耐久后逐笔确认；确认失败暂停后续退款，冷恢复只确认原退款后继续原计划",
+      "baselineCanonicalRuntimeSha256": "305c8af43381ef0d83ee69c80f602b7b777a7efc8715282ce8a4f27a44a9b84e",
+      "canonicalRuntimeSha256": "720b13dfa9101dcf326b28680f88504d1ba8d606458227bf9ae4952c7be3562b",
+      "canonicalTypeSha256": "8423a8c9302484380247d38e78777c254e02b523418cdc74588adddc6d66c74d",
+      "behaviorTests": [
+        {
+          "workspace": "packages/pos-domain",
+          "script": "test",
+          "path": "src/features/returns/adapters/durable-return-execution-orchestrator.test.ts",
+          "pattern": "src/**/*.test.ts"
+        },
+        {
+          "workspace": "apps/pos-ipad",
+          "script": "test:runtime",
+          "path": "src/core/runtime/production-return-runtime.test.ts",
+          "pattern": "src/core/runtime/*.test.ts"
+        },
+        {
+          "workspace": "apps/pos-handheld",
+          "script": "test:runtime",
+          "path": "src/core/runtime/production-return-runtime.test.ts",
+          "pattern": "src/core/runtime/*.test.ts"
+        }
+      ]
     }
   ],
   "semanticAdaptations": [
@@ -215,6 +283,46 @@
           "script": "test:receipts",
           "path": "src/features/receipts/receipt-document.test.ts",
           "pattern": "src/features/receipts/*.test.ts"
+        }
+      ]
+    },
+    {
+      "path": "core/contracts/repositories.ts",
+      "package": "pos-domain",
+      "reason": "Linkly 最终会话确认新增冻结环境、耐久确认标记及账本证明接口，真实 SQLite 回归验证确认资格和失败恢复",
+      "canonicalTypeSha256": "ca4348778f63e3d532977f3150be68648103b019e450afa122a21e93c5e5146b",
+      "behaviorTests": [
+        {
+          "workspace": "apps/pos-ipad",
+          "script": "test:db",
+          "path": "src/core/db/payment-attempt-repository.integration.test.ts",
+          "pattern": "src/core/db/*.test.ts"
+        },
+        {
+          "workspace": "apps/pos-handheld",
+          "script": "test:db",
+          "path": "src/core/db/payment-attempt-repository.integration.test.ts",
+          "pattern": "src/core/db/*.test.ts"
+        }
+      ]
+    },
+    {
+      "path": "core/contracts/payment.ts",
+      "package": "pos-domain",
+      "reason": "Linkly 最终会话确认新增冻结环境、耐久确认标记及账本证明接口，真实 SQLite 回归验证确认资格和失败恢复",
+      "canonicalTypeSha256": "f0c4b781c591048ca5fc84c17bc3cadb2807bca3000266500d7cb114eaf7dde9",
+      "behaviorTests": [
+        {
+          "workspace": "apps/pos-ipad",
+          "script": "test:db",
+          "path": "src/core/db/payment-attempt-repository.integration.test.ts",
+          "pattern": "src/core/db/*.test.ts"
+        },
+        {
+          "workspace": "apps/pos-handheld",
+          "script": "test:db",
+          "path": "src/core/db/payment-attempt-repository.integration.test.ts",
+          "pattern": "src/core/db/*.test.ts"
         }
       ]
     }

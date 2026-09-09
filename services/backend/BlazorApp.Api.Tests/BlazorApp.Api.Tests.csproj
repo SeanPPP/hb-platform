@@ -63,6 +63,8 @@
     <Compile Include="StoreUsersReactServiceTests.cs" />
     <Compile Include="UserStoreManagementRelationTests.cs" />
     <Compile Include="AttendanceReactServiceTests.cs" />
+    <Compile Include="AutoPricingServiceTests.cs" />
+    <Compile Include="PricingCurveTests.cs" />
     <Compile Include="AttendanceWorkSessionCalculatorTests.cs" />
     <Compile Include="AttendanceQrTokenCodecTests.cs" />
     <Compile Include="UserLoginDeviceAuditServiceTests.cs" />
@@ -117,7 +119,10 @@
     <Compile Include="SalesStatisticsBusinessDateTests.cs" />
     <Compile Include="SalesDetailLookupReuseTests.cs" />
     <Compile Include="RevenueReportSnapshotTests.cs" />
+    <Compile Include="RevenueReportSnapshotSqlServerIntegrationTests.cs" />
     <Compile Include="SalesDetailReportTests.cs" />
+    <Compile Include="SalesDetailReportSqlServerIntegrationTests.cs" />
+    <Compile Include="SalesReportStoreScopeTests.cs" />
     <Compile Include="ProductStoreDailyStatisticQueueServiceTests.cs" />
     <Compile Include="SalesDashboardBestSellersTests.cs" />
     <Compile Include="ProductSalesAnalysisLogicTests.cs" />

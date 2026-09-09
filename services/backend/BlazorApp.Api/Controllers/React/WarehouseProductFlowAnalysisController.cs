@@ -44,7 +44,7 @@ namespace BlazorApp.Api.Controllers.React
 
             var result = await _roleService.UserHasExactPermissionAsync(
                 userGuid,
-                Permissions.Reports.ProductMovementView
+                Permissions.SalesDashboard.WarehouseFlowView
             );
             return result.Success && result.Data;
         }
@@ -96,7 +96,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpGet("options")]
-        [Authorize(Policy = Permissions.Reports.ProductMovementView)]
+        [Authorize(Policy = Permissions.SalesDashboard.WarehouseFlowView)]
         public async Task<IActionResult> GetOptions(
             [FromQuery] WarehouseProductFlowAnalysisFilterDto filter,
             [FromQuery] bool forceRefresh = false
@@ -139,7 +139,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("candidates")]
-        [Authorize(Policy = Permissions.Reports.ProductMovementView)]
+        [Authorize(Policy = Permissions.SalesDashboard.WarehouseFlowView)]
         public async Task<IActionResult> GetCandidates(
             [FromBody] WarehouseProductFlowCandidateRequest request
         )
@@ -174,7 +174,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("summary")]
-        [Authorize(Policy = Permissions.Reports.ProductMovementView)]
+        [Authorize(Policy = Permissions.SalesDashboard.WarehouseFlowView)]
         public async Task<IActionResult> GetSummary(
             [FromBody] WarehouseProductFlowAnalysisRequest request
         )
@@ -212,7 +212,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("product-daily")]
-        [Authorize(Policy = Permissions.Reports.ProductMovementView)]
+        [Authorize(Policy = Permissions.SalesDashboard.WarehouseFlowView)]
         public async Task<IActionResult> GetProductDaily(
             [FromBody] WarehouseProductFlowAnalysisRequest request
         )
@@ -226,7 +226,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("order-shipment-daily")]
-        [Authorize(Policy = Permissions.Reports.ProductMovementView)]
+        [Authorize(Policy = Permissions.SalesDashboard.WarehouseFlowView)]
         public async Task<IActionResult> GetOrderShipmentDaily(
             [FromBody] WarehouseProductFlowAnalysisRequest request
         )
@@ -240,7 +240,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("sales-daily")]
-        [Authorize(Policy = Permissions.Reports.ProductMovementView)]
+        [Authorize(Policy = Permissions.SalesDashboard.WarehouseFlowView)]
         public async Task<IActionResult> GetSalesDaily(
             [FromBody] WarehouseProductFlowAnalysisRequest request
         )
@@ -254,7 +254,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("containers")]
-        [Authorize(Policy = Permissions.Reports.ProductMovementView)]
+        [Authorize(Policy = Permissions.SalesDashboard.WarehouseFlowView)]
         public async Task<IActionResult> GetContainers(
             [FromBody] WarehouseProductFlowAnalysisRequest request
         )
@@ -268,7 +268,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("orders")]
-        [Authorize(Policy = Permissions.Reports.ProductMovementView)]
+        [Authorize(Policy = Permissions.SalesDashboard.WarehouseFlowView)]
         public async Task<IActionResult> GetOrders(
             [FromBody] WarehouseProductFlowAnalysisRequest request
         )
@@ -282,7 +282,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("shipments")]
-        [Authorize(Policy = Permissions.Reports.ProductMovementView)]
+        [Authorize(Policy = Permissions.SalesDashboard.WarehouseFlowView)]
         public async Task<IActionResult> GetShipments(
             [FromBody] WarehouseProductFlowAnalysisRequest request
         )
@@ -296,7 +296,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("branches")]
-        [Authorize(Policy = Permissions.Reports.ProductMovementView)]
+        [Authorize(Policy = Permissions.SalesDashboard.WarehouseFlowView)]
         public async Task<IActionResult> GetBranches(
             [FromBody] WarehouseProductFlowAnalysisRequest request
         )
@@ -310,7 +310,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("branch-daily")]
-        [Authorize(Policy = Permissions.Reports.ProductMovementView)]
+        [Authorize(Policy = Permissions.SalesDashboard.WarehouseFlowView)]
         public async Task<IActionResult> GetBranchDaily(
             [FromBody] WarehouseProductFlowAnalysisRequest request
         )

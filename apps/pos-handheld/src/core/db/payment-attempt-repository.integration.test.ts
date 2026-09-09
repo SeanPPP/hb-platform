@@ -215,6 +215,92 @@ test("真实 SQLite：支付尝试保留身份、Approved 仅匹配正确 tender
       /UNIQUE constraint failed: order_tenders\.payment_attempt_id/,
     );
 
+    // M44：真实 SQLite 的 ACK marker 只能在唯一、同订单同金额的 card tender
+    // 耐久后落库；无环境历史记录不得猜当前环境确认。
+    await insertDraftOrder(reopened, "order-linkly-ack", 6, 500);
+    const ackAttempt = payment({ attemptId: "attempt-linkly-ack", idempotencyKey: "idempotency-linkly-ack", orderGuid: "order-linkly-ack", provider: "linkly-cloud", providerEnvironment: "production" });
+    assert.equal(await reopenedRepositories.payments.insertIfUnblocked(ackAttempt), null);
+    const ackApproved = { ...ackAttempt, state: "Approved" as const, updatedAtIso: "2026-07-28T00:03:00.000Z" };
+    assert.equal(await reopenedRepositories.payments.compareAndUpdate(ackAttempt, ackApproved), true);
+    const marker = reopenedRepositories.payments.markProviderAcknowledged;
+    assert.ok(marker);
+    assert.equal(await marker.call(reopenedRepositories.payments, ackApproved, "2026-07-28T00:03:01.000Z"), false);
+    await reopened.run("INSERT INTO order_tenders (tender_guid, order_guid, method, amount_cents, payment_attempt_id, created_at_iso) VALUES (?, ?, ?, ?, ?, ?)", ["ack-tender", "order-linkly-ack", "card", 500, "attempt-linkly-ack", "2026-07-28T00:03:00.000Z"]);
+    assert.equal(await marker.call(reopenedRepositories.payments, ackApproved, "2026-07-28T00:03:01.000Z"), true);
+    assert.equal((await reopenedRepositories.payments.get("attempt-linkly-ack"))?.providerAcknowledgedAtIso, "2026-07-28T00:03:01.000Z");
+
+    await insertDraftOrder(reopened, "order-linkly-legacy", 7, 500);
+    const legacy = payment({ attemptId: "attempt-linkly-legacy", idempotencyKey: "idempotency-linkly-legacy", orderGuid: "order-linkly-legacy", provider: "linkly-cloud", state: "Declined", updatedAtIso: "2026-07-28T00:05:00.000Z" });
+    await reopened.run("INSERT INTO payment_attempts (attempt_id,idempotency_key,order_guid,provider,operation,amount_cents,state,checkout_id,payment_id,session_id,txn_ref,rfn,created_at_iso,updated_at_iso,last_error_code) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [legacy.attemptId, legacy.idempotencyKey, legacy.orderGuid, legacy.provider, legacy.operation, legacy.amount.cents, legacy.state, null, null, null, null, null, legacy.createdAtIso, legacy.updatedAtIso, null]);
+    assert.equal(await marker.call(reopenedRepositories.payments, legacy, "2026-07-28T00:05:01.000Z"), false);
+
+    // 退货动作仍 processing 时，首笔已批准退款也必须能凭 allocation、不可变
+    // binding 与受保护卡证据逐笔 ACK；不能等待整张 return action 才释放终端。
+    await insertDraftOrder(reopened, "return-order-linkly", 9, 100);
+    await reopened.run("INSERT INTO return_actions (action_id,request_fingerprint,return_order_guid,action_recovery_token,source_kind,total_refund_cents,online,store_code,device_code,cashier_id,cashier_name,session_epoch,supervisor_grant_id,plan_json,state,created_at_iso,completed_at_iso,updated_at_iso) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", ["return-action-linkly", "fingerprint", "return-order-linkly", "return-token", "receipt", 100, 1, "S1", "IPAD1", "cashier-1", "Cashier", "epoch", null, "{}", "processing", "2026-07-28T00:06:00.000Z", null, "2026-07-28T00:06:00.000Z"]);
+    await reopened.run("INSERT INTO payment_action_bindings (order_guid,action_id,request_signature,attempt_id,idempotency_key,created_at_iso,audit_actor_json) VALUES (?,?,?,?,?,?,?)", ["return-order-linkly", "external-return-linkly", "signature", "attempt-linkly-refund", "idempotency-linkly-refund", "2026-07-28T00:06:00.000Z", '{"requestingCashierId":"cashier-1","requestingCashierName":"Cashier","requestingUserGuid":null}']);
+    await reopened.run("INSERT INTO payment_attempts (attempt_id,idempotency_key,order_guid,provider,operation,amount_cents,state,checkout_id,payment_id,session_id,txn_ref,rfn,provider_payload_ciphertext,created_at_iso,updated_at_iso,last_error_code,provider_environment) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", ["attempt-linkly-refund", "idempotency-linkly-refund", "return-order-linkly", "linkly-cloud", "refund", -100, "Approved", null, null, "linkly-session", "sync-txn-1", null, new TextEncoder().encode('{"version":1,"voucherReservationToken":null,"cardSyncEvidence":null}'), "2026-07-28T00:06:00.000Z", "2026-07-28T00:06:00.000Z", null, "production"]);
+    await reopened.run("INSERT INTO return_action_allocations (action_id,allocation_id,allocation_index,execution_kind,method,signed_amount_cents,capacity_id,original_order_guid,offline_evidence_id,offline_evidence_remaining_cents,external_attempt_id,external_attempt_kind,external_action_id,durable_attempt_id,status,protected_recovery_ciphertext,capacity_reservation_state,created_at_iso,updated_at_iso) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", ["return-action-linkly", "return-allocation-linkly", 0, "online-refund", "card", -100, null, "original-order", null, null, "external-return-linkly", "payment-provider", "external-return-linkly", "attempt-linkly-refund", "completed", null, "None", "2026-07-28T00:06:00.000Z", "2026-07-28T00:06:00.000Z"]);
+    const refundAttempt = await reopenedRepositories.payments.get("attempt-linkly-refund");
+    assert.ok(refundAttempt);
+    // 空 envelope 不是卡支付证据，不能仅凭任意密文字节释放 Linkly server guard。
+    assert.equal(await reopenedRepositories.payments.canProviderAcknowledged?.(refundAttempt), false);
+    assert.equal(await marker.call(reopenedRepositories.payments, refundAttempt, "2026-07-28T00:06:01.000Z"), false);
+    const refundEvidence = cardSyncEvidence({
+      provider: "linkly-cloud",
+      operation: "refund",
+      processor: "ANZ",
+      amountCents: 100,
+    });
+    // 即使 provider、退款类型和金额相同，另一笔交易的加密证据也不能放行。
+    await reopened.run("UPDATE payment_attempts SET provider_payload_ciphertext = ? WHERE attempt_id = ?", [new TextEncoder().encode(JSON.stringify({ version: 1, voucherReservationToken: null, cardSyncEvidence: { ...refundEvidence, txnRef: "another-refund" } })), "attempt-linkly-refund"]);
+    assert.equal(await reopenedRepositories.payments.canProviderAcknowledged?.(refundAttempt), false);
+    assert.equal(await marker.call(reopenedRepositories.payments, refundAttempt, "2026-07-28T00:06:01.000Z"), false);
+    assert.equal((await reopenedRepositories.payments.get("attempt-linkly-refund"))?.providerAcknowledgedAtIso ?? null, null);
+    await reopened.run("UPDATE payment_attempts SET provider_payload_ciphertext = ? WHERE attempt_id = ?", [new TextEncoder().encode(JSON.stringify({ version: 1, voucherReservationToken: null, cardSyncEvidence: refundEvidence })), "attempt-linkly-refund"]);
+    const provenRefundAttempt = await reopenedRepositories.payments.get("attempt-linkly-refund");
+    assert.ok(provenRefundAttempt);
+    assert.equal(await reopenedRepositories.payments.canProviderAcknowledged?.(provenRefundAttempt), true);
+    assert.equal(await marker.call(reopenedRepositories.payments, provenRefundAttempt, "2026-07-28T00:06:01.000Z"), true);
+
+    for (const state of ["Created", "Submitted", "Pending", "Unknown"] as const) {
+      const orderGuid = `legacy-${state}`;
+      const attemptId = `legacy-${state}`;
+      await insertDraftOrder(reopened, orderGuid, 20 + ["Created", "Submitted", "Pending", "Unknown"].indexOf(state), 100);
+      await reopened.run("INSERT INTO payment_attempts (attempt_id,idempotency_key,order_guid,provider,operation,amount_cents,state,checkout_id,payment_id,session_id,txn_ref,rfn,created_at_iso,updated_at_iso,last_error_code) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [attemptId, `key-${attemptId}`, orderGuid, "linkly-cloud", "purchase", 100, state, null, null, "legacy-session", "legacy-txn", null, "2026-07-28T00:07:00.000Z", "2026-07-28T00:07:00.000Z", null]);
+      const current = await reopenedRepositories.payments.get(attemptId);
+      assert.ok(current);
+      const verify = reopenedRepositories.payments.verifyProviderEnvironment;
+      assert.ok(verify);
+      if (state === "Created") {
+        assert.equal(await verify.call(reopenedRepositories.payments, current, "production"), false);
+        assert.equal((await reopenedRepositories.payments.get(attemptId))?.providerEnvironment ?? null, null);
+        continue;
+      }
+      // 所有错配都在数据库环境仍为 NULL 时验证，防止已有环境的短路掩盖 CAS 漏洞。
+      const mismatches: readonly PaymentAttempt[] = [
+        { ...current, references: { ...current.references, sessionId: "wrong-session" } },
+        { ...current, references: { ...current.references, txnRef: "wrong-txn" } },
+        { ...current, state: state === "Submitted" ? "Pending" : "Submitted" },
+        { ...current, idempotencyKey: "wrong-key" },
+        { ...current, orderGuid: "wrong-order" },
+        { ...current, provider: "square" },
+        { ...current, operation: "refund" },
+        { ...current, amount: { ...current.amount, cents: 101 } },
+      ];
+      for (const mismatch of mismatches) {
+        assert.equal(await verify.call(reopenedRepositories.payments, mismatch, "production"), false);
+        assert.equal((await reopenedRepositories.payments.get(attemptId))?.providerEnvironment ?? null, null);
+      }
+      assert.equal(await verify.call(reopenedRepositories.payments, current, "production"), true);
+      const frozen = await reopenedRepositories.payments.get(attemptId);
+      assert.ok(frozen);
+      assert.equal(frozen.providerEnvironment, "production");
+      assert.equal(await verify.call(reopenedRepositories.payments, frozen, "sandbox"), false);
+      assert.equal(await verify.call(reopenedRepositories.payments, current, "sandbox"), false);
+      assert.equal((await reopenedRepositories.payments.get(attemptId))?.providerEnvironment, "production");
+    }
+
     const stale = payment({ state: "Submitted", updatedAtIso: "2026-07-28T00:02:00.000Z" });
     assert.equal(await repositories.payments.compareAndUpdate(created, stale), false);
     assert.equal((await repositories.payments.get("attempt-1"))?.state, "Approved");

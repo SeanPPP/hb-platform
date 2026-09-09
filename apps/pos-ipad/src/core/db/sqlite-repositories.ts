@@ -1288,7 +1288,7 @@ class SqlitePaymentAttemptRepository implements PaymentAttemptRepositoryPort {
       const blocking = await this.findBlockingWith(transaction, attempt.orderGuid);
       if (blocking) return blocking;
       const inserted = await transaction.run(
-        "INSERT INTO payment_attempts (attempt_id,idempotency_key,order_guid,provider,operation,amount_cents,state,checkout_id,payment_id,session_id,txn_ref,rfn,provider_payload_ciphertext,provider_receipt_ciphertext,provider_response_code,created_at_iso,updated_at_iso,last_error_code) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO payment_attempts (attempt_id,idempotency_key,order_guid,provider,operation,amount_cents,state,checkout_id,payment_id,session_id,txn_ref,rfn,provider_payload_ciphertext,provider_receipt_ciphertext,provider_response_code,created_at_iso,updated_at_iso,last_error_code,provider_environment,provider_acknowledged_at_iso) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         insertParameters(attempt, ciphertext, receiptCiphertext, responseCode),
       );
       if (inserted.changes !== 1) {
@@ -1353,6 +1353,103 @@ class SqlitePaymentAttemptRepository implements PaymentAttemptRepositoryPort {
   public async get(id: string): Promise<PaymentAttempt | null> { const row = await this.db.getFirst<PaymentRow>("SELECT * FROM payment_attempts WHERE attempt_id=?", [id]); return row ? this.read(row) : null; }
   public findBlocking(orderGuid: string): Promise<PaymentAttempt | null> { return this.findBlockingWith(this.db, orderGuid); }
 
+  public async markProviderAcknowledged(
+    expected: PaymentAttempt,
+    acknowledgedAtIso: string,
+  ): Promise<boolean> {
+    const environment = providerEnvironmentOrNull(expected.providerEnvironment);
+    if (
+      expected.provider !== "linkly-cloud" ||
+      environment === null ||
+      expected.providerAcknowledgedAtIso !== null && expected.providerAcknowledgedAtIso !== undefined ||
+      !isLinklyFinalState(expected.state) ||
+      !isIsoInstant(acknowledgedAtIso)
+    ) return false;
+    if (
+      expected.state === "Approved" &&
+      expected.operation === "refund" &&
+      !(await this.hasBoundRefundCardEvidence(expected))
+    ) return false;
+    // 中文注释：Approved 必须已有正确 tender 或完成的退货账本；不能因 ACK
+    // 成功而释放「已扣款、但本地业务事实尚未提交」的 server guard。
+    const changed = await this.db.run(
+      `UPDATE payment_attempts AS p
+       SET provider_acknowledged_at_iso = ?
+       WHERE p.attempt_id = ?
+         AND p.idempotency_key = ?
+         AND p.order_guid = ?
+         AND p.provider = 'linkly-cloud'
+         AND p.provider_environment = ?
+         AND p.provider_acknowledged_at_iso IS NULL
+         AND p.state IN ('Approved', 'Declined', 'Cancelled')
+         AND (
+           p.state <> 'Approved'
+           OR (p.operation = 'purchase' AND EXISTS (
+             SELECT 1 FROM order_tenders t
+             WHERE t.payment_attempt_id = p.attempt_id
+             GROUP BY t.payment_attempt_id
+             HAVING COUNT(*) = 1
+               AND MAX(CASE WHEN t.order_guid = p.order_guid
+                                  AND t.amount_cents = p.amount_cents
+                                  AND t.method = 'card'
+                             THEN 1 ELSE 0 END) = 1
+           ))
+           OR (p.operation = 'refund' AND EXISTS (
+             SELECT 1 FROM return_action_allocations allocation
+             INNER JOIN return_actions action ON action.action_id = allocation.action_id
+             INNER JOIN payment_action_bindings binding
+               ON binding.action_id = allocation.external_action_id
+              AND binding.attempt_id = p.attempt_id
+              AND binding.idempotency_key = p.idempotency_key
+              AND binding.order_guid = p.order_guid
+             WHERE allocation.durable_attempt_id = p.attempt_id
+               AND allocation.external_attempt_kind = 'payment-provider'
+               AND allocation.execution_kind = 'online-refund'
+               AND allocation.method = 'card'
+               AND allocation.signed_amount_cents = p.amount_cents
+               AND allocation.status = 'completed'
+               AND action.return_order_guid = p.order_guid
+               AND p.provider_payload_ciphertext IS NOT NULL
+           ))
+         )`,
+      [acknowledgedAtIso, expected.attemptId, expected.idempotencyKey, expected.orderGuid, environment],
+    );
+    return changed.changes === 1;
+  }
+
+  public async canProviderAcknowledged(attempt: PaymentAttempt): Promise<boolean> {
+    if (attempt.provider !== "linkly-cloud" || !isLinklyFinalState(attempt.state)) return false;
+    if (attempt.state !== "Approved") return true;
+    if (
+      attempt.operation === "refund" &&
+      !(await this.hasBoundRefundCardEvidence(attempt))
+    ) return false;
+    const row = await this.db.getFirst<{ matched: unknown }>(
+      `SELECT 1 AS matched FROM payment_attempts p
+       WHERE p.attempt_id = ? AND p.idempotency_key = ? AND p.order_guid = ?
+         AND p.provider = 'linkly-cloud' AND p.state = 'Approved'
+         AND ((p.operation = 'purchase' AND EXISTS (SELECT 1 FROM order_tenders t WHERE t.payment_attempt_id = p.attempt_id GROUP BY t.payment_attempt_id HAVING COUNT(*) = 1 AND MAX(CASE WHEN t.order_guid = p.order_guid AND t.amount_cents = p.amount_cents AND t.method = 'card' THEN 1 ELSE 0 END) = 1))
+           OR (p.operation = 'refund' AND EXISTS (SELECT 1 FROM return_action_allocations allocation INNER JOIN return_actions action ON action.action_id = allocation.action_id INNER JOIN payment_action_bindings binding ON binding.action_id = allocation.external_action_id AND binding.attempt_id = p.attempt_id AND binding.idempotency_key = p.idempotency_key AND binding.order_guid = p.order_guid WHERE allocation.durable_attempt_id = p.attempt_id AND allocation.external_attempt_kind = 'payment-provider' AND allocation.execution_kind = 'online-refund' AND allocation.method = 'card' AND allocation.signed_amount_cents = p.amount_cents AND allocation.status = 'completed' AND action.return_order_guid = p.order_guid AND p.provider_payload_ciphertext IS NOT NULL)))`,
+      [attempt.attemptId, attempt.idempotencyKey, attempt.orderGuid],
+    );
+    return row?.matched === 1;
+  }
+
+  public async verifyProviderEnvironment(expected: PaymentAttempt, verifiedEnvironment: string): Promise<boolean> {
+    const environment = providerEnvironmentOrNull(verifiedEnvironment);
+    if (expected.provider !== "linkly-cloud" || environment === null || !isLinklyEnvironmentVerifiableState(expected.state) || expected.providerEnvironment) return false;
+    // 只冻结经过只读核验的原交易；状态、金额或引用有任一变化都必须重新核验。
+    const changed = await this.db.run(
+      `UPDATE payment_attempts SET provider_environment = ?
+       WHERE attempt_id = ? AND idempotency_key = ? AND order_guid = ?
+         AND provider = 'linkly-cloud' AND operation = ? AND amount_cents = ? AND state = ?
+         AND session_id IS ? AND txn_ref IS ?
+         AND provider_environment IS NULL AND provider_acknowledged_at_iso IS NULL`,
+      [environment, expected.attemptId, expected.idempotencyKey, expected.orderGuid, expected.operation, expected.amount.cents, expected.state, expected.references.sessionId, expected.references.txnRef],
+    );
+    return changed.changes === 1;
+  }
+
   private async findBlockingWith(database: SqliteConnectionPort, orderGuid: string): Promise<PaymentAttempt | null> {
     const row = await database.getFirst<PaymentRow>(
       `SELECT p.* FROM payment_attempts p
@@ -1376,6 +1473,29 @@ class SqlitePaymentAttemptRepository implements PaymentAttemptRepositoryPort {
       [orderGuid],
     );
     return row ? this.read(row) : null;
+  }
+
+  private async hasBoundRefundCardEvidence(
+    attempt: PaymentAttempt,
+  ): Promise<boolean> {
+    const row = await this.db.getFirst<{ provider_payload_ciphertext: unknown }>(
+      "SELECT provider_payload_ciphertext FROM payment_attempts WHERE attempt_id = ? AND idempotency_key = ? AND order_guid = ?",
+      [attempt.attemptId, attempt.idempotencyKey, attempt.orderGuid],
+    );
+    try {
+      const material = await decryptPaymentProtectedMaterial(
+        this.encryptor,
+        bytesOrNull(row?.provider_payload_ciphertext, "Invalid payment ciphertext."),
+      );
+      if (material.cardSyncEvidence === null) return false;
+      assertCardSyncEvidenceBinding(attempt, material.cardSyncEvidence);
+      // 同额退款仍可能属于另一笔交易，ACK 必须绑定原 session 的交易号。
+      return Boolean(attempt.references.sessionId?.trim()) &&
+        Boolean(attempt.references.txnRef?.trim()) &&
+        material.cardSyncEvidence.txnRef === attempt.references.txnRef;
+    } catch {
+      return false;
+    }
   }
 
   private encryptReferences(
@@ -1403,7 +1523,9 @@ class SqlitePaymentAttemptRepository implements PaymentAttemptRepositoryPort {
       receiptCipher ? this.encryptor.decrypt(receiptCipher) : Promise.resolve(null),
     ]);
     const responseCode = responseCodeOrNull(nullable(r.provider_response_code));
-    return { attemptId:text(r.attempt_id),idempotencyKey:text(r.idempotency_key),orderGuid:text(r.order_guid),provider:r.provider as never,operation:r.operation as never,amount:money(r.amount_cents),state:r.state as never,references:{checkoutId:nullable(r.checkout_id),paymentId:nullable(r.payment_id),sessionId:nullable(r.session_id),txnRef:nullable(r.txn_ref),rfn:nullable(r.rfn),voucherReservationToken:protectedMaterial.voucherReservationToken},createdAtIso:text(r.created_at_iso),updatedAtIso:text(r.updated_at_iso),lastErrorCode:nullable(r.last_error_code),receiptText,responseCode};
+    const providerEnvironment = providerEnvironmentOrNull(nullable(r.provider_environment));
+    const providerAcknowledgedAtIso = nullable(r.provider_acknowledged_at_iso);
+    return { attemptId:text(r.attempt_id),idempotencyKey:text(r.idempotency_key),orderGuid:text(r.order_guid),provider:r.provider as never,operation:r.operation as never,amount:money(r.amount_cents),state:r.state as never,references:{checkoutId:nullable(r.checkout_id),paymentId:nullable(r.payment_id),sessionId:nullable(r.session_id),txnRef:nullable(r.txn_ref),rfn:nullable(r.rfn),voucherReservationToken:protectedMaterial.voucherReservationToken},createdAtIso:text(r.created_at_iso),updatedAtIso:text(r.updated_at_iso),lastErrorCode:nullable(r.last_error_code),...(providerEnvironment ? { providerEnvironment } : {}),...(providerAcknowledgedAtIso ? { providerAcknowledgedAtIso } : {}),receiptText,responseCode};
   }
 }
 
@@ -1450,7 +1572,29 @@ function assertCardSyncEvidenceBinding(
 }
 
 function insertParameters(attempt: PaymentAttempt, ciphertext: Uint8Array | null, receiptCiphertext: Uint8Array | null, responseCode: string | null): readonly SqlValue[] {
-  return [attempt.attemptId,attempt.idempotencyKey,attempt.orderGuid,attempt.provider,attempt.operation,attempt.amount.cents,attempt.state,attempt.references.checkoutId,attempt.references.paymentId,attempt.references.sessionId,attempt.references.txnRef,attempt.references.rfn,ciphertext,receiptCiphertext,responseCode,attempt.createdAtIso,attempt.updatedAtIso,attempt.lastErrorCode];
+  return [attempt.attemptId,attempt.idempotencyKey,attempt.orderGuid,attempt.provider,attempt.operation,attempt.amount.cents,attempt.state,attempt.references.checkoutId,attempt.references.paymentId,attempt.references.sessionId,attempt.references.txnRef,attempt.references.rfn,ciphertext,receiptCiphertext,responseCode,attempt.createdAtIso,attempt.updatedAtIso,attempt.lastErrorCode,providerEnvironmentOrNull(attempt.providerEnvironment),null];
+}
+
+function providerEnvironmentOrNull(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "string") throw new Error("Payment provider environment is invalid.");
+  const normalized = value.trim();
+  if (!normalized || normalized.length > 64 || /[\u0000-\u001f\u007f]/u.test(normalized)) {
+    throw new Error("Payment provider environment is invalid.");
+  }
+  return normalized;
+}
+
+function isLinklyFinalState(state: PaymentAttempt["state"]): boolean {
+  return state === "Approved" || state === "Declined" || state === "Cancelled";
+}
+
+function isLinklyEnvironmentVerifiableState(state: PaymentAttempt["state"]): boolean {
+  return state === "Submitted" || state === "Pending" || state === "Unknown" || isLinklyFinalState(state);
+}
+
+function isIsoInstant(value: string): boolean {
+  return Number.isFinite(Date.parse(value)) && /(?:Z|[+-]\d{2}:\d{2})$/u.test(value);
 }
 
 class SqlitePrintJobRepository implements PrintJobRepositoryPort { public constructor(private readonly db: SqliteConnectionPort) {} public async transition(id: string, expected: never, next: never): Promise<boolean> { return (await this.db.run("UPDATE print_jobs SET state=? WHERE job_id=? AND state=?",[next,id,expected])).changes===1; } }

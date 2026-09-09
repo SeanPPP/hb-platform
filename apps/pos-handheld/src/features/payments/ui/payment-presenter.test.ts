@@ -300,6 +300,17 @@ test("Linkly selection conflict 只刷新权威目录并要求确认，不自动
   );
 });
 
+test("ACK pending 文案明确结果已保存且不会再次扣款或退款", () => {
+  assert.match(
+    paymentText("zh", "error.LINKLY_ACKNOWLEDGEMENT_PENDING"),
+    /交易结果已保存.*不会再次扣款或退款/u,
+  );
+  assert.match(
+    paymentText("en", "error.LINKLY_ACKNOWLEDGEMENT_PENDING"),
+    /result is saved.*no charge or refund will be repeated/u,
+  );
+});
+
 test("后台恢复在途时手动恢复立即失败，不加入后台 signal 的 promise", async () => {
   const runtime = new FakePaymentRuntime();
   const pending = deferred<PaymentCheckoutPublicSnapshot>();
@@ -431,6 +442,40 @@ test("空闲后台恢复把结构化 deadline 控制原样交给 runtime", async
   assert.equal(runtime.recoverCalls, 1);
   assert.strictEqual(runtime.recoverInputs[0]?.signal, controller.signal);
   assert.equal(runtime.recoverInputs[0]?.deadlineAtMs, deadlineAtMs);
+});
+
+test("Linkly 受控恢复 abort 后不补发不可取消的 operator.read；ACK 成功走 runtime ACK-only recovery", async () => {
+  const runtime = new FakePaymentRuntime();
+  runtime.recovery = snapshot({
+    status: "pending",
+    provider: "linkly-cloud",
+    attemptId: "attempt-linkly-control",
+    allowedActions: actions({ recover: true }),
+  });
+  runtime.recoverImpl = async () => runtime.recovery!;
+  const linkly = new FakeLinklyOperator();
+  const presenter = createPresenter(runtime, linkly);
+  await presenter.initialize();
+  const readsAfterInitialize = linkly.readInputs.length;
+  const controller = new AbortController();
+  controller.abort();
+  await presenter.recover({
+    background: true,
+    signal: controller.signal,
+    deadlineAtMs: Date.now() + 180_000,
+  });
+  assert.equal(linkly.readInputs.length, readsAfterInitialize);
+
+  runtime.recovery = snapshot({
+    status: "completed",
+    provider: "linkly-cloud",
+    attemptId: "attempt-linkly-control",
+    errorCode: null,
+    allowedActions: actions(),
+  });
+  assert.equal(await presenter.acknowledgeLinkly(), true);
+  assert.equal(runtime.recoverCalls, 2);
+  assert.equal(linkly.readInputs.length, readsAfterInitialize);
 });
 
 test("冷启动礼券撤销 Unknown 使用脱敏持久恢复入口，完成后清除旧恢复标记", async () => {
@@ -979,7 +1024,7 @@ test("Linkly UI 仅发送 attemptId 与枚举安全键，完成后走同一 atte
 
   assert.deepEqual(
     presenter.getState().linkly.allowedKeys,
-    LINKLY_SAFE_OPERATOR_KEYS,
+    ["yes"],
   );
   assert.equal(await presenter.sendLinklyKey("yes"), true);
   assert.deepEqual(linkly.sendCalls, [
@@ -1155,6 +1200,11 @@ class FakePaymentRuntime implements PaymentCheckoutRuntimePort {
 }
 
 class FakeLinklyOperator implements LinklyOperatorRuntimePort {
+  public readonly readInputs: {
+    attemptId: string;
+    signal?: AbortSignal;
+    deadlineAtMs?: number;
+  }[] = [];
   public readonly sendCalls: {
     attemptId: string;
     key: LinklySafeOperatorKey;
@@ -1170,6 +1220,23 @@ class FakeLinklyOperator implements LinklyOperatorRuntimePort {
       status: "completed",
       errorCode: null,
       allowedKeys: [],
+    };
+  }
+
+  public async read(input: { attemptId: string; signal?: AbortSignal; deadlineAtMs?: number }): Promise<LinklyOperatorPublicResult> {
+    this.readInputs.push(input);
+    return {
+      attemptId: input.attemptId,
+      status: "in-progress",
+      errorCode: null,
+      allowedKeys: ["yes"],
+      interaction: {
+        displayText: "PRESENT CARD",
+        displayLines: [],
+        inputType: null,
+        graphicCode: null,
+        recoveryAction: null,
+      },
     };
   }
 

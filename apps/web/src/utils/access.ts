@@ -62,7 +62,13 @@ function createEmptyAccess(): AccessControl {
     canManageStore: false,
     canViewReports: false,
     canViewSalesIntelligence: false,
+    canViewSalesData: false,
+    canViewSalesDetail: false,
+    canViewCompactSalesBoard: false,
     canViewProductMovementReport: false,
+    canViewWarehouseProductFlowAnalysis: false,
+    canViewLocalProductSalesAnalysis: false,
+    canViewPurchaseAmountDashboard: false,
     canViewProductSalesAnalysis: false,
     canExportData: false,
     canModifyPrice: false,
@@ -230,15 +236,23 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canDeleteProduct = isAdmin || hasPermission(P.Products.Delete)
 
   const canViewReports = isAdmin || hasPermission(P.Reports.View)
-  const canViewProductMovementReport =
-    isAdmin || hasPermission(P.Reports.ProductMovementView) || hasPermission(P.Reports.View)
+  // 销售看板逐页授权，旧报表及进货单权限不能隐式放开其他页面；管理员由 hasPermission 统一放行。
+  const canViewSalesData = hasPermission(P.SalesDashboard.SalesDataView)
+  const canViewSalesDetail = hasPermission(P.SalesDashboard.SalesDetailView)
+  const canViewCompactSalesBoard = hasPermission(P.SalesDashboard.CompactBoardView)
+  const canViewProductMovementReport = hasPermission(P.SalesDashboard.ProductMovementView)
+  const canViewWarehouseProductFlowAnalysis = hasPermission(P.SalesDashboard.WarehouseFlowView)
+  const canViewLocalProductSalesAnalysis = hasPermission(P.SalesDashboard.LocalProductAnalysisView)
+  const canViewPurchaseAmountDashboard = hasPermission(P.SalesDashboard.PurchaseAmountView)
   // 商品销量分析是精确权限契约节点：只读 exactPermissions，不做 Reports.View 别名展开，
   // 字段缺失时非管理员拒绝，超级管理员别名由 isAdmin 兼容放行。
   const canViewProductSalesAnalysis =
     isAdmin || currentExactPermissionSet.has(P.Reports.ProductMovementView.toLowerCase())
-  // 销售看板是多个独立报表的父级；仅有本地进货权限时也必须能进入父菜单。
+  // 父菜单由可见子页决定，不额外要求工作台或报表总权限。
   const canViewSalesIntelligence =
-    canViewReports || canViewProductMovementReport || hasPermission(P.LocalPurchase.View)
+    canViewSalesData || canViewSalesDetail || canViewCompactSalesBoard ||
+    canViewProductMovementReport || canViewWarehouseProductFlowAnalysis ||
+    canViewLocalProductSalesAnalysis || canViewPurchaseAmountDashboard
   const canExportData = isAdmin || hasPermission(P.Reports.Export)
   const canModifyPrice = isAdmin || hasPermission(P.Prices.Modify)
   const canDeletePrice = isAdmin || hasPermission(P.Prices.Delete)
@@ -403,7 +417,13 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     canManageStore,
     canViewReports,
     canViewSalesIntelligence,
+    canViewSalesData,
+    canViewSalesDetail,
+    canViewCompactSalesBoard,
     canViewProductMovementReport,
+    canViewWarehouseProductFlowAnalysis,
+    canViewLocalProductSalesAnalysis,
+    canViewPurchaseAmountDashboard,
     canViewProductSalesAnalysis,
     canExportData,
     canModifyPrice,

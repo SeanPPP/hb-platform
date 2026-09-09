@@ -3,11 +3,13 @@ import { Alert, Button, Input, Pagination, Skeleton, Tag, Tooltip } from 'antd'
 import { CloseOutlined, FullscreenExitOutlined, FullscreenOutlined, SearchOutlined } from '@ant-design/icons'
 import { useKeepAliveContext } from 'keepalive-for-react'
 import { useLocation, useNavigate } from 'react-router-dom'
+import { useIsMobile } from '../../../hooks/useIsMobile'
 import { useAuthStore } from '../../../store/auth'
 import { MetricPair, ReportControls, useReportText } from '../ReportWorkbench/ReportControls'
 import { growth, reportPeriod } from '../ReportWorkbench/logic'
 import { useReportQuery, type ReportQueryState } from '../ReportWorkbench/useReportQuery'
 import { applyKeyword, emptySelection, initialDetailState, resizeColumns, selectDimension, sumProductPage } from './logic'
+import ProductBranchDrawer from './ProductBranchDrawer'
 import { fetchSalesDetailReport, type ReportSection, type SalesDetailPage, type SalesDetailQuery, type SalesDetailReport, type SalesDetailRow } from './reportService'
 import styles from './styles.module.css'
 
@@ -55,7 +57,10 @@ export default function SalesDetailAnalysisV2() {
   const text = useReportText()
   const location = useLocation()
   const navigate = useNavigate()
-  const { active = true } = useKeepAliveContext()
+  const { active: cachedActive } = useKeepAliveContext()
+  const isMobile = useIsMobile()
+  // 手机布局直接渲染页面，没有 KeepAlive；使用与布局相同的判断，避免默认 false 阻止查询。
+  const active = isMobile || cachedActive
   const { access, currentUser } = useAuthStore()
   const initial = useMemo(() => initialDetailState(location.search), [location.search])
   const [dates, setDates] = useState(initial.dates)
@@ -67,6 +72,7 @@ export default function SalesDetailAnalysisV2() {
   const [expanded, setExpanded] = useState<PanelKey | null>(null)
   const [widths, setWidths] = useState([28, 27, 45])
   const [bundleRefresh, setBundleRefresh] = useState(0)
+  const [drawerProduct, setDrawerProduct] = useState<SalesDetailRow | null>(null)
   const [sorts, setSorts] = useState<Record<'suppliers' | 'branches', Sort>>({ suppliers: { key: 'revenue', ascending: false }, branches: { key: 'revenue', ascending: false } })
   const grid = useRef<HTMLDivElement>(null)
   const drag = useRef<{ divider: number; startX: number; widths: number[]; width: number }>()
@@ -74,6 +80,10 @@ export default function SalesDetailAnalysisV2() {
   const searchClear = useRef(false)
   const appliedSearch = useRef(location.search)
 
+  useEffect(() => {
+    // 抽屉挂载在 body；页面切换或账号变化时关闭，避免覆盖其他保活页面。
+    setDrawerProduct(null)
+  }, [active, currentUser?.userGUID])
   useEffect(() => {
     // KeepAlive 隐藏期间不消费其他页面的 URL；返回相同地址时保留三栏筛选。
     if (!active || !location.pathname.endsWith('/sales-detail-v2') || appliedSearch.current === location.search) return
@@ -93,7 +103,8 @@ export default function SalesDetailAnalysisV2() {
     window.addEventListener('keydown', handle)
     return () => window.removeEventListener('keydown', handle)
   }, [])
-  const branches = useMemo(() => access.managedStoreCodes?.() ?? undefined, [access])
+  // 销售明细和商品搜索共用全部关联分店范围。
+  const branches = useMemo(() => access.visibleStoreCodes() ?? undefined, [access])
   const allowed = !!currentUser && (branches === undefined || branches.length > 0)
   const period = useMemo(() => reportPeriod(dates), [dates])
   const query: SalesDetailQuery = { ...period, kind, branchCodes: branches, selectedBranchCode: selection.branch,
@@ -173,8 +184,9 @@ export default function SalesDetailAnalysisV2() {
         <Tooltip title={field === 'share' ? text(kind === 'china' ? '分母：所选分店的国内供应商全量营业额，不受商品选择影响' : '分母：所选分店的全部营业额，不受商品选择影响', 'Denominator: all revenue in the selected store scope; not narrowed by product selection') : field === 'chinaShare' ? text('分母：所选分店的全部营业额', 'Denominator: all revenue in the selected store scope') : undefined}>
           {panel === 'products' ? <span>{metricLabel(panel, field)}</span> : <button onClick={() => setSorts(value => ({ ...value, [panel]: { key: field, ascending: value[panel].key === field ? !value[panel].ascending : false } }))}>{metricLabel(panel, field)} ↕</button>}
         </Tooltip></th>)}</tr></thead>
-      <tbody>{rows.map((row, index) => <tr key={row.code} className={selection[dimension] === row.code ? styles.selected : ''}>
-        <td><button data-code={row.code} aria-pressed={selection[dimension] === row.code} className={styles.nameButton} onClick={() => pick(dimension, row)} title={`${row.name} · ${row.code}`}>
+      <tbody>{rows.map((row, index) => <tr key={row.code} className={panel !== 'products' && selection[dimension] === row.code ? styles.selected : ''}>
+        <td><button data-code={row.code} aria-pressed={panel === 'products' ? drawerProduct?.code === row.code : selection[dimension] === row.code} className={styles.nameButton}
+          onClick={() => panel === 'products' ? setDrawerProduct(row) : pick(dimension, row)} title={`${row.name} · ${row.code}`}>
           {panel === 'products' ? row.productImage ? <img src={row.productImage} alt="" loading="lazy" onError={event => { event.currentTarget.style.visibility = 'hidden' }} /> : <span className={styles.imagePlaceholder}>▦</span> : <span className={styles.rank}>{String(index + 1).padStart(2, '0')}</span>}
           <span className={styles.nameText}>{panel === 'products' && <small>{row.itemNumber || row.code}</small>}<strong>{row.name || row.code}</strong>{panel === 'suppliers' && <small>{row.code}</small>}</span>
         </button></td>{metrics(panel).map(field => <td key={field} data-metric={field}>{field === 'growth'
@@ -193,7 +205,7 @@ export default function SalesDetailAnalysisV2() {
 
   return <main className={styles.page} data-report="sales-detail">
     <div className={styles.heading}><div><span className={styles.eyebrow}>SALES EXPLORER</span><h1>{text('销售明细', 'Sales detail')}</h1><p>{text('供应商、分店与商品双向联动，从任意一栏开始分析。', 'Explore from any supplier, store or product.')}</p></div>
-      <Button onClick={() => navigate(`/executive-sales-intelligence/overview?branch=${encodeURIComponent(selection.branch ?? '')}&startDate=${dates.startDate}&endDate=${dates.endDate}&compare=${dates.compare}&compareMode=${dates.compareMode}`)}>{text('营业额报告', 'Revenue report')}</Button></div>
+      {access.canViewSalesData && <Button onClick={() => navigate(`/executive-sales-intelligence/overview?branch=${encodeURIComponent(selection.branch ?? '')}&startDate=${dates.startDate}&endDate=${dates.endDate}&compare=${dates.compare}&compareMode=${dates.compareMode}`)}>{text('营业额报告', 'Revenue report')}</Button>}</div>
     <ReportControls value={dates} onChange={value => { setDates(value); setSelection(current => ({ ...current, page: 1 })) }} onRefresh={refreshAll} loading={loading} />
     <div className={styles.tabsLine}><div role="tablist" aria-label={text('供应商类别', 'Supplier type')} className={styles.tabs}>
       {(['australia', 'china'] as const).map(value => <button role="tab" key={value} aria-selected={kind === value} onClick={() => switchKind(value)}>{value === 'china' ? text('HB 仓库 · 国内供应商', 'HB warehouse · China') : text('澳洲供应商', 'Australian suppliers')}</button>)}
@@ -238,5 +250,7 @@ export default function SalesDetailAnalysisV2() {
     </div>
     <div className={styles.foot}><span>{text('移动端报告同源统计 · 商品数量含退货抵减 · 商品均价 = 营业额 ÷ 商品数量（数量 ≤ 0 时显示 —）', 'Mobile report statistics · Product quantity is net of returns · Average product price = revenue ÷ product quantity (— when quantity ≤ 0)')}</span>
       <span>{summary.snapshot?.statisticUpdatedAt ? `${text('统计水位', 'Snapshot')} ${new Date(summary.snapshot.statisticUpdatedAt).toLocaleString()}` : text('按完整统计快照读取', 'Reading complete snapshots')}</span></div>
+    <ProductBranchDrawer key={currentUser?.userGUID ?? 'anonymous'} open={active && allowed && !!drawerProduct}
+      product={drawerProduct} baseQuery={query} onClose={() => setDrawerProduct(null)} />
   </main>
 }
