@@ -121,11 +121,12 @@ public sealed class RevenueReportSnapshotController : ControllerBase
         if (string.IsNullOrWhiteSpace(userGuid))
             return (false, new List<string>());
 
-        var user = await _userService.GetUserByGuidAsync(userGuid);
-        if (user?.Success != true || user.Data == null)
+        // 只读销售范围取全部关联分店，不依赖用户管理详情的管理分店校验。
+        var userStores = await _userService.GetUserStoresAsync(userGuid);
+        if (userStores?.Success != true || userStores.Data == null)
             return (false, new List<string>());
 
-        var allowed = NormalizeCodes(user.Data.Stores?.Select(store => store.StoreCode));
+        var allowed = NormalizeCodes(userStores.Data.Select(store => store.StoreCode));
         if (allowed.Count == 0)
             return (false, new List<string>());
         if (requested.Count == 0)

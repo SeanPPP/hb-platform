@@ -93,7 +93,8 @@ export default function SalesDetailAnalysisV2() {
     window.addEventListener('keydown', handle)
     return () => window.removeEventListener('keydown', handle)
   }, [])
-  const branches = useMemo(() => access.managedStoreCodes?.() ?? undefined, [access])
+  // 销售明细和商品搜索共用全部关联分店范围。
+  const branches = useMemo(() => access.visibleStoreCodes() ?? undefined, [access])
   const allowed = !!currentUser && (branches === undefined || branches.length > 0)
   const period = useMemo(() => reportPeriod(dates), [dates])
   const query: SalesDetailQuery = { ...period, kind, branchCodes: branches, selectedBranchCode: selection.branch,

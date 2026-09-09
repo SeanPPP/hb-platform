@@ -118,9 +118,12 @@ public sealed class SalesDetailReportController : ControllerBase
         var userGuid = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
         if (string.IsNullOrWhiteSpace(userGuid))
             return (false, new List<string>());
-        var user = await _userService.GetUserByGuidAsync(userGuid);
-        var allowed = Normalize(user.Data?.Stores?.Select(store => store.StoreCode));
-        if (user.Success != true || allowed.Count == 0)
+        // 只读销售范围取全部关联分店，不依赖用户管理详情的管理分店校验。
+        var userStores = await _userService.GetUserStoresAsync(userGuid);
+        if (userStores?.Success != true || userStores.Data == null)
+            return (false, new List<string>());
+        var allowed = Normalize(userStores.Data.Select(store => store.StoreCode));
+        if (allowed.Count == 0)
             return (false, new List<string>());
         if (normalizedRequested.Count == 0)
             return (true, allowed);
