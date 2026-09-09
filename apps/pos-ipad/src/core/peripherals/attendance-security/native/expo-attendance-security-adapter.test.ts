@@ -27,6 +27,9 @@ function nativeStub(
       return { keyHandle: HANDLE, kid: KID };
     },
     async destroyA256Key() {},
+    async saveFaceHmacKey() {},
+    async hasFaceHmacKey() { return true; },
+    async signFaceHmacSha256() { return "A".repeat(43) + "="; },
     async hasA256Key() {
       return true;
     },
@@ -151,6 +154,24 @@ test("validates opaque handles and native boolean results", async () => {
     }),
   );
   await assert.rejects(() => malformed.hasA256Key(HANDLE));
+});
+
+test("人脸 HMAC 只经原生 Keychain 签名，JS 不接收密钥读取接口", async () => {
+  let signed: readonly unknown[] | undefined;
+  const adapter = new ExpoAttendanceSecurityAdapter(nativeStub({
+    async signFaceHmacSha256(keyId, canonicalMetadata) {
+      signed = [keyId, canonicalMetadata];
+      return "A".repeat(43) + "=";
+    },
+  }));
+  await adapter.saveFaceHmacKey("face_key_1", "A".repeat(43) + "=");
+  assert.equal(await adapter.hasFaceHmacKey("face_key_1"), true);
+  assert.equal(
+    await adapter.signFaceHmacSha256("face_key_1", '["v1","event"]'),
+    "A".repeat(43) + "=",
+  );
+  assert.deepEqual(signed, ["face_key_1", '["v1","event"]']);
+  await assert.rejects(() => adapter.signFaceHmacSha256(" bad", "[]"));
 });
 
 test("同步读取系统 uptime 并严格拒绝非负 safe integer 之外的原生结果", () => {

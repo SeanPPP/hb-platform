@@ -1,4 +1,5 @@
 import ExpoModulesCore
+import CryptoKit
 import Foundation
 
 public final class HBAttendanceSecurityModule: Module {
@@ -48,6 +49,22 @@ public final class HBAttendanceSecurityModule: Module {
     AsyncFunction("destroyA256Key") {
       (keyHandle: String) throws -> Void in
       try self.keychain.destroyKey(handle: keyHandle)
+    }
+
+    AsyncFunction("saveFaceHmacKey") { (keyId: String, secretBase64: String) throws -> Void in
+      try self.keychain.saveFaceHmacKey(keyId: keyId, secretBase64: secretBase64)
+    }
+
+    AsyncFunction("hasFaceHmacKey") { (keyId: String) throws -> Bool in
+      try self.keychain.hasFaceHmacKey(keyId: keyId)
+    }
+
+    AsyncFunction("signFaceHmacSha256") { (keyId: String, canonicalMetadata: String) throws -> String in
+      guard canonicalMetadata.utf8.count <= 16_384 else { throw attendanceInvalidArgument("canonicalMetadata") }
+      var key = try self.keychain.readFaceHmacKey(keyId: keyId)
+      defer { key.resetBytes(in: 0..<key.count) }
+      let signature = HMAC<SHA256>.authenticationCode(for: Data(canonicalMetadata.utf8), using: SymmetricKey(data: key))
+      return Data(signature).base64EncodedString()
     }
 
     AsyncFunction("validateEs256P256PublicKey") {

@@ -367,6 +367,13 @@ namespace BlazorApp.Shared.Constants
                 public const string ReviewManagedStore = "Attendance.Approval.ReviewManagedStore";
             }
 
+            public static class Face
+            {
+                public const string EnrollManagedStore = "Attendance.Face.EnrollManagedStore";
+                public const string ViewPhotosManagedStore = "Attendance.Face.ViewPhotosManagedStore";
+                public const string ReviewManagedStore = "Attendance.Face.ReviewManagedStore";
+            }
+
             public static class Holiday
             {
                 public const string ViewStore = "Attendance.Holiday.ViewStore";

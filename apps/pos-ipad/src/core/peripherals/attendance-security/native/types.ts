@@ -36,6 +36,9 @@ export interface HbAttendanceSecurityNativeModule {
   readRegistrationKeyMaterial(keyHandle: string): Promise<unknown>;
   issueAttendanceQr(input: NativeAttendanceQrInput): Promise<unknown>;
   destroyA256Key(keyHandle: string): Promise<unknown>;
+  saveFaceHmacKey(keyId: string, secretBase64: string): Promise<unknown>;
+  hasFaceHmacKey(keyId: string): Promise<unknown>;
+  signFaceHmacSha256(keyId: string, canonicalMetadata: string): Promise<unknown>;
   validateEs256P256PublicKey(
     key: NativeEmergencyPublicKey,
   ): Promise<unknown>;

@@ -28,6 +28,9 @@ test("Expo module is iOS-only and exports the narrow attendance security bridge"
     "readRegistrationKeyMaterial",
     "issueAttendanceQr",
     "destroyA256Key",
+    "saveFaceHmacKey",
+    "hasFaceHmacKey",
+    "signFaceHmacSha256",
     "validateEs256P256PublicKey",
     "verifyEs256P256Token",
   ]) {
@@ -65,6 +68,17 @@ test("AES-256 attendance keys stay in a non-synchronizable ThisDeviceOnly Keycha
   assert.match(source, /SecItemDelete/);
   assert.match(source, /resetBytes\(in:/);
   assert.doesNotMatch(source, /UserDefaults|NSUbiquitousKeyValueStore|iCloud/);
+});
+
+test("人脸 HMAC 使用独立 ThisDeviceOnly Keychain service，原生层完成 SHA-256 签名", async () => {
+  const [keychain, module] = await Promise.all([
+    read("ios/HBAttendanceSecurityKeychain.swift"),
+    read("ios/HBAttendanceSecurityModule.swift"),
+  ]);
+  assert.match(keychain, /attendance\.face\.hmac\.v1/);
+  assert.match(keychain, /kSecAttrAccessibleWhenUnlockedThisDeviceOnly/);
+  assert.match(module, /HMAC<SHA256>\.authenticationCode/);
+  assert.match(module, /signFaceHmacSha256/);
 });
 
 test("attendance token codec matches HBATE1 AES-GCM wire format and emits only a QR image", async () => {

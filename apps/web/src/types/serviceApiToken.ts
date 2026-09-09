@@ -2,6 +2,7 @@ export type ServiceApiTokenStatus = 'active' | 'revoked' | 'expired' | string
 export type ServiceApiTokenPurpose =
   | 'mobile-ota-publisher'
   | 'pos-ipad-update-decision-reader'
+  | 'attendance-face-gateway'
   | 'quality-ci-reporter'
   | 'deployment-acceptance-reporter'
 

@@ -131,6 +131,25 @@ export class ExpoAttendanceSecurityAdapter
     await this.native.destroyA256Key(opaqueHandle(keyHandle));
   }
 
+  /** 人脸 HMAC 只在原生 Keychain 使用，JS 不能读取或缓存 secret。 */
+  public async saveFaceHmacKey(keyId: string, secretBase64: string): Promise<void> {
+    await this.native.saveFaceHmacKey(faceKeyId(keyId), base64(secretBase64));
+  }
+
+  public async hasFaceHmacKey(keyId: string): Promise<boolean> {
+    const value = await this.native.hasFaceHmacKey(faceKeyId(keyId));
+    if (typeof value !== "boolean") throw bridgeError("Invalid face HMAC key response.");
+    return value;
+  }
+
+  public async signFaceHmacSha256(keyId: string, canonicalMetadata: string): Promise<string> {
+    const value = await this.native.signFaceHmacSha256(faceKeyId(keyId), canonicalMetadata);
+    if (typeof value !== "string" || !/^[A-Za-z0-9+/]{43}=$/u.test(value)) {
+      throw bridgeError("Invalid face HMAC signature.");
+    }
+    return value;
+  }
+
   public async validateEs256P256PublicKey(
     key: EmergencyPublicKey,
   ): Promise<boolean> {
@@ -303,6 +322,20 @@ function opaqueHandle(value: unknown): string {
 function attendanceKid(value: unknown): string {
   if (typeof value !== "string" || !ATTENDANCE_KID.test(value)) {
     throw bridgeError("Invalid attendance kid.");
+  }
+  return value;
+}
+
+function faceKeyId(value: unknown): string {
+  if (typeof value !== "string" || !/^[A-Za-z0-9_-]{1,128}$/u.test(value)) {
+    throw bridgeError("Invalid face HMAC key id.");
+  }
+  return value;
+}
+
+function base64(value: unknown): string {
+  if (typeof value !== "string" || !/^[A-Za-z0-9+/]{43}=$/u.test(value)) {
+    throw bridgeError("Invalid face HMAC secret.");
   }
   return value;
 }

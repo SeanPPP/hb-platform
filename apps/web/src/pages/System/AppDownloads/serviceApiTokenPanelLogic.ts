@@ -28,6 +28,10 @@ export function buildServiceApiTokenEnvSnippet(
   if (purpose === 'pos-ipad-update-decision-reader') {
     return `HBPOS_APP_UPDATE_DECISION_READ_TOKEN=${token.trim()}`
   }
+  if (purpose === 'attendance-face-gateway') {
+    // 人脸网关只接受这个专用令牌，不能误用拥有其他 scope 的通用 Web Token。
+    return `HBPOS_ATTENDANCE_FACE_GATEWAY_TOKEN=${token.trim()}`
+  }
 
   const normalizedBaseUrl = baseUrl.trim().replace(/\/+$/, '')
   const reporterServiceUrl = (() => {

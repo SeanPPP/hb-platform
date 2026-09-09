@@ -25,6 +25,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="FaceAttendanceContractTests.cs" />
+    <Compile Include="FaceAttendanceHttpContractTests.cs" />
+    <Compile Include="FaceAttendancePunchWriterTests.cs" />
+    <Compile Include="FaceAttendanceSchemaSqlServerTests.cs" />
     <Compile Include="StoreProductMaintenanceWarehousePriceSyncTests.cs" />
     <Compile Include="ProductChangeHistoryLegacyEntryPointTests.cs" />
     <Compile Include="StoreProductMaintenanceSyncHelperTests.cs" />

@@ -74,6 +74,10 @@ namespace BlazorApp.Shared.Models
         [SugarColumn(IsNullable = true, Length = 50)]
         public string? AdjustmentGuid { get; set; }
 
+        // 人脸事件与正式考勤一对一，防止后台重试重复写入正式打卡。
+        [SugarColumn(IsNullable = true, Length = 50)]
+        public string? FaceEventGuid { get; set; }
+
         [SugarColumn(IsNullable = true, Length = 500)]
         public string? Remark { get; set; }
     }

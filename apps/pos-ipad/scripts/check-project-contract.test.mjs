@@ -25,9 +25,9 @@ const routeFiles = readdirSync(new URL("app/", appRoot), {
   .map((entry) => entry.name);
 
 assert.equal(packageJson.name, "@hb/pos-ipad");
-assert.equal(packageJson.version, "0.2.0");
+assert.equal(packageJson.version, "0.2.1");
 assert.equal(appLockEntry.name, "@hb/pos-ipad");
-assert.equal(appLockEntry.version, "0.2.0");
+assert.equal(appLockEntry.version, "0.2.1");
 assert.equal(packageJson.main, "index.js");
 assert.equal(
   appEntrySource.trim(),
@@ -109,7 +109,7 @@ const introspectedConfig = JSON.parse(
     encoding: "utf8",
   }),
 );
-assert.equal(introspectedConfig.version, "0.2.0");
+assert.equal(introspectedConfig.version, "0.2.1");
 assert.equal(
   introspectedConfig.ios?.isTabletOnly,
   true,

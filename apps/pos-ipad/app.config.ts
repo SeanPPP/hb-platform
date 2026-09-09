@@ -9,7 +9,7 @@ const defaultHbposApiBaseUrl = "https://hotbargain.vip/pos-api";
 const localHbposApiBaseUrl = "http://192.168.31.246:5003";
 const legacyLocalHbposApiBaseUrl = "http://192.168.31.246:5159";
 const posIpadProductionChannel = "pos-ipad-production";
-const posIpadAppVersion = "0.2.0";
+const posIpadAppVersion = "0.2.1";
 
 function buildOtaUpdateConfiguration(): Readonly<{
   buildProfile: string;
@@ -182,7 +182,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       UISupportedInterfaceOrientations: supportedInterfaceOrientations,
       "UISupportedInterfaceOrientations~ipad": supportedInterfaceOrientations,
       NSBluetoothAlwaysUsageDescription: "HB POS 使用蓝牙连接门店小票打印机。",
-      NSCameraUsageDescription: "HB POS 使用相机作为条码扫描备用方式。",
+      NSCameraUsageDescription: "HB POS 使用相机扫描商品条码，并通过前置摄像头拍摄员工人脸用于考勤核验。",
       NSLocalNetworkUsageDescription: "HB POS 需要访问受支持的门店支付终端。",
     },
   },
@@ -210,8 +210,8 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     [
       "expo-camera",
       {
-        cameraPermission: "允许 HB POS 使用相机扫描商品条码。",
-        // 相机仅用于扫码，禁用所有麦克风与录音权限。
+        cameraPermission: "允许 HB POS 使用相机扫描商品条码和拍摄员工人脸用于考勤核验。",
+        // 相机只拍照和扫码，不申请麦克风与录音权限。
         microphonePermission: false,
         recordAudioAndroid: false,
       },
