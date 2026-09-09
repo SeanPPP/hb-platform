@@ -665,7 +665,7 @@ namespace BlazorApp.Api.Services.React
                 async Task<LocalSupplierProductSalesCurrentBundle>
                     ComputeCurrentBundleAfterOptionsAsync()
                 {
-                    // 汇总会使用列存聚合；先让较短的选项查询完成，避免三个 SQL 段同时争用
+                    // 汇总会使用日期覆盖索引聚合；先让较短的选项查询完成，避免三个 SQL 段同时争用
                     // 四核数据库。当前商品查询仍与汇总尾段并行，不增加首屏瀑布。
                     await optionsTask;
                     return await currentWorker.ComputeFastSqlServerCurrentBundleAsync(
@@ -974,8 +974,8 @@ CASE WHEN EXISTS
       (
           SELECT 1 FROM sys.indexes
           WHERE object_id = OBJECT_ID(N'dbo.ProductStoreDailySalesStatistic')
-            AND name = N'IX_LSPSA_Sales_Analytics'
-            AND type = 6
+            AND name = N'IX_LSPSA_Sales_Date_Product'
+            AND type = 2
             AND is_disabled = 0
             AND is_hypothetical = 0
       )
@@ -1433,8 +1433,10 @@ FROM [ProductGroups]";
             var salesStoreSql = stores is null
                 ? string.Empty
                 : $"AND [sales].[BranchCode] IN ({storeParameters})";
+            // 日统计按日期删除重建，列存会累积删除行；日期覆盖索引只读取本次范围，
+            // 避免汇总性能依赖列存清理进度。限店查询仍使用原有分店覆盖索引。
             var salesIndexSql = stores is null
-                ? "WITH (INDEX([IX_LSPSA_Sales_Analytics]))"
+                ? "WITH (INDEX([IX_LSPSA_Sales_Date_Product]))"
                 : "WITH (INDEX([IX_ProductStoreDailySalesStatistic_Branch_Product_Date]))";
             var purchaseStoreSql = stores is null
                 ? string.Empty

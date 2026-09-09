@@ -888,7 +888,7 @@ public class LocalSupplierProductSalesAnalysisServiceTests : IDisposable
                 "IX_LSPSA_Sales_Product_Date",
                 "IX_LSPSA_InvoiceDetails_Product_Invoice",
                 "IX_StoreLocalSupplierInvoiceDetails_InvoiceGUID_NotDeleted",
-                "IX_LSPSA_Sales_Analytics",
+                "IX_LSPSA_Sales_Date_Product",
                 "IX_ProductStoreDailySalesStatistic_Branch_Product_Date",
                 "PK_StoreLocalSupplierInvoice_InvoiceGUID",
             }
