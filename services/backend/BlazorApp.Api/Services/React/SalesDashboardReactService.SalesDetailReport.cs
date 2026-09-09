@@ -644,14 +644,15 @@ SELECT DISTINCT [ProductCode],[TokenIndex] FROM (
         var branchName = tokens.Length == 0
             ? "COALESCE(NULLIF(LTRIM(RTRIM((SELECT MAX(sName.[StoreName]) FROM [Store] sName WHERE sName.[StoreCode]=f.[BranchCode]))), ''), f.[BranchCode])"
             : "MAX([BranchName])";
+        // 空事实仍返回一行汇总，计数必须为 0 才符合压缩 JSON 的非空整数契约；利润继续保留 NULL。
         string rowSelect(string source, string whereClause, string group, string code, string name, string order, string page = "", bool projected = false) => $"""
 SELECT {code} [Code], {name} [Name], MAX([ItemNumber]) [ItemNumber], MAX([ProductImage]) [ProductImage],
  COALESCE(SUM(CASE WHEN [Period]=0 THEN [Revenue] ELSE 0 END),0) [Revenue], {(hasCompare ? "COALESCE(SUM(CASE WHEN [Period]=1 THEN [Revenue] ELSE 0 END),0)" : "0")} [CompareRevenue],
  COALESCE(SUM(CASE WHEN [Period]=0 THEN [Quantity] ELSE 0 END),0) [Quantity], {(hasCompare ? "COALESCE(SUM(CASE WHEN [Period]=1 THEN [Quantity] ELSE 0 END),0)" : "0")} [CompareQuantity],
  COALESCE(SUM(CASE WHEN [Period]=0 THEN [OrderCount] ELSE 0 END),0) [OrderCount], {(hasCompare ? "COALESCE(SUM(CASE WHEN [Period]=1 THEN [OrderCount] ELSE 0 END),0)" : "0")} [CompareOrderCount],
  SUM(CASE WHEN [Period]=0 THEN [GrossProfit] END) [GrossProfit], {(hasCompare ? "SUM(CASE WHEN [Period]=1 THEN [GrossProfit] END)" : "CAST(NULL AS decimal(18,2))")} [CompareGrossProfit],
- SUM(CASE WHEN [Period]=0 THEN [StatisticRowCount] ELSE 0 END) [StatisticRowCount], SUM(CASE WHEN [Period]=0 THEN [CostedRowCount] ELSE 0 END) [CostedRowCount], SUM(CASE WHEN [Period]=0 THEN [GrossProfitRowCount] ELSE 0 END) [GrossProfitRowCount],
- {(hasCompare ? "SUM(CASE WHEN [Period]=1 THEN [StatisticRowCount] ELSE 0 END)" : "0")} [CompareStatisticRowCount], {(hasCompare ? "SUM(CASE WHEN [Period]=1 THEN [CostedRowCount] ELSE 0 END)" : "0")} [CompareCostedRowCount], {(hasCompare ? "SUM(CASE WHEN [Period]=1 THEN [GrossProfitRowCount] ELSE 0 END)" : "0")} [CompareGrossProfitRowCount],
+ COALESCE(SUM(CASE WHEN [Period]=0 THEN [StatisticRowCount] ELSE 0 END),0) [StatisticRowCount], COALESCE(SUM(CASE WHEN [Period]=0 THEN [CostedRowCount] ELSE 0 END),0) [CostedRowCount], COALESCE(SUM(CASE WHEN [Period]=0 THEN [GrossProfitRowCount] ELSE 0 END),0) [GrossProfitRowCount],
+ {(hasCompare ? "COALESCE(SUM(CASE WHEN [Period]=1 THEN [StatisticRowCount] ELSE 0 END),0)" : "0")} [CompareStatisticRowCount], {(hasCompare ? "COALESCE(SUM(CASE WHEN [Period]=1 THEN [CostedRowCount] ELSE 0 END),0)" : "0")} [CompareCostedRowCount], {(hasCompare ? "COALESCE(SUM(CASE WHEN [Period]=1 THEN [GrossProfitRowCount] ELSE 0 END),0)" : "0")} [CompareGrossProfitRowCount],
  {productMultiplicity("0", projected)} [CurrentProductCount], {(hasCompare ? productMultiplicity("1", projected) : "0")} [CompareProductCount]
 FROM ({source}) f {whereClause}
 {(string.IsNullOrWhiteSpace(group) ? "" : $"GROUP BY {group}")} {order} {page};
@@ -740,8 +741,8 @@ SELECT {code} [Code], {name} [Name], CAST(NULL AS nvarchar(50)) [ItemNumber], CA
  COALESCE(SUM(CASE WHEN [Period]=0 THEN [Quantity] ELSE 0 END),0) [Quantity], {(hasCompare ? "COALESCE(SUM(CASE WHEN [Period]=1 THEN [Quantity] ELSE 0 END),0)" : "0")} [CompareQuantity],
  COALESCE(SUM(CASE WHEN [Period]=0 THEN [OrderCount] ELSE 0 END),0) [OrderCount], {(hasCompare ? "COALESCE(SUM(CASE WHEN [Period]=1 THEN [OrderCount] ELSE 0 END),0)" : "0")} [CompareOrderCount],
  SUM(CASE WHEN [Period]=0 THEN [GrossProfit] END) [GrossProfit], {(hasCompare ? "SUM(CASE WHEN [Period]=1 THEN [GrossProfit] END)" : "CAST(NULL AS decimal(18,2))")} [CompareGrossProfit],
- SUM(CASE WHEN [Period]=0 THEN [StatisticRowCount] ELSE 0 END) [StatisticRowCount], SUM(CASE WHEN [Period]=0 THEN [CostedRowCount] ELSE 0 END) [CostedRowCount], SUM(CASE WHEN [Period]=0 THEN [GrossProfitRowCount] ELSE 0 END) [GrossProfitRowCount],
- {(hasCompare ? "SUM(CASE WHEN [Period]=1 THEN [StatisticRowCount] ELSE 0 END)" : "0")} [CompareStatisticRowCount], {(hasCompare ? "SUM(CASE WHEN [Period]=1 THEN [CostedRowCount] ELSE 0 END)" : "0")} [CompareCostedRowCount], {(hasCompare ? "SUM(CASE WHEN [Period]=1 THEN [GrossProfitRowCount] ELSE 0 END)" : "0")} [CompareGrossProfitRowCount],
+ COALESCE(SUM(CASE WHEN [Period]=0 THEN [StatisticRowCount] ELSE 0 END),0) [StatisticRowCount], COALESCE(SUM(CASE WHEN [Period]=0 THEN [CostedRowCount] ELSE 0 END),0) [CostedRowCount], COALESCE(SUM(CASE WHEN [Period]=0 THEN [GrossProfitRowCount] ELSE 0 END),0) [GrossProfitRowCount],
+ {(hasCompare ? "COALESCE(SUM(CASE WHEN [Period]=1 THEN [StatisticRowCount] ELSE 0 END),0)" : "0")} [CompareStatisticRowCount], {(hasCompare ? "COALESCE(SUM(CASE WHEN [Period]=1 THEN [CostedRowCount] ELSE 0 END),0)" : "0")} [CompareCostedRowCount], {(hasCompare ? "COALESCE(SUM(CASE WHEN [Period]=1 THEN [GrossProfitRowCount] ELSE 0 END),0)" : "0")} [CompareGrossProfitRowCount],
  CASE WHEN MIN([CurrentProductMinCode]) IS NULL THEN 0 WHEN MIN([CurrentProductMinCode])=MAX([CurrentProductMaxCode]) THEN 1 ELSE 2 END [CurrentProductCount],
  CASE WHEN MIN([CompareProductMinCode]) IS NULL THEN 0 WHEN MIN([CompareProductMinCode])=MAX([CompareProductMaxCode]) THEN 1 ELSE 2 END [CompareProductCount]
 FROM #SalesDetailAggregates f
