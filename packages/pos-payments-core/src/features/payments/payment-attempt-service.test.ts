@@ -12,6 +12,7 @@ import {
   type PaymentActionBinding,
   type PaymentActionBindingPort,
   type PaymentAttemptLedgerPort,
+  type LegacyPaymentRecoveryEnvironmentResolver,
   type PersistedOrderDraftPort,
   type TrustedRefundReferenceSeed,
   type TrustedRefundReferenceSeedHook,
@@ -90,6 +91,135 @@ test("Approved 卡证据与状态使用同一 CAS 加密交付，公开 attempt 
   );
   assert.equal("protectedSyncEvidence" in completed.attempt, false);
   assert.equal("protectedSyncEvidence" in completed, false);
+});
+
+test("Linkly Created 在 provider 边界冻结环境；后续配置变化的 recover 仍使用原环境", async () => {
+  const ledger = new MemoryLedger();
+  const provider = new FakeProvider("linkly-cloud");
+  provider.providerEnvironment = "Sandbox";
+  provider.submitResult = async (value) => {
+    assert.equal(value.providerEnvironment, "Sandbox");
+    return result("Pending", { sessionId: "linkly-session-1" });
+  };
+  const service = createService({ ledger, provider });
+  const pending = await service.startAttempt({ ...input(), provider: "linkly-cloud" });
+  assert.equal(pending.attempt.providerEnvironment, "Sandbox");
+
+  provider.providerEnvironment = "Production";
+  provider.recoverResult = async (value) => {
+    assert.equal(value.providerEnvironment, "Sandbox");
+    return result("Declined", { sessionId: "linkly-session-1" });
+  };
+  await service.recoverAttempt(pending.attempt.attemptId);
+  assert.equal(provider.recoverCalls, 1);
+});
+
+test("Linkly 缺少可冻结环境时在 Created/provider 调用前失败关闭", async () => {
+  const ledger = new MemoryLedger();
+  const provider = new FakeProvider("linkly-cloud");
+  provider.providerEnvironment = undefined;
+  const service = createService({ ledger, provider });
+
+  await assert.rejects(
+    () => service.startAttempt({ ...input(), provider: "linkly-cloud" }),
+    PaymentAttemptStateError,
+  );
+  assert.equal(ledger.attempts.size, 0);
+  assert.equal(provider.submitCalls, 0);
+});
+
+test("旧 Linkly Submitted 先强匹配冻结环境，再只恢复原 session；不匹配时不访问 provider", async () => {
+  const ledger = new MemoryLedger();
+  const provider = new FakeProvider("linkly-cloud");
+  provider.recoverResult = async (value) => {
+    assert.equal(value.providerEnvironment, "Sandbox");
+    assert.equal(value.references.sessionId, "legacy-session");
+    return result("Declined", { sessionId: "legacy-session" });
+  };
+  const submitted = attempt({
+    attemptId: "legacy-submitted",
+    idempotencyKey: "legacy-key",
+    provider: "linkly-cloud",
+    state: "Submitted",
+    references: references({ sessionId: "legacy-session" }),
+  });
+  ledger.seed(submitted, true);
+  const service = createService({
+    ledger,
+    provider,
+    legacyPaymentRecoveryEnvironment: async (value) => {
+      assert.equal(value.attemptId, submitted.attemptId);
+      return "Sandbox";
+    },
+  });
+
+  const recovered = await service.recoverAttempt(submitted.attemptId);
+  assert.equal(recovered.attempt.state, "Declined");
+  assert.equal(recovered.attempt.providerEnvironment, "Sandbox");
+  assert.equal(provider.recoverCalls, 1);
+
+  const mismatchLedger = new MemoryLedger();
+  const mismatchProvider = new FakeProvider("linkly-cloud");
+  const mismatch = { ...submitted, attemptId: "legacy-mismatch" };
+  mismatchLedger.seed(mismatch, true);
+  const mismatchService = createService({
+    ledger: mismatchLedger,
+    provider: mismatchProvider,
+    legacyPaymentRecoveryEnvironment: async () => null,
+  });
+  const blocked = await mismatchService.recoverAttempt(mismatch.attemptId);
+  assert.equal(blocked.attempt.state, "Unknown");
+  assert.equal(blocked.attempt.lastErrorCode, "LINKLY_RECOVERY_ENVIRONMENT_REQUIRED");
+  assert.equal(mismatchProvider.recoverCalls, 0);
+});
+
+test("旧 Linkly 无 session 的 Submitted attempt 只进入明确 Unknown，不猜当前环境或 create", async () => {
+  const ledger = new MemoryLedger();
+  const provider = new FakeProvider("linkly-cloud");
+  const submitted = attempt({
+    attemptId: "legacy-no-session",
+    provider: "linkly-cloud",
+    state: "Submitted",
+    references: references(),
+  });
+  ledger.seed(submitted, true);
+  const service = createService({ ledger, provider });
+  const blocked = await service.recoverAttempt(submitted.attemptId);
+  assert.equal(blocked.attempt.state, "Unknown");
+  assert.equal(blocked.attempt.lastErrorCode, "LINKLY_RECOVERY_ENVIRONMENT_REQUIRED");
+  assert.equal(provider.submitCalls, 0);
+  assert.equal(provider.recoverCalls, 0);
+});
+
+test("旧 Linkly reconciliation 被停止时保留原 Submitted，不因 resolver 异常写 Unknown", async () => {
+  const ledger = new MemoryLedger();
+  const provider = new FakeProvider("linkly-cloud");
+  const submitted = attempt({
+    attemptId: "legacy-aborted",
+    provider: "linkly-cloud",
+    state: "Submitted",
+    references: references({ sessionId: "legacy-session" }),
+  });
+  ledger.seed(submitted, true);
+  const controller = new AbortController();
+  const service = createService({
+    ledger,
+    provider,
+    legacyPaymentRecoveryEnvironment: async (value, control) => {
+      assert.equal(value.attemptId, submitted.attemptId);
+      assert.equal(control?.signal, controller.signal);
+      controller.abort();
+      return "Sandbox";
+    },
+  });
+
+  const recovered = await service.recoverAttempt(submitted.attemptId, {
+    signal: controller.signal,
+    deadlineAtMs: Date.now() + 180_000,
+  });
+  assert.equal(recovered.attempt.state, "Submitted");
+  assert.equal(recovered.attempt.providerEnvironment, undefined);
+  assert.equal(provider.recoverCalls, 0);
 });
 
 test("Approved 卡响应缺失或换绑证据时进入 Unknown，绝不持久化或宣称成功", async () => {
@@ -1058,6 +1188,42 @@ test("受控恢复 deadline exceeded 即使 signal 尚未 abort 也保留 Pendin
   assert.equal(recovered.attempt.references.checkoutId, pending.references.checkoutId);
 });
 
+test("Linkly 受控恢复 abort/deadline 只停止查询，不把 Pending 写成 Unknown", async () => {
+  for (const [responseCode, abort] of [
+    ["LINKLY_RECOVERY_ABORTED", true],
+    ["LINKLY_RECOVERY_DEADLINE_EXCEEDED", false],
+  ] as const) {
+    const ledger = new MemoryLedger();
+    const provider = new AbortableFakeProvider("linkly-cloud");
+    const pending = attempt({
+      attemptId: `attempt-linkly-${responseCode.toLowerCase()}`,
+      provider: "linkly-cloud",
+      state: "Pending",
+    });
+    ledger.seed(pending, true);
+    ledger.failUpdateWhenState = "Unknown";
+    const controller = new AbortController();
+    provider.recoverWithControlResult = async () => {
+      if (abort) controller.abort();
+      return {
+        ...result("Unknown"),
+        responseCode,
+      };
+    };
+
+    const recovered = await createService({ ledger, provider }).recoverAttempt(
+      pending.attemptId,
+      {
+        signal: controller.signal,
+        deadlineAtMs: Date.parse(pending.createdAtIso) + 180_000,
+      },
+    );
+
+    assert.equal(recovered.attempt.state, "Pending");
+    assert.equal((await ledger.get(pending.attemptId))?.state, "Pending");
+  }
+});
+
 test("受控恢复的其他 Unknown（包括未 abort 或短码缺失）仍按原逻辑持久化", async () => {
   const ledger = new MemoryLedger();
   const provider = new AbortableFakeProvider("square");
@@ -1428,6 +1594,7 @@ test("Unknown 恢复复用原 attempt、OrderGuid 和幂等键，并合并所有
   const service = createService({ ledger, provider });
   const original = attempt({
     provider: "linkly-cloud",
+    providerEnvironment: "Sandbox",
     state: "Unknown",
     references: references({
       sessionId: "session-1",
@@ -1939,6 +2106,26 @@ class MemoryLedger implements PaymentAttemptLedgerPort {
     return value ? clone(value) : null;
   }
 
+  public async verifyProviderEnvironment(
+    expected: PaymentAttempt,
+    environment: string,
+  ): Promise<boolean> {
+    const current = this.attempts.get(expected.attemptId);
+    if (
+      !current ||
+      current.state === "Created" ||
+      current.providerEnvironment ||
+      current.provider !== expected.provider ||
+      current.operation !== expected.operation ||
+      current.amount.cents !== expected.amount.cents
+    ) return false;
+    this.attempts.set(
+      expected.attemptId,
+      clone({ ...current, providerEnvironment: environment }),
+    );
+    return true;
+  }
+
   public async findBlocking(orderGuid: string): Promise<PaymentAttempt | null> {
     const blocking = this.blockingFor(orderGuid);
     return blocking ? clone(blocking) : null;
@@ -2007,8 +2194,13 @@ class FakeProvider implements OnlinePaymentPort {
     result("Cancelled");
   public refundResult: (attempt: PaymentAttempt) => Promise<PaymentProviderResult> = async () =>
     result("Approved");
+  /** Linkly 新 attempt 必须在 provider 边界冻结环境。 */
+  public providerEnvironment: string | undefined;
 
-  public constructor(public readonly provider: PaymentProvider) {}
+  public constructor(public readonly provider: PaymentProvider) {
+    this.providerEnvironment =
+      provider === "linkly-cloud" ? "test-environment" : undefined;
+  }
 
   public async submit(value: PaymentAttempt): Promise<PaymentProviderResult> {
     this.submitCalls += 1;
@@ -2062,6 +2254,7 @@ function createService(options: {
   providers?: readonly FakeProvider[];
   drafts?: DraftGuard;
   online?: boolean;
+  legacyPaymentRecoveryEnvironment?: LegacyPaymentRecoveryEnvironmentResolver;
   trustedRefundReferenceSeed?: TrustedRefundReferenceSeedHook;
 }): PaymentAttemptService {
   const providers = options.providers ?? [options.provider ?? new FakeProvider("square")];
@@ -2084,6 +2277,9 @@ function createService(options: {
     createAttemptId: () => `attempt-${++id}`,
     createIdempotencyKey: () => `key-${id}`,
     nowIso: () => "2026-07-28T00:00:00.000Z",
+    ...(options.legacyPaymentRecoveryEnvironment
+      ? { legacyPaymentRecoveryEnvironment: options.legacyPaymentRecoveryEnvironment }
+      : {}),
     ...(options.trustedRefundReferenceSeed
       ? {
           trustedRefundReferenceSeed:
@@ -2165,6 +2361,9 @@ function attempt(
     createdAtIso: overrides.createdAtIso ?? "2026-07-28T00:00:00.000Z",
     updatedAtIso: overrides.updatedAtIso ?? "2026-07-28T00:00:00.000Z",
     lastErrorCode: overrides.lastErrorCode ?? null,
+    ...(overrides.providerEnvironment !== undefined
+      ? { providerEnvironment: overrides.providerEnvironment }
+      : {}),
   };
 }
 

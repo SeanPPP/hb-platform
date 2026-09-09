@@ -174,6 +174,40 @@ test("混合现金、卡和券严格按 allocation 顺序执行，provider 只�
   );
 });
 
+test("首笔卡退款 ACK pending 时暂停后续 allocation，恢复先确认原退款再提交第二笔", async () => {
+  let allowFirstAcknowledgement = false;
+  const acknowledgements: string[] = [];
+  const harness = createHarness({
+    async onAllocationFinalized(input) {
+      acknowledgements.push(input.allocation.durableAttemptId ?? "missing");
+      return input.allocation.index !== 0 || allowFirstAcknowledgement;
+    },
+  });
+  const command = receiptCommand(planForMethods(["card", "card"]));
+
+  const first = await harness.orchestrator.execute(command);
+
+  assert.equal(first.status, "unknown");
+  assert.equal(harness.online.submitCalls.length, 1);
+  assert.deepEqual(
+    (await harness.ledger.load(command.actionId))?.allocations.map(
+      (allocation) => allocation.status,
+    ),
+    ["completed", "created"],
+  );
+
+  allowFirstAcknowledgement = true;
+  const recovered = await harness.orchestrator.recover({
+    actionId: command.actionId,
+    recoveryKey: first.status === "unknown" ? first.recoveryKey : null,
+  });
+
+  assert.equal(recovered.status, "completed");
+  assert.equal(harness.online.submitCalls.length, 2);
+  assert.equal(harness.online.recoverCalls.length, 0);
+  assert.ok(acknowledgements.length >= 2);
+});
+
 test("同 actionId 并发重复点击共享同一执行，且后续重放只返回原 returnOrderGuid", async () => {
   const harness = createHarness();
   const command = receiptCommand(offlineCashPlan());
@@ -548,7 +582,12 @@ test("不同门店、设备或收银员均不能恢复原 action", async () => {
   }
 });
 
-function createHarness(): Readonly<{
+function createHarness(input: Readonly<{
+  onAllocationFinalized?(input: Readonly<{
+    action: DurableReturnAction;
+    allocation: DurableReturnAllocation;
+  }>): Promise<boolean>;
+}> = {}): Readonly<{
   orchestrator: DurableReturnExecutionOrchestrator;
   ledger: MemoryReturnLedger;
   cash: ScriptedCashRefund;
@@ -576,6 +615,7 @@ function createHarness(): Readonly<{
     },
     createOpaqueId: (kind) => `${kind}-${++nextId}`,
     nowIso: () => "2026-07-28T01:02:03.000Z",
+    onAllocationFinalized: input.onAllocationFinalized,
   };
   return {
     orchestrator: new DurableReturnExecutionOrchestrator(options),

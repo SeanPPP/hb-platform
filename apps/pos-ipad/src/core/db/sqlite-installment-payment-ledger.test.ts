@@ -366,6 +366,102 @@ test("attempt 仅按合法状态与完整 expected CAS，Approved material 和�
   });
 });
 
+test("Linkly 分期 ACK 只在本地完成后写 marker，环境冻结并拒绝重复标记", async () => {
+  await withMigratedDatabase(async (connection) => {
+    const encryptor = new RecordingEncryptor();
+    const actions = new SqliteInstallmentActionStore(connection, encryptor, () => NOW);
+    await actions.createIfNone(createAction());
+    await actions.transition({ actionId: ACTION_ID, expectedState: "Created", nextState: "ProviderPending", terminal: { storeCode: STORE_CODE, deviceCode: DEVICE_CODE } });
+    const store = new SqliteInstallmentProviderAttemptStore(connection, encryptor, () => NOW);
+    const created = linklyPurchasePlan().attempts[0]!;
+    await store.bindPlanOrGet(linklyPurchasePlan());
+    const submitted = withAttempt(created, { state: "Submitted", updatedAtIso: "2026-07-29T01:00:00.001Z", references: { ...created.attempt.references, sessionId: "linkly-session-1" } });
+    assert.equal(await store.compareAndUpdateAttempt({ expected: created, nextAttempt: submitted.attempt }), true);
+    const approved = withAttempt(submitted, { state: "Approved", updatedAtIso: "2026-07-29T01:00:00.002Z", receiptText: "PRIVATE RECEIPT", references: { ...submitted.attempt.references, txnRef: "SQ-TXN", rfn: "LINKLY-RFN" } });
+    assert.equal(await store.compareAndUpdateAttempt({ expected: submitted, nextAttempt: approved.attempt, approvedMaterial: cardMaterial("linkly-cloud") }), true);
+    assert.equal((await store.get(ATTEMPT_ID))?.providerEnvironment, "production");
+    assert.equal(await store.canProviderAcknowledged(approved.attempt), false);
+    await actions.transition({ actionId: ACTION_ID, expectedState: "ProviderPending", nextState: "Approved", terminal: { storeCode: STORE_CODE, deviceCode: DEVICE_CODE } });
+    await actions.transition({ actionId: ACTION_ID, expectedState: "Approved", nextState: "BackendPending", terminal: { storeCode: STORE_CODE, deviceCode: DEVICE_CODE } });
+    await actions.complete({ actionId: ACTION_ID, expectedState: "BackendPending", terminal: { storeCode: STORE_CODE, deviceCode: DEVICE_CODE } });
+    assert.equal((await connection.getFirst<{ resolution: unknown }>("SELECT resolution FROM installment_actions WHERE action_id = ?", [ACTION_ID]))?.resolution, "Completed");
+    assert.ok(await store.loadApprovedMaterial(ATTEMPT_ID));
+    assert.equal(await store.canProviderAcknowledged(approved.attempt), true);
+    assert.equal((await connection.getFirst<{ provider_session_id: unknown }>("SELECT provider_session_id FROM installment_provider_attempts WHERE attempt_id = ?", [ATTEMPT_ID]))?.provider_session_id, "linkly-session-1");
+    assert.equal((await actions.loadProviderAcknowledgementPending({ storeCode: STORE_CODE, deviceCode: DEVICE_CODE }))?.action.actionId, ACTION_ID);
+    const current = await store.get(ATTEMPT_ID);
+    assert.ok(current);
+    assert.equal(await store.markProviderAcknowledged(current, "2026-07-29T01:01:00.000Z"), true);
+    assert.equal((await store.get(ATTEMPT_ID))?.providerAcknowledgedAtIso, "2026-07-29T01:01:00.000Z");
+    assert.equal(await actions.loadProviderAcknowledgementPending({ storeCode: STORE_CODE, deviceCode: DEVICE_CODE }), null);
+    assert.equal(await store.markProviderAcknowledged(current, "2026-07-29T01:02:00.000Z"), false);
+  });
+});
+
+test("无 session 的 Linkly Declined 不建立 ACK 冷启动门禁", async () => {
+  await withMigratedDatabase(async (connection) => {
+    const encryptor = new RecordingEncryptor();
+    const actions = new SqliteInstallmentActionStore(connection, encryptor, () => NOW);
+    await actions.createIfNone(createAction());
+    await actions.transition({ actionId: ACTION_ID, expectedState: "Created", nextState: "ProviderPending", terminal: { storeCode: STORE_CODE, deviceCode: DEVICE_CODE } });
+    const store = new SqliteInstallmentProviderAttemptStore(connection, encryptor, () => NOW);
+    const created = linklyPurchasePlan().attempts[0]!;
+    await store.bindPlanOrGet(linklyPurchasePlan());
+    const submitted = withAttempt(created, { state: "Submitted", updatedAtIso: "2026-07-29T01:00:00.001Z" });
+    assert.equal(await store.compareAndUpdateAttempt({ expected: created, nextAttempt: submitted.attempt }), true);
+    const declined = withAttempt(submitted, { state: "Declined", updatedAtIso: "2026-07-29T01:00:00.002Z" });
+    assert.equal(await store.compareAndUpdateAttempt({ expected: submitted, nextAttempt: declined.attempt }), true);
+    await actions.decline({ actionId: ACTION_ID, expectedState: "ProviderPending", terminal: { storeCode: STORE_CODE, deviceCode: DEVICE_CODE } });
+    assert.equal(await actions.loadProviderAcknowledgementPending({ storeCode: STORE_CODE, deviceCode: DEVICE_CODE }), null);
+  });
+});
+
+test("旧 Linkly Pending 仅由精确 server session 冻结环境，之后仍恢复原 attempt", async () => {
+  await withMigratedDatabase(async (connection) => {
+    const encryptor = new RecordingEncryptor();
+    const actions = new SqliteInstallmentActionStore(connection, encryptor, () => NOW);
+    await actions.createIfNone(createAction());
+    await actions.transition({ actionId: ACTION_ID, expectedState: "Created", nextState: "ProviderPending", terminal: { storeCode: STORE_CODE, deviceCode: DEVICE_CODE } });
+    const store = new SqliteInstallmentProviderAttemptStore(connection, encryptor, () => NOW);
+    const plan = legacyLinklyPurchasePlan();
+    const created = plan.attempts[0]!;
+    await store.bindPlanOrGet(plan);
+    const submitted = withAttempt(created, { state: "Submitted", updatedAtIso: "2026-07-29T01:00:00.001Z", references: { ...created.attempt.references, sessionId: "server-active-session" } });
+    assert.equal(await store.compareAndUpdateAttempt({ expected: created, nextAttempt: submitted.attempt }), true);
+    const pending = withAttempt(submitted, { state: "Pending", updatedAtIso: "2026-07-29T01:00:00.002Z" });
+    assert.equal(await store.compareAndUpdateAttempt({ expected: submitted, nextAttempt: pending.attempt }), true);
+    assert.equal(await store.findLegacyLinklyAttemptForSession({ storeCode: STORE_CODE, deviceCode: DEVICE_CODE }, "other-session", created.attempt.idempotencyKey), null);
+    const found = await store.findLegacyLinklyAttemptForSession({ storeCode: STORE_CODE, deviceCode: DEVICE_CODE }, "server-active-session", created.attempt.idempotencyKey);
+    assert.equal(found?.attemptId, ATTEMPT_ID);
+    assert.equal(await store.verifyProviderEnvironment(found!, "production"), true);
+    assert.equal((await store.get(ATTEMPT_ID))?.providerEnvironment, "production");
+    assert.equal((await store.get(ATTEMPT_ID))?.references.sessionId, "server-active-session");
+  });
+});
+
+test("M43 升级后的旧 Linkly session 仍可窄查并 CAS 冻结环境", async () => {
+  await withDatabase(async (connection) => {
+    const encryptor = new RecordingEncryptor();
+    await applyMigrations(connection, () => NOW, POS_DATABASE_MIGRATIONS.filter((migration) => migration.version <= 43));
+    const actions = new SqliteInstallmentActionStore(connection, encryptor, () => NOW);
+    await actions.createIfNone(createAction());
+    await actions.transition({ actionId: ACTION_ID, expectedState: "Created", nextState: "ProviderPending", terminal: { storeCode: STORE_CODE, deviceCode: DEVICE_CODE } });
+    const record = legacyLinklyPurchasePlan().attempts[0]!;
+    const submitted = withAttempt(record, { state: "Submitted", updatedAtIso: "2026-07-29T01:00:00.001Z", references: { ...record.attempt.references, sessionId: "m43-active-session" } });
+    await connection.run("INSERT INTO installment_provider_plans (action_id, created_at_iso) VALUES (?, ?)", [ACTION_ID, NOW]);
+    await connection.run(`INSERT INTO installment_provider_attempts (attempt_id, action_id, payment_guid, source_payment_guid, original_tender_evidence_id, source_attempt_id, sequence, provider, operation, amount_cents, state, idempotency_key, payload_revision, protected_payload_ciphertext, created_at_iso, updated_at_iso) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`, [record.attempt.attemptId, record.actionId, record.paymentGuid, record.sourcePaymentGuid, record.originalTenderEvidenceId, record.sourceAttemptId, record.sequence, record.attempt.provider, record.attempt.operation, record.attempt.amount.cents, record.attempt.state, record.attempt.idempotencyKey, await legacyAttemptCiphertext(encryptor, record), record.attempt.createdAtIso, record.attempt.updatedAtIso]);
+    await connection.run("UPDATE installment_provider_attempts SET state = ?, protected_payload_ciphertext = ?, updated_at_iso = ? WHERE attempt_id = ?", [submitted.attempt.state, await legacyAttemptCiphertext(encryptor, submitted), submitted.attempt.updatedAtIso, ATTEMPT_ID]);
+    const m44 = POS_DATABASE_MIGRATIONS.find((migration) => migration.version === 44);
+    assert.ok(m44);
+    await applyMigrations(connection, () => NOW, [m44]);
+    const store = new SqliteInstallmentProviderAttemptStore(connection, encryptor, () => NOW);
+    const found = await store.findLegacyLinklyAttemptForSession({ storeCode: STORE_CODE, deviceCode: DEVICE_CODE }, "m43-active-session", submitted.attempt.idempotencyKey.replaceAll("-", "").toUpperCase());
+    assert.equal(found?.attemptId, ATTEMPT_ID);
+    assert.equal(await store.verifyProviderEnvironment(found!, "production"), true);
+    assert.equal((await store.get(ATTEMPT_ID))?.providerEnvironment, "production");
+  });
+});
+
 test("cash settlement 全 plan 原子 Prepared→Approved、幂等并同事务生成原付款证据", async () => {
   await withMigratedDatabase(async (connection) => {
     const encryptor = new RecordingEncryptor();
@@ -1045,6 +1141,41 @@ function purchasePlan(
   });
 }
 
+function linklyPurchasePlan(): InstallmentProviderAttemptPlan {
+  const plan = purchasePlan();
+  const record = plan.attempts[0]!;
+  return Object.freeze({
+    ...plan,
+    attempts: Object.freeze([Object.freeze({
+      ...record,
+      attempt: Object.freeze({ ...record.attempt, provider: "linkly-cloud", providerEnvironment: "production" }),
+    })]),
+  });
+}
+
+function legacyLinklyPurchasePlan(): InstallmentProviderAttemptPlan {
+  const plan = purchasePlan();
+  const record = plan.attempts[0]!;
+  return Object.freeze({
+    ...plan,
+    attempts: Object.freeze([Object.freeze({
+      ...record,
+      attempt: Object.freeze({ ...record.attempt, provider: "linkly-cloud" }),
+    })]),
+  });
+}
+
+async function legacyAttemptCiphertext(
+  encryptor: RecordingEncryptor,
+  record: InstallmentProviderAttemptRecord,
+): Promise<Uint8Array> {
+  return encryptor.encrypt(JSON.stringify({
+    format: "hb-pos-installment-provider-attempt-v1",
+    aad: { revision: 1, actionId: record.actionId, attemptId: record.attempt.attemptId, paymentGuid: record.paymentGuid, sequence: record.sequence },
+    record,
+  }));
+}
+
 function cashPlan(): InstallmentProviderAttemptPlan {
   return Object.freeze({
     actionId: ACTION_ID,
@@ -1266,7 +1397,7 @@ function voucherIntent(
   });
 }
 
-function cardMaterial(): Extract<
+function cardMaterial(provider: "square" | "linkly-cloud" = "square"): Extract<
   InstallmentApprovedPaymentMaterial,
   { kind: "card" }
 > {
@@ -1274,9 +1405,9 @@ function cardMaterial(): Extract<
     kind: "card" as const,
     evidence: Object.freeze({
       version: 1 as const,
-      provider: "square" as const,
+      provider,
       operation: "purchase" as const,
-      processor: "Square" as const,
+      processor: provider === "linkly-cloud" ? "ANZ" as const : "Square" as const,
       txnRef: "SQ-TXN",
       authCode: "AUTH",
       cardType: "VISA",

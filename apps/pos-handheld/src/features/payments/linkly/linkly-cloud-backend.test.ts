@@ -29,6 +29,7 @@ const attempt = (overrides: Partial<PaymentAttempt> = {}): PaymentAttempt => ({
   attemptId: "attempt-1", idempotencyKey: "idem-1", orderGuid: "order-1", provider: "linkly-cloud", operation: "purchase",
   amount: { currency: "AUD", cents: 1234 }, state: "Created",
   references: { checkoutId: null, paymentId: null, sessionId: null, txnRef: null, rfn: null, voucherReservationToken: null },
+  providerEnvironment: "Sandbox",
   createdAtIso: "2026-07-28T00:00:00.000Z", updatedAtIso: "2026-07-28T00:00:00.000Z", lastErrorCode: null,
   ...overrides,
 });
@@ -481,7 +482,7 @@ test("成功、拒绝和显式取消映射为支付结果，保留 SessionId/Txn
   transport.responses.push(
     none(),
     ok({
-      ...session({ status: "Completed", transactionSuccess: true }),
+      ...session({ status: "Completed", transactionSuccess: true, responseCode: "00" }),
       cardTransaction: cardTransaction({ rfn: "TXN-1" }),
     }),
     none(),
@@ -634,6 +635,7 @@ test("create 响应丢失后以持久化 UID 强匹配 active，再 status/recov
     sessionId: "session-recovery",
     txnRef: "TXN-RECOVERY",
     status: "Pending",
+    recoveryAction: "Retry",
     notifications: [transactionNotification({ uid: recoveryUid })],
   });
   transport.responses.push(
@@ -782,7 +784,7 @@ test("退款响应丢失用独立 UID 和原 RFN 强匹配，不混淆金额方�
       checkoutId: null,
       paymentId: null,
       sessionId: null,
-      txnRef: "TXN-ORIGINAL",
+      txnRef: "TXN-1",
       rfn: "RFN-ORIGINAL",
       voucherReservationToken: null,
     },
@@ -792,6 +794,8 @@ test("退款响应丢失用独立 UID 和原 RFN 强匹配，不混淆金额方�
   assert.equal(result.references.sessionId, "refund-session");
   assert.equal(result.references.txnRef, "TXN-REFUND-RECOVERY");
   assert.equal(result.references.rfn, "RFN-ORIGINAL");
+  assert.ok((transport.requests[2]?.timeoutMs ?? 0) <= 180_000);
+  assert.ok((transport.requests[2]?.timeoutMs ?? 0) > 170_000);
   assert.deepEqual(
     (transport.requests[1]?.data as { purchaseAnalysisData?: unknown })
       .purchaseAnalysisData,
@@ -991,12 +995,12 @@ test("Unknown 可通过既有 SessionId 恢复；旧 attempt 无 UID 时零网�
   const transport = new FakeTransport();
   transport.responses.push(
     ok({
-      ...session({ status: "Completed", transactionSuccess: true, txnRef: "TXN-R" }),
+      ...session({ status: "Completed", transactionSuccess: true, responseCode: "00", txnRef: "TXN-R" }),
       cardTransaction: cardTransaction({ txnRef: "TXN-R", rfn: "TXN-R" }),
     }),
     none(),
     ok({
-      ...session({ status: "Completed", transactionSuccess: true, txnRef: "TXN-REFUND" }),
+      ...session({ status: "Completed", transactionSuccess: true, responseCode: "00", txnRef: "TXN-REFUND" }),
       cardTransaction: cardTransaction({ txnRef: "TXN-REFUND", rfn: "RFN-1" }),
     }),
   );
@@ -1074,7 +1078,7 @@ const cardTransaction = (overrides: Record<string, unknown> = {}) => ({
 
 async function recoverFromSession(backendSession: unknown) {
   const transport = new FakeTransport();
-  transport.responses.push(ok(backendSession));
+  transport.responses.push(ok(backendSession), ok(backendSession));
   const provider = new LinklyCloudBackendProvider(
     new LinklyCloudBackendApi(transport),
     providerOptions(),
@@ -1085,7 +1089,7 @@ async function recoverFromSession(backendSession: unknown) {
       checkoutId: null,
       paymentId: null,
       sessionId: "session-original",
-      txnRef: "TXN-ORIGINAL",
+      txnRef: "TXN-1",
       rfn: "RFN-ORIGINAL",
       voucherReservationToken: null,
     },
@@ -1109,7 +1113,7 @@ test("未知 Linkly 状态失败关闭为 Unknown，并只保留原 SessionId �
   assert.equal(recovered.result.references.sessionId, "session-original");
   assert.equal(
     recovered.transport.requests[0]?.url,
-    "/api/v1/linkly/cloud-backend/transactions/session-original/recover",
+    "/api/v1/linkly/cloud-backend/transactions/session-original/status",
   );
 
   const requestCountBeforeCancel = recovered.transport.requests.length;
@@ -1314,7 +1318,7 @@ test("批准证据金额、SessionId、TxnRef 或退款 RFN 不一致时失败�
   }>[] = [
     {
       paymentAttempt: attempt(),
-      backendSession: session({ status: "Completed", transactionSuccess: true }),
+      backendSession: session({ status: "Completed", transactionSuccess: true, responseCode: "00" }),
       evidence: cardTransaction({ amountCents: 999 }),
     },
     {
@@ -1333,6 +1337,7 @@ test("批准证据金额、SessionId、TxnRef 或退款 RFN 不一致时失败�
         sessionId: "session-other",
         status: "Completed",
         transactionSuccess: true,
+        responseCode: "00",
       }),
       evidence: cardTransaction(),
     },
@@ -1351,6 +1356,7 @@ test("批准证据金额、SessionId、TxnRef 或退款 RFN 不一致时失败�
       backendSession: session({
         status: "Completed",
         transactionSuccess: true,
+        responseCode: "00",
         txnRef: "TXN-OTHER",
       }),
       evidence: cardTransaction({ txnRef: "TXN-OTHER" }),
@@ -1372,6 +1378,7 @@ test("批准证据金额、SessionId、TxnRef 或退款 RFN 不一致时失败�
       backendSession: session({
         status: "Completed",
         transactionSuccess: true,
+        responseCode: "00",
         txnRef: "TXN-REFUND",
       }),
       evidence: cardTransaction({
@@ -1384,6 +1391,9 @@ test("批准证据金额、SessionId、TxnRef 或退款 RFN 不一致时失败�
   for (const item of cases) {
     const transport = new FakeTransport();
     transport.responses.push(ok({
+      ...item.backendSession,
+      cardTransaction: item.evidence,
+    }), ok({
       ...item.backendSession,
       cardTransaction: item.evidence,
     }));
@@ -1400,7 +1410,11 @@ test("批准证据金额、SessionId、TxnRef 或退款 RFN 不一致时失败�
       : await provider.submit(item.paymentAttempt);
 
     assert.equal(result.state, "Unknown");
-    assert.equal(result.responseCode, "LINKLY_CARD_EVIDENCE_MISMATCH");
+    assert.ok(
+      ["LINKLY_CARD_EVIDENCE_MISMATCH", "LINKLY_RECOVERY_CONTEXT_MISMATCH"].includes(
+        result.responseCode ?? "",
+      ),
+    );
     assert.equal(result.protectedSyncEvidence, undefined);
   }
 });
@@ -1437,7 +1451,7 @@ test("recover 只有在 Session/Txn/金额证据完全一致时恢复 Approved",
   assert.equal(result.protectedSyncEvidence?.refundReference, "RFN-1");
   assert.equal(
     transport.requests[0]?.url,
-    "/api/v1/linkly/cloud-backend/transactions/session-1/recover",
+    "/api/v1/linkly/cloud-backend/transactions/session-1/status",
   );
 });
 
@@ -1472,4 +1486,266 @@ test("Pending、Declined 和 Cancelled 即使 DTO 存在也不携带 evidence", 
     assert.notEqual(result.state, "Approved");
     assert.equal(result.protectedSyncEvidence, undefined);
   }
+});
+
+test("Linkly 批准必须使用 WPF 批准码且顶层与 cardTransaction 证据一致", async () => {
+  for (const approvalCode of ["00", "08", "11"]) {
+    const transport = new FakeTransport();
+    transport.responses.push(
+      none(),
+      ok({
+        ...session({
+          status: "Completed",
+          transactionSuccess: true,
+          responseCode: approvalCode,
+          responseText: "APPROVED",
+        }),
+        cardTransaction: cardTransaction({ responseCode: approvalCode, responseText: "APPROVED" }),
+      }),
+    );
+    const provider = new LinklyCloudBackendProvider(new LinklyCloudBackendApi(transport), providerOptions());
+    const result = await provider.submit(attempt());
+    assert.equal(result.state, "Approved");
+  }
+
+  for (const conflicting of [
+    { responseCode: "05", cardCode: "00", responseText: "DECLINED", cardText: "APPROVED" },
+    { responseCode: "00", cardCode: "05", responseText: "APPROVED", cardText: "DECLINED" },
+    { responseCode: "99", cardCode: "99", responseText: "APPROVED", cardText: "APPROVED" },
+  ]) {
+    const transport = new FakeTransport();
+    transport.responses.push(
+      none(),
+      ok({
+        ...session({
+          status: "Completed",
+          transactionSuccess: true,
+          responseCode: conflicting.responseCode,
+          responseText: conflicting.responseText,
+        }),
+        cardTransaction: cardTransaction({
+          responseCode: conflicting.cardCode,
+          responseText: conflicting.cardText,
+        }),
+      }),
+    );
+    const provider = new LinklyCloudBackendProvider(new LinklyCloudBackendApi(transport), providerOptions());
+    const result = await provider.submit(attempt());
+    assert.equal(result.state, "Unknown");
+    assert.equal(result.protectedSyncEvidence, undefined);
+  }
+});
+
+test("cancel 先读取同 Session/环境的最新状态；只有当前可取消上下文才发送 CANCEL", async () => {
+  const transport = new FakeTransport();
+  transport.responses.push(
+    ok(session({ status: "Pending", transactionSuccess: null, cancelKeyFlag: false, okKeyFlag: true })),
+    ok(session({ status: "Pending", transactionSuccess: null, cancelKeyFlag: true })),
+    ok(session({ status: "Cancelled", transactionSuccess: false })),
+  );
+  const provider = new LinklyCloudBackendProvider(new LinklyCloudBackendApi(transport), providerOptions());
+  const references = { checkoutId: null, paymentId: null, sessionId: "session-1", txnRef: "TXN-1", rfn: "RFN-1", voucherReservationToken: null };
+
+  const okOnly = await provider.cancel(attempt({ state: "Pending", references }));
+  assert.equal(okOnly.state, "Unknown");
+  assert.equal(transport.requests.length, 1);
+
+  const cancelled = await provider.cancel(attempt({ state: "Pending", references }));
+  assert.equal(cancelled.state, "Cancelled");
+  assert.deepEqual(transport.requests.slice(1).map((request) => request.url), [
+    "/api/v1/linkly/cloud-backend/transactions/session-1/status",
+    "/api/v1/linkly/cloud-backend/transactions/session-1/sendkey",
+  ]);
+});
+
+test("cancel display flag 对齐 WPF 的布尔/数字/字符串值；非法最新 display 失败关闭", async () => {
+  for (const flag of [true, 1, "yes", "TRUE", "1"] as const) {
+    const transport = new FakeTransport();
+    transport.responses.push(
+      ok(session({
+        status: "Pending",
+        notifications: [{
+          type: "display",
+          payloadJson: JSON.stringify({ CancelKeyFlag: flag }),
+          receivedAt: "2026-09-09T00:00:00.000Z",
+        }],
+      })),
+      ok(session({ status: "Cancelled", transactionSuccess: false })),
+    );
+    const provider = new LinklyCloudBackendProvider(new LinklyCloudBackendApi(transport), providerOptions());
+    const result = await provider.cancel(attempt({ state: "Pending", references: { checkoutId: null, paymentId: null, sessionId: "session-1", txnRef: "TXN-1", rfn: null, voucherReservationToken: null } }));
+    assert.equal(result.state, "Cancelled");
+    assert.equal(transport.requests.length, 2);
+  }
+
+  const invalidTransport = new FakeTransport();
+  invalidTransport.responses.push(ok(session({
+    status: "Pending",
+    cancelKeyFlag: true,
+    notifications: [{
+      type: "display",
+      payloadJson: JSON.stringify({ CancelKeyFlag: "maybe" }),
+      receivedAt: "2026-09-09T00:00:00.000Z",
+    }],
+  })));
+  const invalidProvider = new LinklyCloudBackendProvider(new LinklyCloudBackendApi(invalidTransport), providerOptions());
+  const invalid = await invalidProvider.cancel(attempt({ state: "Pending", references: { checkoutId: null, paymentId: null, sessionId: "session-1", txnRef: "TXN-1", rfn: null, voucherReservationToken: null } }));
+  assert.equal(invalid.state, "Unknown");
+  assert.equal(invalidTransport.requests.length, 1);
+});
+
+test("cancel 对已终态只返回状态，不发送 sendkey；状态操作使用 240 秒预算", async () => {
+  const transport = new FakeTransport();
+  transport.responses.push(ok(session({ status: "Completed", transactionSuccess: false, responseCode: "05" })));
+  const provider = new LinklyCloudBackendProvider(new LinklyCloudBackendApi(transport), providerOptions());
+  const result = await provider.cancel(attempt({ state: "Pending", references: { checkoutId: null, paymentId: null, sessionId: "session-1", txnRef: "TXN-1", rfn: null, voucherReservationToken: null } }));
+  assert.equal(result.state, "Declined");
+  assert.equal(transport.requests.length, 1);
+  assert.equal(transport.requests[0]?.timeoutMs, 240_000);
+});
+
+test("recover 持久 SessionId 先 status；Pending 无 recoveryAction 不调用 recover", async () => {
+  const transport = new FakeTransport();
+  transport.responses.push(ok(session({ status: "Pending", transactionSuccess: null, recoveryAction: null })));
+  const provider = new LinklyCloudBackendProvider(new LinklyCloudBackendApi(transport), providerOptions());
+  const result = await provider.recover(attempt({ state: "Unknown", references: { checkoutId: null, paymentId: null, sessionId: "session-1", txnRef: "TXN-1", rfn: null, voucherReservationToken: null } }));
+  assert.equal(result.state, "Pending");
+  assert.deepEqual(transport.requests.map((request) => request.url), [
+    "/api/v1/linkly/cloud-backend/transactions/session-1/status",
+  ]);
+});
+
+test("recoverWithControl 为每个 status/recover 请求重算 180 秒剩余预算", async () => {
+  const transport = new FakeTransport();
+  transport.responses.push(
+    ok(session({ status: "Pending", transactionSuccess: null, recoveryAction: "Retry" })),
+    ok(session({ status: "Completed", transactionSuccess: false, responseCode: "05" })),
+  );
+  const provider = new LinklyCloudBackendProvider(new LinklyCloudBackendApi(transport), providerOptions());
+  const result = await provider.recoverWithControl(
+    attempt({
+      state: "Unknown",
+      references: { checkoutId: null, paymentId: null, sessionId: "session-1", txnRef: "TXN-1", rfn: null, voucherReservationToken: null },
+    }),
+    { signal: new AbortController().signal, deadlineAtMs: Date.now() + 180_000 },
+  );
+  assert.equal(result.state, "Declined");
+  const timeouts = transport.requests.map((request) => request.timeoutMs ?? 0);
+  assert.equal(timeouts.length, 2);
+  assert.ok(timeouts[0]! <= 180_000 && timeouts[0]! > 170_000);
+  assert.ok(timeouts[1]! <= timeouts[0]!);
+});
+
+test("recoverWithControl 截止或 abort 后保留 Unknown 且不查询终端", async () => {
+  const transport = new FakeTransport();
+  const provider = new LinklyCloudBackendProvider(new LinklyCloudBackendApi(transport), providerOptions());
+  const controller = new AbortController();
+  controller.abort();
+  const result = await provider.recoverWithControl(
+    attempt({ state: "Pending", references: { checkoutId: null, paymentId: null, sessionId: "session-1", txnRef: "TXN-1", rfn: null, voucherReservationToken: null } }),
+    { signal: controller.signal, deadlineAtMs: Date.now() - 1 },
+  );
+  assert.equal(result.state, "Unknown");
+  assert.equal(result.responseCode, "LINKLY_RECOVERY_DEADLINE_EXCEEDED");
+  assert.equal(transport.requests.length, 0);
+});
+
+test("历史 attempt 缺少 providerEnvironment 时，recover/cancel 必须先 reconciliation，不猜当前环境或发变更请求", async () => {
+  const transport = new FakeTransport();
+  const provider = new LinklyCloudBackendProvider(new LinklyCloudBackendApi(transport), providerOptions());
+  const references = { checkoutId: null, paymentId: null, sessionId: "session-1", txnRef: "TXN-1", rfn: null, voucherReservationToken: null };
+
+  const recovered = await provider.recover(attempt({
+    state: "Unknown",
+    providerEnvironment: null,
+    references,
+  }));
+  const cancelled = await provider.cancel(attempt({
+    state: "Pending",
+    providerEnvironment: null,
+    references,
+  }));
+
+  assert.equal(recovered.state, "Unknown");
+  assert.equal(recovered.responseCode, "LINKLY_RECOVERY_ENVIRONMENT_REQUIRED");
+  assert.equal(cancelled.state, "Unknown");
+  assert.equal(cancelled.responseCode, "LINKLY_CANCEL_ENVIRONMENT_REQUIRED");
+  assert.equal(transport.requests.length, 0);
+});
+
+test("acknowledge 只调用原 SessionId，且校验冻结环境、SessionId、时间戳和终态", async () => {
+  const transport = new FakeTransport();
+  transport.responses.push(ok(session({
+    environment: "Sandbox",
+    status: "Completed",
+    transactionSuccess: false,
+    responseCode: "05",
+    clientAcknowledgedAt: "2026-09-09T00:00:00.000Z",
+  })));
+  const provider = new LinklyCloudBackendProvider(new LinklyCloudBackendApi(transport), providerOptions());
+  await provider.acknowledge({
+    ...attempt({ state: "Declined", references: { checkoutId: null, paymentId: null, sessionId: "session-1", txnRef: "TXN-1", rfn: null, voucherReservationToken: null } }),
+    providerEnvironment: "Sandbox",
+  } as PaymentAttempt & { providerEnvironment: string });
+  assert.equal(transport.requests.length, 1);
+  assert.equal(transport.requests[0]?.url, "/api/v1/linkly/cloud-backend/transactions/session-1/acknowledge");
+});
+
+test("legacy 环境只在当前环境强匹配 SessionId、UID、类型和金额后返回可冻结环境", async () => {
+  const transport = new FakeTransport();
+  const candidate = session({
+    sessionId: "session-1",
+    txnRef: "TXN-1",
+    status: "Completed",
+    transactionSuccess: false,
+    responseCode: "05",
+    clientAcknowledgedAt: "2026-09-09T00:00:00.000Z",
+    notifications: [transactionNotification({ uid: recoveryUid, txnRef: "TXN-1" })],
+  });
+  transport.responses.push(ok(candidate), none(), none());
+  const provider = new LinklyCloudBackendProvider(new LinklyCloudBackendApi(transport), providerOptions());
+  const reconciled = await provider.reconcileLegacy(attempt({
+    idempotencyKey: recoveryUid,
+    providerEnvironment: null,
+    references: { checkoutId: null, paymentId: null, sessionId: "session-1", txnRef: "TXN-1", rfn: null, voucherReservationToken: null },
+  }));
+  assert.deepEqual(reconciled, {
+    environment: "Sandbox",
+    clientAcknowledgedAt: "2026-09-09T00:00:00.000Z",
+  });
+  assert.equal(transport.requests.some((request) => request.method === "POST"), false);
+});
+
+test("冷启动 ACK probe 只发现当前环境 active/resumable 的未 ACK 且 UID 强匹配 Session", async () => {
+  const transport = new FakeTransport();
+  transport.responses.push(
+    ok(session({ sessionId: "session-declined", status: "Completed", transactionSuccess: false, responseCode: "05", notifications: [transactionNotification({ uid: recoveryUid, txnRef: "TXN-1" })] })),
+    ok(session({ environment: "Production", sessionId: "session-wrong-env", status: "Completed", transactionSuccess: false, responseCode: "05" })),
+  );
+  const provider = new LinklyCloudBackendProvider(new LinklyCloudBackendApi(transport), providerOptions());
+  assert.deepEqual(await provider.listUnacknowledgedSessions(), [
+    { sessionId: "session-declined", environment: "Sandbox", idempotencyKey: recoveryUid },
+  ]);
+  assert.deepEqual(transport.requests.map((request) => ({ method: request.method, timeoutMs: request.timeoutMs })), [
+    { method: "GET", timeoutMs: 240_000 },
+    { method: "GET", timeoutMs: 240_000 },
+  ]);
+  assert.equal(transport.requests.some((request) => request.method === "POST"), false);
+
+  transport.responses.push(
+    ok(session({ sessionId: "session-duplicate", status: "Pending", transactionSuccess: null, notifications: [transactionNotification({ uid: recoveryUid, txnRef: "TXN-1" })] })),
+    ok(session({ sessionId: "session-duplicate", status: "Pending", transactionSuccess: null, notifications: [transactionNotification({ uid: recoveryUid, txnRef: "TXN-1" })] })),
+  );
+  assert.deepEqual(await provider.listUnacknowledgedSessions(), [
+    { sessionId: "session-duplicate", environment: "Sandbox", idempotencyKey: recoveryUid },
+  ]);
+
+  transport.responses.push(
+    ok(session({ sessionId: "session-conflict", status: "Pending", transactionSuccess: null, notifications: [
+      transactionNotification({ uid: recoveryUid, txnRef: "TXN-1" }),
+      transactionNotification({ uid: "9b241101-e2bb-4255-8caf-4136c566a962", txnRef: "TXN-1" }),
+    ] })),
+    none(),
+  );
+  assert.deepEqual(await provider.listUnacknowledgedSessions(), []);
 });

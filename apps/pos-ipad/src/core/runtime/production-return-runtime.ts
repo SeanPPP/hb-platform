@@ -4,6 +4,7 @@ import {
   type TrustedCashierSession,
 } from "./current-cashier-session";
 import type { ReturnFulfilmentRuntime } from "./return-fulfilment-runtime";
+import type { PaymentAcknowledgementRuntimePort } from "@hb/pos-payments-core/features/payments/payment-acknowledgement-service";
 
 import {
   normalizeLineSyncProvenance,
@@ -117,6 +118,8 @@ export type ProductionReturnRuntimeDependencies = Readonly<{
     ReturnFulfilmentRuntime,
     "materializeAction" | "drainPending"
   >;
+  /** 同一 payment_attempts durable ACK 队列；未配置时保留既有退货行为。 */
+  acknowledgements?: PaymentAcknowledgementRuntimePort | undefined;
   sha256Hex(material: string): Promise<string>;
   createId(): string;
   nowIso(): string;
@@ -352,6 +355,11 @@ function createPresenterForLease(
     lineMaterial: materialCache,
     createOpaqueId: () => runtimeId(input),
     nowIso: input.nowIso,
+    onAllocationFinalized: (finalized) =>
+      acknowledgeFinalizedReturnAllocation(
+        input.acknowledgements,
+        finalized.allocation.durableAttemptId,
+      ),
   });
   const execution = new MaterializingReturnExecution({
     delegate: orchestrator,
@@ -806,6 +814,21 @@ class MaterializingReturnExecution implements ReturnExecutionPort {
       );
     }
     return outcome;
+  }
+}
+
+async function acknowledgeFinalizedReturnAllocation(
+  acknowledgements: PaymentAcknowledgementRuntimePort | undefined,
+  durableAttemptId: string | null,
+): Promise<boolean> {
+  if (!acknowledgements || durableAttemptId === null) return true;
+  try {
+    const result = await acknowledgements.acknowledge(durableAttemptId);
+    // 中文注释：Square 等非 Linkly attempt 会明确返回 pending=false，不能因它们
+    // 没有 ACK marker 阻塞退款。只有 Linkly durable pending 才暂停下一笔退款。
+    return result.pending === false;
+  } catch {
+    return false;
   }
 }
 

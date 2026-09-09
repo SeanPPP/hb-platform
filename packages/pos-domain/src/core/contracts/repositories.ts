@@ -77,6 +77,24 @@ export interface PaymentAttemptRepositoryPort {
     next: PaymentAttempt,
     protectedSyncEvidence?: CardSyncEvidenceV1,
   ): Promise<boolean>;
+  /**
+   * 在 provider 已幂等确认后，以原 attempt 身份写入本地 ACK marker。
+   * 返回 false 表示 marker 未耐久，调用者必须保留 pending 并仅重试 ACK。
+   */
+  markProviderAcknowledged?(
+    expected: PaymentAttempt,
+    acknowledgedAtIso: string,
+  ): Promise<boolean>;
+  /** Approved Linkly 在向终端 ACK 前必须先证明对应业务账本已耐久。 */
+  canProviderAcknowledged?(attempt: PaymentAttempt): Promise<boolean>;
+  /**
+   * 只允许将 M44 前的 NULL 环境补为 provider 只读强匹配回传的环境；不得以当前
+   * 设置猜测，且一旦冻结不得改写。
+   */
+  verifyProviderEnvironment?(
+    expected: PaymentAttempt,
+    verifiedEnvironment: string,
+  ): Promise<boolean>;
   get(attemptId: string): Promise<PaymentAttempt | null>;
   /**
    * 包含 Created/Submitted/Pending/Unknown，以及 Approved 但尚未写入 order_tenders 的 attempt。
