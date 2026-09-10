@@ -11,6 +11,40 @@ namespace Hbpos.Api.Tests;
 public sealed class LinklyCloudTerminalServiceTests
 {
     [Fact]
+    public void Management_connection_test_lease_is_non_financial_and_fail_closed()
+    {
+        var sql = SqlSugarLinklyCloudTerminalRepository.TryAcquireConnectionTestLeaseSql;
+        Assert.Contains("PairingAttemptId", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("PairingLeaseExpiresAt", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Status] IS NULL", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("ClientAcknowledgedAt] IS NULL", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Sale", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Refund", sql, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Assignment_sql_keeps_replace_atomic_and_checks_target_registration()
+    {
+        var sql = SqlSugarLinklyCloudTerminalRepository.AssignTerminalSql;
+        Assert.Contains("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("设备状态] = 1", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("ExpectedSourceRevision", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("ExpectedTargetRevision", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("DELETE FROM [dbo].[POSM_LinklyCloudDeviceSelection]", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("COMMIT TRANSACTION", sql, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Legacy_selection_guard_rejects_unknown_acknowledged_sessions()
+    {
+        var sql = SqlSugarLinklyCloudTerminalRepository.UpsertSelectionSql;
+        Assert.Contains("Status] IS NULL", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Status] NOT IN", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("ClientAcknowledgedAt] IS NULL", sql, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void Sql_repository_datetime_parameters_preserve_datetime2_precision()
     {
         var value = new DateTime(2026, 9, 6, 3, 57, 54, 558, DateTimeKind.Utc)
@@ -707,10 +741,140 @@ public sealed class LinklyCloudTerminalServiceTests
         Assert.Null(resolved);
     }
 
+    [Fact]
+    public async Task ConnectionTestAsync_tests_unassigned_ready_terminal_without_selection_or_financial_transport()
+    {
+        var terminalId = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        var repository = new FakeTerminalRepository { Terminals = [CreateTerminal(terminalId, "S01", "Production", 1, "Front")] };
+        var transport = new FakeStatusTransport(new LinklyCloudBackendTransportResponse(HttpStatusCode.OK, "{\"Response\":{\"Success\":true,\"ResponseCode\":\"T0\",\"ResponseText\":\"Connected\"}}"));
+        var service = CreateService(repository, tokenProvider: new FakeTokenProvider(), backendTransport: transport);
+
+        var response = await service.ConnectionTestAsync("S01", "POS-01", terminalId,
+            new LinklyCloudTerminalConnectionTestRequest("Production", repository.Terminals[0].UpdatedAt!.Value.Ticks.ToString(), null, 0), CancellationToken.None);
+
+        Assert.True(response.Succeeded);
+        Assert.Equal("connected", response.Status);
+        Assert.Equal(1, transport.StatusCalls);
+        Assert.Equal(0, transport.TransactionCalls);
+        Assert.Null(repository.Selection);
+        Assert.Equal(1, repository.ReleasedConnectionLeases);
+    }
+
+    [Fact]
+    public async Task ConnectionTestAsync_incomplete_reply_retains_lease_and_blocks_another_test()
+    {
+        var terminalId = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        var repository = new FakeTerminalRepository { Terminals = [CreateTerminal(terminalId, "S01", "Production", 1, "Front")] };
+        var transport = new FakeStatusTransport(new LinklyCloudBackendTransportResponse(HttpStatusCode.OK, "{\"ResponseCode\":\"91\"}"));
+        var service = CreateService(repository, tokenProvider: new FakeTokenProvider(), backendTransport: transport);
+        var request = new LinklyCloudTerminalConnectionTestRequest("Production", repository.Terminals[0].UpdatedAt!.Value.Ticks.ToString(), null, 0);
+
+        var failed = await service.ConnectionTestAsync("S01", "POS-01", terminalId, request, CancellationToken.None);
+        Assert.False(failed.Succeeded);
+        Assert.Equal("unknown", failed.Status);
+        Assert.Equal(0, repository.ReleasedConnectionLeases);
+        Assert.True(repository.Terminals[0].PairingLeaseExpiresAt >= DateTime.UtcNow
+            + LinklyTimeoutConstants.HttpTimeout + LinklyTimeoutConstants.HttpTimeout);
+
+        await Assert.ThrowsAsync<LinklyCloudTerminalSelectionConflictException>(() =>
+            service.ConnectionTestAsync("S01", "POS-01", terminalId, request, CancellationToken.None));
+    }
+
+    [Theory]
+    [InlineData("{\"Response\":{\"Success\":false,\"ResponseCode\":\"T0\"}}")]
+    [InlineData("{\"Response\":{\"Success\":true,\"ResponseCode\":\"05\"}}")]
+    public async Task ConnectionTestAsync_requires_both_provider_success_and_success_code(string body)
+    {
+        var terminalId = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        var repository = new FakeTerminalRepository { Terminals = [CreateTerminal(terminalId, "S01", "Production", 1, "Front")] };
+        var service = CreateService(repository, tokenProvider: new FakeTokenProvider(),
+            backendTransport: new FakeStatusTransport(new LinklyCloudBackendTransportResponse(HttpStatusCode.OK, body)));
+        var response = await service.ConnectionTestAsync("S01", "POS-01", terminalId,
+            new LinklyCloudTerminalConnectionTestRequest("Production", repository.Terminals[0].UpdatedAt!.Value.Ticks.ToString(), null, 0), CancellationToken.None);
+        Assert.False(response.Succeeded);
+        Assert.NotEqual("connected", response.Status);
+    }
+
+    [Fact]
+    public async Task ConnectionTestAsync_credential_failure_returns_needs_repair()
+    {
+        var id = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        var repository = new FakeTerminalRepository { Terminals = [CreateTerminal(id, "S01", "Production", 1, "Front")] };
+        var service = CreateService(repository, tokenProvider: new FakeTokenProvider { Failure = new LinklyCloudTerminalCredentialUnavailableException() }, backendTransport: new FakeStatusTransport());
+        var response = await service.ConnectionTestAsync("S01", "POS-01", id, TestRequest(repository), CancellationToken.None);
+        Assert.Equal("needs-repair", response.Status);
+        Assert.Equal(1, repository.ReleasedConnectionLeases);
+    }
+
+    [Fact]
+    public async Task ConnectionTestAsync_timeout_returns_unknown_and_keeps_lease()
+    {
+        var id = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        var repository = new FakeTerminalRepository { Terminals = [CreateTerminal(id, "S01", "Production", 1, "Front")] };
+        var service = CreateService(repository, tokenProvider: new FakeTokenProvider(), backendTransport: new FakeStatusTransport { Failure = new OperationCanceledException() });
+        var response = await service.ConnectionTestAsync("S01", "POS-01", id, TestRequest(repository), CancellationToken.None);
+        Assert.Equal("unknown", response.Status);
+        Assert.Equal(0, repository.ReleasedConnectionLeases);
+    }
+
+    private static LinklyCloudTerminalConnectionTestRequest TestRequest(FakeTerminalRepository repository) =>
+        new("Production", repository.Terminals[0].UpdatedAt!.Value.Ticks.ToString(), null, 0);
+
+    [Theory]
+    [InlineData(HttpStatusCode.RequestTimeout, "{}")]
+    [InlineData(HttpStatusCode.ServiceUnavailable, "{}")]
+    [InlineData(HttpStatusCode.Accepted, "{}")]
+    [InlineData(HttpStatusCode.OK, "not-json")]
+    [InlineData(HttpStatusCode.OK, "{\"Response\":{\"ResponseCode\":\"T0\"}}")]
+    public async Task ConnectionTestAsync_ambiguous_response_keeps_lease_without_writing_health(HttpStatusCode status, string body)
+    {
+        var id = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        var repository = new FakeTerminalRepository { Terminals = [CreateTerminal(id, "S01", "Production", 1, "Front")] };
+        var service = CreateService(repository, tokenProvider: new FakeTokenProvider(),
+            backendTransport: new FakeStatusTransport(new LinklyCloudBackendTransportResponse(status, body)));
+        var response = await service.ConnectionTestAsync("S01", "POS-01", id, TestRequest(repository), default);
+        Assert.False(response.Succeeded);
+        Assert.Equal(0, repository.ReleasedConnectionLeases);
+        Assert.Equal(0, repository.HealthWriteAttempts);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    [InlineData(HttpStatusCode.Forbidden)]
+    public async Task ConnectionTestAsync_explicit_credential_rejection_releases_lease(HttpStatusCode status)
+    {
+        var id = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        var repository = new FakeTerminalRepository { Terminals = [CreateTerminal(id, "S01", "Production", 1, "Front")] };
+        var service = CreateService(repository, tokenProvider: new FakeTokenProvider(),
+            backendTransport: new FakeStatusTransport(new LinklyCloudBackendTransportResponse(status, "{}")));
+        var response = await service.ConnectionTestAsync("S01", "POS-01", id, TestRequest(repository), default);
+        Assert.Equal("needs-repair", response.Status);
+        Assert.Equal(1, repository.ReleasedConnectionLeases);
+        Assert.Equal(0, repository.HealthWriteAttempts);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConnectionTestAsync_token_failure_releases_lease_before_terminal_request(bool timeout)
+    {
+        var id = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        var repository = new FakeTerminalRepository { Terminals = [CreateTerminal(id, "S01", "Production", 1, "Front")] };
+        var failure = timeout ? (Exception)new OperationCanceledException() : new HttpRequestException("token offline");
+        var service = CreateService(repository, tokenProvider: new FakeTokenProvider { Failure = failure },
+            backendTransport: new FakeStatusTransport());
+        var response = await service.ConnectionTestAsync("S01", "POS-01", id, TestRequest(repository), default);
+        Assert.False(response.Succeeded);
+        Assert.Equal(1, repository.ReleasedConnectionLeases);
+        Assert.Equal(0, repository.HealthWriteAttempts);
+    }
+
     private static LinklyCloudTerminalService CreateService(
         FakeTerminalRepository repository,
         ILinklyCloudPairingTransport? transport = null,
-        ILinklyCloudBackendAsyncRepository? sessionRepository = null)
+        ILinklyCloudBackendAsyncRepository? sessionRepository = null,
+        ILinklyCloudBackendTokenProvider? tokenProvider = null,
+        ILinklyCloudBackendAsyncTransport? backendTransport = null)
     {
         return new LinklyCloudTerminalService(
             repository,
@@ -721,7 +885,9 @@ public sealed class LinklyCloudTerminalServiceTests
             {
                 ProductionAuthBaseUrl = "https://auth.example/v1/",
                 SandboxAuthBaseUrl = "https://auth.sandbox.example/v1/"
-            }));
+            }),
+            tokenProvider,
+            backendTransport);
     }
 
     private static LinklyCloudTerminalRecord CreateTerminal(
@@ -766,6 +932,12 @@ public sealed class LinklyCloudTerminalServiceTests
         public string? LastModeStoreCode { get; private set; }
 
         public bool PairingBlocked { get; set; }
+
+        public List<LinklyCloudAssignableDevice> AssignableDevices { get; set; } = [];
+
+        public int ReleasedConnectionLeases { get; private set; }
+
+        public int HealthWriteAttempts { get; private set; }
 
         public Task<IReadOnlyList<LinklyCloudTerminalRecord>> ListAsync(
             string environment, string storeCode, CancellationToken cancellationToken)
@@ -836,6 +1008,34 @@ public sealed class LinklyCloudTerminalServiceTests
             LastModeEnvironment = environment;
             LastModeStoreCode = storeCode;
             return Task.FromResult(Mode);
+        }
+
+        public Task<IReadOnlyList<LinklyCloudAssignableDevice>> ListAssignableDevicesAsync(
+            string environment, string storeCode, CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<LinklyCloudAssignableDevice>>(AssignableDevices);
+
+        public Task<bool> TryAcquireConnectionTestLeaseAsync(
+            string environment, string storeCode, Guid terminalId, DateTime expectedUpdatedAt,
+            Guid leaseId, DateTime leaseExpiresAt, DateTime now, CancellationToken cancellationToken,
+            string? expectedAssignedDeviceCode = null, long expectedAssignmentRevision = 0)
+        {
+            var index = Terminals.FindIndex(item => item.TerminalId == terminalId && item.UpdatedAt == expectedUpdatedAt);
+            if (index < 0 || Terminals[index].PairingAttemptId is not null && Terminals[index].PairingLeaseExpiresAt > now)
+                return Task.FromResult(false);
+            Terminals[index] = Terminals[index] with { PairingAttemptId = leaseId, PairingLeaseExpiresAt = leaseExpiresAt };
+            return Task.FromResult(true);
+        }
+
+        public Task ReleaseConnectionTestLeaseAsync(
+            string environment, string storeCode, Guid terminalId, Guid leaseId, CancellationToken cancellationToken)
+        {
+            var index = Terminals.FindIndex(item => item.TerminalId == terminalId && item.PairingAttemptId == leaseId);
+            if (index >= 0)
+            {
+                Terminals[index] = Terminals[index] with { PairingAttemptId = null, PairingLeaseExpiresAt = null };
+                ReleasedConnectionLeases++;
+            }
+            return Task.CompletedTask;
         }
 
         public Task<LinklyCloudTerminalRecord?> TryBeginPairingAsync(
@@ -1016,6 +1216,7 @@ public sealed class LinklyCloudTerminalServiceTests
             DateTime checkedAt,
             CancellationToken cancellationToken)
         {
+            HealthWriteAttempts++;
             lock (_gate)
             {
                 var index = Terminals.FindIndex(item =>
@@ -1063,5 +1264,40 @@ public sealed class LinklyCloudTerminalServiceTests
             beforeReturn?.Invoke();
             return Task.FromResult(response);
         }
+    }
+
+    private sealed class FakeTokenProvider : ILinklyCloudBackendTokenProvider
+    {
+        public Exception? Failure { get; init; }
+        public Task<LinklyCloudBackendToken> GetTokenAsync(string environment, string storeCode, string deviceCode, CancellationToken cancellationToken) =>
+            Get(cancellationToken);
+
+        public Task<LinklyCloudBackendToken> GetTokenAsync(string environment, string storeCode, string deviceCode, Guid? terminalId, CancellationToken cancellationToken) =>
+            Get(cancellationToken);
+
+        private Task<LinklyCloudBackendToken> Get(CancellationToken cancellationToken)
+        {
+            if (Failure is not null) return Task.FromException<LinklyCloudBackendToken>(Failure);
+            return Task.FromResult(new LinklyCloudBackendToken("https://rest.example/", "token"));
+        }
+    }
+
+    private sealed class FakeStatusTransport(LinklyCloudBackendTransportResponse? response = null) : ILinklyCloudBackendAsyncTransport
+    {
+        public Exception? Failure { get; init; }
+        public int StatusCalls { get; private set; }
+        public int TransactionCalls { get; private set; }
+        public Task<LinklyCloudBackendTransportResponse> SendStatusAsync(LinklyCloudBackendTransportStatusRequest request, CancellationToken cancellationToken)
+        {
+            StatusCalls++;
+            if (Failure is not null) return Task.FromException<LinklyCloudBackendTransportResponse>(Failure);
+            return Task.FromResult(response ?? new LinklyCloudBackendTransportResponse(HttpStatusCode.OK, null));
+        }
+        public Task<LinklyCloudBackendTransportResponse> StartTransactionAsync(LinklyCloudBackendTransportTransactionRequest request, CancellationToken cancellationToken)
+        { TransactionCalls++; throw new InvalidOperationException("financial transport must not be called"); }
+        public Task<LinklyCloudBackendTransportResponse> RecoverTransactionAsync(LinklyCloudBackendTransportSessionRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<LinklyCloudBackendTransportResponse> GetTransactionAsync(LinklyCloudBackendTransportSessionRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<LinklyCloudBackendTransportResponse> SendLogonAsync(LinklyCloudBackendTransportSessionRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<LinklyCloudBackendTransportResponse> SendKeyAsync(LinklyCloudBackendTransportSendKeyRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 }
