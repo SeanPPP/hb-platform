@@ -3019,6 +3019,31 @@ export class SettingsPresenter {
           terminals.selectedTerminalId !== previousTerminals.selectedTerminalId ||
           terminals.selectionRevision !== previousTerminals.selectionRevision
         : previousTerminals !== null;
+      // 手动刷新只恢复已完成且仍属于当前线路版本的结果；迟到回包仍受 generation 隔离。
+      // 网关断连未写入持久健康状态时，不能让较旧的“已连接”覆盖刚看到的检测失败。
+      if (!resetLogonTest && terminals?.environment === environment &&
+          terminals.mode === previousTerminals?.mode) {
+        const connectionTests: Record<string, SettingsLinklyConnectionTestState> = {};
+        for (const state of Object.values(current.connectionTests)) {
+          const result = state.result;
+          const terminal = terminals.terminals.find((item) => item.terminalId === state.terminalId);
+          if (state.kind !== "ready" || !result || !terminal ||
+              result.environment !== environment ||
+              result.terminalId !== terminal.terminalId ||
+              result.terminalVersion !== terminal.terminalVersion ||
+              result.assignedDeviceCode !== (terminal.assignedDeviceCode ?? null) ||
+              result.assignmentRevision !== terminal.assignmentRevision ||
+              !Number.isFinite(Date.parse(result.checkedAt)) ||
+              (terminal.lastHealthAt !== null &&
+                Date.parse(terminal.lastHealthAt) >= Date.parse(result.checkedAt))) continue;
+          const key = linklyConnectionTestKey(terminal, generation);
+          connectionTests[key] = Object.freeze({ ...state, key });
+        }
+        this.patch({ linklySetup: Object.freeze({
+          ...this.state.linklySetup!,
+          connectionTests: Object.freeze(connectionTests),
+        }) });
+      }
       if (
         terminals?.environment === environment &&
         terminals.mode === "Active" &&

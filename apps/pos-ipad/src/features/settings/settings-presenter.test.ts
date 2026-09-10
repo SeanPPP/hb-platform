@@ -1698,6 +1698,72 @@ test("Linkly 单线路测试独立记录且不把全局 logon 或支付提供方
   assert.equal(presenter.getState().paymentProviderDraft, providerBefore);
 });
 
+for (const selected of [true, false]) {
+  test(`Linkly 刷新同版本目录保留最近断连结果，已有本机绑定=${selected}`, async () => {
+    const port = new FakeSettingsPort();
+    const setup = new FakeLinklySetupControlPort();
+    port.linklySetup = setup;
+    setup.connectionTestStatus = "unreachable";
+    setup.terminals = {
+      ...setup.terminals,
+      lineManagementSupported: true,
+      selectedTerminalId: selected ? "terminal-1" : null,
+      selectionRevision: selected ? 2 : 0,
+      terminals: setup.terminals.terminals.map((terminal) => ({
+        ...terminal,
+        lastHealthStatus: "Healthy",
+        lastHealthAt: "2026-09-09T02:00:00Z",
+      })),
+    };
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const providerBefore = presenter.getState().paymentProviderDraft;
+    await presenter.testLinklyTerminalConnection("terminal-2");
+    await presenter.refreshLinklySetup();
+
+    const results = Object.values(presenter.getState().linklySetup!.connectionTests);
+    assert.equal(results.length, 1);
+    assert.equal(results[0]?.result?.status, "unreachable");
+    assert.equal(results[0]?.result?.checkedAt, "2026-09-10T02:00:00Z");
+    assert.equal(presenter.getState().linklySetup?.logonTest.status, "idle");
+    assert.equal(presenter.getState().paymentProviderDraft, providerBefore);
+
+    // 刷新后再次测试应替换同一行结果，不能残留旧 generation 的优先显示项。
+    setup.connectionTestStatus = "connected";
+    await presenter.testLinklyTerminalConnection("terminal-2");
+    const retested = Object.values(presenter.getState().linklySetup!.connectionTests);
+    assert.equal(retested.length, 1);
+    assert.equal(retested[0]?.result?.status, "connected");
+  });
+}
+
+for (const changed of ["version", "owner", "revision", "health", "mode", "missing"] as const) {
+  test(`Linkly 刷新后丢弃失效检测结果：${changed}`, async () => {
+    const port = new FakeSettingsPort();
+    const setup = new FakeLinklySetupControlPort();
+    port.linklySetup = setup;
+    setup.terminals = { ...setup.terminals, lineManagementSupported: true };
+    const presenter = createPresenter(port);
+    await presenter.load();
+    await presenter.testLinklyTerminalConnection("terminal-2");
+    setup.terminals = {
+      ...setup.terminals,
+      mode: changed === "mode" ? "Legacy" : "Active",
+      terminals: setup.terminals.terminals
+        .filter((terminal) => changed !== "missing" || terminal.terminalId !== "terminal-2")
+        .map((terminal) => terminal.terminalId !== "terminal-2" ? terminal : {
+          ...terminal,
+          ...(changed === "version" ? { terminalVersion: "v3" } : {}),
+          ...(changed === "owner" ? { assignedDeviceCode: "POS-02" } : {}),
+          ...(changed === "revision" ? { assignmentRevision: 3 } : {}),
+          ...(changed === "health" ? { lastHealthAt: "2026-09-10T03:00:00Z", lastHealthStatus: "Unhealthy" } : {}),
+        }),
+    };
+    await presenter.refreshLinklySetup();
+    assert.deepEqual(presenter.getState().linklySetup?.connectionTests, {});
+  });
+}
+
 test("Linkly 线路测试迟到时不能跨 terminalVersion 与刷新 generation 覆盖新目录", async () => {
   const port = new FakeSettingsPort();
   const setup = new FakeLinklySetupControlPort();
@@ -3174,6 +3240,7 @@ class FakeLinklySetupControlPort implements SettingsLinklySetupControlPort {
   public readonly connectionTestCalls: string[] = [];
   public readonly assignmentCalls: SettingsLinklyTerminalAssignmentInput[] = [];
   public connectionTestHold: Promise<void> | null = null;
+  public connectionTestStatus: SettingsLinklyConnectionTestResult["status"] = "connected";
 
   public async readState(
     environment: "Sandbox" | "Production",
@@ -3222,8 +3289,8 @@ class FakeLinklySetupControlPort implements SettingsLinklySetupControlPort {
       terminalVersion: terminal.terminalVersion,
       assignedDeviceCode: terminal.assignedDeviceCode,
       assignmentRevision: terminal.assignmentRevision,
-      succeeded: true,
-      status: "connected",
+      succeeded: this.connectionTestStatus === "connected",
+      status: this.connectionTestStatus,
       checkedAt: "2026-09-10T02:00:00Z",
       message: "Connected",
       responseCode: null,
