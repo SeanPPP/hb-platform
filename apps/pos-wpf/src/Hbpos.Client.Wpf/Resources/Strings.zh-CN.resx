@@ -3035,4 +3035,28 @@
   <data name="payment.linklyTerminal.display" xml:space="preserve"><value>Lane {0} · {1}</value></data>
   <data name="payment.linklyTerminal.switchBlocked" xml:space="preserve"><value>刷卡交易进行中或结果未决时不能切换刷卡机。</value></data>
   <data name="payment.linklyTerminal.selected" xml:space="preserve"><value>后续付款将使用 {0}。</value></data>
+  <data name="cardRecovery.workspace.subtitle" xml:space="preserve"><value>异常交易集中处理，原订单记录持续保留。</value></data>
+  <data name="cardRecovery.workspace.back" xml:space="preserve"><value>返回收银</value></data>
+  <data name="cardRecovery.workspace.pending" xml:space="preserve"><value>待处理</value></data>
+  <data name="cardRecovery.workspace.failed" xml:space="preserve"><value>已失败</value></data>
+  <data name="cardRecovery.workspace.resolved" xml:space="preserve"><value>已处理</value></data>
+  <data name="cardRecovery.workspace.review" xml:space="preserve"><value>需复核</value></data>
+  <data name="cardRecovery.workspace.list" xml:space="preserve"><value>交易列表</value></data>
+  <data name="cardRecovery.workspace.search" xml:space="preserve"><value>搜索订单号或交易号</value></data>
+  <data name="cardRecovery.workspace.channel" xml:space="preserve"><value>全部渠道</value></data>
+  <data name="cardRecovery.workspace.operations" xml:space="preserve"><value>全部操作</value></data>
+  <data name="cardRecovery.workspace.empty" xml:space="preserve"><value>没有符合筛选条件的交易。</value></data>
+  <data name="cardRecovery.workspace.terminalHint" xml:space="preserve"><value>刷卡终端可能仍在处理原交易；可继续现金收银或使用其他可用终端。</value></data>
+  <data name="cardRecovery.workspace.order" xml:space="preserve"><value>订单 / 交易</value></data>
+  <data name="cardRecovery.workspace.warning" xml:space="preserve"><value>请先核实原交易结果，勿重复扣款。</value></data>
+  <data name="cardRecovery.workspace.more" xml:space="preserve"><value>商品及交易详情</value></data>
+  <data name="cardRecovery.workspace.history" xml:space="preserve"><value>交易状态记录</value></data>
+  <data name="cardRecovery.workspace.created" xml:space="preserve"><value>交易已记录</value></data>
+  <data name="cardRecovery.workspace.readOnly" xml:space="preserve"><value>已结交易 · 仅供查看</value></data>
+  <data name="cardRecovery.workspace.auto" xml:space="preserve"><value>自动恢复</value></data>
+  <data name="cardRecovery.workspace.autoHint" xml:space="preserve"><value>查询原交易，确认成功后补齐订单。</value></data>
+  <data name="cardRecovery.workspace.manual" xml:space="preserve"><value>人工核实付款</value></data>
+  <data name="cardRecovery.workspace.manualHint" xml:space="preserve"><value>根据终端凭证核实，操作需授权。</value></data>
+  <data name="cardRecovery.workspace.refreshed" xml:space="preserve"><value>最近刷新</value></data>
+  <data name="cardRecovery.workspace.historyScope" xml:space="preserve"><value>历史显示本机每个渠道最近 200 笔记录；未结交易全部保留。</value></data>
 </root>

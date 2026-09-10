@@ -1291,4 +1291,28 @@
   <data name="payment.linklyTerminal.display" xml:space="preserve"><value>Lane {0} · {1}</value></data>
   <data name="payment.linklyTerminal.switchBlocked" xml:space="preserve"><value>The terminal cannot be switched while a card payment is active or unresolved.</value></data>
   <data name="payment.linklyTerminal.selected" xml:space="preserve"><value>Payments will use {0}.</value></data>
+  <data name="cardRecovery.workspace.subtitle" xml:space="preserve"><value>Review interrupted transactions while keeping the original order records.</value></data>
+  <data name="cardRecovery.workspace.back" xml:space="preserve"><value>Back to checkout</value></data>
+  <data name="cardRecovery.workspace.pending" xml:space="preserve"><value>Pending</value></data>
+  <data name="cardRecovery.workspace.failed" xml:space="preserve"><value>Failed</value></data>
+  <data name="cardRecovery.workspace.resolved" xml:space="preserve"><value>Processed</value></data>
+  <data name="cardRecovery.workspace.review" xml:space="preserve"><value>Needs review</value></data>
+  <data name="cardRecovery.workspace.list" xml:space="preserve"><value>Transactions</value></data>
+  <data name="cardRecovery.workspace.search" xml:space="preserve"><value>Search order or transaction reference</value></data>
+  <data name="cardRecovery.workspace.channel" xml:space="preserve"><value>All channels</value></data>
+  <data name="cardRecovery.workspace.operations" xml:space="preserve"><value>All operations</value></data>
+  <data name="cardRecovery.workspace.empty" xml:space="preserve"><value>No matching transactions.</value></data>
+  <data name="cardRecovery.workspace.terminalHint" xml:space="preserve"><value>A terminal may still be processing an earlier payment. Continue with cash or another available terminal.</value></data>
+  <data name="cardRecovery.workspace.order" xml:space="preserve"><value>Order / transaction</value></data>
+  <data name="cardRecovery.workspace.warning" xml:space="preserve"><value>Check the original result before taking any further payment. Do not charge twice.</value></data>
+  <data name="cardRecovery.workspace.more" xml:space="preserve"><value>Products and transaction details</value></data>
+  <data name="cardRecovery.workspace.history" xml:space="preserve"><value>Recorded transaction state</value></data>
+  <data name="cardRecovery.workspace.created" xml:space="preserve"><value>Transaction recorded</value></data>
+  <data name="cardRecovery.workspace.readOnly" xml:space="preserve"><value>Processed transaction · Read only</value></data>
+  <data name="cardRecovery.workspace.auto" xml:space="preserve"><value>Automatic recovery</value></data>
+  <data name="cardRecovery.workspace.autoHint" xml:space="preserve"><value>Check the original transaction and complete the order when confirmed.</value></data>
+  <data name="cardRecovery.workspace.manual" xml:space="preserve"><value>Manually verify payment</value></data>
+  <data name="cardRecovery.workspace.manualHint" xml:space="preserve"><value>Check terminal evidence. This action requires authorization.</value></data>
+  <data name="cardRecovery.workspace.refreshed" xml:space="preserve"><value>Last refreshed</value></data>
+  <data name="cardRecovery.workspace.historyScope" xml:space="preserve"><value>History covers the latest 200 records per channel on this register. All open transactions remain available.</value></data>
 </root>
