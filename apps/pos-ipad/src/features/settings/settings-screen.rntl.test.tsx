@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from "@jest/globals";
-import { fireEvent, render, waitFor } from "@testing-library/react-native";
+import { fireEvent, render, waitFor, within } from "@testing-library/react-native";
 import { Linking, StyleSheet } from "react-native";
 
 import {
@@ -28,6 +28,7 @@ import {
   type SettingsPrinterDevice,
   type SettingsReceiptProfileDraft,
   type SettingsLinklyHealthSnapshot,
+  type SettingsLinklyConnectionTestResult,
   type SettingsLinklyPairingPort,
   type SettingsLinklyPairResult,
   type SettingsLinklySetupControlPort,
@@ -972,6 +973,177 @@ describe("SettingsScreen", () => {
     ]);
   });
 
+  it("管理标签不启用支付；每条线路独立重新配对，切换清空输入", async () => {
+    const port = new ScreenSettingsPort();
+    port.linklySetup.multiTerminal = true;
+    port.linklySetup.lineManagementSupported = true;
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(<SettingsScreen locale="zh" presenter={presenter} />);
+    await fireEvent.press(screen.getByTestId("settings-nav-payments"));
+    expect(screen.getByTestId("settings-square-location-load")).toBeTruthy();
+    await fireEvent.press(screen.getByTestId("settings-payment-tab-linkly"));
+    expect(screen.queryByTestId("settings-square-location-load")).toBeNull();
+    expect(presenter.getState().paymentProviderDraft).toBe("square");
+    expect(screen.getAllByText("重新配对")).toHaveLength(2);
+    await fireEvent.press(screen.getByTestId("settings-linkly-repair-terminal-1"));
+    await fireEvent.changeText(screen.getByTestId("settings-linkly-pair-code"), "123456");
+    await fireEvent.press(screen.getByTestId("settings-linkly-repair-terminal-2"));
+    expect(within(screen.getByTestId("settings-linkly-card-terminal-1")).queryByTestId("settings-linkly-pair-code")).toBeNull();
+    expect(within(screen.getByTestId("settings-linkly-card-terminal-2")).getByTestId("settings-linkly-pair-code").props.value).toBe("");
+    await fireEvent.changeText(screen.getByTestId("settings-linkly-pair-code"), "765432");
+    await fireEvent.press(screen.getByTestId("settings-payment-tab-square"));
+    await fireEvent.press(screen.getByTestId("settings-payment-tab-linkly"));
+    expect(screen.queryByTestId("settings-linkly-pair-code")).toBeNull();
+    expect(port.linklyPairing.pairCalls).toEqual([]);
+  });
+
+  it("Linkly 行内重新配对输入新码，确认指定线路且不改绑定和提供方", async () => {
+    const port = new ScreenSettingsPort();
+    port.linklySetup.multiTerminal = true;
+    port.linklySetup.ready = true;
+    port.linklySetup.lineManagementSupported = true;
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const providerBefore = presenter.getState().paymentProviderDraft;
+    const screen = await render(<SettingsScreen locale="zh" presenter={presenter} />);
+    await fireEvent.press(screen.getByTestId("settings-nav-payments"));
+    await fireEvent.press(screen.getByTestId("settings-payment-tab-linkly"));
+    await fireEvent.press(screen.getByTestId("settings-linkly-repair-terminal-2"));
+    expect(screen.getByText("重新配对：退货台 · Lane 2")).toBeTruthy();
+    await fireEvent.changeText(screen.getByTestId("settings-linkly-pair-code"), "12345");
+    expect(screen.getByTestId("settings-linkly-pair").props.accessibilityState.disabled).toBe(true);
+    await fireEvent.changeText(screen.getByTestId("settings-linkly-pair-code"), "654321");
+    await fireEvent.press(screen.getByTestId("settings-linkly-pair"));
+    expect(port.linklyPairing.pairCalls).toEqual([]);
+    expect(screen.getByText("配对线路：退货台 · Lane 2")).toBeTruthy();
+    expect(screen.getByTestId("settings-linkly-pairing-details")).toBeTruthy();
+    await fireEvent.press(screen.getByTestId("settings-confirm"));
+    await screen.findByText("Linkly 终端已配对；状态已刷新");
+    expect(port.linklyPairing.pairCalls).toEqual([{ environment: "Production", terminalId: "terminal-2", pairCode: "654321" }]);
+    expect(port.linklySetup.selectedTerminalId).toBe("terminal-1");
+    expect(presenter.getState().paymentProviderDraft).toBe(providerBefore);
+    await fireEvent.press(screen.getByTestId("settings-linkly-repair-terminal-2"));
+    expect(screen.getByTestId("settings-linkly-pair-code").props.value).toBe("");
+    await fireEvent.changeText(screen.getByTestId("settings-linkly-pair-code"), "123456");
+    await fireEvent.press(screen.getByTestId("settings-linkly-pair-cancel"));
+    expect(screen.queryByTestId("settings-linkly-pair-code")).toBeNull();
+    await fireEvent.press(screen.getByTestId("settings-linkly-repair-terminal-1"));
+    expect(screen.getByTestId("settings-linkly-pair-code").props.value).toBe("");
+    expect(port.linklyPairing.pairCalls).toHaveLength(1);
+  });
+
+  it.each([false, true])("云端线路已加载但旧健康检查不可用时仍可重新配对（请求失败：%s）", async (healthFailed) => {
+    const port = new ScreenSettingsPort();
+    port.linklySetup.multiTerminal = true;
+    port.linklySetup.lineManagementSupported = true;
+    port.linklySetup.selectedTerminalId = null;
+    port.linklySetup.readState = async (environment) => {
+      if (healthFailed) throw new Error("health unavailable");
+      return { environment, storeCode: "STORE-01", deviceCode: "IPAD-01", isReady: false, checks: [] };
+    };
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(<SettingsScreen locale="zh" presenter={presenter} />);
+    await fireEvent.press(screen.getByTestId("settings-nav-payments"));
+    await fireEvent.press(screen.getByTestId("settings-payment-tab-linkly"));
+    await fireEvent.press(screen.getByTestId("settings-linkly-repair-terminal-1"));
+    await fireEvent.changeText(screen.getByTestId("settings-linkly-pair-code"), "12345");
+    expect(screen.getByTestId("settings-linkly-pair").props.accessibilityState.disabled).toBe(true);
+    await fireEvent.changeText(screen.getByTestId("settings-linkly-pair-code"), "123456");
+    expect(screen.getByTestId("settings-linkly-pair").props.accessibilityState.disabled).toBe(false);
+    await fireEvent.press(screen.getByTestId("settings-linkly-pair"));
+    expect(screen.getByText("配对线路：前台 · Lane 1")).toBeTruthy();
+    expect(port.linklyPairing.pairCalls).toEqual([]);
+    expect(port.linklySetup.selectedTerminalId).toBeNull();
+  });
+
+  it("已展开配对表单在连接检测期间不能输入或提交，切换环境清空新码", async () => {
+    const port = new ScreenSettingsPort();
+    port.linklySetup.ready = true;
+    port.linklySetup.lineManagementSupported = true;
+    const originalTest = port.linklySetup.testTerminalConnection.bind(port.linklySetup);
+    let finishTest: () => void = () => {};
+    port.linklySetup.testTerminalConnection = async (...args) => {
+      await new Promise<void>((resolve) => { finishTest = resolve; });
+      return originalTest(...args);
+    };
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(<SettingsScreen locale="zh" presenter={presenter} />);
+    await fireEvent.press(screen.getByTestId("settings-nav-payments"));
+    await fireEvent.press(screen.getByTestId("settings-payment-tab-linkly"));
+    await fireEvent.press(screen.getByTestId("settings-linkly-repair-terminal-1"));
+    await fireEvent.changeText(screen.getByTestId("settings-linkly-pair-code"), "123456");
+    await fireEvent.press(screen.getByTestId("settings-linkly-connection-test-terminal-1"));
+    expect(screen.getByTestId("settings-linkly-pair").props.accessibilityState.disabled).toBe(true);
+    expect(screen.getByTestId("settings-linkly-pair-code").props.editable).toBe(false);
+    await fireEvent.press(screen.getByTestId("settings-linkly-pair"));
+    expect(screen.queryByTestId("settings-confirmation")).toBeNull();
+    finishTest();
+    await waitFor(() => expect(screen.getByTestId("settings-linkly-pair").props.accessibilityState.disabled).toBe(false));
+    await fireEvent.press(screen.getByTestId("settings-linkly-sandbox"));
+    await waitFor(() => expect(screen.queryByTestId("settings-linkly-pair-code")).toBeNull());
+    expect(port.linklyPairing.pairCalls).toEqual([]);
+  });
+
+  it("新配对码被拒绝后显示可操作原因并清空输入，不自动重放配对", async () => {
+    const port = new ScreenSettingsPort();
+    port.linklySetup.ready = true;
+    port.linklySetup.lineManagementSupported = true;
+    const pair = jest.spyOn(port.linklyPairing, "pair").mockRejectedValue(
+      Object.assign(new Error("private upstream detail"), { code: "LINKLY_CLOUD_BACKEND_PAIR_REJECTED" }),
+    );
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(<SettingsScreen locale="zh" presenter={presenter} />);
+    await fireEvent.press(screen.getByTestId("settings-nav-payments"));
+    await fireEvent.press(screen.getByTestId("settings-payment-tab-linkly"));
+    await fireEvent.press(screen.getByTestId("settings-linkly-repair-terminal-1"));
+    await fireEvent.changeText(screen.getByTestId("settings-linkly-pair-code"), "123456");
+    await fireEvent.press(screen.getByTestId("settings-linkly-pair"));
+    await fireEvent.press(screen.getByTestId("settings-confirm"));
+    await screen.findByText("刷卡机未接受配对。请确认新码来自这台刷卡机且未过期，再输入新码。");
+    expect(screen.getByTestId("settings-linkly-pair-code").props.value).toBe("");
+    expect(screen.queryByText(/private upstream detail|LINKLY_CLOUD_BACKEND_PAIR_REJECTED/)).toBeNull();
+    expect(pair).toHaveBeenCalledTimes(1);
+  });
+
+  it("Linkly 忙碌线路禁用检测及重新配对并显示等待说明", async () => {
+    const port = new ScreenSettingsPort();
+    port.linklySetup.ready = true;
+    port.linklySetup.lineManagementSupported = true;
+    port.linklySetup.busyTerminalId = "terminal-1";
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(<SettingsScreen locale="zh" presenter={presenter} />);
+    await fireEvent.press(screen.getByTestId("settings-nav-payments"));
+    await fireEvent.press(screen.getByTestId("settings-payment-tab-linkly"));
+    for (const action of ["connection-test", "repair"]) {
+      expect(screen.getByTestId(`settings-linkly-${action}-terminal-1`).props.accessibilityState.disabled).toBe(true);
+    }
+    expect(screen.getByTestId("settings-linkly-test-guidance-terminal-1").props.children)
+      .toBe("线路正在交易、配对或检测保护中。请先完成当前操作，稍后刷新状态；不要连续点击测试。");
+  });
+
+  it("Linkly 检测保护错误说明原因且不把内部代码显示给收银员", async () => {
+    const port = new ScreenSettingsPort();
+    port.linklySetup.multiTerminal = true;
+    port.linklySetup.ready = true;
+    port.linklySetup.lineManagementSupported = true;
+    port.linklySetup.testTerminalConnection = async () => {
+      throw Object.assign(new Error("private detail"), { code: "LINKLY_CLOUD_TERMINAL_SESSION_ACTIVE" });
+    };
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(<SettingsScreen locale="zh" presenter={presenter} />);
+    await fireEvent.press(screen.getByTestId("settings-nav-payments"));
+    await fireEvent.press(screen.getByTestId("settings-payment-tab-linkly"));
+    await fireEvent.press(screen.getByTestId("settings-linkly-connection-test-terminal-2"));
+    await screen.findByText("线路正在交易、配对或检测保护中。请先完成当前操作，稍后刷新状态；不要连续点击测试。");
+    expect(screen.queryByText(/LINKLY_CLOUD_TERMINAL_SESSION_ACTIVE|private detail/)).toBeNull();
+  });
+
   it("Linkly 线路管理显示设备码与单线路测试，并在本机替换旧线路前确认原子变更", async () => {
     const port = new ScreenSettingsPort();
     port.linklySetup.multiTerminal = true;
@@ -984,6 +1156,7 @@ describe("SettingsScreen", () => {
     );
     await screen.findByTestId("settings-pane-content-general");
     await fireEvent.press(screen.getByTestId("settings-nav-payments"));
+    await fireEvent.press(screen.getByTestId("settings-payment-tab-linkly"));
     await screen.findByTestId("settings-linkly-terminal-terminal-2");
 
     expect(screen.getByText("已分配 POS：POS-01")).toBeTruthy();
@@ -1035,6 +1208,7 @@ describe("SettingsScreen", () => {
     );
     await screen.findByTestId("settings-pane-content-general");
     await fireEvent.press(screen.getByTestId("settings-nav-payments"));
+    await fireEvent.press(screen.getByTestId("settings-payment-tab-linkly"));
     await fireEvent.press(screen.getByTestId("settings-linkly-change-binding-terminal-1"));
     await fireEvent.press(screen.getByTestId("settings-linkly-target-terminal-1-IPAD-02"));
     await screen.findByTestId("settings-confirmation");
@@ -1043,6 +1217,84 @@ describe("SettingsScreen", () => {
       .toBe("原设备：POS-01\n目标设备：IPAD-02\n目标原线路：无\n只更改线路归属；保留刷卡机现有配对，无需重新输入 Pair Code。");
     await fireEvent.press(screen.getByTestId("settings-confirm-cancel"));
     expect(port.linklySetup.selectedTerminalId).toBe("terminal-1");
+  });
+
+  it("Linkly 签到要求不误报离线，也不将其视为支付已就绪", async () => {
+    const port = new ScreenSettingsPort();
+    port.linklySetup.ready = true;
+    port.linklySetup.lineManagementSupported = true;
+    const originalTest = port.linklySetup.testTerminalConnection.bind(port.linklySetup);
+    port.linklySetup.testTerminalConnection = async (...args) => ({
+      ...await originalTest(...args), succeeded: false, status: "unreachable" as const,
+      responseCode: "TF", message: "Terminal status was not confirmed.",
+    });
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(<SettingsScreen locale="zh" presenter={presenter} />);
+    await fireEvent.press(screen.getByTestId("settings-nav-payments"));
+    await fireEvent.press(screen.getByTestId("settings-payment-tab-linkly"));
+    await fireEvent.press(screen.getByTestId("settings-linkly-connection-test-terminal-1"));
+    await screen.findByText(/^需要签到 ·/);
+    expect(screen.getByTestId("settings-linkly-test-guidance-terminal-1").props.children)
+      .toBe("上次检测提示需要签到。点击“测试可用性”查询当前状态，需要时会自动完成银行验证。");
+    expect(screen.queryByText(/^无法连接/)).toBeNull();
+    expect(presenter.getState().linklySetup?.logonTest.status).not.toBe("passed");
+    port.testPaymentProvider = async () => {
+      port.linklySetup.persistedHealthStatus = "Healthy";
+      port.linklySetup.persistedHealthAt = "2026-09-10T02:01:00Z";
+    };
+    await fireEvent.press(screen.getByTestId("settings-linkly-test"));
+    await screen.findByText("支付通道可用");
+    expect(screen.queryByText(/^需要签到 ·/)).toBeNull();
+    expect(screen.getByTestId("settings-payment-provider-linkly").props.accessibilityState.disabled).toBe(false);
+    await fireEvent.press(screen.getByTestId("settings-payment-provider-linkly"));
+    expect(screen.getByTestId("settings-payment-save").props.accessibilityState.disabled).toBe(false);
+    await fireEvent.press(screen.getByTestId("settings-payment-save"));
+    await screen.findByTestId("settings-confirmation");
+    await fireEvent.press(screen.getByTestId("settings-confirm"));
+    expect(port.savedPayments.at(-1)?.provider).toBe("linkly");
+    expect(presenter.getState().paymentProvider).toBe("linkly");
+  });
+
+  it("Linkly Active 已就绪线路不受旧 health 失败影响，验证后启用与保存可用", async () => {
+    const port = new ScreenSettingsPort();
+    port.linklySetup.ready = true;
+    port.linklySetup.multiTerminal = true;
+    port.linklySetup.lineManagementSupported = true;
+    port.linklySetup.readState = async () => { throw new Error("legacy health unavailable"); };
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(<SettingsScreen locale="zh" presenter={presenter} />);
+    await fireEvent.press(screen.getByTestId("settings-nav-payments"));
+    await fireEvent.press(screen.getByTestId("settings-payment-tab-linkly"));
+    expect(screen.getByTestId("settings-linkly-test").props.accessibilityState.disabled).toBe(false);
+    await fireEvent.press(screen.getByTestId("settings-linkly-test"));
+    expect(screen.getByTestId("settings-payment-provider-linkly").props.accessibilityState.disabled).toBe(false);
+    await fireEvent.press(screen.getByTestId("settings-payment-provider-linkly"));
+    expect(screen.getByTestId("settings-payment-save").props.accessibilityState.disabled).toBe(false);
+    await fireEvent.press(screen.getByTestId("settings-payment-save"));
+    await screen.findByTestId("settings-confirmation");
+    await fireEvent.press(screen.getByTestId("settings-confirm"));
+    expect(port.savedPayments.at(-1)?.provider).toBe("linkly");
+    expect(presenter.getState().paymentProvider).toBe("linkly");
+  });
+
+  it("Linkly 验证超时显示结果未确认，不能误启用", async () => {
+    const port = new ScreenSettingsPort();
+    port.linklySetup.ready = true;
+    port.linklySetup.lineManagementSupported = true;
+    port.testPaymentProvider = async () => {
+      throw Object.assign(new Error("private details"), { code: "LINKLY_TEST_UNCONFIRMED" });
+    };
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(<SettingsScreen locale="zh" presenter={presenter} />);
+    await fireEvent.press(screen.getByTestId("settings-nav-payments"));
+    await fireEvent.press(screen.getByTestId("settings-payment-tab-linkly"));
+    await fireEvent.press(screen.getByTestId("settings-linkly-test"));
+    await screen.findByText("尚未确认刷卡机状态。若刷卡机已显示成功，请稍后再次测试可用性；系统会先查询签到状态。");
+    expect(screen.getByTestId("settings-payment-provider-linkly").props.accessibilityState.disabled).toBe(true);
+    expect(port.savedPayments).toEqual([]);
   });
 
   it("Linkly 持久健康 Healthy 与 Unhealthy 映射为本地化状态并格式化时间", async () => {
@@ -1059,6 +1311,7 @@ describe("SettingsScreen", () => {
     );
     await screen.findByTestId("settings-pane-content-general");
     await fireEvent.press(screen.getByTestId("settings-nav-payments"));
+    await fireEvent.press(screen.getByTestId("settings-payment-tab-linkly"));
     const friendlyCheckedAt = new Intl.DateTimeFormat("zh-CN", {
       dateStyle: "medium",
       timeStyle: "short",
@@ -1067,7 +1320,7 @@ describe("SettingsScreen", () => {
 
     port.linklySetup.persistedHealthStatus = "Unhealthy";
     await fireEvent.press(screen.getByTestId("settings-linkly-refresh"));
-    await screen.findByText(`无法连接 · 上次测试：${friendlyCheckedAt}`);
+    await screen.findByText(`检测未通过 · 上次测试：${friendlyCheckedAt}`);
   });
 
   it("Linkly 旧服务缺少线路版本时显示升级说明并隐藏所有线路写操作", async () => {
@@ -2574,7 +2827,7 @@ class ScreenLinklySetupControlPort implements SettingsLinklySetupControlPort {
   public async testTerminalConnection(
     environment: "Sandbox" | "Production",
     terminalInput: Readonly<{ terminalId: string; terminalVersion: string; assignedDeviceCode: string | null; assignmentRevision: number }>,
-  ) {
+  ): Promise<SettingsLinklyConnectionTestResult> {
     return {
       terminalId: terminalInput.terminalId,
       environment,

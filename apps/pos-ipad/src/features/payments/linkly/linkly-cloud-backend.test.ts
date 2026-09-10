@@ -1102,6 +1102,28 @@ async function recoverFromSession(backendSession: unknown) {
   };
 }
 
+test("切换新终端与当前环境后，未完成支付仍按原环境和原会话恢复", async () => {
+  const transport = new FakeTransport();
+  transport.responses.push(ok(session({ status: "Pending", sessionId: "session-original", terminalId: "terminal-original" })));
+  const selection = new FakeTerminalSelectionPort(terminalSelection({
+    selectedTerminalId: "terminal-new", selectionRevision: 8,
+    terminals: terminalSelection().terminals.map((terminal) => ({ ...terminal, terminalId: "terminal-new" })),
+  }));
+  selection.readTerminals = async () => { throw new Error("恢复不能读取新线路"); };
+  const provider = new LinklyCloudBackendProvider(new LinklyCloudBackendApi(transport), {
+    ...providerOptions(selection), environment: "Production",
+  });
+  const original = attempt({ state: "Unknown", references: {
+    ...attempt().references, sessionId: "session-original", txnRef: "TXN-1",
+  } });
+  const result = await provider.recover(original);
+  assert.equal(result.references.sessionId, "session-original");
+  assert.equal(transport.requests.length, 1);
+  assert.equal(transport.requests[0]?.url, "/api/v1/linkly/cloud-backend/transactions/session-original/status");
+  assert.equal(transport.requests[0]?.params?.environment, "Sandbox");
+  assert.equal(transport.requests[0]?.method, "GET");
+});
+
 test("未知 Linkly 状态失败关闭为 Unknown，并只保留原 SessionId 恢复", async () => {
   const recovered = await recoverFromSession(session({
     sessionId: "session-unexpected",

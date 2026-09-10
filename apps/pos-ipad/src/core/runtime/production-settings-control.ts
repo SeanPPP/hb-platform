@@ -695,24 +695,19 @@ function pendingDataBlockersForAction(
   pending: SettingsPendingDataSnapshot,
 ): readonly PendingWorkBlocker[] {
   const blockers = derivePendingWorkBlockers(pending);
-  if (
-    action.kind !== "change-payment-settings" &&
-    action.kind !== "pair-linkly" &&
-    action.kind !== "assign-linkly-terminal"
-  ) {
-    return blockers;
+  if (action.kind === "assign-linkly-terminal") {
+    // 线路选择只影响后续支付，不清空购物车、不改写订单或旧支付会话。
+    // 旧支付按已持久的环境和 SessionId 恢复；本地积压不作为线路选择门禁。
+    return Object.freeze([]);
   }
   if (
-    action.kind === "assign-linkly-terminal" &&
-    action.affectsCurrentDevice
+    action.kind !== "change-payment-settings" &&
+    action.kind !== "pair-linkly"
   ) {
-    // 本机线路变化会立刻改变后续交易使用的终端；全局封门内必须确认所有
-    // 本地待处理与恢复数据均已清空，不能沿用远端配置变更的放宽规则。
     return blockers;
   }
   // 普通已耐久队列可在 reload 后继续处理；内存购物车、进行中的外部动作，
   // 以及仍依赖旧 provider/environment 的订单或恢复必须保持失败关闭。
-  // 远端线路分配不改变本机 provider 与交易通道，也沿用这组门禁。
   return Object.freeze(
     blockers.filter((blocker) =>
       blocker.code === "active-cart" ||

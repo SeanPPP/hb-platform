@@ -33,7 +33,6 @@ import {
 } from "./payment-copy";
 import {
   LINKLY_SAFE_OPERATOR_KEYS,
-  canSwitchLinklyTerminal,
   canSelectPaymentMethod,
   canSubmitPaymentMethod,
   type PaymentPresenterState,
@@ -405,6 +404,8 @@ export function PaymentScreen({
             <Modal
               animationType="fade"
               onRequestClose={closePaymentEntry}
+              // iPad 应用仅支持横屏；默认竖屏弹窗会被 UIKit 直接终止。
+              supportedOrientations={["landscape-left", "landscape-right"]}
               testID="payment-entry-native-modal"
               transparent
               visible={paymentEntryOpen && showEntry}
@@ -669,6 +670,8 @@ export function PaymentScreen({
         onRequestClose={() =>
           setFullInstallmentConfirmationOpen(false)
         }
+        supportedOrientations={["landscape-left", "landscape-right"]}
+        testID="payment-full-installment-native-modal"
         transparent
         visible={fullInstallmentConfirmationOpen}
       >
@@ -722,6 +725,7 @@ export function PaymentScreen({
       <Modal
         animationType="fade"
         onRequestClose={closePreparedCashCancellation}
+        supportedOrientations={["landscape-left", "landscape-right"]}
         testID="payment-cancel-prepared-cash-native-modal"
         transparent
         visible={preparedCashCancellationOpen}
@@ -1356,35 +1360,10 @@ function PaymentStatusPanel({
   );
 }
 
-function ProviderBlockers({
-  state,
-  t,
-}: Readonly<{
-  state: PaymentPresenterState;
-  t: Translate;
-}>) {
-  const blockers = state.providers.filter(
-    (provider) => !provider.available && provider.blocker,
-  );
-  if (!blockers.length) return null;
-  return (
-    <View style={styles.providerBlockers} testID="payment-provider-blockers">
-      {blockers.map((provider) => (
-        <Text key={provider.provider} style={styles.providerBlockerText}>
-          {t(paymentMethodCopyKey(provider.provider))}:{" "}
-          {t(paymentRuntimeErrorCopyKey(provider.blocker!))}
-        </Text>
-      ))}
-    </View>
-  );
-}
-
 function LinklyTerminalSelector({
-  presenter,
   state,
   t,
 }: Readonly<{
-  presenter: PaymentScreenPresenter;
   state: PaymentPresenterState;
   t: Translate;
 }>) {
@@ -1409,77 +1388,33 @@ function LinklyTerminalSelector({
     );
   }
   if (snapshot.mode !== "Active") return null;
-  if (snapshot.terminals.length === 0) {
+  // 付款页只展示设置中已选中的线路，不在收款过程中提供重新绑定入口。
+  const terminal = snapshot.terminals.find(
+    (item) => item.terminalId === snapshot.selectedTerminalId,
+  );
+  if (!terminal) {
     return (
       <View style={styles.linklyTerminalPanel} testID="payment-linkly-terminal-empty">
         <Text style={styles.linklyTerminalError}>{t("linkly.noTerminals")}</Text>
       </View>
     );
   }
-  if (snapshot.terminals.length === 1) {
-    const terminal = snapshot.terminals[0]!;
-    return (
-      <View style={styles.linklyTerminalPanel} testID="payment-linkly-terminal-current">
-        <Text style={styles.linklyTerminalTitle}>{t("linkly.currentTerminal")}</Text>
-        <Text style={styles.linklyTerminalName}>
-          {`${terminal.displayName} · Lane ${terminal.laneNo}`}
-        </Text>
-      </View>
-    );
-  }
-
-  const switchAllowed = canSwitchLinklyTerminal(state);
+  const status = terminal.isBusy
+    ? t("linkly.terminalBusy")
+    : terminal.pairingState === "NeedsRepair"
+      ? t("linkly.terminalNeedsRepair")
+      : terminal.pairingState === "Unpaired"
+        ? t("linkly.terminalUnpaired")
+        : terminal.isReady && terminal.pairingState === "Ready"
+          ? t("linkly.terminalSelected")
+          : t("linkly.terminalUnknown");
   return (
-    <View style={styles.linklyTerminalPanel} testID="payment-linkly-terminal-selector">
+    <View style={styles.linklyTerminalPanel} testID="payment-linkly-terminal-current">
       <Text style={styles.linklyTerminalTitle}>{t("linkly.currentTerminal")}</Text>
-      <View style={styles.linklyTerminalGrid}>
-        {snapshot.terminals.map((terminal) => {
-          const selected = terminal.terminalId === snapshot.selectedTerminalId;
-          const disabled =
-            !switchAllowed ||
-            !terminal.isReady ||
-            terminal.pairingState !== "Ready";
-          const status = terminal.isBusy
-            ? t("linkly.terminalBusy")
-            : terminal.pairingState === "NeedsRepair"
-              ? t("linkly.terminalNeedsRepair")
-              : terminal.pairingState === "Unpaired"
-                ? t("linkly.terminalUnpaired")
-                : terminal.isReady && terminal.pairingState === "Ready"
-                  ? selected
-                    ? t("linkly.terminalSelected")
-                    : t("linkly.terminalReady")
-                  : t("linkly.terminalUnknown");
-          return (
-            <PosPressable
-              accessibilityLabel={`${terminal.displayName}. Lane ${terminal.laneNo}. ${status}`}
-              accessibilityRole="button"
-              accessibilityState={{ disabled, selected }}
-              disabled={disabled}
-              key={terminal.terminalId}
-              onPress={() => {
-                void presenter.selectLinklyTerminal?.(terminal.terminalId);
-              }}
-              sound="tap"
-              style={({ pressed }) => [
-                styles.linklyTerminalButton,
-                selected && styles.linklyTerminalButtonSelected,
-                disabled && styles.disabled,
-                pressed && !disabled && styles.pressed,
-              ]}
-              testID={`payment-linkly-terminal-${terminal.terminalId}`}
-            >
-              <Text style={styles.linklyTerminalName}>
-                {`${terminal.displayName} · Lane ${terminal.laneNo}`}
-              </Text>
-              <Text style={styles.linklyTerminalHint}>{status}</Text>
-            </PosPressable>
-          );
-        })}
-      </View>
-      {resource.kind === "switching" ? (
-        <Text style={styles.linklyTerminalHint}>{t("linkly.terminalSwitching")}</Text>
-      ) : null}
+      <Text style={styles.linklyTerminalName}>
+        {`${terminal.displayName} · Lane ${terminal.laneNo}`}
+      </Text>
+      <Text style={styles.linklyTerminalHint}>{status}</Text>
     </View>
   );
 }
@@ -1725,7 +1660,14 @@ function PaymentSummary({
       >
         <Text style={styles.sectionTitle}>{t("method.title")}</Text>
         <View style={styles.methodGrid}>
-          {PAYMENT_METHODS.map((method) => (
+          {PAYMENT_METHODS.filter((method) =>
+            // 运行时已按设置限制唯一银行卡通道；付款中暂时禁用不影响展示。
+            method === "cash"
+              ? state.cashAvailable === true
+              : state.providers.some(
+                  (entry) => entry.provider === method && entry.available,
+                ),
+          ).map((method) => (
             <PaymentMethodButton
               active={state.selectedMethod === method}
               disabled={!canSelectPaymentMethod(state, method)}
@@ -1736,8 +1678,7 @@ function PaymentSummary({
             />
           ))}
         </View>
-        <ProviderBlockers state={state} t={t} />
-        <LinklyTerminalSelector presenter={presenter} state={state} t={t} />
+        <LinklyTerminalSelector state={state} t={t} />
         <View style={styles.summarySectionRule} />
         <Text style={styles.sectionTitle}>{t("summary.title")}</Text>
         <SummaryAmount
@@ -3092,15 +3033,6 @@ const styles = StyleSheet.create({
   methodButtonTextActive: {
     color: "#FFFFFF",
   },
-  providerBlockers: {
-    marginTop: 10,
-    gap: 3,
-  },
-  providerBlockerText: {
-    color: posColors.mutedInk,
-    fontSize: 12,
-    lineHeight: 17,
-  },
   linklyTerminalPanel: {
     backgroundColor: posColors.blueSoft,
     borderColor: posColors.border,
@@ -3114,27 +3046,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "800",
     lineHeight: 18,
-  },
-  linklyTerminalGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-    marginTop: 8,
-  },
-  linklyTerminalButton: {
-    backgroundColor: posColors.surface,
-    borderColor: posColors.border,
-    borderRadius: 7,
-    borderWidth: 1,
-    flexBasis: "46%",
-    flexGrow: 1,
-    justifyContent: "center",
-    minHeight: PAYMENT_MIN_TOUCH_TARGET,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-  },
-  linklyTerminalButtonSelected: {
-    borderColor: posColors.blue,
   },
   linklyTerminalName: {
     color: posColors.ink,

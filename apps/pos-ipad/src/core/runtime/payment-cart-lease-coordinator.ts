@@ -350,12 +350,25 @@ function assertCartValueMatches(
   actual: CartSnapshot,
   expected: CartSnapshot,
 ): void {
-  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+  if (persistedCartValue(actual) !== persistedCartValue(expected)) {
     throw paymentLeaseError(
       "PAYMENT_CART_LEASE_CONFLICT",
       "Recovered pricing state does not reproduce the persisted cart.",
     );
   }
+}
+
+function persistedCartValue(cart: CartSnapshot): string {
+  return JSON.stringify({
+    ...cart,
+    lines: cart.lines.map((line) => {
+      // discountSource 是 PricingCart 重算生成的展示字段，持久化 CartLine 不含它。
+      // 仅排除此字段，商品、数量、金额、折扣和来源仍必须与耐久快照完全一致。
+      const persisted = { ...line } as typeof line & { discountSource?: unknown };
+      delete persisted.discountSource;
+      return persisted;
+    }),
+  });
 }
 
 function requiredText(value: string, label: string): string {

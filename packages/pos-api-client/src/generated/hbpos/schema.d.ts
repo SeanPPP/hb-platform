@@ -6382,6 +6382,7 @@ export interface components {
             responseTime?: string | null;
             message?: string | null;
             readonly txnRef?: string | null;
+            loggedOn?: boolean | null;
         };
         LinklyCloudBackendStatusTestResponseApiResult: {
             success?: boolean;

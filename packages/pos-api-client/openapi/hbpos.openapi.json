@@ -10085,6 +10085,10 @@
             "type": "string",
             "nullable": true,
             "readOnly": true
+          },
+          "loggedOn": {
+            "type": "boolean",
+            "nullable": true
           }
         },
         "additionalProperties": false
