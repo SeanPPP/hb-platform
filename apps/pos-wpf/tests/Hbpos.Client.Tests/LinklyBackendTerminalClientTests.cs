@@ -316,6 +316,53 @@ public sealed class LinklyBackendTerminalClientTests
     }
 
     [Fact]
+    public async Task TestTerminalConnectionAsync_posts_terminal_identity_fence()
+    {
+        HttpRequestMessage? captured = null;
+        var terminalId = Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd");
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            captured = CloneRequestWithBody(request);
+            return JsonResponse(
+                """
+                {
+                  "success": true,
+                  "data": {
+                    "terminalId": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+                    "environment": "Sandbox",
+                    "terminalVersion": "638931456789000000",
+                    "assignedDeviceCode": "POS-02",
+                    "assignmentRevision": 7,
+                    "succeeded": true,
+                    "status": "connected",
+                    "checkedAt": "2026-09-11T00:00:00Z",
+                    "message": "Connected"
+                  }
+                }
+                """);
+        }, passHealthRequestsToHandler: true);
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+        var terminal = new LinklyCloudTerminalSummary(
+            terminalId, 2, "Returns", "Ready", false, true, null, null,
+            "POS-02", 7, "638931456789000000");
+
+        var result = await client.TestTerminalConnectionAsync(CardTerminalEnvironment.Sandbox, terminal);
+
+        Assert.NotNull(captured);
+        Assert.Equal(HttpMethod.Post, captured.Method);
+        Assert.Equal(
+            "/api/v1/linkly/cloud-backend/terminals/dddddddd-dddd-dddd-dddd-dddddddddddd/connection-test",
+            captured.RequestUri!.AbsolutePath);
+        var body = await captured.Content!.ReadAsStringAsync();
+        using var json = JsonDocument.Parse(body);
+        Assert.Equal("Sandbox", json.RootElement.GetProperty("environment").GetString());
+        Assert.Equal("638931456789000000", json.RootElement.GetProperty("expectedTerminalVersion").GetString());
+        Assert.Equal("POS-02", json.RootElement.GetProperty("expectedAssignedDeviceCode").GetString());
+        Assert.Equal(7, json.RootElement.GetProperty("expectedAssignmentRevision").GetInt64());
+        Assert.True(result.Succeeded);
+    }
+
+    [Fact]
     public async Task PurchaseAsync_includes_cached_terminal_id_and_selection_revision()
     {
         var requests = new List<HttpRequestMessage>();

@@ -42,6 +42,13 @@ public interface ILinklyBackendTerminalClient
         Task.FromException<LinklyCloudTerminalPairResponse>(
             new NotSupportedException("Linkly Cloud terminal pairing is not supported by this client."));
 
+    Task<LinklyCloudTerminalConnectionTestResponse> TestTerminalConnectionAsync(
+        CardTerminalEnvironment environment,
+        LinklyCloudTerminalSummary terminal,
+        CancellationToken cancellationToken = default) =>
+        Task.FromException<LinklyCloudTerminalConnectionTestResponse>(
+            new NotSupportedException("Linkly Cloud terminal connection test is not supported by this client."));
+
     Task<LinklyConnectionTestResult> TestConnectionAsync(
         CardTerminalEnvironment environment,
         CancellationToken cancellationToken = default);
@@ -220,6 +227,25 @@ public sealed class LinklyBackendTerminalClient(
         Log(
             $"terminal pairing completed environment={environment} terminalId={terminalId:D} " +
             $"pairingState={result.PairingState} isReady={result.IsReady}");
+        return result;
+    }
+
+    public async Task<LinklyCloudTerminalConnectionTestResponse> TestTerminalConnectionAsync(
+        CardTerminalEnvironment environment,
+        LinklyCloudTerminalSummary terminal,
+        CancellationToken cancellationToken = default)
+    {
+        var relativeUrl = $"api/v1/linkly/cloud-backend/terminals/{terminal.TerminalId:D}/connection-test";
+        var request = new LinklyCloudTerminalConnectionTestRequest(
+            environment.ToString(),
+            terminal.TerminalVersion ?? string.Empty,
+            terminal.AssignedDeviceCode,
+            terminal.AssignmentRevision);
+        using var response = await httpClient.PostAsJsonAsync(relativeUrl, request, JsonOptions, cancellationToken);
+        var result = await ReadTerminalApiResultAsync<LinklyCloudTerminalConnectionTestResponse>(response, cancellationToken);
+        Log(
+            $"terminal connection test completed environment={environment} terminalId={terminal.TerminalId:D} " +
+            $"succeeded={result.Succeeded} status={LogValue(result.Status)}");
         return result;
     }
 
@@ -4043,13 +4069,5 @@ public sealed class LinklyBackendTerminalClient(
         }
     }
 
-    private sealed class LinklyBackendHttpException(
-        string message,
-        HttpStatusCode httpStatus,
-        string? errorCode = null) : HttpRequestException(message, inner: null, statusCode: httpStatus)
-    {
-        public HttpStatusCode HttpStatus { get; } = httpStatus;
 
-        public string? ErrorCode { get; } = errorCode;
-    }
 }

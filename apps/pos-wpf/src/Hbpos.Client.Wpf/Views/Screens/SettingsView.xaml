@@ -930,6 +930,7 @@
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto" />
                                     <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
                                 </Grid.RowDefinitions>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="0.92*" />
@@ -967,6 +968,13 @@
                                 </DockPanel>
 
                                 <Grid Grid.Row="1" Grid.Column="0">
+                                    <Grid.Style>
+                                        <Style TargetType="Grid">
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsLinklyCloudBackendAsyncMode}" Value="True"><Setter Property="Grid.ColumnSpan" Value="3" /></DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Grid.Style>
                                     <Grid.RowDefinitions>
                                         <RowDefinition Height="Auto" />
                                         <RowDefinition Height="8" />
@@ -1135,7 +1143,20 @@
                                  </StackPanel>
                                 </Grid>
 
-                                <StackPanel Grid.Row="1" Grid.Column="2">
+                                <StackPanel>
+                                    <StackPanel.Style>
+                                        <Style TargetType="StackPanel">
+                                            <Setter Property="Grid.Row" Value="1" />
+                                            <Setter Property="Grid.Column" Value="2" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsLinklyCloudBackendAsyncMode}" Value="True">
+                                                    <Setter Property="Grid.Row" Value="2" />
+                                                    <Setter Property="Grid.Column" Value="0" />
+                                                    <Setter Property="Grid.ColumnSpan" Value="3" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </StackPanel.Style>
 
                                 <Expander Visibility="Collapsed"
                                           Margin="0,0,0,16"
@@ -1596,130 +1617,158 @@
                                                 </Grid>
                                             </Border>
 
-                                            <TextBlock Text="{loc:Loc settings.linkly.cloudBackend.terminal}" Style="{StaticResource SettingsLabelStyle}" />
-                                            <Grid Margin="0,0,0,14">
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="*" />
-                                                    <ColumnDefinition Width="10" />
-                                                    <ColumnDefinition Width="Auto" />
-                                                </Grid.ColumnDefinitions>
-                                                <ComboBox Grid.Column="0"
-                                                          ItemsSource="{Binding LinklyCloudTerminals}"
-                                                          SelectedItem="{Binding SelectedLinklyCloudTerminal, Mode=TwoWay}"
-                                                          SelectionChanged="LinklyCloudTerminal_SelectionChanged"
-                                                          MinHeight="42"
-                                                          Padding="10,6"
-                                                          AutomationProperties.AutomationId="LinklyCloudTerminalSelector">
-                                                    <ComboBox.ItemTemplate>
-                                                        <DataTemplate>
-                                                            <Grid MinWidth="260">
-                                                                <Grid.ColumnDefinitions>
-                                                                    <ColumnDefinition Width="Auto" />
-                                                                    <ColumnDefinition Width="*" />
-                                                                    <ColumnDefinition Width="Auto" />
-                                                                </Grid.ColumnDefinitions>
-                                                                <Border Background="#FFE9EFF9" CornerRadius="4" Padding="7,3" Margin="0,0,9,0">
-                                                                    <TextBlock Text="{Binding LaneNo, StringFormat=Lane {0}}" FontSize="11" FontWeight="Bold" />
-                                                                </Border>
-                                                                <TextBlock Grid.Column="1" Text="{Binding DisplayName}" VerticalAlignment="Center" FontWeight="SemiBold" />
-                                                                <TextBlock Grid.Column="2" Text="{Binding PairingState}" VerticalAlignment="Center" FontSize="11" Foreground="{StaticResource PosMutedForegroundBrush}" Margin="10,0,0,0" />
-                                                            </Grid>
-                                                        </DataTemplate>
-                                                    </ComboBox.ItemTemplate>
-                                                </ComboBox>
-                                                <Button Grid.Column="2"
-                                                        Click="RefreshLinklyCloudTerminals_Click"
-                                                        Style="{StaticResource PosSecondaryButtonStyle}"
-                                                        Height="42"
-                                                        MinWidth="108">
-                                                    <StackPanel Orientation="Horizontal">
-                                                        <materialDesign:PackIcon Kind="Refresh" Width="18" Height="18" Margin="0,0,7,0" />
-                                                        <TextBlock Text="{loc:Loc settings.linkly.cloudBackend.refresh}" />
-                                                    </StackPanel>
+                                            <DockPanel Margin="0,0,0,12" LastChildFill="True">
+                                                <Button DockPanel.Dock="Right" Click="RefreshLinklyCloudTerminals_Click" IsEnabled="{Binding CanChangeEnvironment}"
+                                                        Style="{StaticResource PosSecondaryButtonStyle}" MinHeight="44" Padding="14,8" Margin="12,0,0,0">
+                                                    <TextBlock Text="{loc:Loc settings.linkly.cloudBackend.refresh}" />
                                                 </Button>
-                                            </Grid>
-
-                                            <Border Background="#FFF8F9FB"
-                                                    BorderBrush="{StaticResource PosBorderBrush}"
-                                                    BorderThickness="1"
-                                                    CornerRadius="6"
-                                                    Padding="10,8"
-                                                    Margin="0,0,0,14">
-                                                <StackPanel>
-                                                    <TextBlock Text="{Binding SelectedLinklyCloudTerminalText}"
-                                                               FontSize="12"
-                                                               FontWeight="SemiBold"
-                                                               Foreground="{StaticResource PosTextBrush}"
-                                                               TextWrapping="Wrap" />
-                                                    <TextBlock Text="{loc:Loc settings.linkly.cloudBackend.readyHint}"
-                                                               Margin="0,6,0,0" FontSize="12" TextWrapping="Wrap"
-                                                               Foreground="{StaticResource PosMutedForegroundBrush}" />
+                                                <StackPanel VerticalAlignment="Center">
+                                                    <TextBlock Text="{loc:Loc settings.linkly.lines.title}" FontSize="16" FontWeight="SemiBold" />
+                                                    <TextBlock Text="{loc:Loc settings.linkly.lines.description}" TextWrapping="Wrap" Margin="0,4,0,0" Foreground="{StaticResource PosMutedForegroundBrush}" />
                                                 </StackPanel>
+                                            </DockPanel>
+                                            <TextBlock Text="{loc:Loc settings.linkly.lines.empty}" TextWrapping="Wrap" Margin="0,0,0,14">
+                                                <TextBlock.Style>
+                                                    <Style TargetType="TextBlock">
+                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding HasLinklyCloudTerminals}" Value="False"><Setter Property="Visibility" Value="Visible" /></DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </TextBlock.Style>
+                                            </TextBlock>
+                                            <!-- 每个卡片只操作自身线路；付款线路选择与重新配对使用独立命令。 -->
+                                            <ItemsControl ItemsSource="{Binding LinklyCloudLines}" AutomationProperties.AutomationId="LinklyCloudLineCards">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <Border BorderThickness="1" CornerRadius="6" Padding="14" Margin="0,0,0,12">
+                                                            <Border.Style>
+                                                                <Style TargetType="Border">
+                                                                    <Setter Property="Background" Value="White" />
+                                                                    <Setter Property="BorderBrush" Value="{StaticResource PosBorderBrush}" />
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding IsExpanded}" Value="True">
+                                                                            <Setter Property="Background" Value="#FFF5F9FF" />
+                                                                            <Setter Property="BorderBrush" Value="#FF90B8F0" />
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </Border.Style>
+                                                            <StackPanel>
+                                                                <DockPanel LastChildFill="True">
+                                                                    <Button DockPanel.Dock="Right" Command="{Binding TogglePairingCommand}"
+                                                                            Style="{StaticResource PosSecondaryButtonStyle}" MinHeight="44" Padding="14,8" Margin="10,0,0,0"
+                                                                            AutomationProperties.AutomationId="LinklyLineTogglePairing">
+                                                                        <TextBlock Text="{Binding TogglePairingText}" />
+                                                                    </Button>
+                                                                    <StackPanel VerticalAlignment="Center">
+                                                                        <TextBlock Text="{Binding DisplayName}" FontSize="18" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                                                        <WrapPanel Margin="0,5,0,0">
+                                                                            <Border Background="#FFE6EFFF" CornerRadius="4" Padding="8,4" Margin="0,0,8,4">
+                                                                                <TextBlock Text="{Binding LaneLabel}" FontWeight="Bold" Foreground="{StaticResource PosPrimaryBrush}" />
+                                                                            </Border>
+                                                                            <TextBlock Text="{loc:Loc settings.linkly.lines.selected}" VerticalAlignment="Center"
+                                                                                       Visibility="{Binding IsSelected, Converter={StaticResource BoolToVis}}" Foreground="{StaticResource PosMutedForegroundBrush}" />
+                                                                        </WrapPanel>
+                                                                    </StackPanel>
+                                                                </DockPanel>
+                                                                <WrapPanel Margin="0,10,0,0">
+                                                                    <StackPanel Margin="0,0,28,10" MinWidth="125">
+                                                                        <TextBlock Text="{loc:Loc settings.linkly.lines.pairingStatus}" Style="{StaticResource SettingsLabelStyle}" />
+                                                                        <TextBlock Text="{Binding PairingStatusText}" FontSize="14" FontWeight="SemiBold" TextWrapping="Wrap">
+                                                                            <TextBlock.Style>
+                                                                                <Style TargetType="TextBlock">
+                                                                                    <Setter Property="Foreground" Value="{StaticResource PosMutedForegroundBrush}" />
+                                                                                    <Style.Triggers>
+                                                                                        <DataTrigger Binding="{Binding Terminal.IsReady}" Value="True"><Setter Property="Foreground" Value="#FF137A4B" /></DataTrigger>
+                                                                                    </Style.Triggers>
+                                                                                </Style>
+                                                                            </TextBlock.Style>
+                                                                        </TextBlock>
+                                                                    </StackPanel>
+                                                                    <StackPanel Margin="0,0,0,10" MinWidth="125">
+                                                                        <TextBlock Text="{loc:Loc settings.linkly.lines.connectionStatus}" Style="{StaticResource SettingsLabelStyle}" />
+                                                                        <TextBlock Text="{Binding ConnectionStatusText}" FontSize="14" FontWeight="SemiBold" TextWrapping="Wrap">
+                                                                            <TextBlock.Style>
+                                                                                <Style TargetType="TextBlock">
+                                                                                    <Setter Property="Foreground" Value="{StaticResource PosMutedForegroundBrush}" />
+                                                                                    <Style.Triggers>
+                                                                                        <DataTrigger Binding="{Binding IsConnected}" Value="True"><Setter Property="Foreground" Value="#FF137A4B" /></DataTrigger>
+                                                                                        <DataTrigger Binding="{Binding HasConnectionFailure}" Value="True"><Setter Property="Foreground" Value="#FFB83B24" /></DataTrigger>
+                                                                                    </Style.Triggers>
+                                                                                </Style>
+                                                                            </TextBlock.Style>
+                                                                        </TextBlock>
+                                                                    </StackPanel>
+                                                                </WrapPanel>
+                                                                <Border Background="#FFFFF5E6" BorderBrush="#FFE7BF7A" BorderThickness="1" CornerRadius="4" Padding="10" Margin="0,0,0,10"
+                                                                        Visibility="{Binding HasConnectionHelp, Converter={StaticResource BoolToVis}}">
+                                                                    <TextBlock Text="{Binding ConnectionHelpText}" TextWrapping="Wrap" Foreground="#FF805000" />
+                                                                </Border>
+                                                                <WrapPanel>
+                                                                    <Button Command="{Binding TestConnectionCommand}" Style="{StaticResource PosSecondaryButtonStyle}" MinHeight="44" Padding="12,8" Margin="0,0,10,6">
+                                                                        <TextBlock Text="{loc:Loc settings.linkly.lines.testConnection}" />
+                                                                    </Button>
+                                                                    <Button Command="{Binding SelectCommand}" Style="{StaticResource PosSecondaryButtonStyle}" MinHeight="44" Padding="12,8" Margin="0,0,0,6">
+                                                                        <TextBlock Text="{loc:Loc settings.linkly.lines.select}" />
+                                                                    </Button>
+                                                                </WrapPanel>
+                                                                <Border Background="#FFEAF2FF" CornerRadius="4" Padding="14" Margin="0,10,0,0"
+                                                                        Visibility="{Binding IsExpanded, Converter={StaticResource BoolToVis}}">
+                                                                    <StackPanel>
+                                                                        <TextBlock Text="{loc:Loc settings.linkly.lines.working}" TextWrapping="Wrap" FontWeight="SemiBold" Margin="0,0,0,10"
+                                                                                   Visibility="{Binding IsOperationBusy, Converter={StaticResource BoolToVis}}" />
+                                                                        <StackPanel Visibility="{Binding IsEnteringCode, Converter={StaticResource BoolToVis}}">
+                                                                            <TextBlock Text="{loc:Loc settings.linkly.lines.enterTitle}" FontSize="15" FontWeight="SemiBold" />
+                                                                            <TextBlock Text="{loc:Loc settings.linkly.lines.enterHelp}" TextWrapping="Wrap" Margin="0,6,0,12" />
+                                                                            <TextBox Text="{Binding PairCode, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" MaxLength="6"
+                                                                                     Style="{StaticResource SettingsFieldTextBoxStyle}" Height="52" FontSize="28" FontFamily="Consolas"
+                                                                                     HorizontalContentAlignment="Center" HorizontalAlignment="Left" Width="230"
+                                                                                     InputMethod.IsInputMethodEnabled="False" SpellCheck.IsEnabled="False"
+                                                                                     AutomationProperties.Name="{loc:Loc settings.linkly.cloud.pairCode}"
+                                                                                     AutomationProperties.AutomationId="LinklyLinePairCode" />
+                                                                            <WrapPanel Margin="0,12,0,0">
+                                                                                <Button Command="{Binding CancelCommand}" Style="{StaticResource PosSecondaryButtonStyle}" MinHeight="44" Padding="16,8" Margin="0,0,10,6">
+                                                                                    <TextBlock Text="{loc:Loc settings.linkly.lines.cancel}" />
+                                                                                </Button>
+                                                                                <Button Command="{Binding NextCommand}" Style="{StaticResource PosPrimaryButtonStyle}" MinHeight="44" Padding="16,8" Margin="0,0,0,6">
+                                                                                    <TextBlock Text="{loc:Loc settings.linkly.lines.next}" Foreground="White" />
+                                                                                </Button>
+                                                                            </WrapPanel>
+                                                                        </StackPanel>
+                                                                        <StackPanel Visibility="{Binding IsConfirming, Converter={StaticResource BoolToVis}}">
+                                                                            <TextBlock Text="{loc:Loc settings.linkly.lines.confirmTitle}" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                                                            <TextBlock Text="{Binding DisplayName}" FontSize="22" FontWeight="Bold" TextWrapping="Wrap" Margin="0,12,0,4" />
+                                                                            <TextBlock Text="{Binding LaneLabel}" FontSize="18" FontWeight="Bold" Foreground="{StaticResource PosPrimaryBrush}" />
+                                                                            <TextBlock Text="{loc:Loc settings.linkly.cloud.pairCode}" Margin="0,12,0,4" />
+                                                                            <TextBlock Text="{Binding PairCode}" FontSize="28" FontFamily="Consolas" FontWeight="Bold" />
+                                                                            <TextBlock Text="{loc:Loc settings.linkly.lines.confirmHelp}" TextWrapping="Wrap" Margin="0,10,0,12" />
+                                                                            <WrapPanel>
+                                                                                <Button Command="{Binding BackCommand}" Style="{StaticResource PosSecondaryButtonStyle}" MinHeight="44" Padding="16,8" Margin="0,0,10,6">
+                                                                                    <TextBlock Text="{loc:Loc settings.linkly.lines.back}" />
+                                                                                </Button>
+                                                                                <Button Command="{Binding ConfirmCommand}" Style="{StaticResource PosPrimaryButtonStyle}" MinHeight="44" Padding="16,8" Margin="0,0,10,6"
+                                                                                        AutomationProperties.AutomationId="LinklyLineConfirmPairing">
+                                                                                    <TextBlock Text="{loc:Loc settings.linkly.lines.confirm}" Foreground="White" />
+                                                                                </Button>
+                                                                                <Button Command="{Binding CancelCommand}" Style="{StaticResource PosSecondaryButtonStyle}" MinHeight="44" Padding="16,8" Margin="0,0,0,6">
+                                                                                    <TextBlock Text="{loc:Loc settings.linkly.lines.cancel}" />
+                                                                                </Button>
+                                                                            </WrapPanel>
+                                                                        </StackPanel>
+                                                                    </StackPanel>
+                                                                </Border>
+                                                            </StackPanel>
+                                                        </Border>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                            <TextBlock Text="{loc:Loc settings.linkly.lines.singleExpandedHint}" TextWrapping="Wrap" Foreground="{StaticResource PosMutedForegroundBrush}" Margin="0,0,0,14" />
+                                            <TextBlock Text="{Binding SelectedLinklyCloudTerminalText}" TextWrapping="Wrap" FontWeight="SemiBold" Margin="0,0,0,12" />
+                                            <Border Background="#FFF6F8FB" BorderBrush="#FFE0E4EC" BorderThickness="1" CornerRadius="6" Padding="10,8" Margin="0,0,0,12">
+                                                <TextBlock Text="{Binding LinklyTestStatusMessage}" FontSize="12" TextWrapping="Wrap" />
                                             </Border>
-
-                                            <TextBlock Text="{loc:Loc settings.linkly.cloudBackend.pairHelp}"
-                                                       Margin="0,0,0,10" FontSize="12" TextWrapping="Wrap"
-                                                       Foreground="{StaticResource PosTextBrush}" />
-                                            <TextBlock Text="{loc:Loc settings.linkly.cloud.pairCode}" Style="{StaticResource SettingsLabelStyle}" />
-                                            <Grid Margin="0,0,0,12">
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="*" />
-                                                    <ColumnDefinition Width="12" />
-                                                    <ColumnDefinition Width="Auto" />
-                                                </Grid.ColumnDefinitions>
-                                                <TextBox Grid.Column="0"
-                                                         Text="{Binding LinklyPairCodeText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                                         Style="{StaticResource SettingsFieldTextBoxStyle}" />
-                                                <Button Grid.Column="2"
-                                                        Click="PairLinklyCloud_Click"
-                                                        IsEnabled="{Binding CanPairLinklyCloudFromView}"
-                                                        Style="{StaticResource PosPrimaryButtonStyle}"
-                                                        Height="42"
-                                                        MinWidth="138">
-                                                    <StackPanel Orientation="Horizontal">
-                                                        <materialDesign:PackIcon Kind="LinkVariant" Width="18" Height="18" Margin="0,0,8,0" Foreground="White" />
-                                                        <TextBlock Text="{loc:Loc settings.linkly.cloud.pair}" Foreground="White" />
-                                                    </StackPanel>
-                                                </Button>
-                                            </Grid>
-
-                                            <Border Background="#FFF6F8FB"
-                                                    BorderBrush="#FFE0E4EC"
-                                                    BorderThickness="1"
-                                                    CornerRadius="6"
-                                                    Padding="10,8"
-                                                    MinHeight="40"
-                                                    Margin="0,0,0,18">
-                                                <TextBlock Text="{Binding LinklyTestStatusMessage}"
-                                                           FontSize="12"
-                                                           FontWeight="SemiBold"
-                                                           Foreground="{StaticResource PosMutedForegroundBrush}"
-                                                           TextWrapping="Wrap" />
-                                            </Border>
-
                                             <StackPanel>
-                                                <Button Command="{Binding CancelLinklyCloudPairingCommand}"
-                                                        Click="CancelLinklyCloudPairing_Click"
-                                                        IsEnabled="{Binding CanCancelLinklyCloudPairingFromView}"
-                                                        Style="{StaticResource PosSecondaryButtonStyle}"
-                                                        Height="42"
-                                                        HorizontalAlignment="Stretch"
-                                                        Margin="0,0,0,10">
-                                                    <StackPanel Orientation="Horizontal">
-                                                        <materialDesign:PackIcon Kind="Close" Width="18" Height="18" Margin="0,0,8,0" />
-                                                        <TextBlock Text="{loc:Loc settings.linkly.cloud.cancelPairing}" />
-                                                    </StackPanel>
-                                                </Button>
-                                                <Button Command="{Binding TestLinklyCommand}"
-                                                        Style="{StaticResource PosSecondaryButtonStyle}"
-                                                        Height="42"
-                                                        HorizontalAlignment="Stretch"
-                                                        Margin="0,0,0,10">
-                                                    <StackPanel Orientation="Horizontal">
-                                                        <materialDesign:PackIcon Kind="LanConnect" Width="18" Height="18" Margin="0,0,8,0" />
-                                                        <TextBlock Text="{loc:Loc settings.linkly.cloudBackend.test}" />
-                                                    </StackPanel>
-                                                </Button>
                                                 <Button Command="{Binding TestLinklyTransactionStatusCommand}"
                                                         Style="{StaticResource PosSecondaryButtonStyle}"
                                                         Height="42"

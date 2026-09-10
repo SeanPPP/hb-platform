@@ -116,6 +116,13 @@ public interface ICardTerminalSetupService
         Task.FromException<LinklyCloudTerminalPairResponse>(
             new NotSupportedException("Linkly Cloud terminal pairing is unavailable."));
 
+    Task<LinklyCloudTerminalConnectionTestResponse> TestLinklyCloudBackendTerminalConnectionAsync(
+        CardTerminalEnvironment environment,
+        LinklyCloudTerminalSummary terminal,
+        CancellationToken cancellationToken = default) =>
+        Task.FromException<LinklyCloudTerminalConnectionTestResponse>(
+            new NotSupportedException("Linkly Cloud terminal connection test is unavailable."));
+
     Task<LinklyConnectionTestResult> TestLinklyCloudBackendTransactionStatusAsync(
         CardTerminalEnvironment environment,
         CancellationToken cancellationToken = default);
@@ -482,6 +489,20 @@ public sealed class CardTerminalSetupService(
             terminalId,
             pairCode,
             cancellationToken);
+    }
+
+    public Task<LinklyCloudTerminalConnectionTestResponse> TestLinklyCloudBackendTerminalConnectionAsync(
+        CardTerminalEnvironment environment,
+        LinklyCloudTerminalSummary terminal,
+        CancellationToken cancellationToken = default)
+    {
+        if (linklyBackendTerminalClient is null)
+        {
+            return Task.FromException<LinklyCloudTerminalConnectionTestResponse>(
+                new InvalidOperationException(T("settings.linklyCloud.unavailable", "Linkly Cloud setup is unavailable.")));
+        }
+
+        return linklyBackendTerminalClient.TestTerminalConnectionAsync(environment, terminal, cancellationToken);
     }
 
     public async Task<LinklyConnectionTestResult> TestLinklyCloudBackendTransactionStatusAsync(

@@ -11,7 +11,10 @@ public sealed record LinklyCloudTerminalSummary(
     bool IsBusy,
     bool IsReady,
     string? LastHealthStatus,
-    DateTimeOffset? LastHealthAt);
+    DateTimeOffset? LastHealthAt,
+    string? AssignedDeviceCode = null,
+    long AssignmentRevision = 0,
+    string? TerminalVersion = null);
 
 public sealed record LinklyCloudTerminalListResponse(
     string Environment,
@@ -19,6 +22,25 @@ public sealed record LinklyCloudTerminalListResponse(
     long? SelectionRevision,
     IReadOnlyList<LinklyCloudTerminalSummary> Terminals,
     string Mode = "Legacy");
+
+/// <summary>客户端原样回传终端版本，避免 JavaScript 日期转换丢失 SQL 时间戳精度。</summary>
+public sealed record LinklyCloudTerminalConnectionTestRequest(
+    string Environment,
+    string ExpectedTerminalVersion,
+    string? ExpectedAssignedDeviceCode,
+    long ExpectedAssignmentRevision);
+
+public sealed record LinklyCloudTerminalConnectionTestResponse(
+    Guid TerminalId,
+    string Environment,
+    string TerminalVersion,
+    string? AssignedDeviceCode,
+    long AssignmentRevision,
+    bool Succeeded,
+    string Status,
+    DateTimeOffset CheckedAt,
+    string Message,
+    string? ResponseCode = null);
 
 public sealed record LinklyCloudTerminalSelectionRequest(
     string Environment,
