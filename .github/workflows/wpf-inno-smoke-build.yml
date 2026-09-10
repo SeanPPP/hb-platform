@@ -101,6 +101,7 @@ jobs:
           dotnet test apps/pos-wpf/tests/Hbpos.Client.Tests/Hbpos.Client.Tests.csproj `
             --configuration Release `
             -p:HbposWpfAppVersion=$version `
+            --logger 'console;verbosity=normal' `
             --logger 'trx;LogFileName=Hbpos.Client.Tests.trx' `
             --results-directory $resultsDir `
             -- xUnit.ParallelizeTestCollections=false xUnit.DiagnosticMessages=true xUnit.LongRunningTestSeconds=60 `
