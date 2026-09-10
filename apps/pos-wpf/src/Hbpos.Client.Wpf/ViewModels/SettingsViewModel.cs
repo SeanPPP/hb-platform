@@ -64,7 +64,8 @@ public sealed partial class LinklyCloudTerminalManagementItem(
     IReadOnlyList<LinklyCloudAssignableDevice> assignableDevices,
     LinklyCloudAssignableDevice? selectedTargetDevice,
     string? connectionStatus = null,
-    Func<string, string>? localize = null) : ObservableObject
+    Func<string, string>? localize = null,
+    DateTimeOffset? lastTestedAt = null) : ObservableObject
 {
     public LinklyCloudTerminalSummary Terminal { get; } = terminal;
 
@@ -77,7 +78,7 @@ public sealed partial class LinklyCloudTerminalManagementItem(
     private string _connectionStatus = connectionStatus ?? terminal.LastHealthStatus ?? string.Empty;
 
     [ObservableProperty]
-    private DateTimeOffset? _lastTestedAt = terminal.LastHealthAt;
+    private DateTimeOffset? _lastTestedAt = lastTestedAt ?? terminal.LastHealthAt;
 
     [ObservableProperty]
     private bool _isTesting;
@@ -164,6 +165,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     private int _linklyTerminalDirectoryRequestGeneration;
     private readonly Dictionary<Guid, int> _linklyTerminalTestGenerations = [];
     private readonly Dictionary<Guid, int> _linklyTerminalAssignmentGenerations = [];
+    private readonly Dictionary<LinklyTerminalTestSnapshotKey, LinklyTerminalTestSnapshot> _linklyTerminalTestSnapshots = [];
     private readonly SquareSettingsState _squareState = new();
     private readonly SquareSettingsCoordinator _squareCoordinator;
     private readonly LinklySettingsState _linklyState = new();
@@ -1162,6 +1164,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
                 ? T("settings.linkly.cloudBackend.healthHealthy")
                 : T("settings.linkly.cloudBackend.healthUnhealthy");
             item.LastTestedAt = result.CheckedAt;
+            RememberLinklyTerminalTest(environment, item, result.CheckedAt);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
         {
@@ -1173,6 +1176,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
                     exception: ex);
                 item.ConnectionStatus = T("settings.linkly.cloudBackend.testLineFailed");
                 item.LastTestedAt = DateTimeOffset.Now;
+                RememberLinklyTerminalTest(environment, item, item.LastTestedAt.Value);
             }
         }
         finally
@@ -1293,7 +1297,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             {
                 // 写入响应或模糊失败后的只读校准一旦成为权威结果，立即使更早的目录 GET 失效。
                 Interlocked.Increment(ref _linklyTerminalDirectoryRequestGeneration);
-                ApplyLinklyCloudTerminalDirectory(result.Directory);
+                ApplyLinklyCloudTerminalDirectory(environment, result.Directory);
             }
         }, operationName: "assign linkly cloud terminal");
     }
@@ -1437,10 +1441,12 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         {
             return;
         }
-        ApplyLinklyCloudTerminalDirectory(directory);
+        ApplyLinklyCloudTerminalDirectory(environment, directory);
     }
 
-    private void ApplyLinklyCloudTerminalDirectory(LinklyCloudTerminalListResponse directory)
+    private void ApplyLinklyCloudTerminalDirectory(
+        CardTerminalEnvironment environment,
+        LinklyCloudTerminalListResponse directory)
     {
         Interlocked.Increment(ref _linklyTerminalDirectoryGeneration);
         _linklyTerminalTestGenerations.Clear();
@@ -1458,14 +1464,35 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         var availableTargets = LinklyCloudDevices.Where(device => device.IsAvailable).ToArray();
         var currentTarget = availableTargets.FirstOrDefault(device =>
             string.Equals(device.DeviceCode, Session.DeviceCode, StringComparison.OrdinalIgnoreCase));
+        var currentSnapshotKeys = LinklyCloudTerminals
+            .Select(terminal => CreateLinklyTerminalTestSnapshotKey(environment, terminal))
+            .ToHashSet();
+        foreach (var staleKey in _linklyTerminalTestSnapshots.Keys
+                     .Where(key => key.Environment == environment && !currentSnapshotKeys.Contains(key))
+                     .ToArray())
+        {
+            // 同一环境内绑定、分配修订或终端版本一旦变化，旧检测结果立即失效。
+            _linklyTerminalTestSnapshots.Remove(staleKey);
+        }
         foreach (var terminal in LinklyCloudTerminals)
         {
+            var snapshotKey = CreateLinklyTerminalTestSnapshotKey(environment, terminal);
+            var hasLocalSnapshot = _linklyTerminalTestSnapshots.TryGetValue(snapshotKey, out var localSnapshot) &&
+                (terminal.LastHealthAt is null || terminal.LastHealthAt <= localSnapshot.CheckedAt);
+            if (!hasLocalSnapshot && localSnapshot is not null)
+            {
+                // 服务端已有更新检测时，以服务端为准，避免之后的旧目录重新唤回本地结果。
+                _linklyTerminalTestSnapshots.Remove(snapshotKey);
+            }
             LinklyCloudTerminalItems.Add(new LinklyCloudTerminalManagementItem(
                 terminal,
                 availableTargets,
                 currentTarget,
-                FormatPersistedLinklyHealthStatus(terminal.LastHealthStatus),
-                T));
+                hasLocalSnapshot
+                    ? localSnapshot!.ConnectionStatus
+                    : FormatPersistedLinklyHealthStatus(terminal.LastHealthStatus),
+                T,
+                hasLocalSnapshot ? localSnapshot!.CheckedAt : terminal.LastHealthAt));
         }
 
         _persistedLinklyCloudTerminalId = directory.SelectedTerminalId;
@@ -1487,6 +1514,34 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         "UNHEALTHY" => T("settings.linkly.cloudBackend.healthUnhealthy"),
         _ => string.Empty
     };
+
+    private void RememberLinklyTerminalTest(
+        CardTerminalEnvironment environment,
+        LinklyCloudTerminalManagementItem item,
+        DateTimeOffset checkedAt)
+    {
+        var key = CreateLinklyTerminalTestSnapshotKey(environment, item.Terminal);
+        _linklyTerminalTestSnapshots[key] = new LinklyTerminalTestSnapshot(item.ConnectionStatus, checkedAt);
+    }
+
+    private static LinklyTerminalTestSnapshotKey CreateLinklyTerminalTestSnapshotKey(
+        CardTerminalEnvironment environment,
+        LinklyCloudTerminalSummary terminal) =>
+        new(
+            environment,
+            terminal.TerminalId,
+            terminal.TerminalVersion ?? string.Empty,
+            terminal.AssignedDeviceCode?.Trim().ToUpperInvariant() ?? string.Empty,
+            terminal.AssignmentRevision);
+
+    private sealed record LinklyTerminalTestSnapshot(string ConnectionStatus, DateTimeOffset CheckedAt);
+
+    private readonly record struct LinklyTerminalTestSnapshotKey(
+        CardTerminalEnvironment Environment,
+        Guid TerminalId,
+        string TerminalVersion,
+        string AssignedDeviceCode,
+        long AssignmentRevision);
 
     private void ReplaceLinklyCloudTerminal(
         LinklyCloudTerminalSummary replacement,
