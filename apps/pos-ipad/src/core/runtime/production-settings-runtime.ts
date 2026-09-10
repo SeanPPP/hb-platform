@@ -124,6 +124,7 @@ function securedSettingsPort(
         );
       if (
         action.kind !== "pair-linkly" &&
+        action.kind !== "assign-linkly-terminal" &&
         action.kind !== "reset-device-registration" &&
         action.kind !== "reregister-device"
       ) {
@@ -150,7 +151,8 @@ function securedSettingsPort(
     }
     return action.kind === "restart-app" ||
       action.kind === "change-payment-settings" ||
-      action.kind === "pair-linkly"
+      action.kind === "pair-linkly" ||
+      action.kind === "assign-linkly-terminal"
       ? execute()
       : input.runDangerousExclusive(execute);
   };
@@ -213,8 +215,10 @@ function securedSettingsPort(
       : {}),
     ...(linklySetup
       ? {
-          // Pair 只走危险动作；终端选择必须走 production control 的共享门禁。
+          // Pair 与线路分配只走危险动作；终端选择必须走 production control 的共享门禁。
           linklySetup: Object.freeze({
+            supportsTerminalAssignment:
+              linklySetup.supportsTerminalAssignment === true,
             readState: (
               environment: Parameters<SettingsLinklySetupReadPort["readState"]>[0],
               signal: Parameters<SettingsLinklySetupReadPort["readState"]>[1],
@@ -232,6 +236,15 @@ function securedSettingsPort(
                     run(() =>
                       linklySetup.readTerminals!(environment, signal),
                     ),
+                }
+              : {}),
+            ...(linklySetup.testTerminalConnection
+              ? {
+                  testTerminalConnection: (
+                    environment: PaymentEnvironment,
+                    terminal: Parameters<NonNullable<SettingsLinklySetupReadPort["testTerminalConnection"]>>[1],
+                    signal: AbortSignal,
+                  ) => run(() => linklySetup.testTerminalConnection!(environment, terminal, signal)),
                 }
               : {}),
             ...(linklySetup.selectTerminal &&

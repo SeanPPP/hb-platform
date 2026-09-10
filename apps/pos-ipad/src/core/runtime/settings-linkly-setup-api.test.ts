@@ -165,8 +165,13 @@ test("Linkly 终端列表只保留安全摘要并拒绝凭据字段", async () =
         isReady: true,
         lastHealthStatus: "ready",
         lastHealthAt: "2026-09-02T01:00:00.000Z",
+        assignedDeviceCode: null,
+        assignmentRevision: 0,
+        terminalVersion: null,
       },
     ],
+    devices: [],
+    lineManagementSupported: false,
   });
   assert.equal(JSON.stringify(result).includes("must-not-leak"), false);
   assert.deepEqual(transport.requests, [
@@ -618,4 +623,500 @@ test("Linkly 上游成功但后端持久化失败时按 unknown 处理并禁止�
     { status: "unknown" },
   );
   assert.equal(transport.requests.length, 1);
+});
+
+test("Linkly 线路目录保留分配版本与同店 POS 设备，旧服务则明确标记不支持管理", async () => {
+  const transport = new QueueTransport([
+    {
+      success: true,
+      data: {
+        environment: "Production",
+        mode: "Active",
+        selectedTerminalId: "terminal-1",
+        selectionRevision: 8,
+        terminals: [{
+          terminalId: "terminal-1",
+          laneNo: 1,
+          displayName: "Front",
+          pairingState: "Ready",
+          isBusy: false,
+          isReady: true,
+          assignedDeviceCode: " POS-01 ",
+          assignmentRevision: 4,
+          terminalVersion: " 0x00000000000007D3 ",
+        }],
+        devices: [{
+          deviceCode: " POS-02 ",
+          deviceSystem: " iPadOS ",
+          isAvailable: true,
+          selectedTerminalId: null,
+          selectionRevision: 0,
+        }],
+      },
+    },
+    {
+      success: true,
+      data: {
+        environment: "Production",
+        mode: "Active",
+        selectedTerminalId: null,
+        selectionRevision: null,
+        terminals: [{
+          terminalId: "legacy-terminal",
+          laneNo: 2,
+          displayName: "Legacy",
+          pairingState: "Ready",
+          isBusy: false,
+          isReady: true,
+        }],
+      },
+    },
+  ]);
+  const subject = new HbposSettingsLinklySetupApi(transport);
+  const signal = new AbortController().signal;
+
+  const current = await subject.readTerminals("Production", signal);
+  const legacy = await subject.readTerminals("Production", signal);
+
+  assert.equal(current.lineManagementSupported, true);
+  assert.deepEqual(current.terminals[0], {
+    terminalId: "terminal-1",
+    laneNo: 1,
+    displayName: "Front",
+    pairingState: "Ready",
+    isBusy: false,
+    isReady: true,
+    lastHealthStatus: null,
+    lastHealthAt: null,
+    assignedDeviceCode: " POS-01 ",
+    assignmentRevision: 4,
+    terminalVersion: " 0x00000000000007D3 ",
+  });
+  assert.deepEqual(current.devices, [{
+    deviceCode: " POS-02 ",
+    deviceSystem: "iPadOS",
+    isAvailable: true,
+    selectedTerminalId: null,
+    selectionRevision: 0,
+  }]);
+  assert.equal(legacy.lineManagementSupported, false);
+  assert.equal(legacy.terminals[0]?.terminalVersion, null);
+  assert.deepEqual(legacy.devices, []);
+});
+
+test("Linkly 单线路连接测试携带完整并发前置条件并校验回包作用域", async () => {
+  const transport = new QueueTransport([{
+    success: true,
+    data: {
+      terminalId: "terminal-2",
+      environment: "Sandbox",
+      terminalVersion: "v12",
+      assignedDeviceCode: null,
+      assignmentRevision: 0,
+      succeeded: false,
+      status: "unreachable",
+      checkedAt: "2026-09-10T02:03:04Z",
+      message: "Terminal did not answer",
+      responseCode: "TIMEOUT",
+    },
+  }]);
+  const subject = new HbposSettingsLinklySetupApi(transport);
+  const signal = new AbortController().signal;
+
+  const result = await subject.testTerminalConnection(
+    "Sandbox",
+    {
+      terminalId: "terminal-2",
+      terminalVersion: "v12",
+      assignedDeviceCode: null,
+      assignmentRevision: 0,
+    },
+    signal,
+  );
+
+  assert.equal(result.status, "unreachable");
+  assert.equal(result.responseCode, "TIMEOUT");
+  assert.deepEqual(transport.requests[0], {
+    method: "POST",
+    url: "/api/v1/linkly/cloud-backend/terminals/terminal-2/connection-test",
+    data: {
+      environment: "Sandbox",
+      expectedTerminalVersion: "v12",
+      expectedAssignedDeviceCode: null,
+      expectedAssignmentRevision: 0,
+    },
+    signal,
+  });
+});
+
+test("Linkly 线路分配 PUT 原样发送目标设备旧选择并直接采用完整权威快照", async () => {
+  const response = {
+    success: true,
+    data: {
+      environment: "Production",
+      mode: "Active",
+      selectedTerminalId: "terminal-3",
+      selectionRevision: 11,
+      terminals: [
+        {
+          terminalId: "terminal-3",
+          laneNo: 3,
+          displayName: "Returns",
+          pairingState: "Ready",
+          isBusy: false,
+          isReady: true,
+          assignedDeviceCode: "POS-02",
+          assignmentRevision: 9,
+          terminalVersion: "v9",
+        },
+        {
+          terminalId: "terminal-1",
+          laneNo: 1,
+          displayName: "Front",
+          pairingState: "Ready",
+          isBusy: false,
+          isReady: true,
+          assignedDeviceCode: null,
+          assignmentRevision: 3,
+          terminalVersion: "v3-next",
+        },
+      ],
+      devices: [{
+        deviceCode: "POS-02",
+        deviceSystem: "iPadOS",
+        isAvailable: true,
+        selectedTerminalId: "terminal-3",
+        selectionRevision: 11,
+      }],
+    },
+  };
+  const transport = new QueueTransport([response]);
+  const subject = new HbposSettingsLinklySetupApi(transport);
+  const signal = new AbortController().signal;
+
+  const result = await subject.assignTerminal(
+    "Production",
+    {
+      terminalId: "terminal-3",
+      terminalVersion: "v8",
+      assignedDeviceCode: null,
+      assignmentRevision: 8,
+      targetDeviceCode: "POS-02",
+      expectedTargetTerminalId: "terminal-1",
+      expectedTargetSelectionRevision: 10,
+    },
+    signal,
+  );
+
+  assert.equal(result.terminals[0]?.assignedDeviceCode, "POS-02");
+  assert.deepEqual(transport.requests[0], {
+    method: "PUT",
+    url: "/api/v1/linkly/cloud-backend/terminals/terminal-3/assignment",
+    data: {
+      environment: "Production",
+      expectedTerminalVersion: "v8",
+      expectedAssignedDeviceCode: null,
+      expectedAssignmentRevision: 8,
+      targetDeviceCode: "POS-02",
+      expectedTargetTerminalId: "terminal-1",
+      expectedTargetSelectionRevision: 10,
+    },
+    signal,
+  });
+});
+
+test("Linkly 线路分配保留 opaque CAS token，禁止 trim 或截断", async () => {
+  const opaqueVersion = " version with boundary spaces ";
+  const transport = new QueueTransport([{
+    success: true,
+    data: {
+      environment: "Production",
+      mode: "Active",
+      selectedTerminalId: "terminal-3",
+      selectionRevision: 7,
+      terminals: [{
+        terminalId: "terminal-3",
+        laneNo: 3,
+        displayName: "Returns",
+        pairingState: "Ready",
+        isBusy: false,
+        isReady: true,
+        lastHealthStatus: null,
+        lastHealthAt: null,
+        assignedDeviceCode: "POS-02",
+        assignmentRevision: 7,
+        terminalVersion: "next-version",
+      }],
+      devices: [{
+        deviceCode: "POS-02",
+        deviceSystem: "iPadOS",
+        isAvailable: true,
+        selectedTerminalId: "terminal-3",
+        selectionRevision: 7,
+      }],
+    },
+  }]);
+
+  await new HbposSettingsLinklySetupApi(transport).assignTerminal(
+    "Production",
+    {
+      terminalId: "terminal-3",
+      terminalVersion: opaqueVersion,
+      assignedDeviceCode: null,
+      assignmentRevision: 6,
+      targetDeviceCode: "POS-02",
+      expectedTargetTerminalId: null,
+      expectedTargetSelectionRevision: 6,
+    },
+    new AbortController().signal,
+  );
+
+  assert.equal(
+    (transport.requests[0]?.data as { expectedTerminalVersion: string })
+      .expectedTerminalVersion,
+    opaqueVersion,
+  );
+  await assert.rejects(
+    () => new HbposSettingsLinklySetupApi(new QueueTransport([])).assignTerminal(
+      "Production",
+      {
+        terminalId: "terminal-3",
+        terminalVersion: "v".repeat(161),
+        assignedDeviceCode: null,
+        assignmentRevision: 6,
+        targetDeviceCode: null,
+        expectedTargetTerminalId: null,
+        expectedTargetSelectionRevision: 0,
+      },
+      new AbortController().signal,
+    ),
+    /metadata is invalid/u,
+  );
+});
+
+test("Linkly 实际换线要求来源与被替换线路清除旧健康结果", async () => {
+  const response = {
+    success: true,
+    data: {
+      environment: "Production",
+      mode: "Active",
+      selectedTerminalId: "terminal-2",
+      selectionRevision: 5,
+      terminals: [
+        {
+          terminalId: "terminal-2",
+          laneNo: 2,
+          displayName: "Returns",
+          pairingState: "Ready",
+          isBusy: false,
+          isReady: true,
+          lastHealthStatus: "Ready",
+          lastHealthAt: "2026-09-10T02:03:04Z",
+          assignedDeviceCode: "IPAD-01",
+          assignmentRevision: 5,
+          terminalVersion: "v5",
+        },
+        {
+          terminalId: "terminal-1",
+          laneNo: 1,
+          displayName: "Front",
+          pairingState: "Ready",
+          isBusy: false,
+          isReady: true,
+          lastHealthStatus: null,
+          lastHealthAt: null,
+          assignedDeviceCode: null,
+          assignmentRevision: 2,
+          terminalVersion: "v2-next",
+        },
+      ],
+      devices: [{
+        deviceCode: "IPAD-01",
+        deviceSystem: "iPadOS",
+        isAvailable: true,
+        selectedTerminalId: "terminal-2",
+        selectionRevision: 5,
+      }],
+    },
+  };
+  const subject = new HbposSettingsLinklySetupApi(new QueueTransport([response]));
+
+  await assert.rejects(
+    () => subject.assignTerminal("Production", {
+      terminalId: "terminal-2",
+      terminalVersion: "v4",
+      assignedDeviceCode: null,
+      assignmentRevision: 4,
+      targetDeviceCode: "IPAD-01",
+      expectedTargetTerminalId: "terminal-1",
+      expectedTargetSelectionRevision: 4,
+    }, new AbortController().signal),
+    /unconfirmed/u,
+  );
+
+  const source = response.data.terminals[0] as {
+    lastHealthStatus: string | null;
+    lastHealthAt: string | null;
+  };
+  const replaced = response.data.terminals[1] as {
+    lastHealthStatus: string | null;
+    lastHealthAt: string | null;
+  };
+  source.lastHealthStatus = null;
+  source.lastHealthAt = null;
+  replaced.lastHealthStatus = "Ready";
+  replaced.lastHealthAt = "2026-09-10T02:03:04Z";
+  await assert.rejects(
+    () => new HbposSettingsLinklySetupApi(
+      new QueueTransport([response]),
+    ).assignTerminal("Production", {
+      terminalId: "terminal-2",
+      terminalVersion: "v4",
+      assignedDeviceCode: null,
+      assignmentRevision: 4,
+      targetDeviceCode: "IPAD-01",
+      expectedTargetTerminalId: "terminal-1",
+      expectedTargetSelectionRevision: 4,
+    }, new AbortController().signal),
+    /unconfirmed/u,
+  );
+});
+
+test("Linkly 幂等重复分配保留版本、revision 与健康结果", async () => {
+  const transport = new QueueTransport([{
+    success: true,
+    data: {
+      environment: "Production",
+      mode: "Active",
+      selectedTerminalId: "terminal-2",
+      selectionRevision: 5,
+      terminals: [{
+        terminalId: "terminal-2",
+        laneNo: 2,
+        displayName: "Returns",
+        pairingState: "Ready",
+        isBusy: false,
+        isReady: true,
+        lastHealthStatus: "Ready",
+        lastHealthAt: "2026-09-10T02:03:04Z",
+        assignedDeviceCode: "IPAD-01",
+        assignmentRevision: 5,
+        terminalVersion: "v5",
+      }],
+      devices: [{
+        deviceCode: "IPAD-01",
+        deviceSystem: "iPadOS",
+        isAvailable: true,
+        selectedTerminalId: "terminal-2",
+        selectionRevision: 5,
+      }],
+    },
+  }]);
+
+  const result = await new HbposSettingsLinklySetupApi(transport).assignTerminal(
+    "Production",
+    {
+      terminalId: "terminal-2",
+      terminalVersion: "v5",
+      assignedDeviceCode: "IPAD-01",
+      assignmentRevision: 5,
+      targetDeviceCode: "IPAD-01",
+      expectedTargetTerminalId: "terminal-2",
+      expectedTargetSelectionRevision: 5,
+    },
+    new AbortController().signal,
+  );
+
+  assert.equal(result.terminals[0]?.terminalVersion, "v5");
+  assert.equal(result.terminals[0]?.lastHealthStatus, "Ready");
+});
+
+test("Linkly 分配 PUT 结果不明时只 GET 核对，确认已提交后返回快照且不重放", async () => {
+  const transport = new QueueTransport([
+    new HbposApiError("timeout", { kind: "transport", code: "REQUEST_TIMEOUT" }),
+    {
+      success: true,
+      data: {
+        environment: "Production",
+        mode: "Active",
+        selectedTerminalId: "terminal-2",
+        selectionRevision: 5,
+        terminals: [
+          {
+            terminalId: "terminal-2",
+            laneNo: 2,
+            displayName: "Returns",
+            pairingState: "Ready",
+            isBusy: false,
+            isReady: true,
+            assignedDeviceCode: "IPAD-01",
+            assignmentRevision: 5,
+            terminalVersion: "v5",
+          },
+          {
+            terminalId: "terminal-1",
+            laneNo: 1,
+            displayName: "Front",
+            pairingState: "Ready",
+            isBusy: false,
+            isReady: true,
+            assignedDeviceCode: null,
+            assignmentRevision: 2,
+            terminalVersion: "v2-next",
+          },
+        ],
+        devices: [{
+          deviceCode: "IPAD-01",
+          deviceSystem: "iPadOS",
+          isAvailable: true,
+          selectedTerminalId: "terminal-2",
+          selectionRevision: 5,
+        }],
+      },
+    },
+  ]);
+  const subject = new HbposSettingsLinklySetupApi(transport);
+  const result = await subject.assignTerminal("Production", {
+    terminalId: "terminal-2",
+    terminalVersion: "v4",
+    assignedDeviceCode: null,
+    assignmentRevision: 4,
+    targetDeviceCode: "IPAD-01",
+    expectedTargetTerminalId: "terminal-1",
+    expectedTargetSelectionRevision: 4,
+  }, new AbortController().signal);
+
+  assert.equal(result.terminals[0]?.assignedDeviceCode, "IPAD-01");
+  assert.deepEqual(transport.requests.map(({ method, url }) => ({ method, url })), [
+    { method: "PUT", url: "/api/v1/linkly/cloud-backend/terminals/terminal-2/assignment" },
+    { method: "GET", url: "/api/v1/linkly/cloud-backend/terminals" },
+  ]);
+});
+
+test("Linkly 连接测试无 HTTP 终态时只 GET 核对且不重放 POST", async () => {
+  const transport = new QueueTransport([
+    new HbposApiError("timeout", { kind: "http", status: 504 }),
+    {
+      success: true,
+      data: {
+        environment: "Sandbox",
+        mode: "Active",
+        selectedTerminalId: null,
+        selectionRevision: null,
+        terminals: [],
+        devices: [],
+      },
+    },
+  ]);
+  const subject = new HbposSettingsLinklySetupApi(transport);
+  await assert.rejects(() => subject.testTerminalConnection("Sandbox", {
+    terminalId: "terminal-1",
+    terminalVersion: "v1",
+    assignedDeviceCode: null,
+    assignmentRevision: 0,
+  }, new AbortController().signal));
+  assert.deepEqual(transport.requests.map(({ method, url }) => ({ method, url })), [
+    { method: "POST", url: "/api/v1/linkly/cloud-backend/terminals/terminal-1/connection-test" },
+    { method: "GET", url: "/api/v1/linkly/cloud-backend/terminals" },
+  ]);
 });

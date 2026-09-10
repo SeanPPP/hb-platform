@@ -78,6 +78,7 @@ export type SettingsScreenPresenter = Pick<
   | "previewDeviceReregistration"
   | "requestDeviceRegistrationReset"
   | "requestLinklyPair"
+  | "requestLinklyTerminalAssignment"
   | "refreshLinklySetup"
   | "refreshSquareDeviceCode"
   | "savePaymentSettings"
@@ -112,6 +113,7 @@ export type SettingsScreenPresenter = Pick<
   | "testCashDrawer"
   | "testExternalDisplay"
   | "testPaymentProvider"
+  | "testLinklyTerminalConnection"
   | "testPrinter"
   | "testScanner"
 > &
@@ -1226,6 +1228,7 @@ function LinklySetupCard({
 }>) {
   const [pairCode, setPairCode] = useState("");
   const [pairTerminalId, setPairTerminalId] = useState("");
+  const [assignmentTerminalId, setAssignmentTerminalId] = useState("");
   const setup = state.linklySetup;
   const t = (
     key: SettingsCopyKey,
@@ -1234,19 +1237,18 @@ function LinklySetupCard({
   useEffect(() => {
     setPairCode("");
     setPairTerminalId(
-      setup?.terminals.value?.selectedTerminalId ??
-        setup?.terminals.value?.terminals[0]?.terminalId ??
-        "",
+      setup?.terminals.value?.selectedTerminalId ?? "",
     );
   }, [
     state.linklyDraft.environment,
     setup?.pairCodeResetToken,
     setup?.terminals.value?.selectedTerminalId,
-    setup?.terminals.value?.terminals[0]?.terminalId,
   ]);
   if (!setup) return null;
   const health = setup.health.value;
   const terminalSnapshot = setup.terminals.value;
+  const lineManagementSupported = terminalSnapshot?.lineManagementSupported === true;
+  const currentDeviceCode = state.device.deviceCode.trim();
   const pairTerminal = terminalSnapshot?.terminals.find(
     (terminal) => terminal.terminalId === pairTerminalId,
   );
@@ -1308,33 +1310,54 @@ function LinklySetupCard({
           tone="secondary"
         />
       </View>
+      {setup.health.kind === "selection-required" ? (
+        <Text
+          style={styles.squareFieldHint}
+          testID="settings-linkly-selection-required"
+        >
+          {t("linkly.selectionRequiredHint")}
+        </Text>
+      ) : null}
       <FieldLabel label={t("linkly.terminals")} />
       {terminalSnapshot?.terminals.length ? (
         <View style={styles.linklyTerminalList} testID="settings-linkly-terminals">
           {terminalSnapshot.terminals.map((terminal) => {
-            const selected = terminal.terminalId === pairTerminalId;
+            const selected =
+              terminal.terminalId === terminalSnapshot.selectedTerminalId;
+            const pairingTarget =
+              !selected && terminal.terminalId === pairTerminalId;
             const terminalDisabled =
-              disabled || setup.terminals.kind === "switching";
+              disabled || setup.terminals.kind === "switching" || terminal.isBusy;
             const status = terminal.isBusy
               ? t("linkly.statusBusy")
               : terminal.pairingState === "NeedsRepair"
                 ? t("linkly.statusNeedsRepair")
                 : terminal.isReady && terminal.pairingState === "Ready"
-                  ? t("linkly.statusReady")
+                  ? t("linkly.terminalReady")
                   : terminal.pairingState === "Unpaired"
                     ? t("linkly.statusUnpaired")
                     : t("linkly.statusUnknown");
             return (
-              <PosPressable
-                accessibilityLabel={`${terminal.displayName}. Lane ${terminal.laneNo}. ${status}`}
+              <View key={terminal.terminalId}>
+                <PosPressable
+                accessibilityLabel={`${terminal.displayName}. Lane ${terminal.laneNo}. ${status}${
+                  selected
+                    ? `. ${t("linkly.currentSelection")}`
+                    : pairingTarget
+                      ? `. ${t("linkly.pairTarget")}`
+                      : ""
+                }`}
                 accessibilityRole="button"
                 accessibilityState={{ disabled: terminalDisabled, selected }}
                 disabled={terminalDisabled}
-                key={terminal.terminalId}
                 onPress={() => {
                   setPairCode("");
                   setPairTerminalId(terminal.terminalId);
-                  if (terminal.isReady && terminal.pairingState === "Ready") {
+                  if (
+                    !lineManagementSupported &&
+                    terminal.isReady &&
+                    terminal.pairingState === "Ready"
+                  ) {
                     void presenter.selectLinklyTerminal(terminal.terminalId);
                   }
                 }}
@@ -1351,13 +1374,68 @@ function LinklySetupCard({
                   {`${terminal.displayName} · Lane ${terminal.laneNo}`}
                 </Text>
                 <Text style={styles.linklyTerminalStatus}>{status}</Text>
-              </PosPressable>
+                {terminal.assignedDeviceCode ? (
+                  <Text style={styles.linklyTerminalStatus}>
+                    {t("linkly.assignedDevice", { deviceCode: terminal.assignedDeviceCode })}
+                  </Text>
+                ) : (
+                  <Text style={styles.linklyTerminalStatus}>{t("linkly.unassigned")}</Text>
+                )}
+                {selected || pairingTarget ? (
+                  <Text style={styles.linklyTerminalStatus}>
+                    {t(
+                      selected
+                        ? "linkly.currentSelection"
+                        : "linkly.pairTarget",
+                    )}
+                  </Text>
+                ) : null}
+                </PosPressable>
+                {lineManagementSupported ? (
+                  <LinklyLineActions
+                    currentDeviceCode={currentDeviceCode}
+                    disabled={terminalDisabled}
+                    expanded={assignmentTerminalId === terminal.terminalId}
+                    locale={locale}
+                    onAssign={(deviceCode) =>
+                      presenter.requestLinklyTerminalAssignment(
+                        terminal.terminalId,
+                        deviceCode,
+                      )
+                    }
+                    onChangeBinding={() => {
+                      setAssignmentTerminalId((current) =>
+                        current === terminal.terminalId
+                          ? ""
+                          : terminal.terminalId,
+                      );
+                    }}
+                    onTest={() =>
+                      void presenter.testLinklyTerminalConnection(
+                        terminal.terminalId,
+                      )
+                    }
+                    snapshot={terminalSnapshot}
+                    terminal={terminal}
+                    testState={
+                      Object.values(setup.connectionTests).find(
+                        (item) => item.terminalId === terminal.terminalId,
+                      ) ?? null
+                    }
+                  />
+                ) : null}
+              </View>
             );
           })}
         </View>
       ) : (
         <Text style={styles.squareFieldHint}>{t("linkly.noTerminals")}</Text>
       )}
+      {terminalSnapshot && !lineManagementSupported ? (
+        <Text style={styles.squareFieldHint} testID="settings-linkly-line-management-unavailable">
+          {t("linkly.lineManagementUnavailable")}
+        </Text>
+      ) : null}
       <FieldLabel label={t("linkly.pairCode")} />
       <PosKeyboardAwareTextInput
         accessibilityLabel={t("linkly.pairCode")}
@@ -1397,6 +1475,115 @@ function LinklySetupCard({
       </Text>
     </View>
   );
+}
+
+function LinklyLineActions({
+  currentDeviceCode,
+  disabled,
+  expanded,
+  locale,
+  onAssign,
+  onChangeBinding,
+  onTest,
+  snapshot,
+  terminal,
+  testState,
+}: Readonly<{
+  currentDeviceCode: string;
+  disabled: boolean;
+  expanded: boolean;
+  locale: SettingsLocale;
+  onAssign(deviceCode: string | null): void;
+  onChangeBinding(): void;
+  onTest(): void;
+  snapshot: NonNullable<SettingsState["linklySetup"]>["terminals"]["value"];
+  terminal: NonNullable<SettingsState["linklySetup"]>["terminals"]["value"] extends infer S
+    ? S extends { terminals: readonly (infer T)[] } ? T : never
+    : never;
+  testState: NonNullable<SettingsState["linklySetup"]>["connectionTests"][string] | null;
+}>) {
+  if (!snapshot) return null;
+  const t = (key: SettingsCopyKey, values?: Readonly<Record<string, string | number>>) =>
+    settingsText(locale, key, values);
+  const targets = snapshot.devices ?? [];
+  const validTargets = targets.filter((device) => device.isAvailable);
+  const selfTargetAvailable = validTargets.some(
+    (device) => device.deviceCode === currentDeviceCode,
+  );
+  const connectionResult = testState?.result;
+  const connectionStatus = connectionResult
+    ? linklyConnectionStatusText(locale, connectionResult.status)
+    : null;
+  const lastHealthStatus = terminal.lastHealthAt
+    ? linklyConnectionStatusText(locale, terminal.lastHealthStatus)
+    : null;
+  return (
+    <View style={styles.linklyLineActions}>
+      <Text style={styles.linklyTerminalStatus}>
+        {testState?.kind === "running"
+          ? t("linkly.connectionTesting")
+          : testState?.kind === "failed"
+            ? t("linkly.connectionTestFailed")
+          : connectionResult
+              ? `${connectionStatus} · ${formatLinklyHealthTime(locale, connectionResult.checkedAt)}`
+              : terminal.lastHealthAt
+                ? `${lastHealthStatus} · ${t("linkly.lastTest", { time: formatLinklyHealthTime(locale, terminal.lastHealthAt) })}`
+                : t("linkly.connectionNotTested")}
+      </Text>
+      <View style={styles.actionRow}>
+        <ActionButton compact disabled={disabled || testState?.kind === "running"} label={t("linkly.testConnection")} onPress={onTest} testID={`settings-linkly-connection-test-${terminal.terminalId}`} tone="secondary" />
+        <ActionButton compact disabled={disabled || !selfTargetAvailable} label={t("linkly.useThisLine")} onPress={() => onAssign(currentDeviceCode)} testID={`settings-linkly-use-self-${terminal.terminalId}`} tone="secondary" />
+        <ActionButton compact disabled={disabled || validTargets.length === 0} label={t("linkly.changeBinding")} onPress={onChangeBinding} testID={`settings-linkly-change-binding-${terminal.terminalId}`} tone="secondary" />
+        <ActionButton compact disabled={disabled || !terminal.assignedDeviceCode} label={t("linkly.unbind")} onPress={() => onAssign(null)} testID={`settings-linkly-unbind-${terminal.terminalId}`} tone="danger" />
+      </View>
+      {expanded ? (
+        <View style={styles.actionRow} testID={`settings-linkly-targets-${terminal.terminalId}`}>
+          {targets.map((device) => (
+            <ActionButton
+              compact
+              disabled={disabled || !device.isAvailable}
+              key={device.deviceCode}
+              label={`${device.deviceCode}${device.deviceCode === currentDeviceCode ? ` · ${t("linkly.thisDevice")}` : ""}${!device.isAvailable ? ` · ${t("linkly.targetUnavailable")}` : ""}`}
+              onPress={() => onAssign(device.deviceCode)}
+              testID={`settings-linkly-target-${terminal.terminalId}-${device.deviceCode}`}
+              tone="secondary"
+            />
+          ))}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+function linklyConnectionStatusText(
+  locale: SettingsLocale,
+  status: string | null,
+): string {
+  const normalized = status?.trim().toLowerCase().replace(/[_\s-]/gu, "") ?? "";
+  const key = normalized === "ready" ||
+    normalized === "connected" ||
+    normalized === "healthy"
+    ? "linkly.connection.connected"
+    : normalized === "unreachable" || normalized === "unhealthy"
+      ? "linkly.connection.unreachable"
+      : normalized === "needsrepair"
+        ? "linkly.connection.needs-repair"
+        : normalized === "unknown"
+          ? "linkly.connection.unknown"
+          : "linkly.statusUnknown";
+  return settingsText(locale, key);
+}
+
+function formatLinklyHealthTime(
+  locale: SettingsLocale,
+  value: string,
+): string {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value.trim();
+  return new Intl.DateTimeFormat(locale === "zh" ? "zh-CN" : "en-AU", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(parsed);
 }
 
 function SquareSelectionField({
@@ -1839,6 +2026,9 @@ function linklyHealthStatusText(
 ): string {
   if (kind === "loading") return settingsText(locale, "linkly.statusLoading");
   if (kind === "failed") return settingsText(locale, "linkly.statusUnavailable");
+  if (kind === "selection-required") {
+    return settingsText(locale, "linkly.selectionRequired");
+  }
   if (kind !== "ready") return settingsText(locale, "linkly.statusUnavailable");
   return settingsText(
     locale,
@@ -3063,7 +3253,6 @@ function StatusBanner({
       testID="settings-status"
     >
       <Text style={styles.statusText}>{statusCopy(locale, statusCode)}</Text>
-      <Text style={styles.statusCode}>[{statusCode}]</Text>
     </View>
   );
 }
@@ -3174,6 +3363,20 @@ function confirmationTitle(
       return settingsText(locale, "confirmation.changePaymentSettings");
     case "pair-linkly":
       return settingsText(locale, "confirmation.pairLinkly");
+    case "assign-linkly-terminal":
+      return settingsText(
+        locale,
+        confirmation.targetDeviceCode === null
+          ? "confirmation.unbindLinklyTerminal"
+          : confirmation.replacedTerminalLabel
+            ? "confirmation.replaceLinklyTerminal"
+            : "confirmation.assignLinklyTerminal",
+        {
+          terminal: confirmation.terminalLabel,
+          deviceCode: confirmation.targetDeviceCode ?? "—",
+          replacedTerminal: confirmation.replacedTerminalLabel ?? "—",
+        },
+      );
     case "reset-catalog":
       return settingsText(locale, "confirmation.resetCatalog");
     case "reregister-device":
@@ -3490,6 +3693,10 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     lineHeight: 17,
     marginTop: 2,
+  },
+  linklyLineActions: {
+    gap: 6,
+    marginTop: 8,
   },
   linklySetupStatus: {
     color: posColors.mutedInk,
@@ -4075,11 +4282,6 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 13,
     fontWeight: "700",
-  },
-  statusCode: {
-    color: posColors.mutedInk,
-    fontFamily: "Courier",
-    fontSize: 11,
   },
   emptyPanel: {
     alignItems: "center",
