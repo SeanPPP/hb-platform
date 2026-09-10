@@ -55,6 +55,7 @@ interface AppRouteState {
   appDevices: JsonRecord[];
   mirrorIds: Map<string, string>;
   sequence: number;
+  localBarcodeCounters: Record<string, number>;
 }
 
 interface ReviewAttendanceQrAuthorization {
@@ -807,6 +808,7 @@ function createInitialState(now = new Date()): AppRouteState {
     appDevices,
     mirrorIds: new Map(),
     sequence: 100,
+    localBarcodeCounters: {},
   };
 }
 
@@ -2579,6 +2581,27 @@ export function registerIosReviewAppRoutes(
           hasMore: false,
         },
       };
+    },
+  );
+  register(
+    transport,
+    ["POST"],
+    "/react/v1/products/generate-local-barcode",
+    ({ query }) => {
+      if (!query.get("supplierCode")?.trim() || query.get("supplierCode")?.trim() === "200") {
+        throw new Error("此供应商商品不能自行创建，请联系管理员");
+      }
+      const current = state();
+      // 审核演示仅在会话内分配示例编号，不调用生产预留接口。
+      const date = new Date(new Date(current.now).getTime() + 10 * 60 * 60 * 1000)
+        .toISOString().slice(2, 10).replace(/-/g, "");
+      const prefix = `9529${date}`;
+      const sequence = current.localBarcodeCounters[prefix] ?? 0;
+      if (sequence >= 100) throw new Error("当天的 100 个自动条码已用满，请联系管理员");
+      current.localBarcodeCounters[prefix] = sequence + 1;
+      const body = `${prefix}${String(sequence).padStart(2, "0")}`;
+      const sum = [...body].reduce((total, digit, index) => total + Number(digit) * (index % 2 === 0 ? 1 : 3), 0);
+      return { data: { barcode: `${body}${(10 - sum % 10) % 10}` } };
     },
   );
   register(
