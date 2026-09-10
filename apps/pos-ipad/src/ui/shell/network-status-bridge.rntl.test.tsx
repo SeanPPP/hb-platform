@@ -44,10 +44,14 @@ jest.mock("expo-secure-store", () => ({
 }));
 
 let appStateListener: ((state: AppStateStatus) => void) | null = null;
+let networkStateListener:
+  | ((state: Network.NetworkState) => void)
+  | null = null;
 
 beforeEach(() => {
   usePosShellStore.getState().reset();
   appStateListener = null;
+  networkStateListener = null;
   jest.mocked(Network.getNetworkStateAsync).mockResolvedValue({
     isConnected: true,
     isInternetReachable: true,
@@ -58,6 +62,12 @@ beforeEach(() => {
         appStateListener = handler;
       }
       return { remove: jest.fn() } as never;
+    },
+  );
+  jest.mocked(Network.addNetworkStateListener).mockImplementation(
+    (listener) => {
+      networkStateListener = listener;
+      return { remove: jest.fn() };
     },
   );
 });
@@ -118,7 +128,94 @@ test("设备已连局域网但系统判定无公网时，仍探测后端并显�
   });
 });
 
+test("系统误报设备离线时，挂载仍探测后端并以后端成功结果显示 online", async () => {
+  jest.mocked(Network.getNetworkStateAsync).mockResolvedValue({
+    isConnected: false,
+    isInternetReachable: false,
+  });
+  const fetchMock = jest.fn(
+    async () => ({ ok: true }),
+  ) as unknown as typeof fetch;
+  (globalThis as { fetch: typeof fetch }).fetch = fetchMock;
+
+  await act(async () => {
+    await render(<NetworkStatusBridge />);
+  });
+
+  await waitFor(() => {
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(usePosShellStore.getState().connectivity).toBe("online");
+  });
+});
+
+test("系统网络状态读取失败时，挂载仍探测后端", async () => {
+  jest.mocked(Network.getNetworkStateAsync).mockRejectedValueOnce(
+    new Error("network state unavailable"),
+  );
+  const fetchMock = jest.fn(
+    async () => ({ ok: true }),
+  ) as unknown as typeof fetch;
+  (globalThis as { fetch: typeof fetch }).fetch = fetchMock;
+
+  await act(async () => {
+    await render(<NetworkStatusBridge />);
+  });
+
+  await waitFor(() => {
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(usePosShellStore.getState().connectivity).toBe("online");
+  });
+});
+
+test("后端探测完成前不根据设备在线状态乐观显示 online", async () => {
+  const pending = deferred<{ ok: boolean }>();
+  const fetchMock = jest.fn(() => pending.promise) as unknown as typeof fetch;
+  (globalThis as { fetch: typeof fetch }).fetch = fetchMock;
+
+  const screen = await render(<NetworkStatusBridge />);
+  await waitFor(() => {
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+  expect(usePosShellStore.getState().connectivity).toBe("checking");
+
+  await screen.unmount();
+  pending.resolve({ ok: true });
+});
+
+test("系统网络变化会使旧探测结果失效并立即重新探测", async () => {
+  const latest = deferred<{ ok: boolean }>();
+  const fetchMock = jest.fn<() => Promise<{ ok: boolean }>>()
+    .mockResolvedValueOnce({ ok: true })
+    .mockImplementationOnce(() => latest.promise) as unknown as typeof fetch;
+  (globalThis as { fetch: typeof fetch }).fetch = fetchMock;
+
+  await act(async () => {
+    await render(<NetworkStatusBridge />);
+  });
+  await waitFor(() => {
+    expect(usePosShellStore.getState().connectivity).toBe("online");
+  });
+
+  await act(async () => {
+    networkStateListener?.({
+      isConnected: false,
+      isInternetReachable: false,
+    });
+  });
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(usePosShellStore.getState().connectivity).toBe("offline");
+
+  latest.resolve({ ok: true });
+  await waitFor(() => {
+    expect(usePosShellStore.getState().connectivity).toBe("online");
+  });
+});
+
 test("App 回到前台时立即重新探测后端", async () => {
+  jest.mocked(Network.getNetworkStateAsync).mockResolvedValue({
+    isConnected: false,
+    isInternetReachable: false,
+  });
   // 第一次探测失败（后端停止），前台恢复后探测成功（后端已恢复）。
   let reachable = false;
   const fetchMock = jest.fn(
@@ -139,6 +236,41 @@ test("App 回到前台时立即重新探测后端", async () => {
     appStateListener?.("active");
   });
   await waitFor(() => {
+    expect(usePosShellStore.getState().connectivity).toBe("online");
+  });
+});
+
+test("系统持续报告离线时，周期任务仍重新探测并识别后端恢复", async () => {
+  jest.mocked(Network.getNetworkStateAsync).mockResolvedValue({
+    isConnected: false,
+    isInternetReachable: false,
+  });
+  let periodicProbe: (() => void) | null = null;
+  jest.spyOn(globalThis, "setInterval").mockImplementation(
+    ((handler: TimerHandler, timeout?: number) => {
+      if (timeout === 30_000 && typeof handler === "function") {
+        periodicProbe = () => handler();
+      }
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval,
+  );
+  const fetchMock = jest.fn<() => Promise<{ ok: boolean }>>()
+    .mockResolvedValueOnce({ ok: false })
+    .mockResolvedValueOnce({ ok: true }) as unknown as typeof fetch;
+  (globalThis as { fetch: typeof fetch }).fetch = fetchMock;
+
+  await act(async () => {
+    await render(<NetworkStatusBridge />);
+  });
+  await waitFor(() => {
+    expect(usePosShellStore.getState().connectivity).toBe("offline");
+  });
+
+  await act(async () => {
+    periodicProbe?.();
+  });
+  await waitFor(() => {
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(usePosShellStore.getState().connectivity).toBe("online");
   });
 });
