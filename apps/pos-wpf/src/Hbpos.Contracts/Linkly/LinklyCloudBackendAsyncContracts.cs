@@ -240,6 +240,10 @@ public sealed record LinklyCloudBackendStatusTestResponse(
 {
     [JsonPropertyName("txnRef")]
     public string? TxnRef => ResponseTxnRef;
+
+    // 官方 Status 的实时签到状态；缺失或无有效回包时保持未知。
+    [JsonPropertyName("loggedOn")]
+    public bool? LoggedOn { get; init; }
 }
 
 public sealed record LinklyCloudBackendTerminalCredentialResponse(

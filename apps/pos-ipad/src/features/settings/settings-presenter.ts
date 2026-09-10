@@ -83,6 +83,17 @@ export type SettingsLinklyTerminal = Readonly<{
   isReady: boolean;
   lastHealthStatus: string | null;
   lastHealthAt: string | null;
+  assignedDeviceCode?: string | null;
+  assignmentRevision?: number;
+  terminalVersion?: string | null;
+}>;
+
+export type SettingsLinklyAssignableDevice = Readonly<{
+  deviceCode: string;
+  deviceSystem: string;
+  isAvailable: boolean;
+  selectedTerminalId: string | null;
+  selectionRevision: number;
 }>;
 
 export type SettingsLinklyTerminalSelectionSnapshot = Readonly<{
@@ -91,9 +102,36 @@ export type SettingsLinklyTerminalSelectionSnapshot = Readonly<{
   selectedTerminalId: string | null;
   selectionRevision: number;
   terminals: readonly SettingsLinklyTerminal[];
+  devices?: readonly SettingsLinklyAssignableDevice[];
+  /** 旧服务缺少版本字段时必须隐藏写操作，不能合成可写版本。 */
+  lineManagementSupported?: boolean;
+}>;
+
+export type SettingsLinklyConnectionTestResult = Readonly<{
+  terminalId: string;
+  environment: PaymentEnvironment;
+  terminalVersion: string;
+  assignedDeviceCode: string | null;
+  assignmentRevision: number;
+  succeeded: boolean;
+  status: "connected" | "unreachable" | "unknown" | "needs-repair";
+  checkedAt: string;
+  message: string;
+  responseCode: string | null;
+}>;
+
+export type SettingsLinklyTerminalAssignmentInput = Readonly<{
+  terminalId: string;
+  terminalVersion: string;
+  assignedDeviceCode: string | null;
+  assignmentRevision: number;
+  targetDeviceCode: string | null;
+  expectedTargetTerminalId: string | null;
+  expectedTargetSelectionRevision: number;
 }>;
 
 export interface SettingsLinklySetupReadPort {
+  readonly supportsTerminalAssignment?: boolean;
   readState(
     environment: PaymentEnvironment,
     signal: AbortSignal,
@@ -107,6 +145,16 @@ export interface SettingsLinklySetupReadPort {
     environment: PaymentEnvironment,
     terminalId: string,
     expectedRevision: number,
+    signal: AbortSignal,
+  ): Promise<SettingsLinklyTerminalSelectionSnapshot>;
+  testTerminalConnection?(
+    environment: PaymentEnvironment,
+    terminal: Readonly<{ terminalId: string; terminalVersion: string; assignedDeviceCode: string | null; assignmentRevision: number }>,
+    signal: AbortSignal,
+  ): Promise<SettingsLinklyConnectionTestResult>;
+  assignTerminal?(
+    environment: PaymentEnvironment,
+    input: SettingsLinklyTerminalAssignmentInput,
     signal: AbortSignal,
   ): Promise<SettingsLinklyTerminalSelectionSnapshot>;
 }
@@ -125,13 +173,22 @@ export interface SettingsLinklyPairingPort {
 }
 
 export type SettingsLinklyHealthResource = Readonly<{
-  kind: "idle" | "loading" | "ready" | "failed";
+  kind: "idle" | "loading" | "selection-required" | "ready" | "failed";
   value: SettingsLinklyHealthSnapshot | null;
 }>;
 
 export type SettingsLinklyLogonTestState = Readonly<{
   environment: PaymentEnvironment;
   status: "idle" | "running" | "passed" | "failed";
+}>;
+
+export type SettingsLinklyConnectionTestState = Readonly<{
+  key: string;
+  terminalId: string;
+  kind: "running" | "ready" | "failed";
+  result: SettingsLinklyConnectionTestResult | null;
+  /** 只保留可本地化的原因，不把上游错误正文带入界面。 */
+  failureReason?: "busy" | "changed-or-busy" | "changed" | "access" | "unknown";
 }>;
 
 export type SettingsLinklySetupState = Readonly<{
@@ -141,6 +198,7 @@ export type SettingsLinklySetupState = Readonly<{
     value: SettingsLinklyTerminalSelectionSnapshot | null;
   }>;
   logonTest: SettingsLinklyLogonTestState;
+  connectionTests: Readonly<Record<string, SettingsLinklyConnectionTestState>>;
   /** 仅用于清空 UI 瞬态 PairCode，不保存 PairCode 本身。 */
   pairCodeResetToken: number;
 }>;
@@ -341,6 +399,16 @@ export type SettingsDangerousConfirmation =
       environment: PaymentEnvironment;
       terminalId: string;
       pairCode: string;
+      terminalLabel?: string;
+    }>
+  | Readonly<{
+      kind: "assign-linkly-terminal";
+      environment: PaymentEnvironment;
+      input: SettingsLinklyTerminalAssignmentInput;
+      terminalLabel: string;
+      targetDeviceCode: string | null;
+      replacedTerminalLabel: string | null;
+      affectsCurrentDevice: boolean;
     }>
   | Readonly<{ kind: "reset-catalog" }>
   | Readonly<{
@@ -372,6 +440,11 @@ export type SettingsDangerousActionResult =
         | "reregister-device"
         | "reset-device-registration"
         | "restart-app";
+    }>
+  | Readonly<{
+      status: "completed";
+      kind: "assign-linkly-terminal";
+      terminals: SettingsLinklyTerminalSelectionSnapshot;
     }>
   | Readonly<{
       status: "pending-recovery";
@@ -493,15 +566,23 @@ export type SettingsStatusCode =
   | "linkly-health-load-failed"
   | "linkly-pair-code-invalid"
   | "linkly-pair-failed"
+  | "linkly-pair-code-rejected"
+  | "linkly-pair-credentials-required"
+  | "linkly-pair-busy"
   | "linkly-pair-unknown"
   | "linkly-paired"
   | "linkly-setup-required"
   | "linkly-terminal-selected"
+  | "linkly-terminal-selection-blocked"
+  | "linkly-terminal-assignment-conflict"
+  | "linkly-terminal-session-active"
+  | "linkly-terminal-revision-conflict"
   | "linkly-terminal-switch-failed"
   | "payment-settings-invalid"
   | "payment-settings-save-failed"
   | "payment-settings-saved"
   | "payment-test-failed"
+  | "payment-test-unconfirmed"
   | "payment-test-passed"
   | "pending-local-data"
   | "permission-required"
@@ -1589,6 +1670,15 @@ export class SettingsPresenter {
       this.patch({ statusCode: "linkly-pair-code-invalid" });
       return false;
     }
+    const terminal = this.state.linklySetup?.terminals.value?.terminals.find(
+      (item) => item.terminalId === terminalId,
+    );
+    if (!terminal || terminal.isBusy) {
+      this.patch({ statusCode: terminal?.isBusy
+        ? "linkly-terminal-session-active"
+        : "linkly-terminal-revision-conflict" });
+      return false;
+    }
     if (
       !this.options.port.linklySetup ||
       !terminalId ||
@@ -1605,6 +1695,7 @@ export class SettingsPresenter {
       environment: this.state.linklyDraft.environment,
       terminalId,
       pairCode: normalizedPairCode,
+      terminalLabel: `${terminal.displayName} · Lane ${terminal.laneNo}`,
     });
   }
 
@@ -1619,9 +1710,11 @@ export class SettingsPresenter {
       !this.requirePermission(this.state.access.canConfigurePayments) ||
       !setup?.selectTerminal ||
       !snapshot ||
+      snapshot.lineManagementSupported === true ||
       snapshot.environment !== this.state.linklyDraft.environment ||
       !terminal ||
-      !terminal.isReady
+      !terminal.isReady ||
+      terminal.isBusy
     ) {
       this.patch({ statusCode: "linkly-terminal-switch-failed" });
       return Promise.resolve();
@@ -1631,6 +1724,7 @@ export class SettingsPresenter {
       return Promise.resolve();
     }
     const environment = snapshot.environment;
+    const loadGeneration = this.loadGeneration;
     const generation = ++this.linklySetupGeneration;
     this.patch({
       linklySetup: this.state.linklySetup
@@ -1651,25 +1745,39 @@ export class SettingsPresenter {
       normalizedTerminalId,
       snapshot.selectionRevision,
       this.lifetime.signal,
-    ).then((next) => {
+    ).then(async (next) => {
       if (!this.isCurrentLinklySetupRequest(
         environment,
-        this.loadGeneration,
+        loadGeneration,
         generation,
       )) return;
+      const selectionConfirmed =
+        next.environment === environment &&
+        next.selectedTerminalId === normalizedTerminalId &&
+        next.selectionRevision > snapshot.selectionRevision;
+      if (!selectionConfirmed) {
+        throw Object.assign(new Error("Linkly terminal selection is unconfirmed."), {
+          code: "LINKLY_SELECTION_REVISION_CONFLICT",
+        });
+      }
       this.patch({
         linklySetup: this.state.linklySetup
           ? Object.freeze({
               ...this.state.linklySetup,
+              // 终端作用域改变后，旧 health 与登录测试均不可继续作为启用依据。
+              health: Object.freeze({ kind: "idle" as const, value: null }),
+              logonTest: Object.freeze({ environment, status: "idle" as const }),
               terminals: Object.freeze({ kind: "ready" as const, value: next }),
             })
           : null,
         statusCode: "linkly-terminal-selected",
       });
+      // 选择确认后只读刷新新终端作用域，避免用户误用旧终端检查结果。
+      await this.loadLinklySetupState(environment, loadGeneration, true);
     }).catch(async (error) => {
       if (isAbortError(error) || !this.isCurrentLinklySetupRequest(
         environment,
-        this.loadGeneration,
+        loadGeneration,
         generation,
       )) return;
       let authoritative: SettingsLinklyTerminalSelectionSnapshot | null = null;
@@ -1686,13 +1794,27 @@ export class SettingsPresenter {
       }
       if (!this.isCurrentLinklySetupRequest(
         environment,
-        this.loadGeneration,
+        loadGeneration,
         generation,
       )) return;
+      const selectionScopeChanged =
+        authoritative === null ||
+        authoritative.selectedTerminalId !== snapshot.selectedTerminalId ||
+        authoritative.selectionRevision !== snapshot.selectionRevision;
       this.patch({
         linklySetup: this.state.linklySetup
           ? Object.freeze({
               ...this.state.linklySetup,
+              // 只有权威选择变化或无法确认时才清理旧检查结果；明确未变化时保留。
+              ...(selectionScopeChanged
+                ? {
+                    health: Object.freeze({ kind: "idle" as const, value: null }),
+                    logonTest: Object.freeze({
+                      environment,
+                      status: "idle" as const,
+                    }),
+                  }
+                : {}),
               terminals: authoritative
                 ? Object.freeze({ kind: "ready" as const, value: authoritative })
                 : Object.freeze({ kind: "failed" as const, value: null }),
@@ -1701,9 +1823,120 @@ export class SettingsPresenter {
         statusCode:
           authoritative?.selectedTerminalId === normalizedTerminalId
             ? "linkly-terminal-selected"
-            : "linkly-terminal-switch-failed",
+            : linklyTerminalSelectionFailureStatus(error),
+      });
+      if (authoritative?.selectedTerminalId === normalizedTerminalId) {
+        // PUT 回包不明但权威 GET 已确认时，同样只读刷新新终端 health。
+        await this.loadLinklySetupState(environment, loadGeneration, true);
+      }
+    });
+  }
+
+  public testLinklyTerminalConnection(terminalId: string): Promise<void> {
+    const setup = this.options.port.linklySetup;
+    const snapshot = this.state.linklySetup?.terminals.value;
+    const terminal = snapshot?.terminals.find(
+      (candidate) => candidate.terminalId === terminalId.trim(),
+    );
+    if (
+      !this.requirePermission(this.state.access.canConfigurePayments) ||
+      !setup?.testTerminalConnection ||
+      !snapshot?.lineManagementSupported ||
+      !terminal?.terminalVersion ||
+      terminal.assignmentRevision === undefined
+    ) {
+      this.patch({ statusCode: "linkly-terminal-switch-failed" });
+      return Promise.resolve();
+    }
+    const generation = this.linklySetupGeneration;
+    const key = linklyConnectionTestKey(terminal, generation);
+    this.patchLinklyConnectionTest(key, {
+      key,
+      terminalId: terminal.terminalId,
+      kind: "running",
+      result: null,
+    });
+    return setup.testTerminalConnection(
+      snapshot.environment,
+      {
+        terminalId: terminal.terminalId,
+        terminalVersion: terminal.terminalVersion,
+        assignedDeviceCode: terminal.assignedDeviceCode ?? null,
+        assignmentRevision: terminal.assignmentRevision,
+      },
+      this.lifetime.signal,
+    ).then((result) => {
+      if (!this.isCurrentLinklyTerminalScope(terminal, generation)) return;
+      this.patchLinklyConnectionTest(key, {
+        key,
+        terminalId: terminal.terminalId,
+        kind: "ready",
+        result,
+      });
+    }).catch((error) => {
+      if (isAbortError(error) || !this.isCurrentLinklyTerminalScope(terminal, generation)) return;
+      this.patchLinklyConnectionTest(key, {
+        key,
+        terminalId: terminal.terminalId,
+        kind: "failed",
+        result: null,
+        failureReason: linklyConnectionFailureReason(error),
       });
     });
+  }
+
+  public requestLinklyTerminalAssignment(
+    terminalId: string,
+    targetDeviceCode: string | null,
+  ): boolean {
+    if (!this.requirePermission(this.state.access.canConfigurePayments)) return false;
+    const snapshot = this.state.linklySetup?.terminals.value;
+    const terminal = snapshot?.terminals.find(
+      (candidate) => candidate.terminalId === terminalId.trim(),
+    );
+    const targetCode = targetDeviceCode?.trim() || null;
+    const target = targetCode
+      ? snapshot?.devices?.find((device) => device.deviceCode === targetCode)
+      : null;
+    if (
+      this.options.port.linklySetup?.supportsTerminalAssignment !== true ||
+      !snapshot?.lineManagementSupported ||
+      !terminal?.terminalVersion ||
+      terminal.assignmentRevision === undefined ||
+      terminal.isBusy ||
+      (targetCode !== null && (!target || !target.isAvailable))
+    ) {
+      this.patch({ statusCode: "linkly-terminal-switch-failed" });
+      return false;
+    }
+    if ((terminal.assignedDeviceCode ?? null) === targetCode) {
+      this.patch({ statusCode: "linkly-terminal-selected" });
+      return false;
+    }
+    const replaced = target?.selectedTerminalId
+      ? snapshot.terminals.find((item) => item.terminalId === target.selectedTerminalId)
+      : null;
+    const currentDeviceCode = this.state.device.deviceCode.trim();
+    return this.requestConfirmation(Object.freeze({
+      kind: "assign-linkly-terminal" as const,
+      environment: snapshot.environment,
+      input: Object.freeze({
+        terminalId: terminal.terminalId,
+        terminalVersion: terminal.terminalVersion,
+        assignedDeviceCode: terminal.assignedDeviceCode ?? null,
+        assignmentRevision: terminal.assignmentRevision,
+        targetDeviceCode: targetCode,
+        expectedTargetTerminalId: target?.selectedTerminalId ?? null,
+        expectedTargetSelectionRevision: target?.selectionRevision ?? 0,
+      }),
+      terminalLabel: `${terminal.displayName} · Lane ${terminal.laneNo}`,
+      targetDeviceCode: targetCode,
+      replacedTerminalLabel: replaced
+        ? `${replaced.displayName} · Lane ${replaced.laneNo}`
+        : null,
+      affectsCurrentDevice:
+        terminal.assignedDeviceCode === currentDeviceCode || targetCode === currentDeviceCode,
+    }));
   }
 
   public testPaymentProvider(provider: "square" | "linkly"): Promise<void> {
@@ -1740,6 +1973,30 @@ export class SettingsPresenter {
       this.patch({ statusCode: "payment-settings-invalid" });
       return Promise.resolve();
     }
+    const linklyTestSelection =
+      provider === "linkly" && this.state.linklySetup?.terminals.value
+        ? Object.freeze({
+            environment: this.state.linklyDraft.environment,
+            loadGeneration: this.loadGeneration,
+            setupGeneration: this.linklySetupGeneration,
+            selectedTerminalId:
+              this.state.linklySetup.terminals.value.selectedTerminalId,
+            selectionRevision:
+              this.state.linklySetup.terminals.value.selectionRevision,
+          })
+        : null;
+    const isCurrentLinklyTest = (): boolean => {
+      if (!linklyTestSelection) return true;
+      const current = this.state.linklySetup?.terminals.value;
+      return (
+        this.loadGeneration === linklyTestSelection.loadGeneration &&
+        this.linklySetupGeneration === linklyTestSelection.setupGeneration &&
+        this.state.linklyDraft.environment === linklyTestSelection.environment &&
+        current?.environment === linklyTestSelection.environment &&
+        current.selectedTerminalId === linklyTestSelection.selectedTerminalId &&
+        current.selectionRevision === linklyTestSelection.selectionRevision
+      );
+    };
     return this.runAction(async () => {
       const linklyTestEnvironment =
         provider === "linkly" ? input.linkly?.environment : null;
@@ -1761,17 +2018,30 @@ export class SettingsPresenter {
             ? this.state.linklySetup?.terminals.value ?? null
             : undefined,
         );
+        if (!isCurrentLinklyTest()) return;
         if (linklyTestEnvironment && this.state.linklySetup) {
+          // 新的银行验证已成功，不能继续显示当前线路之前的 TF/失败结果。
+          const selectedTerminalId = this.state.linklySetup.terminals.value?.selectedTerminalId;
           this.patch({
-            linklySetup: updateLinklyLogonTest(
+            linklySetup: { ...updateLinklyLogonTest(
               this.state.linklySetup,
               linklyTestEnvironment,
               "passed",
-            ),
+            ), connectionTests: Object.freeze(Object.fromEntries(
+              Object.entries(this.state.linklySetup.connectionTests).filter(
+                ([, value]) => value.terminalId !== selectedTerminalId,
+              ),
+            )) },
           });
         }
+        if (linklyTestEnvironment && this.options.port.linklySetup) {
+          // 读取银行验证后的最新线路健康，清除较早的 TF；选择变化时刷新会使资格失效。
+          await this.loadLinklySetupState(linklyTestEnvironment, this.loadGeneration, false);
+          if (this.state.linklySetup?.logonTest.status !== "passed") return;
+        }
         this.patch({ statusCode: "payment-test-passed" });
-      } catch {
+      } catch (error) {
+        if (!isCurrentLinklyTest()) return;
         if (linklyTestEnvironment && this.state.linklySetup) {
           this.patch({
             linklySetup: updateLinklyLogonTest(
@@ -1781,7 +2051,9 @@ export class SettingsPresenter {
             ),
           });
         }
-        this.patch({ statusCode: "payment-test-failed" });
+        this.patch({ statusCode: error && typeof error === "object" &&
+          "code" in error && error.code === "LINKLY_TEST_UNCONFIRMED"
+          ? "payment-test-unconfirmed" : "payment-test-failed" });
       }
     });
   }
@@ -2441,6 +2713,34 @@ export class SettingsPresenter {
           }
           return;
         }
+        if (confirmation.kind === "assign-linkly-terminal" && result.kind === "assign-linkly-terminal") {
+          this.patch({
+            confirmation: null,
+            linklySetup: this.state.linklySetup
+              ? Object.freeze({
+                  ...this.state.linklySetup,
+                  terminals: Object.freeze({ kind: "ready" as const, value: result.terminals }),
+                  ...(confirmation.affectsCurrentDevice
+                    ? {
+                        health: Object.freeze({ kind: "idle" as const, value: null }),
+                        logonTest: Object.freeze({
+                          environment: confirmation.environment,
+                          status: "idle" as const,
+                        }),
+                      }
+                    : {}),
+                })
+              : null,
+            statusCode: "linkly-terminal-selected",
+          });
+          // 写入回包是事务快照；随后 GET 再核对，且不会自动重放 PUT。
+          await this.loadLinklySetupState(
+            confirmation.environment,
+            this.loadGeneration,
+            confirmation.affectsCurrentDevice,
+          );
+          return;
+        }
         if (
           confirmation.kind === "reset-catalog" &&
           result.kind === "reset-catalog"
@@ -2466,13 +2766,36 @@ export class SettingsPresenter {
               ? "device-reregister-started"
               : "app-restart-requested",
         });
-      } catch {
+      } catch (error) {
+        if (confirmation.kind === "assign-linkly-terminal") {
+          const statusCode = linklyTerminalSelectionFailureStatus(error);
+          this.patch({
+            confirmation: null,
+            linklySetup: this.state.linklySetup
+              ? resetLinklySetupState(
+                  this.state.linklySetup,
+                  confirmation.environment,
+                  confirmation.affectsCurrentDevice,
+                  false,
+                )
+              : null,
+          });
+          await this.loadLinklySetupState(
+            confirmation.environment,
+            this.loadGeneration,
+            confirmation.affectsCurrentDevice,
+          );
+          this.patch({ statusCode });
+          return;
+        }
         this.patch({
           ...(confirmation.kind === "change-api-address"
             ? { apiAddressDraft: this.state.apiBaseUrl }
             : {}),
           confirmation: null,
-          statusCode: dangerousActionFailureCode(confirmation.kind),
+          statusCode: confirmation.kind === "pair-linkly"
+            ? linklyPairFailureStatus(error)
+            : dangerousActionFailureCode(confirmation.kind),
         });
       }
     });
@@ -2517,6 +2840,35 @@ export class SettingsPresenter {
     }
     this.patch({ confirmation, statusCode: null });
     return true;
+  }
+
+  private patchLinklyConnectionTest(
+    key: string,
+    value: SettingsLinklyConnectionTestState,
+  ): void {
+    if (!this.state.linklySetup) return;
+    this.patch({
+      linklySetup: Object.freeze({
+        ...this.state.linklySetup,
+        connectionTests: Object.freeze({
+          ...this.state.linklySetup.connectionTests,
+          [key]: Object.freeze(value),
+        }),
+      }),
+    });
+  }
+
+  private isCurrentLinklyTerminalScope(
+    terminal: SettingsLinklyTerminal,
+    generation: number,
+  ): boolean {
+    const current = this.state.linklySetup?.terminals.value?.terminals.find(
+      (candidate) => candidate.terminalId === terminal.terminalId,
+    );
+    return this.linklySetupGeneration === generation &&
+      current?.terminalVersion === terminal.terminalVersion &&
+      current?.assignedDeviceCode === terminal.assignedDeviceCode &&
+      current?.assignmentRevision === terminal.assignmentRevision;
   }
 
   private requirePermission(granted: boolean): boolean {
@@ -2667,6 +3019,7 @@ export class SettingsPresenter {
     const generation = ++this.linklySetupGeneration;
     const current =
       this.state.linklySetup ?? initialLinklySetupState(environment);
+    const previousTerminals = current.terminals.value;
     this.patch({
       linklySetup: resetLinklySetupState(
         current,
@@ -2676,6 +3029,8 @@ export class SettingsPresenter {
       ),
     });
     let terminals: SettingsLinklyTerminalSelectionSnapshot | null = null;
+    // 目录读取失败时作用域无法确认；先按失效处理，完整同作用域读取成功后再保留。
+    let activeSelectionChanged = previousTerminals !== null;
     try {
       // Active health 必须绑定同一次权威选择；先读目录可避免把旧终端状态带入检查。
       terminals = setup.readTerminals
@@ -2688,6 +3043,67 @@ export class SettingsPresenter {
           generation,
         )
       ) {
+        return;
+      }
+      activeSelectionChanged = terminals
+        ? previousTerminals === null ||
+          terminals.environment !== previousTerminals.environment ||
+          terminals.mode !== previousTerminals.mode ||
+          terminals.selectedTerminalId !== previousTerminals.selectedTerminalId ||
+          terminals.selectionRevision !== previousTerminals.selectionRevision
+        : previousTerminals !== null;
+      // 手动刷新只恢复已完成且仍属于当前线路版本的结果；迟到回包仍受 generation 隔离。
+      // 网关断连未写入持久健康状态时，不能让较旧的“已连接”覆盖刚看到的检测失败。
+      if (!resetLogonTest && terminals?.environment === environment &&
+          terminals.mode === previousTerminals?.mode) {
+        const connectionTests: Record<string, SettingsLinklyConnectionTestState> = {};
+        for (const state of Object.values(current.connectionTests)) {
+          const result = state.result;
+          const terminal = terminals.terminals.find((item) => item.terminalId === state.terminalId);
+          if (state.kind !== "ready" || !result || !terminal ||
+              result.environment !== environment ||
+              result.terminalId !== terminal.terminalId ||
+              result.terminalVersion !== terminal.terminalVersion ||
+              result.assignedDeviceCode !== (terminal.assignedDeviceCode ?? null) ||
+              result.assignmentRevision !== terminal.assignmentRevision ||
+              !Number.isFinite(Date.parse(result.checkedAt)) ||
+              (terminal.lastHealthAt !== null &&
+                Date.parse(terminal.lastHealthAt) >= Date.parse(result.checkedAt))) continue;
+          const key = linklyConnectionTestKey(terminal, generation);
+          connectionTests[key] = Object.freeze({ ...state, key });
+        }
+        this.patch({ linklySetup: Object.freeze({
+          ...this.state.linklySetup!,
+          connectionTests: Object.freeze(connectionTests),
+        }) });
+      }
+      if (
+        terminals?.environment === environment &&
+        terminals.mode === "Active" &&
+        terminals.selectedTerminalId === null &&
+        terminals.selectionRevision === 0
+      ) {
+        // Active 目录允许尚未选择终端；此时 scoped health 没有合法参数，等待用户明确选择。
+        this.patch({
+          linklySetup: Object.freeze({
+            ...this.state.linklySetup!,
+            health: Object.freeze({
+              kind: "selection-required" as const,
+              value: null,
+            }),
+            terminals: Object.freeze({
+              kind: "ready" as const,
+              value: terminals,
+            }),
+            logonTest: activeSelectionChanged
+              ? Object.freeze({ environment, status: "idle" as const })
+              : this.state.linklySetup!.logonTest,
+          }),
+          statusCode:
+            this.state.statusCode === "linkly-health-load-failed"
+              ? null
+              : this.state.statusCode,
+        });
         return;
       }
       const health = await setup.readState(
@@ -2712,6 +3128,9 @@ export class SettingsPresenter {
           terminals: terminals
             ? Object.freeze({ kind: "ready" as const, value: terminals })
             : this.state.linklySetup!.terminals,
+          logonTest: activeSelectionChanged
+            ? Object.freeze({ environment, status: "idle" as const })
+            : this.state.linklySetup!.logonTest,
         }),
       });
     } catch (error) {
@@ -2734,6 +3153,9 @@ export class SettingsPresenter {
             terminals?.environment === environment
               ? Object.freeze({ kind: "ready" as const, value: terminals })
               : Object.freeze({ kind: "failed" as const, value: null }),
+          logonTest: activeSelectionChanged
+            ? Object.freeze({ environment, status: "idle" as const })
+            : this.state.linklySetup!.logonTest,
         }),
         statusCode: "linkly-health-load-failed",
       });
@@ -2985,6 +3407,7 @@ function initialLinklySetupState(
     health: Object.freeze({ kind: "idle", value: null }),
     terminals: Object.freeze({ kind: "idle", value: null }),
     logonTest: Object.freeze({ environment, status: "idle" }),
+    connectionTests: Object.freeze({}),
     pairCodeResetToken: 0,
   });
 }
@@ -3001,6 +3424,7 @@ function resetLinklySetupState(
     logonTest: resetLogonTest
       ? Object.freeze({ environment, status: "idle" })
       : state.logonTest,
+    connectionTests: Object.freeze({}),
     pairCodeResetToken: state.pairCodeResetToken + (resetPairCode ? 1 : 0),
   });
 }
@@ -3016,7 +3440,8 @@ function updateLinklyLogonTest(
   });
 }
 
-function hasLinklyCloudCredentials(
+// 界面与配对请求共用资格判断，避免已加载云端线路却被旧健康检查挡住。
+export function hasLinklyCloudCredentials(
   state: Pick<SettingsState, "linklySetup">,
   environment: PaymentEnvironment,
 ): boolean {
@@ -3041,7 +3466,7 @@ function hasLinklyCloudCredentials(
   );
 }
 
-function isLinklySetupReady(
+export function isLinklySetupReady(
   state: Pick<SettingsState, "linklySetup">,
   environment: PaymentEnvironment,
 ): boolean {
@@ -3075,7 +3500,7 @@ function isLinklySetupReady(
   );
 }
 
-function isLinklyHealthReady(
+export function isLinklyHealthReady(
   state: Pick<SettingsState, "linklySetup">,
   environment: PaymentEnvironment,
 ): boolean {
@@ -3564,6 +3989,8 @@ function dangerousActionFailureCode(
       return "payment-settings-save-failed";
     case "pair-linkly":
       return "linkly-pair-failed";
+    case "assign-linkly-terminal":
+      return "linkly-terminal-switch-failed";
     case "reset-catalog":
       return "catalog-reset-failed";
     case "reregister-device":
@@ -3573,6 +4000,19 @@ function dangerousActionFailureCode(
     default:
       return "restart-failed";
   }
+}
+
+export function linklyConnectionTestKey(
+  terminal: Pick<SettingsLinklyTerminal, "terminalId" | "terminalVersion" | "assignedDeviceCode" | "assignmentRevision">,
+  generation: number,
+): string {
+  return [
+    terminal.terminalId,
+    terminal.terminalVersion ?? "missing-version",
+    terminal.assignedDeviceCode ?? "unassigned",
+    terminal.assignmentRevision ?? "missing-revision",
+    generation,
+  ].join("|");
 }
 
 function normalizeDeviceActivationPreview(
@@ -3778,4 +4218,59 @@ function printerScanFailureStatus(error: unknown): SettingsStatusCode {
     PRINTER_BLUETOOTH_RESTRICTED: "printer-bluetooth-restricted",
   };
   return bluetoothStatusByCode[code] ?? "printer-scan-failed";
+}
+
+function linklyPairFailureStatus(error: unknown): SettingsStatusCode {
+  const code = error && typeof error === "object" && "code" in error ? error.code : null;
+  switch (code) {
+    case "LINKLY_CLOUD_BACKEND_PAIR_REJECTED":
+      return "linkly-pair-code-rejected";
+    case "LINKLY_CLOUD_BACKEND_PAIR_CREDENTIAL_MISSING":
+      return "linkly-pair-credentials-required";
+    case "LINKLY_CLOUD_BACKEND_PAIR_IN_PROGRESS":
+    case "LINKLY_CLOUD_TERMINAL_SESSION_ACTIVE":
+      return "linkly-pair-busy";
+    default:
+      return "linkly-pair-failed";
+  }
+}
+
+function linklyConnectionFailureReason(
+  error: unknown,
+): NonNullable<SettingsLinklyConnectionTestState["failureReason"]> {
+  if (!error || typeof error !== "object") return "unknown";
+  const code = "code" in error && typeof error.code === "string" ? error.code : "";
+  if (code === "LINKLY_CLOUD_TERMINAL_SESSION_ACTIVE" ||
+      code === "LINKLY_TERMINAL_SESSION_ACTIVE" ||
+      code === "LINKLY_CLOUD_BACKEND_PAIR_IN_PROGRESS") return "busy";
+  // 当前服务端用同一冲突码表达租约保护和版本变化，不能凭一个 409 猜测具体原因。
+  if (code === "LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT") return "changed-or-busy";
+  if (code === "LINKLY_CONNECTION_TEST_SCOPE_CHANGED" ||
+      code === "LINKLY_TERMINAL_REVISION_CONFLICT" ||
+      code === "LINKLY_SELECTION_REVISION_CONFLICT") return "changed";
+  if ("status" in error && (error.status === 401 || error.status === 403)) return "access";
+  return "unknown";
+}
+
+function linklyTerminalSelectionFailureStatus(
+  error: unknown,
+): SettingsStatusCode {
+  if (!error || typeof error !== "object") {
+    return "linkly-terminal-switch-failed";
+  }
+  const rawCode =
+    "code" in error && typeof error.code === "string"
+      ? error.code
+      : "status" in error && typeof error.status === "string"
+        ? error.status
+        : "";
+  const statusByCode: Readonly<Record<string, SettingsStatusCode>> = {
+    LINKLY_TERMINAL_SELECTION_BLOCKED: "linkly-terminal-selection-blocked",
+    LINKLY_TERMINAL_ASSIGNMENT_CONFLICT:
+      "linkly-terminal-assignment-conflict",
+    LINKLY_TERMINAL_SESSION_ACTIVE: "linkly-terminal-session-active",
+    LINKLY_TERMINAL_REVISION_CONFLICT: "linkly-terminal-revision-conflict",
+    LINKLY_SELECTION_REVISION_CONFLICT: "linkly-terminal-revision-conflict",
+  };
+  return statusByCode[rawCode.trim()] ?? "linkly-terminal-switch-failed";
 }

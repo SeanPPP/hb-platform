@@ -25,6 +25,8 @@ import {
   type SettingsPaymentSettingsInput,
   type SettingsPendingDataSnapshot,
   type SettingsLinklyHealthSnapshot,
+  type SettingsLinklyConnectionTestResult,
+  type SettingsLinklyTerminalAssignmentInput,
   type SettingsLinklyPairingPort,
   type SettingsLinklyPairResult,
   type SettingsLinklySetupControlPort,
@@ -1565,11 +1567,34 @@ test("Linkly Active 设置先读取权威终端快照，再按同一快照读取
   await presenter.load();
   await presenter.testPaymentProvider("linkly");
 
-  assert.deepEqual(setup.readSequence, ["terminals", "health"]);
-  assert.deepEqual(setup.healthSelections, [setup.terminals]);
+  assert.deepEqual(setup.readSequence, ["terminals", "health", "terminals", "health"]);
+  assert.deepEqual(setup.healthSelections, [setup.terminals, setup.terminals]);
   assert.deepEqual(port.paymentTerminalSelections, [setup.terminals]);
   assert.equal(presenter.getState().linklySetup?.health.kind, "ready");
   assert.equal(presenter.getState().linklySetup?.terminals.kind, "ready");
+});
+
+test("Linkly Active 权威目录未选择终端时等待用户选择且不误读 health", async () => {
+  const port = new FakeSettingsPort();
+  const setup = new FakeLinklySetupControlPort();
+  port.linklySetup = setup;
+  setup.terminals = linklyTerminals("Production", null, 0);
+  setup.readHandlers = {
+    Production: async () =>
+      assert.fail("未选择 Active 终端时不应读取 scoped health"),
+  };
+  const presenter = createPresenter(port);
+
+  await presenter.load();
+
+  assert.deepEqual(setup.readSequence, ["terminals"]);
+  assert.equal(
+    presenter.getState().linklySetup?.health.kind,
+    "selection-required",
+  );
+  assert.equal(presenter.getState().linklySetup?.health.value, null);
+  assert.equal(presenter.getState().linklySetup?.terminals.kind, "ready");
+  assert.equal(presenter.getState().statusCode, null);
 });
 
 test("Linkly 多终端读取、持久切换并按选中终端配对", async () => {
@@ -1587,6 +1612,8 @@ test("Linkly 多终端读取、持久切换并按选中终端配对", async () =
     presenter.getState().linklySetup?.terminals.value?.terminals.length,
     2,
   );
+  await presenter.testPaymentProvider("linkly");
+  assert.equal(presenter.getState().linklySetup?.logonTest.status, "passed");
   await presenter.selectLinklyTerminal("terminal-2");
   assert.deepEqual(setup.selectCalls, [
     {
@@ -1599,6 +1626,12 @@ test("Linkly 多终端读取、持久切换并按选中终端配对", async () =
     presenter.getState().linklySetup?.terminals.value?.selectedTerminalId,
     "terminal-2",
   );
+  assert.equal(presenter.getState().linklySetup?.health.kind, "ready");
+  assert.equal(
+    setup.healthSelections.at(-1)?.selectedTerminalId,
+    "terminal-2",
+  );
+  assert.equal(presenter.getState().linklySetup?.logonTest.status, "idle");
   assert.equal(presenter.requestLinklyPair("654321"), true);
   await presenter.confirmDangerousAction();
   assert.deepEqual(pairing.pairCalls, [
@@ -1610,7 +1643,7 @@ test("Linkly 多终端读取、持久切换并按选中终端配对", async () =
   ]);
 });
 
-test("Linkly 忙碌终端仍可持久预选", async () => {
+test("Linkly 忙碌终端禁止切换", async () => {
   const port = new FakeSettingsPort();
   const setup = new FakeLinklySetupControlPort();
   port.linklySetup = setup;
@@ -1629,17 +1662,351 @@ test("Linkly 忙碌终端仍可持久预选", async () => {
   await presenter.load();
   await presenter.selectLinklyTerminal("terminal-2");
 
-  assert.deepEqual(setup.selectCalls, [
-    {
-      environment: "Production",
+  assert.deepEqual(setup.selectCalls, []);
+  assert.equal(
+    presenter.getState().linklySetup?.terminals.value?.selectedTerminalId,
+    "terminal-1",
+  );
+  assert.equal(presenter.getState().statusCode, "linkly-terminal-switch-failed");
+});
+
+for (const [error, expected] of [
+  [{ code: "LINKLY_CLOUD_TERMINAL_SESSION_ACTIVE" }, "busy"],
+  [{ code: "LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT" }, "changed-or-busy"],
+  [{ code: "LINKLY_CONNECTION_TEST_SCOPE_CHANGED" }, "changed"],
+  [{ kind: "transport", networkCode: "ECONNABORTED" }, "unknown"],
+  [{ status: 401 }, "access"],
+  [{ message: "do not show private details" }, "unknown"],
+] as const) {
+  test(`Linkly 检测失败给出稳定原因 ${expected}，不暴露原始错误`, async () => {
+    const port = new FakeSettingsPort();
+    const setup = new FakeLinklySetupControlPort();
+    port.linklySetup = setup;
+    setup.terminals = { ...setup.terminals, lineManagementSupported: true };
+    setup.testTerminalConnection = async () => { throw error; };
+    const presenter = createPresenter(port);
+    await presenter.load();
+    await presenter.testLinklyTerminalConnection("terminal-2");
+    const state = Object.values(presenter.getState().linklySetup!.connectionTests)[0];
+    assert.equal(state?.failureReason, expected);
+    assert.equal(JSON.stringify(state).includes("private details"), false);
+    assert.equal(presenter.getState().linklySetup?.logonTest.status, "idle");
+  });
+}
+
+test("Linkly 重新配对仅允许当前目录内空闲线路，确认携带明确线路名称", async () => {
+  const port = new FakeSettingsPort();
+  const setup = new FakeLinklySetupControlPort();
+  port.linklySetup = setup;
+  setup.terminals = { ...setup.terminals, lineManagementSupported: true };
+  const presenter = createPresenter(port);
+  await presenter.load();
+  assert.equal(presenter.requestLinklyPair("missing", "654321"), false);
+  assert.equal(presenter.getState().confirmation, null);
+  assert.equal(presenter.requestLinklyPair("terminal-2", "654321"), true);
+  const confirmation = presenter.getState().confirmation;
+  assert.equal(confirmation?.kind, "pair-linkly");
+  if (confirmation?.kind === "pair-linkly") {
+    assert.equal(confirmation.terminalLabel, "Returns · Lane 2");
+  }
+  presenter.cancelConfirmation();
+  setup.terminals = { ...setup.terminals, terminals: setup.terminals.terminals.map((t) => ({ ...t, isBusy: true })) };
+  await presenter.refreshLinklySetup();
+  assert.equal(presenter.requestLinklyPair("terminal-2", "654321"), false);
+  assert.equal(presenter.getState().confirmation, null);
+});
+
+for (const [code, statusCode] of [
+  ["LINKLY_CLOUD_BACKEND_PAIR_REJECTED", "linkly-pair-code-rejected"],
+  ["LINKLY_CLOUD_BACKEND_PAIR_CREDENTIAL_MISSING", "linkly-pair-credentials-required"],
+  ["LINKLY_CLOUD_BACKEND_PAIR_IN_PROGRESS", "linkly-pair-busy"],
+] as const) {
+  test(`Linkly 新配对码提交失败显示原因 ${code}，不会自动重放`, async () => {
+    const port = new FakeSettingsPort();
+    const setup = new FakeLinklySetupControlPort();
+    const pairing = new FakeLinklyPairingPort();
+    port.linklySetup = setup;
+    port.linklyPairing = pairing;
+    let attempts = 0;
+    pairing.pair = async () => { attempts += 1; throw Object.assign(new Error("private"), { code }); };
+    const presenter = createPresenter(port);
+    await presenter.load();
+    assert.equal(presenter.requestLinklyPair("terminal-2", "654321"), true);
+    await presenter.confirmDangerousAction();
+    assert.equal(attempts, 1);
+    assert.equal(presenter.getState().confirmation, null);
+    assert.equal(presenter.getState().statusCode, statusCode);
+  });
+}
+
+test("Linkly 单线路测试独立记录且不把全局 logon 或支付提供方改为可用", async () => {
+  const port = new FakeSettingsPort();
+  const setup = new FakeLinklySetupControlPort();
+  port.linklySetup = setup;
+  setup.terminals = Object.freeze({
+    ...setup.terminals,
+    lineManagementSupported: true,
+  });
+  const presenter = createPresenter(port);
+  await presenter.load();
+  const providerBefore = presenter.getState().paymentProviderDraft;
+
+  await presenter.selectLinklyTerminal("terminal-2");
+  assert.deepEqual(setup.selectCalls, []);
+  assert.equal(presenter.getState().statusCode, "linkly-terminal-switch-failed");
+
+  await presenter.testLinklyTerminalConnection("terminal-2");
+
+  assert.deepEqual(setup.connectionTestCalls, ["terminal-2"]);
+  const testState = Object.values(
+    presenter.getState().linklySetup?.connectionTests ?? {},
+  )[0];
+  assert.equal(testState?.kind, "ready");
+  assert.equal(testState?.result?.status, "connected");
+  assert.equal(presenter.getState().linklySetup?.logonTest.status, "idle");
+  assert.equal(presenter.getState().paymentProviderDraft, providerBefore);
+});
+
+for (const selected of [true, false]) {
+  test(`Linkly 刷新同版本目录保留最近断连结果，已有本机绑定=${selected}`, async () => {
+    const port = new FakeSettingsPort();
+    const setup = new FakeLinklySetupControlPort();
+    port.linklySetup = setup;
+    setup.connectionTestStatus = "unreachable";
+    setup.terminals = {
+      ...setup.terminals,
+      lineManagementSupported: true,
+      selectedTerminalId: selected ? "terminal-1" : null,
+      selectionRevision: selected ? 2 : 0,
+      terminals: setup.terminals.terminals.map((terminal) => ({
+        ...terminal,
+        lastHealthStatus: "Healthy",
+        lastHealthAt: "2026-09-09T02:00:00Z",
+      })),
+    };
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const providerBefore = presenter.getState().paymentProviderDraft;
+    await presenter.testLinklyTerminalConnection("terminal-2");
+    await presenter.refreshLinklySetup();
+
+    const results = Object.values(presenter.getState().linklySetup!.connectionTests);
+    assert.equal(results.length, 1);
+    assert.equal(results[0]?.result?.status, "unreachable");
+    assert.equal(results[0]?.result?.checkedAt, "2026-09-10T02:00:00Z");
+    assert.equal(presenter.getState().linklySetup?.logonTest.status, "idle");
+    assert.equal(presenter.getState().paymentProviderDraft, providerBefore);
+
+    // 刷新后再次测试应替换同一行结果，不能残留旧 generation 的优先显示项。
+    setup.connectionTestStatus = "connected";
+    await presenter.testLinklyTerminalConnection("terminal-2");
+    const retested = Object.values(presenter.getState().linklySetup!.connectionTests);
+    assert.equal(retested.length, 1);
+    assert.equal(retested[0]?.result?.status, "connected");
+  });
+}
+
+for (const changed of ["version", "owner", "revision", "health", "mode", "missing"] as const) {
+  test(`Linkly 刷新后丢弃失效检测结果：${changed}`, async () => {
+    const port = new FakeSettingsPort();
+    const setup = new FakeLinklySetupControlPort();
+    port.linklySetup = setup;
+    setup.terminals = { ...setup.terminals, lineManagementSupported: true };
+    const presenter = createPresenter(port);
+    await presenter.load();
+    await presenter.testLinklyTerminalConnection("terminal-2");
+    setup.terminals = {
+      ...setup.terminals,
+      mode: changed === "mode" ? "Legacy" : "Active",
+      terminals: setup.terminals.terminals
+        .filter((terminal) => changed !== "missing" || terminal.terminalId !== "terminal-2")
+        .map((terminal) => terminal.terminalId !== "terminal-2" ? terminal : {
+          ...terminal,
+          ...(changed === "version" ? { terminalVersion: "v3" } : {}),
+          ...(changed === "owner" ? { assignedDeviceCode: "POS-02" } : {}),
+          ...(changed === "revision" ? { assignmentRevision: 3 } : {}),
+          ...(changed === "health" ? { lastHealthAt: "2026-09-10T03:00:00Z", lastHealthStatus: "Unhealthy" } : {}),
+        }),
+    };
+    await presenter.refreshLinklySetup();
+    assert.deepEqual(presenter.getState().linklySetup?.connectionTests, {});
+  });
+}
+
+test("Linkly 线路测试迟到时不能跨 terminalVersion 与刷新 generation 覆盖新目录", async () => {
+  const port = new FakeSettingsPort();
+  const setup = new FakeLinklySetupControlPort();
+  const hold = deferred<void>();
+  setup.connectionTestHold = hold.promise;
+  port.linklySetup = setup;
+  setup.terminals = Object.freeze({
+    ...setup.terminals,
+    lineManagementSupported: true,
+  });
+  const presenter = createPresenter(port);
+  await presenter.load();
+
+  const pending = presenter.testLinklyTerminalConnection("terminal-1");
+  await Promise.resolve();
+  setup.terminals = Object.freeze({
+    ...setup.terminals,
+    terminals: Object.freeze(setup.terminals.terminals.map((terminal) =>
+      terminal.terminalId === "terminal-1"
+        ? Object.freeze({ ...terminal, terminalVersion: "external-v3" })
+        : terminal,
+    )),
+  });
+  await presenter.refreshLinklySetup();
+  hold.resolve();
+  await pending;
+
+  assert.deepEqual(presenter.getState().linklySetup?.connectionTests, {});
+  assert.equal(presenter.getState().linklySetup?.logonTest.status, "idle");
+});
+
+test("Linkly 分配到本机时确认原子替换旧线路并只读刷新，不修改 provider", async () => {
+  const port = new FakeSettingsPort();
+  const setup = new FakeLinklySetupControlPort();
+  port.linklySetup = setup;
+  setup.terminals = Object.freeze({
+    ...setup.terminals,
+    lineManagementSupported: true,
+  });
+  const presenter = createPresenter(port);
+  await presenter.load();
+  const providerBefore = presenter.getState().paymentProviderDraft;
+  const readsBefore = setup.readSequence.length;
+
+  assert.equal(
+    presenter.requestLinklyTerminalAssignment("terminal-2", "POS-01"),
+    true,
+  );
+  assert.deepEqual(presenter.getState().confirmation, {
+    kind: "assign-linkly-terminal",
+    environment: "Production",
+    input: {
       terminalId: "terminal-2",
-      expectedRevision: 2,
+      terminalVersion: "v2-2",
+      assignedDeviceCode: null,
+      assignmentRevision: 0,
+      targetDeviceCode: "POS-01",
+      expectedTargetTerminalId: "terminal-1",
+      expectedTargetSelectionRevision: 2,
     },
-  ]);
+    terminalLabel: "Returns · Lane 2",
+    targetDeviceCode: "POS-01",
+    replacedTerminalLabel: "Front counter · Lane 1",
+    affectsCurrentDevice: true,
+  });
+
+  await presenter.confirmDangerousAction();
+
+  assert.equal(setup.assignmentCalls.length, 1);
+  assert.equal(presenter.getState().paymentProviderDraft, providerBefore);
+  assert.equal(presenter.getState().linklySetup?.logonTest.status, "idle");
+  assert.deepEqual(setup.readSequence.slice(readsBefore), ["terminals", "health"]);
+});
+
+test("Linkly 旧终端登录测试迟到时不得覆盖重新加载的新选择", async () => {
+  const port = new FakeSettingsPort();
+  const setup = new FakeLinklySetupControlPort();
+  const testHold = deferred<void>();
+  port.linklySetup = setup;
+  port.paymentTestHold = testHold.promise;
+  const presenter = createPresenter(port);
+  await presenter.load();
+
+  const testPromise = presenter.testPaymentProvider("linkly");
+  await Promise.resolve();
+  assert.equal(presenter.getState().linklySetup?.logonTest.status, "running");
+
+  setup.terminals = linklyTerminals("Production", "terminal-2", 3);
+  await presenter.load();
+  testHold.resolve();
+  await testPromise;
+
   assert.equal(
     presenter.getState().linklySetup?.terminals.value?.selectedTerminalId,
     "terminal-2",
   );
+  assert.equal(presenter.getState().linklySetup?.logonTest.status, "idle");
+  assert.equal(presenter.getState().statusCode, null);
+});
+
+test("Linkly 手动刷新发现外部选择变化时清除旧登录测试", async () => {
+  const port = new FakeSettingsPort();
+  const setup = new FakeLinklySetupControlPort();
+  port.linklySetup = setup;
+  const presenter = createPresenter(port);
+  await presenter.load();
+  await presenter.testPaymentProvider("linkly");
+  assert.equal(presenter.getState().linklySetup?.logonTest.status, "passed");
+
+  setup.terminals = linklyTerminals("Production", "terminal-2", 3);
+  await presenter.refreshLinklySetup();
+
+  assert.equal(
+    presenter.getState().linklySetup?.terminals.value?.selectedTerminalId,
+    "terminal-2",
+  );
+  assert.equal(setup.healthSelections.at(-1)?.selectedTerminalId, "terminal-2");
+  assert.equal(presenter.getState().linklySetup?.logonTest.status, "idle");
+});
+
+test("Linkly 外部选择变化后即使 health 失败也清除旧登录测试", async () => {
+  const port = new FakeSettingsPort();
+  const setup = new FakeLinklySetupControlPort();
+  port.linklySetup = setup;
+  const presenter = createPresenter(port);
+  await presenter.load();
+  await presenter.testPaymentProvider("linkly");
+  assert.equal(presenter.getState().linklySetup?.logonTest.status, "passed");
+
+  setup.terminals = linklyTerminals("Production", "terminal-2", 3);
+  setup.readHandlers.Production = async () => {
+    throw new Error("new terminal health unavailable");
+  };
+  await presenter.refreshLinklySetup();
+
+  assert.equal(
+    presenter.getState().linklySetup?.terminals.value?.selectedTerminalId,
+    "terminal-2",
+  );
+  assert.equal(presenter.getState().linklySetup?.health.kind, "failed");
+  assert.equal(presenter.getState().linklySetup?.logonTest.status, "idle");
+  presenter.setPaymentProvider("linkly");
+  assert.equal(presenter.getState().paymentProviderDraft, "square");
+  assert.equal(presenter.getState().statusCode, "linkly-setup-required");
+});
+
+test("Linkly 目录首次读取失败后再次读到新选择仍不得继承旧登录测试", async () => {
+  const port = new FakeSettingsPort();
+  const setup = new FakeLinklySetupControlPort();
+  port.linklySetup = setup;
+  const presenter = createPresenter(port);
+  await presenter.load();
+  await presenter.testPaymentProvider("linkly");
+  assert.equal(presenter.getState().linklySetup?.logonTest.status, "passed");
+
+  let refreshCount = 0;
+  setup.readTerminals = async () => {
+    refreshCount += 1;
+    if (refreshCount === 1) throw new Error("terminal directory unavailable");
+    return setup.terminals;
+  };
+  await presenter.refreshLinklySetup();
+  assert.equal(presenter.getState().linklySetup?.terminals.kind, "failed");
+  assert.equal(presenter.getState().linklySetup?.logonTest.status, "idle");
+
+  setup.terminals = linklyTerminals("Production", "terminal-2", 3);
+  await presenter.refreshLinklySetup();
+
+  assert.equal(
+    presenter.getState().linklySetup?.terminals.value?.selectedTerminalId,
+    "terminal-2",
+  );
+  assert.equal(presenter.getState().linklySetup?.logonTest.status, "idle");
+  assert.equal(setup.healthSelections.at(-1)?.selectedTerminalId, "terminal-2");
 });
 
 test("Linkly Legacy/Draft readiness 只使用旧 health，不受终端目录状态污染", async () => {
@@ -1710,6 +2077,12 @@ test("Linkly 切换结果不明时重读权威选择；仍失败则清空旧确�
     recoveredPresenter.getState().linklySetup?.terminals.kind,
     "ready",
   );
+  assert.equal(recoveredPresenter.getState().linklySetup?.health.kind, "ready");
+  assert.equal(
+    recoveredSetup.healthSelections.at(-1)?.selectedTerminalId,
+    "terminal-2",
+  );
+  assert.equal(recoveredPresenter.getState().linklySetup?.logonTest.status, "idle");
 
   const failedPort = new FakeSettingsPort();
   const failedSetup = new FakeLinklySetupControlPort();
@@ -1731,6 +2104,49 @@ test("Linkly 切换结果不明时重读权威选择；仍失败则清空旧确�
     failedPresenter.getState().statusCode,
     "linkly-terminal-switch-failed",
   );
+});
+
+test("Linkly 切换失败保留已确认原因并要求刷新核对权威选择", async () => {
+  const cases = [
+    [
+      "LINKLY_TERMINAL_SELECTION_BLOCKED",
+      "linkly-terminal-selection-blocked",
+    ],
+    [
+      "LINKLY_TERMINAL_ASSIGNMENT_CONFLICT",
+      "linkly-terminal-assignment-conflict",
+    ],
+    ["LINKLY_TERMINAL_SESSION_ACTIVE", "linkly-terminal-session-active"],
+    [
+      "LINKLY_SELECTION_REVISION_CONFLICT",
+      "linkly-terminal-revision-conflict",
+    ],
+    [
+      "LINKLY_TERMINAL_REVISION_CONFLICT",
+      "linkly-terminal-revision-conflict",
+    ],
+  ] as const;
+
+  for (const [errorCode, expectedStatus] of cases) {
+    const port = new FakeSettingsPort();
+    const setup = new FakeLinklySetupControlPort();
+    port.linklySetup = setup;
+    const presenter = createPresenter(port);
+    await presenter.load();
+    setup.selectTerminal = async () => {
+      throw Object.assign(new Error("selection rejected"), { code: errorCode });
+    };
+
+    await presenter.selectLinklyTerminal("terminal-2");
+
+    assert.equal(presenter.getState().statusCode, expectedStatus);
+    assert.equal(
+      presenter.getState().linklySetup?.terminals.value?.selectedTerminalId,
+      "terminal-1",
+    );
+    assert.equal(presenter.getState().linklySetup?.health.kind, "ready");
+    assert.equal(presenter.getState().linklySetup?.logonTest.status, "idle");
+  }
 });
 
 test("Linkly 首次配对只需门店凭据；刷新 ready 后 logon 才可保存，未变更保存保持 no-op", async () => {
@@ -1833,7 +2249,7 @@ test("Linkly 配对是危险操作；成功清码刷新，unknown 只刷新且�
   assert.equal(
     setup.readEnvironments.filter((environment) => environment === "Production")
       .length,
-    3,
+    4,
   );
 });
 
@@ -2570,6 +2986,7 @@ class FakeSettingsPort implements SettingsControlPort {
     | null
     | undefined
   )[] = [];
+  public paymentTestHold: Promise<void> | null = null;
   public readonly savedPrinters: ReceiptPrinterSettings[] = [];
   public readonly printerEvents: string[] = [];
   public printerDevices: readonly Readonly<{
@@ -2745,6 +3162,17 @@ class FakeSettingsPort implements SettingsControlPort {
       this.savedPayments.push(action.input);
       return { status: "completed" as const, kind: action.kind };
     }
+    if (action.kind === "assign-linkly-terminal") {
+      if (!this.linklySetup?.assignTerminal) throw new Error("missing fake Linkly setup");
+      return {
+        status: "completed" as const,
+        kind: action.kind,
+        terminals: await this.linklySetup.assignTerminal(
+          action.environment,
+          action.input,
+        ),
+      };
+    }
     this.restartCalls += 1;
     return { status: "completed" as const, kind: action.kind };
   }
@@ -2768,6 +3196,7 @@ class FakeSettingsPort implements SettingsControlPort {
   ): Promise<void> {
     this.paymentTests.push({ provider, input });
     this.paymentTerminalSelections.push(terminals);
+    if (this.paymentTestHold) await this.paymentTestHold;
   }
 
   public async savePrinterSettings(
@@ -2856,6 +3285,7 @@ class FakeSettingsPort implements SettingsControlPort {
 }
 
 class FakeLinklySetupControlPort implements SettingsLinklySetupControlPort {
+  public readonly supportsTerminalAssignment = true;
   public health = linklyHealth("Production", true);
   public terminals = linklyTerminals("Production", "terminal-1", 2);
   public readHandlers: Partial<
@@ -2876,6 +3306,10 @@ class FakeLinklySetupControlPort implements SettingsLinklySetupControlPort {
     terminalId: string;
     expectedRevision: number;
   }>[] = [];
+  public readonly connectionTestCalls: string[] = [];
+  public readonly assignmentCalls: SettingsLinklyTerminalAssignmentInput[] = [];
+  public connectionTestHold: Promise<void> | null = null;
+  public connectionTestStatus: SettingsLinklyConnectionTestResult["status"] = "connected";
 
   public async readState(
     environment: "Sandbox" | "Production",
@@ -2908,6 +3342,48 @@ class FakeLinklySetupControlPort implements SettingsLinklySetupControlPort {
       environment,
       selectedTerminalId: terminalId,
       selectionRevision: expectedRevision + 1,
+    });
+    return this.terminals;
+  }
+
+  public async testTerminalConnection(
+    environment: "Sandbox" | "Production",
+    terminal: Readonly<{ terminalId: string; terminalVersion: string; assignedDeviceCode: string | null; assignmentRevision: number }>,
+  ): Promise<SettingsLinklyConnectionTestResult> {
+    this.connectionTestCalls.push(terminal.terminalId);
+    if (this.connectionTestHold) await this.connectionTestHold;
+    return {
+      terminalId: terminal.terminalId,
+      environment,
+      terminalVersion: terminal.terminalVersion,
+      assignedDeviceCode: terminal.assignedDeviceCode,
+      assignmentRevision: terminal.assignmentRevision,
+      succeeded: this.connectionTestStatus === "connected",
+      status: this.connectionTestStatus,
+      checkedAt: "2026-09-10T02:00:00Z",
+      message: "Connected",
+      responseCode: null,
+    };
+  }
+
+  public async assignTerminal(
+    environment: "Sandbox" | "Production",
+    input: SettingsLinklyTerminalAssignmentInput,
+  ): Promise<SettingsLinklyTerminalSelectionSnapshot> {
+    this.assignmentCalls.push(input);
+    this.terminals = Object.freeze({
+      ...this.terminals,
+      environment,
+      terminals: Object.freeze(this.terminals.terminals.map((terminal) =>
+        terminal.terminalId === input.terminalId
+          ? Object.freeze({
+              ...terminal,
+              assignedDeviceCode: input.targetDeviceCode,
+              assignmentRevision: (terminal.assignmentRevision ?? 0) + 1,
+              terminalVersion: `${terminal.terminalVersion}-next`,
+            })
+          : terminal,
+      )),
     });
     return this.terminals;
   }
@@ -2951,6 +3427,9 @@ function linklyTerminals(
         isReady: true,
         lastHealthStatus: "ready",
         lastHealthAt: null,
+        assignedDeviceCode: "POS-01",
+        assignmentRevision: 2,
+        terminalVersion: "v2-1",
       }),
       Object.freeze({
         terminalId: "terminal-2",
@@ -2961,8 +3440,28 @@ function linklyTerminals(
         isReady: true,
         lastHealthStatus: "ready",
         lastHealthAt: null,
+        assignedDeviceCode: null,
+        assignmentRevision: 0,
+        terminalVersion: "v2-2",
       }),
     ]),
+    devices: Object.freeze([
+      Object.freeze({
+        deviceCode: "POS-01",
+        deviceSystem: "iPadOS",
+        isAvailable: true,
+        selectedTerminalId: "terminal-1",
+        selectionRevision,
+      }),
+      Object.freeze({
+        deviceCode: "POS-02",
+        deviceSystem: "iPadOS",
+        isAvailable: true,
+        selectedTerminalId: null,
+        selectionRevision: 0,
+      }),
+    ]),
+    lineManagementSupported: false,
   });
 }
 

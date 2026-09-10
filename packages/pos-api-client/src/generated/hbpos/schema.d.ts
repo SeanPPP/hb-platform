@@ -2637,6 +2637,162 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/linkly/cloud-backend/terminals/{terminalId}/connection-test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    terminalId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["LinklyCloudTerminalConnectionTestRequest"];
+                    "text/json": components["schemas"]["LinklyCloudTerminalConnectionTestRequest"];
+                    "application/*+json": components["schemas"]["LinklyCloudTerminalConnectionTestRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["LinklyCloudTerminalConnectionTestResponseApiResult"];
+                        "application/json": components["schemas"]["LinklyCloudTerminalConnectionTestResponseApiResult"];
+                        "text/json": components["schemas"]["LinklyCloudTerminalConnectionTestResponseApiResult"];
+                    };
+                };
+                /** @description Bad Request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["LinklyCloudTerminalConnectionTestResponseApiResult"];
+                        "application/json": components["schemas"]["LinklyCloudTerminalConnectionTestResponseApiResult"];
+                        "text/json": components["schemas"]["LinklyCloudTerminalConnectionTestResponseApiResult"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["LinklyCloudTerminalConnectionTestResponseApiResult"];
+                        "application/json": components["schemas"]["LinklyCloudTerminalConnectionTestResponseApiResult"];
+                        "text/json": components["schemas"]["LinklyCloudTerminalConnectionTestResponseApiResult"];
+                    };
+                };
+                /** @description Conflict */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["LinklyCloudTerminalConnectionTestResponseApiResult"];
+                        "application/json": components["schemas"]["LinklyCloudTerminalConnectionTestResponseApiResult"];
+                        "text/json": components["schemas"]["LinklyCloudTerminalConnectionTestResponseApiResult"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/linkly/cloud-backend/terminals/{terminalId}/assignment": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    terminalId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["LinklyCloudTerminalAssignmentRequest"];
+                    "text/json": components["schemas"]["LinklyCloudTerminalAssignmentRequest"];
+                    "application/*+json": components["schemas"]["LinklyCloudTerminalAssignmentRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["LinklyCloudTerminalListResponseApiResult"];
+                        "application/json": components["schemas"]["LinklyCloudTerminalListResponseApiResult"];
+                        "text/json": components["schemas"]["LinklyCloudTerminalListResponseApiResult"];
+                    };
+                };
+                /** @description Bad Request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["LinklyCloudTerminalListResponseApiResult"];
+                        "application/json": components["schemas"]["LinklyCloudTerminalListResponseApiResult"];
+                        "text/json": components["schemas"]["LinklyCloudTerminalListResponseApiResult"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["LinklyCloudTerminalListResponseApiResult"];
+                        "application/json": components["schemas"]["LinklyCloudTerminalListResponseApiResult"];
+                        "text/json": components["schemas"]["LinklyCloudTerminalListResponseApiResult"];
+                    };
+                };
+                /** @description Conflict */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["LinklyCloudTerminalListResponseApiResult"];
+                        "application/json": components["schemas"]["LinklyCloudTerminalListResponseApiResult"];
+                        "text/json": components["schemas"]["LinklyCloudTerminalListResponseApiResult"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/linkly/cloud-backend/pair": {
         parameters: {
             query?: never;
@@ -6067,6 +6223,15 @@ export interface components {
             errorCode?: string | null;
             message?: string | null;
         };
+        LinklyCloudAssignableDevice: {
+            deviceCode?: string | null;
+            deviceSystem?: string | null;
+            isAvailable?: boolean;
+            /** Format: uuid */
+            selectedTerminalId?: string | null;
+            /** Format: int64 */
+            selectionRevision?: number;
+        };
         LinklyCloudBackendAcknowledgeRequest: {
             environment?: string | null;
         };
@@ -6217,6 +6382,7 @@ export interface components {
             responseTime?: string | null;
             message?: string | null;
             readonly txnRef?: string | null;
+            loggedOn?: boolean | null;
         };
         LinklyCloudBackendStatusTestResponseApiResult: {
             success?: boolean;
@@ -6290,6 +6456,46 @@ export interface components {
             errorCode?: string | null;
             message?: string | null;
         };
+        LinklyCloudTerminalAssignmentRequest: {
+            environment?: string | null;
+            expectedTerminalVersion?: string | null;
+            expectedAssignedDeviceCode?: string | null;
+            /** Format: int64 */
+            expectedAssignmentRevision?: number;
+            targetDeviceCode?: string | null;
+            /** Format: uuid */
+            expectedTargetTerminalId?: string | null;
+            /** Format: int64 */
+            expectedTargetSelectionRevision?: number;
+        };
+        LinklyCloudTerminalConnectionTestRequest: {
+            environment?: string | null;
+            expectedTerminalVersion?: string | null;
+            expectedAssignedDeviceCode?: string | null;
+            /** Format: int64 */
+            expectedAssignmentRevision?: number;
+        };
+        LinklyCloudTerminalConnectionTestResponse: {
+            /** Format: uuid */
+            terminalId?: string;
+            environment?: string | null;
+            terminalVersion?: string | null;
+            assignedDeviceCode?: string | null;
+            /** Format: int64 */
+            assignmentRevision?: number;
+            succeeded?: boolean;
+            status?: string | null;
+            /** Format: date-time */
+            checkedAt?: string;
+            message?: string | null;
+            responseCode?: string | null;
+        };
+        LinklyCloudTerminalConnectionTestResponseApiResult: {
+            success?: boolean;
+            data?: components["schemas"]["LinklyCloudTerminalConnectionTestResponse"];
+            errorCode?: string | null;
+            message?: string | null;
+        };
         LinklyCloudTerminalListResponse: {
             environment?: string | null;
             /** Format: uuid */
@@ -6298,6 +6504,7 @@ export interface components {
             selectionRevision?: number | null;
             terminals?: components["schemas"]["LinklyCloudTerminalSummary"][] | null;
             mode?: string | null;
+            devices?: components["schemas"]["LinklyCloudAssignableDevice"][] | null;
         };
         LinklyCloudTerminalListResponseApiResult: {
             success?: boolean;
@@ -6352,6 +6559,10 @@ export interface components {
             lastHealthStatus?: string | null;
             /** Format: date-time */
             lastHealthAt?: string | null;
+            assignedDeviceCode?: string | null;
+            /** Format: int64 */
+            assignmentRevision?: number;
+            terminalVersion?: string | null;
         };
         LinklySettlementSyncRequest: {
             /** Format: int32 */

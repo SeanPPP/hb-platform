@@ -2872,6 +2872,22 @@ namespace Hbpos.Api.Tests;
         Assert.Equal(("Sandbox", "S01", "POS-01"), Assert.Single(tokenProvider.Calls));
     }
 
+    [Theory]
+    [InlineData("true", true)]
+    [InlineData("false", false)]
+    [InlineData("null", null)]
+    [InlineData("\"true\"", null)]
+    public async Task Status_test_exposes_only_explicit_boolean_logged_on(string value, bool? expected)
+    {
+        var transport = new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.OK,
+            "{\"Response\":{\"Success\":true,\"ResponseCode\":\"T0\",\"LoggedOn\":" + value + "}}");
+        var response = await CreateService(transport, new CapturingLinklyCloudBackendTokenProvider())
+            .RunStatusTestAsync("S01", "POS-01", "Sandbox", CancellationToken.None);
+        using var json = JsonDocument.Parse(JsonSerializer.Serialize(response));
+        Assert.True(json.RootElement.TryGetProperty("loggedOn", out var actual));
+        Assert.Equal(expected, actual.ValueKind == JsonValueKind.Null ? (bool?)null : actual.GetBoolean());
+    }
+
     [Fact]
     public async Task RunStatusTestAsync_returns_success_for_terminal_status_ok_response()
     {

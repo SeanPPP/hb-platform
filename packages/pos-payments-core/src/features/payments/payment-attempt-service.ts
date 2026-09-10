@@ -8,8 +8,18 @@ import { canTransitionPaymentAttempt } from "@hb/pos-domain/core/contracts/state
 
 export type PaymentAttemptLedgerPort = Pick<
   PaymentAttemptRepositoryPort,
-  "insertIfUnblocked" | "compareAndUpdate" | "get" | "findBlocking"
+  | "insertIfUnblocked"
+  | "compareAndUpdate"
+  | "get"
+  | "findBlocking"
+  | "verifyProviderEnvironment"
 >;
+
+/** 旧 Linkly attempt 只能由 provider 依据原 session/UID 强匹配出环境。 */
+export type LegacyPaymentRecoveryEnvironmentResolver = (
+  attempt: PaymentAttempt,
+  control?: PaymentRecoveryControl,
+) => Promise<string | null>;
 
 export interface PersistedOrderDraftPort {
   /** 不存在持久化订单草稿时必须抛错；不得在此方法内临时创建草稿。 */
@@ -120,6 +130,8 @@ export type PaymentAttemptServiceOptions = Readonly<{
   createAttemptId(): string;
   createIdempotencyKey(): string;
   nowIso(): string;
+  /** NULL environment 的旧 Linkly 未决交易只读核验入口；不得从当前配置猜环境。 */
+  legacyPaymentRecoveryEnvironment?: LegacyPaymentRecoveryEnvironmentResolver;
   /**
    * 只能由生产组合根注入受保护 capacity vault；route/UI/startAttempt 不得提供 provider 引用。
    * 该 hook 仅用于 Square/Linkly 原卡退款，Voucher refund 不会调用。
@@ -341,9 +353,24 @@ export class PaymentAttemptService {
       return boundAttempt;
     }
 
+    // 已有未决交易必须优先恢复，不能被新 provider 的环境或在线配置错误掩盖。
+    // 此处仅提前返回明确的阻塞事实；插入时仍由仓储事务执行最终防重检查。
+    const existingBlocking = await this.options.ledger.findBlocking(input.orderGuid);
+    if (existingBlocking) {
+      if (existingBlocking.attemptId !== binding.attemptId) {
+        throw new PaymentAttemptBlockedError(existingBlocking);
+      }
+      assertBoundAttemptIdentity(existingBlocking, binding, input);
+      return existingBlocking;
+    }
+
     // 已知离线时保留 action 绑定，但不创建会阻塞订单的 Created attempt。
     await this.assertOnline();
-    const emptyCreated = attemptFromBinding(binding, input);
+    const emptyCreated = attemptFromBinding(
+      binding,
+      input,
+      this.providerEnvironmentForNewAttempt(input.provider),
+    );
     // 受保护原支付引用只能在 action/在线门禁完成后、首次 Created 落库前注入。
     const created = await this.seedTrustedRefundReferences(
       emptyCreated,
@@ -384,6 +411,27 @@ export class PaymentAttemptService {
     return boundAttempt;
   }
 
+  /**
+   * Linkly 的 ACK 必须回到首次交易所用环境。配置切换后不能从当前设置猜测
+   * sandbox/prod；所以在 Created 落库前冻结，缺失即阻止新的 Linkly 交易。
+   */
+  private providerEnvironmentForNewAttempt(
+    provider: PaymentProvider,
+  ): string | null {
+    if (provider !== "linkly-cloud") return null;
+    const candidate = this.options.providers.get(provider) as OnlinePaymentPort & {
+      readonly providerEnvironment?: unknown;
+      readonly environment?: unknown;
+    };
+    const value = candidate.providerEnvironment ?? candidate.environment;
+    if (typeof value !== "string" || !value.trim()) {
+      throw new PaymentAttemptStateError(
+        "Linkly payment environment must be frozen before submission.",
+      );
+    }
+    return value.trim();
+  }
+
   private async recoverAttemptOnce(
     attempt: PaymentAttempt,
     control?: PaymentRecoveryControl,
@@ -401,7 +449,88 @@ export class PaymentAttemptService {
       );
     }
     await this.options.drafts.assertPersisted(attempt.orderGuid);
-    return this.resumeBoundAttempt(attempt, control);
+    let recoverable = attempt;
+    if (
+      attempt.provider === "linkly-cloud" &&
+      !validProviderEnvironment(attempt.providerEnvironment)
+    ) {
+      if (
+        control &&
+        (control.signal.aborted || control.deadlineAtMs <= Date.now())
+      ) {
+        // 受控查询尚未开始时，停止信号只停止本次动作；不能因缺失旧环境
+        // 而把原 Pending/Submitted 事实改写成 Unknown。
+        return outcome(attempt);
+      }
+      // Created 没有可证明的原会话，不能借当前配置重发 create；Submitted/
+      // Pending/Unknown 也必须先用原 session/UID/金额/类型冻结旧环境。
+      if (attempt.state === "Created") {
+        throw new PaymentAttemptStateError(
+          "LINKLY_RECOVERY_ENVIRONMENT_REQUIRED",
+        );
+      }
+      await this.assertOnline();
+      const frozen = await this.freezeLegacyRecoveryEnvironment(attempt, control);
+      if (recoveryControlStopped(control)) return outcome(attempt);
+      if (!frozen) {
+        return this.persistUnknown(
+          attempt,
+          "LINKLY_RECOVERY_ENVIRONMENT_REQUIRED",
+        );
+      }
+      recoverable = frozen;
+    }
+    return this.resumeBoundAttempt(recoverable, control);
+  }
+
+  private async freezeLegacyRecoveryEnvironment(
+    attempt: PaymentAttempt,
+    control?: PaymentRecoveryControl,
+  ): Promise<PaymentAttempt | null> {
+    const resolveEnvironment = this.options.legacyPaymentRecoveryEnvironment;
+    const verifyEnvironment = this.options.ledger.verifyProviderEnvironment;
+    if (
+      !resolveEnvironment ||
+      !verifyEnvironment ||
+      !attempt.references.sessionId
+    ) {
+      return null;
+    }
+    let environment: string | null;
+    try {
+      environment = await resolveEnvironment(attempt, control);
+    } catch {
+      return null;
+    }
+    if (recoveryControlStopped(control)) return null;
+    if (!validProviderEnvironment(environment)) return null;
+    try {
+      if (recoveryControlStopped(control)) return null;
+      if (!await verifyEnvironment.call(this.options.ledger, attempt, environment)) {
+        return null;
+      }
+      const refreshed = await this.options.ledger.get(attempt.attemptId);
+      if (recoveryControlStopped(control)) return null;
+      if (
+        !refreshed ||
+        refreshed.attemptId !== attempt.attemptId ||
+        refreshed.idempotencyKey !== attempt.idempotencyKey ||
+        refreshed.orderGuid !== attempt.orderGuid ||
+        refreshed.provider !== attempt.provider ||
+        refreshed.operation !== attempt.operation ||
+        refreshed.amount.currency !== attempt.amount.currency ||
+        refreshed.amount.cents !== attempt.amount.cents ||
+        refreshed.references.sessionId !== attempt.references.sessionId ||
+        refreshed.references.txnRef !== attempt.references.txnRef ||
+        refreshed.providerEnvironment?.trim() !== environment.trim() ||
+        !validProviderEnvironment(refreshed.providerEnvironment)
+      ) {
+        return null;
+      }
+      return refreshed;
+    } catch {
+      return null;
+    }
   }
 
   private async bindAction(
@@ -1138,6 +1267,7 @@ function assertBindingMatchesRequest(
 function attemptFromBinding(
   binding: PaymentActionBinding,
   input: StartPaymentAttemptInput,
+  providerEnvironment: string | null,
 ): PaymentAttempt {
   return {
     attemptId: binding.attemptId,
@@ -1151,6 +1281,8 @@ function attemptFromBinding(
     createdAtIso: binding.createdAtIso,
     updatedAtIso: binding.createdAtIso,
     lastErrorCode: null,
+    providerEnvironment,
+    providerAcknowledgedAtIso: null,
     receiptText: null,
     responseCode: null,
   };
@@ -1235,6 +1367,17 @@ function normalizedProviderCode(value: unknown): string | null {
   return /^[A-Z0-9][A-Z0-9_.:-]{0,63}$/.test(normalized) ? normalized : null;
 }
 
+function validProviderEnvironment(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function recoveryControlStopped(
+  control: PaymentRecoveryControl | undefined,
+): boolean {
+  return control !== undefined &&
+    (control.signal.aborted || control.deadlineAtMs <= Date.now());
+}
+
 function isNeutralControlledRecoveryUnknown(
   providerResult: PaymentProviderResult,
   control: PaymentRecoveryControl | undefined,
@@ -1242,12 +1385,15 @@ function isNeutralControlledRecoveryUnknown(
   if (!control || providerResult.state !== "Unknown") return false;
 
   const code = normalizedProviderCode(providerResult.responseCode);
-  // 中文注释：只有 Square 受控恢复的已知中断/截止短码才中性收口；其他 Unknown
-  // 仍须按原逻辑持久化，避免把网络歧义或证据冲突误认为页面卸载。
+  // 中文注释：受控恢复的截止或 abort 只代表查询停止，不代表终端交易变成 Unknown。
+  // Linkly 与 Square 均必须保留原 Pending/Submitted 状态；其他 Unknown 仍按原逻辑持久化。
   return (
     code === "SQUARE_RECOVERY_DEADLINE_EXCEEDED" ||
+    code === "LINKLY_RECOVERY_DEADLINE_EXCEEDED" ||
     (control.signal.aborted &&
-      (code === "REQUEST_ABORTED" || code === "SQUARE_RECOVERY_ABORTED"))
+      (code === "REQUEST_ABORTED" ||
+        code === "SQUARE_RECOVERY_ABORTED" ||
+        code === "LINKLY_RECOVERY_ABORTED"))
   );
 }
 

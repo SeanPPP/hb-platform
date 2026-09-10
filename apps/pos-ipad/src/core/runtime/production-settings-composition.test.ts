@@ -270,10 +270,14 @@ test("生产组合隔离 Linkly health 读取与配对写入，并只经危险�
     "terminals:Production:terminal-1",
     "health:Production:unpaired",
     "select:Production:terminal-2:1",
+    "terminals:Production:terminal-2",
+    "health:Production:unpaired",
     "pair:Production:terminal-2:123456",
     "terminals:Production:terminal-2",
     "health:Production:paired",
     "logon:Production:terminal-2:2",
+    "terminals:Production:terminal-2",
+    "health:Production:paired",
   ]);
   assert.equal(presenter.getState().statusCode, "payment-test-passed");
   assert.equal(presenter.getState().linklySetup?.health.value?.isReady, true);
@@ -354,7 +358,10 @@ test("生产 Linkly 终端切换遇到未决支付时保持零 PUT", async () =>
   await presenter.selectLinklyTerminal("terminal-2");
 
   assert.equal(selectCalls, 0);
-  assert.equal(presenter.getState().statusCode, "linkly-terminal-switch-failed");
+  assert.equal(
+    presenter.getState().statusCode,
+    "linkly-terminal-selection-blocked",
+  );
 });
 
 test("生产组合每次创建 Square 配对码只生成一个幂等键并调用底层 API 一次", async () => {

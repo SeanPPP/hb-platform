@@ -1291,6 +1291,109 @@ test("分期生产服务使用独立支付账本和第二套 provider 上下文�
   presenter.destroy();
 });
 
+test("分期生产组合以服务端 scoped Linkly DTO 冻结旧 pending 与 final attempt 的环境", async () => {
+  for (const kind of ["pending", "final"] as const) {
+    const uid = kind === "pending"
+      ? "00112233445566778899aabbccddeeff"
+      : "ffeeddccbbaa99887766554433221100";
+    const sessionId = `legacy-${kind}-session`;
+    const calls = { list: 0, find: 0, reconcile: 0, freeze: 0, financial: 0, acknowledgement: 0 };
+    let frozen = false;
+    const attempt = { attemptId: `legacy-${kind}`, provider: "linkly-cloud" };
+    const provider = {
+      provider: "linkly-cloud" as const,
+      async submit(): Promise<never> {
+        calls.financial += 1;
+        return assert.fail("legacy discovery must not submit a financial operation");
+      },
+      async recover(): Promise<never> {
+        calls.financial += 1;
+        return assert.fail("legacy discovery must not recover a financial operation");
+      },
+      async cancel(): Promise<never> {
+        calls.financial += 1;
+        return assert.fail("legacy discovery must not cancel a financial operation");
+      },
+      async refund(): Promise<never> {
+        calls.financial += 1;
+        return assert.fail("legacy discovery must not refund a financial operation");
+      },
+      async acknowledge() {
+        calls.acknowledgement += 1;
+        return { acknowledged: true };
+      },
+      async listUnacknowledgedSessions() {
+        calls.list += 1;
+        return [{ sessionId, environment: "production", idempotencyKey: uid }];
+      },
+      async reconcileLegacy() {
+        // 回归真实 provider 实例绑定；脱离实例调用会在此失去 this。
+        assert.equal(this, provider);
+        calls.reconcile += 1;
+        return { environment: "production" };
+      },
+      async recoverWithControl() {
+        calls.financial += 1;
+        return assert.fail("legacy discovery must not use controlled financial recovery");
+      },
+    };
+    const database = databaseFor([]);
+    Object.assign(database, {
+      installmentSnapshots: () => ({ async upsertForStore() {}, async listForStore() { return []; } }),
+      installmentActions: () => ({
+        async loadBlocking() {
+          return kind === "pending" && frozen ? { actionId: "pending-recovery" } : null;
+        },
+        async loadLifecycleBlocking() { return null; },
+        async loadProviderAcknowledgementPending() {
+          return kind === "final" && frozen ? { actionId: "final-ack" } : null;
+        },
+      }),
+      installmentPaymentPersistence: () => ({
+        providerAttempts: {
+          async findLegacyLinklyAttemptForSession(scope: unknown, foundSession: string, foundUid: string) {
+            calls.find += 1;
+            assert.deepEqual(scope, { storeCode: "S001", deviceCode: "IPAD-1", appVersion: "0.1.0-test", instanceId: "test-instance" });
+            return foundSession === sessionId && foundUid === uid ? attempt : null;
+          },
+          async verifyProviderEnvironment(foundAttempt: unknown, environment: string) {
+            assert.equal(foundAttempt, attempt);
+            assert.equal(environment, "production");
+            calls.freeze += 1;
+            frozen = true;
+            return attempt;
+          },
+        },
+        voucherIntents: {}, voucherProtectedTokens: {},
+        voucherContextForAttempt: async () => { throw new Error("not called"); },
+        voucherMaterials: {}, refundProvenance: {},
+      }),
+    });
+    const availability = {
+      getAvailability(providerName: "square" | "linkly-cloud" | "voucher") {
+        return { provider: providerName, available: providerName === "linkly-cloud", blocker: null };
+      },
+      listAvailability() { return []; },
+    };
+    const bootstrap = {
+      providers: {
+        ...availability,
+        get(providerName: string) { if (providerName === "linkly-cloud") return provider; throw new Error("unexpected provider"); },
+        listAvailableProviders() { return ["linkly-cloud"]; },
+        getVoucherApprovedPurchaseReleasePort() { return { status: "unavailable", reason: "PAYMENT_PROVIDER_UNKNOWN" as const }; },
+      },
+      configurationAvailability: availability,
+      bindVoucherContextProvider() {},
+      createLinklyOperator() { return null; },
+    } as PaymentProviderRuntimeBootstrap;
+    const services = createTestComposition(database, { cashierPermissions: [INSTALLMENTS_VIEW_PERMISSION], installmentBootstrap: bootstrap });
+    await services.initialize();
+    await services.cashierSession.signIn("cashier");
+    assert.equal((await services.appUpdateSafety.getSnapshot()).hasUnresolvedPayment, true, kind);
+    assert.deepEqual(calls, { list: 1, find: 1, reconcile: 1, freeze: 1, financial: 0, acknowledgement: 0 }, kind);
+  }
+});
+
 test("分期生产组合注入现金原子 finalizer 并在渲染前上报四阶段指标", async () => {
   const installmentGuid = "10000000-0000-4000-8000-000000000001";
   let persistedAction: PersistedInstallmentAction | null = null;
@@ -5287,6 +5390,10 @@ function databaseFor(
           ? ({ draftId: "payment-draft-recovery" } as never)
           : null;
       },
+      // 正常组合 fake 明确表示没有 Linkly ACK/legacy 记录；专项故障用例仍由上面的抛错覆盖。
+      async findPendingLinklyAcknowledgement() { return null; },
+      async hasLegacyLinklyRecovery() { return false; },
+      async findLegacyLinklyAttemptForSession() { return null; },
     }),
     voucherTenderReversals: () => ({
       async findBlocking() {
