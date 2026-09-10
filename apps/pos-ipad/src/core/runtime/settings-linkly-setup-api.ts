@@ -524,12 +524,11 @@ function assignmentConfirmed(
       return false;
     }
   } else if (
-    (terminal.assignmentRevision ?? 0) <= input.assignmentRevision ||
     terminal.terminalVersion === input.terminalVersion ||
     terminal.lastHealthStatus !== null ||
     terminal.lastHealthAt !== null
   ) {
-    // 实际换线必须让来源线路版本前进并清空旧健康结果。
+    // 实际换线必须让来源线路版本变化并清空旧健康结果。
     return false;
   }
   const target = input.targetDeviceCode === null
@@ -537,15 +536,25 @@ function assignmentConfirmed(
     : snapshot.devices?.find(
         (device) => device.deviceCode === input.targetDeviceCode,
       );
-  if (
-    input.targetDeviceCode !== null &&
-    (!target ||
-      target.selectedTerminalId !== terminalId ||
-      (noAssignmentChange
-        ? target.selectionRevision !== input.expectedTargetSelectionRevision
-        : target.selectionRevision <= input.expectedTargetSelectionRevision))
-  ) {
-    return false;
+  if (input.targetDeviceCode === null) {
+    // 服务端删除来源 selection 后，无 owner 的线路 revision 固定回到 0。
+    if (terminal.assignmentRevision !== 0) return false;
+  } else {
+    if (!target || target.selectedTerminalId !== terminalId) return false;
+    if (noAssignmentChange) {
+      if (target.selectionRevision !== input.expectedTargetSelectionRevision) {
+        return false;
+      }
+    } else if (
+      terminal.assignmentRevision !== target.selectionRevision ||
+      (input.expectedTargetTerminalId === null
+        ? target.selectionRevision <= 0
+        : target.selectionRevision !==
+          input.expectedTargetSelectionRevision + 1)
+    ) {
+      // 线路 revision 来自当前 owner 的 selection；跨 owner 时不可与旧来源 revision 比较。
+      return false;
+    }
   }
   if (
     !noAssignmentChange &&
@@ -558,6 +567,7 @@ function assignmentConfirmed(
     if (
       !replaced ||
       replaced.assignedDeviceCode !== null ||
+      replaced.assignmentRevision !== 0 ||
       replaced.lastHealthStatus !== null ||
       replaced.lastHealthAt !== null
     ) return false;
@@ -569,7 +579,12 @@ function assignmentConfirmed(
     const previousOwner = snapshot.devices?.find(
       (device) => device.deviceCode === input.assignedDeviceCode,
     );
-    if (previousOwner?.selectedTerminalId === terminalId) return false;
+    // 注册仍存在时必须看到 selection 已删除后的 null/0；历史 owner 已被注销时可不在目录中。
+    if (
+      previousOwner &&
+      (previousOwner.selectedTerminalId !== null ||
+        previousOwner.selectionRevision !== 0)
+    ) return false;
   }
   return true;
 }

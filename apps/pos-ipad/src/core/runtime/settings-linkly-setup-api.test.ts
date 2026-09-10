@@ -766,7 +766,7 @@ test("Linkly 线路分配 PUT 原样发送目标设备旧选择并直接采用�
           isBusy: false,
           isReady: true,
           assignedDeviceCode: "POS-02",
-          assignmentRevision: 9,
+          assignmentRevision: 11,
           terminalVersion: "v9",
         },
         {
@@ -777,7 +777,7 @@ test("Linkly 线路分配 PUT 原样发送目标设备旧选择并直接采用�
           isBusy: false,
           isReady: true,
           assignedDeviceCode: null,
-          assignmentRevision: 3,
+          assignmentRevision: 0,
           terminalVersion: "v3-next",
         },
       ],
@@ -926,7 +926,7 @@ test("Linkly 实际换线要求来源与被替换线路清除旧健康结果", a
           lastHealthStatus: null,
           lastHealthAt: null,
           assignedDeviceCode: null,
-          assignmentRevision: 2,
+          assignmentRevision: 0,
           terminalVersion: "v2-next",
         },
       ],
@@ -1031,6 +1031,142 @@ test("Linkly 幂等重复分配保留版本、revision 与健康结果", async (
   assert.equal(result.terminals[0]?.lastHealthStatus, "Ready");
 });
 
+test("Linkly 转移按目标 selection revision 确认，不与来源旧 revision 比较", async () => {
+  const result = await new HbposSettingsLinklySetupApi(new QueueTransport([
+    assignmentResponse({
+      sourceAssignedDeviceCode: "TARGET-POS",
+      sourceRevision: 11,
+      targetDeviceCode: "TARGET-POS",
+      targetRevision: 11,
+      includeDisplacedLine: true,
+      includePreviousOwner: true,
+    }),
+  ])).assignTerminal("Production", {
+    terminalId: "source-line",
+    terminalVersion: "source-v1",
+    assignedDeviceCode: "OLD-POS",
+    assignmentRevision: 900_000,
+    targetDeviceCode: "TARGET-POS",
+    expectedTargetTerminalId: "displaced-line",
+    expectedTargetSelectionRevision: 10,
+  }, new AbortController().signal);
+
+  assert.equal(result.terminals[0]?.assignmentRevision, 11);
+  assert.deepEqual(
+    result.devices?.find((device) => device.deviceCode === "OLD-POS"),
+    {
+      deviceCode: "OLD-POS",
+      deviceSystem: "iPadOS",
+      isAvailable: true,
+      selectedTerminalId: null,
+      selectionRevision: 0,
+    },
+  );
+  assert.equal(result.terminals[1]?.assignmentRevision, 0);
+});
+
+test("Linkly 解绑确认来源与仍注册旧 owner 的 revision 均归零", async () => {
+  const result = await new HbposSettingsLinklySetupApi(new QueueTransport([
+    assignmentResponse({
+      sourceAssignedDeviceCode: null,
+      sourceRevision: 0,
+      targetDeviceCode: null,
+      targetRevision: 0,
+      includeDisplacedLine: false,
+      includePreviousOwner: true,
+    }),
+  ])).assignTerminal("Production", {
+    terminalId: "source-line",
+    terminalVersion: "source-v1",
+    assignedDeviceCode: "OLD-POS",
+    assignmentRevision: 900_000,
+    targetDeviceCode: null,
+    expectedTargetTerminalId: null,
+    expectedTargetSelectionRevision: 0,
+  }, new AbortController().signal);
+
+  assert.equal(result.terminals[0]?.assignedDeviceCode, null);
+  assert.equal(result.terminals[0]?.assignmentRevision, 0);
+  assert.equal(result.devices?.[0]?.selectedTerminalId, null);
+  assert.equal(result.devices?.[0]?.selectionRevision, 0);
+});
+
+test("Linkly 新目标无旧 selection 时接受低于来源旧 revision 的正 revision", async () => {
+  const result = await new HbposSettingsLinklySetupApi(new QueueTransport([
+    assignmentResponse({
+      sourceAssignedDeviceCode: "NEW-POS",
+      sourceRevision: 7,
+      targetDeviceCode: "NEW-POS",
+      targetRevision: 7,
+      includeDisplacedLine: false,
+      // 历史 owner 的 registration 已删除时不会出现在设备目录中。
+      includePreviousOwner: false,
+    }),
+  ])).assignTerminal("Production", {
+    terminalId: "source-line",
+    terminalVersion: "source-v1",
+    assignedDeviceCode: "OLD-POS",
+    assignmentRevision: 900_000,
+    targetDeviceCode: "NEW-POS",
+    expectedTargetTerminalId: null,
+    expectedTargetSelectionRevision: 0,
+  }, new AbortController().signal);
+
+  assert.equal(result.terminals[0]?.assignmentRevision, 7);
+});
+
+test("Linkly 转移后来源与目标 revision 不一致时拒绝权威回包", async () => {
+  const subject = new HbposSettingsLinklySetupApi(new QueueTransport([
+    assignmentResponse({
+      sourceAssignedDeviceCode: "TARGET-POS",
+      sourceRevision: 12,
+      targetDeviceCode: "TARGET-POS",
+      targetRevision: 11,
+      includeDisplacedLine: true,
+      includePreviousOwner: true,
+    }),
+  ]));
+
+  await assert.rejects(
+    () => subject.assignTerminal("Production", {
+      terminalId: "source-line",
+      terminalVersion: "source-v1",
+      assignedDeviceCode: "OLD-POS",
+      assignmentRevision: 900_000,
+      targetDeviceCode: "TARGET-POS",
+      expectedTargetTerminalId: "displaced-line",
+      expectedTargetSelectionRevision: 10,
+    }, new AbortController().signal),
+    /unconfirmed/u,
+  );
+});
+
+test("Linkly 已有目标 selection 从 revision 10 跳到 12 时拒绝权威回包", async () => {
+  const subject = new HbposSettingsLinklySetupApi(new QueueTransport([
+    assignmentResponse({
+      sourceAssignedDeviceCode: "TARGET-POS",
+      sourceRevision: 12,
+      targetDeviceCode: "TARGET-POS",
+      targetRevision: 12,
+      includeDisplacedLine: true,
+      includePreviousOwner: true,
+    }),
+  ]));
+
+  await assert.rejects(
+    () => subject.assignTerminal("Production", {
+      terminalId: "source-line",
+      terminalVersion: "source-v1",
+      assignedDeviceCode: "OLD-POS",
+      assignmentRevision: 900_000,
+      targetDeviceCode: "TARGET-POS",
+      expectedTargetTerminalId: "displaced-line",
+      expectedTargetSelectionRevision: 10,
+    }, new AbortController().signal),
+    /unconfirmed/u,
+  );
+});
+
 test("Linkly 分配 PUT 结果不明时只 GET 核对，确认已提交后返回快照且不重放", async () => {
   const transport = new QueueTransport([
     new HbposApiError("timeout", { kind: "transport", code: "REQUEST_TIMEOUT" }),
@@ -1061,7 +1197,7 @@ test("Linkly 分配 PUT 结果不明时只 GET 核对，确认已提交后返回
             isBusy: false,
             isReady: true,
             assignedDeviceCode: null,
-            assignmentRevision: 2,
+            assignmentRevision: 0,
             terminalVersion: "v2-next",
           },
         ],
@@ -1120,3 +1256,78 @@ test("Linkly 连接测试无 HTTP 终态时只 GET 核对且不重放 POST", asy
     { method: "GET", url: "/api/v1/linkly/cloud-backend/terminals" },
   ]);
 });
+
+function assignmentResponse(input: Readonly<{
+  sourceAssignedDeviceCode: string | null;
+  sourceRevision: number;
+  targetDeviceCode: string | null;
+  targetRevision: number;
+  includeDisplacedLine: boolean;
+  includePreviousOwner: boolean;
+}>) {
+  const terminals = [{
+    terminalId: "source-line",
+    laneNo: 2,
+    displayName: "Source",
+    pairingState: "Ready",
+    isBusy: false,
+    isReady: true,
+    lastHealthStatus: null,
+    lastHealthAt: null,
+    assignedDeviceCode: input.sourceAssignedDeviceCode,
+    assignmentRevision: input.sourceRevision,
+    terminalVersion: "source-v2",
+  }];
+  if (input.includeDisplacedLine) {
+    terminals.push({
+      terminalId: "displaced-line",
+      laneNo: 1,
+      displayName: "Displaced",
+      pairingState: "Ready",
+      isBusy: false,
+      isReady: true,
+      lastHealthStatus: null,
+      lastHealthAt: null,
+      assignedDeviceCode: null,
+      assignmentRevision: 0,
+      terminalVersion: "displaced-v2",
+    });
+  }
+  const devices: {
+    deviceCode: string;
+    deviceSystem: string;
+    isAvailable: boolean;
+    selectedTerminalId: string | null;
+    selectionRevision: number;
+  }[] = input.targetDeviceCode === null
+    ? []
+    : [{
+        deviceCode: input.targetDeviceCode,
+        deviceSystem: "iPadOS",
+        isAvailable: true,
+        selectedTerminalId: "source-line",
+        selectionRevision: input.targetRevision,
+      }];
+  if (input.includePreviousOwner) {
+    devices.push({
+      deviceCode: "OLD-POS",
+      deviceSystem: "iPadOS",
+      isAvailable: true,
+      selectedTerminalId: null,
+      selectionRevision: 0,
+    });
+  }
+  return {
+    success: true,
+    data: {
+      environment: "Production",
+      mode: "Active",
+      selectedTerminalId: input.targetDeviceCode === null
+        ? null
+        : "source-line",
+      selectionRevision: input.sourceRevision,
+      terminals,
+      devices,
+    },
+  };
+}
