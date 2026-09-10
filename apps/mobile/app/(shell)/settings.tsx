@@ -1,3 +1,5 @@
+import { CashierBarcodeCard } from "@/modules/employee-profile/CashierBarcodeCard";
+import { resolveEmployeeProfileIdentity } from "@/modules/employee-profile/cache-keys";
 import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import {
   AccessibilityInfo,
@@ -367,6 +369,7 @@ export default function Settings() {
   const { t, language } = useAppTranslation(["settings", "common"]);
   const checkMobileOtaUpdate = useMobileOtaManualCheck();
   const user = useAuthStore((state) => state.user);
+  const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
   const logout = useAuthStore((state) => state.logout);
   const loginDeviceAccount = useAuthStore((state) => state.loginDeviceAccount);
   const sessionKind = useAuthStore((state) => state.sessionKind);
@@ -986,6 +989,40 @@ export default function Settings() {
           </Button>
         </View>
 
+        <CompactSection title={t("groups.account")} testID="settings-group-account">
+          <CompactRow
+            icon="account-circle-outline"
+            label={t("account.title")}
+            value={user?.fullName || user?.username || t("common:notLoggedIn")}
+            meta={
+              user?.username ||
+              (showProfileAction ? t("account.guestEmail") : t("account.deviceModeHelper"))
+            }
+            status={t(showProfileAction ? "overview.accountMode" : "overview.deviceMode")}
+            statusTone="neutral"
+            onPress={
+              showProfileAction
+                ? () => {
+                    router.push(
+                      "/(shell)/employee-profile" as unknown as Parameters<typeof router.push>[0]
+                    );
+                  }
+                : undefined
+            }
+            accessibilityLabel={t("account.profileButton")}
+          />
+          {isAuthenticated && user && sessionKind !== "device" ? (
+            <CashierBarcodeCard
+              key={resolveEmployeeProfileIdentity(user)}
+              employeeName={user.fullName || user.username || ""}
+              username={user.username || ""}
+              userIdentity={resolveEmployeeProfileIdentity(user)}
+              compact
+              expandLabel={t("account.expandPersonalCode")}
+            />
+          ) : null}
+        </CompactSection>
+
         <CompactSection
           title={t("groups.devices")}
           testID="settings-group-device-connections"
@@ -1020,29 +1057,6 @@ export default function Settings() {
               tone={connectionNeedsAttention ? "warning" : "success"}
             />
           </View>
-
-          <View style={styles.sectionDivider} />
-          <CompactRow
-            icon="account-circle-outline"
-            label={t("account.title")}
-            value={user?.fullName || user?.username || t("common:notLoggedIn")}
-            meta={
-              user?.email ||
-              (showProfileAction ? t("account.guestEmail") : t("account.deviceModeHelper"))
-            }
-            status={t(showProfileAction ? "overview.accountMode" : "overview.deviceMode")}
-            statusTone="neutral"
-            onPress={
-              showProfileAction
-                ? () => {
-                    router.push(
-                      "/(shell)/employee-profile" as unknown as Parameters<typeof router.push>[0]
-                    );
-                  }
-                : undefined
-            }
-            accessibilityLabel={t("account.profileButton")}
-          />
 
           <View style={styles.sectionDivider} />
           <CompactRow

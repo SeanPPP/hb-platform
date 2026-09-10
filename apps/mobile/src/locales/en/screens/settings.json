@@ -5,7 +5,8 @@
     "printers": "Printers",
     "devices": "Devices and connections",
     "preferences": "Preferences and security",
-    "support": "App and support"
+    "support": "App and support",
+    "account": "Account"
   },
   "overview": {
     "diagnostics": "Diagnostics",
@@ -45,7 +46,9 @@
     "profileButton": "My profile",
     "profileHelper": "View and update your own personal details.",
     "deviceModeHelper": "The app is using device authorization, so personal profile is hidden.",
-    "logoutToLogin": "Logout and return to login"
+    "logoutToLogin": "Logout and return to login",
+    "expandPersonalCode": "Tap to enlarge · View and print your code",
+    "personalCodeBusy": "A personal code is printing. Wait for the current job to finish."
   },
   "language": {
     "description": "Change the app display language and apply it immediately."

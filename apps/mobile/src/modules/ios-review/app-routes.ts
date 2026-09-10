@@ -692,14 +692,32 @@ function createInitialState(now = new Date()): AppRouteState {
       ],
       accessRoleGuids: ["review-role-store-staff"],
       directPermissionCodes: ["PosTerminal.Sales.AddItem"],
-      status: "Active",
+      status: 1,
       isActive: true,
       createdAt: timestamp,
       updatedAt: timestamp,
     },
   ];
+  // 为可启用 POS 的演示分店提供单人和同店批量打印样例。
+  users.push(...["Birgit", "Emily Chen", "Jason Lee", "Sarah Wang", "Michael"].map((name, index) => ({
+    ...users[0],
+    userGuid: `review-pos-staff-${index + 1}`,
+    userGUID: `review-pos-staff-${index + 1}`,
+    username: name.toLowerCase().replace(/ /g, "."),
+    employmentType: index % 2 ? "fullTime" : "casual",
+    fullName: name,
+    displayName: name,
+    email: `review-pos-${index + 1}@example.invalid`,
+    storeCode: "REV003",
+    storeName: "Demo Branch 03",
+    status: index === 4 ? 0 : 1,
+    isActive: index !== 4,
+    accessStoreAssignments: [{ storeGUID: IOS_REVIEW_STORES.find((store) => store.storeCode === "REV003")!.storeGUID, isPrimary: false }],
+  })));
   const employeeProfile = {
     username: "ios_app_review",
+    sensitiveRevision: 1,
+    identityType: "passport",
     displayName: "App Review Demo",
     bankBsb: "000-000",
     bankAccountNumber: "00000000",
@@ -707,9 +725,10 @@ function createInitialState(now = new Date()): AppRouteState {
     superannuationCompanyCode: "DEMO",
     superannuationAccountNumber: "DEMO-0001",
     birthday: "1990-01-01",
-    gender: "Not specified",
-    employmentType: "Demo",
-    avatarUrl: products[0].productImage,
+    phone: "0400 000 001",
+    gender: "other",
+    employmentType: "fullTime",
+    avatarUrl: "",
     identityId: "DEMO-ID-0001",
     identityPhotoUrl: products[0].productImage,
     identityPhotoUrlExpiresAt: new Date(now.getTime() + 86400000).toISOString(),
@@ -4083,9 +4102,41 @@ function registerUserRoutes(
   holder: AppRouteStateHolder,
 ) {
   const state = () => holder.current;
-  register(transport, ["POST"], "/react/v1/store-users/grid", () => ({
-    data: page(state().users),
-  }));
+  // 演示码和打印记录只保存在本地审核状态中，按员工隔离并保持确认幂等。
+  register(transport, ["GET", "POST"], /^\/react\/v1\/store-users\/([^/]+)\/cashier-barcode(?:\/(ensure|print-confirmation))?$/i,
+    ({ method, match, body, query }) => {
+      const id = decodeURIComponent(match?.[1] ?? "");
+      const action = match?.[2];
+      const user = findByAnyId(state().users, id);
+      const payload = asRecord(body);
+      const storeCode = String(payload.storeCode ?? query.get("storeCode") ?? "");
+      if (!user || !user.isActive || String(user.storeCode) !== storeCode) throw new Error("IOS_REVIEW_STAFF_CODE_SCOPE_INVALID");
+      if ((method === "GET" && action) || (method === "POST" && !action)) throw new Error("IOS_REVIEW_STAFF_CODE_METHOD_INVALID");
+      if (action === "ensure" && !user.reviewCashierBarcode) {
+        const base = `95288${String(state().users.indexOf(user) + 1).padStart(7, "0")}`;
+        const sum = [...base].reduce((total, digit, index) => total + Number(digit) * (index % 2 ? 3 : 1), 0);
+        user.reviewCashierBarcode = { exists: true, barcode: `${base}${(10 - sum % 10) % 10}`, format: "EAN13", printCount: 0, createdAt: state().now, updatedAt: state().now };
+        user.reviewCashierAttempts = [];
+      }
+      const barcode = user.reviewCashierBarcode as JsonRecord | undefined;
+      if (action === "print-confirmation") {
+        if (!barcode || payload.barcode !== barcode.barcode || !payload.printAttemptId) throw new Error("IOS_REVIEW_STAFF_CODE_CONFIRM_INVALID");
+        const attempts = user.reviewCashierAttempts as string[];
+        if (!attempts.includes(String(payload.printAttemptId))) {
+          attempts.push(String(payload.printAttemptId));
+          barcode.printCount += 1;
+        }
+      }
+      return { data: clone(barcode ?? { exists: false, barcode: null, format: "EAN13", printCount: 0 }) };
+    });
+  register(transport, ["POST"], "/react/v1/store-users/grid", ({ body }) => {
+    const payload = asRecord(body);
+    const storeCode = String(payload.storeCode ?? "").trim();
+    const keyword = String(payload.keyword ?? "").trim().toLowerCase();
+    return { data: page(state().users.filter((user) =>
+      (!storeCode || user.storeCode === storeCode)
+      && (!keyword || [user.fullName, user.username, user.phone].some((value) => String(value ?? "").toLowerCase().includes(keyword))))) };
+  });
   register(transport, ["POST"], "/react/v1/store-users", ({ body }) => {
     const current = state();
     const payload = asRecord(body);
@@ -4340,6 +4391,29 @@ function registerEmployeeProfileRoutes(
   holder: AppRouteStateHolder,
 ) {
   const state = () => holder.current;
+  register(transport, ["GET", "PUT"], "/EmployeeProfiles/me/sensitive-change-request", ({ method, body }) => {
+    const profile = state().employeeProfile;
+    if (method === "PUT") {
+      const payload = asRecord(body);
+      if (Number(payload.expectedSensitiveRevision) !== Number(profile.sensitiveRevision)) {
+        throw new Error("EMPLOYEE_PROFILE_SENSITIVE_VERSION_CONFLICT");
+      }
+      const fields = ["bankBsb", "bankAccountNumber", "superannuationCompanyName", "superannuationCompanyCode", "superannuationAccountNumber", "identityType", "identityId"];
+      profile.reviewSensitiveRequest = {
+        ...Object.fromEntries(fields.map((key) => [key, payload[key] ?? ""])),
+        requestId: 1,
+        status: "Pending",
+        hasIdentityPhoto: Boolean(profile.identityPhotoUrl),
+        identityPhotoUrl: profile.identityPhotoUrl,
+        identityPhotoUrlExpiresAt: profile.identityPhotoUrlExpiresAt,
+        baseSensitiveRevision: profile.sensitiveRevision,
+        submittedAt: state().now,
+        submittedBy: "ios_app_review",
+        changedFields: fields.filter((key) => String(payload[key] ?? "") !== String(profile[key] ?? "")),
+      };
+    }
+    return { data: clone(profile.reviewSensitiveRequest ?? null) };
+  });
   register(
     transport,
     ["GET", "PUT"],
