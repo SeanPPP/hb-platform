@@ -3023,6 +3023,27 @@ function ConfirmationCard({
         <Text style={styles.confirmationTitle}>
           {confirmationTitle(locale, confirmation, storeCode, deviceCode)}
         </Text>
+        {confirmation.kind === "assign-linkly-terminal" ? (
+          <Text
+            style={styles.confirmationBody}
+            testID="settings-linkly-assignment-details"
+          >
+            {settingsText(
+              locale,
+              confirmation.targetDeviceCode === null
+                ? "confirmation.unbindLinklyDetails"
+                : "confirmation.assignLinklyDetails",
+              {
+                // 确认框直接呈现同一 CAS 快照中的源设备和目标原线路。
+                sourceDevice: confirmation.input.assignedDeviceCode ??
+                  settingsText(locale, "confirmation.linklyUnassigned"),
+                targetDevice: confirmation.targetDeviceCode ?? "—",
+                replacedTerminal: confirmation.replacedTerminalLabel ??
+                  settingsText(locale, "confirmation.linklyNoTargetLine"),
+              },
+            )}
+          </Text>
+        ) : null}
         <Text style={styles.confirmationBody}>
           {settingsText(
             locale,

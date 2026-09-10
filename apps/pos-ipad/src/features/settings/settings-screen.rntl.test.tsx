@@ -1019,6 +1019,30 @@ describe("SettingsScreen", () => {
         "将 退货台 · Lane 2 分配给 POS-01；原线路 前台 · Lane 1 会在同一事务中释放",
       ),
     ).toBeTruthy();
+    expect(screen.getByTestId("settings-linkly-assignment-details").props.children)
+      .toBe("原设备：未绑定\n目标设备：POS-01\n目标原线路：前台 · Lane 1\n只更改线路归属；保留刷卡机现有配对，无需重新输入 Pair Code。");
+  });
+
+  it("Linkly 转绑到无线路设备前明确显示原设备、目标设备与保留配对", async () => {
+    const port = new ScreenSettingsPort();
+    port.linklySetup.multiTerminal = true;
+    port.linklySetup.ready = true;
+    port.linklySetup.lineManagementSupported = true;
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="zh" presenter={presenter} />,
+    );
+    await screen.findByTestId("settings-pane-content-general");
+    await fireEvent.press(screen.getByTestId("settings-nav-payments"));
+    await fireEvent.press(screen.getByTestId("settings-linkly-change-binding-terminal-1"));
+    await fireEvent.press(screen.getByTestId("settings-linkly-target-terminal-1-IPAD-02"));
+    await screen.findByTestId("settings-confirmation");
+
+    expect(screen.getByTestId("settings-linkly-assignment-details").props.children)
+      .toBe("原设备：POS-01\n目标设备：IPAD-02\n目标原线路：无\n只更改线路归属；保留刷卡机现有配对，无需重新输入 Pair Code。");
+    await fireEvent.press(screen.getByTestId("settings-confirm-cancel"));
+    expect(port.linklySetup.selectedTerminalId).toBe("terminal-1");
   });
 
   it("Linkly 持久健康 Healthy 与 Unhealthy 映射为本地化状态并格式化时间", async () => {

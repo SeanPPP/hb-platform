@@ -322,6 +322,12 @@ export const settingsEnglishCopy = {
   "confirmation.changePaymentSettings": "Change payment terminal settings",
   "confirmation.pairLinkly": "Pair the current Linkly terminal",
   "confirmation.assignLinklyTerminal": "Assign {{terminal}} to {{deviceCode}}",
+  "confirmation.linklyUnassigned": "Unassigned",
+  "confirmation.linklyNoTargetLine": "None",
+  "confirmation.assignLinklyDetails":
+    "Current device: {{sourceDevice}}\nTarget device: {{targetDevice}}\nTarget's current line: {{replacedTerminal}}\nOnly the line assignment changes. Existing terminal pairing is retained; no new Pair Code is needed.",
+  "confirmation.unbindLinklyDetails":
+    "Current device: {{sourceDevice}}\nThe line will be released from this device. Existing terminal pairing is retained; no new Pair Code is needed when assigning it again.",
   "confirmation.replaceLinklyTerminal":
     "Assign {{terminal}} to {{deviceCode}}; {{replacedTerminal}} will be released in the same operation",
   "confirmation.unbindLinklyTerminal":
@@ -748,6 +754,12 @@ export const settingsChineseCopy = {
   "confirmation.changePaymentSettings": "切换支付终端配置",
   "confirmation.pairLinkly": "配对当前 Linkly 终端",
   "confirmation.assignLinklyTerminal": "将 {{terminal}} 分配给 {{deviceCode}}",
+  "confirmation.linklyUnassigned": "未绑定",
+  "confirmation.linklyNoTargetLine": "无",
+  "confirmation.assignLinklyDetails":
+    "原设备：{{sourceDevice}}\n目标设备：{{targetDevice}}\n目标原线路：{{replacedTerminal}}\n只更改线路归属；保留刷卡机现有配对，无需重新输入 Pair Code。",
+  "confirmation.unbindLinklyDetails":
+    "原设备：{{sourceDevice}}\n解除本线路与该设备的关联；保留刷卡机现有配对，再次分配时无需重新输入 Pair Code。",
   "confirmation.replaceLinklyTerminal":
     "将 {{terminal}} 分配给 {{deviceCode}}；原线路 {{replacedTerminal}} 会在同一事务中释放",
   "confirmation.unbindLinklyTerminal":
