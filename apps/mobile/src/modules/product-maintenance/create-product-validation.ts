@@ -18,7 +18,7 @@ export type CreateProductValidationResult =
     }
   | {
       ok: false;
-      reason: "required" | "priceInvalid" | "itemNumberTooShort" | "barcodeTooShort" | "retailPriceTooLow";
+      reason: "required" | "supplierRestricted" | "priceInvalid" | "itemNumberTooShort" | "barcodeTooShort" | "retailPriceTooLow";
     };
 
 function parsePrice(value: string): number | null {
@@ -35,6 +35,9 @@ export function validateCreateProductForm(
   values: CreateProductFormValues
 ): CreateProductValidationResult {
   const localSupplierCode = values.localSupplierCode.trim();
+  if (localSupplierCode === "200") {
+    return { ok: false, reason: "supplierRestricted" };
+  }
   const itemNumber = values.itemNumber.trim();
   const barcode = values.barcode.trim();
   const productName = values.productName.trim();

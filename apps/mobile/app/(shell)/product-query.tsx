@@ -46,6 +46,7 @@ import {
   createSetCode,
   evaluateAutoPricing,
   fetchActiveLocalSuppliers,
+  generateLocalProductBarcode,
   getProductHqSyncOperation,
   getProductCodes,
   getProductFastDetail,
@@ -470,6 +471,8 @@ function ProductQueryContent() {
   const [createSupplierPickerVisible, setCreateSupplierPickerVisible] =
     useState(false);
   const [createProductSaving, setCreateProductSaving] = useState(false);
+  const [createBarcodeGenerating, setCreateBarcodeGenerating] = useState(false);
+  const createProductBusy = createProductSaving || createBarcodeGenerating;
   const [createSuppliers, setCreateSuppliers] = useState<LocalSupplierOption[]>(
     [],
   );
@@ -794,14 +797,14 @@ function ProductQueryContent() {
       Boolean(savingItemId) ||
       savingClearance ||
       productTypeSaving ||
-      createProductSaving ||
+      createProductBusy ||
       hqSyncRetrying,
     [
       autoPricingDialog,
       autoPricingDialogSaving,
       loading,
       lookupVisible,
-      createProductSaving,
+      createProductBusy,
       hqSyncRetrying,
       productTypeSaving,
       saving,
@@ -1233,6 +1236,27 @@ function ProductQueryContent() {
     },
     [updateCreateProductDraft],
   );
+
+  const handleGenerateCreateBarcode = useCallback(async () => {
+    if (createProductBusy) return;
+    const supplierCode = createProductDraft.localSupplierCode.trim();
+    if (!supplierCode || supplierCode === "200") {
+      setSnackbarMessage(t(supplierCode === "200"
+        ? "createProduct.messages.supplierRestricted"
+        : "createProduct.selectSupplier"));
+      return;
+    }
+    setCreateBarcodeGenerating(true);
+    try {
+      // 服务端永久预留独立编号段，客户端不使用随机数拼接条码。
+      const barcode = await generateLocalProductBarcode(supplierCode);
+      updateCreateProductDraft({ barcode });
+    } catch (error) {
+      setSnackbarMessage(getErrorMessage(error, "createProduct.messages.barcodeGenerateFailed"));
+    } finally {
+      setCreateBarcodeGenerating(false);
+    }
+  }, [createProductBusy, createProductDraft.localSupplierCode, getErrorMessage, t, updateCreateProductDraft]);
 
   const handleCreateProductSubmit = useCallback(async () => {
     const validation = validateCreateProductForm(createProductDraft);
@@ -3702,6 +3726,7 @@ function ProductQueryContent() {
               icon="plus"
               mode="contained-tonal"
               onPress={openCreateProductModal}
+              disabled={createProductBusy}
             >
               {t("createProduct.action")}
             </Button>
@@ -3994,7 +4019,7 @@ function ProductQueryContent() {
             <Modal
               visible={createProductVisible}
               onDismiss={
-                createProductSaving ? undefined : closeCreateProductModal
+                createProductBusy ? undefined : closeCreateProductModal
               }
               contentContainerStyle={styles.createProductModal}
             >
@@ -4018,7 +4043,7 @@ function ProductQueryContent() {
                     <Button
                       mode="outlined"
                       onPress={() => setCreateSupplierPickerVisible(true)}
-                      disabled={createProductSaving}
+                      disabled={createProductBusy}
                       style={styles.createSupplierSelectButton}
                       contentStyle={styles.createSupplierSelectContent}
                     >
@@ -4030,7 +4055,7 @@ function ProductQueryContent() {
                     <Button
                       mode="outlined"
                       onPress={() => void loadCreateSuppliers()}
-                      disabled={createProductSaving}
+                      disabled={createProductBusy}
                     >
                       {t("createProduct.reloadSuppliers")}
                     </Button>
@@ -4038,6 +4063,11 @@ function ProductQueryContent() {
                   {selectedCreateSupplier ? (
                     <Text variant="bodySmall" style={styles.createHint}>
                       {selectedCreateSupplier.supplierCode}
+                    </Text>
+                  ) : null}
+                  {createProductDraft.localSupplierCode.trim() === "200" ? (
+                    <Text accessibilityRole="alert" style={styles.createHint}>
+                      {t("createProduct.messages.supplierRestricted")}
                     </Text>
                   ) : null}
                 </View>
@@ -4049,7 +4079,7 @@ function ProductQueryContent() {
                     updateCreateProductDraft({ itemNumber })
                   }
                   placeholder={t("createProduct.fields.itemNumber")}
-                  editable={!createProductSaving}
+                  editable={!createProductBusy}
                 />
                 <TextInput
                   style={styles.createTextInput}
@@ -4058,8 +4088,20 @@ function ProductQueryContent() {
                     updateCreateProductDraft({ barcode })
                   }
                   placeholder={t("createProduct.fields.barcode")}
-                  editable={!createProductSaving}
+                  editable={!createProductBusy}
                 />
+                <Button
+                  mode="outlined"
+                  icon="barcode"
+                  loading={createBarcodeGenerating}
+                  disabled={createProductBusy || !createProductDraft.localSupplierCode.trim() || createProductDraft.localSupplierCode.trim() === "200"}
+                  onPress={() => void handleGenerateCreateBarcode()}
+                >
+                  {t("createProduct.generateBarcode")}
+                </Button>
+                <Text variant="bodySmall" style={styles.createHint}>
+                  {t("createProduct.barcodeHint")}
+                </Text>
                 <TextInput
                   style={styles.createTextInput}
                   value={createProductDraft.productName}
@@ -4067,7 +4109,7 @@ function ProductQueryContent() {
                     updateCreateProductDraft({ productName })
                   }
                   placeholder={t("createProduct.fields.productName")}
-                  editable={!createProductSaving}
+                  editable={!createProductBusy}
                 />
                 <TextInput
                   style={styles.createTextInput}
@@ -4077,7 +4119,7 @@ function ProductQueryContent() {
                   }
                   placeholder={t("createProduct.fields.purchasePrice")}
                   keyboardType="decimal-pad"
-                  editable={!createProductSaving}
+                  editable={!createProductBusy}
                 />
                 <TextInput
                   style={styles.createTextInput}
@@ -4087,7 +4129,7 @@ function ProductQueryContent() {
                   }
                   placeholder={t("createProduct.fields.retailPrice")}
                   keyboardType="decimal-pad"
-                  editable={!createProductSaving}
+                  editable={!createProductBusy}
                 />
 
                 <View style={styles.createSwitchRow}>
@@ -4099,7 +4141,7 @@ function ProductQueryContent() {
                     onValueChange={(isSpecialProduct) =>
                       updateCreateProductDraft({ isSpecialProduct })
                     }
-                    disabled={createProductSaving}
+                    disabled={createProductBusy}
                   />
                 </View>
                 <View style={styles.createSwitchRow}>
@@ -4111,7 +4153,7 @@ function ProductQueryContent() {
                     onValueChange={(isAutoPricing) =>
                       updateCreateProductDraft({ isAutoPricing })
                     }
-                    disabled={createProductSaving}
+                    disabled={createProductBusy}
                   />
                 </View>
 
@@ -4119,14 +4161,14 @@ function ProductQueryContent() {
                   <Button
                     mode="text"
                     onPress={closeCreateProductModal}
-                    disabled={createProductSaving}
+                    disabled={createProductBusy}
                   >
                     {t("common:actions.cancel")}
                   </Button>
                   <Button
                     mode="contained"
                     loading={createProductSaving}
-                    disabled={createProductSaving}
+                    disabled={createProductBusy || createProductDraft.localSupplierCode.trim() === "200"}
                     onPress={() => void handleCreateProductSubmit()}
                   >
                     {t("createProduct.submit")}

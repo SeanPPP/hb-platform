@@ -36,8 +36,12 @@
       "suppliersLoadFailed": "供应商加载失败",
       "created": "商品已创建",
       "refreshFailedAfterCreate": "商品已创建，但刷新详情失败，请手动查询",
-      "createFailed": "创建商品失败"
-    }
+      "createFailed": "创建商品失败",
+      "supplierRestricted": "Hotbargain（200）商品不能自行创建，请联系管理员。",
+      "barcodeGenerateFailed": "条码生成失败，请稍后重试"
+    },
+    "generateBarcode": "自动生成条码",
+    "barcodeHint": "条码格式：9529 + 日期 YYMMDD + 两位序号 + 校验位；每天最多预留 100 个。"
   },
   "messages": {
     "selectStoreFirst": "请先选择分店",

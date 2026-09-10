@@ -62,6 +62,12 @@ async function run() {
       })
     ).data as any;
 
+  const localBarcodeOne = await request("POST", "/react/v1/products/generate-local-barcode", null, { supplierCode: "SP001" });
+  const localBarcodeTwo = await request("POST", "/react/v1/products/generate-local-barcode", null, { supplierCode: "SP001" });
+  assert.match(localBarcodeOne.barcode, /^9529\d{9}$/);
+  assert.notEqual(localBarcodeOne.barcode, localBarcodeTwo.barcode);
+  await assert.rejects(request("POST", "/react/v1/products/generate-local-barcode", null, { supplierCode: "200" }));
+
   const reviewQrToken = (index: number) =>
     `HBATE1.review_${index}.${"A".repeat(16)}.${"B".repeat(40)}.${"C".repeat(22)}`;
   const attendanceQrVerification = {

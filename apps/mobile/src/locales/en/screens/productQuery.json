@@ -36,8 +36,12 @@
       "suppliersLoadFailed": "Failed to load suppliers",
       "created": "Product created.",
       "refreshFailedAfterCreate": "Product was created, but details failed to refresh. Search manually.",
-      "createFailed": "Failed to create product"
-    }
+      "createFailed": "Failed to create product",
+      "supplierRestricted": "You cannot create products for Hotbargain (200). Please contact an administrator.",
+      "barcodeGenerateFailed": "Could not generate a barcode. Please try again."
+    },
+    "generateBarcode": "Generate barcode",
+    "barcodeHint": "EAN-13: 9529 + YYMMDD + two-digit sequence + check digit. Up to 100 reservations per day."
   },
   "messages": {
     "selectStoreFirst": "Please select a store first.",
