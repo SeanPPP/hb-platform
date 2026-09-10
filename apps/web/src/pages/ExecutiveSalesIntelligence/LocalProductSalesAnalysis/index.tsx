@@ -536,6 +536,12 @@ export default function LocalProductSalesAnalysisPage() {
   ]
   const analysisLoading = loadPhase === 'bootstrap' || loadPhase === 'switch'
   const currentName = analysis.currentProduct?.productName || analysis.currentProduct?.itemNumber || analysis.currentProduct?.productCode
+  const supplierOptions = useMemo(() => {
+    // 复制后按供应商名称排序，避免改动接口返回的共享选项；无名称时使用编码。
+    return [...analysis.options.suppliers]
+      .sort((a, b) => (a.name || a.code).localeCompare(b.name || b.code, 'en-AU', { sensitivity: 'base', numeric: true }))
+      .map((item) => ({ value: item.code, label: item.name ? `${item.name} (${item.code})` : item.code }))
+  }, [analysis.options.suppliers])
 
   return <PageContainer title={t('localProductSalesAnalysis.title')}>
     <Card className={styles.toolbar} bordered={false}>
@@ -557,8 +563,12 @@ export default function LocalProductSalesAnalysisPage() {
         <div className={styles.filters}>
           <Input value={draftKeyword} onChange={(event) => setDraftKeyword(event.target.value)} placeholder={t('localProductSalesAnalysis.filters.keyword')} allowClear />
           <Select value={draftCategoryGuid} onChange={setDraftCategoryGuid} placeholder={t('localProductSalesAnalysis.filters.category')} allowClear options={analysis.options.warehouseCategories.map((item) => ({ value: item.guid, label: item.name || item.guid }))} notFoundContent={t('localProductSalesAnalysis.noCategories')} />
-          <Select value={draftSupplierCode} onChange={setDraftSupplierCode} placeholder={t('localProductSalesAnalysis.filters.supplier')} allowClear options={analysis.options.suppliers.map((item) => ({ value: item.code, label: item.name ? `${item.name} (${item.code})` : item.code }))} notFoundContent={t('localProductSalesAnalysis.noSuppliers')} />
+          <Select value={draftSupplierCode} onChange={setDraftSupplierCode} placeholder={t('localProductSalesAnalysis.filters.supplier')} allowClear showSearch optionFilterProp="label" options={supplierOptions} notFoundContent={t('localProductSalesAnalysis.noSuppliers')} />
           <Input value={draftDocumentKeyword} onChange={(event) => setDraftDocumentKeyword(event.target.value)} placeholder={t('localProductSalesAnalysis.filters.invoiceNo')} allowClear />
+          <Space wrap>
+            <Button icon={<SearchOutlined />} type="primary" onClick={applyFilters}>{t('common.query')}</Button>
+            <Button icon={<ClearOutlined />} onClick={resetFilters}>{t('common.reset')}</Button>
+          </Space>
         </div>
         <div className={styles.selectionBar}><span>{analysis.effectiveSelection.mode === 'included' ? t('localProductSalesAnalysis.selectedCount', { count: analysis.effectiveSelection.includedProductCodes.length }) : t('localProductSalesAnalysis.allFilteredSelected')}</span><Space size={4}><Button type="link" size="small" onClick={selectAllFiltered}>{t('localProductSalesAnalysis.selectAllFiltered')}</Button><Button type="link" size="small" onClick={clearSelection}>{t('common.clearSelection')}</Button></Space></div>
         <PanelState loading={loadPhase === 'bootstrap' || candidatePaging} error={undefined} empty={analysis.candidates !== null && !analysis.candidates.items.length} retry={retryBootstrap}>
