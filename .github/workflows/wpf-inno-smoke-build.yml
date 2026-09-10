@@ -97,11 +97,13 @@ jobs:
           $logsDir = Join-Path $PWD '.artifacts\wpf-release\logs'
           New-Item -ItemType Directory -Path $resultsDir, $logsDir -Force | Out-Null
 
+          # 完整烟测在同一台 runner 顺序执行测试集合，避免后台任务和 UI 心跳争抢线程。
           dotnet test apps/pos-wpf/tests/Hbpos.Client.Tests/Hbpos.Client.Tests.csproj `
             --configuration Release `
             -p:HbposWpfAppVersion=$version `
             --logger 'trx;LogFileName=Hbpos.Client.Tests.trx' `
             --results-directory $resultsDir `
+            -- xUnit.ParallelizeTestCollections=false xUnit.DiagnosticMessages=true xUnit.LongRunningTestSeconds=60 `
             2>&1 | Tee-Object -FilePath (Join-Path $logsDir 'Hbpos.Client.Tests.log')
           if ($LASTEXITCODE -ne 0) {
             throw "Hbpos.Client.Tests 失败，退出码：$LASTEXITCODE"
