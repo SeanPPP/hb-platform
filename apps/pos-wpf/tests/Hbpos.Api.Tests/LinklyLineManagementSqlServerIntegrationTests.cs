@@ -1,9 +1,11 @@
 using BlazorApp.Shared.Security;
 using Hbpos.Api.Data;
 using Hbpos.Api.Services;
+using Hbpos.Contracts.Linkly;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace Hbpos.Api.Tests;
 
@@ -106,6 +108,53 @@ public sealed class LinklyLineManagementSqlServerIntegrationTests : IAsyncLifeti
         Assert.Equal(lineB, (await SelectionAsync("POS-A"))!.TerminalId);
         Assert.Null(await OwnerAsync(lineA));
         await AssertPairingPreservedAsync();
+    }
+
+    [LinklyLineSqlServerFact]
+    public async Task Public_directory_uses_target_device_revision_and_zero_after_unbinding()
+    {
+        await SeedSelectionAsync("POS-A", lineA, 900000);
+        await SeedSelectionAsync("POS-B", lineB, 10);
+        var pairedPosId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        await ExecuteAsync("UPDATE [dbo].[POSM_LinklyCloudTerminal] SET [PosId]=@PosId WHERE [TerminalId]=@Line;",
+            new SqlParameter("@PosId", pairedPosId), new SqlParameter("@Line", lineA));
+        var service = new LinklyCloudTerminalService(
+            Repository(), new SqlSugarLinklyCloudBackendAsyncRepository(CreateContext()),
+            new UnusedPairingTransport(), Options.Create(new LinklyCloudBackendAsyncOptions()));
+        var before = await service.GetTerminalsAsync("S001", "POS-C", "Production", default);
+        var source = before.Terminals.Single(item => item.TerminalId == lineA);
+
+        // 修订号属于设备选择；跨设备转绑可以变小，解绑后公开目录必须返回零。
+        var transferred = await service.AssignTerminalAsync("S001", "POS-C", lineA,
+            new LinklyCloudTerminalAssignmentRequest("Production", source.TerminalVersion!,
+                "POS-A", 900000, "POS-B", lineB, 10), "TEST", default);
+        var assigned = transferred.Terminals.Single(item => item.TerminalId == lineA);
+        Assert.Equal("POS-B", assigned.AssignedDeviceCode);
+        Assert.Equal(11, assigned.AssignmentRevision);
+        Assert.NotEqual(source.TerminalVersion, assigned.TerminalVersion);
+        Assert.Null(assigned.LastHealthStatus);
+        var releasedOwner = transferred.Devices!.Single(item => item.DeviceCode == "POS-A");
+        Assert.Null(releasedOwner.SelectedTerminalId);
+        Assert.Equal(0, releasedOwner.SelectionRevision);
+        var displaced = transferred.Terminals.Single(item => item.TerminalId == lineB);
+        Assert.Null(displaced.AssignedDeviceCode);
+        Assert.Equal(0, displaced.AssignmentRevision);
+        Assert.Null(displaced.LastHealthStatus);
+
+        var unbound = await service.AssignTerminalAsync("S001", "POS-C", lineA,
+            new LinklyCloudTerminalAssignmentRequest("Production", assigned.TerminalVersion!,
+                "POS-B", 11, null, null, 0), "TEST", default);
+        var releasedLine = unbound.Terminals.Single(item => item.TerminalId == lineA);
+        Assert.Null(releasedLine.AssignedDeviceCode);
+        Assert.Equal(0, releasedLine.AssignmentRevision);
+        Assert.NotEqual(assigned.TerminalVersion, releasedLine.TerminalVersion);
+        var releasedTarget = unbound.Devices!.Single(item => item.DeviceCode == "POS-B");
+        Assert.Null(releasedTarget.SelectedTerminalId);
+        Assert.Equal(0, releasedTarget.SelectionRevision);
+        var unchangedPairing = (await Repository().GetAsync("Production", "S001", lineA, default))!;
+        Assert.Equal("Ready", unchangedPairing.PairingState);
+        Assert.Equal("test-secret", unchangedPairing.Secret);
+        Assert.Equal(pairedPosId, unchangedPairing.PosId);
     }
 
     [LinklyLineSqlServerFact]
@@ -428,5 +477,12 @@ public sealed class LinklyLineManagementSqlServerIntegrationTests : IAsyncLifeti
         public string UnprotectPassword(string value) => value;
         public string ProtectSecret(string value) => value;
         public string UnprotectSecret(string value) => value;
+    }
+
+    private sealed class UnusedPairingTransport : ILinklyCloudPairingTransport
+    {
+        public Task<LinklyCloudPairingTransportResponse> PairAsync(string authBaseUrl,
+            string username, string password, string pairCode, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("线路分配不能调用配对服务。");
     }
 }
