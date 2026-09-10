@@ -755,6 +755,12 @@ public sealed class LinklyCloudTerminalServiceTests
         Assert.True(response.Succeeded);
         Assert.Equal("connected", response.Status);
         Assert.Equal(1, transport.StatusCalls);
+        // Linkly 的 sessionId 必须是 UUID，审计用途前缀不能进入供应商请求路径。
+        var statusRequest = Assert.IsType<LinklyCloudBackendTransportStatusRequest>(transport.LastStatusRequest);
+        Assert.True(Guid.TryParseExact(statusRequest.SessionId, "D", out var sessionId));
+        Assert.Equal(sessionId.ToString("D"), statusRequest.SessionId);
+        Assert.Equal('4', statusRequest.SessionId[14]);
+        Assert.Contains(statusRequest.SessionId[19], "89ab");
         Assert.Equal(0, transport.TransactionCalls);
         Assert.Null(repository.Selection);
         Assert.Equal(1, repository.ReleasedConnectionLeases);
@@ -1286,10 +1292,12 @@ public sealed class LinklyCloudTerminalServiceTests
     {
         public Exception? Failure { get; init; }
         public int StatusCalls { get; private set; }
+        public LinklyCloudBackendTransportStatusRequest? LastStatusRequest { get; private set; }
         public int TransactionCalls { get; private set; }
         public Task<LinklyCloudBackendTransportResponse> SendStatusAsync(LinklyCloudBackendTransportStatusRequest request, CancellationToken cancellationToken)
         {
             StatusCalls++;
+            LastStatusRequest = request;
             if (Failure is not null) return Task.FromException<LinklyCloudBackendTransportResponse>(Failure);
             return Task.FromResult(response ?? new LinklyCloudBackendTransportResponse(HttpStatusCode.OK, null));
         }

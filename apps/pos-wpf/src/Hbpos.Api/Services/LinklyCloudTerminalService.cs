@@ -564,7 +564,8 @@ public sealed class LinklyCloudTerminalService(
             var response = await backendTransport.SendStatusAsync(
                 new LinklyCloudBackendTransportStatusRequest(
                     environment, token.RestBaseUrl, token.AccessToken,
-                    $"connection-test-{Guid.NewGuid():N}", terminal.StoreCode,
+                    // 供应商 sessionId 必须是标准 UUID；连接测试用途由传输层审计字段标识。
+                    Guid.NewGuid().ToString("D"), terminal.StoreCode,
                     owner?.DeviceCode ?? normalizedDeviceCode, terminalId), cancellationToken);
             terminalRequestStarted = false;
             var parsed = ParseConnectionStatus(response.Body);
