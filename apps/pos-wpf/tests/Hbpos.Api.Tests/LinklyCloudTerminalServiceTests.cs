@@ -823,6 +823,76 @@ public sealed class LinklyCloudTerminalServiceTests
         Assert.Equal(0, repository.ReleasedConnectionLeases);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConnectionTestAsync_total_budget_cancels_current_phase_without_financial_request(bool statusStarted)
+    {
+        var id = Guid.NewGuid();
+        var repository = new FakeTerminalRepository { Terminals = [CreateTerminal(id, "S01", "Production", 1, "Front")] };
+        var clock = new ManualDeadlineTimeProvider();
+        var tokenProvider = new FakeTokenProvider { WaitForCancellation = !statusStarted };
+        var transport = new FakeStatusTransport { WaitForCancellation = statusStarted };
+        var service = CreateService(repository, tokenProvider: tokenProvider, backendTransport: transport, timeProvider: clock);
+
+        var pending = service.ConnectionTestAsync("S01", "POS-01", id, TestRequest(repository), CancellationToken.None);
+        Assert.Equal(LinklyTimeoutConstants.BusinessWait, clock.DueTime);
+        Assert.Equal(1, clock.TimerCount);
+        clock.Expire();
+        var result = await pending.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal("unknown", result.Status);
+        Assert.Equal("Connection test timed out.", result.Message);
+        Assert.Equal(statusStarted ? 0 : 1, repository.ReleasedConnectionLeases);
+        Assert.Equal(statusStarted ? 1 : 0, transport.StatusCalls);
+        Assert.Equal(0, transport.TransactionCalls);
+        Assert.Equal(0, repository.HealthWriteAttempts);
+        Assert.True(statusStarted ? transport.ReceivedCancellationToken.IsCancellationRequested : tokenProvider.ReceivedCancellationToken.IsCancellationRequested);
+    }
+
+    [Fact]
+    public async Task ConnectionTestAsync_expired_budget_after_token_never_sends_status()
+    {
+        var id = Guid.NewGuid();
+        var repository = new FakeTerminalRepository { Terminals = [CreateTerminal(id, "S01", "Production", 1, "Front")] };
+        var clock = new ManualDeadlineTimeProvider();
+        var transport = new FakeStatusTransport();
+        var service = CreateService(repository,
+            tokenProvider: new FakeTokenProvider { BeforeReturn = clock.Expire },
+            backendTransport: transport, timeProvider: clock);
+
+        var result = await service.ConnectionTestAsync("S01", "POS-01", id, TestRequest(repository), CancellationToken.None);
+
+        Assert.Equal("unknown", result.Status);
+        Assert.Equal(0, transport.StatusCalls);
+        Assert.Equal(0, transport.TransactionCalls);
+        Assert.Equal(1, repository.ReleasedConnectionLeases);
+        Assert.Equal(0, repository.HealthWriteAttempts);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConnectionTestAsync_caller_cancellation_propagates_without_becoming_timeout_result(bool statusStarted)
+    {
+        var id = Guid.NewGuid();
+        var repository = new FakeTerminalRepository { Terminals = [CreateTerminal(id, "S01", "Production", 1, "Front")] };
+        var clock = new ManualDeadlineTimeProvider();
+        var tokenProvider = new FakeTokenProvider { WaitForCancellation = !statusStarted };
+        var transport = new FakeStatusTransport { WaitForCancellation = statusStarted };
+        var service = CreateService(repository, tokenProvider: tokenProvider, backendTransport: transport, timeProvider: clock);
+        using var caller = new CancellationTokenSource();
+
+        var pending = service.ConnectionTestAsync("S01", "POS-01", id, TestRequest(repository), caller.Token);
+        caller.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending.WaitAsync(TimeSpan.FromSeconds(5)));
+
+        Assert.Equal(statusStarted ? 0 : 1, repository.ReleasedConnectionLeases);
+        Assert.Equal(statusStarted ? 1 : 0, transport.StatusCalls);
+        Assert.Equal(0, transport.TransactionCalls);
+        Assert.Equal(0, repository.HealthWriteAttempts);
+    }
+
     private static LinklyCloudTerminalConnectionTestRequest TestRequest(FakeTerminalRepository repository) =>
         new("Production", repository.Terminals[0].UpdatedAt!.Value.Ticks.ToString(), null, 0);
 
@@ -880,7 +950,8 @@ public sealed class LinklyCloudTerminalServiceTests
         ILinklyCloudPairingTransport? transport = null,
         ILinklyCloudBackendAsyncRepository? sessionRepository = null,
         ILinklyCloudBackendTokenProvider? tokenProvider = null,
-        ILinklyCloudBackendAsyncTransport? backendTransport = null)
+        ILinklyCloudBackendAsyncTransport? backendTransport = null,
+        TimeProvider? timeProvider = null)
     {
         return new LinklyCloudTerminalService(
             repository,
@@ -893,7 +964,8 @@ public sealed class LinklyCloudTerminalServiceTests
                 SandboxAuthBaseUrl = "https://auth.sandbox.example/v1/"
             }),
             tokenProvider,
-            backendTransport);
+            backendTransport,
+            timeProvider: timeProvider);
     }
 
     private static LinklyCloudTerminalRecord CreateTerminal(
@@ -1275,6 +1347,9 @@ public sealed class LinklyCloudTerminalServiceTests
     private sealed class FakeTokenProvider : ILinklyCloudBackendTokenProvider
     {
         public Exception? Failure { get; init; }
+        public Action? BeforeReturn { get; init; }
+        public bool WaitForCancellation { get; init; }
+        public CancellationToken ReceivedCancellationToken { get; private set; }
         public Task<LinklyCloudBackendToken> GetTokenAsync(string environment, string storeCode, string deviceCode, CancellationToken cancellationToken) =>
             Get(cancellationToken);
 
@@ -1283,7 +1358,10 @@ public sealed class LinklyCloudTerminalServiceTests
 
         private Task<LinklyCloudBackendToken> Get(CancellationToken cancellationToken)
         {
+            ReceivedCancellationToken = cancellationToken;
+            if (WaitForCancellation) return WaitUntilCanceled<LinklyCloudBackendToken>(cancellationToken);
             if (Failure is not null) return Task.FromException<LinklyCloudBackendToken>(Failure);
+            BeforeReturn?.Invoke();
             return Task.FromResult(new LinklyCloudBackendToken("https://rest.example/", "token"));
         }
     }
@@ -1291,6 +1369,8 @@ public sealed class LinklyCloudTerminalServiceTests
     private sealed class FakeStatusTransport(LinklyCloudBackendTransportResponse? response = null) : ILinklyCloudBackendAsyncTransport
     {
         public Exception? Failure { get; init; }
+        public bool WaitForCancellation { get; init; }
+        public CancellationToken ReceivedCancellationToken { get; private set; }
         public int StatusCalls { get; private set; }
         public LinklyCloudBackendTransportStatusRequest? LastStatusRequest { get; private set; }
         public int TransactionCalls { get; private set; }
@@ -1298,6 +1378,8 @@ public sealed class LinklyCloudTerminalServiceTests
         {
             StatusCalls++;
             LastStatusRequest = request;
+            ReceivedCancellationToken = cancellationToken;
+            if (WaitForCancellation) return WaitUntilCanceled<LinklyCloudBackendTransportResponse>(cancellationToken);
             if (Failure is not null) return Task.FromException<LinklyCloudBackendTransportResponse>(Failure);
             return Task.FromResult(response ?? new LinklyCloudBackendTransportResponse(HttpStatusCode.OK, null));
         }
@@ -1307,5 +1389,36 @@ public sealed class LinklyCloudTerminalServiceTests
         public Task<LinklyCloudBackendTransportResponse> GetTransactionAsync(LinklyCloudBackendTransportSessionRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<LinklyCloudBackendTransportResponse> SendLogonAsync(LinklyCloudBackendTransportSessionRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<LinklyCloudBackendTransportResponse> SendKeyAsync(LinklyCloudBackendTransportSendKeyRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
+    }
+
+    private static async Task<T> WaitUntilCanceled<T>(CancellationToken cancellationToken)
+    {
+        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        throw new InvalidOperationException("Cancellation must interrupt the pending request.");
+    }
+
+    // 直接触发业务截止时间，避免回归测试真实等待 180 秒。
+    private sealed class ManualDeadlineTimeProvider : TimeProvider
+    {
+        private TimerCallback? callback;
+        private object? callbackState;
+        public TimeSpan? DueTime { get; private set; }
+        public int TimerCount { get; private set; }
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            this.callback = callback;
+            callbackState = state;
+            DueTime = dueTime;
+            TimerCount++;
+            return new ManualTimer();
+        }
+        public void Expire() => callback!(callbackState);
+
+        private sealed class ManualTimer : ITimer
+        {
+            public bool Change(TimeSpan dueTime, TimeSpan period) => true;
+            public void Dispose() { }
+            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        }
     }
 }

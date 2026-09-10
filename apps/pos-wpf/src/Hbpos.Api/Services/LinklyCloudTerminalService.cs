@@ -349,7 +349,8 @@ public sealed class LinklyCloudTerminalService(
     IOptions<LinklyCloudBackendAsyncOptions> options,
     ILinklyCloudBackendTokenProvider? tokenProvider = null,
     ILinklyCloudBackendAsyncTransport? backendTransport = null,
-    ILogger<LinklyCloudTerminalService>? logger = null) : ILinklyCloudTerminalService
+    ILogger<LinklyCloudTerminalService>? logger = null,
+    TimeProvider? timeProvider = null) : ILinklyCloudTerminalService
 {
     private static readonly TimeSpan PairingLeaseDuration =
         LinklyTimeoutConstants.HttpTimeout + TimeSpan.FromMinutes(1);
@@ -555,25 +556,42 @@ public sealed class LinklyCloudTerminalService(
 
         var releaseLease = true;
         var terminalRequestStarted = false;
+        var phase = "token";
+        var outcome = "unknown";
+        int? providerHttpStatus = null;
+        string? errorType = null;
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        // Token 与 Status 共用一次业务预算；单段 HTTP 超时不能重新获得完整等待时间。
+        // 来访取消仍单独判断；Status 已发出而终态不明时继续保留原管理租约。
+        using var budgetCancellation = new CancellationTokenSource(
+            LinklyTimeoutConstants.BusinessWait, timeProvider ?? TimeProvider.System);
+        using var testCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken, budgetCancellation.Token);
+        var testToken = testCancellation.Token;
         try
         {
             var token = await tokenProvider.GetTokenAsync(
                 environment, terminal.StoreCode, owner?.DeviceCode ?? normalizedDeviceCode,
-                terminalId, cancellationToken);
+                terminalId, testToken);
+            testToken.ThrowIfCancellationRequested();
+            phase = "status";
             terminalRequestStarted = true;
             var response = await backendTransport.SendStatusAsync(
                 new LinklyCloudBackendTransportStatusRequest(
                     environment, token.RestBaseUrl, token.AccessToken,
                     // 供应商 sessionId 必须是标准 UUID；连接测试用途由传输层审计字段标识。
                     Guid.NewGuid().ToString("D"), terminal.StoreCode,
-                    owner?.DeviceCode ?? normalizedDeviceCode, terminalId), cancellationToken);
+                    owner?.DeviceCode ?? normalizedDeviceCode, terminalId), testToken);
             terminalRequestStarted = false;
+            providerHttpStatus = (int)response.StatusCode;
+            phase = "status-response";
             var parsed = ParseConnectionStatus(response.Body);
             var definitive = response.StatusCode == System.Net.HttpStatusCode.OK && parsed.IsComplete;
             var connected = definitive && parsed.Success;
             var credentialsRejected = response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden;
             var status = connected ? "connected" : credentialsRejected ? "needs-repair"
                 : definitive || IsUnreachable(response.StatusCode) ? "unreachable" : "unknown";
+            outcome = status;
             // 408、网关错误和未完成回应可能已送达终端；保留租约，不伪造持久健康状态。
             // 明确 4xx 表示请求已拒绝，可释放管理租约，让用户修复凭据。
             releaseLease = definitive || ((int)response.StatusCode >= 400 && (int)response.StatusCode < 500
@@ -584,7 +602,10 @@ public sealed class LinklyCloudTerminalService(
                     environment, terminal.StoreCode, terminalId, terminal.UpdatedAt.Value,
                     connected ? "Healthy" : "Unhealthy", checkedAt.UtcDateTime, CancellationToken.None);
                 if (!healthRecorded)
+                {
+                    outcome = "unknown";
                     return ConnectionResult(terminal, environment, owner, false, "unknown", checkedAt, "Terminal configuration changed during the test.", parsed.ResponseCode);
+                }
             }
             return ConnectionResult(terminal, environment, owner, connected, status, checkedAt,
                 connected ? "Terminal is connected." : credentialsRejected
@@ -593,35 +614,50 @@ public sealed class LinklyCloudTerminalService(
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             releaseLease = !terminalRequestStarted;
+            outcome = "timeout";
+            errorType = nameof(OperationCanceledException);
             return ConnectionResult(terminal, environment, owner, false, "unknown", checkedAt, "Connection test timed out.", null);
         }
         catch (OperationCanceledException)
         {
             releaseLease = !terminalRequestStarted;
+            outcome = "caller-canceled";
+            errorType = nameof(OperationCanceledException);
             throw;
         }
         catch (HttpRequestException ex) when (ex.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
         {
+            outcome = "needs-repair";
+            errorType = ex.GetType().Name;
+            providerHttpStatus = (int)ex.StatusCode.Value;
             return ConnectionResult(terminal, environment, owner, false, "needs-repair", checkedAt,
                 "Terminal credentials require repair.", null);
         }
-        catch (HttpRequestException)
+        catch (HttpRequestException ex)
         {
             releaseLease = !terminalRequestStarted;
+            outcome = "unreachable";
+            errorType = ex.GetType().Name;
             return ConnectionResult(terminal, environment, owner, false, "unreachable", checkedAt, "Terminal could not be reached.", null);
         }
         catch (LinklyCloudTerminalCredentialReentryRequiredException)
         {
+            outcome = "needs-repair";
+            errorType = nameof(LinklyCloudTerminalCredentialReentryRequiredException);
             return ConnectionResult(terminal, environment, owner, false, "needs-repair", checkedAt, "Terminal credentials require repair.", null);
         }
         catch (LinklyCloudTerminalCredentialUnavailableException)
         {
+            outcome = "needs-repair";
+            errorType = nameof(LinklyCloudTerminalCredentialUnavailableException);
             return ConnectionResult(terminal, environment, owner, false, "needs-repair", checkedAt, "Terminal credentials are unavailable.", null);
         }
-        catch
+        catch (Exception ex)
         {
             // Token 阶段失败尚未触碰终端；送出 Status 后的未知异常仍须保留保护。
             releaseLease = !terminalRequestStarted;
+            outcome = "error";
+            errorType = ex.GetType().Name;
             throw;
         }
         finally
@@ -634,9 +670,14 @@ public sealed class LinklyCloudTerminalService(
                 }
                 catch (Exception ex)
                 {
-                    logger?.LogWarning(ex, "Linkly Cloud connection-test lease release failed environment={Environment} store={StoreCode} terminalId={TerminalId}", environment, terminal.StoreCode, terminalId);
+                    logger?.LogWarning("Linkly Cloud connection-test lease release failed environment={Environment} store={StoreCode} terminalId={TerminalId} errorType={ErrorType}", environment, terminal.StoreCode, terminalId, ex.GetType().Name);
                 }
             }
+            // 只记录公开结果和异常类型，不记录 token、响应正文或异常正文。
+            logger?.LogInformation(
+                "Linkly connection-test completed environment={Environment} store={StoreCode} terminalId={TerminalId} phase={Phase} outcome={Outcome} providerHttpStatus={ProviderHttpStatus} elapsedMs={ElapsedMs} errorType={ErrorType} budgetExpired={BudgetExpired} callerCanceled={CallerCanceled}",
+                environment, terminal.StoreCode, terminalId, phase, outcome, providerHttpStatus,
+                stopwatch.ElapsedMilliseconds, errorType, budgetCancellation.IsCancellationRequested, cancellationToken.IsCancellationRequested);
         }
     }
 
