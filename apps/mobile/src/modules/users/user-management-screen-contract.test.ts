@@ -36,7 +36,7 @@ assert.match(
 );
 assert.match(
   source,
-  /disabled=\{!canResetThisUser\}/,
+  /disabled=\{!moreUser \|\| !canResetUserPassword\(moreUser\)\}/,
   "密码重置按钮必须按 Users.ResetPassword 独立禁用"
 );
 assert.match(source, /createMutation/, "用户页必须接入创建 mutation");
@@ -71,5 +71,30 @@ assert.doesNotMatch(
   /console\.warn\("\[store-users\] (?:save|password reset) failed", error\)/,
   "含密码请求失败时不得直接记录 Axios 错误对象"
 );
+assert.match(source, /testID="compact-staff-row"/, "员工列表必须使用紧凑行布局");
+assert.doesNotMatch(source, /lastLoginIpValue/, "低频登录 IP 不应继续占用员工列表首屏");
+assert.match(source, /statusAllCount/, "状态筛选必须显示计数");
+assert.match(source, /StaffBarcodeDialog/, "员工行必须接入单人个人码弹层");
+assert.match(source, /StaffBarcodeBatchDialog/, "可管理的明确分店必须接入批量打印弹层");
+assert.match(source, /!isDeviceMode && canEditUsers && managedStoreCode/, "纯设备模式或无编辑权限不得显示批量写入口");
+assert.match(source, /canManageStaffBarcode\(/, "个人码入口必须复用统一资格判断，停用员工不得获得写入口");
+assert.match(source, /setSelectedUserGuids\(new Set\(\)\)[\s\S]{0,120}setBatchSelecting\(false\)/, "换店必须清空批量选择");
+
+const barcodeDialogSource = readFileSync(
+  resolve(currentDirectory, "staff-barcode/StaffBarcodeDialogs.tsx"),
+  "utf8"
+);
+assert.match(barcodeDialogSource, /\["staffCashierBarcode", actorGuid, storeCode, userGuid, generation\]/, "个人码缓存必须按操作者、分店、目标和打开轮次隔离");
+assert.match(barcodeDialogSource, /!pendingLoaded \|\| restoreFailed/, "安全记录恢复完成前或失败后不得打印");
+assert.match(barcodeDialogSource, /if \(!printed\) throw new Error\("STAFF_BARCODE_PRINT_NOT_ACCEPTED"\)/, "打印机未接受任务不得进入确认流程");
+assert.match(barcodeDialogSource, /barcodeQuery\.isError \? undefined : barcodeQuery\.data/, "接口失败时不得显示旧缓存个人码");
+assert.match(barcodeDialogSource, /while \(isCurrentSession\(sessionRef, generation\)\)/, "批量打印必须串行且持续校验当前作用域");
+assert.match(barcodeDialogSource, /invalidateStaffBarcodeOperationSession/, "组件卸载必须使旧打印session失效");
+assert.match(barcodeDialogSource, /runStaffBarcodeActionExclusive\(actionGateRef\.current/, "点击动作必须用同步CAS覆盖完整异步链");
+assert.match(barcodeDialogSource, /hasIncompleteStaffBarcodeConfirmation\(batch\)/, "结束批量时不得清理待确认attempt");
+assert.match(barcodeDialogSource, /hydrateSavedPrinter\(\)/, "个人码弹层打开时必须恢复已保存打印机配置");
+assert.match(barcodeDialogSource, /router\.navigate\("\/\(shell\)\/settings"\)/, "个人码弹层必须提供打印机设置入口");
+assert.match(barcodeDialogSource, /pendingConfirmation\?\.phase === "printed"/, "已出纸待确认必须显示独立恢复状态");
+assert.match(barcodeDialogSource, /fontScale > 1\.2 \|\| width < 380/, "窄屏或大字号时弹层操作必须改为纵向布局");
 
 console.log("user-management-screen-contract.test.ts: ok");

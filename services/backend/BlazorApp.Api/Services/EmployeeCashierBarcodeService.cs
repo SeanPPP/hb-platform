@@ -9,6 +9,7 @@ namespace BlazorApp.Api.Services
 {
     public sealed class EmployeeCashierBarcodeService
     {
+        private static readonly SemaphoreSlim NonSqlServerEnsureLock = new(1, 1);
         private readonly SqlSugarContext _context;
         private readonly ICurrentUserService _currentUser;
         private readonly Func<string> _barcodeFactory;
@@ -31,6 +32,11 @@ namespace BlazorApp.Api.Services
             {
                 return ApiResponse<EmployeeCashierBarcodeDto>.Error("未找到当前用户", "CURRENT_USER_NOT_FOUND");
             }
+            return await GetForUserAsync(userGuid);
+        }
+
+        public async Task<ApiResponse<EmployeeCashierBarcodeDto>> GetForUserAsync(string userGuid)
+        {
             var entity = await _context.Db.Queryable<EmployeeCashierBarcode>()
                 .Where(item => item.UserGUID == userGuid && item.Status)
                 .OrderBy(item => item.CreatedAt, OrderByType.Desc)
@@ -61,6 +67,89 @@ namespace BlazorApp.Api.Services
             throw new InvalidOperationException("无法生成唯一员工收银条码");
         }
 
+        public async Task<ApiResponse<EmployeeCashierBarcodeDto>> EnsureForUserAsync(string userGuid)
+        {
+            var useProcessLock = _context.Db.CurrentConnectionConfig.DbType != DbType.SqlServer;
+            if (useProcessLock)
+            {
+                await NonSqlServerEnsureLock.WaitAsync();
+            }
+            try
+            {
+                for (var attempt = 0; attempt < 5; attempt++)
+                {
+                    try
+                    {
+                        return await EnsureOnceAsync(userGuid);
+                    }
+                    catch (Exception ex) when (
+                        attempt < 4 && IsUniqueConstraintViolation(ex)
+                    )
+                    {
+                        // 条码随机碰撞或并发赢家已创建时，重新进入锁并读取最终有效码。
+                    }
+                }
+                throw new InvalidOperationException("无法生成唯一员工收银条码");
+            }
+            finally
+            {
+                if (useProcessLock)
+                {
+                    NonSqlServerEnsureLock.Release();
+                }
+            }
+        }
+
+        private async Task<ApiResponse<EmployeeCashierBarcodeDto>> EnsureOnceAsync(string userGuid)
+        {
+            var db = _context.Db;
+            await db.Ado.BeginTranAsync();
+            try
+            {
+                await CashierBarcodeMutationLock.AcquireAsync(db);
+                var target = await db.Queryable<User>()
+                    .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
+                if (target is null)
+                {
+                    await db.Ado.CommitTranAsync();
+                    return ApiResponse<EmployeeCashierBarcodeDto>.Error(
+                        "用户不存在",
+                        "USER_NOT_FOUND"
+                    );
+                }
+                if (!target.IsActive)
+                {
+                    await db.Ado.CommitTranAsync();
+                    return ApiResponse<EmployeeCashierBarcodeDto>.Error(
+                        "员工账号已停用",
+                        "CASHIER_BARCODE_INACTIVE"
+                    );
+                }
+                // 关键逻辑：幂等判断必须在全局 mutation lock 内重读，两个并发 ensure 只能有一个创建者。
+                var current = await db.Queryable<EmployeeCashierBarcode>()
+                    .Where(item => item.UserGUID == userGuid && item.Status)
+                    .OrderBy(item => item.CreatedAt, OrderByType.Desc)
+                    .FirstAsync();
+                if (current is not null)
+                {
+                    await db.Ado.CommitTranAsync();
+                    return ApiResponse<EmployeeCashierBarcodeDto>.OK(Map(current));
+                }
+
+                var entity = await InsertNewBarcodeWithinTransactionAsync(
+                    userGuid,
+                    deactivateCurrentEmployeeBarcode: false
+                );
+                await db.Ado.CommitTranAsync();
+                return ApiResponse<EmployeeCashierBarcodeDto>.OK(Map(entity), "条码已创建");
+            }
+            catch
+            {
+                await db.Ado.RollbackTranAsync();
+                throw;
+            }
+        }
+
         private async Task<ApiResponse<EmployeeCashierBarcodeDto>> RefreshOnceAsync(string userGuid)
         {
             var db = _context.Db;
@@ -69,28 +158,50 @@ namespace BlazorApp.Api.Services
             {
                 await CashierBarcodeMutationLock.AcquireAsync(db);
 
-                var barcode = _barcodeFactory();
-                var barcodeHguid = Guid.NewGuid().ToString("N");
-                // 关键逻辑：独立占用表是全历史唯一性的硬保证，必须先占位再改有效记录。
-                await db.Insertable(new CashierBarcodeReservation
+                var entity = await InsertNewBarcodeWithinTransactionAsync(
+                    userGuid,
+                    deactivateCurrentEmployeeBarcode: true
+                );
+                await db.Ado.CommitTranAsync();
+                return ApiResponse<EmployeeCashierBarcodeDto>.OK(Map(entity), "条码已刷新");
+            }
+            catch
+            {
+                await db.Ado.RollbackTranAsync();
+                throw;
+            }
+        }
+
+        private async Task<EmployeeCashierBarcode> InsertNewBarcodeWithinTransactionAsync(
+            string userGuid,
+            bool deactivateCurrentEmployeeBarcode
+        )
+        {
+            var db = _context.Db;
+            var barcode = _barcodeFactory();
+            var barcodeHguid = Guid.NewGuid().ToString("N");
+            // 关键逻辑：独立占用表是全历史唯一性的硬保证，必须先占位再改有效记录。
+            await db.Insertable(new CashierBarcodeReservation
+            {
+                Barcode = barcode,
+                CreatedAt = DateTime.UtcNow,
+                OwnerType = "employee",
+                OwnerId = barcodeHguid,
+            }).ExecuteCommandAsync();
+            var actor = _currentUser.GetCurrentUsername();
+            var now = DateTime.UtcNow;
+            // 关键逻辑：个人条码启用时同步停用同用户 legacy 条码，跨表也只能有一个有效身份。
+            await db.Updateable<CashRegisterUser>()
+                .SetColumns(item => new CashRegisterUser
                 {
-                    Barcode = barcode,
-                    CreatedAt = DateTime.UtcNow,
-                    OwnerType = "employee",
-                    OwnerId = barcodeHguid,
-                }).ExecuteCommandAsync();
-                var actor = _currentUser.GetCurrentUsername();
-                var now = DateTime.UtcNow;
-                // 关键逻辑：个人条码启用时同步停用同用户 legacy 条码，跨表也只能有一个有效身份。
-                await db.Updateable<CashRegisterUser>()
-                    .SetColumns(item => new CashRegisterUser
-                    {
-                        Status = false,
-                        LastModifier = actor,
-                        LastModifyDate = now,
-                    })
-                    .Where(item => item.UserGUID == userGuid && item.Status)
-                    .ExecuteCommandAsync();
+                    Status = false,
+                    LastModifier = actor,
+                    LastModifyDate = now,
+                })
+                .Where(item => item.UserGUID == userGuid && item.Status)
+                .ExecuteCommandAsync();
+            if (deactivateCurrentEmployeeBarcode)
+            {
                 await db.Updateable<EmployeeCashierBarcode>()
                     .SetColumns(item => new EmployeeCashierBarcode
                     {
@@ -100,27 +211,21 @@ namespace BlazorApp.Api.Services
                     })
                     .Where(item => item.UserGUID == userGuid && item.Status)
                     .ExecuteCommandAsync();
+            }
 
-                var entity = new EmployeeCashierBarcode
-                {
-                    HGUID = barcodeHguid,
-                    UserGUID = userGuid,
-                    Barcode = barcode,
-                    PrintCount = 0,
-                    Status = true,
-                    CreatedAt = now,
-                    UpdatedBy = actor,
-                    UpdatedAt = now,
-                };
-                await db.Insertable(entity).ExecuteCommandAsync();
-                await db.Ado.CommitTranAsync();
-                return ApiResponse<EmployeeCashierBarcodeDto>.OK(Map(entity), "条码已刷新");
-            }
-            catch
+            var entity = new EmployeeCashierBarcode
             {
-                await db.Ado.RollbackTranAsync();
-                throw;
-            }
+                HGUID = barcodeHguid,
+                UserGUID = userGuid,
+                Barcode = barcode,
+                PrintCount = 0,
+                Status = true,
+                CreatedAt = now,
+                UpdatedBy = actor,
+                UpdatedAt = now,
+            };
+            await db.Insertable(entity).ExecuteCommandAsync();
+            return entity;
         }
 
         public async Task<ApiResponse<EmployeeCashierBarcodeDto>> ConfirmPrintAsync(
@@ -132,6 +237,14 @@ namespace BlazorApp.Api.Services
             {
                 return ApiResponse<EmployeeCashierBarcodeDto>.Error("未找到当前用户", "CURRENT_USER_NOT_FOUND");
             }
+            return await ConfirmPrintForUserAsync(userGuid, request);
+        }
+
+        public async Task<ApiResponse<EmployeeCashierBarcodeDto>> ConfirmPrintForUserAsync(
+            string userGuid,
+            EmployeeCashierBarcodePrintConfirmationRequest request
+        )
+        {
             if (request.PrintAttemptId == Guid.Empty)
             {
                 return ApiResponse<EmployeeCashierBarcodeDto>.Error(
@@ -188,6 +301,13 @@ namespace BlazorApp.Api.Services
                 if (existingAttempt is not null)
                 {
                     await db.Ado.CommitTranAsync();
+                    if (existingAttempt.UserGUID != userGuid || existingAttempt.Barcode != request.Barcode)
+                    {
+                        return ApiResponse<EmployeeCashierBarcodeDto>.Error(
+                            "打印尝试编号已被使用",
+                            "PRINT_ATTEMPT_CONFLICT"
+                        );
+                    }
                     return ApiResponse<EmployeeCashierBarcodeDto>.OK(Map(entity));
                 }
                 await db.Insertable(new EmployeeCashierBarcodePrintAttempt
@@ -226,11 +346,17 @@ namespace BlazorApp.Api.Services
             {
                 await db.Ado.RollbackTranAsync();
                 var attempt = await db.Queryable<EmployeeCashierBarcodePrintAttempt>()
-                    .FirstAsync(item => item.PrintAttemptId == request.PrintAttemptId
-                        && item.UserGUID == userGuid && item.Barcode == request.Barcode);
+                    .FirstAsync(item => item.PrintAttemptId == request.PrintAttemptId);
                 if (attempt is null)
                 {
                     throw;
+                }
+                if (attempt.UserGUID != userGuid || attempt.Barcode != request.Barcode)
+                {
+                    return ApiResponse<EmployeeCashierBarcodeDto>.Error(
+                        "打印尝试编号已被使用",
+                        "PRINT_ATTEMPT_CONFLICT"
+                    );
                 }
                 var confirmed = await db.Queryable<EmployeeCashierBarcode>()
                     .FirstAsync(item => item.HGUID == attempt.BarcodeHGUID);

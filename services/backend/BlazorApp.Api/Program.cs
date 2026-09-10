@@ -725,6 +725,7 @@ builder.Services.AddScoped<IEmployeeProfileService, EmployeeProfileService>(); /
 builder.Services.AddScoped<EmployeeProfileSensitiveChangeService>();
 builder.Services.AddScoped<EmployeeProfileMediaService>();
 builder.Services.AddScoped<EmployeeCashierBarcodeService>();
+builder.Services.AddScoped<StoreUserCashierBarcodeService>();
 builder.Services.AddHostedService<EmployeeImageUploadCleanupBackgroundService>();
 builder.Services.AddScoped<IRoleService, RoleService>(); // 角色管理服务
 builder.Services.AddScoped<IStoreService, StoreService>(); // 分店管理服务
