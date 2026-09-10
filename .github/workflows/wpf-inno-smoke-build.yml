@@ -75,13 +75,19 @@ jobs:
             throw '安装后仍未找到 Inno Setup 6 ISCC.exe。'
           }
 
-          $isccInfo = (Get-Item -LiteralPath $iscc).VersionInfo
-          if ($isccInfo.ProductMajorPart -ne 6) {
-            throw "必须使用 Inno Setup 6，实际版本：$($isccInfo.ProductVersion)"
+          # ISCC 的 EXE 版本资源可能为 0.0.0.0；以编译器自身的帮助标题校验主版本。
+          $helpOutput = Join-Path $env:RUNNER_TEMP 'hbpos-inno-help.stdout.txt'
+          $helpError = Join-Path $env:RUNNER_TEMP 'hbpos-inno-help.stderr.txt'
+          $compiler = Start-Process -FilePath $iscc -ArgumentList '/?' -Wait -PassThru -NoNewWindow `
+            -RedirectStandardOutput $helpOutput -RedirectStandardError $helpError
+          $compilerBanner = Get-Content -LiteralPath $helpOutput -Raw
+          # Inno 6 的 /? 正常帮助请求返回 1，不代表编译失败。
+          if ($compiler.ExitCode -notin @(0, 1) -or $compilerBanner -notmatch '(?m)^Inno Setup 6 Command-Line Compiler\s*$') {
+            throw "必须使用可运行的 Inno Setup 6，编译器帮助输出：$compilerBanner"
           }
 
           "INNO_SETUP_ISCC=$iscc" >> $env:GITHUB_ENV
-          "Inno Setup：$($isccInfo.ProductVersion) ($iscc)" >> $env:GITHUB_STEP_SUMMARY
+          "Inno Setup 6 编译器已验证：$iscc" >> $env:GITHUB_STEP_SUMMARY
 
       - name: 运行 WPF Release 测试
         shell: pwsh
