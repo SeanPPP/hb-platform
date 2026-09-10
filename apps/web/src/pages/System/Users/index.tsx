@@ -672,9 +672,14 @@ export default function SystemUsersPage() {
         ])
         return {
           stores: stores.items,
-          targetKeys: sortStoreGuids(userStores.map((item) => item.storeGUID)),
-          manageableKeys: sortStoreGuids(
+          // 使用本次请求的门店名称排序，避免首次打开时读取尚未更新的 allStores。
+          targetKeys: sortStoreGuidsFromStores(
+            userStores.map((item) => item.storeGUID),
+            stores.items,
+          ),
+          manageableKeys: sortStoreGuidsFromStores(
             userStores.filter((item) => item.isManageable).map((item) => item.storeGUID),
+            stores.items,
           ),
         }
       },
