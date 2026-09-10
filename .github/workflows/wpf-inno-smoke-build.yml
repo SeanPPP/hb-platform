@@ -1,6 +1,6 @@
 name: WPF Inno 内部烟测安装包
 
-run-name: WPF Inno ${{ inputs.version }}（内部烟测）
+run-name: WPF Inno ${{ inputs.version }}（${{ inputs.followup_ci7 && 'CI7 定向复核' || '完整烟测' }}）
 
 on:
   workflow_dispatch:
@@ -9,6 +9,11 @@ on:
         description: 版本号（例如 1.0.11）
         required: true
         type: string
+      followup_ci7:
+        description: 仅限 1.0.28：沿用 CI7 全套结果，隔离复测两个调度失败用例
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -24,10 +29,17 @@ jobs:
     timeout-minutes: 90
     env:
       REQUESTED_VERSION: ${{ inputs.version }}
+      FOLLOWUP_CI7: ${{ inputs.followup_ci7 }}
+      CI7_BASELINE_COMMIT: 61c98330be8a8cfe834b2007bb2130e4f474d425
+      CI7_BASELINE_RUN_ID: '34458477752'
+      PRIOR_FULL_SUITE_RUN_ID: '34455953441'
+      PRIOR_FULL_SUITE_COMMIT: 682cda0e2bbb7805289cca3ed985c7465088e74f
 
     steps:
       - name: 检出源码
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: ${{ inputs.followup_ci7 && '0' || '1' }}
 
       - name: 校验版本号
         id: version
@@ -43,6 +55,61 @@ jobs:
           }
 
           "normalized=$version" >> $env:GITHUB_OUTPUT
+
+      - name: 校验 CI7 定向复核输入未变化
+        if: ${{ inputs.followup_ci7 }}
+        shell: pwsh
+        run: |
+          $version = '${{ steps.version.outputs.normalized }}'
+          if ($version -ne '1.0.28') {
+            throw "CI7 定向复核仅允许构建 1.0.28，实际版本：$version"
+          }
+
+          git cat-file -e "$env:CI7_BASELINE_COMMIT^{commit}"
+          if ($LASTEXITCODE -ne 0) {
+            throw "找不到 CI7 基线提交：$env:CI7_BASELINE_COMMIT"
+          }
+          git merge-base --is-ancestor $env:CI7_BASELINE_COMMIT HEAD
+          if ($LASTEXITCODE -ne 0) {
+            throw "当前提交不是 CI7 基线 $env:CI7_BASELINE_COMMIT 的后继，禁止沿用其全套测试证据。"
+          }
+
+          # 这些路径覆盖客户端、三个测试项目、安装包脚本和全部直接项目依赖。
+          $protectedPaths = @(
+            'apps/pos-wpf/installer'
+            'apps/pos-wpf/scripts/Build-WpfInnoInstaller.ps1'
+            'apps/pos-wpf/src/Hbpos.Client.Wpf'
+            'apps/pos-wpf/src/Hbpos.Contracts'
+            'apps/pos-wpf/src/Hbpos.RemoteMaintenance.Setup'
+            'apps/pos-wpf/src/Hbpos.RemoteStatus'
+            'apps/pos-wpf/tests/Hbpos.Client.Tests'
+            'apps/pos-wpf/tests/Hbpos.Client.UiTests'
+            'apps/pos-wpf/tests/Hbpos.RemoteStatus.Tests'
+            'services/backend/BlazorApp.Shared'
+            'test-fixtures/shared-held-orders'
+            'global.json'
+          )
+          $changedInputs = @(git diff --name-only "$env:CI7_BASELINE_COMMIT..HEAD" -- $protectedPaths)
+          if ($LASTEXITCODE -ne 0) {
+            throw '无法比较 CI7 基线与当前提交的 WPF 输入。'
+          }
+          if ($changedInputs.Count -ne 0) {
+            throw "CI7 后 WPF 构建或测试输入已变化，必须运行完整烟测：`n$($changedInputs -join "`n")"
+          }
+
+          $logsDir = Join-Path $PWD '.artifacts\wpf-release\logs'
+          New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
+          @(
+            "mode=ci7-targeted-followup"
+            "baselineRunId=$env:CI7_BASELINE_RUN_ID"
+            "baselineCommit=$env:CI7_BASELINE_COMMIT"
+            "priorFullSuiteRunId=$env:PRIOR_FULL_SUITE_RUN_ID"
+            "priorFullSuiteCommit=$env:PRIOR_FULL_SUITE_COMMIT"
+            "sourceCommit=${{ github.sha }}"
+            'protectedInputsChanged=false'
+          ) | Set-Content -LiteralPath (Join-Path $logsDir 'ci7-followup-input-guard.txt') -Encoding utf8
+
+          "CI7 定向复核输入闭包与基线一致：$env:CI7_BASELINE_COMMIT" >> $env:GITHUB_STEP_SUMMARY
 
       - name: 安装 .NET 8 与仓库固定 SDK
         uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
@@ -90,6 +157,7 @@ jobs:
           "Inno Setup 6 编译器已验证：$iscc" >> $env:GITHUB_STEP_SUMMARY
 
       - name: 运行 WPF Release 测试
+        if: ${{ !inputs.followup_ci7 }}
         shell: pwsh
         run: |
           $version = '${{ steps.version.outputs.normalized }}'
@@ -109,6 +177,74 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Hbpos.Client.Tests 失败，退出码：$LASTEXITCODE"
           }
+
+      - name: 隔离复测 CI7 调度失败用例
+        if: ${{ inputs.followup_ci7 }}
+        shell: pwsh
+        run: |
+          $version = '${{ steps.version.outputs.normalized }}'
+          $resultsDir = Join-Path $PWD '.artifacts\wpf-release\test-results'
+          $logsDir = Join-Path $PWD '.artifacts\wpf-release\logs'
+          New-Item -ItemType Directory -Path $resultsDir, $logsDir -Force | Out-Null
+
+          dotnet build apps/pos-wpf/tests/Hbpos.Client.Tests/Hbpos.Client.Tests.csproj `
+            --configuration Release `
+            -p:HbposWpfAppVersion=$version `
+            2>&1 | Tee-Object -FilePath (Join-Path $logsDir 'Hbpos.Client.Tests.CI7Followup.build.log')
+          if ($LASTEXITCODE -ne 0) {
+            throw "Hbpos.Client.Tests 定向复核构建失败，退出码：$LASTEXITCODE"
+          }
+
+          $tests = @(
+            [pscustomobject]@{
+              Name = 'CatalogHeartbeat'
+              FullyQualifiedName = 'Hbpos.Client.Tests.PosTerminalCashPaymentViewModelTests.Pos_terminal_catalog_match_refresh_does_not_block_ui_heartbeat_when_search_is_slow'
+            }
+            [pscustomobject]@{
+              Name = 'DisposeCancellation'
+              FullyQualifiedName = 'Hbpos.Client.Tests.PosTerminalCashPaymentViewModelTests.Pos_terminal_dispose_cancels_inflight_catalog_match_refresh'
+            }
+          )
+
+          foreach ($test in $tests) {
+            foreach ($attempt in 1..5) {
+              $resultName = "Hbpos.Client.Tests.CI7Followup.$($test.Name).$attempt.trx"
+              $logPath = Join-Path $logsDir "Hbpos.Client.Tests.CI7Followup.$($test.Name).$attempt.log"
+              # 每次 dotnet test 启动独立 testhost，避免一次进程内的线程池和 GC 状态污染复测证据。
+              dotnet test apps/pos-wpf/tests/Hbpos.Client.Tests/Hbpos.Client.Tests.csproj `
+                --configuration Release `
+                -p:HbposWpfAppVersion=$version `
+                --no-build `
+                --no-restore `
+                --filter "FullyQualifiedName=$($test.FullyQualifiedName)" `
+                --logger 'console;verbosity=normal' `
+                --logger "trx;LogFileName=$resultName" `
+                --results-directory $resultsDir `
+                -- xUnit.ParallelizeTestCollections=false xUnit.DiagnosticMessages=true `
+                2>&1 | Tee-Object -FilePath $logPath
+              if ($LASTEXITCODE -ne 0) {
+                throw "CI7 定向复测失败：$($test.FullyQualifiedName)，隔离进程轮次 $attempt。"
+              }
+              # 零匹配也可能返回退出码 0；必须从 TRX 证明本轮只执行并通过指定用例。
+              [xml]$trx = Get-Content -LiteralPath (Join-Path $resultsDir $resultName) -Raw
+              $counters = $trx.TestRun.ResultSummary.Counters
+              if ($null -eq $counters -or [int]$counters.total -ne 1 -or [int]$counters.passed -ne 1 -or
+                  [int]$counters.failed -ne 0 -or [int]$counters.error -ne 0 -or
+                  [int]$counters.aborted -ne 0 -or [int]$counters.notExecuted -ne 0) {
+                throw "CI7 定向复测 TRX 未证明恰好 1/1 通过：$resultName"
+              }
+            }
+          }
+
+          @"
+          ## CI7 WPF Client.Tests 定向复核
+
+          - CI7 基线运行：``$env:CI7_BASELINE_RUN_ID``（3884 通过、2 个调度型失败）
+          - 基线提交：``$env:CI7_BASELINE_COMMIT``
+          - 此前完整 Client.Tests 成功运行：``$env:PRIOR_FULL_SUITE_RUN_ID``（提交 ``$env:PRIOR_FULL_SUITE_COMMIT``，该运行随后因安装包版本空格核验失败）
+          - 本次验证：两个精确失败用例各 5 个隔离 testhost，合计 10 次通过
+          - 结论边界：本次没有重新运行完整 Client.Tests，不标记为本次 full green
+          "@ >> $env:GITHUB_STEP_SUMMARY
 
       - name: 运行远程维护服务测试
         shell: pwsh
@@ -220,6 +356,13 @@ jobs:
           $report = [ordered]@{
             version = $version
             sourceCommit = '${{ github.sha }}'
+            clientTestValidationMode = if ($env:FOLLOWUP_CI7 -eq 'true') { 'ci7-targeted-followup' } else { 'full-suite' }
+            clientTestFullSuitePassedInCurrentRun = $env:FOLLOWUP_CI7 -ne 'true'
+            clientTestBaselineRunId = if ($env:FOLLOWUP_CI7 -eq 'true') { $env:CI7_BASELINE_RUN_ID } else { $null }
+            clientTestBaselineCommit = if ($env:FOLLOWUP_CI7 -eq 'true') { $env:CI7_BASELINE_COMMIT } else { $null }
+            priorFullSuiteRunId = if ($env:FOLLOWUP_CI7 -eq 'true') { $env:PRIOR_FULL_SUITE_RUN_ID } else { $null }
+            priorFullSuiteCommit = if ($env:FOLLOWUP_CI7 -eq 'true') { $env:PRIOR_FULL_SUITE_COMMIT } else { $null }
+            clientTestTargetedIsolatedRuns = if ($env:FOLLOWUP_CI7 -eq 'true') { 10 } else { 0 }
             configuration = 'Release'
             runtimeIdentifier = 'win-x64'
             deploymentMode = 'framework-dependent'
@@ -252,12 +395,14 @@ jobs:
           - Authenticode：``$($signature.Status)``
           - 运行时要求：``.NET 8 Desktop Runtime x64``
           - 发布属性：内部烟测、framework-dependent、未签名、非正式生产包
+          - Client.Tests 验证：``$($report.clientTestValidationMode)``
+          - 本次完整 Client.Tests：``$($report.clientTestFullSuitePassedInCurrentRun)``
           "@ >> $env:GITHUB_STEP_SUMMARY
 
       - name: 上传 EXE、SHA256 和核验报告
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: wpf-inno-${{ steps.version.outputs.normalized }}-x64
+          name: wpf-inno-${{ steps.version.outputs.normalized }}-x64-${{ inputs.followup_ci7 && 'ci7-followup' || 'full' }}
           path: |
             .artifacts/wpf-release/${{ steps.version.outputs.normalized }}/Hbpos.Client.Wpf-${{ steps.version.outputs.normalized }}-x64.exe
             .artifacts/wpf-release/${{ steps.version.outputs.normalized }}/Hbpos.Client.Wpf-${{ steps.version.outputs.normalized }}-x64.exe.sha256
