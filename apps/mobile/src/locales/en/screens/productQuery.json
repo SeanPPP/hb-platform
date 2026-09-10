@@ -122,6 +122,8 @@
   },
   "lookup": {
     "title": "Choose a matching product",
+    "count": "Matching products: {{count}}",
+    "noImage": "No image",
     "query": "Query: {{value}}",
     "viewDetail": "View details",
     "source": {
