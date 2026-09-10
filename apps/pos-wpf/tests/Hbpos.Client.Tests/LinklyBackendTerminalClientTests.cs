@@ -316,6 +316,75 @@ public sealed class LinklyBackendTerminalClientTests
     }
 
     [Fact]
+    public async Task TestTerminalConnectionAsync_echoes_terminal_version_without_conversion()
+    {
+        HttpRequestMessage? captured = null;
+        const string version = "2026-09-10T01:02:03.1234567";
+        var terminalId = Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd");
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            captured = CloneRequestWithBody(request);
+            return JsonResponse(JsonSerializer.Serialize(new
+            {
+                success = true,
+                data = new
+                {
+                    terminalId,
+                    environment = "Sandbox",
+                    terminalVersion = version,
+                    assignedDeviceCode = "POS-1",
+                    assignmentRevision = 9,
+                    succeeded = true,
+                    status = "connected",
+                    checkedAt = "2026-09-10T01:03:00Z",
+                    message = "Connected"
+                }
+            }));
+        }, passHealthRequestsToHandler: true);
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+
+        var result = await client.TestTerminalConnectionAsync(
+            terminalId,
+            new LinklyCloudTerminalConnectionTestRequest("Sandbox", version, "POS-1", 9));
+
+        Assert.Equal(HttpMethod.Post, captured!.Method);
+        Assert.EndsWith($"/terminals/{terminalId:D}/connection-test", captured.RequestUri!.AbsolutePath, StringComparison.Ordinal);
+        var body = await captured.Content!.ReadAsStringAsync();
+        Assert.Equal(version, ReadJsonString(body, "expectedTerminalVersion"));
+        Assert.Equal(version, result.TerminalVersion);
+        Assert.Equal("connected", result.Status);
+    }
+
+    [Fact]
+    public async Task AssignTerminalAsync_sends_null_target_for_unbind_and_returns_authoritative_directory()
+    {
+        HttpRequestMessage? captured = null;
+        var terminalId = Guid.Parse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee");
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            captured = CloneRequestWithBody(request);
+            return JsonResponse(
+                """
+                {"success":true,"data":{"environment":"Sandbox","selectedTerminalId":null,"selectionRevision":4,"terminals":[],"mode":"Active","devices":[]}}
+                """);
+        }, passHealthRequestsToHandler: true);
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+
+        var result = await client.AssignTerminalAsync(
+            terminalId,
+            new LinklyCloudTerminalAssignmentRequest("Sandbox", "v-1", "POS-1", 3, null, null, 0));
+
+        Assert.Equal(HttpMethod.Put, captured!.Method);
+        Assert.EndsWith($"/terminals/{terminalId:D}/assignment", captured.RequestUri!.AbsolutePath, StringComparison.Ordinal);
+        var body = await captured.Content!.ReadAsStringAsync();
+        using var json = JsonDocument.Parse(body);
+        Assert.False(json.RootElement.TryGetProperty("targetDeviceCode", out _));
+        Assert.False(json.RootElement.TryGetProperty("expectedTargetTerminalId", out _));
+        Assert.Equal("v-1", json.RootElement.GetProperty("expectedTerminalVersion").GetString());
+        Assert.Equal(4, result.SelectionRevision);
+    }
+
+    [Fact]
     public async Task PurchaseAsync_includes_cached_terminal_id_and_selection_revision()
     {
         var requests = new List<HttpRequestMessage>();

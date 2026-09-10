@@ -193,6 +193,7 @@ public static class ServiceRegistration
             sp.GetRequiredService<SharedHeldOrderPublicationHostedService>());
         services.AddSingleton<ILocalCardPaymentAttemptRepository, LocalCardPaymentAttemptRepository>();
         services.AddSingleton<ILinklyPaymentAttemptContextAccessor, LinklyPaymentAttemptContextAccessor>();
+        services.AddSingleton<ILinklyTerminalSelectionTransitionGate, LinklyTerminalSelectionTransitionGate>();
         services.AddSingleton<ILocalSquarePaymentAttemptRepository, LocalSquarePaymentAttemptRepository>();
         services.AddSingleton<ISquarePaymentAttemptContextAccessor, SquarePaymentAttemptContextAccessor>();
         services.AddSingleton<ILocalInstallmentOrderRepository, LocalInstallmentOrderRepository>();
@@ -208,6 +209,8 @@ public static class ServiceRegistration
         services.AddSingleton<ISyncQueueRepository, SyncQueueRepository>();
         services.AddSingleton<ILocalDailyCloseRepository, LocalDailyCloseRepository>();
         services.AddSingleton<ILocalLinklySettlementRepository, LocalLinklySettlementRepository>();
+        services.AddSingleton<ILinklyUnresolvedSettlementReader>(sp =>
+            sp.GetRequiredService<ILocalLinklySettlementRepository>());
         services.AddSingleton<ITestSalesDataResetService, TestSalesDataResetService>();
         services.AddHttpClient<ICatalogApiClient, CatalogApiClient>(client =>
         {
@@ -478,7 +481,12 @@ public static class ServiceRegistration
             sp.GetRequiredService<ILinklyCloudCredentialApiClient>(),
             sp.GetRequiredService<ILinklyCloudTerminalClient>(),
             sp.GetRequiredService<ILinklyBackendTerminalClient>(),
-            sp.GetRequiredService<DeviceAuthorizationState>()));
+            sp.GetRequiredService<DeviceAuthorizationState>(),
+            localization: sp.GetRequiredService<ILocalizationService>(),
+            cardPaymentRecoveryService: sp.GetRequiredService<ICardPaymentRecoveryService>(),
+            linklyPaymentAttemptContextAccessor: sp.GetRequiredService<ILinklyPaymentAttemptContextAccessor>(),
+            linklyTerminalSelectionTransitionGate: sp.GetRequiredService<ILinklyTerminalSelectionTransitionGate>(),
+            linklySettlementRepository: sp.GetRequiredService<ILinklyUnresolvedSettlementReader>()));
         services.AddHttpClient<ICardTerminalClient, ConfiguredCardTerminalClient>(client =>
         {
             client.BaseAddress = initialApiAddress;

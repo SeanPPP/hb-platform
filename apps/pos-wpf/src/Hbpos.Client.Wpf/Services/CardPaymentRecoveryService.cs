@@ -330,7 +330,8 @@ public sealed class CardPaymentRecoveryService(
     ILinklyTerminalClient? linklyTerminalClient = null,
     FinancialSupervisorAuditReplayService? supervisorAuditReplay = null,
     ISharedHeldOrderRepository? sharedHeldOrderRepository = null,
-    ILinklyCloudTerminalClient? cloudTerminalClient = null) : ICardPaymentRecoveryService
+    ILinklyCloudTerminalClient? cloudTerminalClient = null,
+    ILinklyTerminalSelectionTransitionGate? linklyTerminalSelectionTransitionGate = null) : ICardPaymentRecoveryService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -340,6 +341,20 @@ public sealed class CardPaymentRecoveryService(
             : new SharedHeldOrderPaymentSourceResolver(
                 sharedHeldOrderRepository,
                 new SharedHeldOrderReverseMapper());
+
+    private async Task<T> RunWithTerminalSelectionAsync<T>(
+        Func<Task<T>> action,
+        CancellationToken cancellationToken)
+    {
+        if (linklyTerminalSelectionTransitionGate is null)
+        {
+            return await action();
+        }
+
+        // 仅包住会读取当前终端选择的请求；按 SessionId 的后续查询不依赖当前分配。
+        await using var lease = await linklyTerminalSelectionTransitionGate.EnterFinancialOperationAsync(cancellationToken);
+        return await action();
+    }
 
     private async Task<LocalHeldOrderCompletionContext?> TryResolveHeldOrderAsync(
         PosSessionState session,
@@ -833,7 +848,9 @@ public sealed class CardPaymentRecoveryService(
         {
             status = !statusFromResumable
                 ? await backendTerminalClient.GetSessionStatusAsync(settings, attempt.SessionId!, cancellationToken)
-                : await backendTerminalClient.GetResumableSessionAsync(settings, cancellationToken);
+                : await RunWithTerminalSelectionAsync(
+                    () => backendTerminalClient.GetResumableSessionAsync(settings, cancellationToken),
+                    cancellationToken);
 
             // 鏈?SessionId 浣嗗悗绔?session 宸茶繃鏈?娓呯悊锛屽厹搴曞皾璇?Resumable
             if (!statusFromResumable && status is null)
@@ -841,7 +858,9 @@ public sealed class CardPaymentRecoveryService(
                 ConsoleLog.Write(
                     "CardRecovery",
                     $"recover session-status-null retrying-resumable attemptGuid={attempt.AttemptGuid} sessionId={LogValue(attempt.SessionId)}");
-                status = await backendTerminalClient.GetResumableSessionAsync(settings, cancellationToken);
+                status = await RunWithTerminalSelectionAsync(
+                    () => backendTerminalClient.GetResumableSessionAsync(settings, cancellationToken),
+                    cancellationToken);
             }
 
             if (status is not null)
@@ -1452,13 +1471,15 @@ public sealed class CardPaymentRecoveryService(
         try
         {
             // 中文注释：按交易冻结的模式只查询原交易；直连使用持久化的 session，禁止重发扣款。
-            authorization = directCloud
-                ? await cloudTerminalClient!.RecoverTransactionAsync(
-                    attempt.Amount, draft?.Session ?? currentSession,
-                    settings with { LinklyConnectionMode = LinklyConnectionMode.CloudDirectSync },
-                    attempt.SessionId!, txnRef, cancellationToken)
-                : await linklyTerminalClient!.RecoverLastTransactionAsync(
-                    attempt.Amount, draft?.Session ?? currentSession, settings, txnRef, cancellationToken);
+            authorization = await RunWithTerminalSelectionAsync(
+                () => directCloud
+                    ? cloudTerminalClient!.RecoverTransactionAsync(
+                        attempt.Amount, draft?.Session ?? currentSession,
+                        settings with { LinklyConnectionMode = LinklyConnectionMode.CloudDirectSync },
+                        attempt.SessionId!, txnRef, cancellationToken)
+                    : linklyTerminalClient!.RecoverLastTransactionAsync(
+                        attempt.Amount, draft?.Session ?? currentSession, settings, txnRef, cancellationToken),
+                cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException and not OutOfMemoryException and not StackOverflowException)
         {
@@ -2049,7 +2070,9 @@ public sealed class CardPaymentRecoveryService(
         LinklyCloudBackendSessionResponse? status = null;
         try
         {
-            status = await backendTerminalClient.GetResumableSessionAsync(settings, cancellationToken);
+            status = await RunWithTerminalSelectionAsync(
+                () => backendTerminalClient.GetResumableSessionAsync(settings, cancellationToken),
+                cancellationToken);
             if (status is null)
             {
                 if (persistedAttempt is not null)

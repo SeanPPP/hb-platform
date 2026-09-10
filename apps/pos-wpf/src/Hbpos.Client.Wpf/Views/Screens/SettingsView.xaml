@@ -1629,6 +1629,7 @@
                                                 </ComboBox>
                                                 <Button Grid.Column="2"
                                                         Click="RefreshLinklyCloudTerminals_Click"
+                                                        IsEnabled="{Binding CanRefreshLinklyCloudTerminals}"
                                                         Style="{StaticResource PosSecondaryButtonStyle}"
                                                         Height="42"
                                                         MinWidth="108">
@@ -1638,6 +1639,99 @@
                                                     </StackPanel>
                                                 </Button>
                                             </Grid>
+
+                                            <Border Background="#FFFFF4DE"
+                                                    BorderBrush="#FFF2D3A2"
+                                                    BorderThickness="1"
+                                                    CornerRadius="6"
+                                                    Padding="12,8"
+                                                    Margin="0,0,0,12"
+                                                    Visibility="{Binding IsLinklyCloudLineManagementUnavailable, Converter={StaticResource BoolToVis}}">
+                                                <TextBlock Text="{Binding LinklyCloudLineManagementMessage}"
+                                                           FontSize="11"
+                                                           Foreground="#FF8F4E00"
+                                                           TextWrapping="Wrap" />
+                                            </Border>
+
+                                            <ItemsControl ItemsSource="{Binding LinklyCloudTerminalItems}"
+                                                          Margin="0,0,0,14"
+                                                          AutomationProperties.AutomationId="LinklyCloudTerminalLineList">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <Border Background="#FFF8F9FB"
+                                                                BorderBrush="{StaticResource PosBorderBrush}"
+                                                                BorderThickness="1"
+                                                                CornerRadius="6"
+                                                                Padding="12,10"
+                                                                Margin="0,0,0,8">
+                                                            <StackPanel>
+                                                                <Grid>
+                                                                    <Grid.ColumnDefinitions>
+                                                                        <ColumnDefinition Width="Auto" />
+                                                                        <ColumnDefinition Width="*" />
+                                                                        <ColumnDefinition Width="Auto" />
+                                                                    </Grid.ColumnDefinitions>
+                                                                    <Border Background="#FFE9EFF9" CornerRadius="4" Padding="7,3" Margin="0,0,9,0">
+                                                                        <TextBlock Text="{Binding LaneText}" FontSize="11" FontWeight="Bold" />
+                                                                    </Border>
+                                                                    <StackPanel Grid.Column="1">
+                                                                        <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold" />
+                                                                        <TextBlock FontSize="11" Foreground="{StaticResource PosMutedForegroundBrush}">
+                                                                            <Run Text="{loc:Loc settings.linkly.cloudBackend.pairingState}" /><Run Text=": " />
+                                                                            <Run Text="{Binding PairingStateText}" /><Run Text=" · " />
+                                                                            <Run Text="{loc:Loc settings.linkly.cloudBackend.boundDevice}" /><Run Text=": " />
+                                                                            <Run Text="{Binding AssignedDeviceCode, TargetNullValue=—}" />
+                                                                        </TextBlock>
+                                                                    </StackPanel>
+                                                                    <StackPanel Grid.Column="2" HorizontalAlignment="Right">
+                                                                        <TextBlock Text="{Binding ConnectionStatus}" FontSize="11" TextAlignment="Right" TextWrapping="Wrap" MaxWidth="260" />
+                                                                        <TextBlock FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}" TextAlignment="Right">
+                                                                            <Run Text="{loc:Loc settings.linkly.cloudBackend.lastTested}" /><Run Text=": " /><Run Text="{Binding LastTestedText}" />
+                                                                        </TextBlock>
+                                                                    </StackPanel>
+                                                                </Grid>
+                                                                <WrapPanel Margin="0,10,0,0">
+                                                                    <ComboBox ItemsSource="{Binding AssignableDevices}"
+                                                                              SelectedItem="{Binding SelectedTargetDevice, Mode=TwoWay}"
+                                                                              Width="220" MinHeight="36" Padding="8,4">
+                                                                        <ComboBox.ItemTemplate>
+                                                                            <DataTemplate>
+                                                                                <TextBlock>
+                                                                                    <Run Text="{Binding DeviceCode}" /><Run Text=" · " /><Run Text="{Binding DeviceSystem}" />
+                                                                                </TextBlock>
+                                                                            </DataTemplate>
+                                                                        </ComboBox.ItemTemplate>
+                                                                    </ComboBox>
+                                                                    <Button Margin="8,0,0,8" Padding="10,5"
+                                                                            Style="{StaticResource PosSecondaryButtonStyle}"
+                                                                            Command="{Binding DataContext.TestLinklyCloudTerminalCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                            CommandParameter="{Binding}">
+                                                                        <TextBlock Text="{loc:Loc settings.linkly.cloudBackend.testLine}" />
+                                                                    </Button>
+                                                                    <Button Margin="8,0,0,8" Padding="10,5"
+                                                                            Style="{StaticResource PosPrimaryButtonStyle}"
+                                                                            Command="{Binding DataContext.UseLinklyCloudTerminalCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                            CommandParameter="{Binding}">
+                                                                        <TextBlock Text="{loc:Loc settings.linkly.cloudBackend.useLine}" Foreground="White" />
+                                                                    </Button>
+                                                                    <Button Margin="8,0,0,8" Padding="10,5"
+                                                                            Style="{StaticResource PosSecondaryButtonStyle}"
+                                                                            Command="{Binding DataContext.ChangeLinklyCloudTerminalAssignmentCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                            CommandParameter="{Binding}">
+                                                                        <TextBlock Text="{loc:Loc settings.linkly.cloudBackend.changeBinding}" />
+                                                                    </Button>
+                                                                    <Button Margin="8,0,0,8" Padding="10,5"
+                                                                            Style="{StaticResource PosSecondaryButtonStyle}"
+                                                                            Command="{Binding DataContext.UnassignLinklyCloudTerminalCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                            CommandParameter="{Binding}">
+                                                                        <TextBlock Text="{loc:Loc settings.linkly.cloudBackend.unassign}" />
+                                                                    </Button>
+                                                                </WrapPanel>
+                                                            </StackPanel>
+                                                        </Border>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
 
                                             <Border Background="#FFF8F9FB"
                                                     BorderBrush="{StaticResource PosBorderBrush}"
