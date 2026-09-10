@@ -122,6 +122,8 @@
   },
   "lookup": {
     "title": "选择匹配商品",
+    "count": "匹配结果：{{count}}",
+    "noImage": "暂无图片",
     "query": "查询值：{{value}}",
     "viewDetail": "查看详情",
     "source": {
