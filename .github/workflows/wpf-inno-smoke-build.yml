@@ -179,6 +179,9 @@ jobs:
           $appInfo = (Get-Item -LiteralPath $appPath).VersionInfo
           $installerFile = Get-Item -LiteralPath $installerPath
           $installerInfo = $installerFile.VersionInfo
+          # Inno 版本资源会保留固定长度的尾部填充空格，比较和报告均使用实际版本文本。
+          $installerFileVersion = $installerInfo.FileVersion.Trim()
+          $installerProductVersion = $installerInfo.ProductVersion.Trim()
           $hash = (Get-FileHash -LiteralPath $installerPath -Algorithm SHA256).Hash.ToLowerInvariant()
           $signature = Get-AuthenticodeSignature -LiteralPath $installerPath
 
@@ -188,11 +191,11 @@ jobs:
           if (!$appInfo.ProductVersion.StartsWith($version, [System.StringComparison]::OrdinalIgnoreCase)) {
             throw "主程序 ProductVersion 不匹配：$($appInfo.ProductVersion)，预期以 $version 开头"
           }
-          if ($installerInfo.FileVersion -ne $expectedFileVersion) {
-            throw "安装包 FileVersion 不匹配：$($installerInfo.FileVersion)，预期：$expectedFileVersion"
+          if ($installerFileVersion -ne $expectedFileVersion) {
+            throw "安装包 FileVersion 不匹配：$installerFileVersion，预期：$expectedFileVersion"
           }
-          if ($installerInfo.ProductVersion -ne $version) {
-            throw "安装包 ProductVersion 不匹配：$($installerInfo.ProductVersion)，预期：$version"
+          if ($installerProductVersion -ne $version) {
+            throw "安装包 ProductVersion 不匹配：$installerProductVersion，预期：$version"
           }
           if ($signature.Status.ToString() -ne 'NotSigned') {
             throw "内部烟测包预期未签名，实际状态：$($signature.Status)"
@@ -225,8 +228,8 @@ jobs:
             installerFileName = $installerName
             installerFileSize = $installerFile.Length
             installerSha256 = $hash
-            installerFileVersion = $installerInfo.FileVersion
-            installerProductVersion = $installerInfo.ProductVersion
+            installerFileVersion = $installerFileVersion
+            installerProductVersion = $installerProductVersion
             installerSignatureStatus = $signature.Status.ToString()
             appFileVersion = $appInfo.FileVersion
             appProductVersion = $appInfo.ProductVersion
@@ -244,8 +247,8 @@ jobs:
           - SHA256：``$hash``
           - 主程序 FileVersion：``$($appInfo.FileVersion)``
           - 主程序 ProductVersion：``$($appInfo.ProductVersion)``
-          - 安装包 FileVersion：``$($installerInfo.FileVersion)``
-          - 安装包 ProductVersion：``$($installerInfo.ProductVersion)``
+          - 安装包 FileVersion：``$installerFileVersion``
+          - 安装包 ProductVersion：``$installerProductVersion``
           - Authenticode：``$($signature.Status)``
           - 运行时要求：``.NET 8 Desktop Runtime x64``
           - 发布属性：内部烟测、framework-dependent、未签名、非正式生产包
