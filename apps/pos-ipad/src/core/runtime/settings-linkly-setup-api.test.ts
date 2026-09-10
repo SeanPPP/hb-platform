@@ -746,6 +746,7 @@ test("Linkly 单线路连接测试携带完整并发前置条件并校验回包�
       expectedAssignmentRevision: 0,
     },
     signal,
+    timeoutMs: 240_000,
   });
 });
 

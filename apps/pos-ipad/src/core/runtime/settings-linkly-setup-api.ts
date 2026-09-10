@@ -31,6 +31,9 @@ type LinklyAssignmentRequest =
 // 避免全局 15 秒默认值把正常慢配对误报为 unknown。
 const LINKLY_PAIR_REQUEST_TIMEOUT_MS = 270_000;
 
+// 管理检测在服务端以 180 秒统一约束 token 与 Status；客户端保留收尾余量。
+const LINKLY_CONNECTION_TEST_TIMEOUT_MS = 240_000;
+
 export class HbposSettingsLinklySetupApi
   implements SettingsLinklySetupControlPort, SettingsLinklyPairingPort
 {
@@ -178,6 +181,7 @@ export class HbposSettingsLinklySetupApi
           expectedAssignmentRevision: terminal.assignmentRevision,
         } satisfies LinklyConnectionTestRequest,
         signal,
+        timeoutMs: LINKLY_CONNECTION_TEST_TIMEOUT_MS,
       });
       const result = normalizeConnectionTest(
         environment,
