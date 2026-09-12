@@ -19,6 +19,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import shopBrandCart from '../assets/shop-brand-cart.png'
+import './ShopWorkspace.css'
 import LanguageSwitch from '../components/LanguageSwitch'
 import RouteLoadBoundary from '../components/RouteLoadBoundary'
 import ShopCartDrawer from '../components/ShopCartDrawer'
@@ -466,7 +467,7 @@ export default function ShopLayout() {
   }
 
   return (
-    <div className="shop-layout">
+    <div className={`shop-layout${isComingSoonPage || isLocalSupplierInvoicesPage ? ' shop-workspace-layout' : ''}`}>
       <header className="shop-main-header">
         <div className="shop-shell">
           <button
