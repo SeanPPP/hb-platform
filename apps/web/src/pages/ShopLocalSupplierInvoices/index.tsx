@@ -1,6 +1,6 @@
 import {
   CalendarOutlined,
-  CheckCircleOutlined,
+  RightOutlined,
   FileSearchOutlined,
   ReloadOutlined,
   SearchOutlined,
@@ -10,7 +10,8 @@ import {
 import { Alert, Button, Empty, Input, Pagination, Select, Space, Spin, Tag, Typography } from 'antd'
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
+
 import {
   getShopLocalSupplierInvoiceGrid,
   getShopLocalSupplierInvoiceFilterOptions,
@@ -21,6 +22,8 @@ import type {
   ShopLocalSupplierInvoiceListItemDto,
 } from '../../types/localSupplierInvoice'
 import { RequestError } from '../../utils/request'
+
+import styles from './index.module.css'
 import { buildShopLocalSupplierInvoiceGridRequest } from './logic'
 
 const { Search } = Input
@@ -63,11 +66,11 @@ function getStatusMeta(
 ) {
   return status === undefined
     ? { key: 'shop.statusUnknown', fallback: '状态未知', color: 'default' }
-    : definitions[status] ?? {
+    : (definitions[status] ?? {
         key: 'shop.statusUnknown',
         fallback: '状态未知',
         color: 'default',
-      }
+      })
 }
 
 export default function ShopLocalSupplierInvoicesPage() {
@@ -170,16 +173,16 @@ export default function ShopLocalSupplierInvoicesPage() {
     [invoices],
   )
   const currentStoreName = storeCode
-    ? userStores.find((store) => store.storeCode === storeCode)?.storeName ?? storeCode
+    ? (userStores.find((store) => store.storeCode === storeCode)?.storeName ?? storeCode)
     : t('shopLocalSupplierInvoices.allStores')
   const currentSupplierName = supplierCode
-    ? supplierOptions.find((supplier) => supplier.value === supplierCode)?.label ?? supplierCode
+    ? (supplierOptions.find((supplier) => supplier.value === supplierCode)?.label ?? supplierCode)
     : t('shopLocalSupplierInvoices.allSuppliers')
 
   const handleStoreChange = (value: string) => {
     const nextStoreCode = value === ALL_STORES_VALUE ? null : value
     const nextStore = nextStoreCode
-      ? userStores.find((store) => store.storeCode === nextStoreCode) ?? null
+      ? (userStores.find((store) => store.storeCode === nextStoreCode) ?? null)
       : null
     setStoreCode(nextStoreCode)
     setSelectedStore(nextStore)
@@ -195,29 +198,24 @@ export default function ShopLocalSupplierInvoicesPage() {
   }
 
   return (
-    <div className="shop-orders-page shop-local-invoices-page">
-      <div className="shop-orders-hero">
-        <div>
+    <div className={`${styles.page} shop-orders-page shop-local-invoices-page`}>
+      <div className={styles.compactHeader}>
+        <div className={styles.headerCopy}>
           <div className="shop-orders-eyebrow">
             <FileSearchOutlined /> {t('shopLocalSupplierInvoices.eyebrow')}
           </div>
           <Title level={2}>{t('shopLocalSupplierInvoices.title')}</Title>
           <Text type="secondary">{t('shopLocalSupplierInvoices.description')}</Text>
         </div>
-        <div className="shop-orders-store-badge">
-          <ShopOutlined />
-          <span>{selectedStore?.storeName || t('shopLocalSupplierInvoices.currentAccessibleStores')}</span>
-        </div>
-      </div>
-
-      <div className="shop-orders-stats shop-local-invoice-stats">
-        <div className="shop-orders-stat-card">
-          <span className="shop-orders-stat-label">{t('shopLocalSupplierInvoices.invoiceCount')}</span>
-          <strong>{loadError ? '--' : total}</strong>
-        </div>
-        <div className="shop-orders-stat-card accent">
-          <span className="shop-orders-stat-label">{t('shopLocalSupplierInvoices.currentPageAmount')}</span>
-          <strong>{loadError ? '--' : formatMoney(currentPageAmount)}</strong>
+        <div className={styles.inlineStats} aria-label={t('shopLocalSupplierInvoices.invoiceCount')}>
+          <div>
+            <span>{t('shopLocalSupplierInvoices.invoiceCount')}</span>
+            <strong>{loadError ? '--' : total}</strong>
+          </div>
+          <div>
+            <span>{t('shopLocalSupplierInvoices.currentPageAmount')}</span>
+            <strong>{loadError ? '--' : formatMoney(currentPageAmount)}</strong>
+          </div>
         </div>
       </div>
 
@@ -276,7 +274,11 @@ export default function ShopLocalSupplierInvoicesPage() {
           type="warning"
           showIcon
           message={t('shopLocalSupplierInvoices.supplierLoadFailed')}
-          action={<Button size="small" onClick={() => setReloadVersion((current) => current + 1)}>{t('common.retry')}</Button>}
+          action={
+            <Button size="small" onClick={() => setReloadVersion((current) => current + 1)}>
+              {t('common.retry')}
+            </Button>
+          }
         />
       ) : null}
 
@@ -288,7 +290,9 @@ export default function ShopLocalSupplierInvoicesPage() {
       </div>
 
       {loading ? (
-        <div className="shop-orders-loading"><Spin size="large" /></div>
+        <div className="shop-orders-loading">
+          <Spin size="large" />
+        </div>
       ) : loadError ? (
         <div className="shop-orders-empty">
           <Empty
@@ -298,64 +302,99 @@ export default function ShopLocalSupplierInvoicesPage() {
                 : 'shopLocalSupplierInvoices.loadFailed',
             )}
           >
-            <Button type="primary" icon={<ReloadOutlined />} onClick={() => setReloadVersion((current) => current + 1)}>
+            <Button
+              type="primary"
+              icon={<ReloadOutlined />}
+              onClick={() => setReloadVersion((current) => current + 1)}
+            >
               {t('common.retry')}
             </Button>
           </Empty>
         </div>
       ) : invoices.length ? (
         <>
-          <div className="shop-orders-grid shop-local-invoice-grid">
-            {invoices.map((invoice) => {
-              const flowStatus = getStatusMeta(invoice.flowStatus, FLOW_STATUS_META)
-              const inboundStatus = getStatusMeta(invoice.inboundStatus, INBOUND_STATUS_META)
+          <div
+            className={`${styles.tableShell} shop-local-invoice-grid`}
+            role="region"
+            aria-label={t('shopLocalSupplierInvoices.title')}
+            tabIndex={0}
+          >
+            <table className={styles.invoiceTable} aria-label={t('shopLocalSupplierInvoices.title')}>
+              <thead>
+                <tr>
+                  <th>{t('shopLocalSupplierInvoices.invoiceNo')}</th>
+                  <th>{t('posAdmin.invoices.flowStatus', '流程状态')}</th>
+                  <th>{t('shopLocalSupplierInvoices.store')}</th>
+                  <th>{t('shopLocalSupplierInvoices.supplier')}</th>
+                  <th>{t('shopLocalSupplierInvoices.orderDate')}</th>
+                  <th>{t('shopLocalSupplierInvoices.inboundDate')}</th>
+                  <th>{t('posAdmin.invoices.inboundStatus', '收货状态')}</th>
+                  <th className={styles.numeric}>{t('shopLocalSupplierInvoices.totalAmount')}</th>
+                  <th className={styles.numeric}>{t('shopLocalSupplierInvoices.receivedAmount')}</th>
+                  <th aria-label={t('shopLocalSupplierInvoices.viewDetail')} />
+                </tr>
+              </thead>
+              <tbody>
+                {invoices.map((invoice) => {
+                  const flowStatus = getStatusMeta(invoice.flowStatus, FLOW_STATUS_META)
+                  const inboundStatus = getStatusMeta(invoice.inboundStatus, INBOUND_STATUS_META)
 
-              return (
-                <article key={invoice.invoiceGUID} className="shop-order-card shop-local-invoice-card">
-                  <div className="shop-order-card-top">
-                    <div className="shop-order-card-headline">
-                      <div className="shop-order-card-label">{t('shopLocalSupplierInvoices.invoiceNo')}</div>
-                      <Title level={4} className="shop-order-card-title">
-                        {invoice.invoiceNo || t('shopLocalSupplierInvoices.unknownInvoice')}
-                      </Title>
-                    </div>
-                    <Space wrap size={[4, 6]} className="shop-local-invoice-statuses">
-                      <Tag color={flowStatus.color}>{t(flowStatus.key, flowStatus.fallback)}</Tag>
-                      <Tag color={inboundStatus.color}>{t(inboundStatus.key, inboundStatus.fallback)}</Tag>
-                    </Space>
-                  </div>
-
-                  <div className="shop-order-card-meta">
-                    <div><ShopOutlined /><span>{invoice.storeName || invoice.storeCode || t('shopLocalSupplierInvoices.unknownStore')}</span></div>
-                    <div><TeamOutlined /><span>{invoice.supplierName || invoice.supplierCode || t('shopLocalSupplierInvoices.unknownSupplier')}</span></div>
-                    <div><CalendarOutlined /><span>{t('shopLocalSupplierInvoices.orderDate')}: {formatDate(invoice.orderDate, dateLocale)}</span></div>
-                    <div><CalendarOutlined /><span>{t('shopLocalSupplierInvoices.inboundDate')}: {formatDate(invoice.inboundDate, dateLocale)}</span></div>
-                  </div>
-
-                  <div className="shop-order-card-metrics">
-                    <div className="shop-order-metric amount">
-                      <span>{t('shopLocalSupplierInvoices.totalAmount')}</span>
-                      <strong>{formatMoney(invoice.totalAmount)}</strong>
-                    </div>
-                    <div className="shop-order-metric">
-                      <span>{t('shopLocalSupplierInvoices.receivedAmount')}</span>
-                      <strong>{formatMoney(invoice.receivedTotalAmount)}</strong>
-                    </div>
-                  </div>
-
-                  <button
-                    type="button"
-                    className="shop-order-card-footer shop-local-invoice-card-footer"
-                    onClick={() => navigate(`/shop/local-supplier-invoices/${encodeURIComponent(invoice.invoiceGUID)}`)}
-                  >
-                    <Space size={6}>
-                      <CheckCircleOutlined />
-                      <Text>{t('shopLocalSupplierInvoices.viewDetail')}</Text>
-                    </Space>
-                  </button>
-                </article>
-              )
-            })}
+                  return (
+                    <tr key={invoice.invoiceGUID}>
+                      <td className={styles.invoiceNumber}>
+                        <Link to={`/shop/local-supplier-invoices/${encodeURIComponent(invoice.invoiceGUID)}`}>
+                          {invoice.invoiceNo || t('shopLocalSupplierInvoices.unknownInvoice')}
+                        </Link>
+                      </td>
+                      <td>
+                        <Space wrap size={[4, 4]} className="shop-local-invoice-statuses">
+                          <Tag color={flowStatus.color}>{t(flowStatus.key, flowStatus.fallback)}</Tag>
+                        </Space>
+                      </td>
+                      <td>
+                        <ShopOutlined />{' '}
+                        {invoice.storeName ||
+                          invoice.storeCode ||
+                          t('shopLocalSupplierInvoices.unknownStore')}
+                      </td>
+                      <td>
+                        <TeamOutlined />{' '}
+                        {invoice.supplierName ||
+                          invoice.supplierCode ||
+                          t('shopLocalSupplierInvoices.unknownSupplier')}
+                      </td>
+                      <td>
+                        <CalendarOutlined /> {formatDate(invoice.orderDate, dateLocale)}
+                      </td>
+                      <td>
+                        <CalendarOutlined /> {formatDate(invoice.inboundDate, dateLocale)}
+                      </td>
+                      <td>
+                        <Tag color={inboundStatus.color}>{t(inboundStatus.key, inboundStatus.fallback)}</Tag>
+                      </td>
+                      <td className={`${styles.numeric} ${styles.amount}`}>
+                        {formatMoney(invoice.totalAmount)}
+                      </td>
+                      <td className={styles.numeric}>{formatMoney(invoice.receivedTotalAmount)}</td>
+                      <td className={styles.actionCell}>
+                        <button
+                          aria-label={`${t('shopLocalSupplierInvoices.viewDetail')}: ${invoice.invoiceNo || invoice.invoiceGUID}`}
+                          type="button"
+                          className="shop-local-invoice-card-footer"
+                          onClick={() =>
+                            navigate(
+                              `/shop/local-supplier-invoices/${encodeURIComponent(invoice.invoiceGUID)}`,
+                            )
+                          }
+                        >
+                          <RightOutlined />
+                        </button>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
           </div>
 
           <div className="shop-orders-pagination">
