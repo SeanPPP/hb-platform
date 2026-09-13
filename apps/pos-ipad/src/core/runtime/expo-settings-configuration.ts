@@ -8,7 +8,10 @@ import type { PosPaymentPublicExtra } from "./payment-runtime-config";
 
 export type SettingsFetchPort = (
   url: string,
-  init: Readonly<{ method: "GET"; signal: AbortSignal }>,
+  init: Readonly<{
+    method: "GET"; signal: AbortSignal; cache: "no-store";
+    headers: Readonly<Record<string, string>>;
+  }>,
 ) => Promise<Readonly<{ ok: boolean }>>;
 
 export function settingsPaymentConfiguration(
@@ -61,6 +64,9 @@ export function createSettingsApiHealthProbe(
       const response = await fetcher(healthUrl, {
         method: "GET",
         signal,
+        // 健康检查必须访问后端，避免 iOS HTTP 缓存造成假在线。
+        cache: "no-store",
+        headers: { "Cache-Control": "no-cache, no-store", Pragma: "no-cache" },
       });
       if (signal.aborted) throw abortError();
       return response.ok === true;
