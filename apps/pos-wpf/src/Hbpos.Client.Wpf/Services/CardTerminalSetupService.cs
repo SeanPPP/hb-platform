@@ -1,8 +1,17 @@
+using System.Net.Http;
+using System.Text.Json;
 using Hbpos.Client.Wpf.Localization;
+using Hbpos.Client.Wpf.Models;
 using Hbpos.Contracts.Linkly;
 using Hbpos.Contracts.Square;
 
 namespace Hbpos.Client.Wpf.Services;
+
+public sealed record LinklyTerminalAssignmentResult(
+    bool Succeeded,
+    string Message,
+    LinklyCloudTerminalListResponse? Directory = null,
+    bool Reconciled = false);
 
 public interface ICardTerminalSetupService
 {
@@ -116,12 +125,21 @@ public interface ICardTerminalSetupService
         Task.FromException<LinklyCloudTerminalPairResponse>(
             new NotSupportedException("Linkly Cloud terminal pairing is unavailable."));
 
-    Task<LinklyCloudTerminalConnectionTestResponse> TestLinklyCloudBackendTerminalConnectionAsync(
+    Task<LinklyCloudTerminalConnectionTestResponse> TestLinklyCloudBackendTerminalAsync(
         CardTerminalEnvironment environment,
         LinklyCloudTerminalSummary terminal,
         CancellationToken cancellationToken = default) =>
         Task.FromException<LinklyCloudTerminalConnectionTestResponse>(
-            new NotSupportedException("Linkly Cloud terminal connection test is unavailable."));
+            new NotSupportedException("Linkly Cloud terminal connection testing is unavailable."));
+
+    Task<LinklyTerminalAssignmentResult> AssignLinklyCloudBackendTerminalAsync(
+        CardTerminalEnvironment environment,
+        LinklyCloudTerminalSummary terminal,
+        LinklyCloudAssignableDevice? targetDevice,
+        IReadOnlyList<LinklyCloudAssignableDevice> devices,
+        PosSessionState session,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(new LinklyTerminalAssignmentResult(false, "Linkly Cloud terminal assignment is unavailable."));
 
     Task<LinklyConnectionTestResult> TestLinklyCloudBackendTransactionStatusAsync(
         CardTerminalEnvironment environment,
@@ -145,7 +163,11 @@ public sealed class CardTerminalSetupService(
     ILinklyCloudTerminalClient? linklyCloudTerminalClient = null,
     ILinklyBackendTerminalClient? linklyBackendTerminalClient = null,
     DeviceAuthorizationState? deviceAuthorizationState = null,
-    ILocalizationService? localization = null) : ICardTerminalSetupService
+    ILocalizationService? localization = null,
+    ICardPaymentRecoveryService? cardPaymentRecoveryService = null,
+    ILinklyPaymentAttemptContextAccessor? linklyPaymentAttemptContextAccessor = null,
+    ILinklyTerminalSelectionTransitionGate? linklyTerminalSelectionTransitionGate = null,
+    ILinklyUnresolvedSettlementReader? linklySettlementRepository = null) : ICardTerminalSetupService
 {
     public Task<CardTerminalConfiguration> LoadConfigurationAsync(CancellationToken cancellationToken = default)
     {
@@ -491,18 +513,282 @@ public sealed class CardTerminalSetupService(
             cancellationToken);
     }
 
-    public Task<LinklyCloudTerminalConnectionTestResponse> TestLinklyCloudBackendTerminalConnectionAsync(
+    public Task<LinklyCloudTerminalConnectionTestResponse> TestLinklyCloudBackendTerminalAsync(
         CardTerminalEnvironment environment,
         LinklyCloudTerminalSummary terminal,
         CancellationToken cancellationToken = default)
     {
-        if (linklyBackendTerminalClient is null)
+        if (linklyBackendTerminalClient is null || string.IsNullOrWhiteSpace(terminal.TerminalVersion))
         {
             return Task.FromException<LinklyCloudTerminalConnectionTestResponse>(
-                new InvalidOperationException(T("settings.linklyCloud.unavailable", "Linkly Cloud setup is unavailable.")));
+                new NotSupportedException(T("settings.linkly.cloudBackend.managementUnavailable", "Update the POS API before managing individual Linkly lines.")));
         }
 
-        return linklyBackendTerminalClient.TestTerminalConnectionAsync(environment, terminal, cancellationToken);
+        // 连接测试只验证指定线路，不读取或改变本机付款选择，也不执行金融 Status/Logon。
+        return linklyBackendTerminalClient.TestTerminalConnectionAsync(
+            terminal.TerminalId,
+            new LinklyCloudTerminalConnectionTestRequest(
+                environment.ToString(),
+                terminal.TerminalVersion,
+                terminal.AssignedDeviceCode,
+                terminal.AssignmentRevision),
+            cancellationToken);
+    }
+
+    public async Task<LinklyTerminalAssignmentResult> AssignLinklyCloudBackendTerminalAsync(
+        CardTerminalEnvironment environment,
+        LinklyCloudTerminalSummary terminal,
+        LinklyCloudAssignableDevice? targetDevice,
+        IReadOnlyList<LinklyCloudAssignableDevice> devices,
+        PosSessionState session,
+        CancellationToken cancellationToken = default)
+    {
+        if (linklyBackendTerminalClient is null || string.IsNullOrWhiteSpace(terminal.TerminalVersion))
+        {
+            return new LinklyTerminalAssignmentResult(
+                false,
+                T("settings.linkly.cloudBackend.managementUnavailable", "Update the POS API before managing individual Linkly lines."));
+        }
+
+        await using var assignmentLease = linklyTerminalSelectionTransitionGate is null
+            ? null
+            : await linklyTerminalSelectionTransitionGate.TryEnterAssignmentAsync(cancellationToken);
+        if (linklyTerminalSelectionTransitionGate is not null && assignmentLease is null)
+        {
+            return new LinklyTerminalAssignmentResult(
+                false,
+                T("settings.linkly.cloudBackend.assignmentActivePayment", "A card payment is currently running. Finish it before changing this POS line."));
+        }
+
+        var currentDeviceCode = deviceAuthorizationState?.Current?.DeviceCode ?? session.DeviceCode;
+        var changesCurrentDevice = string.Equals(terminal.AssignedDeviceCode, currentDeviceCode, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(targetDevice?.DeviceCode, currentDeviceCode, StringComparison.OrdinalIgnoreCase);
+        if (changesCurrentDevice)
+        {
+            if (linklyPaymentAttemptContextAccessor?.Current is not null)
+            {
+                return new LinklyTerminalAssignmentResult(
+                    false,
+                    T("settings.linkly.cloudBackend.assignmentActivePayment", "A card payment is currently running. Finish it before changing this POS line."));
+            }
+
+            if (cardPaymentRecoveryService is not null)
+            {
+                var openAttempts = await cardPaymentRecoveryService.ListOpenAsync(session, cancellationToken);
+                if (openAttempts.Any(item => item.Processor == CardProcessorKind.Linkly))
+                {
+                    return new LinklyTerminalAssignmentResult(
+                        false,
+                        T("settings.linkly.cloudBackend.assignmentRecoveryRequired", "This POS has an unfinished Linkly payment. Resolve it in Card Recovery before changing the line."));
+                }
+            }
+
+            if (linklySettlementRepository is not null &&
+                await linklySettlementRepository.HasUnresolvedAsync(
+                    session.StoreCode,
+                    currentDeviceCode,
+                    environment.ToString(),
+                    cancellationToken))
+            {
+                return new LinklyTerminalAssignmentResult(
+                    false,
+                    T("settings.linkly.cloudBackend.assignmentSettlementRequired", "This POS has an unfinished Linkly settlement. Resolve it in Daily Close before changing the line."));
+            }
+        }
+
+        if (terminal.IsBusy)
+        {
+            return new LinklyTerminalAssignmentResult(
+                false,
+                T("settings.linkly.cloudBackend.assignmentBusy", "This line has an unfinished transaction. Finish or recover it before changing the binding."));
+        }
+
+        var targetSnapshot = targetDevice is null
+            ? null
+            : devices.FirstOrDefault(item => string.Equals(item.DeviceCode, targetDevice.DeviceCode, StringComparison.OrdinalIgnoreCase));
+        if (targetDevice is not null && (targetSnapshot is null || !targetSnapshot.IsAvailable))
+        {
+            return new LinklyTerminalAssignmentResult(
+                false,
+                T("settings.linkly.cloudBackend.assignmentTargetUnavailable", "The selected POS device is no longer available. Refresh the list and choose another device."));
+        }
+
+        var request = new LinklyCloudTerminalAssignmentRequest(
+            environment.ToString(),
+            terminal.TerminalVersion,
+            terminal.AssignedDeviceCode,
+            terminal.AssignmentRevision,
+            targetSnapshot?.DeviceCode,
+            targetSnapshot?.SelectedTerminalId,
+            targetSnapshot?.SelectionRevision ?? 0);
+        LinklyCloudTerminalListResponse directory;
+        try
+        {
+            directory = await linklyBackendTerminalClient.AssignTerminalAsync(
+                terminal.TerminalId,
+                request,
+                cancellationToken);
+        }
+        catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return await ReconcileAmbiguousAssignmentAsync(
+                linklyBackendTerminalClient, environment, terminal, targetSnapshot, devices, cancellationToken);
+        }
+        catch (HttpRequestException ex) when (
+            ex.StatusCode is null ||
+            ex.StatusCode == System.Net.HttpStatusCode.RequestTimeout ||
+            (int)ex.StatusCode >= 500 ||
+            (int)ex.StatusCode is >= 200 and <= 299)
+        {
+            return await ReconcileAmbiguousAssignmentAsync(
+                linklyBackendTerminalClient, environment, terminal, targetSnapshot, devices, cancellationToken);
+        }
+        catch (JsonException)
+        {
+            return await ReconcileAmbiguousAssignmentAsync(
+                linklyBackendTerminalClient, environment, terminal, targetSnapshot, devices, cancellationToken);
+        }
+        if (AssignmentConfirmed(directory, terminal, targetSnapshot, devices))
+        {
+            return new LinklyTerminalAssignmentResult(
+                true,
+                T("settings.linkly.cloudBackend.assignmentSaved", "The Linkly line binding was updated."),
+                directory);
+        }
+
+        // 2xx 也必须核验完整后置条件；回包不完整时只读一次权威目录，绝不重放 PUT。
+        return await ReconcileAmbiguousAssignmentAsync(
+            linklyBackendTerminalClient, environment, terminal, targetSnapshot, devices, cancellationToken);
+    }
+
+    private async Task<LinklyTerminalAssignmentResult> ReconcileAmbiguousAssignmentAsync(
+        ILinklyBackendTerminalClient backendClient,
+        CardTerminalEnvironment environment,
+        LinklyCloudTerminalSummary submittedTerminal,
+        LinklyCloudAssignableDevice? targetDevice,
+        IReadOnlyList<LinklyCloudAssignableDevice> submittedDevices,
+        CancellationToken cancellationToken)
+    {
+        // PUT 可能已在服务器提交；只读一次权威目录，绝不自动重放写请求。
+        try
+        {
+            var directory = await backendClient.GetTerminalsAsync(environment, cancellationToken);
+            var applied = AssignmentConfirmed(directory, submittedTerminal, targetDevice, submittedDevices);
+            return new LinklyTerminalAssignmentResult(
+                applied,
+                applied
+                    ? T("settings.linkly.cloudBackend.assignmentReconciled", "The response was interrupted, but the refreshed directory confirms that the binding was updated.")
+                    : T("settings.linkly.cloudBackend.assignmentUnconfirmed", "The write response was interrupted and the refreshed directory does not confirm the requested binding. Review the current owner before retrying."),
+                directory,
+                Reconciled: true);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+        {
+            return new LinklyTerminalAssignmentResult(
+                false,
+                T("settings.linkly.cloudBackend.assignmentReconcileFailed", "The write result is unknown and the directory could not be refreshed. Check the current binding before trying again."),
+                Reconciled: true);
+        }
+    }
+
+    private static bool AssignmentConfirmed(
+        LinklyCloudTerminalListResponse directory,
+        LinklyCloudTerminalSummary submittedTerminal,
+        LinklyCloudAssignableDevice? targetDevice,
+        IReadOnlyList<LinklyCloudAssignableDevice> submittedDevices)
+    {
+        var currentTerminal = directory.Terminals.FirstOrDefault(item => item.TerminalId == submittedTerminal.TerminalId);
+        if (currentTerminal is null)
+        {
+            return false;
+        }
+
+        var requestedNoOp = targetDevice is null
+            ? string.IsNullOrWhiteSpace(submittedTerminal.AssignedDeviceCode)
+            : string.Equals(submittedTerminal.AssignedDeviceCode, targetDevice.DeviceCode, StringComparison.OrdinalIgnoreCase) &&
+                targetDevice.SelectedTerminalId == submittedTerminal.TerminalId &&
+                targetDevice.SelectionRevision == submittedTerminal.AssignmentRevision;
+        if (requestedNoOp)
+        {
+            var unchangedTerminal =
+                string.Equals(currentTerminal.AssignedDeviceCode, submittedTerminal.AssignedDeviceCode, StringComparison.OrdinalIgnoreCase) &&
+                currentTerminal.AssignmentRevision == submittedTerminal.AssignmentRevision &&
+                string.Equals(currentTerminal.TerminalVersion, submittedTerminal.TerminalVersion, StringComparison.Ordinal) &&
+                string.Equals(currentTerminal.LastHealthStatus, submittedTerminal.LastHealthStatus, StringComparison.Ordinal) &&
+                currentTerminal.LastHealthAt == submittedTerminal.LastHealthAt;
+            if (!unchangedTerminal || directory.Devices is null)
+            {
+                return false;
+            }
+
+            if (targetDevice is null)
+            {
+                return true;
+            }
+
+            var unchangedTarget = directory.Devices.FirstOrDefault(item =>
+                string.Equals(item.DeviceCode, targetDevice.DeviceCode, StringComparison.OrdinalIgnoreCase));
+            return unchangedTarget is not null &&
+                unchangedTarget.SelectedTerminalId == targetDevice.SelectedTerminalId &&
+                unchangedTarget.SelectionRevision == targetDevice.SelectionRevision;
+        }
+
+        if (!string.Equals(currentTerminal.AssignedDeviceCode, targetDevice?.DeviceCode, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(currentTerminal.TerminalVersion, submittedTerminal.TerminalVersion, StringComparison.Ordinal) ||
+            currentTerminal.LastHealthStatus is not null || currentTerminal.LastHealthAt is not null)
+        {
+            return false;
+        }
+
+        var currentDevices = directory.Devices;
+        if (currentDevices is null)
+        {
+            return false;
+        }
+
+        var oldOwner = string.IsNullOrWhiteSpace(submittedTerminal.AssignedDeviceCode)
+            ? null
+            : submittedDevices.FirstOrDefault(item =>
+                string.Equals(item.DeviceCode, submittedTerminal.AssignedDeviceCode, StringComparison.OrdinalIgnoreCase));
+        if (oldOwner is not null &&
+            !string.Equals(oldOwner.DeviceCode, targetDevice?.DeviceCode, StringComparison.OrdinalIgnoreCase))
+        {
+            var releasedOwner = currentDevices.FirstOrDefault(item =>
+                string.Equals(item.DeviceCode, oldOwner.DeviceCode, StringComparison.OrdinalIgnoreCase));
+            // 历史设备可能已不在注册目录；若仍存在，释放后的选择事实必须归零。
+            if (releasedOwner is not null &&
+                (releasedOwner.SelectedTerminalId is not null || releasedOwner.SelectionRevision != 0))
+            {
+                return false;
+            }
+        }
+
+        if (targetDevice is null)
+        {
+            return currentTerminal.AssignmentRevision == 0;
+        }
+
+        var assignedTarget = currentDevices.FirstOrDefault(item =>
+            string.Equals(item.DeviceCode, targetDevice.DeviceCode, StringComparison.OrdinalIgnoreCase));
+        var targetRevisionConfirmed = targetDevice.SelectedTerminalId is null
+            ? assignedTarget is { SelectionRevision: > 0 }
+            : assignedTarget?.SelectionRevision == targetDevice.SelectionRevision + 1;
+        if (assignedTarget is null || assignedTarget.SelectedTerminalId != submittedTerminal.TerminalId ||
+            !targetRevisionConfirmed || currentTerminal.AssignmentRevision != assignedTarget.SelectionRevision)
+        {
+            return false;
+        }
+
+        if (targetDevice.SelectedTerminalId is not Guid replacedTerminalId || replacedTerminalId == submittedTerminal.TerminalId)
+        {
+            return true;
+        }
+
+        var replacedTerminal = directory.Terminals.FirstOrDefault(item => item.TerminalId == replacedTerminalId);
+        return replacedTerminal is not null &&
+            string.IsNullOrWhiteSpace(replacedTerminal.AssignedDeviceCode) &&
+            replacedTerminal.AssignmentRevision == 0 &&
+            replacedTerminal.LastHealthStatus is null && replacedTerminal.LastHealthAt is null;
     }
 
     public async Task<LinklyConnectionTestResult> TestLinklyCloudBackendTransactionStatusAsync(

@@ -9,11 +9,11 @@ assert.equal(existsSync(snapshotPath), true, "缺少由 Hbpos.Api 测试宿主�
 assert.equal(existsSync(generatedPath), true, "缺少由 openapi-typescript 生成的 DTO 类型");
 
 const document = JSON.parse(readFileSync(snapshotPath, "utf8"));
-assert.equal(Object.keys(document.paths ?? {}).length, 113, "共享 OpenAPI 必须锁定当前 113 条路径");
+assert.equal(Object.keys(document.paths ?? {}).length, 115, "共享 OpenAPI 必须锁定当前 115 条路径");
 assert.equal(
   Object.keys(document.components?.schemas ?? {}).length,
-  271,
-  "共享 OpenAPI 必须锁定当前 271 个 schema",
+  276,
+  "共享 OpenAPI 必须锁定当前 276 个 schema",
 );
 
 for (const route of [
@@ -32,6 +32,8 @@ for (const route of [
   "/api/v1/linkly/cloud-backend/terminals",
   "/api/v1/linkly/cloud-backend/terminal-selection",
   "/api/v1/linkly/cloud-backend/terminals/{terminalId}/pair",
+  "/api/v1/linkly/cloud-backend/terminals/{terminalId}/connection-test",
+  "/api/v1/linkly/cloud-backend/terminals/{terminalId}/assignment",
   "/api/v1/linkly/cloud-backend/transactions",
   "/api/v1/vouchers/lock",
   "/api/v1/installments",
@@ -75,8 +77,17 @@ for (const schema of [
   "LinklyCloudTerminalSelectionRequest",
   "LinklyCloudTerminalSelectionResponse",
   "LinklyCloudTerminalSummary",
+  "LinklyCloudAssignableDevice",
+  "LinklyCloudTerminalConnectionTestRequest",
+  "LinklyCloudTerminalConnectionTestResponse",
+  "LinklyCloudTerminalAssignmentRequest",
 ]) {
   assert.ok(document.components?.schemas?.[schema], `OpenAPI 快照缺少多终端 schema：${schema}`);
+}
+
+for (const schema of ["LinklyCloudTerminalConnectionTestRequest", "LinklyCloudTerminalAssignmentRequest"]) {
+  assert.equal(document.components.schemas[schema].properties.expectedTerminalVersion.type, "string",
+    "终端版本必须以字符串原样传输，不能转换成 JavaScript 日期或数字");
 }
 
 const activationContracts = [

@@ -21,7 +21,16 @@ public sealed record LinklyCloudTerminalListResponse(
     Guid? SelectedTerminalId,
     long? SelectionRevision,
     IReadOnlyList<LinklyCloudTerminalSummary> Terminals,
-    string Mode = "Legacy");
+    string Mode = "Legacy",
+    IReadOnlyList<LinklyCloudAssignableDevice>? Devices = null);
+
+/// <summary>同店设备的公开分配状态；历史失效设备可展示，但不能成为新的绑定目标。</summary>
+public sealed record LinklyCloudAssignableDevice(
+    string DeviceCode,
+    string DeviceSystem,
+    bool IsAvailable,
+    Guid? SelectedTerminalId,
+    long SelectionRevision);
 
 /// <summary>客户端原样回传终端版本，避免 JavaScript 日期转换丢失 SQL 时间戳精度。</summary>
 public sealed record LinklyCloudTerminalConnectionTestRequest(
@@ -41,6 +50,16 @@ public sealed record LinklyCloudTerminalConnectionTestResponse(
     DateTimeOffset CheckedAt,
     string Message,
     string? ResponseCode = null);
+
+/// <summary>目标为空时只解绑；其余情况在同一事务内释放旧归属并替换目标设备的线路。</summary>
+public sealed record LinklyCloudTerminalAssignmentRequest(
+    string Environment,
+    string ExpectedTerminalVersion,
+    string? ExpectedAssignedDeviceCode,
+    long ExpectedAssignmentRevision,
+    string? TargetDeviceCode,
+    Guid? ExpectedTargetTerminalId,
+    long ExpectedTargetSelectionRevision);
 
 public sealed record LinklyCloudTerminalSelectionRequest(
     string Environment,

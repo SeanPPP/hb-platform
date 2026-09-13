@@ -412,7 +412,8 @@ internal sealed class MainChildViewModelFactory
         Action? returnToPos = null,
         Func<CancellationToken, Task>? resetTestSalesDataAsync = null,
         Func<Task<bool>>? confirmResetTestSalesDataAsync = null,
-        Func<CancellationToken, Task<AppUpdateCoordinatorResult>>? checkForAppUpdateAsync = null)
+        Func<CancellationToken, Task<AppUpdateCoordinatorResult>>? checkForAppUpdateAsync = null,
+        Func<string, Task<bool>>? confirmLinklyTerminalAssignmentAsync = null)
     {
         return new SettingsViewModel(
             _cardTerminalSetupService!,
@@ -434,7 +435,8 @@ internal sealed class MainChildViewModelFactory
             operationAuthorizationService: _operationAuthorizationService,
             storeReceiptProfileApiClient: _storeReceiptProfileApiClient,
             session: session,
-            remoteMaintenanceService: _remoteMaintenanceService);
+            remoteMaintenanceService: _remoteMaintenanceService,
+            confirmLinklyTerminalAssignmentAsync: confirmLinklyTerminalAssignmentAsync);
     }
 
     public CustomerDisplayViewModel CreateCustomerDisplayViewModel()

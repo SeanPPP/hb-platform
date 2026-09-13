@@ -373,4 +373,35 @@
   <data name="settings.linkly.lines.targetChanged" xml:space="preserve"><value>线路信息已变化。请刷新列表，并输入正确刷卡机新生成的配对码。</value></data>
   <data name="settings.linkly.lines.preflightFailed" xml:space="preserve"><value>无法核对线路信息。请检查网络并刷新列表后重试，本次未提交配对码。</value></data>
   <data name="settings.linkly.lines.refreshRequired" xml:space="preserve"><value>请刷新线路列表，获取最新配置后再检测连接。</value></data>
+  <data name="settings.linkly.cloudBackend.managementUnavailable" xml:space="preserve"><value>请先更新 POS API，再管理单条 Linkly 线路；配对与原有付款终端选择仍可使用。</value></data>
+  <data name="settings.linkly.cloudBackend.pairingState" xml:space="preserve"><value>配对状态</value></data>
+  <data name="settings.linkly.cloudBackend.lane" xml:space="preserve"><value>线路 {0}</value></data>
+  <data name="settings.linkly.cloudBackend.stateReady" xml:space="preserve"><value>已就绪</value></data>
+  <data name="settings.linkly.cloudBackend.stateUnpaired" xml:space="preserve"><value>未配对</value></data>
+  <data name="settings.linkly.cloudBackend.stateNeedsRepair" xml:space="preserve"><value>需要重新配对</value></data>
+  <data name="settings.linkly.cloudBackend.statePairing" xml:space="preserve"><value>正在配对</value></data>
+  <data name="settings.linkly.cloudBackend.stateUnknown" xml:space="preserve"><value>状态未知</value></data>
+  <data name="settings.linkly.cloudBackend.boundDevice" xml:space="preserve"><value>已绑定 POS</value></data>
+  <data name="settings.linkly.cloudBackend.lastTested" xml:space="preserve"><value>最近测试</value></data>
+  <data name="settings.linkly.cloudBackend.testLine" xml:space="preserve"><value>测试连接</value></data>
+  <data name="settings.linkly.cloudBackend.testingLine" xml:space="preserve"><value>正在测试此线路…</value></data>
+  <data name="settings.linkly.cloudBackend.healthHealthy" xml:space="preserve"><value>连接正常</value></data>
+  <data name="settings.linkly.cloudBackend.healthUnhealthy" xml:space="preserve"><value>无法连接</value></data>
+  <data name="settings.linkly.cloudBackend.testLineFailed" xml:space="preserve"><value>测试未完成，请检查网络和终端，刷新后重试。</value></data>
+  <data name="settings.linkly.cloudBackend.useLine" xml:space="preserve"><value>使用此线路</value></data>
+  <data name="settings.linkly.cloudBackend.changeBinding" xml:space="preserve"><value>变更绑定</value></data>
+  <data name="settings.linkly.cloudBackend.unassign" xml:space="preserve"><value>解除绑定</value></data>
+  <data name="settings.linkly.cloudBackend.unassigned" xml:space="preserve"><value>未绑定</value></data>
+  <data name="settings.linkly.cloudBackend.assignmentConfirmTitle" xml:space="preserve"><value>确认 Linkly 线路绑定</value></data>
+  <data name="settings.linkly.cloudBackend.assignmentConfirmMessage" xml:space="preserve"><value>线路：{0}&#xA;当前归属：{1}&#xA;目标 POS：{2}&#xA;目标 POS 原线路：{3}&#xA;&#xA;确认后将原子替换目标 POS 的线路，并释放旧绑定。</value></data>
+  <data name="settings.linkly.cloudBackend.assignmentSaved" xml:space="preserve"><value>Linkly 线路绑定已更新。</value></data>
+  <data name="settings.linkly.cloudBackend.assignmentActivePayment" xml:space="preserve"><value>本机正在进行刷卡付款，请完成后再变更线路。</value></data>
+  <data name="settings.linkly.cloudBackend.assignmentRecoveryRequired" xml:space="preserve"><value>本机有未完成的 Linkly 付款，请先在异常中心处理，再变更线路。</value></data>
+  <data name="settings.linkly.cloudBackend.assignmentSettlementRequired" xml:space="preserve"><value>本机有未完成的 Linkly 结算，请先在日结中处理，再变更线路。</value></data>
+  <data name="settings.linkly.cloudBackend.assignmentBusy" xml:space="preserve"><value>此线路有未完成交易，请先完成或恢复交易，再变更绑定。</value></data>
+  <data name="settings.linkly.cloudBackend.assignmentTargetUnavailable" xml:space="preserve"><value>所选 POS 设备已失效，请刷新列表并选择其他设备。</value></data>
+  <data name="settings.linkly.cloudBackend.assignmentReconciled" xml:space="preserve"><value>写入响应中断，但刷新后的目录已确认绑定更新成功。</value></data>
+  <data name="settings.linkly.cloudBackend.assignmentUnconfirmed" xml:space="preserve"><value>写入响应中断，刷新后的目录未确认目标绑定。重试前请核对当前归属。</value></data>
+  <data name="settings.linkly.cloudBackend.assignmentReconcileFailed" xml:space="preserve"><value>写入结果未知，且无法刷新线路目录。重试前请先核对当前绑定。</value></data>
+  <data name="settings.linkly.cloudBackend.assignmentSnapshotChanged" xml:space="preserve"><value>操作开始前线路目录已变化，请核对当前归属后重试。</value></data>
 </root>

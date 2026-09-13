@@ -494,6 +494,7 @@ jobs:
       CONTAINER_MUTATION_SQLSERVER_TEST_CONNECTION: Server=localhost,1433;User Id=sa;Password=HbCi_2026!Safe_Only;Encrypt=False;TrustServerCertificate=True;Connect Timeout=30
       COST_BACKFILL_SQLSERVER_TEST_CONNECTION: Server=127.0.0.1,11439;User Id=sa;Password=HbCi_2026!Safe_Only;Encrypt=False;TrustServerCertificate=True;Connect Timeout=30
       DEVICE_ACTIVATION_SQLSERVER_TEST_CONNECTION: Server=localhost,1433;User Id=sa;Password=HbCi_2026!Safe_Only;Encrypt=False;TrustServerCertificate=True;Connect Timeout=30
+      LINKLY_LINE_SQLSERVER_TEST_CONNECTION: Server=localhost,1433;User Id=sa;Password=HbCi_2026!Safe_Only;Encrypt=False;TrustServerCertificate=True;Connect Timeout=30
       HBWEB_SCHEMA_SQLSERVER_TEST_CONNECTION: Server=localhost,1433;User Id=sa;Password=HbCi_2026!Safe_Only;Encrypt=False;TrustServerCertificate=True;Connect Timeout=30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262

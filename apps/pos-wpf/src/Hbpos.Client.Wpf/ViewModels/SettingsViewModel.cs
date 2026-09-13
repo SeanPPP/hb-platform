@@ -60,6 +60,63 @@ public sealed partial class LinklyModePriorityItem(LinklySettingsMode mode) : Ob
     }
 }
 
+public sealed partial class LinklyCloudTerminalManagementItem(
+    LinklyCloudTerminalSummary terminal,
+    IReadOnlyList<LinklyCloudAssignableDevice> assignableDevices,
+    LinklyCloudAssignableDevice? selectedTargetDevice,
+    string? connectionStatus = null,
+    Func<string, string>? localize = null,
+    DateTimeOffset? lastTestedAt = null) : ObservableObject
+{
+    public LinklyCloudTerminalSummary Terminal { get; } = terminal;
+
+    public IReadOnlyList<LinklyCloudAssignableDevice> AssignableDevices { get; } = assignableDevices;
+
+    [ObservableProperty]
+    private LinklyCloudAssignableDevice? _selectedTargetDevice = selectedTargetDevice;
+
+    [ObservableProperty]
+    private string _connectionStatus = connectionStatus ?? terminal.LastHealthStatus ?? string.Empty;
+
+    [ObservableProperty]
+    private DateTimeOffset? _lastTestedAt = lastTestedAt ?? terminal.LastHealthAt;
+
+    [ObservableProperty]
+    private bool _isTesting;
+
+    public Guid TerminalId => Terminal.TerminalId;
+    public int LaneNo => Terminal.LaneNo;
+    public string DisplayName => Terminal.DisplayName;
+    public string LaneText => string.Format(
+        System.Globalization.CultureInfo.CurrentCulture,
+        localize?.Invoke("settings.linkly.cloudBackend.lane") ?? "Lane {0}",
+        LaneNo);
+    public string PairingStateText => Terminal.PairingState.Trim().ToUpperInvariant() switch
+    {
+        "READY" => localize?.Invoke("settings.linkly.cloudBackend.stateReady") ?? "Ready",
+        "UNPAIRED" => localize?.Invoke("settings.linkly.cloudBackend.stateUnpaired") ?? "Unpaired",
+        "NEEDSREPAIR" => localize?.Invoke("settings.linkly.cloudBackend.stateNeedsRepair") ?? "Needs repair",
+        "PAIRING" => localize?.Invoke("settings.linkly.cloudBackend.statePairing") ?? "Pairing",
+        _ => localize?.Invoke("settings.linkly.cloudBackend.stateUnknown") ?? "Unknown"
+    };
+    public bool IsBusy => Terminal.IsBusy;
+    public bool IsReady => Terminal.IsReady;
+    public string? AssignedDeviceCode => Terminal.AssignedDeviceCode;
+    public bool SupportsManagement => !string.IsNullOrWhiteSpace(Terminal.TerminalVersion);
+    public string LastTestedText => LastTestedAt is null
+        ? "—"
+        : LastTestedAt.Value.ToLocalTime().ToString("g", System.Globalization.CultureInfo.CurrentCulture);
+
+    public void RefreshLocalizedText()
+    {
+        OnPropertyChanged(nameof(LaneText));
+        OnPropertyChanged(nameof(PairingStateText));
+        OnPropertyChanged(nameof(LastTestedText));
+    }
+
+    partial void OnLastTestedAtChanged(DateTimeOffset? value) => OnPropertyChanged(nameof(LastTestedText));
+}
+
 public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 {
     internal const string DefaultSquareDeviceCodeName = "HBPOS Terminal";
@@ -71,6 +128,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     private readonly Func<CancellationToken, Task>? _resetCatalogAsync;
     private readonly Func<CancellationToken, Task>? _resetTestSalesDataAsync;
     private readonly Func<Task<bool>>? _confirmResetTestSalesDataAsync;
+    private readonly Func<string, Task<bool>>? _confirmLinklyTerminalAssignmentAsync;
     private readonly Func<Task<DeviceReregistrationStartResult>>? _reregisterDeviceAsync;
     private readonly Func<CancellationToken, Task<AppUpdateCoordinatorResult>>? _checkForAppUpdateAsync;
     private readonly Action? _returnToPos;
@@ -103,9 +161,13 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     private bool _hasLinklyCloudPasswordInput;
     private bool _syncingLinkly;
     private bool _syncingSquare;
-    private bool _isLinklyLineOperationBusy;
-    private int _linklyTerminalDirectoryRequestVersion;
     private Guid? _persistedLinklyCloudTerminalId;
+    private int _linklyTerminalDirectoryGeneration;
+    private int _linklyTerminalDirectoryRequestGeneration;
+    private bool _isLinklyLineOperationBusy;
+    private readonly Dictionary<Guid, int> _linklyTerminalTestGenerations = [];
+    private readonly Dictionary<Guid, int> _linklyTerminalAssignmentGenerations = [];
+    private readonly Dictionary<LinklyTerminalTestSnapshotKey, LinklyTerminalTestSnapshot> _linklyTerminalTestSnapshots = [];
     private readonly SquareSettingsState _squareState = new();
     private readonly SquareSettingsCoordinator _squareCoordinator;
     private readonly LinklySettingsState _linklyState = new();
@@ -229,7 +291,8 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         ApiServerSettingsViewModel? apiServerSettings = null,
         IOperationAuthorizationService? operationAuthorizationService = null,
         PosSessionState? session = null,
-        IRemoteMaintenanceService? remoteMaintenanceService = null)
+        IRemoteMaintenanceService? remoteMaintenanceService = null,
+        Func<string, Task<bool>>? confirmLinklyTerminalAssignmentAsync = null)
     {
         _setupService = setupService;
         _localization = localization;
@@ -238,6 +301,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         _resetCatalogAsync = resetCatalogAsync;
         _resetTestSalesDataAsync = resetTestSalesDataAsync;
         _confirmResetTestSalesDataAsync = confirmResetTestSalesDataAsync;
+        _confirmLinklyTerminalAssignmentAsync = confirmLinklyTerminalAssignmentAsync;
         _reregisterDeviceAsync = reregisterDeviceAsync;
         _checkForAppUpdateAsync = checkForAppUpdateAsync;
         _returnToPos = returnToPos;
@@ -339,6 +403,10 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         CheckForAppUpdateCommand = new AsyncRelayCommand(CheckForAppUpdateAsync, CanCheckForAppUpdate);
         InstallRemoteMaintenanceCommand = new AsyncRelayCommand(InstallRemoteMaintenanceAsync, CanInstallRemoteMaintenance);
         TestLinklyTransactionStatusCommand = new AsyncRelayCommand(TestLinklyTransactionStatusAsync, CanTestLinklyTransactionStatus);
+        TestLinklyCloudTerminalCommand = new AsyncRelayCommand<LinklyCloudTerminalManagementItem>(TestLinklyCloudTerminalAsync, CanManageLinklyCloudTerminal);
+        UseLinklyCloudTerminalCommand = new AsyncRelayCommand<LinklyCloudTerminalManagementItem>(UseLinklyCloudTerminalAsync, CanAssignLinklyCloudTerminal);
+        ChangeLinklyCloudTerminalAssignmentCommand = new AsyncRelayCommand<LinklyCloudTerminalManagementItem>(ChangeLinklyCloudTerminalAssignmentAsync, CanAssignLinklyCloudTerminal);
+        UnassignLinklyCloudTerminalCommand = new AsyncRelayCommand<LinklyCloudTerminalManagementItem>(UnassignLinklyCloudTerminalAsync, CanUnassignLinklyCloudTerminal);
         BackCommand = new RelayCommand(ReturnToPos, () => _returnToPos is not null);
         ResetLinklyModePriority(CardTerminalConfiguration.Default.LinklyConnectionModePriority);
         RefreshLocalizedMessages();
@@ -373,7 +441,21 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     public ObservableCollection<LinklyCloudTerminalSummary> LinklyCloudTerminals { get; } = [];
 
+    public ObservableCollection<LinklyCloudTerminalManagementItem> LinklyCloudTerminalItems { get; } = [];
+
     public ObservableCollection<LinklyCloudLineItem> LinklyCloudLines { get; } = [];
+
+    public IReadOnlyList<LinklyCloudAssignableDevice> LinklyCloudDevices { get; private set; } = [];
+
+    public bool IsLinklyCloudLineManagementAvailable { get; private set; }
+
+    public bool IsLinklyCloudLineManagementUnavailable => !IsLinklyCloudLineManagementAvailable;
+
+    public bool CanRefreshLinklyCloudTerminals => !IsBusy;
+
+    public string LinklyCloudLineManagementMessage => IsLinklyCloudLineManagementAvailable
+        ? string.Empty
+        : T("settings.linkly.cloudBackend.managementUnavailable");
 
     public long? LinklyCloudSelectionRevision { get; private set; }
 
@@ -424,6 +506,14 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     public IAsyncRelayCommand LogonLinklyCommand { get; }
 
     public IAsyncRelayCommand TestLinklyTransactionStatusCommand { get; }
+
+    public IAsyncRelayCommand<LinklyCloudTerminalManagementItem> TestLinklyCloudTerminalCommand { get; }
+
+    public IAsyncRelayCommand<LinklyCloudTerminalManagementItem> UseLinklyCloudTerminalCommand { get; }
+
+    public IAsyncRelayCommand<LinklyCloudTerminalManagementItem> ChangeLinklyCloudTerminalAssignmentCommand { get; }
+
+    public IAsyncRelayCommand<LinklyCloudTerminalManagementItem> UnassignLinklyCloudTerminalCommand { get; }
 
     public IAsyncRelayCommand SaveLinklyCommand { get; }
 
@@ -953,33 +1043,38 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     public async Task RefreshLinklyCloudBackendTerminalsAsync()
     {
+        // 公共入口同样拒绝并发刷新，防止代码调用绕过按钮禁用并覆盖在途分配结果。
+        if (!CanRefreshLinklyCloudTerminals)
+        {
+            return;
+        }
+
         if (!IsLinklyCloudBackendAsyncMode)
         {
             ClearLinklyCloudTerminalDirectory();
             return;
         }
 
-        if (IsBusy || _isLinklyLineOperationBusy)
-        {
-            return;
-        }
-
+        var environment = SelectedLinklyEnvironment;
+        var requestGeneration = Interlocked.Increment(ref _linklyTerminalDirectoryRequestGeneration);
         await RunBusyAsync(
-            () => RefreshLinklyCloudBackendTerminalsCoreAsync(SelectedLinklyEnvironment),
+            () => RefreshLinklyCloudBackendTerminalsCoreAsync(environment, requestGeneration),
             operationName: "refresh linkly cloud terminal directory");
     }
 
     public async Task SelectLinklyCloudBackendTerminalAsync(LinklyCloudTerminalSummary? terminal)
     {
-        if (IsBusy || terminal is null || !IsLinklyCloudBackendAsyncMode || _isLinklyLineOperationBusy)
+        if (terminal is null || !IsLinklyCloudBackendAsyncMode)
         {
             return;
         }
 
-        var environment = SelectedLinklyEnvironment;
-        var expectedRevision = LinklyCloudSelectionRevision;
-        CloseLinklyLinePairing();
         SelectedLinklyCloudTerminal = terminal;
+        if (IsLinklyCloudLineManagementAvailable)
+        {
+            // 新服务端由每行“使用此线路/变更绑定”显式提交；下拉框仅选择配对目标。
+            return;
+        }
         if (terminal.TerminalId == _persistedLinklyCloudTerminalId)
         {
             return;
@@ -995,29 +1090,21 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         using var permissionGrant = await AuthorizeAsync(
             Permissions.PosTerminal.Settings.PaymentTerminal,
             "select-linkly-cloud-terminal");
-        if (permissionGrant is null || !IsLinklyCloudBackendAsyncMode ||
-            environment != SelectedLinklyEnvironment || expectedRevision != LinklyCloudSelectionRevision ||
-            !LinklyCloudTerminals.Contains(terminal) || IsBusy || _isLinklyLineOperationBusy)
+        if (permissionGrant is null)
         {
             RestorePersistedLinklyCloudSelection();
             return;
         }
 
         using var authorizationActivation = permissionGrant.Activate();
-        ResetLinklyConnectionTest();
         await RunBusyAsync(async () =>
         {
             try
             {
                 var selection = await _setupService.SelectLinklyCloudBackendTerminalAsync(
-                    environment,
+                    SelectedLinklyEnvironment,
                     terminal.TerminalId,
-                    expectedRevision);
-                if (selection.TerminalId != terminal.TerminalId ||
-                    !string.Equals(selection.Environment, environment.ToString(), StringComparison.OrdinalIgnoreCase) ||
-                    environment != SelectedLinklyEnvironment || !IsLinklyCloudBackendAsyncMode ||
-                    expectedRevision != LinklyCloudSelectionRevision || !LinklyCloudTerminals.Contains(terminal))
-                    throw new InvalidOperationException(T("settings.linkly.lines.targetChanged"));
+                    LinklyCloudSelectionRevision);
                 ApplyPersistedLinklyCloudSelection(selection.TerminalId, selection.Revision);
                 SetStatusOverride(string.Format(
                     System.Globalization.CultureInfo.CurrentCulture,
@@ -1041,12 +1128,12 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             T,
             () => IsBusy || _isLinklyLineOperationBusy,
             ToggleLinklyLinePairing,
-            item => item.BeginConfirmation(SelectedLinklyEnvironment),
-            item => item.BackToCodeEntry(),
-            item => item.CloseAndClear(),
+            line => line.BeginConfirmation(SelectedLinklyEnvironment),
+            line => line.BackToCodeEntry(),
+            line => line.CloseAndClear(),
             ConfirmLinklyLinePairingAsync,
             TestLinklyLineConnectionAsync,
-            item => SelectLinklyCloudBackendTerminalAsync(item.Terminal));
+            line => SelectLinklyCloudBackendTerminalAsync(line.Terminal));
         item.IsSelected = terminal.TerminalId == selectedTerminalId;
         ApplyInitialLinklyLineConnectionStatus(item, terminal.LastHealthStatus);
         return item;
@@ -1060,10 +1147,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             return;
         }
 
-        foreach (var line in LinklyCloudLines)
-        {
-            line.CloseAndClear();
-        }
+        CloseLinklyLinePairing();
         item.OpenForCodeEntry();
     }
 
@@ -1082,7 +1166,9 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             return;
         }
 
-        SetLinklyLineOperationBusy(item, true);
+        _isLinklyLineOperationBusy = true;
+        item.IsOperationBusy = true;
+        OnPropertyChanged(nameof(CanChangeEnvironment));
         try
         {
             using var permissionGrant = await AuthorizeAsync(
@@ -1094,19 +1180,11 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             }
 
             using var authorizationActivation = permissionGrant.Activate();
-            // 授权等待后只读核对服务端最新线路，配置变化时必须重新确认，不能继续消费旧配对码。
+            // 授权等待后重新读取权威目录，确保确认页锁定的线路、版本和设备归属仍然有效。
+            LinklyCloudTerminalListResponse directory;
             try
             {
-                var directory = await _setupService.ListLinklyCloudBackendTerminalsAsync(target.Environment);
-                var latest = directory.Terminals.FirstOrDefault(line => line.TerminalId == target.TerminalId);
-                if (!IsCurrentLinklyPairingTarget(item, target) || latest is null ||
-                    !string.Equals(directory.Environment, target.Environment.ToString(), StringComparison.OrdinalIgnoreCase) ||
-                    !MatchesLinklyPairingTarget(latest, target))
-                {
-                    item.CloseAndClear();
-                    SetStatus("settings.linkly.lines.targetChanged");
-                    return;
-                }
+                directory = await _setupService.ListLinklyCloudBackendTerminalsAsync(target.Environment);
             }
             catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
             {
@@ -1114,85 +1192,66 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
                 SetStatus("settings.linkly.lines.preflightFailed");
                 return;
             }
-            if (item.IsSelected && _persistedLinklyCloudTerminalId == target.TerminalId)
+            var latest = directory.Terminals.FirstOrDefault(line => line.TerminalId == target.TerminalId);
+            if (!IsCurrentLinklyPairingTarget(item, target) || latest is null ||
+                !string.Equals(directory.Environment, target.Environment.ToString(), StringComparison.OrdinalIgnoreCase) ||
+                !MatchesLinklyPairingTarget(latest, target))
             {
-                ResetLinklyConnectionTest();
+                item.CloseAndClear();
+                SetStatus("settings.linkly.lines.targetChanged");
+                return;
             }
-            // 一次性配对码在 POST 前从可见状态移除；请求不确定时绝不自动重放。
+
+            // 一次性配对码在 POST 前清空；配对仅更新该线路，不隐式切换付款线路。
             item.PairCode = string.Empty;
-            try
+            var result = await _setupService.PairLinklyCloudBackendTerminalAsync(
+                target.Environment,
+                target.TerminalId,
+                target.PairCode);
+            if (result.TerminalId != target.TerminalId ||
+                !string.Equals(result.Environment, target.Environment.ToString(), StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(result.DisplayName, target.DisplayName, StringComparison.Ordinal))
             {
-                var result = await _setupService.PairLinklyCloudBackendTerminalAsync(
-                    target.Environment,
-                    target.TerminalId,
-                    target.PairCode);
-                if (result.TerminalId != target.TerminalId ||
-                    !string.Equals(result.Environment, target.Environment.ToString(), StringComparison.OrdinalIgnoreCase) ||
-                    !string.Equals(result.DisplayName, target.DisplayName, StringComparison.Ordinal))
-                {
-                    throw new InvalidOperationException("Linkly terminal pairing response identity did not match the confirmed line.");
-                }
-                if (!IsLinklyCloudBackendAsyncMode || SelectedLinklyEnvironment != target.Environment || !LinklyCloudLines.Contains(item))
-                    return;
-                var updated = item.Terminal with
-                {
-                    PairingState = result.PairingState,
-                    IsReady = result.IsReady
-                };
-                ReplaceLinklyCloudTerminal(updated, selectReplacement: false);
-                item.UpdateTerminal(updated, item.IsSelected);
-                item.SetConnectionStatus("settings.linkly.lines.connection.notTested",
-                    result.IsReady ? null : "settings.linkly.cloudBackend.pairRejected");
+                throw new InvalidOperationException("Linkly terminal pairing response identity did not match the confirmed line.");
+            }
+
+            if (IsCurrentLinklyPairingTarget(item, target))
+            {
                 SetStatus(result.IsReady
                     ? "settings.linkly.lines.pairingSucceeded"
                     : "settings.linkly.lines.pairingRejected",
                     target.DisplayName);
-                item.CloseAndClear();
-                if (result.IsReady)
-                {
-                    try
-                    {
-                        await RefreshLinklyCloudBackendTerminalsCoreAsync(target.Environment);
-                    }
-                    catch (Exception refreshException) when (refreshException is not OutOfMemoryException and not StackOverflowException)
-                    {
-                        LogLinklyCloudSettings($"paired line refresh failed terminalId={target.TerminalId:D} error={refreshException.GetType().Name}");
-                    }
-                }
             }
-            catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+            item.CloseAndClear();
+            await RefreshLinklyCloudBackendTerminalsCoreAsync(target.Environment);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            LogLinklyCloudSettings($"pair line failed terminalId={target.TerminalId:D} error={ex.GetType().Name}");
+            if (TryGetDefinitiveLinklyPairFailureKey(ex, out var failureKey))
             {
-                LogLinklyCloudSettings($"pair line failed terminalId={target.TerminalId:D} error={ex.GetType().Name}");
-                if (!IsLinklyCloudBackendAsyncMode || SelectedLinklyEnvironment != target.Environment || !LinklyCloudLines.Contains(item))
-                    return;
-                if (TryGetDefinitiveLinklyPairFailureKey(ex, out var failureKey))
-                {
-                    item.CloseAndClear();
-                    item.SetConnectionStatus("settings.linkly.lines.connection.notTested", failureKey);
-                    SetStatus(failureKey);
-                    return;
-                }
-                var unknown = item.Terminal with { PairingState = "Unknown", IsReady = false };
-                ReplaceLinklyCloudTerminal(unknown, selectReplacement: false);
-                item.UpdateTerminal(unknown, item.IsSelected);
+                item.SetConnectionStatus("settings.linkly.lines.connection.notTested", failureKey);
+                SetStatus(failureKey);
+            }
+            else
+            {
                 item.SetConnectionStatus(
                     "settings.linkly.lines.connection.unknown",
                     "settings.linkly.lines.connection.help.checkTerminal");
-                item.CloseAndClear();
                 SetStatus("settings.linkly.lines.pairingUnconfirmed", target.DisplayName);
-                try
-                {
-                    await RefreshLinklyCloudBackendTerminalsCoreAsync(target.Environment);
-                }
-                catch (Exception refreshException) when (refreshException is not OutOfMemoryException and not StackOverflowException)
-                {
-                    LogLinklyCloudSettings($"pair line refresh failed terminalId={target.TerminalId:D} error={refreshException.GetType().Name}");
-                }
             }
+            item.CloseAndClear();
         }
         finally
         {
-            SetLinklyLineOperationBusy(item, false);
+            _isLinklyLineOperationBusy = false;
+            item.IsOperationBusy = false;
+            OnPropertyChanged(nameof(CanChangeEnvironment));
+            foreach (var line in LinklyCloudLines)
+            {
+                line.RefreshCommandStates();
+            }
+            RaiseCommandStates();
         }
     }
 
@@ -1205,16 +1264,15 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
         var environment = SelectedLinklyEnvironment;
         var terminal = item.Terminal;
-        SetLinklyLineOperationBusy(item, true);
+        _isLinklyLineOperationBusy = true;
+        item.IsOperationBusy = true;
+        OnPropertyChanged(nameof(CanChangeEnvironment));
         try
         {
             using var permissionGrant = await AuthorizeAsync(
                 Permissions.PosTerminal.Settings.PaymentTerminal,
                 "test-linkly-cloud-line");
-            if (permissionGrant is null ||
-                environment != SelectedLinklyEnvironment ||
-                !LinklyCloudLines.Contains(item) ||
-                item.Terminal.TerminalId != terminal.TerminalId)
+            if (permissionGrant is null || environment != SelectedLinklyEnvironment || !LinklyCloudLines.Contains(item))
             {
                 return;
             }
@@ -1224,52 +1282,67 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             {
                 ResetLinklyConnectionTest();
             }
-            try
+
+            var result = await _setupService.TestLinklyCloudBackendTerminalAsync(environment, terminal);
+            if (!IsLinklyCloudBackendAsyncMode || environment != SelectedLinklyEnvironment || !LinklyCloudLines.Contains(item))
             {
-                var result = await _setupService.TestLinklyCloudBackendTerminalConnectionAsync(
-                    environment,
-                    terminal);
-                if (!IsLinklyCloudBackendAsyncMode || environment != SelectedLinklyEnvironment || !LinklyCloudLines.Contains(item))
-                    return;
-                if (result.TerminalId != terminal.TerminalId ||
-                    !string.Equals(result.Environment, environment.ToString(), StringComparison.OrdinalIgnoreCase) ||
-                    !string.Equals(result.TerminalVersion, terminal.TerminalVersion, StringComparison.Ordinal) ||
-                    !string.Equals(result.AssignedDeviceCode, terminal.AssignedDeviceCode, StringComparison.Ordinal) ||
-                    result.AssignmentRevision != terminal.AssignmentRevision)
-                {
-                    item.SetConnectionStatus(
-                        "settings.linkly.lines.connection.unknown",
-                        "settings.linkly.lines.connection.help.checkTerminal");
-                    return;
-                }
-                var connectionStatusKey = result.Succeeded
-                    ? "settings.linkly.lines.connection.connected"
-                    : string.Equals(result.Status, "unknown", StringComparison.OrdinalIgnoreCase)
-                        ? "settings.linkly.lines.connection.unknown"
-                        : "settings.linkly.lines.connection.failed";
-                item.SetConnectionStatus(
-                    connectionStatusKey,
-                    result.Succeeded ? null : GetLinklyLineConnectionHelpKey(result.Status));
-                if (item.IsSelected &&
-                    _persistedLinklyCloudTerminalId == terminal.TerminalId &&
-                    environment == SelectedLinklyEnvironment)
-                {
-                    LinklyConnectionSucceeded = result.Succeeded;
-                    _linklyState.ConnectionSucceeded = result.Succeeded;
-                    RaiseCommandStates();
-                }
+                return;
             }
-            catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+            if (result.TerminalId != terminal.TerminalId ||
+                !string.Equals(result.Environment, environment.ToString(), StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(result.TerminalVersion, terminal.TerminalVersion, StringComparison.Ordinal) ||
+                !string.Equals(result.AssignedDeviceCode, terminal.AssignedDeviceCode, StringComparison.OrdinalIgnoreCase) ||
+                result.AssignmentRevision != terminal.AssignmentRevision)
             {
-                LogLinklyCloudSettings($"test line failed terminalId={terminal.TerminalId:D} error={ex.GetType().Name}");
-                var helpKey = TryGetDefinitiveLinklyPairFailureKey(ex, out var failureKey)
-                    ? failureKey : "settings.linkly.lines.connection.help.checkNetwork";
-                item.SetConnectionStatus("settings.linkly.lines.connection.unknown", helpKey);
+                item.SetConnectionStatus(
+                    "settings.linkly.lines.connection.unknown",
+                    "settings.linkly.lines.connection.help.checkTerminal");
+                return;
+            }
+
+            var status = result.Status?.Trim().ToLowerInvariant();
+            var connectionStatusKey = result.Succeeded && status == "connected"
+                ? "settings.linkly.lines.connection.connected"
+                : status == "unknown"
+                    ? "settings.linkly.lines.connection.unknown"
+                    : "settings.linkly.lines.connection.failed";
+            item.SetConnectionStatus(
+                connectionStatusKey,
+                connectionStatusKey == "settings.linkly.lines.connection.connected"
+                    ? null
+                    : GetLinklyLineConnectionHelpKey(status));
+            if (item.IsSelected && _persistedLinklyCloudTerminalId == terminal.TerminalId)
+            {
+                var connected = connectionStatusKey == "settings.linkly.lines.connection.connected";
+                LinklyConnectionSucceeded = connected;
+                _linklyState.ConnectionSucceeded = connected;
+                RaiseCommandStates();
+            }
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            LogLinklyCloudSettings($"test line failed terminalId={terminal.TerminalId:D} error={ex.GetType().Name}");
+            item.SetConnectionStatus(
+                "settings.linkly.lines.connection.unknown",
+                TryGetDefinitiveLinklyPairFailureKey(ex, out var failureKey)
+                    ? failureKey
+                    : "settings.linkly.lines.connection.help.checkNetwork");
+            if (item.IsSelected && _persistedLinklyCloudTerminalId == terminal.TerminalId)
+            {
+                LinklyConnectionSucceeded = false;
+                _linklyState.ConnectionSucceeded = false;
+                RaiseCommandStates();
             }
         }
         finally
         {
-            SetLinklyLineOperationBusy(item, false);
+            _isLinklyLineOperationBusy = false;
+            item.IsOperationBusy = false;
+            OnPropertyChanged(nameof(CanChangeEnvironment));
+            foreach (var line in LinklyCloudLines)
+            {
+                line.RefreshCommandStates();
+            }
         }
     }
 
@@ -1285,55 +1358,34 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         terminal.TerminalId == target.TerminalId && terminal.LaneNo == target.LaneNo &&
         string.Equals(terminal.DisplayName, target.DisplayName, StringComparison.Ordinal) &&
         string.Equals(terminal.TerminalVersion, target.TerminalVersion, StringComparison.Ordinal) &&
-        string.Equals(terminal.AssignedDeviceCode, target.AssignedDeviceCode, StringComparison.Ordinal) &&
+        string.Equals(terminal.AssignedDeviceCode, target.AssignedDeviceCode, StringComparison.OrdinalIgnoreCase) &&
         terminal.AssignmentRevision == target.AssignmentRevision;
-
-    private void SetLinklyLineOperationBusy(LinklyCloudLineItem item, bool value)
-    {
-        _isLinklyLineOperationBusy = value;
-        item.IsOperationBusy = value;
-        OnPropertyChanged(nameof(CanChangeEnvironment));
-        RaiseCommandStates();
-        foreach (var line in LinklyCloudLines)
-        {
-            line.RefreshCommandStates();
-        }
-    }
-
-    private static string GetLinklyLineConnectionHelpKey(string? status) =>
-        status?.Trim().ToLowerInvariant() switch
-        {
-            "needs-repair" or "needsrepair" => "settings.linkly.lines.connection.help.newPairCode",
-            "busy" or "in-progress" => "settings.linkly.lines.connection.help.wait",
-            "not-ready" or "unpaired" => "settings.linkly.lines.connection.help.pairFirst",
-            _ => "settings.linkly.lines.connection.help.checkTerminal"
-        };
 
     private static bool TryGetDefinitiveLinklyPairFailureKey(Exception exception, out string key)
     {
         key = exception is LinklyBackendHttpException backendException
             ? backendException.ErrorCode switch
             {
+                "LINKLY_CLOUD_BACKEND_PAIR_REJECTED" => "settings.linkly.cloudBackend.pairRejected",
+                "LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT" => "settings.linkly.cloudBackend.selectionChanged",
                 "LINKLY_CLOUD_BACKEND_ACTIVE_TRANSACTION" or "LINKLY_CLOUD_TERMINAL_SESSION_ACTIVE" =>
                     "settings.linkly.cloudBackend.operationBlocked",
                 "LINKLY_CLOUD_BACKEND_PAIR_IN_PROGRESS" or "LINKLY_CLOUD_TERMINAL_PAIRING_CONFLICT" =>
                     "settings.linkly.cloudBackend.pairInProgress",
-                "LINKLY_CLOUD_BACKEND_PAIR_REJECTED" => "settings.linkly.cloudBackend.pairRejected",
-                "LINKLY_CLOUD_BACKEND_PAIR_CREDENTIAL_MISSING" or
-                "LINKLY_CLOUD_TERMINAL_CREDENTIAL_REENTRY_REQUIRED" or
-                "LINKLY_CLOUD_TERMINAL_CREDENTIAL_UNAVAILABLE" => "settings.linkly.cloudBackend.credentialsRequired",
-                "LINKLY_CLOUD_BACKEND_PAIR_REQUEST_INVALID" => "settings.linkly.cloudBackend.pairRequestInvalid",
-                "LINKLY_CLOUD_BACKEND_REQUEST_INVALID" => "settings.linkly.lines.targetChanged",
-                "LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT" => "settings.linkly.cloudBackend.selectionChanged",
-                "LINKLY_CLOUD_TERMINAL_ASSIGNED" => "settings.linkly.cloudBackend.assignedElsewhere",
-                "LINKLY_CLOUD_TERMINAL_NOT_FOUND" => "settings.linkly.cloudBackend.terminalUnavailable",
-                "LINKLY_CLOUD_CREDENTIAL_NOT_CONFIGURED" => "settings.linkly.cloudBackend.credentialsRequired",
-                _ => backendException.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden
-                    ? "settings.linkly.cloudBackend.permissionRequired" : string.Empty
+                _ => string.Empty
             }
             : string.Empty;
         return key.Length > 0;
     }
+
+    private static string GetLinklyLineConnectionHelpKey(string? status) => status switch
+    {
+        "needs-repair" or "needsrepair" => "settings.linkly.lines.connection.help.newPairCode",
+        "busy" or "in-progress" => "settings.linkly.lines.connection.help.wait",
+        "not-ready" or "unpaired" => "settings.linkly.lines.connection.help.pairFirst",
+        "unknown" => "settings.linkly.lines.connection.help.checkNetwork",
+        _ => "settings.linkly.lines.connection.help.checkTerminal"
+    };
 
     private static void ApplyInitialLinklyLineConnectionStatus(LinklyCloudLineItem item, string? status)
     {
@@ -1342,32 +1394,213 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             item.SetConnectionStatus("settings.linkly.lines.connection.unknown", "settings.linkly.lines.refreshRequired");
             return;
         }
-        var normalized = status?.Trim().ToLowerInvariant();
-        if (normalized is "connected" or "healthy")
+
+        item.SetConnectionStatus(status?.Trim().ToLowerInvariant() switch
         {
-            item.SetConnectionStatus("settings.linkly.lines.connection.connected");
+            "connected" or "healthy" => "settings.linkly.lines.connection.connected",
+            "unhealthy" or "needs-repair" or "needsrepair" => "settings.linkly.lines.connection.failed",
+            null or "" => "settings.linkly.lines.connection.notTested",
+            _ => "settings.linkly.lines.connection.unknown"
+        });
+    }
+
+    private bool CanManageLinklyCloudTerminal(LinklyCloudTerminalManagementItem? item) =>
+        !IsBusy && IsLinklyCloudBackendAsyncMode && IsLinklyCloudLineManagementAvailable &&
+        item is { SupportsManagement: true, IsReady: true, IsTesting: false };
+
+    private bool CanAssignLinklyCloudTerminal(LinklyCloudTerminalManagementItem? item) =>
+        CanManageLinklyCloudTerminal(item) && !item!.IsBusy;
+
+    private bool CanUnassignLinklyCloudTerminal(LinklyCloudTerminalManagementItem? item) =>
+        CanAssignLinklyCloudTerminal(item) && !string.IsNullOrWhiteSpace(item!.AssignedDeviceCode);
+
+    private async Task TestLinklyCloudTerminalAsync(LinklyCloudTerminalManagementItem? item)
+    {
+        if (!CanManageLinklyCloudTerminal(item))
+        {
             return;
         }
 
-        if (normalized is "needs-repair" or "needsrepair")
+        using var permissionGrant = await AuthorizeAsync(
+            Permissions.PosTerminal.Settings.PaymentTerminal,
+            "test-linkly-cloud-terminal");
+        if (permissionGrant is null)
         {
-            item.SetConnectionStatus(
-                "settings.linkly.lines.connection.failed",
-                "settings.linkly.lines.connection.help.newPairCode");
             return;
         }
 
-        if (normalized == "unhealthy")
+        using var authorizationActivation = permissionGrant.Activate();
+        var environment = SelectedLinklyEnvironment;
+        var directoryGeneration = _linklyTerminalDirectoryGeneration;
+        var requestGeneration = _linklyTerminalTestGenerations.TryGetValue(item!.TerminalId, out var current)
+            ? current + 1
+            : 1;
+        _linklyTerminalTestGenerations[item.TerminalId] = requestGeneration;
+        item.IsTesting = true;
+        item.ConnectionStatus = T("settings.linkly.cloudBackend.testingLine");
+        RaiseCommandStates();
+        try
         {
-            item.SetConnectionStatus(
-                "settings.linkly.lines.connection.failed",
-                "settings.linkly.lines.connection.help.checkTerminal");
+            var result = await _setupService.TestLinklyCloudBackendTerminalAsync(environment, item.Terminal);
+            if (!IsCurrentTerminalRequest(item, environment, directoryGeneration, requestGeneration, result.TerminalVersion, result.AssignmentRevision))
+            {
+                return;
+            }
+
+            item.ConnectionStatus = result.Succeeded
+                ? T("settings.linkly.cloudBackend.healthHealthy")
+                : T("settings.linkly.cloudBackend.healthUnhealthy");
+            item.LastTestedAt = result.CheckedAt;
+            RememberLinklyTerminalTest(environment, item, result.CheckedAt);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            if (IsCurrentTerminalRequest(item, environment, directoryGeneration, requestGeneration, item.Terminal.TerminalVersion, item.Terminal.AssignmentRevision))
+            {
+                ConsoleLog.WriteError(
+                    "Settings",
+                    $"test linkly cloud terminal failed terminalId={item.TerminalId} error={ex.GetType().Name} message={ex.Message}",
+                    exception: ex);
+                item.ConnectionStatus = T("settings.linkly.cloudBackend.testLineFailed");
+                item.LastTestedAt = DateTimeOffset.Now;
+                RememberLinklyTerminalTest(environment, item, item.LastTestedAt.Value);
+            }
+        }
+        finally
+        {
+            if (ReferenceEquals(LinklyCloudTerminalItems.FirstOrDefault(candidate => candidate.TerminalId == item.TerminalId), item))
+            {
+                item.IsTesting = false;
+            }
+            RaiseCommandStates();
+        }
+    }
+
+    private bool IsCurrentTerminalRequest(
+        LinklyCloudTerminalManagementItem item,
+        CardTerminalEnvironment environment,
+        int directoryGeneration,
+        int requestGeneration,
+        string? terminalVersion,
+        long assignmentRevision)
+    {
+        return SelectedLinklyEnvironment == environment &&
+            _linklyTerminalDirectoryGeneration == directoryGeneration &&
+            _linklyTerminalTestGenerations.TryGetValue(item.TerminalId, out var latestGeneration) &&
+            latestGeneration == requestGeneration &&
+            ReferenceEquals(LinklyCloudTerminalItems.FirstOrDefault(candidate => candidate.TerminalId == item.TerminalId), item) &&
+            string.Equals(item.Terminal.TerminalVersion, terminalVersion, StringComparison.Ordinal) &&
+            item.Terminal.AssignmentRevision == assignmentRevision;
+    }
+
+    private Task UseLinklyCloudTerminalAsync(LinklyCloudTerminalManagementItem? item)
+    {
+        var currentDevice = LinklyCloudDevices.FirstOrDefault(device =>
+            device.IsAvailable && string.Equals(device.DeviceCode, Session.DeviceCode, StringComparison.OrdinalIgnoreCase));
+        return AssignLinklyCloudTerminalAsync(item, currentDevice, requireTarget: true);
+    }
+
+    private Task ChangeLinklyCloudTerminalAssignmentAsync(LinklyCloudTerminalManagementItem? item) =>
+        AssignLinklyCloudTerminalAsync(item, item?.SelectedTargetDevice, requireTarget: true);
+
+    private Task UnassignLinklyCloudTerminalAsync(LinklyCloudTerminalManagementItem? item) =>
+        AssignLinklyCloudTerminalAsync(item, targetDevice: null, requireTarget: false);
+
+    private async Task AssignLinklyCloudTerminalAsync(
+        LinklyCloudTerminalManagementItem? item,
+        LinklyCloudAssignableDevice? targetDevice,
+        bool requireTarget)
+    {
+        if (!CanAssignLinklyCloudTerminal(item) || (requireTarget && targetDevice is null))
+        {
+            if (requireTarget && targetDevice is null)
+            {
+                SetStatusOverride(T("settings.linkly.cloudBackend.assignmentTargetUnavailable"));
+            }
             return;
         }
 
-        item.SetConnectionStatus(string.IsNullOrWhiteSpace(normalized)
-            ? "settings.linkly.lines.connection.notTested"
-            : "settings.linkly.lines.connection.unknown");
+        var environment = SelectedLinklyEnvironment;
+        var directoryGeneration = _linklyTerminalDirectoryGeneration;
+        var terminalSnapshot = item!.Terminal;
+        var devicesSnapshot = LinklyCloudDevices.ToArray();
+        var targetOldTerminal = targetDevice?.SelectedTerminalId is Guid targetTerminalId
+            ? LinklyCloudTerminalItems.FirstOrDefault(candidate => candidate.TerminalId == targetTerminalId)?.DisplayName
+            : null;
+        var confirmation = string.Format(
+            System.Globalization.CultureInfo.CurrentCulture,
+            T("settings.linkly.cloudBackend.assignmentConfirmMessage"),
+            item.DisplayName,
+            item.AssignedDeviceCode ?? T("settings.linkly.cloudBackend.unassigned"),
+            targetDevice?.DeviceCode ?? T("settings.linkly.cloudBackend.unassigned"),
+            targetOldTerminal ?? T("settings.linkly.cloudBackend.unassigned"));
+        if (_confirmLinklyTerminalAssignmentAsync is null ||
+            !await _confirmLinklyTerminalAssignmentAsync(confirmation))
+        {
+            return;
+        }
+
+        if (!IsCurrentTerminalSnapshot(item, environment, directoryGeneration, terminalSnapshot))
+        {
+            SetStatusOverride(T("settings.linkly.cloudBackend.assignmentSnapshotChanged"));
+            return;
+        }
+
+        using var permissionGrant = await AuthorizeAsync(
+            Permissions.PosTerminal.Settings.PaymentTerminal,
+            "assign-linkly-cloud-terminal");
+        if (permissionGrant is null)
+        {
+            return;
+        }
+
+        using var authorizationActivation = permissionGrant.Activate();
+        if (!IsCurrentTerminalSnapshot(item, environment, directoryGeneration, terminalSnapshot))
+        {
+            SetStatusOverride(T("settings.linkly.cloudBackend.assignmentSnapshotChanged"));
+            return;
+        }
+        var assignmentGeneration = _linklyTerminalAssignmentGenerations.TryGetValue(item.TerminalId, out var currentGeneration)
+            ? currentGeneration + 1
+            : 1;
+        _linklyTerminalAssignmentGenerations[item.TerminalId] = assignmentGeneration;
+        await RunBusyAsync(async () =>
+        {
+            var result = await _setupService.AssignLinklyCloudBackendTerminalAsync(
+                environment,
+                terminalSnapshot,
+                targetDevice,
+                devicesSnapshot,
+                Session);
+            if (!IsCurrentTerminalSnapshot(item, environment, directoryGeneration, terminalSnapshot) ||
+                !_linklyTerminalAssignmentGenerations.TryGetValue(item.TerminalId, out var latestGeneration) ||
+                latestGeneration != assignmentGeneration)
+            {
+                return;
+            }
+
+            SetStatusOverride(result.Message);
+            if (result.Directory is not null)
+            {
+                // 写入响应或模糊失败后的只读校准一旦成为权威结果，立即使更早的目录 GET 失效。
+                Interlocked.Increment(ref _linklyTerminalDirectoryRequestGeneration);
+                ApplyLinklyCloudTerminalDirectory(environment, result.Directory);
+            }
+        }, operationName: "assign linkly cloud terminal");
+    }
+
+    private bool IsCurrentTerminalSnapshot(
+        LinklyCloudTerminalManagementItem item,
+        CardTerminalEnvironment environment,
+        int directoryGeneration,
+        LinklyCloudTerminalSummary snapshot)
+    {
+        return SelectedLinklyEnvironment == environment &&
+            _linklyTerminalDirectoryGeneration == directoryGeneration &&
+            ReferenceEquals(LinklyCloudTerminalItems.FirstOrDefault(candidate => candidate.TerminalId == item.TerminalId), item) &&
+            string.Equals(item.Terminal.TerminalVersion, snapshot.TerminalVersion, StringComparison.Ordinal) &&
+            string.Equals(item.Terminal.AssignedDeviceCode, snapshot.AssignedDeviceCode, StringComparison.OrdinalIgnoreCase) &&
+            item.Terminal.AssignmentRevision == snapshot.AssignmentRevision;
     }
 
     private async Task PairSelectedLinklyCloudBackendTerminalAsync()
@@ -1422,18 +1655,25 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
                 return;
             }
 
-            var pairedTerminal = terminal with
-            {
-                PairingState = result.PairingState,
-                IsReady = result.IsReady
-            };
             LinklyConnectionSucceeded = result.IsReady;
-            SetLinklyTestStatusOverride(result.Message);
-            SetStatusOverride(result.Message);
+            try
+            {
+                // Pair 会推进终端版本；必须以权威目录替换整行，后续测试/分配才能携带新 CAS facts。
+                await RefreshLinklyCloudBackendTerminalsCoreAsync(environment);
+            }
+            catch
+            {
+                var message = T("settings.linkly.cloudBackend.pairUnconfirmed");
+                SetLinklyTestStatusOverride(message);
+                SetStatusOverride(message);
+                return;
+            }
 
             if (!result.IsReady)
             {
-                ReplaceLinklyCloudTerminal(pairedTerminal);
+                var message = T("settings.linkly.cloudBackend.pairRejected");
+                SetLinklyTestStatusOverride(message);
+                SetStatusOverride(message);
                 return;
             }
 
@@ -1443,9 +1683,21 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
                     environment,
                     terminal.TerminalId,
                     LinklyCloudSelectionRevision);
-                // 先拿到服务端持久选择，再更新本地 Ready 项，避免 SelectionChanged 重复发送 PUT。
-                ReplaceLinklyCloudTerminal(pairedTerminal, selectReplacement: false);
                 ApplyPersistedLinklyCloudSelection(selection.TerminalId, selection.Revision);
+            }
+            catch
+            {
+                // 配对已经成功，选择失败时只能提示“已配对但未选中”，不能再次调用 Pair。
+                RestorePersistedLinklyCloudSelection();
+                var message = T("settings.linkly.cloudBackend.pairedButNotSelected");
+                SetLinklyTestStatusOverride(message);
+                SetStatusOverride(message);
+                return;
+            }
+
+            try
+            {
+                await RefreshLinklyCloudBackendTerminalsCoreAsync(environment);
                 var message = string.Format(System.Globalization.CultureInfo.CurrentCulture,
                     T("settings.linkly.cloudBackend.pairedAndSelected"), terminal.DisplayName);
                 SetLinklyTestStatusOverride(message);
@@ -1453,36 +1705,83 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             }
             catch
             {
-                // 配对已经成功，选择失败时只能提示“已配对但未选中”，不能再次调用 Pair。
-                ReplaceLinklyCloudTerminal(pairedTerminal, selectReplacement: false);
-                RestorePersistedLinklyCloudSelection();
-                var message = T("settings.linkly.cloudBackend.pairedButNotSelected");
+                var message = T("settings.linkly.cloudBackend.pairUnconfirmed");
                 SetLinklyTestStatusOverride(message);
                 SetStatusOverride(message);
             }
         }, operationName: "pair linkly cloud terminal");
     }
 
-    private async Task RefreshLinklyCloudBackendTerminalsCoreAsync(CardTerminalEnvironment environment)
+    private Task RefreshLinklyCloudBackendTerminalsCoreAsync(CardTerminalEnvironment environment)
     {
-        var requestVersion = Interlocked.Increment(ref _linklyTerminalDirectoryRequestVersion);
+        var requestGeneration = Interlocked.Increment(ref _linklyTerminalDirectoryRequestGeneration);
+        return RefreshLinklyCloudBackendTerminalsCoreAsync(environment, requestGeneration);
+    }
+
+    private async Task RefreshLinklyCloudBackendTerminalsCoreAsync(
+        CardTerminalEnvironment environment,
+        int requestGeneration)
+    {
         var directory = await _setupService.ListLinklyCloudBackendTerminalsAsync(environment);
-        if (requestVersion != Volatile.Read(ref _linklyTerminalDirectoryRequestVersion) ||
-            !IsLinklyCloudBackendAsyncMode ||
-            environment != SelectedLinklyEnvironment ||
-            !string.Equals(directory.Environment, environment.ToString(), StringComparison.OrdinalIgnoreCase))
+        if (SelectedLinklyEnvironment != environment ||
+            requestGeneration != _linklyTerminalDirectoryRequestGeneration)
         {
             return;
         }
-        // 刷新可能带回新的版本或设备归属；旧连接成功不能跨目录快照沿用。
-        ResetLinklyConnectionTest();
-        CloseLinklyLinePairing();
+        ApplyLinklyCloudTerminalDirectory(environment, directory);
+    }
+
+    private void ApplyLinklyCloudTerminalDirectory(
+        CardTerminalEnvironment environment,
+        LinklyCloudTerminalListResponse directory)
+    {
+        Interlocked.Increment(ref _linklyTerminalDirectoryGeneration);
+        _linklyTerminalTestGenerations.Clear();
+        _linklyTerminalAssignmentGenerations.Clear();
         LinklyCloudTerminals.Clear();
-        LinklyCloudLines.Clear();
         foreach (var terminal in directory.Terminals.OrderBy(item => item.LaneNo).ThenBy(item => item.DisplayName))
         {
             LinklyCloudTerminals.Add(terminal);
+        }
+
+        LinklyCloudDevices = directory.Devices ?? [];
+        IsLinklyCloudLineManagementAvailable = directory.Devices is not null &&
+            directory.Terminals.All(terminal => !string.IsNullOrWhiteSpace(terminal.TerminalVersion));
+        LinklyCloudTerminalItems.Clear();
+        LinklyCloudLines.Clear();
+        var availableTargets = LinklyCloudDevices.Where(device => device.IsAvailable).ToArray();
+        var currentTarget = availableTargets.FirstOrDefault(device =>
+            string.Equals(device.DeviceCode, Session.DeviceCode, StringComparison.OrdinalIgnoreCase));
+        var currentSnapshotKeys = LinklyCloudTerminals
+            .Select(terminal => CreateLinklyTerminalTestSnapshotKey(environment, terminal))
+            .ToHashSet();
+        foreach (var staleKey in _linklyTerminalTestSnapshots.Keys
+                     .Where(key => key.Environment == environment && !currentSnapshotKeys.Contains(key))
+                     .ToArray())
+        {
+            // 同一环境内绑定、分配修订或终端版本一旦变化，旧检测结果立即失效。
+            _linklyTerminalTestSnapshots.Remove(staleKey);
+        }
+        foreach (var terminal in LinklyCloudTerminals)
+        {
             LinklyCloudLines.Add(CreateLinklyCloudLine(terminal, directory.SelectedTerminalId));
+            var snapshotKey = CreateLinklyTerminalTestSnapshotKey(environment, terminal);
+            var hasLocalSnapshot = _linklyTerminalTestSnapshots.TryGetValue(snapshotKey, out var localSnapshot) &&
+                (terminal.LastHealthAt is null || terminal.LastHealthAt <= localSnapshot.CheckedAt);
+            if (!hasLocalSnapshot && localSnapshot is not null)
+            {
+                // 服务端已有更新检测时，以服务端为准，避免之后的旧目录重新唤回本地结果。
+                _linklyTerminalTestSnapshots.Remove(snapshotKey);
+            }
+            LinklyCloudTerminalItems.Add(new LinklyCloudTerminalManagementItem(
+                terminal,
+                availableTargets,
+                currentTarget,
+                hasLocalSnapshot
+                    ? localSnapshot!.ConnectionStatus
+                    : FormatPersistedLinklyHealthStatus(terminal.LastHealthStatus),
+                T,
+                hasLocalSnapshot ? localSnapshot!.CheckedAt : terminal.LastHealthAt));
         }
 
         _persistedLinklyCloudTerminalId = directory.SelectedTerminalId;
@@ -1492,7 +1791,46 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             // 服务端未持久选择时保持未选择，避免刷新多终端列表时隐式绑定 Lane 1。
             : null;
         RaiseLinklyCloudTerminalProperties();
+        OnPropertyChanged(nameof(LinklyCloudDevices));
+        OnPropertyChanged(nameof(IsLinklyCloudLineManagementAvailable));
+        OnPropertyChanged(nameof(IsLinklyCloudLineManagementUnavailable));
+        OnPropertyChanged(nameof(LinklyCloudLineManagementMessage));
     }
+
+    private string FormatPersistedLinklyHealthStatus(string? status) => status?.Trim().ToUpperInvariant() switch
+    {
+        "HEALTHY" => T("settings.linkly.cloudBackend.healthHealthy"),
+        "UNHEALTHY" => T("settings.linkly.cloudBackend.healthUnhealthy"),
+        _ => string.Empty
+    };
+
+    private void RememberLinklyTerminalTest(
+        CardTerminalEnvironment environment,
+        LinklyCloudTerminalManagementItem item,
+        DateTimeOffset checkedAt)
+    {
+        var key = CreateLinklyTerminalTestSnapshotKey(environment, item.Terminal);
+        _linklyTerminalTestSnapshots[key] = new LinklyTerminalTestSnapshot(item.ConnectionStatus, checkedAt);
+    }
+
+    private static LinklyTerminalTestSnapshotKey CreateLinklyTerminalTestSnapshotKey(
+        CardTerminalEnvironment environment,
+        LinklyCloudTerminalSummary terminal) =>
+        new(
+            environment,
+            terminal.TerminalId,
+            terminal.TerminalVersion ?? string.Empty,
+            terminal.AssignedDeviceCode?.Trim().ToUpperInvariant() ?? string.Empty,
+            terminal.AssignmentRevision);
+
+    private sealed record LinklyTerminalTestSnapshot(string ConnectionStatus, DateTimeOffset CheckedAt);
+
+    private readonly record struct LinklyTerminalTestSnapshotKey(
+        CardTerminalEnvironment Environment,
+        Guid TerminalId,
+        string TerminalVersion,
+        string AssignedDeviceCode,
+        long AssignmentRevision);
 
     private void ReplaceLinklyCloudTerminal(
         LinklyCloudTerminalSummary replacement,
@@ -1512,9 +1850,6 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         {
             LinklyCloudTerminals[index] = replacement;
         }
-
-        var line = LinklyCloudLines.FirstOrDefault(item => item.Terminal.TerminalId == replacement.TerminalId);
-        line?.UpdateTerminal(replacement, replacement.TerminalId == _persistedLinklyCloudTerminalId);
 
         if (selectReplacement)
         {
@@ -1550,14 +1885,23 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     private void ClearLinklyCloudTerminalDirectory()
     {
-        Interlocked.Increment(ref _linklyTerminalDirectoryRequestVersion);
-        CloseLinklyLinePairing();
+        Interlocked.Increment(ref _linklyTerminalDirectoryGeneration);
+        Interlocked.Increment(ref _linklyTerminalDirectoryRequestGeneration);
+        _linklyTerminalTestGenerations.Clear();
+        _linklyTerminalAssignmentGenerations.Clear();
         LinklyCloudTerminals.Clear();
+        LinklyCloudTerminalItems.Clear();
         LinklyCloudLines.Clear();
+        LinklyCloudDevices = [];
+        IsLinklyCloudLineManagementAvailable = false;
         SelectedLinklyCloudTerminal = null;
         _persistedLinklyCloudTerminalId = null;
         LinklyCloudSelectionRevision = null;
         RaiseLinklyCloudTerminalProperties();
+        OnPropertyChanged(nameof(LinklyCloudDevices));
+        OnPropertyChanged(nameof(IsLinklyCloudLineManagementAvailable));
+        OnPropertyChanged(nameof(IsLinklyCloudLineManagementUnavailable));
+        OnPropertyChanged(nameof(LinklyCloudLineManagementMessage));
     }
 
     private void RaiseLinklyCloudTerminalProperties()
@@ -1880,12 +2224,12 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     private bool CanTestLinkly()
     {
-        return !IsBusy && !_isLinklyLineOperationBusy && (PrimaryLinklyMode != LinklySettingsMode.CloudDirectSync || HasSavedLinklyCloudSecret);
+        return !IsBusy && (PrimaryLinklyMode != LinklySettingsMode.CloudDirectSync || HasSavedLinklyCloudSecret);
     }
 
     private bool CanLogonLinkly()
     {
-        return !IsBusy && !_isLinklyLineOperationBusy &&
+        return !IsBusy &&
             PrimaryLinklyMode == LinklySettingsMode.LocalIp &&
             LinklyConnectionSucceeded &&
             LinklyPinPadLoggedOn == false;
@@ -1893,30 +2237,30 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     private bool CanTestLinklyTransactionStatus()
     {
-        return !IsBusy && !_isLinklyLineOperationBusy && IsLinklyCloudBackendAsyncMode;
+        return !IsBusy && IsLinklyCloudBackendAsyncMode;
     }
 
     private bool CanSaveLinkly()
     {
-        return !IsBusy && !_isLinklyLineOperationBusy && LinklyConnectionSucceeded;
+        return !IsBusy && LinklyConnectionSucceeded;
     }
 
     private bool CanPairLinklyCloud()
     {
-        return !IsBusy && !_isLinklyLineOperationBusy && IsLinklyCloudMode &&
+        return !IsBusy && IsLinklyCloudMode &&
             (!IsLinklyCloudBackendAsyncMode || SelectedLinklyCloudTerminal is not null);
     }
 
     private bool CanSaveLinklyCloudCredential()
     {
-        return !IsBusy && !_isLinklyLineOperationBusy &&
+        return !IsBusy &&
             IsLinklyCloudDirectSyncMode &&
             !string.IsNullOrWhiteSpace(LinklyCloudUsernameText);
     }
 
     private bool CanCancelLinklyCloudPairing()
     {
-        return !IsBusy && !_isLinklyLineOperationBusy &&
+        return !IsBusy &&
             IsLinklyCloudMode &&
             (!string.IsNullOrWhiteSpace(LinklyPairCodeText) ||
              (!IsLinklyCloudBackendAsyncMode &&
@@ -2153,6 +2497,14 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         {
             line.RefreshLocalization();
         }
+        foreach (var item in LinklyCloudTerminalItems)
+        {
+            item.RefreshLocalizedText();
+            if (item.LastTestedAt == item.Terminal.LastHealthAt)
+            {
+                item.ConnectionStatus = FormatPersistedLinklyHealthStatus(item.Terminal.LastHealthStatus);
+            }
+        }
         RefreshLocalizedMessages();
     }
 
@@ -2169,10 +2521,6 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     partial void OnSelectedCategoryChanged(SettingsCategory value)
     {
-        if (value != SettingsCategory.PaymentTerminal)
-        {
-            CloseLinklyLinePairing();
-        }
         OnPropertyChanged(nameof(SettingsSubtitleText));
         OnPropertyChanged(nameof(IsDataMaintenanceSelected));
         OnPropertyChanged(nameof(IsPaymentTerminalSelected));
@@ -2231,7 +2579,6 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     partial void OnIsLinklySandboxChanged(bool value)
     {
         if (_syncingLinkly) return;
-        CloseLinklyLinePairing();
         SyncLinklyInputs();
         LogLinklyCloudSettings($"linkly environment changed environment={SelectedLinklyEnvironment}");
         ResetLinklyConnectionTest();
@@ -2269,7 +2616,6 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     partial void OnSelectedLinklyModeChanged(LinklySettingsMode value)
     {
         if (_syncingLinkly) return;
-        CloseLinklyLinePairing();
         SyncLinklyInputs();
         PromoteLinklyModeToPrimary(value);
 
@@ -2539,6 +2885,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     {
         RaiseCommandStates();
         OnPropertyChanged(nameof(CanChangeEnvironment));
+        OnPropertyChanged(nameof(CanRefreshLinklyCloudTerminals));
         foreach (var line in LinklyCloudLines)
         {
             line.RefreshCommandStates();
@@ -2559,6 +2906,10 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         TestLinklyCommand.NotifyCanExecuteChanged();
         LogonLinklyCommand.NotifyCanExecuteChanged();
         TestLinklyTransactionStatusCommand.NotifyCanExecuteChanged();
+        TestLinklyCloudTerminalCommand.NotifyCanExecuteChanged();
+        UseLinklyCloudTerminalCommand.NotifyCanExecuteChanged();
+        ChangeLinklyCloudTerminalAssignmentCommand.NotifyCanExecuteChanged();
+        UnassignLinklyCloudTerminalCommand.NotifyCanExecuteChanged();
         SaveLinklyCommand.NotifyCanExecuteChanged();
         MoveLinklyPriorityUpCommand.NotifyCanExecuteChanged();
         MoveLinklyPriorityDownCommand.NotifyCanExecuteChanged();

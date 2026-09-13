@@ -43,11 +43,18 @@ public interface ILinklyBackendTerminalClient
             new NotSupportedException("Linkly Cloud terminal pairing is not supported by this client."));
 
     Task<LinklyCloudTerminalConnectionTestResponse> TestTerminalConnectionAsync(
-        CardTerminalEnvironment environment,
-        LinklyCloudTerminalSummary terminal,
+        Guid terminalId,
+        LinklyCloudTerminalConnectionTestRequest request,
         CancellationToken cancellationToken = default) =>
         Task.FromException<LinklyCloudTerminalConnectionTestResponse>(
-            new NotSupportedException("Linkly Cloud terminal connection test is not supported by this client."));
+            new NotSupportedException("Linkly Cloud terminal connection testing is not supported by this client."));
+
+    Task<LinklyCloudTerminalListResponse> AssignTerminalAsync(
+        Guid terminalId,
+        LinklyCloudTerminalAssignmentRequest request,
+        CancellationToken cancellationToken = default) =>
+        Task.FromException<LinklyCloudTerminalListResponse>(
+            new NotSupportedException("Linkly Cloud terminal assignment is not supported by this client."));
 
     Task<LinklyConnectionTestResult> TestConnectionAsync(
         CardTerminalEnvironment environment,
@@ -231,22 +238,32 @@ public sealed class LinklyBackendTerminalClient(
     }
 
     public async Task<LinklyCloudTerminalConnectionTestResponse> TestTerminalConnectionAsync(
-        CardTerminalEnvironment environment,
-        LinklyCloudTerminalSummary terminal,
+        Guid terminalId,
+        LinklyCloudTerminalConnectionTestRequest request,
         CancellationToken cancellationToken = default)
     {
-        var relativeUrl = $"api/v1/linkly/cloud-backend/terminals/{terminal.TerminalId:D}/connection-test";
-        var request = new LinklyCloudTerminalConnectionTestRequest(
-            environment.ToString(),
-            terminal.TerminalVersion ?? string.Empty,
-            terminal.AssignedDeviceCode,
-            terminal.AssignmentRevision);
+        var relativeUrl = $"api/v1/linkly/cloud-backend/terminals/{terminalId:D}/connection-test";
         using var response = await httpClient.PostAsJsonAsync(relativeUrl, request, JsonOptions, cancellationToken);
-        var result = await ReadTerminalApiResultAsync<LinklyCloudTerminalConnectionTestResponse>(response, cancellationToken);
-        Log(
-            $"terminal connection test completed environment={environment} terminalId={terminal.TerminalId:D} " +
-            $"succeeded={result.Succeeded} status={LogValue(result.Status)}");
-        return result;
+        return await ReadTerminalApiResultAsync<LinklyCloudTerminalConnectionTestResponse>(response, cancellationToken);
+    }
+
+    public async Task<LinklyCloudTerminalListResponse> AssignTerminalAsync(
+        Guid terminalId,
+        LinklyCloudTerminalAssignmentRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var relativeUrl = $"api/v1/linkly/cloud-backend/terminals/{terminalId:D}/assignment";
+        using var response = await httpClient.PutAsJsonAsync(relativeUrl, request, JsonOptions, cancellationToken);
+        var directory = await ReadTerminalApiResultAsync<LinklyCloudTerminalListResponse>(response, cancellationToken);
+        if (Enum.TryParse<CardTerminalEnvironment>(directory.Environment, ignoreCase: true, out var environment))
+        {
+            lock (_terminalDirectorySync)
+            {
+                _terminalDirectories[environment] = directory;
+            }
+        }
+
+        return directory;
     }
 
     public async Task<LinklyConnectionTestResult> TestConnectionAsync(
@@ -4069,5 +4086,13 @@ public sealed class LinklyBackendTerminalClient(
         }
     }
 
+    private sealed class LinklyBackendHttpException(
+        string message,
+        HttpStatusCode httpStatus,
+        string? errorCode = null) : HttpRequestException(message, inner: null, statusCode: httpStatus)
+    {
+        public HttpStatusCode HttpStatus { get; } = httpStatus;
 
+        public string? ErrorCode { get; } = errorCode;
+    }
 }

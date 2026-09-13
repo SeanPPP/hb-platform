@@ -22,6 +22,7 @@ import {
   type SettingsReceiptProfileDraft,
   type SettingsScannerTestResult,
   type SettingsLinklyPairingPort,
+  type SettingsLinklySetupControlPort,
   type SettingsLinklyTerminalSelectionSnapshot,
   type SettingsSnapshot,
 } from "../../features/settings/settings-presenter";
@@ -61,6 +62,7 @@ export type ProductionSettingsControlDependencies = Readonly<{
                 signal: AbortSignal,
               ) => Promise<SettingsLinklyTerminalSelectionSnapshot>)
             | undefined;
+          assignTerminal?: SettingsLinklySetupControlPort["assignTerminal"];
         }>)
     | undefined;
   runtimeReload: Readonly<{
@@ -368,7 +370,8 @@ export class ProductionSettingsControl implements SettingsControlPort {
     throwIfAborted(signal);
     if (
       action.kind === "change-payment-settings" ||
-      action.kind === "pair-linkly"
+      action.kind === "pair-linkly" ||
+      action.kind === "assign-linkly-terminal"
     ) {
       // transition 已按目录→购物车固定锁序封住新业务并等待在途 operation；
       // 这里直接进入 guarded，不能再次申请同一目录门造成自锁。
@@ -556,6 +559,23 @@ export class ProductionSettingsControl implements SettingsControlPort {
           ? Object.freeze({ status: "unknown", kind: action.kind })
           : completed(action.kind);
       }
+      case "assign-linkly-terminal": {
+        const assignTerminal = this.input.linklySetup?.assignTerminal;
+        if (!assignTerminal) throw linklyTerminalSelectionBlocked();
+        // 分配会同时替换目标设备旧线路；所有本地门禁通过后只提交一次 PUT。
+        throwIfAborted(signal);
+        assertActive();
+        const terminals = await assignTerminal(
+          action.environment,
+          action.input,
+          signal,
+        );
+        return Object.freeze({
+          status: "completed" as const,
+          kind: action.kind,
+          terminals,
+        });
+      }
       case "reset-catalog": {
         if (this.catalogRefreshBlocks()) {
           return safetyBlocked();
@@ -677,12 +697,22 @@ function pendingDataBlockersForAction(
   const blockers = derivePendingWorkBlockers(pending);
   if (
     action.kind !== "change-payment-settings" &&
-    action.kind !== "pair-linkly"
+    action.kind !== "pair-linkly" &&
+    action.kind !== "assign-linkly-terminal"
   ) {
+    return blockers;
+  }
+  if (
+    action.kind === "assign-linkly-terminal" &&
+    action.affectsCurrentDevice
+  ) {
+    // 本机线路变化会立刻改变后续交易使用的终端；全局封门内必须确认所有
+    // 本地待处理与恢复数据均已清空，不能沿用远端配置变更的放宽规则。
     return blockers;
   }
   // 普通已耐久队列可在 reload 后继续处理；内存购物车、进行中的外部动作，
   // 以及仍依赖旧 provider/environment 的订单或恢复必须保持失败关闭。
+  // 远端线路分配不改变本机 provider 与交易通道，也沿用这组门禁。
   return Object.freeze(
     blockers.filter((blocker) =>
       blocker.code === "active-cart" ||
@@ -697,7 +727,7 @@ function pendingDataBlockersForAction(
 function completed(
   kind: Exclude<
     SettingsDangerousConfirmation["kind"],
-    "reset-catalog"
+    "reset-catalog" | "assign-linkly-terminal"
   >,
 ): SettingsDangerousActionResult {
   return Object.freeze({ status: "completed", kind });
