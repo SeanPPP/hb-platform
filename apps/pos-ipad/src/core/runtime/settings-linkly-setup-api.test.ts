@@ -1230,6 +1230,114 @@ test("Linkly 分配 PUT 结果不明时只 GET 核对，确认已提交后返回
   ]);
 });
 
+test("Linkly 分配 PUT 返回不完整快照时只 GET 核对，确认已提交后返回权威快照", async () => {
+  const transport = new QueueTransport([
+    assignmentResponse({
+      sourceAssignedDeviceCode: "TARGET-POS",
+      sourceRevision: 12,
+      targetDeviceCode: "TARGET-POS",
+      targetRevision: 11,
+      includeDisplacedLine: true,
+      includePreviousOwner: true,
+    }),
+    assignmentResponse({
+      sourceAssignedDeviceCode: "TARGET-POS",
+      sourceRevision: 11,
+      targetDeviceCode: "TARGET-POS",
+      targetRevision: 11,
+      includeDisplacedLine: true,
+      includePreviousOwner: true,
+    }),
+  ]);
+
+  const result = await new HbposSettingsLinklySetupApi(transport).assignTerminal(
+    "Production",
+    {
+      terminalId: "source-line",
+      terminalVersion: "source-v1",
+      assignedDeviceCode: "OLD-POS",
+      assignmentRevision: 900_000,
+      targetDeviceCode: "TARGET-POS",
+      expectedTargetTerminalId: "displaced-line",
+      expectedTargetSelectionRevision: 10,
+    },
+    new AbortController().signal,
+  );
+
+  assert.equal(result.terminals[0]?.assignmentRevision, 11);
+  assert.deepEqual(transport.requests.map(({ method, url }) => ({ method, url })), [
+    { method: "PUT", url: "/api/v1/linkly/cloud-backend/terminals/source-line/assignment" },
+    { method: "GET", url: "/api/v1/linkly/cloud-backend/terminals" },
+  ]);
+});
+
+test("Linkly 分配 PUT 返回不完整快照且 GET 未确认时保留原错误并只核对一次", async () => {
+  const invalidSnapshot = assignmentResponse({
+    sourceAssignedDeviceCode: "TARGET-POS",
+    sourceRevision: 12,
+    targetDeviceCode: "TARGET-POS",
+    targetRevision: 11,
+    includeDisplacedLine: true,
+    includePreviousOwner: true,
+  });
+  const transport = new QueueTransport([invalidSnapshot, invalidSnapshot]);
+
+  await assert.rejects(
+    () => new HbposSettingsLinklySetupApi(transport).assignTerminal(
+      "Production",
+      {
+        terminalId: "source-line",
+        terminalVersion: "source-v1",
+        assignedDeviceCode: "OLD-POS",
+        assignmentRevision: 900_000,
+        targetDeviceCode: "TARGET-POS",
+        expectedTargetTerminalId: "displaced-line",
+        expectedTargetSelectionRevision: 10,
+      },
+      new AbortController().signal,
+    ),
+    (error: unknown) => error instanceof HbposApiError &&
+      error.code === "LINKLY_ASSIGNMENT_RESPONSE_INVALID",
+  );
+  assert.deepEqual(transport.requests.map(({ method, url }) => ({ method, url })), [
+    { method: "PUT", url: "/api/v1/linkly/cloud-backend/terminals/source-line/assignment" },
+    { method: "GET", url: "/api/v1/linkly/cloud-backend/terminals" },
+  ]);
+});
+
+test("Linkly 分配 PUT 返回不完整快照且 GET 失败时仍保留原错误", async () => {
+  const transport = new QueueTransport([
+    assignmentResponse({
+      sourceAssignedDeviceCode: "TARGET-POS",
+      sourceRevision: 12,
+      targetDeviceCode: "TARGET-POS",
+      targetRevision: 11,
+      includeDisplacedLine: true,
+      includePreviousOwner: true,
+    }),
+    new HbposApiError("refresh failed", { kind: "transport", code: "NETWORK_ERROR" }),
+  ]);
+
+  await assert.rejects(
+    () => new HbposSettingsLinklySetupApi(transport).assignTerminal(
+      "Production",
+      {
+        terminalId: "source-line",
+        terminalVersion: "source-v1",
+        assignedDeviceCode: "OLD-POS",
+        assignmentRevision: 900_000,
+        targetDeviceCode: "TARGET-POS",
+        expectedTargetTerminalId: "displaced-line",
+        expectedTargetSelectionRevision: 10,
+      },
+      new AbortController().signal,
+    ),
+    (error: unknown) => error instanceof HbposApiError &&
+      error.code === "LINKLY_ASSIGNMENT_RESPONSE_INVALID",
+  );
+  assert.equal(transport.requests.length, 2);
+});
+
 test("Linkly 连接测试无 HTTP 终态时只 GET 核对且不重放 POST", async () => {
   const transport = new QueueTransport([
     new HbposApiError("timeout", { kind: "http", status: 504 }),

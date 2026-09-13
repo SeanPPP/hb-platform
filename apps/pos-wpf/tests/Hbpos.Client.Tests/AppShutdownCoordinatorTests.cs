@@ -498,19 +498,28 @@ public sealed class AppShutdownCoordinatorTests
     [Fact]
     public async Task App_host_dispose_fallback_is_bounded()
     {
-        var disposable = new BlockingDisposable();
-        var startedAt = Stopwatch.GetTimestamp();
+        var disposable = new GatedDisposable();
 
-        var disposed = App.DisposeHostWithinTimeout(
-            disposable,
-            TimeSpan.FromMilliseconds(20),
-            "test");
+        try
+        {
+            var startedAt = Stopwatch.GetTimestamp();
 
-        Assert.False(disposed);
-        Assert.True(
-            Stopwatch.GetElapsedTime(startedAt) < TimeSpan.FromSeconds(1),
-            "host dispose fallback should not block application exit");
-        await disposable.Completed.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            var disposed = App.DisposeHostWithinTimeout(
+                disposable,
+                TimeSpan.FromMilliseconds(20),
+                "test");
+
+            Assert.False(disposed);
+            Assert.True(
+                Stopwatch.GetElapsedTime(startedAt) < TimeSpan.FromSeconds(1),
+                "host dispose fallback should not block application exit");
+        }
+        finally
+        {
+            // 固定延时会受测试运行器调度影响；断言完成后再开门，确保 Dispose 必然跨过 20ms 超时边界。
+            disposable.Release();
+            await disposable.Completed.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        }
     }
 
     [Fact]
@@ -527,16 +536,21 @@ public sealed class AppShutdownCoordinatorTests
         Assert.Equal(0, disposable.DisposeCallCount);
     }
 
-    private sealed class BlockingDisposable : IDisposable
+    private sealed class GatedDisposable : IDisposable
     {
+        private readonly TaskCompletionSource _releaseGate =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public TaskCompletionSource Completed { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void Release() => _releaseGate.TrySetResult();
 
         public void Dispose()
         {
             try
             {
-                Thread.Sleep(100);
+                _releaseGate.Task.GetAwaiter().GetResult();
             }
             finally
             {

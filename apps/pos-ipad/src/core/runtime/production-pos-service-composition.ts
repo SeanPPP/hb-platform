@@ -1395,6 +1395,9 @@ export function createProductionPosRuntimeServices(
   const installmentRecoveryActionStore =
     installmentActionStore ??
     input.database.installmentActions(input.encryptor);
+  let prepareInstallmentAcknowledgementRecovery:
+    | (() => Promise<void>)
+    | null = null;
   const installmentSnapshotRepository = installmentConfiguration
     ? input.database.installmentSnapshots(input.encryptor)
     : null;
@@ -1451,7 +1454,7 @@ export function createProductionPosRuntimeServices(
             createId: input.createId,
             nowIso: input.clock.nowIso,
           });
-        const prepareInstallmentAcknowledgementRecovery =
+        prepareInstallmentAcknowledgementRecovery =
           installmentLegacyAcknowledgementDiscoveryOrNull(
             bootstrap,
             persistence.providerAttempts,
@@ -1507,6 +1510,11 @@ export function createProductionPosRuntimeServices(
         status: "unavailable",
         reason: "INSTALLMENT_PAYMENT_PERSISTENCE_MISSING",
       };
+  const terminalReturnRecoveryLedger =
+    input.database.returnExecutionLedger(input.encryptor, {
+      createTenderGuid: input.createId,
+      createAuditEventId: input.createId,
+    });
   const returnRecoveryProbe = createProductionReturnRecoveryProbe({
     database: input.database,
     encryptor: input.encryptor,
@@ -1920,28 +1928,53 @@ export function createProductionPosRuntimeServices(
         let hasUnresolvedPayment = true;
         let hasRecoveryRequired = true;
         try {
-          const regularPaymentRecovery =
-            payments.status === "available"
-              ? await payments.hasRecoveryRequired()
-              : false;
-          // 必须经分期 runtime 探测：它会先冻结可验证旧 Linkly 环境，且包含 ACK-only。
-          const installmentPaymentRecovery =
-            "hasRecoveryRequired" in installments
-              ? await installments.hasRecoveryRequired()
-              : false;
           hasUnresolvedPayment =
-            regularPaymentRecovery ||
-            installmentPaymentRecovery;
+            await paymentRuntime.recoveryProbe.hasRecoveryRequired();
         } catch {
-          // 无法证明支付已稳定时必须禁止 reload，避免 Unknown 被误当成可安全重启。
+          // 支付耐久状态无法证明稳定时保持阻断，不影响独立核验退货状态。
+        }
+        try {
+          // 分期 legacy 发现只冻结可验证环境；不提交金融操作，随后统一检查三类耐久恢复。
+          await prepareInstallmentAcknowledgementRecovery?.();
+          const [payment, lifecycle, acknowledgement] =
+            await Promise.all([
+              installmentRecoveryActionStore.loadBlocking(
+                input.auditMetadata,
+              ),
+              installmentRecoveryActionStore.loadLifecycleBlocking(
+                input.auditMetadata,
+              ),
+              installmentRecoveryActionStore
+                .loadProviderAcknowledgementPending?.(
+                  input.auditMetadata,
+                ) ?? Promise.resolve(null),
+            ]);
+          if (
+            Number(Boolean(payment)) +
+              Number(Boolean(lifecycle)) +
+              Number(Boolean(acknowledgement)) >
+            1
+          ) {
+            throw new Error(
+              "Multiple installment actions require recovery.",
+            );
+          }
+          hasUnresolvedPayment =
+            hasUnresolvedPayment ||
+            payment !== null ||
+            lifecycle !== null ||
+            acknowledgement !== null;
+        } catch {
+          // 分期 action、lifecycle 或 ACK 读取失败时仍按需要恢复处理。
+          hasUnresolvedPayment = true;
         }
         try {
           hasRecoveryRequired =
-            returns.status === "available"
-              ? await returns.hasRecoveryRequired()
-              : false;
+            await terminalReturnRecoveryLedger.hasRecoverableForTerminal(
+              input.auditMetadata,
+            );
         } catch {
-          // 退货恢复读取失败同样不能当成安全；保持 true 等待下一次可信快照。
+          // 退货终端恢复读取失败同样不能当成安全。
         }
         return Object.freeze({
           hasActiveCart:

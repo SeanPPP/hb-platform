@@ -21,6 +21,7 @@ public sealed class LinklyLineSqlServerFactAttribute : FactAttribute
 }
 
 // 每个用例创建独立数据库；不允许借用生产表，也不依赖用例执行顺序。
+[Trait("Category", "SQL")]
 public sealed class LinklyLineManagementSqlServerIntegrationTests : IAsyncLifetime
 {
     private string? masterConnection;
@@ -356,6 +357,29 @@ public sealed class LinklyLineManagementSqlServerIntegrationTests : IAsyncLifeti
     }
 
     [LinklyLineSqlServerFact]
+    public async Task Unassigned_line_connection_test_rejects_caller_sessions_on_another_line()
+    {
+        var blockingCases = new[]
+        {
+            (Status: "Completed", Acknowledged: true, IsActive: true),
+            (Status: "Unknown", Acknowledged: true, IsActive: false),
+            (Status: "Completed", Acknowledged: false, IsActive: false),
+        };
+
+        foreach (var item in blockingCases)
+        {
+            await SeedSessionAsync("POS-A", lineB, item.Status, item.Acknowledged, item.IsActive);
+            Assert.False(await Repository().TryAcquireConnectionTestLeaseAsync(
+                "Production", "S001", lineA, version, Guid.NewGuid(),
+                DateTime.UtcNow.AddMinutes(9), DateTime.UtcNow, default,
+                expectedAssignedDeviceCode: null, expectedAssignmentRevision: 0,
+                operationDeviceCode: "POS-A"));
+            Assert.Null((await Repository().GetAsync("Production", "S001", lineA, default))!.PairingAttemptId);
+            await ExecuteAsync("DELETE FROM [dbo].[POSM_LinklyCloudBackendSession];");
+        }
+    }
+
+    [LinklyLineSqlServerFact]
     public Task Assignment_racing_session_creation_has_only_one_winner() => RaceWithSessionCreationAsync(false);
 
     [LinklyLineSqlServerFact]
@@ -442,12 +466,14 @@ public sealed class LinklyLineManagementSqlServerIntegrationTests : IAsyncLifeti
         VALUES (N'Production',N'S001',@Device,@Line,@Revision);
         """, new("@Device", device), new("@Line", line), new("@Revision", revision));
 
-    private Task SeedSessionAsync(string device, Guid? line, string status, bool acknowledged) => ExecuteAsync("""
+    private Task SeedSessionAsync(
+        string device, Guid? line, string status, bool acknowledged, bool isActive = false) => ExecuteAsync("""
         INSERT INTO [dbo].[POSM_LinklyCloudBackendSession]
             ([Environment],[StoreCode],[DeviceCode],[TerminalId],[SessionId],[Status],[IsActive],[ClientAcknowledgedAt])
-        VALUES (N'Production',N'S001',@Device,@Line,@Session,@Status,0,@Ack);
+        VALUES (N'Production',N'S001',@Device,@Line,@Session,@Status,@IsActive,@Ack);
         """, new("@Device", device), new("@Line", (object?)line ?? DBNull.Value),
         new("@Session", Guid.NewGuid().ToString()), new("@Status", status),
+        new("@IsActive", isActive),
         new("@Ack", acknowledged ? DateTime.UtcNow : DBNull.Value));
 
     private Task ExecuteAsync(string sql, params SqlParameter[] parameters) => ExecuteAtAsync(connection, sql, parameters);

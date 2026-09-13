@@ -20,6 +20,58 @@ public sealed class CardRecoveryCenterViewModelTests
         DateTimeOffset.Parse("2026-08-21T10:00:00+10:00", CultureInfo.InvariantCulture);
 
     [Fact]
+    public async Task Workspace_filters_history_without_enabling_financial_actions_or_changing_open_count()
+    {
+        var pending = CreateQueueItem(CardProcessorKind.Linkly, Guid.NewGuid(), Now);
+        var failed = CreateQueueItem(CardProcessorKind.Square, Guid.NewGuid(), Now.AddMinutes(-1), status: "Failed") with { IsOpen = false };
+        var completed = CreateQueueItem(CardProcessorKind.Linkly, Guid.NewGuid(), Now.AddMinutes(-2), status: "OrderCompleted") with { IsOpen = false };
+        var recovery = new RecordingRecoveryService { OpenItems = [pending, failed, completed] };
+        using var vm = new CardRecoveryCenterViewModel(recovery, new PosCartService(), CreateSession(), new RecordingAuthorizationService(CreateCashier("SUPERVISOR")), CreateLocalization());
+        await vm.LoadAsync();
+        Assert.Single(vm.OpenAttempts);
+        Assert.Equal(pending.Key, Assert.Single(vm.OpenAttemptRows).Key);
+        vm.FilterCommand.Execute("failed");
+        Assert.Equal(failed.Key, Assert.Single(vm.OpenAttemptRows).Key);
+        Assert.False(vm.RecoverCommand.CanExecute(null));
+        Assert.False(vm.ConfirmPaidCommand.CanExecute(null));
+        await vm.RecoverCommand.ExecuteAsync(null);
+        await vm.ConfirmPaidCommand.ExecuteAsync(null);
+        Assert.Equal(0, recovery.RecoverCallCount);
+        Assert.Equal(0, recovery.ResolveCallCount);
+        vm.SearchText = "not-present";
+        Assert.Empty(vm.OpenAttemptRows);
+        Assert.Null(vm.SelectedAttempt);
+        vm.SearchText = "";
+        vm.FilterCommand.Execute("resolved");
+        Assert.Equal(completed.Key, Assert.Single(vm.OpenAttemptRows).Key);
+        vm.ChannelIndex = 2;
+        Assert.Empty(vm.OpenAttemptRows);
+        vm.ChannelIndex = 0;
+        vm.FilterCommand.Execute("review");
+        Assert.Equal(pending.Key, Assert.Single(vm.OpenAttemptRows).Key);
+    }
+
+    [Fact]
+    public async Task Workspace_searches_exact_order_and_clears_manual_form_on_selection_change()
+    {
+        var first = CreateQueueItem(CardProcessorKind.Linkly, Guid.NewGuid(), Now, orderDraftJson: "{\"orderGuid\":\"ORDER-ALPHA\"}");
+        var second = CreateQueueItem(CardProcessorKind.Square, Guid.NewGuid(), Now.AddMinutes(-1), operationKind: "Refund");
+        using var vm = new CardRecoveryCenterViewModel(new RecordingRecoveryService { OpenItems = [first, second] }, new PosCartService(), CreateSession(), new RecordingAuthorizationService(CreateCashier("SUPERVISOR")), CreateLocalization());
+        await vm.LoadAsync();
+        vm.SearchText = "order-alpha";
+        Assert.Equal(first.Key, Assert.Single(vm.OpenAttemptRows).Key);
+        Assert.Equal("ORDER-ALPHA", vm.SelectedOrderText);
+        vm.IsManualExpanded = true;
+        vm.ResolutionEvidence = "old evidence";
+        vm.SearchText = "";
+        vm.OperationIndex = 2;
+        Assert.Equal(second.Key, Assert.Single(vm.OpenAttemptRows).Key);
+        Assert.False(vm.IsManualExpanded);
+        Assert.Empty(vm.ResolutionEvidence);
+        Assert.Equal(2, vm.SelectedHistory.Count);
+    }
+
+    [Fact]
     public async Task LoadAsync_authorizes_payment_view_before_exposing_open_attempts()
     {
         var first = CreateQueueItem(
@@ -1131,7 +1183,7 @@ public sealed class CardRecoveryCenterViewModelTests
         Assert.Equal("Card sale", viewModel.SelectedTypeText);
         Assert.Equal("Square", viewModel.SelectedChannelText);
         Assert.Equal("Needs supervisor review", viewModel.SelectedStatusText);
-        Assert.Equal("$12.34", viewModel.SelectedAmountText);
+        Assert.Equal("AU$12.34", viewModel.SelectedAmountText);
         Assert.Equal("CASHIER-1", viewModel.SelectedCashierText);
         Assert.Equal(Now.ToString("g", CultureInfo.GetCultureInfo("en-US")), viewModel.SelectedTimeText);
         Assert.Equal("CHECKOUT-1", viewModel.SelectedSessionText);
@@ -1182,6 +1234,7 @@ public sealed class CardRecoveryCenterViewModelTests
         Assert.Equal("Square", viewModel.OpenAttemptRows[0].ChannelText);
         Assert.Equal("Finalization pending", viewModel.OpenAttemptRows[0].StatusText);
         Assert.Equal("Finalization pending", viewModel.SelectedStatusText);
+        Assert.Equal("AU$12.34", viewModel.SelectedAmountText);
         Assert.DoesNotContain(CardRecoveryPhases.FinalizePending, viewModel.OpenAttemptRows[0].StatusText, StringComparison.Ordinal);
 
         localization.SetCulture("zh-CN");
@@ -1190,6 +1243,7 @@ public sealed class CardRecoveryCenterViewModelTests
         Assert.Equal("Square", viewModel.OpenAttemptRows[0].ChannelText);
         Assert.Equal("等待完成", viewModel.OpenAttemptRows[0].StatusText);
         Assert.Equal("等待完成", viewModel.SelectedStatusText);
+        Assert.Equal("AU$12.34", viewModel.SelectedAmountText);
     }
 
     [Fact]
@@ -1272,8 +1326,10 @@ public sealed class CardRecoveryCenterViewModelTests
                 double.TryParse(button.Attribute("MinHeight")?.Value, CultureInfo.InvariantCulture, out var minHeight) &&
                 minHeight >= 48,
                 $"{command} must have a touch target of at least 48.");
-            var label = Assert.Single(button.Descendants(presentation + "TextBlock"));
-            Assert.StartsWith("{loc:Loc ", label.Attribute("Text")?.Value);
+            var label = button.Attribute("Content")?.Value;
+            Assert.True(label?.StartsWith("{loc:Loc ", StringComparison.Ordinal) == true ||
+                label is "{Binding ConfirmProcessedText}" or "{Binding ConfirmNotProcessedText}",
+                $"{command} must use a localized label.");
         }
     }
 

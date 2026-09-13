@@ -333,4 +333,36 @@
   <data name="settings.linkly.cloudBackend.permissionRequired" xml:space="preserve"><value>This operation is not authorized. Ask an authorized supervisor to check the POS sign-in and payment-terminal permissions, then retry.</value></data>
   <data name="settings.linkly.cloudBackend.testCommunicationFailed" xml:space="preserve"><value>The test could not be completed because the connection was interrupted. Check the POS network and terminal screen before retrying; the terminal may still be processing the previous test.</value></data>
   <data name="settings.linkly.cloudBackend.pairRequestInvalid" xml:space="preserve"><value>The pairing request is invalid. Check the selected terminal, environment and 6-digit pair code. If they are correct, ask an administrator to check the terminal configuration.</value></data>
+  <data name="settings.linkly.cloudBackend.managementUnavailable" xml:space="preserve"><value>Update the POS API before managing individual Linkly lines. Pairing and the existing payment selection remain available.</value></data>
+  <data name="settings.linkly.cloudBackend.pairingState" xml:space="preserve"><value>Pairing</value></data>
+  <data name="settings.linkly.cloudBackend.lane" xml:space="preserve"><value>Lane {0}</value></data>
+  <data name="settings.linkly.cloudBackend.stateReady" xml:space="preserve"><value>Ready</value></data>
+  <data name="settings.linkly.cloudBackend.stateUnpaired" xml:space="preserve"><value>Unpaired</value></data>
+  <data name="settings.linkly.cloudBackend.stateNeedsRepair" xml:space="preserve"><value>Needs repair</value></data>
+  <data name="settings.linkly.cloudBackend.statePairing" xml:space="preserve"><value>Pairing</value></data>
+  <data name="settings.linkly.cloudBackend.stateUnknown" xml:space="preserve"><value>Unknown</value></data>
+  <data name="settings.linkly.cloudBackend.boundDevice" xml:space="preserve"><value>Bound POS</value></data>
+  <data name="settings.linkly.cloudBackend.lastTested" xml:space="preserve"><value>Last tested</value></data>
+  <data name="settings.linkly.cloudBackend.testLine" xml:space="preserve"><value>Test connection</value></data>
+  <data name="settings.linkly.cloudBackend.testingLine" xml:space="preserve"><value>Testing this line…</value></data>
+  <data name="settings.linkly.cloudBackend.healthHealthy" xml:space="preserve"><value>Connected</value></data>
+  <data name="settings.linkly.cloudBackend.healthUnhealthy" xml:space="preserve"><value>Unable to connect</value></data>
+  <data name="settings.linkly.cloudBackend.testLineFailed" xml:space="preserve"><value>The test did not complete. Check the network and terminal, then refresh and try again.</value></data>
+  <data name="settings.linkly.cloudBackend.testNeedsRepair" xml:space="preserve"><value>This terminal needs to be paired again. Obtain a new 6-digit code and re-pair this line. If it still fails, ask an administrator to check its Cloud credentials.</value></data>
+  <data name="settings.linkly.cloudBackend.useLine" xml:space="preserve"><value>Use this line</value></data>
+  <data name="settings.linkly.cloudBackend.changeBinding" xml:space="preserve"><value>Change binding</value></data>
+  <data name="settings.linkly.cloudBackend.unassign" xml:space="preserve"><value>Unbind</value></data>
+  <data name="settings.linkly.cloudBackend.unassigned" xml:space="preserve"><value>Unassigned</value></data>
+  <data name="settings.linkly.cloudBackend.assignmentConfirmTitle" xml:space="preserve"><value>Confirm Linkly line binding</value></data>
+  <data name="settings.linkly.cloudBackend.assignmentConfirmMessage" xml:space="preserve"><value>Line: {0}&#xA;Current owner: {1}&#xA;Target POS: {2}&#xA;Target POS current line: {3}&#xA;&#xA;Confirming replaces the target POS line atomically and releases the old binding.</value></data>
+  <data name="settings.linkly.cloudBackend.assignmentSaved" xml:space="preserve"><value>The Linkly line binding was updated.</value></data>
+  <data name="settings.linkly.cloudBackend.assignmentActivePayment" xml:space="preserve"><value>A card payment is currently running. Finish it before changing this POS line.</value></data>
+  <data name="settings.linkly.cloudBackend.assignmentRecoveryRequired" xml:space="preserve"><value>This POS has an unfinished Linkly payment. Resolve it in Card Recovery before changing the line.</value></data>
+  <data name="settings.linkly.cloudBackend.assignmentSettlementRequired" xml:space="preserve"><value>This POS has an unfinished Linkly settlement. Resolve it in Daily Close before changing the line.</value></data>
+  <data name="settings.linkly.cloudBackend.assignmentBusy" xml:space="preserve"><value>This line has an unfinished transaction. Finish or recover it before changing the binding.</value></data>
+  <data name="settings.linkly.cloudBackend.assignmentTargetUnavailable" xml:space="preserve"><value>The selected POS device is no longer available. Refresh the list and choose another device.</value></data>
+  <data name="settings.linkly.cloudBackend.assignmentReconciled" xml:space="preserve"><value>The response was interrupted, but the refreshed directory confirms that the binding was updated.</value></data>
+  <data name="settings.linkly.cloudBackend.assignmentUnconfirmed" xml:space="preserve"><value>The write response was interrupted and the refreshed directory does not confirm the requested binding. Review the current owner before retrying.</value></data>
+  <data name="settings.linkly.cloudBackend.assignmentReconcileFailed" xml:space="preserve"><value>The write result is unknown and the directory could not be refreshed. Check the current binding before trying again.</value></data>
+  <data name="settings.linkly.cloudBackend.assignmentSnapshotChanged" xml:space="preserve"><value>The line directory changed before this operation started. Review the current owner and try again.</value></data>
 </root>
