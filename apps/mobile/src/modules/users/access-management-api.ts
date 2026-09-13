@@ -1,6 +1,7 @@
 import { getAllStores } from "@/modules/shop/api";
 import type { Store } from "@/modules/shop/types";
 import { apiClient } from "@/shared/api/client";
+import type { AxiosRequestConfig } from "axios";
 import { buildAssignableRoleGuids } from "./access-management";
 import type {
   AccessPermission,
@@ -282,37 +283,39 @@ function buildUserAccessPath(userGuid: string, suffix: string) {
   return `/Users/guid/${encodeURIComponent(normalizedUserGuid)}/${suffix}`;
 }
 
-export async function fetchUserAccessStores(userGuid: string) {
-  const response = await apiClient.get(buildUserAccessPath(userGuid, "stores"));
+export async function fetchUserAccessStores(userGuid: string, config?: AxiosRequestConfig) {
+  const response = await apiClient.get(buildUserAccessPath(userGuid, "stores"), config);
   return normalizeUserAccessStoreList(response.data);
 }
 
-export async function fetchUserAccessRoles(userGuid: string) {
-  const response = await apiClient.get(buildUserAccessPath(userGuid, "roles"));
+export async function fetchUserAccessRoles(userGuid: string, config?: AxiosRequestConfig) {
+  const response = await apiClient.get(buildUserAccessPath(userGuid, "roles"), config);
   return normalizeAccessRoleList(response.data);
 }
 
-export async function fetchUserAccessPermissionState(userGuid: string) {
+export async function fetchUserAccessPermissionState(userGuid: string, config?: AxiosRequestConfig) {
   const response = await apiClient.get(
     buildUserAccessPath(userGuid, "permissions/state"),
+    config,
   );
   return normalizeUserAccessPermissionState(response.data);
 }
 
-export async function fetchUserAccessPermissionAccess(userGuid: string) {
+export async function fetchUserAccessPermissionAccess(userGuid: string, config?: AxiosRequestConfig) {
   const response = await apiClient.get(
     buildUserAccessPath(userGuid, "access-permissions"),
+    config,
   );
   return normalizeUserAccessPermissionAccess(response.data);
 }
 
-export async function fetchAccessRoleCatalog() {
-  const response = await apiClient.get("/Roles/active");
+export async function fetchAccessRoleCatalog(config?: AxiosRequestConfig) {
+  const response = await apiClient.get("/Roles/active", config);
   return normalizeAccessRoleList(response.data);
 }
 
-export async function fetchAccessPermissionCatalog() {
-  const response = await apiClient.get("/Roles/permissions");
+export async function fetchAccessPermissionCatalog(config?: AxiosRequestConfig) {
+  const response = await apiClient.get("/Roles/permissions", config);
   return normalizeAccessPermissionCatalog(response.data);
 }
 
@@ -325,7 +328,7 @@ export async function fetchAccessStoreCatalog(
 export async function assignUserAccessStores({
   userGuid,
   assignments,
-}: AssignUserAccessStoresInput) {
+}: AssignUserAccessStoresInput, config?: AxiosRequestConfig) {
   const body = assignments.map((assignment) => {
     const storeGUID = assignment.storeGUID.trim();
     if (!storeGUID) throw new Error("Store GUID is required");
@@ -335,6 +338,7 @@ export async function assignUserAccessStores({
   const response = await apiClient.post(
     buildUserAccessPath(userGuid, "stores"),
     body,
+    config,
   );
   return normalizeMutationResult(response.data);
 }
@@ -343,7 +347,7 @@ export async function assignUserAccessRoles({
   userGuid,
   roleGuids,
   roleCatalog,
-}: AssignUserAccessRolesInput) {
+}: AssignUserAccessRolesInput, config?: AxiosRequestConfig) {
   const response = await apiClient.post(
     buildUserAccessPath(userGuid, "roles"),
     {
@@ -353,6 +357,7 @@ export async function assignUserAccessRoles({
         normalizeStringArray(roleGuids),
       ),
     },
+    config,
   );
   return normalizeMutationResult(response.data);
 }
@@ -360,10 +365,11 @@ export async function assignUserAccessRoles({
 export async function assignUserDirectPermissions({
   userGuid,
   permissions,
-}: AssignUserDirectPermissionsInput) {
+}: AssignUserDirectPermissionsInput, config?: AxiosRequestConfig) {
   const response = await apiClient.post(
     buildUserAccessPath(userGuid, "permissions"),
     { permissions: normalizeStringArray(permissions) },
+    config,
   );
   return normalizeMutationResult(response.data);
 }

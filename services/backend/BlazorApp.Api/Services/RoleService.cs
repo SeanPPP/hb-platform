@@ -315,6 +315,53 @@ namespace BlazorApp.Api.Services
             return Permissions.IsSuperAdminRole(roleName);
         }
 
+        private async Task<string[]?> ResolveRoleMemberReadScopeAsync(ISqlSugarClient db)
+        {
+            if (_manageableStoreScopeService == null)
+            {
+                return null;
+            }
+
+            var scope = await _manageableStoreScopeService.GetScopeAsync();
+            if (!scope.IsAuthenticated || string.IsNullOrWhiteSpace(scope.UserGuid))
+            {
+                return Array.Empty<string>();
+            }
+
+            if (!scope.IsStoreManager)
+            {
+                return null;
+            }
+
+            var managedStoreGuids = scope.StoreGuids
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (!scope.IsAllowed || managedStoreGuids.Length == 0)
+            {
+                return Array.Empty<string>();
+            }
+
+            var scopedUserGuids = await db.Queryable<UserStore>()
+                    .InnerJoin<User>((userStore, user) => userStore.UserGUID == user.UserGUID)
+                    .Where((userStore, user) =>
+                        !userStore.IsDeleted
+                        && !user.IsDeleted
+                        && managedStoreGuids.Contains(userStore.StoreGUID)
+                    )
+                    .Select((userStore, user) => userStore.UserGUID)
+                    .Distinct()
+                    .ToListAsync();
+            var highPrivilegeUserGuids = await UserAccessMutationSecurity.GetHighPrivilegeUserGuidsAsync(
+                db,
+                scopedUserGuids
+            );
+            return scopedUserGuids
+                .Where(userGuid => !highPrivilegeUserGuids.Contains(userGuid))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+
         private static List<string> IncludeBuiltInSalesDashboardPermissionCodes(
             IEnumerable<string> permissionCodes
         )
@@ -694,7 +741,7 @@ namespace BlazorApp.Api.Services
             {
                 var db = _context.Db;
                 var role = await db.Queryable<Role>()
-                    .Where(r => r.RoleGUID == roleGuid)
+                    .Where(r => r.RoleGUID == roleGuid && !r.IsDeleted)
                     .FirstAsync();
 
                 if (role == null)
@@ -713,9 +760,19 @@ namespace BlazorApp.Api.Services
                 };
 
                 // 获取角色用户详情
-                var users = await db.Queryable<UserRole>()
+                var visibleUserGuids = await ResolveRoleMemberReadScopeAsync(db);
+                var usersQuery = db.Queryable<UserRole>()
                     .InnerJoin<User>((ur, u) => ur.UserGUID == u.UserGUID)
-                    .Where((ur, u) => ur.RoleGUID == roleGuid)
+                    .Where((ur, u) =>
+                        ur.RoleGUID == roleGuid && !ur.IsDeleted && !u.IsDeleted
+                    );
+                if (visibleUserGuids != null)
+                {
+                    usersQuery = usersQuery.Where((ur, u) =>
+                        visibleUserGuids.Contains(u.UserGUID)
+                    );
+                }
+                var users = await usersQuery
                     .Select(
                         (ur, u) =>
                             new RoleUserDto
@@ -1063,7 +1120,16 @@ namespace BlazorApp.Api.Services
                 var db = _context.Db;
                 var userQuery = db.Queryable<UserRole>()
                     .InnerJoin<User>((ur, u) => ur.UserGUID == u.UserGUID)
-                    .Where((ur, u) => ur.RoleGUID == roleGuid);
+                    .Where((ur, u) =>
+                        ur.RoleGUID == roleGuid && !ur.IsDeleted && !u.IsDeleted
+                    );
+                var visibleUserGuids = await ResolveRoleMemberReadScopeAsync(db);
+                if (visibleUserGuids != null)
+                {
+                    userQuery = userQuery.Where((ur, u) =>
+                        visibleUserGuids.Contains(u.UserGUID)
+                    );
+                }
 
                 // 搜索条件
                 if (!string.IsNullOrEmpty(query.SearchKeyword))

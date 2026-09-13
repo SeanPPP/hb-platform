@@ -77,6 +77,7 @@ namespace BlazorApp.Api.Services
                 {
                     ActorLabel = actorLabel,
                     IsAuthenticated = true,
+                    IsStoreManager = true,
                     Message = "无法识别当前账号",
                 };
             }
@@ -95,6 +96,7 @@ namespace BlazorApp.Api.Services
                 {
                     ActorLabel = actorLabel,
                     IsAuthenticated = true,
+                    IsStoreManager = true,
                     UserGuid = userGuid,
                     Message = "当前店长未分配任何可管理分店",
                 };
@@ -104,6 +106,7 @@ namespace BlazorApp.Api.Services
             {
                 IsAllowed = true,
                 IsAuthenticated = true,
+                IsStoreManager = true,
                 ActorLabel = actorLabel,
                 UserGuid = userGuid,
                 StoreGuids = stores

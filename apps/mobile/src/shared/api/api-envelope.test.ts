@@ -63,6 +63,15 @@ assert.equal(
   "REQUEST_FAILED",
   "无 data 的 success:false 必须保留 errorCode",
 );
+assert.equal(
+  successFalseWithoutData
+    && typeof successFalseWithoutData === "object"
+    && "apiBusinessError" in successFalseWithoutData
+    ? successFalseWithoutData.apiBusinessError
+    : undefined,
+  true,
+  "success:false 必须标记为确定业务失败",
+);
 
 const isSuccessFalseWithoutData = captureError({
   isSuccess: false,

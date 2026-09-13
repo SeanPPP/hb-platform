@@ -57,6 +57,8 @@ const EXISTING_TAB_PATHS = {
   "attendance-management": "/(shell)/attendance-management",
   "product-query": "/(shell)/product-query",
   users: "/(shell)/users",
+  "user-admin": "/(shell)/user-admin",
+  roles: "/(shell)/roles",
   "employee-profile": "/(shell)/employee-profile",
   "employee-profile-review": "/(shell)/employee-profile-review",
   "device-management": "/(shell)/device-management",
