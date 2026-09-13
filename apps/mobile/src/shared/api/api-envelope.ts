@@ -23,6 +23,8 @@ export function unwrapApiEnvelope<T>(payload: unknown): T {
     const isExplicitFailure = envelope.success === false || envelope.isSuccess === false;
     if (isExplicitFailure) {
       const error = new Error(extractApiErrorMessage(envelope, "Request failed"));
+      // 明确收到 success:false 代表服务端已经给出确定业务结论，调用方可据此安全允许用户修正后重试。
+      Object.assign(error, { apiBusinessError: true });
       const errorCode = envelope.errorCode ?? envelope.ErrorCode ?? envelope.code ?? envelope.Code;
       if (typeof errorCode === "string" && errorCode.trim()) {
         // 保留业务错误码，页面才能稳定映射中英文提示，而不是解析后端文案。

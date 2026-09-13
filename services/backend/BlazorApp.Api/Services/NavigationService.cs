@@ -305,6 +305,22 @@ namespace BlazorApp.Api.Services
             },
             new()
             {
+                RouteName = "user-admin",
+                TitleKey = "tabs.userAdmin",
+                Icon = "account-cog-outline",
+                Permission = Permissions.Users.View,
+                Order = 57,
+            },
+            new()
+            {
+                RouteName = "roles",
+                TitleKey = "tabs.roles",
+                Icon = "shield-account-outline",
+                Permission = Permissions.Roles.View,
+                Order = 58,
+            },
+            new()
+            {
                 RouteName = "employee-profile",
                 TitleKey = "tabs.employeeProfile",
                 Icon = "card-account-details-outline",

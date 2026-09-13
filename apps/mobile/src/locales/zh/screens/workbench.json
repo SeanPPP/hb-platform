@@ -45,6 +45,8 @@
     "attendancePersonal": "个人考勤",
     "attendanceManagement": "考勤管理",
     "users": "员工列表",
+    "userAdmin": "用户管理",
+    "roles": "角色管理",
     "employeeProfile": "个人资料",
     "employeeProfileReview": "资料审核",
     "deviceManagement": "设备管理",

@@ -824,8 +824,10 @@ public class NavigationServiceTests
 
         var menu = _service.BuildAppMenu(user);
 
-        Assert.Equal(22, menu.Count);
+        Assert.Equal(24, menu.Count);
         Assert.Contains(menu, item => item.RouteName == "users");
+        Assert.Contains(menu, item => item.RouteName == "user-admin");
+        Assert.Contains(menu, item => item.RouteName == "roles");
         Assert.Contains(menu, item => item.RouteName == "employee-profile");
         Assert.Contains(menu, item => item.RouteName == "device-management");
         Assert.Contains(menu, item => item.RouteName == "reports");
@@ -1181,6 +1183,33 @@ public class NavigationServiceTests
         var menu = _service.BuildAppMenu(user);
 
         Assert.Contains(menu, item => item.RouteName == "users");
+    }
+
+    [Fact]
+    public void BuildAppMenu_ShowsUserAdminWithUsersViewPermissionWithoutUnlockingRoles()
+    {
+        var menu = _service.BuildAppMenu(CreateUser(new Claim("permission", Permissions.Users.View)));
+
+        Assert.Contains(menu, item => item.RouteName == "user-admin");
+        Assert.DoesNotContain(menu, item => item.RouteName == "roles");
+    }
+
+    [Fact]
+    public void BuildAppMenu_ShowsRolesWithRolesViewPermissionWithoutUnlockingUserAdmin()
+    {
+        var menu = _service.BuildAppMenu(CreateUser(new Claim("permission", Permissions.Roles.View)));
+
+        Assert.Contains(menu, item => item.RouteName == "roles");
+        Assert.DoesNotContain(menu, item => item.RouteName == "user-admin");
+    }
+
+    [Fact]
+    public void BuildAppMenu_HidesGlobalIdentityRoutesWithoutTheirViewPermissions()
+    {
+        var menu = _service.BuildAppMenu(CreateUser(new Claim(ClaimTypes.Role, "StoreManager")));
+
+        Assert.DoesNotContain(menu, item => item.RouteName == "user-admin");
+        Assert.DoesNotContain(menu, item => item.RouteName == "roles");
     }
 
     [Fact]
