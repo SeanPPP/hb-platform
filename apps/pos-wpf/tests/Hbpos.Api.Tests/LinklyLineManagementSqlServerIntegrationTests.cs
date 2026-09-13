@@ -21,6 +21,7 @@ public sealed class LinklyLineSqlServerFactAttribute : FactAttribute
 }
 
 // 每个用例创建独立数据库；不允许借用生产表，也不依赖用例执行顺序。
+[Trait("Category", "SQL")]
 public sealed class LinklyLineManagementSqlServerIntegrationTests : IAsyncLifetime
 {
     private string? masterConnection;

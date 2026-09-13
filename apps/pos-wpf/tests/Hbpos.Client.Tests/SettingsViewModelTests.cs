@@ -2171,7 +2171,7 @@ public sealed class SettingsViewModelTests
 
         var refreshed = Assert.Single(viewModel.LinklyCloudTerminalItems);
         Assert.NotSame(original, refreshed);
-        Assert.Equal("Unhealthy", refreshed.ConnectionStatus);
+        Assert.Equal("Unable to connect", refreshed.ConnectionStatus);
         Assert.Equal(localCheckedAt, refreshed.LastTestedAt);
         Assert.False(viewModel.LinklyConnectionSucceeded);
 
