@@ -457,6 +457,31 @@ select:focus-visible {
   color: #1565c0;
   font-size: 15px;
 }
+.ranking-sales-button {
+  min-width: 0;
+  border-color: #bfd6ff;
+  background: #f3f7ff;
+  padding: 3px 7px;
+  color: #1565c0;
+  text-align: left;
+}
+.ranking-sales-button:hover {
+  border-color: #7ba9f7;
+  background: #eaf2ff;
+}
+.ranking-sales-button:disabled {
+  border-color: transparent;
+  background: transparent;
+}
+.ranking-sales-button span {
+  color: #4f6f9f;
+}
+.ranking-sales-arrow {
+  color: #1565c0 !important;
+  font-size: 17px !important;
+  font-weight: 700;
+  line-height: 1;
+}
 .ranking-average-price strong {
   color: #5d4037;
   font-size: 13px;
@@ -514,6 +539,186 @@ select:focus-visible {
 .ranking-state button {
   min-width: 88px;
 }
+.store-sales-section {
+  margin-bottom: 0;
+}
+.store-sales-back {
+  border-color: transparent;
+  background: transparent;
+  padding: 3px 0;
+  color: #1565c0;
+  font-weight: 600;
+}
+.store-sales-back:hover {
+  text-decoration: underline;
+}
+.store-sales-title {
+  margin: 8px 0 12px;
+  font-size: 18px;
+}
+.store-sales-product {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #e2e2e2;
+}
+.store-sales-image-frame {
+  grid-row: auto;
+}
+.store-sales-product-identity {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.store-sales-product-identity strong {
+  font-size: 13px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.store-sales-product-identity span {
+  color: #616161;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.store-sales-period {
+  margin: 9px 0;
+  color: #4f5f78;
+  font-size: 12px;
+}
+.store-sales-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    'label stores'
+    'total stores';
+  align-items: center;
+  gap: 1px 12px;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border: 1px solid #d7e6ff;
+  border-radius: 7px;
+  background: #edf5ff;
+}
+.store-sales-summary > span:first-child {
+  grid-area: label;
+  color: #4f6f9f;
+  font-size: 12px;
+}
+#storeSalesTotal {
+  grid-area: total;
+  color: #1565c0;
+  font-size: 28px;
+  line-height: 1.1;
+}
+#storeSalesStoreCount {
+  grid-area: stores;
+  padding-left: 12px;
+  border-left: 1px solid #c5dafb;
+  color: #4f6f9f;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.store-sales-search {
+  display: block;
+}
+.store-sales-search input {
+  margin-bottom: 8px;
+}
+.store-sales-table-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 9px;
+  border: 1px solid #dce3ed;
+  border-bottom: 0;
+  border-radius: 7px 7px 0 0;
+  background: #edf2f8;
+  color: #455568;
+  font-size: 12px;
+  font-weight: 600;
+}
+.store-sales-list {
+  max-height: min(54dvh, 520px);
+  overflow-y: auto;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid #dce3ed;
+  border-radius: 0 0 7px 7px;
+  background: #fff;
+}
+.store-sales-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 9px;
+  border-bottom: 1px solid #edf0f3;
+}
+.store-sales-row:last-child {
+  border-bottom: 0;
+}
+.store-sales-store-identity {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1px 8px;
+  min-width: 0;
+}
+.store-sales-store-identity strong {
+  min-width: 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.store-sales-store-identity > span:not(.store-sales-bar) {
+  color: #7a8490;
+  font: 10px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.store-sales-bar {
+  grid-column: 1 / -1;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #eef2f7;
+}
+.store-sales-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #b7d2fa;
+}
+.store-sales-row-quantity {
+  color: #173e78;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.store-sales-helper {
+  margin: 7px 0 0;
+  color: #7a8490;
+  font-size: 11px;
+}
+.store-sales-footer {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 10px -16px -12px;
+  padding: 10px 16px max(10px, env(safe-area-inset-bottom));
+  border-top: 1px solid #dce3ed;
+  background: var(--hb-bg, #f7f7f8);
+  font-weight: 600;
+}
+.store-sales-footer strong {
+  color: #1565c0;
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+}
+.store-sales-footer[hidden] {
+  display: none;
+}
 .visually-hidden {
   position: absolute;
   width: 1px;
@@ -533,6 +738,9 @@ select:focus-visible {
   .ranking-image {
     width: 64px;
     height: 64px;
+  }
+  .store-sales-product {
+    grid-template-columns: 64px minmax(0, 1fr);
   }
   .ranking-metrics {
     grid-column: 3;
