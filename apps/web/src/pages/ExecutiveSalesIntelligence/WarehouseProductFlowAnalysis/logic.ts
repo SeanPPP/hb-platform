@@ -1,5 +1,16 @@
 import type { WarehouseCategoryNode } from '../../../services/warehouseCategoryService'
-import type { WarehouseProductFlowFilter, WarehouseProductFlowPeriods, WarehouseProductFlowSupplierOption } from '../../../types/warehouseProductFlowAnalysis'
+import type { WarehouseProductFlowBranch, WarehouseProductFlowFilter, WarehouseProductFlowPeriods, WarehouseProductFlowSupplierOption } from '../../../types/warehouseProductFlowAnalysis'
+
+export type WarehouseProductFlowPosFilter = 'all' | 'enabled' | 'disabled'
+
+export function filterWarehouseProductFlowShipments<T extends { posEnabled: boolean | null }>(rows: readonly T[], posFilter: WarehouseProductFlowPosFilter): T[] {
+  // 未关联分店的状态未知，只在“全部”中显示，不能归为未启用 POS。
+  return rows.filter((row) => posFilter === 'all' || row.posEnabled === (posFilter === 'enabled'))
+}
+
+export function sortWarehouseProductFlowBranches(branches: readonly WarehouseProductFlowBranch[]): WarehouseProductFlowBranch[] {
+  return [...branches].sort((left, right) => right.netSalesQuantity - left.netSalesQuantity || left.branchCode.localeCompare(right.branchCode))
+}
 
 export interface WarehouseProductFlowDateRange {
   startDate: string

@@ -25,7 +25,9 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="MobileReportStoreOptionsTests.cs" />
     <Compile Include="StoreProductMaintenanceWarehousePriceSyncTests.cs" />
+    <Compile Include="StoreProductMaintenanceLookupTests.cs" />
     <Compile Include="ProductChangeHistoryLegacyEntryPointTests.cs" />
     <Compile Include="StoreProductMaintenanceSyncHelperTests.cs" />
     <Compile Include="SetChildPurchasePriceAllocatorTests.cs" />
@@ -61,8 +63,11 @@
     <Compile Include="EmployeeProfileSensitiveChangeServiceTests.cs" />
     <Compile Include="SqlSugarContextNoLockTransactionTests.cs" />
     <Compile Include="StoreUsersReactServiceTests.cs" />
+    <Compile Include="StoreUserCashierBarcodeServiceTests.cs" />
     <Compile Include="UserStoreManagementRelationTests.cs" />
     <Compile Include="AttendanceReactServiceTests.cs" />
+    <Compile Include="AutoPricingServiceTests.cs" />
+    <Compile Include="PricingCurveTests.cs" />
     <Compile Include="AttendanceWorkSessionCalculatorTests.cs" />
     <Compile Include="AttendanceQrTokenCodecTests.cs" />
     <Compile Include="UserLoginDeviceAuditServiceTests.cs" />
@@ -110,12 +115,18 @@
     <Compile Include="SalesCostBackfillWorkerTests.cs" />
     <Compile Include="SalesDashboardCostStatusTests.cs" />
     <Compile Include="SalesStatisticsProductStoreDailyCommandWriterTests.cs" />
+    <Compile Include="SalesStatisticsProductStoreDailyBuilderPerformanceTests.cs" />
+    <Compile Include="SalesStatisticsHistoricalCostConcurrencySqlServerTests.cs" />
     <Compile Include="SalesStatisticsProductStoreDailyCostRulesTests.cs" />
     <Compile Include="SalesCostBackfillSqlServerTests.cs" />
     <Compile Include="SalesStatisticsBusinessDateTests.cs" />
     <Compile Include="SalesDetailLookupReuseTests.cs" />
+    <Compile Include="SalesDetailQueryProjectionTests.cs" />
     <Compile Include="RevenueReportSnapshotTests.cs" />
+    <Compile Include="RevenueReportSnapshotSqlServerIntegrationTests.cs" />
     <Compile Include="SalesDetailReportTests.cs" />
+    <Compile Include="SalesDetailReportSqlServerIntegrationTests.cs" />
+    <Compile Include="SalesReportStoreScopeTests.cs" />
     <Compile Include="ProductStoreDailyStatisticQueueServiceTests.cs" />
     <Compile Include="SalesDashboardBestSellersTests.cs" />
     <Compile Include="ProductSalesAnalysisLogicTests.cs" />
@@ -138,6 +149,7 @@
     <Compile Include="ProductReportChinaMappingTests.cs" />
     <Compile Include="ProductMovementReportSqlBuilderTests.cs" />
     <Compile Include="LocalSupplierInvoiceSalesAnalysisSqlBuilderTests.cs" />
+    <Compile Include="LocalSupplierPurchaseSalesSqlServerTests.cs" />
     <Compile Include="LocalPurchaseDashboardTests.cs" />
     <Compile Include="LocalPurchaseDashboardSqlServerIntegrationTests.cs" />
     <Compile Include="ClientIpResolverTests.cs" />

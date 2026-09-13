@@ -8,6 +8,70 @@ namespace BlazorApp.Api.Tests;
 public sealed class SalesStatisticsProductStoreDailyCommandWriterTests
 {
     [Fact]
+    public void 历史快照已完整或可按旧单价派生时不锁当前商品成本()
+    {
+        var old = new[]
+        {
+            Statistic("P1", 2, 20m, 3m, 6m, "ProductPurchasePrice"),
+            Statistic("P2", 2, 20m, 4m, null, "StoreRetailPrice"),
+            Statistic("ZERO", 1, 0m, 0m, 0m, "ProductPurchasePrice"),
+            Statistic("DELETED", 1, 10m, 2m, 2m, "ProductPurchasePrice"),
+        };
+        var rebuilt = new[]
+        {
+            Statistic("P1", 2, 20m, 99m, 198m, "ProductPurchasePrice"),
+            Statistic("P2", 3, 30m, 99m, 297m, "ProductPurchasePrice"),
+            Statistic("ZERO", 1, 0m, 99m, 99m, "ProductPurchasePrice"),
+            Statistic("OPENITEM", 2, 20m, 8m, 16m, "OpenItem"),
+        };
+
+        var codes = SalesStatisticsProductStoreDailyCommandWriter.ResolveCurrentCostProductCodes(
+            old[0].Date, ["P1", "P2", "ZERO", "DELETED", "OPENITEM"], rebuilt, old);
+
+        Assert.Equal(new[] { "OPENITEM" }, codes);
+        SalesStatisticsProductStoreDailyCommandWriter.PreserveHistoricalCostSnapshots(rebuilt, old);
+        Assert.Equal(new decimal?[] { 6m, 12m, 0m, 16m }, rebuilt.Select(row => row.TotalCost));
+    }
+
+    [Fact]
+    public void 历史新增缺失及无旧单价但事实改变的商品仍锁当前成本()
+    {
+        var old = new[]
+        {
+            Statistic("MISSING", 2, 20m, null, null, "Missing"),
+            Statistic("CHANGED", 2, 20m, null, 6m, "ProductPurchasePrice"),
+            Statistic("SHARED", 2, 20m, 3m, 6m, "ProductPurchasePrice"),
+        };
+        var sharedNewStore = Statistic("SHARED", 1, 10m, 8m, 8m, "StoreRetailPrice");
+        sharedNewStore.BranchCode = "NEW";
+        var rebuilt = new[]
+        {
+            Statistic("MISSING", 2, 20m, 8m, 16m, "ProductPurchasePrice"),
+            Statistic("CHANGED", 3, 30m, 8m, 24m, "ProductPurchasePrice"),
+            Statistic("NEW", 1, 10m, 8m, 8m, "ProductPurchasePrice"),
+            Statistic("SHARED", 2, 20m, 8m, 16m, "ProductPurchasePrice"),
+            sharedNewStore,
+            Statistic("OPENITEM", 2, 20m, null, null, "OpenItemMissingPrice"),
+            Statistic("MIXED", 2, 20m, null, null, "IdentityConflict"),
+        };
+
+        var codes = SalesStatisticsProductStoreDailyCommandWriter.ResolveCurrentCostProductCodes(
+            old[0].Date, rebuilt.Select(row => row.ProductCode).ToList(), rebuilt, old);
+
+        Assert.Equal(new[] { "CHANGED", "MISSING", "MIXED", "NEW", "OPENITEM", "SHARED" }, codes);
+    }
+
+    [Fact]
+    public void 当日统计仍保护新旧全部商品避免当前成本发布竞态()
+    {
+        var rebuilt = new[] { Statistic("P1", 2, 20m, 3m, 6m, "ProductPurchasePrice") };
+        var codes = SalesStatisticsProductStoreDailyCommandWriter.ResolveCurrentCostProductCodes(
+            SalesStatisticsBusinessDate.Today(), ["P1", "DELETED"], rebuilt, rebuilt);
+
+        Assert.Equal(new[] { "DELETED", "P1" }, codes);
+    }
+
+    [Fact]
     public void 历史入口不再要求队列JobId才保留成本快照()
     {
         var source = File.ReadAllText(Path.Combine(

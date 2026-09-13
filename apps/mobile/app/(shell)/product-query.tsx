@@ -9,12 +9,13 @@ import {
   Card,
   Modal,
   Portal,
-  RadioButton,
   Snackbar,
-  Switch,
   Text,
 } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { CreateSupplierSheet } from "@/components/product-maintenance/CreateSupplierSheet";
+import { CreateBarcodeScanner } from "@/components/product-maintenance/CreateBarcodeScanner";
+import { CreateProductDialog } from "@/components/product-maintenance/CreateProductDialog";
 import { LookupResultSheet } from "@/components/product-maintenance/LookupResultSheet";
 import { LabelPrintCard } from "@/components/product-maintenance/LabelPrintCard";
 import { PrintSettingsModal } from "@/components/product-maintenance/PrintSettingsModal";
@@ -46,6 +47,7 @@ import {
   createSetCode,
   evaluateAutoPricing,
   fetchActiveLocalSuppliers,
+  generateLocalProductBarcode,
   getProductHqSyncOperation,
   getProductCodes,
   getProductFastDetail,
@@ -470,6 +472,10 @@ function ProductQueryContent() {
   const [createSupplierPickerVisible, setCreateSupplierPickerVisible] =
     useState(false);
   const [createProductSaving, setCreateProductSaving] = useState(false);
+  const [createBarcodeGenerating, setCreateBarcodeGenerating] = useState(false);
+  const [createBarcodeScannerVisible, setCreateBarcodeScannerVisible] =
+    useState(false);
+  const createProductBusy = createProductSaving || createBarcodeGenerating;
   const [createSuppliers, setCreateSuppliers] = useState<LocalSupplierOption[]>(
     [],
   );
@@ -794,14 +800,14 @@ function ProductQueryContent() {
       Boolean(savingItemId) ||
       savingClearance ||
       productTypeSaving ||
-      createProductSaving ||
+      createProductBusy ||
       hqSyncRetrying,
     [
       autoPricingDialog,
       autoPricingDialogSaving,
       loading,
       lookupVisible,
-      createProductSaving,
+      createProductBusy,
       hqSyncRetrying,
       productTypeSaving,
       saving,
@@ -1223,6 +1229,7 @@ function ProductQueryContent() {
 
   const closeCreateProductModal = useCallback(() => {
     setCreateSupplierPickerVisible(false);
+    setCreateBarcodeScannerVisible(false);
     setCreateProductVisible(false);
   }, []);
 
@@ -1233,6 +1240,27 @@ function ProductQueryContent() {
     },
     [updateCreateProductDraft],
   );
+
+  const handleGenerateCreateBarcode = useCallback(async () => {
+    if (createProductBusy) return;
+    const supplierCode = createProductDraft.localSupplierCode.trim();
+    if (!supplierCode || supplierCode === "200") {
+      setSnackbarMessage(t(supplierCode === "200"
+        ? "createProduct.messages.supplierRestricted"
+        : "createProduct.selectSupplier"));
+      return;
+    }
+    setCreateBarcodeGenerating(true);
+    try {
+      // 服务端永久预留独立编号段，客户端不使用随机数拼接条码。
+      const barcode = await generateLocalProductBarcode(supplierCode);
+      updateCreateProductDraft({ barcode });
+    } catch (error) {
+      setSnackbarMessage(getErrorMessage(error, "createProduct.messages.barcodeGenerateFailed"));
+    } finally {
+      setCreateBarcodeGenerating(false);
+    }
+  }, [createProductBusy, createProductDraft.localSupplierCode, getErrorMessage, t, updateCreateProductDraft]);
 
   const handleCreateProductSubmit = useCallback(async () => {
     const validation = validateCreateProductForm(createProductDraft);
@@ -3702,6 +3730,7 @@ function ProductQueryContent() {
               icon="plus"
               mode="contained-tonal"
               onPress={openCreateProductModal}
+              disabled={createProductBusy}
             >
               {t("createProduct.action")}
             </Button>
@@ -3991,233 +4020,47 @@ function ProductQueryContent() {
       <Portal>
         {isFocused ? (
           <>
-            <Modal
-              visible={createProductVisible}
-              onDismiss={
-                createProductSaving ? undefined : closeCreateProductModal
+            <CreateProductDialog
+              visible={createProductVisible && !createBarcodeScannerVisible}
+              values={createProductDraft}
+              supplierLabel={
+                selectedCreateSupplier
+                  ? `${selectedCreateSupplier.supplierCode} · ${selectedCreateSupplier.supplierName || selectedCreateSupplier.supplierCode}`
+                  : null
               }
-              contentContainerStyle={styles.createProductModal}
-            >
-              <ScrollView
-                contentContainerStyle={styles.createProductModalContent}
-                keyboardShouldPersistTaps="handled"
-              >
-                <Text variant="titleMedium" style={styles.createProductTitle}>
-                  {t("createProduct.title")}
-                </Text>
+              suppliersLoading={createSuppliersLoading}
+              hasSuppliers={createSuppliers.length > 0}
+              saving={createProductSaving}
+              generating={createBarcodeGenerating}
+              onChange={updateCreateProductDraft}
+              onSelectSupplier={() => setCreateSupplierPickerVisible(true)}
+              onReloadSuppliers={() => void loadCreateSuppliers()}
+              onGenerate={() => void handleGenerateCreateBarcode()}
+              onScan={() => setCreateBarcodeScannerVisible(true)}
+              onDismiss={closeCreateProductModal}
+              onSubmit={() => void handleCreateProductSubmit()}
+            />
 
-                <View style={styles.createFieldGroup}>
-                  <Text variant="labelMedium" style={styles.createFieldLabel}>
-                    {t("createProduct.fields.supplier")}
-                  </Text>
-                  {createSuppliersLoading ? (
-                    <Text variant="bodySmall" style={styles.createHint}>
-                      {t("createProduct.messages.suppliersLoading")}
-                    </Text>
-                  ) : createSuppliers.length ? (
-                    <Button
-                      mode="outlined"
-                      onPress={() => setCreateSupplierPickerVisible(true)}
-                      disabled={createProductSaving}
-                      style={styles.createSupplierSelectButton}
-                      contentStyle={styles.createSupplierSelectContent}
-                    >
-                      {selectedCreateSupplier
-                        ? `${selectedCreateSupplier.supplierCode} - ${selectedCreateSupplier.supplierName || selectedCreateSupplier.supplierCode}`
-                        : t("createProduct.selectSupplier")}
-                    </Button>
-                  ) : (
-                    <Button
-                      mode="outlined"
-                      onPress={() => void loadCreateSuppliers()}
-                      disabled={createProductSaving}
-                    >
-                      {t("createProduct.reloadSuppliers")}
-                    </Button>
-                  )}
-                  {selectedCreateSupplier ? (
-                    <Text variant="bodySmall" style={styles.createHint}>
-                      {selectedCreateSupplier.supplierCode}
-                    </Text>
-                  ) : null}
-                </View>
-
-                <TextInput
-                  style={styles.createTextInput}
-                  value={createProductDraft.itemNumber}
-                  onChangeText={(itemNumber) =>
-                    updateCreateProductDraft({ itemNumber })
-                  }
-                  placeholder={t("createProduct.fields.itemNumber")}
-                  editable={!createProductSaving}
-                />
-                <TextInput
-                  style={styles.createTextInput}
-                  value={createProductDraft.barcode}
-                  onChangeText={(barcode) =>
-                    updateCreateProductDraft({ barcode })
-                  }
-                  placeholder={t("createProduct.fields.barcode")}
-                  editable={!createProductSaving}
-                />
-                <TextInput
-                  style={styles.createTextInput}
-                  value={createProductDraft.productName}
-                  onChangeText={(productName) =>
-                    updateCreateProductDraft({ productName })
-                  }
-                  placeholder={t("createProduct.fields.productName")}
-                  editable={!createProductSaving}
-                />
-                <TextInput
-                  style={styles.createTextInput}
-                  value={createProductDraft.purchasePrice}
-                  onChangeText={(purchasePrice) =>
-                    updateCreateProductDraft({ purchasePrice })
-                  }
-                  placeholder={t("createProduct.fields.purchasePrice")}
-                  keyboardType="decimal-pad"
-                  editable={!createProductSaving}
-                />
-                <TextInput
-                  style={styles.createTextInput}
-                  value={createProductDraft.retailPrice}
-                  onChangeText={(retailPrice) =>
-                    updateCreateProductDraft({ retailPrice })
-                  }
-                  placeholder={t("createProduct.fields.retailPrice")}
-                  keyboardType="decimal-pad"
-                  editable={!createProductSaving}
-                />
-
-                <View style={styles.createSwitchRow}>
-                  <Text variant="bodyMedium">
-                    {t("createProduct.fields.isSpecialProduct")}
-                  </Text>
-                  <Switch
-                    value={createProductDraft.isSpecialProduct}
-                    onValueChange={(isSpecialProduct) =>
-                      updateCreateProductDraft({ isSpecialProduct })
-                    }
-                    disabled={createProductSaving}
-                  />
-                </View>
-                <View style={styles.createSwitchRow}>
-                  <Text variant="bodyMedium">
-                    {t("createProduct.fields.isAutoPricing")}
-                  </Text>
-                  <Switch
-                    value={createProductDraft.isAutoPricing}
-                    onValueChange={(isAutoPricing) =>
-                      updateCreateProductDraft({ isAutoPricing })
-                    }
-                    disabled={createProductSaving}
-                  />
-                </View>
-
-                <View style={styles.createProductFooter}>
-                  <Button
-                    mode="text"
-                    onPress={closeCreateProductModal}
-                    disabled={createProductSaving}
-                  >
-                    {t("common:actions.cancel")}
-                  </Button>
-                  <Button
-                    mode="contained"
-                    loading={createProductSaving}
-                    disabled={createProductSaving}
-                    onPress={() => void handleCreateProductSubmit()}
-                  >
-                    {t("createProduct.submit")}
-                  </Button>
-                </View>
-              </ScrollView>
-            </Modal>
-
-            <Modal
-              visible={createSupplierPickerVisible}
-              onDismiss={
-                createProductSaving
-                  ? undefined
-                  : () => setCreateSupplierPickerVisible(false)
-              }
-              contentContainerStyle={styles.createSupplierPickerModal}
-            >
-              <View style={styles.createSupplierPickerHeader}>
-                <View style={styles.createSupplierPickerTitleWrap}>
-                  <Text variant="titleMedium" style={styles.createProductTitle}>
-                    {t("createProduct.supplierPickerTitle")}
-                  </Text>
-                  <Text variant="bodySmall" style={styles.createHint}>
-                    {selectedCreateSupplier
-                      ? `${selectedCreateSupplier.supplierCode} - ${selectedCreateSupplier.supplierName || selectedCreateSupplier.supplierCode}`
-                      : t("createProduct.selectSupplier")}
-                  </Text>
-                </View>
-                <Button
-                  compact
-                  onPress={() => setCreateSupplierPickerVisible(false)}
-                  disabled={createProductSaving}
-                >
-                  {t("common:actions.close")}
-                </Button>
-              </View>
-              {createSuppliersLoading ? (
-                <View style={styles.createSupplierPickerLoading}>
-                  <Text variant="bodyMedium">
-                    {t("createProduct.messages.suppliersLoading")}
-                  </Text>
-                </View>
-              ) : createSuppliers.length ? (
-                <ScrollView
-                  style={styles.createSupplierPickerList}
-                  keyboardShouldPersistTaps="handled"
-                >
-                  {createSuppliers.map((supplier) => {
-                    const selected =
-                      supplier.supplierCode ===
-                      createProductDraft.localSupplierCode;
-
-                    return (
-                      <View
-                        key={supplier.supplierCode}
-                        style={styles.createSupplierPickerRow}
-                      >
-                        <RadioButton
-                          value={supplier.supplierCode}
-                          status={selected ? "checked" : "unchecked"}
-                          onPress={() => handleSelectCreateSupplier(supplier)}
-                          disabled={createProductSaving}
-                        />
-                        <Button
-                          mode={selected ? "contained-tonal" : "text"}
-                          compact
-                          icon={selected ? "check" : undefined}
-                          onPress={() => handleSelectCreateSupplier(supplier)}
-                          disabled={createProductSaving}
-                          style={styles.createSupplierPickerButton}
-                          contentStyle={
-                            styles.createSupplierPickerButtonContent
-                          }
-                        >
-                          {supplier.supplierCode} -{" "}
-                          {supplier.supplierName || supplier.supplierCode}
-                        </Button>
-                      </View>
-                    );
-                  })}
-                </ScrollView>
-              ) : (
-                <Button
-                  mode="outlined"
-                  onPress={() => void loadCreateSuppliers()}
-                  disabled={createProductSaving}
-                >
-                  {t("createProduct.reloadSuppliers")}
-                </Button>
-              )}
-            </Modal>
+            {createSupplierPickerVisible ? (
+              <CreateSupplierSheet
+                suppliers={createSuppliers}
+                selectedCode={createProductDraft.localSupplierCode}
+                loading={createSuppliersLoading}
+                disabled={createProductBusy}
+                onSelect={handleSelectCreateSupplier}
+                onDismiss={() => setCreateSupplierPickerVisible(false)}
+                onReload={() => void loadCreateSuppliers()}
+              />
+            ) : null}
+            {createBarcodeScannerVisible ? (
+              <CreateBarcodeScanner
+                onDismiss={() => setCreateBarcodeScannerVisible(false)}
+                onScan={(barcode) => {
+                  updateCreateProductDraft({ barcode });
+                  setCreateBarcodeScannerVisible(false);
+                }}
+              />
+            ) : null}
 
             <Modal
               visible={Boolean(autoPricingDialog)}
@@ -4750,98 +4593,8 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
     padding: 16,
   },
-  createProductModal: {
-    marginHorizontal: 16,
-    maxHeight: "88%",
-    borderRadius: 16,
-    backgroundColor: "#fff",
-    padding: 16,
-  },
-  createProductModalContent: {
-    gap: 12,
-    paddingBottom: 4,
-  },
-  createProductTitle: {
-    fontWeight: "700",
-    color: "#111827",
-  },
-  createFieldGroup: {
-    gap: 6,
-  },
-  createFieldLabel: {
-    color: "#344054",
-    fontWeight: "700",
-  },
   createHint: {
     color: "#667085",
-  },
-  createSupplierSelectButton: {
-    alignSelf: "stretch",
-  },
-  createSupplierSelectContent: {
-    justifyContent: "flex-start",
-  },
-  createSupplierPickerModal: {
-    marginHorizontal: 16,
-    maxHeight: "78%",
-    borderRadius: 16,
-    backgroundColor: "#fff",
-    padding: 16,
-    gap: 12,
-  },
-  createSupplierPickerHeader: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    justifyContent: "space-between",
-    gap: 12,
-  },
-  createSupplierPickerTitleWrap: {
-    flex: 1,
-    minWidth: 0,
-    gap: 4,
-  },
-  createSupplierPickerLoading: {
-    minHeight: 96,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  createSupplierPickerList: {
-    maxHeight: 360,
-  },
-  createSupplierPickerRow: {
-    minHeight: 48,
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  createSupplierPickerButton: {
-    flex: 1,
-    minWidth: 0,
-  },
-  createSupplierPickerButtonContent: {
-    justifyContent: "flex-start",
-  },
-  createTextInput: {
-    borderWidth: 1,
-    borderColor: "#CBD5E1",
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    fontSize: 16,
-    backgroundColor: "#FFFFFF",
-  },
-  createSwitchRow: {
-    minHeight: 44,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-  },
-  createProductFooter: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "flex-end",
-    gap: 8,
-    paddingTop: 4,
   },
   autoPricingContent: {
     gap: 12,

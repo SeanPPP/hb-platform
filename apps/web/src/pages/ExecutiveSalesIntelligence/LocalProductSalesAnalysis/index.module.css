@@ -4,7 +4,9 @@
 .layout { display: grid; grid-template-columns: minmax(280px, 29fr) minmax(420px, 43fr) minmax(300px, 28fr); gap: 12px; align-items: start; }
 .panel { min-width: 0; }
 .filters { display: grid; gap: 8px; padding-bottom: 12px; border-bottom: 1px solid #edf0f4; }
-.selectionBar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 10px 0; color: #657185; font-size: 12px; }
+.selectionBar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin: 10px 0; color: #657185; font-size: 12px; }
+.selectionBar :global(.ant-space) { flex-wrap: wrap; }
+.panel :global(.ant-card-head-title) { white-space: normal; overflow-wrap: anywhere; }
 .candidates { display: grid; gap: 4px; max-height: 600px; overflow: auto; }
 .candidate { display: flex; width: 100%; align-items: center; gap: 8px; padding: 7px; border: 1px solid transparent; border-radius: 6px; background: #fff; text-align: left; }
 .candidate:hover, .currentCandidate { border-color: #b8d1ff; background: #f1f6ff; }

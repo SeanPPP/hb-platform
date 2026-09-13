@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, FlatList, RefreshControl, ScrollView, StyleSheet, View } from "react-native";
+import { Alert, FlatList, Pressable, RefreshControl, ScrollView, StyleSheet, View } from "react-native";
 import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
@@ -9,6 +9,7 @@ import {
   Card,
   Chip,
   Dialog,
+  Icon,
   IconButton,
   Portal,
   Searchbar,
@@ -22,7 +23,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { StorePickerModal } from "@/components/ui/StorePickerModal";
 import type { Store } from "@/modules/shop/types";
 import { getDeviceBoundStoreCode } from "@/modules/shop/device-bound-store-filter";
-import { getManageableStoresForSession, isStoreManageable } from "@/modules/shop/store-scope";
+import { getManageableStoresForSession, getPosEnabledStores, isStoreManageable } from "@/modules/shop/store-scope";
 import { useStores } from "@/modules/shop/use-stores";
 import {
   STORE_STAFF_ROLE,
@@ -33,8 +34,9 @@ import {
   type StoreUserFormValues,
   type StoreUserListItem,
 } from "@/modules/users";
+import { StaffBarcodeBatchDialog, StaffBarcodeDialog } from "@/modules/users/staff-barcode/StaffBarcodeDialogs";
+import { canManageStaffBarcode } from "@/modules/users/staff-barcode/eligibility";
 import { getUserAccessEligibility } from "@/modules/users/access-management";
-import { calculateAge } from "@/modules/users/profile-display";
 import { validatePasswordValue, validateStoreUserForm } from "@/modules/users/validation";
 import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
@@ -65,27 +67,13 @@ function getInitials(user: StoreUserListItem) {
   return `${words[0][0]}${words[1][0]}`.toUpperCase();
 }
 
-function formatDateTime(value: string | undefined, locale: string) {
-  if (!value) {
-    return null;
-  }
-
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return value;
-  }
-
-  return new Intl.DateTimeFormat(locale, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(parsed);
-}
-
 export default function UsersScreen() {
   const router = useRouter();
   const { t, language } = useAppTranslation(["userManagement", "common"]);
   const access = useAuthStore((state) => state.access);
   const currentUser = useAuthStore((state) => state.user);
+  const authenticated = useAuthStore((state) => state.isAuthenticated);
+  const actorGuid = currentUser?.userGUID || currentUser?.userGuid || "";
   const {
     stores,
     selectedStoreCode: rememberedStoreCode,
@@ -94,6 +82,8 @@ export default function UsersScreen() {
     isLoading: storesLoading,
     selectStore,
   } = useStores();
+  // 仅收窄选择候选，设备绑定与店员操作权限继续使用原分店范围。
+  const posEnabledStores = useMemo(() => getPosEnabledStores(stores), [stores]);
   const [managedStoreCode, setManagedStoreCode] = useState<string | null>(null);
   const [storePickerVisible, setStorePickerVisible] = useState(false);
   const [keywordInput, setKeywordInput] = useState("");
@@ -108,6 +98,12 @@ export default function UsersScreen() {
   const [resetPasswordVisible, setResetPasswordVisible] = useState(false);
   const [resetPasswordValue, setResetPasswordValue] = useState("");
   const [passwordUser, setPasswordUser] = useState<StoreUserListItem | null>(null);
+  const [moreUser, setMoreUser] = useState<StoreUserListItem | null>(null);
+  const [barcodeUser, setBarcodeUser] = useState<StoreUserListItem | null>(null);
+  const [createdUser, setCreatedUser] = useState<StoreUserListItem | null>(null);
+  const [batchSelecting, setBatchSelecting] = useState(false);
+  const [batchVisible, setBatchVisible] = useState(false);
+  const [selectedUserGuids, setSelectedUserGuids] = useState<Set<string>>(new Set());
   const deviceBoundStoreCode = getDeviceBoundStoreCode({
     isDeviceMode,
     selectedStoreCode: rememberedStoreCode,
@@ -141,12 +137,12 @@ export default function UsersScreen() {
         return deviceBoundStoreCode;
       }
 
-      if (current && stores.some((store) => store.storeCode === current)) {
+      if (current && posEnabledStores.some((store) => store.storeCode === current)) {
         return current;
       }
 
       const selectedAssignedStore = rememberedStoreCode
-        ? stores.find((store) => store.storeCode === rememberedStoreCode)
+        ? posEnabledStores.find((store) => store.storeCode === rememberedStoreCode)
         : null;
       if (selectedAssignedStore) {
         return selectedAssignedStore.storeCode;
@@ -154,7 +150,7 @@ export default function UsersScreen() {
 
       return null;
     });
-  }, [deviceBoundStoreCode, isHydratingSelection, rememberedStoreCode, stores, storesLoading]);
+  }, [deviceBoundStoreCode, isHydratingSelection, rememberedStoreCode, posEnabledStores, storesLoading]);
 
   const managedStore = useMemo(
     () => stores.find((store) => store.storeCode === managedStoreCode) ?? null,
@@ -194,6 +190,21 @@ export default function UsersScreen() {
     (user: StoreUserListItem) =>
       canResetPasswords && isStoreManageable(resolveUserStoreCode(user), manageableStores),
     [canResetPasswords, manageableStores, resolveUserStoreCode]
+  );
+  const canManageUserBarcode = useCallback(
+    (user: StoreUserListItem) => canManageStaffBarcode({
+      authenticated,
+      deviceOnly: isDeviceMode,
+      canEditUsers,
+      canManagePosStore: isStoreManageable(resolveUserStoreCode(user), manageableStores)
+        && posEnabledStores.some((store) => store.storeCode === resolveUserStoreCode(user)),
+      actorGuid,
+      actorRoles: currentUser?.roleNames ?? [],
+      targetGuid: user.userGUID,
+      targetStatus: user.status,
+      targetRoles: user.roleNames,
+    }),
+    [actorGuid, authenticated, canEditUsers, currentUser?.roleNames, isDeviceMode, manageableStores, posEnabledStores, resolveUserStoreCode]
   );
 
   useEffect(() => {
@@ -302,6 +313,9 @@ export default function UsersScreen() {
 
   const handleSelectManagedStore = useCallback(
     async (store: Store | null) => {
+      // 批量选择只能属于一个明确分店，切店时必须清空，避免跨店打印。
+      setSelectedUserGuids(new Set());
+      setBatchSelecting(false);
       setManagedStoreCode(deviceBoundStoreCode ?? store?.storeCode ?? null);
       setStorePickerVisible(false);
 
@@ -373,12 +387,13 @@ export default function UsersScreen() {
 
     try {
       if (isCreating) {
-        await createMutation.mutateAsync({
+        const created = await createMutation.mutateAsync({
           ...payload,
           password: initialPassword.trim(),
           passwordFormat: "raw",
           employmentType: "casual",
         });
+        setCreatedUser(created);
         setSnackbarMessage(t("messages.userCreated"));
       } else {
         await updateMutation.mutateAsync({ ...payload, userGuid: editingUserGuid });
@@ -525,6 +540,43 @@ export default function UsersScreen() {
     );
   }, [statusFilter, usersQuery.data]);
 
+  const statusCounts = useMemo(() => {
+    const items = usersQuery.data ?? [];
+    const active = items.filter((item) => item.status === 1).length;
+    return { all: items.length, active, disabled: items.length - active };
+  }, [usersQuery.data]);
+
+  const selectedUsers = useMemo(
+    () => (usersQuery.data ?? []).filter(
+      (user) => selectedUserGuids.has(user.userGUID) && canManageUserBarcode(user)
+    ),
+    [canManageUserBarcode, selectedUserGuids, usersQuery.data]
+  );
+
+  const moreAccessEligibility = useMemo(() => moreUser ? getUserAccessEligibility({
+    isDeviceMode,
+    isAdmin: access.isAdmin,
+    isStoreManager: access.isStoreManager,
+    canManageStores: canManageUserStores,
+    canManageRoles: canManageUserRoles,
+    canManagePos: canManagePosTerminalPermissions,
+    currentUserGuid: currentUser?.userGUID,
+    targetUserGuid: moreUser.userGUID,
+    targetStatus: moreUser.status,
+    targetRoleNames: moreUser.roleNames,
+    hasManageableStores: access.isAdmin || manageableStores.length > 0,
+  }) : null, [
+    access.isAdmin,
+    access.isStoreManager,
+    canManagePosTerminalPermissions,
+    canManageUserRoles,
+    canManageUserStores,
+    currentUser?.userGUID,
+    isDeviceMode,
+    manageableStores.length,
+    moreUser,
+  ]);
+
   const storeCaption = useMemo(() => {
     if (!managedStoreCode) {
       return t("currentStore.allRelated");
@@ -563,151 +615,82 @@ export default function UsersScreen() {
 
   const renderUserCard = useCallback(
     ({ item }: { item: StoreUserListItem }) => {
-      const lastLogin = formatDateTime(item.lastLoginTime, language);
-      const updatedAt = formatDateTime(item.updatedAt, language);
-      const storeName = item.storeName || managedStore?.storeName || item.storeCode || managedStoreCode;
-      const emptyValue = t("common:na");
-      const age = calculateAge(item.birthday);
-      const gender = item.gender
-        ? t(`detail.genders.${item.gender}`, item.gender)
-        : emptyValue;
       const employmentType = item.employmentType
         ? t(`detail.employmentTypes.${item.employmentType}`, item.employmentType)
-        : emptyValue;
-      const canModifyThisUser = canModifyUserStore(item);
-      const canResetThisUser = canResetUserPassword(item);
-      const accessEligibility = getUserAccessEligibility({
-        isDeviceMode,
-        isAdmin: access.isAdmin,
-        isStoreManager: access.isStoreManager,
-        canManageStores: canManageUserStores,
-        canManageRoles: canManageUserRoles,
-        canManagePos: canManagePosTerminalPermissions,
-        currentUserGuid: currentUser?.userGUID,
-        targetUserGuid: item.userGUID,
-        targetStatus: item.status,
-        targetRoleNames: item.roleNames,
-        hasManageableStores: access.isAdmin || manageableStores.length > 0,
+        : t("fields.positionValue");
+      const canUseBarcode = canManageUserBarcode(item);
+
+      const toggleSelection = () => setSelectedUserGuids((current) => {
+        const next = new Set(current);
+        if (next.has(item.userGUID)) next.delete(item.userGUID);
+        else next.add(item.userGUID);
+        return next;
       });
 
       return (
-        <Card style={styles.userCard} mode="elevated" onPress={() => openStaffDetail(item)}>
+        <Card
+          style={styles.userCard}
+          mode="contained"
+          onPress={() => batchSelecting && canUseBarcode ? toggleSelection() : openStaffDetail(item)}
+          testID="compact-staff-row"
+        >
           <Card.Content style={styles.userCardContent}>
             <View style={styles.userCardHeader}>
+              {batchSelecting && canUseBarcode ? (
+                <IconButton
+                  icon={selectedUserGuids.has(item.userGUID) ? "checkbox-marked" : "checkbox-blank-outline"}
+                  size={22}
+                  accessibilityLabel={t("staffBarcode.batch.selectEmployee", { name: item.fullName || item.username })}
+                  onPress={toggleSelection}
+                />
+              ) : null}
               <View style={styles.identityRow}>
-                <Avatar.Text size={44} label={getInitials(item)} style={styles.avatar} />
+                <Avatar.Text size={38} label={getInitials(item)} style={styles.avatar} />
                 <View style={styles.userTitleWrap}>
-                  <Text variant="titleMedium">{item.fullName || item.username}</Text>
+                  <Text variant="titleSmall" numberOfLines={1}>{item.fullName || item.username}</Text>
                   <Text variant="bodySmall" style={styles.secondaryText}>
-                    {item.username}
+                    @{item.username} · {employmentType}
                   </Text>
+                  {!managedStoreCode && item.storeCode ? (
+                    <Text variant="labelSmall" style={styles.secondaryText} numberOfLines={1}>
+                      {item.storeName || item.storeCode} · {item.storeCode}
+                    </Text>
+                  ) : null}
                 </View>
               </View>
               <View style={styles.cardMenuActions}>
                 <Chip compact style={item.status === 1 ? styles.activeChip : styles.inactiveChip}>
                   {item.status === 1 ? t("statuses.active") : t("statuses.disabled")}
                 </Chip>
+                {canUseBarcode && !batchSelecting ? (
+                  <Pressable
+                    style={styles.codeAction}
+                    accessibilityRole="button"
+                    accessibilityLabel={`${item.fullName || item.username} · ${t("staffBarcode.actions.open")}`}
+                    onPress={() => setBarcodeUser(item)}
+                  >
+                    <Icon source="qrcode" size={20} color={HB_COLORS.action} />
+                    <Text variant="labelSmall" style={styles.codeActionText}>{t("staffBarcode.actions.open")}</Text>
+                  </Pressable>
+                ) : null}
                 <IconButton
                   icon="dots-vertical"
                   size={20}
-                  accessibilityLabel={t("actions.more")}
-                  onPress={() => openEditDialog(item)}
-                  disabled={!canModifyThisUser}
+                  accessibilityLabel={`${item.fullName || item.username} · ${t("actions.more")}`}
+                  onPress={() => setMoreUser(item)}
                 />
               </View>
-            </View>
-
-            <View style={styles.metaWrap}>
-              <Text variant="bodyMedium">{t("fields.positionValue")}</Text>
-              {storeName ? <Text variant="bodyMedium">{t("fields.storeValue", { value: storeName })}</Text> : null}
-              <Text variant="bodyMedium">{t("fields.ageValue", { value: age ?? emptyValue })}</Text>
-              <Text variant="bodyMedium">{t("fields.genderValue", { value: gender })}</Text>
-              <Text variant="bodyMedium">{t("fields.employmentTypeValue", { value: employmentType })}</Text>
-              <Text variant="bodyMedium">{t("fields.phoneValue", { value: item.phone || emptyValue })}</Text>
-              {item.email ? <Text variant="bodyMedium">{t("fields.emailValue", { value: item.email })}</Text> : null}
-              {lastLogin ? (
-                <Text variant="bodySmall" style={styles.secondaryText}>
-                  {t("fields.lastLoginValue", { value: lastLogin })}
-                </Text>
-              ) : null}
-              {item.lastLoginIp ? (
-                <Text variant="bodySmall" style={styles.secondaryText}>
-                  {t("fields.lastLoginIpValue", { value: item.lastLoginIp })}
-                </Text>
-              ) : null}
-              {updatedAt ? (
-                <Text variant="bodySmall" style={styles.secondaryText}>
-                  {t("fields.updatedAtValue", { value: updatedAt })}
-                </Text>
-              ) : null}
-            </View>
-
-            {item.roleNames.length ? (
-              <View style={styles.roleChips} accessibilityLabel={t("accessManagement.tabs.roles")}>
-                {item.roleNames.map((roleName) => <Chip compact key={roleName}>{roleName}</Chip>)}
-              </View>
-            ) : null}
-
-            <View style={styles.actionRow}>
-              <Button compact mode="outlined" icon="account-details-outline" onPress={() => openStaffDetail(item)}>
-                {t("actions.viewDetails")}
-              </Button>
-              {accessEligibility.canOpen ? (
-                <Button
-                  compact
-                  mode="outlined"
-                  icon="shield-account-outline"
-                  onPress={() => openUserAccess(item)}
-                >
-                  {t("accessManagement.actions.open")}
-                </Button>
-              ) : null}
-              <Button compact mode="outlined" icon="pencil-outline" onPress={() => openEditDialog(item)} disabled={!canModifyThisUser}>
-                {t("actions.edit")}
-              </Button>
-              <Button
-                compact
-                mode="outlined"
-                icon="lock-reset"
-                onPress={() => openResetPasswordDialog(item)}
-                disabled={!canResetThisUser}
-              >
-                {t("actions.resetPassword")}
-              </Button>
-              <Button
-                compact
-                mode={item.status === 1 ? "outlined" : "contained-tonal"}
-                icon={item.status === 1 ? "pause-circle-outline" : "play-circle-outline"}
-                onPress={() => handleToggleStatus(item)}
-                disabled={!canModifyThisUser}
-              >
-                {item.status === 1 ? t("actions.disable") : t("actions.enable")}
-              </Button>
             </View>
           </Card.Content>
         </Card>
       );
     },
     [
-      access.isAdmin,
-      access.isStoreManager,
-      canModifyUserStore,
-      canResetUserPassword,
-      canManagePosTerminalPermissions,
-      canManageUserRoles,
-      canManageUserStores,
-      currentUser?.userGUID,
-      handleToggleStatus,
-      isDeviceMode,
-      language,
-      manageableStores,
-      managedStore?.storeName,
-      managedStore?.storeCode,
+      batchSelecting,
+      canManageUserBarcode,
       managedStoreCode,
-      openEditDialog,
-      openUserAccess,
-      openResetPasswordDialog,
       openStaffDetail,
+      selectedUserGuids,
       t,
     ]
   );
@@ -743,9 +726,14 @@ export default function UsersScreen() {
             <View style={styles.titleRow}>
               <View>
                 <Text variant="headlineSmall">{t("title")}</Text>
-                <Text variant="bodyMedium" style={styles.secondaryText}>
-                  {storeCaption}
-                </Text>
+                <View style={styles.storeStatusRow}>
+                  <Text variant="bodyMedium" style={styles.secondaryText}>{storeCaption}</Text>
+                  {managedStoreCode ? (
+                    <Text variant="labelSmall" style={isStoreManageable(managedStoreCode, manageableStores) ? styles.manageableText : styles.readOnlyHint}>
+                      {isStoreManageable(managedStoreCode, manageableStores) ? t("currentStore.manageableBadge") : t("currentStore.viewOnlyBadge")}
+                    </Text>
+                  ) : null}
+                </View>
               </View>
               {canCreateUsers ? (
                 <Button
@@ -769,15 +757,6 @@ export default function UsersScreen() {
               >
                 {managedStore?.storeName || t("currentStore.allRelated")}
               </Button>
-              {managedStoreCode && !selectedStoreCanManageUsers ? (
-                <Text variant="bodySmall" style={styles.readOnlyHint}>
-                  {t("currentStore.readOnlyHelper")}
-                </Text>
-              ) : (
-                <Text variant="bodySmall" style={styles.secondaryText}>
-                  {t("currentStore.helper")}
-                </Text>
-              )}
               <Searchbar
                 placeholder={t("searchPlaceholder")}
                 value={keywordInput}
@@ -785,24 +764,46 @@ export default function UsersScreen() {
                 onIconPress={submitKeyword}
                 onSubmitEditing={submitKeyword}
                 style={styles.searchbar}
+                inputStyle={styles.searchInput}
               />
-              <View style={styles.filterActions}>
-                <Chip icon="sort-alphabetical-ascending" compact>
-                  {t("filters.sortByName")}
-                </Chip>
-                <Button mode="outlined" icon="refresh" onPress={handleRefresh} disabled={usersQuery.isFetching}>
-                  {t("actions.refresh")}
-                </Button>
-              </View>
               <SegmentedButtons
                 value={statusFilter}
                 onValueChange={(value) => setStatusFilter(value as StatusFilter)}
                 buttons={[
-                  { value: "all", label: t("filters.statusAll") },
-                  { value: "active", label: t("filters.statusActive") },
-                  { value: "disabled", label: t("filters.statusDisabled") },
+                  { value: "all", label: t("filters.statusAllCount", { count: statusCounts.all }) },
+                  { value: "active", label: t("filters.statusActiveCount", { count: statusCounts.active }) },
+                  { value: "disabled", label: t("filters.statusDisabledCount", { count: statusCounts.disabled }) },
                 ]}
+                theme={{ colors: { secondaryContainer: "#E8F1FF", onSecondaryContainer: HB_COLORS.action } }}
               />
+              {!isDeviceMode && canEditUsers && managedStoreCode && isStoreManageable(managedStoreCode, manageableStores) ? (
+                <View style={styles.batchActions}>
+                  <Button
+                    compact
+                    mode={batchSelecting ? "contained-tonal" : "outlined"}
+                    icon="printer-outline"
+                    onPress={() => {
+                      setBatchSelecting((current) => !current);
+                      setSelectedUserGuids(new Set());
+                    }}
+                  >
+                    {batchSelecting ? t("staffBarcode.batch.cancelSelection") : t("staffBarcode.batch.entry")}
+                  </Button>
+                  {batchSelecting ? (
+                    <Button
+                      compact
+                      mode="contained"
+                      onPress={() => setBatchVisible(true)}
+                      disabled={!selectedUsers.length}
+                    >
+                      {t("staffBarcode.batch.confirm", { count: selectedUsers.length })}
+                    </Button>
+                  ) : null}
+                </View>
+              ) : null}
+              {managedStoreCode && !selectedStoreCanManageUsers ? (
+                <Text variant="bodySmall" style={styles.readOnlyHint}>{t("currentStore.readOnlyHelper")}</Text>
+              ) : null}
             </View>
 
             {usersQuery.isError ? (
@@ -941,12 +942,73 @@ export default function UsersScreen() {
             </Button>
           </Dialog.Actions>
         </Dialog>
+
+        <Dialog visible={Boolean(moreUser)} onDismiss={() => setMoreUser(null)}>
+          <Dialog.Title>{moreUser?.fullName || moreUser?.username}</Dialog.Title>
+          <Dialog.Content style={styles.moreActions}>
+            <Button icon="account-details-outline" onPress={() => { if (moreUser) openStaffDetail(moreUser); setMoreUser(null); }}>
+              {t("actions.viewDetails")}
+            </Button>
+            {moreAccessEligibility?.canOpen ? (
+              <Button icon="shield-account-outline" onPress={() => { if (moreUser) openUserAccess(moreUser); setMoreUser(null); }}>
+                {t("accessManagement.actions.open")}
+              </Button>
+            ) : null}
+            <Button icon="pencil-outline" disabled={!moreUser || !canModifyUserStore(moreUser)} onPress={() => { if (moreUser) openEditDialog(moreUser); setMoreUser(null); }}>
+              {t("actions.edit")}
+            </Button>
+            <Button icon="lock-reset" disabled={!moreUser || !canResetUserPassword(moreUser)} onPress={() => { if (moreUser) openResetPasswordDialog(moreUser); setMoreUser(null); }}>
+              {t("actions.resetPassword")}
+            </Button>
+            <Button
+              icon={moreUser?.status === 1 ? "pause-circle-outline" : "play-circle-outline"}
+              disabled={!moreUser || !canModifyUserStore(moreUser)}
+              onPress={() => { if (moreUser) handleToggleStatus(moreUser); setMoreUser(null); }}
+            >
+              {moreUser?.status === 1 ? t("actions.disable") : t("actions.enable")}
+            </Button>
+          </Dialog.Content>
+        </Dialog>
+
+        <Dialog visible={Boolean(createdUser)} onDismiss={() => setCreatedUser(null)} testID="staff-created-actions-dialog">
+          <Dialog.Title>{t("staffBarcode.created.title")}</Dialog.Title>
+          <Dialog.Content><Text>{t("staffBarcode.created.description", { name: createdUser?.fullName || createdUser?.username })}</Text></Dialog.Content>
+          <Dialog.Actions>
+            <Button onPress={() => setCreatedUser(null)}>{t("staffBarcode.actions.done")}</Button>
+            {createdUser && canManageUserBarcode(createdUser) ? (
+              <Button mode="contained" onPress={() => { setBarcodeUser(createdUser); setCreatedUser(null); }}>
+                {t("staffBarcode.actions.createAndPrint")}
+              </Button>
+            ) : null}
+          </Dialog.Actions>
+        </Dialog>
       </Portal>
+
+      <StaffBarcodeDialog
+        actorGuid={actorGuid}
+        storeCode={barcodeUser ? resolveUserStoreCode(barcodeUser) ?? "" : ""}
+        user={barcodeUser}
+        visible={Boolean(barcodeUser)}
+        onDismiss={() => setBarcodeUser(null)}
+      />
+      {managedStoreCode ? (
+        <StaffBarcodeBatchDialog
+          actorGuid={actorGuid}
+          storeCode={managedStoreCode}
+          users={selectedUsers}
+          visible={batchVisible}
+          onDismiss={() => {
+            setBatchVisible(false);
+            setBatchSelecting(false);
+            setSelectedUserGuids(new Set());
+          }}
+        />
+      ) : null}
 
       <StorePickerModal
         visible={storePickerVisible}
         presentation="sheet"
-        stores={stores}
+        stores={posEnabledStores}
         selectedStoreCode={managedStoreCode}
         title={t("common:labels.selectStore")}
         cancelLabel={t("common:actions.cancel")}
@@ -965,47 +1027,52 @@ export default function UsersScreen() {
 }
 
 const styles = StyleSheet.create({
-  actionRow: {
+  batchActions: {
+    alignItems: "center",
     flexDirection: "row",
-    flexWrap: "wrap",
     gap: 8,
+    justifyContent: "flex-end",
   },
   activeChip: {
     backgroundColor: "#D1FAE5",
   },
   avatar: {
-    backgroundColor: "#111827",
+    backgroundColor: "#1256DB",
   },
   cardMenuActions: {
-    alignItems: "flex-end",
-    gap: 4,
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 0,
+  },
+  codeAction: {
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 44,
+    minWidth: 48,
+  },
+  codeActionText: {
+    color: HB_COLORS.action,
+    fontSize: 10,
   },
   dialogContent: {
     gap: 12,
     paddingBottom: 8,
   },
-  filterActions: {
-    alignItems: "center",
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 10,
-    justifyContent: "space-between",
-  },
   filterPanel: {
     ...BUSINESS_UI.filterGroup,
     borderWidth: StyleSheet.hairlineWidth,
-    gap: 10,
-    padding: 12,
+    gap: 8,
+    padding: 8,
   },
   headerWrap: {
-    gap: 12,
-    marginBottom: 12,
+    gap: 8,
+    marginBottom: 8,
   },
   identityRow: {
     alignItems: "center",
     flex: 1,
     flexDirection: "row",
-    gap: 12,
+    gap: 8,
   },
   inactiveChip: {
     backgroundColor: "#FEE2E2",
@@ -1015,16 +1082,13 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   listContent: {
-    gap: 12,
-    padding: HB_SPACING.md,
+    gap: 8,
+    padding: HB_SPACING.sm,
     paddingBottom: 112,
   },
   loadingWrap: {
     alignItems: "center",
     paddingVertical: 24,
-  },
-  metaWrap: {
-    gap: 4,
   },
   manageableChip: {
     backgroundColor: "#D1FAE5",
@@ -1038,6 +1102,10 @@ const styles = StyleSheet.create({
   },
   searchbar: {
     backgroundColor: "#F8FAFC",
+    height: 44,
+  },
+  searchInput: {
+    minHeight: 44,
   },
   secondaryText: {
     color: "#6B7280",
@@ -1057,10 +1125,22 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
   },
+  storeStatusRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 6,
+  },
+  manageableText: {
+    color: HB_COLORS.success,
+  },
   switchRow: {
     alignItems: "center",
     flexDirection: "row",
     justifyContent: "space-between",
+  },
+  moreActions: {
+    alignItems: "flex-start",
+    gap: 2,
   },
   titleRow: {
     alignItems: "center",
@@ -1075,22 +1155,17 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
   },
   userCardContent: {
-    gap: 12,
+    paddingVertical: 8,
   },
   userCardHeader: {
-    alignItems: "flex-start",
+    alignItems: "center",
     flexDirection: "row",
-    gap: 12,
+    gap: 4,
     justifyContent: "space-between",
   },
   userTitleWrap: {
     flex: 1,
     gap: 2,
-  },
-  roleChips: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 6,
   },
   viewOnlyChip: {
     backgroundColor: "#FEF3C7",

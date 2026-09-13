@@ -602,6 +602,15 @@ RankedPurchases AS (
         pda.SupplierName,
         pda.PurchaseDate,
         pda.PurchaseQty,
+        -- 在同一次排名中读取上次进货，避免多次展开进货汇总并重复扫描明细、商品表。
+        LEAD(pda.PurchaseDate) OVER (
+            PARTITION BY pda.StoreCode, pda.ProductCode
+            ORDER BY pda.PurchaseDate DESC
+        ) AS PreviousPurchaseDate,
+        LEAD(pda.PurchaseQty) OVER (
+            PARTITION BY pda.StoreCode, pda.ProductCode
+            ORDER BY pda.PurchaseDate DESC
+        ) AS PreviousPurchaseQty,
         ROW_NUMBER() OVER (
             PARTITION BY pda.StoreCode, pda.ProductCode
             ORDER BY pda.PurchaseDate DESC
@@ -620,42 +629,11 @@ LatestPurchases AS (
         rp.SupplierCode,
         rp.SupplierName,
         rp.PurchaseDate AS LatestPurchaseDate,
-        rp.PurchaseQty AS LatestPurchaseQty
+        rp.PurchaseQty AS LatestPurchaseQty,
+        rp.PreviousPurchaseDate,
+        rp.PreviousPurchaseQty
     FROM RankedPurchases rp
     WHERE rp.PurchaseRank = 1
-),
-PreviousPurchases AS (
-    SELECT
-        rp.StoreCode,
-        rp.ProductCode,
-        rp.PurchaseDate AS PreviousPurchaseDate,
-        rp.PurchaseQty AS PreviousPurchaseQty
-    FROM RankedPurchases rp
-    WHERE rp.PurchaseRank = 2
-),
-SalesMetrics AS (
-    SELECT
-        lp.StoreCode,
-        lp.ProductCode,
-        SUM(CASE WHEN s.Date >= lp.LatestPurchaseDate AND s.Date < DATEADD(day, 30, lp.LatestPurchaseDate) THEN COALESCE(s.TotalQuantity, 0) ELSE 0 END) AS SalesQty30,
-        SUM(CASE WHEN s.Date >= lp.LatestPurchaseDate AND s.Date < DATEADD(day, 60, lp.LatestPurchaseDate) THEN COALESCE(s.TotalQuantity, 0) ELSE 0 END) AS SalesQty60,
-        SUM(CASE WHEN s.Date >= lp.LatestPurchaseDate AND s.Date < DATEADD(day, 90, lp.LatestPurchaseDate) THEN COALESCE(s.TotalQuantity, 0) ELSE 0 END) AS SalesQty90,
-        SUM(CASE WHEN pp.PreviousPurchaseDate IS NOT NULL AND s.Date >= pp.PreviousPurchaseDate AND s.Date < lp.LatestPurchaseDate THEN COALESCE(s.TotalQuantity, 0) ELSE 0 END) AS SalesBetweenPurchases,
-        MAX(s.UpdateTime) AS SalesStatisticLastUpdate
-    FROM LatestPurchases lp
-    LEFT JOIN PreviousPurchases pp
-        ON pp.StoreCode = lp.StoreCode
-        AND pp.ProductCode = lp.ProductCode
-    LEFT JOIN [ProductStoreDailySalesStatistic] s
-        ON s.BranchCode = lp.StoreCode
-        AND s.ProductCode = lp.ProductCode
-        AND (
-            (s.Date >= lp.LatestPurchaseDate AND s.Date < DATEADD(day, 90, lp.LatestPurchaseDate))
-            OR (pp.PreviousPurchaseDate IS NOT NULL AND s.Date >= pp.PreviousPurchaseDate AND s.Date < lp.LatestPurchaseDate)
-        )
-    GROUP BY
-        lp.StoreCode,
-        lp.ProductCode
 ),
 FinalRows AS (
     SELECT
@@ -670,14 +648,14 @@ FinalRows AS (
         lp.SupplierName AS SupplierName,
         lp.LatestPurchaseDate AS LatestPurchaseDate,
         CAST(lp.LatestPurchaseQty AS decimal(18, 2)) AS LatestPurchaseQty,
-        pp.PreviousPurchaseDate AS PreviousPurchaseDate,
-        CAST(pp.PreviousPurchaseQty AS decimal(18, 2)) AS PreviousPurchaseQty,
+        lp.PreviousPurchaseDate AS PreviousPurchaseDate,
+        CAST(lp.PreviousPurchaseQty AS decimal(18, 2)) AS PreviousPurchaseQty,
         CASE
-            WHEN pp.PreviousPurchaseDate IS NULL THEN NULL
-            ELSE DATEDIFF(day, pp.PreviousPurchaseDate, lp.LatestPurchaseDate)
+            WHEN lp.PreviousPurchaseDate IS NULL THEN NULL
+            ELSE DATEDIFF(day, lp.PreviousPurchaseDate, lp.LatestPurchaseDate)
         END AS PurchaseIntervalDays,
         CASE
-            WHEN pp.PreviousPurchaseDate IS NULL THEN NULL
+            WHEN lp.PreviousPurchaseDate IS NULL THEN NULL
             ELSE COALESCE(sm.SalesBetweenPurchases, 0)
         END AS SalesBetweenPurchases,
         COALESCE(sm.SalesQty30, 0) AS SalesQty30,
@@ -685,12 +663,28 @@ FinalRows AS (
         COALESCE(sm.SalesQty90, 0) AS SalesQty90,
         sm.SalesStatisticLastUpdate AS SalesStatisticLastUpdate
     FROM LatestPurchases lp
-    LEFT JOIN PreviousPurchases pp
-        ON pp.StoreCode = lp.StoreCode
-        AND pp.ProductCode = lp.ProductCode
-    LEFT JOIN SalesMetrics sm
-        ON sm.StoreCode = lp.StoreCode
-        AND sm.ProductCode = lp.ProductCode
+    -- 上次到最近、最近到 90 天是连续区间；保留各销量窗口的半开边界与退货负数。
+    OUTER APPLY (
+        SELECT SUM(daily.SalesQty30) AS SalesQty30,
+               SUM(daily.SalesQty60) AS SalesQty60,
+               SUM(daily.SalesQty90) AS SalesQty90,
+               SUM(daily.SalesBetweenPurchases) AS SalesBetweenPurchases,
+               MAX(daily.UpdateTime) AS SalesStatisticLastUpdate
+        -- 先投影再聚合，避免 SQL Server 将外部日期引用与销量列视为非法混合聚合。
+        FROM (
+            SELECT
+                CASE WHEN s.Date >= lp.LatestPurchaseDate AND s.Date < DATEADD(day, 30, lp.LatestPurchaseDate) THEN COALESCE(s.TotalQuantity, 0) ELSE 0 END AS SalesQty30,
+                CASE WHEN s.Date >= lp.LatestPurchaseDate AND s.Date < DATEADD(day, 60, lp.LatestPurchaseDate) THEN COALESCE(s.TotalQuantity, 0) ELSE 0 END AS SalesQty60,
+                CASE WHEN s.Date >= lp.LatestPurchaseDate AND s.Date < DATEADD(day, 90, lp.LatestPurchaseDate) THEN COALESCE(s.TotalQuantity, 0) ELSE 0 END AS SalesQty90,
+                CASE WHEN lp.PreviousPurchaseDate IS NOT NULL AND s.Date >= lp.PreviousPurchaseDate AND s.Date < lp.LatestPurchaseDate THEN COALESCE(s.TotalQuantity, 0) ELSE 0 END AS SalesBetweenPurchases,
+                s.UpdateTime
+            FROM [ProductStoreDailySalesStatistic] s
+            WHERE s.BranchCode = lp.StoreCode
+              AND s.ProductCode = lp.ProductCode
+              AND s.Date >= COALESCE(lp.PreviousPurchaseDate, lp.LatestPurchaseDate)
+              AND s.Date < DATEADD(day, 90, lp.LatestPurchaseDate)
+        ) daily
+    ) sm
 )
 """;
 

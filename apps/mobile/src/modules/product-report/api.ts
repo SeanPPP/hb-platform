@@ -798,7 +798,7 @@ export function normalizeProductBranchRows(payload: unknown): ProductBranchBreak
 
 export async function fetchProductReportStoreOptions(options: ProductReportRequestOptions = {}) {
   const apiClient = await getApiClient();
-  const response = await apiClient.get("/react/v1/product-movement-report/store-options", {
+  const response = await apiClient.get("/react/v1/mobile-reports/store-options", {
     signal: options.signal,
   });
   return normalizeStoreOptions(response.data);

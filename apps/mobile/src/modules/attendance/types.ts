@@ -22,6 +22,7 @@ export type AttendanceVerificationReason =
   | "dependencyMissing"
   | "permissionDenied"
   | "networkUnreachable"
+  | "timeout"
   | "unknown";
 
 export type AttendancePunchStatus =
@@ -297,6 +298,11 @@ export interface AttendanceAvailabilityPayload {
   startTime: string;
   endTime: string;
   note?: string;
+}
+
+export interface AttendanceAvailabilityBatchPayload
+  extends Omit<AttendanceAvailabilityPayload, "workDate"> {
+  workDates: string[];
 }
 
 export interface AttendanceStoreHoliday {

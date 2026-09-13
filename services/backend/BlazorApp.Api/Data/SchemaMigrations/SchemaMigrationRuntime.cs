@@ -50,6 +50,16 @@ internal interface ISchemaMigrationRuntime
 
     Task VerifyProductHqSyncOutboxAsync(CancellationToken cancellationToken);
 
+    Task ApplyPricingCurveAsync(CancellationToken cancellationToken);
+
+    Task VerifyPricingCurveAsync(CancellationToken cancellationToken);
+
+    Task ApplySalesDetailQueryProjectionAsync(CancellationToken cancellationToken);
+
+    Task ApplySalesDetailQueryMappingUseAsync(CancellationToken cancellationToken);
+
+    Task VerifySalesDetailQueryProjectionAsync(CancellationToken cancellationToken);
+
     Task ApplyPosmBaselineAsync(CancellationToken cancellationToken);
 
     Task ApplyMobileDeviceActivationAsync(CancellationToken cancellationToken);
@@ -81,6 +91,10 @@ internal sealed class ContainerDetailQueryIndexSchemaMismatchException : Excepti
 internal sealed class ContainerDetailCollaborationSchemaMismatchException : Exception;
 
 internal sealed class ProductHqSyncOutboxSchemaMismatchException : Exception;
+
+internal sealed class PricingCurveSchemaMismatchException : Exception;
+
+internal sealed class SalesDetailQueryProjectionSchemaMismatchException : Exception;
 
 internal sealed class LinklyMultiTerminalSchemaMismatchException : Exception;
 
@@ -270,6 +284,59 @@ internal sealed class SqlServerSchemaMigrationRuntime : ISchemaMigrationRuntime
         catch (SqlException exception) when (exception.Number is >= 51530 and <= 51539)
         {
             throw new ContainerDetailQueryIndexSchemaMismatchException();
+        }
+    }
+
+    public async Task ApplyPricingCurveAsync(CancellationToken cancellationToken)
+    {
+        await SqlServerSchemaMigrationStore.ExecuteBatchAsync(
+            _mainDatabase.ConnectionString, PricingCurveSchema.ApplySql,
+            _commandTimeoutSeconds, cancellationToken);
+        // 签名通过后，协调器才登记迁移成功，防止已有同名错误列被跳过。
+        await VerifyPricingCurveAsync(cancellationToken);
+    }
+
+    public async Task VerifyPricingCurveAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await SqlServerSchemaMigrationStore.ExecuteReadOnlyBatchAsync(
+                _mainDatabase.ConnectionString, PricingCurveSchema.VerifySql,
+                _commandTimeoutSeconds, cancellationToken);
+        }
+        catch (SqlException exception) when (exception.Number is 51710 or 51711)
+        {
+            throw new PricingCurveSchemaMismatchException();
+        }
+    }
+
+    public async Task ApplySalesDetailQueryProjectionAsync(CancellationToken cancellationToken)
+    {
+        await SqlServerSchemaMigrationStore.ExecuteBatchAsync(
+            _mainDatabase.ConnectionString, SalesDetailQueryProjectionSchema.ApplySql,
+            _commandTimeoutSeconds, cancellationToken);
+        await VerifySalesDetailQueryProjectionAsync(cancellationToken);
+    }
+
+    public async Task ApplySalesDetailQueryMappingUseAsync(CancellationToken cancellationToken)
+    {
+        await SqlServerSchemaMigrationStore.ExecuteBatchAsync(
+            _mainDatabase.ConnectionString, SalesDetailQueryProjectionSchema.ApplySql,
+            _commandTimeoutSeconds, cancellationToken);
+        await VerifySalesDetailQueryProjectionAsync(cancellationToken);
+    }
+
+    public async Task VerifySalesDetailQueryProjectionAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await SqlServerSchemaMigrationStore.ExecuteReadOnlyBatchAsync(
+                _mainDatabase.ConnectionString, SalesDetailQueryProjectionSchema.VerifySql,
+                _commandTimeoutSeconds, cancellationToken);
+        }
+        catch (SqlException exception) when (exception.Number is >= 51800 and <= 51802)
+        {
+            throw new SalesDetailQueryProjectionSchemaMismatchException();
         }
     }
 

@@ -41,8 +41,8 @@ public partial class SalesDashboardReactService
         public string Type { get; init; } = string.Empty;
         public DateTime Date { get; init; }
         public string Status { get; init; } = string.Empty;
-        public DateTime? LastAggregatedAtUtc { get; init; }
-        public DateTime? CompletedAtUtc { get; init; }
+        public DateTime? LastAggregatedAtUtc { get; set; }
+        public DateTime? CompletedAtUtc { get; set; }
         public string? SourceProductVersion { get; init; }
     }
 
@@ -55,6 +55,11 @@ public partial class SalesDashboardReactService
         public List<SalesDetailReportSqlRow> Products { get; } = new();
         public int ProductTotal { get; set; }
         public SalesDetailDenominator Denominator { get; set; } = new();
+    }
+
+    private sealed class SalesDetailProductCountSqlRow
+    {
+        public int Total { get; init; }
     }
 
     public async Task<ProductReportResponseDto<SalesDetailReportDto>> GetSalesDetailReportAsync(
@@ -142,18 +147,39 @@ public partial class SalesDashboardReactService
         DateRangeDto range, SalesDetailKind kind, List<string>? branches, string? selectedBranchCode,
         string? selectedSupplierCode, string? selectedProductCode, string? search,
         int pageIndex, int pageSize, IReadOnlySet<SalesDetailSection> wanted, CancellationToken cancellationToken)
-        => _context.Db.CurrentConnectionConfig.DbType == SqlSugar.DbType.SqlServer
+    {
+        var sqlServer = _context.Db.CurrentConnectionConfig.DbType == SqlSugar.DbType.SqlServer;
+        if (sqlServer && !string.IsNullOrWhiteSpace(search) && _context.Db.Ado.Transaction == null
+            && (wanted.Contains(SalesDetailSection.Summary) || wanted.Contains(SalesDetailSection.Products))
+            && TryGetSameServerPosmDatabase(out _))
+        {
+            try
+            {
+                return await ReadSalesDetailReportSqlCoreAsync(
+                    range, kind, branches, selectedBranchCode, selectedSupplierCode, selectedProductCode, search,
+                    pageIndex, pageSize, wanted, cancellationToken, useProjection: true);
+            }
+            catch (SqlException ex) when (ex.Number == 51012
+                || (ex.Number == 208 && ex.Message.Contains("SalesDetailQuery", StringComparison.Ordinal)))
+            {
+                // 派生数据尚未覆盖或版本已变化时，关闭旧快照后重新走原查询，绝不混用两版统计。
+                _logger.LogInformation("销售明细查询投影尚未就绪，改用完整事实快照：{Reason}", ex.Number);
+            }
+        }
+        return sqlServer
             ? await ReadSalesDetailReportSqlCoreAsync(
                 range, kind, branches, selectedBranchCode, selectedSupplierCode, selectedProductCode, search,
                 pageIndex, pageSize, wanted, cancellationToken)
             : await ReadReportSnapshotAsync(() => ReadSalesDetailReportSqlCoreAsync(
                 range, kind, branches, selectedBranchCode, selectedSupplierCode, selectedProductCode, search,
                 pageIndex, pageSize, wanted, cancellationToken));
+    }
 
     private async Task<SalesDetailReportRead> ReadSalesDetailReportSqlCoreAsync(
         DateRangeDto range, SalesDetailKind kind, List<string>? branches, string? selectedBranchCode,
         string? selectedSupplierCode, string? selectedProductCode, string? search,
-        int pageIndex, int pageSize, IReadOnlySet<SalesDetailSection> wanted, CancellationToken cancellationToken)
+        int pageIndex, int pageSize, IReadOnlySet<SalesDetailSection> wanted, CancellationToken cancellationToken,
+        bool useProjection = false)
     {
         var sqlServer = _context.Db.CurrentConnectionConfig.DbType == SqlSugar.DbType.SqlServer;
         var direct = TryGetSameServerPosmDatabase(out var posmDatabase);
@@ -173,8 +199,19 @@ public partial class SalesDashboardReactService
         var failed = true;
         try
         {
+            if (useProjection)
+            {
+                // 显式迁移前不让 SQL Server 编译不存在的派生表；实际覆盖仍在下方同一统计快照内核验。
+                await using var capability = connection.CreateCommand();
+                capability.CommandText = "SELECT CASE WHEN OBJECT_ID(N'dbo.SalesDetailQueryDaily',N'U') IS NOT NULL AND OBJECT_ID(N'dbo.SalesDetailQueryProductAlias',N'U') IS NOT NULL AND OBJECT_ID(N'dbo.SalesDetailQueryProjectionState',N'U') IS NOT NULL AND OBJECT_ID(N'dbo.SalesDetailQueryMappingUse',N'U') IS NOT NULL THEN 1 ELSE 0 END;";
+                useProjection = Convert.ToInt32(await capability.ExecuteScalarAsync(cancellationToken)) == 1;
+            }
             await using var command = connection.CreateCommand();
-            command.CommandText = BuildSalesDetailReportSql(
+            command.CommandText = useProjection
+                ? BuildSalesDetailReportSqlServerCore(
+                    posmDatabase, range, kind, branches, selectedBranchCode, selectedSupplierCode,
+                    selectedProductCode, search, pageIndex, pageSize, wanted, fallbackMap, useProjection: true, compressOutput: true)
+                : BuildSalesDetailReportSql(
                     sqlServer, direct ? posmDatabase : null, range, kind, branches, selectedBranchCode,
                     selectedSupplierCode, selectedProductCode, search, pageIndex, pageSize, wanted, fallbackMap);
             if (ownsTransaction)
@@ -222,30 +259,58 @@ public partial class SalesDashboardReactService
             var read = new SalesDetailReportRead();
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
             var firstResultAt = elapsed.ElapsedMilliseconds;
-            while (await reader.ReadAsync(cancellationToken))
-                read.Status.Add(new SalesDetailReportStatusSqlRow { Type = S(reader, 0), Date = D(reader, 1), Status = S(reader, 2), LastAggregatedAtUtc = ND(reader, 3), CompletedAtUtc = ND(reader, 4), SourceProductVersion = NS(reader, 5) });
-            await NextResult();
-            if (await reader.ReadAsync(cancellationToken)) read.Summary = ReadSectionRow(reader);
-            await NextResult();
-            await ReadRowsAsync(reader, read.Suppliers, cancellationToken);
-            await NextResult();
-            await ReadRowsAsync(reader, read.Branches, cancellationToken);
-            await NextResult();
-            await ReadRowsAsync(reader, read.Products, cancellationToken);
-            await NextResult();
-            if (await reader.ReadAsync(cancellationToken)) read.ProductTotal = I(reader, 0);
-            await NextResult();
-            if (await reader.ReadAsync(cancellationToken))
+            if (useProjection)
             {
-                read.Denominator = new SalesDetailDenominator { AllRevenue = M(reader, 0), ChinaRevenue = M(reader, 1), CompareAllRevenue = M(reader, 2), CompareChinaRevenue = M(reader, 3) };
+                // 状态与各栏按结果集压缩传输，避免大量小行跨服务器往返；空结果仍是明确的 []。
+                read.Status.AddRange(await ReadCompressedRevenueRowsAsync<SalesDetailReportStatusSqlRow>(reader, cancellationToken));
+                // SQL JSON 的 datetime2 不含时区，与原数据读取器一样明确按 UTC 解释。
+                foreach (var state in read.Status)
+                {
+                    if (state.LastAggregatedAtUtc is DateTime aggregated)
+                        state.LastAggregatedAtUtc = DateTime.SpecifyKind(aggregated, DateTimeKind.Utc);
+                    if (state.CompletedAtUtc is DateTime completed)
+                        state.CompletedAtUtc = DateTime.SpecifyKind(completed, DateTimeKind.Utc);
+                }
+                await NextResult();
+                read.Summary = (await ReadCompressedRevenueRowsAsync<SalesDetailReportSqlRow>(reader, cancellationToken)).SingleOrDefault();
+                await NextResult();
+                read.Suppliers.AddRange(await ReadCompressedRevenueRowsAsync<SalesDetailReportSqlRow>(reader, cancellationToken));
+                await NextResult();
+                read.Branches.AddRange(await ReadCompressedRevenueRowsAsync<SalesDetailReportSqlRow>(reader, cancellationToken));
+                await NextResult();
+                read.Products.AddRange(await ReadCompressedRevenueRowsAsync<SalesDetailReportSqlRow>(reader, cancellationToken));
+                await NextResult();
+                read.ProductTotal = (await ReadCompressedRevenueRowsAsync<SalesDetailProductCountSqlRow>(reader, cancellationToken)).Single().Total;
+                await NextResult();
+                read.Denominator = (await ReadCompressedRevenueRowsAsync<SalesDetailDenominator>(reader, cancellationToken)).Single();
+            }
+            else
+            {
+                while (await reader.ReadAsync(cancellationToken))
+                    read.Status.Add(new SalesDetailReportStatusSqlRow { Type = S(reader, 0), Date = D(reader, 1), Status = S(reader, 2), LastAggregatedAtUtc = ND(reader, 3), CompletedAtUtc = ND(reader, 4), SourceProductVersion = NS(reader, 5) });
+                await NextResult();
+                if (await reader.ReadAsync(cancellationToken)) read.Summary = ReadSectionRow(reader);
+                await NextResult();
+                await ReadRowsAsync(reader, read.Suppliers, cancellationToken);
+                await NextResult();
+                await ReadRowsAsync(reader, read.Branches, cancellationToken);
+                await NextResult();
+                await ReadRowsAsync(reader, read.Products, cancellationToken);
+                await NextResult();
+                if (await reader.ReadAsync(cancellationToken)) read.ProductTotal = I(reader, 0);
+                await NextResult();
+                if (await reader.ReadAsync(cancellationToken))
+                {
+                    read.Denominator = new SalesDetailDenominator { AllRevenue = M(reader, 0), ChinaRevenue = M(reader, 1), CompareAllRevenue = M(reader, 2), CompareChinaRevenue = M(reader, 3) };
+                }
             }
             // 必须消费命令尾部，确认 COMMIT 成功后才能向页面发布这一版统计。
             while (await reader.NextResultAsync(cancellationToken))
                 while (await reader.ReadAsync(cancellationToken)) { }
             failed = false;
             _logger.LogInformation(
-                "销售明细统计批次读取完成：连接 {OpenMs}ms，首结果 {FirstResultMs}ms，读取结果 {ReadMs}ms，共 {TotalMs}ms",
-                openedAt, firstResultAt - openedAt, elapsed.ElapsedMilliseconds - firstResultAt, elapsed.ElapsedMilliseconds);
+                "销售明细统计批次读取完成：连接 {OpenMs}ms，首结果 {FirstResultMs}ms，读取结果 {ReadMs}ms，共 {TotalMs}ms，日投影 {Projection}",
+                openedAt, firstResultAt - openedAt, elapsed.ElapsedMilliseconds - firstResultAt, elapsed.ElapsedMilliseconds, useProjection);
             return read;
 
             async Task NextResult()
@@ -345,10 +410,23 @@ public partial class SalesDashboardReactService
         IReadOnlyCollection<string>? branches, string? selectedBranch, string? selectedSupplier, string? selectedProduct,
         string? search, int pageIndex, int pageSize, IReadOnlySet<SalesDetailSection> wanted,
         IReadOnlyDictionary<string, string>? fallbackMap)
+        => BuildSalesDetailReportSqlServerCore(posmDatabase, range, kind, branches, selectedBranch,
+            selectedSupplier, selectedProduct, search, pageIndex, pageSize, wanted, fallbackMap, useProjection: false);
+
+    private static string BuildSalesDetailReportSqlServerCore(
+        string? posmDatabase, DateRangeDto range, SalesDetailKind kind,
+        IReadOnlyCollection<string>? branches, string? selectedBranch, string? selectedSupplier, string? selectedProduct,
+        string? search, int pageIndex, int pageSize, IReadOnlySet<SalesDetailSection> wanted,
+        IReadOnlyDictionary<string, string>? fallbackMap, bool useProjection, bool compressOutput = false)
     {
         var hasCompare = HasCompare(range);
         var sourceBranch = branches is { Count: > 0 }
             ? $" AND s.[BranchCode] IN ({string.Join(",", branches.Select((_, i) => $"@sdrBranch{i}"))})"
+            : string.Empty;
+        // 商品抽屉只请求分店栏，可在聚合前缩小事实范围；全量报表仍保留其他商品候选和供应商分母。
+        var sourceProduct = wanted.Count == 1 && wanted.Contains(SalesDetailSection.Branches)
+            && !string.IsNullOrWhiteSpace(selectedProduct)
+            ? " AND LTRIM(RTRIM(s.[ProductCode])) = @sdrSelectedProduct"
             : string.Empty;
         var fallbackRows = fallbackMap is { Count: > 0 }
             ? string.Join(" UNION ALL ", fallbackMap.Select(item =>
@@ -357,8 +435,10 @@ public partial class SalesDashboardReactService
         var mapping = posmDatabase == null && fallbackRows.Length == 0
             ? "CAST(NULL AS nvarchar(50))"
             : "m.[ChinaSupplierCode]";
+        // 候选日事实的商品码为 nvarchar，映射为 varchar；哈希连接避免每条事实因类型转换重扫映射表。
+        var mappingJoin = useProjection ? "LEFT HASH JOIN" : "LEFT JOIN";
         var joinMapping = posmDatabase != null
-            ? $"LEFT JOIN {QuoteIdentifier(posmDatabase)}.[dbo].[posm_product_supplier_mapping] m ON m.[ProductCode] = LTRIM(RTRIM(s.[ProductCode])) AND m.[LocalSupplierCode] = '200' AND m.[IsDeleted] = 0"
+            ? $"{mappingJoin} {QuoteIdentifier(posmDatabase)}.[dbo].[posm_product_supplier_mapping] m ON m.[ProductCode] = LTRIM(RTRIM(s.[ProductCode])) AND m.[LocalSupplierCode] = '200' AND m.[IsDeleted] = 0"
             : fallbackRows.Length > 0
                 ? $"LEFT JOIN ({fallbackRows}) m ON m.[ProductCode] = LTRIM(RTRIM(s.[ProductCode]))"
                 : string.Empty;
@@ -372,6 +452,8 @@ public partial class SalesDashboardReactService
             : string.Empty;
         var tokens = search?.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Distinct(StringComparer.OrdinalIgnoreCase).ToArray() ?? Array.Empty<string>();
+        // 多词候选的聚合工作量较大，将这些语句的并行度限制为 4；不修改服务器全局配置。
+        var projectionQueryHint = useProjection && tokens.Length > 1 ? " OPTION(MAXDOP 4)" : string.Empty;
         // 先只按事实主键聚合数值和统计表商品名/条码；商品、门店、供应商的宽字段延后到各栏位查询。
         var wideFacts = $"""
 WITH Periods AS
@@ -390,12 +472,12 @@ WITH Periods AS
         LTRIM(RTRIM(COALESCE(s.[BranchCode],''))) [BranchCode], LTRIM(RTRIM(COALESCE(s.[ProductCode],''))) [ProductCode],
         s.[ProductName] [StatisticProductName], s.[Barcode] [StatisticBarcode],
         s.[TotalQuantity], s.[TotalAmount], s.[OrderCount], s.[GrossProfit], s.[TotalCost]
- FROM [ProductStoreDailySalesStatistic] s
+ FROM [{(useProjection ? "#SalesDetailCandidateSource" : "ProductStoreDailySalesStatistic")}] s
  CROSS JOIN Periods periods
  {joinMapping}
  LEFT JOIN (SELECT [SupplierCode] FROM [ChinaSupplier] WHERE [SupplierCode] IS NOT NULL AND [SupplierCode]<>'' GROUP BY [SupplierCode]) cs
    ON cs.[SupplierCode]=LTRIM(RTRIM(s.[SupplierCode]))
- WHERE s.[Date]>=periods.[StartDate] AND s.[Date]<periods.[EndDate]{sourceBranch}
+ WHERE s.[Date]>=periods.[StartDate] AND s.[Date]<periods.[EndDate]{sourceBranch}{sourceProduct}
 ), NarrowFacts AS
 (
  SELECT [Period], [RawSupplierCode], [ChinaSupplierCode], [AustralianSupplierCode], [BranchCode], [ProductCode],
@@ -410,7 +492,7 @@ SELECT [Period], [RawSupplierCode], [ChinaSupplierCode], [AustralianSupplierCode
        [StatisticProductName], [StatisticBarcode], [Revenue], [Quantity], [OrderCount], [GrossProfit],
        [StatisticRowCount], [CostedRowCount], [GrossProfitRowCount]
 INTO #SalesDetailFacts
-FROM NarrowFacts;
+FROM NarrowFacts{projectionQueryHint};
 """;
         // 首屏没有关键词时先压缩商品事实，再解析供应商归属；映射连接因此只面对聚合后的键。
         var rawMapping = joinMapping.Replace("s.[ProductCode]", "r.[ProductCode]", StringComparison.Ordinal);
@@ -431,7 +513,7 @@ WITH Periods AS
         COUNT(s.[GrossProfit]) [GrossProfitRowCount]
  FROM [ProductStoreDailySalesStatistic] s
  CROSS JOIN Periods periods
- WHERE s.[Date]>=periods.[StartDate] AND s.[Date]<periods.[EndDate]{sourceBranch}
+ WHERE s.[Date]>=periods.[StartDate] AND s.[Date]<periods.[EndDate]{sourceBranch}{sourceProduct}
  GROUP BY periods.[Period], LTRIM(RTRIM(COALESCE(s.[SupplierCode],''))),
           LTRIM(RTRIM(COALESCE(s.[BranchCode],''))), LTRIM(RTRIM(COALESCE(s.[ProductCode],'')))
 ), ResolvedFacts AS
@@ -458,8 +540,8 @@ FROM ResolvedFacts;
 """;
         var facts = tokens.Length == 0 ? rawFacts : wideFacts;
 
-        var wideFactRows = """
-SELECT f.[Period], f.[RawSupplierCode], f.[ChinaSupplierCode], f.[AustralianSupplierCode], f.[BranchCode], f.[ProductCode],
+        string buildWideFactRows(string source, bool includeBounds = false) => $"""
+SELECT {(includeBounds ? "f.[MinProductCode], f.[MaxProductCode]," : string.Empty)} f.[Period], f.[RawSupplierCode], f.[ChinaSupplierCode], f.[AustralianSupplierCode], f.[BranchCode], f.[ProductCode],
        f.[StatisticProductName], f.[StatisticBarcode], f.[Revenue], f.[Quantity], f.[OrderCount], f.[GrossProfit],
        f.[StatisticRowCount], f.[CostedRowCount], f.[GrossProfitRowCount],
        CASE WHEN @sdrKind=1 THEN
@@ -472,13 +554,15 @@ SELECT f.[Period], f.[RawSupplierCode], f.[ChinaSupplierCode], f.[AustralianSupp
        CAST(NULL AS nvarchar(200)) [EnglishName], CAST(NULL AS nvarchar(50)) [ItemNumber],
        CAST(NULL AS nvarchar(200)) [ProductImage], CAST(NULL AS nvarchar(50)) [ProductBarcode],
        CASE WHEN @sdrKind=1 THEN f.[ChinaSupplierCode] ELSE f.[AustralianSupplierCode] END [SupplierCode]
-FROM [#SalesDetailFacts] f
+FROM [{source}] f
 LEFT JOIN (SELECT [SupplierCode], MAX([SupplierName]) [SupplierName]
            FROM [ChinaSupplier] WHERE [SupplierCode] IS NOT NULL AND [SupplierCode]<>'' GROUP BY [SupplierCode]) china
   ON china.[SupplierCode]=f.[ChinaSupplierCode]
 LEFT JOIN [LocalSupplier] local ON local.[LocalSupplierCode]=CASE WHEN @sdrKind=1 THEN f.[RawSupplierCode] ELSE f.[AustralianSupplierCode] END AND local.[IsDeleted]=0
 LEFT JOIN [Store] store ON store.[StoreCode]=f.[BranchCode]
 """;
+        var wideFactRows = buildWideFactRows("#SalesDetailFacts");
+        var projectedFactRows = buildWideFactRows("#SalesDetailProjectionTotals", includeBounds: true);
         // 无关键词时，目录名称只从窄事实的 distinct 供应商/分店键解析一次；搜索路径保留完整名称连接，避免改变搜索口径。
         var narrowFactRows = """
 SELECT f.[Period], f.[RawSupplierCode], f.[ChinaSupplierCode], f.[AustralianSupplierCode], f.[BranchCode], f.[ProductCode],
@@ -492,35 +576,93 @@ SELECT f.[Period], f.[RawSupplierCode], f.[ChinaSupplierCode], f.[AustralianSupp
 FROM [#SalesDetailFacts] f
 """;
         var factRows = tokens.Length == 0 ? narrowFactRows : wideFactRows;
+        // 商品资料的模糊匹配每个关键词只做一次，避免每条分店事实及每个结果集反复扫描 Product。
+        // 保留按关键词独立的命中集合，让多个关键词仍可分别命中统计名称、供应商和商品资料。
+        var needsProductSearch = tokens.Length > 0
+            && (wanted.Contains(SalesDetailSection.Summary) || wanted.Contains(SalesDetailSection.Products));
+        var candidateToken = tokens.Length > 0
+            ? Enumerable.Range(0, tokens.Length).OrderByDescending(i => tokens[i].Length).First() : 0;
+        var initialProductTokens = Enumerable.Range(0, tokens.Length)
+            .Where(i => !useProjection || i == candidateToken);
+        string productTokenMatch(string table, int i) =>
+            $"SELECT pSearch.[ProductCode], {i} [TokenIndex] FROM [{table}] pSearch WHERE pSearch.[ProductCode] IS NOT NULL AND (pSearch.[Barcode] LIKE @sdrSearch{i} OR pSearch.[ProductName] LIKE @sdrSearch{i} OR pSearch.[EnglishName] LIKE @sdrSearch{i} OR pSearch.[ItemNumber] LIKE @sdrSearch{i} OR pSearch.[LocalSupplierCode] LIKE @sdrSearch{i})";
+        var productSearchMatches = needsProductSearch
+            ? "SELECT DISTINCT [ProductCode], [TokenIndex] INTO #SalesDetailProductSearchMatches FROM ("
+                + string.Join(" UNION ALL ", initialProductTokens.Select(i => productTokenMatch("Product", i)))
+                + ") matches" + projectionQueryHint + ";"
+            : string.Empty;
+        var remainingTokenIndexes = Enumerable.Range(0, tokens.Length).Where(i => i != candidateToken).ToArray();
+        // 候选键在外侧，逐键读取同码的全部当前资料；命中集合按词去重，重复资料不会放大销售数值。
+        string readRemainingProductMatches(string source, string metadataTable) => $"""
+SELECT pSearch.[ProductCode],pSearch.[Barcode],pSearch.[ProductName],pSearch.[EnglishName],pSearch.[ItemNumber],pSearch.[LocalSupplierCode]
+INTO {metadataTable}
+FROM (SELECT DISTINCT LTRIM(RTRIM([ProductCode])) [ProductCode] FROM {source}) known
+INNER LOOP JOIN dbo.Product pSearch ON pSearch.[ProductCode]=known.[ProductCode];
+INSERT INTO #SalesDetailProductSearchMatches
+SELECT DISTINCT [ProductCode],[TokenIndex] FROM (
+""" + string.Join(" UNION ALL ", remainingTokenIndexes.Select(i => productTokenMatch(metadataTable, i)))
+                + $") matches;DROP TABLE {metadataTable};";
+        // 没有供应商整段事实待读时，资料匹配可提前到候选商品；否则维持事实读取后的完整匹配。
+        var candidateRefinement = useProjection && tokens.Length > 1
+            ? "IF NOT EXISTS (SELECT 1 FROM #SalesDetailCandidateSuppliers) BEGIN\n"
+                + readRemainingProductMatches("#SalesDetailCandidateProducts", "#SalesDetailEarlyProductMetadata")
+                + BuildSalesDetailProjectionRefinementSql(remainingTokenIndexes, selectedProduct) + "\nEND;"
+            : string.Empty;
+        var remainingProductMatches = useProjection && tokens.Length > 1
+            ? "IF EXISTS (SELECT 1 FROM #SalesDetailCandidateSuppliers) BEGIN\n"
+                + readRemainingProductMatches("#SalesDetailCandidateSource", "#SalesDetailLateProductMetadata") + "\nEND;"
+            : string.Empty;
+        var supplierSearchMatches = needsProductSearch
+            ? "SELECT DISTINCT [SupplierCode], [TokenIndex] INTO #SalesDetailSupplierSearchMatches FROM ("
+                + string.Join(" UNION ALL ", tokens.Select((_, i) =>
+                    $"SELECT cSearch.[SupplierCode], {i} [TokenIndex] FROM [ChinaSupplier] cSearch WHERE cSearch.[SupplierCode] IS NOT NULL AND (cSearch.[SupplierCode] LIKE @sdrSearch{i} OR cSearch.[SupplierName] LIKE @sdrSearch{i})"))
+                + ") matches;"
+            : string.Empty;
+        // 唯一命中键用连接复用，避免 OR 内的相关 EXISTS 被逐条执行，也避免重复资料放大销售数值。
+        var searchJoins = string.Join("\n", tokens.Select((_, i) =>
+            $"LEFT JOIN #SalesDetailProductSearchMatches pMatch{i} ON pMatch{i}.[ProductCode]=f.[ProductCode] AND pMatch{i}.[TokenIndex]={i}\nLEFT JOIN #SalesDetailSupplierSearchMatches cMatch{i} ON cMatch{i}.[SupplierCode]=f.[ChinaSupplierCode] AND cMatch{i}.[TokenIndex]={i}"));
         var searchFilter = string.Join(" AND ", tokens.Select((_, i) =>
-            $"(f.[ProductCode] LIKE @sdrSearch{i} OR f.[StatisticBarcode] LIKE @sdrSearch{i} OR f.[ProductName] LIKE @sdrSearch{i} OR f.[RawSupplierCode] LIKE @sdrSearch{i} OR f.[SupplierCode] LIKE @sdrSearch{i} OR f.[SupplierName] LIKE @sdrSearch{i} OR EXISTS (SELECT 1 FROM [Product] pSearch WHERE pSearch.[ProductCode]=f.[ProductCode] AND (pSearch.[Barcode] LIKE @sdrSearch{i} OR pSearch.[ProductName] LIKE @sdrSearch{i} OR pSearch.[EnglishName] LIKE @sdrSearch{i} OR pSearch.[ItemNumber] LIKE @sdrSearch{i} OR pSearch.[LocalSupplierCode] LIKE @sdrSearch{i})) OR EXISTS (SELECT 1 FROM [ChinaSupplier] cSearch WHERE cSearch.[SupplierCode]=f.[ChinaSupplierCode] AND (cSearch.[SupplierCode] LIKE @sdrSearch{i} OR cSearch.[SupplierName] LIKE @sdrSearch{i})))"));
-        if (searchFilter.Length > 0) searchFilter = " AND " + searchFilter;
+            $"(f.[ProductCode] LIKE @sdrSearch{i} OR f.[StatisticBarcode] LIKE @sdrSearch{i} OR f.[ProductName] LIKE @sdrSearch{i} OR f.[RawSupplierCode] LIKE @sdrSearch{i} OR f.[SupplierCode] LIKE @sdrSearch{i} OR f.[SupplierName] LIKE @sdrSearch{i} OR pMatch{i}.[ProductCode] IS NOT NULL OR cMatch{i}.[SupplierCode] IS NOT NULL)"));
+        // 汇总、商品分页和商品总数共用同一份筛选事实，搜索与目录连接只执行一次。
+        var searchFacts = needsProductSearch
+            ? $"SELECT f.* INTO #SalesDetailSearchFacts FROM ({factRows}) f {searchJoins} WHERE {searchFilter}{projectionQueryHint};"
+            : string.Empty;
+        var searchedFactRows = tokens.Length == 0 ? factRows : "SELECT * FROM #SalesDetailSearchFacts";
         var baseSupplier = $"WHERE [SupplierCode] IS NOT NULL{selectedBranchFilter}{productFilter}";
         var baseBranch = $"WHERE [SupplierCode] IS NOT NULL{authorizedBranchFilter}{supplierFilter}{productFilter}";
-        var baseProduct = $"WHERE [SupplierCode] IS NOT NULL{selectedBranchFilter}{supplierFilter}{searchFilter}";
-        var baseSummary = $"WHERE [SupplierCode] IS NOT NULL{selectedBranchFilter}{supplierFilter}{productFilter}{searchFilter}";
-        var productMultiplicity = (string period) => $"CASE WHEN MIN(CASE WHEN [Period]={period} THEN [ProductCode] END) IS NULL THEN 0 WHEN MIN(CASE WHEN [Period]={period} THEN [ProductCode] END) = MAX(CASE WHEN [Period]={period} THEN [ProductCode] END) THEN 1 ELSE 2 END";
+        var baseProduct = $"WHERE [SupplierCode] IS NOT NULL{selectedBranchFilter}{supplierFilter}";
+        var baseSummary = $"WHERE [SupplierCode] IS NOT NULL{selectedBranchFilter}{supplierFilter}{productFilter}";
+        string productMultiplicity(string period, bool projected = false)
+        {
+            var min = projected ? "MinProductCode" : "ProductCode";
+            var max = projected ? "MaxProductCode" : "ProductCode";
+            return $"CASE WHEN MIN(CASE WHEN [Period]={period} THEN [{min}] END) IS NULL THEN 0 WHEN MIN(CASE WHEN [Period]={period} THEN [{min}] END) = MAX(CASE WHEN [Period]={period} THEN [{max}] END) THEN 1 ELSE 2 END";
+        }
         var supplierName = tokens.Length == 0
             ? $"CASE WHEN @sdrKind=1 THEN COALESCE(NULLIF(LTRIM(RTRIM((SELECT MAX(cName.[SupplierName]) FROM [ChinaSupplier] cName WHERE cName.[SupplierCode]=f.[SupplierCode]))), ''), f.[SupplierCode]) ELSE COALESCE(NULLIF(LTRIM(RTRIM((SELECT MAX(lName.[Name]) FROM [LocalSupplier] lName WHERE lName.[LocalSupplierCode]=f.[SupplierCode] AND lName.[IsDeleted]=0))), ''), CASE WHEN f.[SupplierCode]='{CHINA_LOCAL_SUPPLIER_CODE}' THEN '{CHINA_LOCAL_SUPPLIER_FALLBACK_NAME}' ELSE f.[SupplierCode] END) END"
             : "MAX([SupplierName])";
         var branchName = tokens.Length == 0
             ? "COALESCE(NULLIF(LTRIM(RTRIM((SELECT MAX(sName.[StoreName]) FROM [Store] sName WHERE sName.[StoreCode]=f.[BranchCode]))), ''), f.[BranchCode])"
             : "MAX([BranchName])";
-        string rowSelect(string source, string whereClause, string group, string code, string name, string order, string page = "") => $"""
+        // 空事实仍返回一行汇总，计数必须为 0 才符合压缩 JSON 的非空整数契约；利润继续保留 NULL。
+        string rowSelect(string source, string whereClause, string group, string code, string name, string order, string page = "", bool projected = false) => $"""
 SELECT {code} [Code], {name} [Name], MAX([ItemNumber]) [ItemNumber], MAX([ProductImage]) [ProductImage],
  COALESCE(SUM(CASE WHEN [Period]=0 THEN [Revenue] ELSE 0 END),0) [Revenue], {(hasCompare ? "COALESCE(SUM(CASE WHEN [Period]=1 THEN [Revenue] ELSE 0 END),0)" : "0")} [CompareRevenue],
  COALESCE(SUM(CASE WHEN [Period]=0 THEN [Quantity] ELSE 0 END),0) [Quantity], {(hasCompare ? "COALESCE(SUM(CASE WHEN [Period]=1 THEN [Quantity] ELSE 0 END),0)" : "0")} [CompareQuantity],
  COALESCE(SUM(CASE WHEN [Period]=0 THEN [OrderCount] ELSE 0 END),0) [OrderCount], {(hasCompare ? "COALESCE(SUM(CASE WHEN [Period]=1 THEN [OrderCount] ELSE 0 END),0)" : "0")} [CompareOrderCount],
  SUM(CASE WHEN [Period]=0 THEN [GrossProfit] END) [GrossProfit], {(hasCompare ? "SUM(CASE WHEN [Period]=1 THEN [GrossProfit] END)" : "CAST(NULL AS decimal(18,2))")} [CompareGrossProfit],
- SUM(CASE WHEN [Period]=0 THEN [StatisticRowCount] ELSE 0 END) [StatisticRowCount], SUM(CASE WHEN [Period]=0 THEN [CostedRowCount] ELSE 0 END) [CostedRowCount], SUM(CASE WHEN [Period]=0 THEN [GrossProfitRowCount] ELSE 0 END) [GrossProfitRowCount],
- {(hasCompare ? "SUM(CASE WHEN [Period]=1 THEN [StatisticRowCount] ELSE 0 END)" : "0")} [CompareStatisticRowCount], {(hasCompare ? "SUM(CASE WHEN [Period]=1 THEN [CostedRowCount] ELSE 0 END)" : "0")} [CompareCostedRowCount], {(hasCompare ? "SUM(CASE WHEN [Period]=1 THEN [GrossProfitRowCount] ELSE 0 END)" : "0")} [CompareGrossProfitRowCount],
- {productMultiplicity("0")} [CurrentProductCount], {(hasCompare ? productMultiplicity("1") : "0")} [CompareProductCount]
+ COALESCE(SUM(CASE WHEN [Period]=0 THEN [StatisticRowCount] ELSE 0 END),0) [StatisticRowCount], COALESCE(SUM(CASE WHEN [Period]=0 THEN [CostedRowCount] ELSE 0 END),0) [CostedRowCount], COALESCE(SUM(CASE WHEN [Period]=0 THEN [GrossProfitRowCount] ELSE 0 END),0) [GrossProfitRowCount],
+ {(hasCompare ? "COALESCE(SUM(CASE WHEN [Period]=1 THEN [StatisticRowCount] ELSE 0 END),0)" : "0")} [CompareStatisticRowCount], {(hasCompare ? "COALESCE(SUM(CASE WHEN [Period]=1 THEN [CostedRowCount] ELSE 0 END),0)" : "0")} [CompareCostedRowCount], {(hasCompare ? "COALESCE(SUM(CASE WHEN [Period]=1 THEN [GrossProfitRowCount] ELSE 0 END),0)" : "0")} [CompareGrossProfitRowCount],
+ {productMultiplicity("0", projected)} [CurrentProductCount], {(hasCompare ? productMultiplicity("1", projected) : "0")} [CompareProductCount]
 FROM ({source}) f {whereClause}
 {(string.IsNullOrWhiteSpace(group) ? "" : $"GROUP BY {group}")} {order} {page};
 """;
-        var summary = rowSelect(factRows, baseSummary, "", "'summary'", "'当前筛选汇总'", "");
-        var suppliers = rowSelect(factRows, baseSupplier, "[SupplierCode]", "[SupplierCode]", supplierName, "ORDER BY [Revenue] DESC, [CompareRevenue] DESC, [Code] ASC");
-        var branchesSql = rowSelect(factRows, baseBranch, "[BranchCode]", "[BranchCode]", branchName, "ORDER BY [Revenue] DESC, [CompareRevenue] DESC, [Code] ASC");
+        var summary = rowSelect(searchedFactRows, baseSummary, "", "'summary'", "'当前筛选汇总'", "");
+        // 关键词不改变供应商/分店的统计范围；未选商品时直接合并小的日投影。
+        var useProjectedColumns = useProjection && string.IsNullOrWhiteSpace(selectedProduct);
+        var columnFacts = useProjectedColumns ? projectedFactRows : factRows;
+        var suppliers = rowSelect(columnFacts, baseSupplier, "[SupplierCode]", "[SupplierCode]", supplierName, "ORDER BY [Revenue] DESC, [CompareRevenue] DESC, [Code] ASC", projected: useProjectedColumns);
+        var branchesSql = rowSelect(columnFacts, baseBranch, "[BranchCode]", "[BranchCode]", branchName, "ORDER BY [Revenue] DESC, [CompareRevenue] DESC, [Code] ASC", projected: useProjectedColumns);
         var offset = ((long)pageIndex - 1L) * pageSize;
         var productAggregate = $"""
 SELECT [ProductCode], MAX([StatisticProductName]) [StatisticProductName],
@@ -531,7 +673,7 @@ SELECT [ProductCode], MAX([StatisticProductName]) [StatisticProductName],
        SUM(CASE WHEN [Period]=0 THEN [StatisticRowCount] ELSE 0 END) [StatisticRowCount], SUM(CASE WHEN [Period]=0 THEN [CostedRowCount] ELSE 0 END) [CostedRowCount], SUM(CASE WHEN [Period]=0 THEN [GrossProfitRowCount] ELSE 0 END) [GrossProfitRowCount],
        {(hasCompare ? "SUM(CASE WHEN [Period]=1 THEN [StatisticRowCount] ELSE 0 END)" : "0")} [CompareStatisticRowCount], {(hasCompare ? "SUM(CASE WHEN [Period]=1 THEN [CostedRowCount] ELSE 0 END)" : "0")} [CompareCostedRowCount], {(hasCompare ? "SUM(CASE WHEN [Period]=1 THEN [GrossProfitRowCount] ELSE 0 END)" : "0")} [CompareGrossProfitRowCount],
        {productMultiplicity("0")} [CurrentProductCount], {(hasCompare ? productMultiplicity("1") : "0")} [CompareProductCount]
-FROM ({factRows}) f {baseProduct}
+FROM ({searchedFactRows}) f {baseProduct}
 GROUP BY [ProductCode]
 """;
         var statBranchFilter = branches is { Count: > 0 }
@@ -599,8 +741,8 @@ SELECT {code} [Code], {name} [Name], CAST(NULL AS nvarchar(50)) [ItemNumber], CA
  COALESCE(SUM(CASE WHEN [Period]=0 THEN [Quantity] ELSE 0 END),0) [Quantity], {(hasCompare ? "COALESCE(SUM(CASE WHEN [Period]=1 THEN [Quantity] ELSE 0 END),0)" : "0")} [CompareQuantity],
  COALESCE(SUM(CASE WHEN [Period]=0 THEN [OrderCount] ELSE 0 END),0) [OrderCount], {(hasCompare ? "COALESCE(SUM(CASE WHEN [Period]=1 THEN [OrderCount] ELSE 0 END),0)" : "0")} [CompareOrderCount],
  SUM(CASE WHEN [Period]=0 THEN [GrossProfit] END) [GrossProfit], {(hasCompare ? "SUM(CASE WHEN [Period]=1 THEN [GrossProfit] END)" : "CAST(NULL AS decimal(18,2))")} [CompareGrossProfit],
- SUM(CASE WHEN [Period]=0 THEN [StatisticRowCount] ELSE 0 END) [StatisticRowCount], SUM(CASE WHEN [Period]=0 THEN [CostedRowCount] ELSE 0 END) [CostedRowCount], SUM(CASE WHEN [Period]=0 THEN [GrossProfitRowCount] ELSE 0 END) [GrossProfitRowCount],
- {(hasCompare ? "SUM(CASE WHEN [Period]=1 THEN [StatisticRowCount] ELSE 0 END)" : "0")} [CompareStatisticRowCount], {(hasCompare ? "SUM(CASE WHEN [Period]=1 THEN [CostedRowCount] ELSE 0 END)" : "0")} [CompareCostedRowCount], {(hasCompare ? "SUM(CASE WHEN [Period]=1 THEN [GrossProfitRowCount] ELSE 0 END)" : "0")} [CompareGrossProfitRowCount],
+ COALESCE(SUM(CASE WHEN [Period]=0 THEN [StatisticRowCount] ELSE 0 END),0) [StatisticRowCount], COALESCE(SUM(CASE WHEN [Period]=0 THEN [CostedRowCount] ELSE 0 END),0) [CostedRowCount], COALESCE(SUM(CASE WHEN [Period]=0 THEN [GrossProfitRowCount] ELSE 0 END),0) [GrossProfitRowCount],
+ {(hasCompare ? "COALESCE(SUM(CASE WHEN [Period]=1 THEN [StatisticRowCount] ELSE 0 END),0)" : "0")} [CompareStatisticRowCount], {(hasCompare ? "COALESCE(SUM(CASE WHEN [Period]=1 THEN [CostedRowCount] ELSE 0 END),0)" : "0")} [CompareCostedRowCount], {(hasCompare ? "COALESCE(SUM(CASE WHEN [Period]=1 THEN [GrossProfitRowCount] ELSE 0 END),0)" : "0")} [CompareGrossProfitRowCount],
  CASE WHEN MIN([CurrentProductMinCode]) IS NULL THEN 0 WHEN MIN([CurrentProductMinCode])=MAX([CurrentProductMaxCode]) THEN 1 ELSE 2 END [CurrentProductCount],
  CASE WHEN MIN([CompareProductMinCode]) IS NULL THEN 0 WHEN MIN([CompareProductMinCode])=MAX([CompareProductMaxCode]) THEN 1 ELSE 2 END [CompareProductCount]
 FROM #SalesDetailAggregates f
@@ -637,13 +779,15 @@ ORDER BY a.[Quantity] DESC, a.[CompareQuantity] DESC, a.[ProductCode] ASC;
         var emptyRows = "SELECT TOP 0 CAST(NULL AS nvarchar(50)) [Code], CAST(NULL AS nvarchar(200)) [Name], CAST(NULL AS nvarchar(50)) [ItemNumber], CAST(NULL AS nvarchar(200)) [ProductImage], CAST(0 AS decimal(18,2)) [Revenue], CAST(0 AS decimal(18,2)) [CompareRevenue], CAST(0 AS int) [Quantity], CAST(0 AS int) [CompareQuantity], CAST(0 AS int) [OrderCount], CAST(0 AS int) [CompareOrderCount], CAST(NULL AS decimal(18,2)) [GrossProfit], CAST(NULL AS decimal(18,2)) [CompareGrossProfit], CAST(0 AS int) [StatisticRowCount], CAST(0 AS int) [CostedRowCount], CAST(0 AS int) [GrossProfitRowCount], CAST(0 AS int) [CompareStatisticRowCount], CAST(0 AS int) [CompareCostedRowCount], CAST(0 AS int) [CompareGrossProfitRowCount], CAST(0 AS int) [CurrentProductCount], CAST(0 AS int) [CompareProductCount];";
         var emptyCount = "SELECT 0;";
         var productCount = $"SELECT COUNT(*) FROM ({productAggregate}) x;";
-        var denominator = $"SELECT COALESCE(SUM(CASE WHEN [Period]=0 AND [AustralianSupplierCode] IS NOT NULL THEN [Revenue] ELSE 0 END),0), COALESCE(SUM(CASE WHEN [Period]=0 AND [ChinaSupplierCode] IS NOT NULL THEN [Revenue] ELSE 0 END),0), COALESCE(SUM(CASE WHEN [Period]=1 AND [AustralianSupplierCode] IS NOT NULL THEN [Revenue] ELSE 0 END),0), COALESCE(SUM(CASE WHEN [Period]=1 AND [ChinaSupplierCode] IS NOT NULL THEN [Revenue] ELSE 0 END),0) FROM ({factRows}) f WHERE [AustralianSupplierCode] IS NOT NULL{selectedBranchFilter};";
+        var denominatorFacts = useProjection ? projectedFactRows : factRows;
+        var denominator = $"SELECT COALESCE(SUM(CASE WHEN [Period]=0 AND [AustralianSupplierCode] IS NOT NULL THEN [Revenue] ELSE 0 END),0), COALESCE(SUM(CASE WHEN [Period]=0 AND [ChinaSupplierCode] IS NOT NULL THEN [Revenue] ELSE 0 END),0), COALESCE(SUM(CASE WHEN [Period]=1 AND [AustralianSupplierCode] IS NOT NULL THEN [Revenue] ELSE 0 END),0), COALESCE(SUM(CASE WHEN [Period]=1 AND [ChinaSupplierCode] IS NOT NULL THEN [Revenue] ELSE 0 END),0) FROM ({denominatorFacts}) f WHERE [AustralianSupplierCode] IS NOT NULL{selectedBranchFilter};";
         if (!wanted.Contains(SalesDetailSection.Summary)) summary = emptyRows;
         if (!wanted.Contains(SalesDetailSection.Suppliers)) suppliers = emptyRows;
         if (!wanted.Contains(SalesDetailSection.Branches)) branchesSql = emptyRows;
         if (!wanted.Contains(SalesDetailSection.Products)) { products = emptyRows; productCount = emptyCount; }
         if (!wanted.Contains(SalesDetailSection.Suppliers)) denominator = "SELECT 0,0,0,0;";
-        var status = "SELECT [StatisticType],[Date],[Status],[LastAggregatedAtUtc],[CompletedAtUtc],[SourceProductVersion] FROM [SalesStatisticRefreshState] WHERE ([Date]>=@sdrCurrentStart AND [Date]<@sdrCurrentEnd) OR (@sdrHasCompare=1 AND [Date]>=@sdrCompareStart AND [Date]<@sdrCompareEnd) ORDER BY [Date],[StatisticType];";
+        // 本报表只使用 ProductStoreDaily 的发布状态和版本，其他统计类型会被状态解析器忽略。
+        var status = "SELECT [StatisticType],[Date],[Status],[LastAggregatedAtUtc],[CompletedAtUtc],[SourceProductVersion] FROM [SalesStatisticRefreshState] WHERE [StatisticType]='ProductStoreDaily' AND (([Date]>=@sdrCurrentStart AND [Date]<@sdrCurrentEnd) OR (@sdrHasCompare=1 AND [Date]>=@sdrCompareStart AND [Date]<@sdrCompareEnd)) ORDER BY [Date],[StatisticType];";
         if (useGroupingSets)
         {
             // GROUPING SETS 只服务默认全量路径；仍按请求 sections 跳过未请求栏位，保持旧接口契约。
@@ -657,7 +801,28 @@ ORDER BY a.[Quantity] DESC, a.[CompareQuantity] DESC, a.[ProductCode] ASC;
                 : "SELECT 0,0,0,0;";
             return facts + groupingFacts + status + summary + suppliers + branchesSql + products + productCount + denominator + "DROP TABLE #SalesDetailAggregates;DROP TABLE #SalesDetailFacts;";
         }
-        return facts + status + summary + suppliers + branchesSql + products + productCount + denominator + "DROP TABLE #SalesDetailFacts;";
+        var projectionGuard = useProjection ? BuildSalesDetailProjectionGuardSql(posmDatabase!, sourceBranch) : string.Empty;
+        var projectionSource = useProjection
+            ? BuildSalesDetailProjectionSourceSql(sourceBranch, candidateToken, selectedProduct, projectionQueryHint, candidateRefinement)
+            : string.Empty;
+        if (compressOutput)
+        {
+            status = CompressSalesDetailResultSql(status.Replace("SELECT [StatisticType],", "SELECT [StatisticType] [Type],", StringComparison.Ordinal));
+            summary = CompressSalesDetailResultSql(summary);
+            suppliers = CompressSalesDetailResultSql(suppliers);
+            branchesSql = CompressSalesDetailResultSql(branchesSql);
+            products = CompressSalesDetailResultSql(products);
+            productCount = CompressSalesDetailResultSql(productCount.Replace("SELECT COUNT(*) FROM", "SELECT COUNT(*) [Total] FROM", StringComparison.Ordinal)
+                .Replace("SELECT 0;", "SELECT 0 [Total];", StringComparison.Ordinal));
+            // 分母的列名是内部传输约定，外部 DTO 和原有数值口径保持一致。
+            var denominatorSelect = wanted.Contains(SalesDetailSection.Suppliers)
+                ? $"SELECT COALESCE(SUM(CASE WHEN [Period]=0 AND [AustralianSupplierCode] IS NOT NULL THEN [Revenue] ELSE 0 END),0) [AllRevenue], COALESCE(SUM(CASE WHEN [Period]=0 AND [ChinaSupplierCode] IS NOT NULL THEN [Revenue] ELSE 0 END),0) [ChinaRevenue], COALESCE(SUM(CASE WHEN [Period]=1 AND [AustralianSupplierCode] IS NOT NULL THEN [Revenue] ELSE 0 END),0) [CompareAllRevenue], COALESCE(SUM(CASE WHEN [Period]=1 AND [ChinaSupplierCode] IS NOT NULL THEN [Revenue] ELSE 0 END),0) [CompareChinaRevenue] FROM ({denominatorFacts}) f WHERE [AustralianSupplierCode] IS NOT NULL{selectedBranchFilter};"
+                : "SELECT 0 [AllRevenue],0 [ChinaRevenue],0 [CompareAllRevenue],0 [CompareChinaRevenue];";
+            denominator = CompressSalesDetailResultSql(denominatorSelect);
+        }
+        return productSearchMatches + supplierSearchMatches + projectionGuard + projectionSource + remainingProductMatches + facts + searchFacts + status + summary + suppliers + branchesSql + products + productCount + denominator
+            + "DROP TABLE #SalesDetailFacts;" + (needsProductSearch ? "DROP TABLE #SalesDetailSearchFacts;DROP TABLE #SalesDetailProductSearchMatches;DROP TABLE #SalesDetailSupplierSearchMatches;" : string.Empty)
+            + (useProjection ? "DROP TABLE #SalesDetailRequiredDates;DROP TABLE #SalesDetailProjectionTotals;DROP TABLE #SalesDetailCandidateProducts;DROP TABLE #SalesDetailCandidateSuppliers;DROP TABLE #SalesDetailCandidateSource;" : string.Empty);
     }
 
     private static string BuildSalesDetailReportSqlLegacy(bool sqlServer, string? posmDatabase, DateRangeDto range, SalesDetailKind kind,

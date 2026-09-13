@@ -361,6 +361,36 @@ public sealed class ScheduledTaskServiceTests : IDisposable
     }
 
     [Fact]
+    public void CalculateNextDailyRun_默认二十三点和正负五分钟抖动始终落在二十二至六点窗口()
+    {
+        var options = new ScheduledTaskOptions();
+        var service = CreateScheduledTaskService(
+            CreateScopeFactory(CreateScope(new Dictionary<Type, object?>())).Object,
+            NullLogger<ScheduledTaskService>.Instance,
+            options
+        );
+        var method = typeof(ScheduledTaskService).GetMethod(
+            "CalculateNextDailyRun",
+            BindingFlags.Instance | BindingFlags.NonPublic
+        );
+        var now = new DateTime(2026, 9, 8, 12, 0, 0);
+
+        Assert.Equal(23, options.DailyTaskHour);
+        Assert.True(options.EnableJitter);
+        Assert.Equal(5, options.JitterMaxMinutes);
+        for (var index = 0; index < 200; index++)
+        {
+            var delay = (TimeSpan)method!.Invoke(service, new object[] { now })!;
+            var next = now.Add(delay);
+            Assert.True(
+                next.TimeOfDay >= TimeSpan.FromHours(22)
+                    || next.TimeOfDay < TimeSpan.FromHours(6),
+                $"下一次每日任务落在窗口外: {next:yyyy-MM-dd HH:mm:ss}"
+            );
+        }
+    }
+
+    [Fact]
     public void CalculateNextWeeklyRun_默认Jitter开启时_不跨到下周()
     {
         var service = CreateScheduledTaskService(

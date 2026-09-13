@@ -38,7 +38,8 @@
     "系统管理": "System management",
     "角色管理": "Role management",
     "订单管理": "Order management",
-    "货柜管理": "Container management"
+    "货柜管理": "Container management",
+    "销售看板": "Sales dashboard"
   },
   "permissions": {
     "Advertisements.Edit": {
@@ -544,6 +545,34 @@
     "Roles.View": {
       "name": "Roles View",
       "description": "Allows access to Roles View."
+    },
+    "SalesDashboard.CompactBoard.View": {
+      "name": "View compact sales dashboard",
+      "description": "View store, supplier and product sales data in a compact layout."
+    },
+    "SalesDashboard.LocalProductAnalysis.View": {
+      "name": "View Australian local product analysis",
+      "description": "View purchasing and sales performance for Australian local products."
+    },
+    "SalesDashboard.ProductMovement.View": {
+      "name": "View product performance analysis",
+      "description": "View product performance and recommended store manager actions."
+    },
+    "SalesDashboard.PurchaseAmount.View": {
+      "name": "View purchase amount dashboard",
+      "description": "View warehouse orders, local supplier purchase amounts and revenue by store."
+    },
+    "SalesDashboard.SalesData.View": {
+      "name": "View sales data",
+      "description": "View revenue, orders, customer traffic and store sales performance."
+    },
+    "SalesDashboard.SalesDetail.View": {
+      "name": "View sales details",
+      "description": "View sales details by supplier, store and product."
+    },
+    "SalesDashboard.WarehouseFlow.View": {
+      "name": "View warehouse product flow analysis",
+      "description": "View purchasing, dispatch and sales flows for warehouse products."
     },
     "SeasonalCards.Remaining.SubmitManagedStore": {
       "name": "Seasonal Cards Remaining Submit Managed Store",

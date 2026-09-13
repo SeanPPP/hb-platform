@@ -63,8 +63,10 @@ internal sealed class ProductWarehouseUpdateSlice
         try
         {
             _context.Db.Ado.BeginTran();
+            // 完整编辑会写本地供应商这一商品身份，使用 Update 总闸避免与身份变更并发覆盖；
+            // 无关商品的普通成本 Shared 锁仍可继续执行。
             var setChildPurchasePriceLock =
-                await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                await SetChildPurchasePriceMutationLock.AcquireProductIdentitiesWithinBudgetAsync(
                     _context.Db,
                     new[] { productCode }
                 );

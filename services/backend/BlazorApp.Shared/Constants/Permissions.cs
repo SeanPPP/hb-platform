@@ -266,6 +266,18 @@ namespace BlazorApp.Shared.Constants
             public const string ProductMovementView = "Reports.ProductMovement.View";
         }
 
+        public static class SalesDashboard
+        {
+            public const string SalesDataView = "SalesDashboard.SalesData.View";
+            public const string SalesDetailView = "SalesDashboard.SalesDetail.View";
+            public const string CompactBoardView = "SalesDashboard.CompactBoard.View";
+            public const string ProductMovementView = "SalesDashboard.ProductMovement.View";
+            public const string WarehouseFlowView = "SalesDashboard.WarehouseFlow.View";
+            public const string LocalProductAnalysisView =
+                "SalesDashboard.LocalProductAnalysis.View";
+            public const string PurchaseAmountView = "SalesDashboard.PurchaseAmount.View";
+        }
+
         public static class StoreProducts
         {
             public const string View = "StoreProducts.View";

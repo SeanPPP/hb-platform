@@ -577,7 +577,7 @@ export const appRoutes: AppRouteItem[] = [
           title: 'menu.salesData',
           icon: 'DashboardOutlined',
           keepAlive: true,
-          accessKey: 'canViewReports',
+          accessKey: 'canViewSalesData',
         },
         element: <ExecutiveSalesIntelligencePage />,
       },
@@ -587,7 +587,7 @@ export const appRoutes: AppRouteItem[] = [
           title: 'menu.salesDetail',
           icon: 'FileTextOutlined',
           keepAlive: true,
-          accessKey: 'canViewReports',
+          accessKey: 'canViewSalesDetail',
         },
         element: <SalesDetailAnalysisPage />,
       },
@@ -597,7 +597,7 @@ export const appRoutes: AppRouteItem[] = [
           title: 'menu.compactSalesBoard',
           icon: 'BarChartOutlined',
           keepAlive: true,
-          accessKey: 'canViewReports',
+          accessKey: 'canViewCompactSalesBoard',
         },
         element: <CompactSalesBoardPage />,
       },
@@ -617,7 +617,7 @@ export const appRoutes: AppRouteItem[] = [
           title: 'menu.warehouseProductFlowAnalysis',
           icon: 'BarChartOutlined',
           keepAlive: true,
-          accessKey: 'canViewProductSalesAnalysis',
+          accessKey: 'canViewWarehouseProductFlowAnalysis',
         },
         element: <WarehouseProductFlowAnalysisPage />,
       },
@@ -627,7 +627,7 @@ export const appRoutes: AppRouteItem[] = [
           title: 'menu.localProductSalesAnalysis',
           icon: 'BarChartOutlined',
           keepAlive: true,
-          accessKey: 'canManageLocalPurchase',
+          accessKey: 'canViewLocalProductSalesAnalysis',
         },
         element: <LocalProductSalesAnalysisPage />,
       },
@@ -636,7 +636,7 @@ export const appRoutes: AppRouteItem[] = [
         meta: {
           title: 'menu.warehouseProductFlowAnalysis',
           hidden: true,
-          accessKey: 'canViewProductSalesAnalysis',
+          accessKey: 'canViewWarehouseProductFlowAnalysis',
         },
         element: <Navigate replace to="/executive-sales-intelligence/warehouse-product-flow-analysis" />,
       },
@@ -646,7 +646,7 @@ export const appRoutes: AppRouteItem[] = [
           title: 'menu.purchaseAmountDashboard',
           icon: 'DollarOutlined',
           keepAlive: true,
-          accessKey: 'canManageLocalPurchase',
+          accessKey: 'canViewPurchaseAmountDashboard',
         },
         element: <PurchaseAmountDashboardPage />,
       },
@@ -981,7 +981,11 @@ function buildWarehouseStaffMenus(access: AccessControl): MenuProps['items'] {
 
 export function buildMenus(access: AccessControl, navigationMenu?: NavigationMenuDto[]) {
   const localMenus = isWarehouseStaffNavigationLimited(access)
-    ? buildWarehouseStaffMenus(access)
+    ? [
+        ...(buildWarehouseStaffMenus(access) ?? []),
+        // 显式授权的销售页补充到仓库员工菜单，其他业务仍沿用原有白名单。
+        ...(buildMenusInternal(appRoutes.filter(route => route.path === '/executive-sales-intelligence'), access) ?? []),
+      ]
     : buildMenusInternal(appRoutes, access)
   if (navigationMenu !== undefined) {
     return chooseNavigationMenus(localMenus, buildMenusFromBackend(navigationMenu))

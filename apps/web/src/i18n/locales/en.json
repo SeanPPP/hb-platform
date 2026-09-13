@@ -4345,6 +4345,17 @@
       "createUser": "Create User",
       "createUserSuccess": "User created successfully",
       "createUserFailed": "Failed to create user",
+      "createUserFeedbackTitle": "Unable to create user",
+      "createUserResultUnknownTitle": "Creation result unconfirmed",
+      "createUserEmailExists": "This email is already in use. Please use a different email and try again.",
+      "createUserUsernameExists": "This username is already in use. Please use a different username and try again.",
+      "createUserPermissionDenied": "Your account cannot create users. Please contact a system administrator.",
+      "createUserStoreScopeDenied": "The selected store is outside your management scope. Adjust the selection on the Stores tab and try again.",
+      "createUserValidationFailed": "The user information did not pass validation. Please check the entered details and try again.",
+      "createUserRateLimited": "This action was requested too frequently. Please try again later.",
+      "createUserRejected": "The user cannot be created right now. Please try again later. If the problem continues, contact a system administrator.",
+      "createUserResultUnknown": "The creation result could not be confirmed. Check the user list to see whether the user was created before trying again.",
+      "createUserStoreAssignmentUnconfirmed": "The user was created, but the store permissions could not be confirmed. Edit this user from the user list and check the store settings.",
       "password": "Password",
       "passwordRequired": "Please enter password",
       "confirmPassword": "Confirm Password",
@@ -5282,6 +5293,31 @@
     "comingSoonFilterAll": "All",
     "comingSoonFilterReorder": "Reorder",
     "comingSoonFilterNew": "New",
+    "comingSoonWorkspace": {
+      "containers": "Containers",
+      "incoming": "Incoming",
+      "arrived": "Arrived",
+      "newProducts": "New products (loaded)",
+      "index": "Containers",
+      "globalFilter": "Filter all containers",
+      "containerFilter": "Filter this container",
+      "arrivalDate": "Arrival date",
+      "eta": "ETA",
+      "pending": "Loads when selected",
+      "items": "{{count}} items",
+      "productsFailed": "Failed to load products.",
+      "loadFailed": "Failed to load coming soon data.",
+      "empty": "No products found for this filter.",
+      "emptyContainers": "No incoming products found for the selected filter.",
+      "quantity": "Container qty",
+      "showBarcodes": "Show barcodes",
+      "pages": "Product pages",
+      "previous": "Previous",
+      "next": "Next",
+      "page": "Page {{page}} of {{pages}}",
+      "pageInfo": "{{from}}–{{to}} of {{total}} items",
+      "unknownProduct": "Unknown product"
+    },
     "ordersBannerSubtitle": "View submitted store orders, statuses, quantities, and amount summaries.",
     "localSupplierInvoicesBannerSubtitle": "View local purchase invoices, supplier details, product lines, and receiving status by store.",
     "preorderTitle": "Preorder",
@@ -7024,5 +7060,195 @@
     "clearBranch": "Clear Branch",
     "salesNotRealtime": "Daily sales statistics are not real-time and may be delayed",
     "notFresh": "Sales statistics not ready"
+  },
+  "localProductSalesAnalysis": {
+    "title": "Australian Local Product Analysis",
+    "productScope": "Product scope",
+    "currentProduct": "Current product",
+    "product": "Product",
+    "invoiceDetails": "Local purchase details",
+    "dailyTrend": "Daily purchases and sales",
+    "productTrendLabel": "Daily purchases and sales for {{product}}",
+    "branchRanking": "Authorized store sales ranking",
+    "branchTrendTitle": "{{branch}}: daily net sales and average price",
+    "branchTrendLabel": "Daily store net sales and average price",
+    "selectBranch": "Select a store to view its daily trend",
+    "noTrendData": "No trend data",
+    "noCategories": "No categories available",
+    "noSuppliers": "No suppliers available",
+    "uncategorized": "Uncategorised",
+    "selectAllFiltered": "Select all results",
+    "allFilteredSelected": "All matching products selected",
+    "selectedCount": "{{count}} products selected",
+    "selectedCount_one": "{{count}} product selected",
+    "selectedCount_other": "{{count}} products selected",
+    "quickDays": "{{count}} days",
+    "quickDays_one": "{{count}} day",
+    "quickDays_other": "{{count}} days",
+    "filters": {
+      "keyword": "Item no., name or barcode",
+      "category": "Warehouse category",
+      "supplier": "Australian local supplier",
+      "invoiceNo": "Local purchase invoice no."
+    },
+    "metrics": {
+      "purchaseQuantity": "Local purchase quantity",
+      "purchaseAmount": "Purchase amount",
+      "netSalesQuantity": "Store net sales quantity",
+      "netSalesAmount": "Net sales amount",
+      "sellThroughRate": "Sales-to-purchase ratio"
+    },
+    "columns": {
+      "invoiceNo": "Invoice no.",
+      "store": "Store",
+      "supplier": "Supplier",
+      "date": "Date",
+      "quantity": "Quantity",
+      "purchasePrice": "Unit cost",
+      "amount": "Amount",
+      "authorizedStore": "Authorized store",
+      "netSalesQuantity": "Net quantity",
+      "averageUnitPrice": "Avg. price"
+    },
+    "errors": {
+      "title": "Unable to load data",
+      "options": "Unable to load filter options",
+      "load": "Unable to load data. Please retry.",
+      "timeout": "The request timed out. Please retry.",
+      "dateOrder": "The start date must be on or before the end date.",
+      "futureDate": "The end date must be no later than yesterday in Brisbane.",
+      "dateLimit": "The date range cannot exceed 366 days.",
+      "invalidResponse": "The server returned an invalid response."
+    }
+  },
+  "productFlowShared": {
+    "chartDescription": "Blue bars show purchases, teal bars show shipments, orange bars show net sales, and the line shows average unit price. Negative sales appear below zero.",
+    "inboundTooltip": "Purchases {{value}}",
+    "shippedTooltip": "Shipments {{value}}",
+    "netSalesTooltip": "Net sales {{value}}",
+    "averagePriceTooltip": "{{date}} Average price {{value}}",
+    "noImage": "{{product}}: no image available"
+  },
+  "warehouseProductFlowAnalysis": {
+    "title": "Warehouse Product Flow Analysis",
+    "subtitle": "Track container receipts, store orders and shipments, and store sales from the product master.",
+    "actions": {
+      "queryProducts": "Search Products",
+      "refreshAll": "Refresh All",
+      "restoreDefault": "Restore Default",
+      "selectAllFiltered": "Select all results"
+    },
+    "stages": {
+      "containerInbound": "Container Receipts",
+      "branchOrders": "Store Orders",
+      "shippedToBranches": "Shipped to Stores",
+      "branchNetSales": "Store Net Sales"
+    },
+    "master": {
+      "title": "Warehouse Product Master"
+    },
+    "filters": {
+      "category": "Warehouse Category",
+      "categoryPlaceholder": "Select Categories",
+      "keyword": "Item No. / Name / Barcode",
+      "keywordPlaceholder": "Enter a Keyword",
+      "supplier": "Domestic Supplier",
+      "supplierPlaceholder": "Select Domestic Suppliers",
+      "containerNumber": "Container Number",
+      "containerNumberPlaceholder": "Enter a Container Number"
+    },
+    "selection": {
+      "allFiltered_one": "All filtered products ({{count}} excluded)",
+      "allFiltered_other": "All filtered products ({{count}} excluded)",
+      "selected_one": "{{count}} product selected",
+      "selected_other": "{{count}} products selected",
+      "selected": "{{count}} products selected",
+      "allFiltered": "All filtered products ({{count}} excluded)"
+    },
+    "product": {
+      "itemNumber": "Item No.",
+      "code": "Product Code",
+      "barcode": "Barcode",
+      "unnamed": "Unnamed Product",
+      "uncategorized": "Uncategorised",
+      "supplierUnmapped": "Domestic Supplier Not Mapped"
+    },
+    "metrics": {
+      "containerInbound": "Container Receipts",
+      "branchOrders": "Store Orders",
+      "shippedToBranches": "Shipped to Stores",
+      "branchNetSales": "Store Net Sales"
+    },
+    "tabs": {
+      "containerDetails": "Container Details",
+      "branchOrders": "Store Orders",
+      "shipmentDetails": "Shipment Details"
+    },
+    "shipments": {
+      "posLabel": "Store POS",
+      "posAria": "Filter stores by POS status",
+      "allBranches": "All Stores",
+      "posEnabled": "POS Enabled",
+      "posDisabled": "POS Disabled",
+      "salesPeriodNote": "Sales use the store sales period {{period}}. Multiple shipments to the same store show the same net sales quantity."
+    },
+    "branchSales": {
+      "title": "Store Sales"
+    },
+    "tables": {
+      "containerNumber": "Container No.",
+      "arrivalDate": "Arrival Date",
+      "quantity": "Quantity",
+      "unitPrice": "Unit Price",
+      "supplier": "Supplier",
+      "orderNumber": "Order No.",
+      "branch": "Store",
+      "orderDate": "Order Date",
+      "orderedQuantity": "Ordered",
+      "shipmentOrOrderNumber": "Shipment / Order No.",
+      "shipmentDate": "Dispatch Date",
+      "shippedQuantity": "Shipped",
+      "salesQuantity": "Sales",
+      "netSalesQuantity": "Net Sales",
+      "netSalesAmount": "Net Amount",
+      "averagePrice": "Avg. Price"
+    },
+    "charts": {
+      "containerTrend": "Container Receipt Trend",
+      "orderShipmentTrend": "Daily Orders / Shipments",
+      "salesTrend": "Daily Sales Trend",
+      "branchSalesTrend": "Store Sales Trend",
+      "inboundQuantity": "Received",
+      "orderedQuantity": "Ordered",
+      "shippedQuantity": "Shipped",
+      "containerTrendAria": "Daily container receipt quantity for the current product",
+      "orderShipmentTrendAria": "Daily order and shipment quantities for the current product",
+      "salesTrendAria": "Daily net sales and average price for the current product",
+      "branchSalesTrendAria": "Daily net sales and average price for the selected store"
+    },
+    "empty": {
+      "noProducts": "No Products",
+      "selectProduct": "Select a product to view details",
+      "selectBranch": "Select a store to view its daily trend"
+    },
+    "validation": {
+      "invalidDateRange": "Select a valid date range."
+    },
+    "errors": {
+      "loadFailed": "Failed to Load",
+      "summaryTitle": "Failed to Load Summary",
+      "categoriesTitle": "Categories Unavailable",
+      "categories": "Warehouse categories could not be loaded.",
+      "candidates": "The product master could not be loaded.",
+      "summary": "The selected product summary could not be loaded.",
+      "containerDetails": "Container details could not be loaded.",
+      "containerTrend": "The container receipt trend could not be loaded.",
+      "orderDetails": "Order details could not be loaded.",
+      "shipmentDetails": "Shipment details could not be loaded.",
+      "orderShipmentTrend": "The order and shipment trend could not be loaded.",
+      "salesTrend": "The sales trend could not be loaded.",
+      "branchSales": "Store sales could not be loaded.",
+      "branchTrend": "The store sales trend could not be loaded."
+    }
   }
 }

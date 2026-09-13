@@ -7,6 +7,7 @@ using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Helper;
 using BlazorApp.Shared.Models.HBweb;
 using SqlSugar;
+using BlazorApp.Api.Services.Pricing;
 
 namespace BlazorApp.Api.Services.React
 {
@@ -181,6 +182,9 @@ namespace BlazorApp.Api.Services.React
                         StartRate = d.StartRate,
                         EndRate = d.EndRate,
                         Algorithm = d.Algorithm ?? string.Empty,
+                        StartRetailPrice = d.StartRetailPrice,
+                        EndRetailPrice = d.EndRetailPrice,
+                        CurveBend = d.CurveBend,
                     })
                     .OrderBy(d => d.MinPrice)
                     .ToList(),
@@ -201,112 +205,57 @@ namespace BlazorApp.Api.Services.React
             };
         }
 
-        public async Task<ApiResponse<PricingStrategyDetailDto>> CreateAsync(
-            CreatePricingStrategyDto dto
-        )
+        public Task<ApiResponse<PricingStrategyDetailDto>> CreateAsync(CreatePricingStrategyDto dto)
         {
-            var id = UuidHelper.GenerateUuid7();
-            var entity = new PricingStrategy
-            {
-                Id = id,
-                Name = dto.Name,
-                Level = dto.Level,
-                Priority = dto.Priority,
-                IsEnabled = dto.IsEnabled,
-            };
-            await _context.PricingStrategyDb.InsertAsync(entity);
-
-            if (dto.Details != null && dto.Details.Count > 0)
-            {
-                var rules = dto
-                    .Details.Select(d => new PricingStrategyDetail
-                    {
-                        Id = UuidHelper.GenerateUuid7(),
-                        StrategyId = id,
-                        MinPrice = d.MinPrice,
-                        MaxPrice = d.MaxPrice,
-                        StartRate = d.StartRate,
-                        EndRate = d.EndRate,
-                        Algorithm = d.Algorithm ?? string.Empty,
-                    })
-                    .ToList();
-                await _context.PricingStrategyDetailDb.InsertRangeAsync(rules);
-            }
-            if (dto.Targets != null && dto.Targets.Count > 0)
-            {
-                var targets = dto
-                    .Targets.Select(t => new PricingStrategyTarget
-                    {
-                        Id = UuidHelper.GenerateUuid7(),
-                        StrategyId = id,
-                        TargetType = t.TargetType,
-                        TargetCode = t.TargetCode,
-                    })
-                    .ToList();
-                await _context.PricingStrategyTargetDb.InsertRangeAsync(targets);
-            }
-
-            return await GetByIdAsync(id);
+            return SaveAsync(null, dto.Name, dto.Level, dto.Priority, dto.IsEnabled, dto.Details, dto.Targets);
         }
 
-        public async Task<ApiResponse<PricingStrategyDetailDto>> UpdateAsync(
-            string id,
-            UpdatePricingStrategyDto dto
-        )
+        public Task<ApiResponse<PricingStrategyDetailDto>> UpdateAsync(string id, UpdatePricingStrategyDto dto)
         {
-            var s = await _context
-                .PricingStrategyDb.AsQueryable()
-                .Includes(x => x.Details)
-                .Includes(x => x.Targets)
-                .InSingleAsync(id);
-            if (s == null)
+            return SaveAsync(id, dto.Name, dto.Level, dto.Priority, dto.IsEnabled, dto.Details, dto.Targets);
+        }
+
+        private async Task<ApiResponse<PricingStrategyDetailDto>> SaveAsync(
+            string? existingId, string name, string level, int priority, bool enabled,
+            List<PricingStrategyRuleDto>? details, List<PricingStrategyTargetDto>? targets)
+        {
+            var id = existingId ?? UuidHelper.GenerateUuid7();
+            var rules = details?.Select(d => new PricingStrategyDetail
             {
-                return new ApiResponse<PricingStrategyDetailDto>
+                Id = UuidHelper.GenerateUuid7(), StrategyId = id,
+                MinPrice = d.MinPrice, MaxPrice = d.MaxPrice,
+                StartRate = decimal.Round(d.StartRate, 4, MidpointRounding.AwayFromZero),
+                EndRate = decimal.Round(d.EndRate, 4, MidpointRounding.AwayFromZero),
+                Algorithm = d.Algorithm ?? "Linear",
+                // 向零截断避免数据库四舍五入将合法弧度推到约束之外。
+                CurveBend = d.CurveBend.HasValue ? decimal.Truncate(d.CurveBend.Value * 1000000m) / 1000000m : null,
+                StartRetailPrice = d.StartRetailPrice, EndRetailPrice = d.EndRetailPrice,
+            }).ToList() ?? new List<PricingStrategyDetail>();
+            // 所有校验在第一次写入前完成，明细与目标的替换必须使用同一事务。
+            try { PricingCurveMath.Validate(rules); }
+            catch (ArgumentException ex) { return ApiResponse<PricingStrategyDetailDto>.Error(ex.Message); }
+            var entity = existingId == null ? new PricingStrategy { Id = id }
+                : await _context.PricingStrategyDb.AsQueryable().InSingleAsync(id);
+            if (entity == null) return ApiResponse<PricingStrategyDetailDto>.Error("not found");
+            entity.Name = name; entity.Level = level; entity.Priority = priority; entity.IsEnabled = enabled;
+            var transaction = await _context.Db.Ado.UseTranAsync(async () =>
+            {
+                if (existingId == null) await _context.PricingStrategyDb.InsertAsync(entity);
+                else
                 {
-                    Success = false,
-                    Message = "not found",
-                };
-            }
-            s.Name = dto.Name;
-            s.Level = dto.Level;
-            s.Priority = dto.Priority;
-            s.IsEnabled = dto.IsEnabled;
-            await _context.PricingStrategyDb.UpdateAsync(s);
-
-            await _context.PricingStrategyDetailDb.DeleteAsync(d => d.StrategyId == id);
-            await _context.PricingStrategyTargetDb.DeleteAsync(t => t.StrategyId == id);
-
-            if (dto.Details != null && dto.Details.Count > 0)
-            {
-                var rules = dto
-                    .Details.Select(d => new PricingStrategyDetail
-                    {
-                        Id = UuidHelper.GenerateUuid7(),
-                        StrategyId = id,
-                        MinPrice = d.MinPrice,
-                        MaxPrice = d.MaxPrice,
-                        StartRate = d.StartRate,
-                        EndRate = d.EndRate,
-                        Algorithm = d.Algorithm ?? "Linear",
-                    })
-                    .ToList();
+                    await _context.PricingStrategyDb.UpdateAsync(entity);
+                    await _context.PricingStrategyDetailDb.DeleteAsync(d => d.StrategyId == id);
+                    await _context.PricingStrategyTargetDb.DeleteAsync(t => t.StrategyId == id);
+                }
                 await _context.PricingStrategyDetailDb.InsertRangeAsync(rules);
-            }
-
-            if (dto.Targets != null && dto.Targets.Count > 0)
-            {
-                var targets = dto
-                    .Targets.Select(t => new PricingStrategyTarget
+                if (targets?.Count > 0)
+                    await _context.PricingStrategyTargetDb.InsertRangeAsync(targets.Select(t => new PricingStrategyTarget
                     {
-                        Id = UuidHelper.GenerateUuid7(),
-                        StrategyId = id,
-                        TargetType = t.TargetType,
-                        TargetCode = t.TargetCode,
-                    })
-                    .ToList();
-                await _context.PricingStrategyTargetDb.InsertRangeAsync(targets);
-            }
-
+                        Id = UuidHelper.GenerateUuid7(), StrategyId = id,
+                        TargetType = t.TargetType, TargetCode = t.TargetCode,
+                    }).ToList());
+            });
+            if (!transaction.IsSuccess) return ApiResponse<PricingStrategyDetailDto>.Error("保存定价策略失败，已回滚本次修改");
             return await GetByIdAsync(id);
         }
 

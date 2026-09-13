@@ -170,8 +170,11 @@ public sealed class PaymentViewLayoutTests
         var safeExitTrigger = Assert.Single(safeExitButton.Descendants(presentation + "MultiDataTrigger"));
         var safeExitConditions = safeExitTrigger.Descendants(presentation + "Condition").ToArray();
         Assert.Contains(safeExitConditions, condition =>
-            (string?)condition.Attribute("Binding") == "{Binding CardPaymentErrorOverlay.HasPrimaryAction}" &&
-            (string?)condition.Attribute("Value") == "False");
+            (string?)condition.Attribute("Binding") == "{Binding IsCardPaymentRecoveryRequired}" &&
+            (string?)condition.Attribute("Value") == "True");
+        Assert.Contains(safeExitConditions, condition =>
+            (string?)condition.Attribute("Binding") == "{Binding IsPaymentInteractionLocked}" &&
+            (string?)condition.Attribute("Value") == "True");
         Assert.True(HasSetter(safeExitTrigger, "Visibility", "Visible"));
     }
 

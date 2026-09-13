@@ -751,6 +751,12 @@ public sealed class CardRecoveryCenterViewModelTests
         Assert.Equal(expectedCanResolve, viewModel.ConfirmPaidCommand.CanExecute(null));
         Assert.Equal(expectedCanResolve, viewModel.ConfirmNotPaidCommand.CanExecute(null));
         Assert.Equal(expectedCanResolve, viewModel.ContinueWaitingCommand.CanExecute(null));
+        Assert.Equal(expectedCanResolve, viewModel.CanShowSupervisorResolution);
+        Assert.Equal(!expectedCanResolve, viewModel.CanShowRecoveryOnlyGuidance);
+        if (!expectedCanResolve)
+        {
+            Assert.Contains("Recover", viewModel.RecoveryOnlyGuidanceMessage, StringComparison.Ordinal);
+        }
     }
 
     [Theory]
@@ -1508,6 +1514,85 @@ public sealed class CardRecoveryCenterViewModelTests
     }
 
     [Fact]
+    public async Task RefreshCommand_partial_provider_failure_keeps_failed_provider_snapshot_and_replaces_healthy_provider()
+    {
+        var previousLinkly = CreateQueueItem(
+            CardProcessorKind.Linkly,
+            Guid.Parse("46000000-0000-0000-0000-000000000011"),
+            updatedAt: Now);
+        var previousSquare = CreateQueueItem(
+            CardProcessorKind.Square,
+            Guid.Parse("46000000-0000-0000-0000-000000000012"),
+            updatedAt: Now.AddMinutes(-1));
+        var refreshedSquare = CreateQueueItem(
+            CardProcessorKind.Square,
+            Guid.Parse("46000000-0000-0000-0000-000000000013"),
+            updatedAt: Now.AddMinutes(1));
+        var recovery = new RecordingRecoveryService
+        {
+            OpenItems = [previousLinkly, previousSquare]
+        };
+        var reportedCounts = new List<int>();
+        using var viewModel = new CardRecoveryCenterViewModel(
+            recovery,
+            new PosCartService(),
+            CreateSession(),
+            new RecordingAuthorizationService(CreateCashier("SUPERVISOR")),
+            CreateLocalization(),
+            back: () => { },
+            openCountChanged: reportedCounts.Add);
+        await viewModel.LoadAsync();
+        viewModel.SelectedAttempt = previousLinkly;
+        recovery.OpenItems = [refreshedSquare];
+        recovery.FailedProviders = [CardProcessorKind.Linkly];
+
+        await viewModel.RefreshCommand.ExecuteAsync(null);
+
+        Assert.False(viewModel.IsBusy);
+        Assert.Equal(
+            [refreshedSquare.Key, previousLinkly.Key],
+            viewModel.OpenAttempts.Select(item => item.Key).ToArray());
+        Assert.Equal(previousLinkly.Key, viewModel.SelectedAttempt?.Key);
+        Assert.Contains("Linkly", viewModel.StatusMessage, StringComparison.Ordinal);
+        Assert.Contains("Refresh", viewModel.StatusMessage, StringComparison.Ordinal);
+        Assert.True(viewModel.BackCommand.CanExecute(null));
+        Assert.True(viewModel.RefreshCommand.CanExecute(null));
+        Assert.True(viewModel.RecoverCommand.CanExecute(null));
+        Assert.Equal([2], reportedCounts);
+    }
+
+    [Fact]
+    public async Task RefreshCommand_all_provider_failures_keep_last_known_queue_and_retry_available()
+    {
+        var item = CreateQueueItem(
+            CardProcessorKind.Linkly,
+            Guid.Parse("46000000-0000-0000-0000-000000000014"),
+            updatedAt: Now);
+        var recovery = new RecordingRecoveryService { OpenItems = [item] };
+        using var viewModel = new CardRecoveryCenterViewModel(
+            recovery,
+            new PosCartService(),
+            CreateSession(),
+            new RecordingAuthorizationService(CreateCashier("SUPERVISOR")),
+            CreateLocalization(),
+            back: () => { });
+        await viewModel.LoadAsync();
+        recovery.OpenItems = [];
+        recovery.FailedProviders = [CardProcessorKind.Linkly, CardProcessorKind.Square];
+
+        await viewModel.RefreshCommand.ExecuteAsync(null);
+
+        Assert.False(viewModel.IsBusy);
+        Assert.Equal([item.Key], viewModel.OpenAttempts.Select(openItem => openItem.Key).ToArray());
+        Assert.Contains("Linkly", viewModel.StatusMessage, StringComparison.Ordinal);
+        Assert.Contains("Square", viewModel.StatusMessage, StringComparison.Ordinal);
+        Assert.Contains("Refresh", viewModel.StatusMessage, StringComparison.Ordinal);
+        Assert.True(viewModel.BackCommand.CanExecute(null));
+        Assert.True(viewModel.RefreshCommand.CanExecute(null));
+        Assert.True(viewModel.RecoverCommand.CanExecute(null));
+    }
+
+    [Fact]
     public async Task ResolveCommand_preserves_persisted_result_when_post_commit_refresh_fails()
     {
         var item = CreateQueueItem(
@@ -1919,9 +2004,10 @@ public sealed class CardRecoveryCenterViewModelTests
             ["cardRecovery.status.requiresReview"] = "需要复核"
         });
 
-    private sealed class RecordingRecoveryService : ICardPaymentRecoveryService
+    private sealed class RecordingRecoveryService : ICardPaymentRecoveryService, ICardRecoveryQueueLoader
     {
         public IReadOnlyList<CardRecoveryQueueItem> OpenItems { get; set; } = [];
+        public IReadOnlyList<CardProcessorKind> FailedProviders { get; set; } = [];
         public Exception? ListException { get; set; }
         public CardPaymentRecoveryResult RecoverResult { get; set; } = CardPaymentRecoveryResult.None;
         public CardRecoveryAttemptKey? RecoveredKey { get; private set; }
@@ -1948,6 +2034,16 @@ public sealed class CardRecoveryCenterViewModelTests
             return ListException is null
                 ? Task.FromResult(OpenItems)
                 : Task.FromException<IReadOnlyList<CardRecoveryQueueItem>>(ListException);
+        }
+
+        public Task<CardRecoveryQueueLoadResult> LoadOpenQueueAsync(
+            PosSessionState session,
+            CancellationToken cancellationToken = default)
+        {
+            ListOpenCallCount++;
+            return ListException is null
+                ? Task.FromResult(new CardRecoveryQueueLoadResult(OpenItems, FailedProviders))
+                : Task.FromException<CardRecoveryQueueLoadResult>(ListException);
         }
 
         public Task<CardPaymentRecoveryResult> RecoverLatestAsync(

@@ -5303,10 +5303,12 @@ public sealed class LinklyBackendTerminalClientTests
     }
 
     [Fact]
+    [Trait("Category", "Timing")]
     public async Task PurchaseAsync_does_not_use_short_configured_timeout_before_linkly_business_wait()
     {
         var requests = new List<string>();
         var statusWait = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var statusStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var handler = new StubHttpMessageHandler(
             (request, cancellationToken) =>
             {
@@ -5323,6 +5325,7 @@ public sealed class LinklyBackendTerminalClientTests
 
                 if (request.RequestUri.AbsolutePath.Contains("/transactions/short-timeout-session", StringComparison.Ordinal))
                 {
+                    statusStarted.TrySetResult();
                     return statusWait.Task.WaitAsync(cancellationToken);
                 }
 
@@ -5331,18 +5334,30 @@ public sealed class LinklyBackendTerminalClientTests
         var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
         var settings = CreateSettings() with { TerminalTimeout = TimeSpan.FromMilliseconds(30) };
 
-        var purchaseTask = client.PurchaseAsync(10m, CreateSession(), settings);
-        await Task.Delay(120);
-
-        if (purchaseTask.IsCompleted)
+        using var cancellation = new CancellationTokenSource();
+        var purchaseTask = client.PurchaseAsync(10m, CreateSession(), settings, cancellation.Token);
+        try
         {
-            var early = await purchaseTask;
-            Assert.Fail($"Purchase completed before business wait. statusKey={early.StatusKey} unknown={early.ResultUnknown} message={early.Message} requests={string.Join(" | ", requests)}");
-        }
+            // 必须进入交易查询后再计时，预检耗时不能替代业务等待的验证。
+            await statusStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await Task.Delay(120);
 
-        statusWait.SetResult(JsonResponse(ApprovedSessionJson("short-timeout-session", "TXN-SHORT")));
-        var result = await purchaseTask;
-        Assert.True(result.Approved);
+            if (purchaseTask.IsCompleted)
+            {
+                var early = await purchaseTask;
+                Assert.Fail($"Purchase completed before business wait. statusKey={early.StatusKey} unknown={early.ResultUnknown} message={early.Message} requests={string.Join(" | ", requests)}");
+            }
+
+            statusWait.SetResult(JsonResponse(ApprovedSessionJson("short-timeout-session", "TXN-SHORT")));
+            var result = await purchaseTask.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.True(result.Approved);
+        }
+        finally
+        {
+            // 失败路径也取消并观察交易任务，避免影响同进程其他测试。
+            cancellation.Cancel();
+            await purchaseTask.WaitAsync(TimeSpan.FromSeconds(5));
+        }
     }
 
     [Fact]

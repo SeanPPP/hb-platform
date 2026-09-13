@@ -31,6 +31,22 @@ public interface ILinklyCloudTerminalClient
         CardTerminalSettings settings,
         CancellationToken cancellationToken = default);
 
+    Task<PaymentAuthorizationResult> RecoverTransactionAsync(
+        decimal amount,
+        PosSessionState session,
+        CardTerminalSettings settings,
+        string sessionId,
+        string txnRef,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(new PaymentAuthorizationResult(
+            false,
+            null,
+            "Linkly Cloud transaction recovery is unavailable.",
+            TxnType: "P",
+            SessionId: sessionId,
+            TxnRef: txnRef,
+            ResultUnknown: true));
+
     Task<PaymentAuthorizationResult> RefundAsync(
         decimal amount,
         PosSessionState session,
@@ -44,7 +60,8 @@ public sealed class LinklyCloudTerminalClient(
     ILinklyCloudSecretStore secretStore,
     TimeSpan? pollInterval = null,
     ILocalizationService? localization = null,
-    ILinklyTerminalDialogService? dialogService = null) : ILinklyCloudTerminalClient
+    ILinklyTerminalDialogService? dialogService = null,
+    ILinklyPaymentAttemptContextAccessor? linklyPaymentAttemptContextAccessor = null) : ILinklyCloudTerminalClient
 {
     private static readonly TimeSpan DefaultPollInterval = TimeSpan.FromSeconds(2);
     private const string ProcessorName = "ANZ";
@@ -121,6 +138,116 @@ public sealed class LinklyCloudTerminalClient(
                 settings,
                 refundReference,
                 cancellationToken);
+    }
+
+    public async Task<PaymentAuthorizationResult> RecoverTransactionAsync(
+        decimal amount,
+        PosSessionState session,
+        CardTerminalSettings settings,
+        string sessionId,
+        string txnRef,
+        CancellationToken cancellationToken = default)
+    {
+        var requestedSessionId = NormalizeOptional(sessionId);
+        var requestedTxnRef = NormalizeOptional(txnRef);
+        var unknownMessage = T(
+            "linkly.cloud.resultUnknown",
+            "Linkly Cloud transaction result is unknown. Confirm the Linkly transaction status before retrying.");
+
+        if (amount <= 0m || requestedSessionId is null || requestedTxnRef is null)
+        {
+            return RecoveryUnknown(
+                requestedSessionId,
+                requestedTxnRef,
+                T("linkly.cloud.resultUnknown", unknownMessage));
+        }
+
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return RecoveryUnknown(requestedSessionId, requestedTxnRef, unknownMessage);
+        }
+
+        if (CardTerminalSettings.NormalizeLinklyConnectionMode(settings.LinklyConnectionMode) !=
+            LinklyConnectionMode.CloudDirectSync)
+        {
+            return RecoveryUnknown(requestedSessionId, requestedTxnRef, unknownMessage);
+        }
+
+        if (string.IsNullOrWhiteSpace(settings.LinklyCloudSecret) ||
+            string.IsNullOrWhiteSpace(CardTerminalSettings.ResolveLinklyPosVendorId(
+                settings.Environment,
+                settings.LinklyPosVendorId)))
+        {
+            return RecoveryUnknown(requestedSessionId, requestedTxnRef, unknownMessage);
+        }
+
+        var endpointValidationMessage = ValidateEndpointSettings(settings);
+        if (!string.IsNullOrWhiteSpace(endpointValidationMessage))
+        {
+            return RecoveryUnknown(requestedSessionId, requestedTxnRef, endpointValidationMessage);
+        }
+
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(LinklyTimeoutPolicy.BusinessWait);
+        try
+        {
+            Log($"transaction recovery start sessionId={requestedSessionId} txnRef={LogValue(requestedTxnRef)} amountMinor={ToMinorUnits(amount)}");
+            var token = await GetTokenAsync(settings, session.StoreCode, session.DeviceCode, timeoutCts.Token);
+            LinklyCloudTransactionResult result;
+            try
+            {
+                // 中文注释：恢复只查询已持久化的原 session，严禁把查询失败转成新的金融 POST。
+                result = await apiClient.GetTransactionAsync(
+                    settings,
+                    token.Token,
+                    requestedSessionId,
+                    timeoutCts.Token);
+            }
+            catch (LinklyCloudApiException ex) when (ex.IsAuthenticationFailure)
+            {
+                Log($"transaction recovery status auth-failure refreshing-token sessionId={requestedSessionId}");
+                token = await GetTokenAsync(settings, session.StoreCode, session.DeviceCode, timeoutCts.Token);
+                result = await apiClient.GetTransactionAsync(
+                    settings,
+                    token.Token,
+                    requestedSessionId,
+                    timeoutCts.Token);
+            }
+
+            if (result.Outcome != LinklyCloudTransactionOutcome.Completed ||
+                IsPending(result) ||
+                !MatchesRecoveryIdentity(result, amount, requestedSessionId, requestedTxnRef))
+            {
+                return RecoveryUnknown(requestedSessionId, requestedTxnRef, unknownMessage);
+            }
+
+            return ToAuthorizationResult(result, amount, requestedTxnRef, "P");
+        }
+        catch (OperationCanceledException)
+        {
+            return RecoveryUnknown(requestedSessionId, requestedTxnRef, unknownMessage);
+        }
+        catch (LinklyCloudApiException ex)
+        {
+            var detail = ex.IsAuthenticationFailure
+                ? T("linkly.cloud.pairingInvalid", "Linkly Cloud pairing is invalid. Pair the terminal again.")
+                : unknownMessage;
+            return RecoveryUnknown(requestedSessionId, requestedTxnRef, detail);
+        }
+        catch (JsonException)
+        {
+            return RecoveryUnknown(
+                requestedSessionId,
+                requestedTxnRef,
+                T("linkly.cloud.invalidResponse", "Linkly Cloud returned an invalid response."));
+        }
+        catch (HttpRequestException)
+        {
+            return RecoveryUnknown(
+                requestedSessionId,
+                requestedTxnRef,
+                T("linkly.cloud.communicationFailed", "Linkly Cloud communication failed."));
+        }
     }
 
     public async Task<LinklySettlementResult> SettlementAsync(
@@ -286,12 +413,16 @@ public sealed class LinklyCloudTerminalClient(
         timeoutCts.CancelAfter(LinklyTimeoutPolicy.BusinessWait);
         var keepDialogOpen = false;
         var transactionSubmitted = false;
+        var attemptContext = linklyPaymentAttemptContextAccessor?.Current;
+        var txnRef = string.Empty;
+        var sessionId = string.Empty;
 
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             Log($"transaction start environment={settings.Environment} txnType={txnType} store={LogValue(session.StoreCode)} device={LogValue(session.DeviceCode)} amountMinor={ToMinorUnits(amount)} hasRefundReference={!string.IsNullOrWhiteSpace(refundReference)}");
-            var txnRef = BuildTxnRef(session);
-            var sessionId = Guid.NewGuid().ToString("D");
+            txnRef = ResolveTxnRef(session, txnType, attemptContext);
+            sessionId = Guid.NewGuid().ToString("D");
             var token = await GetTokenAsync(settings, session.StoreCode, session.DeviceCode, timeoutCts.Token);
             var request = new LinklyCloudTransactionRequest(
                 txnType,
@@ -307,25 +438,44 @@ public sealed class LinklyCloudTerminalClient(
                         ["PCM"] = "0000"
                     });
 
+            timeoutCts.Token.ThrowIfCancellationRequested();
+            await BindAttemptSessionAsync(attemptContext, sessionId, txnRef);
+            // 中文注释：身份落库不等于金融提交；落库期间取消也必须停在 POST 之前。
+            timeoutCts.Token.ThrowIfCancellationRequested();
             transactionSubmitted = true;
             var result = await SendTransactionWithDialogAsync(settings, token, request, sessionId, timeoutCts.Token);
+            if (!MatchesSubmittedResponseIdentity(result, amount, sessionId, txnRef))
+                return UnknownResponseIdentity(sessionId, txnRef, txnType);
             if (IsPending(result))
             {
                 Log($"transaction pending sessionId={result.SessionId} txnType={txnType} txnRef={txnRef}");
-                var polled = await PollTransactionAsync(settings, session, token, result.SessionId, timeoutCts.Token);
+                var polled = await PollTransactionAsync(settings, session, token, sessionId, txnRef, amount, timeoutCts.Token);
                 result = polled.Result;
                 token = polled.Token;
+                if (!MatchesSubmittedResponseIdentity(result, amount, sessionId, txnRef))
+                    return UnknownResponseIdentity(sessionId, txnRef, txnType);
             }
 
             if (result.Outcome == LinklyCloudTransactionOutcome.NotSubmitted)
             {
+                // 中文注释：已核验原请求明确未提交，重试前取消仍应释放未扣款订单。
+                transactionSubmitted = false;
+                timeoutCts.Token.ThrowIfCancellationRequested();
                 Log($"transaction not-submitted retrying txnType={txnType} previousSessionId={result.SessionId} txnRef={txnRef}");
                 var retrySessionId = Guid.NewGuid().ToString("D");
+                await BindAttemptSessionAsync(attemptContext, retrySessionId, txnRef);
+                sessionId = retrySessionId;
+                timeoutCts.Token.ThrowIfCancellationRequested();
+                transactionSubmitted = true;
                 result = await SendTransactionWithDialogAsync(settings, token, request, retrySessionId, timeoutCts.Token);
+                if (!MatchesSubmittedResponseIdentity(result, amount, sessionId, txnRef))
+                    return UnknownResponseIdentity(sessionId, txnRef, txnType);
                 if (IsPending(result))
                 {
                     Log($"transaction retry pending sessionId={result.SessionId} txnType={txnType} txnRef={txnRef}");
-                    result = (await PollTransactionAsync(settings, session, token, result.SessionId, timeoutCts.Token)).Result;
+                    result = (await PollTransactionAsync(settings, session, token, sessionId, txnRef, amount, timeoutCts.Token)).Result;
+                    if (!MatchesSubmittedResponseIdentity(result, amount, sessionId, txnRef))
+                        return UnknownResponseIdentity(sessionId, txnRef, txnType);
                 }
             }
 
@@ -346,7 +496,7 @@ public sealed class LinklyCloudTerminalClient(
                 return new PaymentAuthorizationResult(false, null, message);
             }
 
-            Log($"transaction completed txnType={txnType} sessionId={result.SessionId} txnRef={LogValue(result.TxnRef ?? txnRef)} approved={result.Succeeded && LinklyApprovalResponseCodes.IsApproved(result.ResponseCode)} responseCode={LogValue(result.ResponseCode)} outcome={result.Outcome}");
+            Log($"transaction completed txnType={txnType} sessionId={result.SessionId} txnRef={LogValue(result.TxnRef ?? txnRef)} approved={result.Succeeded} responseCode={LogValue(result.ResponseCode)} outcome={result.Outcome}");
             await PresentDirectStatusAsync(
                 result.SessionId ?? txnRef,
                 result.Outcome.ToString(),
@@ -357,9 +507,13 @@ public sealed class LinklyCloudTerminalClient(
                 isFinal: true,
                 CancellationToken.None,
                 responseCode: result.ResponseCode);
-            var authorizationResult = ToAuthorizationResult(result, amount, txnRef);
+            var authorizationResult = ToAuthorizationResult(result, amount, txnRef, txnType);
             keepDialogOpen = !authorizationResult.Approved && !IsCancelledResult(result);
             return authorizationResult;
+        }
+        catch (OperationCanceledException ex) when (!transactionSubmitted && cancellationToken.IsCancellationRequested)
+        {
+            throw new CardTerminalNotSubmittedException(ex, cancellationToken);
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
@@ -376,8 +530,26 @@ public sealed class LinklyCloudTerminalClient(
                 CancellationToken.None);
             keepDialogOpen = true;
             return transactionSubmitted
-                ? ResultUnknown("linkly.cloud.resultUnknown", BuildResultUnknownMessage(message))
+                ? ResultUnknown("linkly.cloud.resultUnknown", BuildResultUnknownMessage(message), sessionId, txnRef, txnType)
                 : FallbackAllowed("linkly.cloud.timeout", message);
+        }
+        catch (OperationCanceledException) when (transactionSubmitted && cancellationToken.IsCancellationRequested)
+        {
+            var message = T(
+                "linkly.cloud.resultUnknown",
+                "Linkly Cloud transaction result is unknown. Confirm the Linkly transaction status before retrying.");
+            Log($"transaction caller-cancelled-after-submit txnType={txnType} sessionId={sessionId} txnRef={LogValue(txnRef)}");
+            await PresentDirectStatusAsync(
+                sessionId,
+                "Unknown",
+                message,
+                receiptText: null,
+                responseText: message,
+                isInteractive: false,
+                isFinal: true,
+                CancellationToken.None);
+            keepDialogOpen = true;
+            return ResultUnknown("linkly.cloud.resultUnknown", message, sessionId, txnRef, txnType);
         }
         catch (LinklyCloudApiException ex)
         {
@@ -396,7 +568,7 @@ public sealed class LinklyCloudTerminalClient(
                 CancellationToken.None);
             keepDialogOpen = true;
             return transactionSubmitted
-                ? ResultUnknown("linkly.cloud.resultUnknown", BuildResultUnknownMessage(message))
+                ? ResultUnknown("linkly.cloud.resultUnknown", BuildResultUnknownMessage(message), sessionId, txnRef, txnType)
                 : FallbackAllowed("linkly.cloud.communicationFailed", message);
         }
         catch (JsonException)
@@ -414,7 +586,7 @@ public sealed class LinklyCloudTerminalClient(
                 CancellationToken.None);
             keepDialogOpen = true;
             return transactionSubmitted
-                ? ResultUnknown("linkly.cloud.resultUnknown", BuildResultUnknownMessage(message))
+                ? ResultUnknown("linkly.cloud.resultUnknown", BuildResultUnknownMessage(message), sessionId, txnRef, txnType)
                 : FallbackAllowed("linkly.cloud.invalidResponse", message);
         }
         catch (HttpRequestException)
@@ -432,8 +604,14 @@ public sealed class LinklyCloudTerminalClient(
                 CancellationToken.None);
             keepDialogOpen = true;
             return transactionSubmitted
-                ? ResultUnknown("linkly.cloud.resultUnknown", BuildResultUnknownMessage(message))
+                ? ResultUnknown("linkly.cloud.resultUnknown", BuildResultUnknownMessage(message), sessionId, txnRef, txnType)
                 : FallbackAllowed("linkly.cloud.communicationFailed", message);
+        }
+        catch (Exception ex) when (transactionSubmitted && ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            // 中文注释：提交后未分类异常同样不能证明未扣款，必须携带原身份进入恢复。
+            Log($"transaction unknown txnType={txnType} sessionId={sessionId} error={ex.GetType().Name}");
+            return UnknownResponseIdentity(sessionId, txnRef, txnType);
         }
         finally
         {
@@ -530,6 +708,8 @@ public sealed class LinklyCloudTerminalClient(
         PosSessionState session,
         LinklyCloudToken token,
         string sessionId,
+        string txnRef,
+        decimal amount,
         CancellationToken cancellationToken)
     {
         var dialogMessage = T("linkly.cloud.directPendingMessage", "Waiting for the card terminal result. Complete the operation on the terminal.");
@@ -567,7 +747,7 @@ public sealed class LinklyCloudTerminalClient(
                 continue;
             }
 
-            if (!IsPending(result))
+            if (!MatchesSubmittedResponseIdentity(result, amount, sessionId, txnRef) || !IsPending(result))
             {
                 Log($"transaction status resolved sessionId={sessionId} outcome={result.Outcome} success={result.Succeeded} responseCode={LogValue(result.ResponseCode)}");
                 return new PolledLinklyCloudTransaction(result, token);
@@ -642,14 +822,22 @@ public sealed class LinklyCloudTerminalClient(
     private PaymentAuthorizationResult ToAuthorizationResult(
         LinklyCloudTransactionResult response,
         decimal requestedAmount,
-        string requestedTxnRef)
+        string requestedTxnRef,
+        string txnType)
     {
         var amount = response.Amount;
         var returnedTxnRef = NormalizeOptional(response.TxnRef);
-        // Cloud 直连在提交前没有可持久化的 TxnRef；必须要求终端回传真实引用，但不能拿临时客户端跟踪号冒充银行引用。
+        // 中文注释：Cloud 直连提交前已绑定本地 TxnRef；成功结果仍须回传终端引用，不能用缺失引用放行金融结果。
         if (response.Succeeded && (amount is null || string.IsNullOrWhiteSpace(returnedTxnRef)))
         {
-            return new PaymentAuthorizationResult(false, null, "ANZ Linkly Cloud result could not be verified.", ResultUnknown: true);
+            return new PaymentAuthorizationResult(
+                false,
+                null,
+                "ANZ Linkly Cloud result could not be verified.",
+                TxnType: txnType,
+                SessionId: response.SessionId,
+                TxnRef: returnedTxnRef ?? requestedTxnRef,
+                ResultUnknown: true);
         }
 
         var txnRef = returnedTxnRef ?? requestedTxnRef;
@@ -680,6 +868,11 @@ public sealed class LinklyCloudTerminalClient(
                 "ANZ Linkly Cloud",
                 amount,
                 [transaction],
+                ProcessorName,
+                ConnectionMode: LinklyConnectionMode.CloudDirectSync.ToString(),
+                TxnType: txnType,
+                SessionId: response.SessionId,
+                TxnRef: txnRef,
                 ResponseCode: transaction.ResponseCode,
                 ResponseText: transaction.ResponseText)
             : new PaymentAuthorizationResult(
@@ -688,8 +881,100 @@ public sealed class LinklyCloudTerminalClient(
                 FormatResponseMessage(response.ResponseText, response.ResponseCode),
                 amount,
                 [transaction],
+                ProcessorName,
+                ConnectionMode: LinklyConnectionMode.CloudDirectSync.ToString(),
+                TxnType: txnType,
+                SessionId: response.SessionId,
+                TxnRef: txnRef,
                 ResponseCode: transaction.ResponseCode,
                 ResponseText: transaction.ResponseText);
+    }
+
+    private PaymentAuthorizationResult RecoveryUnknown(
+        string? sessionId,
+        string? txnRef,
+        string detail)
+    {
+        var guidance = T(
+            "linkly.cloud.resultUnknown",
+            "Linkly Cloud transaction result is unknown. Confirm the Linkly transaction status before retrying.");
+        return ResultUnknown(
+            "linkly.cloud.resultUnknown",
+            string.Equals(detail, guidance, StringComparison.Ordinal)
+                ? detail
+                : BuildResultUnknownMessage(detail),
+            sessionId,
+            txnRef,
+            "P");
+    }
+
+    private static bool MatchesRecoveryIdentity(
+        LinklyCloudTransactionResult result,
+        decimal requestedAmount,
+        string requestedSessionId,
+        string requestedTxnRef)
+    {
+        var responseSessionId = NormalizeOptional(result.SessionId);
+        var responseTxnRef = NormalizeOptional(result.TxnRef);
+        return string.Equals(responseSessionId, requestedSessionId, StringComparison.Ordinal) &&
+            string.Equals(responseTxnRef, requestedTxnRef, StringComparison.Ordinal) &&
+            result.Amount is decimal responseAmount &&
+            decimal.Round(responseAmount, 2, MidpointRounding.AwayFromZero) ==
+            decimal.Round(requestedAmount, 2, MidpointRounding.AwayFromZero);
+    }
+
+    private PaymentAuthorizationResult UnknownResponseIdentity(string sessionId, string txnRef, string txnType) =>
+        ResultUnknown("linkly.cloud.resultUnknown",
+            T("linkly.cloud.resultUnknown", "Linkly Cloud transaction result is unknown. Confirm the Linkly transaction status before retrying."),
+            sessionId, txnRef, txnType);
+
+    private static bool MatchesSubmittedResponseIdentity(
+        LinklyCloudTransactionResult result, decimal amount, string sessionId, string txnRef)
+    {
+        // 中文注释：先核对冻结身份，再决定轮询、重试或接受金融结果；外来会话不得触发任何下一步交易。
+        if (!string.Equals(NormalizeOptional(result.SessionId), sessionId, StringComparison.Ordinal))
+            return false;
+        if (!IsPending(result) && result.Outcome == LinklyCloudTransactionOutcome.Completed && result.Succeeded)
+            return MatchesRecoveryIdentity(result, amount, sessionId, txnRef);
+        // 未提交、处理中及终端明确取消/拒绝可能没有引用；一旦提供，也必须属于本次请求。
+        return (NormalizeOptional(result.TxnRef) is not { } responseTxnRef ||
+                string.Equals(responseTxnRef, txnRef, StringComparison.Ordinal)) &&
+            (result.Amount is not { } responseAmount || responseAmount == amount);
+    }
+
+    private static async Task BindAttemptSessionAsync(
+        LinklyPaymentAttemptContext? attemptContext,
+        string sessionId,
+        string txnRef)
+    {
+        if (attemptContext is null)
+        {
+            return;
+        }
+
+        // 中文注释：提交证据必须脱离调用方取消；调用方取消只能改变等待结果，不能阻止身份落库。
+        await attemptContext.BindSessionAsync(
+            sessionId,
+            txnRef,
+            DateTimeOffset.UtcNow,
+            CancellationToken.None);
+    }
+
+    private static string ResolveTxnRef(
+        PosSessionState session,
+        string txnType,
+        LinklyPaymentAttemptContext? attemptContext)
+    {
+        if (attemptContext is not null &&
+            LinklyLocalTxnRef.TryNormalizeHistoricalReference(attemptContext.TxnRef, out var persistedTxnRef))
+        {
+            return persistedTxnRef;
+        }
+
+        var transactionType = string.Equals(txnType, "R", StringComparison.OrdinalIgnoreCase) ? 'R' : 'P';
+        return attemptContext is not null
+            ? BuildTxnRef(transactionType, attemptContext.AttemptGuid.ToString("D"))
+            : BuildTxnRef(session, transactionType);
     }
 
     private static bool IsPending(LinklyCloudTransactionResult result)
@@ -730,7 +1015,24 @@ public sealed class LinklyCloudTerminalClient(
             device = "POS";
         }
 
-        return Limit($"{device}{DateTimeOffset.UtcNow:yyMMddHHmmss}", 16);
+        return BuildTxnRef('P', $"{device}|{session.StoreCode}|{Guid.NewGuid():D}");
+    }
+
+    private static string BuildTxnRef(PosSessionState session, char transactionType)
+    {
+        var device = new string(session.DeviceCode.Where(char.IsLetterOrDigit).ToArray());
+        if (string.IsNullOrWhiteSpace(device))
+        {
+            device = "POS";
+        }
+
+        return BuildTxnRef(transactionType, $"{device}|{session.StoreCode}|{Guid.NewGuid():D}");
+    }
+
+    private static string BuildTxnRef(char transactionType, string stableIdentity)
+    {
+        // 中文注释：Linkly TxnRef 必须同时满足 16 字符上限和同一 PIN pad 唯一；哈希编码避免长设备码截断时间造成碰撞。
+        return LinklyLocalTxnRef.Create(transactionType, stableIdentity);
     }
 
     private static string? TryParseRefundReference(string? reference)
@@ -768,7 +1070,8 @@ public sealed class LinklyCloudTerminalClient(
     {
         var text = NormalizeOptional(result.ResponseText);
         var code = NormalizeOptional(result.ResponseCode);
-        var approved = result.Succeeded && string.Equals(code, "00", StringComparison.OrdinalIgnoreCase);
+        // 中文注释：Linkly 的 Success 字段才是金融结果；ResponseCode 仅用于展示，不能把批准收窄为 code 00。
+        var approved = result.Succeeded;
         var fallback = approved
             ? T("linkly.cloud.approved", "ANZ Linkly Cloud transaction approved.")
             : T("linkly.cloud.declined", "ANZ Linkly Cloud transaction was declined.");
@@ -807,9 +1110,22 @@ public sealed class LinklyCloudTerminalClient(
         return new PaymentAuthorizationResult(false, null, message, StatusKey: statusKey, FallbackAllowed: true);
     }
 
-    private PaymentAuthorizationResult ResultUnknown(string statusKey, string message)
+    private PaymentAuthorizationResult ResultUnknown(
+        string statusKey,
+        string message,
+        string? sessionId = null,
+        string? txnRef = null,
+        string? txnType = null)
     {
-        return new PaymentAuthorizationResult(false, null, message, StatusKey: statusKey, ResultUnknown: true);
+        return new PaymentAuthorizationResult(
+            false,
+            null,
+            message,
+            StatusKey: statusKey,
+            TxnType: txnType,
+            SessionId: sessionId,
+            TxnRef: txnRef,
+            ResultUnknown: true);
     }
 
     private string BuildResultUnknownMessage(string detail)

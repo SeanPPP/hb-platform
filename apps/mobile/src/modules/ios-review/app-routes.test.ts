@@ -62,6 +62,12 @@ async function run() {
       })
     ).data as any;
 
+  const localBarcodeOne = await request("POST", "/react/v1/products/generate-local-barcode", null, { supplierCode: "SP001" });
+  const localBarcodeTwo = await request("POST", "/react/v1/products/generate-local-barcode", null, { supplierCode: "SP001" });
+  assert.match(localBarcodeOne.barcode, /^9529\d{9}$/);
+  assert.notEqual(localBarcodeOne.barcode, localBarcodeTwo.barcode);
+  await assert.rejects(request("POST", "/react/v1/products/generate-local-barcode", null, { supplierCode: "200" }));
+
   const reviewQrToken = (index: number) =>
     `HBATE1.review_${index}.${"A".repeat(16)}.${"B".repeat(40)}.${"C".repeat(22)}`;
   const attendanceQrVerification = {
@@ -721,6 +727,25 @@ async function run() {
     ),
     "审核模式创建的店员必须可以从列表读回",
   );
+
+  const staffCodeUrl = `/react/v1/store-users/${createdReviewUser.userGUID}/cashier-barcode`;
+  assert.equal((await request("GET", staffCodeUrl, null, { storeCode: "REV001" })).exists, false);
+  const staffCode = await request("POST", `${staffCodeUrl}/ensure`, { storeCode: "REV001" });
+  assert.match(staffCode.barcode, /^95288\d{8}$/);
+  assert.equal((await request("POST", `${staffCodeUrl}/ensure`, { storeCode: "REV001" })).barcode, staffCode.barcode);
+  const confirmation = { storeCode: "REV001", barcode: staffCode.barcode, printAttemptId: "review-attempt-1" };
+  await request("POST", `${staffCodeUrl}/print-confirmation`, confirmation);
+  assert.equal((await request("POST", `${staffCodeUrl}/print-confirmation`, confirmation)).printCount, 1);
+  await assert.rejects(request("GET", staffCodeUrl, null, { storeCode: "REV002" }));
+
+  const posStaffUrl = "/react/v1/store-users/review-pos-staff-1/cashier-barcode";
+  const posStaffCode = await request("POST", `${posStaffUrl}/ensure`, { storeCode: "REV003" });
+  assert.notEqual(posStaffCode.barcode, staffCode.barcode, "不同员工使用独立演示码");
+  await assert.rejects(request("POST", "/react/v1/store-users/review-pos-staff-5/cashier-barcode/ensure", { storeCode: "REV003" }));
+  await assert.rejects(request("POST", `${posStaffUrl}/print-confirmation`, { ...confirmation, storeCode: "REV003" }));
+  const posStaffRows = await request("POST", "/react/v1/store-users/grid", { storeCode: "REV003" });
+  assert.equal(posStaffRows.items.length, 5);
+  assert.ok(posStaffRows.items.every((user: { storeCode: string }) => user.storeCode === "REV003"));
 
   const mobileRoot = resolve(import.meta.dirname, "../../..");
   const accountProvisioningSources = await Promise.all([
@@ -2422,6 +2447,23 @@ async function run() {
     displayName: "Updated Demo Reviewer",
   });
   assert.equal(profile.displayName, "Updated Demo Reviewer");
+
+  assert.equal(await request("GET", "/EmployeeProfiles/me/sensitive-change-request"), null);
+  const reviewDraft = await request("PUT", "/EmployeeProfiles/me/sensitive-change-request", {
+    bankBsb: profile.bankBsb,
+    bankAccountNumber: "00001234",
+    superannuationCompanyName: profile.superannuationCompanyName,
+    superannuationCompanyCode: profile.superannuationCompanyCode,
+    superannuationAccountNumber: profile.superannuationAccountNumber,
+    identityType: profile.identityType,
+    identityId: profile.identityId,
+    expectedSensitiveRevision: profile.sensitiveRevision,
+  });
+  assert.equal(reviewDraft.status, "Pending");
+  assert.deepEqual(reviewDraft.changedFields, ["bankAccountNumber"]);
+  assert.equal((await request("GET", "/EmployeeProfiles/me")).bankAccountNumber, profile.bankAccountNumber, "敏感资料提交只创建待审草稿，不直接覆盖正式资料");
+  assert.equal((await request("GET", "/EmployeeProfiles/me/sensitive-change-request")).bankAccountNumber, "00001234");
+  await assert.rejects(request("PUT", "/EmployeeProfiles/me/sensitive-change-request", { expectedSensitiveRevision: -1 }));
 
   const exportData = await request(
     "POST",

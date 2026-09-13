@@ -79,6 +79,15 @@ export const P = {
     Export: 'Reports.Export',
     ProductMovementView: 'Reports.ProductMovement.View',
   },
+  SalesDashboard: {
+    SalesDataView: 'SalesDashboard.SalesData.View',
+    SalesDetailView: 'SalesDashboard.SalesDetail.View',
+    CompactBoardView: 'SalesDashboard.CompactBoard.View',
+    ProductMovementView: 'SalesDashboard.ProductMovement.View',
+    WarehouseFlowView: 'SalesDashboard.WarehouseFlow.View',
+    LocalProductAnalysisView: 'SalesDashboard.LocalProductAnalysis.View',
+    PurchaseAmountView: 'SalesDashboard.PurchaseAmount.View',
+  },
   System: {
     ViewLogs: 'System.ViewLogs',
     ViewPerformanceBaseline: 'System.ViewPerformanceBaseline',

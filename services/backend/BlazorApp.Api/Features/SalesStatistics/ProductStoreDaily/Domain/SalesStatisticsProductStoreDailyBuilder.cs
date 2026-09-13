@@ -16,6 +16,15 @@ internal sealed class SalesStatisticsProductStoreDailyBuilder
             .GroupBy(row => row.ProductCode.Trim(), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key,
                 group => group.Select(row => row.ImportPrice).FirstOrDefault(price => price is > 0));
+        // 每个统计商品只需看到自己的分店成本行；先按规范化商品编码建索引，避免每个统计分组重复扫描全量分店价格。
+        var storeCostMap = input.StoreCosts
+            .Where(row => !string.IsNullOrWhiteSpace(row.ProductCode))
+            .GroupBy(row => row.ProductCode!.Trim(), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlyList<StoreCostRow>)group.ToList(),
+                StringComparer.OrdinalIgnoreCase
+            );
         // POSM 明细必须按订单支付金额分摊；HBSales 与补充退货行继续使用自身金额。
         var resolvedRows = input.RawRows.Select(row => new ProductStoreDailyResolvedRow(
                 row,
@@ -43,7 +52,14 @@ internal sealed class SalesStatisticsProductStoreDailyBuilder
                     null
                 ),
                 row.Row.ProductCode!.Trim()))
-            .Select(group => BuildStatistic(group, input.StoreCosts, productCostMap, warehouseCostMap, input.LastSourceUploadTime))
+            .Select(group => BuildStatistic(
+                group,
+                storeCostMap.TryGetValue(group.Key.ProductCode, out var matchingStoreCosts)
+                    ? matchingStoreCosts
+                    : Array.Empty<StoreCostRow>(),
+                productCostMap,
+                warehouseCostMap,
+                input.LastSourceUploadTime))
             .ToList();
         var returnAdjustments = resolvedRows.Where(row => input.SupplementalReturnRows.Contains(row.Row))
             .GroupBy(row => row.BranchCode, StringComparer.OrdinalIgnoreCase)

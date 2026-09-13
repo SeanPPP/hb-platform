@@ -5347,6 +5347,64 @@ public sealed class MainViewModelScannerTests
         Assert.Equal("SKU-UNKNOWN-BACK", cart.Lines[0].ProductCode);
     }
 
+    [Theory]
+    [InlineData(CardProcessorKind.Linkly, true, true, true)]
+    [InlineData(CardProcessorKind.Linkly, false, true, true)]
+    [InlineData(CardProcessorKind.Linkly, true, false, true)]
+    [InlineData(CardProcessorKind.Linkly, true, true, false)]
+    [InlineData(CardProcessorKind.Square, true, true, true)]
+    [InlineData(CardProcessorKind.Square, false, true, true)]
+    [InlineData(CardProcessorKind.Square, true, false, true)]
+    [InlineData(CardProcessorKind.Square, true, true, false)]
+    public async Task Card_recovery_after_persistence_failure_unlocks_only_matching_order_and_attempt(
+        CardProcessorKind processor, bool matchesOrder, bool matchesAttempt, bool matchesProvider)
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("1042", "SKU-PERSIST-RECOVER", "930PERSISTRECOVER"));
+        var recovery = new FakeCardPaymentRecoveryService { OpenItems = [] };
+        var viewModel = CreateAuthorizedMainViewModelWithPaymentWorkflow(cart,
+            new CashCheckoutService(), new FakeLocalOrderRepository(), new FakeSyncQueueRepository(),
+            new UnknownCardTerminalClient(), recovery);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        viewModel.Session = viewModel.Session with
+        {
+            CashierSession = CreateCashierSession(Permissions.PosTerminal.Payment.TakeCard, Permissions.PosTerminal.Payment.View)
+        };
+        viewModel.ShowCashPaymentCommand.Execute(null);
+        var payment = Assert.IsType<PaymentViewModel>(viewModel.CurrentScreen);
+        var selectedKey = new CardRecoveryAttemptKey(processor, Guid.NewGuid());
+        var expectedOrderGuid = Guid.NewGuid();
+        GetCardPaymentSession(payment).SetPersistenceRecoveryOrder(expectedOrderGuid);
+        payment.SetCurrentCardRecoveryRequired(true, "Save requires recovery");
+        payment.PaymentTenders.Add(new PaymentTender(PaymentMethodKind.Card, 10m, "BANK-APPROVED"));
+        Assert.True(payment.OpenCardRecoveryCenterCommand.CanExecute(null));
+        payment.OpenCardRecoveryCenterCommand.Execute(null);
+        await WaitUntilAsync(() => viewModel.CurrentScreen is CardRecoveryCenterViewModel);
+        var order = CreateReceiptPrintOrder(PaymentMethodKind.Card);
+        var paymentKeyPrefix = (processor == CardProcessorKind.Linkly) == matchesProvider ? "CARD_ATTEMPT" : "SQUARE_ATTEMPT";
+        order = order with
+        {
+            OrderGuid = matchesOrder ? expectedOrderGuid : Guid.NewGuid(),
+            Payments = [order.Payments.Single() with
+            {
+                IdempotencyKey = $"{paymentKeyPrefix}:{(matchesAttempt ? selectedKey.AttemptGuid : Guid.NewGuid()):N}"
+            }]
+        };
+
+        await InvokeHandleCardRecoveryCenterResultAsync(viewModel, selectedKey,
+            new CardPaymentRecoveryResult(CardPaymentRecoveryOutcome.OrderCompleted, "Recovered", Order: order));
+
+        var completed = matchesOrder && matchesAttempt && matchesProvider;
+        Assert.Equal(!completed, payment.IsPaymentInteractionLocked);
+        Assert.Equal(!completed, payment.IsCardPaymentRecoveryRequired);
+        Assert.Equal(completed, cart.IsEmpty);
+        Assert.Equal(completed ? 0 : 1, payment.PaymentTenders.Count);
+        if (completed)
+        {
+            Assert.Same(viewModel.PosTerminal, viewModel.CurrentScreen);
+        }
+    }
+
     [Fact]
     public async Task Card_recovery_center_order_completed_for_current_unknown_key_clears_payment_when_pending_sync_refresh_fails()
     {
@@ -5370,16 +5428,15 @@ public sealed class MainViewModelScannerTests
             "Recovering",
             DateTimeOffset.UtcNow.AddMinutes(-2),
             DateTimeOffset.UtcNow.AddMinutes(-1));
-        var listCallCount = 0;
+        // 交易在执行恢复前持续可见，不依赖入口执行了几次资格查询。
+        var recoveryStarted = false;
         var recovery = new FakeCardPaymentRecoveryService
         {
-            ListOpenHandler = (_, _) => ++listCallCount switch
-            {
-                2 => Task.FromResult<IReadOnlyList<CardRecoveryQueueItem>>([queueItem]),
-                3 => Task.FromException<IReadOnlyList<CardRecoveryQueueItem>>(
-                    new InvalidOperationException("queue unavailable")),
-                _ => Task.FromResult<IReadOnlyList<CardRecoveryQueueItem>>([])
-            },
+            // 恢复前的资格复查与页面加载都能看到交易；恢复后的刷新单独模拟失败。
+            ListOpenHandler = (_, _) => recoveryStarted
+                ? Task.FromException<IReadOnlyList<CardRecoveryQueueItem>>(
+                    new InvalidOperationException("queue unavailable"))
+                : Task.FromResult<IReadOnlyList<CardRecoveryQueueItem>>([queueItem]),
             TargetedRecoverResult = new CardPaymentRecoveryResult(
                 CardPaymentRecoveryOutcome.OrderCompleted,
                 "Recovered current payment completed.")
@@ -5421,12 +5478,14 @@ public sealed class MainViewModelScannerTests
         await payment.CardPaymentErrorPrimaryActionCommand.ExecuteAsync(null);
         await WaitUntilAsync(() => viewModel.CurrentScreen is CardRecoveryCenterViewModel);
         var center = Assert.IsType<CardRecoveryCenterViewModel>(viewModel.CurrentScreen);
+        var listCallCountBeforeRecovery = recovery.ListOpenCallCount;
         Assert.Equal(currentKey, center.SelectedAttempt?.Key);
 
         syncQueue.ThrowOnRead = true;
+        recoveryStarted = true;
         await center.RecoverCommand.ExecuteAsync(null);
 
-        Assert.Equal(3, listCallCount);
+        Assert.Equal(listCallCountBeforeRecovery + 1, recovery.ListOpenCallCount);
         Assert.Same(viewModel.PosTerminal, viewModel.CurrentScreen);
         Assert.Same(payment, viewModel.CashPayment);
         Assert.Equal(
@@ -5468,14 +5527,13 @@ public sealed class MainViewModelScannerTests
             "Recovering",
             DateTimeOffset.UtcNow.AddMinutes(-2),
             DateTimeOffset.UtcNow.AddMinutes(-1));
-        var listCallCount = 0;
+        // 交易在执行恢复前持续可见，不依赖入口执行了几次资格查询。
+        var recoveryStarted = false;
         var recovery = new FakeCardPaymentRecoveryService
         {
-            ListOpenHandler = (_, _) => ++listCallCount switch
-            {
-                2 => Task.FromResult<IReadOnlyList<CardRecoveryQueueItem>>([queueItem]),
-                _ => Task.FromResult<IReadOnlyList<CardRecoveryQueueItem>>([])
-            },
+            // 按恢复状态提供队列，避免资格复查次数改变测试的业务前置条件。
+            ListOpenHandler = (_, _) => Task.FromResult<IReadOnlyList<CardRecoveryQueueItem>>(
+                recoveryStarted ? [] : [queueItem]),
             TargetedRecoverResult = new CardPaymentRecoveryResult(
                 CardPaymentRecoveryOutcome.OrderCompleted,
                 "Recovered current payment completed.",
@@ -5527,6 +5585,7 @@ public sealed class MainViewModelScannerTests
         await payment.CardPaymentErrorPrimaryActionCommand.ExecuteAsync(null);
         await WaitUntilAsync(() => viewModel.CurrentScreen is CardRecoveryCenterViewModel);
         var center = Assert.IsType<CardRecoveryCenterViewModel>(viewModel.CurrentScreen);
+        var listCallCountBeforeRecovery = recovery.ListOpenCallCount;
         Assert.Equal(currentKey, center.SelectedAttempt?.Key);
         syncQueue.Overview = new SyncQueueOverview(4, 0, 0, null);
         var syncReadCountBeforeRecovery = syncQueue.ReadCount;
@@ -5543,6 +5602,7 @@ public sealed class MainViewModelScannerTests
         viewModel.PropertyChanged += ThrowFromPropertyChanged;
         try
         {
+            recoveryStarted = true;
             var commandException = await Record.ExceptionAsync(
                 () => center.RecoverCommand.ExecuteAsync(null));
 
@@ -5553,7 +5613,7 @@ public sealed class MainViewModelScannerTests
             viewModel.PropertyChanged -= ThrowFromPropertyChanged;
         }
 
-        Assert.Equal(3, listCallCount);
+        Assert.Equal(listCallCountBeforeRecovery + 1, recovery.ListOpenCallCount);
         Assert.Equal(1, recovery.TargetedRecoverCallCount);
         Assert.False(cardSession.HasUnknownResult);
         Assert.Null(payment.CreateCardPaymentHandoffRequest().RecoveryAttemptKey);
@@ -5687,11 +5747,12 @@ public sealed class MainViewModelScannerTests
                 "Recovering",
                 DateTimeOffset.UtcNow.AddMinutes(-2),
                 DateTimeOffset.UtcNow.AddMinutes(-1));
-            var listCallCount = 0;
+            // 交易在执行恢复前持续可见，不依赖入口执行了几次资格查询。
+            var recoveryStarted = false;
             var recovery = new FakeCardPaymentRecoveryService
             {
                 ListOpenHandler = (_, _) => Task.FromResult<IReadOnlyList<CardRecoveryQueueItem>>(
-                    ++listCallCount == 2 ? [queueItem] : []),
+                    recoveryStarted ? [] : [queueItem]),
                 TargetedRecoverResult = new CardPaymentRecoveryResult(
                     CardPaymentRecoveryOutcome.OrderCompleted,
                     "Recovered current payment completed.")
@@ -5731,6 +5792,7 @@ public sealed class MainViewModelScannerTests
             await payment.CardPaymentErrorPrimaryActionCommand.ExecuteAsync(null);
             await WaitUntilAsync(() => viewModel.CurrentScreen is CardRecoveryCenterViewModel);
             var center = Assert.IsType<CardRecoveryCenterViewModel>(viewModel.CurrentScreen);
+            var listCallCountBeforeRecovery = recovery.ListOpenCallCount;
             Assert.Equal(currentKey, center.SelectedAttempt?.Key);
             syncQueue.Overview = new SyncQueueOverview(4, 0, 0, null);
             var syncReadCountBeforeRecovery = syncQueue.ReadCount;
@@ -5748,6 +5810,7 @@ public sealed class MainViewModelScannerTests
             throwOnCartChanged = true;
             try
             {
+                recoveryStarted = true;
                 var commandException = await Record.ExceptionAsync(
                     () => center.RecoverCommand.ExecuteAsync(null));
 
@@ -5758,7 +5821,7 @@ public sealed class MainViewModelScannerTests
                 viewModel.PropertyChanged -= ThrowFromWarningNotification;
             }
 
-            Assert.Equal(3, listCallCount);
+            Assert.Equal(listCallCountBeforeRecovery + 1, recovery.ListOpenCallCount);
             Assert.Equal(1, recovery.TargetedRecoverCallCount);
             Assert.False(cardSession.HasUnknownResult);
             Assert.Null(payment.CreateCardPaymentHandoffRequest().RecoveryAttemptKey);
@@ -5813,11 +5876,12 @@ public sealed class MainViewModelScannerTests
                 "Recovering",
                 DateTimeOffset.UtcNow.AddMinutes(-2),
                 DateTimeOffset.UtcNow.AddMinutes(-1));
-            var listCallCount = 0;
+            // 交易在执行恢复前持续可见，不依赖入口执行了几次资格查询。
+            var recoveryStarted = false;
             var recovery = new FakeCardPaymentRecoveryService
             {
                 ListOpenHandler = (_, _) => Task.FromResult<IReadOnlyList<CardRecoveryQueueItem>>(
-                    ++listCallCount == 2 ? [queueItem] : []),
+                    recoveryStarted ? [] : [queueItem]),
                 TargetedRecoverResult = new CardPaymentRecoveryResult(
                     CardPaymentRecoveryOutcome.OrderCompleted,
                     "Recovered current payment completed.")
@@ -5859,16 +5923,18 @@ public sealed class MainViewModelScannerTests
             await payment.CardPaymentErrorPrimaryActionCommand.ExecuteAsync(null);
             await WaitUntilAsync(() => viewModel.CurrentScreen is CardRecoveryCenterViewModel);
             var center = Assert.IsType<CardRecoveryCenterViewModel>(viewModel.CurrentScreen);
+            var listCallCountBeforeRecovery = recovery.ListOpenCallCount;
             Assert.Equal(currentKey, center.SelectedAttempt?.Key);
             syncQueue.Overview = new SyncQueueOverview(4, 0, 0, null);
             var syncReadCountBeforeRecovery = syncQueue.ReadCount;
             throwOnCartChanged = true;
 
+            recoveryStarted = true;
             var commandException = await Record.ExceptionAsync(
                 () => center.RecoverCommand.ExecuteAsync(null));
 
             Assert.Null(commandException);
-            Assert.Equal(3, listCallCount);
+            Assert.Equal(listCallCountBeforeRecovery + 1, recovery.ListOpenCallCount);
             Assert.Equal(1, recovery.TargetedRecoverCallCount);
             Assert.Equal(
                 "Payment completed. Do not take payment again; a follow-up action needs attention.",
@@ -5919,11 +5985,12 @@ public sealed class MainViewModelScannerTests
             "Recovering",
             DateTimeOffset.UtcNow.AddMinutes(-4),
             DateTimeOffset.UtcNow.AddMinutes(-3));
-        var listCallCount = 0;
+        // 交易在执行恢复前持续可见，不依赖入口执行了几次资格查询。
+        var recoveryStarted = false;
         var recovery = new FakeCardPaymentRecoveryService
         {
             ListOpenHandler = (_, _) => Task.FromResult<IReadOnlyList<CardRecoveryQueueItem>>(
-                ++listCallCount == 2 ? [queueItem] : []),
+                recoveryStarted ? [] : [queueItem]),
             TargetedResolveResult = new CardRecoveryResolutionResult(
                 true,
                 "Historical payment confirmed.",
@@ -5967,11 +6034,14 @@ public sealed class MainViewModelScannerTests
         await payment.CardPaymentErrorPrimaryActionCommand.ExecuteAsync(null);
         await WaitUntilAsync(() => viewModel.CurrentScreen is CardRecoveryCenterViewModel);
         var center = Assert.IsType<CardRecoveryCenterViewModel>(viewModel.CurrentScreen);
+        var listCallCountBeforeRecovery = recovery.ListOpenCallCount;
         Assert.Equal(historicalKey, center.SelectedAttempt?.Key);
         center.ResolutionReason = "Bank settlement confirmed";
 
         syncQueue.ThrowOnRead = true;
+        recoveryStarted = true;
         await center.ConfirmPaidCommand.ExecuteAsync(null);
+        Assert.Equal(listCallCountBeforeRecovery + 1, recovery.ListOpenCallCount);
 
         Assert.Same(center, viewModel.CurrentScreen);
         Assert.Equal(

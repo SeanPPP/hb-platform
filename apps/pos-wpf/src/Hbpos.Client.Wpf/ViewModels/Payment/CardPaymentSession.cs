@@ -21,10 +21,10 @@ internal sealed class CardPaymentSession
     private Task _shutdownCancellationTask = Task.CompletedTask;
     private bool _cardPaymentCancellationRequested;
     private bool _awaitingLateCardResultAfterManualCancel;
-    private bool _discardLateCardResultAfterManualCancel;
     private bool _cardPaymentResultUnknownRequiresRecovery;
     private CardPaymentHandoffCandidate? _cardPaymentHandoffCandidate;
     private bool _cardPaymentHandoffQualificationPending;
+    private bool _cardPaymentHandoffInProgress;
     private long _cardPaymentHandoffQualificationGeneration;
     private bool _disposed;
     private CardRecoveryAttemptKey? _recoveryAttemptKey;
@@ -50,6 +50,15 @@ internal sealed class CardPaymentSession
     public CardRecoveryAttemptKey? RecoveryAttemptKey => _recoveryAttemptKey;
 
     public Guid? RecoveryOrderGuid => _recoveryOrderGuid;
+
+    public void SetPersistenceRecoveryOrder(Guid orderGuid)
+    {
+        // 中文注释：落盘未知后保留工作流冻结的订单身份，恢复成功只能解除该订单的付款页锁。
+        if (orderGuid != Guid.Empty)
+        {
+            _recoveryOrderGuid = orderGuid;
+        }
+    }
 
     // ── State accessors (used by PaymentViewModel) ──
 
@@ -88,7 +97,6 @@ internal sealed class CardPaymentSession
         _recoveryOrderGuid = null;
         _cardPaymentCancellationRequested = false;
         _awaitingLateCardResultAfterManualCancel = false;
-        _discardLateCardResultAfterManualCancel = false;
         _activeCardPaymentCts?.Dispose();
         _activeCardPaymentCts = new CancellationTokenSource();
         _vm.IsCardPaymentInProgress = true;
@@ -144,7 +152,6 @@ internal sealed class CardPaymentSession
 
         _cardPaymentCancellationRequested = true;
         _awaitingLateCardResultAfterManualCancel = true;
-        _discardLateCardResultAfterManualCancel = false;
         _manuallyCancelledCardPaymentCts = _activeCardPaymentCts;
         _activeCardPaymentCts.Cancel();
         _vm.IsCardPaymentInProgress = false;
@@ -222,13 +229,6 @@ internal sealed class CardPaymentSession
     public void ResetManualCancellationState()
     {
         _awaitingLateCardResultAfterManualCancel = false;
-        _discardLateCardResultAfterManualCancel = false;
-    }
-
-    public bool ShouldDiscardLateResult
-    {
-        get => _discardLateCardResultAfterManualCancel;
-        set => _discardLateCardResultAfterManualCancel = value;
     }
 
     // ── Exception handling ──
@@ -430,6 +430,7 @@ internal sealed class CardPaymentSession
             CardPaymentErrorOverlayPrimaryActionKind.RecoverPrevious =>
                 _cardPaymentResultUnknownRequiresRecovery &&
                 !_cardPaymentHandoffQualificationPending &&
+                !_cardPaymentHandoffInProgress &&
                 !_vm.IsShuttingDown &&
                 (_cardPaymentHandoffCandidate is not null
                     ? _vm.NavigationActions.HandoffCardPaymentAsync is not null
@@ -514,6 +515,50 @@ internal sealed class CardPaymentSession
         return true;
     }
 
+    public bool CanOpenRecoveryCenter() =>
+        !_disposed &&
+        !_vm.IsShuttingDown &&
+        !_cardPaymentHandoffQualificationPending &&
+        !_cardPaymentHandoffInProgress &&
+        !_vm.CardPaymentErrorPrimaryActionCommand.IsRunning &&
+        _vm.NavigationActions.OpenCardRecoveryCenter is not null;
+
+    public async Task OpenRecoveryCenterAsync()
+    {
+        if (!CanOpenRecoveryCenter())
+        {
+            return;
+        }
+
+        await OpenRecoveryCenterCoreAsync();
+    }
+
+    private async Task OpenRecoveryCenterCoreAsync()
+    {
+        if (_cardPaymentResultUnknownRequiresRecovery &&
+            _recoveryAttemptKey is { } attemptKey &&
+            _recoveryOrderGuid is { } orderGuid &&
+            _vm.CardPaymentErrorOverlay is { PrimaryActionKind: CardPaymentErrorOverlayPrimaryActionKind.RecoverPrevious } overlay)
+        {
+            // 关闭弹窗会失效旧资格；进入恢复中心时重新核验持久化的原订单，不能按相同商品猜测身份。
+            var generation = Interlocked.Increment(ref _cardPaymentHandoffQualificationGeneration);
+            _cardPaymentHandoffQualificationPending = true;
+            if (!await PrepareCardPaymentHandoffAsync(generation, attemptKey, orderGuid, overlay))
+            {
+                return;
+            }
+        }
+
+        // 原订单已安全留在恢复队列后才释放活动购物车，避免确认未支付的草稿被同一笔订单挡住。
+        if (_cardPaymentHandoffCandidate is { } candidate &&
+            !await TryHandoffCardPaymentAsync(candidate))
+        {
+            return;
+        }
+
+        _vm.NavigationActions.OpenCardRecoveryCenter?.Invoke();
+    }
+
     public async Task ExecuteErrorPrimaryActionAsync()
     {
         if (!CanExecuteErrorPrimaryAction())
@@ -533,33 +578,36 @@ internal sealed class CardPaymentSession
         var candidate = _cardPaymentHandoffCandidate;
         if (candidate is null)
         {
-            _vm.OpenCardRecoveryCenterCommand.Execute(null);
+            await OpenRecoveryCenterCoreAsync();
             _vm.CardPaymentErrorPrimaryActionCommand.NotifyCanExecuteChanged();
             return;
         }
 
+        await TryHandoffCardPaymentAsync(candidate);
+    }
+
+    private async Task<bool> TryHandoffCardPaymentAsync(CardPaymentHandoffCandidate candidate)
+    {
         var handoff = _vm.NavigationActions.HandoffCardPaymentAsync;
-        if (handoff is null)
+        if (handoff is null || _cardPaymentHandoffInProgress)
         {
-            return;
+            return false;
         }
 
+        var completed = false;
+        _cardPaymentHandoffInProgress = true;
         try
         {
             _vm.SetStatus("payment.card.error.overlay.activeSession.handingOff");
             if (!await handoff(candidate, _vm.CreateCardPaymentHandoffRequest()))
             {
                 RestoreUnknownResultStatus();
-                _vm.CardPaymentErrorPrimaryActionCommand.NotifyCanExecuteChanged();
-                return;
             }
-
-            if (!_vm.CompleteCardPaymentHandoff())
+            else if (!(completed = _vm.CompleteCardPaymentHandoff()))
             {
                 RestoreUnknownResultStatus();
                 _vm.IsPaymentInteractionLocked = true;
                 _vm.NotifyPaymentCommandStates();
-                return;
             }
         }
         catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
@@ -573,9 +621,16 @@ internal sealed class CardPaymentSession
             RestoreUnknownResultStatus();
             _vm.NotifyPaymentCommandStates();
         }
+        finally
+        {
+            // 只释放入口互斥；致命异常继续原样传播，不能被通知异常覆盖。
+            _cardPaymentHandoffInProgress = false;
+        }
 
         // 致命异常会绕过上面的普通异常 catch；不得在 finally 中执行 UI 通知覆盖原异常。
         _vm.CardPaymentErrorPrimaryActionCommand.NotifyCanExecuteChanged();
+        _vm.OpenCardRecoveryCenterCommand.NotifyCanExecuteChanged();
+        return completed;
     }
 
     private void RestoreUnknownResultStatus()

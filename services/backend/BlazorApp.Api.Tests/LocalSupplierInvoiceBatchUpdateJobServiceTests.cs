@@ -18,7 +18,7 @@ public sealed class LocalSupplierInvoiceBatchUpdateJobServiceTests
         );
         var storeService = new Mock<ILocalSupplierInvoicesReactService>();
         storeService
-            .Setup(service => service.UpdateDetailsToStorePricesAsync(It.IsAny<UpdateToStorePricesRequest>(), "tester"))
+            .Setup(service => service.UpdateDetailsToStorePricesAsync(It.IsAny<UpdateToStorePricesRequest>(), "tester", It.IsAny<int>()))
             .Returns(release.Task);
 
         var service = CreateService(storeService: storeService);
@@ -47,7 +47,7 @@ public sealed class LocalSupplierInvoiceBatchUpdateJobServiceTests
         );
         var storeService = new Mock<ILocalSupplierInvoicesReactService>();
         storeService
-            .Setup(service => service.UpdateDetailsToStorePricesAsync(It.IsAny<UpdateToStorePricesRequest>(), "tester"))
+            .Setup(service => service.UpdateDetailsToStorePricesAsync(It.IsAny<UpdateToStorePricesRequest>(), "tester", It.IsAny<int>()))
             .Returns(release.Task);
 
         var service = CreateService(storeService: storeService);
@@ -60,7 +60,7 @@ public sealed class LocalSupplierInvoiceBatchUpdateJobServiceTests
 
         release.SetResult(ApiResponse<UpdateToStorePricesResultDto>.OK(new UpdateToStorePricesResultDto { Updated = 1 }));
         await WaitForStoreJobAsync(service, first.JobId);
-        storeService.Verify(service => service.UpdateDetailsToStorePricesAsync(It.IsAny<UpdateToStorePricesRequest>(), "tester"), Times.Once);
+        storeService.Verify(service => service.UpdateDetailsToStorePricesAsync(It.IsAny<UpdateToStorePricesRequest>(), "tester", It.IsAny<int>()), Times.Once);
     }
 
     [Fact]
@@ -71,7 +71,7 @@ public sealed class LocalSupplierInvoiceBatchUpdateJobServiceTests
         );
         var storeService = new Mock<ILocalSupplierInvoicesReactService>();
         storeService
-            .Setup(service => service.UpdateDetailsToStorePricesAsync(It.IsAny<UpdateToStorePricesRequest>(), "tester"))
+            .Setup(service => service.UpdateDetailsToStorePricesAsync(It.IsAny<UpdateToStorePricesRequest>(), "tester", It.IsAny<int>()))
             .Returns(release.Task);
 
         var service = CreateService(storeService: storeService);
@@ -87,7 +87,7 @@ public sealed class LocalSupplierInvoiceBatchUpdateJobServiceTests
 
         release.SetResult(ApiResponse<UpdateToStorePricesResultDto>.OK(new UpdateToStorePricesResultDto { Updated = 1 }));
         await WaitForStoreJobAsync(service, first.JobId);
-        storeService.Verify(service => service.UpdateDetailsToStorePricesAsync(It.IsAny<UpdateToStorePricesRequest>(), "tester"), Times.Once);
+        storeService.Verify(service => service.UpdateDetailsToStorePricesAsync(It.IsAny<UpdateToStorePricesRequest>(), "tester", It.IsAny<int>()), Times.Once);
     }
 
     [Fact]
@@ -95,7 +95,7 @@ public sealed class LocalSupplierInvoiceBatchUpdateJobServiceTests
     {
         var storeService = new Mock<ILocalSupplierInvoicesReactService>();
         storeService
-            .Setup(service => service.UpdateDetailsToStorePricesAsync(It.IsAny<UpdateToStorePricesRequest>(), "tester"))
+            .Setup(service => service.UpdateDetailsToStorePricesAsync(It.IsAny<UpdateToStorePricesRequest>(), "tester", It.IsAny<int>()))
             .ReturnsAsync(ApiResponse<UpdateToStorePricesResultDto>.Error(
                 "更新到分店价格失败",
                 "UPDATE_ERROR",
@@ -110,6 +110,139 @@ public sealed class LocalSupplierInvoiceBatchUpdateJobServiceTests
         Assert.Equal(LocalSupplierInvoiceBatchUpdateJobStatusConstants.Failed, completed.Status);
         Assert.Equal(1, completed.Result?.Failed);
         Assert.Contains("更新到分店价格失败", completed.Message);
+    }
+
+    [Fact]
+    public async Task StartUpdateToStorePricesJobAsync_成本锁忙释放后重试并使用全新请求和scope()
+    {
+        var responses = new Queue<ApiResponse<UpdateToStorePricesResultDto>>([
+            ApiResponse<UpdateToStorePricesResultDto>.Error(
+                "分店成本锁繁忙",
+                "STORE_UPDATE_COST_LOCK_BUSY",
+                new UpdateToStorePricesResultDto()
+            ),
+            ApiResponse<UpdateToStorePricesResultDto>.OK(new UpdateToStorePricesResultDto { Updated = 2 })
+        ]);
+        var capturedRequests = new List<UpdateToStorePricesRequest>();
+        var lockWaitMilliseconds = new List<int>();
+        TrackingScopeFactory? scopeFactory = null;
+        var firstScopeReleased = false;
+        var storeService = new Mock<ILocalSupplierInvoicesReactService>(MockBehavior.Strict);
+        storeService
+            .Setup(service => service.UpdateDetailsToStorePricesAsync(
+                It.IsAny<UpdateToStorePricesRequest>(),
+                "tester",
+                It.IsAny<int>()
+            ))
+            .Callback<UpdateToStorePricesRequest, string, int>((request, _, lockWait) =>
+            {
+                capturedRequests.Add(request);
+                lockWaitMilliseconds.Add(lockWait);
+                if (capturedRequests.Count == 2)
+                    firstScopeReleased = scopeFactory!.Scopes[0].Disposed;
+                if (capturedRequests.Count == 1)
+                    request.DetailGuids[0] = "mutated-only-on-first-attempt";
+            })
+            .ReturnsAsync(() => responses.Dequeue());
+
+        var service = CreateService(
+            storeService: storeService,
+            scopeFactoryFactory: provider => scopeFactory = new TrackingScopeFactory(
+                provider.GetRequiredService<IServiceScopeFactory>()
+            )
+        );
+        var started = await service.StartUpdateToStorePricesJobAsync(BuildStoreRequest(), "tester");
+        var completed = await WaitForStoreJobAsync(service, started.JobId);
+
+        Assert.Equal(LocalSupplierInvoiceBatchUpdateJobStatusConstants.Succeeded, completed.Status);
+        Assert.Equal(2, completed.Result?.Updated);
+        Assert.Equal(2, capturedRequests.Count);
+        Assert.NotSame(capturedRequests[0], capturedRequests[1]);
+        Assert.Equal(["detail-1", "detail-2"], capturedRequests[1].DetailGuids);
+        Assert.Equal(2, lockWaitMilliseconds.Count);
+        Assert.All(lockWaitMilliseconds, value => Assert.InRange(value, 1, 10_000));
+        Assert.True(firstScopeReleased);
+        Assert.Equal(2, scopeFactory!.Scopes.Count);
+    }
+
+    [Fact]
+    public async Task StartUpdateToStorePricesJobAsync_成本锁预算到期后不再发起新尝试()
+    {
+        var timeProvider = new SequenceTimeProvider(
+            TimeSpan.FromMilliseconds(1),
+            TimeSpan.FromSeconds(61)
+        );
+        var storeService = new Mock<ILocalSupplierInvoicesReactService>(MockBehavior.Strict);
+        storeService
+            .Setup(service => service.UpdateDetailsToStorePricesAsync(
+                It.IsAny<UpdateToStorePricesRequest>(), "tester", It.IsAny<int>()
+            ))
+            .ReturnsAsync(ApiResponse<UpdateToStorePricesResultDto>.Error(
+                "分店成本锁繁忙",
+                "STORE_UPDATE_COST_LOCK_BUSY",
+                new UpdateToStorePricesResultDto()
+            ));
+
+        var service = CreateService(storeService: storeService, timeProvider: timeProvider);
+        var started = await service.StartUpdateToStorePricesJobAsync(BuildStoreRequest(), "tester");
+        var completed = await WaitForStoreJobAsync(service, started.JobId);
+
+        Assert.Equal(LocalSupplierInvoiceBatchUpdateJobStatusConstants.Failed, completed.Status);
+        Assert.Contains("分店价格更新繁忙", completed.Message);
+        storeService.Verify(service => service.UpdateDetailsToStorePricesAsync(
+            It.IsAny<UpdateToStorePricesRequest>(), "tester", It.IsAny<int>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task StartUpdateToStorePricesJobAsync_最后一次尝试只使用剩余锁预算()
+    {
+        var timeProvider = new SequenceTimeProvider(
+            TimeSpan.FromMilliseconds(1), TimeSpan.FromMilliseconds(1),
+            TimeSpan.FromMilliseconds(1), TimeSpan.FromMilliseconds(1),
+            TimeSpan.FromSeconds(59.5), TimeSpan.FromSeconds(59.5), TimeSpan.FromSeconds(60)
+        );
+        var waits = new List<int>();
+        var storeService = new Mock<ILocalSupplierInvoicesReactService>(MockBehavior.Strict);
+        storeService.Setup(service => service.UpdateDetailsToStorePricesAsync(
+                It.IsAny<UpdateToStorePricesRequest>(), "tester", It.IsAny<int>()))
+            .Callback<UpdateToStorePricesRequest, string, int>((_, _, wait) => waits.Add(wait))
+            .ReturnsAsync(ApiResponse<UpdateToStorePricesResultDto>.Error(
+                "分店成本锁繁忙", "STORE_UPDATE_COST_LOCK_BUSY", new UpdateToStorePricesResultDto()));
+
+        var service = CreateService(storeService: storeService, timeProvider: timeProvider);
+        var started = await service.StartUpdateToStorePricesJobAsync(BuildStoreRequest(), "tester");
+        var completed = await WaitForStoreJobAsync(service, started.JobId);
+
+        Assert.Equal(LocalSupplierInvoiceBatchUpdateJobStatusConstants.Failed, completed.Status);
+        Assert.Equal(2, waits.Count);
+        Assert.Equal(10_000, waits[0]);
+        Assert.InRange(waits[1], 1, 1_000);
+        Assert.Equal(0, completed.Result?.Updated);
+    }
+
+    [Theory]
+    [InlineData("VALIDATION_ERROR")]
+    [InlineData("UPDATE_ERROR")]
+    public async Task StartUpdateToStorePricesJobAsync_普通错误或提交结果未知不重试(string errorCode)
+    {
+        var storeService = new Mock<ILocalSupplierInvoicesReactService>(MockBehavior.Strict);
+        storeService
+            .Setup(service => service.UpdateDetailsToStorePricesAsync(
+                It.IsAny<UpdateToStorePricesRequest>(), "tester", It.IsAny<int>()
+            ))
+            .ReturnsAsync(ApiResponse<UpdateToStorePricesResultDto>.Error(
+                "分店更新失败",
+                errorCode,
+                new UpdateToStorePricesResultDto { Failed = errorCode == "UPDATE_ERROR" ? 1 : 0 }
+            ));
+
+        var service = CreateService(storeService: storeService);
+        var started = await service.StartUpdateToStorePricesJobAsync(BuildStoreRequest(), "tester");
+        var completed = await WaitForStoreJobAsync(service, started.JobId);
+
+        Assert.Equal(LocalSupplierInvoiceBatchUpdateJobStatusConstants.Failed, completed.Status);
+        storeService.Verify(service => service.UpdateDetailsToStorePricesAsync(
+            It.IsAny<UpdateToStorePricesRequest>(), "tester", It.IsAny<int>()), Times.Once);
     }
 
     [Fact]

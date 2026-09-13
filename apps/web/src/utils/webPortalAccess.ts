@@ -73,16 +73,27 @@ const ADMIN_ENTRY_RULES: readonly AdminEntryRule[] = [
     ],
     canAccess: (access) => access.canViewContainers,
   },
-  {
-    defaultPath: '/executive-sales-intelligence/product-movement-report',
-    targetPrefixes: ['/executive-sales-intelligence/product-movement-report'],
-    // Reports.View 兼容叶子页面访问，但后台导航入口与后端一致，仅认专用权限。
-    canAccess: (access) => access.hasPermission(P.Reports.ProductMovementView),
-  },
-  {
-    defaultPath: '/executive-sales-intelligence/purchase-amount-dashboard',
+  // 七个页面各自构成后台入口；仅有单页权限时，登录后直接落到该页。
+  ...([
+    ['overview', P.SalesDashboard.SalesDataView],
+    ['sales-detail-v2', P.SalesDashboard.SalesDetailView],
+    ['compact-sales-board', P.SalesDashboard.CompactBoardView],
+    ['product-movement-report', P.SalesDashboard.ProductMovementView],
+    ['warehouse-product-flow-analysis', P.SalesDashboard.WarehouseFlowView],
+    ['local-product-sales-analysis', P.SalesDashboard.LocalProductAnalysisView],
+    ['purchase-amount-dashboard', P.SalesDashboard.PurchaseAmountView],
+  ] as const).map(([path, permission]) => ({
+    defaultPath: `/executive-sales-intelligence/${path}`,
     targetPrefixes: [
-      '/executive-sales-intelligence/purchase-amount-dashboard',
+      `/executive-sales-intelligence/${path}`,
+      ...(permission === P.SalesDashboard.WarehouseFlowView
+        ? ['/executive-sales-intelligence/product-sales-analysis'] : []),
+    ],
+    canAccess: (access: BackendNavigationAccess) => access.hasPermission(permission),
+  })),
+  {
+    defaultPath: '/pos-admin/local-supplier-invoices',
+    targetPrefixes: [
       '/pos-admin/local-supplier-invoices',
       '/pos-admin/local-supplier-purchase-sales-analysis',
       '/pos-admin/invoice-detail',

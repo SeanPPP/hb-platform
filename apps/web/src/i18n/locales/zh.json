@@ -4345,6 +4345,17 @@
       "createUser": "创建用户",
       "createUserSuccess": "用户创建成功",
       "createUserFailed": "用户创建失败",
+      "createUserFeedbackTitle": "无法创建用户",
+      "createUserResultUnknownTitle": "创建结果待确认",
+      "createUserEmailExists": "该邮箱已被使用，请更换邮箱后重试。",
+      "createUserUsernameExists": "该用户名已被使用，请更换用户名后重试。",
+      "createUserPermissionDenied": "当前账号没有创建用户的权限，请联系系统管理员。",
+      "createUserStoreScopeDenied": "所选分店不在您的管理范围内，请在“分店”页签调整选择后重试。",
+      "createUserValidationFailed": "用户信息未通过校验，请检查填写内容后重试。",
+      "createUserRateLimited": "操作过于频繁，请稍后再试。",
+      "createUserRejected": "暂时无法创建用户，请稍后重试。如仍无法完成，请联系系统管理员。",
+      "createUserResultUnknown": "暂时无法确认创建结果，请先在用户列表中确认该用户是否已创建，再决定是否重试。",
+      "createUserStoreAssignmentUnconfirmed": "用户已创建，但未能确认分店权限是否保存。请在用户列表中编辑该用户，检查分店设置。",
       "password": "密码",
       "passwordRequired": "请输入密码",
       "confirmPassword": "确认密码",
@@ -5282,6 +5293,31 @@
     "comingSoonFilterAll": "全部",
     "comingSoonFilterReorder": "返单",
     "comingSoonFilterNew": "新商品",
+    "comingSoonWorkspace": {
+      "containers": "货柜",
+      "incoming": "在途",
+      "arrived": "已到货",
+      "newProducts": "新品（已加载）",
+      "index": "货柜目录",
+      "globalFilter": "筛选全部货柜",
+      "containerFilter": "筛选当前货柜",
+      "arrivalDate": "到货日期",
+      "eta": "预计到岸",
+      "pending": "选择后加载",
+      "items": "{{count}} 件商品",
+      "productsFailed": "商品加载失败。",
+      "loadFailed": "即将到货数据加载失败。",
+      "empty": "当前筛选下没有商品。",
+      "emptyContainers": "当前筛选下没有即将到货商品。",
+      "quantity": "装柜数量",
+      "showBarcodes": "显示条码",
+      "pages": "商品分页",
+      "previous": "上一页",
+      "next": "下一页",
+      "page": "第 {{page}} / {{pages}} 页",
+      "pageInfo": "第 {{from}}–{{to}} 件，共 {{total}} 件",
+      "unknownProduct": "未命名商品"
+    },
     "ordersBannerSubtitle": "查看分店提交过的订单、状态、数量和金额汇总。",
     "localSupplierInvoicesBannerSubtitle": "按分店和本地供应商查看进货单、商品明细及入库状态。",
     "preorderTitle": "预订货",
@@ -7024,5 +7060,195 @@
     "clearBranch": "清除分店",
     "salesNotRealtime": "销售日统计非实时，数据可能存在延迟",
     "notFresh": "销售统计暂未就绪"
+  },
+  "localProductSalesAnalysis": {
+    "title": "澳洲本地商品分析",
+    "productScope": "商品范围",
+    "currentProduct": "当前商品",
+    "product": "商品",
+    "invoiceDetails": "本地进货单明细",
+    "dailyTrend": "进销日趋势",
+    "productTrendLabel": "{{product}}进销日趋势",
+    "branchRanking": "授权分店销量排行",
+    "branchTrendTitle": "{{branch}}日净销量与均价",
+    "branchTrendLabel": "分店日净销量与均价",
+    "selectBranch": "点击分店查看日趋势",
+    "noTrendData": "暂无趋势数据",
+    "noCategories": "暂无可选分类",
+    "noSuppliers": "暂无可选供应商",
+    "uncategorized": "未分类",
+    "selectAllFiltered": "全选筛选结果",
+    "allFilteredSelected": "已选全部筛选结果",
+    "selectedCount": "已选 {{count}} 项",
+    "selectedCount_one": "已选 {{count}} 项",
+    "selectedCount_other": "已选 {{count}} 项",
+    "quickDays": "{{count}}天",
+    "quickDays_one": "{{count}}天",
+    "quickDays_other": "{{count}}天",
+    "filters": {
+      "keyword": "货号、中文/英文名称或条码",
+      "category": "仓库分类",
+      "supplier": "澳洲本地供应商",
+      "invoiceNo": "本地进货单号"
+    },
+    "metrics": {
+      "purchaseQuantity": "本地进货量",
+      "purchaseAmount": "进货额",
+      "netSalesQuantity": "分店净销量",
+      "netSalesAmount": "净销售额",
+      "sellThroughRate": "售进比"
+    },
+    "columns": {
+      "invoiceNo": "单号",
+      "store": "分店",
+      "supplier": "供应商",
+      "date": "日期",
+      "quantity": "数量",
+      "purchasePrice": "进货单价",
+      "amount": "金额",
+      "authorizedStore": "授权分店",
+      "netSalesQuantity": "净销量",
+      "averageUnitPrice": "均价"
+    },
+    "errors": {
+      "title": "加载失败",
+      "options": "筛选选项加载失败",
+      "load": "加载失败，请重试",
+      "timeout": "请求超时，请重试",
+      "dateOrder": "参数错误：开始日期不能晚于结束日期",
+      "futureDate": "参数错误：日期范围截至 Brisbane 昨天",
+      "dateLimit": "参数错误：日期范围不能超过 366 天",
+      "invalidResponse": "响应格式非法"
+    }
+  },
+  "productFlowShared": {
+    "chartDescription": "蓝色为进货量，青色为发货量，橙色为净销量，折线为平均单价；负销量在零线以下。",
+    "inboundTooltip": "进货 {{value}}",
+    "shippedTooltip": "发货 {{value}}",
+    "netSalesTooltip": "净销量 {{value}}",
+    "averagePriceTooltip": "{{date}} 均价 {{value}}",
+    "noImage": "{{product}} 暂无图片"
+  },
+  "warehouseProductFlowAnalysis": {
+    "title": "仓库商品流转分析",
+    "subtitle": "以商品主档为入口，分别追踪货柜、订货发货与分店销售。",
+    "actions": {
+      "queryProducts": "查询商品主档",
+      "refreshAll": "刷新全部",
+      "restoreDefault": "恢复默认",
+      "selectAllFiltered": "全选筛选结果"
+    },
+    "stages": {
+      "containerInbound": "货柜进货",
+      "branchOrders": "分店订货",
+      "shippedToBranches": "已发分店",
+      "branchNetSales": "分店净销量"
+    },
+    "master": {
+      "title": "仓库商品主档"
+    },
+    "filters": {
+      "category": "仓库分类",
+      "categoryPlaceholder": "选择分类",
+      "keyword": "货号 / 名称 / 条码",
+      "keywordPlaceholder": "输入关键词",
+      "supplier": "国内供应商",
+      "supplierPlaceholder": "选择国内供应商",
+      "containerNumber": "货柜编号",
+      "containerNumberPlaceholder": "输入货柜编号"
+    },
+    "selection": {
+      "allFiltered": "全部筛选商品（排除 {{count}} 项）",
+      "selected": "已选 {{count}} 项",
+      "selected_one": "已选 {{count}} 项",
+      "selected_other": "已选 {{count}} 项",
+      "allFiltered_one": "全部筛选商品（排除 {{count}} 项）",
+      "allFiltered_other": "全部筛选商品（排除 {{count}} 项）"
+    },
+    "product": {
+      "itemNumber": "货号",
+      "code": "商品编码",
+      "barcode": "条码",
+      "unnamed": "未命名商品",
+      "uncategorized": "未分类",
+      "supplierUnmapped": "国内供应商未映射"
+    },
+    "metrics": {
+      "containerInbound": "货柜进货量",
+      "branchOrders": "分店订货量",
+      "shippedToBranches": "已发分店量",
+      "branchNetSales": "分店净销量"
+    },
+    "tabs": {
+      "containerDetails": "货柜明细",
+      "branchOrders": "分店订货",
+      "shipmentDetails": "发货明细"
+    },
+    "shipments": {
+      "posLabel": "分店 POS",
+      "posAria": "分店是否启用 POS",
+      "allBranches": "全部分店",
+      "posEnabled": "已启用 POS",
+      "posDisabled": "未启用 POS",
+      "salesPeriodNote": "销量按分店销售期间统计：{{period}}。同一分店的多张发货单显示相同净销量。"
+    },
+    "branchSales": {
+      "title": "分店销售"
+    },
+    "tables": {
+      "containerNumber": "货柜号",
+      "arrivalDate": "到仓日",
+      "quantity": "数量",
+      "unitPrice": "单价",
+      "supplier": "供应商",
+      "orderNumber": "订单号",
+      "branch": "分店",
+      "orderDate": "订单日",
+      "orderedQuantity": "订货量",
+      "shipmentOrOrderNumber": "发货号 / 订单号",
+      "shipmentDate": "出库日",
+      "shippedQuantity": "发货量",
+      "salesQuantity": "销量",
+      "netSalesQuantity": "净销量",
+      "netSalesAmount": "净销售额",
+      "averagePrice": "均价"
+    },
+    "charts": {
+      "containerTrend": "货柜进货趋势",
+      "orderShipmentTrend": "订货 / 发货日趋势",
+      "salesTrend": "销售日趋势",
+      "branchSalesTrend": "分店销售趋势",
+      "inboundQuantity": "进货量",
+      "orderedQuantity": "订货量",
+      "shippedQuantity": "发货量",
+      "containerTrendAria": "当前商品每日货柜进货量趋势",
+      "orderShipmentTrendAria": "当前商品每日订货量与发货量趋势",
+      "salesTrendAria": "当前商品每日净销量与平均单价趋势",
+      "branchSalesTrendAria": "所选分店每日净销量与平均单价趋势"
+    },
+    "empty": {
+      "noProducts": "暂无商品",
+      "selectProduct": "选择一个商品查看明细",
+      "selectBranch": "点击分店查看每日趋势"
+    },
+    "validation": {
+      "invalidDateRange": "请选择有效的日期范围"
+    },
+    "errors": {
+      "loadFailed": "加载失败",
+      "summaryTitle": "汇总加载失败",
+      "categoriesTitle": "分类不可用",
+      "categories": "无法加载仓库分类。",
+      "candidates": "无法加载商品主档。",
+      "summary": "无法加载已选商品汇总。",
+      "containerDetails": "无法加载货柜明细。",
+      "containerTrend": "无法加载货柜进货趋势。",
+      "orderDetails": "无法加载订货明细。",
+      "shipmentDetails": "无法加载发货明细。",
+      "orderShipmentTrend": "无法加载订货发货趋势。",
+      "salesTrend": "无法加载销售趋势。",
+      "branchSales": "无法加载分店销售。",
+      "branchTrend": "无法加载分店销售趋势。"
+    }
   }
 }

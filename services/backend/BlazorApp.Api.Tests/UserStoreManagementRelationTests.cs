@@ -90,6 +90,499 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task UpdateUserByGuidAsync_StoreManagerCannotEditCrossStoreTarget()
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            var service = CreateUserService(new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
+            {
+                IsAllowed = true,
+                IsAuthenticated = true,
+                UserGuid = "manager-1",
+                StoreGuids = new[] { "store-1" },
+            }));
+
+            var result = await service.UpdateUserByGuidAsync("foreign-user", new UpdateUserDto
+            {
+                Username = "foreign-user-updated",
+                Email = "foreign-user-updated@example.com",
+                IsActive = true,
+            });
+
+            Assert.False(result.Success);
+            Assert.Equal("USER_SCOPE_DENIED", result.ErrorCode);
+            Assert.Equal("foreign-user", (await _db.Queryable<User>().InSingleAsync("foreign-user"))!.Username);
+        }
+
+        [Fact]
+        public async Task UpdateUserPasswordByGuidAsync_StoreManagerCanEditSameStoreTarget()
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            var service = CreateUserService(new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
+            {
+                IsAllowed = true,
+                IsAuthenticated = true,
+                UserGuid = "manager-1",
+                StoreGuids = new[] { "store-1" },
+            }));
+
+            var result = await service.UpdateUserPasswordByGuidAsync("scoped-user", new UpdateUserPasswordDto
+            {
+                NewPassword = "new-password-123",
+                PasswordFormat = "raw",
+            });
+
+            Assert.True(result.Success);
+        }
+
+        [Fact]
+        public async Task GetUserLoginRecordsAsync_StoreManagerCannotReadCrossStoreTarget()
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            var service = CreateUserService(new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
+            {
+                IsAllowed = true,
+                IsAuthenticated = true,
+                UserGuid = "manager-1",
+                StoreGuids = new[] { "store-1" },
+            }));
+
+            var result = await service.GetUserLoginRecordsAsync("foreign-user", new UserLoginRecordQueryDto());
+
+            Assert.False(result.Success);
+            Assert.Equal("FORBIDDEN", result.ErrorCode);
+        }
+
+        [Fact]
+        public async Task UpdateUserByGuidAsync_StoreManagerCannotEditHighPrivilegeTarget()
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            await _db.Insertable(new Role { RoleGUID = "role-admin", RoleName = "Admin", IsActive = true })
+                .ExecuteCommandAsync();
+            await _db.Insertable(CreateUserRole("foreign-user", "role-admin")).ExecuteCommandAsync();
+            var service = CreateUserService(new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
+            {
+                IsAllowed = true, IsAuthenticated = true, UserGuid = "manager-1", StoreGuids = new[] { "store-1" },
+            }));
+
+            var result = await service.UpdateUserByGuidAsync("foreign-user", new UpdateUserDto
+            {
+                Username = "foreign-admin-edited", Email = "foreign-admin-edited@example.com", IsActive = true,
+            });
+
+            Assert.False(result.Success);
+            Assert.Equal("HIGH_PRIVILEGE_TARGET_DENIED", result.ErrorCode);
+            var target = await _db.Queryable<User>().InSingleAsync("foreign-user");
+            Assert.Equal("foreign-user", target!.Username);
+            Assert.Equal("foreign@example.com", target.Email);
+        }
+
+        [Fact]
+        public async Task UpdateUserPasswordByGuidAsync_StoreManagerCannotEditHighPrivilegeTarget()
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            await _db.Insertable(new Role { RoleGUID = "role-admin", RoleName = "Admin", IsActive = true })
+                .ExecuteCommandAsync();
+            await _db.Insertable(CreateUserRole("foreign-user", "role-admin")).ExecuteCommandAsync();
+            var service = CreateUserService(new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
+            {
+                IsAllowed = true, IsAuthenticated = true, UserGuid = "manager-1", StoreGuids = new[] { "store-1" },
+            }));
+            var before = (await _db.Queryable<User>().InSingleAsync("foreign-user"))!.PasswordHash;
+
+            var result = await service.UpdateUserPasswordByGuidAsync("foreign-user", new UpdateUserPasswordDto
+            {
+                NewPassword = "new-password-123", PasswordFormat = "raw",
+            });
+
+            Assert.False(result.Success);
+            Assert.Equal("HIGH_PRIVILEGE_TARGET_DENIED", result.ErrorCode);
+            Assert.Equal(before, (await _db.Queryable<User>().InSingleAsync("foreign-user"))!.PasswordHash);
+        }
+
+        [Fact]
+        public async Task UpdateUserByGuidAsync_GlobalNonAdminExplicitScopeCanEditTarget()
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            var service = CreateUserService(new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
+            {
+                IsAllowed = true, IsAuthenticated = true, UserGuid = "viewer-1",
+            }));
+
+            var result = await service.UpdateUserByGuidAsync("foreign-user", new UpdateUserDto
+            {
+                Username = "foreign-user-edited", Email = "foreign-edited@example.com", IsActive = true,
+            });
+
+            Assert.True(result.Success);
+            Assert.Equal("foreign-user-edited", (await _db.Queryable<User>().InSingleAsync("foreign-user"))!.Username);
+        }
+
+        [Fact]
+        public async Task UpdateUserByGuidAsync_SelfAllowsProfileButRejectsUsernameAndStatus()
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            var service = CreateUserService(new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
+            {
+                IsAllowed = true, IsAuthenticated = true, UserGuid = "manager-1", StoreGuids = new[] { "store-1" },
+            }));
+
+            var profile = await service.UpdateUserByGuidAsync("manager-1", new UpdateUserDto
+            {
+                Username = "manager-1", Email = "manager-updated@example.com", FullName = "店长本人", IsActive = true,
+            });
+            Assert.True(profile.Success);
+
+            var username = await service.UpdateUserByGuidAsync("manager-1", new UpdateUserDto
+            {
+                Username = "manager-renamed", Email = "manager-updated@example.com", FullName = "店长本人", IsActive = true,
+            });
+            Assert.False(username.Success);
+            Assert.Equal("SELF_PROFILE_FIELDS_DENIED", username.ErrorCode);
+
+            var status = await service.UpdateUserByGuidAsync("manager-1", new UpdateUserDto
+            {
+                Username = "manager-1", Email = "manager-updated@example.com", FullName = "店长本人", IsActive = false,
+            });
+            Assert.False(status.Success);
+            Assert.Equal("SELF_PROFILE_FIELDS_DENIED", status.ErrorCode);
+        }
+
+        [Fact]
+        public async Task GetUserByGuidAsync_StoreManagerSeesOnlySharedStoresAndCannotSeePrivilegedTarget()
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            var service = CreateUserService(new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
+            {
+                IsAllowed = true, IsAuthenticated = true, UserGuid = "manager-1", StoreGuids = new[] { "store-1" },
+            }));
+
+            var shared = await service.GetUserByGuidAsync("dual-user");
+            Assert.True(shared.Success);
+            Assert.Single(shared.Data!.Stores);
+            Assert.Equal("store-1", shared.Data.Stores[0].StoreGUID);
+
+            await _db.Insertable(new Role { RoleGUID = "role-admin", RoleName = "Admin", IsActive = true })
+                .ExecuteCommandAsync();
+            await _db.Insertable(CreateUserRole("foreign-user", "role-admin")).ExecuteCommandAsync();
+            var privileged = await service.GetUserByGuidAsync("foreign-user");
+            Assert.False(privileged.Success);
+            Assert.Equal("FORBIDDEN", privileged.ErrorCode);
+        }
+
+        [Fact]
+        public async Task GlobalNonAdminCanReadUserDetailsAndLoginRecords()
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            var service = CreateUserService(new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
+            {
+                IsAllowed = true, IsAuthenticated = true, UserGuid = "viewer-1",
+            }));
+
+            var detail = await service.GetUserByGuidAsync("foreign-user");
+            var records = await service.GetUserLoginRecordsAsync("foreign-user", new UserLoginRecordQueryDto());
+
+            Assert.True(detail.Success);
+            Assert.True(records.Success);
+        }
+
+        [Fact]
+        public async Task ResetUserPasswordAsync_StoreManagerCannotResetHighPrivilegeTarget()
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            await _db.Insertable(new Role { RoleGUID = "role-admin", RoleName = "Admin", IsActive = true })
+                .ExecuteCommandAsync();
+            await _db.Insertable(CreateUserRole("foreign-user", "role-admin")).ExecuteCommandAsync();
+            var service = CreateUserService(new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
+            {
+                IsAllowed = true, IsAuthenticated = true, UserGuid = "manager-1", StoreGuids = new[] { "store-1" },
+            }));
+            var before = (await _db.Queryable<User>().InSingleAsync("foreign-user"))!.PasswordHash;
+
+            var result = await service.ResetUserPasswordAsync("foreign-user");
+
+            Assert.False(result.Success);
+            Assert.Equal("HIGH_PRIVILEGE_TARGET_DENIED", result.ErrorCode);
+            Assert.Equal(before, (await _db.Queryable<User>().InSingleAsync("foreign-user"))!.PasswordHash);
+        }
+
+        [Fact]
+        public async Task UpdateUserStatusByGuidAsync_StoreManagerCannotDisableCrossStoreTarget()
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            var service = CreateUserService(new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
+            {
+                IsAllowed = true, IsAuthenticated = true, UserGuid = "manager-1", StoreGuids = new[] { "store-1" },
+            }));
+
+            var result = await service.UpdateUserStatusByGuidAsync("foreign-user", false);
+
+            Assert.False(result.Success);
+            Assert.Equal("USER_SCOPE_DENIED", result.ErrorCode);
+            Assert.True((await _db.Queryable<User>().InSingleAsync("foreign-user"))!.IsActive);
+        }
+
+        [Fact]
+        public async Task UpdateUserStatusByGuidAsync_StoreManagerCannotDisableSelfOrHighPrivilegeTarget()
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            await _db.Insertable(new Role { RoleGUID = "role-admin", RoleName = "Admin", IsActive = true })
+                .ExecuteCommandAsync();
+            await _db.Insertable(CreateUserRole("scoped-user", "role-admin")).ExecuteCommandAsync();
+            var service = CreateUserService(new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
+            {
+                IsAllowed = true, IsAuthenticated = true, UserGuid = "manager-1", StoreGuids = new[] { "store-1" },
+            }));
+
+            var self = await service.UpdateUserStatusByGuidAsync("manager-1", false);
+            var privileged = await service.UpdateUserStatusByGuidAsync("scoped-user", false);
+
+            Assert.False(self.Success);
+            Assert.Equal("SELF_PROFILE_FIELDS_DENIED", self.ErrorCode);
+            Assert.False(privileged.Success);
+            Assert.Equal("HIGH_PRIVILEGE_TARGET_DENIED", privileged.ErrorCode);
+            Assert.True((await _db.Queryable<User>().InSingleAsync("manager-1"))!.IsActive);
+            Assert.True((await _db.Queryable<User>().InSingleAsync("scoped-user"))!.IsActive);
+        }
+
+        [Theory]
+        [InlineData("manager-1", "SELF_PROFILE_FIELDS_DENIED")]
+        [InlineData("foreign-user", "USER_SCOPE_DENIED")]
+        public async Task DeleteUserByGuidAsync_StoreManagerCannotDeleteForbiddenTarget(
+            string targetUserGuid,
+            string expectedErrorCode
+        )
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            var service = CreateUserService(new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
+            {
+                IsAllowed = true, IsAuthenticated = true, UserGuid = "manager-1", StoreGuids = new[] { "store-1" },
+            }));
+
+            var result = await service.DeleteUserByGuidAsync(targetUserGuid);
+
+            Assert.False(result.Success);
+            Assert.Equal(expectedErrorCode, result.ErrorCode);
+            Assert.NotNull(await _db.Queryable<User>().InSingleAsync(targetUserGuid));
+        }
+
+        [Fact]
+        public async Task DeleteUserByGuidAsync_StoreManagerCannotDeleteHighPrivilegeTarget()
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            await _db.Insertable(new Role { RoleGUID = "role-admin", RoleName = "Admin", IsActive = true })
+                .ExecuteCommandAsync();
+            await _db.Insertable(CreateUserRole("scoped-user", "role-admin")).ExecuteCommandAsync();
+            var service = CreateUserService(new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
+            {
+                IsAllowed = true, IsAuthenticated = true, UserGuid = "manager-1", StoreGuids = new[] { "store-1" },
+            }));
+
+            var result = await service.DeleteUserByGuidAsync("scoped-user");
+
+            Assert.False(result.Success);
+            Assert.Equal("HIGH_PRIVILEGE_TARGET_DENIED", result.ErrorCode);
+            Assert.NotNull(await _db.Queryable<User>().InSingleAsync("scoped-user"));
+        }
+
+        [Fact]
+        public async Task BatchManageUsersAsync_RejectedTargetRollsBackWholeStatusBatch()
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            var service = CreateUserService(new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
+            {
+                IsAllowed = true, IsAuthenticated = true, UserGuid = "manager-1", StoreGuids = new[] { "store-1" },
+            }));
+
+            var result = await service.BatchManageUsersAsync(new BatchUserOperationDto
+            {
+                Operation = "deactivate",
+                UserGuids = new List<string> { "scoped-user", "foreign-user" },
+            });
+
+            Assert.False(result.Success);
+            Assert.Equal("USER_SCOPE_DENIED", result.ErrorCode);
+            Assert.True((await _db.Queryable<User>().InSingleAsync("scoped-user"))!.IsActive);
+            Assert.True((await _db.Queryable<User>().InSingleAsync("foreign-user"))!.IsActive);
+        }
+
+        [Fact]
+        public async Task GetUserStatisticsAsync_StoreManagerUsesSameVisibleUserScopeAsList()
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            var service = CreateUserService(new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
+            {
+                IsAllowed = true, IsAuthenticated = true, UserGuid = "manager-1", StoreGuids = new[] { "store-1" },
+            }));
+
+            var result = await service.GetUserStatisticsAsync();
+
+            Assert.True(result.Success);
+            Assert.Equal(3, result.Data!.TotalUsers);
+            Assert.Equal(3, result.Data.ActiveUsers);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task UserLists_ExcludeSoftDeletedUsersAndRoleRelations(bool optimized)
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            var deleted = await _db.Queryable<User>().InSingleAsync("foreign-user");
+            deleted!.IsDeleted = true;
+            await _db.Updateable(deleted).ExecuteCommandAsync();
+            var deletedRole = CreateUserRole("scoped-user", "role-viewer");
+            deletedRole.IsDeleted = true;
+            await _db.Insertable(deletedRole).ExecuteCommandAsync();
+            var service = CreateUserService();
+
+            var all = await GetUsersAsync(service, optimized, new UserQueryDto { Page = 1, PageSize = 100 });
+            var filtered = await GetUsersAsync(service, optimized, new UserQueryDto
+            {
+                Page = 1, PageSize = 100, RoleGuid = "role-viewer",
+            });
+
+            Assert.DoesNotContain(all.Data!.Items!, user => user.UserGUID == "foreign-user");
+            Assert.DoesNotContain(filtered.Data!.Items!, user => user.UserGUID == "scoped-user");
+        }
+
+        [Fact]
+        public async Task UserMutation_StaleStoreManagerClaimFailsClosedAfterRoleRemoval()
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            await _db.Deleteable<UserRole>()
+                .Where(role => role.UserGUID == "manager-1")
+                .ExecuteCommandAsync();
+            var service = CreateUserService(new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
+            {
+                IsAllowed = true,
+                IsAuthenticated = true,
+                IsStoreManager = true,
+                UserGuid = "manager-1",
+                StoreGuids = new[] { "store-1" },
+            }));
+
+            var result = await service.UpdateUserStatusByGuidAsync("scoped-user", false);
+
+            Assert.False(result.Success);
+            Assert.Equal("ACCESS_DELEGATOR_DENIED", result.ErrorCode);
+            Assert.True((await _db.Queryable<User>().InSingleAsync("scoped-user"))!.IsActive);
+        }
+
+        [Fact]
+        public async Task UserMutation_StoreManagerCannotEditTargetsWithDirectOrRoleAdminPermission()
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            await _db.Insertable(new SysUserPermission
+            {
+                Id = Guid.NewGuid().ToString(),
+                UserGuid = "scoped-user",
+                PermissionCode = Permissions.Users.View,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new Role
+            {
+                RoleGUID = "role-custom-admin",
+                RoleName = "CustomOperator",
+                IsActive = true,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(CreateUserRole("dual-user", "role-custom-admin")).ExecuteCommandAsync();
+            await _db.Insertable(new SysRolePermission
+            {
+                Id = Guid.NewGuid().ToString(),
+                RoleGuid = "role-custom-admin",
+                PermissionCode = Permissions.Roles.View,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            var service = CreateUserService(new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
+            {
+                IsAllowed = true, IsAuthenticated = true, UserGuid = "manager-1", StoreGuids = new[] { "store-1" },
+            }));
+
+            var direct = await service.UpdateUserStatusByGuidAsync("scoped-user", false);
+            var customRole = await service.UpdateUserStatusByGuidAsync("dual-user", false);
+            var reset = await service.ResetUserPasswordAsync("scoped-user");
+
+            Assert.False(direct.Success);
+            Assert.Equal("HIGH_PRIVILEGE_TARGET_DENIED", direct.ErrorCode);
+            Assert.False(customRole.Success);
+            Assert.Equal("HIGH_PRIVILEGE_TARGET_DENIED", customRole.ErrorCode);
+            Assert.False(reset.Success);
+            Assert.Equal("HIGH_PRIVILEGE_TARGET_DENIED", reset.ErrorCode);
+        }
+
+        [Fact]
+        public async Task RoleMemberReads_StoreManagerOnlySeesScopedNonPrivilegedUsers()
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            await _db.Insertable(new[]
+            {
+                CreateUserRole("scoped-user", "role-viewer"),
+                CreateUserRole("foreign-user", "role-viewer"),
+                CreateUserRole("manager-1", "role-viewer"),
+            }).ExecuteCommandAsync();
+            var scope = new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
+            {
+                IsAllowed = true, IsAuthenticated = true, IsStoreManager = true,
+                UserGuid = "manager-1", StoreGuids = new[] { "store-1" },
+            });
+            var roleService = new RoleService(
+                CreateSqlSugarContext(_db),
+                NullLogger<RoleService>.Instance,
+                new HttpContextAccessor(),
+                scope
+            );
+
+            var detail = await roleService.GetRoleByGuidAsync("role-viewer");
+            var members = await roleService.GetRoleUsersAsync("role-viewer", new RoleQueryDto
+            {
+                Page = 1, PageSize = 100,
+            });
+
+            Assert.Equal(new[] { "scoped-user" }, detail.Data!.Users.Select(user => user.UserGUID));
+            Assert.Equal(new[] { "scoped-user" }, members.Data!.Items!.Select(user => user.UserGUID));
+        }
+
+        [Fact]
+        public async Task UserLists_StoreManagerExcludesSameStoreAdminAndWarehouseManager()
+        {
+            await SeedUsersRolesAndStoresForScopeTestsAsync();
+            await _db.Insertable(new[]
+            {
+                CreateUser("same-store-admin", "same-admin@example.com"),
+                CreateUser("same-store-warehouse", "same-warehouse@example.com"),
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new[]
+            {
+                new Role { RoleGUID = "role-admin", RoleName = "Admin", IsActive = true },
+                new Role { RoleGUID = "role-warehouse", RoleName = "WarehouseManager", IsActive = true },
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new[]
+            {
+                CreateUserRole("same-store-admin", "role-admin"),
+                CreateUserRole("same-store-warehouse", "role-warehouse"),
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new[]
+            {
+                CreateUserStore("same-store-admin", "store-1", false),
+                CreateUserStore("same-store-warehouse", "store-1", false),
+            }).ExecuteCommandAsync();
+            var service = CreateUserService(new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
+            {
+                IsAllowed = true, IsAuthenticated = true, UserGuid = "manager-1", StoreGuids = new[] { "store-1" },
+            }));
+
+            var regular = await service.GetUsersAsync(new UserQueryDto { Page = 1, PageSize = 100 });
+            var optimized = await service.GetUsersOptimizedAsync(new UserQueryDto { Page = 1, PageSize = 100 });
+
+            Assert.True(regular.Success);
+            Assert.True(optimized.Success);
+            Assert.DoesNotContain(regular.Data!.Items!, user =>
+                user.UserGUID is "same-store-admin" or "same-store-warehouse");
+            Assert.DoesNotContain(optimized.Data!.Items!, user =>
+                user.UserGUID is "same-store-admin" or "same-store-warehouse");
+        }
+
+        [Fact]
         public async Task GetUserLoginRecordsAsync_ReturnsSelectedUserRecordsInCreatedAtDescendingOrder()
         {
             await SeedLoginRecordUsersAsync();
@@ -2428,9 +2921,9 @@ namespace BlazorApp.Api.Tests
 
             Assert.True(result.Success);
             Assert.NotNull(result.Data);
-            Assert.Equal(4, result.Data!.Total);
+            Assert.Equal(3, result.Data!.Total);
             Assert.Equal(
-                new[] { "dual-user", "manager-1", "manager-cn-1", "scoped-user" },
+                new[] { "dual-user", "manager-cn-1", "scoped-user" },
                 result.Data.Items!
                     .Select(item => item.UserGUID)
                     .OrderBy(item => item)
@@ -3205,6 +3698,45 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task BatchManageUsers_DeleteRequiresUsersDeletePermission()
+        {
+            var roleService = new Mock<IRoleService>();
+            roleService
+                .Setup(service => service.UserHasPermissionAsync("manager-1", Permissions.Users.Delete))
+                .ReturnsAsync(ApiResponse<bool>.OK(false));
+            var userService = new Mock<IUserService>();
+            var controller = new UsersController(
+                userService.Object,
+                roleService.Object,
+                NullLogger<UsersController>.Instance
+            )
+            {
+                ControllerContext = new ControllerContext
+                {
+                    HttpContext = new DefaultHttpContext
+                    {
+                        User = CreatePrincipal("manager-1", "StoreManager"),
+                    },
+                },
+            };
+
+            var result = await controller.BatchManageUsers(new BatchUserOperationDto
+            {
+                Operation = "delete",
+                UserGuids = new List<string> { "scoped-user" },
+            });
+
+            Assert.Equal(
+                StatusCodes.Status403Forbidden,
+                Assert.IsType<ObjectResult>(result).StatusCode
+            );
+            userService.Verify(
+                service => service.BatchManageUsersAsync(It.IsAny<BatchUserOperationDto>()),
+                Times.Never
+            );
+        }
+
+        [Fact]
         public async Task AssignStoresToUser_WhenTargetMissing_ReturnsHttpNotFound()
         {
             var userService = new Mock<IUserService>();
@@ -3590,6 +4122,7 @@ namespace BlazorApp.Api.Tests
                     {
                         IsAllowed = false,
                         IsAuthenticated = true,
+                        IsStoreManager = true,
                         UserGuid = "manager-no-store",
                         Message = "当前店长未分配任何可管理分店",
                     }
@@ -4356,6 +4889,10 @@ namespace BlazorApp.Api.Tests
 
             public FakeManageableStoreScopeService(CurrentUserManageableStoreScope scope)
             {
+                if (!scope.IsAdmin && scope.StoreGuids.Count > 0)
+                {
+                    scope.IsStoreManager = true;
+                }
                 _scope = scope;
             }
 

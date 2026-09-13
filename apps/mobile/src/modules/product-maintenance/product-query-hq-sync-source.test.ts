@@ -23,6 +23,12 @@ assert.match(
   "没有 operation 的普通保存反馈必须校验 mutation 当前性"
 );
 
+assert.match(
+  productQuerySource,
+  /const createProductBusy = createProductSaving \|\| createBarcodeGenerating;/,
+  "商品保存和条码生成都必须纳入创建忙碌状态"
+);
+
 const busySource = productQuerySource.match(
   /const isProductQueryBusy = useCallback\([\s\S]*?\n  \);\n  const invoiceReturnState/
 )?.[0] ?? "";
@@ -31,7 +37,7 @@ for (const mutationState of [
   "savingItemId",
   "savingClearance",
   "productTypeSaving",
-  "createProductSaving",
+  "createProductBusy",
   "hqSyncRetrying",
 ]) {
   assert.match(

@@ -267,6 +267,19 @@ export async function createProductWithPrices(
   return normalizeCreateProductWithPricesResult(response.data);
 }
 
+export async function generateLocalProductBarcode(supplierCode: string): Promise<string> {
+  const response = await apiClient.post(
+    `${PRODUCTS_PATH}/generate-local-barcode`,
+    null,
+    { ...buildRequestConfig(), params: { supplierCode: supplierCode.trim() } }
+  );
+  const barcode = response.data?.barcode;
+  if (typeof barcode !== "string" || !/^9529\d{9}$/.test(barcode)) {
+    throw new Error("Invalid local product barcode response");
+  }
+  return barcode;
+}
+
 export async function getProductDetail(
   productCode: string,
   storeCode?: string | null,

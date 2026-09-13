@@ -28,6 +28,36 @@ internal static class ProductCostMutationLock
             )
         );
 
+    internal static async Task<ProductCostMutationLockScope> AcquireProductsWithinBudgetAsync(
+        ISqlSugarClient db,
+        IEnumerable<string?> productCodes,
+        int totalWaitMilliseconds
+    )
+    {
+        try
+        {
+            return new(
+                await React.SetChildPurchasePriceMutationLock.AcquireProductsWithinBudgetAsync(
+                    db,
+                    productCodes,
+                    totalWaitMilliseconds
+                )
+            );
+        }
+        catch (React.SetChildPurchasePriceLockException ex) when (ex.ResultCode is -1 or -3)
+        {
+            throw new ProductCostMutationLockException(ex);
+        }
+    }
+
+    /// <summary>仓库建档与 HQ 新商品共用身份锁，普通商品成本事务仍可并行。</summary>
+    internal static async Task<ProductCostMutationLockScope> AcquireProductIdentitiesWithinBudgetAsync(
+        ISqlSugarClient db,
+        IEnumerable<string?> productCodes,
+        int totalWaitMilliseconds = 10_000
+    ) => new(await React.SetChildPurchasePriceMutationLock.AcquireProductIdentitiesWithinBudgetAsync(
+        db, productCodes, totalWaitMilliseconds));
+
     internal static bool TryResolveConflict(
         Exception? exception,
         out Exception? conflict
@@ -57,6 +87,19 @@ internal sealed class ProductCostMutationLockScope
 
     internal void EnsureCovers(ISqlSugarClient db, IEnumerable<string?> productCodes) =>
         Inner.EnsureCovers(db, productCodes);
+}
+
+internal sealed class ProductCostMutationLockException : Exception
+{
+    internal ProductCostMutationLockException(React.SetChildPurchasePriceLockException inner)
+        : base(inner.Message, inner)
+    {
+        Resource = inner.Resource;
+        ResultCode = inner.ResultCode;
+    }
+
+    internal string Resource { get; }
+    internal int ResultCode { get; }
 }
 
 /// <summary>

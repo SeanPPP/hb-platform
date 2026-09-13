@@ -48,7 +48,8 @@ export default function ExecutiveSalesIntelligence() {
   const [refresh, setRefresh] = useState(0)
 
   const managedStoreCodes = useMemo(() => {
-    const codes = access.managedStoreCodes()
+    // 销售报表按全部关联分店读取，普通关联分店也可查看销售数据。
+    const codes = access.visibleStoreCodes()
     return codes == null
       ? null
       : [...new Set(codes.map(code => code.trim()).filter(Boolean))].sort((left, right) => left.localeCompare(right))
@@ -299,9 +300,9 @@ export default function ExecutiveSalesIntelligence() {
                         <td>{renderTrend(branch.orderCount, coreCompareAvailable ? branch.orderCountLY : null)}</td>
                         <td><ValuePair current={formatAud(branch.aov, 2)} previous={coreCompareAvailable ? formatAud(branch.aovLY, 2) : '—'} /></td>
                         <td>{renderTrend(branch.aov, coreCompareAvailable ? branch.aovLY : null)}</td>
-                        <td><button type="button" className={styles.detailButton} onClick={() => openSalesDetail(branch.branchCode)}>
+                        <td>{access.canViewSalesDetail && <button type="button" className={styles.detailButton} onClick={() => openSalesDetail(branch.branchCode)}>
                           {text('销售明细', 'Sales detail')} <RightOutlined aria-hidden="true" />
-                        </button></td>
+                        </button>}</td>
                       </tr>
                     )
                   })}

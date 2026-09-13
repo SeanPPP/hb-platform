@@ -50,6 +50,26 @@ namespace BlazorApp.Api.Controllers.React
             return string.IsNullOrWhiteSpace(value) ? "200" : value.Trim();
         }
 
+        [HttpPost("generate-local-barcode")]
+        [Authorize(Policy = Permissions.StoreProducts.Create)]
+        public async Task<IActionResult> GenerateLocalBarcode(
+            [FromQuery] string supplierCode,
+            [FromServices] ItemBarcodeService barcodeService)
+        {
+            if (string.IsNullOrWhiteSpace(supplierCode) || supplierCode.Trim() == "200")
+                return BadRequest(new { success = false, message = "此供应商商品不能自行创建，请联系管理员" });
+
+            try
+            {
+                var barcode = await barcodeService.GenerateLocalProductBarcodeAsync();
+                return Ok(new { barcode });
+            }
+            catch (InvalidOperationException exception)
+            {
+                return Conflict(new { success = false, message = exception.Message });
+            }
+        }
+
         /// <summary>
         /// 创建商品并为所有启用分店初始化分店价格
         /// 不联动零售价更新逻辑
@@ -80,6 +100,30 @@ namespace BlazorApp.Api.Controllers.React
                 await db.Ado.BeginTranAsync();
                 try
                 {
+                    if (dto.Barcode?.Trim().StartsWith("9529", StringComparison.Ordinal) == true)
+                    {
+                        dto.Barcode = dto.Barcode.Trim();
+                        // 自动条码提交时再次检查占用；同一条码的并发创建必须串行，避免重复提交生成两件商品。
+                        if (db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+                        {
+                            await db.Ado.ExecuteCommandAsync("""
+DECLARE @result int;
+EXEC @result = sys.sp_getapplock @Resource = @resource, @LockMode = 'Exclusive',
+    @LockOwner = 'Transaction', @LockTimeout = 10000;
+IF @result < 0 THROW 51062, '获取本地商品条码创建锁失败', 1;
+""", new SugarParameter("@resource", $"LocalProductBarcodeCreate:{dto.Barcode}"));
+                        }
+                        if (await db.Queryable<Product>().AnyAsync(x => x.Barcode == dto.Barcode)
+                            || await db.Queryable<ProductSetCode>().AnyAsync(x => x.SetBarcode == dto.Barcode)
+                            || await db.Queryable<StoreMultiCodeProduct>().AnyAsync(x => x.MultiBarcode == dto.Barcode)
+                            || await db.Queryable<StoreClearancePrice>().AnyAsync(x => x.ClearanceBarcode == dto.Barcode)
+                            || await db.Queryable<DomesticProduct>().AnyAsync(x => x.Barcode == dto.Barcode)
+                            || await db.Queryable<DomesticSetProduct>().AnyAsync(x => x.SetBarcode == dto.Barcode))
+                        {
+                            await db.Ado.RollbackTranAsync();
+                            return Conflict(new { success = false, message = "条码已被使用，请重新生成条码" });
+                        }
+                    }
                     var product = new Product
                     {
                         UUID = UuidHelper.GenerateUuid7(),

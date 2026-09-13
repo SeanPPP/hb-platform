@@ -1,9 +1,9 @@
 {
-  "title": "店员管理",
+  "title": "员工管理",
   "searchPlaceholder": "搜索账号、姓名、邮箱或电话",
   "currentStore": {
     "label": "当前分店",
-    "value": "{{name}} ({{code}})",
+    "value": "{{name}} · {{code}}",
     "empty": "尚未选择分店",
     "allRelated": "全部已分配分店",
     "select": "选择分店",
@@ -14,7 +14,7 @@
   },
   "actions": {
     "refresh": "刷新",
-    "create": "新增店员",
+    "create": "新增员工",
     "edit": "编辑",
     "save": "保存",
     "cancel": "取消",
@@ -206,7 +206,72 @@
     "sortByName": "按姓名排序",
     "statusAll": "全部",
     "statusActive": "启用",
-    "statusDisabled": "停用"
+    "statusDisabled": "停用",
+    "statusAllCount": "全部 {{count}}",
+    "statusActiveCount": "启用 {{count}}",
+    "statusDisabledCount": "停用 {{count}}"
+  },
+  "staffBarcode": {
+    "title": "员工个人码",
+    "emptyDescription": "该员工还没有个人码。创建后可显示二维码，或创建并打印一张标签。",
+    "printCount": "已确认打印 {{count}} 次",
+    "printer": "标签打印机：{{printer}} · {{status}}",
+    "noPrinter": "未选择",
+    "confirmOnlyHint": "标签已出纸，将只重试服务端确认，不会再次打印。",
+    "actions": {
+      "open": "个人码",
+      "create": "创建个人码",
+      "createAndPrint": "创建并打印",
+      "print": "打印",
+      "retryConfirmation": "仅补打印确认",
+      "printed": "已出纸，只补确认",
+      "notPrinted": "未出纸，可重试",
+      "done": "完成",
+      "start": "开始打印",
+      "continue": "继续",
+      "skip": "跳过此人",
+      "end": "结束",
+      "printerSettings": "打印机设置"
+    },
+    "created": {
+      "title": "员工创建完成",
+      "description": "{{name}} 已创建。可直接完成，或现在创建个人码并打印。"
+    },
+    "batch": {
+      "entry": "批量打印",
+      "cancelSelection": "取消选择",
+      "confirm": "打印 {{count}} 人",
+      "title": "批量打印（{{count}} 人）",
+      "summary": "分店 {{store}} · 已完成 {{done}} / {{total}} · 每人 1 张",
+      "selectEmployee": "选择 {{name}}",
+      "statuses": {
+        "pending": "待处理",
+        "printing": "打印中",
+        "done": "完成",
+        "failed": "失败，已暂停",
+        "confirmationPending": "已出纸，待补确认",
+        "uncertain": "待确认是否出纸",
+        "skipped": "已跳过",
+        "obsolete": "旧码已作废"
+      }
+    },
+    "printerStatuses": {
+      "idle": "空闲",
+      "connecting": "连接中",
+      "connected": "已连接",
+      "reconnecting": "重连中",
+      "disconnected": "未连接",
+      "paused": "已暂停",
+      "error": "异常"
+    },
+    "errors": {
+      "inactive": "停用账号不能创建或打印个人码。",
+      "unavailable": "员工个人码服务暂不可用，请稍后重试。",
+      "restore": "未能安全恢复上次打印记录。",
+      "printFailed": "打印已暂停，请检查打印机后继续；若可能已出纸，请先确认实际结果。",
+      "uncertain": "无法确认是否已经出纸。请检查打印机，只能由你选择下一步，系统不会自动补打。",
+      "obsolete": "服务端确认旧码已经失效。请销毁旧标签；页面已刷新为当前个人码，如需打印必须再次明确操作。"
+    }
   },
   "detail": {
     "title": "员工详细资料",

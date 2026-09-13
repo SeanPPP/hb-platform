@@ -413,7 +413,9 @@ namespace BlazorApp.Api.Services
             _context.Db.Ado.BeginTran();
             try
             {
-                var lockScope = await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                // 仓库编辑会补建 Product 并可能写入条码，必须占用商品身份；
+                // Update 总闸与无关商品的成本 Shared 锁兼容。
+                var lockScope = await SetChildPurchasePriceMutationLock.AcquireProductIdentitiesWithinBudgetAsync(
                     _context.Db,
                     new[] { normalizedProductCode }
                 );

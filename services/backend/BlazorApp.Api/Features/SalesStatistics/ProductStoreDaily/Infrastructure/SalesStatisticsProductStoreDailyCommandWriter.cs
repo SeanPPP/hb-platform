@@ -49,17 +49,23 @@ internal sealed class SalesStatisticsProductStoreDailyCommandWriter
                     input.TargetDate,
                     expectedJobId);
 
-                // 先在日期锁内读旧行，再取得全局成本闸；整日上万商品不能逐项往返获取锁。
+                // 日期锁保护整日替换及历史成本快照；仅依赖当前成本的商品需要额外的成本业务锁。
                 var previousRows = await context.Db.Queryable<ProductStoreDailySalesStatistic>()
                     .Where(row => row.Date >= input.TargetDate.Date && row.Date < input.TargetDate.Date.AddDays(1))
                     .With(SqlWith.UpdLock)
                     .ToListAsync();
-                var productCodes = SetChildPurchasePriceMutationLock.NormalizeProductCodes(
+                var allProductCodes = SetChildPurchasePriceMutationLock.NormalizeProductCodes(
                     input.RawRows.Select(row => row.ProductCode)
                         .Concat(previousRows.Select(row => row.ProductCode)));
+                var productCodes = ResolveCurrentCostProductCodes(
+                    input.TargetDate, allProductCodes, build.Statistics, previousRows);
+                logger.LogInformation(
+                    "商品分店每日统计成本锁范围 Date={Date:yyyy-MM-dd} ReferencedProductCount={ReferencedProductCount} CurrentCostProductCount={CurrentCostProductCount}",
+                    input.TargetDate, allProductCodes.Count, productCodes.Count);
                 if (productCodes.Count > 0)
                 {
-                    await SetChildPurchasePriceMutationLock.AcquireAllAsync(context.Db);
+                    // 一次 SQL 批量按规范顺序取锁，兼顾上万商品的往返开销和商品级隔离。
+                    await SetChildPurchasePriceMutationLock.AcquireProductsInBatchWithinBudgetAsync(context.Db, productCodes);
 
                     // 成本表必须在业务锁内重读；POSM/HBSales 原明细和销售金额仍沿用锁外快照，
                     // 仅替换会受商品/分店成本写入影响的三张成本来源表。
@@ -191,6 +197,11 @@ internal sealed class SalesStatisticsProductStoreDailyCommandWriter
                             && row.Date >= input.TargetDate.Date && row.Date < input.TargetDate.Date.AddDays(1))
                         .ExecuteCommandAsync();
                 }
+                // 投影只消费最终发布状态，并与主统计替换共用事务；缺表或非 SQL Server 直连时保持旧查询流程。
+                await SalesDetailQueryProjection.RefreshDayIfSupportedAsync(
+                    context,
+                    posmContext,
+                    input.TargetDate);
                 if (atomicStoreStatistics != null)
                 {
                     await SalesStatisticsProductStoreDailyStateSlice.UpsertStatisticStateAsync(
@@ -233,6 +244,35 @@ internal sealed class SalesStatisticsProductStoreDailyCommandWriter
             logger: logger,
             operationName: "商品分店每日统计更新");
         return new PersistResult(status, capturedBatchFence);
+    }
+
+    internal static List<string> ResolveCurrentCostProductCodes(
+        DateTime targetDate,
+        IReadOnlyList<string> allProductCodes,
+        IReadOnlyList<ProductStoreDailySalesStatistic> rebuilt,
+        IReadOnlyList<ProductStoreDailySalesStatistic> previous)
+    {
+        if (targetDate.Date >= SalesStatisticsBusinessDate.Today())
+            return SetChildPurchasePriceMutationLock.NormalizeProductCodes(allProductCodes);
+
+        var previousByKey = previous.ToDictionary(
+            row => (row.Date.Date, row.BranchCode, row.SupplierCode, row.ProductCode));
+        return SetChildPurchasePriceMutationLock.NormalizeProductCodes(rebuilt
+            .Where(row =>
+            {
+                // OpenItem/身份冲突可能依赖目录条码推断，保留原有商品身份互斥，不能与目录编辑交错提交。
+                if (IsOpenItemCostSource(row.CostSource) || IsOpenItemIdentityConflict(row.CostSource))
+                    return true;
+                if (!previousByKey.TryGetValue(
+                    (row.Date.Date, row.BranchCode, row.SupplierCode, row.ProductCode), out var old))
+                    return true;
+
+                // 与 PreserveHistoricalCostSnapshots 的两条保留规则保持一致：日期锁已保护旧快照，
+                // 完整旧金额或旧正数单价不依赖当前进价；缺失成本、新商品/分店组仍必须锁内重读。
+                return !(old.TotalCost.HasValue && SameSalesFacts(row, old))
+                    && old.UnitCostSnapshot is not > 0;
+            })
+            .Select(row => row.ProductCode));
     }
 
     internal static void PreserveHistoricalCostSnapshots(

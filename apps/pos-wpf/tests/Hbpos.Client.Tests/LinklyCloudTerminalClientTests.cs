@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http;
+using System.Text.Json;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Contracts.Linkly;
@@ -8,6 +9,96 @@ namespace Hbpos.Client.Tests;
 
 public sealed class LinklyCloudTerminalClientTests
 {
+    [Theory]
+    [InlineData(0, 0, 0)]
+    [InlineData(1, 1, 0)]
+    [InlineData(2, 1, 1)]
+    public async Task PurchaseAsync_cancellation_before_submission_reports_not_submitted_without_another_post(
+        int cancelAt, int expectedBindings, int expectedPosts)
+    {
+        using var cancellation = new CancellationTokenSource();
+        var bindings = 0;
+        var accessor = new LinklyPaymentAttemptContextAccessor();
+        using var scope = accessor.Begin(new LinklyPaymentAttemptContext(
+            Guid.NewGuid(),
+            (_, _, _, _) =>
+            {
+                bindings++;
+                if (cancelAt == 1) cancellation.Cancel();
+                return Task.CompletedTask;
+            },
+            LinklyLocalTxnRef.Create('P', "cancel-before-post")));
+        var apiClient = new FakeLinklyCloudApiClient
+        {
+            TransactionResult = NotSubmitted("original-session"),
+            TransactionResponseTransform = result =>
+            {
+                if (cancelAt == 2) cancellation.Cancel();
+                return result;
+            }
+        };
+        var client = new LinklyCloudTerminalClient(apiClient, new FakeLinklyCloudSecretStore(),
+            linklyPaymentAttemptContextAccessor: accessor);
+        if (cancelAt == 0) cancellation.Cancel();
+
+        // 中文注释：工作流依赖此明确边界释放未扣款订单，不能把仅已落库的身份当作已提交。
+        await Assert.ThrowsAsync<CardTerminalNotSubmittedException>(() =>
+            client.PurchaseAsync(10m, CreateSession(), CreateSettings(), cancellation.Token));
+
+        Assert.Equal(expectedBindings, bindings);
+        Assert.Equal(expectedPosts, apiClient.SendTransactionCallCount);
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_unexpected_exception_after_submission_preserves_recovery_identity_without_retry()
+    {
+        var apiClient = new FakeLinklyCloudApiClient
+        {
+            TransactionException = new InvalidOperationException("response lost after submission")
+        };
+        var client = new LinklyCloudTerminalClient(apiClient, new FakeLinklyCloudSecretStore());
+
+        var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
+        Assert.Equal(apiClient.LastTransactionSessionId, result.SessionId);
+        Assert.Equal(Assert.Single(apiClient.SentTransactionTxnRefs), result.TxnRef);
+        Assert.Equal(1, apiClient.SendTransactionCallCount);
+    }
+
+    [Theory]
+    [InlineData(false, "session")]
+    [InlineData(false, "reference")]
+    [InlineData(false, "amount")]
+    [InlineData(true, "session")]
+    [InlineData(true, "reference")]
+    [InlineData(true, "amount")]
+    public async Task PurchaseAsync_checks_each_approved_identity_field_independently(bool poll, string mismatch)
+    {
+        var api = new FakeLinklyCloudApiClient
+        {
+            TransactionResult = poll ? Pending("session") : Approved("session", "reference"),
+            TransactionResponseTransform = result => result.Outcome != LinklyCloudTransactionOutcome.Completed ? result : mismatch switch
+            {
+                "session" => result with { SessionId = "foreign-session" },
+                "reference" => result with { TxnRef = "FOREIGN-TXN" },
+                _ => result with { Amount = 11m }
+            }
+        };
+        if (poll) api.TransactionStatusSequence.Enqueue(Approved("session", "reference"));
+        var client = new LinklyCloudTerminalClient(api, new FakeLinklyCloudSecretStore(), TimeSpan.Zero);
+
+        var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
+        Assert.Equal(api.LastTransactionSessionId, result.SessionId);
+        Assert.Equal(api.SentTransactionTxnRefs.Single(), result.TxnRef);
+        Assert.Equal(1, api.SendTransactionCallCount);
+        Assert.Equal(poll ? 1 : 0, api.GetTransactionCallCount);
+    }
+
     [Fact]
     public async Task PurchaseAsync_uses_pos_id_and_maps_approved_transaction()
     {
@@ -37,7 +128,7 @@ public sealed class LinklyCloudTerminalClientTests
             CreateSettings() with { LinklyPosVendorId = null });
 
         Assert.True(result.Approved);
-        Assert.Equal("ANZCLOUD:TXN-1:RFN-1", result.Reference);
+        Assert.Equal($"ANZCLOUD:{apiClient.SentTransactionTxnRefs.Single()}:RFN-1", result.Reference);
         Assert.Equal("pos-id-1", apiClient.LastPosId);
         Assert.Equal(CardTerminalEnvironment.Production, store.LastEnvironment);
         Assert.Equal("S01", store.LastStoreCode);
@@ -249,6 +340,327 @@ public sealed class LinklyCloudTerminalClientTests
         Assert.Equal("linkly.cloud.resultUnknown", result.StatusKey);
         Assert.Equal(1, apiClient.SendTransactionCallCount);
         Assert.Equal(1, apiClient.GetTransactionCallCount);
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_returns_unknown_with_original_identity_when_initial_result_identity_mismatches()
+    {
+        var apiClient = new FakeLinklyCloudApiClient();
+        apiClient.TransactionIdentityEchoSequence.Enqueue(false);
+        apiClient.TransactionResultSequence.Enqueue(Approved("foreign-session", "FOREIGN-TXN", amount: 11m));
+        var client = new LinklyCloudTerminalClient(
+            apiClient,
+            new FakeLinklyCloudSecretStore(),
+            TimeSpan.Zero);
+
+        var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
+        Assert.Equal(apiClient.LastTransactionSessionId, result.SessionId);
+        Assert.Equal(apiClient.SentTransactionTxnRefs.Single(), result.TxnRef);
+        Assert.Equal(0, apiClient.GetTransactionCallCount);
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_returns_unknown_with_original_identity_when_polled_result_identity_mismatches()
+    {
+        var apiClient = new FakeLinklyCloudApiClient();
+        apiClient.TransactionIdentityEchoSequence.Enqueue(true);
+        apiClient.TransactionIdentityEchoSequence.Enqueue(false);
+        apiClient.TransactionResultSequence.Enqueue(Pending("initial-session"));
+        apiClient.TransactionStatusSequence.Enqueue(Approved("foreign-session", "FOREIGN-TXN", amount: 11m));
+        var client = new LinklyCloudTerminalClient(
+            apiClient,
+            new FakeLinklyCloudSecretStore(),
+            TimeSpan.Zero);
+
+        var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
+        Assert.Equal(apiClient.LastTransactionSessionId, result.SessionId);
+        Assert.Equal(apiClient.SentTransactionTxnRefs.Single(), result.TxnRef);
+        Assert.Equal(1, apiClient.GetTransactionCallCount);
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_does_not_poll_when_initial_pending_session_mismatches_request()
+    {
+        var apiClient = new FakeLinklyCloudApiClient();
+        apiClient.TransactionIdentityEchoSequence.Enqueue(false);
+        apiClient.TransactionResultSequence.Enqueue(Pending("foreign-session"));
+        var client = new LinklyCloudTerminalClient(
+            apiClient,
+            new FakeLinklyCloudSecretStore(),
+            TimeSpan.Zero);
+
+        var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
+        Assert.Equal(apiClient.LastTransactionSessionId, result.SessionId);
+        Assert.Equal(apiClient.SentTransactionTxnRefs.Single(), result.TxnRef);
+        Assert.Equal(0, apiClient.GetTransactionCallCount);
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_does_not_retry_when_not_submitted_session_mismatches_request()
+    {
+        var apiClient = new FakeLinklyCloudApiClient();
+        apiClient.TransactionIdentityEchoSequence.Enqueue(false);
+        apiClient.TransactionResultSequence.Enqueue(NotSubmitted("foreign-session"));
+        var client = new LinklyCloudTerminalClient(
+            apiClient,
+            new FakeLinklyCloudSecretStore(),
+            TimeSpan.Zero);
+
+        var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
+        Assert.Equal(apiClient.LastTransactionSessionId, result.SessionId);
+        Assert.Equal(apiClient.SentTransactionTxnRefs.Single(), result.TxnRef);
+        Assert.Equal(1, apiClient.SendTransactionCallCount);
+        Assert.Equal(0, apiClient.GetTransactionCallCount);
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_binds_direct_cloud_session_before_send_and_reuses_attempt_txn_ref_on_retry()
+    {
+        var apiClient = new FakeLinklyCloudApiClient();
+        apiClient.TransactionResultSequence.Enqueue(Pending("session-first"));
+        apiClient.TransactionStatusSequence.Enqueue(NotSubmitted("session-first"));
+        apiClient.TransactionResultSequence.Enqueue(Approved("session-retry", "TXN-RETRY-RESULT"));
+        var boundSessions = new List<(string SessionId, string? TxnRef, bool Cancellable)>();
+        var attemptTxnRef = LinklyLocalTxnRef.Create('P', "attempt-cloud-direct-1");
+        var accessor = new LinklyPaymentAttemptContextAccessor();
+        using var scope = accessor.Begin(new LinklyPaymentAttemptContext(
+            Guid.Parse("11111111-1111-4111-8111-111111111111"),
+            (sessionId, txnRef, _, cancellationToken) =>
+            {
+                boundSessions.Add((sessionId, txnRef, cancellationToken.CanBeCanceled));
+                return Task.CompletedTask;
+            },
+            attemptTxnRef));
+        var client = new LinklyCloudTerminalClient(
+            apiClient,
+            new FakeLinklyCloudSecretStore(),
+            TimeSpan.Zero,
+            linklyPaymentAttemptContextAccessor: accessor);
+
+        var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        Assert.True(result.Approved);
+        Assert.Equal(2, apiClient.SendTransactionCallCount);
+        Assert.Equal(2, boundSessions.Count);
+        Assert.Equal(apiClient.SentTransactionSessionIds, boundSessions.Select(item => item.SessionId));
+        Assert.All(boundSessions, item => Assert.Equal(attemptTxnRef, item.TxnRef));
+        Assert.All(boundSessions, item => Assert.False(item.Cancellable));
+        Assert.Equal([attemptTxnRef, attemptTxnRef], apiClient.SentTransactionTxnRefs);
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_returns_unknown_with_bound_identity_when_caller_cancels_after_direct_submission()
+    {
+        var apiClient = new FakeLinklyCloudApiClient
+        {
+            PendingTransactionCompletion = new TaskCompletionSource<LinklyCloudTransactionResult>(
+                TaskCreationOptions.RunContinuationsAsynchronously),
+            ObservePendingTransactionCancellation = true
+        };
+        var boundSessions = new List<(string SessionId, string? TxnRef)>();
+        var attemptTxnRef = LinklyLocalTxnRef.Create('P', "attempt-cloud-direct-cancel");
+        var accessor = new LinklyPaymentAttemptContextAccessor();
+        using var scope = accessor.Begin(new LinklyPaymentAttemptContext(
+            Guid.Parse("22222222-2222-4222-8222-222222222222"),
+            (sessionId, txnRef, _, _) =>
+            {
+                boundSessions.Add((sessionId, txnRef));
+                return Task.CompletedTask;
+            },
+            attemptTxnRef));
+        var client = new LinklyCloudTerminalClient(
+            apiClient,
+            new FakeLinklyCloudSecretStore(),
+            TimeSpan.Zero,
+            linklyPaymentAttemptContextAccessor: accessor);
+        using var cancellation = new CancellationTokenSource();
+
+        var purchaseTask = client.PurchaseAsync(10m, CreateSession(), CreateSettings(), cancellation.Token);
+        await WaitUntilAsync(() => apiClient.SendTransactionCallCount == 1);
+        cancellation.Cancel();
+        var result = await purchaseTask;
+
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
+        Assert.Equal(apiClient.LastTransactionSessionId, result.SessionId);
+        Assert.Equal(attemptTxnRef, result.TxnRef);
+        var bound = Assert.Single(boundSessions);
+        Assert.Equal(apiClient.LastTransactionSessionId, bound.SessionId);
+        Assert.Equal(attemptTxnRef, bound.TxnRef);
+        Assert.Equal(1, apiClient.SendTransactionCallCount);
+    }
+
+    [Fact]
+    public async Task RecoverTransactionAsync_queries_only_original_session_and_maps_linkly_success()
+    {
+        var apiClient = new FakeLinklyCloudApiClient();
+        var txnRef = LinklyLocalTxnRef.Create('P', "attempt-cloud-direct-recovery");
+        apiClient.TransactionStatusSequence.Enqueue(Approved("session-recover", txnRef));
+        var client = new LinklyCloudTerminalClient(
+            apiClient,
+            new FakeLinklyCloudSecretStore(),
+            TimeSpan.Zero);
+
+        var result = await client.RecoverTransactionAsync(
+            10m,
+            CreateSession(),
+            CreateSettings(),
+            "session-recover",
+            txnRef);
+
+        Assert.True(result.Approved);
+        Assert.Equal("session-recover", result.SessionId);
+        Assert.Equal(txnRef, result.TxnRef);
+        Assert.Equal(0, apiClient.SendTransactionCallCount);
+        Assert.Equal(1, apiClient.GetTransactionCallCount);
+        Assert.Equal("session-recover", apiClient.LastGetTransactionSessionId);
+    }
+
+    [Fact]
+    public async Task RecoverTransactionAsync_returns_unknown_for_identity_mismatch_without_resubmitting()
+    {
+        var apiClient = new FakeLinklyCloudApiClient();
+        var txnRef = LinklyLocalTxnRef.Create('P', "attempt-cloud-direct-mismatch");
+        apiClient.TransactionStatusSequence.Enqueue(Approved("session-other", txnRef));
+        var client = new LinklyCloudTerminalClient(
+            apiClient,
+            new FakeLinklyCloudSecretStore(),
+            TimeSpan.Zero);
+
+        var result = await client.RecoverTransactionAsync(
+            10m,
+            CreateSession(),
+            CreateSettings(),
+            "session-expected",
+            txnRef);
+
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
+        Assert.Equal(0, apiClient.SendTransactionCallCount);
+        Assert.Equal(1, apiClient.GetTransactionCallCount);
+        Assert.Equal("session-expected", result.SessionId);
+        Assert.Equal(txnRef, result.TxnRef);
+    }
+
+    [Fact]
+    public async Task RecoverTransactionAsync_returns_unknown_for_pending_result_without_resubmitting()
+    {
+        var apiClient = new FakeLinklyCloudApiClient();
+        var txnRef = LinklyLocalTxnRef.Create('P', "attempt-cloud-direct-pending");
+        apiClient.TransactionStatusSequence.Enqueue(Pending("session-pending-recovery"));
+        var client = new LinklyCloudTerminalClient(
+            apiClient,
+            new FakeLinklyCloudSecretStore(),
+            TimeSpan.Zero);
+
+        var result = await client.RecoverTransactionAsync(
+            10m,
+            CreateSession(),
+            CreateSettings(),
+            "session-pending-recovery",
+            txnRef);
+
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
+        Assert.Equal(0, apiClient.SendTransactionCallCount);
+        Assert.Equal(1, apiClient.GetTransactionCallCount);
+        Assert.Equal("session-pending-recovery", result.SessionId);
+        Assert.Equal(txnRef, result.TxnRef);
+    }
+
+    [Fact]
+    public async Task RecoverTransactionAsync_returns_unknown_for_invalid_json_without_resubmitting()
+    {
+        var apiClient = new FakeLinklyCloudApiClient();
+        var txnRef = LinklyLocalTxnRef.Create('P', "attempt-cloud-direct-invalid-json");
+        apiClient.TransactionStatusSequence.Enqueue(new JsonException("invalid Linkly response"));
+        var client = new LinklyCloudTerminalClient(
+            apiClient,
+            new FakeLinklyCloudSecretStore(),
+            TimeSpan.Zero);
+
+        var result = await client.RecoverTransactionAsync(
+            10m,
+            CreateSession(),
+            CreateSettings(),
+            "session-invalid-json",
+            txnRef);
+
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
+        Assert.Equal(0, apiClient.SendTransactionCallCount);
+        Assert.Equal(1, apiClient.GetTransactionCallCount);
+        Assert.Equal("session-invalid-json", result.SessionId);
+        Assert.Equal(txnRef, result.TxnRef);
+    }
+
+    [Fact]
+    public async Task RecoverTransactionAsync_refreshes_token_after_authorization_failure_without_resubmitting()
+    {
+        var apiClient = new FakeLinklyCloudApiClient();
+        var txnRef = LinklyLocalTxnRef.Create('P', "attempt-cloud-direct-auth-refresh");
+        apiClient.TransactionStatusSequence.Enqueue(new LinklyCloudApiException(
+            "status token expired",
+            HttpStatusCode.Unauthorized));
+        apiClient.TransactionStatusSequence.Enqueue(Approved("session-auth-refresh", txnRef));
+        var client = new LinklyCloudTerminalClient(
+            apiClient,
+            new FakeLinklyCloudSecretStore(),
+            TimeSpan.Zero);
+
+        var result = await client.RecoverTransactionAsync(
+            10m,
+            CreateSession(),
+            CreateSettings(),
+            "session-auth-refresh",
+            txnRef);
+
+        Assert.True(result.Approved);
+        Assert.Equal(2, apiClient.TokenCallCount);
+        Assert.Equal(2, apiClient.GetTransactionCallCount);
+        Assert.Equal(0, apiClient.SendTransactionCallCount);
+    }
+
+    [Theory]
+    [InlineData("network")]
+    [InlineData("timeout")]
+    public async Task RecoverTransactionAsync_returns_unknown_for_transport_failures_without_resubmitting(string failure)
+    {
+        var apiClient = new FakeLinklyCloudApiClient();
+        var txnRef = LinklyLocalTxnRef.Create('P', $"attempt-cloud-direct-{failure}");
+        apiClient.TransactionStatusSequence.Enqueue(failure == "network"
+            ? new HttpRequestException("status offline")
+            : new OperationCanceledException("status timed out"));
+        var client = new LinklyCloudTerminalClient(
+            apiClient,
+            new FakeLinklyCloudSecretStore(),
+            TimeSpan.Zero);
+
+        var result = await client.RecoverTransactionAsync(
+            10m,
+            CreateSession(),
+            CreateSettings(),
+            $"session-{failure}",
+            txnRef);
+
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
+        Assert.Equal(0, apiClient.SendTransactionCallCount);
+        Assert.Equal(1, apiClient.GetTransactionCallCount);
+        Assert.Equal($"session-{failure}", result.SessionId);
+        Assert.Equal(txnRef, result.TxnRef);
     }
 
     [Fact]
@@ -527,6 +939,7 @@ public sealed class LinklyCloudTerminalClientTests
     }
 
     [Fact]
+    [Trait("Category", "Timing")]
     public async Task PurchaseAsync_does_not_use_short_configured_timeout_before_linkly_business_wait()
     {
         var apiClient = new FakeLinklyCloudApiClient
@@ -538,14 +951,25 @@ public sealed class LinklyCloudTerminalClientTests
         var client = new LinklyCloudTerminalClient(apiClient, new FakeLinklyCloudSecretStore());
         var settings = CreateSettings() with { TerminalTimeout = TimeSpan.FromMilliseconds(30) };
 
-        var purchaseTask = client.PurchaseAsync(10m, CreateSession(), settings);
-        await Task.Delay(120);
+        using var cancellation = new CancellationTokenSource();
+        var purchaseTask = client.PurchaseAsync(10m, CreateSession(), settings, cancellation.Token);
+        try
+        {
+            // 先确认已提交再观察超时契约，避免仅因请求尚未开始就误判通过。
+            await WaitUntilAsync(() => apiClient.SendTransactionCallCount == 1);
+            await Task.Delay(120);
+            Assert.False(purchaseTask.IsCompleted);
 
-        Assert.False(purchaseTask.IsCompleted);
-
-        apiClient.PendingTransactionCompletion.SetResult(Approved(apiClient.LastTransactionSessionId!, "TXN-5"));
-        var result = await purchaseTask;
-        Assert.True(result.Approved);
+            apiClient.PendingTransactionCompletion.SetResult(Approved(apiClient.LastTransactionSessionId!, "TXN-5"));
+            var result = await purchaseTask.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.True(result.Approved);
+        }
+        finally
+        {
+            // 断言失败也结束待响应交易，不能把后台任务带到后续测试。
+            cancellation.Cancel();
+            await purchaseTask.WaitAsync(TimeSpan.FromSeconds(5));
+        }
     }
 
     private static PosSessionState CreateSession()
@@ -594,7 +1018,28 @@ public sealed class LinklyCloudTerminalClientTests
         };
     }
 
-    private static LinklyCloudTransactionResult Approved(string sessionId, string txnRef)
+    private static LinklyCloudTransactionResult NotSubmitted(string sessionId)
+    {
+        return new LinklyCloudTransactionResult(
+            sessionId,
+            false,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null)
+        {
+            Outcome = LinklyCloudTransactionOutcome.NotSubmitted
+        };
+    }
+
+    private static LinklyCloudTransactionResult Approved(string sessionId, string txnRef, decimal amount = 10m)
     {
         return new LinklyCloudTransactionResult(
             sessionId,
@@ -608,7 +1053,7 @@ public sealed class LinklyCloudTerminalClientTests
             "00",
             "APPROVED",
             "42",
-            10m,
+            amount,
             "RFN-1");
     }
 
@@ -697,6 +1142,8 @@ public sealed class LinklyCloudTerminalClientTests
 
         public LinklyCloudApiException? TokenException { get; init; }
 
+        public Exception? TransactionException { get; init; }
+
         public LinklyCloudApiException? SettlementException { get; init; }
 
         public int TokenCallCount { get; private set; }
@@ -706,6 +1153,12 @@ public sealed class LinklyCloudTerminalClientTests
         public int SendSettlementCallCount { get; private set; }
 
         public string? LastTransactionSessionId { get; private set; }
+
+        public string? LastGetTransactionSessionId { get; private set; }
+
+        public List<string> SentTransactionSessionIds { get; } = [];
+
+        public List<string> SentTransactionTxnRefs { get; } = [];
 
         public TaskCompletionSource<LinklyCloudTransactionResult>? PendingTransactionCompletion { get; init; }
 
@@ -722,6 +1175,10 @@ public sealed class LinklyCloudTerminalClientTests
         public string? LastSendKeyKey { get; private set; }
 
         public Queue<LinklyCloudTransactionResult> TransactionResultSequence { get; } = [];
+
+        public Queue<bool> TransactionIdentityEchoSequence { get; } = [];
+
+        public Func<LinklyCloudTransactionResult, LinklyCloudTransactionResult>? TransactionResponseTransform { get; init; }
 
         public Queue<object> TransactionStatusSequence { get; } = [];
 
@@ -784,16 +1241,24 @@ public sealed class LinklyCloudTerminalClientTests
         {
             SendTransactionCallCount++;
             LastTransactionSessionId = sessionId;
+            SentTransactionSessionIds.Add(sessionId);
+            SentTransactionTxnRefs.Add(request.TxnRef);
+            if (TransactionException is not null)
+            {
+                throw TransactionException;
+            }
             if (PendingTransactionCompletion is not null)
             {
-                return ObservePendingTransactionCancellation
+                var pending = ObservePendingTransactionCancellation
                     ? PendingTransactionCompletion.Task.WaitAsync(cancellationToken)
                     : PendingTransactionCompletion.Task;
+                return EchoPendingResponseAsync(pending, sessionId, request.TxnRef);
             }
 
-            return Task.FromResult(TransactionResultSequence.Count > 0
+            var result = TransactionResultSequence.Count > 0
                 ? TransactionResultSequence.Dequeue()
-                : TransactionResult);
+                : TransactionResult;
+            return Task.FromResult(EchoTransactionIdentity(result, sessionId, request.TxnRef));
         }
 
         public Task<LinklyCloudTransactionResult> GetTransactionAsync(
@@ -803,6 +1268,7 @@ public sealed class LinklyCloudTerminalClientTests
             CancellationToken cancellationToken = default)
         {
             GetTransactionCallCount++;
+            LastGetTransactionSessionId = sessionId;
             if (TransactionStatusSequence.Count == 0)
             {
                 throw new NotSupportedException();
@@ -819,7 +1285,23 @@ public sealed class LinklyCloudTerminalClientTests
                 throw generalException;
             }
 
-            return Task.FromResult((LinklyCloudTransactionResult)next);
+            var result = (LinklyCloudTransactionResult)next;
+            return Task.FromResult(LastTransactionSessionId is null
+                ? result
+                : EchoTransactionIdentity(result, sessionId, SentTransactionTxnRefs.Last()));
+        }
+
+        private async Task<LinklyCloudTransactionResult> EchoPendingResponseAsync(
+            Task<LinklyCloudTransactionResult> pending, string sessionId, string txnRef) =>
+            EchoTransactionIdentity(await pending, sessionId, txnRef);
+
+        private LinklyCloudTransactionResult EchoTransactionIdentity(
+            LinklyCloudTransactionResult result, string sessionId, string txnRef)
+        {
+            // 正常替身回显当前请求；错配回归显式保留外来身份，不能被测试适配掩盖。
+            var echo = TransactionIdentityEchoSequence.Count == 0 || TransactionIdentityEchoSequence.Dequeue();
+            var echoed = echo ? result with { SessionId = sessionId, TxnRef = result.TxnRef is null ? null : txnRef } : result;
+            return TransactionResponseTransform?.Invoke(echoed) ?? echoed;
         }
 
         public Task<LinklyCloudSettlementResult> SendSettlementAsync(

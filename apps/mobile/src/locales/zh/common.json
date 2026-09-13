@@ -53,6 +53,8 @@
     "attendanceManagement": "考勤管理",
     "productQuery": "商品维护",
     "users": "用户",
+    "userAdmin": "用户管理",
+    "roles": "角色管理",
     "employeeProfile": "员工",
     "employeeProfileReview": "资料审核",
     "deviceManagement": "设备管理",

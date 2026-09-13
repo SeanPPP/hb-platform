@@ -149,12 +149,47 @@ internal sealed class WarehouseProductSingleCreationCommandWriter : ProductWareh
             }
 
             _context.Db.Ado.BeginTran();
-            // 新建套装的关系、门店投影和派生成本必须在同一产品锁内完成。
+            // 新建商品会占用商品编码身份；Update 总闸不会阻塞无关商品的普通成本 Shared 锁，
+            // 但会让相同身份的新建或主档变更串行。
             var setChildPurchasePriceLock =
-                await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                await SetChildPurchasePriceMutationLock.AcquireProductIdentitiesWithinBudgetAsync(
                     _context.Db,
                     new[] { productCode }
                 );
+
+            // 锁前的独立连接只用于快速失败；等待身份锁期间可能已有请求创建相同记录，
+            // 因此必须在当前事务连接内复查关键身份，不能沿用锁前结果。
+            var existingProductByCodeWithinLock = await _context.Db.Queryable<Product>()
+                .Where(p => p.ProductCode == productCode && !p.IsDeleted)
+                .FirstAsync();
+            if (existingProductByCodeWithinLock != null)
+            {
+                _context.Db.Ado.RollbackTran();
+                WarehouseProductSingleCreationResultAssembler.Reject(response, "商品编码已存在");
+                return response;
+            }
+
+            var existingProductByItemNumberWithinLock = await _context.Db.Queryable<Product>()
+                .Where(p => p.ItemNumber == itemNumber && !p.IsDeleted)
+                .FirstAsync();
+            if (existingProductByItemNumberWithinLock != null)
+            {
+                _context.Db.Ado.RollbackTran();
+                WarehouseProductSingleCreationResultAssembler.Reject(response, "货号已存在");
+                return response;
+            }
+
+            if (!string.IsNullOrWhiteSpace(barcodeToUse) && !barcodeExists)
+            {
+                var existingBarcodeProductWithinLock = await _context.Db.Queryable<Product>()
+                    .Where(p => p.Barcode == barcodeToUse && !p.IsDeleted)
+                    .FirstAsync();
+                if (existingBarcodeProductWithinLock != null)
+                {
+                    barcodeExists = true;
+                    warnings.Add($"条码 {barcodeToUse} 已存在于系统中");
+                }
+            }
             var now = DateTime.Now;
             var auditProductCode = productCode!;
             var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(

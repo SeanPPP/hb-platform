@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createAttendanceQrScanSessionGate } from "./attendance-qr-scan-session";
+import { createCameraScanGateController } from "../scanner/camera-scan-gate";
 
 function deferred() {
   let resolve!: () => void;
@@ -71,6 +72,31 @@ async function main() {
   assert.equal(onceGate.isActive(onceSession), false);
   assert.equal(onceGate.tryStartSubmitting(nextSession), true,
     "关闭后显式重新扫描创建的新会话可以提交");
+
+  const expiredGate = createAttendanceQrScanSessionGate();
+  const expiredSession = expiredGate.begin();
+  assert.equal(expiredGate.tryStartSubmitting(expiredSession, "old-code"), true);
+  assert.equal(expiredGate.resumeAfterExpired(expiredSession, "old-code"), true);
+  assert.equal(expiredGate.tryStartSubmitting(expiredSession, "old-code"), false);
+  const camera = createCameraScanGateController("fresh-code");
+  const forward = (token: string) => {
+    // 相机 singleScan gate 消费事件前先拦截旧码，否则下一张新码也会被挡住。
+    if (expiredGate.isExpiredToken(token)) return null;
+    return camera.tryStart("fresh-code", token, 1_000, {
+      cooldownMs: 1200, ignoreWhileProcessing: true,
+      singleScanUntilReset: true, suppressRepeatsUntilChange: false,
+    });
+  };
+  assert.equal(forward("old-code"), null);
+  assert.ok(forward("new-code"));
+  assert.equal(expiredGate.tryStartSubmitting(expiredSession, "new-code"), true);
+  assert.equal(expiredGate.tryStartSubmitting(expiredSession, "another-code"), false,
+    "自动恢复只接收下一张新码，进入请求后仍须防止重复提交");
+  expiredGate.invalidate();
+  const newSession = expiredGate.begin();
+  assert.equal(expiredGate.resumeAfterExpired(expiredSession, "late-old-code"), false);
+  assert.equal(expiredGate.tryStartSubmitting(newSession, "late-old-code"), true,
+    "迟到旧会话不能污染新会话的过滤集合");
 
   console.log("attendance-qr-scan-session.test.ts: ok");
 }

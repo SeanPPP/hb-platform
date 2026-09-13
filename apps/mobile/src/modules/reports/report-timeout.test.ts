@@ -120,6 +120,8 @@ async function run() {
     await fetchSupplierBranchBreakdown("australia", query, "S1");
     await fetchProductBranchBreakdown(query, "P1");
     await fetchProductReportStoreOptions();
+    assert.equal(requests.at(-1)?.url, "/react/v1/mobile-reports/store-options",
+      "移动报表门店范围必须使用移动报表权限，不能依赖 Web 商品经营分析权限");
     await fetchStatisticsFreshness();
 
     assert.equal(REPORT_QUERY_TIMEOUT_MS, 60_000);

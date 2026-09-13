@@ -42,6 +42,7 @@ export function TodayPunchCard({
   isLoading,
   isVerificationRefreshing,
   isPunching,
+  processingStage,
   hasAuthorizedStores,
   verification,
   lastQrPunch,
@@ -57,6 +58,7 @@ export function TodayPunchCard({
   isLoading: boolean;
   isVerificationRefreshing?: boolean;
   isPunching: boolean;
+  processingStage?: "validating" | "locating" | "saving" | "tracking";
   hasAuthorizedStores: boolean;
   verification: AttendancePunchVerificationState;
   lastQrPunch?: AttendancePunch;
@@ -180,7 +182,7 @@ export function TodayPunchCard({
           >
             <Text variant="headlineSmall" style={styles.punchButtonText}>
               {isPunching
-                ? t("actions.processingPunch")
+                ? t(processingStage ? `actions.punchStages.${processingStage}` : "actions.processingPunch")
                 : t("actions.scanPunch")}
             </Text>
           </Pressable>
