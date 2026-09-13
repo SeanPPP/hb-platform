@@ -55,22 +55,29 @@ type SquareRecoveryControl = Readonly<{
  */
 export class SquarePaymentAdapter implements OnlinePaymentPort {
   public readonly provider = "square" as const;
+  public readonly providerEnvironment: string;
 
   public constructor(
     private readonly transport: HbposTransport,
     private readonly getConfiguration: SquareTerminalConfigurationProvider,
-  ) {}
+    providerEnvironment: string,
+  ) {
+    this.providerEnvironment = requiredSquareEnvironment(providerEnvironment);
+  }
 
   public submit(attempt: PaymentAttempt): Promise<PaymentProviderResult> {
     return this.safely(attempt, async () => {
       assertPurchaseAttempt(attempt);
-      const rawConfiguration = await this.getConfiguration();
+      const environment = environmentForAttempt(attempt);
       return attempt.references.checkoutId
-        ? this.getStatusWithConfiguration(
+        ? this.getStatusWithConfiguration(attempt, environment)
+        : this.createOrReplayCheckout(
             attempt,
-            normalizeEnvironmentConfiguration(rawConfiguration),
-          )
-        : this.createOrReplayCheckout(attempt, normalizeConfiguration(rawConfiguration));
+            configurationForAttempt(
+              await this.getConfiguration(),
+              environment,
+            ),
+          );
     });
   }
 
@@ -91,25 +98,20 @@ export class SquarePaymentAdapter implements OnlinePaymentPort {
     control?: SquareRecoveryControl,
   ): Promise<PaymentProviderResult> {
     return this.safely(attempt, async () => {
-      const rawConfiguration = await this.getConfiguration();
+      const environment = environmentForAttempt(attempt);
       if (attempt.operation === "refund") {
         assertRefundAttempt(attempt);
-        return this.refundWithConfiguration(
-          attempt,
-          normalizeEnvironmentConfiguration(rawConfiguration),
-          control,
-        );
+        return this.refundWithConfiguration(attempt, environment, control);
       }
       assertPurchaseAttempt(attempt);
       return attempt.references.checkoutId
-        ? this.getStatusWithConfiguration(
-            attempt,
-            normalizeEnvironmentConfiguration(rawConfiguration),
-            control,
-          )
+        ? this.getStatusWithConfiguration(attempt, environment, control)
         : this.createOrReplayCheckout(
             attempt,
-            normalizeConfiguration(rawConfiguration),
+            configurationForAttempt(
+              await this.getConfiguration(),
+              environment,
+            ),
             control,
           );
     });
@@ -122,7 +124,7 @@ export class SquarePaymentAdapter implements OnlinePaymentPort {
         attempt.references.checkoutId,
         "SQUARE_CHECKOUT_ID_REQUIRED",
       );
-      const configuration = normalizeEnvironmentConfiguration(await this.getConfiguration());
+      const configuration = environmentForAttempt(attempt);
       const checkout = await this.requestData<SquareCheckoutStatusResponse>({
         method: "POST",
         url: `/api/v1/square/checkouts/${encodeURIComponent(checkoutId)}/cancel`,
@@ -140,7 +142,7 @@ export class SquarePaymentAdapter implements OnlinePaymentPort {
         attempt.references.checkoutId,
         "SQUARE_CHECKOUT_ID_REQUIRED",
       );
-      const configuration = normalizeEnvironmentConfiguration(await this.getConfiguration());
+      const configuration = environmentForAttempt(attempt);
       const checkout = await this.requestData<SquareCheckoutStatusResponse>({
         method: "POST",
         url: `/api/v1/square/checkouts/${encodeURIComponent(checkoutId)}/dismiss`,
@@ -153,7 +155,7 @@ export class SquarePaymentAdapter implements OnlinePaymentPort {
   public refund(attempt: PaymentAttempt): Promise<PaymentProviderResult> {
     return this.safely(attempt, async () => {
       assertRefundAttempt(attempt);
-      const configuration = normalizeEnvironmentConfiguration(await this.getConfiguration());
+      const configuration = environmentForAttempt(attempt);
       return this.refundWithConfiguration(attempt, configuration);
     });
   }
@@ -162,7 +164,7 @@ export class SquarePaymentAdapter implements OnlinePaymentPort {
     return this.safely(attempt, async () => {
       assertPurchaseAttempt(attempt);
       requiredReference(attempt.references.checkoutId, "SQUARE_CHECKOUT_ID_REQUIRED");
-      const configuration = normalizeEnvironmentConfiguration(await this.getConfiguration());
+      const configuration = environmentForAttempt(attempt);
       return this.getStatusWithConfiguration(attempt, configuration);
     });
   }
@@ -237,6 +239,12 @@ export class SquarePaymentAdapter implements OnlinePaymentPort {
     control?: SquareRecoveryControl,
   ): Promise<PaymentProviderResult> {
     const checkoutId = optionalText(checkout.checkoutId);
+    if (
+      optionalText(checkout.environment)?.toLowerCase() !==
+      configuration.environment.toLowerCase()
+    ) {
+      return unknown(attempt.references, "SQUARE_ENVIRONMENT_CONFLICT");
+    }
     if (!checkoutId) {
       return unknown(attempt.references, "SQUARE_MISSING_CHECKOUT_ID");
     }
@@ -321,7 +329,7 @@ export class SquarePaymentAdapter implements OnlinePaymentPort {
       },
       control,
     );
-    return verifyRefund(attempt, paymentId, refund);
+    return verifyRefund(attempt, configuration, paymentId, refund);
   }
 
   private async requestData<T>(
@@ -418,9 +426,16 @@ function verifyPayment(
 
 function verifyRefund(
   attempt: PaymentAttempt,
+  configuration: SquareEnvironmentConfiguration,
   expectedPaymentId: string,
   refund: SquareRefundResponse,
 ): PaymentProviderResult {
+  if (
+    optionalText(refund.environment)?.toLowerCase() !==
+    configuration.environment.toLowerCase()
+  ) {
+    return unknown(attempt.references, "SQUARE_ENVIRONMENT_CONFLICT");
+  }
   const refundId = optionalText(refund.refundId);
   const returnedPaymentId = optionalText(refund.paymentId);
   if (
@@ -652,7 +667,7 @@ function squareProviderAmountCents(attempt: PaymentAttempt): number {
 function normalizeConfiguration(
   configuration: SquareTerminalConfiguration,
 ): SquareTerminalConfiguration {
-  const { environment } = normalizeEnvironmentConfiguration(configuration);
+  const environment = requiredSquareEnvironment(configuration.environment);
   const rawDeviceId = requiredConfigurationText(
     configuration.deviceId,
     "SQUARE_DEVICE_ID_REQUIRED",
@@ -671,15 +686,31 @@ function normalizeConfiguration(
   };
 }
 
-function normalizeEnvironmentConfiguration(
+function configurationForAttempt(
   configuration: SquareTerminalConfiguration,
+  expected: SquareEnvironmentConfiguration,
+): SquareTerminalConfiguration {
+  const normalized = normalizeConfiguration(configuration);
+  if (normalized.environment !== expected.environment) {
+    throw new SquareAdapterError("SQUARE_ENVIRONMENT_CONFLICT");
+  }
+  return normalized;
+}
+
+function environmentForAttempt(
+  attempt: PaymentAttempt,
 ): SquareEnvironmentConfiguration {
-  return {
-    environment: requiredConfigurationText(
-      configuration.environment,
-      "SQUARE_ENVIRONMENT_REQUIRED",
-    ),
-  };
+  return { environment: requiredSquareEnvironment(attempt.providerEnvironment) };
+}
+
+function requiredSquareEnvironment(value: unknown): string {
+  const normalized = optionalText(value)?.toLowerCase();
+  if (!normalized) {
+    throw new SquareAdapterError("SQUARE_ENVIRONMENT_REQUIRED");
+  }
+  if (normalized === "sandbox") return "Sandbox";
+  if (normalized === "production") return "Production";
+  throw new SquareAdapterError("SQUARE_ENVIRONMENT_INVALID");
 }
 
 function requiredConfigurationText(value: string, code: string): string {

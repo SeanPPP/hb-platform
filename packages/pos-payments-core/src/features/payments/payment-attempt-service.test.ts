@@ -117,7 +117,7 @@ test("Linkly Created 在 provider 边界冻结环境；后续配置变化的 rec
 test("Linkly 缺少可冻结环境时在 Created/provider 调用前失败关闭", async () => {
   const ledger = new MemoryLedger();
   const provider = new FakeProvider("linkly-cloud");
-  provider.providerEnvironment = undefined;
+  delete provider.providerEnvironment;
   const service = createService({ ledger, provider });
 
   await assert.rejects(
@@ -2195,11 +2195,13 @@ class FakeProvider implements OnlinePaymentPort {
   public refundResult: (attempt: PaymentAttempt) => Promise<PaymentProviderResult> = async () =>
     result("Approved");
   /** Linkly 新 attempt 必须在 provider 边界冻结环境。 */
-  public providerEnvironment: string | undefined;
+  public providerEnvironment?: string;
 
   public constructor(public readonly provider: PaymentProvider) {
-    this.providerEnvironment =
-      provider === "linkly-cloud" ? "test-environment" : undefined;
+    // 测试 provider 也必须提供创建前冻结的环境；生产实现对 Square/Linkly 一致执行该门禁。
+    if (provider === "linkly-cloud" || provider === "square") {
+      this.providerEnvironment = "test-environment";
+    }
   }
 
   public async submit(value: PaymentAttempt): Promise<PaymentProviderResult> {

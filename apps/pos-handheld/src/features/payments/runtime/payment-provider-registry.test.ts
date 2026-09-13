@@ -2,6 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  PaymentAttemptService,
+  type PaymentActionBinding,
+  type PaymentActionBindingPort,
+  type PaymentAttemptLedgerPort,
+} from "@hb/pos-payments-core/features/payments/payment-attempt-service";
+
+import {
   PaymentProviderUnavailableError,
   createConfiguredPaymentProviderRegistry,
   type LinklyRuntimeConfiguration,
@@ -44,6 +51,7 @@ test("class 配置仓储保留 this 绑定，且只声明真实配置有效的 p
 
   assert.deepEqual(registry.listAvailableProviders(), ["square", "voucher"]);
   assert.equal(registry.get("square").provider, "square");
+  assert.equal(registry.get("square").providerEnvironment, "Sandbox");
   assert.equal(registry.get("voucher").provider, "voucher");
   assert.deepEqual(registry.getAvailability("linkly-cloud"), {
     provider: "linkly-cloud",
@@ -57,6 +65,65 @@ test("class 配置仓储保留 this 绑定，且只声明真实配置有效的 p
       assert.equal(error.code, "LINKLY_CONFIGURATION_MISSING");
       return true;
     },
+  );
+});
+
+test("真实 Square registry 让 PaymentAttemptService 在首次提交前冻结并使用 Sandbox", async () => {
+  const transport = new RecordingTransport([
+    {
+      status: 200,
+      data: {
+        success: true,
+        data: {
+          checkoutId: "checkout-service-1",
+          environment: "Sandbox",
+          status: "PENDING",
+          paymentIds: [],
+        },
+      },
+    },
+  ]);
+  const registry = await createConfiguredPaymentProviderRegistry({
+    transport,
+    squareConfiguration: new ClassSquareConfiguration("device-service-1"),
+    linklyConfiguration: new ClassLinklyConfiguration(null),
+    voucherConfiguration: new ClassVoucherConfiguration(false),
+    voucherProtectedTokens: new EmptyVoucherTokens(),
+    voucherContextProvider: async () => {
+      throw new Error("not called");
+    },
+  });
+  const ledger = new SingleAttemptLedger();
+  const service = new PaymentAttemptService({
+    ledger,
+    actionBindings: new SingleActionBindings(),
+    drafts: { assertPersisted: async () => undefined },
+    providers: registry,
+    connectivity: { isOnline: async () => true },
+    createAttemptId: () => "attempt-service-1",
+    createIdempotencyKey: () => "key-service-1",
+    nowIso: () => "2026-09-13T00:00:00.000Z",
+  });
+
+  const result = await service.startAttempt({
+    actionId: "action-service-1",
+    orderGuid: "order-service-1",
+    provider: "square",
+    operation: "purchase",
+    amount: { currency: "AUD", cents: 100 },
+    actor: {
+      cashierId: "cashier-1",
+      cashierName: "Cashier One",
+      userGuid: "user-1",
+    },
+  });
+
+  assert.equal(result.attempt.providerEnvironment, "Sandbox");
+  assert.equal(result.attempt.state, "Pending");
+  assert.equal(
+    (transport.calls[0]?.data as { environment?: string } | undefined)
+      ?.environment,
+    "Sandbox",
   );
 });
 
@@ -302,6 +369,62 @@ class EmptyVoucherTokens implements VoucherProtectedTokenPort {
     _protectedReference: string,
   ): Promise<VoucherProtectedAttemptState | null> {
     return null;
+  }
+}
+
+class SingleAttemptLedger implements PaymentAttemptLedgerPort {
+  private current: PaymentAttempt | null = null;
+
+  public async insertIfUnblocked(
+    value: PaymentAttempt,
+  ): Promise<PaymentAttempt | null> {
+    if (this.current) return this.current;
+    this.current = value;
+    return null;
+  }
+
+  public async compareAndUpdate(
+    expected: PaymentAttempt,
+    next: PaymentAttempt,
+  ): Promise<boolean> {
+    if (
+      !this.current ||
+      this.current.attemptId !== expected.attemptId ||
+      this.current.updatedAtIso !== expected.updatedAtIso
+    ) {
+      return false;
+    }
+    this.current = next;
+    return true;
+  }
+
+  public async get(attemptId: string): Promise<PaymentAttempt | null> {
+    return this.current?.attemptId === attemptId ? this.current : null;
+  }
+
+  public async findBlocking(orderGuid: string): Promise<PaymentAttempt | null> {
+    return this.current?.orderGuid === orderGuid ? this.current : null;
+  }
+
+  public async verifyProviderEnvironment(): Promise<boolean> {
+    return false;
+  }
+}
+
+class SingleActionBindings implements PaymentActionBindingPort {
+  private current: PaymentActionBinding | null = null;
+
+  public async bindOrGet(
+    proposed: PaymentActionBinding,
+  ): Promise<PaymentActionBinding> {
+    this.current ??= proposed;
+    return this.current;
+  }
+
+  public async getByAttempt(
+    attemptId: string,
+  ): Promise<PaymentActionBinding | null> {
+    return this.current?.attemptId === attemptId ? this.current : null;
   }
 }
 
