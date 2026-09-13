@@ -1552,7 +1552,7 @@ test("Linkly 配对和支付切换允许普通耐久队列但阻断敏感订单"
   assert.equal(saveCalls, 1);
 });
 
-test("Linkly 远程线路分配复用 payment transition 与五类业务门禁并只提交一次", async () => {
+test("Linkly 远程线路分配复用 payment transition 且不受本地未完成支付阻断", async () => {
   const events: string[] = [];
   const terminalSnapshot = {
     environment: "Production" as const,
@@ -1622,12 +1622,46 @@ test("Linkly 远程线路分配复用 payment transition 与五类业务门禁�
   pending = { ...CLEAR, unresolvedPaymentCount: 1 };
   assert.deepEqual(
     await subject.executeDangerousAction(action, new AbortController().signal),
-    pendingBlocked(pending),
+    { status: "completed", kind: "assign-linkly-terminal", terminals: terminalSnapshot },
   );
-  assert.deepEqual(events, ["transition:start", "pending", "transition:end"]);
+  assert.deepEqual(events, ["transition:start", "pending", "assign:terminal-2:IPAD-01", "transition:end"]);
 });
 
-test("Linkly 本机线路分配在全局 transition 内使用全量 pending 门禁", async () => {
+test("Linkly 本机切线保留本地业务，购物车、支付和待同步记录均不阻断线路选择", async () => {
+  const events: string[] = [];
+  let pending: SettingsPendingDataSnapshot = { ...CLEAR, pendingDurableWriteCount: 7 };
+  const terminalSnapshot = linklyAssignmentSnapshot();
+  const subject = new ProductionSettingsControl(deps({
+    linklySetup: {
+      pair: async () => ({ status: "completed" as const }),
+      assignTerminal: async () => { events.push("assign"); return terminalSnapshot; },
+    },
+    pendingData: { read: async () => pending },
+  }));
+  const action = linklyAssignmentAction({ affectsCurrentDevice: true });
+  assert.deepEqual(await subject.executeDangerousAction(action, new AbortController().signal), {
+    status: "completed", kind: "assign-linkly-terminal", terminals: terminalSnapshot,
+  });
+  assert.equal(pending.pendingDurableWriteCount, 7);
+  assert.deepEqual(events, ["assign"]);
+  for (const remaining of [
+    { hasActiveCart: true },
+    { hasFulfilmentInFlight: true },
+    { hasSyncOrAuditInFlight: true },
+    { pendingSaleCount: 1 },
+    { pendingReturnCount: 1 },
+    { unresolvedPaymentCount: 1 },
+    { paymentConfigurationSensitiveOrderCount: 1 },
+  ]) {
+    pending = { ...CLEAR, pendingDurableWriteCount: 7, ...remaining };
+    assert.deepEqual(await subject.executeDangerousAction(action, new AbortController().signal),
+      { status: "completed", kind: "assign-linkly-terminal", terminals: terminalSnapshot });
+    assert.deepEqual(pending, { ...CLEAR, pendingDurableWriteCount: 7, ...remaining });
+  }
+  assert.deepEqual(events, Array(8).fill("assign"));
+});
+
+test("Linkly 本机线路分配在全局 transition 内保留待处理订单并更新线路", async () => {
   const events: string[] = [];
   const subject = new ProductionSettingsControl(
     deps({
@@ -1635,7 +1669,7 @@ test("Linkly 本机线路分配在全局 transition 内使用全量 pending 门�
         pair: async () => ({ status: "completed" as const }),
         assignTerminal: async () => {
           events.push("assign");
-          throw new Error("不应提交");
+          return linklyAssignmentSnapshot();
         },
       },
       paymentConfigurationTransition: {
@@ -1662,9 +1696,9 @@ test("Linkly 本机线路分配在全局 transition 内使用全量 pending 门�
 
   assert.deepEqual(
     result,
-    pendingBlocked({ ...CLEAR, pendingSaleCount: 1 }),
+    { status: "completed", kind: "assign-linkly-terminal", terminals: linklyAssignmentSnapshot() },
   );
-  assert.deepEqual(events, ["transition:start", "pending", "transition:end"]);
+  assert.deepEqual(events, ["transition:start", "pending", "assign", "transition:end"]);
 });
 
 test("Linkly 本机线路分配等待全局 transition 中的在途交易释放", async () => {

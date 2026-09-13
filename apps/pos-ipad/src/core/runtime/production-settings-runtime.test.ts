@@ -650,6 +650,11 @@ test("Linkly 配对走 transition bypass，health 读取走 lease，POST 后不�
           events.push("health");
           return health;
         },
+        readTerminals: async () => ({
+          environment: health.environment, mode: "Active", selectedTerminalId: "terminal-1", selectionRevision: 1,
+          terminals: [{ terminalId: "terminal-1", displayName: "Front", laneNo: 1, pairingState: "Unpaired",
+            isReady: false, isBusy: false, lastHealthAt: null, lastHealthStatus: null }],
+        }),
       },
       executeDangerousAction: async (action) => {
         assert.equal(action.kind, "pair-linkly");
@@ -672,7 +677,7 @@ test("Linkly 配对走 transition bypass，health 读取走 lease，POST 后不�
   await presenter.confirmDangerousAction();
 
   assert.equal(presenter.getState().statusCode, "linkly-paired");
-  assert.deepEqual(events, ["lease", "pair", "lease", "health", "lease"]);
+  assert.deepEqual(events, ["lease", "pair", "lease", "lease", "lease", "health", "lease"]);
 });
 
 test("可选钱箱与清除能力在不可撤销提交点前复核可信 session", async () => {

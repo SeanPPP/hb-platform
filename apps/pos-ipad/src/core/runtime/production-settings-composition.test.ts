@@ -276,6 +276,8 @@ test("生产组合隔离 Linkly health 读取与配对写入，并只经危险�
     "terminals:Production:terminal-2",
     "health:Production:paired",
     "logon:Production:terminal-2:2",
+    "terminals:Production:terminal-2",
+    "health:Production:paired",
   ]);
   assert.equal(presenter.getState().statusCode, "payment-test-passed");
   assert.equal(presenter.getState().linklySetup?.health.value?.isReady, true);

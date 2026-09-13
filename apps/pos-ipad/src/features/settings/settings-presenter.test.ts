@@ -1567,8 +1567,8 @@ test("Linkly Active 设置先读取权威终端快照，再按同一快照读取
   await presenter.load();
   await presenter.testPaymentProvider("linkly");
 
-  assert.deepEqual(setup.readSequence, ["terminals", "health"]);
-  assert.deepEqual(setup.healthSelections, [setup.terminals]);
+  assert.deepEqual(setup.readSequence, ["terminals", "health", "terminals", "health"]);
+  assert.deepEqual(setup.healthSelections, [setup.terminals, setup.terminals]);
   assert.deepEqual(port.paymentTerminalSelections, [setup.terminals]);
   assert.equal(presenter.getState().linklySetup?.health.kind, "ready");
   assert.equal(presenter.getState().linklySetup?.terminals.kind, "ready");
@@ -1669,6 +1669,75 @@ test("Linkly 忙碌终端禁止切换", async () => {
   );
   assert.equal(presenter.getState().statusCode, "linkly-terminal-switch-failed");
 });
+
+for (const [error, expected] of [
+  [{ code: "LINKLY_CLOUD_TERMINAL_SESSION_ACTIVE" }, "busy"],
+  [{ code: "LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT" }, "changed-or-busy"],
+  [{ code: "LINKLY_CONNECTION_TEST_SCOPE_CHANGED" }, "changed"],
+  [{ kind: "transport", networkCode: "ECONNABORTED" }, "unknown"],
+  [{ status: 401 }, "access"],
+  [{ message: "do not show private details" }, "unknown"],
+] as const) {
+  test(`Linkly 检测失败给出稳定原因 ${expected}，不暴露原始错误`, async () => {
+    const port = new FakeSettingsPort();
+    const setup = new FakeLinklySetupControlPort();
+    port.linklySetup = setup;
+    setup.terminals = { ...setup.terminals, lineManagementSupported: true };
+    setup.testTerminalConnection = async () => { throw error; };
+    const presenter = createPresenter(port);
+    await presenter.load();
+    await presenter.testLinklyTerminalConnection("terminal-2");
+    const state = Object.values(presenter.getState().linklySetup!.connectionTests)[0];
+    assert.equal(state?.failureReason, expected);
+    assert.equal(JSON.stringify(state).includes("private details"), false);
+    assert.equal(presenter.getState().linklySetup?.logonTest.status, "idle");
+  });
+}
+
+test("Linkly 重新配对仅允许当前目录内空闲线路，确认携带明确线路名称", async () => {
+  const port = new FakeSettingsPort();
+  const setup = new FakeLinklySetupControlPort();
+  port.linklySetup = setup;
+  setup.terminals = { ...setup.terminals, lineManagementSupported: true };
+  const presenter = createPresenter(port);
+  await presenter.load();
+  assert.equal(presenter.requestLinklyPair("missing", "654321"), false);
+  assert.equal(presenter.getState().confirmation, null);
+  assert.equal(presenter.requestLinklyPair("terminal-2", "654321"), true);
+  const confirmation = presenter.getState().confirmation;
+  assert.equal(confirmation?.kind, "pair-linkly");
+  if (confirmation?.kind === "pair-linkly") {
+    assert.equal(confirmation.terminalLabel, "Returns · Lane 2");
+  }
+  presenter.cancelConfirmation();
+  setup.terminals = { ...setup.terminals, terminals: setup.terminals.terminals.map((t) => ({ ...t, isBusy: true })) };
+  await presenter.refreshLinklySetup();
+  assert.equal(presenter.requestLinklyPair("terminal-2", "654321"), false);
+  assert.equal(presenter.getState().confirmation, null);
+});
+
+for (const [code, statusCode] of [
+  ["LINKLY_CLOUD_BACKEND_PAIR_REJECTED", "linkly-pair-code-rejected"],
+  ["LINKLY_CLOUD_BACKEND_PAIR_CREDENTIAL_MISSING", "linkly-pair-credentials-required"],
+  ["LINKLY_CLOUD_BACKEND_PAIR_IN_PROGRESS", "linkly-pair-busy"],
+] as const) {
+  test(`Linkly 新配对码提交失败显示原因 ${code}，不会自动重放`, async () => {
+    const port = new FakeSettingsPort();
+    const setup = new FakeLinklySetupControlPort();
+    const pairing = new FakeLinklyPairingPort();
+    port.linklySetup = setup;
+    port.linklyPairing = pairing;
+    let attempts = 0;
+    pairing.pair = async () => { attempts += 1; throw Object.assign(new Error("private"), { code }); };
+    const presenter = createPresenter(port);
+    await presenter.load();
+    assert.equal(presenter.requestLinklyPair("terminal-2", "654321"), true);
+    await presenter.confirmDangerousAction();
+    assert.equal(attempts, 1);
+    assert.equal(presenter.getState().confirmation, null);
+    assert.equal(presenter.getState().statusCode, statusCode);
+  });
+}
 
 test("Linkly 单线路测试独立记录且不把全局 logon 或支付提供方改为可用", async () => {
   const port = new FakeSettingsPort();
@@ -2180,7 +2249,7 @@ test("Linkly 配对是危险操作；成功清码刷新，unknown 只刷新且�
   assert.equal(
     setup.readEnvironments.filter((environment) => environment === "Production")
       .length,
-    3,
+    4,
   );
 });
 
