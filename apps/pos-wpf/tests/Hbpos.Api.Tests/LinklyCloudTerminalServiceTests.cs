@@ -1095,7 +1095,8 @@ public sealed class LinklyCloudTerminalServiceTests
         public Task<bool> TryAcquireConnectionTestLeaseAsync(
             string environment, string storeCode, Guid terminalId, DateTime expectedUpdatedAt,
             Guid leaseId, DateTime leaseExpiresAt, DateTime now, CancellationToken cancellationToken,
-            string? expectedAssignedDeviceCode = null, long expectedAssignmentRevision = 0)
+            string? expectedAssignedDeviceCode = null, long expectedAssignmentRevision = 0,
+            string? operationDeviceCode = null)
         {
             var index = Terminals.FindIndex(item => item.TerminalId == terminalId && item.UpdatedAt == expectedUpdatedAt);
             if (index < 0 || Terminals[index].PairingAttemptId is not null && Terminals[index].PairingLeaseExpiresAt > now)

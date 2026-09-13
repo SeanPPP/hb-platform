@@ -603,6 +603,7 @@ public sealed class PaymentTerminalSettingsService(
             }
 
             PaymentLinklyTerminalRecord? terminal = null;
+            var lockedTerminals = new Dictionary<Guid, PaymentLinklyTerminalRecord>();
             foreach (var terminalId in affectedTerminalIds)
             {
                 var lockedTerminal = await WithLinklyUpdateLock(
@@ -613,6 +614,10 @@ public sealed class PaymentTerminalSettingsService(
                                 && row.Environment == scope.Environment)
                     )
                     .FirstAsync();
+                if (lockedTerminal is not null)
+                {
+                    lockedTerminals[terminalId] = lockedTerminal;
+                }
                 if (lockedTerminal?.PairingAttemptId is not null
                     && lockedTerminal.PairingLeaseExpiresAt > now)
                 {
@@ -732,6 +737,35 @@ public sealed class PaymentTerminalSettingsService(
                         && row.Revision == existing.Revision)
                     .ExecuteCommandAsync();
                 if (affected != 1)
+                {
+                    await posmContext.Db.Ado.RollbackTranAsync();
+                    return LinklySelectionRevisionConflict();
+                }
+            }
+
+            // 分配关系也是终端快照的一部分；旧、新线路都推进版本，阻止 POS 用旧快照完成 ABA 换线。
+            foreach (var terminalId in affectedTerminalIds)
+            {
+                if (!lockedTerminals.TryGetValue(terminalId, out var lockedTerminal))
+                {
+                    await posmContext.Db.Ado.RollbackTranAsync();
+                    return LinklySelectionRevisionConflict();
+                }
+
+                var terminalAffected = await posmContext.Db.Updateable<PaymentLinklyTerminalRecord>()
+                    .SetColumns(row => new PaymentLinklyTerminalRecord
+                    {
+                        UpdatedAt = NextLinklyTerminalUpdatedAt(lockedTerminal.UpdatedAt),
+                        UpdatedBy = updater,
+                        LastHealthStatus = null,
+                        LastHealthAt = null,
+                    })
+                    .Where(row => row.TerminalId == terminalId
+                        && row.StoreCode == scope.StoreCode
+                        && row.Environment == scope.Environment
+                        && row.UpdatedAt == lockedTerminal.UpdatedAt)
+                    .ExecuteCommandAsync();
+                if (terminalAffected != 1)
                 {
                     await posmContext.Db.Ado.RollbackTranAsync();
                     return LinklySelectionRevisionConflict();
@@ -860,6 +894,11 @@ public sealed class PaymentTerminalSettingsService(
                     "LINKLY_TERMINAL_SESSION_ACTIVE"
                 );
             }
+            if (terminal is null)
+            {
+                await posmContext.Db.Ado.RollbackTranAsync();
+                return LinklySelectionRevisionConflict();
+            }
 
             var existing = await WithLinklyUpdateLock(
                     posmContext.Db,
@@ -884,6 +923,26 @@ public sealed class PaymentTerminalSettingsService(
                     && row.Revision == request.ExpectedRevision)
                 .ExecuteCommandAsync();
             if (affected != 1)
+            {
+                await posmContext.Db.Ado.RollbackTranAsync();
+                return LinklySelectionRevisionConflict();
+            }
+
+            // 解绑后 owner 会消失，必须同时推进终端版本并清除旧线路健康结果。
+            var terminalAffected = await posmContext.Db.Updateable<PaymentLinklyTerminalRecord>()
+                .SetColumns(row => new PaymentLinklyTerminalRecord
+                {
+                    UpdatedAt = NextLinklyTerminalUpdatedAt(terminal.UpdatedAt),
+                    UpdatedBy = updater,
+                    LastHealthStatus = null,
+                    LastHealthAt = null,
+                })
+                .Where(row => row.TerminalId == terminal.TerminalId
+                    && row.StoreCode == scope.StoreCode
+                    && row.Environment == scope.Environment
+                    && row.UpdatedAt == terminal.UpdatedAt)
+                .ExecuteCommandAsync();
+            if (terminalAffected != 1)
             {
                 await posmContext.Db.Ado.RollbackTranAsync();
                 return LinklySelectionRevisionConflict();
