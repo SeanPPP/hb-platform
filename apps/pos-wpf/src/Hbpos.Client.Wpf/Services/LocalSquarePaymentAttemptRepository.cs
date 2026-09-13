@@ -484,6 +484,11 @@ public interface ILocalSquarePaymentAttemptRepository
         string environment,
         CancellationToken cancellationToken = default);
 
+    Task<IReadOnlyList<LocalSquarePaymentAttempt>> GetRecentAttemptsAsync(
+        string storeCode, string deviceCode, string environment,
+        CancellationToken cancellationToken = default) =>
+        GetOpenAttemptsAsync(storeCode, deviceCode, environment, cancellationToken);
+
     Task<IReadOnlyList<LocalSquarePaymentAttempt>> GetOpenAttemptsAsync(
         string storeCode,
         string deviceCode,
@@ -2101,6 +2106,28 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
             attempts.Add(ReadAttempt(reader));
         }
 
+        return attempts;
+    }
+
+    // 展示历史严格限定门店、设备和环境，并限制200条；不参与金融恢复门禁。
+    public async Task<IReadOnlyList<LocalSquarePaymentAttempt>> GetRecentAttemptsAsync(
+        string storeCode, string deviceCode, string environment,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT * FROM LocalSquarePaymentAttempts
+            WHERE StoreCode = $StoreCode AND DeviceCode = $DeviceCode AND Environment = $Environment
+              AND OperationKind IN ('Sale', 'Refund', 'ActiveSession')
+            ORDER BY UpdatedAt DESC, CreatedAt DESC LIMIT 200;
+            """;
+        command.Parameters.AddWithValue("$StoreCode", storeCode);
+        command.Parameters.AddWithValue("$DeviceCode", deviceCode);
+        command.Parameters.AddWithValue("$Environment", environment);
+        var attempts = new List<LocalSquarePaymentAttempt>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken)) attempts.Add(ReadAttempt(reader));
         return attempts;
     }
 
