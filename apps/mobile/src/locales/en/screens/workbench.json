@@ -45,6 +45,8 @@
     "attendancePersonal": "My attendance",
     "attendanceManagement": "Attendance management",
     "users": "Employees",
+    "userAdmin": "User administration",
+    "roles": "Roles",
     "employeeProfile": "My profile",
     "employeeProfileReview": "Profile reviews",
     "deviceManagement": "Device management",
