@@ -66,6 +66,7 @@
     "quantity": "数量",
     "detailsCount": "{{count}} 条明细",
     "detailSummary": "{{count}} 条明细 · 涨价 {{up}} · 降价 {{down}}",
+    "priceChangeSummary": "↑{{up}} · ↓{{down}}",
     "subtotal": "小计",
     "invoiceCount": "{{count}} 张发票",
     "noImage": "无图"
