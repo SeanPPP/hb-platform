@@ -50,8 +50,8 @@ export type PaymentAttempt = Readonly<{
   updatedAtIso: string;
   lastErrorCode: string | null;
   /**
-   * Linkly Cloud 首次提交前冻结的环境。历史 NULL 记录不能安全地确认，必须
-   * 保持待处理，避免把 sandbox/prod 的旧会话交给当前配置。
+   * Square/Linkly Cloud 首次提交前冻结的环境。历史 NULL 记录不能安全地确认，
+   * 必须保持待处理，避免把 sandbox/prod 的旧交易交给当前配置。
    */
   providerEnvironment?: string | null;
   /**
@@ -82,6 +82,8 @@ export type PaymentProviderResult = Readonly<{
 
 export interface OnlinePaymentPort {
   readonly provider: PaymentProvider;
+  /** 新 attempt 在首次落库前冻结的 provider 环境；无环境的 provider 可省略。 */
+  readonly providerEnvironment?: string;
   submit(attempt: PaymentAttempt): Promise<PaymentProviderResult>;
   recover(attempt: PaymentAttempt): Promise<PaymentProviderResult>;
   cancel(attempt: PaymentAttempt): Promise<PaymentProviderResult>;

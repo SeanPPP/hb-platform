@@ -288,6 +288,7 @@ function attempt(overrides: Partial<PaymentAttempt>): PaymentAttempt {
     createdAtIso: T0,
     updatedAtIso: T0,
     lastErrorCode: null,
+    providerEnvironment: "Sandbox",
     ...overrides,
   };
 }
@@ -299,9 +300,12 @@ function approved(overrides: Partial<PaymentProviderReferences> = {}): PaymentPr
 class FakeProvider {
   public submitCalls = 0;
   public recoverCalls = 0;
+  public readonly providerEnvironment: string;
   public submitImpl: (attempt: PaymentAttempt) => Promise<PaymentProviderResult> = async () => approved();
   public recoverImpl: (attempt: PaymentAttempt) => Promise<PaymentProviderResult> = async () => approved();
-  public constructor(public readonly provider: PaymentProvider) {}
+  public constructor(public readonly provider: PaymentProvider) {
+    this.providerEnvironment = provider === "square" ? "Sandbox" : "Production";
+  }
   public async submit(attempt: PaymentAttempt): Promise<PaymentProviderResult> { this.submitCalls += 1; return withApprovedCardEvidence(await this.submitImpl(attempt), attempt); }
   public async recover(attempt: PaymentAttempt): Promise<PaymentProviderResult> { this.recoverCalls += 1; return withApprovedCardEvidence(await this.recoverImpl(attempt), attempt); }
   public async cancel(): Promise<PaymentProviderResult> { return { state: "Cancelled", references: references(), receiptText: null, responseCode: null }; }
