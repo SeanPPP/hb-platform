@@ -2132,6 +2132,52 @@ public sealed class SettingsViewModelTests
         Assert.DoesNotContain(model.LinklyCloudLines, item => item.Terminal.IsReady);
     }
 
+    [Fact]
+    public async Task Linkly_line_pairing_blocks_assignment_and_refresh_until_directory_lease_is_released()
+    {
+        var terminal = new LinklyCloudTerminalSummary(
+            Guid.NewGuid(), 2, "Side", "Ready", false, true, null, null, "POS-1", 7, "v-7");
+        var directory = new LinklyCloudTerminalListResponse(
+            "Production", terminal.TerminalId, 4, [terminal], "Active",
+            [new LinklyCloudAssignableDevice("POS-1", "WPF", true, terminal.TerminalId, 4)]);
+        var pending = new TaskCompletionSource<LinklyCloudTerminalPairResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var service = new FakeCardTerminalSetupService(CardTerminalConfiguration.Default with
+            { LinklyConnectionMode = LinklyConnectionMode.CloudBackendAsync })
+        {
+            LinklyCloudTerminalDirectory = directory,
+            PendingBackendPair = pending
+        };
+        using var model = new SettingsViewModel(service);
+        await model.LoadAsync();
+        var line = Assert.Single(model.LinklyCloudLines);
+        var management = Assert.Single(model.LinklyCloudTerminalItems);
+        Assert.True(model.ChangeLinklyCloudTerminalAssignmentCommand.CanExecute(management));
+        Assert.True(model.UnassignLinklyCloudTerminalCommand.CanExecute(management));
+        Assert.True(model.CanRefreshLinklyCloudTerminals);
+
+        line.TogglePairingCommand.Execute(null);
+        line.PairCode = "123456";
+        line.NextCommand.Execute(null);
+        var pairing = line.ConfirmCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, service.BackendPairCallCount);
+        Assert.False(model.ChangeLinklyCloudTerminalAssignmentCommand.CanExecute(management));
+        Assert.False(model.UnassignLinklyCloudTerminalCommand.CanExecute(management));
+        Assert.False(model.CanRefreshLinklyCloudTerminals);
+        var listCalls = service.BackendDirectoryCallCount;
+        await model.RefreshLinklyCloudBackendTerminalsAsync();
+        Assert.Equal(listCalls, service.BackendDirectoryCallCount);
+
+        pending.SetResult(new(
+            terminal.TerminalId, "Production", terminal.DisplayName, "Ready", true, "paired"));
+        await pairing;
+
+        var refreshed = Assert.Single(model.LinklyCloudTerminalItems);
+        Assert.True(model.ChangeLinklyCloudTerminalAssignmentCommand.CanExecute(refreshed));
+        Assert.True(model.UnassignLinklyCloudTerminalCommand.CanExecute(refreshed));
+        Assert.True(model.CanRefreshLinklyCloudTerminals);
+    }
+
     [Theory]
     [InlineData("name")]
     [InlineData("lane")]

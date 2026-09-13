@@ -451,7 +451,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     public bool IsLinklyCloudLineManagementUnavailable => !IsLinklyCloudLineManagementAvailable;
 
-    public bool CanRefreshLinklyCloudTerminals => !IsBusy;
+    public bool CanRefreshLinklyCloudTerminals => !IsBusy && !_isLinklyLineOperationBusy;
 
     public string LinklyCloudLineManagementMessage => IsLinklyCloudLineManagementAvailable
         ? string.Empty
@@ -1182,9 +1182,8 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             return;
         }
 
-        _isLinklyLineOperationBusy = true;
+        SetLinklyLineOperationBusy(true);
         item.IsOperationBusy = true;
-        OnPropertyChanged(nameof(CanChangeEnvironment));
         try
         {
             using var permissionGrant = await AuthorizeAsync(
@@ -1260,14 +1259,8 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         }
         finally
         {
-            _isLinklyLineOperationBusy = false;
             item.IsOperationBusy = false;
-            OnPropertyChanged(nameof(CanChangeEnvironment));
-            foreach (var line in LinklyCloudLines)
-            {
-                line.RefreshCommandStates();
-            }
-            RaiseCommandStates();
+            SetLinklyLineOperationBusy(false);
         }
     }
 
@@ -1280,9 +1273,8 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
         var environment = SelectedLinklyEnvironment;
         var terminal = item.Terminal;
-        _isLinklyLineOperationBusy = true;
+        SetLinklyLineOperationBusy(true);
         item.IsOperationBusy = true;
-        OnPropertyChanged(nameof(CanChangeEnvironment));
         try
         {
             using var permissionGrant = await AuthorizeAsync(
@@ -1352,13 +1344,26 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         }
         finally
         {
-            _isLinklyLineOperationBusy = false;
             item.IsOperationBusy = false;
-            OnPropertyChanged(nameof(CanChangeEnvironment));
-            foreach (var line in LinklyCloudLines)
-            {
-                line.RefreshCommandStates();
-            }
+            SetLinklyLineOperationBusy(false);
+        }
+    }
+
+    private void SetLinklyLineOperationBusy(bool value)
+    {
+        if (_isLinklyLineOperationBusy == value)
+        {
+            return;
+        }
+
+        // 配对和检测持有同一目录租约；期间所有会替换或修改线路快照的入口必须同步禁用。
+        _isLinklyLineOperationBusy = value;
+        OnPropertyChanged(nameof(CanChangeEnvironment));
+        OnPropertyChanged(nameof(CanRefreshLinklyCloudTerminals));
+        RaiseCommandStates();
+        foreach (var line in LinklyCloudLines)
+        {
+            line.RefreshCommandStates();
         }
     }
 
@@ -1421,7 +1426,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     }
 
     private bool CanManageLinklyCloudTerminal(LinklyCloudTerminalManagementItem? item) =>
-        !IsBusy && IsLinklyCloudBackendAsyncMode && IsLinklyCloudLineManagementAvailable &&
+        !IsBusy && !_isLinklyLineOperationBusy && IsLinklyCloudBackendAsyncMode && IsLinklyCloudLineManagementAvailable &&
         item is { SupportsManagement: true, IsReady: true, IsTesting: false };
 
     private bool CanAssignLinklyCloudTerminal(LinklyCloudTerminalManagementItem? item) =>
