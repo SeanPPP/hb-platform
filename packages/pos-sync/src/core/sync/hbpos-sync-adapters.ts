@@ -422,6 +422,10 @@ export class HbposOrderSyncAdapter implements OrderSyncPort {
         heldOrderSource = resolved.heldOrderSource ?? null;
       } catch (error) {
         if (error instanceof OrderSyncMaterialError) {
+          if (error.code === "ORDER_SYNC_MANUAL_PROVIDER_CONFLICT") {
+            // 人工结案与 provider 终态冲突时禁止发 HTTP，也不能永久丢弃订单 outbox。
+            return { kind: "retry", failure: "server" };
+          }
           return { kind: "rejected", failure: "business-rejection", code: error.code };
         }
         // 非确定性的数据库或 IO 故障必须交回 outbox 重试，不能伪装成稳定业务拒绝。

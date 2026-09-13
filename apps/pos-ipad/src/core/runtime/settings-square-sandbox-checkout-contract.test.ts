@@ -47,6 +47,7 @@ test("Sandbox 官方终端保存并重载后原样进入真实 checkout 请求",
       if (!value) throw new Error("Square configuration was not reloaded.");
       return value;
     },
+    "Sandbox",
   );
 
   const result = await adapter.submit(paymentAttempt());
@@ -116,5 +117,6 @@ function paymentAttempt(): PaymentAttempt {
     createdAtIso: "2026-08-02T00:00:00.000Z",
     updatedAtIso: "2026-08-02T00:00:00.000Z",
     lastErrorCode: null,
+    providerEnvironment: "Sandbox",
   };
 }

@@ -379,6 +379,33 @@ export class LinklyCloudBackendProvider implements OnlinePaymentPort {
     });
   }
 
+  /** 人工结论之后只允许 GET 原交易状态；绝不创建、POST recover 或发送终端按键。 */
+  public async queryExistingPayment(
+    attempt: PaymentAttempt,
+    control?: LinklyPaymentRecoveryControl,
+  ): Promise<PaymentProviderResult> {
+    linklyProviderAmountCents(attempt);
+    const environment = frozenEnvironmentOrNull(attempt);
+    const sessionId = attempt.references.sessionId;
+    if (attempt.state === "Created" || environment === null || !sessionId) {
+      return unknownResult(attempt, "LINKLY_STATUS_IDENTITY_REQUIRED");
+    }
+    const remaining = control ? recoveryTimeoutMs(control) : 10_000;
+    if (remaining === null) return unknownResult(attempt, "LINKLY_RECOVERY_DEADLINE_EXCEEDED");
+    let status: LinklyCloudBackendSession;
+    try {
+      status = await this.api.status(environment, sessionId, control?.signal, Math.min(remaining, 10_000));
+    } catch (error) {
+      if (isNotFound(error)) return unknownResult(attempt, "LINKLY_RECOVERY_SESSION_NOT_FOUND");
+      throw error;
+    }
+    if (!sameSessionEnvironment(status, sessionId, environment) ||
+      (attempt.references.txnRef !== null && !sameIdentity(status.txnRef, attempt.references.txnRef))) {
+      return unknownResult(attempt, "LINKLY_RECOVERY_CONTEXT_MISMATCH");
+    }
+    return toPaymentResult(status, attempt);
+  }
+
   public async recoverWithControl(
     attempt: PaymentAttempt,
     control: LinklyPaymentRecoveryControl,

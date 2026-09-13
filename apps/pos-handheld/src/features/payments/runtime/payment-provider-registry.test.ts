@@ -44,6 +44,7 @@ test("class 配置仓储保留 this 绑定，且只声明真实配置有效的 p
 
   assert.deepEqual(registry.listAvailableProviders(), ["square", "voucher"]);
   assert.equal(registry.get("square").provider, "square");
+  assert.equal(registry.get("square").providerEnvironment, "Sandbox");
   assert.equal(registry.get("voucher").provider, "voucher");
   assert.deepEqual(registry.getAvailability("linkly-cloud"), {
     provider: "linkly-cloud",

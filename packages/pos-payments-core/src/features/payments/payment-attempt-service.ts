@@ -418,7 +418,7 @@ export class PaymentAttemptService {
   private providerEnvironmentForNewAttempt(
     provider: PaymentProvider,
   ): string | null {
-    if (provider !== "linkly-cloud") return null;
+    if (provider !== "linkly-cloud" && provider !== "square") return null;
     const candidate = this.options.providers.get(provider) as OnlinePaymentPort & {
       readonly providerEnvironment?: unknown;
       readonly environment?: unknown;
@@ -426,7 +426,7 @@ export class PaymentAttemptService {
     const value = candidate.providerEnvironment ?? candidate.environment;
     if (typeof value !== "string" || !value.trim()) {
       throw new PaymentAttemptStateError(
-        "Linkly payment environment must be frozen before submission.",
+        `${provider} payment environment must be frozen before submission.`,
       );
     }
     return value.trim();
