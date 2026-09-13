@@ -1,0 +1,514 @@
+import { isAxiosError } from "axios";
+import { apiClient } from "@/shared/api/client";
+import { accountBoundRequestConfig } from "@/modules/auth/account-bound-request";
+import {
+  assignUserAccessRoles as assignExistingUserAccessRoles,
+  assignUserAccessStores as assignExistingUserAccessStores,
+  assignUserDirectPermissions as assignExistingUserDirectPermissions,
+  fetchAccessRoleCatalog as fetchExistingAccessRoleCatalog,
+  fetchAccessStoreCatalog as fetchExistingAccessStoreCatalog,
+  fetchUserAccessPermissionAccess as fetchExistingUserAccessPermissionAccess,
+  fetchUserAccessRoles as fetchExistingUserAccessRoles,
+  fetchUserAccessStores as fetchExistingUserAccessStores,
+} from "@/modules/users/access-management-api";
+import type { AssignUserAccessRolesInput, AssignUserAccessStoresInput, AssignUserDirectPermissionsInput } from "@/modules/users/access-management-types";
+import { normalizeShopStoresApiResponse } from "@/modules/shop/store-normalization";
+import type {
+  IdentityAdminErrorMeta,
+  IdentityCreateRoleInput,
+  IdentityCreateUserInput,
+  IdentityPagedResult,
+  IdentityPermission,
+  IdentityPermissionAlias,
+  IdentityPermissionCatalog,
+  IdentityPermissionCategory,
+  IdentityRole,
+  IdentityRoleDetail,
+  IdentityRolePermissionState,
+  IdentityRolePermissionTemplate,
+  IdentityRoleQuery,
+  IdentityRoleUser,
+  IdentityUpdateRoleInput,
+  IdentityUpdateUserInput,
+  IdentityUpdateUserPasswordInput,
+  IdentityUser,
+  IdentityUserDetail,
+  IdentityUserLoginRecord,
+  IdentityUserLoginRecordQuery,
+  IdentityUserQuery,
+  IdentityUserStore,
+} from "./types";
+
+const INVALID_RESPONSE_MESSAGE = "IDENTITY_ADMIN_RESPONSE_INVALID";
+
+type ApiRecord = Record<string, unknown>;
+
+function isRecord(value: unknown): value is ApiRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function pick(source: ApiRecord, ...keys: string[]) {
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(source, key)) return source[key];
+  }
+  return undefined;
+}
+
+function unwrap(value: unknown): unknown {
+  if (!isRecord(value)) return value;
+  const success = pick(value, "success", "Success", "isSuccess", "IsSuccess");
+  if (success === false) {
+    const message = pick(value, "message", "Message");
+    const code = pick(value, "errorCode", "ErrorCode", "code", "Code");
+    const error = new Error(typeof message === "string" && message.trim() ? message : "Request failed");
+    // 收到完整业务响应说明服务端已明确拒绝请求；保留此标记，避免把用户名冲突等确定失败误判成传输不确定。
+    Object.assign(error, { apiBusinessError: true });
+    if (typeof code === "string" && code.trim()) Object.assign(error, { code: code.trim() });
+    throw error;
+  }
+  if (success === true) {
+    const data = pick(value, "data", "Data");
+    if (data === undefined) throw new Error(INVALID_RESPONSE_MESSAGE);
+    return data;
+  }
+  return value;
+}
+
+function requiredRecord(value: unknown): ApiRecord {
+  const normalized = unwrap(value);
+  if (!isRecord(normalized)) throw new Error(INVALID_RESPONSE_MESSAGE);
+  return normalized;
+}
+
+function stringValue(source: ApiRecord, ...keys: string[]) {
+  const value = pick(source, ...keys);
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function requiredString(source: ApiRecord, ...keys: string[]) {
+  const value = stringValue(source, ...keys);
+  if (!value) throw new Error(INVALID_RESPONSE_MESSAGE);
+  return value;
+}
+
+function optionalString(source: ApiRecord, ...keys: string[]) {
+  return stringValue(source, ...keys) || undefined;
+}
+
+function booleanValue(source: ApiRecord, fallback: boolean, ...keys: string[]) {
+  const value = pick(source, ...keys);
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function numberValue(source: ApiRecord, fallback: number, ...keys: string[]) {
+  const value = pick(source, ...keys);
+  const numeric = typeof value === "string" && value.trim() ? Number(value) : value;
+  return typeof numeric === "number" && Number.isFinite(numeric) ? numeric : fallback;
+}
+
+function stringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(new Set(value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean)));
+}
+
+function optionalStringArray(value: unknown): string[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    throw new Error(INVALID_RESPONSE_MESSAGE);
+  }
+  return stringArray(value);
+}
+
+function requiredRecordArray(value: unknown): ApiRecord[] {
+  if (!Array.isArray(value) || value.some((item) => !isRecord(item))) {
+    throw new Error(INVALID_RESPONSE_MESSAGE);
+  }
+  return value;
+}
+
+function optionalRecordArray(value: unknown): ApiRecord[] {
+  if (value === undefined || value === null) return [];
+  return requiredRecordArray(value);
+}
+
+function normalizeUserStore(value: unknown): IdentityUserStore {
+  const source = requiredRecord(value);
+  return {
+    storeGUID: requiredString(source, "storeGUID", "StoreGUID", "storeGuid", "StoreGuid"),
+    storeName: requiredString(source, "storeName", "StoreName"),
+    storeCode: requiredString(source, "storeCode", "StoreCode"),
+    ...(typeof pick(source, "isActive", "IsActive") === "boolean"
+      ? { isActive: booleanValue(source, false, "isActive", "IsActive") }
+      : {}),
+    isPrimary: booleanValue(source, false, "isPrimary", "IsPrimary", "isManageable", "IsManageable"),
+    ...(optionalString(source, "assignedAt", "AssignedAt")
+      ? { assignedAt: optionalString(source, "assignedAt", "AssignedAt") }
+      : {}),
+  };
+}
+
+function normalizeRole(value: unknown): IdentityRole {
+  const source = requiredRecord(value);
+  return {
+    roleGUID: requiredString(source, "roleGUID", "RoleGUID", "roleGuid", "RoleGuid"),
+    roleName: requiredString(source, "roleName", "RoleName"),
+    ...(optionalString(source, "description", "Description")
+      ? { description: optionalString(source, "description", "Description") }
+      : {}),
+    isActive: booleanValue(source, false, "isActive", "IsActive"),
+    createdAt: stringValue(source, "createdAt", "CreatedAt"),
+    updatedAt: stringValue(source, "updatedAt", "UpdatedAt"),
+    userCount: numberValue(source, 0, "userCount", "UserCount"),
+  };
+}
+
+function normalizeRoleUser(value: unknown): IdentityRoleUser {
+  const source = requiredRecord(value);
+  return {
+    userGUID: requiredString(source, "userGUID", "UserGUID", "userGuid", "UserGuid"),
+    username: requiredString(source, "username", "Username"),
+    email: requiredString(source, "email", "Email"),
+    ...(optionalString(source, "fullName", "FullName")
+      ? { fullName: optionalString(source, "fullName", "FullName") }
+      : {}),
+    isActive: booleanValue(source, false, "isActive", "IsActive"),
+    assignedAt: stringValue(source, "assignedAt", "AssignedAt"),
+  };
+}
+
+function normalizeUser(value: unknown): IdentityUser {
+  const source = requiredRecord(value);
+  return {
+    userGUID: requiredString(source, "userGUID", "UserGUID", "userGuid", "UserGuid"),
+    username: requiredString(source, "username", "Username"),
+    email: requiredString(source, "email", "Email"),
+    ...(optionalString(source, "fullName", "FullName") ? { fullName: optionalString(source, "fullName", "FullName") } : {}),
+    ...(optionalString(source, "phone", "Phone") ? { phone: optionalString(source, "phone", "Phone") } : {}),
+    ...(optionalString(source, "lastLoginAt", "LastLoginAt") ? { lastLoginAt: optionalString(source, "lastLoginAt", "LastLoginAt") } : {}),
+    ...(optionalString(source, "lastLoginIp", "LastLoginIp") ? { lastLoginIp: optionalString(source, "lastLoginIp", "LastLoginIp") } : {}),
+    isActive: booleanValue(source, false, "isActive", "IsActive"),
+    createdAt: stringValue(source, "createdAt", "CreatedAt"),
+    updatedAt: stringValue(source, "updatedAt", "UpdatedAt"),
+    ...(optionalString(source, "currentStore", "CurrentStore") ? { currentStore: optionalString(source, "currentStore", "CurrentStore") } : {}),
+    roleNames: optionalStringArray(pick(source, "roleNames", "RoleNames")),
+    storeNames: optionalStringArray(pick(source, "storeNames", "StoreNames")),
+    roles: optionalRecordArray(pick(source, "roles", "Roles")).map(normalizeRole),
+    stores: optionalRecordArray(pick(source, "stores", "Stores")).map(normalizeUserStore),
+    permissions: optionalStringArray(pick(source, "permissions", "Permissions")),
+    exactPermissions: optionalStringArray(pick(source, "exactPermissions", "ExactPermissions")),
+  };
+}
+
+function normalizePaged<T>(value: unknown, normalizeItem: (item: unknown) => T): IdentityPagedResult<T> {
+  const source = requiredRecord(value);
+  // 分页 items 缺失或类型错误属于契约异常，不能伪装成业务空页。
+  const items = requiredRecordArray(pick(source, "items", "Items")).map(normalizeItem);
+  const page = Math.max(1, numberValue(source, 1, "page", "Page", "pageIndex", "PageIndex"));
+  const pageSize = Math.max(1, numberValue(source, Math.max(items.length, 1), "pageSize", "PageSize"));
+  const total = Math.max(0, numberValue(source, items.length, "total", "Total", "totalCount", "TotalCount"));
+  return {
+    items,
+    total,
+    page,
+    pageSize,
+    totalPages: Math.max(0, numberValue(source, Math.ceil(total / pageSize), "totalPages", "TotalPages")),
+  };
+}
+
+function normalizePermission(value: unknown): IdentityPermission {
+  const source = requiredRecord(value);
+  return {
+    name: requiredString(source, "name", "Name"),
+    displayName: requiredString(source, "displayName", "DisplayName"),
+    ...(optionalString(source, "description", "Description") ? { description: optionalString(source, "description", "Description") } : {}),
+    category: requiredString(source, "category", "Category"),
+    isSystemPermission: booleanValue(source, false, "isSystemPermission", "IsSystemPermission"),
+    ...(optionalString(source, "createdAt", "CreatedAt") ? { createdAt: optionalString(source, "createdAt", "CreatedAt") } : {}),
+    ...(optionalString(source, "createdBy", "CreatedBy") ? { createdBy: optionalString(source, "createdBy", "CreatedBy") } : {}),
+    ...(optionalString(source, "updatedAt", "UpdatedAt") ? { updatedAt: optionalString(source, "updatedAt", "UpdatedAt") } : {}),
+    ...(optionalString(source, "updatedBy", "UpdatedBy") ? { updatedBy: optionalString(source, "updatedBy", "UpdatedBy") } : {}),
+  };
+}
+
+function normalizePermissionCategory(value: unknown): IdentityPermissionCategory {
+  const source = requiredRecord(value);
+  return {
+    category: requiredString(source, "category", "Category"),
+    displayName: requiredString(source, "displayName", "DisplayName"),
+    ...(optionalString(source, "description", "Description") ? { description: optionalString(source, "description", "Description") } : {}),
+    permissions: requiredRecordArray(pick(source, "permissions", "Permissions")).map(normalizePermission),
+  };
+}
+
+export function normalizeIdentityUsers(value: unknown) {
+  return normalizePaged(value, normalizeUser);
+}
+
+export function normalizeIdentityUser(value: unknown): IdentityUserDetail {
+  return normalizeUser(value);
+}
+
+export function normalizeIdentityRoles(value: unknown) {
+  return normalizePaged(value, normalizeRole);
+}
+
+export function normalizeIdentityRole(value: unknown): IdentityRoleDetail {
+  const source = requiredRecord(value);
+  return {
+    ...normalizeRole(source),
+    users: optionalRecordArray(pick(source, "users", "Users")).map(normalizeRoleUser),
+    permissions: optionalStringArray(pick(source, "permissions", "Permissions")),
+  };
+}
+
+export function normalizeIdentityRoleUsers(value: unknown) {
+  return normalizePaged(value, normalizeRoleUser);
+}
+
+export function normalizeIdentityUserLoginRecords(value: unknown) {
+  return normalizePaged(value, (item): IdentityUserLoginRecord => {
+    const source = requiredRecord(item);
+    return {
+      sessionId: requiredString(source, "sessionId", "SessionId", "sessionID", "SessionID"),
+      loginAt: stringValue(source, "loginAt", "LoginAt"),
+      ...(optionalString(source, "ipAddress", "IpAddress") ? { ipAddress: optionalString(source, "ipAddress", "IpAddress") } : {}),
+      ...(optionalString(source, "userAgent", "UserAgent") ? { userAgent: optionalString(source, "userAgent", "UserAgent") } : {}),
+      expiresAt: stringValue(source, "expiresAt", "ExpiresAt"),
+      isRevoked: booleanValue(source, false, "isRevoked", "IsRevoked"),
+      isExpired: booleanValue(source, false, "isExpired", "IsExpired"),
+      status: stringValue(source, "status", "Status"),
+    };
+  });
+}
+
+export function normalizeIdentityPermissionCatalog(value: unknown): IdentityPermissionCatalog {
+  const source = requiredRecord(value);
+  const normalizeAlias = (item: unknown): IdentityPermissionAlias => {
+    const record = requiredRecord(item);
+    return {
+      canonicalCode: requiredString(record, "canonicalCode", "CanonicalCode"),
+      aliasCodes: stringArray(pick(record, "aliasCodes", "AliasCodes")),
+    };
+  };
+  const normalizeTemplate = (item: unknown): IdentityRolePermissionTemplate => {
+    const record = requiredRecord(item);
+    return {
+      roleName: requiredString(record, "roleName", "RoleName"),
+      permissionCodes: stringArray(pick(record, "permissionCodes", "PermissionCodes")),
+    };
+  };
+  return {
+    categories: requiredRecordArray(pick(source, "categories", "Categories")).map(normalizePermissionCategory),
+    permissionAliases: requiredRecordArray(pick(source, "permissionAliases", "PermissionAliases")).map(normalizeAlias),
+    roleTemplates: requiredRecordArray(pick(source, "roleTemplates", "RoleTemplates")).map(normalizeTemplate),
+    superAdminRoleNames: stringArray(pick(source, "superAdminRoleNames", "SuperAdminRoleNames")),
+  };
+}
+
+export function normalizeIdentityRolePermissionState(value: unknown): IdentityRolePermissionState {
+  const source = requiredRecord(value);
+  return {
+    roleGuid: requiredString(source, "roleGuid", "RoleGuid", "roleGUID", "RoleGUID"),
+    roleName: requiredString(source, "roleName", "RoleName"),
+    isSuperAdmin: booleanValue(source, false, "isSuperAdmin", "IsSuperAdmin"),
+    implicitAllPermissions: booleanValue(source, false, "implicitAllPermissions", "ImplicitAllPermissions"),
+    explicitPermissionCodes: stringArray(pick(source, "explicitPermissionCodes", "ExplicitPermissionCodes")),
+    effectivePermissionCodes: stringArray(pick(source, "effectivePermissionCodes", "EffectivePermissionCodes")),
+  };
+}
+
+function normalizeBoolean(value: unknown) {
+  const normalized = unwrap(value);
+  if (typeof normalized !== "boolean") throw new Error(INVALID_RESPONSE_MESSAGE);
+  return normalized;
+}
+
+function path(kind: "Users" | "Roles", guid?: string, suffix?: string) {
+  if (!guid) return `/${kind}`;
+  const normalizedGuid = guid.trim();
+  if (!normalizedGuid) throw new Error(`${kind === "Users" ? "User" : "Role"} GUID is required`);
+  return `/${kind}/guid/${encodeURIComponent(normalizedGuid)}${suffix ? `/${suffix}` : ""}`;
+}
+
+function compactParams<T extends object>(params: T): Partial<T> {
+  return Object.fromEntries(Object.entries(params).filter(([, value]) => value !== undefined && value !== "")) as Partial<T>;
+}
+
+export async function fetchIdentityUsers(query: IdentityUserQuery = {}, actorGuid = "", signal?: AbortSignal) {
+  const response = await apiClient.get(path("Users") + "/optimized", {
+    ...accountBoundRequestConfig(actorGuid, signal),
+    params: compactParams({
+      page: query.page,
+      pageSize: query.pageSize,
+      search: query.search?.trim(),
+      roleGuid: query.roleGuid?.trim(),
+      storeGuid: query.storeGuid?.trim(),
+      isActive: query.isActive,
+      sortBy: query.sortBy,
+      sortDirection: query.sortDirection,
+    }),
+  });
+  return normalizeIdentityUsers(response.data);
+}
+
+export async function fetchIdentityUserDetail(userGuid: string, actorGuid: string, signal?: AbortSignal) {
+  const response = await apiClient.get(path("Users", userGuid), accountBoundRequestConfig(actorGuid, signal));
+  return normalizeIdentityUser(response.data);
+}
+
+export async function createIdentityUser(input: IdentityCreateUserInput, actorGuid: string) {
+  const response = await apiClient.post(path("Users"), {
+    username: input.username.trim(),
+    email: input.email.trim(),
+    password: input.password,
+    passwordFormat: input.passwordFormat ?? "raw",
+    fullName: input.fullName?.trim() || null,
+    isActive: input.isActive ?? true,
+    roleGuids: input.roleGuids ?? [],
+    storeGuids: input.storeGuids ?? [],
+  }, accountBoundRequestConfig(actorGuid));
+  return normalizeIdentityUser(response.data);
+}
+
+export async function updateIdentityUser(userGuid: string, input: IdentityUpdateUserInput, actorGuid: string) {
+  const response = await apiClient.put(path("Users", userGuid), {
+    username: input.username.trim(),
+    email: input.email.trim(),
+    fullName: input.fullName?.trim() || null,
+    isActive: input.isActive ?? true,
+  }, accountBoundRequestConfig(actorGuid));
+  return normalizeIdentityUser(response.data);
+}
+
+export async function updateIdentityUserPassword(userGuid: string, input: IdentityUpdateUserPasswordInput, actorGuid: string) {
+  const response = await apiClient.put(path("Users", userGuid, "password"), {
+    newPassword: input.newPassword,
+    passwordFormat: input.passwordFormat ?? "raw",
+    forcePasswordChange: input.forcePasswordChange ?? false,
+  }, accountBoundRequestConfig(actorGuid));
+  return normalizeBoolean(response.data);
+}
+
+export async function fetchIdentityUserLoginRecords(userGuid: string, query: IdentityUserLoginRecordQuery = {}, actorGuid = "", signal?: AbortSignal) {
+  const response = await apiClient.get(path("Users", userGuid, "login-records"), {
+    ...accountBoundRequestConfig(actorGuid, signal),
+    params: compactParams({ page: query.page, pageSize: query.pageSize }),
+  });
+  return normalizeIdentityUserLoginRecords(response.data);
+}
+
+export async function fetchIdentityRoles(query: IdentityRoleQuery = {}, actorGuid = "", signal?: AbortSignal) {
+  const response = await apiClient.get(path("Roles"), { ...accountBoundRequestConfig(actorGuid, signal), params: compactParams(query) });
+  return normalizeIdentityRoles(response.data);
+}
+
+export async function fetchIdentityRoleDetail(roleGuid: string, actorGuid: string, signal?: AbortSignal) {
+  const response = await apiClient.get(path("Roles", roleGuid), accountBoundRequestConfig(actorGuid, signal));
+  return normalizeIdentityRole(response.data);
+}
+
+export async function createIdentityRole(input: IdentityCreateRoleInput, actorGuid: string) {
+  const response = await apiClient.post(path("Roles"), {
+    roleName: input.roleName.trim(),
+    description: input.description?.trim() || null,
+    isActive: input.isActive ?? true,
+    permissions: input.permissions ?? [],
+  }, accountBoundRequestConfig(actorGuid));
+  return normalizeRole(response.data);
+}
+
+export async function updateIdentityRole(roleGuid: string, input: IdentityUpdateRoleInput, actorGuid: string) {
+  const response = await apiClient.put(path("Roles", roleGuid), {
+    roleName: input.roleName.trim(),
+    description: input.description?.trim() || null,
+    isActive: input.isActive ?? true,
+  }, accountBoundRequestConfig(actorGuid));
+  return normalizeIdentityRole(response.data);
+}
+
+export async function fetchIdentityRoleUsers(roleGuid: string, query: IdentityRoleQuery = {}, actorGuid = "", signal?: AbortSignal) {
+  const response = await apiClient.get(path("Roles", roleGuid, "users"), { ...accountBoundRequestConfig(actorGuid, signal), params: compactParams(query) });
+  return normalizeIdentityRoleUsers(response.data);
+}
+
+export async function addIdentityRoleUsers(roleGuid: string, userGuids: string[], actorGuid: string) {
+  const response = await apiClient.post(path("Roles", roleGuid, "users"), userGuids.map((value) => value.trim()).filter(Boolean), accountBoundRequestConfig(actorGuid));
+  return normalizeBoolean(response.data);
+}
+
+export async function removeIdentityRoleUser(roleGuid: string, userGuid: string, actorGuid: string) {
+  const normalizedUserGuid = userGuid.trim();
+  if (!normalizedUserGuid) throw new Error("User GUID is required");
+  const response = await apiClient.delete(`${path("Roles", roleGuid, "users")}/${encodeURIComponent(normalizedUserGuid)}`, accountBoundRequestConfig(actorGuid));
+  return normalizeBoolean(response.data);
+}
+
+export async function fetchIdentityPermissionCatalog(actorGuid: string, signal?: AbortSignal) {
+  const response = await apiClient.get("/Roles/permissions/catalog", accountBoundRequestConfig(actorGuid, signal));
+  return normalizeIdentityPermissionCatalog(response.data);
+}
+
+export async function fetchIdentityRolePermissionState(roleGuid: string, actorGuid: string, signal?: AbortSignal) {
+  const response = await apiClient.get(path("Roles", roleGuid, "permissions/state"), accountBoundRequestConfig(actorGuid, signal));
+  return normalizeIdentityRolePermissionState(response.data);
+}
+
+export async function saveIdentityRolePermissions(roleGuid: string, permissions: string[], actorGuid: string) {
+  const response = await apiClient.post(path("Roles", roleGuid, "permissions"), {
+    permissions: Array.from(new Set(permissions.map((value) => value.trim()).filter(Boolean))),
+  }, accountBoundRequestConfig(actorGuid));
+  return normalizeBoolean(response.data);
+}
+
+export function getIdentityAdminErrorMeta(error: unknown): IdentityAdminErrorMeta {
+  if (isAxiosError(error)) {
+    const payload = isRecord(error.response?.data) ? error.response.data : null;
+    const code = payload ? pick(payload, "errorCode", "ErrorCode", "code", "Code") : undefined;
+    return {
+      message: error.message || "Request failed",
+      ...(typeof error.response?.status === "number" ? { status: error.response.status } : {}),
+      ...(typeof code === "string" && code.trim() ? { code: code.trim() } : typeof error.code === "string" ? { code: error.code } : {}),
+    };
+  }
+  const record = isRecord(error) ? error : null;
+  const code = record ? pick(record, "code", "Code", "errorCode", "ErrorCode") : undefined;
+  return {
+    message: error instanceof Error ? error.message : "Request failed",
+    ...(typeof code === "string" && code.trim() ? { code: code.trim() } : {}),
+  };
+}
+
+export function fetchAccessStoreCatalog(actorGuid: string, signal?: AbortSignal) {
+  return fetchExistingAccessStoreCatalog(async () => {
+    const response = await apiClient.get("/stores/all-by-name", accountBoundRequestConfig(actorGuid, signal));
+    return normalizeShopStoresApiResponse(response.data);
+  });
+}
+
+export function fetchAccessRoleCatalog(actorGuid: string, signal?: AbortSignal) {
+  return fetchExistingAccessRoleCatalog(accountBoundRequestConfig(actorGuid, signal));
+}
+
+export function fetchUserAccessStores(userGuid: string, actorGuid: string, signal?: AbortSignal) {
+  return fetchExistingUserAccessStores(userGuid, accountBoundRequestConfig(actorGuid, signal));
+}
+
+export function fetchUserAccessRoles(userGuid: string, actorGuid: string, signal?: AbortSignal) {
+  return fetchExistingUserAccessRoles(userGuid, accountBoundRequestConfig(actorGuid, signal));
+}
+
+export function fetchUserAccessPermissionAccess(userGuid: string, actorGuid: string, signal?: AbortSignal) {
+  return fetchExistingUserAccessPermissionAccess(userGuid, accountBoundRequestConfig(actorGuid, signal));
+}
+
+export function assignUserAccessStores(input: AssignUserAccessStoresInput, actorGuid: string) {
+  return assignExistingUserAccessStores(input, accountBoundRequestConfig(actorGuid));
+}
+
+export function assignUserAccessRoles(input: AssignUserAccessRolesInput, actorGuid: string) {
+  return assignExistingUserAccessRoles(input, accountBoundRequestConfig(actorGuid));
+}
+
+export function assignUserDirectPermissions(input: AssignUserDirectPermissionsInput, actorGuid: string) {
+  return assignExistingUserDirectPermissions(input, accountBoundRequestConfig(actorGuid));
+}
