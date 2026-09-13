@@ -793,8 +793,14 @@ export default function Orders() {
           style={styles.searchInput}
         />
       </View>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.statusTabsRow}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.statusTabsScroll}
+        contentContainerStyle={styles.statusTabsRow}
+      >
         <Chip
+          hitSlop={4}
           selected={selectedStatus === "all"}
           mode={selectedStatus === "all" ? "flat" : "outlined"}
           onPress={() => handleSelectStatus("all")}
@@ -803,6 +809,7 @@ export default function Orders() {
         {HISTORY_STATUS_VALUES.map((status) => (
           <Chip
             key={status}
+            hitSlop={4}
             selected={selectedStatus === status}
             mode={selectedStatus === status ? "flat" : "outlined"}
             onPress={() => handleSelectStatus(status)}
@@ -1106,7 +1113,9 @@ const styles = StyleSheet.create({
   scopeBarChevron: { color: "#1677FF", fontSize: 28, lineHeight: 28 },
   searchRow: { paddingHorizontal: 16, marginBottom: 4 },
   searchInput: { backgroundColor: "#FFFFFF", height: 46 },
-  statusTabsRow: { paddingHorizontal: 16, paddingVertical: 6, gap: 8 },
+  // 横向 ScrollView 默认会参与纵向 flex 收缩；锁定交叉轴高度，避免 Chip 被压成一条窄缝。
+  statusTabsScroll: { flexGrow: 0, flexShrink: 0, minHeight: 48 },
+  statusTabsRow: { alignItems: "center", gap: 8, minHeight: 48, paddingHorizontal: 16 },
   statusTab: { borderRadius: 10, backgroundColor: "#FFFFFF" },
   filterChip: {
     backgroundColor: "#FFFFFF",
