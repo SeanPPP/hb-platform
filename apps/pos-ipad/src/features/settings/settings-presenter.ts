@@ -187,6 +187,8 @@ export type SettingsLinklyConnectionTestState = Readonly<{
   terminalId: string;
   kind: "running" | "ready" | "failed";
   result: SettingsLinklyConnectionTestResult | null;
+  /** 只保留可本地化的原因，不把上游错误正文带入界面。 */
+  failureReason?: "busy" | "changed-or-busy" | "changed" | "access" | "unknown";
 }>;
 
 export type SettingsLinklySetupState = Readonly<{
@@ -397,6 +399,7 @@ export type SettingsDangerousConfirmation =
       environment: PaymentEnvironment;
       terminalId: string;
       pairCode: string;
+      terminalLabel?: string;
     }>
   | Readonly<{
       kind: "assign-linkly-terminal";
@@ -563,6 +566,9 @@ export type SettingsStatusCode =
   | "linkly-health-load-failed"
   | "linkly-pair-code-invalid"
   | "linkly-pair-failed"
+  | "linkly-pair-code-rejected"
+  | "linkly-pair-credentials-required"
+  | "linkly-pair-busy"
   | "linkly-pair-unknown"
   | "linkly-paired"
   | "linkly-setup-required"
@@ -576,6 +582,7 @@ export type SettingsStatusCode =
   | "payment-settings-save-failed"
   | "payment-settings-saved"
   | "payment-test-failed"
+  | "payment-test-unconfirmed"
   | "payment-test-passed"
   | "pending-local-data"
   | "permission-required"
@@ -1663,6 +1670,15 @@ export class SettingsPresenter {
       this.patch({ statusCode: "linkly-pair-code-invalid" });
       return false;
     }
+    const terminal = this.state.linklySetup?.terminals.value?.terminals.find(
+      (item) => item.terminalId === terminalId,
+    );
+    if (!terminal || terminal.isBusy) {
+      this.patch({ statusCode: terminal?.isBusy
+        ? "linkly-terminal-session-active"
+        : "linkly-terminal-revision-conflict" });
+      return false;
+    }
     if (
       !this.options.port.linklySetup ||
       !terminalId ||
@@ -1679,6 +1695,7 @@ export class SettingsPresenter {
       environment: this.state.linklyDraft.environment,
       terminalId,
       pairCode: normalizedPairCode,
+      terminalLabel: `${terminal.displayName} · Lane ${terminal.laneNo}`,
     });
   }
 
@@ -1863,6 +1880,7 @@ export class SettingsPresenter {
         terminalId: terminal.terminalId,
         kind: "failed",
         result: null,
+        failureReason: linklyConnectionFailureReason(error),
       });
     });
   }
@@ -2002,16 +2020,27 @@ export class SettingsPresenter {
         );
         if (!isCurrentLinklyTest()) return;
         if (linklyTestEnvironment && this.state.linklySetup) {
+          // 新的银行验证已成功，不能继续显示当前线路之前的 TF/失败结果。
+          const selectedTerminalId = this.state.linklySetup.terminals.value?.selectedTerminalId;
           this.patch({
-            linklySetup: updateLinklyLogonTest(
+            linklySetup: { ...updateLinklyLogonTest(
               this.state.linklySetup,
               linklyTestEnvironment,
               "passed",
-            ),
+            ), connectionTests: Object.freeze(Object.fromEntries(
+              Object.entries(this.state.linklySetup.connectionTests).filter(
+                ([, value]) => value.terminalId !== selectedTerminalId,
+              ),
+            )) },
           });
         }
+        if (linklyTestEnvironment && this.options.port.linklySetup) {
+          // 读取银行验证后的最新线路健康，清除较早的 TF；选择变化时刷新会使资格失效。
+          await this.loadLinklySetupState(linklyTestEnvironment, this.loadGeneration, false);
+          if (this.state.linklySetup?.logonTest.status !== "passed") return;
+        }
         this.patch({ statusCode: "payment-test-passed" });
-      } catch {
+      } catch (error) {
         if (!isCurrentLinklyTest()) return;
         if (linklyTestEnvironment && this.state.linklySetup) {
           this.patch({
@@ -2022,7 +2051,9 @@ export class SettingsPresenter {
             ),
           });
         }
-        this.patch({ statusCode: "payment-test-failed" });
+        this.patch({ statusCode: error && typeof error === "object" &&
+          "code" in error && error.code === "LINKLY_TEST_UNCONFIRMED"
+          ? "payment-test-unconfirmed" : "payment-test-failed" });
       }
     });
   }
@@ -2762,7 +2793,9 @@ export class SettingsPresenter {
             ? { apiAddressDraft: this.state.apiBaseUrl }
             : {}),
           confirmation: null,
-          statusCode: dangerousActionFailureCode(confirmation.kind),
+          statusCode: confirmation.kind === "pair-linkly"
+            ? linklyPairFailureStatus(error)
+            : dangerousActionFailureCode(confirmation.kind),
         });
       }
     });
@@ -3407,7 +3440,8 @@ function updateLinklyLogonTest(
   });
 }
 
-function hasLinklyCloudCredentials(
+// 界面与配对请求共用资格判断，避免已加载云端线路却被旧健康检查挡住。
+export function hasLinklyCloudCredentials(
   state: Pick<SettingsState, "linklySetup">,
   environment: PaymentEnvironment,
 ): boolean {
@@ -3432,7 +3466,7 @@ function hasLinklyCloudCredentials(
   );
 }
 
-function isLinklySetupReady(
+export function isLinklySetupReady(
   state: Pick<SettingsState, "linklySetup">,
   environment: PaymentEnvironment,
 ): boolean {
@@ -3466,7 +3500,7 @@ function isLinklySetupReady(
   );
 }
 
-function isLinklyHealthReady(
+export function isLinklyHealthReady(
   state: Pick<SettingsState, "linklySetup">,
   environment: PaymentEnvironment,
 ): boolean {
@@ -4184,6 +4218,38 @@ function printerScanFailureStatus(error: unknown): SettingsStatusCode {
     PRINTER_BLUETOOTH_RESTRICTED: "printer-bluetooth-restricted",
   };
   return bluetoothStatusByCode[code] ?? "printer-scan-failed";
+}
+
+function linklyPairFailureStatus(error: unknown): SettingsStatusCode {
+  const code = error && typeof error === "object" && "code" in error ? error.code : null;
+  switch (code) {
+    case "LINKLY_CLOUD_BACKEND_PAIR_REJECTED":
+      return "linkly-pair-code-rejected";
+    case "LINKLY_CLOUD_BACKEND_PAIR_CREDENTIAL_MISSING":
+      return "linkly-pair-credentials-required";
+    case "LINKLY_CLOUD_BACKEND_PAIR_IN_PROGRESS":
+    case "LINKLY_CLOUD_TERMINAL_SESSION_ACTIVE":
+      return "linkly-pair-busy";
+    default:
+      return "linkly-pair-failed";
+  }
+}
+
+function linklyConnectionFailureReason(
+  error: unknown,
+): NonNullable<SettingsLinklyConnectionTestState["failureReason"]> {
+  if (!error || typeof error !== "object") return "unknown";
+  const code = "code" in error && typeof error.code === "string" ? error.code : "";
+  if (code === "LINKLY_CLOUD_TERMINAL_SESSION_ACTIVE" ||
+      code === "LINKLY_TERMINAL_SESSION_ACTIVE" ||
+      code === "LINKLY_CLOUD_BACKEND_PAIR_IN_PROGRESS") return "busy";
+  // 当前服务端用同一冲突码表达租约保护和版本变化，不能凭一个 409 猜测具体原因。
+  if (code === "LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT") return "changed-or-busy";
+  if (code === "LINKLY_CONNECTION_TEST_SCOPE_CHANGED" ||
+      code === "LINKLY_TERMINAL_REVISION_CONFLICT" ||
+      code === "LINKLY_SELECTION_REVISION_CONFLICT") return "changed";
+  if ("status" in error && (error.status === 401 || error.status === 403)) return "access";
+  return "unknown";
 }
 
 function linklyTerminalSelectionFailureStatus(

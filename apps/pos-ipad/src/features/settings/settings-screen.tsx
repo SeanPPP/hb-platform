@@ -8,6 +8,7 @@ import {
   StyleSheet,
   Text,
   View,
+  useWindowDimensions,
   type StyleProp,
   type ViewStyle,
 } from "react-native";
@@ -20,6 +21,9 @@ import {
   type SettingsLocale,
 } from "./settings-copy";
 import {
+  hasLinklyCloudCredentials,
+  isLinklyHealthReady,
+  isLinklySetupReady,
   type PaymentEnvironment,
   type SettingsDangerousConfirmation,
   type SettingsPane,
@@ -176,6 +180,9 @@ export function SettingsScreen({
     key: SettingsCopyKey,
     values?: Readonly<Record<string, string | number>>,
   ) => settingsText(locale, key, values);
+  const { width: windowWidth } = useWindowDimensions();
+  const modernPayments = state.activePane === "payments" &&
+    state.linklySetup?.terminals.value?.lineManagementSupported === true;
   const interactionLocked = state.busy || state.confirmation !== null;
   const cancelConfirmation = (): void => {
     if (state.busy) return;
@@ -197,8 +204,8 @@ export function SettingsScreen({
         <View style={styles.header}>
           <View style={styles.titleGroup}>
             <Text style={styles.eyebrow}>{t("header.eyebrow")}</Text>
-            <Text style={styles.title}>{t("header.title")}</Text>
-            <Text style={styles.subtitle}>{t("header.subtitle")}</Text>
+            <Text style={styles.title}>{t(modernPayments ? "payments.title" : "header.title")}</Text>
+            <Text style={styles.subtitle}>{t(modernPayments ? "payments.manageSubtitle" : "header.subtitle")}</Text>
           </View>
           {onBack ? (
             <ActionButton
@@ -218,7 +225,7 @@ export function SettingsScreen({
         <View style={styles.workspace} testID="settings-workspace">
           <View
             pointerEvents={state.confirmation ? "none" : "auto"}
-            style={styles.navigation}
+            style={[styles.navigation, modernPayments && windowWidth < 1100 && styles.navigationCompact]}
           >
             <Text style={styles.navigationTitle}>{t("navigation.title")}</Text>
             {NAV_ITEMS.map((item) => (
@@ -785,6 +792,11 @@ function PaymentsPane({
   const [squarePicker, setSquarePicker] = useState<
     "device" | "location" | null
   >(null);
+  const modernLayout = state.linklySetup?.terminals.value?.lineManagementSupported === true;
+  // 查看配置与启用支付分开，未配对线路也能进入管理页。
+  const [providerPanel, setProviderPanel] = useState<"square" | "linkly">(
+    state.paymentProviderDraft ?? "linkly",
+  );
   const t = (
     key: SettingsCopyKey,
     values?: Readonly<Record<string, string | number>>,
@@ -814,7 +826,7 @@ function PaymentsPane({
   const squareSetupDisabled =
     disabled ||
     !state.squareSetup.available ||
-    state.paymentProviderDraft !== "square";
+    (!modernLayout && state.paymentProviderDraft !== "square");
   const selectedLocation = state.squareSetup.locations.items.find(
     (location) => location.id === state.squareSetup.selectedLocationId,
   );
@@ -859,11 +871,11 @@ function PaymentsPane({
       : state.squareSetup.locations.items.map(squareLocationPickerOption);
   return (
     <View testID="settings-pane-content-payments">
-      <PaneHeading
+      {!modernLayout ? <PaneHeading
         subtitle={t("payments.subtitle")}
         title={t("payments.title")}
-      />
-      <SectionCard
+      /> : null}
+      {!modernLayout ? <SectionCard
         eyebrow={t("eyebrow.activeCardTerminal")}
         title={t("payments.provider")}
       >
@@ -897,11 +909,43 @@ function PaymentsPane({
               ? t("payments.squareSelected")
               : t("payments.linklySelected")}
         </Text>
-      </SectionCard>
-      <View style={styles.twoColumn}>
+      </SectionCard> : (
+        <View style={styles.paymentToolbar} testID="settings-payment-toolbar">
+          <View style={styles.paymentTabs}>
+            {(["square", "linkly"] as const).map((provider) => (
+              <PosPressable
+                key={provider}
+                accessibilityRole="tab"
+                accessibilityLabel={t("payments.manageProvider", { provider: provider === "square" ? "Square" : "Linkly" })}
+                accessibilityState={{ selected: providerPanel === provider, disabled }}
+                disabled={disabled}
+                onPress={() => setProviderPanel(provider)}
+                sound="navigate"
+                style={[styles.paymentTab, providerPanel === provider && styles.paymentTabSelected]}
+                testID={`settings-payment-tab-${provider}`}
+              >
+                <Text style={[styles.paymentTabLabel, providerPanel === provider && styles.paymentTabSelectedLabel]}>
+                  {provider === "square" ? "Square" : "Linkly"}
+                </Text>
+              </PosPressable>
+            ))}
+          </View>
+          <EnvironmentSelector
+            disabled={disabled}
+            environment={providerPanel === "square" ? state.squareDraft.environment : state.linklyDraft.environment}
+            locale={locale}
+            onSelect={(environment) => providerPanel === "square"
+              ? presenter.setSquareEnvironment(environment)
+              : presenter.setLinklyEnvironment(environment)}
+            prefix={`settings-${providerPanel}`}
+          />
+        </View>
+      )}
+      <View style={modernLayout ? styles.paymentPanels : styles.twoColumn}>
+        {!modernLayout || providerPanel === "square" ? (
         <SectionCard
           eyebrow={t("eyebrow.cardTerminal")}
-          style={styles.columnCard}
+          style={modernLayout ? styles.paymentProviderPanel : styles.columnCard}
           title="Square"
         >
           {!squareNeedsInitialSetup ? (
@@ -911,7 +955,7 @@ function PaymentsPane({
               locale={locale}
             />
           ) : null}
-          <EnvironmentSelector
+          {!modernLayout ? <EnvironmentSelector
             disabled={squareSetupDisabled}
             environment={state.squareDraft.environment}
             locale={locale}
@@ -919,7 +963,7 @@ function PaymentsPane({
               presenter.setSquareEnvironment(environment)
             }
             prefix="settings-square"
-          />
+          /> : null}
           <View style={styles.squareSummaryRow}>
             <SquareSummaryMetric
               label={t("square.serverToken")}
@@ -1078,20 +1122,21 @@ function PaymentsPane({
             tone="secondary"
           />
         </SectionCard>
-
+        ) : null}
+        {!modernLayout || providerPanel === "linkly" ? (
         <SectionCard
-          eyebrow={t("eyebrow.eftpos")}
-          style={styles.columnCard}
-          title="Linkly"
+          eyebrow={modernLayout ? "" : t("eyebrow.eftpos")}
+          style={modernLayout ? styles.paymentProviderPanel : styles.columnCard}
+          title={modernLayout ? "" : "Linkly"}
         >
-          {!linklyNeedsInitialSetup || !state.linklySetup ? (
+          {(!modernLayout || !linklyAvailable) && (!linklyNeedsInitialSetup || !state.linklySetup) ? (
             <Availability
               available={linklyAvailable}
               blockerCode={state.linkly.blockerCode}
               locale={locale}
             />
           ) : null}
-          <EnvironmentSelector
+          {!modernLayout ? <EnvironmentSelector
             disabled={linklySetupDisabled}
             environment={state.linklyDraft.environment}
             locale={locale}
@@ -1099,8 +1144,8 @@ function PaymentsPane({
               presenter.setLinklyEnvironment(environment)
             }
             prefix="settings-linkly"
-          />
-          <Text style={styles.sectionCopy}>{t("payments.linklyHint")}</Text>
+          /> : null}
+          {!modernLayout ? <Text style={styles.sectionCopy}>{t("payments.linklyHint")}</Text> : null}
           {state.linklySetup ? (
             <LinklySetupCard
               disabled={linklySetupDisabled}
@@ -1118,6 +1163,7 @@ function PaymentsPane({
             />
           )}
         </SectionCard>
+        ) : null}
       </View>
       <SquarePickerModal
         closeLabel={t("square.closePicker")}
@@ -1180,12 +1226,31 @@ function PaymentsPane({
         }
         visible={squarePicker !== null}
       />
-      <ActionButton
-        disabled={disabled || catalogRefreshRunning}
-        label={t("payments.save")}
-        onPress={() => void presenter.savePaymentSettings()}
-        testID="settings-payment-save"
-      />
+      <View style={modernLayout ? styles.paymentFooter : undefined}>
+        {modernLayout ? (
+          <>
+            <Text style={styles.paymentFooterNote} testID="settings-payment-provider-state">
+              {state.paymentProviderDraft === null ? t("payments.noneSelected")
+                : t(state.paymentProviderDraft === "square" ? "payments.squareSelected" : "payments.linklySelected")}
+            </Text>
+            <ActionButton
+              compact
+              disabled={disabled || (providerPanel === "linkly" ? !linklySelectable : !squareAvailable && !state.squareSetup.available)}
+              label={t(state.paymentProviderDraft === providerPanel ? "payments.enabledProvider" : "payments.enableProvider", { provider: providerPanel === "square" ? "Square" : "Linkly" })}
+              onPress={() => presenter.setPaymentProvider(providerPanel)}
+              selected={state.paymentProviderDraft === providerPanel}
+              testID={`settings-payment-provider-${providerPanel}`}
+              tone="secondary"
+            />
+          </>
+        ) : null}
+        <ActionButton
+          disabled={disabled || catalogRefreshRunning || (modernLayout && state.paymentProviderDraft === null)}
+          label={t("payments.save")}
+          onPress={() => void presenter.savePaymentSettings()}
+          testID="settings-payment-save"
+        />
+      </View>
     </View>
   );
 }
@@ -1228,6 +1293,7 @@ function LinklySetupCard({
 }>) {
   const [pairCode, setPairCode] = useState("");
   const [pairTerminalId, setPairTerminalId] = useState("");
+  const [pairingExpanded, setPairingExpanded] = useState(false);
   const [assignmentTerminalId, setAssignmentTerminalId] = useState("");
   const setup = state.linklySetup;
   const t = (
@@ -1236,6 +1302,7 @@ function LinklySetupCard({
   ) => settingsText(locale, key, values);
   useEffect(() => {
     setPairCode("");
+    setPairingExpanded(false);
     setPairTerminalId(
       setup?.terminals.value?.selectedTerminalId ?? "",
     );
@@ -1253,7 +1320,10 @@ function LinklySetupCard({
     (terminal) => terminal.terminalId === pairTerminalId,
   );
   const healthReady = linklyHealthReady(state);
-  const storeCredentialsReady = linklyStoreCredentialsReady(state);
+  const storeCredentialsReady = hasLinklyCloudCredentials(
+    state,
+    state.linklyDraft.environment,
+  );
   const terminalPaired = linklyTerminalPaired(state);
   const healthStatus = linklyHealthStatusText(
     locale,
@@ -1261,9 +1331,58 @@ function LinklySetupCard({
     health?.isReady,
   );
 
+  const pairTestRunning = Object.values(setup.connectionTests).some(
+    (test) => test.terminalId === pairTerminalId && test.kind === "running",
+  );
+  const pairInputDisabled = disabled || pairTerminal?.isBusy || pairTestRunning;
+  const pairingForm = (
+    <View style={lineManagementSupported ? styles.linklyPairForm : styles.linklyLineActions} testID="settings-linkly-pairing-form">
+      {lineManagementSupported && pairTerminal ? (
+        <>
+          <View style={styles.linklyPairHeading}>
+            <Text style={styles.linklyTerminalName}>
+              {t("linkly.repairTitle", { terminal: `${pairTerminal.displayName} · Lane ${pairTerminal.laneNo}` })}
+            </Text>
+            <ActionButton compact label={t("action.cancel")} onPress={() => {
+              setPairCode("");
+              setPairingExpanded(false);
+            }} testID="settings-linkly-pair-cancel" tone="quiet" />
+          </View>
+          <Text style={styles.squareFieldHint}>{t("linkly.repairHint")}</Text>
+        </>
+      ) : <FieldLabel label={t("linkly.pairCode")} />}
+      <View style={lineManagementSupported ? styles.linklyPairInputRow : undefined}>
+        <PosKeyboardAwareTextInput
+          accessibilityLabel={t("linkly.pairCode")}
+          autoCapitalize="none"
+          autoCorrect={false}
+          editable={!pairInputDisabled}
+          keyboardType="number-pad"
+          maxLength={6}
+          onChangeText={(value) => setPairCode(value.replace(/[^0-9]/gu, "").slice(0, 6))}
+          placeholder={t("linkly.pairCodePlaceholder")}
+          style={[styles.textInput, lineManagementSupported && styles.linklyPairInput]}
+          testID="settings-linkly-pair-code"
+          value={pairCode}
+        />
+        <ActionButton
+          compact
+          disabled={Boolean(pairInputDisabled) || !storeCredentialsReady || !pairTerminal || pairCode.length !== 6}
+          label={t(lineManagementSupported ? "linkly.submitNewPairCode" : "linkly.pair")}
+          onPress={() => {
+            if (presenter.requestLinklyPair(pairTerminalId, pairCode)) setPairCode("");
+          }}
+          style={lineManagementSupported ? styles.linklyPairSubmit : undefined}
+          testID="settings-linkly-pair"
+        />
+      </View>
+      <Text style={styles.squareFieldHint}>{t(lineManagementSupported ? "linkly.pairCodeSteps" : "linkly.pairCodeHint")}</Text>
+    </View>
+  );
+
   return (
-    <View style={styles.linklySetupCard} testID="settings-linkly-setup">
-      <View style={styles.squareSummaryRow}>
+    <View style={lineManagementSupported ? styles.linklyManagement : styles.linklySetupCard} testID="settings-linkly-setup">
+      {!lineManagementSupported ? <View style={styles.squareSummaryRow}>
         <SquareSummaryMetric
           label={t("linkly.storeCredentials")}
           testID="settings-linkly-store-credentials"
@@ -1291,8 +1410,13 @@ function LinklySetupCard({
           testID="settings-linkly-backend-ready"
           value={healthStatus}
         />
-      </View>
-      <View style={styles.actionRow}>
+      </View> : null}
+      <View style={lineManagementSupported ? styles.linklySelectionBanner : styles.actionRow}>
+        {lineManagementSupported ? (
+          <View style={styles.linklySelectionCopy}>
+            <Text style={styles.linklyTerminalName} testID="settings-linkly-backend-ready">{terminalSnapshot?.selectedTerminalId ? healthStatus : t("linkly.noLocalSelection")}</Text>
+          </View>
+        ) : null}
         <ActionButton
           compact
           disabled={disabled || setup.health.kind === "loading"}
@@ -1318,14 +1442,19 @@ function LinklySetupCard({
           {t("linkly.selectionRequiredHint")}
         </Text>
       ) : null}
-      <FieldLabel label={t("linkly.terminals")} />
+      {lineManagementSupported ? (
+        <View style={styles.linklyDirectoryHeading}>
+          <Text style={styles.linklyDirectoryTitle}>{t("linkly.terminals")}</Text>
+          <Text style={styles.squareFieldHint}>{t("linkly.lineManagementHint")}</Text>
+        </View>
+      ) : <FieldLabel label={t("linkly.terminals")} />}
       {terminalSnapshot?.terminals.length ? (
         <View style={styles.linklyTerminalList} testID="settings-linkly-terminals">
           {terminalSnapshot.terminals.map((terminal) => {
             const selected =
               terminal.terminalId === terminalSnapshot.selectedTerminalId;
             const pairingTarget =
-              !selected && terminal.terminalId === pairTerminalId;
+              (!lineManagementSupported || pairingExpanded) && !selected && terminal.terminalId === pairTerminalId;
             const terminalDisabled =
               disabled || setup.terminals.kind === "switching" || terminal.isBusy;
             const status = terminal.isBusy
@@ -1333,12 +1462,16 @@ function LinklySetupCard({
               : terminal.pairingState === "NeedsRepair"
                 ? t("linkly.statusNeedsRepair")
                 : terminal.isReady && terminal.pairingState === "Ready"
-                  ? t("linkly.terminalReady")
+                  ? t(lineManagementSupported ? "linkly.statusPaired" : "linkly.terminalReady")
                   : terminal.pairingState === "Unpaired"
                     ? t("linkly.statusUnpaired")
                     : t("linkly.statusUnknown");
             return (
-              <View key={terminal.terminalId}>
+              <View key={terminal.terminalId}
+                style={lineManagementSupported ? [styles.linklyLineCard, selected && styles.linklyLineCardSelected] : undefined}
+                testID={`settings-linkly-card-${terminal.terminalId}`}
+              >
+                <View style={lineManagementSupported ? styles.linklyLineOverview : undefined}>
                 <PosPressable
                 accessibilityLabel={`${terminal.displayName}. Lane ${terminal.laneNo}. ${status}${
                   selected
@@ -1353,6 +1486,7 @@ function LinklySetupCard({
                 onPress={() => {
                   setPairCode("");
                   setPairTerminalId(terminal.terminalId);
+                  setPairingExpanded(lineManagementSupported);
                   if (
                     !lineManagementSupported &&
                     terminal.isReady &&
@@ -1363,17 +1497,19 @@ function LinklySetupCard({
                 }}
                 sound="tap"
                 style={({ pressed }) => [
-                  styles.linklyTerminalOption,
-                  selected && styles.linklyTerminalOptionSelected,
+                  lineManagementSupported ? styles.linklyLineIdentity : styles.linklyTerminalOption,
+                  !lineManagementSupported && selected && styles.linklyTerminalOptionSelected,
                   terminalDisabled && styles.squareSelectionDisabled,
                   pressed && !terminalDisabled && styles.pressedButton,
                 ]}
                 testID={`settings-linkly-terminal-${terminal.terminalId}`}
               >
-                <Text style={styles.linklyTerminalName}>
-                  {`${terminal.displayName} · Lane ${terminal.laneNo}`}
-                </Text>
-                <Text style={styles.linklyTerminalStatus}>{status}</Text>
+                <View style={styles.linklyLineHeading}>
+                  <Text style={styles.linklyTerminalName}>
+                    {`${terminal.displayName} · Lane ${terminal.laneNo}`}
+                  </Text>
+                  <Text style={[styles.linklyTerminalStatus, lineManagementSupported && styles.linklyPairingBadge, terminal.pairingState !== "Ready" && styles.linklyUnpairedBadge]}>{status}</Text>
+                </View>
                 {terminal.assignedDeviceCode ? (
                   <Text style={styles.linklyTerminalStatus}>
                     {t("linkly.assignedDevice", { deviceCode: terminal.assignedDeviceCode })}
@@ -1381,7 +1517,7 @@ function LinklySetupCard({
                 ) : (
                   <Text style={styles.linklyTerminalStatus}>{t("linkly.unassigned")}</Text>
                 )}
-                {selected || pairingTarget ? (
+                {selected || (!lineManagementSupported && pairingTarget) ? (
                   <Text style={styles.linklyTerminalStatus}>
                     {t(
                       selected
@@ -1404,11 +1540,19 @@ function LinklySetupCard({
                       )
                     }
                     onChangeBinding={() => {
+                      setPairCode("");
+                      setPairingExpanded(false);
                       setAssignmentTerminalId((current) =>
                         current === terminal.terminalId
                           ? ""
                           : terminal.terminalId,
                       );
+                    }}
+                    onRepair={() => {
+                      setPairCode("");
+                      setPairTerminalId(terminal.terminalId);
+                      setPairingExpanded(true);
+                      setAssignmentTerminalId("");
                     }}
                     onTest={() =>
                       void presenter.testLinklyTerminalConnection(
@@ -1424,6 +1568,9 @@ function LinklySetupCard({
                     }
                   />
                 ) : null}
+                </View>
+                {lineManagementSupported && pairingExpanded && pairTerminalId === terminal.terminalId
+                  ? pairingForm : null}
               </View>
             );
           })}
@@ -1436,43 +1583,15 @@ function LinklySetupCard({
           {t("linkly.lineManagementUnavailable")}
         </Text>
       ) : null}
-      <FieldLabel label={t("linkly.pairCode")} />
-      <PosKeyboardAwareTextInput
-        accessibilityLabel={t("linkly.pairCode")}
-        autoCapitalize="none"
-        autoCorrect={false}
-        editable={!disabled}
-        keyboardType="number-pad"
-        maxLength={6}
-        onChangeText={(value) =>
-          setPairCode(value.replace(/[^0-9]/gu, "").slice(0, 6))
-        }
-        style={styles.textInput}
-        testID="settings-linkly-pair-code"
-        value={pairCode}
-      />
-      <Text style={styles.squareFieldHint}>{t("linkly.pairCodeHint")}</Text>
-      <ActionButton
-        compact
-        disabled={
-          disabled ||
-          !storeCredentialsReady ||
-          !pairTerminal ||
-          pairTerminal.isBusy ||
-          pairCode.length !== 6
-        }
-        label={t("linkly.pair")}
-        onPress={() => presenter.requestLinklyPair(pairTerminalId, pairCode)}
-        testID="settings-linkly-pair"
-      />
+      {!lineManagementSupported ? pairingForm : null}
       <Text style={styles.linklySetupStatus} testID="settings-linkly-logon-status">
         {setup.logonTest.status === "passed"
           ? t("linkly.logonPassed")
           : t("linkly.logonRequired")}
       </Text>
-      <Text style={styles.squarePairingNote} testID="settings-linkly-instructions">
+      {!lineManagementSupported ? <Text style={styles.squarePairingNote} testID="settings-linkly-instructions">
         {t("linkly.instructions")}
-      </Text>
+      </Text> : null}
     </View>
   );
 }
@@ -1484,6 +1603,7 @@ function LinklyLineActions({
   locale,
   onAssign,
   onChangeBinding,
+  onRepair,
   onTest,
   snapshot,
   terminal,
@@ -1495,6 +1615,7 @@ function LinklyLineActions({
   locale: SettingsLocale;
   onAssign(deviceCode: string | null): void;
   onChangeBinding(): void;
+  onRepair(): void;
   onTest(): void;
   snapshot: NonNullable<SettingsState["linklySetup"]>["terminals"]["value"];
   terminal: NonNullable<SettingsState["linklySetup"]>["terminals"]["value"] extends infer S
@@ -1505,43 +1626,64 @@ function LinklyLineActions({
   if (!snapshot) return null;
   const t = (key: SettingsCopyKey, values?: Readonly<Record<string, string | number>>) =>
     settingsText(locale, key, values);
+  const lineActionDisabled = disabled || testState?.kind === "running";
   const targets = snapshot.devices ?? [];
   const validTargets = targets.filter((device) => device.isAvailable);
   const selfTargetAvailable = validTargets.some(
     (device) => device.deviceCode === currentDeviceCode,
   );
   const connectionResult = testState?.result;
+  // 云端 Status 的 TF 表示要求签到；旧服务端将其归为 unreachable，不能误报断网。
+  const logonRequired = connectionResult?.status === "unreachable" &&
+    connectionResult.responseCode?.trim().toUpperCase() === "TF";
   const connectionStatus = connectionResult
-    ? linklyConnectionStatusText(locale, connectionResult.status)
+    ? logonRequired
+      ? t("linkly.connection.logon-required")
+      : linklyConnectionStatusText(locale, connectionResult.status)
     : null;
   const lastHealthStatus = terminal.lastHealthAt
     ? linklyConnectionStatusText(locale, terminal.lastHealthStatus)
     : null;
+  const connectionHint = terminal.isBusy
+    ? t("linkly.failure.busy")
+    : testState?.kind === "failed"
+      ? t(`linkly.failure.${testState.failureReason ?? "unknown"}`)
+      : logonRequired
+        ? t("linkly.guidance.logon-required")
+      : connectionResult && connectionResult.status !== "connected"
+        ? t(`linkly.guidance.${connectionResult.status}`)
+        : null;
   return (
-    <View style={styles.linklyLineActions}>
+    <View style={[styles.linklyLineActions, styles.linklyLineActionColumn]}>
       <Text style={styles.linklyTerminalStatus}>
         {testState?.kind === "running"
           ? t("linkly.connectionTesting")
           : testState?.kind === "failed"
-            ? t("linkly.connectionTestFailed")
+            ? t("linkly.connectionTestFailedTitle")
           : connectionResult
               ? `${connectionStatus} · ${formatLinklyHealthTime(locale, connectionResult.checkedAt)}`
               : terminal.lastHealthAt
                 ? `${lastHealthStatus} · ${t("linkly.lastTest", { time: formatLinklyHealthTime(locale, terminal.lastHealthAt) })}`
                 : t("linkly.connectionNotTested")}
       </Text>
+      {connectionHint ? (
+        <Text accessibilityLiveRegion="polite" style={styles.linklyConnectionWarning} testID={`settings-linkly-test-guidance-${terminal.terminalId}`}>
+          {connectionHint}
+        </Text>
+      ) : null}
       <View style={styles.actionRow}>
-        <ActionButton compact disabled={disabled || testState?.kind === "running"} label={t("linkly.testConnection")} onPress={onTest} testID={`settings-linkly-connection-test-${terminal.terminalId}`} tone="secondary" />
-        <ActionButton compact disabled={disabled || !selfTargetAvailable} label={t("linkly.useThisLine")} onPress={() => onAssign(currentDeviceCode)} testID={`settings-linkly-use-self-${terminal.terminalId}`} tone="secondary" />
-        <ActionButton compact disabled={disabled || validTargets.length === 0} label={t("linkly.changeBinding")} onPress={onChangeBinding} testID={`settings-linkly-change-binding-${terminal.terminalId}`} tone="secondary" />
-        <ActionButton compact disabled={disabled || !terminal.assignedDeviceCode} label={t("linkly.unbind")} onPress={() => onAssign(null)} testID={`settings-linkly-unbind-${terminal.terminalId}`} tone="danger" />
+        <ActionButton compact disabled={lineActionDisabled || !terminal.isReady} label={t("linkly.testConnection")} onPress={onTest} testID={`settings-linkly-connection-test-${terminal.terminalId}`} tone="secondary" />
+        <ActionButton compact disabled={lineActionDisabled || !terminal.isReady || !selfTargetAvailable} label={t("linkly.useThisLine")} onPress={() => onAssign(currentDeviceCode)} testID={`settings-linkly-use-self-${terminal.terminalId}`} tone="secondary" />
+        <ActionButton compact disabled={lineActionDisabled} label={t("linkly.changeBinding")} onPress={onChangeBinding} testID={`settings-linkly-change-binding-${terminal.terminalId}`} tone="secondary" />
+        <ActionButton compact disabled={lineActionDisabled} label={t("linkly.repair")} onPress={onRepair} testID={`settings-linkly-repair-${terminal.terminalId}`} tone="accent" />
       </View>
       {expanded ? (
         <View style={styles.actionRow} testID={`settings-linkly-targets-${terminal.terminalId}`}>
+        <ActionButton compact disabled={lineActionDisabled || !terminal.assignedDeviceCode} label={t("linkly.unbind")} onPress={() => onAssign(null)} testID={`settings-linkly-unbind-${terminal.terminalId}`} tone="danger" />
           {targets.map((device) => (
             <ActionButton
               compact
-              disabled={disabled || !device.isAvailable}
+              disabled={lineActionDisabled || !device.isAvailable}
               key={device.deviceCode}
               label={`${device.deviceCode}${device.deviceCode === currentDeviceCode ? ` · ${t("linkly.thisDevice")}` : ""}${!device.isAvailable ? ` · ${t("linkly.targetUnavailable")}` : ""}`}
               onPress={() => onAssign(device.deviceCode)}
@@ -1564,7 +1706,9 @@ function linklyConnectionStatusText(
     normalized === "connected" ||
     normalized === "healthy"
     ? "linkly.connection.connected"
-    : normalized === "unreachable" || normalized === "unhealthy"
+    : normalized === "unhealthy"
+      ? "linkly.connection.failed"
+    : normalized === "unreachable"
       ? "linkly.connection.unreachable"
       : normalized === "needsrepair"
         ? "linkly.connection.needs-repair"
@@ -1963,20 +2107,6 @@ function squareTokenStatusText(
   );
 }
 
-function linklyStoreCredentialsReady(
-  state: Pick<SettingsState, "linklySetup">,
-): boolean {
-  const health = state.linklySetup?.health;
-  return Boolean(
-    health?.kind === "ready" &&
-      health.value?.checks.some(
-        (check) =>
-          check.code.trim().toUpperCase() === "STORE_CREDENTIAL" &&
-          check.isReady,
-      ),
-  );
-}
-
 function linklyTerminalPaired(
   state: Pick<SettingsState, "linklySetup">,
 ): boolean {
@@ -2000,23 +2130,13 @@ function linklyTerminalPaired(
 function linklyHealthReady(
   state: Pick<SettingsState, "linklySetup" | "linklyDraft">,
 ): boolean {
-  const setup = state.linklySetup;
-  return Boolean(
-    setup?.health.kind === "ready" &&
-      setup.health.value?.environment === state.linklyDraft.environment &&
-      setup.health.value.isReady === true,
-  );
+  return isLinklyHealthReady(state, state.linklyDraft.environment);
 }
 
 function linklySelectionReady(
   state: Pick<SettingsState, "linklySetup" | "linklyDraft">,
 ): boolean {
-  const logonTest = state.linklySetup?.logonTest;
-  return (
-    linklyHealthReady(state) &&
-    logonTest?.environment === state.linklyDraft.environment &&
-    logonTest.status === "passed"
-  );
+  return isLinklySetupReady(state, state.linklyDraft.environment);
 }
 
 function linklyHealthStatusText(
@@ -3023,6 +3143,11 @@ function ConfirmationCard({
         <Text style={styles.confirmationTitle}>
           {confirmationTitle(locale, confirmation, storeCode, deviceCode)}
         </Text>
+        {confirmation.kind === "pair-linkly" ? (
+          <Text style={styles.confirmationBody} testID="settings-linkly-pairing-details">
+            {settingsText(locale, "confirmation.pairLinklyDetails")}
+          </Text>
+        ) : null}
         {confirmation.kind === "assign-linkly-terminal" ? (
           <Text
             style={styles.confirmationBody}
@@ -3199,8 +3324,8 @@ function SectionCard({
 }>) {
   return (
     <View style={[styles.sectionCard, style]}>
-      <Text style={styles.cardEyebrow}>{eyebrow}</Text>
-      <Text style={styles.cardTitle}>{title}</Text>
+      {eyebrow ? <Text style={styles.cardEyebrow}>{eyebrow}</Text> : null}
+      {title ? <Text style={styles.cardTitle}>{title}</Text> : null}
       {children}
     </View>
   );
@@ -3330,7 +3455,7 @@ function ActionButton({
   selected?: boolean;
   style?: StyleProp<ViewStyle>;
   testID: string;
-  tone?: "danger" | "nav" | "primary" | "quiet" | "secondary";
+  tone?: "accent" | "danger" | "nav" | "primary" | "quiet" | "secondary";
 }>) {
   return (
     <PosPressable
@@ -3345,6 +3470,7 @@ function ActionButton({
         styles.button,
         compact && styles.compactButton,
         tone === "secondary" && styles.secondaryButton,
+        tone === "accent" && styles.accentButton,
         tone === "quiet" && styles.quietButton,
         tone === "danger" && styles.dangerButton,
         tone === "nav" && styles.navButton,
@@ -3360,6 +3486,7 @@ function ActionButton({
           styles.buttonLabel,
           (tone === "secondary" || tone === "quiet" || tone === "nav") &&
             styles.secondaryButtonLabel,
+          tone === "accent" && styles.accentButtonLabel,
           selected && styles.selectedButtonLabel,
         ]}
       >
@@ -3383,7 +3510,7 @@ function confirmationTitle(
     case "change-payment-settings":
       return settingsText(locale, "confirmation.changePaymentSettings");
     case "pair-linkly":
-      return settingsText(locale, "confirmation.pairLinkly");
+      return settingsText(locale, "confirmation.pairLinkly", { terminal: confirmation.terminalLabel ?? confirmation.terminalId });
     case "assign-linkly-terminal":
       return settingsText(
         locale,
@@ -3676,6 +3803,38 @@ const styles = StyleSheet.create({
     lineHeight: 19,
     marginTop: 4,
   },
+  navigationCompact: { width: 184, padding: 10 },
+  paymentToolbar: { alignItems: "center", flexDirection: "row", flexWrap: "wrap", gap: 16, justifyContent: "space-between", marginBottom: 18 },
+  paymentTabs: { flexDirection: "row", borderWidth: 1, borderColor: posColors.border, borderRadius: 8, padding: 3, backgroundColor: posColors.surface },
+  paymentTab: { alignItems: "center", justifyContent: "center", minHeight: SETTINGS_MIN_TOUCH_TARGET, minWidth: 120, paddingHorizontal: 18, borderRadius: 5 },
+  paymentTabSelected: { backgroundColor: posColors.blue },
+  paymentTabLabel: { color: posColors.ink, fontSize: 16, fontWeight: "700" },
+  paymentTabSelectedLabel: { color: "#FFFFFF" },
+  paymentPanels: { gap: 14 },
+  paymentProviderPanel: { padding: 0, borderWidth: 0, backgroundColor: "transparent", marginBottom: 0 },
+  paymentFooter: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 12, borderTopColor: posColors.border, borderTopWidth: 1, marginTop: 18, paddingTop: 10 },
+  paymentFooterNote: { color: posColors.mutedInk, fontSize: 13, lineHeight: 20, flex: 1, minWidth: 200 },
+  linklyManagement: { gap: 0 },
+  linklySelectionBanner: { backgroundColor: posColors.blueSoft, borderRadius: 8, padding: 14, flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 12 },
+  linklySelectionCopy: { flex: 1, minWidth: 180 },
+  linklyDirectoryHeading: { marginTop: 18, marginBottom: 12 },
+  linklyDirectoryTitle: { color: posColors.ink, fontSize: 20, lineHeight: 26, fontWeight: "800" },
+  linklyLineOverview: { flexDirection: "row", flexWrap: "wrap", alignItems: "flex-start", gap: 12 },
+  linklyLineActionColumn: { flexGrow: 1, flexBasis: 470, minWidth: 0 },
+  linklyLineCard: { backgroundColor: posColors.surface, borderColor: posColors.border, borderWidth: 1, borderRadius: 10, padding: 16 },
+  linklyLineCardSelected: { borderColor: posColors.blue },
+  linklyLineIdentity: { minHeight: SETTINGS_MIN_TOUCH_TARGET, justifyContent: "center", flexGrow: 1, flexBasis: 200, minWidth: 0 },
+  linklyLineHeading: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 10 },
+  linklyPairingBadge: { color: posColors.blue, backgroundColor: posColors.blueSoft, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 4, overflow: "hidden" },
+  linklyUnpairedBadge: { backgroundColor: "#EEF0F2", color: posColors.mutedInk },
+  linklyConnectionWarning: { color: "#805700", backgroundColor: posColors.yellowSoft, borderRadius: 6, padding: 10, fontSize: 13, lineHeight: 20 },
+  linklyPairForm: { backgroundColor: posColors.blueSoft, borderColor: "#C4D9EC", borderWidth: 1, borderRadius: 8, padding: 14, marginTop: 14 },
+  linklyPairHeading: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 8 },
+  linklyPairInputRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 12, marginTop: 10 },
+  linklyPairInput: { flex: 1, minWidth: 210, backgroundColor: posColors.surface },
+  linklyPairSubmit: { backgroundColor: posColors.blue, borderColor: posColors.blue },
+  accentButton: { backgroundColor: posColors.surface, borderColor: posColors.blue },
+  accentButtonLabel: { color: posColors.blue },
   linklySetupCard: {
     backgroundColor: "#FAFAF8",
     borderColor: posColors.border,
