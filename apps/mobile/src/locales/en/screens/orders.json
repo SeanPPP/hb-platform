@@ -10,6 +10,11 @@
   "viewDetail": "View details",
   "detailTitle": "Order details",
   "detailCount": "{{count}} lines",
+  "detailStoreCaption": "Store",
+  "detailInfo": "Address, remarks and volume",
+  "detailProductTitle": "Product details",
+  "detailSkuCount": "{{count}} SKUs",
+  "returnToList": "Back to orders",
   "actions": {
     "printLabel": "Print label"
   },
@@ -48,6 +53,7 @@
     "storeAddress": "Address {{value}}",
     "remarks": "Remarks {{value}}",
     "itemNumber": "Item {{value}}",
+    "barcode": "{{value}}",
     "location": "Location {{value}}",
     "orderedQty": "Ordered {{value}}",
     "allocQty": "Allocated {{value}}",

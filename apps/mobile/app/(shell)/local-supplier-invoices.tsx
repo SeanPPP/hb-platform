@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Image, Pressable, RefreshControl, ScrollView, StyleSheet, View } from "react-native";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FlatList, Image, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, type ViewToken, View } from "react-native";
 import * as Clipboard from "expo-clipboard";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import {
   ActivityIndicator,
   Button,
   Card,
+  Icon,
   IconButton,
   Menu,
   Modal,
@@ -56,6 +57,7 @@ type SupplierOption = { supplierCode: string; supplierName: string };
 type CalendarCell = { date: Date; dateString: string; isCurrentMonth: boolean };
 type EntityTagTone = "store" | "supplier" | "neutral";
 type DetailPriceChange = "up" | "down" | null;
+type DetailCountState = Record<InvoiceDetailPriceChangeFilter, number | null>;
 type InvoiceReturnState = NonNullable<ReturnType<typeof decodeLocalSupplierInvoicesReturnParams>>;
 type PendingInvoiceRestore = InvoiceReturnState & {
   listRequestKey: string;
@@ -143,6 +145,105 @@ function EntityTag({
     </View>
   );
 }
+
+const InvoiceDetailRow = memo(function InvoiceDetailRow({
+  detail,
+  onCopy,
+  onOpenProduct,
+  renderImage,
+  t,
+}: {
+  detail: LocalSupplierInvoiceItem;
+  onCopy: (label: string, value: string) => void;
+  onOpenProduct: (detail: LocalSupplierInvoiceItem) => void;
+  renderImage: boolean;
+  t: (key: string, options?: Record<string, unknown>) => string;
+}) {
+  const priceChange = getDetailPriceChange(detail);
+  return (
+    <View style={styles.detailRow}>
+      <View style={styles.detailProductHeader}>
+        {renderImage && detail.productImage ? (
+          <Image source={{ uri: detail.productImage }} style={styles.productImage} />
+        ) : (
+          <View style={styles.productImagePlaceholder}>
+            <Text variant="labelSmall" style={styles.productImagePlaceholderText} numberOfLines={2}>
+              {detail.itemNumber || t("labels.noImage")}
+            </Text>
+          </View>
+        )}
+        <View style={styles.detailBody}>
+          <View style={styles.detailProductNameRow}>
+            <Text variant="titleSmall" style={styles.detailProductName} numberOfLines={2}>{detail.productName || "--"}</Text>
+            {priceChange ? (
+              <Text style={[
+                styles.priceChangeBadge,
+                priceChange === "up" ? styles.priceIncreaseBadge : styles.priceDecreaseBadge,
+              ]}>
+                {priceChange === "up" ? t("labels.priceIncrease") : t("labels.priceDecrease")}
+              </Text>
+            ) : null}
+          </View>
+          <View style={styles.detailProductMetaRow}>
+            <Pressable
+              accessibilityLabel={`${t("actions.copyItemNumber")}: ${detail.itemNumber || "--"}`}
+              accessibilityRole="button"
+              onPress={() => onCopy(t("labels.itemNumber"), detail.itemNumber)}
+              style={styles.detailCopyTarget}
+            >
+              <Text variant="bodySmall" style={styles.detailProductMeta} numberOfLines={1}>{t("labels.itemNumber")} {detail.itemNumber || "--"}</Text>
+            </Pressable>
+            <Pressable
+              accessibilityLabel={`${t("actions.copyBarcode")}: ${detail.barcode || "--"}`}
+              accessibilityRole="button"
+              onPress={() => onCopy(t("labels.barcode"), detail.barcode)}
+              style={[styles.detailBarcodeMeta, styles.detailCopyTarget]}
+            >
+              <Text variant="bodySmall" style={styles.detailProductMeta} numberOfLines={1}>{t("labels.barcode")} {detail.barcode || "--"}</Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+
+      <View style={styles.detailPriceGrid}>
+        <View style={styles.detailMetric}>
+          <Text variant="labelSmall" style={styles.detailMetricLabel}>{t("labels.lastPurchasePrice")}</Text>
+          <Text variant="bodyMedium" style={styles.detailMetricValue}>{formatMoney(detail.lastPurchasePrice)}</Text>
+        </View>
+        <View style={styles.detailMetric}>
+          <Text variant="labelSmall" style={styles.detailMetricLabel}>{t("labels.purchasePrice")}</Text>
+          <Text variant="bodyMedium" style={styles.detailMetricValue}>{formatMoney(detail.purchasePrice)}</Text>
+        </View>
+        <View style={styles.detailMetric}>
+          <Text variant="labelSmall" style={styles.detailMetricLabel}>{t("labels.quantity")}</Text>
+          <Text variant="bodyMedium" style={styles.detailMetricValue}>{formatNumber(detail.quantity)}</Text>
+        </View>
+      </View>
+
+      <View style={styles.detailRowFooter}>
+        <Text variant="bodySmall" style={styles.detailSubtotalLabel}>
+          {t("labels.subtotal")} <Text style={styles.detailSubtotalValue}>{formatMoney(detail.amount)}</Text>
+        </Text>
+        <Button
+          compact
+          contentStyle={styles.detailEditButtonContent}
+          icon="chevron-right"
+          mode="text"
+          onPress={() => onOpenProduct(detail)}
+          textColor="#1677FF"
+        >
+          {t("actions.openProduct")}
+        </Button>
+      </View>
+    </View>
+  );
+}, (previous, next) => (
+  previous.detail === next.detail
+  && previous.onCopy === next.onCopy
+  && previous.onOpenProduct === next.onOpenProduct
+  && previous.renderImage === next.renderImage
+  && previous.t === next.t
+));
 
 function getPageCount(total: number, pageSize: number) {
   return Math.max(1, Math.ceil(total / pageSize));
@@ -347,6 +448,45 @@ function PageSizeMenu<T extends number>({
   );
 }
 
+function DetailPageSizeMenu<T extends number>({
+  label,
+  options,
+  value,
+  onChange,
+}: {
+  label: string;
+  options: T[];
+  value: T;
+  onChange: (value: T) => void;
+}) {
+  const [visible, setVisible] = useState(false);
+  return (
+    <Menu
+      visible={visible}
+      onDismiss={() => setVisible(false)}
+      anchor={
+        <IconButton
+          accessibilityLabel={`${label}: ${value}`}
+          icon="dots-horizontal"
+          onPress={() => setVisible(true)}
+          style={styles.detailNavigationButton}
+        />
+      }
+    >
+      {options.map((option) => (
+        <Menu.Item
+          key={option}
+          onPress={() => {
+            onChange(option);
+            setVisible(false);
+          }}
+          title={`${label}: ${option}`}
+        />
+      ))}
+    </Menu>
+  );
+}
+
 export default function LocalSupplierInvoicesScreen() {
   const { t, language } = useAppTranslation(["localSupplierInvoices", "common", "attendance"]);
   const getErrorMessage = useCallback((error: unknown, fallbackKey: string) => (
@@ -405,12 +545,14 @@ export default function LocalSupplierInvoicesScreen() {
   const [selectedInvoice, setSelectedInvoice] = useState<LocalSupplierInvoice | null>(null);
   const [details, setDetails] = useState<LocalSupplierInvoiceItem[]>([]);
   const [detailsTotal, setDetailsTotal] = useState(0);
+  const [detailCounts, setDetailCounts] = useState<DetailCountState>({ all: null, up: null, down: null });
   const [detailsPage, setDetailsPage] = useState(1);
   const [detailsPageSize, setDetailsPageSize] = useState<InvoiceDetailPageSize>(50);
   const [detailPriceChangeFilter, setDetailPriceChangeFilter] =
     useState<InvoiceDetailPriceChangeFilter>("all");
   const [detailSearch, setDetailSearch] = useState("");
   const [detailSearchQuery, setDetailSearchQuery] = useState("");
+  const [invoiceInfoExpanded, setInvoiceInfoExpanded] = useState(false);
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [snackbar, setSnackbar] = useState("");
   const [initialStoreScopeReady, setInitialStoreScopeReady] = useState(false);
@@ -420,9 +562,46 @@ export default function LocalSupplierInvoicesScreen() {
   const suppliersLoadingRef = useRef(false);
   const listRequestIdRef = useRef(0);
   const detailRequestIdRef = useRef(0);
+  const detailCountCacheRef = useRef(new Map<string, DetailCountState>());
   const [completedListRequest, setCompletedListRequest] = useState<CompletedListRequest | null>(null);
   const pendingDetailAnchorRef = useRef<string | null>(null);
-  const detailListScrollRef = useRef<ScrollView>(null);
+  const detailAnchorRetryRef = useRef(0);
+  const detailAnchorRetryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const detailAnchorRetryFrameRef = useRef<number | null>(null);
+  const detailListScrollRef = useRef<FlatList<LocalSupplierInvoiceItem>>(null);
+  const detailItemsRef = useRef(details);
+  detailItemsRef.current = details;
+  const [visibleDetailGuids, setVisibleDetailGuids] = useState<Set<string>>(() => new Set());
+  const detailViewabilityConfig = useRef({ itemVisiblePercentThreshold: 10 });
+  const onDetailViewableItemsChanged = useRef(
+    ({ viewableItems }: { viewableItems: ViewToken[] }) => {
+      const nextVisibleGuids = new Set<string>();
+      for (const viewableItem of viewableItems) {
+        const detail = viewableItem.item as LocalSupplierInvoiceItem | undefined;
+        if (detail?.detailGuid) {
+          nextVisibleGuids.add(detail.detailGuid);
+        }
+      }
+      if (pendingDetailAnchorRef.current && nextVisibleGuids.has(pendingDetailAnchorRef.current)) {
+        pendingDetailAnchorRef.current = null;
+        detailAnchorRetryRef.current = 0;
+        if (detailAnchorRetryTimeoutRef.current) {
+          clearTimeout(detailAnchorRetryTimeoutRef.current);
+          detailAnchorRetryTimeoutRef.current = null;
+        }
+        if (detailAnchorRetryFrameRef.current != null) {
+          cancelAnimationFrame(detailAnchorRetryFrameRef.current);
+          detailAnchorRetryFrameRef.current = null;
+        }
+      }
+      setVisibleDetailGuids((previous) => {
+        if (previous.size === nextVisibleGuids.size && [...nextVisibleGuids].every((guid) => previous.has(guid))) {
+          return previous;
+        }
+        return nextVisibleGuids;
+      });
+    }
+  );
   const deviceBoundStoreCode = getDeviceBoundStoreCode({ isDeviceMode, selectedStoreCode });
 
   const restoreState = useMemo(
@@ -585,17 +764,59 @@ export default function LocalSupplierInvoicesScreen() {
 
     setDetailsLoading(true);
     try {
+      const keyword = detailSearchQuery.trim();
+      const countCacheKey = JSON.stringify([invoiceGuid, keyword]);
+      const cachedCounts = detailCountCacheRef.current.get(countCacheKey);
+      const nextCounts: DetailCountState = cachedCounts
+        ? { ...cachedCounts }
+        : {
+            all: null,
+            up: keyword ? null : selectedInvoice?.priceIncreaseItemCount ?? 0,
+            down: keyword ? null : selectedInvoice?.priceDecreaseItemCount ?? 0,
+          };
+      setDetailCounts(nextCounts);
       const result = await fetchInvoiceDetailsGrid(invoiceGuid, {
         page: detailsPage,
         pageSize: detailsPageSize,
         priceChange: detailPriceChangeFilter,
-        keyword: detailSearchQuery,
+        keyword,
       });
+      nextCounts[detailPriceChangeFilter] = result.total;
+
       if (requestId !== detailRequestIdRef.current) {
         return;
       }
+      // 主明细成功后立即展示；辅助标签统计失败不能阻塞用户查看商品。
       setDetails(result.items);
       setDetailsTotal(result.total);
+      setDetailCounts({ ...nextCounts });
+      setDetailsLoading(false);
+
+      const missingCountFilters = DETAIL_PRICE_CHANGE_OPTIONS
+        .map((option) => option.value)
+        .filter((filter) => nextCounts[filter] == null);
+      const missingCountResults = await Promise.allSettled(
+        missingCountFilters.map(async (priceChange) => ({
+          priceChange,
+          result: await fetchInvoiceDetailsGrid(invoiceGuid, {
+            page: 1,
+            pageSize: 50,
+            priceChange,
+            keyword,
+          }),
+        }))
+      );
+      for (const countResult of missingCountResults) {
+        if (countResult.status === "fulfilled") {
+          nextCounts[countResult.value.priceChange] = countResult.value.result.total;
+        }
+      }
+
+      if (requestId !== detailRequestIdRef.current) {
+        return;
+      }
+      detailCountCacheRef.current.set(countCacheKey, { ...nextCounts });
+      setDetailCounts({ ...nextCounts });
     } catch (error) {
       if (requestId === detailRequestIdRef.current) {
         setSnackbar(getErrorMessage(error, "messages.detailsLoadFailed"));
@@ -605,7 +826,7 @@ export default function LocalSupplierInvoicesScreen() {
         setDetailsLoading(false);
       }
     }
-  }, [detailPriceChangeFilter, detailSearchQuery, detailsPage, detailsPageSize, getErrorMessage, selectedInvoice?.invoiceGuid]);
+  }, [detailPriceChangeFilter, detailSearchQuery, detailsPage, detailsPageSize, getErrorMessage, selectedInvoice?.invoiceGuid, selectedInvoice?.priceDecreaseItemCount, selectedInvoice?.priceIncreaseItemCount]);
 
   const loadSuppliers = useCallback(async () => {
     if (suppliersLoadingRef.current) {
@@ -641,6 +862,53 @@ export default function LocalSupplierInvoicesScreen() {
   useEffect(() => {
     void loadDetails();
   }, [loadDetails]);
+
+  useEffect(() => {
+    setVisibleDetailGuids(new Set());
+  }, [detailPriceChangeFilter, detailSearchQuery, detailsPage, selectedInvoice?.invoiceGuid]);
+
+  const scrollToPendingDetailAnchor = useCallback(() => {
+    const detailGuid = pendingDetailAnchorRef.current;
+    const currentDetails = detailItemsRef.current;
+    if (!detailGuid || !currentDetails.length) {
+      return;
+    }
+    const index = currentDetails.findIndex((detail) => detail.detailGuid === detailGuid);
+    if (index < 0) {
+      return;
+    }
+    detailListScrollRef.current?.scrollToIndex({ animated: false, index, viewPosition: 0 });
+  }, []);
+
+  useEffect(() => {
+    if (!pendingDetailAnchorRef.current || !details.length) {
+      return;
+    }
+    detailAnchorRetryRef.current = 0;
+    detailAnchorRetryFrameRef.current = requestAnimationFrame(() => {
+      detailAnchorRetryFrameRef.current = null;
+      scrollToPendingDetailAnchor();
+    });
+    return () => {
+      if (detailAnchorRetryFrameRef.current != null) {
+        cancelAnimationFrame(detailAnchorRetryFrameRef.current);
+        detailAnchorRetryFrameRef.current = null;
+      }
+      if (detailAnchorRetryTimeoutRef.current) {
+        clearTimeout(detailAnchorRetryTimeoutRef.current);
+        detailAnchorRetryTimeoutRef.current = null;
+      }
+    };
+  }, [details, scrollToPendingDetailAnchor]);
+
+  useEffect(() => () => {
+    if (detailAnchorRetryTimeoutRef.current) {
+      clearTimeout(detailAnchorRetryTimeoutRef.current);
+    }
+    if (detailAnchorRetryFrameRef.current != null) {
+      cancelAnimationFrame(detailAnchorRetryFrameRef.current);
+    }
+  }, []);
 
   useEffect(() => {
     const nextQuery = detailSearch.trim();
@@ -776,6 +1044,11 @@ export default function LocalSupplierInvoicesScreen() {
     }
 
     setSelectedInvoice(matchedInvoice);
+    setDetailCounts({
+      all: null,
+      up: matchedInvoice.priceIncreaseItemCount,
+      down: matchedInvoice.priceDecreaseItemCount,
+    });
   }, [completedListRequest, filters, items, page, pageSize, sort, t]);
 
   const applyFilters = useCallback(() => {
@@ -799,14 +1072,21 @@ export default function LocalSupplierInvoicesScreen() {
 
   const openDetails = useCallback((invoice: LocalSupplierInvoice) => {
     detailRequestIdRef.current += 1;
+    detailCountCacheRef.current.clear();
     setSelectedInvoice(invoice);
     setDetails([]);
     setDetailsTotal(0);
+    setDetailCounts({
+      all: null,
+      up: invoice.priceIncreaseItemCount,
+      down: invoice.priceDecreaseItemCount,
+    });
     setDetailsPage(1);
     setDetailsPageSize(50);
     setDetailPriceChangeFilter("all");
     setDetailSearch("");
     setDetailSearchQuery("");
+    setInvoiceInfoExpanded(false);
     pendingDetailAnchorRef.current = null;
   }, []);
 
@@ -863,6 +1143,7 @@ export default function LocalSupplierInvoicesScreen() {
         } as Parameters<typeof router.push>[0];
 
         detailRequestIdRef.current += 1;
+        detailCountCacheRef.current.clear();
         setSelectedInvoice(null);
 
         const navigate = () => {
@@ -879,6 +1160,27 @@ export default function LocalSupplierInvoicesScreen() {
       }
     },
     [detailPriceChangeFilter, detailSearchQuery, detailsPage, detailsPageSize, filters, getErrorMessage, page, pageSize, router, selectedInvoice?.invoiceGuid, selectedInvoice?.storeCode, sort, t]
+  );
+
+  const handleCopyDetailValue = useCallback(
+    (label: string, value: string) => void copyValue(label, value),
+    [copyValue]
+  );
+  const renderInvoiceDetailItem = useCallback(
+    ({ item }: { item: LocalSupplierInvoiceItem }) => (
+      <InvoiceDetailRow
+        detail={item}
+        onCopy={handleCopyDetailValue}
+        onOpenProduct={openProduct}
+        renderImage={visibleDetailGuids.has(item.detailGuid)}
+        t={t}
+      />
+    ),
+    [handleCopyDetailValue, openProduct, t, visibleDetailGuids]
+  );
+  const detailListExtraData = useMemo(
+    () => ({ visibleDetailGuids }),
+    [visibleDetailGuids]
   );
 
   const openSupplierPicker = useCallback(() => {
@@ -981,6 +1283,28 @@ export default function LocalSupplierInvoicesScreen() {
       >
         {t("actions.loadMore")}
       </Button>
+    </View>
+  );
+
+  const renderDetailPagination = () => (
+    <View style={styles.detailPagination}>
+      <IconButton
+        accessibilityLabel={t("common:actions.back")}
+        disabled={detailsPage <= 1}
+        icon="chevron-left"
+        onPress={() => setDetailsPage(Math.max(1, detailsPage - 1))}
+        size={18}
+        style={styles.detailPaginationButton}
+      />
+      <Text variant="bodySmall" style={styles.detailPaginationText}>{detailsPage} / {detailsPageCount}</Text>
+      <IconButton
+        accessibilityLabel={t("actions.loadMore")}
+        disabled={detailsPage >= detailsPageCount}
+        icon="chevron-right"
+        onPress={() => setDetailsPage(Math.min(detailsPageCount, detailsPage + 1))}
+        size={18}
+        style={styles.detailPaginationButton}
+      />
     </View>
   );
 
@@ -1266,152 +1590,198 @@ export default function LocalSupplierInvoicesScreen() {
         <Modal
           visible={Boolean(selectedInvoice)}
           onDismiss={closeDetails}
+          style={styles.detailModalOverlay}
           contentContainerStyle={styles.modal}
         >
-          <View style={styles.modalHeader}>
-            <View style={styles.modalTitleGroup}>
-              <Text variant="titleMedium">{selectedInvoice?.invoiceNo || "--"}</Text>
-              <View style={styles.entityTagRow}>
-                <EntityTag label={selectedInvoice?.storeName || selectedInvoice?.storeCode || "--"} tone="store" />
-                <EntityTag label={selectedInvoice?.supplierName || selectedInvoice?.supplierCode || "--"} tone="supplier" />
+          <SafeAreaView edges={["top", "bottom", "left", "right"]} style={styles.detailScreen}>
+            <View style={styles.detailNavigationBar}>
+              <IconButton
+                accessibilityLabel={t("actions.returnToInvoices")}
+                icon="chevron-left"
+                onPress={closeDetails}
+                style={styles.detailNavigationButton}
+              />
+              <Text variant="titleLarge" style={styles.detailNavigationTitle}>{t("detailTitle")}</Text>
+              <DetailPageSizeMenu
+                label={t("labels.detailPageSize")}
+                options={DETAIL_PAGE_SIZES}
+                value={detailsPageSize}
+                onChange={(value) => {
+                  setDetailsPageSize(value);
+                  setDetailsPage(1);
+                }}
+              />
+            </View>
+
+            <View style={styles.detailStoreBanner}>
+              <View style={styles.detailStoreIcon}><Icon source="storefront-outline" size={20} color="#1677FF" /></View>
+              <View style={styles.detailStoreTextWrap}>
+                <Text variant="bodyMedium" style={styles.detailStoreName} numberOfLines={1}>
+                  {selectedInvoice?.storeName || selectedInvoice?.storeCode || "--"}
+                </Text>
+                <Text variant="labelSmall" style={styles.detailStoreCaption}>{t("labels.storeCaption")}</Text>
               </View>
-              <Text variant="bodySmall" style={styles.detailContextText}>
-                {t("labels.orderDate")}: {formatDate(selectedInvoice?.orderDate)} · {t("labels.inboundDate")}: {formatDate(selectedInvoice?.inboundDate)} · {t("labels.inboundStatus")}: {t(`labels.inboundStatusValues.${getInvoiceInboundStatusLabel(selectedInvoice?.inboundStatus)}`)}
+            </View>
+
+            <View style={styles.detailInvoiceSummary}>
+              <View style={styles.detailInvoiceHeadingRow}>
+                <View style={styles.detailInvoiceIdentity}>
+                  <Text variant="headlineSmall" style={styles.detailSupplierName} numberOfLines={1}>
+                    {selectedInvoice?.supplierName || selectedInvoice?.supplierCode || "--"}
+                  </Text>
+                  <Text variant="bodyMedium" style={styles.detailInvoiceNumber}>{selectedInvoice?.invoiceNo || "--"}</Text>
+                  <Text variant="bodySmall" style={styles.detailContextText}>
+                    {t("labels.orderDate")} {formatDate(selectedInvoice?.orderDate)}
+                  </Text>
+                </View>
+                <View style={[
+                  styles.inboundStatusBadge,
+                  getInvoiceInboundStatusLabel(selectedInvoice?.inboundStatus) === "received" ? styles.inboundStatusBadgeSuccess : null,
+                  getInvoiceInboundStatusLabel(selectedInvoice?.inboundStatus) === "partial" ? styles.inboundStatusBadgeWarning : null,
+                ]}>
+                  <Text style={[
+                    styles.inboundStatusBadgeText,
+                    getInvoiceInboundStatusLabel(selectedInvoice?.inboundStatus) === "received" ? styles.inboundStatusBadgeTextSuccess : null,
+                    getInvoiceInboundStatusLabel(selectedInvoice?.inboundStatus) === "partial" ? styles.inboundStatusBadgeTextWarning : null,
+                  ]}>
+                    {t(`labels.inboundStatusValues.${getInvoiceInboundStatusLabel(selectedInvoice?.inboundStatus)}`)}
+                  </Text>
+                </View>
+              </View>
+
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ expanded: invoiceInfoExpanded }}
+                onPress={() => setInvoiceInfoExpanded((current) => !current)}
+                style={styles.detailInfoToggle}
+              >
+                <Text variant="bodySmall" style={styles.detailInfoToggleText}>{t("labels.invoiceInfo")}</Text>
+                <Text style={styles.detailInfoChevron}>{invoiceInfoExpanded ? "⌃" : "⌄"}</Text>
+              </Pressable>
+              {invoiceInfoExpanded ? (
+                <View style={styles.detailInfoPanel}>
+                  <Text variant="bodySmall" style={styles.detailInfoText}>{t("labels.inboundDate")}: {formatDate(selectedInvoice?.inboundDate)}</Text>
+                  <Text variant="bodySmall" style={styles.detailInfoText}>{t("labels.remarks")}: {selectedInvoice?.remarks || "--"}</Text>
+                </View>
+              ) : null}
+
+              <View style={styles.detailAmountGrid}>
+                <View style={styles.detailAmountCell}>
+                  <Text variant="labelSmall" style={styles.detailMetricLabel}>{t("labels.invoiceAmount")}</Text>
+                  <Text variant="titleLarge" style={styles.detailAmountValue}>{formatMoney(selectedInvoice?.totalAmount)}</Text>
+                </View>
+                <View style={styles.detailAmountCell}>
+                  <Text variant="labelSmall" style={styles.detailMetricLabel}>{t("labels.receivedAmount")}</Text>
+                  <Text variant="titleLarge" style={styles.detailAmountValue}>{formatMoney(selectedInvoice?.receivedTotalAmount)}</Text>
+                </View>
+              </View>
+              <Text variant="bodySmall" style={styles.detailCountSummary}>
+                {t("labels.detailSummary", {
+                  count: detailCounts.all ?? "--",
+                  up: detailCounts.up ?? "--",
+                  down: detailCounts.down ?? "--",
+                })}
               </Text>
             </View>
-            <IconButton
-              accessibilityLabel={t("common:actions.close")}
-              icon="close"
-              onPress={closeDetails}
-            />
-          </View>
 
-          <View style={styles.detailToolbar}>
             <TextInput
               dense
               mode="outlined"
-              label={t("filters.detailSearch")}
+              placeholder={t("filters.detailSearchFull")}
               value={detailSearch}
               onChangeText={setDetailSearch}
               left={<TextInput.Icon icon="magnify" />}
               style={styles.detailSearch}
             />
-            <PageSizeMenu
-              label={t("labels.detailPageSize")}
-              options={DETAIL_PAGE_SIZES}
-              value={detailsPageSize}
-              onChange={(value) => {
-                setDetailsPageSize(value);
-                setDetailsPage(1);
-              }}
-            />
-            <View style={styles.detailFilterGroup}>
-              {DETAIL_PRICE_CHANGE_OPTIONS.map((option) => (
-                <Button
-                  key={option.value}
-                  compact
-                  mode={detailPriceChangeFilter === option.value ? "contained-tonal" : "outlined"}
-                  onPress={() => {
-                    setDetailPriceChangeFilter(option.value);
-                    setDetailsPage(1);
-                  }}
-                >
-                  {t(option.labelKey)}
-                </Button>
-              ))}
-            </View>
-            <Text variant="bodyMedium">
-              {t("labels.detailsCount", { count: detailsTotal })}
-            </Text>
-          </View>
 
-          {detailsLoading ? (
-            <View style={styles.loadingBox}>
-              <ActivityIndicator />
-              <Text variant="bodyMedium">{t("common:loading")}</Text>
-            </View>
-          ) : details.length ? (
-            <ScrollView ref={detailListScrollRef} contentContainerStyle={styles.detailList}>
-              {details.map((detail) => {
-                const priceChange = getDetailPriceChange(detail);
+            <View style={styles.detailFilterTabs}>
+              {DETAIL_PRICE_CHANGE_OPTIONS.map((option) => {
+                const selected = detailPriceChangeFilter === option.value;
+                const count = detailCounts[option.value] ?? "--";
                 return (
-                  <View
-                    key={detail.detailGuid}
-                    style={styles.detailRow}
-                    onLayout={(event) => {
-                      if (pendingDetailAnchorRef.current !== detail.detailGuid) {
-                        return;
-                      }
-                      pendingDetailAnchorRef.current = null;
-                      detailListScrollRef.current?.scrollTo({
-                        y: Math.max(0, event.nativeEvent.layout.y - 8),
-                        animated: false,
-                      });
+                  <Pressable
+                    key={option.value}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected }}
+                    onPress={() => {
+                      setDetailPriceChangeFilter(option.value);
+                      setDetailsPage(1);
                     }}
+                    style={[styles.detailFilterTab, selected ? styles.detailFilterTabSelected : null]}
                   >
-                    {detail.productImage ? (
-                      <Image source={{ uri: detail.productImage }} style={styles.productImage} />
-                    ) : (
-                      <View style={styles.productImagePlaceholder}>
-                        <Text variant="labelSmall">{t("labels.noImage")}</Text>
-                      </View>
-                    )}
-                    <View style={styles.detailBody}>
-                      <Text variant="titleSmall" numberOfLines={2}>
-                        {detail.productName || "--"}
-                      </Text>
-                      <View style={styles.copyLine}>
-                        <Button
-                          compact
-                          icon="content-copy"
-                          mode="text"
-                          onPress={() => void copyValue(t("labels.itemNumber"), detail.itemNumber)}
-                        >
-                          {t("labels.itemNumber")}: {detail.itemNumber || "--"}
-                        </Button>
-                      </View>
-                      <View style={styles.copyLine}>
-                        <Button
-                          compact
-                          icon="content-copy"
-                          mode="text"
-                          onPress={() => void copyValue(t("labels.barcode"), detail.barcode)}
-                        >
-                          {t("labels.barcode")}: {detail.barcode || "--"}
-                        </Button>
-                      </View>
-                      <View style={styles.priceLine}>
-                        <Text variant="bodySmall">{t("labels.lastPurchasePrice")}: {formatMoney(detail.lastPurchasePrice)}</Text>
-                        <Text variant="bodySmall">{t("labels.purchasePrice")}: {formatMoney(detail.purchasePrice)}</Text>
-                        <Text variant="bodySmall">{t("labels.quantity")}: {formatNumber(detail.quantity)}</Text>
-                        {priceChange === "up" ? (
-                          <Text variant="labelMedium" style={[styles.priceChangeBadge, styles.priceIncreaseBadge]}>
-                            {t("labels.priceIncrease")}
-                          </Text>
-                        ) : null}
-                        {priceChange === "down" ? (
-                          <Text variant="labelMedium" style={[styles.priceChangeBadge, styles.priceDecreaseBadge]}>
-                            {t("labels.priceDecrease")}
-                          </Text>
-                        ) : null}
-                      </View>
-                      <View style={styles.detailActions}>
-                        <Button compact icon="pencil-box-outline" mode="outlined" onPress={() => openProduct(detail)}>
-                          {t("actions.openProduct")}
-                        </Button>
-                      </View>
-                    </View>
-                  </View>
+                    <Text variant="bodyMedium" style={[styles.detailFilterTabText, selected ? styles.detailFilterTabTextSelected : null]}>
+                      {t(option.labelKey)} {count}
+                    </Text>
+                  </Pressable>
                 );
               })}
-            </ScrollView>
-          ) : (
-            <EmptyState
-              title={detailSearchQuery ? t("messages.detailSearchEmpty") : t("messages.detailsEmpty")}
-            />
-          )}
+            </View>
 
-          {details.length ? renderPagination(detailsPage, detailsPageCount, setDetailsPage) : null}
+            {detailsLoading ? (
+              <View style={styles.loadingBox}>
+                <ActivityIndicator />
+                <Text variant="bodyMedium">{t("common:loading")}</Text>
+              </View>
+            ) : details.length ? (
+              <FlatList
+                ref={detailListScrollRef}
+                data={details}
+                keyExtractor={(detail) => detail.detailGuid}
+                renderItem={renderInvoiceDetailItem}
+                extraData={detailListExtraData}
+                style={styles.detailListScroll}
+                contentContainerStyle={styles.detailList}
+                initialNumToRender={6}
+                maxToRenderPerBatch={6}
+                windowSize={7}
+                keyboardShouldPersistTaps="handled"
+                removeClippedSubviews={Platform.OS === "android"}
+                onViewableItemsChanged={onDetailViewableItemsChanged.current}
+                viewabilityConfig={detailViewabilityConfig.current}
+                onContentSizeChange={() => {
+                  if (pendingDetailAnchorRef.current) {
+                    if (detailAnchorRetryFrameRef.current != null) {
+                      cancelAnimationFrame(detailAnchorRetryFrameRef.current);
+                    }
+                    detailAnchorRetryFrameRef.current = requestAnimationFrame(() => {
+                      detailAnchorRetryFrameRef.current = null;
+                      scrollToPendingDetailAnchor();
+                    });
+                  }
+                }}
+                onScrollToIndexFailed={({ averageItemLength, index }) => {
+                  detailListScrollRef.current?.scrollToOffset({
+                    animated: false,
+                    offset: Math.max(0, averageItemLength * index),
+                  });
+                  if (pendingDetailAnchorRef.current && detailAnchorRetryRef.current < 4) {
+                    detailAnchorRetryRef.current += 1;
+                    if (detailAnchorRetryTimeoutRef.current) {
+                      clearTimeout(detailAnchorRetryTimeoutRef.current);
+                    }
+                    // 给 FlatList 一个批次的渲染和测量时间，再执行精确定位。
+                    detailAnchorRetryTimeoutRef.current = setTimeout(() => {
+                      detailAnchorRetryTimeoutRef.current = null;
+                      scrollToPendingDetailAnchor();
+                    }, 80 * detailAnchorRetryRef.current);
+                  }
+                }}
+                ListFooterComponent={(
+                  <>
+                    {renderDetailPagination()}
+                    <View style={styles.detailReturnBar}>
+                      <Button icon="chevron-left" mode="contained-tonal" onPress={closeDetails} style={styles.detailReturnButton} textColor="#1677FF">
+                        {t("actions.returnToInvoices")}
+                      </Button>
+                    </View>
+                  </>
+                )}
+              />
+            ) : (
+              <EmptyState title={detailSearchQuery ? t("messages.detailSearchEmpty") : t("messages.detailsEmpty")} />
+            )}
+
+          </SafeAreaView>
         </Modal>
       </Portal>
 
@@ -1880,105 +2250,251 @@ const styles = StyleSheet.create({
     flexDirection: "row-reverse",
   },
   modal: {
-    alignSelf: "center",
+    alignSelf: "stretch",
     backgroundColor: "#FFFFFF",
-    borderRadius: 18,
-    maxHeight: "92%",
-    padding: 12,
-    width: "94%",
+    height: "100%",
+    width: "100%",
   },
-  modalHeader: {
+  // Paper Modal 默认再加一层安全区外边距；这里由内部 SafeAreaView 统一处理，避免明细容器上下被重复压缩。
+  detailModalOverlay: {
+    justifyContent: "flex-start",
+    marginBottom: 0,
+    marginTop: 0,
+    paddingBottom: 0,
+    paddingTop: 0,
+  },
+  detailScreen: { backgroundColor: "#FFFFFF", flex: 1 },
+  detailNavigationBar: {
     alignItems: "center",
+    borderBottomColor: "#EAECF0",
+    borderBottomWidth: 1,
     flexDirection: "row",
-    justifyContent: "space-between",
+    minHeight: 52,
+    paddingHorizontal: 8,
   },
-  modalTitleGroup: {
+  detailNavigationButton: { margin: 0 },
+  detailNavigationTitle: {
+    color: "#101828",
     flex: 1,
-    paddingRight: 8,
+    fontWeight: "700",
   },
-  detailContextText: { color: "#667085", marginTop: 4 },
-  detailToolbar: {
+  detailStoreBanner: {
     alignItems: "center",
+    backgroundColor: "#EEF6FF",
     flexDirection: "row",
-    flexWrap: "wrap",
+    gap: 10,
+    marginHorizontal: 16,
+    marginTop: 8,
+    minHeight: 48,
+    paddingHorizontal: 12,
+  },
+  detailStoreIcon: {
+    alignItems: "center",
+    backgroundColor: "#DCEEFF",
+    borderRadius: 8,
+    height: 32,
+    justifyContent: "center",
+    width: 32,
+  },
+  detailStoreTextWrap: { flex: 1, minWidth: 0 },
+  detailStoreName: { color: "#101828", fontWeight: "700" },
+  detailStoreCaption: { color: "#667085" },
+  detailInvoiceSummary: {
     gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  detailInvoiceHeadingRow: {
+    alignItems: "flex-start",
+    flexDirection: "row",
+    gap: 12,
     justifyContent: "space-between",
+  },
+  detailInvoiceIdentity: { flex: 1, gap: 1, minWidth: 0 },
+  detailSupplierName: {
+    color: "#101828",
+    fontWeight: "700",
+  },
+  detailInvoiceNumber: { color: "#475467", fontWeight: "600" },
+  detailContextText: { color: "#667085" },
+  detailInfoToggle: {
+    alignItems: "center",
+    borderBottomColor: "#EAECF0",
+    borderBottomWidth: 1,
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    minHeight: 44,
+  },
+  detailInfoToggleText: { color: "#1677FF", fontWeight: "700" },
+  detailInfoChevron: { color: "#1677FF", fontSize: 18, marginLeft: 4 },
+  detailInfoPanel: {
+    backgroundColor: "#F8FAFC",
+    gap: 4,
+    paddingHorizontal: 10,
     paddingVertical: 8,
   },
-  detailFilterGroup: {
+  detailInfoText: { color: "#475467" },
+  detailAmountGrid: {
     flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 6,
   },
-  detailSearch: { flexGrow: 1, minWidth: 170 },
-  detailList: {
-    gap: 10,
-    paddingBottom: 8,
+  detailAmountCell: {
+    borderRightColor: "#EAECF0",
+    borderRightWidth: 1,
+    flex: 1,
+    gap: 2,
+    paddingHorizontal: 4,
   },
+  detailAmountValue: { color: "#101828", fontWeight: "700" },
+  detailCountSummary: { color: "#667085" },
+  detailSearch: {
+    backgroundColor: "#FFFFFF",
+    height: 46,
+    marginHorizontal: 16,
+  },
+  detailFilterTabs: {
+    borderBottomColor: "#EAECF0",
+    borderBottomWidth: 1,
+    flexDirection: "row",
+    marginTop: 4,
+    paddingHorizontal: 16,
+  },
+  detailFilterTab: {
+    alignItems: "center",
+    borderBottomColor: "transparent",
+    borderBottomWidth: 3,
+    flex: 1,
+    minHeight: 44,
+    justifyContent: "center",
+  },
+  detailFilterTabSelected: { borderBottomColor: "#1677FF" },
+  detailFilterTabText: { color: "#475467" },
+  detailFilterTabTextSelected: { color: "#1677FF", fontWeight: "700" },
+  detailListScroll: { flex: 1 },
+  detailList: { paddingBottom: 4 },
   detailRow: {
     backgroundColor: "#FFFFFF",
-    borderColor: "#EAECF0",
-    borderRadius: 10,
-    borderWidth: 1,
+    borderBottomColor: "#EAECF0",
+    borderBottomWidth: 1,
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  detailProductHeader: {
+    alignItems: "flex-start",
     flexDirection: "row",
     gap: 10,
-    padding: 10,
   },
   productImage: {
     backgroundColor: "#EEF2F6",
-    borderRadius: 6,
-    height: 72,
-    width: 72,
+    borderRadius: 8,
+    height: 62,
+    width: 62,
   },
   productImagePlaceholder: {
     alignItems: "center",
     backgroundColor: "#EEF2F6",
-    borderRadius: 6,
-    height: 72,
+    borderRadius: 8,
+    height: 62,
     justifyContent: "center",
-    width: 72,
+    padding: 6,
+    width: 62,
+  },
+  productImagePlaceholderText: {
+    color: "#667085",
+    textAlign: "center",
   },
   detailBody: {
     flex: 1,
-    gap: 4,
+    gap: 5,
     minWidth: 0,
   },
-  copyLine: {
+  detailProductNameRow: {
     alignItems: "flex-start",
-    minHeight: 30,
-  },
-  priceLine: {
-    alignItems: "center",
     flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 12,
+    gap: 6,
+    justifyContent: "space-between",
+  },
+  detailProductName: {
+    color: "#101828",
+    flex: 1,
+    fontSize: 17,
+    fontWeight: "700",
+    lineHeight: 21,
+  },
+  detailProductMetaRow: { flexDirection: "row", gap: 10, minHeight: 44 },
+  detailProductMeta: {
+    color: "#667085",
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  detailBarcodeMeta: { flex: 1, minWidth: 0 },
+  detailCopyTarget: { justifyContent: "center", minHeight: 44, minWidth: 44 },
+  detailPriceGrid: {
+    flexDirection: "row",
+    marginLeft: 72,
+  },
+  detailMetric: {
+    borderRightColor: "#EAECF0",
+    borderRightWidth: 1,
+    flex: 1,
+    gap: 2,
+    paddingHorizontal: 6,
+  },
+  detailMetricLabel: {
+    color: "#667085",
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  detailMetricValue: {
+    color: "#101828",
+    fontSize: 14,
+    fontWeight: "700",
+    lineHeight: 19,
   },
   priceChangeBadge: {
     borderRadius: 999,
-    borderWidth: 1,
     fontWeight: "700",
     overflow: "hidden",
-    paddingHorizontal: 8,
-    paddingVertical: 2,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
   },
   priceIncreaseBadge: {
-    backgroundColor: "#FEF3F2",
-    borderColor: "#FDA29B",
+    backgroundColor: "#FFF1E8",
     color: "#B42318",
   },
   priceDecreaseBadge: {
     backgroundColor: "#ECFDF3",
-    borderColor: "#75E0A7",
     color: "#027A48",
   },
-  detailActions: {
+  detailRowFooter: {
+    alignItems: "center",
     flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-    paddingTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: "#EAECF0",
+    justifyContent: "flex-end",
+    marginLeft: 72,
   },
+  detailSubtotalLabel: { color: "#667085", marginRight: "auto" },
+  detailSubtotalValue: { color: "#101828", fontWeight: "700" },
+  detailEditButtonContent: { flexDirection: "row-reverse" },
+  detailReturnBar: {
+    backgroundColor: "#FFFFFF",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  detailReturnButton: {
+    backgroundColor: "#EEF6FF",
+    borderRadius: 5,
+  },
+  detailPagination: {
+    alignItems: "center",
+    backgroundColor: "#FFFFFF",
+    borderTopColor: "#EAECF0",
+    borderTopWidth: 1,
+    flexDirection: "row",
+    justifyContent: "center",
+    minHeight: 34,
+  },
+  detailPaginationButton: { height: 44, margin: 0, width: 44 },
+  detailPaginationText: { color: "#475467", minWidth: 44, textAlign: "center" },
   pickerModal: {
     alignSelf: "center",
     backgroundColor: "#FFFFFF",

@@ -1,6 +1,7 @@
 {
   "title": "澳洲供应商发票",
   "subtitle": "快速查看分店供应商发票与商品明细",
+  "detailTitle": "发票明细",
   "filters": {
     "storeCode": "分店",
     "supplierCode": "供应商",
@@ -33,12 +34,17 @@
     "allPriceChanges": "全部",
     "priceUp": "涨价",
     "priceDown": "减价",
-    "detailSearch": "搜索商品 / 条码"
+    "detailSearch": "搜索商品 / 条码",
+    "detailSearchFull": "搜索货号 / 条码 / 商品名称"
   },
   "labels": {
     "orderDate": "订单时间",
+    "storeCaption": "所属分店",
+    "invoiceInfo": "单据信息",
+    "remarks": "备注",
     "inboundDate": "入库时间",
     "amount": "金额",
+    "invoiceAmount": "发票金额",
     "receivedAmount": "收货金额",
     "priceIncreaseItemCount": "涨价商品",
     "priceDecreaseItemCount": "降价商品",
@@ -59,6 +65,8 @@
     "purchasePrice": "进货价",
     "quantity": "数量",
     "detailsCount": "{{count}} 条明细",
+    "detailSummary": "{{count}} 条明细 · 涨价 {{up}} · 降价 {{down}}",
+    "subtotal": "小计",
     "invoiceCount": "{{count}} 张发票",
     "noImage": "无图"
   },
@@ -67,7 +75,8 @@
     "copyBarcode": "复制条码",
     "printLabel": "打印标签",
     "openProduct": "商品编辑",
-    "loadMore": "加载更多"
+    "loadMore": "加载更多",
+    "returnToInvoices": "返回发票列表"
   },
   "messages": {
     "empty": "没有找到进货单",
