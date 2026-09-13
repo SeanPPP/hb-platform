@@ -137,20 +137,44 @@ export const settingsEnglishCopy = {
   "action.test": "Test",
   "eyebrow.eftpos": "EFTPOS",
   "payments.linklyHint":
-    "iPad uses the backend asynchronous Linkly channel; merchant authentication material is not stored here.",
+    "Choose the terminal used by this iPad. Linkly can be enabled after the availability test passes.",
   "linkly.storeCredentials": "Store credentials",
   "linkly.currentPairing": "Current device pairing",
-  "linkly.backendReady": "Backend ready",
+  "linkly.backendReady": "Connection status",
   "linkly.notAvailable": "Not available",
   "linkly.statusLoading": "Checking…",
-  "linkly.statusReady": "Ready",
-  "linkly.statusNotReady": "Not ready",
+  "linkly.statusReady": "Connected",
+  "linkly.statusNotReady": "Not connected",
   "linkly.statusPaired": "Paired",
   "linkly.statusUnpaired": "Not paired",
   "linkly.statusUnavailable": "Unavailable",
   "linkly.statusBusy": "Busy with another transaction",
+  "linkly.terminalReady": "Ready",
   "linkly.statusNeedsRepair": "Pairing needs repair",
   "linkly.statusUnknown": "Status unknown",
+  "linkly.selectionRequired": "Select a ready Linkly terminal first",
+  "linkly.selectionRequiredHint":
+    "Select a ready terminal, refresh its status, then run the availability test. Linkly can be enabled after the test passes.",
+  "linkly.currentSelection": "Current selection",
+  "linkly.pairTarget": "Pairing target",
+  "linkly.assignedDevice": "Assigned POS: {{deviceCode}}",
+  "linkly.unassigned": "Unassigned",
+  "linkly.testConnection": "Test connection",
+  "linkly.useThisLine": "Use this line",
+  "linkly.changeBinding": "Change binding",
+  "linkly.unbind": "Unbind",
+  "linkly.thisDevice": "this iPad",
+  "linkly.targetUnavailable": "unavailable",
+  "linkly.connectionTesting": "Testing this line…",
+  "linkly.connectionNotTested": "Connection not tested",
+  "linkly.lastTest": "Last test: {{time}}",
+  "linkly.connectionTestFailed": "Test failed; refresh the directory before retrying",
+  "linkly.connection.connected": "Connected",
+  "linkly.connection.unreachable": "Unreachable",
+  "linkly.connection.unknown": "Unknown; refresh to reconcile",
+  "linkly.connection.needs-repair": "Needs repair",
+  "linkly.lineManagementUnavailable":
+    "Update the Linkly service to manage line assignments from this iPad.",
   "linkly.terminals": "Linkly Cloud terminals",
   "linkly.noTerminals": "No Linkly Cloud terminals are available.",
   "linkly.refresh": "Refresh status",
@@ -160,7 +184,7 @@ export const settingsEnglishCopy = {
   "linkly.pair": "Pair current terminal",
   "linkly.logonPassed": "Logon test passed",
   "linkly.logonRequired":
-    "Pair first, then run a successful logon test before selecting or saving Linkly.",
+    "Select a ready terminal, then tap Test. Linkly can be enabled and saved after the test passes.",
   "linkly.instructions":
     "On the terminal: FUNC → 8880 → OK / Enter. The Pair Code expires shortly; re-pairing replaces the current terminal binding and creates a new code.",
   "payments.save": "Save payment choices",
@@ -297,6 +321,17 @@ export const settingsEnglishCopy = {
   "confirmation.changeApiAddress": "Change API address\n{{apiBaseUrl}}",
   "confirmation.changePaymentSettings": "Change payment terminal settings",
   "confirmation.pairLinkly": "Pair the current Linkly terminal",
+  "confirmation.assignLinklyTerminal": "Assign {{terminal}} to {{deviceCode}}",
+  "confirmation.linklyUnassigned": "Unassigned",
+  "confirmation.linklyNoTargetLine": "None",
+  "confirmation.assignLinklyDetails":
+    "Current device: {{sourceDevice}}\nTarget device: {{targetDevice}}\nTarget's current line: {{replacedTerminal}}\nOnly the line assignment changes. Existing terminal pairing is retained; no new Pair Code is needed.",
+  "confirmation.unbindLinklyDetails":
+    "Current device: {{sourceDevice}}\nThe line will be released from this device. Existing terminal pairing is retained; no new Pair Code is needed when assigning it again.",
+  "confirmation.replaceLinklyTerminal":
+    "Assign {{terminal}} to {{deviceCode}}; {{replacedTerminal}} will be released in the same operation",
+  "confirmation.unbindLinklyTerminal":
+    "Unbind {{terminal}}; its Pair Code and pairing stay unchanged",
   "confirmation.resetCatalog": "Reset local catalog",
   "confirmation.reregisterDevice":
     "Change device store\n{{currentStoreCode}} → {{targetStoreName}} ({{targetStoreCode}})\n{{deviceSystem}} · expires {{expiresAt}}",
@@ -345,17 +380,26 @@ export const settingsEnglishCopy = {
   "status.invalid-api-address": "Invalid API address",
   "status.invalid-device-registration": "Enter and preview a valid activation code",
   "status.load-failed": "Settings load failed",
-  "status.linkly-health-load-failed": "Could not refresh Linkly backend status",
+  "status.linkly-health-load-failed":
+    "Could not refresh the Linkly connection status. Check the network, then tap Refresh status.",
   "status.linkly-pair-code-invalid": "Enter a six-digit numeric Pair Code",
   "status.linkly-pair-failed": "Linkly terminal pairing failed",
   "status.linkly-pair-unknown":
     "Pairing result unknown; status refreshed and no retry was sent",
   "status.linkly-paired": "Linkly terminal paired; status refreshed",
   "status.linkly-terminal-selected": "Linkly terminal selection saved",
+  "status.linkly-terminal-selection-blocked":
+    "The terminal cannot be changed right now. Finish the current operation and sync pending records, then try again.",
+  "status.linkly-terminal-assignment-conflict":
+    "This terminal is already used by another register. Choose a different terminal.",
+  "status.linkly-terminal-session-active":
+    "This terminal has a transaction in progress or awaiting confirmation. Finish it before changing terminals.",
+  "status.linkly-terminal-revision-conflict":
+    "The terminal selection has changed. Refresh the status and check the current selection.",
   "status.linkly-terminal-switch-failed":
-    "Linkly terminal could not be selected",
+    "The terminal selection could not be confirmed. Refresh the status and check it before trying again.",
   "status.linkly-setup-required":
-    "Linkly backend must be ready and logon test must pass first",
+    "Select a ready terminal and run the availability test. Linkly can be enabled after the test passes.",
   "status.payment-settings-invalid":
     "Public payment provider configuration is incomplete",
   "status.payment-settings-save-failed": "Payment settings save failed",
@@ -534,20 +578,44 @@ export const settingsChineseCopy = {
   "action.test": "测试可用性",
   "eyebrow.eftpos": "刷卡终端",
   "payments.linklyHint":
-    "iPad 使用后端异步 Linkly 通道。商户与 POS 认证材料不会进入本机普通设置。",
+    "选择这台 iPad 使用的刷卡机，测试通过后即可启用 Linkly。",
   "linkly.storeCredentials": "门店云端凭据",
   "linkly.currentPairing": "当前设备配对",
-  "linkly.backendReady": "后端就绪",
+  "linkly.backendReady": "连接状态",
   "linkly.notAvailable": "不可用",
   "linkly.statusLoading": "正在检查…",
-  "linkly.statusReady": "就绪",
-  "linkly.statusNotReady": "未就绪",
+  "linkly.statusReady": "已连接",
+  "linkly.statusNotReady": "未连接",
   "linkly.statusPaired": "已配对",
   "linkly.statusUnpaired": "未配对",
   "linkly.statusUnavailable": "不可用",
   "linkly.statusBusy": "正在处理其他交易",
+  "linkly.terminalReady": "就绪",
   "linkly.statusNeedsRepair": "配对需要修复",
   "linkly.statusUnknown": "状态未知",
+  "linkly.selectionRequired": "请先选择一台已就绪的 Linkly 刷卡机",
+  "linkly.selectionRequiredHint":
+    "先选择一台已就绪刷卡机，再刷新状态并测试可用性；测试通过后可启用 Linkly。",
+  "linkly.currentSelection": "当前已绑定",
+  "linkly.pairTarget": "配对目标",
+  "linkly.assignedDevice": "已分配 POS：{{deviceCode}}",
+  "linkly.unassigned": "未分配",
+  "linkly.testConnection": "测试连接",
+  "linkly.useThisLine": "本机使用",
+  "linkly.changeBinding": "更改绑定",
+  "linkly.unbind": "解绑",
+  "linkly.thisDevice": "本机",
+  "linkly.targetUnavailable": "不可选",
+  "linkly.connectionTesting": "正在测试此线路…",
+  "linkly.connectionNotTested": "尚未测试连接",
+  "linkly.lastTest": "上次测试：{{time}}",
+  "linkly.connectionTestFailed": "测试失败，请先刷新线路目录再重试",
+  "linkly.connection.connected": "已连接",
+  "linkly.connection.unreachable": "无法连接",
+  "linkly.connection.unknown": "状态未知，请刷新核对",
+  "linkly.connection.needs-repair": "需要修复配对",
+  "linkly.lineManagementUnavailable":
+    "当前 Linkly 服务版本不支持线路管理，请先更新服务。",
   "linkly.terminals": "Linkly 云端刷卡机",
   "linkly.noTerminals": "当前没有可用的 Linkly 云端刷卡机。",
   "linkly.refresh": "刷新状态",
@@ -556,7 +624,7 @@ export const settingsChineseCopy = {
   "linkly.pair": "配对当前终端",
   "linkly.logonPassed": "登录测试已通过",
   "linkly.logonRequired":
-    "请先配对，再通过登录测试，之后才能选择或保存 Linkly。",
+    "选择已就绪刷卡机后，点击“测试可用性”；测试通过后即可启用并保存 Linkly。",
   "linkly.instructions":
     "在终端上操作：FUNC → 8880 → OK / Enter。配对码短时有效会过期；重新配对会替换当前终端绑定并生成新码。",
   "payments.save": "保存支付终端选择",
@@ -685,6 +753,17 @@ export const settingsChineseCopy = {
   "confirmation.changeApiAddress": "切换 API 地址\n{{apiBaseUrl}}",
   "confirmation.changePaymentSettings": "切换支付终端配置",
   "confirmation.pairLinkly": "配对当前 Linkly 终端",
+  "confirmation.assignLinklyTerminal": "将 {{terminal}} 分配给 {{deviceCode}}",
+  "confirmation.linklyUnassigned": "未绑定",
+  "confirmation.linklyNoTargetLine": "无",
+  "confirmation.assignLinklyDetails":
+    "原设备：{{sourceDevice}}\n目标设备：{{targetDevice}}\n目标原线路：{{replacedTerminal}}\n只更改线路归属；保留刷卡机现有配对，无需重新输入 Pair Code。",
+  "confirmation.unbindLinklyDetails":
+    "原设备：{{sourceDevice}}\n解除本线路与该设备的关联；保留刷卡机现有配对，再次分配时无需重新输入 Pair Code。",
+  "confirmation.replaceLinklyTerminal":
+    "将 {{terminal}} 分配给 {{deviceCode}}；原线路 {{replacedTerminal}} 会在同一事务中释放",
+  "confirmation.unbindLinklyTerminal":
+    "解绑 {{terminal}}；配对码和现有配对不会被删除",
   "confirmation.resetCatalog": "重置本地商品目录",
   "confirmation.reregisterDevice":
     "更换设备分店\n{{currentStoreCode}} → {{targetStoreName}}（{{targetStoreCode}}）\n{{deviceSystem}} · {{expiresAt}} 到期",
@@ -728,16 +807,26 @@ export const settingsChineseCopy = {
   "status.invalid-api-address": "API 地址格式不安全",
   "status.invalid-device-registration": "请输入并预览有效的设备开通码",
   "status.load-failed": "读取设置失败",
-  "status.linkly-health-load-failed": "无法刷新 Linkly 后端状态",
+  "status.linkly-health-load-failed":
+    "无法刷新 Linkly 连接状态，请检查网络连接后点刷新状态",
   "status.linkly-pair-code-invalid": "请输入六位数字配对码",
   "status.linkly-pair-failed": "Linkly 终端配对失败",
   "status.linkly-pair-unknown":
     "配对结果未知；已刷新状态，且未自动重试",
   "status.linkly-paired": "Linkly 终端已配对；状态已刷新",
   "status.linkly-terminal-selected": "Linkly 刷卡机选择已保存",
-  "status.linkly-terminal-switch-failed": "无法选择该 Linkly 刷卡机",
+  "status.linkly-terminal-selection-blocked":
+    "暂时无法切换刷卡机，请先完成当前操作并同步待处理记录，再试一次",
+  "status.linkly-terminal-assignment-conflict":
+    "这台刷卡机已被其他收银台使用，请选择其他刷卡机",
+  "status.linkly-terminal-session-active":
+    "这台刷卡机有进行中或待确认的交易，请处理完成后再切换",
+  "status.linkly-terminal-revision-conflict":
+    "刷卡机选择已变化，请刷新状态并核对当前选择",
+  "status.linkly-terminal-switch-failed":
+    "暂时无法确认刷卡机选择，请刷新状态核对后再试",
   "status.linkly-setup-required":
-    "Linkly 后端必须先就绪且登录测试通过",
+    "请先选择已就绪刷卡机并测试，测试通过后即可启用 Linkly",
   "status.payment-settings-invalid": "可用支付通道的公开配置不完整",
   "status.payment-settings-save-failed": "支付终端设置保存失败",
   "status.payment-settings-saved": "支付终端设置已保存",

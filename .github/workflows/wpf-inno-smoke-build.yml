@@ -75,13 +75,19 @@ jobs:
             throw '安装后仍未找到 Inno Setup 6 ISCC.exe。'
           }
 
-          $isccInfo = (Get-Item -LiteralPath $iscc).VersionInfo
-          if ($isccInfo.ProductMajorPart -ne 6) {
-            throw "必须使用 Inno Setup 6，实际版本：$($isccInfo.ProductVersion)"
+          # ISCC 的 EXE 版本资源可能为 0.0.0.0；以编译器自身的帮助标题校验主版本。
+          $helpOutput = Join-Path $env:RUNNER_TEMP 'hbpos-inno-help.stdout.txt'
+          $helpError = Join-Path $env:RUNNER_TEMP 'hbpos-inno-help.stderr.txt'
+          $compiler = Start-Process -FilePath $iscc -ArgumentList '/?' -Wait -PassThru -NoNewWindow `
+            -RedirectStandardOutput $helpOutput -RedirectStandardError $helpError
+          $compilerBanner = Get-Content -LiteralPath $helpOutput -Raw
+          # Inno 6 的 /? 正常帮助请求返回 1，不代表编译失败。
+          if ($compiler.ExitCode -notin @(0, 1) -or $compilerBanner -notmatch '(?m)^Inno Setup 6 Command-Line Compiler\s*$') {
+            throw "必须使用可运行的 Inno Setup 6，编译器帮助输出：$compilerBanner"
           }
 
           "INNO_SETUP_ISCC=$iscc" >> $env:GITHUB_ENV
-          "Inno Setup：$($isccInfo.ProductVersion) ($iscc)" >> $env:GITHUB_STEP_SUMMARY
+          "Inno Setup 6 编译器已验证：$iscc" >> $env:GITHUB_STEP_SUMMARY
 
       - name: 运行 WPF Release 测试
         shell: pwsh
@@ -91,11 +97,14 @@ jobs:
           $logsDir = Join-Path $PWD '.artifacts\wpf-release\logs'
           New-Item -ItemType Directory -Path $resultsDir, $logsDir -Force | Out-Null
 
+          # 完整烟测在同一台 runner 顺序执行测试集合，避免后台任务和 UI 心跳争抢线程。
           dotnet test apps/pos-wpf/tests/Hbpos.Client.Tests/Hbpos.Client.Tests.csproj `
             --configuration Release `
             -p:HbposWpfAppVersion=$version `
+            --logger 'console;verbosity=normal' `
             --logger 'trx;LogFileName=Hbpos.Client.Tests.trx' `
             --results-directory $resultsDir `
+            -- xUnit.ParallelizeTestCollections=false xUnit.DiagnosticMessages=true xUnit.LongRunningTestSeconds=60 `
             2>&1 | Tee-Object -FilePath (Join-Path $logsDir 'Hbpos.Client.Tests.log')
           if ($LASTEXITCODE -ne 0) {
             throw "Hbpos.Client.Tests 失败，退出码：$LASTEXITCODE"
@@ -170,6 +179,9 @@ jobs:
           $appInfo = (Get-Item -LiteralPath $appPath).VersionInfo
           $installerFile = Get-Item -LiteralPath $installerPath
           $installerInfo = $installerFile.VersionInfo
+          # Inno 版本资源会保留固定长度的尾部填充空格，比较和报告均使用实际版本文本。
+          $installerFileVersion = $installerInfo.FileVersion.Trim()
+          $installerProductVersion = $installerInfo.ProductVersion.Trim()
           $hash = (Get-FileHash -LiteralPath $installerPath -Algorithm SHA256).Hash.ToLowerInvariant()
           $signature = Get-AuthenticodeSignature -LiteralPath $installerPath
 
@@ -179,11 +191,11 @@ jobs:
           if (!$appInfo.ProductVersion.StartsWith($version, [System.StringComparison]::OrdinalIgnoreCase)) {
             throw "主程序 ProductVersion 不匹配：$($appInfo.ProductVersion)，预期以 $version 开头"
           }
-          if ($installerInfo.FileVersion -ne $expectedFileVersion) {
-            throw "安装包 FileVersion 不匹配：$($installerInfo.FileVersion)，预期：$expectedFileVersion"
+          if ($installerFileVersion -ne $expectedFileVersion) {
+            throw "安装包 FileVersion 不匹配：$installerFileVersion，预期：$expectedFileVersion"
           }
-          if ($installerInfo.ProductVersion -ne $version) {
-            throw "安装包 ProductVersion 不匹配：$($installerInfo.ProductVersion)，预期：$version"
+          if ($installerProductVersion -ne $version) {
+            throw "安装包 ProductVersion 不匹配：$installerProductVersion，预期：$version"
           }
           if ($signature.Status.ToString() -ne 'NotSigned') {
             throw "内部烟测包预期未签名，实际状态：$($signature.Status)"
@@ -216,8 +228,8 @@ jobs:
             installerFileName = $installerName
             installerFileSize = $installerFile.Length
             installerSha256 = $hash
-            installerFileVersion = $installerInfo.FileVersion
-            installerProductVersion = $installerInfo.ProductVersion
+            installerFileVersion = $installerFileVersion
+            installerProductVersion = $installerProductVersion
             installerSignatureStatus = $signature.Status.ToString()
             appFileVersion = $appInfo.FileVersion
             appProductVersion = $appInfo.ProductVersion
@@ -235,8 +247,8 @@ jobs:
           - SHA256：``$hash``
           - 主程序 FileVersion：``$($appInfo.FileVersion)``
           - 主程序 ProductVersion：``$($appInfo.ProductVersion)``
-          - 安装包 FileVersion：``$($installerInfo.FileVersion)``
-          - 安装包 ProductVersion：``$($installerInfo.ProductVersion)``
+          - 安装包 FileVersion：``$installerFileVersion``
+          - 安装包 ProductVersion：``$installerProductVersion``
           - Authenticode：``$($signature.Status)``
           - 运行时要求：``.NET 8 Desktop Runtime x64``
           - 发布属性：内部烟测、framework-dependent、未签名、非正式生产包

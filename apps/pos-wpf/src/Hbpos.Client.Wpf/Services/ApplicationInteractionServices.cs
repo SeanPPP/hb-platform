@@ -25,6 +25,8 @@ public interface IConfirmationDialogService
 
     Task<bool> ConfirmHeldOrderCancellationAsync();
 
+    Task<bool> ConfirmLinklyTerminalAssignmentAsync(string message) => Task.FromResult(false);
+
     Task<bool> ConfirmOrderDateRangeReuploadAsync(
         int orderCount,
         int batchCount,
@@ -83,6 +85,7 @@ public sealed class WpfConfirmationDialogService :
     private string _messageKey = string.Empty;
     private string _confirmButtonKey = string.Empty;
     private object[] _messageFormatArguments = [];
+    private string? _messageOverride;
     private bool _isOpen;
     private string _titleText = string.Empty;
     private string _messageText = string.Empty;
@@ -202,6 +205,14 @@ public sealed class WpfConfirmationDialogService :
             "history.held.deleteConfirmAction",
             isDestructive: true);
 
+    public Task<bool> ConfirmLinklyTerminalAssignmentAsync(string message) =>
+        ShowAsync(
+            "settings.linkly.cloudBackend.assignmentConfirmTitle",
+            "settings.linkly.cloudBackend.assignmentConfirmMessage",
+            "common.confirm",
+            isDestructive: false,
+            messageOverride: message);
+
     public Task<bool> ConfirmOrderDateRangeReuploadAsync(
         int orderCount,
         int batchCount,
@@ -219,7 +230,8 @@ public sealed class WpfConfirmationDialogService :
         string messageKey,
         string confirmButtonKey,
         bool isDestructive,
-        params object[] messageFormatArguments)
+        object[]? messageFormatArguments = null,
+        string? messageOverride = null)
     {
         var completionSource = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         if (Interlocked.CompareExchange(ref _completionSource, completionSource, null) is not null)
@@ -231,7 +243,8 @@ public sealed class WpfConfirmationDialogService :
         _titleKey = titleKey;
         _messageKey = messageKey;
         _confirmButtonKey = confirmButtonKey;
-        _messageFormatArguments = messageFormatArguments;
+        _messageFormatArguments = messageFormatArguments ?? [];
+        _messageOverride = messageOverride;
         IsDestructive = isDestructive;
         RefreshLocalizedText();
         IsOpen = true;
@@ -262,7 +275,7 @@ public sealed class WpfConfirmationDialogService :
     private void RefreshLocalizedText()
     {
         TitleText = _localization.T(_titleKey);
-        MessageText = string.Format(
+        MessageText = _messageOverride ?? string.Format(
             CultureInfo.CurrentCulture,
             _localization.T(_messageKey),
             _messageFormatArguments);

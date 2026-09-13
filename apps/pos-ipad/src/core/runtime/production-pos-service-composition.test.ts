@@ -2824,6 +2824,114 @@ test("生产更新安全快照把可信门店作用域内的退货恢复标记�
   assert.equal(snapshot.hasRecoveryRequired, true);
 });
 
+test("未登录更新安全快照从终端耐久状态判定恢复风险", async (context) => {
+  const availableBootstrap = emptyPaymentBootstrap();
+  const cases = [
+    {
+      name: "干净终端允许更新",
+      database: {},
+      runtimeAvailable: true,
+      expectedPayment: false,
+      expectedReturn: false,
+    },
+    {
+      name: "支付草稿阻断更新",
+      database: { paymentDraftRecoveryRequired: true },
+      expectedPayment: true,
+      expectedReturn: false,
+    },
+    {
+      name: "支付 ACK-only 阻断更新",
+      database: { paymentAcknowledgementRecoveryRequired: true },
+      expectedPayment: true,
+      expectedReturn: false,
+    },
+    {
+      name: "其他收银员在同一终端留下的退货恢复阻断更新",
+      database: {
+        terminalReturnRecoveries: [
+          { storeCode: "S001", deviceCode: "IPAD-1", cashierId: "OTHER" },
+        ],
+      },
+      expectedPayment: false,
+      expectedReturn: true,
+    },
+    {
+      name: "分期 action 阻断更新",
+      database: { installmentRecoveryRequired: true },
+      expectedPayment: true,
+      expectedReturn: false,
+    },
+    {
+      name: "分期 ACK-only 阻断更新",
+      database: { installmentAcknowledgementRecoveryRequired: true },
+      expectedPayment: true,
+      expectedReturn: false,
+    },
+    {
+      name: "分期 lifecycle 阻断更新",
+      database: { installmentLifecycleRecoveryRequired: true },
+      expectedPayment: true,
+      expectedReturn: false,
+    },
+    {
+      name: "其他终端的退货恢复不阻断当前终端",
+      database: {
+        terminalReturnRecoveries: [
+          { storeCode: "S001", deviceCode: "IPAD-2", cashierId: "OTHER" },
+        ],
+      },
+      expectedPayment: false,
+      expectedReturn: false,
+    },
+  ] as const;
+
+  for (const scenario of cases) {
+    await context.test(scenario.name, async () => {
+      const services = createTestComposition(
+        databaseFor([], scenario.database),
+        "runtimeAvailable" in scenario && scenario.runtimeAvailable
+          ? {
+              paymentBootstrap: availableBootstrap,
+              // 有主管认证配置时 returns runtime 与真机一样为 available；此处仍未登录。
+              supervisorPermissions: [],
+            }
+          : {},
+      );
+      await services.initialize();
+
+      const snapshot = await services.appUpdateSafety.getSnapshot();
+      assert.equal(
+        snapshot.hasUnresolvedPayment,
+        scenario.expectedPayment,
+      );
+      assert.equal(
+        snapshot.hasRecoveryRequired,
+        scenario.expectedReturn,
+      );
+    });
+  }
+});
+
+test("未登录更新安全的各耐久探针读取失败时分别保持阻断", async (context) => {
+  for (const scenario of [
+    { failure: "payment", expectedPayment: true, expectedReturn: false },
+    { failure: "installment", expectedPayment: true, expectedReturn: false },
+    { failure: "return", expectedPayment: false, expectedReturn: true },
+  ] as const) {
+    await context.test(scenario.failure, async () => {
+      const services = createTestComposition(
+        databaseFor([], { recoveryProbeFailure: scenario.failure }),
+      );
+      await services.initialize();
+
+      const snapshot = await services.appUpdateSafety.getSnapshot();
+      assert.equal(snapshot.hasUnresolvedPayment, scenario.expectedPayment);
+      assert.equal(snapshot.hasRecoveryRequired, scenario.expectedReturn);
+    });
+  }
+});
+
 test("支付配置切换仍阻断需要恢复的退货，不把普通待同步退货误作恢复", async () => {
   let saveCalls = 0;
   let reloadCalls = 0;
@@ -4629,6 +4737,7 @@ function createTestComposition(
     waitForPrint?(): Promise<void>;
     onDrawerOpen?(actionId: string): void;
     installmentBootstrap?: PaymentProviderRuntimeBootstrap;
+    paymentBootstrap?: PaymentProviderRuntimeBootstrap;
     installmentPerformanceRecorder?: Readonly<{
       record(event: InstallmentPerformanceEvent): void | Promise<void>;
     }>;
@@ -4807,8 +4916,53 @@ function createTestComposition(
           },
         }
       : {}),
+    ...(options.paymentBootstrap
+      ? {
+          payments: {
+            bootstrap: options.paymentBootstrap,
+            linklyEnvironment: null,
+          },
+        }
+      : {}),
     ...(options.settings ? { settings: options.settings } : {}),
   });
+}
+
+function emptyPaymentBootstrap(): PaymentProviderRuntimeBootstrap {
+  const availability = {
+    getAvailability(provider: "square" | "linkly-cloud" | "voucher") {
+      return {
+        provider,
+        available: false,
+        blocker: "PAYMENT_PROVIDER_UNKNOWN" as const,
+      };
+    },
+    listAvailability() {
+      return [];
+    },
+  };
+  return {
+    providers: {
+      ...availability,
+      get() {
+        throw new Error("provider is unavailable in this test");
+      },
+      listAvailableProviders() {
+        return [];
+      },
+      getVoucherApprovedPurchaseReleasePort() {
+        return {
+          status: "unavailable" as const,
+          reason: "PAYMENT_PROVIDER_UNKNOWN" as const,
+        };
+      },
+    },
+    configurationAvailability: availability,
+    bindVoucherContextProvider() {},
+    createLinklyOperator() {
+      return null;
+    },
+  } as PaymentProviderRuntimeBootstrap;
 }
 
 function settingsRuntimeConfiguration(): ProductionSettingsRuntimeConfiguration {
@@ -5109,7 +5263,15 @@ function databaseFor(
     paymentDraftRecoveryRequired?: boolean;
     voucherTenderReversalRecoveryRequired?: boolean;
     installmentRecoveryRequired?: boolean;
+    installmentAcknowledgementRecoveryRequired?: boolean;
+    installmentLifecycleRecoveryRequired?: boolean;
+    paymentAcknowledgementRecoveryRequired?: boolean;
     recoveryProbeFailure?: "payment" | "return" | "installment";
+    terminalReturnRecoveries?: readonly Readonly<{
+      storeCode: string;
+      deviceCode: string;
+      cashierId: string;
+    }>[];
     pendingOrderSyncCount?: number;
     activeCatalogPromotions?: ActiveCatalogPromotions | null;
     activeCatalogMetadata?: ActiveCatalogMetadata | null;
@@ -5391,7 +5553,11 @@ function databaseFor(
           : null;
       },
       // 正常组合 fake 明确表示没有 Linkly ACK/legacy 记录；专项故障用例仍由上面的抛错覆盖。
-      async findPendingLinklyAcknowledgement() { return null; },
+      async findPendingLinklyAcknowledgement() {
+        return options.paymentAcknowledgementRecoveryRequired
+          ? "payment-acknowledgement"
+          : null;
+      },
       async hasLegacyLinklyRecovery() { return false; },
       async findLegacyLinklyAttemptForSession() { return null; },
     }),
@@ -5411,14 +5577,47 @@ function databaseFor(
           ? ({ actionId: "installment-recovery" } as never)
           : null;
       },
+      async loadLifecycleBlocking() {
+        return options.installmentLifecycleRecoveryRequired
+          ? ({ actionId: "installment-lifecycle" } as never)
+          : null;
+      },
+      async loadProviderAcknowledgementPending() {
+        return options.installmentAcknowledgementRecoveryRequired
+          ? ({ actionId: "installment-acknowledgement" } as never)
+          : null;
+      },
     }),
     paymentOrderCommitter: () => ({}),
+    paymentActionBindings: () => ({}),
+    voucherPreparationStore: () => ({}),
+    mixedPaymentOrderTruth: () => ({}),
+    mixedPaymentTenders: () => ({}),
     returnCapacityVault: () => ({
       async protect() {
         throw new Error("return capacity protect is not used");
       },
     }),
     returnExecutionLedger: () => ({
+      async hasRecoverableForTerminal(
+        scope: Readonly<{ storeCode: string; deviceCode: string }>,
+      ) {
+        if (options.recoveryProbeFailure === "return") {
+          throw new Error("return recovery storage unavailable");
+        }
+        if (
+          options.returnRecoveryRequired &&
+          scope.storeCode === "S001" &&
+          scope.deviceCode === "IPAD-1"
+        ) {
+          return true;
+        }
+        return (options.terminalReturnRecoveries ?? []).some(
+          (record) =>
+            record.storeCode === scope.storeCode &&
+            record.deviceCode === scope.deviceCode,
+        );
+      },
       async listRecoverable() {
         if (options.recoveryProbeFailure === "return") {
           throw new Error("return recovery storage unavailable");

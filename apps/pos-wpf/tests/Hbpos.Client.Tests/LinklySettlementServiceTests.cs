@@ -8,6 +8,48 @@ namespace Hbpos.Client.Tests;
 public sealed class LinklySettlementServiceTests
 {
     [Fact]
+    public async Task Settlement_holds_selection_gate_until_terminal_submission_completes()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"hbpos-linkly-settlement-gate-{Guid.NewGuid():N}.db");
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            await new LocalSchemaService(store).InitializeAsync();
+            var terminal = new FakeLinklyTerminalClient(new LinklySettlementResult(true, "done"))
+            {
+                SettlementStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
+                DeferredSettlementResult = new TaskCompletionSource<LinklySettlementResult>(TaskCreationOptions.RunContinuationsAsynchronously)
+            };
+            using var gate = new LinklyTerminalSelectionTransitionGate();
+            var settings = CardTerminalSettings.FromEnvironment() with { Processor = CardProcessorKind.Linkly };
+            var service = new LinklySettlementService(
+                terminal,
+                new FixedCardTerminalSettingsProvider(settings),
+                new LocalLinklySettlementRepository(store),
+                new FakeLinklyBankReceiptPrinter(),
+                linklyTerminalSelectionTransitionGate: gate);
+            var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+
+            var settling = service.SettleAndPrintAsync(session, DateTime.Today);
+            await terminal.SettlementStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Null(await gate.TryEnterAssignmentAsync());
+
+            terminal.DeferredSettlementResult.SetResult(new LinklySettlementResult(false, "declined"));
+            await settling;
+            await using var assignmentLease = await gate.TryEnterAssignmentAsync();
+            Assert.NotNull(assignmentLease);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            foreach (var path in new[] { databasePath, $"{databasePath}-wal", $"{databasePath}-shm" })
+            {
+                if (File.Exists(path)) File.Delete(path);
+            }
+        }
+    }
+
+    [Fact]
     public async Task Settle_then_reprint_persists_once_and_does_not_submit_settlement_again()
     {
         var databasePath = Path.Combine(Path.GetTempPath(), $"hbpos-linkly-settlement-service-{Guid.NewGuid():N}.db");
