@@ -1,5 +1,6 @@
 import type {
   InvoiceDetailPageSize,
+  InvoiceDetailPriceChangeFilter,
   InvoiceGridFilters,
   InvoiceGridSort,
   InvoiceListPageSize,
@@ -22,8 +23,11 @@ type SearchParamValue = string | string[] | undefined;
 export interface LocalSupplierInvoicesReturnState {
   source: typeof LOCAL_SUPPLIER_INVOICES_SOURCE;
   returnInvoiceGuid: string;
+  returnDetailGuid?: string;
   returnDetailsPage: number;
   returnDetailsPageSize: InvoiceDetailPageSize;
+  returnDetailPriceChangeFilter: InvoiceDetailPriceChangeFilter;
+  returnDetailSearch: string;
   returnListPage: number;
   returnListPageSize: InvoiceListPageSize;
   filters: InvoiceGridFilters;
@@ -32,8 +36,11 @@ export interface LocalSupplierInvoicesReturnState {
 
 export interface BuildLocalSupplierInvoicesReturnStateInput {
   returnInvoiceGuid: string;
+  returnDetailGuid?: string;
   returnDetailsPage: number;
   returnDetailsPageSize: InvoiceDetailPageSize;
+  returnDetailPriceChangeFilter: InvoiceDetailPriceChangeFilter;
+  returnDetailSearch: string;
   returnListPage: number;
   returnListPageSize: InvoiceListPageSize;
   filters: InvoiceGridFilters;
@@ -75,6 +82,13 @@ function normalizeDetailPageSize(value: SearchParamValue) {
     : null;
 }
 
+function normalizeDetailPriceChangeFilter(
+  value: SearchParamValue
+): InvoiceDetailPriceChangeFilter {
+  const normalized = firstParam(value)?.toLocaleLowerCase();
+  return normalized === "up" || normalized === "down" ? normalized : "all";
+}
+
 function normalizeSortColId(value: SearchParamValue) {
   const raw = firstParam(value);
   return raw && SORT_COLUMNS.includes(raw as InvoiceGridSort["colId"])
@@ -90,10 +104,15 @@ function normalizeSortDirection(value: SearchParamValue) {
 }
 
 function normalizeFilters(filters: InvoiceGridFilters): InvoiceGridFilters {
+  const inboundStatus = filters.inboundStatus;
   return {
     storeCode: firstParam(filters.storeCode),
     supplierCode: firstParam(filters.supplierCode),
     invoiceNo: firstParam(filters.invoiceNo),
+    inboundStatus:
+      inboundStatus === 0 || inboundStatus === 1 || inboundStatus === 2
+        ? inboundStatus
+        : undefined,
     orderDateFrom: firstParam(filters.orderDateFrom),
     orderDateTo: firstParam(filters.orderDateTo),
   };
@@ -107,13 +126,17 @@ export function buildLocalSupplierInvoicesReturnParams(
   return {
     source: LOCAL_SUPPLIER_INVOICES_SOURCE,
     returnInvoiceGuid: input.returnInvoiceGuid,
+    returnDetailGuid: input.returnDetailGuid?.trim() ?? "",
     returnDetailsPage: String(input.returnDetailsPage),
     returnDetailsPageSize: String(input.returnDetailsPageSize),
+    returnDetailPriceChangeFilter: input.returnDetailPriceChangeFilter,
+    returnDetailSearch: input.returnDetailSearch.trim(),
     returnListPage: String(input.returnListPage),
     returnListPageSize: String(input.returnListPageSize),
     returnFilterStoreCode: filters.storeCode ?? "",
     returnFilterSupplierCode: filters.supplierCode ?? "",
     returnFilterInvoiceNo: filters.invoiceNo ?? "",
+    returnFilterInboundStatus: filters.inboundStatus == null ? "" : String(filters.inboundStatus),
     returnFilterOrderDateFrom: filters.orderDateFrom ?? "",
     returnFilterOrderDateTo: filters.orderDateTo ?? "",
     returnSortColId: input.sort.colId,
@@ -132,6 +155,12 @@ export function decodeLocalSupplierInvoicesReturnParams(
   const returnListPageSize = normalizeListPageSize(params.returnListPageSize);
   const sortColId = normalizeSortColId(params.returnSortColId);
   const sortDirection = normalizeSortDirection(params.returnSortDirection);
+  const inboundStatusRaw = firstParam(params.returnFilterInboundStatus);
+  const inboundStatusNumber = inboundStatusRaw == null ? undefined : Number(inboundStatusRaw);
+  const inboundStatus =
+    inboundStatusNumber === 0 || inboundStatusNumber === 1 || inboundStatusNumber === 2
+      ? inboundStatusNumber
+      : undefined;
 
   if (
     source !== LOCAL_SUPPLIER_INVOICES_SOURCE
@@ -149,14 +178,20 @@ export function decodeLocalSupplierInvoicesReturnParams(
   return {
     source,
     returnInvoiceGuid,
+    returnDetailGuid: firstParam(params.returnDetailGuid),
     returnDetailsPage,
     returnDetailsPageSize,
+    returnDetailPriceChangeFilter: normalizeDetailPriceChangeFilter(
+      params.returnDetailPriceChangeFilter
+    ),
+    returnDetailSearch: firstParam(params.returnDetailSearch) ?? "",
     returnListPage,
     returnListPageSize,
     filters: normalizeFilters({
       storeCode: firstParam(params.returnFilterStoreCode),
       supplierCode: firstParam(params.returnFilterSupplierCode),
       invoiceNo: firstParam(params.returnFilterInvoiceNo),
+      inboundStatus,
       orderDateFrom: firstParam(params.returnFilterOrderDateFrom),
       orderDateTo: firstParam(params.returnFilterOrderDateTo),
     }),

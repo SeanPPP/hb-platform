@@ -2,6 +2,10 @@
   "title": "订单列表",
   "filterTitle": "过滤",
   "selectStore": "请选择分店",
+  "scopeLabel": "查看范围",
+  "allManagedStores": "全部可管理分店",
+  "allManagedStoresHint": "共 {{count}} 家分店",
+  "searchPlaceholder": "搜索订单号或分店",
   "listTitle": "订单记录",
   "viewDetail": "查看明细",
   "detailTitle": "订单明细",
@@ -10,6 +14,7 @@
     "printLabel": "打印标签"
   },
   "messages": {
+    "storeSelectFailed": "切换分店失败",
     "printSuccess": "标签已发送到打印机",
     "printFailed": "打印标签失败"
   },

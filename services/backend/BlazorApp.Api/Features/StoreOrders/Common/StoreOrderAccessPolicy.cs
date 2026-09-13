@@ -197,15 +197,23 @@ internal sealed class StoreOrderAccessPolicy(
             return decision;
         }
 
-        decision = await RequireAssignedStoreScopeAsync(storeCode);
-        if (decision.IsForbidden || storeCodes == null)
+        var requestedStoreCodes = (storeCodes ?? Array.Empty<string?>())
+            .Append(storeCode)
+            .Where(item => !string.IsNullOrWhiteSpace(item))
+            .Select(item => item!.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (requestedStoreCodes.Count == 0)
         {
-            return decision;
+            // 没有任何有效分店筛选时只允许全局范围，避免普通用户读取全部订单。
+            return await RequireAssignedStoreScopeAsync(null);
         }
 
-        foreach (var requestedStoreCode in storeCodes)
+        foreach (var requestedStoreCode in requestedStoreCodes)
         {
-            decision = await RequireStoreScopeAsync(requestedStoreCode);
+            // 单店与多店参数取并集逐一校验，每个分店都可由管理范围或用户分配关系授权。
+            decision = await RequireAssignedStoreScopeAsync(requestedStoreCode);
             if (decision.IsForbidden)
             {
                 return decision;

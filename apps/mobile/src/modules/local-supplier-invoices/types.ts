@@ -7,6 +7,7 @@ export interface InvoiceGridFilters {
   storeCode?: string;
   supplierCode?: string;
   invoiceNo?: string;
+  inboundStatus?: 0 | 1 | 2;
   orderDateFrom?: string;
   orderDateTo?: string;
 }
@@ -32,6 +33,19 @@ export interface InvoiceDetailsGridQuery {
   page?: number;
   pageSize?: number;
   priceChange?: InvoiceDetailPriceChangeFilter;
+  keyword?: string;
+}
+
+/** 后端入库状态：0 未入库，1 部分入库，2 已入库；其他值保持中性。 */
+export type InvoiceInboundStatusLabel = "notReceived" | "partial" | "received" | "unknown";
+
+export function getInvoiceInboundStatusLabel(status: number | null | undefined): InvoiceInboundStatusLabel {
+  switch (status) {
+    case 0: return "notReceived";
+    case 1: return "partial";
+    case 2: return "received";
+    default: return "unknown";
+  }
 }
 
 export interface GridFilterModel {
@@ -47,7 +61,7 @@ export interface GridRequest {
   endRow: number;
   pageSize: number;
   filterModel?: Record<string, GridFilterModel>;
-  sortModel?: Array<{ colId: string; sort: SortDirection }>;
+  sortModel?: { colId: string; sort: SortDirection }[];
 }
 
 export interface GridResult<T> {

@@ -6283,6 +6283,56 @@ public sealed class StoreOrderProductListTests : IDisposable
     }
 
     [Fact]
+    public async Task GetOrderListAsync_关键字在请求分店范围内用相关子查询执行()
+    {
+        await SeedStoreOrderAsync("ORDER-S001", flowStatus: 1, insertStore: true, storeCode: "S001");
+        await SeedOrderLineAsync("ORDER-S001", "P-S001", "SHARED-NEEDLE", quantity: 1m, allocQuantity: 1m);
+        await SeedStoreAsync("STORE-GUID-002", "S002", "测试二店");
+        await SeedStoreOrderAsync("ORDER-S002", flowStatus: 1, insertStore: false, storeCode: "S002");
+        await SeedOrderLineAsync("ORDER-S002", "P-S002", "SHARED-NEEDLE", quantity: 1m, allocQuantity: 1m);
+
+        _sqlLogs.Clear();
+        var result = await CreateService().GetOrderListAsync(new StoreOrderListFilterDto
+        {
+            StoreCodes = new List<string> { "S001" },
+            Keyword = "SHARED-NEEDLE",
+            PageNumber = 1,
+            PageSize = 20,
+            StatusList = new List<int> { 1 },
+        });
+
+        Assert.Equal(1, result.Total);
+        Assert.Equal("ORDER-S001", Assert.Single(result.Items).OrderGUID);
+        Assert.True(_sqlLogs.Count >= 2);
+        Assert.All(
+            _sqlLogs.Take(2),
+            log => Assert.Contains("EXISTS", log, StringComparison.OrdinalIgnoreCase)
+        );
+    }
+
+    [Fact]
+    public async Task GetOrderListAsync_多分店筛选去除空白并忽略大小写去重()
+    {
+        await SeedStoreOrderAsync(
+            "ORDER-TRIMMED-STORE",
+            insertStore: true,
+            storeCode: "S001"
+        );
+
+        var result = await CreateService().GetOrderListAsync(
+            new StoreOrderListFilterDto
+            {
+                StoreCodes = new List<string> { " S001 ", "s001" },
+                PageNumber = 1,
+                PageSize = 20,
+            }
+        );
+
+        Assert.Equal(1, result.Total);
+        Assert.Equal("ORDER-TRIMMED-STORE", Assert.Single(result.Items).OrderGUID);
+    }
+
+    [Fact]
     public async Task GetOrderListAsync_DoesNotDuplicateOrdersWhenMultipleDetailsMatchItemNumber()
     {
         await SeedStoreOrderAsync("ORDER-DUP", flowStatus: 1, insertStore: true);

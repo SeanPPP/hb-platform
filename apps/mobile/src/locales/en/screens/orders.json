@@ -2,6 +2,10 @@
   "title": "Orders",
   "filterTitle": "Filters",
   "selectStore": "Select a store",
+  "scopeLabel": "View scope",
+  "allManagedStores": "All managed stores",
+  "allManagedStoresHint": "{{count}} stores",
+  "searchPlaceholder": "Search order number or store",
   "listTitle": "Order history",
   "viewDetail": "View details",
   "detailTitle": "Order details",
@@ -10,6 +14,7 @@
     "printLabel": "Print label"
   },
   "messages": {
+    "storeSelectFailed": "Failed to switch store",
     "printSuccess": "Label sent to printer",
     "printFailed": "Failed to print label"
   },

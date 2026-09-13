@@ -1,8 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ScrollView, StyleSheet, TextInput, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, TextInput, View } from "react-native";
 import { CameraView } from "expo-camera";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useFocusEffect, useIsFocused } from "@react-navigation/native";
+import {
+  useFocusEffect,
+  useIsFocused,
+  useNavigation,
+  usePreventRemove,
+  type NavigationAction,
+} from "@react-navigation/native";
 import {
   ActivityIndicator,
   Button,
@@ -115,10 +121,15 @@ import type { ScanSource } from "@/modules/scanner/types";
 import { useStores } from "@/modules/shop/use-stores";
 import type { Store } from "@/modules/shop/types";
 import { useAuthStore } from "@/store/auth-store";
+import { useDeviceStore } from "@/store/device-store";
 import {
   buildLocalSupplierInvoicesRestoreHref,
   decodeLocalSupplierInvoicesReturnParams,
 } from "@/modules/local-supplier-invoices/navigation";
+import {
+  resolveInvoiceEditorExitAction,
+  resolveProductEditorStoreScope,
+} from "@/modules/product-maintenance/invoice-editor-exit";
 import { createActivePromotionRequestCoordinator } from "@/modules/promotions/active-promotion-request";
 import { fetchValidPromotionsByProduct } from "@/modules/promotions/api";
 import type { PromotionListItem } from "@/modules/promotions/types";
@@ -381,6 +392,7 @@ const DEFAULT_LOOKUP_FLOW_RESULT: LookupFlowResult = {
 
 function ProductQueryContent() {
   const isFocused = useIsFocused();
+  const navigation = useNavigation();
   const { t, language } = useAppTranslation(["productQuery", "common"]);
   const router = useRouter();
   const queryParams = useLocalSearchParams<{
@@ -389,28 +401,82 @@ function ProductQueryContent() {
     storeCode?: string | string[];
     source?: string | string[];
     returnInvoiceGuid?: string | string[];
+    returnDetailGuid?: string | string[];
     returnDetailsPage?: string | string[];
     returnDetailsPageSize?: string | string[];
+    returnDetailPriceChangeFilter?: string | string[];
+    returnDetailSearch?: string | string[];
     returnListPage?: string | string[];
     returnListPageSize?: string | string[];
     returnFilterStoreCode?: string | string[];
     returnFilterSupplierCode?: string | string[];
     returnFilterInvoiceNo?: string | string[];
+    returnFilterInboundStatus?: string | string[];
     returnFilterOrderDateFrom?: string | string[];
     returnFilterOrderDateTo?: string | string[];
     returnSortColId?: string | string[];
     returnSortDirection?: string | string[];
   }>();
+  const invoiceReturnState = useMemo(
+    () => decodeLocalSupplierInvoicesReturnParams({
+      source: queryParams.source,
+      returnInvoiceGuid: queryParams.returnInvoiceGuid,
+      returnDetailGuid: queryParams.returnDetailGuid,
+      returnDetailsPage: queryParams.returnDetailsPage,
+      returnDetailsPageSize: queryParams.returnDetailsPageSize,
+      returnDetailPriceChangeFilter: queryParams.returnDetailPriceChangeFilter,
+      returnDetailSearch: queryParams.returnDetailSearch,
+      returnListPage: queryParams.returnListPage,
+      returnListPageSize: queryParams.returnListPageSize,
+      returnFilterStoreCode: queryParams.returnFilterStoreCode,
+      returnFilterSupplierCode: queryParams.returnFilterSupplierCode,
+      returnFilterInvoiceNo: queryParams.returnFilterInvoiceNo,
+      returnFilterInboundStatus: queryParams.returnFilterInboundStatus,
+      returnFilterOrderDateFrom: queryParams.returnFilterOrderDateFrom,
+      returnFilterOrderDateTo: queryParams.returnFilterOrderDateTo,
+      returnSortColId: queryParams.returnSortColId,
+      returnSortDirection: queryParams.returnSortDirection,
+    }),
+    [
+      queryParams.returnDetailsPage,
+      queryParams.returnDetailsPageSize,
+      queryParams.returnDetailGuid,
+      queryParams.returnDetailPriceChangeFilter,
+      queryParams.returnDetailSearch,
+      queryParams.returnFilterInvoiceNo,
+      queryParams.returnFilterInboundStatus,
+      queryParams.returnFilterOrderDateFrom,
+      queryParams.returnFilterOrderDateTo,
+      queryParams.returnFilterStoreCode,
+      queryParams.returnFilterSupplierCode,
+      queryParams.returnInvoiceGuid,
+      queryParams.returnListPage,
+      queryParams.returnListPageSize,
+      queryParams.returnSortColId,
+      queryParams.returnSortDirection,
+      queryParams.source,
+    ],
+  );
   const {
     stores,
-    selectedStore,
-    selectedStoreCode,
+    selectedStore: globalSelectedStore,
+    selectedStoreCode: globalSelectedStoreCode,
     selectStore,
     isDeviceMode,
     isLoading: storesLoading,
     isHydratingSelection,
   } = useStores();
+  const editorStoreScope = resolveProductEditorStoreScope({
+    invoiceStoreCode: firstParam(queryParams.storeCode),
+    selectedStoreCode: globalSelectedStoreCode,
+    hasInvoiceReturnContext: Boolean(invoiceReturnState),
+  });
+  const selectedStoreCode = editorStoreScope.storeCode;
+  const selectedStore = editorStoreScope.locked
+    ? stores.find((store) => store.storeCode === selectedStoreCode)
+    : globalSelectedStore;
   const access = useAuthStore((state) => state.access);
+  const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
   const printerAutoReconnectPaused = usePrinterStore(
     (state) => state.autoReconnectPaused,
   );
@@ -503,6 +569,13 @@ function ProductQueryContent() {
   const [quantitySingleUse, setQuantitySingleUse] = useState(true);
   const [printSettingsVisible, setPrintSettingsVisible] = useState(false);
   const [storePickerVisible, setStorePickerVisible] = useState(false);
+  const [discardReturnVisible, setDiscardReturnVisible] = useState(false);
+  const [allowInvoiceExit, setAllowInvoiceExit] = useState(false);
+  const pendingInvoiceExitRef = useRef<
+    { kind: "invoice" } | { kind: "navigation"; action: NavigationAction } | null
+  >(null);
+  const invoiceExitSavingRef = useRef(false);
+  const [editorTab, setEditorTab] = useState<"price" | "codes">("price");
   const getErrorMessage = useCallback(
     (error: unknown, fallbackKey: string) =>
       resolveLocalizedErrorMessage(error, {
@@ -816,25 +889,6 @@ function ProductQueryContent() {
       warehousePriceInteractionLocked,
     ],
   );
-  const invoiceReturnState = useMemo(
-    () => decodeLocalSupplierInvoicesReturnParams(queryParams),
-    [
-      queryParams.returnDetailsPage,
-      queryParams.returnDetailsPageSize,
-      queryParams.returnFilterInvoiceNo,
-      queryParams.returnFilterOrderDateFrom,
-      queryParams.returnFilterOrderDateTo,
-      queryParams.returnFilterStoreCode,
-      queryParams.returnFilterSupplierCode,
-      queryParams.returnInvoiceGuid,
-      queryParams.returnListPage,
-      queryParams.returnListPageSize,
-      queryParams.returnSortColId,
-      queryParams.returnSortDirection,
-      queryParams.source,
-    ],
-  );
-
   useEffect(() => {
     setStorePurchaseInput(
       formatFixedDecimal(detail?.storePrice?.purchasePrice),
@@ -845,6 +899,10 @@ function ProductQueryContent() {
     detail?.storePrice?.retailPrice,
     detail?.storePrice?.uuid,
   ]);
+
+  useEffect(() => {
+    setEditorTab("price");
+  }, [detail?.productCode]);
 
   useEffect(() => {
     setClearancePriceInput(
@@ -1125,11 +1183,14 @@ function ProductQueryContent() {
   );
 
   const canSelectStore =
-    !isDeviceMode && stores.length > 0 && !isProductQueryBusy();
+    !editorStoreScope.locked &&
+    !isDeviceMode &&
+    stores.length > 0 &&
+    !isProductQueryBusy();
 
   const handleSelectStore = useCallback(
     async (store: Store | null) => {
-      if (!store || isProductQueryBusy()) {
+      if (!store || editorStoreScope.locked || isProductQueryBusy()) {
         return;
       }
 
@@ -1172,6 +1233,7 @@ function ProductQueryContent() {
     [
       activateHqSyncScope,
       detail?.productCode,
+      editorStoreScope.locked,
       getErrorMessage,
       invalidateActivePromotions,
       isProductQueryBusy,
@@ -3444,14 +3506,14 @@ function ProductQueryContent() {
 
   saveClearanceRef.current = handleSaveClearancePrice;
 
-  const handleSaveAll = useCallback(async () => {
+  const handleSaveAll = useCallback(async (): Promise<boolean> => {
     if (!detail?.storePrice || !isStorePriceDirty(detail, initialDetail)) {
-      return;
+      return true;
     }
 
     setSaving(true);
     try {
-      await persistStorePrice(detail, {
+      const savedDetail = await persistStorePrice(detail, {
         purchasePrice: detail.storePrice.purchasePrice ?? null,
         retailPrice: detail.storePrice.retailPrice ?? null,
         discountRate: normalizeDiscountRateValue(
@@ -3461,8 +3523,10 @@ function ProductQueryContent() {
         isSpecialProduct: detail.storePrice.isSpecialProduct,
         isActive: detail.storePrice.isActive,
       });
+      return Boolean(savedDetail);
     } catch (error) {
       setSnackbarMessage(getErrorMessage(error, "messages.saveFailed"));
+      return false;
     } finally {
       setSaving(false);
     }
@@ -3591,17 +3655,102 @@ function ProductQueryContent() {
     ],
   );
 
-  const handleReturnToInvoices = useCallback(() => {
-    if (!invoiceReturnState) {
+  const isInvoiceEditorSessionActive = useCallback(() => {
+    const auth = useAuthStore.getState();
+    const device = useDeviceStore.getState().session;
+    // 纯设备登录没有账号 token；仅当前设备会话可作为退出恢复的有效上下文。
+    return auth.isAuthenticated || Boolean(auth.sessionKind === "device" &&
+      device?.hardwareId && device.authCode && device.storeCode);
+  }, []);
+
+  const isInvoiceExitBusy = useCallback(
+    () => invoiceExitSavingRef.current || saving || Boolean(savingItemId) ||
+      savingClearance || productTypeSaving || createProductBusy || hqSyncRetrying ||
+      autoPricingDialogSaving || warehousePriceSyncState.phase === "confirming" ||
+      Boolean(printingAction),
+    [autoPricingDialogSaving, createProductBusy, hqSyncRetrying, printingAction,
+      productTypeSaving, saving, savingClearance, savingItemId, warehousePriceSyncState.phase],
+  );
+
+  const performReturnToInvoices = useCallback(() => {
+    if (!invoiceReturnState || allowInvoiceExit) return;
+    pendingInvoiceExitRef.current = { kind: "invoice" };
+    setDiscardReturnVisible(false);
+    setAllowInvoiceExit(true);
+  }, [allowInvoiceExit, invoiceReturnState]);
+
+  const requestInvoiceExit = useCallback((exit: NonNullable<typeof pendingInvoiceExitRef.current>) => {
+    if (!invoiceReturnState || allowInvoiceExit) return;
+    if (isInvoiceExitBusy()) {
+      setSnackbarMessage(t("messages.finishCurrentAction"));
       return;
     }
+    pendingInvoiceExitRef.current = exit;
+    if (isStorePriceDirty(detail, initialDetail)) {
+      setDiscardReturnVisible(true);
+    } else {
+      setAllowInvoiceExit(true);
+    }
+  }, [allowInvoiceExit, detail, initialDetail, invoiceReturnState, isInvoiceExitBusy, t]);
 
-    router.replace(
-      buildLocalSupplierInvoicesRestoreHref(
-        invoiceReturnState,
-      ) as unknown as Parameters<typeof router.replace>[0],
-    );
-  }, [invoiceReturnState, router]);
+  const handleReturnToInvoices = useCallback(() => {
+    requestInvoiceExit({ kind: "invoice" });
+  }, [requestInvoiceExit]);
+
+  const handleCancelInvoiceExit = useCallback(() => {
+    pendingInvoiceExitRef.current = null;
+    setDiscardReturnVisible(false);
+  }, []);
+
+  const handleDiscardInvoiceExit = useCallback(() => {
+    if (!pendingInvoiceExitRef.current || isInvoiceExitBusy()) return;
+    setDiscardReturnVisible(false);
+    setAllowInvoiceExit(true);
+  }, [isInvoiceExitBusy]);
+
+  usePreventRemove(Boolean(invoiceReturnState) && (isAuthenticated || isDeviceMode) && !allowInvoiceExit, ({ data }) => {
+    // 会话可能刚刚失效：放行原始登录重定向，不能将它改写成发票返回。
+    if (!isInvoiceEditorSessionActive()) {
+      pendingInvoiceExitRef.current = { kind: "navigation", action: data.action };
+      setAllowInvoiceExit(true);
+      return;
+    }
+    const singlePop = data.action.type === "POP" &&
+      (!data.action.payload || !("count" in data.action.payload) || data.action.payload.count === 1);
+    // Android 返回键和 iOS 单页返回手势都恢复携带的发票上下文。
+    requestInvoiceExit(data.action.type === "GO_BACK" || singlePop
+      ? { kind: "invoice" }
+      : { kind: "navigation", action: data.action });
+  });
+
+  useEffect(() => {
+    if (!allowInvoiceExit) return;
+    const exit = pendingInvoiceExitRef.current;
+    pendingInvoiceExitRef.current = null;
+    // 等本次渲染先解除 usePreventRemove，再恢复明细或重放原始导航，避免重复拦截。
+    if (exit?.kind === "navigation") {
+      navigation.dispatch(exit.action);
+    } else if (exit?.kind === "invoice" && invoiceReturnState && isInvoiceEditorSessionActive()) {
+      router.replace(buildLocalSupplierInvoicesRestoreHref(invoiceReturnState) as unknown as Parameters<typeof router.replace>[0]);
+    }
+  }, [allowInvoiceExit, invoiceReturnState, isInvoiceEditorSessionActive, navigation, router]);
+
+  const handleSaveAndReturnToInvoices = useCallback(async () => {
+    if (allowInvoiceExit || isInvoiceExitBusy()) return;
+    const action = resolveInvoiceEditorExitAction({
+      hasInvoiceReturnContext: Boolean(invoiceReturnState),
+      hasUnsavedStorePrice: isStorePriceDirty(detail, initialDetail),
+      intent: "save-and-return",
+    });
+    // ref 在发起保存前同步锁定，覆盖 React 尚未刷新 saving 时的重复点击和系统返回。
+    invoiceExitSavingRef.current = true;
+    try {
+      if (action === "save-and-return" && !(await handleSaveAll())) return;
+      if (action === "return" || action === "save-and-return") performReturnToInvoices();
+    } finally {
+      invoiceExitSavingRef.current = false;
+    }
+  }, [allowInvoiceExit, detail, handleSaveAll, initialDetail, invoiceReturnState, isInvoiceExitBusy, performReturnToInvoices]);
 
   const storePrice = detail?.storePrice;
   const clearancePrice = detail?.clearancePrice;
@@ -3625,6 +3774,13 @@ function ProductQueryContent() {
   const discountedRetailGp = calcGpPercent(
     discountedRetailPrice,
     storePrice?.purchasePrice,
+  );
+  const hasCodeSection = Boolean(
+    detail &&
+      (detail.productType === 1 ||
+        detail.productType === 2 ||
+        detail.setCodeCount > 0 ||
+        detail.multiCodeCount > 0),
   );
   const renderCameraScanner = () => {
     if (!isFocused) {
@@ -3671,8 +3827,9 @@ function ProductQueryContent() {
       edges={["top", "left", "right"]}
     >
       <QueryHeader
-        storeName={selectedStore?.storeName}
+        storeName={selectedStore?.storeName || selectedStoreCode}
         canSelectStore={canSelectStore}
+        storeLocked={editorStoreScope.locked}
         onStorePress={() => {
           if (!isProductQueryBusy()) {
             setStorePickerVisible(true);
@@ -3782,30 +3939,60 @@ function ProductQueryContent() {
         ) : null}
         {invoiceReturnState ? (
           <View style={styles.returnBar}>
-            <Button
-              icon="arrow-left"
-              mode="contained-tonal"
-              onPress={handleReturnToInvoices}
-            >
+            <View style={styles.returnContext}>
+              <Text variant="labelLarge" style={styles.returnContextTitle}>
+                {t("actions.invoiceStoreLocked")}
+              </Text>
+              <Text variant="bodySmall" style={styles.returnContextMeta}>
+                {selectedStore?.storeName || selectedStoreCode || t("common:na")}
+              </Text>
+            </View>
+            <Button compact icon="arrow-left" mode="text" onPress={handleReturnToInvoices}>
               {t("actions.returnToInvoiceDetails")}
             </Button>
           </View>
         ) : null}
         {detail ? (
           <>
-            <View style={styles.firstScreenSection}>
-              <ProductHeroCard
-                imageUrl={detail.productImage}
-                productName={detail.productName}
-                itemNumber={detail.itemNumber}
-                supplierName={detail.localSupplierName}
-                supplierCode={detail.localSupplierCode}
-                barcode={detail.barcode}
-                productType={detail.productType}
-                grade={detail.grade}
-                onPressProductType={() => setProductTypeDialogVisible(true)}
-              />
+            <ProductHeroCard
+              imageUrl={detail.productImage}
+              productName={detail.productName}
+              itemNumber={detail.itemNumber}
+              supplierName={detail.localSupplierName}
+              supplierCode={detail.localSupplierCode}
+              barcode={detail.barcode}
+              productType={detail.productType}
+              grade={detail.grade}
+              onPressProductType={() => setProductTypeDialogVisible(true)}
+            />
 
+            {hasCodeSection ? (
+              <View accessibilityRole="tablist" style={styles.editorTabs}>
+                <Pressable
+                  accessibilityRole="tab"
+                  accessibilityState={{ selected: editorTab === "price" }}
+                  onPress={() => setEditorTab("price")}
+                  style={[styles.editorTab, editorTab === "price" ? styles.editorTabActive : null]}
+                >
+                  <Text style={[styles.editorTabText, editorTab === "price" ? styles.editorTabTextActive : null]}>
+                    {t("sections.priceAndLabels")}
+                  </Text>
+                </Pressable>
+                <Pressable
+                  accessibilityRole="tab"
+                  accessibilityState={{ selected: editorTab === "codes" }}
+                  onPress={() => setEditorTab("codes")}
+                  style={[styles.editorTab, editorTab === "codes" ? styles.editorTabActive : null]}
+                >
+                  <Text style={[styles.editorTabText, editorTab === "codes" ? styles.editorTabTextActive : null]}>
+                    {t("sections.codes")}
+                  </Text>
+                </Pressable>
+              </View>
+            ) : null}
+
+            {editorTab === "price" || !hasCodeSection ? (
+              <View style={styles.firstScreenSection}>
               <ProductPromotionCard items={activePromotions} />
 
               {storePrice ? (
@@ -3870,6 +4057,7 @@ function ProductQueryContent() {
                     ? undefined
                     : () => void handlePrint("bigDiscount")
                 }
+                onOpenSettings={() => setPrintSettingsVisible(true)}
               />
 
               <StoreClearancePriceCard
@@ -3883,15 +4071,13 @@ function ProductQueryContent() {
                     : () => void handlePrint("clearance")
                 }
               />
-            </View>
+              </View>
+            ) : null}
 
-            {detail.productType === 1 ||
-            detail.productType === 2 ||
-            detail.setCodeCount > 0 ||
-            detail.multiCodeCount > 0 ? (
+            {hasCodeSection && editorTab === "codes" ? (
               <View style={styles.secondarySection}>
                 <Text variant="titleSmall" style={styles.secondaryTitle}>
-                  {t("sections.moreInfo")}
+                  {t("sections.codes")}
                 </Text>
                 {detail.productType === 1 ||
                 (detail.productType !== 2 &&
@@ -3982,6 +4168,11 @@ function ProductQueryContent() {
         saving={saving}
         onReset={handleReset}
         onSaveAll={() => void handleSaveAll()}
+        onSaveAndReturn={
+          invoiceReturnState
+            ? () => void handleSaveAndReturnToInvoices()
+            : undefined
+        }
       />
 
       <LookupResultSheet
@@ -4040,6 +4231,29 @@ function ProductQueryContent() {
               onDismiss={closeCreateProductModal}
               onSubmit={() => void handleCreateProductSubmit()}
             />
+            <Modal
+              visible={discardReturnVisible}
+              onDismiss={handleCancelInvoiceExit}
+              contentContainerStyle={styles.discardReturnModal}
+            >
+              <Text variant="titleMedium" style={styles.discardReturnTitle}>
+                {t("actions.unsavedTitle")}
+              </Text>
+              <Text variant="bodyMedium" style={styles.discardReturnDescription}>
+                {t("actions.unsavedDescription")}
+              </Text>
+              <View style={styles.discardReturnActions}>
+                <Button onPress={handleCancelInvoiceExit}>
+                  {t("actions.continueEditing")}
+                </Button>
+                <Button
+                  mode="contained"
+                  onPress={handleDiscardInvoiceExit}
+                >
+                  {t("actions.discardAndReturn")}
+                </Button>
+              </View>
+            </Modal>
 
             {createSupplierPickerVisible ? (
               <CreateSupplierSheet
@@ -4523,8 +4737,29 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   returnBar: {
-    alignItems: "flex-start",
-    paddingTop: 8,
+    minHeight: 56,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#BFDBFE",
+    backgroundColor: "#EFF6FF",
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
+  returnContext: {
+    flex: 1,
+    minWidth: 0,
+    gap: 1,
+  },
+  returnContextTitle: {
+    color: "#0958D9",
+    fontWeight: "700",
+  },
+  returnContextMeta: {
+    color: "#475467",
   },
   createProductBar: {
     alignItems: "flex-start",
@@ -4564,7 +4799,33 @@ const styles = StyleSheet.create({
     opacity: 0,
   },
   firstScreenSection: {
-    gap: 6,
+    gap: 8,
+  },
+  editorTabs: {
+    flexDirection: "row",
+    minHeight: 44,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#D0D5DD",
+    backgroundColor: "#FFFFFF",
+  },
+  editorTab: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    borderBottomWidth: 3,
+    borderBottomColor: "transparent",
+  },
+  editorTabActive: {
+    borderBottomColor: "#1677FF",
+  },
+  editorTabText: {
+    color: "#475467",
+    fontSize: 15,
+    fontWeight: "600",
+  },
+  editorTabTextActive: {
+    color: "#0958D9",
+    fontWeight: "700",
   },
   secondarySection: {
     gap: 8,
@@ -4586,6 +4847,26 @@ const styles = StyleSheet.create({
   },
   emptyText: {
     color: "#555",
+  },
+  discardReturnModal: {
+    marginHorizontal: 18,
+    borderRadius: 16,
+    backgroundColor: "#FFFFFF",
+    padding: 18,
+    gap: 12,
+  },
+  discardReturnTitle: {
+    color: "#111827",
+    fontWeight: "700",
+  },
+  discardReturnDescription: {
+    color: "#475467",
+    lineHeight: 22,
+  },
+  discardReturnActions: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 8,
   },
   autoPricingModal: {
     marginHorizontal: 18,

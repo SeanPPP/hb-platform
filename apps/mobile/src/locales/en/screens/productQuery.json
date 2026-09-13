@@ -6,7 +6,13 @@
     "lastHit": "Last hit: {{value}}"
   },
   "actions": {
-    "returnToInvoiceDetails": "Back to invoice details"
+    "returnToInvoiceDetails": "Back to invoice details",
+    "saveAndReturnToInvoice": "Save and return to invoice",
+    "invoiceStoreLocked": "Invoice store locked",
+    "unsavedTitle": "Unsaved store price changes",
+    "unsavedDescription": "Leaving now will discard the current store price changes. Product type, clearance price, set codes, and multi-codes that were saved separately are kept.",
+    "continueEditing": "Continue editing",
+    "discardAndReturn": "Discard and leave"
   },
   "createProduct": {
     "action": "Create product",
@@ -95,6 +101,7 @@
     "codesLoadFailed": "Failed to load barcode list.",
     "saved": "Product information saved.",
     "saveFailed": "Save failed.",
+    "finishCurrentAction": "Saving or printing is in progress. Please wait before leaving.",
     "emptyStorePrice": "There is no store price record for this product.",
     "emptyPrompt": "Enter a barcode, item number, or product code to start.",
     "cameraTip": "Align the barcode with the center of the frame.",
@@ -137,7 +144,9 @@
     }
   },
   "sections": {
-    "moreInfo": "More details"
+    "moreInfo": "More details",
+    "priceAndLabels": "Price & labels",
+    "codes": "Set / multi codes"
   },
   "promotion": {
     "title": "Promotion",
@@ -249,6 +258,10 @@
     "product": "Regular label",
     "discount": "Discount label",
     "bigDiscount": "Large label",
+    "productShort": "Regular",
+    "discountShort": "Discount",
+    "bigDiscountShort": "Large",
+    "settingsAction": "Settings",
     "clearance": "Clearance label",
     "sendingShort": "Sending",
     "sending": "Sending...",

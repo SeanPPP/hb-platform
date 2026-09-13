@@ -1,10 +1,13 @@
 {
-  "title": "澳洲进货单",
-  "subtitle": "按分店、供应商、订单日期和单号查看本地供应商 invoice",
+  "title": "澳洲供应商发票",
+  "subtitle": "快速查看分店供应商发票与商品明细",
   "filters": {
     "storeCode": "分店",
     "supplierCode": "供应商",
     "invoiceNo": "单号",
+    "invoiceSearchPlaceholder": "搜索发票号",
+    "moreFilters": "更多筛选",
+    "allInboundStatuses": "全部",
     "orderDateRange": "订单日期",
     "dateFrom": "开始日期",
     "dateTo": "结束日期",
@@ -15,6 +18,8 @@
     "dateRangeTitle": "选择订单日期范围",
     "applyDateRange": "应用日期范围",
     "allStores": "全部分店",
+    "managedStores": "可管理分店",
+    "fixedStore": "设备绑定分店",
     "allSuppliers": "全部供应商",
     "storePickerTitle": "选择分店",
     "supplierPickerTitle": "选择供应商",
@@ -27,7 +32,8 @@
     "supplierNameAsc": "供应商 ↑",
     "allPriceChanges": "全部",
     "priceUp": "涨价",
-    "priceDown": "减价"
+    "priceDown": "减价",
+    "detailSearch": "搜索商品 / 条码"
   },
   "labels": {
     "orderDate": "订单时间",
@@ -39,6 +45,13 @@
     "priceIncrease": "涨价",
     "priceDecrease": "降价",
     "status": "状态",
+    "inboundStatus": "入库状态",
+    "inboundStatusValues": {
+      "notReceived": "未入库",
+      "partial": "部分入库",
+      "received": "已入库",
+      "unknown": "状态待确认"
+    },
     "detailPageSize": "明细每页",
     "itemNumber": "货号",
     "barcode": "条码",
@@ -46,6 +59,7 @@
     "purchasePrice": "进货价",
     "quantity": "数量",
     "detailsCount": "{{count}} 条明细",
+    "invoiceCount": "{{count}} 张发票",
     "noImage": "无图"
   },
   "actions": {
@@ -58,6 +72,7 @@
   "messages": {
     "empty": "没有找到进货单",
     "detailsEmpty": "这个单据没有明细",
+    "detailSearchEmpty": "当前页没有匹配的商品",
     "loadFailed": "加载进货单失败",
     "detailsLoadFailed": "加载明细失败",
     "suppliersLoading": "正在加载供应商",
