@@ -148,6 +148,84 @@ public class LocalPurchaseDashboardTests
         AssertUsesSargableDateFallback(query.Sql, "InboundDate");
     }
 
+    [Fact]
+    public void BuildDashboard_ShouldPushSupplierFilterDownAndKeepSalesUnfiltered()
+    {
+        var query = LocalPurchaseDashboardSqlBuilder.BuildDashboard(
+            "2026-07",
+            LocalPurchaseDashboardStoreScope.Restricted(new[] { "1001" }),
+            supplierFilterMode: "include",
+            supplierKeys: new[] { "LOCAL_SUPPLIER:false:ACME", "WAREHOUSE_ORDER:false:WAREHOUSE_ORDER" }
+        );
+
+        Assert.Contains("OPENJSON(@SupplierKeysJson)", query.Sql, StringComparison.Ordinal);
+        Assert.Contains("N'LOCAL_SUPPLIER' + N':'", query.Sql, StringComparison.Ordinal);
+        Assert.Contains("N'WAREHOUSE_ORDER' + N':'", query.Sql, StringComparison.Ordinal);
+        Assert.Contains("OPENJSON(@SupplierKeysJson)", LocalPurchaseDashboardSqlBuilder.BuildDashboard(
+            "2026-07", LocalPurchaseDashboardStoreScope.AllStores(), "include", Array.Empty<string>()).Sql);
+        Assert.Contains("SELECT * FROM SalesMonthly", query.Sql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("LOCAL_SUPPLIER:false:ACME", (string)query.Parameters.Single(p => p.ParameterName == "@SupplierKeysJson").Value);
+    }
+
+    [Fact]
+    public void BuildDashboard_ShouldUseExcludeModeWithoutConcatenatingKeys()
+    {
+        var query = LocalPurchaseDashboardSqlBuilder.BuildDashboard(
+            "2026-07", LocalPurchaseDashboardStoreScope.AllStores(), "exclude",
+            new[] { "LOCAL_SUPPLIER:false:ACME" });
+
+        Assert.Contains("NOT EXISTS", query.Sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("ACME", query.Sql, StringComparison.Ordinal);
+        Assert.Contains("LOCAL_SUPPLIER:false:ACME", (string)query.Parameters.Single(p => p.ParameterName == "@SupplierKeysJson").Value);
+    }
+
+    [Fact]
+    public void ValidateSupplierFilter_ShouldRejectInvalidModeSizeLengthAndUnknownKey()
+    {
+        var options = new[] { new LocalPurchaseDashboardSupplierOptionRow { SourceCode = "ACME", SourceType = "LOCAL_SUPPLIER" } };
+        Assert.Throws<ArgumentException>(() => LocalPurchaseDashboardSqlBuilder.ValidateSupplierFilter("other", Array.Empty<string>(), options));
+        Assert.Throws<ArgumentException>(() => LocalPurchaseDashboardSqlBuilder.ValidateSupplierFilter("include", Enumerable.Range(0, 2001).Select(i => i.ToString()).ToArray(), options));
+        Assert.Throws<ArgumentException>(() => LocalPurchaseDashboardSqlBuilder.ValidateSupplierFilter("include", new[] { new string('x', 257) }, options));
+        Assert.Throws<ArgumentException>(() => LocalPurchaseDashboardSqlBuilder.ValidateSupplierFilter("include", new[] { "LOCAL_SUPPLIER:false:MISSING" }, options));
+        Assert.Throws<ArgumentException>(() => LocalPurchaseDashboardSqlBuilder.ValidateSupplierFilter(null, new[] { "LOCAL_SUPPLIER:false:ACME" }, options));
+    }
+
+    [Fact]
+    public void ValidateSupplierFilterShape_ShouldRejectRawInputBeforeOptionsQuery()
+    {
+        Assert.Throws<ArgumentException>(() => LocalPurchaseDashboardSqlBuilder.ValidateSupplierFilterShape("include", Enumerable.Range(0, 2001).Select(i => i.ToString()).ToArray()));
+        Assert.Throws<ArgumentException>(() => LocalPurchaseDashboardSqlBuilder.ValidateSupplierFilterShape("include", new[] { " " + new string('x', 256) + " " }));
+        var oversized = Enumerable.Repeat(new string('x', 40), 2000).ToArray();
+        Assert.Throws<ArgumentException>(() => LocalPurchaseDashboardSqlBuilder.ValidateSupplierFilterShape("include", oversized));
+    }
+
+    [Fact]
+    public void BuildStoreSuppliers_ShouldUseSourceIdentityThatPreservesColonCodesAndCollisions()
+    {
+        var query = LocalPurchaseDashboardSqlBuilder.BuildStoreSuppliers(
+            "1001", "2026-07", LocalPurchaseDashboardStoreScope.AllStores(), "include",
+            new[] { "LOCAL_SUPPLIER:false:WAREHOUSE_ORDER", "LOCAL_SUPPLIER:false:ACME:WEST", "LOCAL_SUPPLIER:true:UNASSIGNED" }
+        );
+
+        Assert.Contains("CASE WHEN NULLIF(LTRIM(RTRIM(h.SupplierCode)), N'') IS NULL THEN N'true' ELSE N'false' END", query.Sql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("OPENJSON(@SupplierKeysJson)", query.Sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("SPLIT", query.Sql, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void BuildDashboard_ShouldReturnCompleteSupplierOptionsQueryWithinStoreScope()
+    {
+        var query = LocalPurchaseDashboardSqlBuilder.BuildDashboard(
+            "2026-07", LocalPurchaseDashboardStoreScope.Restricted(new[] { "1001", "1002" }), "include",
+            new[] { "LOCAL_SUPPLIER:false:ACME" }
+        );
+
+        Assert.Contains("SELECT SourceCode, SupplierCode, SupplierName, SourceType, IsUnassigned", query.OptionsSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("activeStore.IsActive", query.OptionsSql, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("@SupplierKey", query.OptionsSql, StringComparison.Ordinal);
+        Assert.Contains(query.OptionsParameters, p => p.ParameterName == "@StoreCode0");
+    }
+
     [Theory]
     [InlineData(typeof(ILocalPurchaseDashboardService), nameof(ILocalPurchaseDashboardService.GetDashboardAsync))]
     [InlineData(typeof(ILocalPurchaseDashboardService), nameof(ILocalPurchaseDashboardService.GetStoreSuppliersAsync))]
@@ -412,7 +490,7 @@ public class LocalPurchaseDashboardTests
     }
 
     [Fact]
-    public void ComposeStoreSuppliers_ShouldAlwaysIncludeZeroWarehouseRow()
+    public void ComposeStoreSuppliers_ShouldIncludeZeroWarehouseOnlyForEligibleSelectedStore()
     {
         var period = LocalPurchaseDashboardSqlBuilder.ResolvePeriod("2026-07");
         var rows = new List<LocalPurchaseDashboardSupplierMonthlyRow>
@@ -450,12 +528,23 @@ public class LocalPurchaseDashboardTests
         var emptyResult = LocalPurchaseDashboardComposer.ComposeStoreSuppliers(
             period,
             "1002",
-            Array.Empty<LocalPurchaseDashboardSupplierMonthlyRow>()
+            new[] { new LocalPurchaseDashboardSupplierMonthlyRow { StoreCode = "1002", StoreName = "Empty Store" } }
         );
         var emptyWarehouse = Assert.Single(emptyResult.Suppliers);
         Assert.Equal("WAREHOUSE_ORDER", emptyWarehouse.SourceType);
         Assert.Equal(0m, emptyResult.TotalAmount);
         Assert.Equal(12, emptyWarehouse.Months.Count);
+
+        var missingStore = LocalPurchaseDashboardComposer.ComposeStoreSuppliers(
+            period, "inactive", Array.Empty<LocalPurchaseDashboardSupplierMonthlyRow>());
+        Assert.Empty(missingStore.Suppliers);
+
+        var localOnly = LocalPurchaseDashboardComposer.ComposeStoreSuppliers(period, "1001", rows, includeWarehouse: false);
+        Assert.Equal("SUP-A", Assert.Single(localOnly.Suppliers).SourceCode);
+        Assert.Equal(25m, localOnly.TotalAmount);
+        var none = LocalPurchaseDashboardComposer.ComposeStoreSuppliers(period, "1002",
+            new[] { new LocalPurchaseDashboardSupplierMonthlyRow { StoreCode = "1002" } }, includeWarehouse: false);
+        Assert.Empty(none.Suppliers);
     }
 
     [Theory]

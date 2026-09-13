@@ -17,6 +17,7 @@ Object.defineProperty(Intl, 'NumberFormat', {
 
 const {
   buildRollingMonths,
+  buildPurchaseSupplierFilter,
   buildPurchaseMonthRows,
   createLatestRequestGuard,
   filterPurchaseStores,
@@ -26,10 +27,18 @@ const {
   getPurchaseStoreMonthAmount,
   getSupplierDetailScroll,
   getSupplierDisplayName,
+  invertPurchaseSelection,
+  normalizePurchaseSelection,
   resolvePurchaseReportViewState,
   sortPurchaseMonthsDescending,
   sortPurchaseSuppliers,
+  sumPurchaseStores,
 } = await import('./logic')
+
+assertDeepEqual(buildPurchaseSupplierFilter(['a', 'b', 'c'], ['a', 'b']), { mode: 'exclude', keys: ['c'] }, '接近全选时应发送较短的 exclude 集合')
+assertDeepEqual(buildPurchaseSupplierFilter(['a', 'b', 'c'], []), { mode: 'include', keys: [] }, '空选应发送显式 include 空集合')
+assertDeepEqual(buildPurchaseSupplierFilter(['a', 'b', 'c'], ['a']), { mode: 'include', keys: ['a'] }, '普通选择应发送较短的 include 集合')
+assertDeepEqual(buildPurchaseSupplierFilter(Array.from({ length: 200 }, (_, index) => String(index)), Array.from({ length: 199 }, (_, index) => String(index))), { mode: 'exclude', keys: ['199'] }, '大量选项应发送较短查询串')
 
 function assertEqual<T>(actual: T, expected: T, message: string) {
   if (actual !== expected) {
@@ -163,10 +172,24 @@ assertDeepEqual(
   '分店多选应保留已知编码并忽略未知编码',
 )
 assertDeepEqual(
-  filterPurchaseStores(stores, []).map((item) => item.storeCode),
+  filterPurchaseStores(stores, null).map((item) => item.storeCode),
   ['S001', 'S002'],
-  '清空分店多选应恢复全部分店',
+  '默认全选应展示全部可用分店',
 )
+assertDeepEqual(filterPurchaseStores(stores, []), [], '分店全部反选后应为空，不能恢复全部分店')
+const selectionKeys = ['WAREHOUSE_ORDER:false:WAREHOUSE_ORDER', 'LOCAL_SUPPLIER:false:UNASSIGNED', 'LOCAL_SUPPLIER:true:UNASSIGNED']
+assertDeepEqual(invertPurchaseSelection(selectionKeys, null), [], '全部来源反选应为空选')
+assertEqual(invertPurchaseSelection(selectionKeys, []), null, '空选反选应恢复全选')
+assertDeepEqual(invertPurchaseSelection(selectionKeys, [selectionKeys[1]]), [selectionKeys[0], selectionKeys[2]], '部分反选应保留仓库和未匹配来源的独立身份')
+assertDeepEqual(invertPurchaseSelection(selectionKeys, invertPurchaseSelection(selectionKeys, [selectionKeys[1]])), [selectionKeys[1]], '连续反选两次应恢复原选择')
+assertEqual(normalizePurchaseSelection(selectionKeys, [...selectionKeys].reverse()), null, '手动选满应归一为全部且不依赖顺序')
+assertDeepEqual(invertPurchaseSelection([], []), [], '空选项域反选应保持空选')
+const amountStores = [
+  { ...stores[0], warehouseAmount: 120, localSupplierAmount: 30, totalAmount: 150 },
+  { ...stores[1], warehouseAmount: 80, localSupplierAmount: 20, totalAmount: 100 },
+]
+assertDeepEqual(sumPurchaseStores(filterPurchaseStores(amountStores, ['S002'])), { warehouseAmount: 80, localSupplierAmount: 20, totalAmount: 100 }, '顶部合计只累计当前显示的分店')
+assertDeepEqual(sumPurchaseStores([]), { warehouseAmount: 0, localSupplierAmount: 0, totalAmount: 0 }, '分店空选后顶部三项金额归零')
 assertDeepEqual(
   getPurchaseStoreMonthAmount(stores[0], '2026-01'),
   { month: '2026-01', warehouseAmount: 120, localSupplierAmount: 30, totalAmount: 150, salesAmount: 0 },
