@@ -64,10 +64,11 @@ function createHarness(
 function startAuthorization(
   service: OperationAuthorizationService,
   actionId = "00000000-0000-4000-8000-000000000101",
+  action = "change-price",
 ): Promise<OperationAuthorizationResult<string>> {
   return service.authorizeAndRun(
     {
-      action: "change-price",
+      action,
       actionId,
       permissionCode: PERMISSION,
       screen: "PosTerminal",
@@ -139,6 +140,31 @@ test("仅在待授权时显示，中英双语且输入与按钮满足安全和�
   expect(screen.getByText("Requested action: change-price")).toBeTruthy();
   expect(screen.getByText("Keyboard")).toBeTruthy();
 
+  await act(async () => {
+    fireEvent.press(screen.getByTestId("operation-authorization-cancel"));
+    await Promise.resolve();
+  });
+  await expect(authorization).resolves.toEqual({
+    authorized: false,
+    reason: "CANCELLED",
+  });
+});
+
+test.each([
+  ["zh-CN", "payment-recovery-paid", "申请操作：人工确认刷卡已收款"],
+  ["zh-CN", "payment-recovery-unpaid", "申请操作：人工确认刷卡未扣款"],
+  ["zh-CN", "payment-recovery-uncertain", "申请操作：保留刷卡待核实状态"],
+  ["en-AU", "payment-recovery-paid", "Requested action: Manually confirm card payment received"],
+  ["en-AU", "payment-recovery-unpaid", "Requested action: Manually confirm no card payment"],
+  ["en-AU", "payment-recovery-uncertain", "Requested action: Keep card payment awaiting verification"],
+] as const)("支付恢复动作 %s / %s 显示本地化名称", async (locale, action, expected) => {
+  const { service } = createHarness();
+  const authorization = startAuthorization(service, undefined, action);
+  const screen = await render(
+    <OperationAuthorizationModal locale={locale} service={service} />,
+  );
+
+  expect(screen.getByText(expected)).toBeTruthy();
   await act(async () => {
     fireEvent.press(screen.getByTestId("operation-authorization-cancel"));
     await Promise.resolve();

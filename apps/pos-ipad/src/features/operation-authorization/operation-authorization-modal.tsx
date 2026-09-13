@@ -16,6 +16,7 @@ import {
 } from "react-native";
 
 import {
+  operationAuthorizationActionCopyKey,
   operationAuthorizationFailureCopyKey,
   operationAuthorizationText,
   resolveOperationAuthorizationLocale,
@@ -85,6 +86,11 @@ export function OperationAuthorizationModal({
   const awaiting = state.kind === "awaiting-supervisor";
   const verifying = awaiting && (state.verifying || submitting);
   const actionId = awaiting ? state.actionId : null;
+  const actionCopyKey = awaiting
+    ? operationAuthorizationActionCopyKey(state.action)
+    : null;
+  let actionLabel = "";
+  if (awaiting) actionLabel = actionCopyKey ? t(actionCopyKey) : state.action;
 
   const focusScanner = useCallback(() => {
     const timer = setTimeout(() => inputRef.current?.focus(), 0);
@@ -303,7 +309,7 @@ export function OperationAuthorizationModal({
           <Text style={styles.title}>{t("title")}</Text>
           <Text style={styles.description}>{t("description")}</Text>
           <Text numberOfLines={2} style={styles.requestedAction}>
-            {t("requestedAction", { action: state.action })}
+            {t("requestedAction", { action: actionLabel })}
           </Text>
 
           <Text style={styles.inputLabel}>{t("inputLabel")}</Text>
