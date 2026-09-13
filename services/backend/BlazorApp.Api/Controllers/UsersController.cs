@@ -51,7 +51,7 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _userService.GetUsersAsync(query);
-                return Ok(result);
+                return ToUserAccessActionResult(result);
             }
             catch (Exception ex)
             {
@@ -80,7 +80,7 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _userService.GetUsersOptimizedAsync(query);
-                return Ok(result);
+                return ToUserAccessActionResult(result);
             }
             catch (Exception ex)
             {
@@ -130,7 +130,7 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _userService.GetUserByGuidAsync(guid);
-                return Ok(result);
+                return ToUserAccessActionResult(result);
             }
             catch (Exception ex)
             {
@@ -155,7 +155,7 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _userService.GetUserLoginRecordsAsync(guid, query);
-                return Ok(result);
+                return ToUserAccessActionResult(result);
             }
             catch (Exception ex)
             {
@@ -180,7 +180,7 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _userService.GetUserByUsernameAsync(username);
-                return Ok(result);
+                return ToUserAccessActionResult(result);
             }
             catch (Exception ex)
             {
@@ -202,7 +202,7 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _userService.GetUserByEmailAsync(email);
-                return Ok(result);
+                return ToUserAccessActionResult(result);
             }
             catch (Exception ex)
             {
@@ -307,7 +307,7 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var result = await _userService.UpdateUserByGuidAsync(guid, dto);
-                return Ok(result);
+                return ToUserAccessActionResult(result);
             }
             catch (Exception ex)
             {
@@ -329,7 +329,7 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _userService.DeleteUserByGuidAsync(guid);
-                return Ok(result);
+                return ToUserAccessActionResult(result);
             }
             catch (Exception ex)
             {
@@ -354,7 +354,7 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _userService.UpdateUserStatusByGuidAsync(guid, dto.IsActive);
-                return Ok(result);
+                return ToUserAccessActionResult(result);
             }
             catch (Exception ex)
             {
@@ -386,7 +386,7 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 var result = await _userService.UpdateUserPasswordByGuidAsync(guid, dto);
-                return Ok(result);
+                return ToUserAccessActionResult(result);
             }
             catch (Exception ex)
             {
@@ -719,6 +719,7 @@ namespace BlazorApp.Api.Controllers
             return result.ErrorCode switch
             {
                 "SELF_ACCESS_MANAGEMENT_DENIED"
+                or "SELF_PROFILE_FIELDS_DENIED"
                 or "HIGH_PRIVILEGE_TARGET_DENIED"
                 or "USER_SCOPE_DENIED"
                 or "STORE_SCOPE_DENIED"
@@ -818,8 +819,24 @@ namespace BlazorApp.Api.Controllers
                     );
                 }
 
+                if (string.Equals(dto.Operation, "delete", StringComparison.OrdinalIgnoreCase))
+                {
+                    var actorGuid = ResolveCurrentUserGuid(User);
+                    var canDelete = await _roleService.UserHasPermissionAsync(
+                        actorGuid,
+                        Permissions.Users.Delete
+                    );
+                    if (canDelete.Data != true)
+                    {
+                        return StatusCode(
+                            StatusCodes.Status403Forbidden,
+                            ApiResponse<bool>.Error("无权批量删除用户", "FORBIDDEN")
+                        );
+                    }
+                }
+
                 var result = await _userService.BatchManageUsersAsync(dto);
-                return Ok(result);
+                return ToUserAccessActionResult(result);
             }
             catch (Exception ex)
             {
@@ -888,7 +905,7 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _userService.GetUserStatisticsAsync();
-                return Ok(result);
+                return ToUserAccessActionResult(result);
             }
             catch (Exception ex)
             {
@@ -960,7 +977,7 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _userService.ResetUserPasswordAsync(guid);
-                return Ok(result);
+                return ToUserAccessActionResult(result);
             }
             catch (Exception ex)
             {
@@ -982,7 +999,7 @@ namespace BlazorApp.Api.Controllers
             try
             {
                 var result = await _userService.LockUserAsync(guid, isLocked);
-                return Ok(result);
+                return ToUserAccessActionResult(result);
             }
             catch (Exception ex)
             {

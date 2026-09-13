@@ -5,6 +5,8 @@ export const IOS_REVIEW_EXCLUDED_ROUTE_NAMES = [
   "app-downloads",
   "wpf-versions",
   "employee-profile-review",
+  "user-admin",
+  "roles",
   "workbench",
 ] as const;
 

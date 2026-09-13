@@ -53,6 +53,8 @@
     "attendanceManagement": "Attendance Admin",
     "productQuery": "Products",
     "users": "Users",
+    "userAdmin": "User administration",
+    "roles": "Roles",
     "employeeProfile": "Employee",
     "employeeProfileReview": "Profile Review",
     "deviceManagement": "Devices",
