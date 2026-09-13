@@ -3734,7 +3734,7 @@ public sealed class SettingsViewModelTests
             return PendingBackendPair?.Task ?? Task.FromResult(LinklyCloudTerminalPairResult);
         }
 
-        public Task<LinklyCloudTerminalConnectionTestResponse> TestLinklyCloudBackendTerminalConnectionAsync(
+        public Task<LinklyCloudTerminalConnectionTestResponse> TestLinklyCloudBackendTerminalAsync(
             CardTerminalEnvironment environment,
             LinklyCloudTerminalSummary terminal,
             CancellationToken cancellationToken = default)
@@ -3745,25 +3745,7 @@ public sealed class SettingsViewModelTests
             {
                 return Task.FromException<LinklyCloudTerminalConnectionTestResponse>(exception);
             }
-            return Task.FromResult(LinklyCloudTerminalConnectionTestResult);
-        }
-
-        public Task<LinklyCloudTerminalConnectionTestResponse> TestLinklyCloudBackendTerminalAsync(
-            CardTerminalEnvironment environment,
-            LinklyCloudTerminalSummary terminal,
-            CancellationToken cancellationToken = default)
-        {
-            return PendingTerminalConnectionTest?.Task ?? Task.FromResult(
-                new LinklyCloudTerminalConnectionTestResponse(
-                    terminal.TerminalId,
-                    environment.ToString(),
-                    terminal.TerminalVersion ?? string.Empty,
-                    terminal.AssignedDeviceCode,
-                    terminal.AssignmentRevision,
-                    true,
-                    "connected",
-                    DateTimeOffset.UtcNow,
-                    "Connected"));
+            return PendingTerminalConnectionTest?.Task ?? Task.FromResult(LinklyCloudTerminalConnectionTestResult);
         }
 
         public Task<LinklyTerminalAssignmentResult> AssignLinklyCloudBackendTerminalAsync(

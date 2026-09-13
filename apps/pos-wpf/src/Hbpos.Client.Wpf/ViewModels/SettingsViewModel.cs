@@ -1097,14 +1097,20 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         }
 
         using var authorizationActivation = permissionGrant.Activate();
+        var environment = SelectedLinklyEnvironment;
         await RunBusyAsync(async () =>
         {
             try
             {
                 var selection = await _setupService.SelectLinklyCloudBackendTerminalAsync(
-                    SelectedLinklyEnvironment,
+                    environment,
                     terminal.TerminalId,
                     LinklyCloudSelectionRevision);
+                if (selection.TerminalId != terminal.TerminalId ||
+                    !string.Equals(selection.Environment, environment.ToString(), StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException("Linkly terminal selection response identity did not match the requested line.");
+                }
                 ApplyPersistedLinklyCloudSelection(selection.TerminalId, selection.Revision);
                 SetStatusOverride(string.Format(
                     System.Globalization.CultureInfo.CurrentCulture,
@@ -1814,12 +1820,17 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             LinklyCloudLines.Add(CreateLinklyCloudLine(terminal, directory.SelectedTerminalId, managementItem));
         }
 
+        var previousPersistedTerminalId = _persistedLinklyCloudTerminalId;
         _persistedLinklyCloudTerminalId = directory.SelectedTerminalId;
         LinklyCloudSelectionRevision = directory.SelectionRevision;
         SelectedLinklyCloudTerminal = directory.SelectedTerminalId is Guid selectedTerminalId
             ? LinklyCloudTerminals.FirstOrDefault(item => item.TerminalId == selectedTerminalId)
             // 服务端未持久选择时保持未选择，避免刷新多终端列表时隐式绑定 Lane 1。
             : null;
+        if (previousPersistedTerminalId != _persistedLinklyCloudTerminalId)
+        {
+            ResetLinklyConnectionTest();
+        }
         RaiseLinklyCloudTerminalProperties();
         OnPropertyChanged(nameof(LinklyCloudDevices));
         OnPropertyChanged(nameof(IsLinklyCloudLineManagementAvailable));
@@ -1890,6 +1901,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     private void ApplyPersistedLinklyCloudSelection(Guid terminalId, long revision)
     {
+        var paymentLineChanged = _persistedLinklyCloudTerminalId != terminalId;
         _persistedLinklyCloudTerminalId = terminalId;
         LinklyCloudSelectionRevision = revision;
         SelectedLinklyCloudTerminal = LinklyCloudTerminals.FirstOrDefault(item => item.TerminalId == terminalId)
@@ -1897,6 +1909,11 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         foreach (var line in LinklyCloudLines)
         {
             line.IsSelected = line.Terminal.TerminalId == terminalId;
+        }
+        if (paymentLineChanged)
+        {
+            // 连接成功只属于完成检测时的付款线路，切线后必须重新验证。
+            ResetLinklyConnectionTest();
         }
         RaiseLinklyCloudTerminalProperties();
     }
