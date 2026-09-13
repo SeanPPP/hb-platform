@@ -252,7 +252,7 @@ test("系统持续报告离线时，周期任务仍重新探测并识别后端�
         periodicProbe = () => handler();
       }
       return 1 as unknown as ReturnType<typeof setInterval>;
-    }) as typeof setInterval,
+    }) as unknown as typeof setInterval,
   );
   const fetchMock = jest.fn<() => Promise<{ ok: boolean }>>()
     .mockResolvedValueOnce({ ok: false })
