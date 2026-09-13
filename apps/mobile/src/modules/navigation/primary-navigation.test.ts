@@ -299,6 +299,8 @@ const sparseSections = buildWorkbenchSections([
   "warehouse",
   "reports",
   "users",
+  "user-admin",
+  "roles",
 ]);
 assert.deepEqual(
   sparseSections.map((section) => ({
@@ -309,7 +311,7 @@ assert.deepEqual(
     { key: "sales-product", itemRouteNames: ["orders"] },
     { key: "warehouse-purchase", itemRouteNames: ["warehouse"] },
     { key: "operations-reports", itemRouteNames: ["reports"] },
-    { key: "people-management", itemRouteNames: ["users"] },
+    { key: "people-management", itemRouteNames: ["users", "user-admin", "roles"] },
   ],
   "工作台仅按显式可见路由显示四类业务入口"
 );
@@ -352,7 +354,7 @@ const visibleSectionRoutes = sparseSections.flatMap((section) =>
 );
 assert.deepEqual(
   visibleSectionRoutes,
-  ["orders", "warehouse", "reports", "users"],
+  ["orders", "warehouse", "reports", "users", "user-admin", "roles"],
   "工作台不得从角色或默认配置推断未授权入口"
 );
 assert.deepEqual(
