@@ -2524,6 +2524,42 @@ public sealed class SettingsViewModelTests
         Assert.False(viewModel.LinklyConnectionSucceeded);
     }
 
+    [Theory]
+    [InlineData("connected", false, "Connected")]
+    [InlineData("unreachable", true, "Unable to connect")]
+    [InlineData("unknown", true, "The test did not complete. Check the network and terminal, then refresh and try again.")]
+    [InlineData("needs-repair", true, "This terminal needs to be paired again. Obtain a new 6-digit code and re-pair this line. If it still fails, ask an administrator to check its Cloud credentials.")]
+    public async Task CloudBackendAsync_line_test_maps_authoritative_status_to_safe_localized_message(
+        string status,
+        bool succeeded,
+        string expectedMessage)
+    {
+        var terminalId = Guid.NewGuid();
+        var terminal = new LinklyCloudTerminalSummary(
+            terminalId, 1, "Front", "Ready", false, true, null, null, "POS-1", 3, "v-3");
+        var pending = new TaskCompletionSource<LinklyCloudTerminalConnectionTestResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        pending.SetResult(new LinklyCloudTerminalConnectionTestResponse(
+            terminalId, "Production", "v-3", "POS-1", 3, succeeded, status,
+            DateTimeOffset.UtcNow, "unsafe server message"));
+        var service = new FakeCardTerminalSetupService(
+            CardTerminalConfiguration.Default with { LinklyConnectionMode = LinklyConnectionMode.CloudBackendAsync })
+        {
+            LinklyCloudTerminalDirectory = new LinklyCloudTerminalListResponse(
+                "Production", terminalId, 3, [terminal], "Active",
+                [new LinklyCloudAssignableDevice("POS-1", "WPF", true, terminalId, 3)]),
+            PendingTerminalConnectionTest = pending
+        };
+        var viewModel = new SettingsViewModel(service);
+        await viewModel.LoadAsync();
+
+        var item = Assert.Single(viewModel.LinklyCloudTerminalItems);
+        await viewModel.TestLinklyCloudTerminalCommand.ExecuteAsync(item);
+
+        Assert.Equal(expectedMessage, item.ConnectionStatus);
+        Assert.DoesNotContain("unsafe server message", item.ConnectionStatus, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task CloudBackendAsync_refresh_preserves_newer_local_line_test_for_unchanged_snapshot()
     {
