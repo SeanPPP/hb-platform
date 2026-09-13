@@ -405,4 +405,6 @@
   <data name="settings.linkly.cloudBackend.assignmentUnconfirmed" xml:space="preserve"><value>The write response was interrupted and the refreshed directory does not confirm the requested binding. Review the current owner before retrying.</value></data>
   <data name="settings.linkly.cloudBackend.assignmentReconcileFailed" xml:space="preserve"><value>The write result is unknown and the directory could not be refreshed. Check the current binding before trying again.</value></data>
   <data name="settings.linkly.cloudBackend.assignmentSnapshotChanged" xml:space="preserve"><value>The line directory changed before this operation started. Review the current owner and try again.</value></data>
+  <data name="settings.linkly.cloudBackend.selectionReconciled" xml:space="preserve"><value>The selection response was uncertain. The terminal directory was refreshed; review the current payment line before continuing.</value></data>
+  <data name="settings.linkly.cloudBackend.selectionReconcileFailed" xml:space="preserve"><value>The payment line is unknown because the selection response and directory refresh both failed. Refresh the terminal list before taking payment.</value></data>
 </root>

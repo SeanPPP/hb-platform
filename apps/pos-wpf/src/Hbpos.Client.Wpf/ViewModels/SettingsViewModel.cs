@@ -1117,12 +1117,22 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
                     T("settings.linkly.cloudBackend.selected"),
                     terminal.DisplayName));
             }
-            catch
+            catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
             {
-                // PUT 被拒绝、失权或网络失败时，UI 必须回到服务端已持久化的选择，
-                // 不能让收银员误以为下一笔付款会使用尚未保存的终端。
-                RestorePersistedLinklyCloudSelection();
-                throw;
+                ResetLinklyConnectionTest();
+                try
+                {
+                    // PUT 结果未知时不重放写入，只读一次权威目录决定实际付款线路。
+                    await RefreshLinklyCloudBackendTerminalsCoreAsync(environment);
+                    SetStatus("settings.linkly.cloudBackend.selectionReconciled");
+                }
+                catch (Exception refreshException) when (refreshException is not OutOfMemoryException and not StackOverflowException)
+                {
+                    RestorePersistedLinklyCloudSelection();
+                    SetStatus("settings.linkly.cloudBackend.selectionReconcileFailed");
+                    LogLinklyCloudSettings(
+                        $"select line reconciliation failed selectError={ex.GetType().Name} refreshError={refreshException.GetType().Name}");
+                }
             }
         }, operationName: "select linkly cloud terminal");
     }

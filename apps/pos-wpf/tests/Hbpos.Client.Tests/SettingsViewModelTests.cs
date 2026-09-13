@@ -2066,12 +2066,76 @@ public sealed class SettingsViewModelTests
         };
         using var model = new SettingsViewModel(service);
         await model.LoadAsync();
+        service.LinklyCloudTerminalDirectories.Enqueue(new(
+            "Production", target.TerminalId, 6, [selected, target]));
 
         await model.SelectLinklyCloudBackendTerminalAsync(target);
 
-        Assert.Equal(selected.TerminalId, model.SelectedLinklyCloudTerminal?.TerminalId);
-        Assert.Equal(4, model.LinklyCloudSelectionRevision);
+        Assert.Equal(target.TerminalId, model.SelectedLinklyCloudTerminal?.TerminalId);
+        Assert.Equal(6, model.LinklyCloudSelectionRevision);
+        Assert.Equal(1, service.BackendSelectionCallCount);
+        Assert.Equal(2, service.BackendDirectoryCallCount);
         Assert.False(model.SaveLinklyCommand.CanExecute(null));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Linkly_line_selection_transport_failure_reconciles_once_without_replaying_write(bool serverChanged)
+    {
+        var selected = new LinklyCloudTerminalSummary(Guid.NewGuid(), 1, "Front", "Ready", false, true, null, null);
+        var target = new LinklyCloudTerminalSummary(Guid.NewGuid(), 2, "Side", "Ready", false, true, null, null);
+        var service = new FakeCardTerminalSetupService(CardTerminalConfiguration.Default with
+            { LinklyConnectionMode = LinklyConnectionMode.CloudBackendAsync })
+        {
+            LinklyCloudTerminalDirectory = new("Production", selected.TerminalId, 4, [selected, target]),
+            LinklyCloudTerminalSelectionException = new HttpRequestException("response interrupted")
+        };
+        using var model = new SettingsViewModel(service);
+        await model.LoadAsync();
+        var authoritativeId = serverChanged ? target.TerminalId : selected.TerminalId;
+        service.LinklyCloudTerminalDirectories.Enqueue(new(
+            "Production", authoritativeId, 5, [selected, target]));
+
+        await model.SelectLinklyCloudBackendTerminalAsync(target);
+
+        Assert.Equal(authoritativeId, model.SelectedLinklyCloudTerminal?.TerminalId);
+        Assert.Equal(5, model.LinklyCloudSelectionRevision);
+        Assert.Equal(1, service.BackendSelectionCallCount);
+        Assert.Equal(2, service.BackendDirectoryCallCount);
+        Assert.Contains("refreshed", model.StatusMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Linkly_line_selection_and_reconciliation_failure_fail_closed()
+    {
+        var selected = new LinklyCloudTerminalSummary(
+            Guid.NewGuid(), 1, "Front", "Ready", false, true, null, null, "POS-1", 4, "v-4");
+        var target = new LinklyCloudTerminalSummary(
+            Guid.NewGuid(), 2, "Side", "Ready", false, true, null, null, "POS-2", 4, "v-4");
+        var service = new FakeCardTerminalSetupService(CardTerminalConfiguration.Default with
+            { LinklyConnectionMode = LinklyConnectionMode.CloudBackendAsync })
+        {
+            LinklyCloudTerminalDirectory = new("Production", selected.TerminalId, 4, [selected, target]),
+            LinklyCloudTerminalSelectionException = new HttpRequestException("response interrupted"),
+            LinklyCloudTerminalConnectionTestResult = new(
+                selected.TerminalId, "Production", "v-4", "POS-1", 4, true, "connected",
+                DateTimeOffset.UtcNow, "connected")
+        };
+        using var model = new SettingsViewModel(service);
+        await model.LoadAsync();
+        await model.LinklyCloudLines.Single(line => line.IsSelected).TestConnectionCommand.ExecuteAsync(null);
+        Assert.True(model.LinklyConnectionSucceeded);
+        service.LinklyCloudTerminalListExceptions.Enqueue(new HttpRequestException("directory unavailable"));
+
+        await model.SelectLinklyCloudBackendTerminalAsync(target);
+
+        Assert.False(model.LinklyConnectionSucceeded);
+        Assert.False(model.SaveLinklyCommand.CanExecute(null));
+        Assert.Equal(selected.TerminalId, model.SelectedLinklyCloudTerminal?.TerminalId);
+        Assert.Equal(1, service.BackendSelectionCallCount);
+        Assert.Equal(2, service.BackendDirectoryCallCount);
+        Assert.Contains("unknown", model.StatusMessage, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -3664,6 +3728,8 @@ public sealed class SettingsViewModelTests
 
         public long? LastBackendSelectionExpectedRevision { get; private set; }
 
+        public int BackendSelectionCallCount { get; private set; }
+
         public int BackendAssignmentCallCount { get; private set; }
 
         public Exception? LinklyCloudTerminalSelectionException { get; set; }
@@ -3707,6 +3773,7 @@ public sealed class SettingsViewModelTests
             long? expectedRevision,
             CancellationToken cancellationToken = default)
         {
+            BackendSelectionCallCount++;
             LastBackendSelectionTerminalId = terminalId;
             LastBackendSelectionExpectedRevision = expectedRevision;
             if (LinklyCloudTerminalSelectionException is { } exception)

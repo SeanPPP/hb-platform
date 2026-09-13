@@ -405,4 +405,6 @@
   <data name="settings.linkly.cloudBackend.assignmentUnconfirmed" xml:space="preserve"><value>写入响应中断，刷新后的目录未确认目标绑定。重试前请核对当前归属。</value></data>
   <data name="settings.linkly.cloudBackend.assignmentReconcileFailed" xml:space="preserve"><value>写入结果未知，且无法刷新线路目录。重试前请先核对当前绑定。</value></data>
   <data name="settings.linkly.cloudBackend.assignmentSnapshotChanged" xml:space="preserve"><value>操作开始前线路目录已变化，请核对当前归属后重试。</value></data>
+  <data name="settings.linkly.cloudBackend.selectionReconciled" xml:space="preserve"><value>终端选择响应不确定，已刷新权威目录。继续前请核对当前付款线路。</value></data>
+  <data name="settings.linkly.cloudBackend.selectionReconcileFailed" xml:space="preserve"><value>终端选择响应和目录刷新均失败，当前付款线路未知。收款前请刷新终端列表。</value></data>
 </root>

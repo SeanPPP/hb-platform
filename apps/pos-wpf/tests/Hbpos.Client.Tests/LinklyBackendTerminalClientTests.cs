@@ -291,6 +291,60 @@ public sealed class LinklyBackendTerminalClientTests
         Assert.Equal(8, result.Revision);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task SelectTerminalAsync_rejects_mismatched_identity_and_clears_payment_cache(bool wrongEnvironment)
+    {
+        var cachedId = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        var requestedId = Guid.Parse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+        HttpRequestMessage? logonRequest = null;
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            if (request.Method == HttpMethod.Get)
+            {
+                return JsonResponse(JsonSerializer.Serialize(new
+                {
+                    success = true,
+                    data = new LinklyCloudTerminalListResponse(
+                        "Sandbox", cachedId, 7,
+                        [new LinklyCloudTerminalSummary(cachedId, 1, "Front", "Ready", false, true, null, null)],
+                        "Active")
+                }));
+            }
+            if (request.Method == HttpMethod.Put)
+            {
+                return JsonResponse(JsonSerializer.Serialize(new
+                {
+                    success = true,
+                    data = new LinklyCloudTerminalSelectionResponse(
+                        wrongEnvironment ? "Production" : "Sandbox",
+                        wrongEnvironment ? requestedId : Guid.NewGuid(),
+                        8)
+                }));
+            }
+
+            logonRequest = CloneRequestWithBody(request);
+            return JsonResponse(JsonSerializer.Serialize(new
+            {
+                success = true,
+                data = new LinklyCloudBackendLogonTestResponse(
+                    "Sandbox", "S01", "POS-1", "test", DateTimeOffset.UtcNow,
+                    200, true, "00", "APPROVED", null, null, null, "connected")
+            }));
+        }, passHealthRequestsToHandler: true);
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+        await client.GetTerminalsAsync(CardTerminalEnvironment.Sandbox);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => client.SelectTerminalAsync(
+            CardTerminalEnvironment.Sandbox, requestedId, expectedRevision: 7));
+        await client.TestConnectionAsync(CardTerminalEnvironment.Sandbox);
+
+        Assert.NotNull(logonRequest);
+        Assert.DoesNotContain("terminalId=", logonRequest.RequestUri!.Query, StringComparison.Ordinal);
+        Assert.DoesNotContain("selectionRevision=", logonRequest.RequestUri.Query, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task PairTerminalAsync_posts_only_environment_and_pair_code()
     {
