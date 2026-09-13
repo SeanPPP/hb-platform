@@ -2219,7 +2219,7 @@ public sealed class SettingsViewModelTests
         await viewModel.RefreshLinklyCloudBackendTerminalsAsync();
 
         var serverRefreshed = Assert.Single(viewModel.LinklyCloudTerminalItems);
-        Assert.Equal("Healthy", serverRefreshed.ConnectionStatus);
+        Assert.Equal("Connected", serverRefreshed.ConnectionStatus);
         Assert.Equal(newerServerCheckedAt, serverRefreshed.LastTestedAt);
         Assert.False(viewModel.LinklyConnectionSucceeded);
     }
