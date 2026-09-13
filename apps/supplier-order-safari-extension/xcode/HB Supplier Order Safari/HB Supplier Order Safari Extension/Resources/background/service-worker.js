@@ -766,6 +766,40 @@
     if (!res.success) return { ok: false, error: res.message || res.errorCode || "\u70ED\u9500\u6392\u884C\u83B7\u53D6\u5931\u8D25" };
     return { ok: true, data: res.data, apiOrigin: await getApiOrigin() };
   }
+  async function handleSupplierProductStoreSales(message) {
+    const {
+      supplierCode,
+      productCode,
+      days,
+      startDate,
+      endDate,
+      totalSalesQuantity,
+      snapshotVersion
+    } = message || {};
+    if (!supplierCode || !productCode || !startDate || !endDate || !snapshotVersion || !Number.isFinite(Number(totalSalesQuantity))) {
+      return { ok: false, error: "\u6392\u884C\u699C\u5546\u54C1\u5FEB\u7167\u4E0D\u5B8C\u6574\uFF0C\u8BF7\u5237\u65B0\u6392\u884C\u699C\u540E\u91CD\u8BD5" };
+    }
+    const res = await apiRequest("/api/react/v1/browser-extension/supplier-product-store-sales", {
+      method: "POST",
+      body: JSON.stringify({
+        supplierCode,
+        productCode,
+        days: normalizeRankingDays(days),
+        startDate,
+        endDate,
+        expectedTotalSalesQuantity: Number(totalSalesQuantity),
+        snapshotVersion
+      })
+    });
+    if (!res.success) {
+      return {
+        ok: false,
+        error: res.message || res.errorCode || "\u5546\u54C1\u5206\u5E97\u9500\u91CF\u83B7\u53D6\u5931\u8D25",
+        errorCode: res.errorCode
+      };
+    }
+    return { ok: true, data: res.data, apiOrigin: await getApiOrigin() };
+  }
   async function handleActiveSupplier() {
     let tabs = [];
     try {
@@ -951,6 +985,8 @@
           return handleStores();
         case "SUPPLIER_TOP_SALES":
           return handleSupplierTopSales(message);
+        case "SUPPLIER_PRODUCT_STORE_SALES":
+          return handleSupplierProductStoreSales(message);
         case "ACTIVE_SUPPLIER":
           return handleActiveSupplier();
         case "REGISTER_ORIGIN":

@@ -1,5 +1,6 @@
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services.React;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -138,6 +139,82 @@ public sealed class ReactBrowserExtensionController : ControllerBase
                 StatusCodes.Status500InternalServerError,
                 ApiResponse<BrowserExtensionSupplierTopSalesDto>.Error(
                     "供应商热销排行查询失败。",
+                    "QUERY_ERROR"
+                )
+            );
+        }
+    }
+
+    [HttpPost("supplier-product-store-sales")]
+    [Authorize(Policy = Permissions.SalesDashboard.SalesDetailView)]
+    [BrowserExtensionInvalidRequestFilter]
+    public async Task<IActionResult> GetSupplierProductStoreSales(
+        [FromBody] BrowserExtensionSupplierProductStoreSalesRequestDto request
+    )
+    {
+        if (request == null)
+        {
+            return BadRequest(
+                ApiResponse<BrowserExtensionSupplierProductStoreSalesDto>.Error(
+                    "请求参数不能为空。",
+                    "INVALID_REQUEST"
+                )
+            );
+        }
+
+        // 详情与排行榜使用同一公司级门店范围，不受侧栏当前门店选择限制。
+        if (!await _accessService.CanAccessAsync(User))
+        {
+            return Forbid();
+        }
+
+        try
+        {
+            var data = await _service.GetSupplierProductStoreSalesAsync(request);
+            return Ok(
+                ApiResponse<BrowserExtensionSupplierProductStoreSalesDto>.OK(data, "查询成功")
+            );
+        }
+        catch (BrowserExtensionRankingSnapshotChangedException ex)
+        {
+            return Conflict(
+                ApiResponse<BrowserExtensionSupplierProductStoreSalesDto>.Error(
+                    ex.Message,
+                    "RANKING_SNAPSHOT_CHANGED"
+                )
+            );
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(
+                ApiResponse<BrowserExtensionSupplierProductStoreSalesDto>.Error(
+                    ex.Message,
+                    "INVALID_REQUEST"
+                )
+            );
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(
+                ApiResponse<BrowserExtensionSupplierProductStoreSalesDto>.Error(
+                    ex.Message,
+                    "NOT_FOUND"
+                )
+            );
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "浏览器订货助手商品分店销量查询失败 SupplierCode={SupplierCode} ProductCode={ProductCode} Days={Days}",
+                request.SupplierCode,
+                request.ProductCode,
+                request.Days
+            );
+            return StatusCode(
+                StatusCodes.Status500InternalServerError,
+                ApiResponse<BrowserExtensionSupplierProductStoreSalesDto>.Error(
+                    "商品分店销量查询失败。",
                     "QUERY_ERROR"
                 )
             );
