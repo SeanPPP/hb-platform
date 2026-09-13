@@ -259,6 +259,46 @@ test('Top 30% 支持供应商切换、服务端分页、每页条数和旧 TOP 1
   assert.ok(sidepanel.includes("placeholder.value = ''"));
 });
 
+test('总排行榜销量可进入同周期分店明细并返回原滚动位置', () => {
+  const html = read('src/sidepanel/sidepanel.html');
+  const sidepanel = read('src/sidepanel/sidepanel.js');
+  const worker = read('src/background/service-worker.js');
+  const dto = read('../../services/backend/BlazorApp.Shared/DTOs/BrowserExtensionDtos.cs');
+
+  for (const id of [
+    'storeSalesSection',
+    'storeSalesBackBtn',
+    'storeSalesProduct',
+    'storeSalesTotal',
+    'storeSalesSearch',
+    'storeSalesList',
+    'storeSalesRetryBtn',
+    'storeSalesFooter',
+  ]) {
+    assert.ok(html.includes(`id="${id}"`), `分店销量区缺少 ${id}`);
+  }
+  assert.ok(sidepanel.includes("sales.className = 'ranking-sales ranking-sales-button'"));
+  assert.ok(sidepanel.includes("type: 'SUPPLIER_PRODUCT_STORE_SALES'"));
+  assert.ok(sidepanel.includes('startDate: selection.startDate'));
+  assert.ok(sidepanel.includes('endDate: selection.endDate'));
+  assert.ok(sidepanel.includes('snapshotVersion: selection.snapshotVersion'));
+  assert.ok(sidepanel.includes('totalSalesQuantity: selection.totalSalesQuantity'));
+  assert.ok(sidepanel.includes('normalizeStoreSalesResponse'));
+  assert.ok(sidepanel.includes('filterStoreSales'));
+  assert.ok(sidepanel.includes("sales.dataset.productCode = item.productCode"));
+  assert.ok(sidepanel.includes('focusRankingSalesButton'));
+  assert.ok(sidepanel.includes("el('storeSalesBackBtn').focus()"));
+  assert.ok(sidepanel.includes('rankingScrollTop = globalThis.scrollY'));
+  assert.ok(sidepanel.includes("globalThis.scrollTo({ top: scrollTop, behavior: 'auto' })"));
+  assert.ok(worker.includes("case 'SUPPLIER_PRODUCT_STORE_SALES':"));
+  assert.ok(worker.includes("'/api/react/v1/browser-extension/supplier-product-store-sales'"));
+  assert.ok(worker.includes('expectedTotalSalesQuantity: Number(totalSalesQuantity)'));
+  assert.ok(worker.includes('snapshotVersion'));
+  assert.ok(dto.includes('BrowserExtensionSupplierProductStoreSalesDto'));
+  assert.ok(dto.includes('ExpectedTotalSalesQuantity'));
+  assert.ok(dto.includes('SnapshotVersion'));
+});
+
 test('供应商商品摘要携带并隔离 60/90 天销量排名周期', () => {
   const list = read('src/content/list.js');
   const worker = read('src/background/service-worker.js');

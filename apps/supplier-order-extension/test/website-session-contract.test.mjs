@@ -86,6 +86,7 @@ test('所有受保护业务请求在短期 token 缺失时先执行 single-fligh
     'handlePurchaseCycles',
     'handleStores',
     'handleSupplierTopSales',
+    'handleSupplierProductStoreSales',
   ]) {
     const start = worker.indexOf(`async function ${handler}`);
     const end = worker.indexOf('\n}', start);
