@@ -66,6 +66,7 @@
     "quantity": "Qty",
     "detailsCount": "{{count}} items",
     "detailSummary": "{{count}} items · {{up}} up · {{down}} down",
+    "priceChangeSummary": "↑{{up}} · ↓{{down}}",
     "subtotal": "Subtotal",
     "invoiceCount": "{{count}} invoices",
     "noImage": "No image"

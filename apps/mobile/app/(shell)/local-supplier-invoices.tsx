@@ -1613,25 +1613,15 @@ export default function LocalSupplierInvoicesScreen() {
               />
             </View>
 
-            <View style={styles.detailStoreBanner}>
-              <View style={styles.detailStoreIcon}><Icon source="storefront-outline" size={20} color="#1677FF" /></View>
-              <View style={styles.detailStoreTextWrap}>
-                <Text variant="bodyMedium" style={styles.detailStoreName} numberOfLines={1}>
-                  {selectedInvoice?.storeName || selectedInvoice?.storeCode || "--"}
-                </Text>
-                <Text variant="labelSmall" style={styles.detailStoreCaption}>{t("labels.storeCaption")}</Text>
-              </View>
-            </View>
-
-            <View style={styles.detailInvoiceSummary}>
+            <View style={styles.detailInvoiceCard}>
               <View style={styles.detailInvoiceHeadingRow}>
+                <View style={styles.detailStoreIcon}><Icon source="storefront-outline" size={20} color="#1677FF" /></View>
                 <View style={styles.detailInvoiceIdentity}>
-                  <Text variant="headlineSmall" style={styles.detailSupplierName} numberOfLines={1}>
+                  <Text variant="titleMedium" style={styles.detailSupplierName} numberOfLines={1}>
                     {selectedInvoice?.supplierName || selectedInvoice?.supplierCode || "--"}
                   </Text>
-                  <Text variant="bodyMedium" style={styles.detailInvoiceNumber}>{selectedInvoice?.invoiceNo || "--"}</Text>
-                  <Text variant="bodySmall" style={styles.detailContextText}>
-                    {t("labels.orderDate")} {formatDate(selectedInvoice?.orderDate)}
+                  <Text variant="bodySmall" style={styles.detailContextText} numberOfLines={1}>
+                    {selectedInvoice?.invoiceNo || "--"} · {selectedInvoice?.storeName || selectedInvoice?.storeCode || "--"}
                   </Text>
                 </View>
                 <View style={[
@@ -1649,39 +1639,80 @@ export default function LocalSupplierInvoicesScreen() {
                 </View>
               </View>
 
-              <Pressable
-                accessibilityRole="button"
-                accessibilityState={{ expanded: invoiceInfoExpanded }}
-                onPress={() => setInvoiceInfoExpanded((current) => !current)}
-                style={styles.detailInfoToggle}
-              >
-                <Text variant="bodySmall" style={styles.detailInfoToggleText}>{t("labels.invoiceInfo")}</Text>
-                <Text style={styles.detailInfoChevron}>{invoiceInfoExpanded ? "⌃" : "⌄"}</Text>
-              </Pressable>
+              <View style={styles.detailInvoiceMetaRow}>
+                <Text variant="bodySmall" style={styles.detailContextText} numberOfLines={1}>
+                  {t("labels.orderDate")} {formatDate(selectedInvoice?.orderDate)}
+                </Text>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ expanded: invoiceInfoExpanded }}
+                  onPress={() => setInvoiceInfoExpanded((current) => !current)}
+                  style={styles.detailInfoToggle}
+                >
+                  <Text variant="bodySmall" style={styles.detailInfoToggleText}>{t("labels.invoiceInfo")}</Text>
+                  <Text style={styles.detailInfoChevron}>{invoiceInfoExpanded ? "⌃" : "⌄"}</Text>
+                </Pressable>
+              </View>
               {invoiceInfoExpanded ? (
-                <View style={styles.detailInfoPanel}>
+                <ScrollView
+                  contentContainerStyle={styles.detailInfoPanelContent}
+                  nestedScrollEnabled
+                  showsVerticalScrollIndicator
+                  style={styles.detailInfoPanel}
+                >
                   <Text variant="bodySmall" style={styles.detailInfoText}>{t("labels.inboundDate")}: {formatDate(selectedInvoice?.inboundDate)}</Text>
                   <Text variant="bodySmall" style={styles.detailInfoText}>{t("labels.remarks")}: {selectedInvoice?.remarks || "--"}</Text>
-                </View>
+                </ScrollView>
               ) : null}
 
               <View style={styles.detailAmountGrid}>
                 <View style={styles.detailAmountCell}>
                   <Text variant="labelSmall" style={styles.detailMetricLabel}>{t("labels.invoiceAmount")}</Text>
-                  <Text variant="titleLarge" style={styles.detailAmountValue}>{formatMoney(selectedInvoice?.totalAmount)}</Text>
+                  <Text
+                    adjustsFontSizeToFit
+                    minimumFontScale={0.72}
+                    numberOfLines={1}
+                    variant="titleMedium"
+                    style={styles.detailAmountValue}
+                  >
+                    {formatMoney(selectedInvoice?.totalAmount)}
+                  </Text>
                 </View>
                 <View style={styles.detailAmountCell}>
                   <Text variant="labelSmall" style={styles.detailMetricLabel}>{t("labels.receivedAmount")}</Text>
-                  <Text variant="titleLarge" style={styles.detailAmountValue}>{formatMoney(selectedInvoice?.receivedTotalAmount)}</Text>
+                  <Text
+                    adjustsFontSizeToFit
+                    minimumFontScale={0.72}
+                    numberOfLines={1}
+                    variant="titleMedium"
+                    style={styles.detailAmountValue}
+                  >
+                    {formatMoney(selectedInvoice?.receivedTotalAmount)}
+                  </Text>
+                </View>
+                <View style={[styles.detailAmountCell, styles.detailAmountCellLast]}>
+                  <Text variant="labelSmall" style={styles.detailMetricLabel}>
+                    {t("labels.detailsCount", { count: detailCounts.all ?? "--" })}
+                  </Text>
+                  <Text
+                    accessibilityLabel={t("labels.detailSummary", {
+                      count: detailCounts.all ?? "--",
+                      up: detailCounts.up ?? "--",
+                      down: detailCounts.down ?? "--",
+                    })}
+                    adjustsFontSizeToFit
+                    minimumFontScale={0.72}
+                    numberOfLines={1}
+                    variant="bodyMedium"
+                    style={styles.detailCountValue}
+                  >
+                    {t("labels.priceChangeSummary", {
+                      up: detailCounts.up ?? "--",
+                      down: detailCounts.down ?? "--",
+                    })}
+                  </Text>
                 </View>
               </View>
-              <Text variant="bodySmall" style={styles.detailCountSummary}>
-                {t("labels.detailSummary", {
-                  count: detailCounts.all ?? "--",
-                  up: detailCounts.up ?? "--",
-                  down: detailCounts.down ?? "--",
-                })}
-              </Text>
             </View>
 
             <TextInput
@@ -2278,16 +2309,6 @@ const styles = StyleSheet.create({
     flex: 1,
     fontWeight: "700",
   },
-  detailStoreBanner: {
-    alignItems: "center",
-    backgroundColor: "#EEF6FF",
-    flexDirection: "row",
-    gap: 10,
-    marginHorizontal: 16,
-    marginTop: 8,
-    minHeight: 48,
-    paddingHorizontal: 12,
-  },
   detailStoreIcon: {
     alignItems: "center",
     backgroundColor: "#DCEEFF",
@@ -2296,39 +2317,52 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     width: 32,
   },
-  detailStoreTextWrap: { flex: 1, minWidth: 0 },
-  detailStoreName: { color: "#101828", fontWeight: "700" },
-  detailStoreCaption: { color: "#667085" },
-  detailInvoiceSummary: {
-    gap: 8,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-  },
-  detailInvoiceHeadingRow: {
-    alignItems: "flex-start",
-    flexDirection: "row",
-    gap: 12,
-    justifyContent: "space-between",
-  },
-  detailInvoiceIdentity: { flex: 1, gap: 1, minWidth: 0 },
-  detailSupplierName: {
-    color: "#101828",
-    fontWeight: "700",
-  },
-  detailInvoiceNumber: { color: "#475467", fontWeight: "600" },
-  detailContextText: { color: "#667085" },
-  detailInfoToggle: {
-    alignItems: "center",
+  detailInvoiceCard: {
+    backgroundColor: "#F8FBFF",
     borderBottomColor: "#EAECF0",
     borderBottomWidth: 1,
+    gap: 0,
+    paddingHorizontal: 16,
+    paddingTop: 6,
+  },
+  detailInvoiceHeadingRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 10,
+    justifyContent: "space-between",
+    minHeight: 44,
+  },
+  detailInvoiceIdentity: { flex: 1, gap: 0, minWidth: 0 },
+  detailSupplierName: {
+    color: "#101828",
+    fontSize: 19,
+    fontWeight: "700",
+    lineHeight: 23,
+  },
+  detailContextText: { color: "#667085" },
+  detailInvoiceMetaRow: {
+    alignItems: "center",
+    borderBottomColor: "#DCE5EF",
+    borderBottomWidth: 1,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    minHeight: 44,
+  },
+  detailInfoToggle: {
+    alignItems: "center",
     flexDirection: "row",
     justifyContent: "flex-end",
     minHeight: 44,
+    minWidth: 96,
+    paddingLeft: 12,
   },
   detailInfoToggleText: { color: "#1677FF", fontWeight: "700" },
   detailInfoChevron: { color: "#1677FF", fontSize: 18, marginLeft: 4 },
   detailInfoPanel: {
     backgroundColor: "#F8FAFC",
+    maxHeight: 112,
+  },
+  detailInfoPanelContent: {
     gap: 4,
     paddingHorizontal: 10,
     paddingVertical: 8,
@@ -2336,20 +2370,24 @@ const styles = StyleSheet.create({
   detailInfoText: { color: "#475467" },
   detailAmountGrid: {
     flexDirection: "row",
+    paddingVertical: 8,
   },
   detailAmountCell: {
-    borderRightColor: "#EAECF0",
+    borderRightColor: "#DCE5EF",
     borderRightWidth: 1,
     flex: 1,
-    gap: 2,
-    paddingHorizontal: 4,
+    gap: 0,
+    minWidth: 0,
+    paddingHorizontal: 8,
   },
-  detailAmountValue: { color: "#101828", fontWeight: "700" },
-  detailCountSummary: { color: "#667085" },
+  detailAmountCellLast: { borderRightWidth: 0 },
+  detailAmountValue: { color: "#101828", fontWeight: "700", lineHeight: 24 },
+  detailCountValue: { color: "#101828", fontWeight: "700", lineHeight: 24 },
   detailSearch: {
     backgroundColor: "#FFFFFF",
-    height: 46,
+    height: 44,
     marginHorizontal: 16,
+    marginTop: 6,
   },
   detailFilterTabs: {
     borderBottomColor: "#EAECF0",
