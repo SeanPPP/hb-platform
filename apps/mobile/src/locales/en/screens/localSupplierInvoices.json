@@ -1,10 +1,13 @@
 {
-  "title": "AU Invoices",
-  "subtitle": "View local supplier invoices by store, supplier, order date, and invoice number",
+  "title": "AU Supplier Invoices",
+  "subtitle": "Review supplier invoices and product details by store",
   "filters": {
     "storeCode": "Store",
     "supplierCode": "Supplier",
     "invoiceNo": "Invoice no.",
+    "invoiceSearchPlaceholder": "Search invoice number",
+    "moreFilters": "More filters",
+    "allInboundStatuses": "All",
     "orderDateRange": "Order date",
     "dateFrom": "From date",
     "dateTo": "To date",
@@ -15,6 +18,8 @@
     "dateRangeTitle": "Select order date range",
     "applyDateRange": "Apply date range",
     "allStores": "All stores",
+    "managedStores": "Managed stores",
+    "fixedStore": "Device store",
     "allSuppliers": "All suppliers",
     "storePickerTitle": "Select store",
     "supplierPickerTitle": "Select supplier",
@@ -27,7 +32,8 @@
     "supplierNameAsc": "Supplier ↑",
     "allPriceChanges": "All",
     "priceUp": "Price up",
-    "priceDown": "Price down"
+    "priceDown": "Price down",
+    "detailSearch": "Search product / barcode"
   },
   "labels": {
     "orderDate": "Order date",
@@ -39,6 +45,13 @@
     "priceIncrease": "Price up",
     "priceDecrease": "Price down",
     "status": "Status",
+    "inboundStatus": "Inbound status",
+    "inboundStatusValues": {
+      "notReceived": "Not received",
+      "partial": "Partially received",
+      "received": "Received",
+      "unknown": "Status pending"
+    },
     "detailPageSize": "Detail page size",
     "itemNumber": "Item",
     "barcode": "Barcode",
@@ -46,6 +59,7 @@
     "purchasePrice": "Purchase",
     "quantity": "Qty",
     "detailsCount": "{{count}} items",
+    "invoiceCount": "{{count}} invoices",
     "noImage": "No image"
   },
   "actions": {
@@ -58,6 +72,7 @@
   "messages": {
     "empty": "No invoices found",
     "detailsEmpty": "This invoice has no details",
+    "detailSearchEmpty": "No matching products on this page",
     "loadFailed": "Failed to load invoices",
     "detailsLoadFailed": "Failed to load details",
     "suppliersLoading": "Loading suppliers",

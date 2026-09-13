@@ -27,6 +27,7 @@ import {
   buildLocalSupplierInvoicesReturnParams,
   decodeLocalSupplierInvoicesReturnParams,
 } from "@/modules/local-supplier-invoices/navigation";
+import { getInvoiceInboundStatusLabel } from "@/modules/local-supplier-invoices/types";
 import {
   clearInvoiceDateRange,
   formatInvoiceDateRangeDisplay,
@@ -55,6 +56,12 @@ type SupplierOption = { supplierCode: string; supplierName: string };
 type CalendarCell = { date: Date; dateString: string; isCurrentMonth: boolean };
 type EntityTagTone = "store" | "supplier" | "neutral";
 type DetailPriceChange = "up" | "down" | null;
+type InvoiceReturnState = NonNullable<ReturnType<typeof decodeLocalSupplierInvoicesReturnParams>>;
+type PendingInvoiceRestore = InvoiceReturnState & {
+  listRequestKey: string;
+  minimumListRequestId: number;
+};
+type CompletedListRequest = { id: number; key: string };
 
 const LIST_PAGE_SIZES: InvoiceListPageSize[] = [20, 50, 100];
 const DETAIL_PAGE_SIZES: InvoiceDetailPageSize[] = [50, 100, 200];
@@ -139,6 +146,31 @@ function EntityTag({
 
 function getPageCount(total: number, pageSize: number) {
   return Math.max(1, Math.ceil(total / pageSize));
+}
+
+function buildInvoiceListRequestKey({
+  filters,
+  page,
+  pageSize,
+  sort,
+}: {
+  filters: InvoiceGridFilters;
+  page: number;
+  pageSize: InvoiceListPageSize;
+  sort: InvoiceGridSort;
+}) {
+  return JSON.stringify([
+    page,
+    pageSize,
+    filters.storeCode ?? "",
+    filters.supplierCode ?? "",
+    filters.invoiceNo ?? "",
+    filters.inboundStatus ?? "",
+    filters.orderDateFrom ?? "",
+    filters.orderDateTo ?? "",
+    sort.colId,
+    sort.direction,
+  ]);
 }
 
 function pad2(value: number) {
@@ -329,18 +361,23 @@ export default function LocalSupplierInvoicesScreen() {
     stores,
     selectedStoreCode,
     isDeviceMode,
+    isStoreSelectionReady,
     isLoading: storesLoading,
   } = useStores();
   const searchParams = useLocalSearchParams<{
     source?: string | string[];
     returnInvoiceGuid?: string | string[];
+    returnDetailGuid?: string | string[];
     returnDetailsPage?: string | string[];
     returnDetailsPageSize?: string | string[];
+    returnDetailPriceChangeFilter?: string | string[];
+    returnDetailSearch?: string | string[];
     returnListPage?: string | string[];
     returnListPageSize?: string | string[];
     returnFilterStoreCode?: string | string[];
     returnFilterSupplierCode?: string | string[];
     returnFilterInvoiceNo?: string | string[];
+    returnFilterInboundStatus?: string | string[];
     returnFilterOrderDateFrom?: string | string[];
     returnFilterOrderDateTo?: string | string[];
     returnSortColId?: string | string[];
@@ -350,6 +387,7 @@ export default function LocalSupplierInvoicesScreen() {
   const [filters, setFilters] = useState<InvoiceGridFilters>({});
   const [sort, setSort] = useState<InvoiceGridSort>({ colId: "OrderDate", direction: "desc" });
   const [sortMenuVisible, setSortMenuVisible] = useState(false);
+  const [filtersExpanded, setFiltersExpanded] = useState(false);
   const [storePickerVisible, setStorePickerVisible] = useState(false);
   const [supplierPickerVisible, setSupplierPickerVisible] = useState(false);
   const [dateRangeModalVisible, setDateRangeModalVisible] = useState(false);
@@ -371,19 +409,50 @@ export default function LocalSupplierInvoicesScreen() {
   const [detailsPageSize, setDetailsPageSize] = useState<InvoiceDetailPageSize>(50);
   const [detailPriceChangeFilter, setDetailPriceChangeFilter] =
     useState<InvoiceDetailPriceChangeFilter>("all");
+  const [detailSearch, setDetailSearch] = useState("");
+  const [detailSearchQuery, setDetailSearchQuery] = useState("");
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [snackbar, setSnackbar] = useState("");
-  const pendingRestoreRef = useRef<ReturnType<typeof decodeLocalSupplierInvoicesReturnParams>>(null);
+  const [initialStoreScopeReady, setInitialStoreScopeReady] = useState(false);
+  const pendingRestoreRef = useRef<PendingInvoiceRestore | null>(null);
   const handledRestoreKeyRef = useRef<string | null>(null);
+  const initialStoreScopeAppliedRef = useRef(false);
   const suppliersLoadingRef = useRef(false);
+  const listRequestIdRef = useRef(0);
+  const detailRequestIdRef = useRef(0);
+  const [completedListRequest, setCompletedListRequest] = useState<CompletedListRequest | null>(null);
+  const pendingDetailAnchorRef = useRef<string | null>(null);
+  const detailListScrollRef = useRef<ScrollView>(null);
   const deviceBoundStoreCode = getDeviceBoundStoreCode({ isDeviceMode, selectedStoreCode });
 
   const restoreState = useMemo(
-    () => decodeLocalSupplierInvoicesReturnParams(searchParams),
+    () => decodeLocalSupplierInvoicesReturnParams({
+      source: searchParams.source,
+      returnInvoiceGuid: searchParams.returnInvoiceGuid,
+      returnDetailGuid: searchParams.returnDetailGuid,
+      returnDetailsPage: searchParams.returnDetailsPage,
+      returnDetailsPageSize: searchParams.returnDetailsPageSize,
+      returnDetailPriceChangeFilter: searchParams.returnDetailPriceChangeFilter,
+      returnDetailSearch: searchParams.returnDetailSearch,
+      returnListPage: searchParams.returnListPage,
+      returnListPageSize: searchParams.returnListPageSize,
+      returnFilterStoreCode: searchParams.returnFilterStoreCode,
+      returnFilterSupplierCode: searchParams.returnFilterSupplierCode,
+      returnFilterInvoiceNo: searchParams.returnFilterInvoiceNo,
+      returnFilterInboundStatus: searchParams.returnFilterInboundStatus,
+      returnFilterOrderDateFrom: searchParams.returnFilterOrderDateFrom,
+      returnFilterOrderDateTo: searchParams.returnFilterOrderDateTo,
+      returnSortColId: searchParams.returnSortColId,
+      returnSortDirection: searchParams.returnSortDirection,
+    }),
     [
       searchParams.returnDetailsPage,
       searchParams.returnDetailsPageSize,
+      searchParams.returnDetailGuid,
+      searchParams.returnDetailPriceChangeFilter,
+      searchParams.returnDetailSearch,
       searchParams.returnFilterInvoiceNo,
+      searchParams.returnFilterInboundStatus,
       searchParams.returnFilterOrderDateFrom,
       searchParams.returnFilterOrderDateTo,
       searchParams.returnFilterStoreCode,
@@ -409,6 +478,10 @@ export default function LocalSupplierInvoicesScreen() {
   const selectedStore = useMemo(
     () => stores.find((store) => store.storeCode === (draftFilters.storeCode ?? "")) ?? null,
     [draftFilters.storeCode, stores]
+  );
+  const appliedStore = useMemo(
+    () => stores.find((store) => store.storeCode === (filters.storeCode ?? "")) ?? null,
+    [filters.storeCode, stores]
   );
   const selectedSupplier = useMemo(
     () =>
@@ -460,9 +533,20 @@ export default function LocalSupplierInvoicesScreen() {
 
   const loadInvoices = useCallback(
     async (refresh = false) => {
-      if (isDeviceMode && !selectedStoreCode) {
+      const requestId = ++listRequestIdRef.current;
+      if (!initialStoreScopeReady || !isStoreSelectionReady || (isDeviceMode && !selectedStoreCode)) {
+        setLoading(false);
+        setRefreshing(false);
         return;
       }
+
+      const requestFilters = bindDeviceStore(filters);
+      const requestKey = buildInvoiceListRequestKey({
+        filters: requestFilters,
+        page,
+        pageSize,
+        sort,
+      });
 
       if (refresh) {
         setRefreshing(true);
@@ -470,39 +554,58 @@ export default function LocalSupplierInvoicesScreen() {
         setLoading(true);
       }
       try {
-        const result = await fetchInvoices({ page, pageSize, filters: bindDeviceStore(filters), sort });
+        const result = await fetchInvoices({ page, pageSize, filters: requestFilters, sort });
+        if (requestId !== listRequestIdRef.current) {
+          return;
+        }
         setItems(result.items);
         setTotal(result.total);
+        setCompletedListRequest({ id: requestId, key: requestKey });
       } catch (error) {
-        setSnackbar(getErrorMessage(error, "messages.loadFailed"));
+        if (requestId === listRequestIdRef.current) {
+          setSnackbar(getErrorMessage(error, "messages.loadFailed"));
+        }
       } finally {
-        setLoading(false);
-        setRefreshing(false);
+        if (requestId === listRequestIdRef.current) {
+          setLoading(false);
+          setRefreshing(false);
+        }
       }
     },
-    [bindDeviceStore, filters, getErrorMessage, isDeviceMode, page, pageSize, selectedStoreCode, sort]
+    [bindDeviceStore, filters, getErrorMessage, initialStoreScopeReady, isDeviceMode, isStoreSelectionReady, page, pageSize, selectedStoreCode, sort]
   );
 
   const loadDetails = useCallback(async () => {
-    if (!selectedInvoice?.invoiceGuid) {
+    const requestId = ++detailRequestIdRef.current;
+    const invoiceGuid = selectedInvoice?.invoiceGuid;
+    if (!invoiceGuid) {
+      setDetailsLoading(false);
       return;
     }
 
     setDetailsLoading(true);
     try {
-      const result = await fetchInvoiceDetailsGrid(selectedInvoice.invoiceGuid, {
+      const result = await fetchInvoiceDetailsGrid(invoiceGuid, {
         page: detailsPage,
         pageSize: detailsPageSize,
         priceChange: detailPriceChangeFilter,
+        keyword: detailSearchQuery,
       });
+      if (requestId !== detailRequestIdRef.current) {
+        return;
+      }
       setDetails(result.items);
       setDetailsTotal(result.total);
     } catch (error) {
-      setSnackbar(getErrorMessage(error, "messages.detailsLoadFailed"));
+      if (requestId === detailRequestIdRef.current) {
+        setSnackbar(getErrorMessage(error, "messages.detailsLoadFailed"));
+      }
     } finally {
-      setDetailsLoading(false);
+      if (requestId === detailRequestIdRef.current) {
+        setDetailsLoading(false);
+      }
     }
-  }, [detailPriceChangeFilter, detailsPage, detailsPageSize, getErrorMessage, selectedInvoice?.invoiceGuid]);
+  }, [detailPriceChangeFilter, detailSearchQuery, detailsPage, detailsPageSize, getErrorMessage, selectedInvoice?.invoiceGuid]);
 
   const loadSuppliers = useCallback(async () => {
     if (suppliersLoadingRef.current) {
@@ -540,6 +643,18 @@ export default function LocalSupplierInvoicesScreen() {
   }, [loadDetails]);
 
   useEffect(() => {
+    const nextQuery = detailSearch.trim();
+    if (nextQuery === detailSearchQuery) {
+      return;
+    }
+    const timeout = setTimeout(() => {
+      setDetailsPage(1);
+      setDetailSearchQuery(nextQuery);
+    }, 350);
+    return () => clearTimeout(timeout);
+  }, [detailSearch, detailSearchQuery]);
+
+  useEffect(() => {
     if (!restoreState) {
       return;
     }
@@ -547,8 +662,11 @@ export default function LocalSupplierInvoicesScreen() {
     const restoreKey = JSON.stringify(
       buildLocalSupplierInvoicesReturnParams({
         returnInvoiceGuid: restoreState.returnInvoiceGuid,
+        returnDetailGuid: restoreState.returnDetailGuid,
         returnDetailsPage: restoreState.returnDetailsPage,
         returnDetailsPageSize: restoreState.returnDetailsPageSize,
+        returnDetailPriceChangeFilter: restoreState.returnDetailPriceChangeFilter,
+        returnDetailSearch: restoreState.returnDetailSearch,
         returnListPage: restoreState.returnListPage,
         returnListPageSize: restoreState.returnListPageSize,
         filters: restoreState.filters,
@@ -562,21 +680,58 @@ export default function LocalSupplierInvoicesScreen() {
 
     handledRestoreKeyRef.current = restoreKey;
     const restoredFilters = bindDeviceStore(restoreState.filters);
+    const listRequestKey = buildInvoiceListRequestKey({
+      filters: restoredFilters,
+      page: restoreState.returnListPage,
+      pageSize: restoreState.returnListPageSize,
+      sort: restoreState.sort,
+    });
     pendingRestoreRef.current = {
       ...restoreState,
       filters: restoredFilters,
+      listRequestKey,
+      minimumListRequestId: listRequestIdRef.current + 1,
     };
     setDraftFilters(restoredFilters);
     setFilters(restoredFilters);
     setSort(restoreState.sort);
     setPageSize(restoreState.returnListPageSize);
     setPage(restoreState.returnListPage);
+    detailRequestIdRef.current += 1;
     setSelectedInvoice(null);
     setDetails([]);
     setDetailsTotal(0);
     setDetailsPage(restoreState.returnDetailsPage);
     setDetailsPageSize(restoreState.returnDetailsPageSize);
+    setDetailPriceChangeFilter(restoreState.returnDetailPriceChangeFilter);
+    setDetailSearch(restoreState.returnDetailSearch);
+    setDetailSearchQuery(restoreState.returnDetailSearch);
+    pendingDetailAnchorRef.current = restoreState.returnDetailGuid ?? null;
+    initialStoreScopeAppliedRef.current = true;
+    setInitialStoreScopeReady(true);
   }, [bindDeviceStore, restoreState]);
+
+  useEffect(() => {
+    if (
+      initialStoreScopeAppliedRef.current ||
+      !isStoreSelectionReady ||
+      restoreState ||
+      isDeviceMode
+    ) {
+      return;
+    }
+
+    const initialStoreCode = selectedStoreCode && stores.some(
+      (store) => store.storeCode === selectedStoreCode,
+    )
+      ? selectedStoreCode
+      : undefined;
+    const initialFilters = initialStoreCode ? { storeCode: initialStoreCode } : {};
+    setDraftFilters(initialFilters);
+    setFilters(initialFilters);
+    initialStoreScopeAppliedRef.current = true;
+    setInitialStoreScopeReady(true);
+  }, [isDeviceMode, isStoreSelectionReady, restoreState, selectedStoreCode, stores]);
 
   useEffect(() => {
     if (!deviceBoundStoreCode) {
@@ -593,13 +748,17 @@ export default function LocalSupplierInvoicesScreen() {
         ? current
         : { ...current, storeCode: deviceBoundStoreCode }
     );
+    initialStoreScopeAppliedRef.current = true;
+    setInitialStoreScopeReady(true);
   }, [deviceBoundStoreCode]);
 
   useEffect(() => {
     const pendingRestore = pendingRestoreRef.current;
     if (
       !pendingRestore
-      || loading
+      || !completedListRequest
+      || completedListRequest.id < pendingRestore.minimumListRequestId
+      || completedListRequest.key !== pendingRestore.listRequestKey
       || page !== pendingRestore.returnListPage
       || pageSize !== pendingRestore.returnListPageSize
       || JSON.stringify(filters) !== JSON.stringify(pendingRestore.filters)
@@ -616,14 +775,20 @@ export default function LocalSupplierInvoicesScreen() {
       return;
     }
 
-    setDetailPriceChangeFilter("all");
     setSelectedInvoice(matchedInvoice);
-  }, [filters, items, loading, page, pageSize, sort, t]);
+  }, [completedListRequest, filters, items, page, pageSize, sort, t]);
 
   const applyFilters = useCallback(() => {
     setPage(1);
     setFilters(bindDeviceStore(draftFilters));
   }, [bindDeviceStore, draftFilters]);
+
+  const applyInboundStatus = useCallback((inboundStatus?: 0 | 1 | 2) => {
+    const nextFilters = bindDeviceStore({ ...filters, inboundStatus });
+    setDraftFilters((current) => ({ ...current, inboundStatus }));
+    setFilters(nextFilters);
+    setPage(1);
+  }, [bindDeviceStore, filters]);
 
   const clearFilters = useCallback(() => {
     const emptyFilters = bindDeviceStore({});
@@ -633,12 +798,22 @@ export default function LocalSupplierInvoicesScreen() {
   }, [bindDeviceStore]);
 
   const openDetails = useCallback((invoice: LocalSupplierInvoice) => {
+    detailRequestIdRef.current += 1;
     setSelectedInvoice(invoice);
     setDetails([]);
     setDetailsTotal(0);
     setDetailsPage(1);
     setDetailsPageSize(50);
     setDetailPriceChangeFilter("all");
+    setDetailSearch("");
+    setDetailSearchQuery("");
+    pendingDetailAnchorRef.current = null;
+  }, []);
+
+  const closeDetails = useCallback(() => {
+    detailRequestIdRef.current += 1;
+    setDetailsLoading(false);
+    setSelectedInvoice(null);
   }, []);
 
   const copyValue = useCallback(
@@ -674,8 +849,11 @@ export default function LocalSupplierInvoicesScreen() {
             storeCode: detail.storeCode || selectedInvoice?.storeCode || "",
             ...buildLocalSupplierInvoicesReturnParams({
               returnInvoiceGuid: detail.invoiceGuid || selectedInvoice?.invoiceGuid || "",
+              returnDetailGuid: detail.detailGuid,
               returnDetailsPage: detailsPage,
               returnDetailsPageSize: detailsPageSize,
+              returnDetailPriceChangeFilter: detailPriceChangeFilter,
+              returnDetailSearch: detailSearchQuery,
               returnListPage: page,
               returnListPageSize: pageSize,
               filters,
@@ -684,6 +862,7 @@ export default function LocalSupplierInvoicesScreen() {
           },
         } as Parameters<typeof router.push>[0];
 
+        detailRequestIdRef.current += 1;
         setSelectedInvoice(null);
 
         const navigate = () => {
@@ -699,7 +878,7 @@ export default function LocalSupplierInvoicesScreen() {
         setSnackbar(getErrorMessage(error, "messages.productOpenFailed"));
       }
     },
-    [detailsPage, detailsPageSize, filters, getErrorMessage, page, pageSize, router, selectedInvoice?.invoiceGuid, selectedInvoice?.storeCode, sort, t]
+    [detailPriceChangeFilter, detailSearchQuery, detailsPage, detailsPageSize, filters, getErrorMessage, page, pageSize, router, selectedInvoice?.invoiceGuid, selectedInvoice?.storeCode, sort, t]
   );
 
   const openSupplierPicker = useCallback(() => {
@@ -820,11 +999,74 @@ export default function LocalSupplierInvoicesScreen() {
           <Text variant="bodyMedium" style={styles.subtitle}>
             {t("subtitle")}
           </Text>
+          <View style={styles.scopeBar}>
+            <IconButton icon="store-outline" size={18} style={styles.scopeIcon} />
+            <Text variant="labelLarge" style={styles.scopeText}>
+              {filters.storeCode
+                ? appliedStore?.storeName || filters.storeCode
+                : t("filters.allStores")}
+            </Text>
+            <Text variant="bodySmall" style={styles.scopeHint}>
+              {isDeviceMode ? t("filters.fixedStore") : t("filters.managedStores")}
+            </Text>
+          </View>
         </View>
 
-        <View style={styles.filterPanel}>
+        <View style={styles.quickSearchRow}>
+          <TextInput
+            dense
+            mode="outlined"
+            placeholder={t("filters.invoiceSearchPlaceholder")}
+            value={draftFilters.invoiceNo ?? ""}
+            onChangeText={(value) => setDraftFilters((current) => ({ ...current, invoiceNo: value }))}
+            onSubmitEditing={applyFilters}
+            left={<TextInput.Icon icon="magnify" />}
+            right={<TextInput.Icon icon="arrow-right" onPress={applyFilters} />}
+            style={styles.quickSearchInput}
+          />
+          <IconButton
+            accessibilityLabel={t("filters.moreFilters")}
+            icon={filtersExpanded ? "filter-minus-outline" : "filter-variant"}
+            mode={filtersExpanded ? "contained" : "outlined"}
+            selected={filtersExpanded}
+            onPress={() => setFiltersExpanded((visible) => !visible)}
+            style={styles.quickFilterButton}
+          />
+        </View>
+
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.inboundTabs}
+        >
+          {([
+            { value: undefined, label: t("filters.allInboundStatuses") },
+            { value: 0 as const, label: t("labels.inboundStatusValues.notReceived") },
+            { value: 1 as const, label: t("labels.inboundStatusValues.partial") },
+            { value: 2 as const, label: t("labels.inboundStatusValues.received") },
+          ]).map((option) => {
+            const selected = filters.inboundStatus === option.value;
+            return (
+              <Button
+                key={option.value ?? "all"}
+                compact
+                mode={selected ? "contained" : "text"}
+                onPress={() => applyInboundStatus(option.value)}
+                style={styles.inboundTab}
+              >
+                {option.label}
+              </Button>
+            );
+          })}
+        </ScrollView>
+
+        {filtersExpanded ? <View style={styles.filterPanel}>
           <View style={styles.filterGrid}>
-            <Pressable onPress={() => setStorePickerVisible(true)} style={styles.filterInput}>
+            <Pressable
+              disabled={Boolean(deviceBoundStoreCode)}
+              onPress={() => setStorePickerVisible(true)}
+              style={[styles.filterInput, deviceBoundStoreCode ? styles.disabledField : null]}
+            >
               <Surface style={styles.pickerField} elevation={0}>
                 <View style={styles.pickerFieldText}>
                   <Text variant="labelMedium" style={styles.pickerFieldLabel}>
@@ -864,14 +1106,6 @@ export default function LocalSupplierInvoicesScreen() {
                 )}
               </Surface>
             </Pressable>
-            <TextInput
-              dense
-              label={t("filters.invoiceNo")}
-              mode="outlined"
-              value={draftFilters.invoiceNo ?? ""}
-              onChangeText={(value) => setDraftFilters((current) => ({ ...current, invoiceNo: value }))}
-              style={styles.filterInput}
-            />
             <Pressable onPress={openDateRangeModal} style={styles.filterInput}>
               <Surface style={styles.pickerField} elevation={0}>
                 <View style={styles.pickerFieldText}>
@@ -933,7 +1167,16 @@ export default function LocalSupplierInvoicesScreen() {
               {t("common:actions.clear")}
             </Button>
           </View>
-        </View>
+        </View> : null}
+
+        {!loading && items.length ? (
+          <View style={styles.listSummary}>
+            <Text variant="labelLarge" style={styles.listSummaryText}>
+              {t("labels.invoiceCount", { count: total })}
+            </Text>
+            <Text variant="bodySmall" style={styles.listSummaryCurrency}>AUD</Text>
+          </View>
+        ) : null}
 
         {loading ? (
           <View style={styles.loadingBox}>
@@ -942,47 +1185,72 @@ export default function LocalSupplierInvoicesScreen() {
           </View>
         ) : items.length ? (
           <View style={styles.invoiceList}>
-            {items.map((invoice) => (
-              <Card key={invoice.invoiceGuid} mode="outlined" style={styles.invoiceCard}>
-                <Card.Title
-                  title={invoice.invoiceNo || invoice.invoiceGuid}
-                  right={(props) => (
-                    <IconButton
-                      {...props}
-                      accessibilityLabel={t("common:actions.viewDetail")}
-                      icon="chevron-right"
-                      onPress={() => openDetails(invoice)}
-                    />
-                  )}
-                />
-                <Card.Content style={styles.invoiceContent}>
-                  <View style={styles.entityTagRow}>
-                    <EntityTag label={invoice.storeName || invoice.storeCode || "--"} tone="store" />
-                    <EntityTag label={invoice.supplierName || invoice.supplierCode || "--"} tone="supplier" />
-                  </View>
-                  <View style={styles.invoiceMeta}>
-                    <Text variant="bodyMedium">{t("labels.orderDate")}: {formatDate(invoice.orderDate)}</Text>
-                    <Text variant="bodyMedium">{t("labels.amount")}: {formatMoney(invoice.totalAmount)}</Text>
-                    <Text variant="bodyMedium">{t("labels.receivedAmount")}: {formatMoney(invoice.receivedTotalAmount)}</Text>
-                    {invoice.priceIncreaseItemCount > 0 ? (
-                      <Text variant="bodyMedium" style={styles.priceIncreaseText}>
-                        {t("labels.priceIncreaseItemCount")}: {formatNumber(invoice.priceIncreaseItemCount)}
+            {items.map((invoice) => {
+              const inboundStatusLabel = getInvoiceInboundStatusLabel(invoice.inboundStatus);
+              return (
+              <Card key={invoice.invoiceGuid} mode="contained" style={styles.invoiceCard}>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`${invoice.supplierName || invoice.supplierCode}, ${invoice.invoiceNo}`}
+                  onPress={() => openDetails(invoice)}
+                  style={({ pressed }) => [styles.invoiceRow, pressed ? styles.invoiceRowPressed : null]}
+                >
+                  <View style={styles.invoiceRowMain}>
+                    <View style={styles.invoiceHeadingRow}>
+                      <Text variant="titleMedium" style={styles.invoiceSupplier} numberOfLines={1}>
+                        {invoice.supplierName || invoice.supplierCode || "--"}
                       </Text>
-                    ) : null}
-                    {invoice.priceDecreaseItemCount > 0 ? (
-                      <Text variant="bodyMedium" style={styles.priceDecreaseText}>
-                        {t("labels.priceDecreaseItemCount")}: {formatNumber(invoice.priceDecreaseItemCount)}
+                      <Text variant="titleMedium" style={styles.invoiceAmount}>
+                        {formatMoney(invoice.totalAmount)}
                       </Text>
-                    ) : null}
+                    </View>
+                    <View style={styles.invoiceIdentityRow}>
+                      <Text variant="bodyMedium" style={styles.invoiceNumber} numberOfLines={1}>
+                        {invoice.invoiceNo || invoice.invoiceGuid}
+                      </Text>
+                      <View style={[
+                        styles.inboundStatusBadge,
+                        inboundStatusLabel === "received" ? styles.inboundStatusBadgeSuccess : null,
+                        inboundStatusLabel === "partial" ? styles.inboundStatusBadgeWarning : null,
+                      ]}>
+                        <Text
+                          variant="labelSmall"
+                          style={[
+                            styles.inboundStatusBadgeText,
+                            inboundStatusLabel === "received" ? styles.inboundStatusBadgeTextSuccess : null,
+                            inboundStatusLabel === "partial" ? styles.inboundStatusBadgeTextWarning : null,
+                          ]}
+                        >
+                          {t(`labels.inboundStatusValues.${inboundStatusLabel}`)}
+                        </Text>
+                      </View>
+                    </View>
+                    <Text variant="bodySmall" style={styles.invoiceSecondaryMeta} numberOfLines={1}>
+                      {invoice.storeName || invoice.storeCode || "--"} · {formatDate(invoice.orderDate)}
+                    </Text>
+                    <View style={styles.invoiceFooterRow}>
+                      <Text variant="bodySmall" style={styles.invoiceSecondaryMeta}>
+                        {t("labels.receivedAmount")}: {formatMoney(invoice.receivedTotalAmount)}
+                      </Text>
+                      {invoice.priceIncreaseItemCount > 0 ? (
+                        <Text variant="labelMedium" style={styles.priceIncreaseText}>
+                          {t("labels.priceIncrease")}: {formatNumber(invoice.priceIncreaseItemCount)}
+                        </Text>
+                      ) : null}
+                      {invoice.priceDecreaseItemCount > 0 ? (
+                        <Text variant="labelMedium" style={styles.priceDecreaseText}>
+                          {t("labels.priceDecrease")}: {formatNumber(invoice.priceDecreaseItemCount)}
+                        </Text>
+                      ) : null}
+                    </View>
                   </View>
-                </Card.Content>
-                <Card.Actions>
-                  <Button compact mode="contained-tonal" onPress={() => openDetails(invoice)}>
-                    {t("common:actions.viewDetail")}
-                  </Button>
-                </Card.Actions>
+                  <View style={styles.invoiceChevron}>
+                    <Text style={styles.invoiceChevronText}>›</Text>
+                  </View>
+                </Pressable>
               </Card>
-            ))}
+              );
+            })}
           </View>
         ) : (
           <EmptyState
@@ -997,7 +1265,7 @@ export default function LocalSupplierInvoicesScreen() {
       <Portal>
         <Modal
           visible={Boolean(selectedInvoice)}
-          onDismiss={() => setSelectedInvoice(null)}
+          onDismiss={closeDetails}
           contentContainerStyle={styles.modal}
         >
           <View style={styles.modalHeader}>
@@ -1007,15 +1275,27 @@ export default function LocalSupplierInvoicesScreen() {
                 <EntityTag label={selectedInvoice?.storeName || selectedInvoice?.storeCode || "--"} tone="store" />
                 <EntityTag label={selectedInvoice?.supplierName || selectedInvoice?.supplierCode || "--"} tone="supplier" />
               </View>
+              <Text variant="bodySmall" style={styles.detailContextText}>
+                {t("labels.orderDate")}: {formatDate(selectedInvoice?.orderDate)} · {t("labels.inboundDate")}: {formatDate(selectedInvoice?.inboundDate)} · {t("labels.inboundStatus")}: {t(`labels.inboundStatusValues.${getInvoiceInboundStatusLabel(selectedInvoice?.inboundStatus)}`)}
+              </Text>
             </View>
             <IconButton
               accessibilityLabel={t("common:actions.close")}
               icon="close"
-              onPress={() => setSelectedInvoice(null)}
+              onPress={closeDetails}
             />
           </View>
 
           <View style={styles.detailToolbar}>
+            <TextInput
+              dense
+              mode="outlined"
+              label={t("filters.detailSearch")}
+              value={detailSearch}
+              onChangeText={setDetailSearch}
+              left={<TextInput.Icon icon="magnify" />}
+              style={styles.detailSearch}
+            />
             <PageSizeMenu
               label={t("labels.detailPageSize")}
               options={DETAIL_PAGE_SIZES}
@@ -1051,11 +1331,24 @@ export default function LocalSupplierInvoicesScreen() {
               <Text variant="bodyMedium">{t("common:loading")}</Text>
             </View>
           ) : details.length ? (
-            <ScrollView contentContainerStyle={styles.detailList}>
+            <ScrollView ref={detailListScrollRef} contentContainerStyle={styles.detailList}>
               {details.map((detail) => {
                 const priceChange = getDetailPriceChange(detail);
                 return (
-                  <View key={detail.detailGuid} style={styles.detailRow}>
+                  <View
+                    key={detail.detailGuid}
+                    style={styles.detailRow}
+                    onLayout={(event) => {
+                      if (pendingDetailAnchorRef.current !== detail.detailGuid) {
+                        return;
+                      }
+                      pendingDetailAnchorRef.current = null;
+                      detailListScrollRef.current?.scrollTo({
+                        y: Math.max(0, event.nativeEvent.layout.y - 8),
+                        animated: false,
+                      });
+                    }}
+                  >
                     {detail.productImage ? (
                       <Image source={{ uri: detail.productImage }} style={styles.productImage} />
                     ) : (
@@ -1113,7 +1406,9 @@ export default function LocalSupplierInvoicesScreen() {
               })}
             </ScrollView>
           ) : (
-            <EmptyState title={t("messages.detailsEmpty")} />
+            <EmptyState
+              title={detailSearchQuery ? t("messages.detailSearchEmpty") : t("messages.detailsEmpty")}
+            />
           )}
 
           {details.length ? renderPagination(detailsPage, detailsPageCount, setDetailsPage) : null}
@@ -1313,7 +1608,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#F4F6F8",
   },
   container: {
-    gap: 16,
+    gap: 10,
     padding: 16,
     paddingTop: 12,
     paddingBottom: 24,
@@ -1326,6 +1621,43 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     color: "#667085",
+  },
+  scopeBar: {
+    alignItems: "center",
+    backgroundColor: "#EAF2FF",
+    borderColor: "#B8D4FF",
+    borderRadius: 10,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 2,
+    minHeight: 42,
+    paddingRight: 10,
+  },
+  scopeIcon: { margin: 0 },
+  scopeText: { color: "#175CD3", flexShrink: 1 },
+  scopeHint: { color: "#667085", marginLeft: "auto" },
+  quickSearchRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  quickSearchInput: {
+    flex: 1,
+    backgroundColor: "#FFFFFF",
+  },
+  quickFilterButton: {
+    width: 48,
+    height: 48,
+    margin: 0,
+  },
+  inboundTabs: {
+    alignItems: "center",
+    gap: 4,
+    minHeight: 42,
+    paddingRight: 8,
+  },
+  inboundTab: {
+    borderRadius: 8,
   },
   filterPanel: {
     backgroundColor: "#FFFFFF",
@@ -1344,6 +1676,7 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     minWidth: 150,
   },
+  disabledField: { opacity: 0.8 },
   filterActions: {
     alignItems: "center",
     flexDirection: "row",
@@ -1383,12 +1716,104 @@ const styles = StyleSheet.create({
     padding: 28,
   },
   invoiceList: {
-    gap: 10,
+    gap: 1,
   },
   invoiceCard: {
     backgroundColor: "#FFFFFF",
-    borderRadius: 12,
-    borderColor: "#E4E7EC",
+    borderRadius: 0,
+  },
+  invoiceRow: {
+    minHeight: 126,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  invoiceRowPressed: {
+    backgroundColor: "#F2F4F7",
+  },
+  invoiceRowMain: {
+    flex: 1,
+    minWidth: 0,
+    gap: 5,
+  },
+  invoiceHeadingRow: {
+    flexDirection: "row",
+    alignItems: "baseline",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  invoiceSupplier: {
+    flex: 1,
+    minWidth: 0,
+    color: "#101828",
+    fontWeight: "700",
+  },
+  invoiceAmount: {
+    color: "#101828",
+    fontWeight: "800",
+  },
+  invoiceIdentityRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  invoiceNumber: {
+    flexShrink: 1,
+    color: "#475467",
+  },
+  inboundStatusBadge: {
+    borderRadius: 6,
+    backgroundColor: "#FFF1E8",
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+  },
+  inboundStatusBadgeSuccess: {
+    backgroundColor: "#E9F8EF",
+  },
+  inboundStatusBadgeWarning: {
+    backgroundColor: "#FFF8E1",
+  },
+  inboundStatusBadgeText: {
+    color: "#9A3412",
+    fontWeight: "700",
+  },
+  inboundStatusBadgeTextSuccess: {
+    color: "#067647",
+  },
+  inboundStatusBadgeTextWarning: {
+    color: "#B54708",
+  },
+  invoiceSecondaryMeta: {
+    color: "#667085",
+  },
+  invoiceFooterRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  invoiceChevron: {
+    width: 24,
+    alignItems: "flex-end",
+  },
+  invoiceChevronText: {
+    color: "#667085",
+    fontSize: 28,
+    lineHeight: 30,
+  },
+  listSummary: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 4,
+    paddingVertical: 2,
+  },
+  listSummaryText: {
+    color: "#475467",
+  },
+  listSummaryCurrency: {
+    color: "#667085",
   },
   invoiceContent: {
     gap: 8,
@@ -1404,6 +1829,7 @@ const styles = StyleSheet.create({
     color: "#027A48",
     fontWeight: "700",
   },
+  statusText: { color: "#475467" },
   entityTagRow: {
     alignItems: "center",
     flexDirection: "row",
@@ -1470,6 +1896,7 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingRight: 8,
   },
+  detailContextText: { color: "#667085", marginTop: 4 },
   detailToolbar: {
     alignItems: "center",
     flexDirection: "row",
@@ -1483,6 +1910,7 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     gap: 6,
   },
+  detailSearch: { flexGrow: 1, minWidth: 170 },
   detailList: {
     gap: 10,
     paddingBottom: 8,

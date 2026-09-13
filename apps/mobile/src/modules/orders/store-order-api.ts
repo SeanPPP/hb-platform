@@ -61,8 +61,15 @@ export async function submitStoreOrder(storeCode: string, remarks?: string): Pro
   return res.data;
 }
 
-export async function fetchOrderList(params: StoreOrderListRequestParams): Promise<StoreOrderListResult> {
-  const res = await apiClient.post("/react/v1/store-order/list", buildOrderListRequest(params));
+export async function fetchOrderList(
+  params: StoreOrderListRequestParams,
+  signal?: AbortSignal
+): Promise<StoreOrderListResult> {
+  const res = await apiClient.post(
+    "/react/v1/store-order/list",
+    buildOrderListRequest(params),
+    { signal }
+  );
   return assertSuccess(res.data as StoreOrderListResult, "Order list");
 }
 

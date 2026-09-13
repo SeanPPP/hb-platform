@@ -49,12 +49,13 @@ import {
   type StoreOrderListItem,
 } from "@/modules/orders/types";
 import { printProductLabelPayload } from "@/modules/printer/api";
+import type { Store } from "@/modules/shop/types";
 import { useStores } from "@/modules/shop/use-stores";
 
 const HISTORY_STATUS_VALUES: StoreOrderFlowStatus[] = [
   StoreOrderFlowStatus.Submitted,
-  StoreOrderFlowStatus.Completed,
   StoreOrderFlowStatus.Picking,
+  StoreOrderFlowStatus.Completed,
 ];
 const PAGE_SIZE = DEFAULT_ORDER_LIST_PAGE_SIZE;
 
@@ -516,7 +517,18 @@ export default function Orders() {
     })
   ), [language, t]);
   const localeTag = resolveLocaleTag(language);
-  const { stores, selectedStore, selectedStoreCode, selectStore, isLoading: storesLoading } = useStores();
+  const {
+    stores,
+    selectedStore,
+    selectedStoreCode,
+    selectStore,
+    isDeviceMode,
+    isStoreSelectionReady,
+    debugInfo: storesDebugInfo,
+    isLoading: storesLoading,
+  } = useStores();
+  const [allStoresSelected, setAllStoresSelected] = useState(false);
+  const [initializedOrderScopeKey, setInitializedOrderScopeKey] = useState<string | null>(null);
   const [selectedStatus, setSelectedStatus] = useState<"all" | StoreOrderFlowStatus>("all");
   const [pageNumber, setPageNumber] = useState(1);
   const [selectedOrderGuid, setSelectedOrderGuid] = useState<string | null>(null);
@@ -526,6 +538,40 @@ export default function Orders() {
   const [ordersRefreshing, setOrdersRefreshing] = useState(false);
   const [printingDetailGuid, setPrintingDetailGuid] = useState<string | null>(null);
   const [snackbar, setSnackbar] = useState("");
+  const [orderKeyword, setOrderKeyword] = useState("");
+  const [submittedOrderKeyword, setSubmittedOrderKeyword] = useState("");
+  const orderStoreScopeKey = useMemo(
+    () => [
+      isDeviceMode ? "device" : "account",
+      storesDebugInfo.userGuid,
+      stores.map((store) => store.storeCode).sort().join(","),
+    ].join(":"),
+    [isDeviceMode, stores, storesDebugInfo.userGuid]
+  );
+  const orderScopeReady = isStoreSelectionReady && initializedOrderScopeKey === orderStoreScopeKey;
+
+  useEffect(() => {
+    if (!isStoreSelectionReady || initializedOrderScopeKey === orderStoreScopeKey) {
+      return;
+    }
+    setAllStoresSelected(!isDeviceMode && !selectedStoreCode && stores.length > 0);
+    setInitializedOrderScopeKey(orderStoreScopeKey);
+  }, [initializedOrderScopeKey, isDeviceMode, isStoreSelectionReady, orderStoreScopeKey, selectedStoreCode, stores.length]);
+
+  useEffect(() => {
+    const timeout = setTimeout(() => {
+      setPageNumber(1);
+      setSubmittedOrderKeyword(orderKeyword.trim());
+    }, 350);
+    return () => clearTimeout(timeout);
+  }, [orderKeyword]);
+
+  const scopedStoreCodes = useMemo(
+    () => (allStoresSelected ? stores.map((store) => store.storeCode) : []),
+    [allStoresSelected, stores]
+  );
+  const scopedStoreKey = scopedStoreCodes.join(",");
+  const hasOrderScope = Boolean(selectedStoreCode) || scopedStoreCodes.length > 0;
 
   const statusLabel = useCallback(
     (status?: StoreOrderFlowStatus) => {
@@ -550,20 +596,39 @@ export default function Orders() {
     [selectedStatus]
   );
 
+  const handleSelectStatus = useCallback((status: "all" | StoreOrderFlowStatus) => {
+    setPageNumber(1);
+    setSelectedStatus(status);
+  }, []);
+
+  const handleSelectOrderStore = useCallback((store: Store) => {
+    setStorePickerVisible(false);
+    void selectStore(store)
+      .then(() => {
+        setPageNumber(1);
+        setAllStoresSelected(false);
+      })
+      .catch((error) => {
+        setSnackbar(getErrorMessage(error, "messages.storeSelectFailed"));
+      });
+  }, [getErrorMessage, selectStore]);
+
   useEffect(() => {
     setPageNumber(1);
-  }, [selectedStatus, selectedStoreCode]);
+  }, [selectedStatus, selectedStoreCode, scopedStoreKey]);
 
   const ordersQuery = useQuery({
-    queryKey: ["storeOrders", selectedStoreCode, statusList.join(","), pageNumber],
-    enabled: Boolean(selectedStoreCode),
-    queryFn: () =>
+    queryKey: ["storeOrders", storesDebugInfo.userGuid, allStoresSelected, selectedStoreCode, scopedStoreKey, statusList.join(","), submittedOrderKeyword, pageNumber],
+    enabled: isStoreSelectionReady && orderScopeReady && hasOrderScope,
+    queryFn: ({ signal }) =>
       fetchOrderList({
-        storeCode: selectedStoreCode ?? undefined,
+        storeCode: allStoresSelected ? undefined : selectedStoreCode ?? undefined,
+        storeCodes: allStoresSelected ? scopedStoreCodes : undefined,
         pageNumber,
         pageSize: PAGE_SIZE,
         statusList,
-      }),
+        keyword: submittedOrderKeyword || undefined,
+      }, signal),
   });
 
   const detailQuery = useQuery({
@@ -574,7 +639,7 @@ export default function Orders() {
 
   const refetchOrders = ordersQuery.refetch;
   const handleRefreshOrders = useCallback(async () => {
-    if (!selectedStoreCode) {
+    if (!hasOrderScope) {
       return;
     }
 
@@ -584,7 +649,7 @@ export default function Orders() {
     } finally {
       setOrdersRefreshing(false);
     }
-  }, [refetchOrders, selectedStoreCode]);
+  }, [hasOrderScope, refetchOrders]);
 
   const orderItems = ordersQuery.data?.items ?? [];
   const total = ordersQuery.data?.total ?? 0;
@@ -698,7 +763,54 @@ export default function Orders() {
         />
       </View>
 
-      {!selectedStoreCode && !storesLoading ? (
+      <Pressable
+        accessibilityRole="button"
+        style={styles.scopeBar}
+        onPress={() => setStorePickerVisible(true)}
+        disabled={isDeviceMode}
+      >
+        <View style={styles.scopeBarIcon}>
+          <Text style={styles.scopeBarIconText}>⌂</Text>
+        </View>
+        <View style={styles.scopeBarTextWrap}>
+          <Text variant="labelSmall" style={styles.scopeBarLabel}>{t("scopeLabel")}</Text>
+          <Text variant="bodyMedium" style={styles.scopeBarValue} numberOfLines={1}>
+            {allStoresSelected ? t("allManagedStores") : selectedStore?.storeName || t("selectStore")}
+          </Text>
+        </View>
+        <Text style={styles.scopeBarChevron}>›</Text>
+      </Pressable>
+      <View style={styles.searchRow}>
+        <TextInput
+          mode="outlined"
+          dense
+          value={orderKeyword}
+          onChangeText={setOrderKeyword}
+          placeholder={t("searchPlaceholder")}
+          left={<TextInput.Icon icon="magnify" />}
+          right={orderKeyword ? <TextInput.Icon icon="close" onPress={() => setOrderKeyword("")} /> : undefined}
+          style={styles.searchInput}
+        />
+      </View>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.statusTabsRow}>
+        <Chip
+          selected={selectedStatus === "all"}
+          mode={selectedStatus === "all" ? "flat" : "outlined"}
+          onPress={() => handleSelectStatus("all")}
+          style={styles.statusTab}
+        >{t("filters.allHistory")}</Chip>
+        {HISTORY_STATUS_VALUES.map((status) => (
+          <Chip
+            key={status}
+            selected={selectedStatus === status}
+            mode={selectedStatus === status ? "flat" : "outlined"}
+            onPress={() => handleSelectStatus(status)}
+            style={styles.statusTab}
+          >{statusLabel(status)}</Chip>
+        ))}
+      </ScrollView>
+
+      {!hasOrderScope && !storesLoading ? (
         <EmptyState title={t("empty.selectStoreTitle")} description={t("empty.selectStoreDescription")} />
       ) : (
         <FlatList
@@ -712,7 +824,7 @@ export default function Orders() {
           ListHeaderComponent={
             <View style={styles.listHeader}>
               <Text variant="titleSmall" style={styles.listHeaderTitle}>
-                {selectedStore?.storeName || t("listTitle")}
+                {allStoresSelected ? t("allManagedStores") : selectedStore?.storeName || t("listTitle")}
               </Text>
               <Text variant="bodySmall" style={styles.listHeaderMeta}>
                 {t("summary.total", { count: total })}
@@ -740,7 +852,7 @@ export default function Orders() {
               />
             ) : (
               <EmptyState
-                title={selectedStoreCode ? t("empty.noHistoryTitle") : t("empty.noAccessTitle")}
+                title={hasOrderScope ? t("empty.noHistoryTitle") : t("empty.noAccessTitle")}
                 description={t("empty.noHistoryDescription")}
               />
             )
@@ -790,10 +902,10 @@ export default function Orders() {
                 style={styles.storeSelectorButton}
                 onPress={() => setStorePickerVisible(true)}
               >
-                {selectedStore?.storeName || t("selectStore")}
+                {allStoresSelected ? t("allManagedStores") : selectedStore?.storeName || t("selectStore")}
               </Button>
               <Text variant="bodySmall" style={styles.filtersCurrentText}>
-                {t("filters.currentStore", { store: selectedStore?.storeName || t("common:na") })}
+                {t("filters.currentStore", { store: allStoresSelected ? t("allManagedStores") : selectedStore?.storeName || t("common:na") })}
               </Text>
             </View>
 
@@ -805,7 +917,7 @@ export default function Orders() {
                 <Chip
                   selected={selectedStatus === "all"}
                   mode={selectedStatus === "all" ? "flat" : "outlined"}
-                  onPress={() => setSelectedStatus("all")}
+                  onPress={() => handleSelectStatus("all")}
                   style={styles.filterChip}
                 >
                   {t("filters.allHistory")}
@@ -815,7 +927,7 @@ export default function Orders() {
                     key={status}
                     selected={selectedStatus === status}
                     mode={selectedStatus === status ? "flat" : "outlined"}
-                    onPress={() => setSelectedStatus(status)}
+                    onPress={() => handleSelectStatus(status)}
                     style={styles.filterChip}
                   >
                     {statusLabel(status)}
@@ -836,7 +948,7 @@ export default function Orders() {
                 {t("filters.chooseStore")}
               </Text>
               <Text variant="bodySmall" style={styles.filtersCurrentText}>
-                {t("filters.currentStore", { store: selectedStore?.storeName || t("common:na") })}
+                {t("filters.currentStore", { store: allStoresSelected ? t("allManagedStores") : selectedStore?.storeName || t("common:na") })}
               </Text>
             </View>
             <Button compact onPress={() => setStorePickerVisible(false)}>
@@ -856,24 +968,42 @@ export default function Orders() {
               data={stores}
               keyExtractor={(store) => store.storeCode}
               contentContainerStyle={styles.storePickerListContent}
+              ListHeaderComponent={!isDeviceMode && stores.length > 1 ? (
+                <Pressable
+                  style={[styles.storePickerRow, allStoresSelected ? styles.storePickerRowSelected : null]}
+                  onPress={() => {
+                    setAllStoresSelected(true);
+                    setPageNumber(1);
+                    setStorePickerVisible(false);
+                  }}
+                >
+                  <RadioButton
+                    value="all-managed-stores"
+                    status={allStoresSelected ? "checked" : "unchecked"}
+                    onPress={() => {
+                      setAllStoresSelected(true);
+                      setPageNumber(1);
+                      setStorePickerVisible(false);
+                    }}
+                  />
+                  <View style={styles.storePickerRowTextWrap}>
+                    <Text variant="bodyMedium" style={styles.storePickerStoreName}>{t("allManagedStores")}</Text>
+                    <Text variant="bodySmall" style={styles.filtersCurrentText}>{t("allManagedStoresHint", { count: stores.length })}</Text>
+                  </View>
+                </Pressable>
+              ) : null}
               renderItem={({ item: store }) => {
-                const selected = store.storeCode === selectedStoreCode;
+                const selected = !allStoresSelected && store.storeCode === selectedStoreCode;
 
                 return (
                   <Pressable
                     style={[styles.storePickerRow, selected ? styles.storePickerRowSelected : null]}
-                    onPress={() => {
-                      void selectStore(store);
-                      setStorePickerVisible(false);
-                    }}
+                    onPress={() => handleSelectOrderStore(store)}
                   >
                     <RadioButton
                       value={store.storeCode}
                       status={selected ? "checked" : "unchecked"}
-                      onPress={() => {
-                        void selectStore(store);
-                        setStorePickerVisible(false);
-                      }}
+                      onPress={() => handleSelectOrderStore(store)}
                     />
                     <View style={styles.storePickerRowTextWrap}>
                       <Text variant="bodyMedium" style={styles.storePickerStoreName}>
@@ -945,6 +1075,36 @@ const styles = StyleSheet.create({
   filterButton: {
     margin: 0,
   },
+  scopeBar: {
+    marginHorizontal: 16,
+    marginBottom: 8,
+    minHeight: 52,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    backgroundColor: "#EAF3FF",
+    borderWidth: 1,
+    borderColor: "#CFE3FF",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  scopeBarIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: "#1677FF",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  scopeBarIconText: { color: "#FFFFFF", fontSize: 17, fontWeight: "700" },
+  scopeBarTextWrap: { flex: 1, minWidth: 0, gap: 1 },
+  scopeBarLabel: { color: "#5B7BA3", fontWeight: "700" },
+  scopeBarValue: { color: "#0F172A", fontWeight: "700" },
+  scopeBarChevron: { color: "#1677FF", fontSize: 28, lineHeight: 28 },
+  searchRow: { paddingHorizontal: 16, marginBottom: 4 },
+  searchInput: { backgroundColor: "#FFFFFF", height: 46 },
+  statusTabsRow: { paddingHorizontal: 16, paddingVertical: 6, gap: 8 },
+  statusTab: { borderRadius: 10, backgroundColor: "#FFFFFF" },
   filterChip: {
     backgroundColor: "#FFFFFF",
   },
@@ -985,11 +1145,11 @@ const styles = StyleSheet.create({
   },
   orderCard: {
     backgroundColor: "#FFFFFF",
-    borderRadius: 12,
+    borderRadius: 10,
     borderColor: "#E4E7EC",
   },
   orderCardContent: {
-    gap: 14,
+    gap: 10,
   },
   orderHeader: {
     flexDirection: "row",
