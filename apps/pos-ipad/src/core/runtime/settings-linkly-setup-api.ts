@@ -265,17 +265,21 @@ export class HbposSettingsLinklySetupApi
       }
       return snapshot;
     } catch (error) {
-      if (!isUnknownMutationOutcome(error)) throw error;
-      // PUT 的 HTTP 终态未知时只允许 GET；确认目标状态后视为已提交，其他情况仍失败关闭。
-      const snapshot = await this.readTerminals(environment, signal);
-      if (assignmentConfirmed(snapshot, terminalId, {
-        ...input,
-        terminalVersion,
-        assignedDeviceCode,
-        targetDeviceCode,
-        expectedTargetTerminalId,
-      })) {
-        return snapshot;
+      if (!isUnknownAssignmentOutcome(error)) throw error;
+      // PUT 已返回 2xx 但快照不完整时也可能已经提交；只读核对一次，绝不重放写入。
+      try {
+        const snapshot = await this.readTerminals(environment, signal);
+        if (assignmentConfirmed(snapshot, terminalId, {
+          ...input,
+          terminalVersion,
+          assignedDeviceCode,
+          targetDeviceCode,
+          expectedTargetTerminalId,
+        })) {
+          return snapshot;
+        }
+      } catch {
+        // GET 失败或快照无效时保留最初的 PUT 错误，避免掩盖不确定写入结果。
       }
       throw error;
     }
@@ -692,6 +696,14 @@ function isUnknownMutationOutcome(error: unknown): boolean {
     (error.kind === "http" &&
       (error.status === 408 ||
         (typeof error.status === "number" && error.status >= 500)))
+  );
+}
+
+function isUnknownAssignmentOutcome(error: unknown): boolean {
+  return isUnknownMutationOutcome(error) || (
+    error instanceof HbposApiError &&
+    error.kind === "envelope" &&
+    error.code === "LINKLY_ASSIGNMENT_RESPONSE_INVALID"
   );
 }
 

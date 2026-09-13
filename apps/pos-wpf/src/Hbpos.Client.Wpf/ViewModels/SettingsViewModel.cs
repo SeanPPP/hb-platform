@@ -1160,9 +1160,8 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
                 return;
             }
 
-            item.ConnectionStatus = result.Succeeded
-                ? T("settings.linkly.cloudBackend.healthHealthy")
-                : T("settings.linkly.cloudBackend.healthUnhealthy");
+            // Status 表达服务端的确定性；不能把 Unknown 或 NeedsRepair 降级成普通不可达。
+            item.ConnectionStatus = FormatLinklyTerminalConnectionStatus(result.Status);
             item.LastTestedAt = result.CheckedAt;
             RememberLinklyTerminalTest(environment, item, result.CheckedAt);
         }
@@ -1188,6 +1187,15 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             RaiseCommandStates();
         }
     }
+
+    private string FormatLinklyTerminalConnectionStatus(string? status) => status?.Trim().ToUpperInvariant() switch
+    {
+        "CONNECTED" => T("settings.linkly.cloudBackend.healthHealthy"),
+        "UNREACHABLE" => T("settings.linkly.cloudBackend.healthUnhealthy"),
+        "NEEDS-REPAIR" or "NEEDSREPAIR" => T("settings.linkly.cloudBackend.testNeedsRepair"),
+        "UNKNOWN" => T("settings.linkly.cloudBackend.testLineFailed"),
+        _ => T("settings.linkly.cloudBackend.testLineFailed")
+    };
 
     private bool IsCurrentTerminalRequest(
         LinklyCloudTerminalManagementItem item,
