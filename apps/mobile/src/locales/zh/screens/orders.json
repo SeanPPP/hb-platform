@@ -10,6 +10,11 @@
   "viewDetail": "查看明细",
   "detailTitle": "订单明细",
   "detailCount": "共 {{count}} 条",
+  "detailStoreCaption": "所属分店",
+  "detailInfo": "地址、备注及体积",
+  "detailProductTitle": "商品明细",
+  "detailSkuCount": "{{count}} 个 SKU",
+  "returnToList": "返回订单列表",
   "actions": {
     "printLabel": "打印标签"
   },
@@ -48,6 +53,7 @@
     "storeAddress": "分店地址 {{value}}",
     "remarks": "备注 {{value}}",
     "itemNumber": "货号 {{value}}",
+    "barcode": "{{value}}",
     "location": "货位 {{value}}",
     "orderedQty": "订货 {{value}}",
     "allocQty": "发货 {{value}}",

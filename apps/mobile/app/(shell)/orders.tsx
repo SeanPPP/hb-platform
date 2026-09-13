@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FlatList,
   Image,
+  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -18,6 +19,7 @@ import {
   Card,
   Chip,
   Divider,
+  Icon,
   IconButton,
   Portal,
   Modal,
@@ -27,7 +29,6 @@ import {
   TextInput,
 } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { ProductBarcodeImage } from "@/components/product-maintenance/ProductBarcodeImage";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
@@ -58,19 +59,6 @@ const HISTORY_STATUS_VALUES: StoreOrderFlowStatus[] = [
   StoreOrderFlowStatus.Completed,
 ];
 const PAGE_SIZE = DEFAULT_ORDER_LIST_PAGE_SIZE;
-
-function formatDateTime(value: string | undefined, localeTag: string) {
-  if (!value) {
-    return "--";
-  }
-
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-
-  return date.toLocaleString(localeTag, { hour12: false });
-}
 
 function formatNumber(value?: number, digits = 0) {
   if (value === undefined || value === null) {
@@ -163,21 +151,19 @@ function OrderCardMetric({ label, value }: { label: string; value: string }) {
 const OrderLineCard = memo(function OrderLineCard({
   isPrinting,
   item,
-  index,
   onPrint,
   renderMedia,
   t,
 }: {
   isPrinting: boolean;
   item: StoreOrderDetailLine;
-  index: number;
   onPrint: (item: StoreOrderDetailLine) => void;
   renderMedia: boolean;
   t: (key: string, options?: Record<string, unknown>) => string;
 }) {
   return (
-    <Card mode="outlined" style={styles.detailItemCard}>
-      <Card.Content style={styles.detailItemContent}>
+    <View style={styles.detailItemCard}>
+      <View style={styles.detailItemContent}>
         <View style={styles.detailItemHeader}>
           {renderMedia && item.productImage ? (
             <Image source={{ uri: item.productImage }} style={styles.detailProductImage} resizeMode="cover" />
@@ -191,14 +177,14 @@ const OrderLineCard = memo(function OrderLineCard({
           <View style={styles.detailItemMain}>
             <View style={styles.detailItemTopRow}>
               <View style={styles.detailItemTitleWrap}>
-                <Text variant="labelSmall" style={styles.detailItemIndex}>
-                  #{index + 1}
-                </Text>
                 <Text variant="titleSmall" style={styles.detailItemTitle} numberOfLines={3}>
                   {item.productName || item.productCode}
                 </Text>
                 <Text variant="bodySmall" style={styles.detailItemSubTitle}>
                   {t("fields.itemNumber", { value: item.itemNumber || "--" })}
+                </Text>
+                <Text variant="bodySmall" style={styles.detailItemSubTitle} numberOfLines={1}>
+                  {t("fields.barcode", { value: item.barcode || "--" })}
                 </Text>
               </View>
               <View style={styles.detailItemStatusWrap}>
@@ -209,6 +195,7 @@ const OrderLineCard = memo(function OrderLineCard({
                   {t("fields.allocQty", { value: formatNumber(item.allocQuantity) })}
                 </Text>
               </View>
+              <Icon source="chevron-right" size={20} color="#667085" />
             </View>
           </View>
         </View>
@@ -233,29 +220,25 @@ const OrderLineCard = memo(function OrderLineCard({
             <Text variant="bodyMedium">{formatMoney(getOrderDetailLineAllocatedImportAmount(item))}</Text>
           </View>
         </View>
-        {item.barcode ? (
-          <View style={styles.detailBarcodeWrap}>
-            {renderMedia ? <ProductBarcodeImage value={item.barcode} /> : <View style={styles.detailBarcodePlaceholder} />}
-          </View>
-        ) : null}
         <View style={styles.detailItemActions}>
           <Button
             compact
             disabled={isPrinting}
             icon="printer-outline"
             loading={isPrinting}
-            mode="contained-tonal"
+            mode="outlined"
             onPress={() => onPrint(item)}
+            style={styles.detailPrintButton}
+            textColor="#1677FF"
           >
             {t("actions.printLabel")}
           </Button>
         </View>
-      </Card.Content>
-    </Card>
+      </View>
+    </View>
   );
 }, (prevProps, nextProps) => (
   prevProps.isPrinting === nextProps.isPrinting
-  && prevProps.index === nextProps.index
   && prevProps.item === nextProps.item
   && prevProps.onPrint === nextProps.onPrint
   && prevProps.renderMedia === nextProps.renderMedia
@@ -264,6 +247,7 @@ const OrderLineCard = memo(function OrderLineCard({
 
 function OrderDetailContent({
   detail,
+  listItem,
   itemNumberFilter,
   loading,
   errorMessage,
@@ -277,6 +261,7 @@ function OrderDetailContent({
   t,
 }: {
   detail?: StoreOrderDetail;
+  listItem?: StoreOrderListItem;
   itemNumberFilter: string;
   loading: boolean;
   errorMessage?: string;
@@ -294,11 +279,16 @@ function OrderDetailContent({
     [detail?.items, itemNumberFilter]
   );
   const [visibleDetailGuids, setVisibleDetailGuids] = useState<Set<string>>(() => new Set());
+  const [infoExpanded, setInfoExpanded] = useState(false);
   const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 10 });
 
   useEffect(() => {
     setVisibleDetailGuids(new Set());
   }, [detail?.orderGUID, itemNumberFilter]);
+
+  useEffect(() => {
+    setInfoExpanded(false);
+  }, [detail?.orderGUID]);
 
   const onViewableItemsChanged = useRef(
     ({ viewableItems }: { viewableItems: ViewToken[] }) => {
@@ -335,11 +325,10 @@ function OrderDetailContent({
 
   // 只给可见行挂载重媒体内容，减少图片和条码组件同时存在的数量。
   const renderDetailItem = useCallback(
-    ({ item, index }: { item: StoreOrderDetailLine; index: number }) => (
+    ({ item }: { item: StoreOrderDetailLine }) => (
       <OrderLineCard
         isPrinting={printingDetailGuid === item.detailGUID}
         item={item}
-        index={index}
         onPrint={onPrintLine}
         renderMedia={visibleDetailGuids.has(item.detailGUID)}
         t={t}
@@ -351,67 +340,53 @@ function OrderDetailContent({
   const renderDetailHeader = useCallback(
     () => (
       <View style={styles.detailHeaderContent}>
-        <Card mode="outlined" style={styles.detailSummaryCard}>
-          <Card.Content style={styles.detailSummaryContent}>
-            <View style={styles.detailTitleRow}>
-              <View style={styles.detailTitleWrap}>
-                <Text variant="titleLarge" style={styles.detailOrderNo}>
-                  {detail?.orderNo || "--"}
-                </Text>
-                <Text variant="bodyMedium" style={styles.detailStoreText}>
-                  {t("fields.store", { store: detail?.storeCode || "--" })}
-                </Text>
-              </View>
-              <StatusBadge status={detail?.flowStatus} label={statusLabel(detail?.flowStatus)} />
-            </View>
-
-            <View style={styles.detailInfoBlock}>
-              <Text variant="bodyMedium">
-                {t("fields.orderedAt", { value: formatDateTime(detail?.orderDate, localeTag) })}
-              </Text>
-              <Text variant="bodyMedium">
-                {t("fields.storeAddress", { value: detail?.storeAddress || "--" })}
-              </Text>
-              <Text variant="bodyMedium">{t("fields.remarks", { value: detail?.remarks || "--" })}</Text>
-            </View>
-
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.summaryGrid}
-            >
-              <SummaryMetric style={styles.detailSummaryMetric} label={t("summary.sku")} value={formatNumber(detail?.totalSKU)} />
-              <SummaryMetric style={styles.detailSummaryMetric} label={t("summary.orderedQty")} value={formatNumber(detail?.totalQuantity)} />
-              <SummaryMetric style={styles.detailSummaryMetric} label={t("summary.allocQty")} value={formatNumber(detail?.totalAllocQuantity)} />
-              <SummaryMetric style={styles.detailSummaryMetric} label={t("summary.orderAmount")} value={formatMoney(detail?.totalAmount)} />
-              <SummaryMetric
-                style={styles.detailSummaryMetric}
-                label={t("summary.allocAmount")}
-                value={formatMoney(getOrderDetailTotalAllocatedImportAmount(detail))}
-              />
-              <SummaryMetric style={styles.detailSummaryMetric} label={t("summary.orderVolume")} value={formatNumber(detail?.totalOrderVolume, 4)} />
-            </ScrollView>
-          </Card.Content>
-        </Card>
-
-        <View style={styles.detailListHeader}>
-          <View style={styles.detailListTitleWrap}>
-            <Text variant="titleMedium">{t("detailTitle")}</Text>
-            <Text variant="bodySmall" style={styles.detailListHint}>
-              {t("detailCount", { count: filteredItems.length })}
+        <View style={styles.detailStoreBanner}>
+          <View style={styles.detailStoreIcon}><Icon source="storefront-outline" size={20} color="#1677FF" /></View>
+          <View style={styles.detailStoreBannerText}>
+            <Text variant="bodyMedium" style={styles.detailStoreName} numberOfLines={1}>
+              {listItem?.storeName || detail?.storeCode || "--"}
             </Text>
+            <Text variant="labelSmall" style={styles.detailStoreCaption}>{t("detailStoreCaption")}</Text>
           </View>
-          {itemNumberFilter.trim() ? (
-            <Button compact onPress={() => onItemNumberFilterChange("")}>
-              {t("filters.clearItemNumber")}
-            </Button>
+        </View>
+
+        <View style={styles.detailOrderSummary}>
+          <View style={styles.detailTitleRow}>
+            <Text variant="headlineSmall" style={styles.detailOrderNo}>{detail?.orderNo || "--"}</Text>
+            <StatusBadge status={detail?.flowStatus} label={statusLabel(detail?.flowStatus)} />
+          </View>
+          <Text variant="bodySmall" style={styles.detailDateText}>
+            {t("fields.orderDate")} {formatOrderDate(detail?.orderDate, localeTag)} · {t("fields.outboundDate")} {formatOrderDate(listItem?.outboundDate, localeTag)}
+          </Text>
+
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ expanded: infoExpanded }}
+            onPress={() => setInfoExpanded((current) => !current)}
+            style={styles.detailInfoToggle}
+          >
+            <Text variant="bodySmall" style={styles.detailInfoToggleText}>{t("detailInfo")}</Text>
+            <Text style={styles.detailInfoChevron}>{infoExpanded ? "⌃" : "⌄"}</Text>
+          </Pressable>
+          {infoExpanded ? (
+            <View style={styles.detailInfoBlock}>
+              <Text variant="bodySmall" style={styles.detailInfoText}>{t("fields.storeAddress", { value: detail?.storeAddress || "--" })}</Text>
+              <Text variant="bodySmall" style={styles.detailInfoText}>{t("fields.remarks", { value: detail?.remarks || "--" })}</Text>
+              <Text variant="bodySmall" style={styles.detailInfoText}>{t("summary.orderVolume")}: {formatNumber(detail?.totalOrderVolume, 4)}</Text>
+            </View>
           ) : null}
+
+          <View style={styles.detailSummaryGrid}>
+            <SummaryMetric label={t("summary.orderedQty")} value={formatNumber(detail?.totalQuantity)} />
+            <SummaryMetric label={t("summary.allocQty")} value={formatNumber(detail?.totalAllocQuantity)} />
+            <SummaryMetric label={t("summary.orderAmount")} value={formatMoney(detail?.totalAmount)} />
+            <SummaryMetric label={t("summary.allocAmount")} value={formatMoney(getOrderDetailTotalAllocatedImportAmount(detail))} />
+          </View>
         </View>
 
         <TextInput
           dense
           mode="outlined"
-          label={t("filters.itemNumber")}
           placeholder={t("filters.itemNumberPlaceholder")}
           value={itemNumberFilter}
           onChangeText={onItemNumberFilterChange}
@@ -425,9 +400,16 @@ function OrderDetailContent({
           }
           style={styles.detailFilterInput}
         />
+
+        <View style={styles.detailListHeader}>
+          <Text variant="titleMedium" style={styles.detailSectionTitle}>{t("detailProductTitle")}</Text>
+          <Text variant="bodySmall" style={styles.detailListHint}>
+            {t("detailSkuCount", { count: filteredItems.length })}
+          </Text>
+        </View>
       </View>
     ),
-    [detail, filteredItems.length, itemNumberFilter, localeTag, onItemNumberFilterChange, statusLabel, t]
+    [detail, filteredItems.length, infoExpanded, itemNumberFilter, listItem?.outboundDate, listItem?.storeName, localeTag, onItemNumberFilterChange, statusLabel, t]
   );
 
   const renderDetailEmpty = useCallback(
@@ -480,26 +462,41 @@ function OrderDetailContent({
   }
 
   return (
-    <FlatList
-      data={filteredItems}
-      keyExtractor={(item) => item.detailGUID}
-      renderItem={renderDetailItem}
-      extraData={detailListExtraData}
-      contentContainerStyle={[
-        styles.detailListContent,
-        filteredItems.length ? null : styles.detailListContentEmpty,
-      ]}
-      ListHeaderComponent={renderDetailHeader}
-      ListEmptyComponent={renderDetailEmpty}
-      ItemSeparatorComponent={DetailItemSeparator}
-      initialNumToRender={4}
-      maxToRenderPerBatch={4}
-      windowSize={5}
-      removeClippedSubviews
-      keyboardShouldPersistTaps="handled"
-      onViewableItemsChanged={onViewableItemsChanged.current}
-      viewabilityConfig={viewabilityConfig.current}
-    />
+    <SafeAreaView edges={["top", "bottom", "left", "right"]} style={styles.detailScreen}>
+      <View style={styles.detailNavigationBar}>
+        <IconButton accessibilityLabel={t("returnToList")} icon="chevron-left" onPress={onClose} style={styles.detailNavigationButton} />
+        <Text variant="titleLarge" style={styles.detailNavigationTitle}>{t("detailTitle")}</Text>
+        <IconButton icon="dots-horizontal" disabled style={styles.detailNavigationButton} />
+      </View>
+      <FlatList
+        data={filteredItems}
+        keyExtractor={(item) => item.detailGUID}
+        renderItem={renderDetailItem}
+        extraData={detailListExtraData}
+        contentContainerStyle={[
+          styles.detailListContent,
+          filteredItems.length ? null : styles.detailListContentEmpty,
+        ]}
+        ListHeaderComponent={renderDetailHeader}
+        ListEmptyComponent={renderDetailEmpty}
+        ListFooterComponent={(
+          <View style={styles.detailReturnBar}>
+            <Button icon="chevron-left" mode="contained-tonal" onPress={onClose} style={styles.detailReturnButton} textColor="#1677FF">
+              {t("returnToList")}
+            </Button>
+          </View>
+        )}
+        ItemSeparatorComponent={DetailItemSeparator}
+        initialNumToRender={6}
+        maxToRenderPerBatch={6}
+        windowSize={7}
+        // iOS 的 Portal Modal 内裁剪 FlatList 会偶发漏掉首行；保留虚拟化，仅在 Android 开启原生裁剪。
+        removeClippedSubviews={Platform.OS === "android"}
+        keyboardShouldPersistTaps="handled"
+        onViewableItemsChanged={onViewableItemsChanged.current}
+        viewabilityConfig={viewabilityConfig.current}
+      />
+    </SafeAreaView>
   );
 }
 
@@ -652,6 +649,10 @@ export default function Orders() {
   }, [hasOrderScope, refetchOrders]);
 
   const orderItems = ordersQuery.data?.items ?? [];
+  const selectedOrderItem = useMemo(
+    () => ordersQuery.data?.items.find((item) => item.orderGUID === selectedOrderGuid),
+    [ordersQuery.data?.items, selectedOrderGuid]
+  );
   const total = ordersQuery.data?.total ?? 0;
   const canGoPrevPage = pageNumber > 1;
   const canGoNextPage = pageNumber * PAGE_SIZE < total;
@@ -1026,10 +1027,12 @@ export default function Orders() {
         <Modal
           visible={Boolean(selectedOrderGuid)}
           onDismiss={handleCloseDetail}
+          style={styles.detailModalOverlay}
           contentContainerStyle={styles.modalContent}
         >
           <OrderDetailContent
             detail={detailQuery.data}
+            listItem={selectedOrderItem}
             itemNumberFilter={itemNumberFilter}
             loading={!detailQuery.data && (detailQuery.isLoading || detailQuery.isFetching)}
             errorMessage={
@@ -1232,17 +1235,6 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     lineHeight: 26,
   },
-  summaryMetric: {
-    flex: 1,
-    gap: 4,
-  },
-  summaryLabel: {
-    color: "#94A3B8",
-  },
-  summaryValue: {
-    color: "#0F172A",
-    fontWeight: "700",
-  },
   orderDivider: {
     backgroundColor: "#E2E8F0",
   },
@@ -1355,13 +1347,31 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   modalContent: {
-    flex: 1,
-    marginVertical: 36,
-    marginHorizontal: 12,
+    alignSelf: "stretch",
     backgroundColor: "#FFFFFF",
-    borderRadius: 16,
+    height: "100%",
     overflow: "hidden",
+    width: "100%",
   },
+  // Paper Modal 默认再加一层安全区外边距；这里由内部 SafeAreaView 统一处理，避免明细容器上下被重复压缩。
+  detailModalOverlay: {
+    justifyContent: "flex-start",
+    marginBottom: 0,
+    marginTop: 0,
+    paddingBottom: 0,
+    paddingTop: 0,
+  },
+  detailScreen: { backgroundColor: "#FFFFFF", flex: 1 },
+  detailNavigationBar: {
+    alignItems: "center",
+    borderBottomColor: "#EAECF0",
+    borderBottomWidth: 1,
+    flexDirection: "row",
+    minHeight: 52,
+    paddingHorizontal: 8,
+  },
+  detailNavigationButton: { margin: 0 },
+  detailNavigationTitle: { color: "#101828", flex: 1, fontWeight: "700" },
   detailLoadingWrap: {
     flex: 1,
     alignItems: "center",
@@ -1369,89 +1379,123 @@ const styles = StyleSheet.create({
     minHeight: 240,
   },
   detailListContent: {
-    padding: 16,
-    paddingBottom: 24,
+    paddingBottom: 12,
   },
   detailListContentEmpty: {
     flexGrow: 1,
   },
   detailHeaderContent: {
-    gap: 14,
-    marginBottom: 14,
+    backgroundColor: "#FFFFFF",
   },
-  detailSummaryCard: {
-    backgroundColor: "#F8FAFC",
-    borderRadius: 20,
-  },
-  detailSummaryContent: {
+  detailStoreBanner: {
+    alignItems: "center",
+    backgroundColor: "#EEF6FF",
+    flexDirection: "row",
     gap: 10,
+    marginHorizontal: 16,
+    marginTop: 8,
+    minHeight: 48,
+    paddingHorizontal: 12,
+  },
+  detailStoreIcon: {
+    alignItems: "center",
+    backgroundColor: "#DCEEFF",
+    borderRadius: 8,
+    height: 32,
+    justifyContent: "center",
+    width: 32,
+  },
+  detailStoreBannerText: { flex: 1, minWidth: 0 },
+  detailStoreName: { color: "#101828", fontWeight: "700" },
+  detailStoreCaption: { color: "#667085" },
+  detailOrderSummary: {
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
   },
   detailTitleRow: {
+    alignItems: "center",
     flexDirection: "row",
     justifyContent: "space-between",
     gap: 12,
-  },
-  detailTitleWrap: {
-    flex: 1,
-    gap: 4,
   },
   detailOrderNo: {
-    color: "#0F172A",
+    color: "#101828",
     fontWeight: "700",
   },
-  detailStoreText: {
-    color: "#475569",
-  },
-  detailInfoBlock: {
-    gap: 4,
-  },
-  summaryGrid: {
-    flexDirection: "row",
-    gap: 8,
-    paddingRight: 4,
-  },
-  detailSummaryMetric: {
-    flex: 0,
-    width: 112,
-    borderRadius: 10,
-    backgroundColor: "#FFFFFF",
-    paddingHorizontal: 9,
-    paddingVertical: 7,
-  },
-  detailListHeader: {
-    flexDirection: "row",
+  detailDateText: { color: "#667085" },
+  detailInfoToggle: {
     alignItems: "center",
+    backgroundColor: "#F5F8FC",
+    flexDirection: "row",
     justifyContent: "space-between",
-    gap: 12,
+    minHeight: 44,
+    paddingHorizontal: 12,
   },
-  detailListTitleWrap: {
-    flex: 1,
-    minWidth: 0,
+  detailInfoToggleText: { color: "#475467", fontWeight: "600" },
+  detailInfoChevron: { color: "#667085", fontSize: 18 },
+  detailInfoBlock: {
+    backgroundColor: "#F8FAFC",
+    gap: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
   },
-  detailListHint: {
-    color: "#64748B",
+  detailInfoText: { color: "#475467" },
+  detailSummaryGrid: {
+    borderTopColor: "#EAECF0",
+    borderTopWidth: 1,
+    columnGap: 0,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    marginTop: 2,
+    paddingTop: 10,
   },
+  summaryMetric: {
+    gap: 2,
+    minHeight: 52,
+    paddingHorizontal: 4,
+    width: "50%",
+  },
+  summaryLabel: { color: "#667085" },
+  summaryValue: { color: "#101828", fontWeight: "700" },
   detailFilterInput: {
     backgroundColor: "#FFFFFF",
+    height: 46,
+    marginHorizontal: 16,
+    marginTop: 2,
   },
+  detailListHeader: {
+    alignItems: "center",
+    borderBottomColor: "#EAECF0",
+    borderBottomWidth: 1,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginTop: 10,
+    paddingBottom: 8,
+    paddingHorizontal: 16,
+  },
+  detailSectionTitle: { color: "#101828", fontWeight: "700" },
+  detailListHint: { color: "#667085" },
   detailItemCard: {
     backgroundColor: "#FFFFFF",
-    borderRadius: 18,
+    borderBottomColor: "#EAECF0",
+    borderBottomWidth: 1,
   },
-  detailItemSeparator: {
-    height: 14,
-  },
+  detailItemSeparator: { height: 0 },
   detailItemContent: {
-    gap: 12,
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
   },
   detailItemHeader: {
+    alignItems: "flex-start",
     flexDirection: "row",
-    gap: 12,
+    gap: 10,
   },
   detailProductImage: {
-    width: 72,
-    height: 72,
-    borderRadius: 10,
+    width: 62,
+    height: 62,
+    borderRadius: 8,
     backgroundColor: "#F1F5F9",
   },
   detailProductImagePlaceholder: {
@@ -1464,6 +1508,8 @@ const styles = StyleSheet.create({
   detailProductImageText: {
     color: "#64748B",
     textAlign: "center",
+    fontSize: 12,
+    lineHeight: 17,
   },
   detailItemMain: {
     flex: 1,
@@ -1472,62 +1518,73 @@ const styles = StyleSheet.create({
   detailItemTopRow: {
     flexDirection: "row",
     justifyContent: "space-between",
-    gap: 10,
+    gap: 12,
   },
   detailItemTitleWrap: {
     flex: 1,
     minWidth: 0,
-    gap: 4,
-  },
-  detailItemIndex: {
-    color: "#1677FF",
-    fontWeight: "700",
+    gap: 1,
   },
   detailItemTitle: {
     color: "#0F172A",
     fontWeight: "700",
+    fontSize: 15,
+    lineHeight: 20,
   },
   detailItemSubTitle: {
     color: "#64748B",
+    fontSize: 12,
+    lineHeight: 16,
   },
   detailItemStatusWrap: {
     alignItems: "flex-end",
-    justifyContent: "center",
+    justifyContent: "flex-start",
     gap: 2,
+    minWidth: 58,
   },
   detailQtyText: {
     color: "#0F172A",
     fontWeight: "700",
+    fontSize: 14,
+    lineHeight: 19,
   },
   detailAllocText: {
-    color: "#64748B",
+    color: "#B54708",
+    fontSize: 12,
+    fontWeight: "700",
+    lineHeight: 16,
   },
   detailMetaGrid: {
     flexDirection: "row",
-    flexWrap: "wrap",
-    rowGap: 10,
-    columnGap: 12,
-  },
-  detailBarcodeWrap: {
-    alignSelf: "stretch",
-    height: 48,
-    maxWidth: 220,
-  },
-  detailBarcodePlaceholder: {
-    flex: 1,
-    borderRadius: 8,
-    backgroundColor: "#F8FAFC",
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
+    gap: 0,
   },
   detailItemActions: {
-    alignItems: "flex-end",
+    alignItems: "stretch",
+  },
+  detailPrintButton: {
+    borderColor: "#1677FF",
+    borderRadius: 5,
+    width: "100%",
   },
   detailMetaCell: {
-    width: "47%",
-    gap: 4,
+    borderRightColor: "#EAECF0",
+    borderRightWidth: 1,
+    flex: 1,
+    gap: 2,
+    paddingHorizontal: 8,
   },
   detailMetaLabel: {
-    color: "#94A3B8",
+    color: "#667085",
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  detailReturnBar: {
+    backgroundColor: "#FFFFFF",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  detailReturnButton: {
+    backgroundColor: "#EEF6FF",
+    borderRadius: 5,
   },
 });
