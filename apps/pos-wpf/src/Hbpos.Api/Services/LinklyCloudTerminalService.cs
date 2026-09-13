@@ -167,7 +167,7 @@ public interface ILinklyCloudTerminalRepository
         string environment, string storeCode, Guid terminalId,
         DateTime expectedUpdatedAt, Guid leaseId, DateTime leaseExpiresAt, DateTime now,
         CancellationToken cancellationToken, string? expectedAssignedDeviceCode = null,
-        long expectedAssignmentRevision = 0) => throw new NotSupportedException();
+        long expectedAssignmentRevision = 0, string? operationDeviceCode = null) => throw new NotSupportedException();
 
     Task ReleaseConnectionTestLeaseAsync(
         string environment, string storeCode, Guid terminalId, Guid leaseId,
@@ -539,6 +539,7 @@ public sealed class LinklyCloudTerminalService(
         var owner = devices.FirstOrDefault(item => item.SelectedTerminalId == terminalId);
         if (!AssignmentCasMatches(owner, request.ExpectedAssignedDeviceCode, request.ExpectedAssignmentRevision))
             throw new LinklyCloudTerminalSelectionConflictException();
+        var effectiveDeviceCode = owner?.DeviceCode ?? normalizedDeviceCode;
         var checkedAt = DateTimeOffset.UtcNow;
         if (!IsReady(terminal))
             return ConnectionResult(terminal, environment, owner, false, "needs-repair", checkedAt, "Terminal credentials require repair.", null);
@@ -551,7 +552,7 @@ public sealed class LinklyCloudTerminalService(
         if (!await repository.TryAcquireConnectionTestLeaseAsync(
                 environment, terminal.StoreCode, terminalId, terminal.UpdatedAt!.Value,
                 leaseId, leaseExpiresAt, DateTime.UtcNow, cancellationToken,
-                owner?.DeviceCode, owner?.SelectionRevision ?? 0))
+                owner?.DeviceCode, owner?.SelectionRevision ?? 0, effectiveDeviceCode))
             throw new LinklyCloudTerminalSelectionConflictException("Terminal is busy or has an unacknowledged operation.");
 
         var releaseLease = true;
@@ -571,7 +572,7 @@ public sealed class LinklyCloudTerminalService(
         try
         {
             var token = await tokenProvider.GetTokenAsync(
-                environment, terminal.StoreCode, owner?.DeviceCode ?? normalizedDeviceCode,
+                environment, terminal.StoreCode, effectiveDeviceCode,
                 terminalId, testToken);
             testToken.ThrowIfCancellationRequested();
             phase = "status";
@@ -581,7 +582,7 @@ public sealed class LinklyCloudTerminalService(
                     environment, token.RestBaseUrl, token.AccessToken,
                     // 供应商 sessionId 必须是标准 UUID；连接测试用途由传输层审计字段标识。
                     Guid.NewGuid().ToString("D"), terminal.StoreCode,
-                    owner?.DeviceCode ?? normalizedDeviceCode, terminalId), testToken);
+                    effectiveDeviceCode, terminalId), testToken);
             terminalRequestStarted = false;
             providerHttpStatus = (int)response.StatusCode;
             phase = "status-response";
@@ -1508,7 +1509,8 @@ public sealed class SqlSugarLinklyCloudTerminalRepository(
         BEGIN TRANSACTION;
         IF EXISTS (SELECT 1 FROM [dbo].[POSM_LinklyCloudBackendSession] WITH (UPDLOCK, HOLDLOCK)
                    WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode
-                     AND ([TerminalId] = @TerminalId OR [DeviceCode] = @ExpectedAssignedDeviceCode)
+                     -- 未分配线路仍以调用 POS 发起供应商请求，因此会话隔离必须使用实际操作设备。
+                     AND ([TerminalId] = @TerminalId OR [DeviceCode] = @OperationDeviceCode)
                      AND ([IsActive] = 1 OR [Status] IS NULL OR [Status] NOT IN (N'Completed', N'Cancelled', N'Failed', N'NotSubmitted') OR [ClientAcknowledgedAt] IS NULL))
             THROW 51002, 'Terminal has a blocking operation.', 1;
         DECLARE @Acquired bit = 1;
@@ -1887,7 +1889,7 @@ public sealed class SqlSugarLinklyCloudTerminalRepository(
         string environment, string storeCode, Guid terminalId,
         DateTime expectedUpdatedAt, Guid leaseId, DateTime leaseExpiresAt, DateTime now,
         CancellationToken cancellationToken, string? expectedAssignedDeviceCode = null,
-        long expectedAssignmentRevision = 0)
+        long expectedAssignmentRevision = 0, string? operationDeviceCode = null)
     {
         try
         {
@@ -1901,7 +1903,10 @@ public sealed class SqlSugarLinklyCloudTerminalRepository(
                 DateTime2Parameter("@LeaseExpiresAt", leaseExpiresAt),
                 DateTime2Parameter("@Now", now),
                 new SugarParameter("@ExpectedAssignedDeviceCode", expectedAssignedDeviceCode),
-                new SugarParameter("@ExpectedAssignmentRevision", expectedAssignmentRevision));
+                new SugarParameter("@ExpectedAssignmentRevision", expectedAssignmentRevision),
+                new SugarParameter(
+                    "@OperationDeviceCode",
+                    operationDeviceCode ?? expectedAssignedDeviceCode));
             return row?.Acquired == true;
         }
         catch (Exception ex) when (ex.ToString().Contains("51002", StringComparison.OrdinalIgnoreCase))

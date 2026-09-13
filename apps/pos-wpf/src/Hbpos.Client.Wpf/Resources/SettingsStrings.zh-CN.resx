@@ -348,6 +348,7 @@
   <data name="settings.linkly.cloudBackend.healthHealthy" xml:space="preserve"><value>连接正常</value></data>
   <data name="settings.linkly.cloudBackend.healthUnhealthy" xml:space="preserve"><value>无法连接</value></data>
   <data name="settings.linkly.cloudBackend.testLineFailed" xml:space="preserve"><value>测试未完成，请检查网络和终端，刷新后重试。</value></data>
+  <data name="settings.linkly.cloudBackend.testNeedsRepair" xml:space="preserve"><value>该终端需要重新配对。请获取新的六位配对码并重新配对此线路；若仍失败，请管理员检查云端凭据。</value></data>
   <data name="settings.linkly.cloudBackend.useLine" xml:space="preserve"><value>使用此线路</value></data>
   <data name="settings.linkly.cloudBackend.changeBinding" xml:space="preserve"><value>变更绑定</value></data>
   <data name="settings.linkly.cloudBackend.unassign" xml:space="preserve"><value>解除绑定</value></data>
