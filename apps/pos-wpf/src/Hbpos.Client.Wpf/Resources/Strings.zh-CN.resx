@@ -3046,7 +3046,7 @@
   <data name="cardRecovery.workspace.channel" xml:space="preserve"><value>全部渠道</value></data>
   <data name="cardRecovery.workspace.operations" xml:space="preserve"><value>全部操作</value></data>
   <data name="cardRecovery.workspace.empty" xml:space="preserve"><value>没有符合筛选条件的交易。</value></data>
-  <data name="cardRecovery.workspace.terminalHint" xml:space="preserve"><value>刷卡终端可能仍在处理原交易；可继续现金收银或使用其他可用终端。</value></data>
+  <data name="cardRecovery.workspace.terminalHint" xml:space="preserve"><value>原交易可能仍在处理。请先核实结果；结果未确认前，不得通过现金或其他终端再次收取同一笔款项。</value></data>
   <data name="cardRecovery.workspace.order" xml:space="preserve"><value>订单 / 交易</value></data>
   <data name="cardRecovery.workspace.warning" xml:space="preserve"><value>请先核实原交易结果，勿重复扣款。</value></data>
   <data name="cardRecovery.workspace.more" xml:space="preserve"><value>商品及交易详情</value></data>

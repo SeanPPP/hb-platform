@@ -1302,7 +1302,7 @@
   <data name="cardRecovery.workspace.channel" xml:space="preserve"><value>All channels</value></data>
   <data name="cardRecovery.workspace.operations" xml:space="preserve"><value>All operations</value></data>
   <data name="cardRecovery.workspace.empty" xml:space="preserve"><value>No matching transactions.</value></data>
-  <data name="cardRecovery.workspace.terminalHint" xml:space="preserve"><value>A terminal may still be processing an earlier payment. Continue with cash or another available terminal.</value></data>
+  <data name="cardRecovery.workspace.terminalHint" xml:space="preserve"><value>The original payment may still be processing. Confirm its result before retrying; do not collect the same payment again using cash or another terminal while its result is unknown.</value></data>
   <data name="cardRecovery.workspace.order" xml:space="preserve"><value>Order / transaction</value></data>
   <data name="cardRecovery.workspace.warning" xml:space="preserve"><value>Check the original result before taking any further payment. Do not charge twice.</value></data>
   <data name="cardRecovery.workspace.more" xml:space="preserve"><value>Products and transaction details</value></data>
