@@ -4086,13 +4086,4 @@ public sealed class LinklyBackendTerminalClient(
         }
     }
 
-    private sealed class LinklyBackendHttpException(
-        string message,
-        HttpStatusCode httpStatus,
-        string? errorCode = null) : HttpRequestException(message, inner: null, statusCode: httpStatus)
-    {
-        public HttpStatusCode HttpStatus { get; } = httpStatus;
-
-        public string? ErrorCode { get; } = errorCode;
-    }
 }

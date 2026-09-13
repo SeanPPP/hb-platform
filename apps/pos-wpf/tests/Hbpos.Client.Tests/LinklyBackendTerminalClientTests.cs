@@ -191,6 +191,24 @@ public sealed class LinklyBackendTerminalClientTests
     }
 
     [Fact]
+    public async Task Pair_failure_preserves_structured_error_code_for_settings_view_model()
+    {
+        var handler = new StubHttpMessageHandler(_ => JsonResponse(JsonSerializer.Serialize(new
+        {
+            success = false,
+            errorCode = "LINKLY_CLOUD_BACKEND_PAIR_REJECTED",
+            message = "Pairing rejected"
+        }), HttpStatusCode.BadRequest));
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+
+        var exception = await Assert.ThrowsAsync<LinklyBackendHttpException>(() =>
+            client.PairTerminalAsync(CardTerminalEnvironment.Sandbox, Guid.NewGuid(), "123456"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, exception.HttpStatus);
+        Assert.Equal("LINKLY_CLOUD_BACKEND_PAIR_REJECTED", exception.ErrorCode);
+    }
+
+    [Fact]
     public async Task GetTerminalsAsync_returns_safe_terminal_directory_and_caches_selection()
     {
         var handler = new StubHttpMessageHandler(request =>

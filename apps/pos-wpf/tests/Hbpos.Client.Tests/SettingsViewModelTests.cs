@@ -2666,6 +2666,45 @@ public sealed class SettingsViewModelTests
     }
 
     [Fact]
+    public async Task CloudBackendAsync_line_card_use_for_payments_assigns_once_without_legacy_selection()
+    {
+        var terminalId = Guid.NewGuid();
+        var initial = new LinklyCloudTerminalListResponse(
+            "Production", null, 4,
+            [new LinklyCloudTerminalSummary(terminalId, 1, "Front", "Ready", false, true, null, null, null, 7, "v-7")],
+            "Active",
+            [new LinklyCloudAssignableDevice("POS-1", "WPF", true, null, 4)]);
+        var assigned = initial with
+        {
+            SelectedTerminalId = terminalId,
+            SelectionRevision = 5,
+            Terminals = [initial.Terminals[0] with { AssignedDeviceCode = "POS-1", AssignmentRevision = 8 }],
+            Devices = [new LinklyCloudAssignableDevice("POS-1", "WPF", true, terminalId, 5)]
+        };
+        var assignment = new TaskCompletionSource<LinklyTerminalAssignmentResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        assignment.SetResult(new LinklyTerminalAssignmentResult(true, "saved", assigned));
+        var service = new FakeCardTerminalSetupService(
+            CardTerminalConfiguration.Default with { LinklyConnectionMode = LinklyConnectionMode.CloudBackendAsync })
+        {
+            LinklyCloudTerminalDirectory = initial,
+            PendingTerminalAssignment = assignment
+        };
+        var session = new PosSessionState("HB POS", "S01", "Store", "POS-1", "C1", "Cashier", true, 0);
+        var viewModel = new SettingsViewModel(
+            service,
+            session: session,
+            confirmLinklyTerminalAssignmentAsync: _ => Task.FromResult(true));
+        await viewModel.LoadAsync();
+
+        await Assert.Single(viewModel.LinklyCloudLines).SelectCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, service.BackendAssignmentCallCount);
+        Assert.Null(service.LastBackendSelectionTerminalId);
+        Assert.Equal(5, viewModel.LinklyCloudSelectionRevision);
+        Assert.Equal("POS-1", Assert.Single(viewModel.LinklyCloudLines).Terminal.AssignedDeviceCode);
+    }
+
+    [Fact]
     public async Task CloudBackendAsync_line_health_and_test_failure_use_localized_safe_copy()
     {
         var terminalId = Guid.NewGuid();
@@ -3543,6 +3582,8 @@ public sealed class SettingsViewModelTests
 
         public long? LastBackendSelectionExpectedRevision { get; private set; }
 
+        public int BackendAssignmentCallCount { get; private set; }
+
         public Exception? LinklyCloudTerminalSelectionException { get; set; }
 
         public Exception? LinklyCloudTerminalPairException { get; set; }
@@ -3649,9 +3690,12 @@ public sealed class SettingsViewModelTests
             LinklyCloudAssignableDevice? targetDevice,
             IReadOnlyList<LinklyCloudAssignableDevice> devices,
             PosSessionState session,
-            CancellationToken cancellationToken = default) =>
-            PendingTerminalAssignment?.Task ?? Task.FromResult(
+            CancellationToken cancellationToken = default)
+        {
+            BackendAssignmentCallCount++;
+            return PendingTerminalAssignment?.Task ?? Task.FromResult(
                 new LinklyTerminalAssignmentResult(false, "assignment unavailable"));
+        }
 
         public Task<string?> GetSquareAccessTokenAsync(CancellationToken cancellationToken = default)
         {

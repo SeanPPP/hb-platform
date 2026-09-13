@@ -63,11 +63,20 @@ public sealed class WpfViewLifecycleTests
         var rows = new List<Hbpos.Client.Wpf.ViewModels.Settings.LinklyCloudLineItem>();
         for (var i = 1; i <= 3; i++)
         {
+            var terminal = new Hbpos.Contracts.Linkly.LinklyCloudTerminalSummary(Guid.NewGuid(), i,
+                i == 2 ? "Customer service / 客服收银台 B" : $"Checkout {i}", "Ready", false, true, null, null,
+                i == 1 ? "POS-1" : null, i, $"v-{i}");
+            var devices = new[]
+            {
+                new Hbpos.Contracts.Linkly.LinklyCloudAssignableDevice("POS-1", "WPF", true, i == 1 ? terminal.TerminalId : null, i),
+                new Hbpos.Contracts.Linkly.LinklyCloudAssignableDevice("IPAD-2", "iPad", true, null, i)
+            };
+            var managementItem = new LinklyCloudTerminalManagementItem(
+                terminal, devices, devices[0], localize: localization.T);
             rows.Add(new Hbpos.Client.Wpf.ViewModels.Settings.LinklyCloudLineItem(
-                new Hbpos.Contracts.Linkly.LinklyCloudTerminalSummary(Guid.NewGuid(), i,
-                    i == 2 ? "Customer service / 客服收银台 B" : $"Checkout {i}", "Ready", false, true, null, null),
+                terminal,
                 localization.T, () => false, _ => { }, _ => { }, _ => { }, _ => { },
-                _ => Task.CompletedTask, _ => Task.CompletedTask, _ => Task.CompletedTask));
+                _ => Task.CompletedTask, _ => Task.CompletedTask, _ => Task.CompletedTask, managementItem, supportsManagement: true));
             model.LinklyCloudLines.Add(rows[^1]);
         }
         rows[1].IsExpanded = true;
@@ -90,9 +99,13 @@ public sealed class WpfViewLifecycleTests
                     view.UpdateLayout();
                     var cards = Assert.Single(FindVisualDescendants<ItemsControl>(view).Where(item =>
                         AutomationProperties.GetAutomationId(item) == "LinklyCloudLineCards"));
+                    Assert.Empty(FindVisualDescendants<ItemsControl>(view).Where(item =>
+                        AutomationProperties.GetAutomationId(item) == "LinklyCloudTerminalLineList"));
                     var toggles = FindVisualDescendants<Button>(cards).Where(button =>
                         AutomationProperties.GetAutomationId(button) == "LinklyLineTogglePairing").ToArray();
                     Assert.Equal(3, toggles.Length);
+                    Assert.Equal(3, FindVisualDescendants<Button>(cards).Count(button =>
+                        AutomationProperties.GetAutomationId(button) == "LinklyLineUseForPayments"));
                     Assert.All(toggles, button => Assert.True(button.ActualHeight >= 44));
                     Assert.All(toggles, button => Assert.NotNull(button.Command));
                     Assert.Equal(localization.T("settings.linkly.lines.repair"), Assert.IsType<TextBlock>(toggles[0].Content).Text);
@@ -103,6 +116,8 @@ public sealed class WpfViewLifecycleTests
                     AssertHorizontallyContained(input, cards, width, 5000);
                     foreach (var button in FindVisualDescendants<Button>(cards).Where(button => button.ActualWidth > 0))
                         AssertHorizontallyContained(button, cards, width, 5000);
+                    foreach (var target in FindVisualDescendants<ComboBox>(cards).Where(combo => combo.ActualWidth > 0))
+                        AssertHorizontallyContained(target, cards, width, 5000);
                     Assert.All(FindVisualDescendants<TextBlock>(cards), text => Assert.DoesNotContain("[[settings.", text.Text));
                     SaveLinklyLayoutEvidence(cards, $"linkly-lines-{culture}-{width:0}-entry.png");
                 }

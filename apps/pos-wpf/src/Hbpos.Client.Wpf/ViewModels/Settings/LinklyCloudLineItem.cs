@@ -3,6 +3,7 @@ using CommunityToolkit.Mvvm.Input;
 using Hbpos.Contracts.Linkly;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
+using Hbpos.Client.Wpf.ViewModels;
 
 namespace Hbpos.Client.Wpf.ViewModels.Settings;
 
@@ -29,7 +30,9 @@ public sealed partial class LinklyCloudLineItem : ObservableObject
         Action<LinklyCloudLineItem> cancel,
         Func<LinklyCloudLineItem, Task> confirmAsync,
         Func<LinklyCloudLineItem, Task> testConnectionAsync,
-        Func<LinklyCloudLineItem, Task> selectAsync)
+        Func<LinklyCloudLineItem, Task> selectAsync,
+        LinklyCloudTerminalManagementItem? managementItem = null,
+        bool supportsManagement = false)
     {
         Terminal = terminal;
         _translate = translate;
@@ -41,6 +44,8 @@ public sealed partial class LinklyCloudLineItem : ObservableObject
         _confirmAsync = confirmAsync;
         _testConnectionAsync = testConnectionAsync;
         _selectAsync = selectAsync;
+        ManagementItem = managementItem;
+        SupportsManagement = supportsManagement;
 
         TogglePairingCommand = new RelayCommand(() => _togglePairing(this), () => !IsAnyOperationBusy);
         NextCommand = new RelayCommand(() => _next(this), CanGoNext);
@@ -52,6 +57,10 @@ public sealed partial class LinklyCloudLineItem : ObservableObject
     }
 
     public LinklyCloudTerminalSummary Terminal { get; private set; }
+
+    public LinklyCloudTerminalManagementItem? ManagementItem { get; }
+
+    public bool SupportsManagement { get; }
 
     public int LaneNo => Terminal.LaneNo;
 

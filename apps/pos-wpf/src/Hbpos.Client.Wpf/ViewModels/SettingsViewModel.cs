@@ -1121,7 +1121,10 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         }, operationName: "select linkly cloud terminal");
     }
 
-    private LinklyCloudLineItem CreateLinklyCloudLine(LinklyCloudTerminalSummary terminal, Guid? selectedTerminalId)
+    private LinklyCloudLineItem CreateLinklyCloudLine(
+        LinklyCloudTerminalSummary terminal,
+        Guid? selectedTerminalId,
+        LinklyCloudTerminalManagementItem managementItem)
     {
         var item = new LinklyCloudLineItem(
             terminal,
@@ -1133,10 +1136,23 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             line => line.CloseAndClear(),
             ConfirmLinklyLinePairingAsync,
             TestLinklyLineConnectionAsync,
-            line => SelectLinklyCloudBackendTerminalAsync(line.Terminal));
+            UseLinklyCloudLineForPaymentsAsync,
+            managementItem,
+            IsLinklyCloudLineManagementAvailable);
         item.IsSelected = terminal.TerminalId == selectedTerminalId;
         ApplyInitialLinklyLineConnectionStatus(item, terminal.LastHealthStatus);
         return item;
+    }
+
+    private Task UseLinklyCloudLineForPaymentsAsync(LinklyCloudLineItem line)
+    {
+        if (IsLinklyCloudLineManagementAvailable && line.ManagementItem is { } managementItem)
+        {
+            // 新目录合同必须经服务器分配、CAS 和付款线路切换；配对动作本身仍不会隐式分配。
+            return UseLinklyCloudTerminalAsync(managementItem);
+        }
+
+        return SelectLinklyCloudBackendTerminalAsync(line.Terminal);
     }
 
     private void ToggleLinklyLinePairing(LinklyCloudLineItem item)
@@ -1764,7 +1780,6 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         }
         foreach (var terminal in LinklyCloudTerminals)
         {
-            LinklyCloudLines.Add(CreateLinklyCloudLine(terminal, directory.SelectedTerminalId));
             var snapshotKey = CreateLinklyTerminalTestSnapshotKey(environment, terminal);
             var hasLocalSnapshot = _linklyTerminalTestSnapshots.TryGetValue(snapshotKey, out var localSnapshot) &&
                 (terminal.LastHealthAt is null || terminal.LastHealthAt <= localSnapshot.CheckedAt);
@@ -1773,7 +1788,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
                 // 服务端已有更新检测时，以服务端为准，避免之后的旧目录重新唤回本地结果。
                 _linklyTerminalTestSnapshots.Remove(snapshotKey);
             }
-            LinklyCloudTerminalItems.Add(new LinklyCloudTerminalManagementItem(
+            var managementItem = new LinklyCloudTerminalManagementItem(
                 terminal,
                 availableTargets,
                 currentTarget,
@@ -1781,7 +1796,9 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
                     ? localSnapshot!.ConnectionStatus
                     : FormatPersistedLinklyHealthStatus(terminal.LastHealthStatus),
                 T,
-                hasLocalSnapshot ? localSnapshot!.CheckedAt : terminal.LastHealthAt));
+                hasLocalSnapshot ? localSnapshot!.CheckedAt : terminal.LastHealthAt);
+            LinklyCloudTerminalItems.Add(managementItem);
+            LinklyCloudLines.Add(CreateLinklyCloudLine(terminal, directory.SelectedTerminalId, managementItem));
         }
 
         _persistedLinklyCloudTerminalId = directory.SelectedTerminalId;
