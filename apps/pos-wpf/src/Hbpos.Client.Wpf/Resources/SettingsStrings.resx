@@ -333,6 +333,46 @@
   <data name="settings.linkly.cloudBackend.permissionRequired" xml:space="preserve"><value>This operation is not authorized. Ask an authorized supervisor to check the POS sign-in and payment-terminal permissions, then retry.</value></data>
   <data name="settings.linkly.cloudBackend.testCommunicationFailed" xml:space="preserve"><value>The test could not be completed because the connection was interrupted. Check the POS network and terminal screen before retrying; the terminal may still be processing the previous test.</value></data>
   <data name="settings.linkly.cloudBackend.pairRequestInvalid" xml:space="preserve"><value>The pairing request is invalid. Check the selected terminal, environment and 6-digit pair code. If they are correct, ask an administrator to check the terminal configuration.</value></data>
+  <data name="settings.linkly.lines.title" xml:space="preserve"><value>Lines</value></data>
+  <data name="settings.linkly.lines.description" xml:space="preserve"><value>Each line corresponds to one card terminal.</value></data>
+  <data name="settings.linkly.lines.selected" xml:space="preserve"><value>Current payment line</value></data>
+  <data name="settings.linkly.lines.pairingStatus" xml:space="preserve"><value>Pairing status</value></data>
+  <data name="settings.linkly.lines.connectionStatus" xml:space="preserve"><value>Connection status</value></data>
+  <data name="settings.linkly.lines.testConnection" xml:space="preserve"><value>Test connection</value></data>
+  <data name="settings.linkly.lines.select" xml:space="preserve"><value>Use for payments</value></data>
+  <data name="settings.linkly.lines.enterTitle" xml:space="preserve"><value>Re-pair this line</value></data>
+  <data name="settings.linkly.lines.enterHelp" xml:space="preserve"><value>Enter the new 6-digit code generated on this line’s terminal.</value></data>
+  <data name="settings.linkly.lines.cancel" xml:space="preserve"><value>Cancel</value></data>
+  <data name="settings.linkly.lines.next" xml:space="preserve"><value>Next</value></data>
+  <data name="settings.linkly.lines.confirmTitle" xml:space="preserve"><value>Confirm the line to re-pair</value></data>
+  <data name="settings.linkly.lines.confirmHelp" xml:space="preserve"><value>Check that this code came from the terminal for the line shown above. Pairing does not change the payment line.</value></data>
+  <data name="settings.linkly.lines.back" xml:space="preserve"><value>Back to edit</value></data>
+  <data name="settings.linkly.lines.confirm" xml:space="preserve"><value>Confirm pairing</value></data>
+  <data name="settings.linkly.lines.singleExpandedHint" xml:space="preserve"><value>Only one line can be expanded. Closing or switching lines clears the code.</value></data>
+  <data name="settings.linkly.lines.laneLabel" xml:space="preserve"><value>Line {0:00}</value></data>
+  <data name="settings.linkly.lines.collapsePairing" xml:space="preserve"><value>Collapse</value></data>
+  <data name="settings.linkly.lines.repair" xml:space="preserve"><value>Re-pair</value></data>
+  <data name="settings.linkly.lines.pairing.ready" xml:space="preserve"><value>Paired</value></data>
+  <data name="settings.linkly.lines.pairing.unpaired" xml:space="preserve"><value>Not paired</value></data>
+  <data name="settings.linkly.lines.pairing.needsRepair" xml:space="preserve"><value>Re-pair required</value></data>
+  <data name="settings.linkly.lines.pairing.unknown" xml:space="preserve"><value>Unknown</value></data>
+  <data name="settings.linkly.lines.connection.notTested" xml:space="preserve"><value>Not tested</value></data>
+  <data name="settings.linkly.lines.connection.connected" xml:space="preserve"><value>Connected</value></data>
+  <data name="settings.linkly.lines.connection.failed" xml:space="preserve"><value>Connection failed</value></data>
+  <data name="settings.linkly.lines.connection.unknown" xml:space="preserve"><value>Connection unknown</value></data>
+  <data name="settings.linkly.lines.connection.help.newPairCode" xml:space="preserve"><value>Generate a new 6-digit code on this terminal, then re-pair this line.</value></data>
+  <data name="settings.linkly.lines.connection.help.checkTerminal" xml:space="preserve"><value>Check that the terminal is powered on and online, then test the connection again.</value></data>
+  <data name="settings.linkly.lines.connection.help.checkNetwork" xml:space="preserve"><value>Check the POS network and terminal screen, then retry the connection test.</value></data>
+  <data name="settings.linkly.lines.connection.help.wait" xml:space="preserve"><value>Wait for the current terminal operation to finish, then refresh the line list before retrying.</value></data>
+  <data name="settings.linkly.lines.connection.help.pairFirst" xml:space="preserve"><value>Pair this line before testing the connection.</value></data>
+  <data name="settings.linkly.lines.pairingSucceeded" xml:space="preserve"><value>{0} is paired. Test its connection before taking payments.</value></data>
+  <data name="settings.linkly.lines.pairingRejected" xml:space="preserve"><value>Pairing for {0} was not completed. Check the terminal and obtain a new code if pairing was rejected.</value></data>
+  <data name="settings.linkly.lines.pairingUnconfirmed" xml:space="preserve"><value>The pairing result for {0} could not be confirmed. Refresh the list and check the terminal before trying again.</value></data>
+  <data name="settings.linkly.lines.empty" xml:space="preserve"><value>No lines are available. Refresh the list or ask an administrator to check this store’s terminal configuration.</value></data>
+  <data name="settings.linkly.lines.working" xml:space="preserve"><value>Processing this line… Please wait for the result.</value></data>
+  <data name="settings.linkly.lines.targetChanged" xml:space="preserve"><value>This line changed. Refresh the list and enter a new code for the correct terminal.</value></data>
+  <data name="settings.linkly.lines.preflightFailed" xml:space="preserve"><value>The line could not be verified. Check your network, refresh the list and try again. No pairing code was submitted.</value></data>
+  <data name="settings.linkly.lines.refreshRequired" xml:space="preserve"><value>Refresh the line list to load its latest configuration before testing the connection.</value></data>
   <data name="settings.linkly.cloudBackend.managementUnavailable" xml:space="preserve"><value>Update the POS API before managing individual Linkly lines. Pairing and the existing payment selection remain available.</value></data>
   <data name="settings.linkly.cloudBackend.pairingState" xml:space="preserve"><value>Pairing</value></data>
   <data name="settings.linkly.cloudBackend.lane" xml:space="preserve"><value>Lane {0}</value></data>
@@ -365,4 +405,6 @@
   <data name="settings.linkly.cloudBackend.assignmentUnconfirmed" xml:space="preserve"><value>The write response was interrupted and the refreshed directory does not confirm the requested binding. Review the current owner before retrying.</value></data>
   <data name="settings.linkly.cloudBackend.assignmentReconcileFailed" xml:space="preserve"><value>The write result is unknown and the directory could not be refreshed. Check the current binding before trying again.</value></data>
   <data name="settings.linkly.cloudBackend.assignmentSnapshotChanged" xml:space="preserve"><value>The line directory changed before this operation started. Review the current owner and try again.</value></data>
+  <data name="settings.linkly.cloudBackend.selectionReconciled" xml:space="preserve"><value>The selection response was uncertain. The terminal directory was refreshed; review the current payment line before continuing.</value></data>
+  <data name="settings.linkly.cloudBackend.selectionReconcileFailed" xml:space="preserve"><value>The payment line is unknown because the selection response and directory refresh both failed. Refresh the terminal list before taking payment.</value></data>
 </root>

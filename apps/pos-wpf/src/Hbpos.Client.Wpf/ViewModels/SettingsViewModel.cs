@@ -6,6 +6,7 @@ using CommunityToolkit.Mvvm.Input;
 using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
+using Hbpos.Client.Wpf.ViewModels.Settings;
 using Hbpos.Contracts.Linkly;
 using Hbpos.Contracts.Stores;
 using Hbpos.RemoteMaintenance.Setup;
@@ -163,6 +164,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     private Guid? _persistedLinklyCloudTerminalId;
     private int _linklyTerminalDirectoryGeneration;
     private int _linklyTerminalDirectoryRequestGeneration;
+    private bool _isLinklyLineOperationBusy;
     private readonly Dictionary<Guid, int> _linklyTerminalTestGenerations = [];
     private readonly Dictionary<Guid, int> _linklyTerminalAssignmentGenerations = [];
     private readonly Dictionary<LinklyTerminalTestSnapshotKey, LinklyTerminalTestSnapshot> _linklyTerminalTestSnapshots = [];
@@ -441,13 +443,15 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     public ObservableCollection<LinklyCloudTerminalManagementItem> LinklyCloudTerminalItems { get; } = [];
 
+    public ObservableCollection<LinklyCloudLineItem> LinklyCloudLines { get; } = [];
+
     public IReadOnlyList<LinklyCloudAssignableDevice> LinklyCloudDevices { get; private set; } = [];
 
     public bool IsLinklyCloudLineManagementAvailable { get; private set; }
 
     public bool IsLinklyCloudLineManagementUnavailable => !IsLinklyCloudLineManagementAvailable;
 
-    public bool CanRefreshLinklyCloudTerminals => !IsBusy;
+    public bool CanRefreshLinklyCloudTerminals => !IsBusy && !_isLinklyLineOperationBusy;
 
     public string LinklyCloudLineManagementMessage => IsLinklyCloudLineManagementAvailable
         ? string.Empty
@@ -657,7 +661,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     public string SquareDeviceCodesUnavailableText => T("settings.square.deviceCodes.unsupported");
 
-    public bool CanChangeEnvironment => !IsBusy;
+    public bool CanChangeEnvironment => !IsBusy && !_isLinklyLineOperationBusy;
 
     public LinklySettingsMode PrimaryLinklyMode => LinklyModePriorityItems.Count == 0
         ? SelectedLinklyMode
@@ -1093,32 +1097,352 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         }
 
         using var authorizationActivation = permissionGrant.Activate();
+        var environment = SelectedLinklyEnvironment;
         await RunBusyAsync(async () =>
         {
             try
             {
                 var selection = await _setupService.SelectLinklyCloudBackendTerminalAsync(
-                    SelectedLinklyEnvironment,
+                    environment,
                     terminal.TerminalId,
                     LinklyCloudSelectionRevision);
+                if (selection.TerminalId != terminal.TerminalId ||
+                    !string.Equals(selection.Environment, environment.ToString(), StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException("Linkly terminal selection response identity did not match the requested line.");
+                }
                 ApplyPersistedLinklyCloudSelection(selection.TerminalId, selection.Revision);
                 SetStatusOverride(string.Format(
                     System.Globalization.CultureInfo.CurrentCulture,
                     T("settings.linkly.cloudBackend.selected"),
                     terminal.DisplayName));
             }
-            catch
+            catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
             {
-                // PUT 被拒绝、失权或网络失败时，UI 必须回到服务端已持久化的选择，
-                // 不能让收银员误以为下一笔付款会使用尚未保存的终端。
-                RestorePersistedLinklyCloudSelection();
-                throw;
+                ResetLinklyConnectionTest();
+                try
+                {
+                    // PUT 结果未知时不重放写入，只读一次权威目录决定实际付款线路。
+                    await RefreshLinklyCloudBackendTerminalsCoreAsync(environment);
+                    SetStatus("settings.linkly.cloudBackend.selectionReconciled");
+                }
+                catch (Exception refreshException) when (refreshException is not OutOfMemoryException and not StackOverflowException)
+                {
+                    RestorePersistedLinklyCloudSelection();
+                    SetStatus("settings.linkly.cloudBackend.selectionReconcileFailed");
+                    LogLinklyCloudSettings(
+                        $"select line reconciliation failed selectError={ex.GetType().Name} refreshError={refreshException.GetType().Name}");
+                }
             }
         }, operationName: "select linkly cloud terminal");
     }
 
+    private LinklyCloudLineItem CreateLinklyCloudLine(
+        LinklyCloudTerminalSummary terminal,
+        Guid? selectedTerminalId,
+        LinklyCloudTerminalManagementItem managementItem)
+    {
+        var item = new LinklyCloudLineItem(
+            terminal,
+            T,
+            () => IsBusy || _isLinklyLineOperationBusy,
+            ToggleLinklyLinePairing,
+            line => line.BeginConfirmation(SelectedLinklyEnvironment),
+            line => line.BackToCodeEntry(),
+            line => line.CloseAndClear(),
+            ConfirmLinklyLinePairingAsync,
+            TestLinklyLineConnectionAsync,
+            UseLinklyCloudLineForPaymentsAsync,
+            managementItem,
+            IsLinklyCloudLineManagementAvailable);
+        item.IsSelected = terminal.TerminalId == selectedTerminalId;
+        ApplyInitialLinklyLineConnectionStatus(item, terminal.LastHealthStatus);
+        return item;
+    }
+
+    private Task UseLinklyCloudLineForPaymentsAsync(LinklyCloudLineItem line)
+    {
+        if (IsLinklyCloudLineManagementAvailable && line.ManagementItem is { } managementItem)
+        {
+            // 新目录合同必须经服务器分配、CAS 和付款线路切换；配对动作本身仍不会隐式分配。
+            return UseLinklyCloudTerminalAsync(managementItem);
+        }
+
+        return SelectLinklyCloudBackendTerminalAsync(line.Terminal);
+    }
+
+    private void ToggleLinklyLinePairing(LinklyCloudLineItem item)
+    {
+        if (item.IsExpanded)
+        {
+            item.CloseAndClear();
+            return;
+        }
+
+        CloseLinklyLinePairing();
+        item.OpenForCodeEntry();
+    }
+
+    public void CloseLinklyLinePairing()
+    {
+        foreach (var line in LinklyCloudLines)
+        {
+            line.CloseAndClear();
+        }
+    }
+
+    private async Task ConfirmLinklyLinePairingAsync(LinklyCloudLineItem item)
+    {
+        if (IsBusy || _isLinklyLineOperationBusy || item.PairingTarget is not { } target)
+        {
+            return;
+        }
+
+        SetLinklyLineOperationBusy(true);
+        item.IsOperationBusy = true;
+        try
+        {
+            using var permissionGrant = await AuthorizeAsync(
+                Permissions.PosTerminal.Settings.PaymentTerminal,
+                "pair-linkly-cloud-line");
+            if (permissionGrant is null || !IsCurrentLinklyPairingTarget(item, target))
+            {
+                return;
+            }
+
+            using var authorizationActivation = permissionGrant.Activate();
+            // 授权等待后重新读取权威目录，确保确认页锁定的线路、版本和设备归属仍然有效。
+            LinklyCloudTerminalListResponse directory;
+            try
+            {
+                directory = await _setupService.ListLinklyCloudBackendTerminalsAsync(target.Environment);
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+            {
+                item.CloseAndClear();
+                SetStatus("settings.linkly.lines.preflightFailed");
+                return;
+            }
+            var latest = directory.Terminals.FirstOrDefault(line => line.TerminalId == target.TerminalId);
+            if (!IsCurrentLinklyPairingTarget(item, target) || latest is null ||
+                !string.Equals(directory.Environment, target.Environment.ToString(), StringComparison.OrdinalIgnoreCase) ||
+                !MatchesLinklyPairingTarget(latest, target))
+            {
+                item.CloseAndClear();
+                SetStatus("settings.linkly.lines.targetChanged");
+                return;
+            }
+
+            // 一次性配对码在 POST 前清空；配对仅更新该线路，不隐式切换付款线路。
+            item.PairCode = string.Empty;
+            var result = await _setupService.PairLinklyCloudBackendTerminalAsync(
+                target.Environment,
+                target.TerminalId,
+                target.PairCode);
+            if (result.TerminalId != target.TerminalId ||
+                !string.Equals(result.Environment, target.Environment.ToString(), StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(result.DisplayName, target.DisplayName, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("Linkly terminal pairing response identity did not match the confirmed line.");
+            }
+
+            if (IsCurrentLinklyPairingTarget(item, target))
+            {
+                SetStatus(result.IsReady
+                    ? "settings.linkly.lines.pairingSucceeded"
+                    : "settings.linkly.lines.pairingRejected",
+                    target.DisplayName);
+            }
+            item.CloseAndClear();
+            await RefreshLinklyCloudBackendTerminalsCoreAsync(target.Environment);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            LogLinklyCloudSettings($"pair line failed terminalId={target.TerminalId:D} error={ex.GetType().Name}");
+            if (TryGetDefinitiveLinklyPairFailureKey(ex, out var failureKey))
+            {
+                item.SetConnectionStatus("settings.linkly.lines.connection.notTested", failureKey);
+                SetStatus(failureKey);
+            }
+            else
+            {
+                item.SetConnectionStatus(
+                    "settings.linkly.lines.connection.unknown",
+                    "settings.linkly.lines.connection.help.checkTerminal");
+                SetStatus("settings.linkly.lines.pairingUnconfirmed", target.DisplayName);
+            }
+            item.CloseAndClear();
+        }
+        finally
+        {
+            item.IsOperationBusy = false;
+            SetLinklyLineOperationBusy(false);
+        }
+    }
+
+    private async Task TestLinklyLineConnectionAsync(LinklyCloudLineItem item)
+    {
+        if (IsBusy || _isLinklyLineOperationBusy || !IsLinklyCloudBackendAsyncMode || !item.Terminal.IsReady)
+        {
+            return;
+        }
+
+        var environment = SelectedLinklyEnvironment;
+        var terminal = item.Terminal;
+        SetLinklyLineOperationBusy(true);
+        item.IsOperationBusy = true;
+        try
+        {
+            using var permissionGrant = await AuthorizeAsync(
+                Permissions.PosTerminal.Settings.PaymentTerminal,
+                "test-linkly-cloud-line");
+            if (permissionGrant is null || environment != SelectedLinklyEnvironment || !LinklyCloudLines.Contains(item))
+            {
+                return;
+            }
+
+            using var authorizationActivation = permissionGrant.Activate();
+            if (item.IsSelected && _persistedLinklyCloudTerminalId == terminal.TerminalId)
+            {
+                ResetLinklyConnectionTest();
+            }
+
+            var result = await _setupService.TestLinklyCloudBackendTerminalAsync(environment, terminal);
+            if (!IsLinklyCloudBackendAsyncMode || environment != SelectedLinklyEnvironment || !LinklyCloudLines.Contains(item))
+            {
+                return;
+            }
+            if (result.TerminalId != terminal.TerminalId ||
+                !string.Equals(result.Environment, environment.ToString(), StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(result.TerminalVersion, terminal.TerminalVersion, StringComparison.Ordinal) ||
+                !string.Equals(result.AssignedDeviceCode, terminal.AssignedDeviceCode, StringComparison.OrdinalIgnoreCase) ||
+                result.AssignmentRevision != terminal.AssignmentRevision)
+            {
+                item.SetConnectionStatus(
+                    "settings.linkly.lines.connection.unknown",
+                    "settings.linkly.lines.connection.help.checkTerminal");
+                return;
+            }
+
+            var status = result.Status?.Trim().ToLowerInvariant();
+            var connectionStatusKey = result.Succeeded && status == "connected"
+                ? "settings.linkly.lines.connection.connected"
+                : status == "unknown"
+                    ? "settings.linkly.lines.connection.unknown"
+                    : "settings.linkly.lines.connection.failed";
+            item.SetConnectionStatus(
+                connectionStatusKey,
+                connectionStatusKey == "settings.linkly.lines.connection.connected"
+                    ? null
+                    : GetLinklyLineConnectionHelpKey(status));
+            if (item.IsSelected && _persistedLinklyCloudTerminalId == terminal.TerminalId)
+            {
+                var connected = connectionStatusKey == "settings.linkly.lines.connection.connected";
+                LinklyConnectionSucceeded = connected;
+                _linklyState.ConnectionSucceeded = connected;
+                RaiseCommandStates();
+            }
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            LogLinklyCloudSettings($"test line failed terminalId={terminal.TerminalId:D} error={ex.GetType().Name}");
+            item.SetConnectionStatus(
+                "settings.linkly.lines.connection.unknown",
+                TryGetDefinitiveLinklyPairFailureKey(ex, out var failureKey)
+                    ? failureKey
+                    : "settings.linkly.lines.connection.help.checkNetwork");
+            if (item.IsSelected && _persistedLinklyCloudTerminalId == terminal.TerminalId)
+            {
+                LinklyConnectionSucceeded = false;
+                _linklyState.ConnectionSucceeded = false;
+                RaiseCommandStates();
+            }
+        }
+        finally
+        {
+            item.IsOperationBusy = false;
+            SetLinklyLineOperationBusy(false);
+        }
+    }
+
+    private void SetLinklyLineOperationBusy(bool value)
+    {
+        if (_isLinklyLineOperationBusy == value)
+        {
+            return;
+        }
+
+        // 配对和检测持有同一目录租约；期间所有会替换或修改线路快照的入口必须同步禁用。
+        _isLinklyLineOperationBusy = value;
+        OnPropertyChanged(nameof(CanChangeEnvironment));
+        OnPropertyChanged(nameof(CanRefreshLinklyCloudTerminals));
+        RaiseCommandStates();
+        foreach (var line in LinklyCloudLines)
+        {
+            line.RefreshCommandStates();
+        }
+    }
+
+    private bool IsCurrentLinklyPairingTarget(LinklyCloudLineItem item, PairingTargetSnapshot target) =>
+        IsLinklyCloudBackendAsyncMode &&
+        SelectedLinklyEnvironment == target.Environment &&
+        LinklyCloudLines.Contains(item) &&
+        item.IsConfirming &&
+        item.PairingTarget == target &&
+        MatchesLinklyPairingTarget(item.Terminal, target);
+
+    private static bool MatchesLinklyPairingTarget(LinklyCloudTerminalSummary terminal, PairingTargetSnapshot target) =>
+        terminal.TerminalId == target.TerminalId && terminal.LaneNo == target.LaneNo &&
+        string.Equals(terminal.DisplayName, target.DisplayName, StringComparison.Ordinal) &&
+        string.Equals(terminal.TerminalVersion, target.TerminalVersion, StringComparison.Ordinal) &&
+        string.Equals(terminal.AssignedDeviceCode, target.AssignedDeviceCode, StringComparison.OrdinalIgnoreCase) &&
+        terminal.AssignmentRevision == target.AssignmentRevision;
+
+    private static bool TryGetDefinitiveLinklyPairFailureKey(Exception exception, out string key)
+    {
+        key = exception is LinklyBackendHttpException backendException
+            ? backendException.ErrorCode switch
+            {
+                "LINKLY_CLOUD_BACKEND_PAIR_REJECTED" => "settings.linkly.cloudBackend.pairRejected",
+                "LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT" => "settings.linkly.cloudBackend.selectionChanged",
+                "LINKLY_CLOUD_BACKEND_ACTIVE_TRANSACTION" or "LINKLY_CLOUD_TERMINAL_SESSION_ACTIVE" =>
+                    "settings.linkly.cloudBackend.operationBlocked",
+                "LINKLY_CLOUD_BACKEND_PAIR_IN_PROGRESS" or "LINKLY_CLOUD_TERMINAL_PAIRING_CONFLICT" =>
+                    "settings.linkly.cloudBackend.pairInProgress",
+                _ => string.Empty
+            }
+            : string.Empty;
+        return key.Length > 0;
+    }
+
+    private static string GetLinklyLineConnectionHelpKey(string? status) => status switch
+    {
+        "needs-repair" or "needsrepair" => "settings.linkly.lines.connection.help.newPairCode",
+        "busy" or "in-progress" => "settings.linkly.lines.connection.help.wait",
+        "not-ready" or "unpaired" => "settings.linkly.lines.connection.help.pairFirst",
+        "unknown" => "settings.linkly.lines.connection.help.checkNetwork",
+        _ => "settings.linkly.lines.connection.help.checkTerminal"
+    };
+
+    private static void ApplyInitialLinklyLineConnectionStatus(LinklyCloudLineItem item, string? status)
+    {
+        if (item.Terminal.IsReady && string.IsNullOrWhiteSpace(item.Terminal.TerminalVersion))
+        {
+            item.SetConnectionStatus("settings.linkly.lines.connection.unknown", "settings.linkly.lines.refreshRequired");
+            return;
+        }
+
+        item.SetConnectionStatus(status?.Trim().ToLowerInvariant() switch
+        {
+            "connected" or "healthy" => "settings.linkly.lines.connection.connected",
+            "unhealthy" or "needs-repair" or "needsrepair" => "settings.linkly.lines.connection.failed",
+            null or "" => "settings.linkly.lines.connection.notTested",
+            _ => "settings.linkly.lines.connection.unknown"
+        });
+    }
+
     private bool CanManageLinklyCloudTerminal(LinklyCloudTerminalManagementItem? item) =>
-        !IsBusy && IsLinklyCloudBackendAsyncMode && IsLinklyCloudLineManagementAvailable &&
+        !IsBusy && !_isLinklyLineOperationBusy && IsLinklyCloudBackendAsyncMode && IsLinklyCloudLineManagementAvailable &&
         item is { SupportsManagement: true, IsReady: true, IsTesting: false };
 
     private bool CanAssignLinklyCloudTerminal(LinklyCloudTerminalManagementItem? item) =>
@@ -1469,6 +1793,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         IsLinklyCloudLineManagementAvailable = directory.Devices is not null &&
             directory.Terminals.All(terminal => !string.IsNullOrWhiteSpace(terminal.TerminalVersion));
         LinklyCloudTerminalItems.Clear();
+        LinklyCloudLines.Clear();
         var availableTargets = LinklyCloudDevices.Where(device => device.IsAvailable).ToArray();
         var currentTarget = availableTargets.FirstOrDefault(device =>
             string.Equals(device.DeviceCode, Session.DeviceCode, StringComparison.OrdinalIgnoreCase));
@@ -1492,7 +1817,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
                 // 服务端已有更新检测时，以服务端为准，避免之后的旧目录重新唤回本地结果。
                 _linklyTerminalTestSnapshots.Remove(snapshotKey);
             }
-            LinklyCloudTerminalItems.Add(new LinklyCloudTerminalManagementItem(
+            var managementItem = new LinklyCloudTerminalManagementItem(
                 terminal,
                 availableTargets,
                 currentTarget,
@@ -1500,15 +1825,22 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
                     ? localSnapshot!.ConnectionStatus
                     : FormatPersistedLinklyHealthStatus(terminal.LastHealthStatus),
                 T,
-                hasLocalSnapshot ? localSnapshot!.CheckedAt : terminal.LastHealthAt));
+                hasLocalSnapshot ? localSnapshot!.CheckedAt : terminal.LastHealthAt);
+            LinklyCloudTerminalItems.Add(managementItem);
+            LinklyCloudLines.Add(CreateLinklyCloudLine(terminal, directory.SelectedTerminalId, managementItem));
         }
 
+        var previousPersistedTerminalId = _persistedLinklyCloudTerminalId;
         _persistedLinklyCloudTerminalId = directory.SelectedTerminalId;
         LinklyCloudSelectionRevision = directory.SelectionRevision;
         SelectedLinklyCloudTerminal = directory.SelectedTerminalId is Guid selectedTerminalId
             ? LinklyCloudTerminals.FirstOrDefault(item => item.TerminalId == selectedTerminalId)
             // 服务端未持久选择时保持未选择，避免刷新多终端列表时隐式绑定 Lane 1。
             : null;
+        if (previousPersistedTerminalId != _persistedLinklyCloudTerminalId)
+        {
+            ResetLinklyConnectionTest();
+        }
         RaiseLinklyCloudTerminalProperties();
         OnPropertyChanged(nameof(LinklyCloudDevices));
         OnPropertyChanged(nameof(IsLinklyCloudLineManagementAvailable));
@@ -1579,10 +1911,20 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     private void ApplyPersistedLinklyCloudSelection(Guid terminalId, long revision)
     {
+        var paymentLineChanged = _persistedLinklyCloudTerminalId != terminalId;
         _persistedLinklyCloudTerminalId = terminalId;
         LinklyCloudSelectionRevision = revision;
         SelectedLinklyCloudTerminal = LinklyCloudTerminals.FirstOrDefault(item => item.TerminalId == terminalId)
             ?? SelectedLinklyCloudTerminal;
+        foreach (var line in LinklyCloudLines)
+        {
+            line.IsSelected = line.Terminal.TerminalId == terminalId;
+        }
+        if (paymentLineChanged)
+        {
+            // 连接成功只属于完成检测时的付款线路，切线后必须重新验证。
+            ResetLinklyConnectionTest();
+        }
         RaiseLinklyCloudTerminalProperties();
     }
 
@@ -1591,6 +1933,10 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         SelectedLinklyCloudTerminal = _persistedLinklyCloudTerminalId is Guid persistedTerminalId
             ? LinklyCloudTerminals.FirstOrDefault(item => item.TerminalId == persistedTerminalId)
             : null;
+        foreach (var line in LinklyCloudLines)
+        {
+            line.IsSelected = line.Terminal.TerminalId == _persistedLinklyCloudTerminalId;
+        }
         RaiseLinklyCloudTerminalProperties();
     }
 
@@ -1602,6 +1948,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         _linklyTerminalAssignmentGenerations.Clear();
         LinklyCloudTerminals.Clear();
         LinklyCloudTerminalItems.Clear();
+        LinklyCloudLines.Clear();
         LinklyCloudDevices = [];
         IsLinklyCloudLineManagementAvailable = false;
         SelectedLinklyCloudTerminal = null;
@@ -2203,6 +2550,10 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(ReceiptPrinterTitleText));
         OnPropertyChanged(nameof(SquareTokenStatusText));
         OnPropertyChanged(nameof(SquareDeviceCodesUnavailableText));
+        foreach (var line in LinklyCloudLines)
+        {
+            line.RefreshLocalization();
+        }
         foreach (var item in LinklyCloudTerminalItems)
         {
             item.RefreshLocalizedText();
@@ -2592,6 +2943,10 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         RaiseCommandStates();
         OnPropertyChanged(nameof(CanChangeEnvironment));
         OnPropertyChanged(nameof(CanRefreshLinklyCloudTerminals));
+        foreach (var line in LinklyCloudLines)
+        {
+            line.RefreshCommandStates();
+        }
     }
 
     private void RaiseCommandStates()

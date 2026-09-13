@@ -333,6 +333,46 @@
   <data name="settings.linkly.cloudBackend.permissionRequired" xml:space="preserve"><value>当前无权执行此操作。请有权限的主管检查 POS 登录状态与付款终端权限，再重试。</value></data>
   <data name="settings.linkly.cloudBackend.testCommunicationFailed" xml:space="preserve"><value>连接中断，测试未能完成。重试前请检查 POS 网络与终端屏幕；终端可能仍在处理上一次测试。</value></data>
   <data name="settings.linkly.cloudBackend.pairRequestInvalid" xml:space="preserve"><value>配对请求无效。请核对所选终端、环境和 6 位配对码；若均正确，请管理员检查终端配置。</value></data>
+  <data name="settings.linkly.lines.title" xml:space="preserve"><value>线路管理</value></data>
+  <data name="settings.linkly.lines.description" xml:space="preserve"><value>每条线路对应一台刷卡机。</value></data>
+  <data name="settings.linkly.lines.selected" xml:space="preserve"><value>当前付款线路</value></data>
+  <data name="settings.linkly.lines.pairingStatus" xml:space="preserve"><value>配对状态</value></data>
+  <data name="settings.linkly.lines.connectionStatus" xml:space="preserve"><value>连接状态</value></data>
+  <data name="settings.linkly.lines.testConnection" xml:space="preserve"><value>检测连接</value></data>
+  <data name="settings.linkly.lines.select" xml:space="preserve"><value>设为付款线路</value></data>
+  <data name="settings.linkly.lines.enterTitle" xml:space="preserve"><value>重新配对此线路</value></data>
+  <data name="settings.linkly.lines.enterHelp" xml:space="preserve"><value>输入该线路刷卡机新生成的六位配对码。</value></data>
+  <data name="settings.linkly.lines.cancel" xml:space="preserve"><value>取消</value></data>
+  <data name="settings.linkly.lines.next" xml:space="preserve"><value>下一步</value></data>
+  <data name="settings.linkly.lines.confirmTitle" xml:space="preserve"><value>确认要重新配对的线路</value></data>
+  <data name="settings.linkly.lines.confirmHelp" xml:space="preserve"><value>请确认此配对码来自上方线路的刷卡机。重新配对不会切换付款线路。</value></data>
+  <data name="settings.linkly.lines.back" xml:space="preserve"><value>返回修改</value></data>
+  <data name="settings.linkly.lines.confirm" xml:space="preserve"><value>确认配对</value></data>
+  <data name="settings.linkly.lines.singleExpandedHint" xml:space="preserve"><value>一次只展开一条线路；关闭或切换线路时清空输入。</value></data>
+  <data name="settings.linkly.lines.laneLabel" xml:space="preserve"><value>线路 {0:00}</value></data>
+  <data name="settings.linkly.lines.collapsePairing" xml:space="preserve"><value>收起</value></data>
+  <data name="settings.linkly.lines.repair" xml:space="preserve"><value>重新配对</value></data>
+  <data name="settings.linkly.lines.pairing.ready" xml:space="preserve"><value>已配对</value></data>
+  <data name="settings.linkly.lines.pairing.unpaired" xml:space="preserve"><value>未配对</value></data>
+  <data name="settings.linkly.lines.pairing.needsRepair" xml:space="preserve"><value>需要重新配对</value></data>
+  <data name="settings.linkly.lines.pairing.unknown" xml:space="preserve"><value>未知</value></data>
+  <data name="settings.linkly.lines.connection.notTested" xml:space="preserve"><value>未检测</value></data>
+  <data name="settings.linkly.lines.connection.connected" xml:space="preserve"><value>已连接</value></data>
+  <data name="settings.linkly.lines.connection.failed" xml:space="preserve"><value>连接失败</value></data>
+  <data name="settings.linkly.lines.connection.unknown" xml:space="preserve"><value>连接状态未知</value></data>
+  <data name="settings.linkly.lines.connection.help.newPairCode" xml:space="preserve"><value>请在该刷卡机上生成新的六位配对码，然后重新配对此线路。</value></data>
+  <data name="settings.linkly.lines.connection.help.checkTerminal" xml:space="preserve"><value>请检查刷卡机电源和网络，然后重新检测连接。</value></data>
+  <data name="settings.linkly.lines.connection.help.checkNetwork" xml:space="preserve"><value>请检查收银机网络和刷卡机屏幕，然后重试连接检测。</value></data>
+  <data name="settings.linkly.lines.connection.help.wait" xml:space="preserve"><value>请等待刷卡机当前操作结束，刷新线路列表后再重试。</value></data>
+  <data name="settings.linkly.lines.connection.help.pairFirst" xml:space="preserve"><value>请先配对此线路，再检测连接。</value></data>
+  <data name="settings.linkly.lines.pairingSucceeded" xml:space="preserve"><value>{0} 已配对，请检测连接后再收款。</value></data>
+  <data name="settings.linkly.lines.pairingRejected" xml:space="preserve"><value>{0} 未完成配对。请检查刷卡机；若配对码已被拒绝，请生成新码后再试。</value></data>
+  <data name="settings.linkly.lines.pairingUnconfirmed" xml:space="preserve"><value>无法确认 {0} 的配对结果。请刷新列表并检查刷卡机后再继续。</value></data>
+  <data name="settings.linkly.lines.empty" xml:space="preserve"><value>暂无可用线路。请刷新列表，或请管理员检查本店刷卡机配置。</value></data>
+  <data name="settings.linkly.lines.working" xml:space="preserve"><value>正在处理此线路，请等待结果…</value></data>
+  <data name="settings.linkly.lines.targetChanged" xml:space="preserve"><value>线路信息已变化。请刷新列表，并输入正确刷卡机新生成的配对码。</value></data>
+  <data name="settings.linkly.lines.preflightFailed" xml:space="preserve"><value>无法核对线路信息。请检查网络并刷新列表后重试，本次未提交配对码。</value></data>
+  <data name="settings.linkly.lines.refreshRequired" xml:space="preserve"><value>请刷新线路列表，获取最新配置后再检测连接。</value></data>
   <data name="settings.linkly.cloudBackend.managementUnavailable" xml:space="preserve"><value>请先更新 POS API，再管理单条 Linkly 线路；配对与原有付款终端选择仍可使用。</value></data>
   <data name="settings.linkly.cloudBackend.pairingState" xml:space="preserve"><value>配对状态</value></data>
   <data name="settings.linkly.cloudBackend.lane" xml:space="preserve"><value>线路 {0}</value></data>
@@ -365,4 +405,6 @@
   <data name="settings.linkly.cloudBackend.assignmentUnconfirmed" xml:space="preserve"><value>写入响应中断，刷新后的目录未确认目标绑定。重试前请核对当前归属。</value></data>
   <data name="settings.linkly.cloudBackend.assignmentReconcileFailed" xml:space="preserve"><value>写入结果未知，且无法刷新线路目录。重试前请先核对当前绑定。</value></data>
   <data name="settings.linkly.cloudBackend.assignmentSnapshotChanged" xml:space="preserve"><value>操作开始前线路目录已变化，请核对当前归属后重试。</value></data>
+  <data name="settings.linkly.cloudBackend.selectionReconciled" xml:space="preserve"><value>终端选择响应不确定，已刷新权威目录。继续前请核对当前付款线路。</value></data>
+  <data name="settings.linkly.cloudBackend.selectionReconcileFailed" xml:space="preserve"><value>终端选择响应和目录刷新均失败，当前付款线路未知。收款前请刷新终端列表。</value></data>
 </root>

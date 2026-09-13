@@ -39,6 +39,7 @@ public sealed class WpfViewLifecycleTests
         await _staHost.RunAsync(_ =>
         {
             VerifySettingsViewLifecycle();
+            VerifyLinklyLineCardsLayout();
             VerifyTransactionHistoryViewLifecycle();
             VerifyTransactionHistoryOrderDetailsLayout();
             VerifyTransactionHistoryDisabledDetailsReason();
@@ -49,6 +50,125 @@ public sealed class WpfViewLifecycleTests
             VerifyUnloadedViewInstancesAreCollectible();
             return Task.CompletedTask;
         });
+    }
+
+    private static void VerifyLinklyLineCardsLayout()
+    {
+        var localization = new LocalizationService();
+        LocalizationResourceProvider.Instance.Configure(localization);
+        using var model = new SettingsViewModel(
+            DispatchProxy.Create<ICardTerminalSetupService, ThrowingDispatchProxy>(), localization);
+        model.SelectedCategory = SettingsCategory.PaymentTerminal;
+        model.SelectedLinklyMode = LinklySettingsMode.CloudBackendAsync;
+        var rows = new List<Hbpos.Client.Wpf.ViewModels.Settings.LinklyCloudLineItem>();
+        for (var i = 1; i <= 3; i++)
+        {
+            var terminal = new Hbpos.Contracts.Linkly.LinklyCloudTerminalSummary(Guid.NewGuid(), i,
+                i == 2 ? "Customer service / 客服收银台 B" : $"Checkout {i}", "Ready", false, true, null, null,
+                i == 1 ? "POS-1" : null, i, $"v-{i}");
+            var devices = new[]
+            {
+                new Hbpos.Contracts.Linkly.LinklyCloudAssignableDevice("POS-1", "WPF", true, i == 1 ? terminal.TerminalId : null, i),
+                new Hbpos.Contracts.Linkly.LinklyCloudAssignableDevice("IPAD-2", "iPad", true, null, i)
+            };
+            var managementItem = new LinklyCloudTerminalManagementItem(
+                terminal, devices, devices[0], localize: localization.T);
+            rows.Add(new Hbpos.Client.Wpf.ViewModels.Settings.LinklyCloudLineItem(
+                terminal,
+                localization.T, () => false, _ => { }, _ => { }, _ => { }, _ => { },
+                _ => Task.CompletedTask, _ => Task.CompletedTask, _ => Task.CompletedTask, managementItem, supportsManagement: true));
+            model.LinklyCloudLines.Add(rows[^1]);
+        }
+        rows[1].IsExpanded = true;
+        rows[1].IsEnteringCode = true;
+        rows[1].PairCode = "386214";
+        var view = new SettingsView { DataContext = model };
+        try
+        {
+            view.Measure(new Size(1366, 5000));
+            view.Arrange(new Rect(0, 0, 1366, 5000));
+            view.UpdateLayout();
+            Assert.Single(FindVisualDescendants<TabControl>(view)).SelectedIndex = 1;
+            foreach (var culture in new[] { "en-US", "zh-CN" })
+            {
+                localization.SetCulture(culture);
+                foreach (var width in new[] { 1366d, 1024d })
+                {
+                    view.Measure(new Size(width, 5000));
+                    view.Arrange(new Rect(0, 0, width, 5000));
+                    view.UpdateLayout();
+                    var cards = Assert.Single(FindVisualDescendants<ItemsControl>(view).Where(item =>
+                        AutomationProperties.GetAutomationId(item) == "LinklyCloudLineCards"));
+                    Assert.Empty(FindVisualDescendants<ItemsControl>(view).Where(item =>
+                        AutomationProperties.GetAutomationId(item) == "LinklyCloudTerminalLineList"));
+                    var toggles = FindVisualDescendants<Button>(cards).Where(button =>
+                        AutomationProperties.GetAutomationId(button) == "LinklyLineTogglePairing").ToArray();
+                    Assert.Equal(3, toggles.Length);
+                    Assert.Equal(3, FindVisualDescendants<Button>(cards).Count(button =>
+                        AutomationProperties.GetAutomationId(button) == "LinklyLineUseForPayments"));
+                    Assert.All(toggles, button => Assert.True(button.ActualHeight >= 44));
+                    Assert.All(toggles, button => Assert.NotNull(button.Command));
+                    Assert.Equal(localization.T("settings.linkly.lines.repair"), Assert.IsType<TextBlock>(toggles[0].Content).Text);
+                    Assert.Equal(localization.T("settings.linkly.lines.collapsePairing"), Assert.IsType<TextBlock>(toggles[1].Content).Text);
+                    var input = Assert.Single(FindVisualDescendants<TextBox>(cards).Where(box => box.ActualHeight > 0));
+                    Assert.Equal("386214", input.Text);
+                    Assert.Equal(6, input.MaxLength);
+                    AssertHorizontallyContained(input, cards, width, 5000);
+                    foreach (var button in FindVisualDescendants<Button>(cards).Where(button => button.ActualWidth > 0))
+                        AssertHorizontallyContained(button, cards, width, 5000);
+                    foreach (var target in FindVisualDescendants<ComboBox>(cards).Where(combo => combo.ActualWidth > 0))
+                        AssertHorizontallyContained(target, cards, width, 5000);
+                    Assert.All(FindVisualDescendants<TextBlock>(cards), text => Assert.DoesNotContain("[[settings.", text.Text));
+                    SaveLinklyLayoutEvidence(cards, $"linkly-lines-{culture}-{width:0}-entry.png");
+                }
+            }
+            rows[1].IsEnteringCode = false;
+            rows[1].IsConfirming = true;
+            view.UpdateLayout();
+            var confirmedCards = Assert.Single(FindVisualDescendants<ItemsControl>(view).Where(item =>
+                AutomationProperties.GetAutomationId(item) == "LinklyCloudLineCards"));
+            var confirmation = Assert.Single(FindVisualDescendants<Button>(confirmedCards).Where(button =>
+                AutomationProperties.GetAutomationId(button) == "LinklyLineConfirmPairing" && button.ActualHeight > 0));
+            Assert.Same(rows[1].ConfirmCommand, confirmation.Command);
+            SaveLinklyLayoutEvidence(confirmedCards, "linkly-lines-zh-CN-confirm.png");
+            RaiseLoaded(view);
+            RaiseUnloaded(view);
+            Assert.All(rows, row => { Assert.False(row.IsExpanded); Assert.Empty(row.PairCode); });
+            rows[0].IsExpanded = true;
+            rows[0].PairCode = "654321";
+            RaiseLoaded(view);
+            view.DataContext = null;
+            Assert.False(rows[0].IsExpanded);
+            Assert.Empty(rows[0].PairCode);
+        }
+        finally
+        {
+            view.DataContext = null;
+            localization.SetCulture("en-US");
+        }
+    }
+
+    private static void SaveLinklyLayoutEvidence(FrameworkElement element, string fileName)
+    {
+        var outputDirectory = Environment.GetEnvironmentVariable("HBPOS_TEST_SCREENSHOT_DIR");
+        if (string.IsNullOrWhiteSpace(outputDirectory)) return;
+        System.IO.Directory.CreateDirectory(outputDirectory);
+        var bitmap = new System.Windows.Media.Imaging.RenderTargetBitmap(
+            (int)Math.Ceiling(element.ActualWidth), (int)Math.Ceiling(element.ActualHeight),
+            96, 96, PixelFormats.Pbgra32);
+        // VisualBrush 从卡片自身原点绘制，避免布局偏移占用画布并裁掉底部。
+        var drawing = new DrawingVisual();
+        using (var context = drawing.RenderOpen())
+        {
+            var bounds = new Rect(0, 0, element.ActualWidth, element.ActualHeight);
+            context.DrawRectangle(Brushes.White, null, bounds);
+            context.DrawRectangle(new VisualBrush(element) { Stretch = Stretch.Fill }, null, bounds);
+        }
+        bitmap.Render(drawing);
+        var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+        encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bitmap));
+        using var output = System.IO.File.Create(System.IO.Path.Combine(outputDirectory, fileName));
+        encoder.Save(output);
     }
 
     private static void VerifySettingsViewLifecycle()
