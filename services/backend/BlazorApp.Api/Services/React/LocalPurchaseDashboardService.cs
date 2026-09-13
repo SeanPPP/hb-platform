@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Text.Json;
+using System.Text;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.DTOs;
@@ -23,15 +25,26 @@ namespace BlazorApp.Api.Services.React
         public async Task<ApiResponse<LocalPurchaseDashboardResponseDto>> GetDashboardAsync(
             string endMonth,
             LocalPurchaseDashboardStoreScope storeScope,
-            CancellationToken cancellationToken
+            CancellationToken cancellationToken,
+            string? supplierFilterMode = null,
+            IReadOnlyCollection<string>? supplierKeys = null
         )
         {
             try
             {
+                LocalPurchaseDashboardSqlBuilder.ValidateSupplierFilterShape(supplierFilterMode, supplierKeys);
                 var query = LocalPurchaseDashboardSqlBuilder.BuildDashboard(
                     endMonth,
-                    storeScope
+                    storeScope,
+                    supplierFilterMode,
+                    supplierKeys
                 );
+                var optionRows = await _db.Ado.SqlQueryAsync<LocalPurchaseDashboardSupplierOptionRow>(
+                    query.OptionsSql,
+                    query.OptionsParameters.ToArray(),
+                    cancellationToken
+                );
+                LocalPurchaseDashboardSqlBuilder.ValidateSupplierFilter(supplierFilterMode, supplierKeys, optionRows);
                 var rows = await _db.Ado.SqlQueryAsync<LocalPurchaseDashboardMonthlyRow>(
                     query.Sql,
                     query.Parameters.ToArray(),
@@ -39,7 +52,7 @@ namespace BlazorApp.Api.Services.React
                 );
 
                 return ApiResponse<LocalPurchaseDashboardResponseDto>.OK(
-                    LocalPurchaseDashboardComposer.ComposeDashboard(query.Period, rows)
+                    LocalPurchaseDashboardComposer.ComposeDashboard(query.Period, rows, optionRows)
                 );
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -75,15 +88,20 @@ namespace BlazorApp.Api.Services.React
             string storeCode,
             string endMonth,
             LocalPurchaseDashboardStoreScope storeScope,
-            CancellationToken cancellationToken
+            CancellationToken cancellationToken,
+            string? supplierFilterMode = null,
+            IReadOnlyCollection<string>? supplierKeys = null
         )
         {
             try
             {
+                LocalPurchaseDashboardSqlBuilder.ValidateSupplierFilterShape(supplierFilterMode, supplierKeys);
                 var query = LocalPurchaseDashboardSqlBuilder.BuildStoreSuppliers(
                     storeCode,
                     endMonth,
-                    storeScope
+                    storeScope,
+                    supplierFilterMode,
+                    supplierKeys
                 );
 
                 // controller 已做一次权限校验；service 再收口，避免未来被其他入口复用时越权。
@@ -95,17 +113,28 @@ namespace BlazorApp.Api.Services.React
                     );
                 }
 
+                var optionRows = await _db.Ado.SqlQueryAsync<LocalPurchaseDashboardSupplierOptionRow>(
+                    query.OptionsSql,
+                    query.OptionsParameters.ToArray(),
+                    cancellationToken
+                );
+                LocalPurchaseDashboardSqlBuilder.ValidateSupplierFilter(supplierFilterMode, supplierKeys, optionRows);
+                var warehouseKey = "WAREHOUSE_ORDER:false:WAREHOUSE_ORDER";
+                var warehouseSelected = (supplierKeys ?? Array.Empty<string>()).Any(key => string.Equals(key?.Trim(), warehouseKey, StringComparison.OrdinalIgnoreCase));
+                var includeWarehouse = supplierFilterMode == null
+                    || (string.Equals(supplierFilterMode, "include", StringComparison.OrdinalIgnoreCase) && warehouseSelected)
+                    || (string.Equals(supplierFilterMode, "exclude", StringComparison.OrdinalIgnoreCase) && !warehouseSelected);
                 var rows = await _db.Ado.SqlQueryAsync<LocalPurchaseDashboardSupplierMonthlyRow>(
                     query.Sql,
                     query.Parameters.ToArray(),
                     cancellationToken
                 );
-
                 return ApiResponse<LocalPurchaseDashboardStoreSuppliersDto>.OK(
                     LocalPurchaseDashboardComposer.ComposeStoreSuppliers(
                         query.Period,
                         storeCode.Trim(),
-                        rows
+                        rows,
+                        includeWarehouse
                     )
                 );
             }
@@ -199,7 +228,9 @@ namespace BlazorApp.Api.Services.React
 
         public static LocalPurchaseDashboardSqlBuildResult BuildDashboard(
             string endMonth,
-            LocalPurchaseDashboardStoreScope storeScope
+            LocalPurchaseDashboardStoreScope storeScope,
+            string? supplierFilterMode = null,
+            IReadOnlyCollection<string>? supplierKeys = null
         )
         {
             ArgumentNullException.ThrowIfNull(storeScope);
@@ -208,6 +239,10 @@ namespace BlazorApp.Api.Services.React
             var storeParameterNames = AddStoreParameters(parameters, storeScope);
             var warehouseStoreFilter = BuildStoreFilter("h.StoreCode", storeParameterNames);
             var localStoreFilter = BuildStoreFilter("h.StoreCode", storeParameterNames);
+            var supplierParameters = AddSupplierParameters(parameters, supplierFilterMode, supplierKeys);
+            var warehouseSupplierFilter = BuildSupplierFilter("N'WAREHOUSE_ORDER' + N':' + N'false' + N':' + N'WAREHOUSE_ORDER'", supplierFilterMode, supplierParameters);
+            var localSupplierKeyExpression = "N'LOCAL_SUPPLIER' + N':' + CASE WHEN NULLIF(LTRIM(RTRIM(h.SupplierCode)), N'') IS NULL THEN N'true' ELSE N'false' END + N':' + COALESCE(NULLIF(LTRIM(RTRIM(h.SupplierCode)), N''), N'UNASSIGNED')";
+            var localSupplierFilter = BuildSupplierFilter(localSupplierKeyExpression, supplierFilterMode, supplierParameters);
             var salesStoreFilter = BuildStoreFilter(
                 "LTRIM(RTRIM(sales.BranchCode))",
                 storeParameterNames
@@ -231,7 +266,8 @@ WITH WarehouseMonthly AS (
         COALESCE(h.IsDeleted, 0) = 0
         AND COALESCE(h.FlowStatus, -1) <> 0
         AND NULLIF(LTRIM(RTRIM(h.StoreCode)), N'') IS NOT NULL
-{{WarehouseDateRangeFilter}}{{warehouseStoreFilter}}
+        AND EXISTS (SELECT 1 FROM [Store] activeStore WHERE COALESCE(activeStore.IsDeleted, 0) = 0 AND COALESCE(activeStore.IsActive, 0) = 1 AND activeStore.StoreCode = LTRIM(RTRIM(h.StoreCode)))
+{{WarehouseDateRangeFilter}}{{warehouseStoreFilter}}{{warehouseSupplierFilter}}
     GROUP BY
         LTRIM(RTRIM(h.StoreCode)),
         CONVERT(char(7), COALESCE(h.OutboundDate, h.OrderDate, h.CreatedAt), 120)
@@ -247,7 +283,8 @@ LocalSupplierMonthly AS (
     WHERE
         COALESCE(h.IsDeleted, 0) = 0
         AND NULLIF(LTRIM(RTRIM(h.StoreCode)), N'') IS NOT NULL
-{{LocalSupplierDateRangeFilter}}{{localStoreFilter}}
+        AND EXISTS (SELECT 1 FROM [Store] activeStore WHERE COALESCE(activeStore.IsDeleted, 0) = 0 AND COALESCE(activeStore.IsActive, 0) = 1 AND activeStore.StoreCode = LTRIM(RTRIM(h.StoreCode)))
+{{LocalSupplierDateRangeFilter}}{{localStoreFilter}}{{localSupplierFilter}}
     GROUP BY
         LTRIM(RTRIM(h.StoreCode)),
         CONVERT(char(7), COALESCE(h.InboundDate, h.OrderDate, h.CreatedAt), 120)
@@ -265,6 +302,7 @@ SalesMonthly AS (
         AND sales.[Date] < @EndDateExclusive
         AND NULLIF(LTRIM(RTRIM(sales.BranchCode)), N'') IS NOT NULL
         AND UPPER(LTRIM(RTRIM(sales.BranchCode))) <> N'ALL'{{salesStoreFilter}}
+        AND EXISTS (SELECT 1 FROM [Store] activeStore WHERE COALESCE(activeStore.IsDeleted, 0) = 0 AND COALESCE(activeStore.IsActive, 0) = 1 AND activeStore.StoreCode = LTRIM(RTRIM(sales.BranchCode)))
     GROUP BY
         LTRIM(RTRIM(sales.BranchCode)),
         CONVERT(char(7), sales.[Date], 120)
@@ -292,6 +330,7 @@ AllStores AS (
     FROM [Store] s
     WHERE
         COALESCE(s.IsDeleted, 0) = 0
+        AND COALESCE(s.IsActive, 0) = 1
         AND NULLIF(LTRIM(RTRIM(s.StoreCode)), N'') IS NOT NULL{{masterStoreFilter}}
 
     UNION
@@ -317,13 +356,16 @@ LEFT JOIN MonthlyAmounts monthly
 ORDER BY stores.StoreCode, monthly.Month
 """;
 
-            return new LocalPurchaseDashboardSqlBuildResult(sql, parameters, period, true);
+            var options = BuildSupplierOptions(null, period, storeScope);
+            return new LocalPurchaseDashboardSqlBuildResult(sql, parameters, period, true, options.Sql, options.Parameters);
         }
 
         public static LocalPurchaseDashboardSqlBuildResult BuildStoreSuppliers(
             string storeCode,
             string endMonth,
-            LocalPurchaseDashboardStoreScope storeScope
+            LocalPurchaseDashboardStoreScope storeScope,
+            string? supplierFilterMode = null,
+            IReadOnlyCollection<string>? supplierKeys = null
         )
         {
             ArgumentNullException.ThrowIfNull(storeScope);
@@ -343,16 +385,20 @@ ORDER BY stores.StoreCode, monthly.Month
             var scopeGuard = storeAllowed ? string.Empty : "\n        AND 1 = 0";
             var parameters = BuildPeriodParameters(period);
             parameters.Add(new SugarParameter("@RequestedStoreCode", normalizedStoreCode));
+            var supplierParameters = AddSupplierParameters(parameters, supplierFilterMode, supplierKeys);
+            var warehouseSupplierFilter = BuildSupplierFilter("N'WAREHOUSE_ORDER' + N':' + N'false' + N':' + N'WAREHOUSE_ORDER'", supplierFilterMode, supplierParameters);
+            var localSupplierKeyExpression = "N'LOCAL_SUPPLIER' + N':' + CASE WHEN NULLIF(LTRIM(RTRIM(h.SupplierCode)), N'') IS NULL THEN N'true' ELSE N'false' END + N':' + COALESCE(NULLIF(LTRIM(RTRIM(h.SupplierCode)), N''), N'UNASSIGNED')";
+            var localSupplierFilter = BuildSupplierFilter(localSupplierKeyExpression, supplierFilterMode, supplierParameters);
 
             var sql = $$"""
 WITH StoreIdentity AS (
     SELECT
         @RequestedStoreCode AS StoreCode,
         COALESCE(NULLIF(st.StoreName, N''), @RequestedStoreCode) AS StoreName
-    FROM (SELECT 1 AS Seed) seed
-    LEFT JOIN [Store] st
-        ON st.StoreCode = @RequestedStoreCode
+    FROM [Store] st
+    WHERE st.StoreCode = @RequestedStoreCode
         AND COALESCE(st.IsDeleted, 0) = 0
+        AND COALESCE(st.IsActive, 0) = 1
 ),
 WarehouseMonthly AS (
     SELECT
@@ -372,7 +418,8 @@ WarehouseMonthly AS (
         COALESCE(h.IsDeleted, 0) = 0
         AND COALESCE(h.FlowStatus, -1) <> 0
         AND h.StoreCode = @RequestedStoreCode
-{{WarehouseDateRangeFilter}}{{scopeGuard}}
+        AND EXISTS (SELECT 1 FROM [Store] activeStore WHERE COALESCE(activeStore.IsDeleted, 0) = 0 AND COALESCE(activeStore.IsActive, 0) = 1 AND activeStore.StoreCode = LTRIM(RTRIM(h.StoreCode)))
+{{WarehouseDateRangeFilter}}{{scopeGuard}}{{warehouseSupplierFilter}}
     GROUP BY
         LTRIM(RTRIM(h.StoreCode)),
         CONVERT(char(7), COALESCE(h.OutboundDate, h.OrderDate, h.CreatedAt), 120)
@@ -400,7 +447,8 @@ LocalSupplierMonthly AS (
     WHERE
         COALESCE(h.IsDeleted, 0) = 0
         AND h.StoreCode = @RequestedStoreCode
-{{LocalSupplierDateRangeFilter}}{{scopeGuard}}
+        AND EXISTS (SELECT 1 FROM [Store] activeStore WHERE COALESCE(activeStore.IsDeleted, 0) = 0 AND COALESCE(activeStore.IsActive, 0) = 1 AND activeStore.StoreCode = LTRIM(RTRIM(h.StoreCode)))
+{{LocalSupplierDateRangeFilter}}{{scopeGuard}}{{localSupplierFilter}}
     GROUP BY
         LTRIM(RTRIM(h.StoreCode)),
         COALESCE(NULLIF(LTRIM(RTRIM(h.SupplierCode)), N''), N'UNASSIGNED'),
@@ -438,12 +486,9 @@ ORDER BY
     source.Month
 """;
 
-            return new LocalPurchaseDashboardSqlBuildResult(
-                sql,
-                parameters,
-                period,
-                storeAllowed
-            );
+            // 合法键必须来自当前权限范围和期间的全局选项；明细金额本身仍按请求分店过滤。
+            var options = BuildSupplierOptions(null, period, storeScope);
+            return new LocalPurchaseDashboardSqlBuildResult(sql, parameters, period, storeAllowed, options.Sql, options.Parameters);
         }
 
         public static bool ContainsWriteKeyword(string sql)
@@ -454,6 +499,101 @@ ORDER BY
                 " INSERT ", " UPDATE ", " DELETE ", " MERGE ", " CREATE ", " ALTER ",
                 " DROP ", " TRUNCATE ", " EXEC ",
             }.Any(upper.Contains);
+        }
+
+        private static List<SugarParameter> AddSupplierParameters(
+            List<SugarParameter> parameters,
+            string? filterMode,
+            IReadOnlyCollection<string>? supplierKeys
+        )
+        {
+            var names = new List<SugarParameter>();
+            if (string.IsNullOrWhiteSpace(filterMode)) return names;
+            var keys = (supplierKeys ?? Array.Empty<string>()).Where(key => !string.IsNullOrWhiteSpace(key)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            var parameter = new SugarParameter("@SupplierKeysJson", JsonSerializer.Serialize(keys.Select(key => key.Trim())));
+            parameters.Add(parameter);
+            names.Add(parameter);
+            return names;
+        }
+
+        private static string BuildSupplierFilter(string expression, string? filterMode, IReadOnlyList<SugarParameter> parameters)
+        {
+            if (string.IsNullOrWhiteSpace(filterMode)) return string.Empty;
+            if (parameters.Count == 0)
+                return string.Equals(filterMode, "include", StringComparison.OrdinalIgnoreCase) ? "\n        AND 1 = 0" : string.Empty;
+            var exists = "EXISTS";
+            if (string.Equals(filterMode, "exclude", StringComparison.OrdinalIgnoreCase)) exists = "NOT EXISTS";
+            return "\n        AND " + exists + " (SELECT 1 FROM OPENJSON(@SupplierKeysJson) filterKey WHERE filterKey.value = " + expression + ")";
+        }
+
+        public static void ValidateSupplierFilter(
+            string? filterMode,
+            IReadOnlyCollection<string>? supplierKeys,
+            IReadOnlyList<LocalPurchaseDashboardSupplierOptionRow> optionRows
+        )
+        {
+            if (filterMode == null && supplierKeys is { Count: > 0 })
+                throw new ArgumentException("供应商筛选模式不能为空。", nameof(filterMode));
+            if (filterMode != null && !string.Equals(filterMode, "include", StringComparison.OrdinalIgnoreCase) && !string.Equals(filterMode, "exclude", StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException("供应商筛选模式必须是 include 或 exclude。", nameof(filterMode));
+            var keys = (supplierKeys ?? Array.Empty<string>()).Where(key => !string.IsNullOrWhiteSpace(key)).Select(key => key.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            if (keys.Count > 2000) throw new ArgumentException("供应商筛选项过多。", nameof(supplierKeys));
+            if (keys.Any(key => key.Length > 256)) throw new ArgumentException("供应商筛选项过长。", nameof(supplierKeys));
+            if (JsonSerializer.Serialize(keys).Length > 65536) throw new ArgumentException("供应商筛选请求过大。", nameof(supplierKeys));
+            if (filterMode == null) return;
+            var validKeys = optionRows.Select(row =>
+                (row.SourceType ?? string.Empty).Trim() + ":" + (row.IsUnassigned ? "true" : "false") + ":" + (row.SourceCode ?? string.Empty).Trim()
+            ).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (keys.Any(key => !validKeys.Contains(key))) throw new ArgumentException("供应商筛选项无效。", nameof(supplierKeys));
+        }
+
+        public static void ValidateSupplierFilterShape(string? filterMode, IReadOnlyCollection<string>? supplierKeys)
+        {
+            if (filterMode == null && supplierKeys is { Count: > 0 })
+                throw new ArgumentException("供应商筛选模式不能为空。", nameof(filterMode));
+            if (filterMode != null && !string.Equals(filterMode, "include", StringComparison.OrdinalIgnoreCase) && !string.Equals(filterMode, "exclude", StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException("供应商筛选模式必须是 include 或 exclude。", nameof(filterMode));
+            if (supplierKeys == null) return;
+            if (supplierKeys.Count > 2000) throw new ArgumentException("供应商筛选项过多。", nameof(supplierKeys));
+            if (supplierKeys.Any(key => key == null || key.Length > 256)) throw new ArgumentException("供应商筛选项过长。", nameof(supplierKeys));
+            var json = JsonSerializer.Serialize(supplierKeys);
+            if (Encoding.UTF8.GetByteCount(json) > 65536) throw new ArgumentException("供应商筛选请求过大。", nameof(supplierKeys));
+        }
+
+        private static LocalPurchaseDashboardOptionsSqlBuildResult BuildSupplierOptions(
+            string? requestedStoreCode,
+            LocalPurchaseDashboardPeriod period,
+            LocalPurchaseDashboardStoreScope storeScope
+        )
+        {
+            var parameters = BuildPeriodParameters(period);
+            var storeNames = AddStoreParameters(parameters, storeScope);
+            var storeFilter = BuildStoreFilter("h.StoreCode", storeNames);
+            var requestedFilter = requestedStoreCode == null ? string.Empty : "\n        AND h.StoreCode = @RequestedStoreCode";
+            if (requestedStoreCode != null) parameters.Add(new SugarParameter("@RequestedStoreCode", requestedStoreCode));
+            var sql = $$"""
+SELECT SourceCode, SupplierCode, SupplierName, SourceType, IsUnassigned
+FROM (
+    SELECT N'WAREHOUSE_ORDER' AS SourceCode, CAST(NULL AS nvarchar(50)) AS SupplierCode, N'仓库订单' AS SupplierName, N'WAREHOUSE_ORDER' AS SourceType, CAST(0 AS bit) AS IsUnassigned
+    FROM [WareHouseOrder] h
+    INNER JOIN [WareHouseOrderDetails] d ON d.OrderGUID = h.OrderGUID AND COALESCE(d.IsDeleted, 0) = 0
+    WHERE COALESCE(h.IsDeleted, 0) = 0 AND COALESCE(h.FlowStatus, -1) <> 0
+      AND EXISTS (SELECT 1 FROM [Store] activeStore WHERE COALESCE(activeStore.IsDeleted, 0) = 0 AND COALESCE(activeStore.IsActive, 0) = 1 AND activeStore.StoreCode = LTRIM(RTRIM(h.StoreCode)))
+{{WarehouseDateRangeFilter}}{{storeFilter}}{{requestedFilter}}
+    GROUP BY h.StoreCode
+    UNION
+    SELECT COALESCE(NULLIF(LTRIM(RTRIM(h.SupplierCode)), N''), N'UNASSIGNED'), COALESCE(NULLIF(LTRIM(RTRIM(h.SupplierCode)), N''), N'UNASSIGNED'),
+      CASE WHEN NULLIF(LTRIM(RTRIM(h.SupplierCode)), N'') IS NULL THEN N'未匹配供应商' ELSE COALESCE(NULLIF(supplier.Name, N''), LTRIM(RTRIM(h.SupplierCode))) END,
+      N'LOCAL_SUPPLIER', CASE WHEN NULLIF(LTRIM(RTRIM(h.SupplierCode)), N'') IS NULL THEN CAST(1 AS bit) ELSE CAST(0 AS bit) END
+    FROM [StoreLocalSupplierInvoice] h
+    LEFT JOIN [LocalSupplier] supplier ON supplier.LocalSupplierCode = NULLIF(LTRIM(RTRIM(h.SupplierCode)), N'') AND COALESCE(supplier.IsDeleted, 0) = 0
+    WHERE COALESCE(h.IsDeleted, 0) = 0
+      AND EXISTS (SELECT 1 FROM [Store] activeStore WHERE COALESCE(activeStore.IsDeleted, 0) = 0 AND COALESCE(activeStore.IsActive, 0) = 1 AND activeStore.StoreCode = LTRIM(RTRIM(h.StoreCode)))
+{{LocalSupplierDateRangeFilter}}{{storeFilter}}{{requestedFilter}}
+) options
+ORDER BY CASE WHEN SourceType = N'WAREHOUSE_ORDER' THEN 0 ELSE 1 END, SupplierName, SourceCode
+""";
+            return new LocalPurchaseDashboardOptionsSqlBuildResult(sql, parameters);
         }
 
         private static List<SugarParameter> BuildPeriodParameters(
@@ -530,7 +670,8 @@ ORDER BY
     {
         public static LocalPurchaseDashboardResponseDto ComposeDashboard(
             LocalPurchaseDashboardPeriod period,
-            IReadOnlyList<LocalPurchaseDashboardMonthlyRow> rows
+            IReadOnlyList<LocalPurchaseDashboardMonthlyRow> rows,
+            IReadOnlyList<LocalPurchaseDashboardSupplierOptionRow>? optionRows = null
         )
         {
             var monthSet = period.Months.ToHashSet(StringComparer.Ordinal);
@@ -597,24 +738,31 @@ ORDER BY
                 LocalSupplierTotal = localSupplierTotal,
                 TotalAmount = RoundMoney(warehouseTotal + localSupplierTotal),
                 Stores = stores,
+                SupplierOptions = ComposeSupplierOptions(optionRows),
             };
         }
 
         public static LocalPurchaseDashboardStoreSuppliersDto ComposeStoreSuppliers(
             LocalPurchaseDashboardPeriod period,
             string storeCode,
-            IReadOnlyList<LocalPurchaseDashboardSupplierMonthlyRow> rows
+            IReadOnlyList<LocalPurchaseDashboardSupplierMonthlyRow> rows,
+            bool includeWarehouse = true
         )
         {
             var monthSet = period.Months.ToHashSet(StringComparer.Ordinal);
-            // 仓库来源是固定的虚拟行；即使期间没有仓库订单，也要返回完整十二个月零金额。
-            var sourceRows = rows.Append(new LocalPurchaseDashboardSupplierMonthlyRow
-            {
-                StoreCode = storeCode,
-                SourceCode = "WAREHOUSE_ORDER",
-                SupplierName = "仓库订单",
-                SourceType = "WAREHOUSE_ORDER",
-            });
+            // 仅为已启用且选中仓库来源的分店补零行；无门店身份或排除仓库时不得补回。
+            var hasStoreIdentity = rows.Any(row =>
+                string.Equals(row.StoreCode?.Trim(), storeCode, StringComparison.OrdinalIgnoreCase)
+            );
+            var sourceRows = includeWarehouse && hasStoreIdentity
+                ? rows.Append(new LocalPurchaseDashboardSupplierMonthlyRow
+                {
+                    StoreCode = storeCode,
+                    SourceCode = "WAREHOUSE_ORDER",
+                    SupplierName = "仓库订单",
+                    SourceType = "WAREHOUSE_ORDER",
+                })
+                : rows;
             var suppliers = sourceRows
                 .Where(row => !string.IsNullOrWhiteSpace(row.SourceCode))
                 // 虚拟身份参与分组，避免真实业务编码 UNASSIGNED 或 WAREHOUSE_ORDER 与系统行碰撞。
@@ -701,6 +849,30 @@ ORDER BY
             };
         }
 
+        private static List<LocalPurchaseDashboardSupplierOptionDto> ComposeSupplierOptions(
+            IReadOnlyList<LocalPurchaseDashboardSupplierOptionRow>? rows
+        ) => (rows ?? Array.Empty<LocalPurchaseDashboardSupplierOptionRow>())
+            .Where(row => !string.IsNullOrWhiteSpace(row.SourceCode) && !string.IsNullOrWhiteSpace(row.SourceType))
+            .GroupBy(row => row.SourceType!.Trim() + "\u001f" + row.IsUnassigned + "\u001f" + row.SourceCode!.Trim(), StringComparer.OrdinalIgnoreCase)
+            .Select(group =>
+            {
+                var first = group.First();
+                var sourceType = first.SourceType!.Trim();
+                var sourceCode = first.SourceCode!.Trim();
+                var warehouse = sourceType.Equals("WAREHOUSE_ORDER", StringComparison.OrdinalIgnoreCase);
+                return new LocalPurchaseDashboardSupplierOptionDto
+                {
+                    SourceCode = sourceCode,
+                    SupplierCode = warehouse ? null : (first.SupplierCode ?? sourceCode).Trim(),
+                    SupplierName = string.IsNullOrWhiteSpace(first.SupplierName) ? sourceCode : first.SupplierName.Trim(),
+                    SourceType = warehouse ? "WAREHOUSE_ORDER" : "LOCAL_SUPPLIER",
+                    IsUnassigned = !warehouse && first.IsUnassigned,
+                };
+            })
+            .OrderBy(option => option.SourceType.Equals("WAREHOUSE_ORDER", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+            .ThenBy(option => option.SupplierName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
         private static decimal RoundMoney(decimal value) =>
             Math.Round(value, 2, MidpointRounding.AwayFromZero);
     }
@@ -715,8 +887,12 @@ ORDER BY
         string Sql,
         IReadOnlyList<SugarParameter> Parameters,
         LocalPurchaseDashboardPeriod Period,
-        bool StoreAllowed
+        bool StoreAllowed,
+        string OptionsSql,
+        IReadOnlyList<SugarParameter> OptionsParameters
     );
+
+    internal sealed record LocalPurchaseDashboardOptionsSqlBuildResult(string Sql, IReadOnlyList<SugarParameter> Parameters);
 
     internal sealed class LocalPurchaseDashboardMonthlyRow
     {
@@ -739,5 +915,14 @@ ORDER BY
         public bool IsUnassigned { get; set; }
         public string? Month { get; set; }
         public decimal Amount { get; set; }
+    }
+
+    internal sealed class LocalPurchaseDashboardSupplierOptionRow
+    {
+        public string? SourceCode { get; set; }
+        public string? SupplierCode { get; set; }
+        public string? SupplierName { get; set; }
+        public string? SourceType { get; set; }
+        public bool IsUnassigned { get; set; }
     }
 }

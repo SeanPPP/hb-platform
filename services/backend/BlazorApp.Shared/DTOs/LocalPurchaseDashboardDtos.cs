@@ -1,5 +1,12 @@
 namespace BlazorApp.Shared.DTOs
 {
+    public sealed class LocalPurchaseDashboardQueryRequestDto
+    {
+        public string EndMonth { get; set; } = string.Empty;
+        public string? SupplierFilterMode { get; set; }
+        public IReadOnlyCollection<string>? SupplierKeys { get; set; }
+    }
+
     /// <summary>
     /// 进货金额看板响应。
     /// </summary>
@@ -10,6 +17,7 @@ namespace BlazorApp.Shared.DTOs
         public decimal LocalSupplierTotal { get; set; }
         public decimal TotalAmount { get; set; }
         public List<LocalPurchaseDashboardStoreDto> Stores { get; set; } = new();
+        public List<LocalPurchaseDashboardSupplierOptionDto> SupplierOptions { get; set; } = new();
     }
 
     /// <summary>
@@ -72,5 +80,14 @@ namespace BlazorApp.Shared.DTOs
     {
         public string Month { get; set; } = string.Empty;
         public decimal Amount { get; set; }
+    }
+
+    public class LocalPurchaseDashboardSupplierOptionDto
+    {
+        public string SourceCode { get; set; } = string.Empty;
+        public string? SupplierCode { get; set; }
+        public string SupplierName { get; set; } = string.Empty;
+        public string SourceType { get; set; } = string.Empty;
+        public bool IsUnassigned { get; set; }
     }
 }

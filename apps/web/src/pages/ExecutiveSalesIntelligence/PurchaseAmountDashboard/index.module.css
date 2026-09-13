@@ -7,6 +7,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 .summaryCard :global(.ant-statistic-title) {
@@ -41,9 +42,35 @@
   gap: 4px;
 }
 
-.storeFilter {
-  width: 360px;
-  max-width: 100%;
+.filters {
+  display: flex;
+  flex: 1;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 12px;
+  min-width: 0;
+}
+
+.filterField {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.filterField > :first-child {
+  flex-shrink: 0;
+}
+
+.filterSelect {
+  width: 260px;
+  min-width: 0;
+}
+
+.filterActions {
+  padding: 4px 8px 8px;
+  border-bottom: 1px solid #f0f0f0;
+  margin-bottom: 4px;
 }
 
 .amountCell {
@@ -90,7 +117,17 @@
     flex-direction: column;
   }
 
-  .storeFilter {
+  .filters {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 640px) {
+  .filterField {
     width: 100%;
+  }
+
+  .filterSelect {
+    flex: 1;
   }
 }

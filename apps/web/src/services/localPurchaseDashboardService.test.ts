@@ -53,6 +53,18 @@ assertDeepEqual(
   '稀疏月份应补零，且营业额应兼容 camelCase 与 PascalCase',
 )
 assertEqual(JSON.stringify(rawDashboard), rawDashboardSnapshot, '主表归一化不得修改接口源数组')
+assertEqual(normalizedDashboard.supplierOptions, undefined, '旧响应缺少选项时不得假装支持服务端筛选')
+const dashboardWithOptions = __localPurchaseDashboardServiceTestOnly.normalizeDashboardResponse({
+  ...rawDashboard,
+  SupplierOptions: [
+    { SourceCode: 'WAREHOUSE_ORDER', SourceType: 'WAREHOUSE_ORDER', SupplierName: 'Warehouse' },
+    { sourceCode: 'UNASSIGNED', sourceType: 'LOCAL_SUPPLIER', supplierName: 'Real supplier', supplierCode: 'UNASSIGNED' },
+    { sourceCode: 'UNASSIGNED', sourceType: 'LOCAL_SUPPLIER', supplierName: 'Unassigned', isUnassigned: true },
+  ],
+}, '2026-07')
+assertDeepEqual(dashboardWithOptions.supplierOptions?.map((option) => option.rowKey), [
+  'WAREHOUSE_ORDER:false:WAREHOUSE_ORDER', 'LOCAL_SUPPLIER:false:UNASSIGNED', 'LOCAL_SUPPLIER:true:UNASSIGNED',
+], '筛选选项应支持大小写字段并与明细保持同一身份编码')
 
 const normalizedDetails = __localPurchaseDashboardServiceTestOnly.normalizeSupplierDetailResponse({
   storeCode: 'S001',
@@ -167,12 +179,15 @@ const originalFetch = globalThis.fetch
 let dashboardUrl = ''
 let supplierUrl = ''
 let dashboardSignal: AbortSignal | null | undefined
+let dashboardBody = ''
+let supplierBody = ''
 
 try {
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     if (url.includes('/stores/')) {
       supplierUrl = url
+      supplierBody = String(init?.body ?? '')
       return new Response(JSON.stringify({ success: true, data: { Stores: [], Suppliers: [], Months: [] } }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -180,6 +195,7 @@ try {
     }
     dashboardUrl = url
     dashboardSignal = init?.signal
+    dashboardBody = String(init?.body ?? '')
     return new Response(JSON.stringify({ success: true, data: { Stores: [], Months: [] } }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -191,16 +207,36 @@ try {
   await getLocalPurchaseSupplierDetails('STORE/A', '2026-07')
 
   assertEqual(
-    new URL(dashboardUrl, 'https://example.test').searchParams.get('endMonth'),
+    dashboardUrl.endsWith('/api/react/v1/local-purchase-dashboard'),
+    true,
+    '主看板筛选应通过固定 POST 路由提交，避免把筛选条件放入查询字符串',
+  )
+  assertEqual(
+    JSON.parse(dashboardBody).endMonth,
     '2026-07',
     '主看板接口应传递结束月份',
   )
   assertEqual(dashboardSignal, abortController.signal, '主看板接口应把 AbortSignal 传给请求层')
   assertEqual(
-    supplierUrl.includes('/stores/STORE%2FA/suppliers?endMonth=2026-07'),
+    supplierUrl.includes('/stores/STORE%2FA/suppliers'),
     true,
     '供应商接口应编码分店并传递结束月份',
   )
+  assertEqual(JSON.parse(dashboardBody).supplierFilterMode, undefined, '默认全选不添加过滤标记，兼容已有调用')
+  const supplierKeys = ['LOCAL_SUPPLIER:false:A&B:1', 'LOCAL_SUPPLIER:true:UNASSIGNED']
+  await getLocalPurchaseDashboard('2026-07', abortController.signal, 'include', supplierKeys)
+  await getLocalPurchaseSupplierDetails('STORE/A', '2026-07', abortController.signal, 'include', supplierKeys)
+  for (const body of [dashboardBody, supplierBody]) {
+    const parsed = JSON.parse(body)
+    assertEqual(parsed.supplierFilterMode, 'include', '两接口应显式声明 include 过滤模式')
+    assertDeepEqual(parsed.supplierKeys, supplierKeys, '两接口应以 JSON 传递多选，保留特殊字符和身份')
+  }
+  await getLocalPurchaseDashboard('2026-07', undefined, 'include', [])
+  const emptyBody = JSON.parse(dashboardBody)
+  assertEqual(emptyBody.supplierFilterMode, 'include', '空选仍需显式 include，避免回退为全选')
+  assertDeepEqual(emptyBody.supplierKeys, [], '空选应不传入伪造的供应商编码')
+  await getLocalPurchaseSupplierDetails('STORE/A', '2026-07', undefined, 'include', [])
+  assertEqual(JSON.parse(supplierBody).supplierFilterMode, 'include', '明细也应保留空选语义')
 } finally {
   globalThis.fetch = originalFetch
 }
