@@ -66,6 +66,7 @@ function createEmptyAccess(): AccessControl {
     canViewSalesDetail: false,
     canViewCompactSalesBoard: false,
     canViewProductMovementReport: false,
+    canViewBatchProductSalesAnalysis: false,
     canViewWarehouseProductFlowAnalysis: false,
     canViewLocalProductSalesAnalysis: false,
     canViewPurchaseAmountDashboard: false,
@@ -241,6 +242,7 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canViewSalesDetail = hasPermission(P.SalesDashboard.SalesDetailView)
   const canViewCompactSalesBoard = hasPermission(P.SalesDashboard.CompactBoardView)
   const canViewProductMovementReport = hasPermission(P.SalesDashboard.ProductMovementView)
+  const canViewBatchProductSalesAnalysis = hasPermission(P.SalesDashboard.BatchProductSalesView)
   const canViewWarehouseProductFlowAnalysis = hasPermission(P.SalesDashboard.WarehouseFlowView)
   const canViewLocalProductSalesAnalysis = hasPermission(P.SalesDashboard.LocalProductAnalysisView)
   const canViewPurchaseAmountDashboard = hasPermission(P.SalesDashboard.PurchaseAmountView)
@@ -252,7 +254,7 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canViewSalesIntelligence =
     canViewSalesData || canViewSalesDetail || canViewCompactSalesBoard ||
     canViewProductMovementReport || canViewWarehouseProductFlowAnalysis ||
-    canViewLocalProductSalesAnalysis || canViewPurchaseAmountDashboard
+    canViewLocalProductSalesAnalysis || canViewPurchaseAmountDashboard || canViewBatchProductSalesAnalysis
   const canExportData = isAdmin || hasPermission(P.Reports.Export)
   const canModifyPrice = isAdmin || hasPermission(P.Prices.Modify)
   const canDeletePrice = isAdmin || hasPermission(P.Prices.Delete)
@@ -421,6 +423,7 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     canViewSalesDetail,
     canViewCompactSalesBoard,
     canViewProductMovementReport,
+    canViewBatchProductSalesAnalysis,
     canViewWarehouseProductFlowAnalysis,
     canViewLocalProductSalesAnalysis,
     canViewPurchaseAmountDashboard,
