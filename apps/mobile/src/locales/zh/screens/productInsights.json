@@ -38,13 +38,13 @@
     "salesAmount": "本店销售额",
     "purchaseQuantity": "进货数量",
     "purchaseDocuments": "进货单数",
-    "orderedQuantity": "仓库订货",
-    "deliveredQuantity": "仓库送货",
+    "orderedQuantity": "订货数量",
+    "allocatedQuantity": "配货数量",
     "salesDetail": "销售明细",
     "date": "日期",
     "documentNo": "单据号",
     "quantity": "数量",
-    "deliveryDate": "送货日期"
+    "outboundDate": "出库日期"
   },
   "units": {
     "items": "件",
@@ -54,13 +54,12 @@
   "generatedAt": "查询：{{value}}",
   "salesUpdatedAt": "销售统计更新时间：{{value}}",
   "salesUpdatedUnavailable": "销售统计更新时间暂不可用",
-  "purchaseScope": "仅统计已完成入库单据",
+  "purchaseScope": "按本地进货单统计",
   "recordCount": "{{count}} 条",
   "tabs": {
     "sales": "销售明细",
     "purchases": "进货明细",
-    "orders": "订货记录",
-    "deliveries": "送货记录"
+    "warehouseRecords": "订货 / 配货记录"
   },
   "history": {
     "noPurchases": "近 90 天无进货",
@@ -68,8 +67,10 @@
     "none": "暂无历史进货记录"
   },
   "warehouse": {
-    "lastDelivery": "最近送货：{{date}} · {{quantity}} 件（送货指仓库出库，不表示分店已签收）",
-    "noDelivery": "近 90 天暂无送货记录"
+    "lastAllocation": "最近配货：{{date}} · {{quantity}} 件",
+    "noAllocation": "近 90 天暂无配货记录",
+    "dispatchedOn": "{{date}} 已出库",
+    "awaitingAllocation": "待配货"
   },
   "states": {
     "initialTitle": "查询商品进销记录",

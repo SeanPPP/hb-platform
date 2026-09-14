@@ -149,7 +149,8 @@ public sealed class StoreProductInsightQueryService(
 
     private ISugarQueryable<PurchaseRow> BuildValidPurchaseQuery(string storeCode, string productCode)
     {
-        // 明细无全量实收数量；只有完成入库单才能作为准确的实际进货数量，部分入库单不以整行数量冒充实收。
+        // 本地进货按进货单明细数量统计，不以入库状态筛掉单据；该数量不代表实收数量。
+        // 与既有商品动销报表一致，业务日期优先入库日，未填时使用订单日，不以创建日期冒充进货日期。
         return _db.Queryable<StoreLocalSupplierInvoiceDetails>()
             .InnerJoin<StoreLocalSupplierInvoice>((detail, invoice) => detail.InvoiceGUID == invoice.InvoiceGUID)
             // 历史详情可能只保存 StoreRetailPrice.UUID；回退必须锁定同一分店，允许停用价目但排除软删映射。
@@ -159,13 +160,13 @@ public sealed class StoreProductInsightQueryService(
                 invoice.StoreCode == storeCode
                 && SqlFunc.IIF(SqlFunc.IsNullOrEmpty(detail.ProductCode), price.ProductCode, detail.ProductCode) == productCode
                 && !invoice.IsDeleted && !detail.IsDeleted
-                && invoice.InboundDate != null && invoice.InboundStatus == 2)
-            .GroupBy((detail, invoice, price, supplier) => new { invoice.InvoiceGUID, invoice.InvoiceNo, invoice.InboundDate, invoice.SupplierCode, supplier.Name })
+                && (invoice.InboundDate != null || invoice.OrderDate != null))
+            .GroupBy((detail, invoice, price, supplier) => new { invoice.InvoiceGUID, invoice.InvoiceNo, invoice.InboundDate, invoice.OrderDate, invoice.SupplierCode, supplier.Name })
             .Select((detail, invoice, price, supplier) => new PurchaseRow
             {
                 Id = invoice.InvoiceGUID,
                 DocumentNo = invoice.InvoiceNo,
-                InboundDate = invoice.InboundDate!.Value,
+                InboundDate = SqlFunc.IIF(invoice.InboundDate != null, invoice.InboundDate!.Value, invoice.OrderDate!.Value),
                 SupplierCode = invoice.SupplierCode,
                 SupplierName = supplier.Name,
                 Quantity = SqlFunc.AggregateSum(detail.Quantity ?? 0m),
