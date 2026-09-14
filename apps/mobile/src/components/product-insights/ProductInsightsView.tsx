@@ -50,7 +50,7 @@ export interface ProductInsightsViewProps {
   emptyState?: "initial" | "not-found";
 }
 
-type DetailTab = "sales" | "purchases" | "orders" | "deliveries";
+type DetailTab = "sales" | "purchases" | "warehouseRecords";
 type DetailItem =
   ProductInsightMovement | ProductInsightOrder | ProductInsightDailySales;
 const money = (value: number) =>
@@ -58,6 +58,11 @@ const money = (value: number) =>
 function dateLabel(value: string) {
   const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
   return match ? `${match[3]}/${match[2]}/${match[1]}` : "—";
+}
+
+function shortDateLabel(value: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
+  return match ? `${match[3]}/${match[2]}` : "—";
 }
 
 function timestampLabel(value: string) {
@@ -97,7 +102,7 @@ export function ProductInsightsView({
     : "";
 
   useEffect(() => {
-    setTab(sourceType === "warehouse" ? "orders" : "purchases");
+    setTab(sourceType === "warehouse" ? "warehouseRecords" : "purchases");
     setDetail(null);
   }, [productKey, sourceType]);
 
@@ -108,11 +113,10 @@ export function ProductInsightsView({
     if (!data) return [] as DetailItem[];
     if (tab === "sales") return data.sales.records;
     if (tab === "purchases") return data.purchases.records;
-    if (tab === "orders") return data.warehouse.orders;
-    return data.warehouse.deliveries;
+    return [] as DetailItem[];
   }, [data, tab]);
   const tabs: DetailTab[] = warehouse
-    ? ["sales", "orders", "deliveries"]
+    ? ["sales", "warehouseRecords"]
     : ["sales", "purchases"];
 
   return (
@@ -244,7 +248,7 @@ export function ProductInsightsView({
                       value={`${data.warehouse.orderedQuantity.toLocaleString()} ${t("units.items")}`}
                     />
                     <Summary
-                      label={t("labels.deliveredQuantity")}
+                      label={t("labels.allocatedQuantity")}
                       value={`${data.warehouse.deliveredQuantity.toLocaleString()} ${t("units.items")}`}
                     />
                   </>
@@ -296,10 +300,23 @@ export function ProductInsightsView({
                   {t(`tabs.${tab}`)}
                 </Text>
                 <Text variant="labelSmall" style={styles.count}>
-                  {t("recordCount", { count: records.length })}
+                  {t("recordCount", {
+                    count:
+                      tab === "warehouseRecords"
+                        ? data.warehouse.orders.length
+                        : records.length,
+                  })}
                 </Text>
               </View>
-              <RecordList records={records} onPress={setDetail} t={t} />
+              {tab === "warehouseRecords" ? (
+                <WarehouseOrderList
+                  records={data.warehouse.orders}
+                  onPress={setDetail}
+                  t={t}
+                />
+              ) : (
+                <RecordList records={records} onPress={setDetail} t={t} />
+              )}
             </>
           )}
         </ScrollView>
@@ -417,11 +434,11 @@ function DeliveryHint({
       />
       <Text style={styles.deliveryText}>
         {record
-          ? t("warehouse.lastDelivery", {
+          ? t("warehouse.lastAllocation", {
               date: dateLabel(record.date),
               quantity: record.quantity.toLocaleString(),
             })
-          : t("warehouse.noDelivery")}
+          : t("warehouse.noAllocation")}
       </Text>
     </View>
   );
@@ -469,6 +486,93 @@ function RecordList({
     </View>
   );
 }
+function WarehouseOrderList({
+  records,
+  onPress,
+  t,
+}: {
+  records: ProductInsightOrder[];
+  onPress: (item: ProductInsightOrder) => void;
+  t: (key: string, values?: Record<string, unknown>) => string;
+}) {
+  if (!records.length)
+    return (
+      <View style={styles.recordsEmpty}>
+        <Text>{t("states.noRecords")}</Text>
+      </View>
+    );
+
+  return (
+    <View style={styles.warehouseRecords}>
+      {records.map((item, index) => (
+        <Pressable
+          key={item.id}
+          onPress={() => onPress(item)}
+          style={[
+            styles.warehouseRecord,
+            index === records.length - 1 && styles.warehouseRecordLast,
+          ]}
+        >
+          <View style={styles.warehouseIdentity}>
+            <Text numberOfLines={1} style={styles.recordDate}>
+              {dateLabel(item.date)}
+            </Text>
+            <Text numberOfLines={1} style={styles.recordDocument}>
+              {item.documentNo}
+            </Text>
+          </View>
+          <View style={styles.warehouseDivider} />
+          <WarehouseQuantity
+            label={t("labels.orderedQuantity")}
+            value={item.quantity}
+          />
+          <Icon source="arrow-right" size={17} color="#98A2B3" />
+          <WarehouseQuantity
+            label={t("labels.allocatedQuantity")}
+            value={item.deliveredQuantity}
+          />
+          <View
+            style={[
+              styles.deliveryStatus,
+              item.deliveryDate
+                ? styles.deliveryStatusDispatched
+                : styles.deliveryStatusPending,
+            ]}
+          >
+            <Text
+              numberOfLines={1}
+              style={[
+                styles.deliveryStatusText,
+                item.deliveryDate
+                  ? styles.deliveryStatusTextDispatched
+                  : styles.deliveryStatusTextPending,
+              ]}
+            >
+              {item.deliveryDate
+                ? t("warehouse.dispatchedOn", {
+                    date: shortDateLabel(item.deliveryDate),
+                  })
+                : t("warehouse.awaitingAllocation")}
+            </Text>
+          </View>
+          <Icon source="chevron-right" size={17} color="#98A2B3" />
+        </Pressable>
+      ))}
+    </View>
+  );
+}
+function WarehouseQuantity({ label, value }: { label: string; value: number }) {
+  return (
+    <View style={styles.warehouseQuantity}>
+      <Text numberOfLines={1} style={styles.warehouseQuantityLabel}>
+        {label}
+      </Text>
+      <Text style={styles.warehouseQuantityValue}>
+        {value.toLocaleString()}
+      </Text>
+    </View>
+  );
+}
 function DetailModal({
   item,
   onClose,
@@ -510,12 +614,12 @@ function DetailModal({
           {"deliveredQuantity" in item ? (
             <>
               <DetailRow
-                label={t("labels.deliveredQuantity")}
+                label={t("labels.allocatedQuantity")}
                 value={item.deliveredQuantity.toLocaleString()}
               />
               <DetailRow
-                label={t("labels.deliveryDate")}
-                value={item.deliveryDate ?? "—"}
+                label={t("labels.outboundDate")}
+                value={item.deliveryDate ? dateLabel(item.deliveryDate) : "—"}
               />
             </>
           ) : null}
@@ -701,6 +805,57 @@ const styles = StyleSheet.create({
     borderColor: HB_COLORS.outlineMuted,
     backgroundColor: HB_COLORS.white,
   },
+  warehouseRecords: {
+    borderRadius: HB_RADIUS.surface,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: HB_COLORS.outlineMuted,
+    backgroundColor: HB_COLORS.white,
+  },
+  warehouseRecord: {
+    minHeight: 72,
+    paddingHorizontal: HB_SPACING.sm,
+    paddingVertical: HB_SPACING.xs,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: HB_SPACING.xxs,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: HB_COLORS.outlineMuted,
+  },
+  warehouseRecordLast: { borderBottomWidth: 0 },
+  warehouseIdentity: { flex: 1, minWidth: 72, gap: 2 },
+  warehouseDivider: {
+    width: StyleSheet.hairlineWidth,
+    alignSelf: "stretch",
+    backgroundColor: HB_COLORS.outlineMuted,
+  },
+  warehouseQuantity: {
+    width: 52,
+    minWidth: 48,
+    gap: 2,
+  },
+  warehouseQuantityLabel: { color: HB_COLORS.textSecondary, fontSize: 10 },
+  warehouseQuantityValue: {
+    color: HB_COLORS.textPrimary,
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  deliveryStatus: {
+    minWidth: 60,
+    maxWidth: 82,
+    paddingHorizontal: 7,
+    paddingVertical: 5,
+    borderRadius: 999,
+  },
+  deliveryStatusText: {
+    textAlign: "center",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  deliveryStatusPending: { backgroundColor: "#FFF2E8" },
+  deliveryStatusDispatched: { backgroundColor: "#EAF2FF" },
+  deliveryStatusTextPending: { color: HB_COLORS.warning },
+  deliveryStatusTextDispatched: { color: HB_COLORS.action },
   record: {
     minHeight: 54,
     paddingHorizontal: HB_SPACING.sm,
