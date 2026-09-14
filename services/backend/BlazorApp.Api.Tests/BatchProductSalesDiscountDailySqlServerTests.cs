@@ -93,6 +93,52 @@ public sealed partial class BatchProductSalesAnalysisSqlServerIntegrationTests
     }
 
     [BatchSalesSqlServerFact]
+    public async Task DailySnapshot_SQLServer失败后可重试且按参数保留既有重算标记()
+    {
+        await InstallDailySchemaAsync();
+        var day = new DateTime(2026, 1, 5);
+        var now = new DateTime(2026, 9, 15, 2, 0, 0, DateTimeKind.Utc);
+        var store = new BatchProductSalesDiscountDailyStore(_catalog!);
+        var cases = new[]
+        {
+            new { Existing = false, PreserveExisting = false, Requested = false, Expected = false },
+            new { Existing = false, PreserveExisting = false, Requested = true, Expected = true },
+            new { Existing = false, PreserveExisting = true, Requested = false, Expected = false },
+            new { Existing = false, PreserveExisting = true, Requested = true, Expected = true },
+            new { Existing = true, PreserveExisting = false, Requested = false, Expected = false },
+            new { Existing = true, PreserveExisting = false, Requested = true, Expected = true },
+            new { Existing = true, PreserveExisting = true, Requested = false, Expected = true },
+            new { Existing = true, PreserveExisting = true, Requested = true, Expected = true },
+        };
+
+        for (var index = 0; index < cases.Length; index++)
+        {
+            var @case = cases[index];
+            var caseDay = day.AddDays(index);
+            await store.EnsureQueuedAsync([caseDay], now, default);
+            await _catalog!.Updateable<BatchProductSalesDiscountRefreshState>()
+                .SetColumns(x => x.ReconcileRequested == @case.Existing)
+                .Where(x => x.Date == caseDay)
+                .ExecuteCommandAsync();
+            var claim = (await store.ClaimNextAsync(now, [caseDay], default))!;
+
+            await store.FinishFailureAsync(claim, $"模拟失败-{index}", now, @case.Requested, default,
+                @case.PreserveExisting);
+
+            var failed = (await store.GetAsync(caseDay))!;
+            Assert.Equal("Failed", failed.Status);
+            Assert.Equal(@case.Expected, failed.ReconcileRequested);
+            Assert.Null(failed.LeaseToken);
+            Assert.Null(failed.LeaseUntilUtc);
+            Assert.Equal(now.AddMinutes(3), failed.NextAttemptAtUtc);
+
+            var retry = await store.ClaimNextAsync(now.AddMinutes(3), [caseDay], default);
+            Assert.NotNull(retry);
+            Assert.Equal("Running", (await store.GetAsync(caseDay))!.Status);
+        }
+    }
+
+    [BatchSalesSqlServerFact]
     public async Task DailySnapshot_SQLServer迁移可重复执行且旧快照完整保留()
     {
         var original = ReadDiscountMigration("BatchProductSalesDiscountSnapshot.sql");

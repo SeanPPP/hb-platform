@@ -165,8 +165,9 @@ public sealed class BatchProductSalesDiscountWorker(
         }
         catch (Exception ex)
         {
-            await store.FinishFailureAsync(claim, ex.Message, DateTime.UtcNow, false, CancellationToken.None);
+            // 先记录原始错误，避免状态持久化异常遮蔽真正的计算失败原因。
             logger.LogWarning(ex, "商品折扣日快照失败: {Date}, Attempt={Attempts}", day, claim.State.Attempts);
+            await store.FinishFailureAsync(claim, ex.Message, DateTime.UtcNow, false, CancellationToken.None);
         }
     }
 

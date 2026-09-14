@@ -153,6 +153,11 @@ public sealed partial class BatchProductSalesAnalysisSqlServerIntegrationTests
             .Where(row => row.系统设备编号 == "D1").ExecuteCommandAsync();
         var afterDevice = await reader.GetSourceVersionAsync(day, CancellationToken.None);
         Assert.NotEqual(afterDiscount, afterDevice);
+        // FactReader 以规范化的明细编码与映射表原键相等关联；前导空格映射不会命中，
+        // 因而不能让无关的脏数据误触发日快照重算。
+        await _posm.Insertable(new PosmProductSupplierMapping { ProductCode = " P1", LocalSupplierCode = "IGNORED" })
+            .ExecuteCommandAsync();
+        Assert.Equal(afterDevice, await reader.GetSourceVersionAsync(day, CancellationToken.None));
         // 映射表没有可靠的来源更新时间：空映射后插入及随后修改供应商值都必须使日快照失效。
         await _posm.Insertable(new PosmProductSupplierMapping { ProductCode = "P1", LocalSupplierCode = "LOCAL-A" })
             .ExecuteCommandAsync();
