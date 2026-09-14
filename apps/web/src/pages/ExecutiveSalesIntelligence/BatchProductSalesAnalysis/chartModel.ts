@@ -1,6 +1,6 @@
 import type { BatchSalesDaily } from '../../../types/batchProductSalesAnalysis'
 
-export type DiscountChartKind = 'regular' | 'discount' | 'unknown'
+export type DiscountChartKind = 'regular' | 'discount' | 'unknown' | 'total'
 
 export interface DiscountChartSegment {
   kind: DiscountChartKind
@@ -12,6 +12,7 @@ export interface DiscountChartSegment {
 }
 
 export interface DiscountChartPoint {
+  pending: boolean
   date: string
   quantity: number
   regularQuantity: number
@@ -76,10 +77,12 @@ export function buildDiscountDailyChartModel(data: BatchSalesDaily[], width = 72
   const plotTop = 18
   const plotBottom = height - 32
   const normalized = data.map((item) => {
+    const pending = item.metrics.discountStatus === 'pending'
     const regularQuantity = finite(item.metrics.regularQuantity)
     const discountQuantity = finite(item.metrics.discountQuantity)
     const unknownQuantity = finite(item.metrics.unknownQuantity)
     return {
+      pending,
       date: item.date,
       quantity: finite(item.metrics.quantity),
       regularQuantity,
@@ -89,8 +92,8 @@ export function buildDiscountDailyChartModel(data: BatchSalesDaily[], width = 72
       originalPriceMax: item.metrics.originalPriceMax,
       discountPriceMin: item.metrics.discountPriceMin,
       discountPriceMax: item.metrics.discountPriceMax,
-      positive: [regularQuantity, discountQuantity, unknownQuantity].filter((value) => value > 0).reduce((sum, value) => sum + value, 0),
-      negative: [regularQuantity, discountQuantity, unknownQuantity].filter((value) => value < 0).reduce((sum, value) => sum + value, 0),
+      positive: (pending ? [finite(item.metrics.quantity)] : [regularQuantity, discountQuantity, unknownQuantity]).filter((value) => value > 0).reduce((sum, value) => sum + value, 0),
+      negative: (pending ? [finite(item.metrics.quantity)] : [regularQuantity, discountQuantity, unknownQuantity]).filter((value) => value < 0).reduce((sum, value) => sum + value, 0),
     }
   })
   const minValue = Math.min(0, ...normalized.map((point) => point.negative))
@@ -108,7 +111,8 @@ export function buildDiscountDailyChartModel(data: BatchSalesDaily[], width = 72
     const x = plotLeft + slotWidth * index + (slotWidth - barWidth) / 2
     let positiveBase = 0
     let negativeBase = 0
-    const segments = SERIES.map(({ kind, key }) => {
+    const series: Array<{ kind: DiscountChartKind; key: 'quantity' | 'regularQuantity' | 'discountQuantity' | 'unknownQuantity' }> = point.pending ? [{ kind: 'total', key: 'quantity' }] : SERIES
+    const segments = series.map(({ kind, key }) => {
       const value = point[key]
       if (!value) return { kind, value, x, y: zeroY, width: barWidth, height: 0 }
       if (value > 0) {

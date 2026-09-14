@@ -50,7 +50,7 @@ const query = {
 const detailRequest = { ...query, productCode: 'P-1' }
 const originalFetch = globalThis.fetch
 let captured: Array<{ url: string; init?: RequestInit }> = []
-let responseMode: 'normal' | 'missingMetrics' | 'emptyPayload' | 'businessFailure' | 'forbidden' | 'unauthorized' | 'abort' | 'returns' | 'netZero' | 'missingScope' = 'normal'
+let responseMode: 'normal' | 'missingMetrics' | 'emptyPayload' | 'businessFailure' | 'forbidden' | 'unauthorized' | 'abort' | 'returns' | 'netZero' | 'missingScope' | 'omittedPrices' | 'pending' = 'normal'
 
 try {
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -97,6 +97,8 @@ try {
     if (pathname.endsWith('/detail')) {
       const detailMetrics = responseMode === 'missingMetrics'
         ? { ...metrics, ReturnQuantity: undefined }
+        : responseMode === 'omittedPrices' ? { ...metrics, OriginalPriceMin: undefined, OriginalPriceMax: undefined, DiscountPriceMin: undefined, DiscountPriceMax: undefined }
+        : responseMode === 'pending' ? { ...metrics, Quantity: 7, RegularQuantity: 0, DiscountQuantity: 0, UnknownQuantity: 7, DiscountStatus: 'pending' }
         : responseMode === 'returns' ? { ...metrics, Quantity: -2, RegularQuantity: -1, DiscountQuantity: -1, ReturnQuantity: 2 }
         : responseMode === 'netZero' ? { ...metrics, Quantity: 0, RegularQuantity: 1, DiscountQuantity: -1, ReturnQuantity: 1 } : metrics
       return jsonResponse({
@@ -105,6 +107,7 @@ try {
           StartDate: query.startDate, EndDate: query.endDate, StoreCodes: ['S1', 'S2'],
           Product: { ProductCode: 'P-1', ItemNumber: '00123', ProductName: '测试商品', EnglishName: 'Test item' },
           Metrics: detailMetrics,
+          StatisticStatus: 'Fresh', DiscountStatisticStatus: responseMode === 'pending' ? 'Queued' : 'Fresh',
           Daily: [{ Date: '2026-08-18T13:00:00+10:00', Metrics: metrics }],
           Branches: [{ BranchCode: 'S1', BranchName: 'Sunnybank', Metrics: metrics, Daily: [] }],
           Warnings: [],
@@ -142,6 +145,13 @@ try {
   assert.equal(detail.metrics.originalPriceMin, 10, '原价区间必须保留')
   assert.equal(detail.metrics.discountPriceMin, null, '可空折扣价必须保留 null')
 
+  responseMode = 'pending'
+  const pendingDetail = await batchProductSalesApi.getDetail(detailRequest)
+  assert.equal(pendingDetail.metrics.quantity, 7)
+  assert.equal(pendingDetail.metrics.discountStatus, 'pending')
+  assert.equal(pendingDetail.discountStatisticStatus, 'Queued')
+  responseMode = 'normal'
+
   await assertRejects(
     () => batchProductSalesApi.query({ ...query, startDate: '2026-02-31' }),
     '缺少或非法开始日期',
@@ -162,6 +172,11 @@ try {
   assert.equal((await batchProductSalesApi.getDetail(detailRequest)).metrics.quantity, 0, '净销量为0仍可有退货数量')
   responseMode = 'missingScope'
   await assertRejects(() => batchProductSalesApi.query(query), '缺少或非法门店编码', '缺少实际范围必须拒绝')
+
+  responseMode = 'omittedPrices'
+  const withoutPrices = await batchProductSalesApi.getDetail(detailRequest)
+  assert.equal(withoutPrices.metrics.originalPriceMin, null, '生产 WhenWritingNull 省略原价时应保留未知价格')
+  assert.equal(withoutPrices.metrics.discountPriceMax, null, '省略折扣价不得导致整个销量请求失败')
 
   responseMode = 'missingMetrics'
   await assertRejects(

@@ -60,7 +60,8 @@
       "load": "无法加载数据，请重试。",
       "timeout": "请求超时，请重试。",
       "forbidden": "您没有查询这些分店销量的权限。",
-      "date": "日期范围无效。"
+      "date": "日期范围无效。",
+      "statistics": "商品日统计正在刷新，暂不能显示销量，请重新查询。"
     },
     "metrics": {
       "quantity": "销量",
@@ -88,9 +89,30 @@
       "description": "蓝色为正价净销量，橙色为折扣净销量，灰色为无法判定价格状态的净销量；退货显示在零线下方。可用键盘聚焦日期查看详细数值。",
       "pointAria": "{{date}}：净销量 {{quantity}}，正价 {{regular}}，折扣 {{discount}}，未知 {{unknown}}",
       "originalPrice": "原价",
-      "discountPrice": "折扣价"
+      "discountPrice": "折扣价",
+      "quantityDescription": "每日净销量；折扣统计完成后显示分类。",
+      "totalPointAria": "{{date}}，净销量 {{quantity}}，折扣待统计"
     },
     "statisticsPending": "所选日期的销量统计尚未就绪，请稍后重新查询。",
-    "dataNotes": "数据说明"
+    "dataNotes": "数据说明",
+    "selectScope": "选择商品范围",
+    "scopeHint": "粘贴货号或导入 Excel，最多 {{count}} 个",
+    "selectItems": "选择商品（{{count}}）",
+    "confirmItems": "确认 {{count}} 个商品",
+    "cancel": "取消",
+    "searchProducts": "搜索货号或商品名称",
+    "storeCount": "已选 {{count}} 家分店",
+    "fileError": "文件读取失败，请检查格式后重新导入。",
+    "discountPending": "折扣待统计",
+    "discountStates": {
+      "Queued": "销量已就绪，折扣统计正在排队，完成后自动更新。",
+      "Running": "销量已就绪，后台正在计算折扣，完成后自动更新。",
+      "Unavailable": "销量已就绪，折扣统计暂不可用。",
+      "Failed": "销量已就绪，折扣统计失败，请联系管理员检查后台任务。",
+      "OutOfSync": "销量已就绪，折扣明细与日统计不一致，暂不显示折扣拆分。",
+      "Superseded": "统计版本已更新，请刷新当前商品。",
+      "Pending": "等待商品日统计完成。"
+    },
+    "refreshStatus": "刷新状态"
   }
 }

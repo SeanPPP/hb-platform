@@ -13,7 +13,7 @@ import type { BatchSalesMetrics, BatchSalesProduct, BatchSalesScope } from '../.
 
 // 独立本地验收入口，未登记生产路由；模拟接口仅在本文件加载时启用。
 const qa = (window as any).__batchSalesQA = {
-  requests: [] as any[], errors: [] as string[], delay: 120, fail: '', productDelays: {} as Record<string, number>,
+  requests: [] as any[], errors: [] as string[], delay: 120, fail: '', discountState: 'Fresh', statisticState: 'Fresh', productDelays: {} as Record<string, number>,
 }
 window.addEventListener('error', event => qa.errors.push(event.message))
 window.addEventListener('unhandledrejection', event => qa.errors.push(String(event.reason)))
@@ -21,12 +21,15 @@ const stores = [
   { code: 'B1', name: 'Springfield' }, { code: 'B2', name: 'Sunnybank' },
   { code: 'B3', name: 'Browns Plains' }, { code: 'B4', name: 'Logan Central' },
 ]
-const definitions = [
+const definitions: Array<[string, string, number, number]> = [
   ['001236', '透明收纳盒 1.5L', 268, 72], ['HB24018', '厨房清洁海绵 6片装', 186, 44],
   ['006821', '不锈钢保温杯 500ml', 142, 24], ['HB23056', '防滑衣架 10只装', 98, 26],
   ['000875', '抽屉分隔收纳盒', 64, 14], ['HB25012', '微纤维清洁布 4片装', 52, 14],
   ['009102', '食品密封夹 12只装', 31, 7], ['HB22034', '陶瓷马克杯', 0, 0],
-] as const
+]
+// 54 行验收独立滚动；仅本地预览使用。
+for (let index = 9; index <= 54; index += 1) definitions.push([`QA-${String(index).padStart(3, '0')}`, `滚动验收商品 ${index}`, index, 0])
+Object.assign(qa, { itemNumbers: definitions.map(item => item[0]) })
 const products: BatchSalesProduct[] = definitions.map(([itemNumber, productName], index) => ({
   productCode: `P${index + 1}`, itemNumber, productName, englishName: `Preview product ${index + 1}`,
 }))
@@ -119,6 +122,18 @@ window.fetch = async (input, init) => {
           return { branchCode: store.code, branchName: store.name, metrics: add(branchFacts.map(row => row.metrics)), daily: dayRows(scope, branchFacts) }
         }), warnings: [] }
     }
+  }
+  if (endpoint === 'detail' && data) {
+    const result = data as any
+    result.statisticStatus = qa.statisticState
+    result.discountStatisticStatus = qa.discountState
+    if (qa.discountState !== 'Fresh') {
+      const pending = (m: BatchSalesMetrics) => ({ ...m, regularQuantity: 0, discountQuantity: 0, unknownQuantity: m.quantity, returnQuantity: 0, discountStatus: 'pending', originalPriceMin: null, originalPriceMax: null, discountPriceMin: null, discountPriceMax: null })
+      result.metrics = pending(result.metrics)
+      result.daily.forEach((day: any) => { day.metrics = pending(day.metrics) })
+      result.branches.forEach((branch: any) => { branch.metrics = pending(branch.metrics); branch.daily.forEach((day: any) => { day.metrics = pending(day.metrics) }) })
+    }
+    if (qa.statisticState !== 'Fresh') { result.daily = []; result.branches = [] }
   }
   return new Response(JSON.stringify({ success: true, data }), { headers: { 'content-type': 'application/json' } })
 }

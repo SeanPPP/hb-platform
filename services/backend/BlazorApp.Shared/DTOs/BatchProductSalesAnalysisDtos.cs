@@ -65,7 +65,7 @@ public sealed class BatchProductSalesMetricsDto
     public decimal UnknownQuantity { get; set; }
     public decimal ReturnQuantity { get; set; }
     public decimal SalesAmount { get; set; }
-    /// <summary>complete / partial / unknown</summary>
+    /// <summary>complete / partial / unknown / pending（待计算，分类数量不得显示为真实值）</summary>
     public string DiscountStatus { get; set; } = "unknown";
     public decimal? OriginalPriceMin { get; set; }
     public decimal? OriginalPriceMax { get; set; }
@@ -98,6 +98,10 @@ public sealed class BatchProductSalesQueryResultDto : BatchProductSalesScopeDto
 
 public sealed class BatchProductSalesDetailDto : BatchProductSalesScopeDto
 {
+    public string StatisticStatus { get; set; } = "Fresh";
+    public DateTime? StatisticUpdatedAt { get; set; }
+    public string DiscountStatisticStatus { get; set; } = "Fresh";
+    public DateTime? DiscountUpdatedAt { get; set; }
     public BatchProductSalesProductDto Product { get; set; } = new();
     public BatchProductSalesMetricsDto Metrics { get; set; } = new();
     public List<BatchProductSalesDailyDto> Daily { get; set; } = [];

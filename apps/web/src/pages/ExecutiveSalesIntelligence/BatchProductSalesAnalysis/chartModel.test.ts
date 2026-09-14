@@ -30,3 +30,10 @@ const annual = buildDiscountDailyChartModel(Array.from({ length: 366 }, (_, inde
 assert(annual.points.every((point, index) => index === 0
   || annual.points[index - 1].segments[0].x + annual.points[index - 1].segments[0].width <= point.segments[0].x),
 '全年每日柱应保持独立，不能因最小柱宽互相覆盖')
+
+const pending = buildDiscountDailyChartModel([
+  { date: '2026-09-01', metrics: metrics({ quantity: 8, unknownQuantity: 8, discountStatus: 'pending' }) },
+  { date: '2026-09-02', metrics: metrics({ quantity: -2, unknownQuantity: -2, discountStatus: 'pending' }) },
+])
+assert(pending.points.every((point) => point.pending && point.segments.length === 1 && point.segments[0].kind === 'total'), '待统计只能画总销量，不能伪装正价或未知分类')
+assert(pending.points[1].segments[0].y === pending.zeroY && pending.points[1].segments[0].height > 0, '待统计负净销量仍在零线下显示')

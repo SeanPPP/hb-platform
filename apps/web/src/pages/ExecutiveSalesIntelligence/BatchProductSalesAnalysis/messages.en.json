@@ -60,7 +60,8 @@
       "load": "Unable to load data. Please retry.",
       "timeout": "The request timed out. Please retry.",
       "forbidden": "You are not permitted to query sales for these stores.",
-      "date": "The date range is invalid."
+      "date": "The date range is invalid.",
+      "statistics": "Daily statistics are refreshing. Run the query again."
     },
     "metrics": {
       "quantity": "Quantity",
@@ -88,9 +89,30 @@
       "description": "Blue is regular-price net sales, orange is discounted net sales and grey is net sales with an unknown price status. Returns are shown below zero. Focus a day with the keyboard for details.",
       "pointAria": "{{date}}: net quantity {{quantity}}, regular {{regular}}, discount {{discount}}, unknown {{unknown}}",
       "originalPrice": "Original",
-      "discountPrice": "Discount"
+      "discountPrice": "Discount",
+      "quantityDescription": "Daily net quantity. Classification appears when discount statistics are ready.",
+      "totalPointAria": "{{date}}, net quantity {{quantity}}, discounts pending"
     },
     "statisticsPending": "Sales statistics for these dates are not ready. Please try again later.",
-    "dataNotes": "Data notes"
+    "dataNotes": "Data notes",
+    "selectScope": "Select product scope",
+    "scopeHint": "Paste item numbers or import Excel, up to {{count}} items",
+    "selectItems": "Select products ({{count}})",
+    "confirmItems": "Confirm {{count}} products",
+    "cancel": "Cancel",
+    "searchProducts": "Search item number or product",
+    "storeCount": "{{count}} stores selected",
+    "fileError": "Could not read the file. Check its format and try again.",
+    "discountPending": "Discounts pending",
+    "discountStates": {
+      "Queued": "Sales are ready. Discount statistics are queued and will update automatically.",
+      "Running": "Sales are ready. Discounts are being calculated in the background.",
+      "Unavailable": "Sales are ready. Discount statistics are currently unavailable.",
+      "Failed": "Sales are ready. Discount calculation failed. Contact an administrator.",
+      "OutOfSync": "Sales are ready. Discount totals do not match daily statistics; breakdown is withheld.",
+      "Superseded": "The source statistics changed. Refresh this product.",
+      "Pending": "Waiting for daily sales statistics."
+    },
+    "refreshStatus": "Refresh status"
   }
 }

@@ -50,7 +50,8 @@ function requiredNumber(value: unknown, label: string): number {
 }
 
 function requiredNullableNumber(value: unknown, label: string): number | null {
-  if (value === null) {
+  // API 使用 WhenWritingNull，缺省价格与显式 null 都代表未知，不能令整份销量失败。
+  if (value === null || value === undefined) {
     return null
   }
   return requiredNumber(value, label)
@@ -143,7 +144,7 @@ function normalizeMetrics(raw: unknown): BatchSalesMetrics {
     discountStatus: normalizeEnum(
       pick(record, 'discountStatus', 'DiscountStatus'),
       '折扣状态',
-      ['complete', 'partial', 'unknown'],
+      ['complete', 'partial', 'unknown', 'pending'],
     ),
     originalPriceMin: requiredNullableNumber(pick(record, 'originalPriceMin', 'OriginalPriceMin'), '原价最小值'),
     originalPriceMax: requiredNullableNumber(pick(record, 'originalPriceMax', 'OriginalPriceMax'), '原价最大值'),
@@ -249,6 +250,10 @@ function normalizeDetail(raw: unknown): BatchSalesDetail {
   const record = asRecord(raw, '详情响应')
   return {
     ...normalizeResponseScope(record),
+    statisticStatus: optionalString(pick(record, 'statisticStatus', 'StatisticStatus')),
+    statisticUpdatedAt: optionalString(pick(record, 'statisticUpdatedAt', 'StatisticUpdatedAt')),
+    discountStatisticStatus: optionalString(pick(record, 'discountStatisticStatus', 'DiscountStatisticStatus')),
+    discountUpdatedAt: optionalString(pick(record, 'discountUpdatedAt', 'DiscountUpdatedAt')),
     product: normalizeProduct(pick(record, 'product', 'Product')),
     metrics: normalizeMetrics(pick(record, 'metrics', 'Metrics')),
     daily: requiredArray(pick(record, 'daily', 'Daily'), '每日销量').map(normalizeDaily),

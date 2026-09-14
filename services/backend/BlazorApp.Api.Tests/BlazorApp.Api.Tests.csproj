@@ -136,6 +136,7 @@
     <Compile Include="SalesDashboardBestSellersTests.cs" />
     <Compile Include="ProductSalesAnalysisLogicTests.cs" />
     <Compile Include="BatchProductSalesAnalysisLogicTests.cs" />
+    <Compile Include="BatchProductSalesMiddleTableTests.cs" />
     <Compile Include="BatchProductSalesAnalysisControllerTests.cs" />
     <Compile Include="BatchProductSalesAnalysisSqlTests.cs" />
     <Compile Include="BatchProductSalesAnalysisSqlServerIntegrationTests.cs" />

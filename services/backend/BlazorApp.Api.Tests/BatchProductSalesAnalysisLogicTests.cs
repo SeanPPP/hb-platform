@@ -147,7 +147,7 @@ public sealed class BatchProductSalesAnalysisLogicTests
                     SkippedDates = [new DateTime(2025, 1, 1)],
                     Status = SalesStatisticRefreshStatus.Running,
                 });
-            var service = new BatchProductSalesAnalysisService(db, db, db, queue.Object,
+            var service = new BatchProductSalesAnalysisService(db, queue.Object,
                 NullLogger<BatchProductSalesAnalysisService>.Instance);
 
             var response = await service.QueryAsync(new BatchProductSalesQueryRequestDto
@@ -193,7 +193,7 @@ public sealed class BatchProductSalesAnalysisLogicTests
                     It.Is<IEnumerable<DateTime>>(dates => dates.SequenceEqual(new[] { day })),
                     "batch-product-sales-analysis", 3, It.IsAny<CancellationToken>()))
                 .ThrowsAsync(new InvalidOperationException("queue unavailable"));
-            var service = new BatchProductSalesAnalysisService(db, db, db, queue.Object,
+            var service = new BatchProductSalesAnalysisService(db, queue.Object,
                 NullLogger<BatchProductSalesAnalysisService>.Instance);
 
             var response = await service.QueryAsync(new BatchProductSalesQueryRequestDto
