@@ -8,6 +8,20 @@ namespace BlazorApp.Api.Tests;
 public sealed class BatchProductSalesDiscountWorkerSchedulingTests
 {
     [Fact]
+    public void 默认回填窗口为一年且闰日按完整日历年覆盖()
+    {
+        var today = new DateTime(2028, 2, 29);
+        var options = new ScheduledTaskOptions();
+
+        var days = BatchProductSalesDiscountWorker.BuildCoverageDays(today, options.DiscountSnapshotHistoricalYears);
+
+        Assert.Equal(1, options.DiscountSnapshotHistoricalYears);
+        Assert.Equal(new DateTime(2027, 2, 28), days.First());
+        Assert.Equal(today, days.Last());
+        Assert.Equal((today - new DateTime(2027, 2, 28)).Days + 1, days.Count);
+    }
+
+    [Fact]
     public void BuildCoverageDays_精确覆盖当天向前两年并保留闰日差异()
     {
         var today = new DateTime(2028, 2, 29);

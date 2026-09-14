@@ -6,7 +6,7 @@ using System.Text.Json;
 
 namespace BlazorApp.Api.Services.Background;
 
-/// <summary>只由当前调度实例驱动的格式 2 折扣日快照；请求线程不创建工作项，也不读取成交源。</summary>
+/// <summary>由专用分布式租约串行的格式 2 折扣日快照；请求线程不创建工作项，也不读取成交源。</summary>
 public sealed class BatchProductSalesDiscountWorker(
     IServiceScopeFactory scopes,
     IOptions<ScheduledTaskOptions> options,
@@ -37,7 +37,8 @@ public sealed class BatchProductSalesDiscountWorker(
     {
         using var scope = scopes.CreateScope();
         var services = scope.ServiceProvider;
-        if (!await services.GetRequiredService<ScheduledTaskRuntimeControlService>().IsCurrentInstanceSchedulerEnabledAsync()) return false;
+        // 折扣 worker 由 daily-format-2 全局租约串行，不能被旧实例的通用 scheduler 选主长期阻断。
+        if (!await services.GetRequiredService<ScheduledTaskRuntimeControlService>().IsLeaseManagedWorkerEnabledAsync()) return false;
         var db = services.GetRequiredService<SqlSugarContext>().Db;
         var store = new BatchProductSalesDiscountDailyStore(db);
         if (!store.SchemaReady)
@@ -53,7 +54,7 @@ public sealed class BatchProductSalesDiscountWorker(
         try
         {
             var today = SalesStatisticsBusinessDate.GetBusinessDate(DateTimeOffset.UtcNow);
-            // SQL Server 单个 IN 参数列表有限制；五年仍明显高于默认两年且保持一次缺口扫描可执行。
+            // SQL Server 单个 IN 参数列表有限制；五年仍明显高于默认一年且保持一次缺口扫描可执行。
             var historicalYears = Math.Clamp(options.Value.DiscountSnapshotHistoricalYears, 1, 5);
             var coverage = BuildCoverageDays(today, historicalYears);
             var coverageStart = coverage[0];

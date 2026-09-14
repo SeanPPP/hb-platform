@@ -139,6 +139,26 @@ public sealed partial class BatchProductSalesAnalysisSqlServerIntegrationTests
     }
 
     [BatchSalesSqlServerFact]
+    public async Task DailySnapshot_SQLServer一年范围外Queued保留但不领取也不触发续跑()
+    {
+        await InstallDailySchemaAsync();
+        var now = new DateTime(2026, 9, 15, 2, 0, 0, DateTimeKind.Utc);
+        var coverageStart = now.Date.AddYears(-1);
+        var outsideCoverage = coverageStart.AddDays(-1);
+        var store = new BatchProductSalesDiscountDailyStore(_catalog!);
+        await store.EnsureQueuedAsync([outsideCoverage], now, default);
+
+        var claim = await store.ClaimNextAsync(now, Array.Empty<DateTime>(), coverageStart, now.Date,
+            TimeSpan.FromMinutes(5), default);
+
+        Assert.Null(claim);
+        Assert.False(await store.HasDueBackfillAsync(coverageStart, now.Date, now));
+        var preserved = await store.GetAsync(outsideCoverage);
+        Assert.NotNull(preserved);
+        Assert.Equal("Queued", preserved.Status);
+    }
+
+    [BatchSalesSqlServerFact]
     public async Task DailySnapshot_SQLServer迁移可重复执行且旧快照完整保留()
     {
         var original = ReadDiscountMigration("BatchProductSalesDiscountSnapshot.sql");

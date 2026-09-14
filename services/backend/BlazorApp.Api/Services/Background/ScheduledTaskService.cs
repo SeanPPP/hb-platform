@@ -85,7 +85,7 @@ namespace BlazorApp.Api.Services.Background
         public int DiscountSnapshotRecentDays { get; set; } = 3;
 
         /// <summary>自动回填从业务当天向前覆盖的完整年数，含首尾日期。</summary>
-        public int DiscountSnapshotHistoricalYears { get; set; } = 2;
+        public int DiscountSnapshotHistoricalYears { get; set; } = 1;
 
         /// <summary>单轮最多处理的折扣业务日数，防止持续回填占用其他后台工作。</summary>
         public int DiscountSnapshotBatchSize { get; set; } = 12;
