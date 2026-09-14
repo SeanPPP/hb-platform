@@ -33,6 +33,23 @@ public partial class SalesDashboardReactService
     )
     {
         var db = _context.Db;
+        var hourlyTable = HourlySalesStatisticsReadSource.GetTableName(_context);
+        // 两个来源按日期互斥。manifest 与小时行在下方同一快照中读取，发布零行也会压过旧表。
+        var refreshSource = hourlyTable == "HourlySalesReadStatistic"
+            ? """
+                (SELECT s.[StatisticType], s.[Date], s.[Status], s.[LastAggregatedAtUtc], s.[CompletedAtUtc],
+                    CAST(NULL AS nvarchar(120)) AS [PublicationVersion]
+                 FROM [dbo].[SalesStatisticRefreshState] s
+                 WHERE s.[StatisticType] <> N'HourlySales' OR NOT EXISTS
+                    (SELECT 1 FROM [dbo].[HourlySalesBackfillDay] d WHERE d.[Date] = s.[Date] AND d.[Status] = N'Applied')
+                 UNION ALL
+                 SELECT N'HourlySales', d.[Date], CASE WHEN b.[RuleVersion] = @hourlyRuleVersion
+                    AND (d.[Error] IS NULL OR LTRIM(RTRIM(d.[Error])) = N'') THEN N'Fresh' ELSE N'Failed' END,
+                    d.[UpdatedAtUtc], d.[UpdatedAtUtc], CONVERT(nvarchar(36), d.[BatchId]) + N':' + COALESCE(d.[AfterHash], N'')
+                 FROM [dbo].[HourlySalesBackfillDay] d LEFT JOIN [dbo].[HourlySalesBackfillBatch] b ON b.[Id] = d.[BatchId]
+                 WHERE d.[Status] = N'Applied')
+                """
+            : "(SELECT [StatisticType], [Date], [Status], [LastAggregatedAtUtc], [CompletedAtUtc], CAST(NULL AS nvarchar(120)) AS [PublicationVersion] FROM [dbo].[SalesStatisticRefreshState])";
         var elapsed = Stopwatch.StartNew();
         var ownsTransaction = db.Ado.Transaction == null;
         // 单条报表批次不需要多个活动结果集；独立连接避免 MARS 给远程大结果读取增加等待。
@@ -52,6 +69,8 @@ public partial class SalesDashboardReactService
             await using var command = connection.CreateCommand();
             command.Transaction = db.Ado.Transaction as DbTransaction;
             command.CommandTimeout = 8;
+            if (hourlyTable == "HourlySalesReadStatistic")
+                Parameter("@hourlyRuleVersion", HourlySalesBackfillRules.Version, System.Data.DbType.String);
 
             void Parameter(string name, object value, System.Data.DbType type)
             {
@@ -102,15 +121,15 @@ public partial class SalesDashboardReactService
                     BEGIN TRANSACTION;
                 END;
                 BEGIN TRY
-                    SELECT COMPRESS(COALESCE((SELECT [StatisticType], [Date], [Status], [LastAggregatedAtUtc], [CompletedAtUtc]
-                    FROM [dbo].[SalesStatisticRefreshState]
+                    SELECT COMPRESS(COALESCE((SELECT [StatisticType], [Date], [Status], [LastAggregatedAtUtc], [CompletedAtUtc], [PublicationVersion]
+                    FROM {refreshSource} r
                     WHERE [StatisticType] IN (N'StoreSales', N'HourlySales') AND {period} FOR JSON PATH, INCLUDE_NULL_VALUES), N'[]')) AS [Data];
                     SELECT COMPRESS(COALESCE((SELECT [Date], [BranchCode], COALESCE([BranchName], N'') [BranchName], [TotalAmount], [OrderCount]
                     FROM [dbo].[StoreSalesStatistic]
                     WHERE {period}{storeScope} FOR JSON PATH, INCLUDE_NULL_VALUES), N'[]')) AS [Data];
                     SELECT COMPRESS(COALESCE((SELECT p.[DateStart] AS [Date], [Hour], [BranchCode], MAX([BranchName]) AS [BranchName],
                         SUM([TotalAmount]) AS [TotalAmount], SUM([OrderCount]) AS [OrderCount], p.[Period]
-                    FROM [dbo].[HourlySalesStatistic] h
+                    FROM [dbo].[{hourlyTable}] h
                     INNER JOIN (VALUES (0, @Start, @End), (1, @CompareStart, @CompareEnd)) p([Period], [DateStart], [DateEnd])
                         ON h.[Date] >= p.[DateStart] AND h.[Date] < p.[DateEnd]
                     WHERE (p.[Period] = 0 OR @HasCompare = 1)
@@ -121,7 +140,7 @@ public partial class SalesDashboardReactService
                     WHERE @IncludeActiveStores = 1 AND [IsActive] = 1 AND [IsDeleted] = 0
                         AND [StoreCode] IS NOT NULL AND [StoreCode] <> N'' FOR JSON PATH, INCLUDE_NULL_VALUES), N'[]')) AS [Data];
                     SELECT COMPRESS(COALESCE((SELECT DISTINCT [Date], [BranchCode]
-                    FROM [dbo].[HourlySalesStatistic]
+                    FROM [dbo].[{hourlyTable}]
                     WHERE [BranchCode] IS NOT NULL AND [BranchCode] <> N'ALL'
                         AND {period}{hourlyScope} FOR JSON PATH, INCLUDE_NULL_VALUES), N'[]')) AS [Data];
                     IF @OwnTransaction = 1

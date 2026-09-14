@@ -119,6 +119,8 @@
     <Compile Include="HqPurchasePriceSyncGuardTests.cs" />
     <Compile Include="SalesCostBackfillTests.cs" />
     <Compile Include="SalesCostBackfillWorkerTests.cs" />
+    <Compile Include="HourlySalesBackfillRulesTests.cs" />
+    <Compile Include="HourlySalesBackfillSqlServerTests.cs" />
     <Compile Include="SalesDashboardCostStatusTests.cs" />
     <Compile Include="SalesStatisticsProductStoreDailyCommandWriterTests.cs" />
     <Compile Include="SalesStatisticsProductStoreDailyBuilderPerformanceTests.cs" />

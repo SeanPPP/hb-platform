@@ -1308,6 +1308,12 @@ namespace BlazorApp.Shared.DTOs
         /// <summary>统计是否仍在补算或快照不完整</summary>
         public bool StatisticsPending { get; set; }
 
+        /// <summary>统计缺口已确认但当前没有运行中的修复任务</summary>
+        public bool StatisticsUnavailable { get; set; }
+
+        /// <summary>Fresh、Pending 或 Unavailable</summary>
+        public string StatisticsStatus { get; set; } = "Fresh";
+
         /// <summary>当前查询范围预期明细项数量</summary>
         public int StatisticsExpectedItemCount { get; set; }
 

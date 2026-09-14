@@ -15,6 +15,14 @@ namespace BlazorApp.Api.Data
         private readonly ILogger<SqlSugarContext> _logger;
         private readonly bool _syncExistingTableStructureOnStartup;
 
+        /// <summary>供隔离只读工具注入已配置客户端；不执行结构初始化，也不附加 SQL 日志。</summary>
+        public SqlSugarContext(ISqlSugarClient db, ILogger<SqlSugarContext> logger)
+        {
+            _db = db ?? throw new ArgumentNullException(nameof(db));
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _syncExistingTableStructureOnStartup = false;
+        }
+
         public SqlSugarContext(
             IConfiguration configuration,
             ILogger<SqlSugarContext> logger,

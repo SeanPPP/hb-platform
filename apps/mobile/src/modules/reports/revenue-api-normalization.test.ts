@@ -114,6 +114,22 @@ assert.equal(
 );
 assert.equal(backendDataEnvelopeHourlyDetail.rows[0]?.hour, 10);
 
+const unavailableHourlyPayload = {
+  items: [],
+  statisticsPending: false,
+  statisticsUnavailable: true,
+  statisticsStatus: "Unavailable",
+  statisticsExpectedItemCount: 0,
+  statisticsSnapshotItemCount: 0,
+};
+assert.throws(
+  () => normalizeHourlyRevenueSnapshot(unavailableHourlyPayload),
+  (error: unknown) => error instanceof Error
+    && error.name === "StatisticsUnavailableError"
+    && error.message === "分时统计暂不可用，请稍后重试。",
+  "分时不可用终态必须进入明确错误态，不得作为完整空结果或零值业务行展示",
+);
+
 for (const [label, snapshot] of [
   ["裸数组", normalizeHourlyRevenueSnapshot([{ Hour: 9, Revenue: 80 }])],
   ["缺少 Pending", normalizeHourlyRevenueSnapshot({
@@ -188,6 +204,27 @@ assert.equal(legacySnapshot.statisticsPending, true);
 assert.equal(legacySnapshot.statisticsExpectedBranchCount, null);
 
 async function runPollingAssertions() {
+  let unavailableLoads = 0;
+  const unavailableWaits: number[] = [];
+  await assert.rejects(
+    pollRevenueDetailSnapshot(
+      async () => {
+        unavailableLoads += 1;
+        return normalizeHourlyRevenueSnapshot(unavailableHourlyPayload);
+      },
+      {
+        delaysMs: [200, 400],
+        wait: async (delayMs) => { unavailableWaits.push(delayMs); },
+      },
+    ),
+    (error: unknown) => error instanceof Error
+      && error.name === "StatisticsUnavailableError"
+      && error.message === "分时统计暂不可用，请稍后重试。",
+    "分时不可用必须立即进入现有错误态",
+  );
+  assert.equal(unavailableLoads, 1, "分时不可用终态不得再次请求");
+  assert.deepEqual(unavailableWaits, [], "分时不可用终态不得进入退避等待");
+
   const snapshots = [
     createBranchSnapshot(5, true),
     createBranchSnapshot(20, true),

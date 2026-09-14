@@ -174,6 +174,7 @@ public sealed class RevenueReportSnapshotTests : IDisposable
         ado.SetupGet(value => value.Transaction).Returns(new Mock<DbTransaction>().Object);
         ado.SetupGet(value => value.Connection).Returns(connection.Object);
         var db = new Mock<ISqlSugarClient>();
+        db.SetupGet(value => value.DbMaintenance).Returns(Mock.Of<IDbMaintenance>());
         db.SetupGet(value => value.Ado).Returns(ado.Object);
         db.SetupGet(value => value.CurrentConnectionConfig).Returns(new ConnectionConfig { DbType = DbType.SqlServer });
         using var cache = new MemoryCache(new MemoryCacheOptions());

@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="../../services/backend/BlazorApp.Api/BlazorApp.Api.csproj" />
+  </ItemGroup>
+
+  <!-- ProjectReference 会带入 API 的示例配置；runner 发布包必须只使用容器现有环境。 -->
+  <Target Name="RemoveAppSettingsFromPublish" AfterTargets="Publish">
+    <ItemGroup>
+      <RunnerAppSettings Include="$(PublishDir)appsettings*.json" />
+    </ItemGroup>
+    <Delete Files="@(RunnerAppSettings)" />
+  </Target>
+</Project>

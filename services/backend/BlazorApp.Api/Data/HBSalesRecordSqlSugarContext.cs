@@ -17,6 +17,7 @@ namespace BlazorApp.Api.Data
             // 使用 Scoped 生命周期管理连接
             // IsAutoCloseConnection = true 自动管理连接的打开和关闭，避免连接泄露
 
+            var enableSqlLogging = configuration.GetValue<bool>("Database:EnableSqlLogging", false);
             _db = new SqlSugarScope(
                 new ConnectionConfig()
                 {
@@ -36,10 +37,8 @@ namespace BlazorApp.Api.Data
                 },
                 db =>
                 {
-                    db.Aop.OnLogExecuting = (sql, pars) =>
-                    {
-                        Console.WriteLine($"[HBSalesRecord] SQL: {sql}");
-                    };
+                    if (enableSqlLogging)
+                        db.Aop.OnLogExecuting = (sql, _) => Console.WriteLine($"[HBSalesRecord] SQL: {sql}");
                 }
             );
 

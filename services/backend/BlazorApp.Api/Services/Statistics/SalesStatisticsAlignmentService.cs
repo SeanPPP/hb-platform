@@ -535,7 +535,10 @@ namespace BlazorApp.Api.Services
 
         private async Task<Dictionary<DateTime, StatisticMetric>> QueryHourlyMetricsAsync(DateTime start, DateTime end)
         {
-            var rows = await _context.Db.Queryable<HourlySalesStatistic>()
+            var publications = await HourlySalesStatisticsReadSource.ReadAppliedAsync(_context, start, end);
+            if (publications.Any(day => !string.IsNullOrWhiteSpace(day.Error)))
+                throw new HourlySalesPublicationUnavailableException("分时发布版本失效，不能执行统计对齐");
+            var rows = await _context.Db.Queryable<HourlySalesStatistic>().AS(HourlySalesStatisticsReadSource.GetTableName(_context))
                 .Where(row => row.Date >= start && row.Date <= end && row.BranchCode == "ALL")
                 .GroupBy(row => row.Date)
                 .Select(row => new StatisticMetric

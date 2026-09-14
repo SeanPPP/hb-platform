@@ -1351,6 +1351,8 @@ namespace BlazorApp.Api.Controllers.React
                     success = true,
                     data = result.Items,
                     result.StatisticsPending,
+                    result.StatisticsUnavailable,
+                    result.StatisticsStatus,
                     result.StatisticsExpectedItemCount,
                     result.StatisticsSnapshotItemCount,
                 });

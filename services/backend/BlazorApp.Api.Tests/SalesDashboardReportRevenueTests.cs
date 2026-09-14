@@ -925,6 +925,212 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
     }
 
     [Fact]
+    public async Task GetExecutiveHourlyTrafficAsync_未登记历史缺口返回Unavailable终态()
+    {
+        EnableHourlyBackfillSchema();
+        var date = new DateTime(2025, 9, 15);
+        await SeedStoreSalesStatisticAsync(date, "S1", "Glendale", 100m, 3);
+
+        var result = await CreateService().GetExecutiveHourlyTrafficAsync(
+            new DateRangeDto { StartDate = date, EndDate = date }, ["S1"]);
+
+        Assert.True(result.StatisticsUnavailable);
+        Assert.False(result.StatisticsPending);
+        Assert.Equal("Unavailable", result.StatisticsStatus);
+        Assert.Empty(result.Items);
+    }
+
+    [Fact]
+    public async Task GetExecutiveHourlyTrafficAsync_回填结构Degraded时失败关闭且不触发旧重算()
+    {
+        // 模拟迁移只留下 day 表、batch/围栏结构不完整；不能退回旧 POSM-only 路径。
+        _localDb.CodeFirst.InitTables(typeof(HourlySalesBackfillDay));
+        var date = new DateTime(2025, 9, 15);
+        await SeedStoreSalesStatisticAsync(date, "S1", "Glendale", 100m, 3);
+        await SeedHourlySalesStatisticAsync(date, 9, "S1", "Glendale", 100m, 3);
+        var oldRefreshCalled = false;
+        var service = CreateService();
+        service.HourlyStatisticsRefreshTestInterceptor = _ =>
+        {
+            oldRefreshCalled = true;
+            return Task.CompletedTask;
+        };
+
+        var result = await service.GetExecutiveHourlyTrafficAsync(
+            new DateRangeDto { StartDate = date, EndDate = date }, ["S1"]);
+
+        Assert.True(result.StatisticsUnavailable);
+        Assert.False(result.StatisticsPending);
+        Assert.Equal("Unavailable", result.StatisticsStatus);
+        Assert.False(oldRefreshCalled);
+        Assert.Empty(result.Items);
+    }
+
+    [Theory]
+    [InlineData("Blocked", "Blocked")]
+    [InlineData("RolledBack", "RolledBack")]
+    public async Task GetExecutiveHourlyTrafficAsync_未发布或已回滚不遮挡完整旧统计(
+        string batchStatus, string dayStatus)
+    {
+        EnableHourlyBackfillSchema();
+        var date = new DateTime(2025, 9, 15);
+        await SeedStoreSalesStatisticAsync(date, "S1", "Glendale", 100m, 3);
+        await SeedHourlySalesStatisticAsync(date, 9, "S1", "Glendale", 100m, 3);
+        await SeedHourlyBackfillStateAsync(date, batchStatus, dayStatus, null);
+
+        var result = await CreateService().GetExecutiveHourlyTrafficAsync(
+            new DateRangeDto { StartDate = date, EndDate = date }, ["S1"]);
+
+        Assert.False(result.StatisticsUnavailable);
+        Assert.False(result.StatisticsPending);
+        Assert.Equal(100m, Assert.Single(result.Items).Revenue);
+    }
+
+    [Fact]
+    public async Task GetExecutiveHourlyTrafficAsync_发布事务提交前继续读取完整旧统计()
+    {
+        EnableHourlyBackfillSchema();
+        var date = new DateTime(2025, 9, 15);
+        await SeedStoreSalesStatisticAsync(date, "S1", "Glendale", 100m, 3);
+        await SeedHourlySalesStatisticAsync(date, 9, "S1", "Glendale", 100m, 3);
+        await SeedHourlyBackfillStateAsync(date, "Applying", "Previewed", null);
+
+        var result = await CreateService().GetExecutiveHourlyTrafficAsync(
+            new DateRangeDto { StartDate = date, EndDate = date }, ["S1"]);
+
+        Assert.False(result.StatisticsPending);
+        Assert.False(result.StatisticsUnavailable);
+        Assert.Equal(100m, Assert.Single(result.Items).Revenue);
+    }
+
+    [Fact]
+    public async Task GetExecutiveHourlyTrafficAsync_Applied摘要漂移返回Unavailable()
+    {
+        EnableHourlyBackfillSchema();
+        var date = new DateTime(2025, 9, 15);
+        await SeedStoreSalesStatisticAsync(date, "S1", "Glendale", 100m, 3);
+        await SeedHourlySalesStatisticAsync(date, 9, "S1", "Glendale", 100m, 3);
+        await SeedHourlyBackfillStateAsync(date, "Applied", "Applied", "stale-hash");
+
+        var result = await CreateService().GetExecutiveHourlyTrafficAsync(
+            new DateRangeDto { StartDate = date, EndDate = date }, ["S1"]);
+
+        Assert.True(result.StatisticsUnavailable);
+        Assert.Empty(result.Items);
+    }
+
+    [Fact]
+    public async Task GetExecutiveHourlyTrafficAsync_Applied来源复核失败返回Unavailable终态()
+    {
+        EnableHourlyBackfillSchema();
+        var date = new DateTime(2025, 9, 15);
+        await SeedStoreSalesStatisticAsync(date, "S1", "Glendale", 100m, 3);
+        await SeedHourlySalesStatisticAsync(date, 9, "S1", "Glendale", 100m, 3);
+        var rows = await _localDb.Queryable<HourlySalesStatistic>()
+            .Where(row => row.Date == date).ToListAsync();
+        await SeedHourlyBackfillStateAsync(date, "Applied", "Applied",
+            HourlySalesBackfillService.TargetHash(rows),
+            "source-drift:原始来源或日统计已变化");
+
+        var result = await CreateService().GetExecutiveHourlyTrafficAsync(
+            new DateRangeDto { StartDate = date, EndDate = date }, ["S1"]);
+
+        Assert.True(result.StatisticsUnavailable);
+        Assert.False(result.StatisticsPending);
+        Assert.Equal("Unavailable", result.StatisticsStatus);
+        Assert.Empty(result.Items);
+    }
+
+    [Fact]
+    public async Task GetExecutiveHourlyTrafficAsync_Applied摘要包含All行且匹配时可读()
+    {
+        EnableHourlyBackfillSchema();
+        var date = new DateTime(2025, 9, 15);
+        await SeedStoreSalesStatisticAsync(date, "S1", "Glendale", 100m, 3);
+        await SeedHourlySalesStatisticAsync(date, 9, "S1", "Glendale", 100m, 3);
+        await SeedHourlySalesStatisticAsync(date, 9, "ALL", "All Stores", 100m, 3);
+        var rows = await _localDb.Queryable<HourlySalesStatistic>()
+            .Where(row => row.Date == date).ToListAsync();
+        await SeedHourlyBackfillStateAsync(date, "Applied", "Applied",
+            HourlySalesBackfillService.TargetHash(rows));
+
+        var publishedRead = await _localDb.Queryable<HourlySalesStatistic>().AS("HourlySalesReadStatistic")
+            .Where(row => row.Date == date).ToListAsync();
+        Assert.Equal(System.Text.Json.JsonSerializer.Serialize(rows), System.Text.Json.JsonSerializer.Serialize(publishedRead));
+
+        var result = await CreateService().GetExecutiveHourlyTrafficAsync(
+            new DateRangeDto { StartDate = date, EndDate = date }, ["S1"]);
+
+        Assert.False(result.StatisticsUnavailable);
+        Assert.False(result.StatisticsPending);
+        var row = Assert.Single(result.Items);
+        Assert.Equal("Glendale", row.BranchName);
+    }
+
+    [Fact]
+    public async Task GetExecutiveHourlyTrafficAsync_发布后旧写入不覆盖且回滚切换缓存版本()
+    {
+        EnableHourlyBackfillSchema();
+        var date = new DateTime(2025, 9, 15);
+        await SeedStoreSalesStatisticAsync(date, "S1", "Glendale", 100m, 3);
+        await SeedHourlySalesStatisticAsync(date, 9, "S1", "Glendale", 100m, 3);
+        var rows = await _localDb.Queryable<HourlySalesStatistic>().Where(row => row.Date == date).ToListAsync();
+        await SeedHourlyBackfillStateAsync(date, "Applied", "Applied", HourlySalesBackfillService.TargetHash(rows));
+        var service = CreateService();
+        var range = new DateRangeDto { StartDate = date, EndDate = date };
+        Assert.Equal(100m, Assert.Single((await service.GetExecutiveHourlyTrafficAsync(range, ["S1"])).Items).Revenue);
+
+        // 模拟仍在运行的旧任务完整覆盖原表；已发布版本必须保持不变。
+        await _localDb.Updateable<HourlySalesStatistic>().SetColumns(row => row.TotalAmount == 200m)
+            .Where(row => row.Date == date).ExecuteCommandAsync();
+        await _localDb.Updateable<StoreSalesStatistic>().SetColumns(row => row.TotalAmount == 200m)
+            .Where(row => row.Date == date).ExecuteCommandAsync();
+        Assert.Equal(100m, Assert.Single((await service.GetExecutiveHourlyTrafficAsync(range, ["S1"])).Items).Revenue);
+        await _localDb.Updateable<HourlySalesBackfillDay>().SetColumns(row => row.Status == "RolledBack")
+            .Where(row => row.Date == date).ExecuteCommandAsync();
+        Assert.Equal(200m, Assert.Single((await service.GetExecutiveHourlyTrafficAsync(range, ["S1"])).Items).Revenue);
+    }
+
+    [Fact]
+    public async Task GetExecutiveHourlyTrafficAsync_认证零销售遮挡旧行且来源失效不命中旧缓存()
+    {
+        EnableHourlyBackfillSchema();
+        var date = new DateTime(2025, 9, 15);
+        await SeedHourlyBackfillStateAsync(date, "Applied", "Applied", HourlySalesBackfillService.TargetHash([]));
+        await SeedHourlySalesStatisticAsync(date, 9, "S1", "Glendale", 100m, 3);
+        var service = CreateService();
+        var range = new DateRangeDto { StartDate = date, EndDate = date };
+        var first = await service.GetExecutiveHourlyTrafficAsync(range, ["S1"]);
+        Assert.False(first.StatisticsUnavailable);
+        Assert.False(first.StatisticsPending);
+        Assert.Empty(first.Items);
+        await _localDb.Updateable<HourlySalesBackfillDay>().SetColumns(row => row.Error == "source-drift")
+            .Where(row => row.Date == date).ExecuteCommandAsync();
+        var second = await service.GetExecutiveHourlyTrafficAsync(range, ["S1"]);
+        Assert.True(second.StatisticsUnavailable);
+        Assert.Empty(second.Items);
+    }
+
+    [Fact]
+    public async Task 分时所有入口拒绝未知发布规则且不回退旧行()
+    {
+        EnableHourlyBackfillSchema();
+        var date = new DateTime(2025, 9, 15);
+        await SeedStoreSalesStatisticAsync(date, "S1", "Glendale", 100m, 3);
+        await SeedHourlySalesStatisticAsync(date, 9, "S1", "Glendale", 100m, 3);
+        var rows = await _localDb.Queryable<HourlySalesStatistic>().Where(row => row.Date == date).ToListAsync();
+        await SeedHourlyBackfillStateAsync(date, "Applied", "Applied", HourlySalesBackfillService.TargetHash(rows));
+        await _localDb.Updateable<HourlySalesBackfillBatch>().SetColumns(row => row.RuleVersion == "unknown-rule")
+            .Where(row => row.StartDate == date).ExecuteCommandAsync();
+        var service = CreateService();
+        var range = new DateRangeDto { StartDate = date, EndDate = date };
+        Assert.True((await service.GetExecutiveHourlyTrafficAsync(range, ["S1"])).StatisticsUnavailable);
+        await Assert.ThrowsAsync<HourlySalesPublicationUnavailableException>(() => service.GetHourlySalesAsync(range, ["S1"]));
+        await Assert.ThrowsAsync<HourlySalesPublicationUnavailableException>(() => service.GetRevenueReportSnapshotAsync(range, ["S1"]));
+        Assert.Empty(await _localDb.Queryable<HourlySalesStatistic>().AS("HourlySalesReadStatistic").ToListAsync());
+    }
+
+    [Fact]
     public async Task GetExecutiveHourlyTrafficAsync_同期独有分店小时也返回并将本期补零()
     {
         var currentDate = new DateTime(2026, 7, 1);
@@ -4516,6 +4722,68 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
             CustomerCount = orderCount,
             UpdateTime = DateTime.UtcNow,
         }).ExecuteCommandAsync();
+    }
+
+    private void EnableHourlyBackfillSchema()
+    {
+        _localDb.CodeFirst.InitTables(typeof(HourlySalesBackfillBatch), typeof(HourlySalesBackfillDay),
+            typeof(HourlySalesBackfillPublishedRow));
+        _localDb.Ado.ExecuteCommand("CREATE UNIQUE INDEX IF NOT EXISTS UX_HourlySalesBackfillDay_OneAppliedPerDate ON HourlySalesBackfillDay(Date) WHERE Status = 'Applied'");
+        _localDb.Ado.ExecuteCommand("""
+            CREATE VIEW IF NOT EXISTS HourlySalesReadStatistic AS
+            SELECT p.Date, p.Hour, p.BranchCode, p.BranchName, p.TotalAmount, p.TotalQuantity,
+                p.OrderCount, p.CustomerCount, p.AverageOrderValue, p.PublishedAtUtc AS UpdateTime
+            FROM HourlySalesBackfillPublishedRow p
+            JOIN HourlySalesBackfillDay d ON p.BatchId = d.BatchId AND p.Date = d.Date
+            JOIN HourlySalesBackfillBatch b ON b.Id = d.BatchId
+            WHERE d.Status = 'Applied' AND b.RuleVersion = 'hourly-posm-hbsales-v1'
+                AND (d.Error IS NULL OR TRIM(d.Error) = '')
+            UNION ALL
+            SELECT h.Date, h.Hour, h.BranchCode, h.BranchName, h.TotalAmount, h.TotalQuantity,
+                h.OrderCount, h.CustomerCount, h.AverageOrderValue, h.UpdateTime FROM HourlySalesStatistic h
+            WHERE NOT EXISTS (SELECT 1 FROM HourlySalesBackfillDay d WHERE d.Date = h.Date AND d.Status = 'Applied')
+            """);
+    }
+
+    private async Task SeedHourlyBackfillStateAsync(
+        DateTime date, string batchStatus, string dayStatus, string? afterHash,
+        string? error = null)
+    {
+        var id = Guid.NewGuid();
+        var now = DateTime.UtcNow;
+        await _localDb.Insertable(new HourlySalesBackfillBatch
+        {
+            Id = id,
+            StartDate = date,
+            EndDate = date,
+            RuleVersion = HourlySalesBackfillRules.Version,
+            Status = batchStatus,
+            RequestedBy = "test",
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now,
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new HourlySalesBackfillDay
+        {
+            BatchId = id,
+            Date = date,
+            Status = dayStatus,
+            AfterHash = afterHash,
+            Error = error,
+            UpdatedAtUtc = now,
+        }).ExecuteCommandAsync();
+        if (dayStatus == "Applied")
+        {
+            var rows = await _localDb.Queryable<HourlySalesStatistic>().Where(row => row.Date == date).ToListAsync();
+            // 夹具逐行写入，使用与 manifest 相同的 SQLite 参数化插入路径。
+            foreach (var row in rows)
+                await _localDb.Insertable(new HourlySalesBackfillPublishedRow
+                {
+                    BatchId = id, Date = row.Date, Hour = row.Hour, BranchCode = row.BranchCode!,
+                    BranchName = row.BranchName, TotalAmount = row.TotalAmount, TotalQuantity = row.TotalQuantity,
+                    OrderCount = row.OrderCount ?? 0, CustomerCount = row.CustomerCount,
+                    AverageOrderValue = row.AverageOrderValue, PublishedAtUtc = row.UpdateTime,
+                }).ExecuteCommandAsync();
+        }
     }
 
     private async Task SeedStatisticsTaskLogAsync(

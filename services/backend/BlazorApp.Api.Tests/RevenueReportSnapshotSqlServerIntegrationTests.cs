@@ -2,8 +2,10 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using AutoMapper;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
+using BlazorApp.Shared.Models;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -32,6 +34,9 @@ public sealed class RevenueReportSnapshotSqlServerIntegrationTests
     private const string SqlServerTestConnectionEnvVar = "HB_TEST_SQLSERVER_CONNECTION";
     private static readonly DateTime SeedDate = new(2026, 9, 7);
     private static readonly DateTime EmptyDate = new(2026, 9, 8);
+    private static readonly DateTime PublishedDate = new(2026, 9, 9);
+    private static readonly DateTime LegacyDate = new(2026, 9, 10);
+    private static readonly DateTime PublishedZeroDate = new(2026, 9, 11);
     private static readonly string[] AuthorizedStoreCodes =
     {
         "1003", "1004", "1005", "1009", "1012", "1014", "1015", "1024",
@@ -111,6 +116,95 @@ public sealed class RevenueReportSnapshotSqlServerIntegrationTests
         Assert.Equal(999.99m, outside.Revenue);
     }
 
+    [RevenueReportSnapshotSqlServerFact]
+    public async Task 原生SQL读取按日期切换发布版本_真零覆盖旧行_旧BulkCopy不污染认证结果()
+    {
+        await using var fixture = await RevenueSnapshotSqlServerFixture.CreateAsync();
+        await fixture.SeedPublicationScenarioAsync();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = fixture.CreateService(cache);
+
+        var mixed = await service.GetRevenueReportSnapshotAsync(
+            new DateRangeDto { StartDate = PublishedDate, EndDate = LegacyDate },
+            ["1003"],
+            ["1003"]);
+
+        Assert.False(mixed.StatisticsPending);
+        var mixedHour = Assert.Single(mixed.Hourly);
+        Assert.Equal("09:00", mixedHour.Hour);
+        Assert.Equal("1003", mixedHour.BranchCode);
+        Assert.Equal(30m, mixedHour.Revenue);
+        Assert.Equal(3, mixedHour.OrderCount);
+        Assert.Equal(2, await fixture.CountReadRowsAsync(PublishedDate, LegacyDate));
+
+        var publishedBeforeBulk = await fixture.ReadViewAsync(PublishedDate);
+        await fixture.LegacyFastestBulkCopyAsync(PublishedDate);
+        Assert.Equal(2, await fixture.CountPhysicalRowsAsync(PublishedDate));
+        Assert.Equal(
+            publishedBeforeBulk.Select(RowIdentity),
+            (await fixture.ReadViewAsync(PublishedDate)).Select(RowIdentity));
+
+        using var refreshedCache = new MemoryCache(new MemoryCacheOptions());
+        var afterBulk = await fixture.CreateService(refreshedCache).GetRevenueReportSnapshotAsync(
+            new DateRangeDto { StartDate = PublishedDate, EndDate = LegacyDate },
+            ["1003"],
+            ["1003"]);
+        var afterBulkHour = Assert.Single(afterBulk.Hourly);
+        Assert.Equal(30m, afterBulkHour.Revenue);
+        Assert.DoesNotContain(afterBulk.Hourly, row => row.Hour == "10:00");
+
+        var zero = await fixture.CreateService(refreshedCache).GetRevenueReportSnapshotAsync(
+            new DateRangeDto { StartDate = PublishedZeroDate, EndDate = PublishedZeroDate },
+            ["1003"],
+            ["1003"]);
+        Assert.False(zero.StatisticsPending);
+        Assert.False(zero.HourlyCurrentPending);
+        Assert.Empty(zero.Hourly);
+        Assert.Equal(70m, Assert.Single(await fixture.ReadPhysicalAsync(PublishedZeroDate)).TotalAmount);
+        Assert.Empty(await fixture.ReadViewAsync(PublishedZeroDate));
+    }
+
+    [RevenueReportSnapshotSqlServerFact]
+    public async Task 来源漂移的Applied版本抛Unavailable且不复用之前缓存()
+    {
+        await using var fixture = await RevenueSnapshotSqlServerFixture.CreateAsync();
+        await fixture.SeedPublicationScenarioAsync();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = fixture.CreateService(cache);
+        var range = new DateRangeDto { StartDate = PublishedDate, EndDate = PublishedDate };
+
+        var warm = await service.GetRevenueReportSnapshotAsync(range, ["1003"], ["1003"]);
+        Assert.Equal(10m, Assert.Single(warm.Hourly).Revenue);
+
+        await fixture.MarkPublicationSourceDriftAsync(PublishedDate);
+        var error = await Assert.ThrowsAsync<HourlySalesPublicationUnavailableException>(
+            () => service.GetRevenueReportSnapshotAsync(range, ["1003"], ["1003"]));
+        Assert.Contains("来源复核未通过", error.Message);
+        Assert.Empty(await fixture.ReadViewAsync(PublishedDate));
+    }
+
+    [RevenueReportSnapshotSqlServerFact]
+    public async Task 未知RuleVersion的Applied版本抛Unavailable且不回退原表()
+    {
+        await using var fixture = await RevenueSnapshotSqlServerFixture.CreateAsync();
+        await fixture.SeedPublicationScenarioAsync();
+        await fixture.MarkPublicationRuleUnsupportedAsync(PublishedDate);
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+
+        var error = await Assert.ThrowsAsync<HourlySalesPublicationUnavailableException>(() =>
+            fixture.CreateService(cache).GetRevenueReportSnapshotAsync(
+                new DateRangeDto { StartDate = PublishedDate, EndDate = PublishedDate },
+                ["1003"],
+                ["1003"]));
+
+        Assert.Contains("来源复核未通过", error.Message);
+        Assert.Single(await fixture.ReadPhysicalAsync(PublishedDate));
+        Assert.Empty(await fixture.ReadViewAsync(PublishedDate));
+    }
+
+    private static string RowIdentity(HourlySalesStatistic row) =>
+        $"{row.Date:yyyy-MM-dd}|{row.Hour}|{row.BranchCode}|{row.TotalAmount}|{row.OrderCount}";
+
     private sealed class RevenueSnapshotSqlServerFixture : IAsyncDisposable
     {
         private readonly string _masterConnectionString;
@@ -150,6 +244,12 @@ public sealed class RevenueReportSnapshotSqlServerIntegrationTests
                     databaseConnectionString,
                     "ALTER DATABASE CURRENT SET ALLOW_SNAPSHOT_ISOLATION ON;");
                 await ExecuteNonQueryAsync(databaseConnectionString, SchemaAndSeedSql);
+                var migrationSql = await File.ReadAllTextAsync(FindMigrationPath());
+                migrationSql = migrationSql.Replace(
+                    "IF DB_NAME() <> N'HBweb'",
+                    $"IF DB_NAME() <> N'{databaseName}'",
+                    StringComparison.Ordinal);
+                await ExecuteNonQueryAsync(databaseConnectionString, migrationSql);
                 return new RevenueSnapshotSqlServerFixture(
                     masterConnectionString,
                     databaseName,
@@ -162,14 +262,121 @@ public sealed class RevenueReportSnapshotSqlServerIntegrationTests
             }
         }
 
-        public SalesDashboardReactService CreateService()
+        public SalesDashboardReactService CreateService(IMemoryCache? cache = null)
         {
             return new SalesDashboardReactService(
                 CreateSqlSugarContext(_db),
                 CreatePosmSqlSugarContext(_posmDb),
                 Mock.Of<IMapper>(),
                 NullLogger<SalesDashboardReactService>.Instance,
-                _cache);
+                cache ?? _cache);
+        }
+
+        public async Task SeedPublicationScenarioAsync()
+        {
+            var now = DateTime.UtcNow;
+            await _db.Insertable(new[]
+            {
+                new StoreSalesStatistic
+                {
+                    Date = PublishedDate, BranchCode = "1003", BranchName = "一〇〇三店",
+                    TotalAmount = 10m, TotalQuantity = 1, OrderCount = 1,
+                    CustomerCount = 1, AverageOrderValue = 10m,
+                },
+                new StoreSalesStatistic
+                {
+                    Date = LegacyDate, BranchCode = "1003", BranchName = "一〇〇三店",
+                    TotalAmount = 20m, TotalQuantity = 2, OrderCount = 2,
+                    CustomerCount = 2, AverageOrderValue = 10m,
+                },
+                new StoreSalesStatistic
+                {
+                    Date = PublishedZeroDate, BranchCode = "1003", BranchName = "一〇〇三店",
+                    TotalAmount = 0m, TotalQuantity = 0, OrderCount = 0,
+                    CustomerCount = 0, AverageOrderValue = 0m,
+                },
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new[]
+            {
+                LegacyRow(PublishedDate, 9, 90m, 9),
+                LegacyRow(LegacyDate, 9, 20m, 2),
+                LegacyRow(PublishedZeroDate, 9, 70m, 7),
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new[]
+            {
+                RefreshState("StoreSales", PublishedDate, now),
+                RefreshState("StoreSales", LegacyDate, now),
+                RefreshState("StoreSales", PublishedZeroDate, now),
+                RefreshState("HourlySales", PublishedDate, now),
+                RefreshState("HourlySales", LegacyDate, now),
+                RefreshState("HourlySales", PublishedZeroDate, now),
+            }).ExecuteCommandAsync();
+
+            var batchId = Guid.NewGuid();
+            await _db.Insertable(new HourlySalesBackfillBatch
+            {
+                Id = batchId, StartDate = PublishedDate, EndDate = PublishedZeroDate,
+                RuleVersion = HourlySalesBackfillService.CurrentRuleVersion,
+                Status = "Applied", RequestedBy = "integration-test",
+                AppliedBy = "integration-test", CreatedAtUtc = now, UpdatedAtUtc = now,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new[]
+            {
+                AppliedDay(batchId, PublishedDate, "published-hash", 10m, 1, 1, now),
+                AppliedDay(batchId, PublishedZeroDate, "zero-hash", 0m, 0, 0, now),
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new HourlySalesBackfillPublishedRow
+            {
+                BatchId = batchId, Date = PublishedDate, Hour = 9,
+                BranchCode = "1003", BranchName = "一〇〇三店",
+                TotalAmount = 10m, TotalQuantity = 1, OrderCount = 1,
+                CustomerCount = 1, AverageOrderValue = 10m, PublishedAtUtc = now,
+            }).ExecuteCommandAsync();
+        }
+
+        public async Task LegacyFastestBulkCopyAsync(DateTime date)
+        {
+            await _db.Fastest<HourlySalesStatistic>().BulkCopyAsync(new List<HourlySalesStatistic>
+            {
+                LegacyRow(date, 10, 999m, 99),
+            });
+        }
+
+        public Task<List<HourlySalesStatistic>> ReadViewAsync(DateTime date) =>
+            _db.Queryable<HourlySalesStatistic>().AS("HourlySalesReadStatistic")
+                .Where(row => row.Date == date.Date).OrderBy(row => row.Hour).ToListAsync();
+
+        public Task<List<HourlySalesStatistic>> ReadPhysicalAsync(DateTime date) =>
+            _db.Queryable<HourlySalesStatistic>()
+                .Where(row => row.Date == date.Date).OrderBy(row => row.Hour).ToListAsync();
+
+        public Task<int> CountPhysicalRowsAsync(DateTime date) =>
+            _db.Queryable<HourlySalesStatistic>().Where(row => row.Date == date.Date).CountAsync();
+
+        public Task<int> CountReadRowsAsync(DateTime start, DateTime end) =>
+            _db.Queryable<HourlySalesStatistic>().AS("HourlySalesReadStatistic")
+                .Where(row => row.Date >= start.Date && row.Date <= end.Date).CountAsync();
+
+        public async Task MarkPublicationSourceDriftAsync(DateTime date)
+        {
+            await _db.Updateable<HourlySalesBackfillDay>()
+                .SetColumns(row => row.Error == "source-drift:测试来源变化")
+                .SetColumns(row => row.UpdatedAtUtc == DateTime.UtcNow.AddSeconds(1))
+                .Where(row => row.Date == date.Date && row.Status == "Applied")
+                .ExecuteCommandAsync();
+        }
+
+        public async Task MarkPublicationRuleUnsupportedAsync(DateTime date)
+        {
+            var batchId = await _db.Queryable<HourlySalesBackfillDay>()
+                .Where(row => row.Date == date.Date && row.Status == "Applied")
+                .Select(row => row.BatchId)
+                .SingleAsync();
+            await _db.Updateable<HourlySalesBackfillBatch>()
+                .SetColumns(row => row.RuleVersion == "unsupported-v0")
+                .SetColumns(row => row.UpdatedAtUtc == DateTime.UtcNow.AddSeconds(1))
+                .Where(row => row.Id == batchId)
+                .ExecuteCommandAsync();
         }
 
         public async ValueTask DisposeAsync()
@@ -179,6 +386,31 @@ public sealed class RevenueReportSnapshotSqlServerIntegrationTests
             _posmDb.Dispose();
             await DropDatabaseAsync(_masterConnectionString, _databaseName);
         }
+
+        private static HourlySalesStatistic LegacyRow(DateTime date, int hour, decimal amount, int orders) => new()
+        {
+            Date = date, Hour = hour, BranchCode = "1003", BranchName = "一〇〇三店",
+            TotalAmount = amount, TotalQuantity = orders, OrderCount = orders,
+            CustomerCount = orders, AverageOrderValue = orders == 0 ? 0m : amount / orders,
+            UpdateTime = DateTime.UtcNow,
+        };
+
+        private static SalesStatisticRefreshState RefreshState(string type, DateTime date, DateTime now) => new()
+        {
+            StatisticType = type, Date = date, Status = SalesStatisticRefreshStatus.Fresh,
+            LastAggregatedAtUtc = now, CompletedAtUtc = now,
+        };
+
+        private static HourlySalesBackfillDay AppliedDay(
+            Guid batchId, DateTime date, string hash, decimal amount, int orders, int rows, DateTime now) => new()
+        {
+            BatchId = batchId, Date = date, Status = "Applied",
+            SourceHash = hash, BeforeHash = "legacy", AfterHash = hash,
+            BeforeJson = "[]", CandidateJson = "[]", SourceStatusJson = "[]",
+            ExpectedAmount = amount, CandidateAmount = amount,
+            ExpectedOrderCount = orders, CandidateOrderCount = orders,
+            RowCount = rows, UpdatedAtUtc = now,
+        };
 
         private static readonly string SchemaAndSeedSql = """
             SET NOCOUNT ON;
@@ -193,7 +425,11 @@ public sealed class RevenueReportSnapshotSqlServerIntegrationTests
                 [BranchCode] nvarchar(50) NOT NULL,
                 [BranchName] nvarchar(100) NOT NULL,
                 [TotalAmount] decimal(18,2) NOT NULL,
+                [TotalQuantity] int NOT NULL CONSTRAINT [DF_StoreSalesStatistic_TotalQuantity] DEFAULT 0,
                 [OrderCount] int NOT NULL,
+                [CustomerCount] int NOT NULL CONSTRAINT [DF_StoreSalesStatistic_CustomerCount] DEFAULT 0,
+                [AverageOrderValue] decimal(18,2) NOT NULL CONSTRAINT [DF_StoreSalesStatistic_AverageOrderValue] DEFAULT 0,
+                [UpdateTime] datetime2(7) NOT NULL CONSTRAINT [DF_StoreSalesStatistic_UpdateTime] DEFAULT SYSUTCDATETIME(),
                 CONSTRAINT [PK_StoreSalesStatistic] PRIMARY KEY ([Date], [BranchCode])
             );
             CREATE TABLE [dbo].[HourlySalesStatistic] (
@@ -203,13 +439,26 @@ public sealed class RevenueReportSnapshotSqlServerIntegrationTests
                 [BranchName] nvarchar(100) NULL,
                 [TotalAmount] decimal(18,2) NOT NULL,
                 [OrderCount] int NULL,
+                [TotalQuantity] int NOT NULL CONSTRAINT [DF_HourlySalesStatistic_TotalQuantity] DEFAULT 0,
+                [CustomerCount] int NOT NULL CONSTRAINT [DF_HourlySalesStatistic_CustomerCount] DEFAULT 0,
+                [AverageOrderValue] decimal(18,2) NOT NULL CONSTRAINT [DF_HourlySalesStatistic_AverageOrderValue] DEFAULT 0,
+                [UpdateTime] datetime2(7) NOT NULL CONSTRAINT [DF_HourlySalesStatistic_UpdateTime] DEFAULT SYSUTCDATETIME(),
                 CONSTRAINT [PK_HourlySalesStatistic] PRIMARY KEY ([Date], [Hour], [BranchCode])
             );
             CREATE TABLE [dbo].[SalesStatisticRefreshState] (
                 [StatisticType] nvarchar(80) NOT NULL,
                 [Date] datetime2(7) NOT NULL,
                 [Status] nvarchar(20) NOT NULL,
+                [LastSourceUploadTime] datetime2(7) NULL,
+                [SourceTimeZone] nvarchar(40) NOT NULL CONSTRAINT [DF_SalesStatisticRefreshState_SourceTimeZone] DEFAULT N'POSM_LOCAL',
+                [SourceProductVersion] nvarchar(64) NULL,
                 [LastAggregatedAtUtc] datetime2(7) NULL,
+                [LastCheckedAtUtc] datetime2(7) NULL,
+                [ErrorMessage] nvarchar(1000) NULL,
+                [JobId] uniqueidentifier NULL,
+                [RequestedBy] nvarchar(100) NULL,
+                [RequestedAtUtc] datetime2(7) NULL,
+                [StartedAtUtc] datetime2(7) NULL,
                 [CompletedAtUtc] datetime2(7) NULL,
                 CONSTRAINT [PK_SalesStatisticRefreshState] PRIMARY KEY ([StatisticType], [Date])
             );
@@ -282,8 +531,23 @@ public sealed class RevenueReportSnapshotSqlServerIntegrationTests
             var builder = new SqlConnectionStringBuilder(connectionString)
             {
                 InitialCatalog = databaseName,
+                PersistSecurityInfo = true,
             };
             return builder.ConnectionString;
+        }
+
+        private static string FindMigrationPath()
+        {
+            var directory = new DirectoryInfo(AppContext.BaseDirectory);
+            while (directory != null)
+            {
+                var candidate = Path.Combine(directory.FullName, "services", "backend", "BlazorApp.Api",
+                    "Data", "Migrations", "20260915_CreateHourlySalesBackfill.sql");
+                if (File.Exists(candidate))
+                    return candidate;
+                directory = directory.Parent;
+            }
+            throw new FileNotFoundException("找不到分时回填 SQL Server 迁移文件。");
         }
 
         private static void EnsureLoopbackSqlServer(string connectionString)

@@ -47,6 +47,7 @@ export interface ExecutiveBranchPerformancePollingOptions {
 export interface RevenueDetailSnapshot<Row> {
   rows: Row[];
   statisticsPending: boolean;
+  statisticsUnavailable: boolean;
   statisticsExpectedItemCount: number | null;
   statisticsSnapshotItemCount: number | null;
   isComplete: boolean;
@@ -458,6 +459,10 @@ function normalizeRevenueDetailSnapshot<Row>(
   const rawItems = snapshot?.items;
   const rows = Array.isArray(rawItems) ? rawItems.map(normalizeRow) : [];
   const rawPending = snapshot?.statisticsPending;
+  const rawUnavailable = snapshot
+    ? pick(snapshot, "statisticsUnavailable", "StatisticsUnavailable")
+    : undefined;
+  const statisticsUnavailable = asBoolean(rawUnavailable);
   const statisticsExpectedItemCount = asNonNegativeInteger(snapshot?.statisticsExpectedItemCount);
   const statisticsSnapshotItemCount = asNonNegativeInteger(snapshot?.statisticsSnapshotItemCount);
   const hasCompleteMetadata = Array.isArray(rawItems)
@@ -467,13 +472,16 @@ function normalizeRevenueDetailSnapshot<Row>(
   // 分时/逐日明细必须来自同一份可证明完整的统计快照。缺字段、裸数组或计数不一致时
   // 一律 fail-closed，禁止渲染业务行或把“首条可见”计入两秒性能样本。
   const isComplete = hasCompleteMetadata
+    && !statisticsUnavailable
     && !rawPending
     && statisticsExpectedItemCount === statisticsSnapshotItemCount
     && statisticsSnapshotItemCount === rows.length;
 
   return {
     rows,
-    statisticsPending: hasCompleteMetadata ? !isComplete : true,
+    // Unavailable 是明确终态，不能再伪装成 Pending 触发整段退避轮询。
+    statisticsPending: statisticsUnavailable ? false : hasCompleteMetadata ? !isComplete : true,
+    statisticsUnavailable,
     statisticsExpectedItemCount,
     statisticsSnapshotItemCount,
     isComplete,
@@ -538,7 +546,13 @@ export function normalizeDailyRevenueRows(payload: unknown) {
 }
 
 export function normalizeHourlyRevenueSnapshot(payload: unknown) {
-  return normalizeRevenueDetailSnapshot(payload, normalizeHourlyRow);
+  const snapshot = normalizeRevenueDetailSnapshot(payload, normalizeHourlyRow);
+  if (snapshot.statisticsUnavailable) {
+    const error = new Error("分时统计暂不可用，请稍后重试。");
+    error.name = "StatisticsUnavailableError";
+    throw error;
+  }
+  return snapshot;
 }
 
 export function normalizeDailyRevenueSnapshot(payload: unknown) {

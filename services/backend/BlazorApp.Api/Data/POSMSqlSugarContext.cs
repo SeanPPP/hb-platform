@@ -14,6 +14,12 @@ namespace BlazorApp.Api.Data
     {
         private readonly ISqlSugarClient _db;
 
+        /// <summary>供隔离只读工具注入已配置客户端；不附加审计、性能或 SQL 日志。</summary>
+        public POSMSqlSugarContext(ISqlSugarClient db)
+        {
+            _db = db ?? throw new ArgumentNullException(nameof(db));
+        }
+
         public POSMSqlSugarContext(
             IConfiguration configuration,
             ICurrentUserService currentUserService,

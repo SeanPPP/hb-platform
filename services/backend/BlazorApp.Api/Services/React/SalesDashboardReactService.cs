@@ -355,6 +355,7 @@ namespace BlazorApp.Api.Services.React
             NotNeeded,
             Completed,
             Pending,
+            Unavailable,
         }
 
         private sealed class ReportStatisticsCacheGenerationState
@@ -579,8 +580,16 @@ namespace BlazorApp.Api.Services.React
             try
             {
                 ValidateDateRange(dateRange);
-
-                var cacheKey = SalesDashboardCacheKeys.Hourly(dateRange, branchCodes, null);
+                return await ReadReportSnapshotAsync(async () =>
+                {
+                var publications = await HourlySalesStatisticsReadSource.ReadAppliedAsync(_context,
+                    dateRange.StartDate.Date, dateRange.EndDate.Date,
+                    dateRange.CompareStartDate?.Date, dateRange.CompareEndDate?.Date);
+                if (publications.Any(day => !string.IsNullOrWhiteSpace(day.Error)))
+                    throw new HourlySalesPublicationUnavailableException("历史分时来源复核未通过，暂时无法读取认证统计");
+                var publicationVersion = await HourlySalesStatisticsReadSource.GetVersionAsync(_context, dateRange);
+                var cacheKey = SalesDashboardCacheKeys.Hourly(dateRange, branchCodes, null)
+                    + $":published:{publicationVersion}";
 
                 if (
                     _cache.TryGetValue<List<HourlySalesDto>>(cacheKey, out var cachedResult)
@@ -601,7 +610,7 @@ namespace BlazorApp.Api.Services.React
                 var endDate = dateRange.EndDate.Date;
 
                 var currentQuery = _context
-                    .Db.Queryable<HourlySalesStatistic>()
+                    .Db.Queryable<HourlySalesStatistic>().AS(HourlySalesStatisticsReadSource.GetTableName(_context))
                     .Where(s => s.BranchCode != "ALL" && s.Date >= startDate && s.Date <= endDate);
 
                 if (branchCodes != null && branchCodes.Any())
@@ -632,7 +641,7 @@ namespace BlazorApp.Api.Services.React
                     var compareEndDate = dateRange.CompareEndDate.Value.Date;
 
                     var compareQuery = _context
-                        .Db.Queryable<HourlySalesStatistic>()
+                        .Db.Queryable<HourlySalesStatistic>().AS(HourlySalesStatisticsReadSource.GetTableName(_context))
                         .Where(s => s.Date >= compareStartDate && s.Date <= compareEndDate);
 
                     if (branchCodes != null && branchCodes.Any())
@@ -704,6 +713,12 @@ namespace BlazorApp.Api.Services.React
                 );
 
                 return result;
+                });
+            }
+            catch (HourlySalesPublicationUnavailableException)
+            {
+                // 兼容接口没有 unavailable 字段；让控制器返回明确失败，不能把失效日期当作空销售。
+                throw;
             }
             catch (Exception ex)
             {
@@ -3800,10 +3815,39 @@ namespace BlazorApp.Api.Services.React
 
                 return await ReadReportSnapshotAsync(async () =>
                 {
+                    // 未登记旧历史的兼容认证必须与下方实际小时读取处于同一个 snapshot；
+                    // 否则旧 writer 可在两次事务之间删改小时行并把局部数据伪装为完整。
+                    var snapshotHistoricalState = StatisticsRefreshState.NotNeeded;
+                    var backfillSchema = HourlySalesBackfillProtection.GetSchemaState(_context);
+                    if (backfillSchema == HourlySalesBackfillSchemaState.Degraded)
+                    {
+                        return CreateExecutiveReportResult<ExecutiveHourlyTrafficDto>(
+                            [], false, statisticsUnavailable: true);
+                    }
+                    if (backfillSchema == HourlySalesBackfillSchemaState.Ready)
+                    {
+                        snapshotHistoricalState = await GetHistoricalHourlyCoverageStateAsync(
+                            dateRange.StartDate.Date, dateRange.EndDate.Date, normalizedBranchCodes);
+                        if (dateRange.CompareStartDate.HasValue && dateRange.CompareEndDate.HasValue)
+                        {
+                            snapshotHistoricalState = CombineStatisticsStates(snapshotHistoricalState,
+                                await GetHistoricalHourlyCoverageStateAsync(
+                                    dateRange.CompareStartDate.Value.Date,
+                                    dateRange.CompareEndDate.Value.Date,
+                                    normalizedBranchCodes));
+                        }
+                    }
+                    var snapshotRefreshState = CombineStatisticsStates(
+                        statisticsRefreshState, snapshotHistoricalState);
+                    if (snapshotRefreshState == StatisticsRefreshState.Unavailable)
+                    {
+                        return CreateExecutiveReportResult<ExecutiveHourlyTrafficDto>(
+                            [], false, statisticsUnavailable: true);
+                    }
                     // 快速补算任务即使已结束，也必须重查来源/统计覆盖；不能把“完成”当作“完整”。
                     // 稳定统计已在 Ensure 中完成一次覆盖核验，此处不重复扫描 POSM，允许尽早命中缓存。
                     var hourlyStatisticsStillMissing = new List<DateTime>();
-                    if (statisticsRefreshState == StatisticsRefreshState.Completed)
+                    if (snapshotRefreshState == StatisticsRefreshState.Completed)
                     {
                         hourlyStatisticsStillMissing = await GetMissingHourlyStatisticDatesAsync(
                             dateRange.StartDate.Date,
@@ -3819,17 +3863,18 @@ namespace BlazorApp.Api.Services.React
                             ));
                         }
                     }
-                    var statisticsPending = statisticsRefreshState == StatisticsRefreshState.Pending
+                    var statisticsPending = snapshotRefreshState == StatisticsRefreshState.Pending
                         || hourlyStatisticsStillMissing.Count > 0;
 
                     var compareStartStr = dateRange.CompareStartDate?.ToString("yyyyMMdd") ?? "null";
                     var compareEndStr = dateRange.CompareEndDate?.ToString("yyyyMMdd") ?? "null";
                     var statisticsVersion = await GetStatisticsCacheVersionAsync(dateRange);
+                    var publicationVersion = await HourlySalesStatisticsReadSource.GetVersionAsync(_context, dateRange);
                     var cacheKey =
-                        $"ExecutiveHourlyTraffic_{statisticsVersion}_{dateRange.StartDate:yyyyMMdd}_{dateRange.EndDate:yyyyMMdd}_{compareStartStr}_{compareEndStr}_{string.Join(",", normalizedBranchCodes)}";
+                        $"ExecutiveHourlyTraffic_{statisticsVersion}_{publicationVersion}_{dateRange.StartDate:yyyyMMdd}_{dateRange.EndDate:yyyyMMdd}_{compareStartStr}_{compareEndStr}_{string.Join(",", normalizedBranchCodes)}";
 
                     if (
-                        statisticsRefreshState == StatisticsRefreshState.NotNeeded
+                        snapshotRefreshState == StatisticsRefreshState.NotNeeded
                         &&
                         _cache.TryGetValue<ExecutiveReportResultDto<ExecutiveHourlyTrafficDto>>(
                             cacheKey,
@@ -3847,7 +3892,7 @@ namespace BlazorApp.Api.Services.React
                     var endDate = dateRange.EndDate.Date;
 
                     var query = _context
-                        .Db.Queryable<HourlySalesStatistic>()
+                        .Db.Queryable<HourlySalesStatistic>().AS(HourlySalesStatisticsReadSource.GetTableName(_context))
                         .Where(s =>
                             s.Date >= startDate
                             && s.Date <= endDate
@@ -3888,7 +3933,7 @@ namespace BlazorApp.Api.Services.React
                         var lyEndDate = dateRange.CompareEndDate.Value.Date;
 
                         var lyQuery = _context
-                            .Db.Queryable<HourlySalesStatistic>()
+                            .Db.Queryable<HourlySalesStatistic>().AS(HourlySalesStatisticsReadSource.GetTableName(_context))
                             .Where(s =>
                                 s.Date >= lyStartDate
                                 && s.Date <= lyEndDate
@@ -4028,7 +4073,8 @@ namespace BlazorApp.Api.Services.React
 
                     var response = CreateExecutiveReportResult(
                         items,
-                        statisticsPending
+                        statisticsPending,
+                        statisticsUnavailable: false
                     );
 
                     if (!response.StatisticsPending)
@@ -4286,7 +4332,8 @@ namespace BlazorApp.Api.Services.React
 
         private static ExecutiveReportResultDto<T> CreateExecutiveReportResult<T>(
             List<T> items,
-            bool statisticsPending
+            bool statisticsPending,
+            bool statisticsUnavailable = false
         )
         {
             // Pending 快照没有可证明的最终条目数，故故意令 expected 大于 snapshot，
@@ -4295,6 +4342,9 @@ namespace BlazorApp.Api.Services.React
             {
                 Items = items,
                 StatisticsPending = statisticsPending,
+                StatisticsUnavailable = statisticsUnavailable,
+                StatisticsStatus = statisticsUnavailable ? "Unavailable"
+                    : statisticsPending ? "Pending" : "Fresh",
                 StatisticsSnapshotItemCount = items.Count,
                 StatisticsExpectedItemCount = statisticsPending ? items.Count + 1 : items.Count,
             };
@@ -5012,6 +5062,23 @@ namespace BlazorApp.Api.Services.React
             List<string> branchCodes
         )
         {
+            var historicalState = StatisticsRefreshState.NotNeeded;
+            var backfillSchema = HourlySalesBackfillProtection.GetSchemaState(_context);
+            if (backfillSchema == HourlySalesBackfillSchemaState.Degraded)
+                return StatisticsRefreshState.Unavailable;
+            if (backfillSchema == HourlySalesBackfillSchemaState.Ready)
+            {
+                historicalState = await GetHistoricalHourlyCoverageStateAsync(
+                    dateRange.StartDate.Date, dateRange.EndDate.Date, branchCodes);
+                if (dateRange.CompareStartDate.HasValue && dateRange.CompareEndDate.HasValue)
+                {
+                    historicalState = CombineStatisticsStates(historicalState,
+                        await GetHistoricalHourlyCoverageStateAsync(
+                            dateRange.CompareStartDate.Value.Date,
+                            dateRange.CompareEndDate.Value.Date,
+                            branchCodes));
+                }
+            }
             var missingDates = await GetMissingHourlyStatisticDatesAsync(
                 dateRange.StartDate.Date,
                 dateRange.EndDate.Date,
@@ -5027,7 +5094,7 @@ namespace BlazorApp.Api.Services.React
                 ));
             }
 
-            return await RefreshMissingStatisticsAsync(
+            var refreshState = await RefreshMissingStatisticsAsync(
                 "hourly",
                 "分时营业额",
                 missingDates,
@@ -5043,6 +5110,19 @@ namespace BlazorApp.Api.Services.React
                     await service.UpdateHourlyStatistics(date);
                 }
             );
+            return CombineStatisticsStates(historicalState, refreshState);
+        }
+
+        private static StatisticsRefreshState CombineStatisticsStates(
+            StatisticsRefreshState first, StatisticsRefreshState second)
+        {
+            if (first == StatisticsRefreshState.Pending || second == StatisticsRefreshState.Pending)
+                return StatisticsRefreshState.Pending;
+            if (first == StatisticsRefreshState.Unavailable || second == StatisticsRefreshState.Unavailable)
+                return StatisticsRefreshState.Unavailable;
+            if (first == StatisticsRefreshState.Completed || second == StatisticsRefreshState.Completed)
+                return StatisticsRefreshState.Completed;
+            return StatisticsRefreshState.NotNeeded;
         }
 
         private async Task<List<DateTime>> GetMissingStoreStatisticDatesAsync(
@@ -5200,7 +5280,119 @@ namespace BlazorApp.Api.Services.React
                 if (expectedDates.Count == 0)
                     return new List<DateTime>();
 
-                var query = _context.Db.Queryable<HourlySalesStatistic>()
+                var backfillSchema = HourlySalesBackfillProtection.GetSchemaState(_context);
+                if (backfillSchema == HourlySalesBackfillSchemaState.Degraded)
+                    return new List<DateTime>();
+                if (backfillSchema == HourlySalesBackfillSchemaState.Ready)
+                {
+                    var today = SalesStatisticsBusinessDate.Today();
+                    var mutableDates = expectedDates.Where(date => date.Date >= today).ToList();
+                    if (mutableDates.Count == 0)
+                        return new List<DateTime>();
+                    startDate = mutableDates.Min().Date;
+                    endDate = mutableDates.Max().Date;
+                    return await GetMissingHourlyStatisticDatesFromSourceAsync(
+                        startDate, endDate, branchCodes);
+                }
+
+                return await GetMissingHourlyStatisticDatesFromSourceAsync(
+                    startDate, endDate, branchCodes);
+            });
+        }
+
+        private async Task<StatisticsRefreshState> GetHistoricalHourlyCoverageStateAsync(
+            DateTime startDate, DateTime endDate, List<string> branchCodes)
+        {
+            var today = SalesStatisticsBusinessDate.Today();
+            var dates = EnumerateReportDates(startDate, endDate)
+                .Where(date => date.Date < today).Select(date => date.Date).Distinct().ToList();
+            if (dates.Count == 0) return StatisticsRefreshState.NotNeeded;
+            var first = dates.Min();
+            var lastExclusive = dates.Max().AddDays(1);
+            var ruleVersion = HourlySalesBackfillRules.Version;
+            var trackedRows = await _context.Db.Queryable<HourlySalesBackfillDay>()
+                .InnerJoin<HourlySalesBackfillBatch>((day, batch) => day.BatchId == batch.Id)
+                .Where((day, batch) => day.Date >= first && day.Date < lastExclusive)
+                .Select((day, batch) => new HourlyBackfillReadState
+                {
+                    Date = day.Date, DayStatus = day.Status, BatchStatus = batch.Status,
+                    RuleVersion = batch.RuleVersion,
+                    AfterHash = day.AfterHash, Error = day.Error, UpdatedAtUtc = day.UpdatedAtUtc,
+                }).ToListAsync();
+            var latestTracked = trackedRows.GroupBy(row => row.Date.Date)
+                .ToDictionary(group => group.Key, group => group
+                    .OrderByDescending(row => row.DayStatus == "Applied")
+                    .ThenByDescending(row => row.UpdatedAtUtc).First());
+            var hourlyRows = await _context.Db.Queryable<HourlySalesStatistic>().AS(HourlySalesStatisticsReadSource.GetTableName(_context))
+                .Where(row => row.Date >= first && row.Date < lastExclusive)
+                .ToListAsync();
+            var targetRows = await _context.Db.Queryable<StoreSalesStatistic>()
+                .Where(row => row.Date >= first && row.Date < lastExclusive && row.BranchCode != "ALL")
+                .ToListAsync();
+            var allowedBranches = branchCodes.Count == 0 ? null
+                : branchCodes.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var sawUnavailable = false;
+            foreach (var date in dates)
+            {
+                var allDateHourly = hourlyRows.Where(row => row.Date.Date == date).ToList();
+                if (latestTracked.TryGetValue(date, out var tracked))
+                {
+                    if (tracked.DayStatus == "Applied" && string.IsNullOrWhiteSpace(tracked.Error)
+                        && tracked.RuleVersion == ruleVersion
+                        && !string.IsNullOrWhiteSpace(tracked.AfterHash)
+                        && HourlySalesBackfillService.TargetHash(allDateHourly) == tracked.AfterHash)
+                        continue;
+                    // 已发布但校验失效时绝不退回旧表。预览和回滚则不遮挡尚可用的旧统计。
+                    if (tracked.DayStatus == "Applied")
+                    {
+                        sawUnavailable = true;
+                        continue;
+                    }
+                }
+
+                var selectedHourly = allDateHourly.Where(row => row.BranchCode != "ALL"
+                    && (allowedBranches == null
+                    || (row.BranchCode != null && allowedBranches.Contains(row.BranchCode)))).ToList();
+                var selectedTargets = targetRows.Where(row => row.Date.Date == date
+                    && (allowedBranches == null || allowedBranches.Contains(row.BranchCode))).ToList();
+                if (!HistoricalHourlyMatchesDaily(selectedHourly, selectedTargets))
+                {
+                    if (tracked != null && ((tracked.BatchStatus == "Previewing" && tracked.DayStatus == "Pending")
+                        || (tracked.BatchStatus == "Applying" && tracked.DayStatus == "Previewed")))
+                        return StatisticsRefreshState.Pending;
+                    sawUnavailable = true;
+                }
+            }
+            return sawUnavailable ? StatisticsRefreshState.Unavailable : StatisticsRefreshState.NotNeeded;
+        }
+
+        private static bool HistoricalHourlyMatchesDaily(
+            IReadOnlyCollection<HourlySalesStatistic> hourly,
+            IReadOnlyCollection<StoreSalesStatistic> daily)
+        {
+            if (daily.Count == 0 || hourly.Count == 0 || hourly.Any(row => !row.OrderCount.HasValue))
+                return false;
+            var hourlyByBranch = hourly.GroupBy(row => row.BranchCode ?? "", StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => new
+                {
+                    Amount = group.Sum(row => row.TotalAmount),
+                    Orders = group.Sum(row => row.OrderCount ?? 0),
+                }, StringComparer.OrdinalIgnoreCase);
+            if (!hourlyByBranch.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase)
+                .SetEquals(daily.Select(row => row.BranchCode))) return false;
+            return daily.All(target => hourlyByBranch.TryGetValue(target.BranchCode, out var actual)
+                && Math.Abs(actual.Amount - target.TotalAmount) <= 0.01m
+                && actual.Orders == target.OrderCount);
+        }
+
+        private async Task<List<DateTime>> GetMissingHourlyStatisticDatesFromSourceAsync(
+            DateTime startDate,
+            DateTime endDate,
+            List<string> branchCodes)
+        {
+                var expectedDates = EnumerateReportDates(startDate, endDate);
+
+                var query = _context.Db.Queryable<HourlySalesStatistic>().AS(HourlySalesStatisticsReadSource.GetTableName(_context))
                     .Where(s => s.Date >= startDate && s.Date <= endDate);
                 if (branchCodes.Count > 0)
                 {
@@ -5234,7 +5426,17 @@ namespace BlazorApp.Api.Services.React
                     rows,
                     expectedSalesBranchesByDate
                 );
-            });
+        }
+
+        private sealed class HourlyBackfillReadState
+        {
+            public string? RuleVersion { get; set; }
+            public DateTime Date { get; set; }
+            public string DayStatus { get; set; } = "";
+            public string BatchStatus { get; set; } = "";
+            public string? AfterHash { get; set; }
+            public string? Error { get; set; }
+            public DateTime UpdatedAtUtc { get; set; }
         }
 
         private async Task<Dictionary<DateTime, HashSet<string>>?> GetStoreSalesSourceBranchCodesByDateAsync(

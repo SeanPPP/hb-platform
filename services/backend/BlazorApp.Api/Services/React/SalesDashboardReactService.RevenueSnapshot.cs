@@ -43,6 +43,7 @@ public partial class SalesDashboardReactService
         public string Status { get; set; } = string.Empty;
         public DateTime? LastAggregatedAtUtc { get; set; }
         public DateTime? CompletedAtUtc { get; set; }
+        public string? PublicationVersion { get; set; }
     }
 
     private sealed class RevenueSnapshotStatus
@@ -140,6 +141,9 @@ public partial class SalesDashboardReactService
                 hourlyCoverageRows = new List<RevenueSnapshotHourlyCoverageRow>();
                 activeStoreNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             }
+            if (refreshRows.Any(row => row.PublicationVersion != null
+                && row.Status == SalesStatisticRefreshStatus.Failed))
+                throw new HourlySalesPublicationUnavailableException("历史分时来源复核未通过，暂时无法读取认证统计");
             var status = BuildRevenueSnapshotStatus(
                 refreshRows,
                 startDate,
@@ -150,8 +154,15 @@ public partial class SalesDashboardReactService
                 storeRows,
                 hourlyCoverageRows
             );
+            // 发布、复核失效和回滚各用独立缓存键，不能用之前的完整 bundle 掩盖认证失效。
+            var publicationVersion = string.Join("|", refreshRows
+                .Where(row => row.PublicationVersion != null)
+                .OrderBy(row => row.Date)
+                .Select(row => $"{row.Date:yyyyMMdd}:{row.PublicationVersion}:{row.Status}"));
+            var publicationCacheKey = cacheKey + ":published:" + Convert.ToHexString(
+                SHA256.HashData(Encoding.UTF8.GetBytes(publicationVersion)));
 
-            if (_cache.TryGetValue<RevenueReportSnapshotDto>(cacheKey, out var cached)
+            if (_cache.TryGetValue<RevenueReportSnapshotDto>(publicationCacheKey, out var cached)
                 && cached != null
                 && (!status.Complete || cached.CacheVersion == status.Version))
             {
@@ -214,7 +225,7 @@ public partial class SalesDashboardReactService
                 hourlyCoverageRows
             );
 
-            if (_cache.TryGetValue<RevenueReportSnapshotDto>(cacheKey, out cached)
+            if (_cache.TryGetValue<RevenueReportSnapshotDto>(publicationCacheKey, out cached)
                 && cached != null
                 && (!status.Complete || cached.CacheVersion == status.Version))
                 return !status.Complete ? CloneRevenueSnapshot(cached, status) : cached;
@@ -279,7 +290,7 @@ public partial class SalesDashboardReactService
             if (status.Complete)
             {
                 _cache.Set(
-                    cacheKey,
+                    publicationCacheKey,
                     result,
                     new MemoryCacheEntryOptions()
                         .SetAbsoluteExpiration(RANKING_CACHE_DURATION)
@@ -325,7 +336,7 @@ public partial class SalesDashboardReactService
     {
         cancellationToken.ThrowIfCancellationRequested();
         var hasCompare = compareStartDate.HasValue && compareEndDate.HasValue;
-        return await _context.Db.Queryable<SalesStatisticRefreshState>()
+        var rows = await _context.Db.Queryable<SalesStatisticRefreshState>()
             .Where(state =>
                 (state.StatisticType == SalesStatisticType.StoreSales
                  || state.StatisticType == SalesStatisticType.HourlySales)
@@ -342,6 +353,22 @@ public partial class SalesDashboardReactService
                 CompletedAtUtc = state.CompletedAtUtc,
             })
             .ToListAsync();
+        var publications = await HourlySalesStatisticsReadSource.ReadAppliedAsync(
+            _context, startDate, endDate, compareStartDate, compareEndDate, cancellationToken);
+        var publishedDates = publications.Select(day => day.Date.Date).ToHashSet();
+        rows.RemoveAll(row => row.StatisticType == SalesStatisticType.HourlySales
+            && publishedDates.Contains(row.Date.Date));
+        rows.AddRange(publications.Select(day => new RevenueSnapshotRefreshRow
+        {
+            StatisticType = SalesStatisticType.HourlySales,
+            Date = day.Date,
+            Status = string.IsNullOrWhiteSpace(day.Error)
+                ? SalesStatisticRefreshStatus.Fresh : SalesStatisticRefreshStatus.Failed,
+            LastAggregatedAtUtc = day.UpdatedAtUtc,
+            CompletedAtUtc = day.UpdatedAtUtc,
+            PublicationVersion = $"{day.BatchId:D}:{day.AfterHash}",
+        }));
+        return rows;
     }
 
     private static RevenueSnapshotStatus BuildRevenueSnapshotStatus(
@@ -379,6 +406,9 @@ public partial class SalesDashboardReactService
                 && string.Equals(hourlyState.Status, SalesStatisticRefreshStatus.Fresh, StringComparison.OrdinalIgnoreCase)
                 && hourlyState.LastAggregatedAtUtc.HasValue
                 && hourlyState.CompletedAtUtc.HasValue;
+            // 认证 manifest 已核对完整日期；合法零销售没有小时行，仍必须覆盖原表旧行。
+            if (!string.IsNullOrEmpty(hourlyState?.PublicationVersion))
+                return hourlyStateComplete;
 
             // Hourly 状态表是在历史 hourly 快照之后才引入的。已有分时行代表旧批次
             // 已提交；只有状态存在且明确处于 Running/Queued 时才必须等待新一版。
@@ -425,7 +455,7 @@ public partial class SalesDashboardReactService
         var versionSource = string.Join(
             "|",
             rows.OrderBy(row => row.Date).ThenBy(row => row.StatisticType).Select(row =>
-                $"{row.StatisticType}:{row.Date:yyyyMMdd}:{row.Status}:{row.LastAggregatedAtUtc?.Ticks ?? 0}:{row.CompletedAtUtc?.Ticks ?? 0}")
+                $"{row.StatisticType}:{row.Date:yyyyMMdd}:{row.Status}:{row.LastAggregatedAtUtc?.Ticks ?? 0}:{row.CompletedAtUtc?.Ticks ?? 0}:{row.PublicationVersion}")
         );
 
         return new RevenueSnapshotStatus
@@ -494,7 +524,7 @@ public partial class SalesDashboardReactService
     )
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var query = _context.Db.Queryable<HourlySalesStatistic>()
+        var query = _context.Db.Queryable<HourlySalesStatistic>().AS(HourlySalesStatisticsReadSource.GetTableName(_context))
             .Where(row => row.BranchCode != null && row.BranchCode != "ALL");
         query = compareStartDate.HasValue && compareEndDate.HasValue
             ? query.Where(row =>
