@@ -130,6 +130,7 @@
     "productMovementReport": "商品经营分析",
     "productSalesAnalysis": "商品销量分析",
     "warehouseProductFlowAnalysis": "仓库商品流转分析",
+    "batchProductSalesAnalysis": "批量货号销量",
     "localProductSalesAnalysis": "澳洲本地商品分析",
     "purchaseAmountDashboard": "进货金额看板",
     "pageNotFound": "页面不存在",

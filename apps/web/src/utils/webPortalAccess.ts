@@ -73,12 +73,13 @@ const ADMIN_ENTRY_RULES: readonly AdminEntryRule[] = [
     ],
     canAccess: (access) => access.canViewContainers,
   },
-  // 七个页面各自构成后台入口；仅有单页权限时，登录后直接落到该页。
+  // 每个销售页面独立授权；仅有单页权限时，登录后直接落到该页。
   ...([
     ['overview', P.SalesDashboard.SalesDataView],
     ['sales-detail-v2', P.SalesDashboard.SalesDetailView],
     ['compact-sales-board', P.SalesDashboard.CompactBoardView],
     ['product-movement-report', P.SalesDashboard.ProductMovementView],
+    ['batch-product-sales-analysis', P.SalesDashboard.BatchProductSalesView],
     ['warehouse-product-flow-analysis', P.SalesDashboard.WarehouseFlowView],
     ['local-product-sales-analysis', P.SalesDashboard.LocalProductAnalysisView],
     ['purchase-amount-dashboard', P.SalesDashboard.PurchaseAmountView],

@@ -85,6 +85,7 @@ assertArrayEqual(
     'advertisements',
     'promotions',
     'product-query',
+    'product-insights',
     'installment-orders',
     'store-vouchers',
     'attendance-personal',
@@ -145,11 +146,12 @@ assertArrayEqual(
     'cart',
     'local-supplier-invoices',
     'product-query',
+    'product-insights',
     'installment-orders',
     'store-vouchers',
     'seasonal-cards',
   ],
-  'Web 权限预览的门店业务分组应包含节日贺卡',
+  'Web 权限预览的门店业务分组应包含商品进销和节日贺卡',
 )
 
 const warehouseRoute = completePreview.allRoutes.find((route) => route.routeName === 'warehouse')

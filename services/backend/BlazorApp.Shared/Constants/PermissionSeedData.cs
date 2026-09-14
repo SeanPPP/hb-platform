@@ -59,6 +59,7 @@ namespace BlazorApp.Shared.Constants
                 new(Permissions.SalesDashboard.SalesDetailView, "查看销售明细", "销售看板", "按供应商、分店和商品查看销售明细"),
                 new(Permissions.SalesDashboard.CompactBoardView, "查看独立销售看板", "销售看板", "查看紧凑布局的分店、供应商和商品销售数据"),
                 new(Permissions.SalesDashboard.ProductMovementView, "查看商品经营分析", "销售看板", "查看商品经营表现和店长动作建议"),
+                new(Permissions.SalesDashboard.BatchProductSalesView, "查看批量货号销量", "销售看板", "按导入货号查看商品每日销量、分店销量及折扣成交情况"),
                 new(Permissions.SalesDashboard.WarehouseFlowView, "查看仓库商品流转分析", "销售看板", "查看仓库商品的进货、发货和销售流转"),
                 new(Permissions.SalesDashboard.LocalProductAnalysisView, "查看澳洲本地商品分析", "销售看板", "查看澳洲本地商品的进货与销售表现"),
                 new(Permissions.SalesDashboard.PurchaseAmountView, "查看进货金额看板", "销售看板", "查看各分店仓库订单、本地供应商进货金额及营业额"),

@@ -135,6 +135,10 @@
     <Compile Include="ProductStoreDailyStatisticQueueServiceTests.cs" />
     <Compile Include="SalesDashboardBestSellersTests.cs" />
     <Compile Include="ProductSalesAnalysisLogicTests.cs" />
+    <Compile Include="BatchProductSalesAnalysisLogicTests.cs" />
+    <Compile Include="BatchProductSalesAnalysisControllerTests.cs" />
+    <Compile Include="BatchProductSalesAnalysisSqlTests.cs" />
+    <Compile Include="BatchProductSalesAnalysisSqlServerIntegrationTests.cs" />
     <Compile Include="ProductSalesAnalysisServiceTests.cs" />
     <Compile Include="WarehouseProductFlowAnalysisLogicTests.cs" />
     <Compile Include="WarehouseProductFlowAnalysisServiceTests.cs" />
