@@ -5,7 +5,7 @@
 .field { display: flex; flex: 0 1 auto; flex-direction: column; gap: 2px; min-width: 0; color: #65758b; font-size: 12px; }
 .field > span { font-weight: 600; }
 .storeSelect { width: 220px; }
-.layout { display: grid; grid-template-areas: "products total branch-trend" "products daily branch-sales"; grid-template-columns: 282px minmax(420px, 1fr) 338px; gap: 12px; align-items: start; }
+.layout { display: grid; grid-template-areas: "products total branch-trend" "products daily branch-sales"; grid-template-columns: 240px minmax(400px, 1fr) 400px; gap: 12px; align-items: start; }
 .column { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
 .leftColumn { grid-area: products; }
 .totalTrendPanel { grid-area: total; align-self: stretch; }
@@ -96,9 +96,11 @@
 :global(.batch-product-sales-chart-legend span) { display: inline-flex; align-items: center; gap: 5px; }
 :global(.batch-product-sales-chart-legend i) { width: 8px; height: 8px; border-radius: 50%; }
 
-@media (max-width: 1439px) and (min-width: 1200px) { .layout { grid-template-columns: 264px minmax(390px, 1fr) 320px; } .metrics { gap: 6px 9px; } .branchGridHead, .branchGridRow, .branchGridTotal { grid-template-columns: minmax(58px, 1fr) 35px 31px 31px 63px 36px; gap: 2px; } }
-@media (max-width: 1199px) { .layout { grid-template-areas: "products total" "products daily" ". branch-trend" ". branch-sales"; grid-template-columns: 292px minmax(0, 1fr); } }
-@media (max-width: 800px) { .toolbar { align-items: stretch; flex-direction: column; } .field, .storeSelect { width: 100%; } .layout { grid-template-areas: "products" "total" "daily" "branch-trend" "branch-sales"; grid-template-columns: 1fr; } .metrics { margin-left: 0; } }
+/* 桌面端优先给分店趋势保留可读宽度；空间不足时提前回退为右侧双列布局。 */
+@media (min-width: 1600px) { .layout { grid-template-columns: 240px minmax(480px, 1fr) 480px; } }
+@media (max-width: 1439px) and (min-width: 1344px) { .metrics { gap: 6px 9px; } }
+@media (max-width: 1343px) { .layout { grid-template-areas: "products total" "products daily" ". branch-trend" ". branch-sales"; grid-template-columns: 292px minmax(0, 1fr); } }
+@media (max-width: 899px) { .toolbar { align-items: stretch; flex-direction: column; } .field, .storeSelect { width: 100%; } .layout { grid-template-areas: "products" "total" "daily" "branch-trend" "branch-sales"; grid-template-columns: 1fr; } .metrics { margin-left: 0; } }
 @media (max-width: 520px) { .panel { padding: 10px; } .currentProduct { align-items: flex-start; flex-wrap: wrap; } .metrics { width: 100%; grid-template-columns: repeat(2, 1fr); } .metrics > div { align-items: flex-start; } :global(.batch-product-sales-chart-legend) { gap: 8px; font-size: 11px; } }
 @media (prefers-reduced-motion: reduce) { .productRow { transition: none; } }
 
