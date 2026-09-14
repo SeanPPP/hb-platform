@@ -1,4 +1,30 @@
+import type { BatchSalesBranch, BatchSalesDaily } from '../../../types/batchProductSalesAnalysis'
+
 const DATE_ONLY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/
+
+function nonZeroFinite(value: unknown): boolean {
+  return typeof value === 'number' && Number.isFinite(value) && value !== 0
+}
+
+/**
+ * 只移除服务端补齐的全零日期。分类净量是有符号值，故退货和正负抵消也属于真实活动。
+ * 同类销售和退货抵消后分类净量可为零，此时退货量或销售额仍能证明当天有真实业务。
+ * 待统计尚未提供可靠分类时，以非零总销量兜底，避免把真实销售隐藏为补齐日。
+ */
+export function hasBatchProductSalesDailyActivity(day: BatchSalesDaily): boolean {
+  const { metrics } = day
+  return nonZeroFinite(metrics.regularQuantity)
+    || nonZeroFinite(metrics.discountQuantity)
+    || nonZeroFinite(metrics.unknownQuantity)
+    || nonZeroFinite(metrics.returnQuantity)
+    || nonZeroFinite(metrics.salesAmount)
+    || (metrics.discountStatus === 'pending' && nonZeroFinite(metrics.quantity))
+}
+
+/** 保持服务端并列顺序，并避免原地排序影响原始分店数据。 */
+export function sortBatchProductSalesBranchesByQuantity(branches: readonly BatchSalesBranch[]): BatchSalesBranch[] {
+  return [...branches].sort((left, right) => right.metrics.quantity - left.metrics.quantity)
+}
 
 function parseDateOnly(value: string): Date | null {
   const match = DATE_ONLY_PATTERN.exec(value.trim())

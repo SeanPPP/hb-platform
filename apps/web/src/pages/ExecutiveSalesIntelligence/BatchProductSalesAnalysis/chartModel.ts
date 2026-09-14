@@ -39,6 +39,7 @@ export interface DiscountChartModel {
   points: DiscountChartPoint[]
   ticks: Array<{ value: number; y: number }>
   xTicks: Array<{ date: string; x: number }>
+  weekDividers: Array<{ date: string; x: number }>
 }
 
 const SERIES: Array<{ kind: DiscountChartKind; key: 'regularQuantity' | 'discountQuantity' | 'unknownQuantity' }> = [
@@ -68,6 +69,15 @@ function xTickIndices(length: number) {
   if (length <= 6) return Array.from({ length }, (_, index) => index)
   const count = Math.min(7, length)
   return Array.from({ length: count }, (_, index) => Math.round((index * (length - 1)) / (count - 1)))
+}
+
+function naturalWeekKey(date: string): string | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null
+  const parsed = new Date(`${date}T00:00:00Z`)
+  if (Number.isNaN(parsed.valueOf()) || parsed.toISOString().slice(0, 10) !== date) return null
+  const weekday = parsed.getUTCDay() || 7
+  parsed.setUTCDate(parsed.getUTCDate() - weekday + 1)
+  return parsed.toISOString().slice(0, 10)
 }
 
 /** 生成有符号堆叠柱。各分类各自在零线两侧累计，因此退货不会被正销量抵消。 */
@@ -136,5 +146,14 @@ export function buildDiscountDailyChartModel(data: BatchSalesDaily[], width = 72
     points,
     ticks: values.map((value) => ({ value, y: y(value) })),
     xTicks: xTickIndices(points.length).map((index) => ({ date: points[index].date, x: points[index].x })),
+    // 以严格 UTC 日期归属的周一比较相邻点；缺日跨周时仍在当前柱槽左侧分隔，首日不重复左边界。
+    weekDividers: points.flatMap((point, index) => {
+      if (index === 0) return []
+      const previousWeek = naturalWeekKey(points[index - 1].date)
+      const currentWeek = naturalWeekKey(point.date)
+      return previousWeek && currentWeek && previousWeek !== currentWeek
+        ? [{ date: point.date, x: plotLeft + slotWidth * index }]
+        : []
+    }),
   }
 }
