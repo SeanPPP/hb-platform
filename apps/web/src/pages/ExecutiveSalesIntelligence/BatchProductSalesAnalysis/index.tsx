@@ -1,7 +1,6 @@
-import { DownloadOutlined, ReloadOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons'
+import { DownloadOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import { Alert, Button, DatePicker, Dropdown, Empty, Input, Select, Skeleton, Tag } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import type { TextAreaRef } from 'antd/es/input/TextArea'
 import dayjs, { type Dayjs } from 'dayjs'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -10,9 +9,10 @@ import { MeasuredTable } from '../../../components/MeasuredTable'
 import { batchProductSalesApi } from '../../../services/batchProductSalesAnalysisService'
 import type { BatchProductSalesApi, BatchSalesDaily, BatchSalesDetail, BatchSalesMetrics, BatchSalesProductSummary, BatchSalesQueryResult, BatchSalesScope } from '../../../types/batchProductSalesAnalysis'
 import ProductImage from '../ProductFlowShared/ProductImage'
-import { parsePastedItemNumbers, readItemNumberFile, type ImportResult } from './import'
+import { parsePastedItemNumbers, type ImportResult } from './import'
 import { formatCsvRow, getBatchProductSalesDateRangeError } from './logic'
 import DiscountDailyChart from './DiscountDailyChart'
+import ProductScopeModal from './ProductScopeModal'
 import styles from './index.module.css'
 
 const { RangePicker } = DatePicker
@@ -55,6 +55,10 @@ function fillKnownDays(data: BatchSalesDaily[], scope: BatchSalesScope, canFill:
   return dates
 }
 
+function classified(metrics: BatchSalesMetrics, field: 'regularQuantity' | 'discountQuantity' | 'unknownQuantity') {
+  return metrics.discountStatus === 'pending' ? '—' : number(metrics[field])
+}
+
 function discountRate(metrics: BatchSalesMetrics) {
   if (metrics.quantity <= 0 || metrics.discountStatus !== 'complete' || metrics.unknownQuantity !== 0 || metrics.regularQuantity < 0 || metrics.discountQuantity < 0) return '—'
   return `${((metrics.discountQuantity / metrics.quantity) * 100).toFixed(1)}%`
@@ -64,6 +68,7 @@ function branchProductShare(branch: BatchSalesMetrics, product: BatchSalesMetric
   return `${((branch.quantity / product.quantity) * 100).toFixed(1)}%`
 }
 function metricStatus(metrics: BatchSalesMetrics, t: (key: string) => string) {
+  if (metrics.discountStatus === 'pending') return t('batchProductSalesAnalysis.discountPending')
   if (metrics.discountStatus === 'complete' && metrics.quantity === 0 && metrics.regularQuantity === 0 && metrics.discountQuantity === 0 && metrics.unknownQuantity === 0 && metrics.returnQuantity === 0) return t('batchProductSalesAnalysis.noSalesStatus')
   if (metrics.unknownQuantity !== 0 || metrics.discountStatus !== 'complete') return t('batchProductSalesAnalysis.unknownStatus')
   if (metrics.regularQuantity !== 0 && metrics.discountQuantity !== 0) return t('batchProductSalesAnalysis.mixedStatus')
@@ -111,16 +116,13 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState<string>()
   const [selectedBranchCode, setSelectedBranchCode] = useState<string>()
-  const [fileLoading, setFileLoading] = useState(false)
-  const [fileError, setFileError] = useState<string>()
-  const fileInputRef = useRef<HTMLInputElement>(null)
-  const pastedTextAreaRef = useRef<TextAreaRef>(null)
+  const [scopeOpen, setScopeOpen] = useState(false)
+  const [productSearch, setProductSearch] = useState('')
   const queryAbortRef = useRef<AbortController>()
   const detailAbortRef = useRef<AbortController>()
   const queryRequestRef = useRef(0)
   const detailRequestRef = useRef(0)
   const optionsRequestRef = useRef(0)
-  const fileRequestRef = useRef(0)
 
   const loadOptions = useCallback(() => {
     const controller = new AbortController()
@@ -138,23 +140,35 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
   const appliedStoreText = useMemo(() => {
     if (!appliedScope?.storeCodes.length) return t('batchProductSalesAnalysis.allStores')
     const storesByCode = new Map((options?.stores ?? []).map((store) => [store.code, store]))
+    if (appliedScope.storeCodes.length > 3) return t('batchProductSalesAnalysis.storeCount', { count: appliedScope.storeCodes.length })
     return appliedScope.storeCodes.map((code) => {
       const store = storesByCode.get(code)
       return store ? `${store.name} (${code})` : code
     }).join(' · ')
   }, [appliedScope, options?.stores, t])
 
-  const loadDetail = useCallback((productCode: string, scope: BatchSalesScope) => {
+  const loadDetail = useCallback((productCode: string, scope: BatchSalesScope, background = false) => {
     detailAbortRef.current?.abort()
     const controller = new AbortController(); detailAbortRef.current = controller
     const request = ++detailRequestRef.current
-    setDetailLoading(true); setDetailError(undefined); setDetail(undefined); setSelectedBranchCode(undefined)
+    setDetailError(undefined)
+    if (!background) { setDetailLoading(true); setDetail(undefined); setSelectedBranchCode(undefined) }
     api.getDetail({ ...scope, productCode }, controller.signal).then((result) => {
       if (request !== detailRequestRef.current) return
+      if (result.statisticStatus && result.statisticStatus.toLowerCase() !== 'fresh') {
+        setDetail(undefined); setDetailError('statistics'); return
+      }
       setDetail(result)
-      setSelectedBranchCode(result.branches[0]?.branchCode)
+      setSelectedBranchCode((current) => background && result.branches.some((branch) => branch.branchCode === current) ? current : result.branches[0]?.branchCode)
     }).catch((error) => { if (!isAbort(error) && request === detailRequestRef.current) setDetailError(errorKind(error)) }).finally(() => { if (request === detailRequestRef.current) setDetailLoading(false) })
   }, [api])
+
+  // 后台刷新保留已显示的数量和分店；切换商品时 effect 清理定时器且请求序号阻止旧结果覆盖。
+  useEffect(() => {
+    if (!detail || detailError || !appliedScope || !selectedProductCode || !['Queued', 'Running'].includes(detail.discountStatisticStatus ?? '')) return
+    const timer = window.setTimeout(() => loadDetail(selectedProductCode, appliedScope, true), 5000)
+    return () => window.clearTimeout(timer)
+  }, [detail, detailError, appliedScope, selectedProductCode, loadDetail])
 
   const query = useCallback(() => {
     const startDate = draftRange[0].format('YYYY-MM-DD'); const endDate = draftRange[1].format('YYYY-MM-DD')
@@ -165,7 +179,7 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
     const request = ++queryRequestRef.current
     ++detailRequestRef.current
     const scope = { startDate, endDate, storeCodes: [...draftStores] }
-    setQueryLoading(true); setQueryError(undefined); setQueryResult(undefined); setAppliedScope(undefined); setDetail(undefined); setDetailError(undefined); setSelectedProductCode(undefined); setSelectedBranchCode(undefined)
+    setProductSearch(''); setQueryLoading(true); setQueryError(undefined); setQueryResult(undefined); setAppliedScope(undefined); setDetail(undefined); setDetailError(undefined); setSelectedProductCode(undefined); setSelectedBranchCode(undefined)
     api.query({ ...scope, itemNumbers: importResult.itemNumbers }, controller.signal).then((result) => {
       if (request !== queryRequestRef.current) return
       setQueryResult(result); setAppliedScope({ startDate: result.startDate, endDate: result.endDate, storeCodes: result.storeCodes }); setSubmittedInput({ scope, itemNumbers: [...importResult.itemNumbers] })
@@ -179,26 +193,15 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
     setSelectedProductCode(product.productCode)
     loadDetail(product.productCode, appliedScope)
   }
-  const onPasteChange = (text: string) => { fileRequestRef.current += 1; setFileLoading(false); setFileError(undefined); setPastedText(text); setImportResult(parsePastedItemNumbers(text)) }
-  const onFile = async (file: File) => {
-    const request = ++fileRequestRef.current
-    setFileLoading(true); setFileError(undefined)
-    try {
-      const result = await readItemNumberFile(file)
-      if (request === fileRequestRef.current) { setImportResult(result); setPastedText(result.itemNumbers.join('\n')) }
-    } catch (error) {
-      if (request === fileRequestRef.current) setFileError(errorKind(error))
-    } finally { if (request === fileRequestRef.current) setFileLoading(false) }
-  }
   const currentDaily = detail && appliedScope ? fillKnownDays(detail.daily, appliedScope, !isPartial(detail.warnings)) : []
   const branchDaily = selectedBranch && appliedScope && detail ? fillKnownDays(selectedBranch.daily, appliedScope, !isPartial(detail.warnings)) : []
 
   const dailyColumns: ColumnsType<BatchSalesDaily> = [
     { title: t('batchProductSalesAnalysis.columns.date'), dataIndex: 'date', width: 86 },
     { title: t('batchProductSalesAnalysis.columns.quantity'), align: 'right', width: 78, render: (_, row) => number(row.metrics.quantity) },
-    { title: t('batchProductSalesAnalysis.columns.regular'), align: 'right', width: 68, render: (_, row) => number(row.metrics.regularQuantity) },
-    { title: t('batchProductSalesAnalysis.columns.discount'), align: 'right', width: 68, render: (_, row) => number(row.metrics.discountQuantity) },
-    { title: t('batchProductSalesAnalysis.columns.unknown'), align: 'right', width: 68, render: (_, row) => number(row.metrics.unknownQuantity) },
+    { title: t('batchProductSalesAnalysis.columns.regular'), align: 'right', width: 68, render: (_, row) => classified(row.metrics, 'regularQuantity') },
+    { title: t('batchProductSalesAnalysis.columns.discount'), align: 'right', width: 68, render: (_, row) => classified(row.metrics, 'discountQuantity') },
+    { title: t('batchProductSalesAnalysis.columns.unknown'), align: 'right', width: 68, render: (_, row) => classified(row.metrics, 'unknownQuantity') },
     { title: t('batchProductSalesAnalysis.columns.status'), width: 72, render: (_, row) => metricStatus(row.metrics, t) },
   ]
 
@@ -208,7 +211,7 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
     [t('batchProductSalesAnalysis.columns.itemNumber'), t('batchProductSalesAnalysis.columns.product'), t('batchProductSalesAnalysis.columns.quantity')],
     ...queryResult.products.map((product) => [product.itemNumber, product.productName || product.englishName || product.productCode, product.quantity]),
   ])
-  const exportDetail = () => detail && downloadCsv('batch-product-sales-detail.csv', [
+  const exportDetail = () => detail && detail.metrics.discountStatus !== 'pending' && downloadCsv('batch-product-sales-detail.csv', [
     [t('batchProductSalesAnalysis.export.product'), detail.product.productCode, detail.product.itemNumber, detail.product.productName || detail.product.englishName || ''],
     [t('batchProductSalesAnalysis.export.scope'), appliedScope?.startDate ?? '', appliedScope?.endDate ?? '', appliedScope?.storeCodes.join(' | ') || t('batchProductSalesAnalysis.allStores')],
     [t('batchProductSalesAnalysis.export.daily')],
@@ -225,43 +228,38 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
   return <div className={styles.screen}><PageContainer title={t('batchProductSalesAnalysis.title')} subtitle={t('batchProductSalesAnalysis.subtitle')}>
     <div className={styles.page}>
       <section className={styles.toolbar} aria-label={t('batchProductSalesAnalysis.query')}>
+        <Button onClick={() => setScopeOpen(true)}>{t('batchProductSalesAnalysis.selectItems', { count: importResult.itemNumbers.length })}</Button>
         <label className={styles.field}><span>{t('batchProductSalesAnalysis.dateRange')}</span><RangePicker value={draftRange} allowClear={false} disabledDate={(date) => date.isAfter(dayjs(today), 'day')} onChange={(value) => value?.[0] && value?.[1] && setDraftRange([value[0], value[1]])} /></label>
         <label className={styles.field}><span>{t('batchProductSalesAnalysis.stores')}</span><Select mode="multiple" value={draftStores} loading={optionsLoading} className={styles.storeSelect} maxTagCount="responsive" placeholder={t('batchProductSalesAnalysis.allStores')} options={options?.stores.map((store) => ({ value: store.code, label: `${store.name} (${store.code})` }))} onChange={setDraftStores} /></label>
-        <Button type="primary" icon={<SearchOutlined />} loading={queryLoading} disabled={!importResult.itemNumbers.length || fileLoading} onClick={query}>{queryLoading ? t('batchProductSalesAnalysis.querying') : t('batchProductSalesAnalysis.query')}</Button>
-        <Dropdown trigger={['click']} menu={{ items: [{ key: 'summary', label: t('batchProductSalesAnalysis.downloadSummary'), disabled: !queryResult || statisticsPending, onClick: exportSummary }, { key: 'detail', label: t('batchProductSalesAnalysis.downloadDetail'), disabled: !detail, onClick: exportDetail }] }}><Button icon={<DownloadOutlined />}>{t('batchProductSalesAnalysis.exportResults')}</Button></Dropdown>
+        <Button type="primary" icon={<SearchOutlined />} loading={queryLoading} disabled={!importResult.itemNumbers.length} onClick={query}>{queryLoading ? t('batchProductSalesAnalysis.querying') : t('batchProductSalesAnalysis.query')}</Button>
+        <Dropdown trigger={['click']} menu={{ items: [{ key: 'summary', label: t('batchProductSalesAnalysis.downloadSummary'), disabled: !queryResult || statisticsPending, onClick: exportSummary }, { key: 'detail', label: t('batchProductSalesAnalysis.downloadDetail'), disabled: !detail || detail.metrics.discountStatus === 'pending', onClick: exportDetail }] }}><Button icon={<DownloadOutlined />}>{t('batchProductSalesAnalysis.exportResults')}</Button></Dropdown>
       </section>
       {optionsError ? <Alert type="warning" showIcon message={t('batchProductSalesAnalysis.errors.load')} action={<Button size="small" icon={<ReloadOutlined />} onClick={loadOptions}>{t('batchProductSalesAnalysis.retry')}</Button>} /> : null}
       {dirty ? <Alert type="info" showIcon message={t('batchProductSalesAnalysis.pendingQuery')} /> : null}
       {appliedScope ? <div className={styles.appliedScope}>{t('batchProductSalesAnalysis.appliedScope', { startDate: appliedScope.startDate, endDate: appliedScope.endDate, stores: appliedStoreText })}</div> : null}
       {!statisticsPending && queryResult?.warnings.length ? <details className={styles.hint}><summary>{t('batchProductSalesAnalysis.dataNotes')}</summary>{queryResult.warnings.map((warning) => <p key={warning}>{warning}</p>)}</details> : null}
+      {detail?.metrics.discountStatus === 'pending' ? <Alert type="info" showIcon message={t(`batchProductSalesAnalysis.discountStates.${detail.discountStatisticStatus ?? 'Unavailable'}`)} action={<Button size="small" onClick={() => selectedProductCode && appliedScope && loadDetail(selectedProductCode, appliedScope, true)}>{t('batchProductSalesAnalysis.refreshStatus')}</Button>} /> : null}
       <main className={styles.layout}>
         <aside className={`${styles.column} ${styles.leftColumn}`}>
-          <section className={styles.panel}><header className={styles.panelHeader}><h2>{t('batchProductSalesAnalysis.scope')}</h2></header>
-            <div className={styles.importTabs}><Button type="primary" onClick={() => pastedTextAreaRef.current?.focus()}>{t('batchProductSalesAnalysis.paste')}</Button><Button icon={<UploadOutlined />} loading={fileLoading} onClick={() => fileInputRef.current?.click()}>{t('batchProductSalesAnalysis.importFile')}</Button><input ref={fileInputRef} type="file" accept=".csv,.xlsx" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void onFile(file); event.currentTarget.value = '' }} /></div>
-            <Input.TextArea ref={pastedTextAreaRef} value={pastedText} rows={4} placeholder={t('batchProductSalesAnalysis.importHint')} onChange={(event) => onPasteChange(event.target.value)} />
-            <p className={styles.hint}>{t('batchProductSalesAnalysis.importHint')}</p>
-            {(importResult.sourceRowCount > 0 || importResult.issues.length > 0) ? <div className={styles.importSummary}>{t('batchProductSalesAnalysis.sourceSummary', { rows: importResult.sourceRowCount, duplicates: importResult.duplicateCount, valid: importResult.itemNumbers.length })}</div> : <p className={styles.hint}>{t('batchProductSalesAnalysis.noImportedItems')}</p>}
-            {fileError ? <Alert className={styles.warning} type="error" showIcon message={t(`batchProductSalesAnalysis.errors.${fileError}`)} /> : null}
-            {importResult.itemNumbers.length ? <details className={styles.itemPreview}><summary>{t('batchProductSalesAnalysis.validItems', { count: importResult.itemNumbers.length })}</summary><div>{importResult.itemNumbers.map((itemNumber) => <Tag key={itemNumber}>{itemNumber}</Tag>)}</div></details> : null}
-            {importResult.issues.length ? <details className={styles.details}><summary>{t('batchProductSalesAnalysis.issues', { count: importResult.issues.length })}</summary>{importResult.issues.map((issue) => <div key={`${issue.row}-${issue.value}`}><span>{issue.row || '—'}</span><span>{issue.value || '—'}</span><span>{issue.reason}</span></div>)}</details> : null}
-          </section>
-          <section className={styles.panel}><header className={styles.panelHeader}><h2>{t('batchProductSalesAnalysis.productList', { count: queryResult?.products.length ?? 0 })}</h2>{queryResult && !statisticsPending ? <span className={styles.panelMeta}>{t('batchProductSalesAnalysis.totalQuantity', { value: number(queryResult.products.reduce((sum, product) => sum + product.quantity, 0)) })}</span> : null}</header>
-            {statisticsPending && !queryLoading ? <Alert type="info" showIcon message={t('batchProductSalesAnalysis.statisticsPending')} description={queryResult?.warnings.map((warning) => <div key={warning}>{warning}</div>)} action={<Button size="small" onClick={query}>{t('batchProductSalesAnalysis.retry')}</Button>} /> : <LoadState loading={queryLoading} error={queryError} empty={!!queryResult && !queryResult.products.length} onRetry={query}>{queryResult ? <div className={styles.productList}>{queryResult.products.map((product) => <button key={product.productCode} className={`${styles.productRow} ${selectedProductCode === product.productCode ? styles.productCurrent : ''}`} onClick={() => chooseProduct(product)}><ProductImage src={product.imageUrl} alt={product.productName || product.itemNumber} /><span className={styles.productInfo}><strong>{product.itemNumber}</strong><span>{product.productName || product.englishName || product.productCode}</span></span><b>{number(product.quantity)}</b></button>)}</div> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('batchProductSalesAnalysis.noQueryResult')} />}</LoadState>}
+          <section className={`${styles.panel} ${styles.productPanel}`}><header className={styles.panelHeader}><h2>{t('batchProductSalesAnalysis.productList', { count: queryResult?.products.length ?? 0 })}</h2>{queryResult && !statisticsPending ? <span className={styles.panelMeta}>{t('batchProductSalesAnalysis.totalQuantity', { value: number(queryResult.products.reduce((sum, product) => sum + product.quantity, 0)) })}</span> : null}</header>
+            <Input allowClear prefix={<SearchOutlined />} aria-label={t('batchProductSalesAnalysis.searchProducts')} placeholder={t('batchProductSalesAnalysis.searchProducts')} value={productSearch} onChange={event => setProductSearch(event.target.value)} />
+            {statisticsPending && !queryLoading ? <Alert type="info" showIcon message={t('batchProductSalesAnalysis.statisticsPending')} description={queryResult?.warnings.map((warning) => <div key={warning}>{warning}</div>)} action={<Button size="small" onClick={query}>{t('batchProductSalesAnalysis.retry')}</Button>} /> : <LoadState loading={queryLoading} error={queryError} empty={!!queryResult && !queryResult.products.length} onRetry={query}>{queryResult ? <div className={styles.productList} role="region" aria-label={t('batchProductSalesAnalysis.productList', { count: queryResult.products.length })} tabIndex={0}>{queryResult.products.filter(product => `${product.itemNumber} ${product.productName} ${product.englishName ?? ''}`.toLocaleLowerCase().includes(productSearch.trim().toLocaleLowerCase())).map((product) => <button key={product.productCode} className={`${styles.productRow} ${selectedProductCode === product.productCode ? styles.productCurrent : ''}`} aria-pressed={selectedProductCode === product.productCode} onClick={() => chooseProduct(product)}><ProductImage src={product.imageUrl} alt={product.productName || product.itemNumber} /><span className={styles.productInfo}><strong>{product.itemNumber}</strong><span>{product.productName || product.englishName || product.productCode}</span></span><b>{number(product.quantity)}</b></button>)}</div> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('batchProductSalesAnalysis.noQueryResult')} />}</LoadState>}
             {queryResult?.matches.length ? <details className={styles.details}><summary>{t('batchProductSalesAnalysis.matched')} {queryResult.matches.filter((match) => match.status === 'matched').length} · {t('batchProductSalesAnalysis.notFound')} {queryResult.matches.filter((match) => match.status === 'notFound').length} · {t('batchProductSalesAnalysis.ambiguous')} {queryResult.matches.filter((match) => match.status === 'ambiguous').length}</summary>{queryResult.matches.map((match) => <div key={match.itemNumber}><span>{match.itemNumber}</span><Tag color={match.status === 'matched' ? 'success' : match.status === 'ambiguous' ? 'warning' : 'error'}>{t(`batchProductSalesAnalysis.${match.status === 'notFound' ? 'notFound' : match.status}`)}</Tag></div>)}</details> : null}
           </section>
         </aside>
         <section className={`${styles.column} ${styles.middleColumn}`}>
           <section className={styles.panel}>
             <header className={styles.panelHeader}><h2>{t('batchProductSalesAnalysis.currentProduct')}</h2></header>
-            {selectedProduct ? <div className={styles.currentProduct}><ProductImage size={64} src={selectedProduct.imageUrl} alt={selectedProduct.productName || selectedProduct.itemNumber} /><div><strong>{selectedProduct.itemNumber}</strong><h3>{selectedProduct.productName || selectedProduct.englishName || selectedProduct.productCode}</h3>{detail ? <Tag color={detail.metrics.discountStatus === 'complete' ? (detail.metrics.regularQuantity !== 0 && detail.metrics.discountQuantity !== 0 ? 'orange' : detail.metrics.discountQuantity !== 0 ? 'gold' : 'blue') : 'default'}>{metricStatus(detail.metrics, t)}</Tag> : null}{selectedProduct.barcode ? <span>{selectedProduct.barcode}</span> : null}</div>{detail ? <div className={styles.metrics}><div><span>{t('batchProductSalesAnalysis.metrics.quantity')}</span><b>{number(detail.metrics.quantity)}</b></div><div><span>{t('batchProductSalesAnalysis.metrics.regular')}</span><b className={styles.regular}>{number(detail.metrics.regularQuantity)}</b></div><div><span>{t('batchProductSalesAnalysis.metrics.discount')}</span><b className={styles.discount}>{number(detail.metrics.discountQuantity)}</b></div><div><span>{t('batchProductSalesAnalysis.discountRate')}</span><b>{discountRate(detail.metrics)}</b></div></div> : null}</div> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('batchProductSalesAnalysis.noQueryResult')} />}
+            {selectedProduct ? <div className={styles.currentProduct}><ProductImage size={64} src={selectedProduct.imageUrl} alt={selectedProduct.productName || selectedProduct.itemNumber} /><div><strong>{selectedProduct.itemNumber}</strong><h3>{selectedProduct.productName || selectedProduct.englishName || selectedProduct.productCode}</h3>{detail ? <Tag color={detail.metrics.discountStatus === 'complete' ? (detail.metrics.regularQuantity !== 0 && detail.metrics.discountQuantity !== 0 ? 'orange' : detail.metrics.discountQuantity !== 0 ? 'gold' : 'blue') : 'default'}>{metricStatus(detail.metrics, t)}</Tag> : null}{selectedProduct.barcode ? <span>{selectedProduct.barcode}</span> : null}</div>{detail ? <div className={styles.metrics}><div><span>{t('batchProductSalesAnalysis.metrics.quantity')}</span><b>{number(detail.metrics.quantity)}</b></div><div><span>{t('batchProductSalesAnalysis.metrics.regular')}</span><b className={styles.regular}>{classified(detail.metrics, 'regularQuantity')}</b></div><div><span>{t('batchProductSalesAnalysis.metrics.discount')}</span><b className={styles.discount}>{classified(detail.metrics, 'discountQuantity')}</b></div><div><span>{t('batchProductSalesAnalysis.discountRate')}</span><b>{discountRate(detail.metrics)}</b></div></div> : null}</div> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('batchProductSalesAnalysis.noQueryResult')} />}
             {detail?.metrics.returnQuantity ? <p className={styles.returnHint}>{t('batchProductSalesAnalysis.returnHint', { value: number(detail.metrics.returnQuantity) })}</p> : null}
             {detail ? <p className={styles.priceHint}>{t('batchProductSalesAnalysis.priceRange', { original: range(detail.metrics.originalPriceMin, detail.metrics.originalPriceMax), discount: range(detail.metrics.discountPriceMin, detail.metrics.discountPriceMax) })}</p> : null}
           </section>
           <section className={styles.panel}><header className={styles.panelHeader}><h2>{t('batchProductSalesAnalysis.dailyTrend')}</h2></header><LoadState loading={detailLoading} error={detailError} empty={!detailLoading && !!detail && !currentDaily.length} onRetry={() => selectedProductCode && appliedScope && loadDetail(selectedProductCode, appliedScope)}>{detail ? <DiscountDailyChart data={currentDaily} ariaLabel={t('batchProductSalesAnalysis.dailyTrend')} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('batchProductSalesAnalysis.noQueryResult')} />}</LoadState></section>
           <section className={styles.panel}><header className={styles.panelHeader}><h2>{t('batchProductSalesAnalysis.dailyDetail')}</h2></header>{detail?.warnings.map((warning) => <Alert key={warning} className={styles.warning} type="warning" showIcon message={warning} />)}<div className={styles.tableWrap}>{detail ? <MeasuredTable metricId="executive-sales-intelligence.batch-product-sales-analysis.daily" size="small" rowKey="date" columns={dailyColumns} dataSource={currentDaily} pagination={false} scroll={{ x: 440 }} /> : null}</div></section>
         </section>
-        <aside className={`${styles.column} ${styles.rightColumn}`}><section className={styles.panel}><header className={styles.panelHeader}><h2>{t('batchProductSalesAnalysis.branchSales')}</h2><span className={styles.panelMeta}>{detail?.branches.length ? `${detail.branches.length}` : ''}</span></header><LoadState loading={detailLoading} error={detailError} empty={!detailLoading && !!detail && !detail.branches.length} onRetry={() => selectedProductCode && appliedScope && loadDetail(selectedProductCode, appliedScope)}>{detail ? <div className={styles.branchGrid}><div className={styles.branchGridHead}><span>{t('batchProductSalesAnalysis.columns.branch')}</span><span>{t('batchProductSalesAnalysis.columns.quantity')}</span><span>{t('batchProductSalesAnalysis.columns.regular')}</span><span>{t('batchProductSalesAnalysis.columns.discount')}</span><span>{t('batchProductSalesAnalysis.columns.productShare')}</span></div>{detail.branches.map((branch) => <div className={`${styles.branchGridRow} ${selectedBranchCode === branch.branchCode ? styles.branchCurrent : ''}`} key={branch.branchCode}><button className={styles.branchButton} onClick={() => setSelectedBranchCode(branch.branchCode)}>{branch.branchName || branch.branchCode}</button><span>{number(branch.metrics.quantity)}</span><span className={styles.regular}>{number(branch.metrics.regularQuantity)}</span><span className={styles.discount}>{number(branch.metrics.discountQuantity)}</span><span>{branchProductShare(branch.metrics, detail.metrics)}</span></div>)}<div className={styles.branchGridTotal}><strong>{t('batchProductSalesAnalysis.total')}</strong><strong>{number(detail.metrics.quantity)}</strong><strong className={styles.regular}>{number(detail.metrics.regularQuantity)}</strong><strong className={styles.discount}>{number(detail.metrics.discountQuantity)}</strong><strong>{branchProductShare(detail.metrics, detail.metrics)}</strong></div></div> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('batchProductSalesAnalysis.selectBranch')} />}</LoadState></section><section className={styles.panel}><header className={styles.panelHeader}><h2>{selectedBranch ? t('batchProductSalesAnalysis.branchTrend', { branch: selectedBranch.branchName || selectedBranch.branchCode }) : t('batchProductSalesAnalysis.selectBranch')}</h2></header>{selectedBranch ? <><DiscountDailyChart data={branchDaily} ariaLabel={t('batchProductSalesAnalysis.branchTrend', { branch: selectedBranch.branchName || selectedBranch.branchCode })} /><div className={styles.branchTotals}><span>{t('batchProductSalesAnalysis.metrics.quantity')} <b>{number(selectedBranch.metrics.quantity)}</b></span><span className={styles.regular}>{t('batchProductSalesAnalysis.metrics.regular')} <b>{number(selectedBranch.metrics.regularQuantity)}</b></span><span className={styles.discount}>{t('batchProductSalesAnalysis.metrics.discount')} <b>{number(selectedBranch.metrics.discountQuantity)}</b></span></div></> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('batchProductSalesAnalysis.selectBranch')} />}</section></aside>
+        <aside className={`${styles.column} ${styles.rightColumn}`}><section className={styles.panel}><header className={styles.panelHeader}><h2>{t('batchProductSalesAnalysis.branchSales')}</h2><span className={styles.panelMeta}>{detail?.branches.length ? `${detail.branches.length}` : ''}</span></header><LoadState loading={detailLoading} error={detailError} empty={!detailLoading && !!detail && !detail.branches.length} onRetry={() => selectedProductCode && appliedScope && loadDetail(selectedProductCode, appliedScope)}>{detail ? <div className={styles.branchGrid}><div className={styles.branchGridHead}><span>{t('batchProductSalesAnalysis.columns.branch')}</span><span>{t('batchProductSalesAnalysis.columns.quantity')}</span><span>{t('batchProductSalesAnalysis.columns.regular')}</span><span>{t('batchProductSalesAnalysis.columns.discount')}</span><span>{t('batchProductSalesAnalysis.columns.productShare')}</span></div>{detail.branches.map((branch) => <div className={`${styles.branchGridRow} ${selectedBranchCode === branch.branchCode ? styles.branchCurrent : ''}`} key={branch.branchCode}><button className={styles.branchButton} onClick={() => setSelectedBranchCode(branch.branchCode)}>{branch.branchName || branch.branchCode}</button><span>{number(branch.metrics.quantity)}</span><span className={styles.regular}>{classified(branch.metrics, 'regularQuantity')}</span><span className={styles.discount}>{classified(branch.metrics, 'discountQuantity')}</span><span>{branchProductShare(branch.metrics, detail.metrics)}</span></div>)}<div className={styles.branchGridTotal}><strong>{t('batchProductSalesAnalysis.total')}</strong><strong>{number(detail.metrics.quantity)}</strong><strong className={styles.regular}>{classified(detail.metrics, 'regularQuantity')}</strong><strong className={styles.discount}>{classified(detail.metrics, 'discountQuantity')}</strong><strong>{branchProductShare(detail.metrics, detail.metrics)}</strong></div></div> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('batchProductSalesAnalysis.selectBranch')} />}</LoadState></section><section className={styles.panel}><header className={styles.panelHeader}><h2>{selectedBranch ? t('batchProductSalesAnalysis.branchTrend', { branch: selectedBranch.branchName || selectedBranch.branchCode }) : t('batchProductSalesAnalysis.selectBranch')}</h2></header>{selectedBranch ? <><DiscountDailyChart data={branchDaily} ariaLabel={t('batchProductSalesAnalysis.branchTrend', { branch: selectedBranch.branchName || selectedBranch.branchCode })} /><div className={styles.branchTotals}><span>{t('batchProductSalesAnalysis.metrics.quantity')} <b>{number(selectedBranch.metrics.quantity)}</b></span><span className={styles.regular}>{t('batchProductSalesAnalysis.metrics.regular')} <b>{classified(selectedBranch.metrics, 'regularQuantity')}</b></span><span className={styles.discount}>{t('batchProductSalesAnalysis.metrics.discount')} <b>{classified(selectedBranch.metrics, 'discountQuantity')}</b></span></div></> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('batchProductSalesAnalysis.selectBranch')} />}</section></aside>
       </main>
+      {scopeOpen ? <ProductScopeModal initialText={pastedText} initialResult={importResult} maxItems={options?.maxItemNumbers ?? 500} onCancel={() => setScopeOpen(false)} onApply={(text, result) => { setPastedText(text); setImportResult(result); setScopeOpen(false) }} /> : null}
     </div>
   </PageContainer></div>
 }

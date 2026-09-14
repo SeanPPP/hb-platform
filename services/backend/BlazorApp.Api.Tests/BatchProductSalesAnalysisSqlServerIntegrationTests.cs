@@ -53,6 +53,35 @@ public sealed class BatchProductSalesAnalysisSqlServerIntegrationTests : IAsyncL
     }
 
     [BatchSalesSqlServerFact]
+    public async Task Snapshot_SQLServer并发去重和租约隔离_原子发布聚合结果()
+    {
+        _catalog!.CodeFirst.InitTables<BatchProductSalesDiscountSnapshot, SalesStatisticRefreshState, ProductStoreDailySalesStatistic>();
+        // 隔离测试库复现生产日统计金额的 decimal(18,4) 存储精度。
+        await _catalog.Ado.ExecuteCommandAsync("ALTER TABLE dbo.ProductStoreDailySalesStatistic ALTER COLUMN TotalAmount decimal(18,4) NOT NULL");
+        var day = new DateTime(2025, 9, 1);
+        await _catalog.Insertable(new SalesStatisticRefreshState { StatisticType = SalesStatisticType.ProductStoreDaily, Date = day, Status = "Fresh", CompletedAtUtc = day }).ExecuteCommandAsync();
+        await _catalog.Insertable(new ProductStoreDailySalesStatistic { Date = day, ProductCode = "P1", BranchCode = "S1", SupplierCode = "A", TotalQuantity = 2, TotalAmount = 29.9921m }).ExecuteCommandAsync();
+        var reader = new BatchProductSalesStatisticReader(_catalog);
+        var version = await reader.StatusAsync(day, day, default);
+        var store = new BatchProductSalesDiscountStore(_catalog);
+        using var otherDb = Client(WithDatabase(_master!, CatalogName));
+        var other = new BatchProductSalesDiscountStore(otherDb);
+        var request = BatchProductSalesDiscountStore.Create("P1", day, day, ["S1"], version.Version);
+        await Task.WhenAll(store.FindOrQueueAsync(request, default), other.FindOrQueueAsync(request, default));
+        Assert.Equal(1, await _catalog.Queryable<BatchProductSalesDiscountSnapshot>().CountAsync());
+        var claims = await Task.WhenAll(store.ClaimAsync(DateTime.UtcNow), other.ClaimAsync(DateTime.UtcNow));
+        var job = Assert.Single(claims.Where(c => c != null))!;
+        Assert.Null((await other.FindAsync(job.Id))!.PayloadJson);
+        var state = await store.ComputeAsync(job, (_, _, _, _, _) => Task.FromResult(new List<BatchProductSalesAggregateRow> { new() { Date = day, ProductCode = "P1", BranchCode = "S1", Quantity = 2, DiscountQuantity = 2, SalesAmount = 29.99205m } }), default);
+        Assert.Equal("Fresh", state);
+        var published = (await other.FindAsync(job.Id))!;
+        Assert.Equal("Fresh", published.Status);
+        Assert.Contains("\"DiscountQuantity\":2", published.PayloadJson);
+        Assert.Contains("\"SalesAmount\":29.9921", published.PayloadJson);
+        Assert.False(await other.FinishAsync(job, "Failed", null, DateTime.UtcNow));
+    }
+
+    [BatchSalesSqlServerFact]
     public async Task ReadAsync_POSM支付分摊部分退货排重设备回填和错误原单均按事实口径()
     {
         var day = new DateTime(2025, 6, 10);

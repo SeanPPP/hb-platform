@@ -14,7 +14,7 @@ export interface BatchSalesMetrics {
   /** 正数退货量，仅作辅助信息，已在上述净数量扣除。 */
   returnQuantity: number
   salesAmount: number
-  discountStatus: 'complete' | 'partial' | 'unknown'
+  discountStatus: 'complete' | 'partial' | 'unknown' | 'pending'
   originalPriceMin: number | null
   originalPriceMax: number | null
   discountPriceMin: number | null
@@ -69,6 +69,10 @@ export interface BatchSalesDetailRequest extends BatchSalesScope {
 }
 
 export interface BatchSalesDetail extends BatchSalesScope {
+  statisticStatus?: string
+  statisticUpdatedAt?: string
+  discountStatisticStatus?: string
+  discountUpdatedAt?: string
   product: BatchSalesProduct
   metrics: BatchSalesMetrics
   daily: BatchSalesDaily[]
