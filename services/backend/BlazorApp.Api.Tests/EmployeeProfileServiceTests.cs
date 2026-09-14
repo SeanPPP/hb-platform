@@ -650,6 +650,67 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task CashierBarcode_GetOnlyReturnsCurrentUsersActiveBarcode()
+        {
+            const string selfBarcode = "2911111111118";
+            const string otherBarcode = "2922222222226";
+            await CreateBarcodeService("user-self", "self_user", () => selfBarcode).RefreshAsync();
+            await CreateBarcodeService("user-other", "other_user", () => otherBarcode).RefreshAsync();
+
+            var result = await CreateBarcodeService("user-self", "self_user").GetAsync();
+
+            Assert.True(result.Success);
+            Assert.Equal(selfBarcode, result.Data!.Barcode);
+            Assert.NotEqual(otherBarcode, result.Data.Barcode);
+        }
+
+        [Fact]
+        public async Task CashierBarcode_RefreshOnlyDeactivatesCurrentUsersBarcode()
+        {
+            const string oldSelfBarcode = "2911111111118";
+            const string newSelfBarcode = "2933333333334";
+            const string otherBarcode = "2922222222226";
+            await CreateBarcodeService("user-self", "self_user", () => oldSelfBarcode).RefreshAsync();
+            await CreateBarcodeService("user-other", "other_user", () => otherBarcode).RefreshAsync();
+
+            var result = await CreateBarcodeService(
+                "user-self",
+                "self_user",
+                () => newSelfBarcode
+            ).RefreshAsync();
+
+            Assert.True(result.Success);
+            Assert.Equal(newSelfBarcode, result.Data!.Barcode);
+            var other = await _db.Queryable<EmployeeCashierBarcode>()
+                .SingleAsync(item => item.UserGUID == "user-other" && item.Status);
+            Assert.Equal(otherBarcode, other.Barcode);
+        }
+
+        [Fact]
+        public async Task CashierBarcode_ConfirmPrintCannotUseAnotherUsersBarcode()
+        {
+            const string selfBarcode = "2911111111118";
+            const string otherBarcode = "2922222222226";
+            await CreateBarcodeService("user-self", "self_user", () => selfBarcode).RefreshAsync();
+            await CreateBarcodeService("user-other", "other_user", () => otherBarcode).RefreshAsync();
+
+            var result = await CreateBarcodeService("user-self", "self_user").ConfirmPrintAsync(
+                new EmployeeCashierBarcodePrintConfirmationRequest
+                {
+                    Barcode = otherBarcode,
+                    PrintAttemptId = Guid.NewGuid(),
+                }
+            );
+
+            Assert.False(result.Success);
+            Assert.Equal("CASHIER_BARCODE_CHANGED", result.Code);
+            var other = await _db.Queryable<EmployeeCashierBarcode>()
+                .SingleAsync(item => item.UserGUID == "user-other" && item.Status);
+            Assert.Equal(0, other.PrintCount);
+            Assert.Equal(0, await _db.Queryable<EmployeeCashierBarcodePrintAttempt>().CountAsync());
+        }
+
+        [Fact]
         public async Task CashierBarcode_RefreshDeactivatesActiveLegacyBarcodeForSameUser()
         {
             await _db.Insertable(new CashRegisterUser

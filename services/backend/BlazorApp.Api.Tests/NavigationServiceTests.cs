@@ -6,6 +6,7 @@ using System.Security.Claims;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
+using BlazorApp.Api.Authorization;
 using BlazorApp.Api.Controllers;
 using BlazorApp.Api.Controllers.React;
 using BlazorApp.Api.Data;
@@ -1313,24 +1314,23 @@ public class NavigationServiceTests
         Assert.Equal(Permissions.EmployeeProfiles.Edit, authorizeAttribute.Policy);
     }
 
-    [Fact]
-    public void EmployeeCashierBarcodeRefresh_RequiresEmployeeProfileViewPermission()
+    [Theory]
+    [InlineData(nameof(EmployeeProfilesController.GetCashierBarcode))]
+    [InlineData(nameof(EmployeeProfilesController.RefreshCashierBarcode))]
+    [InlineData(nameof(EmployeeProfilesController.ConfirmCashierBarcodePrint))]
+    public void EmployeeCashierBarcode_RequiresAuthenticatedSelfService(string methodName)
     {
-        var authorizeAttribute = GetMethodAuthorizeAttribute(
-            nameof(EmployeeProfilesController.RefreshCashierBarcode)
+        var controllerType = typeof(EmployeeProfilesController);
+        var method = controllerType.GetMethod(methodName)!;
+        var authorizeAttribute = GetMethodAuthorizeAttribute(methodName);
+
+        Assert.Equal(EmployeeCashierBarcodeSelfServicePolicy.Name, authorizeAttribute.Policy);
+        Assert.Contains(
+            controllerType.GetCustomAttributes<AuthorizeAttribute>(),
+            attribute => string.IsNullOrWhiteSpace(attribute.Policy)
         );
-
-        Assert.Equal(Permissions.EmployeeProfiles.View, authorizeAttribute.Policy);
-    }
-
-    [Fact]
-    public void EmployeeCashierBarcodePrintConfirmation_RequiresEmployeeProfileViewPermission()
-    {
-        var authorizeAttribute = GetMethodAuthorizeAttribute(
-            nameof(EmployeeProfilesController.ConfirmCashierBarcodePrint)
-        );
-
-        Assert.Equal(Permissions.EmployeeProfiles.View, authorizeAttribute.Policy);
+        Assert.Empty(controllerType.GetCustomAttributes<AllowAnonymousAttribute>());
+        Assert.Empty(method.GetCustomAttributes<AllowAnonymousAttribute>());
     }
 
     [Fact]
