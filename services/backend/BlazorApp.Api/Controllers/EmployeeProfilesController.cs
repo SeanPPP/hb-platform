@@ -1,4 +1,5 @@
 using BlazorApp.Api.Interfaces;
+using BlazorApp.Api.Authorization;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Api.Services;
@@ -316,16 +317,16 @@ namespace BlazorApp.Api.Controllers
         }
 
         [HttpGet("me/cashier-barcode")]
-        [Authorize(Policy = Permissions.EmployeeProfiles.View)]
+        [Authorize(Policy = EmployeeCashierBarcodeSelfServicePolicy.Name)]
         public async Task<IActionResult> GetCashierBarcode() => Ok(await _barcodeService.GetAsync());
 
         [HttpPost("me/cashier-barcode/refresh")]
-        [Authorize(Policy = Permissions.EmployeeProfiles.View)]
+        [Authorize(Policy = EmployeeCashierBarcodeSelfServicePolicy.Name)]
         public async Task<IActionResult> RefreshCashierBarcode() =>
             Ok(await _barcodeService.RefreshAsync());
 
         [HttpPost("me/cashier-barcode/print-confirmation")]
-        [Authorize(Policy = Permissions.EmployeeProfiles.View)]
+        [Authorize(Policy = EmployeeCashierBarcodeSelfServicePolicy.Name)]
         public async Task<IActionResult> ConfirmCashierBarcodePrint(
             [FromBody] EmployeeCashierBarcodePrintConfirmationRequest request
         ) => Ok(await _barcodeService.ConfirmPrintAsync(request));
