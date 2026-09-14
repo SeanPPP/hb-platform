@@ -1,3 +1,4 @@
+using System.Text.Json;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
@@ -11,39 +12,32 @@ using SqlSugar;
 namespace BlazorApp.Api.Services.React;
 
 /// <summary>
-/// 批量货号销量的原始成交明细读取。
-/// 日统计表没有成交时折扣字段，因此本服务不以当前商品价格或日均价反推折扣。
+/// 前台只读取商品分店日统计和已发布折扣快照；成交明细由独立后台任务读取。
 /// </summary>
 public sealed class BatchProductSalesAnalysisService : IBatchProductSalesAnalysisService
 {
     internal const int MaxItemNumbers = 500;
     internal const int MaxDays = 366;
     private readonly ISqlSugarClient _db;
-    private readonly ISqlSugarClient _posmDb;
-    private readonly ISqlSugarClient _hbSalesDb;
-    private readonly BatchProductSalesAnalysisFactReader _factReader;
+    private readonly BatchProductSalesStatisticReader _statisticReader;
+    private readonly BatchProductSalesDiscountStore _discountStore;
     private readonly IProductStoreDailyStatisticQueueService _productStoreDailyQueue;
     private readonly ILogger<BatchProductSalesAnalysisService> _logger;
 
     public BatchProductSalesAnalysisService(
         SqlSugarContext context,
-        POSMSqlSugarContext posmContext,
-        HBSalesRecordSqlSugarContext hbSalesContext,
         IProductStoreDailyStatisticQueueService productStoreDailyQueue,
         ILogger<BatchProductSalesAnalysisService> logger)
-        : this(context.Db, posmContext.Db, hbSalesContext.Db, productStoreDailyQueue, logger) { }
+        : this(context.Db, productStoreDailyQueue, logger) { }
 
     internal BatchProductSalesAnalysisService(
         ISqlSugarClient db,
-        ISqlSugarClient posmDb,
-        ISqlSugarClient hbSalesDb,
         IProductStoreDailyStatisticQueueService productStoreDailyQueue,
         ILogger<BatchProductSalesAnalysisService> logger)
     {
         _db = db;
-        _posmDb = posmDb;
-        _hbSalesDb = hbSalesDb;
-        _factReader = new BatchProductSalesAnalysisFactReader(db, posmDb, hbSalesDb);
+        _statisticReader = new BatchProductSalesStatisticReader(db);
+        _discountStore = new BatchProductSalesDiscountStore(db);
         _productStoreDailyQueue = productStoreDailyQueue;
         _logger = logger;
     }
@@ -80,7 +74,8 @@ public sealed class BatchProductSalesAnalysisService : IBatchProductSalesAnalysi
     {
         var range = ValidateRange(request);
         var itemNumbers = NormalizeItemNumbers(request.ItemNumbers);
-        var storeCodes = await ResolveEffectiveStoreScopeAsync(request.StoreCodes, scopedStoreCodes, cancellationToken);
+        var storeScope = await ResolveEffectiveStoreScopeAsync(request.StoreCodes, scopedStoreCodes, cancellationToken);
+        var storeCodes = storeScope.Codes;
         cancellationToken.ThrowIfCancellationRequested();
 
         var matches = await ResolveItemMatchesAsync(itemNumbers, cancellationToken);
@@ -121,7 +116,7 @@ public sealed class BatchProductSalesAnalysisService : IBatchProductSalesAnalysi
         };
         if (statisticStatus.IsFresh)
         {
-            result.Warnings.Add("摘要净销量来自商品分店日统计；折扣拆分仅在单商品明细中按成交记录计算。");
+            result.Warnings.Add("摘要净销量来自商品分店日统计；折扣拆分由后台成交聚合快照提供。");
         }
         else
         {
@@ -138,19 +133,65 @@ public sealed class BatchProductSalesAnalysisService : IBatchProductSalesAnalysi
     {
         var range = ValidateRange(request);
         var productCode = NormalizeRequired(request.ProductCode, "productCode");
-        var storeCodes = await ResolveEffectiveStoreScopeAsync(request.StoreCodes, scopedStoreCodes, cancellationToken);
+        var storeScope = await ResolveEffectiveStoreScopeAsync(request.StoreCodes, scopedStoreCodes, cancellationToken);
+        var storeCodes = storeScope.Codes;
         var product = (await LoadProductsAsync([productCode], cancellationToken)).SingleOrDefault();
         if (product == null)
             throw new BatchProductSalesAnalysisValidationException("商品不存在。");
 
-        var facts = await _factReader.ReadAsync([productCode], range.StartDate, range.EndDate, storeCodes, cancellationToken);
-        var storeNames = await LoadStoreNamesAsync(facts.Select(f => f.BranchCode), cancellationToken);
+        var statistic = await GetStatisticStatusAsync(range.StartDate, range.EndDate, cancellationToken);
+        if (!statistic.IsFresh)
+            return ApiResponse<BatchProductSalesDetailDto>.OK(new()
+            {
+                StartDate = range.StartDate, EndDate = range.EndDate, StoreCodes = storeCodes, Product = product,
+                StatisticStatus = "Pending", DiscountStatisticStatus = "Pending", StatisticUpdatedAt = statistic.UpdatedAt,
+                Metrics = new() { DiscountStatus = "pending" },
+                Warnings = ["商品日统计尚未完整刷新，当前销量暂不可用，请重新查询。"],
+            });
+        var quantities = await _statisticReader.ReadAsync(productCode, range.StartDate, range.EndDate, storeCodes, cancellationToken);
+        BatchProductSalesDiscountSnapshot? snapshot = null;
+        try
+        {
+            snapshot = await _discountStore.FindOrQueueAsync(BatchProductSalesDiscountStore.Create(productCode,
+                range.StartDate, range.EndDate, storeCodes, statistic.Version), cancellationToken);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { _logger.LogWarning(ex, "折扣快照不可用，仍返回商品日统计 {ProductCode}", productCode); }
+        var discountState = snapshot?.Status ?? "Unavailable";
+        var facts = quantities;
+        if (snapshot is { Status: "Fresh" })
+        {
+            try
+            {
+                var discountRows = snapshot.PayloadJson == null ? null
+                    : JsonSerializer.Deserialize<List<BatchProductSalesAggregateRow>>(snapshot.PayloadJson);
+                if (discountRows != null && BatchProductSalesStatisticReader.TotalsMatch(quantities, discountRows)) facts = discountRows;
+                else discountState = "OutOfSync";
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogWarning(ex, "折扣聚合快照损坏，保留日统计销量 {Id}", snapshot.Id);
+                discountState = "Unavailable";
+            }
+        }
+        else if (snapshot is { Status: "Failed", Attempts: < 3 }) discountState = "Queued";
+        var afterRead = await GetStatisticStatusAsync(range.StartDate, range.EndDate, cancellationToken);
+        if (!afterRead.IsFresh || afterRead.Version != statistic.Version)
+            return ApiResponse<BatchProductSalesDetailDto>.OK(new()
+            {
+                StartDate = range.StartDate, EndDate = range.EndDate, StoreCodes = storeCodes, Product = product,
+                StatisticStatus = "Pending", DiscountStatisticStatus = "Pending", Metrics = new() { DiscountStatus = "pending" },
+                Warnings = ["商品日统计正在更新，请重新查询，避免混用不同版本。"],
+            });
+        var storeNames = storeScope.Names;
         var result = new BatchProductSalesDetailDto
         {
             StartDate = range.StartDate,
             EndDate = range.EndDate,
             StoreCodes = storeCodes,
             Product = product,
+            StatisticStatus = "Fresh", StatisticUpdatedAt = statistic.UpdatedAt,
+            DiscountStatisticStatus = discountState, DiscountUpdatedAt = discountState == "Fresh" ? snapshot?.CompletedAtUtc : null,
             Metrics = BuildAggregateMetrics(facts),
             Daily = BuildAggregateDaily(facts, range.StartDate, range.EndDate),
             Branches = facts.GroupBy(f => f.BranchCode, StringComparer.OrdinalIgnoreCase)
@@ -160,13 +201,22 @@ public sealed class BatchProductSalesAnalysisService : IBatchProductSalesAnalysi
                     BranchCode = group.Key,
                     BranchName = storeNames.TryGetValue(group.Key, out var name) ? name : group.Key,
                     Metrics = BuildAggregateMetrics(group),
-                    Daily = BuildAggregateDaily(group, range.StartDate, range.EndDate),
+                    // 未选中分店只传有统计的日期，前端在选中和导出时补齐已知零日，减少全年响应体。
+                    Daily = group.GroupBy(row => row.Date).OrderBy(days => days.Key)
+                        .Select(days => new BatchProductSalesDailyDto { Date = days.Key, Metrics = BuildAggregateMetrics(days) }).ToList(),
                 }).ToList(),
         };
-        AddSourceWarning(result.Warnings, range);
-        var statistic = await GetProductStatisticTotalsAsync(productCode, range.StartDate, range.EndDate, storeCodes, cancellationToken);
-        if (statistic.IsFresh && (statistic.Quantity != result.Metrics.Quantity || statistic.Amount != result.Metrics.SalesAmount))
-            result.Warnings.Add($"成交明细与 Fresh 商品日统计存在差异：销量 {result.Metrics.Quantity - statistic.Quantity:+0.####;-0.####;0}，金额 {result.Metrics.SalesAmount - statistic.Amount:+0.00;-0.00;0.00}。");
+        if (discountState != "Fresh")
+        {
+            // 待计算与成交证据未知是两种状态；数量先可见，分类字段不作为真实零展示。
+            result.Metrics.DiscountStatus = "pending";
+            foreach (var day in result.Daily) day.Metrics.DiscountStatus = "pending";
+            foreach (var branch in result.Branches)
+            {
+                branch.Metrics.DiscountStatus = "pending";
+                foreach (var day in branch.Daily) day.Metrics.DiscountStatus = "pending";
+            }
+        }
         return ApiResponse<BatchProductSalesDetailDto>.OK(result);
     }
 
@@ -237,59 +287,25 @@ public sealed class BatchProductSalesAnalysisService : IBatchProductSalesAnalysi
     private static decimal? MinPrice(IEnumerable<decimal?> values) { var rows = values.Where(value => value.HasValue).Select(value => value!.Value).ToList(); return rows.Count == 0 ? null : rows.Min(); }
     private static decimal? MaxPrice(IEnumerable<decimal?> values) { var rows = values.Where(value => value.HasValue).Select(value => value!.Value).ToList(); return rows.Count == 0 ? null : rows.Max(); }
 
-    private async Task<Dictionary<string, string>> LoadStoreNamesAsync(IEnumerable<string> codes, CancellationToken cancellationToken)
-    {
-        var storeCodes = codes.Where(code => !string.IsNullOrWhiteSpace(code)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        if (storeCodes.Count == 0) return new(StringComparer.OrdinalIgnoreCase);
-        var rows = await _db.Queryable<Store>().Where(s => storeCodes.Contains(s.StoreCode))
-            .Select(s => new { s.StoreCode, s.StoreName }).ToListAsync();
-        cancellationToken.ThrowIfCancellationRequested();
-        return rows.Where(r => !string.IsNullOrWhiteSpace(r.StoreCode)).ToDictionary(r => r.StoreCode, r => r.StoreName ?? r.StoreCode, StringComparer.OrdinalIgnoreCase);
-    }
-
-    private async Task<List<string>> LoadAllStoreCodesAsync(CancellationToken cancellationToken)
-    {
-        var rows = await _db.Queryable<Store>().Where(s => s.IsDeleted == false).Select(s => s.StoreCode).ToListAsync();
-        cancellationToken.ThrowIfCancellationRequested();
-        return NormalizeStoreCodes(rows);
-    }
-
-    private async Task<List<string>> ResolveEffectiveStoreScopeAsync(IEnumerable<string>? requested,
-        IReadOnlyList<string>? granted, CancellationToken cancellationToken)
+    private async Task<(List<string> Codes, Dictionary<string, string> Names)> ResolveEffectiveStoreScopeAsync(
+        IEnumerable<string>? requested, IReadOnlyList<string>? granted, CancellationToken cancellationToken)
     {
         var requestedScope = ResolveStoreScope(requested, granted);
-        var activeStores = await LoadAllStoreCodesAsync(cancellationToken);
-        // null 表示管理员全店，但“全店”只能是 options 也会展示的有效门店。
-        return requestedScope == null
-            ? activeStores
-            : requestedScope.Where(code => activeStores.Contains(code, StringComparer.OrdinalIgnoreCase)).ToList();
+        var activeStores = await _db.Queryable<Store>().Where(s => s.IsDeleted == false)
+            .Select(s => new BatchProductSalesStoreDto { Code = s.StoreCode, Name = s.StoreName }).ToListAsync();
+        cancellationToken.ThrowIfCancellationRequested();
+        // 权限与活跃分店每次请求重新解析，同时携带名称，避免单品详情再查一次门店。
+        var permitted = activeStores.Where(s => !string.IsNullOrWhiteSpace(s.Code))
+            .Select(s => new BatchProductSalesStoreDto { Code = s.Code.Trim(), Name = s.Name })
+            .Where(s => requestedScope == null || requestedScope.Contains(s.Code, StringComparer.OrdinalIgnoreCase))
+            .GroupBy(s => s.Code, StringComparer.OrdinalIgnoreCase).Select(g => g.First()).ToList();
+        return (permitted.Select(s => s.Code).ToList(), permitted.ToDictionary(s => s.Code,
+            s => string.IsNullOrWhiteSpace(s.Name) ? s.Code : s.Name, StringComparer.OrdinalIgnoreCase));
     }
 
-    private async Task<BatchProductSalesStatisticStatus> GetStatisticStatusAsync(
-        DateTime startDate, DateTime endDate, CancellationToken cancellationToken)
-    {
-        var states = await _db.Queryable<SalesStatisticRefreshState>()
-            .Where(state => state.StatisticType == SalesStatisticType.ProductStoreDaily
-                && state.Date >= startDate && state.Date <= endDate)
-            .Select(state => new { state.Date, state.Status, state.CompletedAtUtc, state.LastCheckedAtUtc }).ToListAsync();
-        cancellationToken.ThrowIfCancellationRequested();
-        var byDate = states.GroupBy(state => state.Date.Date).ToDictionary(group => group.Key, group => group.ToList());
-        var pendingDates = new List<DateTime>();
-        for (var date = startDate.Date; date <= endDate.Date; date = date.AddDays(1))
-        {
-            if (!byDate.TryGetValue(date, out var dateStates)
-                || dateStates.Count != 1
-                || !string.Equals(dateStates[0].Status, SalesStatisticRefreshStatus.Fresh, StringComparison.OrdinalIgnoreCase))
-            {
-                pendingDates.Add(date);
-            }
-        }
-        var updatedAt = states.Select(state => state.CompletedAtUtc ?? state.LastCheckedAtUtc)
-            .Where(value => value.HasValue).Select(value => value!.Value).DefaultIfEmpty().Max();
-        return new BatchProductSalesStatisticStatus(pendingDates.Count == 0,
-            pendingDates.Count == 0 ? SalesStatisticRefreshStatus.Fresh : SalesStatisticRefreshStatus.Pending,
-            updatedAt, pendingDates);
-    }
+    private Task<BatchProductSalesStatisticStatus> GetStatisticStatusAsync(
+        DateTime startDate, DateTime endDate, CancellationToken cancellationToken) =>
+        _statisticReader.StatusAsync(startDate, endDate, cancellationToken);
 
     private async Task<BatchProductSalesStatisticQueueResult> QueuePendingStatisticDatesAsync(
         IReadOnlyList<DateTime> pendingDates,
@@ -348,18 +364,6 @@ public sealed class BatchProductSalesAnalysisService : IBatchProductSalesAnalysi
         return segments;
     }
 
-    private async Task<(bool IsFresh, decimal Quantity, decimal Amount)> GetProductStatisticTotalsAsync(string productCode,
-        DateTime startDate, DateTime endDate, IReadOnlyCollection<string> storeCodes, CancellationToken cancellationToken)
-    {
-        var status = await GetStatisticStatusAsync(startDate, endDate, cancellationToken);
-        if (!status.IsFresh) return (false, 0m, 0m);
-        var rows = await _db.Queryable<ProductStoreDailySalesStatistic>()
-            .Where(row => row.ProductCode == productCode && row.Date >= startDate && row.Date <= endDate && storeCodes.Contains(row.BranchCode))
-            .Select(row => new { row.TotalQuantity, row.TotalAmount }).ToListAsync();
-        cancellationToken.ThrowIfCancellationRequested();
-        return (true, rows.Sum(row => (decimal)row.TotalQuantity), rows.Sum(row => row.TotalAmount));
-    }
-
     internal static (DateTime StartDate, DateTime EndDate) ValidateRange(BatchProductSalesScopeDto request)
     {
         var start = request.StartDate.Date; var end = request.EndDate.Date;
@@ -386,25 +390,11 @@ public sealed class BatchProductSalesAnalysisService : IBatchProductSalesAnalysi
     private static List<string>? NormalizeScope(IReadOnlyList<string>? values) => values == null ? null : NormalizeStoreCodes(values);
     private static List<string> NormalizeStoreCodes(IEnumerable<string>? values) => values?.Where(v => !string.IsNullOrWhiteSpace(v)).Select(v => v.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToList() ?? [];
     private static string NormalizeRequired(string? value, string name) => string.IsNullOrWhiteSpace(value) ? throw new BatchProductSalesAnalysisValidationException($"{name} 不能为空。") : value.Trim();
-    private static DateTime Max(DateTime left, DateTime right) => left > right ? left : right;
-    private static DateTime Min(DateTime left, DateTime right) => left < right ? left : right;
     private static DateTime GetBrisbaneToday()
     {
         try { return TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, TimeZoneInfo.FindSystemTimeZoneById("Australia/Brisbane")).Date; }
         catch (TimeZoneNotFoundException) { return DateTime.UtcNow.Date; }
     }
-    private static void AddSourceWarning(List<string> warnings, (DateTime StartDate, DateTime EndDate) range)
-    {
-        warnings.Add("销量和折扣拆分来自成交明细；未知折扣不会按当前商品价格推断。");
-        if (range.StartDate.Year <= 2025 && range.EndDate.Year >= 2025) warnings.Add("2025 年按既有口径合并 HBSales 与 POSM，已排除 HBSales 单据类型 2 和 POSM 非完成订单。");
-    }
-
-    private sealed record BatchProductSalesStatisticStatus(
-        bool IsFresh,
-        string Status,
-        DateTime? UpdatedAt,
-        IReadOnlyList<DateTime> PendingDates);
-
     internal sealed record BatchProductSalesStatisticQueueSegment(
         IReadOnlyList<DateTime> Dates,
         bool IsYearBackfill);

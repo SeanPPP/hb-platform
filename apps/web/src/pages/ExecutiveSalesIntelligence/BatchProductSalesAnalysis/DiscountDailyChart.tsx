@@ -9,7 +9,7 @@ interface DiscountDailyChartProps {
   className?: string
 }
 
-const colors: Record<DiscountChartKind, string> = { regular: '#1677ff', discount: '#fa8c16', unknown: '#aab2bd' }
+const colors: Record<DiscountChartKind, string> = { regular: '#1677ff', discount: '#fa8c16', unknown: '#aab2bd', total: '#1677ff' }
 const audFormatter = new Intl.NumberFormat('en-AU', { style: 'currency', currency: 'AUD' })
 
 function compactDate(value: string) {
@@ -24,6 +24,7 @@ export default function DiscountDailyChart({ data, ariaLabel, className }: Disco
   const { t } = useTranslation()
   const [activeIndex, setActiveIndex] = useState<number | null>(null)
   const model = buildDiscountDailyChartModel(data)
+  const quantityOnly = data.some((day) => day.metrics.discountStatus === 'pending')
   const active = activeIndex === null ? null : model.points[activeIndex]
   const tooltipX = active ? Math.min(Math.max(active.x + 12, model.plotLeft + 4), model.plotRight - 184) : 0
   const tooltipY = active ? Math.max(model.plotTop + 6, Math.min(model.plotBottom - 116, model.zeroY - 96)) : 0
@@ -33,18 +34,18 @@ export default function DiscountDailyChart({ data, ariaLabel, className }: Disco
   return (
     <div className={className}>
       <div className="batch-product-sales-chart-legend" aria-label={t('batchProductSalesAnalysis.chart.legend')}>
-        {(['regular', 'discount', 'unknown'] as const).map((kind) => <span key={kind}><i style={{ background: colors[kind] }} />{t(`batchProductSalesAnalysis.metrics.${kind}`)}</span>)}
+        {(quantityOnly ? ['total'] as const : ['regular', 'discount', 'unknown'] as const).map((kind) => <span key={kind}><i style={{ background: colors[kind] }} />{t(`batchProductSalesAnalysis.metrics.${kind === 'total' ? 'quantity' : kind}`)}</span>)}
       </div>
       <svg role="img" aria-label={ariaLabel} viewBox={`0 0 ${model.width} ${model.height}`} className="batch-product-sales-chart">
         <title>{ariaLabel}</title>
-        <desc>{t('batchProductSalesAnalysis.chart.description')}</desc>
+        <desc>{t(quantityOnly ? 'batchProductSalesAnalysis.chart.quantityDescription' : 'batchProductSalesAnalysis.chart.description')}</desc>
         {model.ticks.map((tick) => <g key={tick.value}><line x1={model.plotLeft} x2={model.plotRight} y1={tick.y} y2={tick.y} stroke={tick.value === 0 ? '#8590a2' : '#edf0f5'} strokeDasharray={tick.value === 0 ? '4 3' : '2 2'} /><text x={model.plotLeft - 7} y={tick.y + 4} textAnchor="end" fontSize="11" fill="#718096">{tick.value}</text></g>)}
         {model.points.map((point, index) => (
           <g
             key={point.date}
             tabIndex={0}
             role="graphics-symbol"
-            aria-label={t('batchProductSalesAnalysis.chart.pointAria', { date: point.date, quantity: point.quantity, regular: point.regularQuantity, discount: point.discountQuantity, unknown: point.unknownQuantity })}
+            aria-label={t(point.pending ? 'batchProductSalesAnalysis.chart.totalPointAria' : 'batchProductSalesAnalysis.chart.pointAria', { date: point.date, quantity: point.quantity, regular: point.regularQuantity, discount: point.discountQuantity, unknown: point.unknownQuantity })}
             onFocus={() => setActiveIndex(index)}
             onBlur={() => setActiveIndex((current) => current === index ? null : current)}
             onMouseEnter={() => setActiveIndex(index)}
@@ -55,7 +56,7 @@ export default function DiscountDailyChart({ data, ariaLabel, className }: Disco
           </g>
         ))}
         {model.xTicks.map((tick) => <text key={tick.date} x={tick.x} y={model.plotBottom + 18} textAnchor="middle" fontSize="11" fill="#718096">{compactDate(tick.date)}</text>)}
-        {active ? <g aria-live="polite"><rect x={tooltipX} y={tooltipY} width="180" height="110" rx="4" fill="#172033" opacity=".96" /><text x={tooltipX + 10} y={tooltipY + 17} fontSize="11" fill="#fff">{active.date}</text><text x={tooltipX + 10} y={tooltipY + 33} fontSize="11" fill="#9cc5ff">{t('batchProductSalesAnalysis.metrics.regular')}: {active.regularQuantity}</text><text x={tooltipX + 10} y={tooltipY + 49} fontSize="11" fill="#ffd09b">{t('batchProductSalesAnalysis.metrics.discount')}: {active.discountQuantity}</text><text x={tooltipX + 10} y={tooltipY + 65} fontSize="11" fill="#d5d9df">{t('batchProductSalesAnalysis.metrics.unknown')}: {active.unknownQuantity}</text><text x={tooltipX + 10} y={tooltipY + 84} fontSize="10" fill="#dfe7f1">{t('batchProductSalesAnalysis.chart.originalPrice')}: {priceRange(active.originalPriceMin, active.originalPriceMax)}</text><text x={tooltipX + 10} y={tooltipY + 100} fontSize="10" fill="#dfe7f1">{t('batchProductSalesAnalysis.chart.discountPrice')}: {priceRange(active.discountPriceMin, active.discountPriceMax)}</text></g> : null}
+        {active?.pending ? <g aria-live="polite"><rect x={tooltipX} y={tooltipY} width="180" height="52" rx="4" fill="#172033" /><text x={tooltipX + 10} y={tooltipY + 18} fontSize="11" fill="#fff">{active.date}</text><text x={tooltipX + 10} y={tooltipY + 37} fontSize="11" fill="#9cc5ff">{t('batchProductSalesAnalysis.metrics.quantity')}: {active.quantity}</text></g> : active ? <g aria-live="polite"><rect x={tooltipX} y={tooltipY} width="180" height="110" rx="4" fill="#172033" opacity=".96" /><text x={tooltipX + 10} y={tooltipY + 17} fontSize="11" fill="#fff">{active.date}</text><text x={tooltipX + 10} y={tooltipY + 33} fontSize="11" fill="#9cc5ff">{t('batchProductSalesAnalysis.metrics.regular')}: {active.regularQuantity}</text><text x={tooltipX + 10} y={tooltipY + 49} fontSize="11" fill="#ffd09b">{t('batchProductSalesAnalysis.metrics.discount')}: {active.discountQuantity}</text><text x={tooltipX + 10} y={tooltipY + 65} fontSize="11" fill="#d5d9df">{t('batchProductSalesAnalysis.metrics.unknown')}: {active.unknownQuantity}</text><text x={tooltipX + 10} y={tooltipY + 84} fontSize="10" fill="#dfe7f1">{t('batchProductSalesAnalysis.chart.originalPrice')}: {priceRange(active.originalPriceMin, active.originalPriceMax)}</text><text x={tooltipX + 10} y={tooltipY + 100} fontSize="10" fill="#dfe7f1">{t('batchProductSalesAnalysis.chart.discountPrice')}: {priceRange(active.discountPriceMin, active.discountPriceMax)}</text></g> : null}
       </svg>
     </div>
   )

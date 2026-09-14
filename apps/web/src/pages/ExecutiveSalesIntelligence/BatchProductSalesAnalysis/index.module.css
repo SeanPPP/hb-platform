@@ -23,7 +23,28 @@
 .itemPreview summary { cursor: pointer; color: #3c6fae; }
 .itemPreview > div { display: flex; flex-wrap: wrap; gap: 4px; max-height: 116px; margin-top: 6px; overflow: auto; }
 .itemPreview :global(.ant-tag) { margin-inline-end: 0; font-variant-numeric: tabular-nums; }
-.productList { display: flex; flex-direction: column; margin: 0 -4px; }
+.productList { display: flex; flex-direction: column; height: clamp(320px, calc(100dvh - 350px), 640px); margin: 10px -4px 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; scrollbar-gutter: stable; scrollbar-width: thin; }
+.productList::-webkit-scrollbar, .scopePreview > div::-webkit-scrollbar { width: 7px; }
+.productList::-webkit-scrollbar-thumb, .scopePreview > div::-webkit-scrollbar-thumb { border-radius: 4px; background: #b8c4d4; }
+.productList:focus-visible, .productRow:focus-visible { outline: 2px solid #1677ff; outline-offset: -2px; }
+.productPanel > .details { max-height: 130px; overflow-y: auto; }
+.modalHint { margin: 4px 0 20px; color: #65758b; }
+.scopeEditor { display: grid; grid-template-columns: minmax(0, 1fr) 220px; gap: 18px; }
+.pasteField { display: flex; flex-direction: column; gap: 8px; font-weight: 600; }
+.pasteField textarea { font-variant-numeric: tabular-nums; font-weight: 400; }
+.uploadZone { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 18px; border: 1px dashed #bdcce0; border-radius: 6px; background: #fafcff; }
+.uploadZone > :first-child { font-size: 30px; color: #1677ff; }
+.uploadZone > span:last-of-type { font-size: 12px; line-height: 1.6; color: #718096; }
+.scopePreview { margin: 18px 0; }
+.scopePreview h3 { margin: 0 0 10px; font-size: 14px; }
+.scopePreview > div { display: flex; align-content: flex-start; flex-wrap: wrap; gap: 6px; max-height: 132px; min-height: 48px; overflow-y: auto; scrollbar-gutter: stable; }
+.scopePreview :global(.ant-tag) { margin: 0; padding: 3px 8px; }
+.details > .importIssues { display: block; max-height: 130px; overflow-y: auto; }
+@media (max-width: 600px) {
+  .scopeEditor { grid-template-columns: minmax(0, 1fr); }
+  .uploadZone { flex-direction: row; flex-wrap: wrap; padding: 12px; gap: 10px; }
+  .uploadZone > :first-child { display: none; }
+}
 .productRow { display: grid; grid-template-columns: 36px minmax(0, 1fr) auto; align-items: center; gap: 7px; width: 100%; min-height: 50px; padding: 5px 4px; border: 0; border-bottom: 1px solid #f0f2f5; border-left: 3px solid transparent; background: transparent; color: inherit; text-align: left; cursor: pointer; }
 .productRow:hover { background: #f7faff; }
 .productCurrent { border-left-color: #1677ff; background: #edf5ff; }

@@ -50,7 +50,7 @@ const query = {
 const detailRequest = { ...query, productCode: 'P-1' }
 const originalFetch = globalThis.fetch
 let captured: Array<{ url: string; init?: RequestInit }> = []
-let responseMode: 'normal' | 'missingMetrics' | 'missingNullablePrices' | 'invalidNullablePrice' | 'emptyPayload' | 'businessFailure' | 'forbidden' | 'unauthorized' | 'abort' | 'returns' | 'netZero' | 'missingScope' = 'normal'
+let responseMode: 'normal' | 'missingMetrics' | 'missingNullablePrices' | 'invalidNullablePrice' | 'emptyPayload' | 'businessFailure' | 'forbidden' | 'unauthorized' | 'abort' | 'returns' | 'netZero' | 'missingScope' | 'pending' = 'normal'
 
 try {
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -107,14 +107,17 @@ try {
           }
           : responseMode === 'invalidNullablePrice'
             ? { ...metrics, OriginalPriceMin: 'not-a-number' }
-        : responseMode === 'returns' ? { ...metrics, Quantity: -2, RegularQuantity: -1, DiscountQuantity: -1, ReturnQuantity: 2 }
-        : responseMode === 'netZero' ? { ...metrics, Quantity: 0, RegularQuantity: 1, DiscountQuantity: -1, ReturnQuantity: 1 } : metrics
+            : responseMode === 'pending'
+              ? { ...metrics, Quantity: 7, RegularQuantity: 0, DiscountQuantity: 0, UnknownQuantity: 7, DiscountStatus: 'pending' }
+              : responseMode === 'returns' ? { ...metrics, Quantity: -2, RegularQuantity: -1, DiscountQuantity: -1, ReturnQuantity: 2 }
+              : responseMode === 'netZero' ? { ...metrics, Quantity: 0, RegularQuantity: 1, DiscountQuantity: -1, ReturnQuantity: 1 } : metrics
       return jsonResponse({
         Success: true,
         Data: {
           StartDate: query.startDate, EndDate: query.endDate, StoreCodes: ['S1', 'S2'],
           Product: { ProductCode: 'P-1', ItemNumber: '00123', ProductName: '测试商品', EnglishName: 'Test item' },
           Metrics: detailMetrics,
+          StatisticStatus: 'Fresh', DiscountStatisticStatus: responseMode === 'pending' ? 'Queued' : 'Fresh',
           Daily: [{ Date: '2026-08-18T13:00:00+10:00', Metrics: metrics }],
           Branches: [{ BranchCode: 'S1', BranchName: 'Sunnybank', Metrics: metrics, Daily: [] }],
           Warnings: [],
@@ -151,6 +154,13 @@ try {
   assert.equal(detail.daily[0]?.date, '2026-08-18', '日期必须归一化为合法前十位')
   assert.equal(detail.metrics.originalPriceMin, 10, '原价区间必须保留')
   assert.equal(detail.metrics.discountPriceMin, null, '可空折扣价必须保留 null')
+
+  responseMode = 'pending'
+  const pendingDetail = await batchProductSalesApi.getDetail(detailRequest)
+  assert.equal(pendingDetail.metrics.quantity, 7)
+  assert.equal(pendingDetail.metrics.discountStatus, 'pending')
+  assert.equal(pendingDetail.discountStatisticStatus, 'Queued')
+  responseMode = 'normal'
 
   await assertRejects(
     () => batchProductSalesApi.query({ ...query, startDate: '2026-02-31' }),
