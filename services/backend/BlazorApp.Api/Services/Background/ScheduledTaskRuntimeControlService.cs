@@ -41,6 +41,24 @@ namespace BlazorApp.Api.Services.Background
             return status.EffectiveSchedulerEnabled;
         }
 
+        /// <summary>
+        /// 返回由自身分布式租约串行的后台 worker 是否允许参与执行。
+        /// 这类 worker 不使用通用调度实例选主：旧版本实例仍可能维持旧的定时任务，
+        /// 若以 ActiveInstanceId 作为前置条件，会使已经部署到新实例的专用 worker 永久跳过。
+        /// </summary>
+        public async Task<bool> IsLeaseManagedWorkerEnabledAsync()
+        {
+            await TouchCurrentInstanceAsync();
+            if (!_options.Enabled)
+            {
+                return false;
+            }
+
+            // 只读取持久化总开关；不创建或切换 ActiveInstanceId，互斥由调用方自己的租约保证。
+            var control = await QueryControlAsync();
+            return control?.SchedulerEnabled ?? true;
+        }
+
         public async Task<ScheduledTaskRuntimeControlStatusDto> GetStatusAsync()
         {
             var control = await QueryControlAsync();
