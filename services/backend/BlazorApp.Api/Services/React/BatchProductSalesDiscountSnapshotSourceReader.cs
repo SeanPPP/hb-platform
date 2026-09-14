@@ -454,24 +454,39 @@ internal sealed class BatchProductSalesDiscountSnapshotSourceReader(
         {
             var values = batch.ToList();
             var rows = await _posmDb.Queryable<PosmProductSupplierMapping>()
-                // FactReader 同样按 LTRIM/RTRIM(ProductCode) 匹配；这里不能仅精确匹配而漏掉旧数据空格。
-                .Where(mapping => mapping.ProductCode != null && values.Contains(mapping.ProductCode.Trim()))
+                // FactReader 用已规范化的明细编码与映射表原键关联。不能在映射键上套 TRIM：
+                // 这会使 SQL Server 放弃 ProductCode 主键，并把前导空格的无效旧映射误纳入来源版本。
+                .Where(mapping => mapping.ProductCode != null && values.Contains(mapping.ProductCode))
+                .Select(mapping => new SupplierMappingSignatureRow
+                {
+                    ProductCode = mapping.ProductCode,
+                    LocalSupplierCode = mapping.LocalSupplierCode,
+                })
                 .ToListAsync(token);
-            mappings.AddRange(rows.Select(mapping => new SupplierMappingSignatureRow(
-                mapping.ProductCode, mapping.LocalSupplierCode)));
+            mappings.AddRange(rows);
         }
         token.ThrowIfCancellationRequested();
 
+        // ProductCode 是主键，正常每个规范化编码最多一个映射。仍按 SQL Server 的尾部空格比较语义
+        // 分组，既保留异常数据时的确定性签名，也让下面每个商品 O(1) 取候选而非 O(N×M) 扫描。
+        var mappingsByProductCode = mappings
+            .Where(mapping => !string.IsNullOrWhiteSpace(mapping.ProductCode))
+            .GroupBy(mapping => mapping.ProductCode!.TrimEnd(), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group.OrderBy(mapping => mapping.ProductCode, StringComparer.Ordinal)
+                    .ThenBy(mapping => mapping.LocalSupplierCode, StringComparer.Ordinal)
+                    .ToList(),
+                StringComparer.OrdinalIgnoreCase);
+
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-        SalesStatisticsProductStoreDailyDomainRules.AppendSignatureValue(hash, "posm-local-supplier-mapping-v1");
+        SalesStatisticsProductStoreDailyDomainRules.AppendSignatureValue(hash, "posm-local-supplier-mapping-v2");
         foreach (var productCode in productCodes)
         {
             SalesStatisticsProductStoreDailyDomainRules.AppendSignatureValue(hash, productCode);
-            var candidates = mappings
-                .Where(mapping => string.Equals(mapping.ProductCode?.Trim(), productCode, StringComparison.OrdinalIgnoreCase))
-                .OrderBy(mapping => mapping.ProductCode, StringComparer.Ordinal)
-                .ThenBy(mapping => mapping.LocalSupplierCode, StringComparer.Ordinal)
-                .ToList();
+            var candidates = mappingsByProductCode.TryGetValue(productCode, out var matchedMappings)
+                ? matchedMappings
+                : [];
             SalesStatisticsProductStoreDailyDomainRules.AppendSignatureValue(hash, candidates.Count);
             foreach (var mapping in candidates)
             {
@@ -669,7 +684,11 @@ internal sealed class BatchProductSalesDiscountSnapshotSourceReader(
     private sealed record CatalogAliasProduct(string? ProductCode, string? ItemNumber, string? Barcode);
     private sealed record CatalogAlias(string? Alias, string? ProductCode);
     private sealed record CatalogStoreAlias(string? Alias, string? BranchCode, string? ProductCode);
-    private sealed record SupplierMappingSignatureRow(string? ProductCode, string? LocalSupplierCode);
+    private sealed class SupplierMappingSignatureRow
+    {
+        public string? ProductCode { get; init; }
+        public string? LocalSupplierCode { get; init; }
+    }
 
     private sealed class ReturnSourceRow
     {

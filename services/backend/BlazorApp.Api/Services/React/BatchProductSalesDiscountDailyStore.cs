@@ -297,13 +297,16 @@ internal sealed class BatchProductSalesDiscountDailyStore(ISqlSugarClient db)
             ? nowUtc.AddHours(24)
             : nowUtc.AddMinutes(Math.Min(60, Math.Max(2, attempts * 3)));
         var persistedReason = reason.Length > 2000 ? reason.Substring(0, 2000) : reason;
+        // SqlSugar 会把实体成员写进 SET 的表达式翻译。先在 C# 计算布尔值，避免它把
+        // `ReconcileRequested OR @value` 当成赋值右侧 SQL 表达式，破坏失败状态的租约归还。
+        var persistedReconcileRequested = reconcileRequested
+            || (preserveExistingReconcileRequested && claim.State.ReconcileRequested);
         await db.Updateable<BatchProductSalesDiscountRefreshState>()
             .SetColumns(x => x.Status == "Failed")
             .SetColumns(x => x.NextAttemptAtUtc == retryAt)
             .SetColumns(x => x.LastError == persistedReason)
             // 一旦已成功请求 canonical 重算，后续围栏或超时失败不能把该事实清掉。
-            .SetColumns(x => x.ReconcileRequested == (reconcileRequested
-                || (preserveExistingReconcileRequested && claim.State.ReconcileRequested)))
+            .SetColumns(x => x.ReconcileRequested == persistedReconcileRequested)
             .SetColumns(x => x.LeaseToken == null)
             .SetColumns(x => x.LeaseUntilUtc == null)
             .Where(x => x.Date == claim.State.Date && x.Status == "Running" && x.LeaseToken == claim.LeaseToken)
