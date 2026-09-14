@@ -4,6 +4,7 @@ using BlazorApp.Api.Data;
 using BlazorApp.Api.Services.Performance;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models.HBweb;
+using Microsoft.Extensions.DependencyInjection;
 using SqlSugar;
 using TaskStatus = BlazorApp.Shared.Models.HBweb.TaskStatus;
 using TaskTrigger = BlazorApp.Shared.Models.HBweb.TaskTrigger;
@@ -20,16 +21,69 @@ namespace BlazorApp.Api.Services.Background
     {
         private readonly SqlSugarContext _context;
         private readonly ILogger<ScheduledTaskLogService> _logger;
+        private readonly IServiceScopeFactory? _scopeFactory;
+        private readonly TimeSpan _terminalPersistenceTimeout;
         private static readonly ConcurrentDictionary<Guid, (string ExternalRunId, int Attempt)> PerformanceRuns = new();
+        private static readonly TimeSpan DefaultTerminalPersistenceTimeout = TimeSpan.FromSeconds(15);
 
         public ScheduledTaskLogService(
             SqlSugarContext context,
-            ILogger<ScheduledTaskLogService> logger
+            ILogger<ScheduledTaskLogService> logger,
+            IServiceScopeFactory? scopeFactory = null,
+            TimeSpan? terminalPersistenceTimeout = null
         )
         {
             _context = context;
             _logger = logger;
+            _scopeFactory = scopeFactory;
+            _terminalPersistenceTimeout = terminalPersistenceTimeout ?? DefaultTerminalPersistenceTimeout;
         }
+
+        /// <summary>
+        /// 业务已提交后的终态日志不能复用 HTTP 请求作用域中的 ADO。
+        /// SqlSugar 会把传入查询的取消令牌保存在 ADO 实例上；这里改用独立 scope 和有限时长令牌，
+        /// 防止请求断开后遗留的 RequestAborted 取消 Success/Skipped/Failed 持久化。
+        /// </summary>
+        private async Task PersistTerminalAsync(Func<SqlSugarContext, Task> persistAsync)
+        {
+            // 旧的直接构造测试夹具没有 DI scope；生产注册会注入 scope factory。
+            if (_scopeFactory == null)
+            {
+                await persistAsync(_context);
+                return;
+            }
+
+            Task persistenceTask;
+            // 只在创建后台任务的同步块内抑制 HTTP AsyncLocal 流动；离开 using 后立即恢复。
+            using (ExecutionContext.SuppressFlow())
+            {
+                persistenceTask = Task.Run(
+                    async () =>
+                    {
+                        using var deadline = new CancellationTokenSource(_terminalPersistenceTimeout);
+                        await using var scope = _scopeFactory.CreateAsyncScope();
+                        var terminalContext = scope.ServiceProvider.GetRequiredService<SqlSugarContext>();
+
+                        // deadline 直接进入 SqlSugar ADO，实际 SELECT/UPDATE 会按该令牌取消。
+                        terminalContext.Db.Ado.CancellationToken = deadline.Token;
+                        try
+                        {
+                            await persistAsync(terminalContext);
+                        }
+                        finally
+                        {
+                            // 仅清除本独立 context 的 deadline，绝不触碰原 HTTP scope 的 request token。
+                            terminalContext.Db.Ado.RemoveCancellationToken();
+                        }
+                    },
+                    CancellationToken.None
+                );
+            }
+
+            // scope 必须等全部 SQL 完成才释放；不使用 WaitAsync 提前返回并遗留后台写入。
+            await persistenceTask;
+        }
+
 
         /// <summary>
         /// 记录任务开始
@@ -184,38 +238,43 @@ namespace BlazorApp.Api.Services.Background
         {
             try
             {
-                var taskLog = await _context.ScheduledTaskLogDb.GetByIdAsync(taskId);
-                if (taskLog == null)
+                await PersistTerminalAsync(async context =>
                 {
-                    _logger.LogWarning("任务日志不存在: {TaskId}", taskId);
-                    return;
-                }
+                    var taskLog = await context.ScheduledTaskLogDb.GetByIdAsync(taskId);
+                    if (taskLog == null)
+                    {
+                        _logger.LogWarning("任务日志不存在: {TaskId}", taskId);
+                        return;
+                    }
 
-                taskLog.Status = TaskStatus.Success;
-                taskLog.CompletedAt = DateTime.UtcNow;
-                taskLog.DurationMs = (int)(
-                    (taskLog.CompletedAt.Value - taskLog.StartedAt).TotalMilliseconds
-                );
-
-                // 更新任务状态为成功
-                var updated = await _context.ScheduledTaskLogDb.UpdateAsync(taskLog);
-                if (!updated)
-                {
-                    // 权威任务日志没有终态时不得污染成功率；保留映射，由运行租约恢复为 interrupted。
-                    _logger.LogWarning(
-                        "任务成功状态未持久化，不发布性能完成事件: {TaskId}",
-                        taskId
+                    taskLog.Status = TaskStatus.Success;
+                    taskLog.CompletedAt = DateTime.UtcNow;
+                    taskLog.DurationMs = (int)(
+                        (taskLog.CompletedAt.Value - taskLog.StartedAt).TotalMilliseconds
                     );
-                    return;
-                }
-                PublishCompletion(taskLog, "success");
+                    taskLog.UpdatedAt = taskLog.CompletedAt;
 
-                _logger.LogInformation(
-                    "任务成功完成: {TaskType}, TaskId: {TaskId}, 耗时: {Duration}ms",
-                    taskLog.TaskType,
-                    taskLog.Id,
-                    taskLog.DurationMs
-                );
+                    // 更新任务状态为成功
+                    using var auditScope = SqlSugarAuditScope.PreserveExplicitAuditFields();
+                    var updated = await context.ScheduledTaskLogDb.UpdateAsync(taskLog);
+                    if (!updated)
+                    {
+                        // 权威任务日志没有终态时不得污染成功率；保留映射，由运行租约恢复为 interrupted。
+                        _logger.LogWarning(
+                            "任务成功状态未持久化，不发布性能完成事件: {TaskId}",
+                            taskId
+                        );
+                        return;
+                    }
+                    PublishCompletion(taskLog, "success");
+
+                    _logger.LogInformation(
+                        "任务成功完成: {TaskType}, TaskId: {TaskId}, 耗时: {Duration}ms",
+                        taskLog.TaskType,
+                        taskLog.Id,
+                        taskLog.DurationMs
+                    );
+                });
             }
             catch (Exception ex)
             {
@@ -228,32 +287,37 @@ namespace BlazorApp.Api.Services.Background
         /// </summary>
         public async Task LogTaskSuccessStrictAsync(Guid taskId)
         {
-            var taskLog = await _context.ScheduledTaskLogDb.GetByIdAsync(taskId);
-            if (taskLog == null)
+            await PersistTerminalAsync(async context =>
             {
-                throw new InvalidOperationException($"任务日志不存在，无法确认成功版本: {taskId}");
-            }
+                var taskLog = await context.ScheduledTaskLogDb.GetByIdAsync(taskId);
+                if (taskLog == null)
+                {
+                    throw new InvalidOperationException($"任务日志不存在，无法确认成功版本: {taskId}");
+                }
 
-            taskLog.Status = TaskStatus.Success;
-            taskLog.CompletedAt = DateTime.UtcNow;
-            taskLog.DurationMs = (int)(
-                (taskLog.CompletedAt.Value - taskLog.StartedAt).TotalMilliseconds
-            );
+                taskLog.Status = TaskStatus.Success;
+                taskLog.CompletedAt = DateTime.UtcNow;
+                taskLog.DurationMs = (int)(
+                    (taskLog.CompletedAt.Value - taskLog.StartedAt).TotalMilliseconds
+                );
+                taskLog.UpdatedAt = taskLog.CompletedAt;
 
-            var updated = await _context.ScheduledTaskLogDb.UpdateAsync(taskLog);
-            if (!updated)
-            {
-                throw new InvalidOperationException($"任务成功状态未持久化: {taskId}");
-            }
+                using var auditScope = SqlSugarAuditScope.PreserveExplicitAuditFields();
+                var updated = await context.ScheduledTaskLogDb.UpdateAsync(taskLog);
+                if (!updated)
+                {
+                    throw new InvalidOperationException($"任务成功状态未持久化: {taskId}");
+                }
 
-            PublishCompletion(taskLog, "success");
+                PublishCompletion(taskLog, "success");
 
-            _logger.LogInformation(
-                "任务成功完成并严格持久化: {TaskType}, TaskId: {TaskId}, 耗时: {Duration}ms",
-                taskLog.TaskType,
-                taskLog.Id,
-                taskLog.DurationMs
-            );
+                _logger.LogInformation(
+                    "任务成功完成并严格持久化: {TaskType}, TaskId: {TaskId}, 耗时: {Duration}ms",
+                    taskLog.TaskType,
+                    taskLog.Id,
+                    taskLog.DurationMs
+                );
+            });
         }
 
         /// <summary>
@@ -261,34 +325,39 @@ namespace BlazorApp.Api.Services.Background
         /// </summary>
         public async Task LogTaskSkippedStrictAsync(Guid taskId, string reason)
         {
-            var taskLog = await _context.ScheduledTaskLogDb.GetByIdAsync(taskId);
-            if (taskLog == null)
+            await PersistTerminalAsync(async context =>
             {
-                throw new InvalidOperationException($"任务日志不存在，无法确认跳过状态: {taskId}");
-            }
+                var taskLog = await context.ScheduledTaskLogDb.GetByIdAsync(taskId);
+                if (taskLog == null)
+                {
+                    throw new InvalidOperationException($"任务日志不存在，无法确认跳过状态: {taskId}");
+                }
 
-            taskLog.Status = TaskStatus.Skipped;
-            taskLog.CompletedAt = DateTime.UtcNow;
-            taskLog.DurationMs = (int)(
-                (taskLog.CompletedAt.Value - taskLog.StartedAt).TotalMilliseconds
-            );
-            taskLog.ErrorMessage = string.IsNullOrWhiteSpace(reason) ? "任务跳过" : reason.Trim();
-            // Skip 表示已有执行者持有日期范围，并非应由失败重试队列再次执行的错误。
-            taskLog.CanRetry = false;
+                taskLog.Status = TaskStatus.Skipped;
+                taskLog.CompletedAt = DateTime.UtcNow;
+                taskLog.DurationMs = (int)(
+                    (taskLog.CompletedAt.Value - taskLog.StartedAt).TotalMilliseconds
+                );
+                taskLog.ErrorMessage = string.IsNullOrWhiteSpace(reason) ? "任务跳过" : reason.Trim();
+                // Skip 表示已有执行者持有日期范围，并非应由失败重试队列再次执行的错误。
+                taskLog.CanRetry = false;
+                taskLog.UpdatedAt = taskLog.CompletedAt;
 
-            var updated = await _context.ScheduledTaskLogDb.UpdateAsync(taskLog);
-            if (!updated)
-            {
-                throw new InvalidOperationException($"任务跳过状态未持久化: {taskId}");
-            }
+                using var auditScope = SqlSugarAuditScope.PreserveExplicitAuditFields();
+                var updated = await context.ScheduledTaskLogDb.UpdateAsync(taskLog);
+                if (!updated)
+                {
+                    throw new InvalidOperationException($"任务跳过状态未持久化: {taskId}");
+                }
 
-            PublishCompletion(taskLog, "skipped");
-            _logger.LogInformation(
-                "任务跳过并严格持久化: {TaskType}, TaskId: {TaskId}, 原因: {Reason}",
-                taskLog.TaskType,
-                taskLog.Id,
-                taskLog.ErrorMessage
-            );
+                PublishCompletion(taskLog, "skipped");
+                _logger.LogInformation(
+                    "任务跳过并严格持久化: {TaskType}, TaskId: {TaskId}, 原因: {Reason}",
+                    taskLog.TaskType,
+                    taskLog.Id,
+                    taskLog.ErrorMessage
+                );
+            });
         }
 
         /// <summary>
@@ -296,35 +365,40 @@ namespace BlazorApp.Api.Services.Background
         /// </summary>
         public async Task LogTaskFailureStrictAsync(Guid taskId, string errorMessage)
         {
-            var taskLog = await _context.ScheduledTaskLogDb.GetByIdAsync(taskId);
-            if (taskLog == null)
+            await PersistTerminalAsync(async context =>
             {
-                throw new InvalidOperationException($"任务日志不存在，无法严格标记失败: {taskId}");
-            }
+                var taskLog = await context.ScheduledTaskLogDb.GetByIdAsync(taskId);
+                if (taskLog == null)
+                {
+                    throw new InvalidOperationException($"任务日志不存在，无法严格标记失败: {taskId}");
+                }
 
-            taskLog.Status = TaskStatus.Failed;
-            taskLog.CompletedAt = DateTime.UtcNow;
-            taskLog.DurationMs = (int)(
-                (taskLog.CompletedAt.Value - taskLog.StartedAt).TotalMilliseconds
-            );
-            taskLog.ErrorMessage = errorMessage;
-            taskLog.CanRetry = true;
-            taskLog.RetryCount++;
+                taskLog.Status = TaskStatus.Failed;
+                taskLog.CompletedAt = DateTime.UtcNow;
+                taskLog.DurationMs = (int)(
+                    (taskLog.CompletedAt.Value - taskLog.StartedAt).TotalMilliseconds
+                );
+                taskLog.ErrorMessage = errorMessage;
+                taskLog.CanRetry = true;
+                taskLog.RetryCount++;
+                taskLog.UpdatedAt = taskLog.CompletedAt;
 
-            var updated = await _context.ScheduledTaskLogDb.UpdateAsync(taskLog);
-            if (!updated)
-            {
-                throw new InvalidOperationException($"任务失败状态未持久化: {taskId}");
-            }
+                using var auditScope = SqlSugarAuditScope.PreserveExplicitAuditFields();
+                var updated = await context.ScheduledTaskLogDb.UpdateAsync(taskLog);
+                if (!updated)
+                {
+                    throw new InvalidOperationException($"任务失败状态未持久化: {taskId}");
+                }
 
-            PublishCompletion(taskLog, "failure");
+                PublishCompletion(taskLog, "failure");
 
-            _logger.LogError(
-                "任务失败状态已严格持久化: {TaskType}, TaskId: {TaskId}, 错误: {Error}",
-                taskLog.TaskType,
-                taskLog.Id,
-                errorMessage
-            );
+                _logger.LogError(
+                    "任务失败状态已严格持久化: {TaskType}, TaskId: {TaskId}, 错误: {Error}",
+                    taskLog.TaskType,
+                    taskLog.Id,
+                    errorMessage
+                );
+            });
         }
 
         /// <summary>
@@ -409,42 +483,47 @@ namespace BlazorApp.Api.Services.Background
         {
             try
             {
-                var taskLog = await _context.ScheduledTaskLogDb.GetByIdAsync(taskId);
-                if (taskLog == null)
+                await PersistTerminalAsync(async context =>
                 {
-                    _logger.LogWarning("任务日志不存在: {TaskId}", taskId);
-                    return;
-                }
+                    var taskLog = await context.ScheduledTaskLogDb.GetByIdAsync(taskId);
+                    if (taskLog == null)
+                    {
+                        _logger.LogWarning("任务日志不存在: {TaskId}", taskId);
+                        return;
+                    }
 
-                taskLog.Status = TaskStatus.Failed;
-                taskLog.CompletedAt = DateTime.UtcNow;
-                taskLog.DurationMs = (int)(
-                    (taskLog.CompletedAt.Value - taskLog.StartedAt).TotalMilliseconds
-                );
-                taskLog.ErrorMessage = errorMessage;
-                taskLog.CanRetry = canRetry;
-                taskLog.RetryCount++;
-
-                // 更新任务状态为失败，并记录错误信息
-                var updated = await _context.ScheduledTaskLogDb.UpdateAsync(taskLog);
-                if (!updated)
-                {
-                    // 与成功路径保持同一权威顺序，避免不存在的失败终态进入冻结基线。
-                    _logger.LogWarning(
-                        "任务失败状态未持久化，不发布性能完成事件: {TaskId}",
-                        taskId
+                    taskLog.Status = TaskStatus.Failed;
+                    taskLog.CompletedAt = DateTime.UtcNow;
+                    taskLog.DurationMs = (int)(
+                        (taskLog.CompletedAt.Value - taskLog.StartedAt).TotalMilliseconds
                     );
-                    return;
-                }
-                PublishCompletion(taskLog, "failure");
+                    taskLog.ErrorMessage = errorMessage;
+                    taskLog.CanRetry = canRetry;
+                    taskLog.RetryCount++;
+                    taskLog.UpdatedAt = taskLog.CompletedAt;
 
-                _logger.LogError(
-                    "任务执行失败: {TaskType}, TaskId: {TaskId}, 耗时: {Duration}ms, 错误: {Error}",
-                    taskLog.TaskType,
-                    taskLog.Id,
-                    taskLog.DurationMs,
-                    errorMessage
-                );
+                    // 更新任务状态为失败，并记录错误信息
+                    using var auditScope = SqlSugarAuditScope.PreserveExplicitAuditFields();
+                    var updated = await context.ScheduledTaskLogDb.UpdateAsync(taskLog);
+                    if (!updated)
+                    {
+                        // 与成功路径保持同一权威顺序，避免不存在的失败终态进入冻结基线。
+                        _logger.LogWarning(
+                            "任务失败状态未持久化，不发布性能完成事件: {TaskId}",
+                            taskId
+                        );
+                        return;
+                    }
+                    PublishCompletion(taskLog, "failure");
+
+                    _logger.LogError(
+                        "任务执行失败: {TaskType}, TaskId: {TaskId}, 耗时: {Duration}ms, 错误: {Error}",
+                        taskLog.TaskType,
+                        taskLog.Id,
+                        taskLog.DurationMs,
+                        errorMessage
+                    );
+                });
             }
             catch (Exception ex)
             {
