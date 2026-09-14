@@ -37,7 +37,7 @@ public sealed class StoreProductInsightQueryServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task 普通商品_草稿和部分入库排除且统计末日销售()
+    public async Task 普通商品_本地进货包含未入库和部分入库单且统计末日销售()
     {
         await SeedCommonAsync("L100");
         await SeedInvoiceAsync("old", new DateTime(2025, 1, 4), 2, 1);
@@ -51,9 +51,9 @@ public sealed class StoreProductInsightQueryServiceTests : IDisposable
 
         Assert.NotNull(result);
         Assert.Equal("local", result!.SourceType);
-        Assert.Equal(3m, result.Purchases.Quantity);
-        Assert.Equal(1, result.Purchases.DocumentCount);
-        Assert.Equal("current-a", result.Purchases.LastRecord!.Id);
+        Assert.Equal(106m, result.Purchases.Quantity);
+        Assert.Equal(3, result.Purchases.DocumentCount);
+        Assert.Equal("draft", result.Purchases.LastRecord!.Id);
         Assert.Equal(7, result.Sales.Quantity);
         Assert.Equal(21m, result.Sales.Amount);
         Assert.Equal(new DateTime(2026, 9, 14, 23, 0, 0), result.SalesStatisticLastUpdatedAt);
@@ -83,6 +83,71 @@ public sealed class StoreProductInsightQueryServiceTests : IDisposable
         Assert.Equal("older-outbound", result.Warehouse.Deliveries[0].Id);
         Assert.Equal(0, result.Sales.Quantity);
         Assert.Null(result.SalesStatisticLastUpdatedAt);
+    }
+
+    [Theory]
+    [InlineData(0, true)]
+    [InlineData(1, true)]
+    [InlineData(null, true)]
+    [InlineData(2, false)]
+    [InlineData(0, false)]
+    public async Task 本地进货_按进货单数量统计且未填入库日期使用订单日期(int? inboundStatus, bool hasInboundDate)
+    {
+        await SeedCommonAsync("L100");
+        var purchaseDate = new DateTime(2026, 9, 14, 23, 30, 0);
+        await _db.Insertable(new StoreLocalSupplierInvoice
+        {
+            InvoiceGUID = "local-invoice", StoreCode = "S1", SupplierCode = "L100", InvoiceNo = "DATS-59890",
+            InboundStatus = inboundStatus, InboundDate = hasInboundDate ? purchaseDate : null,
+            OrderDate = hasInboundDate ? purchaseDate.AddDays(-1) : purchaseDate, IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await SeedInvoiceDetailAsync("local-invoice", "local-detail", 12m);
+
+        var result = await CreateService().GetAsync("S1", "P1", purchaseDate.Date, purchaseDate.Date);
+
+        Assert.NotNull(result);
+        Assert.Equal(12m, result!.Purchases.Quantity);
+        Assert.Equal(1, result.Purchases.DocumentCount);
+        var record = Assert.Single(result.Purchases.Records);
+        Assert.Equal("DATS-59890", record.DocumentNo);
+        Assert.Equal(purchaseDate, record.Date);
+        Assert.Equal(record.Id, result.Purchases.LastRecord!.Id);
+    }
+
+    [Fact]
+    public async Task 本地进货_订单日期历史回显保留门店删除和结束日期边界()
+    {
+        await SeedCommonAsync("L100");
+        var endDate = new DateTime(2026, 9, 14);
+        foreach (var (id, storeCode, orderDate, invoiceDeleted, detailDeleted) in new[]
+        {
+            ("history", "S1", (DateTime?)new DateTime(2024, 2, 1), false, false),
+            ("future", "S1", (DateTime?)endDate.AddDays(1), false, false),
+            ("other-store", "S2", (DateTime?)endDate, false, false),
+            ("deleted-invoice", "S1", (DateTime?)endDate, true, false),
+            ("deleted-detail", "S1", (DateTime?)endDate, false, true),
+            ("undated", "S1", (DateTime?)null, false, false),
+        })
+        {
+            await _db.Insertable(new StoreLocalSupplierInvoice
+            {
+                InvoiceGUID = id, StoreCode = storeCode, SupplierCode = "L100", InvoiceNo = id,
+                InboundStatus = 0, OrderDate = orderDate, IsDeleted = invoiceDeleted,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new StoreLocalSupplierInvoiceDetails
+            {
+                DetailGUID = $"detail-{id}", InvoiceGUID = id, ProductCode = "P1", Quantity = 6m, IsDeleted = detailDeleted,
+            }).ExecuteCommandAsync();
+        }
+
+        var result = await CreateService().GetAsync("S1", "P1", endDate, endDate);
+
+        Assert.NotNull(result);
+        Assert.Equal(0m, result!.Purchases.Quantity);
+        Assert.Empty(result.Purchases.Records);
+        Assert.NotNull(result.Purchases.LastRecord);
+        Assert.Equal("history", result.Purchases.LastRecord!.Id);
+        Assert.Equal(new DateTime(2024, 2, 1), result.Purchases.LastRecord.Date);
     }
 
     [Fact]

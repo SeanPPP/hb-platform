@@ -50,7 +50,7 @@ const query = {
 const detailRequest = { ...query, productCode: 'P-1' }
 const originalFetch = globalThis.fetch
 let captured: Array<{ url: string; init?: RequestInit }> = []
-let responseMode: 'normal' | 'missingMetrics' | 'emptyPayload' | 'businessFailure' | 'forbidden' | 'unauthorized' | 'abort' | 'returns' | 'netZero' | 'missingScope' | 'omittedPrices' | 'pending' = 'normal'
+let responseMode: 'normal' | 'missingMetrics' | 'missingNullablePrices' | 'invalidNullablePrice' | 'emptyPayload' | 'businessFailure' | 'forbidden' | 'unauthorized' | 'abort' | 'returns' | 'netZero' | 'missingScope' | 'pending' = 'normal'
 
 try {
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -97,10 +97,20 @@ try {
     if (pathname.endsWith('/detail')) {
       const detailMetrics = responseMode === 'missingMetrics'
         ? { ...metrics, ReturnQuantity: undefined }
-        : responseMode === 'omittedPrices' ? { ...metrics, OriginalPriceMin: undefined, OriginalPriceMax: undefined, DiscountPriceMin: undefined, DiscountPriceMax: undefined }
-        : responseMode === 'pending' ? { ...metrics, Quantity: 7, RegularQuantity: 0, DiscountQuantity: 0, UnknownQuantity: 7, DiscountStatus: 'pending' }
-        : responseMode === 'returns' ? { ...metrics, Quantity: -2, RegularQuantity: -1, DiscountQuantity: -1, ReturnQuantity: 2 }
-        : responseMode === 'netZero' ? { ...metrics, Quantity: 0, RegularQuantity: 1, DiscountQuantity: -1, ReturnQuantity: 1 } : metrics
+        : responseMode === 'missingNullablePrices'
+          ? {
+            ...metrics,
+            OriginalPriceMin: undefined,
+            OriginalPriceMax: undefined,
+            DiscountPriceMin: undefined,
+            DiscountPriceMax: undefined,
+          }
+          : responseMode === 'invalidNullablePrice'
+            ? { ...metrics, OriginalPriceMin: 'not-a-number' }
+            : responseMode === 'pending'
+              ? { ...metrics, Quantity: 7, RegularQuantity: 0, DiscountQuantity: 0, UnknownQuantity: 7, DiscountStatus: 'pending' }
+              : responseMode === 'returns' ? { ...metrics, Quantity: -2, RegularQuantity: -1, DiscountQuantity: -1, ReturnQuantity: 2 }
+              : responseMode === 'netZero' ? { ...metrics, Quantity: 0, RegularQuantity: 1, DiscountQuantity: -1, ReturnQuantity: 1 } : metrics
       return jsonResponse({
         Success: true,
         Data: {
@@ -173,16 +183,25 @@ try {
   responseMode = 'missingScope'
   await assertRejects(() => batchProductSalesApi.query(query), '缺少或非法门店编码', '缺少实际范围必须拒绝')
 
-  responseMode = 'omittedPrices'
-  const withoutPrices = await batchProductSalesApi.getDetail(detailRequest)
-  assert.equal(withoutPrices.metrics.originalPriceMin, null, '生产 WhenWritingNull 省略原价时应保留未知价格')
-  assert.equal(withoutPrices.metrics.discountPriceMax, null, '省略折扣价不得导致整个销量请求失败')
-
   responseMode = 'missingMetrics'
   await assertRejects(
     () => batchProductSalesApi.getDetail(detailRequest),
     '缺少或非法退货数量',
     '缺少关键指标不得回退为零',
+  )
+
+  responseMode = 'missingNullablePrices'
+  const omittedPriceDetail = await batchProductSalesApi.getDetail(detailRequest)
+  assert.equal(omittedPriceDetail.metrics.originalPriceMin, null, '省略的原价最小值必须按空价格范围处理')
+  assert.equal(omittedPriceDetail.metrics.originalPriceMax, null, '省略的原价最大值必须按空价格范围处理')
+  assert.equal(omittedPriceDetail.metrics.discountPriceMin, null, '省略的折扣价最小值必须按空价格范围处理')
+  assert.equal(omittedPriceDetail.metrics.discountPriceMax, null, '省略的折扣价最大值必须按空价格范围处理')
+
+  responseMode = 'invalidNullablePrice'
+  await assertRejects(
+    () => batchProductSalesApi.getDetail(detailRequest),
+    '缺少或非法原价最小值',
+    '可空价格字段存在但不是数值时仍必须拒绝',
   )
 
   responseMode = 'emptyPayload'

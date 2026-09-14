@@ -21,17 +21,20 @@ public sealed class StoreProductInsightRulesTests
     }
 
     [Theory]
-    [InlineData(0, false)]
-    [InlineData(1, false)]
-    [InlineData(2, true)]
-    [InlineData(3, false)]
-    public void IsValidLocalInbound_只接受已完成入库的准确数量口径(int inboundStatus, bool expected)
+    [InlineData(false, false, true, false, true)]
+    [InlineData(false, false, false, true, true)]
+    [InlineData(false, false, true, true, true)]
+    [InlineData(false, false, false, false, false)]
+    [InlineData(true, false, true, true, false)]
+    [InlineData(false, true, true, true, false)]
+    public void IsValidLocalPurchase_未删除且至少有一个进货业务日期(
+        bool isInvoiceDeleted, bool isDetailDeleted, bool hasInboundDate, bool hasOrderDate, bool expected)
     {
-        var actual = StoreProductInsightRules.IsValidLocalInbound(
-            isInvoiceDeleted: false,
-            isDetailDeleted: false,
-            inboundDate: inboundStatus == 0 ? null : new DateTime(2026, 9, 14),
-            inboundStatus: inboundStatus
+        var actual = StoreProductInsightRules.IsValidLocalPurchase(
+            isInvoiceDeleted: isInvoiceDeleted,
+            isDetailDeleted: isDetailDeleted,
+            inboundDate: hasInboundDate ? new DateTime(2026, 9, 14) : null,
+            orderDate: hasOrderDate ? new DateTime(2026, 9, 13) : null
         );
 
         Assert.Equal(expected, actual);

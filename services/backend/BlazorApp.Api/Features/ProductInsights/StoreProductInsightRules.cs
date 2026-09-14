@@ -8,8 +8,9 @@ public static class StoreProductInsightRules
 
     public static bool IsValidRange(DateTime startDate, DateTime endDate) => startDate.Date <= endDate.Date;
 
-    public static bool IsValidLocalInbound(bool isInvoiceDeleted, bool isDetailDeleted, DateTime? inboundDate, int? inboundStatus) =>
-        !isInvoiceDeleted && !isDetailDeleted && inboundDate.HasValue && inboundStatus == 2;
+    // 本地进货按进货单口径判断；入库状态不决定单据是否参与统计。
+    public static bool IsValidLocalPurchase(bool isInvoiceDeleted, bool isDetailDeleted, DateTime? inboundDate, DateTime? orderDate) =>
+        !isInvoiceDeleted && !isDetailDeleted && (inboundDate.HasValue || orderDate.HasValue);
 
     public static bool IsWarehouseDelivery(int? flowStatus, DateTime? outboundDate, decimal allocatedQuantity, DateTime startDate, DateTime endDate) =>
         flowStatus == 2 && outboundDate.HasValue && allocatedQuantity > 0

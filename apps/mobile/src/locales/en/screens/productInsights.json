@@ -38,13 +38,13 @@
     "salesAmount": "Store sales amount",
     "purchaseQuantity": "Purchase quantity",
     "purchaseDocuments": "Purchase documents",
-    "orderedQuantity": "Warehouse ordered",
-    "deliveredQuantity": "Warehouse delivered",
+    "orderedQuantity": "Ordered quantity",
+    "allocatedQuantity": "Allocated quantity",
     "salesDetail": "Sales detail",
     "date": "Date",
     "documentNo": "Document no.",
     "quantity": "Quantity",
-    "deliveryDate": "Delivery date"
+    "outboundDate": "Outbound date"
   },
   "units": {
     "items": "items",
@@ -54,13 +54,12 @@
   "generatedAt": "Queried: {{value}}",
   "salesUpdatedAt": "Sales statistics updated: {{value}}",
   "salesUpdatedUnavailable": "Sales statistics update time unavailable",
-  "purchaseScope": "Only completed inbound documents are included",
+  "purchaseScope": "Based on local purchase documents",
   "recordCount": "{{count}} records",
   "tabs": {
     "sales": "Sales",
     "purchases": "Purchases",
-    "orders": "Orders",
-    "deliveries": "Deliveries"
+    "warehouseRecords": "Orders / allocations"
   },
   "history": {
     "noPurchases": "No purchases in the last 90 days",
@@ -68,8 +67,10 @@
     "none": "No historical purchase record"
   },
   "warehouse": {
-    "lastDelivery": "Last delivery: {{date}} · {{quantity}} items (delivery means warehouse dispatch, not store receipt)",
-    "noDelivery": "No deliveries in the last 90 days"
+    "lastAllocation": "Latest allocation: {{date}} · {{quantity}} items",
+    "noAllocation": "No allocations in the last 90 days",
+    "dispatchedOn": "{{date}} dispatched",
+    "awaitingAllocation": "Awaiting allocation"
   },
   "states": {
     "initialTitle": "Search product movement",

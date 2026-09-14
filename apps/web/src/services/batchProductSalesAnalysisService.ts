@@ -50,7 +50,7 @@ function requiredNumber(value: unknown, label: string): number {
 }
 
 function requiredNullableNumber(value: unknown, label: string): number | null {
-  // API 使用 WhenWritingNull，缺省价格与显式 null 都代表未知，不能令整份销量失败。
+  // Program.cs 的 WhenWritingNull 会省略 null 价格字段；缺失与显式 null 都表示服务端没有可用价格范围。
   if (value === null || value === undefined) {
     return null
   }
