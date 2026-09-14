@@ -252,6 +252,15 @@ namespace BlazorApp.Api.Services
             },
             new()
             {
+                RouteName = "product-insights",
+                TitleKey = "tabs.productInsights",
+                Icon = "chart-timeline-variant",
+                // 与商品查询共用查看授权，避免客户端入口与设备菜单出现范围偏差。
+                Permission = Permissions.StoreProducts.View,
+                Order = 50,
+            },
+            new()
+            {
                 RouteName = "installment-orders",
                 TitleKey = "tabs.installmentOrders",
                 Icon = "cash-clock",
@@ -381,7 +390,7 @@ namespace BlazorApp.Api.Services
         };
 
         private static readonly HashSet<string> DeviceBaseRouteNames = new(
-            new[] { "home", "orders", "cart", "product-query", "settings" },
+            new[] { "home", "orders", "cart", "product-query", "product-insights", "settings" },
             StringComparer.OrdinalIgnoreCase
         );
 

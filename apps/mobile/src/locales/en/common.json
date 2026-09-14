@@ -52,6 +52,7 @@
     "attendancePersonal": "Attendance",
     "attendanceManagement": "Attendance Admin",
     "productQuery": "Products",
+    "productInsights": "Product activity",
     "users": "Users",
     "userAdmin": "User administration",
     "roles": "Roles",

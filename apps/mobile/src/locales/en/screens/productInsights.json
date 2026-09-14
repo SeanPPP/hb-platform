@@ -1,0 +1,106 @@
+{
+  "title": "Product movement",
+  "store": "Store: {{store}} ({{code}})",
+  "search": {
+    "placeholder": "Item no. / barcode / product code"
+  },
+  "actions": {
+    "back": "Back",
+    "search": "Search",
+    "scan": "Scan",
+    "retry": "Retry",
+    "close": "Close",
+    "selectStore": "Select store",
+    "openBranchSales": "View all POS store sales",
+    "apply": "Apply"
+  },
+  "messages": {
+    "selectStore": "Select a store first",
+    "storesFailed": "Could not load stores",
+    "lookupFailed": "Product search failed",
+    "loadFailed": "Could not load product movement",
+    "branchSalesFailed": "Could not load POS store sales",
+    "storeNotAllowed": "You do not have access to this store",
+    "cameraPermission": "Camera permission is required to scan",
+    "grantCameraPermission": "Allow camera access",
+    "cameraUnavailable": "Camera is unavailable",
+    "reviewUnavailable": "This device cannot open permission settings",
+    "invalidResponse": "The server returned an invalid data format"
+  },
+  "camera": {
+    "title": "Scan product"
+  },
+  "labels": {
+    "itemNumber": "Item no.",
+    "barcode": "Barcode",
+    "supplier": "Supplier",
+    "salesQuantity": "Store sales",
+    "salesAmount": "Store sales amount",
+    "purchaseQuantity": "Purchase quantity",
+    "purchaseDocuments": "Purchase documents",
+    "orderedQuantity": "Warehouse ordered",
+    "deliveredQuantity": "Warehouse delivered",
+    "salesDetail": "Sales detail",
+    "date": "Date",
+    "documentNo": "Document no.",
+    "quantity": "Quantity",
+    "deliveryDate": "Delivery date"
+  },
+  "units": {
+    "items": "items",
+    "documents": "docs"
+  },
+  "range": "{{startDate}} to {{endDate}}",
+  "generatedAt": "Queried: {{value}}",
+  "salesUpdatedAt": "Sales statistics updated: {{value}}",
+  "salesUpdatedUnavailable": "Sales statistics update time unavailable",
+  "purchaseScope": "Only completed inbound documents are included",
+  "recordCount": "{{count}} records",
+  "tabs": {
+    "sales": "Sales",
+    "purchases": "Purchases",
+    "orders": "Orders",
+    "deliveries": "Deliveries"
+  },
+  "history": {
+    "noPurchases": "No purchases in the last 90 days",
+    "lastPurchase": "History: {{date}} · {{quantity}} items · {{documentNo}} · {{supplier}}. This record is excluded from the 90-day purchase total.",
+    "none": "No historical purchase record"
+  },
+  "warehouse": {
+    "lastDelivery": "Last delivery: {{date}} · {{quantity}} items (delivery means warehouse dispatch, not store receipt)",
+    "noDelivery": "No deliveries in the last 90 days"
+  },
+  "states": {
+    "initialTitle": "Search product movement",
+    "initialDescription": "Enter an item number, barcode, or product code to begin.",
+    "notFoundTitle": "No matching product",
+    "notFoundDescription": "Check the query or scan the product again.",
+    "loadFailed": "Could not load product movement",
+    "noRecords": "No detail records in this range",
+    "loadingBranchSales": "Loading POS store sales…",
+    "noBranchSales": "No store sales data in this range",
+    "noStoreMatch": "No matching store"
+  },
+  "detail": {
+    "title": "Detail"
+  },
+  "branchSheet": {
+    "title": "All POS store sales",
+    "startDate": "Start date",
+    "endDate": "End date",
+    "invalidDate": "Enter valid dates (YYYY-MM-DD); end date cannot be before start date.",
+    "appliedRange": "Results period: {{startDate}} to {{endDate}}",
+    "pendingRange": "Dates have not been applied. Tap Apply.",
+    "total": "{{count}} POS stores included",
+    "authorizedScope": "Only {{count}} of {{total}} authorized POS stores are included",
+    "searchStore": "Search store name or code",
+    "store": "Store",
+    "authorizedTitle": "Authorized POS store sales",
+    "quantity": "Quantity",
+    "amount": "Sales amount",
+    "totalQuantity": "Total quantity",
+    "totalAmount": "Total sales",
+    "totalUnknown": "POS store sales summary"
+  }
+}

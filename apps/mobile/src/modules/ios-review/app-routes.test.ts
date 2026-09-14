@@ -330,6 +330,11 @@ async function run() {
 
   const menu = await request("GET", "/navigation/app-menu");
   assert.equal(menu.length, 19, "审核菜单必须覆盖全部 19 个业务入口");
+  assert.equal(
+    menu.some((item: { routeName?: string }) => item.routeName === "product-insights"),
+    false,
+    "商品进销查询没有离线审核数据契约时不得进入审核菜单",
+  );
 
   const stores = await request("GET", "/Users/guid/review-user/stores");
   assert.equal(stores.length, 28, "审核门店接口必须覆盖 28 店报表规模");
@@ -2535,6 +2540,11 @@ async function run() {
     () => request("GET", "/react/v1/not-a-real-endpoint"),
     /IOS_REVIEW_UNHANDLED_REQUEST/,
     "宽泛 prefix 路由不能吞掉未登记 endpoint",
+  );
+  await assert.rejects(
+    () => request("GET", "/react/v1/product-insights"),
+    /IOS_REVIEW_UNHANDLED_REQUEST/,
+    "商品进销查询未登记审核 fixture 时必须 fail-closed",
   );
 
   console.log("app-routes.test.ts: ok");
