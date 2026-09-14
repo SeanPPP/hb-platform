@@ -50,7 +50,7 @@ const query = {
 const detailRequest = { ...query, productCode: 'P-1' }
 const originalFetch = globalThis.fetch
 let captured: Array<{ url: string; init?: RequestInit }> = []
-let responseMode: 'normal' | 'missingMetrics' | 'emptyPayload' | 'businessFailure' | 'forbidden' | 'unauthorized' | 'abort' | 'returns' | 'netZero' | 'missingScope' = 'normal'
+let responseMode: 'normal' | 'missingMetrics' | 'missingNullablePrices' | 'invalidNullablePrice' | 'emptyPayload' | 'businessFailure' | 'forbidden' | 'unauthorized' | 'abort' | 'returns' | 'netZero' | 'missingScope' = 'normal'
 
 try {
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -97,6 +97,16 @@ try {
     if (pathname.endsWith('/detail')) {
       const detailMetrics = responseMode === 'missingMetrics'
         ? { ...metrics, ReturnQuantity: undefined }
+        : responseMode === 'missingNullablePrices'
+          ? {
+            ...metrics,
+            OriginalPriceMin: undefined,
+            OriginalPriceMax: undefined,
+            DiscountPriceMin: undefined,
+            DiscountPriceMax: undefined,
+          }
+          : responseMode === 'invalidNullablePrice'
+            ? { ...metrics, OriginalPriceMin: 'not-a-number' }
         : responseMode === 'returns' ? { ...metrics, Quantity: -2, RegularQuantity: -1, DiscountQuantity: -1, ReturnQuantity: 2 }
         : responseMode === 'netZero' ? { ...metrics, Quantity: 0, RegularQuantity: 1, DiscountQuantity: -1, ReturnQuantity: 1 } : metrics
       return jsonResponse({
@@ -168,6 +178,20 @@ try {
     () => batchProductSalesApi.getDetail(detailRequest),
     '缺少或非法退货数量',
     '缺少关键指标不得回退为零',
+  )
+
+  responseMode = 'missingNullablePrices'
+  const omittedPriceDetail = await batchProductSalesApi.getDetail(detailRequest)
+  assert.equal(omittedPriceDetail.metrics.originalPriceMin, null, '省略的原价最小值必须按空价格范围处理')
+  assert.equal(omittedPriceDetail.metrics.originalPriceMax, null, '省略的原价最大值必须按空价格范围处理')
+  assert.equal(omittedPriceDetail.metrics.discountPriceMin, null, '省略的折扣价最小值必须按空价格范围处理')
+  assert.equal(omittedPriceDetail.metrics.discountPriceMax, null, '省略的折扣价最大值必须按空价格范围处理')
+
+  responseMode = 'invalidNullablePrice'
+  await assertRejects(
+    () => batchProductSalesApi.getDetail(detailRequest),
+    '缺少或非法原价最小值',
+    '可空价格字段存在但不是数值时仍必须拒绝',
   )
 
   responseMode = 'emptyPayload'
