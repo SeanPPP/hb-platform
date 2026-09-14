@@ -30,6 +30,7 @@
   },
   "routes": {
     "productQuery": "Product lookup",
+    "productInsights": "Product activity",
     "storeOrdering": "Store ordering",
     "cart": "Cart",
     "orders": "HB Orders",
