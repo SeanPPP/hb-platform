@@ -97,6 +97,64 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task FullRefreshCurrentDay_日期租约仍在运行时返回Skipped且不发布新快照()
+    {
+        var today = SalesStatisticsBusinessDate.Today();
+        await _localDb.Insertable(new ScheduledTaskLease
+        {
+            TaskType = SalesStatisticsAlignmentService.DailyFullRefreshLeaseTaskType,
+            ScopeKey = today.ToString("yyyy-MM-dd"),
+            Status = ScheduledTaskLeaseStatus.Running,
+            OwnerInstanceId = "other-instance",
+            LeaseToken = Guid.NewGuid().ToString("N"),
+            LeaseUntilUtc = DateTime.UtcNow.AddHours(1),
+            StartedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow,
+        }).ExecuteCommandAsync();
+        using var serviceProvider = CreateRollingRefreshServiceProvider();
+        var service = CreateService(serviceProvider.GetRequiredService<IServiceScopeFactory>());
+
+        var result = await service.FullRefreshCurrentDay(automatic: true, includeHistorical: false);
+
+        Assert.True(result.IsSkipped);
+        Assert.False(result.IsCompleted);
+        Assert.Empty(await _localDb.Queryable<SalesStatisticRefreshState>()
+            .Where(state => state.StatisticType == SalesStatisticType.RevenueReportPublished)
+            .ToListAsync());
+    }
+
+    [Fact]
+    public async Task UpsertStatisticStateAsync_失败时应保留最后一次已提交统计水位()
+    {
+        var targetDate = new DateTime(2026, 9, 14);
+        var lastPublishedAt = new DateTime(2026, 9, 14, 5, 30, 0, DateTimeKind.Utc);
+        await _localDb.Insertable(new SalesStatisticRefreshState
+        {
+            StatisticType = SalesStatisticType.StoreSales,
+            Date = targetDate,
+            Status = SalesStatisticRefreshStatus.Fresh,
+            LastAggregatedAtUtc = lastPublishedAt,
+            CompletedAtUtc = lastPublishedAt,
+        }).ExecuteCommandAsync();
+
+        await SalesStatisticsProductStoreDailyStateSlice.UpsertStatisticStateAsync(
+            CreateSqlSugarContext(_localDb),
+            SalesStatisticType.StoreSales,
+            targetDate,
+            SalesStatisticRefreshStatus.Failed,
+            null,
+            "刷新失败"
+        );
+
+        var persisted = await _localDb.Queryable<SalesStatisticRefreshState>()
+            .SingleAsync(row => row.StatisticType == SalesStatisticType.StoreSales && row.Date == targetDate);
+
+        Assert.Equal(SalesStatisticRefreshStatus.Failed, persisted.Status);
+        Assert.Equal(lastPublishedAt, persisted.LastAggregatedAtUtc);
+        Assert.Equal(lastPublishedAt, persisted.CompletedAtUtc);
+    }
+
+    [Fact]
     public async Task FullRefreshCurrentDay_自动当天模式即使夜间也不启动历史日()
     {
         var today = SalesStatisticsBusinessDate.Today();

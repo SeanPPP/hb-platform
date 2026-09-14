@@ -176,7 +176,11 @@ namespace BlazorApp.Api.Services
             return new DailyStatisticsAlignmentRecalculateResponseDto
             {
                 JobId = jobId,
-                Success = failedDates.Count == 0,
+                // 有日期被 guard/租约跳过时，补算并未完整完成，不能向后台日志或调用方
+                // 宣称 Success；这与实际失败区分在 SkippedDates 中。
+                Success = failedDates.Count == 0
+                    && skippedDates.Count == 0
+                    && processedDates.Count == targetDates.Count,
                 Message = BuildRecalculateMessage(processedDates.Count, skippedDates.Count, failedDates.Count),
                 ProcessedDates = processedDates.OrderBy(date => date).ToList(),
                 SkippedDates = skippedDates.OrderBy(date => date).ToList(),

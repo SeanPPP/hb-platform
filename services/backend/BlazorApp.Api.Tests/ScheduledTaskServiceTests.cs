@@ -209,6 +209,24 @@ public sealed class ScheduledTaskServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task LogTaskSkippedStrictAsync_跳过应持久化Skipped而非Success()
+    {
+        var taskLog = await _taskLogService.LogTaskStartAsync(
+            TaskType.UpdateCurrentHourStatistics,
+            new TaskParameters()
+        );
+
+        await _taskLogService.LogTaskSkippedStrictAsync(taskLog.Id, "日期租约仍在运行");
+
+        var persisted = await _db.Queryable<ScheduledTaskLog>().SingleAsync(item => item.Id == taskLog.Id);
+        Assert.Equal(BlazorApp.Shared.Models.HBweb.TaskStatus.Skipped, persisted.Status);
+        Assert.NotEqual(BlazorApp.Shared.Models.HBweb.TaskStatus.Success, persisted.Status);
+        Assert.False(persisted.CanRetry);
+        Assert.NotNull(persisted.CompletedAt);
+        Assert.Contains("日期租约", persisted.ErrorMessage);
+    }
+
+    [Fact]
     public async Task LogTaskSuccessStrictAsync_成功写入失败后可严格标记Failed()
     {
         var taskLog = await _taskLogService.LogTaskStartAsync(

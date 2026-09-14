@@ -62,6 +62,8 @@ namespace BlazorApp.Shared.Models
         public const string ProductStoreDaily = "ProductStoreDaily";
         public const string AustralianSupplierStoreSales = "AustralianSupplierStoreSales";
         public const string ChinaSupplierStoreSales = "ChinaSupplierStoreSales";
+        /// <summary>完整日统计已核验并可供报表读取的发布记录。</summary>
+        public const string RevenueReportPublished = "RevenueReportPublished";
 
         public static readonly string[] DailyAlignmentTypes =
         {
@@ -85,5 +87,29 @@ namespace BlazorApp.Shared.Models
         public const string Stale = "Stale";
         public const string Failed = "Failed";
         public const string ProvisionalFresh = "ProvisionalFresh";
+    }
+
+    /// <summary>
+    /// 当日全量统计的明确执行结果。跳过代表另一执行者仍持有日期租约，不能被记为成功。
+    /// </summary>
+    public sealed record SalesStatisticsRefreshExecutionResult(
+        SalesStatisticsRefreshExecutionStatus Status,
+        string? Message = null
+    )
+    {
+        public bool IsCompleted => Status == SalesStatisticsRefreshExecutionStatus.Completed;
+        public bool IsSkipped => Status == SalesStatisticsRefreshExecutionStatus.Skipped;
+
+        public static SalesStatisticsRefreshExecutionResult Completed() =>
+            new(SalesStatisticsRefreshExecutionStatus.Completed);
+
+        public static SalesStatisticsRefreshExecutionResult Skipped(string? message = null) =>
+            new(SalesStatisticsRefreshExecutionStatus.Skipped, message);
+    }
+
+    public enum SalesStatisticsRefreshExecutionStatus
+    {
+        Completed,
+        Skipped,
     }
 }

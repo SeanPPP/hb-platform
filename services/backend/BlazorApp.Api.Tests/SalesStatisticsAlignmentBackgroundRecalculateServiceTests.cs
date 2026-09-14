@@ -108,7 +108,7 @@ public sealed class SalesStatisticsAlignmentBackgroundRecalculateServiceTests : 
     }
 
     [Fact]
-    public async Task QueueAsync_后台补算部分失败_日志状态为Failed并包含失败日期()
+    public async Task QueueAsync_后台补算失败时清缓存并记录Failed()
     {
         var failedDate = new DateTime(2026, 7, 6);
         var alignmentService = CreateAlignmentServiceMock((_, _) => Task.FromResult(
@@ -132,6 +132,33 @@ public sealed class SalesStatisticsAlignmentBackgroundRecalculateServiceTests : 
         Assert.False(failedLog.CanRetry);
         Assert.Contains("已补算 0 天，失败 1 天", failedLog.ErrorMessage);
         Assert.Contains("2026-07-06", failedLog.ErrorMessage);
+        cacheWarmer.Verify(x => x.ClearCacheAsync(), Times.Once);
+    }
+
+    [Fact]
+    public async Task QueueAsync_后台补算部分完成且失败时清缓存并记录Failed()
+    {
+        var processedDate = new DateTime(2026, 7, 6);
+        var failedDate = processedDate.AddDays(1);
+        var alignmentService = CreateAlignmentServiceMock((_, _) => Task.FromResult(
+            new DailyStatisticsAlignmentRecalculateResponseDto
+            {
+                JobId = Guid.NewGuid(),
+                Success = false,
+                Message = "已补算 1 天，失败 1 天",
+                ProcessedDates = new List<DateTime> { processedDate },
+                FailedDates = new List<DateTime> { failedDate },
+            }
+        ));
+        var cacheWarmer = new Mock<ISalesDashboardCacheWarmer>();
+        cacheWarmer.Setup(x => x.ClearCacheAsync()).Returns(Task.CompletedTask);
+        using var provider = CreateServiceProvider(alignmentService.Object, cacheWarmer.Object);
+        var service = CreateService(provider);
+
+        var result = await service.QueueAsync(new[] { processedDate, failedDate }, 3);
+
+        var failedLog = await WaitForStatusAsync(result.JobId, TaskStatus.Failed);
+        Assert.Contains("失败 1 天", failedLog.ErrorMessage);
         cacheWarmer.Verify(x => x.ClearCacheAsync(), Times.Once);
     }
 

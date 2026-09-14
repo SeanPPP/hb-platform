@@ -114,6 +114,7 @@
     <Compile Include="ScheduledTaskRuntimeControlServiceTests.cs" />
     <Compile Include="SalesStatisticsAlignmentBackgroundRecalculateServiceTests.cs" />
     <Compile Include="SalesStatisticsAlignmentServiceTests.cs" />
+    <Compile Include="SalesStatisticsDateExecutionGuardSqlServerTests.cs" />
     <Compile Include="SalesStatisticsJobServiceTests.cs" />
     <Compile Include="HqPurchasePriceSyncGuardTests.cs" />
     <Compile Include="SalesCostBackfillTests.cs" />
