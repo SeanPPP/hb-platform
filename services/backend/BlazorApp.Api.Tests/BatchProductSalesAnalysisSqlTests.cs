@@ -1,3 +1,4 @@
+using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.React;
 using Xunit;
 
@@ -8,6 +9,28 @@ namespace BlazorApp.Api.Tests;
 /// </summary>
 public sealed class BatchProductSalesAnalysisSqlTests
 {
+    [Fact]
+    public void SourceVersion_支付或别名规则变动必须改变日版本()
+    {
+        var day = new DateTime(2026, 1, 2);
+        var orders = new Posm2025DailyTableSignature(1, day, day, "orders");
+        var details = new Posm2025DailyTableSignature(1, day, day, "details");
+        var returns = new Posm2025DailyTableSignature(0, null, null, "returns");
+        var first = new Posm2025DailySnapshotSignature(
+            day, orders, details, new Posm2025DailyTableSignature(1, day, day, "payment-15"), returns);
+        var changedPayment = first with
+        {
+            Payments = new Posm2025DailyTableSignature(1, day, day, "payment-16")
+        };
+
+        var current = BatchProductSalesDiscountSnapshotSourceReader.BuildSourceVersion(
+            first, null, "aliases-A");
+        Assert.NotEqual(current, BatchProductSalesDiscountSnapshotSourceReader.BuildSourceVersion(
+            changedPayment, null, "aliases-A"));
+        Assert.NotEqual(current, BatchProductSalesDiscountSnapshotSourceReader.BuildSourceVersion(
+            first, null, "aliases-B"));
+    }
+
     [Fact]
     public void ToAggregateRow_同类来源行在SQL结果合并后保持有符号净量()
     {
@@ -55,6 +78,63 @@ public sealed class BatchProductSalesAnalysisSqlTests
         };
 
         Assert.Equal("partial", merged.Metrics.DiscountStatus);
+    }
+
+    [Fact]
+    public void CanonicalizeSupplierGroups_同供应商跨来源在供应商组末尾四舍五入且类别金额守恒()
+    {
+        var day = new DateTime(2025, 6, 11);
+
+        var rows = BatchProductSalesAnalysisFactReader.CanonicalizeSupplierGroups(
+        [
+            new() { Date = day, BranchCode = "S1", ProductCode = "P1", SupplierCode = "SUP-1", DiscountKind = 0, Quantity = 1m, SalesAmount = 1.00004m },
+            new() { Date = day, BranchCode = "S1", ProductCode = "P1", SupplierCode = "SUP-1", DiscountKind = 1, Quantity = 1m, SalesAmount = 1.00004m },
+        ]);
+
+        Assert.Equal(2.0001m, rows.Sum(row => row.SalesAmount));
+        Assert.Equal(2m, rows.Sum(row => row.Quantity));
+        // 类别各自四舍五入后，由稳定残差承载者补回 canonical supplier 总额。
+        Assert.Equal(1.0001m, Assert.Single(rows, row => row.RegularQuantity != 0m).SalesAmount);
+        Assert.Equal(1.0000m, Assert.Single(rows, row => row.DiscountQuantity != 0m).SalesAmount);
+    }
+
+    [Fact]
+    public void CanonicalizeSupplierGroups_不同供应商必须分别四舍五入()
+    {
+        var day = new DateTime(2025, 6, 11);
+
+        var rows = BatchProductSalesAnalysisFactReader.CanonicalizeSupplierGroups(
+        [
+            new() { Date = day, BranchCode = "S1", ProductCode = "P1", SupplierCode = "SUP-1", DiscountKind = 0, Quantity = 1m, SalesAmount = 0.00004m },
+            new() { Date = day, BranchCode = "S1", ProductCode = "P1", SupplierCode = "SUP-2", DiscountKind = 0, Quantity = 1m, SalesAmount = 0.00004m },
+        ]);
+
+        Assert.Equal(2m, Assert.Single(rows).Quantity);
+        Assert.Equal(0m, Assert.Single(rows).SalesAmount);
+    }
+
+    [Fact]
+    public void CanonicalizeSupplierGroups_供应商组数量截断残差必须标为unknown()
+    {
+        var day = new DateTime(2025, 6, 11);
+
+        var rows = BatchProductSalesAnalysisFactReader.CanonicalizeSupplierGroups(
+        [new() { Date = day, BranchCode = "S1", ProductCode = "P1", SupplierCode = "SUP-1", DiscountKind = 0, Quantity = 1.5m, SalesAmount = 10m }]);
+
+        var regular = Assert.Single(rows, row => row.RegularQuantity != 0m);
+        var unknown = Assert.Single(rows, row => row.UnknownQuantity != 0m);
+        Assert.Equal(1.5m, regular.RegularQuantity);
+        Assert.Equal(-0.5m, unknown.UnknownQuantity);
+        Assert.Equal(1, unknown.UnknownRowCount);
+        Assert.Equal(1m, rows.Sum(row => row.Quantity));
+        Assert.Equal("partial", rows.Aggregate(new BatchProductSalesAggregateRow(), (sum, row) => new BatchProductSalesAggregateRow
+        {
+            Quantity = sum.Quantity + row.Quantity,
+            RegularQuantity = sum.RegularQuantity + row.RegularQuantity,
+            DiscountQuantity = sum.DiscountQuantity + row.DiscountQuantity,
+            UnknownQuantity = sum.UnknownQuantity + row.UnknownQuantity,
+            UnknownRowCount = sum.UnknownRowCount + row.UnknownRowCount,
+        }).Metrics.DiscountStatus);
     }
 
     [Theory]

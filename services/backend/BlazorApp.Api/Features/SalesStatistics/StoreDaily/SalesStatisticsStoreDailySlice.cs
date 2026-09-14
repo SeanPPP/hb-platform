@@ -37,9 +37,9 @@ namespace BlazorApp.Api.Services
         {
             _logger.LogInformation("开始更新分店统计数据: {Date}", targetDate);
 
-            if (targetDate.Year == 2025)
+            if (SalesStatisticsHBSalesHistoryWindow.Includes(targetDate))
             {
-                // 2025 的分店与商品统计来自双来源，必须在同一事务内同时替换。
+                // HBSales 历史窗口内的分店与商品统计来自双来源，必须在同一事务内同时替换。
                 await _productRefresh.Update2025StoreAndProductStatisticsAtomically(
                     _context,
                     _posmContext,
@@ -53,7 +53,7 @@ namespace BlazorApp.Api.Services
             var statisticsList = await _productSupport.BuildStoreStatisticsAsync(
                 _context,
                 _posmContext,
-                GetHBSalesContextFor2025(targetDate),
+                GetHBSalesContextForVerifiedHistory(targetDate),
                 targetDate,
                 null
             );
@@ -232,7 +232,7 @@ namespace BlazorApp.Api.Services
                 leaseDuration,
                 "商品分店每日滚动补算"
             );
-            if (targetDate.Year == 2025)
+            if (SalesStatisticsHBSalesHistoryWindow.Includes(targetDate))
             {
                 // 滚动补算同样不能让商品表单独 Running/Failed，原子入口会成对维护状态。
                 await _productRefresh.Update2025StoreAndProductStatisticsAtomically(
@@ -282,7 +282,7 @@ namespace BlazorApp.Api.Services
         }
         catch (Exception ex)
         {
-            if (targetDate.Year != 2025)
+            if (!SalesStatisticsHBSalesHistoryWindow.Includes(targetDate))
             {
                 await SalesStatisticsProductStoreDailyStateSlice.UpsertStatisticStateAsync(
                     context,
@@ -352,12 +352,12 @@ namespace BlazorApp.Api.Services
                 targetBranchCodes.Any() ? string.Join(", ", targetBranchCodes) : "All"
             );
 
-            if (targetDate.Year == 2025)
+            if (SalesStatisticsHBSalesHistoryWindow.Includes(targetDate))
             {
                 if (targetBranchCodes.Any())
                 {
                     throw new InvalidOperationException(
-                        "2025 年不能仅刷新指定分店：该操作会破坏 ProductStoreDaily 与 StoreSales 的双表一致性，请执行全分店刷新"
+                        "HBSales 历史窗口内不能仅刷新指定分店：该操作会破坏 ProductStoreDaily 与 StoreSales 的双表一致性，请执行全分店刷新"
                     );
                 }
 
@@ -375,7 +375,7 @@ namespace BlazorApp.Api.Services
             var statisticsList = await _productSupport.BuildStoreStatisticsAsync(
                 _context,
                 _posmContext,
-                GetHBSalesContextFor2025(targetDate),
+                GetHBSalesContextForVerifiedHistory(targetDate),
                 targetDate,
                 branchCodes
             );

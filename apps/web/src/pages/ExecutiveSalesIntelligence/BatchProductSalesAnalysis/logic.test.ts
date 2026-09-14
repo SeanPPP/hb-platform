@@ -76,19 +76,19 @@ assert.equal(getBatchProductSalesClassifiedQuantity(metrics({ regularQuantity: 4
 assert.equal(getBatchProductSalesClassifiedQuantity(metrics({ discountStatus: 'pending', regularQuantity: 0 }), 'regularQuantity'), null, '待统计不得把正价缺失显示成零')
 assert.equal(getBatchProductSalesClassifiedQuantity(metrics({ discountStatus: 'unknown', regularQuantity: 0 }), 'regularQuantity', true), null, '终态未知不得把正价缺失显示成零')
 assert.equal(getBatchProductSalesClassifiedQuantity(metrics({ discountStatus: 'unknown', unknownQuantity: 6 }), 'unknownQuantity', true), 6, '终态未知仍应显示可靠的未知数量')
-assert.equal(getBatchProductSalesClassifiedQuantity(metrics({ discountStatus: 'unknown', regularQuantity: 0 }), 'regularQuantity'), 0, 'Fresh 快照中的真实未知价格成交仍保留已有分类数值')
+assert.equal(getBatchProductSalesClassifiedQuantity(metrics({ discountStatus: 'unknown', regularQuantity: 0 }), 'regularQuantity'), null, '未知分类不得把正价缺失显示成零')
 assert.equal(getBatchProductSalesClassifiedQuantity(metrics({ discountStatus: 'partial', regularQuantity: 4 }), 'regularQuantity'), 4, '部分分类仍应显示已有证据')
 
-for (const status of ['Queued', 'Running', 'Pending', 'queued', 'RUNNING']) {
+for (const status of ['Queued', 'Running', 'Pending', 'Backfilling', 'Refreshing', 'Partial', 'OutOfSync', 'Unavailable', 'queued', 'RUNNING']) {
   assert.equal(shouldRefreshBatchProductSalesDiscountStatistics(status), true, `${status} 应继续轮询`)
   assert.equal(hasBatchProductSalesDiscountStatisticsNotice(status), true, `${status} 应显示状态提示`)
 }
-for (const status of ['Fresh', 'Failed', 'OutOfSync', 'Superseded', 'Unavailable', undefined]) {
+for (const status of ['Fresh', 'Failed', 'Superseded', undefined]) {
   assert.equal(shouldRefreshBatchProductSalesDiscountStatistics(status), false, `${status ?? 'undefined'} 不应继续轮询`)
 }
 assert.equal(hasBatchProductSalesDiscountStatisticsNotice('Fresh'), false, 'Fresh 不应显示折扣统计提示')
 assert.equal(hasBatchProductSalesDiscountStatisticsNotice(undefined), false, '缺少状态时不应误报折扣统计异常')
-for (const status of ['Failed', 'OutOfSync', 'Superseded', 'Unavailable']) {
+for (const status of ['Partial', 'Failed', 'OutOfSync', 'Superseded', 'Unavailable']) {
   assert.equal(hasBatchProductSalesDiscountStatisticsNotice(status), true, `${status} 应显示终态警告`)
 }
 

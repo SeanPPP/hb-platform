@@ -10,7 +10,7 @@ namespace BlazorApp.Api.Tests;
 
 /// <summary>仅针对 BATCH_SALES_SQLSERVER_TEST_CONNECTION 指向的无数据卷隔离 SQL Server 运行。</summary>
 [Trait("Category", "SQL")]
-public sealed class BatchProductSalesAnalysisSqlServerIntegrationTests : IAsyncLifetime
+public sealed partial class BatchProductSalesAnalysisSqlServerIntegrationTests : IAsyncLifetime
 {
     private const string ConnectionEnvironmentVariable = "BATCH_SALES_SQLSERVER_TEST_CONNECTION";
     private readonly string? _master = Environment.GetEnvironmentVariable(ConnectionEnvironmentVariable);
@@ -152,6 +152,79 @@ public sealed class BatchProductSalesAnalysisSqlServerIntegrationTests : IAsyncL
     }
 
     [BatchSalesSqlServerFact]
+    public async Task ReadAsync_POSM付款分摊保留超过六位的累计精度再按供应商落四位()
+    {
+        var day = new DateTime(2026, 6, 11);
+        await SeedProductsAsync(("P1", "001", null));
+        await _posm!.Ado.ExecuteCommandAsync($"ALTER TABLE {Quote(_posm.EntityMaintenance.GetTableName(typeof(PaymentDetail)))} ALTER COLUMN [Amount] decimal(19,4) NULL");
+        await _posm.Insertable(new SalesOrder { OrderGuid = "O-PRECISION", OrderTime = day, BranchCode = "S1", Status = 1 }).ExecuteCommandAsync();
+        await _posm.Insertable(new PaymentDetail { PaymentGuid = "PAY-PRECISION", OrderGuid = "O-PRECISION", Amount = 13.0026m }).ExecuteCommandAsync();
+        await _posm.Insertable(Enumerable.Range(1, 1000).Select(index => new SalesOrderDetail
+        {
+            OrderDetailGuid = $"D-PRECISION-{index}", OrderGuid = "O-PRECISION", ProductCode = "P1", SupplierCode = "SUP-1",
+            Quantity = 1, Price = 1m, Subtotal = 1m, ActualAmount = 1m, DiscountAmount = 0m,
+        }).ToList()).ExecuteCommandAsync();
+
+        var row = Assert.Single(await ReadAsync("P1", day, "S1"));
+        Assert.Equal(1000m, row.Quantity);
+        Assert.Equal(1000m, row.RegularQuantity);
+        // 每条为 0.0130026；若 SQL 除法压到六位会得到 13.0030，而非 canonical 的 13.0026。
+        Assert.Equal(13.0026m, row.SalesAmount);
+    }
+
+    [BatchSalesSqlServerFact]
+    public async Task ReadAsync_POSM前导空格映射不能改变unknown供应商分组()
+    {
+        var day = new DateTime(2026, 6, 12);
+        await SeedProductsAsync(("P1", "001", null));
+        await _posm!.Ado.ExecuteCommandAsync($"ALTER TABLE {Quote(_posm.EntityMaintenance.GetTableName(typeof(PaymentDetail)))} ALTER COLUMN [Amount] decimal(19,6) NULL");
+        await _posm.Insertable(new PosmProductSupplierMapping { ProductCode = " P1", LocalSupplierCode = "SUP-MAPPED" }).ExecuteCommandAsync();
+        await _posm.Insertable(new SalesOrder[]
+        {
+            new() { OrderGuid = "O-LEADING-MAP", OrderTime = day, BranchCode = "S1", Status = 1 },
+            new() { OrderGuid = "O-UNKNOWN", OrderTime = day, BranchCode = "S1", Status = 1 },
+        }).ExecuteCommandAsync();
+        await _posm.Ado.ExecuteCommandAsync($"INSERT INTO {Quote(_posm.EntityMaintenance.GetTableName(typeof(PaymentDetail)))} ([PaymentGuid], [OrderGuid], [Amount]) VALUES ('PAY-LEADING-MAP', 'O-LEADING-MAP', CAST(0.00004 AS decimal(19,6))), ('PAY-UNKNOWN', 'O-UNKNOWN', CAST(0.00004 AS decimal(19,6)))");
+        await _posm.Insertable(new SalesOrderDetail[]
+        {
+            new() { OrderDetailGuid = "D-LEADING-MAP", OrderGuid = "O-LEADING-MAP", ProductCode = "P1", SupplierCode = "", Quantity = 1, Price = 1m, Subtotal = 1m, ActualAmount = 1m, DiscountAmount = 0m },
+            new() { OrderDetailGuid = "D-UNKNOWN", OrderGuid = "O-UNKNOWN", ProductCode = "P1", SupplierCode = "UNKNOWN", Quantity = 1, Price = 1m, Subtotal = 1m, ActualAmount = 1m, DiscountAmount = 0m },
+        }).ExecuteCommandAsync();
+
+        var row = Assert.Single(await ReadAsync("P1", day, "S1"));
+        Assert.Equal(2m, row.Quantity);
+        // 空 supplier 必须仍与明确 UNKNOWN 同组。若 trim 了 mapping key，会拆成两个组且各自落为 0。
+        Assert.Equal(0.0001m, row.SalesAmount);
+    }
+
+    [BatchSalesSqlServerFact]
+    public async Task ReadAsync_POSM映射供应商与HBS同供应商必须共同落四位()
+    {
+        var day = new DateTime(2025, 6, 11);
+        await SeedProductsAsync(("P1", "001", null));
+        await _posm!.Ado.ExecuteCommandAsync($"ALTER TABLE {Quote(_posm.EntityMaintenance.GetTableName(typeof(PaymentDetail)))} ALTER COLUMN [Amount] decimal(19,6) NULL");
+        await _hbs!.Ado.ExecuteCommandAsync($"ALTER TABLE {Quote(_hbs.EntityMaintenance.GetTableName(typeof(SalesOrderDetailRecord)))} ALTER COLUMN [B合计金额] decimal(19,6) NULL");
+        await _hbs.Ado.ExecuteCommandAsync($"ALTER TABLE {Quote(_hbs.EntityMaintenance.GetTableName(typeof(SalesOrderDetailRecord)))} ALTER COLUMN [B原价合计金额] decimal(19,6) NULL");
+        await _posm.Insertable(new PosmProductSupplierMapping { ProductCode = "P1", LocalSupplierCode = "SUP-1" }).ExecuteCommandAsync();
+        await _posm.Insertable(new SalesOrder { OrderGuid = "O-MAPPED", OrderTime = day, BranchCode = "S1", Status = 1 }).ExecuteCommandAsync();
+        // 模型默认金额列为两位；这里直接写入隔离表的六位源值，验证事实读取不会在来源侧截断。
+        await _posm.Ado.ExecuteCommandAsync($"INSERT INTO {Quote(_posm.EntityMaintenance.GetTableName(typeof(PaymentDetail)))} ([PaymentGuid], [OrderGuid], [Amount]) VALUES ('PAY-MAPPED', 'O-MAPPED', CAST(0.00004 AS decimal(19,6)))");
+        await _posm.Insertable(new SalesOrderDetail
+        {
+            OrderDetailGuid = "D-MAPPED", OrderGuid = "O-MAPPED", ProductCode = "P1", SupplierCode = "",
+            Quantity = 1, Price = 1m, Subtotal = 1m, ActualAmount = 1m, DiscountAmount = 0m,
+        }).ExecuteCommandAsync();
+        await _hbs.Insertable(new SalesOrderMain { ID = 1, B销售单号 = "H-MAPPED", B单据类型 = "1", B结账日期 = day }).ExecuteCommandAsync();
+        await _hbs.Ado.ExecuteCommandAsync($"INSERT INTO {Quote(_hbs.EntityMaintenance.GetTableName(typeof(SalesOrderDetailRecord)))} ([ID], [B销售单号], [B分店代码], [B结账日期], [B产品编号], [B供应商ID], [B数量], [B单价], [B原价合计金额], [B合计金额], [B折扣率]) VALUES (1, 'H-MAPPED', 'S1', '{day:yyyy-MM-dd}', 'P1', 'SUP-1', 1, CAST(0.00004 AS decimal(19,6)), CAST(0.00004 AS decimal(19,6)), CAST(0.00004 AS decimal(19,6)), 0)");
+
+        var row = Assert.Single(await ReadAsync("P1", day, "S1"));
+        Assert.Equal(2m, row.Quantity);
+        Assert.Equal(2m, row.RegularQuantity);
+        // 两来源各 0.00004；必须依 SupplierCode 合并成 0.00008 后统一落为 0.0001，不能先分别 round。
+        Assert.Equal(0.0001m, row.SalesAmount);
+    }
+
+    [BatchSalesSqlServerFact]
     public async Task ReadAsync_HBSales原单退货别名消歧与错误关联保持真实分类()
     {
         var day = new DateTime(2025, 6, 10);
@@ -195,7 +268,8 @@ public sealed class BatchProductSalesAnalysisSqlServerIntegrationTests : IAsyncL
     {
         // 测试表结构必须由与生产相同的 SqlSugar 模型生成，避免手写最小表遗漏字段或表名。
         _catalog!.CodeFirst.InitTables(typeof(Product), typeof(ProductSetCode), typeof(StoreMultiCodeProduct));
-        _posm!.CodeFirst.InitTables(typeof(SalesOrder), typeof(SalesOrderDetail), typeof(PaymentDetail), typeof(SalesReturnRecord), typeof(POSM_设备注册信息表));
+        _posm!.CodeFirst.InitTables(typeof(SalesOrder), typeof(SalesOrderDetail), typeof(PaymentDetail), typeof(SalesReturnRecord),
+            typeof(POSM_设备注册信息表), typeof(PosmProductSupplierMapping));
         _hbs!.CodeFirst.InitTables(typeof(SalesOrderMain), typeof(SalesOrderDetailRecord));
         await Task.CompletedTask;
     }

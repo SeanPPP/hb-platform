@@ -206,8 +206,8 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
   const currentDaily = detail && appliedScope ? fillKnownDays(detail.daily, appliedScope, !isPartial(detail.warnings)) : []
   const dailyDetailRows = currentDaily.filter(hasBatchProductSalesDailyActivity)
   const branchDaily = selectedBranch && appliedScope && detail ? fillKnownDays(selectedBranch.daily, appliedScope, !isPartial(detail.warnings)) : []
-  const classificationUnavailable = !!detail && detail.metrics.discountStatus !== 'pending'
-    && !!detail.discountStatisticStatus && detail.discountStatisticStatus.toLowerCase() !== 'fresh'
+  // 部分回填时已完成日仍有可靠分类；未知日由自身 discountStatus 显示为破折号。
+  const classificationUnavailable = !!detail && ['outofsync', 'unavailable', 'superseded'].includes(detail.discountStatisticStatus?.toLowerCase() ?? '')
   const exportClassifiedQuantity = (metrics: BatchSalesMetrics, field: 'regularQuantity' | 'discountQuantity' | 'unknownQuantity') => (
     getBatchProductSalesClassifiedQuantity(metrics, field, classificationUnavailable) ?? ''
   )
@@ -255,7 +255,7 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
       {dirty ? <Alert type="info" showIcon message={t('batchProductSalesAnalysis.pendingQuery')} /> : null}
       {appliedScope ? <div className={styles.appliedScope}>{t('batchProductSalesAnalysis.appliedScope', { startDate: appliedScope.startDate, endDate: appliedScope.endDate, stores: appliedStoreText })}</div> : null}
       {!statisticsPending && queryResult?.warnings.length ? <details className={styles.hint}><summary>{t('batchProductSalesAnalysis.dataNotes')}</summary>{queryResult.warnings.map((warning) => <p key={warning}>{warning}</p>)}</details> : null}
-      {hasBatchProductSalesDiscountStatisticsNotice(detail?.discountStatisticStatus) ? <Alert type={detail?.metrics.discountStatus === 'pending' ? 'info' : 'warning'} showIcon message={t(`batchProductSalesAnalysis.discountStates.${detail?.discountStatisticStatus ?? 'Unavailable'}`)} action={<Button size="small" onClick={() => selectedProductCode && appliedScope && loadDetail(selectedProductCode, appliedScope, true)}>{t('batchProductSalesAnalysis.refreshStatus')}</Button>} /> : null}
+      {hasBatchProductSalesDiscountStatisticsNotice(detail?.discountStatisticStatus) ? <Alert type={detail?.metrics.discountStatus === 'pending' || detail?.discountStatisticStatus === 'Refreshing' ? 'info' : 'warning'} showIcon message={t(`batchProductSalesAnalysis.discountStates.${detail?.discountStatisticStatus ?? 'Unavailable'}`)} action={<Button size="small" onClick={() => selectedProductCode && appliedScope && loadDetail(selectedProductCode, appliedScope, true)}>{t('batchProductSalesAnalysis.refreshStatus')}</Button>} /> : null}
       <main className={styles.layout}>
         <aside className={`${styles.column} ${styles.leftColumn}`}>
           <section className={`${styles.panel} ${styles.productPanel}`}><header className={styles.panelHeader}><h2>{t('batchProductSalesAnalysis.productList', { count: queryResult?.products.length ?? 0 })}</h2>{queryResult && !statisticsPending ? <span className={styles.panelMeta}>{t('batchProductSalesAnalysis.totalQuantity', { value: number(queryResult.products.reduce((sum, product) => sum + product.quantity, 0)) })}</span> : null}</header>

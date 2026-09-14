@@ -708,6 +708,36 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task UpdateProductStoreDailyStatistics_2024已验证HBSales日应以双来源原子链写入Fresh()
+    {
+        var targetDate = new DateTime(2024, 9, 14);
+        var modifiedAt = targetDate.AddHours(11);
+        await SeedHBSalesAsync(914, targetDate, "HB-P-2024", "1004", "200", 2m, 30m, "1", modifiedAt);
+
+        await CreateService().UpdateProductStoreDailyStatistics(targetDate);
+
+        var product = await _localDb.Queryable<ProductStoreDailySalesStatistic>()
+            .Where(row => row.Date == targetDate && row.BranchCode == "1004" && row.ProductCode == "HB-P-2024")
+            .FirstAsync();
+        var store = await _localDb.Queryable<StoreSalesStatistic>()
+            .Where(row => row.Date == targetDate && row.BranchCode == "1004")
+            .FirstAsync();
+        var states = await _localDb.Queryable<SalesStatisticRefreshState>()
+            .Where(row => row.Date == targetDate)
+            .ToListAsync();
+
+        Assert.NotNull(product);
+        Assert.NotNull(store);
+        Assert.Equal(30m, product!.TotalAmount);
+        Assert.Equal(modifiedAt, product.LastSourceUploadTime);
+        Assert.Equal(30m, store!.TotalAmount);
+        Assert.Contains(states, row => row.StatisticType == SalesStatisticType.ProductStoreDaily
+            && row.Status == SalesStatisticRefreshStatus.Fresh);
+        Assert.Contains(states, row => row.StatisticType == SalesStatisticType.StoreSales
+            && row.Status == SalesStatisticRefreshStatus.Fresh);
+    }
+
+    [Fact]
     public async Task UpdateProductStoreDailyStatistics_2025HBSales类型2应排除()
     {
         var targetDate = new DateTime(2025, 4, 2);
@@ -1426,6 +1456,54 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
     public async Task UpdateStoreStatistics_2025指定分店应拒绝避免破坏双表一致性()
     {
         var requestDate = new DateTime(2025, 4, 7, 16, 30, 0);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            CreateService().UpdateStoreStatistics(requestDate, new List<string> { "1004" })
+        );
+
+        Assert.Contains("不能仅刷新指定分店", error.Message);
+        Assert.Contains("双表一致性", error.Message);
+    }
+
+    [Fact]
+    public async Task UpdateStoreStatistics_2024已验证HBSales日应全分店原子发布()
+    {
+        var requestDate = new DateTime(2024, 9, 14, 16, 30, 0);
+        var targetDate = requestDate.Date;
+        await SeedStoreSalesStatisticAsync(targetDate, "1004", 99m, 9);
+        await _localDb.Insertable(new ProductStoreDailySalesStatistic
+        {
+            Date = targetDate,
+            BranchCode = "1004",
+            SupplierCode = "200",
+            ProductCode = "OLD-PRODUCT",
+            TotalQuantity = 9,
+            TotalAmount = 99m,
+            OrderCount = 1,
+        }).ExecuteCommandAsync();
+        await SeedHBSalesAsync(9142, targetDate, "HB-P-STORE-ATOMIC-2024", "1004", "200", 2m, 30m, "1");
+
+        await CreateService().UpdateStoreStatistics(requestDate);
+
+        var store = await _localDb.Queryable<StoreSalesStatistic>()
+            .Where(row => row.Date == targetDate && row.BranchCode == "1004")
+            .FirstAsync();
+        var product = await _localDb.Queryable<ProductStoreDailySalesStatistic>()
+            .Where(row => row.Date == targetDate && row.ProductCode == "HB-P-STORE-ATOMIC-2024")
+            .FirstAsync();
+        var oldProductCount = await _localDb.Queryable<ProductStoreDailySalesStatistic>()
+            .Where(row => row.Date == targetDate && row.ProductCode == "OLD-PRODUCT")
+            .CountAsync();
+
+        Assert.Equal(30m, store!.TotalAmount);
+        Assert.Equal(30m, product!.TotalAmount);
+        Assert.Equal(0, oldProductCount);
+    }
+
+    [Fact]
+    public async Task UpdateStoreStatistics_2024已验证HBSales日指定分店应拒绝避免破坏双表一致性()
+    {
+        var requestDate = new DateTime(2024, 9, 14, 16, 30, 0);
 
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             CreateService().UpdateStoreStatistics(requestDate, new List<string> { "1004" })
@@ -2404,6 +2482,41 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
         Assert.NotNull(newProduct);
         Assert.Equal(20m, newStore!.TotalAmount);
         Assert.Equal(20m, newProduct!.TotalAmount);
+    }
+
+    [Fact]
+    public async Task ExecuteQueuedDateAsync_2024已验证HBSales日应走双来源原子链()
+    {
+        var targetDate = new DateTime(2024, 9, 14);
+        var jobId = Guid.NewGuid();
+        await SeedRefreshStateAsync(targetDate, SalesStatisticRefreshStatus.Running, jobId: jobId);
+        await SeedHBSalesAsync(9141, targetDate, "P-QUEUE-2024", "S1", "HB-2024", 2m, 20m, "1");
+
+        await CreateService().ExecuteQueuedDateAsync(
+            targetDate,
+            jobId,
+            () => Task.CompletedTask,
+            CancellationToken.None
+        );
+
+        var product = await _localDb.Queryable<ProductStoreDailySalesStatistic>()
+            .Where(row => row.Date == targetDate && row.ProductCode == "P-QUEUE-2024")
+            .FirstAsync();
+        var store = await _localDb.Queryable<StoreSalesStatistic>()
+            .Where(row => row.Date == targetDate && row.BranchCode == "S1")
+            .FirstAsync();
+        var states = await _localDb.Queryable<SalesStatisticRefreshState>()
+            .Where(row => row.Date == targetDate)
+            .ToListAsync();
+
+        Assert.NotNull(product);
+        Assert.NotNull(store);
+        Assert.Equal(20m, product!.TotalAmount);
+        Assert.Equal(20m, store!.TotalAmount);
+        Assert.Contains(states, row => row.StatisticType == SalesStatisticType.ProductStoreDaily
+            && row.Status == SalesStatisticRefreshStatus.Fresh);
+        Assert.Contains(states, row => row.StatisticType == SalesStatisticType.StoreSales
+            && row.Status == SalesStatisticRefreshStatus.Fresh);
     }
 
     [Fact]

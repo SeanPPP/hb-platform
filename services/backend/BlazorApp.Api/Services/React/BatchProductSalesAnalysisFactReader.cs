@@ -1,6 +1,7 @@
 using System.Data;
 using System.Data.Common;
 using System.Text.Json;
+using BlazorApp.Api.Services;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HBSalesRecord;
@@ -35,7 +36,8 @@ internal sealed class BatchProductSalesAnalysisFactReader
         DateTime startDate,
         DateTime endDate,
         IReadOnlyCollection<string> storeCodes,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyList<BatchProductSalesHBSalesAlias>? preparedHbsAliases = null)
     {
         var products = Normalize(productCodes);
         var stores = Normalize(storeCodes);
@@ -48,19 +50,19 @@ internal sealed class BatchProductSalesAnalysisFactReader
         var endExclusive = endDate.Date.AddDays(1);
         cancellationToken.ThrowIfCancellationRequested();
         var posmTask = ReadPosmAsync(products, stores, startDate.Date, endExclusive, cancellationToken);
-        var hbTask = startDate.Year <= 2025 && endDate.Year >= 2025
-            ? ReadHBSalesAsync(products, stores, Max(startDate.Date, new DateTime(2025, 1, 1)),
-                Min(endDate.Date, new DateTime(2025, 12, 31)).AddDays(1), cancellationToken)
+        // HBSales 的可用范围并不等同于自然年份。与 canonical 统计使用同一个已核验历史窗口，
+        // 使 2024-09-14 起的真实历史进入事实，同时不把 2026 误接入旧来源。
+        var hbStart = Max(startDate.Date, SalesStatisticsHBSalesHistoryWindow.StartDate);
+        var hbEndExclusive = Min(endExclusive, SalesStatisticsHBSalesHistoryWindow.EndExclusive);
+        var hbTask = hbStart < hbEndExclusive
+            ? ReadHBSalesAsync(products, stores, hbStart, hbEndExclusive, cancellationToken, preparedHbsAliases)
             : Task.FromResult(new List<SqlAggregateRow>());
         await Task.WhenAll(posmTask, hbTask);
         cancellationToken.ThrowIfCancellationRequested();
 
-        // 两个数据库不能 UNION；这里只合并已经在各自 SQL 端聚合的至多日期×门店×商品×类别行。
-        return posmTask.Result.Concat(hbTask.Result)
-            .GroupBy(row => new { row.Date, BranchCode = row.BranchCode.ToUpperInvariant(), ProductCode = row.ProductCode.ToUpperInvariant(), row.DiscountKind })
-            .Select(group => ToAggregateRow(group.Key.Date, group.Key.BranchCode, group.Key.ProductCode, group.Key.DiscountKind, group))
-            .OrderBy(row => row.Date).ThenBy(row => row.BranchCode, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(row => row.ProductCode, StringComparer.OrdinalIgnoreCase).ToList();
+        // 两个数据库不能 UNION。先按 canonical 的日期/分店/供应商/商品粒度合并两个来源并落为四位，
+        // 再合并为页面需要的折扣类别；不能让 POSM 与 HBSales 分别 round 后改变日统计金额。
+        return CanonicalizeSupplierGroups(posmTask.Result.Concat(hbTask.Result));
     }
 
     private async Task<List<SqlAggregateRow>> ReadPosmAsync(
@@ -68,58 +70,103 @@ internal sealed class BatchProductSalesAnalysisFactReader
         CancellationToken cancellationToken)
     {
         const string sql = """
-WITH ProductScope AS (SELECT [value] AS ProductCode FROM OPENJSON(@products)),
-StoreScope AS (SELECT [value] AS BranchCode FROM OPENJSON(@stores)),
-DeviceBranch AS (
+SET NOCOUNT ON;
+
+-- 全日快照的 ProductScope 可能有数千项。先物化范围和来源订单，避免 CTE 被优化器反复展开后
+-- 对 OPENJSON 与成交明细作错误的基数估计；下游仍只在 SQL Server 内聚合。
+-- 商品主数据及快照键均限定为 nvarchar(50)。OPENJSON 的 value 是 nvarchar(max)，
+-- 需在物化时收窄，否则 SQL Server 不能为范围表创建索引。
+SELECT DISTINCT CONVERT(nvarchar(50), LTRIM(RTRIM([value]))) AS ProductCode INTO #ProductScope FROM OPENJSON(@products);
+CREATE UNIQUE CLUSTERED INDEX IX_ProductScope ON #ProductScope(ProductCode);
+SELECT DISTINCT CONVERT(nvarchar(50), LTRIM(RTRIM([value]))) AS BranchCode INTO #StoreScope FROM OPENJSON(@stores);
+CREATE UNIQUE CLUSTERED INDEX IX_StoreScope ON #StoreScope(BranchCode);
+
+SELECT DeviceCode, BranchCode INTO #DeviceBranch FROM (
+    -- 与 ProductStoreDaily 的 C# 分组一致：取同设备第一条非空分店，不能用 MAX 改变历史归属。
     SELECT UPPER(LTRIM(RTRIM([系统设备编号]))) AS DeviceCode,
-           MAX(NULLIF(LTRIM(RTRIM([分店代码])), '')) AS BranchCode
+           LTRIM(RTRIM([分店代码])) AS BranchCode,
+           ROW_NUMBER() OVER (
+               PARTITION BY UPPER(LTRIM(RTRIM([系统设备编号])))
+               ORDER BY [ID]
+           ) AS RowNumber
     FROM [POSM_设备注册信息表]
     WHERE [系统设备编号] IS NOT NULL
-    GROUP BY UPPER(LTRIM(RTRIM([系统设备编号])))
-),
-EligibleOrders AS (
-    SELECT o.[OrderGuid], o.[OrderTime], o.[BranchCode], o.[DeviceCode]
+      AND NULLIF(LTRIM(RTRIM([分店代码])), '') IS NOT NULL
+) mapped WHERE RowNumber = 1;
+CREATE UNIQUE CLUSTERED INDEX IX_DeviceBranch ON #DeviceBranch(DeviceCode);
+
+SELECT o.[OrderGuid], o.[OrderTime],
+       COALESCE(NULLIF(LTRIM(RTRIM(o.[BranchCode])), ''), db.BranchCode) AS BranchCode,
+       o.[DeviceCode]
+INTO #EligibleOrders
     FROM [sales_order] o
-    LEFT JOIN DeviceBranch db ON db.DeviceCode = UPPER(LTRIM(RTRIM(o.[DeviceCode])))
-    INNER JOIN StoreScope ss ON ss.BranchCode = COALESCE(NULLIF(LTRIM(RTRIM(o.[BranchCode])), ''), db.BranchCode)
+    LEFT JOIN #DeviceBranch db ON db.DeviceCode = UPPER(LTRIM(RTRIM(o.[DeviceCode])))
+    INNER JOIN #StoreScope ss ON ss.BranchCode = COALESCE(NULLIF(LTRIM(RTRIM(o.[BranchCode])), ''), db.BranchCode)
     WHERE o.[Status] IN (1, 4) AND o.[OrderTime] >= @startDate AND o.[OrderTime] < @endExclusive
-),
-TargetSaleOrders AS (
-    -- 只保留实际含目标商品的订单；随后仍读取该订单全部行，保证支付分摊分母正确。
-    SELECT DISTINCT o.[OrderGuid]
-    FROM EligibleOrders o INNER JOIN [sales_order_detail] d ON d.[OrderGuid] = o.[OrderGuid]
-    INNER JOIN ProductScope ps ON ps.ProductCode = LTRIM(RTRIM(d.[ProductCode]))
-),
-PaymentTotals AS (
-    SELECT p.[OrderGuid], SUM(COALESCE(p.[Amount], 0)) AS PaymentAmount
-    FROM [payment_detail] p INNER JOIN TargetSaleOrders o ON o.[OrderGuid] = p.[OrderGuid]
-    GROUP BY p.[OrderGuid]
-),
-AllDetails AS (
-    SELECT o.[OrderGuid], o.[OrderTime], o.[BranchCode], o.[DeviceCode], d.[OrderDetailGuid],
-           d.[ProductCode], d.[Quantity], d.[ActualAmount], d.[Price], d.[Subtotal], d.[DiscountAmount], d.[DiscountRate],
-           SUM(COALESCE(d.[ActualAmount], 0)) OVER (PARTITION BY o.[OrderGuid]) AS OrderDetailAmount
-    FROM EligibleOrders o INNER JOIN TargetSaleOrders tso ON tso.[OrderGuid] = o.[OrderGuid]
-    INNER JOIN [sales_order_detail] d ON d.[OrderGuid] = o.[OrderGuid]
-),
+;
+CREATE UNIQUE CLUSTERED INDEX IX_EligibleOrders ON #EligibleOrders(OrderGuid);
+
+SELECT o.[OrderGuid], o.[OrderTime], o.[BranchCode], o.[DeviceCode], d.[OrderDetailGuid],
+           d.[ProductCode], d.[SupplierCode], d.[Quantity], d.[ActualAmount], d.[Price], d.[Subtotal], d.[DiscountAmount], d.[DiscountRate],
+       CONVERT(nvarchar(50), LTRIM(RTRIM(d.[ProductCode]))) AS NormalizedProductCode
+INTO #DayDetails
+FROM #EligibleOrders o INNER JOIN [sales_order_detail] d ON d.[OrderGuid] = o.[OrderGuid];
+CREATE INDEX IX_DayDetailsOrder ON #DayDetails(OrderGuid);
+CREATE INDEX IX_DayDetailsProduct ON #DayDetails(NormalizedProductCode);
+
+-- 先限定真正含目标商品的订单，随后仍带出该订单的所有明细作为支付分母。
+SELECT DISTINCT d.[OrderGuid] INTO #TargetSaleOrders
+FROM #DayDetails d INNER JOIN #ProductScope ps ON ps.ProductCode = d.NormalizedProductCode;
+CREATE UNIQUE CLUSTERED INDEX IX_TargetSaleOrders ON #TargetSaleOrders(OrderGuid);
+
+SELECT p.[OrderGuid], SUM(COALESCE(p.[Amount], 0)) AS PaymentAmount INTO #PaymentTotals
+FROM [payment_detail] p INNER JOIN #TargetSaleOrders o ON o.[OrderGuid] = p.[OrderGuid]
+GROUP BY p.[OrderGuid];
+CREATE UNIQUE CLUSTERED INDEX IX_PaymentTotals ON #PaymentTotals(OrderGuid);
+
+SELECT d.[OrderGuid], d.[OrderTime], d.[BranchCode], d.[DeviceCode], d.[OrderDetailGuid], d.[ProductCode], d.[SupplierCode],
+       d.[Quantity], d.[ActualAmount], d.[Price], d.[Subtotal], d.[DiscountAmount], d.[DiscountRate],
+       d.NormalizedProductCode,
+       SUM(COALESCE(d.[ActualAmount], 0)) OVER (PARTITION BY d.[OrderGuid]) AS OrderDetailAmount
+INTO #AllDetails
+FROM #DayDetails d INNER JOIN #TargetSaleOrders tso ON tso.[OrderGuid] = d.[OrderGuid];
+CREATE INDEX IX_AllDetailsProduct ON #AllDetails(NormalizedProductCode);
+
+-- 退货去重是日/状态语义，不能受本次分店 scope 影响；显式从当天全店订单收集 GUID。
+SELECT d.[OrderDetailGuid] INTO #CurrentDayDetailGuids
+FROM [sales_order] o INNER JOIN [sales_order_detail] d ON d.[OrderGuid] = o.[OrderGuid]
+WHERE o.[Status] IN (1, 4) AND o.[OrderTime] >= @startDate AND o.[OrderTime] < @endExclusive;
+CREATE UNIQUE CLUSTERED INDEX IX_CurrentDayDetailGuids ON #CurrentDayDetailGuids(OrderDetailGuid);
+
+WITH ProductScope AS (SELECT ProductCode FROM #ProductScope),
+StoreScope AS (SELECT BranchCode FROM #StoreScope),
 SaleFacts AS (
     SELECT CONVERT(date, d.[OrderTime]) AS [Date],
-           COALESCE(NULLIF(LTRIM(RTRIM(d.[BranchCode])), ''), db.BranchCode) AS BranchCode,
-           LTRIM(RTRIM(d.[ProductCode])) AS ProductCode,
+           d.[BranchCode] AS BranchCode,
+           d.NormalizedProductCode AS ProductCode,
+           COALESCE(NULLIF(LTRIM(RTRIM(d.[SupplierCode])), ''), NULLIF(LTRIM(RTRIM(supplierMap.[LocalSupplierCode])), ''), 'UNKNOWN') AS SupplierCode,
            COALESCE(d.[Quantity], 0) AS Quantity,
-           CASE WHEN pt.PaymentAmount IS NULL OR d.OrderDetailAmount = 0 THEN CAST(0 AS decimal(19,4))
-                ELSE pt.PaymentAmount * COALESCE(d.[ActualAmount], 0) / d.OrderDetailAmount END AS SalesAmount,
+           -- 先把 SUM 后的 decimal(38,*) 缩窄，避免 SQL Server 除法把有效分摊精度压到 6 位；
+           -- POSM 的支付分摊原值可到六位；先缩窄 SUM 后的 decimal(38,*)，再以 19,6 / 26,12
+           -- 保留付款、明细和分母的六位精度，避免 SQL Server 除法降成六位或在源侧截去小数。
+           CASE WHEN pt.PaymentAmount IS NULL OR d.OrderDetailAmount = 0 THEN CAST(0 AS decimal(38,16))
+                ELSE CAST(
+                    CAST(CAST(pt.PaymentAmount AS decimal(19,6)) * CAST(COALESCE(d.[ActualAmount], 0) AS decimal(19,6)) AS decimal(26,12))
+                    / NULLIF(CAST(d.OrderDetailAmount AS decimal(19,6)), 0)
+                    AS decimal(38,16)) END AS SalesAmount,
            d.[Price], d.[ActualAmount], d.[Subtotal], d.[DiscountAmount], d.[DiscountRate],
            CAST(CASE WHEN COALESCE(d.[Quantity], 0) < 0 OR COALESCE(d.[ActualAmount], 0) < 0 THEN 1 ELSE 0 END AS bit) AS IsReturn
-    FROM AllDetails d
-    LEFT JOIN PaymentTotals pt ON pt.[OrderGuid] = d.[OrderGuid]
-    LEFT JOIN DeviceBranch db ON db.DeviceCode = UPPER(LTRIM(RTRIM(d.[DeviceCode])))
-    INNER JOIN ProductScope ps ON ps.ProductCode = LTRIM(RTRIM(d.[ProductCode]))
+    FROM #AllDetails d
+    LEFT JOIN #PaymentTotals pt ON pt.[OrderGuid] = d.[OrderGuid]
+    LEFT JOIN [posm_product_supplier_mapping] supplierMap
+        ON supplierMap.[ProductCode] = d.NormalizedProductCode
+    INNER JOIN ProductScope ps ON ps.ProductCode = d.NormalizedProductCode
 ),
 ReturnFacts AS (
     SELECT CONVERT(date, o.[OrderTime]) AS [Date],
-           COALESCE(NULLIF(LTRIM(RTRIM(o.[BranchCode])), ''), db.BranchCode) AS BranchCode,
+           o.[BranchCode] AS BranchCode,
            LTRIM(RTRIM(COALESCE(NULLIF(LTRIM(RTRIM(r.[ProductCode])), ''), od.[ProductCode]))) AS ProductCode,
+           COALESCE(NULLIF(LTRIM(RTRIM(od.[SupplierCode])), ''), NULLIF(LTRIM(RTRIM(returnSupplierMap.[LocalSupplierCode])), ''), 'UNKNOWN') AS SupplierCode,
            -ABS(COALESCE(r.[ReturnQuantity], 0)) AS Quantity,
            -ABS(COALESCE(r.[ReturnAmount], 0)) AS SalesAmount,
            CASE WHEN LTRIM(RTRIM(r.[OriginalOrderGuid])) = LTRIM(RTRIM(od.[OrderGuid]))
@@ -142,18 +189,19 @@ ReturnFacts AS (
                 THEN od.[DiscountRate] END AS DiscountRate,
            CAST(1 AS bit) AS IsReturn
     FROM [sales_return_record] r
-    INNER JOIN EligibleOrders o ON o.[OrderGuid] = r.[ReturnOrderGuid]
+    INNER JOIN #EligibleOrders o ON o.[OrderGuid] = r.[ReturnOrderGuid]
     LEFT JOIN [sales_order_detail] od ON od.[OrderDetailGuid] = r.[OriginalOrderDetailGuid]
-    LEFT JOIN DeviceBranch db ON db.DeviceCode = UPPER(LTRIM(RTRIM(o.[DeviceCode])))
+    LEFT JOIN [posm_product_supplier_mapping] returnSupplierMap
+        ON returnSupplierMap.[ProductCode] = LTRIM(RTRIM(COALESCE(NULLIF(LTRIM(RTRIM(r.[ProductCode])), ''), od.[ProductCode])))
     INNER JOIN ProductScope ps ON ps.ProductCode = LTRIM(RTRIM(COALESCE(NULLIF(LTRIM(RTRIM(r.[ProductCode])), ''), od.[ProductCode])))
     WHERE NULLIF(LTRIM(RTRIM(r.[ReturnDetailGuid])), '') IS NULL
-       OR NOT EXISTS (SELECT 1 FROM [sales_order_detail] ad WHERE ad.[OrderDetailGuid] = r.[ReturnDetailGuid])
+       OR NOT EXISTS (SELECT 1 FROM #CurrentDayDetailGuids ad WHERE ad.[OrderDetailGuid] = r.[ReturnDetailGuid])
 ),
 Facts AS (
-    SELECT s.[Date], s.BranchCode, s.ProductCode, s.Quantity, s.SalesAmount, s.[Price], s.[ActualAmount],
+    SELECT s.[Date], s.BranchCode, s.ProductCode, s.SupplierCode, s.Quantity, s.SalesAmount, s.[Price], s.[ActualAmount],
            NULL AS OriginalActualAmount, NULL AS OriginalQuantity, s.[Subtotal], s.[DiscountAmount], s.[DiscountRate], s.IsReturn FROM SaleFacts s
     UNION ALL
-    SELECT r.[Date], r.BranchCode, r.ProductCode, r.Quantity, r.SalesAmount, r.[Price], NULL,
+    SELECT r.[Date], r.BranchCode, r.ProductCode, r.SupplierCode, r.Quantity, r.SalesAmount, r.[Price], NULL,
            r.OriginalActualAmount, r.OriginalQuantity, r.[Subtotal], r.[DiscountAmount], r.[DiscountRate], r.IsReturn FROM ReturnFacts r
 ),
 Classified AS (
@@ -167,7 +215,7 @@ Classified AS (
         ELSE 0 END AS DiscountKind
     FROM Facts f INNER JOIN StoreScope ss ON ss.BranchCode = f.BranchCode
 )
-SELECT [Date], BranchCode, ProductCode, DiscountKind,
+SELECT [Date], BranchCode, ProductCode, SupplierCode, DiscountKind,
        SUM(Quantity) AS Quantity, SUM(SalesAmount) AS SalesAmount,
        SUM(CASE WHEN IsReturn = 1 THEN ABS(Quantity) ELSE 0 END) AS ReturnQuantity,
        SUM(CASE WHEN DiscountKind = 2 THEN 1 ELSE 0 END) AS UnknownRowCount,
@@ -177,7 +225,7 @@ SELECT [Date], BranchCode, ProductCode, DiscountKind,
        MAX(CASE WHEN DiscountKind = 1 AND Quantity <> 0 THEN ABS(SalesAmount / Quantity) END) AS DiscountPriceMax
 FROM Classified
 WHERE BranchCode IS NOT NULL AND BranchCode <> '' AND ProductCode IS NOT NULL AND ProductCode <> ''
-GROUP BY [Date], BranchCode, ProductCode, DiscountKind;
+GROUP BY [Date], BranchCode, ProductCode, SupplierCode, DiscountKind;
 """;
         var returnTableName = _posmDb.EntityMaintenance.GetTableName(typeof(SalesReturnRecord));
         var hasReturnTable = _posmDb.DbMaintenance.GetTableInfoList(false)
@@ -196,49 +244,91 @@ GROUP BY [Date], BranchCode, ProductCode, DiscountKind;
     }
 
     private async Task<List<SqlAggregateRow>> ReadHBSalesAsync(IReadOnlyList<string> products,
-        IReadOnlyList<string> stores, DateTime startDate, DateTime endExclusive, CancellationToken cancellationToken)
+        IReadOnlyList<string> stores, DateTime startDate, DateTime endExclusive, CancellationToken cancellationToken,
+        IReadOnlyList<BatchProductSalesHBSalesAlias>? preparedAliases)
     {
-        // 先从本次范围内缺产品码的 HBSales 明细取得实际货号/条码，再做目录消歧。
-        // 不能从当前 Product 的条码反推历史别名，否则会漏掉 ProductSetCode/一品多码。
-        var aliases = await BuildHBSalesAliasesAsync(products, stores, cancellationToken);
+        // 定时日快照已在 Capture 阶段从当天实际缺码明细读取候选并固定进来源签名。
+        // 直接复用它，避免全日商品数千时再次按“所有商品的全部历史 alias”扩展目录。
+        // 旧的页面/服务调用仍沿用原有动态解析路径。
+        var aliases = preparedAliases?.ToList() ?? await BuildHBSalesAliasesAsync(products, stores, cancellationToken);
         const string sql = """
-WITH ProductScope AS (SELECT [value] AS ProductCode FROM OPENJSON(@products)),
-StoreScope AS (SELECT [value] AS BranchCode FROM OPENJSON(@stores)),
-Aliases AS (SELECT Alias, BranchCode, ProductCode, Scope FROM OPENJSON(@aliases)
-    WITH (Alias nvarchar(100), BranchCode nvarchar(100), ProductCode nvarchar(100), Scope nvarchar(16))),
-Raw AS (
- SELECT CONVERT(date, d.[B结账日期]) [Date], LTRIM(RTRIM(d.[B分店代码])) BranchCode,
-        LTRIM(RTRIM(d.[B产品编号])) RawProductCode, d.[B货号] ItemNumber, d.[B条形码] Barcode,
-        d.[B数量] Quantity, d.[B合计金额] SalesAmount,
-        CASE WHEN LTRIM(RTRIM(m.[B单据类型])) IN ('3','4') THEN origEvidence.[B单价] ELSE d.[B单价] END OriginalPrice,
-        CASE WHEN LTRIM(RTRIM(m.[B单据类型])) IN ('3','4') THEN origEvidence.[B原价合计金额] ELSE d.[B原价合计金额] END OriginalAmount,
-        CASE WHEN LTRIM(RTRIM(m.[B单据类型])) IN ('3','4') THEN origEvidence.[B合计金额] ELSE d.[B合计金额] END OriginalSaleAmount,
-        CASE WHEN LTRIM(RTRIM(m.[B单据类型])) IN ('3','4') THEN origEvidence.[B数量] ELSE d.[B数量] END OriginalSaleQuantity,
-        CASE WHEN LTRIM(RTRIM(m.[B单据类型])) IN ('3','4') THEN origEvidence.[B折扣率] ELSE d.[B折扣率] END DiscountRate,
-        CASE WHEN LTRIM(RTRIM(m.[B单据类型])) IN ('3','4') THEN origEvidence.CandidateCount ELSE 1 END OriginalCandidateCount,
-        origEvidence.OriginalProductCode,
-        m.[B单据类型] DocumentType
- FROM [B销售清单主表副本] m INNER JOIN [B销售清单详情表副本] d ON d.[B销售单号] = m.[B销售单号]
- INNER JOIN StoreScope scope ON scope.BranchCode = LTRIM(RTRIM(d.[B分店代码]))
- OUTER APPLY (
-    SELECT COUNT(*) CandidateCount, MIN(o.[B产品编号]) OriginalProductCode, MIN(o.[B单价]) [B单价], MIN(o.[B原价合计金额]) [B原价合计金额],
-           MIN(o.[B合计金额]) [B合计金额], MIN(o.[B数量]) [B数量], MIN(o.[B折扣率]) [B折扣率]
-    FROM [B销售清单详情表副本] o
-    WHERE LTRIM(RTRIM(m.[B单据类型])) IN ('3', '4')
-      AND LTRIM(RTRIM(o.[B销售单号])) = LTRIM(RTRIM(m.[B原销售单号]))
-      AND ((NULLIF(LTRIM(RTRIM(d.[B退货码])), '') IS NOT NULL
-               AND LTRIM(RTRIM(o.[B退货码])) = LTRIM(RTRIM(d.[B退货码]))
-               AND (NULLIF(LTRIM(RTRIM(d.[B产品编号])), '') IS NULL OR NULLIF(LTRIM(RTRIM(o.[B产品编号])), '') IS NULL OR LTRIM(RTRIM(o.[B产品编号])) = LTRIM(RTRIM(d.[B产品编号]))))
-           OR (NULLIF(LTRIM(RTRIM(d.[B退货码])), '') IS NULL
-               AND (NULLIF(LTRIM(RTRIM(d.[B产品编号])), '') IS NULL OR LTRIM(RTRIM(o.[B产品编号])) = LTRIM(RTRIM(d.[B产品编号])))
-               AND (NULLIF(LTRIM(RTRIM(d.[B条形码])), '') IS NULL OR LTRIM(RTRIM(o.[B条形码])) = LTRIM(RTRIM(d.[B条形码])))))
- ) origEvidence
- WHERE d.[B结账日期] >= @startDate AND d.[B结账日期] < @endExclusive
-   AND m.[B结账日期] >= @mainWindowStart AND m.[B结账日期] < @mainWindowEnd
-   AND (m.[B单据类型] IS NULL OR LTRIM(RTRIM(m.[B单据类型])) <> '2')
-   AND (EXISTS (SELECT 1 FROM ProductScope ps WHERE ps.ProductCode = LTRIM(RTRIM(d.[B产品编号])) )
-        OR (NULLIF(LTRIM(RTRIM(d.[B产品编号])), '') IS NULL
-            AND EXISTS (SELECT 1 FROM Aliases a WHERE a.Alias = LTRIM(RTRIM(d.[B货号])) OR a.Alias = LTRIM(RTRIM(d.[B条形码])))))
+SET NOCOUNT ON;
+
+-- HBSales 的当天事实很窄，但退货原单证据可能落在整个历史详情表。先物化当天行及实际原单号，
+-- 再只扫描一次候选原单详情，避免每条退货在 OUTER APPLY 中重复全表扫描。
+SELECT DISTINCT CONVERT(nvarchar(100), LTRIM(RTRIM([value]))) ProductCode INTO #ProductScope
+FROM OPENJSON(@products) WHERE NULLIF(LTRIM(RTRIM([value])), '') IS NOT NULL;
+CREATE UNIQUE CLUSTERED INDEX IX_ProductScope ON #ProductScope(ProductCode);
+SELECT DISTINCT CONVERT(nvarchar(100), LTRIM(RTRIM([value]))) BranchCode INTO #StoreScope
+FROM OPENJSON(@stores) WHERE NULLIF(LTRIM(RTRIM([value])), '') IS NOT NULL;
+CREATE UNIQUE CLUSTERED INDEX IX_StoreScope ON #StoreScope(BranchCode);
+SELECT Alias, BranchCode, ProductCode, Scope INTO #Aliases FROM OPENJSON(@aliases)
+    WITH (Alias nvarchar(100), BranchCode nvarchar(100), ProductCode nvarchar(100), Scope nvarchar(16));
+CREATE INDEX IX_AliasesBranch ON #Aliases(Scope, BranchCode, Alias);
+CREATE INDEX IX_AliasesGlobal ON #Aliases(Scope, Alias);
+
+SELECT IDENTITY(bigint, 1, 1) AS RowId,
+       CONVERT(date, d.[B结账日期]) [Date], LTRIM(RTRIM(d.[B分店代码])) BranchCode,
+       LTRIM(RTRIM(d.[B产品编号])) RawProductCode, d.[B货号] ItemNumber, d.[B条形码] Barcode,
+       LTRIM(RTRIM(d.[B供应商ID])) SupplierCode, d.[B数量] Quantity, d.[B合计金额] SalesAmount,
+       d.[B单价] DetailPrice, d.[B原价合计金额] DetailOriginalAmount, d.[B合计金额] DetailSaleAmount,
+       d.[B数量] DetailSaleQuantity, d.[B折扣率] DetailDiscountRate,
+       LTRIM(RTRIM(m.[B单据类型])) DocumentType,
+       LTRIM(RTRIM(m.[B原销售单号])) OriginalOrderNumber,
+       LTRIM(RTRIM(d.[B退货码])) ReturnCode
+INTO #DayFacts
+FROM [B销售清单主表副本] m
+INNER JOIN [B销售清单详情表副本] d ON d.[B销售单号] = m.[B销售单号]
+INNER JOIN #StoreScope scope ON scope.BranchCode = LTRIM(RTRIM(d.[B分店代码]))
+WHERE d.[B结账日期] >= @startDate AND d.[B结账日期] < @endExclusive
+  AND m.[B结账日期] >= @mainWindowStart AND m.[B结账日期] < @mainWindowEnd
+  AND (m.[B单据类型] IS NULL OR LTRIM(RTRIM(m.[B单据类型])) <> '2')
+  AND (EXISTS (SELECT 1 FROM #ProductScope ps WHERE ps.ProductCode = LTRIM(RTRIM(d.[B产品编号])))
+       OR (NULLIF(LTRIM(RTRIM(d.[B产品编号])), '') IS NULL
+           AND EXISTS (SELECT 1 FROM #Aliases a WHERE a.Alias = LTRIM(RTRIM(d.[B货号])) OR a.Alias = LTRIM(RTRIM(d.[B条形码])))));
+CREATE UNIQUE CLUSTERED INDEX IX_DayFactsRow ON #DayFacts(RowId);
+CREATE INDEX IX_DayFactsReturn ON #DayFacts(DocumentType, OriginalOrderNumber);
+
+SELECT DISTINCT OriginalOrderNumber INTO #OriginalOrderScope
+FROM #DayFacts WHERE DocumentType IN ('3', '4') AND OriginalOrderNumber <> '';
+CREATE UNIQUE CLUSTERED INDEX IX_OriginalOrderScope ON #OriginalOrderScope(OriginalOrderNumber);
+
+SELECT LTRIM(RTRIM(o.[B销售单号])) OriginalOrderNumber, o.[ID] DetailId,
+       LTRIM(RTRIM(o.[B退货码])) ReturnCode, LTRIM(RTRIM(o.[B产品编号])) ProductCode,
+       LTRIM(RTRIM(o.[B条形码])) Barcode, o.[B单价], o.[B原价合计金额],
+       o.[B合计金额], o.[B数量], o.[B折扣率]
+INTO #OriginalEvidenceSource
+FROM [B销售清单详情表副本] o
+INNER JOIN #OriginalOrderScope scope ON scope.OriginalOrderNumber = LTRIM(RTRIM(o.[B销售单号]));
+CREATE INDEX IX_OriginalEvidenceSource ON #OriginalEvidenceSource(OriginalOrderNumber, ReturnCode, ProductCode, Barcode);
+
+SELECT r.RowId, COUNT(o.DetailId) CandidateCount, MIN(o.ProductCode) OriginalProductCode,
+       MIN(o.[B单价]) [B单价], MIN(o.[B原价合计金额]) [B原价合计金额],
+       MIN(o.[B合计金额]) [B合计金额], MIN(o.[B数量]) [B数量], MIN(o.[B折扣率]) [B折扣率]
+INTO #OriginalEvidence
+FROM #DayFacts r
+LEFT JOIN #OriginalEvidenceSource o ON r.DocumentType IN ('3', '4')
+    AND o.OriginalOrderNumber = r.OriginalOrderNumber
+    AND ((NULLIF(r.ReturnCode, '') IS NOT NULL
+          AND o.ReturnCode = r.ReturnCode
+          AND (NULLIF(r.RawProductCode, '') IS NULL OR NULLIF(o.ProductCode, '') IS NULL OR o.ProductCode = r.RawProductCode))
+         OR (NULLIF(r.ReturnCode, '') IS NULL
+             AND (NULLIF(r.RawProductCode, '') IS NULL OR o.ProductCode = r.RawProductCode)
+             AND (NULLIF(LTRIM(RTRIM(r.Barcode)), '') IS NULL OR o.Barcode = LTRIM(RTRIM(r.Barcode)))) )
+WHERE r.DocumentType IN ('3', '4')
+GROUP BY r.RowId;
+CREATE UNIQUE CLUSTERED INDEX IX_OriginalEvidence ON #OriginalEvidence(RowId);
+
+WITH Raw AS (
+ SELECT f.[Date], f.BranchCode, f.RawProductCode, f.ItemNumber, f.Barcode, f.SupplierCode, f.Quantity, f.SalesAmount,
+        CASE WHEN f.DocumentType IN ('3','4') THEN origEvidence.[B单价] ELSE f.DetailPrice END OriginalPrice,
+        CASE WHEN f.DocumentType IN ('3','4') THEN origEvidence.[B原价合计金额] ELSE f.DetailOriginalAmount END OriginalAmount,
+        CASE WHEN f.DocumentType IN ('3','4') THEN origEvidence.[B合计金额] ELSE f.DetailSaleAmount END OriginalSaleAmount,
+        CASE WHEN f.DocumentType IN ('3','4') THEN origEvidence.[B数量] ELSE f.DetailSaleQuantity END OriginalSaleQuantity,
+        CASE WHEN f.DocumentType IN ('3','4') THEN origEvidence.[B折扣率] ELSE f.DetailDiscountRate END DiscountRate,
+        CASE WHEN f.DocumentType IN ('3','4') THEN origEvidence.CandidateCount ELSE 1 END OriginalCandidateCount,
+        origEvidence.OriginalProductCode, f.DocumentType
+ FROM #DayFacts f LEFT JOIN #OriginalEvidence origEvidence ON origEvidence.RowId = f.RowId
 ),
 Resolved AS (
  SELECT r.*, CASE WHEN NULLIF(LTRIM(RTRIM(r.RawProductCode)), '') IS NOT NULL THEN ps.ProductCode
@@ -246,16 +336,16 @@ Resolved AS (
    CASE WHEN branchAlias.CandidateCount > 0 THEN branchAlias.CandidateCount
         WHEN globalAlias.CandidateCount > 0 THEN globalAlias.CandidateCount ELSE crossAlias.CandidateCount END CandidateCount
  FROM Raw r
- LEFT JOIN ProductScope ps ON ps.ProductCode = LTRIM(RTRIM(r.RawProductCode))
- OUTER APPLY (SELECT COUNT(DISTINCT ProductCode) CandidateCount, MIN(ProductCode) ProductCode FROM Aliases a
+ LEFT JOIN #ProductScope ps ON ps.ProductCode = LTRIM(RTRIM(r.RawProductCode))
+ OUTER APPLY (SELECT COUNT(DISTINCT ProductCode) CandidateCount, MIN(ProductCode) ProductCode FROM #Aliases a
    WHERE a.Scope = 'branch' AND a.BranchCode = r.BranchCode AND a.Alias = LTRIM(RTRIM(r.Barcode))) branchAlias
- OUTER APPLY (SELECT COUNT(DISTINCT ProductCode) CandidateCount, MIN(ProductCode) ProductCode FROM Aliases a
+ OUTER APPLY (SELECT COUNT(DISTINCT ProductCode) CandidateCount, MIN(ProductCode) ProductCode FROM #Aliases a
    WHERE a.Scope = 'global' AND (a.Alias = LTRIM(RTRIM(r.ItemNumber)) OR a.Alias = LTRIM(RTRIM(r.Barcode)))) globalAlias
- OUTER APPLY (SELECT COUNT(DISTINCT ProductCode) CandidateCount, MIN(ProductCode) ProductCode FROM Aliases a
+ OUTER APPLY (SELECT COUNT(DISTINCT ProductCode) CandidateCount, MIN(ProductCode) ProductCode FROM #Aliases a
    WHERE a.Scope = 'cross' AND a.Alias = LTRIM(RTRIM(r.Barcode))) crossAlias
 ),
 Classified AS (
- SELECT [Date], BranchCode, ProductCode,
+ SELECT [Date], BranchCode, ProductCode, COALESCE(NULLIF(SupplierCode, ''), 'UNKNOWN') AS SupplierCode,
    CASE WHEN LTRIM(RTRIM(DocumentType)) IN ('3','4') THEN -COALESCE(Quantity,0) ELSE COALESCE(Quantity,0) END Quantity,
    CASE WHEN LTRIM(RTRIM(DocumentType)) IN ('3','4') THEN -COALESCE(SalesAmount,0) ELSE COALESCE(SalesAmount,0) END SalesAmount,
    CASE WHEN LTRIM(RTRIM(DocumentType)) IN ('3','4') THEN 1 ELSE 0 END IsReturn,
@@ -276,15 +366,15 @@ Classified AS (
    -- 权威 B产品编号 只需精确命中目标商品；别名歧义只能限制缺产品编号行。
    AND (NULLIF(LTRIM(RTRIM(RawProductCode)), '') IS NOT NULL OR CandidateCount IS NULL OR CandidateCount <= 1)
 )
-SELECT c.[Date], c.BranchCode, c.ProductCode, c.DiscountKind, SUM(Quantity) Quantity, SUM(SalesAmount) SalesAmount,
+SELECT c.[Date], c.BranchCode, c.ProductCode, c.SupplierCode, c.DiscountKind, SUM(Quantity) Quantity, SUM(SalesAmount) SalesAmount,
  SUM(CASE WHEN IsReturn=1 THEN ABS(Quantity) ELSE 0 END) ReturnQuantity,
  SUM(CASE WHEN DiscountKind=2 THEN 1 ELSE 0 END) UnknownRowCount,
  MIN(CASE WHEN DiscountKind<>2 AND OriginalPrice>0 THEN OriginalPrice END) OriginalPriceMin,
  MAX(CASE WHEN DiscountKind<>2 AND OriginalPrice>0 THEN OriginalPrice END) OriginalPriceMax,
  MIN(CASE WHEN DiscountKind=1 AND Quantity<>0 THEN ABS(SalesAmount/Quantity) END) DiscountPriceMin,
  MAX(CASE WHEN DiscountKind=1 AND Quantity<>0 THEN ABS(SalesAmount/Quantity) END) DiscountPriceMax
-FROM Classified c INNER JOIN StoreScope s ON s.BranchCode=c.BranchCode
-GROUP BY c.[Date], c.BranchCode, c.ProductCode, c.DiscountKind;
+FROM Classified c INNER JOIN #StoreScope s ON s.BranchCode=c.BranchCode
+GROUP BY c.[Date], c.BranchCode, c.ProductCode, c.SupplierCode, c.DiscountKind;
 """;
         return await ExecuteAggregateQueryAsync(_hbSalesDb, sql,
             [new("@products", JsonSerializer.Serialize(products), SqlDbType.NVarChar), new("@stores", JsonSerializer.Serialize(stores), SqlDbType.NVarChar),
@@ -293,7 +383,7 @@ GROUP BY c.[Date], c.BranchCode, c.ProductCode, c.DiscountKind;
              new("@mainWindowEnd", endExclusive.AddDays(7), SqlDbType.DateTime2)], cancellationToken);
     }
 
-    private async Task<List<AliasRow>> BuildHBSalesAliasesAsync(IReadOnlyList<string> products,
+    private async Task<List<BatchProductSalesHBSalesAlias>> BuildHBSalesAliasesAsync(IReadOnlyList<string> products,
         IReadOnlyList<string> stores, CancellationToken cancellationToken)
     {
         var productScope = JsonSerializer.Serialize(products);
@@ -339,30 +429,134 @@ WHERE p.[IsDeleted] = 0 AND p.[StoreCode] IS NOT NULL AND p.[ProductCode] IS NOT
         }
         cancellationToken.ThrowIfCancellationRequested();
         var targetSet = products.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var result = new List<AliasRow>();
+        var result = new List<BatchProductSalesHBSalesAlias>();
         foreach (var value in aliases)
         {
             // 非目标商品也必须参加歧义判定，不能只看命中目标的行。
             var globalAll = allProducts.Where(p => Same(p.ItemNumber, value) || Same(p.Barcode, value)).Select(p => p.ProductCode!).Concat(sets.Where(s => Same(s.Alias, value)).Select(s => s.ProductCode!)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
             if (globalAll.Count == 1 && targetSet.Contains(globalAll[0]))
-                result.Add(new AliasRow(value, null, globalAll[0], "global"));
+                result.Add(new BatchProductSalesHBSalesAlias(value, null, globalAll[0], "global"));
             else if (globalAll.Count > 0)
                 // 空值占位使 SQL 不会把已存在的全局歧义降级到跨店多码候选。
-                result.Add(new AliasRow(value, null, string.Empty, "global"));
+                result.Add(new BatchProductSalesHBSalesAlias(value, null, string.Empty, "global"));
             foreach (var branch in stores)
             {
                 var candidates = multi.Where(m => Same(m.Alias, value) && Same(m.BranchCode, branch)).Select(m => m.ProductCode!).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
                 if (candidates.Count == 1 && targetSet.Contains(candidates[0]))
-                    result.Add(new AliasRow(value, branch, candidates[0], "branch"));
+                    result.Add(new BatchProductSalesHBSalesAlias(value, branch, candidates[0], "branch"));
                 else if (candidates.Count > 0)
                     // 分店多码有候选但不唯一时，稳定口径不允许退回全局候选。
-                    result.Add(new AliasRow(value, branch, string.Empty, "branch"));
+                    result.Add(new BatchProductSalesHBSalesAlias(value, branch, string.Empty, "branch"));
             }
             var cross = multi.Where(m => Same(m.Alias, value)).Select(m => m.ProductCode!).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-            if (globalAll.Count == 0 && cross.Count == 1 && targetSet.Contains(cross[0])) result.Add(new AliasRow(value, null, cross[0], "cross"));
+            if (globalAll.Count == 0 && cross.Count == 1 && targetSet.Contains(cross[0])) result.Add(new BatchProductSalesHBSalesAlias(value, null, cross[0], "cross"));
         }
         return result;
     }
+
+    /// <summary>
+    /// 对齐 ProductStoreDailySalesStatistic 的持久化边界：来源行先按供应商合并，金额仅在
+    /// supplier 组末尾四舍五入。折扣类别不是 canonical 主键，因此类别金额的四位舍入残差
+    /// 固定放入该组已有的最低类别，保证类别之和严格等于 canonical 总额而不改变事实分类。
+    /// </summary>
+    internal static List<BatchProductSalesAggregateRow> CanonicalizeSupplierGroups(IEnumerable<SqlAggregateRow> sourceRows)
+    {
+        var supplierRows = sourceRows
+            .Where(row => !string.IsNullOrWhiteSpace(row.BranchCode)
+                && !string.IsNullOrWhiteSpace(row.ProductCode))
+            .GroupBy(row => new SupplierFactGroupKey(
+                row.Date.Date,
+                NormalizeFactCode(row.BranchCode),
+                NormalizeFactCode(row.ProductCode),
+                NormalizeSupplierCode(row.SupplierCode)))
+            .SelectMany(group => CanonicalizeSupplierGroup(group.Key, group))
+            .ToList();
+
+        return supplierRows
+            .GroupBy(row => new
+            {
+                row.Date,
+                BranchCode = NormalizeFactCode(row.BranchCode),
+                ProductCode = NormalizeFactCode(row.ProductCode),
+                row.DiscountKind,
+            })
+            .Select(group => ToAggregateRow(
+                group.Key.Date,
+                group.Key.BranchCode,
+                group.Key.ProductCode,
+                group.Key.DiscountKind,
+                group))
+            .OrderBy(row => row.Date)
+            .ThenBy(row => row.BranchCode, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.ProductCode, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static IEnumerable<SqlAggregateRow> CanonicalizeSupplierGroup(
+        SupplierFactGroupKey key,
+        IEnumerable<SqlAggregateRow> rows)
+    {
+        var categories = rows.GroupBy(row => row.DiscountKind)
+            .Select(group => new SqlAggregateRow
+            {
+                Date = key.Date,
+                BranchCode = key.BranchCode,
+                ProductCode = key.ProductCode,
+                SupplierCode = key.SupplierCode,
+                DiscountKind = group.Key,
+                Quantity = group.Sum(row => row.Quantity),
+                SalesAmount = Math.Round(group.Sum(row => row.SalesAmount), 4, MidpointRounding.AwayFromZero),
+                ReturnQuantity = group.Sum(row => row.ReturnQuantity),
+                UnknownRowCount = group.Sum(row => row.UnknownRowCount),
+                OriginalPriceMin = Min(group.Select(row => row.OriginalPriceMin)),
+                OriginalPriceMax = Max(group.Select(row => row.OriginalPriceMax)),
+                DiscountPriceMin = Min(group.Select(row => row.DiscountPriceMin)),
+                DiscountPriceMax = Max(group.Select(row => row.DiscountPriceMax)),
+            })
+            .OrderBy(row => row.DiscountKind)
+            .ToList();
+
+        var canonicalAmount = Math.Round(rows.Sum(row => row.SalesAmount), 4, MidpointRounding.AwayFromZero);
+        var amountResidual = canonicalAmount - categories.Sum(row => row.SalesAmount);
+        if (amountResidual != 0m)
+        {
+            // 残差只来自把 canonical 无类别金额投影回类别；优先最低既有类别是稳定且可复算的选择。
+            categories[0].SalesAmount += amountResidual;
+        }
+
+        var sourceQuantity = rows.Sum(row => row.Quantity);
+        var canonicalQuantity = (decimal)(int)sourceQuantity;
+        var quantityResidual = canonicalQuantity - categories.Sum(row => row.Quantity);
+        if (quantityResidual != 0m)
+        {
+            // canonical 在 supplier 组强制截断总量，无法从类别事实判断被截去的分数属于哪一类。
+            // 单独标为 unknown，既保留来源的已知类别，也不伪造正价/折扣数量。
+            categories.Add(new SqlAggregateRow
+            {
+                Date = key.Date,
+                BranchCode = key.BranchCode,
+                ProductCode = key.ProductCode,
+                SupplierCode = key.SupplierCode,
+                DiscountKind = 2,
+                Quantity = quantityResidual,
+                UnknownRowCount = 1,
+            });
+        }
+
+        return categories;
+    }
+
+    private static string NormalizeFactCode(string? value) => SalesStatisticsCodeRules.Normalize(value);
+
+    private static string NormalizeSupplierCode(string? value)
+    {
+        var normalized = SalesStatisticsCodeRules.Normalize(value);
+        return string.IsNullOrWhiteSpace(normalized)
+            ? SalesStatisticsCodeRules.UnknownSupplierCode
+            : normalized;
+    }
+
+    private sealed record SupplierFactGroupKey(DateTime Date, string BranchCode, string ProductCode, string SupplierCode);
 
     internal static BatchProductSalesAggregateRow ToAggregateRow(DateTime date, string branchCode, string productCode, int kind, IEnumerable<SqlAggregateRow> rows)
     {
@@ -400,10 +594,10 @@ WHERE p.[IsDeleted] = 0 AND p.[StoreCode] IS NOT NULL AND p.[ProductCode] IS NOT
             rows.Add(new SqlAggregateRow
             {
                 Date = reader.GetDateTime(0), BranchCode = reader.GetString(1), ProductCode = reader.GetString(2),
-                DiscountKind = reader.GetInt32(3), Quantity = reader.GetDecimal(4), SalesAmount = reader.GetDecimal(5),
-                ReturnQuantity = reader.GetDecimal(6), UnknownRowCount = reader.GetInt32(7),
-                OriginalPriceMin = GetNullableDecimal(reader, 8), OriginalPriceMax = GetNullableDecimal(reader, 9),
-                DiscountPriceMin = GetNullableDecimal(reader, 10), DiscountPriceMax = GetNullableDecimal(reader, 11),
+                SupplierCode = reader.GetString(3), DiscountKind = reader.GetInt32(4), Quantity = reader.GetDecimal(5), SalesAmount = reader.GetDecimal(6),
+                ReturnQuantity = reader.GetDecimal(7), UnknownRowCount = reader.GetInt32(8),
+                OriginalPriceMin = GetNullableDecimal(reader, 9), OriginalPriceMax = GetNullableDecimal(reader, 10),
+                DiscountPriceMin = GetNullableDecimal(reader, 11), DiscountPriceMax = GetNullableDecimal(reader, 12),
             });
         }
         return rows;
@@ -436,13 +630,15 @@ WHERE p.[IsDeleted] = 0 AND p.[StoreCode] IS NOT NULL AND p.[ProductCode] IS NOT
     private static DateTime Min(DateTime left, DateTime right) => left < right ? left : right;
     private static void EnsureSqlServer(ISqlSugarClient db, string source) { if (db.CurrentConnectionConfig.DbType != SqlSugar.DbType.SqlServer) throw new NotSupportedException($"批量货号销量仅支持 SQL Server {source} 数据源。"); }
 
-    internal sealed class SqlAggregateRow { public DateTime Date { get; set; } public string BranchCode { get; set; } = string.Empty; public string ProductCode { get; set; } = string.Empty; public int DiscountKind { get; set; } public decimal Quantity { get; set; } public decimal SalesAmount { get; set; } public decimal ReturnQuantity { get; set; } public int UnknownRowCount { get; set; } public decimal? OriginalPriceMin { get; set; } public decimal? OriginalPriceMax { get; set; } public decimal? DiscountPriceMin { get; set; } public decimal? DiscountPriceMax { get; set; } }
+    internal sealed class SqlAggregateRow { public DateTime Date { get; set; } public string BranchCode { get; set; } = string.Empty; public string ProductCode { get; set; } = string.Empty; public string SupplierCode { get; set; } = SalesStatisticsCodeRules.UnknownSupplierCode; public int DiscountKind { get; set; } public decimal Quantity { get; set; } public decimal SalesAmount { get; set; } public decimal ReturnQuantity { get; set; } public int UnknownRowCount { get; set; } public decimal? OriginalPriceMin { get; set; } public decimal? OriginalPriceMax { get; set; } public decimal? DiscountPriceMin { get; set; } public decimal? DiscountPriceMax { get; set; } }
     private sealed record BatchSqlParameter(string Name, object? Value, SqlDbType Type);
     private sealed class CatalogProductRow { public string? ProductCode { get; set; } public string? ItemNumber { get; set; } public string? Barcode { get; set; } }
     private class AliasCatalogRow { public string? Alias { get; set; } public string? ProductCode { get; set; } }
     private sealed class StoreAliasCatalogRow : AliasCatalogRow { public string? BranchCode { get; set; } }
-    private sealed record AliasRow(string Alias, string? BranchCode, string ProductCode, string Scope);
 }
+
+/// <summary>已固定在日来源捕获中的 HBSales 缺码别名解析结果。</summary>
+internal sealed record BatchProductSalesHBSalesAlias(string Alias, string? BranchCode, string ProductCode, string Scope);
 
 /// <summary>一行对应一个折扣类别的 SQL 聚合；UnknownRowCount 使净未知量为零时仍保持 partial/unknown。</summary>
 internal sealed class BatchProductSalesAggregateRow

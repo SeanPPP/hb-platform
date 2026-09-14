@@ -4,6 +4,7 @@ using BlazorApp.Api.Data;
 using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.Background;
 using BlazorApp.Shared.Models;
+using BlazorApp.Shared.Models.HBSalesRecord;
 using BlazorApp.Shared.Models.HBweb;
 using BlazorApp.Shared.Models.POSM;
 using Microsoft.Data.SqlClient;
@@ -27,6 +28,26 @@ public sealed class SalesCostBackfillSqlServerFactAttribute : FactAttribute
 [Trait("Category", "SQL")]
 public sealed class SalesCostBackfillSqlServerTests
 {
+    [SalesCostBackfillSqlServerFact]
+    public async Task 二零二四年已验证HBSales来源可预览成本缺口()
+    {
+        var date = new DateTime(2024, 9, 14);
+        await using var f = await Fixture.CreateAsync();
+        await f.SeedHistoricalHBSOnlyAsync(date);
+
+        var batch = await f.PreviewAsync(date);
+        var day = await f.Db.Queryable<SalesCostBackfillDay>()
+            .Where(row => row.BatchId == batch && row.Date == date)
+            .SingleAsync();
+        var item = await f.Db.Queryable<SalesCostBackfillItem>()
+            .Where(row => row.BatchId == batch && row.Date == date)
+            .SingleAsync();
+
+        Assert.Equal("Previewed", day.Status);
+        Assert.Equal("Candidate", item.Status);
+        Assert.Contains("HBSales", item.EvidenceJson);
+    }
+
     [SalesCostBackfillSqlServerFact]
     public async Task 停用商品使用可信主表进价回填且不重新启用()
     {
@@ -251,6 +272,7 @@ public sealed class SalesCostBackfillSqlServerTests
                 typeof(SalesCostBackfillBatch), typeof(SalesCostBackfillDay), typeof(SalesCostBackfillItem));
             f.posm.CodeFirst.InitTables(typeof(SalesOrder), typeof(SalesOrderDetail), typeof(SalesReturnRecord),
                 typeof(PaymentDetail), typeof(PosmProductSupplierMapping), typeof(POSM_设备注册信息表));
+            f.history.CodeFirst.InitTables(typeof(SalesOrderMain), typeof(SalesOrderDetailRecord));
             return f;
         }
         internal async Task<ProductStoreDailySalesStatistic> SeedAsync()
@@ -259,23 +281,72 @@ public sealed class SalesCostBackfillSqlServerTests
             await Db.Insertable(row).ExecuteCommandAsync();
             await RepublishAsync(); return await RowAsync();
         }
-        internal async Task RepublishAsync()
+        internal async Task SeedHistoricalHBSOnlyAsync(DateTime date)
         {
-            var rows = await Db.Queryable<ProductStoreDailySalesStatistic>().ToListAsync();
+            var row = SalesCostBackfillTests.Row();
+            row.Date = date;
+            row.LastSourceUploadTime = date.AddHours(12);
+            row.UpdateTime = date.AddDays(1);
+            row.UnitCostSnapshot = null;
+            row.TotalCost = row.GrossProfit = row.GrossMarginRate = null;
+            row.CostSource = "Missing";
+            await Db.Insertable(row).ExecuteCommandAsync();
+            await Db.Insertable(new StoreRetailPrice
+            {
+                UUID = "PRICE-HBS-2024",
+                StoreCode = row.BranchCode,
+                ProductCode = row.ProductCode,
+                SupplierCode = row.SupplierCode,
+                PurchasePrice = 1.94m,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await history.Insertable(new SalesOrderMain
+            {
+                ID = 91401,
+                B销售单号 = "HBS-COST-2024",
+                B分店代码 = row.BranchCode,
+                B单据类型 = "1",
+                B结账日期 = date,
+                FGC_LastModifyDate = date.AddHours(12),
+            }).ExecuteCommandAsync();
+            await history.Insertable(new SalesOrderDetailRecord
+            {
+                ID = 91401,
+                B销售单号 = "HBS-COST-2024",
+                B分店代码 = row.BranchCode,
+                B结账日期 = date,
+                B产品编号 = row.ProductCode,
+                B供应商ID = row.SupplierCode,
+                B条形码 = row.Barcode,
+                B数量 = row.TotalQuantity,
+                B合计金额 = row.TotalAmount,
+                FGC_LastModifyDate = date.AddHours(12),
+            }).ExecuteCommandAsync();
+            await RepublishAsync(date);
+        }
+        internal Task RepublishAsync() => RepublishAsync(Date);
+        private async Task RepublishAsync(DateTime date)
+        {
+            var rows = await Db.Queryable<ProductStoreDailySalesStatistic>().Where(row => row.Date == date).ToListAsync();
             var build = await new SalesStatisticsSupplierStoreSummaryService().BuildFromProductStatisticsAsync(context, posmContext, rows, DateTime.Now);
-            await Db.Deleteable<AustralianSupplierStoreSalesDetail>().Where(x => x.Date == Date).ExecuteCommandAsync();
+            await Db.Deleteable<AustralianSupplierStoreSalesDetail>().Where(x => x.Date == date).ExecuteCommandAsync();
             if (build.Australian.Count > 0) await Db.Insertable(build.Australian).ExecuteCommandAsync();
             foreach (var type in new[] { SalesStatisticType.ProductStoreDaily, SalesStatisticType.AustralianSupplierStoreSales, SalesStatisticType.ChinaSupplierStoreSales })
             {
-                var state = new SalesStatisticRefreshState { Date = Date, StatisticType = type, Status = "Fresh",
+                var state = new SalesStatisticRefreshState { Date = date, StatisticType = type, Status = "Fresh",
                     CompletedAtUtc = DateTime.UtcNow, LastAggregatedAtUtc = DateTime.UtcNow,
-                    SourceProductVersion = SupplierStatisticVersion.ComputeProductVersion(rows), LastSourceUploadTime = Date.AddHours(12) };
+                    SourceProductVersion = SupplierStatisticVersion.ComputeProductVersion(rows), LastSourceUploadTime = date.AddHours(12) };
                 await Db.Storageable(state).ExecuteCommandAsync();
             }
         }
         internal async Task<Guid> PreviewAsync()
         {
             var id = await Service.PreviewAsync(Date, Date, "预览人"); await DrainAsync(); return id;
+        }
+        internal async Task<Guid> PreviewAsync(DateTime date)
+        {
+            var id = await Service.PreviewAsync(date, date, "预览人"); await DrainAsync(); return id;
         }
         internal async Task DrainAsync()
         {
