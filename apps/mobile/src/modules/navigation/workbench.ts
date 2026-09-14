@@ -20,6 +20,7 @@ const WORKBENCH_SECTIONS: WorkbenchNavigationSection[] = [
     titleKey: "groups.salesProduct",
     items: [
       { routeName: "product-query", labelKey: "routes.productQuery", icon: "barcode-scan" },
+      { routeName: "product-insights", labelKey: "routes.productInsights", icon: "chart-timeline-variant" },
       { routeName: "home", labelKey: "routes.storeOrdering", icon: "storefront-outline" },
       { routeName: "cart", labelKey: "routes.cart", icon: "cart-outline" },
       { routeName: "orders", labelKey: "routes.orders", icon: "clipboard-list-outline" },
