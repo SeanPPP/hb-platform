@@ -824,7 +824,10 @@ public class NavigationServiceTests
 
         var menu = _service.BuildAppMenu(user);
 
-        Assert.Equal(24, menu.Count);
+        // 管理员可见完整 App 菜单；商品查询与同权限的商品进销查询都必须保留。
+        Assert.Equal(25, menu.Count);
+        Assert.Contains(menu, item => item.RouteName == "product-query");
+        Assert.Contains(menu, item => item.RouteName == "product-insights");
         Assert.Contains(menu, item => item.RouteName == "users");
         Assert.Contains(menu, item => item.RouteName == "user-admin");
         Assert.Contains(menu, item => item.RouteName == "roles");
@@ -914,6 +917,32 @@ public class NavigationServiceTests
         Assert.Equal("tabs.localSupplierInvoices", item.TitleKey);
         Assert.Equal("receipt-text-outline", item.Icon);
         Assert.Equal(Permissions.LocalPurchase.View, item.Permission);
+    }
+
+    [Fact]
+    public void BuildAppMenu_ProductInsightsUsesTheProductQueryPermission()
+    {
+        var authorized = _service.BuildAppMenu(
+            CreateUser(new Claim("permission", Permissions.StoreProducts.View))
+        );
+        var unauthorized = _service.BuildAppMenu(
+            CreateUser(new Claim("permission", Permissions.Orders.View))
+        );
+
+        var item = Assert.Single(authorized, item => item.RouteName == "product-insights");
+        Assert.Equal("tabs.productInsights", item.TitleKey);
+        Assert.Equal("chart-timeline-variant", item.Icon);
+        Assert.Equal(Permissions.StoreProducts.View, item.Permission);
+        Assert.DoesNotContain(unauthorized, item => item.RouteName == "product-insights");
+    }
+
+    [Fact]
+    public void BuildDeviceAppMenu_IncludesProductInsightsWithProductQuery()
+    {
+        var menu = _service.BuildDeviceAppMenu("Mobile");
+
+        Assert.Contains(menu, item => item.RouteName == "product-query");
+        Assert.Contains(menu, item => item.RouteName == "product-insights");
     }
 
     [Fact]

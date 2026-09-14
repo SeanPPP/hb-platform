@@ -2206,6 +2206,20 @@ function ProductQueryContent() {
   ]);
 
   const scannerInputBlocked = isProductQueryBusy();
+  const handleOpenProductInsights = useCallback(() => {
+    if (!detail?.productCode || !selectedStoreCode || isProductQueryBusy()) {
+      return;
+    }
+
+    // push 保留当前详情和未保存编辑；返回时继续停留在同一商品与门店上下文。
+    router.push({
+      pathname: "/(shell)/product-insights",
+      params: {
+        productCode: detail.productCode,
+        storeCode: selectedStoreCode,
+      },
+    } as unknown as Parameters<typeof router.push>[0]);
+  }, [detail?.productCode, isProductQueryBusy, router, selectedStoreCode]);
   const updateCameraSheetSession = useCallback(
     (
       event: Parameters<typeof reduceCameraSheetSession>[1],
@@ -3965,6 +3979,17 @@ function ProductQueryContent() {
               grade={detail.grade}
               onPressProductType={() => setProductTypeDialogVisible(true)}
             />
+
+            {!isIosReviewSessionActive() ? (
+              <Button
+                icon="chart-timeline-variant"
+                mode="outlined"
+                onPress={handleOpenProductInsights}
+                disabled={scannerInputBlocked}
+              >
+                {t("common:tabs.productInsights")}
+              </Button>
+            ) : null}
 
             {hasCodeSection ? (
               <View accessibilityRole="tablist" style={styles.editorTabs}>
