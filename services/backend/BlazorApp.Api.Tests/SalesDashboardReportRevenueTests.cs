@@ -617,6 +617,32 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
     }
 
     [Fact]
+    public async Task GetExecutiveBranchPerformanceAsync_二零二四年已验证HBSales来源身份也视为完整()
+    {
+        var date = new DateTime(2024, 9, 14);
+        await SeedStoreAsync("S02", "Store S02");
+        await SeedHbSalesOrderAsync("hb-only-source-2024", date.AddHours(9), "S02", 66m, 1m);
+        await SeedStoreSalesStatisticAsync(date, "S02", "Store S02", 66m, 1);
+
+        var refreshDates = new List<DateTime>();
+        var service = CreateService();
+        service.StoreStatisticsRefreshTestInterceptor = refreshDate =>
+        {
+            refreshDates.Add(refreshDate.Date);
+            return Task.CompletedTask;
+        };
+
+        var result = await service.GetExecutiveBranchPerformanceAsync(
+            new DateRangeDto { StartDate = date, EndDate = date },
+            branchCodes: new List<string> { "S02" }
+        );
+
+        Assert.Empty(refreshDates);
+        Assert.False(result.StatisticsPending);
+        Assert.Equal(66m, Assert.Single(result.Items).Revenue);
+    }
+
+    [Fact]
     public async Task GetExecutiveBranchPerformanceAsync_二零二五年POSM与HBSales来源身份取并集()
     {
         var date = new DateTime(2025, 7, 20);

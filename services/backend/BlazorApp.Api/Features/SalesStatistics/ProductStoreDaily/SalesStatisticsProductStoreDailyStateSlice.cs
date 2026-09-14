@@ -358,10 +358,10 @@ namespace BlazorApp.Api.Services
             await QueryDailyPosmSourceWatermarkAsync(posmContext, targetDate),
         };
 
-        if (targetDate.Year == 2025)
+        if (SalesStatisticsHBSalesHistoryWindow.Includes(targetDate))
         {
             var requiredHBSalesContext = hbSalesContext
-                ?? throw new InvalidOperationException("2025 年统计水位查询缺少 HBSalesRecord 上下文");
+                ?? throw new InvalidOperationException("HBSales 历史窗口内的统计水位查询缺少 HBSalesRecord 上下文");
             if (preloadedHBSalesRows != null)
             {
                 // 仅 pre 阶段复用已加载明细；post 阶段不传此参数，必须重新查库检测漂移。

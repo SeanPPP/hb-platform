@@ -110,6 +110,9 @@
     "discountStates": {
       "Queued": "Sales are ready. Discount statistics are queued and will update automatically.",
       "Running": "Sales are ready. Discounts are being calculated in the background.",
+      "Backfilling": "Sales are ready. Historical discount snapshots are being backfilled and will update automatically.",
+      "Refreshing": "Showing the last verified discount statistics while the background refresh is running.",
+      "Partial": "Some dates have verified discount results. Other dates are still unavailable and are shown as unknown.",
       "Unavailable": "Sales are ready. Discount statistics are currently unavailable.",
       "Failed": "Sales are ready. Discount calculation failed. Contact an administrator.",
       "OutOfSync": "Sales are ready. Discount totals do not match daily statistics; breakdown is withheld.",

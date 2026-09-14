@@ -4550,8 +4550,9 @@ namespace BlazorApp.Api.Services.React
                 ));
             }
 
-            // 2025 年门店统计与商品门店日统计必须全分店原子刷新，保持既有统计口径。
-            static bool RequiresAllBranchRefresh(DateTime date) => date.Year == 2025;
+            // HBSales 历史窗口内的门店统计与商品门店日统计必须全分店原子刷新，保持既有统计口径。
+            static bool RequiresAllBranchRefresh(DateTime date) =>
+                SalesStatisticsHBSalesHistoryWindow.Includes(date);
 
             return await RefreshMissingStatisticsAsync(
                 "store",
@@ -4976,8 +4977,9 @@ namespace BlazorApp.Api.Services.React
                 ));
             }
 
-            // 2025 年门店统计与商品门店日统计必须全分店原子刷新，不能沿用报表的分店筛选。
-            static bool RequiresAllBranchRefresh(DateTime date) => date.Year == 2025;
+            // HBSales 历史窗口内的门店统计与商品门店日统计必须全分店原子刷新，不能沿用报表的分店筛选。
+            static bool RequiresAllBranchRefresh(DateTime date) =>
+                SalesStatisticsHBSalesHistoryWindow.Includes(date);
 
             return await RefreshMissingStatisticsAsync(
                 "store",
@@ -5245,7 +5247,7 @@ namespace BlazorApp.Api.Services.React
             endDate = endDate.Date;
             var result = new Dictionary<DateTime, HashSet<string>>();
 
-            // 门店日统计始终聚合 POSM；2025 年还会叠加 HBSales，完整性身份必须取两者并集。
+            // 门店日统计始终聚合 POSM；HBSales 已核验历史窗口还会叠加 HBSales，完整性身份必须取两者并集。
             var posmCoverage = await GetPosmStoreSalesBranchCodesByDateAsync(
                 startDate,
                 endDate,
@@ -5255,12 +5257,13 @@ namespace BlazorApp.Api.Services.React
                 return null;
             MergeSalesSourceCoverage(result, posmCoverage);
 
-            var hbSalesStart = startDate > new DateTime(2025, 1, 1)
+            var hbSalesStart = startDate > SalesStatisticsHBSalesHistoryWindow.StartDate
                 ? startDate
-                : new DateTime(2025, 1, 1);
-            var hbSalesEnd = endDate < new DateTime(2025, 12, 31)
+                : SalesStatisticsHBSalesHistoryWindow.StartDate;
+            var historyEndDate = SalesStatisticsHBSalesHistoryWindow.EndExclusive.AddDays(-1);
+            var hbSalesEnd = endDate < historyEndDate
                 ? endDate
-                : new DateTime(2025, 12, 31);
+                : historyEndDate;
             if (hbSalesStart <= hbSalesEnd)
             {
                 var hbSalesCoverage = await GetHbSalesStoreSalesBranchCodesByDateAsync(

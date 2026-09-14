@@ -32,18 +32,18 @@ export function getBatchProductSalesClassifiedQuantity(
   field: 'regularQuantity' | 'discountQuantity' | 'unknownQuantity',
   classificationUnavailable = false,
 ): number | null {
-  if (metrics.discountStatus === 'pending') return null
+  if (metrics.discountStatus === 'pending' || (metrics.discountStatus === 'unknown' && field !== 'unknownQuantity')) return null
   if (classificationUnavailable && field !== 'unknownQuantity') return null
   return metrics[field]
 }
 
-/** 只有仍可能发生状态变化的折扣统计任务才需要继续轮询。 */
+/** 后台回填会逐日发布，部分可用和可恢复的失配状态也要继续读取最新快照。 */
 export function shouldRefreshBatchProductSalesDiscountStatistics(status?: string): boolean {
-  // 后端排队状态曾返回 Pending；与 Queued/Running 同样轮询，兼容旧响应并避免页面过早停止刷新。
-  return ['queued', 'running', 'pending'].includes(status?.toLowerCase() ?? '')
+  // 后端排队状态曾返回 Pending；OutOfSync/Unavailable 可能正由后台重试，保持既有轮询节奏以恢复展示。
+  return ['queued', 'running', 'pending', 'backfilling', 'refreshing', 'partial', 'outofsync', 'unavailable'].includes(status?.toLowerCase() ?? '')
 }
 
-/** Fresh 以外的状态均需要提示；终态由页面显示警告，但不会继续自动轮询。 */
+/** Fresh 以外的状态均需要提示。 */
 export function hasBatchProductSalesDiscountStatisticsNotice(status?: string): boolean {
   return !!status && status.toLowerCase() !== 'fresh'
 }

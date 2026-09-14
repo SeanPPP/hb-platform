@@ -92,6 +92,15 @@ internal abstract class SalesStatisticsSliceBase
         return date.Year == 2025 ? _hbSalesContext : null;
     }
 
+    /// <summary>
+    /// 商品分店日统计专用：仅已核验的 HBSales 历史窗口可读取 HBSalesRecord。
+    /// 保留 GetHBSalesContextFor2025 的既有语义，避免其它统计调用意外扩展年份。
+    /// </summary>
+    protected HBSalesRecordSqlSugarContext? GetHBSalesContextForVerifiedHistory(DateTime date)
+    {
+        return SalesStatisticsHBSalesHistoryWindow.Includes(date) ? _hbSalesContext : null;
+    }
+
     protected BatchStatisticsUpdateResult ValidateDateRange(DateTime startDate, DateTime endDate)
     {
         var result = new BatchStatisticsUpdateResult { Success = false };

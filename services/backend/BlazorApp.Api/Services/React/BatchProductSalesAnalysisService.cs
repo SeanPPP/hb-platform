@@ -1,4 +1,3 @@
-using System.Text.Json;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
@@ -20,7 +19,7 @@ public sealed class BatchProductSalesAnalysisService : IBatchProductSalesAnalysi
     internal const int MaxDays = 366;
     private readonly ISqlSugarClient _db;
     private readonly BatchProductSalesStatisticReader _statisticReader;
-    private readonly BatchProductSalesDiscountStore _discountStore;
+    private readonly BatchProductSalesDiscountSnapshotReader _discountSnapshotReader;
     private readonly IProductStoreDailyStatisticQueueService _productStoreDailyQueue;
     private readonly ILogger<BatchProductSalesAnalysisService> _logger;
 
@@ -37,7 +36,7 @@ public sealed class BatchProductSalesAnalysisService : IBatchProductSalesAnalysi
     {
         _db = db;
         _statisticReader = new BatchProductSalesStatisticReader(db);
-        _discountStore = new BatchProductSalesDiscountStore(db);
+        _discountSnapshotReader = new BatchProductSalesDiscountSnapshotReader(db);
         _productStoreDailyQueue = productStoreDailyQueue;
         _logger = logger;
     }
@@ -149,32 +148,23 @@ public sealed class BatchProductSalesAnalysisService : IBatchProductSalesAnalysi
                 Warnings = ["商品日统计尚未完整刷新，当前销量暂不可用，请重新查询。"],
             });
         var quantities = await _statisticReader.ReadAsync(productCode, range.StartDate, range.EndDate, storeCodes, cancellationToken);
-        BatchProductSalesDiscountSnapshot? snapshot = null;
+        BatchProductSalesDiscountSnapshotReadResult discount;
         try
         {
-            snapshot = await _discountStore.FindOrQueueAsync(BatchProductSalesDiscountStore.Create(productCode,
-                range.StartDate, range.EndDate, storeCodes, statistic.Version), cancellationToken);
+            // 请求只读取已发布的日快照；调度器负责两年预计算和后续回填。
+            discount = await _discountSnapshotReader.ReadAsync(productCode, range.StartDate, range.EndDate,
+                storeCodes, quantities, cancellationToken);
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { _logger.LogWarning(ex, "折扣快照不可用，仍返回商品日统计 {ProductCode}", productCode); }
-        var discountState = snapshot?.Status ?? "Unavailable";
-        var facts = quantities;
-        if (snapshot is { Status: "Fresh" })
+        catch (Exception ex)
         {
-            try
-            {
-                var discountRows = snapshot.PayloadJson == null ? null
-                    : JsonSerializer.Deserialize<List<BatchProductSalesAggregateRow>>(snapshot.PayloadJson);
-                if (discountRows != null && BatchProductSalesStatisticReader.TotalsMatch(quantities, discountRows)) facts = discountRows;
-                else discountState = "OutOfSync";
-            }
-            catch (JsonException ex)
-            {
-                _logger.LogWarning(ex, "折扣聚合快照损坏，保留日统计销量 {Id}", snapshot.Id);
-                discountState = "Unavailable";
-            }
+            _logger.LogWarning(ex, "折扣日快照不可用，保留商品日统计销量 {ProductCode}", productCode);
+            // 异常回退也必须显式标记未知，不能让净额刚好为零的销量被聚合为 complete。
+            discount = new(BatchProductSalesDiscountSnapshotReader.MarkUnknown(
+                quantities, productCode, range.StartDate, range.EndDate, storeCodes), "Unavailable", null);
         }
-        else if (snapshot is { Attempts: < 3, Status: "Failed" or "OutOfSync" }) discountState = "Queued";
+        var discountState = discount.Status;
+        var facts = discount.Rows;
         var afterRead = await GetStatisticStatusAsync(range.StartDate, range.EndDate, cancellationToken);
         if (!afterRead.IsFresh || afterRead.Version != statistic.Version)
             return ApiResponse<BatchProductSalesDetailDto>.OK(new()
@@ -191,7 +181,7 @@ public sealed class BatchProductSalesAnalysisService : IBatchProductSalesAnalysi
             StoreCodes = storeCodes,
             Product = product,
             StatisticStatus = "Fresh", StatisticUpdatedAt = statistic.UpdatedAt,
-            DiscountStatisticStatus = discountState, DiscountUpdatedAt = discountState == "Fresh" ? snapshot?.CompletedAtUtc : null,
+            DiscountStatisticStatus = discountState, DiscountUpdatedAt = discount.UpdatedAt,
             Metrics = BuildAggregateMetrics(facts),
             Daily = BuildAggregateDaily(facts, range.StartDate, range.EndDate),
             Branches = facts.GroupBy(f => f.BranchCode, StringComparer.OrdinalIgnoreCase)
@@ -206,25 +196,7 @@ public sealed class BatchProductSalesAnalysisService : IBatchProductSalesAnalysi
                         .Select(days => new BatchProductSalesDailyDto { Date = days.Key, Metrics = BuildAggregateMetrics(days) }).ToList(),
                 }).ToList(),
         };
-        var metricDiscountStatus = discountState switch
-        {
-            // 只有 worker 仍可能推进的状态才可标记为待统计，前端据此继续轮询。
-            "Queued" or "Running" => "pending",
-            "Fresh" => null,
-            // 失败、版本失效、对账不一致和快照不可用都是终态；不能伪装为仍会完成的任务。
-            _ => "unknown",
-        };
-        if (metricDiscountStatus != null)
-        {
-            // 数量先可见，分类字段无可靠成交证据时不作为真实零展示。
-            result.Metrics.DiscountStatus = metricDiscountStatus;
-            foreach (var day in result.Daily) day.Metrics.DiscountStatus = metricDiscountStatus;
-            foreach (var branch in result.Branches)
-            {
-                branch.Metrics.DiscountStatus = metricDiscountStatus;
-                foreach (var day in branch.Daily) day.Metrics.DiscountStatus = metricDiscountStatus;
-            }
-        }
+        // Backfilling/Refreshing 由范围状态驱动前端轮询；逐日指标保留已核验或未知证据，不能整体改写为 pending。
         return ApiResponse<BatchProductSalesDetailDto>.OK(result);
     }
 

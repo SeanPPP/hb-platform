@@ -526,8 +526,9 @@ namespace BlazorApp.Api.Services
                         "分时统计",
                         () => UpdateHourlyStatisticsWithContext(context, posmContext, logger, date, null)
                     );
-                    // 当天与 2025 日期都由商品入口原子发布分店表，不能提前独立替换。
-                    if (date.Year != 2025 && !SalesStatisticsBusinessDate.IsToday(date))
+                    // 当天与 HBSales 历史窗口日期都由商品入口原子发布分店表，不能提前独立替换。
+                    if (!SalesStatisticsHBSalesHistoryWindow.Includes(date)
+                        && !SalesStatisticsBusinessDate.IsToday(date))
                     {
                         await RunStep(
                             SalesStatisticType.StoreSales,
@@ -564,15 +565,15 @@ namespace BlazorApp.Api.Services
                         "商品分店每日统计",
                         async () =>
                         {
-                            if (date.Year == 2025)
+                            if (SalesStatisticsHBSalesHistoryWindow.Includes(date))
                             {
-                                // 完整刷新也必须复用 2025 原子入口，不能先独立提交分店统计。
+                                // 完整刷新也必须复用 HBSales 原子入口，不能先独立提交分店统计。
                                 await _productRefresh.Update2025StoreAndProductStatisticsAtomically(
                                     context,
                                     posmContext,
                                     hbSalesContext
                                         ?? throw new InvalidOperationException(
-                                            "2025 年完整刷新缺少 HBSalesRecord 上下文"
+                                            "HBSales 历史窗口内的完整刷新缺少 HBSalesRecord 上下文"
                                         ),
                                     logger,
                                     date,
@@ -755,7 +756,7 @@ internal Task UpdateHourlyStatisticsWithContext(
     /// </summary>
     /// <param name="context">数据库上下文</param>
     /// <param name="posmContext">POSM数据库上下文</param>
-    /// <param name="hbSalesContext">HBSalesRecord 数据库上下文；仅 2025 年使用</param>
+    /// <param name="hbSalesContext">HBSalesRecord 数据库上下文；仅已核验历史窗口使用</param>
     /// <param name="logger">日志记录器</param>
     /// <param name="date">目标日期</param>
     /// <param name="branchCodes">分店代码列表，为空则更新所有分店</param>
@@ -780,9 +781,9 @@ internal async Task UpdateStoreStatisticsWithContext(
         var statisticsList = await _productSupport.BuildStoreStatisticsAsync(
             context,
             posmContext,
-            targetDate.Year == 2025
+            SalesStatisticsHBSalesHistoryWindow.Includes(targetDate)
                 ? hbSalesContext
-                    ?? throw new InvalidOperationException("2025 年分店统计缺少 HBSalesRecord 上下文")
+                    ?? throw new InvalidOperationException("HBSales 历史窗口内的分店统计缺少 HBSalesRecord 上下文")
                 : null,
             targetDate,
             branchCodes

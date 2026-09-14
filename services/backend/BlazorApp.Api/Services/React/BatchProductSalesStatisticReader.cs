@@ -46,6 +46,8 @@ internal sealed class BatchProductSalesStatisticReader(ISqlSugarClient db)
                 Date = s.Date, BranchCode = s.BranchCode, ProductCode = s.ProductCode,
                 Quantity = SqlFunc.AggregateSum(s.TotalQuantity),
                 UnknownQuantity = SqlFunc.AggregateSum(s.TotalQuantity),
+                // 即使销售与退货净额相抵，日统计仍没有折扣分类证据，不能显示为 complete。
+                UnknownRowCount = 1,
                 SalesAmount = SqlFunc.AggregateSum(s.TotalAmount),
             }).ToListAsync();
         token.ThrowIfCancellationRequested();
