@@ -40,6 +40,7 @@ export default function DiscountDailyChart({ data, ariaLabel, className }: Disco
         <title>{ariaLabel}</title>
         <desc>{t(quantityOnly ? 'batchProductSalesAnalysis.chart.quantityDescription' : 'batchProductSalesAnalysis.chart.description')}</desc>
         {model.ticks.map((tick) => <g key={tick.value}><line x1={model.plotLeft} x2={model.plotRight} y1={tick.y} y2={tick.y} stroke={tick.value === 0 ? '#8590a2' : '#edf0f5'} strokeDasharray={tick.value === 0 ? '4 3' : '2 2'} /><text x={model.plotLeft - 7} y={tick.y + 4} textAnchor="end" fontSize="11" fill="#718096">{tick.value}</text></g>)}
+        {model.weekDividers.map((divider) => <line key={divider.date} x1={divider.x} x2={divider.x} y1={model.plotTop} y2={model.plotBottom} stroke="#e2e8f0" strokeWidth="1" />)}
         {model.points.map((point, index) => (
           <g
             key={point.date}
