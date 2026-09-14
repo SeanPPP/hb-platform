@@ -31,6 +31,15 @@ dotnet publish outputs/hourly-backfill-runner-20260915/HourlyBackfillRunner.cspr
 
 迁移失败时停止，不运行 runner；按已记录恢复方案处理。应用后的业务回退只通过正式 rollback 状态机和 hash-CAS 撤销 manifest 认证，PublishedRow 作为不可变审计版本保留，不删除、不更新。
 
+## 生产迁移与恢复准备
+
+1. 只读核对 HBweb、POSM、HOT_POS_CLOUD 的实际身份，记录旧 5002 镜像与所有相关容器 ID。核对将上传的每个文件与基准内容相同；不覆盖其他部署的新改动。
+2. 对本次精确文件清单创建旧源码归档和校验清单，给旧 5002 镜像保留回滚标签。保留 `.env`、DataProtection 密钥和其他服务。
+3. 新库结构不存在时，迁移仅创建本任务三张表、索引、外键、读取视图和新发布表防误改触发器，不更改原小时表。数据库事务失败自动回滚；应用回退时保留新对象作为审计资料，旧镜像不使用它们。若目标对象已存在，先保存其定义和数据备份，不能按首次安装直接覆盖。
+4. 核对迁移 SHA-256 后执行 `20260915_CreateHourlySalesBackfill.sql`（自带 HBweb guard、迁移锁和单事务）。立即确认三张表、唯一 Applied 索引、读取 view、新表 UPDATE/DELETE trigger enabled，并通过 `SchemaReady()`；失败不进入发布。
+5. 仅重建/启动 `hbweb_vite` 的 `hb-api`，使用 `--no-deps`。验证 5002 健康、旧 5001 / 5003 / frontend 容器身份保持及 8888 返回 200。失败则通过记录的旧镜像标签和精确源码备份回退当前 API，不删除发布数据。
+6. 单日发布前保留候选、来源摘要、目标 fingerprint 和批次 manifest；发布后独立读取发布行/日统计并重新验证来源。数据回退通过正式 rollback 状态机，只切日期指针、保留版本行，拒绝覆盖后续发布。
+
 ## 1. 纯只读预览
 
 默认模式只读三个来源，逐日原子写 checkpoint，单日失败或规则无效会保留并继续下一日。首次只跑一天：
