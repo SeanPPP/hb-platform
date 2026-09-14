@@ -49,7 +49,8 @@ internal sealed class BatchProductSalesDiscountStore(ISqlSugarClient db)
             .Where(s => s.Status == "Running" && s.Attempts >= 3 && s.LeaseUntilUtc <= now)
             .ExecuteCommandAsync();
         var candidate = await db.Queryable<BatchProductSalesDiscountSnapshot>().With(SqlWith.Null)
-            .Where(s => ((s.Status == "Queued" || s.Status == "Failed") && s.Attempts < 3 && s.NextAttemptAtUtc <= now)
+            // 对账不一致可能来自统计与成交源的短暂水位差，沿用失败任务的有限退避重试；第三次仍不一致保留终态。
+            .Where(s => ((s.Status == "Queued" || s.Status == "Failed" || s.Status == "OutOfSync") && s.Attempts < 3 && s.NextAttemptAtUtc <= now)
                 || (s.Status == "Running" && s.LeaseUntilUtc <= now))
             .OrderBy(s => s.RequestedAtUtc).FirstAsync();
         if (candidate == null) return null;
@@ -59,7 +60,7 @@ internal sealed class BatchProductSalesDiscountStore(ISqlSugarClient db)
             .SetColumns(s => s.Status == "Running").SetColumns(s => s.LeaseToken == lease)
             .SetColumns(s => s.LeaseUntilUtc == until).SetColumns(s => s.Attempts == s.Attempts + 1)
             .Where(s => s.Id == candidate.Id && s.Attempts == candidate.Attempts &&
-                (((s.Status == "Queued" || s.Status == "Failed") && s.NextAttemptAtUtc <= now)
+                (((s.Status == "Queued" || s.Status == "Failed" || s.Status == "OutOfSync") && s.NextAttemptAtUtc <= now)
                  || (s.Status == "Running" && s.LeaseUntilUtc <= now)))
             .ExecuteCommandAsync();
         if (changed != 1) return null;

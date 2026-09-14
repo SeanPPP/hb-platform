@@ -1,4 +1,4 @@
-import type { BatchSalesBranch, BatchSalesDaily } from '../../../types/batchProductSalesAnalysis'
+import type { BatchSalesBranch, BatchSalesDaily, BatchSalesMetrics } from '../../../types/batchProductSalesAnalysis'
 
 const DATE_ONLY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/
 
@@ -24,6 +24,28 @@ export function hasBatchProductSalesDailyActivity(day: BatchSalesDaily): boolean
 /** 保持服务端并列顺序，并避免原地排序影响原始分店数据。 */
 export function sortBatchProductSalesBranchesByQuantity(branches: readonly BatchSalesBranch[]): BatchSalesBranch[] {
   return [...branches].sort((left, right) => right.metrics.quantity - left.metrics.quantity)
+}
+
+/** 待计算和终态不可用时不把缺少证据的正价/折扣数量显示成真实零；未知数量仍可如实展示。 */
+export function getBatchProductSalesClassifiedQuantity(
+  metrics: BatchSalesMetrics,
+  field: 'regularQuantity' | 'discountQuantity' | 'unknownQuantity',
+  classificationUnavailable = false,
+): number | null {
+  if (metrics.discountStatus === 'pending') return null
+  if (classificationUnavailable && field !== 'unknownQuantity') return null
+  return metrics[field]
+}
+
+/** 只有仍可能发生状态变化的折扣统计任务才需要继续轮询。 */
+export function shouldRefreshBatchProductSalesDiscountStatistics(status?: string): boolean {
+  // 后端排队状态曾返回 Pending；与 Queued/Running 同样轮询，兼容旧响应并避免页面过早停止刷新。
+  return ['queued', 'running', 'pending'].includes(status?.toLowerCase() ?? '')
+}
+
+/** Fresh 以外的状态均需要提示；终态由页面显示警告，但不会继续自动轮询。 */
+export function hasBatchProductSalesDiscountStatisticsNotice(status?: string): boolean {
+  return !!status && status.toLowerCase() !== 'fresh'
 }
 
 function parseDateOnly(value: string): Date | null {
