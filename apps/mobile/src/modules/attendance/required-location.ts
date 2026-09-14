@@ -4,6 +4,10 @@ import { DeviceStorage } from "@/modules/device/storage";
 import type { DeviceProfile } from "@/modules/device/types";
 import { isIosReviewSessionActive } from "@/modules/ios-review/session";
 import { IOS_REVIEW_LOCATION } from "@/modules/ios-review/helpers";
+import {
+  collectOptionalLoginLocationAttempt,
+  type OptionalLoginLocationBridge,
+} from "./optional-login-location";
 
 const IOS_REVIEW_HARDWARE_ID = "ios-review-device";
 
@@ -149,19 +153,37 @@ export async function collectLoginDeviceContext(
 export async function collectOptionalLoginDeviceLocation(
   profile?: Pick<DeviceProfile, "systemDeviceNumber" | "deviceSystem" | "storeCode"> | null,
 ): Promise<OptionalLoginDeviceLocationPayload> {
+  const bridge: OptionalLoginLocationBridge = {
+    getForegroundPermissionsAsync: async () => {
+      const permission = await Location.getForegroundPermissionsAsync();
+      return { status: permission.status };
+    },
+    getCurrentPositionAsync: () =>
+      Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High }),
+  };
+
   const [context, locationResult] = await Promise.all([
     collectLoginDeviceContext(profile),
-    collectRequiredLocation()
-      .then((location) => ({ ok: true as const, location }))
-      .catch((error: unknown) => ({ ok: false as const, error })),
+    isIosReviewSessionActive()
+      ? collectRequiredLocation()
+          .then((location) => ({ location, error: null, timedOut: false }))
+          .catch((error: unknown) => ({ location: null, error, timedOut: false }))
+      : collectOptionalLoginLocationAttempt({
+          bridge,
+        }),
   ]);
 
-  if (locationResult.ok) {
+  if (locationResult.location) {
     return { ...context, ...locationResult.location };
   }
 
   // 普通账号密码登录不能被 Android 定位服务不可用卡死；定位只作为登录审计补充信息。
-  console.warn("[login-location] 账号登录定位采集失败，继续按账号密码登录", locationResult.error);
+  console.warn(
+    locationResult.timedOut
+      ? "[login-location] 账号登录定位采集超时，继续按账号密码登录"
+      : "[login-location] 账号登录定位采集失败，继续按账号密码登录",
+    locationResult.error,
+  );
   return context;
 }
 

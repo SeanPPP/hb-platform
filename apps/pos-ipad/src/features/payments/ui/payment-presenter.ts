@@ -5,6 +5,7 @@ import type {
 } from "@/core/contracts";
 import type {
   LinklyOperatorPublicResult,
+  LinklyOperatorInteraction,
   LinklyOperatorRuntimePort,
   LinklyOperatorStatus,
   LinklySafeOperatorKey,
@@ -61,7 +62,8 @@ export type PaymentFieldIssue =
 export type LinklyOperatorErrorCode =
   | "LINKLY_UNKNOWN_REQUIRES_RECOVERY"
   | "LINKLY_OPERATOR_STATE_INVALID"
-  | "LINKLY_OPERATOR_KEY_NOT_ALLOWED";
+  | "LINKLY_OPERATOR_KEY_NOT_ALLOWED"
+  | "LINKLY_ACKNOWLEDGEMENT_PENDING";
 
 export type PaymentUiRuntimeErrorCode =
   | PaymentCheckoutErrorCode
@@ -144,6 +146,7 @@ export type PaymentPresenterState = Readonly<{
     status: LinklyOperatorStatus | null;
     errorCode: LinklyOperatorErrorCode | null;
     allowedKeys: readonly LinklySafeOperatorKey[];
+    interaction?: LinklyOperatorInteraction | null | undefined;
   }>;
   linklyTerminals?: Readonly<{
     kind: "unavailable" | "loading" | "ready" | "switching" | "failed";
@@ -213,7 +216,8 @@ export type PaymentPresenterDependencies = Readonly<{
 }>;
 
 export const LINKLY_SAFE_OPERATOR_KEYS = Object.freeze([
-  "ok-cancel",
+  "ok",
+  "cancel",
   "yes",
   "no",
   "authorise",
@@ -358,6 +362,7 @@ export class PaymentPresenter {
       if (!this.isCurrent(revision)) return false;
       if (recovery) {
         this.applySnapshot(recovery);
+        await this.refreshLinklyInteraction(revision);
         const linklyTerminals = await this.loadLinklyTerminals(false);
         this.patchIfCurrent(revision, { linklyTerminals });
       } else {
@@ -388,6 +393,7 @@ export class PaymentPresenter {
       const snapshot = await this.dependencies.runtime.read(orderGuid);
       if (!this.isCurrent(revision)) return false;
       this.applySnapshot(snapshot);
+      await this.refreshLinklyInteraction(revision);
       return true;
     });
   }
@@ -739,6 +745,7 @@ export class PaymentPresenter {
       }
       if (!snapshot || !this.isCurrent(revision)) return false;
       this.applySnapshot(snapshot);
+      await this.refreshLinklyInteraction(revision);
       if (
         snapshot.errorCode ===
         "LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT"
@@ -805,6 +812,7 @@ export class PaymentPresenter {
           : await this.dependencies.runtime.resumeCurrent();
       if (!snapshot || !this.isCurrent(revision)) return false;
       this.applySnapshot(snapshot);
+      await this.refreshLinklyInteraction(revision, options);
       return snapshot.status === "completed" || snapshot.status === "partial";
     }, { background: options.background === true });
   }
@@ -832,6 +840,7 @@ export class PaymentPresenter {
           });
       if (!this.isCurrent(revision)) return false;
       this.applySnapshot(snapshot);
+      await this.refreshLinklyInteraction(revision);
       return snapshot.status === "cancelled";
     });
   }
@@ -923,6 +932,17 @@ export class PaymentPresenter {
             );
       if (!this.isCurrent(revision)) return false;
       this.applyLinklyResult(result);
+      if (action === "acknowledged" && result.errorCode === null) {
+        // ACK 成功后由 checkout runtime 执行 ACK-only recovery/业务状态刷新；
+        // 不能再次调用 operator.read，避免把 ACK 入口变成额外终端查询。
+        const snapshot = await this.dependencies.runtime.recover({
+          orderGuid: this.state.orderGuid!,
+          attemptId: result.attemptId,
+        });
+        if (!this.isCurrent(revision)) return false;
+        this.applySnapshot(snapshot);
+        return snapshot.errorCode === null;
+      }
       return result.errorCode === null;
     });
   }
@@ -992,11 +1012,37 @@ export class PaymentPresenter {
         status: result.status,
         errorCode,
         allowedKeys: Object.freeze([...result.allowedKeys]),
+        interaction: copyLinklyInteraction(result.interaction),
       }),
       ...(result.status === "recovery-required"
         ? { phase: "recovery-required" as const }
         : {}),
     });
+  }
+
+  private async refreshLinklyInteraction(
+    revision: number,
+    control: PaymentRecoverOptions = {},
+  ): Promise<void> {
+    const attemptId = this.state.attemptId;
+    if (
+      !attemptId ||
+      this.state.provider !== "linkly-cloud" ||
+      !this.dependencies.linklyOperator ||
+      !this.isCurrent(revision)
+    ) {
+      return;
+    }
+    if (control.signal?.aborted) return;
+    const result = await this.dependencies.linklyOperator.read({
+      attemptId,
+      ...(control.signal ? { signal: control.signal } : {}),
+      ...(control.deadlineAtMs !== undefined
+        ? { deadlineAtMs: control.deadlineAtMs }
+        : {}),
+    });
+    if (!this.isCurrent(revision)) return;
+    this.applyLinklyResult(result);
   }
 
   private clearVoucher(): void {
@@ -1397,6 +1443,7 @@ function emptyLinklyState(): PaymentPresenterState["linkly"] {
     status: null,
     errorCode: null,
     allowedKeys: Object.freeze([]),
+    interaction: null,
   });
 }
 
@@ -1414,11 +1461,9 @@ function linklyStateForSnapshot(
     return Object.freeze({
       status: "in-progress",
       errorCode: null,
-      // 初次响应尚无 allowedKeys；仅展示受枚举约束的安全按键，运行时会再次校验。
-      allowedKeys:
-        previous.status === "in-progress" && previous.allowedKeys.length > 0
-          ? previous.allowedKeys
-          : LINKLY_SAFE_OPERATOR_KEYS,
+      // 未读到当前终端旗标前不得展示任何按键，避免将 Key=0 误作取消。
+      allowedKeys: previous.status === "in-progress" ? previous.allowedKeys : [],
+      interaction: previous.interaction,
     });
   }
   if (snapshot.status === "unknown") {
@@ -1426,6 +1471,7 @@ function linklyStateForSnapshot(
       status: "recovery-required",
       errorCode: "LINKLY_UNKNOWN_REQUIRES_RECOVERY",
       allowedKeys: Object.freeze([]),
+      interaction: previous.interaction,
     });
   }
   if (snapshot.status === "cancelled") {
@@ -1433,6 +1479,15 @@ function linklyStateForSnapshot(
       status: "cancelled",
       errorCode: null,
       allowedKeys: Object.freeze([]),
+      interaction: previous.interaction,
+    });
+  }
+  if (snapshot.status === "declined") {
+    return Object.freeze({
+      status: "declined",
+      errorCode: null,
+      allowedKeys: Object.freeze([]),
+      interaction: previous.interaction,
     });
   }
   if (snapshot.status === "completed" || snapshot.status === "partial") {
@@ -1440,9 +1495,23 @@ function linklyStateForSnapshot(
       status: "completed",
       errorCode: null,
       allowedKeys: Object.freeze([]),
+      interaction: previous.interaction,
     });
   }
   return previous;
+}
+
+function copyLinklyInteraction(
+  interaction: LinklyOperatorInteraction | undefined,
+): LinklyOperatorInteraction | null {
+  if (!interaction) return null;
+  return Object.freeze({
+    displayText: interaction.displayText,
+    displayLines: Object.freeze([...interaction.displayLines]),
+    inputType: interaction.inputType,
+    graphicCode: interaction.graphicCode,
+    recoveryAction: interaction.recoveryAction,
+  });
 }
 
 function runtimeErrorCode(error: unknown): PaymentUiRuntimeErrorCode {
@@ -1463,4 +1532,5 @@ const LINKLY_OPERATOR_ERRORS = new Set<LinklyOperatorErrorCode>([
   "LINKLY_UNKNOWN_REQUIRES_RECOVERY",
   "LINKLY_OPERATOR_STATE_INVALID",
   "LINKLY_OPERATOR_KEY_NOT_ALLOWED",
+  "LINKLY_ACKNOWLEDGEMENT_PENDING",
 ]);

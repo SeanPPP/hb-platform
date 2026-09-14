@@ -10,7 +10,7 @@ namespace BlazorApp.Api.Controllers.React
 {
     [ApiController]
     [Route("api/react/v1/local-purchase-dashboard")]
-    [Authorize(Policy = Permissions.LocalPurchase.View)]
+    [Authorize(Policy = Permissions.SalesDashboard.PurchaseAmountView)]
     public class ReactLocalPurchaseDashboardController : ControllerBase
     {
         private readonly ILocalPurchaseDashboardService _service;
@@ -29,7 +29,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpGet]
-        [Authorize(Policy = Permissions.LocalPurchase.View)]
+        [Authorize(Policy = Permissions.SalesDashboard.PurchaseAmountView)]
         public async Task<IActionResult> GetDashboard(
             [FromQuery] string? endMonth,
             CancellationToken cancellationToken
@@ -46,7 +46,9 @@ namespace BlazorApp.Api.Controllers.React
                 var result = await _service.GetDashboardAsync(
                     endMonth ?? string.Empty,
                     scope.ServiceScope,
-                    cancellationToken
+                    cancellationToken,
+                    null,
+                    null
                 );
                 return ToActionResult(result);
             }
@@ -66,7 +68,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpGet("stores/{storeCode}/suppliers")]
-        [Authorize(Policy = Permissions.LocalPurchase.View)]
+        [Authorize(Policy = Permissions.SalesDashboard.PurchaseAmountView)]
         public async Task<IActionResult> GetStoreSuppliers(
             string storeCode,
             [FromQuery] string? endMonth,
@@ -85,7 +87,9 @@ namespace BlazorApp.Api.Controllers.React
                     storeCode,
                     endMonth ?? string.Empty,
                     scope.ServiceScope,
-                    cancellationToken
+                    cancellationToken,
+                    null,
+                    null
                 );
                 if (string.Equals(result.ErrorCode, "FORBIDDEN", StringComparison.OrdinalIgnoreCase))
                 {
@@ -114,6 +118,24 @@ namespace BlazorApp.Api.Controllers.React
                     )
                 );
             }
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> PostDashboard([FromBody] LocalPurchaseDashboardQueryRequestDto request, CancellationToken cancellationToken)
+        {
+            var scope = await ResolveStoreScopeAsync();
+            if (scope.Forbidden) return Forbid();
+            var result = await _service.GetDashboardAsync(request.EndMonth, scope.ServiceScope, cancellationToken, request.SupplierFilterMode, request.SupplierKeys);
+            return ToActionResult(result);
+        }
+
+        [HttpPost("stores/{storeCode}/suppliers")]
+        public async Task<IActionResult> PostStoreSuppliers(string storeCode, [FromBody] LocalPurchaseDashboardQueryRequestDto request, CancellationToken cancellationToken)
+        {
+            var scope = await ResolveStoreScopeAsync();
+            if (scope.Forbidden || !scope.CanAccess(storeCode)) return Forbid();
+            var result = await _service.GetStoreSuppliersAsync(storeCode, request.EndMonth, scope.ServiceScope, cancellationToken, request.SupplierFilterMode, request.SupplierKeys);
+            return ToActionResult(result);
         }
 
         private IActionResult ToActionResult<T>(ApiResponse<T> result)

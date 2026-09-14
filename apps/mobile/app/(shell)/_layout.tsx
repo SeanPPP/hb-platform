@@ -23,6 +23,7 @@ import {
 import { getEmployeeProfileReviewRequestsApi } from "@/modules/employee-profile-review/api";
 import { AppNavigationAccessProvider } from "@/modules/navigation/access-context";
 import { canAccessVersionManagement, filterVersionManagementRoutes } from "@/modules/navigation/version-management-access";
+import { resolveIdentityAdminRouteNames } from "@/modules/navigation/identity-admin-access";
 
 export const unstable_settings = {
   initialRouteName: "workbench",
@@ -53,6 +54,9 @@ export default function ShellLayout() {
   );
   const canCreateOrder = useAuthStore((state) => state.access.canCreateOrder);
   const isAdmin = useAuthStore((state) => state.access.isAdmin);
+  const canReadUsers = useAuthStore((state) => state.access.hasPermission("Users.View"));
+  const canReadRoles = useAuthStore((state) => state.access.hasPermission("Roles.View"));
+  const iosReviewOfflineGuardActive = useAuthStore((state) => state.iosReviewOfflineGuardActive);
   const versionManagementAllowed = canAccessVersionManagement({ isAdmin, isAuthenticated, sessionKind });
   const isWarehouseStaffOnly = useAuthStore((state) => state.access.isWarehouseStaffOnly);
   const hasRestored = useRef(false);
@@ -257,10 +261,20 @@ export default function ShellLayout() {
   const accountRouteNames = useMemo(
     () =>
       filterAccountTabRouteNames(
-        navigationItems.map((item) => item.routeName),
+        resolveIdentityAdminRouteNames(navigationItems.map((item) => item.routeName), {
+          isAuthenticated,
+          sessionKind,
+          iosReviewOfflineGuardActive,
+          isAdmin,
+          canReadUsers,
+          canReadRoles,
+          menuReady: navigationReady && !navigationLoading && !navigationErrorMessage,
+        }),
         { canCreateOrder, isWarehouseStaffOnly }
       ),
-    [canCreateOrder, isWarehouseStaffOnly, navigationItems]
+    [canCreateOrder, isWarehouseStaffOnly, navigationItems, isAuthenticated, sessionKind,
+      iosReviewOfflineGuardActive, isAdmin, canReadUsers, canReadRoles,
+      navigationReady, navigationLoading, navigationErrorMessage]
   );
   const employeeProfileReviewAccess = useMemo(
     () => getEmployeeProfileReviewAccess({

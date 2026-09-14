@@ -1,0 +1,175 @@
+.compactHeader {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 4px 0 18px;
+  border-bottom: 1px solid var(--shop-border, #dce3ea);
+}
+.headerCopy {
+  min-width: 0;
+}
+.headerCopy h2 {
+  margin: 0 0 5px !important;
+  color: var(--shop-navy, #18324a);
+}
+.inlineStats {
+  display: flex;
+  align-items: stretch;
+  flex-shrink: 0;
+}
+.inlineStats > div {
+  min-width: 122px;
+  padding: 4px 18px;
+  border-left: 1px solid var(--shop-border, #dce3ea);
+}
+.inlineStats span {
+  display: block;
+  color: var(--shop-muted, #637386);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.inlineStats strong {
+  display: block;
+  margin-top: 5px;
+  color: var(--shop-navy, #18324a);
+  font-size: 21px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tableShell {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--shop-border, #dce3ea);
+  border-radius: var(--shop-radius-panel, 12px);
+  background: #fff;
+}
+
+.invoiceTable {
+  width: 100%;
+  min-width: 1060px;
+  border-collapse: collapse;
+  color: var(--shop-navy, #18324a);
+  font-size: 13px;
+}
+
+.invoiceTable th {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--shop-border, #dce3ea);
+  background: #f6f8fa;
+  color: var(--shop-muted, #637386);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.invoiceTable td {
+  padding: 8px 14px;
+  border-bottom: 1px solid #edf0f3;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.invoiceTable tbody tr:last-child td {
+  border-bottom: 0;
+}
+.invoiceTable tbody tr:hover {
+  background: #fffaf7;
+}
+.invoiceNumber {
+  font-weight: 700;
+}
+.numeric {
+  text-align: right !important;
+  font-variant-numeric: tabular-nums;
+}
+.amount {
+  color: var(--shop-navy, #18324a);
+  font-weight: 600;
+}
+.invoiceNumber a {
+  color: var(--shop-navy);
+}
+.invoiceNumber a:hover {
+  text-decoration: underline;
+}
+.invoiceNumber a:focus-visible {
+  outline: 2px solid var(--shop-navy);
+  outline-offset: 4px;
+}
+.actionCell {
+  text-align: right;
+}
+.actionCell button {
+  min-width: 32px;
+  min-height: 32px;
+  padding: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--shop-navy, #18324a);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+}
+.actionCell button:hover {
+  color: var(--shop-orange, #e56b38);
+  text-decoration: underline;
+}
+.actionCell button:focus-visible {
+  outline: 2px solid var(--shop-orange, #e56b38);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+
+@media (max-width: 640px) {
+  .compactHeader {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .inlineStats {
+    width: 100%;
+  }
+  .inlineStats > div {
+    flex: 1;
+    padding-left: 0;
+  }
+  .tableShell {
+    border-left: 0;
+    border-right: 0;
+    border-radius: 0;
+    margin-inline: -12px;
+    width: calc(100% + 24px);
+  }
+  .invoiceTable {
+    min-width: 980px;
+  }
+}
+.page {
+  min-width: 0;
+}
+
+.page :global(.shop-orders-toolbar) {
+  border: 1px solid var(--shop-border);
+  border-radius: 6px;
+  padding: 12px 16px;
+}
+
+.page :global(.shop-orders-filter-note) {
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  font-size: 12px;
+}
+
+.page :global(.shop-orders-eyebrow) {
+  display: none;
+}
+
+.page :global(.shop-orders-pagination) {
+  margin-top: 0;
+}

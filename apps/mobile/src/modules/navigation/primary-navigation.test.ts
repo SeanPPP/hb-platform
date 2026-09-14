@@ -132,6 +132,11 @@ assert.equal(
   "商品查询页必须高亮扫码查询"
 );
 assert.equal(
+  compactPrimaryItems("product-insights", [...fullMenu, "product-insights"])[0]?.active,
+  true,
+  "商品进销查询作为商品功能子页必须回归工作台上下文，不能新增一级导航"
+);
+assert.equal(
   compactPrimaryItems("attendance-management", fullMenu)[2]?.active,
   true,
   "考勤管理页也必须高亮打卡，而不是改变打卡的个人考勤目标"
@@ -299,6 +304,8 @@ const sparseSections = buildWorkbenchSections([
   "warehouse",
   "reports",
   "users",
+  "user-admin",
+  "roles",
 ]);
 assert.deepEqual(
   sparseSections.map((section) => ({
@@ -309,7 +316,7 @@ assert.deepEqual(
     { key: "sales-product", itemRouteNames: ["orders"] },
     { key: "warehouse-purchase", itemRouteNames: ["warehouse"] },
     { key: "operations-reports", itemRouteNames: ["reports"] },
-    { key: "people-management", itemRouteNames: ["users"] },
+    { key: "people-management", itemRouteNames: ["users", "user-admin", "roles"] },
   ],
   "工作台仅按显式可见路由显示四类业务入口"
 );
@@ -334,6 +341,14 @@ assert.deepEqual(
   "供应商发票必须归入销售与商品并紧跟 HB订单，仓库与采购不得再包含该入口"
 );
 assert.deepEqual(
+  buildWorkbenchSections(["product-query", "product-insights"]).map((section) => ({
+    key: section.key,
+    itemRouteNames: section.items.map((item) => item.routeName),
+  })),
+  [{ key: "sales-product", itemRouteNames: ["product-query", "product-insights"] }],
+  "商品查询与商品进销查询必须同属销售与商品，并且只依赖后端显式菜单"
+);
+assert.deepEqual(
   buildWorkbenchSections(["local-supplier-invoices"]).map((section) => ({
     key: section.key,
     itemRouteNames: section.items.map((item) => item.routeName),
@@ -352,7 +367,7 @@ const visibleSectionRoutes = sparseSections.flatMap((section) =>
 );
 assert.deepEqual(
   visibleSectionRoutes,
-  ["orders", "warehouse", "reports", "users"],
+  ["orders", "warehouse", "reports", "users", "user-admin", "roles"],
   "工作台不得从角色或默认配置推断未授权入口"
 );
 assert.deepEqual(

@@ -16,6 +16,32 @@ public sealed class ConfiguredCardTerminalClientTests
     private static readonly Uri HbposApiBaseAddress = new("http://localhost:5159/");
 
     [Fact]
+    public async Task Linkly_authorization_holds_selection_gate_until_terminal_call_completes()
+    {
+        var completion = new TaskCompletionSource<PaymentAuthorizationResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var terminal = new StubLinklyTerminalClient(new PaymentAuthorizationResult(true, "approved"))
+        {
+            PurchaseCompletion = completion
+        };
+        using var gate = new LinklyTerminalSelectionTransitionGate();
+        var client = new ConfiguredCardTerminalClient(
+            new StaticCardTerminalSettingsProvider(CreateLinklySettings()),
+            CreateApiClient(new StubHttpMessageHandler((_, _) =>
+                Task.FromException<HttpResponseMessage>(new InvalidOperationException("HTTP should not be called.")))),
+            terminal,
+            linklyTerminalSelectionTransitionGate: gate);
+
+        var authorization = client.AuthorizeAsync(10m, CreateSession());
+        await terminal.PurchaseStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Null(await gate.TryEnterAssignmentAsync());
+        completion.SetResult(new PaymentAuthorizationResult(true, "approved"));
+        Assert.True((await authorization).Approved);
+        await using var assignmentLease = await gate.TryEnterAssignmentAsync();
+        Assert.NotNull(assignmentLease);
+    }
+
+    [Fact]
     public async Task AuthorizeAsync_fails_when_card_terminal_is_not_configured()
     {
         var client = new ConfiguredCardTerminalClient(
@@ -2447,6 +2473,11 @@ public sealed class ConfiguredCardTerminalClientTests
 
     private sealed class StubLinklyTerminalClient(PaymentAuthorizationResult result) : ILinklyTerminalClient
     {
+        public TaskCompletionSource<PaymentAuthorizationResult>? PurchaseCompletion { get; init; }
+
+        public TaskCompletionSource<bool> PurchaseStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public int RecoverCallCount { get; private set; }
 
         public string? LastRecoveryTxnRef { get; private set; }
@@ -2480,7 +2511,8 @@ public sealed class ConfiguredCardTerminalClientTests
         {
             LastAmount = amount;
             LastSettings = settings;
-            return Task.FromResult(result);
+            PurchaseStarted.TrySetResult(true);
+            return PurchaseCompletion?.Task ?? Task.FromResult(result);
         }
 
         public Task<PaymentAuthorizationResult> PurchaseWithReferenceAsync(

@@ -15,12 +15,14 @@ import {
 } from "./payment-completion-runtime";
 import type { PaymentProviderRuntimeBootstrap } from "./payment-provider-runtime-bootstrap";
 import { ProductionReturnRefundAdapter } from "./production-return-refund-adapter";
+import { withPersistedLinklyAcknowledgementRecovery } from "@/features/payments/runtime/linkly-acknowledgement-recovery-runtime";
 
 import type {
   AuditActorSnapshot,
   CartSnapshot,
   Money,
   OrderTender,
+  PaymentAttempt,
 } from "@/core/contracts";
 import type { PosDatabase } from "@/core/db/pos-database";
 import type {
@@ -53,7 +55,14 @@ import {
 import {
   PaymentAttemptService,
   type PaymentConnectivityPort,
+  type PaymentRecoveryControl,
 } from "@hb/pos-payments-core/features/payments/payment-attempt-service";
+import {
+  PaymentAcknowledgementService,
+  type LinklyLegacyAcknowledgementReconciler,
+  type LinklyPaymentAcknowledgementPort,
+  type PaymentAcknowledgementRuntimePort,
+} from "@hb/pos-payments-core/features/payments/payment-acknowledgement-service";
 import {
   PaymentCheckoutRuntime,
   PaymentCheckoutRuntimeError,
@@ -110,6 +119,8 @@ export type ProductionPaymentRuntime = Readonly<{
   }>;
   /** 仅供生产组合根接入退货编排；不会进入 route 可见的 payments service。 */
   returnRefund: DurableOnlineReturnRefundPort | null;
+  /** 仅供组合根在退货账本完成后确认，禁止暴露到页面。 */
+  acknowledgements: PaymentAcknowledgementRuntimePort | null;
   initializeRecovery(): Promise<void>;
 }>;
 
@@ -128,6 +139,8 @@ export type ProductionPaymentRuntimeDependencies = Readonly<{
   connectivity: PaymentConnectivityPort;
   bootstrap?: PaymentProviderRuntimeBootstrap | undefined;
   receiptSettings?: PaymentReceiptSettingsPort | undefined;
+  /** 退货存在活动恢复时封锁新的付款/退款金融操作。 */
+  hasReturnRecoveryRequired?: (() => Promise<boolean>) | undefined;
   drainFulfilment(): Promise<unknown>;
 }>;
 
@@ -145,13 +158,18 @@ export function createProductionPaymentRuntime(
     createAuditEventId: input.createId,
   });
   const voucherReversalStore = voucherTenderReversalStore(input);
+  // legacy 发现只在冷启动/显式恢复时执行一次；普通 read 不应触发 provider 查询。
+  let discoverLegacyForRecoveryProbe:
+    ((retry?: boolean) => Promise<void>) | null = null;
   const recoveryProbe = Object.freeze({
     async hasRecoveryRequired(): Promise<boolean> {
-      const [draftRecovery, voucherReversal] = await Promise.all([
+      await discoverLegacyForRecoveryProbe?.();
+      const [draftRecovery, voucherReversal, pendingAcknowledgement] = await Promise.all([
         drafts.findBlockingRecovery(terminalScope),
         voucherReversalStore.findBlocking(terminalScope),
+        drafts.findPendingLinklyAcknowledgement(terminalScope),
       ]);
-      return draftRecovery !== null || voucherReversal !== null;
+      return draftRecovery !== null || voucherReversal !== null || pendingAcknowledgement !== null;
     },
   });
 
@@ -160,6 +178,7 @@ export function createProductionPaymentRuntime(
       initializeRecovery: async () => undefined,
       recoveryProbe,
       returnRefund: null,
+      acknowledgements: null,
       service: {
         status: "unavailable",
         blockers: [
@@ -184,6 +203,8 @@ export function createProductionPaymentRuntime(
   );
   let recoveryInitialized = false;
   let returnRefund: ProductionReturnRefundAdapter | null = null;
+  const linklyAcknowledger = input.bootstrap.linklyTerminals ? requireLinklyAcknowledger(input.bootstrap.providers) : null;
+  const legacyReconciler = linklyAcknowledger ? legacyReconcilerOrNull(linklyAcknowledger) : null;
   const attempts = new PaymentAttemptService({
     ledger: input.repositories.payments,
     actionBindings: input.database.paymentActionBindings(),
@@ -193,6 +214,7 @@ export function createProductionPaymentRuntime(
     createAttemptId: input.createId,
     createIdempotencyKey: input.createId,
     nowIso: input.clock.nowIso,
+    ...(legacyReconciler ? { legacyPaymentRecoveryEnvironment: legacyReconciler.reconcileLegacy } : {}),
     trustedRefundReferenceSeed: (request) => {
       if (!returnRefund) {
         throw new Error("RETURN_REFUND_RUNTIME_NOT_INITIALIZED");
@@ -200,6 +222,49 @@ export function createProductionPaymentRuntime(
       return returnRefund.trustedRefundReferenceSeed(request);
     },
   });
+  const acknowledgements = linklyAcknowledger
+    ? new PaymentAcknowledgementService({ ledger: input.repositories.payments, acknowledger: linklyAcknowledger, ...(legacyReconciler ? { legacyReconciler } : {}), nowIso: input.clock.nowIso })
+    : null;
+  let legacyDiscovery: Promise<void> | null = null;
+  let legacyDiscoveryAttempted = false;
+  const discoverLegacy = (retry = false): Promise<void> => {
+    if (retry) legacyDiscoveryAttempted = false;
+    if (legacyDiscovery) return legacyDiscovery;
+    if (legacyDiscoveryAttempted) return Promise.resolve();
+    const list = linklyAcknowledger?.listUnacknowledgedSessions;
+    if (typeof list !== "function" || !legacyReconciler) {
+      legacyDiscoveryAttempted = true;
+      return Promise.resolve();
+    }
+    legacyDiscoveryAttempted = true;
+    // 只从后端当前未确认会话反查本机旧记录；不扫描全部历史，也不发送金融请求。
+    legacyDiscovery = (async () => {
+      requireScopedCurrentCashier(input);
+      // 新库没有旧环境缺失的 Linkly attempt 时，不触发 active/resumable 的
+      // 240 秒网络探针；先用本地阻断记录确认存在候选，再查询后端当前会话。
+      if (!await drafts.hasLegacyLinklyRecovery(terminalScope)) return;
+      const sessions = await list.call(linklyAcknowledger) as readonly { sessionId: string; environment: string; idempotencyKey?: string }[];
+      requireScopedCurrentCashier(input);
+      for (const session of sessions) {
+        if (typeof session.idempotencyKey !== "string") continue;
+        const id = await drafts.findLegacyLinklyAttemptForSession(terminalScope, session.sessionId, session.idempotencyKey);
+        if (!id) continue;
+        const attempt = await input.repositories.payments.get(id);
+        if (!attempt) continue;
+        const environment = await legacyReconciler.reconcileLegacy(attempt);
+        requireScopedCurrentCashier(input);
+        if (environment !== session.environment) continue;
+        await input.repositories.payments.verifyProviderEnvironment?.(attempt, environment);
+      }
+    })().catch(() => {
+      // 权限/网络失败不是“已完成发现”；登录后 probe 必须允许重试。
+      legacyDiscoveryAttempted = false;
+    }).finally(() => {
+      legacyDiscovery = null;
+    });
+    return legacyDiscovery;
+  };
+  discoverLegacyForRecoveryProbe = discoverLegacy;
   const voucherPreparation = new DurableVoucherPreparationService(
     input.database.voucherPreparationStore(
       input.encryptor,
@@ -377,30 +442,91 @@ export function createProductionPaymentRuntime(
         },
       },
     });
+    // 履约基于本地完成事实触发；ACK 网络故障不能推迟已入队的小票，也不能在 ACK-only 重试时重放履约。
+    const committedRuntime = withPostCommitFulfilment(runtime, input.drainFulfilment);
+    // 退货恢复封门必须位于 ACK wrapper 之外：没有 Linkly/ACK 能力时也要阻止
+    // 新的付款金融操作；ACK-only 已持久终态快路径仍由外层 wrapper 直接处理。
+    const financialGuardedRuntime = withReturnRecoveryFinancialGate(
+      committedRuntime,
+      async () => {
+        await guard.assertActive();
+        if (await input.hasReturnRecoveryRequired?.()) {
+          await guard.assertActive();
+          throw new PaymentCheckoutRuntimeError("RETURN_RECOVERY_REQUIRED");
+        }
+        await guard.assertActive();
+      },
+    );
+    const acknowledgedRuntime = acknowledgements
+      ? withPersistedLinklyAcknowledgementRecovery({
+          runtime: financialGuardedRuntime,
+          acknowledgements,
+          assertView: async () => {
+            await guard.assertActive();
+            await guard.assert("Permissions.PosTerminal.Payment.View");
+          },
+          assertAcknowledge: async () => {
+            await guard.assertActive();
+            await guard.assert("Permissions.PosTerminal.Payment.View");
+            await guard.assert("Permissions.PosTerminal.Payment.TakeCard");
+            await guard.assert("Permissions.PosTerminal.Payment.Confirm");
+          },
+          async findPendingAttempt() {
+            const id = await drafts.findPendingLinklyAcknowledgement(terminalScope);
+            return id ? input.repositories.payments.get(id) : null;
+          },
+          getAttempt: (id) => input.repositories.payments.get(id),
+          canAcknowledge: async (attempt) =>
+            input.repositories.payments.canProviderAcknowledged?.(attempt) ?? false,
+          async readFinalSnapshot(attempt) {
+            await guard.assertActive();
+            const order = await input.repositories.orders.getByGuid(attempt.orderGuid);
+            await guard.assertActive();
+            if (!order || order.storeCode !== terminalScope.storeCode || order.deviceCode !== terminalScope.deviceCode) {
+              throw new PaymentCheckoutRuntimeError("PAYMENT_ATTEMPT_ORDER_MISMATCH");
+            }
+            const draft = await draftPort.read(attempt.orderGuid);
+            const base = draft ? await runtime.read(attempt.orderGuid) : null;
+            const status = attempt.state === "Declined" ? "declined"
+              : attempt.state === "Cancelled" ? "cancelled"
+                : order.state !== "Draft" && order.state !== "Completing" ? "completed" : "partial";
+            return {
+              ...(base ?? {
+                orderGuid: order.orderGuid,
+                total: { currency: "AUD" as const, cents: Math.abs(order.actualAmount.cents) },
+                remaining: { currency: "AUD" as const, cents: 0 },
+                tenders: [],
+                allowedActions: { start: false, changeProvider: false, recover: false, cancel: false, addCash: false, removeTender: false },
+              }),
+              status,
+              errorCode: null,
+              attemptId: attempt.attemptId,
+              attemptCreatedAtIso: attempt.createdAtIso,
+              provider: attempt.provider,
+              ...(status === "completed" ? { allowedActions: { start: false, changeProvider: false, recover: false, cancel: false, addCash: false, removeTender: false } } : {}),
+            };
+          },
+        })
+      : financialGuardedRuntime;
     return {
-      runtime: withPostCommitFulfilment(
-        withPersistedVoucherTenderReversalRecovery({
-          runtime,
-          store: voucherReversalStore,
-          scope: terminalScope,
-          retryAvailable: voucherReversal !== null,
-        }),
-        input.drainFulfilment,
-      ),
-      linkly: input.bootstrap!.createLinklyOperator({
-        attempts,
-        trustedSession: guard,
-        permissions: guard,
+      runtime: withPersistedVoucherTenderReversalRecovery({
+        runtime: acknowledgedRuntime,
+        store: voucherReversalStore,
+        scope: terminalScope,
+        retryAvailable: voucherReversal !== null,
       }),
+      linkly: acknowledgements ? input.bootstrap!.createLinklyOperator({ attempts, acknowledgements, trustedSession: guard, permissions: guard }) : null,
     };
   };
 
   return {
     returnRefund,
+    acknowledgements,
     recoveryProbe,
     initializeRecovery: async () => {
       await cartLease.initializeRecovery();
       recoveryInitialized = true;
+      await discoverLegacy(true);
     },
     service: {
       status: "available",
@@ -422,6 +548,35 @@ export function createProductionPaymentRuntime(
         const context = createContext();
         return (await context.runtime.findRecoveryRequired()) !== null;
       },
+    },
+  };
+}
+
+function requireLinklyAcknowledger(
+  providers: PaymentProviderRuntimeBootstrap["providers"],
+): LinklyPaymentAcknowledgementPort & Readonly<{ reconcileLegacy?: unknown; listUnacknowledgedSessions?: unknown }> {
+  const provider = providers.get("linkly-cloud") as unknown;
+  if (!provider || typeof provider !== "object" || !("acknowledge" in provider) || typeof provider.acknowledge !== "function") throw new Error("LINKLY_ACKNOWLEDGEMENT_PORT_MISSING");
+  return provider as LinklyPaymentAcknowledgementPort & Readonly<{ reconcileLegacy?: unknown; listUnacknowledgedSessions?: unknown }>;
+}
+function legacyReconcilerOrNull(
+  provider: Readonly<{ reconcileLegacy?: unknown; listUnacknowledgedSessions?: unknown }>,
+): LinklyLegacyAcknowledgementReconciler | null {
+  if (typeof provider.reconcileLegacy !== "function") return null;
+  const reconcile = provider.reconcileLegacy as (
+    attempt: PaymentAttempt,
+    control?: PaymentRecoveryControl,
+  ) => Promise<unknown>;
+  return {
+    async reconcileLegacy(attempt, control) {
+      const verified = await reconcile.call(provider, attempt, control);
+      if (
+        !verified ||
+        typeof verified !== "object" ||
+        !("environment" in verified) ||
+        typeof verified.environment !== "string"
+      ) return null;
+      return verified.environment;
     },
   };
 }
@@ -937,6 +1092,56 @@ function paymentSessionGuard(
     },
     can(code: PaymentPermissionCode): boolean {
       return requireScopedLease(lease, terminal).permissionCodes.includes(code);
+    },
+  };
+}
+
+function withReturnRecoveryFinancialGate(
+  runtime: PaymentCheckoutRuntimePort,
+  assertFinancialAvailable: () => Promise<void>,
+): PaymentCheckoutRuntimePort {
+  return {
+    listProviderAvailability: () => runtime.listProviderAvailability(),
+    canTakeCash: () => runtime.canTakeCash?.() === true,
+    read: (orderGuid) => runtime.read(orderGuid),
+    findRecoveryRequired: () => runtime.findRecoveryRequired(),
+    async resumeCurrent(input) {
+      await assertFinancialAvailable();
+      return runtime.resumeCurrent(input);
+    },
+    async start(input) {
+      await assertFinancialAvailable();
+      return runtime.start(input);
+    },
+    ...(runtime.startCash
+      ? {
+          async startCash(input) {
+            await assertFinancialAvailable();
+            return runtime.startCash!(input);
+          },
+        }
+      : {}),
+    async recover(input) {
+      await assertFinancialAvailable();
+      return runtime.recover(input);
+    },
+    ...(runtime.retryTenderReversal
+      ? {
+          async retryTenderReversal(input: Parameters<NonNullable<PaymentCheckoutRuntimePort["retryTenderReversal"]>>[0]) {
+            await assertFinancialAvailable();
+            return runtime.retryTenderReversal!(input);
+          },
+        }
+      : {}),
+    cancel: (input) => runtime.cancel(input),
+    abandonPrepared: (input) => runtime.abandonPrepared(input),
+    async addCash(input) {
+      await assertFinancialAvailable();
+      return runtime.addCash(input);
+    },
+    async removeTender(input) {
+      await assertFinancialAvailable();
+      return runtime.removeTender(input);
     },
   };
 }

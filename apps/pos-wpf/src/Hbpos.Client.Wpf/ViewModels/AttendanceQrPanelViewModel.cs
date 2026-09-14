@@ -19,6 +19,7 @@ public sealed class AttendanceQrPanelViewModel : ObservableObject, IDisposable
     private const string IdentitySettingsKey = "attendance.qr.identity.v2";
     private const string TrustedTimeSettingsKey = "attendance.qr.trusted-time.v1";
     private static readonly TimeSpan TokenLifetime = TimeSpan.FromSeconds(AttendanceQrTokenCodec.TokenLifetimeSeconds);
+    private static readonly TimeSpan RefreshLead = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan DefaultTickInterval = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan DefaultRefreshInterval = TimeSpan.FromSeconds(15);
 
@@ -374,9 +375,9 @@ public sealed class AttendanceQrPanelViewModel : ObservableObject, IDisposable
 
         _lastObservedLocalUtc = localNow;
         var trustedUtc = _trustedTime.ServerUtc + (localNow - _trustedTime.LocalUtc);
-        if (_tokenExpiresAtUtc is null || trustedUtc >= _tokenExpiresAtUtc)
+        if (_tokenExpiresAtUtc is null || trustedUtc >= _tokenExpiresAtUtc - RefreshLead)
         {
-            // 先清除到期图，再签发新图，绑定层不会短暂保留已经过期的二维码。
+            // 提前 5 秒清除旧图并签发新图，绑定层不会短暂保留临近失效的二维码。
             ClearQr(string.Empty);
             IssueQr(trustedUtc);
         }

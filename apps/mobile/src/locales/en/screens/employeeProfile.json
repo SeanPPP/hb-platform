@@ -28,6 +28,8 @@
     "address": "Street, suburb, state, postcode"
   },
   "sections": {
+    "basic": "Basic details",
+    "sensitive": "Sensitive details",
     "banking": "Banking",
     "superannuation": "Superannuation",
     "personal": "Personal details",
@@ -46,6 +48,8 @@
     "casual": "Casual"
   },
   "actions": {
+    "edit": "Edit",
+    "editAvatar": "Edit avatar",
     "save": "Save profile",
     "savePersonal": "Save personal details",
     "editSensitive": "Update sensitive details",
@@ -58,6 +62,24 @@
     "capture": "Capture",
     "switchCamera": "Switch camera",
     "openSettings": "Open settings"
+  },
+  "overview": {
+    "completed": "Completed",
+    "notProvided": "Not provided",
+    "updatedAt": "Updated: {{time}}"
+  },
+  "edit": {
+    "basicTitle": "Edit basic details",
+    "sensitiveTitle": "Edit sensitive details",
+    "avatarTitle": "Change avatar",
+    "basicHint": "Save your changes to update these details immediately.",
+    "reviewNoticeTitle": "Review required",
+    "reviewNoticeDescription": "Banking, superannuation, and identity details are submitted together. Confirmed details remain visible until approval."
+  },
+  "unsaved": {
+    "title": "Discard unsaved changes?",
+    "description": "Your edits will not be kept after you leave.",
+    "discard": "Discard changes"
   },
   "messages": {
     "loadFailed": "Failed to load your profile.",

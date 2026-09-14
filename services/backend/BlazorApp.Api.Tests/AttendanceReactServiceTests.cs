@@ -1797,6 +1797,27 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task GetMyTodayAsync_AdminRequestedStoreIncludesRequestedScheduleOutsideRelatedScope()
+        {
+            await SeedStoreScopeAsync();
+            await SeedManagerStoreAccessAsync("admin-user", "store-other");
+            await SeedScheduleAsync("admin-bri", "BRI", "admin-user", new DateTime(2026, 5, 18), "Active");
+            await SeedScheduleAsync("admin-other", "OTHER", "admin-user", new DateTime(2026, 5, 18), "Active");
+            _timeProvider.SetUtcNow(new DateTime(2026, 5, 18, 8, 0, 0, DateTimeKind.Utc));
+
+            var service = CreateService("admin-user", "admin", "Admin");
+            var result = await service.GetMyTodayAsync(new DateTime(2026, 5, 18), "BRI");
+            var allStoresResult = await service.GetMyTodayAsync(new DateTime(2026, 5, 18));
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal("admin-bri", Assert.Single(result.Data!.Schedules).ScheduleGuid);
+            Assert.DoesNotContain(result.Data.StorePunchStates, item => item.StoreCode == "BRI");
+            Assert.Contains(result.Data.StorePunchStates, item => item.StoreCode == "OTHER");
+            Assert.True(allStoresResult.Success, allStoresResult.Message);
+            Assert.Equal(2, allStoresResult.Data!.Schedules.Count);
+        }
+
+        [Fact]
         public async Task GetMyTodayAsync_SameStoreMultipleSchedules_AggregatesAnomalyStateOnce()
         {
             await SeedStoreScopeAsync();
@@ -2883,6 +2904,27 @@ namespace BlazorApp.Api.Tests
             Assert.True(result.Success, $"{result.ErrorCode}: {result.Message}");
             Assert.Equal("Australia/Brisbane", result.Data!.StoreTimeZone);
             Assert.Equal("2026-01-01", result.Data.WorkDate.ToString("yyyy-MM-dd"));
+        }
+
+        [Fact]
+        public async Task PunchAsync_WhenStoreIsDeleted_UsesDefaultStoreTimeZone()
+        {
+            await SeedStoreScopeAsync();
+            await _db.Updateable<Store>()
+                .SetColumns(item => item.IsDeleted == true)
+                .Where(item => item.StoreCode == "BRI")
+                .ExecuteCommandAsync();
+            var now = DateTime.Parse("2026-01-01T13:30:00Z").ToUniversalTime();
+            var request = CreateQrPunchRequest(now, Guid.NewGuid());
+            // 定位采集时间需相对测试运行时保持新鲜；打卡时间仍固定用于验证跨午夜日期。
+            request.LocationCapturedAtUtc = DateTime.UtcNow;
+
+            var result = await CreateService("admin-user", "admin", "Admin")
+                .PunchAsync(request);
+
+            Assert.True(result.Success, $"{result.ErrorCode}: {result.Message}");
+            Assert.Equal("Australia/Sydney", result.Data!.StoreTimeZone);
+            Assert.Equal("2026-01-02", result.Data.WorkDate.ToString("yyyy-MM-dd"));
         }
 
         [Fact]

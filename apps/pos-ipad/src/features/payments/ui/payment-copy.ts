@@ -82,10 +82,16 @@ export const paymentEnglishCopy = {
   "success.print.failed": "Receipt printing failed. Check the printer and try again.",
   "terminal.title": "Terminal controls",
   "terminal.safeOnly": "Only the approved Linkly operator keys are available.",
-  "terminal.ok-cancel": "OK / Cancel",
+  "terminal.ok": "OK",
+  "terminal.okCancel": "OK / Cancel",
+  "terminal.cancel": "Cancel",
   "terminal.yes": "Yes",
   "terminal.no": "No",
   "terminal.authorise": "Authorise",
+  "terminal.inputRequired": "Complete the requested input on the card terminal.",
+  "terminal.graphicCard": "Follow the card prompt on the terminal.",
+  "terminal.graphicTerminal": "Follow the prompt shown on the terminal.",
+  "terminal.recoveryRequired": "The terminal needs recovery; keep this payment open.",
   "status.loading.title": "Checking payment recovery",
   "status.loading.hint": "Looking for a durable draft or payment attempt.",
   "status.ready.title": "Choose a tender",
@@ -176,6 +182,8 @@ export const paymentEnglishCopy = {
   "error.LINKLY_UNKNOWN_REQUIRES_RECOVERY": "Linkly outcome is unknown. Recover the payment before using operator keys.",
   "error.LINKLY_OPERATOR_STATE_INVALID": "Linkly operator controls are not valid in the current state.",
   "error.LINKLY_OPERATOR_KEY_NOT_ALLOWED": "That Linkly key is not currently accepted by the terminal.",
+  "error.RETURN_RECOVERY_REQUIRED": "Return to the Returns screen and recover the original return before starting another payment.",
+  "error.LINKLY_ACKNOWLEDGEMENT_PENDING": "The transaction result is saved. Confirm the terminal only; no charge or refund will be repeated.",
 } as const;
 
 export type PaymentCopyKey = keyof typeof paymentEnglishCopy;
@@ -254,10 +262,16 @@ const paymentChineseCopy = {
   "success.print.failed": "小票打印失败，请检查打印机后重试。",
   "terminal.title": "终端操作",
   "terminal.safeOnly": "这里只提供经过限制的 Linkly 安全按键。",
-  "terminal.ok-cancel": "确认 / 取消",
+  "terminal.ok": "确认",
+  "terminal.okCancel": "确认 / 取消",
+  "terminal.cancel": "取消",
   "terminal.yes": "是",
   "terminal.no": "否",
   "terminal.authorise": "授权",
+  "terminal.inputRequired": "请在刷卡终端完成提示的输入。",
+  "terminal.graphicCard": "请按终端上的刷卡提示操作。",
+  "terminal.graphicTerminal": "请按终端显示的提示操作。",
+  "terminal.recoveryRequired": "终端需要恢复，请保持此支付页面打开。",
   "status.loading.title": "正在检查支付恢复",
   "status.loading.hint": "正在查找已保存的草稿或支付尝试。",
   "status.ready.title": "选择付款方式",
@@ -348,6 +362,8 @@ const paymentChineseCopy = {
   "error.LINKLY_UNKNOWN_REQUIRES_RECOVERY": "Linkly 结果未知，使用终端按键前必须先恢复支付。",
   "error.LINKLY_OPERATOR_STATE_INVALID": "当前状态不能使用 Linkly 终端操作。",
   "error.LINKLY_OPERATOR_KEY_NOT_ALLOWED": "终端当前不接受这个 Linkly 按键。",
+  "error.RETURN_RECOVERY_REQUIRED": "请返回退货页面恢复原退货，再开始新的收款。",
+  "error.LINKLY_ACKNOWLEDGEMENT_PENDING": "交易结果已保存，仅需确认终端；不会再次扣款或退款。",
 } as const satisfies Record<PaymentCopyKey, string>;
 
 const paymentCopy = {

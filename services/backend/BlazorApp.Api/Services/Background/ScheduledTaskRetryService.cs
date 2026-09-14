@@ -1,6 +1,7 @@
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.Performance;
+using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HBweb;
 using System.Text.Json;
 
@@ -136,10 +137,23 @@ namespace BlazorApp.Api.Services.Background
 
             try
             {
+                SalesStatisticsRefreshExecutionResult? fullRefreshResult = null;
+                BatchStatisticsUpdateResult? batchFullRefreshResult = null;
                 switch (taskType)
                 {
                     case TaskType.UpdateCurrentHourStatistics:
-                        await _statisticsJobService.UpdateCurrentHourStatistics();
+                        // 半小时统计重试必须复用带日期租约、发布记录和 session guard 的完整路径。
+                        fullRefreshResult = await _statisticsJobService.FullRefreshCurrentDay(
+                            automatic: true,
+                            includeHistorical: false
+                        );
+                        break;
+
+                    case TaskType.FullRefreshCurrentDay:
+                        fullRefreshResult = await _statisticsJobService.FullRefreshCurrentDay(
+                            automatic: true,
+                            includeHistorical: false
+                        );
                         break;
 
                     case TaskType.UpdateDailyStatistics:
@@ -233,13 +247,13 @@ namespace BlazorApp.Api.Services.Background
                         break;
 
                     case TaskType.FullRefreshPreviousDay:
-                        await _statisticsJobService.FullRefreshPreviousDay();
+                        fullRefreshResult = await _statisticsJobService.FullRefreshPreviousDay();
                         break;
 
                     case TaskType.FullRefreshPreviousMonth:
                         {
                             var previousMonth = SalesStatisticsBusinessDate.Today().AddMonths(-1).ToString("yyyy-MM");
-                            await _statisticsJobService.BatchFullRefreshByMonths(
+                            batchFullRefreshResult = await _statisticsJobService.BatchFullRefreshByMonths(
                                 parameters.StartYearMonth ?? previousMonth,
                                 parameters.EndYearMonth ?? previousMonth,
                                 parameters.MaxMonths ?? 1
@@ -255,7 +269,7 @@ namespace BlazorApp.Api.Services.Background
                             && !string.IsNullOrEmpty(parameters.EndYearMonth)
                         )
                         {
-                            await _statisticsJobService.BatchFullRefreshByMonths(
+                            batchFullRefreshResult = await _statisticsJobService.BatchFullRefreshByMonths(
                                 parameters.StartYearMonth,
                                 parameters.EndYearMonth,
                                 parameters.MaxMonths ?? 12
@@ -293,7 +307,29 @@ namespace BlazorApp.Api.Services.Background
                         throw new ArgumentException($"未知的任务类型: {taskType}");
                 }
 
-                await _taskLogService.LogTaskSuccessAsync(newTaskLog.Id);
+                if (fullRefreshResult?.IsSkipped == true)
+                {
+                    await _taskLogService.LogTaskSkippedStrictAsync(
+                        newTaskLog.Id,
+                        fullRefreshResult?.Message ?? "统计日期租约仍由其他执行者持有"
+                    );
+                }
+                else if (batchFullRefreshResult?.HasSkippedDates == true
+                    && !batchFullRefreshResult.HasFailedDates)
+                {
+                    await _taskLogService.LogTaskSkippedStrictAsync(
+                        newTaskLog.Id,
+                        batchFullRefreshResult.Message
+                    );
+                }
+                else if (batchFullRefreshResult != null && !batchFullRefreshResult.Success)
+                {
+                    throw new InvalidOperationException(batchFullRefreshResult.Message);
+                }
+                else
+                {
+                    await _taskLogService.LogTaskSuccessAsync(newTaskLog.Id);
+                }
             }
             catch (Exception ex)
             {

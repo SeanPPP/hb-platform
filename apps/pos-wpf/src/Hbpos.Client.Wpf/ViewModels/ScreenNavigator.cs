@@ -378,7 +378,8 @@ internal sealed class ScreenNavigator
             returnToPos: ShowPos,
             resetTestSalesDataAsync: resetTestSalesDataAsync,
             confirmResetTestSalesDataAsync: confirmResetTestSalesDataAsync,
-            checkForAppUpdateAsync: _checkForAppUpdateAsync);
+            checkForAppUpdateAsync: _checkForAppUpdateAsync,
+            confirmLinklyTerminalAssignmentAsync: _confirmationDialogService.ConfirmLinklyTerminalAssignmentAsync);
         await Settings.LoadAsync();
         SetCurrentScreen(Settings);
     }

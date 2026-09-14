@@ -48,7 +48,8 @@ public sealed class LinklySettlementService(
     ILocalLinklySettlementRepository settlementRepository,
     ILinklyBankReceiptPrinter receiptPrinter,
     ILinklyBackendTerminalClient? backendTerminalClient = null,
-    ILinklySettlementUploadScheduler? settlementUploadScheduler = null) : ILinklySettlementService
+    ILinklySettlementUploadScheduler? settlementUploadScheduler = null,
+    ILinklyTerminalSelectionTransitionGate? linklyTerminalSelectionTransitionGate = null) : ILinklySettlementService
 {
     public async Task<LinklySettlementExecutionResult> SettleAndPrintAsync(
         PosSessionState session,
@@ -66,6 +67,11 @@ public sealed class LinklySettlementService(
             // 非 Linkly 模式绝不能创建结算记录或触发终端调用。
             throw new InvalidOperationException("Linkly settlement is unavailable because Linkly is not the active card processor.");
         }
+
+        // 结算会消费当前 POS 的线路选择；从本地未决检查到终端结果落库期间禁止换线。
+        await using var transitionLease = linklyTerminalSelectionTransitionGate is null
+            ? null
+            : await linklyTerminalSelectionTransitionGate.EnterFinancialOperationAsync(cancellationToken);
 
         var existingSettlements = await settlementRepository.GetByBusinessDateAsync(
             session.StoreCode,

@@ -22,8 +22,17 @@ namespace BlazorApp.Shared.Models.HBweb
         [SugarColumn(DecimalDigits = 4)]
         public decimal EndRate { get; set; }
 
+        [SugarColumn(Length = 18, DecimalDigits = 2, IsNullable = true)]
+        public decimal? StartRetailPrice { get; set; }
+
+        [SugarColumn(Length = 18, DecimalDigits = 2, IsNullable = true)]
+        public decimal? EndRetailPrice { get; set; }
+
+        [SugarColumn(Length = 18, DecimalDigits = 6, IsNullable = true)]
+        public decimal? CurveBend { get; set; }
+
         /// <summary>
-        /// Linear, Exponential, Step
+        /// Linear, ArcUp, ArcDown, Exponential, Step
         /// </summary>
         [SugarColumn(Length = 20)]
         public string Algorithm { get; set; } = "Linear";

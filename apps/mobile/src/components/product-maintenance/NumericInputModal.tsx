@@ -138,7 +138,7 @@ const styles = StyleSheet.create({
   modal: {
     marginHorizontal: 18,
     borderRadius: 16,
-    backgroundColor: "#fff",
+    backgroundColor: "#FFFFFF",
     padding: 16,
   },
   content: {
@@ -150,7 +150,7 @@ const styles = StyleSheet.create({
   },
   valueCard: {
     borderRadius: 12,
-    backgroundColor: "#F8FAFC",
+    backgroundColor: "#F2F4F7",
     paddingHorizontal: 14,
     paddingVertical: 18,
     alignItems: "flex-end",

@@ -90,6 +90,7 @@ public partial class SalesDashboardReactService
 
             // 只使用数据库已启用的快照；未启用时快速失败，避免范围锁阻塞统计刷新。
             const string period = "(([Date] >= @Start AND [Date] < @End) OR ([Date] >= @CompareStart AND [Date] < @CompareEnd))";
+            // 空 FOR JSON 子查询会返回 NULL；先转为 [] 再压缩，保留合法空结果与结果缺失的区别。
             command.CommandText = $"""
                 SET NOCOUNT ON;
                 IF @OwnTransaction = 1
@@ -101,28 +102,28 @@ public partial class SalesDashboardReactService
                     BEGIN TRANSACTION;
                 END;
                 BEGIN TRY
-                    SELECT COMPRESS((SELECT [StatisticType], [Date], [Status], [LastAggregatedAtUtc], [CompletedAtUtc]
+                    SELECT COMPRESS(COALESCE((SELECT [StatisticType], [Date], [Status], [LastAggregatedAtUtc], [CompletedAtUtc]
                     FROM [dbo].[SalesStatisticRefreshState]
-                    WHERE [StatisticType] IN (N'StoreSales', N'HourlySales') AND {period} FOR JSON PATH, INCLUDE_NULL_VALUES)) AS [Data];
-                    SELECT COMPRESS((SELECT [Date], [BranchCode], COALESCE([BranchName], N'') [BranchName], [TotalAmount], [OrderCount]
+                    WHERE [StatisticType] IN (N'StoreSales', N'HourlySales') AND {period} FOR JSON PATH, INCLUDE_NULL_VALUES), N'[]')) AS [Data];
+                    SELECT COMPRESS(COALESCE((SELECT [Date], [BranchCode], COALESCE([BranchName], N'') [BranchName], [TotalAmount], [OrderCount]
                     FROM [dbo].[StoreSalesStatistic]
-                    WHERE {period}{storeScope} FOR JSON PATH, INCLUDE_NULL_VALUES)) AS [Data];
-                    SELECT COMPRESS((SELECT p.[DateStart] AS [Date], [Hour], [BranchCode], MAX([BranchName]) AS [BranchName],
+                    WHERE {period}{storeScope} FOR JSON PATH, INCLUDE_NULL_VALUES), N'[]')) AS [Data];
+                    SELECT COMPRESS(COALESCE((SELECT p.[DateStart] AS [Date], [Hour], [BranchCode], MAX([BranchName]) AS [BranchName],
                         SUM([TotalAmount]) AS [TotalAmount], SUM([OrderCount]) AS [OrderCount], p.[Period]
                     FROM [dbo].[HourlySalesStatistic] h
                     INNER JOIN (VALUES (0, @Start, @End), (1, @CompareStart, @CompareEnd)) p([Period], [DateStart], [DateEnd])
                         ON h.[Date] >= p.[DateStart] AND h.[Date] < p.[DateEnd]
                     WHERE (p.[Period] = 0 OR @HasCompare = 1)
                         AND [BranchCode] IS NOT NULL AND [BranchCode] <> N'ALL'{hourlyScope}
-                    GROUP BY p.[Period], p.[DateStart], [Hour], [BranchCode] FOR JSON PATH, INCLUDE_NULL_VALUES)) AS [Data];
-                    SELECT COMPRESS((SELECT [StoreCode], COALESCE([StoreName], [StoreCode]) [StoreName]
+                    GROUP BY p.[Period], p.[DateStart], [Hour], [BranchCode] FOR JSON PATH, INCLUDE_NULL_VALUES), N'[]')) AS [Data];
+                    SELECT COMPRESS(COALESCE((SELECT [StoreCode], COALESCE([StoreName], [StoreCode]) [StoreName]
                     FROM [dbo].[Store]
                     WHERE @IncludeActiveStores = 1 AND [IsActive] = 1 AND [IsDeleted] = 0
-                        AND [StoreCode] IS NOT NULL AND [StoreCode] <> N'' FOR JSON PATH, INCLUDE_NULL_VALUES)) AS [Data];
-                    SELECT COMPRESS((SELECT DISTINCT [Date], [BranchCode]
+                        AND [StoreCode] IS NOT NULL AND [StoreCode] <> N'' FOR JSON PATH, INCLUDE_NULL_VALUES), N'[]')) AS [Data];
+                    SELECT COMPRESS(COALESCE((SELECT DISTINCT [Date], [BranchCode]
                     FROM [dbo].[HourlySalesStatistic]
                     WHERE [BranchCode] IS NOT NULL AND [BranchCode] <> N'ALL'
-                        AND {period}{hourlyScope} FOR JSON PATH, INCLUDE_NULL_VALUES)) AS [Data];
+                        AND {period}{hourlyScope} FOR JSON PATH, INCLUDE_NULL_VALUES), N'[]')) AS [Data];
                     IF @OwnTransaction = 1
                     BEGIN
                         COMMIT TRANSACTION;

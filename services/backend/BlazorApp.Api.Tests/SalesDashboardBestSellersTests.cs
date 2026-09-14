@@ -112,6 +112,56 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
     }
 
     [Fact]
+    public async Task GetStatisticsFreshnessAsync_跳过或失败不推进最后完整发布快照时间()
+    {
+        var publishedAt = DateTime.SpecifyKind(
+            SalesStatisticsBusinessDate.Today().AddHours(5),
+            DateTimeKind.Utc
+        );
+        await _localDb.Insertable(new SalesStatisticRefreshState
+        {
+            StatisticType = SalesStatisticType.RevenueReportPublished,
+            Date = SalesStatisticsBusinessDate.Today(),
+            Status = SalesStatisticRefreshStatus.Fresh,
+            LastAggregatedAtUtc = publishedAt,
+            CompletedAtUtc = publishedAt,
+            LastCheckedAtUtc = publishedAt,
+            SourceTimeZone = "POSM_LOCAL",
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new ScheduledTaskLog
+        {
+            TaskType = TaskType.UpdateCurrentHourStatistics,
+            Status = BlazorApp.Shared.Models.HBweb.TaskStatus.Skipped,
+            StartedAt = publishedAt.AddHours(1),
+            CompletedAt = publishedAt.AddHours(1),
+            ScheduledTime = publishedAt.AddHours(1),
+        }).ExecuteCommandAsync();
+
+        var freshness = await CreateService().GetStatisticsFreshnessAsync();
+
+        Assert.Equal(publishedAt, freshness.LastSuccessfulAtUtc);
+        Assert.Equal(BlazorApp.Shared.Models.HBweb.TaskStatus.Skipped, freshness.LatestRunStatus);
+    }
+
+    [Fact]
+    public async Task GetStatisticsFreshnessAsync_缺少完整发布记录时不能由局部状态伪造新鲜时间()
+    {
+        await _localDb.Insertable(new SalesStatisticRefreshState
+        {
+            StatisticType = SalesStatisticType.HourlySales,
+            Date = new DateTime(2026, 9, 14),
+            Status = SalesStatisticRefreshStatus.Fresh,
+            LastAggregatedAtUtc = DateTime.UtcNow,
+            CompletedAtUtc = DateTime.UtcNow,
+            SourceTimeZone = "POSM_LOCAL",
+        }).ExecuteCommandAsync();
+
+        var freshness = await CreateService().GetStatisticsFreshnessAsync();
+
+        Assert.Null(freshness.LastSuccessfulAtUtc);
+    }
+
+    [Fact]
     public async Task GetCompactSalesBoardAsync_统计水位相同则命中缓存_forceRefresh绕过缓存()
     {
         var date = new DateTime(2026, 8, 2);

@@ -27,6 +27,12 @@ function normalizeUserStores(payload: unknown): UserStoreDto[] {
           (typeof item.StoreGuid === "string" && item.StoreGuid) ||
           undefined,
         storeCode,
+        isActive:
+          typeof item.isActive === "boolean"
+            ? item.isActive
+            : typeof item.IsActive === "boolean"
+              ? item.IsActive
+              : undefined,
         storeName:
           (typeof item.storeName === "string" && item.storeName) ||
           (typeof item.StoreName === "string" && item.StoreName) ||

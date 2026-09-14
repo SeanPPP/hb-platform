@@ -53,12 +53,12 @@ export const CreateBatchProductEditor = memo(function CreateBatchProductEditor({
 });
 
 const styles = StyleSheet.create({
-  card: { borderWidth: 1, borderColor: "#D0D5DD", borderRadius: 10, padding: 12, gap: 8, backgroundColor: "#FFFFFF" },
+  card: { borderWidth: 1, borderColor: "#E4E7EC", borderRadius: 12, padding: 12, gap: 10, backgroundColor: "#FFFFFF" },
   header: { flexDirection: "row", alignItems: "center", gap: 4 },
   heading: { flex: 1, fontWeight: "600" },
   input: { backgroundColor: "#FFFFFF" },
   numbers: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   leftButton: { justifyContent: "flex-start", minHeight: 44 },
-  children: { gap: 12, paddingLeft: 10, borderLeftWidth: 2, borderLeftColor: "#91CAFF" },
+  children: { gap: 12, padding: 10, borderRadius: 8, backgroundColor: "#F8FAFC", borderLeftWidth: 3, borderLeftColor: "#1677FF" },
   child: { gap: 8, paddingBottom: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: "#EAECF0" },
 });

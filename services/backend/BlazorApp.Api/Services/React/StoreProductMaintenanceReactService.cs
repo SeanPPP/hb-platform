@@ -34,6 +34,8 @@ namespace BlazorApp.Api.Services.React
         private readonly IProductMaintenanceHqProjectionWriter _hqProjectionWriter;
         private const string PricingStrategiesCacheKey = "StoreProductMaintenance:PricingStrategies:Active";
         private static readonly TimeSpan PricingStrategiesCacheDuration = TimeSpan.FromSeconds(60);
+        // Unicode 空格分隔符（普通空格之外）；只统一空格种类，不删除或合并字符。
+        private const string ItemNumberSpaceVariants = "\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u202f\u205f\u3000";
 
         public StoreProductMaintenanceReactService(
             SqlSugarContext context,
@@ -2907,6 +2909,33 @@ namespace BlazorApp.Api.Services.React
             {
                 new("@Keyword", keyword),
             };
+            var itemNumberPredicate = "p.ItemNumber = @Keyword";
+            if (keyword.Any(character => character == ' ' || ItemNumberSpaceVariants.Contains(character)))
+            {
+                // 仅含空格的货号启用兼容查询，普通货号及所有条码继续走原来的精确匹配。
+                var normalizedKeyword = keyword;
+                var normalizedColumn = "p.ItemNumber";
+                for (var i = 0; i < ItemNumberSpaceVariants.Length; i++)
+                {
+                    var space = ItemNumberSpaceVariants[i];
+                    normalizedKeyword = normalizedKeyword.Replace(space, ' ');
+                    var parameterName = "@ItemNumberSpace" + i;
+                    parameters.Add(new SugarParameter(parameterName, space.ToString()));
+                    normalizedColumn = $"REPLACE({normalizedColumn}, {parameterName}, ' ')";
+                }
+
+                // 保留无函数的 LIKE 前缀条件，让数据库有机会先通过货号索引缩小候选范围。
+                // 空格只占一个字符；其余通配符必须转义，最终仍由统一空格后的相等比较判定。
+                var candidatePattern = normalizedKeyword
+                    .Replace("\\", "\\\\")
+                    .Replace("%", "\\%")
+                    .Replace("_", "\\_")
+                    .Replace("[", "\\[")
+                    .Replace(' ', '_');
+                parameters.Add(new SugarParameter("@ItemNumberPattern", candidatePattern));
+                parameters.Add(new SugarParameter("@NormalizedItemNumber", normalizedKeyword));
+                itemNumberPredicate = $"(p.ItemNumber = @Keyword OR (p.ItemNumber LIKE @ItemNumberPattern ESCAPE '\\' AND {normalizedColumn} = @NormalizedItemNumber))";
+            }
             var storeFilterSql = string.Empty;
             if (selectedStoreCodes != null)
             {
@@ -2926,7 +2955,7 @@ namespace BlazorApp.Api.Services.React
 
             var sql = new StringBuilder();
             sql.AppendLine(
-                """
+                $"""
                 SELECT
                     p.ProductCode AS ProductCode,
                     p.ItemNumber AS ItemNumber,
@@ -2945,7 +2974,7 @@ namespace BlazorApp.Api.Services.React
                     'ItemNumber' AS MatchSource,
                     @Keyword AS MatchValue
                 FROM [Product] p
-                WHERE p.IsDeleted = 0 AND p.ItemNumber = @Keyword
+                WHERE p.IsDeleted = 0 AND {itemNumberPredicate}
 
                 UNION ALL
 

@@ -43,4 +43,50 @@ public sealed class SalesStatisticsBusinessDateTests
         Assert.False(SalesStatisticsBusinessDate.IsToday(new DateTime(2026, 9, 8), utcNow));
         Assert.Equal(new DateTime(2026, 9, 7), today);
     }
+
+    [Theory]
+    [InlineData("2026-09-07T11:59:59+00:00", false)]
+    [InlineData("2026-09-07T12:00:00+00:00", true)]
+    [InlineData("2026-09-07T13:59:59+00:00", true)]
+    [InlineData("2026-09-07T14:00:00+00:00", true)]
+    [InlineData("2026-09-07T19:59:59+00:00", true)]
+    [InlineData("2026-09-07T20:00:00+00:00", false)]
+    [InlineData("2026-10-04T10:59:59+00:00", false)]
+    [InlineData("2026-10-04T11:00:00+00:00", true)]
+    [InlineData("2026-10-04T12:59:59+00:00", true)]
+    [InlineData("2026-10-04T13:00:00+00:00", true)]
+    [InlineData("2026-10-04T18:59:59+00:00", true)]
+    [InlineData("2026-10-04T19:00:00+00:00", false)]
+    public void HistoricalRefreshWindow_按悉尼本地二十二点至六点判断并支持TimeProvider(
+        string utcText,
+        bool expectedOpen)
+    {
+        var clock = new FixedTimeProvider(DateTimeOffset.Parse(utcText));
+
+        Assert.Equal(expectedOpen, SalesStatisticsHistoricalRefreshWindow.IsOpen(clock));
+    }
+
+    [Fact]
+    public void HistoricalRefreshWindow_从五点五十九到六点的两次检查停止下一历史日()
+    {
+        var clock = new MutableTimeProvider(new DateTimeOffset(2026, 9, 7, 19, 59, 59, TimeSpan.Zero));
+
+        Assert.True(SalesStatisticsHistoricalRefreshWindow.IsOpen(clock));
+
+        clock.UtcNow = new DateTimeOffset(2026, 9, 7, 20, 0, 0, TimeSpan.Zero);
+
+        Assert.False(SalesStatisticsHistoricalRefreshWindow.IsOpen(clock));
+    }
+
+    private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => utcNow;
+    }
+
+    private sealed class MutableTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public DateTimeOffset UtcNow { get; set; } = utcNow;
+
+        public override DateTimeOffset GetUtcNow() => UtcNow;
+    }
 }

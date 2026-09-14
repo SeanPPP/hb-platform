@@ -285,6 +285,80 @@ public sealed class LinklyController(
     }
 
     [Authorize(Policy = CashierAuthorizationPolicies.PaymentSettings)]
+    [HttpPost("cloud-backend/terminals/{terminalId:guid}/connection-test")]
+    [ProducesResponseType(typeof(ApiResult<LinklyCloudTerminalConnectionTestResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResult<LinklyCloudTerminalConnectionTestResponse>), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ApiResult<LinklyCloudTerminalConnectionTestResponse>), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ApiResult<LinklyCloudTerminalConnectionTestResponse>), StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<ApiResult<LinklyCloudTerminalConnectionTestResponse>>> TestCloudBackendTerminal(
+        Guid terminalId,
+        [FromBody] LinklyCloudTerminalConnectionTestRequest request,
+        CancellationToken cancellationToken)
+    {
+        var scope = GetAuthenticatedDeviceScope<LinklyCloudTerminalConnectionTestResponse>();
+        if (scope.Result is not null) return scope.Result;
+        if (request is null)
+            return BadRequest(ApiResult<LinklyCloudTerminalConnectionTestResponse>.Fail(CloudBackendInvalidCode, "request body is required."));
+        try
+        {
+            var response = await GetTerminalService().ConnectionTestAsync(
+                scope.StoreCode!, scope.DeviceCode!, terminalId, request, cancellationToken);
+            return Ok(ApiResult<LinklyCloudTerminalConnectionTestResponse>.Ok(response));
+        }
+        catch (LinklyCloudTerminalNotFoundException ex)
+        {
+            return NotFound(ApiResult<LinklyCloudTerminalConnectionTestResponse>.Fail(CloudBackendTerminalNotFoundCode, ex.Message));
+        }
+        catch (LinklyCloudTerminalSelectionConflictException ex)
+        {
+            return Conflict(ApiResult<LinklyCloudTerminalConnectionTestResponse>.Fail(CloudBackendTerminalSelectionConflictCode, ex.Message));
+        }
+        catch (LinklyCloudBackendValidationException ex)
+        {
+            return BadRequest(ApiResult<LinklyCloudTerminalConnectionTestResponse>.Fail(CloudBackendInvalidCode, ex.Message));
+        }
+    }
+
+    [Authorize(Policy = CashierAuthorizationPolicies.PaymentSettings)]
+    [HttpPut("cloud-backend/terminals/{terminalId:guid}/assignment")]
+    [ProducesResponseType(typeof(ApiResult<LinklyCloudTerminalListResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResult<LinklyCloudTerminalListResponse>), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ApiResult<LinklyCloudTerminalListResponse>), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ApiResult<LinklyCloudTerminalListResponse>), StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<ApiResult<LinklyCloudTerminalListResponse>>> AssignCloudBackendTerminal(
+        Guid terminalId,
+        [FromBody] LinklyCloudTerminalAssignmentRequest request,
+        CancellationToken cancellationToken)
+    {
+        var scope = GetAuthenticatedDeviceScope<LinklyCloudTerminalListResponse>();
+        if (scope.Result is not null) return scope.Result;
+        if (request is null)
+            return BadRequest(ApiResult<LinklyCloudTerminalListResponse>.Fail(CloudBackendInvalidCode, "request body is required."));
+        try
+        {
+            var response = await GetTerminalService().AssignTerminalAsync(
+                scope.StoreCode!, scope.DeviceCode!, terminalId, request, GetUpdatedByClaim(), cancellationToken);
+            return Ok(ApiResult<LinklyCloudTerminalListResponse>.Ok(response));
+        }
+        catch (LinklyCloudTerminalNotReadyException ex)
+        {
+            return Conflict(ApiResult<LinklyCloudTerminalListResponse>.Fail(CloudBackendTerminalNotReadyCode, ex.Message));
+        }
+        catch (LinklyCloudTerminalNotFoundException ex)
+        {
+            return NotFound(ApiResult<LinklyCloudTerminalListResponse>.Fail(CloudBackendTerminalNotFoundCode, ex.Message));
+        }
+        catch (LinklyCloudTerminalSelectionConflictException ex)
+        {
+            return Conflict(ApiResult<LinklyCloudTerminalListResponse>.Fail(CloudBackendTerminalSelectionConflictCode, ex.Message));
+        }
+        catch (LinklyCloudBackendValidationException ex)
+        {
+            return BadRequest(ApiResult<LinklyCloudTerminalListResponse>.Fail(CloudBackendInvalidCode, ex.Message));
+        }
+    }
+
+    [Authorize(Policy = CashierAuthorizationPolicies.PaymentSettings)]
     [HttpPost("cloud-backend/pair")]
     [LinklyCloudPairRequestModelState]
     [ProducesResponseType(typeof(ApiResult<LinklyCloudBackendTerminalCredentialResponse>), StatusCodes.Status200OK)]

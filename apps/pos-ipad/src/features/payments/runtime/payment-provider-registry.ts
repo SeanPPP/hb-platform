@@ -228,6 +228,7 @@ export async function createConfiguredPaymentProviderRegistry(
         new SquarePaymentAdapter(
           dependencies.transport,
           async (): Promise<SquareTerminalConfiguration> => frozen,
+          frozen.environment,
         ),
       ),
     );

@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Routing;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Xunit;
@@ -19,6 +20,148 @@ namespace BlazorApp.Api.Tests;
 public class ControllerAuthorizationMetadataTests
 {
     private const string LocalPurchasePushToHq = "LocalPurchase.PushToHq";
+
+    public static IEnumerable<object[]> SalesDashboardPagePolicies()
+    {
+        yield return new object[]
+        {
+            typeof(RevenueReportSnapshotController),
+            nameof(RevenueReportSnapshotController.GetRevenueReportSnapshot),
+            "SalesDashboard.SalesData.View",
+        };
+        yield return new object[]
+        {
+            typeof(SalesDetailReportController),
+            nameof(SalesDetailReportController.GetSalesDetailReport),
+            "SalesDashboard.SalesDetail.View",
+        };
+        yield return new object[]
+        {
+            typeof(SalesDashboardController),
+            nameof(SalesDashboardController.GetCompactSalesBoard),
+            "SalesDashboard.CompactBoard.View",
+        };
+        yield return new object[]
+        {
+            typeof(ProductMovementReportController),
+            nameof(ProductMovementReportController.GetReport),
+            "SalesDashboard.ProductMovement.View",
+        };
+        yield return new object[]
+        {
+            typeof(WarehouseProductFlowAnalysisController),
+            nameof(WarehouseProductFlowAnalysisController.GetSummary),
+            "SalesDashboard.WarehouseFlow.View",
+        };
+        yield return new object[]
+        {
+            typeof(LocalSupplierProductSalesAnalysisController),
+            nameof(LocalSupplierProductSalesAnalysisController.Summary),
+            "SalesDashboard.LocalProductAnalysis.View",
+        };
+        yield return new object[]
+        {
+            typeof(ReactLocalPurchaseDashboardController),
+            nameof(ReactLocalPurchaseDashboardController.GetDashboard),
+            "SalesDashboard.PurchaseAmount.View",
+        };
+    }
+
+    [Theory]
+    [MemberData(nameof(SalesDashboardPagePolicies))]
+    public void SalesDashboardPages_RequireIndependentPermission(
+        Type controllerType,
+        string methodName,
+        string expectedPolicy
+    )
+    {
+        var authorizeAttributes = controllerType
+            .GetCustomAttributes<AuthorizeAttribute>(inherit: false)
+            .Concat(
+                GetDeclaredMethod(controllerType, methodName)
+                    .GetCustomAttributes<AuthorizeAttribute>(inherit: false)
+            )
+            .ToList();
+
+        Assert.Contains(authorizeAttributes, attribute => attribute.Policy == expectedPolicy);
+        Assert.DoesNotContain(
+            authorizeAttributes,
+            attribute => attribute.Policy is Permissions.Reports.View
+                or Permissions.Reports.ProductMovementView
+                or Permissions.LocalPurchase.View
+        );
+    }
+
+    [Theory]
+    [InlineData(typeof(RevenueReportSnapshotController), "SalesDashboard.SalesData.View")]
+    [InlineData(typeof(SalesDetailReportController), "SalesDashboard.SalesDetail.View")]
+    [InlineData(typeof(ProductMovementReportController), "SalesDashboard.ProductMovement.View")]
+    [InlineData(typeof(LocalSupplierProductSalesAnalysisController), "SalesDashboard.LocalProductAnalysis.View")]
+    [InlineData(typeof(ReactLocalPurchaseDashboardController), "SalesDashboard.PurchaseAmount.View")]
+    public void SalesDashboardPageControllers_DoNotRetainLegacyOrConflictingPolicies(
+        Type controllerType,
+        string expectedPolicy
+    )
+    {
+        var policies = controllerType
+            .GetCustomAttributes<AuthorizeAttribute>(inherit: false)
+            .Concat(
+                controllerType
+                    .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly)
+                    .SelectMany(method =>
+                        method.GetCustomAttributes<AuthorizeAttribute>(inherit: false)
+                    )
+            )
+            .Select(attribute => attribute.Policy)
+            .Where(policy => !string.IsNullOrWhiteSpace(policy))
+            .ToList();
+
+        Assert.NotEmpty(policies);
+        Assert.All(policies, policy => Assert.Equal(expectedPolicy, policy));
+    }
+
+    [Fact]
+    public void WarehouseProductFlowAnalysis_AllHttpActionsRequireIndependentPermission()
+    {
+        var controllerType = typeof(WarehouseProductFlowAnalysisController);
+        var httpActions = controllerType
+            .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly)
+            .Where(method =>
+                method.GetCustomAttributes<HttpMethodAttribute>(inherit: false).Any()
+            )
+            .ToList();
+
+        Assert.NotEmpty(httpActions);
+        Assert.All(
+            httpActions,
+            method =>
+            {
+                var policies = method
+                    .GetCustomAttributes<AuthorizeAttribute>(inherit: false)
+                    .Select(attribute => attribute.Policy)
+                    .ToList();
+
+                Assert.Contains(Permissions.SalesDashboard.WarehouseFlowView, policies);
+                Assert.DoesNotContain(Permissions.Reports.View, policies);
+                Assert.DoesNotContain(Permissions.Reports.ProductMovementView, policies);
+                Assert.DoesNotContain(Permissions.LocalPurchase.View, policies);
+            }
+        );
+    }
+
+    [Fact]
+    public void LegacyProductSalesAnalysisEndpoint_KeepsExistingReportPermission()
+    {
+        var method = GetDeclaredMethod(
+            typeof(SalesDashboardController),
+            nameof(SalesDashboardController.GetProductSalesAnalysisOptions)
+        );
+
+        Assert.Contains(
+            method.GetCustomAttributes<AuthorizeAttribute>(inherit: false),
+            attribute => attribute.Policy == Permissions.Reports.ProductMovementView
+        );
+    }
 
     public static IEnumerable<object[]> MenuBackedEndpointPolicies()
     {
@@ -218,7 +361,7 @@ public class ControllerAuthorizationMetadataTests
         );
         yield return Policy<SalesDashboardController>(
             nameof(SalesDashboardController.GetCompactSalesBoard),
-            Permissions.Reports.View
+            Permissions.SalesDashboard.CompactBoardView
         );
         yield return Policy<SalesDashboardController>(
             nameof(SalesDashboardController.GetProductSalesByAllBranches),

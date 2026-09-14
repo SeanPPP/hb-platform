@@ -15,6 +15,9 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { MonthDatePicker } from "@/components/attendance/MonthDatePicker";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { BusinessSheet } from "@/components/ui/BusinessSheet";
+import { BUSINESS_UI } from "@/components/ui/business-ui";
+import { HB_COLORS } from "@/shared/theme/tokens";
 import { EntityTag } from "@/components/ui/EntityTag";
 import { QrCodePanel } from "@/components/ui/QrCodePanel";
 import {
@@ -235,6 +238,8 @@ export default function InstallmentOrdersScreen() {
   const [detail, setDetail] = useState<InstallmentOrderDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [snackbar, setSnackbar] = useState("");
+  const [detailError, setDetailError] = useState("");
+  const [detailRequestVersion, setDetailRequestVersion] = useState(0);
   const deviceBoundStoreCode = getDeviceBoundStoreCode({ isDeviceMode, selectedStoreCode });
 
   const selectedStore = useMemo(
@@ -308,6 +313,7 @@ export default function InstallmentOrdersScreen() {
 
     let active = true;
     setDetail(null);
+    setDetailError("");
     setDetailLoading(true);
 
     fetchInstallmentOrderDetail(selectedOrder.installmentGuid)
@@ -318,7 +324,8 @@ export default function InstallmentOrdersScreen() {
       })
       .catch((error) => {
         if (active) {
-          setSnackbar(getErrorMessage(error, "messages.detailsLoadFailed"));
+          // 详情在原生弹窗内，失败信息必须与详情一起呈现，避免被底层 Snackbar 遮住。
+          setDetailError(getErrorMessage(error, "messages.detailsLoadFailed"));
         }
       })
       .finally(() => {
@@ -330,7 +337,7 @@ export default function InstallmentOrdersScreen() {
     return () => {
       active = false;
     };
-  }, [getErrorMessage, selectedOrder?.installmentGuid, t]);
+  }, [detailRequestVersion, getErrorMessage, selectedOrder?.installmentGuid, t]);
 
   useEffect(() => {
     if (!deviceBoundStoreCode) {
@@ -672,27 +679,25 @@ export default function InstallmentOrdersScreen() {
         {items.length ? renderPagination() : null}
       </ScrollView>
 
-      <Portal>
-        <Modal visible={Boolean(selectedOrder)} onDismiss={closeDetail} contentContainerStyle={styles.modal}>
-          <View style={styles.modalHeader}>
-            <View style={styles.modalTitleGroup}>
-              <Text variant="titleMedium">
-                {detailOrder?.installmentNumber || detailOrder?.installmentGuid || "--"}
-              </Text>
-              <Text selectable variant="bodySmall" style={styles.subtitle}>
-                {formatDateTime(detailOrder?.createdAt, localeTag)}
-              </Text>
-            </View>
-            <IconButton accessibilityLabel={t("common:actions.close")} icon="close" onPress={closeDetail} />
-          </View>
-
+      <BusinessSheet
+        visible={Boolean(selectedOrder)}
+        title={detailOrder?.installmentNumber || detailOrder?.installmentGuid || "--"}
+        subtitle={formatDateTime(detailOrder?.createdAt, localeTag)}
+        onDismiss={closeDetail}
+      >
           {detailLoading ? (
             <View style={styles.loadingBox}>
               <ActivityIndicator />
               <Text variant="bodyMedium">{t("common:loading")}</Text>
             </View>
+          ) : detailError ? (
+            <EmptyState
+              title={t("messages.detailsLoadFailed")}
+              description={detailError}
+              primaryAction={{ label: t("common:actions.retry"), icon: "refresh", onPress: () => setDetailRequestVersion((value) => value + 1) }}
+            />
           ) : (
-            <ScrollView contentContainerStyle={styles.detailContent}>
+            <View style={styles.detailContent}>
               <QrCodePanel label={t("labels.orderQrCode")} value={detailOrderQrValue} />
               <View style={styles.detailSummary}>
                 <View style={styles.tagRow}>
@@ -795,12 +800,11 @@ export default function InstallmentOrdersScreen() {
               ) : (
                 <EmptyState title={t("messages.orderLinesEmpty")} />
               )}
-            </ScrollView>
+            </View>
           )}
-        </Modal>
-      </Portal>
+      </BusinessSheet>
 
-      <StorePickerModal
+      <StorePickerModal presentation="sheet"
         visible={storePickerVisible}
         stores={stores}
         selectedStoreCode={draftFilters.branchCode}
@@ -812,7 +816,7 @@ export default function InstallmentOrdersScreen() {
         onSelectStore={handleSelectStore}
       />
 
-      <SelectionListModal
+      <SelectionListModal presentation="sheet"
         visible={statusPickerVisible}
         title={t("filters.statusPickerTitle")}
         cancelLabel={t("common:actions.cancel")}
@@ -829,6 +833,7 @@ export default function InstallmentOrdersScreen() {
         <Modal
           visible={Boolean(datePickerTarget)}
           onDismiss={() => setDatePickerTarget(null)}
+          style={{ justifyContent: "flex-end" }}
           contentContainerStyle={styles.dateModal}
         >
           <View style={styles.pickerModalHeader}>
@@ -875,8 +880,7 @@ export default function InstallmentOrdersScreen() {
 
 const styles = StyleSheet.create({
   safeArea: {
-    flex: 1,
-    backgroundColor: "#F6F7F9",
+    ...BUSINESS_UI.screen,
   },
   container: {
     gap: 12,
@@ -887,18 +891,14 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   title: {
-    fontWeight: "700",
+    ...BUSINESS_UI.title,
   },
   subtitle: {
-    color: "#667085",
+    color: HB_COLORS.textSecondary,
   },
   filterPanel: {
-    backgroundColor: "#FFFFFF",
-    borderColor: "#E4E7EC",
-    borderRadius: 8,
-    borderWidth: 1,
+    ...BUSINESS_UI.filterGroup,
     gap: 12,
-    padding: 12,
   },
   filterGrid: {
     flexDirection: "row",
@@ -918,8 +918,8 @@ const styles = StyleSheet.create({
   pickerField: {
     alignItems: "center",
     backgroundColor: "#FFFFFF",
-    borderColor: "#79747E",
-    borderRadius: 4,
+    borderColor: HB_COLORS.outline,
+    borderRadius: 8,
     borderWidth: 1,
     flexDirection: "row",
     minHeight: 56,
@@ -947,8 +947,7 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   card: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 8,
+    ...BUSINESS_UI.section,
   },
   cardContent: {
     gap: 10,
@@ -978,8 +977,8 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   summaryMetric: {
-    backgroundColor: "#F9FAFB",
-    borderColor: "#EAECF0",
+    backgroundColor: HB_COLORS.surfaceMuted,
+    borderColor: HB_COLORS.surfaceMuted,
     borderRadius: 8,
     borderWidth: 1,
     flexGrow: 1,
@@ -990,8 +989,7 @@ const styles = StyleSheet.create({
     color: "#667085",
   },
   summaryValue: {
-    fontVariant: ["tabular-nums"],
-    fontWeight: "700",
+    ...BUSINESS_UI.number,
   },
   pagination: {
     alignItems: "center",
@@ -1004,33 +1002,12 @@ const styles = StyleSheet.create({
   nextButtonContent: {
     flexDirection: "row-reverse",
   },
-  modal: {
-    alignSelf: "center",
-    backgroundColor: "#FFFFFF",
-    borderRadius: 8,
-    maxHeight: "92%",
-    padding: 12,
-    width: "94%",
-  },
-  modalHeader: {
-    alignItems: "center",
-    flexDirection: "row",
-    justifyContent: "space-between",
-  },
-  modalTitleGroup: {
-    flex: 1,
-    minWidth: 0,
-    paddingRight: 8,
-  },
   detailContent: {
     gap: 12,
     paddingBottom: 8,
   },
   detailSummary: {
-    backgroundColor: "#F9FAFB",
-    borderColor: "#EAECF0",
-    borderRadius: 8,
-    borderWidth: 1,
+    ...BUSINESS_UI.section,
     gap: 10,
     padding: 10,
   },
@@ -1048,7 +1025,7 @@ const styles = StyleSheet.create({
     minWidth: 120,
   },
   sectionTitle: {
-    fontWeight: "700",
+    ...BUSINESS_UI.sectionTitle,
     marginTop: 4,
   },
   recordRow: {
@@ -1132,9 +1109,11 @@ const styles = StyleSheet.create({
   dateModal: {
     alignSelf: "center",
     backgroundColor: "#FFFFFF",
-    borderRadius: 12,
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
     padding: 16,
-    width: "92%",
+    width: "100%",
+    maxWidth: 680,
   },
   dateModalActions: {
     alignItems: "flex-end",

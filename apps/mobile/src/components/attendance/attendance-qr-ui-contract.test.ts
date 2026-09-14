@@ -40,7 +40,6 @@ assert.doesNotMatch(todayCardSource, /today\.info\.location|openLocationInSystem
 
 const validateIndex = source.indexOf("validateAttendanceQrToken(normalizedQrToken)");
 const hideScannerIndex = source.indexOf("hideAttendanceScannerForProcessing();", validateIndex);
-const networkIndex = source.indexOf("verifyAttendanceNetworkReachability()");
 const resolveIndex = source.indexOf("resolveAttendanceQr(normalizedQrToken)");
 const preparationIndex = source.indexOf("prepareAttendanceQrPunch(qrToday.nextPunchType");
 // 普通打卡与二维码打卡共存时，只验证二维码准备完成后的 punch 调用顺序。
@@ -53,12 +52,17 @@ const uiGateAfterTrackingIndex = source.indexOf(
 );
 assert.ok(validateIndex >= 0, "扫码后必须先做 opaque token 格式预检");
 assert.ok(hideScannerIndex > validateIndex, "格式预检通过后必须立即卸载相机");
-assert.ok(networkIndex > hideScannerIndex, "卸载相机后才能开始第一个网络 await");
-assert.ok(resolveIndex > networkIndex, "联网后必须调用后端 resolve");
+assert.ok(resolveIndex > hideScannerIndex, "卸载相机后立即调用后端 resolve");
+assert.doesNotMatch(source, /verifyAttendanceNetworkReachability/,
+  "二维码校验前不得等待独立 health 探测而消耗有效期");
 assert.ok(preparationIndex > resolveIndex, "后端 resolve 门店后才准备权限与实时 GPS");
 assert.ok(punchIndex > preparationIndex, "权限与最新 GPS 完成后才允许 punch");
 assert.ok(successSoundIndex > punchIndex, "打卡成功返回后必须播放专用成功音");
 assert.ok(trackingIndex > successSoundIndex, "成功音必须位于 punch 成功与 tracking 之间");
+assert.ok(source.indexOf("setLastQrPunch(result)") < trackingIndex,
+  "已保存结果必须在后台定位生命周期完成前展示");
+assert.doesNotMatch(source.slice(source.indexOf("const punchMutation"), source.indexOf("const previewPunchAdjustmentMutation")),
+  /invalidateEmployeeData|onSuccess/, "提交结果不得继续等待查询刷新");
 assert.ok(uiGateAfterTrackingIndex > trackingIndex,
   "tracking 生命周期必须位于服务端成功后的 UI session gate 之前");
 assert.doesNotMatch(source, /parseAttendanceQrMetadata/,

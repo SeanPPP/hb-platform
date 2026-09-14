@@ -2,6 +2,7 @@ export type NormalizedShopStore = {
   storeGUID?: string;
   storeCode: string;
   storeName: string;
+  isActive?: boolean;
   postcode?: string;
   stateCode?: string;
   isPrimary?: boolean;
@@ -73,6 +74,12 @@ export function normalizeShopStores(payload: unknown): NormalizedShopStore[] {
           record.BranchGuid
         ),
         storeCode,
+        isActive:
+          typeof record.isActive === "boolean"
+            ? record.isActive
+            : typeof record.IsActive === "boolean"
+              ? record.IsActive
+              : undefined,
         storeName:
           getStringValue(
             record.storeName,

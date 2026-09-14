@@ -58,13 +58,13 @@ assert(
 )
 assert(
   menuPreviewSource.includes(
-    "{ path: '/executive-sales-intelligence/warehouse-product-flow-analysis', title: 'menu.warehouseProductFlowAnalysis', accessKey: 'canViewProductSalesAnalysis' }",
+    "{ path: '/executive-sales-intelligence/warehouse-product-flow-analysis', title: 'menu.warehouseProductFlowAnalysis', accessKey: 'canViewWarehouseProductFlowAnalysis' }",
   ),
   '角色菜单预览应展示仓库商品流转入口',
 )
 assert(
   menuPreviewSource.includes(
-    "{ path: '/executive-sales-intelligence/local-product-sales-analysis', title: 'menu.localProductSalesAnalysis', accessKey: 'canManageLocalPurchase' }",
+    "{ path: '/executive-sales-intelligence/local-product-sales-analysis', title: 'menu.localProductSalesAnalysis', accessKey: 'canViewLocalProductSalesAnalysis' }",
   ),
   '角色菜单预览应展示澳洲本地商品入口',
 )
@@ -109,7 +109,7 @@ assert(
 )
 
 const localPurchaseAccess = buildAccess(createUser({ permissions: [P.LocalPurchase.View] }))
-assert(localPurchaseAccess.canManageLocalPurchase, 'LocalPurchase.View 应允许进入澳洲本地商品分析')
-assert(localPurchaseAccess.canViewSalesIntelligence, '仅有本地进货权限时也应显示销售看板父级')
+assert(localPurchaseAccess.canManageLocalPurchase, 'LocalPurchase.View 继续允许本地进货业务')
+assert(!localPurchaseAccess.canViewSalesIntelligence, '仅有本地进货权限时不应显示销售看板父级')
 
 console.log('productSalesAnalysisRoute.test: ok')

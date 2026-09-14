@@ -1,0 +1,20 @@
+import assert from "node:assert/strict";
+import { EMPTY_IDENTITY_USER_FORM, isIdentitySessionAllowed, isUncertainIdentityWrite, selectableIdentityRoles, validateIdentityUserForm } from "./user-logic";
+
+const valid = { ...EMPTY_IDENTITY_USER_FORM, username: "staff01", email: "staff@example.com", password: "abcdef", confirmPassword: "abcdef" };
+assert.equal(validateIdentityUserForm(valid, true), null);
+assert.equal(validateIdentityUserForm({ ...valid, username: " x " }, true), "usernameInvalid");
+assert.equal(validateIdentityUserForm({ ...valid, email: "name@" }, true), "emailInvalid");
+assert.equal(validateIdentityUserForm({ ...valid, confirmPassword: "different" }, true), "passwordMismatch");
+assert.equal(validateIdentityUserForm({ ...valid, password: "", confirmPassword: "" }, false), null);
+for (const sessionKind of ["device", "iosReview", "anonymous"]) assert.equal(isIdentitySessionAllowed({ isAuthenticated: true, sessionKind, iosReviewOfflineGuardActive: false }, true), false);
+assert.equal(isIdentitySessionAllowed({ isAuthenticated: true, sessionKind: "account", iosReviewOfflineGuardActive: true }, true), false);
+assert.equal(isIdentitySessionAllowed({ isAuthenticated: true, sessionKind: "account", iosReviewOfflineGuardActive: false }, true), true);
+assert.equal(isIdentitySessionAllowed({ isAuthenticated: true, sessionKind: "account", iosReviewOfflineGuardActive: false }, false), false);
+assert.deepEqual(selectableIdentityRoles([{ roleGUID: "1", roleName: "Admin" }, { roleGUID: "2", roleName: "StoreStaff" }, { roleGUID: "3", roleName: "StoreManager" }], true).map(x => x.roleGUID), ["2"]);
+assert.equal(isUncertainIdentityWrite(new Error("offline")), true);
+assert.equal(isUncertainIdentityWrite({ response: { status: 503 } }), true);
+assert.equal(isUncertainIdentityWrite({ response: { status: 400 } }), false);
+assert.equal(isUncertainIdentityWrite({ response: { status: 403 } }), false);
+assert.equal(isUncertainIdentityWrite({ apiBusinessError: true, code: "USERNAME_EXISTS" }), false);
+console.log("identity user validation, session boundaries and uncertain writes: passed");

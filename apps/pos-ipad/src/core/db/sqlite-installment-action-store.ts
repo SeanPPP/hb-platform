@@ -106,6 +106,31 @@ export class SqliteInstallmentActionStore
     return this.readRow(rows[0]!);
   }
 
+  /** 已经完成业务但尚未 ACK 的 Linkly attempt 仍要挡住下一单，且只允许 ACK 恢复。 */
+  public async loadProviderAcknowledgementPending(
+    terminalInput: TerminalScope,
+  ): Promise<PersistedInstallmentAction | null> {
+    const terminal = normalizeTerminal(terminalInput);
+    const row = await this.connection.getFirst<ActionRow>(
+      `${selectColumns()}
+       WHERE store_code = ? AND device_code = ?
+         AND resolution IN ('Completed', 'Declined')
+         AND EXISTS (
+           SELECT 1 FROM installment_provider_attempts attempts
+           WHERE attempts.action_id = installment_actions.action_id
+             AND attempts.provider = 'linkly-cloud'
+             AND attempts.provider_environment IS NOT NULL
+             AND attempts.state IN ('Approved', 'Declined', 'Cancelled')
+             AND (attempts.state = 'Approved' OR attempts.provider_session_id IS NOT NULL)
+             AND attempts.provider_acknowledged_at_iso IS NULL
+         )
+       ORDER BY resolved_at_iso ASC, action_id ASC LIMIT 1`,
+      [terminal.storeCode, terminal.deviceCode],
+    );
+    // 中文注释：按稳定 actionId 读取终态只用于账本证明/ACK；blocking 查询仍拒绝已解决 action。
+    return row ? this.readBoundActionRow(row) : null;
+  }
+
   public async loadLifecycleBlocking(
     terminal: TerminalScope,
   ): Promise<PersistedInstallmentLifecycleAction | null> {
@@ -129,7 +154,8 @@ export class SqliteInstallmentActionStore
       `${selectColumns()} WHERE action_id = ? LIMIT 1`,
       [actionId],
     );
-    return row ? this.readRow(row) : null;
+    // 中文注释：按稳定 actionId 读取终态只用于账本证明/ACK；blocking 查询仍拒绝已解决 action。
+    return row ? this.readBoundActionRow(row) : null;
   }
 
   public async createIfNone(

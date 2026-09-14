@@ -31,6 +31,8 @@ public sealed record CardRecoveryQueueItem(
     Guid? OperationGuid = null,
     string? PaymentStatus = null)
 {
+    public bool IsOpen { get; init; } = true;
+
     public CardRecoveryAttemptKey Key => new(Processor, AttemptGuid);
 }
 
@@ -45,6 +47,10 @@ public sealed record CardRecoveryQueueLoadResult(
 
 public interface ICardRecoveryQueueLoader
 {
+    Task<CardRecoveryQueueLoadResult> LoadHistoryQueueAsync(
+        PosSessionState session, CancellationToken cancellationToken = default) =>
+        LoadOpenQueueAsync(session, cancellationToken);
+
     Task<CardRecoveryQueueLoadResult> LoadOpenQueueAsync(
         PosSessionState session,
         CancellationToken cancellationToken = default);

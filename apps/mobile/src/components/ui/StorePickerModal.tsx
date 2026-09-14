@@ -1,9 +1,12 @@
 import type { ReactNode } from "react";
 import { Pressable, ScrollView, StyleSheet, useWindowDimensions, View } from "react-native";
 import { Button, Modal, Portal, RadioButton, Text } from "react-native-paper";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { HB_COLORS } from "@/shared/theme/tokens";
 import type { Store } from "@/modules/shop/types";
 
 interface StorePickerModalProps {
+  presentation?: "dialog" | "sheet";
   visible: boolean;
   stores: Store[];
   selectedStoreCode?: string | null;
@@ -18,6 +21,7 @@ interface StorePickerModalProps {
 }
 
 export function StorePickerModal({
+  presentation = "dialog",
   visible,
   stores,
   selectedStoreCode,
@@ -31,6 +35,8 @@ export function StorePickerModal({
   onSelectStore,
 }: StorePickerModalProps) {
   const { height } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  const isSheet = presentation === "sheet";
   const rowCount = stores.length + (includeAllOption ? 1 : 0);
   const maxListHeight = Math.max(160, Math.min(480, height * 0.58));
   const listHeight = Math.min(rowCount * 48, maxListHeight);
@@ -40,9 +46,11 @@ export function StorePickerModal({
       <Modal
         visible={visible}
         onDismiss={onDismiss}
-        contentContainerStyle={styles.container}
+        style={isSheet ? styles.sheetOverlay : undefined}
+        contentContainerStyle={[styles.container, isSheet && styles.sheet, isSheet && { paddingBottom: Math.max(insets.bottom, 16) }]}
       >
-        <Text variant="titleLarge" style={styles.title}>
+        {isSheet ? <View style={styles.handle} /> : null}
+        <Text variant="titleLarge" style={[styles.title, isSheet && styles.sheetTitle]}>
           {title}
         </Text>
         <ScrollView
@@ -74,7 +82,7 @@ export function StorePickerModal({
           ))}
         </ScrollView>
         <View style={styles.actions}>
-          <Button onPress={onDismiss}>{cancelLabel}</Button>
+          <Button contentStyle={isSheet ? { minHeight: 44 } : undefined} onPress={onDismiss}>{cancelLabel}</Button>
         </View>
       </Modal>
     </Portal>
@@ -125,6 +133,10 @@ function PickerRow({
 }
 
 const styles = StyleSheet.create({
+  sheetOverlay: { justifyContent: "flex-end" },
+  sheet: { width: "100%", maxWidth: 680, borderTopLeftRadius: 18, borderTopRightRadius: 18, borderBottomLeftRadius: 0, borderBottomRightRadius: 0, paddingHorizontal: 16, paddingTop: 10 },
+  sheetTitle: { fontWeight: "700", color: HB_COLORS.textPrimary },
+  handle: { width: 44, height: 4, borderRadius: 2, backgroundColor: HB_COLORS.outline, alignSelf: "center", marginBottom: 16 },
   actions: {
     alignItems: "flex-end",
     marginTop: 8,

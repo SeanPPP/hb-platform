@@ -476,12 +476,17 @@ public sealed class StartupSchemaMigratorStartupContractTests
     {
         var repoRoot = FindRepoRoot();
         var programPath = Path.Combine(repoRoot, "services/backend/BlazorApp.Api/Program.cs");
+        var schemaCommandPath = Path.Combine(
+            repoRoot,
+            "services/backend/BlazorApp.Api/Data/SchemaMigrations/SchemaCommand.cs"
+        );
         var migratorPath = Path.Combine(
             repoRoot,
             "services/backend/BlazorApp.Api/Data/StartupSchemaMigrator.cs"
         );
 
         var program = await File.ReadAllTextAsync(programPath);
+        var schemaCommand = await File.ReadAllTextAsync(schemaCommandPath);
         var migrator = await File.ReadAllTextAsync(migratorPath);
 
         var coordinatorIndex = program.IndexOf("SchemaMigrationCoordinator", StringComparison.Ordinal);
@@ -491,8 +496,12 @@ public sealed class StartupSchemaMigratorStartupContractTests
             appRunIndex > coordinatorIndex,
             "迁移命令处理和正常启动就绪门禁必须在应用开始监听前完成。"
         );
-        Assert.Contains("--schema=migrate", program, StringComparison.Ordinal);
-        Assert.Contains("--schema=check", program, StringComparison.Ordinal);
+        Assert.Contains("var schemaCommand = SchemaCommand.Parse(args);", program, StringComparison.Ordinal);
+        // 命令字面量由独立解析器统一维护；Program 只按解析后的模式构建最小 schema host。
+        Assert.Contains("private const string MigrateArgument = \"--schema=migrate\";", schemaCommand, StringComparison.Ordinal);
+        Assert.Contains("private const string CheckArgument = \"--schema=check\";", schemaCommand, StringComparison.Ordinal);
+        Assert.Contains("MigrateArgument => new SchemaCommand(SchemaCommandMode.Migrate, null)", schemaCommand, StringComparison.Ordinal);
+        Assert.Contains("CheckArgument => new SchemaCommand(SchemaCommandMode.Check, null)", schemaCommand, StringComparison.Ordinal);
         var explicitSchemaStart = program.IndexOf(
             "if (schemaCommand.Mode != SchemaCommandMode.Server)",
             StringComparison.Ordinal
@@ -509,6 +518,7 @@ public sealed class StartupSchemaMigratorStartupContractTests
         Assert.Contains("schemaApp = builder.Build();", explicitSchemaBranch, StringComparison.Ordinal);
         Assert.Contains("SCHEMA_HOST_BUILD_FAILED", explicitSchemaBranch, StringComparison.Ordinal);
         Assert.Contains("SchemaExitCodes.ConfigurationError", explicitSchemaBranch, StringComparison.Ordinal);
+        Assert.Contains("ExecuteSchemaOperationAsync(schemaApp.Services, schemaCommand.Mode)", explicitSchemaBranch, StringComparison.Ordinal);
         Assert.DoesNotContain("AddControllers", explicitSchemaBranch, StringComparison.Ordinal);
         Assert.DoesNotContain("AddSwaggerGen", explicitSchemaBranch, StringComparison.Ordinal);
         Assert.DoesNotContain("AddHostedService", explicitSchemaBranch, StringComparison.Ordinal);

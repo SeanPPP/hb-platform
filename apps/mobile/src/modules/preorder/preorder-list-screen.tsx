@@ -116,23 +116,23 @@ export function PreorderListScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#F6FAFE" },
+  container: { flex: 1, backgroundColor: "#F4F6F8" },
   header: {
     minHeight: 64,
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#D9E0E8",
+    borderBottomColor: "#E4E7EC",
     backgroundColor: "#FFFFFF",
   },
   headerButton: { width: 44, height: 44, margin: 0 },
   headerText: { flex: 1, paddingRight: 12 },
   title: { color: "#0F172A", fontWeight: "700" },
   subtitle: { color: "#5B6474" },
-  storeRow: { paddingHorizontal: 12, paddingTop: 10 },
-  listContent: { flexGrow: 1, padding: 12, paddingBottom: 24, gap: 10 },
-  card: { backgroundColor: "#FFFFFF", borderColor: "#D9E0E8" },
+  storeRow: { paddingHorizontal: 16, paddingTop: 12 },
+  listContent: { flexGrow: 1, padding: 16, paddingBottom: 24, gap: 12 },
+  card: { backgroundColor: "#FFFFFF", borderColor: "#E4E7EC", borderRadius: 12 },
   cardContent: { gap: 12 },
   cardHeading: { flexDirection: "row", alignItems: "flex-start", gap: 10 },
   cardTitleWrap: { flex: 1, gap: 2 },

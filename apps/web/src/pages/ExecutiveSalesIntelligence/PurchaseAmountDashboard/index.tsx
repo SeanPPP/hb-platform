@@ -33,11 +33,13 @@ import {
 import type {
   LocalPurchaseDashboardResponse,
   LocalPurchaseStoreSummary,
+  LocalPurchaseSupplierOption,
   LocalPurchaseSupplierDetailResponse,
   LocalPurchaseSupplierSummary,
 } from '../../../types/localPurchaseDashboard'
 import {
   buildRollingMonths,
+  buildPurchaseSupplierFilter,
   buildPurchaseMonthRows,
   createLatestRequestGuard,
   filterPurchaseStores,
@@ -47,9 +49,12 @@ import {
   getPurchaseStoreMonthAmount,
   getSupplierDetailScroll,
   getSupplierDisplayName,
+  invertPurchaseSelection,
+  normalizePurchaseSelection,
   resolvePurchaseReportViewState,
   sortPurchaseMonthsDescending,
   sortPurchaseSuppliers,
+  sumPurchaseStores,
   type PurchaseMonthRow,
 } from './logic'
 import styles from './index.module.css'
@@ -67,7 +72,11 @@ export default function PurchaseAmountDashboardPage() {
   const { t } = useTranslation()
   const { active } = useKeepAliveContext()
   const [endMonth, setEndMonth] = useState<Dayjs>(() => dayjs().startOf('month'))
-  const [selectedStoreCodes, setSelectedStoreCodes] = useState<string[]>([])
+  const [selectedStoreCodes, setSelectedStoreCodes] = useState<string[] | null>(null)
+  const [selectedSupplierKeys, setSelectedSupplierKeys] = useState<string[] | null>(null)
+  const [storeOptions, setStoreOptions] = useState<{ label: string; value: string }[]>([])
+  const [supplierOptions, setSupplierOptions] = useState<LocalPurchaseSupplierOption[]>([])
+  const [supplierFilterAvailable, setSupplierFilterAvailable] = useState(false)
   const [refreshVersion, setRefreshVersion] = useState(0)
   const [report, setReport] = useState<LocalPurchaseDashboardResponse | null>(null)
   const [loading, setLoading] = useState(true)
@@ -82,8 +91,25 @@ export default function PurchaseAmountDashboardPage() {
   const dashboardAbortRef = useRef<AbortController>()
   const supplierAbortRef = useRef<AbortController>()
   const endMonthKey = endMonth.format('YYYY-MM')
+  const previousEndMonthRef = useRef(endMonthKey)
+  const allSupplierKeys = useMemo(() => supplierOptions.map((supplier) => supplier.rowKey), [supplierOptions])
 
   useEffect(() => {
+    const monthChanged = previousEndMonthRef.current !== endMonthKey
+    if (monthChanged && selectedSupplierKeys !== null) {
+      previousEndMonthRef.current = endMonthKey
+      setSupplierOptions([])
+      setSelectedSupplierKeys(null)
+      setReport(null)
+      setLoading(true)
+      return
+    }
+    if (monthChanged) {
+      previousEndMonthRef.current = endMonthKey
+      setSupplierOptions([])
+      setReport(null)
+      setLoading(true)
+    }
     if (!active) {
       dashboardAbortRef.current?.abort()
       supplierAbortRef.current?.abort()
@@ -103,14 +129,31 @@ export default function PurchaseAmountDashboardPage() {
     const abortController = new AbortController()
     dashboardAbortRef.current = abortController
     const requestId = dashboardGuardRef.current.begin()
-    // 月份口径变化后先清空旧结果，失败时也不能在新月份控件下展示旧金额。
+    // 月份或供应商口径变化后先清空旧金额，保留选项以便连续多选、反选。
     setReport(null)
     setLoading(true)
     setError(undefined)
 
-    getLocalPurchaseDashboard(endMonthKey, abortController.signal)
+    const supplierFilter = buildPurchaseSupplierFilter(allSupplierKeys, selectedSupplierKeys)
+    getLocalPurchaseDashboard(endMonthKey, abortController.signal, supplierFilter.mode, supplierFilter.keys)
       .then((data) => {
-        if (dashboardGuardRef.current.isLatest(requestId)) setReport(data)
+        if (!dashboardGuardRef.current.isLatest(requestId)) return
+        setReport(data)
+        setStoreOptions(data.stores.map((store) => ({
+          label: `${store.storeName} (${store.storeCode})`,
+          value: store.storeCode,
+        })))
+        setSupplierFilterAvailable(data.supplierOptions !== undefined)
+        setSupplierOptions((previous) => {
+          const next = data.supplierOptions ?? []
+          const nextKeys = new Set(next.map((supplier) => supplier.rowKey))
+          // 跨月后保留已选但当期无进货的名称，避免标签退化为内部来源编码。
+          const merged = [...next, ...previous.filter((supplier) =>
+            selectedSupplierKeys?.includes(supplier.rowKey) && !nextKeys.has(supplier.rowKey))]
+          return merged.length === previous.length && merged.every((item, index) => item.rowKey === previous[index]?.rowKey && item.supplierName === previous[index]?.supplierName)
+            ? previous
+            : merged
+        })
       })
       .catch((nextError) => {
         if (!dashboardGuardRef.current.isLatest(requestId) || isAbortError(nextError)) return
@@ -125,7 +168,7 @@ export default function PurchaseAmountDashboardPage() {
       abortController.abort()
       dashboardGuardRef.current.invalidate()
     }
-  }, [active, endMonthKey, refreshVersion, t])
+  }, [active, endMonthKey, refreshVersion, selectedSupplierKeys, t])
 
   const months = useMemo(
     () => report?.months?.length ? report.months : buildRollingMonths(endMonthKey),
@@ -136,19 +179,31 @@ export default function PurchaseAmountDashboardPage() {
     () => filterPurchaseStores(report?.stores ?? [], selectedStoreCodes),
     [report?.stores, selectedStoreCodes],
   )
-  const storeOptions = useMemo(
-    () => (report?.stores ?? []).map((store) => ({
-      label: `${store.storeName} (${store.storeCode})`,
-      value: store.storeCode,
-    })),
-    [report?.stores],
-  )
+  const visibleTotals = useMemo(() => sumPurchaseStores(visibleStores), [visibleStores])
+  const allStoreCodes = useMemo(() => storeOptions.map((store) => store.value), [storeOptions])
+  const supplierSelectOptions = useMemo(() => supplierOptions.map((supplier) => ({
+    value: supplier.rowKey,
+    label: getSupplierDisplayName(supplier, {
+      warehouse: t('purchaseAmountDashboard.warehouse'),
+      unassigned: t('purchaseAmountDashboard.unassignedSupplier'),
+    }) + (supplier.supplierCode ? ` (${supplier.supplierCode})` : ''),
+  })), [supplierOptions, t])
 
   const closeDrawer = () => {
     supplierAbortRef.current?.abort()
     supplierGuardRef.current.invalidate()
     setSupplierLoading(false)
     setDrawerOpen(false)
+  }
+
+  const changeStores = (keys: string[] | null) => {
+    closeDrawer()
+    setSelectedStoreCodes(keys === null ? null : normalizePurchaseSelection(allStoreCodes, keys))
+  }
+
+  const changeSuppliers = (keys: string[] | null) => {
+    closeDrawer()
+    setSelectedSupplierKeys(keys === null ? null : normalizePurchaseSelection(allSupplierKeys, keys))
   }
 
   const openStore = useCallback(async (store: LocalPurchaseStoreSummary) => {
@@ -163,7 +218,8 @@ export default function PurchaseAmountDashboardPage() {
     setSupplierLoading(true)
 
     try {
-      const data = await getLocalPurchaseSupplierDetails(store.storeCode, endMonthKey, abortController.signal)
+      const supplierFilter = buildPurchaseSupplierFilter(allSupplierKeys, selectedSupplierKeys)
+      const data = await getLocalPurchaseSupplierDetails(store.storeCode, endMonthKey, abortController.signal, supplierFilter.mode, supplierFilter.keys)
       if (supplierGuardRef.current.isLatest(requestId)) setSupplierReport(data)
     } catch (nextError) {
       if (!supplierGuardRef.current.isLatest(requestId) || isAbortError(nextError)) return
@@ -172,7 +228,7 @@ export default function PurchaseAmountDashboardPage() {
       // 用户连续切换分店时，旧抽屉请求不得改写新分店状态。
       if (supplierGuardRef.current.isLatest(requestId)) setSupplierLoading(false)
     }
-  }, [endMonthKey, t])
+  }, [allSupplierKeys, endMonthKey, selectedSupplierKeys, t])
 
   const columns = useMemo<ColumnsType<PurchaseMonthRow>>(() => [
     {
@@ -313,17 +369,17 @@ export default function PurchaseAmountDashboardPage() {
           <Row gutter={[12, 12]}>
           <Col xs={24} md={8}>
             <Card size="small" loading={loading && !report} className={styles.summaryCard}>
-              <Statistic title={t('purchaseAmountDashboard.warehouseTotal')} value={report?.warehouseAmount ?? 0} precision={2} prefix="$" />
+              <Statistic title={t('purchaseAmountDashboard.warehouseTotal')} value={visibleTotals.warehouseAmount} precision={2} prefix="$" />
             </Card>
           </Col>
           <Col xs={24} md={8}>
             <Card size="small" loading={loading && !report} className={styles.summaryCard}>
-              <Statistic title={t('purchaseAmountDashboard.localSupplierTotal')} value={report?.localSupplierAmount ?? 0} precision={2} prefix="$" />
+              <Statistic title={t('purchaseAmountDashboard.localSupplierTotal')} value={visibleTotals.localSupplierAmount} precision={2} prefix="$" />
             </Card>
           </Col>
           <Col xs={24} md={8}>
             <Card size="small" loading={loading && !report} className={styles.summaryCard}>
-              <Statistic title={t('purchaseAmountDashboard.grandTotal')} value={report?.totalAmount ?? 0} precision={2} prefix="$" valueStyle={{ fontWeight: 600 }} />
+              <Statistic title={t('purchaseAmountDashboard.grandTotal')} value={visibleTotals.totalAmount} precision={2} prefix="$" valueStyle={{ fontWeight: 600 }} />
             </Card>
           </Col>
           </Row>
@@ -350,20 +406,61 @@ export default function PurchaseAmountDashboardPage() {
                   {t('common.refresh')}
                 </Button>
               </Space>
-              <Select
-                mode="multiple"
-                allowClear
-                showSearch
-                optionFilterProp="label"
-                maxTagCount="responsive"
-                value={selectedStoreCodes}
-                options={storeOptions}
-                onChange={setSelectedStoreCodes}
-                placeholder={t('purchaseAmountDashboard.allStores')}
-                aria-label={t('purchaseAmountDashboard.storeFilter')}
-                className={styles.storeFilter}
-              />
+              <div className={styles.filters}>
+                <div className={styles.filterField}>
+                  <Typography.Text>{t('purchaseAmountDashboard.supplierFilter')}</Typography.Text>
+                  <Select
+                    mode="multiple"
+                    allowClear
+                    showSearch
+                    optionFilterProp="label"
+                    maxTagCount={selectedSupplierKeys === null ? 0 : 'responsive'}
+                    maxTagPlaceholder={(omitted) => selectedSupplierKeys === null
+                      ? t('purchaseAmountDashboard.allSuppliers') : `+${omitted.length}`}
+                    value={selectedSupplierKeys ?? allSupplierKeys}
+                    options={supplierSelectOptions}
+                    onChange={changeSuppliers}
+                    disabled={!supplierFilterAvailable}
+                    placeholder={t('purchaseAmountDashboard.noSuppliersSelected')}
+                    aria-label={t('purchaseAmountDashboard.supplierFilter')}
+                    className={styles.filterSelect}
+                    popupRender={(menu) => <>
+                      <Space className={styles.filterActions} onMouseDown={(event) => event.preventDefault()}>
+                        <Button size="small" type="link" onClick={() => changeSuppliers(null)}>{t('purchaseAmountDashboard.selectAll')}</Button>
+                        <Button size="small" type="link" onClick={() => changeSuppliers(invertPurchaseSelection(allSupplierKeys, selectedSupplierKeys))}>{t('purchaseAmountDashboard.invertSelection')}</Button>
+                      </Space>
+                      {menu}
+                    </>}
+                  />
+                </div>
+                <div className={styles.filterField}>
+                  <Typography.Text>{t('purchaseAmountDashboard.storeFilter')}</Typography.Text>
+                  <Select
+                    mode="multiple"
+                    allowClear
+                    showSearch
+                    optionFilterProp="label"
+                    maxTagCount={selectedStoreCodes === null ? 0 : 'responsive'}
+                    maxTagPlaceholder={(omitted) => selectedStoreCodes === null
+                      ? t('purchaseAmountDashboard.allStores') : `+${omitted.length}`}
+                    value={selectedStoreCodes ?? allStoreCodes}
+                    options={storeOptions}
+                    onChange={changeStores}
+                    placeholder={t('purchaseAmountDashboard.noStoresSelected')}
+                    aria-label={t('purchaseAmountDashboard.storeFilter')}
+                    className={styles.filterSelect}
+                    popupRender={(menu) => <>
+                      <Space className={styles.filterActions} onMouseDown={(event) => event.preventDefault()}>
+                        <Button size="small" type="link" onClick={() => changeStores(null)}>{t('purchaseAmountDashboard.selectAll')}</Button>
+                        <Button size="small" type="link" onClick={() => changeStores(invertPurchaseSelection(allStoreCodes, selectedStoreCodes))}>{t('purchaseAmountDashboard.invertSelection')}</Button>
+                      </Space>
+                      {menu}
+                    </>}
+                  />
+                </div>
+              </div>
             </div>
+            <Typography.Text type="secondary">{t('purchaseAmountDashboard.filterHint')}</Typography.Text>
 
             {error ? (
               <Alert
@@ -380,7 +477,7 @@ export default function PurchaseAmountDashboardPage() {
             ) : dashboardViewState === 'empty' ? (
               <Empty
                 image={Empty.PRESENTED_IMAGE_SIMPLE}
-                description={t('purchaseAmountDashboard.noStores')}
+                description={t(selectedStoreCodes?.length === 0 ? 'purchaseAmountDashboard.noStoresSelected' : 'purchaseAmountDashboard.noStores')}
               />
             ) : dashboardViewState === 'ready' ? (
               <MeasuredTable<PurchaseMonthRow> metricId="executive-sales-intelligence.purchase-amount-dashboard.table-1"

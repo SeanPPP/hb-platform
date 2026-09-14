@@ -57,6 +57,340 @@ public sealed class CardTerminalSetupServiceTests
     }
 
     [Fact]
+    public async Task Linkly_terminal_connection_test_uses_terminal_assignment_snapshot()
+    {
+        var terminal = new LinklyCloudTerminalSummary(
+            Guid.NewGuid(), 2, "Returns", "Ready", false, true, null, null,
+            "POS-2", 7, "2026-09-10T01:02:03.1234567");
+        var backend = new FakeLinklyBackendTerminalClient();
+        var service = new CardTerminalSetupService(
+            new FakeCardTerminalSettingsStore(),
+            new FakeSquareTerminalSetupClient(),
+            new FakeLinklyTerminalClient(),
+            linklyBackendTerminalClient: backend);
+
+        await service.TestLinklyCloudBackendTerminalAsync(CardTerminalEnvironment.Sandbox, terminal);
+
+        Assert.Equal(terminal.TerminalId, backend.LastTerminalId);
+        Assert.Equal(terminal.TerminalVersion, backend.LastConnectionTestRequest!.ExpectedTerminalVersion);
+        Assert.Equal("POS-2", backend.LastConnectionTestRequest.ExpectedAssignedDeviceCode);
+        Assert.Equal(7, backend.LastConnectionTestRequest.ExpectedAssignmentRevision);
+    }
+
+    [Fact]
+    public async Task Linkly_terminal_unbind_does_not_pair_or_clear_client_credentials()
+    {
+        var terminal = new LinklyCloudTerminalSummary(
+            Guid.NewGuid(), 1, "Front", "Ready", false, true, null, null,
+            "POS-2", 11, "v-11");
+        var backend = new FakeLinklyBackendTerminalClient();
+        var service = new CardTerminalSetupService(
+            new FakeCardTerminalSettingsStore(),
+            new FakeSquareTerminalSetupClient(),
+            new FakeLinklyTerminalClient(),
+            linklyBackendTerminalClient: backend);
+        var session = new Hbpos.Client.Wpf.Models.PosSessionState(
+            "HB POS", "S01", "Store", "POS-1", "C1", "Cashier", true, 0);
+
+        var result = await service.AssignLinklyCloudBackendTerminalAsync(
+            CardTerminalEnvironment.Sandbox,
+            terminal,
+            targetDevice: null,
+            devices: [],
+            session);
+
+        Assert.True(result.Succeeded);
+        Assert.Null(backend.LastAssignmentRequest!.TargetDeviceCode);
+        Assert.Null(backend.LastAssignmentRequest.ExpectedTargetTerminalId);
+        Assert.Equal(0, backend.LastAssignmentRequest.ExpectedTargetSelectionRevision);
+        Assert.Null(backend.LastPairCode);
+    }
+
+    [Fact]
+    public async Task Linkly_terminal_assignment_blocks_while_current_payment_attempt_is_active()
+    {
+        var terminal = new LinklyCloudTerminalSummary(
+            Guid.NewGuid(), 1, "Front", "Ready", false, true, null, null,
+            null, 0, "v-1");
+        var target = new LinklyCloudAssignableDevice("POS-1", "WPF", true, null, 0);
+        var backend = new FakeLinklyBackendTerminalClient();
+        var accessor = new FakeLinklyPaymentAttemptContextAccessor
+        {
+            CurrentValue = new LinklyPaymentAttemptContext(Guid.NewGuid(), (_, _, _, _) => Task.CompletedTask)
+        };
+        var service = new CardTerminalSetupService(
+            new FakeCardTerminalSettingsStore(),
+            new FakeSquareTerminalSetupClient(),
+            new FakeLinklyTerminalClient(),
+            linklyBackendTerminalClient: backend,
+            linklyPaymentAttemptContextAccessor: accessor);
+        var session = new Hbpos.Client.Wpf.Models.PosSessionState(
+            "HB POS", "S01", "Store", "POS-1", "C1", "Cashier", true, 0);
+
+        var result = await service.AssignLinklyCloudBackendTerminalAsync(
+            CardTerminalEnvironment.Production, terminal, target, [target], session);
+
+        Assert.False(result.Succeeded);
+        Assert.Contains("currently running", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Null(backend.LastAssignmentRequest);
+    }
+
+    [Fact]
+    public async Task Linkly_terminal_assignment_same_owner_is_no_op_and_preserves_health()
+    {
+        var terminalId = Guid.NewGuid();
+        var checkedAt = DateTimeOffset.UtcNow;
+        var terminal = new LinklyCloudTerminalSummary(
+            terminalId, 1, "Front", "Ready", false, true, "connected", checkedAt,
+            "POS-1", 4, "v-4");
+        var target = new LinklyCloudAssignableDevice("POS-1", "WPF", true, terminalId, 4);
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            AssignmentResult = new LinklyCloudTerminalListResponse(
+                "Production", terminalId, 4, [terminal], "Active", [target])
+        };
+        var service = new CardTerminalSetupService(
+            new FakeCardTerminalSettingsStore(), new FakeSquareTerminalSetupClient(), new FakeLinklyTerminalClient(),
+            linklyBackendTerminalClient: backend);
+        var session = new Hbpos.Client.Wpf.Models.PosSessionState(
+            "HB POS", "S01", "Store", "POS-1", "C1", "Cashier", true, 0);
+
+        var result = await service.AssignLinklyCloudBackendTerminalAsync(
+            CardTerminalEnvironment.Production, terminal, target, [target], session);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal("connected", terminal.LastHealthStatus);
+        Assert.Equal(checkedAt, terminal.LastHealthAt);
+        Assert.Equal(1, backend.AssignmentCallCount);
+        Assert.Equal(0, backend.DirectoryCallCount);
+    }
+
+    [Fact]
+    public async Task Linkly_terminal_no_op_stale_snapshot_is_rejected_by_server_cas()
+    {
+        var terminalId = Guid.NewGuid();
+        var terminal = new LinklyCloudTerminalSummary(
+            terminalId, 1, "Front", "Ready", false, true, "Healthy", DateTimeOffset.UtcNow,
+            "POS-1", 4, "v-4");
+        var target = new LinklyCloudAssignableDevice("POS-1", "WPF", true, terminalId, 4);
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            AssignmentException = new HttpRequestException("selection changed", null, HttpStatusCode.Conflict)
+        };
+        var service = new CardTerminalSetupService(
+            new FakeCardTerminalSettingsStore(), new FakeSquareTerminalSetupClient(), new FakeLinklyTerminalClient(),
+            linklyBackendTerminalClient: backend);
+        var session = new Hbpos.Client.Wpf.Models.PosSessionState(
+            "HB POS", "S01", "Store", "POS-1", "C1", "Cashier", true, 0);
+
+        await Assert.ThrowsAsync<HttpRequestException>(() => service.AssignLinklyCloudBackendTerminalAsync(
+            CardTerminalEnvironment.Production, terminal, target, [target], session));
+
+        Assert.Equal(1, backend.AssignmentCallCount);
+        Assert.Equal(0, backend.DirectoryCallCount);
+    }
+
+    [Fact]
+    public async Task Linkly_terminal_assignment_blocks_durable_unresolved_settlement_after_restart()
+    {
+        var terminal = new LinklyCloudTerminalSummary(
+            Guid.NewGuid(), 1, "Front", "Ready", false, true, null, null,
+            null, 0, "v-1");
+        var target = new LinklyCloudAssignableDevice("POS-1", "WPF", true, null, 0);
+        var backend = new FakeLinklyBackendTerminalClient();
+        var service = new CardTerminalSetupService(
+            new FakeCardTerminalSettingsStore(), new FakeSquareTerminalSetupClient(), new FakeLinklyTerminalClient(),
+            linklyBackendTerminalClient: backend,
+            linklySettlementRepository: new FakeUnresolvedSettlementReader(true));
+        var session = new Hbpos.Client.Wpf.Models.PosSessionState(
+            "HB POS", "S01", "Store", "POS-1", "C1", "Cashier", true, 0);
+
+        var result = await service.AssignLinklyCloudBackendTerminalAsync(
+            CardTerminalEnvironment.Production, terminal, target, [target], session);
+
+        Assert.False(result.Succeeded);
+        Assert.Contains("unfinished Linkly settlement", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, backend.AssignmentCallCount);
+    }
+
+    [Fact]
+    public async Task Linkly_terminal_assignment_reconciles_response_loss_with_one_put_and_one_get()
+    {
+        var terminalId = Guid.NewGuid();
+        var terminal = new LinklyCloudTerminalSummary(
+            terminalId, 1, "Front", "Ready", false, true, "connected", DateTimeOffset.UtcNow,
+            null, 0, "v-1");
+        var target = new LinklyCloudAssignableDevice("POS-1", "WPF", true, null, 0);
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            AssignmentException = new TaskCanceledException("response lost"),
+            TerminalDirectory = ChangedDirectory(terminal, target)
+        };
+        var service = new CardTerminalSetupService(
+            new FakeCardTerminalSettingsStore(), new FakeSquareTerminalSetupClient(), new FakeLinklyTerminalClient(),
+            linklyBackendTerminalClient: backend);
+        var session = new Hbpos.Client.Wpf.Models.PosSessionState(
+            "HB POS", "S01", "Store", "POS-1", "C1", "Cashier", true, 0);
+
+        var result = await service.AssignLinklyCloudBackendTerminalAsync(
+            CardTerminalEnvironment.Production, terminal, target, [target], session);
+
+        Assert.True(result.Succeeded);
+        Assert.True(result.Reconciled);
+        Assert.Equal(1, backend.AssignmentCallCount);
+        Assert.Equal(1, backend.DirectoryCallCount);
+    }
+
+    [Fact]
+    public async Task Linkly_terminal_assignment_rechecks_incomplete_success_response_without_replaying_put()
+    {
+        var terminalId = Guid.NewGuid();
+        var terminal = new LinklyCloudTerminalSummary(
+            terminalId, 1, "Front", "Ready", false, true, "connected", DateTimeOffset.UtcNow,
+            null, 0, "v-1");
+        var target = new LinklyCloudAssignableDevice("POS-1", "WPF", true, null, 0);
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            AssignmentResult = new LinklyCloudTerminalListResponse("Production", null, null, [], "Active", []),
+            TerminalDirectory = ChangedDirectory(terminal, target)
+        };
+        var service = new CardTerminalSetupService(
+            new FakeCardTerminalSettingsStore(), new FakeSquareTerminalSetupClient(), new FakeLinklyTerminalClient(),
+            linklyBackendTerminalClient: backend);
+        var session = new Hbpos.Client.Wpf.Models.PosSessionState(
+            "HB POS", "S01", "Store", "POS-1", "C1", "Cashier", true, 0);
+
+        var result = await service.AssignLinklyCloudBackendTerminalAsync(
+            CardTerminalEnvironment.Production, terminal, target, [target], session);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(1, backend.AssignmentCallCount);
+        Assert.Equal(1, backend.DirectoryCallCount);
+    }
+
+    [Fact]
+    public async Task Linkly_terminal_rebind_accepts_per_device_revision_and_cleared_displaced_line()
+    {
+        var sourceId = Guid.NewGuid();
+        var displacedId = Guid.NewGuid();
+        var source = new LinklyCloudTerminalSummary(
+            sourceId, 1, "Front", "Ready", false, true, "Healthy", DateTimeOffset.UtcNow,
+            null, 0, "v-source-1");
+        var target = new LinklyCloudAssignableDevice("POS-1", "WPF", true, displacedId, 5);
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            AssignmentResult = new LinklyCloudTerminalListResponse(
+                "Production", sourceId, 6,
+                [
+                    source with
+                    {
+                        AssignedDeviceCode = "POS-1", AssignmentRevision = 6,
+                        TerminalVersion = "v-source-2", LastHealthStatus = null, LastHealthAt = null
+                    },
+                    new LinklyCloudTerminalSummary(
+                        displacedId, 2, "Returns", "Ready", false, true, null, null,
+                        null, 0, "v-displaced-2")
+                ],
+                "Active",
+                [target with { SelectedTerminalId = sourceId, SelectionRevision = 6 }])
+        };
+        var service = new CardTerminalSetupService(
+            new FakeCardTerminalSettingsStore(), new FakeSquareTerminalSetupClient(), new FakeLinklyTerminalClient(),
+            linklyBackendTerminalClient: backend);
+        var session = new Hbpos.Client.Wpf.Models.PosSessionState(
+            "HB POS", "S01", "Store", "POS-1", "C1", "Cashier", true, 0);
+
+        var result = await service.AssignLinklyCloudBackendTerminalAsync(
+            CardTerminalEnvironment.Production, source, target, [target], session);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(1, backend.AssignmentCallCount);
+        Assert.Equal(0, backend.DirectoryCallCount);
+    }
+
+    [Fact]
+    public async Task Linkly_terminal_assignment_reconciles_malformed_success_body_and_http_408_once_each()
+    {
+        foreach (var ambiguous in new Exception[]
+                 {
+                     new System.Text.Json.JsonException("truncated 200 body"),
+                     new HttpRequestException("request timeout", null, HttpStatusCode.RequestTimeout),
+                     new HttpRequestException("empty 200 contract", null, HttpStatusCode.OK)
+                 })
+        {
+            var terminal = new LinklyCloudTerminalSummary(
+                Guid.NewGuid(), 1, "Front", "Ready", false, true, null, null, null, 0, "v-1");
+            var target = new LinklyCloudAssignableDevice("POS-1", "WPF", true, null, 0);
+            var backend = new FakeLinklyBackendTerminalClient
+            {
+                AssignmentException = ambiguous,
+                TerminalDirectory = ChangedDirectory(terminal, target)
+            };
+            var service = new CardTerminalSetupService(
+                new FakeCardTerminalSettingsStore(), new FakeSquareTerminalSetupClient(), new FakeLinklyTerminalClient(),
+                linklyBackendTerminalClient: backend);
+            var session = new Hbpos.Client.Wpf.Models.PosSessionState(
+                "HB POS", "S01", "Store", "POS-1", "C1", "Cashier", true, 0);
+
+            var result = await service.AssignLinklyCloudBackendTerminalAsync(
+                CardTerminalEnvironment.Production, terminal, target, [target], session);
+
+            Assert.True(result.Succeeded);
+            Assert.Equal(1, backend.AssignmentCallCount);
+            Assert.Equal(1, backend.DirectoryCallCount);
+        }
+    }
+
+    [Fact]
+    public async Task Linkly_terminal_assignment_returns_stable_failure_when_reconcile_body_is_malformed()
+    {
+        var terminal = new LinklyCloudTerminalSummary(
+            Guid.NewGuid(), 1, "Front", "Ready", false, true, null, null, null, 0, "v-1");
+        var target = new LinklyCloudAssignableDevice("POS-1", "WPF", true, null, 0);
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            AssignmentException = new System.Text.Json.JsonException("truncated PUT body"),
+            DirectoryException = new System.Text.Json.JsonException("truncated GET body")
+        };
+        var service = new CardTerminalSetupService(
+            new FakeCardTerminalSettingsStore(), new FakeSquareTerminalSetupClient(), new FakeLinklyTerminalClient(),
+            linklyBackendTerminalClient: backend);
+        var session = new Hbpos.Client.Wpf.Models.PosSessionState(
+            "HB POS", "S01", "Store", "POS-1", "C1", "Cashier", true, 0);
+
+        var result = await service.AssignLinklyCloudBackendTerminalAsync(
+            CardTerminalEnvironment.Production, terminal, target, [target], session);
+
+        Assert.False(result.Succeeded);
+        Assert.True(result.Reconciled);
+        Assert.Contains("could not be refreshed", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, backend.AssignmentCallCount);
+        Assert.Equal(1, backend.DirectoryCallCount);
+    }
+
+    private static LinklyCloudTerminalListResponse ChangedDirectory(
+        LinklyCloudTerminalSummary terminal,
+        LinklyCloudAssignableDevice target) =>
+        new(
+            "Production",
+            terminal.TerminalId,
+            target.SelectionRevision + 1,
+            [terminal with
+            {
+                AssignedDeviceCode = target.DeviceCode,
+                AssignmentRevision = target.SelectedTerminalId is null ? 4_107 : target.SelectionRevision + 1,
+                TerminalVersion = terminal.TerminalVersion + "-next",
+                LastHealthStatus = null,
+                LastHealthAt = null
+            }],
+            "Active",
+            [target with
+            {
+                SelectedTerminalId = terminal.TerminalId,
+                SelectionRevision = target.SelectedTerminalId is null ? 4_107 : target.SelectionRevision + 1
+            }]);
+
+    [Fact]
     public async Task LogonLinklyAsync_delegates_to_local_terminal_client()
     {
         var expected = new LinklyLogonResult(true, "logged on", "00", "APPROVED");
@@ -763,6 +1097,16 @@ public sealed class CardTerminalSetupServiceTests
         public LinklyCloudTerminalListResponse TerminalDirectory { get; init; } =
             new("Sandbox", null, null, []);
 
+        public LinklyCloudTerminalListResponse? AssignmentResult { get; init; }
+
+        public Exception? AssignmentException { get; init; }
+
+        public Exception? DirectoryException { get; init; }
+
+        public int DirectoryCallCount { get; private set; }
+
+        public int AssignmentCallCount { get; private set; }
+
         public LinklyCloudTerminalSelectionResponse TerminalSelection { get; init; } =
             new("Sandbox", Guid.Empty, 1);
 
@@ -783,11 +1127,20 @@ public sealed class CardTerminalSetupServiceTests
 
         public int StatusTestCallCount { get; private set; }
 
+        public LinklyCloudTerminalConnectionTestRequest? LastConnectionTestRequest { get; private set; }
+
+        public LinklyCloudTerminalAssignmentRequest? LastAssignmentRequest { get; private set; }
+
         public Task<LinklyCloudTerminalListResponse> GetTerminalsAsync(
             CardTerminalEnvironment environment,
             CancellationToken cancellationToken = default)
         {
             LastTerminalEnvironment = environment;
+            DirectoryCallCount++;
+            if (DirectoryException is not null)
+            {
+                return Task.FromException<LinklyCloudTerminalListResponse>(DirectoryException);
+            }
             return Task.FromResult(TerminalDirectory);
         }
 
@@ -813,6 +1166,57 @@ public sealed class CardTerminalSetupServiceTests
             LastTerminalId = terminalId;
             LastPairCode = pairCode;
             return Task.FromResult(TerminalPairResult);
+        }
+
+        public Task<LinklyCloudTerminalConnectionTestResponse> TestTerminalConnectionAsync(
+            Guid terminalId,
+            LinklyCloudTerminalConnectionTestRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            LastTerminalId = terminalId;
+            LastConnectionTestRequest = request;
+            return Task.FromResult(new LinklyCloudTerminalConnectionTestResponse(
+                terminalId,
+                request.Environment,
+                request.ExpectedTerminalVersion,
+                request.ExpectedAssignedDeviceCode,
+                request.ExpectedAssignmentRevision,
+                true,
+                "connected",
+                DateTimeOffset.UtcNow,
+                "Connected"));
+        }
+
+        public Task<LinklyCloudTerminalListResponse> AssignTerminalAsync(
+            Guid terminalId,
+            LinklyCloudTerminalAssignmentRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            LastTerminalId = terminalId;
+            LastAssignmentRequest = request;
+            AssignmentCallCount++;
+            if (AssignmentException is not null)
+            {
+                return Task.FromException<LinklyCloudTerminalListResponse>(AssignmentException);
+            }
+
+            return Task.FromResult(AssignmentResult ?? new LinklyCloudTerminalListResponse(
+                request.Environment,
+                request.TargetDeviceCode is null ? null : terminalId,
+                1,
+                [new LinklyCloudTerminalSummary(
+                    terminalId, 1, "Line", "Ready", false, true, null, null,
+                    request.TargetDeviceCode,
+                    request.TargetDeviceCode is null
+                        ? 0
+                        : request.ExpectedTargetTerminalId is null ? 4_107 : request.ExpectedTargetSelectionRevision + 1,
+                    request.ExpectedTerminalVersion + "-next")],
+                "Active",
+                request.TargetDeviceCode is null
+                    ? []
+                    : [new LinklyCloudAssignableDevice(
+                        request.TargetDeviceCode, "WPF", true, terminalId,
+                        request.ExpectedTargetTerminalId is null ? 4_107 : request.ExpectedTargetSelectionRevision + 1)]));
         }
 
         public Task<LinklyConnectionTestResult> TestConnectionAsync(
@@ -888,6 +1292,24 @@ public sealed class CardTerminalSetupServiceTests
         {
             throw new NotSupportedException();
         }
+    }
+
+    private sealed class FakeUnresolvedSettlementReader(bool hasUnresolved) : ILinklyUnresolvedSettlementReader
+    {
+        public Task<bool> HasUnresolvedAsync(
+            string storeCode,
+            string deviceCode,
+            string environment,
+            CancellationToken cancellationToken = default) => Task.FromResult(hasUnresolved);
+    }
+
+    private sealed class FakeLinklyPaymentAttemptContextAccessor : ILinklyPaymentAttemptContextAccessor
+    {
+        public LinklyPaymentAttemptContext? CurrentValue { get; init; }
+
+        public LinklyPaymentAttemptContext? Current => CurrentValue;
+
+        public IDisposable Begin(LinklyPaymentAttemptContext context) => throw new NotSupportedException();
     }
 
     private sealed class EnvironmentVariableScope : IDisposable

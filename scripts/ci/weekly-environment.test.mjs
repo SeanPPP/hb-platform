@@ -92,6 +92,7 @@ exit 0
 printf 'HB_TEST_SQLSERVER_CONNECTION=%s\\n' "\${HB_TEST_SQLSERVER_CONNECTION:-}" >> "$CI_SQL_CAPTURE"
 printf 'CONTAINER_MUTATION_SQLSERVER_TEST_CONNECTION=%s\\n' "\${CONTAINER_MUTATION_SQLSERVER_TEST_CONNECTION:-}" >> "$CI_SQL_CAPTURE"
 printf 'COST_BACKFILL_SQLSERVER_TEST_CONNECTION=%s\\n' "\${COST_BACKFILL_SQLSERVER_TEST_CONNECTION:-}" >> "$CI_SQL_CAPTURE"
+printf 'LINKLY_LINE_SQLSERVER_TEST_CONNECTION=%s\\n' "\${LINKLY_LINE_SQLSERVER_TEST_CONNECTION:-}" >> "$CI_SQL_CAPTURE"
 exit 0
 `);
   makeExecutable(join(bin, "node"), "#!/usr/bin/env bash\nexit 0\n");
@@ -113,6 +114,7 @@ exit 0
     SET_CHILD_PURCHASE_PRICE_SQLSERVER_TEST_CONNECTION: connection,
     STORE_PRICE_TRANSFER_SQLSERVER_TEST_CONNECTION: connection,
     DEVICE_ACTIVATION_SQLSERVER_TEST_CONNECTION: connection,
+    LINKLY_LINE_SQLSERVER_TEST_CONNECTION: connection,
     HBWEB_SCHEMA_SQLSERVER_TEST_CONNECTION: connection,
   };
 
@@ -120,6 +122,7 @@ exit 0
     "HB_TEST_SQLSERVER_CONNECTION",
     "CONTAINER_MUTATION_SQLSERVER_TEST_CONNECTION",
     "COST_BACKFILL_SQLSERVER_TEST_CONNECTION",
+    "LINKLY_LINE_SQLSERVER_TEST_CONNECTION",
   ]) {
     const workflow = readFileSync(join(repositoryRoot, ".github/workflows/pr-ci.yml"), "utf8");
     const weeklyJob = workflow.slice(workflow.indexOf("  weekly_sql:"), workflow.indexOf("  weekly_performance:"));
@@ -152,4 +155,5 @@ exit 0
     /CONTAINER_MUTATION_SQLSERVER_TEST_CONNECTION=Server=localhost,1433/,
   );
   assert.match(readFileSync(capture, "utf8"), /COST_BACKFILL_SQLSERVER_TEST_CONNECTION=Server=127\.0\.0\.1,11439/);
+  assert.match(readFileSync(capture, "utf8"), /LINKLY_LINE_SQLSERVER_TEST_CONNECTION=Server=localhost,1433/);
 });

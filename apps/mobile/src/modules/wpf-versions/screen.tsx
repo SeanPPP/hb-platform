@@ -23,6 +23,9 @@ import {
   useTheme,
 } from "react-native-paper";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
+import { BUSINESS_UI } from "@/components/ui/business-ui";
+import { BusinessSheet } from "@/components/ui/BusinessSheet";
+import { HB_COLORS } from "@/shared/theme/tokens";
 import { useAuthStore } from "@/store/auth-store";
 import {
   getWpfReleases,
@@ -634,7 +637,7 @@ export default function WpfVersionsScreen() {
       >
         <View style={styles.headerRow}>
           <View style={styles.flex}>
-            <Text variant="headlineSmall">{t("title")}</Text>
+            <Text variant="headlineSmall" style={BUSINESS_UI.title}>{t("title")}</Text>
             <Text variant="bodySmall" style={styles.muted}>
               {t("subtitle")}
             </Text>
@@ -1029,6 +1032,7 @@ export default function WpfVersionsScreen() {
       <Portal>
         <Modal
           visible={Boolean(detail)}
+          style={styles.sheetOverlay}
           onDismiss={() => setDetail(null)}
           contentContainerStyle={styles.modal}
         >
@@ -1101,17 +1105,26 @@ export default function WpfVersionsScreen() {
           </Button>
         </Modal>
       </Portal>
-      <Portal>
-        <Modal
-          visible={Boolean(editRelease)}
-          onDismiss={() => setEditRelease(null)}
-          contentContainerStyle={styles.modal}
-        >
-          <View style={styles.modalHeader}>
-            <Text variant="titleLarge">{t("editMetadata")}</Text>
-            <IconButton icon="close" onPress={() => setEditRelease(null)} />
+      <BusinessSheet
+        visible={Boolean(editRelease)}
+        title={t("editMetadata")}
+        onDismiss={() => setEditRelease(null)}
+        footer={
+          <View style={{ gap: 8 }}>
+            {snackbar ? <Text accessibilityRole="alert" style={{ color: HB_COLORS.danger }}>{snackbar}</Text> : null}
+            <Button
+              mode="contained"
+              icon="content-save"
+              onPress={() => void saveReleaseMetadata()}
+              loading={Boolean(updatingId)}
+              disabled={Boolean(updatingId)}
+              contentStyle={BUSINESS_UI.buttonContent}
+            >
+              {t("saveMetadata")}
+            </Button>
           </View>
-          <Divider />
+        }
+      >
           <TextInput
             label={t("downloadUrl")}
             value={editDraft.downloadUrl}
@@ -1171,21 +1184,11 @@ export default function WpfVersionsScreen() {
             multiline
             style={styles.input}
           />
-          <Button
-            mode="contained"
-            icon="content-save"
-            onPress={() => void saveReleaseMetadata()}
-            loading={Boolean(updatingId)}
-            disabled={Boolean(updatingId)}
-            style={styles.actionButton}
-          >
-            {t("saveMetadata")}
-          </Button>
-        </Modal>
-      </Portal>
+      </BusinessSheet>
       <Portal>
         <Modal
           visible={policyConfirmVisible}
+          style={styles.sheetOverlay}
           onDismiss={() => setPolicyConfirmVisible(false)}
           contentContainerStyle={styles.modal}
         >
@@ -1274,7 +1277,7 @@ export default function WpfVersionsScreen() {
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: "#f7f8fa" },
+  safe: { ...BUSINESS_UI.screen },
   center: {
     flex: 1,
     alignItems: "center",
@@ -1284,8 +1287,8 @@ const styles = StyleSheet.create({
   content: { padding: 16, paddingBottom: 44, gap: 12 },
   headerRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   flex: { flex: 1 },
-  muted: { opacity: 0.68 },
-  card: { marginBottom: 2 },
+  muted: { color: HB_COLORS.textSecondary },
+  card: { ...BUSINESS_UI.section, marginBottom: 2 },
   segmented: { marginTop: 10, marginBottom: 10 },
   switchRow: {
     flexDirection: "row",
@@ -1327,19 +1330,24 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   modal: {
-    margin: 20,
-    padding: 18,
+    alignSelf: "center",
+    width: "100%",
+    maxWidth: 680,
+    padding: 16,
+    paddingBottom: 28,
     backgroundColor: "white",
-    borderRadius: 12,
-    maxHeight: "80%",
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+    maxHeight: "92%",
   },
+  sheetOverlay: { justifyContent: "flex-end" },
   modalHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
   },
-  detailRow: { paddingVertical: 10, gap: 4 },
-  detailLabel: { opacity: 0.7 },
+  detailRow: { paddingVertical: 12, gap: 4, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: HB_COLORS.outlineMuted },
+  detailLabel: { color: HB_COLORS.textSecondary },
   qrModal: {
     margin: 20,
     padding: 24,

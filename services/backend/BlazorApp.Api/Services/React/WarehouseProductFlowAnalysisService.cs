@@ -46,6 +46,12 @@ namespace BlazorApp.Api.Services.React
         public decimal AllocQuantity { get; set; }
     }
 
+    internal sealed class WarehouseProductFlowAnalysisStoreMetadata
+    {
+        public string BranchName { get; set; } = string.Empty;
+        public bool PosEnabled { get; set; }
+    }
+
     internal sealed class WarehouseProductFlowAnalysisContainerRow
     {
         public string ProductCode { get; set; } = string.Empty;
@@ -217,21 +223,36 @@ namespace BlazorApp.Api.Services.React
 
                     if (!string.IsNullOrWhiteSpace(keyword))
                     {
-                        if (hasActiveProductCodeDuplicates)
+                        // 先形成匹配商品集合再关联仓库主档，避免 OR + 关联子查询逐行扫描 Product。
+                        // 使用相同的确定性主档规则，去重后也不会放大 count 或分页行数。
+                        var keywordProductCodes = BuildCandidateProductQuery(hasActiveProductCodeDuplicates)
+                            .Where(product =>
+                                product.ProductCode!.Contains(keyword)
+                                || (product.ItemNumber != null && product.ItemNumber.Contains(keyword))
+                                || (product.ProductName != null && product.ProductName.Contains(keyword))
+                                || (product.EnglishName != null && product.EnglishName.Contains(keyword))
+                                || (product.Barcode != null && product.Barcode.Contains(keyword))
+                            )
+                            .Select(product => new { ProductCode = product.ProductCode! })
+                            .Distinct()
+                            .MergeTable();
+                        // 常见的货号/条码只命中少量商品：复用匹配编码，避免 count 和分页各扫描一次主档。
+                        // 最多预读一个批次；宽泛关键字继续使用完整子查询，不截断结果或生成超长 IN。
+                        var matchedCodes = await keywordProductCodes.Clone()
+                            .Select(product => product.ProductCode)
+                            .Take(CodeBatchSize + 1)
+                            .ToListAsync();
+                        if (matchedCodes.Count <= CodeBatchSize)
                         {
-                            var keywordProductCodes = BuildCanonicalProductQuery()
-                                .Where(product =>
-                                    product.ProductCode!.Contains(keyword)
-                                    || (product.ItemNumber != null
-                                        && product.ItemNumber.Contains(keyword))
-                                    || (product.ProductName != null
-                                        && product.ProductName.Contains(keyword))
-                                    || (product.EnglishName != null
-                                        && product.EnglishName.Contains(keyword))
-                                    || (product.Barcode != null && product.Barcode.Contains(keyword))
-                                )
-                                .Select(product => new { ProductCode = product.ProductCode! })
-                                .MergeTable();
+                            warehouseProductQuery = matchedCodes.Count == 0
+                                ? warehouseProductQuery.Where(warehouseProduct =>
+                                    warehouseProduct.ProductCode.Contains(keyword))
+                                : warehouseProductQuery.Where(warehouseProduct =>
+                                    warehouseProduct.ProductCode.Contains(keyword)
+                                    || matchedCodes.Contains(warehouseProduct.ProductCode));
+                        }
+                        else
+                        {
                             warehouseProductQuery = warehouseProductQuery
                                 .LeftJoin(
                                     keywordProductCodes,
@@ -244,26 +265,6 @@ namespace BlazorApp.Api.Services.React
                                 )
                                 .Select((warehouseProduct, product) => warehouseProduct)
                                 .MergeTable();
-                        }
-                        else
-                        {
-                            warehouseProductQuery = warehouseProductQuery.Where(warehouseProduct =>
-                                warehouseProduct.ProductCode.Contains(keyword)
-                                || SqlFunc.Subqueryable<Product>()
-                                    .Where(product =>
-                                        !product.IsDeleted
-                                        && product.ProductCode == warehouseProduct.ProductCode
-                                        && ((product.ItemNumber != null
-                                                && product.ItemNumber.Contains(keyword))
-                                            || (product.ProductName != null
-                                                && product.ProductName.Contains(keyword))
-                                            || (product.EnglishName != null
-                                                && product.EnglishName.Contains(keyword))
-                                            || (product.Barcode != null
-                                                && product.Barcode.Contains(keyword)))
-                                    )
-                                    .Any()
-                            );
                         }
                     }
 
@@ -618,9 +619,10 @@ namespace BlazorApp.Api.Services.React
             return await GetOrCreateAsync(cacheKey, request.ForceRefresh, async () =>
             {
                 var context = await BuildQueryContextAsync(
-                    request.Filter ?? new WarehouseProductFlowAnalysisFilterDto()
+                    request.Filter ?? new WarehouseProductFlowAnalysisFilterDto(),
+                    request.Selection
                 );
-                var selectedCodes = ApplySelection(context.FilteredCodes, request.Selection);
+                var selectedCodes = context.FilteredCodes;
                 var metrics = await BuildMetricMapAsync(selectedCodes, branchCodes, periods);
                 var rows = BuildProductDtos(context, selectedCodes, metrics);
                 var page = SortAndPageProducts(
@@ -811,11 +813,13 @@ namespace BlazorApp.Api.Services.React
         {
             var productCode = ResolveCurrentProductCode(request);
             var period = ValidateOrderShipmentPeriod(request);
+            var salesPeriod = ValidateSalesPeriod(request);
             var cacheKey = BuildCacheKey(
                 "shipments",
                 request,
                 branchCodes,
-                period
+                period,
+                salesPeriod
             );
             return await GetOrCreateAsync(cacheKey, request.ForceRefresh, async () =>
             {
@@ -825,17 +829,34 @@ namespace BlazorApp.Api.Services.React
                     period.StartDate,
                     period.EndDate
                 );
-                var storeNames = await GetStoreNameMapAsync(rows.Select(row => row.StoreCode));
+                if (rows.Count == 0)
+                    return new List<WarehouseProductFlowShipmentDto>();
+                var storeMetadata = await GetStoreMetadataMapAsync(rows.Select(row => row.StoreCode));
+                var salesByBranch = (await QuerySalesRowsAsync(
+                        new List<string> { productCode },
+                        branchCodes,
+                        salesPeriod.StartDate,
+                        salesPeriod.EndDate
+                    ))
+                    .GroupBy(row => row.BranchCode, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(group => group.Key, group => group.Sum(row => row.TotalQuantity), StringComparer.OrdinalIgnoreCase);
                 return rows
                     .OrderBy(row => row.OutboundDate)
                     .ThenBy(row => row.OrderNo, StringComparer.OrdinalIgnoreCase)
-                    .Select(row => new WarehouseProductFlowShipmentDto
+                    .Select(row =>
                     {
-                        ShipmentNumber = null,
-                        OrderNumber = row.OrderNo,
-                        BranchName = storeNames.GetValueOrDefault(row.StoreCode),
-                        ShipmentDate = row.OutboundDate,
-                        ShippedQuantity = row.AllocQuantity,
+                        storeMetadata.TryGetValue(row.StoreCode, out var metadata);
+                        return new WarehouseProductFlowShipmentDto
+                        {
+                            ShipmentNumber = null,
+                            OrderNumber = row.OrderNo,
+                            BranchName = metadata?.BranchName,
+                            ShipmentDate = row.OutboundDate,
+                            ShippedQuantity = row.AllocQuantity,
+                            BranchCode = string.IsNullOrWhiteSpace(row.StoreCode) ? null : row.StoreCode,
+                            PosEnabled = metadata?.PosEnabled,
+                            NetSalesQuantity = salesByBranch.GetValueOrDefault(row.StoreCode),
+                        };
                     })
                     .ToList();
             });
@@ -883,7 +904,8 @@ namespace BlazorApp.Api.Services.React
                             AverageUnitPrice = CalculateAverageUnitPrice(netSales.quantity, netSales.amount),
                         };
                     })
-                    .OrderBy(row => row.BranchCode, StringComparer.OrdinalIgnoreCase)
+                    .OrderByDescending(row => row.NetSalesQuantity)
+                    .ThenBy(row => row.BranchCode, StringComparer.OrdinalIgnoreCase)
                     .ToList();
             });
         }
@@ -922,26 +944,47 @@ namespace BlazorApp.Api.Services.React
         }
 
         private async Task<WarehouseProductFlowAnalysisQueryContext> BuildQueryContextAsync(
-            WarehouseProductFlowAnalysisFilterDto filter
+            WarehouseProductFlowAnalysisFilterDto filter,
+            WarehouseProductFlowAnalysisSelectionDto? selection
         )
         {
-            var allCodes = await _context
+            var warehouseProducts = _context
                 .Db.Queryable<WarehouseProduct>()
-                .Where(w => !w.IsDeleted)
-                .Select(w => w.ProductCode)
-                .ToListAsync();
-            var normalizedAllCodes = NormalizeCodes(allCodes);
+                .Where(w => !w.IsDeleted);
+            var allCodes = new List<string>();
+            if (string.Equals(selection?.Mode?.Trim(), "included", StringComparison.OrdinalIgnoreCase))
+            {
+                var includedCodes = NormalizeCodes(selection?.IncludedProductCodes);
+                foreach (var batch in BatchCodes(includedCodes))
+                {
+                    allCodes.AddRange(await warehouseProducts.Clone()
+                        .Where(product => batch.Contains(product.ProductCode))
+                        .Select(product => product.ProductCode)
+                        .ToListAsync());
+                }
+
+                // 正常单选仅传回所选编码。未完整命中时保留旧数据的空格/大小写兼容，
+                // 仍由下方原有 NormalizeCodes + ApplySelection 判断最终选择范围。
+                var matchedCodes = NormalizeCodes(allCodes).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                if (includedCodes.Any(code => !matchedCodes.Contains(code)))
+                    allCodes = await warehouseProducts.Select(product => product.ProductCode).ToListAsync();
+            }
+            else
+            {
+                allCodes = await warehouseProducts.Select(product => product.ProductCode).ToListAsync();
+            }
+            // 选择与主档筛选取交集；先缩小补资料范围，避免单选商品也逐批读取整仓主档。
+            // 在编码归一化后沿用原有选择逻辑，保留大小写、空格及排除选择的语义。
+            var selectedCodes = ApplySelection(NormalizeCodes(allCodes), selection);
+            var context = new WarehouseProductFlowAnalysisQueryContext { AllCodes = selectedCodes };
+            if (selectedCodes.Count == 0)
+                return context;
 
             var categories = await _context
                 .Db.Queryable<WarehouseCategory>()
                 .Where(c => !c.IsDeleted)
                 .Select(c => new { c.CategoryGUID, c.CategoryName, c.ParentGUID })
                 .ToListAsync();
-
-            var context = new WarehouseProductFlowAnalysisQueryContext
-            {
-                AllCodes = normalizedAllCodes,
-            };
 
             foreach (var category in categories)
             {
@@ -953,8 +996,8 @@ namespace BlazorApp.Api.Services.React
                         : category.CategoryName.Trim();
             }
 
-            await LoadProductInfosAsync(context, normalizedAllCodes);
-            await LoadDomesticInfosAsync(context, normalizedAllCodes);
+            await LoadProductInfosAsync(context, selectedCodes);
+            await LoadDomesticInfosAsync(context, selectedCodes);
 
             var requestedCategoryGuids = NormalizeCodes(filter.WarehouseCategoryGuids);
             var requestedSupplierCodes = NormalizeCodes(filter.SupplierCodes);
@@ -996,8 +1039,8 @@ namespace BlazorApp.Api.Services.React
             foreach (var batch in BatchCodes(codes))
             {
                 var batchCodes = batch;
-                var rows = await BuildCanonicalProductQuery()
-                    .Where(p => p.ProductCode != null && batchCodes.Contains(p.ProductCode))
+                // 先限定商品再按 UUID 去重，避免每个批次重复聚合全部 Product 主档。
+                var rows = await BuildCanonicalProductQuery(batchCodes)
                     .Select(p => new
                     {
                         p.ProductCode,
@@ -1471,6 +1514,34 @@ namespace BlazorApp.Api.Services.React
             return map;
         }
 
+        private async Task<Dictionary<string, WarehouseProductFlowAnalysisStoreMetadata>> GetStoreMetadataMapAsync(
+            IEnumerable<string?> storeCodes
+        )
+        {
+            var codes = NormalizeCodes(storeCodes);
+            var map = new Dictionary<string, WarehouseProductFlowAnalysisStoreMetadata>(StringComparer.OrdinalIgnoreCase);
+            foreach (var batch in BatchCodes(codes))
+            {
+                var rows = await _context
+                    .Db.Queryable<Store>()
+                    .Where(s => batch.Contains(s.StoreCode))
+                    .Select(s => new { s.StoreCode, s.StoreName, s.IsActive })
+                    .ToListAsync();
+                foreach (var row in rows)
+                {
+                    var code = row.StoreCode?.Trim();
+                    if (string.IsNullOrWhiteSpace(code) || map.ContainsKey(code))
+                        continue;
+                    map[code] = new WarehouseProductFlowAnalysisStoreMetadata
+                    {
+                        BranchName = string.IsNullOrWhiteSpace(row.StoreName) ? code : row.StoreName.Trim(),
+                        PosEnabled = row.IsActive,
+                    };
+                }
+            }
+            return map;
+        }
+
         private async Task<string?> GetDomesticSupplierNameAsync(string productCode)
         {
             var domestic = await _context
@@ -1782,7 +1853,7 @@ namespace BlazorApp.Api.Services.React
 
         internal static List<string> ApplySelection(
             IEnumerable<string> codes,
-            WarehouseProductFlowAnalysisSelectionDto selection
+            WarehouseProductFlowAnalysisSelectionDto? selection
         )
         {
             var mode = string.IsNullOrWhiteSpace(selection?.Mode) ? "allFiltered" : selection.Mode.Trim();

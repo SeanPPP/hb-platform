@@ -83,6 +83,36 @@ public sealed class ProductStoreRecordsTests : IDisposable
     }
 
     [Fact]
+    public async Task CreateWithPrices_本地自动条码已占用时拒绝重复创建()
+    {
+        await SeedProductAsync("existing-local", "SUP01", barcode: "9529260910009");
+        var controller = new ReactProductsController(
+            CreateSqlSugarContext(_localDb), NullLogger<ReactProductsController>.Instance,
+            WarehouseProductChangeHistoryTestDouble.CreateNoop(),
+            Mock.Of<ICurrentUserService>(), Mock.Of<IProductMaintenanceHqProjectionWriter>());
+        var result = await controller.CreateWithPrices(new CreateProductWithPricesDto
+        {
+            ProductName = "重复条码", LocalSupplierCode = "SUP01", Barcode = "9529260910009",
+            PurchasePrice = 1, RetailPrice = 2,
+        });
+        Assert.IsType<ConflictObjectResult>(result);
+        Assert.Equal(1, await _localDb.Queryable<Product>().CountAsync());
+    }
+
+    [Theory]
+    [InlineData("200")]
+    [InlineData(" 200 ")]
+    [InlineData("")]
+    public async Task GenerateLocalBarcode_限制供应商不能生成条码(string supplierCode)
+    {
+        var controller = new ReactProductsController(
+            CreateSqlSugarContext(_localDb), NullLogger<ReactProductsController>.Instance,
+            WarehouseProductChangeHistoryTestDouble.CreateNoop(),
+            Mock.Of<ICurrentUserService>(), Mock.Of<IProductMaintenanceHqProjectionWriter>());
+        Assert.IsType<BadRequestObjectResult>(await controller.GenerateLocalBarcode(supplierCode, null!));
+    }
+
+    [Fact]
     public async Task GetPagedListAsync_StoreRecordCountMin为1时仅返回有未删除分店记录的商品()
     {
         await SeedProductAsync("P001", "A001");

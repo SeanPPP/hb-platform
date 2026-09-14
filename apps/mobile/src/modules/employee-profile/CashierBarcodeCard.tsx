@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, AppState, StyleSheet, View } from "react-native";
+import { AccessibilityInfo, Alert, AppState, findNodeHandle, InteractionManager, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import * as Crypto from "expo-crypto";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
@@ -27,6 +27,7 @@ import {
   type PendingCashierBarcodePrintConfirmation,
 } from "./cashier-barcode";
 import { getCashierBarcodeQueryKey } from "./cache-keys";
+import { PersonalCodePrintBusyError, runPersonalCodePrintExclusive } from "@/modules/printer/personal-code-print-lock";
 import { printEmployeeCashierBarcodeLabel } from "@/modules/printer/api";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { SecureStorage } from "@/shared/storage/secure";
@@ -41,13 +42,20 @@ export function CashierBarcodeCard({
   employeeName,
   username,
   userIdentity,
+  compact = false,
+  expandLabel,
 }: {
   employeeName: string;
   username: string;
   userIdentity: string;
+  compact?: boolean;
+  expandLabel?: string;
 }) {
-  const { t } = useAppTranslation(["employeeProfile", "common"]);
+  const { t } = useAppTranslation(["employeeProfile", "common", "settings"]);
   const router = useRouter();
+  const [expanded, setExpanded] = useState(false);
+  const modalHeadingRef = useRef<View>(null);
+  const compactTriggerRef = useRef<View>(null);
   const queryClient = useQueryClient();
   const [pendingConfirmation, setPendingConfirmation] =
     useState<PendingCashierBarcodePrintConfirmation | null>(null);
@@ -80,7 +88,7 @@ export function CashierBarcodeCard({
     },
   });
   const printMutation = useMutation({
-    mutationFn: async (action: CashierPrintAction) => {
+    mutationFn: (action: CashierPrintAction) => runPersonalCodePrintExclusive(async () => {
       let barcode = barcodeQuery.data?.barcode;
       if (!barcode) {
         throw new Error(t("cashierBarcode.empty"));
@@ -130,9 +138,13 @@ export function CashierBarcodeCard({
         ),
         onPendingChange: persistPendingConfirmation,
       });
-    },
+    }),
     onSuccess: (data) => queryClient.setQueryData(queryKey, data),
     onError: (error) => {
+      if (error instanceof PersonalCodePrintBusyError) {
+        Alert.alert(t("cashierBarcode.title"), t("settings:account.personalCodeBusy"));
+        return;
+      }
       if (error instanceof CashierBarcodePendingChangedError || isCashierBarcodeChangedError(error)) {
         void persistPendingConfirmation(null).catch(() => undefined);
         // 实体标签已打印但后台条码已变化，立即重新加载，避免继续显示过期条码。
@@ -164,6 +176,7 @@ export function CashierBarcodeCard({
   });
 
   useEffect(() => {
+    setExpanded(false);
     pendingIdentityRef.current = userIdentity;
     const secureSession = activateCashierPrintSecureSession(userIdentity);
     secureSessionRef.current = secureSession;
@@ -241,10 +254,10 @@ export function CashierBarcodeCard({
   const busy = refreshMutation.isPending || printMutation.isPending || !pendingLoaded;
   const refreshAllowed = canRefreshCashierBarcode(pendingConfirmation, pendingLoaded);
   const barcodeValue = barcodeQuery.data?.barcode?.trim() ?? "";
-  return (
-    <Surface style={styles.card} elevation={1}>
+  const detail = (
+    <Surface style={styles.card} elevation={0}>
       <View style={styles.header}>
-        <View style={styles.titleBlock}>
+        <View ref={modalHeadingRef} accessible accessibilityRole="header" accessibilityLabel={t("cashierBarcode.title")} style={styles.titleBlock}>
           <Text variant="titleMedium">{t("cashierBarcode.title")}</Text>
           <Text variant="bodySmall" style={styles.muted}>{employeeName}</Text>
         </View>
@@ -307,10 +320,67 @@ export function CashierBarcodeCard({
       <HelperText type="error" visible={refreshMutation.isError}>{t("cashierBarcode.refreshFailed")}</HelperText>
     </Surface>
   );
+  if (!compact) return detail;
+  const restoreTriggerFocus = () => {
+    InteractionManager.runAfterInteractions(() => {
+      const handle = findNodeHandle(compactTriggerRef.current);
+      if (handle) AccessibilityInfo.setAccessibilityFocus(handle);
+    });
+  };
+  const dismiss = () => {
+    setExpanded(false);
+    // iOS 等原生弹窗退出后恢复焦点，避免背景仍被 modal 屏蔽。
+    if (Platform.OS !== "ios") restoreTriggerFocus();
+  };
+  return (
+    <>
+      <Pressable
+        ref={compactTriggerRef}
+        testID="settings-personal-code"
+        accessibilityRole="button"
+        accessibilityLabel={expandLabel || t("cashierBarcode.title")}
+        onPress={() => setExpanded(true)}
+        style={styles.compactCard}
+      >
+        <View style={styles.compactHeading}>
+          <Text variant="titleSmall">{t("cashierBarcode.title")}</Text>
+          {barcodeQuery.isError ? <Text style={styles.muted}>{t("cashierBarcode.loadFailed")}</Text> : null}
+          {!barcodeQuery.isLoading && !barcodeQuery.isError && !barcodeValue ? <Text style={styles.muted}>{t("cashierBarcode.empty")}</Text> : null}
+        </View>
+        <View style={styles.compactQr}>
+          {barcodeQuery.isLoading ? <ActivityIndicator /> : barcodeValue && !barcodeQuery.isError ? (
+            <>
+              <QRCode value={barcodeValue} size={104} backgroundColor="#FFFFFF" color="#111111" />
+              <Text variant="labelSmall" style={styles.compactValue}>{barcodeValue}</Text>
+            </>
+          ) : null}
+        </View>
+        <Text variant="bodySmall" style={styles.compactHint}>{expandLabel}</Text>
+      </Pressable>
+      <Modal visible={expanded} transparent animationType="fade" onRequestClose={dismiss}
+        onDismiss={restoreTriggerFocus}
+        onShow={() => { InteractionManager.runAfterInteractions(() => { const handle = findNodeHandle(modalHeadingRef.current); if (handle) AccessibilityInfo.setAccessibilityFocus(handle); }); }}>
+        <View style={styles.modalBackdrop} accessibilityViewIsModal>
+          <View style={styles.modalSheet}>
+            <ScrollView contentContainerStyle={styles.modalContent}>{detail}</ScrollView>
+            <Button onPress={dismiss}>{t("common:actions.close")}</Button>
+          </View>
+        </View>
+      </Modal>
+    </>
+  );
 }
 
 const styles = StyleSheet.create({
-  card: { padding: 18, borderRadius: 18, gap: 12 },
+  card: { padding: 18, borderRadius: 12, gap: 12, backgroundColor: "#FFFFFF" },
+  compactCard: { alignItems: "center", gap: 4, padding: 14, borderTopWidth: 1, borderTopColor: "#EEF1F5" },
+  compactHeading: { alignSelf: "stretch", gap: 4 },
+  compactHint: { color: "#667085", textAlign: "center", fontSize: 11 },
+  compactValue: { color: "#667085", fontSize: 10, marginTop: 8, fontVariant: ["tabular-nums"] },
+  compactQr: { backgroundColor: "#FFFFFF", padding: 12, minWidth: 128, minHeight: 128, alignItems: "center", justifyContent: "center" },
+  modalBackdrop: { flex: 1, backgroundColor: "rgba(15,23,42,0.42)", justifyContent: "center", padding: 20 },
+  modalSheet: { maxHeight: "88%", borderRadius: 16, backgroundColor: "#FFFFFF", overflow: "hidden", paddingBottom: 12 },
+  modalContent: { flexGrow: 1 },
   header: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 12 },
   titleBlock: { flex: 1, gap: 3 },
   muted: { color: "#667085" },

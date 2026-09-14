@@ -58,12 +58,17 @@ if (!formattedOrderDate.includes("2026")) {
 const defaultRequest = buildOrderListRequest();
 assertEqual(defaultRequest.pageNumber, 1, "默认订单列表页码为 1");
 assertEqual(defaultRequest.pageSize, 10, "默认订单列表每页 10 条");
-assertEqual(defaultRequest.statusList.join(","), "1,2,3", "默认订单列表状态为历史订单状态");
+assertEqual(defaultRequest.statusList.join(","), "1,3,2", "默认订单列表状态为历史订单状态");
 
 const customRequest = buildOrderListRequest({ pageNumber: 3, pageSize: 25, statusList: [2] });
 assertEqual(customRequest.pageNumber, 3, "显式订单列表页码保持调用方设置");
 assertEqual(customRequest.pageSize, 25, "显式订单列表每页数量保持调用方设置");
 assertEqual(customRequest.statusList.join(","), "2", "显式订单列表状态保持调用方设置");
+
+const scopedRequest = buildOrderListRequest({ storeCodes: ["BRISBANE", "SYDNEY"], statusList: [1] });
+assertEqual(scopedRequest.storeCode, undefined, "多店范围请求不应携带单店参数");
+assertEqual(scopedRequest.storeCodes?.join(","), "BRISBANE,SYDNEY", "多店范围请求保留可管理分店代码");
+assertEqual(buildOrderListRequest({ storeCodes: [] }).storeCodes, undefined, "空多店范围不应发起无范围请求");
 
 const lines = [
   makeLine("P001", { itemNumber: "HB-001", barcode: "BAR-001" }),

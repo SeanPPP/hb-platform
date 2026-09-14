@@ -242,4 +242,23 @@ namespace BlazorApp.Shared.DTOs
         [Required]
         public Guid PrintAttemptId { get; set; }
     }
+
+    public sealed class StoreUserCashierBarcodeEnsureRequest
+    {
+        [Required]
+        [StringLength(50, MinimumLength = 1)]
+        public string StoreCode { get; set; } = string.Empty;
+    }
+
+    public sealed class StoreUserCashierBarcodePrintConfirmationRequest
+    {
+        [Required]
+        [StringLength(50, MinimumLength = 1)]
+        public string StoreCode { get; set; } = string.Empty;
+        [Required]
+        [StringLength(13, MinimumLength = 13)]
+        public string Barcode { get; set; } = string.Empty;
+        [Required]
+        public Guid PrintAttemptId { get; set; }
+    }
 }

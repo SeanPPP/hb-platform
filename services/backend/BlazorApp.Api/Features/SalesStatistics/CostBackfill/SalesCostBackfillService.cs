@@ -24,8 +24,10 @@ public sealed class SalesCostBackfillService(
     public async Task<Guid> PreviewAsync(DateTime start, DateTime end, string actor, bool automatic = false)
     {
         if (!SchemaReady()) throw new InvalidOperationException("成本回填审计表尚未完成受控迁移");
-        if (start.Date < new DateTime(2025, 1, 1) || end.Date < start.Date || end.Date > SalesStatisticsBusinessDate.Today())
-            throw new ArgumentException("日期必须在 2025-01-01 至当前业务日之间");
+        if (start.Date < SalesStatisticsHBSalesHistoryWindow.StartDate
+            || end.Date < start.Date
+            || end.Date > SalesStatisticsBusinessDate.Today())
+            throw new ArgumentException($"日期必须在 {SalesStatisticsHBSalesHistoryWindow.StartDate:yyyy-MM-dd} 至当前业务日之间");
         var now = DateTime.UtcNow;
         var batch = new SalesCostBackfillBatch { Id = Guid.NewGuid(), StartDate = start.Date,
             EndDate = end.Date, RequestedBy = actor, Automatic = automatic,
@@ -408,7 +410,8 @@ public sealed class SalesCostBackfillService(
 
     private Task<ProductStoreDailyRefreshInput> LoadAsync(DateTime date, IReadOnlyCollection<string> productCodes) =>
         new SalesStatisticsProductStoreDailySourceReader().LoadAsync(context, posm,
-            date.Year == 2025 ? history : null, logger, date, null, null, productCodes);
+            SalesStatisticsHBSalesHistoryWindow.Includes(date) ? history : null,
+            logger, date, null, null, productCodes);
 
     private async Task VerifySourcesAsync(DateTime date, IReadOnlyCollection<string> productCodes, string expectedHash)
     {

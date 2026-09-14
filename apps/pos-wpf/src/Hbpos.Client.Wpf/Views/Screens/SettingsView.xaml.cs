@@ -165,6 +165,8 @@ public partial class SettingsView : UserControl
 
         if (_viewModel is not null)
         {
+            // 离开页面或更换数据上下文时，清除线路的临时配对码。
+            _viewModel.CloseLinklyLinePairing();
             _viewModel.PropertyChanged -= ViewModel_PropertyChanged;
         }
 

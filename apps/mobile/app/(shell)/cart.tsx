@@ -1120,14 +1120,14 @@ export default function Cart() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#fff",
+    backgroundColor: "#F4F6F8",
   },
   header: {
     paddingHorizontal: 16,
     paddingTop: 0,
     paddingBottom: 6,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#C5C6CD",
+    borderBottomColor: "#E4E7EC",
     backgroundColor: "#FFFFFF",
   },
   headerRow: {
@@ -1159,7 +1159,7 @@ const styles = StyleSheet.create({
   listContent: {
     flexGrow: 1,
     paddingHorizontal: 12,
-    paddingTop: 10,
+    paddingTop: 12,
     paddingBottom: 20,
   },
   cartStatsBar: {
@@ -1168,10 +1168,10 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     paddingHorizontal: 12,
     paddingVertical: 10,
-    borderRadius: 10,
-    backgroundColor: "#F8FAFC",
+    borderRadius: 12,
+    backgroundColor: "#FFFFFF",
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "#D9E0E8",
+    borderColor: "#E4E7EC",
   },
   cartStatsBarCompact: {
     marginBottom: 6,
@@ -1330,7 +1330,8 @@ const styles = StyleSheet.create({
   itemCard: {
     marginBottom: 0,
     overflow: "hidden",
-    borderColor: "#D7DCE2",
+    borderRadius: 12,
+    borderColor: "#E4E7EC",
     backgroundColor: "#FFFFFF",
   },
   itemContent: {
@@ -1346,7 +1347,7 @@ const styles = StyleSheet.create({
     width: 4,
     borderTopLeftRadius: 12,
     borderBottomLeftRadius: 12,
-    backgroundColor: "#9ADBC3",
+    backgroundColor: "#1677FF",
   },
   itemMainRow: {
     flexDirection: "row",
@@ -1361,7 +1362,7 @@ const styles = StyleSheet.create({
     width: "100%",
     height: "100%",
     borderRadius: 8,
-    backgroundColor: "#E9EDF2",
+    backgroundColor: "#F2F4F7",
   },
   itemImagePlaceholder: {
     width: "100%",
@@ -1369,7 +1370,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#EEF2F6",
+    backgroundColor: "#F2F4F7",
   },
   itemBody: {
     flex: 1,
@@ -1433,9 +1434,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 0,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "#CDD4DC",
+    borderColor: "#D0D5DD",
     borderRadius: 8,
-    backgroundColor: "#F7F8FA",
+    backgroundColor: "#F2F4F7",
   },
   quantityButton: {
     margin: 0,

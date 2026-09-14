@@ -1,8 +1,13 @@
 import {
   getAssignedStoresForSession,
   getManageableStoresForSession,
+  getPosEnabledStores,
+  isStoreManageable,
   resolveScopedStoreCode,
 } from "./store-scope";
+import { IOS_REVIEW_STORES } from "../ios-review/identity";
+import { normalizeShopStores } from "./store-normalization";
+import type { Store } from "./types";
 
 function assertEqual(actual: unknown, expected: unknown, label: string) {
   if (actual !== expected) {
@@ -14,6 +19,106 @@ const assignedStores = [
   { storeCode: "1006", storeName: "HB WARE HOUSE", isPrimary: false },
   { storeCode: "1004", storeName: "Campbelltown", isPrimary: true },
 ];
+
+const mixedPosStores = [
+  { storeCode: "INACTIVE", storeName: "Inactive primary", isActive: false, isPrimary: true },
+  { storeCode: "ENABLED_VIEW", storeName: "Zulu", isActive: true, isPrimary: false },
+  { storeCode: "MISSING", storeName: "Missing flag", isPrimary: true },
+  { storeCode: "STRING_FALSE", storeName: "Invalid false", isActive: "false", isPrimary: true } as unknown as Store,
+  { storeCode: "ENABLED_MANAGE", storeName: "Alpha", isActive: true, isPrimary: true },
+];
+
+const posEnabledStores = getPosEnabledStores(mixedPosStores);
+
+assertEqual(
+  posEnabledStores.map((store) => store.storeCode).join(","),
+  "ENABLED_VIEW,ENABLED_MANAGE",
+  "POS scope keeps only literal true flags in the existing order"
+);
+assertEqual(posEnabledStores[0]?.isPrimary, false, "enabled read-only store keeps isPrimary=false");
+assertEqual(posEnabledStores[1]?.isPrimary, true, "enabled manageable store keeps isPrimary=true");
+
+const deviceBoundStoreWithoutPosFlag = {
+  storeCode: "DEVICE_BOUND",
+  storeName: "Device Bound Store",
+};
+const devicePickerStores = getPosEnabledStores([deviceBoundStoreWithoutPosFlag]);
+
+assertEqual(
+  devicePickerStores.length,
+  0,
+  "device-bound store without an explicit POS flag is not added to picker candidates"
+);
+assertEqual(
+  resolveScopedStoreCode({
+    currentStoreCode: null,
+    persistedStoreCode: null,
+    deviceBoundStoreCode: deviceBoundStoreWithoutPosFlag.storeCode,
+    isDeviceMode: true,
+    stores: devicePickerStores,
+  }),
+  "DEVICE_BOUND",
+  "device mode keeps the bound query store even when it is absent from picker candidates"
+);
+
+const manageableAssignedStores = getManageableStoresForSession({
+  deviceBoundStore: null,
+  isAdmin: false,
+  isDeviceMode: false,
+  stores: mixedPosStores,
+});
+
+assertEqual(
+  manageableAssignedStores.map((store) => store.storeCode).join(","),
+  "INACTIVE,MISSING,STRING_FALSE,ENABLED_MANAGE",
+  "picker filtering does not narrow the original isPrimary operation scope"
+);
+assertEqual(
+  isStoreManageable("INACTIVE", manageableAssignedStores),
+  true,
+  "inactive assigned primary store keeps its existing operation authorization"
+);
+
+const inactiveDeviceBoundStore = mixedPosStores[0];
+const manageableDeviceStores = getManageableStoresForSession({
+  deviceBoundStore: inactiveDeviceBoundStore,
+  isAdmin: false,
+  isDeviceMode: true,
+  stores: posEnabledStores,
+});
+
+assertEqual(
+  manageableDeviceStores[0]?.storeCode,
+  "INACTIVE",
+  "device binding remains authoritative even when the store is absent from picker candidates"
+);
+
+const normalizedIosReviewStores = normalizeShopStores(IOS_REVIEW_STORES);
+const iosReviewPickerStores = getPosEnabledStores(normalizedIosReviewStores);
+const iosReviewManageableStores = getManageableStoresForSession({
+  deviceBoundStore: null,
+  isAdmin: false,
+  isDeviceMode: false,
+  stores: normalizedIosReviewStores,
+});
+
+assertEqual(iosReviewPickerStores.length, 28, "iOS review keeps all 28 POS-enabled picker stores");
+assertEqual(
+  iosReviewManageableStores.map((store) => store.storeCode).join(","),
+  "REV001",
+  "iOS review normalization keeps the original primary management scope"
+);
+assertEqual(
+  resolveScopedStoreCode({
+    currentStoreCode: "INACTIVE",
+    persistedStoreCode: "INACTIVE",
+    deviceBoundStoreCode: null,
+    isDeviceMode: false,
+    stores: posEnabledStores,
+  }),
+  null,
+  "stale inactive selection is rejected when multiple enabled stores remain"
+);
 
 assertEqual(
   getAssignedStoresForSession({

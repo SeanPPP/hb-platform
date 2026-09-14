@@ -1,5 +1,5 @@
 import { StyleSheet, View } from "react-native";
-import { Button, IconButton, Searchbar, Text } from "react-native-paper";
+import { IconButton, Searchbar, Text } from "react-native-paper";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 
 interface SearchPanelProps {
@@ -78,32 +78,34 @@ export function SearchPanel({
 
 const styles = StyleSheet.create({
   container: {
-    paddingHorizontal: 12,
-    paddingBottom: 2,
-    gap: 2,
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+    gap: 6,
   },
   searchRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 2,
+    gap: 6,
   },
   searchbar: {
     flex: 1,
-    height: 36,
+    height: 44,
     elevation: 0,
     borderRadius: 8,
-    backgroundColor: "#F5F5F5",
+    borderWidth: 1,
+    borderColor: "#D0D5DD",
+    backgroundColor: "#FFFFFF",
   },
   input: {
     alignSelf: "center",
     minHeight: 0,
     paddingBottom: 0,
     paddingTop: 0,
-    fontSize: 12,
+    fontSize: 14,
   },
   iconButton: {
-    width: 32,
-    height: 32,
+    width: 40,
+    height: 40,
     margin: 0,
     borderRadius: 8,
   },

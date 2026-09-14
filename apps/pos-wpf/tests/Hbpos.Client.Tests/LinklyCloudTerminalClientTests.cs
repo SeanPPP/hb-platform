@@ -10,6 +10,64 @@ namespace Hbpos.Client.Tests;
 public sealed class LinklyCloudTerminalClientTests
 {
     [Theory]
+    [InlineData(0, 0, 0)]
+    [InlineData(1, 1, 0)]
+    [InlineData(2, 1, 1)]
+    public async Task PurchaseAsync_cancellation_before_submission_reports_not_submitted_without_another_post(
+        int cancelAt, int expectedBindings, int expectedPosts)
+    {
+        using var cancellation = new CancellationTokenSource();
+        var bindings = 0;
+        var accessor = new LinklyPaymentAttemptContextAccessor();
+        using var scope = accessor.Begin(new LinklyPaymentAttemptContext(
+            Guid.NewGuid(),
+            (_, _, _, _) =>
+            {
+                bindings++;
+                if (cancelAt == 1) cancellation.Cancel();
+                return Task.CompletedTask;
+            },
+            LinklyLocalTxnRef.Create('P', "cancel-before-post")));
+        var apiClient = new FakeLinklyCloudApiClient
+        {
+            TransactionResult = NotSubmitted("original-session"),
+            TransactionResponseTransform = result =>
+            {
+                if (cancelAt == 2) cancellation.Cancel();
+                return result;
+            }
+        };
+        var client = new LinklyCloudTerminalClient(apiClient, new FakeLinklyCloudSecretStore(),
+            linklyPaymentAttemptContextAccessor: accessor);
+        if (cancelAt == 0) cancellation.Cancel();
+
+        // 中文注释：工作流依赖此明确边界释放未扣款订单，不能把仅已落库的身份当作已提交。
+        await Assert.ThrowsAsync<CardTerminalNotSubmittedException>(() =>
+            client.PurchaseAsync(10m, CreateSession(), CreateSettings(), cancellation.Token));
+
+        Assert.Equal(expectedBindings, bindings);
+        Assert.Equal(expectedPosts, apiClient.SendTransactionCallCount);
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_unexpected_exception_after_submission_preserves_recovery_identity_without_retry()
+    {
+        var apiClient = new FakeLinklyCloudApiClient
+        {
+            TransactionException = new InvalidOperationException("response lost after submission")
+        };
+        var client = new LinklyCloudTerminalClient(apiClient, new FakeLinklyCloudSecretStore());
+
+        var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
+        Assert.Equal(apiClient.LastTransactionSessionId, result.SessionId);
+        Assert.Equal(Assert.Single(apiClient.SentTransactionTxnRefs), result.TxnRef);
+        Assert.Equal(1, apiClient.SendTransactionCallCount);
+    }
+
+    [Theory]
     [InlineData(false, "session")]
     [InlineData(false, "reference")]
     [InlineData(false, "amount")]
@@ -1084,6 +1142,8 @@ public sealed class LinklyCloudTerminalClientTests
 
         public LinklyCloudApiException? TokenException { get; init; }
 
+        public Exception? TransactionException { get; init; }
+
         public LinklyCloudApiException? SettlementException { get; init; }
 
         public int TokenCallCount { get; private set; }
@@ -1183,6 +1243,10 @@ public sealed class LinklyCloudTerminalClientTests
             LastTransactionSessionId = sessionId;
             SentTransactionSessionIds.Add(sessionId);
             SentTransactionTxnRefs.Add(request.TxnRef);
+            if (TransactionException is not null)
+            {
+                throw TransactionException;
+            }
             if (PendingTransactionCompletion is not null)
             {
                 var pending = ObservePendingTransactionCancellation

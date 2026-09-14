@@ -864,9 +864,13 @@ export function RevenueReportScreen({
   );
   const branchPickerRows = useMemo(() => {
     const search = branchPickerSearch.trim().toLocaleLowerCase();
-    if (!search) return rows;
-    return rows.filter((row) =>
+    // 选择器按店名排列，复制数组以保留报表自身的营业额排名。
+    return rows.filter((row) => !search ||
       `${row.branchName} ${row.branchCode}`.toLocaleLowerCase().includes(search),
+    ).sort((a, b) =>
+      (a.branchName || a.branchCode).localeCompare(b.branchName || b.branchCode, "en", {
+        sensitivity: "base", numeric: true,
+      }) || a.branchCode.localeCompare(b.branchCode, "en", { numeric: true }),
     );
   }, [branchPickerSearch, rows]);
   const scopedRows = useMemo(
@@ -1468,9 +1472,8 @@ export function RevenueReportScreen({
           <FlatList
             data={branchPickerRows}
             keyExtractor={(row) => row.id}
-            renderItem={({ item }) => {
+            renderItem={({ item, index }) => {
               const selected = item.branchCode === selectedBranchCode;
-              const rank = rows.findIndex((row) => row.id === item.id);
               return (
                 <Pressable
                   style={[styles.branchPickerRow, selected ? styles.branchPickerRowSelected : null]}
@@ -1486,7 +1489,7 @@ export function RevenueReportScreen({
                   }}
                 >
                   <View style={styles.detailRankColumn}>
-                    <TableText style={styles.rankText}>{formatOrdinal(rank)}</TableText>
+                    <TableText style={styles.rankText}>{formatOrdinal(index)}</TableText>
                   </View>
                   <View style={styles.branchPickerName}>
                     <TableText style={styles.strongText}>{item.branchName || item.branchCode}</TableText>

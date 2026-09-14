@@ -27,13 +27,13 @@ namespace BlazorApp.Api.Services
     public async Task UpdateProductStoreDailyStatistics(DateTime? date = null)
     {
         var targetDate = (date ?? SalesStatisticsBusinessDate.Today()).Date;
-        if (targetDate.Year == 2025)
+        if (SalesStatisticsHBSalesHistoryWindow.Includes(targetDate))
         {
-            // 2025 双来源统计必须同时切换两张日表，不能留下新旧口径混合的中间状态。
+            // HBSales 历史窗口的双来源统计必须同时切换两张日表，不能留下新旧口径混合的中间状态。
             await _productRefresh.Update2025StoreAndProductStatisticsAtomically(
                 _context,
                 _posmContext,
-                GetHBSalesContextFor2025(targetDate)!,
+                GetHBSalesContextForVerifiedHistory(targetDate)!,
                 _logger,
                 targetDate
             );
@@ -70,12 +70,12 @@ namespace BlazorApp.Api.Services
         }
 
         var targetDate = date.Date;
-        if (targetDate.Year == 2025)
+        if (SalesStatisticsHBSalesHistoryWindow.Includes(targetDate))
         {
             await _productRefresh.Update2025StoreAndProductStatisticsAtomically(
                 _context,
                 _posmContext,
-                GetHBSalesContextFor2025(targetDate)!,
+                GetHBSalesContextForVerifiedHistory(targetDate)!,
                 _logger,
                 targetDate,
                 expectedJobId: expectedJobId,

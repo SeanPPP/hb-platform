@@ -1,0 +1,67 @@
+/* 仅压缩到货与本地发票三个工作页面的外壳，保留其他订货页面的布局。 */
+.shop-layout.shop-workspace-layout {
+  --shop-radius-control: 6px;
+  --shop-radius-panel: 8px;
+}
+
+@media (min-width: 769px) {
+  .shop-workspace-layout .shop-main-header,
+  .shop-workspace-layout .shop-main-header .shop-shell {
+    min-height: 64px;
+  }
+
+  .shop-workspace-layout .shop-main-header .shop-shell {
+    gap: 16px;
+  }
+
+  .shop-workspace-layout .shop-brand-mark {
+    width: 40px;
+    height: 40px;
+    border-radius: 6px;
+  }
+
+  .shop-workspace-layout .shop-primary-nav__item {
+    padding-inline: clamp(8px, 1vw, 16px);
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .shop-workspace-layout .shop-ordering-toolbar .shop-shell {
+    min-height: 60px;
+    gap: 10px;
+  }
+
+  .shop-workspace-layout .shop-ordering-search .ant-input,
+  .shop-workspace-layout .shop-ordering-search .ant-input-affix-wrapper,
+  .shop-workspace-layout .shop-ordering-search .ant-input-search-button,
+  .shop-workspace-layout .shop-ordering-scan,
+  .shop-workspace-layout .shop-ordering-review,
+  .shop-workspace-layout .shop-ordering-store .ant-select-selector,
+  .shop-workspace-layout .shop-ordering-cart {
+    min-height: 38px;
+  }
+
+  .shop-workspace-layout .shop-content {
+    padding-top: 24px;
+  }
+
+  .shop-workspace-layout .shop-footer {
+    padding-block: 18px;
+    font-size: 12px;
+  }
+}
+
+@media (min-width: 769px) and (max-width: 1100px) {
+  .shop-workspace-layout .shop-main-header .shop-shell {
+    gap: 10px;
+  }
+
+  .shop-workspace-layout .shop-primary-nav__item {
+    padding-inline: 7px;
+    font-size: 12px;
+  }
+
+  .shop-workspace-layout .shop-ordering-toolbar .shop-shell {
+    grid-template-columns: minmax(150px, 1fr) auto minmax(180px, 0.8fr) auto;
+  }
+}

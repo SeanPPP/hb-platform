@@ -19,6 +19,7 @@ public sealed class BrowserExtensionSupplierSalesAggregate
 internal sealed class BrowserExtensionSupplierSalesRankingSnapshot
 {
     public string SupplierCode { get; init; } = string.Empty;
+    public string SnapshotVersion { get; init; } = string.Empty;
     public int Days { get; init; }
     public DateOnly StartDate { get; init; }
     public DateOnly EndDate { get; init; }

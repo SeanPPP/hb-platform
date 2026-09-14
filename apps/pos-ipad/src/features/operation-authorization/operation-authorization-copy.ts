@@ -7,6 +7,9 @@ export type OperationAuthorizationCopyKey =
   | "title"
   | "description"
   | "requestedAction"
+  | "paymentRecoveryPaid"
+  | "paymentRecoveryUnpaid"
+  | "paymentRecoveryUncertain"
   | "inputLabel"
   | "inputHint"
   | "keyboard"
@@ -30,6 +33,9 @@ const COPY: Readonly<
     description:
       "Scan an authorized supervisor barcode to continue this operation.",
     requestedAction: "Requested action: {{action}}",
+    paymentRecoveryPaid: "Manually confirm card payment received",
+    paymentRecoveryUnpaid: "Manually confirm no card payment",
+    paymentRecoveryUncertain: "Keep card payment awaiting verification",
     inputLabel: "Supervisor barcode",
     inputHint: "Scan supervisor barcode",
     keyboard: "Keyboard",
@@ -55,6 +61,9 @@ const COPY: Readonly<
     title: "此操作需要主管批准",
     description: "请扫描具有相应权限的主管条码后继续。",
     requestedAction: "申请操作：{{action}}",
+    paymentRecoveryPaid: "人工确认刷卡已收款",
+    paymentRecoveryUnpaid: "人工确认刷卡未扣款",
+    paymentRecoveryUncertain: "保留刷卡待核实状态",
     inputLabel: "主管条码",
     inputHint: "扫描主管条码",
     keyboard: "键盘",
@@ -88,6 +97,21 @@ export function operationAuthorizationText(
     (text, [name, value]) => text.replaceAll(`{{${name}}}`, String(value)),
     template,
   );
+}
+
+export function operationAuthorizationActionCopyKey(
+  action: string,
+): OperationAuthorizationCopyKey | null {
+  switch (action) {
+    case "payment-recovery-paid":
+      return "paymentRecoveryPaid";
+    case "payment-recovery-unpaid":
+      return "paymentRecoveryUnpaid";
+    case "payment-recovery-uncertain":
+      return "paymentRecoveryUncertain";
+    default:
+      return null;
+  }
 }
 
 export function operationAuthorizationFailureCopyKey(

@@ -30,16 +30,15 @@ export function mapReachabilityToConnectivity(
  * 场景：设备 Wi-Fi 正常但后端服务已停止时，仅靠 expo-network 会误报“在线”；
  * 这里把“后端可达”纳入判定，保证收银页状态与真实可用性一致。
  * 规则：
- * - 设备层非在线（offline/checking）→ 沿用设备判定；
- * - 设备在线且后端探测失败（false）→ 离线（仅现金可用）；
- * - 设备在线且后端可达或尚未探测（null）→ 在线（未探测保持乐观，避免启动闪烁）。
+ * - 后端实测可达（true）→ 在线，即使系统网络状态暂时误报离线；
+ * - 后端实测不可达（false）→ 离线；
+ * - 尚未探测（null）→ 不乐观宣称在线，沿用明确离线或显示检查中。
  */
 export function resolveBackendAwareConnectivity(
   deviceStatus: ConnectivityStatus,
   backendReachable: boolean | null,
 ): ConnectivityStatus {
-  if (deviceStatus !== "online") {
-    return deviceStatus;
-  }
-  return backendReachable === false ? "offline" : "online";
+  if (backendReachable === true) return "online";
+  if (backendReachable === false) return "offline";
+  return deviceStatus === "offline" ? "offline" : "checking";
 }

@@ -22,6 +22,7 @@ import {
   Switch,
   Text,
 } from "react-native-paper";
+import { BUSINESS_UI } from "@/components/ui/business-ui";
 import { EmptyState } from "@/components/ui/EmptyState";
 import {
   useRestoreStoreUserPosTerminalPermissions,
@@ -43,6 +44,7 @@ import {
 import type { PosPermissionErrorKind } from "@/modules/users/pos-terminal-permissions";
 import type { StoreUserPosTerminalPermissions } from "@/modules/users/types";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
+import { HB_COLORS, HB_SPACING } from "@/shared/theme/tokens";
 import { PERMISSIONS } from "@/shared/utils/access";
 import { useAuthStore } from "@/store/auth-store";
 
@@ -550,29 +552,31 @@ export default function PosTerminalPermissionsScreen() {
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: "#F4F6F8" },
+  safeArea: BUSINESS_UI.screen,
   body: { flex: 1 },
   header: {
     minHeight: 56,
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#FFFFFF",
-    paddingRight: 12,
+    backgroundColor: HB_COLORS.white,
+    borderBottomColor: HB_COLORS.outlineMuted,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    paddingRight: HB_SPACING.sm,
   },
-  headerTitle: { flex: 1 },
+  headerTitle: { ...BUSINESS_UI.sectionTitle, flex: 1 },
   centerState: { flex: 1, alignItems: "center", justifyContent: "center", gap: 12, padding: 24 },
-  scrollContent: { gap: 12, padding: 12, paddingBottom: 24 },
-  identityCard: { borderRadius: 10, backgroundColor: "#FFFFFF" },
-  identityContent: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
-  identityText: { flex: 1, gap: 2 },
-  groupCard: { borderRadius: 10, backgroundColor: "#FFFFFF" },
-  groupContent: { gap: 4 },
-  groupHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8, paddingBottom: 4 },
+  scrollContent: { ...BUSINESS_UI.content, paddingBottom: HB_SPACING.lg },
+  identityCard: BUSINESS_UI.section,
+  identityContent: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: HB_SPACING.sm },
+  identityText: { flex: 1, gap: HB_SPACING.xxs },
+  groupCard: BUSINESS_UI.section,
+  groupContent: { ...BUSINESS_UI.sectionContent, gap: HB_SPACING.xxs },
+  groupHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: HB_SPACING.xs, paddingBottom: HB_SPACING.xxs },
   groupTitleWrap: { flex: 1 },
   groupActions: { flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-end" },
-  permissionRow: { minHeight: 58, flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: "#D8DEE6" },
-  permissionText: { flex: 1, gap: 2 },
-  secondaryText: { color: "#5E6B78" },
-  footer: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 10, paddingHorizontal: 12, paddingVertical: 10, backgroundColor: "#FFFFFF" },
+  permissionRow: { minHeight: 58, flexDirection: "row", alignItems: "center", gap: HB_SPACING.sm, paddingVertical: HB_SPACING.xs, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: HB_COLORS.outlineMuted },
+  permissionText: { flex: 1, gap: HB_SPACING.xxs },
+  secondaryText: { color: HB_COLORS.textSecondary },
+  footer: { ...BUSINESS_UI.footer, flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: HB_SPACING.xs },
   footerButton: { flexGrow: 1, minWidth: 160 },
 });

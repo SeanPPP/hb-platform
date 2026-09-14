@@ -9,6 +9,7 @@ namespace BlazorApp.Api.Interfaces
         public bool IsAllowed { get; set; }
         public bool IsAuthenticated { get; set; }
         public bool IsAdmin { get; set; }
+        public bool IsStoreManager { get; set; }
         public string ActorLabel { get; set; } = "system";
         public string Message { get; set; } = string.Empty;
         public string UserGuid { get; set; } = string.Empty;

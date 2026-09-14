@@ -5,7 +5,10 @@ import {
   filterWarehouseProductFlowSupplierOptions,
   createWarehouseProductFlowFilter,
   isValidWarehouseProductFlowRange,
+  filterWarehouseProductFlowShipments,
+  sortWarehouseProductFlowBranches,
 } from './logic'
+import type { WarehouseProductFlowBranch } from '../../../types/warehouseProductFlowAnalysis'
 
 function assertEqual<T>(actual: T, expected: T, message: string) {
   if (actual !== expected) throw new Error(`${message}。Expected: ${String(expected)}, received: ${String(actual)}`)
@@ -48,5 +51,21 @@ const supplierOptions = filterWarehouseProductFlowSupplierOptions([
 ], ' toy ')
 assertDeepEqual(supplierOptions.map((option) => option.value), ['TOY', 'SUP-101', 'TOY-001', 'OTHER-1'], '供应商搜索必须覆盖编码和名称，并按 exact、prefix、contains 排序')
 assertDeepEqual(filterWarehouseProductFlowSupplierOptions([{ code: 'CN-1', name: '优品玩具' }], ' 优品  ').map((option) => option.value), ['CN-1'], '供应商名称搜索必须忽略首尾与连续空白')
+
+const shipments = [
+  { shipmentNumber: 'S1', posEnabled: true },
+  { shipmentNumber: 'S2', posEnabled: false },
+  { shipmentNumber: 'S3', posEnabled: null },
+  { shipmentNumber: 'S4', posEnabled: true },
+]
+assertDeepEqual(filterWarehouseProductFlowShipments(shipments, 'all'), shipments, '全部分店必须保留未知 POS 状态和原发货顺序')
+assertDeepEqual(filterWarehouseProductFlowShipments(shipments, 'enabled').map((row) => row.shipmentNumber), ['S1', 'S4'], '启用 POS 筛选必须保留同一分店的多张发货单')
+assertDeepEqual(filterWarehouseProductFlowShipments(shipments, 'disabled').map((row) => row.shipmentNumber), ['S2'], '未启用 POS 筛选不能误包含状态未知的分店')
+assertDeepEqual(filterWarehouseProductFlowShipments([], 'enabled'), [], '无发货明细时筛选必须返回空列表')
+
+const branch = (branchCode: string, netSalesQuantity: number): WarehouseProductFlowBranch => ({ branchCode, netSalesQuantity, orderedQuantity: 0, shippedQuantity: 0, netSalesAmount: 0, sellThroughRate: null, averageUnitPrice: null })
+const unsortedBranches = [branch('B', 3), branch('D', -2), branch('C', 10), branch('E', 0), branch('A', 3)]
+assertDeepEqual(sortWarehouseProductFlowBranches(unsortedBranches).map((row) => row.branchCode), ['C', 'A', 'B', 'E', 'D'], '分店必须按净销量降序，同销量按分店编码稳定排序，退货负数排在零之后')
+assertDeepEqual(unsortedBranches.map((row) => row.branchCode), ['B', 'D', 'C', 'E', 'A'], '排序不得修改接口返回的原始数组')
 
 console.log('warehouseProductFlowAnalysis.logic.test: ok')

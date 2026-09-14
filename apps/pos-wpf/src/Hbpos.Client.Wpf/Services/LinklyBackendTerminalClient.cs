@@ -42,6 +42,20 @@ public interface ILinklyBackendTerminalClient
         Task.FromException<LinklyCloudTerminalPairResponse>(
             new NotSupportedException("Linkly Cloud terminal pairing is not supported by this client."));
 
+    Task<LinklyCloudTerminalConnectionTestResponse> TestTerminalConnectionAsync(
+        Guid terminalId,
+        LinklyCloudTerminalConnectionTestRequest request,
+        CancellationToken cancellationToken = default) =>
+        Task.FromException<LinklyCloudTerminalConnectionTestResponse>(
+            new NotSupportedException("Linkly Cloud terminal connection testing is not supported by this client."));
+
+    Task<LinklyCloudTerminalListResponse> AssignTerminalAsync(
+        Guid terminalId,
+        LinklyCloudTerminalAssignmentRequest request,
+        CancellationToken cancellationToken = default) =>
+        Task.FromException<LinklyCloudTerminalListResponse>(
+            new NotSupportedException("Linkly Cloud terminal assignment is not supported by this client."));
+
     Task<LinklyConnectionTestResult> TestConnectionAsync(
         CardTerminalEnvironment environment,
         CancellationToken cancellationToken = default);
@@ -144,18 +158,30 @@ public sealed class LinklyBackendTerminalClient(
         CardTerminalEnvironment environment,
         CancellationToken cancellationToken = default)
     {
-        var relativeUrl = $"api/v1/linkly/cloud-backend/terminals?environment={Uri.EscapeDataString(environment.ToString())}";
-        using var response = await httpClient.GetAsync(relativeUrl, cancellationToken);
-        var directory = await ReadTerminalApiResultAsync<LinklyCloudTerminalListResponse>(response, cancellationToken);
-        lock (_terminalDirectorySync)
+        try
         {
-            _terminalDirectories[environment] = directory;
-        }
+            var relativeUrl = $"api/v1/linkly/cloud-backend/terminals?environment={Uri.EscapeDataString(environment.ToString())}";
+            using var response = await httpClient.GetAsync(relativeUrl, cancellationToken);
+            var directory = await ReadTerminalApiResultAsync<LinklyCloudTerminalListResponse>(response, cancellationToken);
+            if (!string.Equals(directory.Environment, environment.ToString(), StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Linkly terminal directory response environment did not match the request.");
+            }
+            lock (_terminalDirectorySync)
+            {
+                _terminalDirectories[environment] = directory;
+            }
 
-        Log(
-            $"terminal directory loaded environment={environment} count={directory.Terminals.Count} " +
-            $"selectedTerminalId={directory.SelectedTerminalId?.ToString("D") ?? "<null>"} revision={directory.SelectionRevision?.ToString(CultureInfo.InvariantCulture) ?? "<null>"}");
-        return directory;
+            Log(
+                $"terminal directory loaded environment={environment} count={directory.Terminals.Count} " +
+                $"selectedTerminalId={directory.SelectedTerminalId?.ToString("D") ?? "<null>"} revision={directory.SelectionRevision?.ToString(CultureInfo.InvariantCulture) ?? "<null>"}");
+            return directory;
+        }
+        catch
+        {
+            InvalidateTerminalDirectory(environment);
+            throw;
+        }
     }
 
     public async Task<LinklyCloudTerminalSelectionResponse> SelectTerminalAsync(
@@ -164,29 +190,47 @@ public sealed class LinklyBackendTerminalClient(
         long? expectedRevision,
         CancellationToken cancellationToken = default)
     {
-        const string relativeUrl = "api/v1/linkly/cloud-backend/terminal-selection";
-        var request = new LinklyCloudTerminalSelectionRequest(
-            environment.ToString(),
-            terminalId,
-            expectedRevision);
-        using var response = await httpClient.PutAsJsonAsync(relativeUrl, request, JsonOptions, cancellationToken);
-        var selection = await ReadTerminalApiResultAsync<LinklyCloudTerminalSelectionResponse>(response, cancellationToken);
+        try
+        {
+            const string relativeUrl = "api/v1/linkly/cloud-backend/terminal-selection";
+            var request = new LinklyCloudTerminalSelectionRequest(environment.ToString(), terminalId, expectedRevision);
+            using var response = await httpClient.PutAsJsonAsync(relativeUrl, request, JsonOptions, cancellationToken);
+            var selection = await ReadTerminalApiResultAsync<LinklyCloudTerminalSelectionResponse>(response, cancellationToken);
+            if (selection.TerminalId != terminalId ||
+                !string.Equals(selection.Environment, environment.ToString(), StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Linkly terminal selection response identity did not match the request.");
+            }
+            lock (_terminalDirectorySync)
+            {
+                var hasCurrent = _terminalDirectories.TryGetValue(environment, out var current);
+                _terminalDirectories[environment] = new LinklyCloudTerminalListResponse(
+                    selection.Environment,
+                    selection.TerminalId,
+                    selection.Revision,
+                    hasCurrent ? current!.Terminals : [],
+                    hasCurrent ? current!.Mode : "Legacy");
+            }
+
+            Log(
+                $"terminal selection saved environment={environment} terminalId={terminalId:D} " +
+                $"revision={selection.Revision.ToString(CultureInfo.InvariantCulture)}");
+            return selection;
+        }
+        catch
+        {
+            // PUT 可能已经到达服务器；未知或失配响应必须清除缓存，避免下一笔交易沿用错误线路。
+            InvalidateTerminalDirectory(environment);
+            throw;
+        }
+    }
+
+    private void InvalidateTerminalDirectory(CardTerminalEnvironment environment)
+    {
         lock (_terminalDirectorySync)
         {
-            var hasCurrent = _terminalDirectories.TryGetValue(environment, out var current);
-            var terminals = hasCurrent ? current!.Terminals : [];
-            _terminalDirectories[environment] = new LinklyCloudTerminalListResponse(
-                selection.Environment,
-                selection.TerminalId,
-                selection.Revision,
-                terminals,
-                hasCurrent ? current!.Mode : "Legacy");
+            _terminalDirectories.Remove(environment);
         }
-
-        Log(
-            $"terminal selection saved environment={environment} terminalId={terminalId:D} " +
-            $"revision={selection.Revision.ToString(CultureInfo.InvariantCulture)}");
-        return selection;
     }
 
     public async Task<LinklyCloudTerminalPairResponse> PairTerminalAsync(
@@ -221,6 +265,35 @@ public sealed class LinklyBackendTerminalClient(
             $"terminal pairing completed environment={environment} terminalId={terminalId:D} " +
             $"pairingState={result.PairingState} isReady={result.IsReady}");
         return result;
+    }
+
+    public async Task<LinklyCloudTerminalConnectionTestResponse> TestTerminalConnectionAsync(
+        Guid terminalId,
+        LinklyCloudTerminalConnectionTestRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var relativeUrl = $"api/v1/linkly/cloud-backend/terminals/{terminalId:D}/connection-test";
+        using var response = await httpClient.PostAsJsonAsync(relativeUrl, request, JsonOptions, cancellationToken);
+        return await ReadTerminalApiResultAsync<LinklyCloudTerminalConnectionTestResponse>(response, cancellationToken);
+    }
+
+    public async Task<LinklyCloudTerminalListResponse> AssignTerminalAsync(
+        Guid terminalId,
+        LinklyCloudTerminalAssignmentRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var relativeUrl = $"api/v1/linkly/cloud-backend/terminals/{terminalId:D}/assignment";
+        using var response = await httpClient.PutAsJsonAsync(relativeUrl, request, JsonOptions, cancellationToken);
+        var directory = await ReadTerminalApiResultAsync<LinklyCloudTerminalListResponse>(response, cancellationToken);
+        if (Enum.TryParse<CardTerminalEnvironment>(directory.Environment, ignoreCase: true, out var environment))
+        {
+            lock (_terminalDirectorySync)
+            {
+                _terminalDirectories[environment] = directory;
+            }
+        }
+
+        return directory;
     }
 
     public async Task<LinklyConnectionTestResult> TestConnectionAsync(
@@ -4043,13 +4116,4 @@ public sealed class LinklyBackendTerminalClient(
         }
     }
 
-    private sealed class LinklyBackendHttpException(
-        string message,
-        HttpStatusCode httpStatus,
-        string? errorCode = null) : HttpRequestException(message, inner: null, statusCode: httpStatus)
-    {
-        public HttpStatusCode HttpStatus { get; } = httpStatus;
-
-        public string? ErrorCode { get; } = errorCode;
-    }
 }

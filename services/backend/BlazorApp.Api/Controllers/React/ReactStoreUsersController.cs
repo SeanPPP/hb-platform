@@ -1,4 +1,5 @@
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
@@ -12,10 +13,15 @@ namespace BlazorApp.Api.Controllers.React
     public class ReactStoreUsersController : ControllerBase
     {
         private readonly IStoreUserReactService _service;
+        private readonly StoreUserCashierBarcodeService _cashierBarcodeService;
 
-        public ReactStoreUsersController(IStoreUserReactService service)
+        public ReactStoreUsersController(
+            IStoreUserReactService service,
+            StoreUserCashierBarcodeService cashierBarcodeService
+        )
         {
             _service = service;
+            _cashierBarcodeService = cashierBarcodeService;
         }
 
         [HttpPost("grid")]
@@ -60,6 +66,27 @@ namespace BlazorApp.Api.Controllers.React
             var result = await _service.GetByUserGuidAsync(userGuid, storeCode);
             return Ok(result);
         }
+
+        [HttpGet("{userGuid}/cashier-barcode")]
+        [Authorize(Policy = Permissions.Users.Edit)]
+        public async Task<IActionResult> GetCashierBarcode(
+            string userGuid,
+            [FromQuery] string? storeCode
+        ) => Ok(await _cashierBarcodeService.GetAsync(userGuid, storeCode));
+
+        [HttpPost("{userGuid}/cashier-barcode/ensure")]
+        [Authorize(Policy = Permissions.Users.Edit)]
+        public async Task<IActionResult> EnsureCashierBarcode(
+            string userGuid,
+            [FromBody] StoreUserCashierBarcodeEnsureRequest request
+        ) => Ok(await _cashierBarcodeService.EnsureAsync(userGuid, request.StoreCode));
+
+        [HttpPost("{userGuid}/cashier-barcode/print-confirmation")]
+        [Authorize(Policy = Permissions.Users.Edit)]
+        public async Task<IActionResult> ConfirmCashierBarcodePrint(
+            string userGuid,
+            [FromBody] StoreUserCashierBarcodePrintConfirmationRequest request
+        ) => Ok(await _cashierBarcodeService.ConfirmPrintAsync(userGuid, request));
 
         [HttpPost]
         [Authorize(Policy = Permissions.Users.Create)]

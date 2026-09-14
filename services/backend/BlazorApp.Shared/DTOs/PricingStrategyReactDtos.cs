@@ -21,6 +21,9 @@ namespace BlazorApp.Shared.DTOs
         public decimal StartRate { get; set; }
         public decimal EndRate { get; set; }
         public string? Algorithm { get; set; }
+        public decimal? StartRetailPrice { get; set; }
+        public decimal? EndRetailPrice { get; set; }
+        public decimal? CurveBend { get; set; }
     }
 
     public class PricingStrategyTargetDto
@@ -72,6 +75,7 @@ namespace BlazorApp.Shared.DTOs
     {
         public decimal RetailPrice { get; set; }
         public decimal Rate { get; set; }
+        public decimal EffectiveRate { get; set; }
         public string? StrategyId { get; set; }
         public PricingEvaluateRuleInfo? Rule { get; set; }
     }
@@ -81,6 +85,9 @@ namespace BlazorApp.Shared.DTOs
         public decimal MinPrice { get; set; }
         public decimal MaxPrice { get; set; }
         public string? Algorithm { get; set; }
+        public decimal? StartRetailPrice { get; set; }
+        public decimal? EndRetailPrice { get; set; }
+        public decimal? CurveBend { get; set; }
         public decimal StartRate { get; set; }
         public decimal EndRate { get; set; }
     }

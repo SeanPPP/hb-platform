@@ -135,7 +135,7 @@ namespace BlazorApp.Api.Services
             }
         }
 
-        result.Success = result.FailedDates.Count == 0;
+        result.Success = result.IsComplete;
         result.Message = result.Success
             ? $"批量按月份刷新完成: {result.ProcessedDays}/{result.TotalDays} 天, 跳过: {result.SkippedDates.Count} 天, {result.ProcessedMonths}/{result.TotalMonths} 个月"
             : $"批量按月份刷新部分完成: {result.ProcessedDays}/{result.TotalDays} 天, 跳过: {result.SkippedDates.Count} 天, 失败 {result.FailedDates.Count} 天, 失败月份: {string.Join(", ", result.FailedMonths)}";
@@ -234,46 +234,59 @@ namespace BlazorApp.Api.Services
                             dateRange.DayCount
                         );
 
-                        // 为每个并发任务创建独立的作用域和数据库上下文
-                        using var scope = _serviceScopeFactory.CreateScope();
-                        var context =
-                            scope.ServiceProvider.GetRequiredService<SqlSugarContext>();
-                        var posmContext =
-                            scope.ServiceProvider.GetRequiredService<POSMSqlSugarContext>();
-                        var hbSalesContext =
-                            scope.ServiceProvider.GetService<HBSalesRecordSqlSugarContext>();
-                        var logger = _logger;
-                        var leaseService =
-                            scope.ServiceProvider.GetRequiredService<ScheduledTaskLeaseService>();
-
-                        // 调用带上下文的全量刷新方法
-                        var rangeResult = await FullRefreshDateRangeWithContext(
-                            context,
-                            posmContext,
-                            hbSalesContext,
-                            logger,
-                            leaseService,
-                            dateRange.StartDate,
-                            dateRange.EndDate
-                        );
-
-                        // 使用锁更新进度
-                        lock (syncLock)
+                        // 每日用独立 SQL 写 scope：若一天的会话被 KILL，失效 guard 会
+                        // 永久拒绝旧 context；下一天只能以新 context 获取新的 session 锁。
+                        for (var date = dateRange.StartDate; date <= dateRange.EndDate; date = date.AddDays(1))
                         {
-                            processedDays += rangeResult.ProcessedDays;
-                            skippedDates.AddRange(rangeResult.SkippedDates);
-                            failedDates.AddRange(rangeResult.FailedDates);
+                            cancellationToken.ThrowIfCancellationRequested();
+                            IServiceScope? dayScope = null;
+                            try
+                            {
+                                dayScope = _serviceScopeFactory.CreateScope();
+                                var context = dayScope.ServiceProvider.GetRequiredService<SqlSugarContext>();
+                                var posmContext = dayScope.ServiceProvider.GetRequiredService<POSMSqlSugarContext>();
+                                var hbSalesContext = dayScope.ServiceProvider.GetService<HBSalesRecordSqlSugarContext>();
+                                var leaseService = dayScope.ServiceProvider.GetRequiredService<ScheduledTaskLeaseService>();
+                                var dayResult = await FullRefreshDateRangeWithContext(
+                                    context,
+                                    posmContext,
+                                    hbSalesContext,
+                                    _logger,
+                                    leaseService,
+                                    date,
+                                    date
+                                );
+                                lock (syncLock)
+                                {
+                                    processedDays += dayResult.ProcessedDays;
+                                    skippedDates.AddRange(dayResult.SkippedDates);
+                                    failedDates.AddRange(dayResult.FailedDates);
+                                }
+                            }
+                            finally
+                            {
+                                try
+                                {
+                                    dayScope?.Dispose();
+                                }
+                                catch (Exception disposeException)
+                                {
+                                    // KILL 后 SqlSugar 释放僵尸事务可能抛异常。该日期结果已由
+                                    // FullRefreshDateRangeWithContext 记录，不能阻断后续日期。
+                                    _logger.LogWarning(disposeException, "释放失效统计日期 scope 失败: {Date}", date);
+                                }
+                            }
                         }
 
-                        logger.LogInformation(
+                        _logger.LogInformation(
                             "并发块处理完成 {StartDate} 至 {EndDate} ({Days} 天), 累计进度: {Progress}/{Total}, 跳过: {Skipped}, 失败: {Failed}",
                             dateRange.StartDate.ToString("yyyy-MM-dd"),
                             dateRange.EndDate.ToString("yyyy-MM-dd"),
                             dateRange.DayCount,
                             processedDays,
                             totalDays,
-                            rangeResult.SkippedDates.Count,
-                            rangeResult.FailedDates.Count
+                            skippedDates.Count,
+                            failedDates.Count
                         );
                     }
                     catch (Exception ex)
@@ -311,7 +324,7 @@ namespace BlazorApp.Api.Services
             result.ProcessedDays = processedDays;
             result.FailedDates = failedDates;
             result.SkippedDates = skippedDates;
-            result.Success = failedDates.Count == 0;
+        result.Success = result.IsComplete;
 
             var avgTimePerDay = stopwatch.Elapsed.TotalSeconds / totalDays;
             result.Message = result.Success
@@ -389,13 +402,32 @@ namespace BlazorApp.Api.Services
                 var leaseTaskType = SalesStatisticsAlignmentService.DailyFullRefreshLeaseTaskType;
                 var leaseDuration = TimeSpan.FromHours(2);
                 string? leaseToken = null;
+                SalesStatisticsDateExecutionGuard? dateGuard = null;
                 try
                 {
-                    var lease = await leaseService.TryAcquireAsync(
-                        leaseTaskType,
-                        dateStr,
-                        leaseDuration
+                    dateGuard = await SalesStatisticsDateExecutionGuard.TryAcquireAsync(
+                        context,
+                        date,
+                        logger
                     );
+                    if (!dateGuard.Acquired)
+                    {
+                        result.SkippedDates.Add(dateStr);
+                        logger.LogInformation("日期 {Date} 的 SQL 会话锁仍由其他执行者持有，本次完整刷新跳过", dateStr);
+                        continue;
+                    }
+
+                    var lease = dateGuard.IsSqlServerSessionGuarded
+                        ? await leaseService.TryAcquireSessionGuardedAsync(
+                            leaseTaskType,
+                            dateStr,
+                            dateGuard
+                        )
+                        : await leaseService.TryAcquireAsync(
+                            leaseTaskType,
+                            dateStr,
+                            leaseDuration
+                        );
                     if (!lease.Acquired)
                     {
                         result.SkippedDates.Add(dateStr);
@@ -423,12 +455,14 @@ namespace BlazorApp.Api.Services
                         bool markFreshOnSuccess = true
                     )
                     {
-                        await leaseService.EnsureActiveAsync(
+                        await dateGuard.EnsureActiveAsync(stepName);
+                        await leaseService.EnsureSessionGuardedActiveAsync(
                             leaseTaskType,
                             dateStr,
                             leaseToken,
                             leaseDuration,
-                            stepName
+                            stepName,
+                            dateGuard
                         );
                         await SalesStatisticsProductStoreDailyStateSlice.UpsertStatisticStateAsync(
                             context,
@@ -442,12 +476,14 @@ namespace BlazorApp.Api.Services
                         try
                         {
                             await action();
-                            await leaseService.EnsureActiveAsync(
+                            await dateGuard.EnsureActiveAsync($"{stepName}完成确认");
+                            await leaseService.EnsureSessionGuardedActiveAsync(
                                 leaseTaskType,
                                 dateStr,
                                 leaseToken,
                                 leaseDuration,
-                                $"{stepName}完成确认"
+                                $"{stepName}完成确认",
+                                dateGuard
                             );
                             if (markFreshOnSuccess)
                             {
@@ -464,14 +500,18 @@ namespace BlazorApp.Api.Services
                         }
                         catch (Exception stepEx)
                         {
-                            await SalesStatisticsProductStoreDailyStateSlice.UpsertStatisticStateAsync(
-                                context,
-                                statisticType,
-                                date,
-                                SalesStatisticRefreshStatus.Failed,
-                                sourceWatermark,
-                                stepEx.Message
-                            );
+                            dateGuard.RecordException(stepEx);
+                            if (dateGuard.IsActive)
+                            {
+                                await SalesStatisticsProductStoreDailyStateSlice.UpsertStatisticStateAsync(
+                                    context,
+                                    statisticType,
+                                    date,
+                                    SalesStatisticRefreshStatus.Failed,
+                                    sourceWatermark,
+                                    stepEx.Message
+                                );
+                            }
                             throw;
                         }
                     }
@@ -486,8 +526,9 @@ namespace BlazorApp.Api.Services
                         "分时统计",
                         () => UpdateHourlyStatisticsWithContext(context, posmContext, logger, date, null)
                     );
-                    // 当天与 2025 日期都由商品入口原子发布分店表，不能提前独立替换。
-                    if (date.Year != 2025 && !SalesStatisticsBusinessDate.IsToday(date))
+                    // 当天与 HBSales 历史窗口日期都由商品入口原子发布分店表，不能提前独立替换。
+                    if (!SalesStatisticsHBSalesHistoryWindow.Includes(date)
+                        && !SalesStatisticsBusinessDate.IsToday(date))
                     {
                         await RunStep(
                             SalesStatisticType.StoreSales,
@@ -524,15 +565,15 @@ namespace BlazorApp.Api.Services
                         "商品分店每日统计",
                         async () =>
                         {
-                            if (date.Year == 2025)
+                            if (SalesStatisticsHBSalesHistoryWindow.Includes(date))
                             {
-                                // 完整刷新也必须复用 2025 原子入口，不能先独立提交分店统计。
+                                // 完整刷新也必须复用 HBSales 原子入口，不能先独立提交分店统计。
                                 await _productRefresh.Update2025StoreAndProductStatisticsAtomically(
                                     context,
                                     posmContext,
                                     hbSalesContext
                                         ?? throw new InvalidOperationException(
-                                            "2025 年完整刷新缺少 HBSalesRecord 上下文"
+                                            "HBSales 历史窗口内的完整刷新缺少 HBSalesRecord 上下文"
                                         ),
                                     logger,
                                     date,
@@ -566,7 +607,15 @@ namespace BlazorApp.Api.Services
                         "日期 {Date} 完整刷新完成",
                         date.ToString("yyyy-MM-dd")
                     );
-                    if (!await leaseService.CompleteAsync(leaseTaskType, dateStr, leaseToken, true))
+                    // 发布记录必须在日期 session guard 和 fencing token 仍有效时写入，
+                    // 不能在 Batch 返回后的调用方补写，否则会与下一次执行交错。
+                    await dateGuard.EnsureActiveAsync("发布报表快照");
+                    await SalesStatisticsProductStoreDailyStateSlice.PublishRevenueReportSnapshotAsync(
+                        context,
+                        date
+                    );
+                    await dateGuard.EnsureActiveAsync("发布完成租约");
+                    if (!await leaseService.CompleteSessionGuardedAsync(leaseTaskType, dateStr, leaseToken, true, null, dateGuard))
                     {
                         throw new InvalidOperationException($"统计租约完成失败，token 已失效: {dateStr}");
                     }
@@ -574,15 +623,41 @@ namespace BlazorApp.Api.Services
                 }
                 catch (Exception ex)
                 {
+                    dateGuard?.RecordException(ex);
+                    // 失去 SQL Session 后，旧 worker 不得通过自动重连写 Failed 或 Complete，
+                    // 否则会覆盖已接管该日期的新执行者。
+                    // dateGuard 的作用域结束会释放会话锁；异常保持为失败结果供后续正常调度重试。
                     if (!string.IsNullOrWhiteSpace(leaseToken))
                     {
-                        await leaseService.CompleteAsync(
-                            leaseTaskType,
-                            dateStr,
-                            leaseToken,
-                            false,
-                            ex.Message
-                        );
+                        // 非 SQL Server 回退路径没有 Session guard；SQL Server 仅在 guard 仍
+                        // 有效时才允许写失败终态，绝不能为失联连接触发透明重连。
+                        if (context.Db.CurrentConnectionConfig.DbType != DbType.SqlServer
+                            || dateGuard?.IsActive == true)
+                        {
+                            if (dateGuard?.IsSqlServerSessionGuarded == true)
+                                await dateGuard.EnsureActiveAsync("记录失败租约");
+                            if (dateGuard?.IsSqlServerSessionGuarded == true)
+                            {
+                                await leaseService.CompleteSessionGuardedAsync(
+                                    leaseTaskType,
+                                    dateStr,
+                                    leaseToken,
+                                    false,
+                                    ex.Message,
+                                    dateGuard
+                                );
+                            }
+                            else
+                            {
+                                await leaseService.CompleteAsync(
+                                    leaseTaskType,
+                                    dateStr,
+                                    leaseToken,
+                                    false,
+                                    ex.Message
+                                );
+                            }
+                        }
                     }
                     logger.LogError(
                         ex,
@@ -590,6 +665,11 @@ namespace BlazorApp.Api.Services
                         date.ToString("yyyy-MM-dd")
                     );
                     result.FailedDates.Add(dateStr);
+                }
+                finally
+                {
+                    if (dateGuard != null)
+                        await dateGuard.DisposeAsync();
                 }
             }
 
@@ -676,7 +756,7 @@ internal Task UpdateHourlyStatisticsWithContext(
     /// </summary>
     /// <param name="context">数据库上下文</param>
     /// <param name="posmContext">POSM数据库上下文</param>
-    /// <param name="hbSalesContext">HBSalesRecord 数据库上下文；仅 2025 年使用</param>
+    /// <param name="hbSalesContext">HBSalesRecord 数据库上下文；仅已核验历史窗口使用</param>
     /// <param name="logger">日志记录器</param>
     /// <param name="date">目标日期</param>
     /// <param name="branchCodes">分店代码列表，为空则更新所有分店</param>
@@ -701,9 +781,9 @@ internal async Task UpdateStoreStatisticsWithContext(
         var statisticsList = await _productSupport.BuildStoreStatisticsAsync(
             context,
             posmContext,
-            targetDate.Year == 2025
+            SalesStatisticsHBSalesHistoryWindow.Includes(targetDate)
                 ? hbSalesContext
-                    ?? throw new InvalidOperationException("2025 年分店统计缺少 HBSalesRecord 上下文")
+                    ?? throw new InvalidOperationException("HBSales 历史窗口内的分店统计缺少 HBSalesRecord 上下文")
                 : null,
             targetDate,
             branchCodes

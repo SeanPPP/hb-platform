@@ -52,7 +52,10 @@
     "attendancePersonal": "Attendance",
     "attendanceManagement": "Attendance Admin",
     "productQuery": "Products",
+    "productInsights": "Product activity",
     "users": "Users",
+    "userAdmin": "User administration",
+    "roles": "Roles",
     "employeeProfile": "Employee",
     "employeeProfileReview": "Profile Review",
     "deviceManagement": "Devices",
@@ -97,6 +100,9 @@
     "addingToCart": "Adding to cart",
     "cameraModeSingle": "Single scan",
     "cameraModeContinuous": "Continuous scan",
+    "cameraModeLabel": "Scan mode",
+    "cameraSingleHint": "Close the camera after one scan.",
+    "cameraContinuousHint": "Keep the camera open after scanning.",
     "addedByCamera": "Camera scan added to cart",
     "addedByScanner": "Scanner input added to cart",
     "selectStoreFirst": "Please select a store before scanning.",
@@ -124,6 +130,7 @@
     "freshness": {
       "lastUpdated": "Latest statistics: {{time}}",
       "running": "Updating",
+      "skipped": "Update skipped",
       "failed": "Update failed",
       "noSuccess": "No successful statistics yet",
       "unavailable": "Statistics time unavailable"

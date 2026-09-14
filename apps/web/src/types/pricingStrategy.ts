@@ -1,5 +1,5 @@
 export type PricingStrategyLevel = 'Supplier' | 'Store' | 'Global'
-export type PricingStrategyAlgorithm = 'Linear' | 'Exponential' | 'Step'
+export type PricingStrategyAlgorithm = 'Linear' | 'ArcUp' | 'ArcDown' | 'Exponential' | 'Step'
 
 export interface PricingStrategyListDto {
   id: string
@@ -17,6 +17,9 @@ export interface PricingStrategyRuleDto {
   id?: string
   minPrice: number
   maxPrice: number
+  startRetailPrice?: number | null
+  endRetailPrice?: number | null
+  curveBend?: number | null
   startRate: number
   endRate: number
   algorithm: PricingStrategyAlgorithm

@@ -23,7 +23,8 @@ internal sealed class SalesStatisticsSliceContext
         HBSalesRecordSqlSugarContext? hbSalesContext,
         int maxConcurrentUpdates,
         int maxDaysForConcurrentUpdate,
-        int maxDaysPerChunk)
+        int maxDaysPerChunk,
+        TimeProvider? timeProvider = null)
     {
         PosmContext = posmContext;
         Context = context;
@@ -35,6 +36,7 @@ internal sealed class SalesStatisticsSliceContext
         MaxConcurrentUpdates = maxConcurrentUpdates;
         MaxDaysForConcurrentUpdate = maxDaysForConcurrentUpdate;
         MaxDaysPerChunk = maxDaysPerChunk;
+        TimeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public POSMSqlSugarContext PosmContext { get; }
@@ -47,6 +49,7 @@ internal sealed class SalesStatisticsSliceContext
     public int MaxConcurrentUpdates { get; }
     public int MaxDaysForConcurrentUpdate { get; }
     public int MaxDaysPerChunk { get; }
+    public TimeProvider TimeProvider { get; }
 }
 
 /// <summary>
@@ -79,6 +82,7 @@ internal abstract class SalesStatisticsSliceBase
     protected int _maxConcurrentUpdates => Shared.MaxConcurrentUpdates;
     protected int _maxDaysForConcurrentUpdate => Shared.MaxDaysForConcurrentUpdate;
     protected int _maxDaysPerChunk => Shared.MaxDaysPerChunk;
+    protected TimeProvider _timeProvider => Shared.TimeProvider;
 
     /// <summary>
     /// 仅 2025 年允许读取 HBSales；年份门槛保持原有来源边界，不能由调用方绕过。
@@ -86,6 +90,15 @@ internal abstract class SalesStatisticsSliceBase
     protected HBSalesRecordSqlSugarContext? GetHBSalesContextFor2025(DateTime date)
     {
         return date.Year == 2025 ? _hbSalesContext : null;
+    }
+
+    /// <summary>
+    /// 商品分店日统计专用：仅已核验的 HBSales 历史窗口可读取 HBSalesRecord。
+    /// 保留 GetHBSalesContextFor2025 的既有语义，避免其它统计调用意外扩展年份。
+    /// </summary>
+    protected HBSalesRecordSqlSugarContext? GetHBSalesContextForVerifiedHistory(DateTime date)
+    {
+        return SalesStatisticsHBSalesHistoryWindow.Includes(date) ? _hbSalesContext : null;
     }
 
     protected BatchStatisticsUpdateResult ValidateDateRange(DateTime startDate, DateTime endDate)

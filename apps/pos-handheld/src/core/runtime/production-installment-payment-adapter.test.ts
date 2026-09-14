@@ -23,6 +23,7 @@ import type {
   PaymentProviderResult,
 } from "@/core/contracts";
 import type { PaymentProviderRegistryPort } from "@hb/pos-payments-core/features/payments/payment-attempt-service";
+import type { PaymentAcknowledgementRuntimePort } from "@hb/pos-payments-core/features/payments/payment-acknowledgement-service";
 
 const ACTION_ID = "10000000-0000-4000-8000-000000000001";
 const INSTALLMENT_GUID = "20000000-0000-4000-8000-000000000001";
@@ -525,6 +526,77 @@ test("取消按 paymentGuid 精确绑定现金/Square/券原付款，先完成 p
   assert.equal(store.events.at(-1), "approve-cash");
 });
 
+test("两笔 Linkly 退款在首笔耐久 Approved 后先 ACK，释放终端 guard 再执行第二笔", async () => {
+  const acknowledged = new Set<string>();
+  const linkly = new GuardedLinklyRefundProvider(acknowledged);
+  linkly.refundResults.push(
+    approvedCardResult("linkly-cloud", { rfn: "ORIGINAL-LINKLY-RFN" }, cardEvidence("linkly-cloud", "refund", 1_200)),
+    approvedCardResult("linkly-cloud", { rfn: "ORIGINAL-LINKLY-RFN" }, cardEvidence("linkly-cloud", "refund", 800)),
+  );
+  const acknowledgements = {
+    async acknowledge(attemptId: string) {
+      acknowledged.add(attemptId);
+      return {
+        attempt: acknowledgementAttempt(attemptId),
+        acknowledged: true,
+        pending: false,
+        errorCode: null,
+      };
+    },
+  } satisfies PaymentAcknowledgementRuntimePort;
+  const adapter = createAdapter({
+    store: new MemoryAttemptStore(cancelAction()),
+    provenance: new FakeProvenance(provenanceSnapshot([
+      originalTender("card", 1_200, "01", "linkly-cloud"),
+      originalTender("card", 800, "02", "linkly-cloud"),
+    ])),
+    providers: new ProviderRegistry(linkly),
+    acknowledgements,
+  });
+
+  const result = await adapter.beginOrRecover(ACTION_ID);
+
+  assert.equal(result.kind, "approved");
+  assert.equal(linkly.calls.filter((call) => call.kind === "refund").length, 2);
+  assert.equal(linkly.secondRefundStartedAfterFirstAcknowledgement, true);
+  assert.equal(acknowledged.size, 2);
+});
+
+test("首笔退款 ACK 失败时不发第二笔；恢复只 ACK 原 Approved 后继续", async () => {
+  const acknowledged = new Set<string>();
+  const linkly = new GuardedLinklyRefundProvider(acknowledged);
+  linkly.refundResults.push(
+    approvedCardResult("linkly-cloud", { rfn: "ORIGINAL-LINKLY-RFN" }, cardEvidence("linkly-cloud", "refund", 1_200)),
+    approvedCardResult("linkly-cloud", { rfn: "ORIGINAL-LINKLY-RFN" }, cardEvidence("linkly-cloud", "refund", 800)),
+  );
+  let failFirstAcknowledgement = true;
+  const acknowledgements = {
+    async acknowledge(attemptId: string) {
+      if (failFirstAcknowledgement) {
+        failFirstAcknowledgement = false;
+        return { attempt: acknowledgementAttempt(attemptId), acknowledged: false, pending: true, errorCode: "LINKLY_ACKNOWLEDGEMENT_PENDING" };
+      }
+      acknowledged.add(attemptId);
+      return { attempt: acknowledgementAttempt(attemptId), acknowledged: true, pending: false, errorCode: null };
+    },
+  } satisfies PaymentAcknowledgementRuntimePort;
+  const adapter = createAdapter({
+    store: new MemoryAttemptStore(cancelAction()),
+    provenance: new FakeProvenance(provenanceSnapshot([
+      originalTender("card", 1_200, "01", "linkly-cloud"),
+      originalTender("card", 800, "02", "linkly-cloud"),
+    ])),
+    providers: new ProviderRegistry(linkly), acknowledgements,
+  });
+
+  await assert.rejects(() => adapter.beginOrRecover(ACTION_ID), InstallmentPaymentAdapterError);
+  assert.equal(linkly.calls.filter((call) => call.kind === "refund").length, 1);
+  const recovered = await adapter.recoverBlocking(ACTION_ID);
+  assert.equal(recovered.kind, "approved");
+  assert.equal(linkly.calls.filter((call) => call.kind === "refund").length, 2);
+  assert.equal(linkly.secondRefundStartedAfterFirstAcknowledgement, true);
+});
+
 test("远程 provenance 必须完整、同 scope、paymentGuid 唯一且金额按全部已记录付款闭合", async () => {
   const invalidSnapshots: InstallmentRefundProvenanceSnapshot[] = [
     {
@@ -710,6 +782,7 @@ function createAdapter(
     configuredCardProviders?: readonly ("square" | "linkly-cloud")[];
     provenance?: FakeProvenance;
     voucherMaterials?: FakeVoucherMaterials;
+    acknowledgements?: PaymentAcknowledgementRuntimePort | null;
   }> = {},
 ): ProductionInstallmentPaymentAdapter {
   const ids = overrides.ids ?? new StableIds();
@@ -727,6 +800,9 @@ function createAdapter(
       new FakeProvenance(provenanceSnapshot([originalTender("cash", 1, "01")])),
     voucherMaterials:
       overrides.voucherMaterials ?? new FakeVoucherMaterials(),
+    ...(overrides.acknowledgements !== undefined
+      ? { acknowledgements: overrides.acknowledgements }
+      : {}),
     createId: ids.create,
     nowIso: () => NOW,
   });
@@ -862,6 +938,8 @@ class ProviderRegistry implements PaymentProviderRegistryPort {
 }
 
 class ScriptedProvider implements OnlinePaymentPort {
+  /** Linkly 新 attempt 必须在 Created 时冻结 provider 的实际环境。 */
+  public readonly environment = "test";
   public readonly calls: Readonly<{
     kind: "submit" | "recover" | "cancel" | "refund";
     attempt: PaymentAttempt;
@@ -901,6 +979,28 @@ class ScriptedProvider implements OnlinePaymentPort {
     const result = results.shift();
     if (!result) throw new Error(`Missing ${this.provider} ${kind} result.`);
     return Promise.resolve(result);
+  }
+}
+
+/** 模拟 Linkly 服务端的单终端 guard：未确认的首笔退款会阻塞下一笔。 */
+class GuardedLinklyRefundProvider extends ScriptedProvider {
+  private firstRefundAttemptId: string | null = null;
+  public secondRefundStartedAfterFirstAcknowledgement = false;
+
+  public constructor(private readonly acknowledged: ReadonlySet<string>) {
+    super("linkly-cloud");
+  }
+
+  public override refund(attempt: PaymentAttempt): Promise<PaymentProviderResult> {
+    if (this.firstRefundAttemptId) {
+      if (!this.acknowledged.has(this.firstRefundAttemptId)) {
+        return Promise.reject(new Error("LINKLY_TERMINAL_GUARD_BUSY"));
+      }
+      this.secondRefundStartedAfterFirstAcknowledgement = true;
+    } else {
+      this.firstRefundAttemptId = attempt.attemptId;
+    }
+    return super.refund(attempt);
   }
 }
 
@@ -1067,6 +1167,24 @@ function createAttemptRecord(
       receiptText: null,
       responseCode: null,
     },
+  };
+}
+
+function acknowledgementAttempt(attemptId: string): PaymentAttempt {
+  return {
+    attemptId,
+    idempotencyKey: `ack:${attemptId}`,
+    orderGuid: INSTALLMENT_GUID,
+    provider: "linkly-cloud",
+    operation: "refund",
+    amount: { currency: "AUD", cents: -1 },
+    state: "Approved",
+    references: emptyReferences(),
+    createdAtIso: NOW,
+    updatedAtIso: NOW,
+    lastErrorCode: null,
+    receiptText: null,
+    responseCode: "00",
   };
 }
 

@@ -10,7 +10,7 @@ namespace BlazorApp.Api.Controllers.React
 {
     [ApiController]
     [Route("api/react/v1/local-supplier-product-sales-analysis")]
-    [Authorize(Policy = Permissions.LocalPurchase.View)]
+    [Authorize(Policy = Permissions.SalesDashboard.LocalProductAnalysisView)]
     public class LocalSupplierProductSalesAnalysisController : ControllerBase
     {
         private readonly ILocalSupplierProductSalesAnalysisService _service;

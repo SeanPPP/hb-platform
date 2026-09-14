@@ -1,5 +1,5 @@
 import { completeSum, margin, normalizeKeyword, quickDateSelection, validPeriod, type DateSelection } from '../ReportWorkbench/logic'
-import type { SalesDetailRow, SupplierKind } from './reportService'
+import type { SalesDetailQuery, SalesDetailRow, SupplierKind } from './reportService'
 
 export interface DetailSelection { supplier?: string; branch?: string; product?: string; keyword: string; page: number; pageSize: number }
 export const emptySelection: DetailSelection = { keyword: '', page: 1, pageSize: 20 }
@@ -17,6 +17,11 @@ export function initialDetailState(search: string): { dates: DateSelection; kind
 
 export function selectDimension(state: DetailSelection, dimension: 'supplier' | 'branch' | 'product', code: string): DetailSelection {
   return { ...state, [dimension]: state[dimension] === code ? undefined : code, page: dimension === 'product' ? state.page : 1 }
+}
+
+/** 商品反查只固定商品条件，清除分店和关键字，保留当前日期、类别、供应商与账号分店范围。 */
+export function productBranchDrawerQuery(query: SalesDetailQuery, productCode: string): SalesDetailQuery {
+  return { ...query, selectedProductCode: productCode, selectedBranchCode: undefined, search: undefined, pageIndex: 1 }
 }
 
 export function applyKeyword(state: DetailSelection, keyword: string): DetailSelection {

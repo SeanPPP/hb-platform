@@ -191,6 +191,24 @@ public sealed class LinklyBackendTerminalClientTests
     }
 
     [Fact]
+    public async Task Pair_failure_preserves_structured_error_code_for_settings_view_model()
+    {
+        var handler = new StubHttpMessageHandler(_ => JsonResponse(JsonSerializer.Serialize(new
+        {
+            success = false,
+            errorCode = "LINKLY_CLOUD_BACKEND_PAIR_REJECTED",
+            message = "Pairing rejected"
+        }), HttpStatusCode.BadRequest));
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+
+        var exception = await Assert.ThrowsAsync<LinklyBackendHttpException>(() =>
+            client.PairTerminalAsync(CardTerminalEnvironment.Sandbox, Guid.NewGuid(), "123456"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, exception.HttpStatus);
+        Assert.Equal("LINKLY_CLOUD_BACKEND_PAIR_REJECTED", exception.ErrorCode);
+    }
+
+    [Fact]
     public async Task GetTerminalsAsync_returns_safe_terminal_directory_and_caches_selection()
     {
         var handler = new StubHttpMessageHandler(request =>
@@ -273,6 +291,60 @@ public sealed class LinklyBackendTerminalClientTests
         Assert.Equal(8, result.Revision);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task SelectTerminalAsync_rejects_mismatched_identity_and_clears_payment_cache(bool wrongEnvironment)
+    {
+        var cachedId = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        var requestedId = Guid.Parse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+        HttpRequestMessage? logonRequest = null;
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            if (request.Method == HttpMethod.Get)
+            {
+                return JsonResponse(JsonSerializer.Serialize(new
+                {
+                    success = true,
+                    data = new LinklyCloudTerminalListResponse(
+                        "Sandbox", cachedId, 7,
+                        [new LinklyCloudTerminalSummary(cachedId, 1, "Front", "Ready", false, true, null, null)],
+                        "Active")
+                }));
+            }
+            if (request.Method == HttpMethod.Put)
+            {
+                return JsonResponse(JsonSerializer.Serialize(new
+                {
+                    success = true,
+                    data = new LinklyCloudTerminalSelectionResponse(
+                        wrongEnvironment ? "Production" : "Sandbox",
+                        wrongEnvironment ? requestedId : Guid.NewGuid(),
+                        8)
+                }));
+            }
+
+            logonRequest = CloneRequestWithBody(request);
+            return JsonResponse(JsonSerializer.Serialize(new
+            {
+                success = true,
+                data = new LinklyCloudBackendLogonTestResponse(
+                    "Sandbox", "S01", "POS-1", "test", DateTimeOffset.UtcNow,
+                    200, true, "00", "APPROVED", null, null, null, "connected")
+            }));
+        }, passHealthRequestsToHandler: true);
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+        await client.GetTerminalsAsync(CardTerminalEnvironment.Sandbox);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => client.SelectTerminalAsync(
+            CardTerminalEnvironment.Sandbox, requestedId, expectedRevision: 7));
+        await client.TestConnectionAsync(CardTerminalEnvironment.Sandbox);
+
+        Assert.NotNull(logonRequest);
+        Assert.DoesNotContain("terminalId=", logonRequest.RequestUri!.Query, StringComparison.Ordinal);
+        Assert.DoesNotContain("selectionRevision=", logonRequest.RequestUri.Query, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task PairTerminalAsync_posts_only_environment_and_pair_code()
     {
@@ -313,6 +385,75 @@ public sealed class LinklyBackendTerminalClientTests
         Assert.Equal("Sandbox", json.RootElement.GetProperty("environment").GetString());
         Assert.Equal("123456", json.RootElement.GetProperty("pairCode").GetString());
         Assert.True(result.IsReady);
+    }
+
+    [Fact]
+    public async Task TestTerminalConnectionAsync_echoes_terminal_version_without_conversion()
+    {
+        HttpRequestMessage? captured = null;
+        const string version = "2026-09-10T01:02:03.1234567";
+        var terminalId = Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd");
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            captured = CloneRequestWithBody(request);
+            return JsonResponse(JsonSerializer.Serialize(new
+            {
+                success = true,
+                data = new
+                {
+                    terminalId,
+                    environment = "Sandbox",
+                    terminalVersion = version,
+                    assignedDeviceCode = "POS-1",
+                    assignmentRevision = 9,
+                    succeeded = true,
+                    status = "connected",
+                    checkedAt = "2026-09-10T01:03:00Z",
+                    message = "Connected"
+                }
+            }));
+        }, passHealthRequestsToHandler: true);
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+
+        var result = await client.TestTerminalConnectionAsync(
+            terminalId,
+            new LinklyCloudTerminalConnectionTestRequest("Sandbox", version, "POS-1", 9));
+
+        Assert.Equal(HttpMethod.Post, captured!.Method);
+        Assert.EndsWith($"/terminals/{terminalId:D}/connection-test", captured.RequestUri!.AbsolutePath, StringComparison.Ordinal);
+        var body = await captured.Content!.ReadAsStringAsync();
+        Assert.Equal(version, ReadJsonString(body, "expectedTerminalVersion"));
+        Assert.Equal(version, result.TerminalVersion);
+        Assert.Equal("connected", result.Status);
+    }
+
+    [Fact]
+    public async Task AssignTerminalAsync_sends_null_target_for_unbind_and_returns_authoritative_directory()
+    {
+        HttpRequestMessage? captured = null;
+        var terminalId = Guid.Parse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee");
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            captured = CloneRequestWithBody(request);
+            return JsonResponse(
+                """
+                {"success":true,"data":{"environment":"Sandbox","selectedTerminalId":null,"selectionRevision":4,"terminals":[],"mode":"Active","devices":[]}}
+                """);
+        }, passHealthRequestsToHandler: true);
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+
+        var result = await client.AssignTerminalAsync(
+            terminalId,
+            new LinklyCloudTerminalAssignmentRequest("Sandbox", "v-1", "POS-1", 3, null, null, 0));
+
+        Assert.Equal(HttpMethod.Put, captured!.Method);
+        Assert.EndsWith($"/terminals/{terminalId:D}/assignment", captured.RequestUri!.AbsolutePath, StringComparison.Ordinal);
+        var body = await captured.Content!.ReadAsStringAsync();
+        using var json = JsonDocument.Parse(body);
+        Assert.False(json.RootElement.TryGetProperty("targetDeviceCode", out _));
+        Assert.False(json.RootElement.TryGetProperty("expectedTargetTerminalId", out _));
+        Assert.Equal("v-1", json.RootElement.GetProperty("expectedTerminalVersion").GetString());
+        Assert.Equal(4, result.SelectionRevision);
     }
 
     [Fact]

@@ -17,7 +17,7 @@ export function WeeklyScheduleTable({ week }: { week?: AttendanceWeek }) {
   const { t } = useAppTranslation(["attendance", "common"]);
 
   return (
-    <Card mode="elevated" style={styles.card}>
+    <Card mode="outlined" style={styles.card}>
       <Card.Title
         title={t("sections.week")}
         subtitle={
@@ -89,14 +89,18 @@ export function WeeklyScheduleTable({ week }: { week?: AttendanceWeek }) {
 
 const styles = StyleSheet.create({
   card: {
-    borderRadius: 8,
+    backgroundColor: "#FFFFFF",
+    borderColor: "#E4E7EC",
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    elevation: 0,
   },
   content: {
     gap: 10,
   },
   dayBlock: {
     backgroundColor: "#FFFFFF",
-    borderColor: "#E5E7EB",
+    borderColor: "#E4E7EC",
     borderRadius: 10,
     borderWidth: StyleSheet.hairlineWidth,
     gap: 8,
@@ -119,15 +123,15 @@ const styles = StyleSheet.create({
     borderColor: "#6EE7B7",
   },
   muted: {
-    color: "#6B7280",
+    color: "#475467",
   },
   scheduleMeta: {
     flex: 1,
     gap: 2,
   },
   scheduleRow: {
-    backgroundColor: "#F8FAFC",
-    borderColor: "#E5E7EB",
+    backgroundColor: "#F2F4F7",
+    borderColor: "#E4E7EC",
     borderLeftWidth: 3,
     borderRadius: 8,
     borderWidth: StyleSheet.hairlineWidth,

@@ -22,6 +22,10 @@ import {
   transitionRankingPagination,
 } from '../lib/ranking.js';
 import {
+  filterStoreSales,
+  normalizeStoreSalesResponse,
+} from '../lib/store-sales.js';
+import {
   normalizeCycles,
   buildTimeline,
   filterTimeline,
@@ -62,6 +66,13 @@ let rankingApiOrigin = null;
 let rankingLoading = false;
 let rankingError = null;
 let rankingRetryTarget = null;
+let storeSalesSelection = null;
+let storeSalesData = null;
+let storeSalesLoading = false;
+let storeSalesError = null;
+let storeSalesErrorCode = null;
+let storeSalesQuery = '';
+let rankingScrollTop = 0;
 let apiOrigin = null;
 let defaultApiOrigin = null;
 let localApiOrigin = null;
@@ -71,6 +82,7 @@ let lastDetectedSupplierCode = null;
 let activeSupplierRefreshTimer = null;
 const itemRequestGeneration = createGenerationGuard(0);
 const rankingRequestGeneration = createGenerationGuard(0);
+const storeSalesRequestGeneration = createGenerationGuard(0);
 const activeSupplierRequestGeneration = createGenerationGuard(0);
 
 const el = (id) => document.getElementById(id);
@@ -135,6 +147,15 @@ function applyI18n() {
   el('rankingPageSizeLabel').textContent = t(locale, 'rankingPageSize');
   el('rankingRetryBtn').textContent = t(locale, 'rankingRetry');
   el('rankingLegacyHint').textContent = t(locale, 'rankingLegacyHint');
+  el('storeSalesBackBtn').textContent = `‹ ${t(locale, 'storeSalesBack')}`;
+  el('storeSalesTitle').textContent = t(locale, 'storeSalesTitle');
+  el('storeSalesTotalLabel').textContent = t(locale, 'storeSalesTotal');
+  el('storeSalesSearchLabel').textContent = t(locale, 'storeSalesSearch');
+  el('storeSalesSearch').placeholder = t(locale, 'storeSalesSearch');
+  el('storeSalesSearch').setAttribute('aria-label', t(locale, 'storeSalesSearch'));
+  el('storeSalesStoreHeading').textContent = t(locale, 'storeSalesStore');
+  el('storeSalesQuantityHeading').textContent = `${t(locale, 'storeSalesQuantity')} ↓`;
+  el('storeSalesRetryBtn').textContent = t(locale, 'rankingRetry');
   document.querySelectorAll('[data-ranking-days]').forEach((button) => {
     button.textContent = `${button.dataset.rankingDays} ${t(locale, 'days')}`;
   });
@@ -161,13 +182,14 @@ function renderApiSettings() {
 
 function renderAuth() {
   const connected = authState === 'connected' && !!user;
+  const showConnectedShell = connected && !storeSalesSelection;
   const authSection = el('authSection');
   authSection.hidden = connected;
   authSection.classList.toggle('checking', authState === 'checking');
   authSection.classList.toggle('needs-website', authState === 'needsWebsite');
-  el('userSection').hidden = !connected;
-  el('storeSection').hidden = !connected;
-  el('supplierSection').hidden = !connected;
+  el('userSection').hidden = !showConnectedShell;
+  el('storeSection').hidden = !showConnectedShell;
+  el('supplierSection').hidden = !showConnectedShell;
   el('openShopBtn').disabled = authState === 'checking';
   el('recheckBtn').disabled = authState === 'checking';
 
@@ -283,7 +305,7 @@ async function grantOrigin(pattern) {
 }
 
 function renderDataTabs() {
-  el('dataTabs').hidden = !user;
+  el('dataTabs').hidden = !user || !!storeSalesSelection;
   el('historyTab').disabled = false;
   el('rankingTab').disabled = false;
   el('historyTab').setAttribute('aria-selected', String(activeView === 'history'));
@@ -333,7 +355,7 @@ function attachImageCandidates(image, placeholder, item) {
 }
 
 function renderRanking() {
-  const visible = !!user && activeView === 'ranking';
+  const visible = !!user && activeView === 'ranking' && !storeSalesSelection;
   const section = el('rankingSection');
   section.hidden = !visible;
   if (!visible) return;
@@ -463,8 +485,9 @@ function renderRanking() {
 
     const metrics = document.createElement('div');
     metrics.className = 'ranking-metrics';
-    const sales = document.createElement('div');
-    sales.className = 'ranking-sales';
+    const sales = document.createElement('button');
+    sales.type = 'button';
+    sales.className = 'ranking-sales ranking-sales-button';
     const salesLabel = document.createElement('span');
     salesLabel.textContent = t(locale, 'sales');
     const salesValue = document.createElement('strong');
@@ -472,7 +495,21 @@ function renderRanking() {
     salesValue.textContent = Number.isFinite(numericQuantity)
       ? numericQuantity.toLocaleString(locale === 'zh' ? 'zh-CN' : 'en-AU')
       : String(item.salesQuantity ?? 0);
-    sales.append(salesLabel, salesValue);
+    const salesArrow = document.createElement('span');
+    salesArrow.className = 'ranking-sales-arrow';
+    salesArrow.textContent = '›';
+    sales.append(salesLabel, salesValue, salesArrow);
+    sales.setAttribute('aria-label', formatMessage('storeSalesOpen', {
+      product: item.productName || item.itemNumber || item.productCode || '',
+    }));
+    sales.dataset.productCode = item.productCode || '';
+    sales.dataset.rank = String(item.rank ?? '');
+    sales.setAttribute('aria-controls', 'storeSalesSection');
+    sales.disabled = !item.productCode
+      || !rankingData?.startDate
+      || !rankingData?.endDate
+      || !rankingData?.snapshotVersion;
+    sales.addEventListener('click', () => openStoreSales(item));
 
     const averagePrice = document.createElement('div');
     averagePrice.className = 'ranking-average-price';
@@ -499,6 +536,252 @@ function renderRanking() {
     : '';
   el('rankingPrevBtn').disabled = rankingLoading || !showPager || rankingData.page <= 1;
   el('rankingNextBtn').disabled = rankingLoading || !showPager || rankingData.page >= rankingData.totalPages;
+}
+
+function formatSalesQuantity(value) {
+  const quantity = Number(value ?? 0);
+  return Number.isFinite(quantity)
+    ? quantity.toLocaleString(locale === 'zh' ? 'zh-CN' : 'en-AU', {
+      maximumFractionDigits: 2,
+    })
+    : '0';
+}
+
+function resetStoreSalesState() {
+  storeSalesRequestGeneration.advance();
+  storeSalesSelection = null;
+  storeSalesData = null;
+  storeSalesLoading = false;
+  storeSalesError = null;
+  storeSalesErrorCode = null;
+  storeSalesQuery = '';
+}
+
+function focusRankingSalesButton(target) {
+  if (!target?.productCode) return false;
+  const button = [...document.querySelectorAll('.ranking-sales-button')].find((candidate) => (
+    candidate.dataset.productCode === target.productCode
+    && candidate.dataset.rank === String(target.rank ?? '')
+  ));
+  if (!button) return false;
+  button.focus();
+  return true;
+}
+
+function renderStoreSalesProduct(item) {
+  const product = el('storeSalesProduct');
+  product.replaceChildren();
+  if (!item) return;
+
+  const imageFrame = document.createElement('div');
+  imageFrame.className = 'ranking-image-frame store-sales-image-frame';
+  const image = document.createElement('img');
+  image.className = 'ranking-image';
+  image.alt = item.productName || item.itemNumber || '';
+  const placeholder = document.createElement('span');
+  placeholder.className = 'ranking-image-placeholder';
+  placeholder.textContent = '—';
+  placeholder.setAttribute('aria-hidden', 'true');
+  imageFrame.append(image, placeholder);
+  attachImageCandidates(image, placeholder, item);
+
+  const identity = document.createElement('div');
+  identity.className = 'store-sales-product-identity';
+  const name = document.createElement('strong');
+  name.textContent = item.productName || item.itemNumber || item.productCode || '—';
+  const code = document.createElement('span');
+  code.textContent = `SKU: ${item.itemNumber || item.productCode || '—'}`;
+  const supplier = document.createElement('span');
+  supplier.textContent = currentSupplier
+    ? `${currentSupplier.displayName || currentSupplier.supplierCode} (${currentSupplier.supplierCode})`
+    : item.supplierCode || '';
+  identity.append(name, code, supplier);
+  product.append(imageFrame, identity);
+}
+
+function renderStoreSalesList() {
+  const list = el('storeSalesList');
+  list.replaceChildren();
+  const state = el('storeSalesState');
+  const stateText = el('storeSalesStateText');
+  const retry = el('storeSalesRetryBtn');
+  const stores = storeSalesData ? filterStoreSales(storeSalesData.stores, storeSalesQuery) : [];
+  let message = '';
+  if (storeSalesLoading) message = t(locale, 'storeSalesLoading');
+  else if (storeSalesErrorCode === 'RANKING_SNAPSHOT_CHANGED') message = t(locale, 'storeSalesStale');
+  else if (storeSalesError) message = t(locale, 'storeSalesLoadFailed');
+  else if (storeSalesData && stores.length === 0) message = t(locale, 'storeSalesNoMatch');
+  state.hidden = !message;
+  stateText.textContent = message;
+  state.title = storeSalesError || '';
+  retry.hidden = !storeSalesError;
+  retry.textContent = storeSalesErrorCode === 'RANKING_SNAPSHOT_CHANGED'
+    ? t(locale, 'storeSalesRefreshRanking')
+    : t(locale, 'rankingRetry');
+
+  const maximum = Math.max(0, ...stores.map((store) => store.salesQuantity));
+  for (const store of stores) {
+    const row = document.createElement('li');
+    row.className = 'store-sales-row';
+    const identity = document.createElement('div');
+    identity.className = 'store-sales-store-identity';
+    const name = document.createElement('strong');
+    name.textContent = store.storeName || store.storeCode;
+    const code = document.createElement('span');
+    code.textContent = store.storeCode;
+    const bar = document.createElement('span');
+    bar.className = 'store-sales-bar';
+    const fill = document.createElement('span');
+    fill.style.width = maximum > 0
+      ? `${Math.max(0, store.salesQuantity) / maximum * 100}%`
+      : '0%';
+    bar.appendChild(fill);
+    identity.append(name, code, bar);
+    const quantity = document.createElement('strong');
+    quantity.className = 'store-sales-row-quantity';
+    quantity.textContent = formatSalesQuantity(store.salesQuantity);
+    row.append(identity, quantity);
+    list.appendChild(row);
+  }
+}
+
+function renderStoreSales() {
+  const visible = !!user && !!storeSalesSelection;
+  const section = el('storeSalesSection');
+  section.hidden = !visible;
+  if (!visible) return;
+  section.setAttribute('aria-busy', String(storeSalesLoading));
+  renderStoreSalesProduct(storeSalesSelection.item);
+
+  const startDate = storeSalesData?.startDate || storeSalesSelection.startDate;
+  const endDate = storeSalesData?.endDate || storeSalesSelection.endDate;
+  const dateRange = startDate && endDate ? ` · ${startDate}–${endDate}` : '';
+  el('storeSalesPeriod').textContent = `${storeSalesSelection.days} ${t(locale, 'days')}${dateRange}`;
+  const storeCount = storeSalesData?.enabledStoreCount
+    ?? storeSalesSelection.enabledStoreCount
+    ?? 0;
+  const total = storeSalesData?.totalSalesQuantity
+    ?? storeSalesSelection.item.salesQuantity
+    ?? 0;
+  el('storeSalesTotal').textContent = formatSalesQuantity(total);
+  el('storeSalesStoreCount').textContent = formatMessage('storeSalesStoreCount', {
+    count: storeCount,
+  });
+  const search = el('storeSalesSearch');
+  if (document.activeElement !== search) search.value = storeSalesQuery;
+  el('storeSalesHelper').hidden = !storeSalesData;
+  el('storeSalesHelper').textContent = t(locale, 'storeSalesHelper');
+  el('storeSalesFooter').hidden = !storeSalesData;
+  el('storeSalesFooterLabel').textContent = formatMessage('storeSalesFooter', {
+    count: storeCount,
+  });
+  el('storeSalesFooterTotal').textContent = formatSalesQuantity(total);
+  renderStoreSalesList();
+}
+
+async function loadStoreSales() {
+  if (!storeSalesSelection) return false;
+  const selection = storeSalesSelection;
+  const requestGeneration = storeSalesRequestGeneration.advance();
+  storeSalesData = null;
+  storeSalesLoading = true;
+  storeSalesError = null;
+  storeSalesErrorCode = null;
+  setStatus('');
+  render();
+  let response;
+  try {
+    response = await send({
+      type: 'SUPPLIER_PRODUCT_STORE_SALES',
+      supplierCode: selection.supplierCode,
+      productCode: selection.item.productCode,
+      days: selection.days,
+      startDate: selection.startDate,
+      endDate: selection.endDate,
+      totalSalesQuantity: selection.totalSalesQuantity,
+      snapshotVersion: selection.snapshotVersion,
+    });
+  } catch (error) {
+    response = { ok: false, error: String((error && error.message) || error) };
+  }
+  if (!storeSalesRequestGeneration.isCurrent(requestGeneration)) return false;
+  storeSalesLoading = false;
+  if (!response?.ok) {
+    storeSalesError = response?.error || t(locale, 'storeSalesLoadFailed');
+    storeSalesErrorCode = response?.errorCode || null;
+    render();
+    return false;
+  }
+  try {
+    storeSalesData = normalizeStoreSalesResponse(response.data, {
+      supplierCode: selection.supplierCode,
+      productCode: selection.item.productCode,
+      days: selection.days,
+      startDate: selection.startDate,
+      endDate: selection.endDate,
+      totalSalesQuantity: selection.totalSalesQuantity,
+      snapshotVersion: selection.snapshotVersion,
+    });
+  } catch (error) {
+    storeSalesError = String((error && error.message) || error);
+    storeSalesErrorCode = null;
+    render();
+    return false;
+  }
+  rankingApiOrigin = response.apiOrigin || apiOrigin;
+  el('storeSalesAnnouncement').textContent = `${t(locale, 'storeSalesTitle')}: ${formatSalesQuantity(
+    storeSalesData.totalSalesQuantity,
+  )}`;
+  render();
+  return true;
+}
+
+function openStoreSales(item) {
+  if (!item?.productCode || !currentSupplier) return;
+  rankingScrollTop = globalThis.scrollY || 0;
+  storeSalesSelection = {
+    item,
+    supplierCode: currentSupplier.supplierCode,
+    days: rankingDays,
+    startDate: rankingData?.startDate,
+    endDate: rankingData?.endDate,
+    enabledStoreCount: rankingData?.enabledStoreCount,
+    totalSalesQuantity: Number(item.salesQuantity ?? 0),
+    snapshotVersion: rankingData?.snapshotVersion,
+  };
+  storeSalesQuery = '';
+  void loadStoreSales();
+  globalThis.requestAnimationFrame?.(() => {
+    globalThis.scrollTo({ top: 0, behavior: 'auto' });
+    el('storeSalesBackBtn').focus();
+  });
+}
+
+function closeStoreSales() {
+  const scrollTop = rankingScrollTop;
+  const focusTarget = storeSalesSelection
+    ? { productCode: storeSalesSelection.item.productCode, rank: storeSalesSelection.item.rank }
+    : null;
+  resetStoreSalesState();
+  render();
+  globalThis.requestAnimationFrame?.(() => {
+    globalThis.scrollTo({ top: scrollTop, behavior: 'auto' });
+    if (!focusRankingSalesButton(focusTarget)) el('rankingSupplierSelect').focus();
+  });
+}
+
+async function refreshRankingAfterStaleStoreSales() {
+  const scrollTop = rankingScrollTop;
+  const focusTarget = storeSalesSelection
+    ? { productCode: storeSalesSelection.item.productCode, rank: storeSalesSelection.item.rank }
+    : null;
+  resetStoreSalesState();
+  render();
+  await loadRanking({ clear: true });
+  globalThis.requestAnimationFrame?.(() => {
+    globalThis.scrollTo({ top: scrollTop, behavior: 'auto' });
+    if (!focusRankingSalesButton(focusTarget)) el('rankingSupplierSelect').focus();
+  });
 }
 
 function renderItem() {
@@ -574,6 +857,7 @@ function render() {
   renderDataTabs();
   renderItem();
   renderRanking();
+  renderStoreSales();
 }
 
 async function loadProfiles() {
@@ -618,6 +902,7 @@ async function loadActiveSupplier() {
   const nextCode = detectedSupplier?.supplierCode || null;
   if (previousCode === nextCode) return false;
 
+  resetStoreSalesState();
   rankingRequestGeneration.advance();
   currentSupplier = detectedSupplier;
   rankingData = null;
@@ -639,6 +924,7 @@ function selectSupplier(supplierCode, { manual = false } = {}) {
     displayName: profile?.displayName || supplierCode,
   };
   if (changed) {
+    resetStoreSalesState();
     rankingRequestGeneration.advance();
     rankingData = null;
     rankingLegacyItems = null;
@@ -854,6 +1140,7 @@ async function loadItem(item) {
 function resetAuthenticatedData() {
   itemRequestGeneration.advance();
   rankingRequestGeneration.advance();
+  resetStoreSalesState();
   activeSupplierRequestGeneration.advance();
   user = null;
   profiles = [];
@@ -1137,6 +1424,23 @@ el('rankingRetryBtn').addEventListener('click', async () => {
   }
 });
 
+el('storeSalesBackBtn').addEventListener('click', () => {
+  closeStoreSales();
+});
+
+el('storeSalesSearch').addEventListener('input', (event) => {
+  storeSalesQuery = event.currentTarget.value;
+  renderStoreSalesList();
+});
+
+el('storeSalesRetryBtn').addEventListener('click', () => {
+  if (storeSalesErrorCode === 'RANKING_SNAPSHOT_CHANGED') {
+    void refreshRankingAfterStaleStoreSales();
+    return;
+  }
+  void loadStoreSales();
+});
+
 el('rankingPrevBtn').addEventListener('click', async () => {
   if (rankingPage > 1) {
     ({ page: rankingPage, pageSize: rankingPageSize } = transitionRankingPagination(
@@ -1202,6 +1506,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     }
     if (rankingContextChanged || rankingPageSizeChanged) {
       rankingRequestGeneration.advance();
+      resetStoreSalesState();
       rankingPage = 1;
       rankingError = null;
       if (rankingContextChanged) {

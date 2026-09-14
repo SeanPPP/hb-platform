@@ -6,7 +6,13 @@
     "lastHit": "最近命中：{{value}}"
   },
   "actions": {
-    "returnToInvoiceDetails": "返回订单明细"
+    "returnToInvoiceDetails": "返回发票明细",
+    "saveAndReturnToInvoice": "保存并返回发票明细",
+    "invoiceStoreLocked": "发票分店已固定",
+    "unsavedTitle": "有未保存的价格修改",
+    "unsavedDescription": "离开页面会放弃当前分店价格修改。已单独保存的商品类型、清货价、套码或多码不会受影响。",
+    "continueEditing": "继续编辑",
+    "discardAndReturn": "放弃并离开"
   },
   "createProduct": {
     "action": "创建商品",
@@ -19,7 +25,7 @@
       "supplier": "供应商",
       "itemNumber": "货号",
       "barcode": "条码",
-      "productName": "名称",
+      "productName": "商品名称",
       "purchasePrice": "进货价",
       "retailPrice": "零售价",
       "isSpecialProduct": "是否特殊商品",
@@ -36,8 +42,34 @@
       "suppliersLoadFailed": "供应商加载失败",
       "created": "商品已创建",
       "refreshFailedAfterCreate": "商品已创建，但刷新详情失败，请手动查询",
-      "createFailed": "创建商品失败"
-    }
+      "createFailed": "创建商品失败",
+      "supplierRestricted": "Hotbargain（200）商品不能自行创建，请联系管理员。",
+      "barcodeGenerateFailed": "条码生成失败，请稍后重试"
+    },
+    "generateBarcode": "自动生成条码",
+    "barcodeHint": "条码格式：9529 + 日期 YYMMDD + 两位序号 + 校验位；每天最多预留 100 个。",
+    "formHint": "填写商品资料与售价，完成后即可创建",
+    "namePlaceholder": "输入商品名称",
+    "itemPlaceholder": "至少 5 个字符",
+    "barcodePlaceholder": "输入条码或自动生成",
+    "generateShort": "自动生成",
+    "specialShort": "特殊商品",
+    "autoPriceShort": "自动定价",
+    "keyboardDone": "收起键盘",
+    "cameraScan": "摄像头扫码",
+    "supplierSearch": "搜索供应商名称或编号",
+    "clearSearch": "清空搜索",
+    "supplierList": "供应商 · {{count}}",
+    "nameSort": "按名称排序",
+    "supplierCode": "编号：{{code}}",
+    "adminOnly": "需联系管理员",
+    "noSuppliers": "未找到供应商",
+    "supplierSelectHint": "点击供应商即可选择并返回",
+    "scanTitle": "扫描商品条码",
+    "scanHint": "将条码放入框内，识别后自动回填",
+    "cameraUnavailable": "当前无法使用摄像头，请返回手动输入条码。",
+    "openSettings": "打开设置",
+    "cameraPermissionHint": "允许使用摄像头，扫描后自动填写商品条码。"
   },
   "messages": {
     "selectStoreFirst": "请先选择分店",
@@ -69,6 +101,7 @@
     "codesLoadFailed": "条码列表加载失败",
     "saved": "商品信息已保存",
     "saveFailed": "保存失败",
+    "finishCurrentAction": "正在保存或打印，请完成后再离开页面。",
     "emptyStorePrice": "当前分店没有商品价格记录",
     "emptyPrompt": "输入条码、货号或商品编码开始查询",
     "cameraTip": "将条码对准取景框中心",
@@ -96,6 +129,8 @@
   },
   "lookup": {
     "title": "选择匹配商品",
+    "count": "匹配结果：{{count}}",
+    "noImage": "暂无图片",
     "query": "查询值：{{value}}",
     "viewDetail": "查看详情",
     "source": {
@@ -109,7 +144,9 @@
     }
   },
   "sections": {
-    "moreInfo": "更多信息"
+    "moreInfo": "更多信息",
+    "priceAndLabels": "价格与标签",
+    "codes": "套码 / 多码"
   },
   "promotion": {
     "title": "满减活动",
@@ -221,6 +258,10 @@
     "product": "普通标签",
     "discount": "折扣标签",
     "bigDiscount": "大标签",
+    "productShort": "普通",
+    "discountShort": "折扣",
+    "bigDiscountShort": "大标签",
+    "settingsAction": "设置",
     "clearance": "清货标签",
     "sendingShort": "发送中",
     "sending": "发送中...",

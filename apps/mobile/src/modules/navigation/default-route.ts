@@ -15,7 +15,10 @@ export type AppTabPath =
   | "/(shell)/attendance-personal"
   | "/(shell)/attendance-management"
   | "/(shell)/product-query"
+  | "/(shell)/product-insights"
   | "/(shell)/users"
+  | "/(shell)/user-admin"
+  | "/(shell)/roles"
   | "/(shell)/employee-profile"
   | "/(shell)/employee-profile-review"
   | "/(shell)/device-management"
@@ -40,7 +43,10 @@ export const TAB_PATHS: Record<string, AppTabPath> = {
   "attendance-personal": "/(shell)/attendance-personal",
   "attendance-management": "/(shell)/attendance-management",
   "product-query": "/(shell)/product-query",
+  "product-insights": "/(shell)/product-insights",
   users: "/(shell)/users",
+  "user-admin": "/(shell)/user-admin",
+  roles: "/(shell)/roles",
   "employee-profile": "/(shell)/employee-profile",
   "employee-profile-review": "/(shell)/employee-profile-review",
   "device-management": "/(shell)/device-management",
@@ -60,6 +66,8 @@ const DEVICE_MODE_BLOCKED_ROUTE_NAMES = new Set([
   "employee-profile-review",
   "device-management",
   "reports",
+  "user-admin",
+  "roles",
 ]);
 const LEGACY_ATTENDANCE_ROUTE_NAME = "attendance";
 export const SUPPORTED_APP_MENU_ROUTE_NAMES = new Set([

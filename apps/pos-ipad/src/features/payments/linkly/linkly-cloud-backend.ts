@@ -24,6 +24,26 @@ type LinklyTransactionRequest =
     selectionRevision?: number;
   }>;
 
+const LINKLY_HTTP_TIMEOUT_MS = 240_000;
+const LINKLY_RECOVERY_DEADLINE_MS = 180_000;
+
+export type LinklyPaymentRecoveryControl = Readonly<{
+  signal: AbortSignal;
+  deadlineAtMs: number;
+}>;
+
+export type LinklyLegacyReconciliation = Readonly<{
+  environment: string;
+  clientAcknowledgedAt: string | null;
+}>;
+
+export type LinklyUnacknowledgedSession = Readonly<{
+  sessionId: string;
+  environment: string;
+  /** 从 transaction 通知中强匹配出的本地幂等键；无法唯一验证时不列出会话。 */
+  idempotencyKey: string;
+}>;
+
 export type LinklyTerminalMode = "Active" | "Legacy" | "Draft";
 
 export type LinklyTerminalPairingState =
@@ -133,8 +153,8 @@ export type LinklyCloudBackendProviderOptions = Readonly<{
 export class LinklyCloudBackendApi implements LinklyTerminalSelectionPort {
   public constructor(private readonly transport: HbposTransport) {}
 
-  public create(input: LinklyTransactionRequest): Promise<LinklyCloudBackendSession> {
-    return this.requestSession({ method: "POST", url: "/api/v1/linkly/cloud-backend/transactions", data: input });
+  public create(input: LinklyTransactionRequest, signal?: AbortSignal): Promise<LinklyCloudBackendSession> {
+    return this.requestSession({ method: "POST", url: "/api/v1/linkly/cloud-backend/transactions", data: input, ...(signal ? { signal } : {}) });
   }
 
   public async readTerminals(
@@ -145,6 +165,7 @@ export class LinklyCloudBackendApi implements LinklyTerminalSelectionPort {
       method: "GET",
       url: "/api/v1/linkly/cloud-backend/terminals",
       params: { environment },
+      timeoutMs: LINKLY_HTTP_TIMEOUT_MS,
       ...(signal ? { signal } : {}),
     });
     return normalizeTerminalSelection(unwrapHbposEnvelope(response.data));
@@ -160,30 +181,31 @@ export class LinklyCloudBackendApi implements LinklyTerminalSelectionPort {
       method: "PUT",
       url: "/api/v1/linkly/cloud-backend/terminal-selection",
       data: { environment, terminalId, expectedRevision },
+      timeoutMs: LINKLY_HTTP_TIMEOUT_MS,
       ...(signal ? { signal } : {}),
     });
     // PUT 响应可能只带选择头字段；始终重读安全列表作为唯一权威状态。
     return this.readTerminals(environment, signal);
   }
 
-  public active(environment: string): Promise<LinklyCloudBackendSession | null> {
-    return this.requestOptionalSession({ method: "GET", url: "/api/v1/linkly/cloud-backend/transactions/active", params: { environment } });
+  public active(environment: string, signal?: AbortSignal, timeoutMs = LINKLY_HTTP_TIMEOUT_MS): Promise<LinklyCloudBackendSession | null> {
+    return this.requestOptionalSession({ method: "GET", url: "/api/v1/linkly/cloud-backend/transactions/active", params: { environment }, timeoutMs, ...(signal ? { signal } : {}) });
   }
 
-  public resumable(environment: string): Promise<LinklyCloudBackendSession | null> {
-    return this.requestOptionalSession({ method: "GET", url: "/api/v1/linkly/cloud-backend/transactions/resumable", params: { environment } });
+  public resumable(environment: string, signal?: AbortSignal, timeoutMs = LINKLY_HTTP_TIMEOUT_MS): Promise<LinklyCloudBackendSession | null> {
+    return this.requestOptionalSession({ method: "GET", url: "/api/v1/linkly/cloud-backend/transactions/resumable", params: { environment }, timeoutMs, ...(signal ? { signal } : {}) });
   }
 
-  public status(environment: string, sessionId: string): Promise<LinklyCloudBackendSession> {
-    return this.requestSession({ method: "GET", url: sessionUrl(sessionId, "status"), params: { environment } });
+  public status(environment: string, sessionId: string, signal?: AbortSignal, timeoutMs = LINKLY_HTTP_TIMEOUT_MS): Promise<LinklyCloudBackendSession> {
+    return this.requestSession({ method: "GET", url: sessionUrl(sessionId, "status"), params: { environment }, timeoutMs, ...(signal ? { signal } : {}) });
   }
 
-  public recover(environment: string, sessionId: string): Promise<LinklyCloudBackendSession> {
-    return this.requestSession({ method: "POST", url: sessionUrl(sessionId, "recover"), data: { environment } });
+  public recover(environment: string, sessionId: string, signal?: AbortSignal, timeoutMs = LINKLY_HTTP_TIMEOUT_MS): Promise<LinklyCloudBackendSession> {
+    return this.requestSession({ method: "POST", url: sessionUrl(sessionId, "recover"), data: { environment }, timeoutMs, ...(signal ? { signal } : {}) });
   }
 
-  public sendKey(environment: string, sessionId: string, key: string, data: string | null): Promise<LinklyCloudBackendSession> {
-    return this.requestSession({ method: "POST", url: sessionUrl(sessionId, "sendkey"), data: { environment, key, data } });
+  public sendKey(environment: string, sessionId: string, key: string, data: string | null, signal?: AbortSignal): Promise<LinklyCloudBackendSession> {
+    return this.requestSession({ method: "POST", url: sessionUrl(sessionId, "sendkey"), data: { environment, key, data }, ...(signal ? { signal } : {}) });
   }
 
   public markReceiptPrinted(environment: string, sessionId: string): Promise<LinklyCloudBackendSession> {
@@ -195,14 +217,20 @@ export class LinklyCloudBackendApi implements LinklyTerminalSelectionPort {
   }
 
   private async requestSession(request: Parameters<HbposTransport["request"]>[0]): Promise<LinklyCloudBackendSession> {
-    const response = await this.transport.request<HbposEnvelope<LinklySessionDto>>(request);
+    const response = await this.transport.request<HbposEnvelope<LinklySessionDto>>({
+      timeoutMs: LINKLY_HTTP_TIMEOUT_MS,
+      ...request,
+    });
     if (response.status === 404) throw sessionNotFound();
     return normalizeSession(unwrapHbposEnvelope(response.data));
   }
 
   private async requestOptionalSession(request: Parameters<HbposTransport["request"]>[0]): Promise<LinklyCloudBackendSession | null> {
     try {
-      const response = await this.transport.request<HbposEnvelope<LinklySessionDto>>(request);
+      const response = await this.transport.request<HbposEnvelope<LinklySessionDto>>({
+        timeoutMs: LINKLY_HTTP_TIMEOUT_MS,
+        ...request,
+      });
       if (response.status === 404) return null;
       return normalizeSession(unwrapHbposEnvelope(response.data));
     } catch (error) {
@@ -295,30 +323,34 @@ export class LinklyPaymentTerminalSelectionCoordinator
  */
 export class LinklyCloudBackendProvider implements OnlinePaymentPort {
   public readonly provider = "linkly-cloud" as const;
+  public readonly environment: string;
 
   public constructor(
     private readonly api: LinklyCloudBackendApi,
     private readonly options: LinklyCloudBackendProviderOptions,
-  ) {}
+  ) {
+    this.environment = options.environment;
+  }
 
   public async submit(attempt: PaymentAttempt): Promise<PaymentProviderResult> {
     linklyProviderAmountCents(attempt);
     if (attempt.operation === "refund") return this.refund(attempt);
     if (attempt.state === "Unknown" || attempt.references.sessionId) return this.recover(attempt);
+    const environment = frozenEnvironment(attempt, this.environment);
 
     const selection = await transactionTerminalSelection(
       this.options.terminalSelection,
-      this.options.environment,
+      environment,
       attempt,
     );
     if (!selection.ok) return terminalSelectionDeclined(attempt, selection.code);
 
-    const active = await this.api.active(this.options.environment);
+    const active = await this.api.active(environment);
     // 这是另一笔未完成交易，不能把它的 SessionId/TxnRef 绑定到当前新订单。
     if (active) return activeSessionConflict(attempt);
     try {
       const created = await this.api.create(
-        transactionRequest(attempt, this.options.environment, selection),
+        transactionRequest(attempt, environment, selection),
       );
       return toPaymentResult(created, attempt);
     } catch (error) {
@@ -333,24 +365,66 @@ export class LinklyCloudBackendProvider implements OnlinePaymentPort {
         return terminalSelectionDeclined(attempt, "LINKLY_TERMINAL_NOT_READY");
       }
       if (!isCreateAmbiguous(error)) throw error;
-      return this.recoverAmbiguousCreate(attempt);
+      return this.recoverAmbiguousCreate(attempt, {
+        signal: new AbortController().signal,
+        deadlineAtMs: Date.now() + LINKLY_RECOVERY_DEADLINE_MS,
+      });
     }
   }
 
   public async recover(attempt: PaymentAttempt): Promise<PaymentProviderResult> {
+    return this.recoverWithControl(attempt, {
+      signal: new AbortController().signal,
+      deadlineAtMs: Date.now() + LINKLY_RECOVERY_DEADLINE_MS,
+    });
+  }
+
+  public async recoverWithControl(
+    attempt: PaymentAttempt,
+    control: LinklyPaymentRecoveryControl,
+  ): Promise<PaymentProviderResult> {
     linklyProviderAmountCents(attempt);
-    if (attempt.references.sessionId) {
-      const recovered = await this.api.recover(this.options.environment, attempt.references.sessionId);
-      return toPaymentResult(recovered, attempt);
+    const environment = frozenEnvironmentOrNull(attempt);
+    if (environment === null) {
+      // 历史 attempt 的环境必须先由 reconcileLegacy 强匹配并通过本地 CAS 冻结，禁止猜当前环境恢复。
+      return unknownResult(attempt, "LINKLY_RECOVERY_ENVIRONMENT_REQUIRED");
     }
-    return this.recoverAmbiguousCreate(attempt);
+    if (attempt.references.sessionId) {
+      return this.recoverPersistedSession(attempt, environment, attempt.references.sessionId, control);
+    }
+    return this.recoverAmbiguousCreate(attempt, control);
   }
 
   public async cancel(attempt: PaymentAttempt): Promise<PaymentProviderResult> {
     linklyProviderAmountCents(attempt);
     // Unknown 只能恢复，绝不能在不知道终端是否已扣款时自动发送取消键。
-    if (attempt.state === "Unknown" || !attempt.references.sessionId) return unknownResult(attempt);
-    const session = await this.api.sendKey(this.options.environment, attempt.references.sessionId, "CANCEL", null);
+    if (!attempt.references.sessionId) return unknownResult(attempt);
+    const environment = frozenEnvironmentOrNull(attempt);
+    if (environment === null) {
+      // 没有持久化环境时连 status 也不能用当前配置猜测，必须先完成 legacy reconciliation。
+      return unknownResult(attempt, "LINKLY_CANCEL_ENVIRONMENT_REQUIRED");
+    }
+    if (attempt.state === "Unknown") return unknownResult(attempt);
+    let status: LinklyCloudBackendSession;
+    try {
+      status = await this.api.status(environment, attempt.references.sessionId);
+    } catch (error) {
+      if (isNotFound(error)) return unknownResult(attempt, "LINKLY_CANCEL_SESSION_NOT_FOUND");
+      throw error;
+    }
+    if (!sameSessionEnvironment(status, attempt.references.sessionId, environment) ||
+      (attempt.references.txnRef !== null && !sameIdentity(status.txnRef, attempt.references.txnRef))) {
+      return unknownResult(attempt, "LINKLY_CANCEL_CONTEXT_MISMATCH");
+    }
+    const statusResult = toPaymentResult(status, attempt);
+    if (isFinalPaymentState(statusResult.state)) return statusResult;
+    if (statusResult.state === "Unknown") return unknownResult(attempt, "LINKLY_CANCEL_CONTEXT_UNKNOWN");
+    if (!supportsCancelPayment(status)) return unknownResult(attempt, "LINKLY_CANCEL_NOT_ALLOWED");
+    const session = await this.api.sendKey(environment, attempt.references.sessionId, "CANCEL", null);
+    if (!sameSessionEnvironment(session, attempt.references.sessionId, environment) ||
+      (attempt.references.txnRef !== null && !sameIdentity(session.txnRef, attempt.references.txnRef))) {
+      return unknownResult(attempt, "LINKLY_CANCEL_CONTEXT_MISMATCH");
+    }
     return toPaymentResult(session, attempt);
   }
 
@@ -358,20 +432,21 @@ export class LinklyCloudBackendProvider implements OnlinePaymentPort {
     linklyProviderAmountCents(attempt);
     if (attempt.references.rfn === null) return { state: "Declined", references: attempt.references, receiptText: null, responseCode: "LINKLY_RFN_REQUIRED" };
     if (attempt.state === "Unknown" || attempt.references.sessionId) return this.recover(attempt);
+    const environment = frozenEnvironment(attempt, this.environment);
 
     const selection = await transactionTerminalSelection(
       this.options.terminalSelection,
-      this.options.environment,
+      environment,
       attempt,
     );
     if (!selection.ok) return terminalSelectionDeclined(attempt, selection.code);
 
-    const active = await this.api.active(this.options.environment);
+    const active = await this.api.active(environment);
     if (active) return activeSessionConflict(attempt);
     try {
       return toPaymentResult(
         await this.api.create(
-          transactionRequest(attempt, this.options.environment, selection),
+          transactionRequest(attempt, environment, selection),
         ),
         attempt,
       );
@@ -387,28 +462,40 @@ export class LinklyCloudBackendProvider implements OnlinePaymentPort {
         return terminalSelectionDeclined(attempt, "LINKLY_TERMINAL_NOT_READY");
       }
       if (!isCreateAmbiguous(error)) throw error;
-      return this.recoverAmbiguousCreate(attempt);
+      return this.recoverAmbiguousCreate(attempt, {
+        signal: new AbortController().signal,
+        deadlineAtMs: Date.now() + LINKLY_RECOVERY_DEADLINE_MS,
+      });
     }
   }
 
-  private async recoverAmbiguousCreate(attempt: PaymentAttempt): Promise<PaymentProviderResult> {
+  private async recoverAmbiguousCreate(
+    attempt: PaymentAttempt,
+    control?: LinklyPaymentRecoveryControl,
+  ): Promise<PaymentProviderResult> {
     const recoveryUid = normalizeRecoveryUid(attempt.idempotencyKey);
     if (recoveryUid === null) return unknownResult(attempt);
 
-    const active = await this.api.active(this.options.environment);
+    const environment = frozenEnvironmentOrNull(attempt);
+    if (environment === null) return unknownResult(attempt, "LINKLY_RECOVERY_ENVIRONMENT_REQUIRED");
+    const activeTimeoutMs = recoveryTimeoutMs(control);
+    if (activeTimeoutMs === null) return unknownResult(attempt, "LINKLY_RECOVERY_DEADLINE_EXCEEDED");
+    const active = await this.api.active(environment, control?.signal, activeTimeoutMs);
     const activeScope = active === null
       ? null
-      : matchingRecoveryScope(active, attempt, this.options.environment, recoveryUid);
+      : matchingRecoveryScope(active, attempt, environment, recoveryUid);
     if (active !== null && activeScope !== null) {
-      return this.recoverMatchedSession(attempt, active, activeScope, recoveryUid);
+      return this.recoverMatchedSession(attempt, active, activeScope, recoveryUid, control);
     }
 
-    const resumable = await this.api.resumable(this.options.environment);
+    const resumableTimeoutMs = recoveryTimeoutMs(control);
+    if (resumableTimeoutMs === null) return unknownResult(attempt, "LINKLY_RECOVERY_DEADLINE_EXCEEDED");
+    const resumable = await this.api.resumable(environment, control?.signal, resumableTimeoutMs);
     const resumableScope = resumable === null
       ? null
-      : matchingRecoveryScope(resumable, attempt, this.options.environment, recoveryUid);
+      : matchingRecoveryScope(resumable, attempt, environment, recoveryUid);
     if (resumable === null || resumableScope === null) return unknownResult(attempt);
-    return this.recoverMatchedSession(attempt, resumable, resumableScope, recoveryUid);
+    return this.recoverMatchedSession(attempt, resumable, resumableScope, recoveryUid, control);
   }
 
   private async recoverMatchedSession(
@@ -416,22 +503,159 @@ export class LinklyCloudBackendProvider implements OnlinePaymentPort {
     candidate: LinklyCloudBackendSession,
     expectedScope: LinklyRecoveryScope,
     recoveryUid: string,
+    control?: LinklyPaymentRecoveryControl,
   ): Promise<PaymentProviderResult> {
-    const status = await this.api.status(this.options.environment, candidate.sessionId);
+    const statusTimeoutMs = recoveryTimeoutMs(control);
+    if (statusTimeoutMs === null) return unknownResult(attempt, "LINKLY_RECOVERY_DEADLINE_EXCEEDED");
+    const status = await this.api.status(expectedScope.environment, candidate.sessionId, control?.signal, statusTimeoutMs);
     if (!matchesRecoveryScope(status, expectedScope) ||
-      matchingRecoveryScope(status, attempt, this.options.environment, recoveryUid) === null) {
+      matchingRecoveryScope(status, attempt, expectedScope.environment, recoveryUid) === null) {
       return unknownResult(attempt);
     }
 
     const statusResult = toPaymentResult(status, attempt);
     if (isFinalPaymentState(statusResult.state)) return statusResult;
+    if (statusResult.state === "Pending" && !hasRecoveryAction(status)) return statusResult;
 
-    const recovered = await this.api.recover(this.options.environment, candidate.sessionId);
+    const recoverTimeoutMs = recoveryTimeoutMs(control);
+    if (recoverTimeoutMs === null) return unknownResult(attempt, "LINKLY_RECOVERY_DEADLINE_EXCEEDED");
+    const recovered = await this.api.recover(expectedScope.environment, candidate.sessionId, control?.signal, recoverTimeoutMs);
     if (!matchesRecoveryScope(recovered, expectedScope) ||
-      matchingRecoveryScope(recovered, attempt, this.options.environment, recoveryUid) === null) {
+      matchingRecoveryScope(recovered, attempt, expectedScope.environment, recoveryUid) === null) {
       return unknownResult(attempt);
     }
     return toPaymentResult(recovered, attempt);
+  }
+
+  private async recoverPersistedSession(
+    attempt: PaymentAttempt,
+    environment: string,
+    sessionId: string,
+    control: LinklyPaymentRecoveryControl,
+  ): Promise<PaymentProviderResult> {
+    const statusTimeoutMs = recoveryTimeoutMs(control);
+    if (statusTimeoutMs === null) return unknownResult(attempt, "LINKLY_RECOVERY_DEADLINE_EXCEEDED");
+    let status: LinklyCloudBackendSession;
+    try {
+      status = await this.api.status(environment, sessionId, control.signal, statusTimeoutMs);
+    } catch (error) {
+      if (isNotFound(error)) return unknownResult(attempt, "LINKLY_RECOVERY_SESSION_NOT_FOUND");
+      throw error;
+    }
+    if (!sameSessionEnvironment(status, sessionId, environment) ||
+      (attempt.references.txnRef !== null && !sameIdentity(status.txnRef, attempt.references.txnRef))) {
+      return unknownResult(attempt, "LINKLY_RECOVERY_CONTEXT_MISMATCH");
+    }
+    const statusResult = toPaymentResult(status, attempt);
+    if (isFinalPaymentState(statusResult.state)) return statusResult;
+    if (statusResult.state === "Pending" && !hasRecoveryAction(status)) return statusResult;
+    const recoverTimeoutMs = recoveryTimeoutMs(control);
+    if (recoverTimeoutMs === null) return unknownResult(attempt, "LINKLY_RECOVERY_DEADLINE_EXCEEDED");
+    const recovered = await this.api.recover(environment, sessionId, control.signal, recoverTimeoutMs);
+    if (!sameSessionEnvironment(recovered, sessionId, environment) ||
+      (attempt.references.txnRef !== null && !sameIdentity(recovered.txnRef, attempt.references.txnRef))) {
+      return unknownResult(attempt, "LINKLY_RECOVERY_CONTEXT_MISMATCH");
+    }
+    return toPaymentResult(recovered, attempt);
+  }
+
+  public async acknowledge(attempt: PaymentAttempt): Promise<void> {
+    const environment = attempt.providerEnvironment?.trim() || null;
+    const sessionId = attempt.references.sessionId?.trim() || null;
+    if (environment === null || sessionId === null) {
+      throw new Error("LINKLY_ACK_PROVIDER_ENVIRONMENT_REQUIRED");
+    }
+    const acknowledged = await this.api.acknowledge(environment, sessionId);
+    if (!sameSessionEnvironment(acknowledged, sessionId, environment)) {
+      throw new Error("LINKLY_ACK_CONTEXT_MISMATCH");
+    }
+    const acknowledgedState = sessionState(acknowledged);
+    if (!isFinalPaymentState(acknowledgedState) || !isValidTimestamp(acknowledged.clientAcknowledgedAt)) {
+      throw new Error("LINKLY_ACK_FINAL_STATE_REQUIRED");
+    }
+    if ((attempt.state === "Approved" || attempt.state === "Declined" || attempt.state === "Cancelled") && attempt.state !== acknowledgedState) {
+      throw new Error("LINKLY_ACK_RESULT_MISMATCH");
+    }
+    if (acknowledgedState === "Approved") {
+      const verified = toPaymentResult(acknowledged, attempt);
+      if (verified.state !== "Approved" || verified.protectedSyncEvidence === undefined) {
+        throw new Error("LINKLY_ACK_APPROVAL_EVIDENCE_REQUIRED");
+      }
+    }
+  }
+
+  /**
+   * 为历史 NULL 环境记录提供只读、强匹配的环境冻结入口；不创建、不恢复、不 ACK。
+   * 调用方必须先用返回值完成本地 CAS，再调用 acknowledge(attempt)。
+   */
+  public async reconcileLegacy(
+    attempt: PaymentAttempt,
+    control?: LinklyPaymentRecoveryControl,
+  ): Promise<LinklyLegacyReconciliation | null> {
+    if (attempt.providerEnvironment?.trim() || !attempt.references.sessionId) return null;
+    const recoveryUid = normalizeRecoveryUid(attempt.idempotencyKey);
+    if (recoveryUid === null) return null;
+    const environment = this.environment;
+    const candidates: LinklyCloudBackendSession[] = [];
+    const statusTimeoutMs = recoveryTimeoutMs(control);
+    if (statusTimeoutMs === null) return null;
+    try {
+      candidates.push(await this.api.status(environment, attempt.references.sessionId, control?.signal, statusTimeoutMs));
+    } catch (error) {
+      if (!isNotFound(error)) throw error;
+    }
+    const activeTimeoutMs = recoveryTimeoutMs(control);
+    if (activeTimeoutMs === null) return null;
+    const active = await this.api.active(environment, control?.signal, activeTimeoutMs);
+    if (active) candidates.push(active);
+    const resumableTimeoutMs = recoveryTimeoutMs(control);
+    if (resumableTimeoutMs === null) return null;
+    const resumable = await this.api.resumable(environment, control?.signal, resumableTimeoutMs);
+    if (resumable) candidates.push(resumable);
+    for (const candidate of candidates) {
+      if (sameSessionEnvironment(candidate, attempt.references.sessionId, environment) &&
+        matchingRecoveryScope(candidate, attempt, environment, recoveryUid) !== null) {
+        return {
+          environment,
+          clientAcknowledgedAt: candidate.clientAcknowledgedAt,
+        };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * 冷启动 ACK probe 的窄入口：只读当前认证环境的 active/resumable，绝不扫描历史或发送 ACK。
+   * 调用方负责按 sessionId+订单作用域找到本地 attempt 后再走 reconcileLegacy/CAS；不得用于页面轮询。
+   */
+  public async listUnacknowledgedSessions(): Promise<readonly LinklyUnacknowledgedSession[]> {
+    const [active, resumable] = await Promise.all([
+      this.api.active(this.environment),
+      this.api.resumable(this.environment),
+    ]);
+    const seen = new Set<string>();
+    const sessions: LinklyUnacknowledgedSession[] = [];
+    for (const candidate of [active, resumable]) {
+      if (candidate === null ||
+        !sameCaseInsensitiveIdentity(candidate.environment, this.environment) ||
+        !candidate.sessionId.trim() ||
+        candidate.clientAcknowledgedAt !== null) {
+        continue;
+      }
+      // active/resumable 可能仍在 Pending/Unknown；只有 transaction 通知中的
+      // UID 全部一致且可解析，才允许把它交给本地窄查询，避免扫历史或猜订单。
+      const idempotencyKey = sessionRecoveryUid(candidate);
+      if (idempotencyKey === null) continue;
+      const sessionId = candidate.sessionId.trim();
+      if (seen.has(sessionId)) continue;
+      seen.add(sessionId);
+      sessions.push({
+        sessionId,
+        environment: candidate.environment.trim(),
+        idempotencyKey,
+      });
+    }
+    return Object.freeze(sessions);
   }
 }
 
@@ -449,6 +673,23 @@ type LinklyRecoveryIdentity = Readonly<{
   amountCents: number;
   txnRef: string;
 }>;
+
+function sessionRecoveryUid(session: LinklyCloudBackendSession): string | null {
+  const identities: LinklyRecoveryIdentity[] = [];
+  for (const notification of session.notifications) {
+    if (!sameCaseInsensitiveIdentity(notification.type, "transaction")) continue;
+    const identity = parseRecoveryIdentity(notification.payloadJson);
+    // 冷启动发现必须证明所有 transaction 通知属于同一笔交易；缺失或冲突
+    // 的 UID 直接跳过，交由显式人工/业务恢复处理，不能猜本地订单。
+    if (identity === null) return null;
+    identities.push(identity);
+  }
+  if (identities.length === 0) return null;
+  const first = identities[0]!;
+  return identities.every((identity) => sameRecoveryIdentity(identity, first))
+    ? first.uid
+    : null;
+}
 
 function matchingRecoveryScope(
   session: LinklyCloudBackendSession,
@@ -663,8 +904,8 @@ function toPaymentResult(session: LinklyCloudBackendSession, attempt: PaymentAtt
   };
 }
 
-function unknownResult(attempt: PaymentAttempt): PaymentProviderResult {
-  return { state: "Unknown", references: attempt.references, receiptText: null, responseCode: "LINKLY_SESSION_UNRESOLVED" };
+function unknownResult(attempt: PaymentAttempt, responseCode = "LINKLY_SESSION_UNRESOLVED"): PaymentProviderResult {
+  return { state: "Unknown", references: attempt.references, receiptText: null, responseCode };
 }
 
 function activeSessionConflict(attempt: PaymentAttempt): PaymentProviderResult {
@@ -784,7 +1025,7 @@ function sessionState(session: LinklyCloudBackendSession): PaymentProviderResult
     return session.transactionSuccess === null ? "Pending" : "Unknown";
   }
 
-  if (status === "completed" && session.transactionSuccess === true) {
+  if (status === "completed" && session.transactionSuccess === true && isLinklyApprovalCode(session.responseCode)) {
     return "Approved";
   }
 
@@ -963,6 +1204,13 @@ function buildApprovedCardSyncEvidence(
   }
 
   const expectedAmountCents = linklyProviderAmountCents(attempt);
+  if (!isLinklyApprovalCode(session.responseCode) ||
+    !isLinklyApprovalCode(evidence.responseCode) ||
+    !sameIdentity(session.responseCode, evidence.responseCode) ||
+    (session.responseText !== null && evidence.responseText !== null &&
+      !sameIdentity(session.responseText, evidence.responseText))) {
+    return { ok: false, code: "LINKLY_CARD_EVIDENCE_MISMATCH" };
+  }
   if (
     evidence.amountCents !== expectedAmountCents ||
     evidence.txnRef === null ||
@@ -994,6 +1242,91 @@ function sameIdentity(left: unknown, right: unknown): boolean {
     typeof right === "string" &&
     left.trim().length > 0 &&
     left.trim() === right.trim();
+}
+
+function isLinklyApprovalCode(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const normalized = value.trim().toUpperCase();
+  return normalized === "00" || normalized === "08" || normalized === "11";
+}
+
+function frozenEnvironment(attempt: PaymentAttempt, fallback: string): string {
+  const persisted = attempt.providerEnvironment?.trim();
+  return persisted || fallback;
+}
+
+function frozenEnvironmentOrNull(attempt: PaymentAttempt): string | null {
+  const persisted = attempt.providerEnvironment?.trim();
+  return persisted || null;
+}
+
+function recoveryTimeoutMs(control?: LinklyPaymentRecoveryControl): number | null {
+  if (!control) return LINKLY_HTTP_TIMEOUT_MS;
+  if (control.signal.aborted) return null;
+  if (!Number.isFinite(control.deadlineAtMs)) return null;
+  const remaining = Math.floor(control.deadlineAtMs - Date.now());
+  return remaining > 0 ? Math.min(remaining, LINKLY_HTTP_TIMEOUT_MS) : null;
+}
+
+function sameSessionEnvironment(
+  session: LinklyCloudBackendSession,
+  sessionId: string,
+  environment: string,
+): boolean {
+  return sameCaseInsensitiveIdentity(session.environment, environment) &&
+    sameIdentity(session.sessionId, sessionId);
+}
+
+function hasRecoveryAction(session: LinklyCloudBackendSession): boolean {
+  return Boolean(session.recoveryAction?.trim());
+}
+
+function supportsCancelPayment(session: LinklyCloudBackendSession): boolean {
+  const displays = session.notifications.filter((notification) =>
+    notification.type.trim().toLowerCase() === "display");
+  const latest = displays.at(-1);
+  if (latest) {
+    const flags = readDisplayFlags(latest.payloadJson);
+    // 最新 display 快照优先于可能过期的顶层字段；解析失败时失败关闭。
+    return flags?.cancelKeyFlag === true;
+  }
+  return session.cancelKeyFlag;
+}
+
+function readDisplayFlags(payloadJson: string): Readonly<{ cancelKeyFlag: boolean }> | null {
+  try {
+    const parsed: unknown = JSON.parse(payloadJson);
+    if (!isRecord(parsed)) return null;
+    const response = recordValue(parsed, "Response");
+    const source = isRecord(response) ? response : parsed;
+    const cancel = recordValue(source, "CancelKeyFlag");
+    const decoded = decodeLinklyFlag(cancel);
+    return decoded === null ? null : { cancelKeyFlag: decoded };
+  } catch {
+    return null;
+  }
+}
+
+function decodeLinklyFlag(value: unknown): boolean | null {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return Number.isFinite(value) ? value !== 0 : null;
+  if (typeof value !== "string") return null;
+  switch (value.trim().toLowerCase()) {
+    case "true":
+    case "1":
+    case "yes":
+      return true;
+    case "false":
+    case "0":
+    case "no":
+      return false;
+    default:
+      return null;
+  }
+}
+
+function isValidTimestamp(value: string | null): boolean {
+  return typeof value === "string" && value.trim().length > 0 && Number.isFinite(Date.parse(value));
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {

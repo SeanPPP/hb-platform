@@ -78,6 +78,153 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task FullRefreshCurrentDay_自动白天仍刷新当天但不启动历史日()
+    {
+        var today = SalesStatisticsBusinessDate.Today();
+        using var serviceProvider = CreateRollingRefreshServiceProvider();
+        var service = CreateService(
+            serviceProvider.GetRequiredService<IServiceScopeFactory>(),
+            new FixedTimeProvider(new DateTimeOffset(today, TimeSpan.Zero).AddHours(4))
+        );
+
+        await service.FullRefreshCurrentDay(automatic: true);
+
+        var states = await _localDb.Queryable<SalesStatisticRefreshState>().ToListAsync();
+        Assert.Contains(states, state => state.Date.Date == today
+            && state.StatisticType == SalesStatisticType.ProductStoreDaily);
+        Assert.DoesNotContain(states, state => state.Date.Date == today.AddDays(-1)
+            && state.StatisticType == SalesStatisticType.ProductStoreDaily);
+    }
+
+    [Fact]
+    public async Task FullRefreshCurrentDay_日期租约仍在运行时返回Skipped且不发布新快照()
+    {
+        var today = SalesStatisticsBusinessDate.Today();
+        await _localDb.Insertable(new ScheduledTaskLease
+        {
+            TaskType = SalesStatisticsAlignmentService.DailyFullRefreshLeaseTaskType,
+            ScopeKey = today.ToString("yyyy-MM-dd"),
+            Status = ScheduledTaskLeaseStatus.Running,
+            OwnerInstanceId = "other-instance",
+            LeaseToken = Guid.NewGuid().ToString("N"),
+            LeaseUntilUtc = DateTime.UtcNow.AddHours(1),
+            StartedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow,
+        }).ExecuteCommandAsync();
+        using var serviceProvider = CreateRollingRefreshServiceProvider();
+        var service = CreateService(serviceProvider.GetRequiredService<IServiceScopeFactory>());
+
+        var result = await service.FullRefreshCurrentDay(automatic: true, includeHistorical: false);
+
+        Assert.True(result.IsSkipped);
+        Assert.False(result.IsCompleted);
+        Assert.Empty(await _localDb.Queryable<SalesStatisticRefreshState>()
+            .Where(state => state.StatisticType == SalesStatisticType.RevenueReportPublished)
+            .ToListAsync());
+    }
+
+    [Fact]
+    public async Task UpsertStatisticStateAsync_失败时应保留最后一次已提交统计水位()
+    {
+        var targetDate = new DateTime(2026, 9, 14);
+        var lastPublishedAt = new DateTime(2026, 9, 14, 5, 30, 0, DateTimeKind.Utc);
+        await _localDb.Insertable(new SalesStatisticRefreshState
+        {
+            StatisticType = SalesStatisticType.StoreSales,
+            Date = targetDate,
+            Status = SalesStatisticRefreshStatus.Fresh,
+            LastAggregatedAtUtc = lastPublishedAt,
+            CompletedAtUtc = lastPublishedAt,
+        }).ExecuteCommandAsync();
+
+        await SalesStatisticsProductStoreDailyStateSlice.UpsertStatisticStateAsync(
+            CreateSqlSugarContext(_localDb),
+            SalesStatisticType.StoreSales,
+            targetDate,
+            SalesStatisticRefreshStatus.Failed,
+            null,
+            "刷新失败"
+        );
+
+        var persisted = await _localDb.Queryable<SalesStatisticRefreshState>()
+            .SingleAsync(row => row.StatisticType == SalesStatisticType.StoreSales && row.Date == targetDate);
+
+        Assert.Equal(SalesStatisticRefreshStatus.Failed, persisted.Status);
+        Assert.Equal(lastPublishedAt, persisted.LastAggregatedAtUtc);
+        Assert.Equal(lastPublishedAt, persisted.CompletedAtUtc);
+    }
+
+    [Fact]
+    public async Task FullRefreshCurrentDay_自动当天模式即使夜间也不启动历史日()
+    {
+        var today = SalesStatisticsBusinessDate.Today();
+        using var serviceProvider = CreateRollingRefreshServiceProvider();
+        var service = CreateService(
+            serviceProvider.GetRequiredService<IServiceScopeFactory>(),
+            new FixedTimeProvider(new DateTimeOffset(today, TimeSpan.Zero).AddHours(14))
+        );
+
+        await service.FullRefreshCurrentDay(automatic: true, includeHistorical: false);
+
+        var states = await _localDb.Queryable<SalesStatisticRefreshState>().ToListAsync();
+        Assert.Contains(states, state => state.Date.Date == today
+            && state.StatisticType == SalesStatisticType.ProductStoreDaily);
+        Assert.DoesNotContain(states, state => state.Date.Date == today.AddDays(-1)
+            && state.StatisticType == SalesStatisticType.ProductStoreDaily);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task FullRefreshCurrentDay_自动从未刷新日期开始且六点停止下一日(int firstHistoricalDayOffset)
+    {
+        var today = SalesStatisticsBusinessDate.Today();
+        var timeZone = TimeZoneInfo.FindSystemTimeZoneById("Australia/Sydney");
+        var beforeWindowCloseUtc = TimeZoneInfo.ConvertTimeToUtc(
+            DateTime.SpecifyKind(today.AddHours(5).AddMinutes(59).AddSeconds(59), DateTimeKind.Unspecified),
+            timeZone);
+        var atWindowCloseUtc = TimeZoneInfo.ConvertTimeToUtc(
+            DateTime.SpecifyKind(today.AddHours(6), DateTimeKind.Unspecified),
+            timeZone);
+        using var serviceProvider = CreateRollingRefreshServiceProvider();
+        var service = CreateService(
+            serviceProvider.GetRequiredService<IServiceScopeFactory>(),
+            new SequenceTimeProvider(
+                new DateTimeOffset(beforeWindowCloseUtc),
+                new DateTimeOffset(atWindowCloseUtc)
+            )
+        );
+
+        await service.FullRefreshCurrentDay(automatic: true, firstHistoricalDayOffset: firstHistoricalDayOffset);
+
+        var states = await _localDb.Queryable<SalesStatisticRefreshState>().ToListAsync();
+        Assert.Contains(states, state => state.Date.Date == today.AddDays(-firstHistoricalDayOffset)
+            && state.StatisticType == SalesStatisticType.ProductStoreDaily);
+        Assert.DoesNotContain(states, state => state.Date.Date == today.AddDays(-firstHistoricalDayOffset - 1)
+            && state.StatisticType == SalesStatisticType.ProductStoreDaily);
+        if (firstHistoricalDayOffset == 2)
+            Assert.DoesNotContain(states, state => state.Date.Date == today.AddDays(-1)
+                && state.StatisticType == SalesStatisticType.ProductStoreDaily);
+    }
+
+    [Fact]
+    public async Task FullRefreshCurrentDay_手动白天不受历史窗口门控()
+    {
+        var today = SalesStatisticsBusinessDate.Today();
+        using var serviceProvider = CreateRollingRefreshServiceProvider();
+        var service = CreateService(
+            serviceProvider.GetRequiredService<IServiceScopeFactory>(),
+            new FixedTimeProvider(new DateTimeOffset(today, TimeSpan.Zero).AddHours(4))
+        );
+
+        await service.FullRefreshCurrentDay();
+
+        var states = await _localDb.Queryable<SalesStatisticRefreshState>().ToListAsync();
+        Assert.Contains(states, state => state.Date.Date == today.AddDays(-1)
+            && state.StatisticType == SalesStatisticType.ProductStoreDaily);
+    }
+
+    [Fact]
     public async Task LoadStoreCostsInBatchesAsync_超过批量上限应拆分查询且完整返回()
     {
         var productCodes = Enumerable.Range(
@@ -558,6 +705,36 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
         Assert.Equal(30m, row.TotalAmount);
         Assert.Equal(modifiedAt, row.LastSourceUploadTime);
         Assert.Equal(SalesStatisticRefreshStatus.Fresh, state!.Status);
+    }
+
+    [Fact]
+    public async Task UpdateProductStoreDailyStatistics_2024已验证HBSales日应以双来源原子链写入Fresh()
+    {
+        var targetDate = new DateTime(2024, 9, 14);
+        var modifiedAt = targetDate.AddHours(11);
+        await SeedHBSalesAsync(914, targetDate, "HB-P-2024", "1004", "200", 2m, 30m, "1", modifiedAt);
+
+        await CreateService().UpdateProductStoreDailyStatistics(targetDate);
+
+        var product = await _localDb.Queryable<ProductStoreDailySalesStatistic>()
+            .Where(row => row.Date == targetDate && row.BranchCode == "1004" && row.ProductCode == "HB-P-2024")
+            .FirstAsync();
+        var store = await _localDb.Queryable<StoreSalesStatistic>()
+            .Where(row => row.Date == targetDate && row.BranchCode == "1004")
+            .FirstAsync();
+        var states = await _localDb.Queryable<SalesStatisticRefreshState>()
+            .Where(row => row.Date == targetDate)
+            .ToListAsync();
+
+        Assert.NotNull(product);
+        Assert.NotNull(store);
+        Assert.Equal(30m, product!.TotalAmount);
+        Assert.Equal(modifiedAt, product.LastSourceUploadTime);
+        Assert.Equal(30m, store!.TotalAmount);
+        Assert.Contains(states, row => row.StatisticType == SalesStatisticType.ProductStoreDaily
+            && row.Status == SalesStatisticRefreshStatus.Fresh);
+        Assert.Contains(states, row => row.StatisticType == SalesStatisticType.StoreSales
+            && row.Status == SalesStatisticRefreshStatus.Fresh);
     }
 
     [Fact]
@@ -1279,6 +1456,54 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
     public async Task UpdateStoreStatistics_2025指定分店应拒绝避免破坏双表一致性()
     {
         var requestDate = new DateTime(2025, 4, 7, 16, 30, 0);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            CreateService().UpdateStoreStatistics(requestDate, new List<string> { "1004" })
+        );
+
+        Assert.Contains("不能仅刷新指定分店", error.Message);
+        Assert.Contains("双表一致性", error.Message);
+    }
+
+    [Fact]
+    public async Task UpdateStoreStatistics_2024已验证HBSales日应全分店原子发布()
+    {
+        var requestDate = new DateTime(2024, 9, 14, 16, 30, 0);
+        var targetDate = requestDate.Date;
+        await SeedStoreSalesStatisticAsync(targetDate, "1004", 99m, 9);
+        await _localDb.Insertable(new ProductStoreDailySalesStatistic
+        {
+            Date = targetDate,
+            BranchCode = "1004",
+            SupplierCode = "200",
+            ProductCode = "OLD-PRODUCT",
+            TotalQuantity = 9,
+            TotalAmount = 99m,
+            OrderCount = 1,
+        }).ExecuteCommandAsync();
+        await SeedHBSalesAsync(9142, targetDate, "HB-P-STORE-ATOMIC-2024", "1004", "200", 2m, 30m, "1");
+
+        await CreateService().UpdateStoreStatistics(requestDate);
+
+        var store = await _localDb.Queryable<StoreSalesStatistic>()
+            .Where(row => row.Date == targetDate && row.BranchCode == "1004")
+            .FirstAsync();
+        var product = await _localDb.Queryable<ProductStoreDailySalesStatistic>()
+            .Where(row => row.Date == targetDate && row.ProductCode == "HB-P-STORE-ATOMIC-2024")
+            .FirstAsync();
+        var oldProductCount = await _localDb.Queryable<ProductStoreDailySalesStatistic>()
+            .Where(row => row.Date == targetDate && row.ProductCode == "OLD-PRODUCT")
+            .CountAsync();
+
+        Assert.Equal(30m, store!.TotalAmount);
+        Assert.Equal(30m, product!.TotalAmount);
+        Assert.Equal(0, oldProductCount);
+    }
+
+    [Fact]
+    public async Task UpdateStoreStatistics_2024已验证HBSales日指定分店应拒绝避免破坏双表一致性()
+    {
+        var requestDate = new DateTime(2024, 9, 14, 16, 30, 0);
 
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             CreateService().UpdateStoreStatistics(requestDate, new List<string> { "1004" })
@@ -2257,6 +2482,41 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
         Assert.NotNull(newProduct);
         Assert.Equal(20m, newStore!.TotalAmount);
         Assert.Equal(20m, newProduct!.TotalAmount);
+    }
+
+    [Fact]
+    public async Task ExecuteQueuedDateAsync_2024已验证HBSales日应走双来源原子链()
+    {
+        var targetDate = new DateTime(2024, 9, 14);
+        var jobId = Guid.NewGuid();
+        await SeedRefreshStateAsync(targetDate, SalesStatisticRefreshStatus.Running, jobId: jobId);
+        await SeedHBSalesAsync(9141, targetDate, "P-QUEUE-2024", "S1", "HB-2024", 2m, 20m, "1");
+
+        await CreateService().ExecuteQueuedDateAsync(
+            targetDate,
+            jobId,
+            () => Task.CompletedTask,
+            CancellationToken.None
+        );
+
+        var product = await _localDb.Queryable<ProductStoreDailySalesStatistic>()
+            .Where(row => row.Date == targetDate && row.ProductCode == "P-QUEUE-2024")
+            .FirstAsync();
+        var store = await _localDb.Queryable<StoreSalesStatistic>()
+            .Where(row => row.Date == targetDate && row.BranchCode == "S1")
+            .FirstAsync();
+        var states = await _localDb.Queryable<SalesStatisticRefreshState>()
+            .Where(row => row.Date == targetDate)
+            .ToListAsync();
+
+        Assert.NotNull(product);
+        Assert.NotNull(store);
+        Assert.Equal(20m, product!.TotalAmount);
+        Assert.Equal(20m, store!.TotalAmount);
+        Assert.Contains(states, row => row.StatisticType == SalesStatisticType.ProductStoreDaily
+            && row.Status == SalesStatisticRefreshStatus.Fresh);
+        Assert.Contains(states, row => row.StatisticType == SalesStatisticType.StoreSales
+            && row.Status == SalesStatisticRefreshStatus.Fresh);
     }
 
     [Fact]
@@ -4027,7 +4287,9 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
         InitKeyType = InitKeyType.Attribute,
     });
 
-    private SalesStatisticsJobService CreateService(IServiceScopeFactory? serviceScopeFactory = null)
+    private SalesStatisticsJobService CreateService(
+        IServiceScopeFactory? serviceScopeFactory = null,
+        TimeProvider? timeProvider = null)
     {
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -4044,7 +4306,8 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
             NullLogger<SalesStatisticsJobService>.Instance,
             configuration,
             serviceScopeFactory ?? Mock.Of<IServiceScopeFactory>(),
-            new HBSalesRecordSqlSugarContext(_hbSalesDb)
+            new HBSalesRecordSqlSugarContext(_hbSalesDb),
+            timeProvider
         );
     }
 
@@ -4673,6 +4936,22 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
     }
 
     private sealed record LogEntry(LogLevel LogLevel, string Message, Exception? Exception);
+
+    private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => utcNow;
+    }
+
+    private sealed class SequenceTimeProvider(params DateTimeOffset[] values) : TimeProvider
+    {
+        private int _index;
+
+        public override DateTimeOffset GetUtcNow()
+        {
+            var index = Interlocked.Increment(ref _index) - 1;
+            return values[Math.Min(index, values.Length - 1)];
+        }
+    }
 
     private sealed class NullScope : IDisposable
     {

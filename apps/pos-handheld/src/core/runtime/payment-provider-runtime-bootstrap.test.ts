@@ -36,6 +36,7 @@ test("provider bootstrap 对缺失公开配置返回稳定 unavailable，不触�
   assert.equal(
     bootstrap.createLinklyOperator({
       attempts: {} as never,
+      acknowledgements: {} as never,
       trustedSession: {} as never,
       permissions: {} as never,
     }),
@@ -86,6 +87,7 @@ test("bootstrap 仅在合法且可用的 Linkly 环境创建 operator，并一�
   assert.ok(
     bootstrap.createLinklyOperator({
       attempts: {} as never,
+      acknowledgements: {} as never,
       trustedSession: {
         assertActive() {},
       },

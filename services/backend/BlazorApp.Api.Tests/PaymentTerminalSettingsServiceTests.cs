@@ -715,6 +715,109 @@ public sealed class PaymentTerminalSettingsServiceTests : IDisposable
         Assert.Null(management.Devices.Single(device => device.DeviceCode == "POS-02").TerminalId);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task SetLinklyDeviceSelectionAsync_BlocksLeaseOnCurrentOrDestinationTerminal(bool leaseOnCurrent)
+    {
+        var service = CreateService();
+        SeedStore("001", "City Store");
+        SeedPosDevice("POS-01", "001");
+        for (var lane = 1; lane <= 2; lane++)
+        {
+            await service.CreateLinklyTerminalAsync(new CreateLinklyTerminalDto
+            {
+                StoreCode = "001", Environment = "Production", LaneNo = lane,
+                DisplayName = $"Counter {lane}", Username = $"test-user-{lane}", Password = "test-password",
+            }, "admin");
+        }
+        var management = (await service.GetLinklyTerminalManagementAsync("001", "Production")).Data!;
+        var currentId = management.Terminals.Single(terminal => terminal.LaneNo == 1).TerminalId;
+        var nextId = management.Terminals.Single(terminal => terminal.LaneNo == 2).TerminalId;
+        var selected = await service.SetLinklyDeviceSelectionAsync("POS-01", new UpdateLinklyDeviceSelectionDto
+        {
+            StoreCode = "001", Environment = "Production", TerminalId = currentId,
+        }, "admin");
+        Assert.True(selected.Success);
+        var revision = selected.Data!.Devices.Single(device => device.DeviceCode == "POS-01").Revision;
+        var leasedId = leaseOnCurrent ? currentId : nextId;
+        await _posmDb.Ado.ExecuteCommandAsync(
+            "UPDATE POSM_LinklyCloudTerminal SET PairingAttemptId = @Attempt, PairingLeaseExpiresAt = @Expiry WHERE TerminalId = @Terminal",
+            new SugarParameter("@Attempt", Guid.NewGuid()),
+            new SugarParameter("@Expiry", DateTime.UtcNow.AddMinutes(5)),
+            new SugarParameter("@Terminal", leasedId));
+
+        var request = new UpdateLinklyDeviceSelectionDto
+        {
+            StoreCode = "001", Environment = "Production", TerminalId = nextId, ExpectedRevision = revision,
+        };
+        var blocked = await service.SetLinklyDeviceSelectionAsync("POS-01", request, "admin");
+
+        Assert.False(blocked.Success);
+        Assert.Equal("LINKLY_TERMINAL_SESSION_ACTIVE", blocked.ErrorCode);
+        var retained = (await service.GetLinklyTerminalManagementAsync("001", "Production"))
+            .Data!.Devices.Single(device => device.DeviceCode == "POS-01");
+        Assert.Equal(currentId, retained.TerminalId);
+        Assert.Equal(revision, retained.Revision);
+
+        // 租约过期后允许正常换线，证明保护没有永久锁住设备。
+        await _posmDb.Ado.ExecuteCommandAsync(
+            "UPDATE POSM_LinklyCloudTerminal SET PairingLeaseExpiresAt = @Expiry WHERE TerminalId = @Terminal",
+            new SugarParameter("@Expiry", DateTime.UtcNow.AddMinutes(-1)),
+            new SugarParameter("@Terminal", leasedId));
+        var changed = await service.SetLinklyDeviceSelectionAsync("POS-01", request, "admin");
+        Assert.True(changed.Success);
+        Assert.Equal(nextId, changed.Data!.Devices.Single(device => device.DeviceCode == "POS-01").TerminalId);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task LinklySelectionMutation_BlocksUnknownTerminalSession(bool acknowledged, bool release)
+    {
+        var service = CreateService();
+        SeedStore("001", "City Store");
+        SeedPosDevice("POS-01", "001");
+        var created = await service.CreateLinklyTerminalAsync(new CreateLinklyTerminalDto
+        {
+            StoreCode = "001", Environment = "Production", LaneNo = 1,
+            DisplayName = "Counter", Username = "test-user", Password = "test-password",
+        }, "admin");
+        var terminalId = created.Data!.Terminals.Single().TerminalId;
+        var selected = await service.SetLinklyDeviceSelectionAsync("POS-01", new UpdateLinklyDeviceSelectionDto
+        {
+            StoreCode = "001", Environment = "Production", TerminalId = terminalId,
+        }, "admin");
+        Assert.True(selected.Success);
+        var revision = selected.Data!.Devices.Single(device => device.DeviceCode == "POS-01").Revision;
+        await SeedBlockingSessionAsync(terminalId, "HISTORICAL-POS", "Unknown", false);
+        if (acknowledged)
+        {
+            await _posmDb.Ado.ExecuteCommandAsync(
+                "UPDATE POSM_LinklyCloudBackendSession SET ClientAcknowledgedAt = @Ack WHERE TerminalId = @Terminal AND DeviceCode = 'HISTORICAL-POS'",
+                new SugarParameter("@Ack", DateTime.UtcNow), new SugarParameter("@Terminal", terminalId));
+        }
+
+        var result = release
+            ? await service.DeleteLinklyDeviceSelectionAsync("POS-01", new DeleteLinklyDeviceSelectionDto
+            {
+                StoreCode = "001", Environment = "Production", ExpectedRevision = revision,
+            }, "admin")
+            : await service.SetLinklyDeviceSelectionAsync("POS-01", new UpdateLinklyDeviceSelectionDto
+            {
+                StoreCode = "001", Environment = "Production", TerminalId = terminalId, ExpectedRevision = revision,
+            }, "admin");
+
+        Assert.False(result.Success);
+        Assert.Equal("LINKLY_TERMINAL_SESSION_ACTIVE", result.ErrorCode);
+        var retained = (await service.GetLinklyTerminalManagementAsync("001", "Production"))
+            .Data!.Devices.Single(device => device.DeviceCode == "POS-01");
+        Assert.Equal(terminalId, retained.TerminalId);
+        Assert.Equal(revision, retained.Revision);
+    }
+
     [Fact]
     public async Task DeleteLinklyDeviceSelectionAsync_ExposesAndReleasesDisabledOrMissingDeviceSelection()
     {
@@ -1106,6 +1209,77 @@ public sealed class PaymentTerminalSettingsServiceTests : IDisposable
             .Data!.Devices.Single(device => device.DeviceCode == "POS-01");
         Assert.Equal(terminalId, current.TerminalId);
         Assert.Equal(reboundRevision, current.Revision);
+    }
+
+    [Fact]
+    public async Task LinklyDeviceSelectionMutation_AdvancesAffectedTerminalVersionsAndClearsHealth()
+    {
+        var service = CreateService();
+        SeedStore("001", "City Store");
+        SeedPosDevice("POS-01", "001");
+        for (var lane = 1; lane <= 2; lane++)
+        {
+            Assert.True((await service.CreateLinklyTerminalAsync(new CreateLinklyTerminalDto
+            {
+                StoreCode = "001",
+                Environment = "Production",
+                LaneNo = lane,
+                DisplayName = $"Counter {lane}",
+                Username = $"test-user-{lane}",
+                Password = "lane-secret",
+            }, "admin")).Success);
+        }
+
+        var initial = await QueryLinklyTerminalRowsAsync("001", "Production");
+        var lineA = initial.Single(item => item.LaneNo == 1);
+        var lineB = initial.Single(item => item.LaneNo == 2);
+        await SetTerminalHealthAsync(lineA.TerminalId, "Healthy");
+        await SetTerminalHealthAsync(lineB.TerminalId, "Healthy");
+
+        var assigned = await service.SetLinklyDeviceSelectionAsync("POS-01", new UpdateLinklyDeviceSelectionDto
+        {
+            StoreCode = "001", Environment = "Production", TerminalId = lineA.TerminalId,
+        }, "admin");
+        Assert.True(assigned.Success);
+        var assignmentRevision = assigned.Data!.Devices.Single(item => item.DeviceCode == "POS-01").Revision;
+        var afterAssign = (await QueryLinklyTerminalRowsAsync("001", "Production"))
+            .Single(item => item.TerminalId == lineA.TerminalId);
+        Assert.True(afterAssign.UpdatedAt > lineA.UpdatedAt);
+        Assert.Null(afterAssign.LastHealthStatus);
+        Assert.Null(afterAssign.LastHealthAt);
+
+        await SetTerminalHealthAsync(lineA.TerminalId, "Healthy");
+        await SetTerminalHealthAsync(lineB.TerminalId, "Healthy");
+        var beforeRebind = await QueryLinklyTerminalRowsAsync("001", "Production");
+        var rebound = await service.SetLinklyDeviceSelectionAsync("POS-01", new UpdateLinklyDeviceSelectionDto
+        {
+            StoreCode = "001", Environment = "Production", TerminalId = lineB.TerminalId,
+            ExpectedRevision = assignmentRevision,
+        }, "admin");
+        Assert.True(rebound.Success);
+        var reboundRevision = rebound.Data!.Devices.Single(item => item.DeviceCode == "POS-01").Revision;
+        var afterRebind = await QueryLinklyTerminalRowsAsync("001", "Production");
+        foreach (var before in beforeRebind)
+        {
+            var after = afterRebind.Single(item => item.TerminalId == before.TerminalId);
+            Assert.True(after.UpdatedAt > before.UpdatedAt);
+            Assert.Null(after.LastHealthStatus);
+            Assert.Null(after.LastHealthAt);
+        }
+
+        await SetTerminalHealthAsync(lineB.TerminalId, "Healthy");
+        var beforeUnbind = (await QueryLinklyTerminalRowsAsync("001", "Production"))
+            .Single(item => item.TerminalId == lineB.TerminalId);
+        var unbound = await service.DeleteLinklyDeviceSelectionAsync("POS-01", new DeleteLinklyDeviceSelectionDto
+        {
+            StoreCode = "001", Environment = "Production", ExpectedRevision = reboundRevision,
+        }, "admin");
+        Assert.True(unbound.Success);
+        var afterUnbind = (await QueryLinklyTerminalRowsAsync("001", "Production"))
+            .Single(item => item.TerminalId == lineB.TerminalId);
+        Assert.True(afterUnbind.UpdatedAt > beforeUnbind.UpdatedAt);
+        Assert.Null(afterUnbind.LastHealthStatus);
+        Assert.Null(afterUnbind.LastHealthAt);
     }
 
     [Fact]
@@ -1803,6 +1977,16 @@ public sealed class PaymentTerminalSettingsServiceTests : IDisposable
             """,
             new SugarParameter("@StoreCode", storeCode),
             new SugarParameter("@Environment", environment)
+        );
+    }
+
+    private Task SetTerminalHealthAsync(Guid terminalId, string status)
+    {
+        return _posmDb.Ado.ExecuteCommandAsync(
+            "UPDATE POSM_LinklyCloudTerminal SET LastHealthStatus = @Status, LastHealthAt = @CheckedAt WHERE TerminalId = @TerminalId",
+            new SugarParameter("@Status", status),
+            new SugarParameter("@CheckedAt", DateTime.UtcNow),
+            new SugarParameter("@TerminalId", terminalId)
         );
     }
 

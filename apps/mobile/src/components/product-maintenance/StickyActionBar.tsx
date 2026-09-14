@@ -8,6 +8,7 @@ interface StickyActionBarProps {
   saving?: boolean;
   onReset: () => void;
   onSaveAll: () => void;
+  onSaveAndReturn?: () => void;
 }
 
 export function StickyActionBar({
@@ -16,6 +17,7 @@ export function StickyActionBar({
   saving = false,
   onReset,
   onSaveAll,
+  onSaveAndReturn,
 }: StickyActionBarProps) {
   const { t } = useAppTranslation(["productQuery", "common"]);
 
@@ -25,30 +27,46 @@ export function StickyActionBar({
 
   return (
     <Surface style={styles.container} elevation={2}>
-      <Text variant="bodyMedium">{t("multiCode.dirtyCount", { count: dirtyCount })}</Text>
-      <View style={styles.actions}>
-        <Button compact onPress={onReset} disabled={saving}>
-          {t("common:actions.discard")}
-        </Button>
-        <Button mode="contained" compact onPress={onSaveAll} loading={saving} disabled={saving}>
-          {saving ? t("common:actions.saving") : t("common:actions.saveAll")}
-        </Button>
+      <View style={styles.primaryRow}>
+        <Text variant="bodyMedium">{t("multiCode.dirtyCount", { count: dirtyCount })}</Text>
+        <View style={styles.actions}>
+          <Button compact onPress={onReset} disabled={saving}>
+            {t("common:actions.discard")}
+          </Button>
+          <Button mode="contained" compact onPress={onSaveAll} loading={saving} disabled={saving}>
+            {saving ? t("common:actions.saving") : t("common:actions.saveAll")}
+          </Button>
+        </View>
       </View>
+      {onSaveAndReturn ? (
+        <Button
+          compact
+          icon="arrow-left"
+          mode="outlined"
+          onPress={onSaveAndReturn}
+          disabled={saving}
+        >
+          {t("actions.saveAndReturnToInvoice")}
+        </Button>
+      ) : null}
     </Surface>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
     gap: 12,
     paddingHorizontal: 16,
     paddingVertical: 10,
     backgroundColor: "#fff",
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "#E3E3E3",
+    borderTopColor: "#E4E7EC",
+  },
+  primaryRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
   },
   actions: {
     flexDirection: "row",

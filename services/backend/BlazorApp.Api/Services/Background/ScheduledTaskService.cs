@@ -77,6 +77,18 @@ namespace BlazorApp.Api.Services.Background
         /// 随机冗余最大偏移分钟数（默认 5 分钟，即 -5 到 +5 分钟）
         /// </summary>
         public int JitterMaxMinutes { get; set; } = 5;
+
+        /// <summary>最近业务日 Fresh 快照的元数据巡检周期。</summary>
+        public int DiscountSnapshotRecentCheckMinutes { get; set; } = 5;
+
+        /// <summary>优先保持折扣快照最新的业务日数。</summary>
+        public int DiscountSnapshotRecentDays { get; set; } = 3;
+
+        /// <summary>自动回填从业务当天向前覆盖的完整年数，含首尾日期。</summary>
+        public int DiscountSnapshotHistoricalYears { get; set; } = 1;
+
+        /// <summary>单轮最多处理的折扣业务日数，防止持续回填占用其他后台工作。</summary>
+        public int DiscountSnapshotBatchSize { get; set; } = 12;
     }
 
     /// <summary>
@@ -97,6 +109,12 @@ namespace BlazorApp.Api.Services.Background
         private Timer? _weeklyTimer;
         private Timer? _monthlyTimer;
         private bool _stopping;
+
+        private sealed record TaskExecutionOutcome(bool IsSkipped, string? SkipReason = null)
+        {
+            public static TaskExecutionOutcome Completed() => new(false);
+            public static TaskExecutionOutcome Skipped(string? reason) => new(true, reason);
+        }
 
         public ScheduledTaskService(
             IServiceScopeFactory scopeFactory,
@@ -163,7 +181,7 @@ namespace BlazorApp.Api.Services.Background
             // 计算到下一个每日任务执行时间的时间间隔
             var nextDaily = CalculateNextDailyRun(now);
             _dailyTimer = new Timer(
-                async _ => await ExecuteDailyTask(),
+                async _ => await ExecuteDailyTask(automatic: true),
                 null,
                 nextDaily,
                 TimeSpan.FromDays(1)
@@ -421,6 +439,7 @@ namespace BlazorApp.Api.Services.Background
                                 : result.Message
                         );
                     }
+                    return TaskExecutionOutcome.Completed();
                 }
             );
         }
@@ -434,12 +453,22 @@ namespace BlazorApp.Api.Services.Background
                 {
                     var statisticsJobService =
                         serviceProvider.GetRequiredService<SalesStatisticsJobService>();
-                    await statisticsJobService.FullRefreshCurrentDay();
+                    // 半小时刷新只处理当天；最近七日历史由每日夜间任务补算，避免重复占用商品成本锁。
+                    var refreshResult = await statisticsJobService.FullRefreshCurrentDay(
+                        automatic: true,
+                        includeHistorical: false
+                    );
+                    if (refreshResult.IsSkipped)
+                    {
+                        // 跳过表示另一实例仍持有日期租约；既不能伪造成功，也不能清理有效快照缓存。
+                        return TaskExecutionOutcome.Skipped(refreshResult.Message);
+                    }
 
-                    // 本实例统计完成后立即清理看板缓存；其他实例通过成功时间版本自动绕过旧缓存。
+                    // 只有实际完成并发布快照后才清理本实例缓存。
                     var dashboardCacheWarmer =
                         serviceProvider.GetRequiredService<ISalesDashboardCacheWarmer>();
                     await dashboardCacheWarmer.ClearCacheAsync();
+                    return TaskExecutionOutcome.Completed();
                 }
             );
         }
@@ -455,6 +484,7 @@ namespace BlazorApp.Api.Services.Background
                     var cacheWarmer =
                         serviceProvider.GetRequiredService<BlazorApp.Api.Interfaces.IStoreOrderCacheWarmer>();
                     await cacheWarmer.WarmUpHomePageAsync();
+                    return TaskExecutionOutcome.Completed();
                 }
             );
         }
@@ -465,7 +495,7 @@ namespace BlazorApp.Api.Services.Background
         private async Task ExecuteHourlyTaskWithIndependentScopeAsync(
             string taskType,
             string taskName,
-            Func<IServiceProvider, Task> taskAction
+            Func<IServiceProvider, Task<TaskExecutionOutcome>> taskAction
         )
         {
             try
@@ -499,14 +529,23 @@ namespace BlazorApp.Api.Services.Background
                 try
                 {
                     _logger.LogInformation("开始执行{TaskName}", taskName);
-                    await taskAction(serviceProvider);
+                    var outcome = await taskAction(serviceProvider);
 
                     if (taskLog != null && taskLogService != null)
                     {
                         if (taskType == TaskType.UpdateCurrentHourStatistics)
                         {
-                            // 跨实例缓存版本依赖成功日志时间，统计任务必须确认成功状态真正写入数据库。
-                            await taskLogService.LogTaskSuccessStrictAsync(taskLog.Id);
+                            if (outcome.IsSkipped)
+                            {
+                                await taskLogService.LogTaskSkippedStrictAsync(
+                                    taskLog.Id,
+                                    outcome.SkipReason ?? "统计日期租约仍由其他执行者持有"
+                                );
+                            }
+                            else
+                            {
+                                await taskLogService.LogTaskSuccessStrictAsync(taskLog.Id);
+                            }
                         }
                         else
                         {
@@ -514,7 +553,10 @@ namespace BlazorApp.Api.Services.Background
                         }
                     }
 
-                    _logger.LogInformation("{TaskName}执行完成", taskName);
+                    _logger.LogInformation(
+                        outcome.IsSkipped ? "{TaskName}跳过执行" : "{TaskName}执行完成",
+                        taskName
+                    );
                 }
                 catch (Exception ex)
                 {
@@ -582,7 +624,7 @@ namespace BlazorApp.Api.Services.Background
         /// 执行每日全量刷新任务
         /// 全量刷新当天的统计数据
         /// </summary>
-        private async Task ExecuteDailyTask()
+        private async Task ExecuteDailyTask(bool automatic)
         {
             if (!await IsCurrentInstanceSchedulerEnabledAsync("每日全量刷新任务"))
             {
@@ -613,11 +655,29 @@ namespace BlazorApp.Api.Services.Background
 
                     var statisticsJobService =
                         scope.ServiceProvider.GetRequiredService<SalesStatisticsJobService>();
-                    await statisticsJobService.FullRefreshPreviousDay();
-                    await statisticsJobService.FullRefreshCurrentDay();
+                    var previousDayResult = await statisticsJobService.FullRefreshPreviousDay();
+                    // 昨天的完整统计刚完成，滚动补算从前天开始，避免重复更新同一批商品。
+                    var currentDayResult = await statisticsJobService.FullRefreshCurrentDay(
+                        automatic,
+                        firstHistoricalDayOffset: 2
+                    );
 
                     if (taskLog != null)
-                        await taskLogService.LogTaskSuccessAsync(taskLog.Id);
+                    {
+                        if (previousDayResult.IsSkipped || currentDayResult.IsSkipped)
+                        {
+                            await taskLogService.LogTaskSkippedStrictAsync(
+                                taskLog.Id,
+                                previousDayResult.IsSkipped
+                                    ? previousDayResult.Message ?? "前一天统计已有运行中的日期租约"
+                                    : currentDayResult.Message ?? "当天统计已有运行中的日期租约"
+                            );
+                        }
+                        else
+                        {
+                            await taskLogService.LogTaskSuccessAsync(taskLog.Id);
+                        }
+                    }
                     _logger.LogInformation("每日全量刷新任务执行完成");
                 }
                 catch (Exception ex)
@@ -703,6 +763,13 @@ namespace BlazorApp.Api.Services.Background
                     );
 
                     var result = await statisticsJobService.BatchFullRefreshConcurrent(monday, sunday);
+                    if (result.HasSkippedDates && !result.HasFailedDates)
+                    {
+                        if (taskLog != null)
+                            await taskLogService.LogTaskSkippedStrictAsync(taskLog.Id, result.Message);
+                        _logger.LogInformation("每周全量刷新存在跳过日期，不写 Success: {Message}", result.Message);
+                        return;
+                    }
                     if (!result.Success)
                     {
                         throw new Exception($"每周统计任务失败: {result.Message}");
@@ -804,6 +871,13 @@ namespace BlazorApp.Api.Services.Background
                         isQuarterEnd ? 3 : 1
                     );
 
+                    if (result.HasSkippedDates && !result.HasFailedDates)
+                    {
+                        if (taskLog != null)
+                            await taskLogService.LogTaskSkippedStrictAsync(taskLog.Id, result.Message);
+                        _logger.LogInformation("每月全量刷新存在跳过日期，不写 Success: {Message}", result.Message);
+                        return;
+                    }
                     if (!result.Success)
                     {
                         throw new Exception($"每月统计任务失败: {result.Message}");
@@ -845,7 +919,7 @@ namespace BlazorApp.Api.Services.Background
         public async Task TriggerDailyTaskManually()
         {
             _logger.LogInformation("手动触发每日全量刷新任务");
-            await ExecuteDailyTask();
+            await ExecuteDailyTask(automatic: false);
         }
 
         /// <summary>

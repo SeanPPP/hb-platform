@@ -134,6 +134,30 @@ test("点击付款方式后才打开金额输入弹窗", async () => {
   expect(spies.cancel).not.toHaveBeenCalled();
 });
 
+test.each(["cash", "square", "linkly-cloud", "voucher"] as const)(
+  "%s 金额弹窗支持 iPad 横屏，关闭再打开不会发起付款",
+  async (method) => {
+    const { presenter, spies } = createUiPresenter();
+    const screen = await render(
+      <PaymentScreen locale="zh" presenter={presenter} showStatusStrip={false} />,
+    );
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await openPaymentEntry(screen, method);
+      expect(
+        screen.getByTestId("payment-entry-native-modal").props.supportedOrientations,
+      ).toEqual(["landscape-left", "landscape-right"]);
+      expect(screen.getByTestId("payment-entry-modal")).toBeTruthy();
+      await fireEvent.press(screen.getByTestId("payment-entry-cancel"));
+      expect(screen.queryByTestId("payment-entry-modal")).toBeNull();
+    }
+
+    expect(spies.submitSelected).not.toHaveBeenCalled();
+    expect(spies.cancel).not.toHaveBeenCalled();
+    await screen.unmount();
+  },
+);
+
 test("提交失败时保留金额弹窗并宣告字段错误", async () => {
   const harness = createUiPresenter({
     selectedMethod: "cash",
@@ -205,7 +229,45 @@ test("付款内容滚动区采用系统键盘避让且金额输入仍禁用软�
   );
 });
 
-test("Linkly Cloud 多终端允许预选忙碌终端，未配对与未知结果期间禁用", async () => {
+test.each(["square", "linkly-cloud"] as const)(
+  "付款方式只显示现金与已启用的 %s，不显示未启用卡通道及礼券",
+  async (card) => {
+    const other = card === "square" ? "linkly-cloud" : "square";
+    const { presenter } = createUiPresenter({
+      selectedMethod: "cash",
+      providers: [
+        providerAvailability(card),
+        { provider: other, available: false, blocker: "PAYMENT_PROVIDER_UNKNOWN" },
+        { provider: "voucher", available: false, blocker: "VOUCHER_CONFIGURATION_DISABLED" },
+      ],
+    });
+    const screen = await render(
+      <PaymentScreen locale="zh" presenter={presenter} showStatusStrip={false} />,
+    );
+    expect(screen.getByTestId("payment-method-cash")).toBeTruthy();
+    expect(screen.getByTestId(`payment-method-${card}`)).toBeTruthy();
+    expect(screen.queryByTestId(`payment-method-${other}`)).toBeNull();
+    expect(screen.queryByTestId("payment-method-voucher")).toBeNull();
+    expect(screen.queryByTestId("payment-provider-blockers")).toBeNull();
+    await screen.unmount();
+  },
+);
+
+test("现金无权限时隐藏现金入口，已启用礼券仍可使用", async () => {
+  const { presenter } = createUiPresenter({
+    cashAvailable: false,
+    providers: [providerAvailability("voucher")],
+  });
+  const screen = await render(
+    <PaymentScreen locale="zh" presenter={presenter} showStatusStrip={false} />,
+  );
+  expect(screen.queryByTestId("payment-method-cash")).toBeNull();
+  expect(screen.queryByTestId("payment-method-square")).toBeNull();
+  expect(screen.queryByTestId("payment-method-linkly-cloud")).toBeNull();
+  expect(screen.getByTestId("payment-method-voucher")).toBeTruthy();
+});
+
+test("Linkly Cloud 多终端只展示实际选中线路，支付页不能更改绑定", async () => {
   const harness = createUiPresenter({
     selectedMethod: "linkly-cloud",
     linklyTerminals: {
@@ -214,7 +276,7 @@ test("Linkly Cloud 多终端允许预选忙碌终端，未配对与未知结果�
       snapshot: {
         environment: "Sandbox",
         mode: "Active",
-        selectedTerminalId: "terminal-1",
+        selectedTerminalId: "terminal-2",
         selectionRevision: 5,
         terminals: [
           linklyTerminal("terminal-1", 1, "Front"),
@@ -238,31 +300,14 @@ test("Linkly Cloud 多终端允许预选忙碌终端，未配对与未知结果�
     />,
   );
 
-  expect(screen.getByTestId("payment-linkly-terminal-selector")).toBeTruthy();
-  expect(screen.getByText("Front · Lane 1")).toBeTruthy();
-  expect(
-    screen.getByTestId("payment-linkly-terminal-terminal-2").props
-      .accessibilityState.disabled,
-  ).toBe(false);
-  expect(
-    screen.getByTestId("payment-linkly-terminal-terminal-busy").props
-      .accessibilityState.disabled,
-  ).toBe(false);
-  expect(
-    screen.getByTestId("payment-linkly-terminal-terminal-unpaired").props
-      .accessibilityState.disabled,
-  ).toBe(true);
-
-  await fireEvent.press(
-    screen.getByTestId("payment-linkly-terminal-terminal-2"),
-  );
-  expect(harness.spies.selectLinklyTerminal).toHaveBeenCalledWith("terminal-2");
-  await fireEvent.press(
-    screen.getByTestId("payment-linkly-terminal-terminal-busy"),
-  );
-  expect(harness.spies.selectLinklyTerminal).toHaveBeenCalledWith(
-    "terminal-busy",
-  );
+  expect(screen.getByTestId("payment-linkly-terminal-current")).toBeTruthy();
+  expect(screen.getByText("Returns · Lane 2")).toBeTruthy();
+  expect(screen.queryByText("Front · Lane 1")).toBeNull();
+  expect(screen.queryByText("Busy · Lane 3")).toBeNull();
+  expect(screen.queryByText("Unpaired · Lane 4")).toBeNull();
+  expect(screen.queryByTestId("payment-linkly-terminal-selector")).toBeNull();
+  expect(screen.queryByTestId("payment-linkly-terminal-terminal-2")).toBeNull();
+  expect(harness.spies.selectLinklyTerminal).not.toHaveBeenCalled();
 
   await act(async () => {
     harness.publish({
@@ -271,11 +316,37 @@ test("Linkly Cloud 多终端允许预选忙碌终端，未配对与未知结果�
       runtimeStatus: "unknown",
     });
   });
-  expect(
-    screen.getByTestId("payment-linkly-terminal-terminal-2").props
-      .accessibilityState.disabled,
-  ).toBe(true);
+  expect(screen.getByText("Returns · Lane 2")).toBeTruthy();
+  expect(screen.queryByTestId("payment-linkly-terminal-selector")).toBeNull();
 });
+
+test.each([null, "missing-terminal"])(
+  "Linkly 当前选择 %s 不存在时不擅自展示目录中的其他线路",
+  async (selectedTerminalId) => {
+    const { presenter } = createUiPresenter({
+      selectedMethod: "linkly-cloud",
+      linklyTerminals: {
+        kind: "ready",
+        environment: "Sandbox",
+        snapshot: {
+          environment: "Sandbox",
+          mode: "Active",
+          selectedTerminalId,
+          selectionRevision: 3,
+          terminals: [linklyTerminal("terminal-1", 1, "Front")],
+        },
+        errorCode: null,
+      },
+    });
+    const screen = await render(
+      <PaymentScreen locale="zh" presenter={presenter} showStatusStrip={false} />,
+    );
+    expect(screen.queryByText("Front · Lane 1")).toBeNull();
+    expect(screen.queryByTestId("payment-linkly-terminal-current")).toBeNull();
+    expect(screen.getByTestId("payment-linkly-terminal-empty")).toBeTruthy();
+    await screen.unmount();
+  },
+);
 
 test("Linkly Cloud 零终端阻止支付，单终端只显示当前终端而隐藏切换器", async () => {
   const zero = createUiPresenter({
@@ -878,17 +949,19 @@ test("Linkly Pending 仅渲染枚举安全键，点击只传 attemptId 和 key",
   await waitFor(() =>
     expect(screen.getByTestId("payment-linkly-controls")).toBeTruthy(),
   );
+  expect(screen.getByTestId("payment-linkly-display-text")).toHaveTextContent(
+    "PRESENT CARD",
+  );
+  expect(screen.queryByTestId("payment-linkly-cancel")).toBeNull();
   expect(screen.getByTestId("payment-linkly-yes")).toBeTruthy();
-  expect(screen.getByTestId("payment-linkly-authorise")).toBeTruthy();
+  expect(screen.queryByTestId("payment-linkly-authorise")).toBeNull();
   await fireEvent.press(screen.getByTestId("payment-linkly-yes"));
   await waitFor(() => expect(linkly.sendCalls).toHaveLength(1));
   expect(linkly.sendCalls[0]).toEqual({
     attemptId: "attempt-linkly-pending",
     key: "yes",
   });
-  expect(
-    screen.getByTestId("payment-linkly-authorise").props.accessibilityState,
-  ).toEqual({ disabled: true });
+  expect(screen.queryByTestId("payment-linkly-authorise")).toBeNull();
 });
 
 test("Square Pending 按 WPF 节奏自动恢复且卸载后停止轮询", async () => {
@@ -1081,7 +1154,7 @@ test("Square 一秒恢复仍锚定 createdAt 的固定两秒 cadence", async () 
   }
 });
 
-test("Square 慢恢复在 90 秒后不再发起新请求且 Linkly Pending 不受影响", async () => {
+test("Square 慢恢复在 90 秒后不再发起新请求；Linkly Pending 在 2 秒后恢复同一 attempt", async () => {
   jest.useFakeTimers();
   const createdAtIso = "2026-08-09T01:00:00.000Z";
   const createdAtMs = Date.parse(createdAtIso);
@@ -1135,12 +1208,13 @@ test("Square 慢恢复在 90 秒后不再发起新请求且 Linkly Pending 不�
     expect(square.spies.recover).toHaveBeenCalledTimes(callsAtDeadline);
     await squareScreen.unmount();
 
+    jest.setSystemTime(new Date(createdAtMs));
     const linkly = createUiPresenter({
       phase: "pending",
       provider: "linkly-cloud",
       runtimeStatus: "pending",
-      orderGuid: "order-linkly-no-auto-recovery",
-      attemptId: "attempt-linkly-no-auto-recovery",
+      orderGuid: "order-linkly-auto-recovery",
+      attemptId: "attempt-linkly-auto-recovery",
       attemptCreatedAtIso: createdAtIso,
       allowedActions: actions({ recover: true, cancel: true }),
     });
@@ -1152,9 +1226,13 @@ test("Square 慢恢复在 90 秒后不再发起新请求且 Linkly Pending 不�
       />,
     );
     await act(async () => {
-      await jest.advanceTimersByTimeAsync(10_000);
+      await jest.advanceTimersByTimeAsync(2_000);
     });
-    expect(linkly.spies.recover).not.toHaveBeenCalled();
+    expect(linkly.spies.recover).toHaveBeenCalledWith({
+      background: true,
+      deadlineAtMs: createdAtMs + 180_000,
+      signal: expect.any(AbortSignal),
+    });
     await linklyScreen.unmount();
   } finally {
     jest.useRealTimers();
@@ -1687,7 +1765,7 @@ test.each([
     linkly: {
       status: "in-progress",
       errorCode: null,
-      allowedKeys: ["yes", "no", "ok-cancel", "authorise"],
+      allowedKeys: ["yes", "no", "ok", "cancel", "authorise"],
     },
   });
   const screen = await render(
@@ -1703,7 +1781,7 @@ test.each([
     // 动作已经失败且 busy=false 时，不再保留误导性的“正在保存”状态条。
     expect(screen.queryByTestId("payment-status-submitting")).toBeNull();
     expect(screen.getByTestId("payment-runtime-error")).toBeTruthy();
-    expect(screen.getByTestId("payment-linkly-ok-cancel")).toBeTruthy();
+    expect(screen.getByTestId("payment-linkly-ok")).toBeTruthy();
     expect(
       StyleSheet.flatten(
         screen.getByTestId("payment-content-scroll").props
@@ -2051,6 +2129,9 @@ test("尚未收现取消续付先显示中文主管确认 Modal，放弃时零�
     screen.getByTestId("payment-cancel-prepared-cash-confirmation"),
   ).toBeTruthy();
   expect(screen.getByText("确认本次现金尚未收取")).toBeTruthy();
+  expect(
+    screen.getByTestId("payment-cancel-prepared-cash-native-modal").props.supportedOrientations,
+  ).toEqual(["landscape-left", "landscape-right"]);
   expect(
     screen.getByText(
       "此操作需要主管授权。仅在核对钱箱并确认本次续付现金尚未收取时继续。若现金已收取或无法确定，请返回并由主管恢复原操作。",
@@ -2420,6 +2501,9 @@ test("分期现金超付显示入账与找零，并可确认付款", async () =>
   expect(
     screen.getByTestId("payment-full-installment-confirmation"),
   ).toBeTruthy();
+  expect(
+    screen.getByTestId("payment-full-installment-native-modal").props.supportedOrientations,
+  ).toEqual(["landscape-left", "landscape-right"]);
   expect(spies.confirm).not.toHaveBeenCalled();
 
   await fireEvent.press(
@@ -3354,6 +3438,22 @@ class ScreenLinklyOperator implements LinklyOperatorRuntimePort {
     return this.sendImpl(input.attemptId);
   }
 
+  public async read(input: { attemptId: string; signal?: AbortSignal; deadlineAtMs?: number }): Promise<LinklyOperatorPublicResult> {
+    return {
+      attemptId: input.attemptId,
+      status: "in-progress",
+      errorCode: null,
+      allowedKeys: ["yes"],
+      interaction: {
+        displayText: "PRESENT CARD",
+        displayLines: ["TAP CARD"],
+        inputType: null,
+        graphicCode: null,
+        recoveryAction: null,
+      },
+    };
+  }
+
   public async markReceiptPrinted(
     attemptId: string,
   ): Promise<LinklyOperatorPublicResult> {
@@ -3464,3 +3564,31 @@ function createDeferred<T>() {
   });
   return { promise, reject, resolve };
 }
+
+
+test.each(["zh", "en"] as const)("Linkly 双 OK/Cancel 旗标仅显示一个合并按键（%s）", async (locale) => {
+  const { presenter, spies } = createUiPresenter({
+    phase: "pending", provider: "linkly-cloud", selectedMethod: "linkly-cloud",
+    orderGuid: "order-key-zero", attemptId: "attempt-key-zero", runtimeStatus: "pending",
+    linkly: { status: "in-progress", errorCode: null, allowedKeys: ["ok", "cancel"] },
+  });
+  const screen = await render(<PaymentScreen locale={locale} presenter={presenter} showStatusStrip={false} />);
+  expect(screen.queryByTestId("payment-linkly-cancel")).toBeNull();
+  expect(screen.getByTestId("payment-linkly-ok")).toHaveTextContent(locale === "zh" ? "确认 / 取消" : "OK / Cancel");
+  await fireEvent.press(screen.getByTestId("payment-linkly-ok"));
+  expect(spies.sendLinklyKey).toHaveBeenCalledTimes(1);
+  expect(spies.sendLinklyKey).toHaveBeenCalledWith("ok");
+});
+
+
+test("新收款被活动退货拦截后，显示原退货恢复提示并允许返回", async () => {
+  const onBack = jest.fn();
+  const { presenter } = createUiPresenter({
+    phase: "submitting", busy: false, orderGuid: null, attemptId: null,
+    runtimeErrorCode: "RETURN_RECOVERY_REQUIRED",
+  });
+  const screen = await render(<PaymentScreen locale="zh" onBack={onBack} presenter={presenter} showStatusStrip={false} />);
+  expect(within(screen.getByTestId("payment-runtime-error")).getByText("请返回退货页面恢复原退货，再开始新的收款。")).toBeTruthy();
+  await fireEvent.press(screen.getByTestId("payment-back"));
+  expect(onBack).toHaveBeenCalledTimes(1);
+});

@@ -1,5 +1,12 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { FlatList, ScrollView, StyleSheet, TextInput, useWindowDimensions, View } from "react-native";
+import {
+  FlatList,
+  ScrollView,
+  StyleSheet,
+  TextInput,
+  useWindowDimensions,
+  View,
+} from "react-native";
 import { useQuery } from "@tanstack/react-query";
 import { CameraView } from "expo-camera";
 import { type Href, useRouter } from "expo-router";
@@ -21,7 +28,7 @@ import { AnimatedEmptyStateGraphic } from "@/components/ui/AnimatedEmptyStateGra
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingOverlay } from "@/components/ui/LoadingOverlay";
 import { ProductCard } from "@/components/ui/ProductCard";
-import { CameraScanModeSelector } from "@/components/ui/CameraScanModeSelector";
+import { CameraScanSheet } from "@/components/ui/CameraScanSheet";
 import { getCategoryTree } from "@/modules/shop/api";
 import {
   canSubmitCartQuantityEdit,
@@ -29,7 +36,10 @@ import {
   shouldSubmitCartQuantityUpdate,
 } from "@/modules/shop/cart-quantity-input";
 import { shouldClearActiveCartMutation } from "@/modules/shop/cart-mutation-state";
-import { resolveMinimumOrderQuantity, useAddToCart } from "@/modules/shop/use-add-to-cart";
+import {
+  resolveMinimumOrderQuantity,
+  useAddToCart,
+} from "@/modules/shop/use-add-to-cart";
 import { useCartSummary } from "@/modules/shop/use-cart-summary";
 import { useProductGrades } from "@/modules/shop/use-product-grades";
 import { isLocationLookupEnabled } from "@/modules/shop/location-lookup";
@@ -44,11 +54,22 @@ import {
   type HomeSearchPageAction,
   type VisibleCategoryRow,
 } from "@/modules/shop/home-filters";
-import { useCameraScan, type CameraScanMode } from "@/modules/scanner/use-camera-scan";
+import {
+  useCameraScan,
+  type CameraScanMode,
+} from "@/modules/scanner/use-camera-scan";
+import {
+  createCameraSheetSession,
+  isCameraSheetSessionActive,
+  reduceCameraSheetSession,
+} from "@/modules/scanner/camera-sheet-session";
 import { useHidBarcodeScanner } from "@/modules/scanner/use-hid-barcode-scanner";
 import { useScanResult } from "@/modules/scanner/use-scan-result";
 import { ScanResultPicker } from "@/components/ui/ScanResultPicker";
-import type { StoreOrderCategoryNode, StoreOrderProductItem } from "@/modules/shop/types";
+import type {
+  StoreOrderCategoryNode,
+  StoreOrderProductItem,
+} from "@/modules/shop/types";
 import { useCartStore } from "@/store/cart-store";
 import { isPreorderRequiredError } from "@/modules/preorder/api";
 import { canBypassPreorderGate } from "@/modules/preorder/gate";
@@ -59,7 +80,9 @@ import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 
 function resolveDisplayCategories(tree: StoreOrderCategoryNode[]) {
-  const allNode = tree.find((item) => item.categoryName.toLowerCase().includes("all"));
+  const allNode = tree.find((item) =>
+    item.categoryName.toLowerCase().includes("all"),
+  );
   return allNode?.children?.length ? allNode.children : tree;
 }
 
@@ -90,44 +113,84 @@ export default function Home() {
   const cartSummary = useCartStore((state) => state.cartSummary);
   const access = useAuthStore((state) => state.access);
   const locationLookupEnabled = isLocationLookupEnabled(access);
-  const [cameraVisible, setCameraVisible] = useState(false);
-  const [cameraScanMode, setCameraScanMode] = useState<CameraScanMode>("single");
+  const [cameraScanMode, setCameraScanMode] =
+    useState<CameraScanMode>("single");
+  const [cameraSession, setCameraSession] = useState(() =>
+    createCameraSheetSession("single"),
+  );
+  const cameraSheetSessionRef = useRef(cameraSession);
+  const cameraScanModeRef = useRef(cameraScanMode);
+  const isFocusedRef = useRef(isFocused);
+  const cameraResultGenerationRef = useRef<number | null>(null);
+  const [cameraScanHandling, setCameraScanHandling] = useState(false);
+  const [cameraSelectionConfirming, setCameraSelectionConfirming] =
+    useState(false);
+  const [lastCameraScan, setLastCameraScan] = useState<{
+    product: StoreOrderProductItem;
+    barcode: string;
+  } | null>(null);
+  const [lastCameraBarcode, setLastCameraBarcode] = useState<string | null>(
+    null,
+  );
+  const cameraVisible = cameraSession.visible;
   const [storePickerVisible, setStorePickerVisible] = useState(false);
   const [filtersVisible, setFiltersVisible] = useState(false);
   const [gradeFilterVisible, setGradeFilterVisible] = useState(false);
   const [searchInput, setSearchInput] = useState("");
   const [autoAddWhenSingle, setAutoAddWhenSingle] = useState(true);
   const [keyword, setKeyword] = useState("");
-  const [scannedProducts, setScannedProducts] = useState<StoreOrderProductItem[] | null>(null);
-  const [scannedProductTraceIds, setScannedProductTraceIds] = useState<Record<string, string>>({});
-  const [selectedCategoryGUID, setSelectedCategoryGUID] = useState<string | undefined>();
+  const [scannedProducts, setScannedProducts] = useState<
+    StoreOrderProductItem[] | null
+  >(null);
+  const [scannedProductTraceIds, setScannedProductTraceIds] = useState<
+    Record<string, string>
+  >({});
+  const [selectedCategoryGUID, setSelectedCategoryGUID] = useState<
+    string | undefined
+  >();
   const [selectedGrade, setSelectedGrade] = useState<string | undefined>();
-  const [expandedCategoryGUIDs, setExpandedCategoryGUIDs] = useState<string[]>([]);
+  const [expandedCategoryGUIDs, setExpandedCategoryGUIDs] = useState<string[]>(
+    [],
+  );
   const [pageNumber, setPageNumber] = useState(1);
+  isFocusedRef.current = isFocused;
+  cameraScanModeRef.current = cameraScanMode;
   const searchReturnPageRef = useRef<number | null>(null);
   const [noticeMessage, setNoticeMessage] = useState("");
-  const [activeCartMutationProductCode, setActiveCartMutationProductCode] = useState<string | null>(null);
-  const [quantityEditorProduct, setQuantityEditorProduct] = useState<StoreOrderProductItem | null>(null);
-  const [quantityEditorStoreCode, setQuantityEditorStoreCode] = useState<string | null>(null);
+  const [activeCartMutationProductCode, setActiveCartMutationProductCode] =
+    useState<string | null>(null);
+  const [quantityEditorProduct, setQuantityEditorProduct] =
+    useState<StoreOrderProductItem | null>(null);
+  const [quantityEditorStoreCode, setQuantityEditorStoreCode] = useState<
+    string | null
+  >(null);
   const [quantityDraft, setQuantityDraft] = useState("");
   const [quantityEditorError, setQuantityEditorError] = useState("");
   const [preorderPromptVisible, setPreorderPromptVisible] = useState(false);
   const promptedPreorderKeyRef = useRef("");
-  const getErrorMessage = useCallback((error: unknown, fallbackKey: string) => (
-    resolveLocalizedErrorMessage(error, {
-      language,
-      t,
-      fallbackKey,
-    })
-  ), [language, t]);
+  const getErrorMessage = useCallback(
+    (error: unknown, fallbackKey: string) =>
+      resolveLocalizedErrorMessage(error, {
+        language,
+        t,
+        fallbackKey,
+      }),
+    [language, t],
+  );
   const addToCart = useAddToCart(selectedStoreCode);
   const updateCartQuantity = useUpdateCartQuantity(selectedStoreCode);
-  const quantityEditorBusy = Boolean(quantityEditorProduct && updateCartQuantity.isPending);
-  const selectedStoreCodeRef = useRef<string | null>(normalizeStoreCode(selectedStoreCode));
-  const resumeHiddenScannerFocusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const quantityEditorBusy = Boolean(
+    quantityEditorProduct && updateCartQuantity.isPending,
+  );
+  const selectedStoreCodeRef = useRef<string | null>(
+    normalizeStoreCode(selectedStoreCode),
+  );
+  const resumeHiddenScannerFocusTimerRef = useRef<ReturnType<
+    typeof setTimeout
+  > | null>(null);
   const preorderGate = usePreorderGate(
     selectedStoreCode,
-    canBypassPreorderGate(access)
+    canBypassPreorderGate(access),
   );
 
   const openPreorder = useCallback(() => {
@@ -136,31 +199,45 @@ export default function Home() {
     if (firstActivation && selectedStoreCode) {
       router.push({
         pathname: "/preorders/[activationGuid]",
-        params: { activationGuid: firstActivation.activationGuid, storeCode: selectedStoreCode },
+        params: {
+          activationGuid: firstActivation.activationGuid,
+          storeCode: selectedStoreCode,
+        },
       } as unknown as Href);
       return;
     }
     router.push("/preorders" as Href);
   }, [preorderGate.activations, router, selectedStoreCode]);
 
-  const handleNormalOrderError = useCallback((error: unknown, fallbackKey: string) => {
-    if (isPreorderRequiredError(error)) {
-      void preorderGate.refresh();
-      openPreorder();
-      return;
-    }
-    setNoticeMessage(getErrorMessage(error, fallbackKey));
-  }, [getErrorMessage, openPreorder, preorderGate]);
+  const handleNormalOrderError = useCallback(
+    (error: unknown, fallbackKey: string) => {
+      if (isPreorderRequiredError(error)) {
+        void preorderGate.refresh();
+        openPreorder();
+        return;
+      }
+      setNoticeMessage(getErrorMessage(error, fallbackKey));
+    },
+    [getErrorMessage, openPreorder, preorderGate],
+  );
 
   useEffect(() => {
-    if (!selectedStoreCode || !preorderGate.normalOrderBlocked || !preorderGate.activations.length) {
+    if (
+      !selectedStoreCode ||
+      !preorderGate.normalOrderBlocked ||
+      !preorderGate.activations.length
+    ) {
       return;
     }
     const promptKey = `${selectedStoreCode}:${preorderGate.activations.map((item) => item.activationGuid).join(",")}`;
     if (promptedPreorderKeyRef.current === promptKey) return;
     promptedPreorderKeyRef.current = promptKey;
     setPreorderPromptVisible(true);
-  }, [preorderGate.activations, preorderGate.normalOrderBlocked, selectedStoreCode]);
+  }, [
+    preorderGate.activations,
+    preorderGate.normalOrderBlocked,
+    selectedStoreCode,
+  ]);
 
   selectedStoreCodeRef.current = normalizeStoreCode(selectedStoreCode);
 
@@ -176,12 +253,14 @@ export default function Home() {
   const handleScanLookupProduct = useCallback(
     async (
       product: StoreOrderProductItem,
-      _barcode?: string,
-      _source?: unknown,
+      barcode?: string,
+      source?: unknown,
       scanTraceId?: string,
-      scanStoreCode?: string | null
+      scanStoreCode?: string | null,
     ) => {
-      const expectedStoreCode = normalizeStoreCode(scanStoreCode ?? selectedStoreCodeRef.current);
+      const expectedStoreCode = normalizeStoreCode(
+        scanStoreCode ?? selectedStoreCodeRef.current,
+      );
       if (selectedStoreCodeRef.current !== expectedStoreCode) {
         return;
       }
@@ -189,9 +268,14 @@ export default function Home() {
       setSearchInput("");
       clearAppliedSearchForScan();
       setScannedProducts([product]);
-      setScannedProductTraceIds(scanTraceId ? { [product.productCode]: scanTraceId } : {});
+      setScannedProductTraceIds(
+        scanTraceId ? { [product.productCode]: scanTraceId } : {},
+      );
       setSelectedCategoryGUID(undefined);
       setSelectedGrade(undefined);
+      if (source === "camera") {
+        setLastCameraScan({ product, barcode: barcode || product.productCode });
+      }
 
       if (!autoAddWhenSingle) {
         return;
@@ -209,7 +293,9 @@ export default function Home() {
         }
 
         setNoticeMessage(
-          t("messages.addedToCart", { name: product.productName || product.productCode })
+          t("messages.addedToCart", {
+            name: product.productName || product.productCode,
+          }),
         );
       } catch (error) {
         if (selectedStoreCodeRef.current !== expectedStoreCode) {
@@ -218,24 +304,49 @@ export default function Home() {
 
         handleNormalOrderError(error, "messages.scanAddFailed");
       } finally {
-        if (shouldClearActiveCartMutation(selectedStoreCodeRef.current, expectedStoreCode)) {
+        if (
+          shouldClearActiveCartMutation(
+            selectedStoreCodeRef.current,
+            expectedStoreCode,
+          )
+        ) {
           setActiveCartMutationProductCode(null);
         }
       }
     },
-    [addToCart, autoAddWhenSingle, clearAppliedSearchForScan, handleNormalOrderError, t]
+    [
+      addToCart,
+      autoAddWhenSingle,
+      clearAppliedSearchForScan,
+      handleNormalOrderError,
+      t,
+    ],
   );
   const handleScanAddedProduct = useCallback(
-    (product: StoreOrderProductItem, _barcode?: string, _source?: unknown, scanTraceId?: string) => {
+    (
+      product: StoreOrderProductItem,
+      barcode?: string,
+      source?: unknown,
+      scanTraceId?: string,
+    ) => {
       setSearchInput("");
       clearAppliedSearchForScan();
       setScannedProducts([product]);
-      setScannedProductTraceIds(scanTraceId ? { [product.productCode]: scanTraceId } : {});
+      setScannedProductTraceIds(
+        scanTraceId ? { [product.productCode]: scanTraceId } : {},
+      );
       setSelectedCategoryGUID(undefined);
       setSelectedGrade(undefined);
-      setNoticeMessage(t("messages.addedToCart", { name: product.productName || product.productCode }));
+      if (source === "camera") {
+        setLastCameraScan({ product, barcode: barcode || product.productCode });
+      }
+      setNoticeMessage(
+        t("messages.addedToCart", {
+          name: product.productName || product.productCode,
+        }),
+      );
     },
-    [clearAppliedSearchForScan, t]
+    [clearAppliedSearchForScan, t],
   );
   const scanResult = useScanResult({
     autoAddWhenSingle,
@@ -244,15 +355,64 @@ export default function Home() {
     onProductFound: handleScanLookupProduct,
     storeCode: selectedStoreCode,
   });
+  const updateCameraSheetSession = useCallback(
+    (
+      event: Parameters<typeof reduceCameraSheetSession>[1],
+      mode = cameraScanModeRef.current,
+    ) => {
+      const next = reduceCameraSheetSession(
+        cameraSheetSessionRef.current,
+        event,
+        mode,
+      );
+      cameraSheetSessionRef.current = next;
+      setCameraSession(next);
+      return next;
+    },
+    [],
+  );
   const cameraScan = useCameraScan({
+    disabled: !isFocused || !cameraSession.visible,
     ignoreWhileProcessing: cameraScanMode === "continuous",
-    resetKey: `${cameraScanMode}:${selectedStoreCode ?? ""}:${autoAddWhenSingle ? "add-to-cart" : "lookup"}`,
+    resetKey: `${isFocused ? "focused" : "blurred"}:${cameraSession.generation}:${cameraScanMode}:${selectedStoreCode ?? ""}:${autoAddWhenSingle ? "add-to-cart" : "lookup"}`,
     onBarcode: async (barcode) => {
-      if (cameraScanMode === "single") {
-        // 单次扫码命中后先收起相机，后续查询/加购反馈沿用原链路。
-        setCameraVisible(false);
+      const session = cameraSheetSessionRef.current;
+      if (
+        !isFocusedRef.current ||
+        !isCameraSheetSessionActive(session, session.generation)
+      ) {
+        return;
       }
-      await scanResult.handleBarcode(barcode, "camera");
+      const generation = session.generation;
+      // 新一笔相机任务不能继续显示上一笔命中；队列的失败反馈会在 sheet 内按条码呈现。
+      setLastCameraBarcode(barcode);
+      setLastCameraScan(null);
+      // Native sheet 会遮住扫码结果弹层；每次命中先卸载相机，连续模式仅在结果处理完成后恢复。
+      setCameraScanHandling(true);
+      cameraResultGenerationRef.current = generation;
+      const captured = updateCameraSheetSession(
+        { type: "capture", generation },
+        cameraScanModeRef.current,
+      );
+      if (captured === session) {
+        setCameraScanHandling(false);
+        return;
+      }
+      try {
+        await scanResult.handleBarcode(barcode, "camera");
+      } finally {
+        if (cameraSheetSessionRef.current.generation === generation) {
+          setCameraScanHandling(false);
+          updateCameraSheetSession(
+            {
+              type: "foreground-complete",
+              focused: isFocusedRef.current,
+              generation,
+            },
+            cameraScanModeRef.current,
+          );
+        }
+      }
     },
   });
   const hidScanner = useHidBarcodeScanner({
@@ -292,11 +452,23 @@ export default function Home() {
     }, [hidScanner.focusHiddenInput]),
   );
 
-  useEffect(() => () => {
-    if (resumeHiddenScannerFocusTimerRef.current) {
-      clearTimeout(resumeHiddenScannerFocusTimerRef.current);
+  useEffect(() => {
+    if (!isFocused) {
+      // 离开订货页时卸载相机 sheet，防止连续扫码会话在后台继续占用相机。
+      cameraResultGenerationRef.current = null;
+      setCameraScanHandling(false);
+      updateCameraSheetSession({ type: "blur" }, cameraScanModeRef.current);
     }
-  }, []);
+  }, [isFocused, updateCameraSheetSession]);
+
+  useEffect(
+    () => () => {
+      if (resumeHiddenScannerFocusTimerRef.current) {
+        clearTimeout(resumeHiddenScannerFocusTimerRef.current);
+      }
+    },
+    [],
+  );
 
   const categoriesQuery = useQuery({
     queryKey: ["shopCategories"],
@@ -306,27 +478,37 @@ export default function Home() {
 
   const categoryOptions = useMemo(
     () => resolveDisplayCategories(categoriesQuery.data ?? []),
-    [categoriesQuery.data]
+    [categoriesQuery.data],
   );
-  const categoryNameMap = useMemo(() => buildCategoryNameMap(categoryOptions), [categoryOptions]);
+  const categoryNameMap = useMemo(
+    () => buildCategoryNameMap(categoryOptions),
+    [categoryOptions],
+  );
   const visibleCategoryRows = useMemo(
     () => flattenVisibleCategories(categoryOptions, expandedCategoryGUIDs),
-    [categoryOptions, expandedCategoryGUIDs]
+    [categoryOptions, expandedCategoryGUIDs],
   );
   const selectedCategoryName = useMemo(
-    () => (selectedCategoryGUID ? categoryNameMap.get(selectedCategoryGUID) : undefined) ?? t("filters.all"),
-    [categoryNameMap, selectedCategoryGUID, t]
+    () =>
+      (selectedCategoryGUID
+        ? categoryNameMap.get(selectedCategoryGUID)
+        : undefined) ?? t("filters.all"),
+    [categoryNameMap, selectedCategoryGUID, t],
   );
   const productGradesQuery = useProductGrades();
-  const gradeOptions = useMemo(() => productGradesQuery.data ?? [], [productGradesQuery.data]);
+  const gradeOptions = useMemo(
+    () => productGradesQuery.data ?? [],
+    [productGradesQuery.data],
+  );
   const selectedGradeLabel = useMemo(() => {
     if (!selectedGrade) {
       return t("filters.all");
     }
 
     return (
-      gradeOptions.find((item) => normalizeGradeValue(item.value) === selectedGrade)?.label ??
-      selectedGrade
+      gradeOptions.find(
+        (item) => normalizeGradeValue(item.value) === selectedGrade,
+      )?.label ?? selectedGrade
     );
   }, [gradeOptions, selectedGrade, t]);
   const productQuery = useMemo(
@@ -339,7 +521,13 @@ export default function Home() {
         pageNumber,
         pageSize: 18,
       }),
-    [keyword, pageNumber, selectedCategoryGUID, selectedGrade, selectedStoreCode]
+    [
+      keyword,
+      pageNumber,
+      selectedCategoryGUID,
+      selectedGrade,
+      selectedStoreCode,
+    ],
   );
   const productsQuery = useProducts(productQuery, locationLookupEnabled);
 
@@ -356,7 +544,10 @@ export default function Home() {
 
   useEffect(() => {
     const currentStoreCode = normalizeStoreCode(selectedStoreCode);
-    if (!quantityEditorStoreCode || quantityEditorStoreCode === currentStoreCode) {
+    if (
+      !quantityEditorStoreCode ||
+      quantityEditorStoreCode === currentStoreCode
+    ) {
       return;
     }
 
@@ -366,7 +557,11 @@ export default function Home() {
     setQuantityDraft("");
     setQuantityEditorError("");
     resumeHiddenScannerFocusSoon();
-  }, [quantityEditorStoreCode, resumeHiddenScannerFocusSoon, selectedStoreCode]);
+  }, [
+    quantityEditorStoreCode,
+    resumeHiddenScannerFocusSoon,
+    selectedStoreCode,
+  ]);
 
   useEffect(() => {
     if (
@@ -394,7 +589,9 @@ export default function Home() {
       return;
     }
 
-    setNoticeMessage(getErrorMessage(productsQuery.error, "messages.productsLoadFailed"));
+    setNoticeMessage(
+      getErrorMessage(productsQuery.error, "messages.productsLoadFailed"),
+    );
   }, [getErrorMessage, productsQuery.error, productsQuery.isError]);
 
   useEffect(() => {
@@ -415,16 +612,25 @@ export default function Home() {
     const total = productsQuery.data?.total ?? 0;
     return pageNumber * 18 < total;
   }, [pageNumber, productsQuery.data?.total]);
-  const hasNoAssignedStores = !storesLoading && !storesLoadFailed && stores.length === 0 && !selectedStoreCode;
+  const hasNoAssignedStores =
+    !storesLoading &&
+    !storesLoadFailed &&
+    stores.length === 0 &&
+    !selectedStoreCode;
   const isCompactLayout = windowHeight < 780;
   const productListContentStyle = useMemo(
-    () => [styles.listContent, isCompactLayout ? styles.listContentCompact : null],
-    [isCompactLayout]
+    () => [
+      styles.listContent,
+      isCompactLayout ? styles.listContentCompact : null,
+    ],
+    [isCompactLayout],
   );
   const displayProducts = useMemo(() => {
     if (scannedProducts?.length) {
       return selectedGrade
-        ? scannedProducts.filter((product) => normalizeGradeValue(product.grade) === selectedGrade)
+        ? scannedProducts.filter(
+            (product) => normalizeGradeValue(product.grade) === selectedGrade,
+          )
         : scannedProducts;
     }
 
@@ -438,7 +644,9 @@ export default function Home() {
     }
 
     scannedProducts.forEach((product) => {
-      const cartItem = cartSummary.items.find((item) => item.productCode === product.productCode);
+      const cartItem = cartSummary.items.find(
+        (item) => item.productCode === product.productCode,
+      );
       if (!cartItem) {
         return;
       }
@@ -452,20 +660,23 @@ export default function Home() {
 
     return mergedMap;
   }, [cartSummary?.items, productsQuery.dynamicDataMap, scannedProducts]);
-  const applySearchPageAction = useCallback((action: HomeSearchPageAction) => {
-    const nextState = resolveHomeSearchPageState(
-      {
-        keyword,
-        pageNumber,
-        returnPageNumber: searchReturnPageRef.current,
-      },
-      action,
-    );
+  const applySearchPageAction = useCallback(
+    (action: HomeSearchPageAction) => {
+      const nextState = resolveHomeSearchPageState(
+        {
+          keyword,
+          pageNumber,
+          returnPageNumber: searchReturnPageRef.current,
+        },
+        action,
+      );
 
-    searchReturnPageRef.current = nextState.returnPageNumber;
-    setKeyword(nextState.keyword);
-    setPageNumber(nextState.pageNumber);
-  }, [keyword, pageNumber]);
+      searchReturnPageRef.current = nextState.returnPageNumber;
+      setKeyword(nextState.keyword);
+      setPageNumber(nextState.pageNumber);
+    },
+    [keyword, pageNumber],
+  );
   const handleApplySearch = useCallback(() => {
     setScannedProducts(null);
     // 搜索框可能接收到同一扫码枪输入，保留商品 trace 让同商品数量调整继续走 scan-update。
@@ -474,38 +685,45 @@ export default function Home() {
     }
     applySearchPageAction({ type: "apply", input: searchInput });
   }, [applySearchPageAction, searchInput]);
-  const handleSearchInputChange = useCallback((value: string) => {
-    setSearchInput(value);
-    setScannedProducts(null);
-    if (!value.trim()) {
-      applySearchPageAction({ type: "clear" });
-    }
-  }, [applySearchPageAction]);
-  const handleClearSearchAndScan = useCallback(() => {
+  const handleSearchInputChange = useCallback(
+    (value: string) => {
+      setSearchInput(value);
       setScannedProducts(null);
-      setScannedProductTraceIds({});
-      setSearchInput("");
-      setKeyword("");
-      setSelectedGrade(undefined);
+      if (!value.trim()) {
+        applySearchPageAction({ type: "clear" });
+      }
+    },
+    [applySearchPageAction],
+  );
+  const handleClearSearchAndScan = useCallback(() => {
+    setScannedProducts(null);
+    setScannedProductTraceIds({});
+    setSearchInput("");
+    setKeyword("");
+    setSelectedGrade(undefined);
   }, []);
   const handleCameraScanModeChange = useCallback((mode: CameraScanMode) => {
+    cameraScanModeRef.current = mode;
     setCameraScanMode(mode);
-    if (mode === "continuous") {
-      setCameraVisible(false);
-    }
+    const next = {
+      ...cameraSheetSessionRef.current,
+      resumeRequested: mode === "continuous",
+    };
+    cameraSheetSessionRef.current = next;
+    setCameraSession(next);
   }, []);
 
   const toggleCategoryExpanded = useCallback((categoryGUID: string) => {
     setExpandedCategoryGUIDs((currentValue) =>
       currentValue.includes(categoryGUID)
         ? currentValue.filter((item) => item !== categoryGUID)
-        : [...currentValue, categoryGUID]
+        : [...currentValue, categoryGUID],
     );
   }, []);
 
   const handleSelectCategoryFilter = useCallback((categoryGUID?: string) => {
     setSelectedCategoryGUID((currentValue) =>
-      currentValue === categoryGUID ? undefined : categoryGUID
+      currentValue === categoryGUID ? undefined : categoryGUID,
     );
     // 分类选择完成后回到商品列表；展开箭头不走这个回调，保持只展开分类树。
     setFiltersVisible(false);
@@ -517,8 +735,18 @@ export default function Home() {
       const isSelected = selectedCategoryGUID === node.categoryGUID;
 
       return (
-        <View style={[styles.categoryTreeNode, depth ? { marginLeft: depth * 14 } : null]}>
-          <View style={[styles.categoryTreeRow, isSelected ? styles.categoryTreeRowSelected : null]}>
+        <View
+          style={[
+            styles.categoryTreeNode,
+            depth ? { marginLeft: depth * 14 } : null,
+          ]}
+        >
+          <View
+            style={[
+              styles.categoryTreeRow,
+              isSelected ? styles.categoryTreeRowSelected : null,
+            ]}
+          >
             <Button
               compact
               mode={isSelected ? "contained-tonal" : "text"}
@@ -541,7 +769,7 @@ export default function Home() {
         </View>
       );
     },
-    [handleSelectCategoryFilter, selectedCategoryGUID, toggleCategoryExpanded]
+    [handleSelectCategoryFilter, selectedCategoryGUID, toggleCategoryExpanded],
   );
 
   async function handleAddToCart(product: StoreOrderProductItem) {
@@ -554,12 +782,19 @@ export default function Home() {
         scanTraceId: scannedProductTraceIds[product.productCode],
       });
       setNoticeMessage(
-        t("messages.addedToCart", { name: product.productName || product.productCode })
+        t("messages.addedToCart", {
+          name: product.productName || product.productCode,
+        }),
       );
     } catch (error) {
       handleNormalOrderError(error, "messages.addFailed");
     } finally {
-      if (shouldClearActiveCartMutation(selectedStoreCodeRef.current, mutationStoreCode)) {
+      if (
+        shouldClearActiveCartMutation(
+          selectedStoreCodeRef.current,
+          mutationStoreCode,
+        )
+      ) {
         setActiveCartMutationProductCode(null);
       }
     }
@@ -569,7 +804,10 @@ export default function Home() {
     return displayDynamicDataMap[productCode]?.cartQuantity ?? 0;
   }
 
-  function handleEditCartQuantity(product: StoreOrderProductItem, currentQuantity: number) {
+  function handleEditCartQuantity(
+    product: StoreOrderProductItem,
+    currentQuantity: number,
+  ) {
     pauseHiddenScannerFocus();
     setQuantityEditorProduct(product);
     setQuantityEditorStoreCode(selectedStoreCodeRef.current);
@@ -649,7 +887,12 @@ export default function Home() {
         setNoticeMessage(message);
       }
     } finally {
-      if (shouldClearActiveCartMutation(selectedStoreCodeRef.current, mutationStoreCode)) {
+      if (
+        shouldClearActiveCartMutation(
+          selectedStoreCodeRef.current,
+          mutationStoreCode,
+        )
+      ) {
         setActiveCartMutationProductCode(null);
       }
     }
@@ -670,13 +913,21 @@ export default function Home() {
     } catch (error) {
       handleNormalOrderError(error, "messages.updateQtyFailed");
     } finally {
-      if (shouldClearActiveCartMutation(selectedStoreCodeRef.current, mutationStoreCode)) {
+      if (
+        shouldClearActiveCartMutation(
+          selectedStoreCodeRef.current,
+          mutationStoreCode,
+        )
+      ) {
         setActiveCartMutationProductCode(null);
       }
     }
   }
 
-  async function handleDecreaseCartQuantity(product: StoreOrderProductItem, currentQuantity: number) {
+  async function handleDecreaseCartQuantity(
+    product: StoreOrderProductItem,
+    currentQuantity: number,
+  ) {
     const mutationStoreCode = selectedStoreCodeRef.current;
     const step = resolveMinimumOrderQuantity(product);
     const nextQuantity = Math.max(0, currentQuantity - step);
@@ -691,17 +942,31 @@ export default function Home() {
     } catch (error) {
       handleNormalOrderError(error, "messages.updateQtyFailed");
     } finally {
-      if (shouldClearActiveCartMutation(selectedStoreCodeRef.current, mutationStoreCode)) {
+      if (
+        shouldClearActiveCartMutation(
+          selectedStoreCodeRef.current,
+          mutationStoreCode,
+        )
+      ) {
         setActiveCartMutationProductCode(null);
       }
     }
   }
 
   const fixedHeaderContent = (
-    <View style={[styles.header, isCompactLayout ? styles.headerCompact : null]}>
-      <View style={[styles.headerTopRow, isCompactLayout ? styles.headerTopRowCompact : null]}>
+    <View
+      style={[styles.header, isCompactLayout ? styles.headerCompact : null]}
+    >
+      <View
+        style={[
+          styles.headerTopRow,
+          isCompactLayout ? styles.headerTopRowCompact : null,
+        ]}
+      >
         <View style={styles.headerTitleWrap}>
-          <Text variant="titleLarge" style={styles.headerTitle}>{t("title")}</Text>
+          <Text variant="titleLarge" style={styles.headerTitle}>
+            {t("title")}
+          </Text>
           <Text variant="bodySmall" style={styles.headerSubtitle}>
             {selectedStore?.storeName || t("common:labels.selectStore")}
           </Text>
@@ -713,16 +978,27 @@ export default function Home() {
             onPress={() => router.push("/(shell)/cart")}
             style={styles.cartButton}
           />
-          {cartSummary?.totalQuantity ? <Badge style={styles.badge}>{cartSummary.totalQuantity}</Badge> : null}
+          {cartSummary?.totalQuantity ? (
+            <Badge style={styles.badge}>{cartSummary.totalQuantity}</Badge>
+          ) : null}
           <Text variant="labelMedium" style={styles.cartText}>
             {t("cartSummary.total")} {cartSummary?.totalQuantity ?? 0}
           </Text>
         </View>
       </View>
-      <View style={[styles.searchRow, isCompactLayout ? styles.searchRowCompact : null]}>
+      <View
+        style={[
+          styles.searchRow,
+          isCompactLayout ? styles.searchRowCompact : null,
+        ]}
+      >
         <View style={styles.searchInputWrap}>
           <Searchbar
-            placeholder={t(locationLookupEnabled ? "locationSearchPlaceholder" : "searchPlaceholder")}
+            placeholder={t(
+              locationLookupEnabled
+                ? "locationSearchPlaceholder"
+                : "searchPlaceholder",
+            )}
             value={searchInput}
             onChangeText={handleSearchInputChange}
             onSubmitEditing={handleApplySearch}
@@ -737,8 +1013,14 @@ export default function Home() {
           icon="camera-outline"
           mode="contained-tonal"
           accessibilityLabel={t("cameraQuery")}
-          onPress={() => setCameraVisible(true)}
-          disabled={cameraScanMode === "continuous"}
+          onPress={() => {
+            cameraResultGenerationRef.current = null;
+            setCameraScanHandling(false);
+            updateCameraSheetSession(
+              { type: "open" },
+              cameraScanModeRef.current,
+            );
+          }}
           style={styles.cameraQueryButton}
         />
         <IconButton
@@ -749,33 +1031,6 @@ export default function Home() {
           style={styles.filterToggleButton}
         />
       </View>
-      <CameraScanModeSelector
-        value={cameraScanMode}
-        onChange={handleCameraScanModeChange}
-        style={styles.scanModeSelector}
-      />
-      {cameraScanMode === "continuous" ? (
-        <View style={styles.inlineCameraPanel}>
-          {cameraScan.permission?.granted ? (
-            <CameraView
-              style={[styles.inlineCameraView, isCompactLayout ? styles.inlineCameraViewCompact : null]}
-              {...cameraScan.cameraProps}
-            />
-          ) : (
-            <Card style={styles.permissionCard}>
-              <Card.Content style={styles.permissionCardContent}>
-                <Text variant="titleMedium">{t("camera.needPermissionTitle")}</Text>
-                <Text variant="bodySmall" style={styles.secondaryText}>
-                  {t("camera.needPermissionDescription")}
-                </Text>
-                <Button mode="contained" onPress={() => void cameraScan.requestPermission()}>
-                  {t("camera.grantPermission")}
-                </Button>
-              </Card.Content>
-            </Card>
-          )}
-        </View>
-      ) : null}
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
@@ -796,8 +1051,14 @@ export default function Home() {
           mode={selectedCategoryGUID ? "flat" : "outlined"}
           icon="shape-outline"
           onPress={() => setFiltersVisible(true)}
-          style={[styles.utilityChip, selectedCategoryGUID ? styles.utilityChipActive : null]}
-          textStyle={[styles.utilityChipText, selectedCategoryGUID ? styles.utilityChipTextActive : null]}
+          style={[
+            styles.utilityChip,
+            selectedCategoryGUID ? styles.utilityChipActive : null,
+          ]}
+          textStyle={[
+            styles.utilityChipText,
+            selectedCategoryGUID ? styles.utilityChipTextActive : null,
+          ]}
         >
           {selectedCategoryName}
         </Chip>
@@ -806,10 +1067,18 @@ export default function Home() {
           mode={selectedGrade ? "flat" : "outlined"}
           icon="label-outline"
           onPress={() => setGradeFilterVisible(true)}
-          style={[styles.utilityChip, selectedGrade ? styles.utilityChipActive : null]}
-          textStyle={[styles.utilityChipText, selectedGrade ? styles.utilityChipTextActive : null]}
+          style={[
+            styles.utilityChip,
+            selectedGrade ? styles.utilityChipActive : null,
+          ]}
+          textStyle={[
+            styles.utilityChipText,
+            selectedGrade ? styles.utilityChipTextActive : null,
+          ]}
         >
-          {selectedGrade ? t("common:grade", { grade: selectedGrade }) : t("filters.grade")}
+          {selectedGrade
+            ? t("common:grade", { grade: selectedGrade })
+            : t("filters.grade")}
         </Chip>
         <Chip
           compact
@@ -817,9 +1086,17 @@ export default function Home() {
           selected={autoAddWhenSingle}
           icon={autoAddWhenSingle ? "cart-check" : "cart-off"}
           onPress={() => setAutoAddWhenSingle((currentValue) => !currentValue)}
-          accessibilityLabel={autoAddWhenSingle ? t("autoAddOn") : t("autoAddOff")}
-          style={[styles.utilityChip, autoAddWhenSingle ? styles.utilityChipActive : null]}
-          textStyle={[styles.utilityChipText, autoAddWhenSingle ? styles.utilityChipTextActive : null]}
+          accessibilityLabel={
+            autoAddWhenSingle ? t("autoAddOn") : t("autoAddOff")
+          }
+          style={[
+            styles.utilityChip,
+            autoAddWhenSingle ? styles.utilityChipActive : null,
+          ]}
+          textStyle={[
+            styles.utilityChipText,
+            autoAddWhenSingle ? styles.utilityChipTextActive : null,
+          ]}
         >
           {t("common:labels.autoAddShort")}
         </Chip>
@@ -890,32 +1167,50 @@ export default function Home() {
                   ? t("empty.productsLoadFailedTitle")
                   : hasNoAssignedStores
                     ? t("empty.noAssignedStoresTitle")
-                  : selectedStoreCode
-                    ? t("empty.noProductsTitle")
-                    : t("empty.selectStoreTitle")
+                    : selectedStoreCode
+                      ? t("empty.noProductsTitle")
+                      : t("empty.selectStoreTitle")
               }
               description={
                 productsQuery.isError
                   ? t("empty.productsLoadFailedDescription")
                   : hasNoAssignedStores
                     ? t("empty.noAssignedStoresDescription")
-                  : selectedStoreCode
-                    ? t("empty.noProductsDescription")
-                    : t("empty.selectStoreDescription")
+                    : selectedStoreCode
+                      ? t("empty.noProductsDescription")
+                      : t("empty.selectStoreDescription")
               }
-              actionLabel={productsQuery.isError ? t("common:actions.retry") : undefined}
-              onAction={productsQuery.isError ? () => void productsQuery.refetch() : undefined}
+              actionLabel={
+                productsQuery.isError ? t("common:actions.retry") : undefined
+              }
+              onAction={
+                productsQuery.isError
+                  ? () => void productsQuery.refetch()
+                  : undefined
+              }
             />
           </View>
         }
         ListFooterComponent={
           displayProducts.length ? (
             <View style={styles.paginationRow}>
-              <Button mode="outlined" disabled={pageNumber <= 1} onPress={() => setPageNumber((value) => value - 1)}>
-                {t("pagination.previous")}</Button>
-              <Text variant="bodyMedium">{t("pagination.page", { page: pageNumber })}</Text>
-              <Button mode="outlined" disabled={!canGoNextPage} onPress={() => setPageNumber((value) => value + 1)}>
-                {t("pagination.next")}</Button>
+              <Button
+                mode="outlined"
+                disabled={pageNumber <= 1}
+                onPress={() => setPageNumber((value) => value - 1)}
+              >
+                {t("pagination.previous")}
+              </Button>
+              <Text variant="bodyMedium">
+                {t("pagination.page", { page: pageNumber })}
+              </Text>
+              <Button
+                mode="outlined"
+                disabled={!canGoNextPage}
+                onPress={() => setPageNumber((value) => value + 1)}
+              >
+                {t("pagination.next")}
+              </Button>
             </View>
           ) : null
         }
@@ -945,7 +1240,9 @@ export default function Home() {
             {t("preorder:gate.dialogTitle")}
           </Text>
           <Text variant="bodyMedium" style={styles.secondaryText}>
-            {t("preorder:gate.dialogMessage", { count: preorderGate.activations.length })}
+            {t("preorder:gate.dialogMessage", {
+              count: preorderGate.activations.length,
+            })}
           </Text>
           <View style={styles.preorderPromptActions}>
             <Button
@@ -973,10 +1270,16 @@ export default function Home() {
           contentContainerStyle={styles.quantityEditorModal}
         >
           <Text variant="titleMedium">{t("quantityEditor.title")}</Text>
-          <Text variant="bodySmall" numberOfLines={2} style={styles.secondaryText}>
+          <Text
+            variant="bodySmall"
+            numberOfLines={2}
+            style={styles.secondaryText}
+          >
             {quantityEditorProduct
               ? t("quantityEditor.product", {
-                  name: quantityEditorProduct.productName || quantityEditorProduct.productCode,
+                  name:
+                    quantityEditorProduct.productName ||
+                    quantityEditorProduct.productCode,
                 })
               : ""}
           </Text>
@@ -1006,7 +1309,10 @@ export default function Home() {
             </Text>
           ) : null}
           <View style={styles.quantityEditorActions}>
-            <Button onPress={handleDismissQuantityEditor} disabled={quantityEditorBusy}>
+            <Button
+              onPress={handleDismissQuantityEditor}
+              disabled={quantityEditorBusy}
+            >
               {t("common:actions.cancel")}
             </Button>
             <Button
@@ -1032,7 +1338,9 @@ export default function Home() {
               <View style={styles.filtersModalTitleWrap}>
                 <Text variant="titleMedium">{t("filters.store")}</Text>
                 <Text variant="bodySmall" style={styles.secondaryText}>
-                  {t("filters.currentStore", { store: selectedStore?.storeName || t("common:na") })}
+                  {t("filters.currentStore", {
+                    store: selectedStore?.storeName || t("common:na"),
+                  })}
                 </Text>
               </View>
               <Button mode="text" onPress={() => setStorePickerVisible(false)}>
@@ -1058,11 +1366,18 @@ export default function Home() {
                   </Button>
                 </View>
               ) : stores.length ? (
-                <ScrollView style={styles.storeListScroll} contentContainerStyle={styles.storeListContent}>
+                <ScrollView
+                  style={styles.storeListScroll}
+                  contentContainerStyle={styles.storeListContent}
+                >
                   {stores.map((item) => (
                     <Button
                       key={item.storeCode}
-                      mode={selectedStoreCode === item.storeCode ? "contained" : "outlined"}
+                      mode={
+                        selectedStoreCode === item.storeCode
+                          ? "contained"
+                          : "outlined"
+                      }
                       style={styles.storeButton}
                       onPress={() => {
                         void selectStore(item);
@@ -1092,7 +1407,9 @@ export default function Home() {
               <View style={styles.filtersModalTitleWrap}>
                 <Text variant="titleMedium">{t("filterTitle")}</Text>
                 <Text variant="bodySmall" style={styles.secondaryText}>
-                  {t("filters.currentCategory", { category: selectedCategoryName })}
+                  {t("filters.currentCategory", {
+                    category: selectedCategoryName,
+                  })}
                 </Text>
               </View>
               <Button mode="text" onPress={() => setFiltersVisible(false)}>
@@ -1102,11 +1419,19 @@ export default function Home() {
             <View style={styles.filtersSection}>
               <View style={styles.filtersSectionHeader}>
                 <Text variant="labelLarge">{t("filters.category")}</Text>
-                <Button compact onPress={() => handleSelectCategoryFilter(undefined)}>
+                <Button
+                  compact
+                  onPress={() => handleSelectCategoryFilter(undefined)}
+                >
                   {t("filters.allCategories")}
                 </Button>
               </View>
-              <View style={[styles.categoryTreeWrap, { maxHeight: Math.max(260, windowHeight - 260) }]}>
+              <View
+                style={[
+                  styles.categoryTreeWrap,
+                  { maxHeight: Math.max(260, windowHeight - 260) },
+                ]}
+              >
                 <Button
                   compact
                   mode={!selectedCategoryGUID ? "contained-tonal" : "text"}
@@ -1169,8 +1494,14 @@ export default function Home() {
                     setSelectedGrade(undefined);
                     setGradeFilterVisible(false);
                   }}
-                  style={[styles.filterChip, !selectedGrade ? styles.filterChipActive : null]}
-                  textStyle={[styles.filterChipText, !selectedGrade ? styles.filterChipTextActive : null]}
+                  style={[
+                    styles.filterChip,
+                    !selectedGrade ? styles.filterChipActive : null,
+                  ]}
+                  textStyle={[
+                    styles.filterChipText,
+                    !selectedGrade ? styles.filterChipTextActive : null,
+                  ]}
                 >
                   {t("filters.all")}
                 </Chip>
@@ -1188,8 +1519,14 @@ export default function Home() {
                         setSelectedGrade(isSelected ? undefined : grade);
                         setGradeFilterVisible(false);
                       }}
-                      style={[styles.filterChip, isSelected ? styles.filterChipActive : null]}
-                      textStyle={[styles.filterChipText, isSelected ? styles.filterChipTextActive : null]}
+                      style={[
+                        styles.filterChip,
+                        isSelected ? styles.filterChipActive : null,
+                      ]}
+                      textStyle={[
+                        styles.filterChipText,
+                        isSelected ? styles.filterChipTextActive : null,
+                      ]}
                     >
                       {t("common:grade", { grade: option.label })}
                     </Chip>
@@ -1203,7 +1540,9 @@ export default function Home() {
               ) : null}
               {!gradeOptions.length ? (
                 <Text variant="bodySmall" style={styles.secondaryText}>
-                  {productGradesQuery.isLoading ? t("common:loading") : t("filters.noGrades")}
+                  {productGradesQuery.isLoading
+                    ? t("common:loading")
+                    : t("filters.noGrades")}
                 </Text>
               ) : null}
             </View>
@@ -1211,48 +1550,98 @@ export default function Home() {
         </Modal>
       </Portal>
 
-      <Portal>
-        <Modal
-          visible={cameraVisible && cameraScanMode === "single"}
-          onDismiss={() => {
-            setCameraVisible(false);
-          }}
-          contentContainerStyle={styles.cameraModal}
-        >
-          <View style={styles.cameraModalHeader}>
-            <View style={styles.cameraModalTitleWrap}>
-              <Text variant="titleMedium">{t("camera.title")}</Text>
-              <Text variant="bodySmall" style={styles.secondaryText}>
-                {t("camera.currentStore", { store: selectedStore?.storeName || t("common:na") })}
+      <CameraScanSheet
+        visible={
+          cameraVisible &&
+          !scanResult.selectionState &&
+          !cameraSelectionConfirming &&
+          !cameraScanHandling
+        }
+        title={t("camera.title")}
+        subtitle={t("camera.currentStore", {
+          store: selectedStore?.storeName || t("common:na"),
+        })}
+        mode={cameraScanMode}
+        onModeChange={handleCameraScanModeChange}
+        onDismiss={() => {
+          cameraResultGenerationRef.current = null;
+          setCameraScanHandling(false);
+          updateCameraSheetSession(
+            { type: "dismiss" },
+            cameraScanModeRef.current,
+          );
+        }}
+      >
+        {lastCameraBarcode &&
+        scanResult.feedback.barcode === lastCameraBarcode &&
+        ["not_found", "blocked", "error"].includes(
+          scanResult.feedback.status,
+        ) ? (
+          <View style={styles.cameraFeedbackBar}>
+            <View style={styles.cameraHitCopy}>
+              <Text variant="labelLarge">{scanResult.feedback.message}</Text>
+              <Text
+                variant="bodySmall"
+                style={styles.secondaryText}
+                numberOfLines={1}
+              >
+                {lastCameraBarcode}
+              </Text>
+            </View>
+          </View>
+        ) : null}
+        {lastCameraScan ? (
+          <View style={styles.cameraHitBar}>
+            <View style={styles.cameraHitCopy}>
+              <Text variant="labelLarge" numberOfLines={1}>
+                {lastCameraScan.product.productName ||
+                  lastCameraScan.product.productCode}
+              </Text>
+              <Text
+                variant="bodySmall"
+                style={styles.secondaryText}
+                numberOfLines={1}
+              >
+                {lastCameraScan.barcode}
               </Text>
             </View>
             <Button
-              mode="text"
+              compact
+              mode="contained-tonal"
               onPress={() => {
-                setCameraVisible(false);
+                cameraResultGenerationRef.current = null;
+                setCameraScanHandling(false);
+                updateCameraSheetSession(
+                  { type: "dismiss" },
+                  cameraScanModeRef.current,
+                );
               }}
             >
-              {t("common:actions.close")}
+              {t("common:actions.viewDetail")}
             </Button>
           </View>
-
-          {cameraScan.permission?.granted ? (
-            <CameraView style={styles.cameraView} {...cameraScan.cameraProps} />
-          ) : (
-            <Card style={styles.permissionCard}>
-              <Card.Content style={styles.permissionCardContent}>
-                <Text variant="titleMedium">{t("camera.needPermissionTitle")}</Text>
-                <Text variant="bodySmall" style={styles.secondaryText}>
-                  {t("camera.needPermissionDescription")}
-                </Text>
-                <Button mode="contained" onPress={() => void cameraScan.requestPermission()}>
-                  {t("camera.grantPermission")}
-                </Button>
-              </Card.Content>
-            </Card>
-          )}
-        </Modal>
-      </Portal>
+        ) : null}
+        {cameraScan.permission?.granted ? (
+          <CameraView style={styles.cameraView} {...cameraScan.cameraProps} />
+        ) : (
+          <Card style={styles.permissionCard}>
+            <Card.Content style={styles.permissionCardContent}>
+              <Text variant="titleMedium">
+                {t("camera.needPermissionTitle")}
+              </Text>
+              <Text variant="bodySmall" style={styles.secondaryText}>
+                {t("camera.needPermissionDescription")}
+              </Text>
+              <Button
+                mode="contained"
+                onPress={() => void cameraScan.requestPermission()}
+              >
+                {t("camera.grantPermission")}
+              </Button>
+            </Card.Content>
+          </Card>
+        )}
+      </CameraScanSheet>
 
       <ScanResultPicker
         visible={Boolean(scanResult.selectionState)}
@@ -1261,19 +1650,47 @@ export default function Home() {
         selectLabel={t("common:actions.select")}
         cancelLabel={t("common:actions.cancel")}
         title={t("productQuery:lookup.title")}
-        tip={t("productQuery:lookup.query", { value: scanResult.selectionState?.barcode || t("common:na") })}
+        tip={t("productQuery:lookup.query", {
+          value: scanResult.selectionState?.barcode || t("common:na"),
+        })}
         onDismiss={() => {
           scanResult.clearSelection();
+          const generation = cameraResultGenerationRef.current;
+          if (generation !== null) {
+            updateCameraSheetSession(
+              {
+                type: "foreground-complete",
+                focused: isFocusedRef.current,
+                generation,
+              },
+              cameraScanModeRef.current,
+            );
+          }
         }}
         onSelect={async (product) => {
-          await scanResult.confirmSelection(product);
+          setCameraSelectionConfirming(true);
+          try {
+            await scanResult.confirmSelection(product);
+          } finally {
+            setCameraSelectionConfirming(false);
+            const generation = cameraResultGenerationRef.current;
+            if (generation !== null) {
+              updateCameraSheetSession(
+                {
+                  type: "foreground-complete",
+                  focused: isFocusedRef.current,
+                  generation,
+                },
+                cameraScanModeRef.current,
+              );
+            }
+          }
         }}
       />
 
       {hidScanner.mode === "textInput" && hidScanner.textInputProps ? (
         <TextInput style={styles.hiddenInput} {...hidScanner.textInputProps} />
       ) : null}
-
     </SafeAreaView>
   );
 }
@@ -1281,7 +1698,7 @@ export default function Home() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#F6FAFE",
+    backgroundColor: "#F4F6F8",
   },
   header: {
     paddingHorizontal: 16,
@@ -1367,7 +1784,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     backgroundColor: "#FFFFFF",
     borderWidth: 1,
-    borderColor: "#DFE3E7",
+    borderColor: "#E4E7EC",
     alignItems: "center",
     justifyContent: "center",
   },
@@ -1567,9 +1984,9 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   listContent: {
-    paddingHorizontal: 6,
-    paddingBottom: 10,
-    paddingTop: 4,
+    paddingHorizontal: 4,
+    paddingBottom: 16,
+    paddingTop: 6,
     flexGrow: 1,
   },
   listContentCompact: {
@@ -1594,7 +2011,7 @@ const styles = StyleSheet.create({
     marginTop: 12,
     paddingHorizontal: 12,
     paddingVertical: 10,
-    borderRadius: 10,
+    borderRadius: 12,
     backgroundColor: "#FFFFFF",
   },
   filtersModal: {
@@ -1663,6 +2080,28 @@ const styles = StyleSheet.create({
     height: 420,
     borderRadius: 12,
     overflow: "hidden",
+  },
+  cameraFeedbackBar: {
+    minHeight: 52,
+    borderRadius: 8,
+    backgroundColor: "#FFF4E5",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  cameraHitBar: {
+    minHeight: 52,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderRadius: 8,
+    backgroundColor: "#EAF2FF",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  cameraHitCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
   },
   permissionCard: {
     marginTop: 4,

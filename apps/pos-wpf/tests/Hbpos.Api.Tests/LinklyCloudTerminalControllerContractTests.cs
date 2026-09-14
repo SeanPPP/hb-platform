@@ -20,6 +20,8 @@ public sealed class LinklyCloudTerminalControllerContractTests
     [InlineData(nameof(LinklyController.SelectCloudBackendTerminal), "cloud-backend/terminal-selection", CashierAuthorizationPolicies.PaymentTerminalSelection)]
     [InlineData(nameof(LinklyController.GetCloudBackendHealth), "cloud-backend/health", CashierAuthorizationPolicies.PaymentTerminalSelection)]
     [InlineData(nameof(LinklyController.PairCloudBackendTerminal), "cloud-backend/terminals/{terminalId:guid}/pair", CashierAuthorizationPolicies.PaymentSettings)]
+    [InlineData(nameof(LinklyController.TestCloudBackendTerminal), "cloud-backend/terminals/{terminalId:guid}/connection-test", CashierAuthorizationPolicies.PaymentSettings)]
+    [InlineData(nameof(LinklyController.AssignCloudBackendTerminal), "cloud-backend/terminals/{terminalId:guid}/assignment", CashierAuthorizationPolicies.PaymentSettings)]
     [InlineData(nameof(LinklyController.PairCloudBackend), "cloud-backend/pair", CashierAuthorizationPolicies.PaymentSettings)]
     [InlineData(nameof(LinklyController.RunCloudBackendLogonTest), "cloud-backend/logon-test", CashierAuthorizationPolicies.PaymentSettings)]
     public void Multi_terminal_routes_use_claim_scoped_permissions(
@@ -38,6 +40,43 @@ public sealed class LinklyCloudTerminalControllerContractTests
             .Single();
         Assert.Equal(expectedTemplate, route.Template);
         Assert.Equal(expectedPolicy, authorization.Policy);
+    }
+
+    [Theory]
+    [InlineData(nameof(LinklyController.TestCloudBackendTerminal), typeof(LinklyCloudTerminalConnectionTestResponse))]
+    [InlineData(nameof(LinklyController.AssignCloudBackendTerminal), typeof(LinklyCloudTerminalListResponse))]
+    public void New_terminal_management_routes_declare_typed_success_and_error_responses(string methodName, Type responseType)
+    {
+        var method = typeof(LinklyController).GetMethod(methodName)!;
+        var responseTypes = method.GetCustomAttributes(inherit: true).OfType<ProducesResponseTypeAttribute>().ToArray();
+        Assert.Contains(responseTypes, item => item.StatusCode == 200 && item.Type == typeof(ApiResult<>).MakeGenericType(responseType));
+        Assert.Contains(responseTypes, item => item.StatusCode == 400);
+        Assert.Contains(responseTypes, item => item.StatusCode == 404);
+        Assert.Contains(responseTypes, item => item.StatusCode == 409);
+    }
+
+    [Fact]
+    public async Task New_terminal_management_routes_reject_null_body_as_bad_request()
+    {
+        var controller = CreateController(new CredentialFailureTerminalService(new LinklyCloudTerminalSelectionConflictException()));
+        var id = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        var connection = await controller.TestCloudBackendTerminal(id, null!, CancellationToken.None);
+        var assignment = await controller.AssignCloudBackendTerminal(id, null!, CancellationToken.None);
+        Assert.IsType<BadRequestObjectResult>(connection.Result);
+        Assert.IsType<BadRequestObjectResult>(assignment.Result);
+    }
+
+    [Fact]
+    public async Task New_terminal_management_routes_map_busy_to_conflict()
+    {
+        var controller = CreateController(new CredentialFailureTerminalService(new LinklyCloudTerminalSelectionConflictException("busy")));
+        var id = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        var connection = await controller.TestCloudBackendTerminal(id,
+            new LinklyCloudTerminalConnectionTestRequest("Production", "1", null, 0), CancellationToken.None);
+        var assignment = await controller.AssignCloudBackendTerminal(id,
+            new LinklyCloudTerminalAssignmentRequest("Production", "1", null, 0, null, null, 0), CancellationToken.None);
+        Assert.IsType<ConflictObjectResult>(connection.Result);
+        Assert.IsType<ConflictObjectResult>(assignment.Result);
     }
 
     [Fact]
@@ -272,6 +311,16 @@ public sealed class LinklyCloudTerminalControllerContractTests
             LinklyCloudTerminalPaymentContext terminalContext,
             string healthStatus,
             DateTime checkedAt,
+            CancellationToken cancellationToken) => throw exception;
+
+        public Task<LinklyCloudTerminalConnectionTestResponse> ConnectionTestAsync(
+            string storeCode, string deviceCode, Guid terminalId,
+            LinklyCloudTerminalConnectionTestRequest request,
+            CancellationToken cancellationToken) => throw exception;
+
+        public Task<LinklyCloudTerminalListResponse> AssignTerminalAsync(
+            string storeCode, string deviceCode, Guid terminalId,
+            LinklyCloudTerminalAssignmentRequest request, string? updatedBy,
             CancellationToken cancellationToken) => throw exception;
     }
 }

@@ -6,6 +6,7 @@ using System.Security.Claims;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
+using BlazorApp.Api.Authorization;
 using BlazorApp.Api.Controllers;
 using BlazorApp.Api.Controllers.React;
 using BlazorApp.Api.Data;
@@ -29,6 +30,45 @@ public class NavigationServiceTests
 
     private readonly NavigationService _service = new();
 
+    public static IEnumerable<object[]> SalesDashboardPageMenuCases()
+    {
+        yield return new object[] { "SalesDashboard.SalesData.View", "/executive-sales-intelligence/overview" };
+        yield return new object[] { "SalesDashboard.SalesDetail.View", "/executive-sales-intelligence/sales-detail-v2" };
+        yield return new object[] { "SalesDashboard.CompactBoard.View", "/executive-sales-intelligence/compact-sales-board" };
+        yield return new object[] { "SalesDashboard.ProductMovement.View", "/executive-sales-intelligence/product-movement-report" };
+        yield return new object[] { "SalesDashboard.BatchProductSales.View", "/executive-sales-intelligence/batch-product-sales-analysis" };
+        yield return new object[] { "SalesDashboard.WarehouseFlow.View", "/executive-sales-intelligence/warehouse-product-flow-analysis" };
+        yield return new object[] { "SalesDashboard.LocalProductAnalysis.View", "/executive-sales-intelligence/local-product-sales-analysis" };
+        yield return new object[] { "SalesDashboard.PurchaseAmount.View", "/executive-sales-intelligence/purchase-amount-dashboard" };
+    }
+
+    [Theory]
+    [MemberData(nameof(SalesDashboardPageMenuCases))]
+    public void BuildMenu_SalesDashboardPermissionShowsOnlyItsOwnPage(
+        string permission,
+        string expectedPath
+    )
+    {
+        var menu = _service.BuildMenu(CreateUser(new Claim("permission", permission)));
+
+        var salesMenu = Assert.Single(
+            menu,
+            item => item.Path == "/executive-sales-intelligence"
+        );
+        Assert.Equal(new[] { expectedPath }, salesMenu.Children!.Select(item => item.Path));
+    }
+
+    [Theory]
+    [InlineData(Permissions.Reports.View)]
+    [InlineData(Permissions.Reports.ProductMovementView)]
+    [InlineData(Permissions.LocalPurchase.View)]
+    public void BuildMenu_LegacyBroadPermissionDoesNotGrantSalesDashboardPages(string permission)
+    {
+        var menu = _service.BuildMenu(CreateUser(new Claim("permission", permission)));
+
+        Assert.DoesNotContain(menu, item => item.Path == "/executive-sales-intelligence");
+    }
+
     [Fact]
     public void BuildMenu_HidesBackendNavigationWithoutDashboardPermission()
     {
@@ -42,7 +82,9 @@ public class NavigationServiceTests
     [Fact]
     public void BuildMenu_ShowsProductMovementReportWithoutDashboardPermission()
     {
-        var user = CreateUser(new Claim("permission", Permissions.Reports.ProductMovementView));
+        var user = CreateUser(
+            new Claim("permission", Permissions.SalesDashboard.ProductMovementView)
+        );
 
         var menu = _service.BuildMenu(user);
 
@@ -58,10 +100,11 @@ public class NavigationServiceTests
     }
 
     [Fact]
-    public void BuildMenu_ClaimPermissionWithoutExactInfo_HidesProductSalesAnalysis()
+    public void BuildMenu_WarehouseFlowClaimShowsWarehouseFlowPage()
     {
-        // Claim 上下文没有精确权限信息，精确节点必须 fail-closed，不能把展开权限误当 exact。
-        var user = CreateUser(new Claim("permission", Permissions.Reports.ProductMovementView));
+        var user = CreateUser(
+            new Claim("permission", Permissions.SalesDashboard.WarehouseFlowView)
+        );
 
         var menu = _service.BuildMenu(user);
 
@@ -69,18 +112,34 @@ public class NavigationServiceTests
             menu,
             item => item.Path == "/executive-sales-intelligence"
         );
-        Assert.Contains(
-            salesIntelligence.Children!,
-            item => item.Path == "/executive-sales-intelligence/product-movement-report"
-        );
-        Assert.DoesNotContain(
-            salesIntelligence.Children!,
-            item => item.Path == "/executive-sales-intelligence/warehouse-product-flow-analysis"
+        var salesPage = Assert.Single(salesIntelligence.Children!);
+        Assert.Equal(
+            "/executive-sales-intelligence/warehouse-product-flow-analysis",
+            salesPage.Path
         );
     }
 
     [Fact]
-    public async Task BuildMenu_ProductSalesAnalysisRequiresExactProductMovementView()
+    public void BuildMenu_WarehouseStaffWithSalesPermissionShowsOnlyThatSalesPage()
+    {
+        var user = CreateUser(
+            new Claim(ClaimTypes.Role, "WarehouseStaff"),
+            new Claim("permission", Permissions.SalesDashboard.PurchaseAmountView)
+        );
+
+        var menu = _service.BuildMenu(user);
+
+        var salesMenu = Assert.Single(menu);
+        Assert.Equal("/executive-sales-intelligence", salesMenu.Path);
+        var salesPage = Assert.Single(salesMenu.Children!);
+        Assert.Equal(
+            "/executive-sales-intelligence/purchase-amount-dashboard",
+            salesPage.Path
+        );
+    }
+
+    [Fact]
+    public async Task BuildMenu_LegacyProductMovementPermissionDoesNotShowNewSalesPages()
     {
         using var harness = new NavigationTestHarness();
         await harness.SeedUserWithRoleAsync(
@@ -95,30 +154,18 @@ public class NavigationServiceTests
 
         var menu = service.BuildMenu(user);
 
-        var salesIntelligence = Assert.Single(
-            menu,
-            item => item.Path == "/executive-sales-intelligence"
-        );
-        // 原商品移动报表继续兼容 Reports.View；精确节点商品销量分析必须拒绝。
-        Assert.Contains(
-            salesIntelligence.Children!,
-            item => item.Path == "/executive-sales-intelligence/product-movement-report"
-        );
-        Assert.DoesNotContain(
-            salesIntelligence.Children!,
-            item => item.Path == "/executive-sales-intelligence/warehouse-product-flow-analysis"
-        );
+        Assert.DoesNotContain(menu, item => item.Path == "/executive-sales-intelligence");
     }
 
     [Fact]
-    public async Task BuildMenu_ProductSalesAnalysisShownWithExactProductMovementView()
+    public async Task BuildMenu_WarehouseFlowShownWithIndependentPermission()
     {
         using var harness = new NavigationTestHarness();
         await harness.SeedUserWithRoleAsync(
             "user-1",
             "role-user",
             "User",
-            Permissions.Reports.ProductMovementView
+            Permissions.SalesDashboard.WarehouseFlowView
         );
 
         var service = harness.CreateNavigationService();
@@ -135,8 +182,8 @@ public class NavigationServiceTests
             item => item.Path == "/executive-sales-intelligence/warehouse-product-flow-analysis"
         );
         Assert.Equal("menu.warehouseProductFlowAnalysis", productSalesAnalysis.TitleKey);
-        Assert.Equal(Permissions.Reports.ProductMovementView, productSalesAnalysis.Permission);
-        Assert.True(productSalesAnalysis.RequireExactPermission);
+        Assert.Equal(Permissions.SalesDashboard.WarehouseFlowView, productSalesAnalysis.Permission);
+        Assert.False(productSalesAnalysis.RequireExactPermission);
     }
 
     [Theory]
@@ -158,30 +205,26 @@ public class NavigationServiceTests
             menu,
             item => item.Path == "/executive-sales-intelligence"
         );
-        Assert.Contains(
-            salesIntelligence.Children!,
-            item => item.Path == "/executive-sales-intelligence/warehouse-product-flow-analysis"
+        Assert.Equal(
+            SalesDashboardPageMenuCases()
+                .Select(values => Assert.IsType<string>(values[1]))
+                .OrderBy(path => path),
+            salesIntelligence.Children!.Select(item => item.Path).OrderBy(path => path)
         );
     }
 
     [Fact]
-    public void BuildMenu_LocalPurchaseViewShowsAustralianLocalProductAnalysis()
+    public void BuildMenu_LocalPurchaseViewKeepsInvoiceMenusWithoutNewSalesPages()
     {
         var user = CreateUser(new Claim("permission", Permissions.LocalPurchase.View));
 
         var menu = _service.BuildMenu(user);
 
-        var salesIntelligence = Assert.Single(
-            menu,
-            item => item.Path == "/executive-sales-intelligence"
-        );
+        Assert.DoesNotContain(menu, item => item.Path == "/executive-sales-intelligence");
+        var posAdmin = Assert.Single(menu, item => item.Path == "/pos-admin");
         Assert.Contains(
-            salesIntelligence.Children!,
-            item => item.Path == "/executive-sales-intelligence/local-product-sales-analysis"
-        );
-        Assert.DoesNotContain(
-            salesIntelligence.Children!,
-            item => item.Path == "/executive-sales-intelligence/warehouse-product-flow-analysis"
+            posAdmin.Children!,
+            item => item.Path == "/pos-admin/local-supplier-invoices"
         );
     }
 
@@ -596,6 +639,16 @@ public class NavigationServiceTests
     }
 
     [Fact]
+    public void BuildAppMenu_ShowsDeviceManagementWithMobileActivationCodePermission()
+    {
+        var user = CreateUser(new Claim("permission", Permissions.DeviceRegistration.MobileActivationCodes.Manage));
+
+        var menu = _service.BuildAppMenu(user);
+
+        Assert.Contains(menu, item => item.RouteName == "device-management");
+    }
+
+    [Fact]
     public void BuildMenu_ShowsAppDownloadsWithAppDownloadsPermission()
     {
         var user = CreateUser(
@@ -701,7 +754,7 @@ public class NavigationServiceTests
             new Claim(ClaimTypes.Role, "Order"),
             new Claim(ClaimTypes.Role, "订货员"),
             new Claim("permission", Permissions.Dashboard.View),
-            new Claim("permission", Permissions.LocalPurchase.View)
+            new Claim("permission", Permissions.SalesDashboard.SalesDataView)
         );
 
         var menu = _service.BuildMenu(user);
@@ -773,8 +826,13 @@ public class NavigationServiceTests
 
         var menu = _service.BuildAppMenu(user);
 
-        Assert.Equal(22, menu.Count);
+        // 管理员可见完整 App 菜单；商品查询与同权限的商品进销查询都必须保留。
+        Assert.Equal(25, menu.Count);
+        Assert.Contains(menu, item => item.RouteName == "product-query");
+        Assert.Contains(menu, item => item.RouteName == "product-insights");
         Assert.Contains(menu, item => item.RouteName == "users");
+        Assert.Contains(menu, item => item.RouteName == "user-admin");
+        Assert.Contains(menu, item => item.RouteName == "roles");
         Assert.Contains(menu, item => item.RouteName == "employee-profile");
         Assert.Contains(menu, item => item.RouteName == "device-management");
         Assert.Contains(menu, item => item.RouteName == "reports");
@@ -861,6 +919,32 @@ public class NavigationServiceTests
         Assert.Equal("tabs.localSupplierInvoices", item.TitleKey);
         Assert.Equal("receipt-text-outline", item.Icon);
         Assert.Equal(Permissions.LocalPurchase.View, item.Permission);
+    }
+
+    [Fact]
+    public void BuildAppMenu_ProductInsightsUsesTheProductQueryPermission()
+    {
+        var authorized = _service.BuildAppMenu(
+            CreateUser(new Claim("permission", Permissions.StoreProducts.View))
+        );
+        var unauthorized = _service.BuildAppMenu(
+            CreateUser(new Claim("permission", Permissions.Orders.View))
+        );
+
+        var item = Assert.Single(authorized, item => item.RouteName == "product-insights");
+        Assert.Equal("tabs.productInsights", item.TitleKey);
+        Assert.Equal("chart-timeline-variant", item.Icon);
+        Assert.Equal(Permissions.StoreProducts.View, item.Permission);
+        Assert.DoesNotContain(unauthorized, item => item.RouteName == "product-insights");
+    }
+
+    [Fact]
+    public void BuildDeviceAppMenu_IncludesProductInsightsWithProductQuery()
+    {
+        var menu = _service.BuildDeviceAppMenu("Mobile");
+
+        Assert.Contains(menu, item => item.RouteName == "product-query");
+        Assert.Contains(menu, item => item.RouteName == "product-insights");
     }
 
     [Fact]
@@ -1133,6 +1217,33 @@ public class NavigationServiceTests
     }
 
     [Fact]
+    public void BuildAppMenu_ShowsUserAdminWithUsersViewPermissionWithoutUnlockingRoles()
+    {
+        var menu = _service.BuildAppMenu(CreateUser(new Claim("permission", Permissions.Users.View)));
+
+        Assert.Contains(menu, item => item.RouteName == "user-admin");
+        Assert.DoesNotContain(menu, item => item.RouteName == "roles");
+    }
+
+    [Fact]
+    public void BuildAppMenu_ShowsRolesWithRolesViewPermissionWithoutUnlockingUserAdmin()
+    {
+        var menu = _service.BuildAppMenu(CreateUser(new Claim("permission", Permissions.Roles.View)));
+
+        Assert.Contains(menu, item => item.RouteName == "roles");
+        Assert.DoesNotContain(menu, item => item.RouteName == "user-admin");
+    }
+
+    [Fact]
+    public void BuildAppMenu_HidesGlobalIdentityRoutesWithoutTheirViewPermissions()
+    {
+        var menu = _service.BuildAppMenu(CreateUser(new Claim(ClaimTypes.Role, "StoreManager")));
+
+        Assert.DoesNotContain(menu, item => item.RouteName == "user-admin");
+        Assert.DoesNotContain(menu, item => item.RouteName == "roles");
+    }
+
+    [Fact]
     public void BuildAppMenu_ShowsDeviceManagementForAdmin()
     {
         var user = CreateUser(new Claim(ClaimTypes.Role, "Admin"));
@@ -1233,24 +1344,23 @@ public class NavigationServiceTests
         Assert.Equal(Permissions.EmployeeProfiles.Edit, authorizeAttribute.Policy);
     }
 
-    [Fact]
-    public void EmployeeCashierBarcodeRefresh_RequiresEmployeeProfileViewPermission()
+    [Theory]
+    [InlineData(nameof(EmployeeProfilesController.GetCashierBarcode))]
+    [InlineData(nameof(EmployeeProfilesController.RefreshCashierBarcode))]
+    [InlineData(nameof(EmployeeProfilesController.ConfirmCashierBarcodePrint))]
+    public void EmployeeCashierBarcode_RequiresAuthenticatedSelfService(string methodName)
     {
-        var authorizeAttribute = GetMethodAuthorizeAttribute(
-            nameof(EmployeeProfilesController.RefreshCashierBarcode)
+        var controllerType = typeof(EmployeeProfilesController);
+        var method = controllerType.GetMethod(methodName)!;
+        var authorizeAttribute = GetMethodAuthorizeAttribute(methodName);
+
+        Assert.Equal(EmployeeCashierBarcodeSelfServicePolicy.Name, authorizeAttribute.Policy);
+        Assert.Contains(
+            controllerType.GetCustomAttributes<AuthorizeAttribute>(),
+            attribute => string.IsNullOrWhiteSpace(attribute.Policy)
         );
-
-        Assert.Equal(Permissions.EmployeeProfiles.View, authorizeAttribute.Policy);
-    }
-
-    [Fact]
-    public void EmployeeCashierBarcodePrintConfirmation_RequiresEmployeeProfileViewPermission()
-    {
-        var authorizeAttribute = GetMethodAuthorizeAttribute(
-            nameof(EmployeeProfilesController.ConfirmCashierBarcodePrint)
-        );
-
-        Assert.Equal(Permissions.EmployeeProfiles.View, authorizeAttribute.Policy);
+        Assert.Empty(controllerType.GetCustomAttributes<AllowAnonymousAttribute>());
+        Assert.Empty(method.GetCustomAttributes<AllowAnonymousAttribute>());
     }
 
     [Fact]

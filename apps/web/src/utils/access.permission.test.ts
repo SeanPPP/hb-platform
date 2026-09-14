@@ -146,7 +146,7 @@ assertEqual(
 
 const productMovementReportOnlyAccess = buildAccess(
   createCurrentUser({
-    permissions: [P.Reports.ProductMovementView],
+    permissions: [P.SalesDashboard.ProductMovementView],
   }),
 )
 
@@ -164,8 +164,8 @@ assertEqual(
 
 assertEqual(
   localPurchaseDashboardOnlyAccess.canViewSalesIntelligence,
-  true,
-  'LocalPurchase.View should keep the sales dashboard parent visible',
+  false,
+  '本地进货权限不再连带显示销售看板',
 )
 
 assertEqual(
@@ -194,7 +194,7 @@ assertEqual(
 
 assertEqual(
   getDefaultWebPath(localPurchaseDashboardOnlyAccess),
-  '/executive-sales-intelligence/purchase-amount-dashboard',
+  '/pos-admin/local-supplier-invoices',
   'LocalPurchase.View should default to the only authorized admin page',
 )
 
@@ -203,8 +203,8 @@ assertEqual(
     '/executive-sales-intelligence/purchase-amount-dashboard',
     localPurchaseDashboardOnlyAccess,
   ),
-  '/executive-sales-intelligence/purchase-amount-dashboard',
-  'LocalPurchase.View should preserve the authorized dashboard redirect target',
+  undefined,
+  '本地进货权限不允许跳转到未授权的进货金额看板',
 )
 
 assertEqual(
@@ -364,8 +364,8 @@ const backendNavigationEntryCases: Array<[string, string]> = [
   [P.Warehouse.ManageOrders, '/warehouse/store-orders'],
   [P.Warehouse.Manage, '/warehouse/store-orders'],
   [P.Container.View, '/warehouse/containers'],
-  [P.Reports.ProductMovementView, '/executive-sales-intelligence/product-movement-report'],
-  [P.LocalPurchase.View, '/executive-sales-intelligence/purchase-amount-dashboard'],
+  [P.SalesDashboard.ProductMovementView, '/executive-sales-intelligence/product-movement-report'],
+  [P.LocalPurchase.View, '/pos-admin/local-supplier-invoices'],
   [P.System.ManageSettings, '/system/invoice-email-settings'],
   [P.System.ViewAppDownloads, '/system/app-downloads'],
   [P.System.ManageAppDownloads, '/system/app-downloads'],
@@ -385,13 +385,13 @@ for (const [permission, expectedPath] of backendNavigationEntryCases) {
 assertEqual(
   productMovementReportOnlyAccess.canViewReports,
   false,
-  'Reports.ProductMovement.View should not unlock legacy sales reports',
+  '商品经营分析单页权限不应授予旧报表总权限',
 )
 
 assertEqual(
   productMovementReportOnlyAccess.canViewProductMovementReport,
   true,
-  'Reports.ProductMovement.View should unlock product movement report',
+  '商品经营分析单页权限应放开对应页面',
 )
 
 assertEqual(
@@ -1131,8 +1131,8 @@ assertEqual(
 
 assertEqual(
   compactSalesBoardMenu?.permissionCodes.join(','),
-  P.Reports.View,
-  '独立销售看板应仅要求 Reports.View 权限',
+  P.SalesDashboard.CompactBoardView,
+  '独立销售看板应仅要求本页查看权限',
 )
 
 assertEqual(
@@ -1161,20 +1161,20 @@ assertEqual(
 
 assertEqual(
   localPurchaseSalesParentMenu?.visible,
-  true,
-  '只有 LocalPurchase.View 时销售看板父菜单应可见',
+  false,
+  '只有本地进货权限时销售看板父菜单应隐藏',
 )
 
 assertEqual(
   purchaseAmountDashboardMenu?.visible,
-  true,
-  'LocalPurchase.View 应显示进货金额看板',
+  false,
+  '本地进货权限不应显示进货金额看板',
 )
 
 assertEqual(
   purchaseAmountDashboardMenu?.permissionCodes.join(','),
-  `${P.LocalPurchase.View},LocalInvocie.View`,
-  '进货金额看板应沿用本地进货查看权限及旧权限别名',
+  P.SalesDashboard.PurchaseAmountView,
+  '进货金额看板应单独配置页面查看权限',
 )
 
 assertEqual(
@@ -1588,8 +1588,8 @@ assertEqual(
 )
 assertEqual(
   exactReportsViewOnlyAccess.canViewProductMovementReport,
-  true,
-  'Reports.View 应继续兼容商品移动报表，不受 exact 契约影响',
+  false,
+  '旧报表权限不再放开商品经营分析页面',
 )
 
 const exactPermissionsMissingAccess = buildAccess(
@@ -1632,8 +1632,8 @@ assertEqual(
 )
 assertEqual(
   productMovementExactPreviewAccess.canViewProductMovementReport,
-  true,
-  '角色预览 Reports.ProductMovement.View 应继续允许商品移动报表',
+  false,
+  '角色预览旧商品报表权限不应放开商品经营分析页面',
 )
 
 const reportsViewExpandedPreviewAccess = buildRolePreviewAccess({
@@ -1651,8 +1651,8 @@ assertEqual(
 )
 assertEqual(
   reportsViewExpandedPreviewAccess.canViewProductMovementReport,
-  true,
-  '角色预览 Reports.View 展开应继续允许商品移动报表',
+  false,
+  '角色预览旧报表权限展开不应放开商品经营分析页面',
 )
 
 const superAdminExactEmptyPreviewAccess = buildRolePreviewAccess({

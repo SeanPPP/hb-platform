@@ -419,6 +419,7 @@ public sealed class LinklyCloudTerminalClient(
 
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             Log($"transaction start environment={settings.Environment} txnType={txnType} store={LogValue(session.StoreCode)} device={LogValue(session.DeviceCode)} amountMinor={ToMinorUnits(amount)} hasRefundReference={!string.IsNullOrWhiteSpace(refundReference)}");
             txnRef = ResolveTxnRef(session, txnType, attemptContext);
             sessionId = Guid.NewGuid().ToString("D");
@@ -437,7 +438,10 @@ public sealed class LinklyCloudTerminalClient(
                         ["PCM"] = "0000"
                     });
 
+            timeoutCts.Token.ThrowIfCancellationRequested();
             await BindAttemptSessionAsync(attemptContext, sessionId, txnRef);
+            // 中文注释：身份落库不等于金融提交；落库期间取消也必须停在 POST 之前。
+            timeoutCts.Token.ThrowIfCancellationRequested();
             transactionSubmitted = true;
             var result = await SendTransactionWithDialogAsync(settings, token, request, sessionId, timeoutCts.Token);
             if (!MatchesSubmittedResponseIdentity(result, amount, sessionId, txnRef))
@@ -454,10 +458,15 @@ public sealed class LinklyCloudTerminalClient(
 
             if (result.Outcome == LinklyCloudTransactionOutcome.NotSubmitted)
             {
+                // 中文注释：已核验原请求明确未提交，重试前取消仍应释放未扣款订单。
+                transactionSubmitted = false;
+                timeoutCts.Token.ThrowIfCancellationRequested();
                 Log($"transaction not-submitted retrying txnType={txnType} previousSessionId={result.SessionId} txnRef={txnRef}");
                 var retrySessionId = Guid.NewGuid().ToString("D");
                 await BindAttemptSessionAsync(attemptContext, retrySessionId, txnRef);
                 sessionId = retrySessionId;
+                timeoutCts.Token.ThrowIfCancellationRequested();
+                transactionSubmitted = true;
                 result = await SendTransactionWithDialogAsync(settings, token, request, retrySessionId, timeoutCts.Token);
                 if (!MatchesSubmittedResponseIdentity(result, amount, sessionId, txnRef))
                     return UnknownResponseIdentity(sessionId, txnRef, txnType);
@@ -501,6 +510,10 @@ public sealed class LinklyCloudTerminalClient(
             var authorizationResult = ToAuthorizationResult(result, amount, txnRef, txnType);
             keepDialogOpen = !authorizationResult.Approved && !IsCancelledResult(result);
             return authorizationResult;
+        }
+        catch (OperationCanceledException ex) when (!transactionSubmitted && cancellationToken.IsCancellationRequested)
+        {
+            throw new CardTerminalNotSubmittedException(ex, cancellationToken);
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
@@ -593,6 +606,12 @@ public sealed class LinklyCloudTerminalClient(
             return transactionSubmitted
                 ? ResultUnknown("linkly.cloud.resultUnknown", BuildResultUnknownMessage(message), sessionId, txnRef, txnType)
                 : FallbackAllowed("linkly.cloud.communicationFailed", message);
+        }
+        catch (Exception ex) when (transactionSubmitted && ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            // 中文注释：提交后未分类异常同样不能证明未扣款，必须携带原身份进入恢复。
+            Log($"transaction unknown txnType={txnType} sessionId={sessionId} error={ex.GetType().Name}");
+            return UnknownResponseIdentity(sessionId, txnRef, txnType);
         }
         finally
         {

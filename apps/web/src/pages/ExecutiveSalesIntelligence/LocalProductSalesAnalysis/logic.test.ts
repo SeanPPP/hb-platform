@@ -15,6 +15,7 @@ import {
   getCurrentProductAfterCancellation,
   isSelected,
   PAGE_BOOTSTRAP_TIMEOUT_SECONDS,
+  PAGE_SECTION_TIMEOUT_SECONDS,
   setLocalProductSalesAnalysisSectionError,
 } from './logic'
 
@@ -70,8 +71,9 @@ const clearedRequest = buildLocalProductSalesAnalysisBootstrapRequest({
 })
 deepEqual(clearedRequest, { filter: bootstrapFilter, selection: clearedSelection, autoSelectFirst: false, forceRefresh: true, ...bootstrapPages }, '刷新必须尊重用户主动清空选择')
 
-// 页面专用 8 秒安全超时
-equal(PAGE_BOOTSTRAP_TIMEOUT_SECONDS, 8, '页面安全超时必须是 8 秒')
+// bootstrap 允许已证实的 9 秒内成功响应完成，分段交互仍保持 8 秒上限
+equal(PAGE_BOOTSTRAP_TIMEOUT_SECONDS, 15, 'bootstrap 安全超时必须是 15 秒')
+equal(PAGE_SECTION_TIMEOUT_SECONDS, 8, '分段请求安全超时必须保持 8 秒')
 {
   const timeout = createPageRequestTimeout(0.01)
   await new Promise((resolve) => setTimeout(resolve, 30))
@@ -86,9 +88,9 @@ equal(PAGE_BOOTSTRAP_TIMEOUT_SECONDS, 8, '页面安全超时必须是 8 秒')
   equal(timeout.signal.aborted, false, '成功后清理超时不得再中止请求')
 }
 {
-  const timeout = createPageRequestTimeout(8)
+  const timeout = createPageRequestTimeout(PAGE_BOOTSTRAP_TIMEOUT_SECONDS)
   timeout.abort()
-  equal(timeout.signal.aborted, true, '发起新请求必须立即中止旧请求')
+  equal(timeout.signal.aborted, true, '用户取消必须立即中止仍在 bootstrap 等待期内的请求')
   timeout.clear()
 }
 

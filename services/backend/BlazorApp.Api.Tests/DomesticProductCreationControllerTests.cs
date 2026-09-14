@@ -762,6 +762,53 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task 本地商品条码_使用独立编号段且并发永久预留不重复()
+        {
+            using var database = new DomesticProductCreationTestDatabase();
+            database.Db.CodeFirst.InitTables(typeof(ProductSetCode), typeof(StoreClearancePrice), typeof(StoreMultiCodeProduct));
+            var generator = database.CreateItemBarcodeService();
+            var barcodes = await Task.WhenAll(Enumerable.Range(0, 8)
+                .Select(_ => generator.GenerateLocalProductBarcodeAsync(DateTimeOffset.Parse("2026-09-09T14:00:00Z"))));
+
+            Assert.Equal(8, barcodes.Distinct().Count());
+            Assert.All(barcodes, barcode =>
+            {
+                Assert.Matches("^9529260910[0-9]{3}$", barcode);
+                Assert.DoesNotContain("9527", barcode[..4]);
+                var sum = barcode[..12].Select((digit, index) => (digit - '0') * (index % 2 == 0 ? 1 : 3)).Sum();
+                Assert.Equal((10 - sum % 10) % 10, barcode[12] - '0');
+            });
+            var reservations = await database.Db.Queryable<ItemBarcodeReservation>().ToListAsync();
+            Assert.Equal(8, reservations.Count);
+            Assert.All(reservations, reservation => Assert.Equal("Barcode", reservation.IdentifierType));
+            Assert.All(barcodes, barcode => Assert.Contains(reservations, row => row.IdentifierValue == barcode));
+        }
+
+        [Fact]
+        public async Task 本地条码_当日满额不循环且布里斯班跨日重新编号()
+        {
+            using var database = new DomesticProductCreationTestDatabase();
+            database.Db.CodeFirst.InitTables(typeof(ProductSetCode), typeof(StoreClearancePrice), typeof(StoreMultiCodeProduct));
+            var generator = database.CreateItemBarcodeService();
+            var now = DateTimeOffset.Parse("2026-09-09T14:00:00Z");
+            var reservations = Enumerable.Range(0, 100).Select(index =>
+            {
+                var barcode = BarcodeHelper.GenerateCompleteEan13($"9529260910{index:D2}");
+                return new ItemBarcodeReservation
+                {
+                    ReservationKey = $"BARCODE:{barcode}", IdentifierType = "Barcode",
+                    IdentifierValue = barcode, CreatedAt = now.UtcDateTime,
+                };
+            }).ToList();
+            await database.Db.Insertable(reservations).ExecuteCommandAsync();
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => generator.GenerateLocalProductBarcodeAsync(now));
+            Assert.Contains("100", exception.Message);
+            Assert.Equal(100, await database.Db.Queryable<ItemBarcodeReservation>().CountAsync());
+            var nextDay = await generator.GenerateLocalProductBarcodeAsync(now.AddDays(1));
+            Assert.Equal(BarcodeHelper.GenerateCompleteEan13("952926091100"), nextDay);
+        }
+
+        [Fact]
         public async Task ItemBarcodeService_多组套装子项一次预留且货号条码唯一()
         {
             using var database = new DomesticProductCreationTestDatabase();

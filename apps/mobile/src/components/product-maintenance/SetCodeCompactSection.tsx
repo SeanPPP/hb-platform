@@ -113,7 +113,9 @@ export function SetCodeCompactSection({
 
 const styles = StyleSheet.create({
   card: {
-    borderRadius: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E4E7EC",
     backgroundColor: "#fff",
   },
   content: {

@@ -288,6 +288,9 @@ export function createProductionSettingsComposition(
       ? {
           linklySetup: {
             pair: input.linklySetup.pair.bind(input.linklySetup),
+            ...(input.linklySetup.assignTerminal
+              ? { assignTerminal: input.linklySetup.assignTerminal.bind(input.linklySetup) }
+              : {}),
             ...(input.linklySetup.selectTerminal
               ? {
                   selectTerminal:
@@ -446,11 +449,19 @@ export function createProductionSettingsComposition(
     ...(input.linklySetup
       ? {
           linklySetup: Object.freeze({
+            supportsTerminalAssignment:
+              input.linklySetup.supportsTerminalAssignment === true,
             readState: input.linklySetup.readState.bind(input.linklySetup),
             ...(input.linklySetup.readTerminals
               ? {
                   readTerminals:
                     input.linklySetup.readTerminals.bind(input.linklySetup),
+                }
+              : {}),
+            ...(input.linklySetup.testTerminalConnection
+              ? {
+                  testTerminalConnection:
+                    input.linklySetup.testTerminalConnection.bind(input.linklySetup),
                 }
               : {}),
             ...(input.linklySetup.selectTerminal

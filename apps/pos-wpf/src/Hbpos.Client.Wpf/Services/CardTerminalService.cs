@@ -533,6 +533,7 @@ public sealed class ConfiguredCardTerminalClient :
     private readonly ISquarePaymentAttemptContextAccessor? _squarePaymentAttemptContextAccessor;
     private readonly ILocalSquarePaymentAttemptRepository? _squarePaymentAttemptRepository;
     private readonly ILinklyPaymentAttemptContextAccessor? _linklyPaymentAttemptContextAccessor;
+    private readonly ILinklyTerminalSelectionTransitionGate? _linklyTerminalSelectionTransitionGate;
     private readonly ConcurrentDictionary<SquareRefundAttemptKey, string> _squareRefundIdempotencyKeys = new();
 
     public ConfiguredCardTerminalClient(
@@ -544,7 +545,8 @@ public sealed class ConfiguredCardTerminalClient :
         ISquarePaymentAttemptContextAccessor? squarePaymentAttemptContextAccessor = null,
         ILocalSquarePaymentAttemptRepository? squarePaymentAttemptRepository = null,
         ILinklyPaymentAttemptContextAccessor? linklyPaymentAttemptContextAccessor = null,
-        ILinklyBackendTerminalClient? linklyBackendTerminalClient = null)
+        ILinklyBackendTerminalClient? linklyBackendTerminalClient = null,
+        ILinklyTerminalSelectionTransitionGate? linklyTerminalSelectionTransitionGate = null)
     {
         _settingsProvider = settingsProvider;
         _httpClient = httpClient;
@@ -554,6 +556,7 @@ public sealed class ConfiguredCardTerminalClient :
         _squarePaymentAttemptContextAccessor = squarePaymentAttemptContextAccessor;
         _squarePaymentAttemptRepository = squarePaymentAttemptRepository;
         _linklyPaymentAttemptContextAccessor = linklyPaymentAttemptContextAccessor;
+        _linklyTerminalSelectionTransitionGate = linklyTerminalSelectionTransitionGate;
     }
 
     public async Task<PaymentAuthorizationResult> AuthorizeAsync(
@@ -595,15 +598,29 @@ public sealed class ConfiguredCardTerminalClient :
         PosSessionState session,
         CancellationToken cancellationToken)
     {
+        if (settings.Processor == CardProcessorKind.Linkly && _linklyTerminalSelectionTransitionGate is not null)
+        {
+            // 从设置快照确定 Linkly 后持有门禁到请求完成，分配不能夹在选择与扣款之间。
+            await using var lease = await _linklyTerminalSelectionTransitionGate.EnterFinancialOperationAsync(cancellationToken);
+            return await AuthorizeLinklyWithAvailabilityAsync(settings, amount, session, cancellationToken);
+        }
+
         return settings.Processor switch
         {
-            CardProcessorKind.Linkly => _linklyTerminalClient is null
-                ? new PaymentAuthorizationResult(false, null, T("payment.card.linklyUnavailable", "ANZ Linkly terminal adapter is unavailable."))
-                : await AuthorizeLinklyAsync(amount, session, settings, cancellationToken),
+            CardProcessorKind.Linkly => await AuthorizeLinklyWithAvailabilityAsync(settings, amount, session, cancellationToken),
             CardProcessorKind.Square => await AuthorizeSquareAsync(settings, amount, session, cancellationToken),
             _ => new PaymentAuthorizationResult(false, null, T("payment.card.status.notConfigured", "Card terminal is not configured."))
         };
     }
+
+    private Task<PaymentAuthorizationResult> AuthorizeLinklyWithAvailabilityAsync(
+        CardTerminalSettings settings,
+        decimal amount,
+        PosSessionState session,
+        CancellationToken cancellationToken) =>
+        _linklyTerminalClient is null
+            ? Task.FromResult(new PaymentAuthorizationResult(false, null, T("payment.card.linklyUnavailable", "ANZ Linkly terminal adapter is unavailable.")))
+            : AuthorizeLinklyAsync(amount, session, settings, cancellationToken);
 
     private Task<PaymentAuthorizationResult> AuthorizeLinklyAsync(
         decimal amount,
@@ -686,17 +703,40 @@ public sealed class ConfiguredCardTerminalClient :
         string? idempotencyKey,
         CancellationToken cancellationToken)
     {
+        if (settings.Processor == CardProcessorKind.Linkly && _linklyTerminalSelectionTransitionGate is not null)
+        {
+            await using var lease = await _linklyTerminalSelectionTransitionGate.EnterFinancialOperationAsync(cancellationToken);
+            return await RefundLinklyWithAvailabilityAsync(
+                settings, amount, session, originalReference, idempotencyKey, cancellationToken);
+        }
+
         return settings.Processor switch
         {
-            CardProcessorKind.Linkly => _linklyTerminalClient is null
-                ? new PaymentAuthorizationResult(false, null, T("payment.card.linklyUnavailable", "ANZ Linkly terminal adapter is unavailable."))
-                : string.IsNullOrWhiteSpace(idempotencyKey)
-                    ? await _linklyTerminalClient.RefundAsync(amount, session, settings, originalReference, cancellationToken)
-                    // 中文注释：LocalIp 将已持久化的退款 TxnRef 经既有幂等键参数传入；Cloud 模式继续只使用原交易引用。
-                    : await _linklyTerminalClient.RefundWithReferenceAsync(amount, session, settings, originalReference, idempotencyKey, cancellationToken),
+            CardProcessorKind.Linkly => await RefundLinklyWithAvailabilityAsync(
+                settings, amount, session, originalReference, idempotencyKey, cancellationToken),
             CardProcessorKind.Square => await RefundSquareAsync(settings, amount, originalReference, idempotencyKey, cancellationToken),
             _ => new PaymentAuthorizationResult(false, null, T("payment.card.status.notConfigured", "Card terminal is not configured."))
         };
+    }
+
+    private Task<PaymentAuthorizationResult> RefundLinklyWithAvailabilityAsync(
+        CardTerminalSettings settings,
+        decimal amount,
+        PosSessionState session,
+        string? originalReference,
+        string? idempotencyKey,
+        CancellationToken cancellationToken)
+    {
+        if (_linklyTerminalClient is null)
+        {
+            return Task.FromResult(new PaymentAuthorizationResult(
+                false, null, T("payment.card.linklyUnavailable", "ANZ Linkly terminal adapter is unavailable.")));
+        }
+
+        // LocalIp 将已持久化的退款 TxnRef 经既有幂等键参数传入；Cloud 模式继续只使用原交易引用。
+        return string.IsNullOrWhiteSpace(idempotencyKey)
+            ? _linklyTerminalClient.RefundAsync(amount, session, settings, originalReference, cancellationToken)
+            : _linklyTerminalClient.RefundWithReferenceAsync(amount, session, settings, originalReference, idempotencyKey, cancellationToken);
     }
 
     private async Task<PaymentAuthorizationResult> AuthorizeSquareAsync(
@@ -1472,6 +1512,10 @@ public sealed class ConfiguredCardTerminalClient :
         {
             return UnknownRecovery("Linkly attempt does not match the configured terminal.");
         }
+
+        await using var transitionLease = _linklyTerminalSelectionTransitionGate is null
+            ? null
+            : await _linklyTerminalSelectionTransitionGate.EnterFinancialOperationAsync(cancellationToken);
 
         var mode = CardTerminalSettings.NormalizeLinklyConnectionMode(
             attempt.ConnectionMode,

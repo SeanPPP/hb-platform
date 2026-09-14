@@ -1008,7 +1008,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 分店范围统一从实时用户关系解析，任何解析失败都拒绝请求，不能退化成全分店查询。
         /// </summary>
         [HttpGet("compact-sales-board")]
-        [Authorize(Policy = Permissions.Reports.View)]
+        [Authorize(Policy = Permissions.SalesDashboard.CompactBoardView)]
         public async Task<IActionResult> GetCompactSalesBoard(
             [FromQuery] DateTime startDate,
             [FromQuery] DateTime endDate,

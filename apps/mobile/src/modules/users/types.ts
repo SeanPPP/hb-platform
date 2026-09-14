@@ -83,6 +83,15 @@ export interface StoreUserFormValues {
   status: boolean;
 }
 
+export interface StaffCashierBarcodeResponse {
+  exists: boolean;
+  barcode: string;
+  format: string;
+  printCount: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export interface PosTerminalPermissionOption {
   code: string;
   name: string;

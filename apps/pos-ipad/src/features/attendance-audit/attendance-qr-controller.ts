@@ -5,6 +5,7 @@ import {
 } from "@hb/pos-api-client/features/attendance-audit/hbpos-attendance-security-api";
 
 export const ATTENDANCE_QR_TOKEN_LIFETIME_MS = 15_000;
+export const ATTENDANCE_QR_REFRESH_LEAD_MS = 5_000;
 export const ATTENDANCE_QR_TICK_INTERVAL_MS = 1_000;
 export const ATTENDANCE_QR_REFRESH_INTERVAL_MS = 15_000;
 
@@ -378,7 +379,8 @@ export class AttendanceQrController {
       (localNow - provisioning.trustedTime.localEpochMs);
     if (
       this.tokenExpiresAtTrustedEpochMs === null ||
-      trustedNow >= this.tokenExpiresAtTrustedEpochMs
+      trustedNow >=
+        this.tokenExpiresAtTrustedEpochMs - ATTENDANCE_QR_REFRESH_LEAD_MS
     ) {
       await this.rotateQr(provisioning, trustedNow);
       return;

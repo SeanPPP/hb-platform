@@ -1,5 +1,10 @@
 import type { Store } from "@/modules/shop/types";
 
+export function getPosEnabledStores(stores: Store[]) {
+  // 考勤相关页面只展示明确启用 POS 的门店，不改变全局已分配门店和购物车范围。
+  return stores.filter((store) => store.isActive === true);
+}
+
 export type StoreScopeInput = {
   stores: Store[];
   isDeviceMode: boolean;

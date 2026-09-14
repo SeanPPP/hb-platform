@@ -1552,6 +1552,213 @@ test("Linkly 配对和支付切换允许普通耐久队列但阻断敏感订单"
   assert.equal(saveCalls, 1);
 });
 
+test("Linkly 远程线路分配复用 payment transition 且不受本地未完成支付阻断", async () => {
+  const events: string[] = [];
+  const terminalSnapshot = {
+    environment: "Production" as const,
+    mode: "Active" as const,
+    selectedTerminalId: "terminal-2",
+    selectionRevision: 5,
+    terminals: [],
+    devices: [],
+    lineManagementSupported: true,
+  };
+  let pending: SettingsPendingDataSnapshot = CLEAR;
+  const subject = new ProductionSettingsControl(
+    deps({
+      linklySetup: {
+        pair: async () => ({ status: "completed" as const }),
+        assignTerminal: async (_environment, input) => {
+          events.push(`assign:${input.terminalId}:${input.targetDeviceCode}`);
+          return terminalSnapshot;
+        },
+      },
+      paymentConfigurationTransition: {
+        run: async (operation) => {
+          events.push("transition:start");
+          const result = await operation();
+          events.push("transition:end");
+          return result;
+        },
+      },
+      pendingData: {
+        read: async () => {
+          events.push("pending");
+          return pending;
+        },
+      },
+    }),
+  );
+  const action = {
+    kind: "assign-linkly-terminal" as const,
+    environment: "Production" as const,
+    input: {
+      terminalId: "terminal-2",
+      terminalVersion: "v4",
+      assignedDeviceCode: null,
+      assignmentRevision: 4,
+      targetDeviceCode: "IPAD-01",
+      expectedTargetTerminalId: "terminal-1",
+      expectedTargetSelectionRevision: 4,
+    },
+    terminalLabel: "Returns · Lane 2",
+    targetDeviceCode: "IPAD-01",
+    replacedTerminalLabel: "Front · Lane 1",
+    affectsCurrentDevice: false,
+  };
+
+  assert.deepEqual(
+    await subject.executeDangerousAction(action, new AbortController().signal),
+    { status: "completed", kind: "assign-linkly-terminal", terminals: terminalSnapshot },
+  );
+  assert.deepEqual(events, [
+    "transition:start",
+    "pending",
+    "assign:terminal-2:IPAD-01",
+    "transition:end",
+  ]);
+
+  events.length = 0;
+  pending = { ...CLEAR, unresolvedPaymentCount: 1 };
+  assert.deepEqual(
+    await subject.executeDangerousAction(action, new AbortController().signal),
+    { status: "completed", kind: "assign-linkly-terminal", terminals: terminalSnapshot },
+  );
+  assert.deepEqual(events, ["transition:start", "pending", "assign:terminal-2:IPAD-01", "transition:end"]);
+});
+
+test("Linkly 本机切线保留本地业务，购物车、支付和待同步记录均不阻断线路选择", async () => {
+  const events: string[] = [];
+  let pending: SettingsPendingDataSnapshot = { ...CLEAR, pendingDurableWriteCount: 7 };
+  const terminalSnapshot = linklyAssignmentSnapshot();
+  const subject = new ProductionSettingsControl(deps({
+    linklySetup: {
+      pair: async () => ({ status: "completed" as const }),
+      assignTerminal: async () => { events.push("assign"); return terminalSnapshot; },
+    },
+    pendingData: { read: async () => pending },
+  }));
+  const action = linklyAssignmentAction({ affectsCurrentDevice: true });
+  assert.deepEqual(await subject.executeDangerousAction(action, new AbortController().signal), {
+    status: "completed", kind: "assign-linkly-terminal", terminals: terminalSnapshot,
+  });
+  assert.equal(pending.pendingDurableWriteCount, 7);
+  assert.deepEqual(events, ["assign"]);
+  for (const remaining of [
+    { hasActiveCart: true },
+    { hasFulfilmentInFlight: true },
+    { hasSyncOrAuditInFlight: true },
+    { pendingSaleCount: 1 },
+    { pendingReturnCount: 1 },
+    { unresolvedPaymentCount: 1 },
+    { paymentConfigurationSensitiveOrderCount: 1 },
+  ]) {
+    pending = { ...CLEAR, pendingDurableWriteCount: 7, ...remaining };
+    assert.deepEqual(await subject.executeDangerousAction(action, new AbortController().signal),
+      { status: "completed", kind: "assign-linkly-terminal", terminals: terminalSnapshot });
+    assert.deepEqual(pending, { ...CLEAR, pendingDurableWriteCount: 7, ...remaining });
+  }
+  assert.deepEqual(events, Array(8).fill("assign"));
+});
+
+test("Linkly 本机线路分配在全局 transition 内保留待处理订单并更新线路", async () => {
+  const events: string[] = [];
+  const subject = new ProductionSettingsControl(
+    deps({
+      linklySetup: {
+        pair: async () => ({ status: "completed" as const }),
+        assignTerminal: async () => {
+          events.push("assign");
+          return linklyAssignmentSnapshot();
+        },
+      },
+      paymentConfigurationTransition: {
+        run: async (operation) => {
+          events.push("transition:start");
+          const result = await operation();
+          events.push("transition:end");
+          return result;
+        },
+      },
+      pendingData: {
+        read: async () => {
+          events.push("pending");
+          return { ...CLEAR, pendingSaleCount: 1 };
+        },
+      },
+    }),
+  );
+
+  const result = await subject.executeDangerousAction(
+    linklyAssignmentAction({ affectsCurrentDevice: true }),
+    new AbortController().signal,
+  );
+
+  assert.deepEqual(
+    result,
+    { status: "completed", kind: "assign-linkly-terminal", terminals: linklyAssignmentSnapshot() },
+  );
+  assert.deepEqual(events, ["transition:start", "pending", "assign", "transition:end"]);
+});
+
+test("Linkly 本机线路分配等待全局 transition 中的在途交易释放", async () => {
+  const events: string[] = [];
+  let releaseTransaction!: () => void;
+  const transactionReleased = new Promise<void>((resolve) => {
+    releaseTransaction = resolve;
+  });
+  let transitionEntered!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    transitionEntered = resolve;
+  });
+  const subject = new ProductionSettingsControl(
+    deps({
+      linklySetup: {
+        pair: async () => ({ status: "completed" as const }),
+        assignTerminal: async () => {
+          events.push("assign");
+          return linklyAssignmentSnapshot();
+        },
+      },
+      paymentConfigurationTransition: {
+        run: async (operation) => {
+          events.push("transition:requested");
+          transitionEntered();
+          await transactionReleased;
+          events.push("transaction:released");
+          return operation();
+        },
+      },
+      pendingData: {
+        read: async () => {
+          events.push("pending");
+          return CLEAR;
+        },
+      },
+    }),
+  );
+
+  const assignment = subject.executeDangerousAction(
+    linklyAssignmentAction({ affectsCurrentDevice: true }),
+    new AbortController().signal,
+  );
+  await entered;
+  assert.deepEqual(events, ["transition:requested"]);
+
+  releaseTransaction();
+  assert.deepEqual(await assignment, {
+    status: "completed",
+    kind: "assign-linkly-terminal",
+    terminals: linklyAssignmentSnapshot(),
+  });
+  assert.deepEqual(events, [
+    "transition:requested",
+    "transaction:released",
+    "pending",
+    "assign",
+  ]);
+});
+
 test("Linkly 配对 POST 返回后 signal 取消仍保留不可逆 completed 终态", async () => {
   const controller = new AbortController();
   let releasePair!: () => void;
@@ -1753,5 +1960,42 @@ function paymentSettingsAction(): SettingsDangerousConfirmation {
       },
       linkly: null,
     },
+  };
+}
+
+function linklyAssignmentAction(
+  overrides: Partial<
+    Extract<SettingsDangerousConfirmation, { kind: "assign-linkly-terminal" }>
+  > = {},
+): Extract<SettingsDangerousConfirmation, { kind: "assign-linkly-terminal" }> {
+  return {
+    kind: "assign-linkly-terminal",
+    environment: "Production",
+    input: {
+      terminalId: "terminal-2",
+      terminalVersion: "v4",
+      assignedDeviceCode: null,
+      assignmentRevision: 4,
+      targetDeviceCode: "IPAD-01",
+      expectedTargetTerminalId: "terminal-1",
+      expectedTargetSelectionRevision: 4,
+    },
+    terminalLabel: "Returns · Lane 2",
+    targetDeviceCode: "IPAD-01",
+    replacedTerminalLabel: "Front · Lane 1",
+    affectsCurrentDevice: true,
+    ...overrides,
+  };
+}
+
+function linklyAssignmentSnapshot() {
+  return {
+    environment: "Production" as const,
+    mode: "Active" as const,
+    selectedTerminalId: "terminal-2",
+    selectionRevision: 5,
+    terminals: [],
+    devices: [],
+    lineManagementSupported: true,
   };
 }

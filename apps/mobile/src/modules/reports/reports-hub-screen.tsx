@@ -88,6 +88,8 @@ export function ReportsHubScreen() {
     ? t("reports.freshness.running")
     : freshnessQuery.data?.latestRunStatus === "Failed"
       ? t("reports.freshness.failed")
+      : freshnessQuery.data?.latestRunStatus === "Skipped"
+        ? t("reports.freshness.skipped")
       : null;
   const handleTabChange = useCallback((value: string) => {
     if (value !== "revenue" && value !== "product") return;

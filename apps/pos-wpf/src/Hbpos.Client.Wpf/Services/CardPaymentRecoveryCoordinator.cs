@@ -92,6 +92,17 @@ public sealed class CardPaymentRecoveryCoordinator(
                 LockRetained: true));
     }
 
+    public async Task<IReadOnlyList<CardRecoveryQueueItem>> ListHistoryAsync(
+        PosSessionState session,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await LoadHistoryQueueAsync(session, cancellationToken);
+        if (!result.IsComplete)
+            throw new InvalidOperationException(
+                $"Card recovery history could not refresh {string.Join(", ", result.FailedProviders)}.");
+        return result.Items;
+    }
+
     public async Task<IReadOnlyList<CardRecoveryQueueItem>> ListOpenAsync(
         PosSessionState session,
         CancellationToken cancellationToken = default)
@@ -107,20 +118,31 @@ public sealed class CardPaymentRecoveryCoordinator(
         return result.Items;
     }
 
-    public async Task<CardRecoveryQueueLoadResult> LoadOpenQueueAsync(
-        PosSessionState session,
-        CancellationToken cancellationToken = default)
+    public Task<CardRecoveryQueueLoadResult> LoadOpenQueueAsync(
+        PosSessionState session, CancellationToken cancellationToken = default) =>
+        LoadQueueAsync(session, includeHistory: false, cancellationToken);
+
+    public Task<CardRecoveryQueueLoadResult> LoadHistoryQueueAsync(
+        PosSessionState session, CancellationToken cancellationToken = default) =>
+        LoadQueueAsync(session, includeHistory: true, cancellationToken);
+
+    private async Task<CardRecoveryQueueLoadResult> LoadQueueAsync(
+        PosSessionState session, bool includeHistory, CancellationToken cancellationToken)
     {
         await ReplaySupervisorAuditAsync(cancellationToken);
         // 双 provider 队列：同时列出 Linkly 与 Square 的未结 attempt，全局按更新时间排序，
         // 并隔离单一 provider 的读取故障，避免健康 provider 的恢复入口一起消失。
         var linklyLoad = LoadProviderAsync(
             CardProcessorKind.Linkly,
-            () => linklyRecoveryService.ListOpenAsync(session, cancellationToken),
+            () => includeHistory
+                ? linklyRecoveryService.ListHistoryAsync(session, cancellationToken)
+                : linklyRecoveryService.ListOpenAsync(session, cancellationToken),
             cancellationToken);
         var squareLoad = LoadProviderAsync(
             CardProcessorKind.Square,
-            () => squareRecoveryService.ListOpenAsync(session, cancellationToken),
+            () => includeHistory
+                ? squareRecoveryService.ListHistoryAsync(session, cancellationToken)
+                : squareRecoveryService.ListOpenAsync(session, cancellationToken),
             cancellationToken);
         await Task.WhenAll(linklyLoad, squareLoad);
 

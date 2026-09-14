@@ -145,6 +145,37 @@
         <span id="rankingAnnouncement" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></span>
       </section>
 
+      <section id="storeSalesSection" class="store-sales-section" aria-labelledby="storeSalesTitle" aria-busy="false" hidden>
+        <button id="storeSalesBackBtn" class="store-sales-back" type="button">‹ 返回排行榜</button>
+        <h2 id="storeSalesTitle" class="store-sales-title">分店销量</h2>
+        <div id="storeSalesProduct" class="store-sales-product"></div>
+        <p id="storeSalesPeriod" class="store-sales-period"></p>
+        <div class="store-sales-summary">
+          <span id="storeSalesTotalLabel">全公司总销量</span>
+          <strong id="storeSalesTotal">0</strong>
+          <span id="storeSalesStoreCount">0 家分店</span>
+        </div>
+        <label class="store-sales-search">
+          <span class="visually-hidden" id="storeSalesSearchLabel">搜索分店</span>
+          <input id="storeSalesSearch" type="search" autocomplete="off" placeholder="搜索分店" />
+        </label>
+        <div class="store-sales-table-heading" aria-hidden="true">
+          <span id="storeSalesStoreHeading">分店</span>
+          <span id="storeSalesQuantityHeading">销量 ↓</span>
+        </div>
+        <ul id="storeSalesList" class="store-sales-list"></ul>
+        <div id="storeSalesState" class="ranking-state muted" role="status" aria-live="polite" hidden>
+          <span id="storeSalesStateText"></span>
+          <button id="storeSalesRetryBtn" type="button" hidden>重试</button>
+        </div>
+        <p id="storeSalesHelper" class="store-sales-helper" hidden></p>
+        <div id="storeSalesFooter" class="store-sales-footer" hidden>
+          <span id="storeSalesFooterLabel"></span>
+          <strong id="storeSalesFooterTotal">0</strong>
+        </div>
+        <span id="storeSalesAnnouncement" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></span>
+      </section>
+
       <div id="status" class="status" role="status" aria-live="polite"></div>
     </main>
     <script type="module" src="sidepanel.js"></script>

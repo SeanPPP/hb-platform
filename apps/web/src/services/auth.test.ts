@@ -1,4 +1,4 @@
-import { normalizeCurrentUser, refreshSession } from './auth'
+import { login, normalizeCurrentUser, refreshSession } from './auth'
 
 function assertEqual<T>(actual: T, expected: T, message: string) {
   if (actual !== expected) {
@@ -128,5 +128,22 @@ globalThis.fetch = (async () =>
   })) as typeof fetch
 
 assertEqual(await refreshSession(), false, 'session refresh 失败时应返回 false')
+
+let loginRequestCount = 0
+globalThis.fetch = (async () => {
+  loginRequestCount += 1
+  return new Response(JSON.stringify({ success: false, message: '用户名或密码错误' }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}) as typeof fetch
+
+try {
+  await login({ username: 'invalid', password: 'invalid', passwordFormat: 'raw' })
+  throw new Error('HTTP 200 业务失败应抛出异常')
+} catch (error) {
+  assertEqual((error as Error).message, '用户名或密码错误', '登录业务失败应立即返回后端错误')
+}
+assertEqual(loginRequestCount, 1, '登录业务失败后不应继续请求 current 或 refresh')
 
 globalThis.fetch = originalFetch

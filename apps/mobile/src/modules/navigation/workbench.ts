@@ -20,6 +20,7 @@ const WORKBENCH_SECTIONS: WorkbenchNavigationSection[] = [
     titleKey: "groups.salesProduct",
     items: [
       { routeName: "product-query", labelKey: "routes.productQuery", icon: "barcode-scan" },
+      { routeName: "product-insights", labelKey: "routes.productInsights", icon: "chart-timeline-variant" },
       { routeName: "home", labelKey: "routes.storeOrdering", icon: "storefront-outline" },
       { routeName: "cart", labelKey: "routes.cart", icon: "cart-outline" },
       { routeName: "orders", labelKey: "routes.orders", icon: "clipboard-list-outline" },
@@ -53,6 +54,8 @@ const WORKBENCH_SECTIONS: WorkbenchNavigationSection[] = [
       { routeName: "attendance-personal", labelKey: "routes.attendancePersonal", icon: "clock-check-outline" },
       { routeName: "attendance-management", labelKey: "routes.attendanceManagement", icon: "calendar-edit" },
       { routeName: "users", labelKey: "routes.users", icon: "account-group-outline" },
+      { routeName: "user-admin", labelKey: "routes.userAdmin", icon: "account-cog-outline" },
+      { routeName: "roles", labelKey: "routes.roles", icon: "shield-account-outline" },
       { routeName: "employee-profile", labelKey: "routes.employeeProfile", icon: "card-account-details-outline" },
       { routeName: "employee-profile-review", labelKey: "routes.employeeProfileReview", icon: "account-check-outline" },
       { routeName: "device-management", labelKey: "routes.deviceManagement", icon: "cellphone-cog" },

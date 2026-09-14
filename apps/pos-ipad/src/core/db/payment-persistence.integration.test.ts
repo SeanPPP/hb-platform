@@ -15,6 +15,7 @@ import type {
   PricingCartStateSnapshot,
   RecallActiveBinding,
 } from "../contracts";
+import { ActivePricingCartPaymentLeaseCoordinator } from "../runtime/payment-cart-lease-coordinator";
 import { HbposOrderSyncAdapter } from "@hb/pos-sync/core/sync/hbpos-sync-adapters";
 
 import { applyMigrations, POS_DATABASE_MIGRATIONS } from "./migrations";
@@ -38,6 +39,9 @@ import type {
   SqlRunResult,
   SqlValue,
 } from "@hb/pos-db/core/db/types";
+
+import { PricingCart } from "@/features/sales/domain";
+import { ActivePricingCartSession } from "@/features/sales/runtime";
 
 const T0 = "2026-07-28T00:00:00.000Z";
 const T1 = "2026-07-28T00:01:00.000Z";
@@ -1054,6 +1058,25 @@ test("真实 SQLite：payment draft 同事务创建并按完整 cart/身份重�
       recovery?.pricingState.lines[1]?.discountState.kind,
       "manual-percent",
     );
+    assert.ok(recovery);
+    const activeCart = new ActivePricingCartSession(new PricingCart(), () => new PricingCart());
+    const coordinator = new ActivePricingCartPaymentLeaseCoordinator(
+      activeCart,
+      { async findBlockingCart() {
+        return {
+          checkoutIntentId: input.draftId,
+          cart: recovery.cart,
+          pricingState: recovery.pricingState,
+          recallBinding: recovery.recallBinding,
+        };
+      } },
+      () => "sqlite-cold-start-lease",
+    );
+    const lease = await coordinator.initializeRecovery();
+    assert.ok(lease);
+    assert.deepEqual(lease.total, recovery.cart.actualAmount);
+    assert.deepEqual(lease.pricingState, recovery.pricingState);
+    await coordinator.releaseAfterSafeCancel(lease, first.orderGuid);
   });
 });
 

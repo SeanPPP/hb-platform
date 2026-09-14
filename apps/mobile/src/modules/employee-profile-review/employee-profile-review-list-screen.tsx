@@ -4,6 +4,7 @@ import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { useFocusEffect, useRouter } from "expo-router";
 import { ActivityIndicator, Badge, Button, Card, Chip, Text, useTheme } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { BUSINESS_UI } from "@/components/ui/business-ui";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { getEmployeeProfileReviewAccess } from "./access";
 import { getEmployeeProfileReviewRequestsApi } from "./api";
@@ -13,6 +14,7 @@ import { mergeUniqueEmployeeProfileReviewPages } from "./pagination";
 import type { EmployeeProfileReviewSummary } from "./types";
 import { useAppNavigationStore } from "@/modules/navigation/store";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
+import { HB_COLORS, HB_SPACING } from "@/shared/theme/tokens";
 import { useAuthStore } from "@/store/auth-store";
 
 export const employeeProfileReviewListQueryKey = [
@@ -208,6 +210,7 @@ export function EmployeeProfileReviewListScreen() {
         renderItem={({ item }) => (
           <Card
             mode="outlined"
+            style={styles.requestCard}
             onPress={() => openDetail(item)}
             accessibilityLabel={t("list.openRequest", { name: item.username || item.userGuid })}
           >
@@ -250,17 +253,18 @@ export function EmployeeProfileReviewListScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
-  centered: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24 },
-  header: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8, gap: 4 },
-  titleRow: { flexDirection: "row", alignItems: "center", gap: 10 },
-  list: { padding: 16, paddingBottom: 32, gap: 12 },
-  emptyList: { flexGrow: 1, justifyContent: "center", padding: 16 },
-  cardContent: { paddingVertical: 4, gap: 12 },
-  cardTitleRow: { flexDirection: "row", alignItems: "flex-start", gap: 12 },
-  employeeText: { flex: 1, gap: 2 },
-  chips: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
-  footerRow: { minHeight: 48, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
+  container: BUSINESS_UI.screen,
+  centered: { flex: 1, alignItems: "center", justifyContent: "center", padding: HB_SPACING.lg },
+  header: { ...BUSINESS_UI.header, backgroundColor: HB_COLORS.white, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: HB_COLORS.outlineMuted },
+  titleRow: { flexDirection: "row", alignItems: "center", gap: HB_SPACING.xs },
+  list: { ...BUSINESS_UI.content, paddingBottom: HB_SPACING.xl },
+  emptyList: { flexGrow: 1, justifyContent: "center", padding: HB_SPACING.md },
+  requestCard: BUSINESS_UI.section,
+  cardContent: { ...BUSINESS_UI.sectionContent, paddingVertical: HB_SPACING.sm },
+  cardTitleRow: { flexDirection: "row", alignItems: "flex-start", gap: HB_SPACING.sm },
+  employeeText: { flex: 1, gap: HB_SPACING.xxs },
+  chips: { flexDirection: "row", flexWrap: "wrap", gap: HB_SPACING.xs },
+  footerRow: { minHeight: 48, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: HB_SPACING.xs },
   touchTarget: { minHeight: 48 },
-  pageLoader: { paddingVertical: 16 },
+  pageLoader: { paddingVertical: HB_SPACING.md },
 });

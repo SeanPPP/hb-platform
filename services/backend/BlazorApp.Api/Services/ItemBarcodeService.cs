@@ -227,6 +227,37 @@ namespace BlazorApp.Api.Services
             return result;
         }
 
+        public async Task<string> GenerateLocalProductBarcodeAsync(DateTimeOffset? now = null)
+        {
+            // 9529 + 布里斯班日期 YYMMDD + 两位序号 + EAN13 校验位；预留编号永不回收。
+            var generated = await GenerateAndReserveAsync("LocalProductBarcode", async db =>
+            {
+                var date = (now ?? DateTimeOffset.UtcNow).ToOffset(TimeSpan.FromHours(10));
+                var prefix = "9529" + date.ToString("yyMMdd", System.Globalization.CultureInfo.InvariantCulture);
+                var reserved = (await db.Queryable<ItemBarcodeReservation>()
+                    .Where(x => x.IdentifierType == BarcodeIdentifierType && x.IdentifierValue.StartsWith(prefix))
+                    .Select(x => x.IdentifierValue).ToListAsync()).ToHashSet(StringComparer.Ordinal);
+                for (var sequence = 0; sequence < 100; sequence++)
+                {
+                    var barcode = BarcodeHelper.GenerateCompleteEan13(
+                        prefix + sequence.ToString("D2", System.Globalization.CultureInfo.InvariantCulture)
+                    );
+                    if (reserved.Contains(barcode)
+                        || await db.Queryable<Product>().AnyAsync(x => x.Barcode == barcode)
+                        || await db.Queryable<ProductSetCode>().AnyAsync(x => x.SetBarcode == barcode)
+                        || await db.Queryable<StoreMultiCodeProduct>().AnyAsync(x => x.MultiBarcode == barcode)
+                        || await db.Queryable<StoreClearancePrice>().AnyAsync(x => x.ClearanceBarcode == barcode)
+                        || await db.Queryable<DomesticProduct>().AnyAsync(x => x.Barcode == barcode)
+                        || await db.Queryable<DomesticSetProduct>().AnyAsync(x => x.SetBarcode == barcode))
+                        continue;
+
+                    return new List<(string itemNumber, string barcode)> { (string.Empty, barcode) };
+                }
+                throw new InvalidOperationException("当天的 100 个自动条码已用满，请联系管理员，不能重复使用已有条码");
+            });
+            return generated[0].barcode;
+        }
+
         private Task<List<(string itemNumber, string barcode)>> GenerateMainItemNumbersAndBarcodesAsync(
             string supplierCode,
             ProductTypeEnum productType,
@@ -438,6 +469,8 @@ namespace BlazorApp.Api.Services
                         CreateReservation(BarcodeIdentifierType, item.barcode, createdAt),
                     }
                 )
+                // 本地商品只预留条码，不生成或占用货号。
+                .Where(item => !string.IsNullOrWhiteSpace(item.IdentifierValue))
                 .ToList();
             if (
                 reservations.Select(item => item.ReservationKey).Distinct().Count()

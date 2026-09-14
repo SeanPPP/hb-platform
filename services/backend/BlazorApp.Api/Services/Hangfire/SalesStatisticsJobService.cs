@@ -562,7 +562,8 @@ namespace BlazorApp.Api.Services
             ILogger<SalesStatisticsJobService> logger,
             IConfiguration configuration,
             IServiceScopeFactory serviceScopeFactory,
-            HBSalesRecordSqlSugarContext? hbSalesContext = null
+            HBSalesRecordSqlSugarContext? hbSalesContext = null,
+            TimeProvider? timeProvider = null
         )
         {
             _serviceScopeFactory = serviceScopeFactory;
@@ -573,7 +574,8 @@ namespace BlazorApp.Api.Services
                 configuration,
                 serviceScopeFactory,
                 serviceProvider => serviceProvider.GetRequiredService<ISalesStatisticsRecalculationExecutor>(),
-                hbSalesContext
+                hbSalesContext,
+                timeProvider
             );
         }
 
@@ -597,8 +599,10 @@ namespace BlazorApp.Api.Services
         public Task UpdateDailyStatistics(string? dateStr = null) => _application.UpdateDailyStatistics(dateStr);
         public Task UpdateHourlyStatistics(DateTime date, int? hour = null) => _application.UpdateHourlyStatistics(date, hour);
         public Task UpdateStoreStatistics(DateTime? date = null) => _application.UpdateStoreStatistics(date);
-        public Task FullRefreshPreviousDay() => _application.FullRefreshPreviousDay();
-        public Task FullRefreshCurrentDay() => _application.FullRefreshCurrentDay();
+        public Task<SalesStatisticsRefreshExecutionResult> FullRefreshPreviousDay() => _application.FullRefreshPreviousDay();
+        public Task<SalesStatisticsRefreshExecutionResult> FullRefreshCurrentDay() => _application.FullRefreshCurrentDay();
+        public Task<SalesStatisticsRefreshExecutionResult> FullRefreshCurrentDay(bool automatic, bool includeHistorical = true, int firstHistoricalDayOffset = 1) =>
+            _application.FullRefreshCurrentDay(automatic, includeHistorical, firstHistoricalDayOffset);
         public Task UpdateStoreStatistics(DateTime date, List<string>? branchCodes = null) => _application.UpdateStoreStatistics(date, branchCodes);
         public Task UpdateSupplierStatistics(DateTime? startDate = null, DateTime? endDate = null, List<string>? supplierCodes = null) => _application.UpdateSupplierStatistics(startDate, endDate, supplierCodes);
         public Task UpdateProductStoreDailyStatistics(DateTime? date = null) => _application.UpdateProductStoreDailyStatistics(date);

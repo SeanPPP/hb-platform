@@ -206,6 +206,15 @@ namespace BlazorApp.Shared.DTOs
         public DateTime? ShipmentDate { get; set; }
 
         public decimal ShippedQuantity { get; set; }
+
+        /// <summary>订单对应的分店代码。</summary>
+        public string? BranchCode { get; set; }
+
+        /// <summary>分店 Store.IsActive 配置；未匹配门店时为 null。</summary>
+        public bool? PosEnabled { get; set; }
+
+        /// <summary>SalesPeriod 内该商品该分店净销量；同店多张发货单重复展示，不按发货单分摊。</summary>
+        public int NetSalesQuantity { get; set; }
     }
 
     public class WarehouseProductFlowBranchDto

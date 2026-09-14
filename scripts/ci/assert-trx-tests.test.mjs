@@ -69,11 +69,18 @@ test('Windows 组件测试按 profile 筛选性能测试并在 weekly 启用性�
 
 test('POS API 常规组件排除由 weekly lane 执行的 SQL 集成测试', () => {
   const source = readFileSync(new URL('./run-dotnet-component.sh', import.meta.url), 'utf8')
+  const weeklySource = readFileSync(new URL('./run-weekly-sql.sh', import.meta.url), 'utf8')
+  const linklySqlSource = readFileSync(
+    new URL('../../apps/pos-wpf/tests/Hbpos.Api.Tests/LinklyLineManagementSqlServerIntegrationTests.cs', import.meta.url),
+    'utf8',
+  )
 
   assert.match(
     source,
     /pos-api\)[\s\S]*--filter 'Category!=SQL&Category!=Performance&Category!=LiveE2e'/,
   )
+  assert.match(linklySqlSource, /\[Trait\("Category", "SQL"\)\][\s\S]*LinklyLineManagementSqlServerIntegrationTests/)
+  assert.match(weeklySource, /LINKLY_LINE_SQLSERVER_TEST_CONNECTION/)
 })
 
 test('Backend Mobile 合同测试排除由独立 Schema lane 强制执行的 SQL 测试', () => {

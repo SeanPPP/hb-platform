@@ -33,6 +33,8 @@ export interface UserStoreDto {
   storeGUID?: string;
   storeCode: string;
   storeName: string;
+  /** 后端门店的 POS 启用开关，不代表设备在线状态。 */
+  isActive?: boolean;
   postcode?: string;
   stateCode?: string;
   isPrimary?: boolean;
@@ -92,6 +94,9 @@ export interface AccessControl {
   canDeletePrice: boolean;
   canViewDeviceRegistration: boolean;
   canManageDeviceRegistration: boolean;
+  canManageDeviceActivationCodes: boolean;
+  canManageMobileDeviceActivationCodes: boolean;
+  canManageEmergencyLoginGrants: boolean;
   canViewEmployeeProfiles: boolean;
   canViewAttendancePersonal: boolean;
   canViewAttendanceManagement: boolean;

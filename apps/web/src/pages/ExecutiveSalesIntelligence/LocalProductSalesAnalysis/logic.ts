@@ -15,8 +15,11 @@ import type {
 
 export interface LocalProductSalesAnalysisDateRange { startDate: string; endDate: string }
 
-/** 页面专用安全超时：bootstrap 与分段重试统一 8 秒。 */
-export const PAGE_BOOTSTRAP_TIMEOUT_SECONDS = 8
+/** bootstrap 需要覆盖完整页面数据，给偶发但成功的慢查询留出有界等待时间。 */
+export const PAGE_BOOTSTRAP_TIMEOUT_SECONDS = 15
+
+/** 分段重试、候选分页与分店钻取继续使用较短的交互等待上限。 */
+export const PAGE_SECTION_TIMEOUT_SECONDS = 8
 
 export type LocalProductSalesAnalysisSectionKey = keyof LocalSupplierProductSalesAnalysisSectionErrors
 
@@ -150,8 +153,8 @@ export function buildLocalProductSalesAnalysisBootstrapRequest(context: LocalPro
   }
 }
 
-/** 页面统一安全超时：超时中止为 AbortError；clear 用于成功后取消定时器。 */
-export function createPageRequestTimeout(seconds = PAGE_BOOTSTRAP_TIMEOUT_SECONDS): PageRequestTimeout {
+/** 页面请求安全超时：默认用于分段请求；bootstrap 必须显式传入自己的等待上限。 */
+export function createPageRequestTimeout(seconds = PAGE_SECTION_TIMEOUT_SECONDS): PageRequestTimeout {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), Math.max(1, Math.round(seconds * 1000)))
   return {

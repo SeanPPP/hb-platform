@@ -5,8 +5,10 @@ import { Button, Divider, IconButton, Surface, Text } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { getMobilePrivacyPolicy } from "@/shared/legal/mobile-privacy-policy";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
+import { BUSINESS_UI } from "@/components/ui/business-ui";
+import { HB_COLORS } from "@/shared/theme/tokens";
 
-const BRAND_RED = "#E53935";
+const BRAND_RED = HB_COLORS.brand;
 
 export default function PrivacyScreen() {
   const router = useRouter();
@@ -130,7 +132,7 @@ export default function PrivacyScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#F5F7FA" },
+  container: { ...BUSINESS_UI.screen },
   header: {
     minHeight: 52,
     paddingHorizontal: 4,
@@ -144,14 +146,15 @@ const styles = StyleSheet.create({
   headerSpacer: { width: 48 },
   content: { paddingHorizontal: 16, paddingTop: 20, paddingBottom: 32 },
   intro: { gap: 6 },
-  title: { color: "#20242C", fontWeight: "800" },
+  title: { ...BUSINESS_UI.title },
   subtitle: { color: "#4B5563" },
   effectiveDate: { color: BRAND_RED, marginTop: 2 },
   summary: { color: "#303640", lineHeight: 22, marginTop: 8 },
   organizationCard: {
+    ...BUSINESS_UI.section,
     marginTop: 18,
     padding: 14,
-    borderRadius: 8,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: "#E1E5EB",
     backgroundColor: "#FFFFFF",

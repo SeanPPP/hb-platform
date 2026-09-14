@@ -27,6 +27,8 @@ import {
   removeRequestHeader,
   resolveDeviceAccountRequestPolicy,
 } from "@/modules/device-activation/device-account-request-policy";
+import { EXPECTED_ACCOUNT_HEADER } from "@/shared/api/account-bound-request-header";
+import { toByteArray } from "base64-js";
 
 export const apiClient = axios.create({
   baseURL: DEFAULT_API_BASE_URL,
@@ -179,7 +181,24 @@ async function redirectToLoginAfterUnauthenticated(message?: string) {
 
 apiClient.interceptors.request.use(
   async (config: InternalAxiosRequestConfig) => {
+    const guardedConfig = config as InternalAxiosRequestConfig & {
+      _expectedAccountGuid?: string;
+    };
+    const rawExpectedAccountGuid = config.headers?.[EXPECTED_ACCOUNT_HEADER];
+    const headerExpectedAccountGuid = Array.isArray(rawExpectedAccountGuid)
+      ? rawExpectedAccountGuid[0]
+      : rawExpectedAccountGuid;
+    if (typeof headerExpectedAccountGuid === "string" && headerExpectedAccountGuid.trim()) {
+      guardedConfig._expectedAccountGuid = headerExpectedAccountGuid.trim();
+    }
+    // 内部 metadata 会随 401 重试保留；header 在首次读取后立即删除，绝不发送给服务端。
+    const expectedAccountGuid = guardedConfig._expectedAccountGuid;
+    if (config.headers) removeRequestHeader(config.headers, EXPECTED_ACCOUNT_HEADER);
+
     if (isIosReviewSessionActive()) {
+      if (expectedAccountGuid) {
+        throw Object.assign(new Error("ACCOUNT_SESSION_CHANGED"), { code: "ACCOUNT_SESSION_CHANGED" });
+      }
       // 关键位置：审核会话在任何 base URL、token、设备认证读取之前强制切到本地 adapter。
       config.adapter = iosReviewAxiosAdapter;
       config.baseURL = undefined;
@@ -232,12 +251,34 @@ apiClient.interceptors.request.use(
       getAuthSessionMarker(),
       DeviceAccountStorage.loadBinding().catch(() => null),
     ]);
+    // 存储读取期间用户可能切换到审核会话；账号绑定请求必须在异步边界后再次确认。
+    if (expectedAccountGuid && isIosReviewSessionActive()) {
+      throw Object.assign(new Error("ACCOUNT_SESSION_CHANGED"), { code: "ACCOUNT_SESSION_CHANGED" });
+    }
+    if (typeof expectedAccountGuid === "string" && expectedAccountGuid.trim()) {
+      const tokenParts = token?.split(".") ?? [];
+      let tokenSubject = "";
+      try {
+        const encoded = (tokenParts[1] ?? "").replace(/-/g, "+").replace(/_/g, "/");
+        const padded = encoded.padEnd(Math.ceil(encoded.length / 4) * 4, "=");
+        const payload = JSON.parse(new TextDecoder().decode(toByteArray(padded))) as Record<string, unknown>;
+        tokenSubject = typeof payload.sub === "string" ? payload.sub : "";
+      } catch {
+        tokenSubject = "";
+      }
+      if (!tokenSubject || tokenSubject.toLowerCase() !== expectedAccountGuid.trim().toLowerCase()) {
+        throw Object.assign(new Error("ACCOUNT_SESSION_CHANGED"), { code: "ACCOUNT_SESSION_CHANGED" });
+      }
+    }
     const sessionKind = deriveEffectiveAuthSessionKind({
       persistedKind: persistedSessionKind,
       hasAccessToken: Boolean(token),
       hasRefreshToken: Boolean(refreshToken),
       hasBinding: Boolean(accountBinding),
     });
+    if (expectedAccountGuid && sessionKind !== "account") {
+      throw Object.assign(new Error("ACCOUNT_SESSION_CHANGED"), { code: "ACCOUNT_SESSION_CHANGED" });
+    }
     const requestPolicy = resolveDeviceAccountRequestPolicy({
       requestedApiHost,
       bindingApiHost: accountBinding?.apiHost,
@@ -313,9 +354,27 @@ apiClient.interceptors.response.use(
     return response;
   },
   async (error: AxiosError) => {
-    const original = error.config as InternalAxiosRequestConfig & { _retry?: boolean };
+    const original = error.config as InternalAxiosRequestConfig & {
+      _retry?: boolean;
+      _expectedAccountGuid?: string;
+    };
     const skipAuthRedirect = shouldSkipAuthRedirect(original);
     const skipAuthRecovery = shouldSkipAuthRecovery(original);
+
+    if (
+      error.response?.status === 401
+      && original?._expectedAccountGuid
+      && !isAuthenticationRequest(original)
+    ) {
+      // 权限管理写请求不能在 401 后自动重放：迟到的刷新结果可能覆盖用户刚建立的新会话。
+      // 此处也不能清理全局会话；旧响应与新登录并发时，异步清理可能误删新账号凭据。
+      return Promise.reject(
+        Object.assign(new Error("ACCOUNT_SESSION_CHANGED"), {
+          code: "ACCOUNT_SESSION_CHANGED",
+          cause: preserveApiClientError(error),
+        })
+      );
+    }
 
     if (error.response?.status === 401 && skipAuthRecovery) {
       return Promise.reject(preserveApiClientError(error));

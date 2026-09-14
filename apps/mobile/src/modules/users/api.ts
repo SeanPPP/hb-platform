@@ -9,6 +9,7 @@ import type {
   StoreUserProfile,
   StoreUserStatusPayload,
   StoreUserUpdatePayload,
+  StaffCashierBarcodeResponse,
 } from "@/modules/users/types";
 import {
   normalizeStoreUserDetail,
@@ -110,4 +111,48 @@ export async function resetStoreUserPassword(payload: StoreUserPasswordPayload):
       passwordFormat: payload.passwordFormat,
     }
   );
+}
+
+type ApiRecord = Record<string, unknown>;
+
+function normalizeStaffCashierBarcode(payload: unknown): StaffCashierBarcodeResponse {
+  const envelope = payload && typeof payload === "object" ? payload as ApiRecord : {};
+  const value = envelope.data && typeof envelope.data === "object" ? envelope.data as ApiRecord : envelope;
+  const text = (candidate: unknown) => typeof candidate === "string" ? candidate.trim() : "";
+  return {
+    exists: Boolean(value.exists ?? value.Exists),
+    barcode: text(value.barcode ?? value.Barcode),
+    format: text(value.format ?? value.Format) || "EAN13",
+    printCount: Number(value.printCount ?? value.PrintCount) || 0,
+    createdAt: text(value.createdAt ?? value.CreatedAt) || undefined,
+    updatedAt: text(value.updatedAt ?? value.UpdatedAt) || undefined,
+  };
+}
+
+function staffCashierBarcodePath(userGuid: string, suffix = "") {
+  return `/react/v1/store-users/${encodeURIComponent(userGuid)}/cashier-barcode${suffix}`;
+}
+
+export async function getStaffCashierBarcodeApi(userGuid: string, storeCode: string) {
+  const response = await apiClient.get(staffCashierBarcodePath(userGuid), { params: { storeCode } });
+  return normalizeStaffCashierBarcode(response.data);
+}
+
+export async function ensureStaffCashierBarcodeApi(userGuid: string, storeCode: string) {
+  const response = await apiClient.post(staffCashierBarcodePath(userGuid, "/ensure"), { storeCode });
+  return normalizeStaffCashierBarcode(response.data);
+}
+
+export async function confirmStaffCashierBarcodePrintApi(
+  userGuid: string,
+  storeCode: string,
+  barcode: string,
+  printAttemptId: string
+) {
+  const response = await apiClient.post(staffCashierBarcodePath(userGuid, "/print-confirmation"), {
+    storeCode,
+    barcode: barcode.trim(),
+    printAttemptId: printAttemptId.trim(),
+  });
+  return normalizeStaffCashierBarcode(response.data);
 }

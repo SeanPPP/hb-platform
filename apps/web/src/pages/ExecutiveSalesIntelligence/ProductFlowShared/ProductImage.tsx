@@ -1,5 +1,6 @@
 import { PictureOutlined } from '@ant-design/icons'
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 
 interface ProductImageProps {
   src?: string
@@ -8,6 +9,7 @@ interface ProductImageProps {
 }
 
 export default function ProductImage({ src, alt, size = 48 }: ProductImageProps) {
+  const { t } = useTranslation()
   const [failed, setFailed] = useState(false)
 
   useEffect(() => {
@@ -17,7 +19,7 @@ export default function ProductImage({ src, alt, size = 48 }: ProductImageProps)
   if (!src || failed) {
     return (
       <span
-        aria-label={`${alt} 暂无图片`}
+        aria-label={t('productFlowShared.noImage', { product: alt })}
         className="product-flow-image-fallback"
         style={{ width: size, height: size }}
       >

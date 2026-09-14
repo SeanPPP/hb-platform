@@ -103,6 +103,12 @@ import {
   VoucherBalanceReceiptRenderer,
 } from "../../features/receipts/voucher-balance-receipt";
 import { HbposRemoteHistoryApi } from "@hb/pos-api-client/features/remote-history/remote-history-api";
+import {
+  PaymentAcknowledgementService,
+  type PaymentAcknowledgementLedgerPort,
+  type LinklyLegacyAcknowledgementReconciler,
+  type LinklyPaymentAcknowledgementPort,
+} from "@hb/pos-payments-core/features/payments/payment-acknowledgement-service";
 import { REMOTE_HISTORY_REPRINT_PERMISSION } from "@hb/pos-domain/features/remote-history/remote-history-presenter";
 import {
   createHbposRemoteHistoryPresenterFactory,
@@ -1375,6 +1381,10 @@ export function createProductionPosRuntimeServices(
     receiptSettings: {
       getReceiptPrinterSettings: () => baseReceiptSettings.get(),
     },
+    // returnRecoveryProbe 在本组合根稍后初始化；此闭包只会在付款运行时实际执行
+    // 金融操作前调用，届时 probe 已就绪，避免活动退货期间启动新的扣款/退款。
+    hasReturnRecoveryRequired: () =>
+      returnRecoveryProbe.hasRecoveryRequired(),
     drainFulfilment: postCommitWork,
   });
   const payments = paymentRuntime.service;
@@ -1385,6 +1395,9 @@ export function createProductionPosRuntimeServices(
   const installmentRecoveryActionStore =
     installmentActionStore ??
     input.database.installmentActions(input.encryptor);
+  let prepareInstallmentAcknowledgementRecovery:
+    | (() => Promise<void>)
+    | null = null;
   const installmentSnapshotRepository = installmentConfiguration
     ? input.database.installmentSnapshots(input.encryptor)
     : null;
@@ -1433,9 +1446,20 @@ export function createProductionPosRuntimeServices(
               persistence.refundProvenance,
             ),
             voucherMaterials: persistence.voucherMaterials,
+            acknowledgements: installmentAcknowledgementsOrNull(
+              bootstrap,
+              persistence.providerAttempts,
+              input.clock.nowIso,
+            ),
             createId: input.createId,
             nowIso: input.clock.nowIso,
           });
+        prepareInstallmentAcknowledgementRecovery =
+          installmentLegacyAcknowledgementDiscoveryOrNull(
+            bootstrap,
+            persistence.providerAttempts,
+            input.auditMetadata,
+          );
         return createProductionInstallmentRuntime({
           currentCashier,
           terminal: input.auditMetadata,
@@ -1450,6 +1474,12 @@ export function createProductionPosRuntimeServices(
           snapshotRepository: installmentSnapshotRepository,
           actionStore,
           payments: installmentPayments,
+          ...(prepareInstallmentAcknowledgementRecovery
+            ? {
+                prepareProviderAcknowledgementRecovery:
+                  prepareInstallmentAcknowledgementRecovery,
+              }
+            : {}),
           receiptReprint: {
             canReprint: isInstallmentReceiptReprintEligible,
             execute: (installmentGuid, authorization, assertActive) =>
@@ -1480,6 +1510,11 @@ export function createProductionPosRuntimeServices(
         status: "unavailable",
         reason: "INSTALLMENT_PAYMENT_PERSISTENCE_MISSING",
       };
+  const terminalReturnRecoveryLedger =
+    input.database.returnExecutionLedger(input.encryptor, {
+      createTenderGuid: input.createId,
+      createAuditEventId: input.createId,
+    });
   const returnRecoveryProbe = createProductionReturnRecoveryProbe({
     database: input.database,
     encryptor: input.encryptor,
@@ -1496,6 +1531,7 @@ export function createProductionPosRuntimeServices(
         currentCashier,
         authorization: operationAuthorization,
         providerRefund: paymentRuntime.returnRefund,
+        acknowledgements: paymentRuntime.acknowledgements,
         requestOrderSyncDrain: () => coordinator.requestDrain(),
       })
     : {
@@ -1892,29 +1928,53 @@ export function createProductionPosRuntimeServices(
         let hasUnresolvedPayment = true;
         let hasRecoveryRequired = true;
         try {
-          const regularPaymentRecovery =
-            payments.status === "available"
-              ? await payments.hasRecoveryRequired()
-              : false;
-          const installmentPaymentRecovery =
-            installmentActionStore
-              ? (await installmentActionStore.loadBlocking(
-                  input.auditMetadata,
-                )) !== null
-              : false;
           hasUnresolvedPayment =
-            regularPaymentRecovery ||
-            installmentPaymentRecovery;
+            await paymentRuntime.recoveryProbe.hasRecoveryRequired();
         } catch {
-          // 无法证明支付已稳定时必须禁止 reload，避免 Unknown 被误当成可安全重启。
+          // 支付耐久状态无法证明稳定时保持阻断，不影响独立核验退货状态。
+        }
+        try {
+          // 分期 legacy 发现只冻结可验证环境；不提交金融操作，随后统一检查三类耐久恢复。
+          await prepareInstallmentAcknowledgementRecovery?.();
+          const [payment, lifecycle, acknowledgement] =
+            await Promise.all([
+              installmentRecoveryActionStore.loadBlocking(
+                input.auditMetadata,
+              ),
+              installmentRecoveryActionStore.loadLifecycleBlocking(
+                input.auditMetadata,
+              ),
+              installmentRecoveryActionStore
+                .loadProviderAcknowledgementPending?.(
+                  input.auditMetadata,
+                ) ?? Promise.resolve(null),
+            ]);
+          if (
+            Number(Boolean(payment)) +
+              Number(Boolean(lifecycle)) +
+              Number(Boolean(acknowledgement)) >
+            1
+          ) {
+            throw new Error(
+              "Multiple installment actions require recovery.",
+            );
+          }
+          hasUnresolvedPayment =
+            hasUnresolvedPayment ||
+            payment !== null ||
+            lifecycle !== null ||
+            acknowledgement !== null;
+        } catch {
+          // 分期 action、lifecycle 或 ACK 读取失败时仍按需要恢复处理。
+          hasUnresolvedPayment = true;
         }
         try {
           hasRecoveryRequired =
-            returns.status === "available"
-              ? await returns.hasRecoveryRequired()
-              : false;
+            await terminalReturnRecoveryLedger.hasRecoverableForTerminal(
+              input.auditMetadata,
+            );
         } catch {
-          // 退货恢复读取失败同样不能当成安全；保持 true 等待下一次可信快照。
+          // 退货终端恢复读取失败同样不能当成安全。
         }
         return Object.freeze({
           hasActiveCart:
@@ -2316,6 +2376,83 @@ export function createProductionPosRuntimeServices(
   };
 }
 
+function installmentAcknowledgementsOrNull(
+  bootstrap: PaymentProviderRuntimeBootstrap,
+  ledger: import("./production-installment-payment-adapter").InstallmentProviderAttemptStorePort,
+  nowIso: () => string,
+): PaymentAcknowledgementService | null {
+  let candidate: unknown;
+  try {
+    candidate = bootstrap.providers.get("linkly-cloud") as unknown;
+  } catch {
+    // Linkly 是可选 provider；未安装时不能让分期生产组合在启动阶段失败。
+    return null;
+  }
+  if (!candidate || typeof candidate !== "object" || !("acknowledge" in candidate) || typeof candidate.acknowledge !== "function") return null;
+  const reconciler = installmentLegacyReconcilerOrNull(candidate);
+  return new PaymentAcknowledgementService({
+    ledger: ledger as PaymentAcknowledgementLedgerPort,
+    acknowledger: candidate as LinklyPaymentAcknowledgementPort,
+    ...(reconciler ? { legacyReconciler: reconciler } : {}),
+    nowIso,
+  });
+}
+
+function installmentLegacyReconcilerOrNull(candidate: object): LinklyLegacyAcknowledgementReconciler | null {
+  if (!("reconcileLegacy" in candidate) || typeof candidate.reconcileLegacy !== "function") return null;
+  const reconcile = candidate.reconcileLegacy as (attempt: import("../contracts").PaymentAttempt) => Promise<unknown>;
+  return {
+    async reconcileLegacy(attempt) {
+      // provider 的核验会读取自身冻结的连接配置，脱离实例调用会丢失 this。
+      const result = await reconcile.call(candidate, attempt);
+      return result && typeof result === "object" && "environment" in result && typeof result.environment === "string" ? result.environment : null;
+    },
+  };
+}
+
+function installmentLegacyAcknowledgementDiscoveryOrNull(
+  bootstrap: PaymentProviderRuntimeBootstrap,
+  ledger: import("./production-installment-payment-adapter").InstallmentProviderAttemptStorePort,
+  terminal: Readonly<{ storeCode: string; deviceCode: string }>,
+): (() => Promise<void>) | null {
+  let candidate: unknown;
+  try {
+    candidate = bootstrap.providers.get("linkly-cloud") as unknown;
+  } catch {
+    // 与 ACK 服务保持相同的可选依赖语义，缺少 Linkly 时跳过只读旧记录发现。
+    return null;
+  }
+  if (!candidate || typeof candidate !== "object") return null;
+  const list = "listUnacknowledgedSessions" in candidate
+    ? candidate.listUnacknowledgedSessions
+    : null;
+  const reconcile = installmentLegacyReconcilerOrNull(candidate);
+  const find = ledger.findLegacyLinklyAttemptForSession;
+  const verify = ledger.verifyProviderEnvironment;
+  if (typeof list !== "function" || !reconcile || !find || !verify) return null;
+  let discovery: Promise<void> | null = null;
+  return async () => {
+    if (discovery) return discovery;
+    // 只读后端占用会话，再以完整 session 与 CAS 冻结环境；离线时不把历史猜成 pending。
+    discovery = (async () => {
+      const sessions = await (list as () => Promise<readonly { sessionId: string; environment: string; idempotencyKey?: string }[]>).call(candidate);
+      for (const session of sessions) {
+        // 旧分期没有 session projection；必须同时有后端回传的本地稳定 UID 才可窄查。
+        if (typeof session.idempotencyKey !== "string") continue;
+        const attempt = await find.call(ledger, terminal, session.sessionId, session.idempotencyKey);
+        if (!attempt) continue;
+        const environment = await reconcile.reconcileLegacy(attempt);
+        if (environment !== session.environment) continue;
+        await verify.call(ledger, attempt, environment);
+      }
+    })().catch(() => {
+      // 后端不可达保留旧事实；下次启动重试只读发现，绝不发送退款/付款。
+      discovery = null;
+    });
+    return discovery;
+  };
+}
+
 function createCurrentCashierSalesAuthorization(
   cashierLease: TrustedCashierLease,
   terminal: HbposAuditMetadata,
@@ -2645,6 +2782,9 @@ function createAvailableReturnRuntime(input: Readonly<{
   providerRefund: ReturnType<
     typeof createProductionPaymentRuntime
   >["returnRefund"];
+  acknowledgements: ReturnType<
+    typeof createProductionPaymentRuntime
+  >["acknowledgements"];
   requestOrderSyncDrain: () => Promise<unknown>;
 }>): PosReturnsRuntimeService {
   const receiptRenderer = new OrderRepositoryReturnReceiptRenderer(
@@ -2690,6 +2830,9 @@ function createAvailableReturnRuntime(input: Readonly<{
     onlineRefund: new ProductionReturnOnlineRefundRouter({
       providerRefund: input.providerRefund,
     }),
+    ...(input.acknowledgements
+      ? { acknowledgements: input.acknowledgements }
+      : {}),
     fulfilment: {
       materializeAction: (actionId) =>
         fulfilment.materializeAction(actionId),

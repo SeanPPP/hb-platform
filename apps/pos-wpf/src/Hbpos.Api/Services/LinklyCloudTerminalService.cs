@@ -49,6 +49,23 @@ public interface ILinklyCloudTerminalService
         Guid terminalId,
         CancellationToken cancellationToken);
 
+    Task<LinklyCloudTerminalConnectionTestResponse> ConnectionTestAsync(
+        string storeCode,
+        string deviceCode,
+        Guid terminalId,
+        LinklyCloudTerminalConnectionTestRequest request,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException("Linkly Cloud terminal connection testing is not available.");
+
+    Task<LinklyCloudTerminalListResponse> AssignTerminalAsync(
+        string storeCode,
+        string deviceCode,
+        Guid terminalId,
+        LinklyCloudTerminalAssignmentRequest request,
+        string? updatedBy,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException("Linkly Cloud terminal assignment is not available.");
+
     // 响应展示只能读取非敏感元数据；默认返回空，禁止替代实现意外回退到凭据解密。
     Task<string?> GetTerminalDisplayNameAsync(
         string environment,
@@ -114,10 +131,47 @@ public interface ILinklyCloudTerminalRepository
         string? updatedBy,
         CancellationToken cancellationToken);
 
+    Task<LinklyCloudDeviceSelectionRecord> UpsertSelectionWithSnapshotAsync(
+        string environment, string storeCode, string deviceCode, Guid terminalId, long? expectedRevision,
+        DateTime updatedAt, string? updatedBy, CancellationToken cancellationToken, Guid? expectedOldTerminalId) =>
+        UpsertSelectionAsync(environment, storeCode, deviceCode, terminalId, expectedRevision, updatedAt, updatedBy, cancellationToken);
+
     Task<string> GetConfigurationModeAsync(
         string environment,
         string storeCode,
         CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<LinklyCloudAssignableDevice>> ListAssignableDevicesAsync(
+        string environment,
+        string storeCode,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException();
+
+    Task AssignTerminalAsync(
+        string environment,
+        string storeCode,
+        string sourceDeviceCode,
+        Guid sourceTerminalId,
+        DateTime expectedSourceUpdatedAt,
+        string? expectedSourceAssignedDeviceCode,
+        long expectedSourceRevision,
+        string? targetDeviceCode,
+        Guid? expectedTargetTerminalId,
+        long expectedTargetRevision,
+        DateTime updatedAt,
+        string? updatedBy,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException();
+
+    Task<bool> TryAcquireConnectionTestLeaseAsync(
+        string environment, string storeCode, Guid terminalId,
+        DateTime expectedUpdatedAt, Guid leaseId, DateTime leaseExpiresAt, DateTime now,
+        CancellationToken cancellationToken, string? expectedAssignedDeviceCode = null,
+        long expectedAssignmentRevision = 0, string? operationDeviceCode = null) => throw new NotSupportedException();
+
+    Task ReleaseConnectionTestLeaseAsync(
+        string environment, string storeCode, Guid terminalId, Guid leaseId,
+        CancellationToken cancellationToken) => throw new NotSupportedException();
 
     Task<LinklyCloudTerminalRecord?> TryBeginPairingAsync(
         string environment,
@@ -250,6 +304,20 @@ public sealed class LinklyCloudDeviceSelectionRecord
     public string? UpdatedBy { get; set; }
 }
 
+internal sealed class LinklyCloudAssignableDeviceRow
+{
+    public string DeviceCode { get; set; } = string.Empty;
+    public string DeviceSystem { get; set; } = string.Empty;
+    public bool IsAvailable { get; set; }
+    public Guid? SelectedTerminalId { get; set; }
+    public long SelectionRevision { get; set; }
+}
+
+internal sealed class LinklyLeaseResult
+{
+    public bool Acquired { get; set; }
+}
+
 public sealed class LinklyCloudTerminalNotFoundException()
     : Exception("Linkly Cloud terminal was not found in the authenticated store and environment.");
 
@@ -279,7 +347,10 @@ public sealed class LinklyCloudTerminalService(
     ILinklyCloudBackendAsyncRepository sessionRepository,
     ILinklyCloudPairingTransport pairingTransport,
     IOptions<LinklyCloudBackendAsyncOptions> options,
-    ILogger<LinklyCloudTerminalService>? logger = null) : ILinklyCloudTerminalService
+    ILinklyCloudBackendTokenProvider? tokenProvider = null,
+    ILinklyCloudBackendAsyncTransport? backendTransport = null,
+    ILogger<LinklyCloudTerminalService>? logger = null,
+    TimeProvider? timeProvider = null) : ILinklyCloudTerminalService
 {
     private static readonly TimeSpan PairingLeaseDuration =
         LinklyTimeoutConstants.HttpTimeout + TimeSpan.FromMinutes(1);
@@ -308,6 +379,7 @@ public sealed class LinklyCloudTerminalService(
             normalizedEnvironment,
             normalizedStoreCode,
             cancellationToken);
+        var devices = await ListDevicesSafeAsync(normalizedEnvironment, normalizedStoreCode, cancellationToken);
 
         var summaries = new List<LinklyCloudTerminalSummary>(terminals.Count);
         foreach (var terminal in terminals.OrderBy(item => item.LaneNo).ThenBy(item => item.DisplayName, StringComparer.OrdinalIgnoreCase))
@@ -325,7 +397,10 @@ public sealed class LinklyCloudTerminalService(
                 active is not null,
                 IsReady(terminal),
                 terminal.LastHealthStatus,
-                ToDateTimeOffset(terminal.LastHealthAt)));
+                ToDateTimeOffset(terminal.LastHealthAt),
+                devices.FirstOrDefault(item => item.SelectedTerminalId == terminal.TerminalId)?.DeviceCode,
+                devices.FirstOrDefault(item => item.SelectedTerminalId == terminal.TerminalId)?.SelectionRevision ?? 0,
+                ToTerminalVersion(terminal.UpdatedAt)));
         }
 
         return new LinklyCloudTerminalListResponse(
@@ -333,7 +408,341 @@ public sealed class LinklyCloudTerminalService(
             selection?.TerminalId,
             selection?.Revision,
             summaries,
-            mode);
+            mode,
+            devices);
+    }
+
+    public async Task<LinklyCloudTerminalListResponse> AssignTerminalAsync(
+        string storeCode,
+        string deviceCode,
+        Guid terminalId,
+        LinklyCloudTerminalAssignmentRequest request,
+        string? updatedBy,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var environment = NormalizeEnvironment(request.Environment);
+        var normalizedStore = NormalizeRequired(storeCode, "storeCode");
+        var normalizedDevice = NormalizeRequired(deviceCode, "deviceCode");
+        var normalizedTarget = request.TargetDeviceCode is null ? null : NormalizeRequired(request.TargetDeviceCode, "targetDeviceCode");
+        if (terminalId == Guid.Empty || string.IsNullOrWhiteSpace(request.ExpectedTerminalVersion) || !string.Equals(request.ExpectedTerminalVersion,
+                request.ExpectedTerminalVersion.Trim(), StringComparison.Ordinal))
+        {
+            throw new LinklyCloudBackendValidationException("terminalId and expectedTerminalVersion are required.");
+        }
+
+        var source = await GetRequiredTerminalAsync(environment, normalizedStore, terminalId, cancellationToken);
+        if (!string.Equals(ToTerminalVersion(source.UpdatedAt), request.ExpectedTerminalVersion, StringComparison.Ordinal))
+        {
+            throw new LinklyCloudTerminalSelectionConflictException();
+        }
+        if (normalizedTarget is not null && !IsReady(source))
+            throw new LinklyCloudTerminalNotReadyException();
+
+        var devices = await ListDevicesSafeAsync(environment, normalizedStore, cancellationToken);
+        var current = devices.FirstOrDefault(item => item.SelectedTerminalId == terminalId);
+        var targetBefore = normalizedTarget is null
+            ? null
+            : devices.FirstOrDefault(item => string.Equals(item.DeviceCode, normalizedTarget, StringComparison.OrdinalIgnoreCase));
+        if (!AssignmentCasMatches(current, request.ExpectedAssignedDeviceCode, request.ExpectedAssignmentRevision))
+        {
+            throw new LinklyCloudTerminalSelectionConflictException();
+        }
+
+        if (normalizedTarget is { } target)
+        {
+            target = NormalizeRequired(target, "targetDeviceCode");
+            var targetDevice = devices.FirstOrDefault(item =>
+                string.Equals(item.DeviceCode, target, StringComparison.OrdinalIgnoreCase));
+            if (targetDevice is null || !targetDevice.IsAvailable)
+            {
+                throw new LinklyCloudBackendValidationException("targetDeviceCode must be an active POS in the same store.");
+            }
+            if (targetDevice.SelectedTerminalId is not null &&
+                (request.ExpectedTargetTerminalId != targetDevice.SelectedTerminalId ||
+                 request.ExpectedTargetSelectionRevision != targetDevice.SelectionRevision))
+            {
+                throw new LinklyCloudTerminalSelectionConflictException();
+            }
+            if (targetDevice.SelectedTerminalId is null &&
+                (request.ExpectedTargetTerminalId is not null || request.ExpectedTargetSelectionRevision != 0))
+            {
+                throw new LinklyCloudTerminalSelectionConflictException();
+            }
+        }
+        else if (request.ExpectedTargetTerminalId is not null || request.ExpectedTargetSelectionRevision != 0)
+        {
+            throw new LinklyCloudTerminalSelectionConflictException();
+        }
+
+        logger?.LogInformation(
+            "Linkly assignment requested operator={Operator} callerDevice={CallerDevice} environment={Environment} store={StoreCode} terminal={TerminalId} sourceOwner={SourceOwner} sourceRevision={SourceRevision} targetDevice={TargetDevice} targetTerminal={TargetTerminal} targetRevision={TargetRevision} outcome=requested",
+            NormalizeOptional(updatedBy), normalizedDevice, environment, normalizedStore, terminalId,
+            request.ExpectedAssignedDeviceCode, request.ExpectedAssignmentRevision, normalizedTarget,
+            request.ExpectedTargetTerminalId, request.ExpectedTargetSelectionRevision);
+        try
+        {
+            await repository.AssignTerminalAsync(
+            environment,
+            normalizedStore,
+            normalizedDevice,
+            terminalId,
+            source.UpdatedAt ?? throw new LinklyCloudTerminalSelectionConflictException(),
+            request.ExpectedAssignedDeviceCode,
+            request.ExpectedAssignmentRevision,
+            normalizedTarget,
+            request.ExpectedTargetTerminalId,
+            request.ExpectedTargetSelectionRevision,
+            NextUpdatedAt(source.UpdatedAt),
+            NormalizeOptional(updatedBy),
+                cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            // 只记录公开范围和异常类型，不将可能包含凭据的异常正文写入审计。
+            logger?.LogWarning(
+                "Linkly assignment not confirmed operator={Operator} callerDevice={CallerDevice} environment={Environment} store={StoreCode} terminal={TerminalId} sourceOwner={SourceOwner} targetDevice={TargetDevice} outcome=not-confirmed error={ErrorType}",
+                NormalizeOptional(updatedBy), normalizedDevice, environment, normalizedStore, terminalId,
+                request.ExpectedAssignedDeviceCode, normalizedTarget, exception.GetType().Name);
+            throw;
+        }
+
+        var result = await GetTerminalsAsync(normalizedStore, normalizedDevice, environment, cancellationToken);
+        var targetAfter = normalizedTarget is null
+            ? null
+            : result.Devices?.FirstOrDefault(item => string.Equals(item.DeviceCode, normalizedTarget, StringComparison.OrdinalIgnoreCase));
+        var sourceAfter = result.Devices?.FirstOrDefault(item => item.SelectedTerminalId == terminalId);
+        logger?.LogInformation(
+            "Linkly Cloud terminal assignment completed operator={Operator} callerDevice={CallerDevice} environment={Environment} store={StoreCode} sourceDevice={SourceDeviceCode} sourceTerminalBefore={SourceTerminalBefore} sourceTerminalAfter={SourceTerminalAfter} sourceRevisionBefore={SourceRevisionBefore} sourceRevisionAfter={SourceRevisionAfter} targetDevice={TargetDeviceCode} targetTerminalBefore={TargetTerminalBefore} targetRevisionBefore={TargetRevisionBefore} targetTerminalAfter={TargetTerminalAfter} targetRevisionAfter={TargetRevisionAfter} outcome={Outcome}",
+            NormalizeOptional(updatedBy), normalizedDevice, environment, normalizedStore, current?.DeviceCode, current?.SelectedTerminalId, sourceAfter?.SelectedTerminalId, current?.SelectionRevision ?? 0, sourceAfter?.SelectionRevision ?? 0,
+            normalizedTarget, targetBefore?.SelectedTerminalId, targetBefore?.SelectionRevision ?? 0,
+            targetAfter?.SelectedTerminalId, targetAfter?.SelectionRevision ?? 0, "success");
+        return result;
+    }
+
+    public async Task<LinklyCloudTerminalConnectionTestResponse> ConnectionTestAsync(
+        string storeCode,
+        string deviceCode,
+        Guid terminalId,
+        LinklyCloudTerminalConnectionTestRequest request,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var environment = NormalizeEnvironment(request.Environment);
+        var normalizedDeviceCode = NormalizeRequired(deviceCode, "deviceCode");
+        var terminal = await GetRequiredTerminalAsync(
+            environment, NormalizeRequired(storeCode, "storeCode"), terminalId, cancellationToken);
+        var version = ToTerminalVersion(terminal.UpdatedAt);
+        if (!string.Equals(version, request.ExpectedTerminalVersion, StringComparison.Ordinal))
+            throw new LinklyCloudTerminalSelectionConflictException();
+        var devices = await ListDevicesSafeAsync(environment, terminal.StoreCode, cancellationToken);
+        var owner = devices.FirstOrDefault(item => item.SelectedTerminalId == terminalId);
+        if (!AssignmentCasMatches(owner, request.ExpectedAssignedDeviceCode, request.ExpectedAssignmentRevision))
+            throw new LinklyCloudTerminalSelectionConflictException();
+        var effectiveDeviceCode = owner?.DeviceCode ?? normalizedDeviceCode;
+        var checkedAt = DateTimeOffset.UtcNow;
+        if (!IsReady(terminal))
+            return ConnectionResult(terminal, environment, owner, false, "needs-repair", checkedAt, "Terminal credentials require repair.", null);
+        if (tokenProvider is null || backendTransport is null)
+            return ConnectionResult(terminal, environment, owner, false, "unknown", checkedAt, "Connection test transport is unavailable.", null);
+
+        var leaseId = Guid.NewGuid();
+        // 覆盖 token 和 Status 两段 HTTP 的完整上界，避免检测仍在飞时租约已过期。
+        var leaseExpiresAt = DateTime.UtcNow.Add(OperationLeaseDuration);
+        if (!await repository.TryAcquireConnectionTestLeaseAsync(
+                environment, terminal.StoreCode, terminalId, terminal.UpdatedAt!.Value,
+                leaseId, leaseExpiresAt, DateTime.UtcNow, cancellationToken,
+                owner?.DeviceCode, owner?.SelectionRevision ?? 0, effectiveDeviceCode))
+            throw new LinklyCloudTerminalSelectionConflictException("Terminal is busy or has an unacknowledged operation.");
+
+        var releaseLease = true;
+        var terminalRequestStarted = false;
+        var phase = "token";
+        var outcome = "unknown";
+        int? providerHttpStatus = null;
+        string? errorType = null;
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        // Token 与 Status 共用一次业务预算；单段 HTTP 超时不能重新获得完整等待时间。
+        // 来访取消仍单独判断；Status 已发出而终态不明时继续保留原管理租约。
+        using var budgetCancellation = new CancellationTokenSource(
+            LinklyTimeoutConstants.BusinessWait, timeProvider ?? TimeProvider.System);
+        using var testCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken, budgetCancellation.Token);
+        var testToken = testCancellation.Token;
+        try
+        {
+            var token = await tokenProvider.GetTokenAsync(
+                environment, terminal.StoreCode, effectiveDeviceCode,
+                terminalId, testToken);
+            testToken.ThrowIfCancellationRequested();
+            phase = "status";
+            terminalRequestStarted = true;
+            var response = await backendTransport.SendStatusAsync(
+                new LinklyCloudBackendTransportStatusRequest(
+                    environment, token.RestBaseUrl, token.AccessToken,
+                    // 供应商 sessionId 必须是标准 UUID；连接测试用途由传输层审计字段标识。
+                    Guid.NewGuid().ToString("D"), terminal.StoreCode,
+                    effectiveDeviceCode, terminalId), testToken);
+            terminalRequestStarted = false;
+            providerHttpStatus = (int)response.StatusCode;
+            phase = "status-response";
+            var parsed = ParseConnectionStatus(response.Body);
+            var definitive = response.StatusCode == System.Net.HttpStatusCode.OK && parsed.IsComplete;
+            var connected = definitive && parsed.Success;
+            var credentialsRejected = response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden;
+            var status = connected ? "connected" : credentialsRejected ? "needs-repair"
+                : definitive || IsUnreachable(response.StatusCode) ? "unreachable" : "unknown";
+            outcome = status;
+            // 408、网关错误和未完成回应可能已送达终端；保留租约，不伪造持久健康状态。
+            // 明确 4xx 表示请求已拒绝，可释放管理租约，让用户修复凭据。
+            releaseLease = definitive || ((int)response.StatusCode >= 400 && (int)response.StatusCode < 500
+                && response.StatusCode != System.Net.HttpStatusCode.RequestTimeout);
+            if (definitive)
+            {
+                var healthRecorded = await repository.TryRecordHealthAsync(
+                    environment, terminal.StoreCode, terminalId, terminal.UpdatedAt.Value,
+                    connected ? "Healthy" : "Unhealthy", checkedAt.UtcDateTime, CancellationToken.None);
+                if (!healthRecorded)
+                {
+                    outcome = "unknown";
+                    return ConnectionResult(terminal, environment, owner, false, "unknown", checkedAt, "Terminal configuration changed during the test.", parsed.ResponseCode);
+                }
+            }
+            return ConnectionResult(terminal, environment, owner, connected, status, checkedAt,
+                connected ? "Terminal is connected." : credentialsRejected
+                    ? "Terminal credentials require repair." : "Terminal status was not confirmed.", parsed.ResponseCode);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            releaseLease = !terminalRequestStarted;
+            outcome = "timeout";
+            errorType = nameof(OperationCanceledException);
+            return ConnectionResult(terminal, environment, owner, false, "unknown", checkedAt, "Connection test timed out.", null);
+        }
+        catch (OperationCanceledException)
+        {
+            releaseLease = !terminalRequestStarted;
+            outcome = "caller-canceled";
+            errorType = nameof(OperationCanceledException);
+            throw;
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
+        {
+            outcome = "needs-repair";
+            errorType = ex.GetType().Name;
+            providerHttpStatus = (int)ex.StatusCode.Value;
+            return ConnectionResult(terminal, environment, owner, false, "needs-repair", checkedAt,
+                "Terminal credentials require repair.", null);
+        }
+        catch (HttpRequestException ex)
+        {
+            releaseLease = !terminalRequestStarted;
+            outcome = "unreachable";
+            errorType = ex.GetType().Name;
+            return ConnectionResult(terminal, environment, owner, false, "unreachable", checkedAt, "Terminal could not be reached.", null);
+        }
+        catch (LinklyCloudTerminalCredentialReentryRequiredException)
+        {
+            outcome = "needs-repair";
+            errorType = nameof(LinklyCloudTerminalCredentialReentryRequiredException);
+            return ConnectionResult(terminal, environment, owner, false, "needs-repair", checkedAt, "Terminal credentials require repair.", null);
+        }
+        catch (LinklyCloudTerminalCredentialUnavailableException)
+        {
+            outcome = "needs-repair";
+            errorType = nameof(LinklyCloudTerminalCredentialUnavailableException);
+            return ConnectionResult(terminal, environment, owner, false, "needs-repair", checkedAt, "Terminal credentials are unavailable.", null);
+        }
+        catch (Exception ex)
+        {
+            // Token 阶段失败尚未触碰终端；送出 Status 后的未知异常仍须保留保护。
+            releaseLease = !terminalRequestStarted;
+            outcome = "error";
+            errorType = ex.GetType().Name;
+            throw;
+        }
+        finally
+        {
+            if (releaseLease)
+            {
+                try
+                {
+                    await repository.ReleaseConnectionTestLeaseAsync(environment, terminal.StoreCode, terminalId, leaseId, CancellationToken.None);
+                }
+                catch (Exception ex)
+                {
+                    logger?.LogWarning("Linkly Cloud connection-test lease release failed environment={Environment} store={StoreCode} terminalId={TerminalId} errorType={ErrorType}", environment, terminal.StoreCode, terminalId, ex.GetType().Name);
+                }
+            }
+            // 只记录公开结果和异常类型，不记录 token、响应正文或异常正文。
+            logger?.LogInformation(
+                "Linkly connection-test completed environment={Environment} store={StoreCode} terminalId={TerminalId} phase={Phase} outcome={Outcome} providerHttpStatus={ProviderHttpStatus} elapsedMs={ElapsedMs} errorType={ErrorType} budgetExpired={BudgetExpired} callerCanceled={CallerCanceled}",
+                environment, terminal.StoreCode, terminalId, phase, outcome, providerHttpStatus,
+                stopwatch.ElapsedMilliseconds, errorType, budgetCancellation.IsCancellationRequested, cancellationToken.IsCancellationRequested);
+        }
+    }
+
+    private static LinklyCloudTerminalConnectionTestResponse ConnectionResult(
+        LinklyCloudTerminalRecord terminal, string environment, LinklyCloudAssignableDevice? owner,
+        bool succeeded, string status, DateTimeOffset checkedAt, string message, string? responseCode) =>
+        new(terminal.TerminalId, environment, ToTerminalVersion(terminal.UpdatedAt) ?? string.Empty,
+            owner?.DeviceCode, owner?.SelectionRevision ?? 0, succeeded, status, checkedAt, message, responseCode);
+
+    private static bool IsUnreachable(System.Net.HttpStatusCode statusCode) =>
+        statusCode == System.Net.HttpStatusCode.RequestTimeout || (int)statusCode >= 500;
+
+    private static (bool Success, string? ResponseCode, bool IsComplete) ParseConnectionStatus(string? body)
+    {
+        if (string.IsNullOrWhiteSpace(body)) return (false, null, false);
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(body);
+            var root = document.RootElement;
+            if (root.ValueKind != System.Text.Json.JsonValueKind.Object) return (false, null, false);
+            if ((root.TryGetProperty("Response", out var nested) || root.TryGetProperty("response", out nested))
+                && nested.ValueKind == System.Text.Json.JsonValueKind.Object)
+                root = nested;
+            var code = root.TryGetProperty("ResponseCode", out var codeProperty) ? codeProperty.ToString() :
+                root.TryGetProperty("responseCode", out codeProperty) ? codeProperty.ToString() : null;
+            code = code?.Trim();
+            var hasSuccess = (root.TryGetProperty("Success", out var successProperty) || root.TryGetProperty("success", out successProperty))
+                && successProperty.ValueKind is System.Text.Json.JsonValueKind.True or System.Text.Json.JsonValueKind.False;
+            var providerSuccess = hasSuccess && successProperty.ValueKind == System.Text.Json.JsonValueKind.True;
+            var successCode = string.Equals(code, "00", StringComparison.OrdinalIgnoreCase) || string.Equals(code, "0", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(code, "T0", StringComparison.OrdinalIgnoreCase);
+            var success = providerSuccess && successCode;
+            return (success, code is { Length: > 0 and <= 32 } ? code : null, hasSuccess && code is { Length: > 0 and <= 32 });
+        }
+        catch (System.Text.Json.JsonException) { return (false, null, false); }
+    }
+
+    private static bool AssignmentCasMatches(
+        LinklyCloudAssignableDevice? current,
+        string? expectedDeviceCode,
+        long expectedRevision)
+    {
+        if (current is null)
+        {
+            return expectedDeviceCode is null && expectedRevision == 0;
+        }
+        return string.Equals(current.DeviceCode, expectedDeviceCode, StringComparison.OrdinalIgnoreCase) &&
+            current.SelectionRevision == expectedRevision;
+    }
+
+    private async Task<IReadOnlyList<LinklyCloudAssignableDevice>> ListDevicesSafeAsync(
+        string environment,
+        string storeCode,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await repository.ListAssignableDevicesAsync(environment, storeCode, cancellationToken);
+        }
+        catch (NotSupportedException)
+        {
+            // 兼容仅实现历史终端接口的测试替身；生产 SQL repository 始终提供同店设备列表。
+            return Array.Empty<LinklyCloudAssignableDevice>();
+        }
     }
 
     public Task<string> GetConfigurationModeAsync(
@@ -397,7 +806,7 @@ public sealed class LinklyCloudTerminalService(
             throw new LinklyCloudTerminalSelectionConflictException();
         }
 
-        var saved = await repository.UpsertSelectionAsync(
+        var saved = await repository.UpsertSelectionWithSnapshotAsync(
             environment,
             normalizedStoreCode,
             normalizedDeviceCode,
@@ -405,7 +814,8 @@ public sealed class LinklyCloudTerminalService(
             request.ExpectedRevision,
             DateTime.UtcNow,
             NormalizeOptional(updatedBy),
-            cancellationToken);
+            cancellationToken,
+            current?.TerminalId);
         return new LinklyCloudTerminalSelectionResponse(environment, saved.TerminalId, saved.Revision);
     }
 
@@ -915,6 +1325,11 @@ public sealed class LinklyCloudTerminalService(
             ? new DateTimeOffset(DateTime.SpecifyKind(value.Value, DateTimeKind.Utc))
             : null;
     }
+
+    private static string? ToTerminalVersion(DateTime? value)
+    {
+        return value is null ? null : value.Value.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture);
+    }
 }
 
 public sealed class SqlSugarLinklyCloudTerminalRepository(
@@ -939,71 +1354,267 @@ public sealed class SqlSugarLinklyCloudTerminalRepository(
         WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode AND [TerminalId] = @TerminalId;
         """;
 
+    internal const string ListAssignableDevicesSql = """
+        WITH registrations AS (
+            SELECT [系统设备编号], [设备系统], [设备状态], [设备类型], [是否允许交易],
+                   ROW_NUMBER() OVER (PARTITION BY [分店代码], [系统设备编号] ORDER BY [ID] DESC) AS [RowNo]
+            FROM [dbo].[POSM_设备注册信息表]
+            WHERE [分店代码] = @StoreCode
+        )
+        SELECT
+            registration.[系统设备编号] AS DeviceCode,
+            COALESCE(NULLIF(registration.[设备系统], N''), N'Unknown') AS DeviceSystem,
+            CAST(CASE WHEN registration.[设备状态] = 1 AND UPPER(LTRIM(RTRIM(registration.[设备类型]))) = N'POS' AND ISNULL(registration.[是否允许交易], 0) = 1 THEN 1 ELSE 0 END AS bit) AS IsAvailable,
+            selection.[TerminalId] AS SelectedTerminalId,
+            ISNULL(selection.[Revision], 0) AS SelectionRevision
+        FROM registrations AS registration
+        LEFT JOIN [dbo].[POSM_LinklyCloudDeviceSelection] AS selection
+          ON selection.[Environment] = @Environment AND selection.[StoreCode] = @StoreCode AND selection.[DeviceCode] = registration.[系统设备编号]
+        WHERE registration.[RowNo] = 1
+          AND NULLIF(LTRIM(RTRIM(registration.[系统设备编号])), N'') IS NOT NULL
+        UNION ALL
+        SELECT selection.[DeviceCode], N'Unknown', CAST(0 AS bit), selection.[TerminalId], selection.[Revision]
+        FROM [dbo].[POSM_LinklyCloudDeviceSelection] AS selection
+        WHERE selection.[Environment] = @Environment AND selection.[StoreCode] = @StoreCode
+          AND NOT EXISTS (SELECT 1 FROM registrations AS historical WHERE historical.[RowNo] = 1 AND historical.[系统设备编号] = selection.[DeviceCode])
+        ORDER BY DeviceCode;
+        """;
+
+    // 管理端转绑和解绑共用一个 Serializable CAS；锁序固定为会话 -> 终端 -> 选择 -> 模式。
+    internal const string AssignTerminalSql = """
+        SET XACT_ABORT ON;
+        SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+        BEGIN TRANSACTION;
+        -- 先覆盖全部设备和终端会话；后续阶段不得回头取会话锁。
+        IF EXISTS (SELECT 1 FROM [dbo].[POSM_LinklyCloudBackendSession] WITH (UPDLOCK, HOLDLOCK)
+                   WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode
+                     AND ([DeviceCode] = @SourceDeviceCode OR [DeviceCode] = @ExpectedSourceAssignedDeviceCode
+                          OR [DeviceCode] = @TargetDeviceCode OR [TerminalId] = @SourceTerminalId
+                          OR [TerminalId] = @ExpectedTargetTerminalId)
+                     AND ([IsActive] = 1 OR [Status] IS NULL
+                          OR [Status] NOT IN (N'Completed', N'Cancelled', N'Failed', N'NotSubmitted')
+                          OR [ClientAcknowledgedAt] IS NULL))
+            THROW 51002, 'POS or terminal has an active, unknown or unacknowledged operation.', 1;
+
+        -- 请求中的旧目标只确定锁集合，选择阶段必须再次 CAS；逐个按 SQL Guid 顺序锁终端。
+        DECLARE @FirstTerminalId UNIQUEIDENTIFIER = CASE
+            WHEN @ExpectedTargetTerminalId IS NULL OR @SourceTerminalId <= @ExpectedTargetTerminalId
+            THEN @SourceTerminalId ELSE @ExpectedTargetTerminalId END;
+        DECLARE @SecondTerminalId UNIQUEIDENTIFIER = CASE
+            WHEN @ExpectedTargetTerminalId IS NULL OR @SourceTerminalId <= @ExpectedTargetTerminalId
+            THEN @ExpectedTargetTerminalId ELSE @SourceTerminalId END;
+        DECLARE @LockedTerminalId UNIQUEIDENTIFIER;
+        SELECT @LockedTerminalId = [TerminalId] FROM [dbo].[POSM_LinklyCloudTerminal] WITH (UPDLOCK, HOLDLOCK)
+        WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode AND [TerminalId] = @FirstTerminalId;
+        IF @SecondTerminalId IS NOT NULL AND @SecondTerminalId <> @FirstTerminalId
+            SELECT @LockedTerminalId = [TerminalId] FROM [dbo].[POSM_LinklyCloudTerminal] WITH (UPDLOCK, HOLDLOCK)
+            WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode AND [TerminalId] = @SecondTerminalId;
+        IF NOT EXISTS (SELECT 1 FROM [dbo].[POSM_LinklyCloudTerminal]
+                       WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode
+                         AND [TerminalId] = @SourceTerminalId AND [UpdatedAt] = @ExpectedSourceUpdatedAt)
+            THROW 51001, 'Terminal version conflict.', 1;
+        IF EXISTS (SELECT 1 FROM [dbo].[POSM_LinklyCloudTerminal]
+                   WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode
+                     AND ([TerminalId] = @SourceTerminalId OR [TerminalId] = @ExpectedTargetTerminalId)
+                     AND [PairingAttemptId] IS NOT NULL AND [PairingLeaseExpiresAt] > @UpdatedAt)
+            THROW 51002, 'Linkly Cloud terminal is leased.', 1;
+        IF @TargetDeviceCode IS NOT NULL
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM [dbo].[POSM_LinklyCloudTerminal]
+                           WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode AND [TerminalId] = @SourceTerminalId
+                             AND [CredentialProtectionVersion] = 1 AND [PairingState] = N'Ready'
+                             AND NULLIF(LTRIM(RTRIM([Secret])), N'') IS NOT NULL
+                             AND NULLIF(LTRIM(RTRIM([PosId])), N'') IS NOT NULL)
+                THROW 51003, 'Linkly Cloud terminal is not paired and ready.', 1;
+            IF NOT EXISTS (SELECT 1 FROM [dbo].[POSM_设备注册信息表] AS registration WITH (UPDLOCK, HOLDLOCK)
+                           WHERE registration.[分店代码] = @StoreCode AND registration.[系统设备编号] = @TargetDeviceCode
+                             AND registration.[设备状态] = 1 AND UPPER(LTRIM(RTRIM(registration.[设备类型]))) = N'POS'
+                             AND ISNULL(registration.[是否允许交易], 0) = 1
+                             AND NOT EXISTS (SELECT 1 FROM [dbo].[POSM_设备注册信息表] AS newer
+                                             WHERE newer.[分店代码] = @StoreCode AND newer.[系统设备编号] = @TargetDeviceCode
+                                               AND newer.[ID] > registration.[ID]))
+                THROW 51005, 'Target POS is not active.', 1;
+        END;
+
+        DECLARE @FirstDeviceCode NVARCHAR(64) = CASE
+            WHEN @ExpectedSourceAssignedDeviceCode IS NULL THEN @TargetDeviceCode
+            WHEN @TargetDeviceCode IS NULL OR @ExpectedSourceAssignedDeviceCode <= @TargetDeviceCode
+            THEN @ExpectedSourceAssignedDeviceCode ELSE @TargetDeviceCode END;
+        DECLARE @SecondDeviceCode NVARCHAR(64) = CASE
+            WHEN @ExpectedSourceAssignedDeviceCode IS NULL THEN NULL
+            WHEN @TargetDeviceCode IS NULL OR @ExpectedSourceAssignedDeviceCode <= @TargetDeviceCode
+            THEN @TargetDeviceCode ELSE @ExpectedSourceAssignedDeviceCode END;
+        DECLARE @LockedDeviceCode NVARCHAR(64);
+        IF @FirstDeviceCode IS NOT NULL
+            SELECT @LockedDeviceCode = [DeviceCode] FROM [dbo].[POSM_LinklyCloudDeviceSelection] WITH (UPDLOCK, HOLDLOCK)
+            WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode AND [DeviceCode] = @FirstDeviceCode;
+        IF @SecondDeviceCode IS NOT NULL AND @SecondDeviceCode <> @FirstDeviceCode
+            SELECT @LockedDeviceCode = [DeviceCode] FROM [dbo].[POSM_LinklyCloudDeviceSelection] WITH (UPDLOCK, HOLDLOCK)
+            WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode AND [DeviceCode] = @SecondDeviceCode;
+        DECLARE @ActualOwner NVARCHAR(64) = NULL;
+        DECLARE @ActualSourceRevision BIGINT = 0;
+        SELECT @ActualOwner = [DeviceCode], @ActualSourceRevision = [Revision]
+        FROM [dbo].[POSM_LinklyCloudDeviceSelection] WITH (UPDLOCK, HOLDLOCK)
+        WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode AND [TerminalId] = @SourceTerminalId;
+        IF (@ActualOwner IS NULL AND @ExpectedSourceAssignedDeviceCode IS NOT NULL)
+           OR (@ActualOwner IS NOT NULL AND (@ExpectedSourceAssignedDeviceCode IS NULL OR @ActualOwner <> @ExpectedSourceAssignedDeviceCode))
+           OR @ActualSourceRevision <> @ExpectedSourceRevision
+            THROW 51001, 'Source assignment revision conflict.', 1;
+        DECLARE @ActualTargetTerminalId UNIQUEIDENTIFIER = NULL;
+        DECLARE @ActualTargetRevision BIGINT = 0;
+        IF @TargetDeviceCode IS NOT NULL
+            SELECT @ActualTargetTerminalId = [TerminalId], @ActualTargetRevision = [Revision]
+            FROM [dbo].[POSM_LinklyCloudDeviceSelection]
+            WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode AND [DeviceCode] = @TargetDeviceCode;
+        IF (@ActualTargetTerminalId IS NULL AND @ExpectedTargetTerminalId IS NOT NULL)
+           OR (@ActualTargetTerminalId IS NOT NULL AND (@ExpectedTargetTerminalId IS NULL OR @ActualTargetTerminalId <> @ExpectedTargetTerminalId))
+           OR @ActualTargetRevision <> @ExpectedTargetRevision
+            THROW 51001, 'Target assignment revision conflict.', 1;
+
+        -- 事实未变时幂等返回，不提升版本；解绑不能删除调用方的其他线路。
+        IF (@ActualOwner IS NULL AND @TargetDeviceCode IS NULL) OR @ActualOwner = @TargetDeviceCode
+        BEGIN
+            COMMIT TRANSACTION;
+            RETURN;
+        END;
+        DELETE FROM [dbo].[POSM_LinklyCloudDeviceSelection]
+        WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode AND [TerminalId] = @SourceTerminalId;
+        IF @TargetDeviceCode IS NOT NULL
+        BEGIN
+            IF @ActualTargetTerminalId IS NOT NULL
+            BEGIN
+                IF @ActualTargetRevision >= @MaxRevision THROW 51001, 'Target assignment revision conflict.', 1;
+                UPDATE [dbo].[POSM_LinklyCloudDeviceSelection]
+                SET [TerminalId] = @SourceTerminalId, [Revision] = [Revision] + 1,
+                    [UpdatedAt] = @UpdatedAt, [UpdatedBy] = @UpdatedBy
+                WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode AND [DeviceCode] = @TargetDeviceCode;
+            END
+            ELSE
+                INSERT INTO [dbo].[POSM_LinklyCloudDeviceSelection]
+                    ([Environment], [StoreCode], [DeviceCode], [TerminalId], [Revision], [UpdatedAt], [UpdatedBy])
+                VALUES (@Environment, @StoreCode, @TargetDeviceCode, @SourceTerminalId, @NewRevision, @UpdatedAt, @UpdatedBy);
+        END;
+        -- 源线路和被替换线路均作废旧检测；Secret、PosId 和配对状态始终不变。
+        UPDATE [dbo].[POSM_LinklyCloudTerminal]
+        SET [UpdatedAt] = CASE WHEN [UpdatedAt] >= @UpdatedAt THEN DATEADD(NANOSECOND, 100, [UpdatedAt]) ELSE @UpdatedAt END,
+            [UpdatedBy] = @UpdatedBy, [LastHealthStatus] = NULL, [LastHealthAt] = NULL
+        WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode
+          AND ([TerminalId] = @SourceTerminalId OR [TerminalId] = @ActualTargetTerminalId);
+        COMMIT TRANSACTION;
+        """;
+
+    internal const string TryAcquireConnectionTestLeaseSql = """
+        SET XACT_ABORT ON;
+        SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+        BEGIN TRANSACTION;
+        IF EXISTS (SELECT 1 FROM [dbo].[POSM_LinklyCloudBackendSession] WITH (UPDLOCK, HOLDLOCK)
+                   WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode
+                     -- 未分配线路仍以调用 POS 发起供应商请求，因此会话隔离必须使用实际操作设备。
+                     AND ([TerminalId] = @TerminalId OR [DeviceCode] = @OperationDeviceCode)
+                     AND ([IsActive] = 1 OR [Status] IS NULL OR [Status] NOT IN (N'Completed', N'Cancelled', N'Failed', N'NotSubmitted') OR [ClientAcknowledgedAt] IS NULL))
+            THROW 51002, 'Terminal has a blocking operation.', 1;
+        DECLARE @Acquired bit = 1;
+        UPDATE [dbo].[POSM_LinklyCloudTerminal] WITH (UPDLOCK, HOLDLOCK)
+        SET [PairingAttemptId] = @LeaseId, [PairingLeaseExpiresAt] = @LeaseExpiresAt
+        WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode AND [TerminalId] = @TerminalId
+          AND [UpdatedAt] = @ExpectedUpdatedAt
+          AND ([PairingAttemptId] IS NULL OR [PairingLeaseExpiresAt] IS NULL OR [PairingLeaseExpiresAt] <= @Now);
+        IF @@ROWCOUNT <> 1 SET @Acquired = 0;
+        IF @Acquired = 1 AND @ExpectedAssignedDeviceCode IS NULL AND EXISTS (
+            SELECT 1 FROM [dbo].[POSM_LinklyCloudDeviceSelection] WITH (UPDLOCK, HOLDLOCK)
+            WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode AND [TerminalId] = @TerminalId)
+            SET @Acquired = 0;
+        IF @Acquired = 1 AND @ExpectedAssignedDeviceCode IS NOT NULL AND NOT EXISTS (
+            SELECT 1 FROM [dbo].[POSM_LinklyCloudDeviceSelection] WITH (UPDLOCK, HOLDLOCK)
+            WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode
+              AND [DeviceCode] = @ExpectedAssignedDeviceCode AND [TerminalId] = @TerminalId
+              AND [Revision] = @ExpectedAssignmentRevision)
+            SET @Acquired = 0;
+        IF @Acquired = 0
+            UPDATE [dbo].[POSM_LinklyCloudTerminal] SET [PairingAttemptId] = NULL, [PairingLeaseExpiresAt] = NULL
+            WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode AND [TerminalId] = @TerminalId AND [PairingAttemptId] = @LeaseId;
+        COMMIT TRANSACTION;
+        SELECT @Acquired AS [Acquired];
+        """;
+
+    internal const string ReleaseConnectionTestLeaseSql = """
+        UPDATE [dbo].[POSM_LinklyCloudTerminal]
+        SET [PairingAttemptId] = NULL, [PairingLeaseExpiresAt] = NULL
+        WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode AND [TerminalId] = @TerminalId
+          AND [PairingAttemptId] = @LeaseId;
+        """;
+
     internal const string UpsertSelectionSql = """
         SET XACT_ABORT ON;
         SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
         BEGIN TRANSACTION;
 
-        -- 全部写路径统一按“会话 -> 终端 -> 选择”取锁。
+        -- 旧终端快照仅确定锁集合；选择锁取得后还要重新核对快照和修订。
         IF EXISTS (
-            SELECT TOP (1) 1
-            FROM [dbo].[POSM_LinklyCloudBackendSession] WITH (UPDLOCK, HOLDLOCK)
-            WHERE [Environment] = @Environment
-              AND [StoreCode] = @StoreCode
-              AND [DeviceCode] = @DeviceCode
-              AND (
-                  [IsActive] = 1
-                  OR (
-                      [Status] IN (N'Completed', N'Cancelled', N'Failed', N'NotSubmitted')
-                      AND [ClientAcknowledgedAt] IS NULL
-                  )
-              ))
-            THROW 51002, 'Current POS has a Linkly Cloud operation that must be recovered or acknowledged.', 1;
+            SELECT 1 FROM [dbo].[POSM_LinklyCloudBackendSession] WITH (UPDLOCK, HOLDLOCK)
+            WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode
+              AND ([DeviceCode] = @DeviceCode OR [TerminalId] = @TerminalId OR [TerminalId] = @ExpectedOldTerminalId)
+              AND ([IsActive] = 1 OR [Status] IS NULL
+                   OR [Status] NOT IN (N'Completed', N'Cancelled', N'Failed', N'NotSubmitted')
+                   OR [ClientAcknowledgedAt] IS NULL))
+            THROW 51002, 'Current POS or terminal has an operation that must be recovered or acknowledged.', 1;
+
+        -- 逐个按 SQL uniqueidentifier 的同一顺序取锁，不能先锁目标再排序结果。
+        DECLARE @FirstTerminalId UNIQUEIDENTIFIER = CASE
+            WHEN @ExpectedOldTerminalId IS NULL OR @TerminalId <= @ExpectedOldTerminalId
+            THEN @TerminalId ELSE @ExpectedOldTerminalId END;
+        DECLARE @SecondTerminalId UNIQUEIDENTIFIER = CASE
+            WHEN @ExpectedOldTerminalId IS NULL OR @TerminalId <= @ExpectedOldTerminalId
+            THEN @ExpectedOldTerminalId ELSE @TerminalId END;
+        DECLARE @LockedTerminalId UNIQUEIDENTIFIER;
+        SELECT @LockedTerminalId = [TerminalId] FROM [dbo].[POSM_LinklyCloudTerminal] WITH (UPDLOCK, HOLDLOCK)
+        WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode AND [TerminalId] = @FirstTerminalId;
+        IF @SecondTerminalId IS NOT NULL AND @SecondTerminalId <> @FirstTerminalId
+            SELECT @LockedTerminalId = [TerminalId] FROM [dbo].[POSM_LinklyCloudTerminal] WITH (UPDLOCK, HOLDLOCK)
+            WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode AND [TerminalId] = @SecondTerminalId;
 
         IF NOT EXISTS (
-            SELECT TOP (1) 1
-            FROM [dbo].[POSM_LinklyCloudTerminal] WITH (UPDLOCK, HOLDLOCK)
-            WHERE [Environment] = @Environment
-              AND [StoreCode] = @StoreCode
-              AND [TerminalId] = @TerminalId
-              AND [CredentialProtectionVersion] = 1
-              AND [PairingState] = N'Ready'
+            SELECT 1 FROM [dbo].[POSM_LinklyCloudTerminal]
+            WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode AND [TerminalId] = @TerminalId
+              AND [CredentialProtectionVersion] = 1 AND [PairingState] = N'Ready'
               AND NULLIF(LTRIM(RTRIM([Secret])), N'') IS NOT NULL
               AND NULLIF(LTRIM(RTRIM([PosId])), N'') IS NOT NULL)
             THROW 51003, 'Linkly Cloud terminal is not paired and ready.', 1;
-
-        -- 物理终端归属按环境、门店和 TerminalId 唯一；Serializable + 范围锁负责并发串行化，唯一索引兜底。
         IF EXISTS (
-            SELECT TOP (1) 1
-            FROM [dbo].[POSM_LinklyCloudDeviceSelection] WITH (UPDLOCK, HOLDLOCK)
-            WHERE [Environment] = @Environment
-              AND [StoreCode] = @StoreCode
-              AND [TerminalId] = @TerminalId
-              AND [DeviceCode] <> @DeviceCode)
-            THROW 51004, 'Linkly Cloud terminal is already assigned to another POS.', 1;
+            SELECT 1 FROM [dbo].[POSM_LinklyCloudTerminal]
+            WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode
+              AND ([TerminalId] = @TerminalId OR [TerminalId] = @ExpectedOldTerminalId)
+              AND [PairingAttemptId] IS NOT NULL AND [PairingLeaseExpiresAt] > @UpdatedAt)
+            THROW 51002, 'Linkly Cloud terminal is leased.', 1;
 
+        DECLARE @ExistingTerminalId UNIQUEIDENTIFIER = NULL;
+        DECLARE @ExistingRevision BIGINT = NULL;
+        SELECT @ExistingTerminalId = [TerminalId], @ExistingRevision = [Revision]
+        FROM [dbo].[POSM_LinklyCloudDeviceSelection] WITH (UPDLOCK, HOLDLOCK)
+        WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode AND [DeviceCode] = @DeviceCode;
+        IF (@ExpectedOldTerminalId IS NULL AND @ExistingTerminalId IS NOT NULL) OR
+           (@ExpectedOldTerminalId IS NOT NULL AND (@ExistingTerminalId IS NULL OR @ExistingTerminalId <> @ExpectedOldTerminalId))
+            THROW 51001, 'Existing terminal snapshot changed.', 1;
         IF EXISTS (
             SELECT 1 FROM [dbo].[POSM_LinklyCloudDeviceSelection] WITH (UPDLOCK, HOLDLOCK)
-            WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode AND [DeviceCode] = @DeviceCode)
-        BEGIN
-            IF @ExpectedRevision IS NULL OR NOT EXISTS (
-                SELECT 1 FROM [dbo].[POSM_LinklyCloudDeviceSelection]
-                WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode
-                  AND [DeviceCode] = @DeviceCode AND [Revision] = @ExpectedRevision)
-                THROW 51001, 'Linkly Cloud terminal selection revision conflict.', 1;
+            WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode
+              AND [TerminalId] = @TerminalId AND [DeviceCode] <> @DeviceCode)
+            THROW 51004, 'Linkly Cloud terminal is already assigned to another POS.', 1;
 
+        IF @ExistingTerminalId IS NOT NULL
+        BEGIN
+            IF @ExpectedRevision IS NULL OR @ExpectedRevision <> @ExistingRevision
+                OR @ExistingRevision >= @MaxRevision
+                THROW 51001, 'Linkly Cloud terminal selection revision conflict.', 1;
             UPDATE [dbo].[POSM_LinklyCloudDeviceSelection]
-            SET [TerminalId] = @TerminalId,
-                [Revision] = [Revision] + 1,
-                [UpdatedAt] = @UpdatedAt,
-                [UpdatedBy] = @UpdatedBy
+            SET [TerminalId] = @TerminalId, [Revision] = [Revision] + 1,
+                [UpdatedAt] = @UpdatedAt, [UpdatedBy] = @UpdatedBy
             WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode AND [DeviceCode] = @DeviceCode;
         END
         ELSE
         BEGIN
             IF @ExpectedRevision IS NOT NULL AND @ExpectedRevision <> 0
                 THROW 51001, 'Linkly Cloud terminal selection revision conflict.', 1;
-
             INSERT INTO [dbo].[POSM_LinklyCloudDeviceSelection]
                 ([Environment], [StoreCode], [DeviceCode], [TerminalId], [Revision], [UpdatedAt], [UpdatedBy])
             VALUES (@Environment, @StoreCode, @DeviceCode, @TerminalId, @NewRevision, @UpdatedAt, @UpdatedBy);
@@ -1042,13 +1653,7 @@ public sealed class SqlSugarLinklyCloudTerminalRepository(
         WHERE [Environment] = @Environment
           AND [StoreCode] = @StoreCode
           AND [TerminalId] = @TerminalId
-          AND (
-              [IsActive] = 1
-              OR (
-                  [Status] IN (N'Completed', N'Cancelled', N'Failed', N'NotSubmitted')
-                  AND [ClientAcknowledgedAt] IS NULL
-              )
-          );
+          AND ([IsActive] = 1 OR [Status] IS NULL OR [Status] NOT IN (N'Completed', N'Cancelled', N'Failed', N'NotSubmitted') OR [ClientAcknowledgedAt] IS NULL);
 
         IF @HasBlockingSession = 0
         BEGIN
@@ -1095,13 +1700,7 @@ public sealed class SqlSugarLinklyCloudTerminalRepository(
         WHERE [Environment] = @Environment
           AND [StoreCode] = @StoreCode
           AND [DeviceCode] = @DeviceCode
-          AND (
-              [IsActive] = 1
-              OR (
-                  [Status] IN (N'Completed', N'Cancelled', N'Failed', N'NotSubmitted')
-                  AND [ClientAcknowledgedAt] IS NULL
-              )
-          );
+          AND ([IsActive] = 1 OR [Status] IS NULL OR [Status] NOT IN (N'Completed', N'Cancelled', N'Failed', N'NotSubmitted') OR [ClientAcknowledgedAt] IS NULL);
 
         IF @HasBlockingSession = 0
         BEGIN
@@ -1110,13 +1709,7 @@ public sealed class SqlSugarLinklyCloudTerminalRepository(
             WHERE [Environment] = @Environment
               AND [StoreCode] = @StoreCode
               AND [TerminalId] = @TerminalId
-              AND (
-                  [IsActive] = 1
-                  OR (
-                      [Status] IN (N'Completed', N'Cancelled', N'Failed', N'NotSubmitted')
-                      AND [ClientAcknowledgedAt] IS NULL
-                  )
-              );
+              AND ([IsActive] = 1 OR [Status] IS NULL OR [Status] NOT IN (N'Completed', N'Cancelled', N'Failed', N'NotSubmitted') OR [ClientAcknowledgedAt] IS NULL);
         END;
 
         SELECT @StoredTerminalId = [TerminalId]
@@ -1223,6 +1816,114 @@ public sealed class SqlSugarLinklyCloudTerminalRepository(
             new SugarParameter("@TerminalId", terminalId));
         return row?.DisplayName;
     }
+
+    public async Task<IReadOnlyList<LinklyCloudAssignableDevice>> ListAssignableDevicesAsync(
+        string environment,
+        string storeCode,
+        CancellationToken cancellationToken)
+    {
+        var rows = await dbContext.PosmDb.Ado.SqlQueryAsync<LinklyCloudAssignableDeviceRow>(
+            ListAssignableDevicesSql,
+            new SugarParameter("@Environment", environment),
+            new SugarParameter("@StoreCode", storeCode));
+        return rows.Select(row => new LinklyCloudAssignableDevice(
+            row.DeviceCode.Trim(),
+            row.DeviceSystem.Trim(),
+            row.IsAvailable,
+            row.SelectedTerminalId,
+            row.SelectionRevision)).ToArray();
+    }
+
+    public async Task AssignTerminalAsync(
+        string environment,
+        string storeCode,
+        string sourceDeviceCode,
+        Guid sourceTerminalId,
+        DateTime expectedSourceUpdatedAt,
+        string? expectedSourceAssignedDeviceCode,
+        long expectedSourceRevision,
+        string? targetDeviceCode,
+        Guid? expectedTargetTerminalId,
+        long expectedTargetRevision,
+        DateTime updatedAt,
+        string? updatedBy,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var newRevision = LinklyCloudSelectionRevision.CreateInitial();
+            await dbContext.PosmDb.Ado.ExecuteCommandAsync(
+                AssignTerminalSql,
+                new SugarParameter("@Environment", environment),
+                new SugarParameter("@StoreCode", storeCode),
+                new SugarParameter("@SourceDeviceCode", sourceDeviceCode),
+                new SugarParameter("@SourceTerminalId", sourceTerminalId),
+                DateTime2Parameter("@ExpectedSourceUpdatedAt", expectedSourceUpdatedAt),
+                new SugarParameter("@ExpectedSourceAssignedDeviceCode", expectedSourceAssignedDeviceCode),
+                new SugarParameter("@ExpectedSourceRevision", expectedSourceRevision),
+                new SugarParameter("@TargetDeviceCode", targetDeviceCode),
+                new SugarParameter("@ExpectedTargetTerminalId", expectedTargetTerminalId),
+                new SugarParameter("@ExpectedTargetRevision", expectedTargetRevision),
+                new SugarParameter("@NewRevision", newRevision),
+                new SugarParameter("@MaxRevision", LinklyCloudSelectionRevision.MaxJsSafeRevision),
+                DateTime2Parameter("@UpdatedAt", updatedAt),
+                new SugarParameter("@UpdatedBy", updatedBy));
+        }
+        catch (Exception ex) when (ex.ToString().Contains("51005", StringComparison.OrdinalIgnoreCase) ||
+            ex.Message.Contains("Target POS is not active", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new LinklyCloudBackendValidationException("targetDeviceCode must be an active POS in the same store.");
+        }
+        catch (Exception ex) when (ex.ToString().Contains("51002", StringComparison.OrdinalIgnoreCase) ||
+            ex.ToString().Contains("51001", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new LinklyCloudTerminalSelectionConflictException();
+        }
+        catch (Exception ex) when (ex.ToString().Contains("51003", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new LinklyCloudTerminalNotReadyException();
+        }
+    }
+
+    public async Task<bool> TryAcquireConnectionTestLeaseAsync(
+        string environment, string storeCode, Guid terminalId,
+        DateTime expectedUpdatedAt, Guid leaseId, DateTime leaseExpiresAt, DateTime now,
+        CancellationToken cancellationToken, string? expectedAssignedDeviceCode = null,
+        long expectedAssignmentRevision = 0, string? operationDeviceCode = null)
+    {
+        try
+        {
+            var row = await dbContext.PosmDb.Ado.SqlQuerySingleAsync<LinklyLeaseResult>(
+                TryAcquireConnectionTestLeaseSql,
+                new SugarParameter("@Environment", environment),
+                new SugarParameter("@StoreCode", storeCode),
+                new SugarParameter("@TerminalId", terminalId),
+                DateTime2Parameter("@ExpectedUpdatedAt", expectedUpdatedAt),
+                new SugarParameter("@LeaseId", leaseId),
+                DateTime2Parameter("@LeaseExpiresAt", leaseExpiresAt),
+                DateTime2Parameter("@Now", now),
+                new SugarParameter("@ExpectedAssignedDeviceCode", expectedAssignedDeviceCode),
+                new SugarParameter("@ExpectedAssignmentRevision", expectedAssignmentRevision),
+                new SugarParameter(
+                    "@OperationDeviceCode",
+                    operationDeviceCode ?? expectedAssignedDeviceCode));
+            return row?.Acquired == true;
+        }
+        catch (Exception ex) when (ex.ToString().Contains("51002", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+    }
+
+    public Task ReleaseConnectionTestLeaseAsync(
+        string environment, string storeCode, Guid terminalId, Guid leaseId,
+        CancellationToken cancellationToken) =>
+        dbContext.PosmDb.Ado.ExecuteCommandAsync(
+            ReleaseConnectionTestLeaseSql,
+            new SugarParameter("@Environment", environment),
+            new SugarParameter("@StoreCode", storeCode),
+            new SugarParameter("@TerminalId", terminalId),
+            new SugarParameter("@LeaseId", leaseId));
 
     internal static LinklyCloudTerminalRecord MaterializeRuntimeTerminal(
         LinklyCloudTerminalRecord stored,
@@ -1401,6 +2102,22 @@ public sealed class SqlSugarLinklyCloudTerminalRepository(
         string? updatedBy,
         CancellationToken cancellationToken)
     {
+        var snapshot = await GetSelectionAsync(environment, storeCode, deviceCode, cancellationToken);
+        return await UpsertSelectionWithSnapshotAsync(environment, storeCode, deviceCode, terminalId,
+            expectedRevision, updatedAt, updatedBy, cancellationToken, snapshot?.TerminalId);
+    }
+
+    public async Task<LinklyCloudDeviceSelectionRecord> UpsertSelectionWithSnapshotAsync(
+        string environment,
+        string storeCode,
+        string deviceCode,
+        Guid terminalId,
+        long? expectedRevision,
+        DateTime updatedAt,
+        string? updatedBy,
+        CancellationToken cancellationToken,
+        Guid? expectedOldTerminalId)
+    {
         try
         {
             var newRevision = expectedRevision is null or 0
@@ -1413,7 +2130,9 @@ public sealed class SqlSugarLinklyCloudTerminalRepository(
                 new SugarParameter("@DeviceCode", deviceCode),
                 new SugarParameter("@TerminalId", terminalId),
                 new SugarParameter("@ExpectedRevision", expectedRevision),
+                new SugarParameter("@ExpectedOldTerminalId", expectedOldTerminalId),
                 new SugarParameter("@NewRevision", newRevision),
+                new SugarParameter("@MaxRevision", LinklyCloudSelectionRevision.MaxJsSafeRevision),
                 DateTime2Parameter("@UpdatedAt", updatedAt),
                 new SugarParameter("@UpdatedBy", updatedBy));
         }

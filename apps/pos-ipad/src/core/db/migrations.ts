@@ -5902,6 +5902,23 @@ BEGIN
 END;
 `;
 
+/**
+ * M44 将 Linkly 的最终会话确认绑定到原 payment_attempt：终态和 marker 在同一
+ * durable record 上，进程在 provider ACK 后崩溃时仍能安全重试原 ACK。旧记录没有
+ * 可信环境，运行时必须 fail-closed，不能用当前环境猜测确认目标。
+ */
+const M44 = `
+ALTER TABLE payment_attempts ADD COLUMN provider_environment TEXT NULL;
+ALTER TABLE payment_attempts ADD COLUMN provider_acknowledged_at_iso TEXT NULL;
+ALTER TABLE installment_provider_attempts ADD COLUMN provider_environment TEXT NULL;
+ALTER TABLE installment_provider_attempts ADD COLUMN provider_session_id TEXT NULL;
+ALTER TABLE installment_provider_attempts ADD COLUMN provider_acknowledged_at_iso TEXT NULL;
+CREATE INDEX IF NOT EXISTS ix_payment_attempts_linkly_ack_pending
+  ON payment_attempts (provider, provider_environment, provider_acknowledged_at_iso, state);
+CREATE INDEX IF NOT EXISTS ix_installment_provider_attempts_linkly_ack_pending
+  ON installment_provider_attempts (provider, provider_environment, provider_session_id, provider_acknowledged_at_iso, state);
+`;
+
 export const POS_DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   { version: 1, name: "M1_security_and_time", sql: M1 },
   { version: 2, name: "M2_catalog", sql: M2 },
@@ -5946,6 +5963,7 @@ export const POS_DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   { version: 41, name: "M41_shared_held_order_share_request", sql: M41 },
   { version: 42, name: "M42_shared_held_order_claim_wire_version", sql: M42 },
   { version: 43, name: "M43_shared_held_order_publication_wire_version", sql: M43 },
+  { version: 44, name: "M44_linkly_provider_acknowledgement", sql: M44 },
 ];
 
 export async function applyMigrations(

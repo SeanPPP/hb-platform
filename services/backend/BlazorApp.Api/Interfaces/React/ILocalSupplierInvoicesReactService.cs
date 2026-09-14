@@ -42,6 +42,11 @@ namespace BlazorApp.Api.Interfaces.React
             UpdateToStorePricesRequest dto,
             string updatedBy
         );
+        Task<ApiResponse<UpdateToStorePricesResultDto>> UpdateDetailsToStorePricesAsync(
+            UpdateToStorePricesRequest dto,
+            string updatedBy,
+            int lockWaitMilliseconds
+        );
         Task<ApiResponse<UpdateLastPurchasePricesResultDto>> UpdateLastPurchasePricesAsync(
             string invoiceGuid,
             UpdateLastPurchasePricesRequest request,

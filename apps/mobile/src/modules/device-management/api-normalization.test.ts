@@ -70,3 +70,10 @@ const empty = normalizeDeviceManagementListResponse({});
 
 assertEqual(empty.devices.length, 0, "missing devices fallback to empty list");
 assertEqual(empty.pagination.pageNumber, 1, "missing pagination uses first page");
+
+const hardwareOnly = normalizeDeviceManagementListResponse({
+  devices: [{ hardwareId: "HW-NO-REGISTRATION-ID", status: 1 }],
+});
+
+assertEqual(hardwareOnly.devices[0]?.id, "HW-NO-REGISTRATION-ID", "hardware ID may remain a display fallback");
+assertEqual(hardwareOnly.devices[0]?.registrationId, undefined, "hardware fallback must never become a writable registration ID");

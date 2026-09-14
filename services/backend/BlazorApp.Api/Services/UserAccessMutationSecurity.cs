@@ -354,23 +354,128 @@ namespace BlazorApp.Api.Services
             return UserAccessMutationDecision.Allow;
         }
 
-        private static async Task<bool> IsHighPrivilegeTargetAsync(
+        internal static async Task<HashSet<string>> GetHighPrivilegeUserGuidsAsync(
+            ISqlSugarClient db,
+            IReadOnlyCollection<string>? candidateUserGuids = null
+        )
+        {
+            var candidates = candidateUserGuids?
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (candidates is { Length: 0 })
+            {
+                return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            var highPrivilegeRoleNames = Permissions.HighPrivilegeRoleNames.ToArray();
+            var highRoleQuery = db.Queryable<UserRole>()
+                .InnerJoin<Role>((userRole, role) => userRole.RoleGUID == role.RoleGUID)
+                .Where((userRole, role) =>
+                    !userRole.IsDeleted
+                    && !role.IsDeleted
+                    && role.IsActive
+                    && highPrivilegeRoleNames.Contains(role.RoleName)
+                );
+            if (candidates != null)
+            {
+                highRoleQuery = highRoleQuery.Where((userRole, role) =>
+                    candidates.Contains(userRole.UserGUID)
+                );
+            }
+            var result = (await highRoleQuery
+                    .Select((userRole, role) => userRole.UserGUID)
+                    .Distinct()
+                    .ToListAsync())
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            var highPrivilegePermissionCodes = new HashSet<string>(
+                new[]
+                {
+                    Permissions.Users.Create,
+                    Permissions.Users.View,
+                    Permissions.Users.Edit,
+                    Permissions.Users.Delete,
+                    Permissions.Users.ManageRoles,
+                    Permissions.Users.ManageStores,
+                    Permissions.Users.ManagePosTerminalPermissions,
+                    Permissions.Users.ResetPassword,
+                    Permissions.Roles.Create,
+                    Permissions.Roles.View,
+                    Permissions.Roles.Edit,
+                    Permissions.Roles.Delete,
+                    Permissions.Roles.ManagePermissions,
+                    Permissions.Roles.ManageUsers,
+                    Permissions.System.ManageSettings,
+                },
+                StringComparer.OrdinalIgnoreCase
+            );
+            var rolePermissionQuery = db.Queryable<UserRole>()
+                .InnerJoin<Role>((userRole, role) => userRole.RoleGUID == role.RoleGUID)
+                .InnerJoin<SysRolePermission>((userRole, role, permission) =>
+                    userRole.RoleGUID == permission.RoleGuid
+                )
+                .Where((userRole, role, permission) =>
+                    !userRole.IsDeleted
+                    && !role.IsDeleted
+                    && role.IsActive
+                    && !permission.IsDeleted
+                );
+            if (candidates != null)
+            {
+                rolePermissionQuery = rolePermissionQuery.Where((userRole, role, permission) =>
+                    candidates.Contains(userRole.UserGUID)
+                );
+            }
+            var rolePermissions = await rolePermissionQuery
+                .Select((userRole, role, permission) => new
+                {
+                    UserGuid = userRole.UserGUID,
+                    permission.PermissionCode,
+                })
+                .ToListAsync();
+
+            var directPermissionQuery = db.Queryable<SysUserPermission>()
+                .Where(permission => !permission.IsDeleted);
+            if (candidates != null)
+            {
+                directPermissionQuery = directPermissionQuery.Where(permission =>
+                    candidates.Contains(permission.UserGuid)
+                );
+            }
+            var directPermissions = await directPermissionQuery
+                .Select(permission => new
+                {
+                    permission.UserGuid,
+                    permission.PermissionCode,
+                })
+                .ToListAsync();
+
+            foreach (var permissionGroup in rolePermissions
+                .Concat(directPermissions)
+                .GroupBy(item => item.UserGuid, StringComparer.OrdinalIgnoreCase))
+            {
+                var effective = Permissions.ExpandPermissionCodes(
+                    permissionGroup.Select(item => item.PermissionCode)
+                );
+                if (effective.Any(highPrivilegePermissionCodes.Contains))
+                {
+                    result.Add(permissionGroup.Key);
+                }
+            }
+            return result;
+        }
+
+        internal static async Task<bool> IsHighPrivilegeTargetAsync(
             ISqlSugarClient db,
             string targetUserGuid
         )
         {
-            var highPrivilegeRoleNames = Permissions.HighPrivilegeRoleNames.ToArray();
-            return await db.Queryable<UserRole>()
-                .InnerJoin<Role>((userRole, role) => userRole.RoleGUID == role.RoleGUID)
-                .Where(
-                    (userRole, role) =>
-                        userRole.UserGUID == targetUserGuid
-                        && !userRole.IsDeleted
-                        && !role.IsDeleted
-                        && role.IsActive
-                        && highPrivilegeRoleNames.Contains(role.RoleName)
-                )
-                .AnyAsync();
+            var targets = await GetHighPrivilegeUserGuidsAsync(
+                db,
+                new[] { targetUserGuid }
+            );
+            return targets.Contains(targetUserGuid);
         }
     }
 

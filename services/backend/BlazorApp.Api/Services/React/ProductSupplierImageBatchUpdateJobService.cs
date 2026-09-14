@@ -99,9 +99,12 @@ namespace BlazorApp.Api.Services.React
                 _runningSupplierJobIds[supplierKey] = jobState.JobId;
             }
 
+            // 先冻结入队响应，再启动后台任务；否则极快的任务可能抢先把响应状态改成 Running。
+            var queuedSnapshot = CreateSnapshot(jobState, false);
+
             // 关键位置：后台任务重新建 scope，避免请求结束后继续复用 scoped 数据库上下文。
             _ = Task.Run(() => ExecuteJobAsync(jobState), CancellationToken.None);
-            return Task.FromResult(CreateSnapshot(jobState, false));
+            return Task.FromResult(queuedSnapshot);
         }
 
         public Task<BatchUpdateSupplierImagesJobDto?> GetJobAsync(

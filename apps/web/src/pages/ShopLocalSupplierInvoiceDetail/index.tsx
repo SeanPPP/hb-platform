@@ -1,17 +1,15 @@
 import {
   ArrowLeftOutlined,
-  BarcodeOutlined,
-  FileTextOutlined,
   InboxOutlined,
   ReloadOutlined,
   ShopOutlined,
-  TagsOutlined,
   TeamOutlined,
 } from '@ant-design/icons'
 import { Button, Empty, Image, Pagination, Result, Space, Spin, Tag, Typography } from 'antd'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate, useParams } from 'react-router-dom'
+
 import {
   getShopLocalSupplierInvoice,
   getShopLocalSupplierInvoiceDetailsGrid,
@@ -22,6 +20,8 @@ import type {
   ShopLocalSupplierInvoiceItemDto,
 } from '../../types/localSupplierInvoice'
 import { RequestError } from '../../utils/request'
+
+import styles from './index.module.css'
 
 const { Text, Title } = Typography
 
@@ -63,11 +63,11 @@ function getStatusMeta(
 ) {
   return status === undefined
     ? { key: 'shop.statusUnknown', fallback: '状态未知', color: 'default' }
-    : definitions[status] ?? {
+    : (definitions[status] ?? {
         key: 'shop.statusUnknown',
         fallback: '状态未知',
         color: 'default',
-      }
+      })
 }
 
 function formatMoney(value?: number) {
@@ -129,7 +129,11 @@ export default function ShopLocalSupplierInvoiceDetailPage() {
 
       const [invoiceResult, itemsResult] = await Promise.allSettled([
         getShopLocalSupplierInvoice(invoiceGuid, controller.signal),
-        getShopLocalSupplierInvoiceDetailsGrid(invoiceGuid, { page: currentPage, pageSize }, controller.signal),
+        getShopLocalSupplierInvoiceDetailsGrid(
+          invoiceGuid,
+          { page: currentPage, pageSize },
+          controller.signal,
+        ),
       ])
 
       if (cancelled) return
@@ -163,34 +167,43 @@ export default function ShopLocalSupplierInvoiceDetailPage() {
   }, [currentPage, invoiceGuid, pageSize, reloadVersion])
 
   if (loading) {
-    return <div className="shop-order-detail-loading"><Spin size="large" /></div>
+    return (
+      <div className="shop-order-detail-loading">
+        <Spin size="large" />
+      </div>
+    )
   }
 
   if (loadError) {
     const status = loadError === 'forbidden' ? '403' : loadError === 'not-found' ? '404' : 'error'
-    const messageKey = loadError === 'forbidden'
-      ? 'shopLocalSupplierInvoiceDetail.forbidden'
-      : loadError === 'not-found'
-        ? 'shopLocalSupplierInvoiceDetail.notFound'
-        : 'shopLocalSupplierInvoiceDetail.loadFailed'
+    const messageKey =
+      loadError === 'forbidden'
+        ? 'shopLocalSupplierInvoiceDetail.forbidden'
+        : loadError === 'not-found'
+          ? 'shopLocalSupplierInvoiceDetail.notFound'
+          : 'shopLocalSupplierInvoiceDetail.loadFailed'
 
     return (
       <div className="shop-order-detail-empty shop-local-invoice-detail-error">
         <Result
           status={status}
           title={t(messageKey)}
-          extra={(
+          extra={
             <Space wrap>
               <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/shop/local-supplier-invoices')}>
                 {t('shopLocalSupplierInvoiceDetail.backToList')}
               </Button>
               {loadError === 'failed' ? (
-                <Button type="primary" icon={<ReloadOutlined />} onClick={() => setReloadVersion((current) => current + 1)}>
+                <Button
+                  type="primary"
+                  icon={<ReloadOutlined />}
+                  onClick={() => setReloadVersion((current) => current + 1)}
+                >
                   {t('common.retry')}
                 </Button>
               ) : null}
             </Space>
-          )}
+          }
         />
       </div>
     )
@@ -202,7 +215,7 @@ export default function ShopLocalSupplierInvoiceDetailPage() {
   const inboundStatus = getStatusMeta(invoice.inboundStatus, INBOUND_STATUS_META)
 
   return (
-    <div className="shop-order-detail-page shop-local-invoice-detail-page">
+    <div className={`${styles.page} shop-order-detail-page shop-local-invoice-detail-page`}>
       <div className="shop-order-detail-hero">
         <div className="shop-order-detail-hero-main">
           <Button
@@ -212,10 +225,6 @@ export default function ShopLocalSupplierInvoiceDetailPage() {
           >
             {t('shopLocalSupplierInvoiceDetail.backToList')}
           </Button>
-
-          <div className="shop-order-detail-eyebrow">
-            <FileTextOutlined /> {t('shopLocalSupplierInvoiceDetail.title')}
-          </div>
 
           <div className="shop-order-detail-title-row">
             <div>
@@ -228,106 +237,139 @@ export default function ShopLocalSupplierInvoiceDetailPage() {
             </Space>
           </div>
 
-          <div className="shop-order-detail-meta">
-            <div><ShopOutlined /><span>{invoice.storeName || invoice.storeCode || '--'}</span></div>
-            <div><TeamOutlined /><span>{invoice.supplierName || invoice.supplierCode || '--'}</span></div>
-            <div><FileTextOutlined /><span>{total} {t('shopLocalSupplierInvoiceDetail.detailLines')}</span></div>
+          <div className={styles.metadataStrip}>
+            <div>
+              <ShopOutlined />
+              <span>{invoice.storeName || invoice.storeCode || '--'}</span>
+            </div>
+            <div>
+              <span className={styles.metaLabel}>{t('shopOrderDetail.storeCode')}</span>
+              {invoice.storeCode || '--'}
+            </div>
+            <div>
+              <TeamOutlined />
+              <span>{invoice.supplierName || invoice.supplierCode || '--'}</span>
+            </div>
+            <div>
+              <span className={styles.metaLabel}>{t('shopLocalSupplierInvoiceDetail.orderDate')}</span>
+              {formatDate(invoice.orderDate, dateLocale)}
+            </div>
+            <div>
+              <span className={styles.metaLabel}>{t('shopLocalSupplierInvoiceDetail.inboundDate')}</span>
+              {formatDate(invoice.inboundDate, dateLocale)}
+            </div>
           </div>
         </div>
       </div>
 
-      <div className="shop-order-detail-stats shop-local-invoice-detail-stats">
-        <div className="shop-order-detail-stat accent">
+      <div className={`${styles.detailSummaryBar} shop-local-invoice-detail-info-grid`}>
+        <div>
           <span>{t('shopLocalSupplierInvoiceDetail.totalAmount')}</span>
           <strong>{formatMoney(invoice.totalAmount)}</strong>
         </div>
-        <div className="shop-order-detail-stat">
+        <div>
           <span>{t('shopLocalSupplierInvoiceDetail.receivedAmount')}</span>
           <strong>{formatMoney(invoice.receivedTotalAmount)}</strong>
         </div>
-        <div className="shop-order-detail-stat">
-          <span>{t('shopLocalSupplierInvoiceDetail.orderDate')}</span>
-          <strong>{formatDate(invoice.orderDate, dateLocale)}</strong>
+        <div>
+          <span>{t('shopLocalSupplierInvoiceDetail.productDetail')}</span>
+          <strong>
+            {total} {t('shopLocalSupplierInvoiceDetail.detailLines')}
+          </strong>
         </div>
-        <div className="shop-order-detail-stat">
-          <span>{t('shopLocalSupplierInvoiceDetail.inboundDate')}</span>
-          <strong>{formatDate(invoice.inboundDate, dateLocale)}</strong>
-        </div>
-      </div>
-
-      <div className="shop-order-detail-info-grid shop-local-invoice-detail-info-grid">
-        <section className="shop-order-detail-panel">
-          <div className="shop-order-detail-panel-title">{t('shopLocalSupplierInvoiceDetail.storeInfo')}</div>
-          <div className="shop-order-detail-info-list">
-            <div><span>{t('shopLocalSupplierInvoiceDetail.storeInfo')}</span><strong>{invoice.storeName || '--'}</strong></div>
-            <div><span>{t('shopOrderDetail.storeCode')}</span><strong>{invoice.storeCode || '--'}</strong></div>
-            <div><span>{t('shopLocalSupplierInvoiceDetail.supplierInfo')}</span><strong>{invoice.supplierName || invoice.supplierCode || '--'}</strong></div>
-          </div>
-        </section>
       </div>
 
       <section className="shop-order-lines-panel shop-local-invoice-lines-panel">
         <div className="shop-order-lines-header">
           <div>
-            <div className="shop-order-detail-panel-title">{t('shopLocalSupplierInvoiceDetail.productDetail')}</div>
+            <div className="shop-order-detail-panel-title">
+              {t('shopLocalSupplierInvoiceDetail.productDetail')}
+            </div>
             <Text type="secondary">{t('shopLocalSupplierInvoiceDetail.productDetailTip')}</Text>
           </div>
-          <div className="shop-order-lines-counter">{total} {t('shopLocalSupplierInvoiceDetail.detailLines')}</div>
+          <div className="shop-order-lines-counter">
+            {total} {t('shopLocalSupplierInvoiceDetail.detailLines')}
+          </div>
         </div>
 
         {items.length ? (
-          <div className="shop-order-lines-list">
-            {items.map((item) => (
-              <article key={item.detailGUID} className="shop-order-line-card shop-local-invoice-line-card">
-                <div className="shop-order-line-media">
-                  <Image
-                    src={item.productImage || PRODUCT_IMAGE_FALLBACK}
-                    fallback={PRODUCT_IMAGE_FALLBACK}
-                    alt={item.productName || item.itemNumber || item.productCode}
-                    width={96}
-                    height={96}
-                    style={{ objectFit: 'contain' }}
-                    preview={false}
-                  />
-                </div>
-
-                <div className="shop-order-line-main">
-                  <div className="shop-order-line-head">
-                    <div>
-                      <Title level={5} className="shop-order-line-title">
-                        {item.productName || t('shopLocalSupplierInvoiceDetail.unnamedProduct')}
-                      </Title>
-                      <Space size={[6, 8]} wrap className="shop-local-invoice-line-identifiers">
-                        <Tag icon={<TagsOutlined />}>{t('shopLocalSupplierInvoiceDetail.itemNumber')}: {item.itemNumber || item.productCode || '--'}</Tag>
-                        <Tag icon={<BarcodeOutlined />}>{t('shopLocalSupplierInvoiceDetail.barcode')}: {item.barcode || '--'}</Tag>
-                      </Space>
-                    </div>
-                  </div>
-
-                  <div className="shop-local-invoice-line-attributes">
-                    <div><span>{t('shopLocalSupplierInvoiceDetail.specification')}</span><strong>{item.specification || '--'}</strong></div>
-                    <div><span>{t('shopLocalSupplierInvoiceDetail.unit')}</span><strong>{item.unit || '--'}</strong></div>
-                  </div>
-
-                  <div className="shop-order-line-metrics shop-local-invoice-line-metrics">
-                    <div><span>{t('shopLocalSupplierInvoiceDetail.quantity')}</span><strong>{formatQuantity(item.quantity)}</strong></div>
-                    <div><span>{t('shopLocalSupplierInvoiceDetail.purchasePrice')}</span><strong>{formatMoney(item.purchasePrice)}</strong></div>
-                    {typeof item.lastPurchasePrice === 'number' ? (
-                      <div><span>{t('shopLocalSupplierInvoiceDetail.lastPurchasePrice')}</span><strong>{formatMoney(item.lastPurchasePrice)}</strong></div>
-                    ) : null}
-                    <div><span>{t('shopLocalSupplierInvoiceDetail.retailPrice')}</span><strong>{formatMoney(item.retailPrice)}</strong></div>
-                    {typeof item.newAutoRetailPrice === 'number' ? (
-                      <div><span>{t('shopLocalSupplierInvoiceDetail.newAutoRetailPrice')}</span><strong>{formatMoney(item.newAutoRetailPrice)}</strong></div>
-                    ) : null}
-                    <div className="shop-local-invoice-line-amount"><span>{t('shopLocalSupplierInvoiceDetail.lineAmount')}</span><strong>{formatMoney(getLineAmount(item))}</strong></div>
-                  </div>
-                </div>
-              </article>
-            ))}
+          <div
+            className={styles.lineTableShell}
+            role="region"
+            aria-label={t('shopLocalSupplierInvoiceDetail.productDetail')}
+            tabIndex={0}
+          >
+            <table
+              className={styles.lineTable}
+              aria-label={t('shopLocalSupplierInvoiceDetail.productDetail')}
+            >
+              <thead>
+                <tr>
+                  <th>{t('shopLocalSupplierInvoiceDetail.productName')}</th>
+                  <th>{t('shopLocalSupplierInvoiceDetail.itemNumber')}</th>
+                  <th>{t('shopLocalSupplierInvoiceDetail.barcode')}</th>
+                  <th>{t('shopLocalSupplierInvoiceDetail.specification')}</th>
+                  <th>{t('shopLocalSupplierInvoiceDetail.unit')}</th>
+                  <th className={styles.numeric}>{t('shopLocalSupplierInvoiceDetail.quantity')}</th>
+                  <th className={styles.numeric}>{t('shopLocalSupplierInvoiceDetail.purchasePrice')}</th>
+                  <th className={styles.numeric}>{t('shopLocalSupplierInvoiceDetail.retailPrice')}</th>
+                  <th className={styles.numeric}>{t('shopLocalSupplierInvoiceDetail.lineAmount')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((item) => (
+                  <tr key={item.detailGUID}>
+                    <td className={styles.productCell}>
+                      <div>
+                        <Image
+                          src={item.productImage || PRODUCT_IMAGE_FALLBACK}
+                          fallback={PRODUCT_IMAGE_FALLBACK}
+                          alt={item.productName || item.itemNumber || item.productCode}
+                          width={48}
+                          height={48}
+                          style={{ objectFit: 'contain' }}
+                          preview={false}
+                        />
+                        <span>{item.productName || t('shopLocalSupplierInvoiceDetail.unnamedProduct')}</span>
+                      </div>
+                    </td>
+                    <td>{item.itemNumber || item.productCode || '--'}</td>
+                    <td>{item.barcode || '--'}</td>
+                    <td>{item.specification || '--'}</td>
+                    <td>{item.unit || '--'}</td>
+                    <td className={styles.numeric}>{formatQuantity(item.quantity)}</td>
+                    <td className={styles.numeric}>
+                      <span>{formatMoney(item.purchasePrice)}</span>
+                      {typeof item.lastPurchasePrice === 'number' ? (
+                        <small>
+                          {t('shopLocalSupplierInvoiceDetail.lastPurchasePrice')}:{' '}
+                          {formatMoney(item.lastPurchasePrice)}
+                        </small>
+                      ) : null}
+                    </td>
+                    <td className={styles.numeric}>
+                      <span>{formatMoney(item.retailPrice)}</span>
+                      {typeof item.newAutoRetailPrice === 'number' ? (
+                        <small>
+                          {t('shopLocalSupplierInvoiceDetail.newAutoRetailPrice')}:{' '}
+                          {formatMoney(item.newAutoRetailPrice)}
+                        </small>
+                      ) : null}
+                    </td>
+                    <td className={`${styles.numeric} ${styles.amount}`}>
+                      {formatMoney(getLineAmount(item))}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         ) : (
           <div className="shop-order-lines-empty">
-            <Empty image={<InboxOutlined />} description={t('shopLocalSupplierInvoiceDetail.noProductDetail')} />
+            <Empty
+              image={<InboxOutlined />}
+              description={t('shopLocalSupplierInvoiceDetail.noProductDetail')}
+            />
           </div>
         )}
 

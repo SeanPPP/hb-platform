@@ -1167,7 +1167,8 @@ public class LinklyCloudBackendAsyncService(
             out var responseText,
             out var responseTxnRef,
             out var responseDate,
-            out var responseTime);
+            out var responseTime,
+            out var loggedOn);
         var resolvedResponseTxnRef = await ResolveStatusTestTxnRefAsync(
             responseTxnRef,
             normalizedEnvironment,
@@ -1191,7 +1192,10 @@ public class LinklyCloudBackendAsyncService(
             resolvedResponseTxnRef,
             responseDate,
             responseTime,
-            message);
+            message)
+        {
+            LoggedOn = transportResponse.StatusCode == HttpStatusCode.OK && status ? loggedOn : null
+        };
 
         await TryRecordDefinitiveTerminalHealthAsync(
             terminalContext,
@@ -2548,13 +2552,15 @@ public class LinklyCloudBackendAsyncService(
         out string? responseText,
         out string? responseTxnRef,
         out string? responseDate,
-        out string? responseTime)
+        out string? responseTime,
+        out bool? loggedOn)
     {
         responseCode = null;
         responseText = null;
         responseTxnRef = null;
         responseDate = null;
         responseTime = null;
+        loggedOn = null;
         if (string.IsNullOrWhiteSpace(bodyJson))
         {
             return false;
@@ -2569,6 +2575,11 @@ public class LinklyCloudBackendAsyncService(
             responseTxnRef = ReadString(response, "TxnRef");
             responseDate = ReadString(response, "Date");
             responseTime = ReadString(response, "Time");
+            if (TryGetProperty(response, "LoggedOn", out var value) &&
+                value.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            {
+                loggedOn = value.GetBoolean();
+            }
             return ReadBool(response, "Success") == true;
         }
         catch (JsonException)

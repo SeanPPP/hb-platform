@@ -61,7 +61,10 @@ namespace BlazorApp.Api.Services
                 }
 
                 //使用多对多导航查询
-                var userQuery = db.Queryable<User>().Includes(u => u.Roles).Includes(u => u.Stores);
+                var userQuery = db.Queryable<User>()
+                    .Where(user => !user.IsDeleted)
+                    .Includes(u => u.Roles)
+                    .Includes(u => u.Stores);
 
                 if (storeScope.StoreGuids.Count > 0)
                 {
@@ -81,6 +84,14 @@ namespace BlazorApp.Api.Services
                     }
 
                     userQuery = userQuery.Where(u => scopedUserGuids.Contains(u.UserGUID));
+
+                    var excludedHighPrivilegeGuids = await ResolveScopedHighPrivilegeUserGuidsAsync(
+                        db
+                    );
+                    if (excludedHighPrivilegeGuids.Length > 0)
+                    {
+                        userQuery = userQuery.Where(u => !excludedHighPrivilegeGuids.Contains(u.UserGUID));
+                    }
                 }
 
                 // 搜索条件
@@ -102,23 +113,31 @@ namespace BlazorApp.Api.Services
                 // 角色筛选 - 优化为子查询
                 if (!string.IsNullOrEmpty(query.RoleGuid))
                 {
-                    userQuery = userQuery.Where(u =>
-                        db.Queryable<UserRole>()
-                            .Where(ur => ur.RoleGUID == query.RoleGuid && ur.UserGUID == u.UserGUID)
-                            .Any()
-                    );
+                    var roleUserGuids = await db.Queryable<UserRole>()
+                        .InnerJoin<Role>((userRole, role) => userRole.RoleGUID == role.RoleGUID)
+                        .Where((userRole, role) =>
+                            userRole.RoleGUID == query.RoleGuid
+                            && !userRole.IsDeleted
+                            && !role.IsDeleted
+                            && role.IsActive
+                        )
+                        .Select((userRole, role) => userRole.UserGUID)
+                        .Distinct()
+                        .ToListAsync();
+                    userQuery = userQuery.Where(user => roleUserGuids.Contains(user.UserGUID));
                 }
 
                 // 分店筛选 - 优化为子查询
                 if (!string.IsNullOrEmpty(query.StoreGuid))
                 {
-                    userQuery = userQuery.Where(u =>
-                        db.Queryable<UserStore>()
-                            .Where(us =>
-                                us.StoreGUID == query.StoreGuid && us.UserGUID == u.UserGUID
-                            )
-                            .Any()
-                    );
+                    var storeUserGuids = await db.Queryable<UserStore>()
+                        .Where(userStore =>
+                            userStore.StoreGUID == query.StoreGuid && !userStore.IsDeleted
+                        )
+                        .Select(userStore => userStore.UserGUID)
+                        .Distinct()
+                        .ToListAsync();
+                    userQuery = userQuery.Where(user => storeUserGuids.Contains(user.UserGUID));
                 }
 
                 // 排序
@@ -162,11 +181,87 @@ namespace BlazorApp.Api.Services
                     .Skip((query.Page - 1) * query.PageSize)
                     .Take(query.PageSize)
                     .ToListAsync();
+                var pageUserGuids = users.Select(user => user.UserGUID).ToArray();
+                var visibleRoleRelations = pageUserGuids.Length == 0
+                    ? new List<UserRole>()
+                    : await db.Queryable<UserRole>()
+                        .Where(userRole =>
+                            pageUserGuids.Contains(userRole.UserGUID) && !userRole.IsDeleted
+                        )
+                        .ToListAsync();
+                var visibleRoleGuids = visibleRoleRelations
+                    .Select(userRole => userRole.RoleGUID)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+                var visibleRolesByGuid = (visibleRoleGuids.Length == 0
+                        ? new List<Role>()
+                        : await db.Queryable<Role>()
+                            .Where(role =>
+                                visibleRoleGuids.Contains(role.RoleGUID)
+                                && !role.IsDeleted
+                                && role.IsActive
+                            )
+                            .ToListAsync())
+                    .ToDictionary(role => role.RoleGUID, StringComparer.OrdinalIgnoreCase);
+                var roleGuidsByUser = visibleRoleRelations
+                    .GroupBy(item => item.UserGUID, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(
+                        group => group.Key,
+                        group => group.Select(item => item.RoleGUID).ToArray(),
+                        StringComparer.OrdinalIgnoreCase
+                    );
+
+                var visibleStoreRelations = pageUserGuids.Length == 0
+                    ? new List<UserStore>()
+                    : await db.Queryable<UserStore>()
+                        .Where(userStore =>
+                            pageUserGuids.Contains(userStore.UserGUID) && !userStore.IsDeleted
+                        )
+                        .ToListAsync();
+                var visibleStoreGuids = visibleStoreRelations
+                    .Select(userStore => userStore.StoreGUID)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+                var visibleStoresByGuid = (visibleStoreGuids.Length == 0
+                        ? new List<Store>()
+                        : await db.Queryable<Store>()
+                            .Where(store =>
+                                visibleStoreGuids.Contains(store.StoreGUID) && !store.IsDeleted
+                            )
+                            .ToListAsync())
+                    .ToDictionary(store => store.StoreGUID, StringComparer.OrdinalIgnoreCase);
+                var storeRelationsByUser = visibleStoreRelations
+                    .GroupBy(item => item.UserGUID, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(
+                        group => group.Key,
+                        group => group.ToArray(),
+                        StringComparer.OrdinalIgnoreCase
+                    );
                 //内存中将用户转换为UserDto
                 var userDtos = new List<UserDto>();
 
                 foreach (var user in users)
                 {
+                    var visibleRoles = roleGuidsByUser.TryGetValue(user.UserGUID, out var roleGuids)
+                        ? roleGuids
+                            .Where(visibleRolesByGuid.ContainsKey)
+                            .Select(roleGuid => visibleRolesByGuid[roleGuid])
+                            .ToList()
+                        : new List<Role>();
+                    var visibleStores = storeRelationsByUser.TryGetValue(
+                        user.UserGUID,
+                        out var storeRelations
+                    )
+                        ? storeRelations
+                            .Where(relation => visibleStoresByGuid.ContainsKey(relation.StoreGUID))
+                            .Select(relation => new
+                            {
+                                Store = visibleStoresByGuid[relation.StoreGUID],
+                                relation.IsPrimary,
+                                relation.AssignedAt,
+                            })
+                            .ToList()
+                        : [];
                     var userDto = new UserDto
                     {
                         UserGUID = user.UserGUID,
@@ -178,17 +273,17 @@ namespace BlazorApp.Api.Services
                         IsActive = user.IsActive,
                         CreatedAt = user.CreatedAt,
                         UpdatedAt = user.UpdatedAt ?? user.CreatedAt,
-                        RoleNames = (user.Roles ?? new List<Role>())
+                        RoleNames = visibleRoles
                             .Select(r => r.RoleName)
                             .ToList(),
-                        StoreNames = (user.Stores ?? new List<Store>())
-                            .Where(s =>
+                        StoreNames = visibleStores
+                            .Where(item =>
                                 storeScope.StoreGuids.Count == 0
-                                || storeScope.StoreGuids.Contains(s.StoreGUID)
+                                || storeScope.StoreGuids.Contains(item.Store.StoreGUID)
                             )
-                            .Select(s => s.StoreName)
+                            .Select(item => item.Store.StoreName)
                             .ToList(),
-                        Roles = (user.Roles ?? new List<Role>())
+                        Roles = visibleRoles
                             .Select(r => new RoleDto
                             {
                                 RoleGUID = r.RoleGUID,
@@ -199,19 +294,19 @@ namespace BlazorApp.Api.Services
                                 UpdatedAt = r.UpdatedAt ?? r.CreatedAt,
                             })
                             .ToList(),
-                        Stores = (user.Stores ?? new List<Store>())
-                            .Where(s =>
+                        Stores = visibleStores
+                            .Where(item =>
                                 storeScope.StoreGuids.Count == 0
-                                || storeScope.StoreGuids.Contains(s.StoreGUID)
+                                || storeScope.StoreGuids.Contains(item.Store.StoreGUID)
                             )
-                            .Select(s => new UserStoreDto
+                            .Select(item => new UserStoreDto
                             {
-                                StoreGUID = s.StoreGUID,
-                                StoreName = s.StoreName,
-                                StoreCode = s.StoreCode,
-                                IsActive = s.IsActive,
-                                IsPrimary = false,
-                                AssignedAt = DateTime.UtcNow,
+                                StoreGUID = item.Store.StoreGUID,
+                                StoreName = item.Store.StoreName,
+                                StoreCode = item.Store.StoreCode,
+                                IsActive = item.Store.IsActive,
+                                IsPrimary = item.IsPrimary,
+                                AssignedAt = item.AssignedAt,
                             })
                             .ToList(),
                     };
@@ -266,13 +361,14 @@ namespace BlazorApp.Api.Services
 
                 // 构建复合查询，一次性获取所有需要的数据
                 var baseQuery = db.Queryable<User>()
-                    .LeftJoin<UserRole>((u, ur) => u.UserGUID == ur.UserGUID)
-                    .LeftJoin<Role>((u, ur, r) => ur.RoleGUID == r.RoleGUID && r.IsActive)
+                    .LeftJoin<UserRole>((u, ur) => u.UserGUID == ur.UserGUID && !ur.IsDeleted)
+                    .LeftJoin<Role>((u, ur, r) => ur.RoleGUID == r.RoleGUID && r.IsActive && !r.IsDeleted)
                     .LeftJoin<UserStore>((u, ur, r, us) => u.UserGUID == us.UserGUID && !us.IsDeleted)
                     // 用户关联分店用于身份范围展示，停用分店也必须保留；只排除已删除分店。
                     .LeftJoin<Store>(
                         (u, ur, r, us, s) => us.StoreGUID == s.StoreGUID && !s.IsDeleted
-                    );
+                    )
+                    .Where((u, ur, r, us, s) => !u.IsDeleted);
 
                 if (storeScope.StoreGuids.Count > 0)
                 {
@@ -281,6 +377,16 @@ namespace BlazorApp.Api.Services
                         (u, ur, r, us, s) =>
                             !us.IsDeleted && scopedStoreGuids.Contains(us.StoreGUID)
                     );
+
+                    var excludedHighPrivilegeGuids = await ResolveScopedHighPrivilegeUserGuidsAsync(
+                        db
+                    );
+                    if (excludedHighPrivilegeGuids.Length > 0)
+                    {
+                        baseQuery = baseQuery.Where(
+                            (u, ur, r, us, s) => !excludedHighPrivilegeGuids.Contains(u.UserGUID)
+                        );
+                    }
                 }
 
                 // 搜索条件
@@ -448,6 +554,78 @@ namespace BlazorApp.Api.Services
             }
         }
 
+        private async Task<UserAccessReadDecision?> ResolveUserReadDecisionAsync(
+            ISqlSugarClient db,
+            string targetUserGuid
+        )
+        {
+            // 未注入当前用户上下文的内部调用保持既有无限制行为；HTTP 请求均注入该服务，
+            // 因此详情和登录记录会统一经过目标用户的读取边界校验。
+            if (_manageableStoreScopeService == null)
+            {
+                return null;
+            }
+
+            var scope = await _manageableStoreScopeService.GetScopeAsync();
+            if (!scope.IsAuthenticated || string.IsNullOrWhiteSpace(scope.UserGuid))
+            {
+                return UserAccessReadDecision.Forbidden;
+            }
+
+            // 以请求 claims 记录的身份类型为准；角色在 DB 中刚被撤销时也必须保持 fail closed。
+            if (!scope.IsStoreManager)
+            {
+                return UserAccessReadDecision.Unrestricted;
+            }
+
+            return await UserAccessMutationSecurity.ValidateReadTargetAsync(
+                db,
+                scope.UserGuid,
+                targetUserGuid
+            );
+        }
+
+        private async Task<string[]> ResolveScopedHighPrivilegeUserGuidsAsync(ISqlSugarClient db)
+        {
+            if (_manageableStoreScopeService == null)
+            {
+                return Array.Empty<string>();
+            }
+
+            var scope = await _manageableStoreScopeService.GetScopeAsync();
+            if (!scope.IsAuthenticated || string.IsNullOrWhiteSpace(scope.UserGuid))
+            {
+                return Array.Empty<string>();
+            }
+
+            var scopedStoreGuids = scope.StoreGuids
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var candidateUserGuids = scopedStoreGuids.Length == 0
+                ? new List<string>()
+                : await db.Queryable<UserStore>()
+                    .InnerJoin<User>((userStore, user) => userStore.UserGUID == user.UserGUID)
+                    .Where((userStore, user) =>
+                        !userStore.IsDeleted
+                        && !user.IsDeleted
+                        && scopedStoreGuids.Contains(userStore.StoreGUID)
+                    )
+                    .Select((userStore, user) => userStore.UserGUID)
+                    .Distinct()
+                    .ToListAsync();
+            var excluded = await UserAccessMutationSecurity.GetHighPrivilegeUserGuidsAsync(
+                db,
+                candidateUserGuids
+            );
+
+            // 店长本人沿用原有本人读取规则，即使其账号被额外授予高权限角色也不从列表隐藏。
+            return excluded
+                .Where(userGuid => !string.Equals(userGuid, scope.UserGuid, StringComparison.OrdinalIgnoreCase))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+
         private async Task<UserListStoreScope> ResolveUserListStoreScopeAsync(ISqlSugarClient db)
         {
             if (_manageableStoreScopeService == null)
@@ -461,7 +639,7 @@ namespace BlazorApp.Api.Services
                 return UserListStoreScope.Unrestricted;
             }
 
-            if (scope.IsAllowed)
+            if (scope.IsAllowed && scope.IsStoreManager)
             {
                 return new UserListStoreScope(
                     scope.StoreGuids
@@ -477,13 +655,7 @@ namespace BlazorApp.Api.Services
                 return UserListStoreScope.Unrestricted;
             }
 
-            var isStoreManager = await CurrentUserHasRoleAliasAsync(
-                db,
-                scope.UserGuid,
-                CurrentUserManageableStoreScopeService.StoreManagerRoleAliases
-            );
-
-            return isStoreManager
+            return scope.IsStoreManager
                 ? new UserListStoreScope(Array.Empty<string>(), true)
                 : UserListStoreScope.Unrestricted;
         }
@@ -664,30 +836,18 @@ namespace BlazorApp.Api.Services
             try
             {
                 var db = _context.Db;
-                var storeScope = await ResolveUserListStoreScopeAsync(db);
-                if (storeScope.ReturnEmptyPage)
+                var access = await ResolveUserReadDecisionAsync(db, userGuid);
+                if (access is { IsNotFound: true })
+                {
+                    return ApiResponse<UserDetailDto>.Error("用户不存在", "USER_NOT_FOUND");
+                }
+                if (access is { IsAllowed: false })
                 {
                     return ApiResponse<UserDetailDto>.Error("无权查看该用户", "FORBIDDEN");
                 }
 
-                if (storeScope.StoreGuids.Count > 0)
-                {
-                    // Users.View 新增给店长后，GUID 详情同样必须受管理分店约束，避免绕过列表隔离。
-                    var scopedStoreGuids = storeScope.StoreGuids.ToArray();
-                    var isRelatedUser = await db.Queryable<UserStore>()
-                        .AnyAsync(item =>
-                            item.UserGUID == userGuid
-                            && !item.IsDeleted
-                            && scopedStoreGuids.Contains(item.StoreGUID)
-                        );
-                    if (!isRelatedUser)
-                    {
-                        return ApiResponse<UserDetailDto>.Error("无权查看该用户", "FORBIDDEN");
-                    }
-                }
-
                 var user = await db.Queryable<User>()
-                    .Where(u => u.UserGUID == userGuid)
+                    .Where(u => u.UserGUID == userGuid && !u.IsDeleted)
                     .FirstAsync();
 
                 if (user == null)
@@ -747,6 +907,17 @@ namespace BlazorApp.Api.Services
                     .ToListAsync();
                 userDetail.Stores = stores;
 
+                if (access?.VisibleStoreGuids != null && access.RequiresDelegatedPermission)
+                {
+                    var visibleStoreGuids = access.VisibleStoreGuids.ToHashSet(
+                        StringComparer.OrdinalIgnoreCase
+                    );
+                    userDetail.Stores = stores
+                        .Where(store => visibleStoreGuids.Contains(store.StoreGUID))
+                        .ToList();
+                }
+                stores = userDetail.Stores;
+
                 // 填充角色名和分店名
                 userDetail.RoleNames = roles.Select(r => r.RoleName).ToList();
                 userDetail.StoreNames = stores.Select(s => s.StoreName).ToList();
@@ -786,31 +957,20 @@ namespace BlazorApp.Api.Services
             try
             {
                 var db = _context.Db;
-                var storeScope = await ResolveUserListStoreScopeAsync(db);
-                if (storeScope.ReturnEmptyPage)
+                var access = await ResolveUserReadDecisionAsync(db, userGuid);
+                if (access is { IsNotFound: true })
+                {
+                    return ApiResponse<PagedResult<UserLoginRecordDto>>.Error(
+                        "用户不存在",
+                        "USER_NOT_FOUND"
+                    );
+                }
+                if (access is { IsAllowed: false })
                 {
                     return ApiResponse<PagedResult<UserLoginRecordDto>>.Error(
                         "无权查看该用户登录记录",
                         "FORBIDDEN"
                     );
-                }
-
-                if (storeScope.StoreGuids.Count > 0)
-                {
-                    var scopedStoreGuids = storeScope.StoreGuids.ToArray();
-                    var isRelatedUser = await db.Queryable<UserStore>()
-                        .AnyAsync(item =>
-                            item.UserGUID == userGuid
-                            && !item.IsDeleted
-                            && scopedStoreGuids.Contains(item.StoreGUID)
-                        );
-                    if (!isRelatedUser)
-                    {
-                        return ApiResponse<PagedResult<UserLoginRecordDto>>.Error(
-                            "无权查看该用户登录记录",
-                            "FORBIDDEN"
-                        );
-                    }
                 }
 
                 var page = Math.Max(query.Page, 1);
@@ -894,7 +1054,7 @@ namespace BlazorApp.Api.Services
                 var db = _context.Db;
                 var usernameLower = (username ?? string.Empty).Trim().ToLowerInvariant();
                 var user = await db.Queryable<User>()
-                    .Where(u => u.Username.ToLower() == usernameLower)
+                    .Where(u => !u.IsDeleted && u.Username.ToLower() == usernameLower)
                     .Select(u => new UserDto
                     {
                         UserGUID = u.UserGUID,
@@ -912,6 +1072,12 @@ namespace BlazorApp.Api.Services
                 if (user == null)
                 {
                     return ApiResponse<UserDto>.Error("用户不存在", "USER_NOT_FOUND");
+                }
+
+                var access = await ResolveUserReadDecisionAsync(db, user.UserGUID);
+                if (access is { IsAllowed: false })
+                {
+                    return ApiResponse<UserDto>.Error("无权查看该用户", "FORBIDDEN");
                 }
 
                 return ApiResponse<UserDto>.OK(user, "获取用户成功");
@@ -932,7 +1098,7 @@ namespace BlazorApp.Api.Services
             {
                 var db = _context.Db;
                 var user = await db.Queryable<User>()
-                    .Where(u => u.Email == email)
+                    .Where(u => !u.IsDeleted && u.Email == email)
                     .Select(u => new UserDto
                     {
                         UserGUID = u.UserGUID,
@@ -950,6 +1116,12 @@ namespace BlazorApp.Api.Services
                 if (user == null)
                 {
                     return ApiResponse<UserDto>.Error("用户不存在", "USER_NOT_FOUND");
+                }
+
+                var access = await ResolveUserReadDecisionAsync(db, user.UserGUID);
+                if (access is { IsAllowed: false })
+                {
+                    return ApiResponse<UserDto>.Error("无权查看该用户", "FORBIDDEN");
                 }
 
                 return ApiResponse<UserDto>.OK(user, "获取用户成功");
@@ -1252,64 +1424,93 @@ namespace BlazorApp.Api.Services
             UpdateUserDto dto
         )
         {
+            var db = _context.Db;
             try
             {
-                var db = _context.Db;
-
-                // 检查用户是否存在
-                var user = await db.Queryable<User>()
-                    .Where(u => u.UserGUID == userGuid)
-                    .FirstAsync();
-
-                if (user == null)
+                await db.Ado.BeginTranAsync(IsolationLevel.Serializable);
+                try
                 {
-                    return ApiResponse<UserDto>.Error("用户不存在", "USER_NOT_FOUND");
-                }
+                    // 店长的用户编辑必须在事务内重新核对目标范围；全局显式 Users.Edit 账号保持原有能力。
+                    var user = await db.Queryable<User>()
+                        .Where(u => u.UserGUID == userGuid && !u.IsDeleted)
+                        .FirstAsync();
 
-                // 检查用户名和邮箱是否被其他用户使用（用户名大小写不敏感）
-                var usernameLower = (dto.Username ?? string.Empty).Trim().ToLowerInvariant();
-                var existingUser = await db.Queryable<User>()
-                    .Where(u =>
-                        u.UserGUID != userGuid
-                        && (u.Username.ToLower() == usernameLower || u.Email == dto.Email)
-                    )
-                    .FirstAsync();
+                    if (user == null)
+                    {
+                        await db.Ado.RollbackTranAsync();
+                        return ApiResponse<UserDto>.Error("用户不存在", "USER_NOT_FOUND");
+                    }
 
-                if (existingUser != null)
-                {
-                    if (existingUser.Username.ToLower() == usernameLower)
+                    var targetDecision = await ValidateUserProfileMutationTargetAsync(db, userGuid);
+                    if (!targetDecision.IsAllowed)
+                    {
+                        await db.Ado.RollbackTranAsync();
+                        return ApiResponse<UserDto>.Error(targetDecision.Message, targetDecision.ErrorCode);
+                    }
+
+                    var actor = await UserAccessMutationSecurity.ResolveActorAsync(
+                        db,
+                        _manageableStoreScopeService
+                    );
+                    var isSelf = actor.UserGuid.Equals(userGuid, StringComparison.OrdinalIgnoreCase);
+                    if (isSelf && (dto.IsActive != user.IsActive || !string.Equals(
+                        (dto.Username ?? string.Empty).Trim(), user.Username, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        await db.Ado.RollbackTranAsync();
                         return ApiResponse<UserDto>.Error(
-                            "用户名已被其他用户使用",
-                            "USERNAME_EXISTS"
+                            "本人只能修改个人资料，不能修改用户名或账号状态",
+                            "SELF_PROFILE_FIELDS_DENIED"
                         );
-                    if (existingUser.Email == dto.Email)
-                        return ApiResponse<UserDto>.Error("邮箱已被其他用户使用", "EMAIL_EXISTS");
+                    }
+
+                    // 检查用户名和邮箱是否被其他用户使用（用户名大小写不敏感）
+                    var usernameLower = (dto.Username ?? string.Empty).Trim().ToLowerInvariant();
+                    var existingUser = await db.Queryable<User>()
+                        .Where(u =>
+                            u.UserGUID != userGuid
+                            && !u.IsDeleted
+                            && (u.Username.ToLower() == usernameLower || u.Email == dto.Email)
+                        )
+                        .FirstAsync();
+
+                    if (existingUser != null)
+                    {
+                        if (existingUser.Username.ToLower() == usernameLower)
+                            return await RollbackUserUpdateAsync<UserDto>(db, "用户名已被其他用户使用", "USERNAME_EXISTS");
+                        if (existingUser.Email == dto.Email)
+                            return await RollbackUserUpdateAsync<UserDto>(db, "邮箱已被其他用户使用", "EMAIL_EXISTS");
+                    }
+
+                    // 更新用户信息（用户名统一写入小写）
+                    user.Username = usernameLower;
+                    user.Email = dto.Email;
+                    user.FullName = dto.FullName;
+                    user.IsActive = dto.IsActive;
+                    user.UpdatedAt = DateTime.UtcNow;
+                    await db.Updateable(user).ExecuteCommandAsync();
+                    await db.Ado.CommitTranAsync();
+
+                    var result = new UserDto
+                    {
+                        UserGUID = user.UserGUID,
+                        Username = user.Username,
+                        Email = user.Email,
+                        FullName = user.FullName,
+                        LastLoginAt = user.LastLoginAt,
+                        LastLoginIp = user.LastLoginIp,
+                        IsActive = user.IsActive,
+                        CreatedAt = user.CreatedAt,
+                        UpdatedAt = user.UpdatedAt ?? user.CreatedAt,
+                    };
+
+                    _logger.LogInformation("更新用户成功，UserGUID: {UserGUID}", userGuid);
+                    return ApiResponse<UserDto>.OK(result, "更新用户成功");
                 }
-
-                // 更新用户信息（用户名统一写入小写）
-                user.Username = usernameLower;
-                user.Email = dto.Email;
-                user.FullName = dto.FullName;
-                user.IsActive = dto.IsActive;
-                user.UpdatedAt = DateTime.UtcNow;
-
-                await db.Updateable(user).ExecuteCommandAsync();
-
-                var result = new UserDto
+                catch
                 {
-                    UserGUID = user.UserGUID,
-                    Username = user.Username,
-                    Email = user.Email,
-                    FullName = user.FullName,
-                    LastLoginAt = user.LastLoginAt,
-                    LastLoginIp = user.LastLoginIp,
-                    IsActive = user.IsActive,
-                    CreatedAt = user.CreatedAt,
-                    UpdatedAt = user.UpdatedAt ?? user.CreatedAt,
-                };
-
-                _logger.LogInformation("更新用户成功，UserGUID: {UserGUID}", userGuid);
-                return ApiResponse<UserDto>.OK(result, "更新用户成功");
+                    await db.Ado.RollbackTranAsync();
+                    throw;
+                }
             }
             catch (Exception ex)
             {
@@ -1329,7 +1530,7 @@ namespace BlazorApp.Api.Services
 
                 // 检查用户是否存在
                 var user = await db.Queryable<User>()
-                    .Where(u => u.UserGUID == userGuid)
+                    .Where(u => u.UserGUID == userGuid && !u.IsDeleted)
                     .FirstAsync();
 
                 if (user == null)
@@ -1358,6 +1559,21 @@ namespace BlazorApp.Api.Services
                         {
                             await db.Ado.RollbackTranAsync();
                             return ApiResponse<bool>.Error("用户不存在", "USER_NOT_FOUND");
+                        }
+
+                        // 删除前在同一事务内重新核对店长的目标用户范围，避免绕过资料编辑接口的保护。
+                        var targetDecision = await ValidateUserProfileMutationTargetAsync(
+                            db,
+                            userGuid,
+                            allowSelf: false
+                        );
+                        if (!targetDecision.IsAllowed)
+                        {
+                            await db.Ado.RollbackTranAsync();
+                            return ApiResponse<bool>.Error(
+                                targetDecision.Message,
+                                targetDecision.ErrorCode
+                            );
                         }
 
                         var profile = await db.Queryable<EmployeeProfile>()
@@ -1435,29 +1651,56 @@ namespace BlazorApp.Api.Services
             bool isActive
         )
         {
+            var db = _context.Db;
             try
             {
-                var db = _context.Db;
-
-                var result = await db.Updateable<User>()
-                    .SetColumns(u => new User { IsActive = isActive, UpdatedAt = DateTime.UtcNow })
-                    .Where(u => u.UserGUID == userGuid)
-                    .ExecuteCommandAsync();
-
-                if (result == 0)
+                await db.Ado.BeginTranAsync(IsolationLevel.Serializable);
+                try
                 {
-                    return ApiResponse<bool>.Error("用户不存在", "USER_NOT_FOUND");
-                }
+                    var user = await db.Queryable<User>()
+                        .Where(u => u.UserGUID == userGuid && !u.IsDeleted)
+                        .FirstAsync();
+                    if (user == null)
+                    {
+                        await db.Ado.RollbackTranAsync();
+                        return ApiResponse<bool>.Error("用户不存在", "USER_NOT_FOUND");
+                    }
 
-                _logger.LogInformation(
-                    "更新用户状态成功，UserGUID: {UserGUID}, IsActive: {IsActive}",
-                    userGuid,
-                    isActive
-                );
-                return ApiResponse<bool>.OK(
-                    true,
-                    $"用户状态已更新为{(isActive ? "激活" : "禁用")}"
-                );
+                    var targetDecision = await ValidateUserProfileMutationTargetAsync(
+                        db,
+                        userGuid,
+                        allowSelf: false
+                    );
+                    if (!targetDecision.IsAllowed)
+                    {
+                        await db.Ado.RollbackTranAsync();
+                        return ApiResponse<bool>.Error(
+                            targetDecision.Message,
+                            targetDecision.ErrorCode
+                        );
+                    }
+
+                    await db.Updateable<User>()
+                        .SetColumns(u => new User { IsActive = isActive, UpdatedAt = DateTime.UtcNow })
+                        .Where(u => u.UserGUID == userGuid && !u.IsDeleted)
+                        .ExecuteCommandAsync();
+                    await db.Ado.CommitTranAsync();
+
+                    _logger.LogInformation(
+                        "更新用户状态成功，UserGUID: {UserGUID}, IsActive: {IsActive}",
+                        userGuid,
+                        isActive
+                    );
+                    return ApiResponse<bool>.OK(
+                        true,
+                        $"用户状态已更新为{(isActive ? "激活" : "禁用")}"
+                    );
+                }
+                catch
+                {
+                    await db.Ado.RollbackTranAsync();
+                    throw;
+                }
             }
             catch (Exception ex)
             {
@@ -1474,34 +1717,107 @@ namespace BlazorApp.Api.Services
             UpdateUserPasswordDto dto
         )
         {
+            var db = _context.Db;
             try
             {
-                var db = _context.Db;
-
-                var hashedPassword = PasswordHasher.HashSubmittedPassword(dto.NewPassword, dto.PasswordFormat);
-
-                var result = await db.Updateable<User>()
-                    .SetColumns(u => new User
-                    {
-                        PasswordHash = hashedPassword,
-                        UpdatedAt = DateTime.UtcNow,
-                    })
-                    .Where(u => u.UserGUID == userGuid)
-                    .ExecuteCommandAsync();
-
-                if (result == 0)
+                await db.Ado.BeginTranAsync(IsolationLevel.Serializable);
+                try
                 {
-                    return ApiResponse<bool>.Error("用户不存在", "USER_NOT_FOUND");
-                }
+                    var user = await db.Queryable<User>()
+                        .Where(u => u.UserGUID == userGuid && !u.IsDeleted)
+                        .FirstAsync();
+                    if (user == null)
+                    {
+                        await db.Ado.RollbackTranAsync();
+                        return ApiResponse<bool>.Error("用户不存在", "USER_NOT_FOUND");
+                    }
 
-                _logger.LogInformation("更新用户密码成功，UserGUID: {UserGUID}", userGuid);
-                return ApiResponse<bool>.OK(true, "密码更新成功");
+                    var targetDecision = await ValidateUserProfileMutationTargetAsync(db, userGuid);
+                    if (!targetDecision.IsAllowed)
+                    {
+                        await db.Ado.RollbackTranAsync();
+                        return ApiResponse<bool>.Error(targetDecision.Message, targetDecision.ErrorCode);
+                    }
+
+                    var hashedPassword = PasswordHasher.HashSubmittedPassword(dto.NewPassword, dto.PasswordFormat);
+                    await db.Updateable<User>()
+                        .SetColumns(u => new User
+                        {
+                            PasswordHash = hashedPassword,
+                            UpdatedAt = DateTime.UtcNow,
+                        })
+                        .Where(u => u.UserGUID == userGuid && !u.IsDeleted)
+                        .ExecuteCommandAsync();
+
+                    await db.Ado.CommitTranAsync();
+                    _logger.LogInformation("更新用户密码成功，UserGUID: {UserGUID}", userGuid);
+                    return ApiResponse<bool>.OK(true, "密码更新成功");
+                }
+                catch
+                {
+                    await db.Ado.RollbackTranAsync();
+                    throw;
+                }
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "更新用户密码失败，UserGUID: {UserGUID}", userGuid);
                 return ApiResponse<bool>.Error("更新用户密码失败", "UPDATE_USER_PASSWORD_FAILED");
             }
+        }
+
+        private async Task<UserAccessMutationDecision> ValidateUserProfileMutationTargetAsync(
+            ISqlSugarClient db,
+            string targetUserGuid,
+            bool allowSelf = true
+        )
+        {
+            var actor = await UserAccessMutationSecurity.ResolveActorAsync(
+                db,
+                _manageableStoreScopeService
+            );
+            if (actor.IsSuperAdmin)
+            {
+                // 全局 Users.Edit/ResetPassword 的授权仍由控制器策略负责，这里不额外收窄。
+                return UserAccessMutationDecision.Allow;
+            }
+
+            if (!actor.IsStoreManager)
+            {
+                var scope = _manageableStoreScopeService == null
+                    ? null
+                    : await _manageableStoreScopeService.GetScopeAsync();
+                return scope?.IsStoreManager == true
+                    ? new UserAccessMutationDecision(
+                        false,
+                        "当前店长权限已失效",
+                        "ACCESS_DELEGATOR_DENIED"
+                    )
+                    : UserAccessMutationDecision.Allow;
+            }
+
+            if (actor.UserGuid.Equals(targetUserGuid, StringComparison.OrdinalIgnoreCase))
+            {
+                return allowSelf
+                    ? UserAccessMutationDecision.Allow
+                    : new UserAccessMutationDecision(
+                        false,
+                        "不能禁用、锁定或删除本人账号",
+                        "SELF_PROFILE_FIELDS_DENIED"
+                    );
+            }
+
+            return await UserAccessMutationSecurity.ValidateTargetAsync(db, actor, targetUserGuid);
+        }
+
+        private static async Task<ApiResponse<T>> RollbackUserUpdateAsync<T>(
+            ISqlSugarClient db,
+            string message,
+            string errorCode
+        )
+        {
+            await db.Ado.RollbackTranAsync();
+            return ApiResponse<T>.Error(message, errorCode);
         }
 
         /// <summary>
@@ -2395,38 +2711,72 @@ namespace BlazorApp.Api.Services
             try
             {
                 var db = _context.Db;
+                var userGuids = dto.UserGuids
+                    .Where(userGuid => !string.IsNullOrWhiteSpace(userGuid))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Order(StringComparer.Ordinal)
+                    .ToArray();
 
                 switch (dto.Operation.ToLower())
                 {
                     case "activate":
-                        await db.Updateable<User>()
-                            .SetColumns(u => new User
-                            {
-                                IsActive = true,
-                                UpdatedAt = DateTime.UtcNow,
-                            })
-                            .Where(u => dto.UserGuids.Contains(u.UserGUID))
-                            .ExecuteCommandAsync();
-                        break;
-
                     case "deactivate":
-                        await db.Updateable<User>()
-                            .SetColumns(u => new User
+                        await db.Ado.BeginTranAsync(IsolationLevel.Serializable);
+                        try
+                        {
+                            foreach (var targetUserGuid in userGuids)
                             {
-                                IsActive = false,
-                                UpdatedAt = DateTime.UtcNow,
-                            })
-                            .Where(u => dto.UserGuids.Contains(u.UserGUID))
-                            .ExecuteCommandAsync();
+                                var target = await db.Queryable<User>()
+                                    .Where(user => user.UserGUID == targetUserGuid && !user.IsDeleted)
+                                    .FirstAsync();
+                                if (target == null)
+                                {
+                                    return await RollbackUserUpdateAsync<bool>(
+                                        db,
+                                        "用户不存在",
+                                        "USER_NOT_FOUND"
+                                    );
+                                }
+
+                                var decision = await ValidateUserProfileMutationTargetAsync(
+                                    db,
+                                    targetUserGuid,
+                                    allowSelf: false
+                                );
+                                if (!decision.IsAllowed)
+                                {
+                                    return await RollbackUserUpdateAsync<bool>(
+                                        db,
+                                        decision.Message,
+                                        decision.ErrorCode
+                                    );
+                                }
+                            }
+
+                            var isActive = string.Equals(
+                                dto.Operation,
+                                "activate",
+                                StringComparison.OrdinalIgnoreCase
+                            );
+                            await db.Updateable<User>()
+                                .SetColumns(u => new User
+                                {
+                                    IsActive = isActive,
+                                    UpdatedAt = DateTime.UtcNow,
+                                })
+                                .Where(u => userGuids.Contains(u.UserGUID) && !u.IsDeleted)
+                                .ExecuteCommandAsync();
+                            await db.Ado.CommitTranAsync();
+                        }
+                        catch
+                        {
+                            await db.Ado.RollbackTranAsync();
+                            throw;
+                        }
                         break;
 
                     case "delete":
                         {
-                            var userGuids = dto.UserGuids
-                                .Where(userGuid => !string.IsNullOrWhiteSpace(userGuid))
-                                .Distinct(StringComparer.Ordinal)
-                                .Order(StringComparer.Ordinal)
-                                .ToArray();
                             var removalPlans = new List<
                                 (string UserGuid, EmployeeProfileDataRemovalPlan Plan)
                             >();
@@ -2451,8 +2801,30 @@ namespace BlazorApp.Api.Services
                                         )
                                         .Select(item => item.UserGUID)
                                         .ToListAsync();
+                                    if (existingUserGuids.Count != userGuids.Length)
+                                    {
+                                        return await RollbackUserUpdateAsync<bool>(
+                                            db,
+                                            "用户不存在",
+                                            "USER_NOT_FOUND"
+                                        );
+                                    }
                                     foreach (var targetUserGuid in existingUserGuids)
                                     {
+                                        var decision = await ValidateUserProfileMutationTargetAsync(
+                                            db,
+                                            targetUserGuid,
+                                            allowSelf: false
+                                        );
+                                        if (!decision.IsAllowed)
+                                        {
+                                            return await RollbackUserUpdateAsync<bool>(
+                                                db,
+                                                decision.Message,
+                                                decision.ErrorCode
+                                            );
+                                        }
+
                                         var profile = await db.Queryable<EmployeeProfile>()
                                             .FirstAsync(item => item.UserGUID == targetUserGuid);
                                         if (_sensitiveChangeService is not null)
@@ -2629,24 +3001,73 @@ namespace BlazorApp.Api.Services
             try
             {
                 var db = _context.Db;
+                var storeScope = await ResolveUserListStoreScopeAsync(db);
+                if (storeScope.ReturnEmptyPage)
+                {
+                    return ApiResponse<UserStatisticsDto>.OK(new UserStatisticsDto(), "获取用户统计成功");
+                }
 
-                // 获取基本统计
-                var totalUsers = await db.Queryable<User>().CountAsync();
-                var activeUsers = await db.Queryable<User>().Where(u => u.IsActive).CountAsync();
-                var inactiveUsers = await db.Queryable<User>().Where(u => !u.IsActive).CountAsync();
+                var visibleUserQuery = db.Queryable<User>().Where(user => !user.IsDeleted);
+                if (storeScope.StoreGuids.Count > 0)
+                {
+                    var scopedStoreGuids = storeScope.StoreGuids.ToArray();
+                    var scopedUserGuids = await db.Queryable<UserStore>()
+                        .Where(userStore =>
+                            !userStore.IsDeleted && scopedStoreGuids.Contains(userStore.StoreGUID)
+                        )
+                        .Select(userStore => userStore.UserGUID)
+                        .Distinct()
+                        .ToListAsync();
+                    if (scopedUserGuids.Count == 0)
+                    {
+                        return ApiResponse<UserStatisticsDto>.OK(new UserStatisticsDto(), "获取用户统计成功");
+                    }
 
-                // 获取有角色的用户
-                var usersWithRoles = await db.Queryable<UserRole>()
-                    .Select(ur => ur.UserGUID)
-                    .Distinct()
+                    var excluded = await ResolveScopedHighPrivilegeUserGuidsAsync(db);
+                    visibleUserQuery = visibleUserQuery.Where(user =>
+                        scopedUserGuids.Contains(user.UserGUID)
+                        && !excluded.Contains(user.UserGUID)
+                    );
+                }
+
+                // 统计只读取用户标识和状态，关系表也只读取去重后的用户标识，避免构造完整列表 DTO。
+                var visibleUsers = await visibleUserQuery
+                    .Select(user => new User
+                    {
+                        UserGUID = user.UserGUID,
+                        IsActive = user.IsActive,
+                    })
                     .ToListAsync();
+                var visibleUserGuids = visibleUsers.Select(user => user.UserGUID).ToArray();
+                var usersWithRoles = visibleUserGuids.Length == 0
+                    ? new List<string>()
+                    : await db.Queryable<UserRole>()
+                        .InnerJoin<Role>((userRole, role) => userRole.RoleGUID == role.RoleGUID)
+                        .Where((userRole, role) =>
+                            visibleUserGuids.Contains(userRole.UserGUID)
+                            && !userRole.IsDeleted
+                            && !role.IsDeleted
+                            && role.IsActive
+                        )
+                        .Select((userRole, role) => userRole.UserGUID)
+                        .Distinct()
+                        .ToListAsync();
+                var usersWithStores = visibleUserGuids.Length == 0
+                    ? new List<string>()
+                    : await db.Queryable<UserStore>()
+                        .InnerJoin<Store>((userStore, store) => userStore.StoreGUID == store.StoreGUID)
+                        .Where((userStore, store) =>
+                            visibleUserGuids.Contains(userStore.UserGUID)
+                            && !userStore.IsDeleted
+                            && !store.IsDeleted
+                        )
+                        .Select((userStore, store) => userStore.UserGUID)
+                        .Distinct()
+                        .ToListAsync();
+                var totalUsers = visibleUsers.Count;
+                var activeUsers = visibleUsers.Count(user => user.IsActive);
+                var inactiveUsers = totalUsers - activeUsers;
                 var usersWithoutRoles = totalUsers - usersWithRoles.Count;
-
-                // 获取有分店的用户
-                var usersWithStores = await db.Queryable<UserStore>()
-                    .Select(us => us.UserGUID)
-                    .Distinct()
-                    .ToListAsync();
                 var usersWithoutStores = totalUsers - usersWithStores.Count;
 
                 var statistics = new UserStatisticsDto
@@ -2732,9 +3153,25 @@ namespace BlazorApp.Api.Services
         /// </summary>
         public async Task<ApiResponse<string>> ResetUserPasswordAsync(string userGuid)
         {
+            var db = _context.Db;
             try
             {
-                var db = _context.Db;
+                await db.Ado.BeginTranAsync(IsolationLevel.Serializable);
+                var target = await db.Queryable<User>()
+                    .Where(user => user.UserGUID == userGuid && !user.IsDeleted)
+                    .FirstAsync();
+                if (target == null)
+                {
+                    await db.Ado.RollbackTranAsync();
+                    return ApiResponse<string>.Error("用户不存在", "USER_NOT_FOUND");
+                }
+
+                var targetDecision = await ValidateUserProfileMutationTargetAsync(db, userGuid);
+                if (!targetDecision.IsAllowed)
+                {
+                    await db.Ado.RollbackTranAsync();
+                    return ApiResponse<string>.Error(targetDecision.Message, targetDecision.ErrorCode);
+                }
 
                 // 生成新密码
                 var newPassword = GenerateRandomPassword();
@@ -2746,19 +3183,30 @@ namespace BlazorApp.Api.Services
                         PasswordHash = hashedPassword,
                         UpdatedAt = DateTime.UtcNow,
                     })
-                    .Where(u => u.UserGUID == userGuid)
+                    .Where(u => u.UserGUID == userGuid && !u.IsDeleted)
                     .ExecuteCommandAsync();
 
                 if (result == 0)
                 {
+                    await db.Ado.RollbackTranAsync();
                     return ApiResponse<string>.Error("用户不存在", "USER_NOT_FOUND");
                 }
+
+                await db.Ado.CommitTranAsync();
 
                 _logger.LogInformation("重置用户密码成功，UserGUID: {UserGUID}", userGuid);
                 return ApiResponse<string>.OK(newPassword, "密码重置成功");
             }
             catch (Exception ex)
             {
+                try
+                {
+                    await db.Ado.RollbackTranAsync();
+                }
+                catch
+                {
+                    // 回滚失败不覆盖原始重置错误。
+                }
                 _logger.LogError(ex, "重置用户密码失败，UserGUID: {UserGUID}", userGuid);
                 return ApiResponse<string>.Error("重置密码失败", "RESET_PASSWORD_FAILED");
             }

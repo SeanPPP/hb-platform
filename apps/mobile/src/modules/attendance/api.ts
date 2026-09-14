@@ -9,6 +9,7 @@ import type {
   AttendanceDirectUploadRequest,
   AttendanceDirectUploadSignature,
   AttendanceAvailability,
+  AttendanceAvailabilityBatchPayload,
   AttendanceAvailabilityPayload,
   AttendanceHolidayQueryParams,
   AttendanceHolidaySyncPayload,
@@ -46,6 +47,12 @@ import {
   normalizeAttendancePunchAdjustmentPreview,
 } from "@/modules/attendance/attendance-punch-adjustment";
 import { buildAttendanceApprovalReviewRequest } from "@/modules/attendance/attendance-approval";
+import {
+  createAvailabilityBatch as runAvailabilityBatch,
+  verifyAvailabilityBatch as runVerifyAvailabilityBatch,
+  type AvailabilityBatchWeekPayload,
+} from "@/modules/attendance/availability-batch";
+export { AvailabilityBatchSaveError } from "@/modules/attendance/availability-batch";
 
 type ApiRecord = Record<string, unknown>;
 
@@ -526,6 +533,38 @@ export async function createAvailability(payload: AttendanceAvailabilityPayload)
   const response = await apiClient.post(`${ATTENDANCE_BASE}/my/availability`, sanitizePayload(toCreateAvailabilityPayload(payload)));
   const rows = getArray(response.data);
   return normalizeAvailability(rows[0] ?? {});
+}
+
+export function createAvailabilityBatch(
+  payload: AttendanceAvailabilityBatchPayload,
+): Promise<AttendanceAvailability[]> {
+  return runAvailabilityBatch(payload, {
+    getWeek: getMyAvailability,
+    createWeek: createAvailabilityWeek,
+  });
+}
+
+export function verifyAvailabilityBatch(
+  payload: AttendanceAvailabilityBatchPayload,
+): Promise<string[]> {
+  return runVerifyAvailabilityBatch(payload, {
+    getWeek: getMyAvailability,
+    createWeek: createAvailabilityWeek,
+  });
+}
+
+async function createAvailabilityWeek(
+  payload: AvailabilityBatchWeekPayload,
+): Promise<AttendanceAvailability[]> {
+  const response = await apiClient.post(
+    `${ATTENDANCE_BASE}/my/availability`,
+    sanitizePayload({
+      storeCode: payload.storeCode,
+      weekStartDate: payload.weekStartDate,
+      segments: payload.segments,
+    }),
+  );
+  return getArray(response.data).map(normalizeAvailability);
 }
 
 export async function updateAvailability(

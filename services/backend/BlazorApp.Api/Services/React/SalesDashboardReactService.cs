@@ -3524,7 +3524,7 @@ namespace BlazorApp.Api.Services.React
 
                     var compareStartStr = dateRange.CompareStartDate?.ToString("yyyyMMdd") ?? "null";
                     var compareEndStr = dateRange.CompareEndDate?.ToString("yyyyMMdd") ?? "null";
-                    var statisticsVersion = await GetStatisticsCacheVersionAsync();
+                    var statisticsVersion = await GetStatisticsCacheVersionAsync(dateRange);
                     var cacheKey =
                         $"ExecutiveBranchPerformance_{statisticsVersion}_{dateRange.StartDate:yyyyMMdd}_{dateRange.EndDate:yyyyMMdd}_{compareStartStr}_{compareEndStr}_{topN?.ToString() ?? "all"}_{string.Join(",", displayBranchCodes.OrderBy(code => code, StringComparer.OrdinalIgnoreCase))}";
 
@@ -3824,7 +3824,7 @@ namespace BlazorApp.Api.Services.React
 
                     var compareStartStr = dateRange.CompareStartDate?.ToString("yyyyMMdd") ?? "null";
                     var compareEndStr = dateRange.CompareEndDate?.ToString("yyyyMMdd") ?? "null";
-                    var statisticsVersion = await GetStatisticsCacheVersionAsync();
+                    var statisticsVersion = await GetStatisticsCacheVersionAsync(dateRange);
                     var cacheKey =
                         $"ExecutiveHourlyTraffic_{statisticsVersion}_{dateRange.StartDate:yyyyMMdd}_{dateRange.EndDate:yyyyMMdd}_{compareStartStr}_{compareEndStr}_{string.Join(",", normalizedBranchCodes)}";
 
@@ -4095,7 +4095,7 @@ namespace BlazorApp.Api.Services.React
 
                     var compareStartStr = dateRange.CompareStartDate?.ToString("yyyyMMdd") ?? "null";
                     var compareEndStr = dateRange.CompareEndDate?.ToString("yyyyMMdd") ?? "null";
-                    var statisticsVersion = await GetStatisticsCacheVersionAsync();
+                    var statisticsVersion = await GetStatisticsCacheVersionAsync(dateRange);
                     var cacheKey =
                         $"BranchDailyPerformance_{statisticsVersion}_{dateRange.StartDate:yyyyMMdd}_{dateRange.EndDate:yyyyMMdd}_{compareStartStr}_{compareEndStr}_{string.Join(",", normalizedBranchCodes)}";
 
@@ -4306,13 +4306,16 @@ namespace BlazorApp.Api.Services.React
                 .Where(task => task.TaskType == TaskType.UpdateCurrentHourStatistics)
                 .OrderByDescending(task => task.StartedAt)
                 .FirstAsync();
-            var latestSuccess = await _context.Db.Queryable<ScheduledTaskLog>()
-                .Where(task =>
-                    task.TaskType == TaskType.UpdateCurrentHourStatistics
-                    && task.Status == ScheduledTaskStatus.Success
-                    && task.CompletedAt != null
+            // 调度日志只描述一次尝试；完整报表的最后成功时间必须来自实际发布记录。
+            var latestPublished = await _context.Db.Queryable<SalesStatisticRefreshState>()
+                .Where(state =>
+                    state.StatisticType == SalesStatisticType.RevenueReportPublished
+                    && state.Status == SalesStatisticRefreshStatus.Fresh
+                    && state.CompletedAtUtc != null
+                    && state.Date >= SalesStatisticsBusinessDate.Today()
+                    && state.Date < SalesStatisticsBusinessDate.Today().AddDays(1)
                 )
-                .OrderByDescending(task => task.CompletedAt)
+                .OrderByDescending(state => state.CompletedAtUtc)
                 .FirstAsync();
 
             var latestRunStatus = latestRun?.Status ?? "NeverRun";
@@ -4332,28 +4335,63 @@ namespace BlazorApp.Api.Services.React
 
             return new StatisticsFreshnessDto
             {
-                LastSuccessfulAtUtc = latestSuccess?.CompletedAt is DateTime completedAt
+                LastSuccessfulAtUtc = latestPublished?.CompletedAtUtc is DateTime completedAt
                     ? DateTime.SpecifyKind(completedAt, DateTimeKind.Utc)
                     : null,
                 LatestRunStatus = latestRunStatus,
             };
         }
 
-        private async Task<string> GetStatisticsCacheVersionAsync()
+        private async Task<string> GetStatisticsCacheVersionAsync(DateRangeDto dateRange)
         {
-            // 缓存只依赖最近成功完成时间，无需额外读取最新任务的运行状态。
-            var completedAt = await _context.Db.Queryable<ScheduledTaskLog>()
-                .Where(task =>
-                    task.TaskType == TaskType.UpdateCurrentHourStatistics
-                    && task.Status == ScheduledTaskStatus.Success
-                    && task.CompletedAt != null
-                )
-                .OrderByDescending(task => task.CompletedAt)
-                .Select(task => task.CompletedAt)
-                .FirstAsync();
-            var scheduledVersion = completedAt?.Ticks.ToString() ?? "none";
+            // 查询范围与当前报表一致，利用 StatisticType + Date 索引避免扫描全历史状态。
+            // 每日、每维度和每次真实提交都参与指纹，历史手工补算不会复用旧缓存。
+            var startDate = dateRange.StartDate.Date;
+            var endDate = dateRange.EndDate.Date;
+            var compareStartDate = dateRange.CompareStartDate?.Date;
+            var compareEndDate = dateRange.CompareEndDate?.Date;
+            var statisticTypes = SalesStatisticType.DailyAlignmentTypes;
+            var stateQuery = _context.Db.Queryable<SalesStatisticRefreshState>()
+                .Where(state => statisticTypes.Contains(state.StatisticType));
+            if (compareStartDate.HasValue && compareEndDate.HasValue)
+            {
+                var compareStart = compareStartDate.Value;
+                var compareEnd = compareEndDate.Value;
+                stateQuery = stateQuery.Where(state =>
+                    (state.Date >= startDate && state.Date <= endDate)
+                    || (state.Date >= compareStart && state.Date <= compareEnd)
+                );
+            }
+            else
+            {
+                stateQuery = stateQuery.Where(state =>
+                    state.Date >= startDate && state.Date <= endDate
+                );
+            }
+            // 缓存指纹只需要真实提交版本字段，避免每个报表请求加载状态行的完整实体列。
+            var states = await stateQuery.Select(state => new
+            {
+                state.Date,
+                state.StatisticType,
+                state.Status,
+                state.LastAggregatedAtUtc,
+                state.CompletedAtUtc,
+                state.SourceProductVersion,
+            }).ToListAsync();
+            var versionSource = string.Join(
+                "|",
+                states
+                    .OrderBy(state => state.Date)
+                    .ThenBy(state => state.StatisticType, StringComparer.Ordinal)
+                    .Select(state =>
+                        $"{state.Date:yyyyMMdd}:{state.StatisticType}:{state.Status}:{state.LastAggregatedAtUtc?.Ticks ?? 0}:{state.CompletedAtUtc?.Ticks ?? 0}:{state.SourceProductVersion ?? ""}"
+                    )
+            );
+            var statisticsVersion = Convert.ToHexString(
+                SHA256.HashData(Encoding.UTF8.GetBytes(versionSource))
+            );
             var generation = Volatile.Read(ref GetReportStatisticsCacheGenerationState().Value);
-            return $"{scheduledVersion}:g{generation}";
+            return $"{statisticsVersion}:g{generation}";
         }
 
         private ReportStatisticsCacheGenerationState GetReportStatisticsCacheGenerationState()
@@ -4475,7 +4513,7 @@ namespace BlazorApp.Api.Services.React
 
                     var statisticsPending = statisticsRefreshState == StatisticsRefreshState.Pending
                         || statisticsStillMissing.Count > 0;
-                    var statisticsVersion = await GetStatisticsCacheVersionAsync();
+                    var statisticsVersion = await GetStatisticsCacheVersionAsync(dateRange);
                     var items = await ReadWeeklyPerformanceHierarchyAsync(
                         dateRange,
                         branchCodes == null ? null : normalizedBranchCodes,
@@ -4512,8 +4550,9 @@ namespace BlazorApp.Api.Services.React
                 ));
             }
 
-            // 2025 年门店统计与商品门店日统计必须全分店原子刷新，保持既有统计口径。
-            static bool RequiresAllBranchRefresh(DateTime date) => date.Year == 2025;
+            // HBSales 历史窗口内的门店统计与商品门店日统计必须全分店原子刷新，保持既有统计口径。
+            static bool RequiresAllBranchRefresh(DateTime date) =>
+                SalesStatisticsHBSalesHistoryWindow.Includes(date);
 
             return await RefreshMissingStatisticsAsync(
                 "store",
@@ -4938,8 +4977,9 @@ namespace BlazorApp.Api.Services.React
                 ));
             }
 
-            // 2025 年门店统计与商品门店日统计必须全分店原子刷新，不能沿用报表的分店筛选。
-            static bool RequiresAllBranchRefresh(DateTime date) => date.Year == 2025;
+            // HBSales 历史窗口内的门店统计与商品门店日统计必须全分店原子刷新，不能沿用报表的分店筛选。
+            static bool RequiresAllBranchRefresh(DateTime date) =>
+                SalesStatisticsHBSalesHistoryWindow.Includes(date);
 
             return await RefreshMissingStatisticsAsync(
                 "store",
@@ -5207,7 +5247,7 @@ namespace BlazorApp.Api.Services.React
             endDate = endDate.Date;
             var result = new Dictionary<DateTime, HashSet<string>>();
 
-            // 门店日统计始终聚合 POSM；2025 年还会叠加 HBSales，完整性身份必须取两者并集。
+            // 门店日统计始终聚合 POSM；HBSales 已核验历史窗口还会叠加 HBSales，完整性身份必须取两者并集。
             var posmCoverage = await GetPosmStoreSalesBranchCodesByDateAsync(
                 startDate,
                 endDate,
@@ -5217,12 +5257,13 @@ namespace BlazorApp.Api.Services.React
                 return null;
             MergeSalesSourceCoverage(result, posmCoverage);
 
-            var hbSalesStart = startDate > new DateTime(2025, 1, 1)
+            var hbSalesStart = startDate > SalesStatisticsHBSalesHistoryWindow.StartDate
                 ? startDate
-                : new DateTime(2025, 1, 1);
-            var hbSalesEnd = endDate < new DateTime(2025, 12, 31)
+                : SalesStatisticsHBSalesHistoryWindow.StartDate;
+            var historyEndDate = SalesStatisticsHBSalesHistoryWindow.EndExclusive.AddDays(-1);
+            var hbSalesEnd = endDate < historyEndDate
                 ? endDate
-                : new DateTime(2025, 12, 31);
+                : historyEndDate;
             if (hbSalesStart <= hbSalesEnd)
             {
                 var hbSalesCoverage = await GetHbSalesStoreSalesBranchCodesByDateAsync(

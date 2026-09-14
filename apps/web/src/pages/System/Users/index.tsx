@@ -88,6 +88,7 @@ import {
   splitPermissionCategoriesByPlatform,
 } from './userPermissions'
 import type { AssignmentLoadStatus, PosPermissionRequestTarget } from './userPermissions'
+import { getCreateUserErrorFeedback } from './createUserFeedback'
 import { formatUserLocalDateTime } from './time'
 import {
   DEFAULT_SYSTEM_LIST_PAGE_SIZE,
@@ -192,6 +193,7 @@ export default function SystemUsersPage() {
 
   const [createOpen, setCreateOpen] = useState(false)
   const [createLoading, setCreateLoading] = useState(false)
+  const [createFeedback, setCreateFeedback] = useState<ReturnType<typeof getCreateUserErrorFeedback> | null>(null)
   const [createTab, setCreateTab] = useState('info')
   const [createForm] = Form.useForm<CreateUserDto & { confirmPassword: string }>()
 
@@ -201,6 +203,19 @@ export default function SystemUsersPage() {
   const [createStoreTargetKeys, setCreateStoreTargetKeys] = useState<string[]>([])
   const [createStoreManageableKeys, setCreateStoreManageableKeys] = useState<string[]>([])
   const [createStoreLoading, setCreateStoreLoading] = useState(false)
+
+  const clearCreateFormState = () => {
+    createForm.resetFields()
+    setCreateFeedback(null)
+    setCreateRoleTargetKeys([])
+    setCreateStoreTargetKeys([])
+    setCreateStoreManageableKeys([])
+  }
+
+  useEffect(() => {
+    if (!createOpen || !createFeedback?.field) return
+    createForm.scrollToField(createFeedback.field, { block: 'center', focus: true })
+  }, [createFeedback, createForm, createOpen])
 
   const sortedStores = useMemo(
     () => [...allStores].sort((a, b) => a.storeName.localeCompare(b.storeName)),
@@ -657,9 +672,14 @@ export default function SystemUsersPage() {
         ])
         return {
           stores: stores.items,
-          targetKeys: sortStoreGuids(userStores.map((item) => item.storeGUID)),
-          manageableKeys: sortStoreGuids(
+          // 使用本次请求的门店名称排序，避免首次打开时读取尚未更新的 allStores。
+          targetKeys: sortStoreGuidsFromStores(
+            userStores.map((item) => item.storeGUID),
+            stores.items,
+          ),
+          manageableKeys: sortStoreGuidsFromStores(
             userStores.filter((item) => item.isManageable).map((item) => item.storeGUID),
+            stores.items,
           ),
         }
       },
@@ -1190,6 +1210,7 @@ export default function SystemUsersPage() {
     setCreateOpen(true)
     setCreateTab('info')
     createForm.resetFields()
+    setCreateFeedback(null)
     setCreateRoleTargetKeys([])
     setCreateStoreTargetKeys([])
     setCreateStoreManageableKeys([])
@@ -1213,10 +1234,13 @@ export default function SystemUsersPage() {
   }
 
   const handleCreateSubmit = async () => {
+    setCreateFeedback(null)
     try {
       const values = await createForm.validateFields()
       if (isCurrentUserScoped && !areRoleGuidsAllowedForScopedManager(createRoleTargetKeys, allRoles)) {
-        message.error(t('system.users.roleAssignForbidden', '店长不能分配管理员、店长或仓库经理角色'))
+        setCreateFeedback({
+          message: t('system.users.roleAssignForbidden', '店长不能分配管理员、店长或仓库经理角色'),
+        })
         return
       }
       setCreateLoading(true)
@@ -1232,26 +1256,44 @@ export default function SystemUsersPage() {
       }
       const created = await createUser(payload)
       if (createStoreTargetKeys.length > 0) {
-        await assignStoresToUser(
-          created.userGUID,
-          createStoreTargetKeys.map((storeGUID) => ({
-            storeGUID,
-            accessLevel: 'ReadWrite',
-            isManageable: createStoreManageableKeys.includes(storeGUID),
-          })),
-        )
+        try {
+          await assignStoresToUser(
+            created.userGUID,
+            createStoreTargetKeys.map((storeGUID) => ({
+              storeGUID,
+              accessLevel: 'ReadWrite',
+              isManageable: createStoreManageableKeys.includes(storeGUID),
+            })),
+          )
+        } catch (error) {
+          console.error(error)
+          message.warning({
+            content: t(
+              'system.users.createUserStoreAssignmentUnconfirmed',
+              '用户已创建，但未能确认分店权限是否保存。请在用户列表中编辑该用户，检查分店设置。',
+            ),
+            duration: 8,
+          })
+          setCreateOpen(false)
+          clearCreateFormState()
+          void loadData(1, pageSize, sortBy, sortOrder)
+          return
+        }
       }
       message.success(t('system.users.createUserSuccess', '用户创建成功'))
       setCreateOpen(false)
-      createForm.resetFields()
-      setCreateRoleTargetKeys([])
-      setCreateStoreTargetKeys([])
-      setCreateStoreManageableKeys([])
+      clearCreateFormState()
       void loadData(1, pageSize, sortBy, sortOrder)
     } catch (error) {
       if (typeof error === 'object' && error !== null && 'errorFields' in error) return
       console.error(error)
-      message.error(t('system.users.createUserFailed', '用户创建失败'))
+      const feedback = getCreateUserErrorFeedback(error, t)
+      if (!feedback) return
+      if (feedback.field) {
+        createForm.setFields([{ name: feedback.field, errors: [feedback.message] }])
+        setCreateTab('info')
+      }
+      setCreateFeedback(feedback)
     } finally {
       setCreateLoading(false)
     }
@@ -2315,18 +2357,13 @@ export default function SystemUsersPage() {
         onCancel={() => {
           if (createLoading) return
           setCreateOpen(false)
-          createForm.resetFields()
-          setCreateRoleTargetKeys([])
-          setCreateStoreTargetKeys([])
-          setCreateStoreManageableKeys([])
+          clearCreateFormState()
         }}
         footer={createTab === 'info' ? [
-          <Button key="cancel" onClick={() => {
+          <Button key="cancel" disabled={createLoading} onClick={() => {
+            if (createLoading) return
             setCreateOpen(false)
-            createForm.resetFields()
-            setCreateRoleTargetKeys([])
-            setCreateStoreTargetKeys([])
-            setCreateStoreManageableKeys([])
+            clearCreateFormState()
           }}>
             {t('common.cancel', '取消')}
           </Button>,
@@ -2336,6 +2373,17 @@ export default function SystemUsersPage() {
         ] : null}
         destroyOnHidden
       >
+        {createFeedback && !createFeedback.field ? (
+          <Alert
+            type={createFeedback.resultUnconfirmed ? 'warning' : 'error'}
+            showIcon
+            message={createFeedback.resultUnconfirmed
+              ? t('system.users.createUserResultUnknownTitle', '创建结果待确认')
+              : t('system.users.createUserFeedbackTitle', '无法创建用户')}
+            description={createFeedback.message}
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
         <Tabs
           activeKey={createTab}
           onChange={setCreateTab}

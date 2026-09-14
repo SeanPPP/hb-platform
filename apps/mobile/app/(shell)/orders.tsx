@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FlatList,
   Image,
+  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -18,6 +19,7 @@ import {
   Card,
   Chip,
   Divider,
+  Icon,
   IconButton,
   Portal,
   Modal,
@@ -27,7 +29,6 @@ import {
   TextInput,
 } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { ProductBarcodeImage } from "@/components/product-maintenance/ProductBarcodeImage";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
@@ -49,27 +50,15 @@ import {
   type StoreOrderListItem,
 } from "@/modules/orders/types";
 import { printProductLabelPayload } from "@/modules/printer/api";
+import type { Store } from "@/modules/shop/types";
 import { useStores } from "@/modules/shop/use-stores";
 
 const HISTORY_STATUS_VALUES: StoreOrderFlowStatus[] = [
   StoreOrderFlowStatus.Submitted,
-  StoreOrderFlowStatus.Completed,
   StoreOrderFlowStatus.Picking,
+  StoreOrderFlowStatus.Completed,
 ];
 const PAGE_SIZE = DEFAULT_ORDER_LIST_PAGE_SIZE;
-
-function formatDateTime(value: string | undefined, localeTag: string) {
-  if (!value) {
-    return "--";
-  }
-
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-
-  return date.toLocaleString(localeTag, { hour12: false });
-}
 
 function formatNumber(value?: number, digits = 0) {
   if (value === undefined || value === null) {
@@ -162,21 +151,19 @@ function OrderCardMetric({ label, value }: { label: string; value: string }) {
 const OrderLineCard = memo(function OrderLineCard({
   isPrinting,
   item,
-  index,
   onPrint,
   renderMedia,
   t,
 }: {
   isPrinting: boolean;
   item: StoreOrderDetailLine;
-  index: number;
   onPrint: (item: StoreOrderDetailLine) => void;
   renderMedia: boolean;
   t: (key: string, options?: Record<string, unknown>) => string;
 }) {
   return (
-    <Card mode="outlined" style={styles.detailItemCard}>
-      <Card.Content style={styles.detailItemContent}>
+    <View style={styles.detailItemCard}>
+      <View style={styles.detailItemContent}>
         <View style={styles.detailItemHeader}>
           {renderMedia && item.productImage ? (
             <Image source={{ uri: item.productImage }} style={styles.detailProductImage} resizeMode="cover" />
@@ -190,14 +177,14 @@ const OrderLineCard = memo(function OrderLineCard({
           <View style={styles.detailItemMain}>
             <View style={styles.detailItemTopRow}>
               <View style={styles.detailItemTitleWrap}>
-                <Text variant="labelSmall" style={styles.detailItemIndex}>
-                  #{index + 1}
-                </Text>
                 <Text variant="titleSmall" style={styles.detailItemTitle} numberOfLines={3}>
                   {item.productName || item.productCode}
                 </Text>
                 <Text variant="bodySmall" style={styles.detailItemSubTitle}>
                   {t("fields.itemNumber", { value: item.itemNumber || "--" })}
+                </Text>
+                <Text variant="bodySmall" style={styles.detailItemSubTitle} numberOfLines={1}>
+                  {t("fields.barcode", { value: item.barcode || "--" })}
                 </Text>
               </View>
               <View style={styles.detailItemStatusWrap}>
@@ -208,6 +195,7 @@ const OrderLineCard = memo(function OrderLineCard({
                   {t("fields.allocQty", { value: formatNumber(item.allocQuantity) })}
                 </Text>
               </View>
+              <Icon source="chevron-right" size={20} color="#667085" />
             </View>
           </View>
         </View>
@@ -232,29 +220,25 @@ const OrderLineCard = memo(function OrderLineCard({
             <Text variant="bodyMedium">{formatMoney(getOrderDetailLineAllocatedImportAmount(item))}</Text>
           </View>
         </View>
-        {item.barcode ? (
-          <View style={styles.detailBarcodeWrap}>
-            {renderMedia ? <ProductBarcodeImage value={item.barcode} /> : <View style={styles.detailBarcodePlaceholder} />}
-          </View>
-        ) : null}
         <View style={styles.detailItemActions}>
           <Button
             compact
             disabled={isPrinting}
             icon="printer-outline"
             loading={isPrinting}
-            mode="contained-tonal"
+            mode="outlined"
             onPress={() => onPrint(item)}
+            style={styles.detailPrintButton}
+            textColor="#1677FF"
           >
             {t("actions.printLabel")}
           </Button>
         </View>
-      </Card.Content>
-    </Card>
+      </View>
+    </View>
   );
 }, (prevProps, nextProps) => (
   prevProps.isPrinting === nextProps.isPrinting
-  && prevProps.index === nextProps.index
   && prevProps.item === nextProps.item
   && prevProps.onPrint === nextProps.onPrint
   && prevProps.renderMedia === nextProps.renderMedia
@@ -263,6 +247,7 @@ const OrderLineCard = memo(function OrderLineCard({
 
 function OrderDetailContent({
   detail,
+  listItem,
   itemNumberFilter,
   loading,
   errorMessage,
@@ -276,6 +261,7 @@ function OrderDetailContent({
   t,
 }: {
   detail?: StoreOrderDetail;
+  listItem?: StoreOrderListItem;
   itemNumberFilter: string;
   loading: boolean;
   errorMessage?: string;
@@ -293,11 +279,16 @@ function OrderDetailContent({
     [detail?.items, itemNumberFilter]
   );
   const [visibleDetailGuids, setVisibleDetailGuids] = useState<Set<string>>(() => new Set());
+  const [infoExpanded, setInfoExpanded] = useState(false);
   const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 10 });
 
   useEffect(() => {
     setVisibleDetailGuids(new Set());
   }, [detail?.orderGUID, itemNumberFilter]);
+
+  useEffect(() => {
+    setInfoExpanded(false);
+  }, [detail?.orderGUID]);
 
   const onViewableItemsChanged = useRef(
     ({ viewableItems }: { viewableItems: ViewToken[] }) => {
@@ -334,11 +325,10 @@ function OrderDetailContent({
 
   // 只给可见行挂载重媒体内容，减少图片和条码组件同时存在的数量。
   const renderDetailItem = useCallback(
-    ({ item, index }: { item: StoreOrderDetailLine; index: number }) => (
+    ({ item }: { item: StoreOrderDetailLine }) => (
       <OrderLineCard
         isPrinting={printingDetailGuid === item.detailGUID}
         item={item}
-        index={index}
         onPrint={onPrintLine}
         renderMedia={visibleDetailGuids.has(item.detailGUID)}
         t={t}
@@ -350,67 +340,53 @@ function OrderDetailContent({
   const renderDetailHeader = useCallback(
     () => (
       <View style={styles.detailHeaderContent}>
-        <Card mode="outlined" style={styles.detailSummaryCard}>
-          <Card.Content style={styles.detailSummaryContent}>
-            <View style={styles.detailTitleRow}>
-              <View style={styles.detailTitleWrap}>
-                <Text variant="titleLarge" style={styles.detailOrderNo}>
-                  {detail?.orderNo || "--"}
-                </Text>
-                <Text variant="bodyMedium" style={styles.detailStoreText}>
-                  {t("fields.store", { store: detail?.storeCode || "--" })}
-                </Text>
-              </View>
-              <StatusBadge status={detail?.flowStatus} label={statusLabel(detail?.flowStatus)} />
-            </View>
-
-            <View style={styles.detailInfoBlock}>
-              <Text variant="bodyMedium">
-                {t("fields.orderedAt", { value: formatDateTime(detail?.orderDate, localeTag) })}
-              </Text>
-              <Text variant="bodyMedium">
-                {t("fields.storeAddress", { value: detail?.storeAddress || "--" })}
-              </Text>
-              <Text variant="bodyMedium">{t("fields.remarks", { value: detail?.remarks || "--" })}</Text>
-            </View>
-
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.summaryGrid}
-            >
-              <SummaryMetric style={styles.detailSummaryMetric} label={t("summary.sku")} value={formatNumber(detail?.totalSKU)} />
-              <SummaryMetric style={styles.detailSummaryMetric} label={t("summary.orderedQty")} value={formatNumber(detail?.totalQuantity)} />
-              <SummaryMetric style={styles.detailSummaryMetric} label={t("summary.allocQty")} value={formatNumber(detail?.totalAllocQuantity)} />
-              <SummaryMetric style={styles.detailSummaryMetric} label={t("summary.orderAmount")} value={formatMoney(detail?.totalAmount)} />
-              <SummaryMetric
-                style={styles.detailSummaryMetric}
-                label={t("summary.allocAmount")}
-                value={formatMoney(getOrderDetailTotalAllocatedImportAmount(detail))}
-              />
-              <SummaryMetric style={styles.detailSummaryMetric} label={t("summary.orderVolume")} value={formatNumber(detail?.totalOrderVolume, 4)} />
-            </ScrollView>
-          </Card.Content>
-        </Card>
-
-        <View style={styles.detailListHeader}>
-          <View style={styles.detailListTitleWrap}>
-            <Text variant="titleMedium">{t("detailTitle")}</Text>
-            <Text variant="bodySmall" style={styles.detailListHint}>
-              {t("detailCount", { count: filteredItems.length })}
+        <View style={styles.detailStoreBanner}>
+          <View style={styles.detailStoreIcon}><Icon source="storefront-outline" size={20} color="#1677FF" /></View>
+          <View style={styles.detailStoreBannerText}>
+            <Text variant="bodyMedium" style={styles.detailStoreName} numberOfLines={1}>
+              {listItem?.storeName || detail?.storeCode || "--"}
             </Text>
+            <Text variant="labelSmall" style={styles.detailStoreCaption}>{t("detailStoreCaption")}</Text>
           </View>
-          {itemNumberFilter.trim() ? (
-            <Button compact onPress={() => onItemNumberFilterChange("")}>
-              {t("filters.clearItemNumber")}
-            </Button>
+        </View>
+
+        <View style={styles.detailOrderSummary}>
+          <View style={styles.detailTitleRow}>
+            <Text variant="headlineSmall" style={styles.detailOrderNo}>{detail?.orderNo || "--"}</Text>
+            <StatusBadge status={detail?.flowStatus} label={statusLabel(detail?.flowStatus)} />
+          </View>
+          <Text variant="bodySmall" style={styles.detailDateText}>
+            {t("fields.orderDate")} {formatOrderDate(detail?.orderDate, localeTag)} · {t("fields.outboundDate")} {formatOrderDate(listItem?.outboundDate, localeTag)}
+          </Text>
+
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ expanded: infoExpanded }}
+            onPress={() => setInfoExpanded((current) => !current)}
+            style={styles.detailInfoToggle}
+          >
+            <Text variant="bodySmall" style={styles.detailInfoToggleText}>{t("detailInfo")}</Text>
+            <Text style={styles.detailInfoChevron}>{infoExpanded ? "⌃" : "⌄"}</Text>
+          </Pressable>
+          {infoExpanded ? (
+            <View style={styles.detailInfoBlock}>
+              <Text variant="bodySmall" style={styles.detailInfoText}>{t("fields.storeAddress", { value: detail?.storeAddress || "--" })}</Text>
+              <Text variant="bodySmall" style={styles.detailInfoText}>{t("fields.remarks", { value: detail?.remarks || "--" })}</Text>
+              <Text variant="bodySmall" style={styles.detailInfoText}>{t("summary.orderVolume")}: {formatNumber(detail?.totalOrderVolume, 4)}</Text>
+            </View>
           ) : null}
+
+          <View style={styles.detailSummaryGrid}>
+            <SummaryMetric label={t("summary.orderedQty")} value={formatNumber(detail?.totalQuantity)} />
+            <SummaryMetric label={t("summary.allocQty")} value={formatNumber(detail?.totalAllocQuantity)} />
+            <SummaryMetric label={t("summary.orderAmount")} value={formatMoney(detail?.totalAmount)} />
+            <SummaryMetric label={t("summary.allocAmount")} value={formatMoney(getOrderDetailTotalAllocatedImportAmount(detail))} />
+          </View>
         </View>
 
         <TextInput
           dense
           mode="outlined"
-          label={t("filters.itemNumber")}
           placeholder={t("filters.itemNumberPlaceholder")}
           value={itemNumberFilter}
           onChangeText={onItemNumberFilterChange}
@@ -424,9 +400,16 @@ function OrderDetailContent({
           }
           style={styles.detailFilterInput}
         />
+
+        <View style={styles.detailListHeader}>
+          <Text variant="titleMedium" style={styles.detailSectionTitle}>{t("detailProductTitle")}</Text>
+          <Text variant="bodySmall" style={styles.detailListHint}>
+            {t("detailSkuCount", { count: filteredItems.length })}
+          </Text>
+        </View>
       </View>
     ),
-    [detail, filteredItems.length, itemNumberFilter, localeTag, onItemNumberFilterChange, statusLabel, t]
+    [detail, filteredItems.length, infoExpanded, itemNumberFilter, listItem?.outboundDate, listItem?.storeName, localeTag, onItemNumberFilterChange, statusLabel, t]
   );
 
   const renderDetailEmpty = useCallback(
@@ -479,26 +462,41 @@ function OrderDetailContent({
   }
 
   return (
-    <FlatList
-      data={filteredItems}
-      keyExtractor={(item) => item.detailGUID}
-      renderItem={renderDetailItem}
-      extraData={detailListExtraData}
-      contentContainerStyle={[
-        styles.detailListContent,
-        filteredItems.length ? null : styles.detailListContentEmpty,
-      ]}
-      ListHeaderComponent={renderDetailHeader}
-      ListEmptyComponent={renderDetailEmpty}
-      ItemSeparatorComponent={DetailItemSeparator}
-      initialNumToRender={4}
-      maxToRenderPerBatch={4}
-      windowSize={5}
-      removeClippedSubviews
-      keyboardShouldPersistTaps="handled"
-      onViewableItemsChanged={onViewableItemsChanged.current}
-      viewabilityConfig={viewabilityConfig.current}
-    />
+    <SafeAreaView edges={["top", "bottom", "left", "right"]} style={styles.detailScreen}>
+      <View style={styles.detailNavigationBar}>
+        <IconButton accessibilityLabel={t("returnToList")} icon="chevron-left" onPress={onClose} style={styles.detailNavigationButton} />
+        <Text variant="titleLarge" style={styles.detailNavigationTitle}>{t("detailTitle")}</Text>
+        <IconButton icon="dots-horizontal" disabled style={styles.detailNavigationButton} />
+      </View>
+      <FlatList
+        data={filteredItems}
+        keyExtractor={(item) => item.detailGUID}
+        renderItem={renderDetailItem}
+        extraData={detailListExtraData}
+        contentContainerStyle={[
+          styles.detailListContent,
+          filteredItems.length ? null : styles.detailListContentEmpty,
+        ]}
+        ListHeaderComponent={renderDetailHeader}
+        ListEmptyComponent={renderDetailEmpty}
+        ListFooterComponent={(
+          <View style={styles.detailReturnBar}>
+            <Button icon="chevron-left" mode="contained-tonal" onPress={onClose} style={styles.detailReturnButton} textColor="#1677FF">
+              {t("returnToList")}
+            </Button>
+          </View>
+        )}
+        ItemSeparatorComponent={DetailItemSeparator}
+        initialNumToRender={6}
+        maxToRenderPerBatch={6}
+        windowSize={7}
+        // iOS 的 Portal Modal 内裁剪 FlatList 会偶发漏掉首行；保留虚拟化，仅在 Android 开启原生裁剪。
+        removeClippedSubviews={Platform.OS === "android"}
+        keyboardShouldPersistTaps="handled"
+        onViewableItemsChanged={onViewableItemsChanged.current}
+        viewabilityConfig={viewabilityConfig.current}
+      />
+    </SafeAreaView>
   );
 }
 
@@ -516,7 +514,18 @@ export default function Orders() {
     })
   ), [language, t]);
   const localeTag = resolveLocaleTag(language);
-  const { stores, selectedStore, selectedStoreCode, selectStore, isLoading: storesLoading } = useStores();
+  const {
+    stores,
+    selectedStore,
+    selectedStoreCode,
+    selectStore,
+    isDeviceMode,
+    isStoreSelectionReady,
+    debugInfo: storesDebugInfo,
+    isLoading: storesLoading,
+  } = useStores();
+  const [allStoresSelected, setAllStoresSelected] = useState(false);
+  const [initializedOrderScopeKey, setInitializedOrderScopeKey] = useState<string | null>(null);
   const [selectedStatus, setSelectedStatus] = useState<"all" | StoreOrderFlowStatus>("all");
   const [pageNumber, setPageNumber] = useState(1);
   const [selectedOrderGuid, setSelectedOrderGuid] = useState<string | null>(null);
@@ -526,6 +535,40 @@ export default function Orders() {
   const [ordersRefreshing, setOrdersRefreshing] = useState(false);
   const [printingDetailGuid, setPrintingDetailGuid] = useState<string | null>(null);
   const [snackbar, setSnackbar] = useState("");
+  const [orderKeyword, setOrderKeyword] = useState("");
+  const [submittedOrderKeyword, setSubmittedOrderKeyword] = useState("");
+  const orderStoreScopeKey = useMemo(
+    () => [
+      isDeviceMode ? "device" : "account",
+      storesDebugInfo.userGuid,
+      stores.map((store) => store.storeCode).sort().join(","),
+    ].join(":"),
+    [isDeviceMode, stores, storesDebugInfo.userGuid]
+  );
+  const orderScopeReady = isStoreSelectionReady && initializedOrderScopeKey === orderStoreScopeKey;
+
+  useEffect(() => {
+    if (!isStoreSelectionReady || initializedOrderScopeKey === orderStoreScopeKey) {
+      return;
+    }
+    setAllStoresSelected(!isDeviceMode && !selectedStoreCode && stores.length > 0);
+    setInitializedOrderScopeKey(orderStoreScopeKey);
+  }, [initializedOrderScopeKey, isDeviceMode, isStoreSelectionReady, orderStoreScopeKey, selectedStoreCode, stores.length]);
+
+  useEffect(() => {
+    const timeout = setTimeout(() => {
+      setPageNumber(1);
+      setSubmittedOrderKeyword(orderKeyword.trim());
+    }, 350);
+    return () => clearTimeout(timeout);
+  }, [orderKeyword]);
+
+  const scopedStoreCodes = useMemo(
+    () => (allStoresSelected ? stores.map((store) => store.storeCode) : []),
+    [allStoresSelected, stores]
+  );
+  const scopedStoreKey = scopedStoreCodes.join(",");
+  const hasOrderScope = Boolean(selectedStoreCode) || scopedStoreCodes.length > 0;
 
   const statusLabel = useCallback(
     (status?: StoreOrderFlowStatus) => {
@@ -550,20 +593,39 @@ export default function Orders() {
     [selectedStatus]
   );
 
+  const handleSelectStatus = useCallback((status: "all" | StoreOrderFlowStatus) => {
+    setPageNumber(1);
+    setSelectedStatus(status);
+  }, []);
+
+  const handleSelectOrderStore = useCallback((store: Store) => {
+    setStorePickerVisible(false);
+    void selectStore(store)
+      .then(() => {
+        setPageNumber(1);
+        setAllStoresSelected(false);
+      })
+      .catch((error) => {
+        setSnackbar(getErrorMessage(error, "messages.storeSelectFailed"));
+      });
+  }, [getErrorMessage, selectStore]);
+
   useEffect(() => {
     setPageNumber(1);
-  }, [selectedStatus, selectedStoreCode]);
+  }, [selectedStatus, selectedStoreCode, scopedStoreKey]);
 
   const ordersQuery = useQuery({
-    queryKey: ["storeOrders", selectedStoreCode, statusList.join(","), pageNumber],
-    enabled: Boolean(selectedStoreCode),
-    queryFn: () =>
+    queryKey: ["storeOrders", storesDebugInfo.userGuid, allStoresSelected, selectedStoreCode, scopedStoreKey, statusList.join(","), submittedOrderKeyword, pageNumber],
+    enabled: isStoreSelectionReady && orderScopeReady && hasOrderScope,
+    queryFn: ({ signal }) =>
       fetchOrderList({
-        storeCode: selectedStoreCode ?? undefined,
+        storeCode: allStoresSelected ? undefined : selectedStoreCode ?? undefined,
+        storeCodes: allStoresSelected ? scopedStoreCodes : undefined,
         pageNumber,
         pageSize: PAGE_SIZE,
         statusList,
-      }),
+        keyword: submittedOrderKeyword || undefined,
+      }, signal),
   });
 
   const detailQuery = useQuery({
@@ -574,7 +636,7 @@ export default function Orders() {
 
   const refetchOrders = ordersQuery.refetch;
   const handleRefreshOrders = useCallback(async () => {
-    if (!selectedStoreCode) {
+    if (!hasOrderScope) {
       return;
     }
 
@@ -584,9 +646,13 @@ export default function Orders() {
     } finally {
       setOrdersRefreshing(false);
     }
-  }, [refetchOrders, selectedStoreCode]);
+  }, [hasOrderScope, refetchOrders]);
 
   const orderItems = ordersQuery.data?.items ?? [];
+  const selectedOrderItem = useMemo(
+    () => ordersQuery.data?.items.find((item) => item.orderGUID === selectedOrderGuid),
+    [ordersQuery.data?.items, selectedOrderGuid]
+  );
   const total = ordersQuery.data?.total ?? 0;
   const canGoPrevPage = pageNumber > 1;
   const canGoNextPage = pageNumber * PAGE_SIZE < total;
@@ -698,7 +764,61 @@ export default function Orders() {
         />
       </View>
 
-      {!selectedStoreCode && !storesLoading ? (
+      <Pressable
+        accessibilityRole="button"
+        style={styles.scopeBar}
+        onPress={() => setStorePickerVisible(true)}
+        disabled={isDeviceMode}
+      >
+        <View style={styles.scopeBarIcon}>
+          <Text style={styles.scopeBarIconText}>⌂</Text>
+        </View>
+        <View style={styles.scopeBarTextWrap}>
+          <Text variant="labelSmall" style={styles.scopeBarLabel}>{t("scopeLabel")}</Text>
+          <Text variant="bodyMedium" style={styles.scopeBarValue} numberOfLines={1}>
+            {allStoresSelected ? t("allManagedStores") : selectedStore?.storeName || t("selectStore")}
+          </Text>
+        </View>
+        <Text style={styles.scopeBarChevron}>›</Text>
+      </Pressable>
+      <View style={styles.searchRow}>
+        <TextInput
+          mode="outlined"
+          dense
+          value={orderKeyword}
+          onChangeText={setOrderKeyword}
+          placeholder={t("searchPlaceholder")}
+          left={<TextInput.Icon icon="magnify" />}
+          right={orderKeyword ? <TextInput.Icon icon="close" onPress={() => setOrderKeyword("")} /> : undefined}
+          style={styles.searchInput}
+        />
+      </View>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.statusTabsScroll}
+        contentContainerStyle={styles.statusTabsRow}
+      >
+        <Chip
+          hitSlop={4}
+          selected={selectedStatus === "all"}
+          mode={selectedStatus === "all" ? "flat" : "outlined"}
+          onPress={() => handleSelectStatus("all")}
+          style={styles.statusTab}
+        >{t("filters.allHistory")}</Chip>
+        {HISTORY_STATUS_VALUES.map((status) => (
+          <Chip
+            key={status}
+            hitSlop={4}
+            selected={selectedStatus === status}
+            mode={selectedStatus === status ? "flat" : "outlined"}
+            onPress={() => handleSelectStatus(status)}
+            style={styles.statusTab}
+          >{statusLabel(status)}</Chip>
+        ))}
+      </ScrollView>
+
+      {!hasOrderScope && !storesLoading ? (
         <EmptyState title={t("empty.selectStoreTitle")} description={t("empty.selectStoreDescription")} />
       ) : (
         <FlatList
@@ -712,7 +832,7 @@ export default function Orders() {
           ListHeaderComponent={
             <View style={styles.listHeader}>
               <Text variant="titleSmall" style={styles.listHeaderTitle}>
-                {selectedStore?.storeName || t("listTitle")}
+                {allStoresSelected ? t("allManagedStores") : selectedStore?.storeName || t("listTitle")}
               </Text>
               <Text variant="bodySmall" style={styles.listHeaderMeta}>
                 {t("summary.total", { count: total })}
@@ -740,7 +860,7 @@ export default function Orders() {
               />
             ) : (
               <EmptyState
-                title={selectedStoreCode ? t("empty.noHistoryTitle") : t("empty.noAccessTitle")}
+                title={hasOrderScope ? t("empty.noHistoryTitle") : t("empty.noAccessTitle")}
                 description={t("empty.noHistoryDescription")}
               />
             )
@@ -790,10 +910,10 @@ export default function Orders() {
                 style={styles.storeSelectorButton}
                 onPress={() => setStorePickerVisible(true)}
               >
-                {selectedStore?.storeName || t("selectStore")}
+                {allStoresSelected ? t("allManagedStores") : selectedStore?.storeName || t("selectStore")}
               </Button>
               <Text variant="bodySmall" style={styles.filtersCurrentText}>
-                {t("filters.currentStore", { store: selectedStore?.storeName || t("common:na") })}
+                {t("filters.currentStore", { store: allStoresSelected ? t("allManagedStores") : selectedStore?.storeName || t("common:na") })}
               </Text>
             </View>
 
@@ -805,7 +925,7 @@ export default function Orders() {
                 <Chip
                   selected={selectedStatus === "all"}
                   mode={selectedStatus === "all" ? "flat" : "outlined"}
-                  onPress={() => setSelectedStatus("all")}
+                  onPress={() => handleSelectStatus("all")}
                   style={styles.filterChip}
                 >
                   {t("filters.allHistory")}
@@ -815,7 +935,7 @@ export default function Orders() {
                     key={status}
                     selected={selectedStatus === status}
                     mode={selectedStatus === status ? "flat" : "outlined"}
-                    onPress={() => setSelectedStatus(status)}
+                    onPress={() => handleSelectStatus(status)}
                     style={styles.filterChip}
                   >
                     {statusLabel(status)}
@@ -836,7 +956,7 @@ export default function Orders() {
                 {t("filters.chooseStore")}
               </Text>
               <Text variant="bodySmall" style={styles.filtersCurrentText}>
-                {t("filters.currentStore", { store: selectedStore?.storeName || t("common:na") })}
+                {t("filters.currentStore", { store: allStoresSelected ? t("allManagedStores") : selectedStore?.storeName || t("common:na") })}
               </Text>
             </View>
             <Button compact onPress={() => setStorePickerVisible(false)}>
@@ -856,24 +976,42 @@ export default function Orders() {
               data={stores}
               keyExtractor={(store) => store.storeCode}
               contentContainerStyle={styles.storePickerListContent}
+              ListHeaderComponent={!isDeviceMode && stores.length > 1 ? (
+                <Pressable
+                  style={[styles.storePickerRow, allStoresSelected ? styles.storePickerRowSelected : null]}
+                  onPress={() => {
+                    setAllStoresSelected(true);
+                    setPageNumber(1);
+                    setStorePickerVisible(false);
+                  }}
+                >
+                  <RadioButton
+                    value="all-managed-stores"
+                    status={allStoresSelected ? "checked" : "unchecked"}
+                    onPress={() => {
+                      setAllStoresSelected(true);
+                      setPageNumber(1);
+                      setStorePickerVisible(false);
+                    }}
+                  />
+                  <View style={styles.storePickerRowTextWrap}>
+                    <Text variant="bodyMedium" style={styles.storePickerStoreName}>{t("allManagedStores")}</Text>
+                    <Text variant="bodySmall" style={styles.filtersCurrentText}>{t("allManagedStoresHint", { count: stores.length })}</Text>
+                  </View>
+                </Pressable>
+              ) : null}
               renderItem={({ item: store }) => {
-                const selected = store.storeCode === selectedStoreCode;
+                const selected = !allStoresSelected && store.storeCode === selectedStoreCode;
 
                 return (
                   <Pressable
                     style={[styles.storePickerRow, selected ? styles.storePickerRowSelected : null]}
-                    onPress={() => {
-                      void selectStore(store);
-                      setStorePickerVisible(false);
-                    }}
+                    onPress={() => handleSelectOrderStore(store)}
                   >
                     <RadioButton
                       value={store.storeCode}
                       status={selected ? "checked" : "unchecked"}
-                      onPress={() => {
-                        void selectStore(store);
-                        setStorePickerVisible(false);
-                      }}
+                      onPress={() => handleSelectOrderStore(store)}
                     />
                     <View style={styles.storePickerRowTextWrap}>
                       <Text variant="bodyMedium" style={styles.storePickerStoreName}>
@@ -896,10 +1034,12 @@ export default function Orders() {
         <Modal
           visible={Boolean(selectedOrderGuid)}
           onDismiss={handleCloseDetail}
+          style={styles.detailModalOverlay}
           contentContainerStyle={styles.modalContent}
         >
           <OrderDetailContent
             detail={detailQuery.data}
+            listItem={selectedOrderItem}
             itemNumberFilter={itemNumberFilter}
             loading={!detailQuery.data && (detailQuery.isLoading || detailQuery.isFetching)}
             errorMessage={
@@ -928,12 +1068,12 @@ export default function Orders() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#F6F8FB",
+    backgroundColor: "#F4F6F8",
   },
   headerRow: {
     paddingHorizontal: 16,
-    paddingTop: 0,
-    paddingBottom: 0,
+    paddingTop: 8,
+    paddingBottom: 8,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
@@ -945,6 +1085,38 @@ const styles = StyleSheet.create({
   filterButton: {
     margin: 0,
   },
+  scopeBar: {
+    marginHorizontal: 16,
+    marginBottom: 8,
+    minHeight: 52,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    backgroundColor: "#EAF3FF",
+    borderWidth: 1,
+    borderColor: "#CFE3FF",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  scopeBarIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: "#1677FF",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  scopeBarIconText: { color: "#FFFFFF", fontSize: 17, fontWeight: "700" },
+  scopeBarTextWrap: { flex: 1, minWidth: 0, gap: 1 },
+  scopeBarLabel: { color: "#5B7BA3", fontWeight: "700" },
+  scopeBarValue: { color: "#0F172A", fontWeight: "700" },
+  scopeBarChevron: { color: "#1677FF", fontSize: 28, lineHeight: 28 },
+  searchRow: { paddingHorizontal: 16, marginBottom: 4 },
+  searchInput: { backgroundColor: "#FFFFFF", height: 46 },
+  // 横向 ScrollView 默认会参与纵向 flex 收缩；锁定交叉轴高度，避免 Chip 被压成一条窄缝。
+  statusTabsScroll: { flexGrow: 0, flexShrink: 0, minHeight: 48 },
+  statusTabsRow: { alignItems: "center", gap: 8, minHeight: 48, paddingHorizontal: 16 },
+  statusTab: { borderRadius: 10, backgroundColor: "#FFFFFF" },
   filterChip: {
     backgroundColor: "#FFFFFF",
   },
@@ -960,8 +1132,8 @@ const styles = StyleSheet.create({
   },
   listContent: {
     paddingHorizontal: 16,
-    paddingTop: 0,
-    paddingBottom: 0,
+    paddingTop: 4,
+    paddingBottom: 20,
     gap: 12,
     flexGrow: 1,
   },
@@ -985,10 +1157,11 @@ const styles = StyleSheet.create({
   },
   orderCard: {
     backgroundColor: "#FFFFFF",
-    borderRadius: 18,
+    borderRadius: 10,
+    borderColor: "#E4E7EC",
   },
   orderCardContent: {
-    gap: 14,
+    gap: 10,
   },
   orderHeader: {
     flexDirection: "row",
@@ -1071,17 +1244,6 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     lineHeight: 26,
   },
-  summaryMetric: {
-    flex: 1,
-    gap: 4,
-  },
-  summaryLabel: {
-    color: "#94A3B8",
-  },
-  summaryValue: {
-    color: "#0F172A",
-    fontWeight: "700",
-  },
   orderDivider: {
     backgroundColor: "#E2E8F0",
   },
@@ -1112,7 +1274,7 @@ const styles = StyleSheet.create({
     marginHorizontal: 16,
     marginVertical: 84,
     backgroundColor: "#FFFFFF",
-    borderRadius: 20,
+    borderRadius: 16,
     overflow: "hidden",
   },
   filtersModalScroll: {
@@ -1138,7 +1300,7 @@ const styles = StyleSheet.create({
     marginHorizontal: 16,
     marginVertical: 84,
     backgroundColor: "#FFFFFF",
-    borderRadius: 20,
+    borderRadius: 16,
     maxHeight: "78%",
     overflow: "hidden",
     padding: 16,
@@ -1166,9 +1328,9 @@ const styles = StyleSheet.create({
   },
   storePickerRow: {
     minHeight: 56,
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: "#E2E8F0",
+    borderColor: "#E4E7EC",
     backgroundColor: "#FFFFFF",
     flexDirection: "row",
     alignItems: "center",
@@ -1194,13 +1356,31 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   modalContent: {
-    flex: 1,
-    marginVertical: 36,
-    marginHorizontal: 12,
+    alignSelf: "stretch",
     backgroundColor: "#FFFFFF",
-    borderRadius: 24,
+    height: "100%",
     overflow: "hidden",
+    width: "100%",
   },
+  // Paper Modal 默认再加一层安全区外边距；这里由内部 SafeAreaView 统一处理，避免明细容器上下被重复压缩。
+  detailModalOverlay: {
+    justifyContent: "flex-start",
+    marginBottom: 0,
+    marginTop: 0,
+    paddingBottom: 0,
+    paddingTop: 0,
+  },
+  detailScreen: { backgroundColor: "#FFFFFF", flex: 1 },
+  detailNavigationBar: {
+    alignItems: "center",
+    borderBottomColor: "#EAECF0",
+    borderBottomWidth: 1,
+    flexDirection: "row",
+    minHeight: 52,
+    paddingHorizontal: 8,
+  },
+  detailNavigationButton: { margin: 0 },
+  detailNavigationTitle: { color: "#101828", flex: 1, fontWeight: "700" },
   detailLoadingWrap: {
     flex: 1,
     alignItems: "center",
@@ -1208,89 +1388,123 @@ const styles = StyleSheet.create({
     minHeight: 240,
   },
   detailListContent: {
-    padding: 16,
-    paddingBottom: 24,
+    paddingBottom: 12,
   },
   detailListContentEmpty: {
     flexGrow: 1,
   },
   detailHeaderContent: {
-    gap: 14,
-    marginBottom: 14,
+    backgroundColor: "#FFFFFF",
   },
-  detailSummaryCard: {
-    backgroundColor: "#F8FAFC",
-    borderRadius: 20,
-  },
-  detailSummaryContent: {
+  detailStoreBanner: {
+    alignItems: "center",
+    backgroundColor: "#EEF6FF",
+    flexDirection: "row",
     gap: 10,
+    marginHorizontal: 16,
+    marginTop: 8,
+    minHeight: 48,
+    paddingHorizontal: 12,
+  },
+  detailStoreIcon: {
+    alignItems: "center",
+    backgroundColor: "#DCEEFF",
+    borderRadius: 8,
+    height: 32,
+    justifyContent: "center",
+    width: 32,
+  },
+  detailStoreBannerText: { flex: 1, minWidth: 0 },
+  detailStoreName: { color: "#101828", fontWeight: "700" },
+  detailStoreCaption: { color: "#667085" },
+  detailOrderSummary: {
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
   },
   detailTitleRow: {
+    alignItems: "center",
     flexDirection: "row",
     justifyContent: "space-between",
     gap: 12,
-  },
-  detailTitleWrap: {
-    flex: 1,
-    gap: 4,
   },
   detailOrderNo: {
-    color: "#0F172A",
+    color: "#101828",
     fontWeight: "700",
   },
-  detailStoreText: {
-    color: "#475569",
-  },
-  detailInfoBlock: {
-    gap: 4,
-  },
-  summaryGrid: {
-    flexDirection: "row",
-    gap: 8,
-    paddingRight: 4,
-  },
-  detailSummaryMetric: {
-    flex: 0,
-    width: 112,
-    borderRadius: 10,
-    backgroundColor: "#FFFFFF",
-    paddingHorizontal: 9,
-    paddingVertical: 7,
-  },
-  detailListHeader: {
-    flexDirection: "row",
+  detailDateText: { color: "#667085" },
+  detailInfoToggle: {
     alignItems: "center",
+    backgroundColor: "#F5F8FC",
+    flexDirection: "row",
     justifyContent: "space-between",
-    gap: 12,
+    minHeight: 44,
+    paddingHorizontal: 12,
   },
-  detailListTitleWrap: {
-    flex: 1,
-    minWidth: 0,
+  detailInfoToggleText: { color: "#475467", fontWeight: "600" },
+  detailInfoChevron: { color: "#667085", fontSize: 18 },
+  detailInfoBlock: {
+    backgroundColor: "#F8FAFC",
+    gap: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
   },
-  detailListHint: {
-    color: "#64748B",
+  detailInfoText: { color: "#475467" },
+  detailSummaryGrid: {
+    borderTopColor: "#EAECF0",
+    borderTopWidth: 1,
+    columnGap: 0,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    marginTop: 2,
+    paddingTop: 10,
   },
+  summaryMetric: {
+    gap: 2,
+    minHeight: 52,
+    paddingHorizontal: 4,
+    width: "50%",
+  },
+  summaryLabel: { color: "#667085" },
+  summaryValue: { color: "#101828", fontWeight: "700" },
   detailFilterInput: {
     backgroundColor: "#FFFFFF",
+    height: 46,
+    marginHorizontal: 16,
+    marginTop: 2,
   },
+  detailListHeader: {
+    alignItems: "center",
+    borderBottomColor: "#EAECF0",
+    borderBottomWidth: 1,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginTop: 10,
+    paddingBottom: 8,
+    paddingHorizontal: 16,
+  },
+  detailSectionTitle: { color: "#101828", fontWeight: "700" },
+  detailListHint: { color: "#667085" },
   detailItemCard: {
     backgroundColor: "#FFFFFF",
-    borderRadius: 18,
+    borderBottomColor: "#EAECF0",
+    borderBottomWidth: 1,
   },
-  detailItemSeparator: {
-    height: 14,
-  },
+  detailItemSeparator: { height: 0 },
   detailItemContent: {
-    gap: 12,
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
   },
   detailItemHeader: {
+    alignItems: "flex-start",
     flexDirection: "row",
-    gap: 12,
+    gap: 10,
   },
   detailProductImage: {
-    width: 72,
-    height: 72,
-    borderRadius: 10,
+    width: 62,
+    height: 62,
+    borderRadius: 8,
     backgroundColor: "#F1F5F9",
   },
   detailProductImagePlaceholder: {
@@ -1303,6 +1517,8 @@ const styles = StyleSheet.create({
   detailProductImageText: {
     color: "#64748B",
     textAlign: "center",
+    fontSize: 12,
+    lineHeight: 17,
   },
   detailItemMain: {
     flex: 1,
@@ -1311,62 +1527,73 @@ const styles = StyleSheet.create({
   detailItemTopRow: {
     flexDirection: "row",
     justifyContent: "space-between",
-    gap: 10,
+    gap: 12,
   },
   detailItemTitleWrap: {
     flex: 1,
     minWidth: 0,
-    gap: 4,
-  },
-  detailItemIndex: {
-    color: "#1677FF",
-    fontWeight: "700",
+    gap: 1,
   },
   detailItemTitle: {
     color: "#0F172A",
     fontWeight: "700",
+    fontSize: 15,
+    lineHeight: 20,
   },
   detailItemSubTitle: {
     color: "#64748B",
+    fontSize: 12,
+    lineHeight: 16,
   },
   detailItemStatusWrap: {
     alignItems: "flex-end",
-    justifyContent: "center",
+    justifyContent: "flex-start",
     gap: 2,
+    minWidth: 58,
   },
   detailQtyText: {
     color: "#0F172A",
     fontWeight: "700",
+    fontSize: 14,
+    lineHeight: 19,
   },
   detailAllocText: {
-    color: "#64748B",
+    color: "#B54708",
+    fontSize: 12,
+    fontWeight: "700",
+    lineHeight: 16,
   },
   detailMetaGrid: {
     flexDirection: "row",
-    flexWrap: "wrap",
-    rowGap: 10,
-    columnGap: 12,
-  },
-  detailBarcodeWrap: {
-    alignSelf: "stretch",
-    height: 48,
-    maxWidth: 220,
-  },
-  detailBarcodePlaceholder: {
-    flex: 1,
-    borderRadius: 8,
-    backgroundColor: "#F8FAFC",
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
+    gap: 0,
   },
   detailItemActions: {
-    alignItems: "flex-end",
+    alignItems: "stretch",
+  },
+  detailPrintButton: {
+    borderColor: "#1677FF",
+    borderRadius: 5,
+    width: "100%",
   },
   detailMetaCell: {
-    width: "47%",
-    gap: 4,
+    borderRightColor: "#EAECF0",
+    borderRightWidth: 1,
+    flex: 1,
+    gap: 2,
+    paddingHorizontal: 8,
   },
   detailMetaLabel: {
-    color: "#94A3B8",
+    color: "#667085",
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  detailReturnBar: {
+    backgroundColor: "#FFFFFF",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  detailReturnButton: {
+    backgroundColor: "#EEF6FF",
+    borderRadius: 5,
   },
 });

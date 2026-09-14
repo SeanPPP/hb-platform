@@ -3,6 +3,7 @@ import {
   queryWarehouseProductFlowCandidates,
   queryWarehouseProductFlowOrderShipmentDaily,
   queryWarehouseProductFlowSalesDaily,
+  queryWarehouseProductFlowShipments,
   queryWarehouseProductFlowSummary,
 } from './warehouseProductFlowAnalysisService'
 
@@ -28,6 +29,12 @@ try {
     if (url.endsWith('/options') || url.endsWith('/options?forceRefresh=true')) return jsonResponse({ success: true, data: { DomesticSuppliers: [{ Code: 'CN-1', Name: '优品玩具' }] } })
     if (url.endsWith('/candidates')) return jsonResponse({ success: true, data: { Items: [{ ProductCode: 'HB-1', ItemNumber: '001', ProductName: '粉色玩具', Barcode: '123' }], Total: 1, PageNumber: 1, PageSize: 20 } })
     if (url.endsWith('/summary')) return jsonResponse({ success: true, data: { Totals: { InboundQuantity: 12 }, CurrentProduct: { ProductCode: 'HB-1', Metrics: { InboundQuantity: 12 } }, Items: [{ ProductCode: 'HB-1', Metrics: { InboundQuantity: 12 } }], Total: 1, PageNumber: 1, PageSize: 20 } })
+    if (url.endsWith('/shipments')) return jsonResponse({ success: true, data: [
+      { ShipmentNumber: 'S1', BranchCode: 'B1', BranchName: '分店一', PosEnabled: true, ShipmentDate: '2026-08-17T00:00:00', ShippedQuantity: 12, NetSalesQuantity: -2 },
+      { shipmentNumber: 'S2', branchCode: 'B2', posEnabled: false, shippedQuantity: 6, netSalesQuantity: 0 },
+      { ShipmentNumber: 'S3', BranchCode: 'B3', PosEnabled: null, NetSalesQuantity: 3 },
+      { OrderNumber: 'OLD', ShippedQuantity: 4 },
+    ] })
     return jsonResponse({ success: true, data: [{ Date: '2026-08-17T00:00:00', OrderedQuantity: 4, ShippedQuantity: 3, NetSalesQuantity: -1, NetSalesAmount: -6, AverageUnitPrice: 6 }] })
   }) as typeof fetch
 
@@ -66,6 +73,18 @@ try {
   assertEqual(captured[5].url.endsWith('/sales-daily'), true, '销售趋势必须独立请求')
   assertEqual(orderShipmentDaily.data[0].orderedQuantity, 4, '订货发货趋势必须归一化 daily orderedQuantity')
   assertEqual(salesDaily.data[0].netSalesQuantity, -1, '销售趋势必须归一化 daily netSalesQuantity')
+
+  const shipments = await queryWarehouseProductFlowShipments(productRequest)
+  assertDeepEqual(JSON.parse(String(captured[6].init?.body)), productRequest, '发货查询必须传递独立的销售期间与发货期间')
+  assertDeepEqual(shipments.data[0], {
+    shipmentNumber: 'S1', orderNumber: undefined, branchCode: 'B1', branchName: '分店一', posEnabled: true,
+    shipmentDate: '2026-08-17', shippedQuantity: 12, netSalesQuantity: -2,
+  }, '发货必须归一化分店编码、POS 启用状态和负数净销量')
+  assertEqual(shipments.data[1].posEnabled, false, 'camelCase 的未启用 POS 不能丢失 false')
+  assertEqual(shipments.data[1].netSalesQuantity, 0, '明确的零销量必须保留')
+  assertEqual(shipments.data[2].posEnabled, null, '未关联分店必须保持未知 POS 状态')
+  assertEqual(shipments.data[3].netSalesQuantity, null, '旧接口缺少销量时不能误显示为零')
+  assertEqual(shipments.data[3].posEnabled, null, '旧接口缺少 POS 状态时不能归入未启用')
 
   console.log('warehouseProductFlowAnalysisService.test: ok')
 } finally {

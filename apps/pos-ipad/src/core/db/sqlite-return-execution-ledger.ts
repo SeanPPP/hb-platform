@@ -244,6 +244,29 @@ implements ReturnExecutionLedgerPort, ReturnRecoveryListPort {
     );
   }
 
+  /**
+   * 更新前仅核验当前终端的恢复布尔值，包含其他收银员留下的记录；
+   * 不解密或暴露退货材料，真正恢复仍必须经 listRecoverable 的收银员范围。
+   */
+  public hasRecoverableForTerminal(
+    input: Readonly<Pick<ReturnRecoveryScope, "storeCode" | "deviceCode">>,
+  ): Promise<boolean> {
+    const storeCode = strictText(input.storeCode, "return recovery store code", 64);
+    const deviceCode = strictText(input.deviceCode, "return recovery device code", 128);
+    return this.connection.withExclusiveTransaction(async (transaction) => {
+      // 仅排除明确终态；未来或损坏的未知状态也必须阻止重启。
+      const row = await transaction.getFirst<{ has_recovery: number }>(
+        `SELECT 1 AS has_recovery
+         FROM return_actions
+         WHERE store_code = ? AND device_code = ?
+           AND (state IS NULL OR state NOT IN ('declined', 'completed'))
+         LIMIT 1`,
+        [storeCode, deviceCode],
+      );
+      return row !== null;
+    });
+  }
+
   public listRecoverable(
     input: ReturnRecoveryScope,
   ): Promise<readonly DurableReturnRecoveryAction[]> {

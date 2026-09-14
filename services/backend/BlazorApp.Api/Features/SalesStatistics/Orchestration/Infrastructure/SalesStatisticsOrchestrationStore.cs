@@ -18,12 +18,14 @@ internal sealed class SalesStatisticsOrchestrationStore
         SqlSugarContext context,
         DateTime date)
     {
+        // 先规范化为日期参数，避免 ORM 在不同数据库中把 Date 成员翻译成不同格式的字符串。
+        var targetDate = date.Date;
         // SqlSugar 的 FirstAsync 可返回空记录，但其泛型签名未标注可空；在此处 await 后如实暴露契约。
         return await context.Db
             .Queryable<SalesStatisticRefreshState>()
             .Where(state =>
                 state.StatisticType == SalesStatisticType.ProductStoreDaily
-                && state.Date == date.Date)
+                && state.Date == targetDate)
             .FirstAsync();
     }
 

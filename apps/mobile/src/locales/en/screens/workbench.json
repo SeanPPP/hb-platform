@@ -30,6 +30,7 @@
   },
   "routes": {
     "productQuery": "Product lookup",
+    "productInsights": "Product activity",
     "storeOrdering": "Store ordering",
     "cart": "Cart",
     "orders": "HB Orders",
@@ -45,6 +46,8 @@
     "attendancePersonal": "My attendance",
     "attendanceManagement": "Attendance management",
     "users": "Employees",
+    "userAdmin": "User administration",
+    "roles": "Roles",
     "employeeProfile": "My profile",
     "employeeProfileReview": "Profile reviews",
     "deviceManagement": "Device management",

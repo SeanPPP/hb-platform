@@ -62,6 +62,7 @@ if (valid.ok) {
 }
 
 assertInvalid({ localSupplierCode: "" }, "required", "missing supplier");
+assertInvalid({ localSupplierCode: " 200 " }, "supplierRestricted", "Hotbargain supplier cannot be self-created");
 assertInvalid({ itemNumber: "" }, "required", "missing item number");
 assertInvalid({ barcode: "" }, "required", "missing barcode");
 assertInvalid({ purchasePrice: "" }, "required", "missing purchase price");

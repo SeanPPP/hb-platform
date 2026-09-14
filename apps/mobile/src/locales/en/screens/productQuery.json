@@ -6,7 +6,13 @@
     "lastHit": "Last hit: {{value}}"
   },
   "actions": {
-    "returnToInvoiceDetails": "Back to invoice details"
+    "returnToInvoiceDetails": "Back to invoice details",
+    "saveAndReturnToInvoice": "Save and return to invoice",
+    "invoiceStoreLocked": "Invoice store locked",
+    "unsavedTitle": "Unsaved store price changes",
+    "unsavedDescription": "Leaving now will discard the current store price changes. Product type, clearance price, set codes, and multi-codes that were saved separately are kept.",
+    "continueEditing": "Continue editing",
+    "discardAndReturn": "Discard and leave"
   },
   "createProduct": {
     "action": "Create product",
@@ -19,7 +25,7 @@
       "supplier": "Supplier",
       "itemNumber": "Item number",
       "barcode": "Barcode",
-      "productName": "Name",
+      "productName": "Product name",
       "purchasePrice": "Purchase price",
       "retailPrice": "Retail price",
       "isSpecialProduct": "Special product",
@@ -36,8 +42,34 @@
       "suppliersLoadFailed": "Failed to load suppliers",
       "created": "Product created.",
       "refreshFailedAfterCreate": "Product was created, but details failed to refresh. Search manually.",
-      "createFailed": "Failed to create product"
-    }
+      "createFailed": "Failed to create product",
+      "supplierRestricted": "You cannot create products for Hotbargain (200). Please contact an administrator.",
+      "barcodeGenerateFailed": "Could not generate a barcode. Please try again."
+    },
+    "generateBarcode": "Generate barcode",
+    "barcodeHint": "EAN-13: 9529 + YYMMDD + two-digit sequence + check digit. Up to 100 reservations per day.",
+    "formHint": "Add product details and pricing",
+    "namePlaceholder": "Product name",
+    "itemPlaceholder": "At least 5 characters",
+    "barcodePlaceholder": "Enter or generate",
+    "generateShort": "Generate",
+    "specialShort": "Special product",
+    "autoPriceShort": "Auto pricing",
+    "keyboardDone": "Hide keyboard",
+    "cameraScan": "Scan barcode",
+    "supplierSearch": "Search name or code",
+    "clearSearch": "Clear search",
+    "supplierList": "Suppliers · {{count}}",
+    "nameSort": "Sorted by name",
+    "supplierCode": "Code: {{code}}",
+    "adminOnly": "Contact admin",
+    "noSuppliers": "No suppliers found",
+    "supplierSelectHint": "Tap a supplier to select and return",
+    "scanTitle": "Scan product barcode",
+    "scanHint": "Position the barcode inside the frame to fill it in",
+    "cameraUnavailable": "Camera unavailable. Go back to enter the barcode manually.",
+    "openSettings": "Open settings",
+    "cameraPermissionHint": "Allow camera access to scan and fill in the product barcode."
   },
   "messages": {
     "selectStoreFirst": "Please select a store first.",
@@ -69,6 +101,7 @@
     "codesLoadFailed": "Failed to load barcode list.",
     "saved": "Product information saved.",
     "saveFailed": "Save failed.",
+    "finishCurrentAction": "Saving or printing is in progress. Please wait before leaving.",
     "emptyStorePrice": "There is no store price record for this product.",
     "emptyPrompt": "Enter a barcode, item number, or product code to start.",
     "cameraTip": "Align the barcode with the center of the frame.",
@@ -96,6 +129,8 @@
   },
   "lookup": {
     "title": "Choose a matching product",
+    "count": "Matching products: {{count}}",
+    "noImage": "No image",
     "query": "Query: {{value}}",
     "viewDetail": "View details",
     "source": {
@@ -109,7 +144,9 @@
     }
   },
   "sections": {
-    "moreInfo": "More details"
+    "moreInfo": "More details",
+    "priceAndLabels": "Price & labels",
+    "codes": "Set / multi codes"
   },
   "promotion": {
     "title": "Promotion",
@@ -221,6 +258,10 @@
     "product": "Regular label",
     "discount": "Discount label",
     "bigDiscount": "Large label",
+    "productShort": "Regular",
+    "discountShort": "Discount",
+    "bigDiscountShort": "Large",
+    "settingsAction": "Settings",
     "clearance": "Clearance label",
     "sendingShort": "Sending",
     "sending": "Sending...",

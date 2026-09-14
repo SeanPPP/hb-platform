@@ -32,6 +32,11 @@ namespace BlazorApp.Api.Services.React
         private const int MaxHqLockWaitMilliseconds = 10_000;
         private const string HqUpdateCostLockBusyCode = "HQ_UPDATE_COST_LOCK_BUSY";
         private const string HqLockRetryTimeoutMessage = "商品更新繁忙，等待其他成本操作超时，本次未更新 HQ 商品";
+        private static readonly TimeSpan StorePriceLockRetryBudget = TimeSpan.FromSeconds(60);
+        private static readonly TimeSpan StorePriceLockRetryDelay = TimeSpan.FromMilliseconds(250);
+        private const int MaxStorePriceLockWaitMilliseconds = 10_000;
+        private const string StorePriceUpdateCostLockBusyCode = "STORE_UPDATE_COST_LOCK_BUSY";
+        private const string StorePriceLockRetryTimeoutMessage = "分店价格更新繁忙，等待其他成本操作超时，本次未更新分店价格";
 
         private readonly ConcurrentDictionary<string, JobState<UpdateToStorePricesResultDto>> _storePriceJobs = new();
         private readonly ConcurrentDictionary<string, JobState<UpdateHqProductsResult>> _hqProductJobs = new();
@@ -323,24 +328,103 @@ namespace BlazorApp.Api.Services.React
             string updatedBy
         )
         {
+            var startedTimestamp = _timeProvider.GetTimestamp();
+            var attempt = 0;
+            UpdateToStorePricesResultDto? lastBusyResult = null;
             try
             {
-                using var scope = _serviceScopeFactory.CreateScope();
-                var service = scope.ServiceProvider.GetRequiredService<ILocalSupplierInvoicesReactService>();
-                var response = await service.UpdateDetailsToStorePricesAsync(request, updatedBy);
-                var result = response.Data ?? response.Details as UpdateToStorePricesResultDto;
-                CompleteJob(
-                    jobState,
-                    response.Success
-                        ? LocalSupplierInvoiceBatchUpdateJobStatusConstants.Succeeded
-                        : LocalSupplierInvoiceBatchUpdateJobStatusConstants.Failed,
-                    result,
-                    response.Message
-                );
+                while (true)
+                {
+                    var remainingBudget = StorePriceLockRetryBudget - GetElapsed(startedTimestamp);
+                    if (remainingBudget <= TimeSpan.Zero)
+                    {
+                        CompleteJob(
+                            jobState,
+                            LocalSupplierInvoiceBatchUpdateJobStatusConstants.Failed,
+                            lastBusyResult ?? new UpdateToStorePricesResultDto(),
+                            StorePriceLockRetryTimeoutMessage
+                        );
+                        return;
+                    }
+
+                    attempt++;
+                    var lockWaitMilliseconds = Math.Clamp(
+                        (int)Math.Ceiling(remainingBudget.TotalMilliseconds),
+                        1,
+                        MaxStorePriceLockWaitMilliseconds
+                    );
+                    ApiResponse<UpdateToStorePricesResultDto> response;
+
+                    // 每次尝试使用独立 scope 和克隆请求；锁忙等待发生在 scope 释放之后。
+                    using (_logger.BeginScope(new Dictionary<string, object?>
+                    {
+                        ["JobId"] = jobState.JobId,
+                        ["InvoiceGuid"] = request.InvoiceGuid,
+                        ["Attempt"] = attempt,
+                        ["Elapsed"] = GetElapsed(startedTimestamp),
+                    }))
+                    {
+                        using var scope = _serviceScopeFactory.CreateScope();
+                        var service = scope.ServiceProvider.GetRequiredService<ILocalSupplierInvoicesReactService>();
+                        response = await service.UpdateDetailsToStorePricesAsync(
+                            CloneUpdateToStoreRequest(request),
+                            updatedBy,
+                            lockWaitMilliseconds
+                        );
+                    }
+
+                    var result = response.Data ?? response.Details as UpdateToStorePricesResultDto;
+                    if (IsRetryableStorePriceLockBusy(response, result))
+                    {
+                        lastBusyResult = result;
+                        remainingBudget = StorePriceLockRetryBudget - GetElapsed(startedTimestamp);
+                        if (remainingBudget <= TimeSpan.Zero)
+                        {
+                            CompleteJob(
+                                jobState,
+                                LocalSupplierInvoiceBatchUpdateJobStatusConstants.Failed,
+                                result ?? new UpdateToStorePricesResultDto(),
+                                StorePriceLockRetryTimeoutMessage
+                            );
+                            return;
+                        }
+
+                        var delay = remainingBudget < StorePriceLockRetryDelay
+                            ? remainingBudget
+                            : StorePriceLockRetryDelay;
+                        _logger.LogWarning(
+                            "更新分店价格遇到成本锁冲突，将重试。JobId={JobId}, InvoiceGuid={InvoiceGuid}, Attempt={Attempt}, Elapsed={Elapsed}, Delay={Delay}",
+                            jobState.JobId,
+                            request.InvoiceGuid,
+                            attempt,
+                            GetElapsed(startedTimestamp),
+                            delay
+                        );
+                        await Task.Delay(delay, _timeProvider);
+                        continue;
+                    }
+
+                    CompleteJob(
+                        jobState,
+                        response.Success
+                            ? LocalSupplierInvoiceBatchUpdateJobStatusConstants.Succeeded
+                            : LocalSupplierInvoiceBatchUpdateJobStatusConstants.Failed,
+                        result,
+                        response.Message
+                    );
+                    return;
+                }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "执行更新到分店价格 job 失败: {JobId}", jobState.JobId);
+                _logger.LogError(
+                    ex,
+                    "执行更新到分店价格 job 失败: JobId={JobId}, InvoiceGuid={InvoiceGuid}, Attempt={Attempt}, Elapsed={Elapsed}",
+                    jobState.JobId,
+                    request.InvoiceGuid,
+                    attempt,
+                    GetElapsed(startedTimestamp)
+                );
                 CompleteJob(
                     jobState,
                     LocalSupplierInvoiceBatchUpdateJobStatusConstants.Failed,
@@ -562,6 +646,22 @@ namespace BlazorApp.Api.Services.React
                 && result.Failed == 0
                 && result.Errors is { Count: 0 }
                 && !HasHqWriteCounts(result);
+        }
+
+        private static bool IsRetryableStorePriceLockBusy(
+            ApiResponse<UpdateToStorePricesResultDto> response,
+            UpdateToStorePricesResultDto? result
+        )
+        {
+            return !response.Success
+                && string.Equals(response.Code, StorePriceUpdateCostLockBusyCode, StringComparison.Ordinal)
+                && result is not null
+                && result.Inserted == 0
+                && result.Updated == 0
+                && result.UpdatedPurchasePrices == 0
+                && result.Skipped == 0
+                && result.Failed == 0
+                && result.Errors is { Count: 0 };
         }
 
         private static bool HasHqWriteCounts(UpdateHqProductsResult? result)

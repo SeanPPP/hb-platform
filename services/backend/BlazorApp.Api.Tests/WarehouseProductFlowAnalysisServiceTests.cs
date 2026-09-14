@@ -214,6 +214,69 @@ public sealed class WarehouseProductFlowAnalysisServiceTests : IDisposable
         Assert.Equal("ACTIVE", row.ItemNumber);
     }
 
+    [Theory]
+    [InlineData("HB022-244", "P1")]
+    [InlineData("火箭", "P1")]
+    [InlineData("Rocket", "P1")]
+    [InlineData("952790", "P1")]
+    [InlineData("P1", "P1")]
+    [InlineData("WH-ONLY", "WH-ONLY")]
+    [InlineData("删除商品", null)]
+    [InlineData("不存在", null)]
+    public async Task Candidates_关键字集合匹配覆盖所有字段及缺失主档(string keyword, string? expectedCode)
+    {
+        await _db.Insertable(new[]
+        {
+            new WarehouseProduct { ProductCode = "P1", IsDeleted = false },
+            new WarehouseProduct { ProductCode = "WH-ONLY", IsDeleted = false },
+            new WarehouseProduct { ProductCode = "DELETED-PRODUCT", IsDeleted = false },
+            new WarehouseProduct { ProductCode = "DELETED-WAREHOUSE", IsDeleted = true },
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new[]
+        {
+            new Product
+            {
+                UUID = "u1", ProductCode = "P1", ItemNumber = "HB022-244",
+                ProductName = "火箭玩具", EnglishName = "Jumbo Rocket", Barcode = "9527902201157",
+            },
+            new Product { UUID = "u2", ProductCode = "DELETED-PRODUCT", ProductName = "删除商品", IsDeleted = true },
+            new Product { UUID = "u3", ProductCode = "DELETED-WAREHOUSE", ProductName = "删除商品" },
+        }).ExecuteCommandAsync();
+
+        var result = await CreateService().GetCandidatesAsync(CreateCandidateRequest(keyword: keyword));
+
+        Assert.Equal(expectedCode == null ? 0 : 1, result.Data!.Total);
+        if (expectedCode == null)
+            Assert.Empty(result.Data.Items);
+        else
+            Assert.Equal(expectedCode, Assert.Single(result.Data.Items).ProductCode);
+    }
+
+    [Fact]
+    public async Task Candidates_宽泛关键字不因候选预读取截断()
+    {
+        foreach (var chunk in Enumerable.Range(1, 505).Chunk(500))
+        {
+            await _db.Insertable(chunk.Select(index => new WarehouseProduct
+            {
+                ProductCode = $"P{index:D4}", IsDeleted = false,
+            }).ToList()).ExecuteCommandAsync();
+            await _db.Insertable(chunk.Select(index => new Product
+            {
+                UUID = $"uuid-{index:D4}", ProductCode = $"P{index:D4}", ProductName = "批量关键字",
+            }).ToList()).ExecuteCommandAsync();
+        }
+        var request = CreateCandidateRequest(keyword: "批量关键字");
+        request.PageNumber = 6;
+        request.PageSize = 100;
+
+        var result = await CreateService().GetCandidatesAsync(request);
+
+        Assert.Equal(505, result.Data!.Total);
+        Assert.Equal(Enumerable.Range(501, 5).Select(index => $"P{index:D4}"),
+            result.Data.Items.Select(row => row.ProductCode));
+    }
+
     [Fact]
     public async Task Candidates_父分类包含子分类商品()
     {
@@ -565,6 +628,79 @@ public sealed class WarehouseProductFlowAnalysisServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Shipments_返回分店销量和POS状态且销售日期参与缓存键()
+    {
+        var shipmentDate = new DateTime(2026, 8, 10);
+        var firstSalesDate = new DateTime(2026, 8, 11);
+        var secondSalesDate = new DateTime(2026, 8, 12);
+        await _db.Insertable(new[]
+        {
+            new Store { StoreGUID = "s1", StoreCode = "B1", StoreName = "启用", IsActive = true },
+            new Store { StoreGUID = "s2", StoreCode = "B2", StoreName = "停用", IsActive = false },
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new[]
+        {
+            new WareHouseOrder { OrderGUID = "O1", OrderNo = "SO1", StoreCode = "B1", FlowStatus = 1, OutboundDate = shipmentDate },
+            new WareHouseOrder { OrderGUID = "O4", OrderNo = "SO4", StoreCode = "B1", FlowStatus = 1, OutboundDate = shipmentDate },
+            new WareHouseOrder { OrderGUID = "O2", OrderNo = "SO2", StoreCode = "B2", FlowStatus = 1, OutboundDate = shipmentDate },
+            new WareHouseOrder { OrderGUID = "O3", OrderNo = "SO3", StoreCode = "B3", FlowStatus = 1, OutboundDate = shipmentDate },
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new[]
+        {
+            new WareHouseOrderDetails { DetailGUID = "D1", OrderGUID = "O1", ProductCode = "P1", AllocQuantity = 1m },
+            new WareHouseOrderDetails { DetailGUID = "D4", OrderGUID = "O4", ProductCode = "P1", AllocQuantity = 2m },
+            new WareHouseOrderDetails { DetailGUID = "D2", OrderGUID = "O2", ProductCode = "P1", AllocQuantity = 1m },
+            new WareHouseOrderDetails { DetailGUID = "D3", OrderGUID = "O3", ProductCode = "P1", AllocQuantity = 1m },
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new[]
+        {
+            CreateStatistic(firstSalesDate, "B1", "AU1", "P1", 5, 50m),
+            CreateStatistic(firstSalesDate, "B2", "AU1", "P1", -2, -20m),
+            CreateStatistic(firstSalesDate, "B1", "AU1", "P2", 100, 1000m),
+            CreateStatistic(secondSalesDate, "B1", "AU1", "P1", 9, 90m),
+        }).ExecuteCommandAsync();
+
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = CreateService(cache);
+        var firstRequest = CreateRequestWithPeriods(shipmentDate, shipmentDate, firstSalesDate, "P1");
+        var first = await service.GetShipmentsAsync(firstRequest, branchCodes: null);
+        var firstRows = first.Data!;
+        Assert.Equal(4, firstRows.Count);
+        Assert.Equal(new[] { 5, 5 }, firstRows.Where(row => row.BranchCode == "B1").Select(row => row.NetSalesQuantity));
+        Assert.Equal(-2, firstRows.Single(row => row.BranchCode == "B2").NetSalesQuantity);
+        Assert.All(firstRows.Where(row => row.BranchCode == "B1"), row => Assert.True(row.PosEnabled));
+        Assert.False(firstRows.Single(row => row.BranchCode == "B2").PosEnabled);
+        Assert.Null(firstRows.Single(row => row.BranchCode == "B3").PosEnabled);
+        Assert.Equal(0, firstRows.Single(row => row.BranchCode == "B3").NetSalesQuantity);
+
+        var unauthorized = await service.GetShipmentsAsync(firstRequest, branchCodes: new List<string>());
+        Assert.Empty(unauthorized.Data!);
+
+        var secondRequest = CreateRequestWithPeriods(shipmentDate, shipmentDate, secondSalesDate, "P1");
+        var second = await service.GetShipmentsAsync(secondRequest, branchCodes: null);
+        Assert.Equal(
+            new[] { 9, 9 },
+            second.Data!.Where(row => row.BranchCode == "B1").Select(row => row.NetSalesQuantity)
+        );
+    }
+
+    [Fact]
+    public async Task Branches_按净销量降序并以分店代码稳定排序()
+    {
+        var date = new DateTime(2026, 8, 10);
+        await _db.Insertable(new[]
+        {
+            CreateStatistic(date, "B2", "AU1", "P1", 3, 30m),
+            CreateStatistic(date, "B1", "AU1", "P1", 3, 30m),
+            CreateStatistic(date, "B3", "AU1", "P1", 8, 80m),
+        }).ExecuteCommandAsync();
+
+        var result = await CreateService().GetBranchesAsync(CreateRequest(date, currentProductCode: "P1"), null);
+
+        Assert.Equal(new[] { "B3", "B1", "B2" }, result.Data!.Select(row => row.BranchCode));
+    }
+
+    [Fact]
     public async Task SalesDaily_只返回销售期间并保留负销量()
     {
         var date = new DateTime(2026, 8, 10);
@@ -607,6 +743,114 @@ public sealed class WarehouseProductFlowAnalysisServiceTests : IDisposable
         var zero = result.Data.Items.Single(row => row.ProductCode == "P2");
         Assert.Equal(0, zero.Metrics.NetSalesQuantity);
         Assert.Null(zero.Metrics.AverageUnitPrice);
+    }
+
+    [Theory]
+    [InlineData("P1")]
+    [InlineData(" P1 ")]
+    [InlineData("\tP1\t")]
+    [InlineData("p1")]
+    public async Task Summary_编码预查询保留旧编码归一化语义(string storedCode)
+    {
+        var date = new DateTime(2026, 8, 10);
+        var normalizedCode = storedCode.Trim();
+        await _db.Insertable(new[]
+        {
+            new WarehouseProduct { ProductCode = storedCode, IsDeleted = false },
+            new WarehouseProduct { ProductCode = "UNSELECTED", IsDeleted = false },
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new Product
+        {
+            UUID = "u1", ProductCode = normalizedCode, ProductName = "所选商品",
+        }).ExecuteCommandAsync();
+        await _db.Insertable(CreateStatistic(date, "B1", "AU1", normalizedCode, 3, 45m)).ExecuteCommandAsync();
+        var request = CreateRequest(date);
+        request.Selection = new WarehouseProductFlowAnalysisSelectionDto
+        {
+            Mode = "included", IncludedProductCodes = new List<string> { " P1 " },
+        };
+
+        var result = await CreateService().GetSummaryAsync(request, branchCodes: null);
+
+        var row = Assert.Single(result.Data!.Items);
+        Assert.Equal(normalizedCode, row.ProductCode);
+        Assert.Equal("所选商品", row.ProductName);
+        Assert.Equal(3, row.Metrics.NetSalesQuantity);
+        Assert.Equal(45m, row.Metrics.NetSalesAmount);
+    }
+
+    [Fact]
+    public async Task Summary_单选查询量不随未选商品数增加()
+    {
+        var date = new DateTime(2026, 8, 10);
+        await _db.Insertable(new WarehouseProduct { ProductCode = "P1", IsDeleted = false }).ExecuteCommandAsync();
+        await _db.Insertable(new[]
+        {
+            new Product { UUID = "a-product", ProductCode = "P1", ProductName = "确定主档" },
+            new Product { UUID = "z-product", ProductCode = "P1", ProductName = "另一条主档" },
+        }).ExecuteCommandAsync();
+        await _db.Insertable(CreateStatistic(date, "B1", "AU1", "P1", -2, -20m)).ExecuteCommandAsync();
+        var request = CreateRequest(date, currentProductCode: "P1");
+        request.Selection = new WarehouseProductFlowAnalysisSelectionDto
+        {
+            Mode = " included ",
+            IncludedProductCodes = new List<string> { " p1 ", "P1", "不存在" },
+        };
+        var queryCount = 0;
+        _db.Aop.OnLogExecuting = (_, _) => queryCount++;
+        var before = await CreateService().GetSummaryAsync(request, branchCodes: null);
+        var singleProductQueryCount = queryCount;
+        _db.Aop.OnLogExecuting = null;
+
+        // 未选择的主档跨多个批次，不能让单商品请求逐批补读无关商品及供应商。
+        foreach (var chunk in Enumerable.Range(1, 1001).Select(index => new WarehouseProduct
+        {
+            ProductCode = $"UNSELECTED-{index:D4}",
+            IsDeleted = false,
+        }).Chunk(500))
+            await _db.Insertable(chunk).ExecuteCommandAsync();
+
+        queryCount = 0;
+        _db.Aop.OnLogExecuting = (_, _) => queryCount++;
+        var after = await CreateService().GetSummaryAsync(request, branchCodes: null);
+        Assert.Equal(singleProductQueryCount, queryCount);
+        Assert.Equal(before.Data!.Total, after.Data!.Total);
+        var row = Assert.Single(after.Data.Items);
+        Assert.Equal("P1", row.ProductCode);
+        Assert.Equal("确定主档", row.ProductName);
+        Assert.Equal(-2, row.Metrics.NetSalesQuantity);
+        Assert.Equal(-20m, row.Metrics.NetSalesAmount);
+    }
+
+    [Theory]
+    [InlineData("商品", 1)]
+    [InlineData("不匹配", 0)]
+    public async Task Summary_单选仍与筛选条件取交集(string keyword, int expectedCount)
+    {
+        var date = new DateTime(2026, 8, 10);
+        await _db.Insertable(new[]
+        {
+            new WarehouseProduct { ProductCode = "P1", IsDeleted = false },
+            new WarehouseProduct { ProductCode = "P2", IsDeleted = false },
+            new WarehouseProduct { ProductCode = "DELETED", IsDeleted = true },
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new[]
+        {
+            new Product { UUID = "u1", ProductCode = "P1", ProductName = "商品" },
+            new Product { UUID = "u2", ProductCode = "P2", ProductName = "商品" },
+        }).ExecuteCommandAsync();
+        var request = CreateRequest(date);
+        request.Filter.Keyword = keyword;
+        request.Selection = new WarehouseProductFlowAnalysisSelectionDto
+        {
+            Mode = "included",
+            IncludedProductCodes = new List<string> { "P1", "DELETED", "不存在" },
+        };
+
+        var result = await CreateService().GetSummaryAsync(request, branchCodes: null);
+
+        Assert.Equal(expectedCount, result.Data!.Total);
+        Assert.All(result.Data.Items, row => Assert.Equal("P1", row.ProductCode));
     }
 
     [Fact]

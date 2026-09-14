@@ -1800,9 +1800,12 @@ public sealed class SettingsViewModelTests
                         false,
                         false,
                         null,
-                        null)
+                        null,
+                        "POS-1",
+                        5)
                 ],
-                "Draft"),
+                "Draft",
+                [new LinklyCloudAssignableDevice("POS-1", "WPF", true, selectedTerminalId, 5)]),
             LinklyCloudTerminalPairResult = new LinklyCloudTerminalPairResponse(
                 selectedTerminalId,
                 "Sandbox",
@@ -1819,6 +1822,26 @@ public sealed class SettingsViewModelTests
 
         await viewModel.LoadAsync();
 
+        var pairedDirectory = new LinklyCloudTerminalListResponse(
+            "Sandbox",
+            selectedTerminalId,
+            5,
+            [new LinklyCloudTerminalSummary(
+                selectedTerminalId, 1, "Front Counter", "Ready", false, true,
+                null, null, "POS-1", 5, "v-2")],
+            "Draft",
+            [new LinklyCloudAssignableDevice("POS-1", "WPF", true, selectedTerminalId, 5)]);
+        var selectedDirectory = pairedDirectory with
+        {
+            SelectionRevision = 6,
+            Terminals = [new LinklyCloudTerminalSummary(
+                selectedTerminalId, 1, "Front Counter", "Ready", false, true,
+                null, null, "POS-1", 6, "v-2")],
+            Devices = [new LinklyCloudAssignableDevice("POS-1", "WPF", true, selectedTerminalId, 6)]
+        };
+        service.LinklyCloudTerminalDirectories.Enqueue(pairedDirectory);
+        service.LinklyCloudTerminalDirectories.Enqueue(selectedDirectory);
+
         Assert.False(viewModel.SaveLinklyCloudCredentialCommand.CanExecute(null));
         Assert.True(viewModel.PairLinklyCloudCommand.CanExecute(null));
         Assert.Equal(selectedTerminalId, Assert.Single(viewModel.LinklyCloudTerminals).TerminalId);
@@ -1832,6 +1855,8 @@ public sealed class SettingsViewModelTests
         Assert.Equal("123456", service.LastBackendPairCode);
         Assert.Equal(5, service.LastBackendSelectionExpectedRevision);
         Assert.Equal(6, viewModel.LinklyCloudSelectionRevision);
+        Assert.Equal(3, service.BackendDirectoryCallCount);
+        Assert.Equal("v-2", Assert.Single(viewModel.LinklyCloudTerminals).TerminalVersion);
         Assert.Contains("Front Counter is paired and selected", viewModel.LinklyTestStatusMessage, StringComparison.Ordinal);
         Assert.Contains("Test Logon", viewModel.LinklyTestStatusMessage, StringComparison.Ordinal);
         Assert.Contains("Enable", viewModel.LinklyTestStatusMessage, StringComparison.Ordinal);
@@ -1880,10 +1905,11 @@ public sealed class SettingsViewModelTests
             LinklyCloudTerminalDirectory = new LinklyCloudTerminalListResponse(
                 "Production", readyTerminalId, 5,
                 [
-                    new LinklyCloudTerminalSummary(readyTerminalId, 1, "Front", "Ready", false, true, null, null),
+                    new LinklyCloudTerminalSummary(readyTerminalId, 1, "Front", "Ready", false, true, null, null, "POS-1", 5),
                     new LinklyCloudTerminalSummary(unpairedTerminalId, 2, "Returns", "Unpaired", false, false, null, null)
                 ],
-                "Active"),
+                "Active",
+                [new LinklyCloudAssignableDevice("POS-1", "WPF", true, readyTerminalId, 5)]),
             LinklyCloudTerminalPairResult = new LinklyCloudTerminalPairResponse(
                 unpairedTerminalId, "Production", "Returns", "Ready", true, "paired"),
             LinklyCloudTerminalSelectionResult = new LinklyCloudTerminalSelectionResponse(
@@ -1892,6 +1918,27 @@ public sealed class SettingsViewModelTests
         var viewModel = new SettingsViewModel(service);
 
         await viewModel.LoadAsync();
+        var pairedDirectory = new LinklyCloudTerminalListResponse(
+            "Production", readyTerminalId, 5,
+            [
+                new LinklyCloudTerminalSummary(readyTerminalId, 1, "Front", "Ready", false, true, null, null, "POS-1", 5, "v-front-1"),
+                new LinklyCloudTerminalSummary(unpairedTerminalId, 2, "Returns", "Ready", false, true, null, null, null, 0, "v-returns-2")
+            ],
+            "Active",
+            [new LinklyCloudAssignableDevice("POS-1", "WPF", true, readyTerminalId, 5)]);
+        var selectedDirectory = pairedDirectory with
+        {
+            SelectedTerminalId = unpairedTerminalId,
+            SelectionRevision = 6,
+            Terminals =
+            [
+                new LinklyCloudTerminalSummary(readyTerminalId, 1, "Front", "Ready", false, true, null, null, null, 0, "v-front-1"),
+                new LinklyCloudTerminalSummary(unpairedTerminalId, 2, "Returns", "Ready", false, true, null, null, "POS-1", 6, "v-returns-2")
+            ],
+            Devices = [new LinklyCloudAssignableDevice("POS-1", "WPF", true, unpairedTerminalId, 6)]
+        };
+        service.LinklyCloudTerminalDirectories.Enqueue(pairedDirectory);
+        service.LinklyCloudTerminalDirectories.Enqueue(selectedDirectory);
         await viewModel.SelectLinklyCloudBackendTerminalAsync(
             viewModel.LinklyCloudTerminals.Single(item => item.TerminalId == unpairedTerminalId));
 
@@ -1907,6 +1954,10 @@ public sealed class SettingsViewModelTests
         Assert.Equal(5, service.LastBackendSelectionExpectedRevision);
         Assert.Equal(unpairedTerminalId, viewModel.SelectedLinklyCloudTerminal?.TerminalId);
         Assert.Equal(6, viewModel.LinklyCloudSelectionRevision);
+        Assert.Equal(3, service.BackendDirectoryCallCount);
+        Assert.Equal(
+            "v-returns-2",
+            viewModel.LinklyCloudTerminals.Single(item => item.TerminalId == unpairedTerminalId).TerminalVersion);
     }
 
     [Fact]
@@ -1997,6 +2048,864 @@ public sealed class SettingsViewModelTests
         Assert.Equal(1, service.BackendPairCallCount);
         Assert.Empty(viewModel.LinklyPairCodeText);
         Assert.Contains("paired but not selected", viewModel.LinklyTestStatusMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Linkly_line_selection_rejects_mismatched_response_identity(bool wrongEnvironment)
+    {
+        var selected = new LinklyCloudTerminalSummary(Guid.NewGuid(), 1, "Front", "Ready", false, true, null, null);
+        var target = new LinklyCloudTerminalSummary(Guid.NewGuid(), 2, "Side", "Ready", false, true, null, null);
+        var service = new FakeCardTerminalSetupService(CardTerminalConfiguration.Default with
+            { LinklyConnectionMode = LinklyConnectionMode.CloudBackendAsync })
+        {
+            LinklyCloudTerminalDirectory = new("Production", selected.TerminalId, 4, [selected, target]),
+            LinklyCloudTerminalSelectionResult = new(wrongEnvironment ? "Sandbox" : "Production",
+                wrongEnvironment ? target.TerminalId : Guid.NewGuid(), 5)
+        };
+        using var model = new SettingsViewModel(service);
+        await model.LoadAsync();
+        service.LinklyCloudTerminalDirectories.Enqueue(new(
+            "Production", target.TerminalId, 6, [selected, target]));
+
+        await model.SelectLinklyCloudBackendTerminalAsync(target);
+
+        Assert.Equal(target.TerminalId, model.SelectedLinklyCloudTerminal?.TerminalId);
+        Assert.Equal(6, model.LinklyCloudSelectionRevision);
+        Assert.Equal(1, service.BackendSelectionCallCount);
+        Assert.Equal(2, service.BackendDirectoryCallCount);
+        Assert.False(model.SaveLinklyCommand.CanExecute(null));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Linkly_line_selection_transport_failure_reconciles_once_without_replaying_write(bool serverChanged)
+    {
+        var selected = new LinklyCloudTerminalSummary(Guid.NewGuid(), 1, "Front", "Ready", false, true, null, null);
+        var target = new LinklyCloudTerminalSummary(Guid.NewGuid(), 2, "Side", "Ready", false, true, null, null);
+        var service = new FakeCardTerminalSetupService(CardTerminalConfiguration.Default with
+            { LinklyConnectionMode = LinklyConnectionMode.CloudBackendAsync })
+        {
+            LinklyCloudTerminalDirectory = new("Production", selected.TerminalId, 4, [selected, target]),
+            LinklyCloudTerminalSelectionException = new HttpRequestException("response interrupted")
+        };
+        using var model = new SettingsViewModel(service);
+        await model.LoadAsync();
+        var authoritativeId = serverChanged ? target.TerminalId : selected.TerminalId;
+        service.LinklyCloudTerminalDirectories.Enqueue(new(
+            "Production", authoritativeId, 5, [selected, target]));
+
+        await model.SelectLinklyCloudBackendTerminalAsync(target);
+
+        Assert.Equal(authoritativeId, model.SelectedLinklyCloudTerminal?.TerminalId);
+        Assert.Equal(5, model.LinklyCloudSelectionRevision);
+        Assert.Equal(1, service.BackendSelectionCallCount);
+        Assert.Equal(2, service.BackendDirectoryCallCount);
+        Assert.Contains("refreshed", model.StatusMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Linkly_line_selection_and_reconciliation_failure_fail_closed()
+    {
+        var selected = new LinklyCloudTerminalSummary(
+            Guid.NewGuid(), 1, "Front", "Ready", false, true, null, null, "POS-1", 4, "v-4");
+        var target = new LinklyCloudTerminalSummary(
+            Guid.NewGuid(), 2, "Side", "Ready", false, true, null, null, "POS-2", 4, "v-4");
+        var service = new FakeCardTerminalSetupService(CardTerminalConfiguration.Default with
+            { LinklyConnectionMode = LinklyConnectionMode.CloudBackendAsync })
+        {
+            LinklyCloudTerminalDirectory = new("Production", selected.TerminalId, 4, [selected, target]),
+            LinklyCloudTerminalSelectionException = new HttpRequestException("response interrupted"),
+            LinklyCloudTerminalConnectionTestResult = new(
+                selected.TerminalId, "Production", "v-4", "POS-1", 4, true, "connected",
+                DateTimeOffset.UtcNow, "connected")
+        };
+        using var model = new SettingsViewModel(service);
+        await model.LoadAsync();
+        await model.LinklyCloudLines.Single(line => line.IsSelected).TestConnectionCommand.ExecuteAsync(null);
+        Assert.True(model.LinklyConnectionSucceeded);
+        service.LinklyCloudTerminalListExceptions.Enqueue(new HttpRequestException("directory unavailable"));
+
+        await model.SelectLinklyCloudBackendTerminalAsync(target);
+
+        Assert.False(model.LinklyConnectionSucceeded);
+        Assert.False(model.SaveLinklyCommand.CanExecute(null));
+        Assert.Equal(selected.TerminalId, model.SelectedLinklyCloudTerminal?.TerminalId);
+        Assert.Equal(1, service.BackendSelectionCallCount);
+        Assert.Equal(2, service.BackendDirectoryCallCount);
+        Assert.Contains("unknown", model.StatusMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Linkly_line_selection_blocks_refresh_until_its_response_is_applied()
+    {
+        var terminal = new LinklyCloudTerminalSummary(Guid.NewGuid(), 2, "Side", "Ready", false, true, null, null);
+        var pending = new TaskCompletionSource<LinklyCloudTerminalSelectionResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var service = new FakeCardTerminalSetupService(CardTerminalConfiguration.Default with
+            { LinklyConnectionMode = LinklyConnectionMode.CloudBackendAsync })
+        {
+            LinklyCloudTerminalDirectory = new("Production", null, 4, [terminal]),
+            PendingBackendSelection = pending
+        };
+        using var model = new SettingsViewModel(service);
+        await model.LoadAsync();
+        var line = Assert.Single(model.LinklyCloudLines);
+        var selecting = model.SelectLinklyCloudBackendTerminalAsync(terminal);
+        Assert.True(model.IsBusy);
+        var listCalls = service.BackendDirectoryCallCount;
+
+        await model.RefreshLinklyCloudBackendTerminalsAsync();
+
+        Assert.Equal(listCalls, service.BackendDirectoryCallCount);
+        Assert.Same(line, Assert.Single(model.LinklyCloudLines));
+        pending.SetResult(new("Production", terminal.TerminalId, 5));
+        await selecting;
+        Assert.Equal(5, model.LinklyCloudSelectionRevision);
+        Assert.Equal(terminal.TerminalId, model.SelectedLinklyCloudTerminal?.TerminalId);
+    }
+
+    [Fact]
+    public async Task Linkly_line_pairing_does_not_double_submit_or_apply_to_a_new_environment()
+    {
+        var terminal = new LinklyCloudTerminalSummary(Guid.NewGuid(), 2, "Side", "Unpaired", false, false, null, null);
+        var pending = new TaskCompletionSource<LinklyCloudTerminalPairResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var service = new FakeCardTerminalSetupService(CardTerminalConfiguration.Default with
+            { LinklyConnectionMode = LinklyConnectionMode.CloudBackendAsync })
+        {
+            LinklyCloudTerminalDirectory = new("Production", null, null, [terminal]),
+            PendingBackendPair = pending
+        };
+        using var model = new SettingsViewModel(service);
+        await model.LoadAsync();
+        var line = Assert.Single(model.LinklyCloudLines);
+        line.TogglePairingCommand.Execute(null);
+        line.PairCode = "123456";
+        line.NextCommand.Execute(null);
+        var pairing = line.ConfirmCommand.ExecuteAsync(null);
+        Assert.Equal(1, service.BackendPairCallCount);
+        Assert.Empty(line.PairCode);
+        Assert.False(model.CanChangeEnvironment);
+        await line.ConfirmCommand.ExecuteAsync(null);
+        Assert.Equal(1, service.BackendPairCallCount);
+        model.IsLinklySandbox = true;
+        pending.SetResult(new(terminal.TerminalId, "Production", "Side", "Ready", true, "paired"));
+        await pairing;
+        Assert.False(model.LinklyConnectionSucceeded);
+        Assert.DoesNotContain(model.LinklyCloudLines, item => item.Terminal.IsReady);
+    }
+
+    [Fact]
+    public async Task Linkly_line_pairing_blocks_assignment_and_refresh_until_directory_lease_is_released()
+    {
+        var terminal = new LinklyCloudTerminalSummary(
+            Guid.NewGuid(), 2, "Side", "Ready", false, true, null, null, "POS-1", 7, "v-7");
+        var directory = new LinklyCloudTerminalListResponse(
+            "Production", terminal.TerminalId, 4, [terminal], "Active",
+            [new LinklyCloudAssignableDevice("POS-1", "WPF", true, terminal.TerminalId, 4)]);
+        var pending = new TaskCompletionSource<LinklyCloudTerminalPairResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var service = new FakeCardTerminalSetupService(CardTerminalConfiguration.Default with
+            { LinklyConnectionMode = LinklyConnectionMode.CloudBackendAsync })
+        {
+            LinklyCloudTerminalDirectory = directory,
+            PendingBackendPair = pending
+        };
+        using var model = new SettingsViewModel(service);
+        await model.LoadAsync();
+        var line = Assert.Single(model.LinklyCloudLines);
+        var management = Assert.Single(model.LinklyCloudTerminalItems);
+        Assert.True(model.ChangeLinklyCloudTerminalAssignmentCommand.CanExecute(management));
+        Assert.True(model.UnassignLinklyCloudTerminalCommand.CanExecute(management));
+        Assert.True(model.CanRefreshLinklyCloudTerminals);
+
+        line.TogglePairingCommand.Execute(null);
+        line.PairCode = "123456";
+        line.NextCommand.Execute(null);
+        var pairing = line.ConfirmCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, service.BackendPairCallCount);
+        Assert.False(model.ChangeLinklyCloudTerminalAssignmentCommand.CanExecute(management));
+        Assert.False(model.UnassignLinklyCloudTerminalCommand.CanExecute(management));
+        Assert.False(model.CanRefreshLinklyCloudTerminals);
+        var listCalls = service.BackendDirectoryCallCount;
+        await model.RefreshLinklyCloudBackendTerminalsAsync();
+        Assert.Equal(listCalls, service.BackendDirectoryCallCount);
+
+        pending.SetResult(new(
+            terminal.TerminalId, "Production", terminal.DisplayName, "Ready", true, "paired"));
+        await pairing;
+
+        var refreshed = Assert.Single(model.LinklyCloudTerminalItems);
+        Assert.True(model.ChangeLinklyCloudTerminalAssignmentCommand.CanExecute(refreshed));
+        Assert.True(model.UnassignLinklyCloudTerminalCommand.CanExecute(refreshed));
+        Assert.True(model.CanRefreshLinklyCloudTerminals);
+    }
+
+    [Theory]
+    [InlineData("name")]
+    [InlineData("lane")]
+    [InlineData("version")]
+    [InlineData("assignment")]
+    public async Task Linkly_line_confirmation_rechecks_server_identity_before_consuming_code(string changedField)
+    {
+        var terminal = new LinklyCloudTerminalSummary(Guid.NewGuid(), 2, "Returns", "Ready", false, true,
+            null, null, "POS-02", 3, "v1");
+        var service = new FakeCardTerminalSetupService(CardTerminalConfiguration.Default with
+            { LinklyConnectionMode = LinklyConnectionMode.CloudBackendAsync })
+        {
+            LinklyCloudTerminalDirectory = new("Production", terminal.TerminalId, 3, [terminal])
+        };
+        using var model = new SettingsViewModel(service);
+        await model.LoadAsync();
+        var line = Assert.Single(model.LinklyCloudLines);
+        line.TogglePairingCommand.Execute(null);
+        line.PairCode = "123456";
+        line.NextCommand.Execute(null);
+        var changed = changedField switch
+        {
+            "name" => terminal with { DisplayName = "New checkout" },
+            "lane" => terminal with { LaneNo = 8 },
+            "version" => terminal with { TerminalVersion = "v2" },
+            _ => terminal with { AssignedDeviceCode = "POS-03", AssignmentRevision = 4 }
+        };
+        service.LinklyCloudTerminalDirectory = service.LinklyCloudTerminalDirectory with { Terminals = [changed] };
+
+        await line.ConfirmCommand.ExecuteAsync(null);
+
+        Assert.Equal(0, service.BackendPairCallCount);
+        Assert.False(line.IsExpanded);
+        Assert.Empty(line.PairCode);
+        Assert.Contains("changed", model.StatusMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Linkly_line_preflight_network_failure_does_not_submit_pair_code()
+    {
+        var terminal = new LinklyCloudTerminalSummary(Guid.NewGuid(), 2, "Returns", "Unpaired", false, false, null, null);
+        var service = new FakeCardTerminalSetupService(CardTerminalConfiguration.Default with
+            { LinklyConnectionMode = LinklyConnectionMode.CloudBackendAsync })
+        {
+            LinklyCloudTerminalDirectory = new("Production", null, null, [terminal])
+        };
+        using var model = new SettingsViewModel(service);
+        await model.LoadAsync();
+        var line = Assert.Single(model.LinklyCloudLines);
+        line.TogglePairingCommand.Execute(null);
+        line.PairCode = "123456";
+        line.NextCommand.Execute(null);
+        service.LinklyCloudTerminalListExceptions.Enqueue(new HttpRequestException("offline"));
+
+        await line.ConfirmCommand.ExecuteAsync(null);
+
+        Assert.Equal(0, service.BackendPairCallCount);
+        Assert.Empty(line.PairCode);
+        Assert.Contains("No pairing code was submitted", model.StatusMessage);
+    }
+
+    [Theory]
+    [InlineData("LINKLY_CLOUD_BACKEND_PAIR_REJECTED", "settings.linkly.cloudBackend.pairRejected")]
+    [InlineData("LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT", "settings.linkly.cloudBackend.selectionChanged")]
+    public async Task Linkly_line_pair_errors_show_specific_localized_help(string errorCode, string resourceKey)
+    {
+        var localization = new LocalizationService();
+        var terminal = new LinklyCloudTerminalSummary(Guid.NewGuid(), 1, "Front", "Ready", false, true, null, null);
+        var service = new FakeCardTerminalSetupService(CardTerminalConfiguration.Default with
+            { LinklyConnectionMode = LinklyConnectionMode.CloudBackendAsync })
+        {
+            LinklyCloudTerminalDirectory = new("Production", terminal.TerminalId, 1, [terminal]),
+            LinklyCloudTerminalPairException = new LinklyBackendHttpException("Do not show raw server details", System.Net.HttpStatusCode.Conflict, errorCode)
+        };
+        using var model = new SettingsViewModel(service, localization);
+        await model.LoadAsync();
+        var line = Assert.Single(model.LinklyCloudLines);
+        line.TogglePairingCommand.Execute(null);
+        line.PairCode = "123456";
+        line.NextCommand.Execute(null);
+        await line.ConfirmCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, service.BackendPairCallCount);
+        Assert.Equal(localization.T(resourceKey), line.ConnectionHelpText);
+        Assert.False(model.LinklyConnectionSucceeded);
+        localization.SetCulture("zh-CN");
+        Assert.Equal(localization.T(resourceKey), line.ConnectionHelpText);
+        Assert.Equal(localization.T(resourceKey), model.StatusMessage);
+    }
+
+    [Fact]
+    public async Task Linkly_line_without_version_requires_refresh_before_connection_test()
+    {
+        var terminal = new LinklyCloudTerminalSummary(Guid.NewGuid(), 1, "Front", "Ready", false, true, "Healthy", null);
+        var service = new FakeCardTerminalSetupService(CardTerminalConfiguration.Default with
+            { LinklyConnectionMode = LinklyConnectionMode.CloudBackendAsync })
+        {
+            LinklyCloudTerminalDirectory = new("Production", terminal.TerminalId, 1, [terminal])
+        };
+        using var model = new SettingsViewModel(service);
+        await model.LoadAsync();
+        var line = Assert.Single(model.LinklyCloudLines);
+        Assert.False(line.TestConnectionCommand.CanExecute(null));
+        Assert.Contains("Refresh", line.ConnectionHelpText);
+    }
+
+    [Fact]
+    public async Task Linkly_line_pairing_requires_confirmation_and_does_not_change_payment_line()
+    {
+        var selectedId = Guid.Parse("aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb");
+        var targetId = Guid.Parse("cccccccc-1111-2222-3333-bbbbbbbbbbbb");
+        var service = new FakeCardTerminalSetupService(
+            CardTerminalConfiguration.Default with { LinklyConnectionMode = LinklyConnectionMode.CloudBackendAsync })
+        {
+            LinklyCloudTerminalDirectory = new LinklyCloudTerminalListResponse(
+                "Production", selectedId, 9,
+                [
+                    new LinklyCloudTerminalSummary(selectedId, 1, "Front", "Ready", false, true, "connected", null),
+                    new LinklyCloudTerminalSummary(targetId, 2, "Returns", "Unpaired", false, false, null, null)
+                ], "Active"),
+            LinklyCloudTerminalPairResult = new LinklyCloudTerminalPairResponse(
+                targetId, "Production", "Returns", "Ready", true, "paired")
+        };
+        var viewModel = new SettingsViewModel(service);
+        await viewModel.LoadAsync();
+        var target = viewModel.LinklyCloudLines.Single(item => item.Terminal.TerminalId == targetId);
+
+        target.TogglePairingCommand.Execute(null);
+        target.PairCode = "123456";
+        target.NextCommand.Execute(null);
+
+        Assert.True(target.IsConfirming);
+        Assert.Equal(0, service.BackendPairCallCount);
+
+        await target.ConfirmCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, service.BackendPairCallCount);
+        Assert.Equal(targetId, service.LastBackendPairTerminalId);
+        Assert.Equal("123456", service.LastBackendPairCode);
+        Assert.Null(service.LastBackendSelectionTerminalId);
+        Assert.Equal(selectedId, viewModel.SelectedLinklyCloudTerminal?.TerminalId);
+        Assert.True(viewModel.LinklyCloudLines.Single(item => item.Terminal.TerminalId == selectedId).IsSelected);
+        Assert.False(target.IsExpanded);
+        Assert.Empty(target.PairCode);
+    }
+
+    [Fact]
+    public async Task Linkly_line_pairing_allows_only_one_open_line_and_rejects_non_ascii_code()
+    {
+        var service = new FakeCardTerminalSetupService(
+            CardTerminalConfiguration.Default with { LinklyConnectionMode = LinklyConnectionMode.CloudBackendAsync })
+        {
+            LinklyCloudTerminalDirectory = new LinklyCloudTerminalListResponse(
+                "Production", null, 1,
+                [
+                    new LinklyCloudTerminalSummary(Guid.NewGuid(), 1, "Front", "Unpaired", false, false, null, null),
+                    new LinklyCloudTerminalSummary(Guid.NewGuid(), 2, "Returns", "Unpaired", false, false, null, null)
+                ], "Draft")
+        };
+        var viewModel = new SettingsViewModel(service);
+        await viewModel.LoadAsync();
+        var first = viewModel.LinklyCloudLines[0];
+        var second = viewModel.LinklyCloudLines[1];
+
+        first.TogglePairingCommand.Execute(null);
+        first.PairCode = "12345A";
+        Assert.False(first.NextCommand.CanExecute(null));
+
+        second.TogglePairingCommand.Execute(null);
+
+        Assert.False(first.IsExpanded);
+        Assert.Empty(first.PairCode);
+        Assert.True(second.IsEnteringCode);
+        Assert.Equal(0, service.BackendPairCallCount);
+    }
+
+    [Fact]
+    public async Task Linkly_line_connection_test_targets_requested_terminal_without_selecting_it()
+    {
+        var selectedId = Guid.NewGuid();
+        var targetId = Guid.NewGuid();
+        var terminalVersion = "638931456789000000";
+        var service = new FakeCardTerminalSetupService(
+            CardTerminalConfiguration.Default with { LinklyConnectionMode = LinklyConnectionMode.CloudBackendAsync })
+        {
+            LinklyCloudTerminalDirectory = new LinklyCloudTerminalListResponse(
+                "Production", selectedId, 4,
+                [
+                    new LinklyCloudTerminalSummary(selectedId, 1, "Front", "Ready", false, true, null, null),
+                    new LinklyCloudTerminalSummary(targetId, 2, "Returns", "Ready", false, true, null, null, "POS-02", 7, terminalVersion)
+                ], "Active"),
+            LinklyCloudTerminalConnectionTestResult = new LinklyCloudTerminalConnectionTestResponse(
+                targetId, "Production", terminalVersion, "POS-02", 7, true, "connected",
+                DateTimeOffset.UtcNow, "connected")
+        };
+        var viewModel = new SettingsViewModel(service);
+        await viewModel.LoadAsync();
+        var target = viewModel.LinklyCloudLines.Single(item => item.Terminal.TerminalId == targetId);
+
+        await target.TestConnectionCommand.ExecuteAsync(null);
+
+        Assert.Equal(targetId, service.LastBackendConnectionTestTerminalId);
+        Assert.Equal(CardTerminalEnvironment.Production, service.LastBackendConnectionTestEnvironment);
+        Assert.Null(service.LastBackendSelectionTerminalId);
+        Assert.Contains("Connected", target.ConnectionStatusText, StringComparison.OrdinalIgnoreCase);
+        Assert.False(viewModel.LinklyConnectionSucceeded);
+        Assert.False(viewModel.SaveLinklyCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task Linkly_selected_line_connection_test_unlocks_save_only_after_verified_success()
+    {
+        var terminalId = Guid.NewGuid();
+        const string terminalVersion = "638931456789000000";
+        var service = new FakeCardTerminalSetupService(
+            CardTerminalConfiguration.Default with { LinklyConnectionMode = LinklyConnectionMode.CloudBackendAsync })
+        {
+            LinklyCloudTerminalDirectory = new LinklyCloudTerminalListResponse(
+                "Production", terminalId, 4,
+                [new LinklyCloudTerminalSummary(
+                    terminalId, 1, "Front", "Ready", false, true, null, null,
+                    "POS-01", 5, terminalVersion)], "Active"),
+            LinklyCloudTerminalConnectionTestResult = new LinklyCloudTerminalConnectionTestResponse(
+                terminalId, "Production", terminalVersion, "POS-01", 5, true, "connected",
+                DateTimeOffset.UtcNow, "connected")
+        };
+        var viewModel = new SettingsViewModel(service);
+        await viewModel.LoadAsync();
+        var selected = Assert.Single(viewModel.LinklyCloudLines);
+
+        await selected.TestConnectionCommand.ExecuteAsync(null);
+
+        Assert.True(viewModel.LinklyConnectionSucceeded);
+        Assert.True(viewModel.SaveLinklyCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task Linkly_connection_success_is_cleared_when_payment_line_changes()
+    {
+        var firstId = Guid.NewGuid();
+        var secondId = Guid.NewGuid();
+        const string version = "638931456789000000";
+        var service = new FakeCardTerminalSetupService(
+            CardTerminalConfiguration.Default with { LinklyConnectionMode = LinklyConnectionMode.CloudBackendAsync })
+        {
+            LinklyCloudTerminalDirectory = new LinklyCloudTerminalListResponse(
+                "Production", firstId, 4,
+                [
+                    new LinklyCloudTerminalSummary(firstId, 1, "Front", "Ready", false, true, null, null, "POS-01", 5, version),
+                    new LinklyCloudTerminalSummary(secondId, 2, "Returns", "Ready", false, true, null, null, "POS-02", 6, version)
+                ], "Active"),
+            LinklyCloudTerminalConnectionTestResult = new LinklyCloudTerminalConnectionTestResponse(
+                firstId, "Production", version, "POS-01", 5, true, "connected",
+                DateTimeOffset.UtcNow, "connected"),
+            LinklyCloudTerminalSelectionResult = new LinklyCloudTerminalSelectionResponse(
+                "Production", secondId, 5)
+        };
+        var viewModel = new SettingsViewModel(service);
+        await viewModel.LoadAsync();
+        await viewModel.LinklyCloudLines.Single(item => item.IsSelected).TestConnectionCommand.ExecuteAsync(null);
+        Assert.True(viewModel.LinklyConnectionSucceeded);
+
+        await viewModel.LinklyCloudLines.Single(item => item.Terminal.TerminalId == secondId).SelectCommand.ExecuteAsync(null);
+
+        Assert.False(viewModel.LinklyConnectionSucceeded);
+        Assert.False(viewModel.SaveLinklyCommand.CanExecute(null));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Linkly_selected_line_retest_clears_previous_success_on_unknown_or_exception(bool throws)
+    {
+        var terminalId = Guid.NewGuid();
+        const string version = "638931456789000000";
+        var service = new FakeCardTerminalSetupService(
+            CardTerminalConfiguration.Default with { LinklyConnectionMode = LinklyConnectionMode.CloudBackendAsync })
+        {
+            LinklyCloudTerminalDirectory = new LinklyCloudTerminalListResponse(
+                "Production", terminalId, 4,
+                [new LinklyCloudTerminalSummary(terminalId, 1, "Front", "Ready", false, true, null, null, "POS-01", 5, version)], "Active"),
+            LinklyCloudTerminalConnectionTestResult = new LinklyCloudTerminalConnectionTestResponse(
+                terminalId, "Production", version, "POS-01", 5, true, "connected",
+                DateTimeOffset.UtcNow, "connected")
+        };
+        var viewModel = new SettingsViewModel(service);
+        await viewModel.LoadAsync();
+        var selected = Assert.Single(viewModel.LinklyCloudLines);
+        await selected.TestConnectionCommand.ExecuteAsync(null);
+        Assert.True(viewModel.LinklyConnectionSucceeded);
+
+        service.LinklyCloudTerminalConnectionTestResult = new LinklyCloudTerminalConnectionTestResponse(
+            terminalId, "Production", version, "POS-01", 5, false, "unknown",
+            DateTimeOffset.UtcNow, "unknown");
+        service.LinklyCloudTerminalConnectionTestException = throws
+            ? new HttpRequestException("network unavailable")
+            : null;
+        await selected.TestConnectionCommand.ExecuteAsync(null);
+
+        Assert.False(viewModel.LinklyConnectionSucceeded);
+        Assert.False(viewModel.SaveLinklyCommand.CanExecute(null));
+        Assert.True(selected.HasConnectionFailure);
+    }
+
+    [Fact]
+    public async Task CloudBackendAsync_pair_refreshes_row_with_new_version_before_immediate_management()
+    {
+        var terminalId = Guid.NewGuid();
+        var service = new FakeCardTerminalSetupService(
+            CardTerminalConfiguration.Default with { LinklyConnectionMode = LinklyConnectionMode.CloudBackendAsync })
+        {
+            LinklyCloudTerminalDirectory = new LinklyCloudTerminalListResponse(
+                "Production", null, 0,
+                [new LinklyCloudTerminalSummary(terminalId, 1, "Front", "Unpaired", false, false, null, null, null, 0, "v-1")],
+                "Active",
+                [new LinklyCloudAssignableDevice("POS-1", "WPF", true, null, 0)]),
+            LinklyCloudTerminalPairResult = new LinklyCloudTerminalPairResponse(
+                terminalId, "Production", "Front", "Ready", true, "paired"),
+            LinklyCloudTerminalSelectionResult = new LinklyCloudTerminalSelectionResponse("Production", terminalId, 2)
+        };
+        var viewModel = new SettingsViewModel(service);
+        await viewModel.LoadAsync();
+        await viewModel.SelectLinklyCloudBackendTerminalAsync(Assert.Single(viewModel.LinklyCloudTerminals));
+        var pairedDirectory = new LinklyCloudTerminalListResponse(
+            "Production", null, 0,
+            [new LinklyCloudTerminalSummary(terminalId, 1, "Front", "Ready", false, true, null, null, null, 0, "v-2")],
+            "Active",
+            [new LinklyCloudAssignableDevice("POS-1", "WPF", true, null, 0)]);
+        var selectedDirectory = pairedDirectory with
+        {
+            SelectedTerminalId = terminalId,
+            SelectionRevision = 2,
+            Terminals = [new LinklyCloudTerminalSummary(
+                terminalId, 1, "Front", "Ready", false, true, null, null, "POS-1", 2, "v-2")],
+            Devices = [new LinklyCloudAssignableDevice("POS-1", "WPF", true, terminalId, 2)]
+        };
+        service.LinklyCloudTerminalDirectories.Enqueue(pairedDirectory);
+        service.LinklyCloudTerminalDirectories.Enqueue(selectedDirectory);
+        viewModel.LinklyPairCodeText = "123456";
+
+        await viewModel.PairLinklyCloudCommand.ExecuteAsync(null);
+
+        var item = Assert.Single(viewModel.LinklyCloudTerminalItems);
+        Assert.True(item.IsReady);
+        Assert.Equal(1, service.BackendPairCallCount);
+        Assert.Equal(terminalId, service.LastBackendSelectionTerminalId);
+        Assert.Equal(0, service.LastBackendSelectionExpectedRevision);
+        Assert.Equal(3, service.BackendDirectoryCallCount);
+        Assert.Equal(terminalId, viewModel.SelectedLinklyCloudTerminal?.TerminalId);
+        Assert.Equal(2, viewModel.LinklyCloudSelectionRevision);
+        Assert.Equal("POS-1", item.AssignedDeviceCode);
+        Assert.True(viewModel.IsLinklyCloudLineManagementAvailable);
+        Assert.Equal("v-2", item.Terminal.TerminalVersion);
+        Assert.True(viewModel.TestLinklyCloudTerminalCommand.CanExecute(item));
+        Assert.True(viewModel.ChangeLinklyCloudTerminalAssignmentCommand.CanExecute(item));
+        Assert.True(viewModel.UnassignLinklyCloudTerminalCommand.CanExecute(item));
+    }
+
+    [Fact]
+    public async Task CloudBackendAsync_line_test_is_row_scoped_and_late_result_cannot_update_refreshed_row()
+    {
+        var terminalId = Guid.NewGuid();
+        var service = new FakeCardTerminalSetupService(
+            CardTerminalConfiguration.Default with { LinklyConnectionMode = LinklyConnectionMode.CloudBackendAsync })
+        {
+            LinklyCloudTerminalDirectory = new LinklyCloudTerminalListResponse(
+                "Production", terminalId, 1,
+                [new LinklyCloudTerminalSummary(terminalId, 1, "Front", "Ready", false, true, null, null, "POS-1", 3, "v-3")],
+                "Active",
+                [new LinklyCloudAssignableDevice("POS-1", "WPF", true, terminalId, 1)])
+        };
+        var pending = new TaskCompletionSource<LinklyCloudTerminalConnectionTestResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        service.PendingTerminalConnectionTest = pending;
+        var viewModel = new SettingsViewModel(service);
+        await viewModel.LoadAsync();
+        var original = Assert.Single(viewModel.LinklyCloudTerminalItems);
+
+        var testing = viewModel.TestLinklyCloudTerminalCommand.ExecuteAsync(original);
+        Assert.True(original.IsTesting);
+        await viewModel.RefreshLinklyCloudBackendTerminalsAsync();
+        var refreshed = Assert.Single(viewModel.LinklyCloudTerminalItems);
+        pending.SetResult(new LinklyCloudTerminalConnectionTestResponse(
+            terminalId, "Production", "v-3", "POS-1", 3, true, "connected",
+            DateTimeOffset.UtcNow, "Connected"));
+        await testing;
+
+        Assert.NotSame(original, refreshed);
+        Assert.Empty(refreshed.ConnectionStatus);
+        Assert.Null(refreshed.LastTestedAt);
+        Assert.False(viewModel.LinklyConnectionSucceeded);
+    }
+
+    [Theory]
+    [InlineData("connected", false, "Connected")]
+    [InlineData("unreachable", true, "Unable to connect")]
+    [InlineData("unknown", true, "The test did not complete. Check the network and terminal, then refresh and try again.")]
+    [InlineData("needs-repair", true, "This terminal needs to be paired again. Obtain a new 6-digit code and re-pair this line. If it still fails, ask an administrator to check its Cloud credentials.")]
+    public async Task CloudBackendAsync_line_test_maps_authoritative_status_to_safe_localized_message(
+        string status,
+        bool succeeded,
+        string expectedMessage)
+    {
+        var terminalId = Guid.NewGuid();
+        var terminal = new LinklyCloudTerminalSummary(
+            terminalId, 1, "Front", "Ready", false, true, null, null, "POS-1", 3, "v-3");
+        var pending = new TaskCompletionSource<LinklyCloudTerminalConnectionTestResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        pending.SetResult(new LinklyCloudTerminalConnectionTestResponse(
+            terminalId, "Production", "v-3", "POS-1", 3, succeeded, status,
+            DateTimeOffset.UtcNow, "unsafe server message"));
+        var service = new FakeCardTerminalSetupService(
+            CardTerminalConfiguration.Default with { LinklyConnectionMode = LinklyConnectionMode.CloudBackendAsync })
+        {
+            LinklyCloudTerminalDirectory = new LinklyCloudTerminalListResponse(
+                "Production", terminalId, 3, [terminal], "Active",
+                [new LinklyCloudAssignableDevice("POS-1", "WPF", true, terminalId, 3)]),
+            PendingTerminalConnectionTest = pending
+        };
+        var viewModel = new SettingsViewModel(service);
+        await viewModel.LoadAsync();
+
+        var item = Assert.Single(viewModel.LinklyCloudTerminalItems);
+        await viewModel.TestLinklyCloudTerminalCommand.ExecuteAsync(item);
+
+        Assert.Equal(expectedMessage, item.ConnectionStatus);
+        Assert.DoesNotContain("unsafe server message", item.ConnectionStatus, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CloudBackendAsync_refresh_preserves_newer_local_line_test_for_unchanged_snapshot()
+    {
+        var terminalId = Guid.NewGuid();
+        var serverCheckedAt = new DateTimeOffset(2026, 9, 7, 10, 0, 0, TimeSpan.Zero);
+        var localCheckedAt = new DateTimeOffset(2026, 9, 10, 10, 47, 0, TimeSpan.Zero);
+        var directory = new LinklyCloudTerminalListResponse(
+            "Production", terminalId, 7,
+            [new LinklyCloudTerminalSummary(
+                terminalId, 1, "Front", "Ready", false, true, "Healthy", serverCheckedAt,
+                "POS-1", 7, "v-7")],
+            "Active",
+            [new LinklyCloudAssignableDevice("POS-1", "WPF", true, terminalId, 7)]);
+        var service = new FakeCardTerminalSetupService(
+            CardTerminalConfiguration.Default with { LinklyConnectionMode = LinklyConnectionMode.CloudBackendAsync })
+        {
+            LinklyCloudTerminalDirectory = directory,
+            PendingTerminalConnectionTest = new TaskCompletionSource<LinklyCloudTerminalConnectionTestResponse>(
+                TaskCreationOptions.RunContinuationsAsynchronously)
+        };
+        service.PendingTerminalConnectionTest.SetResult(new LinklyCloudTerminalConnectionTestResponse(
+            terminalId, "Production", "v-7", "POS-1", 7, false, "unreachable",
+            localCheckedAt, "Unable to connect", null));
+        var viewModel = new SettingsViewModel(service);
+        await viewModel.LoadAsync();
+        var original = Assert.Single(viewModel.LinklyCloudTerminalItems);
+
+        await viewModel.TestLinklyCloudTerminalCommand.ExecuteAsync(original);
+        service.LinklyCloudTerminalDirectories.Enqueue(directory);
+        await viewModel.RefreshLinklyCloudBackendTerminalsAsync();
+
+        var refreshed = Assert.Single(viewModel.LinklyCloudTerminalItems);
+        Assert.NotSame(original, refreshed);
+        Assert.Equal("Unable to connect", refreshed.ConnectionStatus);
+        Assert.Equal(localCheckedAt, refreshed.LastTestedAt);
+        Assert.False(viewModel.LinklyConnectionSucceeded);
+
+        var newerServerCheckedAt = localCheckedAt.AddMinutes(1);
+        service.LinklyCloudTerminalDirectories.Enqueue(directory with
+        {
+            Terminals = [directory.Terminals[0] with { LastHealthAt = newerServerCheckedAt }]
+        });
+        await viewModel.RefreshLinklyCloudBackendTerminalsAsync();
+
+        var serverRefreshed = Assert.Single(viewModel.LinklyCloudTerminalItems);
+        Assert.Equal("Connected", serverRefreshed.ConnectionStatus);
+        Assert.Equal(newerServerCheckedAt, serverRefreshed.LastTestedAt);
+        Assert.False(viewModel.LinklyConnectionSucceeded);
+    }
+
+    [Theory]
+    [InlineData("v-8", "POS-1", 7)]
+    [InlineData("v-7", "POS-2", 7)]
+    [InlineData("v-7", "POS-1", 8)]
+    public async Task CloudBackendAsync_refresh_discards_local_line_test_when_snapshot_identity_changes(
+        string terminalVersion,
+        string assignedDeviceCode,
+        long assignmentRevision)
+    {
+        var terminalId = Guid.NewGuid();
+        var checkedAt = new DateTimeOffset(2026, 9, 10, 10, 47, 0, TimeSpan.Zero);
+        var initialTerminal = new LinklyCloudTerminalSummary(
+            terminalId, 1, "Front", "Ready", false, true, null, null,
+            "POS-1", 7, "v-7");
+        var directory = new LinklyCloudTerminalListResponse(
+            "Production", terminalId, 7, [initialTerminal], "Active",
+            [new LinklyCloudAssignableDevice("POS-1", "WPF", true, terminalId, 7)]);
+        var pending = new TaskCompletionSource<LinklyCloudTerminalConnectionTestResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        pending.SetResult(new LinklyCloudTerminalConnectionTestResponse(
+            terminalId, "Production", "v-7", "POS-1", 7, false, "unreachable",
+            checkedAt, "Unable to connect", null));
+        var service = new FakeCardTerminalSetupService(
+            CardTerminalConfiguration.Default with { LinklyConnectionMode = LinklyConnectionMode.CloudBackendAsync })
+        {
+            LinklyCloudTerminalDirectory = directory,
+            PendingTerminalConnectionTest = pending
+        };
+        var viewModel = new SettingsViewModel(service);
+        await viewModel.LoadAsync();
+        await viewModel.TestLinklyCloudTerminalCommand.ExecuteAsync(
+            Assert.Single(viewModel.LinklyCloudTerminalItems));
+        service.LinklyCloudTerminalDirectories.Enqueue(directory with
+        {
+            Terminals = [initialTerminal with
+            {
+                TerminalVersion = terminalVersion,
+                AssignedDeviceCode = assignedDeviceCode,
+                AssignmentRevision = assignmentRevision
+            }]
+        });
+
+        await viewModel.RefreshLinklyCloudBackendTerminalsAsync();
+
+        var refreshed = Assert.Single(viewModel.LinklyCloudTerminalItems);
+        Assert.Empty(refreshed.ConnectionStatus);
+        Assert.Null(refreshed.LastTestedAt);
+        Assert.False(viewModel.LinklyConnectionSucceeded);
+    }
+
+    [Fact]
+    public async Task CloudBackendAsync_refresh_is_rejected_while_assignment_is_in_flight()
+    {
+        var terminalId = Guid.NewGuid();
+        var initial = new LinklyCloudTerminalListResponse(
+            "Production", null, 1,
+            [new LinklyCloudTerminalSummary(terminalId, 1, "Front", "Ready", false, true, null, null, null, 0, "v-1")],
+            "Active",
+            [new LinklyCloudAssignableDevice("POS-1", "WPF", true, null, 1)]);
+        var assigned = new LinklyCloudTerminalListResponse(
+            "Production", terminalId, 2,
+            [new LinklyCloudTerminalSummary(terminalId, 1, "Front", "Ready", false, true, null, null, "POS-1", 2, "v-2")],
+            "Active",
+            [new LinklyCloudAssignableDevice("POS-1", "WPF", true, terminalId, 2)]);
+        var pendingAssignment = new TaskCompletionSource<LinklyTerminalAssignmentResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var service = new FakeCardTerminalSetupService(
+            CardTerminalConfiguration.Default with { LinklyConnectionMode = LinklyConnectionMode.CloudBackendAsync })
+        {
+            LinklyCloudTerminalDirectory = initial,
+            PendingTerminalAssignment = pendingAssignment
+        };
+        var session = new PosSessionState("HB POS", "S01", "Store", "POS-1", "C1", "Cashier", true, 0);
+        var viewModel = new SettingsViewModel(
+            service,
+            session: session,
+            confirmLinklyTerminalAssignmentAsync: _ => Task.FromResult(true));
+        await viewModel.LoadAsync();
+        var item = Assert.Single(viewModel.LinklyCloudTerminalItems);
+
+        var assignment = viewModel.UseLinklyCloudTerminalCommand.ExecuteAsync(item);
+        Assert.True(viewModel.IsBusy);
+        await viewModel.RefreshLinklyCloudBackendTerminalsAsync();
+        Assert.Equal(1, service.BackendDirectoryCallCount);
+
+        pendingAssignment.SetResult(new LinklyTerminalAssignmentResult(true, "saved", assigned));
+        await assignment;
+
+        Assert.Equal("POS-1", Assert.Single(viewModel.LinklyCloudTerminalItems).AssignedDeviceCode);
+        Assert.False(viewModel.IsBusy);
+    }
+
+    [Fact]
+    public async Task CloudBackendAsync_line_card_use_for_payments_assigns_once_without_legacy_selection()
+    {
+        var terminalId = Guid.NewGuid();
+        var initial = new LinklyCloudTerminalListResponse(
+            "Production", null, 4,
+            [new LinklyCloudTerminalSummary(terminalId, 1, "Front", "Ready", false, true, null, null, null, 7, "v-7")],
+            "Active",
+            [new LinklyCloudAssignableDevice("POS-1", "WPF", true, null, 4)]);
+        var assigned = initial with
+        {
+            SelectedTerminalId = terminalId,
+            SelectionRevision = 5,
+            Terminals = [initial.Terminals[0] with { AssignedDeviceCode = "POS-1", AssignmentRevision = 8 }],
+            Devices = [new LinklyCloudAssignableDevice("POS-1", "WPF", true, terminalId, 5)]
+        };
+        var assignment = new TaskCompletionSource<LinklyTerminalAssignmentResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        assignment.SetResult(new LinklyTerminalAssignmentResult(true, "saved", assigned));
+        var service = new FakeCardTerminalSetupService(
+            CardTerminalConfiguration.Default with { LinklyConnectionMode = LinklyConnectionMode.CloudBackendAsync })
+        {
+            LinklyCloudTerminalDirectory = initial,
+            PendingTerminalAssignment = assignment
+        };
+        var session = new PosSessionState("HB POS", "S01", "Store", "POS-1", "C1", "Cashier", true, 0);
+        var viewModel = new SettingsViewModel(
+            service,
+            session: session,
+            confirmLinklyTerminalAssignmentAsync: _ => Task.FromResult(true));
+        await viewModel.LoadAsync();
+
+        await Assert.Single(viewModel.LinklyCloudLines).SelectCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, service.BackendAssignmentCallCount);
+        Assert.Null(service.LastBackendSelectionTerminalId);
+        Assert.Equal(5, viewModel.LinklyCloudSelectionRevision);
+        Assert.Equal("POS-1", Assert.Single(viewModel.LinklyCloudLines).Terminal.AssignedDeviceCode);
+    }
+
+    [Fact]
+    public async Task CloudBackendAsync_line_health_and_test_failure_use_localized_safe_copy()
+    {
+        var terminalId = Guid.NewGuid();
+        var localization = new LocalizationService();
+        localization.SetCulture("zh-CN");
+        var pending = new TaskCompletionSource<LinklyCloudTerminalConnectionTestResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var service = new FakeCardTerminalSetupService(
+            CardTerminalConfiguration.Default with { LinklyConnectionMode = LinklyConnectionMode.CloudBackendAsync })
+        {
+            LinklyCloudTerminalDirectory = new LinklyCloudTerminalListResponse(
+                "Production", null, 1,
+                [new LinklyCloudTerminalSummary(terminalId, 1, "Front", "Ready", false, true, "Healthy", DateTimeOffset.UtcNow, null, 0, "v-1")],
+                "Active",
+                [new LinklyCloudAssignableDevice("POS-1", "WPF", true, null, 1)]),
+            PendingTerminalConnectionTest = pending
+        };
+        var viewModel = new SettingsViewModel(service, localization);
+        await viewModel.LoadAsync();
+        var item = Assert.Single(viewModel.LinklyCloudTerminalItems);
+        Assert.Equal("连接正常", item.ConnectionStatus);
+        Assert.Equal("线路 1", item.LaneText);
+        Assert.Equal("已就绪", item.PairingStateText);
+
+        var testing = viewModel.TestLinklyCloudTerminalCommand.ExecuteAsync(item);
+        pending.SetException(new HttpRequestException("internal endpoint detail"));
+        await testing;
+
+        Assert.Equal("测试未完成，请检查网络和终端，刷新后重试。", item.ConnectionStatus);
+        Assert.DoesNotContain("internal endpoint detail", item.ConnectionStatus, StringComparison.Ordinal);
+        localization.SetCulture("en-US");
+        Assert.Equal("Lane 1", item.LaneText);
+        Assert.Equal("Ready", item.PairingStateText);
+    }
+
+    [Fact]
+    public async Task CloudBackendAsync_old_directory_contract_disables_line_management()
+    {
+        var terminalId = Guid.NewGuid();
+        var service = new FakeCardTerminalSetupService(
+            CardTerminalConfiguration.Default with { LinklyConnectionMode = LinklyConnectionMode.CloudBackendAsync })
+        {
+            LinklyCloudTerminalDirectory = new LinklyCloudTerminalListResponse(
+                "Production", terminalId, 1,
+                [new LinklyCloudTerminalSummary(terminalId, 1, "Front", "Ready", false, true, null, null)],
+                "Active")
+        };
+        var viewModel = new SettingsViewModel(service);
+
+        await viewModel.LoadAsync();
+
+        var item = Assert.Single(viewModel.LinklyCloudTerminalItems);
+        Assert.False(viewModel.IsLinklyCloudLineManagementAvailable);
+        Assert.False(viewModel.TestLinklyCloudTerminalCommand.CanExecute(item));
+        Assert.False(viewModel.UseLinklyCloudTerminalCommand.CanExecute(item));
+        Assert.NotEmpty(viewModel.LinklyCloudLineManagementMessage);
     }
 
     [Fact]
@@ -2705,7 +3614,11 @@ public sealed class SettingsViewModelTests
 
         public LinklyConnectionTestResult LinklyCloudBackendStatusTestResult { get; init; } = new(false, "status failed");
 
-        public LinklyCloudTerminalListResponse LinklyCloudTerminalDirectory { get; init; } =
+        public int BackendDirectoryCallCount { get; private set; }
+        public TaskCompletionSource<LinklyCloudTerminalSelectionResponse>? PendingBackendSelection { get; init; }
+        public TaskCompletionSource<LinklyCloudTerminalPairResponse>? PendingBackendPair { get; init; }
+
+        public LinklyCloudTerminalListResponse LinklyCloudTerminalDirectory { get; set; } =
             new("Production", null, null, []);
 
         public LinklyCloudTerminalSelectionResponse LinklyCloudTerminalSelectionResult { get; init; } =
@@ -2713,6 +3626,11 @@ public sealed class SettingsViewModelTests
 
         public LinklyCloudTerminalPairResponse LinklyCloudTerminalPairResult { get; init; } =
             new(Guid.Empty, "Production", string.Empty, "Unpaired", false, "Pair failed.");
+
+        public LinklyCloudTerminalConnectionTestResponse LinklyCloudTerminalConnectionTestResult { get; set; } =
+            new(Guid.Empty, "Production", string.Empty, null, 0, false, "unknown", DateTimeOffset.UtcNow, "failed");
+
+        public Exception? LinklyCloudTerminalConnectionTestException { get; set; }
 
         public int LinklyCloudTestCallCount { get; private set; }
 
@@ -2802,15 +3720,29 @@ public sealed class SettingsViewModelTests
 
         public string? LastBackendPairCode { get; private set; }
 
+        public Guid? LastBackendConnectionTestTerminalId { get; private set; }
+
+        public CardTerminalEnvironment? LastBackendConnectionTestEnvironment { get; private set; }
+
         public Guid? LastBackendSelectionTerminalId { get; private set; }
 
         public long? LastBackendSelectionExpectedRevision { get; private set; }
+
+        public int BackendSelectionCallCount { get; private set; }
+
+        public int BackendAssignmentCallCount { get; private set; }
 
         public Exception? LinklyCloudTerminalSelectionException { get; set; }
 
         public Exception? LinklyCloudTerminalPairException { get; set; }
 
+        public TaskCompletionSource<LinklyCloudTerminalConnectionTestResponse>? PendingTerminalConnectionTest { get; set; }
+
+        public TaskCompletionSource<LinklyTerminalAssignmentResult>? PendingTerminalAssignment { get; set; }
+
         public Queue<Exception> LinklyCloudTerminalListExceptions { get; } = [];
+
+        public Queue<LinklyCloudTerminalListResponse> LinklyCloudTerminalDirectories { get; } = [];
 
         public Task<CardTerminalConfiguration> LoadConfigurationAsync(CancellationToken cancellationToken = default)
         {
@@ -2821,9 +3753,15 @@ public sealed class SettingsViewModelTests
             CardTerminalEnvironment environment,
             CancellationToken cancellationToken = default)
         {
+            BackendDirectoryCallCount++;
             if (LinklyCloudTerminalListExceptions.TryDequeue(out var exception))
             {
                 return Task.FromException<LinklyCloudTerminalListResponse>(exception);
+            }
+
+            if (LinklyCloudTerminalDirectories.TryDequeue(out var directory))
+            {
+                return Task.FromResult(directory);
             }
 
             return Task.FromResult(LinklyCloudTerminalDirectory);
@@ -2835,6 +3773,7 @@ public sealed class SettingsViewModelTests
             long? expectedRevision,
             CancellationToken cancellationToken = default)
         {
+            BackendSelectionCallCount++;
             LastBackendSelectionTerminalId = terminalId;
             LastBackendSelectionExpectedRevision = expectedRevision;
             if (LinklyCloudTerminalSelectionException is { } exception)
@@ -2842,7 +3781,7 @@ public sealed class SettingsViewModelTests
                 return Task.FromException<LinklyCloudTerminalSelectionResponse>(exception);
             }
 
-            return Task.FromResult(LinklyCloudTerminalSelectionResult);
+            return PendingBackendSelection?.Task ?? Task.FromResult(LinklyCloudTerminalSelectionResult);
         }
 
         public Task<LinklyCloudTerminalPairResponse> PairLinklyCloudBackendTerminalAsync(
@@ -2859,7 +3798,34 @@ public sealed class SettingsViewModelTests
                 return Task.FromException<LinklyCloudTerminalPairResponse>(exception);
             }
 
-            return Task.FromResult(LinklyCloudTerminalPairResult);
+            return PendingBackendPair?.Task ?? Task.FromResult(LinklyCloudTerminalPairResult);
+        }
+
+        public Task<LinklyCloudTerminalConnectionTestResponse> TestLinklyCloudBackendTerminalAsync(
+            CardTerminalEnvironment environment,
+            LinklyCloudTerminalSummary terminal,
+            CancellationToken cancellationToken = default)
+        {
+            LastBackendConnectionTestEnvironment = environment;
+            LastBackendConnectionTestTerminalId = terminal.TerminalId;
+            if (LinklyCloudTerminalConnectionTestException is { } exception)
+            {
+                return Task.FromException<LinklyCloudTerminalConnectionTestResponse>(exception);
+            }
+            return PendingTerminalConnectionTest?.Task ?? Task.FromResult(LinklyCloudTerminalConnectionTestResult);
+        }
+
+        public Task<LinklyTerminalAssignmentResult> AssignLinklyCloudBackendTerminalAsync(
+            CardTerminalEnvironment environment,
+            LinklyCloudTerminalSummary terminal,
+            LinklyCloudAssignableDevice? targetDevice,
+            IReadOnlyList<LinklyCloudAssignableDevice> devices,
+            PosSessionState session,
+            CancellationToken cancellationToken = default)
+        {
+            BackendAssignmentCallCount++;
+            return PendingTerminalAssignment?.Task ?? Task.FromResult(
+                new LinklyTerminalAssignmentResult(false, "assignment unavailable"));
         }
 
         public Task<string?> GetSquareAccessTokenAsync(CancellationToken cancellationToken = default)

@@ -125,12 +125,14 @@ namespace BlazorApp.Api.Services
                 Icon = "BarChartOutlined",
                 Children = new List<NavigationMenuDto>
                 {
-                    new() { Path = "/executive-sales-intelligence/overview",       TitleKey = "menu.salesData",   Icon = "DashboardOutlined", Permission = Permissions.Reports.View },
-                    new() { Path = "/executive-sales-intelligence/sales-detail-v2", TitleKey = "menu.salesDetail", Icon = "FileTextOutlined",  Permission = Permissions.Reports.View },
-                    new() { Path = "/executive-sales-intelligence/product-movement-report", TitleKey = "menu.productMovementReport", Icon = "ReconciliationOutlined", Permission = Permissions.Reports.ProductMovementView },
-                    new() { Path = "/executive-sales-intelligence/warehouse-product-flow-analysis", TitleKey = "menu.warehouseProductFlowAnalysis", Icon = "BarChartOutlined", Permission = Permissions.Reports.ProductMovementView, RequireExactPermission = true },
-                    new() { Path = "/executive-sales-intelligence/local-product-sales-analysis", TitleKey = "menu.localProductSalesAnalysis", Icon = "BarChartOutlined", Permission = Permissions.LocalPurchase.View },
-                    new() { Path = "/executive-sales-intelligence/purchase-amount-dashboard", TitleKey = "menu.purchaseAmountDashboard", Icon = "DollarOutlined", Permission = Permissions.LocalPurchase.View },
+                    new() { Path = "/executive-sales-intelligence/overview",       TitleKey = "menu.salesData",   Icon = "DashboardOutlined", Permission = Permissions.SalesDashboard.SalesDataView },
+                    new() { Path = "/executive-sales-intelligence/sales-detail-v2", TitleKey = "menu.salesDetail", Icon = "FileTextOutlined",  Permission = Permissions.SalesDashboard.SalesDetailView },
+                    new() { Path = "/executive-sales-intelligence/compact-sales-board", TitleKey = "menu.compactSalesBoard", Icon = "BarChartOutlined", Permission = Permissions.SalesDashboard.CompactBoardView },
+                    new() { Path = "/executive-sales-intelligence/product-movement-report", TitleKey = "menu.productMovementReport", Icon = "ReconciliationOutlined", Permission = Permissions.SalesDashboard.ProductMovementView },
+                    new() { Path = "/executive-sales-intelligence/batch-product-sales-analysis", TitleKey = "menu.batchProductSalesAnalysis", Icon = "BarChartOutlined", Permission = Permissions.SalesDashboard.BatchProductSalesView },
+                    new() { Path = "/executive-sales-intelligence/warehouse-product-flow-analysis", TitleKey = "menu.warehouseProductFlowAnalysis", Icon = "BarChartOutlined", Permission = Permissions.SalesDashboard.WarehouseFlowView },
+                    new() { Path = "/executive-sales-intelligence/local-product-sales-analysis", TitleKey = "menu.localProductSalesAnalysis", Icon = "BarChartOutlined", Permission = Permissions.SalesDashboard.LocalProductAnalysisView },
+                    new() { Path = "/executive-sales-intelligence/purchase-amount-dashboard", TitleKey = "menu.purchaseAmountDashboard", Icon = "DollarOutlined", Permission = Permissions.SalesDashboard.PurchaseAmountView },
                 },
             },
             new()
@@ -250,6 +252,15 @@ namespace BlazorApp.Api.Services
             },
             new()
             {
+                RouteName = "product-insights",
+                TitleKey = "tabs.productInsights",
+                Icon = "chart-timeline-variant",
+                // 与商品查询共用查看授权，避免客户端入口与设备菜单出现范围偏差。
+                Permission = Permissions.StoreProducts.View,
+                Order = 50,
+            },
+            new()
+            {
                 RouteName = "installment-orders",
                 TitleKey = "tabs.installmentOrders",
                 Icon = "cash-clock",
@@ -301,6 +312,22 @@ namespace BlazorApp.Api.Services
                 Icon = "account-group-outline",
                 Permission = Permissions.Users.View,
                 Order = 57,
+            },
+            new()
+            {
+                RouteName = "user-admin",
+                TitleKey = "tabs.userAdmin",
+                Icon = "account-cog-outline",
+                Permission = Permissions.Users.View,
+                Order = 57,
+            },
+            new()
+            {
+                RouteName = "roles",
+                TitleKey = "tabs.roles",
+                Icon = "shield-account-outline",
+                Permission = Permissions.Roles.View,
+                Order = 58,
             },
             new()
             {
@@ -363,7 +390,7 @@ namespace BlazorApp.Api.Services
         };
 
         private static readonly HashSet<string> DeviceBaseRouteNames = new(
-            new[] { "home", "orders", "cart", "product-query", "settings" },
+            new[] { "home", "orders", "cart", "product-query", "product-insights", "settings" },
             StringComparer.OrdinalIgnoreCase
         );
 
@@ -412,35 +439,40 @@ namespace BlazorApp.Api.Services
             NavigationPermissionContext context
         )
         {
-            if (!HasAnyPermission(
-                context,
-                Permissions.Warehouse.ManageOrders,
-                Permissions.Warehouse.Manage
-            ))
+            var result = new List<NavigationMenuDto>();
+            if (HasAnyPermission(
+                    context,
+                    Permissions.Warehouse.ManageOrders,
+                    Permissions.Warehouse.Manage
+                ))
             {
-                return new List<NavigationMenuDto>();
+                // 仓库员工桌面端的仓库功能仍只暴露分店订货列表。
+                result.Add(
+                    new NavigationMenuDto
+                    {
+                        Path = "/warehouse",
+                        TitleKey = "menu.warehouse",
+                        Icon = "DatabaseOutlined",
+                        Children = new List<NavigationMenuDto>
+                        {
+                            new()
+                            {
+                                Path = "/warehouse/store-orders",
+                                TitleKey = "menu.storeOrders",
+                                Icon = "ReconciliationOutlined",
+                                Permission = Permissions.Warehouse.ManageOrders,
+                            },
+                        },
+                    }
+                );
             }
 
-            // 仓库员工桌面端只暴露分店订货列表；首柜价差异报表属于仓库管理员权限，不跟随只读入口开放。
-            return new List<NavigationMenuDto>
-            {
-                new()
-                {
-                    Path = "/warehouse",
-                    TitleKey = "menu.warehouse",
-                    Icon = "DatabaseOutlined",
-                    Children = new List<NavigationMenuDto>
-                    {
-                        new()
-                        {
-                            Path = "/warehouse/store-orders",
-                            TitleKey = "menu.storeOrders",
-                            Icon = "ReconciliationOutlined",
-                            Permission = Permissions.Warehouse.ManageOrders,
-                        },
-                    },
-                },
-            };
+            // 新销售页只认各自显式权限；WarehouseStaff 的其他后台限制保持不变。
+            var salesDefinition = FullMenu.First(node =>
+                node.Path == "/executive-sales-intelligence"
+            );
+            result.AddRange(FilterMenu(new List<NavigationMenuDto> { salesDefinition }, context));
+            return result;
         }
 
         public List<AppNavigationMenuDto> BuildAppMenu(ClaimsPrincipal user)
@@ -558,13 +590,21 @@ namespace BlazorApp.Api.Services
                 Permissions.Warehouse.ManageOrders,
                 Permissions.Warehouse.Manage,
                 Permissions.Container.View,
-                Permissions.Reports.ProductMovementView,
                 Permissions.LocalPurchase.View,
+                Permissions.SalesDashboard.SalesDataView,
+                Permissions.SalesDashboard.SalesDetailView,
+                Permissions.SalesDashboard.CompactBoardView,
+                Permissions.SalesDashboard.ProductMovementView,
+                Permissions.SalesDashboard.BatchProductSalesView,
+                Permissions.SalesDashboard.WarehouseFlowView,
+                Permissions.SalesDashboard.LocalProductAnalysisView,
+                Permissions.SalesDashboard.PurchaseAmountView,
                 Permissions.System.ManageSettings,
                 Permissions.System.ViewAppDownloads,
                 Permissions.System.ManageAppDownloads,
                 Permissions.PosTerminal.Audit.View,
-                Permissions.DeviceRegistration.ActivationCodes.Manage
+                Permissions.DeviceRegistration.ActivationCodes.Manage,
+                Permissions.DeviceRegistration.MobileActivationCodes.Manage
             );
         }
 
@@ -791,6 +831,7 @@ namespace BlazorApp.Api.Services
             if (string.Equals(permission, Permissions.DeviceRegistration.View, StringComparison.OrdinalIgnoreCase))
             {
                 codes.Add(Permissions.DeviceRegistration.ActivationCodes.Manage);
+                codes.Add(Permissions.DeviceRegistration.MobileActivationCodes.Manage);
             }
 
             return codes;

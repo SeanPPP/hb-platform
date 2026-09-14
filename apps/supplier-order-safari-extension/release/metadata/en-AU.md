@@ -17,11 +17,11 @@ The Safari extension is designed for iPhone and iPad and is available only to au
 
 Keywords: supplier,ordering,purchase,sales,inventory,business
 
-## What's New in Version 1.4.0
+## What's New in Version 1.4.1
 
-- Adds company-wide supplier sales rank bands (TOP 10%, TOP 20% and TOP 30%) to supported product pages, including items with no purchase history.
-- Expands supplier top sellers to a paginated TOP 30% ranking with global positions, 60/90-day periods and page sizes of 50, 100 or 200.
-- Improves product-code matching and in-page information placement on the GFA supplier website.
+- Tap a product's total sales in the supplier TOP 30% ranking to see sales by individual store.
+- Search the store breakdown and compare stores in descending sales order, including stores with zero sales.
+- Adds clearer loading, refresh and return behaviour when ranking data changes.
 
 Privacy URL: https://hotbargain.vip/privacy/browser-extension
 

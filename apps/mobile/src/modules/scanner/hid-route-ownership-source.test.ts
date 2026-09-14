@@ -63,8 +63,8 @@ assert.match(
 );
 assert.match(
   productQueryContentSource,
-  /const cameraScanDisabled = !isFocused \|\| scannerInputBlocked;/,
-  "商品维护相机事件必须同时受路由焦点和页面 busy 状态门禁",
+  /const cameraScanDisabled\s*=\s*!isFocused\s*\|\|\s*scannerInputBlocked\s*\|\|\s*!cameraSession\.visible;/,
+  "商品维护相机事件必须同时受路由焦点、页面 busy 状态和显式相机会话门禁",
 );
 assert.match(
   productQueryContentSource,
@@ -73,8 +73,18 @@ assert.match(
 );
 assert.match(
   productQueryContentSource,
-  /if \(!isFocused\) \{\s*setCameraVisible\(false\);\s*\}/s,
-  "商品维护失焦时必须关闭单次相机画面",
+  /if \(!isFocused\) \{\s*cameraForegroundGenerationRef\.current = null;\s*updateCameraSheetSession\(\s*\{ type: "blur" \},\s*cameraScanModeRef\.current,?\s*\);\s*\}/s,
+  "商品维护失焦时必须使会话代次失效、清除恢复意图并关闭相机 sheet",
+);
+assert.match(
+  productQueryContentSource,
+  /if \(\s*!isFocusedRef\.current\s*\|\|\s*isProductQueryBusy\(\)\s*\|\|\s*!isCameraSheetSessionActive\(session, session\.generation\)\s*\) \{\s*return;\s*\}[\s\S]*?await handleLookup\(barcode, "scan", "camera"\);/,
+  "商品维护必须在查询前同步拒绝关闭或失焦会话的迟到相机回调",
+);
+assert.match(
+  productQueryContentSource,
+  /cameraSession\.generation,[\s\S]*?suppressRepeatsUntilChange:\s*cameraScanMode === "continuous"/,
+  "商品维护连续扫码 resetKey 必须纳入显式会话代次，关闭后重开允许同一条码",
 );
 assert.match(
   productQueryContentSource,
@@ -90,6 +100,53 @@ assert.match(
   productQueryScreenSource,
   /return <ProductQueryContent \/>;/,
   "商品维护路由必须始终保持内容组件挂载",
+);
+
+const homeSource = readTabSource("home.tsx");
+assert.match(
+  homeSource,
+  /disabled:\s*!isFocused\s*\|\|\s*!cameraSession\.visible,[\s\S]*?if \(\s*!isFocusedRef\.current\s*\|\|\s*!isCameraSheetSessionActive\(session, session\.generation\)\s*\) \{\s*return;\s*\}[\s\S]*?await scanResult\.handleBarcode\(barcode, "camera"\);/,
+  "首页必须在加购前同步拒绝关闭或失焦会话的迟到相机回调",
+);
+assert.match(
+  homeSource,
+  /resetKey:\s*`\$\{isFocused \? "focused" : "blurred"\}:\$\{cameraSession\.generation\}:[^`]*`,/,
+  "首页相机 resetKey 必须包含路由焦点和显式会话代次",
+);
+assert.match(
+  homeSource,
+  /scanResult\.feedback\.barcode === lastCameraBarcode[\s\S]*?\["not_found", "blocked", "error"\]\.includes\(\s*scanResult\.feedback\.status,?\s*\)[\s\S]*?scanResult\.feedback\.message/,
+  "首页连续加购队列的失败、无结果和阻止反馈必须在相机 sheet 内可见",
+);
+assert.match(
+  productQueryContentSource,
+  /lastCameraBarcode && queryFeedback\.type === "empty"[\s\S]*?t\("messages\.notFound"\)[\s\S]*?lastCameraBarcode && queryFeedback\.type === "error"[\s\S]*?queryFeedback\.message/,
+  "商品维护相机连续查询的无结果和异常反馈必须在相机 sheet 内可见",
+);
+
+const warehouseSource = readTabSource("warehouse.tsx");
+assert.match(
+  warehouseSource,
+  /cameraSheetSession\.generation,[\s\S]*?suppressRepeatsUntilChange:\s*cameraScanMode === "continuous"/,
+  "仓库连续扫码 resetKey 必须纳入显式会话代次，关闭后重开允许同一条码",
+);
+assert.match(
+  warehouseSource,
+  /!isCameraSheetSessionActive\(cameraSheetSessionRef\.current, session\.sheetGeneration\)[\s\S]*?return;[\s\S]*?suspendCameraForResult\(session\);/,
+  "仓库必须在任何查询或绑定前同步拒绝关闭或失焦会话的迟到相机回调",
+);
+const productLocationCameraLookupSource = warehouseSource.match(
+  /const handleLookupLocationsForProductScan = useCallback\([\s\S]*?\n  \}, \[getErrorMessage, handleRequestBindLocation, pendingStorageLocationBind, t\]\);/
+)?.[0] ?? "";
+assert.match(
+  productLocationCameraLookupSource,
+  /if \(fromCamera\) \{\s*setCameraResultSummary\(null\);\s*\}/,
+  "仓库商品货位相机每次捕获前必须清除上一笔摘要",
+);
+assert.match(
+  productLocationCameraLookupSource,
+  /const message = getErrorMessage\(error, "messages\.locationLookupFailed"\);[\s\S]*?setSnackbar\(message\);[\s\S]*?if \(fromCamera\) \{\s*setCameraResultSummary\(\{ title: message, detail: keyword \}\);\s*\}/,
+  "仓库商品货位相机查询失败必须在相机 sheet 内显示本次条码和失败说明",
 );
 
 console.log("hid-route-ownership-source.test.ts: ok");

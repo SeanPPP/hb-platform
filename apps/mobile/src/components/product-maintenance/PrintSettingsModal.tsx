@@ -88,11 +88,11 @@ const styles = StyleSheet.create({
   modal: {
     marginHorizontal: 24,
     borderRadius: 16,
-    backgroundColor: "#fff",
+    backgroundColor: "#FFFFFF",
   },
   content: {
     padding: 20,
-    gap: 16,
+    gap: 12,
   },
   title: {
     fontWeight: "700",
@@ -109,8 +109,8 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   qtyButton: {
-    width: 28,
-    height: 28,
+    width: 40,
+    height: 40,
     margin: 0,
   },
   qtyValue: {

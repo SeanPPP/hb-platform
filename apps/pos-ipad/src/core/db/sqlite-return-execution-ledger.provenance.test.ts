@@ -104,6 +104,78 @@ test("退货账本绑定同一交易行同步来源，数据库拒绝写后篡�
   }
 });
 
+test("未登录更新探针仅按终端检查退货恢复，不要求收银员或解密交易内容", async () => {
+  const connection = new NodeSqliteConnection();
+  try {
+    await applyMigrations(connection, () => NOW_ISO);
+    const ids = {
+      createTenderGuid: () => "tender-1",
+      createAuditEventId: () => "audit-1",
+    };
+    const ledger = new SqliteReturnExecutionLedger(
+      connection, plaintextEncryptor, ids, () => NOW_ISO,
+    );
+    const terminal = { storeCode: "S01", deviceCode: "IPAD-1" };
+    assert.equal(await ledger.hasRecoverableForTerminal(terminal), false);
+    await ledger.prepareOrLoad(noReceiptDraft());
+
+    const readOnlyLedger = new SqliteReturnExecutionLedger(connection, {
+      async encrypt() { throw new Error("更新检查禁止写入加密材料"); },
+      async decrypt() { throw new Error("更新检查不应读取交易内容"); },
+    }, ids, () => NOW_ISO);
+    assert.equal(await readOnlyLedger.hasRecoverableForTerminal(terminal), true);
+    assert.equal(await readOnlyLedger.hasRecoverableForTerminal({
+      ...terminal, storeCode: "S02",
+    }), false);
+    assert.equal(await readOnlyLedger.hasRecoverableForTerminal({
+      ...terminal, deviceCode: "IPAD-2",
+    }), false);
+
+    // 只查询终端布尔值没有放开原有恢复明细的收银员范围。
+    assert.deepEqual(await ledger.listRecoverable({
+      ...terminal, cashierId: "OTHER-CASHIER", sessionEpoch: "other-epoch",
+    }), []);
+    for (const [state, blocked] of [
+      ["unknown", true], ["completed", false], ["declined", false],
+    ] as const) {
+      await connection.run("UPDATE return_actions SET state = ?, completed_at_iso = ? WHERE action_id = ?", [
+        state, state === "completed" ? NOW_ISO : null, noReceiptDraft().actionId,
+      ]);
+      assert.equal(await readOnlyLedger.hasRecoverableForTerminal(terminal), blocked);
+    }
+  } finally {
+    await connection.close();
+  }
+});
+
+test("终端更新探针对非法状态、无效范围和读取失败保持阻断", async () => {
+  const connection = new NodeSqliteConnection();
+  const ledger = new SqliteReturnExecutionLedger(connection, plaintextEncryptor, {
+    createTenderGuid: () => "tender-1",
+    createAuditEventId: () => "audit-1",
+  }, () => NOW_ISO);
+  try {
+    await applyMigrations(connection, () => NOW_ISO);
+    await ledger.prepareOrLoad(noReceiptDraft());
+    // 仅在内存测试库注入异常持久状态，验证未知枚举不能被误判为安全。
+    await connection.exec("PRAGMA ignore_check_constraints = ON");
+    await connection.run("UPDATE return_actions SET state = ? WHERE action_id = ?", [
+      "corrupt-state", noReceiptDraft().actionId,
+    ]);
+    assert.equal(await ledger.hasRecoverableForTerminal({
+      storeCode: "S01", deviceCode: "IPAD-1",
+    }), true);
+    await assert.rejects(async () => ledger.hasRecoverableForTerminal({
+      storeCode: "", deviceCode: "IPAD-1",
+    }));
+  } finally {
+    await connection.close();
+  }
+  await assert.rejects(async () => ledger.hasRecoverableForTerminal({
+    storeCode: "S01", deviceCode: "IPAD-1",
+  }));
+});
+
 function noReceiptDraft(): PrepareDurableReturnAction {
   const syncProvenance = Object.freeze({
     referenceCode: "RETURN-REF",

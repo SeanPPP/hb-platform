@@ -130,6 +130,31 @@ assert.ok(
   "d. close/reopen 后新会话首个 token 应允许"
 );
 
+const continuousSessionGate = createCameraScanGateController("continuous-generation-1");
+const continuousOptions = {
+  ...baseOptions,
+  ignoreWhileProcessing: true,
+  suppressRepeatsUntilChange: true,
+};
+const firstContinuousLease = continuousSessionGate.tryStart(
+  "continuous-generation-1",
+  "A",
+  5000,
+  continuousOptions
+);
+assert.ok(firstContinuousLease, "连续会话首个 A 必须允许");
+continuousSessionGate.finish(firstContinuousLease);
+assert.equal(
+  continuousSessionGate.tryStart("continuous-generation-1", "A", 8000, continuousOptions),
+  null,
+  "同一显式会话自动恢复后 A/A 仍必须被抑制"
+);
+continuousSessionGate.setCurrentResetKey("continuous-generation-2");
+assert.ok(
+  continuousSessionGate.tryStart("continuous-generation-2", "A", 8100, continuousOptions),
+  "主动关闭后重新打开生成新代次时，同一个 A 必须再次允许"
+);
+
 const processingOptions = {
   ...baseOptions,
   ignoreWhileProcessing: true,

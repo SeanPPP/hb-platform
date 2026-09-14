@@ -4,6 +4,11 @@ export const PERMISSIONS = {
   DeviceRegistration: {
     View: "DeviceRegistration.View",
     Manage: "DeviceRegistration.Manage",
+    ActivationCodesManage: "DeviceRegistration.ActivationCodes.Manage",
+    MobileActivationCodesManage: "DeviceRegistration.MobileActivationCodes.Manage",
+  },
+  System: {
+    ManageSettings: "System.ManageSettings",
   },
   EmployeeProfiles: {
     View: "EmployeeProfiles.View",
@@ -175,6 +180,9 @@ function createEmptyAccess(): AccessControl {
     canDeletePrice: false,
     canViewDeviceRegistration: false,
     canManageDeviceRegistration: false,
+    canManageDeviceActivationCodes: false,
+    canManageMobileDeviceActivationCodes: false,
+    canManageEmergencyLoginGrants: false,
     canViewEmployeeProfiles: false,
     canViewAttendancePersonal: false,
     canViewAttendanceManagement: false,
@@ -309,8 +317,20 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canModifyPrice = hasPermission("Prices.Modify");
   const canDeletePrice = hasPermission("Prices.Delete");
   const canManageDeviceRegistration = hasPermission(PERMISSIONS.DeviceRegistration.Manage);
+  const canManageDeviceActivationCodes = hasPermission(
+    PERMISSIONS.DeviceRegistration.ActivationCodesManage
+  );
+  const canManageMobileDeviceActivationCodes = hasPermission(
+    PERMISSIONS.DeviceRegistration.MobileActivationCodesManage
+  );
   const canViewDeviceRegistration =
-    canManageDeviceRegistration || hasPermission(PERMISSIONS.DeviceRegistration.View);
+    canManageDeviceRegistration ||
+    hasPermission(PERMISSIONS.DeviceRegistration.View) ||
+    canManageDeviceActivationCodes ||
+    canManageMobileDeviceActivationCodes;
+  // 紧急登录凭证同时改变设备与系统级安全边界，两个权限缺一不可。
+  const canManageEmergencyLoginGrants =
+    canManageDeviceRegistration && hasPermission(PERMISSIONS.System.ManageSettings);
   const canViewEmployeeProfiles = hasPermission(PERMISSIONS.EmployeeProfiles.View);
   const canViewAttendancePersonal =
     isAdmin ||
@@ -388,6 +408,9 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     canDeletePrice,
     canViewDeviceRegistration,
     canManageDeviceRegistration,
+    canManageDeviceActivationCodes,
+    canManageMobileDeviceActivationCodes,
+    canManageEmergencyLoginGrants,
     canViewEmployeeProfiles,
     canViewAttendancePersonal,
     canViewAttendanceManagement,

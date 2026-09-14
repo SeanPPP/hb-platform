@@ -525,17 +525,20 @@ export function ContainerListScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: "#F6F8FB",
+    backgroundColor: "#F4F6F8",
   },
   content: {
-    gap: 12,
-    padding: 12,
-    paddingBottom: 28,
+    gap: 16,
+    padding: 16,
+    paddingTop: 12,
+    paddingBottom: 24,
   },
   filterPanel: {
     gap: 10,
     padding: 12,
-    borderRadius: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E4E7EC",
     backgroundColor: "#FFFFFF",
   },
   summaryPanel: {
@@ -543,11 +546,14 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     gap: 10,
     padding: 12,
-    borderRadius: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E4E7EC",
     backgroundColor: "#FFFFFF",
   },
   card: {
-    borderRadius: 8,
+    borderRadius: 12,
+    borderColor: "#E4E7EC",
     backgroundColor: "#FFFFFF",
   },
   chipRow: {
@@ -602,7 +608,7 @@ const styles = StyleSheet.create({
     margin: 18,
     gap: 10,
     padding: 16,
-    borderRadius: 8,
+    borderRadius: 18,
     backgroundColor: "#FFFFFF",
   },
 });

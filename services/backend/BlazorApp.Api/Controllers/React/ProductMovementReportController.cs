@@ -13,7 +13,7 @@ namespace BlazorApp.Api.Controllers.React
     /// </summary>
     [ApiController]
     [Route("api/react/v1/product-movement-report")]
-    [Authorize(Policy = Permissions.Reports.ProductMovementView)]
+    [Authorize(Policy = Permissions.SalesDashboard.ProductMovementView)]
     public class ProductMovementReportController : ControllerBase
     {
         private readonly IProductMovementReportService _service;

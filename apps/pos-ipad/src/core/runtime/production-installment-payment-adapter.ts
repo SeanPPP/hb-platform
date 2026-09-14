@@ -3,6 +3,10 @@ import type {
   InstallmentMutationPaymentPort,
   PersistedInstallmentAction,
 } from "./production-installment-runtime";
+import type {
+  PaymentAcknowledgementResult,
+  PaymentAcknowledgementRuntimePort,
+} from "@hb/pos-payments-core/features/payments/payment-acknowledgement-service";
 
 import {
   canTransitionPaymentAttempt,
@@ -192,6 +196,15 @@ export interface InstallmentProviderAttemptStorePort {
   approveCashSettlements(
     actionId: string,
   ): Promise<readonly InstallmentCashSettlement[]>;
+  get?(attemptId: string): Promise<PaymentAttempt | null>;
+  findLegacyLinklyAttemptForSession?(
+    terminal: Readonly<{ storeCode: string; deviceCode: string }>,
+    sessionId: string,
+    idempotencyKey: string,
+  ): Promise<PaymentAttempt | null>;
+  markProviderAcknowledged?(expected: PaymentAttempt, acknowledgedAtIso: string): Promise<boolean>;
+  canProviderAcknowledged?(attempt: PaymentAttempt): Promise<boolean>;
+  verifyProviderEnvironment?(expected: PaymentAttempt, verifiedEnvironment: string): Promise<boolean>;
 }
 
 export type ProductionInstallmentPaymentAdapterOptions = Readonly<{
@@ -200,6 +213,7 @@ export type ProductionInstallmentPaymentAdapterOptions = Readonly<{
   cardProviderSelection: InstallmentCardProviderSelectionPort;
   provenance: InstallmentRefundProvenanceRemotePort;
   voucherMaterials: InstallmentVoucherMaterialPort;
+  acknowledgements?: PaymentAcknowledgementRuntimePort | null;
   createId(): string;
   nowIso(): string;
 }>;
@@ -269,6 +283,29 @@ export class ProductionInstallmentPaymentAdapter
     persistedActionId: string,
   ): Promise<PaymentAdapterResult> {
     return this.run(persistedActionId);
+  }
+
+  /** 中文注释：ACK 恢复绝不触发 submit、refund 或 provider recover。 */
+  public async acknowledgeProviderAttempts(
+    persistedActionId: string,
+  ): Promise<boolean> {
+    const acknowledgements = this.options.acknowledgements;
+    const plan = await this.options.store.loadPlan(persistedActionId);
+    if (!plan) return true;
+    const linklyFinalAttempts = plan.attempts.filter(
+      (record) =>
+        record.attempt.provider === "linkly-cloud" &&
+        (record.attempt.state === "Approved" ||
+          record.attempt.state === "Declined" ||
+          record.attempt.state === "Cancelled"),
+    );
+    // 没有 ACK 服务时不能把已落账的 Linkly 终态误判为可离开。
+    if (!acknowledgements) return linklyFinalAttempts.length === 0;
+    const results = await Promise.all(
+      linklyFinalAttempts
+        .map((record) => acknowledgements.acknowledge(record.attempt.attemptId)),
+    );
+    return results.every((result: PaymentAcknowledgementResult) => result.acknowledged);
   }
 
   /**
@@ -626,6 +663,10 @@ export class ProductionInstallmentPaymentAdapter
   }>): InstallmentProviderAttemptRecord {
     const attemptId = generatedId(this.options.createId(), "provider attempt id");
     const nowIso = canonicalIso(this.options.nowIso(), "provider attempt time");
+    const providerEnvironment =
+      input.provider === "linkly-cloud"
+        ? requiredProviderEnvironment(this.requireProvider(input.provider))
+        : null;
     return Object.freeze({
       actionId: input.action.action.actionId,
       paymentGuid: input.paymentGuid,
@@ -651,6 +692,7 @@ export class ProductionInstallmentPaymentAdapter
         createdAtIso: nowIso,
         updatedAtIso: nowIso,
         lastErrorCode: null,
+        ...(providerEnvironment ? { providerEnvironment } : {}),
         receiptText: null,
         responseCode: null,
       }),
@@ -767,6 +809,7 @@ export class ProductionInstallmentPaymentAdapter
       if (execution.kind === "approved") {
         providerRefundApproved = true;
         approvedRecords.push(execution.record);
+        await this.acknowledgeApprovedLinklyRefund(execution.record);
         continue;
       }
       if (execution.kind === "declined") {
@@ -806,6 +849,31 @@ export class ProductionInstallmentPaymentAdapter
       kind: "approved" as const,
       refunds: Object.freeze(refunds),
     });
+  }
+
+  /**
+   * Linkly 服务端会以尚未 ACK 的退款占用终端。取消退款 action 仍被本地阻塞，
+   * 但该笔退款已有不可变原付款绑定、耐久 Approved 与加密证据时，必须逐笔确认
+   * 才能安全执行下一笔；首付和还款仍只在整个 action 完成后 ACK。
+   */
+  private async acknowledgeApprovedLinklyRefund(
+    record: InstallmentProviderAttemptRecord,
+  ): Promise<void> {
+    if (record.attempt.provider !== "linkly-cloud") return;
+    const acknowledgements = this.options.acknowledgements;
+    if (!acknowledgements) {
+      throw adapterError(
+        "INSTALLMENT_ATTEMPT_DURABILITY_REQUIRED",
+        "Linkly refund acknowledgement service is unavailable.",
+      );
+    }
+    const result = await acknowledgements.acknowledge(record.attempt.attemptId);
+    if (!result.acknowledged) {
+      throw adapterError(
+        "INSTALLMENT_ATTEMPT_DURABILITY_REQUIRED",
+        "Linkly refund acknowledgement requires recovery.",
+      );
+    }
   }
 
   private async approveCash(
@@ -1872,6 +1940,18 @@ function requiredText(value: string | null | undefined, label: string): string {
     );
   }
   return value;
+}
+
+function requiredProviderEnvironment(provider: OnlinePaymentPort): string {
+  const value = (provider as Readonly<{ environment?: unknown }>).environment;
+  if (typeof value !== "string") {
+    throw adapterError("INSTALLMENT_PROVIDER_UNAVAILABLE", "Linkly installment provider environment is unavailable.");
+  }
+  const environment = value.trim();
+  if (!environment || environment.length > 64 || /[\u0000-\u001f\u007f]/u.test(environment)) {
+    throw adapterError("INSTALLMENT_PROVIDER_UNAVAILABLE", "Linkly installment provider environment is invalid.");
+  }
+  return environment;
 }
 
 function protectedText(value: string, label: string): string {

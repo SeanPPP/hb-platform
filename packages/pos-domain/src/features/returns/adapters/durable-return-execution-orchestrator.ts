@@ -361,6 +361,14 @@ export type DurableReturnExecutionOptions = Readonly<{
       | "drawer-event",
   ): string;
   nowIso(): string;
+  /**
+   * 外部退款终态已耐久化后的可选确认闸门。false 表示确认仍 pending：
+   * 不能继续下一笔外部退款，必须把 action 留给恢复流程先重试原确认。
+   */
+  onAllocationFinalized?: ((input: Readonly<{
+    action: DurableReturnAction;
+    allocation: DurableReturnAllocation;
+  }>) => Promise<boolean>) | undefined;
 }>;
 
 /**
@@ -374,6 +382,8 @@ export class DurableReturnExecutionOrchestrator
     string,
     Promise<ReturnExecutionOutcome>
   >();
+  /** 同一进程已确认过的 allocation 不重复调用确认端口；崩溃后的新实例仍会从 durable ledger 重试。 */
+  private readonly acknowledgedAllocations = new Set<string>();
 
   public constructor(private readonly options: DurableReturnExecutionOptions) {}
 
@@ -467,6 +477,11 @@ export class DurableReturnExecutionOrchestrator
       const action = await this.requireAction(actionId);
       if (action.status === "completed") return completedOutcome(action);
       if (action.status === "declined") return { status: "declined" };
+      if (!(await this.confirmPersistedFinalAllocations(action))) {
+        await this.safelyMarkActionUnknown(actionId);
+        const latest = await this.options.ledger.load(actionId);
+        return unknownOutcome(latest ?? action);
+      }
       const allocation = [...action.allocations]
         .sort((left, right) => left.index - right.index)
         .find((candidate) => candidate.status !== "completed");
@@ -491,6 +506,17 @@ export class DurableReturnExecutionOrchestrator
         allocation.status === "created"
           ? await this.submitAllocation(action, allocation)
           : await this.recoverAllocation(action, allocation);
+      if (
+        outcome.status !== "unknown" &&
+        !(await this.confirmPersistedFinalAllocation(
+          actionId,
+          allocation.allocationId,
+        ))
+      ) {
+        await this.safelyMarkActionUnknown(actionId);
+        const latest = await this.options.ledger.load(actionId);
+        return unknownOutcome(latest ?? action);
+      }
       if (outcome.status === "declined") {
         await this.options.ledger.markActionDeclined({ actionId });
         return { status: "declined" };
@@ -604,6 +630,52 @@ export class DurableReturnExecutionOrchestrator
     });
     if (!saved) {
       throw new ReturnFeatureError("RETURN_EXECUTION_FAILED");
+    }
+  }
+
+  private async confirmPersistedFinalAllocations(
+    action: DurableReturnAction,
+  ): Promise<boolean> {
+    for (const allocation of action.allocations) {
+      if (
+        (allocation.status === "completed" || allocation.status === "declined") &&
+        !(await this.confirmPersistedFinalAllocation(
+          action.actionId,
+          allocation.allocationId,
+        ))
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private async confirmPersistedFinalAllocation(
+    actionId: string,
+    allocationId: string,
+  ): Promise<boolean> {
+    const callback = this.options.onAllocationFinalized;
+    if (!callback) return true;
+    const key = `${actionId}:${allocationId}`;
+    if (this.acknowledgedAllocations.has(key)) return true;
+    try {
+      const action = await this.requireAction(actionId);
+      const allocation = action.allocations.find(
+        (candidate) => candidate.allocationId === allocationId,
+      );
+      if (
+        !allocation ||
+        (allocation.status !== "completed" && allocation.status !== "declined")
+      ) {
+        return true;
+      }
+      // 中文注释：先读取刚完成持久化的 allocation，再确认 Linkly；任何确认失败都
+      // 只能暂停整张 return action，绝不能让第二笔退款撞上同终端的 server guard。
+      if (!(await callback({ action, allocation }))) return false;
+      this.acknowledgedAllocations.add(key);
+      return true;
+    } catch {
+      return false;
     }
   }
 

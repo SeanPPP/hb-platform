@@ -28,6 +28,8 @@
     "address": "街道、城市、州、省、邮编"
   },
   "sections": {
+    "basic": "基本资料",
+    "sensitive": "敏感资料",
     "banking": "银行信息",
     "superannuation": "养老金信息",
     "personal": "个人资料",
@@ -46,6 +48,8 @@
     "casual": "临时工"
   },
   "actions": {
+    "edit": "编辑",
+    "editAvatar": "编辑头像",
     "save": "保存资料",
     "savePersonal": "保存个人资料",
     "editSensitive": "填报修改",
@@ -58,6 +62,24 @@
     "capture": "拍照",
     "switchCamera": "切换镜头",
     "openSettings": "打开系统设置"
+  },
+  "overview": {
+    "completed": "已填写",
+    "notProvided": "未填写",
+    "updatedAt": "更新时间：{{time}}"
+  },
+  "edit": {
+    "basicTitle": "编辑基本资料",
+    "sensitiveTitle": "编辑敏感资料",
+    "avatarTitle": "更换头像",
+    "basicHint": "修改后保存，资料会立即更新。",
+    "reviewNoticeTitle": "提交后需要审核",
+    "reviewNoticeDescription": "银行、养老金和身份信息会作为一份完整申请提交。审核通过前继续显示已确认资料。"
+  },
+  "unsaved": {
+    "title": "放弃未保存的修改？",
+    "description": "返回后，本次编辑的内容将不会保留。",
+    "discard": "放弃修改"
   },
   "messages": {
     "loadFailed": "加载个人信息失败。",

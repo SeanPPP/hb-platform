@@ -65,6 +65,7 @@ namespace BlazorApp.Api.Services.React
         public Task<ApiResponse<BatchResultDto>> BatchUpsertDetailsAsync(string invoiceGuid, List<InvoiceDetailUpsertItemDto> items, string updatedBy) => _details.BatchUpsertDetailsAsync(invoiceGuid, items, updatedBy);
         public Task<ApiResponse<BatchResultDto>> BatchUpdateDetailsAsync(string invoiceGuid, BatchUpdateInvoiceDetailsRequest request, string updatedBy) => _details.BatchUpdateDetailsAsync(invoiceGuid, request, updatedBy);
         public Task<ApiResponse<UpdateToStorePricesResultDto>> UpdateDetailsToStorePricesAsync(UpdateToStorePricesRequest dto, string updatedBy) => _pricing.UpdateDetailsToStorePricesAsync(dto, updatedBy);
+        public Task<ApiResponse<UpdateToStorePricesResultDto>> UpdateDetailsToStorePricesAsync(UpdateToStorePricesRequest dto, string updatedBy, int lockWaitMilliseconds) => _pricing.UpdateDetailsToStorePricesAsync(dto, updatedBy, lockWaitMilliseconds);
         public Task<ApiResponse<UpdateLastPurchasePricesResultDto>> UpdateLastPurchasePricesAsync(string invoiceGuid, UpdateLastPurchasePricesRequest request, string updatedBy) => _pricing.UpdateLastPurchasePricesAsync(invoiceGuid, request, updatedBy);
         public Task<ApiResponse<CheckProductsResponseDto>> CheckProductsAsync(CheckProductsRequest dto) => _productReview.CheckProductsAsync(dto);
         public Task<ApiResponse<BatchResultDto>> PasteDetailsAsync(PasteDetailsRequest dto, string updatedBy) => _details.PasteDetailsAsync(dto, updatedBy);

@@ -563,12 +563,21 @@ public sealed class PaymentTerminalSettingsService(
             );
         }
 
+        // 快照只用于确定旧、新终端的锁集合；锁住选择后仍须重新比对，避免换线竞态。
+        var selectionSnapshot = await posmContext.Db.Queryable<PaymentLinklyDeviceSelectionRecord>()
+            .Where(row => row.StoreCode == scope.StoreCode
+                && row.Environment == scope.Environment
+                && row.DeviceCode == normalizedDeviceCode)
+            .Select(row => new { row.TerminalId })
+            .FirstAsync();
+        var affectedTerminalIds = new[] { request.TerminalId, selectionSnapshot?.TerminalId ?? request.TerminalId }
+            .Distinct().OrderBy(id => new System.Data.SqlTypes.SqlGuid(id)).ToArray();
         var now = DateTime.UtcNow;
         var updater = NormalizeOptional(updatedBy);
         await posmContext.Db.Ado.BeginTranAsync(IsolationLevel.Serializable);
         try
         {
-            // 固定锁序：会话 -> 终端 -> 选择 -> 模式，和交易创建/配对写路径保持一致。
+            // 固定锁序：会话 -> 按编号排序的终端 -> 选择 -> 模式，覆盖换线两端。
             if (await HasBlockingLinklyDeviceSessionAsync(
                     normalizedDeviceCode,
                     scope.StoreCode!,
@@ -581,14 +590,49 @@ public sealed class PaymentTerminalSettingsService(
                 );
             }
 
-            var terminal = await WithLinklyUpdateLock(
-                    posmContext.Db,
-                    posmContext.Db.Queryable<PaymentLinklyTerminalRecord>()
-                        .Where(row => row.TerminalId == request.TerminalId
-                            && row.StoreCode == scope.StoreCode
-                            && row.Environment == scope.Environment)
-                )
-                .FirstAsync();
+            foreach (var terminalId in affectedTerminalIds)
+            {
+                if (await HasBlockingLinklySessionAsync(terminalId, scope.StoreCode!, scope.Environment!))
+                {
+                    await posmContext.Db.Ado.RollbackTranAsync();
+                    return ApiResponse<LinklyTerminalManagementDto>.Error(
+                        "原线路或目标线路仍有进行中或待确认的交易，请先完成交易恢复",
+                        "LINKLY_TERMINAL_SESSION_ACTIVE"
+                    );
+                }
+            }
+
+            PaymentLinklyTerminalRecord? terminal = null;
+            var lockedTerminals = new Dictionary<Guid, PaymentLinklyTerminalRecord>();
+            foreach (var terminalId in affectedTerminalIds)
+            {
+                var lockedTerminal = await WithLinklyUpdateLock(
+                        posmContext.Db,
+                        posmContext.Db.Queryable<PaymentLinklyTerminalRecord>()
+                            .Where(row => row.TerminalId == terminalId
+                                && row.StoreCode == scope.StoreCode
+                                && row.Environment == scope.Environment)
+                    )
+                    .FirstAsync();
+                if (lockedTerminal is not null)
+                {
+                    lockedTerminals[terminalId] = lockedTerminal;
+                }
+                if (lockedTerminal?.PairingAttemptId is not null
+                    && lockedTerminal.PairingLeaseExpiresAt > now)
+                {
+                    await posmContext.Db.Ado.RollbackTranAsync();
+                    return ApiResponse<LinklyTerminalManagementDto>.Error(
+                        "原线路或目标线路正在配对或检测，请等待操作结束后刷新线路",
+                        "LINKLY_TERMINAL_SESSION_ACTIVE"
+                    );
+                }
+
+                if (terminalId == request.TerminalId)
+                {
+                    terminal = lockedTerminal;
+                }
+            }
             if (terminal is null)
             {
                 await posmContext.Db.Ado.RollbackTranAsync();
@@ -621,6 +665,12 @@ public sealed class PaymentTerminalSettingsService(
                             && row.DeviceCode == normalizedDeviceCode)
                 )
                 .FirstAsync();
+
+            if (existing?.TerminalId != selectionSnapshot?.TerminalId)
+            {
+                await posmContext.Db.Ado.RollbackTranAsync();
+                return LinklySelectionRevisionConflict();
+            }
 
             var mode = await GetLinklyConfigurationModeForUpdateAsync(
                 scope.StoreCode!,
@@ -687,6 +737,35 @@ public sealed class PaymentTerminalSettingsService(
                         && row.Revision == existing.Revision)
                     .ExecuteCommandAsync();
                 if (affected != 1)
+                {
+                    await posmContext.Db.Ado.RollbackTranAsync();
+                    return LinklySelectionRevisionConflict();
+                }
+            }
+
+            // 分配关系也是终端快照的一部分；旧、新线路都推进版本，阻止 POS 用旧快照完成 ABA 换线。
+            foreach (var terminalId in affectedTerminalIds)
+            {
+                if (!lockedTerminals.TryGetValue(terminalId, out var lockedTerminal))
+                {
+                    await posmContext.Db.Ado.RollbackTranAsync();
+                    return LinklySelectionRevisionConflict();
+                }
+
+                var terminalAffected = await posmContext.Db.Updateable<PaymentLinklyTerminalRecord>()
+                    .SetColumns(row => new PaymentLinklyTerminalRecord
+                    {
+                        UpdatedAt = NextLinklyTerminalUpdatedAt(lockedTerminal.UpdatedAt),
+                        UpdatedBy = updater,
+                        LastHealthStatus = null,
+                        LastHealthAt = null,
+                    })
+                    .Where(row => row.TerminalId == terminalId
+                        && row.StoreCode == scope.StoreCode
+                        && row.Environment == scope.Environment
+                        && row.UpdatedAt == lockedTerminal.UpdatedAt)
+                    .ExecuteCommandAsync();
+                if (terminalAffected != 1)
                 {
                     await posmContext.Db.Ado.RollbackTranAsync();
                     return LinklySelectionRevisionConflict();
@@ -815,6 +894,11 @@ public sealed class PaymentTerminalSettingsService(
                     "LINKLY_TERMINAL_SESSION_ACTIVE"
                 );
             }
+            if (terminal is null)
+            {
+                await posmContext.Db.Ado.RollbackTranAsync();
+                return LinklySelectionRevisionConflict();
+            }
 
             var existing = await WithLinklyUpdateLock(
                     posmContext.Db,
@@ -839,6 +923,26 @@ public sealed class PaymentTerminalSettingsService(
                     && row.Revision == request.ExpectedRevision)
                 .ExecuteCommandAsync();
             if (affected != 1)
+            {
+                await posmContext.Db.Ado.RollbackTranAsync();
+                return LinklySelectionRevisionConflict();
+            }
+
+            // 解绑后 owner 会消失，必须同时推进终端版本并清除旧线路健康结果。
+            var terminalAffected = await posmContext.Db.Updateable<PaymentLinklyTerminalRecord>()
+                .SetColumns(row => new PaymentLinklyTerminalRecord
+                {
+                    UpdatedAt = NextLinklyTerminalUpdatedAt(terminal.UpdatedAt),
+                    UpdatedBy = updater,
+                    LastHealthStatus = null,
+                    LastHealthAt = null,
+                })
+                .Where(row => row.TerminalId == terminal.TerminalId
+                    && row.StoreCode == scope.StoreCode
+                    && row.Environment == scope.Environment
+                    && row.UpdatedAt == terminal.UpdatedAt)
+                .ExecuteCommandAsync();
+            if (terminalAffected != 1)
             {
                 await posmContext.Db.Ado.RollbackTranAsync();
                 return LinklySelectionRevisionConflict();
@@ -1202,6 +1306,7 @@ public sealed class PaymentTerminalSettingsService(
             .FirstAsync();
     }
 
+    // 只有已确认且明确结束的会话可放行；未知状态即使误写 ACK 也不能释放线路。
     private async Task<bool> HasBlockingLinklySessionAsync(
         Guid terminalId,
         string storeCode,
@@ -1215,11 +1320,11 @@ public sealed class PaymentTerminalSettingsService(
                         && row.StoreCode == storeCode
                         && row.Environment == environment
                         && (row.IsActive
-                            || (row.ClientAcknowledgedAt == null
-                                && (row.Status == "Completed"
-                                    || row.Status == "Cancelled"
-                                    || row.Status == "Failed"
-                                    || row.Status == "NotSubmitted"))))
+                            || row.ClientAcknowledgedAt == null
+                            || (row.Status != "Completed"
+                                && row.Status != "Cancelled"
+                                && row.Status != "Failed"
+                                && row.Status != "NotSubmitted")))
             )
             .AnyAsync();
     }
@@ -1237,11 +1342,11 @@ public sealed class PaymentTerminalSettingsService(
                         && row.StoreCode == storeCode
                         && row.Environment == environment
                         && (row.IsActive
-                            || (row.ClientAcknowledgedAt == null
-                                && (row.Status == "Completed"
-                                    || row.Status == "Cancelled"
-                                    || row.Status == "Failed"
-                                    || row.Status == "NotSubmitted"))))
+                            || row.ClientAcknowledgedAt == null
+                            || (row.Status != "Completed"
+                                && row.Status != "Cancelled"
+                                && row.Status != "Failed"
+                                && row.Status != "NotSubmitted")))
             )
             .AnyAsync();
     }
@@ -1257,11 +1362,11 @@ public sealed class PaymentTerminalSettingsService(
                     .Where(row => row.StoreCode == storeCode
                         && row.Environment == environment
                         && (row.IsActive
-                            || (row.ClientAcknowledgedAt == null
-                                && (row.Status == "Completed"
-                                    || row.Status == "Cancelled"
-                                    || row.Status == "Failed"
-                                    || row.Status == "NotSubmitted"))))
+                            || row.ClientAcknowledgedAt == null
+                            || (row.Status != "Completed"
+                                && row.Status != "Cancelled"
+                                && row.Status != "Failed"
+                                && row.Status != "NotSubmitted")))
             )
             .AnyAsync();
     }

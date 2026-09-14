@@ -173,7 +173,7 @@ export function ManagerApprovalList({
   };
 
   return (
-    <Card mode="elevated" style={styles.card}>
+    <Card mode="outlined" style={styles.card}>
       <Card.Title title={title ?? t("sections.approvals")} />
       <Card.Content style={styles.content}>
         {approvals.length ? (
@@ -263,7 +263,11 @@ const styles = StyleSheet.create({
     justifyContent: "flex-end",
   },
   card: {
-    borderRadius: 8,
+    backgroundColor: "#FFFFFF",
+    borderColor: "#E4E7EC",
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    elevation: 0,
   },
   content: {
     gap: 10,
@@ -278,8 +282,9 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   item: {
-    borderColor: "#E5E7EB",
-    borderRadius: 6,
+    backgroundColor: "#FCFCFD",
+    borderColor: "#E4E7EC",
+    borderRadius: 8,
     borderWidth: StyleSheet.hairlineWidth,
     gap: 8,
     padding: 10,
@@ -290,6 +295,6 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   muted: {
-    color: "#6B7280",
+    color: "#475467",
   },
 });

@@ -155,18 +155,20 @@ export function StorePriceStrategyCard({
 
 const styles = StyleSheet.create({
   card: {
-    borderRadius: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E4E7EC",
     backgroundColor: "#fff",
   },
   content: {
-    gap: 4,
-    paddingVertical: 6,
+    gap: 8,
+    paddingVertical: 12,
   },
   headerRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 6,
+    gap: 8,
   },
   title: {
     fontWeight: "700",
@@ -183,11 +185,11 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   input: {
-    backgroundColor: "#fff",
-    height: 38,
+    backgroundColor: "#FFFFFF",
+    height: 44,
   },
   narrowInput: {
-    width: 88,
+    width: 96,
     flexShrink: 0,
   },
   inputFill: {
@@ -204,11 +206,11 @@ const styles = StyleSheet.create({
   gpText: {
     fontWeight: "700",
     fontSize: 12,
-    color: "#1677FF",
+    color: "#0958D9",
     flexShrink: 0,
   },
   rateText: {
-    color: "#1677FF",
+    color: "#0958D9",
     fontWeight: "700",
     flexShrink: 0,
   },
@@ -222,7 +224,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     gap: 8,
-    paddingTop: 2,
+    paddingTop: 4,
   },
   summarySpacer: {
     flex: 1,

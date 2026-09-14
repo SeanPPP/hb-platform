@@ -13,8 +13,6 @@ import {
   Card,
   DataTable,
   HelperText,
-  Modal,
-  Portal,
   SegmentedButtons,
   Snackbar,
   Surface,
@@ -23,6 +21,9 @@ import {
 } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { BusinessSheet } from "@/components/ui/BusinessSheet";
+import { BUSINESS_UI } from "@/components/ui/business-ui";
+import { HB_COLORS } from "@/shared/theme/tokens";
 import {
   SelectionListModal,
   type SelectionListItem,
@@ -574,13 +575,6 @@ export function SeasonalCardsScreen() {
 
   const renderSubmitView = () => (
     <View style={styles.section}>
-      <Surface style={styles.headerCard}>
-        <Text variant="titleMedium">{t("title")}</Text>
-        <Text variant="bodyMedium" style={styles.subtitle}>
-          {t("submitSubtitle")}
-        </Text>
-      </Surface>
-
       <FieldButton
         label={t("form.storeCode")}
         value={selectedFormStore?.storeName ?? draft.storeCode}
@@ -704,13 +698,6 @@ export function SeasonalCardsScreen() {
 
   const renderHistoryView = () => (
     <View style={styles.section}>
-      <Surface style={styles.headerCard}>
-        <Text variant="titleMedium">{t("historyTitle")}</Text>
-        <Text variant="bodyMedium" style={styles.subtitle}>
-          {t("historySubtitle")}
-        </Text>
-      </Surface>
-
       <FieldButton
         label={t("history.storeCode")}
         value={selectedHistoryStore?.storeName ?? historyFilters.storeCode}
@@ -793,7 +780,7 @@ export function SeasonalCardsScreen() {
       ) : historyQuery.data?.items.length ? (
         <View style={styles.cardList}>
           {historyQuery.data.items.map((item) => (
-            <Card key={item.submissionGuid} mode="outlined">
+            <Card key={item.submissionGuid} mode="outlined" style={BUSINESS_UI.section}>
               <Card.Content style={styles.cardContent}>
                 <Text variant="titleMedium">
                   {getCardTypeLabel(item.cardType, item.cardTypeName) ||
@@ -896,6 +883,14 @@ export function SeasonalCardsScreen() {
         }
         contentContainerStyle={styles.content}
       >
+        <View style={BUSINESS_UI.header}>
+          <Text variant="headlineSmall" style={BUSINESS_UI.title}>
+            {viewMode === "history" ? t("historyTitle") : t("title")}
+          </Text>
+          <Text variant="bodyMedium" style={styles.subtitle}>
+            {viewMode === "history" ? t("historySubtitle") : t("submitSubtitle")}
+          </Text>
+        </View>
         {canSubmit && canView ? (
           <SegmentedButtons
             value={viewMode}
@@ -910,7 +905,7 @@ export function SeasonalCardsScreen() {
         {viewMode === "submit" ? renderSubmitView() : renderHistoryView()}
       </ScrollView>
 
-      <StorePickerModal
+      <StorePickerModal presentation="sheet"
         visible={Boolean(storePickerTarget)}
         stores={stores}
         selectedStoreCode={currentStorePickerSelection}
@@ -922,7 +917,7 @@ export function SeasonalCardsScreen() {
         }}
       />
 
-      <SelectionListModal
+      <SelectionListModal presentation="sheet"
         visible={Boolean(yearPickerTarget)}
         title={t("form.yearPickerTitle")}
         cancelLabel={t("common:actions.cancel")}
@@ -937,7 +932,7 @@ export function SeasonalCardsScreen() {
         }}
       />
 
-      <SelectionListModal
+      <SelectionListModal presentation="sheet"
         visible={Boolean(cardTypePickerTarget)}
         title={t("form.cardTypePickerTitle")}
         cancelLabel={t("common:actions.cancel")}
@@ -961,7 +956,7 @@ export function SeasonalCardsScreen() {
         }}
       />
 
-      <SelectionListModal
+      <SelectionListModal presentation="sheet"
         visible={priceOptionPickerVisible}
         title={t("form.priceOptionPickerTitle")}
         cancelLabel={t("common:actions.cancel")}
@@ -977,15 +972,16 @@ export function SeasonalCardsScreen() {
         }}
       />
 
-      <Portal>
-        <Modal
-          visible={Boolean(selectedSubmissionGuid)}
-          onDismiss={() => setSelectedSubmissionGuid(null)}
-          contentContainerStyle={styles.detailModal}
-        >
-          <Text variant="titleLarge" style={styles.detailTitle}>
-            {t("detailTitle")}
-          </Text>
+      <BusinessSheet
+        visible={Boolean(selectedSubmissionGuid)}
+        title={t("detailTitle")}
+        onDismiss={() => setSelectedSubmissionGuid(null)}
+        footer={
+          <Button mode="outlined" contentStyle={BUSINESS_UI.buttonContent} onPress={() => setSelectedSubmissionGuid(null)}>
+            {t("common:actions.close")}
+          </Button>
+        }
+      >
           {detailQuery.isLoading ? (
             <View style={styles.feedbackBlock}>
               <ActivityIndicator />
@@ -1044,13 +1040,7 @@ export function SeasonalCardsScreen() {
               description={t("messages.detailLoadFailedDescription")}
             />
           )}
-          <View style={styles.modalActions}>
-            <Button onPress={() => setSelectedSubmissionGuid(null)}>
-              {t("common:actions.close")}
-            </Button>
-          </View>
-        </Modal>
-      </Portal>
+      </BusinessSheet>
 
       <Snackbar visible={Boolean(snackbar)} onDismiss={() => setSnackbar("")}>
         {snackbar}
@@ -1082,32 +1072,26 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   content: {
-    gap: 10,
-    padding: 10,
-    paddingBottom: 16,
+    ...BUSINESS_UI.content,
   },
   detailBlock: {
     gap: 6,
   },
   detailLine: {
-    gap: 1,
+    flexDirection: "row",
+    gap: 12,
+    paddingVertical: 6,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: HB_COLORS.outlineMuted,
   },
   detailLineLabel: {
-    color: "#666",
+    ...BUSINESS_UI.fieldLabel,
+    width: 104,
   },
   detailLineValue: {
-    color: "#111",
-  },
-  detailModal: {
-    alignSelf: "center",
-    backgroundColor: "#FFFFFF",
-    borderRadius: 16,
-    gap: 12,
-    padding: 20,
-    width: "88%",
-  },
-  detailTitle: {
-    marginBottom: 4,
+    ...BUSINESS_UI.fieldValue,
+    flex: 1,
+    textAlign: "right",
   },
   feedbackBlock: {
     alignItems: "center",
@@ -1116,7 +1100,7 @@ const styles = StyleSheet.create({
   },
   fieldButtonContent: {
     justifyContent: "flex-start",
-    minHeight: 34,
+    minHeight: 44,
     paddingHorizontal: 2,
   },
   fieldButtonLabel: {
@@ -1129,24 +1113,15 @@ const styles = StyleSheet.create({
     lineHeight: 15,
   },
   fieldSurface: {
-    borderRadius: 12,
+    ...BUSINESS_UI.section,
     gap: 4,
     padding: 8,
-  },
-  headerCard: {
-    borderRadius: 12,
-    gap: 2,
-    padding: 10,
   },
   historyDisplaySwitch: {
     marginTop: 2,
   },
   historyTable: {
     minWidth: 320,
-  },
-  modalActions: {
-    alignItems: "flex-end",
-    marginTop: 8,
   },
   pagination: {
     alignItems: "center",
@@ -1158,23 +1133,20 @@ const styles = StyleSheet.create({
     minWidth: 96,
   },
   screen: {
-    backgroundColor: "#F7F8FA",
-    flex: 1,
+    ...BUSINESS_UI.screen,
   },
   section: {
-    gap: 6,
+    gap: 12,
   },
   submitButtonContent: {
-    minHeight: 40,
+    minHeight: 48,
   },
   tableSurface: {
-    borderRadius: 12,
+    ...BUSINESS_UI.section,
     overflow: "hidden",
   },
   subtitle: {
-    color: "#666",
-    fontSize: 12,
-    lineHeight: 16,
+    ...BUSINESS_UI.subtitle,
   },
   yearHeaderCell: {
     minWidth: 72,

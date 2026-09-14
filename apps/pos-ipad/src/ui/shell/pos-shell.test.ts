@@ -40,15 +40,15 @@ test("backend-aware connectivity: 设备在线但后端停止时判定为离线"
   assert.equal(resolveBackendAwareConnectivity("online", false), "offline");
   // 后端可达：在线。
   assert.equal(resolveBackendAwareConnectivity("online", true), "online");
-  // 尚未探测：保持乐观在线，避免启动闪烁。
-  assert.equal(resolveBackendAwareConnectivity("online", null), "online");
+  // 尚未探测：不能仅凭系统网络状态乐观宣称后端在线。
+  assert.equal(resolveBackendAwareConnectivity("online", null), "checking");
 });
 
-test("backend-aware connectivity: 设备断网时恒为离线，不受后端探测影响", () => {
-  assert.equal(resolveBackendAwareConnectivity("offline", true), "offline");
+test("backend-aware connectivity: 后端实测可达优先于系统网络误报", () => {
+  assert.equal(resolveBackendAwareConnectivity("offline", true), "online");
   assert.equal(resolveBackendAwareConnectivity("offline", null), "offline");
-  assert.equal(resolveBackendAwareConnectivity("checking", false), "checking");
-  assert.equal(resolveBackendAwareConnectivity("checking", true), "checking");
+  assert.equal(resolveBackendAwareConnectivity("checking", false), "offline");
+  assert.equal(resolveBackendAwareConnectivity("checking", true), "online");
 });
 
 test("shell store starts in checking and validates ready pending sync counts", () => {

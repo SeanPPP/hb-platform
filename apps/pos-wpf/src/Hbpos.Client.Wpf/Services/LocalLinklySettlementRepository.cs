@@ -109,8 +109,18 @@ public sealed record LocalLinklySettlementCompletion(
     DateTimeOffset CompletedAt,
     ProviderSubmissionState ProviderSubmissionState = ProviderSubmissionState.Unknown);
 
-public interface ILocalLinklySettlementRepository
+public interface ILinklyUnresolvedSettlementReader
 {
+    Task<bool> HasUnresolvedAsync(
+        string storeCode,
+        string deviceCode,
+        string environment,
+        CancellationToken cancellationToken = default);
+}
+
+public interface ILocalLinklySettlementRepository : ILinklyUnresolvedSettlementReader
+{
+
     Task CreatePendingAsync(LocalLinklySettlementRecord settlement, CancellationToken cancellationToken = default);
 
     Task<bool> TryCreatePendingAsync(LocalLinklySettlementRecord settlement, CancellationToken cancellationToken = default);
@@ -202,6 +212,33 @@ public interface ILocalLinklySettlementRepository
 
 public sealed class LocalLinklySettlementRepository(LocalSqliteStore store) : ILocalLinklySettlementRepository
 {
+    public async Task<bool> HasUnresolvedAsync(
+        string storeCode,
+        string deviceCode,
+        string environment,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT EXISTS
+            (
+                SELECT 1
+                FROM LinklySettlementRecords
+                WHERE StoreCode = $StoreCode
+                  AND DeviceCode = $DeviceCode
+                  AND Environment = $Environment
+                  AND Status IN ($PendingStatus, $UnknownStatus)
+            );
+            """;
+        command.Parameters.AddWithValue("$StoreCode", storeCode);
+        command.Parameters.AddWithValue("$DeviceCode", deviceCode);
+        command.Parameters.AddWithValue("$Environment", environment);
+        command.Parameters.AddWithValue("$PendingStatus", LocalLinklySettlementStatus.Pending.ToString());
+        command.Parameters.AddWithValue("$UnknownStatus", LocalLinklySettlementStatus.Unknown.ToString());
+        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture) == 1;
+    }
+
     public async Task CreatePendingAsync(LocalLinklySettlementRecord settlement, CancellationToken cancellationToken = default)
     {
         if (!await TryCreatePendingAsync(settlement, cancellationToken))

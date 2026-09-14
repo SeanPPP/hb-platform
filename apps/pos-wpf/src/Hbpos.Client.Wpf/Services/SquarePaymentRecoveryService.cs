@@ -26,6 +26,10 @@ public interface ISquarePaymentRecoveryService
             false,
             "Square refund supervisor resolution is unavailable."));
 
+    Task<IReadOnlyList<CardRecoveryQueueItem>> ListHistoryAsync(
+        PosSessionState session, CancellationToken cancellationToken = default) =>
+        ListOpenAsync(session, cancellationToken);
+
     Task<IReadOnlyList<CardRecoveryQueueItem>> ListOpenAsync(
         PosSessionState session,
         CancellationToken cancellationToken = default);
@@ -135,6 +139,55 @@ public sealed class SquarePaymentRecoveryService(
         }
 
         return await RecoverSaleAttemptAsync(cart, session, settings, attempt, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<CardRecoveryQueueItem>> ListHistoryAsync(
+        PosSessionState session,
+        CancellationToken cancellationToken = default)
+    {
+        var settings = await settingsProvider.GetSettingsAsync(cancellationToken);
+        var attempts = await RunLocalStoreAsync(
+            () => attemptRepository.GetRecentAttemptsAsync(
+                session.StoreCode,
+                session.DeviceCode,
+                settings.Environment.ToString(),
+                cancellationToken),
+            cancellationToken);
+        // 未结记录不受历史条数上限影响；历史数据只用于展示，不能恢复已关闭交易。
+        var open = await ListOpenAsync(session, cancellationToken);
+        var openKeys = open.Select(item => item.Key).ToHashSet();
+        var recent = attempts
+            .Select(attempt => new CardRecoveryQueueItem(
+                CardProcessorKind.Square,
+                attempt.AttemptGuid,
+                attempt.OperationKind,
+                attempt.Amount,
+                attempt.StoreCode,
+                attempt.DeviceCode,
+                attempt.CashierId,
+                attempt.Environment,
+                string.Equals(
+                    attempt.RecoveryPhase,
+                    CardRecoveryPhases.FinalizePending,
+                    StringComparison.Ordinal)
+                    ? CardRecoveryPhases.FinalizePending
+                    : attempt.Status.ToString(),
+                attempt.CreatedAt,
+                attempt.UpdatedAt,
+                attempt.OrderDraftJson,
+                null,
+                null,
+                attempt.CheckoutId,
+                attempt.ResponseCode,
+                attempt.ResponseText,
+                null,
+                attempt.PaymentId,
+                attempt.OperationGuid,
+                attempt.PaymentStatus))
+            .Select(item => item with { IsOpen = openKeys.Contains(item.Key) })
+            .ToArray();
+        return open.Concat(recent.Where(item => !openKeys.Contains(item.Key)))
+            .OrderByDescending(item => item.UpdatedAt).ToArray();
     }
 
     public async Task<IReadOnlyList<CardRecoveryQueueItem>> ListOpenAsync(

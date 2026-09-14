@@ -3,7 +3,7 @@
   "searchPlaceholder": "Search username, name, email, or phone",
   "currentStore": {
     "label": "Current store",
-    "value": "{{name}} ({{code}})",
+    "value": "{{name}} · {{code}}",
     "empty": "No store selected",
     "allRelated": "All assigned stores",
     "select": "Select store",
@@ -14,7 +14,7 @@
   },
   "actions": {
     "refresh": "Refresh",
-    "create": "Add staff",
+    "create": "Add employee",
     "edit": "Edit",
     "save": "Save",
     "cancel": "Cancel",
@@ -206,7 +206,72 @@
     "sortByName": "Sort by name",
     "statusAll": "All",
     "statusActive": "Active",
-    "statusDisabled": "Disabled"
+    "statusDisabled": "Disabled",
+    "statusAllCount": "All {{count}}",
+    "statusActiveCount": "Active {{count}}",
+    "statusDisabledCount": "Disabled {{count}}"
+  },
+  "staffBarcode": {
+    "title": "Staff personal code",
+    "emptyDescription": "This staff member has no personal code yet. Create one to show the QR code, or create and print one label.",
+    "printCount": "{{count}} confirmed prints",
+    "printer": "Label printer: {{printer}} · {{status}}",
+    "noPrinter": "Not selected",
+    "confirmOnlyHint": "The label was printed. Only server confirmation will be retried; no new label will print.",
+    "actions": {
+      "open": "Personal code",
+      "create": "Create code",
+      "createAndPrint": "Create and print",
+      "print": "Print",
+      "retryConfirmation": "Retry confirmation only",
+      "printed": "Printed; confirm only",
+      "notPrinted": "Not printed; retry",
+      "done": "Done",
+      "start": "Start printing",
+      "continue": "Continue",
+      "skip": "Skip staff member",
+      "end": "End",
+      "printerSettings": "Printer settings"
+    },
+    "created": {
+      "title": "Staff member created",
+      "description": "{{name}} was created. Finish now, or create and print their personal code."
+    },
+    "batch": {
+      "entry": "Batch print",
+      "cancelSelection": "Cancel selection",
+      "confirm": "Print {{count}}",
+      "title": "Batch print ({{count}})",
+      "summary": "Store {{store}} · {{done}} / {{total}} done · one label each",
+      "selectEmployee": "Select {{name}}",
+      "statuses": {
+        "pending": "Pending",
+        "printing": "Printing",
+        "done": "Done",
+        "failed": "Failed; paused",
+        "confirmationPending": "Printed; confirmation pending",
+        "uncertain": "Confirm paper result",
+        "skipped": "Skipped",
+        "obsolete": "Old code invalid"
+      }
+    },
+    "printerStatuses": {
+      "idle": "Idle",
+      "connecting": "Connecting",
+      "connected": "Connected",
+      "reconnecting": "Reconnecting",
+      "disconnected": "Disconnected",
+      "paused": "Paused",
+      "error": "Error"
+    },
+    "errors": {
+      "inactive": "A disabled account cannot create or print a personal code.",
+      "unavailable": "The staff personal-code service is unavailable. Try again later.",
+      "restore": "The previous print record could not be safely restored.",
+      "printFailed": "Printing paused. Check the printer before continuing. If paper may have printed, confirm the physical result first.",
+      "uncertain": "The app cannot confirm whether paper printed. Check the printer and choose the result; the app will not print another label automatically.",
+      "obsolete": "The server reports that the old code is invalid. Destroy the old label. The current code has been refreshed; printing it requires another explicit action."
+    }
   },
   "detail": {
     "title": "Staff Details",

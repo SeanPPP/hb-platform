@@ -439,8 +439,10 @@ public sealed class ReactLocalSupplierInvoiceAuthorizationTests : IDisposable
         Assert.Equal(Permissions.LocalPurchase.View, analysisAuthorize.Policy);
     }
 
-    [Fact]
-    public async Task UpdateToStorePrices_成本业务锁冲突返回409和Busy错误码()
+    [Theory]
+    [InlineData(SetChildPurchasePriceMutationLock.BusyErrorCode)]
+    [InlineData("STORE_UPDATE_COST_LOCK_BUSY")]
+    public async Task UpdateToStorePrices_成本业务锁冲突返回409和Busy错误码(string busyCode)
     {
         var invoices = new Mock<ILocalSupplierInvoicesReactService>(MockBehavior.Strict);
         invoices
@@ -450,7 +452,7 @@ public sealed class ReactLocalSupplierInvoiceAuthorizationTests : IDisposable
             ))
             .ReturnsAsync(ApiResponse<UpdateToStorePricesResultDto>.Error(
                 "套装子项成本正在更新，请稍后重试",
-                SetChildPurchasePriceMutationLock.BusyErrorCode
+                busyCode
             ));
         var controller = CreateController(invoices.Object, authorizationService: null, isAdmin: true);
 
@@ -465,7 +467,7 @@ public sealed class ReactLocalSupplierInvoiceAuthorizationTests : IDisposable
         var conflict = Assert.IsType<ObjectResult>(actionResult);
         Assert.Equal(StatusCodes.Status409Conflict, conflict.StatusCode);
         Assert.Equal(
-            SetChildPurchasePriceMutationLock.BusyErrorCode,
+            busyCode,
             conflict.Value?.GetType().GetProperty("code")?.GetValue(conflict.Value)
         );
         invoices.VerifyAll();

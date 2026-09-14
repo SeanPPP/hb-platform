@@ -184,3 +184,36 @@ test("设置 reload 成功后保持 terminal pending，失败时仍向上抛出"
     /RELOAD_FAILED/u,
   );
 });
+
+
+test("联网探测要求实时响应，禁止复用 HTTP 健康检查缓存", async () => {
+  let options: unknown;
+  const probe = createSettingsApiHealthProbe(async (_url, init) => {
+    options = init;
+    return { ok: true };
+  });
+  const controller = new AbortController();
+  await probe("https://pos.example.test/api/v1/health", controller.signal);
+  assert.deepEqual(options, {
+    method: "GET", signal: controller.signal, cache: "no-store",
+    headers: { "Cache-Control": "no-cache, no-store", Pragma: "no-cache" },
+  });
+});
+
+
+test("健康检查失败不误报在线，取消后的成功响应不再被采纳", async () => {
+  const controller = new AbortController();
+  for (const fetcher of [
+    async () => ({ ok: false }),
+    async (): Promise<{ ok: boolean }> => { throw new Error("Network unavailable"); },
+  ]) {
+    assert.equal(await createSettingsApiHealthProbe(fetcher)(
+      "https://pos.example.test/api/v1/health", controller.signal,
+    ), false);
+  }
+  const probe = createSettingsApiHealthProbe(async () => {
+    controller.abort();
+    return { ok: true };
+  });
+  await assert.rejects(probe("https://pos.example.test/api/v1/health", controller.signal), /abort/i);
+});

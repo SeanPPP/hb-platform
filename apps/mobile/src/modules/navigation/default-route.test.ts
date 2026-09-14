@@ -138,6 +138,42 @@ assertEqual(
 );
 
 assertEqual(
+  TAB_PATHS["product-insights"],
+  "/(shell)/product-insights",
+  "商品进销查询必须注册为商品查询详情可返回的 Shell 子页"
+);
+
+assertEqual(
+  getVisibleTabRouteNames({
+    routeNames: ["product-query", "product-insights"],
+    isDeviceMode: true,
+  }).join(","),
+  "workbench,product-query,product-insights,settings",
+  "设备模式拥有商品查询权限时必须保留商品进销查询入口"
+);
+
+assertEqual(
+  TAB_PATHS["user-admin"],
+  "/(shell)/user-admin",
+  "全局用户管理入口必须注册为独立路由，不能复用门店员工入口"
+);
+
+assertEqual(
+  TAB_PATHS.roles,
+  "/(shell)/roles",
+  "全局角色管理入口必须注册为独立路由"
+);
+
+assertEqual(
+  getVisibleTabRouteNames({
+    routeNames: ["user-admin", "roles", "users", "settings"],
+    isDeviceMode: true,
+  }).join(","),
+  "workbench,users,settings",
+  "设备模式必须隐藏全局用户与角色管理，但保留既有门店员工流程"
+);
+
+assertEqual(
   resolveTabRouteCorrection({
     currentRouteName: "employee-profile-review",
     hasAppliedDefaultRoute: true,

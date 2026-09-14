@@ -372,14 +372,14 @@ export function PunchAdjustmentCard({
 }
 
 const styles = StyleSheet.create({
-  card: { borderRadius: 8 },
+  card: { backgroundColor: "#FFFFFF", borderColor: "#E4E7EC", borderRadius: 12, borderWidth: StyleSheet.hairlineWidth, elevation: 0 },
   chipRow: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
   content: { gap: 10 },
   exceptionText: { color: "#B42318" },
   existingPunches: { gap: 6 },
   flexText: { flex: 1 },
   header: { alignItems: "flex-start", flexDirection: "row", gap: 8 },
-  muted: { color: "#6B7280" },
-  previewBox: { backgroundColor: "#EEF6F0", borderRadius: 8, gap: 5, padding: 10 },
+  muted: { color: "#475467" },
+  previewBox: { backgroundColor: "#ECFDF3", borderRadius: 8, gap: 5, padding: 10 },
   previewInvalid: { backgroundColor: "#FFF5F5" },
 });

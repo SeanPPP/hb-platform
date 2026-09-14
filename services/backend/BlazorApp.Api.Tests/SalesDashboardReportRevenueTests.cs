@@ -182,7 +182,20 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
     [Fact]
     public async Task GetStatisticsFreshnessAsync_返回最近成功时间和最新运行状态()
     {
-        var successfulAt = new DateTime(2026, 7, 10, 1, 30, 5, DateTimeKind.Utc);
+        var successfulAt = DateTime.SpecifyKind(
+            SalesStatisticsBusinessDate.Today().AddHours(1).AddMinutes(30).AddSeconds(5),
+            DateTimeKind.Utc
+        );
+        await _localDb.Insertable(new SalesStatisticRefreshState
+        {
+            StatisticType = SalesStatisticType.RevenueReportPublished,
+            Date = successfulAt.Date,
+            Status = SalesStatisticRefreshStatus.Fresh,
+            LastAggregatedAtUtc = successfulAt,
+            LastCheckedAtUtc = successfulAt,
+            CompletedAtUtc = successfulAt,
+            SourceTimeZone = "POSM_LOCAL",
+        }).ExecuteCommandAsync();
         await SeedStatisticsTaskLogAsync(ScheduledTaskStatus.Success, successfulAt.AddMinutes(-2), successfulAt);
         await SeedStatisticsTaskLogAsync(
             ScheduledTaskStatus.Failed,
@@ -210,6 +223,65 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         var result = await service.GetStatisticsFreshnessAsync();
 
         Assert.Equal(ScheduledTaskStatus.Failed, result.LatestRunStatus);
+    }
+
+    [Fact]
+    public async Task GetStatisticsFreshnessAsync_昨天完成发布不能推进当天新鲜度()
+    {
+        var yesterdayPublishedAt = DateTime.SpecifyKind(
+            SalesStatisticsBusinessDate.Today().AddDays(-1).AddHours(23),
+            DateTimeKind.Utc
+        );
+        await _localDb.Insertable(new SalesStatisticRefreshState
+        {
+            StatisticType = SalesStatisticType.RevenueReportPublished,
+            Date = yesterdayPublishedAt.Date,
+            Status = SalesStatisticRefreshStatus.Fresh,
+            LastAggregatedAtUtc = yesterdayPublishedAt,
+            LastCheckedAtUtc = yesterdayPublishedAt,
+            CompletedAtUtc = yesterdayPublishedAt,
+            SourceTimeZone = "POSM_LOCAL",
+        }).ExecuteCommandAsync();
+        await SeedStatisticsTaskLogAsync(
+            ScheduledTaskStatus.Skipped,
+            SalesStatisticsBusinessDate.Today().AddHours(1),
+            SalesStatisticsBusinessDate.Today().AddHours(1).AddMinutes(1)
+        );
+
+        var result = await CreateService().GetStatisticsFreshnessAsync();
+
+        Assert.Null(result.LastSuccessfulAtUtc);
+        Assert.Equal(ScheduledTaskStatus.Skipped, result.LatestRunStatus);
+    }
+
+    [Fact]
+    public async Task StatisticsCacheVersion_范围内单一维度实际提交后必须变化()
+    {
+        var date = new DateTime(2026, 9, 14);
+        var firstPublishedAt = new DateTime(2026, 9, 14, 4, 0, 0, DateTimeKind.Utc);
+        await _localDb.Insertable(new SalesStatisticRefreshState
+        {
+            StatisticType = SalesStatisticType.StoreSales,
+            Date = date,
+            Status = SalesStatisticRefreshStatus.Fresh,
+            LastAggregatedAtUtc = firstPublishedAt,
+            CompletedAtUtc = firstPublishedAt,
+            SourceTimeZone = "POSM_LOCAL",
+        }).ExecuteCommandAsync();
+        var service = CreateService();
+        var range = new DateRangeDto { StartDate = date, EndDate = date };
+
+        var before = await InvokeStatisticsCacheVersionAsync(service, range);
+        var secondPublishedAt = firstPublishedAt.AddMinutes(30);
+        await _localDb.Updateable<SalesStatisticRefreshState>()
+            .SetColumns(row => row.LastAggregatedAtUtc == secondPublishedAt)
+            .SetColumns(row => row.CompletedAtUtc == secondPublishedAt)
+            .Where(row => row.Date == date && row.StatisticType == SalesStatisticType.StoreSales)
+            .ExecuteCommandAsync();
+
+        var after = await InvokeStatisticsCacheVersionAsync(service, range);
+
+        Assert.NotEqual(before, after);
     }
 
     [Fact]
@@ -245,11 +317,16 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         var date = new DateTime(2026, 7, 10);
         await SeedStoreSalesStatisticAsync(date, "S1", "分店一", 100m, 5);
         await SeedSalesOrderAsync("daily-cache-version", date.AddHours(9), "S1");
-        await SeedStatisticsTaskLogAsync(
-            ScheduledTaskStatus.Success,
-            new DateTime(2026, 7, 10, 0, 29, 0, DateTimeKind.Utc),
-            new DateTime(2026, 7, 10, 0, 30, 0, DateTimeKind.Utc)
-        );
+        var firstCommittedAt = new DateTime(2026, 7, 10, 0, 30, 0, DateTimeKind.Utc);
+        await _localDb.Insertable(new SalesStatisticRefreshState
+        {
+            StatisticType = SalesStatisticType.StoreSales,
+            Date = date,
+            Status = SalesStatisticRefreshStatus.Fresh,
+            LastAggregatedAtUtc = firstCommittedAt,
+            CompletedAtUtc = firstCommittedAt,
+            LastCheckedAtUtc = firstCommittedAt,
+        }).ExecuteCommandAsync();
         var service = CreateService();
         var range = new DateRangeDto { StartDate = date, EndDate = date };
         var first = await service.GetBranchDailyPerformanceAsync(range, new List<string> { "S1" });
@@ -259,11 +336,13 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
             .SetColumns(row => row.TotalAmount == 200m)
             .Where(row => row.Date == date && row.BranchCode == "S1")
             .ExecuteCommandAsync();
-        await SeedStatisticsTaskLogAsync(
-            ScheduledTaskStatus.Success,
-            new DateTime(2026, 7, 10, 0, 59, 0, DateTimeKind.Utc),
-            new DateTime(2026, 7, 10, 1, 0, 0, DateTimeKind.Utc)
-        );
+        var secondCommittedAt = new DateTime(2026, 7, 10, 1, 0, 0, DateTimeKind.Utc);
+        await _localDb.Updateable<SalesStatisticRefreshState>()
+            .SetColumns(row => row.LastAggregatedAtUtc == secondCommittedAt)
+            .SetColumns(row => row.CompletedAtUtc == secondCommittedAt)
+            .SetColumns(row => row.LastCheckedAtUtc == secondCommittedAt)
+            .Where(row => row.Date == date && row.StatisticType == SalesStatisticType.StoreSales)
+            .ExecuteCommandAsync();
 
         var second = await service.GetBranchDailyPerformanceAsync(range, new List<string> { "S1" });
 
@@ -517,6 +596,32 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         var date = new DateTime(2025, 7, 19);
         await SeedStoreAsync("S02", "Store S02");
         await SeedHbSalesOrderAsync("hb-only-source", date.AddHours(9), "S02", 66m, 1m);
+        await SeedStoreSalesStatisticAsync(date, "S02", "Store S02", 66m, 1);
+
+        var refreshDates = new List<DateTime>();
+        var service = CreateService();
+        service.StoreStatisticsRefreshTestInterceptor = refreshDate =>
+        {
+            refreshDates.Add(refreshDate.Date);
+            return Task.CompletedTask;
+        };
+
+        var result = await service.GetExecutiveBranchPerformanceAsync(
+            new DateRangeDto { StartDate = date, EndDate = date },
+            branchCodes: new List<string> { "S02" }
+        );
+
+        Assert.Empty(refreshDates);
+        Assert.False(result.StatisticsPending);
+        Assert.Equal(66m, Assert.Single(result.Items).Revenue);
+    }
+
+    [Fact]
+    public async Task GetExecutiveBranchPerformanceAsync_二零二四年已验证HBSales来源身份也视为完整()
+    {
+        var date = new DateTime(2024, 9, 14);
+        await SeedStoreAsync("S02", "Store S02");
+        await SeedHbSalesOrderAsync("hb-only-source-2024", date.AddHours(9), "S02", 66m, 1m);
         await SeedStoreSalesStatisticAsync(date, "S02", "Store S02", 66m, 1);
 
         var refreshDates = new List<DateTime>();
@@ -4988,6 +5093,22 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
             {
             }
         }
+    }
+
+    private static async Task<string> InvokeStatisticsCacheVersionAsync(
+        SalesDashboardReactService service,
+        DateRangeDto dateRange
+    )
+    {
+        var method = typeof(SalesDashboardReactService).GetMethod(
+            "GetStatisticsCacheVersionAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic
+        );
+        Assert.NotNull(method);
+
+        var task = method!.Invoke(service, new object[] { dateRange }) as Task<string>;
+        Assert.NotNull(task);
+        return await task!;
     }
 
     private SalesDashboardReactService CreateService(bool useSupplierRollups = false)

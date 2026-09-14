@@ -1,4 +1,5 @@
 import type { PaymentAttemptService } from "../../features/payments";
+import type { PaymentAcknowledgementRuntimePort } from "@hb/pos-payments-core/features/payments/payment-acknowledgement-service";
 import {
   LinklyCloudBackendApi,
   LinklyPaymentTerminalSelectionCoordinator,
@@ -58,6 +59,7 @@ export type PaymentProviderRuntimeBootstrap = Readonly<{
   bindVoucherContextProvider(provider: VoucherPaymentContextProvider): void;
   createLinklyOperator(input: Readonly<{
     attempts: PaymentAttemptService;
+    acknowledgements: PaymentAcknowledgementRuntimePort;
     trustedSession: PaymentTrustedSessionGuard;
     permissions: PaymentPermissionGuard;
   }>): LinklyOperatorRuntime | null;
@@ -126,6 +128,7 @@ export async function createPaymentProviderRuntimeBootstrap(input: Readonly<{
     bindVoucherContextProvider: (provider) => voucherContext.bind(provider),
     createLinklyOperator: ({
       attempts,
+      acknowledgements,
       trustedSession,
       permissions,
     }) => {
@@ -137,6 +140,7 @@ export async function createPaymentProviderRuntimeBootstrap(input: Readonly<{
       }
       const options: LinklyOperatorRuntimeOptions = {
         attempts,
+        acknowledgements,
         api: linklyApi,
         configuration: { environment: linklyEnvironment },
         trustedSession,

@@ -13,10 +13,12 @@ import {
   Divider,
   Portal,
   Snackbar,
+  Surface,
   Text,
   TextInput,
   useTheme,
 } from "react-native-paper";
+import { BUSINESS_UI } from "@/components/ui/business-ui";
 import { getEmployeeProfileReviewAccess } from "./access";
 import {
   approveEmployeeProfileReviewApi,
@@ -45,6 +47,7 @@ import {
 } from "./sensitive-detail-activity-guard";
 import { useAppNavigationStore } from "@/modules/navigation/store";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
+import { HB_COLORS, HB_RADIUS, HB_SPACING } from "@/shared/theme/tokens";
 import { useAuthStore } from "@/store/auth-store";
 
 const MASKED_FIELDS = new Set<EmployeeProfileSensitiveField>([
@@ -494,7 +497,7 @@ export function EmployeeProfileReviewDetailScreen() {
         style={{ backgroundColor: theme.colors.background }}
         contentContainerStyle={styles.content}
       >
-        <Card mode="outlined">
+        <Card mode="outlined" style={styles.summarySurface}>
           <Card.Content style={styles.summaryCard}>
             <View style={styles.summaryTitleRow}>
               <View style={styles.flex}>
@@ -516,7 +519,7 @@ export function EmployeeProfileReviewDetailScreen() {
             <Card
               mode="outlined"
               key={key}
-              style={changed ? { backgroundColor: theme.colors.secondaryContainer } : undefined}
+              style={[styles.comparisonSurface, changed ? { backgroundColor: theme.colors.secondaryContainer } : undefined]}
             >
               <Card.Content style={styles.comparisonCard}>
                 <View style={styles.fieldTitleRow}>
@@ -563,9 +566,9 @@ export function EmployeeProfileReviewDetailScreen() {
 
         <Card
           mode="outlined"
-          style={detail.changedFields.includes("identityPhotoUrl")
+          style={[styles.comparisonSurface, detail.changedFields.includes("identityPhotoUrl")
             ? { backgroundColor: theme.colors.secondaryContainer }
-            : undefined}
+            : undefined]}
         >
           <Card.Content style={styles.comparisonCard}>
             <View style={styles.fieldTitleRow}>
@@ -596,7 +599,7 @@ export function EmployeeProfileReviewDetailScreen() {
         </Card>
 
         {detail.reviewReason ? (
-          <Card mode="outlined">
+          <Card mode="outlined" style={styles.comparisonSurface}>
             <Card.Content style={styles.comparisonCard}>
               <Text variant="labelLarge" selectable>{t("detail.reviewReason")}</Text>
               <Text selectable>{detail.reviewReason}</Text>
@@ -605,7 +608,7 @@ export function EmployeeProfileReviewDetailScreen() {
         ) : null}
 
         {staleAfterConflict ? (
-          <Card mode="outlined" style={{ backgroundColor: theme.colors.errorContainer }}>
+          <Card mode="outlined" style={[styles.comparisonSurface, { backgroundColor: theme.colors.errorContainer }]}>
             <Card.Content>
               <Text selectable style={{ color: theme.colors.onErrorContainer }}>
                 {t("messages.conflict")}
@@ -614,6 +617,9 @@ export function EmployeeProfileReviewDetailScreen() {
           </Card>
         ) : null}
 
+      </ScrollView>
+
+      <Surface style={styles.reviewFooter} elevation={3}>
         <View style={styles.reviewActions}>
           <Button
             mode="outlined"
@@ -641,7 +647,7 @@ export function EmployeeProfileReviewDetailScreen() {
             {t("actions.approve")}
           </Button>
         </View>
-      </ScrollView>
+      </Surface>
 
       <Portal>
         <Dialog visible={dialogAction !== null} onDismiss={() => setDialogAction(null)}>
@@ -752,19 +758,22 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   centered: { flex: 1, padding: 24, alignItems: "center", justifyContent: "center", gap: 16 },
   privacyShield: { flex: 1, padding: 32, alignItems: "center", justifyContent: "center", gap: 16 },
-  content: { padding: 16, paddingBottom: 40, gap: 12 },
-  summaryCard: { gap: 10 },
-  summaryTitleRow: { flexDirection: "row", alignItems: "flex-start", gap: 12 },
-  comparisonCard: { gap: 12 },
-  fieldTitleRow: { minHeight: 48, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
-  fieldActions: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end", gap: 4 },
-  valueRow: { flexDirection: "row", alignItems: "flex-start", gap: 16 },
-  valueColumn: { flex: 1, gap: 4 },
-  photoRow: { flexDirection: "row", alignItems: "stretch", gap: 12 },
-  photoColumn: { flex: 1, gap: 8 },
-  photo: { width: "100%", height: 180, borderRadius: 8, backgroundColor: "#F1F5F9" },
-  photoEmpty: { minHeight: 180, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "#CBD5E1", borderRadius: 8 },
-  reviewActions: { flexDirection: "row", gap: 12 },
+  content: { ...BUSINESS_UI.content, paddingBottom: 112 },
+  summarySurface: BUSINESS_UI.section,
+  comparisonSurface: BUSINESS_UI.section,
+  summaryCard: { ...BUSINESS_UI.sectionContent, gap: HB_SPACING.xs },
+  summaryTitleRow: { flexDirection: "row", alignItems: "flex-start", gap: HB_SPACING.sm },
+  comparisonCard: { ...BUSINESS_UI.sectionContent, gap: HB_SPACING.sm },
+  fieldTitleRow: { minHeight: 48, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: HB_SPACING.xs },
+  fieldActions: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end", gap: HB_SPACING.xxs },
+  valueRow: { flexDirection: "row", alignItems: "flex-start", gap: HB_SPACING.md },
+  valueColumn: { flex: 1, gap: HB_SPACING.xxs },
+  photoRow: { flexDirection: "row", alignItems: "stretch", gap: HB_SPACING.sm },
+  photoColumn: { flex: 1, gap: HB_SPACING.xs },
+  photo: { width: "100%", height: 180, borderRadius: HB_RADIUS.control, backgroundColor: HB_COLORS.surfaceMuted },
+  photoEmpty: { minHeight: 180, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: HB_COLORS.outline, borderRadius: HB_RADIUS.control },
+  reviewFooter: BUSINESS_UI.footer,
+  reviewActions: { flexDirection: "row", gap: HB_SPACING.sm },
   touchTarget: { minHeight: 48 },
   dialogContent: { gap: 12 },
 });

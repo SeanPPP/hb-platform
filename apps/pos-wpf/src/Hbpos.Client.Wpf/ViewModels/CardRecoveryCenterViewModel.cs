@@ -45,9 +45,11 @@ public sealed class CardRecoveryQueueRowViewModel
     public string AmountText { get; }
 
     public string StatusText { get; }
+
+    public string OrderText => CardRecoveryCenterViewModel.OrderReference(Source);
 }
 
-public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
+public sealed partial class CardRecoveryCenterViewModel : ObservableObject, IDisposable
 {
     private const string ScreenName = "card-recovery-center";
     private static readonly JsonSerializerOptions DraftJsonOptions =
@@ -192,6 +194,7 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
             {
                 if (previousKey != value?.Key)
                 {
+                    IsManualExpanded = false;
                     ResolutionReason = string.Empty;
                     ResolutionEvidence = string.Empty;
                     ResolutionReference = string.Empty;
@@ -278,16 +281,16 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
     public bool HasSelection => SelectedAttempt is not null;
     public bool HasNoSelection => !HasSelection;
     public bool HasOpenAttempts => OpenAttempts.Count > 0;
-    public bool HasNoOpenAttempts => !HasOpenAttempts;
+    public bool HasNoOpenAttempts => OpenAttemptRows.Count == 0;
     public bool HasProductSnapshot => SelectedProductLines.Count > 0;
     public bool HasNoProductSnapshot => !HasProductSnapshot;
     public IReadOnlyList<PosCartLineSnapshot> SelectedProductLines => _selectedProductLines;
     public bool IsSquareRefundProcessing =>
         SelectedAttempt is { } attempt && HasSquareRefundPaymentEvidence(attempt);
     public bool CanShowSupervisorResolution =>
-        SelectedAttempt is { } attempt && IsSupervisorResolutionAllowed(attempt);
+        SelectedAttempt is { IsOpen: true } attempt && IsSupervisorResolutionAllowed(attempt);
     public bool CanShowRecoveryOnlyGuidance =>
-        SelectedAttempt is { } attempt &&
+        SelectedAttempt is { IsOpen: true } attempt &&
         !IsSquareRefundProcessing &&
         !IsSupervisorResolutionAllowed(attempt);
     public string RecoveryOnlyGuidanceMessage => T(
@@ -358,7 +361,7 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
     public string SelectedChannelText => MapChannel(SelectedAttempt?.Processor);
     public string SelectedAmountText => SelectedAttempt is null
         ? NoneText
-        : SelectedAttempt.Amount.ToString("C2", GetCulture());
+        : FormatAmount(SelectedAttempt.Amount);
     public string SelectedCashierText => ValueOrNone(SelectedAttempt?.CashierId);
     public string SelectedTimeText => SelectedAttempt is null
         ? NoneText
@@ -431,7 +434,7 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
     private async Task RecoverSelectedAsync()
     {
         var selected = SelectedAttempt;
-        if (selected is null)
+        if (selected is null || !selected.IsOpen || IsBusy)
         {
             return;
         }
@@ -502,11 +505,11 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
         }
     }
 
-    private bool CanOperateOnSelection() => !IsBusy && SelectedAttempt is not null;
+    private bool CanOperateOnSelection() => !IsBusy && SelectedAttempt is { IsOpen: true };
 
     private bool CanResolveSelection() =>
         !IsBusy &&
-        SelectedAttempt is { } attempt &&
+        SelectedAttempt is { IsOpen: true } attempt &&
         IsSupervisorResolutionAllowed(attempt);
 
     private static bool IsSupervisorResolutionAllowed(CardRecoveryQueueItem attempt)
@@ -584,7 +587,7 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
         string action)
     {
         var selected = SelectedAttempt;
-        if (selected is null)
+        if (selected is null || !selected.IsOpen || IsBusy)
         {
             return;
         }
@@ -831,6 +834,7 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
 
     private void NotifySelectedAttemptProperties()
     {
+        NotifyWorkspaceProperties();
         OnPropertyChanged(nameof(HasSelection));
         OnPropertyChanged(nameof(HasNoSelection));
         OnPropertyChanged(nameof(SelectedTypeText));
@@ -862,14 +866,14 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
     {
         var selectedKey = SelectedAttempt?.Key ?? SelectedRow?.Key;
         var loadResult = _recoveryService is ICardRecoveryQueueLoader queueLoader
-            ? await queueLoader.LoadOpenQueueAsync(_session)
+            ? await queueLoader.LoadHistoryQueueAsync(_session)
             : new CardRecoveryQueueLoadResult(
-                await _recoveryService.ListOpenAsync(_session),
+                await _recoveryService.ListHistoryAsync(_session),
                 []);
         var failedProviders = loadResult.FailedProviders.ToHashSet();
         // 某 provider 读取失败时保留它最后一次成功展示的快照；只有成功读取的 provider
         // 才能用本次结果替换，避免把“加载失败”误报成“队列已清空”。
-        var items = OpenAttempts
+        var items = _history
             .Where(item => failedProviders.Contains(item.Processor))
             .Concat(loadResult.Items)
             .GroupBy(item => item.Key)
@@ -877,18 +881,19 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
             .OrderByDescending(item => item.UpdatedAt)
             .ThenByDescending(item => item.CreatedAt)
             .ToArray();
+        _history = items;
+        if (loadResult.IsComplete) _lastRefresh = DateTimeOffset.Now;
         OpenAttempts.Clear();
-        foreach (var item in items)
+        foreach (var item in items.Where(item => item.IsOpen))
         {
             OpenAttempts.Add(item);
         }
 
         RefreshDisplayRows(selectedKey);
 
-        SelectedAttempt = selectedKey is null
-            ? OpenAttempts.FirstOrDefault()
-            : OpenAttempts.FirstOrDefault(item => item.Key == selectedKey.Value) ??
-              OpenAttempts.FirstOrDefault();
+        SelectedAttempt = OpenAttemptRows.FirstOrDefault(row => row.Key == selectedKey)?.Source
+            ?? OpenAttemptRows.FirstOrDefault()?.Source;
+        NotifyWorkspaceProperties();
         OnPropertyChanged(nameof(OpenCountText));
         OnPropertyChanged(nameof(HasOpenAttempts));
         OnPropertyChanged(nameof(HasNoOpenAttempts));
@@ -965,7 +970,7 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
         try
         {
             OpenAttemptRows.Clear();
-            foreach (var item in OpenAttempts)
+            foreach (var item in FilteredHistory())
             {
                 OpenAttemptRows.Add(CreateDisplayRow(item));
             }
@@ -986,7 +991,7 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
 
         var selectedAttempt = selectedKey is null
             ? null
-            : OpenAttempts.FirstOrDefault(item => item.Key == selectedKey.Value);
+            : OpenAttemptRows.FirstOrDefault(item => item.Key == selectedKey.Value)?.Source;
         if (!ReferenceEquals(_selectedAttempt, selectedAttempt))
         {
             SelectedAttempt = selectedAttempt;
@@ -999,7 +1004,7 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
             MapOperationType(item.OperationKind),
             MapChannel(item.Processor),
             item.UpdatedAt.ToString("g", GetCulture()),
-            item.Amount.ToString("C2", GetCulture()),
+            FormatAmount(item.Amount),
             MapStatus(item.Status));
 
     private string MapOperationType(string? value)
@@ -1092,6 +1097,7 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
     private void OnCultureChanged(object? sender, EventArgs e)
     {
         RefreshDisplayRows();
+        NotifyWorkspaceProperties();
         OnPropertyChanged(nameof(OpenCountText));
         NotifySelectedAttemptProperties();
     }

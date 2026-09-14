@@ -52,7 +52,10 @@
     "attendancePersonal": "考勤",
     "attendanceManagement": "考勤管理",
     "productQuery": "商品维护",
+    "productInsights": "商品进销查询",
     "users": "用户",
+    "userAdmin": "用户管理",
+    "roles": "角色管理",
     "employeeProfile": "员工",
     "employeeProfileReview": "资料审核",
     "deviceManagement": "设备管理",
@@ -97,6 +100,9 @@
     "addingToCart": "正在加入购物车",
     "cameraModeSingle": "单次扫码",
     "cameraModeContinuous": "连续扫码",
+    "cameraModeLabel": "扫码模式",
+    "cameraSingleHint": "识别一次后关闭相机",
+    "cameraContinuousHint": "识别后保持相机开启",
     "addedByCamera": "摄像头扫码已加入购物车",
     "addedByScanner": "扫码枪扫码已加入购物车",
     "selectStoreFirst": "请先选择门店后再扫码",
@@ -124,6 +130,7 @@
     "freshness": {
       "lastUpdated": "最近统计：{{time}}",
       "running": "更新中",
+      "skipped": "本次更新已跳过",
       "failed": "更新失败",
       "noSuccess": "尚无成功统计记录",
       "unavailable": "统计时间暂不可用"

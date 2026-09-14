@@ -17,6 +17,8 @@ import {
 } from "react-native-paper";
 import QRCode from "react-native-qrcode-svg";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
+import { BUSINESS_UI } from "@/components/ui/business-ui";
+import { HB_COLORS } from "@/shared/theme/tokens";
 import { apiClient } from "@/shared/api/client";
 import en from "@/locales/en/appDownloads.json";
 import zh from "@/locales/zh/appDownloads.json";
@@ -1413,6 +1415,7 @@ export default function AppDownloadsScreen() {
       <Portal>
         <Modal
           visible={Boolean(pending)}
+          style={{ justifyContent: "flex-end" }}
           onDismiss={() => {
             if (!saving) setPending(null);
           }}
@@ -1446,9 +1449,9 @@ export default function AppDownloadsScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#f6f7f9" },
+  container: { ...BUSINESS_UI.screen },
   content: { padding: 16, gap: 12, paddingBottom: 48 },
-  title: { marginBottom: 4 },
+  title: { ...BUSINESS_UI.title, marginBottom: 4 },
   titleRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -1456,13 +1459,13 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   tabsRow: { gap: 8, paddingRight: 12 },
-  tabChip: { minWidth: 112 },
-  card: { marginVertical: 4 },
-  row: { paddingVertical: 10, gap: 3 },
-  muted: { color: "#68707d" },
+  tabChip: { minWidth: 112, borderRadius: 8 },
+  card: { ...BUSINESS_UI.section, marginVertical: 4 },
+  row: { paddingVertical: 12, gap: 6, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: HB_COLORS.outlineMuted },
+  muted: { color: HB_COLORS.textSecondary },
   error: { color: "#b42318", marginVertical: 6 },
   loading: { margin: 24 },
-  filterRow: { gap: 6 },
+  filterRow: { ...BUSINESS_UI.filterGroup },
   inlineActions: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -1473,7 +1476,8 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingVertical: 5,
+    minHeight: 48,
+    paddingVertical: 8,
   },
   chip: { marginVertical: 3 },
   releaseOption: { gap: 2 },
@@ -1488,9 +1492,13 @@ const styles = StyleSheet.create({
   qrUrl: { textAlign: "center" },
   confirmModal: {
     backgroundColor: "white",
-    margin: 24,
-    padding: 20,
-    borderRadius: 12,
+    alignSelf: "center",
+    width: "100%",
+    maxWidth: 680,
+    padding: 16,
+    paddingBottom: 28,
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
     gap: 10,
   },
   summaryLine: { fontSize: 15 },

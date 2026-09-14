@@ -693,6 +693,95 @@ implements PersistedOrderDraftPort {
     );
   }
 
+  /**
+   * 只判断本地是否存在旧 Linkly 会话候选；用于决定是否值得查询后端
+   * active/resumable。范围、provider、NULL 环境、未 ACK、非 Created 和
+   * 原 session 均在 SQL 内约束，避免新库冷启动发无意义的 240 秒请求。
+   */
+  public async hasLegacyLinklyRecovery(
+    scopeInput: PaymentRecoveryScope,
+  ): Promise<boolean> {
+    const scope = normalizeScope(scopeInput);
+    const row = await this.connection.getFirst<{ attempt_id: unknown }>(
+      `SELECT p.attempt_id FROM payment_attempts p
+       INNER JOIN local_orders o ON o.order_guid = p.order_guid
+       WHERE o.store_code = ? AND o.device_code = ?
+         AND p.provider = 'linkly-cloud'
+         AND p.provider_environment IS NULL
+         AND p.provider_acknowledged_at_iso IS NULL
+         AND p.session_id IS NOT NULL
+         AND p.state IN ('Submitted', 'Pending', 'Unknown', 'Approved', 'Declined', 'Cancelled')
+         AND NOT EXISTS (
+           SELECT 1
+           FROM return_action_allocations allocation
+           INNER JOIN return_actions action ON action.action_id = allocation.action_id
+           WHERE allocation.durable_attempt_id = p.attempt_id
+             AND action.state IN ('processing', 'unknown')
+         )
+       LIMIT 1`,
+      [scope.storeCode, scope.deviceCode],
+    );
+    return row !== null;
+  }
+
+  /** 已完成订单仍可能留下 Linkly server guard；只返回 M44 后冻结环境的原 attempt。 */
+  public async findPendingLinklyAcknowledgement(
+    scopeInput: PaymentRecoveryScope,
+  ): Promise<string | null> {
+    const scope = normalizeScope(scopeInput);
+    const row = await this.connection.getFirst<{ attempt_id: unknown }>(
+      `SELECT p.attempt_id FROM payment_attempts p
+       INNER JOIN local_orders o ON o.order_guid = p.order_guid
+       WHERE o.store_code = ? AND o.device_code = ?
+         AND p.provider = 'linkly-cloud'
+         AND p.provider_environment IS NOT NULL
+         AND p.provider_acknowledged_at_iso IS NULL
+         AND p.state IN ('Approved', 'Declined', 'Cancelled')
+         AND (p.state = 'Approved' OR p.session_id IS NOT NULL)
+         AND NOT EXISTS (
+           SELECT 1
+           FROM return_action_allocations allocation
+           INNER JOIN return_actions action ON action.action_id = allocation.action_id
+           WHERE allocation.durable_attempt_id = p.attempt_id
+             AND action.state IN ('processing', 'unknown')
+         )
+       ORDER BY p.updated_at_iso, p.attempt_id LIMIT 2`,
+      [scope.storeCode, scope.deviceCode],
+    );
+    return row ? strictId(text(row.attempt_id, "Linkly acknowledgement attempt"), "Linkly acknowledgement attempt") : null;
+  }
+
+  /** 只从已认证后端返回的原 session 查找旧账本，不扫描或猜测所有历史确认。 */
+  public async findLegacyLinklyAttemptForSession(
+    scopeInput: PaymentRecoveryScope,
+    sessionId: string,
+    idempotencyKey?: string,
+  ): Promise<string | null> {
+    const scope = normalizeScope(scopeInput);
+    const normalizedUid = idempotencyKey
+      ? idempotencyKey.replaceAll("-", "").trim().toLowerCase()
+      : null;
+    const rows = await this.connection.getAll<{ attempt_id: unknown }>(
+      `SELECT p.attempt_id FROM payment_attempts p
+       INNER JOIN local_orders o ON o.order_guid = p.order_guid
+       WHERE o.store_code = ? AND o.device_code = ?
+         AND p.provider = 'linkly-cloud' AND p.session_id = ?
+         AND p.provider_environment IS NULL AND p.provider_acknowledged_at_iso IS NULL
+         AND p.state IN ('Submitted', 'Pending', 'Unknown', 'Approved', 'Declined', 'Cancelled')
+         AND NOT EXISTS (
+           SELECT 1
+           FROM return_action_allocations allocation
+           INNER JOIN return_actions action ON action.action_id = allocation.action_id
+           WHERE allocation.durable_attempt_id = p.attempt_id
+             AND action.state IN ('processing', 'unknown')
+         )
+         AND (? IS NULL OR lower(replace(p.idempotency_key, '-', '')) = ?) LIMIT 2`,
+      [scope.storeCode, scope.deviceCode, strictId(sessionId, "Linkly session"), normalizedUid, normalizedUid],
+    );
+    if (rows.length !== 1) return null;
+    return strictId(text(rows[0]!.attempt_id, "Linkly legacy attempt"), "Linkly legacy attempt");
+  }
+
   public abandonPreparedDraft(
     input: PaymentDraftAbandonInput,
   ): Promise<PaymentDraftAbandonResult> {
