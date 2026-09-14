@@ -96,6 +96,51 @@ public sealed class BatchProductSalesMiddleTableTests : IDisposable
         var result = (await service.GetDetailAsync(new() { ProductCode = "P1", StartDate = _day, EndDate = _day }, ["S1"])).Data!;
         Assert.Equal(1m, result.Metrics.Quantity);
         Assert.Equal("Unavailable", result.DiscountStatisticStatus);
+        Assert.Equal("unknown", result.Metrics.DiscountStatus);
+    }
+
+    [Theory]
+    [InlineData("Failed")]
+    [InlineData("OutOfSync")]
+    [InlineData("Superseded")]
+    public async Task Detail_折扣任务已终态时不继续显示待统计(string status)
+    {
+        var job = await QueueAndClaim();
+        await _db.Updateable<BatchProductSalesDiscountSnapshot>()
+            .SetColumns(s => s.Status == status)
+            .SetColumns(s => s.Attempts == ((status == "Failed" || status == "OutOfSync") ? 3 : job.Attempts))
+            .SetColumns(s => s.LeaseUntilUtc == null)
+            .SetColumns(s => s.CompletedAtUtc == DateTime.UtcNow)
+            .Where(s => s.Id == job.Id)
+            .ExecuteCommandAsync();
+
+        var service = new BatchProductSalesAnalysisService(_db, Mock.Of<IProductStoreDailyStatisticQueueService>(),
+            NullLogger<BatchProductSalesAnalysisService>.Instance);
+        var result = (await service.GetDetailAsync(new() { ProductCode = "P1", StartDate = _day, EndDate = _day }, ["S1"])).Data!;
+
+        Assert.Equal(status, result.DiscountStatisticStatus);
+        Assert.Equal("unknown", result.Metrics.DiscountStatus);
+        Assert.All(result.Daily, day => Assert.Equal("unknown", day.Metrics.DiscountStatus));
+        Assert.All(result.Branches, branch => Assert.Equal("unknown", branch.Metrics.DiscountStatus));
+    }
+
+    [Theory]
+    [InlineData("Failed")]
+    [InlineData("OutOfSync")]
+    public async Task Detail_可重试终态继续显示排队并允许前端轮询(string status)
+    {
+        var job = await QueueAndClaim();
+        await _db.Updateable<BatchProductSalesDiscountSnapshot>()
+            .SetColumns(s => s.Status == status)
+            .SetColumns(s => s.LeaseUntilUtc == null)
+            .Where(s => s.Id == job.Id)
+            .ExecuteCommandAsync();
+
+        var service = new BatchProductSalesAnalysisService(_db, Mock.Of<IProductStoreDailyStatisticQueueService>(),
+            NullLogger<BatchProductSalesAnalysisService>.Instance);
+        var result = (await service.GetDetailAsync(new() { ProductCode = "P1", StartDate = _day, EndDate = _day }, ["S1"])).Data!;
+
+        Assert.Equal("Queued", result.DiscountStatisticStatus);
         Assert.Equal("pending", result.Metrics.DiscountStatus);
     }
 
@@ -111,7 +156,7 @@ public sealed class BatchProductSalesMiddleTableTests : IDisposable
         var result = (await service.GetDetailAsync(new() { ProductCode = "P1", StartDate = _day, EndDate = _day }, ["S1"])).Data!;
         Assert.Equal(1m, result.Metrics.Quantity);
         Assert.Equal(expectedStatus, result.DiscountStatisticStatus);
-        Assert.Equal("pending", result.Metrics.DiscountStatus);
+        Assert.Equal("unknown", result.Metrics.DiscountStatus);
     }
 
     [Fact]
@@ -189,14 +234,16 @@ public sealed class BatchProductSalesMiddleTableTests : IDisposable
         Assert.Equal("Failed", (await _store.FindAsync(first.Id))!.Status);
     }
 
-    [Fact]
-    public async Task Retry_失败退避且最多三次()
+    [Theory]
+    [InlineData("Failed")]
+    [InlineData("OutOfSync")]
+    public async Task Retry_可重试终态退避且最多三次(string status)
     {
         var job = await QueueAndClaim();
         var now = DateTime.UtcNow;
         for (var attempt = 1; attempt <= 3; attempt++)
         {
-            Assert.True(await _store.FinishAsync(job, "Failed", null, now));
+            Assert.True(await _store.FinishAsync(job, status, null, now));
             Assert.Null(await _store.ClaimAsync(now));
             now = now.AddMinutes(attempt * 2 + 1);
             var retry = await _store.ClaimAsync(now);

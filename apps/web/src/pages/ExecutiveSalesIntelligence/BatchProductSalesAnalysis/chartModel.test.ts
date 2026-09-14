@@ -7,13 +7,14 @@ function metrics(overrides: Partial<BatchSalesDaily['metrics']>): BatchSalesDail
 
 const { buildDiscountDailyChartModel } = await import('./chartModel')
 const chart = buildDiscountDailyChartModel([
-  { date: '2026-09-01', metrics: metrics({ quantity: 8, regularQuantity: 5, discountQuantity: 3 }) },
+  { date: '2026-09-01', metrics: metrics({ quantity: 8, salesAmount: 51.5, regularQuantity: 5, discountQuantity: 3 }) },
   { date: '2026-09-02', metrics: metrics({ quantity: -4, regularQuantity: -1, discountQuantity: -3 }) },
   { date: '2026-09-03', metrics: metrics({ quantity: 0, unknownQuantity: 0 }) },
   { date: '2026-09-04', metrics: { ...metrics({ quantity: 2, discountQuantity: 2 }), regularQuantity: null } as unknown as BatchSalesDaily['metrics'] },
 ])
 
 assert(chart.points.length === 4, '每个业务日都应有一个数据点')
+assert(chart.points[0].salesAmount === 51.5, '图表数据点必须保留每日销售额供悬浮提示显示')
 assert(chart.points[0].segments[0].height > 0 && chart.points[0].segments[1].height > 0, '正价和折扣的正销量应分别堆叠')
 assert(chart.points[0].segments[1].y < chart.points[0].segments[0].y, '正值后续分段应位于前一个正值之上')
 assert(chart.points[1].segments[0].y === chart.zeroY, '负销量第一段应从零线开始')
@@ -69,3 +70,21 @@ const pending = buildDiscountDailyChartModel([
 ])
 assert(pending.points.every((point) => point.pending && point.segments.length === 1 && point.segments[0].kind === 'total'), '待统计只能画总销量，不能伪装正价或未知分类')
 assert(pending.points[1].segments[0].y === pending.zeroY && pending.points[1].segments[0].height > 0, '待统计负净销量仍在零线下显示')
+
+const unavailable = buildDiscountDailyChartModel([
+  { date: '2026-09-01', metrics: metrics({ quantity: 8, salesAmount: 40, unknownQuantity: 8, discountStatus: 'unknown' }) },
+], 720, 248, true)
+assert(unavailable.points[0].pending && !unavailable.points[0].discountPending && unavailable.points[0].segments.length === 1,
+  '折扣拆分终态不可用时只画可靠的总销量，且不得伪装成仍在等待')
+
+const partial = buildDiscountDailyChartModel([
+  { date: '2026-09-01', metrics: metrics({ quantity: 8, regularQuantity: 4, discountQuantity: 3, unknownQuantity: 1, discountStatus: 'partial' }) },
+])
+assert(!partial.points[0].pending && partial.points[0].segments.length === 3,
+  '部分分类已有证据时必须保留正价、折扣和未知分段')
+
+const freshUnknown = buildDiscountDailyChartModel([
+  { date: '2026-09-01', metrics: metrics({ quantity: 8, unknownQuantity: 8, discountStatus: 'unknown' }) },
+])
+assert(!freshUnknown.points[0].pending && freshUnknown.points[0].segments[2].height > 0,
+  'Fresh 快照中真实存在的未知价格成交必须保留灰色未知分类柱')

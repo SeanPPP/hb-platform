@@ -174,7 +174,7 @@ public sealed class BatchProductSalesAnalysisService : IBatchProductSalesAnalysi
                 discountState = "Unavailable";
             }
         }
-        else if (snapshot is { Status: "Failed", Attempts: < 3 }) discountState = "Queued";
+        else if (snapshot is { Attempts: < 3, Status: "Failed" or "OutOfSync" }) discountState = "Queued";
         var afterRead = await GetStatisticStatusAsync(range.StartDate, range.EndDate, cancellationToken);
         if (!afterRead.IsFresh || afterRead.Version != statistic.Version)
             return ApiResponse<BatchProductSalesDetailDto>.OK(new()
@@ -206,15 +206,23 @@ public sealed class BatchProductSalesAnalysisService : IBatchProductSalesAnalysi
                         .Select(days => new BatchProductSalesDailyDto { Date = days.Key, Metrics = BuildAggregateMetrics(days) }).ToList(),
                 }).ToList(),
         };
-        if (discountState != "Fresh")
+        var metricDiscountStatus = discountState switch
         {
-            // 待计算与成交证据未知是两种状态；数量先可见，分类字段不作为真实零展示。
-            result.Metrics.DiscountStatus = "pending";
-            foreach (var day in result.Daily) day.Metrics.DiscountStatus = "pending";
+            // 只有 worker 仍可能推进的状态才可标记为待统计，前端据此继续轮询。
+            "Queued" or "Running" => "pending",
+            "Fresh" => null,
+            // 失败、版本失效、对账不一致和快照不可用都是终态；不能伪装为仍会完成的任务。
+            _ => "unknown",
+        };
+        if (metricDiscountStatus != null)
+        {
+            // 数量先可见，分类字段无可靠成交证据时不作为真实零展示。
+            result.Metrics.DiscountStatus = metricDiscountStatus;
+            foreach (var day in result.Daily) day.Metrics.DiscountStatus = metricDiscountStatus;
             foreach (var branch in result.Branches)
             {
-                branch.Metrics.DiscountStatus = "pending";
-                foreach (var day in branch.Daily) day.Metrics.DiscountStatus = "pending";
+                branch.Metrics.DiscountStatus = metricDiscountStatus;
+                foreach (var day in branch.Daily) day.Metrics.DiscountStatus = metricDiscountStatus;
             }
         }
         return ApiResponse<BatchProductSalesDetailDto>.OK(result);

@@ -13,8 +13,10 @@ export interface DiscountChartSegment {
 
 export interface DiscountChartPoint {
   pending: boolean
+  discountPending: boolean
   date: string
   quantity: number
+  salesAmount: number
   regularQuantity: number
   discountQuantity: number
   unknownQuantity: number
@@ -81,20 +83,22 @@ function naturalWeekKey(date: string): string | null {
 }
 
 /** 生成有符号堆叠柱。各分类各自在零线两侧累计，因此退货不会被正销量抵消。 */
-export function buildDiscountDailyChartModel(data: BatchSalesDaily[], width = 720, height = 248): DiscountChartModel {
+export function buildDiscountDailyChartModel(data: BatchSalesDaily[], width = 720, height = 248, classificationUnavailable = false): DiscountChartModel {
   const plotLeft = 42
   const plotRight = width - 12
   const plotTop = 18
   const plotBottom = height - 32
   const normalized = data.map((item) => {
-    const pending = item.metrics.discountStatus === 'pending'
+    const pending = item.metrics.discountStatus === 'pending' || classificationUnavailable
     const regularQuantity = finite(item.metrics.regularQuantity)
     const discountQuantity = finite(item.metrics.discountQuantity)
     const unknownQuantity = finite(item.metrics.unknownQuantity)
     return {
       pending,
+      discountPending: item.metrics.discountStatus === 'pending',
       date: item.date,
       quantity: finite(item.metrics.quantity),
+      salesAmount: finite(item.metrics.salesAmount),
       regularQuantity,
       discountQuantity,
       unknownQuantity,
