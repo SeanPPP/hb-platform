@@ -257,6 +257,41 @@ namespace BlazorApp.Api.Services.Background
         }
 
         /// <summary>
+        /// 严格记录正常跳过。跳过不是成功，且必须持久化，避免后续读侧把它当成新的统计快照。
+        /// </summary>
+        public async Task LogTaskSkippedStrictAsync(Guid taskId, string reason)
+        {
+            var taskLog = await _context.ScheduledTaskLogDb.GetByIdAsync(taskId);
+            if (taskLog == null)
+            {
+                throw new InvalidOperationException($"任务日志不存在，无法确认跳过状态: {taskId}");
+            }
+
+            taskLog.Status = TaskStatus.Skipped;
+            taskLog.CompletedAt = DateTime.UtcNow;
+            taskLog.DurationMs = (int)(
+                (taskLog.CompletedAt.Value - taskLog.StartedAt).TotalMilliseconds
+            );
+            taskLog.ErrorMessage = string.IsNullOrWhiteSpace(reason) ? "任务跳过" : reason.Trim();
+            // Skip 表示已有执行者持有日期范围，并非应由失败重试队列再次执行的错误。
+            taskLog.CanRetry = false;
+
+            var updated = await _context.ScheduledTaskLogDb.UpdateAsync(taskLog);
+            if (!updated)
+            {
+                throw new InvalidOperationException($"任务跳过状态未持久化: {taskId}");
+            }
+
+            PublishCompletion(taskLog, "skipped");
+            _logger.LogInformation(
+                "任务跳过并严格持久化: {TaskType}, TaskId: {TaskId}, 原因: {Reason}",
+                taskLog.TaskType,
+                taskLog.Id,
+                taskLog.ErrorMessage
+            );
+        }
+
+        /// <summary>
         /// 严格记录统计任务失败，防止持久化异常被吞掉后长期残留 Running 状态。
         /// </summary>
         public async Task LogTaskFailureStrictAsync(Guid taskId, string errorMessage)

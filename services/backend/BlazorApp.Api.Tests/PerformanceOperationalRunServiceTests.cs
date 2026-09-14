@@ -260,6 +260,27 @@ public sealed class PerformanceOperationalRunServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task 生命周期转换_跳过是独立终态且不归一为失败()
+    {
+        var occurredAt = new DateTime(2026, 9, 14, 6, 30, 0, DateTimeKind.Utc);
+        await PerformanceOperationalRunWriterService.ApplyAsync(
+            _db,
+            PerformanceOperationalRunTransition.Completed(
+                "statistics-skipped",
+                "statistics",
+                "full-refresh",
+                "skipped",
+                occurredAt
+            ),
+            Options.Create(new PerformanceMetricsOptions())
+        );
+
+        var run = await _db.Queryable<PerformanceOperationalRun>().SingleAsync();
+        Assert.Equal("skipped", run.Status);
+        Assert.NotNull(run.CompletedAtUtc);
+    }
+
+    [Fact]
     public async Task Outbox乱序处理_旧非终态不得覆盖较新重试且最终完成仍可落库()
     {
         var start = new DateTime(2026, 8, 25, 1, 0, 0, DateTimeKind.Utc);

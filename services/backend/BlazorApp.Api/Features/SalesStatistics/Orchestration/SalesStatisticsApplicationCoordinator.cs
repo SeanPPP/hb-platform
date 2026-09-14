@@ -111,9 +111,9 @@ internal sealed class SalesStatisticsApplicationCoordinator :
     internal Task UpdateStoreStatistics(DateTime? date = null) =>
         _storeDaily.UpdateStoreStatistics(date);
 
-    internal Task FullRefreshPreviousDay() => _storeDaily.FullRefreshPreviousDay();
+    internal Task<SalesStatisticsRefreshExecutionResult> FullRefreshPreviousDay() => _storeDaily.FullRefreshPreviousDay();
 
-    internal Task FullRefreshCurrentDay(bool automatic = false, bool includeHistorical = true, int firstHistoricalDayOffset = 1) =>
+    internal Task<SalesStatisticsRefreshExecutionResult> FullRefreshCurrentDay(bool automatic = false, bool includeHistorical = true, int firstHistoricalDayOffset = 1) =>
         _storeDaily.FullRefreshCurrentDay(automatic, includeHistorical, firstHistoricalDayOffset);
 
     internal Task UpdateStoreStatistics(DateTime date, List<string>? branchCodes = null) =>

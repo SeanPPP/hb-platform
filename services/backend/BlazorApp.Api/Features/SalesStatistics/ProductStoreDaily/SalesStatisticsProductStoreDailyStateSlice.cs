@@ -135,15 +135,11 @@ namespace BlazorApp.Api.Services
             existing.SourceProductVersion = IsCompletedProductStatus(status.Status)
                 ? status.SourceProductVersion
                 : null;
-            existing.LastAggregatedAtUtc = DateTime.UtcNow;
             existing.LastCheckedAtUtc = DateTime.UtcNow;
             existing.ErrorMessage = status.ErrorMessage;
-            if (
-                status.Status == SalesStatisticRefreshStatus.Fresh
-                || status.Status == ProvisionalFreshStatus
-                || status.Status == SalesStatisticRefreshStatus.Failed
-            )
+            if (IsCompletedProductStatus(status.Status))
             {
+                existing.LastAggregatedAtUtc = DateTime.UtcNow;
                 existing.CompletedAtUtc = DateTime.UtcNow;
             }
             await context.Db.Insertable(existing).ExecuteCommandAsync();
@@ -158,15 +154,11 @@ namespace BlazorApp.Api.Services
         if (IsCompletedProductStatus(status.Status)
             && !string.IsNullOrWhiteSpace(status.SourceProductVersion))
             existing.SourceProductVersion = status.SourceProductVersion;
-        existing.LastAggregatedAtUtc = DateTime.UtcNow;
         existing.LastCheckedAtUtc = DateTime.UtcNow;
         existing.ErrorMessage = status.ErrorMessage;
-        if (
-            status.Status == SalesStatisticRefreshStatus.Fresh
-            || status.Status == ProvisionalFreshStatus
-            || status.Status == SalesStatisticRefreshStatus.Failed
-        )
+        if (IsCompletedProductStatus(status.Status))
         {
+            existing.LastAggregatedAtUtc = DateTime.UtcNow;
             existing.CompletedAtUtc = DateTime.UtcNow;
         }
         await context.Db.Updateable(existing).ExecuteCommandAsync();
@@ -217,9 +209,8 @@ namespace BlazorApp.Api.Services
         if (status == SalesStatisticRefreshStatus.Running)
         {
             state.StartedAtUtc = now;
-            state.CompletedAtUtc = null;
         }
-        else
+        else if (status == SalesStatisticRefreshStatus.Fresh || status == ProvisionalFreshStatus)
         {
             state.LastAggregatedAtUtc = now;
             state.CompletedAtUtc = now;
@@ -233,6 +224,72 @@ namespace BlazorApp.Api.Services
         {
             await context.Db.Updateable(state).ExecuteCommandAsync();
         }
+    }
+
+    /// <summary>
+    /// 只有同日全部报表维度都已实际提交后，才发布报表可读快照。
+    /// 运行、跳过和失败均不得触碰已有发布记录，因此最后成功时间可跨失败尝试保留。
+    /// </summary>
+    internal static async Task PublishRevenueReportSnapshotAsync(
+        SqlSugarContext context,
+        DateTime targetDate
+    )
+    {
+        var date = targetDate.Date;
+        var nextDate = date.AddDays(1);
+        var requiredTypes = SalesStatisticType.DailyAlignmentTypes;
+        var states = await context.Db.Queryable<SalesStatisticRefreshState>()
+            .Where(state =>
+                requiredTypes.Contains(state.StatisticType)
+                && state.Date >= date
+                && state.Date < nextDate
+            )
+            .ToListAsync();
+
+        var missingOrIncomplete = requiredTypes.Where(type =>
+            !states.Any(state =>
+                state.StatisticType == type
+                && state.Status == SalesStatisticRefreshStatus.Fresh
+                && state.LastAggregatedAtUtc.HasValue
+                && state.CompletedAtUtc.HasValue
+            )
+        ).ToList();
+        if (missingOrIncomplete.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"统计维度尚未全部提交，不能发布报表快照: {date:yyyy-MM-dd}; {string.Join(",", missingOrIncomplete)}"
+            );
+        }
+
+        var now = DateTime.UtcNow;
+        var published = await context.Db.Queryable<SalesStatisticRefreshState>()
+            .Where(state =>
+                state.StatisticType == SalesStatisticType.RevenueReportPublished
+                && state.Date >= date
+                && state.Date < nextDate
+            )
+            .FirstAsync();
+        if (published == null)
+        {
+            await context.Db.Insertable(new SalesStatisticRefreshState
+            {
+                StatisticType = SalesStatisticType.RevenueReportPublished,
+                Date = date,
+                Status = SalesStatisticRefreshStatus.Fresh,
+                SourceTimeZone = "POSM_LOCAL",
+                LastAggregatedAtUtc = now,
+                LastCheckedAtUtc = now,
+                CompletedAtUtc = now,
+            }).ExecuteCommandAsync();
+            return;
+        }
+
+        published.Status = SalesStatisticRefreshStatus.Fresh;
+        published.LastAggregatedAtUtc = now;
+        published.LastCheckedAtUtc = now;
+        published.CompletedAtUtc = now;
+        published.ErrorMessage = null;
+        await context.Db.Updateable(published).ExecuteCommandAsync();
     }
 
     private static bool IsCompletedProductStatus(string status) =>

@@ -9,6 +9,10 @@ assert.deepEqual(normalizeStatisticsFreshness({ latestRunStatus: "Unknown" }), {
   lastSuccessfulAtUtc: null,
   latestRunStatus: null,
 });
+assert.deepEqual(normalizeStatisticsFreshness({ latestRunStatus: "Skipped" }), {
+  lastSuccessfulAtUtc: null,
+  latestRunStatus: "Skipped",
+});
 assert.equal(formatStatisticsFreshnessTime("invalid"), null);
 assert.match(formatStatisticsFreshnessTime("2026-07-11T01:30:00Z") ?? "", /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
 assert.equal(getStatisticsFreshnessRefetchInterval({ latestRunStatus: "Running" }), 5_000);

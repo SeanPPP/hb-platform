@@ -16,6 +16,7 @@ public sealed class PerformanceOperationalRunWriterService : BackgroundService
     private static readonly HashSet<string> TerminalStatuses = new(StringComparer.Ordinal)
     {
         "success",
+        "skipped",
         "failure",
         "cancelled",
         "interrupted",
@@ -23,6 +24,7 @@ public sealed class PerformanceOperationalRunWriterService : BackgroundService
     private static readonly HashSet<string> AuthoritativeTerminalStatuses = new(StringComparer.Ordinal)
     {
         "success",
+        "skipped",
         "failure",
         "cancelled",
     };
@@ -701,6 +703,7 @@ public sealed class PerformanceOperationalRunWriterService : BackgroundService
         "running" => "running",
         "retry_wait" => "retry_wait",
         "success" or "succeeded" => "success",
+        "skipped" => "skipped",
         "failure" or "failed" or "partiallysucceeded" or "partially_succeeded" => "failure",
         "cancelled" or "canceled" => "cancelled",
         "interrupted" => "interrupted",
@@ -754,7 +757,7 @@ public sealed class PerformanceOperationalRunWriterService : BackgroundService
         "running" => 1,
         "retry_wait" => 2,
         "interrupted" => 3,
-        "success" or "failure" or "cancelled" => 4,
+        "success" or "skipped" or "failure" or "cancelled" => 4,
         _ => 0,
     };
 

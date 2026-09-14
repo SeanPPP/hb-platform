@@ -237,8 +237,23 @@ namespace BlazorApp.Api.Controllers
 
                 _logger.LogInformation("全量刷新任务已触发");
 
-                await _statisticsJobService.FullRefreshPreviousDay();
-                await _statisticsJobService.FullRefreshCurrentDay();
+                var previousDayResult = await _statisticsJobService.FullRefreshPreviousDay();
+                var currentDayResult = await _statisticsJobService.FullRefreshCurrentDay();
+                if (previousDayResult.IsSkipped || currentDayResult.IsSkipped)
+                {
+                    await _taskLogService.LogTaskSkippedStrictAsync(
+                        taskId,
+                        previousDayResult.IsSkipped
+                            ? previousDayResult.Message ?? "前一天统计已有运行中的日期租约"
+                            : currentDayResult.Message ?? "当天统计已有运行中的日期租约"
+                    );
+                    return Ok(new
+                    {
+                        success = false,
+                        message = "全量刷新存在跳过日期",
+                        jobId = taskId,
+                    });
+                }
 
                 await _taskLogService.LogTaskSuccessAsync(taskId);
 
@@ -284,7 +299,20 @@ namespace BlazorApp.Api.Controllers
 
                 _logger.LogInformation("全量刷新当天数据任务已触发");
 
-                await _statisticsJobService.FullRefreshCurrentDay();
+                var refreshResult = await _statisticsJobService.FullRefreshCurrentDay();
+                if (refreshResult.IsSkipped)
+                {
+                    await _taskLogService.LogTaskSkippedStrictAsync(
+                        taskId,
+                        refreshResult.Message ?? "当天统计已有运行中的日期租约"
+                    );
+                    return Ok(new
+                    {
+                        success = false,
+                        message = "全量刷新当天数据已跳过: " + refreshResult.Message,
+                        jobId = taskId,
+                    });
+                }
 
                 await _taskLogService.LogTaskSuccessAsync(taskId);
 
@@ -858,6 +886,10 @@ namespace BlazorApp.Api.Controllers
                 {
                     await _taskLogService.LogTaskSuccessAsync(taskId);
                 }
+                else if (result.HasSkippedDates && !result.HasFailedDates)
+                {
+                    await _taskLogService.LogTaskSkippedStrictAsync(taskId, result.Message);
+                }
                 else
                 {
                     await _taskLogService.LogTaskFailureAsync(taskId, result.Message);
@@ -928,6 +960,10 @@ namespace BlazorApp.Api.Controllers
                 {
                     await _taskLogService.LogTaskSuccessAsync(taskId);
                 }
+                else if (result.HasSkippedDates && !result.HasFailedDates)
+                {
+                    await _taskLogService.LogTaskSkippedStrictAsync(taskId, result.Message);
+                }
                 else
                 {
                     await _taskLogService.LogTaskFailureAsync(taskId, result.Message);
@@ -993,6 +1029,10 @@ namespace BlazorApp.Api.Controllers
                 if (result.Success)
                 {
                     await _taskLogService.LogTaskSuccessAsync(taskId);
+                }
+                else if (result.HasSkippedDates && !result.HasFailedDates)
+                {
+                    await _taskLogService.LogTaskSkippedStrictAsync(taskId, result.Message);
                 }
                 else
                 {
@@ -1064,6 +1104,10 @@ namespace BlazorApp.Api.Controllers
                 if (result.Success)
                 {
                     await _taskLogService.LogTaskSuccessAsync(taskId);
+                }
+                else if (result.HasSkippedDates && !result.HasFailedDates)
+                {
+                    await _taskLogService.LogTaskSkippedStrictAsync(taskId, result.Message);
                 }
                 else
                 {
@@ -1272,6 +1316,10 @@ namespace BlazorApp.Api.Controllers
                 {
                     await _taskLogService.LogTaskSuccessAsync(taskId);
                 }
+                else if (result.HasSkippedDates && !result.HasFailedDates)
+                {
+                    await _taskLogService.LogTaskSkippedStrictAsync(taskId, result.Message);
+                }
                 else
                 {
                     await _taskLogService.LogTaskFailureAsync(taskId, result.Message);
@@ -1343,6 +1391,10 @@ namespace BlazorApp.Api.Controllers
                 if (result.Success)
                 {
                     await _taskLogService.LogTaskSuccessAsync(taskId);
+                }
+                else if (result.HasSkippedDates && !result.HasFailedDates)
+                {
+                    await _taskLogService.LogTaskSkippedStrictAsync(taskId, result.Message);
                 }
                 else
                 {
