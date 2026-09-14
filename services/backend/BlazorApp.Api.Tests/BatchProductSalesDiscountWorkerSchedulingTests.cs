@@ -62,7 +62,7 @@ public sealed class BatchProductSalesDiscountWorkerSchedulingTests
     }
 
     [Fact]
-    public void OrderEligibleCandidates_非最近历史回填恢复优先于较新的Fresh巡检并按日期从近到远()
+    public void OrderEligibleCandidates_历史回填恢复优先于非最近Fresh巡检并按日期从远到近()
     {
         var now = new DateTime(2026, 9, 14, 8, 0, 0, DateTimeKind.Utc);
         var oldQueued = new BatchProductSalesDiscountRefreshState
@@ -77,12 +77,19 @@ public sealed class BatchProductSalesDiscountWorkerSchedulingTests
         {
             Date = now.Date.AddDays(-30), Status = "Queued", NextAttemptAtUtc = now,
         };
+        var preferredWaiting = new BatchProductSalesDiscountRefreshState
+        {
+            Date = now.Date, Status = BatchProductSalesDiscountDailyStore.WaitingForCanonicalStatus,
+            NextAttemptAtUtc = now,
+        };
 
         var ordered = BatchProductSalesDiscountDailyStore.OrderEligibleCandidates(
-            [newerFresh, oldQueued, newerQueued], now, new HashSet<DateTime>(), now.Date.AddYears(-2), now.Date,
+            [newerFresh, oldQueued, newerQueued, preferredWaiting], now, new HashSet<DateTime> { now.Date },
+            now.Date.AddYears(-2), now.Date,
             TimeSpan.FromMinutes(5));
 
-        Assert.Equal([newerQueued.Date, oldQueued.Date, newerFresh.Date], ordered.Select(state => state.Date));
+        Assert.Equal([oldQueued.Date, newerQueued.Date, preferredWaiting.Date, newerFresh.Date],
+            ordered.Select(state => state.Date));
     }
 
     [Fact]

@@ -125,7 +125,7 @@ internal sealed class BatchProductSalesDiscountDailyStore(ISqlSugarClient db)
         !reconcileRequested || string.IsNullOrWhiteSpace(canonicalStatus)
             || string.Equals(canonicalStatus, SalesStatisticRefreshStatus.Failed, StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>先处理最近业务日；较早的回填/恢复任务先于历史 Fresh 巡检，避免巡检挤占首次回填。</summary>
+    /// <summary>最近业务日的已发布数据按短间隔刷新；历史回填/恢复从范围起点向后推进。</summary>
     internal static IReadOnlyList<BatchProductSalesDiscountRefreshState> OrderEligibleCandidates(
         IEnumerable<BatchProductSalesDiscountRefreshState> candidates, DateTime nowUtc,
         IReadOnlySet<DateTime> preferredDates, DateTime coverageStart, DateTime coverageEnd,
@@ -137,13 +137,14 @@ internal sealed class BatchProductSalesDiscountDailyStore(ISqlSugarClient db)
                 && (state.Status is "Queued" or "Failed" or WaitingForCanonicalStatus
                 || state.Status == "Fresh" && (!state.LastCheckedAtUtc.HasValue
                     || state.LastCheckedAtUtc <= (preferredDates.Contains(state.Date) ? recentCutoff : historicalCutoff))))
-            .OrderByDescending(state => preferredDates.Contains(state.Date))
-            // 最近范围外，Queued/Failed/WaitingCanonical 代表尚未完成的回填或恢复，必须先于已可读的历史巡检。
+            // 最近已发布数据保持短间隔刷新；未完成的最近日期仍归入历史回填顺序，避免跳过范围起点。
+            .OrderByDescending(state => state.Status == "Fresh" && preferredDates.Contains(state.Date))
+            // Queued/Failed/WaitingCanonical 代表尚未完成的回填或恢复，必须先于非最近的历史 Fresh 巡检。
             .ThenBy(state => state.Status == "Fresh" ? 1 : 0)
             // 历史 Fresh 每天仅巡检一次；未巡检和最久未巡检的日期优先，日期只用于稳定排序。
             .ThenBy(state => state.Status == "Fresh" ? state.LastCheckedAtUtc ?? DateTime.MinValue : DateTime.MaxValue)
-            // 回填/恢复仍从较新的业务日向较旧日期推进；Fresh 的日期仅在检查时间相同时升序稳定排序。
-            .ThenByDescending(state => state.Status == "Fresh" ? DateTime.MinValue : state.Date)
+            // 回填/恢复从范围内最早日期向最新日期推进；Fresh 的日期仅在检查时间相同时升序稳定排序。
+            .ThenBy(state => state.Status == "Fresh" ? DateTime.MaxValue : state.Date)
             .ThenBy(state => state.Status == "Fresh" ? state.Date : DateTime.MinValue)
             .ToList();
     }
