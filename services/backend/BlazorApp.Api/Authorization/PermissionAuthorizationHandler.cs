@@ -2,6 +2,7 @@ using System.Security.Claims;
 using BlazorApp.Api.Authentication;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Services;
+using BlazorApp.Api.Services.MobileDeviceActivation;
 using BlazorApp.Shared.Constants;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.Extensions.Caching.Memory;
@@ -33,6 +34,23 @@ namespace BlazorApp.Api.Authorization
             PermissionRequirement requirement
         )
         {
+            if (requirement.Permission == EmployeeCashierBarcodeSelfServicePolicy.Name)
+            {
+                // 仅接受与条码服务一致的本人身份；设备、扩展和服务令牌不能借自助策略取得员工码。
+                var userGuid = context.User.FindFirst("userId")?.Value
+                    ?? context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (context.User.Identity?.IsAuthenticated == true
+                    && !string.IsNullOrWhiteSpace(userGuid)
+                    && !IsServiceApiToken(context.User)
+                    && !context.User.HasClaim("token_use", MobileDeviceAccountTokenIssuer.TokenUse)
+                    && !context.User.HasClaim("token_use", "browser_extension"))
+                {
+                    context.Succeed(requirement);
+                }
+
+                return;
+            }
+
             if (IsServiceApiToken(context.User))
             {
                 // 关键位置：service token 只认认证 handler 写入的专用 scope，不能回落到用户角色或普通 permission claim。
