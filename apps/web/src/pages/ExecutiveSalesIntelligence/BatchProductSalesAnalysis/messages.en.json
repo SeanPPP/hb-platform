@@ -20,6 +20,8 @@
     "dateRange": "Date range",
     "stores": "Stores",
     "allStores": "All visible stores",
+    "allProducts": "All products",
+    "allProductsHint": "Combined results from loaded item details",
     "productList": "Products ({{count}})",
     "totalQuantity": "Total {{value}} units",
     "total": "Total",
@@ -29,6 +31,14 @@
     "currentProduct": "Current product",
     "dailyTrend": "Total sales trend",
     "dailyDetail": "Daily detail",
+    "branchRanking": "Store totals ranking",
+    "branchProductContribution": "Store product contribution",
+    "searchBranches": "Search stores",
+    "topN": "Top {{count}}",
+    "onlyBranchesWithSales": "Sales only",
+    "clearFilters": "Clear filters",
+    "detailLoadingProgress": "Loading item details ({{completed}} / {{total}})",
+    "partialDetailFailure": "{{count}} item details could not load. The current totals include only returned items.",
     "branchSales": "Store sales",
     "selectBranch": "Select a store to view daily sales",
     "branchTrend": "{{branch}} · daily sales",
@@ -72,6 +82,7 @@
       "amount": "Sales"
     },
     "columns": {
+      "rank": "Rank",
       "date": "Date",
       "product": "Product",
       "itemNumber": "Item no.",
@@ -82,7 +93,8 @@
       "status": "Status",
       "branch": "Store",
       "amount": "Sales",
-      "rate": "Share",
+      "rate": "Discount rate",
+      "contributingProducts": "Contributing items",
       "productShare": "Item share"
     },
     "chart": {

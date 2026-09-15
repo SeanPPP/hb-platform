@@ -20,6 +20,8 @@
     "dateRange": "日期范围",
     "stores": "分店",
     "allStores": "全部可见分店",
+    "allProducts": "全部商品",
+    "allProductsHint": "合并所有已返回的商品明细",
     "productList": "商品列表（{{count}}）",
     "totalQuantity": "总销量 {{value}} 件",
     "total": "合计",
@@ -29,6 +31,14 @@
     "currentProduct": "当前商品",
     "dailyTrend": "总销量趋势",
     "dailyDetail": "每日明细",
+    "branchRanking": "分店总量排行",
+    "branchProductContribution": "分店商品贡献",
+    "searchBranches": "搜索分店",
+    "topN": "前 {{count}} 名",
+    "onlyBranchesWithSales": "仅有销量",
+    "clearFilters": "清除筛选",
+    "detailLoadingProgress": "正在加载商品明细（{{completed}} / {{total}}）",
+    "partialDetailFailure": "{{count}} 个商品明细未能加载；当前汇总只包含成功返回的商品。",
     "branchSales": "分店销量",
     "selectBranch": "选择分店查看每日销量",
     "branchTrend": "{{branch}} · 每日销量",
@@ -72,6 +82,7 @@
       "amount": "销售额"
     },
     "columns": {
+      "rank": "排名",
       "date": "日期",
       "product": "商品",
       "itemNumber": "货号",
@@ -82,7 +93,8 @@
       "status": "状态",
       "branch": "分店",
       "amount": "销售额",
-      "rate": "占比",
+      "rate": "折扣占比",
+      "contributingProducts": "贡献商品",
       "productShare": "商品占比"
     },
     "chart": {
