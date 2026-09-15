@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Diagnostics;
 using BlazorApp.Api.Services;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HBSalesRecord;
@@ -14,7 +15,8 @@ namespace BlazorApp.Api.Services.React;
 internal sealed class BatchProductSalesDiscountSnapshotSourceReader(
     ISqlSugarClient catalogDb,
     ISqlSugarClient posmDb,
-    ISqlSugarClient hbSalesDb)
+    ISqlSugarClient hbSalesDb,
+    ILogger<BatchProductSalesDiscountSnapshotSourceReader>? logger = null)
 {
     private const string DiscountClassificationRuleVersion = "batch-product-sales-discount-v2";
     private readonly ISqlSugarClient _catalogDb = catalogDb;
@@ -38,7 +40,15 @@ internal sealed class BatchProductSalesDiscountSnapshotSourceReader(
     {
         return await WithSourceCancellationAsync(token, async () =>
         {
-            var snapshot = await CaptureAsync(day.Date, token);
+            var elapsed = Stopwatch.StartNew();
+            DaySourceSnapshot snapshot;
+            try { snapshot = await CaptureAsync(day.Date, token); }
+            finally
+            {
+                // 保留取消样本的耗时，避免将整段来源预算误认成最后一条 SQL 的执行时间。
+                logger?.LogInformation("折扣来源阶段耗时: {Date}, Stage=来源签名, ElapsedMs={ElapsedMs}, Canceled={Canceled}",
+                    day.Date, elapsed.ElapsedMilliseconds, token.IsCancellationRequested);
+            }
             return new PreparedDay(day.Date, snapshot,
                 BuildSourceVersion(snapshot.PosmSignature, snapshot.HBSalesSignature, snapshot.AliasVersion,
                     snapshot.DiscountSemanticVersion, snapshot.SupplierMappingVersion));
@@ -62,8 +72,18 @@ internal sealed class BatchProductSalesDiscountSnapshotSourceReader(
 
             // 聚合器的 products/stores 是单日来源一次性收集的全集，只作为 SQL OPENJSON 范围；
             // 不会形成“商品数 × 日期”或“商品数 × 分店”的查询循环。
-            var facts = await new BatchProductSalesAnalysisFactReader(_catalogDb, _posmDb, _hbSalesDb)
-                .ReadAsync(before.ProductCodes, prepared.Day, prepared.Day, before.StoreCodes, token, before.HBSalesAliases);
+            var elapsed = Stopwatch.StartNew();
+            List<BatchProductSalesAggregateRow> facts;
+            try
+            {
+                facts = await new BatchProductSalesAnalysisFactReader(_catalogDb, _posmDb, _hbSalesDb)
+                    .ReadAsync(before.ProductCodes, prepared.Day, prepared.Day, before.StoreCodes, token, before.HBSalesAliases);
+            }
+            finally
+            {
+                logger?.LogInformation("折扣来源阶段耗时: {Date}, Stage=事实聚合, ElapsedMs={ElapsedMs}, Canceled={Canceled}",
+                    prepared.Day, elapsed.ElapsedMilliseconds, token.IsCancellationRequested);
+            }
 
             var after = await CapturePreparedAsync(prepared.Day, token);
             if (!string.Equals(prepared.SourceVersion, after.SourceVersion, StringComparison.Ordinal))

@@ -8,6 +8,15 @@ namespace BlazorApp.Api.Tests;
 public sealed class BatchProductSalesDiscountWorkerSchedulingTests
 {
     [Fact]
+    public void 日期处理预算短于租约并为来源核验后发布留出余量()
+    {
+        Assert.True(BatchProductSalesDiscountWorker.SourceReadLimit < BatchProductSalesDiscountWorker.DayExecutionLimit);
+        Assert.True(BatchProductSalesDiscountWorker.DayExecutionLimit - BatchProductSalesDiscountWorker.SourceReadLimit >= TimeSpan.FromMinutes(1));
+        Assert.True(BatchProductSalesDiscountWorker.DayExecutionLimit < BatchProductSalesDiscountDailyStore.ExecutionLeaseDuration);
+        Assert.True(BatchProductSalesDiscountDailyStore.ExecutionLeaseDuration < BatchProductSalesDiscountWorker.GlobalLeaseDuration);
+    }
+
+    [Fact]
     public void 默认回填窗口为一年且闰日按完整日历年覆盖()
     {
         var today = new DateTime(2028, 2, 29);
