@@ -300,6 +300,59 @@ public sealed class BatchProductSalesMiddleTableTests : IDisposable
     }
 
     [Fact]
+    public async Task SnapshotReader_旧表降级读取仍在商品日期边界响应取消()
+    {
+        var legacyPath = Path.Combine(Path.GetTempPath(), $"batch-legacy-cancel-{Guid.NewGuid():N}.db");
+        try
+        {
+            using var legacyDb = new SqlSugarClient(new ConnectionConfig
+            {
+                DbType = DbType.Sqlite,
+                ConnectionString = $"Data Source={legacyPath}",
+                IsAutoCloseConnection = true,
+            });
+            legacyDb.Ado.ExecuteCommand("CREATE TABLE BatchProductSalesDiscountSnapshot (Id TEXT PRIMARY KEY)");
+            legacyDb.Ado.ExecuteCommand("CREATE TABLE BatchProductSalesDiscountRefreshState (Date DATETIME PRIMARY KEY)");
+            using var cancellation = new CancellationTokenSource();
+            cancellation.Cancel();
+
+            await Assert.ThrowsAsync<OperationCanceledException>(() => new BatchProductSalesDiscountSnapshotReader(legacyDb).ReadManyAsync(
+                ["P1", "P2"], [_day, _day.AddDays(1)], ["S1"],
+                [new() { Date = _day, BranchCode = "S1", ProductCode = "P1", Quantity = 1, SalesAmount = 10 }], cancellation.Token));
+        }
+        finally
+        {
+            if (File.Exists(legacyPath))
+                File.Delete(legacyPath);
+        }
+    }
+
+    [Fact]
+    public async Task SnapshotReader_批量读取按商品日期精确匹配()
+    {
+        var nextDay = _day.AddDays(1);
+        AddRefreshState(nextDay, "source-2");
+        Publish(_day, "source-1", Facts());
+        Publish(nextDay, "source-2", [new()
+        {
+            Date = nextDay, BranchCode = "S1", ProductCode = "P1", Quantity = 3, DiscountQuantity = 3, SalesAmount = 30,
+        }]);
+        var statistics = new List<BatchProductSalesAggregateRow>
+        {
+            new() { Date = _day, BranchCode = "S1", ProductCode = "P1", Quantity = 1, SalesAmount = 10 },
+            new() { Date = nextDay, BranchCode = "S1", ProductCode = "P1", Quantity = 3, SalesAmount = 30 },
+        };
+
+        var result = await new BatchProductSalesDiscountSnapshotReader(_db).ReadManyAsync(
+            ["P1"], [_day, nextDay], ["S1"], statistics, default);
+
+        var read = Assert.Single(result).Value;
+        Assert.Equal("Fresh", read.Status);
+        Assert.Equal(4m, read.Rows.Sum(row => row.Quantity));
+        Assert.All(read.Rows, row => Assert.Equal("S1", row.BranchCode));
+    }
+
+    [Fact]
     public async Task Detail_越权门店范围继续被拒绝()
     {
         Publish(_day, "source-1", Facts());

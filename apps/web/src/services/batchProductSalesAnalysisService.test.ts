@@ -48,9 +48,10 @@ const query = {
   itemNumbers: ['00123'],
 }
 const detailRequest = { ...query, productCode: 'P-1' }
+const coverage = { Status: 'Partial', ReadyDates: ['2026-08-18'], PendingDates: [{ Date: '2026-08-17', Reason: 'queued' }], Version: 'coverage-v1' }
 const originalFetch = globalThis.fetch
 let captured: Array<{ url: string; init?: RequestInit }> = []
-let responseMode: 'normal' | 'missingMetrics' | 'missingNullablePrices' | 'invalidNullablePrice' | 'emptyPayload' | 'businessFailure' | 'forbidden' | 'unauthorized' | 'abort' | 'returns' | 'netZero' | 'missingScope' | 'pending' = 'normal'
+let responseMode: 'normal' | 'missingMetrics' | 'missingNullablePrices' | 'invalidNullablePrice' | 'emptyPayload' | 'businessFailure' | 'forbidden' | 'unauthorized' | 'coverageConflict' | 'abort' | 'returns' | 'netZero' | 'missingScope' | 'pending' = 'normal'
 
 try {
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -70,6 +71,9 @@ try {
     if (responseMode === 'unauthorized') {
       return jsonResponse({ message: '登录已过期' }, 401)
     }
+    if (responseMode === 'coverageConflict' && pathname.endsWith('/detail')) {
+      return jsonResponse({ errorCode: 'BATCH_PRODUCT_SALES_COVERAGE_VERSION_CONFLICT', message: '统计覆盖范围已更新' }, 409)
+    }
     if (responseMode === 'businessFailure') {
       return jsonResponse({ success: false, message: '统计未就绪' })
     }
@@ -87,10 +91,12 @@ try {
         data: {
           startDate: query.startDate, endDate: query.endDate, storeCodes: responseMode === 'missingScope' ? undefined : ['S1', 'S2'],
           matches: [{ itemNumber: '00123', status: 'Matched', productCodes: ['P-1'] }],
-          products: [{ productCode: 'P-1', itemNumber: '00123', productName: '测试商品', quantity: 1.5 }],
+          products: [{ productCode: 'P-1', itemNumber: '00123', productName: '测试商品', quantity: 1.5, salesAmount: 14.75 }],
           warnings: [],
           statisticStatus: 'Fresh',
           statisticUpdatedAt: '2026-08-18T02:00:00Z',
+          coverage,
+          overview: { metrics, daily: [{ date: '2026-08-18T13:00:00+10:00', metrics }], branches: [{ branchCode: 'S1', branchName: 'Sunnybank', metrics, daily: [], contributingProductCount: 1 }] },
         },
       })
     }
@@ -115,12 +121,13 @@ try {
         Success: true,
         Data: {
           StartDate: query.startDate, EndDate: query.endDate, StoreCodes: ['S1', 'S2'],
-          Product: { ProductCode: 'P-1', ItemNumber: '00123', ProductName: '测试商品', EnglishName: 'Test item' },
+          ProductCodes: ['P-1'], Product: { ProductCode: 'P-1', ItemNumber: '00123', ProductName: '测试商品', EnglishName: 'Test item' },
           Metrics: detailMetrics,
           StatisticStatus: 'Fresh', DiscountStatisticStatus: responseMode === 'pending' ? 'Queued' : 'Fresh',
           Daily: [{ Date: '2026-08-18T13:00:00+10:00', Metrics: metrics }],
           Branches: [{ BranchCode: 'S1', BranchName: 'Sunnybank', Metrics: metrics, Daily: [] }],
           Warnings: [],
+          Coverage: coverage,
         },
       })
     }
@@ -147,6 +154,7 @@ try {
   assert.equal(queryResult.endDate, '2026-08-18', '查询结果日期归一化')
   assert.deepEqual(queryResult.storeCodes, ['S1', 'S2'], '必须保留服务端实际有效门店')
   assert.equal(queryResult.products[0]?.quantity, 1.5, '数量必须保留 decimal，不得取整或回退为零')
+  assert.equal(queryResult.coverage.version, 'coverage-v1', '日期覆盖版本必须保留')
 
   const detail = await batchProductSalesApi.getDetail(detailRequest)
   assert.equal(captured[2]?.url, '/api/react/v1/dashboard/batch-product-sales-analysis/detail', 'detail 必须请求固定 POST 路径')
@@ -154,6 +162,10 @@ try {
   assert.equal(detail.daily[0]?.date, '2026-08-18', '日期必须归一化为合法前十位')
   assert.equal(detail.metrics.originalPriceMin, 10, '原价区间必须保留')
   assert.equal(detail.metrics.discountPriceMin, null, '可空折扣价必须保留 null')
+
+  const lockedDetail = await batchProductSalesApi.getDetail({ ...detailRequest, coverageVersion: 'coverage-v1', readyDates: ['2026-08-18'] })
+  assert.equal(lockedDetail.coverage.readyDates[0], '2026-08-18', '详情必须保留锁定后的日期覆盖')
+  assert.deepEqual(JSON.parse(String(captured[captured.length - 1]?.init?.body)).readyDates, ['2026-08-18'], '详情必须发送已完成日期集合')
 
   responseMode = 'pending'
   const pendingDetail = await batchProductSalesApi.getDetail(detailRequest)
@@ -234,6 +246,16 @@ try {
   } catch (error) {
     assert(error instanceof RequestError, '401 必须保留 request 层 RequestError')
     assert.equal(error.status, 401, '401 状态码不得被服务层改写')
+  }
+
+  responseMode = 'coverageConflict'
+  try {
+    await batchProductSalesApi.getDetail({ ...detailRequest, coverageVersion: 'coverage-v1', readyDates: ['2026-08-18'] })
+    throw new Error('覆盖范围冲突必须拒绝')
+  } catch (error) {
+    assert(error instanceof RequestError, '409 覆盖范围冲突必须保留 RequestError')
+    assert.equal(error.status, 409, '覆盖范围冲突必须保留 HTTP 409')
+    assert.equal((error.payload as { errorCode?: string }).errorCode, 'BATCH_PRODUCT_SALES_COVERAGE_VERSION_CONFLICT', '覆盖范围冲突码必须保留给页面原子刷新逻辑')
   }
 
   responseMode = 'abort'

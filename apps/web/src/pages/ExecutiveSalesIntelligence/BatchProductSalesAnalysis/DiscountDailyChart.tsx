@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import type { BatchSalesDaily } from '../../../types/batchProductSalesAnalysis'
-import { buildDiscountDailyChartModel, type DiscountChartKind } from './chartModel'
+import { buildDiscountDailyChartModel, type DiscountChartDaily, type DiscountChartKind } from './chartModel'
 
 interface DiscountDailyChartProps {
-  data: BatchSalesDaily[]
+  data: DiscountChartDaily[]
   ariaLabel: string
   className?: string
   classificationUnavailable?: boolean
@@ -60,18 +59,18 @@ export default function DiscountDailyChart({ data, ariaLabel, className, classif
             key={point.date}
             tabIndex={0}
             role="graphics-symbol"
-            aria-label={t(point.pending ? (point.discountPending ? 'batchProductSalesAnalysis.chart.totalPointAria' : 'batchProductSalesAnalysis.chart.unavailablePointAria') : 'batchProductSalesAnalysis.chart.pointAria', { date: point.date, quantity: point.quantity, amount: audFormatter.format(point.salesAmount), regular: point.regularQuantity, discount: point.discountQuantity, unknown: point.unknownQuantity })}
+            aria-label={t(point.unavailable ? 'batchProductSalesAnalysis.chart.uncomputedPointAria' : point.pending ? (point.discountPending ? 'batchProductSalesAnalysis.chart.totalPointAria' : 'batchProductSalesAnalysis.chart.unavailablePointAria') : 'batchProductSalesAnalysis.chart.pointAria', { date: point.date, quantity: point.quantity, amount: audFormatter.format(point.salesAmount), regular: point.regularQuantity, discount: point.discountQuantity, unknown: point.unknownQuantity })}
             onFocus={() => setActiveIndex(index)}
             onBlur={() => setActiveIndex((current) => current === index ? null : current)}
             onMouseEnter={() => setActiveIndex(index)}
             onMouseLeave={() => setActiveIndex((current) => current === index ? null : current)}
           >
             {point.segments.map((segment) => segment.height > 0 ? <rect key={segment.kind} x={segment.x} y={segment.y} width={segment.width} height={segment.height} rx="1" fill={colors[segment.kind]} /> : null)}
-            <rect x={point.segments[0]?.x ?? point.x} y={model.plotTop} width={point.segments[0]?.width ?? 0} height={model.plotBottom - model.plotTop} fill="transparent" />
+            <rect x={point.hitX} y={model.plotTop} width={point.hitWidth} height={model.plotBottom - model.plotTop} fill="transparent" />
           </g>
         ))}
         {model.xTicks.map((tick) => <text key={tick.date} x={tick.x} y={model.plotBottom + 18} textAnchor="middle" fontSize="11" fill="#718096">{compactDate(tick.date)}</text>)}
-        {active?.pending ? <g aria-live="polite"><rect x={tooltipX} y={tooltipY} width="180" height="68" rx="4" fill="#172033" /><text x={tooltipX + 10} y={tooltipY + 18} fontSize="11" fill="#fff">{active.date}</text><text x={tooltipX + 10} y={tooltipY + 37} fontSize="11" fill="#9cc5ff">{t('batchProductSalesAnalysis.metrics.quantity')}: {active.quantity}</text><text x={tooltipX + 10} y={tooltipY + 55} fontSize="11" fill="#9fe0c9">{t('batchProductSalesAnalysis.metrics.amount')}: {audFormatter.format(active.salesAmount)}</text></g> : active ? <g aria-live="polite"><rect x={tooltipX} y={tooltipY} width="180" height="126" rx="4" fill="#172033" opacity=".96" /><text x={tooltipX + 10} y={tooltipY + 17} fontSize="11" fill="#fff">{active.date}</text><text x={tooltipX + 10} y={tooltipY + 33} fontSize="11" fill="#9cc5ff">{t('batchProductSalesAnalysis.metrics.regular')}: {active.regularQuantity}</text><text x={tooltipX + 10} y={tooltipY + 49} fontSize="11" fill="#ffd09b">{t('batchProductSalesAnalysis.metrics.discount')}: {active.discountQuantity}</text><text x={tooltipX + 10} y={tooltipY + 65} fontSize="11" fill="#d5d9df">{t('batchProductSalesAnalysis.metrics.unknown')}: {active.unknownQuantity}</text><text x={tooltipX + 10} y={tooltipY + 81} fontSize="11" fill="#9fe0c9">{t('batchProductSalesAnalysis.metrics.amount')}: {audFormatter.format(active.salesAmount)}</text><text x={tooltipX + 10} y={tooltipY + 100} fontSize="10" fill="#dfe7f1">{t('batchProductSalesAnalysis.chart.originalPrice')}: {priceRange(active.originalPriceMin, active.originalPriceMax)}</text><text x={tooltipX + 10} y={tooltipY + 116} fontSize="10" fill="#dfe7f1">{t('batchProductSalesAnalysis.chart.discountPrice')}: {priceRange(active.discountPriceMin, active.discountPriceMax)}</text></g> : null}
+        {active?.unavailable ? <g aria-live="polite"><rect x={tooltipX} y={tooltipY} width="180" height="44" rx="4" fill="#172033" /><text x={tooltipX + 10} y={tooltipY + 18} fontSize="11" fill="#fff">{active.date}</text><text x={tooltipX + 10} y={tooltipY + 35} fontSize="11" fill="#ffd591">{t('batchProductSalesAnalysis.chart.uncomputed')}</text></g> : active?.pending ? <g aria-live="polite"><rect x={tooltipX} y={tooltipY} width="180" height="68" rx="4" fill="#172033" /><text x={tooltipX + 10} y={tooltipY + 18} fontSize="11" fill="#fff">{active.date}</text><text x={tooltipX + 10} y={tooltipY + 37} fontSize="11" fill="#9cc5ff">{t('batchProductSalesAnalysis.metrics.quantity')}: {active.quantity}</text><text x={tooltipX + 10} y={tooltipY + 55} fontSize="11" fill="#9fe0c9">{t('batchProductSalesAnalysis.metrics.amount')}: {audFormatter.format(active.salesAmount)}</text></g> : active ? <g aria-live="polite"><rect x={tooltipX} y={tooltipY} width="180" height="126" rx="4" fill="#172033" opacity=".96" /><text x={tooltipX + 10} y={tooltipY + 17} fontSize="11" fill="#fff">{active.date}</text><text x={tooltipX + 10} y={tooltipY + 33} fontSize="11" fill="#9cc5ff">{t('batchProductSalesAnalysis.metrics.regular')}: {active.regularQuantity}</text><text x={tooltipX + 10} y={tooltipY + 49} fontSize="11" fill="#ffd09b">{t('batchProductSalesAnalysis.metrics.discount')}: {active.discountQuantity}</text><text x={tooltipX + 10} y={tooltipY + 65} fontSize="11" fill="#d5d9df">{t('batchProductSalesAnalysis.metrics.unknown')}: {active.unknownQuantity}</text><text x={tooltipX + 10} y={tooltipY + 81} fontSize="11" fill="#9fe0c9">{t('batchProductSalesAnalysis.metrics.amount')}: {audFormatter.format(active.salesAmount)}</text><text x={tooltipX + 10} y={tooltipY + 100} fontSize="10" fill="#dfe7f1">{t('batchProductSalesAnalysis.chart.originalPrice')}: {priceRange(active.originalPriceMin, active.originalPriceMax)}</text><text x={tooltipX + 10} y={tooltipY + 116} fontSize="10" fill="#dfe7f1">{t('batchProductSalesAnalysis.chart.discountPrice')}: {priceRange(active.discountPriceMin, active.discountPriceMax)}</text></g> : null}
       </svg>
     </div>
   )

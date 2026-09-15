@@ -46,6 +46,14 @@ public sealed class BatchProductSalesAnalysisControllerTests
     }
 
     [Fact]
+    public async Task Options_零门店授权服务拒绝时映射403()
+    {
+        var service = new Mock<IBatchProductSalesAnalysisService>();
+        service.Setup(x => x.GetOptionsAsync(It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>())).ThrowsAsync(new BatchProductSalesAnalysisForbiddenException());
+        Assert.IsType<ForbidResult>(await CreateController(service.Object, "User", []).GetOptions());
+    }
+
+    [Fact]
     public async Task Options_普通用户无门店传递空范围()
     {
         IReadOnlyList<string>? captured = null;
@@ -85,6 +93,26 @@ public sealed class BatchProductSalesAnalysisControllerTests
         var service = new Mock<IBatchProductSalesAnalysisService>(MockBehavior.Strict);
         var controller = CreateController(service.Object, "User", ["S1"], snapshotSuccess: false);
         Assert.IsType<ForbidResult>(await controller.Query(new()));
+        service.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task BranchOverview_锁冲突返回统一409错误码()
+    {
+        var service = new Mock<IBatchProductSalesAnalysisService>();
+        service.Setup(x => x.GetBranchOverviewAsync(It.IsAny<BatchProductSalesBranchOverviewRequestDto>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new BatchProductSalesCoverageVersionConflictException());
+        var result = await CreateController(service.Object, "User", ["S1"]).BranchOverview(new());
+        var conflict = Assert.IsType<ConflictObjectResult>(result);
+        Assert.Contains("BATCH_PRODUCT_SALES_COVERAGE_VERSION_CONFLICT", System.Text.Json.JsonSerializer.Serialize(conflict.Value));
+    }
+
+    [Fact]
+    public async Task DiscountOverview_撤销权限时不调用Reader()
+    {
+        var service = new Mock<IBatchProductSalesAnalysisService>(MockBehavior.Strict);
+        var result = await CreateController(service.Object, "User", ["S1"], hasPermission: false).DiscountOverview(new());
+        Assert.IsType<ForbidResult>(result);
         service.VerifyNoOtherCalls();
     }
 

@@ -88,3 +88,12 @@ const freshUnknown = buildDiscountDailyChartModel([
 ])
 assert(!freshUnknown.points[0].pending && freshUnknown.points[0].segments[2].height > 0,
   'Fresh 快照中真实存在的未知价格成交必须保留灰色未知分类柱')
+
+const partialCoverage = buildDiscountDailyChartModel([
+  { date: '2026-09-01', metrics: metrics({ quantity: 2, regularQuantity: 2 }) },
+  { date: '2026-09-02', metrics: null },
+  { date: '2026-09-03', metrics: metrics({ quantity: 0 }) },
+])
+assert(partialCoverage.points[1].unavailable && partialCoverage.points[1].segments.length === 0, '未完成日期必须保留日期轴断点，不能补零或画柱')
+assert(partialCoverage.points[1].hitWidth > 0, '未完成日期即使没有柱形也必须保留可悬停和键盘聚焦的日期槽')
+assert(!partialCoverage.points[2].unavailable && partialCoverage.points[2].segments.every((segment) => segment.height === 0), '已完成日期才可以作为真实零值')

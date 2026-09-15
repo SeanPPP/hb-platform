@@ -41,116 +41,125 @@ internal sealed class BatchProductSalesDiscountSnapshotReader(ISqlSugarClient db
         IReadOnlyList<BatchProductSalesAggregateRow> statistics,
         CancellationToken token)
     {
-        if (!SchemaReady)
-            return new(MarkUnknown(statistics, productCode, start, end, stores), "Unavailable", null);
+        var dates = Enumerable.Range(0, (end.Date - start.Date).Days + 1).Select(offset => start.Date.AddDays(offset)).ToList();
+        return await ReadAsync(productCode, dates, stores, statistics, token);
+    }
 
-        var endExclusive = end.Date.AddDays(1);
-        // 每个表只做一个范围读取；绝不能按日期发出 N 次查询。
-        var states = await db.Queryable<BatchProductSalesDiscountRefreshState>().With(SqlWith.Null)
-            .Where(s => s.Date >= start.Date && s.Date < endExclusive).ToListAsync();
-        var snapshots = await db.Queryable<BatchProductSalesDiscountSnapshot>().With(SqlWith.Null)
-            .Where(s => s.SnapshotFormat == 2 && s.ProductCode == productCode
-                && s.StartDate >= start.Date && s.StartDate < endExclusive && s.EndDate == s.StartDate)
-            .ToListAsync();
-        token.ThrowIfCancellationRequested();
+    internal async Task<BatchProductSalesDiscountSnapshotReadResult> ReadAsync(
+        string productCode,
+        IReadOnlyList<DateTime> dates,
+        IReadOnlyList<string> stores,
+        IReadOnlyList<BatchProductSalesAggregateRow> statistics,
+        CancellationToken token)
+    {
+        var results = await ReadManyAsync([productCode], dates, stores, statistics, token);
+        return results[productCode];
+    }
 
-        var stateByDay = states.GroupBy(state => state.Date.Date).ToDictionary(group => group.Key, group => group.ToList());
-        var snapshotByDay = snapshots.GroupBy(snapshot => snapshot.StartDate.Date).ToDictionary(group => group.Key, group => group.ToList());
-        var statisticsByDay = statistics.GroupBy(row => row.Date.Date).ToDictionary(group => group.Key, group => group.ToList());
-        var rows = new List<BatchProductSalesAggregateRow>();
-        var outcomes = new List<BatchProductSalesDiscountDayOutcome>();
-        var usedUpdatedAt = new List<DateTime>();
+    /// <summary>批量读取状态和快照各一次；每个商品只在内存中解析自己的发布 JSON。</summary>
+    internal async Task<Dictionary<string, BatchProductSalesDiscountSnapshotReadResult>> ReadManyAsync(
+        IReadOnlyList<string> productCodes, IReadOnlyList<DateTime> dates, IReadOnlyList<string> stores,
+        IReadOnlyList<BatchProductSalesAggregateRow> statistics, CancellationToken token)
+    {
+        var codes = productCodes.Where(code => !string.IsNullOrWhiteSpace(code)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var days = dates.Select(date => date.Date).Distinct().OrderBy(date => date).ToList();
+        if (days.Count == 0) return codes.ToDictionary(code => code, _ => new BatchProductSalesDiscountSnapshotReadResult([], "Pending", null), StringComparer.OrdinalIgnoreCase);
 
-        for (var day = start.Date; day <= end.Date; day = day.AddDays(1))
+        var previousToken = db.Ado.CancellationToken;
+        db.Ado.CancellationToken = token;
+        try
         {
-            var dayStatistics = statisticsByDay.GetValueOrDefault(day) ?? [];
-            var dayStates = stateByDay.GetValueOrDefault(day) ?? [];
-            var daySnapshots = snapshotByDay.GetValueOrDefault(day) ?? [];
-            if (dayStates.Count != 1)
-            {
-                rows.AddRange(MarkUnknown(dayStatistics, productCode, day, day, stores));
-                outcomes.Add(BatchProductSalesDiscountDayOutcome.Backfilling);
-                continue;
-            }
 
-            var state = dayStates[0];
-            if (!HasCommittedGeneration(state))
-            {
-                rows.AddRange(MarkUnknown(dayStatistics, productCode, day, day, stores));
-                outcomes.Add(state.RuleVersion != CurrentRuleVersion
-                    ? BatchProductSalesDiscountDayOutcome.OutOfSync
-                    : IsRetrying(state.Status)
-                        ? BatchProductSalesDiscountDayOutcome.Backfilling
-                        : BatchProductSalesDiscountDayOutcome.Unavailable);
-                continue;
-            }
+        // 统计行可能有数十万条；按商品和日期建一次索引，不能随商品数重复扫描整批统计。
+        var statisticsByProduct = new Dictionary<string, List<BatchProductSalesAggregateRow>>(StringComparer.OrdinalIgnoreCase);
+        var statisticsByProductDay = new Dictionary<(string Product, DateTime Date), List<BatchProductSalesAggregateRow>>(new ProductDayComparer());
+        foreach (var statistic in statistics)
+        {
+            var productCode = statistic.ProductCode ?? string.Empty;
+            if (!statisticsByProduct.TryGetValue(productCode, out var productStatistics))
+                statisticsByProduct[productCode] = productStatistics = [];
+            productStatistics.Add(statistic);
 
-            // 调度器不会为无成交商品写格式 2 行。已有完成代际且当前授权范围无统计行即为零日；
-            // SnapshotCount 是全天所有商品数量，不能用其他商品的活动把当前商品误判为缺失。
-            if (daySnapshots.Count == 0)
-            {
-                if (dayStatistics.Count == 0)
-                    outcomes.Add(IsFresh(state.Status)
-                        ? BatchProductSalesDiscountDayOutcome.Fresh
-                        : BatchProductSalesDiscountDayOutcome.Refreshing);
-                else
-                {
-                    rows.AddRange(MarkUnknown(dayStatistics, productCode, day, day, stores));
-                    outcomes.Add(BatchProductSalesDiscountDayOutcome.OutOfSync);
-                }
-                continue;
-            }
-
-            if (daySnapshots.Count != 1 || !IsUsable(daySnapshots[0], state))
-            {
-                rows.AddRange(MarkUnknown(dayStatistics, productCode, day, day, stores));
-                outcomes.Add(IsRetrying(daySnapshots[0].Status)
-                    ? BatchProductSalesDiscountDayOutcome.Backfilling
-                    : BatchProductSalesDiscountDayOutcome.OutOfSync);
-                continue;
-            }
-
-            try
-            {
-                var snapshotRows = JsonSerializer.Deserialize<List<BatchProductSalesAggregateRow?>>(daySnapshots[0].PayloadJson!) ?? [];
-                if (snapshotRows.Any(row => !IsContractRow(row, day, productCode)))
-                    throw new JsonException("折扣日快照的聚合行不符合发布契约。");
-                var authorizedRows = snapshotRows
-                    .Where(row => row is not null && stores.Contains(row.BranchCode, StringComparer.OrdinalIgnoreCase))
-                    .Select(row => row!)
-                    .ToList();
-                // 对当前授权范围逐日逐店核对；未授权分店从不参与响应或校验。
-                if (!BatchProductSalesStatisticReader.TotalsMatch(dayStatistics, authorizedRows))
-                {
-                    rows.AddRange(MarkUnknown(dayStatistics, productCode, day, day, stores));
-                    outcomes.Add(BatchProductSalesDiscountDayOutcome.OutOfSync);
-                    continue;
-                }
-                rows.AddRange(authorizedRows);
-                usedUpdatedAt.Add(daySnapshots[0].CompletedAtUtc!.Value);
-                // 巡检会暂时把 Fresh 状态改为 Running；同源已发布快照经当前授权统计核验后仍可安全展示。
-                outcomes.Add(IsFresh(state.Status)
-                    ? BatchProductSalesDiscountDayOutcome.Fresh
-                    : BatchProductSalesDiscountDayOutcome.Refreshing);
-            }
-            catch (JsonException)
-            {
-                rows.AddRange(MarkUnknown(dayStatistics, productCode, day, day, stores));
-                outcomes.Add(BatchProductSalesDiscountDayOutcome.OutOfSync);
-            }
+            var key = (productCode, statistic.Date.Date);
+            if (!statisticsByProductDay.TryGetValue(key, out var dayStatistics))
+                statisticsByProductDay[key] = dayStatistics = [];
+            dayStatistics.Add(statistic);
         }
 
-        var status = outcomes.All(outcome => outcome == BatchProductSalesDiscountDayOutcome.Fresh) ? "Fresh"
-            : outcomes.All(outcome => outcome is BatchProductSalesDiscountDayOutcome.Fresh or BatchProductSalesDiscountDayOutcome.Refreshing)
-                && outcomes.Any(outcome => outcome == BatchProductSalesDiscountDayOutcome.Refreshing) ? "Refreshing"
-            : outcomes.Any(outcome => outcome is BatchProductSalesDiscountDayOutcome.Fresh or BatchProductSalesDiscountDayOutcome.Refreshing) ? "Partial"
-            : outcomes.Any(outcome => outcome == BatchProductSalesDiscountDayOutcome.OutOfSync) ? "OutOfSync"
-            : outcomes.Any(outcome => outcome == BatchProductSalesDiscountDayOutcome.Backfilling) ? "Backfilling"
-            : "Unavailable";
-        // 更新时间只取已经解析且通过当前授权范围逐店核对的快照，失配行不能误导使用者。
-        DateTime? updatedAt = usedUpdatedAt.Count == 0 ? null : usedUpdatedAt.Max();
-        return new(rows, status, updatedAt);
+        if (!SchemaReady)
+        {
+            var unavailable = new Dictionary<string, BatchProductSalesDiscountSnapshotReadResult>(StringComparer.OrdinalIgnoreCase);
+            foreach (var code in codes)
+            {
+                token.ThrowIfCancellationRequested();
+                // 与正常读取同样在每个商品/日期边界响应取消，避免大范围降级阻塞请求取消。
+                foreach (var _ in days)
+                    token.ThrowIfCancellationRequested();
+                unavailable[code] = new(MarkUnknown(statisticsByProduct.GetValueOrDefault(code) ?? [], code, days, stores), "Unavailable", null);
+            }
+            return unavailable;
+        }
+        // SqlSugar 在 SQLite 上会把 DateTime IN 参数格式化为无法匹配的值；逐日半开区间既保持精确日期集合，
+        // 也让 SQL Server 可用 Date 列索引，避免把非连续 ready dates 之间的快照传回应用层。
+        var stateDates = Expressionable.Create<BatchProductSalesDiscountRefreshState>();
+        var snapshotDates = Expressionable.Create<BatchProductSalesDiscountSnapshot>();
+        foreach (var day in days)
+        {
+            var dayStart = day;
+            var dayEnd = day.AddDays(1);
+            stateDates = stateDates.Or(state => state.Date >= dayStart && state.Date < dayEnd);
+            snapshotDates = snapshotDates.Or(snapshot => snapshot.StartDate >= dayStart && snapshot.StartDate < dayEnd);
+        }
+        var states = await db.Queryable<BatchProductSalesDiscountRefreshState>().With(SqlWith.Null)
+            .Where(stateDates.ToExpression()).ToListAsync(token);
+        var snapshots = await db.Queryable<BatchProductSalesDiscountSnapshot>().With(SqlWith.Null)
+            .Where(snapshot => snapshot.SnapshotFormat == 2 && codes.Contains(snapshot.ProductCode) && snapshot.EndDate == snapshot.StartDate)
+            .Where(snapshotDates.ToExpression()).ToListAsync(token);
+        token.ThrowIfCancellationRequested();
+        var stateByDay = states.GroupBy(x => x.Date.Date).ToDictionary(g => g.Key, g => g.ToList());
+        var snapshotMap = snapshots.GroupBy(x => (x.ProductCode ?? string.Empty, x.StartDate.Date), new ProductDayComparer()).ToDictionary(g => g.Key, g => g.ToList(), new ProductDayComparer());
+        var authorizedStores = stores.Where(store => !string.IsNullOrWhiteSpace(store)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var result = new Dictionary<string, BatchProductSalesDiscountSnapshotReadResult>(StringComparer.OrdinalIgnoreCase);
+        foreach (var code in codes)
+        {
+            var rows = new List<BatchProductSalesAggregateRow>(); var outcomes = new List<BatchProductSalesDiscountDayOutcome>(); var updated = new List<DateTime>();
+            foreach (var day in days)
+            {
+                token.ThrowIfCancellationRequested();
+                var stats = statisticsByProductDay.GetValueOrDefault((code, day)) ?? []; var dayStates = stateByDay.GetValueOrDefault(day) ?? [];
+                var daySnapshots = snapshotMap.GetValueOrDefault((code, day)) ?? [];
+                if (dayStates.Count != 1) { rows.AddRange(MarkUnknown(stats, code, [day], stores)); outcomes.Add(BatchProductSalesDiscountDayOutcome.Backfilling); continue; }
+                var state = dayStates[0];
+                if (!HasCommittedGeneration(state)) { rows.AddRange(MarkUnknown(stats, code, [day], stores)); outcomes.Add(state.RuleVersion != CurrentRuleVersion ? BatchProductSalesDiscountDayOutcome.OutOfSync : IsRetrying(state.Status) ? BatchProductSalesDiscountDayOutcome.Backfilling : BatchProductSalesDiscountDayOutcome.Unavailable); continue; }
+                if (daySnapshots.Count == 0) { if (stats.Count == 0) outcomes.Add(IsFresh(state.Status) ? BatchProductSalesDiscountDayOutcome.Fresh : BatchProductSalesDiscountDayOutcome.Refreshing); else { rows.AddRange(MarkUnknown(stats, code, [day], stores)); outcomes.Add(BatchProductSalesDiscountDayOutcome.OutOfSync); } continue; }
+                if (daySnapshots.Count != 1 || !IsUsable(daySnapshots[0], state)) { rows.AddRange(MarkUnknown(stats, code, [day], stores)); outcomes.Add(IsRetrying(daySnapshots[0].Status) ? BatchProductSalesDiscountDayOutcome.Backfilling : BatchProductSalesDiscountDayOutcome.OutOfSync); continue; }
+                try { var parsed = JsonSerializer.Deserialize<List<BatchProductSalesAggregateRow?>>(daySnapshots[0].PayloadJson!) ?? []; if (parsed.Any(row => !IsContractRow(row, day, code))) throw new JsonException(); var authorized = parsed.Where(row => row is not null && authorizedStores.Contains(row.BranchCode)).Select(row => row!).ToList(); if (!BatchProductSalesStatisticReader.TotalsMatch(stats, authorized)) { rows.AddRange(MarkUnknown(stats, code, [day], stores)); outcomes.Add(BatchProductSalesDiscountDayOutcome.OutOfSync); continue; } rows.AddRange(authorized); updated.Add(daySnapshots[0].CompletedAtUtc!.Value); outcomes.Add(IsFresh(state.Status) ? BatchProductSalesDiscountDayOutcome.Fresh : BatchProductSalesDiscountDayOutcome.Refreshing); }
+                catch (JsonException) { rows.AddRange(MarkUnknown(stats, code, [day], stores)); outcomes.Add(BatchProductSalesDiscountDayOutcome.OutOfSync); }
+            }
+            var status = outcomes.All(x=>x==BatchProductSalesDiscountDayOutcome.Fresh) ? "Fresh" : outcomes.All(x=>x is BatchProductSalesDiscountDayOutcome.Fresh or BatchProductSalesDiscountDayOutcome.Refreshing) && outcomes.Any(x=>x==BatchProductSalesDiscountDayOutcome.Refreshing) ? "Refreshing" : outcomes.Any(x=>x is BatchProductSalesDiscountDayOutcome.Fresh or BatchProductSalesDiscountDayOutcome.Refreshing) ? "Partial" : outcomes.Any(x=>x==BatchProductSalesDiscountDayOutcome.OutOfSync) ? "OutOfSync" : outcomes.Any(x=>x==BatchProductSalesDiscountDayOutcome.Backfilling) ? "Backfilling" : "Unavailable";
+            result[code] = new(rows, status, updated.Count == 0 ? null : updated.Max());
+        }
+        return result;
+        }
+        catch (Exception exception) when (token.IsCancellationRequested)
+        {
+            throw new OperationCanceledException("折扣快照查询已取消。", exception, token);
+        }
+        finally
+        {
+            RestoreAdoCancellationToken(previousToken);
+        }
     }
+
+    /// <summary>SqlSugar 的 token 查询会写入 client ADO；请求结束前必须还原嵌套调用的原令牌。</summary>
+    private void RestoreAdoCancellationToken(CancellationToken? token)
+    {
+        if (token.HasValue) db.Ado.CancellationToken = token.Value;
+        else db.Ado.RemoveCancellationToken();
+    }
+
+    private sealed class ProductDayComparer : IEqualityComparer<(string Product, DateTime Date)>
+    { public bool Equals((string Product, DateTime Date) x, (string Product, DateTime Date) y) => x.Date == y.Date && string.Equals(x.Product, y.Product, StringComparison.OrdinalIgnoreCase); public int GetHashCode((string Product, DateTime Date) x) => HashCode.Combine(StringComparer.OrdinalIgnoreCase.GetHashCode(x.Product), x.Date); }
 
     private static bool HasCommittedGeneration(BatchProductSalesDiscountRefreshState state) =>
         state.RuleVersion == CurrentRuleVersion
@@ -189,11 +198,21 @@ internal sealed class BatchProductSalesDiscountSnapshotReader(ISqlSugarClient db
         DateTime end,
         IReadOnlyList<string> stores)
     {
+        var dates = Enumerable.Range(0, (end.Date - start.Date).Days + 1).Select(offset => start.Date.AddDays(offset)).ToList();
+        return MarkUnknown(statistics, productCode, dates, stores);
+    }
+
+    internal static List<BatchProductSalesAggregateRow> MarkUnknown(
+        IReadOnlyList<BatchProductSalesAggregateRow> statistics,
+        string productCode,
+        IReadOnlyList<DateTime> dates,
+        IReadOnlyList<string> stores)
+    {
         var authorizedStores = stores.Where(store => !string.IsNullOrWhiteSpace(store))
-            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var rows = statistics
             // 即使调用者失误传入范围外统计行，也不能把它放进当前授权响应。
-            .Where(row => authorizedStores.Contains(row.BranchCode, StringComparer.OrdinalIgnoreCase))
+            .Where(row => authorizedStores.Contains(row.BranchCode))
             .Select(row => new BatchProductSalesAggregateRow
         {
             Date = row.Date.Date, BranchCode = row.BranchCode, ProductCode = row.ProductCode,
@@ -201,15 +220,25 @@ internal sealed class BatchProductSalesDiscountSnapshotReader(ISqlSugarClient db
             UnknownQuantity = row.Quantity, UnknownRowCount = Math.Max(1, row.UnknownRowCount),
         }).ToList();
         // 未完成或失配时，每个日期、每个授权分店都需要未知标记：只有部分分店有日统计也不能把其余分店补成完成零日。
-        for (var day = start.Date; day <= end.Date; day = day.AddDays(1))
+        var completedStoreDays = rows.Select(row => (row.Date.Date, row.BranchCode ?? string.Empty))
+            .ToHashSet(new StoreDayComparer());
+        foreach (var day in dates.Select(date => date.Date).Distinct())
             foreach (var store in authorizedStores)
-                if (!rows.Any(row => row.Date.Date == day
-                    && string.Equals(row.BranchCode, store, StringComparison.OrdinalIgnoreCase)))
+                if (completedStoreDays.Add((day, store)))
                     rows.Add(new BatchProductSalesAggregateRow
                 {
                     Date = day, BranchCode = store, ProductCode = productCode, UnknownRowCount = 1,
                 });
         return rows;
+    }
+
+    private sealed class StoreDayComparer : IEqualityComparer<(DateTime Date, string Store)>
+    {
+        public bool Equals((DateTime Date, string Store) x, (DateTime Date, string Store) y) =>
+            x.Date == y.Date && string.Equals(x.Store, y.Store, StringComparison.OrdinalIgnoreCase);
+
+        public int GetHashCode((DateTime Date, string Store) value) =>
+            HashCode.Combine(value.Date, StringComparer.OrdinalIgnoreCase.GetHashCode(value.Store));
     }
 }
 

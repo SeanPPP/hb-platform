@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import type { BatchSalesBranch, BatchSalesDaily, BatchSalesDetail, BatchSalesMetrics } from '../../../types/batchProductSalesAnalysis'
-import { buildBatchProductSalesAnalysis, escapeCsvCell, formatCsvRow, getBatchProductSalesDiscountStateKey, getBatchProductSalesClassifiedQuantity, getBatchProductSalesDateRangeError, hasBatchProductSalesDiscountStatisticsNotice, hasBatchProductSalesDailyActivity, runBatchProductSalesPool, shouldRefreshBatchProductSalesDiscountStatistics, sortBatchProductSalesBranchesByQuantity } from './logic'
+import { buildBatchProductSalesAnalysis, buildBatchProductSalesDetailExportScope, escapeCsvCell, formatCsvRow, getBatchProductSalesDiscountStateKey, getBatchProductSalesClassifiedQuantity, getBatchProductSalesDateRangeError, hasBatchProductSalesDiscountStatisticsNotice, hasBatchProductSalesDailyActivity, runBatchProductSalesPool, shouldRefreshBatchProductSalesDiscountStatistics, sortBatchProductSalesBranchesByQuantity } from './logic'
 
 function metrics(overrides: Partial<BatchSalesMetrics> = {}): BatchSalesMetrics {
   return {
@@ -42,6 +42,7 @@ function detail(productCode: string, branches: BatchSalesBranch[]): BatchSalesDe
     startDate: '2026-09-01',
     endDate: '2026-09-02',
     storeCodes: [],
+    productCodes: [productCode],
     warnings: [],
     product: { productCode, itemNumber: productCode, productName: productCode },
     metrics: metrics({
@@ -52,6 +53,7 @@ function detail(productCode: string, branches: BatchSalesBranch[]): BatchSalesDe
     }),
     daily: branches.flatMap((item) => item.daily),
     branches,
+    coverage: { status: 'complete', readyDates: ['2026-09-01', '2026-09-02'], pendingDates: [], version: 'test' },
   }
 }
 
@@ -114,6 +116,7 @@ for (const status of ['Fresh', 'Failed', 'Superseded', undefined]) {
   assert.equal(shouldRefreshBatchProductSalesDiscountStatistics(status), false, `${status ?? 'undefined'} 不应继续轮询`)
 }
 assert.equal(hasBatchProductSalesDiscountStatisticsNotice('Fresh'), false, 'Fresh 不应显示折扣统计提示')
+assert.equal(getBatchProductSalesDiscountStateKey('Fresh'), 'Fresh', 'Fresh 必须保留为可用折扣分类状态')
 assert.equal(hasBatchProductSalesDiscountStatisticsNotice(undefined), false, '缺少状态时不应误报折扣统计异常')
 assert.equal(getBatchProductSalesDiscountStateKey('backFILLing'), 'Backfilling', '折扣状态翻译 key 必须大小写稳健')
 assert.equal(getBatchProductSalesDiscountStateKey('OUT_OF_SYNC'), 'OutOfSync', '折扣状态翻译 key 必须兼容服务端分隔符')
@@ -251,6 +254,19 @@ assert.deepEqual(
   }).productContributions.map((row) => row.product.productCode),
   ['P1'],
   '未返回的商品不得显示为零贡献',
+)
+
+const exportScope = { startDate: '2026-09-01', endDate: '2026-09-30', storeCodes: ['S1', 'S2'] }
+const exportCoverage = { status: 'complete' as const, readyDates: ['2026-09-01', '2026-09-02'], pendingDates: [], version: 'coverage-v1' }
+assert.deepEqual(
+  buildBatchProductSalesDetailExportScope(exportScope, exportCoverage, ['P1', 'P2']),
+  { ...exportScope, productCodes: ['P1', 'P2'], coverageVersion: 'coverage-v1', readyDates: ['2026-09-01', '2026-09-02'] },
+  '全部商品视图导出必须保留摘要商品集合、实际门店范围和 coverage 锁',
+)
+assert.deepEqual(
+  buildBatchProductSalesDetailExportScope(exportScope, exportCoverage, ['P1', 'P2'], 'P2'),
+  { ...exportScope, productCodes: ['P2'], coverageVersion: 'coverage-v1', readyDates: ['2026-09-01', '2026-09-02'] },
+  '选定商品导出只能提交该商品，且不能因分店钻取改变实际门店范围',
 )
 
 console.log('BatchProductSalesAnalysis.logic.test: ok')

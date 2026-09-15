@@ -1,4 +1,4 @@
-import type { BatchSalesBranch, BatchSalesDaily, BatchSalesDetail, BatchSalesMetrics, BatchSalesProduct } from '../../../types/batchProductSalesAnalysis'
+import type { BatchSalesBranch, BatchSalesCoverage, BatchSalesDaily, BatchSalesDetail, BatchSalesLockedScope, BatchSalesMetrics, BatchSalesProduct, BatchSalesScope } from '../../../types/batchProductSalesAnalysis'
 
 const DATE_ONLY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/
 
@@ -24,6 +24,21 @@ export interface BatchProductSalesAnalysis {
   branches: BatchSalesBranch[]
   /** 当前分店内、当前商品范围的商品贡献。 */
   productContributions: BatchProductSalesContribution[]
+}
+
+/** 详情 CSV 跟随当前商品视图；分店仅是页面钻取，不能缩小授权过的门店范围。 */
+export function buildBatchProductSalesDetailExportScope(
+  scope: BatchSalesScope,
+  coverage: BatchSalesCoverage,
+  productCodes: readonly string[],
+  selectedProductCode?: string,
+): BatchSalesLockedScope {
+  return {
+    ...scope,
+    productCodes: selectedProductCode ? [selectedProductCode] : [...productCodes],
+    coverageVersion: coverage.version,
+    readyDates: [...coverage.readyDates],
+  }
 }
 
 /** 以固定并发处理任务，避免大批量货号同时打满明细接口。 */
@@ -196,9 +211,11 @@ export function hasBatchProductSalesDiscountStatisticsNotice(status?: string): b
 }
 
 /** 服务端状态大小写和分隔符不稳定，翻译 key 必须收敛为既有的 PascalCase 枚举。 */
-export function getBatchProductSalesDiscountStateKey(status?: string): 'Queued' | 'Running' | 'Backfilling' | 'Refreshing' | 'Partial' | 'Unavailable' | 'Failed' | 'OutOfSync' | 'Superseded' | 'Pending' {
+export function getBatchProductSalesDiscountStateKey(status?: string): 'Fresh' | 'Queued' | 'Running' | 'Backfilling' | 'Refreshing' | 'Partial' | 'Unavailable' | 'Failed' | 'OutOfSync' | 'Superseded' | 'Pending' {
   const normalized = normalizeDiscountState(status)
   switch (normalized) {
+    case 'fresh':
+      return 'Fresh'
     case 'queued':
       return 'Queued'
     case 'running':

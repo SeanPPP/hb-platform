@@ -2,12 +2,19 @@ import type { ApiResponse } from '../types/api'
 import type {
   BatchProductSalesApi,
   BatchSalesBranch,
+  BatchSalesBranchOverview,
+  BatchSalesBranchOverviewRequest,
+  BatchSalesCoverage,
   BatchSalesDaily,
   BatchSalesDetail,
   BatchSalesDetailRequest,
   BatchSalesMatch,
   BatchSalesMetrics,
   BatchSalesOptions,
+  BatchSalesOverview,
+  BatchSalesOverviewBranch,
+  BatchSalesDiscountOverview,
+  BatchSalesLockedScope,
   BatchSalesProduct,
   BatchSalesProductSummary,
   BatchSalesQuery,
@@ -186,8 +193,32 @@ function normalizeProductSummary(raw: unknown): BatchSalesProductSummary {
   const record = asRecord(raw, '商品汇总')
   return {
     ...normalizeProduct(record),
-    quantity: requiredNumber(pick(record, 'quantity', 'Quantity'), '商品汇总销量'),
+    quantity: requiredNullableNumber(pick(record, 'quantity', 'Quantity'), '商品汇总销量'),
+    salesAmount: requiredNullableNumber(pick(record, 'salesAmount', 'SalesAmount'), '商品汇总销售额'),
   }
+}
+
+function normalizeCoverage(raw: unknown): BatchSalesCoverage {
+  const record = asRecord(raw, '日期覆盖范围')
+  const readyDates = requiredStringArray(pick(record, 'readyDates', 'ReadyDates'), '已完成日期').map((value, index) => normalizeDate(value, `已完成日期[${index}]`))
+  const pendingDates = requiredArray(pick(record, 'pendingDates', 'PendingDates'), '待完成日期').map((entry, index) => {
+    const pending = asRecord(entry, `待完成日期[${index}]`)
+    return {
+      date: normalizeDate(pick(pending, 'date', 'Date'), `待完成日期[${index}].date`),
+      reason: requiredString(pick(pending, 'reason', 'Reason'), `待完成日期[${index}].reason`),
+    }
+  })
+  const status = normalizeEnum(pick(record, 'status', 'Status'), '日期覆盖状态', ['complete', 'partial', 'pending'])
+  const version = requiredString(pick(record, 'version', 'Version'), '日期覆盖版本')
+  const known = new Set<string>()
+  for (const date of [...readyDates, ...pendingDates.map((item) => item.date)]) {
+    if (known.has(date)) throw new Error('日期覆盖范围包含重复日期')
+    known.add(date)
+  }
+  if ((status === 'complete') !== (pendingDates.length === 0) || (status === 'pending') !== (readyDates.length === 0)) {
+    throw new Error('日期覆盖状态与日期集合不一致')
+  }
+  return { status, readyDates, pendingDates, version }
 }
 
 function normalizeDaily(raw: unknown): BatchSalesDaily {
@@ -205,6 +236,21 @@ function normalizeBranch(raw: unknown): BatchSalesBranch {
     branchName: requiredString(pick(record, 'branchName', 'BranchName'), '分店名称'),
     metrics: normalizeMetrics(pick(record, 'metrics', 'Metrics')),
     daily: requiredArray(pick(record, 'daily', 'Daily'), '分店每日销量').map(normalizeDaily),
+  }
+}
+
+function normalizeOverviewBranch(raw: unknown): BatchSalesOverviewBranch {
+  const record = asRecord(raw, '总览分店销量')
+  return { ...normalizeBranch(record), contributingProductCount: requiredNumber(pick(record, 'contributingProductCount', 'ContributingProductCount'), '贡献商品数') }
+}
+
+function normalizeOverview(raw: unknown): BatchSalesOverview {
+  const record = asRecord(raw, '总览')
+  const rawMetrics = pick(record, 'metrics', 'Metrics')
+  return {
+    metrics: rawMetrics === null || rawMetrics === undefined ? null : normalizeMetrics(rawMetrics),
+    daily: requiredArray(pick(record, 'daily', 'Daily'), '总览每日销量').map(normalizeDaily),
+    branches: requiredArray(pick(record, 'branches', 'Branches'), '总览分店销量').map(normalizeOverviewBranch),
   }
 }
 
@@ -243,13 +289,40 @@ function normalizeQueryResult(raw: unknown): BatchSalesQueryResult {
     warnings: requiredStringArray(pick(record, 'warnings', 'Warnings'), '警告'),
     statisticStatus: optionalString(pick(record, 'statisticStatus', 'StatisticStatus')),
     statisticUpdatedAt: optionalString(pick(record, 'statisticUpdatedAt', 'StatisticUpdatedAt')),
+    discountStatisticStatus: optionalString(pick(record, 'discountStatisticStatus', 'DiscountStatisticStatus')),
+    discountUpdatedAt: optionalString(pick(record, 'discountUpdatedAt', 'DiscountUpdatedAt')),
+    coverage: normalizeCoverage(pick(record, 'coverage', 'Coverage')),
+    overview: normalizeOverview(pick(record, 'overview', 'Overview')),
   }
+}
+
+function normalizeLockedScope(input: BatchSalesLockedScope): void {
+  validateScope(input)
+  requiredStringArray(input.productCodes, '商品编码')
+  requiredString(input.coverageVersion, '日期覆盖版本')
+  input.readyDates.forEach((date, index) => normalizeDate(date, `已完成日期[${index}]`))
+}
+
+function normalizeBranchOverview(raw: unknown): BatchSalesBranchOverview {
+  const record = asRecord(raw, '分店总览响应')
+  return { ...normalizeResponseScope(record), productCodes: requiredStringArray(pick(record, 'productCodes', 'ProductCodes'), '商品编码'), coverage: normalizeCoverage(pick(record, 'coverage', 'Coverage')), branch: normalizeBranch(pick(record, 'branch', 'Branch')), products: requiredArray(pick(record, 'products', 'Products'), '商品贡献').map((entry) => {
+    const product = asRecord(entry, '商品贡献')
+    return { ...normalizeProduct(product), metrics: normalizeMetrics(pick(product, 'metrics', 'Metrics')) }
+  }) }
+}
+
+function normalizeDiscountOverview(raw: unknown): BatchSalesDiscountOverview {
+  const record = asRecord(raw, '折扣总览响应')
+  const products = pick(record, 'products', 'Products')
+  const branch = pick(record, 'branch', 'Branch')
+  return { ...normalizeResponseScope(record), productCodes: requiredStringArray(pick(record, 'productCodes', 'ProductCodes'), '商品编码'), coverage: normalizeCoverage(pick(record, 'coverage', 'Coverage')), overview: normalizeOverview(pick(record, 'overview', 'Overview')), branch: branch === null || branch === undefined ? undefined : normalizeBranch(branch), products: products === null || products === undefined ? undefined : requiredArray(products, '商品贡献').map((entry) => { const product = asRecord(entry, '商品贡献'); return { ...normalizeProduct(product), metrics: normalizeMetrics(pick(product, 'metrics', 'Metrics')) } }), discountStatisticStatus: optionalString(pick(record, 'discountStatisticStatus', 'DiscountStatisticStatus')), discountUpdatedAt: optionalString(pick(record, 'discountUpdatedAt', 'DiscountUpdatedAt')), warnings: requiredStringArray(pick(record, 'warnings', 'Warnings'), '警告') }
 }
 
 function normalizeDetail(raw: unknown): BatchSalesDetail {
   const record = asRecord(raw, '详情响应')
   return {
     ...normalizeResponseScope(record),
+    productCodes: requiredStringArray(pick(record, 'productCodes', 'ProductCodes'), '商品编码'),
     statisticStatus: optionalString(pick(record, 'statisticStatus', 'StatisticStatus')),
     statisticUpdatedAt: optionalString(pick(record, 'statisticUpdatedAt', 'StatisticUpdatedAt')),
     discountStatisticStatus: optionalString(pick(record, 'discountStatisticStatus', 'DiscountStatisticStatus')),
@@ -259,6 +332,7 @@ function normalizeDetail(raw: unknown): BatchSalesDetail {
     daily: requiredArray(pick(record, 'daily', 'Daily'), '每日销量').map(normalizeDaily),
     branches: requiredArray(pick(record, 'branches', 'Branches'), '分店销量').map(normalizeBranch),
     warnings: requiredStringArray(pick(record, 'warnings', 'Warnings'), '警告'),
+    coverage: normalizeCoverage(pick(record, 'coverage', 'Coverage')),
   }
 }
 
@@ -297,8 +371,31 @@ async function query(input: BatchSalesQuery, signal?: AbortSignal): Promise<Batc
 async function getDetail(input: BatchSalesDetailRequest, signal?: AbortSignal): Promise<BatchSalesDetail> {
   validateScope(input)
   requiredString(input.productCode, '商品编码')
+  if ((input.coverageVersion === undefined) !== (input.readyDates === undefined)) throw new Error('日期覆盖版本与已完成日期必须同时提供')
+  if (input.coverageVersion !== undefined) {
+    requiredString(input.coverageVersion, '日期覆盖版本')
+    input.readyDates?.forEach((date, index) => normalizeDate(date, `已完成日期[${index}]`))
+  }
   const response = await request.post<ApiResponse<unknown> | unknown>(`${API_BASE}/detail`, input, { signal })
   return normalizeDetail(unwrapPayload(response))
 }
 
-export const batchProductSalesApi: BatchProductSalesApi = { getOptions, query, getDetail }
+async function getBranchOverview(input: BatchSalesBranchOverviewRequest, signal?: AbortSignal): Promise<BatchSalesBranchOverview> {
+  normalizeLockedScope(input)
+  requiredString(input.branchCode, '分店编码')
+  const response = await request.post<ApiResponse<unknown> | unknown>(`${API_BASE}/overview/branch`, input, { signal })
+  return normalizeBranchOverview(unwrapPayload(response))
+}
+
+async function getDiscounts(input: BatchSalesLockedScope & { branchCode?: string }, signal?: AbortSignal): Promise<BatchSalesDiscountOverview> {
+  normalizeLockedScope(input)
+  const response = await request.post<ApiResponse<unknown> | unknown>(`${API_BASE}/overview/discounts`, input, { signal })
+  return normalizeDiscountOverview(unwrapPayload(response))
+}
+
+async function exportDetail(input: BatchSalesLockedScope, signal?: AbortSignal): Promise<string> {
+  normalizeLockedScope(input)
+  return request.post<string>(`${API_BASE}/export/detail`, input, { signal })
+}
+
+export const batchProductSalesApi: BatchProductSalesApi = { getOptions, query, getDetail, getBranchOverview, getDiscounts, exportDetail }

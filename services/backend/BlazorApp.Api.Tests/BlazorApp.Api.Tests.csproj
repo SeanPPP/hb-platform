@@ -143,6 +143,10 @@
     <Compile Include="BatchProductSalesAnalysisControllerTests.cs" />
     <Compile Include="BatchProductSalesAnalysisSqlTests.cs" />
     <Compile Include="BatchProductSalesAnalysisSqlServerIntegrationTests.cs" />
+    <Compile Include="BatchProductSalesPartialCoverageSqlServerTests.cs" />
+    <Compile Include="BatchProductSalesCancellationSqlServerTests.cs" />
+    <Compile Include="BatchProductSalesOverviewPerformanceSqlServerTests.cs" />
+    <Compile Include="BatchProductSales90DayHttpHarnessSqlServerTests.cs" />
     <Compile Include="BatchProductSalesDiscountSourceSqlServerTests.cs" />
     <Compile Include="BatchProductSalesDiscountDailySqlServerTests.cs" />
     <Compile Include="BatchProductSalesDiscountWorkerSchedulingTests.cs" />

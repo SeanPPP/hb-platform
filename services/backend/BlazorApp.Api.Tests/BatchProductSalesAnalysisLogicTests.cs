@@ -156,7 +156,12 @@ public sealed class BatchProductSalesAnalysisLogicTests
             }, null);
 
             Assert.Equal(SalesStatisticRefreshStatus.Pending, response.Data!.StatisticStatus);
-            Assert.Empty(response.Data.Products);
+            var product = Assert.Single(response.Data.Products);
+            Assert.Equal(0m, product.Quantity);
+            Assert.Equal("partial", response.Data.Coverage.Status);
+            Assert.Equal(["2024-12-31"], response.Data.Coverage.ReadyDates);
+            Assert.Contains(response.Data.Coverage.PendingDates, row => row.Date == "2024-12-30" && row.Reason == "queued");
+            Assert.Contains(response.Data.Coverage.PendingDates, row => row.Date == "2025-01-01" && row.Reason == "active");
             Assert.Contains(response.Data.Warnings, warning => warning.Contains("1 个缺失或未完成统计日期提交", StringComparison.Ordinal));
             Assert.Contains(response.Data.Warnings, warning => warning.Contains("1 个统计日期已有活动队列任务", StringComparison.Ordinal));
             queue.VerifyAll();
@@ -202,7 +207,10 @@ public sealed class BatchProductSalesAnalysisLogicTests
             }, null);
 
             Assert.Equal(SalesStatisticRefreshStatus.Pending, response.Data!.StatisticStatus);
-            Assert.Empty(response.Data.Products);
+            var product = Assert.Single(response.Data.Products);
+            Assert.Null(product.Quantity);
+            Assert.Equal("pending", response.Data.Coverage.Status);
+            Assert.Contains(response.Data.Coverage.PendingDates, row => row.Date == "2024-12-30" && row.Reason == "queueFailed");
             Assert.Contains(response.Data.Warnings, warning => warning.Contains("提交失败，尚未排队", StringComparison.Ordinal));
             Assert.DoesNotContain(response.Data.Warnings, warning => warning.Contains("提交到持久队列", StringComparison.Ordinal));
             queue.VerifyAll();
