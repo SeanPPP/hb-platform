@@ -94,6 +94,12 @@
 .branchTotals { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 5px; color: #53667e; font-size: 12px; font-variant-numeric: tabular-nums; }
 .branchTotals b { margin-left: 3px; color: #263a56; }
 .warning { margin-bottom: 8px; }
+.coverageDetails { margin-top: 6px; font-size: 12px; }
+.coverageDetails summary { cursor: pointer; color: #3c6fae; }
+.coverageDetails > div { display: flex; gap: 10px; padding: 4px 0; border-bottom: 1px solid #f0f2f5; }
+.coverageDetails > div:last-child { border-bottom: 0; }
+.coverageDetails b { font-variant-numeric: tabular-nums; }
+.coverageDetails span { color: #65758b; }
 
 :global(.batch-product-sales-chart) { display: block; width: 100%; height: auto; overflow: visible; }
 :global(.batch-product-sales-chart g[role="graphics-symbol"]) { cursor: crosshair; outline: none; }

@@ -1,23 +1,25 @@
 import { DownloadOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
-import { Alert, Button, DatePicker, Dropdown, Empty, Input, Progress, Select, Skeleton, Tag } from 'antd'
+import { Alert, Button, DatePicker, Dropdown, Empty, Input, Select, Skeleton, Tag } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import dayjs, { type Dayjs } from 'dayjs'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import PageContainer from '../../../components/PageContainer'
 import { MeasuredTable } from '../../../components/MeasuredTable'
 import { batchProductSalesApi } from '../../../services/batchProductSalesAnalysisService'
-import type { BatchProductSalesApi, BatchSalesBranch, BatchSalesDaily, BatchSalesDetail, BatchSalesMetrics, BatchSalesProductSummary, BatchSalesQueryResult, BatchSalesScope } from '../../../types/batchProductSalesAnalysis'
+import { useAuthStore } from '../../../store/auth'
+import { RequestError } from '../../../utils/request'
+import type { BatchProductSalesApi, BatchSalesBranch, BatchSalesBranchOverview, BatchSalesCoverage, BatchSalesDaily, BatchSalesDetail, BatchSalesMetrics, BatchSalesQueryResult, BatchSalesScope } from '../../../types/batchProductSalesAnalysis'
 import ProductImage from '../ProductFlowShared/ProductImage'
 import { parsePastedItemNumbers, type ImportResult } from './import'
-import { buildBatchProductSalesAnalysis, formatCsvRow, getBatchProductSalesClassifiedQuantity, getBatchProductSalesDateRangeError, getBatchProductSalesDiscountStateKey, hasBatchProductSalesDiscountStatisticsNotice, hasBatchProductSalesDailyActivity, runBatchProductSalesPool, shouldRefreshBatchProductSalesDiscountStatistics } from './logic'
+import { buildBatchProductSalesAnalysis, buildBatchProductSalesDetailExportScope, formatCsvRow, getBatchProductSalesClassifiedQuantity, getBatchProductSalesDateRangeError, getBatchProductSalesDiscountStateKey, hasBatchProductSalesDiscountStatisticsNotice } from './logic'
 import DiscountDailyChart from './DiscountDailyChart'
+import type { DiscountChartDaily } from './chartModel'
 import ProductScopeModal from './ProductScopeModal'
 import styles from './index.module.css'
 
 const { RangePicker } = DatePicker
 const ALL_PRODUCTS = '__batch-product-sales-all__'
-const DETAIL_CONCURRENCY = 5
 const quantityFormatter = new Intl.NumberFormat('en-AU')
 const audFormatter = new Intl.NumberFormat('en-AU', {
   style: 'currency',
@@ -59,11 +61,17 @@ function errorKind(error: unknown) {
   if (/abort|timeout|超时/i.test(text)) return 'timeout'
   return 'load'
 }
+function isAuthorizationError(error: unknown) {
+  return error instanceof RequestError && (error.status === 401 || error.status === 403)
+}
 function isAbort(error: unknown) {
   return error instanceof Error && error.name === 'AbortError'
 }
-function isPartial(warnings: string[]) {
-  return warnings.some((warning) => /partial|incomplete|missing|不完整|缺失/i.test(warning))
+function isCoverageConflict(error: unknown) {
+  if (error instanceof Error && (error.message === 'coverage' || error.message.includes('BATCH_PRODUCT_SALES_COVERAGE_VERSION_CONFLICT'))) return true
+  if (!(error instanceof RequestError) || error.status !== 409 || !error.payload || typeof error.payload !== 'object') return false
+  const payload = error.payload as Record<string, unknown>
+  return payload.errorCode === 'BATCH_PRODUCT_SALES_COVERAGE_VERSION_CONFLICT' || payload.ErrorCode === 'BATCH_PRODUCT_SALES_COVERAGE_VERSION_CONFLICT'
 }
 function classified(metrics: BatchSalesMetrics, field: 'regularQuantity' | 'discountQuantity' | 'unknownQuantity', unavailable = false) {
   const value = getBatchProductSalesClassifiedQuantity(metrics, field, unavailable)
@@ -92,16 +100,57 @@ function downloadCsv(fileName: string, rows: unknown[][]) {
   anchor.remove()
   URL.revokeObjectURL(url)
 }
+function downloadCsvText(fileName: string, text: string) {
+  const url = URL.createObjectURL(new Blob([text], { type: 'text/csv;charset=utf-8' }))
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = fileName
+  anchor.click()
+  URL.revokeObjectURL(url)
+}
 
-/** 所有商品明细都完整返回时才能补零日，部分失败始终保留为缺失。 */
-function fillKnownDays(data: BatchSalesDaily[], scope: BatchSalesScope, canFill: boolean): BatchSalesDaily[] {
-  if (!canFill) return data
+function sameCoverage(left: BatchSalesCoverage, right: BatchSalesCoverage) {
+  return left.version === right.version && sameStringSet(left.readyDates, right.readyDates)
+}
+function sameStringSet(left: string[], right: string[]) {
+  return left.length === right.length && [...left].sort().every((value, index) => value === [...right].sort()[index])
+}
+function sameLockedScope(response: BatchSalesScope & { productCodes?: string[]; coverage: BatchSalesCoverage }, scope: BatchSalesScope, coverage: BatchSalesCoverage, productCodes?: string[]) {
+  return sameCoverage(response.coverage, coverage)
+    && response.startDate === scope.startDate && response.endDate === scope.endDate
+    && sameStringSet(response.storeCodes, scope.storeCodes)
+    && (!productCodes || (!!response.productCodes && sameStringSet(response.productCodes, productCodes)))
+}
+function requestCacheKey(sessionKey: string, scope: BatchSalesScope, coverage: BatchSalesCoverage, productCodes: string[], view: string, branchCode?: string) {
+  return [sessionKey, scope.startDate, scope.endDate, [...scope.storeCodes].sort().join(','), coverage.version, [...coverage.readyDates].sort().join(','), [...productCodes].sort().join(','), view, branchCode ?? ''].join('|')
+}
+function mergeClassifications<T extends BatchSalesMetrics>(reliable: T, classifiedMetrics: BatchSalesMetrics): T {
+  return { ...classifiedMetrics, quantity: reliable.quantity, salesAmount: reliable.salesAmount } as T
+}
+
+/** 首屏总览是可靠数量的唯一来源；用一个本地视图行复用既有图表与排行渲染，绝不触发商品详情请求。 */
+function overviewDetail(result: BatchSalesQueryResult): BatchSalesDetail | undefined {
+  if (!result.overview.metrics) return undefined
+  return {
+    startDate: result.startDate, endDate: result.endDate, storeCodes: result.storeCodes,
+    productCodes: result.products.map((product) => product.productCode),
+    product: { productCode: ALL_PRODUCTS, itemNumber: '', productName: '' },
+    metrics: result.overview.metrics, daily: result.overview.daily, branches: result.overview.branches,
+    warnings: result.warnings, coverage: result.coverage,
+    discountStatisticStatus: result.discountStatisticStatus,
+    discountUpdatedAt: result.discountUpdatedAt,
+  }
+}
+
+/** 只在摘要承诺的 readyDates 补真实零；其他日期保留 null 断点。 */
+function fillCoverageDays(data: BatchSalesDaily[], scope: BatchSalesScope, coverage: BatchSalesCoverage): DiscountChartDaily[] {
   const byDate = new Map(data.map((item) => [item.date, item]))
-  const dates: BatchSalesDaily[] = []
+  const readyDates = new Set(coverage.readyDates)
+  const dates: DiscountChartDaily[] = []
   for (let date = dayjs(scope.startDate); !date.isAfter(scope.endDate, 'day'); date = date.add(1, 'day')) {
     const key = date.format('YYYY-MM-DD')
     dates.push(
-      byDate.get(key) ?? {
+      !readyDates.has(key) ? { date: key, metrics: null } : byDate.get(key) ?? {
         date: key,
         metrics: {
           quantity: 0,
@@ -152,6 +201,14 @@ function LoadState({ loading, error, empty, onRetry, children }: { loading: bool
 
 export default function BatchProductSalesAnalysisPage({ api = batchProductSalesApi }: BatchProductSalesAnalysisPageProps) {
   const { t } = useTranslation()
+  const currentUser = useAuthStore((state) => state.currentUser)
+  // 同一 GUID 的角色、精确权限或可见门店变动也必须隔离旧查询缓存。
+  const sessionKey = useMemo(() => currentUser ? [
+    currentUser.userGUID,
+    [...(currentUser.exactPermissions ?? [])].sort().join(','),
+    [...currentUser.roleNames].sort().join(','),
+    [...(currentUser.stores ?? [])].map((store) => store.storeCode).sort().join(','),
+  ].join('|') : 'anonymous', [currentUser])
   const today = useMemo(businessToday, [])
   const [draftRange, setDraftRange] = useState<[Dayjs, Dayjs]>(() => defaultRange(today))
   const [draftStores, setDraftStores] = useState<string[]>([])
@@ -173,12 +230,12 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
   const [queryLoading, setQueryLoading] = useState(false)
   const [queryError, setQueryError] = useState<string>()
   const [detailsByProduct, setDetailsByProduct] = useState<Record<string, BatchSalesDetail>>({})
+  const [branchOverview, setBranchOverview] = useState<BatchSalesBranchOverview>()
   const [detailFailures, setDetailFailures] = useState<Record<string, string>>({})
-  const [detailProgress, setDetailProgress] = useState({
-    completed: 0,
-    total: 0,
-  })
   const [detailLoading, setDetailLoading] = useState(false)
+  const [branchLoading, setBranchLoading] = useState(false)
+  const [branchError, setBranchError] = useState<string>()
+  const [globalDiscountError, setGlobalDiscountError] = useState(false)
   const [selectedProductCode, setSelectedProductCode] = useState(ALL_PRODUCTS)
   const [selectedBranchCode, setSelectedBranchCode] = useState<string>()
   const [branchSelectionTouched, setBranchSelectionTouched] = useState(false)
@@ -187,17 +244,63 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
   const [branchSearch, setBranchSearch] = useState('')
   const [branchTopN, setBranchTopN] = useState(20)
   const [onlyBranchesWithSales, setOnlyBranchesWithSales] = useState(false)
-  const [discountPollRevision, setDiscountPollRevision] = useState(0)
+  const [restoreRevision, setRestoreRevision] = useState(0)
   const queryAbortRef = useRef<AbortController>()
   const detailAbortRef = useRef<AbortController>()
+  const branchAbortRef = useRef<AbortController>()
   const refreshAbortRefs = useRef(new Map<string, AbortController>())
+  const exportAbortRef = useRef<AbortController>()
+  const detailCacheRef = useRef(new Map<string, BatchSalesDetail>())
+  const branchCacheRef = useRef(new Map<string, BatchSalesBranchOverview>())
+  const branchDiscountLoadedRef = useRef(new Set<string>())
+  const detailInflightRef = useRef(new Map<string, AbortController>())
+  const branchInflightRef = useRef(new Map<string, AbortController>())
+  const requestGenerationRef = useRef(0)
+  const previousSessionKeyRef = useRef(sessionKey)
   const queryRequestRef = useRef(0)
-  const detailSessionRef = useRef(0)
-  const refreshRequestRefs = useRef(new Map<string, number>())
   const optionsRequestRef = useRef(0)
+  const optionsAbortRef = useRef<AbortController>()
+  const pendingSelectionRestoreRef = useRef<{ productCode: string; branchCode?: string; branchTouched: boolean }>()
+  const selectedBranchRequestKeyRef = useRef<string>()
+
+  const clearQueryForAuthorization = useCallback(() => {
+    requestGenerationRef.current += 1
+    queryAbortRef.current?.abort()
+    detailAbortRef.current?.abort()
+    branchAbortRef.current?.abort()
+    exportAbortRef.current?.abort()
+    refreshAbortRefs.current.forEach((controller) => controller.abort())
+    refreshAbortRefs.current.clear()
+    detailCacheRef.current.clear()
+    branchCacheRef.current.clear()
+    branchDiscountLoadedRef.current.clear()
+    detailInflightRef.current.forEach((controller) => controller.abort())
+    branchInflightRef.current.forEach((controller) => controller.abort())
+    detailInflightRef.current.clear()
+    branchInflightRef.current.clear()
+    setQueryResult(undefined)
+    setAppliedScope(undefined)
+    setSubmittedInput(undefined)
+    setDetailsByProduct({})
+    setBranchOverview(undefined)
+    setDetailFailures({})
+    setDetailLoading(false)
+    setBranchLoading(false)
+    setBranchError(undefined)
+    setGlobalDiscountError(false)
+    setQueryLoading(false)
+    setQueryError(undefined)
+    setSelectedProductCode(ALL_PRODUCTS)
+    setSelectedBranchCode(undefined)
+    setBranchSelectionTouched(false)
+    setOptions(undefined)
+    setDraftStores([])
+  }, [])
 
   const loadOptions = useCallback(() => {
+    optionsAbortRef.current?.abort()
     const controller = new AbortController()
+    optionsAbortRef.current = controller
     const request = ++optionsRequestRef.current
     setOptionsLoading(true)
     setOptionsError(undefined)
@@ -207,7 +310,12 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
         if (request === optionsRequestRef.current) setOptions(result)
       })
       .catch((error) => {
-        if (!isAbort(error) && request === optionsRequestRef.current) setOptionsError(errorKind(error))
+        if (isAbort(error) || controller.signal.aborted || request !== optionsRequestRef.current) return
+        if (isAuthorizationError(error)) {
+          clearQueryForAuthorization()
+          return
+        }
+        setOptionsError(errorKind(error))
       })
       .finally(() => {
         if (request === optionsRequestRef.current) setOptionsLoading(false)
@@ -216,128 +324,68 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
       controller.abort()
       if (request === optionsRequestRef.current) optionsRequestRef.current += 1
     }
-  }, [api])
+  }, [api, clearQueryForAuthorization])
   useEffect(() => loadOptions(), [loadOptions])
   useEffect(
     () => () => {
       queryAbortRef.current?.abort()
       detailAbortRef.current?.abort()
+      branchAbortRef.current?.abort()
+      optionsAbortRef.current?.abort()
       refreshAbortRefs.current.forEach((controller) => controller.abort())
+      exportAbortRef.current?.abort()
+      detailInflightRef.current.forEach((controller) => controller.abort())
+      branchInflightRef.current.forEach((controller) => controller.abort())
     },
     [],
   )
 
-  const loadAllDetails = useCallback(
-    async (products: BatchSalesProductSummary[], scope: BatchSalesScope, replace = true) => {
-      detailAbortRef.current?.abort()
-      const controller = new AbortController()
-      detailAbortRef.current = controller
-      const session = ++detailSessionRef.current
-      if (replace) {
-        setDetailsByProduct({})
-        setDetailFailures({})
-      } else {
-        setDetailFailures((current) => {
-          const next = { ...current }
-          products.forEach((product) => delete next[product.productCode])
-          return next
-        })
-      }
-      setDetailProgress({ completed: 0, total: products.length })
-      setDetailLoading(products.length > 0)
-      await runBatchProductSalesPool(products, DETAIL_CONCURRENCY, async (currentProduct) => {
-        try {
-          const result = await api.getDetail({ ...scope, productCode: currentProduct.productCode }, controller.signal)
-          if (session !== detailSessionRef.current) return
-          if (result.statisticStatus && result.statisticStatus.toLowerCase() !== 'fresh') throw new Error('statistics')
-          const branches = [...result.branches].sort((left, right) => right.metrics.quantity - left.metrics.quantity)
-          setDetailsByProduct((current) => ({
-            ...current,
-            [currentProduct.productCode]: { ...result, branches },
-          }))
-        } catch (error) {
-          if (isAbort(error) || session !== detailSessionRef.current) return
-          const kind = error instanceof Error && error.message === 'statistics' ? 'statistics' : errorKind(error)
-          setDetailFailures((current) => ({
-            ...current,
-            [currentProduct.productCode]: kind,
-          }))
-        } finally {
-          if (session === detailSessionRef.current && !controller.signal.aborted)
-            setDetailProgress((current) => ({
-              ...current,
-              completed: current.completed + 1,
-            }))
-        }
-      })
-      if (session === detailSessionRef.current) setDetailLoading(false)
-    },
-    [api],
-  )
-  const refreshDetail = useCallback(
-    async (productCode: string, scope: BatchSalesScope) => {
-      refreshAbortRefs.current.get(productCode)?.abort()
-      const controller = new AbortController()
-      refreshAbortRefs.current.set(productCode, controller)
-      const request = (refreshRequestRefs.current.get(productCode) ?? 0) + 1
-      refreshRequestRefs.current.set(productCode, request)
-      const session = detailSessionRef.current
-
-      try {
-        const result = await api.getDetail({ ...scope, productCode }, controller.signal)
-        if (session !== detailSessionRef.current || refreshRequestRefs.current.get(productCode) !== request || (result.statisticStatus && result.statisticStatus.toLowerCase() !== 'fresh')) return
-        const branches = [...result.branches].sort((left, right) => right.metrics.quantity - left.metrics.quantity)
-        setDetailsByProduct((current) => ({
-          ...current,
-          [productCode]: { ...result, branches },
-        }))
-        setDetailFailures((current) => {
-          const { [productCode]: _removed, ...remaining } = current
-          return remaining
-        })
-      } catch {
-        // 后台轮询失败时保留上一次可靠结果，下一轮继续尝试。
-      } finally {
-        if (refreshAbortRefs.current.get(productCode) === controller) refreshAbortRefs.current.delete(productCode)
-      }
-    },
-    [api],
-  )
-
-  const refreshPendingDetails = useCallback(
-    async (productCodes: string[], scope: BatchSalesScope) => {
-      await runBatchProductSalesPool(productCodes, DETAIL_CONCURRENCY, (productCode) => refreshDetail(productCode, scope))
-    },
-    [refreshDetail],
-  )
+  useLayoutEffect(() => {
+    if (previousSessionKeyRef.current === sessionKey) return
+    previousSessionKeyRef.current = sessionKey
+    clearQueryForAuthorization()
+    void loadOptions()
+  }, [clearQueryForAuthorization, loadOptions, sessionKey])
 
   const dirty = !!submittedInput && (submittedInput.scope.startDate !== draftRange[0].format('YYYY-MM-DD') || submittedInput.scope.endDate !== draftRange[1].format('YYYY-MM-DD') || submittedInput.scope.storeCodes.join('|') !== draftStores.join('|') || submittedInput.itemNumbers.join('\u0001') !== importResult.itemNumbers.join('\u0001'))
   const productFilter = selectedProductCode === ALL_PRODUCTS ? undefined : selectedProductCode
+  // synthetic ALL 总览和单品详情不能一起参与聚合，否则从单品切回全部会重复计量。
+  const selectedDetails = useMemo(() => {
+    const detail = detailsByProduct[productFilter ?? ALL_PRODUCTS]
+    return detail ? [detail] : []
+  }, [detailsByProduct, productFilter])
   const rankAnalysis = useMemo(
     () =>
-      buildBatchProductSalesAnalysis(Object.values(detailsByProduct), {
+      buildBatchProductSalesAnalysis(selectedDetails, {
         productCode: productFilter,
       }),
-    [detailsByProduct, productFilter],
+    [productFilter, selectedDetails],
   )
-  const activeBranchCode = branchSelectionTouched ? selectedBranchCode : rankAnalysis.branches[0]?.branchCode
+  // 分店钻取是按需请求，首屏不自动选择首家分店。
+  const activeBranchCode = branchSelectionTouched ? selectedBranchCode : undefined
+  const branchOverviewMatchesSelection = !!branchOverview && branchOverview.branch.branchCode === activeBranchCode
+  // ALL 的分店日序列与贡献只能由按需 branch overview 提供；不能拿 synthetic ALL 总览伪造。
+  const hasSingleProductBranchFallback = !!productFilter && selectedDetails.some((detail) => detail.branches.some((branch) => branch.branchCode === activeBranchCode))
+  const branchAnalysisAvailable = !activeBranchCode || branchOverviewMatchesSelection || hasSingleProductBranchFallback
   const analysis = useMemo(
-    () =>
-      buildBatchProductSalesAnalysis(Object.values(detailsByProduct), {
+    () => branchOverview && branchOverview.branch.branchCode === activeBranchCode
+      ? { metrics: branchOverview.branch.metrics, daily: branchOverview.branch.daily, branches: [branchOverview.branch], productContributions: branchOverview.products.map((product) => ({ product, metrics: product.metrics })) }
+      : buildBatchProductSalesAnalysis(selectedDetails, {
         productCode: productFilter,
         branchCode: activeBranchCode,
       }),
-    [activeBranchCode, detailsByProduct, productFilter],
+    [activeBranchCode, branchOverview, productFilter, selectedDetails],
   )
   const selectedProduct = queryResult?.products.find((product) => product.productCode === productFilter)
   const selectedBranch = rankAnalysis.branches.find((branch) => branch.branchCode === activeBranchCode)
-  const selectedDetails = useMemo(() => Object.values(detailsByProduct).filter((detail) => !productFilter || detail.product.productCode === productFilter), [detailsByProduct, productFilter])
   const discountNotice = useMemo(() => {
     const priority = ['Failed', 'OutOfSync', 'Superseded', 'Unavailable', 'Partial', 'Refreshing', 'Backfilling', 'Running', 'Queued', 'Pending'] as const
     const counts = new Map<(typeof priority)[number], number>()
     selectedDetails.forEach((detail) => {
+      if (!detail.discountStatisticStatus) return
       if (!hasBatchProductSalesDiscountStatisticsNotice(detail.discountStatisticStatus)) return
       const state = getBatchProductSalesDiscountStateKey(detail.discountStatisticStatus)
+      if (state === 'Fresh') return
       counts.set(state, (counts.get(state) ?? 0) + 1)
     })
     const primary = priority.find((state) => counts.has(state))
@@ -351,10 +399,9 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
         .join(' · '),
     }
   }, [selectedDetails, t])
-  const completeSelectedDetails = productFilter ? !!detailsByProduct[productFilter] && !detailFailures[productFilter] : !!queryResult && Object.keys(detailsByProduct).length + Object.keys(detailFailures).length === queryResult.products.length && !Object.keys(detailFailures).length
-  const classificationUnavailable = selectedDetails.some((detail) => ['OutOfSync', 'Unavailable', 'Superseded'].includes(getBatchProductSalesDiscountStateKey(detail.discountStatisticStatus)))
-  const totalDaily = appliedScope ? fillKnownDays(rankAnalysis.daily, appliedScope, completeSelectedDetails && !selectedDetails.some((detail) => isPartial(detail.warnings))) : []
-  const branchDaily = appliedScope && activeBranchCode ? fillKnownDays(analysis.daily, appliedScope, completeSelectedDetails && !selectedDetails.some((detail) => isPartial(detail.warnings))) : []
+  const classificationUnavailable = !!productFilter && selectedDetails.some((detail) => ['OutOfSync', 'Unavailable', 'Superseded'].includes(getBatchProductSalesDiscountStateKey(detail.discountStatisticStatus)))
+  const totalDaily = appliedScope && queryResult ? fillCoverageDays(rankAnalysis.daily, appliedScope, queryResult.coverage) : []
+  const branchDaily = appliedScope && activeBranchCode && queryResult && branchAnalysisAvailable ? fillCoverageDays(analysis.daily, appliedScope, queryResult.coverage) : []
   const appliedStoreText = useMemo(() => {
     if (!appliedScope?.storeCodes.length) return t('batchProductSalesAnalysis.allStores')
     const byCode = new Map((options?.stores ?? []).map((store) => [store.code, store]))
@@ -369,104 +416,302 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
       })
       .join(' · ')
   }, [appliedScope, options?.stores, t])
+  // 每个 coverage 快照只读取一次总览折扣分类；后台已在一次请求中补齐，不再进行五秒轮询。
   useEffect(() => {
-    if (detailLoading || !appliedScope) return
-    const pendingProductCodes = selectedDetails.filter((detail) => shouldRefreshBatchProductSalesDiscountStatistics(detail.discountStatisticStatus)).map((detail) => detail.product.productCode)
-    if (!pendingProductCodes.length) return
-    const session = detailSessionRef.current
-    const timer = window.setTimeout(() => {
-      void refreshPendingDetails(pendingProductCodes, appliedScope).finally(() => {
-        if (session === detailSessionRef.current) setDiscountPollRevision((current) => current + 1)
+    if (!queryResult || !appliedScope || !queryResult.products.length || !queryResult.coverage.readyDates.length) return
+    setGlobalDiscountError(false)
+    const controller = new AbortController()
+    const generation = requestGenerationRef.current
+    const productCodes = queryResult.products.map((product) => product.productCode)
+    void api.getDiscounts({ ...appliedScope, productCodes, coverageVersion: queryResult.coverage.version, readyDates: queryResult.coverage.readyDates }, controller.signal)
+      .then((discounts) => {
+        const productCodes = queryResult.products.map((product) => product.productCode)
+        if (generation !== requestGenerationRef.current || !sameLockedScope(discounts, appliedScope, queryResult.coverage, productCodes)) throw new Error('coverage')
+        if (!queryResult.overview.metrics || !discounts.overview.metrics) return
+        // 分类请求只能补分类字段；可靠 quantity 和 salesAmount 始终保留 query overview 的值。
+        const patched = {
+          ...queryResult,
+          discountStatisticStatus: discounts.discountStatisticStatus,
+          discountUpdatedAt: discounts.discountUpdatedAt,
+          warnings: [...new Set([...queryResult.warnings, ...discounts.warnings])],
+          overview: {
+            ...queryResult.overview,
+            metrics: mergeClassifications(queryResult.overview.metrics, discounts.overview.metrics),
+            daily: queryResult.overview.daily.map((day) => {
+              const next = discounts.overview.daily.find((item) => item.date === day.date)
+              return next ? { ...next, metrics: mergeClassifications(day.metrics, next.metrics) } : day
+            }),
+            branches: queryResult.overview.branches.map((branch) => {
+              const next = discounts.overview.branches.find((item) => item.branchCode === branch.branchCode)
+              return next ? { ...next, metrics: mergeClassifications(branch.metrics, next.metrics), daily: branch.daily } : branch
+            }),
+          },
+        }
+        setQueryResult((current) => current && sameCoverage(current.coverage, queryResult.coverage) ? patched : current)
+        const synthetic = overviewDetail(patched)
+        if (synthetic) setDetailsByProduct((current) => current[ALL_PRODUCTS] && sameCoverage(current[ALL_PRODUCTS].coverage, queryResult.coverage) ? { ...current, [ALL_PRODUCTS]: synthetic } : current)
       })
-    }, 5000)
-    return () => window.clearTimeout(timer)
-  }, [appliedScope, detailLoading, discountPollRevision, refreshPendingDetails, selectedDetails])
+      .catch((error) => {
+        if (isAbort(error) || controller.signal.aborted || generation !== requestGenerationRef.current) return
+        if (isAuthorizationError(error)) {
+          clearQueryForAuthorization()
+          return
+        }
+        if (isCoverageConflict(error)) setQueryError('statistics')
+        else setGlobalDiscountError(true)
+      })
+    return () => controller.abort()
+  }, [api, appliedScope, clearQueryForAuthorization, queryResult?.coverage.version, queryResult?.coverage.readyDates.join('|'), queryResult?.products, sessionKey])
 
-  const query = useCallback(() => {
-    const startDate = draftRange[0].format('YYYY-MM-DD')
-    const endDate = draftRange[1].format('YYYY-MM-DD')
-    if (!importResult.itemNumbers.length) {
+  const query = useCallback((preserveCurrent = false) => {
+    const input = preserveCurrent ? submittedInput : { scope: { startDate: draftRange[0].format('YYYY-MM-DD'), endDate: draftRange[1].format('YYYY-MM-DD'), storeCodes: [...draftStores] }, itemNumbers: importResult.itemNumbers }
+    if (!input?.itemNumbers.length) {
       setQueryError('load')
       return
     }
-    if (getBatchProductSalesDateRangeError(startDate, endDate, today)) {
+    if (getBatchProductSalesDateRangeError(input.scope.startDate, input.scope.endDate, today)) {
       setQueryError('date')
       return
     }
     queryAbortRef.current?.abort()
     detailAbortRef.current?.abort()
+    branchAbortRef.current?.abort()
     refreshAbortRefs.current.forEach((controller) => controller.abort())
     refreshAbortRefs.current.clear()
-    ++detailSessionRef.current
+    exportAbortRef.current?.abort()
+    detailCacheRef.current.clear()
+    branchCacheRef.current.clear()
+    branchDiscountLoadedRef.current.clear()
+    detailInflightRef.current.forEach((current) => current.abort())
+    branchInflightRef.current.forEach((current) => current.abort())
+    detailInflightRef.current.clear()
+    branchInflightRef.current.clear()
+    const generation = ++requestGenerationRef.current
     const controller = new AbortController()
     queryAbortRef.current = controller
     const request = ++queryRequestRef.current
-    const scope = { startDate, endDate, storeCodes: [...draftStores] }
-    setProductSearch('')
-    setBranchSearch('')
-    setBranchTopN(20)
-    setOnlyBranchesWithSales(false)
+    const scope = input.scope
+    const previousSelection = { productCode: selectedProductCode, branchCode: selectedBranchCode, branchTouched: branchSelectionTouched }
     setQueryLoading(true)
     setQueryError(undefined)
-    setQueryResult(undefined)
-    setAppliedScope(undefined)
-    setDetailsByProduct({})
-    setDetailFailures({})
-    setDetailProgress({ completed: 0, total: 0 })
-    setSelectedProductCode(ALL_PRODUCTS)
-    setSelectedBranchCode(undefined)
-    setBranchSelectionTouched(false)
+    if (!preserveCurrent) {
+      setProductSearch('')
+      setBranchSearch('')
+      setBranchTopN(20)
+      setOnlyBranchesWithSales(false)
+    }
     api
-      .query({ ...scope, itemNumbers: importResult.itemNumbers }, controller.signal)
-      .then((result) => {
-        if (request !== queryRequestRef.current) return
+      .query({ ...scope, itemNumbers: input.itemNumbers }, controller.signal)
+      .then(async (result) => {
+        if (request !== queryRequestRef.current || generation !== requestGenerationRef.current) return
         const resultScope = {
           startDate: result.startDate,
           endDate: result.endDate,
           storeCodes: result.storeCodes,
         }
+        if (request !== queryRequestRef.current || generation !== requestGenerationRef.current) return
+        // 首屏只替换 query/overview；商品和分店详情由用户选择后按需读取。
         setQueryResult(result)
         setAppliedScope(resultScope)
-        setSubmittedInput({
-          scope,
-          itemNumbers: [...importResult.itemNumbers],
-        })
-        void loadAllDetails(result.products, resultScope)
+        const overview = overviewDetail(result)
+        setDetailsByProduct(overview ? { [ALL_PRODUCTS]: overview } : {})
+        setBranchOverview(undefined)
+        setDetailFailures({})
+        setDetailLoading(false)
+        setBranchLoading(false)
+        setBranchError(undefined)
+        setGlobalDiscountError(false)
+        setSubmittedInput({ scope, itemNumbers: [...input.itemNumbers] })
+        if (!preserveCurrent) {
+          setSelectedProductCode(ALL_PRODUCTS)
+          setSelectedBranchCode(undefined)
+          setBranchSelectionTouched(false)
+        } else if (previousSelection.productCode === ALL_PRODUCTS || result.products.some((product) => product.productCode === previousSelection.productCode)) {
+          // 仅成功刷新的新快照恢复一次选择；普通点击不进入此路径。
+          const branchIsStillAvailable = !previousSelection.branchTouched || !previousSelection.branchCode || result.overview.branches.some((branch) => branch.branchCode === previousSelection.branchCode)
+          pendingSelectionRestoreRef.current = branchIsStillAvailable
+            ? previousSelection
+            : { ...previousSelection, branchCode: undefined, branchTouched: false }
+          if (!branchIsStillAvailable) {
+            setSelectedBranchCode(undefined)
+            setBranchSelectionTouched(false)
+          }
+          setRestoreRevision((current) => current + 1)
+        } else {
+          setSelectedProductCode(ALL_PRODUCTS)
+          setSelectedBranchCode(undefined)
+          setBranchSelectionTouched(false)
+        }
       })
       .catch((error) => {
-        if (!isAbort(error) && request === queryRequestRef.current) setQueryError(errorKind(error))
+        if (!isAbort(error) && !controller.signal.aborted && request === queryRequestRef.current && generation === requestGenerationRef.current) {
+          if (isAuthorizationError(error)) clearQueryForAuthorization()
+          else setQueryError(isCoverageConflict(error) ? 'statistics' : errorKind(error))
+        }
       })
       .finally(() => {
         if (request === queryRequestRef.current) setQueryLoading(false)
       })
-  }, [api, draftRange, draftStores, importResult.itemNumbers, loadAllDetails, today])
-  const chooseProduct = (productCode: string) => {
+  }, [api, branchSelectionTouched, clearQueryForAuthorization, draftRange, draftStores, importResult.itemNumbers, selectedBranchCode, selectedProductCode, submittedInput, today])
+  const chooseProduct = (productCode: string, preserveBranchSelection = false) => {
+    const currentCoverage = queryResult?.coverage
+    const sameDetailKey = currentCoverage && appliedScope
+      ? requestCacheKey(sessionKey, appliedScope, currentCoverage, [productCode], 'detail')
+      : undefined
+    // 同一用户点击尚在加载的同一商品应复用请求；刷新恢复使用新 coverage key，不会被这里拦截。
+    if (!preserveBranchSelection && selectedProductCode === productCode && sameDetailKey && detailInflightRef.current.has(sameDetailKey)) return
+    // 先取消旧单品请求，再处理 ALL/缓存快路，避免晚到响应和 loading 串到新选择。
+    detailAbortRef.current?.abort()
+    detailAbortRef.current = undefined
+    detailInflightRef.current.forEach((controller) => controller.abort())
+    detailInflightRef.current.clear()
+    setDetailLoading(false)
     setSelectedProductCode(productCode)
-    setSelectedBranchCode(undefined)
-    setBranchSelectionTouched(false)
+    if (!preserveBranchSelection) {
+      setSelectedBranchCode(undefined)
+      setBranchSelectionTouched(false)
+    }
+    setBranchOverview(undefined)
+    setBranchLoading(false)
+    setBranchError(undefined)
+    selectedBranchRequestKeyRef.current = undefined
+    // 商品范围切换使所有分店钻取结果失效；不能让旧商品集合的晚到响应复活。
+    branchInflightRef.current.forEach((controller) => controller.abort())
+    branchInflightRef.current.clear()
+    branchAbortRef.current?.abort()
+    if (productCode === ALL_PRODUCTS || !queryResult || !appliedScope || !queryResult.coverage.readyDates.length || detailsByProduct[productCode]) return
+    const coverage = queryResult.coverage
+    const cacheKey = requestCacheKey(sessionKey, appliedScope, coverage, [productCode], 'detail')
+    const cached = detailCacheRef.current.get(cacheKey)
+    if (cached) {
+      setDetailsByProduct((current) => ({ ...current, [productCode]: cached }))
+      return
+    }
+    if (detailInflightRef.current.has(cacheKey)) return
+    const controller = new AbortController()
+    detailAbortRef.current = controller
+    detailInflightRef.current.set(cacheKey, controller)
+    const generation = requestGenerationRef.current
+    setDetailLoading(true)
+    void api.getDetail({ ...appliedScope, productCode, coverageVersion: coverage.version, readyDates: coverage.readyDates }, controller.signal)
+      .then((detail) => {
+        if (generation !== requestGenerationRef.current || !sameLockedScope(detail, appliedScope, coverage, [productCode]) || controller.signal.aborted) throw new Error('coverage')
+        const normalized = { ...detail, branches: [...detail.branches].sort((left, right) => right.metrics.quantity - left.metrics.quantity) }
+        detailCacheRef.current.set(cacheKey, normalized)
+        setDetailsByProduct((current) => ({ ...current, [productCode]: normalized }))
+        setDetailFailures((current) => { const { [productCode]: _, ...rest } = current; return rest })
+      })
+      .catch((error) => {
+        if (isAbort(error) || controller.signal.aborted || generation !== requestGenerationRef.current) return
+        if (isAuthorizationError(error)) {
+          clearQueryForAuthorization()
+          return
+        }
+        setDetailFailures((current) => ({ ...current, [productCode]: isCoverageConflict(error) ? 'statistics' : errorKind(error) }))
+      })
+      .finally(() => {
+        detailInflightRef.current.delete(cacheKey)
+        if (detailAbortRef.current === controller) setDetailLoading(false)
+      })
   }
   const chooseBranch = (branchCode: string) => {
     setSelectedBranchCode(branchCode)
     setBranchSelectionTouched(true)
+    if (!queryResult || !appliedScope || !queryResult.coverage.readyDates.length) return
+    const coverage = queryResult.coverage
+    const productCodes = productFilter ? [productFilter] : queryResult.products.map((product) => product.productCode)
+    const cacheKey = requestCacheKey(sessionKey, appliedScope, coverage, productCodes, 'branch', branchCode)
+    selectedBranchRequestKeyRef.current = cacheKey
+    if (branchInflightRef.current.has(cacheKey)) return
+    // 无论接下来命中缓存还是创建请求，都先取消离开范围的 branch/discounts 链。
+    branchAbortRef.current?.abort()
+    branchInflightRef.current.forEach((controller, key) => {
+      if (key !== cacheKey) controller.abort()
+    })
+    branchInflightRef.current.clear()
+    setBranchLoading(false)
+    setBranchError(undefined)
+    const cached = branchCacheRef.current.get(cacheKey)
+    if (branchOverview?.branch.branchCode === branchCode && sameStringSet(branchOverview.productCodes, productCodes) && sameCoverage(branchOverview.coverage, coverage) && branchDiscountLoadedRef.current.has(cacheKey)) return
+    const controller = new AbortController()
+    branchAbortRef.current = controller
+    branchInflightRef.current.set(cacheKey, controller)
+    const generation = requestGenerationRef.current
+    if (!cached) setBranchLoading(true)
+    const rawOverview = cached
+      ? Promise.resolve(cached)
+      : api.getBranchOverview({ ...appliedScope, productCodes, branchCode, coverageVersion: coverage.version, readyDates: coverage.readyDates }, controller.signal)
+    void rawOverview
+      .then((result) => {
+        if (generation !== requestGenerationRef.current || selectedBranchRequestKeyRef.current !== cacheKey || !sameLockedScope(result, appliedScope, coverage, productCodes) || result.branch.branchCode !== branchCode || controller.signal.aborted) throw new Error('coverage')
+        branchCacheRef.current.set(cacheKey, result)
+        setBranchOverview(result)
+        // 原始分店总览已是可靠销量；折扣补齐继续后台完成，不能遮住它。
+        setBranchLoading(false)
+        if (branchDiscountLoadedRef.current.has(cacheKey)) return undefined
+        // 分店数量先由 branch 总览展示；分类由同一锁定范围的单次补齐请求覆盖，失败绝不把可靠量清零。
+        return api.getDiscounts({ ...appliedScope, productCodes, branchCode, coverageVersion: coverage.version, readyDates: coverage.readyDates }, controller.signal)
+          .then((discounts) => {
+            if (generation !== requestGenerationRef.current || selectedBranchRequestKeyRef.current !== cacheKey || !sameLockedScope(discounts, appliedScope, coverage, productCodes) || discounts.branch?.branchCode !== branchCode || controller.signal.aborted) throw new Error('coverage')
+            if (!discounts.branch) return
+            const patched = {
+              ...result,
+              branch: {
+                ...discounts.branch,
+                metrics: mergeClassifications(result.branch.metrics, discounts.branch.metrics),
+                daily: result.branch.daily.map((day) => {
+                  const next = discounts.branch?.daily.find((item) => item.date === day.date)
+                  return next ? { ...next, metrics: mergeClassifications(day.metrics, next.metrics) } : day
+                }),
+              },
+              products: result.products.map((product) => {
+                const next = discounts.products?.find((item) => item.productCode === product.productCode)
+                return next ? { ...next, metrics: mergeClassifications(product.metrics, next.metrics) } : product
+              }),
+            }
+            branchCacheRef.current.set(cacheKey, patched)
+            branchDiscountLoadedRef.current.add(cacheKey)
+            setBranchOverview((current) => selectedBranchRequestKeyRef.current === cacheKey && current?.branch.branchCode === branchCode && sameCoverage(current.coverage, coverage) ? patched : current)
+          })
+      })
+      .catch((error) => {
+        if (isAbort(error) || controller.signal.aborted || generation !== requestGenerationRef.current) return
+        if (isAuthorizationError(error)) {
+          clearQueryForAuthorization()
+          return
+        }
+        setBranchError(isCoverageConflict(error) ? 'statistics' : errorKind(error))
+      })
+      .finally(() => {
+        if (branchInflightRef.current.get(cacheKey) === controller) branchInflightRef.current.delete(cacheKey)
+        if (branchAbortRef.current === controller) setBranchLoading(false)
+      })
   }
+  // 原子刷新替换快照后，仅消费一次恢复令牌；不能让普通点击或缓存写入重复发请求。
+  useEffect(() => {
+    const selection = pendingSelectionRestoreRef.current
+    pendingSelectionRestoreRef.current = undefined
+    if (!selection || !queryResult || (selection.productCode !== ALL_PRODUCTS && !queryResult.products.some((product) => product.productCode === selection.productCode))) return
+    chooseProduct(selection.productCode, true)
+    if (selection.branchTouched && selection.branchCode) chooseBranch(selection.branchCode)
+  }, [restoreRevision])
   const clearFilters = () => {
-    setSelectedProductCode(ALL_PRODUCTS)
-    setSelectedBranchCode(undefined)
-    setBranchSelectionTouched(false)
+    chooseProduct(ALL_PRODUCTS)
     setProductSearch('')
     setBranchSearch('')
     setBranchTopN(20)
     setOnlyBranchesWithSales(false)
   }
   const contributingProductCounts = useMemo(() => {
+    if (!productFilter && queryResult) return new Map(queryResult.overview.branches.map((branch) => [branch.branchCode, branch.contributingProductCount]))
     const counts = new Map<string, number>()
     selectedDetails.forEach((detail) => {
       detail.branches.forEach((branch) => {
-        if (branch.metrics.quantity !== 0) counts.set(branch.branchCode, (counts.get(branch.branchCode) ?? 0) + 1)
+        if (branch.metrics.quantity !== 0 || branch.metrics.salesAmount !== 0) counts.set(branch.branchCode, (counts.get(branch.branchCode) ?? 0) + 1)
       })
     })
     return counts
-  }, [selectedDetails])
+  }, [productFilter, queryResult, selectedDetails])
   const selectedProductCount = productFilter ? 1 : (queryResult?.products.length ?? 0)
   const branchRows = useMemo<BranchRankingRow[]>(
     () =>
@@ -582,32 +827,33 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
       render: (_, row) => percent(share(row.metrics.quantity, analysis.metrics.quantity)),
     },
   ]
-  const statisticsPending = !!queryResult?.statisticStatus && queryResult.statisticStatus.toLowerCase() !== 'fresh'
-  const detailExportReady = completeSelectedDetails && !detailLoading && selectedDetails.length > 0 && selectedDetails.every((detail) => detail.metrics.discountStatus === 'complete' && !isPartial(detail.warnings))
-  const exportClassifiedQuantity = (metrics: BatchSalesMetrics, field: 'regularQuantity' | 'discountQuantity' | 'unknownQuantity') => getBatchProductSalesClassifiedQuantity(metrics, field, classificationUnavailable) ?? ''
-  const exportSummary = () => queryResult && downloadCsv('batch-product-sales-summary.csv', [[t('batchProductSalesAnalysis.export.scope'), appliedScope?.startDate ?? '', appliedScope?.endDate ?? '', appliedScope?.storeCodes.join(' | ') || t('batchProductSalesAnalysis.allStores')], [t('batchProductSalesAnalysis.columns.itemNumber'), t('batchProductSalesAnalysis.columns.product'), t('batchProductSalesAnalysis.columns.quantity')], ...queryResult.products.map((product) => [product.itemNumber, product.productName || product.englishName || product.productCode, product.quantity])])
-  const exportDetail = () =>
-    appliedScope &&
-    detailExportReady &&
-    downloadCsv('batch-product-sales-detail.csv', [
-      [t('batchProductSalesAnalysis.export.product'), selectedProduct?.productCode ?? t('batchProductSalesAnalysis.allProducts'), selectedProduct?.itemNumber ?? '', selectedProduct?.productName || selectedProduct?.englishName || ''],
-      [t('batchProductSalesAnalysis.export.scope'), appliedScope.startDate, appliedScope.endDate, appliedScope.storeCodes.join(' | ') || t('batchProductSalesAnalysis.allStores')],
-      [t('batchProductSalesAnalysis.export.daily')],
-      [t('batchProductSalesAnalysis.columns.date'), t('batchProductSalesAnalysis.columns.quantity'), t('batchProductSalesAnalysis.columns.regular'), t('batchProductSalesAnalysis.columns.discount'), t('batchProductSalesAnalysis.columns.unknown'), t('batchProductSalesAnalysis.columns.amount')],
-      ...totalDaily.filter(hasBatchProductSalesDailyActivity).map((day) => [day.date, day.metrics.quantity, exportClassifiedQuantity(day.metrics, 'regularQuantity'), exportClassifiedQuantity(day.metrics, 'discountQuantity'), exportClassifiedQuantity(day.metrics, 'unknownQuantity'), day.metrics.salesAmount]),
-      [],
-      [t('batchProductSalesAnalysis.export.branches')],
-      [t('batchProductSalesAnalysis.columns.branch'), t('batchProductSalesAnalysis.columns.quantity'), t('batchProductSalesAnalysis.columns.regular'), t('batchProductSalesAnalysis.columns.discount'), t('batchProductSalesAnalysis.columns.unknown'), t('batchProductSalesAnalysis.columns.amount')],
-      ...rankAnalysis.branches.map((branch) => [branch.branchName || branch.branchCode, branch.metrics.quantity, exportClassifiedQuantity(branch.metrics, 'regularQuantity'), exportClassifiedQuantity(branch.metrics, 'discountQuantity'), exportClassifiedQuantity(branch.metrics, 'unknownQuantity'), branch.metrics.salesAmount]),
-      [],
-      [t('batchProductSalesAnalysis.export.branchDaily')],
-      [t('batchProductSalesAnalysis.columns.branch'), t('batchProductSalesAnalysis.columns.date'), t('batchProductSalesAnalysis.columns.quantity'), t('batchProductSalesAnalysis.columns.regular'), t('batchProductSalesAnalysis.columns.discount'), t('batchProductSalesAnalysis.columns.unknown'), t('batchProductSalesAnalysis.columns.amount')],
-      ...rankAnalysis.branches.flatMap((branch) =>
-        fillKnownDays(branch.daily, appliedScope, detailExportReady)
-          .filter(hasBatchProductSalesDailyActivity)
-          .map((day) => [branch.branchName || branch.branchCode, day.date, day.metrics.quantity, exportClassifiedQuantity(day.metrics, 'regularQuantity'), exportClassifiedQuantity(day.metrics, 'discountQuantity'), exportClassifiedQuantity(day.metrics, 'unknownQuantity'), day.metrics.salesAmount]),
-      ),
-    ])
+  // 日期可用性只由结构化 coverage 决定；旧 statisticStatus 仍可说明后台状态，但不能挡住已发布日期的商品和折扣分类。
+  const statisticsPending = queryResult?.coverage.status === 'pending'
+  const noCompletedStatistics = t('batchProductSalesAnalysis.coveragePending')
+  const detailExportReady = !!queryResult && queryResult.coverage.status !== 'pending' && !queryLoading
+  const coverageReason = (reason: string) => t(`batchProductSalesAnalysis.coverageReasons.${reason}`, { defaultValue: reason })
+  const coverageExportRows = queryResult ? [[t('batchProductSalesAnalysis.export.readyDates'), queryResult.coverage.readyDates.join(' | ')], [t('batchProductSalesAnalysis.export.pendingDates'), ...queryResult.coverage.pendingDates.map((item) => `${item.date}: ${coverageReason(item.reason)}`)], [t('batchProductSalesAnalysis.export.readyOnlyNotice')]] : []
+  const exportSummary = () => queryResult && downloadCsv('batch-product-sales-summary.csv', [[t('batchProductSalesAnalysis.export.scope'), appliedScope?.startDate ?? '', appliedScope?.endDate ?? '', appliedScope?.storeCodes.join(' | ') || t('batchProductSalesAnalysis.allStores')], ...coverageExportRows, [t('batchProductSalesAnalysis.columns.itemNumber'), t('batchProductSalesAnalysis.columns.product'), t('batchProductSalesAnalysis.columns.quantity')], ...queryResult.products.map((product) => [product.itemNumber, product.productName || product.englishName || product.productCode, product.quantity ?? ''])])
+  const exportDetail = () => {
+    if (!appliedScope || !queryResult || !detailExportReady) return
+    exportAbortRef.current?.abort()
+    const controller = new AbortController()
+    exportAbortRef.current = controller
+    const generation = requestGenerationRef.current
+    void api.exportDetail(buildBatchProductSalesDetailExportScope(appliedScope, queryResult.coverage, queryResult.products.map((product) => product.productCode), productFilter), controller.signal)
+      .then((csv) => {
+        if (controller.signal.aborted || generation !== requestGenerationRef.current) return
+        downloadCsvText('batch-product-sales-detail.csv', csv)
+      })
+      .catch((error) => {
+        if (isAbort(error) || controller.signal.aborted || generation !== requestGenerationRef.current) return
+        if (isAuthorizationError(error)) {
+          clearQueryForAuthorization()
+          return
+        }
+        setQueryError(isCoverageConflict(error) ? 'statistics' : errorKind(error))
+      })
+  }
   const detailWarnings = [...new Set(selectedDetails.flatMap((detail) => detail.warnings))]
   const filtersAreDefault = selectedProductCode === ALL_PRODUCTS && !branchSelectionTouched && !productSearch && !branchSearch && branchTopN === 20 && !onlyBranchesWithSales
 
@@ -641,9 +887,10 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
                 onChange={setDraftStores}
               />
             </label>
-            <Button type="primary" icon={<SearchOutlined />} loading={queryLoading} disabled={!importResult.itemNumbers.length} onClick={query}>
+            <Button type="primary" icon={<SearchOutlined />} loading={queryLoading} disabled={!importResult.itemNumbers.length} onClick={() => query()}>
               {queryLoading ? t('batchProductSalesAnalysis.querying') : t('batchProductSalesAnalysis.query')}
             </Button>
+            {queryResult ? <Button icon={<ReloadOutlined />} loading={queryLoading} onClick={() => query(true)}>{t('batchProductSalesAnalysis.refreshResults')}</Button> : null}
             <Dropdown
               trigger={['click']}
               menu={{
@@ -679,6 +926,8 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
             />
           ) : null}
           {dirty ? <Alert type="info" showIcon message={t('batchProductSalesAnalysis.pendingQuery')} /> : null}
+          {queryResult && queryError ? <Alert type="warning" showIcon message={t('batchProductSalesAnalysis.errors.title')} description={t(`batchProductSalesAnalysis.errors.${queryError}`)} action={<Button size="small" onClick={() => query(true)}>{t('batchProductSalesAnalysis.retry')}</Button>} /> : null}
+          {queryResult && globalDiscountError ? <Alert type="warning" showIcon message={t('batchProductSalesAnalysis.discountLoadFailed')} action={<Button size="small" onClick={() => query(true)}>{t('batchProductSalesAnalysis.refreshStatus')}</Button>} /> : null}
           {appliedScope ? (
             <div className={styles.appliedScope}>
               {t('batchProductSalesAnalysis.appliedScope', {
@@ -688,6 +937,17 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
               })}
             </div>
           ) : null}
+          {queryResult && queryResult.coverage.status !== 'complete' ? (
+            <Alert
+              className={styles.warning}
+              type={queryResult.coverage.status === 'pending' ? 'info' : 'warning'}
+              showIcon
+              message={queryResult.coverage.status === 'pending'
+                ? t('batchProductSalesAnalysis.coveragePending')
+                : t('batchProductSalesAnalysis.coverage', { ready: queryResult.coverage.readyDates.length, total: queryResult.coverage.readyDates.length + queryResult.coverage.pendingDates.length })}
+              description={<>{t('batchProductSalesAnalysis.coverageScopeNotice')}{queryResult.coverage.pendingDates.length ? <details className={styles.coverageDetails}><summary>{t('batchProductSalesAnalysis.coverageDetails', { count: queryResult.coverage.pendingDates.length })}</summary>{queryResult.coverage.pendingDates.map((item) => <div key={item.date}><b>{item.date}</b><span>{coverageReason(item.reason)}</span></div>)}</details> : null}</>}
+            />
+          ) : null}
           {!statisticsPending && queryResult?.warnings.length ? (
             <details className={styles.hint}>
               <summary>{t('batchProductSalesAnalysis.dataNotes')}</summary>
@@ -696,7 +956,7 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
               ))}
             </details>
           ) : null}
-          {detailLoading ? <Alert type="info" showIcon message={t('batchProductSalesAnalysis.detailLoadingProgress', detailProgress)} description={<Progress percent={detailProgress.total ? Math.round((detailProgress.completed / detailProgress.total) * 100) : 0} size="small" showInfo />} /> : null}
+          {detailLoading ? <Alert type="info" showIcon message={t('batchProductSalesAnalysis.detailLoadingProgress', { completed: 0, total: 1 })} /> : null}
           {!detailLoading && Object.keys(detailFailures).length ? (
             <Alert
               type="warning"
@@ -704,22 +964,7 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
               message={t('batchProductSalesAnalysis.partialDetailFailure', {
                 count: Object.keys(detailFailures).length,
               })}
-              action={
-                queryResult && appliedScope ? (
-                  <Button
-                    size="small"
-                    onClick={() =>
-                      void loadAllDetails(
-                        queryResult.products.filter((product) => detailFailures[product.productCode]),
-                        appliedScope,
-                        false,
-                      )
-                    }
-                  >
-                    {t('batchProductSalesAnalysis.retry')}
-                  </Button>
-                ) : undefined
-              }
+              action={<Button size="small" onClick={() => query(true)}>{t('batchProductSalesAnalysis.retry')}</Button>}
             />
           ) : null}
           {discountNotice ? (
@@ -727,13 +972,7 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
               type={discountNotice.type}
               showIcon
               message={discountNotice.message}
-              action={
-                productFilter && appliedScope ? (
-                  <Button size="small" onClick={() => refreshDetail(productFilter, appliedScope)}>
-                    {t('batchProductSalesAnalysis.refreshStatus')}
-                  </Button>
-                ) : undefined
-              }
+              action={<Button size="small" onClick={() => query(true)}>{t('batchProductSalesAnalysis.refreshStatus')}</Button>}
             />
           ) : null}
           <main className={styles.layout}>
@@ -745,31 +984,16 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
                       count: queryResult?.products.length ?? 0,
                     })}
                   </h2>
-                  {queryResult && !statisticsPending ? (
+                  {queryResult ? (
                     <span className={styles.panelMeta}>
-                      {t('batchProductSalesAnalysis.totalQuantity', {
-                        value: number(queryResult.products.reduce((sum, product) => sum + product.quantity, 0)),
+                      {t('batchProductSalesAnalysis.readyDatesTotalQuantity', {
+                        value: queryResult.coverage.status === 'pending' ? '—' : number(queryResult.products.reduce((sum, product) => sum + (product.quantity ?? 0), 0)),
                       })}
                     </span>
                   ) : null}
                 </header>
                 <Input allowClear prefix={<SearchOutlined />} aria-label={t('batchProductSalesAnalysis.searchProducts')} placeholder={t('batchProductSalesAnalysis.searchProducts')} value={productSearch} onChange={(event) => setProductSearch(event.target.value)} />
-                {statisticsPending && !queryLoading ? (
-                  <Alert
-                    type="info"
-                    showIcon
-                    message={t('batchProductSalesAnalysis.statisticsPending')}
-                    description={queryResult?.warnings.map((warning) => (
-                      <div key={warning}>{warning}</div>
-                    ))}
-                    action={
-                      <Button size="small" onClick={query}>
-                        {t('batchProductSalesAnalysis.retry')}
-                      </Button>
-                    }
-                  />
-                ) : (
-                  <LoadState loading={queryLoading} error={queryError} empty={!!queryResult && !queryResult.products.length} onRetry={query}>
+                <LoadState loading={queryLoading && !queryResult} error={queryResult ? undefined : queryError} empty={!!queryResult && !queryResult.products.length} onRetry={() => query()}>
                     {queryResult ? (
                       <div
                         className={styles.productList}
@@ -785,7 +1009,7 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
                             <strong>{t('batchProductSalesAnalysis.allProducts')}</strong>
                             <span>{t('batchProductSalesAnalysis.allProductsHint')}</span>
                           </span>
-                          <b>{number(queryResult.products.reduce((sum, product) => sum + product.quantity, 0))}</b>
+                          <b>{queryResult.coverage.status === 'pending' ? '—' : number(queryResult.products.reduce((sum, product) => sum + (product.quantity ?? 0), 0))}</b>
                         </button>
                         {queryResult.products
                           .filter((product) => `${product.itemNumber} ${product.productName} ${product.englishName ?? ''}`.toLocaleLowerCase().includes(productSearch.trim().toLocaleLowerCase()))
@@ -796,15 +1020,14 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
                                 <strong>{product.itemNumber}</strong>
                                 <span>{product.productName || product.englishName || product.productCode}</span>
                               </span>
-                              <b>{number(product.quantity)}</b>
+                              <b>{product.quantity === null ? '—' : number(product.quantity)}</b>
                             </button>
                           ))}
                       </div>
                     ) : (
                       <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('batchProductSalesAnalysis.noQueryResult')} />
                     )}
-                  </LoadState>
-                )}
+                </LoadState>
                 {queryResult?.matches.length ? (
                   <details className={styles.details}>
                     <summary>
@@ -859,7 +1082,7 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
                     </p>
                   </>
                 ) : (
-                  <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('batchProductSalesAnalysis.noQueryResult')} />
+                  <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={statisticsPending ? noCompletedStatistics : t('batchProductSalesAnalysis.noQueryResult')} />
                 )}
               </LoadState>
             </section>
@@ -869,31 +1092,36 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
                 {selectedBranch ? <span className={styles.panelMeta}>{selectedBranch.branchName || selectedBranch.branchCode}</span> : null}
               </header>
               {selectedBranch && activeBranchCode ? (
-                <>
-                  <DiscountDailyChart
-                    data={branchDaily}
-                    ariaLabel={t('batchProductSalesAnalysis.branchTrend', {
-                      branch: selectedBranch.branchName || selectedBranch.branchCode,
-                    })}
-                    classificationUnavailable={classificationUnavailable}
-                  />
-                  <div className={styles.branchTotals}>
-                    <span>
-                      {t('batchProductSalesAnalysis.metrics.quantity')} <b>{number(analysis.metrics.quantity)}</b>
-                    </span>
-                    <span className={styles.amount}>
-                      {t('batchProductSalesAnalysis.metrics.amount')} <b>{money(analysis.metrics.salesAmount)}</b>
-                    </span>
-                    <span className={styles.regular}>
-                      {t('batchProductSalesAnalysis.metrics.regular')} <b>{classified(analysis.metrics, 'regularQuantity', classificationUnavailable)}</b>
-                    </span>
-                    <span className={styles.discount}>
-                      {t('batchProductSalesAnalysis.metrics.discount')} <b>{classified(analysis.metrics, 'discountQuantity', classificationUnavailable)}</b>
-                    </span>
-                  </div>
-                </>
+                <LoadState loading={branchLoading && !branchAnalysisAvailable} error={branchAnalysisAvailable ? undefined : branchError} empty={!branchAnalysisAvailable || !branchDaily.length}>
+                  {branchAnalysisAvailable ? (
+                    <>
+                      {branchError ? <Alert className={styles.warning} type="warning" showIcon message={t(`batchProductSalesAnalysis.errors.${branchError}`)} /> : null}
+                      <DiscountDailyChart
+                        data={branchDaily}
+                        ariaLabel={t('batchProductSalesAnalysis.branchTrend', {
+                          branch: selectedBranch.branchName || selectedBranch.branchCode,
+                        })}
+                        classificationUnavailable={classificationUnavailable}
+                      />
+                      <div className={styles.branchTotals}>
+                        <span>
+                          {t('batchProductSalesAnalysis.metrics.quantity')} <b>{number(analysis.metrics.quantity)}</b>
+                        </span>
+                        <span className={styles.amount}>
+                          {t('batchProductSalesAnalysis.metrics.amount')} <b>{money(analysis.metrics.salesAmount)}</b>
+                        </span>
+                        <span className={styles.regular}>
+                          {t('batchProductSalesAnalysis.metrics.regular')} <b>{classified(analysis.metrics, 'regularQuantity', classificationUnavailable)}</b>
+                        </span>
+                        <span className={styles.discount}>
+                          {t('batchProductSalesAnalysis.metrics.discount')} <b>{classified(analysis.metrics, 'discountQuantity', classificationUnavailable)}</b>
+                        </span>
+                      </div>
+                    </>
+                  ) : null}
+                </LoadState>
               ) : (
-                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('batchProductSalesAnalysis.selectBranch')} />
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={statisticsPending ? noCompletedStatistics : t('batchProductSalesAnalysis.selectBranch')} />
               )}
             </section>
             <section className={`${styles.panel} ${styles.dailyDetailPanel}`}>
@@ -923,14 +1151,20 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
                   <input type="checkbox" checked={onlyBranchesWithSales} onChange={(event) => setOnlyBranchesWithSales(event.target.checked)} /> {t('batchProductSalesAnalysis.onlyBranchesWithSales')}
                 </label>
               </div>
-              <div className={styles.tableWrap}>{branchRows.length ? <MeasuredTable metricId="executive-sales-intelligence.batch-product-sales-analysis.branch-ranking" size="small" rowKey="branchCode" columns={branchColumns} dataSource={branchRows} rowClassName={(row) => (row.branchCode === activeBranchCode ? styles.branchCurrent : '')} pagination={false} scroll={{ x: 674 }} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('batchProductSalesAnalysis.noBranchData')} />}</div>
+              <div className={styles.tableWrap}>{branchRows.length ? <MeasuredTable metricId="executive-sales-intelligence.batch-product-sales-analysis.branch-ranking" size="small" rowKey="branchCode" columns={branchColumns} dataSource={branchRows} rowClassName={(row) => (row.branchCode === activeBranchCode ? styles.branchCurrent : '')} pagination={false} scroll={{ x: 674 }} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={statisticsPending ? noCompletedStatistics : t('batchProductSalesAnalysis.noBranchData')} />}</div>
             </section>
             <section id="batch-product-sales-branch-contribution" className={`${styles.panel} ${styles.branchSalesPanel}`}>
               <header className={styles.panelHeader}>
                 <h2>{t('batchProductSalesAnalysis.branchProductContribution')}</h2>
                 {selectedBranch ? <span className={styles.panelMeta}>{selectedBranch.branchName || selectedBranch.branchCode}</span> : null}
               </header>
-              {activeBranchCode ? <div className={styles.tableWrap}>{analysis.productContributions.length ? <MeasuredTable metricId="executive-sales-intelligence.batch-product-sales-analysis.branch-product-contribution" size="small" rowKey={(row) => row.product.productCode} columns={contributionColumns} dataSource={analysis.productContributions} pagination={false} scroll={{ x: 652 }} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('batchProductSalesAnalysis.noBranchData')} />}</div> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('batchProductSalesAnalysis.selectBranch')} />}
+              {activeBranchCode ? (
+                <div className={styles.tableWrap}>
+                  <LoadState loading={branchLoading && !branchAnalysisAvailable} error={branchAnalysisAvailable ? undefined : branchError} empty={!branchAnalysisAvailable || !analysis.productContributions.length}>
+                    {branchAnalysisAvailable && analysis.productContributions.length ? <MeasuredTable metricId="executive-sales-intelligence.batch-product-sales-analysis.branch-product-contribution" size="small" rowKey={(row) => row.product.productCode} columns={contributionColumns} dataSource={analysis.productContributions} pagination={false} scroll={{ x: 652 }} /> : null}
+                  </LoadState>
+                </div>
+              ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={statisticsPending ? noCompletedStatistics : t('batchProductSalesAnalysis.selectBranch')} />}
             </section>
           </main>
           {scopeOpen ? (
