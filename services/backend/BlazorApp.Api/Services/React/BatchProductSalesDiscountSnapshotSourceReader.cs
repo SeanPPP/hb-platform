@@ -36,40 +36,78 @@ internal sealed class BatchProductSalesDiscountSnapshotSourceReader(
     /// </summary>
     internal async Task<PreparedDay> CapturePreparedAsync(DateTime day, CancellationToken token)
     {
-        var snapshot = await CaptureAsync(day.Date, token);
-        return new PreparedDay(day.Date, snapshot,
-            BuildSourceVersion(snapshot.PosmSignature, snapshot.HBSalesSignature, snapshot.AliasVersion,
-                snapshot.DiscountSemanticVersion, snapshot.SupplierMappingVersion));
+        return await WithSourceCancellationAsync(token, async () =>
+        {
+            var snapshot = await CaptureAsync(day.Date, token);
+            return new PreparedDay(day.Date, snapshot,
+                BuildSourceVersion(snapshot.PosmSignature, snapshot.HBSalesSignature, snapshot.AliasVersion,
+                    snapshot.DiscountSemanticVersion, snapshot.SupplierMappingVersion));
+        });
     }
 
     /// <summary>使用已经固定的范围执行事实聚合，并以前后完整来源版本相等作为结果可发布的前提。</summary>
     internal async Task<PreparedDayReadResult> ReadPreparedDayAsync(PreparedDay prepared, CancellationToken token)
     {
-        ArgumentNullException.ThrowIfNull(prepared);
-        var before = prepared.Snapshot;
-        if (before.ProductCodes.Count == 0 || before.StoreCodes.Count == 0)
+        return await WithSourceCancellationAsync(token, async () =>
         {
-            var emptyAfter = await CapturePreparedAsync(prepared.Day, token);
-            if (!string.Equals(prepared.SourceVersion, emptyAfter.SourceVersion, StringComparison.Ordinal))
+            ArgumentNullException.ThrowIfNull(prepared);
+            var before = prepared.Snapshot;
+            if (before.ProductCodes.Count == 0 || before.StoreCodes.Count == 0)
+            {
+                var emptyAfter = await CapturePreparedAsync(prepared.Day, token);
+                if (!string.Equals(prepared.SourceVersion, emptyAfter.SourceVersion, StringComparison.Ordinal))
+                    throw SourceChangedDuringRead(prepared.Day);
+                return new PreparedDayReadResult([], emptyAfter.SourceVersion);
+            }
+
+            // 聚合器的 products/stores 是单日来源一次性收集的全集，只作为 SQL OPENJSON 范围；
+            // 不会形成“商品数 × 日期”或“商品数 × 分店”的查询循环。
+            var facts = await new BatchProductSalesAnalysisFactReader(_catalogDb, _posmDb, _hbSalesDb)
+                .ReadAsync(before.ProductCodes, prepared.Day, prepared.Day, before.StoreCodes, token, before.HBSalesAliases);
+
+            var after = await CapturePreparedAsync(prepared.Day, token);
+            if (!string.Equals(prepared.SourceVersion, after.SourceVersion, StringComparison.Ordinal))
                 throw SourceChangedDuringRead(prepared.Day);
-            return new PreparedDayReadResult([], emptyAfter.SourceVersion);
-        }
 
-        // 聚合器的 products/stores 是单日来源一次性收集的全集，只作为 SQL OPENJSON 范围；
-        // 不会形成“商品数 × 日期”或“商品数 × 分店”的查询循环。
-        var facts = await new BatchProductSalesAnalysisFactReader(_catalogDb, _posmDb, _hbSalesDb)
-            .ReadAsync(before.ProductCodes, prepared.Day, prepared.Day, before.StoreCodes, token, before.HBSalesAliases);
-
-        var after = await CapturePreparedAsync(prepared.Day, token);
-        if (!string.Equals(prepared.SourceVersion, after.SourceVersion, StringComparison.Ordinal))
-            throw SourceChangedDuringRead(prepared.Day);
-
-        return new PreparedDayReadResult(facts, after.SourceVersion);
+            return new PreparedDayReadResult(facts, after.SourceVersion);
+        });
     }
 
     internal async Task<string> GetSourceVersionAsync(DateTime day, CancellationToken token)
     {
         return (await CapturePreparedAsync(day, token)).SourceVersion;
+    }
+
+    /// <summary>
+    /// SqlSugar 的带 token 查询会把 token 留在 client 级别的 ADO 上，后续无 token 的写入仍会继承它。
+    /// 三个来源都可能在嵌套读取中复用，所以必须恢复调用前状态，而非无条件清空。
+    /// </summary>
+    private async Task<T> WithSourceCancellationAsync<T>(CancellationToken token, Func<Task<T>> action)
+    {
+        var catalogToken = _catalogDb.Ado.CancellationToken;
+        var posmToken = _posmDb.Ado.CancellationToken;
+        var hbSalesToken = _hbSalesDb.Ado.CancellationToken;
+        _catalogDb.Ado.CancellationToken = token;
+        _posmDb.Ado.CancellationToken = token;
+        _hbSalesDb.Ado.CancellationToken = token;
+        try
+        {
+            return await action();
+        }
+        finally
+        {
+            RestoreAdoCancellationToken(_hbSalesDb, hbSalesToken);
+            RestoreAdoCancellationToken(_posmDb, posmToken);
+            RestoreAdoCancellationToken(_catalogDb, catalogToken);
+        }
+    }
+
+    private static void RestoreAdoCancellationToken(ISqlSugarClient db, CancellationToken? token)
+    {
+        if (token.HasValue)
+            db.Ado.CancellationToken = token.Value;
+        else
+            db.Ado.RemoveCancellationToken();
     }
 
     private static InvalidOperationException SourceChangedDuringRead(DateTime day) => new(

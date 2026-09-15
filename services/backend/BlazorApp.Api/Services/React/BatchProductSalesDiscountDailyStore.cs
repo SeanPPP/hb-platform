@@ -12,6 +12,7 @@ internal sealed class BatchProductSalesDiscountDailyStore(ISqlSugarClient db)
     internal const int SnapshotFormat = 2;
     internal const int RuleVersion = 1;
     internal const int MaxAttempts = 5;
+    internal const int SnapshotInsertBatchSize = 100;
     internal const string WaitingForCanonicalStatus = "WaitingCanonical";
     internal static readonly TimeSpan ExecutionLeaseDuration = TimeSpan.FromMinutes(10);
     internal static readonly TimeSpan CanonicalWaitDelay = TimeSpan.FromSeconds(30);
@@ -197,62 +198,82 @@ internal sealed class BatchProductSalesDiscountDailyStore(ISqlSugarClient db)
         IReadOnlyDictionary<string, List<BatchProductSalesAggregateRow>> payloadByProduct, DateTime nowUtc,
         CancellationToken token)
     {
-        await EnsureOwnershipAsync(claim, nowUtc, token);
-        var day = claim.State.Date.Date;
-        var snapshots = payloadByProduct.OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase).Select(pair => new BatchProductSalesDiscountSnapshot
-        {
-            Id = CreateDailyId(day, pair.Key),
-            SnapshotFormat = SnapshotFormat,
-            SourceVersion = sourceVersion,
-            ProductCode = pair.Key.Trim().ToUpperInvariant(),
-            StartDate = day,
-            EndDate = day,
-            StoreCodesJson = "[]",
-            Status = "Fresh",
-            Attempts = claim.State.Attempts,
-            RequestedAtUtc = claim.State.RequestedAtUtc,
-            NextAttemptAtUtc = nowUtc,
-            CompletedAtUtc = nowUtc,
-            PayloadJson = JsonSerializer.Serialize(pair.Value),
-        }).ToList();
-
-        await db.Ado.BeginTranAsync();
+        var previousToken = db.Ado.CancellationToken;
+        db.Ado.CancellationToken = token;
         try
         {
-            token.ThrowIfCancellationRequested();
-            var owner = await db.Queryable<BatchProductSalesDiscountRefreshState>().With(SqlWith.UpdLock)
-                .Where(x => x.Date == day && x.Status == "Running" && x.LeaseToken == claim.LeaseToken
-                    && x.LeaseUntilUtc != null && x.LeaseUntilUtc > nowUtc).FirstAsync();
-            if (owner == null) throw new InvalidOperationException("折扣日任务发布前已失去执行权");
+            await EnsureOwnershipAsync(claim, nowUtc, token);
+            var day = claim.State.Date.Date;
+            var snapshots = payloadByProduct.OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase).Select(pair => new BatchProductSalesDiscountSnapshot
+            {
+                Id = CreateDailyId(day, pair.Key),
+                SnapshotFormat = SnapshotFormat,
+                SourceVersion = sourceVersion,
+                ProductCode = pair.Key.Trim().ToUpperInvariant(),
+                StartDate = day,
+                EndDate = day,
+                StoreCodesJson = "[]",
+                Status = "Fresh",
+                Attempts = claim.State.Attempts,
+                RequestedAtUtc = claim.State.RequestedAtUtc,
+                NextAttemptAtUtc = nowUtc,
+                CompletedAtUtc = nowUtc,
+                PayloadJson = JsonSerializer.Serialize(pair.Value),
+            }).ToList();
 
-            await db.Deleteable<BatchProductSalesDiscountSnapshot>()
-                .Where(x => x.SnapshotFormat == SnapshotFormat && x.StartDate >= day && x.StartDate < day.AddDays(1)
-                    && x.EndDate >= day && x.EndDate < day.AddDays(1))
-                .ExecuteCommandAsync();
-            if (snapshots.Count > 0) await db.Insertable(snapshots).ExecuteCommandAsync();
-            var updated = await db.Updateable<BatchProductSalesDiscountRefreshState>()
-                .SetColumns(x => x.Status == "Fresh")
-                .SetColumns(x => x.Attempts == 0)
-                .SetColumns(x => x.RuleVersion == RuleVersion)
-                .SetColumns(x => x.StatisticsVersion == statisticsVersion)
-                .SetColumns(x => x.SourceVersion == sourceVersion)
-                .SetColumns(x => x.CompletedAtUtc == nowUtc)
-                .SetColumns(x => x.LastCheckedAtUtc == nowUtc)
-                .SetColumns(x => x.SnapshotCount == snapshots.Count)
-                .SetColumns(x => x.ReconcileRequested == false)
-                .SetColumns(x => x.LeaseToken == null)
-                .SetColumns(x => x.LeaseUntilUtc == null)
-                .SetColumns(x => x.LastError == null)
-                .Where(x => x.Date == day && x.Status == "Running" && x.LeaseToken == claim.LeaseToken)
-                .ExecuteCommandAsync();
-            if (updated != 1) throw new InvalidOperationException("折扣日任务发布时已失去执行权");
-            await db.Ado.CommitTranAsync();
+            await db.Ado.BeginTranAsync();
+            try
+            {
+                token.ThrowIfCancellationRequested();
+                var owner = await db.Queryable<BatchProductSalesDiscountRefreshState>().With(SqlWith.UpdLock)
+                    .Where(x => x.Date == day && x.Status == "Running" && x.LeaseToken == claim.LeaseToken
+                        && x.LeaseUntilUtc != null && x.LeaseUntilUtc > nowUtc).FirstAsync();
+                if (owner == null) throw new InvalidOperationException("折扣日任务发布前已失去执行权");
+
+                await db.Deleteable<BatchProductSalesDiscountSnapshot>()
+                    .Where(x => x.SnapshotFormat == SnapshotFormat && x.StartDate >= day && x.StartDate < day.AddDays(1)
+                        && x.EndDate >= day && x.EndDate < day.AddDays(1))
+                    .ExecuteCommandAsync();
+                // 单日可有上万商品及大 JSON；分批降低 SQL 构造/编译开销，但所有批次仍与 Fresh 状态同事务提交。
+                foreach (var batch in snapshots.Chunk(SnapshotInsertBatchSize))
+                {
+                    token.ThrowIfCancellationRequested();
+                    await db.Insertable(batch.ToList()).ExecuteCommandAsync();
+                }
+                token.ThrowIfCancellationRequested();
+                var updated = await db.Updateable<BatchProductSalesDiscountRefreshState>()
+                    .SetColumns(x => x.Status == "Fresh")
+                    .SetColumns(x => x.Attempts == 0)
+                    .SetColumns(x => x.RuleVersion == RuleVersion)
+                    .SetColumns(x => x.StatisticsVersion == statisticsVersion)
+                    .SetColumns(x => x.SourceVersion == sourceVersion)
+                    .SetColumns(x => x.CompletedAtUtc == nowUtc)
+                    .SetColumns(x => x.LastCheckedAtUtc == nowUtc)
+                    .SetColumns(x => x.SnapshotCount == snapshots.Count)
+                    .SetColumns(x => x.ReconcileRequested == false)
+                    .SetColumns(x => x.LeaseToken == null)
+                    .SetColumns(x => x.LeaseUntilUtc == null)
+                    .SetColumns(x => x.LastError == null)
+                    .Where(x => x.Date == day && x.Status == "Running" && x.LeaseToken == claim.LeaseToken)
+                    .ExecuteCommandAsync();
+                if (updated != 1) throw new InvalidOperationException("折扣日任务发布时已失去执行权");
+                await db.Ado.CommitTranAsync();
+            }
+            catch (Exception original)
+            {
+                // 取消的业务令牌不能取消回滚；回滚失败也不能遮蔽首次数据库/取消异常。
+                db.Ado.RemoveCancellationToken();
+                try { await db.Ado.RollbackTranAsync(); }
+                catch (Exception rollback) { original.Data["DiscountSnapshotRollbackError"] = rollback.Message; }
+                throw;
+            }
         }
-        catch
+        finally
         {
-            await db.Ado.RollbackTranAsync();
-            throw;
+            if (previousToken.HasValue) db.Ado.CancellationToken = previousToken.Value;
+            else db.Ado.RemoveCancellationToken();
         }
+
     }
 
     /// <summary>canonical 队列已受理时仅短暂等待，不消耗折扣计算的失败重试次数。</summary>
@@ -292,26 +313,37 @@ internal sealed class BatchProductSalesDiscountDailyStore(ISqlSugarClient db)
     internal async Task FinishFailureAsync(ClaimedDay claim, string reason, DateTime nowUtc, bool reconcileRequested,
         CancellationToken token, bool preserveExistingReconcileRequested = true)
     {
-        token.ThrowIfCancellationRequested();
-        var attempts = claim.State.Attempts;
-        var retryAt = attempts >= MaxAttempts
-            ? nowUtc.AddHours(24)
-            : nowUtc.AddMinutes(Math.Min(60, Math.Max(2, attempts * 3)));
-        var persistedReason = reason.Length > 2000 ? reason.Substring(0, 2000) : reason;
-        // SqlSugar 会把实体成员写进 SET 的表达式翻译。先在 C# 计算布尔值，避免它把
-        // `ReconcileRequested OR @value` 当成赋值右侧 SQL 表达式，破坏失败状态的租约归还。
-        var persistedReconcileRequested = reconcileRequested
-            || (preserveExistingReconcileRequested && claim.State.ReconcileRequested);
-        await db.Updateable<BatchProductSalesDiscountRefreshState>()
-            .SetColumns(x => x.Status == "Failed")
-            .SetColumns(x => x.NextAttemptAtUtc == retryAt)
-            .SetColumns(x => x.LastError == persistedReason)
-            // 一旦已成功请求 canonical 重算，后续围栏或超时失败不能把该事实清掉。
-            .SetColumns(x => x.ReconcileRequested == persistedReconcileRequested)
-            .SetColumns(x => x.LeaseToken == null)
-            .SetColumns(x => x.LeaseUntilUtc == null)
-            .Where(x => x.Date == claim.State.Date && x.Status == "Running" && x.LeaseToken == claim.LeaseToken)
-            .ExecuteCommandAsync();
+        var previousToken = db.Ado.CancellationToken;
+        db.Ado.CancellationToken = token;
+        try
+        {
+            token.ThrowIfCancellationRequested();
+            var attempts = claim.State.Attempts;
+            var retryAt = attempts >= MaxAttempts
+                ? nowUtc.AddHours(24)
+                : nowUtc.AddMinutes(Math.Min(60, Math.Max(2, attempts * 3)));
+            var persistedReason = reason.Length > 2000 ? reason.Substring(0, 2000) : reason;
+            // SqlSugar 会把实体成员写进 SET 的表达式翻译。先在 C# 计算布尔值，避免它把
+            // `ReconcileRequested OR @value` 当成赋值右侧 SQL 表达式，破坏失败状态的租约归还。
+            var persistedReconcileRequested = reconcileRequested
+                || (preserveExistingReconcileRequested && claim.State.ReconcileRequested);
+            await db.Updateable<BatchProductSalesDiscountRefreshState>()
+                .SetColumns(x => x.Status == "Failed")
+                .SetColumns(x => x.NextAttemptAtUtc == retryAt)
+                .SetColumns(x => x.LastError == persistedReason)
+                // 一旦已成功请求 canonical 重算，后续围栏或超时失败不能把该事实清掉。
+                .SetColumns(x => x.ReconcileRequested == persistedReconcileRequested)
+                .SetColumns(x => x.LeaseToken == null)
+                .SetColumns(x => x.LeaseUntilUtc == null)
+                .Where(x => x.Date == claim.State.Date && x.Status == "Running" && x.LeaseToken == claim.LeaseToken)
+                .ExecuteCommandAsync();
+        }
+        finally
+        {
+            if (previousToken.HasValue) db.Ado.CancellationToken = previousToken.Value;
+            else db.Ado.RemoveCancellationToken();
+        }
+
     }
 
     internal async Task<List<BatchProductSalesAggregateRow>> ReadDailyStatisticsAsync(DateTime date, CancellationToken token)
