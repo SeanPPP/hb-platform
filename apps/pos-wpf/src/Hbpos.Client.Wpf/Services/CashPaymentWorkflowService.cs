@@ -40,6 +40,15 @@ public interface ICashPaymentWorkflowService
         return Task.FromResult(false);
     }
 
+    Task<PaymentTenderAttemptResult> AddManualCardTenderAsync(
+        PosSessionState session,
+        decimal actualAmount,
+        IReadOnlyList<PaymentTender> currentTenders,
+        string? amountText,
+        Guid confirmationId,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(PaymentTenderAttemptResult.Fail("payment.status.unsupportedMethod"));
+
     Task<CashPaymentWorkflowResult> CompleteAsync(
         PosCartService cart,
         PosSessionState session,
@@ -185,6 +194,44 @@ public sealed class CashPaymentWorkflowService(
         return _cashRoundingPolicy.CalculateChange(cashTotal, roundedCashDue);
     }
 
+    public Task<PaymentTenderAttemptResult> AddManualCardTenderAsync(
+        PosSessionState session,
+        decimal actualAmount,
+        IReadOnlyList<PaymentTender> currentTenders,
+        string? amountText,
+        Guid confirmationId,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (RoundCurrency(actualAmount) <= 0m || confirmationId == Guid.Empty ||
+            currentTenders.Any(tender => tender.Method == PaymentMethodKind.Card))
+        {
+            return Task.FromResult(PaymentTenderAttemptResult.Fail("payment.status.unsupportedMethod"));
+        }
+
+        if (!TryParseTenderedAmount(amountText, out var amount) || amount <= 0m || amount != RoundCurrency(amount))
+        {
+            return Task.FromResult(PaymentTenderAttemptResult.Fail("payment.status.invalidAmount"));
+        }
+
+        var remaining = CalculateExternalRemainingAmount(actualAmount, currentTenders);
+        if (remaining <= 0m || amount != remaining)
+        {
+            return Task.FromResult(PaymentTenderAttemptResult.Fail(
+                amount > remaining ? "payment.status.cardExceedsRemaining" : "payment.status.cardMustBeFinalTender"));
+        }
+
+        // 中文注释：调用方只能在人工核实成功后进入此方法；不读取终端设置、不发起任何扣款。
+        var reference = ManualCardPaymentReference.Format(confirmationId);
+        var transaction = new CardTransactionDto(
+            ManualCardPaymentReference.Processor, reference, null, null, null, null, null,
+            null, "Manually confirmed by cashier", null, null, amount, null);
+        return Task.FromResult(PaymentTenderAttemptResult.Success(
+            new PaymentTender(PaymentMethodKind.Card, amount, reference,
+                CardTransactions: [transaction], IdempotencyKey: reference),
+            "payment.status.cardTenderAdded"));
+    }
+
     public async Task<PaymentTenderAttemptResult> AddTenderAsync(
         PaymentMethodKind method,
         PosSessionState session,
@@ -217,6 +264,12 @@ public sealed class CashPaymentWorkflowService(
 
         if (isRefund)
         {
+            if (method == PaymentMethodKind.Card && ManualCardPaymentReference.IsManualRefundSource(referenceText))
+            {
+                return PaymentTenderAttemptResult.Fail("payment.status.cardDeclined",
+                    "This payment was confirmed manually. Refund it using an alternative method; do not send it to a linked terminal.");
+            }
+
             if (method == PaymentMethodKind.Card && string.IsNullOrWhiteSpace(referenceText))
             {
                 ConsoleLog.Write("CardRefund", "workflow blocked card refund reason=missing-original-reference");
@@ -375,6 +428,14 @@ public sealed class CashPaymentWorkflowService(
         var result = checkout.CreatePaymentOrder(cart, session, tenderSnapshot, cashTenderedAmount);
         // 退款代金券先以待发券状态落本地，确保崩溃后仍能沿用原始幂等键恢复。
         var orderForPersistence = PrepareOrderForVoucherRefundPersistence(result.Order);
+        var manualReference = tenderSnapshot.FirstOrDefault(tender =>
+            tender.Method == PaymentMethodKind.Card && ManualCardPaymentReference.IsManual(tender.Reference))?.Reference;
+        if (ManualCardPaymentReference.TryParse(manualReference, out var manualConfirmationId))
+        {
+            // 中文注释：连首次本地读取失败也必须报告固定订单身份，避免重试转为另一笔订单。
+            orderForPersistence = orderForPersistence with { OrderGuid = manualConfirmationId };
+        }
+
         var persistenceOrderGuid = orderForPersistence.OrderGuid;
         // 终端已批准后，订单 GUID 恢复和本地订单落盘不能被随后取消的 UI 操作打断。
         var persistenceCancellationToken = CancellationToken.None;
@@ -3758,6 +3819,43 @@ public sealed class CashPaymentWorkflowService(
         CardRecoveryAttemptKey? recoveryOwnerAttemptKey,
         CancellationToken cancellationToken)
     {
+        var manualTenders = tenders.Where(tender =>
+            ManualCardPaymentReference.IsManual(tender.Reference) ||
+            tender.CardTransactions?.Any(transaction => string.Equals(transaction.Processor,
+                ManualCardPaymentReference.Processor, StringComparison.OrdinalIgnoreCase)) == true).ToArray();
+        if (manualTenders.Length > 0)
+        {
+            var manual = manualTenders[0];
+            if (manualTenders.Length != 1 || manual.Method != PaymentMethodKind.Card ||
+                order.ActualAmount <= 0m || order.Lines.Any(line => line.Kind == OrderLineKind.Return) ||
+                recoveryOwnerAttemptGuid is not null || recoveryOwnerAttemptKey is not null ||
+                tenders.Count(tender => tender.Method == PaymentMethodKind.Card) != 1 ||
+                !ManualCardPaymentReference.TryParse(manual.Reference, out var confirmationId) ||
+                !string.Equals(manual.Reference, manual.IdempotencyKey, StringComparison.Ordinal) ||
+                manual.CardTransactions is not { Count: 1 } ||
+                manual.CardTransactions[0].Processor != ManualCardPaymentReference.Processor ||
+                manual.CardTransactions[0].Amount != manual.Amount ||
+                manual.CardTransactions[0].TxnRef != manual.Reference)
+            {
+                throw new InvalidOperationException("The manually confirmed payment identity is inconsistent.");
+            }
+
+            // 中文注释：同一次人工确认始终对应同一订单，保存返回未知时重试不会再新增订单或调用刷卡机。
+            var manualOrder = order with { OrderGuid = confirmationId };
+            var persistedOrder = await orderRepository.GetOrderAsync(confirmationId, cancellationToken);
+            if (persistedOrder is null)
+            {
+                return new RecoverableOrderPersistence(manualOrder, AlreadyPersisted: false);
+            }
+
+            if (!MatchesManualPaymentContinuation(manualOrder, persistedOrder))
+            {
+                throw new InvalidOperationException("The saved order does not match the manually confirmed payment.");
+            }
+
+            return new RecoverableOrderPersistence(persistedOrder, AlreadyPersisted: true);
+        }
+
         if (recoveryOwnerAttemptKey is CardRecoveryAttemptKey exactOwnerKey)
         {
             if (recoveryOwnerAttemptGuid != exactOwnerKey.AttemptGuid)
@@ -3932,6 +4030,43 @@ public sealed class CashPaymentWorkflowService(
         }
 
         return new RecoverableOrderPersistence(order, AlreadyPersisted: false);
+    }
+
+    private static bool MatchesManualPaymentContinuation(LocalOrder candidate, LocalOrder persisted)
+    {
+        if (candidate.OrderGuid != persisted.OrderGuid || candidate.StoreCode != persisted.StoreCode ||
+            candidate.DeviceCode != persisted.DeviceCode || candidate.CashierId != persisted.CashierId ||
+            candidate.CashierName != persisted.CashierName || candidate.TotalAmount != persisted.TotalAmount ||
+            candidate.DiscountAmount != persisted.DiscountAmount || candidate.ActualAmount != persisted.ActualAmount ||
+            candidate.TenderedAmount != persisted.TenderedAmount || candidate.ChangeAmount != persisted.ChangeAmount ||
+            candidate.Lines.Count != persisted.Lines.Count || candidate.Payments.Count != persisted.Payments.Count)
+        {
+            return false;
+        }
+
+        // 中文注释：重试的临时行/付款 GUID 和时间会重新生成；商品、付款及人工确认身份必须逐项相同。
+        for (var index = 0; index < candidate.Lines.Count; index++)
+        {
+            if (candidate.Lines[index] with { OrderLineGuid = Guid.Empty } !=
+                persisted.Lines[index] with { OrderLineGuid = Guid.Empty })
+            {
+                return false;
+            }
+        }
+
+        for (var index = 0; index < candidate.Payments.Count; index++)
+        {
+            var left = candidate.Payments[index];
+            var right = persisted.Payments[index];
+            if (left.Method != right.Method || left.Amount != right.Amount || left.Reference != right.Reference ||
+                left.IdempotencyKey != right.IdempotencyKey ||
+                !(left.CardTransactions ?? []).SequenceEqual(right.CardTransactions ?? []))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private async Task<RecoverableOrderPersistence> PrepareAlternativeSquareRefundPersistenceAsync(

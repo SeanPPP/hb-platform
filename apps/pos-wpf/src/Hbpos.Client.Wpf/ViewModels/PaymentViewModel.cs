@@ -172,7 +172,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         Func<CardPaymentHandoffRequest, Task<CardPaymentHandoffCandidate?>>? prepareCardPaymentHandoffAsync = null,
         Func<CardPaymentHandoffCandidate, CardPaymentHandoffRequest, Task<bool>>? handoffCardPaymentAsync = null,
         Action? openCardRecoveryCenter = null,
-        ICardTerminalSetupService? cardTerminalSetupService = null)
+        ICardTerminalSetupService? cardTerminalSetupService = null,
+        IPaymentMethodSettingsService? paymentMethodSettingsService = null)
         : this(
             cart,
             new CashPaymentWorkflowService(checkout, orderRepository, syncQueueRepository),
@@ -192,7 +193,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             prepareCardPaymentHandoffAsync,
             handoffCardPaymentAsync,
             openCardRecoveryCenter,
-            cardTerminalSetupService)
+            cardTerminalSetupService,
+            paymentMethodSettingsService)
     {
     }
 
@@ -215,7 +217,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         Func<CardPaymentHandoffRequest, Task<CardPaymentHandoffCandidate?>>? prepareCardPaymentHandoffAsync = null,
         Func<CardPaymentHandoffCandidate, CardPaymentHandoffRequest, Task<bool>>? handoffCardPaymentAsync = null,
         Action? openCardRecoveryCenter = null,
-        ICardTerminalSetupService? cardTerminalSetupService = null)
+        ICardTerminalSetupService? cardTerminalSetupService = null,
+        IPaymentMethodSettingsService? paymentMethodSettingsService = null)
     {
         _cart = cart;
         _cartWasEmpty = cart.IsEmpty;
@@ -280,6 +283,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             ExecuteCardPaymentErrorPrimaryActionAsync,
             CanExecuteCardPaymentErrorPrimaryAction);
 
+        InitializeManualCardCommands();
+        InitializePaymentMethodSettings(paymentMethodSettingsService);
         RefreshCart();
     }
 
@@ -291,6 +296,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         }
 
         _disposed = true;
+        if (_paymentMethodSettingsService is not null)
+            _paymentMethodSettingsService.Changed -= OnPaymentMethodSettingsChanged;
         BeginShutdown();
         if (_localization is not null)
         {
@@ -329,7 +336,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     public async Task RefreshLinklyCloudTerminalsAsync()
     {
-        if (_cardTerminalSetupService is null || IsLinklyCloudTerminalRefreshing)
+        if (!IsIntegratedCardPaymentVisible || !_paymentMethodSettingsReady ||
+            _cardTerminalSetupService is null || IsLinklyCloudTerminalRefreshing)
         {
             return;
         }
@@ -553,7 +561,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     public long? LinklyCloudSelectionRevision { get; private set; }
 
     public bool IsLinklyCloudTerminalSelectorVisible =>
-        _isLinklyCloudBackendTerminalMode;
+        IsIntegratedCardPaymentVisible && _isLinklyCloudBackendTerminalMode;
 
     public bool CanSwitchLinklyCloudTerminal =>
         IsLinklyCloudTerminalSelectorVisible &&
@@ -652,7 +660,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     public string StatusMessage => _statusTextOverride ?? T(_statusKey);
 
-    public bool IsPaymentInteractionEnabled => !IsPaymentInteractionLocked && !_cardSession.HasUnknownResult;
+    public bool IsPaymentInteractionEnabled => _paymentMethodSettingsReady && !IsPaymentInteractionLocked && !_cardSession.HasUnknownResult && !IsManualCardDialogOpen;
 
     // 中文注释：恢复入口必须独立于错误遮罩；订单锁定时即使遮罩已关闭也要能继续核对已批准卡款。
     public bool IsCardPaymentRecoveryRequired => _cardSession.HasUnknownResult;
@@ -690,7 +698,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     public bool IsVoucherSelected => SelectedPaymentMethod == PaymentMethodKind.Voucher;
 
-    public bool IsVoucherCodeEntryVisible => IsVoucherSelected && !IsRefundMode;
+    public bool IsVoucherCodeEntryVisible => IsVoucherPaymentVisible && IsVoucherSelected && !IsRefundMode;
 
     public bool IsInstallmentEntryVisible => IsPaymentMode;
 
@@ -876,6 +884,10 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     public void PrepareForEntry(PosSessionState session)
     {
+        // 已人工确认但尚未落单时，页面重入不能清掉付款证据。
+        if (IsManualCardSavePending) return;
+        IsManualCardDialogOpen = false;
+        IsManualCardSuccessChecked = false;
         // 先封死上一付款代际并取消旧卡任务；Session setter 或其通知失败时，迟到结果也不能污染恢复页。
         _paymentEntryVersion++;
         _cardSession.ResetManualCancellationState();
@@ -936,7 +948,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         }
 
         OnPropertyChanged(nameof(StatusMessage));
-        _ = RefreshLinklyCloudTerminalsAsync();
+        _ = RefreshPaymentSettingsForEntryAsync();
     }
 
     private void OnCartTransactionChanged(object? sender, EventArgs e)
@@ -1255,7 +1267,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     private void AppendTenderAmount(string? value)
     {
-        if (IsPaymentInteractionLocked || _cardSession.IsActive || _cardSession.HasUnknownResult)
+        if (!IsPaymentInteractionEnabled || _cardSession.IsActive)
         {
             return;
         }
@@ -1358,7 +1370,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     private bool CanUseVoucherEntryDialog()
     {
-        return IsVoucherEntryDialogOpen && IsPaymentInteractionEnabled;
+        return IsVoucherPaymentVisible && IsVoucherEntryDialogOpen && IsPaymentInteractionEnabled;
     }
 
     private void CancelVoucherEntry()
@@ -1482,6 +1494,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     private async Task AddTenderByMethodAsync(PaymentMethodKind method)
     {
+        if (!EnsurePaymentMethodEnabled(method)) return;
         if (method == PaymentMethodKind.Card && _requiresAlternativeRefundMethod)
         {
             // Square 恢复退款只能改用其他退款方式；即使命令被程序化调用也不能再次进入卡工作流。
@@ -1546,6 +1559,9 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         {
             return;
         }
+
+        // 授权期间可能保存新设置，真正收款前再次检查，防止执行已隐藏的付款方式。
+        if (!EnsurePaymentMethodEnabled(method)) return;
 
         // 中文注释：卡终端阶段只激活收卡授权；确认付款授权到真正完成订单前才单独激活。
         using var tenderAuthorizationActivation = tenderPermissionGrant.Activate();
@@ -2063,6 +2079,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     private async Task ConfirmPaymentAsync()
     {
+        if (IsManualCardDialogOpen) return;
         using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.Payment.Confirm, "confirm-payment");
         if (permissionGrant is null)
         {
@@ -2138,6 +2155,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             // 结算期间若发现已批准卡款无法安全落盘，finally 不能覆盖待恢复锁。
             IsPaymentInteractionLocked =
                 preservePaymentInteractionLock ||
+                IsManualCardSavePending ||
                 IsShuttingDown ||
                 _cardSession.HasUnknownResult;
         }
@@ -2194,6 +2212,14 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         }
         catch (CardPaymentPersistenceUnknownException ex)
         {
+            if (tenderSnapshot.Any(tender => ManualCardPaymentReference.IsManual(tender.Reference)))
+            {
+                // 手动款只能重试保存同一订单，不能转到 Linkly/Square 查询或让收银员再次刷卡。
+                IsManualCardSavePending = true;
+                IsPaymentInteractionLocked = true;
+                SetStatus("payment.manualCard.saveFailed");
+                return;
+            }
             _cardSession.SetPersistenceRecoveryOrder(ex.OrderGuid);
             // 中文注释：先保留付款锁与恢复入口，诊断写入失败不能丢失已批准卡款的待恢复状态。
             SetCurrentCardRecoveryRequired(true, ex.Message);
@@ -2299,6 +2325,12 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             NotifyPaymentCommandStates();
             return;
         }
+
+        // 分期续付的 tender 尚未扣款，首次提交仍须遵守开关；已提交的幂等操作保留原身份核对结果。
+        if (IsInstallmentRepaymentMode &&
+            (_installmentDraftPaymentGuid is null || !string.Equals(_installmentDraftFingerprint,
+                CreateInstallmentPaymentFingerprint(GetInstallmentAppliedTender(tender)), StringComparison.Ordinal)) &&
+            !EnsurePaymentMethodEnabled(tender.Method)) return;
 
         IsPaymentInteractionLocked = true;
         var preservePaymentInteractionLock = false;
@@ -2711,6 +2743,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     private void CompleteSuccessfulPayment(CashPaymentWorkflowResult result)
     {
+        IsManualCardSavePending = false;
         _pendingVoucherUploadOrderGuid = null;
         _pendingVoucherTenderedAmount = 0m;
         _pendingVoucherChangeAmount = 0m;
@@ -2738,6 +2771,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     private bool CanAddTender(PaymentMethodKind method, bool allowDefaultAmount)
     {
+        if (!IsPaymentMethodEnabled(method)) return false;
+        if (IsManualCardDialogOpen) return false;
         if (method == PaymentMethodKind.Card && _requiresAlternativeRefundMethod)
         {
             return false;
@@ -2805,6 +2840,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     private bool CanConfirmPayment()
     {
+        if (IsManualCardDialogOpen) return false;
         if (IsPaymentInteractionLocked || _cardSession.IsActive || _cardSession.HasUnknownResult)
         {
             return false;
@@ -2989,6 +3025,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     private void BackToPos()
     {
+        if (IsManualCardDialogOpen || IsManualCardSavePending) return;
         if (TrySetOfflineVoucherRefundTenderStatus())
         {
             return;
@@ -3006,7 +3043,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     private bool CanBackToPos()
     {
-        return !IsPaymentInteractionLocked &&
+        return !IsManualCardDialogOpen && !IsPaymentInteractionLocked &&
             !IsCardPaymentInProgress &&
             !_cardSession.HasUnknownResult &&
             !_cardSession.IsAwaitingLateResult;
@@ -3040,7 +3077,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     private bool CanShowInstallmentCenter()
     {
-        return IsPaymentMode &&
+        return !IsManualCardDialogOpen && IsPaymentMode &&
             !IsPaymentInteractionLocked &&
             !_cardSession.IsActive &&
             !_cardSession.HasUnknownResult &&
@@ -3193,14 +3230,13 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
                 line.ActualAmount)).ToList());
     }
 
-    private InstallmentPaymentDraft CreateInstallmentPaymentDraft(PaymentTender tender)
+    private string CreateInstallmentPaymentFingerprint(PaymentTender tender)
     {
         var (reference, reservationToken) = tender.Method == PaymentMethodKind.Voucher
             ? OrderUploadService.ParseVoucherReference(tender.Reference)
             : (tender.Reference, null);
 
-        // 中文注释：结果未知时用户会再次确认同一草稿，必须复用 GUID 和幂等键，不能重新授权终端或创建另一笔分期操作。
-        var fingerprint = string.Join(
+        return string.Join(
             '\u001f',
             _installmentRepaymentOrder?.OrderId.ToString("N") ?? "create",
             Session.StoreCode,
@@ -3213,6 +3249,15 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             InstallmentCustomerName.Trim(),
             InstallmentCustomerPhone.Trim(),
             _cart.ActualAmount.ToString(CultureInfo.InvariantCulture));
+    }
+
+    private InstallmentPaymentDraft CreateInstallmentPaymentDraft(PaymentTender tender)
+    {
+        var (reference, reservationToken) = tender.Method == PaymentMethodKind.Voucher
+            ? OrderUploadService.ParseVoucherReference(tender.Reference)
+            : (tender.Reference, null);
+        // 仅同一订单、金额和付款方式的重试可复用身份，旧草稿不能放行新的已禁用付款。
+        var fingerprint = CreateInstallmentPaymentFingerprint(tender);
         if (!string.Equals(_installmentDraftFingerprint, fingerprint, StringComparison.Ordinal))
         {
             _installmentDraftFingerprint = fingerprint;
@@ -3352,6 +3397,11 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     private static string? ResolveOriginalCardRefundReference(OrderReturnPaymentCapacityDto capacity)
     {
         var reference = NormalizeReference(capacity.Reference);
+        if (ManualCardPaymentReference.IsManualRefundSource(reference) ||
+            capacity.CardTransactions?.Any(transaction => string.Equals(transaction.Processor, "Manual", StringComparison.OrdinalIgnoreCase)) == true)
+        {
+            return null;
+        }
         if (reference is null || RequiresLinklyRefundReference(reference))
         {
             return BuildLinklyRefundReference(capacity.CardTransactions, reference) ?? reference;
@@ -3523,6 +3573,10 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     internal void NotifyPaymentCommandStates()
     {
+        OpenManualCardCommand.NotifyCanExecuteChanged();
+        CancelManualCardCommand.NotifyCanExecuteChanged();
+        ConfirmManualCardCommand.NotifyCanExecuteChanged();
+        RetryManualCardSaveCommand.NotifyCanExecuteChanged();
         NumberInputCommand.NotifyCanExecuteChanged();
         SelectCashCommand.NotifyCanExecuteChanged();
         SelectCardCommand.NotifyCanExecuteChanged();
@@ -3743,7 +3797,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         return new PaymentTenderAddRequest(
             method,
             SelectedPaymentMethod,
-            IsPaymentInteractionLocked || _cardSession.IsActive || _cardSession.HasUnknownResult,
+            IsManualCardDialogOpen || IsPaymentInteractionLocked || _cardSession.IsActive || _cardSession.HasUnknownResult,
             _pendingVoucherUploadOrderGuid is not null,
             IsRefundMode,
             IsOfflineVoucherRefundUnavailable(method),

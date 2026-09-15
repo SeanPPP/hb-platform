@@ -340,7 +340,7 @@ public sealed class OperationAuditViewModelTests
         {
             ReleaseVoucherTenderResult = releaseSucceeded
         };
-        var viewModel = new PaymentViewModel(cart, workflow, Session, operationAuditLogger: logger)
+        var viewModel = new PaymentViewModel(cart, workflow, Session, operationAuditLogger: logger, paymentMethodSettingsService: new MutablePaymentMethodSettingsService(new(VoucherEnabled: true)))
         {
             TenderAmountText = "10",
             VoucherCodeText = "SAFE-VOUCHER"
@@ -378,7 +378,7 @@ public sealed class OperationAuditViewModelTests
         {
             ReleaseVoucherTenderException = new InvalidOperationException("release unavailable")
         };
-        var viewModel = new PaymentViewModel(cart, workflow, Session, operationAuditLogger: logger)
+        var viewModel = new PaymentViewModel(cart, workflow, Session, operationAuditLogger: logger, paymentMethodSettingsService: new MutablePaymentMethodSettingsService(new(VoucherEnabled: true)))
         {
             TenderAmountText = "10",
             VoucherCodeText = "SAFE-VOUCHER"
@@ -660,7 +660,7 @@ public sealed class OperationAuditViewModelTests
         {
             AddTenderException = new InvalidOperationException("tender unavailable")
         };
-        var viewModel = new PaymentViewModel(cart, workflow, Session, operationAuditLogger: logger)
+        var viewModel = new PaymentViewModel(cart, workflow, Session, operationAuditLogger: logger, paymentMethodSettingsService: new MutablePaymentMethodSettingsService(new(VoucherEnabled: true)))
         {
             TenderAmountText = "7",
             VoucherCodeText = method == PaymentMethodKind.Voucher ? "SAFE-VOUCHER" : string.Empty
