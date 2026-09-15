@@ -15,11 +15,12 @@ public sealed class BatchProductSalesDiscountWorker(
 {
     private const string GlobalLeaseTaskType = nameof(BatchProductSalesDiscountWorker);
     private const string GlobalLeaseScope = "daily-format-2";
-    private static readonly TimeSpan GlobalLeaseDuration = TimeSpan.FromMinutes(15);
+    internal static readonly TimeSpan GlobalLeaseDuration = TimeSpan.FromMinutes(15);
     private static readonly TimeSpan RunBudget = TimeSpan.FromMinutes(4);
-    internal static readonly TimeSpan DayExecutionLimit = TimeSpan.FromMinutes(5);
+    internal static readonly TimeSpan DayExecutionLimit = TimeSpan.FromMinutes(6);
     private static readonly TimeSpan TerminalPersistenceLimit = TimeSpan.FromSeconds(15);
-    private static readonly TimeSpan SourceReadLimit = TimeSpan.FromMinutes(3);
+    // 来源预算覆盖前后两次 capture 与事实聚合；为发布留余量，且单日硬截止仍短于日期租约。
+    internal static readonly TimeSpan SourceReadLimit = TimeSpan.FromMinutes(4);
     private static readonly TimeSpan BackfillPollInterval = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan IdlePollInterval = TimeSpan.FromMinutes(1);
 
@@ -101,6 +102,7 @@ public sealed class BatchProductSalesDiscountWorker(
         using var dayBudget = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
         dayBudget.CancelAfter(DayExecutionLimit);
         var dayToken = dayBudget.Token;
+        using var sourceBudget = CancellationTokenSource.CreateLinkedTokenSource(dayToken);
         computationDb.Ado.CancellationToken = dayToken;
         var day = claim.State.Date.Date;
         var elapsed = Stopwatch.StartNew();
@@ -124,12 +126,12 @@ public sealed class BatchProductSalesDiscountWorker(
             var source = new BatchProductSalesDiscountSnapshotSourceReader(
                 services.GetRequiredService<SqlSugarContext>().Db,
                 services.GetRequiredService<POSMSqlSugarContext>().Db,
-                services.GetRequiredService<HBSalesRecordSqlSugarContext>().Db);
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(dayToken);
-            timeout.CancelAfter(SourceReadLimit);
+                services.GetRequiredService<HBSalesRecordSqlSugarContext>().Db,
+                services.GetRequiredService<ILogger<BatchProductSalesDiscountSnapshotSourceReader>>());
+            sourceBudget.CancelAfter(SourceReadLimit);
             // 同一个准备结果既用于变更检查，也用于聚合，完整来源扫描保持前后各一次。
             stage = "读取成交源";
-            var prepared = await source.CapturePreparedAsync(day, timeout.Token);
+            var prepared = await source.CapturePreparedAsync(day, sourceBudget.Token);
             var sourceBefore = prepared.SourceVersion;
             if (claim.State.Status == "Fresh" && !claim.State.ReconcileRequested
                 && claim.State.RuleVersion == BatchProductSalesDiscountDailyStore.RuleVersion
@@ -139,7 +141,8 @@ public sealed class BatchProductSalesDiscountWorker(
                 return;
             }
             await ValidateOwnershipAsync(store, leases, globalToken, claim, dayToken);
-            var readResult = await source.ReadPreparedDayAsync(prepared, timeout.Token);
+            var readResult = await source.ReadPreparedDayAsync(prepared, sourceBudget.Token);
+            sourceBudget.CancelAfter(Timeout.InfiniteTimeSpan);
             var sourceRows = readResult.Rows;
             stage = "核对折扣汇总";
             var statisticRows = await store.ReadDailyStatisticsAsync(day, dayToken);
@@ -179,6 +182,7 @@ public sealed class BatchProductSalesDiscountWorker(
                 day, claim.State.Attempts, stage, elapsed.ElapsedMilliseconds);
             var reason = stoppingToken.IsCancellationRequested ? "服务停止，等待重试"
                 : dayBudget.IsCancellationRequested ? $"单日处理超时，阶段：{stage}"
+                : sourceBudget.IsCancellationRequested ? "来源读取超时，等待重试"
                 : ex.Message;
             await PersistFailureAsync(claim, reason);
             stoppingToken.ThrowIfCancellationRequested();
