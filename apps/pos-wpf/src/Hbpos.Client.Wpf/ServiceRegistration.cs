@@ -61,6 +61,7 @@ public static class ServiceRegistration
         services.AddSingleton<DeviceAuthorizationState>();
         services.AddTransient<DeviceAuthorizationMessageHandler>();
         services.AddSingleton<ILocalAppSettingsRepository, LocalAppSettingsRepository>();
+        services.AddSingleton<IPaymentMethodSettingsService, PaymentMethodSettingsService>();
         services.AddSingleton<IRemoteMaintenanceSecretProtector, DpapiRemoteMaintenanceSecretProtector>();
         services.AddSingleton(sp => new RemoteMaintenanceJournal(
             Path.Combine(localDataDirectory, "remote-maintenance.journal"),
@@ -610,7 +611,8 @@ public static class ServiceRegistration
                 sharedHeldOrderPublicationWorker: sp.GetRequiredService<ISharedHeldOrderPublicationWorker>(),
                 storeReceiptProfileApiClient: sp.GetRequiredService<IStoreReceiptProfileApiClient>(),
                 cashierSessionRefreshService: sp.GetRequiredService<CashierSessionRefreshService>(),
-                remoteMaintenanceService: sp.GetRequiredService<IRemoteMaintenanceService>());
+                remoteMaintenanceService: sp.GetRequiredService<IRemoteMaintenanceService>(),
+                paymentMethodSettingsService: sp.GetRequiredService<IPaymentMethodSettingsService>());
             viewModel.ConfigureAuditSyncCenter(
                 sp.GetRequiredService<ClientLogOutboxStore>(),
                 sp.GetRequiredService<OperationAuditUploadService>(),

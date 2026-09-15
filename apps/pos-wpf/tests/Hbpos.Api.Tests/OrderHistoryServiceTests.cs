@@ -15,6 +15,41 @@ public sealed class OrderHistoryServiceTests
     private static readonly TimeSpan QueryBudget = TimeSpan.FromSeconds(2);
 
     [Fact]
+    public async Task GetDetailsAsync_preserves_manual_card_identity_from_persisted_reference()
+    {
+        using var database = await OrderHistorySqliteFixture.CreateAsync(orderCount: 1);
+        var db = database.DbContext.PosmDb;
+        db.CodeFirst.InitTables<BankTransaction>();
+        var orderGuid = OrderHistorySqliteFixture.TargetOrderGuid;
+        var paymentGuid = Guid.NewGuid().ToString("D");
+        var reference = ManualCardPaymentReference.Format(Guid.NewGuid());
+        await db.Insertable(new PaymentDetail
+        {
+            PaymentGuid = paymentGuid,
+            OrderGuid = orderGuid.ToString("D"),
+            PaymentMethod = (int)PaymentMethodKind.Card,
+            Amount = 20m,
+            Reference = reference
+        }).ExecuteCommandAsync();
+        await db.Insertable(new BankTransaction
+        {
+            Id = Guid.NewGuid(),
+            PaymentGuid = paymentGuid,
+            OrderGuid = orderGuid.ToString("D"),
+            TxnRef = reference,
+            Amount = 20m,
+            ResponseText = "Manually confirmed by cashier"
+        }).ExecuteCommandAsync();
+
+        var details = await new SqlSugarOrderHistoryRepository(database.DbContext).GetDetailsAsync(orderGuid, CancellationToken.None);
+        var payment = Assert.Single(details!.Payments);
+        Assert.Equal(reference, payment.Reference);
+        var transaction = Assert.Single(payment.CardTransactions!);
+        Assert.Equal("Manual", transaction.Processor);
+        Assert.Null(transaction.RefundReference);
+    }
+
+    [Fact]
     [Trait("Category", "Performance")]
     public async Task QueryAsync_matches_item_number_and_barcode_within_two_seconds_without_global_detail_materialization()
     {
