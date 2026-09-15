@@ -426,7 +426,7 @@ namespace BlazorApp.Api.Services
         }
     }
 
-    private static async Task PersistProductStatisticFailureAsync(
+    internal static async Task PersistProductStatisticFailureAsync(
         SqlSugarContext context,
         ILogger logger,
         DateTime targetDate,
@@ -482,7 +482,7 @@ namespace BlazorApp.Api.Services
         }
     }
 
-    private static async Task<ProductStatisticFailureFence?> CaptureProductStatisticFailureFenceAsync(
+    internal static async Task<ProductStatisticFailureFence?> CaptureProductStatisticFailureFenceAsync(
         SqlSugarContext context,
         DateTime targetDate)
     {

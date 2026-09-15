@@ -760,13 +760,21 @@ internal Task UpdateHourlyStatisticsWithContext(
     /// <param name="logger">日志记录器</param>
     /// <param name="date">目标日期</param>
     /// <param name="branchCodes">分店代码列表，为空则更新所有分店</param>
+    /// <param name="expectedProductStatisticJobId">队列商品统计任务标识；提供时在分店事务中围栏执行权</param>
+    /// <param name="validateExecutionOwnershipBeforeCommitAsync">队列租约在分店事务提交前的附加校验</param>
+    /// <param name="sourceWatermark">队列分店行所对应的 POSM 来源水位</param>
+    /// <param name="validateSourceWatermarkBeforeCommitAsync">分店事务提交前核对来源仍为构建水位</param>
 internal async Task UpdateStoreStatisticsWithContext(
     SqlSugarContext context,
     POSMSqlSugarContext posmContext,
     HBSalesRecordSqlSugarContext? hbSalesContext,
     ILogger logger,
     DateTime date,
-    List<string>? branchCodes
+    List<string>? branchCodes,
+    Guid? expectedProductStatisticJobId = null,
+    Func<Task>? validateExecutionOwnershipBeforeCommitAsync = null,
+    DateTime? sourceWatermark = null,
+    Func<Task>? validateSourceWatermarkBeforeCommitAsync = null
 )
 {
     try
@@ -789,7 +797,15 @@ internal async Task UpdateStoreStatisticsWithContext(
             branchCodes
         );
         await _store.ReplaceStoreStatisticsAsync(
-            context, logger, targetDate, branchCodes, statisticsList);
+            context,
+            logger,
+            targetDate,
+            branchCodes,
+            statisticsList,
+            expectedProductStatisticJobId,
+            validateExecutionOwnershipBeforeCommitAsync,
+            sourceWatermark,
+            validateSourceWatermarkBeforeCommitAsync);
 
         logger.LogInformation(
             "指定分店统计数据更新完成: {Date}, 总记录: {Total}",

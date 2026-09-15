@@ -50,13 +50,22 @@ internal sealed class SalesStatisticsOrchestrationStore
         ILogger logger,
         DateTime targetDate,
         List<string>? branchCodes,
-        List<StoreSalesStatistic> statisticsList)
+        List<StoreSalesStatistic> statisticsList,
+        Guid? expectedProductStatisticJobId = null,
+        Func<Task>? validateExecutionOwnershipBeforeCommitAsync = null,
+        DateTime? sourceWatermark = null,
+        Func<Task>? validateSourceWatermarkBeforeCommitAsync = null)
     {
         var targetBranchCodes = SalesStatisticsCodeRules.NormalizeBranchCodes(branchCodes);
         await SalesStatisticsTransactionExecutor.ExecuteAsync(
             beginAsync: () => context.Db.Ado.BeginTranAsync(),
             workAsync: async () =>
             {
+                // 前置分店写入复用商品队列的 JobId fencing，避免过期 worker 在商品提交前先替换营业额。
+                await SalesStatisticsProductStoreDailyStateSlice.FenceProductStatisticExecutionOwnerAsync(
+                    context,
+                    targetDate,
+                    expectedProductStatisticJobId);
                 var deleteable = context.Db.Deleteable<StoreSalesStatistic>()
                     .Where(row => row.Date == targetDate);
                 if (targetBranchCodes.Any())
@@ -73,6 +82,30 @@ internal sealed class SalesStatisticsOrchestrationStore
                         .PageSize(BatchSize)
                         .BulkCopy(statisticsList);
                 }
+
+                // 队列前置路径必须先确认 POSM 仍是构建时的同一版本，再将行和 StoreSales
+                // Fresh/watermark 一起提交；报表完整性和缓存指纹依赖这个状态行。
+                if (validateSourceWatermarkBeforeCommitAsync != null)
+                    await validateSourceWatermarkBeforeCommitAsync();
+                if (expectedProductStatisticJobId.HasValue)
+                {
+                    await SalesStatisticsProductStoreDailyStateSlice.UpsertStatisticStateAsync(
+                        context,
+                        SalesStatisticType.StoreSales,
+                        targetDate,
+                        SalesStatisticRefreshStatus.Fresh,
+                        sourceWatermark,
+                        null,
+                        overwriteLastSourceUploadTime: true);
+                }
+
+                // 提交前在同一事务内再围栏，防止 callback 与接管写入竞争；失败会回滚整次替换。
+                await SalesStatisticsProductStoreDailyStateSlice.FenceProductStatisticExecutionOwnerAsync(
+                    context,
+                    targetDate,
+                    expectedProductStatisticJobId);
+                if (validateExecutionOwnershipBeforeCommitAsync != null)
+                    await validateExecutionOwnershipBeforeCommitAsync();
             },
             commitAsync: () => context.Db.Ado.CommitTranAsync(),
             rollbackAsync: () => context.Db.Ado.RollbackTranAsync(),
