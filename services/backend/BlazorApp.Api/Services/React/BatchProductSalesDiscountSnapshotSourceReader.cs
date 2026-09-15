@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Diagnostics;
+using System.Globalization;
 using BlazorApp.Api.Services;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HBSalesRecord;
@@ -261,7 +262,7 @@ internal sealed class BatchProductSalesDiscountSnapshotSourceReader(
         var hbRows = SalesStatisticsHBSalesHistoryWindow.Includes(day) ? await LoadHBSalesRowsAsync(day, nextDay, token) : [];
         var returnDiscountRows = await LoadReturnDiscountSemanticRowsAsync(day, nextDay, detailGuids, token);
         var hbDiscountRows = SalesStatisticsHBSalesHistoryWindow.Includes(day)
-            ? await LoadHBSalesDiscountSemanticRowsAsync(day, nextDay, hbRows, token)
+            ? await LoadHBSalesDiscountSemanticRowsAsync(hbRows, token)
             : [];
         var aliasResult = await BuildScopeAndAliasVersionAsync(details, supplementalReturns, hbRows, orders, token);
         var supplierMappingVersion = await CreatePosmSupplierMappingVersionAsync(details, supplementalReturns, token);
@@ -388,7 +389,9 @@ internal sealed class BatchProductSalesDiscountSnapshotSourceReader(
                 // 此读取器不以 HBSales 的显示键参与聚合；直接保留源单号，避免 SQL Server 的 + 把字符串前缀强制转为整数。
                 OrderGuid = main.B销售单号,
                 HBSalesOrderNumber = main.B销售单号,
-                DetailGuid = detail.ID.ToString(),
+                // 不能在 SQL 投影中调用 ToString：SqlSugar 会生成 CAST(... AS nvarchar(max))，
+                // 大量行流式传输会显著拖慢来源围栏。保留数值 ID，物化后再生成相同的十进制签名键。
+                HBSalesDetailId = detail.ID,
                 BranchCode = detail.B分店代码,
                 ProductCode = detail.B产品编号,
                 ItemNumber = detail.B货号,
@@ -397,6 +400,8 @@ internal sealed class BatchProductSalesDiscountSnapshotSourceReader(
                 Barcode = detail.B条形码,
                 HBSalesUnitPrice = detail.B单价,
                 HBSalesOriginalAmount = detail.B原价合计金额,
+                HBSalesSaleAmount = detail.B合计金额,
+                HBSalesDiscountRate = detail.B折扣率,
                 OriginalUnitPrice = detail.B单价,
                 OriginalSubtotal = detail.B原价合计金额,
                 PricingUnit = detail.B单位,
@@ -420,25 +425,24 @@ internal sealed class BatchProductSalesDiscountSnapshotSourceReader(
             row.Quantity = -row.Quantity;
             row.ActualAmount = -row.ActualAmount;
         }
+        foreach (var row in rows)
+            row.DetailGuid = row.HBSalesDetailId.ToString(CultureInfo.InvariantCulture);
         return rows;
     }
 
     private async Task<List<DiscountSemanticRow>> LoadHBSalesDiscountSemanticRowsAsync(
-        DateTime day, DateTime nextDay, IReadOnlyList<ProductStoreDailySourceRow> dayRows, CancellationToken token)
+        IReadOnlyList<ProductStoreDailySourceRow> dayRows, CancellationToken token)
     {
-        var rows = await _hbSalesDb.Queryable<SalesOrderMain>()
-            .InnerJoin<SalesOrderDetailRecord>((main, detail) => main.B销售单号 == detail.B销售单号)
-            .Where((main, detail) => detail.B结账日期.HasValue && detail.B结账日期.Value >= day && detail.B结账日期.Value < nextDay
-                && main.B结账日期.HasValue && main.B结账日期.Value >= day.AddDays(-7) && main.B结账日期.Value < nextDay.AddDays(7)
-                && (main.B单据类型 == null || main.B单据类型.Trim() != "2"))
-            .Select((main, detail) => new DiscountSemanticRow
+        // LoadHBSalesRowsAsync 已按相同 join/filter 固定当天行；直接复用，避免每个 Capture 重扫一次 HBSales 日明细。
+        // 退货行的 Quantity/ActualAmount 已归一化，因此签名必须使用保留的原始字段，与原查询逐字段等价。
+        var rows = dayRows.Select(row => new DiscountSemanticRow
             {
-                Scope = "hbs-detail", Key = detail.ID.ToString(), RelatedKey = main.B销售单号,
-                Value1 = main.B单据类型, Value2 = main.B原销售单号, Value3 = detail.B产品编号,
-                Value4 = detail.B退货码, Value5 = detail.B条形码, Value6 = detail.B数量,
-                Value7 = detail.B合计金额, Value8 = detail.B单价, Value9 = detail.B原价合计金额,
-                Value10 = detail.B折扣率,
-            }).ToListAsync(token);
+                Scope = "hbs-detail", Key = row.DetailGuid, RelatedKey = row.HBSalesOrderNumber,
+                Value1 = row.DocumentType, Value2 = row.OriginalHBSalesOrderNumber, Value3 = row.ProductCode,
+                Value4 = row.HBSalesReturnCode, Value5 = row.Barcode, Value6 = row.OriginalSaleQuantity,
+                Value7 = row.HBSalesSaleAmount, Value8 = row.HBSalesUnitPrice, Value9 = row.HBSalesOriginalAmount,
+                Value10 = row.HBSalesDiscountRate,
+            }).ToList();
         var originalOrderNumbers = dayRows.Where(row => row.DocumentType?.Trim() is "3" or "4")
             .Select(row => row.OriginalHBSalesOrderNumber).Where(value => !string.IsNullOrWhiteSpace(value))
             .Select(value => value!.Trim()).Distinct(StringComparer.Ordinal).ToList();
