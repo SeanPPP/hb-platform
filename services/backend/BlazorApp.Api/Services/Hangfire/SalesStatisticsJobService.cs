@@ -738,8 +738,21 @@ namespace BlazorApp.Api.Services
             HBSalesRecordSqlSugarContext? hbSalesContext,
             ILogger logger,
             DateTime date,
-            List<string>? branchCodes) => _application.UpdateStoreStatisticsWithContext(
-                context, posmContext, hbSalesContext, logger, date, branchCodes);
+            List<string>? branchCodes,
+            Guid? expectedProductStatisticJobId = null,
+            Func<Task>? validateExecutionOwnershipBeforeCommitAsync = null,
+            DateTime? sourceWatermark = null,
+            Func<Task>? validateSourceWatermarkBeforeCommitAsync = null) => _application.UpdateStoreStatisticsWithContext(
+                context,
+                posmContext,
+                hbSalesContext,
+                logger,
+                date,
+                branchCodes,
+                expectedProductStatisticJobId,
+                validateExecutionOwnershipBeforeCommitAsync,
+                sourceWatermark,
+                validateSourceWatermarkBeforeCommitAsync);
 
         private Task UpdateAustralianSupplierStoreStatisticsWithContext(
             SqlSugarContext context,
