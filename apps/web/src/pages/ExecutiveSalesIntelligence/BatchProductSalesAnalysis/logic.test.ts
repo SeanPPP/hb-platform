@@ -1,15 +1,6 @@
 import assert from 'node:assert/strict'
-import type { BatchSalesBranch, BatchSalesDaily, BatchSalesMetrics } from '../../../types/batchProductSalesAnalysis'
-import {
-  escapeCsvCell,
-  formatCsvRow,
-  getBatchProductSalesClassifiedQuantity,
-  getBatchProductSalesDateRangeError,
-  hasBatchProductSalesDiscountStatisticsNotice,
-  hasBatchProductSalesDailyActivity,
-  shouldRefreshBatchProductSalesDiscountStatistics,
-  sortBatchProductSalesBranchesByQuantity,
-} from './logic'
+import type { BatchSalesBranch, BatchSalesDaily, BatchSalesDetail, BatchSalesMetrics } from '../../../types/batchProductSalesAnalysis'
+import { buildBatchProductSalesAnalysis, escapeCsvCell, formatCsvRow, getBatchProductSalesDiscountStateKey, getBatchProductSalesClassifiedQuantity, getBatchProductSalesDateRangeError, hasBatchProductSalesDiscountStatisticsNotice, hasBatchProductSalesDailyActivity, runBatchProductSalesPool, shouldRefreshBatchProductSalesDiscountStatistics, sortBatchProductSalesBranchesByQuantity } from './logic'
 
 function metrics(overrides: Partial<BatchSalesMetrics> = {}): BatchSalesMetrics {
   return {
@@ -33,7 +24,35 @@ function daily(overrides: Partial<BatchSalesMetrics> = {}): BatchSalesDaily {
 }
 
 function branch(code: string, quantity: number): BatchSalesBranch {
-  return { branchCode: code, branchName: code, metrics: metrics({ quantity }), daily: [] }
+  return {
+    branchCode: code,
+    branchName: code,
+    metrics: metrics({ quantity }),
+    daily: [],
+  }
+}
+
+function detail(productCode: string, branches: BatchSalesBranch[]): BatchSalesDetail {
+  const metricRows = branches.map((item) => item.metrics)
+  const quantity = metricRows.reduce((sum, item) => sum + item.quantity, 0)
+  const regularQuantity = metricRows.reduce((sum, item) => sum + item.regularQuantity, 0)
+  const discountQuantity = metricRows.reduce((sum, item) => sum + item.discountQuantity, 0)
+  const salesAmount = metricRows.reduce((sum, item) => sum + item.salesAmount, 0)
+  return {
+    startDate: '2026-09-01',
+    endDate: '2026-09-02',
+    storeCodes: [],
+    warnings: [],
+    product: { productCode, itemNumber: productCode, productName: productCode },
+    metrics: metrics({
+      quantity,
+      regularQuantity,
+      discountQuantity,
+      salesAmount,
+    }),
+    daily: branches.flatMap((item) => item.daily),
+    branches,
+  }
 }
 
 assert.equal(getBatchProductSalesDateRangeError('2025-08-18', '2026-08-18', '2026-08-18'), undefined, '含首尾共 366 天的范围必须允许')
@@ -52,7 +71,7 @@ assert.equal(escapeCsvCell('@cmd'), "'@cmd", '@ 开头必须防止 CSV 被解释
 assert.equal(escapeCsvCell(-3), '-3', '数值型退货数量必须保持为可计算数字')
 assert.equal(escapeCsvCell('-3'), "'-3", '字符串型负数仍必须防止 CSV 被解释为公式')
 assert.equal(escapeCsvCell(Number.NaN), '', '非有限数值不得导出为错误数值')
-assert.equal(formatCsvRow(['货号', '=A1', 'a,b']), "货号,'=A1,\"a,b\"", '整行导出必须复用安全单元格转义')
+assert.equal(formatCsvRow(['货号', '=A1', 'a,b']), '货号,\'=A1,"a,b"', '整行导出必须复用安全单元格转义')
 
 assert.equal(hasBatchProductSalesDailyActivity(daily()), false, '全零补齐日必须隐藏')
 assert.equal(hasBatchProductSalesDailyActivity(daily({ regularQuantity: 3, quantity: 3 })), true, '正价销售必须保留')
@@ -68,8 +87,16 @@ assert.equal(hasBatchProductSalesDailyActivity(daily({ quantity: 0, discountStat
 
 const branches = [branch('B', 4), branch('A', 9), branch('C', 4), branch('D', -2)]
 const sortedBranches = sortBatchProductSalesBranchesByQuantity(branches)
-assert.deepEqual(sortedBranches.map((item) => item.branchCode), ['A', 'B', 'C', 'D'], '分店必须按销量稳定降序排列')
-assert.deepEqual(branches.map((item) => item.branchCode), ['B', 'A', 'C', 'D'], '排序不得修改服务端原始数组')
+assert.deepEqual(
+  sortedBranches.map((item) => item.branchCode),
+  ['A', 'B', 'C', 'D'],
+  '分店必须按销量稳定降序排列',
+)
+assert.deepEqual(
+  branches.map((item) => item.branchCode),
+  ['B', 'A', 'C', 'D'],
+  '排序不得修改服务端原始数组',
+)
 assert.notEqual(sortedBranches, branches, '排序结果必须是新的数组')
 
 assert.equal(getBatchProductSalesClassifiedQuantity(metrics({ regularQuantity: 4 }), 'regularQuantity'), 4, '分类完成时应显示真实数量')
@@ -88,8 +115,142 @@ for (const status of ['Fresh', 'Failed', 'Superseded', undefined]) {
 }
 assert.equal(hasBatchProductSalesDiscountStatisticsNotice('Fresh'), false, 'Fresh 不应显示折扣统计提示')
 assert.equal(hasBatchProductSalesDiscountStatisticsNotice(undefined), false, '缺少状态时不应误报折扣统计异常')
+assert.equal(getBatchProductSalesDiscountStateKey('backFILLing'), 'Backfilling', '折扣状态翻译 key 必须大小写稳健')
+assert.equal(getBatchProductSalesDiscountStateKey('OUT_OF_SYNC'), 'OutOfSync', '折扣状态翻译 key 必须兼容服务端分隔符')
+assert.equal(shouldRefreshBatchProductSalesDiscountStatistics('OUT_OF_SYNC'), true, '分隔符状态也必须继续轮询')
+assert.equal(getBatchProductSalesDiscountStateKey('new-state'), 'Unavailable', '未知状态必须降级到已有翻译 key')
 for (const status of ['Partial', 'Failed', 'OutOfSync', 'Superseded', 'Unavailable']) {
   assert.equal(hasBatchProductSalesDiscountStatisticsNotice(status), true, `${status} 应显示终态警告`)
 }
+
+let activeWorkers = 0
+let maxActiveWorkers = 0
+const processedItems: number[] = []
+await runBatchProductSalesPool([1, 2, 3, 4, 5, 6, 7], 3, async (item) => {
+  activeWorkers += 1
+  maxActiveWorkers = Math.max(maxActiveWorkers, activeWorkers)
+  await new Promise((resolve) => setTimeout(resolve, 1))
+  processedItems.push(item)
+  activeWorkers -= 1
+})
+assert.equal(maxActiveWorkers, 3, '明细请求池必须遵守并发上限')
+assert.deepEqual(
+  [...processedItems].sort((left, right) => left - right),
+  [1, 2, 3, 4, 5, 6, 7],
+  '请求池必须且只处理每个商品一次',
+)
+
+const p1b1 = branch('B1', 5)
+p1b1.metrics = metrics({
+  quantity: 5,
+  regularQuantity: 4,
+  discountQuantity: 1,
+  salesAmount: 42,
+})
+p1b1.daily = [
+  {
+    date: '2026-09-01',
+    metrics: metrics({ quantity: 2, regularQuantity: 2, salesAmount: 18 }),
+  },
+  {
+    date: '2026-09-02',
+    metrics: metrics({
+      quantity: 3,
+      regularQuantity: 2,
+      discountQuantity: 1,
+      salesAmount: 24,
+    }),
+  },
+]
+const p1b2 = branch('B2', 2)
+p1b2.metrics = metrics({ quantity: 2, regularQuantity: 2, salesAmount: 16 })
+p1b2.daily = [
+  {
+    date: '2026-09-01',
+    metrics: metrics({ quantity: 2, regularQuantity: 2, salesAmount: 16 }),
+  },
+]
+const p2b1 = branch('B1', 3)
+p2b1.metrics = metrics({
+  quantity: 3,
+  regularQuantity: 1,
+  discountQuantity: 2,
+  salesAmount: 21,
+})
+p2b1.daily = [
+  {
+    date: '2026-09-01',
+    metrics: metrics({
+      quantity: 3,
+      regularQuantity: 1,
+      discountQuantity: 2,
+      salesAmount: 21,
+    }),
+  },
+]
+const p2b2 = branch('B2', 7)
+p2b2.metrics = metrics({ quantity: 7, regularQuantity: 7, salesAmount: 56 })
+p2b2.daily = [
+  {
+    date: '2026-09-02',
+    metrics: metrics({ quantity: 7, regularQuantity: 7, salesAmount: 56 }),
+  },
+]
+const aggregate = buildBatchProductSalesAnalysis([detail('P1', [p1b1, p1b2]), detail('P2', [p2b1, p2b2])])
+assert.equal(aggregate.metrics.quantity, 17, '全部商品必须汇总每个已加载商品的销量')
+assert.equal(aggregate.metrics.salesAmount, 135, '全部商品必须汇总销售额')
+assert.deepEqual(
+  aggregate.daily.map((row) => [row.date, row.metrics.quantity]),
+  [
+    ['2026-09-01', 7],
+    ['2026-09-02', 10],
+  ],
+  '全部商品的每日销量必须按日期聚合',
+)
+assert.deepEqual(
+  aggregate.branches.map((row) => [row.branchCode, row.metrics.quantity]),
+  [
+    ['B2', 9],
+    ['B1', 8],
+  ],
+  '分店总量排行必须稳定按销量降序',
+)
+assert.deepEqual(
+  buildBatchProductSalesAnalysis([detail('P1', [p1b1, p1b2]), detail('P2', [p2b1, p2b2])], { branchCode: 'B1' }).productContributions.map((row) => [row.product.productCode, row.metrics.quantity]),
+  [
+    ['P1', 5],
+    ['P2', 3],
+  ],
+  '所选分店的商品贡献必须按销量降序',
+)
+
+const singleProduct = buildBatchProductSalesAnalysis([detail('P1', [p1b1, p1b2]), detail('P2', [p2b1, p2b2])], { productCode: 'P1' })
+assert.equal(singleProduct.metrics.quantity, 7, '商品筛选必须只汇总已选商品')
+assert.deepEqual(
+  singleProduct.branches.map((row) => row.branchCode),
+  ['B1', 'B2'],
+  '商品筛选后的分店排行必须保留商品范围',
+)
+
+const singleBranch = buildBatchProductSalesAnalysis([detail('P1', [p1b1, p1b2]), detail('P2', [p2b1, p2b2])], { branchCode: 'B1' })
+assert.equal(singleBranch.metrics.quantity, 8, '分店筛选必须只汇总已选分店')
+assert.deepEqual(
+  singleBranch.daily.map((row) => [row.date, row.metrics.quantity]),
+  [
+    ['2026-09-01', 5],
+    ['2026-09-02', 3],
+  ],
+  '分店筛选后的每日趋势必须来自所选分店',
+)
+
+const incomplete = buildBatchProductSalesAnalysis([detail('P1', [p1b1, p1b2])])
+assert.equal(incomplete.metrics.quantity, 7, '未返回的商品不得被补成零或混入已加载汇总')
+assert.deepEqual(
+  buildBatchProductSalesAnalysis([detail('P1', [p1b1, p1b2])], {
+    branchCode: 'B1',
+  }).productContributions.map((row) => row.product.productCode),
+  ['P1'],
+  '未返回的商品不得显示为零贡献',
+)
 
 console.log('BatchProductSalesAnalysis.logic.test: ok')

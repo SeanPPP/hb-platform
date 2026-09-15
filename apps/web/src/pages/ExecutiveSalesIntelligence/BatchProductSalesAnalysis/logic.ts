@@ -1,9 +1,165 @@
-import type { BatchSalesBranch, BatchSalesDaily, BatchSalesMetrics } from '../../../types/batchProductSalesAnalysis'
+import type { BatchSalesBranch, BatchSalesDaily, BatchSalesDetail, BatchSalesMetrics, BatchSalesProduct } from '../../../types/batchProductSalesAnalysis'
 
 const DATE_ONLY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/
 
 function nonZeroFinite(value: unknown): boolean {
   return typeof value === 'number' && Number.isFinite(value) && value !== 0
+}
+
+export interface BatchProductSalesAnalysisFilters {
+  productCode?: string
+  branchCode?: string
+}
+
+export interface BatchProductSalesContribution {
+  product: BatchSalesProduct
+  metrics: BatchSalesMetrics
+}
+
+export interface BatchProductSalesAnalysis {
+  /** 当前商品/分店组合的汇总；只使用实际已返回的明细。 */
+  metrics: BatchSalesMetrics
+  daily: BatchSalesDaily[]
+  /** 当前商品范围内的分店总量排行，始终保留全部分店以便切换。 */
+  branches: BatchSalesBranch[]
+  /** 当前分店内、当前商品范围的商品贡献。 */
+  productContributions: BatchProductSalesContribution[]
+}
+
+/** 以固定并发处理任务，避免大批量货号同时打满明细接口。 */
+export async function runBatchProductSalesPool<T>(items: readonly T[], concurrency: number, worker: (item: T) => Promise<void>): Promise<void> {
+  if (!items.length) return
+  let nextIndex = 0
+  const runWorker = async () => {
+    while (nextIndex < items.length) {
+      const item = items[nextIndex++]
+      await worker(item)
+    }
+  }
+  const workerCount = Math.min(Math.max(1, Math.floor(concurrency)), items.length)
+  await Promise.all(Array.from({ length: workerCount }, runWorker))
+}
+
+function emptyMetrics(): BatchSalesMetrics {
+  return {
+    quantity: 0,
+    regularQuantity: 0,
+    discountQuantity: 0,
+    unknownQuantity: 0,
+    returnQuantity: 0,
+    salesAmount: 0,
+    discountStatus: 'complete',
+    originalPriceMin: null,
+    originalPriceMax: null,
+    discountPriceMin: null,
+    discountPriceMax: null,
+  }
+}
+
+function minimum(values: readonly (number | null)[]): number | null {
+  const present = values.filter((value): value is number => value !== null)
+  return present.length ? Math.min(...present) : null
+}
+
+function maximum(values: readonly (number | null)[]): number | null {
+  const present = values.filter((value): value is number => value !== null)
+  return present.length ? Math.max(...present) : null
+}
+
+/**
+ * 聚合只针对已返回的服务端明细；调用方必须把失败商品单独展示，不能以零值替代。
+ * 任何尚未完成或未知的折扣分类都向上冒泡，使视图继续显示破折号而非伪造分类值。
+ */
+export function aggregateBatchProductSalesMetrics(rows: readonly BatchSalesMetrics[]): BatchSalesMetrics {
+  if (!rows.length) return emptyMetrics()
+  const statuses = new Set(rows.map((row) => row.discountStatus))
+  const discountStatus = statuses.has('pending') ? 'pending' : statuses.has('unknown') ? 'unknown' : statuses.has('partial') ? 'partial' : 'complete'
+  return {
+    quantity: rows.reduce((sum, row) => sum + row.quantity, 0),
+    regularQuantity: rows.reduce((sum, row) => sum + row.regularQuantity, 0),
+    discountQuantity: rows.reduce((sum, row) => sum + row.discountQuantity, 0),
+    unknownQuantity: rows.reduce((sum, row) => sum + row.unknownQuantity, 0),
+    returnQuantity: rows.reduce((sum, row) => sum + row.returnQuantity, 0),
+    salesAmount: rows.reduce((sum, row) => sum + row.salesAmount, 0),
+    discountStatus,
+    originalPriceMin: minimum(rows.map((row) => row.originalPriceMin)),
+    originalPriceMax: maximum(rows.map((row) => row.originalPriceMax)),
+    discountPriceMin: minimum(rows.map((row) => row.discountPriceMin)),
+    discountPriceMax: maximum(rows.map((row) => row.discountPriceMax)),
+  }
+}
+
+export function aggregateBatchProductSalesDaily(rows: readonly BatchSalesDaily[]): BatchSalesDaily[] {
+  const grouped = new Map<string, BatchSalesMetrics[]>()
+  rows.forEach((row) => {
+    const current = grouped.get(row.date)
+    if (current) current.push(row.metrics)
+    else grouped.set(row.date, [row.metrics])
+  })
+  return [...grouped.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([date, metrics]) => ({
+      date,
+      metrics: aggregateBatchProductSalesMetrics(metrics),
+    }))
+}
+
+/**
+ * 统一产出全部/单商品、全部/单分店的图表和排行模型。
+ * `details` 仅传入成功返回的商品，缺失商品不会被创建成零销量行。
+ */
+export function buildBatchProductSalesAnalysis(details: readonly BatchSalesDetail[], filters: BatchProductSalesAnalysisFilters = {}): BatchProductSalesAnalysis {
+  const scopedProducts = filters.productCode ? details.filter((detail) => detail.product.productCode === filters.productCode) : [...details]
+  const branchGroups = new Map<
+    string,
+    {
+      branchName: string
+      metrics: BatchSalesMetrics[]
+      daily: BatchSalesDaily[]
+    }
+  >()
+  scopedProducts.forEach((detail) =>
+    detail.branches.forEach((branch) => {
+      const current = branchGroups.get(branch.branchCode)
+      if (current) {
+        current.metrics.push(branch.metrics)
+        current.daily.push(...branch.daily)
+      } else {
+        branchGroups.set(branch.branchCode, {
+          branchName: branch.branchName,
+          metrics: [branch.metrics],
+          daily: [...branch.daily],
+        })
+      }
+    }),
+  )
+  const branches = sortBatchProductSalesBranchesByQuantity(
+    [...branchGroups.entries()].map(([branchCode, branch]) => ({
+      branchCode,
+      branchName: branch.branchName,
+      metrics: aggregateBatchProductSalesMetrics(branch.metrics),
+      daily: aggregateBatchProductSalesDaily(branch.daily),
+    })),
+  )
+  const selectedBranches = filters.branchCode ? scopedProducts.map((detail) => detail.branches.find((branch) => branch.branchCode === filters.branchCode)).filter((branch): branch is BatchSalesBranch => !!branch) : []
+  const productContributions = scopedProducts
+    .map((detail) => {
+      const branch = filters.branchCode ? detail.branches.find((item) => item.branchCode === filters.branchCode) : undefined
+      return {
+        product: detail.product,
+        metrics: branch?.metrics ?? detail.metrics,
+        hasSelectedBranch: !!branch,
+      }
+    })
+    .filter((row) => !filters.branchCode || row.hasSelectedBranch)
+    .map(({ product, metrics }) => ({ product, metrics }))
+    .sort((left, right) => right.metrics.quantity - left.metrics.quantity)
+  return {
+    metrics: filters.branchCode ? aggregateBatchProductSalesMetrics(selectedBranches.map((branch) => branch.metrics)) : aggregateBatchProductSalesMetrics(scopedProducts.map((detail) => detail.metrics)),
+    daily: filters.branchCode ? aggregateBatchProductSalesDaily(selectedBranches.flatMap((branch) => branch.daily)) : aggregateBatchProductSalesDaily(scopedProducts.flatMap((detail) => detail.daily)),
+    branches,
+    productContributions,
+  }
 }
 
 /**
@@ -13,12 +169,7 @@ function nonZeroFinite(value: unknown): boolean {
  */
 export function hasBatchProductSalesDailyActivity(day: BatchSalesDaily): boolean {
   const { metrics } = day
-  return nonZeroFinite(metrics.regularQuantity)
-    || nonZeroFinite(metrics.discountQuantity)
-    || nonZeroFinite(metrics.unknownQuantity)
-    || nonZeroFinite(metrics.returnQuantity)
-    || nonZeroFinite(metrics.salesAmount)
-    || (metrics.discountStatus === 'pending' && nonZeroFinite(metrics.quantity))
+  return nonZeroFinite(metrics.regularQuantity) || nonZeroFinite(metrics.discountQuantity) || nonZeroFinite(metrics.unknownQuantity) || nonZeroFinite(metrics.returnQuantity) || nonZeroFinite(metrics.salesAmount) || (metrics.discountStatus === 'pending' && nonZeroFinite(metrics.quantity))
 }
 
 /** 保持服务端并列顺序，并避免原地排序影响原始分店数据。 */
@@ -27,11 +178,7 @@ export function sortBatchProductSalesBranchesByQuantity(branches: readonly Batch
 }
 
 /** 待计算和终态不可用时不把缺少证据的正价/折扣数量显示成真实零；未知数量仍可如实展示。 */
-export function getBatchProductSalesClassifiedQuantity(
-  metrics: BatchSalesMetrics,
-  field: 'regularQuantity' | 'discountQuantity' | 'unknownQuantity',
-  classificationUnavailable = false,
-): number | null {
+export function getBatchProductSalesClassifiedQuantity(metrics: BatchSalesMetrics, field: 'regularQuantity' | 'discountQuantity' | 'unknownQuantity', classificationUnavailable = false): number | null {
   if (metrics.discountStatus === 'pending' || (metrics.discountStatus === 'unknown' && field !== 'unknownQuantity')) return null
   if (classificationUnavailable && field !== 'unknownQuantity') return null
   return metrics[field]
@@ -40,12 +187,43 @@ export function getBatchProductSalesClassifiedQuantity(
 /** 后台回填会逐日发布，部分可用和可恢复的失配状态也要继续读取最新快照。 */
 export function shouldRefreshBatchProductSalesDiscountStatistics(status?: string): boolean {
   // 后端排队状态曾返回 Pending；OutOfSync/Unavailable 可能正由后台重试，保持既有轮询节奏以恢复展示。
-  return ['queued', 'running', 'pending', 'backfilling', 'refreshing', 'partial', 'outofsync', 'unavailable'].includes(status?.toLowerCase() ?? '')
+  return ['queued', 'running', 'pending', 'backfilling', 'refreshing', 'partial', 'outofsync', 'unavailable'].includes(normalizeDiscountState(status))
 }
 
 /** Fresh 以外的状态均需要提示。 */
 export function hasBatchProductSalesDiscountStatisticsNotice(status?: string): boolean {
   return !!status && status.toLowerCase() !== 'fresh'
+}
+
+/** 服务端状态大小写和分隔符不稳定，翻译 key 必须收敛为既有的 PascalCase 枚举。 */
+export function getBatchProductSalesDiscountStateKey(status?: string): 'Queued' | 'Running' | 'Backfilling' | 'Refreshing' | 'Partial' | 'Unavailable' | 'Failed' | 'OutOfSync' | 'Superseded' | 'Pending' {
+  const normalized = normalizeDiscountState(status)
+  switch (normalized) {
+    case 'queued':
+      return 'Queued'
+    case 'running':
+      return 'Running'
+    case 'backfilling':
+      return 'Backfilling'
+    case 'refreshing':
+      return 'Refreshing'
+    case 'partial':
+      return 'Partial'
+    case 'failed':
+      return 'Failed'
+    case 'outofsync':
+      return 'OutOfSync'
+    case 'superseded':
+      return 'Superseded'
+    case 'pending':
+      return 'Pending'
+    default:
+      return 'Unavailable'
+  }
+}
+
+function normalizeDiscountState(status?: string): string {
+  return status?.trim().replace(/[ _-]/g, '').toLowerCase() ?? ''
 }
 
 function parseDateOnly(value: string): Date | null {
@@ -54,11 +232,7 @@ function parseDateOnly(value: string): Date | null {
     return null
   }
   const parsed = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])))
-  if (
-    parsed.getUTCFullYear() !== Number(match[1])
-    || parsed.getUTCMonth() !== Number(match[2]) - 1
-    || parsed.getUTCDate() !== Number(match[3])
-  ) {
+  if (parsed.getUTCFullYear() !== Number(match[1]) || parsed.getUTCMonth() !== Number(match[2]) - 1 || parsed.getUTCDate() !== Number(match[3])) {
     return null
   }
   return parsed
@@ -67,11 +241,7 @@ function parseDateOnly(value: string): Date | null {
 /**
  * 使用页面传入的业务日期字符串校验，避免浏览器本地时区在 UTC 零点附近改变结果。
  */
-export function getBatchProductSalesDateRangeError(
-  startDate: string,
-  endDate: string,
-  todayDate: string,
-): string | undefined {
+export function getBatchProductSalesDateRangeError(startDate: string, endDate: string, todayDate: string): string | undefined {
   const start = parseDateOnly(startDate)
   const end = parseDateOnly(endDate)
   const today = parseDateOnly(todayDate)
