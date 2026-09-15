@@ -156,6 +156,8 @@ internal class ProductStoreDailySourceRow
     public string? OrderGuid { get; set; }
     public string? HBSalesOrderNumber { get; set; }
     public string? DetailGuid { get; set; }
+    /// <summary>HBSales 明细原始 ID；物化后再格式化为签名键，避免 SQL Server 生成 nvarchar(max) CAST。</summary>
+    public long HBSalesDetailId { get; set; }
     public string? BranchCode { get; set; }
     public string? DeviceCode { get; set; }
     public DateTime? HBSalesMainLastModifiedAt { get; set; }
@@ -177,6 +179,10 @@ internal class ProductStoreDailySourceRow
     public decimal? Subtotal { get; set; }
     public decimal? HBSalesUnitPrice { get; set; }
     public decimal? HBSalesOriginalAmount { get; set; }
+    /// <summary>HBSales 明细原始合计金额；退货行归一化后仍供来源签名保留原值。</summary>
+    public decimal? HBSalesSaleAmount { get; set; }
+    /// <summary>HBSales 明细折扣率；供折扣快照来源签名复用已读取的日明细。</summary>
+    public decimal? HBSalesDiscountRate { get; set; }
     public string? PriceLookupCode { get; set; }
     /// <summary>原销售明细数量；退货行的 Quantity 是退货量，不能拿来反推原价。</summary>
     public decimal? OriginalSaleQuantity { get; set; }

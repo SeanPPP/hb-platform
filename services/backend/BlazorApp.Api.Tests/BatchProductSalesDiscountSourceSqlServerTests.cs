@@ -147,6 +147,74 @@ public sealed partial class BatchProductSalesAnalysisSqlServerIntegrationTests
     }
 
     [BatchSalesSqlServerFact]
+    public async Task SourceReader_GetSourceVersionAsync_HBS当天普通明细折扣率修正必须失效()
+    {
+        var day = new DateTime(2025, 2, 3);
+        await SeedProductsAsync(("P1", "001", null));
+        await _hbs!.Insertable(new SalesOrderMain
+        {
+            ID = 31, B销售单号 = "H-RATE", B单据类型 = "1", B结账日期 = day,
+        }).ExecuteCommandAsync();
+        await _hbs.Insertable(new SalesOrderDetailRecord
+        {
+            ID = 31, B销售单号 = "H-RATE", B分店代码 = "S1", B结账日期 = day, B产品编号 = "P1",
+            B数量 = 1m, B单价 = 10m, B原价合计金额 = 10m, B合计金额 = 10m, B折扣率 = 0m,
+        }).ExecuteCommandAsync();
+        var reader = new BatchProductSalesDiscountSnapshotSourceReader(_catalog!, _posm!, _hbs);
+
+        var before = await reader.GetSourceVersionAsync(day, CancellationToken.None);
+        await _hbs.Updateable<SalesOrderDetailRecord>().SetColumns(row => row.B折扣率 == 0.5m)
+            .Where(row => row.ID == 31).ExecuteCommandAsync();
+
+        Assert.NotEqual(before, await reader.GetSourceVersionAsync(day, CancellationToken.None));
+    }
+
+    [BatchSalesSqlServerFact]
+    public async Task SourceReader_GetSourceVersionAsync_HBS明细BigintId物化后保持签名且SQL不生成NvarcharMaxCast()
+    {
+        var day = new DateTime(2025, 2, 4);
+        const long detailId = (long)int.MaxValue + 1;
+        await SeedProductsAsync(("P1", "001", null));
+        await _hbs!.Insertable(new SalesOrderMain
+        {
+            ID = 32, B销售单号 = "H-LONG-ID", B单据类型 = "1", B结账日期 = day,
+        }).ExecuteCommandAsync();
+        // CodeFirst 为隔离表创建了 int 主键；生产列为 bigint，先精确重建该测试库的主键以复现读取边界。
+        await _hbs.Ado.ExecuteCommandAsync("""
+            ALTER TABLE dbo.[B销售清单详情表副本] DROP CONSTRAINT [PK_B销售清单详情表副本_ID];
+            ALTER TABLE dbo.[B销售清单详情表副本] ALTER COLUMN [ID] bigint NOT NULL;
+            ALTER TABLE dbo.[B销售清单详情表副本] ADD CONSTRAINT [PK_B销售清单详情表副本_ID] PRIMARY KEY ([ID]);
+            """);
+        await _hbs.Ado.ExecuteCommandAsync($"""
+            INSERT INTO dbo.[B销售清单详情表副本]
+                ([ID], [B销售单号], [B分店代码], [B结账日期], [B产品编号], [B数量], [B单价], [B原价合计金额], [B合计金额], [B折扣率])
+            VALUES ({detailId}, N'H-LONG-ID', N'S1', '{day:yyyy-MM-dd}', N'P1', 1, 10, 10, 10, 0)
+            """);
+        var reads = new List<string>();
+        _hbs.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (sql.TrimStart().StartsWith("SELECT", StringComparison.OrdinalIgnoreCase)
+                && sql.Contains("B销售清单详情表副本", StringComparison.Ordinal))
+                reads.Add(sql);
+        };
+        try
+        {
+            var reader = new BatchProductSalesDiscountSnapshotSourceReader(_catalog!, _posm!, _hbs);
+            var before = await reader.GetSourceVersionAsync(day, CancellationToken.None);
+            await _hbs.Ado.ExecuteCommandAsync($"UPDATE dbo.[B销售清单详情表副本] SET [B折扣率] = 0.5 WHERE [ID] = {detailId}");
+            var after = await reader.GetSourceVersionAsync(day, CancellationToken.None);
+
+            Assert.NotEqual(before, after);
+        }
+        finally
+        {
+            _hbs.Aop.OnLogExecuting = null;
+        }
+        Assert.NotEmpty(reads);
+        Assert.DoesNotContain(reads, sql => sql.Contains("nvarchar(max)", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [BatchSalesSqlServerFact]
     public async Task SourceReader_GetSourceVersionAsync_支付折扣和设备映射的无时间戳修正必须失效()
     {
         var day = new DateTime(2025, 1, 2);
