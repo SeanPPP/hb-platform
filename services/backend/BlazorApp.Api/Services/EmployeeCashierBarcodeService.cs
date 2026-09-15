@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using IsolationLevel = System.Data.IsolationLevel;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
@@ -37,6 +38,10 @@ namespace BlazorApp.Api.Services
 
         public async Task<ApiResponse<EmployeeCashierBarcodeDto>> GetForUserAsync(string userGuid)
         {
+            if (string.IsNullOrWhiteSpace(userGuid))
+            {
+                return ApiResponse<EmployeeCashierBarcodeDto>.Error("用户编号无效", "USER_NOT_FOUND");
+            }
             var entity = await _context.Db.Queryable<EmployeeCashierBarcode>()
                 .Where(item => item.UserGUID == userGuid && item.Status)
                 .OrderBy(item => item.CreatedAt, OrderByType.Desc)
@@ -62,6 +67,29 @@ namespace BlazorApp.Api.Services
                 )
                 {
                     // 极低概率的跨用户随机碰撞由数据库唯一约束兜底，回滚后重新生成。
+                }
+            }
+            throw new InvalidOperationException("无法生成唯一员工收银条码");
+        }
+
+        public async Task<ApiResponse<EmployeeCashierBarcodeDto>> RefreshForUserAsync(
+            string userGuid,
+            string? expectedBarcode
+        )
+        {
+            if (string.IsNullOrWhiteSpace(userGuid))
+            {
+                return ApiResponse<EmployeeCashierBarcodeDto>.Error("用户编号无效", "USER_NOT_FOUND");
+            }
+            for (var attempt = 0; attempt < 5; attempt++)
+            {
+                try
+                {
+                    return await RefreshOnceAsync(userGuid, enforceExpected: true, expectedBarcode);
+                }
+                catch (Exception ex) when (attempt < 4 && IsUniqueConstraintViolation(ex))
+                {
+                    // 与本人刷新一致：随机碰撞回滚后重新生成。
                 }
             }
             throw new InvalidOperationException("无法生成唯一员工收银条码");
@@ -150,13 +178,57 @@ namespace BlazorApp.Api.Services
             }
         }
 
-        private async Task<ApiResponse<EmployeeCashierBarcodeDto>> RefreshOnceAsync(string userGuid)
+        private async Task<ApiResponse<EmployeeCashierBarcodeDto>> RefreshOnceAsync(
+            string userGuid,
+            bool enforceExpected = false,
+            string? expectedBarcode = null
+        )
         {
             var db = _context.Db;
-            await db.Ado.BeginTranAsync();
+            if (enforceExpected)
+            {
+                // 管理刷新需持有目标用户读取锁至提交，防止并发停用/刷新绕过 expected 校验。
+                var isolation = db.CurrentConnectionConfig.DbType == DbType.SqlServer
+                    ? IsolationLevel.RepeatableRead
+                    : IsolationLevel.Serializable;
+                await db.Ado.BeginTranAsync(isolation);
+            }
+            else
+            {
+                await db.Ado.BeginTranAsync();
+            }
             try
             {
                 await CashierBarcodeMutationLock.AcquireAsync(db);
+
+                if (enforceExpected)
+                {
+                    var target = await db.Queryable<User>()
+                        .Where(item => item.UserGUID == userGuid)
+                        .FirstAsync();
+                    if (target is null || target.IsDeleted)
+                    {
+                        await db.Ado.RollbackTranAsync();
+                        return ApiResponse<EmployeeCashierBarcodeDto>.Error("用户不存在", "USER_NOT_FOUND");
+                    }
+                    if (!target.IsActive)
+                    {
+                        await db.Ado.RollbackTranAsync();
+                        return ApiResponse<EmployeeCashierBarcodeDto>.Error("用户已停用", "USER_INACTIVE");
+                    }
+                    var current = await db.Queryable<EmployeeCashierBarcode>()
+                        .Where(item => item.UserGUID == userGuid && item.Status)
+                        .OrderBy(item => item.CreatedAt, OrderByType.Desc)
+                        .FirstAsync();
+                    if (!string.Equals(current?.Barcode, expectedBarcode, StringComparison.Ordinal))
+                    {
+                        await db.Ado.RollbackTranAsync();
+                        return ApiResponse<EmployeeCashierBarcodeDto>.Error(
+                            "当前条码已变化，请刷新后重试",
+                            "CASHIER_BARCODE_CHANGED"
+                        );
+                    }
+                }
 
                 var entity = await InsertNewBarcodeWithinTransactionAsync(
                     userGuid,

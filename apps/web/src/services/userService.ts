@@ -14,6 +14,7 @@ import type {
   UserQueryDto,
   UserRoleAssignmentDto,
   UserStorePosTerminalPermissionsResponse,
+  EmployeeCashierBarcodeDto,
   UserStoreAssignmentDto,
   UserStoreDto,
   UpdateUserStorePosTerminalPermissionsRequest,
@@ -59,6 +60,25 @@ export async function createUser(payload: CreateUserDto): Promise<UserDto> {
 
 export async function getUserByGuid(guid: string): Promise<UserDetailDto> {
   const response = await request.get<ApiResponse<UserDetailDto>>(`/api/Users/guid/${guid}`)
+  return unwrapApiData(response)
+}
+
+export async function getUserCashierBarcode(guid: string): Promise<EmployeeCashierBarcodeDto> {
+  const response = await request.get<ApiResponse<EmployeeCashierBarcodeDto>>(
+    `/api/Users/guid/${encodeURIComponent(guid)}/cashier-barcode`,
+    { cache: 'no-store' },
+  )
+  return unwrapApiData(response)
+}
+
+export async function refreshUserCashierBarcode(
+  guid: string,
+  expectedBarcode: string | null,
+): Promise<EmployeeCashierBarcodeDto> {
+  const response = await request.post<ApiResponse<EmployeeCashierBarcodeDto>>(
+    `/api/Users/guid/${encodeURIComponent(guid)}/cashier-barcode/refresh`,
+    { expectedBarcode },
+  )
   return unwrapApiData(response)
 }
 
