@@ -573,8 +573,10 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
     const currentCoverage = queryResult?.coverage
     const sameDetailKey = currentCoverage && appliedScope ? requestCacheKey(sessionKey, appliedScope, currentCoverage, [productCode], 'detail') : undefined
     const sameDiscountKey = currentCoverage && appliedScope ? requestCacheKey(sessionKey, appliedScope, currentCoverage, [productCode], 'detail-discounts') : undefined
-    // 同一商品的可靠详情或分类仍在读取时复用；刷新后的 coverage key 不同，不会被此快路阻断。
-    if (!preserveBranchSelection && selectedProductCode === productCode && ((sameDetailKey && detailInflightRef.current.has(sameDetailKey)) || (sameDiscountKey && detailDiscountInflightRef.current.has(sameDiscountKey)))) return
+    // 可靠详情和分类两条链都已有缓存或仍在读取时才复用。可靠详情失败而分类仍在途时必须允许重试。
+    const hasReliableDetail = !!sameDetailKey && (detailCacheRef.current.has(sameDetailKey) || detailInflightRef.current.has(sameDetailKey))
+    const hasClassifications = !!sameDiscountKey && (detailDiscountCacheRef.current.has(sameDiscountKey) || detailDiscountInflightRef.current.has(sameDiscountKey))
+    if (!preserveBranchSelection && selectedProductCode === productCode && hasReliableDetail && hasClassifications) return
     // 先取消旧商品的两条链，再处理缓存快路，避免旧范围的详情或分类晚到写回。
     detailAbortRef.current?.abort()
     detailAbortRef.current = undefined
