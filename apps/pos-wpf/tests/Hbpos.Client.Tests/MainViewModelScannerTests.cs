@@ -6098,7 +6098,8 @@ public sealed class MainViewModelScannerTests
         ]);
         var viewModel = CreateAuthorizedMainViewModel(
             new FakeCustomerDisplayWindowService(),
-            cart: cart);
+            cart: cart,
+            paymentMethodSettingsService: new MutablePaymentMethodSettingsService(new(VoucherEnabled: true)));
         await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
         var result = new CardPaymentRecoveryResult(
             CardPaymentRecoveryOutcome.DraftRestored,
@@ -6951,7 +6952,8 @@ public sealed class MainViewModelScannerTests
         ILinklySettlementUploadQueueReader? linklySettlementUploadQueueReader = null,
         ILinklySettlementUploadExecutionService? linklySettlementUploadExecutionService = null,
         IRemoteOrderHistoryService? remoteOrderHistoryService = null,
-        IDeviceRegistrationWorkflowService? deviceRegistrationWorkflowService = null)
+        IDeviceRegistrationWorkflowService? deviceRegistrationWorkflowService = null,
+        IPaymentMethodSettingsService? paymentMethodSettingsService = null)
     {
         var priceIndex = new LocalSellableItemIndex();
         var effectiveCart = cart ?? new PosCartService();
@@ -7013,7 +7015,8 @@ public sealed class MainViewModelScannerTests
             enforceCashierPermissions: enforceCashierPermissions,
             linklySettlementUploadQueueReader: linklySettlementUploadQueueReader,
             linklySettlementUploadExecutionService: linklySettlementUploadExecutionService,
-            remoteOrderHistoryService: remoteOrderHistoryService);
+            remoteOrderHistoryService: remoteOrderHistoryService,
+            paymentMethodSettingsService: paymentMethodSettingsService);
     }
 
     private static MainViewModel CreateMainViewModelWithShellCatalog(
