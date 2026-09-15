@@ -4268,6 +4268,22 @@
       "statusUpdateFailed": "Failed to update WPF version status"
     },
     "users": {
+      "cashierQr": {
+        "title": "Cashier QR code",
+        "reload": "Reload",
+        "reset": "Reset QR code",
+        "generate": "Generate QR code",
+        "inactive": "This account is inactive. Its cashier QR code cannot be displayed or generated.",
+        "uncertain": "The operation needs to be verified. We have attempted to reload the current QR code. Check its state before continuing.",
+        "loading": "Loading cashier QR code…",
+        "loadFailed": "Unable to load the cashier QR code. Reload or check the account and your access.",
+        "scanHint": "Scan with POS to identify the cashier",
+        "updatedAt": "Updated",
+        "empty": "No personal cashier QR code has been generated",
+        "generateHint": "Generating a code will invalidate this user's legacy cashier codes.",
+        "confirmTitle": "Reset cashier QR code",
+        "confirmDescription": "Reset the cashier QR code for {{name}}? Their old codes will become invalid across all stores. Use the new code. Offline POS devices will reflect the change after synchronisation."
+      },
       "loadListFailed": "Failed to load user list",
       "loadDetailFailed": "Failed to load user details",
       "loadRolesFailed": "Failed to load role data",

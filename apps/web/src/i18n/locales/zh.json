@@ -4268,6 +4268,22 @@
       "statusUpdateFailed": "更新 WPF 版本状态失败"
     },
     "users": {
+      "cashierQr": {
+        "title": "收银二维码",
+        "reload": "重新读取",
+        "reset": "重置二维码",
+        "generate": "生成二维码",
+        "inactive": "账号已停用，无法展示或生成收银二维码。",
+        "uncertain": "操作结果需要核对，已尝试重新读取当前二维码。请核对后再操作。",
+        "loading": "正在读取收银二维码…",
+        "loadFailed": "无法读取收银二维码，请重新读取或检查账号及操作权限。",
+        "scanHint": "使用 POS 扫码识别收银员",
+        "updatedAt": "更新时间",
+        "empty": "尚未生成个人收银二维码",
+        "generateHint": "生成后，该用户原有旧版收银码将失效。",
+        "confirmTitle": "重置收银二维码",
+        "confirmDescription": "确认重置 {{name}} 的收银二维码？该用户所有门店使用的旧码将失效，请使用新码。离线 POS 以同步后的状态为准。"
+      },
       "loadListFailed": "加载用户列表失败",
       "loadDetailFailed": "加载用户详情失败",
       "loadRolesFailed": "加载角色数据失败",
