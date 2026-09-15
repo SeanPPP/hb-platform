@@ -10,6 +10,71 @@ namespace BlazorApp.Api.Tests;
 public sealed partial class BatchProductSalesAnalysisSqlServerIntegrationTests
 {
     [BatchSalesSqlServerFact]
+    public async Task SourceReader_CapturePreparedAsync完成后恢复三库Ado令牌且后续HBweb写入不继承已取消令牌()
+    {
+        var day = new DateTime(2026, 1, 9);
+        var reader = new BatchProductSalesDiscountSnapshotSourceReader(_catalog!, _posm!, _hbs!);
+        _catalog.Ado.RemoveCancellationToken();
+        _posm.Ado.RemoveCancellationToken();
+        _hbs.Ado.RemoveCancellationToken();
+        using var readCancellation = new CancellationTokenSource();
+
+        await reader.CapturePreparedAsync(day, readCancellation.Token);
+        readCancellation.Cancel();
+
+        Assert.Null(_catalog.Ado.CancellationToken);
+        Assert.Null(_posm.Ado.CancellationToken);
+        Assert.Null(_hbs.Ado.CancellationToken);
+        Assert.Equal(1, await _catalog.Ado.GetIntAsync("SELECT 1"));
+    }
+
+    [BatchSalesSqlServerFact]
+    public async Task SourceReader_CapturePreparedAsync已取消或查询失败时仍恢复三库Ado令牌()
+    {
+        var day = new DateTime(2026, 1, 10);
+        var reader = new BatchProductSalesDiscountSnapshotSourceReader(_catalog!, _posm!, _hbs!);
+        _catalog.Ado.RemoveCancellationToken();
+        _posm.Ado.RemoveCancellationToken();
+        _hbs.Ado.RemoveCancellationToken();
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => reader.CapturePreparedAsync(day, cancelled.Token));
+
+        Assert.Null(_catalog.Ado.CancellationToken);
+        Assert.Null(_posm.Ado.CancellationToken);
+        Assert.Null(_hbs.Ado.CancellationToken);
+        Assert.Equal(1, await _catalog.Ado.GetIntAsync("SELECT 1"));
+    }
+
+    [BatchSalesSqlServerFact]
+    public async Task SourceReader_ReadPreparedDayAsync嵌套Capture后恢复外层三库Ado令牌()
+    {
+        var day = new DateTime(2026, 1, 11);
+        var reader = new BatchProductSalesDiscountSnapshotSourceReader(_catalog!, _posm!, _hbs!);
+        using var outer = new CancellationTokenSource();
+        using var inner = new CancellationTokenSource();
+        _catalog.Ado.CancellationToken = outer.Token;
+        _posm.Ado.CancellationToken = outer.Token;
+        _hbs.Ado.CancellationToken = outer.Token;
+        try
+        {
+            var prepared = await reader.CapturePreparedAsync(day, inner.Token);
+            await reader.ReadPreparedDayAsync(prepared, inner.Token);
+
+            Assert.Equal(outer.Token, _catalog.Ado.CancellationToken);
+            Assert.Equal(outer.Token, _posm.Ado.CancellationToken);
+            Assert.Equal(outer.Token, _hbs.Ado.CancellationToken);
+        }
+        finally
+        {
+            _catalog.Ado.RemoveCancellationToken();
+            _posm.Ado.RemoveCancellationToken();
+            _hbs.Ado.RemoveCancellationToken();
+        }
+    }
+
+    [BatchSalesSqlServerFact]
     public async Task SourceReader_ReadDayAsync_全天全店全商品支付分摊同日退货排重及2025别名保持事实口径()
     {
         var day = new DateTime(2025, 6, 10);

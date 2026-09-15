@@ -3,6 +3,7 @@ using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.React;
 using Microsoft.Extensions.Options;
 using System.Text.Json;
+using System.Diagnostics;
 
 namespace BlazorApp.Api.Services.Background;
 
@@ -16,6 +17,8 @@ public sealed class BatchProductSalesDiscountWorker(
     private const string GlobalLeaseScope = "daily-format-2";
     private static readonly TimeSpan GlobalLeaseDuration = TimeSpan.FromMinutes(15);
     private static readonly TimeSpan RunBudget = TimeSpan.FromMinutes(4);
+    internal static readonly TimeSpan DayExecutionLimit = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan TerminalPersistenceLimit = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan SourceReadLimit = TimeSpan.FromMinutes(3);
     private static readonly TimeSpan BackfillPollInterval = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan IdlePollInterval = TimeSpan.FromMinutes(1);
@@ -62,80 +65,89 @@ public sealed class BatchProductSalesDiscountWorker(
             var recentDays = Math.Clamp(options.Value.DiscountSnapshotRecentDays, 1, 14);
             var preferred = Enumerable.Range(0, recentDays).Select(offset => today.AddDays(-offset)).ToArray();
             var deadline = DateTime.UtcNow.Add(RunBudget);
-            using var runBudget = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-            runBudget.CancelAfter(RunBudget);
-            try
+            // 单轮预算只限制领取新日期；已领取日期使用自己的完整预算，避免写入到一半被截断。
+            await store.EnsureQueuedAsync(coverage, DateTime.UtcNow, stoppingToken);
+            var recentCheckInterval = TimeSpan.FromMinutes(Math.Max(1, options.Value.DiscountSnapshotRecentCheckMinutes));
+            var batchSize = Math.Clamp(options.Value.DiscountSnapshotBatchSize, 1, 48);
+            for (var completed = 0; completed < batchSize && DateTime.UtcNow < deadline; completed++)
             {
-                var nowUtc = DateTime.UtcNow;
-                await store.EnsureQueuedAsync(coverage, nowUtc, runBudget.Token);
+                stoppingToken.ThrowIfCancellationRequested();
                 await leases.EnsureActiveAsync(GlobalLeaseTaskType, GlobalLeaseScope, globalToken, GlobalLeaseDuration, "折扣日快照持久队列");
-                var recentCheckInterval = TimeSpan.FromMinutes(Math.Max(1, options.Value.DiscountSnapshotRecentCheckMinutes));
-                var batchSize = Math.Clamp(options.Value.DiscountSnapshotBatchSize, 1, 48);
-                for (var completed = 0; completed < batchSize && DateTime.UtcNow < deadline; completed++)
-                {
-                    await leases.EnsureActiveAsync(GlobalLeaseTaskType, GlobalLeaseScope, globalToken, GlobalLeaseDuration, "折扣日快照持久队列");
-                    var claim = await store.ClaimNextAsync(DateTime.UtcNow, preferred, coverageStart, coverageEnd,
-                        recentCheckInterval, runBudget.Token);
-                    if (claim == null) break;
-                    await ExecuteClaimAsync(services, store, leases, globalToken, claim, runBudget.Token);
-                }
-            }
-            catch (OperationCanceledException) when (runBudget.IsCancellationRequested && !stoppingToken.IsCancellationRequested)
-            {
-                // 单轮预算耗尽不是完成；下一轮短间隔续跑，并由租约继续保护当前实例。
+                var claim = await store.ClaimNextAsync(DateTime.UtcNow, preferred, coverageStart, coverageEnd,
+                    recentCheckInterval, stoppingToken);
+                if (claim == null) break;
+                await ExecuteClaimAsync(leases, globalToken, claim, stoppingToken);
             }
             success = true;
-            return runBudget.IsCancellationRequested || await store.HasDueBackfillAsync(coverageStart, coverageEnd, DateTime.UtcNow);
+            return await store.HasDueBackfillAsync(coverageStart, coverageEnd, DateTime.UtcNow);
         }
-        finally { await leases.CompleteAsync(GlobalLeaseTaskType, GlobalLeaseScope, globalToken, success); }
+        finally
+        {
+            // 全局租约收尾不能继承计算 scope 的取消状态，服务停止时也要有界地归还执行权。
+            await PersistTerminalAsync(async (terminalServices, _) =>
+                await terminalServices.GetRequiredService<ScheduledTaskLeaseService>()
+                    .CompleteAsync(GlobalLeaseTaskType, GlobalLeaseScope, globalToken, success));
+        }
     }
 
-    private async Task ExecuteClaimAsync(IServiceProvider services, BatchProductSalesDiscountDailyStore store,
-        ScheduledTaskLeaseService leases, string globalToken, BatchProductSalesDiscountDailyStore.ClaimedDay claim,
+    private async Task ExecuteClaimAsync(ScheduledTaskLeaseService leases, string globalToken, BatchProductSalesDiscountDailyStore.ClaimedDay claim,
         CancellationToken stoppingToken)
     {
+        // 调度/全局租约和每个日期的成交读取使用不同的 SqlSugar context，取消不跨日期传播。
+        using var computationScope = scopes.CreateScope();
+        var services = computationScope.ServiceProvider;
+        var computationDb = services.GetRequiredService<SqlSugarContext>().Db;
+        var store = new BatchProductSalesDiscountDailyStore(computationDb);
+        using var dayBudget = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        dayBudget.CancelAfter(DayExecutionLimit);
+        var dayToken = dayBudget.Token;
+        computationDb.Ado.CancellationToken = dayToken;
         var day = claim.State.Date.Date;
+        var elapsed = Stopwatch.StartNew();
+        var stage = "核对日统计";
         try
         {
-            await ValidateOwnershipAsync(store, leases, globalToken, claim, stoppingToken);
+            await ValidateOwnershipAsync(store, leases, globalToken, claim, dayToken);
             var canonical = new BatchProductSalesStatisticReader(services.GetRequiredService<SqlSugarContext>().Db);
-            var canonicalStatus = await canonical.StatusAsync(day, day, stoppingToken);
+            var canonicalStatus = await canonical.StatusAsync(day, day, dayToken);
             if (!canonicalStatus.IsFresh)
             {
-                var stateStatus = await store.ReadCanonicalStatusAsync(day, stoppingToken);
+                var stateStatus = await store.ReadCanonicalStatusAsync(day, dayToken);
                 if (BatchProductSalesDiscountDailyStore.ShouldRequestCanonicalReconciliation(
                         claim.State.ReconcileRequested, stateStatus))
-                    await RequestCanonicalReconciliationAsync(services, day, stoppingToken);
-                await store.WaitForCanonicalRefreshAsync(claim, DateTime.UtcNow, CancellationToken.None);
+                    await RequestCanonicalReconciliationAsync(services, day, dayToken);
+                await store.WaitForCanonicalRefreshAsync(claim, DateTime.UtcNow, dayToken);
                 return;
             }
-            await store.BeginComputationAsync(claim, DateTime.UtcNow, stoppingToken);
-            var statisticsBefore = await store.ReadStatisticsVersionAsync(day, stoppingToken);
+            await store.BeginComputationAsync(claim, DateTime.UtcNow, dayToken);
+            var statisticsBefore = await store.ReadStatisticsVersionAsync(day, dayToken);
             var source = new BatchProductSalesDiscountSnapshotSourceReader(
                 services.GetRequiredService<SqlSugarContext>().Db,
                 services.GetRequiredService<POSMSqlSugarContext>().Db,
                 services.GetRequiredService<HBSalesRecordSqlSugarContext>().Db);
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(dayToken);
             timeout.CancelAfter(SourceReadLimit);
             // 同一个准备结果既用于变更检查，也用于聚合，完整来源扫描保持前后各一次。
+            stage = "读取成交源";
             var prepared = await source.CapturePreparedAsync(day, timeout.Token);
             var sourceBefore = prepared.SourceVersion;
             if (claim.State.Status == "Fresh" && !claim.State.ReconcileRequested
                 && claim.State.RuleVersion == BatchProductSalesDiscountDailyStore.RuleVersion
                 && claim.State.StatisticsVersion == statisticsBefore && claim.State.SourceVersion == sourceBefore)
             {
-                await store.RecordCheckedAsync(claim, statisticsBefore, sourceBefore, DateTime.UtcNow, stoppingToken);
+                await store.RecordCheckedAsync(claim, statisticsBefore, sourceBefore, DateTime.UtcNow, dayToken);
                 return;
             }
-            await ValidateOwnershipAsync(store, leases, globalToken, claim, stoppingToken);
+            await ValidateOwnershipAsync(store, leases, globalToken, claim, dayToken);
             var readResult = await source.ReadPreparedDayAsync(prepared, timeout.Token);
             var sourceRows = readResult.Rows;
-            var statisticRows = await store.ReadDailyStatisticsAsync(day, stoppingToken);
+            stage = "核对折扣汇总";
+            var statisticRows = await store.ReadDailyStatisticsAsync(day, dayToken);
             var sourceAfter = readResult.SourceVersion;
-            var statisticsAfter = await store.ReadStatisticsVersionAsync(day, stoppingToken);
+            var statisticsAfter = await store.ReadStatisticsVersionAsync(day, dayToken);
             if (sourceAfter != sourceBefore || statisticsAfter != statisticsBefore)
             {
-                await store.FinishFailureAsync(claim, "读取期间成交源或销售日统计发生变化，等待下次围栏重试", DateTime.UtcNow, false, stoppingToken);
+                await PersistFailureAsync(claim, "读取期间成交源或销售日统计发生变化，等待下次围栏重试");
                 return;
             }
             var payload = BuildPayload(day, statisticRows, sourceRows, out var mismatches);
@@ -146,30 +158,56 @@ public sealed class BatchProductSalesDiscountWorker(
                 if (claim.State.ReconcileRequested)
                 {
                     // 已请求的 canonical 已发布但数值仍不一致，记为真正计算失败；下次退避重试可重新入队。
-                    await store.FinishFailureAsync(claim, mismatchDiagnostic,
-                        DateTime.UtcNow, false, CancellationToken.None, preserveExistingReconcileRequested: false);
+                    await PersistFailureAsync(claim, mismatchDiagnostic, preserveExistingReconcileRequested: false);
                     return;
                 }
                 if (BatchProductSalesDiscountDailyStore.ShouldRequestCanonicalReconciliation(claim.State.ReconcileRequested, null))
-                    await RequestCanonicalReconciliationAsync(services, day, stoppingToken);
-                await store.WaitForCanonicalRefreshAsync(claim, DateTime.UtcNow, CancellationToken.None, mismatchDiagnostic);
+                    await RequestCanonicalReconciliationAsync(services, day, dayToken);
+                await store.WaitForCanonicalRefreshAsync(claim, DateTime.UtcNow, dayToken, mismatchDiagnostic);
                 return;
             }
-            await ValidateOwnershipAsync(store, leases, globalToken, claim, stoppingToken);
-            await store.PublishAsync(claim, statisticsAfter, sourceAfter, payload, DateTime.UtcNow, stoppingToken);
-            logger.LogInformation("商品折扣日快照已发布: {Date}, Products={ProductCount}", day, payload.Count);
-        }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-        {
-            await store.FinishFailureAsync(claim, "服务停止，等待租约恢复", DateTime.UtcNow, false, CancellationToken.None);
-            throw;
+            await ValidateOwnershipAsync(store, leases, globalToken, claim, dayToken);
+            stage = "发布日快照";
+            await store.PublishAsync(claim, statisticsAfter, sourceAfter, payload, DateTime.UtcNow, dayToken);
+            logger.LogInformation("商品折扣日快照已发布: {Date}, Products={ProductCount}, ElapsedMs={ElapsedMs}",
+                day, payload.Count, elapsed.ElapsedMilliseconds);
         }
         catch (Exception ex)
         {
-            // 先记录原始错误，避免状态持久化异常遮蔽真正的计算失败原因。
-            logger.LogWarning(ex, "商品折扣日快照失败: {Date}, Attempt={Attempts}", day, claim.State.Attempts);
-            await store.FinishFailureAsync(claim, ex.Message, DateTime.UtcNow, false, CancellationToken.None);
+            // 原始异常先落日志；SQL Server 取消也可能包装成 SqlException，而非 OperationCanceledException。
+            logger.LogWarning(ex, "商品折扣日快照失败: {Date}, Attempt={Attempts}, Stage={Stage}, ElapsedMs={ElapsedMs}",
+                day, claim.State.Attempts, stage, elapsed.ElapsedMilliseconds);
+            var reason = stoppingToken.IsCancellationRequested ? "服务停止，等待重试"
+                : dayBudget.IsCancellationRequested ? $"单日处理超时，阶段：{stage}"
+                : ex.Message;
+            await PersistFailureAsync(claim, reason);
+            stoppingToken.ThrowIfCancellationRequested();
         }
+        finally
+        {
+            computationDb.Ado.RemoveCancellationToken();
+        }
+    }
+
+    private Task PersistFailureAsync(BatchProductSalesDiscountDailyStore.ClaimedDay claim, string reason,
+        bool preserveExistingReconcileRequested = true) =>
+        PersistTerminalAsync((services, token) =>
+            new BatchProductSalesDiscountDailyStore(services.GetRequiredService<SqlSugarContext>().Db)
+                .FinishFailureAsync(claim, reason, DateTime.UtcNow, false, token, preserveExistingReconcileRequested));
+
+    private async Task PersistTerminalAsync(Func<IServiceProvider, CancellationToken, Task> persist)
+    {
+        using var terminalScope = scopes.CreateScope();
+        using var deadline = new CancellationTokenSource(TerminalPersistenceLimit);
+        var db = terminalScope.ServiceProvider.GetRequiredService<SqlSugarContext>().Db;
+        db.Ado.CancellationToken = deadline.Token;
+        try { await persist(terminalScope.ServiceProvider, deadline.Token); }
+        catch (Exception ex)
+        {
+            // 数据库不可用时保留原始计算异常，现有租约 TTL 仍负责最终恢复。
+            logger.LogError(ex, "折扣日快照终态持久化失败，将由租约到期恢复");
+        }
+        finally { db.Ado.RemoveCancellationToken(); }
     }
 
     internal sealed record BatchProductSalesDiscountMismatch(string ProductCode, string StoreCode,

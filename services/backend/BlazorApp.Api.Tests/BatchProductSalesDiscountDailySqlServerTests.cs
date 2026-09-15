@@ -1,6 +1,14 @@
 using System.Text.Json;
+using System.Reflection;
+using System.Runtime.CompilerServices;
+using BlazorApp.Api.Data;
+using BlazorApp.Api.Services.Background;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.Models;
+using BlazorApp.Shared.Models.HBweb;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using SqlSugar;
 using Xunit;
 
@@ -90,6 +98,242 @@ public sealed partial class BatchProductSalesAnalysisSqlServerIntegrationTests
         Assert.Equal(1m, Assert.Single(JsonSerializer.Deserialize<List<BatchProductSalesAggregateRow>>(snapshot.PayloadJson!)!).Quantity);
         Assert.Equal("Running", (await store.GetAsync(day))!.Status);
         Assert.Equal("source-old", (await store.GetAsync(day))!.SourceVersion);
+    }
+
+    [BatchSalesSqlServerFact]
+    public async Task DailySnapshot_SQLServer第二个插入批次失败必须回滚所有新快照并保留旧结果()
+    {
+        await InstallDailySchemaAsync();
+        var day = new DateTime(2026, 1, 6);
+        var now = new DateTime(2026, 9, 15, 3, 0, 0, DateTimeKind.Utc);
+        var store = new BatchProductSalesDiscountDailyStore(_catalog!);
+        await store.EnsureQueuedAsync([day], now, default);
+        var initialClaim = (await store.ClaimNextAsync(now, [day], default))!;
+        await store.PublishAsync(initialClaim, "stats-old", "source-old",
+            new Dictionary<string, List<BatchProductSalesAggregateRow>> { ["OLD"] = [DailyRow(day, "S1", 1, 15)] }, now, default);
+        await _catalog!.Ado.ExecuteCommandAsync("""
+            CREATE TRIGGER dbo.RejectSecondDiscountSnapshotBatch ON dbo.BatchProductSalesDiscountSnapshot AFTER INSERT AS
+            BEGIN
+                IF EXISTS (SELECT 1 FROM inserted WHERE ProductCode = N'P0100')
+                    THROW 51022, N'模拟第二个快照插入批次失败', 1;
+            END
+            """);
+        var claim = (await store.ClaimNextAsync(now.AddMinutes(6), [day], default))!;
+        var payload = Enumerable.Range(0, BatchProductSalesDiscountDailyStore.SnapshotInsertBatchSize + 1)
+            .ToDictionary(index => $"P{index:D4}", index => new List<BatchProductSalesAggregateRow>
+            {
+                DailyRow(day, "S1", index + 1, index + 1),
+            });
+
+        await Assert.ThrowsAnyAsync<Exception>(() => store.PublishAsync(claim, "stats-new", "source-new", payload,
+            now.AddMinutes(6), default));
+
+        var remaining = Assert.Single(await _catalog.Queryable<BatchProductSalesDiscountSnapshot>().ToListAsync());
+        Assert.Equal("OLD", remaining.ProductCode);
+        Assert.Equal("source-old", remaining.SourceVersion);
+        var state = (await store.GetAsync(day))!;
+        Assert.Equal("Running", state.Status);
+        Assert.Equal("source-old", state.SourceVersion);
+        Assert.Equal(1, state.SnapshotCount);
+    }
+
+    [BatchSalesSqlServerFact]
+    public async Task DailySnapshot_SQLServer多个插入批次成功后快照数和状态计数一致()
+    {
+        await InstallDailySchemaAsync();
+        var day = new DateTime(2026, 1, 7);
+        var now = new DateTime(2026, 9, 15, 3, 0, 0, DateTimeKind.Utc);
+        var store = new BatchProductSalesDiscountDailyStore(_catalog!);
+        await store.EnsureQueuedAsync([day], now, default);
+        var claim = (await store.ClaimNextAsync(now, [day], default))!;
+        var snapshotCount = BatchProductSalesDiscountDailyStore.SnapshotInsertBatchSize * 2 + 1;
+        var payload = Enumerable.Range(0, snapshotCount).ToDictionary(index => $"P{index:D4}", index =>
+            new List<BatchProductSalesAggregateRow> { DailyRow(day, "S1", index + 1, index + 1) });
+
+        await store.PublishAsync(claim, "stats-new", "source-new", payload, now, default);
+
+        var snapshots = await _catalog!.Queryable<BatchProductSalesDiscountSnapshot>()
+            .Where(snapshot => snapshot.StartDate == day && snapshot.EndDate == day).ToListAsync();
+        Assert.Equal(snapshotCount, snapshots.Count);
+        Assert.All(snapshots, snapshot => Assert.Equal("source-new", snapshot.SourceVersion));
+        var state = (await store.GetAsync(day))!;
+        Assert.Equal("Fresh", state.Status);
+        Assert.Equal(snapshotCount, state.SnapshotCount);
+        Assert.Null(state.LeaseToken);
+        Assert.Null(state.LeaseUntilUtc);
+    }
+
+    [BatchSalesSqlServerFact]
+    public async Task DailySnapshot_SQLServer第二批执行前取消令牌必须回滚并保留旧结果()
+    {
+        await InstallDailySchemaAsync();
+        var day = new DateTime(2026, 1, 7);
+        var now = new DateTime(2026, 9, 15, 3, 0, 0, DateTimeKind.Utc);
+        var store = new BatchProductSalesDiscountDailyStore(_catalog!);
+        await store.EnsureQueuedAsync([day], now, default);
+        var oldClaim = (await store.ClaimNextAsync(now, [day], default))!;
+        await store.PublishAsync(oldClaim, "stats-old", "source-old",
+            new Dictionary<string, List<BatchProductSalesAggregateRow>> { ["OLD"] = [DailyRow(day, "S1", 1, 15)] }, now, default);
+        var claim = (await store.ClaimNextAsync(now.AddMinutes(6), [day], default))!;
+        var payload = Enumerable.Range(0, BatchProductSalesDiscountDailyStore.SnapshotInsertBatchSize + 1)
+            .ToDictionary(index => $"P{index:D4}", index => new List<BatchProductSalesAggregateRow>
+            {
+                DailyRow(day, "S1", index + 1, index + 1),
+            });
+        using var cancelled = new CancellationTokenSource();
+        var snapshotInsertCommands = 0;
+        _catalog.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (sql.Contains("BatchProductSalesDiscountSnapshot", StringComparison.OrdinalIgnoreCase)
+                && sql.TrimStart().StartsWith("INSERT", StringComparison.OrdinalIgnoreCase)
+                && ++snapshotInsertCommands == 2)
+                cancelled.Cancel();
+        };
+        try
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => store.PublishAsync(claim, "stats-new", "source-new", payload,
+                now.AddMinutes(6), cancelled.Token));
+        }
+        finally
+        {
+            _catalog.Aop.OnLogExecuting = null;
+            _catalog.Ado.RemoveCancellationToken();
+        }
+
+        Assert.Equal(2, snapshotInsertCommands);
+        var remaining = Assert.Single(await _catalog.Queryable<BatchProductSalesDiscountSnapshot>().ToListAsync());
+        Assert.Equal("OLD", remaining.ProductCode);
+        Assert.Equal("source-old", remaining.SourceVersion);
+        var state = (await store.GetAsync(day))!;
+        Assert.Equal("Running", state.Status);
+        Assert.Equal("source-old", state.SourceVersion);
+        Assert.Equal(1, state.SnapshotCount);
+    }
+
+    [BatchSalesSqlServerFact]
+    public async Task DailySnapshot_SQLServer已取消的Ado令牌不能阻止None令牌记录失败并归还当天租约()
+    {
+        await InstallDailySchemaAsync();
+        var day = new DateTime(2026, 1, 8);
+        var now = new DateTime(2026, 9, 15, 3, 0, 0, DateTimeKind.Utc);
+        var store = new BatchProductSalesDiscountDailyStore(_catalog!);
+        await store.EnsureQueuedAsync([day], now, default);
+        var claim = (await store.ClaimNextAsync(now, [day], default))!;
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        _catalog!.Ado.CancellationToken = cancelled.Token;
+        try
+        {
+            // 旧实现直接在复用 client 上执行终态 UPDATE；已取消的 ADO token 会使该写入失败。
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => _catalog.Updateable<BatchProductSalesDiscountRefreshState>()
+                .SetColumns(state => state.LastError == "旧实现不应写入")
+                .Where(state => state.Date == day).ExecuteCommandAsync());
+
+            await store.FinishFailureAsync(claim, "模拟预算取消", now, false, CancellationToken.None);
+            // 收尾写入临时替换为 None，但调用者自己的已取消令牌仍须原样恢复。
+            Assert.Equal(cancelled.Token, _catalog.Ado.CancellationToken);
+        }
+        finally
+        {
+            _catalog.Ado.RemoveCancellationToken();
+        }
+
+        var failed = (await store.GetAsync(day))!;
+        Assert.Equal("Failed", failed.Status);
+        Assert.Equal("模拟预算取消", failed.LastError);
+        Assert.Null(failed.LeaseToken);
+        Assert.Null(failed.LeaseUntilUtc);
+        Assert.Equal(now.AddMinutes(3), failed.NextAttemptAtUtc);
+    }
+
+    [BatchSalesSqlServerFact]
+    public async Task DailySnapshot_SQLServer计算作用域Ado已取消时独立终态作用域仍完成全局租约()
+    {
+        _catalog!.CodeFirst.InitTables<ScheduledTaskLease>();
+        const string taskType = "BatchProductSalesDiscountWorker";
+        const string scopeKey = "daily-format-2";
+        const string instanceId = "discount-cancellation-test";
+        var options = Options.Create(new ScheduledTaskOptions { InstanceId = instanceId });
+        var runningLeaseService = new ScheduledTaskLeaseService(CreateSqlSugarContext(_catalog), options,
+            NullLogger<ScheduledTaskLeaseService>.Instance);
+        var acquired = await runningLeaseService.TryAcquireAsync(taskType, scopeKey, TimeSpan.FromMinutes(15));
+        Assert.True(acquired.Acquired);
+        var leaseToken = Assert.IsType<string>(acquired.Lease?.LeaseToken);
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        _catalog.Ado.CancellationToken = cancelled.Token;
+        try
+        {
+            // 复现单日计算 scope 已带取消 ADO token；worker 收尾必须换用独立 db scope。
+            using var terminalDb = Client(WithDatabase(_master!, CatalogName));
+            var terminalLeaseService = new ScheduledTaskLeaseService(CreateSqlSugarContext(terminalDb), options,
+                NullLogger<ScheduledTaskLeaseService>.Instance);
+
+            Assert.True(await terminalLeaseService.CompleteAsync(taskType, scopeKey, leaseToken, success: false,
+                errorMessage: "simulated day-budget cancellation"));
+            var completed = await terminalDb.Queryable<ScheduledTaskLease>()
+                .SingleAsync(lease => lease.TaskType == taskType && lease.ScopeKey == scopeKey);
+            Assert.Equal(ScheduledTaskLeaseStatus.Failed, completed.Status);
+            Assert.Null(completed.LeaseUntilUtc);
+            Assert.Equal("simulated day-budget cancellation", completed.LastError);
+        }
+        finally
+        {
+            _catalog.Ado.RemoveCancellationToken();
+        }
+    }
+
+    [BatchSalesSqlServerFact]
+    public async Task DailySnapshot_SQLServer_Worker终态持久化使用独立Scope归还全局租约()
+    {
+        _catalog!.CodeFirst.InitTables<ScheduledTaskLease>();
+        const string taskType = "BatchProductSalesDiscountWorker";
+        const string scopeKey = "daily-format-2";
+        const string instanceId = "discount-worker-terminal-scope-test";
+        var options = Options.Create(new ScheduledTaskOptions { InstanceId = instanceId });
+        var runningLeases = new ScheduledTaskLeaseService(CreateSqlSugarContext(_catalog), options,
+            NullLogger<ScheduledTaskLeaseService>.Instance);
+        var acquired = await runningLeases.TryAcquireAsync(taskType, scopeKey, TimeSpan.FromMinutes(15));
+        var leaseToken = Assert.IsType<string>(acquired.Lease?.LeaseToken);
+        using var cancelledComputation = new CancellationTokenSource();
+        cancelledComputation.Cancel();
+        _catalog.Ado.CancellationToken = cancelledComputation.Token;
+
+        using var terminalDb = Client(WithDatabase(_master!, CatalogName));
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddScoped<SqlSugarContext>(_ => CreateSqlSugarContext(terminalDb));
+        services.AddScoped<ScheduledTaskLeaseService>();
+        services.AddSingleton<IOptions<ScheduledTaskOptions>>(options);
+        using var provider = services.BuildServiceProvider();
+        var worker = new BatchProductSalesDiscountWorker(provider.GetRequiredService<IServiceScopeFactory>(), options,
+            NullLogger<BatchProductSalesDiscountWorker>.Instance);
+        var persisted = false;
+        try
+        {
+            var persist = new Func<IServiceProvider, CancellationToken, Task>(async (terminalServices, token) =>
+            {
+                var scopedTerminalDb = terminalServices.GetRequiredService<SqlSugarContext>().Db;
+                Assert.Same(terminalDb, scopedTerminalDb);
+                Assert.NotSame(_catalog, scopedTerminalDb);
+                Assert.False(token.IsCancellationRequested);
+                persisted = await terminalServices.GetRequiredService<ScheduledTaskLeaseService>()
+                    .CompleteAsync(taskType, scopeKey, leaseToken, success: false, errorMessage: "worker terminal cancellation");
+            });
+            var method = typeof(BatchProductSalesDiscountWorker).GetMethod("PersistTerminalAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            await (Task)method.Invoke(worker, [persist])!;
+        }
+        finally
+        {
+            _catalog.Ado.RemoveCancellationToken();
+        }
+
+        Assert.True(persisted);
+        var completed = await _catalog.Queryable<ScheduledTaskLease>()
+            .SingleAsync(lease => lease.TaskType == taskType && lease.ScopeKey == scopeKey);
+        Assert.Equal(ScheduledTaskLeaseStatus.Failed, completed.Status);
+        Assert.Null(completed.LeaseUntilUtc);
+        Assert.Equal("worker terminal cancellation", completed.LastError);
     }
 
     [BatchSalesSqlServerFact]
@@ -199,4 +443,11 @@ public sealed partial class BatchProductSalesAnalysisSqlServerIntegrationTests
 
     private static BatchProductSalesAggregateRow DailyRow(DateTime day, string store, decimal quantity, decimal amount) =>
         new() { Date = day, ProductCode = "P1", BranchCode = store, Quantity = quantity, DiscountQuantity = quantity, SalesAmount = amount };
+
+    private static SqlSugarContext CreateSqlSugarContext(ISqlSugarClient db)
+    {
+        var context = (SqlSugarContext)RuntimeHelpers.GetUninitializedObject(typeof(SqlSugarContext));
+        typeof(SqlSugarContext).GetField("_db", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(context, db);
+        return context;
+    }
 }
