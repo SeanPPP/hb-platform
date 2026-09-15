@@ -3,8 +3,11 @@ using BlazorApp.Api.Services.React;
 using BlazorApp.Api.Services;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
+using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
+using System.Reflection;
+using System.Runtime.CompilerServices;
 using Xunit;
 
 namespace BlazorApp.Api.Tests;
@@ -362,6 +365,122 @@ public sealed partial class BatchProductSalesAnalysisSqlServerIntegrationTests
     }
 
     [BatchSalesSqlServerFact]
+    public async Task PartialCoverage_SQLServer_export快照死锁重试两次后成功()
+    {
+        var setup = await PrepareLockedExportAsync();
+        var attempts = 0;
+        _catalog!.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (IsDiscountSnapshotSelect(sql) && ++attempts <= 2)
+                throw CreateSqlException(1205);
+        };
+        try
+        {
+            var csv = await setup.Service.ExportDetailCsvAsync(setup.Request, ["S1"]);
+            Assert.Equal(3, attempts);
+            Assert.Contains("2026-08-28,2,2,0,0,2,complete", csv);
+        }
+        finally { _catalog.Aop.OnLogExecuting = null; }
+    }
+
+    [BatchSalesSqlServerFact]
+    public async Task PartialCoverage_SQLServer_export快照死锁耗尽重试仍原样失败()
+    {
+        var setup = await PrepareLockedExportAsync();
+        var attempts = 0;
+        _catalog!.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (IsDiscountSnapshotSelect(sql))
+            {
+                attempts++;
+                throw CreateSqlException(1205);
+            }
+        };
+        try
+        {
+            var exception = await Assert.ThrowsAsync<SqlException>(() => setup.Service.ExportDetailCsvAsync(setup.Request, ["S1"]));
+            Assert.Equal(1205, exception.Number);
+            Assert.Equal(3, attempts);
+        }
+        finally { _catalog.Aop.OnLogExecuting = null; }
+    }
+
+    [BatchSalesSqlServerFact]
+    public async Task PartialCoverage_SQLServer_export非死锁错误不重试()
+    {
+        var setup = await PrepareLockedExportAsync();
+        var attempts = 0;
+        _catalog!.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (IsDiscountSnapshotSelect(sql))
+            {
+                attempts++;
+                throw CreateSqlException(50000);
+            }
+        };
+        try
+        {
+            var exception = await Assert.ThrowsAsync<SqlException>(() => setup.Service.ExportDetailCsvAsync(setup.Request, ["S1"]));
+            Assert.Equal(50000, exception.Number);
+            Assert.Equal(1, attempts);
+        }
+        finally { _catalog.Aop.OnLogExecuting = null; }
+    }
+
+    [BatchSalesSqlServerFact]
+    public async Task PartialCoverage_SQLServer_export死锁退避可取消()
+    {
+        var setup = await PrepareLockedExportAsync();
+        var attempts = 0;
+        using var cancellation = new CancellationTokenSource();
+        _catalog!.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (IsDiscountSnapshotSelect(sql))
+            {
+                attempts++;
+                // 已进入快照 SELECT 并命中死锁后才取消，确保取消发生在 export 的退避等待中。
+                cancellation.CancelAfter(TimeSpan.FromMilliseconds(50));
+                throw CreateSqlException(1205);
+            }
+        };
+        try
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => setup.Service.ExportDetailCsvAsync(setup.Request, ["S1"], cancellation.Token));
+            Assert.Equal(1, attempts);
+        }
+        finally { _catalog.Aop.OnLogExecuting = null; }
+    }
+
+    [BatchSalesSqlServerFact]
+    public async Task PartialCoverage_SQLServer_detail不含折扣不读取快照且销量分类保持未知()
+    {
+        var setup = await PrepareLockedExportAsync();
+        var snapshotReads = 0;
+        _catalog!.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (IsDiscountSnapshotSelect(sql)) snapshotReads++;
+        };
+        try
+        {
+            var detail = (await setup.Service.GetDetailAsync(new()
+            {
+                ProductCode = "P1", StartDate = setup.Day, EndDate = setup.Day, StoreCodes = ["S1"],
+                CoverageVersion = setup.Request.CoverageVersion, ReadyDates = setup.Request.ReadyDates,
+                IncludeDiscounts = false,
+            }, ["S1"])).Data!;
+
+            Assert.Equal("Pending", detail.DiscountStatisticStatus);
+            Assert.Equal(2m, detail.Metrics.Quantity);
+            Assert.Equal(2m, detail.Metrics.SalesAmount);
+            Assert.Equal("unknown", detail.Metrics.DiscountStatus);
+            Assert.Equal("unknown", Assert.Single(detail.Daily).Metrics.DiscountStatus);
+            Assert.Equal("unknown", Assert.Single(detail.Branches).Metrics.DiscountStatus);
+            Assert.Equal(0, snapshotReads);
+        }
+        finally { _catalog.Aop.OnLogExecuting = null; }
+    }
+
+    [BatchSalesSqlServerFact]
     public async Task PartialCoverage_SQLServer_C2稳定日期再次变化返回409语义异常()
     {
         var day28 = new DateTime(2026, 8, 28); var day29 = day28.AddDays(1);
@@ -418,6 +537,24 @@ public sealed partial class BatchProductSalesAnalysisSqlServerIntegrationTests
     }
 
     private static List<string> ExportTemporaryFiles() => Directory.GetFiles(Path.GetTempPath(), "batch-product-sales-*.csv").OrderBy(path => path, StringComparer.Ordinal).ToList();
+
+    private static bool IsDiscountSnapshotSelect(string sql) =>
+        sql.Contains("FROM [BatchProductSalesDiscountSnapshot]", StringComparison.OrdinalIgnoreCase)
+        && sql.Contains("SnapshotFormat", StringComparison.OrdinalIgnoreCase);
+
+    private static SqlException CreateSqlException(int number)
+    {
+        var error = (SqlError)RuntimeHelpers.GetUninitializedObject(typeof(SqlError));
+        typeof(SqlError).GetField("_number", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(error, number);
+        var errors = (SqlErrorCollection)Activator.CreateInstance(typeof(SqlErrorCollection), nonPublic: true)!;
+        typeof(SqlErrorCollection).GetMethod("Add", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(errors, [error]);
+        var exception = (SqlException)RuntimeHelpers.GetUninitializedObject(typeof(SqlException));
+        typeof(SqlException).GetField("_errors", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(exception, errors);
+        return exception;
+    }
 
     private async Task PrepareAnalysisSchemaAsync()
     {

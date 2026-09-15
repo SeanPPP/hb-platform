@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
-import type { BatchSalesBranch, BatchSalesDaily, BatchSalesDetail, BatchSalesMetrics } from '../../../types/batchProductSalesAnalysis'
-import { buildBatchProductSalesAnalysis, buildBatchProductSalesDetailExportScope, escapeCsvCell, formatCsvRow, getBatchProductSalesDiscountStateKey, getBatchProductSalesClassifiedQuantity, getBatchProductSalesDateRangeError, hasBatchProductSalesDiscountStatisticsNotice, hasBatchProductSalesDailyActivity, runBatchProductSalesPool, shouldRefreshBatchProductSalesDiscountStatistics, sortBatchProductSalesBranchesByQuantity } from './logic'
+import type { BatchSalesBranch, BatchSalesDaily, BatchSalesDetail, BatchSalesDiscountOverview, BatchSalesMetrics } from '../../../types/batchProductSalesAnalysis'
+import { buildBatchProductSalesAnalysis, buildBatchProductSalesDetailExportScope, escapeCsvCell, formatCsvRow, getBatchProductSalesDiscountStateKey, getBatchProductSalesClassifiedQuantity, getBatchProductSalesDateRangeError, hasBatchProductSalesDiscountStatisticsNotice, hasBatchProductSalesDailyActivity, mergeBatchProductSalesDetailClassifications, runBatchProductSalesPool, shouldRefreshBatchProductSalesDiscountStatistics, sortBatchProductSalesBranchesByQuantity } from './logic'
 
 function metrics(overrides: Partial<BatchSalesMetrics> = {}): BatchSalesMetrics {
   return {
@@ -268,5 +268,23 @@ assert.deepEqual(
   { ...exportScope, productCodes: ['P2'], coverageVersion: 'coverage-v1', readyDates: ['2026-09-01', '2026-09-02'] },
   '选定商品导出只能提交该商品，且不能因分店钻取改变实际门店范围',
 )
+
+const reliableSingle = detail('P1', [{ ...branch('B1', 5), metrics: metrics({ quantity: 5, salesAmount: 50, discountStatus: 'unknown' }), daily: [daily({ quantity: 5, salesAmount: 50, discountStatus: 'unknown' })] }])
+const singleClassifications: BatchSalesDiscountOverview = {
+  startDate: reliableSingle.startDate, endDate: reliableSingle.endDate, storeCodes: reliableSingle.storeCodes, productCodes: ['P1'], coverage: reliableSingle.coverage,
+  overview: {
+    metrics: metrics({ quantity: 999, salesAmount: 999, regularQuantity: 4, discountQuantity: 1 }),
+    daily: [{ date: '2026-09-14', metrics: metrics({ quantity: 999, salesAmount: 999, regularQuantity: 4, discountQuantity: 1 }) }],
+    branches: [{ branchCode: 'B1', branchName: 'B1', metrics: metrics({ quantity: 999, salesAmount: 999, regularQuantity: 4, discountQuantity: 1 }), daily: [{ date: '2026-09-14', metrics: metrics({ quantity: 999, salesAmount: 999, regularQuantity: 4, discountQuantity: 1 }) }], contributingProductCount: 1 }],
+  },
+  discountStatisticStatus: 'Fresh', warnings: ['classification ready'],
+}
+const classifiedSingle = mergeBatchProductSalesDetailClassifications(reliableSingle, singleClassifications)
+assert.equal(classifiedSingle.metrics.quantity, 5, '分类迟到不得覆盖单品可靠总销量')
+assert.equal(classifiedSingle.metrics.salesAmount, 50, '分类迟到不得覆盖单品可靠销售额')
+assert.equal(classifiedSingle.metrics.regularQuantity, 4, '分类响应可补齐单品正价数量')
+assert.equal(classifiedSingle.daily[0]?.metrics.quantity, 5, '分类迟到不得覆盖单品可靠每日销量')
+assert.equal(classifiedSingle.branches[0]?.metrics.salesAmount, 50, '分类迟到不得覆盖单品可靠分店金额')
+assert.equal(classifiedSingle.discountStatisticStatus, 'Fresh', '分类状态应透传到单品详情')
 
 console.log('BatchProductSalesAnalysis.logic.test: ok')

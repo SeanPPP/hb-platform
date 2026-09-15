@@ -5,6 +5,7 @@ using BlazorApp.Api.Services.Background;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HBweb;
+using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
 using SqlSugar;
 
@@ -208,19 +209,28 @@ public sealed class BatchProductSalesAnalysisService : IBatchProductSalesAnalysi
 
         var quantities = await _statisticReader.ReadAsync(productCode, requestedReadyDates, storeCodes, cancellationToken);
         BatchProductSalesDiscountSnapshotReadResult discount;
-        try
+        if (!request.IncludeDiscounts)
         {
-            // 请求只读取已发布的日快照；调度器负责两年预计算和后续回填。
-            discount = await _discountSnapshotReader.ReadAsync(productCode, requestedReadyDates,
-                storeCodes, quantities, cancellationToken);
-        }
-        catch (OperationCanceledException) { throw; }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "折扣日快照不可用，保留商品日统计销量 {ProductCode}", productCode);
-            // 异常回退也必须显式标记未知，不能让净额刚好为零的销量被聚合为 complete。
+            // 快速详情仅返回严格日统计销量；分类与价格没有快照证据时必须保持未知。
             discount = new(BatchProductSalesDiscountSnapshotReader.MarkUnknown(
-                quantities, productCode, requestedReadyDates, storeCodes), "Unavailable", null);
+                quantities, productCode, requestedReadyDates, storeCodes), "Pending", null);
+        }
+        else
+        {
+            try
+            {
+                // 请求只读取已发布的日快照；调度器负责两年预计算和后续回填。
+                discount = await _discountSnapshotReader.ReadAsync(productCode, requestedReadyDates,
+                    storeCodes, quantities, cancellationToken);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "折扣日快照不可用，保留商品日统计销量 {ProductCode}", productCode);
+                // 异常回退也必须显式标记未知，不能让净额刚好为零的销量被聚合为 complete。
+                discount = new(BatchProductSalesDiscountSnapshotReader.MarkUnknown(
+                    quantities, productCode, requestedReadyDates, storeCodes), "Unavailable", null);
+            }
         }
         var discountState = discount.Status;
         var facts = discount.Rows;
@@ -304,7 +314,7 @@ public sealed class BatchProductSalesAnalysisService : IBatchProductSalesAnalysi
         foreach (var batch in context.ProductCodes.Chunk(20))
         {
             var statistics = await _statisticReader.ReadAsync(batch, context.ReadyDates, context.StoreCodes, cancellationToken);
-            var discounts = await _discountSnapshotReader.ReadManyAsync(batch, context.ReadyDates, context.StoreCodes, statistics, cancellationToken);
+            var discounts = await ReadExportDiscountsWithRetryAsync(batch, context.ReadyDates, context.StoreCodes, statistics, cancellationToken);
             // 每批立即折叠为 Date×Branch；导出不保留商品明细矩阵，下一批可释放。
             facts = MergeDateBranchRows(facts.Concat(discounts.Values.SelectMany(value => value.Rows)));
         }
@@ -322,6 +332,31 @@ public sealed class BatchProductSalesAnalysisService : IBatchProductSalesAnalysi
             return await File.ReadAllTextAsync(path, cancellationToken);
         }
         finally { try { if (File.Exists(path)) File.Delete(path); } catch (Exception ex) { _logger.LogWarning(ex, "删除批量销量导出临时文件失败"); } }
+    }
+
+    private async Task<Dictionary<string, BatchProductSalesDiscountSnapshotReadResult>> ReadExportDiscountsWithRetryAsync(
+        IReadOnlyList<string> productCodes,
+        IReadOnlyList<DateTime> readyDates,
+        IReadOnlyList<string> storeCodes,
+        IReadOnlyList<BatchProductSalesAggregateRow> statistics,
+        CancellationToken cancellationToken)
+    {
+        const int maxAttempts = 3;
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return await _discountSnapshotReader.ReadManyAsync(productCodes, readyDates, storeCodes, statistics, cancellationToken);
+            }
+            catch (SqlException exception) when (exception.Number == 1205 && attempt < maxAttempts)
+            {
+                var delay = TimeSpan.FromMilliseconds(200 * attempt);
+                _logger.LogWarning(exception,
+                    "批量销量导出折扣快照读取发生死锁，第 {Attempt}/{MaxAttempts} 次重试将在 {DelayMs}ms 后执行",
+                    attempt, maxAttempts, delay.TotalMilliseconds);
+                await Task.Delay(delay, cancellationToken);
+            }
+        }
     }
 
     private async Task<FollowupContext> ResolveFollowupAsync(BatchProductSalesFollowupRequestDto request, IReadOnlyList<string>? granted, CancellationToken token)
