@@ -1,4 +1,4 @@
-import type { BatchSalesBranch, BatchSalesCoverage, BatchSalesDaily, BatchSalesDetail, BatchSalesLockedScope, BatchSalesMetrics, BatchSalesProduct, BatchSalesScope } from '../../../types/batchProductSalesAnalysis'
+import type { BatchSalesBranch, BatchSalesCoverage, BatchSalesDaily, BatchSalesDetail, BatchSalesDiscountOverview, BatchSalesLockedScope, BatchSalesMetrics, BatchSalesProduct, BatchSalesScope } from '../../../types/batchProductSalesAnalysis'
 
 const DATE_ONLY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/
 
@@ -24,6 +24,28 @@ export interface BatchProductSalesAnalysis {
   branches: BatchSalesBranch[]
   /** 当前分店内、当前商品范围的商品贡献。 */
   productContributions: BatchProductSalesContribution[]
+}
+
+/** 可靠单品详情与折扣分类是两次独立读取；后者绝不能覆盖前者的数量或金额。 */
+export function mergeBatchProductSalesDetailClassifications(reliable: BatchSalesDetail, discounts: BatchSalesDiscountOverview): BatchSalesDetail {
+  const merge = (reliableMetrics: BatchSalesMetrics, classified: BatchSalesMetrics): BatchSalesMetrics => ({ ...classified, quantity: reliableMetrics.quantity, salesAmount: reliableMetrics.salesAmount })
+  if (!discounts.overview.metrics) return { ...reliable, discountStatisticStatus: discounts.discountStatisticStatus, discountUpdatedAt: discounts.discountUpdatedAt, warnings: [...new Set([...reliable.warnings, ...discounts.warnings])] }
+  const days = new Map(discounts.overview.daily.map((day) => [day.date, day]))
+  const branches = new Map(discounts.overview.branches.map((branch) => [branch.branchCode, branch]))
+  return {
+    ...reliable,
+    metrics: merge(reliable.metrics, discounts.overview.metrics),
+    daily: reliable.daily.map((day) => days.has(day.date) ? { ...days.get(day.date)!, metrics: merge(day.metrics, days.get(day.date)!.metrics) } : day),
+    branches: reliable.branches.map((branch) => {
+      const classified = branches.get(branch.branchCode)
+      if (!classified) return branch
+      const branchDays = new Map(classified.daily.map((day) => [day.date, day]))
+      return { ...classified, metrics: merge(branch.metrics, classified.metrics), daily: branch.daily.map((day) => branchDays.has(day.date) ? { ...branchDays.get(day.date)!, metrics: merge(day.metrics, branchDays.get(day.date)!.metrics) } : day) }
+    }),
+    discountStatisticStatus: discounts.discountStatisticStatus,
+    discountUpdatedAt: discounts.discountUpdatedAt,
+    warnings: [...new Set([...reliable.warnings, ...discounts.warnings])],
+  }
 }
 
 /** 详情 CSV 跟随当前商品视图；分店仅是页面钻取，不能缩小授权过的门店范围。 */

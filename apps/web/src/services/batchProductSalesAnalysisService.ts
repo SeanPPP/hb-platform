@@ -371,6 +371,7 @@ async function query(input: BatchSalesQuery, signal?: AbortSignal): Promise<Batc
 async function getDetail(input: BatchSalesDetailRequest, signal?: AbortSignal): Promise<BatchSalesDetail> {
   validateScope(input)
   requiredString(input.productCode, '商品编码')
+  if (input.includeDiscounts !== undefined && typeof input.includeDiscounts !== 'boolean') throw new Error('是否包含折扣分类必须为布尔值')
   if ((input.coverageVersion === undefined) !== (input.readyDates === undefined)) throw new Error('日期覆盖版本与已完成日期必须同时提供')
   if (input.coverageVersion !== undefined) {
     requiredString(input.coverageVersion, '日期覆盖版本')

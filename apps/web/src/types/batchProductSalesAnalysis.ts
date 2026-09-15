@@ -120,6 +120,8 @@ export interface BatchSalesDiscountOverview extends BatchSalesScope {
 
 export interface BatchSalesDetailRequest extends BatchSalesScope {
   productCode: string
+  /** 单品钻取先读取可靠销量；折扣分类由独立锁定请求异步补齐。 */
+  includeDiscounts?: boolean
   coverageVersion?: string
   readyDates?: string[]
 }

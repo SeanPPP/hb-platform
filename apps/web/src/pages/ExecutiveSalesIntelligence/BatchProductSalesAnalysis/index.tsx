@@ -9,10 +9,10 @@ import { MeasuredTable } from '../../../components/MeasuredTable'
 import { batchProductSalesApi } from '../../../services/batchProductSalesAnalysisService'
 import { useAuthStore } from '../../../store/auth'
 import { RequestError } from '../../../utils/request'
-import type { BatchProductSalesApi, BatchSalesBranch, BatchSalesBranchOverview, BatchSalesCoverage, BatchSalesDaily, BatchSalesDetail, BatchSalesMetrics, BatchSalesQueryResult, BatchSalesScope } from '../../../types/batchProductSalesAnalysis'
+import type { BatchProductSalesApi, BatchSalesBranch, BatchSalesBranchOverview, BatchSalesCoverage, BatchSalesDaily, BatchSalesDetail, BatchSalesDiscountOverview, BatchSalesMetrics, BatchSalesQueryResult, BatchSalesScope } from '../../../types/batchProductSalesAnalysis'
 import ProductImage from '../ProductFlowShared/ProductImage'
 import { parsePastedItemNumbers, type ImportResult } from './import'
-import { buildBatchProductSalesAnalysis, buildBatchProductSalesDetailExportScope, formatCsvRow, getBatchProductSalesClassifiedQuantity, getBatchProductSalesDateRangeError, getBatchProductSalesDiscountStateKey, hasBatchProductSalesDiscountStatisticsNotice } from './logic'
+import { buildBatchProductSalesAnalysis, buildBatchProductSalesDetailExportScope, formatCsvRow, getBatchProductSalesClassifiedQuantity, getBatchProductSalesDateRangeError, getBatchProductSalesDiscountStateKey, hasBatchProductSalesDiscountStatisticsNotice, mergeBatchProductSalesDetailClassifications } from './logic'
 import DiscountDailyChart from './DiscountDailyChart'
 import type { DiscountChartDaily } from './chartModel'
 import ProductScopeModal from './ProductScopeModal'
@@ -236,6 +236,7 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
   const [branchLoading, setBranchLoading] = useState(false)
   const [branchError, setBranchError] = useState<string>()
   const [globalDiscountError, setGlobalDiscountError] = useState(false)
+  const [detailDiscountError, setDetailDiscountError] = useState<string>()
   const [selectedProductCode, setSelectedProductCode] = useState(ALL_PRODUCTS)
   const [selectedBranchCode, setSelectedBranchCode] = useState<string>()
   const [branchSelectionTouched, setBranchSelectionTouched] = useState(false)
@@ -251,9 +252,11 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
   const refreshAbortRefs = useRef(new Map<string, AbortController>())
   const exportAbortRef = useRef<AbortController>()
   const detailCacheRef = useRef(new Map<string, BatchSalesDetail>())
+  const detailDiscountCacheRef = useRef(new Map<string, BatchSalesDiscountOverview>())
   const branchCacheRef = useRef(new Map<string, BatchSalesBranchOverview>())
   const branchDiscountLoadedRef = useRef(new Set<string>())
   const detailInflightRef = useRef(new Map<string, AbortController>())
+  const detailDiscountInflightRef = useRef(new Map<string, AbortController>())
   const branchInflightRef = useRef(new Map<string, AbortController>())
   const requestGenerationRef = useRef(0)
   const previousSessionKeyRef = useRef(sessionKey)
@@ -262,6 +265,7 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
   const optionsAbortRef = useRef<AbortController>()
   const pendingSelectionRestoreRef = useRef<{ productCode: string; branchCode?: string; branchTouched: boolean }>()
   const selectedBranchRequestKeyRef = useRef<string>()
+  const selectedDetailRequestKeyRef = useRef<string>()
 
   const clearQueryForAuthorization = useCallback(() => {
     requestGenerationRef.current += 1
@@ -272,12 +276,17 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
     refreshAbortRefs.current.forEach((controller) => controller.abort())
     refreshAbortRefs.current.clear()
     detailCacheRef.current.clear()
+    detailDiscountCacheRef.current.clear()
     branchCacheRef.current.clear()
     branchDiscountLoadedRef.current.clear()
     detailInflightRef.current.forEach((controller) => controller.abort())
+    detailDiscountInflightRef.current.forEach((controller) => controller.abort())
     branchInflightRef.current.forEach((controller) => controller.abort())
     detailInflightRef.current.clear()
+    detailDiscountInflightRef.current.clear()
     branchInflightRef.current.clear()
+    selectedDetailRequestKeyRef.current = undefined
+    selectedBranchRequestKeyRef.current = undefined
     setQueryResult(undefined)
     setAppliedScope(undefined)
     setSubmittedInput(undefined)
@@ -288,6 +297,7 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
     setBranchLoading(false)
     setBranchError(undefined)
     setGlobalDiscountError(false)
+    setDetailDiscountError(undefined)
     setQueryLoading(false)
     setQueryError(undefined)
     setSelectedProductCode(ALL_PRODUCTS)
@@ -330,6 +340,7 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
     () => () => {
       queryAbortRef.current?.abort()
       detailAbortRef.current?.abort()
+      detailDiscountInflightRef.current.forEach((controller) => controller.abort())
       branchAbortRef.current?.abort()
       optionsAbortRef.current?.abort()
       refreshAbortRefs.current.forEach((controller) => controller.abort())
@@ -480,12 +491,17 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
     refreshAbortRefs.current.clear()
     exportAbortRef.current?.abort()
     detailCacheRef.current.clear()
+    detailDiscountCacheRef.current.clear()
     branchCacheRef.current.clear()
     branchDiscountLoadedRef.current.clear()
     detailInflightRef.current.forEach((current) => current.abort())
+    detailDiscountInflightRef.current.forEach((current) => current.abort())
     branchInflightRef.current.forEach((current) => current.abort())
     detailInflightRef.current.clear()
+    detailDiscountInflightRef.current.clear()
     branchInflightRef.current.clear()
+    selectedDetailRequestKeyRef.current = undefined
+    selectedBranchRequestKeyRef.current = undefined
     const generation = ++requestGenerationRef.current
     const controller = new AbortController()
     queryAbortRef.current = controller
@@ -555,17 +571,21 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
   }, [api, branchSelectionTouched, clearQueryForAuthorization, draftRange, draftStores, importResult.itemNumbers, selectedBranchCode, selectedProductCode, submittedInput, today])
   const chooseProduct = (productCode: string, preserveBranchSelection = false) => {
     const currentCoverage = queryResult?.coverage
-    const sameDetailKey = currentCoverage && appliedScope
-      ? requestCacheKey(sessionKey, appliedScope, currentCoverage, [productCode], 'detail')
-      : undefined
-    // 同一用户点击尚在加载的同一商品应复用请求；刷新恢复使用新 coverage key，不会被这里拦截。
-    if (!preserveBranchSelection && selectedProductCode === productCode && sameDetailKey && detailInflightRef.current.has(sameDetailKey)) return
-    // 先取消旧单品请求，再处理 ALL/缓存快路，避免晚到响应和 loading 串到新选择。
+    const sameDetailKey = currentCoverage && appliedScope ? requestCacheKey(sessionKey, appliedScope, currentCoverage, [productCode], 'detail') : undefined
+    const sameDiscountKey = currentCoverage && appliedScope ? requestCacheKey(sessionKey, appliedScope, currentCoverage, [productCode], 'detail-discounts') : undefined
+    // 可靠详情和分类两条链都已有缓存或仍在读取时才复用。可靠详情失败而分类仍在途时必须允许重试。
+    const hasReliableDetail = !!sameDetailKey && (detailCacheRef.current.has(sameDetailKey) || detailInflightRef.current.has(sameDetailKey))
+    const hasClassifications = !!sameDiscountKey && (detailDiscountCacheRef.current.has(sameDiscountKey) || detailDiscountInflightRef.current.has(sameDiscountKey))
+    if (!preserveBranchSelection && selectedProductCode === productCode && hasReliableDetail && hasClassifications) return
+    // 先取消旧商品的两条链，再处理缓存快路，避免旧范围的详情或分类晚到写回。
     detailAbortRef.current?.abort()
     detailAbortRef.current = undefined
     detailInflightRef.current.forEach((controller) => controller.abort())
+    detailDiscountInflightRef.current.forEach((controller) => controller.abort())
     detailInflightRef.current.clear()
+    detailDiscountInflightRef.current.clear()
     setDetailLoading(false)
+    setDetailDiscountError(undefined)
     setSelectedProductCode(productCode)
     if (!preserveBranchSelection) {
       setSelectedBranchCode(undefined)
@@ -575,43 +595,85 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
     setBranchLoading(false)
     setBranchError(undefined)
     selectedBranchRequestKeyRef.current = undefined
-    // 商品范围切换使所有分店钻取结果失效；不能让旧商品集合的晚到响应复活。
+    selectedDetailRequestKeyRef.current = undefined
     branchInflightRef.current.forEach((controller) => controller.abort())
     branchInflightRef.current.clear()
     branchAbortRef.current?.abort()
-    if (productCode === ALL_PRODUCTS || !queryResult || !appliedScope || !queryResult.coverage.readyDates.length || detailsByProduct[productCode]) return
+    if (productCode === ALL_PRODUCTS || !queryResult || !appliedScope || !queryResult.coverage.readyDates.length) return
     const coverage = queryResult.coverage
-    const cacheKey = requestCacheKey(sessionKey, appliedScope, coverage, [productCode], 'detail')
-    const cached = detailCacheRef.current.get(cacheKey)
-    if (cached) {
-      setDetailsByProduct((current) => ({ ...current, [productCode]: cached }))
-      return
+    const detailKey = requestCacheKey(sessionKey, appliedScope, coverage, [productCode], 'detail')
+    const discountKey = requestCacheKey(sessionKey, appliedScope, coverage, [productCode], 'detail-discounts')
+    selectedDetailRequestKeyRef.current = detailKey
+    const publish = (reliable: BatchSalesDetail) => {
+      const discounts = detailDiscountCacheRef.current.get(discountKey)
+      const next = discounts ? mergeBatchProductSalesDetailClassifications(reliable, discounts) : reliable
+      setDetailsByProduct((current) => selectedDetailRequestKeyRef.current === detailKey ? { ...current, [productCode]: next } : current)
     }
-    if (detailInflightRef.current.has(cacheKey)) return
+    const cached = detailCacheRef.current.get(detailKey)
+    if (cached) publish(cached)
+    else if (!detailInflightRef.current.has(detailKey)) {
+      const controller = new AbortController()
+      detailAbortRef.current = controller
+      detailInflightRef.current.set(detailKey, controller)
+      const generation = requestGenerationRef.current
+      setDetailLoading(true)
+      void api.getDetail({ ...appliedScope, productCode, includeDiscounts: false, coverageVersion: coverage.version, readyDates: coverage.readyDates }, controller.signal)
+        .then((detail) => {
+          if (controller.signal.aborted || generation !== requestGenerationRef.current || selectedDetailRequestKeyRef.current !== detailKey) return
+          if (!sameLockedScope(detail, appliedScope, coverage, [productCode])) {
+            setQueryError('statistics')
+            return
+          }
+          const normalized = { ...detail, branches: [...detail.branches].sort((left, right) => right.metrics.quantity - left.metrics.quantity) }
+          detailCacheRef.current.set(detailKey, normalized)
+          publish(normalized)
+          setDetailFailures((current) => { const { [productCode]: _, ...rest } = current; return rest })
+        })
+        .catch((error) => {
+          if (isAbort(error) || controller.signal.aborted || generation !== requestGenerationRef.current || selectedDetailRequestKeyRef.current !== detailKey) return
+          if (isAuthorizationError(error)) {
+            clearQueryForAuthorization()
+            return
+          }
+          setDetailFailures((current) => ({ ...current, [productCode]: isCoverageConflict(error) ? 'statistics' : errorKind(error) }))
+        })
+        .finally(() => {
+          if (detailInflightRef.current.get(detailKey) === controller) detailInflightRef.current.delete(detailKey)
+          if (detailAbortRef.current === controller) setDetailLoading(false)
+        })
+    }
+    // 与可靠详情并行读取单商品分类；不会把分类响应中的 quantity/salesAmount 当作可信来源。
+    if (detailDiscountCacheRef.current.has(discountKey) || detailDiscountInflightRef.current.has(discountKey)) return
     const controller = new AbortController()
-    detailAbortRef.current = controller
-    detailInflightRef.current.set(cacheKey, controller)
+    detailDiscountInflightRef.current.set(discountKey, controller)
     const generation = requestGenerationRef.current
-    setDetailLoading(true)
-    void api.getDetail({ ...appliedScope, productCode, coverageVersion: coverage.version, readyDates: coverage.readyDates }, controller.signal)
-      .then((detail) => {
-        if (generation !== requestGenerationRef.current || !sameLockedScope(detail, appliedScope, coverage, [productCode]) || controller.signal.aborted) throw new Error('coverage')
-        const normalized = { ...detail, branches: [...detail.branches].sort((left, right) => right.metrics.quantity - left.metrics.quantity) }
-        detailCacheRef.current.set(cacheKey, normalized)
-        setDetailsByProduct((current) => ({ ...current, [productCode]: normalized }))
-        setDetailFailures((current) => { const { [productCode]: _, ...rest } = current; return rest })
+    void api.getDiscounts({ ...appliedScope, productCodes: [productCode], coverageVersion: coverage.version, readyDates: coverage.readyDates }, controller.signal)
+      .then((discounts) => {
+        if (controller.signal.aborted || generation !== requestGenerationRef.current || selectedDetailRequestKeyRef.current !== detailKey) return
+        if (!sameLockedScope(discounts, appliedScope, coverage, [productCode])) {
+          setQueryError('statistics')
+          return
+        }
+        detailDiscountCacheRef.current.set(discountKey, discounts)
+        setDetailDiscountError(undefined)
+        const reliable = detailCacheRef.current.get(detailKey)
+        if (reliable) publish(reliable)
       })
       .catch((error) => {
-        if (isAbort(error) || controller.signal.aborted || generation !== requestGenerationRef.current) return
+        if (isAbort(error) || controller.signal.aborted || generation !== requestGenerationRef.current || selectedDetailRequestKeyRef.current !== detailKey) return
         if (isAuthorizationError(error)) {
           clearQueryForAuthorization()
           return
         }
-        setDetailFailures((current) => ({ ...current, [productCode]: isCoverageConflict(error) ? 'statistics' : errorKind(error) }))
+        // 分类失败不作为 detail failure：可靠销量继续显示，正价/折扣保留未知语义。
+        if (isCoverageConflict(error)) {
+          setQueryError('statistics')
+          return
+        }
+        setDetailDiscountError(errorKind(error))
       })
       .finally(() => {
-        detailInflightRef.current.delete(cacheKey)
-        if (detailAbortRef.current === controller) setDetailLoading(false)
+        if (detailDiscountInflightRef.current.get(discountKey) === controller) detailDiscountInflightRef.current.delete(discountKey)
       })
   }
   const chooseBranch = (branchCode: string) => {
@@ -928,6 +990,7 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
           {dirty ? <Alert type="info" showIcon message={t('batchProductSalesAnalysis.pendingQuery')} /> : null}
           {queryResult && queryError ? <Alert type="warning" showIcon message={t('batchProductSalesAnalysis.errors.title')} description={t(`batchProductSalesAnalysis.errors.${queryError}`)} action={<Button size="small" onClick={() => query(true)}>{t('batchProductSalesAnalysis.retry')}</Button>} /> : null}
           {queryResult && globalDiscountError ? <Alert type="warning" showIcon message={t('batchProductSalesAnalysis.discountLoadFailed')} action={<Button size="small" onClick={() => query(true)}>{t('batchProductSalesAnalysis.refreshStatus')}</Button>} /> : null}
+          {queryResult && productFilter && detailDiscountError ? <Alert type="warning" showIcon message={t('batchProductSalesAnalysis.discountLoadFailed')} action={<Button size="small" onClick={() => chooseProduct(productFilter, true)}>{t('batchProductSalesAnalysis.retry')}</Button>} /> : null}
           {appliedScope ? (
             <div className={styles.appliedScope}>
               {t('batchProductSalesAnalysis.appliedScope', {

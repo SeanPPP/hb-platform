@@ -167,6 +167,9 @@ try {
   assert.equal(lockedDetail.coverage.readyDates[0], '2026-08-18', '详情必须保留锁定后的日期覆盖')
   assert.deepEqual(JSON.parse(String(captured[captured.length - 1]?.init?.body)).readyDates, ['2026-08-18'], '详情必须发送已完成日期集合')
 
+  await batchProductSalesApi.getDetail({ ...detailRequest, includeDiscounts: false })
+  assert.equal(JSON.parse(String(captured[captured.length - 1]?.init?.body)).includeDiscounts, false, '单品可靠详情必须明确关闭折扣分类，避免等待 SnapshotReader')
+
   responseMode = 'pending'
   const pendingDetail = await batchProductSalesApi.getDetail(detailRequest)
   assert.equal(pendingDetail.metrics.quantity, 7)

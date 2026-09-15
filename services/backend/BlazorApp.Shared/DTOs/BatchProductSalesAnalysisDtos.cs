@@ -16,6 +16,8 @@ public sealed class BatchProductSalesQueryRequestDto : BatchProductSalesScopeDto
 public sealed class BatchProductSalesDetailRequestDto : BatchProductSalesScopeDto
 {
     public string? ProductCode { get; set; }
+    /// <summary>默认保留旧客户端的折扣分类读取；false 时只读取已完成日销量统计。</summary>
+    public bool IncludeDiscounts { get; set; } = true;
     /// <summary>摘要返回的可用日期版本；与 readyDates 一起传入可锁定明细读取边界。</summary>
     public string? CoverageVersion { get; set; }
     public List<string>? ReadyDates { get; set; }
