@@ -283,6 +283,8 @@ export function PosOperationLogFilterSheet({
         </View>
       </ScrollView>
       <StorePickerModal
+        // 筛选面板本身是原生 Modal，Portal 会被它盖住，门店选择器必须用原生 Modal 承载。
+        host="native-modal"
         presentation="sheet"
         visible={storePickerVisible}
         stores={stores}
