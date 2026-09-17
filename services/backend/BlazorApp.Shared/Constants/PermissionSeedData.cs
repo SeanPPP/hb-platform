@@ -310,7 +310,7 @@ namespace BlazorApp.Shared.Constants
                 new(Permissions.PosTerminal.Receipt.PrintLast, "打印上一张小票", "POS 小票", "收银端小票 - 打印上一张小票按钮"),
                 new(Permissions.PosTerminal.CustomerDisplay.Manage, "管理客显", "POS 客显", "收银端客显 - 管理客显按钮"),
                 new(Permissions.PosTerminal.System.Sync, "同步收银数据", "POS 同步", "收银端同步 - 手动同步按钮"),
-                new(Permissions.PosTerminal.Audit.View, "查看员工操作日志", "POS 审计", "收银端操作审计 - 页面 /pos-admin/operation-logs 查看管理分店的员工操作记录"),
+                new(Permissions.PosTerminal.Audit.View, "查看员工操作日志", "POS 审计", "收银端操作审计 - Web 页面 /pos-admin/operation-logs 与移动端工作台「员工操作日志」查看管理分店的员工操作记录"),
                 new(Permissions.Promotions.View, "查看促销", "促销管理", "页面 /pos-admin/promotions - 查看促销活动"),
                 new(Permissions.Promotions.Edit, "编辑促销", "促销管理", "页面 /pos-admin/promotions - 编辑促销活动"),
                 new(Permissions.Advertisements.View, "查看广告素材", "广告管理", "页面 /pos-admin/advertisements - 查看广告素材列表与详情"),

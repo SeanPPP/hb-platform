@@ -18,6 +18,12 @@ public sealed class OperationAuditQueryDto
 
     public string? Outcome { get; set; }
 
+    /// <summary>为 null 时不过滤；true/false 时只返回紧急覆盖标记等于该值的记录。</summary>
+    public bool? IsEmergencyOverride { get; set; }
+
+    /// <summary>为 null 时不过滤；true/false 时只返回离线缓存标记等于该值的记录。</summary>
+    public bool? IsOfflineCached { get; set; }
+
     public string? ProductKeyword { get; set; }
 
     public string? OrderGuid { get; set; }
@@ -31,6 +37,25 @@ public sealed class OperationAuditQueryDto
     public int PageNumber { get; set; } = 1;
 
     public int PageSize { get; set; } = 20;
+}
+
+/// <summary>
+/// 操作日志汇总计数。移动端用它作为“快捷过滤”入口，
+/// 因此计数只按门店权限与基础筛选条件统计，不受 Outcome / 布尔标记过滤影响。
+/// </summary>
+public sealed class OperationAuditSummaryDto
+{
+    public int Total { get; set; }
+
+    public int Succeeded { get; set; }
+
+    public int Denied { get; set; }
+
+    public int Failed { get; set; }
+
+    public int EmergencyOverride { get; set; }
+
+    public int OfflineCached { get; set; }
 }
 
 public class OperationAuditListItemDto

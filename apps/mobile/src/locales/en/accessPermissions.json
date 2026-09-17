@@ -228,7 +228,7 @@
     },
     "Permissions.PosTerminal.Audit.View": {
       "name": "View POS audit logs",
-      "description": "View POS operation audit logs for managed stores."
+      "description": "View POS operation audit logs for managed stores on the web admin and the mobile workbench."
     },
     "Permissions.PosTerminal.CashDrawer.Open": {
       "name": "Permissions Pos Terminal Cash Drawer Open",

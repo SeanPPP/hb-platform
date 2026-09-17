@@ -66,11 +66,80 @@ public sealed class OperationAuditQueryService
         }
 
         var now = DateTime.SpecifyKind(utcNow ?? DateTime.UtcNow, DateTimeKind.Utc);
+        var query = BuildFilteredQuery(request, access, now, includeOutcomeFilters: true);
+        if (query == null)
+        {
+            return empty;
+        }
+
+        var total = await query.CountAsync();
+        var rows = await ApplySort(query, request.SortBy, request.SortOrder)
+            .Skip((pageNumber - 1) * pageSize)
+            .Take(pageSize)
+            .ToListAsync();
+
+        return new PagedListReactDto<OperationAuditListItemDto>
+        {
+            Items = rows.Select(MapListItem).ToList(),
+            Total = total,
+            PageNumber = pageNumber,
+            PageSize = pageSize,
+        };
+    }
+
+    /// <summary>
+    /// 汇总计数：与列表共用门店权限与基础筛选，但忽略 Outcome / IsEmergencyOverride / IsOfflineCached，
+    /// 因为移动端把这些计数当作“快捷过滤”入口，必须反映未按结果过滤前的基数。
+    /// </summary>
+    public async Task<OperationAuditSummaryDto> GetSummaryAsync(
+        OperationAuditQueryDto request,
+        DateTime? utcNow = null
+    )
+    {
+        var summary = new OperationAuditSummaryDto();
+        var access = await ResolveAccessAsync();
+        if (!access.IsAllowed)
+        {
+            return summary;
+        }
+
+        var now = DateTime.SpecifyKind(utcNow ?? DateTime.UtcNow, DateTimeKind.Utc);
+        // SqlSugar 的 Where 会就地修改查询对象，为避免各计数条件互相叠加，每次计数都重新构建基础查询。
+        ISugarQueryable<PosOperationAudit>? Build() =>
+            BuildFilteredQuery(request, access, now, includeOutcomeFilters: false);
+
+        var baseQuery = Build();
+        if (baseQuery == null)
+        {
+            return summary;
+        }
+
+        summary.Total = await baseQuery.CountAsync();
+        summary.Succeeded = await Build()!.Where(item => item.Outcome == "Succeeded").CountAsync();
+        summary.Denied = await Build()!.Where(item => item.Outcome == "Denied").CountAsync();
+        summary.Failed = await Build()!.Where(item => item.Outcome == "Failed").CountAsync();
+        summary.EmergencyOverride = await Build()!.Where(item => item.IsEmergencyOverride).CountAsync();
+        summary.OfflineCached = await Build()!.Where(item => item.IsOfflineCached).CountAsync();
+        return summary;
+    }
+
+    /// <summary>
+    /// 构建列表与汇总共用的过滤查询；返回 null 表示条件本身已决定结果为空（时间范围倒置、越权门店、非法设备系统）。
+    /// includeOutcomeFilters 为 false 时跳过 Outcome / IsEmergencyOverride / IsOfflineCached 三个“结果类”过滤。
+    /// 分页与排序不在这里处理。
+    /// </summary>
+    private ISugarQueryable<PosOperationAudit>? BuildFilteredQuery(
+        OperationAuditQueryDto request,
+        OperationAuditStoreAccess access,
+        DateTime now,
+        bool includeOutcomeFilters
+    )
+    {
         var fromUtc = request.FromUtc?.UtcDateTime ?? now.AddDays(-7);
         var toUtc = request.ToUtc?.UtcDateTime ?? now;
         if (fromUtc > toUtc)
         {
-            return empty;
+            return null;
         }
 
         var query = _db.Queryable<PosOperationAudit>()
@@ -86,7 +155,7 @@ public sealed class OperationAuditQueryService
         {
             if (!access.IsAdmin && !access.StoreCodes.Contains(storeCode, StringComparer.OrdinalIgnoreCase))
             {
-                return empty;
+                return null;
             }
 
             query = query.Where(item => item.StoreCode == storeCode);
@@ -111,7 +180,7 @@ public sealed class OperationAuditQueryService
         var deviceSystem = ParseDeviceSystemFilter(request.DeviceSystem);
         if (deviceSystem == DeviceSystemFilter.Invalid)
         {
-            return empty;
+            return null;
         }
 
         query = deviceSystem switch
@@ -128,10 +197,23 @@ public sealed class OperationAuditQueryService
             query = query.Where(item => item.OperationType == operationType);
         }
 
-        var outcome = TrimToNull(request.Outcome);
-        if (outcome != null)
+        if (includeOutcomeFilters)
         {
-            query = query.Where(item => item.Outcome == outcome);
+            var outcome = TrimToNull(request.Outcome);
+            if (outcome != null)
+            {
+                query = query.Where(item => item.Outcome == outcome);
+            }
+
+            if (request.IsEmergencyOverride is { } isEmergencyOverride)
+            {
+                query = query.Where(item => item.IsEmergencyOverride == isEmergencyOverride);
+            }
+
+            if (request.IsOfflineCached is { } isOfflineCached)
+            {
+                query = query.Where(item => item.IsOfflineCached == isOfflineCached);
+            }
         }
 
         var orderGuid = TrimToNull(request.OrderGuid);
@@ -176,19 +258,7 @@ public sealed class OperationAuditQueryService
             );
         }
 
-        var total = await query.CountAsync();
-        var rows = await ApplySort(query, request.SortBy, request.SortOrder)
-            .Skip((pageNumber - 1) * pageSize)
-            .Take(pageSize)
-            .ToListAsync();
-
-        return new PagedListReactDto<OperationAuditListItemDto>
-        {
-            Items = rows.Select(MapListItem).ToList(),
-            Total = total,
-            PageNumber = pageNumber,
-            PageSize = pageSize,
-        };
+        return query;
     }
 
     private static ISugarQueryable<PosOperationAudit> ApplySort(
