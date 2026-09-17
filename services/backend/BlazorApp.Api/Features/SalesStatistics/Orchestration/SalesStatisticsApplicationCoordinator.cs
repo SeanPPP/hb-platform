@@ -76,12 +76,15 @@ internal sealed class SalesStatisticsApplicationCoordinator :
         // 先组装叶子切片，再逐层组装调用方；任何切片都不会反向持有协调器或兼容门面。
         _productSupport = new SalesStatisticsProductStoreDailySupportSlice(shared);
         _productRefresh = new SalesStatisticsProductStoreDailyRefreshSlice(shared, _productSupport);
-        _productEntry = new SalesStatisticsProductStoreDailyEntrySlice(shared, _productRefresh);
         _orchestration = new SalesStatisticsOrchestrationSlice(
             shared,
             _productRefresh,
             _productSupport
         );
+        _productEntry = new SalesStatisticsProductStoreDailyEntrySlice(
+            shared,
+            _productRefresh,
+            _orchestration);
         _storeDaily = new SalesStatisticsStoreDailySlice(
             shared,
             _productRefresh,
@@ -111,9 +114,9 @@ internal sealed class SalesStatisticsApplicationCoordinator :
     internal Task UpdateStoreStatistics(DateTime? date = null) =>
         _storeDaily.UpdateStoreStatistics(date);
 
-    internal Task FullRefreshPreviousDay() => _storeDaily.FullRefreshPreviousDay();
+    internal Task<SalesStatisticsRefreshExecutionResult> FullRefreshPreviousDay() => _storeDaily.FullRefreshPreviousDay();
 
-    internal Task FullRefreshCurrentDay(bool automatic = false, bool includeHistorical = true, int firstHistoricalDayOffset = 1) =>
+    internal Task<SalesStatisticsRefreshExecutionResult> FullRefreshCurrentDay(bool automatic = false, bool includeHistorical = true, int firstHistoricalDayOffset = 1) =>
         _storeDaily.FullRefreshCurrentDay(automatic, includeHistorical, firstHistoricalDayOffset);
 
     internal Task UpdateStoreStatistics(DateTime date, List<string>? branchCodes = null) =>
@@ -293,14 +296,22 @@ internal sealed class SalesStatisticsApplicationCoordinator :
         HBSalesRecordSqlSugarContext? hbSalesContext,
         ILogger logger,
         DateTime date,
-        List<string>? branchCodes) =>
+        List<string>? branchCodes,
+        Guid? expectedProductStatisticJobId = null,
+        Func<Task>? validateExecutionOwnershipBeforeCommitAsync = null,
+        DateTime? sourceWatermark = null,
+        Func<Task>? validateSourceWatermarkBeforeCommitAsync = null) =>
         _orchestration.UpdateStoreStatisticsWithContext(
             context,
             posmContext,
             hbSalesContext,
             logger,
             date,
-            branchCodes
+            branchCodes,
+            expectedProductStatisticJobId,
+            validateExecutionOwnershipBeforeCommitAsync,
+            sourceWatermark,
+            validateSourceWatermarkBeforeCommitAsync
         );
 
     internal Task UpdateAustralianSupplierStoreStatisticsWithContext(

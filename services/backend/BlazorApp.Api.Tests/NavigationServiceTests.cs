@@ -6,6 +6,7 @@ using System.Security.Claims;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
+using BlazorApp.Api.Authorization;
 using BlazorApp.Api.Controllers;
 using BlazorApp.Api.Controllers.React;
 using BlazorApp.Api.Data;
@@ -35,6 +36,7 @@ public class NavigationServiceTests
         yield return new object[] { "SalesDashboard.SalesDetail.View", "/executive-sales-intelligence/sales-detail-v2" };
         yield return new object[] { "SalesDashboard.CompactBoard.View", "/executive-sales-intelligence/compact-sales-board" };
         yield return new object[] { "SalesDashboard.ProductMovement.View", "/executive-sales-intelligence/product-movement-report" };
+        yield return new object[] { "SalesDashboard.BatchProductSales.View", "/executive-sales-intelligence/batch-product-sales-analysis" };
         yield return new object[] { "SalesDashboard.WarehouseFlow.View", "/executive-sales-intelligence/warehouse-product-flow-analysis" };
         yield return new object[] { "SalesDashboard.LocalProductAnalysis.View", "/executive-sales-intelligence/local-product-sales-analysis" };
         yield return new object[] { "SalesDashboard.PurchaseAmount.View", "/executive-sales-intelligence/purchase-amount-dashboard" };
@@ -824,7 +826,10 @@ public class NavigationServiceTests
 
         var menu = _service.BuildAppMenu(user);
 
-        Assert.Equal(24, menu.Count);
+        // 管理员可见完整 App 菜单；商品查询与同权限的商品进销查询都必须保留。
+        Assert.Equal(25, menu.Count);
+        Assert.Contains(menu, item => item.RouteName == "product-query");
+        Assert.Contains(menu, item => item.RouteName == "product-insights");
         Assert.Contains(menu, item => item.RouteName == "users");
         Assert.Contains(menu, item => item.RouteName == "user-admin");
         Assert.Contains(menu, item => item.RouteName == "roles");
@@ -914,6 +919,32 @@ public class NavigationServiceTests
         Assert.Equal("tabs.localSupplierInvoices", item.TitleKey);
         Assert.Equal("receipt-text-outline", item.Icon);
         Assert.Equal(Permissions.LocalPurchase.View, item.Permission);
+    }
+
+    [Fact]
+    public void BuildAppMenu_ProductInsightsUsesTheProductQueryPermission()
+    {
+        var authorized = _service.BuildAppMenu(
+            CreateUser(new Claim("permission", Permissions.StoreProducts.View))
+        );
+        var unauthorized = _service.BuildAppMenu(
+            CreateUser(new Claim("permission", Permissions.Orders.View))
+        );
+
+        var item = Assert.Single(authorized, item => item.RouteName == "product-insights");
+        Assert.Equal("tabs.productInsights", item.TitleKey);
+        Assert.Equal("chart-timeline-variant", item.Icon);
+        Assert.Equal(Permissions.StoreProducts.View, item.Permission);
+        Assert.DoesNotContain(unauthorized, item => item.RouteName == "product-insights");
+    }
+
+    [Fact]
+    public void BuildDeviceAppMenu_IncludesProductInsightsWithProductQuery()
+    {
+        var menu = _service.BuildDeviceAppMenu("Mobile");
+
+        Assert.Contains(menu, item => item.RouteName == "product-query");
+        Assert.Contains(menu, item => item.RouteName == "product-insights");
     }
 
     [Fact]
@@ -1313,24 +1344,23 @@ public class NavigationServiceTests
         Assert.Equal(Permissions.EmployeeProfiles.Edit, authorizeAttribute.Policy);
     }
 
-    [Fact]
-    public void EmployeeCashierBarcodeRefresh_RequiresEmployeeProfileViewPermission()
+    [Theory]
+    [InlineData(nameof(EmployeeProfilesController.GetCashierBarcode))]
+    [InlineData(nameof(EmployeeProfilesController.RefreshCashierBarcode))]
+    [InlineData(nameof(EmployeeProfilesController.ConfirmCashierBarcodePrint))]
+    public void EmployeeCashierBarcode_RequiresAuthenticatedSelfService(string methodName)
     {
-        var authorizeAttribute = GetMethodAuthorizeAttribute(
-            nameof(EmployeeProfilesController.RefreshCashierBarcode)
+        var controllerType = typeof(EmployeeProfilesController);
+        var method = controllerType.GetMethod(methodName)!;
+        var authorizeAttribute = GetMethodAuthorizeAttribute(methodName);
+
+        Assert.Equal(EmployeeCashierBarcodeSelfServicePolicy.Name, authorizeAttribute.Policy);
+        Assert.Contains(
+            controllerType.GetCustomAttributes<AuthorizeAttribute>(),
+            attribute => string.IsNullOrWhiteSpace(attribute.Policy)
         );
-
-        Assert.Equal(Permissions.EmployeeProfiles.View, authorizeAttribute.Policy);
-    }
-
-    [Fact]
-    public void EmployeeCashierBarcodePrintConfirmation_RequiresEmployeeProfileViewPermission()
-    {
-        var authorizeAttribute = GetMethodAuthorizeAttribute(
-            nameof(EmployeeProfilesController.ConfirmCashierBarcodePrint)
-        );
-
-        Assert.Equal(Permissions.EmployeeProfiles.View, authorizeAttribute.Policy);
+        Assert.Empty(controllerType.GetCustomAttributes<AllowAnonymousAttribute>());
+        Assert.Empty(method.GetCustomAttributes<AllowAnonymousAttribute>());
     }
 
     [Fact]

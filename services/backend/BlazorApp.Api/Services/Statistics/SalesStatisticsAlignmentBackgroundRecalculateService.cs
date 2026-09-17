@@ -84,11 +84,24 @@ namespace BlazorApp.Api.Services
                 var cacheWarmer = scope.ServiceProvider.GetRequiredService<ISalesDashboardCacheWarmer>();
 
                 var result = await alignmentService.RecalculateAsync(targetDates, concurrency);
-                await cacheWarmer.ClearCacheAsync();
+                // 仅全跳过没有可能写入的数据。失败日期可能在某个维度或事务之后才报错，
+                // 因而也可能已有部分数据提交；只要存在完成或失败日期均失效非版本化缓存。
+                if (result.ProcessedDates.Count > 0 || result.FailedDates.Count > 0)
+                {
+                    await cacheWarmer.ClearCacheAsync();
+                }
 
                 if (result.Success)
                 {
                     await taskLogService.LogTaskSuccessAsync(taskId);
+                    return;
+                }
+
+                if (result.SkippedDates.Count > 0 && result.FailedDates.Count == 0)
+                {
+                    // 全跳过没有新数据版本，不能清缓存；若部分日期已真实提交，仍要清理
+                    // 非版本化缓存，但任务终态保持 Skipped，不能写为 Success 或 Failure。
+                    await taskLogService.LogTaskSkippedStrictAsync(taskId, result.Message);
                     return;
                 }
 

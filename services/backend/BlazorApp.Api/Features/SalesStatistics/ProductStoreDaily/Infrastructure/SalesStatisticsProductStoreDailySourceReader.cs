@@ -63,14 +63,14 @@ internal sealed class SalesStatisticsProductStoreDailySourceReader
                 preloadedPosmSnapshot
             );
 
-        var hbSalesRows = targetDate.Year == 2025
+        var hbSalesRows = SalesStatisticsHBSalesHistoryWindow.Includes(targetDate)
             ? preloadedHBSalesRows?.ToList()
                 ?? await LoadHBSalesProductStoreDailyRowsAsync(
-                    hbSalesContext ?? throw new InvalidOperationException("2025 年商品统计缺少 HBSalesRecord 上下文"),
+                    hbSalesContext ?? throw new InvalidOperationException("HBSales 历史窗口内的商品统计缺少 HBSalesRecord 上下文"),
                     targetDate,
                     nextDate)
             : new List<ProductStoreDailySourceRow>();
-        if (targetDate.Year == 2025)
+        if (SalesStatisticsHBSalesHistoryWindow.Includes(targetDate))
             await ValidateAndResolveHBSalesRowsAsync(context, hbSalesContext, hbSalesRows, targetDate);
 
         var lastSourceUploadTime = SalesStatisticsProductStoreDailyDomainRules.GetLatestSourceTime(
@@ -82,7 +82,7 @@ internal sealed class SalesStatisticsProductStoreDailySourceReader
         {
             // 缺分店来源仅记录诊断，不能在装载阶段篡改既有口径。
             logger.LogWarning(
-                "2025 HBSales 有 {Count} 条明细缺少分店编码，未写入商品分店统计: {Date}",
+                "HBSales 历史窗口内有 {Count} 条明细缺少分店编码，未写入商品分店统计: {Date}",
                 missingHBSalesBranchCount,
                 targetDate.ToString("yyyy-MM-dd"));
         }

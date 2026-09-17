@@ -440,6 +440,48 @@ async function handleSupplierTopSales({ supplierCode, days, topPercent, page, pa
   return { ok: true, data: res.data, apiOrigin: await getApiOrigin() };
 }
 
+async function handleSupplierProductStoreSales(message) {
+  const {
+    supplierCode,
+    productCode,
+    days,
+    startDate,
+    endDate,
+    totalSalesQuantity,
+    snapshotVersion,
+  } = message || {};
+  if (
+    !supplierCode
+    || !productCode
+    || !startDate
+    || !endDate
+    || !snapshotVersion
+    || !Number.isFinite(Number(totalSalesQuantity))
+  ) {
+    return { ok: false, error: '排行榜商品快照不完整，请刷新排行榜后重试' };
+  }
+  const res = await apiRequest('/api/react/v1/browser-extension/supplier-product-store-sales', {
+    method: 'POST',
+    body: JSON.stringify({
+      supplierCode,
+      productCode,
+      days: normalizeRankingDays(days),
+      startDate,
+      endDate,
+      expectedTotalSalesQuantity: Number(totalSalesQuantity),
+      snapshotVersion,
+    }),
+  });
+  if (!res.success) {
+    return {
+      ok: false,
+      error: res.message || res.errorCode || '商品分店销量获取失败',
+      errorCode: res.errorCode,
+    };
+  }
+  return { ok: true, data: res.data, apiOrigin: await getApiOrigin() };
+}
+
 async function handleActiveSupplier() {
   let tabs = [];
   try {
@@ -658,6 +700,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return handleStores();
       case 'SUPPLIER_TOP_SALES':
         return handleSupplierTopSales(message);
+      case 'SUPPLIER_PRODUCT_STORE_SALES':
+        return handleSupplierProductStoreSales(message);
       case 'ACTIVE_SUPPLIER':
         return handleActiveSupplier();
       case 'REGISTER_ORIGIN':

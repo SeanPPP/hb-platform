@@ -21,57 +21,13 @@ internal sealed class StoreOrderListQueryStore(
     )
     {
         var accessibleStoreCodes = await accessScope.GetAccessibleStoreCodesAsync();
-        ISugarQueryable<WareHouseOrder> query;
-
-        // 关键字分别命中订单主表和商品主档，保留原实现可利用各表索引的两段查询。
-        if (!string.IsNullOrWhiteSpace(filter.Keyword))
-        {
-            var keyword = filter.Keyword.Trim();
-            var matchedGuids = await _db.Queryable<WareHouseOrder>()
-                .Where(order =>
-                    !order.IsDeleted
-                    && (
-                        (order.OrderNo != null && order.OrderNo.Contains(keyword))
-                        || (order.StoreCode != null && order.StoreCode.Contains(keyword))
-                    )
-                )
-                .Select(order => order.OrderGUID)
-                .ToListAsync();
-            var detailMatchedGuids = await _db.Queryable<WareHouseOrderDetails>()
-                .InnerJoin<Product>((detail, product) =>
-                    detail.ProductCode == product.ProductCode
-                )
-                .Where((detail, product) =>
-                    !detail.IsDeleted
-                    && !product.IsDeleted
-                    && detail.OrderGUID != null
-                    && product.ItemNumber != null
-                    && product.ItemNumber.Contains(keyword)
-                )
-                .Select(detail => detail.OrderGUID)
-                .Distinct()
-                .ToListAsync();
-
-            matchedGuids.AddRange(
-                detailMatchedGuids
-                    .Where(guid => !string.IsNullOrWhiteSpace(guid))
-                    .Select(guid => guid!)
-            );
-            matchedGuids = matchedGuids.Distinct().ToList();
-            query = _db.Queryable<WareHouseOrder>()
-                .Where(order =>
-                    !order.IsDeleted && matchedGuids.Contains(order.OrderGUID)
-                );
-        }
-        else
-        {
-            query = _db.Queryable<WareHouseOrder>().Where(order => !order.IsDeleted);
-        }
+        var query = _db.Queryable<WareHouseOrder>().Where(order => !order.IsDeleted);
 
         if (filter.StoreCodes != null && filter.StoreCodes.Any())
         {
             var requestedStoreCodes = filter.StoreCodes
                 .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Select(code => code.Trim())
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
             if (accessibleStoreCodes != null)
@@ -153,6 +109,38 @@ internal sealed class StoreOrderListQueryStore(
                     }
                 }
             }
+        }
+
+        if (!string.IsNullOrWhiteSpace(filter.Keyword))
+        {
+            var keyword = filter.Keyword.Trim();
+            // 先限定授权分店，再用相关 EXISTS 查商品，避免把全库匹配 GUID 拉入内存。
+            query = query.Where(order =>
+                (order.OrderNo != null && order.OrderNo.Contains(keyword))
+                || (order.StoreCode != null && order.StoreCode.Contains(keyword))
+                || SqlFunc.Subqueryable<Store>()
+                    .Where(store =>
+                        (
+                            store.StoreCode == order.StoreCode
+                            || store.StoreGUID == order.StoreCode
+                        )
+                        && store.StoreName != null
+                        && store.StoreName.Contains(keyword)
+                    )
+                    .Any()
+                || SqlFunc.Subqueryable<WareHouseOrderDetails>()
+                    .InnerJoin<Product>((detail, product) =>
+                        detail.ProductCode == product.ProductCode
+                    )
+                    .Where((detail, product) =>
+                        !detail.IsDeleted
+                        && !product.IsDeleted
+                        && detail.OrderGUID == order.OrderGUID
+                        && product.ItemNumber != null
+                        && product.ItemNumber.Contains(keyword)
+                    )
+                    .Any()
+            );
         }
 
         if (filter.StatusList != null && filter.StatusList.Any())

@@ -239,6 +239,12 @@ export class SquarePaymentAdapter implements OnlinePaymentPort {
     control?: SquareRecoveryControl,
   ): Promise<PaymentProviderResult> {
     const checkoutId = optionalText(checkout.checkoutId);
+    if (
+      optionalText(checkout.environment)?.toLowerCase() !==
+      configuration.environment.toLowerCase()
+    ) {
+      return unknown(attempt.references, "SQUARE_ENVIRONMENT_CONFLICT");
+    }
     if (!checkoutId) {
       return unknown(attempt.references, "SQUARE_MISSING_CHECKOUT_ID");
     }
@@ -323,7 +329,7 @@ export class SquarePaymentAdapter implements OnlinePaymentPort {
       },
       control,
     );
-    return verifyRefund(attempt, paymentId, refund);
+    return verifyRefund(attempt, configuration, paymentId, refund);
   }
 
   private async requestData<T>(
@@ -420,9 +426,16 @@ function verifyPayment(
 
 function verifyRefund(
   attempt: PaymentAttempt,
+  configuration: SquareEnvironmentConfiguration,
   expectedPaymentId: string,
   refund: SquareRefundResponse,
 ): PaymentProviderResult {
+  if (
+    optionalText(refund.environment)?.toLowerCase() !==
+    configuration.environment.toLowerCase()
+  ) {
+    return unknown(attempt.references, "SQUARE_ENVIRONMENT_CONFLICT");
+  }
   const refundId = optionalText(refund.refundId);
   const returnedPaymentId = optionalText(refund.paymentId);
   if (

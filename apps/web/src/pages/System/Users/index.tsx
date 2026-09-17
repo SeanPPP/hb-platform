@@ -1,4 +1,4 @@
-import { DollarOutlined, EditOutlined, EyeOutlined, HistoryOutlined, LockOutlined, PlusOutlined, ReloadOutlined, SaveOutlined, SearchOutlined } from '@ant-design/icons'
+import { DollarOutlined, EditOutlined, EyeOutlined, HistoryOutlined, LockOutlined, PlusOutlined, QrcodeOutlined, ReloadOutlined, SaveOutlined, SearchOutlined } from '@ant-design/icons'
 import {
   Alert,
   Button,
@@ -98,6 +98,7 @@ import {
 } from '../listPagination'
 import { MeasuredTable } from '../../../components/MeasuredTable'
 import UserMobileMenuPermissionManager from './UserMobileMenuPermissionManager'
+import UserCashierBarcodeModal from './UserCashierBarcodeModal'
 
 type PermissionPlatform = 'web' | 'pos'
 
@@ -132,6 +133,7 @@ export default function SystemUsersPage() {
   const [storeOptions, setStoreOptions] = useState<{ label: string; value: string }[]>([])
   const [roleOptions, setRoleOptions] = useState<{ label: string; value: string; roleName: string }[]>([])
 
+  const [cashierBarcodeUser, setCashierBarcodeUser] = useState<UserDto | null>(null)
   const [detailOpen, setDetailOpen] = useState(false)
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailUser, setDetailUser] = useState<UserDetailDto | null>(null)
@@ -1544,7 +1546,7 @@ export default function SystemUsersPage() {
       width: 350,
       fixed: 'right',
       render: (_, record) => (
-        <Space size={0}>
+        <Space size={0} wrap>
           <Button type="link" icon={<EyeOutlined />} onClick={() => void handleViewDetail(record)}>
             {t('common.view', '详情')}
           </Button>
@@ -1565,6 +1567,11 @@ export default function SystemUsersPage() {
               {t('system.users.posPermissions', '收银权限')}
             </Button>
           </HasPermission>
+          {access.isAdmin && canManagePosTerminalPermissions && (
+            <Button type="link" icon={<QrcodeOutlined />} onClick={() => setCashierBarcodeUser(record)}>
+              {t('system.users.cashierQr.title')}
+            </Button>
+          )}
         </Space>
       ),
     },
@@ -1953,6 +1960,14 @@ export default function SystemUsersPage() {
           }}
         />
       </Card>
+
+      {cashierBarcodeUser && access.isAdmin && canManagePosTerminalPermissions && (
+        <UserCashierBarcodeModal
+          key={cashierBarcodeUser.userGUID}
+          user={cashierBarcodeUser}
+          onClose={() => setCashierBarcodeUser(null)}
+        />
+      )}
 
       <Drawer
         title={detailUser ? t('system.users.userDetailTitle', '用户详情 - {{name}}', { name: detailUser.username }) : t('system.users.userDetail', '用户详情')}

@@ -293,6 +293,7 @@ public sealed class BrowserExtensionService : IBrowserExtensionService
         var response = new BrowserExtensionSupplierTopSalesDto
         {
             SupplierCode = supplierCode,
+            SnapshotVersion = ranking.SnapshotVersion,
             Days = days,
             StartDate = ranking.StartDate,
             EndDate = ranking.EndDate,
@@ -384,31 +385,232 @@ public sealed class BrowserExtensionService : IBrowserExtensionService
         return response;
     }
 
+    public async Task<BrowserExtensionSupplierProductStoreSalesDto>
+        GetSupplierProductStoreSalesAsync(
+            BrowserExtensionSupplierProductStoreSalesRequestDto request
+        )
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var supplierCode = NormalizeCode(request.SupplierCode, "供应商代码");
+        var productCode = NormalizeCode(request.ProductCode, "商品代码");
+        var days = BrowserExtensionRankingLogic.NormalizeDays(request.Days);
+        EnsureSupplierEnabled(supplierCode);
+
+        var endDate = request.EndDate;
+        var startDate = request.StartDate;
+        var expectedStartDate = BrowserExtensionRankingLogic.ResolveStartDate(endDate, days);
+        // 明细必须绑定用户点击时看到的排行榜快照；跨日或周期变化时让客户端刷新排行榜。
+        if (
+            endDate != ResolveRankingToday()
+            || startDate == default
+            || startDate != expectedStartDate
+        )
+        {
+            throw new BrowserExtensionRankingSnapshotChangedException();
+        }
+
+        var snapshotContext = await GetRankingSnapshotContextAsync(
+            supplierCode,
+            days,
+            startDate,
+            endDate
+        );
+        EnsureRankingSnapshotVersion(snapshotContext.SnapshotVersion, request.SnapshotVersion);
+        var enabledStoreCodes = snapshotContext.EnabledStoreCodes;
+        var response = new BrowserExtensionSupplierProductStoreSalesDto
+        {
+            SupplierCode = supplierCode,
+            ProductCode = productCode,
+            SnapshotVersion = snapshotContext.SnapshotVersion,
+            Days = days,
+            StartDate = startDate,
+            EndDate = endDate,
+            EnabledStoreCount = enabledStoreCodes.Count,
+        };
+        if (enabledStoreCodes.Count == 0)
+        {
+            EnsureRankingSnapshotTotal(
+                response.TotalSalesQuantity,
+                request.ExpectedTotalSalesQuantity
+            );
+            await EnsureRankingSnapshotVersionCurrentAsync(
+                supplierCode,
+                days,
+                startDate,
+                endDate,
+                request.SnapshotVersion
+            );
+            return response;
+        }
+
+        var startDateTime = startDate.ToDateTime(TimeOnly.MinValue);
+        var endDateExclusive = endDate.AddDays(1).ToDateTime(TimeOnly.MinValue);
+        var salesRows = await _db.Queryable<ProductStoreDailySalesStatistic>()
+            .Where(row =>
+                enabledStoreCodes.Contains(row.BranchCode)
+                && row.SupplierCode == supplierCode
+                && row.ProductCode == productCode
+                && row.Date >= startDateTime
+                && row.Date < endDateExclusive
+            )
+            .GroupBy(row => row.BranchCode)
+            .Select(row => new BrowserExtensionProductStoreSalesAggregate
+            {
+                StoreCode = row.BranchCode,
+                SalesQuantity = SqlFunc.AggregateSum(row.TotalQuantity),
+                SalesStatisticLastUpdate = SqlFunc.AggregateMax(row.UpdateTime),
+            })
+            .ToListAsync();
+        var salesByStore = salesRows
+            .Where(row => !string.IsNullOrWhiteSpace(row.StoreCode))
+            .GroupBy(row => row.StoreCode.Trim(), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Sum(row => row.SalesQuantity),
+                StringComparer.OrdinalIgnoreCase
+            );
+        var stores = await _db.Queryable<Store>()
+            .Where(store =>
+                store.IsActive
+                && !store.IsDeleted
+                && enabledStoreCodes.Contains(store.StoreCode)
+            )
+            .ToListAsync();
+        var storeNames = stores
+            .Where(store => !string.IsNullOrWhiteSpace(store.StoreCode))
+            .GroupBy(store => store.StoreCode.Trim(), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .Select(store => store.StoreName?.Trim())
+                    .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name)) ?? group.Key,
+                StringComparer.OrdinalIgnoreCase
+            );
+
+        response.Stores = enabledStoreCodes
+            .Select(storeCode => new BrowserExtensionSupplierProductStoreSalesItemDto
+            {
+                StoreCode = storeCode,
+                StoreName = storeNames.GetValueOrDefault(storeCode, storeCode),
+                SalesQuantity = salesByStore.GetValueOrDefault(storeCode, 0m),
+            })
+            .OrderByDescending(store => store.SalesQuantity)
+            .ThenBy(store => store.StoreName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(store => store.StoreCode, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        response.TotalSalesQuantity = response.Stores.Sum(store => store.SalesQuantity);
+        EnsureRankingSnapshotTotal(
+            response.TotalSalesQuantity,
+            request.ExpectedTotalSalesQuantity
+        );
+        response.SalesStatisticLastUpdate = salesRows
+            .Select(row => row.SalesStatisticLastUpdate)
+            .Where(value => value.HasValue)
+            .DefaultIfEmpty()
+            .Max();
+        // 查询期间刷新任务或启用门店发生变化时，拒绝返回混合快照。
+        await EnsureRankingSnapshotVersionCurrentAsync(
+            supplierCode,
+            days,
+            startDate,
+            endDate,
+            request.SnapshotVersion
+        );
+
+        _logger.LogInformation(
+            "浏览器订货助手商品分店销量查询完成 SupplierCode={SupplierCode} ProductCode={ProductCode} Days={Days} StoreCount={StoreCount} TotalSalesQuantity={TotalSalesQuantity}",
+            supplierCode,
+            productCode,
+            days,
+            response.EnabledStoreCount,
+            response.TotalSalesQuantity
+        );
+        return response;
+    }
+
+    private static void EnsureRankingSnapshotTotal(decimal actual, decimal expected)
+    {
+        if (actual != expected)
+        {
+            throw new BrowserExtensionRankingSnapshotChangedException();
+        }
+    }
+
+    private static void EnsureRankingSnapshotVersion(string actual, string expected)
+    {
+        if (
+            string.IsNullOrWhiteSpace(expected)
+            || !string.Equals(actual, expected.Trim(), StringComparison.Ordinal)
+        )
+        {
+            throw new BrowserExtensionRankingSnapshotChangedException();
+        }
+    }
+
+    private async Task EnsureRankingSnapshotVersionCurrentAsync(
+        string supplierCode,
+        int days,
+        DateOnly startDate,
+        DateOnly endDate,
+        string expectedSnapshotVersion
+    )
+    {
+        var current = await GetRankingSnapshotContextAsync(
+            supplierCode,
+            days,
+            startDate,
+            endDate
+        );
+        EnsureRankingSnapshotVersion(current.SnapshotVersion, expectedSnapshotVersion);
+    }
+
+    private async Task<(
+        List<string> EnabledStoreCodes,
+        string SnapshotVersion
+    )> GetRankingSnapshotContextAsync(
+        string supplierCode,
+        int days,
+        DateOnly startDate,
+        DateOnly endDate
+    )
+    {
+        var enabledStoreCodes = await QueryEnabledPosStoreCodesAsync();
+        var refreshStates = await QueryProductStoreDailyRefreshStatesAsync(startDate, endDate);
+        var snapshotVersion = BuildSupplierSalesRankingCacheKey(
+            supplierCode,
+            days,
+            startDate,
+            endDate,
+            enabledStoreCodes,
+            refreshStates
+        );
+        return (enabledStoreCodes, snapshotVersion);
+    }
+
     private async Task<BrowserExtensionSupplierSalesRankingSnapshot>
         GetSupplierSalesRankingSnapshotAsync(string supplierCode, int days, DateOnly today)
     {
         var startDate = BrowserExtensionRankingLogic.ResolveStartDate(today, days);
-        var enabledStoreCodes = await QueryEnabledPosStoreCodesAsync();
+        var snapshotContext = await GetRankingSnapshotContextAsync(
+            supplierCode,
+            days,
+            startDate,
+            today
+        );
+        var enabledStoreCodes = snapshotContext.EnabledStoreCodes;
         if (enabledStoreCodes.Count == 0)
         {
             return new BrowserExtensionSupplierSalesRankingSnapshot
             {
                 SupplierCode = supplierCode,
+                SnapshotVersion = snapshotContext.SnapshotVersion,
                 Days = days,
                 StartDate = startDate,
                 EndDate = today,
             };
         }
 
-        var refreshStates = await QueryProductStoreDailyRefreshStatesAsync(startDate, today);
-        var cacheKey = BuildSupplierSalesRankingCacheKey(
-            supplierCode,
-            days,
-            startDate,
-            today,
-            enabledStoreCodes,
-            refreshStates
-        );
+        var cacheKey = snapshotContext.SnapshotVersion;
         return await _rankingCache.GetOrCreateAsync(
             cacheKey,
             () =>
@@ -417,7 +619,8 @@ public sealed class BrowserExtensionService : IBrowserExtensionService
                     days,
                     startDate,
                     today,
-                    enabledStoreCodes
+                    enabledStoreCodes,
+                    snapshotContext.SnapshotVersion
                 )
         );
     }
@@ -428,7 +631,8 @@ public sealed class BrowserExtensionService : IBrowserExtensionService
             int days,
             DateOnly startDate,
             DateOnly endDate,
-            IReadOnlyList<string> enabledStoreCodes
+            IReadOnlyList<string> enabledStoreCodes,
+            string snapshotVersion
         )
     {
         var startDateTime = startDate.ToDateTime(TimeOnly.MinValue);
@@ -462,6 +666,7 @@ public sealed class BrowserExtensionService : IBrowserExtensionService
         return new BrowserExtensionSupplierSalesRankingSnapshot
         {
             SupplierCode = supplierCode,
+            SnapshotVersion = snapshotVersion,
             Days = days,
             StartDate = startDate,
             EndDate = endDate,
@@ -721,6 +926,13 @@ public sealed class BrowserExtensionService : IBrowserExtensionService
         public DateTime? CompletedAtUtc { get; set; }
     }
 
+    private sealed class BrowserExtensionProductStoreSalesAggregate
+    {
+        public string StoreCode { get; set; } = string.Empty;
+        public decimal SalesQuantity { get; set; }
+        public DateTime? SalesStatisticLastUpdate { get; set; }
+    }
+
     private sealed class PurchaseSqlRow
     {
         public DateTime? PurchaseDate { get; set; }
@@ -740,6 +952,12 @@ public sealed class BrowserExtensionService : IBrowserExtensionService
         public decimal Amount { get; set; }
         public DateTime? StatisticLastUpdate { get; set; }
     }
+}
+
+public sealed class BrowserExtensionRankingSnapshotChangedException : Exception
+{
+    public BrowserExtensionRankingSnapshotChangedException()
+        : base("排行榜数据已更新，请刷新排行榜后重试。") { }
 }
 
 public static partial class BrowserExtensionProfileCatalog

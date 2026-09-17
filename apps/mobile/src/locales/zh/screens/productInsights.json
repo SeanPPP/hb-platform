@@ -1,0 +1,107 @@
+{
+  "title": "商品进销查询",
+  "store": "所属分店：{{store}}（{{code}}）",
+  "search": {
+    "placeholder": "货号 / 条码 / 商品编码"
+  },
+  "actions": {
+    "back": "返回",
+    "search": "查询",
+    "scan": "扫码",
+    "retry": "重试",
+    "close": "关闭",
+    "selectStore": "选择分店",
+    "openBranchSales": "查看全部 POS 分店销售",
+    "apply": "应用"
+  },
+  "messages": {
+    "selectStore": "请先选择分店",
+    "storesFailed": "分店列表加载失败",
+    "lookupFailed": "商品查询失败",
+    "loadFailed": "商品进销记录加载失败",
+    "branchSalesFailed": "POS 分店销售加载失败",
+    "storeNotAllowed": "没有权限访问该分店",
+    "cameraPermission": "需要相机权限才能扫码",
+    "grantCameraPermission": "允许相机权限",
+    "cameraUnavailable": "相机暂不可用",
+    "reviewUnavailable": "当前设备不支持进入权限设置",
+    "invalidResponse": "服务器返回的数据格式无效"
+  },
+  "camera": {
+    "title": "扫码查询商品"
+  },
+  "labels": {
+    "itemNumber": "货号",
+    "barcode": "条码",
+    "supplier": "供应商",
+    "salesQuantity": "本店销量",
+    "salesAmount": "本店销售额",
+    "purchaseQuantity": "进货数量",
+    "purchaseDocuments": "进货单数",
+    "orderedQuantity": "订货数量",
+    "allocatedQuantity": "配货数量",
+    "salesDetail": "销售明细",
+    "date": "日期",
+    "documentNo": "单据号",
+    "quantity": "数量",
+    "outboundDate": "出库日期"
+  },
+  "units": {
+    "items": "件",
+    "documents": "单"
+  },
+  "range": "{{startDate}} 至 {{endDate}}",
+  "generatedAt": "查询：{{value}}",
+  "salesUpdatedAt": "销售统计更新时间：{{value}}",
+  "salesUpdatedUnavailable": "销售统计更新时间暂不可用",
+  "purchaseScope": "按本地进货单统计",
+  "recordCount": "{{count}} 条",
+  "tabs": {
+    "sales": "销售明细",
+    "purchases": "进货明细",
+    "warehouseRecords": "订货 / 配货记录"
+  },
+  "history": {
+    "noPurchases": "近 90 天无进货",
+    "lastPurchase": "历史记录：{{date}} · {{quantity}} 件 · {{documentNo}} · {{supplier}}。该记录不计入近 90 天进货合计。",
+    "none": "暂无历史进货记录"
+  },
+  "warehouse": {
+    "lastAllocation": "最近配货：{{date}} · {{quantity}} 件",
+    "noAllocation": "近 90 天暂无配货记录",
+    "dispatchedOn": "{{date}} 已出库",
+    "awaitingAllocation": "待配货"
+  },
+  "states": {
+    "initialTitle": "查询商品进销记录",
+    "initialDescription": "输入货号、条码或商品编码后开始查询。",
+    "notFoundTitle": "未找到匹配商品",
+    "notFoundDescription": "请检查查询内容，或使用扫码重新查询。",
+    "loadFailed": "商品进销记录加载失败",
+    "noRecords": "当前范围暂无明细记录",
+    "loadingBranchSales": "正在加载 POS 分店销售…",
+    "noBranchSales": "当前范围暂无分店销售数据",
+    "noStoreMatch": "没有匹配的分店"
+  },
+  "detail": {
+    "title": "明细"
+  },
+  "branchSheet": {
+    "title": "全部 POS 分店销售",
+    "startDate": "开始日期",
+    "endDate": "结束日期",
+    "invalidDate": "请输入有效日期（YYYY-MM-DD），且结束日期不能早于开始日期。",
+    "appliedRange": "当前结果周期：{{startDate}} 至 {{endDate}}",
+    "pendingRange": "日期尚未应用，请点击应用。",
+    "total": "已纳入 {{count}} 家 POS 分店",
+    "authorizedScope": "当前仅覆盖已授权的 {{count}} / {{total}} 家 POS 分店",
+    "searchStore": "搜索分店名称或编码",
+    "store": "分店",
+    "authorizedTitle": "授权 POS 分店销售",
+    "quantity": "销量",
+    "amount": "销售额",
+    "totalQuantity": "总销量",
+    "totalAmount": "总销售额",
+    "totalUnknown": "POS 分店销售汇总"
+  }
+}

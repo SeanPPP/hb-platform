@@ -146,6 +146,25 @@ namespace BlazorApp.Shared.DTOs
         public DateTime? UpdatedAt { get; set; }
     }
 
+    public sealed class AdminCashierBarcodeRefreshRequest
+    {
+        private string? _expectedBarcode;
+
+        // setter 用于区分 JSON 中显式传 null 与缺少字段，避免陈旧页面无条件刷新。
+        public string? ExpectedBarcode
+        {
+            get => _expectedBarcode;
+            set
+            {
+                _expectedBarcode = value;
+                HasExpectedBarcode = true;
+            }
+        }
+
+        [System.Text.Json.Serialization.JsonIgnore]
+        public bool HasExpectedBarcode { get; private set; }
+    }
+
     public sealed class EmployeeProfileSensitiveChangeUpsertDto
     {
         [StringLength(20)]

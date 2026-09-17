@@ -4,6 +4,8 @@ export const DEFAULT_ORDER_LIST_PAGE_SIZE = 10;
 
 export interface StoreOrderListRequestParams {
   storeCode?: string;
+  /** 账号模式的全部可管理分店范围；与 storeCode 二选一。 */
+  storeCodes?: string[];
   pageNumber?: number;
   pageSize?: number;
   statusList?: number[];
@@ -13,9 +15,10 @@ export interface StoreOrderListRequestParams {
 export function buildOrderListRequest(params: StoreOrderListRequestParams = {}) {
   return {
     storeCode: params.storeCode,
+    storeCodes: params.storeCodes?.length ? params.storeCodes : undefined,
     pageNumber: params.pageNumber ?? 1,
     pageSize: params.pageSize ?? DEFAULT_ORDER_LIST_PAGE_SIZE,
-    statusList: params.statusList ?? [1, 2, 3],
+    statusList: params.statusList ?? [1, 3, 2],
     keyword: params.keyword,
   };
 }

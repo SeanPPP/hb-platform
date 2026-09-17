@@ -7,6 +7,7 @@ import { buildMenus, getCurrentElement, getCurrentRoute } from '../router/routes
 import { useAuthStore } from '../store/auth'
 import MobileNavBar from '../components/MobileNavBar'
 import MobileTabBar from '../components/MobileTabBar'
+import RouteKeepAlive from '../components/RouteKeepAlive'
 import RouteLoadBoundary from '../components/RouteLoadBoundary'
 
 export default function MobileLayout() {
@@ -35,7 +36,12 @@ export default function MobileLayout() {
 
       <div className="mobile-content" key={location.pathname}>
         <RouteLoadBoundary resetKey={location.pathname}>
-          {currentElement}
+          {/* 明细页依赖激活上下文才能加载；外层路由 key 保证手机切页时仍卸载旧页面。 */}
+          <RouteKeepAlive
+            activeKey={location.pathname}
+            include={[location.pathname]}
+            currentElement={currentElement}
+          />
         </RouteLoadBoundary>
       </div>
 

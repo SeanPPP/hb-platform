@@ -52,6 +52,7 @@
     "attendancePersonal": "Attendance",
     "attendanceManagement": "Attendance Admin",
     "productQuery": "Products",
+    "productInsights": "Product activity",
     "users": "Users",
     "userAdmin": "User administration",
     "roles": "Roles",
@@ -129,6 +130,7 @@
     "freshness": {
       "lastUpdated": "Latest statistics: {{time}}",
       "running": "Updating",
+      "skipped": "Update skipped",
       "failed": "Update failed",
       "noSuccess": "No successful statistics yet",
       "unavailable": "Statistics time unavailable"

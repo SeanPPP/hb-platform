@@ -332,6 +332,11 @@ public sealed class SqlSugarOrderHistoryRepository(HbposSqlSugarContext dbContex
     private static string InferCardProcessor(string? paymentReference)
     {
         var displayReference = CardRefundReference.GetDisplayReference(paymentReference);
+        if (ManualCardPaymentReference.IsManual(displayReference))
+        {
+            return ManualCardPaymentReference.Processor;
+        }
+
         if (displayReference?.StartsWith("ANZ:", StringComparison.OrdinalIgnoreCase) == true)
         {
             return "ANZ";

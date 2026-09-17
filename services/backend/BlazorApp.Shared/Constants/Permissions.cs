@@ -272,6 +272,7 @@ namespace BlazorApp.Shared.Constants
             public const string SalesDetailView = "SalesDashboard.SalesDetail.View";
             public const string CompactBoardView = "SalesDashboard.CompactBoard.View";
             public const string ProductMovementView = "SalesDashboard.ProductMovement.View";
+            public const string BatchProductSalesView = "SalesDashboard.BatchProductSales.View";
             public const string WarehouseFlowView = "SalesDashboard.WarehouseFlow.View";
             public const string LocalProductAnalysisView =
                 "SalesDashboard.LocalProductAnalysis.View";

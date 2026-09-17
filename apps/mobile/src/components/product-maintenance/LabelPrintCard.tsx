@@ -1,5 +1,6 @@
 import { StyleSheet, View } from "react-native";
-import { Button, Card } from "react-native-paper";
+import { Button, Card, Text } from "react-native-paper";
+import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 
 interface LabelPrintCardProps {
   isPrintingProduct?: boolean;
@@ -10,6 +11,7 @@ interface LabelPrintCardProps {
   onPrintProduct?: () => void;
   onPrintDiscount?: () => void;
   onPrintBigDiscount?: () => void;
+  onOpenSettings?: () => void;
 }
 
 export function LabelPrintCard({
@@ -21,10 +23,23 @@ export function LabelPrintCard({
   onPrintProduct,
   onPrintDiscount,
   onPrintBigDiscount,
+  onOpenSettings,
 }: LabelPrintCardProps) {
+  const { t } = useAppTranslation(["productQuery"]);
+
   return (
     <Card style={styles.card} mode="contained">
       <Card.Content style={styles.content}>
+        <View style={styles.header}>
+          <Text variant="titleSmall" style={styles.title}>
+            {t("print.title")}
+          </Text>
+          {onOpenSettings ? (
+            <Button compact icon="cog-outline" mode="text" onPress={onOpenSettings}>
+              {t("print.settingsAction")}
+            </Button>
+          ) : null}
+        </View>
         <View style={styles.actions}>
           <Button
             compact
@@ -35,7 +50,7 @@ export function LabelPrintCard({
             disabled={!onPrintProduct || isPrintingProduct}
             style={styles.button}
           >
-            Regular
+            {t("print.productShort")}
           </Button>
           <Button
             compact
@@ -46,7 +61,7 @@ export function LabelPrintCard({
             disabled={!onPrintDiscount || !canPrintDiscount || isPrintingDiscount}
             style={styles.button}
           >
-            Discount
+            {t("print.discountShort")}
           </Button>
           <Button
             compact
@@ -57,7 +72,7 @@ export function LabelPrintCard({
             disabled={!onPrintBigDiscount || !canPrintBigDiscount || isPrintingBigDiscount}
             style={styles.button}
           >
-            Large
+            {t("print.bigDiscountShort")}
           </Button>
         </View>
       </Card.Content>
@@ -73,7 +88,18 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFFFF",
   },
   content: {
-    paddingVertical: 12,
+    paddingVertical: 10,
+    gap: 8,
+  },
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  title: {
+    fontWeight: "700",
+    color: "#111827",
   },
   actions: {
     flexDirection: "row",

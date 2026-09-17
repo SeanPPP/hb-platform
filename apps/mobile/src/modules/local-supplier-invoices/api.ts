@@ -128,9 +128,13 @@ export function buildInvoiceGridRequest(query: InvoiceGridQuery): GridRequest {
   const page = normalizePage(query.page);
   const startRow = (page - 1) * pageSize;
   const filterModel: Record<string, GridFilterModel> = {};
-  const storeFilter = textFilter(query.filters?.storeCode);
+  const storeCode = query.filters?.storeCode?.trim();
+  const storeFilter = storeCode
+    ? { filterType: "text" as const, type: "equals", filter: storeCode }
+    : null;
   const supplierFilter = textFilter(query.filters?.supplierCode);
   const invoiceFilter = textFilter(query.filters?.invoiceNo);
+  const inboundStatus = query.filters?.inboundStatus;
   const orderDateFilter = dateRangeFilter(
     query.filters?.orderDateFrom,
     query.filters?.orderDateTo
@@ -139,6 +143,14 @@ export function buildInvoiceGridRequest(query: InvoiceGridQuery): GridRequest {
   if (storeFilter) filterModel.storeCode = storeFilter;
   if (supplierFilter) filterModel.supplierCode = supplierFilter;
   if (invoiceFilter) filterModel.invoiceNo = invoiceFilter;
+  if (inboundStatus === 0 || inboundStatus === 1 || inboundStatus === 2) {
+    filterModel.inboundStatus = {
+      filterType: "number",
+      type: "equals",
+      // 后端 Grid Filter 契约使用 string，避免 JSON 模型绑定在控制器入口返回 400。
+      filter: String(inboundStatus),
+    };
+  }
   if (orderDateFilter) filterModel.OrderDate = orderDateFilter;
 
   return {
@@ -160,6 +172,11 @@ export function buildInvoiceDetailsGridRequest(query: InvoiceDetailsGridQuery): 
   const page = normalizePage(query.page);
   const startRow = (page - 1) * pageSize;
   const filterModel: Record<string, GridFilterModel> = {};
+  const keyword = textFilter(query.keyword);
+
+  if (keyword) {
+    filterModel.productKeyword = keyword;
+  }
 
   if (query.priceChange === "up" || query.priceChange === "down") {
     filterModel.priceChange = {

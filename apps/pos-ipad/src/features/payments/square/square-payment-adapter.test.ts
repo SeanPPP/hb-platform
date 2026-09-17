@@ -138,6 +138,53 @@ test("无 checkout 的重放若当前配置与冻结环境不同则失败关闭"
   assert.equal(transport.calls.length, 0);
 });
 
+test("Square checkout 响应缺失或错配冻结环境时不得进入 Pending", async () => {
+  for (const environment of [undefined, "Production"] as const) {
+    const transport = new ScriptedTransport([
+      ok({
+        checkoutId: "checkout-environment-conflict",
+        ...(environment ? { environment } : {}),
+        status: "PENDING",
+      }),
+    ]);
+
+    const result = await createAdapter(transport).getStatus(
+      attempt({
+        state: "Pending",
+        references: references({ checkoutId: "checkout-environment-conflict" }),
+      }),
+    );
+
+    assert.equal(result.state, "Unknown");
+    assert.equal(result.responseCode, "SQUARE_ENVIRONMENT_CONFLICT");
+  }
+});
+
+test("Square refund 响应缺失或错配冻结环境时不得进入 Pending", async () => {
+  for (const environment of [undefined, "Production"] as const) {
+    const transport = new ScriptedTransport([
+      ok({
+        refundId: "refund-environment-conflict",
+        ...(environment ? { environment } : {}),
+        status: "PENDING",
+        paymentId: "payment-original",
+        amountMoney: { amount: 500, currency: "AUD" },
+      }),
+    ]);
+
+    const result = await createAdapter(transport).refund(
+      attempt({
+        operation: "refund",
+        amount: { currency: "AUD", cents: -500 },
+        references: references({ paymentId: "payment-original" }),
+      }),
+    );
+
+    assert.equal(result.state, "Unknown");
+    assert.equal(result.responseCode, "SQUARE_ENVIRONMENT_CONFLICT");
+  }
+});
+
 test("checkout 完成后验证 payment 金额与币种，Approved 同时携带 CheckoutId 和 PaymentId", async () => {
   const transport = new ScriptedTransport([
     ok({
@@ -860,6 +907,7 @@ test("COMPLETED refund 必须绑定 PaymentId、退款引用和精确金额，�
     {
       response: {
         refundId: "refund-missing-payment",
+        environment: "Sandbox",
         status: "COMPLETED",
         amountMoney: { amount: 500, currency: "AUD" },
       },
@@ -868,6 +916,7 @@ test("COMPLETED refund 必须绑定 PaymentId、退款引用和精确金额，�
     {
       response: {
         refundId: "refund-missing-money",
+        environment: "Sandbox",
         status: "COMPLETED",
         paymentId: "payment-original",
       },
@@ -876,6 +925,7 @@ test("COMPLETED refund 必须绑定 PaymentId、退款引用和精确金额，�
     {
       response: {
         refundId: "refund-other-payment",
+        environment: "Sandbox",
         status: "COMPLETED",
         paymentId: "payment-other",
         amountMoney: { amount: 500, currency: "AUD" },
@@ -885,6 +935,7 @@ test("COMPLETED refund 必须绑定 PaymentId、退款引用和精确金额，�
     {
       response: {
         refundId: "refund-unsafe\u0000reference",
+        environment: "Sandbox",
         status: "COMPLETED",
         paymentId: "payment-original",
         amountMoney: { amount: 500, currency: "AUD" },
@@ -914,6 +965,7 @@ test("refund 响应丢失后仅以同一幂等 attempt 恢复，并只在 Approv
     new Error("response lost"),
     ok({
       refundId: "refund-replayed",
+      environment: "Sandbox",
       status: "COMPLETED",
       paymentId: "payment-original",
       amountMoney: { amount: 500, currency: "AUD" },

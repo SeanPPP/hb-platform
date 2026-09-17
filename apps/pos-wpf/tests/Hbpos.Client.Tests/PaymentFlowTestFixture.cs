@@ -172,13 +172,15 @@ internal sealed class PaymentFlowTestFixture : IAsyncDisposable
 
     public PaymentViewModel CreatePaymentViewModel(
         PosCartService cart,
-        Action? openCardRecoveryCenter = null)
+        Action? openCardRecoveryCenter = null,
+        IPaymentMethodSettingsService? paymentMethodSettingsService = null)
     {
         return new PaymentViewModel(
             cart,
             Workflow,
             Session,
-            openCardRecoveryCenter: openCardRecoveryCenter);
+            openCardRecoveryCenter: openCardRecoveryCenter,
+            paymentMethodSettingsService: paymentMethodSettingsService);
     }
 
     public CardPaymentRecoveryService CreateRecoveryService()

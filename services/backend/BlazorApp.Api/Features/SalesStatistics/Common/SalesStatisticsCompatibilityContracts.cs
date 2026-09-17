@@ -36,6 +36,18 @@ public class BatchStatisticsUpdateResult
 
     /// <summary>任务 ID。</summary>
     public Guid TaskId { get; set; }
+
+    /// <summary>范围内至少一天因已有执行权而未完成。</summary>
+    public bool HasSkippedDates => SkippedDates.Count > 0;
+
+    /// <summary>范围内至少一天实际执行失败。</summary>
+    public bool HasFailedDates => FailedDates.Count > 0;
+
+    /// <summary>仅所有请求日期均实际处理、且没有失败或跳过时才是完整成功。</summary>
+    public bool IsComplete => TotalDays > 0
+        && ProcessedDays == TotalDays
+        && !HasFailedDates
+        && !HasSkippedDates;
 }
 
 internal sealed class FullRefreshRangeExecutionResult

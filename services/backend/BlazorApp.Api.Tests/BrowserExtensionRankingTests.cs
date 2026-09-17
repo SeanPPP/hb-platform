@@ -10,6 +10,7 @@ using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Controllers.React;
 using BlazorApp.Api.Models;
 using BlazorApp.Api.Services.React;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.POSM;
@@ -41,6 +42,22 @@ public sealed class BrowserExtensionRankingTests
 
         Assert.NotNull(type.GetMethod(nameof(ReactBrowserExtensionController.GetEnabledStores)));
         Assert.NotNull(type.GetMethod(nameof(ReactBrowserExtensionController.GetSupplierTopSales)));
+        Assert.NotNull(
+            type.GetMethod(nameof(ReactBrowserExtensionController.GetSupplierProductStoreSales))
+        );
+    }
+
+    [Fact]
+    public void StoreSalesRoute_RequiresSalesDetailPermission()
+    {
+        var action = typeof(ReactBrowserExtensionController).GetMethod(
+            nameof(ReactBrowserExtensionController.GetSupplierProductStoreSales)
+        );
+
+        var authorize = Assert.Single(
+            action!.GetCustomAttributes<AuthorizeAttribute>(inherit: true)
+        );
+        Assert.Equal(Permissions.SalesDashboard.SalesDetailView, authorize.Policy);
     }
 
     [Theory]
@@ -784,6 +801,214 @@ public sealed class BrowserExtensionServiceRankingContractTests : IDisposable
         Assert.Empty(result.Items);
     }
 
+    [Fact]
+    public async Task GetSupplierProductStoreSalesAsync_IncludesEnabledZeroSalesStoresAndMatchesTotal()
+    {
+        var rankingDate = new DateTime(2026, 9, 3);
+        await SeedRankingAsync(rankingDate, 1);
+        await SeedEnabledStoreAsync("S-2", "Campbelltown", "POS-2");
+        await SeedEnabledStoreAsync("S-3", "Springfield", "POS-3");
+        await _localDb.Insertable(new ProductStoreDailySalesStatistic
+        {
+            Date = rankingDate,
+            BranchCode = "S-2",
+            SupplierCode = "240",
+            ProductCode = "P-0001",
+            ProductName = "商品 1",
+            TotalQuantity = 12,
+            TotalAmount = 120m,
+            UpdateTime = rankingDate,
+        }).ExecuteCommandAsync();
+
+        using var memoryCache = new MemoryCache(new MemoryCacheOptions());
+        var service = CreateService(memoryCache, rankingDate);
+        var ranking = await service.GetSupplierTopSalesAsync(
+            new BrowserExtensionSupplierTopSalesRequestDto
+            {
+                SupplierCode = "240",
+                Days = 60,
+            }
+        );
+
+        var result = await service.GetSupplierProductStoreSalesAsync(
+            new BrowserExtensionSupplierProductStoreSalesRequestDto
+            {
+                SupplierCode = "240",
+                ProductCode = "P-0001",
+                Days = 60,
+                StartDate = new DateOnly(2026, 7, 6),
+                EndDate = new DateOnly(2026, 9, 3),
+                ExpectedTotalSalesQuantity = 13m,
+                SnapshotVersion = ranking.SnapshotVersion,
+            }
+        );
+
+        Assert.Equal("240", result.SupplierCode);
+        Assert.Equal("P-0001", result.ProductCode);
+        Assert.Equal(new DateOnly(2026, 7, 6), result.StartDate);
+        Assert.Equal(new DateOnly(2026, 9, 3), result.EndDate);
+        Assert.Equal(3, result.EnabledStoreCount);
+        Assert.Equal(13m, result.TotalSalesQuantity);
+        Assert.Equal(13m, result.Stores.Sum(store => store.SalesQuantity));
+        Assert.Collection(
+            result.Stores,
+            store =>
+            {
+                Assert.Equal("S-2", store.StoreCode);
+                Assert.Equal("Campbelltown", store.StoreName);
+                Assert.Equal(12m, store.SalesQuantity);
+            },
+            store =>
+            {
+                Assert.Equal("S-1", store.StoreCode);
+                Assert.Equal("测试门店", store.StoreName);
+                Assert.Equal(1m, store.SalesQuantity);
+            },
+            store =>
+            {
+                Assert.Equal("S-3", store.StoreCode);
+                Assert.Equal("Springfield", store.StoreName);
+                Assert.Equal(0m, store.SalesQuantity);
+            }
+        );
+    }
+
+    [Fact]
+    public async Task GetSupplierProductStoreSalesAsync_RejectsChangedOrExpiredRankingSnapshot()
+    {
+        var rankingDate = new DateTime(2026, 9, 3);
+        await SeedRankingAsync(rankingDate, 1);
+        using var memoryCache = new MemoryCache(new MemoryCacheOptions());
+        var service = CreateService(memoryCache, rankingDate);
+        var ranking = await service.GetSupplierTopSalesAsync(
+            new BrowserExtensionSupplierTopSalesRequestDto
+            {
+                SupplierCode = "240",
+                Days = 60,
+            }
+        );
+
+        await Assert.ThrowsAsync<BrowserExtensionRankingSnapshotChangedException>(() =>
+            service.GetSupplierProductStoreSalesAsync(
+                new BrowserExtensionSupplierProductStoreSalesRequestDto
+                {
+                    SupplierCode = "240",
+                    ProductCode = "P-0001",
+                    Days = 60,
+                    StartDate = new DateOnly(2026, 7, 6),
+                    EndDate = new DateOnly(2026, 9, 3),
+                    ExpectedTotalSalesQuantity = 99m,
+                    SnapshotVersion = ranking.SnapshotVersion,
+                }
+            )
+        );
+        await Assert.ThrowsAsync<BrowserExtensionRankingSnapshotChangedException>(() =>
+            service.GetSupplierProductStoreSalesAsync(
+                new BrowserExtensionSupplierProductStoreSalesRequestDto
+                {
+                    SupplierCode = "240",
+                    ProductCode = "P-0001",
+                    Days = 60,
+                    StartDate = new DateOnly(2026, 7, 5),
+                    EndDate = new DateOnly(2026, 9, 2),
+                    ExpectedTotalSalesQuantity = 1m,
+                    SnapshotVersion = ranking.SnapshotVersion,
+                }
+            )
+        );
+    }
+
+    [Fact]
+    public async Task GetSupplierProductStoreSalesAsync_RejectsChangedStoreSetWithSameTotal()
+    {
+        var rankingDate = new DateTime(2026, 9, 3);
+        await SeedRankingAsync(rankingDate, 1);
+        using var memoryCache = new MemoryCache(new MemoryCacheOptions());
+        var service = CreateService(memoryCache, rankingDate);
+        var ranking = await service.GetSupplierTopSalesAsync(
+            new BrowserExtensionSupplierTopSalesRequestDto { SupplierCode = "240", Days = 60 }
+        );
+
+        await SeedEnabledStoreAsync("S-2", "Campbelltown", "POS-2");
+
+        await Assert.ThrowsAsync<BrowserExtensionRankingSnapshotChangedException>(() =>
+            service.GetSupplierProductStoreSalesAsync(
+                new BrowserExtensionSupplierProductStoreSalesRequestDto
+                {
+                    SupplierCode = "240",
+                    ProductCode = "P-0001",
+                    Days = 60,
+                    StartDate = ranking.StartDate,
+                    EndDate = ranking.EndDate,
+                    ExpectedTotalSalesQuantity = 1m,
+                    SnapshotVersion = ranking.SnapshotVersion,
+                }
+            )
+        );
+    }
+
+    [Fact]
+    public async Task GetSupplierProductStoreSalesAsync_RejectsRedistributedStoreSalesWithSameTotal()
+    {
+        var rankingDate = new DateTime(2026, 9, 3);
+        await SeedRankingAsync(rankingDate, 1);
+        await SeedEnabledStoreAsync("S-2", "Campbelltown", "POS-2");
+        await _localDb.Insertable(new ProductStoreDailySalesStatistic
+        {
+            Date = rankingDate,
+            BranchCode = "S-2",
+            SupplierCode = "240",
+            ProductCode = "P-0001",
+            ProductName = "商品 1",
+            TotalQuantity = 0,
+            TotalAmount = 0m,
+            UpdateTime = rankingDate,
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new SalesStatisticRefreshState
+        {
+            StatisticType = SalesStatisticType.ProductStoreDaily,
+            Date = rankingDate,
+            Status = SalesStatisticRefreshStatus.Fresh,
+            CompletedAtUtc = rankingDate,
+        }).ExecuteCommandAsync();
+        using var memoryCache = new MemoryCache(new MemoryCacheOptions());
+        var service = CreateService(memoryCache, rankingDate);
+        var ranking = await service.GetSupplierTopSalesAsync(
+            new BrowserExtensionSupplierTopSalesRequestDto { SupplierCode = "240", Days = 60 }
+        );
+
+        await _localDb.Updateable<ProductStoreDailySalesStatistic>()
+            .SetColumns(row => row.TotalQuantity == 0)
+            .Where(row => row.BranchCode == "S-1" && row.ProductCode == "P-0001")
+            .ExecuteCommandAsync();
+        await _localDb.Updateable<ProductStoreDailySalesStatistic>()
+            .SetColumns(row => row.TotalQuantity == 1)
+            .Where(row => row.BranchCode == "S-2" && row.ProductCode == "P-0001")
+            .ExecuteCommandAsync();
+        await _localDb.Updateable<SalesStatisticRefreshState>()
+            .SetColumns(state => state.CompletedAtUtc == rankingDate.AddMinutes(1))
+            .Where(state =>
+                state.StatisticType == SalesStatisticType.ProductStoreDaily
+                && state.Date == rankingDate
+            )
+            .ExecuteCommandAsync();
+
+        await Assert.ThrowsAsync<BrowserExtensionRankingSnapshotChangedException>(() =>
+            service.GetSupplierProductStoreSalesAsync(
+                new BrowserExtensionSupplierProductStoreSalesRequestDto
+                {
+                    SupplierCode = "240",
+                    ProductCode = "P-0001",
+                    Days = 60,
+                    StartDate = ranking.StartDate,
+                    EndDate = ranking.EndDate,
+                    ExpectedTotalSalesQuantity = 1m,
+                    SnapshotVersion = ranking.SnapshotVersion,
+                }
+            )
+        );
+    }
+
     private async Task SeedRankingAsync(DateTime rankingDate, int productCount)
     {
         await _localDb.Insertable(new Store
@@ -829,6 +1054,28 @@ public sealed class BrowserExtensionServiceRankingContractTests : IDisposable
             .ToList();
         await _localDb.Insertable(products).ExecuteCommandAsync();
         await _localDb.Insertable(statistics).ExecuteCommandAsync();
+    }
+
+    private async Task SeedEnabledStoreAsync(string storeCode, string storeName, string deviceNumber)
+    {
+        await _localDb.Insertable(new Store
+        {
+            StoreGUID = Guid.NewGuid().ToString(),
+            StoreCode = storeCode,
+            StoreName = storeName,
+            TimeZoneId = "Australia/Brisbane",
+            IsActive = true,
+        }).ExecuteCommandAsync();
+        await _posmDb.Insertable(new POSM_设备注册信息表
+        {
+            设备硬件识别码 = $"browser-extension-test-{deviceNumber}",
+            系统设备编号 = deviceNumber,
+            分店代码 = storeCode,
+            设备类型 = "POS",
+            设备系统 = "Windows",
+            设备状态 = 1,
+            设备授权码 = "test-only",
+        }).ExecuteCommandAsync();
     }
 
     private BrowserExtensionService CreateService(IMemoryCache memoryCache, DateTime rankingDate)

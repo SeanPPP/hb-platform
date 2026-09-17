@@ -30,7 +30,7 @@ assert.match(
 );
 
 const busySource = productQuerySource.match(
-  /const isProductQueryBusy = useCallback\([\s\S]*?\n  \);\n  const invoiceReturnState/
+  /const isProductQueryBusy = useCallback\([\s\S]*?\n  \);/
 )?.[0] ?? "";
 for (const mutationState of [
   "saving",

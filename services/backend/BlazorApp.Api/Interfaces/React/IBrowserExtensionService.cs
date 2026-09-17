@@ -22,4 +22,8 @@ public interface IBrowserExtensionService
     Task<BrowserExtensionSupplierTopSalesDto> GetSupplierTopSalesAsync(
         BrowserExtensionSupplierTopSalesRequestDto request
     );
+
+    Task<BrowserExtensionSupplierProductStoreSalesDto> GetSupplierProductStoreSalesAsync(
+        BrowserExtensionSupplierProductStoreSalesRequestDto request
+    );
 }

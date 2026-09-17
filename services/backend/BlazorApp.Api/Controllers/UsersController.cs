@@ -1,7 +1,9 @@
 using System.Security.Claims;
+using BlazorApp.Api.Authentication;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Services;
+using BlazorApp.Api.Services.MobileDeviceActivation;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
@@ -24,18 +26,78 @@ namespace BlazorApp.Api.Controllers
         private readonly IRoleService _roleService;
         private readonly ILogger<UsersController> _logger;
         private readonly SqlSugarContext? _context;
+        private readonly EmployeeCashierBarcodeService? _cashierBarcodeService;
 
         public UsersController(
             IUserService userService,
             IRoleService roleService,
             ILogger<UsersController> logger,
-            SqlSugarContext? context = null
+            SqlSugarContext? context = null,
+            EmployeeCashierBarcodeService? cashierBarcodeService = null
         )
         {
             _userService = userService;
             _roleService = roleService;
             _logger = logger;
             _context = context;
+            _cashierBarcodeService = cashierBarcodeService;
+        }
+
+        [HttpGet("guid/{guid}/cashier-barcode")]
+        [Authorize(Policy = Permissions.Users.ManagePosTerminalPermissions)]
+        public async Task<IActionResult> GetUserCashierBarcode(string guid)
+        {
+            Response.Headers.CacheControl = "no-store";
+            var failure = await AuthorizeGlobalCashierAdminAsync(guid);
+            if (failure != null) return failure;
+            return Ok(await _cashierBarcodeService!.GetForUserAsync(guid));
+        }
+
+        [HttpPost("guid/{guid}/cashier-barcode/refresh")]
+        [Authorize(Policy = Permissions.Users.ManagePosTerminalPermissions)]
+        public async Task<IActionResult> RefreshUserCashierBarcode(
+            string guid,
+            [FromBody] AdminCashierBarcodeRefreshRequest? request
+        )
+        {
+            Response.Headers.CacheControl = "no-store";
+            var failure = await AuthorizeGlobalCashierAdminAsync(guid);
+            if (failure != null) return failure;
+            if (request == null || !request.HasExpectedBarcode)
+            {
+                return BadRequest(ApiResponse<object>.Error("必须提供 expectedBarcode（可为 null）", "EXPECTED_BARCODE_REQUIRED"));
+            }
+            var result = await _cashierBarcodeService!.RefreshForUserAsync(guid, request.ExpectedBarcode);
+            if (result.Success) return Ok(result);
+            // 冲突响应不回显当前条码，避免陈旧客户端通过失败响应获得敏感身份码。
+            result.Data = default;
+            return Conflict(result);
+        }
+
+        private async Task<IActionResult?> AuthorizeGlobalCashierAdminAsync(string targetUserGuid)
+        {
+            if (_context == null || _cashierBarcodeService == null) return Forbid();
+            // 管理端二维码接口只接受浏览器用户会话，拒绝服务、设备和订货助手令牌。
+            if (User.HasClaim(ServiceApiTokenAuthenticationDefaults.TokenTypeClaim, "true")
+                || User.HasClaim("token_use", MobileDeviceAccountTokenIssuer.TokenUse)
+                || User.HasClaim("token_use", "browser_extension"))
+            {
+                return Forbid();
+            }
+            var actorGuid = ResolveCurrentUserGuid(User);
+            var actorUser = await _context.Db.Queryable<User>()
+                .Where(item => item.UserGUID == actorGuid && !item.IsDeleted && item.IsActive)
+                .FirstAsync();
+            if (actorUser == null) return Forbid();
+            var actor = await UserAccessMutationSecurity.ResolveActorByUserGuidAsync(_context.Db, actorGuid);
+            if (!actor.IsSuperAdmin) return Forbid();
+            var permission = await _roleService.UserHasPermissionAsync(actorGuid, Permissions.Users.ManagePosTerminalPermissions);
+            if (permission?.Data != true) return Forbid();
+            var target = await _context.Db.Queryable<User>()
+                .Where(item => item.UserGUID == targetUserGuid && !item.IsDeleted && item.IsActive)
+                .FirstAsync();
+            if (target == null) return NotFound(ApiResponse<object>.Error("用户不存在或已停用", "USER_NOT_FOUND"));
+            return null;
         }
 
         /// <summary>

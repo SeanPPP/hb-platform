@@ -2498,8 +2498,15 @@ namespace BlazorApp.Api.Services.React
                 var items = await db.Queryable<DomesticSetProduct>()
                     .Where(sp =>
                         sp.ProductCode == productCode
-                        && sp.ProductNo != sp.SetProductNo
                         && !sp.IsDeleted
+                        // 历史子项的 ProductNo 可能为空，此时按父商品货号判断，避免放行代表主商品的关系行。
+                        && (
+                            (sp.ProductNo != null && sp.ProductNo != sp.SetProductNo)
+                            || (
+                                sp.ProductNo == null
+                                && setProduct.HBProductNo != sp.SetProductNo
+                            )
+                        )
                     )
                     .Select(sp => new DomesticSetProductDto
                     {
@@ -2558,8 +2565,12 @@ namespace BlazorApp.Api.Services.React
                 var existingItems = await db.Queryable<DomesticSetProduct>()
                     .Where(sp =>
                         sp.ProductCode == productCode
-                        && sp.ProductNo != sp.SetProductNo
                         && !sp.IsDeleted
+                        // 与读取规则保持一致，确保历史空 ProductNo 子项能被更新且不会误处理主商品关系行。
+                        && (
+                            (sp.ProductNo != null && sp.ProductNo != sp.SetProductNo)
+                            || (sp.ProductNo == null && product.HBProductNo != sp.SetProductNo)
+                        )
                     )
                     .ToListAsync();
                 var existingItemsDict = existingItems.ToDictionary(x => x.SetProductCode);

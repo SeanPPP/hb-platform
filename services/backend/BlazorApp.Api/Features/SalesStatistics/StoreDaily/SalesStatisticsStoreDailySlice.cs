@@ -37,9 +37,9 @@ namespace BlazorApp.Api.Services
         {
             _logger.LogInformation("开始更新分店统计数据: {Date}", targetDate);
 
-            if (targetDate.Year == 2025)
+            if (SalesStatisticsHBSalesHistoryWindow.Includes(targetDate))
             {
-                // 2025 的分店与商品统计来自双来源，必须在同一事务内同时替换。
+                // HBSales 历史窗口内的分店与商品统计来自双来源，必须在同一事务内同时替换。
                 await _productRefresh.Update2025StoreAndProductStatisticsAtomically(
                     _context,
                     _posmContext,
@@ -53,7 +53,7 @@ namespace BlazorApp.Api.Services
             var statisticsList = await _productSupport.BuildStoreStatisticsAsync(
                 _context,
                 _posmContext,
-                GetHBSalesContextFor2025(targetDate),
+                GetHBSalesContextForVerifiedHistory(targetDate),
                 targetDate,
                 null
             );
@@ -101,7 +101,7 @@ namespace BlazorApp.Api.Services
     /// 全量刷新前一天数据
     /// 刷新前一天的每日统计、分时统计、分店统计和供应商统计
     /// </summary>
-    public async Task FullRefreshPreviousDay()
+    public async Task<SalesStatisticsRefreshExecutionResult> FullRefreshPreviousDay()
     {
         try
         {
@@ -110,9 +110,12 @@ namespace BlazorApp.Api.Services
             _logger.LogInformation("开始全量刷新前一天数据: {Date}", previousDay);
 
             // 全量刷新统一走带数据库租约的入口，保证 8 张日级统计表口径一致且跨实例不重复跑。
-            await RunLeasedFullRefreshForSingleDateAsync(previousDay, "前一天");
+            var refreshed = await RunLeasedFullRefreshForSingleDateAsync(previousDay, "前一天");
 
             _logger.LogInformation("前一天数据全量刷新完成: {Date}", previousDay);
+            return refreshed
+                ? SalesStatisticsRefreshExecutionResult.Completed()
+                : SalesStatisticsRefreshExecutionResult.Skipped("前一天统计已有运行中的日期租约");
         }
         catch (Exception ex)
         {
@@ -125,7 +128,7 @@ namespace BlazorApp.Api.Services
     /// 全量刷新当天数据
     /// 刷新当天的每日统计、分时统计、分店统计和供应商统计
     /// </summary>
-    public async Task FullRefreshCurrentDay(bool automatic = false, bool includeHistorical = true, int firstHistoricalDayOffset = 1)
+    public async Task<SalesStatisticsRefreshExecutionResult> FullRefreshCurrentDay(bool automatic = false, bool includeHistorical = true, int firstHistoricalDayOffset = 1)
     {
         try
         {
@@ -137,7 +140,9 @@ namespace BlazorApp.Api.Services
             var refreshed = await RunLeasedFullRefreshForSingleDateAsync(currentDay, "当天");
             if (!refreshed || !includeHistorical)
             {
-                return;
+                return refreshed
+                    ? SalesStatisticsRefreshExecutionResult.Completed()
+                    : SalesStatisticsRefreshExecutionResult.Skipped("当天统计已有运行中的日期租约");
             }
 
             // POSM 可能延迟上传，商品统计额外滚动补算最近 7 天；历史日只在夜间窗口启动。
@@ -151,13 +156,14 @@ namespace BlazorApp.Api.Services
                         currentDay,
                         offset
                     );
-                    return;
+                    return SalesStatisticsRefreshExecutionResult.Completed();
                 }
 
                 await RunLeasedProductStoreDailyRefreshAsync(currentDay.AddDays(-offset));
             }
 
             _logger.LogInformation("当天数据全量刷新完成: {Date}", currentDay);
+            return SalesStatisticsRefreshExecutionResult.Completed();
         }
         catch (Exception ex)
         {
@@ -172,12 +178,7 @@ namespace BlazorApp.Api.Services
     )
     {
         var result = await _orchestration.BatchFullRefreshConcurrent(date, date, 1);
-        if (!result.Success)
-        {
-            throw new InvalidOperationException(result.Message);
-        }
-
-        if (result.SkippedDates.Any())
+        if (result.HasSkippedDates && !result.HasFailedDates)
         {
             _logger.LogInformation(
                 "{Label}数据全量刷新跳过，日期 {Date} 已有运行中统计租约",
@@ -186,8 +187,12 @@ namespace BlazorApp.Api.Services
             );
             return false;
         }
+        if (!result.Success)
+        {
+            throw new InvalidOperationException(result.Message);
+        }
 
-        return true;
+        return result.ProcessedDays == 1;
     }
 
     internal async Task<bool> RunLeasedProductStoreDailyRefreshAsync(DateTime date)
@@ -227,7 +232,7 @@ namespace BlazorApp.Api.Services
                 leaseDuration,
                 "商品分店每日滚动补算"
             );
-            if (targetDate.Year == 2025)
+            if (SalesStatisticsHBSalesHistoryWindow.Includes(targetDate))
             {
                 // 滚动补算同样不能让商品表单独 Running/Failed，原子入口会成对维护状态。
                 await _productRefresh.Update2025StoreAndProductStatisticsAtomically(
@@ -277,7 +282,7 @@ namespace BlazorApp.Api.Services
         }
         catch (Exception ex)
         {
-            if (targetDate.Year != 2025)
+            if (!SalesStatisticsHBSalesHistoryWindow.Includes(targetDate))
             {
                 await SalesStatisticsProductStoreDailyStateSlice.UpsertStatisticStateAsync(
                     context,
@@ -347,12 +352,12 @@ namespace BlazorApp.Api.Services
                 targetBranchCodes.Any() ? string.Join(", ", targetBranchCodes) : "All"
             );
 
-            if (targetDate.Year == 2025)
+            if (SalesStatisticsHBSalesHistoryWindow.Includes(targetDate))
             {
                 if (targetBranchCodes.Any())
                 {
                     throw new InvalidOperationException(
-                        "2025 年不能仅刷新指定分店：该操作会破坏 ProductStoreDaily 与 StoreSales 的双表一致性，请执行全分店刷新"
+                        "HBSales 历史窗口内不能仅刷新指定分店：该操作会破坏 ProductStoreDaily 与 StoreSales 的双表一致性，请执行全分店刷新"
                     );
                 }
 
@@ -370,7 +375,7 @@ namespace BlazorApp.Api.Services
             var statisticsList = await _productSupport.BuildStoreStatisticsAsync(
                 _context,
                 _posmContext,
-                GetHBSalesContextFor2025(targetDate),
+                GetHBSalesContextForVerifiedHistory(targetDate),
                 targetDate,
                 branchCodes
             );

@@ -11,6 +11,7 @@ const pages: Array<[string, keyof AccessControl, string]> = [
   ['sales-detail-v2', 'canViewSalesDetail', 'SalesDashboard.SalesDetail.View'],
   ['compact-sales-board', 'canViewCompactSalesBoard', 'SalesDashboard.CompactBoard.View'],
   ['product-movement-report', 'canViewProductMovementReport', 'SalesDashboard.ProductMovement.View'],
+  ['batch-product-sales-analysis', 'canViewBatchProductSalesAnalysis', 'SalesDashboard.BatchProductSales.View'],
   ['warehouse-product-flow-analysis', 'canViewWarehouseProductFlowAnalysis', 'SalesDashboard.WarehouseFlow.View'],
   ['local-product-sales-analysis', 'canViewLocalProductSalesAnalysis', 'SalesDashboard.LocalProductAnalysis.View'],
   ['purchase-amount-dashboard', 'canViewPurchaseAmountDashboard', 'SalesDashboard.PurchaseAmount.View'],
@@ -54,7 +55,7 @@ for (const permissions of [[], ['Reports.View'], ['Reports.ProductMovement.View'
 
 for (const role of ['Admin', '管理员', 'SuperAdmin', '超级管理员']) {
   const access = buildAccess(user([], [role]))
-  assert.equal(preview(access)?.children?.filter(node => node.visible).length, 7, '管理员默认显示全部七页')
+  assert.equal(preview(access)?.children?.filter(node => node.visible).length, pages.length, '管理员默认显示全部销售页')
   for (const [path, key] of pages) {
     assert.equal(access[key], true)
     assert.equal(resolveAuthorizedWebTarget(`${prefix}/${path}`, access), `${prefix}/${path}`)
@@ -69,7 +70,7 @@ for (const [path, key, code] of pages) {
     removePermissionCodes: node.edit.removePermissionCodes })
   const access = buildAccess(user(remaining))
   assert.equal(access[key], false, '撤销一页后该页立即不满足前端权限')
-  assert.equal(preview(access)?.children?.filter(item => item.visible).length, 6, '其余六页应保持可见')
+  assert.equal(preview(access)?.children?.filter(item => item.visible).length, pages.length - 1, '其余销售页应保持可见')
   const hidden = preview(buildAccess(user([])))!.children!.find(item => item.path === `${prefix}/${path}`)!
   assert.deepEqual(hidden.edit.addPermissionCodes, [code], '新增看板页只授予该页，不额外授予工作台')
 }
@@ -84,4 +85,4 @@ for (const [path, key] of pages) {
 const aliasAccess = buildAccess(user(['SalesDashboard.WarehouseFlow.View']))
 assert.equal(resolveAuthorizedWebTarget(`${prefix}/product-sales-analysis`, aliasAccess), `${prefix}/product-sales-analysis`)
 assert.equal(buildAccess(null).canViewSalesIntelligence, false)
-console.log('销售看板七页独立授权、菜单、跳转、撤销及管理员默认权限测试通过')
+console.log('销售看板逐页独立授权、菜单、跳转、撤销及管理员默认权限测试通过')

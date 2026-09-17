@@ -3,6 +3,7 @@ import type {
   LocalPurchaseDashboardResponse,
   LocalPurchaseSupplierDetailResponse,
   LocalPurchaseSupplierSummary,
+  LocalPurchaseSupplierFilterMode,
 } from '../types/localPurchaseDashboard'
 import request, { unwrapApiData } from '../utils/request'
 
@@ -171,6 +172,9 @@ function normalizeDashboardResponse(raw: unknown, requestedEndMonth: string): Lo
     localSupplierAmount,
     totalAmount: readTotalAmount(record) ?? readTotalAmount(summary) ?? warehouseAmount + localSupplierAmount,
     stores,
+    supplierOptions: Array.isArray(record.supplierOptions ?? record.SupplierOptions)
+      ? readArray(record.supplierOptions, record.SupplierOptions).map(normalizeSupplierOption)
+      : undefined,
   }
 }
 
@@ -184,7 +188,7 @@ function normalizeSupplierMonth(raw: unknown) {
   }
 }
 
-function normalizeSupplier(raw: unknown, months: string[]) {
+function normalizeSupplierOption(raw: unknown) {
   const record = asRecord(raw)
   const supplierCode = readString(record.supplierCode, record.SupplierCode)
   const rawSourceType = readString(record.sourceType, record.SourceType)?.toLocaleUpperCase()
@@ -196,6 +200,21 @@ function normalizeSupplier(raw: unknown, months: string[]) {
   const sourceType: LocalPurchaseSupplierSummary['sourceType'] = isWarehouse
     ? 'WAREHOUSE_ORDER'
     : 'LOCAL_SUPPLIER'
+  return {
+    // 虚拟来源与真实同名编码必须使用不同身份，供筛选和明细共用。
+    rowKey: `${sourceType}:${isUnassigned}:${sourceCode}`,
+    sourceCode,
+    sourceType,
+    supplierCode,
+    supplierName: readString(record.supplierName, record.SupplierName, record.sourceName, record.SourceName)
+      ?? (isWarehouse ? 'WAREHOUSE_ORDER' : supplierCode ?? sourceCode),
+    isWarehouse,
+    isUnassigned,
+  }
+}
+
+function normalizeSupplier(raw: unknown, months: string[]) {
+  const record = asRecord(raw)
   const rawMonthAmounts = readArray(
     record.monthlyAmounts,
     record.MonthlyAmounts,
@@ -212,15 +231,7 @@ function normalizeSupplier(raw: unknown, months: string[]) {
   )
   const monthlyAmounts = months.map((month) => monthAmountMap.get(month) ?? { month, amount: 0 })
   return {
-    // 虚拟未匹配来源与真实业务编码可能同为 UNASSIGNED，行键必须包含显式身份。
-    rowKey: `${sourceType}:${isUnassigned}:${sourceCode}`,
-    sourceCode,
-    sourceType,
-    supplierCode,
-    supplierName: readString(record.supplierName, record.SupplierName, record.sourceName, record.SourceName)
-      ?? (isWarehouse ? 'WAREHOUSE_ORDER' : supplierCode ?? sourceCode),
-    isWarehouse,
-    isUnassigned,
+    ...normalizeSupplierOption(raw),
     monthlyAmounts,
     totalAmount: readTotalAmount(record) ?? monthlyAmounts.reduce((sum, item) => sum + item.amount, 0),
   }
@@ -266,10 +277,13 @@ function normalizeSupplierDetailResponse(
 export async function getLocalPurchaseDashboard(
   endMonth: string,
   signal?: AbortSignal,
+  supplierFilterMode?: LocalPurchaseSupplierFilterMode | null,
+  supplierKeys?: string[] | null,
 ): Promise<LocalPurchaseDashboardResponse> {
-  const response = await request.get<ApiResponse<LocalPurchaseDashboardResponse> | LocalPurchaseDashboardResponse>(
+  const response = await request.post<ApiResponse<LocalPurchaseDashboardResponse> | LocalPurchaseDashboardResponse>(
     API_BASE,
-    { params: { endMonth }, signal },
+    buildPurchaseFilterBody(endMonth, supplierFilterMode, supplierKeys),
+    { signal },
   )
   return normalizeDashboardResponse(unwrapApiData(response), endMonth)
 }
@@ -278,12 +292,22 @@ export async function getLocalPurchaseSupplierDetails(
   storeCode: string,
   endMonth: string,
   signal?: AbortSignal,
+  supplierFilterMode?: LocalPurchaseSupplierFilterMode | null,
+  supplierKeys?: string[] | null,
 ): Promise<LocalPurchaseSupplierDetailResponse> {
-  const response = await request.get<ApiResponse<LocalPurchaseSupplierDetailResponse> | LocalPurchaseSupplierDetailResponse>(
+  const response = await request.post<ApiResponse<LocalPurchaseSupplierDetailResponse> | LocalPurchaseSupplierDetailResponse>(
     `${API_BASE}/stores/${encodeURIComponent(storeCode)}/suppliers`,
-    { params: { endMonth }, signal },
+    buildPurchaseFilterBody(endMonth, supplierFilterMode, supplierKeys),
+    { signal },
   )
   return normalizeSupplierDetailResponse(unwrapApiData(response), storeCode, endMonth)
+}
+
+function buildPurchaseFilterBody(endMonth: string, supplierFilterMode?: LocalPurchaseSupplierFilterMode | null, supplierKeys?: string[] | null) {
+  // 全选省略筛选；include 空数组和 exclude 单键都必须显式携带模式，避免语义混淆。
+  return supplierFilterMode == null
+    ? { endMonth }
+    : { endMonth, supplierFilterMode, supplierKeys: supplierKeys ?? [] }
 }
 
 export const __localPurchaseDashboardServiceTestOnly = {

@@ -129,6 +129,7 @@ namespace BlazorApp.Api.Services
                     new() { Path = "/executive-sales-intelligence/sales-detail-v2", TitleKey = "menu.salesDetail", Icon = "FileTextOutlined",  Permission = Permissions.SalesDashboard.SalesDetailView },
                     new() { Path = "/executive-sales-intelligence/compact-sales-board", TitleKey = "menu.compactSalesBoard", Icon = "BarChartOutlined", Permission = Permissions.SalesDashboard.CompactBoardView },
                     new() { Path = "/executive-sales-intelligence/product-movement-report", TitleKey = "menu.productMovementReport", Icon = "ReconciliationOutlined", Permission = Permissions.SalesDashboard.ProductMovementView },
+                    new() { Path = "/executive-sales-intelligence/batch-product-sales-analysis", TitleKey = "menu.batchProductSalesAnalysis", Icon = "BarChartOutlined", Permission = Permissions.SalesDashboard.BatchProductSalesView },
                     new() { Path = "/executive-sales-intelligence/warehouse-product-flow-analysis", TitleKey = "menu.warehouseProductFlowAnalysis", Icon = "BarChartOutlined", Permission = Permissions.SalesDashboard.WarehouseFlowView },
                     new() { Path = "/executive-sales-intelligence/local-product-sales-analysis", TitleKey = "menu.localProductSalesAnalysis", Icon = "BarChartOutlined", Permission = Permissions.SalesDashboard.LocalProductAnalysisView },
                     new() { Path = "/executive-sales-intelligence/purchase-amount-dashboard", TitleKey = "menu.purchaseAmountDashboard", Icon = "DollarOutlined", Permission = Permissions.SalesDashboard.PurchaseAmountView },
@@ -246,6 +247,15 @@ namespace BlazorApp.Api.Services
                 RouteName = "product-query",
                 TitleKey = "tabs.productQuery",
                 Icon = "barcode-scan",
+                Permission = Permissions.StoreProducts.View,
+                Order = 50,
+            },
+            new()
+            {
+                RouteName = "product-insights",
+                TitleKey = "tabs.productInsights",
+                Icon = "chart-timeline-variant",
+                // 与商品查询共用查看授权，避免客户端入口与设备菜单出现范围偏差。
                 Permission = Permissions.StoreProducts.View,
                 Order = 50,
             },
@@ -380,7 +390,7 @@ namespace BlazorApp.Api.Services
         };
 
         private static readonly HashSet<string> DeviceBaseRouteNames = new(
-            new[] { "home", "orders", "cart", "product-query", "settings" },
+            new[] { "home", "orders", "cart", "product-query", "product-insights", "settings" },
             StringComparer.OrdinalIgnoreCase
         );
 
@@ -585,6 +595,7 @@ namespace BlazorApp.Api.Services
                 Permissions.SalesDashboard.SalesDetailView,
                 Permissions.SalesDashboard.CompactBoardView,
                 Permissions.SalesDashboard.ProductMovementView,
+                Permissions.SalesDashboard.BatchProductSalesView,
                 Permissions.SalesDashboard.WarehouseFlowView,
                 Permissions.SalesDashboard.LocalProductAnalysisView,
                 Permissions.SalesDashboard.PurchaseAmountView,

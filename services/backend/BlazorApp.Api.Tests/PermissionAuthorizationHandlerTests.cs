@@ -2,6 +2,7 @@ using System.Security.Claims;
 using BlazorApp.Api.Authentication;
 using BlazorApp.Api.Authorization;
 using BlazorApp.Api.Interfaces;
+using BlazorApp.Api.Services.MobileDeviceActivation;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
@@ -481,6 +482,133 @@ public class PermissionAuthorizationHandlerTests
         );
     }
 
+    [Fact]
+    public async Task SelfCashierBarcodePolicy_AllowsAuthenticatedUserWithoutManagementPermission()
+    {
+        var roleService = new Mock<IRoleService>();
+        var handler = CreateHandler(roleService);
+        var requirement = new PermissionRequirement(
+            EmployeeCashierBarcodeSelfServicePolicy.Name
+        );
+        var context = new AuthorizationHandlerContext(
+            new[] { requirement },
+            CreateUser(),
+            resource: null
+        );
+
+        await handler.HandleAsync(context);
+
+        Assert.True(context.HasSucceeded);
+        VerifyRoleServiceWasNotQueried(roleService);
+    }
+
+    [Fact]
+    public async Task SelfCashierBarcodePolicy_DeniesAnonymousIdentityEvenWhenItCarriesUserId()
+    {
+        var roleService = new Mock<IRoleService>();
+        roleService
+            .Setup(service =>
+                service.UserHasPermissionAsync(
+                    "user-1",
+                    EmployeeCashierBarcodeSelfServicePolicy.Name
+                )
+            )
+            .ReturnsAsync(ApiResponse<bool>.OK(true));
+        var handler = CreateHandler(roleService);
+        var requirement = new PermissionRequirement(
+            EmployeeCashierBarcodeSelfServicePolicy.Name
+        );
+        var context = new AuthorizationHandlerContext(
+            new[] { requirement },
+            new ClaimsPrincipal(
+                new ClaimsIdentity(new[] { new Claim(ClaimTypes.NameIdentifier, "user-1") })
+            ),
+            resource: null
+        );
+
+        await handler.HandleAsync(context);
+
+        Assert.False(context.HasSucceeded);
+        VerifyRoleServiceWasNotQueried(roleService);
+    }
+
+    [Fact]
+    public async Task SelfCashierBarcodePolicy_DeniesAuthenticatedIdentityWithoutUserId()
+    {
+        var roleService = new Mock<IRoleService>();
+        var handler = CreateHandler(roleService);
+        var requirement = new PermissionRequirement(
+            EmployeeCashierBarcodeSelfServicePolicy.Name
+        );
+        var context = new AuthorizationHandlerContext(
+            new[] { requirement },
+            new ClaimsPrincipal(new ClaimsIdentity(authenticationType: "TestAuth")),
+            resource: null
+        );
+
+        await handler.HandleAsync(context);
+
+        Assert.False(context.HasSucceeded);
+        VerifyRoleServiceWasNotQueried(roleService);
+    }
+
+    [Theory]
+    [InlineData(MobileDeviceAccountTokenIssuer.TokenUse)]
+    [InlineData("browser_extension")]
+    public async Task SelfCashierBarcodePolicy_RestrictedTokenUseCannotBeExpandedByPrivilegedClaims(
+        string tokenUse
+    )
+    {
+        var roleService = new Mock<IRoleService>();
+        roleService
+            .Setup(service =>
+                service.UserHasPermissionAsync(
+                    "user-1",
+                    EmployeeCashierBarcodeSelfServicePolicy.Name
+                )
+            )
+            .ReturnsAsync(ApiResponse<bool>.OK(true));
+        var handler = CreateHandler(roleService);
+        var requirement = new PermissionRequirement(
+            EmployeeCashierBarcodeSelfServicePolicy.Name
+        );
+        var context = new AuthorizationHandlerContext(
+            new[] { requirement },
+            CreateUser(
+                new Claim("token_use", tokenUse),
+                new Claim(ClaimTypes.Role, "SuperAdmin"),
+                new Claim("permission", EmployeeCashierBarcodeSelfServicePolicy.Name)
+            ),
+            resource: null
+        );
+
+        await handler.HandleAsync(context);
+
+        Assert.False(context.HasSucceeded);
+        // 受限令牌即使伪造管理员或权限 claim，也不能进入数据库角色兜底。
+        VerifyRoleServiceWasNotQueried(roleService);
+    }
+
+    [Fact]
+    public async Task SelfCashierBarcodePolicy_ServiceTokenCannotBeExpandedByMatchingScopeOrAdminRole()
+    {
+        var roleService = new Mock<IRoleService>();
+        var handler = CreateHandler(roleService);
+        var requirement = new PermissionRequirement(
+            EmployeeCashierBarcodeSelfServicePolicy.Name
+        );
+        var context = new AuthorizationHandlerContext(
+            new[] { requirement },
+            CreatePrivilegedServiceTokenUser(),
+            resource: null
+        );
+
+        await handler.HandleAsync(context);
+
+        Assert.False(context.HasSucceeded);
+        VerifyRoleServiceWasNotQueried(roleService);
+    }
+
     private static PermissionAuthorizationHandler CreateHandler(Mock<IRoleService> roleService)
     {
         roleService
@@ -556,6 +684,38 @@ public class PermissionAuthorizationHandlerTests
                 },
                 ServiceApiTokenAuthenticationDefaults.AuthenticationScheme
             )
+        );
+    }
+
+    private static ClaimsPrincipal CreatePrivilegedServiceTokenUser()
+    {
+        return new ClaimsPrincipal(
+            new ClaimsIdentity(
+                new[]
+                {
+                    new Claim(ServiceApiTokenAuthenticationDefaults.TokenTypeClaim, "true"),
+                    new Claim(
+                        ServiceApiTokenAuthenticationDefaults.ScopeClaim,
+                        EmployeeCashierBarcodeSelfServicePolicy.Name
+                    ),
+                    new Claim(ClaimTypes.NameIdentifier, "user-1"),
+                    new Claim(ClaimTypes.Role, "SuperAdmin"),
+                    new Claim("permission", EmployeeCashierBarcodeSelfServicePolicy.Name),
+                },
+                ServiceApiTokenAuthenticationDefaults.AuthenticationScheme
+            )
+        );
+    }
+
+    private static void VerifyRoleServiceWasNotQueried(Mock<IRoleService> roleService)
+    {
+        roleService.Verify(
+            service => service.UserHasPermissionAsync(It.IsAny<string>(), It.IsAny<string>()),
+            Times.Never
+        );
+        roleService.Verify(
+            service => service.UserHasRoleAsync(It.IsAny<string>(), It.IsAny<string>()),
+            Times.Never
         );
     }
 }

@@ -190,6 +190,7 @@ public sealed class BrowserExtensionSupplierTopSalesItemDto
 public sealed class BrowserExtensionSupplierTopSalesDto
 {
     public string SupplierCode { get; set; } = string.Empty;
+    public string SnapshotVersion { get; set; } = string.Empty;
     public int Days { get; set; }
     public DateOnly StartDate { get; set; }
     public DateOnly EndDate { get; set; }
@@ -202,4 +203,47 @@ public sealed class BrowserExtensionSupplierTopSalesDto
     public int? TotalPages { get; set; }
     public DateTime? SalesStatisticLastUpdate { get; set; }
     public List<BrowserExtensionSupplierTopSalesItemDto> Items { get; set; } = new();
+}
+
+public sealed class BrowserExtensionSupplierProductStoreSalesRequestDto
+{
+    [Required]
+    [StringLength(50)]
+    public string SupplierCode { get; set; } = string.Empty;
+
+    [Required]
+    [StringLength(50)]
+    public string ProductCode { get; set; } = string.Empty;
+
+    [Range(1, 90)]
+    public int Days { get; set; } = 60;
+
+    public DateOnly StartDate { get; set; }
+    public DateOnly EndDate { get; set; }
+    public decimal ExpectedTotalSalesQuantity { get; set; }
+
+    [Required]
+    [StringLength(200)]
+    public string SnapshotVersion { get; set; } = string.Empty;
+}
+
+public sealed class BrowserExtensionSupplierProductStoreSalesItemDto
+{
+    public string StoreCode { get; set; } = string.Empty;
+    public string StoreName { get; set; } = string.Empty;
+    public decimal SalesQuantity { get; set; }
+}
+
+public sealed class BrowserExtensionSupplierProductStoreSalesDto
+{
+    public string SupplierCode { get; set; } = string.Empty;
+    public string ProductCode { get; set; } = string.Empty;
+    public string SnapshotVersion { get; set; } = string.Empty;
+    public int Days { get; set; }
+    public DateOnly StartDate { get; set; }
+    public DateOnly EndDate { get; set; }
+    public int EnabledStoreCount { get; set; }
+    public decimal TotalSalesQuantity { get; set; }
+    public DateTime? SalesStatisticLastUpdate { get; set; }
+    public List<BrowserExtensionSupplierProductStoreSalesItemDto> Stores { get; set; } = new();
 }
