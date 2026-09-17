@@ -351,6 +351,20 @@ test("稳定材料错配返回明确业务拒绝且不发送请求", async () =>
   assert.equal(transport.calls.length, 0);
 });
 
+test("人工结案与 provider 终态冲突时保留可重试结果且不发送 HTTP", async () => {
+  const { transport, adapter } = trustedOrderAdapter({
+    async resolveForSync() {
+      throw new OrderSyncMaterialError("ORDER_SYNC_MANUAL_PROVIDER_CONFLICT");
+    },
+  });
+
+  assert.deepEqual(
+    await adapter.sync(orderGuid, JSON.stringify({ orderGuid })),
+    { kind: "retry", failure: "server" },
+  );
+  assert.equal(transport.calls.length, 0);
+});
+
 test("resolver 返回 RemoteClaim 来源时 mapOrder 写入 heldOrderSource", async () => {
   const { transport, adapter } = trustedOrderAdapter({
     async resolveForSync(input) {

@@ -12,7 +12,9 @@ export type OrderSyncMaterialErrorCode =
   | "ORDER_SYNC_VOUCHER_REVERSAL_UNRESOLVED"
   | "ORDER_SYNC_VOUCHER_REVERSAL_MISMATCH"
   | "ORDER_SYNC_CARD_REVERSAL_UNSUPPORTED"
-  | "ORDER_SYNC_HELD_SOURCE_MISSING";
+  | "ORDER_SYNC_HELD_SOURCE_MISSING"
+  /** 人工结案与 provider 终态冲突时必须保留 outbox，等待恢复中心处理。 */
+  | "ORDER_SYNC_MANUAL_PROVIDER_CONFLICT";
 
 /** 同步 wire 的不可变共享挂单来源；只从数据库解析，绝不依赖调用方内存对象。 */
 export type ResolvedHeldOrderSource = Readonly<{
