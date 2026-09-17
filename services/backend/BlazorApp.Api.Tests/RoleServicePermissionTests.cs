@@ -622,6 +622,54 @@ public sealed class RoleServicePermissionTests : IDisposable
     }
 
     [Fact]
+    public async Task GetPermissionRoleCountsAsync_CountsOnlyLiveExplicitRoleLinks()
+    {
+        await InsertRoleAsync("role-manager", "StoreManager");
+        await InsertRoleAsync("role-cashier", "Cashier");
+        await InsertRoleAsync("role-deleted", "Deleted", isDeleted: true);
+        await InsertRolePermissionAsync("role-manager", Permissions.Users.View);
+        await InsertRolePermissionAsync("role-cashier", Permissions.Users.View);
+        await InsertRolePermissionAsync("role-manager", Permissions.Roles.View);
+        // 已删除角色与已删除关联都不能计入引用数。
+        await InsertRolePermissionAsync("role-deleted", Permissions.Roles.View);
+        await _db.Insertable(new SysRolePermission
+        {
+            Id = "role-cashier-deleted-link",
+            RoleGuid = "role-cashier",
+            PermissionCode = Permissions.Roles.View,
+            IsDeleted = true,
+        }).ExecuteCommandAsync();
+
+        var result = await (await CreateAdminServiceAsync()).GetPermissionRoleCountsAsync();
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(2, result.Data[Permissions.Users.View]);
+        Assert.Equal(1, result.Data[Permissions.Roles.View]);
+        Assert.False(result.Data.ContainsKey(Permissions.Users.Create));
+    }
+
+    [Fact]
+    public async Task GetPermissionRoleCountsAsync_RequiresAdmin()
+    {
+        await SeedUserWithRoleAsync("user-manager", "role-manager", "StoreManager");
+
+        var result = await CreateService(
+            "user-manager",
+            new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
+            {
+                IsAllowed = true,
+                IsAuthenticated = true,
+                IsAdmin = false,
+                UserGuid = "user-manager",
+            })
+        ).GetPermissionRoleCountsAsync();
+
+        Assert.False(result.Success);
+        Assert.Null(result.Data);
+    }
+
+    [Fact]
     public async Task GetPermissionCatalogAsync_ReturnsAliasesTemplatesAndSuperAdminRoles()
     {
         var result = await (await CreateAdminServiceAsync()).GetPermissionCatalogAsync();

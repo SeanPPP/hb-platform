@@ -56,8 +56,15 @@ export default function RolesScreen() {
     >
       <AdminTabs
         value="roles"
-        items={canViewUsers ? [{ key: "users", label: copy.usersTab }, { key: "roles", label: copy.rolesTab }] : [{ key: "roles", label: copy.rolesTab }]}
-        onChange={(key) => { if (key === "users") router.replace("/user-admin"); }}
+        items={[
+          ...(canViewUsers ? [{ key: "users", label: copy.usersTab }] : []),
+          { key: "roles", label: copy.rolesTab },
+          { key: "permissions", label: copy.permissionsTab },
+        ]}
+        onChange={(key) => {
+          if (key === "users") router.replace("/user-admin");
+          else if (key === "permissions") router.replace("/(shell)/permissions");
+        }}
       />
       {!allowed ? (
         <View style={localStyles.denied}>

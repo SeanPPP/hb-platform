@@ -59,6 +59,7 @@
     "users": "用户",
     "userAdmin": "用户管理",
     "roles": "角色管理",
+    "permissions": "权限管理",
     "employeeProfile": "员工",
     "employeeProfileReview": "资料审核",
     "deviceManagement": "设备管理",

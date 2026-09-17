@@ -244,6 +244,12 @@ namespace BlazorApp.Api.Interfaces
         Task<ApiResponse<bool>> AssignRolesToPermissionAsync(string permissionCode, List<string> roleGuids);
 
         /// <summary>
+        /// 获取每个权限被显式分配的角色数量（仅统计未删除的角色-权限关联；超级管理员的隐式全权限不计入）
+        /// </summary>
+        /// <returns>权限代码 → 角色数量</returns>
+        Task<ApiResponse<Dictionary<string, int>>> GetPermissionRoleCountsAsync();
+
+        /// <summary>
         /// 获取所有权限（扁平列表，用于管理表格）
         /// </summary>
         /// <returns>权限列表</returns>
