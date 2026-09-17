@@ -18,6 +18,8 @@ export function resolveIdentityAdminRouteNames(
   const identityRoutes = [
     { name: "user-admin", allowed: isIdentitySessionAllowed(access, access.canReadUsers) },
     { name: "roles", allowed: isIdentitySessionAllowed(access, access.canReadRoles) },
+    // 权限管理与 Web 端 /system/permissions 一样只认 Roles.View。
+    { name: "permissions", allowed: isIdentitySessionAllowed(access, access.canReadRoles) },
   ];
   const result = routes.filter((name) =>
     identityRoutes.every((route) => route.name !== name || route.allowed),

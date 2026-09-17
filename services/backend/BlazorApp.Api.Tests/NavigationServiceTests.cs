@@ -827,8 +827,9 @@ public class NavigationServiceTests
         var menu = _service.BuildAppMenu(user);
 
         // 管理员可见完整 App 菜单；商品查询与同权限的商品进销查询都必须保留。
-        Assert.Equal(28, menu.Count);
+        Assert.Equal(29, menu.Count);
         Assert.Contains(menu, item => item.RouteName == "sales-orders");
+        Assert.Contains(menu, item => item.RouteName == "permissions");
         Assert.Contains(menu, item => item.RouteName == "product-query");
         Assert.Contains(menu, item => item.RouteName == "pos-operation-logs");
         Assert.Contains(menu, item => item.RouteName == "product-insights");
@@ -1274,6 +1275,35 @@ public class NavigationServiceTests
         var menu = _service.BuildDeviceAppMenu("Mobile");
 
         Assert.DoesNotContain(menu, item => item.RouteName == "pos-operation-logs");
+    }
+
+    [Fact]
+    public void BuildAppMenu_ShowsPermissionsOnlyWithRolesViewPermission()
+    {
+        var authorized = CreateUser(new Claim("permission", Permissions.Roles.View));
+        var unauthorized = CreateUser(new Claim("permission", Permissions.Users.View));
+
+        // 权限管理入口与 Web 端 /system/permissions 一致，只认 Roles.View；仅有用户查看权限的人不应看到。
+        var item = Assert.Single(
+            _service.BuildAppMenu(authorized),
+            menu => menu.RouteName == "permissions"
+        );
+        Assert.Equal("tabs.permissions", item.TitleKey);
+        Assert.Equal("key-outline", item.Icon);
+        Assert.Equal(Permissions.Roles.View, item.Permission);
+        Assert.DoesNotContain(
+            _service.BuildAppMenu(unauthorized),
+            menu => menu.RouteName == "permissions"
+        );
+    }
+
+    [Fact]
+    public void BuildDeviceAppMenu_HidesPermissionsForDeviceMode()
+    {
+        // 设备会话没有用户角色，RoleService 的管理员校验会直接拒绝，设备模式菜单不应暴露该入口。
+        var menu = _service.BuildDeviceAppMenu("Mobile");
+
+        Assert.DoesNotContain(menu, item => item.RouteName == "permissions");
     }
 
     [Fact]

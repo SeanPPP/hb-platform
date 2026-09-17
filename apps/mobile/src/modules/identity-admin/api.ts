@@ -16,18 +16,21 @@ import { normalizeShopStoresApiResponse } from "@/modules/shop/store-normalizati
 import type {
   IdentityAdminErrorMeta,
   IdentityCreateRoleInput,
+  IdentityCreateSysPermissionInput,
   IdentityCreateUserInput,
   IdentityPagedResult,
   IdentityPermission,
   IdentityPermissionAlias,
   IdentityPermissionCatalog,
   IdentityPermissionCategory,
+  IdentityPermissionRoleCounts,
   IdentityRole,
   IdentityRoleDetail,
   IdentityRolePermissionState,
   IdentityRolePermissionTemplate,
   IdentityRoleQuery,
   IdentityRoleUser,
+  IdentitySysPermission,
   IdentityUpdateRoleInput,
   IdentityUpdateUserInput,
   IdentityUpdateUserPasswordInput,
@@ -305,6 +308,38 @@ export function normalizeIdentityPermissionCatalog(value: unknown): IdentityPerm
   };
 }
 
+function normalizeSysPermission(value: unknown): IdentitySysPermission {
+  const source = requiredRecord(value);
+  const code = requiredString(source, "code", "Code");
+  return {
+    id: stringValue(source, "id", "Id") || code,
+    code,
+    name: stringValue(source, "name", "Name") || code,
+    category: stringValue(source, "category", "Category"),
+    ...(optionalString(source, "description", "Description") ? { description: optionalString(source, "description", "Description") } : {}),
+  };
+}
+
+export function normalizeIdentitySysPermissions(value: unknown): IdentitySysPermission[] {
+  const normalized = unwrap(value);
+  // 后端 data 为 null 时视为空表，与 Web 端 `?? []` 语义一致。
+  if (normalized === null || normalized === undefined) return [];
+  if (!Array.isArray(normalized)) throw new Error(INVALID_RESPONSE_MESSAGE);
+  return normalized.map(normalizeSysPermission);
+}
+
+export function normalizeIdentityPermissionRoleCounts(value: unknown): IdentityPermissionRoleCounts {
+  const normalized = unwrap(value);
+  if (normalized === null || normalized === undefined) return {};
+  if (!isRecord(normalized)) throw new Error(INVALID_RESPONSE_MESSAGE);
+  const counts: IdentityPermissionRoleCounts = {};
+  for (const [code, raw] of Object.entries(normalized)) {
+    const count = typeof raw === "string" && raw.trim() ? Number(raw) : raw;
+    if (code.trim() && typeof count === "number" && Number.isFinite(count) && count >= 0) counts[code.trim()] = Math.floor(count);
+  }
+  return counts;
+}
+
 export function normalizeIdentityRolePermissionState(value: unknown): IdentityRolePermissionState {
   const source = requiredRecord(value);
   return {
@@ -457,6 +492,57 @@ export async function saveIdentityRolePermissions(roleGuid: string, permissions:
   const response = await apiClient.post(path("Roles", roleGuid, "permissions"), {
     permissions: Array.from(new Set(permissions.map((value) => value.trim()).filter(Boolean))),
   }, accountBoundRequestConfig(actorGuid));
+  return normalizeBoolean(response.data);
+}
+
+function permissionPath(code: string, suffix?: string) {
+  const normalized = code.trim();
+  if (!normalized) throw new Error("Permission code is required");
+  return `/Roles/permissions/${encodeURIComponent(normalized)}${suffix ? `/${suffix}` : ""}`;
+}
+
+export async function fetchIdentitySysPermissions(actorGuid: string, signal?: AbortSignal) {
+  const response = await apiClient.get("/Roles/sys-permissions", accountBoundRequestConfig(actorGuid, signal));
+  return normalizeIdentitySysPermissions(response.data);
+}
+
+export async function fetchIdentityPermissionRoleCounts(actorGuid: string, signal?: AbortSignal) {
+  const response = await apiClient.get("/Roles/permissions/role-counts", accountBoundRequestConfig(actorGuid, signal));
+  return normalizeIdentityPermissionRoleCounts(response.data);
+}
+
+export async function fetchIdentityPermissionRoles(code: string, actorGuid: string, signal?: AbortSignal) {
+  const response = await apiClient.get(permissionPath(code, "roles"), accountBoundRequestConfig(actorGuid, signal));
+  const normalized = unwrap(response.data);
+  if (normalized === null || normalized === undefined) return [] as IdentityRole[];
+  if (!Array.isArray(normalized)) throw new Error(INVALID_RESPONSE_MESSAGE);
+  return normalized.map(normalizeRole);
+}
+
+export async function assignIdentityPermissionRoles(code: string, roleGuids: string[], actorGuid: string) {
+  const response = await apiClient.post(
+    permissionPath(code, "roles"),
+    Array.from(new Set(roleGuids.map((value) => value.trim()).filter(Boolean))),
+    accountBoundRequestConfig(actorGuid),
+  );
+  return normalizeBoolean(response.data);
+}
+
+export async function createIdentitySysPermission(input: IdentityCreateSysPermissionInput, actorGuid: string) {
+  const actions = Array.from(new Set((input.actions ?? []).map((value) => value.trim()).filter(Boolean)));
+  const response = await apiClient.post("/Roles/permissions", {
+    code: input.code.trim(),
+    name: input.name.trim(),
+    category: input.category.trim(),
+    description: input.description?.trim() || null,
+    // 服务端以 actions 是否为空区分单个创建与批量生成，空数组必须省略。
+    ...(actions.length ? { actions } : {}),
+  }, accountBoundRequestConfig(actorGuid));
+  return normalizeIdentitySysPermissions(response.data);
+}
+
+export async function deleteIdentitySysPermission(code: string, actorGuid: string) {
+  const response = await apiClient.delete(permissionPath(code), accountBoundRequestConfig(actorGuid));
   return normalizeBoolean(response.data);
 }
 

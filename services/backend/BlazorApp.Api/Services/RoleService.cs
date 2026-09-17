@@ -2874,6 +2874,68 @@ namespace BlazorApp.Api.Services
         }
 
         /// <summary>
+        /// 获取每个权限被显式分配的角色数量
+        /// 📱 供移动端权限列表一次性展示「N 个角色」，避免逐个权限调用 GetPermissionRolesAsync
+        /// </summary>
+        public async Task<ApiResponse<Dictionary<string, int>>> GetPermissionRoleCountsAsync()
+        {
+            try
+            {
+                var db = _context.Db;
+                // 与 GetPermissionRolesAsync 保持相同的管理员校验，避免通过聚合接口绕过服务层限制。
+                var adminDecision = await UserAccessMutationSecurity.ValidateAdminOperationAsync(
+                    db,
+                    _manageableStoreScopeService
+                );
+                if (!adminDecision.IsAllowed)
+                {
+                    return ApiResponse<Dictionary<string, int>>.Error(
+                        adminDecision.Message,
+                        adminDecision.ErrorCode
+                    );
+                }
+
+                // 仅统计仍然存在的角色；被删除的角色不应继续占用权限的引用计数。
+                var rows = await db.Queryable<SysRolePermission>()
+                    .InnerJoin<Role>((rp, r) => rp.RoleGuid == r.RoleGUID)
+                    .Where((rp, r) => rp.IsDeleted == false && r.IsDeleted == false)
+                    .GroupBy((rp, r) => rp.PermissionCode)
+                    .Select((rp, r) => new PermissionRoleCountRow
+                    {
+                        PermissionCode = rp.PermissionCode,
+                        RoleCount = SqlFunc.AggregateDistinctCount(rp.RoleGuid),
+                    })
+                    .ToListAsync();
+
+                var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                foreach (var row in rows)
+                {
+                    if (string.IsNullOrWhiteSpace(row.PermissionCode))
+                    {
+                        continue;
+                    }
+                    counts[row.PermissionCode.Trim()] = row.RoleCount;
+                }
+
+                return ApiResponse<Dictionary<string, int>>.OK(counts, "获取权限角色数量成功");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "获取权限角色数量失败");
+                return ApiResponse<Dictionary<string, int>>.Error(
+                    "获取权限角色数量失败",
+                    "GET_PERMISSION_ROLE_COUNTS_FAILED"
+                );
+            }
+        }
+
+        private sealed class PermissionRoleCountRow
+        {
+            public string PermissionCode { get; set; } = string.Empty;
+            public int RoleCount { get; set; }
+        }
+
+        /// <summary>
         /// 为权限分配角色
         /// </summary>
         public async Task<ApiResponse<bool>> AssignRolesToPermissionAsync(

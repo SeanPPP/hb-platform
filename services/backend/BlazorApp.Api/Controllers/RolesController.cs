@@ -664,6 +664,32 @@ namespace BlazorApp.Api.Controllers
         }
 
         /// <summary>
+        /// 获取每个权限被显式分配的角色数量（权限代码 → 数量）
+        /// 📱 移动端权限列表用于展示「N 个角色」
+        /// </summary>
+        [HttpGet("permissions/role-counts")]
+        [Authorize(Policy = Permissions.Roles.View)]
+        public async Task<IActionResult> GetPermissionRoleCounts()
+        {
+            try
+            {
+                var result = await _roleService.GetPermissionRoleCountsAsync();
+                return ToRoleAccessMutationActionResult(result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "获取权限角色数量失败");
+                return StatusCode(
+                    500,
+                    ApiResponse<Dictionary<string, int>>.Error(
+                        "服务器内部错误",
+                        "INTERNAL_SERVER_ERROR"
+                    )
+                );
+            }
+        }
+
+        /// <summary>
         /// 为权限分配角色
         /// </summary>
         [HttpPost("permissions/{code}/roles")]

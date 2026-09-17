@@ -9,15 +9,15 @@ const admin = {
 };
 const legacy = ["users", "employee-profile", "app-downloads", "settings"];
 const routes = resolveIdentityAdminRouteNames(legacy, admin);
-assert.deepEqual(routes, [...legacy, "user-admin", "roles"]);
+assert.deepEqual(routes, [...legacy, "user-admin", "roles", "permissions"]);
 assert.deepEqual(legacy, ["users", "employee-profile", "app-downloads", "settings"]);
 assert.deepEqual(resolveIdentityAdminRouteNames(routes, admin), routes, "新服务端菜单不得重复补齐");
 
 const section = buildWorkbenchSections(routes).find(item => item.key === "people-management");
 assert.deepEqual(section?.items.map(item => item.routeName), [
-  "users", "user-admin", "roles", "employee-profile", "app-downloads",
+  "users", "user-admin", "roles", "permissions", "employee-profile", "app-downloads",
 ]);
-for (const route of ["user-admin", "roles"]) {
+for (const route of ["user-admin", "roles", "permissions"]) {
   assert.equal(resolveTabRouteCorrection({
     currentRouteName: route, hasAppliedDefaultRoute: true, isDeviceMode: false, routeNames: routes,
   }), null, "点击新入口后不能被 Shell 纠偏回工作台");
@@ -26,7 +26,7 @@ for (const route of ["user-admin", "roles"]) {
 assert.deepEqual(resolveIdentityAdminRouteNames(legacy, { ...admin, isAdmin: false }), legacy,
   "普通账号即使持有读权限，也不能补回服务端未下发或关闭的菜单");
 assert.deepEqual(resolveIdentityAdminRouteNames(routes, { ...admin, isAdmin: false, canReadRoles: false }),
-  [...legacy, "user-admin"], "服务端菜单仍须匹配页面自身权限");
+  [...legacy, "user-admin"], "服务端菜单仍须匹配页面自身权限；权限管理与角色管理同样只认 Roles.View");
 assert.deepEqual(resolveIdentityAdminRouteNames(routes, { ...admin, isAdmin: false, canReadUsers: false, canReadRoles: false }), legacy);
 
 for (const sessionKind of ["device", "deviceAccount", "iosReview", "none"]) {
