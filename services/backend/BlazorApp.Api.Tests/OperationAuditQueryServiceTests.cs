@@ -426,6 +426,99 @@ public sealed class OperationAuditQueryServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task QueryAsync_FiltersByEmergencyOverrideAndOfflineCachedFlags()
+    {
+        var now = DateTime.UtcNow;
+        var emergency = CreateAudit("emergency", "BRI", now.AddMinutes(-1));
+        emergency.IsEmergencyOverride = true;
+        var offline = CreateAudit("offline", "BRI", now.AddMinutes(-2));
+        offline.IsOfflineCached = true;
+        var plain = CreateAudit("plain", "BRI", now.AddMinutes(-3));
+        await _db.Insertable(new[] { emergency, offline, plain }).ExecuteCommandAsync();
+        var service = CreateService("Admin");
+
+        var emergencyOnly = await service.QueryAsync(
+            new OperationAuditQueryDto { IsEmergencyOverride = true },
+            now
+        );
+        var offlineOnly = await service.QueryAsync(
+            new OperationAuditQueryDto { IsOfflineCached = true },
+            now
+        );
+        var neither = await service.QueryAsync(
+            new OperationAuditQueryDto { IsEmergencyOverride = false, IsOfflineCached = false },
+            now
+        );
+        var unfiltered = await service.QueryAsync(new OperationAuditQueryDto(), now);
+
+        Assert.Equal(emergency.EventId, Assert.Single(emergencyOnly.Items).EventId);
+        Assert.Equal(offline.EventId, Assert.Single(offlineOnly.Items).EventId);
+        Assert.Equal(plain.EventId, Assert.Single(neither.Items).EventId);
+        // 参数为 null 时保持原有行为，不做过滤。
+        Assert.Equal(3, unfiltered.Total);
+    }
+
+    [Fact]
+    public async Task GetSummaryAsync_CountsByOutcomeAndFlagsIgnoringOutcomeFilter()
+    {
+        var now = DateTime.UtcNow;
+        var succeededEmergency = CreateAudit("succeeded-emergency", "BRI", now.AddMinutes(-1));
+        succeededEmergency.IsEmergencyOverride = true;
+        var succeeded = CreateAudit("succeeded", "BRI", now.AddMinutes(-2));
+        var denied = CreateAudit("denied", "BRI", now.AddMinutes(-3));
+        denied.Outcome = "Denied";
+        var failedOffline = CreateAudit("failed-offline", "BRI", now.AddMinutes(-4));
+        failedOffline.Outcome = "Failed";
+        failedOffline.IsOfflineCached = true;
+        await _db.Insertable(new[] { succeededEmergency, succeeded, denied, failedOffline })
+            .ExecuteCommandAsync();
+        var service = CreateService("Admin");
+
+        // 请求携带结果类过滤参数，汇总必须忽略它们并返回未过滤前的基数。
+        var summary = await service.GetSummaryAsync(
+            new OperationAuditQueryDto { Outcome = "Denied", IsEmergencyOverride = true },
+            now
+        );
+
+        Assert.Equal(4, summary.Total);
+        Assert.Equal(2, summary.Succeeded);
+        Assert.Equal(1, summary.Denied);
+        Assert.Equal(1, summary.Failed);
+        Assert.Equal(1, summary.EmergencyOverride);
+        Assert.Equal(1, summary.OfflineCached);
+    }
+
+    [Fact]
+    public async Task GetSummaryAsync_RespectsStoreScopeForStoreManager()
+    {
+        var now = DateTime.UtcNow;
+        await InsertAuditAsync("allowed-1", "BRI", now.AddMinutes(-1));
+        await InsertAuditAsync("allowed-2", "BRI", now.AddMinutes(-2));
+        var blocked = CreateAudit("blocked", "OTHER", now.AddMinutes(-3));
+        blocked.Outcome = "Denied";
+        blocked.IsEmergencyOverride = true;
+        await _db.Insertable(blocked).ExecuteCommandAsync();
+        var service = CreateService("StoreManager", ["BRI"]);
+
+        var summary = await service.GetSummaryAsync(new OperationAuditQueryDto(), now);
+        var blockedRequested = await service.GetSummaryAsync(
+            new OperationAuditQueryDto { StoreCode = "OTHER" },
+            now
+        );
+        var noScope = await CreateService("StoreManager", [], scopeAllowed: false)
+            .GetSummaryAsync(new OperationAuditQueryDto(), now);
+
+        Assert.Equal(2, summary.Total);
+        Assert.Equal(2, summary.Succeeded);
+        Assert.Equal(0, summary.Denied);
+        Assert.Equal(0, summary.EmergencyOverride);
+        // 显式请求越权门店以及无可管理门店时都返回全 0。
+        Assert.Equal(0, blockedRequested.Total);
+        Assert.Equal(0, noScope.Total);
+        Assert.Equal(0, noScope.Succeeded);
+    }
+
+    [Fact]
     public async Task GetDetailAsync_ReturnsItemsForAccessibleEvent()
     {
         var now = DateTime.UtcNow;
@@ -652,6 +745,7 @@ public sealed class OperationAuditControllerContractTests
         );
         Assert.NotNull(type.GetMethod(nameof(PosOperationAuditController.GetList)));
         Assert.NotNull(type.GetMethod(nameof(PosOperationAuditController.GetDetail)));
+        Assert.NotNull(type.GetMethod(nameof(PosOperationAuditController.GetSummary)));
     }
 
     [Fact]

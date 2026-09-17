@@ -3351,21 +3351,6 @@ public sealed class SettingsViewModelTests
         Assert.False(viewModel.HasSavedLinklyCloudSecret);
     }
 
-    private static async Task WaitUntilAsync(Func<bool> condition)
-    {
-        for (var attempt = 0; attempt < 20; attempt++)
-        {
-            if (condition())
-            {
-                return;
-            }
-
-            await Task.Delay(10);
-        }
-
-        Assert.True(condition());
-    }
-
     [Fact]
     public async Task LoadAsync_loads_receipt_printer_settings_and_save_persists_changes()
     {

@@ -232,7 +232,7 @@
     },
     "Permissions.PosTerminal.Audit.View": {
       "name": "查看员工操作日志",
-      "description": "收银端操作审计 - 页面 /pos-admin/operation-logs 查看管理分店的员工操作记录"
+      "description": "收银端操作审计 - Web 页面 /pos-admin/operation-logs 与移动端工作台「员工操作日志」查看管理分店的员工操作记录"
     },
     "Permissions.PosTerminal.CashDrawer.Open": {
       "name": "打开钱箱",

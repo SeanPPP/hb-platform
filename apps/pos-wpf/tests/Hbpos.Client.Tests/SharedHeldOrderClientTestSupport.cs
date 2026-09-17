@@ -6,7 +6,6 @@ using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Contracts.Catalog;
 using Hbpos.Contracts.HeldOrders;
-using Microsoft.Data.Sqlite;
 
 namespace Hbpos.Client.Tests;
 
@@ -72,18 +71,10 @@ public static class SharedHeldOrderClientTestSupport
 
         public SharedHeldOrderRepository Repository { get; }
 
-        public ValueTask DisposeAsync()
+        public async ValueTask DisposeAsync()
         {
-            SqliteConnection.ClearAllPools();
-            foreach (var path in new[] { DatabasePath, $"{DatabasePath}-wal", $"{DatabasePath}-shm" })
-            {
-                if (File.Exists(path))
-                {
-                    File.Delete(path);
-                }
-            }
-
-            return ValueTask.CompletedTask;
+            // 直接 File.Delete 会在 Windows CI 上随机撞到 SQLite 尚未释放的句柄，改走共享的重试清理。
+            await SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(DatabasePath);
         }
     }
 

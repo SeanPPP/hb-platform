@@ -10,6 +10,7 @@ export const IOS_REVIEW_EXCLUDED_ROUTE_NAMES = [
   "product-insights",
   "warehouse-product-insights",
   "sales-orders",
+  "pos-operation-logs",
   "workbench",
 ] as const;
 

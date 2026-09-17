@@ -1234,20 +1234,6 @@ public sealed class CardRefundRecoveryPresenterTests
                 LocalCardPaymentAttemptStatus.RequiresReview,
                 DateTimeOffset.UtcNow));
 
-    private static async Task WaitUntilAsync(Func<bool> predicate)
-    {
-        var timeoutAt = DateTimeOffset.UtcNow.AddSeconds(2);
-        while (!predicate())
-        {
-            if (DateTimeOffset.UtcNow >= timeoutAt)
-            {
-                throw new TimeoutException("Timed out waiting for the presenter state.");
-            }
-
-            await Task.Delay(10);
-        }
-    }
-
     private static void PublishRecoveryOwner(PosCartService cart)
     {
         var publication = cart.TryPublishRecoverySnapshot(
