@@ -524,7 +524,15 @@ namespace BlazorApp.Api.Services
                     await RunStep(
                         SalesStatisticType.HourlySales,
                         "分时统计",
-                        () => UpdateHourlyStatisticsWithContext(context, posmContext, logger, date, null)
+                        () => UpdateHourlyStatisticsWithContext(
+                            context,
+                            posmContext,
+                            // 分时统计与分店统计同源：历史窗口内必须带 HBSales 上下文。
+                            SalesStatisticsHBSalesHistoryWindow.Includes(date) ? hbSalesContext : null,
+                            logger,
+                            date,
+                            null
+                        )
                     );
                     // 当天与 HBSales 历史窗口日期都由商品入口原子发布分店表，不能提前独立替换。
                     if (!SalesStatisticsHBSalesHistoryWindow.Includes(date)
@@ -737,18 +745,20 @@ internal async Task UpdateDailyStatisticsWithContext(
     /// </summary>
     /// <param name="context">数据库上下文</param>
     /// <param name="posmContext">POSM数据库上下文</param>
+    /// <param name="hbSalesContext">HBSalesRecord 数据库上下文；仅 HBSales 历史窗口内需要</param>
     /// <param name="logger">日志记录器</param>
     /// <param name="date">目标日期</param>
     /// <param name="hour">指定小时，为空则更新所有小时</param>
 internal Task UpdateHourlyStatisticsWithContext(
     SqlSugarContext context,
     POSMSqlSugarContext posmContext,
+    HBSalesRecordSqlSugarContext? hbSalesContext,
     ILogger logger,
     DateTime date,
     int? hour
 )
 {
-    return _store.UpdateHourlyStatisticsWithContext(context, posmContext, logger, date, hour);
+    return _store.UpdateHourlyStatisticsWithContext(context, posmContext, hbSalesContext, logger, date, hour);
 }
 
     /// <summary>

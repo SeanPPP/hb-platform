@@ -1009,6 +1009,42 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
     }
 
     [Fact]
+    public async Task GetExecutiveHourlyTrafficAsync_同期仅HBSales有单据时补算并返回去年小时数据()
+    {
+        // 2025-07-05 在 HBSales 历史窗口内，且该分店当天只有旧系统单据：
+        // 完整性核验必须把它视为应有数据，补算后同期小时行才不会是 0。
+        await SeedStoreAsync("S1", "Store A");
+        // 本期用真实 POSM 订单，没有来源覆盖的裸统计行会被视为残留快照而重算掉。
+        await SeedPosmOrderWithPaymentAsync("current-dual-1", new DateTime(2026, 7, 4, 10, 10, 0), "S1", 50m, 1);
+        await SeedPosmOrderWithPaymentAsync("current-dual-2", new DateTime(2026, 7, 4, 10, 40, 0), "S1", 70m, 1);
+        await SeedHbSalesOrderAsync("hb-old-hour-1", new DateTime(2025, 7, 5, 10, 10, 0), "S1", 35m, 1);
+        await SeedHbSalesOrderAsync("hb-old-hour-2", new DateTime(2025, 7, 5, 10, 40, 0), "S1", 45m, 2);
+        var service = CreateService();
+        var range = new DateRangeDto
+        {
+            StartDate = new DateTime(2026, 7, 4),
+            EndDate = new DateTime(2026, 7, 4),
+            CompareStartDate = new DateTime(2025, 7, 5),
+            CompareEndDate = new DateTime(2025, 7, 5),
+        };
+
+        var result = await service.GetExecutiveHourlyTrafficAsync(range, new List<string> { "S1" });
+        for (var attempt = 0; result.StatisticsPending && attempt < 200; attempt++)
+        {
+            await Task.Delay(50);
+            result = await service.GetExecutiveHourlyTrafficAsync(range, new List<string> { "S1" });
+        }
+
+        Assert.False(result.StatisticsPending);
+        var row = Assert.Single(result);
+        Assert.Equal("10:00", row.Hour);
+        Assert.Equal(120m, row.Revenue);
+        Assert.Equal(2, row.OrderCount);
+        Assert.Equal(80m, row.RevenueLY);
+        Assert.Equal(2, row.OrderCountLY);
+    }
+
+    [Fact]
     public async Task GetExecutiveHourlyTrafficAsync_本期小时客单缺失时重算当前日期()
     {
         await SeedStoreAsync("S1", "Store A");

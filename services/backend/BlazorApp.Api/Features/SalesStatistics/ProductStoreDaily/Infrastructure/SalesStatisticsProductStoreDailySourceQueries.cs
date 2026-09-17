@@ -243,6 +243,126 @@ internal static class SalesStatisticsProductStoreDailySourceQueries
         }
     }
 
+    /// <summary>
+    /// HBSales 历史窗口内的分时来源：按分店与结账小时聚合金额、销量与去重单数。
+    /// 过滤规则与 <see cref="LoadHBSalesStoreAggregatesAsync"/> 完全一致，保证分时之和等于分店日统计。
+    /// 结账时间是 time 类型，跨数据库无法在 SQL 中稳定取小时，因此先按销售单拉取，再在内存中分桶。
+    /// </summary>
+    internal static async Task<List<HBSalesHourlyAggregateRow>> LoadHBSalesHourlyAggregatesAsync(
+        HBSalesRecordSqlSugarContext hbSalesContext,
+        DateTime targetDate,
+        DateTime nextDate)
+    {
+        var originalCommandTimeout = hbSalesContext.Db.Ado.CommandTimeOut;
+        var mainCheckoutDateWindowStart = targetDate.AddDays(
+            -HBSalesMainCheckoutDateWindowDays
+        );
+        var mainCheckoutDateWindowEnd = nextDate.AddDays(HBSalesMainCheckoutDateWindowDays);
+        hbSalesContext.Db.Ado.CommandTimeOut = Math.Max(
+            originalCommandTimeout,
+            CommandTimeoutSeconds
+        );
+        List<HBSalesHourlySourceRow> orderRows;
+        try
+        {
+            orderRows = await hbSalesContext.Db.Queryable<SalesOrderMain>()
+                .LeftJoin<SalesOrderDetailRecord>((main, detail) =>
+                    main.B销售单号 == detail.B销售单号)
+                .Where((main, detail) =>
+                    detail.B结账日期.HasValue
+                    && detail.B结账日期.Value >= targetDate
+                    && detail.B结账日期.Value < nextDate
+                    && main.B结账日期.HasValue
+                    && main.B结账日期.Value >= mainCheckoutDateWindowStart
+                    && main.B结账日期.Value < mainCheckoutDateWindowEnd
+                    && (main.B单据类型 == null || main.B单据类型.Trim() != "2")
+                    && detail.B分店代码 != null
+                    && detail.B分店代码.Trim() != ""
+                )
+                .GroupBy((main, detail) => new
+                {
+                    BranchCode = detail.B分店代码!.Trim(),
+                    main.B销售单号,
+                    main.B单据类型,
+                    DetailCheckoutTime = detail.B结账时间,
+                    MainCheckoutTime = main.B结账时间,
+                })
+                .Select((main, detail) => new HBSalesHourlySourceRow
+                {
+                    BranchCode = detail.B分店代码!.Trim(),
+                    SalesOrderNo = main.B销售单号,
+                    DocumentType = main.B单据类型,
+                    DetailCheckoutTime = detail.B结账时间,
+                    MainCheckoutTime = main.B结账时间,
+                    TotalAmount = SqlFunc.AggregateSum(detail.B合计金额 ?? 0m),
+                    TotalQuantity = SqlFunc.AggregateSum(detail.B数量 ?? 0m),
+                })
+                .ToListAsync();
+        }
+        finally
+        {
+            hbSalesContext.Db.Ado.CommandTimeOut = originalCommandTimeout;
+        }
+
+        return BuildHBSalesHourlyAggregates(orderRows);
+    }
+
+    /// <summary>
+    /// 把按销售单拉取的 HBSales 行折算为分店小时聚合：退货/退款单（单据类型 3、4）取反，
+    /// 小时取该单最早的结账时间，缺少结账时间的旧单沿用历史导入口径落到 0 点。
+    /// </summary>
+    internal static List<HBSalesHourlyAggregateRow> BuildHBSalesHourlyAggregates(
+        IEnumerable<HBSalesHourlySourceRow> rows)
+    {
+        var orders = rows
+            .Where(row => !string.IsNullOrWhiteSpace(row.BranchCode))
+            .GroupBy(row => (
+                BranchCode: row.BranchCode!.Trim(),
+                SalesOrderNo: row.SalesOrderNo?.Trim() ?? string.Empty
+            ))
+            .Select(group =>
+            {
+                // 同一销售单的明细可能落在不同秒，先按销售单归并，才能保证单数按小时去重。
+                var checkoutTime = group
+                    .Select(row => row.DetailCheckoutTime ?? row.MainCheckoutTime)
+                    .Where(time => time.HasValue)
+                    .OrderBy(time => time!.Value)
+                    .FirstOrDefault();
+                return new
+                {
+                    group.Key.BranchCode,
+                    HasOrderNo = group.Key.SalesOrderNo.Length > 0,
+                    Hour = checkoutTime.HasValue ? checkoutTime.Value.Hours : 0,
+                    TotalAmount = group.Sum(row =>
+                        ApplyHBSalesDocumentTypeSign(row.DocumentType, row.TotalAmount)),
+                    TotalQuantity = group.Sum(row =>
+                        ApplyHBSalesDocumentTypeSign(row.DocumentType, row.TotalQuantity)),
+                };
+            })
+            .ToList();
+
+        return orders
+            .GroupBy(order => (order.BranchCode, order.Hour))
+            .Select(group => new HBSalesHourlyAggregateRow
+            {
+                BranchCode = group.Key.BranchCode,
+                Hour = group.Key.Hour,
+                TotalAmount = group.Sum(order => order.TotalAmount),
+                TotalQuantity = group.Sum(order => order.TotalQuantity),
+                // 与分店日统计的 COUNT(DISTINCT 销售单号) 口径一致：空单号不计单数，但金额仍计入。
+                OrderCount = group.Count(order => order.HasOrderNo),
+            })
+            .OrderBy(row => row.BranchCode, StringComparer.Ordinal)
+            .ThenBy(row => row.Hour)
+            .ToList();
+    }
+
+    private static decimal ApplyHBSalesDocumentTypeSign(string? documentType, decimal value)
+    {
+        var normalized = documentType?.Trim();
+        return normalized == "3" || normalized == "4" ? -value : value;
+    }
+
     internal static async Task<Posm2025DailySnapshot> Load2025PosmDailySnapshotAsync(
         POSMSqlSugarContext posmContext,
         DateTime date)

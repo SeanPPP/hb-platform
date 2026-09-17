@@ -5218,14 +5218,16 @@ namespace BlazorApp.Api.Services.React
                     })
                     .ToListAsync();
 
-                var expectedSalesBranchesByDate = await GetPosmStoreSalesBranchCodesByDateAsync(
+                // 分时统计与分店日统计同源：HBSales 历史窗口内期望分店必须取 POSM 与 HBSales 并集，
+                // 否则只在旧系统有单据的分店会被当成“不该有数据”，缺口永远不会触发补算。
+                var expectedSalesBranchesByDate = await GetStoreSalesSourceBranchCodesByDateAsync(
                     startDate,
                     endDate,
                     branchCodes
                 );
                 if (expectedSalesBranchesByDate == null)
                 {
-                    // POSM 来源覆盖无法确认时，保守触发重算；不能把局部小时统计误认为完整。
+                    // 来源覆盖无法确认时，保守触发重算；不能把局部小时统计误认为完整。
                     return expectedDates;
                 }
 
