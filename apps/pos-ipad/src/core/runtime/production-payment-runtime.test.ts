@@ -19,6 +19,7 @@ import type {
   PaymentDraftRecovery,
 } from "@/core/db/sqlite-payment-draft-recovery-store";
 import type {
+  ManualPaymentRecoveryFindingInput,
   PaymentRecoveryCenterRecord,
 } from "@/core/db/sqlite-payment-recovery-center-store";
 import type {
