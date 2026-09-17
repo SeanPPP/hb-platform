@@ -58,5 +58,11 @@ namespace BlazorApp.Api.Interfaces.React
             WarehouseProductFlowAnalysisRequest request,
             List<string>? branchCodes
         );
+
+        /// <summary>移动端仓库商品进销查询：单商品一次返回合计、分店分布与货柜/订货/发货明细。</summary>
+        Task<ApiResponse<WarehouseProductInsightDto>> GetProductInsightAsync(
+            WarehouseProductInsightQuery query,
+            List<string>? branchCodes
+        );
     }
 }
