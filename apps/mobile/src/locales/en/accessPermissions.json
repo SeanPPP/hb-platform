@@ -226,6 +226,10 @@
       "name": "Orders View",
       "description": "Allows access to Orders View."
     },
+    "SalesOrders.View": {
+      "name": "Sales records view",
+      "description": "Mobile sales records - view sales orders, lines and invoices by store, date and order type."
+    },
     "Permissions.PosTerminal.Audit.View": {
       "name": "View POS audit logs",
       "description": "View POS operation audit logs for managed stores."

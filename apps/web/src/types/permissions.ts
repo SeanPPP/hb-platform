@@ -57,6 +57,9 @@ export const P = {
     Edit: 'Container.Edit',
     Delete: 'Container.Delete',
   },
+  SalesOrders: {
+    View: 'SalesOrders.View',
+  },
   InstallmentOrders: {
     View: 'InstallmentOrders.View',
   },

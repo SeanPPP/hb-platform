@@ -73,32 +73,6 @@ function trimOrUndefined(value?: string): string | undefined {
   return normalized || undefined
 }
 
-export function resolvePosmSalesOrderClientUtcOffsetMinutes(
-  startDate: string | undefined,
-  fallbackOffsetMinutes: number,
-): number {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(startDate?.trim() ?? '')
-  if (!match) return fallbackOffsetMinutes
-
-  const year = Number(match[1])
-  const month = Number(match[2])
-  const day = Number(match[3])
-  if (year < 1) return fallbackOffsetMinutes
-  const localMidnight = new Date(0)
-  localMidnight.setFullYear(year, month - 1, day)
-  localMidnight.setHours(0, 0, 0, 0)
-  if (
-    localMidnight.getFullYear() !== year ||
-    localMidnight.getMonth() !== month - 1 ||
-    localMidnight.getDate() !== day
-  ) {
-    return fallbackOffsetMinutes
-  }
-
-  // 以选中日期的当地零点取 offset，兼容存在夏令时的浏览器时区。
-  return -localMidnight.getTimezoneOffset()
-}
-
 export function createPosmSalesOrderColumnFilterDraft(
   applied: PosmSalesOrderColumnFilters,
   changes: Partial<PosmSalesOrderColumnFilters> = {},
@@ -252,10 +226,6 @@ export function buildPosmSalesOrderListQuery(
     deviceCodeKeyword: trimOrUndefined(filters.deviceCodeKeyword),
     timeStart: filters.timeStart,
     timeEnd: filters.timeEnd,
-    clientUtcOffsetMinutes: resolvePosmSalesOrderClientUtcOffsetMinutes(
-      startDate,
-      -new Date().getTimezoneOffset(),
-    ),
     skuCountMin: filters.skuCountMin,
     skuCountMax: filters.skuCountMax,
     itemCountMin: filters.itemCountMin,

@@ -186,6 +186,15 @@ namespace BlazorApp.Api.Services
             },
             new()
             {
+                RouteName = "sales-orders",
+                TitleKey = "tabs.salesOrders",
+                Icon = "receipt-text-outline",
+                // 移动端销售订单查询使用独立权限，由管理员显式授予；不随 Web 收银记录页的 Orders.View 放行。
+                Permission = Permissions.SalesOrders.View,
+                Order = 21,
+            },
+            new()
+            {
                 RouteName = "cart",
                 TitleKey = "tabs.cart",
                 Icon = "cart-outline",

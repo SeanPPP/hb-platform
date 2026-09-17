@@ -33,7 +33,7 @@ public sealed class PosmSalesOrderReactServiceTests : IDisposable
                 InitKeyType = InitKeyType.Attribute,
             }
         );
-        _db.CodeFirst.InitTables(typeof(SalesOrder), typeof(SalesOrderDetail), typeof(Store));
+        _db.CodeFirst.InitTables(typeof(SalesOrder), typeof(SalesOrderDetail), typeof(Store), typeof(Product));
     }
 
     [Fact]
@@ -50,6 +50,90 @@ public sealed class PosmSalesOrderReactServiceTests : IDisposable
         Assert.Equal(1, result.Total);
         Assert.Single(result.Items);
         Assert.Equal("ORDER-001", result.Items[0].OrderGuid);
+    }
+
+    [Fact]
+    public async Task GetMatchedProductsAsync_按订单聚合命中商品且与列表关键词口径一致()
+    {
+        await SeedOrderAsync("ORDER-001", new DateTime(2026, 7, 1, 9, 0, 0), "DEVICE-A");
+        await SeedOrderAsync("ORDER-002", new DateTime(2026, 7, 1, 10, 0, 0), "DEVICE-A");
+        await SeedOrderAsync("ORDER-003", new DateTime(2026, 7, 1, 11, 0, 0), "DEVICE-A");
+        // 同一订单同一货号两行（不同折扣），命中后必须合并为一条并累计数量。
+        await SeedDetailAsync("ORDER-001", "jm-001", "BAR-001", "保温杯");
+        await SeedDetailAsync("ORDER-001", "jm-001", "BAR-001", "保温杯");
+        await SeedDetailAsync("ORDER-001", "jm-002", "BAR-002", "纸巾");
+        await SeedDetailAsync("ORDER-002", "jm-003", "BAR-003", "保温杯 大号");
+        await SeedDetailAsync("ORDER-003", "jm-004", "BAR-004", "收纳箱");
+
+        var service = CreateService();
+        var matched = await service.GetMatchedProductsAsync(
+            new[] { "ORDER-001", "ORDER-002", "ORDER-003", "ORDER-001" },
+            " 保温杯 "
+        );
+
+        Assert.Equal(2, matched.Count);
+        var first = Assert.Single(matched["ORDER-001"]);
+        Assert.Equal("jm-001", first.ProductCode);
+        Assert.Equal("保温杯", first.ProductName);
+        Assert.Equal("BAR-001", first.Barcode);
+        Assert.Equal(2, first.Quantity);
+        Assert.Equal("jm-003", Assert.Single(matched["ORDER-002"]).ProductCode);
+        Assert.False(matched.ContainsKey("ORDER-003"));
+
+        // 关键词命中订单集合必须与列表过滤结果一致，否则列表会出现没有命中商品的订单。
+        var list = await service.GetSalesOrderListAsync(
+            new PosmSalesOrderQueryParams { Keyword = "保温杯" }
+        );
+        Assert.Equal(
+            matched.Keys.OrderBy(guid => guid),
+            list.Items.Select(item => item.OrderGuid!).OrderBy(guid => guid)
+        );
+        // 件数按明细数量求和：ORDER-001 三行各 1 件 = 3，SKU 去重后为 2。
+        var orderOne = list.Items.Single(item => item.OrderGuid == "ORDER-001");
+        Assert.Equal(3, orderOne.QuantityTotal);
+        Assert.Equal(2, orderOne.SkuCount);
+    }
+
+    [Fact]
+    public async Task GetMatchedProductsAsync_空关键词或空订单不查库()
+    {
+        var service = CreateService();
+        Assert.Empty(await service.GetMatchedProductsAsync(Array.Empty<string>(), "jm"));
+        Assert.Empty(await service.GetMatchedProductsAsync(new[] { "ORDER-001" }, "   "));
+    }
+
+    [Fact]
+    public async Task 关键词按主档货号命中订单并回带货号()
+    {
+        await _db.Insertable(
+                new Product
+                {
+                    ProductCode = "81C5AF52",
+                    ItemNumber = "HB034-80",
+                    Barcode = "9528503423080",
+                    ProductName = "Vinal Roll",
+                }
+            )
+            .ExecuteCommandAsync();
+        await SeedOrderAsync("ORDER-ITEM", new DateTime(2026, 9, 17, 9, 0, 0), "DEVICE-A");
+        await SeedDetailAsync("ORDER-ITEM", "81C5AF52", "", "Vinal Roll");
+        await SeedOrderAsync("ORDER-OTHER", new DateTime(2026, 9, 17, 9, 5, 0), "DEVICE-A");
+        await SeedDetailAsync("ORDER-OTHER", "OTHER-CODE", "", "别的商品");
+
+        var service = CreateService();
+        // 货号不在 POSM 明细里，必须经主档解析成商品编码才能命中。
+        var list = await service.GetSalesOrderListAsync(
+            new PosmSalesOrderQueryParams { Keyword = "HB034-80" }
+        );
+        Assert.Equal("ORDER-ITEM", Assert.Single(list.Items).OrderGuid);
+
+        var matched = await service.GetMatchedProductsAsync(new[] { "ORDER-ITEM", "ORDER-OTHER" }, "HB034-80");
+        var hit = Assert.Single(matched["ORDER-ITEM"]);
+        Assert.Equal("81C5AF52", hit.ProductCode);
+        Assert.Equal("HB034-80", hit.ItemNumber);
+        // 主档没有对应商品的编码不回带货号。
+        var otherMatched = await service.GetMatchedProductsAsync(new[] { "ORDER-OTHER" }, "别的");
+        Assert.Null(Assert.Single(otherMatched["ORDER-OTHER"]).ItemNumber);
     }
 
     public static TheoryData<string, string, string> SortCases =>
@@ -392,16 +476,17 @@ public sealed class PosmSalesOrderReactServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task 客户端时区偏移同时作用于日期和时间筛选()
+    public async Task 日期与时段筛选按订单墙钟时间直接比较不做时区平移()
     {
-        await SeedOrderAsync("LOCAL-MATCH", new DateTime(2026, 7, 16, 14, 30, 0, DateTimeKind.Utc), "D1");
-        await SeedDetailAsync("LOCAL-MATCH", "P-1", "B-1", "当地七月十七日零点半");
-        await SeedOrderAsync("PREVIOUS-LOCAL-DAY", new DateTime(2026, 7, 16, 13, 30, 0, DateTimeKind.Utc), "D2");
-        await SeedDetailAsync("PREVIOUS-LOCAL-DAY", "P-2", "B-2", "当地七月十六日");
-        await SeedOrderAsync("NEXT-LOCAL-DAY", new DateTime(2026, 7, 17, 14, 30, 0, DateTimeKind.Utc), "D3");
-        await SeedDetailAsync("NEXT-LOCAL-DAY", "P-3", "B-3", "当地七月十八日");
-        await SeedOrderAsync("WRONG-LOCAL-TIME", new DateTime(2026, 7, 17, 0, 30, 0, DateTimeKind.Utc), "D4");
-        await SeedDetailAsync("WRONG-LOCAL-TIME", "P-4", "B-4", "当地上午十点半");
+        // OrderTime 是 POS 写入的门店本地墙钟时间，2026-09-17 已对照库内最新订单与悉尼时间核实。
+        await SeedOrderAsync("WALL-MATCH", new DateTime(2026, 7, 17, 0, 30, 0), "D1");
+        await SeedDetailAsync("WALL-MATCH", "P-1", "B-1", "七月十七日零点半");
+        await SeedOrderAsync("PREVIOUS-DAY", new DateTime(2026, 7, 16, 23, 30, 0), "D2");
+        await SeedDetailAsync("PREVIOUS-DAY", "P-2", "B-2", "七月十六日深夜");
+        await SeedOrderAsync("NEXT-DAY", new DateTime(2026, 7, 18, 0, 30, 0), "D3");
+        await SeedDetailAsync("NEXT-DAY", "P-3", "B-3", "七月十八日零点半");
+        await SeedOrderAsync("WRONG-TIME", new DateTime(2026, 7, 17, 10, 30, 0), "D4");
+        await SeedDetailAsync("WRONG-TIME", "P-4", "B-4", "七月十七日上午十点半");
 
         var result = await CreateService().GetSalesOrderListAsync(
             new PosmSalesOrderQueryParams
@@ -410,11 +495,10 @@ public sealed class PosmSalesOrderReactServiceTests : IDisposable
                 EndDate = new DateTime(2026, 7, 17),
                 TimeStart = new TimeSpan(0, 30, 0),
                 TimeEnd = new TimeSpan(0, 30, 0),
-                ClientUtcOffsetMinutes = 600,
             }
         );
 
-        Assert.Equal("LOCAL-MATCH", Assert.Single(result.Items).OrderGuid);
+        Assert.Equal("WALL-MATCH", Assert.Single(result.Items).OrderGuid);
     }
 
     public void Dispose()

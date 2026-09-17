@@ -1,6 +1,8 @@
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Features.PosmSalesOrders;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Authorization;
@@ -138,6 +140,162 @@ namespace BlazorApp.Api.Controllers.React
             {
                 _logger.LogError(ex, "GetSalesOrderDetail failed");
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 与既有列表 / 详情 / 发票接口相同的分店范围口径：
+        /// 管理员或未分配分店的账号视为全分店，其余账号严格限授权分店。
+        /// 移动端单独收口在这里，保证列表、分店清单与详情三者可见范围一致。
+        /// </summary>
+        private async Task<(string Scope, List<string>? BranchCodes)> ResolveMobileBranchScopeAsync()
+        {
+            if (IsAdmin())
+            {
+                return (PosmSalesOrderMobileRules.ScopeAllStores, null);
+            }
+
+            var storeCodes = await GetCurrentUserStoreCodesAsync();
+            return storeCodes.Count == 0
+                ? (PosmSalesOrderMobileRules.ScopeAllStores, null)
+                : (PosmSalesOrderMobileRules.ScopeAuthorizedStores, storeCodes);
+        }
+
+        /// <summary>移动端销售订单列表：区间必填且不超过 30 天，按下单时间排序，关键词命中的商品随单返回。</summary>
+        [HttpPost("mobile-list")]
+        [Authorize(Policy = Permissions.SalesOrders.View)]
+        public async Task<IActionResult> GetMobileSalesOrderList(
+            [FromBody] PosmSalesOrderMobileQueryDto query
+        )
+        {
+            try
+            {
+                if (
+                    !PosmSalesOrderMobileRules.TryResolveRange(
+                        query.StartDate,
+                        query.EndDate,
+                        out var range,
+                        out var error,
+                        out var errorCode
+                    )
+                )
+                {
+                    return BadRequest(ApiResponse<PosmSalesOrderMobileListDto>.Error(error!, errorCode));
+                }
+
+                var scope = await ResolveMobileBranchScopeAsync();
+                var pageNumber = PosmSalesOrderMobileRules.NormalizePageNumber(query.PageNumber);
+                var pageSize = PosmSalesOrderMobileRules.NormalizePageSize(query.PageSize);
+                var sortDirection = PosmSalesOrderMobileRules.NormalizeSortDirection(query.SortDirection);
+                var response = new PosmSalesOrderMobileListDto
+                {
+                    PageNumber = pageNumber,
+                    PageSize = pageSize,
+                    Scope = scope.Scope,
+                    SortDirection = sortDirection,
+                    Range = new PosmSalesOrderMobileRangeDto
+                    {
+                        StartDate = PosmSalesOrderMobileRules.FormatDate(range.StartDate),
+                        EndDate = PosmSalesOrderMobileRules.FormatDate(range.EndDate),
+                        DayCount = PosmSalesOrderMobileRules.CountDays(range.StartDate, range.EndDate),
+                    },
+                };
+
+                var branchCodes = PosmSalesOrderMobileRules.ResolveEffectiveBranchCodes(
+                    query.BranchCodes,
+                    scope.BranchCodes
+                );
+                if (branchCodes is { Count: 0 })
+                {
+                    // 请求的分店全部不在授权范围内：返回空结果，而不是退回到授权范围放大查询。
+                    return Ok(ApiResponse<PosmSalesOrderMobileListDto>.OK(response));
+                }
+
+                var keyword = query.Keyword?.Trim();
+                var result = await _service.GetSalesOrderListAsync(
+                    new PosmSalesOrderQueryParams
+                    {
+                        StartDate = range.StartDate,
+                        EndDate = range.EndDate,
+                        BranchCodes = branchCodes,
+                        OrderType = PosmSalesOrderMobileRules.NormalizeOrderType(query.OrderType),
+                        Keyword = string.IsNullOrEmpty(keyword) ? null : keyword,
+                        SortField = "orderTime",
+                        SortDirection = sortDirection,
+                        PageNumber = pageNumber,
+                        PageSize = pageSize,
+                    }
+                );
+
+                var matchedProducts = new Dictionary<string, List<PosmSalesOrderMatchedProductDto>>();
+                if (!string.IsNullOrEmpty(keyword) && result.Items.Count > 0)
+                {
+                    matchedProducts = await _service.GetMatchedProductsAsync(
+                        result.Items.Select(item => item.OrderGuid ?? string.Empty).ToList(),
+                        keyword
+                    );
+                }
+
+                response.Total = result.Total;
+                response.Items = result
+                    .Items.Select(item =>
+                        PosmSalesOrderMobileItemDto.From(
+                            item,
+                            item.OrderGuid != null && matchedProducts.TryGetValue(item.OrderGuid, out var matched)
+                                ? matched
+                                : null
+                        )
+                    )
+                    .ToList();
+                return Ok(ApiResponse<PosmSalesOrderMobileListDto>.OK(response));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetMobileSalesOrderList failed");
+                return StatusCode(
+                    500,
+                    ApiResponse<PosmSalesOrderMobileListDto>.Error("服务器内部错误", "QUERY_ERROR")
+                );
+            }
+        }
+
+        /// <summary>移动端筛选用的分店清单：全分店账号返回全部未删除门店，其余只返回授权分店。</summary>
+        [HttpGet("mobile-branches")]
+        [Authorize(Policy = Permissions.SalesOrders.View)]
+        public async Task<IActionResult> GetMobileBranches()
+        {
+            try
+            {
+                var scope = await ResolveMobileBranchScopeAsync();
+                var storeQuery = _dbContext.Db.Queryable<Store>().Where(s => !s.IsDeleted);
+                if (scope.BranchCodes != null)
+                {
+                    var authorized = scope.BranchCodes;
+                    storeQuery = storeQuery.Where(s => authorized.Contains(s.StoreCode));
+                }
+
+                var stores = await storeQuery
+                    .OrderBy(s => s.StoreCode)
+                    .Select(s => new PosmSalesOrderBranchDto
+                    {
+                        StoreCode = s.StoreCode,
+                        StoreName = s.StoreName,
+                    })
+                    .ToListAsync();
+
+                return Ok(
+                    ApiResponse<PosmSalesOrderMobileBranchesDto>.OK(
+                        new PosmSalesOrderMobileBranchesDto { Scope = scope.Scope, Branches = stores }
+                    )
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetMobileBranches failed");
+                return StatusCode(
+                    500,
+                    ApiResponse<PosmSalesOrderMobileBranchesDto>.Error("服务器内部错误", "QUERY_ERROR")
+                );
             }
         }
 

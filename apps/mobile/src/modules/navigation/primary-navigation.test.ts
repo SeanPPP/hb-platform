@@ -145,6 +145,11 @@ assert.equal(
   "仓库商品进销查询同样从工作台进入，不能新增一级导航"
 );
 assert.equal(
+  compactPrimaryItems("sales-orders", [...fullMenu, "sales-orders"])[0]?.active,
+  true,
+  "销售订单查询从工作台进入，不能新增一级导航"
+);
+assert.equal(
   compactPrimaryItems("attendance-management", fullMenu)[2]?.active,
   true,
   "考勤管理页也必须高亮打卡，而不是改变打卡的个人考勤目标"
@@ -355,6 +360,21 @@ assert.deepEqual(
   })),
   [{ key: "sales-product", itemRouteNames: ["product-query", "product-insights"] }],
   "商品查询与商品进销查询必须同属销售与商品，并且只依赖后端显式菜单"
+);
+assert.deepEqual(
+  buildWorkbenchSections(["orders", "sales-orders"]).map((section) => ({
+    key: section.key,
+    itemRouteNames: section.items.map((item) => item.routeName),
+  })),
+  [{ key: "sales-product", itemRouteNames: ["orders", "sales-orders"] }],
+  "销售订单查询必须归入销售与商品并紧跟 HB订单，同样只依赖后端显式菜单"
+);
+assert.equal(
+  buildWorkbenchSections(["orders"]).some((section) =>
+    section.items.some((item) => item.routeName === "sales-orders")
+  ),
+  false,
+  "后端菜单未显式下发 sales-orders 时工作台不得自行显示销售订单入口"
 );
 assert.deepEqual(
   buildWorkbenchSections(["warehouse", "warehouse-product-insights"]).map((section) => ({

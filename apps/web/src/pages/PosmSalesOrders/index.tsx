@@ -55,7 +55,7 @@ import type {
   PosmSalesOrderSortState,
 } from '../../types/posmSalesOrder'
 import { OrderType } from '../../types/posmSalesOrder'
-import { formatPosmSalesOrderLocalTime } from './time'
+import { formatPosmSalesOrderTime } from './time'
 import { MeasuredTable } from '../../components/MeasuredTable'
 
 const { Text } = Typography
@@ -680,7 +680,7 @@ export default function PosmSalesOrdersPage() {
       onFilterDropdownOpenChange: initializeColumnFilterDraft,
       filterIcon,
       filtered: Boolean(columnFilters.startDate || columnFilters.endDate),
-      render: (_, record) => formatPosmSalesOrderLocalTime(record.orderTime, 'YYYY-MM-DD'),
+      render: (_, record) => formatPosmSalesOrderTime(record.orderTime, 'YYYY-MM-DD'),
     },
     {
       key: 'time',
@@ -693,7 +693,7 @@ export default function PosmSalesOrdersPage() {
       onFilterDropdownOpenChange: initializeColumnFilterDraft,
       filterIcon,
       filtered: Boolean(columnFilters.timeStart || columnFilters.timeEnd),
-      render: (_, record) => formatPosmSalesOrderLocalTime(record.orderTime, 'HH:mm:ss'),
+      render: (_, record) => formatPosmSalesOrderTime(record.orderTime, 'HH:mm:ss'),
     },
     {
       key: 'skuCount',
@@ -970,7 +970,7 @@ export default function PosmSalesOrdersPage() {
                             }}
                           >
                             <Text>
-                              {formatPosmSalesOrderLocalTime(payment.paymentTime, 'HH:mm:ss')}
+                              {formatPosmSalesOrderTime(payment.paymentTime, 'HH:mm:ss')}
                             </Text>
                             <Tag color="green">
                               {payment.paymentMethodName || t('posmOrders.payment')}

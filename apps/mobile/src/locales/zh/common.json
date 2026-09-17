@@ -38,6 +38,7 @@
     "home": "商品",
     "store": "门店",
     "orders": "订单",
+    "salesOrders": "销售订单",
     "cart": "购物车",
     "warehouse": "仓库",
     "warehouseProductInsights": "仓库商品进销",

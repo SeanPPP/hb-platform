@@ -1,0 +1,119 @@
+{
+  "title": "销售订单查询",
+  "scope": {
+    "loading": "正在确认分店范围",
+    "all": "全部分店 · 共 {{count}} 家",
+    "authorized": "授权分店 {{count}} 家 · 已选 {{selected}} 家"
+  },
+  "search": {
+    "placeholder": "订单号 / 货号 / 条码 / 商品名"
+  },
+  "actions": {
+    "back": "返回",
+    "search": "查询",
+    "scan": "扫码",
+    "retry": "重试",
+    "close": "关闭",
+    "toggleSort": "切换时间排序",
+    "retryLoadMore": "加载失败，点击重试"
+  },
+  "chips": {
+    "allBranches": "全部分店",
+    "branches": "分店 {{count}}"
+  },
+  "status": {
+    "all": "全部类型",
+    "pending": "待处理",
+    "paid": "已支付",
+    "cancelled": "已取消",
+    "refunded": "已退款",
+    "installment": "分期",
+    "unknown": "未知"
+  },
+  "summary": {
+    "total": "共 {{count}} 单",
+    "filters": "已启用 {{count}} 项筛选"
+  },
+  "sort": {
+    "newestFirst": "最新在前",
+    "oldestFirst": "最早在前"
+  },
+  "states": {
+    "loading": "正在查询销售订单",
+    "loadFailed": "销售订单加载失败",
+    "initialTitle": "查询销售订单",
+    "initialDescription": "输入订单号、货号、条码或商品名，也可以直接扫码",
+    "emptyTitle": "该条件下没有订单",
+    "emptyDescription": "试试调整日期区间、分店或订单类型",
+    "loadMore": "上拉加载更多 · {{shown}} / {{total}}",
+    "allLoaded": "已显示全部 {{total}} 单"
+  },
+  "card": {
+    "counts": "{{sku}} SKU · {{items}} 件",
+    "matched": "命中 {{code}} {{name}} ×{{quantity}}",
+    "matchedMore": " 等 {{count}} 项"
+  },
+  "filterSheet": {
+    "title": "筛选",
+    "limit": "日期区间最长 {{days}} 天 · 含首尾日",
+    "range": "日期区间",
+    "today": "今天",
+    "preset": "近 {{days}} 天",
+    "startDate": "开始日期",
+    "endDate": "结束日期",
+    "selectedDays": "已选 {{days}} 天",
+    "maxDays": "上限 {{days}} 天",
+    "overflow": "已选 {{days}} 天 · 超出 {{excess}} 天",
+    "overflowHint": "查询区间不能超过 {{days}} 天",
+    "invalidFormat": "日期需使用 YYYY-MM-DD 格式",
+    "invalidOrder": "开始日期不能晚于结束日期",
+    "clamp": "收敛为最近 {{days}} 天",
+    "branches": "分店",
+    "branchScopeAll": "全部分店可选",
+    "branchScopeAuthorized": "按用户授权范围",
+    "branchesLoading": "正在加载分店…",
+    "allBranches": "全部 ({{count}})",
+    "orderType": "订单类型",
+    "reset": "重置",
+    "apply": "应用筛选",
+    "branchPickerTitle": "选择分店",
+    "branchPickerSubtitle": "已选 {{selected}} / {{total}} 家",
+    "branchSearch": "搜索分店名称或编码",
+    "branchesSelected": "{{first}} 等 {{count}} 家",
+    "branchesEmpty": "没有匹配的分店",
+    "branchClear": "清空",
+    "branchConfirm": "确定 ({{count}})"
+  },
+  "detail": {
+    "title": "订单详情",
+    "device": "设备 {{value}}",
+    "totalAmount": "总金额",
+    "discount": "折扣",
+    "actualPay": "实付",
+    "previewInvoice": "预览发票",
+    "downloadInvoice": "下载发票",
+    "loading": "正在加载订单明细",
+    "lines": "商品明细",
+    "noLines": "该订单没有商品明细",
+    "matched": "关键词命中",
+    "lineDiscount": "折 {{value}}",
+    "payments": "支付信息",
+    "noPayments": "没有支付记录",
+    "paymentMethod": "支付方式 {{value}}"
+  },
+  "messages": {
+    "reviewUnavailable": "当前模式不提供销售订单查询",
+    "notAllowed": "没有查看销售订单的权限",
+    "loadFailed": "销售订单加载失败",
+    "branchesFailed": "分店清单加载失败",
+    "detailFailed": "订单明细加载失败",
+    "invoiceFailed": "发票获取失败",
+    "rangeTooLong": "查询区间不能超过 30 天",
+    "shareUnavailable": "当前设备不支持分享文件",
+    "cameraPermission": "需要相机权限才能扫码",
+    "cameraUnavailable": "相机暂不可用"
+  },
+  "camera": {
+    "title": "扫码查询订单"
+  }
+}
