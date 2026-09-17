@@ -31,6 +31,52 @@ namespace Hbpos.Api.Tests;
         var selectionIndex = sql.IndexOf("POSM_LinklyCloudDeviceSelection", StringComparison.OrdinalIgnoreCase);
         var modeIndex = sql.IndexOf("POSM_LinklyCloudConfigurationMode", StringComparison.OrdinalIgnoreCase);
         Assert.True(sessionIndex >= 0 && terminalIndex > sessionIndex && selectionIndex > terminalIndex && modeIndex > selectionIndex);
+        Assert.Contains("THEN target.[TxnRef]", SqlSugarLinklyCloudBackendAsyncRepository.UpsertSessionSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("COALESCE(target.[RequestRfn], @RequestRfn)", SqlSugarLinklyCloudBackendAsyncRepository.UpsertSessionSql, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Repository_stale_write_preserves_persisted_request_evidence_and_txn_ref()
+    {
+        var repository = new InMemoryLinklyCloudBackendAsyncRepository();
+        var stored = new LinklyCloudBackendSessionRecord
+        {
+            Environment = "Sandbox",
+            StoreCode = "S01",
+            DeviceCode = "POS-01",
+            SessionId = "request-evidence-race",
+            Status = "Pending",
+            TxnRef = "260101010101ABCD",
+            RequestTxnType = "P",
+            RequestAmountCents = 99,
+            RequestRfn = "CUSTOM-RFN-99",
+            IsActive = true,
+            UpdatedAt = DateTimeOffset.UtcNow
+        };
+        await repository.UpsertSessionAsync(stored, CancellationToken.None);
+        var stale = new LinklyCloudBackendSessionRecord
+        {
+            Environment = stored.Environment,
+            StoreCode = stored.StoreCode,
+            DeviceCode = stored.DeviceCode,
+            SessionId = stored.SessionId,
+            Status = "Completed",
+            TxnRef = "****ABCD",
+            TransactionSuccess = true,
+            ResponseCode = "00",
+            ResponseText = "APPROVED",
+            IsActive = false,
+            UpdatedAt = DateTimeOffset.UtcNow
+        };
+
+        await repository.UpsertSessionAsync(stale, CancellationToken.None);
+        var persisted = await repository.GetSessionAsync(
+            "Sandbox", "S01", "POS-01", stored.SessionId, CancellationToken.None);
+
+        Assert.Equal(stored.TxnRef, persisted?.TxnRef);
+        Assert.Equal("P", persisted?.RequestTxnType);
+        Assert.Equal(99, persisted?.RequestAmountCents);
+        Assert.Equal("CUSTOM-RFN-99", persisted?.RequestRfn);
     }
 
     [Fact]
@@ -932,6 +978,418 @@ namespace Hbpos.Api.Tests;
         Assert.Equal(response.TxnRef, purchaseAnalysisData["RFN"]);
         Assert.Equal("000001000", purchaseAnalysisData["AMT"]);
         Assert.Equal("0000", purchaseAnalysisData["PCM"]);
+    }
+
+    [Theory]
+    [InlineData("00")]
+    [InlineData("08")]
+    [InlineData("11")]
+    public async Task Completed_notification_uses_persisted_request_evidence_for_card_transaction(
+        string responseCode)
+    {
+        var service = CreateService(new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted));
+        var started = await service.StartTransactionAsync(
+            "S01",
+            "POS-01",
+            new LinklyCloudBackendTransactionRequest(
+                "Sandbox",
+                "P",
+                99,
+                new Dictionary<string, string> { ["RFN"] = "CUSTOM-RFN-99" }),
+            CancellationToken.None);
+        using var notification = JsonDocument.Parse(JsonSerializer.Serialize(new
+        {
+            Response = new
+            {
+                Success = true,
+                TxnRef = started.TxnRef,
+                TxnType = "P",
+                AmtPurchase = 99,
+                ResponseCode = responseCode,
+                ResponseText = "APPROVED",
+                PurchaseAnalysisData = new { }
+            }
+        }));
+
+        await service.ReceiveNotificationAsync(
+            "Sandbox",
+            started.SessionId,
+            "transaction",
+            "Bearer sandbox-notify",
+            notification.RootElement,
+            CancellationToken.None);
+        var recovered = await service.GetStatusAsync(
+            "S01", "POS-01", "Sandbox", started.SessionId, CancellationToken.None);
+
+        Assert.NotNull(recovered?.CardTransaction);
+        Assert.Equal(started.TxnRef, recovered!.CardTransaction!.TxnRef);
+        Assert.Equal("CUSTOM-RFN-99", recovered.CardTransaction.Rfn);
+        Assert.Equal(99, recovered.CardTransaction.AmountCents);
+    }
+
+    [Fact]
+    public async Task Refund_persists_custom_rfn_before_sending_and_never_replaces_it_with_new_txn_ref()
+    {
+        var repository = new InMemoryLinklyCloudBackendAsyncRepository();
+        var transport = new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted);
+        var service = CreateService(transport, repository: repository);
+
+        var started = await service.StartTransactionAsync(
+            "S01",
+            "POS-01",
+            new LinklyCloudBackendTransactionRequest(
+                "Sandbox",
+                "R",
+                250,
+                new Dictionary<string, string> { ["rfn"] = "ORIGINAL-RFN-250" }),
+            CancellationToken.None);
+
+        var persisted = await repository.GetSessionAsync(
+            "Sandbox", "S01", "POS-01", started.SessionId, CancellationToken.None);
+        Assert.Equal("R", persisted?.RequestTxnType);
+        Assert.Equal(250, persisted?.RequestAmountCents);
+        Assert.Equal("ORIGINAL-RFN-250", persisted?.RequestRfn);
+        Assert.Equal("ORIGINAL-RFN-250", transport.LastTransaction?.PurchaseAnalysisData?["rfn"]);
+        Assert.Equal(persisted?.RequestRfn, transport.LastTransaction?.PurchaseAnalysisData?["rfn"]);
+        Assert.NotEqual(started.TxnRef, persisted?.RequestRfn);
+    }
+
+    [Theory]
+    [InlineData("amount")]
+    [InlineData("txn-type")]
+    [InlineData("txn-ref")]
+    public async Task Completed_notification_rejects_mismatched_request_evidence(string mismatch)
+    {
+        var service = CreateService(new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted));
+        var started = await service.StartTransactionAsync(
+            "S01", "POS-01", CreateTransactionRequest(), CancellationToken.None);
+        using var notification = JsonDocument.Parse(JsonSerializer.Serialize(new
+        {
+            Response = new
+            {
+                Success = true,
+                TxnRef = mismatch == "txn-ref" ? "260101010101FFFF" : started.TxnRef,
+                TxnType = mismatch == "txn-type" ? "R" : "P",
+                AmtPurchase = mismatch == "amount" ? 1001 : 1000,
+                ResponseCode = "00",
+                ResponseText = "APPROVED"
+            }
+        }));
+
+        await service.ReceiveNotificationAsync(
+            "Sandbox", started.SessionId, "transaction", "Bearer sandbox-notify",
+            notification.RootElement, CancellationToken.None);
+        var recovered = await service.GetStatusAsync(
+            "S01", "POS-01", "Sandbox", started.SessionId, CancellationToken.None);
+
+        Assert.Null(recovered?.CardTransaction);
+        Assert.DoesNotContain(recovered?.Notifications ?? [], notification =>
+            string.Equals(notification.Type, "transaction", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Theory]
+    [InlineData("RFN WITH SPACE", 99L)]
+    [InlineData("RFN-OVER-LIMIT", 1_000_000_000L)]
+    public async Task Completed_notification_rejects_request_evidence_outside_public_card_contract(
+        string rfn,
+        long amount)
+    {
+        var service = CreateService(new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted));
+        var started = await service.StartTransactionAsync(
+            "S01",
+            "POS-01",
+            new LinklyCloudBackendTransactionRequest(
+                "Sandbox",
+                "P",
+                amount,
+                new Dictionary<string, string> { ["RFN"] = rfn }),
+            CancellationToken.None);
+        using var notification = JsonDocument.Parse(JsonSerializer.Serialize(new
+        {
+            Response = new
+            {
+                Success = true,
+                TxnRef = started.TxnRef,
+                TxnType = "P",
+                AmtPurchase = amount,
+                ResponseCode = "00",
+                ResponseText = "APPROVED"
+            }
+        }));
+
+        await service.ReceiveNotificationAsync(
+            "Sandbox", started.SessionId, "transaction", "Bearer sandbox-notify",
+            notification.RootElement, CancellationToken.None);
+        var recovered = await service.GetStatusAsync(
+            "S01", "POS-01", "Sandbox", started.SessionId, CancellationToken.None);
+
+        Assert.Null(recovered?.CardTransaction);
+    }
+
+    [Fact]
+    public async Task Completed_notification_requires_explicit_approval_response_code()
+    {
+        var service = CreateService(new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted));
+        var started = await service.StartTransactionAsync(
+            "S01", "POS-01", CreateTransactionRequest(), CancellationToken.None);
+        var payload = new Dictionary<string, object?>
+        {
+            ["Success"] = true,
+            ["TxnRef"] = started.TxnRef,
+            ["TxnType"] = "P",
+            ["AmtPurchase"] = 1000,
+            ["ResponseText"] = "APPROVED"
+        };
+        using var notification = JsonDocument.Parse(JsonSerializer.Serialize(new { Response = payload }));
+
+        await service.ReceiveNotificationAsync(
+            "Sandbox", started.SessionId, "transaction", "Bearer sandbox-notify",
+            notification.RootElement, CancellationToken.None);
+        var recovered = await service.GetStatusAsync(
+            "S01", "POS-01", "Sandbox", started.SessionId, CancellationToken.None);
+
+        Assert.Null(recovered?.CardTransaction);
+    }
+
+    [Fact]
+    public async Task Persisted_evidence_allows_later_notification_text_when_session_text_is_absent()
+    {
+        var repository = new InMemoryLinklyCloudBackendAsyncRepository();
+        await repository.UpsertSessionAsync(new LinklyCloudBackendSessionRecord
+        {
+            Environment = "Sandbox",
+            StoreCode = "S01",
+            DeviceCode = "POS-01",
+            SessionId = "nullable-response-text",
+            Status = "Completed",
+            TxnRef = "2609101317495BC4",
+            RequestTxnType = "P",
+            RequestAmountCents = 99,
+            RequestRfn = "RFN-99",
+            TransactionSuccess = true,
+            ResponseCode = "00",
+            ResponseText = null,
+            IsActive = false,
+            UpdatedAt = DateTimeOffset.UtcNow
+        }, CancellationToken.None);
+        await repository.AddNotificationAsync(new LinklyCloudBackendNotificationRecord
+        {
+            Environment = "Sandbox",
+            StoreCode = "S01",
+            DeviceCode = "POS-01",
+            SessionId = "nullable-response-text",
+            Type = "transaction",
+            PayloadJson = """{"Response":{"Success":true,"TxnRef":"2609101317495BC4","TxnType":"P","AmtPurchase":-99,"ResponseCode":"00","ResponseText":"APPROVED"}}""",
+            ReceivedAt = DateTimeOffset.UtcNow
+        }, CancellationToken.None);
+        var service = CreateService(
+            new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted),
+            repository: repository);
+
+        var recovered = await service.GetStatusAsync(
+            "S01", "POS-01", "Sandbox", "nullable-response-text", CancellationToken.None);
+
+        Assert.Equal("2609101317495BC4", recovered?.CardTransaction?.TxnRef);
+        Assert.Null(recovered?.CardTransaction?.ResponseText);
+    }
+
+    [Fact]
+    public async Task Legacy_completed_session_without_request_evidence_remains_without_card_transaction()
+    {
+        var repository = new InMemoryLinklyCloudBackendAsyncRepository();
+        await repository.UpsertSessionAsync(new LinklyCloudBackendSessionRecord
+        {
+            Environment = "Sandbox",
+            StoreCode = "S01",
+            DeviceCode = "POS-01",
+            SessionId = "legacy-completed",
+            Status = "Completed",
+            TxnRef = "260101010101ABCD",
+            TransactionSuccess = true,
+            ResponseCode = "00",
+            ResponseText = "APPROVED",
+            IsActive = false,
+            UpdatedAt = DateTimeOffset.UtcNow
+        }, CancellationToken.None);
+        await repository.AddNotificationAsync(new LinklyCloudBackendNotificationRecord
+        {
+            Environment = "Sandbox",
+            StoreCode = "S01",
+            DeviceCode = "POS-01",
+            SessionId = "legacy-completed",
+            Type = "transaction",
+            PayloadJson = """{"Response":{"Success":true,"TxnRef":"****ABCD","TxnType":"P","AmtPurchase":99,"ResponseCode":"00","ResponseText":"APPROVED"}}""",
+            ReceivedAt = DateTimeOffset.UtcNow
+        }, CancellationToken.None);
+        var service = CreateService(
+            new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted),
+            repository: repository);
+
+        var recovered = await service.GetStatusAsync(
+            "S01", "POS-01", "Sandbox", "legacy-completed", CancellationToken.None);
+
+        Assert.Null(recovered?.CardTransaction);
+    }
+
+    [Theory]
+    [InlineData("2601010101011234")]
+    [InlineData("2609101317495BC4")]
+    public async Task Legacy_completed_session_keeps_exact_complete_official_evidence_compatible(string txnRef)
+    {
+        var recovered = await GetLegacyCompletedSessionAsync(
+            txnRef,
+            JsonSerializer.Serialize(new
+            {
+                Response = new
+                {
+                    Success = true,
+                    TxnRef = txnRef,
+                    TxnType = "P",
+                    AmtPurchase = 99,
+                    ResponseCode = "00",
+                    ResponseText = "APPROVED",
+                    PurchaseAnalysisData = new { RFN = "RFN-LEGACY-99" }
+                }
+            }));
+
+        Assert.Equal(txnRef, recovered?.CardTransaction?.TxnRef);
+        Assert.Equal("RFN-LEGACY-99", recovered?.CardTransaction?.Rfn);
+        Assert.Equal(99, recovered?.CardTransaction?.AmountCents);
+    }
+
+    [Fact]
+    public async Task Legacy_completed_session_rejects_masked_txn_ref_even_with_other_complete_fields()
+    {
+        var recovered = await GetLegacyCompletedSessionAsync(
+            "2609101317495BC4",
+            """{"Response":{"Success":true,"TxnRef":"****7495BC4","TxnType":"P","AmtPurchase":99,"ResponseCode":"00","ResponseText":"APPROVED","PurchaseAnalysisData":{"RFN":"RFN-LEGACY-99"}}}""");
+
+        Assert.Null(recovered?.CardTransaction);
+    }
+
+    [Fact]
+    public async Task Legacy_completed_session_rejects_masked_rfn()
+    {
+        var recovered = await GetLegacyCompletedSessionAsync(
+            "2609101317495BC4",
+            """{"Response":{"Success":true,"TxnRef":"2609101317495BC4","TxnType":"P","AmtPurchase":99,"ResponseCode":"00","ResponseText":"APPROVED","PurchaseAnalysisData":{"RFN":"****1234"}}}""");
+
+        Assert.Null(recovered?.CardTransaction);
+    }
+
+    [Fact]
+    public async Task Partially_persisted_request_evidence_never_falls_back_to_legacy_notification()
+    {
+        var recovered = await GetLegacyCompletedSessionAsync(
+            "2601010101011234",
+            """{"Response":{"Success":true,"TxnRef":"2601010101011234","TxnType":"P","AmtPurchase":99,"ResponseCode":"00","ResponseText":"APPROVED","PurchaseAnalysisData":{"RFN":"RFN-LEGACY-99"}}}""",
+            requestTxnType: "P");
+
+        Assert.Null(recovered?.CardTransaction);
+    }
+
+    private static async Task<LinklyCloudBackendSessionResponse?> GetLegacyCompletedSessionAsync(
+        string txnRef,
+        string notificationJson,
+        string? requestTxnType = null)
+    {
+        var repository = new InMemoryLinklyCloudBackendAsyncRepository();
+        await repository.UpsertSessionAsync(new LinklyCloudBackendSessionRecord
+        {
+            Environment = "Sandbox",
+            StoreCode = "S01",
+            DeviceCode = "POS-01",
+            SessionId = "legacy-complete-evidence",
+            Status = "Completed",
+            TxnRef = txnRef,
+            RequestTxnType = requestTxnType,
+            TransactionSuccess = true,
+            ResponseCode = "00",
+            ResponseText = "APPROVED",
+            IsActive = false,
+            UpdatedAt = DateTimeOffset.UtcNow
+        }, CancellationToken.None);
+        await repository.AddNotificationAsync(new LinklyCloudBackendNotificationRecord
+        {
+            Environment = "Sandbox",
+            StoreCode = "S01",
+            DeviceCode = "POS-01",
+            SessionId = "legacy-complete-evidence",
+            Type = "transaction",
+            PayloadJson = notificationJson,
+            ReceivedAt = DateTimeOffset.UtcNow
+        }, CancellationToken.None);
+        var service = CreateService(
+            new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted),
+            repository: repository);
+        return await service.GetStatusAsync(
+            "S01", "POS-01", "Sandbox", "legacy-complete-evidence", CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Official_get_rejects_masked_txn_ref_even_when_the_suffix_matches()
+    {
+        var transport = new CapturingLinklyCloudBackendAsyncTransport(
+            HttpStatusCode.Accepted,
+            getTransactionStatusCode: HttpStatusCode.OK);
+        var service = CreateService(transport);
+        var started = await service.StartTransactionAsync(
+            "S01", "POS-01", CreateTransactionRequest(), CancellationToken.None);
+        var originalTxnRef = started.TxnRef!;
+        transport.GetTransactionBody = JsonSerializer.Serialize(new
+        {
+            Response = new
+            {
+                Success = true,
+                TxnRef = "****FFFF",
+                TxnType = "P",
+                AmtPurchase = 1000,
+                ResponseCode = "00",
+                ResponseText = "APPROVED"
+            }
+        });
+
+        var recovered = await service.GetStatusAsync(
+            "S01", "POS-01", "Sandbox", started.SessionId, CancellationToken.None);
+        var persisted = await service.Repository.GetSessionAsync(
+            "Sandbox", "S01", "POS-01", started.SessionId, CancellationToken.None);
+
+        Assert.Equal(originalTxnRef, recovered?.TxnRef);
+        Assert.Equal(originalTxnRef, persisted?.TxnRef);
+        Assert.Null(recovered?.CardTransaction);
+        Assert.DoesNotContain(recovered?.Notifications ?? [], notification =>
+            string.Equals(notification.Type, "transaction", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task Completed_notification_rejects_wrong_refund_reference()
+    {
+        var service = CreateService(new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted));
+        var started = await service.StartTransactionAsync(
+            "S01", "POS-01", CreateTransactionRequest(), CancellationToken.None);
+        using var notification = JsonDocument.Parse(JsonSerializer.Serialize(new
+        {
+            Response = new
+            {
+                Success = true,
+                TxnRef = started.TxnRef,
+                TxnType = "P",
+                AmtPurchase = 1000,
+                ResponseCode = "00",
+                ResponseText = "APPROVED",
+                PurchaseAnalysisData = new { RFN = "WRONG-RFN" }
+            }
+        }));
+
+        await service.ReceiveNotificationAsync(
+            "Sandbox", started.SessionId, "transaction", "Bearer sandbox-notify",
+            notification.RootElement, CancellationToken.None);
+        var recovered = await service.GetStatusAsync(
+            "S01", "POS-01", "Sandbox", started.SessionId, CancellationToken.None);
+
+        Assert.Null(recovered?.CardTransaction);
+        Assert.DoesNotContain(recovered?.Notifications ?? [], item =>
+            string.Equals(item.Type, "transaction", StringComparison.OrdinalIgnoreCase));
     }
 
     [Theory]
@@ -3215,7 +3673,8 @@ namespace Hbpos.Api.Tests;
         Assert.Equal("00", scopedStatus.ResponseCode);
         Assert.Equal("PRESENT CARD", scopedStatus.DisplayText);
         Assert.Contains("MERCHANT RECEIPT", scopedStatus.ReceiptText, StringComparison.Ordinal);
-        Assert.Equal(4, scopedStatus.Notifications.Count);
+        // 新证据会话只向客户端暴露通过完整请求证据校验的 transaction 通知，避免客户端回退历史通知误判成功。
+        Assert.Equal(2, scopedStatus.Notifications.Count);
         Assert.Equal("display", scopedStatus.Notifications[0].Type);
         Assert.Null(scopedStatus.ReceiptPrintedAt);
         Assert.Null(await service.GetStatusAsync("S01", "POS-02", "Sandbox", session.SessionId, CancellationToken.None));
@@ -3628,6 +4087,8 @@ namespace Hbpos.Api.Tests;
         string? getTransactionBody = null,
         Exception? terminalTestException = null) : ILinklyCloudBackendAsyncTransport
     {
+        public string? GetTransactionBody { get; set; } = getTransactionBody;
+
         public LinklyCloudBackendNotificationRequest? LastNotification { get; private set; }
 
         public LinklyCloudBackendTransportTransactionRequest? LastTransaction { get; private set; }
@@ -3677,7 +4138,7 @@ namespace Hbpos.Api.Tests;
             LastGetTransaction = request;
             return Task.FromResult(new LinklyCloudBackendTransportResponse(
                 getTransactionStatusCode ?? responseStatusCode,
-                getTransactionBody ?? responseBody));
+                GetTransactionBody ?? responseBody));
         }
 
         public Task<LinklyCloudBackendTransportResponse> SendLogonAsync(
