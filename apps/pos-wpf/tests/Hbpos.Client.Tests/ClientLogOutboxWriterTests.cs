@@ -960,35 +960,8 @@ public sealed class ClientLogOutboxWriterTests
     private static string CreateDatabasePath() =>
         Path.Combine(Path.GetTempPath(), $"hbpos-logs-writer-test-{Guid.NewGuid():N}.db");
 
-    private static async Task DeleteDatabaseFilesAsync(string databasePath)
+    private static Task DeleteDatabaseFilesAsync(string databasePath)
     {
-        // 与仓库其他 SQLite 测试一致，先清理 Microsoft.Data.Sqlite 的全局句柄，再删除 Windows 临时文件。
-        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-        foreach (var suffix in new[] { string.Empty, "-wal", "-shm" })
-        {
-            var path = databasePath + suffix;
-            for (var attempt = 0; attempt < 20 && File.Exists(path); attempt++)
-            {
-                try
-                {
-                    File.Delete(path);
-                }
-                catch (IOException) when (attempt < 19)
-                {
-                    // Windows 可能在 SQLite 连接 Dispose 后极短时间仍持有句柄，按文件状态重试测试清理。
-                    await Task.Delay(25);
-                }
-                catch (IOException)
-                {
-                    // 临时库最终仍被系统持有时采用 best-effort，不能覆盖已经通过的行为断言。
-                    break;
-                }
-                catch (UnauthorizedAccessException)
-                {
-                    // 对齐仓库 SqliteTempFileCleanup：测试清理权限竞态不作为业务失败。
-                    break;
-                }
-            }
-        }
+        return SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(databasePath);
     }
 }
