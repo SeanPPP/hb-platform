@@ -149,6 +149,7 @@ const TAB_PATHS: Record<string, string> = {
   'attendance-management': '/(shell)/attendance-management',
   'product-query': '/(shell)/product-query',
   'product-insights': '/(shell)/product-insights',
+  'warehouse-product-insights': '/(shell)/warehouse-product-insights',
   users: '/(shell)/users',
   'user-admin': '/(shell)/user-admin',
   roles: '/(shell)/roles',
@@ -177,6 +178,7 @@ const ROUTE_LABELS: Record<string, Pick<ExpoAppMenuDefinition, 'zhTitle' | 'enTi
   'attendance-management': { zhTitle: '考勤管理', enTitle: 'Attendance Management' },
   'product-query': { zhTitle: '商品维护', enTitle: 'Products' },
   'product-insights': { zhTitle: '商品进销', enTitle: 'Product Insights' },
+  'warehouse-product-insights': { zhTitle: '仓库商品进销', enTitle: 'Warehouse Insights' },
   users: { zhTitle: '用户', enTitle: 'Users' },
   'user-admin': { zhTitle: '用户管理', enTitle: 'User Management' },
   roles: { zhTitle: '角色管理', enTitle: 'Role Management' },
@@ -273,6 +275,15 @@ const EXPO_APP_MENU_DEFINITIONS: ExpoAppMenuDefinition[] = [
     permissionCodes: [P.StoreProducts.View],
     order: 50,
     ...ROUTE_LABELS['product-insights'],
+  },
+  {
+    routeName: 'warehouse-product-insights',
+    titleKey: 'tabs.warehouseProductInsights',
+    icon: 'warehouse',
+    // 与后端 FullAppMenu 一致：复用 Web 仓库商品流转分析的授权，两端可见范围保持相同。
+    permissionCodes: [P.SalesDashboard.WarehouseFlowView],
+    order: 50,
+    ...ROUTE_LABELS['warehouse-product-insights'],
   },
   {
     routeName: 'installment-orders',

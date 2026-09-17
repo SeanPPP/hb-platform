@@ -86,6 +86,7 @@ assertArrayEqual(
     'promotions',
     'product-query',
     'product-insights',
+    'warehouse-product-insights',
     'installment-orders',
     'store-vouchers',
     'attendance-personal',
