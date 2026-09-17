@@ -181,16 +181,36 @@ internal static class SalesStatisticsProductStoreDailySourceQueries
         );
     }
 
+    /// <summary>
+    /// 主表与明细表的结账日期都是 date 列。SqlSugar 表达式默认把 DateTime 变量作为 datetime 参数下发，
+    /// SQL Server 会对整列做隐式转换而放弃索引查找：生产实测同一天查询 13 秒，改为 date 参数后 0.7 秒。
+    /// 因此结账日期范围条件改用显式 <see cref="System.Data.DbType.Date"/> 参数；别名 main/detail 与表达式中的 lambda 参数名一致。
+    /// </summary>
+    private const string HBSalesCheckoutDateRangeWhere =
+        "[detail].[B结账日期] IS NOT NULL"
+        + " AND [detail].[B结账日期] >= @hbDetailStart AND [detail].[B结账日期] < @hbDetailEnd"
+        + " AND [main].[B结账日期] IS NOT NULL"
+        + " AND [main].[B结账日期] >= @hbMainStart AND [main].[B结账日期] < @hbMainEnd";
+
+    private static SugarParameter[] BuildHBSalesCheckoutDateParameters(DateTime targetDate, DateTime nextDate)
+    {
+        var mainCheckoutDateWindowStart = targetDate.Date.AddDays(-HBSalesMainCheckoutDateWindowDays);
+        var mainCheckoutDateWindowEnd = nextDate.Date.AddDays(HBSalesMainCheckoutDateWindowDays);
+        return new[]
+        {
+            new SugarParameter("@hbDetailStart", targetDate.Date, System.Data.DbType.Date),
+            new SugarParameter("@hbDetailEnd", nextDate.Date, System.Data.DbType.Date),
+            new SugarParameter("@hbMainStart", mainCheckoutDateWindowStart, System.Data.DbType.Date),
+            new SugarParameter("@hbMainEnd", mainCheckoutDateWindowEnd, System.Data.DbType.Date),
+        };
+    }
+
     internal static async Task<List<HBSalesStoreAggregateRow>> LoadHBSalesStoreAggregatesAsync(
         HBSalesRecordSqlSugarContext hbSalesContext,
         DateTime targetDate,
         DateTime nextDate)
     {
         var originalCommandTimeout = hbSalesContext.Db.Ado.CommandTimeOut;
-        var mainCheckoutDateWindowStart = targetDate.AddDays(
-            -HBSalesMainCheckoutDateWindowDays
-        );
-        var mainCheckoutDateWindowEnd = nextDate.AddDays(HBSalesMainCheckoutDateWindowDays);
         hbSalesContext.Db.Ado.CommandTimeOut = Math.Max(
             originalCommandTimeout,
             CommandTimeoutSeconds
@@ -200,14 +220,12 @@ internal static class SalesStatisticsProductStoreDailySourceQueries
             return await hbSalesContext.Db.Queryable<SalesOrderMain>()
                 .LeftJoin<SalesOrderDetailRecord>((main, detail) =>
                     main.B销售单号 == detail.B销售单号)
+                .Where(
+                    HBSalesCheckoutDateRangeWhere,
+                    BuildHBSalesCheckoutDateParameters(targetDate, nextDate)
+                )
                 .Where((main, detail) =>
-                    detail.B结账日期.HasValue
-                    && detail.B结账日期.Value >= targetDate
-                    && detail.B结账日期.Value < nextDate
-                    && main.B结账日期.HasValue
-                    && main.B结账日期.Value >= mainCheckoutDateWindowStart
-                    && main.B结账日期.Value < mainCheckoutDateWindowEnd
-                    && (main.B单据类型 == null || main.B单据类型.Trim() != "2")
+                    (main.B单据类型 == null || main.B单据类型.Trim() != "2")
                     && detail.B分店代码 != null
                     && detail.B分店代码.Trim() != ""
                 )
@@ -254,10 +272,6 @@ internal static class SalesStatisticsProductStoreDailySourceQueries
         DateTime nextDate)
     {
         var originalCommandTimeout = hbSalesContext.Db.Ado.CommandTimeOut;
-        var mainCheckoutDateWindowStart = targetDate.AddDays(
-            -HBSalesMainCheckoutDateWindowDays
-        );
-        var mainCheckoutDateWindowEnd = nextDate.AddDays(HBSalesMainCheckoutDateWindowDays);
         hbSalesContext.Db.Ado.CommandTimeOut = Math.Max(
             originalCommandTimeout,
             CommandTimeoutSeconds
@@ -268,14 +282,12 @@ internal static class SalesStatisticsProductStoreDailySourceQueries
             orderRows = await hbSalesContext.Db.Queryable<SalesOrderMain>()
                 .LeftJoin<SalesOrderDetailRecord>((main, detail) =>
                     main.B销售单号 == detail.B销售单号)
+                .Where(
+                    HBSalesCheckoutDateRangeWhere,
+                    BuildHBSalesCheckoutDateParameters(targetDate, nextDate)
+                )
                 .Where((main, detail) =>
-                    detail.B结账日期.HasValue
-                    && detail.B结账日期.Value >= targetDate
-                    && detail.B结账日期.Value < nextDate
-                    && main.B结账日期.HasValue
-                    && main.B结账日期.Value >= mainCheckoutDateWindowStart
-                    && main.B结账日期.Value < mainCheckoutDateWindowEnd
-                    && (main.B单据类型 == null || main.B单据类型.Trim() != "2")
+                    (main.B单据类型 == null || main.B单据类型.Trim() != "2")
                     && detail.B分店代码 != null
                     && detail.B分店代码.Trim() != ""
                 )
