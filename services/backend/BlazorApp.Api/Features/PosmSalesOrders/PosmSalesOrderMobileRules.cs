@@ -117,8 +117,9 @@ public static class PosmSalesOrderMobileRules
         {
             return authorizedBranchCodes;
         }
-        return requested
-            .Where(code => authorizedBranchCodes.Contains(code, StringComparer.OrdinalIgnoreCase))
+        // 以授权清单里的原始写法为准，避免把用户输入的大小写变体带进 SQL。
+        return authorizedBranchCodes
+            .Where(authorized => requested.Contains(authorized, StringComparer.OrdinalIgnoreCase))
             .ToList();
     }
 }
