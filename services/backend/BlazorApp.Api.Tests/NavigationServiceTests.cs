@@ -827,7 +827,8 @@ public class NavigationServiceTests
         var menu = _service.BuildAppMenu(user);
 
         // 管理员可见完整 App 菜单；商品查询与同权限的商品进销查询都必须保留。
-        Assert.Equal(27, menu.Count);
+        Assert.Equal(28, menu.Count);
+        Assert.Contains(menu, item => item.RouteName == "sales-orders");
         Assert.Contains(menu, item => item.RouteName == "product-query");
         Assert.Contains(menu, item => item.RouteName == "pos-operation-logs");
         Assert.Contains(menu, item => item.RouteName == "product-insights");
@@ -846,6 +847,20 @@ public class NavigationServiceTests
         Assert.DoesNotContain(menu, item => item.RouteName == "attendance");
         Assert.Contains(menu, item => item.RouteName == "local-supplier-invoices");
         Assert.Contains(menu, item => item.RouteName == "warehouse");
+    }
+
+    [Fact]
+    public void BuildAppMenu_ShowsSalesOrdersOnlyWithSalesOrdersViewPermission()
+    {
+        var salesOrdersUser = CreateUser(new Claim("permission", Permissions.SalesOrders.View));
+        var ordersUser = CreateUser(new Claim("permission", Permissions.Orders.View));
+
+        var salesOrdersMenu = _service.BuildAppMenu(salesOrdersUser);
+        var ordersMenu = _service.BuildAppMenu(ordersUser);
+
+        // 移动端销售订单查询只认独立权限；Web 收银记录页的 Orders.View 不得顺带放行。
+        Assert.Single(salesOrdersMenu, item => item.RouteName == "sales-orders");
+        Assert.DoesNotContain(ordersMenu, item => item.RouteName == "sales-orders");
     }
 
     [Fact]

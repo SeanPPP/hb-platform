@@ -38,6 +38,7 @@
     "home": "Home",
     "store": "Store",
     "orders": "Orders",
+    "salesOrders": "Sales Records",
     "cart": "Cart",
     "warehouse": "Warehouse",
     "warehouseProductInsights": "Warehouse activity",

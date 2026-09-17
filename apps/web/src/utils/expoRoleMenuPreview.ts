@@ -135,6 +135,7 @@ PERMISSION_ALIAS_GROUPS.forEach(({ canonicalCode, aliasCodes }) => {
 const TAB_PATHS: Record<string, string> = {
   home: '/(shell)/home',
   orders: '/(shell)/orders',
+  'sales-orders': '/(shell)/sales-orders',
   cart: '/(shell)/cart',
   warehouse: '/(shell)/warehouse',
   'domestic-purchase': '/(shell)/domestic-purchase',
@@ -165,6 +166,7 @@ const TAB_PATHS: Record<string, string> = {
 const ROUTE_LABELS: Record<string, Pick<ExpoAppMenuDefinition, 'zhTitle' | 'enTitle'>> = {
   home: { zhTitle: '商品', enTitle: 'Home' },
   orders: { zhTitle: '订单', enTitle: 'Orders' },
+  'sales-orders': { zhTitle: '销售订单', enTitle: 'Sales Records' },
   cart: { zhTitle: '购物车', enTitle: 'Cart' },
   warehouse: { zhTitle: '仓库', enTitle: 'Warehouse' },
   'domestic-purchase': { zhTitle: '中国采购', enTitle: 'China Purchase' },
@@ -213,6 +215,15 @@ const EXPO_APP_MENU_DEFINITIONS: ExpoAppMenuDefinition[] = [
     ],
     order: 20,
     ...ROUTE_LABELS.orders,
+  },
+  {
+    routeName: 'sales-orders',
+    titleKey: 'tabs.salesOrders',
+    icon: 'receipt-text-outline',
+    // 与后端 FullAppMenu 一致：移动端销售订单查询使用独立权限。
+    permissionCodes: [P.SalesOrders.View],
+    order: 21,
+    ...ROUTE_LABELS['sales-orders'],
   },
   {
     routeName: 'cart',

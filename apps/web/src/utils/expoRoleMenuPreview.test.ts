@@ -54,6 +54,7 @@ assertEqual(
 const completePreview = buildPreview([
   P.Orders.Create,
   P.Orders.View,
+  P.SalesOrders.View,
   P.Warehouse.ManageProducts,
   P.DomesticPurchase.ManageProducts,
   P.LocalPurchase.MobileView,
@@ -79,6 +80,7 @@ assertArrayEqual(
   [
     'home',
     'orders',
+    'sales-orders',
     'cart',
     'warehouse',
     'domestic-purchase',

@@ -63,10 +63,11 @@ function resolveActivePrimaryKey(routeName: string | undefined): PrimaryNavigati
     return "scan";
   }
 
-  // 商品进销、仓库商品进销与员工操作日志都从工作台进入，是子页，不额外占用一级导航。
+  // 商品进销、仓库商品进销、销售订单查询与员工操作日志都从工作台进入，是子页，不额外占用一级导航。
   if (
     routeName === "product-insights" ||
     routeName === "warehouse-product-insights" ||
+    routeName === "sales-orders" ||
     routeName === "pos-operation-logs"
   ) {
     return "workbench";

@@ -216,6 +216,12 @@ namespace BlazorApp.Shared.Constants
             public const string Delete = "Orders.Delete";
         }
 
+        /// <summary>移动端销售订单查询；与 Web 收银记录页的 Orders.View 分开授权。</summary>
+        public static class SalesOrders
+        {
+            public const string View = "SalesOrders.View";
+        }
+
         public static class InstallmentOrders
         {
             public const string View = "InstallmentOrders.View";

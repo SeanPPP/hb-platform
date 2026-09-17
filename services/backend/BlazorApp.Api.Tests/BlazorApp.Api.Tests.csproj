@@ -230,6 +230,7 @@
     <Compile Include="ProductSetCodeHqIncrementalSyncTests.cs" />
     <Compile Include="ProductSetCodeReactServiceTests.cs" />
     <Compile Include="PosmSalesOrderReactServiceTests.cs" />
+    <Compile Include="PosmSalesOrderMobileRulesTests.cs" />
     <Compile Include="InstallmentOrderReactServiceTests.cs" />
     <Compile Include="InstallmentOrdersControllerTests.cs" />
     <Compile Include="InstallmentOrderContractTests.cs" />

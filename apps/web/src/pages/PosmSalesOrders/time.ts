@@ -1,6 +1,5 @@
 import dayjs from 'dayjs'
 
-const timezoneSuffixPattern = /(Z|[+-]\d{2}:?\d{2})$/i
 const dotNetIsoTimestampPattern =
   /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})(?:\.\d{1,7})?(Z|[+-]\d{2}:?\d{2})?$/i
 
@@ -58,17 +57,11 @@ function isValidPosmSalesOrderTimestamp(value: string): boolean {
   return true
 }
 
-export function normalizePosmSalesOrderUtcTime(value: string): string {
-  const trimmed = value.trim()
-  if (timezoneSuffixPattern.test(trimmed)) {
-    return trimmed
-  }
-
-  // 主站 API 的订单时间语义是 UTC，但 SQL/JSON 可能返回不带时区后缀的字符串。
-  return `${trimmed}Z`
-}
-
-export function formatPosmSalesOrderLocalTime(
+/**
+ * 订单时间是 POS 写入的门店本地墙钟时间（非 UTC），无时区后缀时按字面显示，不做任何时区换算。
+ * 只有带显式 Z / offset 后缀的值才按其时区语义转换到浏览器本地时间。
+ */
+export function formatPosmSalesOrderTime(
   value: string | null | undefined,
   format: string,
 ): string {
@@ -82,6 +75,6 @@ export function formatPosmSalesOrderLocalTime(
     return value
   }
 
-  const parsed = dayjs(normalizePosmSalesOrderUtcTime(trimmed))
+  const parsed = dayjs(trimmed)
   return parsed.isValid() ? parsed.format(format) : value
 }
