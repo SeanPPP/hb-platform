@@ -151,6 +151,7 @@ const TAB_PATHS: Record<string, string> = {
   'product-insights': '/(shell)/product-insights',
   'warehouse-product-insights': '/(shell)/warehouse-product-insights',
   users: '/(shell)/users',
+  'pos-operation-logs': '/(shell)/pos-operation-logs',
   'user-admin': '/(shell)/user-admin',
   roles: '/(shell)/roles',
   'employee-profile': '/(shell)/employee-profile',
@@ -180,6 +181,7 @@ const ROUTE_LABELS: Record<string, Pick<ExpoAppMenuDefinition, 'zhTitle' | 'enTi
   'product-insights': { zhTitle: '商品进销', enTitle: 'Product Insights' },
   'warehouse-product-insights': { zhTitle: '仓库商品进销', enTitle: 'Warehouse Insights' },
   users: { zhTitle: '用户', enTitle: 'Users' },
+  'pos-operation-logs': { zhTitle: '员工操作日志', enTitle: 'POS Operation Logs' },
   'user-admin': { zhTitle: '用户管理', enTitle: 'User Management' },
   roles: { zhTitle: '角色管理', enTitle: 'Role Management' },
   'employee-profile': { zhTitle: '员工', enTitle: 'Employee' },
@@ -335,6 +337,15 @@ const EXPO_APP_MENU_DEFINITIONS: ExpoAppMenuDefinition[] = [
     permissionCodes: [P.Users.View],
     order: 57,
     ...ROUTE_LABELS.users,
+  },
+  {
+    routeName: 'pos-operation-logs',
+    titleKey: 'tabs.posOperationLogs',
+    icon: 'clipboard-text-clock-outline',
+    // 与后端 FullAppMenu 一致：复用 Web 后台 /pos-admin/operation-logs 的审计查看权限，两端可见范围保持相同。
+    permissionCodes: [P.PosTerminal.AuditView],
+    order: 57,
+    ...ROUTE_LABELS['pos-operation-logs'],
   },
   {
     routeName: 'user-admin',
