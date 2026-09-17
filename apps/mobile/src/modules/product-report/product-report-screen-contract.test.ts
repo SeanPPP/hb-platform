@@ -373,6 +373,25 @@ assert.match(
   "供应商高密度排行必须用整元金额，避免大额数值被下钻箭头截断",
 );
 
+const supplierTitleStart = source.indexOf("function getSupplierTitle(");
+assert.ok(supplierTitleStart >= 0, "供应商标题函数必须存在");
+const supplierTitleBody = source.slice(supplierTitleStart, source.indexOf("\n}", supplierTitleStart));
+assert.doesNotMatch(
+  supplierTitleBody,
+  /\$\{[^}]*supplierCode[^}]*\}/,
+  "供应商标题不能把供应商代码拼进名称，代码由下方副行单独展示",
+);
+assert.doesNotMatch(
+  supplierTitleBody,
+  /slice\(/,
+  "供应商名称不能按固定字数截断，窄列由 numberOfLines 自动省略",
+);
+assert.match(
+  source,
+  /shouldShowSupplierCode\(item\) \? item\.supplierCode : ""/,
+  "供应商名称回退成代码时，副行必须留空避免上下重复显示同一串代码",
+);
+
 const supplierHeaderStart = source.indexOf("function SupplierTableHeader(");
 const productHeaderStart = source.indexOf("function ProductTableHeader(");
 assert.ok(supplierHeaderStart >= 0 && productHeaderStart > supplierHeaderStart, "供应商表头必须存在");
