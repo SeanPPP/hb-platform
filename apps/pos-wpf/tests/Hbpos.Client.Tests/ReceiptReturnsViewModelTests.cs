@@ -542,17 +542,6 @@ public sealed class ReceiptReturnsViewModelTests
             1m,
             DateTimeOffset.UtcNow);
 
-    private static async Task WaitUntilAsync(Func<bool> condition)
-    {
-        var timeoutAt = DateTimeOffset.UtcNow.AddSeconds(2);
-        while (!condition() && DateTimeOffset.UtcNow < timeoutAt)
-        {
-            await Task.Delay(10);
-        }
-
-        Assert.True(condition());
-    }
-
     private sealed class FakeReceiptReturnsWorkflowService : IReceiptReturnsWorkflowService
     {
         public int LookupCallCount { get; private set; }

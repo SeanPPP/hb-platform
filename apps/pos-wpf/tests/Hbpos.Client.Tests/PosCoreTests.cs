@@ -1146,18 +1146,6 @@ public sealed class PosCoreTests
         field.SetValue(line, quantity);
     }
 
-    private static async Task WaitUntilAsync(Func<bool> condition, int timeoutMilliseconds = 5000)
-    {
-        var deadline = Environment.TickCount64 + timeoutMilliseconds;
-        while (!condition())
-        {
-            Assert.True(
-                Environment.TickCount64 <= deadline,
-                "异步回单预览未在超时前完成。");
-            await Task.Delay(10);
-        }
-    }
-
     private static LocalOrder CreateLocalOrder(
         Guid? orderGuid = null,
         string deviceCode = "POS-01",

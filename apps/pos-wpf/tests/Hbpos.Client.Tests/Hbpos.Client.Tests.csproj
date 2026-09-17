@@ -12,6 +12,8 @@
   <ItemGroup>
     <PackageReference Include="coverlet.collector" Version="6.0.0" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
+    <!-- FakeTimeProvider：让测试直接推进虚拟时间触发生产代码超时，而不是靠墙钟硬等。 -->
+    <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" Version="10.10.0" />
     <PackageReference Include="xunit" Version="2.5.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.5.3" />
     <PackageReference Include="ZXing.Net" Version="0.16.11" />
@@ -19,6 +21,8 @@
 
   <ItemGroup>
     <Using Include="Xunit" />
+    <!-- 共享 WaitUntilAsync：见 AsyncTestWaitSupport.cs，各测试文件不要再复制私有副本。 -->
+    <Using Include="Hbpos.Client.Tests.AsyncTestWaitSupport" Static="true" />
   </ItemGroup>
 
   <ItemGroup>
