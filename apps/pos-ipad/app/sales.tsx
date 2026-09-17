@@ -507,6 +507,7 @@ export default function SalesRoute() {
           )
         }
         onOpenSyncHistory={() => push("/sync-history" as Href)}
+        onOpenPaymentRecovery={() => push("/payment-recovery" as Href)}
         presenter={presenter}
         toolbarOrder={toolbarOrder}
         {...(activeCashier && canDownloadCatalog(activeCashier.permissions)
