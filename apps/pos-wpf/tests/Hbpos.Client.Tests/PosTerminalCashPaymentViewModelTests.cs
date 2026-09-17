@@ -14,6 +14,7 @@ using Hbpos.Contracts.Installments;
 using Hbpos.Contracts.Orders;
 using Hbpos.Contracts.Promotions;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Time.Testing;
 
 namespace Hbpos.Client.Tests;
 
@@ -2399,17 +2400,27 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var index = new LocalSellableItemIndex();
         var item = CreateItem("SKU-128", "Timeout Tea", "930128", PriceSourceKind.StoreRetailPrice, 5.5m);
         var logs = new ConcurrentQueue<string>();
+        var timeProvider = new FakeTimeProvider();
+        var remoteLookupStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         index.ReplaceAll([item]);
+        // 显式构造 workflow service 以注入 FakeTimeProvider；ViewModel 其余行为与默认构造一致。
+        var workflowService = new PosTerminalWorkflowService(
+            index,
+            cart,
+            remoteLookupRefreshAsync: async (_, _, cancellationToken) =>
+            {
+                remoteLookupStarted.TrySetResult();
+                // 只有超时令牌能结束这次等待：证明购物车不会被"成功结果"改写。
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                return new RemoteLookupRefreshResult("S001", "930128", Found: false, Item: null, DeletedCount: 1);
+            },
+            timeProvider: timeProvider);
         var viewModel = new PosTerminalViewModel(
             index,
             cart,
             Session,
             onOpenPayment: null,
-            remoteLookupRefreshAsync: async (_, _, cancellationToken) =>
-            {
-                await Task.Delay(TimeSpan.FromSeconds(10), cancellationToken);
-                return new RemoteLookupRefreshResult("S001", "930128", Found: false, Item: null, DeletedCount: 1);
-            });
+            workflowService: workflowService);
 
         using var logCapture = CaptureClientLog(logs);
 
@@ -2419,7 +2430,11 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var line = Assert.Single(viewModel.CartLines);
         Assert.Equal("Timeout Tea", line.DisplayName);
 
-        await WaitUntilAsync(() => HasLog(logs, "remote lookup timeout"));
+        // 远程查询回调被调用时，超时 CTS 已在 FakeTimeProvider 上注册，此时推进虚拟时间必然触发超时。
+        await WaitUntilAsync(() => remoteLookupStarted.Task.IsCompleted, diagnostics: () => DescribeCapturedLogs(logs));
+        timeProvider.Advance(PosTerminalWorkflowService.RemoteLookupTimeout);
+
+        await WaitUntilAsync(() => HasLog(logs, "remote lookup timeout"), diagnostics: () => DescribeCapturedLogs(logs));
 
         line = Assert.Single(viewModel.CartLines);
         Assert.Equal("Timeout Tea", line.DisplayName);
@@ -7451,22 +7466,6 @@ public sealed class PosTerminalCashPaymentViewModelTests
     private static Task ExecuteManualScanAsync(PosTerminalViewModel viewModel)
     {
         return viewModel.ScanCommand.ExecuteAsync(null);
-    }
-
-    private static async Task WaitUntilAsync(Func<bool> condition)
-    {
-        var timeoutAt = DateTimeOffset.UtcNow.AddSeconds(3);
-        while (DateTimeOffset.UtcNow < timeoutAt)
-        {
-            if (condition())
-            {
-                return;
-            }
-
-            await Task.Delay(10);
-        }
-
-        Assert.True(condition());
     }
 
     private static PromotionRuleDto CreatePromotionRule(

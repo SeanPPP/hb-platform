@@ -1075,15 +1075,6 @@ public sealed class LinklyCloudTerminalClientTests
             "RFN-SIG");
     }
 
-    private static async Task WaitUntilAsync(Func<bool> predicate)
-    {
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        while (!predicate())
-        {
-            await Task.Delay(10, cts.Token);
-        }
-    }
-
     private sealed class FakeLinklyCloudSecretStore : ILinklyCloudSecretStore
     {
         public string? LastStoreCode { get; private set; }

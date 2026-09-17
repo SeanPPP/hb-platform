@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Contracts.Catalog;
+using Microsoft.Extensions.Time.Testing;
 
 namespace Hbpos.Client.Tests;
 
@@ -351,21 +352,30 @@ public sealed class PosTerminalWorkflowServiceTests
         var index = new LocalSellableItemIndex();
         var item = CreateItem("SKU-251", "Timeout Workflow Tea", "930251", PriceSourceKind.StoreRetailPrice, 5.5m);
         var logs = new ConcurrentQueue<string>();
+        var timeProvider = new FakeTimeProvider();
+        var remoteLookupStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         index.ReplaceAll([item]);
         var service = new PosTerminalWorkflowService(
             index,
             cart,
             remoteLookupRefreshAsync: async (_, _, cancellationToken) =>
             {
-                await Task.Delay(TimeSpan.FromSeconds(10), cancellationToken);
+                remoteLookupStarted.TrySetResult();
+                // 只有超时令牌能结束这次等待：证明购物车不会被"成功结果"改写。
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
                 return new RemoteLookupRefreshResult("S001", "930251", Found: false, Item: null, DeletedCount: 1);
-            });
+            },
+            timeProvider: timeProvider);
 
         using var logCapture = CaptureClientLog(logs);
 
         service.AddSelectedItem(Session, item, clearScanText: true, closeMatchesPopup: false, operation: "manual-add-selected");
 
-        await WaitUntilAsync(() => HasLog(logs, "remote lookup timeout"));
+        // 远程查询回调被调用时，超时 CTS 已在 FakeTimeProvider 上注册，此时推进虚拟时间必然触发超时。
+        await WaitUntilAsync(() => remoteLookupStarted.Task.IsCompleted, diagnostics: () => DescribeCapturedLogs(logs));
+        timeProvider.Advance(PosTerminalWorkflowService.RemoteLookupTimeout);
+
+        await WaitUntilAsync(() => HasLog(logs, "remote lookup timeout"), diagnostics: () => DescribeCapturedLogs(logs));
 
         var line = Assert.Single(cart.Lines);
         Assert.Equal("Timeout Workflow Tea", line.DisplayName);
@@ -732,22 +742,6 @@ public sealed class PosTerminalWorkflowServiceTests
         var field = typeof(CartLine).GetField("_quantity", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
         Assert.NotNull(field);
         field.SetValue(line, quantity);
-    }
-
-    private static async Task WaitUntilAsync(Func<bool> condition)
-    {
-        var timeoutAt = DateTimeOffset.UtcNow.AddSeconds(3);
-        while (DateTimeOffset.UtcNow < timeoutAt)
-        {
-            if (condition())
-            {
-                return;
-            }
-
-            await Task.Delay(10);
-        }
-
-        Assert.True(condition());
     }
 
     private static IDisposable CaptureClientLog(ConcurrentQueue<string> lines)

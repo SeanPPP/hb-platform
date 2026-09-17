@@ -85,7 +85,8 @@ public interface IPosTerminalWorkflowService
 
 public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
 {
-    private static readonly TimeSpan RemoteLookupTimeout = TimeSpan.FromSeconds(2);
+    // internal：测试通过 InternalsVisibleTo 引用该值推进虚拟时间，避免在测试里复制一份 2 秒常量。
+    internal static readonly TimeSpan RemoteLookupTimeout = TimeSpan.FromSeconds(2);
     private const string OpenItemLookupCode = "OPENITEM";
 
     private readonly LocalSellableItemIndex _priceIndex;
@@ -94,6 +95,8 @@ public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
     private readonly Func<CancellationToken, Task<IReadOnlyList<SellableItemDto>>>? _reloadCatalogAsync;
     private readonly IUiPriorityCoordinator _uiPriorityCoordinator;
     private readonly Func<bool> _isCatalogSyncActive;
+    // 远程查询超时计时器走 TimeProvider，测试可注入 FakeTimeProvider 直接推进到超时点。
+    private readonly TimeProvider _timeProvider;
     private readonly object _remoteLookupGate = new();
     private readonly HashSet<RemoteLookupKey> _pendingRemoteLookups = [];
     private readonly Dictionary<RemoteLookupKey, Task<RemoteLookupRefreshResult>> _pendingRemoteLookupTasks = [];
@@ -104,7 +107,8 @@ public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
         Func<string, string, CancellationToken, Task<RemoteLookupRefreshResult>>? remoteLookupRefreshAsync = null,
         Func<CancellationToken, Task<IReadOnlyList<SellableItemDto>>>? reloadCatalogAsync = null,
         IUiPriorityCoordinator? uiPriorityCoordinator = null,
-        Func<bool>? isCatalogSyncActive = null)
+        Func<bool>? isCatalogSyncActive = null,
+        TimeProvider? timeProvider = null)
     {
         _priceIndex = priceIndex;
         _cart = cart;
@@ -112,6 +116,7 @@ public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
         _reloadCatalogAsync = reloadCatalogAsync;
         _uiPriorityCoordinator = uiPriorityCoordinator ?? UiPriorityCoordinator.Noop;
         _isCatalogSyncActive = isCatalogSyncActive ?? (() => false);
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public event EventHandler<PosTerminalCatalogReloadedEventArgs>? CatalogReloaded;
@@ -705,9 +710,10 @@ public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
         string lookupCode,
         CancellationToken cancellationToken)
     {
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutCts.CancelAfter(RemoteLookupTimeout);
-        return await _remoteLookupRefreshAsync!(storeCode, lookupCode, timeoutCts.Token);
+        // CancelAfter 不接受 TimeProvider，改为独立的超时 CTS 再与外部令牌链接，语义不变。
+        using var timeoutCts = new CancellationTokenSource(RemoteLookupTimeout, _timeProvider);
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+        return await _remoteLookupRefreshAsync!(storeCode, lookupCode, linkedCts.Token);
     }
 
     private PosTerminalWorkflowResult ApplyWholeOrderDiscountAmount(string keypadBuffer)
@@ -907,7 +913,7 @@ public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
                 "PosScan",
                 $"remote lookup dispatch storeCode={snapshot.StoreCode} lookupCode={snapshot.LookupCode} productCode={snapshot.ProductCode} catalogSyncActive={FormatBool(catalogSyncActive)} elapsedMs={stopwatch.ElapsedMilliseconds}");
 
-            using var timeoutCts = new CancellationTokenSource(RemoteLookupTimeout);
+            using var timeoutCts = new CancellationTokenSource(RemoteLookupTimeout, _timeProvider);
             var result = await _remoteLookupRefreshAsync!(
                 snapshot.StoreCode,
                 snapshot.LookupCode,

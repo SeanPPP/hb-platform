@@ -4220,20 +4220,6 @@ public sealed class TransactionHistoryViewModelTests
         return new PosSessionState("HB POS", storeCode, storeName, deviceCode, "C001", "Alice", isOnline, 0);
     }
 
-    private static async Task WaitUntilAsync(Func<bool> condition, int timeoutMilliseconds = 5000)
-    {
-        var deadline = Environment.TickCount64 + timeoutMilliseconds;
-        while (!condition())
-        {
-            if (Environment.TickCount64 > deadline)
-            {
-                Assert.Fail("condition was not met within the timeout.");
-            }
-
-            await Task.Delay(10);
-        }
-    }
-
     private static InstallmentOrderSummary CreateInstallmentOrder(
         string orderNumber,
         string customerName,
