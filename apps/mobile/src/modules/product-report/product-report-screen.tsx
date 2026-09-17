@@ -155,11 +155,15 @@ function formatShare(value: number, denominator: number) {
   return `${((value / denominator) * 100).toFixed(1)}%`;
 }
 
-function getSupplierTitle(kind: SupplierReportKind, row: SupplierReportRow) {
-  if (kind === "china") {
-    return `${row.supplierCode} ${row.supplierName.slice(0, 3)}`.trim();
-  }
-  return row.supplierName || row.supplierCode;
+// 标题只放供应商名称，代码由下方副行单独展示，避免中国供应商代码上下重复。
+function getSupplierTitle(row: SupplierReportRow) {
+  return row.supplierName.trim() || row.supplierCode;
+}
+
+// 后端缺名时会把 supplierName 回退成 supplierCode，此时副行再显示一次代码就成了重复。
+function shouldShowSupplierCode(row: SupplierReportRow) {
+  const name = row.supplierName.trim();
+  return name !== "" && name !== row.supplierCode.trim();
 }
 
 function TableCell({
@@ -1407,13 +1411,16 @@ export function ProductReportScreen({
               setProductPage(1);
             }}
             accessibilityRole="button"
-            accessibilityLabel={`${getSupplierTitle(kind, item)} ${t("productReport.sections.products")}`}
+            accessibilityLabel={`${getSupplierTitle(item)} ${t("productReport.sections.products")}`}
             accessibilityState={{ selected: isSelected }}
             style={[styles.supplierNameColumn, styles.fullHeightCell]}
           >
-            <TableCell style={styles.strongText}>{getSupplierTitle(kind, item)}</TableCell>
+            <TableCell style={styles.strongText}>{getSupplierTitle(item)}</TableCell>
             <View style={styles.supplierFilterMeta}>
-              <TableCell style={[styles.muted, styles.supplierCodeText]}>{item.supplierCode}</TableCell>
+              {/* 代码与名称相同时留空占位，保持“筛选商品”提示的横向位置不变。 */}
+              <TableCell style={[styles.muted, styles.supplierCodeText]}>
+                {shouldShowSupplierCode(item) ? item.supplierCode : ""}
+              </TableCell>
               <Text variant="labelSmall" style={styles.filterProductsHint}>
                 {t("productReport.actions.filterProducts")}
               </Text>
@@ -1424,7 +1431,7 @@ export function ProductReportScreen({
           // 营业额列只打开供应商分店数据，不改变下方商品明细筛选。
           onPress={() => setDrilldown({ type: "supplier", kind, supplier: item })}
           accessibilityRole="button"
-          accessibilityLabel={`${getSupplierTitle(kind, item)} ${t("productReport.drilldown.supplier")}`}
+          accessibilityLabel={`${getSupplierTitle(item)} ${t("productReport.drilldown.supplier")}`}
           style={[styles.supplierMoneyColumn, styles.fullHeightCell]}
         >
           <TableCell numeric style={styles.strongText}>{formatWholeMoney(item.revenue)}</TableCell>
