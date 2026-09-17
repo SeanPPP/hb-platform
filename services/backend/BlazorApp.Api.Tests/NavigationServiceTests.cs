@@ -827,9 +827,10 @@ public class NavigationServiceTests
         var menu = _service.BuildAppMenu(user);
 
         // 管理员可见完整 App 菜单；商品查询与同权限的商品进销查询都必须保留。
-        Assert.Equal(25, menu.Count);
+        Assert.Equal(26, menu.Count);
         Assert.Contains(menu, item => item.RouteName == "product-query");
         Assert.Contains(menu, item => item.RouteName == "product-insights");
+        Assert.Contains(menu, item => item.RouteName == "warehouse-product-insights");
         Assert.Contains(menu, item => item.RouteName == "users");
         Assert.Contains(menu, item => item.RouteName == "user-admin");
         Assert.Contains(menu, item => item.RouteName == "roles");
@@ -844,6 +845,20 @@ public class NavigationServiceTests
         Assert.DoesNotContain(menu, item => item.RouteName == "attendance");
         Assert.Contains(menu, item => item.RouteName == "local-supplier-invoices");
         Assert.Contains(menu, item => item.RouteName == "warehouse");
+    }
+
+    [Fact]
+    public void BuildAppMenu_ShowsWarehouseProductInsightsOnlyWithWarehouseFlowPermission()
+    {
+        var flowUser = CreateUser(new Claim("permission", Permissions.SalesDashboard.WarehouseFlowView));
+        var warehouseOnlyUser = CreateUser(new Claim("permission", Permissions.Warehouse.View));
+
+        var flowMenu = _service.BuildAppMenu(flowUser);
+        var warehouseOnlyMenu = _service.BuildAppMenu(warehouseOnlyUser);
+
+        // 仓库商品进销读的是跨分店销售，必须与 Web 仓库商品流转分析同权限，仓库查看权限不得顺带放行。
+        Assert.Single(flowMenu, item => item.RouteName == "warehouse-product-insights");
+        Assert.DoesNotContain(warehouseOnlyMenu, item => item.RouteName == "warehouse-product-insights");
     }
 
     [Fact]
