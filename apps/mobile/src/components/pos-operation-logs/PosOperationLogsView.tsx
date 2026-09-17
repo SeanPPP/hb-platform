@@ -210,6 +210,8 @@ export function PosOperationLogsView({
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
+        // ScrollView 默认 flexGrow: 1，会和下方 flex: 1 的列表平分高度，把 chip 拉成整块；这里只占内容高度。
+        style={styles.chipScroll}
         contentContainerStyle={styles.chipRow}
         keyboardShouldPersistTaps="handled"
       >
@@ -374,7 +376,13 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   badgeText: { fontSize: 10, lineHeight: 12, color: HB_COLORS.white, fontWeight: "700" },
-  chipRow: { paddingHorizontal: HB_SPACING.md, gap: 6, paddingBottom: HB_SPACING.xs },
+  chipScroll: { flexGrow: 0, flexShrink: 0 },
+  chipRow: {
+    paddingHorizontal: HB_SPACING.md,
+    gap: 6,
+    paddingBottom: HB_SPACING.xs,
+    alignItems: "center",
+  },
   searchRow: { paddingHorizontal: HB_SPACING.md, paddingBottom: HB_SPACING.xs },
   search: {
     height: 38,
