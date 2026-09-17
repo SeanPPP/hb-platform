@@ -85,6 +85,48 @@ test("订单确认后才清空购物车并释放支付 lease", async () => {
   assert.equal(active.read().cart.lines.length, 1);
 });
 
+test("异常支付耐久移交后清空当前车，并可按原材料精确恢复", async () => {
+  const original = cartWithDiscount();
+  const active = session(original);
+  const coordinator = createCoordinator(active, null);
+  await coordinator.acquireExact({
+    checkoutIntentId: "checkout-parked",
+    expectedRevision: active.read().cart.revision,
+  });
+
+  await coordinator.clearAfterRecoveryParked("checkout-parked", "order-parked");
+  assert.equal(active.read().cart.lines.length, 0);
+  active.addItem({
+    lineId: "next-sale",
+    productCode: "NEXT",
+    itemNumber: null,
+    lookupCode: "NEXT",
+    displayName: "Next sale",
+    unitPrice: { currency: "AUD", cents: 100 },
+    syncProvenance: { referenceCode: null, priceSource: 0 },
+  });
+  await assert.rejects(
+    () => coordinator.prepareParkedRecovery({
+      checkoutIntentId: "checkout-parked",
+      cart: original.snapshot(),
+      pricingState: original.stateSnapshot(),
+      recallBinding: null,
+    }),
+    hasCode("ACTIVE_PRICING_CART_BUSY"),
+  );
+  active.clearManually();
+  const restored = await coordinator.prepareParkedRecovery({
+    checkoutIntentId: "checkout-parked",
+    cart: original.snapshot(),
+    pricingState: original.stateSnapshot(),
+    recallBinding: null,
+  });
+  assert.equal(restored.checkoutIntentId, "checkout-parked");
+  assert.deepEqual(active.read().cart, original.snapshot());
+  await coordinator.clearAfterCompleted(restored, "order-parked");
+  assert.equal(active.read().cart.lines.length, 0);
+});
+
 test("设备 scope 失效后已耐久完成订单仍由原支付 lease 清车并释放", async () => {
   const active = session(cartWithDiscount());
   const leaseCoordinator = createCoordinator(active, null);

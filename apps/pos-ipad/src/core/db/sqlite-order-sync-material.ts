@@ -15,6 +15,7 @@ import {
 import type { LocalOrder, OrderTender } from "@hb/pos-domain/core/contracts/order";
 import type { CardSyncEvidenceV1 } from "@hb/pos-domain/core/contracts/payment";
 
+import { readManualPaymentSyncEvidence } from "./sqlite-manual-payment-sync";
 import type { SqliteReturnCapacityVault } from "./sqlite-return-capacity-vault";
 import type { SqliteVoucherProtectedTokenStore } from "./sqlite-voucher-protected-token-store";
 
@@ -214,6 +215,14 @@ export class SqliteOrderSyncMaterialResolver {
       );
       const tender = cardTenders.get(tenderGuid);
       if (!tender) throw materialError("ORDER_SYNC_TENDER_MISMATCH");
+      const manualEvidence = await readManualPaymentSyncEvidence(this.connection, {
+        tenderGuid, orderGuid: wireOrder.orderGuid, storeCode: wireOrder.storeCode,
+        deviceCode: wireOrder.deviceCode, amountCents: tender.amount.cents,
+      });
+      if (manualEvidence) {
+        cardSyncEvidenceByTenderGuid.set(tenderGuid, manualEvidence);
+        continue;
+      }
       const attempt = readApprovedAttempt(row, wireOrder, tender);
       const provider = attempt.provider;
       if (provider === "voucher") {
@@ -467,6 +476,13 @@ export class SqliteOrderSyncMaterialResolver {
       return tender;
     }
 
+    if (method === "card") {
+      const manualEvidence = await readManualPaymentSyncEvidence(this.connection, {
+        tenderGuid: tender.tenderGuid, orderGuid: order.orderGuid, storeCode: order.storeCode,
+        deviceCode: order.deviceCode, amountCents: tender.amount.cents,
+      });
+      if (manualEvidence) return Object.freeze({ ...tender, reference: `MANUAL_CARD:${String(row.payment_attempt_id)}` });
+    }
     const attempt = readApprovedAttempt(row, order, tender);
     const bindings = await this.readReturnBindings(tender.tenderGuid);
     if (attempt.operation === "purchase") {

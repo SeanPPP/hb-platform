@@ -78,11 +78,13 @@ import {
   type OperationAuditLocalScope,
 } from "@hb/pos-db/core/db/sqlite-operation-audit-read";
 import { SqliteOrderSyncMaterialResolver } from "./sqlite-order-sync-material";
+import { SqliteManualPaymentOrderCommitter } from "./sqlite-manual-payment-committer";
 import { SqlitePaymentActionBindingStore } from "./sqlite-payment-action-binding-store";
 import {
   SqlitePaymentDraftRecoveryStore,
   type PaymentDraftPersistenceIds,
 } from "./sqlite-payment-draft-recovery-store";
+import { SqlitePaymentRecoveryCenterStore } from "./sqlite-payment-recovery-center-store";
 import { SqlitePaymentProtectedMaterialReader } from "@hb/pos-db/core/db/sqlite-payment-protected-material";
 import { SqliteRefundVoucherPrintMaterial } from "./sqlite-refund-voucher-print-material";
 import {
@@ -223,6 +225,23 @@ export class PosDatabase implements DatabasePort {
   /** 顶部状态只读取去重后的订单补传数量，不向 UI 暴露裸 outbox。 */
   public orderSyncStatus(): SqliteOrderSyncStatusRepository {
     return new SqliteOrderSyncStatusRepository(this.connection);
+  }
+
+  /** 异常刷卡订单独立于当前购物车保存；页面只能经窄恢复中心端口访问。 */
+  public paymentRecoveryCenter(
+    createAuditEventId: () => string,
+  ): SqlitePaymentRecoveryCenterStore {
+    return new SqlitePaymentRecoveryCenterStore(
+      this.connection,
+      createAuditEventId,
+      createAuditEventId,
+      this.nowIso,
+    );
+  }
+
+  /** 人工确认已收款只经专用事务写入 manual tender，不能伪造 provider Approved。 */
+  public manualPaymentOrderCommitter(): SqliteManualPaymentOrderCommitter {
+    return new SqliteManualPaymentOrderCommitter(this.connection, this.nowIso);
   }
 
   /**

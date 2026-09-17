@@ -119,7 +119,9 @@ namespace BlazorApp.Api.Services.React
             new(StringComparer.OrdinalIgnoreCase);
     }
 
-    public class WarehouseProductFlowAnalysisService : IWarehouseProductFlowAnalysisService
+    // 移动端仓库商品进销查询的单商品聚合实现在 WarehouseProductFlowAnalysisService.ProductInsight.cs，
+    // 拆分文件后可直接复用此处的行查询、门店名映射与缓存，避免两套 SQL 造成口径漂移。
+    public partial class WarehouseProductFlowAnalysisService : IWarehouseProductFlowAnalysisService
     {
         private readonly SqlSugarContext _context;
         private readonly IMemoryCache _cache;
