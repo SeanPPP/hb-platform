@@ -181,6 +181,28 @@
   ],
   "runtimeAdaptations": [
     {
+      "path": "core/sync/hbpos-sync-adapters.ts",
+      "package": "pos-sync",
+      "reason": "人工结案与 provider 终态冲突时必须交回 outbox 重试，不能按业务拒绝永久丢弃订单",
+      "baselineCanonicalRuntimeSha256": "1320cf6ac0ade04e774ee613faf5fff1c562384f7e8d6397c3a45a3e3adaac58",
+      "canonicalRuntimeSha256": "4d2bf28fe1254f015c5a853696b105b1b07eff3fa1b46122897e1c72b9da4c78",
+      "canonicalTypeSha256": "62ada3b04b9dabec10b18642f7d6dee43eb46af39f26a4ed0462b684ace07730",
+      "behaviorTests": [
+        {
+          "workspace": "apps/pos-ipad",
+          "script": "test:sync",
+          "path": "src/core/sync/hbpos-sync-adapters.test.ts",
+          "pattern": "src/core/sync/*.test.ts"
+        },
+        {
+          "workspace": "apps/pos-handheld",
+          "script": "test:sync",
+          "path": "src/core/sync/hbpos-sync-adapters.test.ts",
+          "pattern": "src/core/sync/*.test.ts"
+        }
+      ]
+    },
+    {
       "path": "core/sync/sync-coordinator.ts",
       "package": "pos-sync",
       "reason": "换店门禁需要同步协调器在更新切换释放后补做定时唤醒，并向双端运行时发布脱敏的单飞 drain 终态",
