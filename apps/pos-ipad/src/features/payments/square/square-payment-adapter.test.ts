@@ -14,6 +14,177 @@ import type {
   PaymentProviderReferences,
 } from "@/core/contracts";
 
+test("人工结论后 Square 查询缺少 checkout 不创建，已有 checkout 只 GET", async () => {
+  const transport = new ScriptedTransport([ok({ checkoutId: "checkout-existing", environment: "Sandbox", status: "PENDING", paymentIds: [] })]);
+  const adapter = createAdapter(transport);
+  await adapter.queryExistingPayment(attempt({ state: "Unknown" }));
+  assert.equal(transport.calls.length, 0);
+  await adapter.queryExistingPayment(attempt({ state: "Unknown", references: references({ checkoutId: "checkout-existing" }) }));
+  assert.equal(transport.calls.length, 1);
+  assert.equal(transport.calls[0]?.method, "GET");
+});
+
+test("恢复只使用 attempt 冻结的 Sandbox 环境，不随当前 Production 配置漂移", async () => {
+  const transport = new ScriptedTransport([
+    ok({
+      checkoutId: "checkout-sandbox",
+      environment: "Sandbox",
+      status: "CANCELED",
+    }),
+  ]);
+  const adapter = createAdapter(transport, { environment: "Production" });
+
+  assert.equal(adapter.providerEnvironment, "Production");
+  const recovered = await adapter.recover(
+    attempt({
+      providerEnvironment: "Sandbox",
+      state: "Pending",
+      references: references({ checkoutId: "checkout-sandbox" }),
+    }),
+  );
+
+  assert.equal(recovered.state, "Cancelled");
+  assert.deepEqual(transport.calls, [
+    {
+      method: "GET",
+      url: "/api/v1/square/checkouts/checkout-sandbox",
+      params: { environment: "Sandbox" },
+    },
+  ]);
+});
+
+test("Square 查询、取消、dismiss 与退款统一路由到 attempt 冻结环境", async () => {
+  const transport = new ScriptedTransport([
+    ok({ checkoutId: "checkout-1", environment: "Sandbox", status: "CANCELED" }),
+    ok({ checkoutId: "checkout-1", environment: "Sandbox", status: "CANCELED" }),
+    ok({ checkoutId: "checkout-1", environment: "Sandbox", status: "CANCELED" }),
+    ok({
+      refundId: "refund-1",
+      paymentId: "payment-1",
+      status: "PENDING",
+      amountMoney: { amount: 1_250, currency: "AUD" },
+    }),
+  ]);
+  const adapter = createAdapter(transport, { environment: "Production" });
+  const purchase = attempt({
+    providerEnvironment: "Sandbox",
+    state: "Pending",
+    references: references({ checkoutId: "checkout-1" }),
+  });
+
+  await adapter.getStatus(purchase);
+  await adapter.cancel(purchase);
+  await adapter.dismiss(purchase);
+  await adapter.refund({
+    ...purchase,
+    operation: "refund",
+    amount: { currency: "AUD", cents: -1_250 },
+    references: references({ paymentId: "payment-1" }),
+  });
+
+  assert.deepEqual(
+    transport.calls.map(
+      (call) =>
+        call.params?.environment ??
+        (call.data as { environment?: string } | undefined)?.environment,
+    ),
+    ["Sandbox", "Sandbox", "Sandbox", "Sandbox"],
+  );
+});
+
+test("Square 旧 attempt 缺少冻结环境时所有金融及查询动作失败关闭且零 HTTP", async () => {
+  const transport = new ScriptedTransport([]);
+  const adapter = createAdapter(transport, { environment: "Production" });
+  const legacy = attempt({
+    providerEnvironment: null,
+    state: "Pending",
+    references: references({
+      checkoutId: "checkout-legacy",
+      paymentId: "payment-legacy",
+    }),
+  });
+
+  for (const operation of [
+    () => adapter.submit(legacy),
+    () => adapter.recover(legacy),
+    () => adapter.cancel(legacy),
+    () => adapter.dismiss(legacy),
+    () =>
+      adapter.refund({
+        ...legacy,
+        operation: "refund",
+        amount: { currency: "AUD", cents: -1_250 },
+      }),
+    () => adapter.getStatus(legacy),
+    () => adapter.queryExistingPayment(legacy),
+  ]) {
+    const result = await operation();
+    assert.equal(result.state, "Unknown");
+    assert.equal(result.responseCode, "SQUARE_ENVIRONMENT_REQUIRED");
+  }
+  assert.equal(transport.calls.length, 0);
+});
+
+test("无 checkout 的重放若当前配置与冻结环境不同则失败关闭", async () => {
+  const transport = new ScriptedTransport([]);
+  const adapter = createAdapter(transport, { environment: "Production" });
+
+  const result = await adapter.recover(
+    attempt({ providerEnvironment: "Sandbox", state: "Submitted" }),
+  );
+
+  assert.equal(result.state, "Unknown");
+  assert.equal(result.responseCode, "SQUARE_ENVIRONMENT_CONFLICT");
+  assert.equal(transport.calls.length, 0);
+});
+
+test("Square checkout 响应缺失或错配冻结环境时不得进入 Pending", async () => {
+  for (const environment of [undefined, "Production"] as const) {
+    const transport = new ScriptedTransport([
+      ok({
+        checkoutId: "checkout-environment-conflict",
+        ...(environment ? { environment } : {}),
+        status: "PENDING",
+      }),
+    ]);
+
+    const result = await createAdapter(transport).getStatus(
+      attempt({
+        state: "Pending",
+        references: references({ checkoutId: "checkout-environment-conflict" }),
+      }),
+    );
+
+    assert.equal(result.state, "Unknown");
+    assert.equal(result.responseCode, "SQUARE_ENVIRONMENT_CONFLICT");
+  }
+});
+
+test("Square refund 响应缺失或错配冻结环境时不得进入 Pending", async () => {
+  for (const environment of [undefined, "Production"] as const) {
+    const transport = new ScriptedTransport([
+      ok({
+        refundId: "refund-environment-conflict",
+        ...(environment ? { environment } : {}),
+        status: "PENDING",
+        paymentId: "payment-original",
+        amountMoney: { amount: 500, currency: "AUD" },
+      }),
+    ]);
+
+    const result = await createAdapter(transport).refund(
+      attempt({
+        operation: "refund",
+        amount: { currency: "AUD", cents: -500 },
+        references: references({ paymentId: "payment-original" }),
+      }),
+    );
+
+    assert.equal(result.state, "Unknown");
+    assert.equal(result.responseCode, "SQUARE_ENVIRONMENT_CONFLICT");
+  }
+});
+
 test("checkout 完成后验证 payment 金额与币种，Approved 同时携带 CheckoutId 和 PaymentId", async () => {
   const transport = new ScriptedTransport([
     ok({
@@ -138,7 +309,9 @@ test("PENDING checkout 只返回 Pending；recover 按 CheckoutId 查询并验�
   ]);
   const adapter = createAdapter(transport, { environment: "Production" });
 
-  const pending = await adapter.submit(attempt());
+  const pending = await adapter.submit(
+    attempt({ providerEnvironment: "Production" }),
+  );
   assert.equal(pending.state, "Pending");
   assert.equal(pending.references.checkoutId, "checkout-1");
   assert.equal("protectedSyncEvidence" in pending, false);
@@ -146,6 +319,7 @@ test("PENDING checkout 只返回 Pending；recover 按 CheckoutId 查询并验�
   const recovered = await adapter.recover(
     attempt({
       state: "Pending",
+      providerEnvironment: "Production",
       references: pending.references,
     }),
   );
@@ -733,6 +907,7 @@ test("COMPLETED refund 必须绑定 PaymentId、退款引用和精确金额，�
     {
       response: {
         refundId: "refund-missing-payment",
+        environment: "Sandbox",
         status: "COMPLETED",
         amountMoney: { amount: 500, currency: "AUD" },
       },
@@ -741,6 +916,7 @@ test("COMPLETED refund 必须绑定 PaymentId、退款引用和精确金额，�
     {
       response: {
         refundId: "refund-missing-money",
+        environment: "Sandbox",
         status: "COMPLETED",
         paymentId: "payment-original",
       },
@@ -749,6 +925,7 @@ test("COMPLETED refund 必须绑定 PaymentId、退款引用和精确金额，�
     {
       response: {
         refundId: "refund-other-payment",
+        environment: "Sandbox",
         status: "COMPLETED",
         paymentId: "payment-other",
         amountMoney: { amount: 500, currency: "AUD" },
@@ -758,6 +935,7 @@ test("COMPLETED refund 必须绑定 PaymentId、退款引用和精确金额，�
     {
       response: {
         refundId: "refund-unsafe\u0000reference",
+        environment: "Sandbox",
         status: "COMPLETED",
         paymentId: "payment-original",
         amountMoney: { amount: 500, currency: "AUD" },
@@ -787,6 +965,7 @@ test("refund 响应丢失后仅以同一幂等 attempt 恢复，并只在 Approv
     new Error("response lost"),
     ok({
       refundId: "refund-replayed",
+      environment: "Sandbox",
       status: "COMPLETED",
       paymentId: "payment-original",
       amountMoney: { amount: 500, currency: "AUD" },
@@ -874,11 +1053,15 @@ function createAdapter(
     locationId: string;
   }> = {},
 ) {
-  return new SquarePaymentAdapter(transport, async () => ({
-    environment: overrides.environment ?? "Sandbox",
-    deviceId: overrides.deviceId ?? "device:terminal-1",
-    locationId: overrides.locationId ?? "location-1",
-  }));
+  return new SquarePaymentAdapter(
+    transport,
+    async () => ({
+      environment: overrides.environment ?? "Sandbox",
+      deviceId: overrides.deviceId ?? "device:terminal-1",
+      locationId: overrides.locationId ?? "location-1",
+    }),
+    overrides.environment ?? "Sandbox",
+  );
 }
 
 function ok<T>(data: T): HbposTransportResponse<HbposEnvelope<T>> {
@@ -901,6 +1084,10 @@ function attempt(overrides: Partial<PaymentAttempt> = {}): PaymentAttempt {
     createdAtIso: overrides.createdAtIso ?? "2026-07-28T00:00:00.000Z",
     updatedAtIso: overrides.updatedAtIso ?? "2026-07-28T00:00:00.001Z",
     lastErrorCode: overrides.lastErrorCode ?? null,
+    providerEnvironment:
+      overrides.providerEnvironment === undefined
+        ? "Sandbox"
+        : overrides.providerEnvironment,
   };
 }
 

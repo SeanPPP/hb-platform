@@ -550,6 +550,10 @@
       "name": "View compact sales dashboard",
       "description": "View store, supplier and product sales data in a compact layout."
     },
+    "SalesDashboard.BatchProductSales.View": {
+      "name": "View batch item sales",
+      "description": "View daily, store and discounted sales for imported item numbers."
+    },
     "SalesDashboard.LocalProductAnalysis.View": {
       "name": "View Australian local product analysis",
       "description": "View purchasing and sales performance for Australian local products."

@@ -36,14 +36,18 @@ namespace BlazorApp.Api.Interfaces.React
         Task<ApiResponse<LocalPurchaseDashboardResponseDto>> GetDashboardAsync(
             string endMonth,
             LocalPurchaseDashboardStoreScope storeScope,
-            CancellationToken cancellationToken
+            CancellationToken cancellationToken,
+            string? supplierFilterMode = null,
+            IReadOnlyCollection<string>? supplierKeys = null
         );
 
         Task<ApiResponse<LocalPurchaseDashboardStoreSuppliersDto>> GetStoreSuppliersAsync(
             string storeCode,
             string endMonth,
             LocalPurchaseDashboardStoreScope storeScope,
-            CancellationToken cancellationToken
+            CancellationToken cancellationToken,
+            string? supplierFilterMode = null,
+            IReadOnlyCollection<string>? supplierKeys = null
         );
     }
 }

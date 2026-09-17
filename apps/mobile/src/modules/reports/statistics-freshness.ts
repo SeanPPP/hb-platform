@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 
-export type StatisticsRunStatus = "Success" | "Failed" | "Running";
+export type StatisticsRunStatus = "Success" | "Skipped" | "Failed" | "Running";
 
 export interface StatisticsFreshness {
   lastSuccessfulAtUtc: string | null;
@@ -14,7 +14,7 @@ export function normalizeStatisticsFreshness(payload: unknown): StatisticsFreshn
   const status = value.latestRunStatus;
   return {
     lastSuccessfulAtUtc: typeof value.lastSuccessfulAtUtc === "string" ? value.lastSuccessfulAtUtc : null,
-    latestRunStatus: status === "Success" || status === "Failed" || status === "Running" ? status : null,
+    latestRunStatus: status === "Success" || status === "Skipped" || status === "Failed" || status === "Running" ? status : null,
   };
 }
 

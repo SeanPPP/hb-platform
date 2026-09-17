@@ -15,25 +15,28 @@ namespace BlazorApp.Api.Services
     internal sealed class SalesStatisticsProductStoreDailyEntrySlice : SalesStatisticsSliceBase
     {
         private readonly SalesStatisticsProductStoreDailyRefreshSlice _productRefresh;
+        private readonly SalesStatisticsOrchestrationSlice _orchestration;
 
         public SalesStatisticsProductStoreDailyEntrySlice(
             SalesStatisticsSliceContext shared,
-            SalesStatisticsProductStoreDailyRefreshSlice productRefresh)
+            SalesStatisticsProductStoreDailyRefreshSlice productRefresh,
+            SalesStatisticsOrchestrationSlice orchestration)
             : base(shared)
         {
             _productRefresh = productRefresh;
+            _orchestration = orchestration;
         }
 
     public async Task UpdateProductStoreDailyStatistics(DateTime? date = null)
     {
         var targetDate = (date ?? SalesStatisticsBusinessDate.Today()).Date;
-        if (targetDate.Year == 2025)
+        if (SalesStatisticsHBSalesHistoryWindow.Includes(targetDate))
         {
-            // 2025 双来源统计必须同时切换两张日表，不能留下新旧口径混合的中间状态。
+            // HBSales 历史窗口的双来源统计必须同时切换两张日表，不能留下新旧口径混合的中间状态。
             await _productRefresh.Update2025StoreAndProductStatisticsAtomically(
                 _context,
                 _posmContext,
-                GetHBSalesContextFor2025(targetDate)!,
+                GetHBSalesContextForVerifiedHistory(targetDate)!,
                 _logger,
                 targetDate
             );
@@ -70,12 +73,12 @@ namespace BlazorApp.Api.Services
         }
 
         var targetDate = date.Date;
-        if (targetDate.Year == 2025)
+        if (SalesStatisticsHBSalesHistoryWindow.Includes(targetDate))
         {
             await _productRefresh.Update2025StoreAndProductStatisticsAtomically(
                 _context,
                 _posmContext,
-                GetHBSalesContextFor2025(targetDate)!,
+                GetHBSalesContextForVerifiedHistory(targetDate)!,
                 _logger,
                 targetDate,
                 expectedJobId: expectedJobId,
@@ -83,12 +86,92 @@ namespace BlazorApp.Api.Services
             return;
         }
 
+        if (SalesStatisticsBusinessDate.IsToday(targetDate))
+        {
+            // 当天必须保留单份 POSM 快照驱动的 Store/Product 原子发布；不能拆成两次来源读取。
+            await _productRefresh.UpdateProductStoreDailyStatisticsWithContext(
+                _context,
+                _posmContext,
+                null,
+                _logger,
+                targetDate,
+                expectedJobId: expectedJobId,
+                validateExecutionOwnershipBeforeCommitAsync: ValidateBeforeCommitAsync);
+            return;
+        }
+
+        var initialProductStateFence = await SalesStatisticsProductStoreDailyRefreshSlice
+            .CaptureProductStatisticFailureFenceAsync(
+            _context,
+            targetDate);
+        // 非 2025 队列以前只替换商品日统计，会把迟到来源的新商品金额与旧分店营业额混用。
+        // 先提交同一日期的分店统计；其提交前和商品写入事务内均复用队列 owner 校验。
+        DateTime? sourceWatermark = null;
+        Func<Task>? validateQueuedSourceWatermarkAsync = null;
+        try
+        {
+            sourceWatermark = await SalesStatisticsProductStoreDailyStateSlice
+                .QueryDailySourceWatermarkAsync(
+                _posmContext,
+                GetHBSalesContextFor2025(targetDate),
+                targetDate);
+            validateQueuedSourceWatermarkAsync = async () =>
+            {
+                var currentWatermark = await SalesStatisticsProductStoreDailyStateSlice
+                    .QueryDailySourceWatermarkAsync(
+                    _posmContext,
+                    GetHBSalesContextFor2025(targetDate),
+                    targetDate);
+                if (currentWatermark != sourceWatermark)
+                {
+                    throw new InvalidOperationException(
+                        $"队列分店/商品统计构建期间来源水位发生变化，拒绝提交: {targetDate:yyyy-MM-dd}");
+                }
+            };
+            await _orchestration.UpdateStoreStatisticsWithContext(
+                _context,
+                _posmContext,
+                GetHBSalesContextFor2025(targetDate),
+                _logger,
+                targetDate,
+                null,
+                expectedJobId,
+                ValidateBeforeCommitAsync,
+                sourceWatermark,
+                validateQueuedSourceWatermarkAsync);
+        }
+        catch (Exception ex)
+        {
+            // 分店前置失败也必须按原 JobId 写 Product Failed；CAS/fencing 会让已换主的任务保持新状态。
+            try
+            {
+                await SalesStatisticsProductStoreDailyRefreshSlice.PersistProductStatisticFailureAsync(
+                    _context,
+                    _logger,
+                    targetDate,
+                    ex,
+                    expectedJobId,
+                    ValidateBeforeCommitAsync,
+                    initialProductStateFence);
+            }
+            catch (Exception stateException)
+            {
+                _logger.LogError(stateException, "写入分店前置失败的商品统计状态失败: {Date}", targetDate);
+            }
+            throw;
+        }
+
+        // Store 提交和 Product 事务是两个原子提交点；开始后者前再次确认队列租约，
+        // 后续仍由 Product 事务内的 JobId fence 拒绝已经换主的旧 worker。
+        await ValidateBeforeCommitAsync();
         await _productRefresh.UpdateProductStoreDailyStatisticsWithContext(
             _context,
             _posmContext,
             GetHBSalesContextFor2025(targetDate),
             _logger,
             targetDate,
+            sourceWatermarkOverride: sourceWatermark,
+            validateSourceWatermarkBeforeCommitAsync: validateQueuedSourceWatermarkAsync,
             expectedJobId: expectedJobId,
             validateExecutionOwnershipBeforeCommitAsync: ValidateBeforeCommitAsync);
     }

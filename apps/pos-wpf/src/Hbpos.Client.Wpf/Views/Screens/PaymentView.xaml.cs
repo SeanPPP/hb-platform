@@ -135,6 +135,12 @@ public partial class PaymentView : UserControl
             return;
         }
 
+        if (e.PropertyName == nameof(PaymentViewModel.IsManualCardDialogOpen) && viewModel.IsManualCardDialogOpen)
+        {
+            Dispatcher.BeginInvoke(new Action(() => ManualCardSuccessCheckBox.Focus()));
+            return;
+        }
+
         if (e.PropertyName == nameof(PaymentViewModel.IsVoucherEntryDialogOpen) &&
             viewModel.IsVoucherEntryDialogOpen)
         {

@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  operationAuthorizationActionCopyKey,
+  operationAuthorizationText,
+} from "./operation-authorization-copy";
+import {
   OperationAuthorizationService,
   type OperationAuthorizationRequest,
   type RequestingCashierAuthorizationIdentity,
@@ -125,6 +129,148 @@ test("当前收银员直通且重复 action 只执行一次，回调上下文没
   assert.deepEqual(audits, []);
 });
 
+test("强制主管授权时，即使当前收银员已有权限也必须等待主管扫码", async () => {
+  const { service, loginInputs } = harness(undefined, cashier({ permissions: [PERMISSION] }));
+  let calls = 0;
+  const action = service.authorizeAndRun(request({ forceSupervisor: true }), (context) => {
+    calls += 1;
+    return context;
+  });
+
+  assert.equal(calls, 0);
+  assert.equal(service.getState().kind, "awaiting-supervisor");
+  assert.deepEqual(await service.submitSupervisorBarcode("supervisor"), { consumed: true, outcome: "authorized" });
+  const result = await action;
+  assert.deepEqual(result, {
+    authorized: true,
+    value: {
+      authorizationMode: "online",
+      requestingCashierId: "REQUESTER",
+      authorizingCashierId: "SUPERVISOR",
+      authorizingActor: {
+        cashierId: "SUPERVISOR",
+        cashierName: "Supervisor",
+        userGuid: "supervisor-user-guid",
+      },
+      permissionCode: PERMISSION,
+    },
+  });
+  assert.equal(result.authorized && Object.isFrozen(result.value.authorizingActor), true);
+  assert.equal(calls, 1);
+  assert.equal(loginInputs.length, 1);
+});
+
+test("强制主管授权拒绝当前收银员用 cashierId 或 userGuid 给自己授权", async () => {
+  const cases: readonly CashierSessionDto[] = [
+    supervisor({ cashierId: " requester ", userGuid: "different-user-guid" }),
+    supervisor({ cashierId: "OTHER", userGuid: " REQUESTER-USER-GUID " }),
+  ];
+
+  for (const [index, session] of cases.entries()) {
+    const { service } = harness(async () => ({ source: "online", session }), cashier({ permissions: [PERMISSION] }));
+    const action = service.authorizeAndRun(
+      request({ actionId: `forced-self-${index}`, forceSupervisor: true }),
+      () => "must-not-run",
+    );
+    assert.deepEqual(await service.submitSupervisorBarcode("requester"), {
+      consumed: true,
+      outcome: "denied",
+      reason: "AUTHORIZER_IDENTITY_INVALID",
+    });
+    assert.equal(service.cancel(), true);
+    assert.deepEqual(await action, { authorized: false, reason: "CANCELLED" });
+  }
+});
+
+test("强制主管授权允许同店同设备且身份不同的合法主管执行动作", async () => {
+  const { service } = harness(undefined, cashier({ permissions: [PERMISSION] }));
+  const action = service.authorizeAndRun(
+    request({ actionId: "forced-valid-supervisor", forceSupervisor: true }),
+    (context) => context.authorizingCashierId,
+  );
+
+  assert.deepEqual(await service.submitSupervisorBarcode("supervisor"), { consumed: true, outcome: "authorized" });
+  assert.deepEqual(await action, { authorized: true, value: "SUPERVISOR" });
+});
+
+test("强制主管授权允许离线缓存中的合法第二人执行动作", async () => {
+  const { service } = harness(
+    async () => ({ source: "offline-cache", session: supervisor() }),
+    cashier({ permissions: [PERMISSION] }),
+  );
+  const action = service.authorizeAndRun(
+    request({ actionId: "forced-offline-valid", forceSupervisor: true }),
+    (context) => context,
+  );
+
+  assert.deepEqual(await service.submitSupervisorBarcode("supervisor"), { consumed: true, outcome: "authorized" });
+  assert.deepEqual(await action, {
+    authorized: true,
+    value: {
+      authorizationMode: "offline-cache",
+      requestingCashierId: "REQUESTER",
+      authorizingCashierId: "SUPERVISOR",
+      authorizingActor: {
+        cashierId: "SUPERVISOR",
+        cashierName: "Supervisor",
+        userGuid: "supervisor-user-guid",
+      },
+      permissionCode: PERMISSION,
+    },
+  });
+});
+
+test("强制主管授权拒绝离线缓存中的当前收银员给自己授权", async () => {
+  const { service } = harness(
+    async () => ({
+      source: "offline-cache",
+      session: supervisor({ cashierId: " requester ", userGuid: "different-user-guid" }),
+    }),
+    cashier({ permissions: [PERMISSION] }),
+  );
+  const action = service.authorizeAndRun(
+    request({ actionId: "forced-offline-self", forceSupervisor: true }),
+    () => "must-not-run",
+  );
+
+  assert.deepEqual(await service.submitSupervisorBarcode("requester"), {
+    consumed: true,
+    outcome: "denied",
+    reason: "AUTHORIZER_IDENTITY_INVALID",
+  });
+  assert.equal(service.cancel(), true);
+  assert.deepEqual(await action, { authorized: false, reason: "CANCELLED" });
+});
+
+test("相同 actionId 不能通过切换强制主管标记重放授权动作", async () => {
+  const { service } = harness(undefined, cashier({ permissions: [PERMISSION] }));
+  let calls = 0;
+  const original = request({ actionId: "force-supervisor-signature" });
+  assert.deepEqual(await service.authorizeAndRun(original, () => { calls += 1; return "done"; }), {
+    authorized: true,
+    value: "done",
+  });
+
+  assert.deepEqual(
+    await service.authorizeAndRun({ ...original, forceSupervisor: true }, () => { calls += 100; return "replayed"; }),
+    { authorized: false, reason: "ACTION_ID_CONFLICT" },
+  );
+  assert.equal(calls, 1);
+});
+
+test("支付恢复动作名称提供中英文安全文案", () => {
+  assert.equal(operationAuthorizationActionCopyKey("payment-recovery-paid"), "paymentRecoveryPaid");
+  assert.equal(operationAuthorizationActionCopyKey("payment-recovery-unpaid"), "paymentRecoveryUnpaid");
+  assert.equal(operationAuthorizationActionCopyKey("payment-recovery-uncertain"), "paymentRecoveryUncertain");
+  assert.equal(operationAuthorizationActionCopyKey("change-price"), null);
+  assert.equal(operationAuthorizationText("zh", "paymentRecoveryPaid"), "人工确认刷卡已收款");
+  assert.equal(operationAuthorizationText("zh", "paymentRecoveryUnpaid"), "人工确认刷卡未扣款");
+  assert.equal(operationAuthorizationText("zh", "paymentRecoveryUncertain"), "保留刷卡待核实状态");
+  assert.equal(operationAuthorizationText("en", "paymentRecoveryPaid"), "Manually confirm card payment received");
+  assert.equal(operationAuthorizationText("en", "paymentRecoveryUnpaid"), "Manually confirm no card payment");
+  assert.equal(operationAuthorizationText("en", "paymentRecoveryUncertain"), "Keep card payment awaiting verification");
+});
+
 test("主管授权审计脱敏，票据既不在回调也不留在可 JSON 化服务状态", async () => {
   const { service, audits } = harness();
   const authorization = service.authorizeAndRun(request(), (context) => context);
@@ -136,6 +282,11 @@ test("主管授权审计脱敏，票据既不在回调也不留在可 JSON 化�
       authorizationMode: "online",
       requestingCashierId: "REQUESTER",
       authorizingCashierId: "SUPERVISOR",
+      authorizingActor: {
+        cashierId: "SUPERVISOR",
+        cashierName: "Supervisor",
+        userGuid: "supervisor-user-guid",
+      },
       permissionCode: PERMISSION,
     },
   });

@@ -1,10 +1,11 @@
 import { Pressable, StyleSheet, View } from "react-native";
-import { IconButton, Text } from "react-native-paper";
+import { Icon, IconButton, Text } from "react-native-paper";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 
 interface QueryHeaderProps {
   storeName?: string;
   canSelectStore?: boolean;
+  storeLocked?: boolean;
   onScanPress: () => void;
   onRefreshPress: () => void;
   onStorePress?: () => void;
@@ -14,6 +15,7 @@ interface QueryHeaderProps {
 export function QueryHeader({
   storeName,
   canSelectStore = false,
+  storeLocked = false,
   onScanPress,
   onRefreshPress,
   onStorePress,
@@ -38,6 +40,14 @@ export function QueryHeader({
         >
           {storeLabel}
         </Text>
+        {storeLocked ? (
+          <View style={styles.lockedHint}>
+            <Icon source="lock-outline" size={14} color="#0958D9" />
+            <Text variant="labelSmall" style={styles.lockedText}>
+              {t("actions.invoiceStoreLocked")}
+            </Text>
+          </View>
+        ) : null}
       </Pressable>
       <View style={styles.actions}>
         <IconButton icon="barcode-scan" size={20} onPress={onScanPress} style={styles.iconButton} />
@@ -69,6 +79,14 @@ const styles = StyleSheet.create({
   },
   storeButton: {
     flex: 1,
+  },
+  lockedHint: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 1,
+  },
+  lockedText: {
+    color: "#0958D9",
   },
   storeLabelSelectable: {
     color: "#0958D9",

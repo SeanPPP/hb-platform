@@ -125,6 +125,7 @@ namespace BlazorApp.Shared.Models.HBweb
         public const string Pending = "Pending";
         public const string Running = "Running";
         public const string Success = "Success";
+        public const string Skipped = "Skipped";
         public const string Failed = "Failed";
     }
 

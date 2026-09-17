@@ -9,6 +9,10 @@ import { STORE_SELECTION_STORAGE_KEY, type Store } from "@/modules/shop/types";
 import { normalizeShopStores, sortShopStores } from "@/modules/shop/store-normalization";
 import { getAssignedStoresForSession, resolveScopedStoreCode } from "@/modules/shop/store-scope";
 import { shouldLoadAllStoresForWarehouseCart } from "@/modules/shop/warehouse-cart-access";
+import {
+  buildStoreSelectionScopeKey,
+  isStoreSelectionReadyForScope,
+} from "@/modules/shop/store-selection-readiness";
 
 export function useStores() {
   const user = useAuthStore((state) => state.user);
@@ -21,6 +25,7 @@ export function useStores() {
   const setSelectedStore = useCartStore((state) => state.setSelectedStore);
   const setCartSummary = useCartStore((state) => state.setCartSummary);
   const [isHydratingSelection, setIsHydratingSelection] = useState(false);
+  const [hydratedSelectionScopeKey, setHydratedSelectionScopeKey] = useState<string | null>(null);
   const userGuid = user?.userGUID ?? null;
   const hasUserSession = Boolean(isAuthenticated && userGuid);
   const useAllStoresForWarehouseCart = shouldLoadAllStoresForWarehouseCart(access);
@@ -118,6 +123,17 @@ export function useStores() {
       }
     },
   });
+  const selectionScopeKey = useMemo(
+    () =>
+      userGuid && storesQuery.isSuccess
+        ? buildStoreSelectionScopeKey({
+            storeCodes: (storesQuery.data ?? []).map((store) => store.storeCode),
+            useAllStores: useAllStoresForWarehouseCart,
+            userGuid,
+          })
+        : null,
+    [storesQuery.data, storesQuery.isSuccess, useAllStoresForWarehouseCart, userGuid]
+  );
 
   useEffect(() => {
     if (isDeviceMode) {
@@ -174,6 +190,7 @@ export function useStores() {
       }
 
       if (!cancelled) {
+        setHydratedSelectionScopeKey(selectionScopeKey);
         setIsHydratingSelection(false);
       }
     }
@@ -183,7 +200,7 @@ export function useStores() {
     return () => {
       cancelled = true;
     };
-  }, [deviceBoundStore, isDeviceMode, setCartSummary, setSelectedStore, setUserStores, storesQuery.data, storesQuery.isSuccess, userGuid]);
+  }, [deviceBoundStore, isDeviceMode, selectionScopeKey, setCartSummary, setSelectedStore, setUserStores, storesQuery.data, storesQuery.isSuccess, userGuid]);
 
   const effectiveStores = getAssignedStoresForSession({
     stores: userStores,
@@ -192,6 +209,13 @@ export function useStores() {
   });
   const effectiveSelectedStore = isDeviceMode ? deviceBoundStore : selectedStore;
   const selectedStoreCode = effectiveSelectedStore?.storeCode ?? null;
+  const isStoreSelectionReady = isStoreSelectionReadyForScope({
+    currentScopeKey: selectionScopeKey,
+    deviceStoreCode: deviceBoundStore?.storeCode,
+    hydratedScopeKey: hydratedSelectionScopeKey,
+    isDeviceMode,
+    userGuid,
+  });
   const embeddedStores = useMemo(() => sortShopStores(normalizeShopStores(user?.stores)), [user?.stores]);
   const debugInfo = useMemo(
     () => ({
@@ -252,6 +276,7 @@ export function useStores() {
     isDeviceMode,
     deviceBoundStore,
     isHydratingSelection,
+    isStoreSelectionReady,
     debugInfo,
     ...storesQuery,
     ...actions,

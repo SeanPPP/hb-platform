@@ -50,6 +50,7 @@ internal sealed class MainChildViewModelFactory
     private readonly ISharedHeldOrderPublicationWorker? _sharedHeldOrderPublicationWorker;
     private readonly IStoreReceiptProfileApiClient? _storeReceiptProfileApiClient;
     private readonly IRemoteMaintenanceService? _remoteMaintenanceService;
+    private readonly IPaymentMethodSettingsService? _paymentMethodSettingsService;
 
     public MainChildViewModelFactory(
         IDeviceRegistrationWorkflowService deviceRegistrationWorkflowService,
@@ -91,7 +92,8 @@ internal sealed class MainChildViewModelFactory
         ISharedHeldOrderRepository? sharedHeldOrderRepository = null,
         ISharedHeldOrderPublicationWorker? sharedHeldOrderPublicationWorker = null,
         IStoreReceiptProfileApiClient? storeReceiptProfileApiClient = null,
-        IRemoteMaintenanceService? remoteMaintenanceService = null)
+        IRemoteMaintenanceService? remoteMaintenanceService = null,
+        IPaymentMethodSettingsService? paymentMethodSettingsService = null)
     {
         _deviceRegistrationWorkflowService = deviceRegistrationWorkflowService;
         _receiptQueryService = receiptQueryService;
@@ -133,6 +135,7 @@ internal sealed class MainChildViewModelFactory
         _sharedHeldOrderPublicationWorker = sharedHeldOrderPublicationWorker;
         _storeReceiptProfileApiClient = storeReceiptProfileApiClient;
         _remoteMaintenanceService = remoteMaintenanceService;
+        _paymentMethodSettingsService = paymentMethodSettingsService;
     }
 
     public DeviceRegistrationViewModel CreateDeviceRegistrationViewModel(
@@ -382,7 +385,8 @@ internal sealed class MainChildViewModelFactory
             confirmInstallmentFullFirstPaymentAsync,
             _operationAuditLogger,
             _operationAuthorizationService,
-            cardTerminalSetupService: _cardTerminalSetupService);
+            cardTerminalSetupService: _cardTerminalSetupService,
+            paymentMethodSettingsService: _paymentMethodSettingsService);
     }
 
     public DailyCloseViewModel CreateDailyCloseViewModel(
@@ -436,7 +440,8 @@ internal sealed class MainChildViewModelFactory
             storeReceiptProfileApiClient: _storeReceiptProfileApiClient,
             session: session,
             remoteMaintenanceService: _remoteMaintenanceService,
-            confirmLinklyTerminalAssignmentAsync: confirmLinklyTerminalAssignmentAsync);
+            confirmLinklyTerminalAssignmentAsync: confirmLinklyTerminalAssignmentAsync,
+            paymentMethodSettingsService: _paymentMethodSettingsService);
     }
 
     public CustomerDisplayViewModel CreateCustomerDisplayViewModel()

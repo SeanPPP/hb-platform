@@ -550,6 +550,10 @@
       "name": "查看独立销售看板",
       "description": "查看紧凑布局的分店、供应商和商品销售数据"
     },
+    "SalesDashboard.BatchProductSales.View": {
+      "name": "查看批量货号销量",
+      "description": "按导入货号查看商品每日销量、分店销量及折扣成交情况"
+    },
     "SalesDashboard.LocalProductAnalysis.View": {
       "name": "查看澳洲本地商品分析",
       "description": "查看澳洲本地商品的进货与销售表现"

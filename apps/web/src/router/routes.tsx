@@ -55,6 +55,7 @@ const CompactSalesBoardPage = lazy(() => import('../pages/ExecutiveSalesIntellig
 const SalesDetailAnalysisPage = lazy(() => import('../pages/ExecutiveSalesIntelligence/SalesDetailAnalysisV2'))
 const ProductMovementReportPage = lazy(() => import('../pages/ExecutiveSalesIntelligence/ProductMovementReport'))
 const WarehouseProductFlowAnalysisPage = lazy(() => import('../pages/ExecutiveSalesIntelligence/WarehouseProductFlowAnalysis'))
+const BatchProductSalesAnalysisPage = lazy(() => import('../pages/ExecutiveSalesIntelligence/BatchProductSalesAnalysis'))
 const LocalProductSalesAnalysisPage = lazy(() => import('../pages/ExecutiveSalesIntelligence/LocalProductSalesAnalysis'))
 const PurchaseAmountDashboardPage = lazy(() => import('../pages/ExecutiveSalesIntelligence/PurchaseAmountDashboard'))
 const PosmSalesOrdersPage = lazy(() => import('../pages/PosmSalesOrders'))
@@ -610,6 +611,16 @@ export const appRoutes: AppRouteItem[] = [
           accessKey: 'canViewProductMovementReport',
         },
         element: <ProductMovementReportPage />,
+      },
+      {
+        path: '/executive-sales-intelligence/batch-product-sales-analysis',
+        meta: {
+          title: 'menu.batchProductSalesAnalysis',
+          icon: 'BarChartOutlined',
+          keepAlive: true,
+          accessKey: 'canViewBatchProductSalesAnalysis',
+        },
+        element: <BatchProductSalesAnalysisPage />,
       },
       {
         path: '/executive-sales-intelligence/warehouse-product-flow-analysis',

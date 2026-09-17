@@ -703,6 +703,13 @@ public sealed class ConfiguredCardTerminalClient :
         string? idempotencyKey,
         CancellationToken cancellationToken)
     {
+        // 人工确认的独立终端付款不属于已配置终端，包括包装过的原付款引用。
+        if (ManualCardPaymentReference.IsManualRefundSource(originalReference))
+        {
+            return new PaymentAuthorizationResult(false, null,
+                T("payment.manualCard.refundUnavailable", "Manual card payments cannot be refunded through a linked terminal."));
+        }
+
         if (settings.Processor == CardProcessorKind.Linkly && _linklyTerminalSelectionTransitionGate is not null)
         {
             await using var lease = await _linklyTerminalSelectionTransitionGate.EnterFinancialOperationAsync(cancellationToken);

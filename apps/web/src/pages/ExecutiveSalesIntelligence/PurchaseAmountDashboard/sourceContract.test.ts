@@ -37,18 +37,26 @@ assert(
   pageSource.includes('mode="multiple"') &&
     pageSource.includes('optionFilterProp="label"') &&
     pageSource.includes('label: `${store.storeName} (${store.storeCode})`') &&
-    pageSource.includes('onChange={setSelectedStoreCodes}'),
-  '分店筛选应支持按名称或编码搜索的多选模式，清空值由空数组表示全部',
+    pageSource.includes('onChange={changeStores}') &&
+    pageSource.includes('onChange={changeSuppliers}') &&
+    pageSource.includes('invertPurchaseSelection(allStoreCodes, selectedStoreCodes)') &&
+    pageSource.includes('invertPurchaseSelection(allSupplierKeys, selectedSupplierKeys)'),
+  '分店及供应商筛选应支持搜索、多选、反选，完整列表作为反选范围',
 )
 assert(
   pageSource.includes('AbortController') && pageSource.includes('createLatestRequestGuard'),
   '主表与抽屉请求应同时支持取消和请求序号保护',
 )
 assert(
+  pageSource.includes('? previous') &&
+    pageSource.includes('}, [active, endMonthKey, refreshVersion, selectedSupplierKeys, t])'),
+  '成功回写供应商选项必须保持引用稳定，避免因选项数组更新重复请求',
+)
+assert(
   pageSource.includes('const openStore = useCallback(async') &&
-    pageSource.includes('}, [endMonthKey, t])') &&
+    pageSource.includes('}, [allSupplierKeys, endMonthKey, selectedSupplierKeys, t])') &&
     pageSource.includes('], [openStore, t, visibleStores])'),
-  '分店明细回调应稳定引用当前月份和文案，并纳入动态列依赖',
+  '分店明细回调应稳定引用当前月份、供应商筛选和文案，并纳入动态列依赖',
 )
 assert(
   pageSource.includes("aria-label={t('purchaseAmountDashboard.endMonth')}") &&

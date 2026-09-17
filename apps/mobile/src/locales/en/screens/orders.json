@@ -2,14 +2,24 @@
   "title": "Orders",
   "filterTitle": "Filters",
   "selectStore": "Select a store",
+  "scopeLabel": "View scope",
+  "allManagedStores": "All managed stores",
+  "allManagedStoresHint": "{{count}} stores",
+  "searchPlaceholder": "Search order number or store",
   "listTitle": "Order history",
   "viewDetail": "View details",
   "detailTitle": "Order details",
   "detailCount": "{{count}} lines",
+  "detailStoreCaption": "Store",
+  "detailInfo": "Address, remarks and volume",
+  "detailProductTitle": "Product details",
+  "detailSkuCount": "{{count}} SKUs",
+  "returnToList": "Back to orders",
   "actions": {
     "printLabel": "Print label"
   },
   "messages": {
+    "storeSelectFailed": "Failed to switch store",
     "printSuccess": "Label sent to printer",
     "printFailed": "Failed to print label"
   },
@@ -43,6 +53,7 @@
     "storeAddress": "Address {{value}}",
     "remarks": "Remarks {{value}}",
     "itemNumber": "Item {{value}}",
+    "barcode": "{{value}}",
     "location": "Location {{value}}",
     "orderedQty": "Ordered {{value}}",
     "allocQty": "Allocated {{value}}",

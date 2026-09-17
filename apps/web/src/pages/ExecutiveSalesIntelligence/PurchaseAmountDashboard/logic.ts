@@ -1,8 +1,23 @@
 import type {
   LocalPurchaseMonthAmount,
+  LocalPurchaseSupplierOption,
   LocalPurchaseSupplierSummary,
   LocalPurchaseStoreSummary,
+  LocalPurchaseSupplierFilterMode,
 } from '../../../types/localPurchaseDashboard'
+
+export function buildPurchaseSupplierFilter(allKeys: string[], selectedKeys: string[] | null): {
+  mode: LocalPurchaseSupplierFilterMode | null
+  keys: string[]
+} {
+  if (selectedKeys === null) return { mode: null, keys: [] }
+  const selected = [...new Set(selectedKeys)]
+  const selectedSet = new Set(selected)
+  const excluded = allKeys.filter((key) => !selectedSet.has(key))
+  return selected.length <= excluded.length
+    ? { mode: 'include', keys: selected }
+    : { mode: 'exclude', keys: excluded }
+}
 
 export interface PurchaseMonthRow {
   month: string
@@ -75,12 +90,30 @@ export function buildPurchaseMonthRows(months: string[]): PurchaseMonthRow[] {
 
 export function filterPurchaseStores(
   stores: LocalPurchaseStoreSummary[],
-  selectedStoreCodes: string[],
+  selectedStoreCodes: string[] | null,
 ): LocalPurchaseStoreSummary[] {
-  if (selectedStoreCodes.length === 0) return stores
+  if (selectedStoreCodes === null) return stores
 
   const selectedCodes = new Set(selectedStoreCodes)
   return stores.filter((store) => selectedCodes.has(store.storeCode))
+}
+
+export function normalizePurchaseSelection(allKeys: string[], selectedKeys: string[]): string[] | null {
+  const selected = new Set(selectedKeys)
+  return allKeys.length > 0 && allKeys.every((key) => selected.has(key)) ? null : selectedKeys
+}
+
+export function invertPurchaseSelection(allKeys: string[], selectedKeys: string[] | null): string[] | null {
+  // null 是全选，[] 是空选；反选必须保留这两个不同状态。
+  if (selectedKeys === null) return []
+  const selected = new Set(selectedKeys)
+  return normalizePurchaseSelection(allKeys, allKeys.filter((key) => !selected.has(key)))
+}
+
+export function sumPurchaseStores(stores: LocalPurchaseStoreSummary[]) {
+  const warehouseAmount = stores.reduce((sum, store) => sum + store.warehouseAmount, 0)
+  const localSupplierAmount = stores.reduce((sum, store) => sum + store.localSupplierAmount, 0)
+  return { warehouseAmount, localSupplierAmount, totalAmount: warehouseAmount + localSupplierAmount }
 }
 
 const emptyMonthAmount: LocalPurchaseMonthAmount = {
@@ -153,7 +186,7 @@ export function formatPurchaseAmount(value: number | null | undefined): string {
 }
 
 export function getSupplierDisplayName(
-  supplier: LocalPurchaseSupplierSummary,
+  supplier: LocalPurchaseSupplierOption,
   labels: { warehouse: string; unassigned: string },
 ): string {
   if (supplier.isWarehouse) return labels.warehouse

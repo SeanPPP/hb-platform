@@ -314,7 +314,7 @@ namespace BlazorApp.Api.Services
                 group => group.Select(row => row.OrderGuid).Distinct().Count()
             );
 
-        if (targetDate.Year == 2025)
+        if (SalesStatisticsHBSalesHistoryWindow.Includes(targetDate))
         {
             var hbSalesAggregates = preloadedHBSalesRows != null
                 ? SalesStatisticsProductStoreDailyDomainRules.BuildHBSalesStoreAggregates(
@@ -323,7 +323,7 @@ namespace BlazorApp.Api.Services
                 : await SalesStatisticsProductStoreDailySourceQueries
                     .LoadHBSalesStoreAggregatesAsync(
                     hbSalesContext
-                        ?? throw new InvalidOperationException("2025 年分店统计缺少 HBSalesRecord 上下文"),
+                        ?? throw new InvalidOperationException("HBSales 历史窗口内的分店统计缺少 HBSalesRecord 上下文"),
                     targetDate,
                     nextDate
                 );

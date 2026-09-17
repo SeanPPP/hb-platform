@@ -412,13 +412,13 @@ export class PaymentAttemptService {
   }
 
   /**
-   * Linkly 的 ACK 必须回到首次交易所用环境。配置切换后不能从当前设置猜测
-   * sandbox/prod；所以在 Created 落库前冻结，缺失即阻止新的 Linkly 交易。
+   * Linkly 的 ACK 与 Square 的查询、退款都必须回到首次交易所用环境。
+   * 配置切换后不能从当前设置猜测 sandbox/prod；因此在 Created 落库前冻结，缺失即阻止新交易。
    */
   private providerEnvironmentForNewAttempt(
     provider: PaymentProvider,
   ): string | null {
-    if (provider !== "linkly-cloud") return null;
+    if (provider !== "linkly-cloud" && provider !== "square") return null;
     const candidate = this.options.providers.get(provider) as OnlinePaymentPort & {
       readonly providerEnvironment?: unknown;
       readonly environment?: unknown;
@@ -426,7 +426,7 @@ export class PaymentAttemptService {
     const value = candidate.providerEnvironment ?? candidate.environment;
     if (typeof value !== "string" || !value.trim()) {
       throw new PaymentAttemptStateError(
-        "Linkly payment environment must be frozen before submission.",
+        `${provider} payment environment must be frozen before submission.`,
       );
     }
     return value.trim();

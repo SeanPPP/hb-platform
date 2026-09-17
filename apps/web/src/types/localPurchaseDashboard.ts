@@ -22,14 +22,17 @@ export interface LocalPurchaseDashboardResponse {
   localSupplierAmount: number
   totalAmount: number
   stores: LocalPurchaseStoreSummary[]
+  supplierOptions?: LocalPurchaseSupplierOption[]
 }
+
+export type LocalPurchaseSupplierFilterMode = 'include' | 'exclude'
 
 export interface LocalPurchaseSupplierMonthAmount {
   month: string
   amount: number
 }
 
-export interface LocalPurchaseSupplierSummary {
+export interface LocalPurchaseSupplierOption {
   rowKey: string
   sourceCode: string
   sourceType: 'WAREHOUSE_ORDER' | 'LOCAL_SUPPLIER'
@@ -37,6 +40,9 @@ export interface LocalPurchaseSupplierSummary {
   supplierName: string
   isWarehouse: boolean
   isUnassigned: boolean
+}
+
+export interface LocalPurchaseSupplierSummary extends LocalPurchaseSupplierOption {
   monthlyAmounts: LocalPurchaseSupplierMonthAmount[]
   totalAmount: number
 }

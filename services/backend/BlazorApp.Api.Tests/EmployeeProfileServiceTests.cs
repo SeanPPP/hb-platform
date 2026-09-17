@@ -6,11 +6,13 @@ using System.Runtime.CompilerServices;
 using System.Security.Claims;
 using System.Threading.Tasks;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Controllers;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Services;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Logging;
@@ -647,6 +649,67 @@ namespace BlazorApp.Api.Tests
                 await _db.Queryable<EmployeeCashierBarcode>()
                     .CountAsync(item => item.UserGUID == "user-self")
             );
+        }
+
+        [Fact]
+        public async Task CashierBarcode_GetOnlyReturnsCurrentUsersActiveBarcode()
+        {
+            const string selfBarcode = "2911111111118";
+            const string otherBarcode = "2922222222226";
+            await CreateBarcodeService("user-self", "self_user", () => selfBarcode).RefreshAsync();
+            await CreateBarcodeService("user-other", "other_user", () => otherBarcode).RefreshAsync();
+
+            var result = await CreateBarcodeService("user-self", "self_user").GetAsync();
+
+            Assert.True(result.Success);
+            Assert.Equal(selfBarcode, result.Data!.Barcode);
+            Assert.NotEqual(otherBarcode, result.Data.Barcode);
+        }
+
+        [Fact]
+        public async Task CashierBarcode_RefreshOnlyDeactivatesCurrentUsersBarcode()
+        {
+            const string oldSelfBarcode = "2911111111118";
+            const string newSelfBarcode = "2933333333334";
+            const string otherBarcode = "2922222222226";
+            await CreateBarcodeService("user-self", "self_user", () => oldSelfBarcode).RefreshAsync();
+            await CreateBarcodeService("user-other", "other_user", () => otherBarcode).RefreshAsync();
+
+            var result = await CreateBarcodeService(
+                "user-self",
+                "self_user",
+                () => newSelfBarcode
+            ).RefreshAsync();
+
+            Assert.True(result.Success);
+            Assert.Equal(newSelfBarcode, result.Data!.Barcode);
+            var other = await _db.Queryable<EmployeeCashierBarcode>()
+                .SingleAsync(item => item.UserGUID == "user-other" && item.Status);
+            Assert.Equal(otherBarcode, other.Barcode);
+        }
+
+        [Fact]
+        public async Task CashierBarcode_ConfirmPrintCannotUseAnotherUsersBarcode()
+        {
+            const string selfBarcode = "2911111111118";
+            const string otherBarcode = "2922222222226";
+            await CreateBarcodeService("user-self", "self_user", () => selfBarcode).RefreshAsync();
+            await CreateBarcodeService("user-other", "other_user", () => otherBarcode).RefreshAsync();
+
+            var result = await CreateBarcodeService("user-self", "self_user").ConfirmPrintAsync(
+                new EmployeeCashierBarcodePrintConfirmationRequest
+                {
+                    Barcode = otherBarcode,
+                    PrintAttemptId = Guid.NewGuid(),
+                }
+            );
+
+            Assert.False(result.Success);
+            Assert.Equal("CASHIER_BARCODE_CHANGED", result.Code);
+            var other = await _db.Queryable<EmployeeCashierBarcode>()
+                .SingleAsync(item => item.UserGUID == "user-other" && item.Status);
+            Assert.Equal(0, other.PrintCount);
+            Assert.Equal(0, await _db.Queryable<EmployeeCashierBarcodePrintAttempt>().CountAsync());
         }
 
         [Fact]
@@ -1399,6 +1462,84 @@ namespace BlazorApp.Api.Tests
             IsAutoCloseConnection = true,
             InitKeyType = InitKeyType.Attribute,
         });
+
+        [Fact]
+        public async Task AdminRefreshForUser_RequiresMatchingExpectedAndDisablesLegacy()
+        {
+            await SeedUsersAsync();
+            await _db.Insertable(new CashRegisterUser { UserGUID = "user-other", UserBarcode = "9988776655443", Status = true, OperatorUser = "seed", LoginRole = "cashier", Remark = "", Creator = "seed", CreateDate = DateTime.UtcNow, LastModifier = "seed", LastModifyDate = DateTime.UtcNow }).ExecuteCommandAsync();
+            var generated = new Queue<string>(new[] { "2912345678901", "2912345678902" });
+            var service = CreateBarcodeService("admin", "admin", () => generated.Dequeue());
+
+            var first = await service.RefreshForUserAsync("user-other", null);
+            Assert.True(first.Success);
+            Assert.Equal("2912345678901", first.Data!.Barcode);
+            Assert.False((await _db.Queryable<CashRegisterUser>().FirstAsync(x => x.UserGUID == "user-other")).Status);
+
+            var reset = await service.RefreshForUserAsync("user-other", first.Data.Barcode);
+            Assert.True(reset.Success);
+            Assert.Equal("2912345678902", reset.Data!.Barcode);
+            var activeCodes = await _db.Queryable<EmployeeCashierBarcode>()
+                .Where(x => x.UserGUID == "user-other" && x.Status)
+                .ToListAsync();
+            Assert.Single(activeCodes);
+            Assert.Equal("2912345678902", activeCodes[0].Barcode);
+
+            var stale = await service.RefreshForUserAsync("user-other", "2912345678901");
+            Assert.False(stale.Success);
+            Assert.Equal("CASHIER_BARCODE_CHANGED", stale.ErrorCode);
+            Assert.Null(stale.Data);
+        }
+
+        [Fact]
+        public async Task AdminRefreshForUser_IsolatesTargetAndRejectsInactiveUserWithoutMutation()
+        {
+            await SeedUsersAsync();
+            var existing = new EmployeeCashierBarcode
+            {
+                UserGUID = "user-other",
+                Barcode = "9988776655443",
+                Status = true,
+                CreatedAt = DateTime.UtcNow.AddMinutes(-1),
+                UpdatedAt = DateTime.UtcNow.AddMinutes(-1),
+                UpdatedBy = "seed",
+            };
+            await _db.Insertable(existing).ExecuteCommandAsync();
+            var service = CreateBarcodeService("admin", "admin", () => "2912345678901");
+
+            var targetResult = await service.RefreshForUserAsync("user-self", null);
+            Assert.True(targetResult.Success);
+            Assert.Equal("2912345678901", targetResult.Data!.Barcode);
+            Assert.Equal("9988776655443", (await _db.Queryable<EmployeeCashierBarcode>()
+                .Where(x => x.UserGUID == "user-other" && x.Status).FirstAsync()).Barcode);
+
+            await _db.Updateable<User>().SetColumns(x => x.IsActive == false)
+                .Where(x => x.UserGUID == "user-other").ExecuteCommandAsync();
+            var inactive = await service.RefreshForUserAsync("user-other", "9988776655443");
+            Assert.False(inactive.Success);
+            Assert.Equal("USER_INACTIVE", inactive.ErrorCode);
+            Assert.Equal("9988776655443", (await _db.Queryable<EmployeeCashierBarcode>()
+                .Where(x => x.UserGUID == "user-other" && x.Status).FirstAsync()).Barcode);
+        }
+
+        [Fact]
+        public void AdminRefreshForUser_DistinguishesMissingExpectedFromExplicitNull()
+        {
+            var request = new AdminCashierBarcodeRefreshRequest();
+            Assert.False(request.HasExpectedBarcode);
+            request.ExpectedBarcode = null;
+            Assert.True(request.HasExpectedBarcode);
+            Assert.Null(request.ExpectedBarcode);
+        }
+
+        [Fact]
+        public void UsersController_ExposesAdminCashierBarcodeRoutes()
+        {
+            var get = typeof(UsersController).GetMethod(nameof(UsersController.GetUserCashierBarcode));
+            var post = typeof(UsersController).GetMethod(nameof(UsersController.RefreshUserCashierBarcode));
+            Assert.Equal("guid/{guid}/cashier-barcode", get?.GetCustomAttribute<HttpGetAttribute>()?.Template);
+            Assert.Equal("guid/{guid}/cashier-barcode/refresh", post?.GetCustomAttribute<HttpPostAttribute>()?.Template);
+        }
 
         private EmployeeCashierBarcodeService CreateBarcodeService(
             string userGuid,

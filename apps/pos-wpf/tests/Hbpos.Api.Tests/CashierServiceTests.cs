@@ -184,6 +184,42 @@ public sealed class CashierServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task BarcodeLoginAsync_ResetStateRejectsOldCodesAndAcceptsNewCodeOnlyForActiveAuthorizedUser()
+    {
+        await SeedStoreAsync("qr-allowed", "QR-ALLOWED");
+        await SeedStoreAsync("qr-blocked", "QR-BLOCKED");
+        await SeedUserAsync("qr-user", "QR User");
+        await SeedUserStoreAsync("qr-user", "qr-allowed");
+        await SeedCashierAsync("qr-legacy", "qr-user", "QR-ALLOWED", "2900000000018");
+        // 模拟后台重置提交后的同步状态，验证 POS 消费相同两张表的有效标记。
+        await _db.Updateable<CashRegisterUser>()
+            .SetColumns(item => item.Status == false)
+            .Where(item => item.UserGUID == "qr-user")
+            .ExecuteCommandAsync();
+        await _db.Insertable(new[]
+        {
+            new EmployeeCashierBarcode { HGUID = "qr-old", UserGUID = "qr-user", Barcode = "2900000000025", Status = false, CreatedAt = DateTime.UtcNow },
+            new EmployeeCashierBarcode { HGUID = "qr-new", UserGUID = "qr-user", Barcode = "2900000000032", Status = true, CreatedAt = DateTime.UtcNow },
+        }).ExecuteCommandAsync();
+        var service = CreateService();
+        foreach (var oldCode in new[] { "2900000000018", "2900000000025" })
+        {
+            Assert.Null(await service.BarcodeLoginAsync(
+                new CashierBarcodeLoginRequest("QR-ALLOWED", oldCode, "POS-1"), CancellationToken.None));
+        }
+        var current = await service.BarcodeLoginAsync(
+            new CashierBarcodeLoginRequest("QR-ALLOWED", "2900000000032", "POS-1"), CancellationToken.None);
+        Assert.NotNull(current);
+        Assert.Equal("qr-user", current.UserGuid);
+        Assert.Null(await service.BarcodeLoginAsync(
+            new CashierBarcodeLoginRequest("QR-BLOCKED", "2900000000032", "POS-1"), CancellationToken.None));
+        await _db.Updateable<User>().SetColumns(item => item.IsActive == false)
+            .Where(item => item.UserGUID == "qr-user").ExecuteCommandAsync();
+        Assert.Null(await service.BarcodeLoginAsync(
+            new CashierBarcodeLoginRequest("QR-ALLOWED", "2900000000032", "POS-1"), CancellationToken.None));
+    }
+
+    [Fact]
     public async Task BarcodeLoginAsync_同一条码双表同时有效时拒绝登录()
     {
         await SeedStoreAsync("store-allowed", "S-ALLOWED");

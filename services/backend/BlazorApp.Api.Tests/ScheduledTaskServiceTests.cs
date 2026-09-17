@@ -209,6 +209,24 @@ public sealed class ScheduledTaskServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task LogTaskSkippedStrictAsync_跳过应持久化Skipped而非Success()
+    {
+        var taskLog = await _taskLogService.LogTaskStartAsync(
+            TaskType.UpdateCurrentHourStatistics,
+            new TaskParameters()
+        );
+
+        await _taskLogService.LogTaskSkippedStrictAsync(taskLog.Id, "日期租约仍在运行");
+
+        var persisted = await _db.Queryable<ScheduledTaskLog>().SingleAsync(item => item.Id == taskLog.Id);
+        Assert.Equal(BlazorApp.Shared.Models.HBweb.TaskStatus.Skipped, persisted.Status);
+        Assert.NotEqual(BlazorApp.Shared.Models.HBweb.TaskStatus.Success, persisted.Status);
+        Assert.False(persisted.CanRetry);
+        Assert.NotNull(persisted.CompletedAt);
+        Assert.Contains("日期租约", persisted.ErrorMessage);
+    }
+
+    [Fact]
     public async Task LogTaskSuccessStrictAsync_成功写入失败后可严格标记Failed()
     {
         var taskLog = await _taskLogService.LogTaskStartAsync(
@@ -271,6 +289,165 @@ public sealed class ScheduledTaskServiceTests : IDisposable
             _db.Aop.OnLogExecuting = null;
             performanceRuns.TryRemove(taskLog.Id, out _);
         }
+    }
+
+    [Theory]
+    [InlineData("success", BlazorApp.Shared.Models.HBweb.TaskStatus.Success)]
+    [InlineData("success-strict", BlazorApp.Shared.Models.HBweb.TaskStatus.Success)]
+    [InlineData("skipped", BlazorApp.Shared.Models.HBweb.TaskStatus.Skipped)]
+    [InlineData("failed", BlazorApp.Shared.Models.HBweb.TaskStatus.Failed)]
+    [InlineData("failed-strict", BlazorApp.Shared.Models.HBweb.TaskStatus.Failed)]
+    public async Task 终态日志_请求ADO令牌已取消时_仍在独立终态Scope持久化(
+        string terminalStatus,
+        string expectedStatus)
+    {
+        var taskLog = await _taskLogService.LogTaskStartAsync(
+            TaskType.BatchFullRefreshConcurrent,
+            new TaskParameters()
+        );
+        taskLog.CreatedBy = "manual-user";
+        taskLog.UpdatedBy = "manual-user";
+        taskLog.UpdatedAt = DateTime.UtcNow.AddMinutes(-1);
+        await _db.Updateable(taskLog).ExecuteCommandAsync();
+        using var requestAbort = new CancellationTokenSource();
+        requestAbort.Cancel();
+        // 模拟 JWT 会话校验把 RequestAborted 写入当前 HTTP scoped SqlSugar ADO 后遗留的生产路径。
+        _db.Ado.CancellationToken = requestAbort.Token;
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            _db.Queryable<ScheduledTaskLog>().SingleAsync(item => item.Id == taskLog.Id)
+        );
+
+        using var terminalDb = CreateIndependentDb();
+        var observedTerminalTokens = new List<CancellationToken?>();
+        terminalDb.Aop.OnLogExecuting = (_, _) =>
+        {
+            observedTerminalTokens.Add(terminalDb.Ado.CancellationToken);
+        };
+        var terminalContext = CreateSqlSugarContext(terminalDb);
+        var scopeFactory = CreateScopeFactory(
+            CreateScope(
+                new Dictionary<Type, object?>
+                {
+                    [typeof(SqlSugarContext)] = terminalContext,
+                }
+            )
+        );
+        var service = new ScheduledTaskLogService(
+            CreateSqlSugarContext(_db),
+            NullLogger<ScheduledTaskLogService>.Instance,
+            scopeFactory.Object
+        );
+
+        try
+        {
+            switch (terminalStatus)
+            {
+                case "success":
+                    await service.LogTaskSuccessAsync(taskLog.Id);
+                    break;
+                case "success-strict":
+                    await service.LogTaskSuccessStrictAsync(taskLog.Id);
+                    break;
+                case "skipped":
+                    await service.LogTaskSkippedStrictAsync(taskLog.Id, "日期已有其他执行者");
+                    break;
+                case "failed":
+                    await service.LogTaskFailureAsync(taskLog.Id, "统计刷新失败");
+                    break;
+                case "failed-strict":
+                    await service.LogTaskFailureStrictAsync(taskLog.Id, "统计刷新失败");
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(terminalStatus));
+            }
+
+            var terminalTokensDuringWrite = observedTerminalTokens.ToArray();
+            var persisted = await terminalDb.Queryable<ScheduledTaskLog>()
+                .SingleAsync(item => item.Id == taskLog.Id);
+            Assert.Equal(expectedStatus, persisted.Status);
+            Assert.NotNull(persisted.CompletedAt);
+            Assert.Equal("manual-user", persisted.CreatedBy);
+            Assert.Equal("manual-user", persisted.UpdatedBy);
+            Assert.Equal(persisted.CompletedAt, persisted.UpdatedAt);
+            Assert.True(_db.Ado.CancellationToken?.IsCancellationRequested);
+            Assert.NotEmpty(terminalTokensDuringWrite);
+            Assert.All(terminalTokensDuringWrite, token =>
+            {
+                Assert.True(token.HasValue);
+                Assert.True(token.Value.CanBeCanceled);
+                Assert.False(token.Value.IsCancellationRequested);
+            });
+            Assert.Null(terminalDb.Ado.CancellationToken);
+        }
+        finally
+        {
+            _db.Ado.RemoveCancellationToken();
+        }
+    }
+
+    [Fact]
+    public async Task 严格终态日志_独立Deadline取消SQL时_等待收尾且不继承请求AsyncLocal()
+    {
+        var taskLog = await _taskLogService.LogTaskStartAsync(
+            TaskType.BatchFullRefreshConcurrent,
+            new TaskParameters()
+        );
+        using var terminalDb = CreateIndependentDb();
+        var terminalContext = CreateSqlSugarContext(terminalDb);
+        var requestFlow = new AsyncLocal<string?> { Value = "request-flow" };
+        var observedWorkerFlow = new List<string?>();
+        var updateSawCancelledDeadline = false;
+        var updateCommands = 0;
+        terminalDb.Aop.OnLogExecuting = (sql, _) =>
+        {
+            observedWorkerFlow.Add(requestFlow.Value);
+            if (!IsScheduledTaskLogUpdate(sql))
+            {
+                return;
+            }
+
+            updateCommands++;
+            // 在真正执行 UPDATE 前等待独立 ADO deadline 到期；随后由 SqlSugar 将已取消令牌传给 DbCommand。
+            updateSawCancelledDeadline = SpinWait.SpinUntil(
+                () => terminalDb.Ado.CancellationToken?.IsCancellationRequested == true,
+                TimeSpan.FromSeconds(2)
+            );
+        };
+
+        var provider = new Mock<IServiceProvider>(MockBehavior.Strict);
+        provider
+            .Setup(x => x.GetService(typeof(SqlSugarContext)))
+            .Returns(terminalContext);
+        var scope = new Mock<IServiceScope>(MockBehavior.Strict);
+        scope.SetupGet(x => x.ServiceProvider).Returns(provider.Object);
+        scope.Setup(x => x.Dispose());
+        var scopeFactory = CreateScopeFactory(scope.Object);
+        var service = new ScheduledTaskLogService(
+            CreateSqlSugarContext(_db),
+            NullLogger<ScheduledTaskLogService>.Instance,
+            scopeFactory.Object,
+            TimeSpan.FromMilliseconds(250)
+        );
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => service.LogTaskSuccessStrictAsync(taskLog.Id)
+        );
+
+        // PersistTerminalAsync 等待 Task.Run 收尾，异常返回时 scope 已释放且没有遗留后台 UPDATE。
+        scope.Verify(x => x.Dispose(), Times.Once);
+        Assert.True(updateSawCancelledDeadline);
+        Assert.Equal(1, updateCommands);
+        Assert.All(observedWorkerFlow, flow => Assert.Null(flow));
+        Assert.Equal("request-flow", requestFlow.Value);
+        Assert.Null(terminalDb.Ado.CancellationToken);
+
+        await Task.Delay(100);
+        Assert.Equal(1, updateCommands);
+        var persisted = await terminalDb.Queryable<ScheduledTaskLog>()
+            .SingleAsync(item => item.Id == taskLog.Id);
+        Assert.Equal(BlazorApp.Shared.Models.HBweb.TaskStatus.Running, persisted.Status);
+        Assert.Null(persisted.CompletedAt);
+        Assert.Equal("request-flow", requestFlow.Value);
     }
 
     [Fact]
@@ -474,7 +651,7 @@ public sealed class ScheduledTaskServiceTests : IDisposable
         (ConcurrentDictionary<Guid, (string ExternalRunId, int Attempt)>)
             typeof(ScheduledTaskLogService)
                 .GetField("PerformanceRuns", BindingFlags.Static | BindingFlags.NonPublic)!
-                .GetValue(null)!;
+            .GetValue(null)!;
 
     private static bool IsScheduledTaskLogUpdate(string sql) =>
         sql.TrimStart().StartsWith("UPDATE", StringComparison.OrdinalIgnoreCase)

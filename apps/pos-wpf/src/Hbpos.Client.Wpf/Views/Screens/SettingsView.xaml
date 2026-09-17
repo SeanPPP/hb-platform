@@ -561,6 +561,7 @@
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
@@ -575,7 +576,57 @@
                                        Style="{StaticResource SettingsPageDescriptionStyle}" />
                         </StackPanel>
 
-                        <Border Grid.Row="1"
+                        <Border Grid.Row="1" Grid.ColumnSpan="3"
+                                Style="{StaticResource SettingsActionCardStyle}"
+                                Margin="0,0,0,16">
+                            <StackPanel>
+                                <TextBlock Text="{loc:Loc settings.payment.methods.title}" FontSize="18" FontWeight="Bold" />
+                                <TextBlock Text="{loc:Loc settings.payment.methods.description}"
+                                           Style="{StaticResource SettingsPageDescriptionStyle}" Margin="0,6,0,18" />
+                                <Grid Margin="0,0,0,16">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Margin="0,0,20,0">
+                                        <TextBlock Text="{loc:Loc settings.payment.methods.manualCard}" FontSize="16" FontWeight="SemiBold" />
+                                        <TextBlock Text="{loc:Loc settings.payment.methods.manualCard.help}"
+                                                   TextWrapping="Wrap" Foreground="{StaticResource PosMutedForegroundBrush}" Margin="0,5,0,0" />
+                                    </StackPanel>
+                                    <ToggleButton Grid.Column="1" x:Name="ManualCardSettingToggle"
+                                                  Style="{StaticResource MaterialDesignSwitchToggleButton}"
+                                                  IsChecked="{Binding UseManualCard, Mode=TwoWay}"
+                                                  IsEnabled="{Binding CanChangeEnvironment}"
+                                                  AutomationProperties.Name="{loc:Loc settings.payment.methods.manualCard}"
+                                                  MinHeight="48" MinWidth="56" VerticalAlignment="Center" />
+                                </Grid>
+                                <Border Height="1" Background="{StaticResource PosBorderBrush}" Margin="0,0,0,16" />
+                                <Grid Margin="0,0,0,18">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Margin="0,0,20,0">
+                                        <TextBlock Text="{loc:Loc settings.payment.methods.voucher}" FontSize="16" FontWeight="SemiBold" />
+                                        <TextBlock Text="{loc:Loc settings.payment.methods.voucher.help}"
+                                                   TextWrapping="Wrap" Foreground="{StaticResource PosMutedForegroundBrush}" Margin="0,5,0,0" />
+                                    </StackPanel>
+                                    <ToggleButton Grid.Column="1" x:Name="VoucherSettingToggle"
+                                                  Style="{StaticResource MaterialDesignSwitchToggleButton}"
+                                                  IsChecked="{Binding VoucherEnabled, Mode=TwoWay}"
+                                                  IsEnabled="{Binding CanChangeEnvironment}"
+                                                  AutomationProperties.Name="{loc:Loc settings.payment.methods.voucher}"
+                                                  MinHeight="48" MinWidth="56" VerticalAlignment="Center" />
+                                </Grid>
+                                <Button Command="{Binding SavePaymentMethodsCommand}"
+                                        Style="{StaticResource PosPrimaryButtonStyle}"
+                                        HorizontalAlignment="Right" MinHeight="48">
+                                    <TextBlock Text="{loc:Loc settings.payment.methods.save}" Foreground="White" />
+                                </Button>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Grid.Row="2"
                                 Grid.Column="0"
                                 Grid.ColumnSpan="3"
                                 Background="#FFFFFFFF"
@@ -616,7 +667,7 @@
                             </DockPanel>
                         </Border>
 
-                        <TabControl Grid.Row="2"
+                        <TabControl Grid.Row="3"
                                     Grid.ColumnSpan="3"
                                     Background="Transparent"
                                     BorderThickness="0"

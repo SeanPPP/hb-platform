@@ -5,6 +5,7 @@ import {
   normalizeInvoiceDetailsGridResponse,
   normalizeInvoiceGridResponse,
 } from "./api";
+import { getInvoiceInboundStatusLabel } from "./types";
 
 function assertEqual(actual: unknown, expected: unknown, label: string) {
   if (actual !== expected) {
@@ -19,6 +20,11 @@ function assertDeepEqual(actual: unknown, expected: unknown, label: string) {
     throw new Error(`${label}: expected ${expectedText}, got ${actualText}`);
   }
 }
+
+assertEqual(getInvoiceInboundStatusLabel(0), "notReceived", "inbound status 0 is not received");
+assertEqual(getInvoiceInboundStatusLabel(1), "partial", "inbound status 1 is partial");
+assertEqual(getInvoiceInboundStatusLabel(2), "received", "inbound status 2 is received");
+assertEqual(getInvoiceInboundStatusLabel(99), "unknown", "unknown inbound status stays neutral");
 
 const defaultListRequest = buildInvoiceGridRequest({});
 assertEqual(defaultListRequest.startRow, 0, "default list starts from first row");
@@ -37,6 +43,7 @@ const filteredListRequest = buildInvoiceGridRequest({
     storeCode: " S01 ",
     supplierCode: " SUP ",
     invoiceNo: " INV ",
+    inboundStatus: 1,
     orderDateFrom: "2026-01-02",
     orderDateTo: "2026-01-05",
   },
@@ -48,9 +55,10 @@ assertEqual(filteredListRequest.pageSize, 50, "list page size accepts 50");
 assertDeepEqual(
   filteredListRequest.filterModel,
   {
-    storeCode: { filterType: "text", type: "contains", filter: "S01" },
+    storeCode: { filterType: "text", type: "equals", filter: "S01" },
     supplierCode: { filterType: "text", type: "contains", filter: "SUP" },
     invoiceNo: { filterType: "text", type: "contains", filter: "INV" },
+    inboundStatus: { filterType: "number", type: "equals", filter: "1" },
     OrderDate: {
       filterType: "date",
       type: "inRange",
@@ -72,7 +80,7 @@ const blankDateRequest = buildInvoiceGridRequest({
 assertDeepEqual(
   blankDateRequest.filterModel,
   {
-    storeCode: { filterType: "text", type: "contains", filter: "STO" },
+    storeCode: { filterType: "text", type: "equals", filter: "STO" },
     supplierCode: { filterType: "text", type: "contains", filter: "LOC" },
   },
   "blank order date values do not send OrderDate while store and supplier filters remain correct"
@@ -121,10 +129,14 @@ assertEqual(detailsRequest.startRow, 200, "third detail page starts at row 200")
 assertEqual(detailsRequest.endRow, 300, "third detail page ends at row 300");
 assertEqual(detailsRequest.pageSize, 100, "detail page size accepts 100");
 
-const priceDownDetailsRequest = buildInvoiceDetailsGridRequest({ priceChange: "down" });
+const priceDownDetailsRequest = buildInvoiceDetailsGridRequest({
+  priceChange: "down",
+  keyword: " BAR-7 ",
+});
 assertDeepEqual(
   priceDownDetailsRequest.filterModel,
   {
+    productKeyword: { filterType: "text", type: "contains", filter: "BAR-7" },
     priceChange: { filterType: "text", type: "equals", filter: "down" },
   },
   "detail price change filter is sent to grid request"

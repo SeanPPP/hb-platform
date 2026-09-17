@@ -1,7 +1,8 @@
 namespace BlazorApp.Api.Services.Background;
 
 /// <summary>
-/// 在当前调度实例持续恢复、排空并汇总商品分店每日统计持久队列。
+/// 在允许参与的实例持续恢复、排空并汇总商品分店每日统计持久队列。
+/// 逐日执行由持久租约围栏，不能因旧通用调度实例仍在心跳而阻塞新版本消费者。
 /// </summary>
 public sealed class ProductStoreDailyStatisticRecoveryService : BackgroundService
 {
@@ -32,7 +33,7 @@ public sealed class ProductStoreDailyStatisticRecoveryService : BackgroundServic
                 using var scope = _scopeFactory.CreateScope();
                 var runtimeControl = scope.ServiceProvider
                     .GetRequiredService<ScheduledTaskRuntimeControlService>();
-                if (!await runtimeControl.IsCurrentInstanceSchedulerEnabledAsync())
+                if (!await runtimeControl.IsLeaseManagedWorkerEnabledAsync())
                 {
                     delay = PassiveDelay;
                 }

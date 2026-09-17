@@ -60,6 +60,15 @@ export interface UserDto {
 
 export interface UserDetailDto extends UserDto {}
 
+export interface EmployeeCashierBarcodeDto {
+  exists: boolean
+  barcode: string | null
+  format: string
+  printCount: number
+  createdAt?: string | null
+  updatedAt?: string | null
+}
+
 export interface UpdateUserDto {
   username: string
   email: string

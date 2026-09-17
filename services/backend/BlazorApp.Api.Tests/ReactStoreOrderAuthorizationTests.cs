@@ -2052,6 +2052,120 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
     }
 
     [Fact]
+    public async Task GetOrderList_AllowsMultipleManagedOrAssignedStoresForOrderViewUser()
+    {
+        var request = new StoreOrderListFilterDto
+        {
+            StoreCodes = new List<string> { " S001 ", "s001", "S002" },
+        };
+        var expected = new PagedListReactDto<StoreOrderListItemDto>();
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service.Setup(item => item.GetOrderListAsync(request)).ReturnsAsync(expected);
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessStoreCodeAsync("S002")).ReturnsAsync(false);
+        var userService = new Mock<IUserService>(MockBehavior.Strict);
+        userService
+            .Setup(item => item.GetUserStoresAsync("user-1"))
+            .ReturnsAsync(
+                ApiResponse<List<UserStoreDto>>.OK(
+                    new List<UserStoreDto> { new() { StoreCode = "S002" } }
+                )
+            );
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.View),
+            scopeService,
+            userService: userService
+        );
+
+        var result = await controller.GetOrderList(request);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        Assert.Same(expected, ok.Value?.GetType().GetProperty("data")?.GetValue(ok.Value));
+        scopeService.Verify(item => item.CanAccessStoreCodeAsync("S001"), Times.Once);
+        scopeService.Verify(item => item.CanAccessStoreCodeAsync("S002"), Times.Once);
+        userService.Verify(item => item.GetUserStoresAsync("user-1"), Times.Once);
+    }
+
+    [Fact]
+    public async Task GetOrderList_ForbidsMultipleStoresWhenOneIsOutsideManagedOrAssignedScope()
+    {
+        var request = new StoreOrderListFilterDto
+        {
+            StoreCodes = new List<string> { "S001", "S999" },
+        };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessStoreCodeAsync("S999")).ReturnsAsync(false);
+        var userService = CreateAssignedStoreUserService("S001");
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.View),
+            scopeService,
+            userService: userService
+        );
+
+        var result = await controller.GetOrderList(request);
+
+        Assert.IsType<ForbidResult>(result);
+        service.VerifyNoOtherCalls();
+        userService.Verify(item => item.GetUserStoresAsync("user-1"), Times.Once);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task GetOrderList_ForbidsEmptyOrBlankStoreSelectionForNonGlobalUser(
+        bool includeBlankValues
+    )
+    {
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.View),
+            CreateScopeService()
+        );
+
+        var result = await controller.GetOrderList(
+            new StoreOrderListFilterDto
+            {
+                StoreCodes = includeBlankValues
+                    ? new List<string> { " ", "\t" }
+                    : new List<string>(),
+            }
+        );
+
+        Assert.IsType<ForbidResult>(result);
+        service.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task GetOrderList_ForbidsUnauthorizedSingleStoreEvenWhenMultipleStoresAreAllowed()
+    {
+        var request = new StoreOrderListFilterDto
+        {
+            StoreCode = "S999",
+            StoreCodes = new List<string> { "S001", "S002" },
+        };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessStoreCodeAsync("S002")).ReturnsAsync(true);
+        scopeService.Setup(item => item.CanAccessStoreCodeAsync("S999")).ReturnsAsync(false);
+        var userService = CreateAssignedStoreUserService("S001");
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.View),
+            scopeService,
+            userService: userService
+        );
+
+        var result = await controller.GetOrderList(request);
+
+        Assert.IsType<ForbidResult>(result);
+        service.VerifyNoOtherCalls();
+    }
+
+    [Fact]
     public async Task GetImportPriceVariance_ForbidsWarehouseStaffLegacyManagePermission()
     {
         var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);

@@ -52,6 +52,7 @@
     "attendancePersonal": "考勤",
     "attendanceManagement": "考勤管理",
     "productQuery": "商品维护",
+    "productInsights": "商品进销查询",
     "users": "用户",
     "userAdmin": "用户管理",
     "roles": "角色管理",
@@ -129,6 +130,7 @@
     "freshness": {
       "lastUpdated": "最近统计：{{time}}",
       "running": "更新中",
+      "skipped": "本次更新已跳过",
       "failed": "更新失败",
       "noSuccess": "尚无成功统计记录",
       "unavailable": "统计时间暂不可用"

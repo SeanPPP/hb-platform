@@ -148,6 +148,67 @@ public sealed class ScheduledTaskRuntimeControlServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task IsLeaseManagedWorkerEnabledAsync_旧实例为通用调度实例时_新实例仍可参与且不切换选主()
+    {
+        await _db.Insertable(new ScheduledTaskRuntimeControl
+        {
+            Id = ScheduledTaskRuntimeControl.DefaultId,
+            SchedulerEnabled = true,
+            ActiveInstanceId = "legacy-api",
+            UpdatedAtUtc = DateTime.UtcNow,
+        }).ExecuteCommandAsync();
+        var service = CreateService("discount-worker-new");
+
+        var enabled = await service.IsLeaseManagedWorkerEnabledAsync();
+        var control = await _db.Queryable<ScheduledTaskRuntimeControl>()
+            .Where(x => x.Id == ScheduledTaskRuntimeControl.DefaultId)
+            .FirstAsync();
+        var heartbeat = await _db.Queryable<ScheduledTaskInstanceState>()
+            .Where(x => x.InstanceId == "discount-worker-new")
+            .FirstAsync();
+
+        Assert.True(enabled);
+        Assert.Equal("legacy-api", control.ActiveInstanceId);
+        Assert.NotNull(heartbeat);
+    }
+
+    [Fact]
+    public async Task IsLeaseManagedWorkerEnabledAsync_控制记录不存在时_允许参与但不创建或切换选主()
+    {
+        var service = CreateService("discount-worker-new");
+
+        var enabled = await service.IsLeaseManagedWorkerEnabledAsync();
+        var control = await _db.Queryable<ScheduledTaskRuntimeControl>()
+            .Where(x => x.Id == ScheduledTaskRuntimeControl.DefaultId)
+            .FirstAsync();
+        var heartbeat = await _db.Queryable<ScheduledTaskInstanceState>()
+            .Where(x => x.InstanceId == "discount-worker-new")
+            .FirstAsync();
+
+        Assert.True(enabled);
+        Assert.Null(control);
+        Assert.NotNull(heartbeat);
+    }
+
+    [Fact]
+    public async Task IsLeaseManagedWorkerEnabledAsync_配置或持久化总开关关闭时_不得参与()
+    {
+        var configDisabled = CreateService("config-disabled", enabled: false);
+        Assert.False(await configDisabled.IsLeaseManagedWorkerEnabledAsync());
+
+        await _db.Insertable(new ScheduledTaskRuntimeControl
+        {
+            Id = ScheduledTaskRuntimeControl.DefaultId,
+            SchedulerEnabled = false,
+            ActiveInstanceId = "legacy-api",
+            UpdatedAtUtc = DateTime.UtcNow,
+        }).ExecuteCommandAsync();
+        var globallyPaused = CreateService("globally-paused");
+
+        Assert.False(await globallyPaused.IsLeaseManagedWorkerEnabledAsync());
+    }
+
+    [Fact]
     public async Task IsCurrentInstanceSchedulerEnabledAsync_选中实例心跳过期时_当前实例应自动接管()
     {
         await _db.Insertable(new ScheduledTaskRuntimeControl
@@ -212,6 +273,19 @@ public sealed class ScheduledTaskRuntimeControlServiceTests : IDisposable
         Assert.False(second.Acquired);
         Assert.Equal(ScheduledTaskLeaseStatus.Running, lease.Status);
         Assert.Equal(1, lease.DuplicateSkipCount);
+    }
+
+    [Fact]
+    public async Task TryAcquireAsync_折扣Worker全局范围仅允许一个实例()
+    {
+        var firstInstance = CreateLeaseService("discount-worker-a");
+        var secondInstance = CreateLeaseService("discount-worker-b");
+
+        var first = await firstInstance.TryAcquireAsync("BatchProductSalesDiscountWorker", "daily-format-2", TimeSpan.FromMinutes(15));
+        var second = await secondInstance.TryAcquireAsync("BatchProductSalesDiscountWorker", "daily-format-2", TimeSpan.FromMinutes(15));
+
+        Assert.True(first.Acquired);
+        Assert.False(second.Acquired);
     }
 
     [Fact]
