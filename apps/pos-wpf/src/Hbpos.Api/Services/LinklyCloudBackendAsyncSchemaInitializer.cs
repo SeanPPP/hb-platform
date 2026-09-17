@@ -40,6 +40,9 @@ public sealed class SqlSugarLinklyCloudBackendAsyncSchemaInitializer(
                 [SessionId] NVARCHAR(64) NOT NULL,
                 [Status] NVARCHAR(32) NOT NULL,
                 [TxnRef] NVARCHAR(16) NULL,
+                [RequestTxnType] NVARCHAR(8) NULL,
+                [RequestAmountCents] BIGINT NULL,
+                [RequestRfn] NVARCHAR(128) NULL,
                 [TransactionSuccess] BIT NULL,
                 [OperationType] NVARCHAR(32) NOT NULL CONSTRAINT [DF_POSM_LinklyCloudBackendSession_OperationType] DEFAULT (N'Transaction'),
                 [OperationSuccess] BIT NULL,
@@ -75,6 +78,24 @@ public sealed class SqlSugarLinklyCloudBackendAsyncSchemaInitializer(
             BEGIN
                 ALTER TABLE [dbo].[POSM_LinklyCloudBackendSession]
                     ADD [TerminalId] UNIQUEIDENTIFIER NULL;
+            END;
+
+            IF COL_LENGTH(N'dbo.POSM_LinklyCloudBackendSession', N'RequestTxnType') IS NULL
+            BEGIN
+                ALTER TABLE [dbo].[POSM_LinklyCloudBackendSession]
+                    ADD [RequestTxnType] NVARCHAR(8) NULL;
+            END;
+
+            IF COL_LENGTH(N'dbo.POSM_LinklyCloudBackendSession', N'RequestAmountCents') IS NULL
+            BEGIN
+                ALTER TABLE [dbo].[POSM_LinklyCloudBackendSession]
+                    ADD [RequestAmountCents] BIGINT NULL;
+            END;
+
+            IF COL_LENGTH(N'dbo.POSM_LinklyCloudBackendSession', N'RequestRfn') IS NULL
+            BEGIN
+                ALTER TABLE [dbo].[POSM_LinklyCloudBackendSession]
+                    ADD [RequestRfn] NVARCHAR(128) NULL;
             END;
 
             IF COL_LENGTH(N'dbo.POSM_LinklyCloudBackendSession', N'DisplayText') IS NULL

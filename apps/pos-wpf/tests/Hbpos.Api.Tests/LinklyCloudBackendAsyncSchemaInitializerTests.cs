@@ -26,6 +26,9 @@ public sealed class LinklyCloudBackendAsyncSchemaInitializerTests
         Assert.Contains("[DeviceCode] NVARCHAR(64) NOT NULL", sql);
         Assert.Contains("[SessionId] NVARCHAR(64) NOT NULL", sql);
         Assert.Contains("[TxnRef] NVARCHAR(16) NULL", sql);
+        Assert.Contains("[RequestTxnType] NVARCHAR(8) NULL", sql);
+        Assert.Contains("[RequestAmountCents] BIGINT NULL", sql);
+        Assert.Contains("[RequestRfn] NVARCHAR(128) NULL", sql);
         Assert.Contains("[DisplayText] NVARCHAR(512) NULL", sql);
         Assert.Contains("[DisplayLines] NVARCHAR(MAX) NULL", sql);
         Assert.Contains("[CancelKeyFlag] BIT NOT NULL", sql);
@@ -46,6 +49,9 @@ public sealed class LinklyCloudBackendAsyncSchemaInitializerTests
         Assert.Contains("[SettlementData] NVARCHAR(MAX) NULL", sql);
         Assert.Contains("[SettlementReceiptTexts] NVARCHAR(MAX) NULL", sql);
         Assert.Contains("COL_LENGTH(N'dbo.POSM_LinklyCloudBackendSession', N'DisplayText') IS NULL", sql);
+        Assert.Contains("COL_LENGTH(N'dbo.POSM_LinklyCloudBackendSession', N'RequestTxnType') IS NULL", sql);
+        Assert.Contains("COL_LENGTH(N'dbo.POSM_LinklyCloudBackendSession', N'RequestAmountCents') IS NULL", sql);
+        Assert.Contains("COL_LENGTH(N'dbo.POSM_LinklyCloudBackendSession', N'RequestRfn') IS NULL", sql);
         Assert.Contains("COL_LENGTH(N'dbo.POSM_LinklyCloudBackendSession', N'DisplayLines') IS NULL", sql);
         Assert.Contains("COL_LENGTH(N'dbo.POSM_LinklyCloudBackendSession', N'CancelKeyFlag') IS NULL", sql);
         Assert.Contains("COL_LENGTH(N'dbo.POSM_LinklyCloudBackendSession', N'OKKeyFlag') IS NULL", sql);
