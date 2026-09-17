@@ -261,6 +261,15 @@ namespace BlazorApp.Api.Services
             },
             new()
             {
+                RouteName = "warehouse-product-insights",
+                TitleKey = "tabs.warehouseProductInsights",
+                Icon = "warehouse",
+                // 与 Web 仓库商品流转分析共用授权，避免同一份数据在两端出现不同的可见范围。
+                Permission = Permissions.SalesDashboard.WarehouseFlowView,
+                Order = 50,
+            },
+            new()
+            {
                 RouteName = "installment-orders",
                 TitleKey = "tabs.installmentOrders",
                 Icon = "cash-clock",

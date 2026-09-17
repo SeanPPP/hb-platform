@@ -89,6 +89,9 @@ import type {
 import { PosDatabase } from "../db/pos-database";
 import type { ReceiptPrinterSettings } from "../db/pos-settings-repository";
 import type { SqliteInstallmentSnapshotRepository } from "../db/sqlite-installment-snapshot-repository";
+import type {
+  ManualPaymentRecoveryFindingInput,
+} from "../db/sqlite-payment-recovery-center-store";
 import type { SensitivePayloadEncryptor } from "../db/sqlite-repositories";
 import {
   DeviceSessionCoordinator,
@@ -5560,6 +5563,22 @@ function databaseFor(
       },
       async hasLegacyLinklyRecovery() { return false; },
       async findLegacyLinklyAttemptForSession() { return null; },
+    }),
+    paymentRecoveryCenter: () => ({
+      async list() { return []; },
+      async findCurrentCandidate() { return null; },
+      async getExact() { return null; },
+      async parkExact() {},
+      async resumeExact() {},
+      async getManualPaidCommitContext() { return null; },
+      async recordManualFinding(_input: ManualPaymentRecoveryFindingInput) {
+        throw new Error("manual payment recovery is not configured");
+      },
+    }),
+    manualPaymentOrderCommitter: () => ({
+      async completeManualPaymentOrder() {
+        throw new Error("manual payment commit is not configured");
+      },
     }),
     voucherTenderReversals: () => ({
       async findBlocking() {

@@ -12,6 +12,7 @@ import {
   SaveOutlined,
   SearchOutlined,
   SettingOutlined,
+  SnippetsOutlined,
 } from '@ant-design/icons'
 import {
   DndContext,
@@ -58,7 +59,7 @@ import type { TFunction } from 'i18next'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
 import { useKeepAliveContext } from 'keepalive-for-react'
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type HTMLAttributes, type Key, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type UIEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type HTMLAttributes, type Key, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type UIEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import BarcodePreview from '../../../components/BarcodePreview'
@@ -282,6 +283,15 @@ import {
   type ContainerDetailAutoSaveQueue,
   type ContainerDetailAutoSaveSnapshot,
 } from './containerDetailAutoSaveQueue'
+import {
+  CONTAINER_DETAIL_COLUMN_PASTE_KEYS,
+  CONTAINER_DETAIL_COLUMN_PASTE_TARGETS,
+  buildContainerDetailColumnPastePlan,
+  isContainerDetailColumnPasteKey,
+  parseContainerDetailColumnPasteText,
+  type ContainerDetailColumnPasteEntry,
+  type ContainerDetailColumnPasteKey,
+} from './containerDetailColumnPaste'
 import useContainerSetCode from './useContainerSetCode'
 import {
   collectCategoryExpandedKeys,
@@ -875,6 +885,11 @@ export default function ContainerDetailPage() {
   const [hqTranslating, setHqTranslating] = useState(false)
   const [pushToHqLoading, setPushToHqLoading] = useState(false)
   const [detailSaveSubmitting, setDetailSaveSubmitting] = useState(false)
+  // 「粘贴列」弹窗：目标列、起始行（空表示当前显示的第一行）与待解析的 Excel 列文本。
+  const [columnPasteModalOpen, setColumnPasteModalOpen] = useState(false)
+  const [columnPasteColumnKey, setColumnPasteColumnKey] = useState<ContainerDetailColumnPasteKey>('importPrice')
+  const [columnPasteStartRowKey, setColumnPasteStartRowKey] = useState<string | null>(null)
+  const [columnPasteText, setColumnPasteText] = useState('')
   const [matchDomesticDataLoading, setMatchDomesticDataLoading] = useState(false)
   const [aligningDomesticProductDetailHguid, setAligningDomesticProductDetailHguid] = useState<string | null>(null)
   const [createProductsLoading, setCreateProductsLoading] = useState(false)
@@ -2751,15 +2766,22 @@ export default function ContainerDetailPage() {
     return false
   }
 
-  const patchRow = (key: string, patch: Partial<ContainerDetail>) => {
-    const nextRows = rowsRef.current.map((item) => (
-      rowKey(item) === key ? mergeContainerDetailPatch(item, patch) : item
-    ))
+  // 多行一次性合并补丁，只触发一次 setRows；列粘贴批量写入时避免逐行重渲染。
+  const patchRows = (patchesByKey: ReadonlyMap<string, Partial<ContainerDetail>>) => {
+    if (!patchesByKey.size) return
+    const nextRows = rowsRef.current.map((item) => {
+      const patch = patchesByKey.get(rowKey(item))
+      return patch ? mergeContainerDetailPatch(item, patch) : item
+    })
     rowsRef.current = nextRows
     if (autoSaveContextKeyRef.current) {
       updateAutoSaveContextRows(autoSaveContextKeyRef.current, nextRows, containerRef.current)
     }
     setRows(nextRows)
+  }
+
+  const patchRow = (key: string, patch: Partial<ContainerDetail>) => {
+    patchRows(new Map([[key, patch]]))
   }
 
   const patchAutoSaveRow = (
@@ -3056,23 +3078,38 @@ export default function ContainerDetailPage() {
     })
   }
 
+  type PendingDetailPatchItem = {
+    row: ContainerDetail
+    patch: Pick<Partial<ContainerDetail>, '进口价格' | '贴牌价格' | '英文名称'>
+  }
+
+  // 批量标记草稿：页面行只合并一次，localStorage 草稿也只写一次。
+  const markPendingDetailPatches = (items: PendingDetailPatchItem[]) => {
+    const visiblePatches = new Map<string, Partial<ContainerDetail>>()
+    items.forEach(({ row, patch }) => {
+      const isExistingProductRetailPatch = !row.是否新商品 && '贴牌价格' in patch
+      const visiblePatch: Partial<ContainerDetail> = isExistingProductRetailPatch
+        ? {
+            ...patch,
+            // 已有商品的零售价列绑定仓库实时价，输入后同步刷新两套字段，避免保存前显示回跳。
+            warehouseOEMPrice: patch.贴牌价格,
+            WarehouseOEMPrice: patch.贴牌价格,
+          }
+        : patch
+      const key = rowKey(row)
+      visiblePatches.set(key, { ...visiblePatches.get(key), ...visiblePatch })
+    })
+    patchRows(visiblePatches)
+    const updates = items.flatMap(({ row, patch }) => (row.hguid ? [{ hguid: row.hguid, ...patch }] : []))
+    if (!updates.length) return
+    queuePendingDetailUpdates(updates)
+  }
+
   const markPendingDetailPatch = (
     row: ContainerDetail,
-    patch: Pick<Partial<ContainerDetail>, '进口价格' | '贴牌价格' | '英文名称'>,
+    patch: PendingDetailPatchItem['patch'],
   ) => {
-    const key = rowKey(row)
-    const isExistingProductRetailPatch = !row.是否新商品 && '贴牌价格' in patch
-    const visiblePatch: Partial<ContainerDetail> = isExistingProductRetailPatch
-      ? {
-          ...patch,
-          // 已有商品的零售价列绑定仓库实时价，输入后同步刷新两套字段，避免保存前显示回跳。
-          warehouseOEMPrice: patch.贴牌价格,
-          WarehouseOEMPrice: patch.贴牌价格,
-        }
-      : patch
-    patchRow(key, visiblePatch)
-    if (!row.hguid) return
-    queuePendingDetailUpdates([{ hguid: row.hguid, ...patch }])
+    markPendingDetailPatches([{ row, patch }])
   }
 
   const handlePendingImportPriceBlur = (row: ContainerDetail, rawValue: string) => {
@@ -3266,26 +3303,45 @@ export default function ContainerDetailPage() {
     return { ...result, validationErrors: failures }
   }
 
-  const enqueueAutoSavePatch = (row: ContainerDetail, patch: ContainerDetailAutoSavePatch) => {
+  type AutoSavePatchItem = { row: ContainerDetail; patch: ContainerDetailAutoSavePatch }
+
+  // 批量入队自动保存：草稿只写一次、页面行只合并一次，再逐行进入自动保存队列（队列内部会合批发送）。
+  const enqueueAutoSavePatches = (items: AutoSavePatchItem[]) => {
     const contextKey = autoSaveContextKeyRef.current
     if (
       !access.canEditContainer
-      || !row.hguid
       || resolveContainerDetailAutoSaveLifecycleAction(containerDetailTabActiveRef.current, contextKey) !== 'attach'
     ) return
-    const latestRow = rowsRef.current.find((item) => item.hguid === row.hguid) ?? row
+    const validItems = items.filter((item): item is AutoSavePatchItem & { row: { hguid: string } } => Boolean(item.row.hguid))
+    if (!validItems.length) return
     // 自动保存也先进入同一份 localStorage 草稿；刷新、关闭或网络失败都不会丢字段。
-    queuePendingDetailUpdates([{ hguid: row.hguid, ...patch }])
-    const optimisticUpdate = buildContainerDetailAutoSaveUpdate(latestRow, patch, containerRef.current)
-    const nextRows = rowsRef.current.map((item) => (
-      item.hguid === optimisticUpdate.hguid
+    queuePendingDetailUpdates(validItems.map(({ row, patch }) => ({ hguid: row.hguid, ...patch })))
+    const latestRowsByHguid = new Map(rowsRef.current.flatMap((item) => (item.hguid ? [[item.hguid, item] as const] : [])))
+    const optimisticUpdates = new Map<string, UpdateContainerDetailRequest>()
+    validItems.forEach(({ row, patch }) => {
+      // 同一行多次出现时以已合并的乐观值为基线，保证派生成本字段按最终值计算。
+      const baseRow = optimisticUpdates.has(row.hguid)
+        ? mergeContainerDetailPatch(latestRowsByHguid.get(row.hguid) ?? row, optimisticUpdates.get(row.hguid) as Partial<ContainerDetail>)
+        : latestRowsByHguid.get(row.hguid) ?? row
+      optimisticUpdates.set(row.hguid, {
+        ...optimisticUpdates.get(row.hguid),
+        ...buildContainerDetailAutoSaveUpdate(baseRow, patch, containerRef.current),
+      })
+    })
+    const nextRows = rowsRef.current.map((item) => {
+      const optimisticUpdate = item.hguid ? optimisticUpdates.get(item.hguid) : undefined
+      return optimisticUpdate
         ? mergeContainerDetailPatch(item, optimisticUpdate as Partial<ContainerDetail>)
         : item
-    ))
+    })
     rowsRef.current = nextRows
     updateAutoSaveContextRows(contextKey, nextRows, containerRef.current)
     setRows(nextRows)
-    autoSaveQueueRef.current?.enqueue(contextKey, row.hguid, patch)
+    validItems.forEach(({ row, patch }) => autoSaveQueueRef.current?.enqueue(contextKey, row.hguid, patch))
+  }
+
+  const enqueueAutoSavePatch = (row: ContainerDetail, patch: ContainerDetailAutoSavePatch) => {
+    enqueueAutoSavePatches([{ row, patch }])
   }
 
   const saveRowPatch = async (row: ContainerDetail, patch: ContainerDetailAutoSavePatch) => {
@@ -3808,6 +3864,143 @@ export default function ContainerDetailPage() {
     }
     enqueueAutoSavePatch(row, patch as ContainerDetailAutoSavePatch)
   }
+
+  /**
+   * 把一列 Excel 值按当前显示顺序从 startRowKey 向下写入目标列。
+   * 价格/英文名称进入“保存明细”草稿，其余列进入自动保存队列，与单元格手工编辑走同一条落库链路。
+   */
+  const applyContainerDetailColumnPaste = (
+    columnKey: ContainerDetailColumnPasteKey,
+    values: string[],
+    startRowKey: string,
+  ) => {
+    if (!access.canEditContainer) return false
+    const target = CONTAINER_DETAIL_COLUMN_PASTE_TARGETS[columnKey]
+    const plan = buildContainerDetailColumnPastePlan({
+      columnKey,
+      values,
+      rows: displayRows,
+      startRowKey,
+      getRowKey: rowKey,
+    })
+    if (plan.error === 'missing_target') {
+      message.warning(t('containers.messages.columnPasteTargetMissing', '粘贴起始行已不在当前列表中，请重新选择'))
+      return false
+    }
+    if (
+      plan.entries.length > 0
+      && target.requiresCostParameters
+      && showCostRecalculateWarning(getContainerDetailCostMissingFields(container))
+    ) {
+      return false
+    }
+    const applyEntries = (entries: ContainerDetailColumnPasteEntry[]) => {
+      if (!entries.length) return
+      if (target.channel === 'pendingDraft') {
+        markPendingDetailPatches(entries.map(({ row, field, value }) => ({
+          row,
+          patch: { [field]: value } as PendingDetailPatchItem['patch'],
+        })))
+        return
+      }
+      enqueueAutoSavePatches(entries.map(({ row, field, value }) => ({
+        row,
+        patch: { [field]: value } as ContainerDetailAutoSavePatch,
+      })))
+    }
+    applyEntries(plan.entries)
+
+    const summary = [t('containers.messages.columnPasteApplied', '已粘贴 {{count}} 个值', { count: plan.appliedCount })]
+    if (plan.unchangedCount > 0) {
+      summary.push(t('containers.messages.columnPasteUnchanged', '{{count}} 个与当前值相同', { count: plan.unchangedCount }))
+    }
+    if (plan.skippedBlankCount > 0) {
+      summary.push(t('containers.messages.columnPasteSkippedBlank', '跳过 {{count}} 个空单元格', { count: plan.skippedBlankCount }))
+    }
+    if (plan.invalidCount > 0) {
+      summary.push(t('containers.messages.columnPasteInvalid', '{{count}} 个无效值未应用（第 {{rows}} 行）', {
+        count: plan.invalidCount,
+        rows: plan.invalidRowNumbers.slice(0, 10).join('、') + (plan.invalidRowNumbers.length > 10 ? '…' : ''),
+      }))
+    }
+    if (plan.overflowCount > 0) {
+      summary.push(t('containers.messages.columnPasteOverflow', '超出列表末尾 {{count}} 行未粘贴', { count: plan.overflowCount }))
+    }
+    if (plan.appliedCount > 0 && target.channel === 'pendingDraft') {
+      summary.push(t('containers.messages.columnPasteNeedsSave', '请点击“保存明细”落库'))
+    }
+    const summaryText = summary.join('，')
+    if (plan.appliedCount === 0 || plan.invalidCount > 0 || plan.overflowCount > 0) {
+      message.warning(summaryText)
+    } else {
+      message.success(summaryText)
+    }
+    return plan.appliedCount > 0
+  }
+
+  /** 可编辑单元格内 Ctrl+V：单个值交给原生粘贴；多行数据则从当前行向下按列填充。 */
+  const handleEditableCellPaste = (
+    row: ContainerDetail,
+    columnKey: ContainerDetailColumnPasteKey,
+    event: ReactClipboardEvent<HTMLElement>,
+  ) => {
+    const parsed = parseContainerDetailColumnPasteText(event.clipboardData.getData('text/plain'))
+    if (!parsed.ok) {
+      if (parsed.reason === 'multiple_columns') {
+        event.preventDefault()
+        message.warning(t('containers.messages.columnPasteMultipleColumns', '一次只能粘贴一列 Excel 数据'))
+      }
+      return
+    }
+    if (parsed.values.length <= 1) return
+    event.preventDefault()
+    // 先结束当前单元格编辑，让它自身的 blur 保存链路先落库，随后的批量补丁才能覆盖成粘贴值。
+    event.currentTarget.blur()
+    applyContainerDetailColumnPaste(columnKey, parsed.values, rowKey(row))
+  }
+
+  const openColumnPasteModal = () => {
+    if (!displayRows.length) {
+      message.warning(t('containers.messages.columnPasteNoRows', '当前列表没有可粘贴的明细行'))
+      return
+    }
+    setColumnPasteStartRowKey(null)
+    setColumnPasteText('')
+    setColumnPasteModalOpen(true)
+  }
+
+  const closeColumnPasteModal = () => {
+    setColumnPasteModalOpen(false)
+    setColumnPasteText('')
+  }
+
+  const submitColumnPasteModal = () => {
+    const parsed = parseContainerDetailColumnPasteText(columnPasteText)
+    if (!parsed.ok) {
+      message.warning(parsed.reason === 'multiple_columns'
+        ? t('containers.messages.columnPasteMultipleColumns', '一次只能粘贴一列 Excel 数据')
+        : t('containers.messages.columnPasteEmpty', '请先粘贴 Excel 列数据'))
+      return
+    }
+    const startRowKey = columnPasteStartRowKey ?? (displayRows[0] ? rowKey(displayRows[0]) : '')
+    if (applyContainerDetailColumnPaste(columnPasteColumnKey, parsed.values, startRowKey)) {
+      closeColumnPasteModal()
+    }
+  }
+
+  const columnPasteParsedValueCount = useMemo(() => {
+    const parsed = parseContainerDetailColumnPasteText(columnPasteText)
+    return parsed.ok ? parsed.values.length : 0
+  }, [columnPasteText])
+
+  const columnPasteStartRowOptions = useMemo(() => (
+    columnPasteModalOpen
+      ? displayRows.map((row, index) => ({
+          value: rowKey(row),
+          label: `${index + 1}. ${getContainerDetailItemNumber(row) ?? getContainerDetailProductCode(row) ?? getContainerDetailProductName(row) ?? ''}`,
+        }))
+      : []
+  ), [columnPasteModalOpen, displayRows])
 
   const openBatchFloatRateModal = async () => {
     if (!ensureTargetRowsVisible()) return
@@ -5521,6 +5714,7 @@ export default function ContainerDetailPage() {
             title={validationMessage}
             onChange={(event) => markPendingDetailPatch(row, { 英文名称: event.target.value })}
             onKeyDown={(event) => handleEditableCellKeyDown(row, 'englishName', event)}
+            onPaste={(event) => handleEditableCellPaste(row, 'englishName', event)}
           />
         ))
       },
@@ -5590,6 +5784,7 @@ export default function ContainerDetailPage() {
               void savePackageMetricPatch(row, { 单件装箱数: Number(event.target.value) }).catch(handleDetailSaveError)
             }}
             onKeyDown={(event) => handleEditableCellKeyDown(row, 'packingQuantity', event)}
+            onPaste={(event) => handleEditableCellPaste(row, 'packingQuantity', event)}
           />
         )) : renderConcurrentEditableField(row, '单件装箱数', renderNumericCell(formatNumber(row.单件装箱数, 0)))
       },
@@ -5636,6 +5831,7 @@ export default function ContainerDetailPage() {
               void savePackageMetricPatch(row, { 单件体积: Number(event.target.value) }).catch(handleDetailSaveError)
             }}
             onKeyDown={(event) => handleEditableCellKeyDown(row, 'unitVolume', event)}
+            onPaste={(event) => handleEditableCellPaste(row, 'unitVolume', event)}
           />
         )) : renderConcurrentEditableField(row, '单件体积', renderNumericCell(formatNumber(row.单件体积, 3)))
       },
@@ -5699,6 +5895,7 @@ export default function ContainerDetailPage() {
               void saveFloatRatePatch(row, value).catch(handleDetailSaveError)
             }}
             onKeyDown={(event) => handleEditableCellKeyDown(row, 'floatRate', event)}
+            onPaste={(event) => handleEditableCellPaste(row, 'floatRate', event)}
           />
         )) : renderConcurrentEditableField(row, '调整浮率', renderNumericCell(formatNumber(row.调整浮率, 2)))
       },
@@ -5736,6 +5933,7 @@ export default function ContainerDetailPage() {
               void saveRowPatch(row, { 中包数: Number(event.target.value) }).catch(handleDetailSaveError)
             }}
             onKeyDown={(event) => handleEditableCellKeyDown(row, 'middlePackQuantity', event)}
+            onPaste={(event) => handleEditableCellPaste(row, 'middlePackQuantity', event)}
           />
         )) : renderConcurrentEditableField(row, '中包数', renderNumericCell(row.中包数 ?? '--'))
       },
@@ -5783,6 +5981,7 @@ export default function ContainerDetailPage() {
               onChange={(value) => markPendingDetailPatch(row, { 进口价格: value == null ? undefined : Number(value) })}
               onBlur={(event) => handlePendingImportPriceBlur(row, event.currentTarget.value)}
               onKeyDown={(event) => handleEditableCellKeyDown(row, 'importPrice', event)}
+              onPaste={(event) => handleEditableCellPaste(row, 'importPrice', event)}
             />
           )))
           : renderConcurrentEditableField(row, '进口价格', renderImportPriceCell(row))
@@ -5820,6 +6019,7 @@ export default function ContainerDetailPage() {
             title={concurrencyConflict?.message ?? saveFailure?.message}
             onChange={(value) => markPendingDetailPatch(row, { 贴牌价格: value == null ? undefined : Number(value) })}
             onKeyDown={(event) => handleEditableCellKeyDown(row, 'oemPrice', event)}
+            onPaste={(event) => handleEditableCellPaste(row, 'oemPrice', event)}
           />
         )) : renderConcurrentEditableField(row, '贴牌价格', renderOemPriceCell(row))
       },
@@ -6020,6 +6220,7 @@ export default function ContainerDetailPage() {
             onChange={(event) => patchAutoSaveRow(row, { 备注: event.target.value })}
             onBlur={(event) => void saveRowPatch(row, { 备注: event.target.value }).catch(handleDetailSaveError)}
             onKeyDown={(event) => handleEditableCellKeyDown(row, 'remark', event)}
+            onPaste={(event) => handleEditableCellPaste(row, 'remark', event)}
           />
         )) : renderConcurrentEditableField(row, '备注', row.备注 || '--')
       },
@@ -6680,6 +6881,16 @@ export default function ContainerDetailPage() {
                       >
                         {t('containers.actions.saveDetails', '保存明细')}{pendingDetailPatchCount ? ` (${pendingDetailPatchCount})` : ''}
                       </Button>
+                      <Tooltip title={t('containers.text.columnPasteTooltip', '把 Excel 一列数据按当前显示顺序填入目标列；也可在单元格内直接 Ctrl+V 粘贴多行')}>
+                        <Button
+                          size="small"
+                          icon={<SnippetsOutlined />}
+                          disabled={detailLoading || !displayRows.length}
+                          onClick={openColumnPasteModal}
+                        >
+                          {t('containers.actions.pasteColumn', '粘贴列')}
+                        </Button>
+                      </Tooltip>
                       {autoSaveSnapshot.unsavedFieldCount > 0 ? (
                         <Space
                           size={4}
@@ -6818,6 +7029,64 @@ export default function ContainerDetailPage() {
           </Card>
         </Space>
       </Spin>
+      <Modal
+        title={t('containers.modals.columnPasteTitle', '粘贴 Excel 列数据')}
+        open={columnPasteModalOpen}
+        width={560}
+        okText={t('containers.actions.applyColumnPaste', '填充')}
+        cancelText={t('common.cancel')}
+        okButtonProps={{ disabled: !columnPasteText.trim() }}
+        onOk={submitColumnPasteModal}
+        onCancel={closeColumnPasteModal}
+        destroyOnHidden
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Typography.Text type="secondary">
+            {t('containers.modals.columnPasteHint', '从 Excel 复制一列后粘贴到下方。数据将按当前显示顺序从起始行向下逐行填充，空单元格保持原值；进口价格、零售价、英文名称需再点击“保存明细”落库。')}
+          </Typography.Text>
+          <Space wrap size={[12, 8]}>
+            <Space size={6}>
+              <Typography.Text>{t('containers.modals.columnPasteTargetColumn', '目标列')}</Typography.Text>
+              <Select<ContainerDetailColumnPasteKey>
+                size="small"
+                style={{ width: 150 }}
+                value={columnPasteColumnKey}
+                onChange={(value) => {
+                  if (isContainerDetailColumnPasteKey(value)) setColumnPasteColumnKey(value)
+                }}
+                options={CONTAINER_DETAIL_COLUMN_PASTE_KEYS.map((key) => ({
+                  value: key,
+                  label: t(`containers.fields.${key}`),
+                }))}
+              />
+            </Space>
+            <Space size={6}>
+              <Typography.Text>{t('containers.modals.columnPasteStartRow', '起始行')}</Typography.Text>
+              <Select<string>
+                size="small"
+                style={{ width: 240 }}
+                showSearch
+                optionFilterProp="label"
+                value={columnPasteStartRowKey ?? columnPasteStartRowOptions[0]?.value}
+                onChange={(value) => setColumnPasteStartRowKey(value)}
+                options={columnPasteStartRowOptions}
+              />
+            </Space>
+          </Space>
+          <Input.TextArea
+            value={columnPasteText}
+            autoSize={{ minRows: 8, maxRows: 14 }}
+            placeholder={t('containers.modals.columnPastePlaceholder', '在此粘贴 Excel 单列数据，每行一个值')}
+            onChange={(event) => setColumnPasteText(event.target.value)}
+          />
+          <Typography.Text type="secondary">
+            {t('containers.modals.columnPasteSummary', '共 {{count}} 行数据，当前列表可见 {{visible}} 行', {
+              count: columnPasteParsedValueCount,
+              visible: displayRows.length,
+            })}
+          </Typography.Text>
+        </Space>
+      </Modal>
       <Modal
         title={t('containers.setCode.pricesTitle', {
           item: setCodeModalRow ? getContainerDetailItemNumber(setCodeModalRow) ?? getContainerDetailProductCode(setCodeModalRow) ?? '' : '',

@@ -63,8 +63,11 @@ function resolveActivePrimaryKey(routeName: string | undefined): PrimaryNavigati
     return "scan";
   }
 
-  // 商品进销查询从工作台进入，是商品查询详情的子页，不额外占用一级导航。
-  if (routeName === "product-insights") {
+  // 商品进销查询与仓库商品进销查询都从工作台进入，是商品功能的子页，不额外占用一级导航。
+  if (
+    routeName === "product-insights" ||
+    routeName === "warehouse-product-insights"
+  ) {
     return "workbench";
   }
 

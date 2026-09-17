@@ -1,0 +1,147 @@
+{
+  "title": "Warehouse product activity",
+  "scope": {
+    "warehouse": "Whole warehouse",
+    "all": "Whole warehouse · {{count}} stores covered",
+    "authorized": "Authorised scope · {{count}} stores covered"
+  },
+  "search": {
+    "placeholder": "Item no. / barcode / product name"
+  },
+  "actions": {
+    "back": "Back",
+    "search": "Search",
+    "scan": "Scan",
+    "retry": "Retry",
+    "close": "Close",
+    "cancel": "Cancel",
+    "openBranches": "View store breakdown"
+  },
+  "labels": {
+    "itemNumber": "Item no.",
+    "barcode": "Barcode",
+    "location": "Location",
+    "stock": "Stock",
+    "quantity": "Qty",
+    "ordered": "Ordered",
+    "shipped": "Shipped",
+    "sales": "Sold",
+    "salesAmount": "Sales"
+  },
+  "units": {
+    "items": "pcs"
+  },
+  "range": {
+    "label": "{{startDate}} – {{endDate}}",
+    "days": "{{days}} days",
+    "sheetLabel": "{{startDate}} to {{endDate}} · {{days}} / 400 days",
+    "salesUpdatedAt": "Sales stats updated {{value}}",
+    "salesUpdatedUnavailable": "Sales stats update time unavailable"
+  },
+  "flow": {
+    "inbound": "In {{quantity}} · last year",
+    "shipped": "Shipped {{quantity}} · {{percent}}%",
+    "sold": "Sold {{quantity}} · {{percent}}%",
+    "legendSold": "Sold",
+    "legendShipped": "Shipped, unsold",
+    "legendRemaining": "In warehouse"
+  },
+  "cards": {
+    "inbound": "Inbound · containers",
+    "inboundHint": "{{count}} containers in the last year",
+    "ordered": "Ordered · stores",
+    "orderedHint": "{{count}} stores ordered",
+    "shipped": "Shipped · outbound",
+    "shippedHint": "{{count}} stores shipped",
+    "sales": "Store sales"
+  },
+  "pending": {
+    "banner": "{{quantity}} pcs pending · {{count}} stores not fully shipped",
+    "inTransit": "{{count}} containers in transit · {{quantity}} pcs, excluded from inbound total"
+  },
+  "tabs": {
+    "containers": "Containers",
+    "orders": "Orders",
+    "shipments": "Shipments",
+    "sales": "Sales"
+  },
+  "records": {
+    "count": "{{count}} records",
+    "truncated": "Showing latest {{shown}} / {{total}}",
+    "empty": "No records in this range"
+  },
+  "states": {
+    "loading": "Loading warehouse activity",
+    "loadFailed": "Failed to load warehouse activity",
+    "initialTitle": "Search warehouse product activity",
+    "initialDescription": "Enter an item number, barcode or product name, or scan a code",
+    "notFoundTitle": "No matching warehouse product",
+    "notFoundDescription": "Check whether the item number or barcode belongs to a warehouse product"
+  },
+  "messages": {
+    "reviewUnavailable": "Warehouse activity is not available in this mode",
+    "notAllowed": "You do not have permission to view warehouse product activity",
+    "loadFailed": "Failed to load warehouse activity",
+    "lookupFailed": "Warehouse product lookup failed",
+    "cameraPermission": "Camera permission is required to scan",
+    "cameraUnavailable": "Camera is unavailable"
+  },
+  "camera": {
+    "title": "Scan a warehouse product"
+  },
+  "candidates": {
+    "title": "Select a product",
+    "subtitle": "\"{{keyword}}\" matches several warehouse products"
+  },
+  "rangeSheet": {
+    "title": "Date range",
+    "limit": "Up to {{days}} days · both ends included",
+    "preset": "Last {{days}} days",
+    "startDate": "Start date",
+    "endDate": "End date",
+    "selectedDays": "{{days}} days selected",
+    "maxDays": "Limit {{days}} days",
+    "overflow": "{{days}} days selected · {{excess}} over",
+    "overflowHint": "The date range cannot exceed {{days}} days",
+    "limitHint": "400 days covers a full year-on-year comparison and cross-year container cycles; longer ranges slow the sales aggregation down noticeably",
+    "invalidFormat": "Dates must use the YYYY-MM-DD format",
+    "invalidOrder": "The start date cannot be later than the end date",
+    "clamp": "Trim to the last {{days}} days",
+    "apply": "Apply range"
+  },
+  "branchSheet": {
+    "title": "Store breakdown",
+    "total": "Total · {{count}} stores with records",
+    "searchStore": "Search stores",
+    "store": "Store",
+    "empty": "No store records in this range",
+    "pending": "{{quantity}} pcs pending",
+    "sellThrough": "Sell-through {{rate}}",
+    "authorizedScope": "Showing the {{count}} stores within your authorised scope",
+    "fullScope": "Showing {{count}} stores with records",
+    "sort": {
+      "sales": "Sold ↓",
+      "shipped": "Shipped ↓",
+      "ordered": "Ordered ↓"
+    }
+  },
+  "containerSheet": {
+    "title": "Container inbound detail",
+    "summary": "{{count}} containers arrived · {{quantity}} pcs in total",
+    "arrivalRule": "Container inbound is always measured over the last year, independent of the range above; grouped by actual arrival date, and containers with only an estimated arrival are excluded from the total",
+    "container": "Container",
+    "pieces": "Cartons",
+    "status": "Status",
+    "empty": "No container inbound in this range",
+    "actualArrival": "Arrived {{date}}",
+    "estimatedArrival": "Est. {{date}} · excluded",
+    "statuses": {
+      "arrived": "Arrived",
+      "shipping": "In transit",
+      "cleared": "Cleared",
+      "completed": "Completed",
+      "unknown": "Unknown"
+    },
+    "range": "Inbound range {{startDate}} to {{endDate}} · fixed last year"
+  }
+}

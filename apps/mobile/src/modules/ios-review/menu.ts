@@ -8,6 +8,7 @@ export const IOS_REVIEW_EXCLUDED_ROUTE_NAMES = [
   "user-admin",
   "roles",
   "product-insights",
+  "warehouse-product-insights",
   "workbench",
 ] as const;
 
