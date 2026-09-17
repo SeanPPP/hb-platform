@@ -155,6 +155,7 @@ const TAB_PATHS: Record<string, string> = {
   'pos-operation-logs': '/(shell)/pos-operation-logs',
   'user-admin': '/(shell)/user-admin',
   roles: '/(shell)/roles',
+  permissions: '/(shell)/permissions',
   'employee-profile': '/(shell)/employee-profile',
   'employee-profile-review': '/(shell)/employee-profile-review',
   'device-management': '/(shell)/device-management',
@@ -186,6 +187,7 @@ const ROUTE_LABELS: Record<string, Pick<ExpoAppMenuDefinition, 'zhTitle' | 'enTi
   'pos-operation-logs': { zhTitle: '员工操作日志', enTitle: 'POS Operation Logs' },
   'user-admin': { zhTitle: '用户管理', enTitle: 'User Management' },
   roles: { zhTitle: '角色管理', enTitle: 'Role Management' },
+  permissions: { zhTitle: '权限管理', enTitle: 'Permission Management' },
   'employee-profile': { zhTitle: '员工', enTitle: 'Employee' },
   'employee-profile-review': { zhTitle: '员工资料审核', enTitle: 'Employee Profile Review' },
   'device-management': { zhTitle: '设备管理', enTitle: 'Devices' },
@@ -373,6 +375,15 @@ const EXPO_APP_MENU_DEFINITIONS: ExpoAppMenuDefinition[] = [
     permissionCodes: [P.Roles.View],
     order: 58,
     ...ROUTE_LABELS.roles,
+  },
+  {
+    routeName: 'permissions',
+    titleKey: 'tabs.permissions',
+    icon: 'key-outline',
+    // 与后端 FullAppMenu 一致：权限管理与 Web 后台 /system/permissions 同样只认 Roles.View。
+    permissionCodes: [P.Roles.View],
+    order: 58,
+    ...ROUTE_LABELS.permissions,
   },
   {
     routeName: 'employee-profile',

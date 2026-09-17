@@ -59,6 +59,7 @@ const WORKBENCH_SECTIONS: WorkbenchNavigationSection[] = [
       { routeName: "users", labelKey: "routes.users", icon: "account-group-outline" },
       { routeName: "user-admin", labelKey: "routes.userAdmin", icon: "account-cog-outline" },
       { routeName: "roles", labelKey: "routes.roles", icon: "shield-account-outline" },
+      { routeName: "permissions", labelKey: "routes.permissions", icon: "key-outline" },
       { routeName: "employee-profile", labelKey: "routes.employeeProfile", icon: "card-account-details-outline" },
       { routeName: "employee-profile-review", labelKey: "routes.employeeProfileReview", icon: "account-check-outline" },
       { routeName: "device-management", labelKey: "routes.deviceManagement", icon: "cellphone-cog" },

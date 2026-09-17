@@ -46,7 +46,8 @@ export default function IdentityUsersScreen() {
   const total = usersQuery.data?.total ?? 0;
 
   return <AdminScreen title={c.users} action={access.isAdmin && access.hasPermission("Users.Create") ? <Button icon="plus" onPress={() => router.push("/(shell)/user-admin/new")}>{c.add}</Button> : undefined}>
-    <AdminTabs value="users" onChange={key => key === "roles" && router.replace("/(shell)/roles")} items={[{ key: "users", label: c.usersTab }, ...(access.canReadRole ? [{ key: "roles", label: c.rolesTab }] : [])]} />
+    <AdminTabs value="users" onChange={key => { if (key === "roles") router.replace("/(shell)/roles"); else if (key === "permissions") router.replace("/(shell)/permissions"); }}
+      items={[{ key: "users", label: c.usersTab }, ...(access.canReadRole ? [{ key: "roles", label: c.rolesTab }, { key: "permissions", label: c.permissionsTab }] : [])]} />
     <View style={{ paddingHorizontal: 16, gap: 10 }}>
       <SearchField value={input} onChange={setInput} placeholder={c.search} />
       <View style={{ flexDirection: "row", gap: 8 }}>
