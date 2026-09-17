@@ -56,6 +56,11 @@ export interface PosOperationLogsViewProps {
   onSearchSubmit: () => void;
   onQuickFilter: (quick: PosOperationQuickFilter) => void;
   onOpenFilters: () => void;
+  /** 四个筛选 chip 各自直接下拉选择，完整筛选面板只由右上角按钮打开。 */
+  onPickRange: () => void;
+  onPickStore: () => void;
+  onPickType: () => void;
+  onPickPlatform: () => void;
   onClearOrderTrace: () => void;
   onRefresh: () => void;
   onLoadMore: () => void;
@@ -89,6 +94,10 @@ export function PosOperationLogsView({
   onSearchSubmit,
   onQuickFilter,
   onOpenFilters,
+  onPickRange,
+  onPickStore,
+  onPickType,
+  onPickPlatform,
   onClearOrderTrace,
   onRefresh,
   onLoadMore,
@@ -117,6 +126,11 @@ export function PosOperationLogsView({
   const outcomeLabel = useCallback(
     (outcome: PosOperationLogItem["outcome"]) => t(`outcomes.${outcome}`),
     [t],
+  );
+  // 行内显示门店名称而不是编码；主档没有的门店回退显示编码。
+  const storeNames = useMemo(
+    () => new Map(stores.map((store) => [store.storeCode, store.storeName || store.storeCode])),
+    [stores],
   );
   const storeName = filters.storeCode
     ? stores.find((store) => store.storeCode === filters.storeCode)?.storeName ?? filters.storeCode
@@ -215,17 +229,17 @@ export function PosOperationLogsView({
         contentContainerStyle={styles.chipRow}
         keyboardShouldPersistTaps="handled"
       >
-        <Chip label={rangeChipLabel} icon="calendar" selected onPress={onOpenFilters} />
-        <Chip label={storeName ?? t("chips.allStores")} selected={Boolean(storeName)} onPress={onOpenFilters} />
+        <Chip label={rangeChipLabel} icon="calendar" selected onPress={onPickRange} />
+        <Chip label={storeName ?? t("chips.allStores")} selected={Boolean(storeName)} onPress={onPickStore} />
         <Chip
           label={filters.operationType ? operationLabel(filters.operationType) : t("chips.allTypes")}
           selected={Boolean(filters.operationType)}
-          onPress={onOpenFilters}
+          onPress={onPickType}
         />
         <Chip
           label={filters.deviceSystem ? t(`platforms.${filters.deviceSystem}`) : t("chips.platform")}
           selected={Boolean(filters.deviceSystem)}
-          onPress={onOpenFilters}
+          onPress={onPickPlatform}
         />
       </ScrollView>
 
@@ -300,6 +314,7 @@ export function PosOperationLogsView({
           renderItem={({ item }) => (
             <PosOperationLogRow
               item={item}
+              storeName={storeNames.get(item.storeCode) ?? null}
               operationLabel={operationLabel}
               outcomeLabel={outcomeLabel}
               t={t}

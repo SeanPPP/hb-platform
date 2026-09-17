@@ -30,6 +30,13 @@
     "allTypes": "All events",
     "platform": "Platform"
   },
+  "pickers": {
+    "range": "Select time range",
+    "store": "Select store",
+    "type": "Select event type",
+    "platform": "Select platform",
+    "searchType": "Search event types"
+  },
   "quick": {
     "all": "All",
     "succeeded": "Succeeded",
