@@ -119,6 +119,24 @@ public sealed class ClientLogOutboxWriterTests
         try
         {
             await writer.StartAsync(CancellationToken.None);
+            // 先用一条预热事件等后台循环完成初始化并落库：writer 启动时会再次调用 store.InitializeAsync，
+            // 它同样要拿 _writeGate，若此时测试已持闸，消费循环会卡在初始化而不是落库步骤。
+            var warmupEventId = Guid.NewGuid();
+            writer.Record(new OperationAuditEventDto
+            {
+                EventId = warmupEventId,
+                OperationType = "OPERATION_FLUSH_WARMUP",
+                Outcome = "Succeeded"
+            });
+            _ = await WaitForSinglePendingAsync(store, ClientLogOutboxKind.OperationAudit);
+            await WaitUntilAsync(() => writer.PendingOperationAuditPersistenceCount == 0, diagnostics: () => DescribeWriter(writer));
+            await store.ApplyResultsAsync(
+                ClientLogOutboxKind.OperationAudit,
+                [warmupEventId],
+                [],
+                DateTimeOffset.UtcNow,
+                CancellationToken.None);
+
             await writeGate.WaitAsync(CancellationToken.None);
             writer.Record(new OperationAuditEventDto
             {
@@ -248,6 +266,9 @@ public sealed class ClientLogOutboxWriterTests
                 Outcome = "Succeeded"
             });
             _ = await WaitForSinglePendingAsync(store, ClientLogOutboxKind.OperationAudit);
+            // 落库可见与 CompleteOperationAuditPersistence 之间有微小窗口，等计数归零后再持闸，
+            // 否则下面 "pending == 11" 的断言可能多算预热事件。
+            await WaitUntilAsync(() => writer.PendingOperationAuditPersistenceCount == 0, diagnostics: () => DescribeWriter(writer));
             await store.ApplyResultsAsync(
                 ClientLogOutboxKind.OperationAudit,
                 [warmupEventId],
