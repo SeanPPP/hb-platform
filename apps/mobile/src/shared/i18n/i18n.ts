@@ -20,6 +20,7 @@ import advertisementsEn from "@/locales/en/screens/advertisements.json";
 import promotionsEn from "@/locales/en/screens/promotions.json";
 import productQueryEn from "@/locales/en/screens/productQuery.json";
 import productInsightsEn from "@/locales/en/screens/productInsights.json";
+import warehouseProductInsightsEn from "@/locales/en/screens/warehouseProductInsights.json";
 import preorderEn from "@/locales/en/screens/preorder.json";
 import seasonalCardsEn from "@/locales/en/screens/seasonalCards.json";
 import settingsEn from "@/locales/en/screens/settings.json";
@@ -43,6 +44,7 @@ import advertisementsZh from "@/locales/zh/screens/advertisements.json";
 import promotionsZh from "@/locales/zh/screens/promotions.json";
 import productQueryZh from "@/locales/zh/screens/productQuery.json";
 import productInsightsZh from "@/locales/zh/screens/productInsights.json";
+import warehouseProductInsightsZh from "@/locales/zh/screens/warehouseProductInsights.json";
 import preorderZh from "@/locales/zh/screens/preorder.json";
 import seasonalCardsZh from "@/locales/zh/screens/seasonalCards.json";
 import settingsZh from "@/locales/zh/screens/settings.json";
@@ -80,6 +82,7 @@ const resources = {
     storeVouchers: storeVouchersZh,
     productQuery: productQueryZh,
     productInsights: productInsightsZh,
+    warehouseProductInsights: warehouseProductInsightsZh,
     preorder: preorderZh,
     userManagement: userManagementZh,
     warehouse: warehouseZh,
@@ -107,6 +110,7 @@ const resources = {
     storeVouchers: storeVouchersEn,
     productQuery: productQueryEn,
     productInsights: productInsightsEn,
+    warehouseProductInsights: warehouseProductInsightsEn,
     preorder: preorderEn,
     userManagement: userManagementEn,
     warehouse: warehouseEn,
@@ -136,7 +140,7 @@ if (!i18n.isInitialized) {
     lng: DEFAULT_APP_LANGUAGE,
     fallbackLng: DEFAULT_APP_LANGUAGE,
     defaultNS: "common",
-    ns: ["appDownloads", "wpfVersions", "common", "advertisements", "attendance", "login", "home", "cart", "domesticPurchase", "deviceManagement", "employeeProfile", "employeeProfileReview", "installmentOrders", "localSupplierInvoices", "orders", "promotions", "preorder", "seasonalCards", "settings", "storeVouchers", "productQuery", "productInsights", "userManagement", "warehouse", "workbench"],
+    ns: ["appDownloads", "wpfVersions", "common", "advertisements", "attendance", "login", "home", "cart", "domesticPurchase", "deviceManagement", "employeeProfile", "employeeProfileReview", "installmentOrders", "localSupplierInvoices", "orders", "promotions", "preorder", "seasonalCards", "settings", "storeVouchers", "productQuery", "productInsights", "warehouseProductInsights", "userManagement", "warehouse", "workbench"],
     interpolation: {
       escapeValue: false,
     },

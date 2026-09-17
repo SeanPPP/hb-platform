@@ -1,0 +1,147 @@
+{
+  "title": "仓库商品进销",
+  "scope": {
+    "warehouse": "全仓库",
+    "all": "全仓库 · 覆盖 {{count}} 家分店",
+    "authorized": "授权范围 · 覆盖 {{count}} 家分店"
+  },
+  "search": {
+    "placeholder": "货号 / 条码 / 商品名"
+  },
+  "actions": {
+    "back": "返回",
+    "search": "查询",
+    "scan": "扫码",
+    "retry": "重试",
+    "close": "关闭",
+    "cancel": "取消",
+    "openBranches": "查看分店分布"
+  },
+  "labels": {
+    "itemNumber": "货号",
+    "barcode": "条码",
+    "location": "仓位",
+    "stock": "库存",
+    "quantity": "数量",
+    "ordered": "订货",
+    "shipped": "发货",
+    "sales": "销售",
+    "salesAmount": "销售额"
+  },
+  "units": {
+    "items": "件"
+  },
+  "range": {
+    "label": "{{startDate}} – {{endDate}}",
+    "days": "{{days}} 天",
+    "sheetLabel": "{{startDate}} 至 {{endDate}} · {{days}} / 400 天",
+    "salesUpdatedAt": "销售统计更新 {{value}}",
+    "salesUpdatedUnavailable": "销售统计更新时间暂不可用"
+  },
+  "flow": {
+    "inbound": "进货 {{quantity}} · 近一年",
+    "shipped": "发货 {{quantity}} · {{percent}}%",
+    "sold": "售出 {{quantity}} · {{percent}}%",
+    "legendSold": "已售出",
+    "legendShipped": "已发未售",
+    "legendRemaining": "仓库结存"
+  },
+  "cards": {
+    "inbound": "进货 · 货柜",
+    "inboundHint": "近一年 {{count}} 个货柜到货",
+    "ordered": "订货 · 分店",
+    "orderedHint": "{{count}} 家分店下单",
+    "shipped": "发货 · 出库",
+    "shippedHint": "{{count}} 家分店已发",
+    "sales": "分店销售"
+  },
+  "pending": {
+    "banner": "待发 {{quantity}} 件 · {{count}} 家分店未发齐",
+    "inTransit": "另有在途货柜 {{count}} 个 · {{quantity}} 件，未计入进货合计"
+  },
+  "tabs": {
+    "containers": "货柜进货",
+    "orders": "订货",
+    "shipments": "发货",
+    "sales": "销售"
+  },
+  "records": {
+    "count": "{{count}} 条",
+    "truncated": "显示最近 {{shown}} / {{total}} 条",
+    "empty": "该区间没有记录"
+  },
+  "states": {
+    "loading": "正在查询仓库进销数据",
+    "loadFailed": "仓库进销数据加载失败",
+    "initialTitle": "查询仓库商品进销",
+    "initialDescription": "输入货号、条码或商品名，也可以直接扫码",
+    "notFoundTitle": "没有找到匹配的仓库商品",
+    "notFoundDescription": "请确认货号或条码是否属于仓库商品"
+  },
+  "messages": {
+    "reviewUnavailable": "当前模式不提供仓库进销查询",
+    "notAllowed": "没有查看仓库商品进销的权限",
+    "loadFailed": "仓库进销数据加载失败",
+    "lookupFailed": "仓库商品查询失败",
+    "cameraPermission": "需要相机权限才能扫码",
+    "cameraUnavailable": "相机暂不可用"
+  },
+  "camera": {
+    "title": "扫码查询仓库商品"
+  },
+  "candidates": {
+    "title": "选择商品",
+    "subtitle": "“{{keyword}}”匹配到多个仓库商品"
+  },
+  "rangeSheet": {
+    "title": "查询区间",
+    "limit": "最长 {{days}} 天 · 含首尾日",
+    "preset": "近 {{days}} 天",
+    "startDate": "开始日期",
+    "endDate": "结束日期",
+    "selectedDays": "已选 {{days}} 天",
+    "maxDays": "上限 {{days}} 天",
+    "overflow": "已选 {{days}} 天 · 超出 {{excess}} 天",
+    "overflowHint": "查询区间不能超过 {{days}} 天",
+    "limitHint": "上限 400 天可覆盖整年同期对比与跨年货柜周期；超过后销售统计聚合会明显变慢",
+    "invalidFormat": "日期需使用 YYYY-MM-DD 格式",
+    "invalidOrder": "开始日期不能晚于结束日期",
+    "clamp": "收敛为最近 {{days}} 天",
+    "apply": "应用区间"
+  },
+  "branchSheet": {
+    "title": "分店分布",
+    "total": "合计 · {{count}} 家分店有记录",
+    "searchStore": "搜索分店",
+    "store": "分店",
+    "empty": "该区间没有分店记录",
+    "pending": "待发 {{quantity}} 件",
+    "sellThrough": "售罄率 {{rate}}",
+    "authorizedScope": "仅显示授权范围内的 {{count}} 家分店",
+    "fullScope": "显示 {{count}} 家有记录的分店",
+    "sort": {
+      "sales": "销售 ↓",
+      "shipped": "发货 ↓",
+      "ordered": "订货 ↓"
+    }
+  },
+  "containerSheet": {
+    "title": "货柜进货明细",
+    "summary": "{{count}} 个货柜到货 · 合计 {{quantity}} 件",
+    "arrivalRule": "货柜进货固定按最近一年统计，不跟随上方查询区间；到货日取实际到货日，仅有预计到岸日的在途货柜不计入合计",
+    "container": "货柜编号",
+    "pieces": "件数",
+    "status": "状态",
+    "empty": "该区间没有货柜进货",
+    "actualArrival": "到货 {{date}}",
+    "estimatedArrival": "预计 {{date}} · 未计入合计",
+    "statuses": {
+      "arrived": "已到货",
+      "shipping": "运输中",
+      "cleared": "已清关",
+      "completed": "已完成",
+      "unknown": "未知"
+    },
+    "range": "进货区间 {{startDate}} 至 {{endDate}} · 固定近一年"
+  }
+}
