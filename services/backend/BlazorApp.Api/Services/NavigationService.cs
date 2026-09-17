@@ -324,6 +324,16 @@ namespace BlazorApp.Api.Services
             },
             new()
             {
+                RouteName = "pos-operation-logs",
+                TitleKey = "tabs.posOperationLogs",
+                Icon = "clipboard-text-clock-outline",
+                // 与 Web 后台 /pos-admin/operation-logs 共用审计查看权限，两端可见范围保持一致。
+                // 设备模式菜单（BuildDeviceAppMenu）按 DeviceBaseRouteNames 白名单挑选，不会包含此项。
+                Permission = Permissions.PosTerminal.Audit.View,
+                Order = 57,
+            },
+            new()
+            {
                 RouteName = "user-admin",
                 TitleKey = "tabs.userAdmin",
                 Icon = "account-cog-outline",

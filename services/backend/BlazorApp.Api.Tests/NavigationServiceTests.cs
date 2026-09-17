@@ -827,8 +827,9 @@ public class NavigationServiceTests
         var menu = _service.BuildAppMenu(user);
 
         // 管理员可见完整 App 菜单；商品查询与同权限的商品进销查询都必须保留。
-        Assert.Equal(26, menu.Count);
+        Assert.Equal(27, menu.Count);
         Assert.Contains(menu, item => item.RouteName == "product-query");
+        Assert.Contains(menu, item => item.RouteName == "pos-operation-logs");
         Assert.Contains(menu, item => item.RouteName == "product-insights");
         Assert.Contains(menu, item => item.RouteName == "warehouse-product-insights");
         Assert.Contains(menu, item => item.RouteName == "users");
@@ -1229,6 +1230,35 @@ public class NavigationServiceTests
         var menu = _service.BuildAppMenu(user);
 
         Assert.Contains(menu, item => item.RouteName == "users");
+    }
+
+    [Fact]
+    public void BuildAppMenu_ShowsPosOperationLogsOnlyWithAuditViewPermission()
+    {
+        var authorized = CreateUser(new Claim("permission", Permissions.PosTerminal.Audit.View));
+        var unauthorized = CreateUser(new Claim("permission", Permissions.Users.View));
+
+        // 员工操作日志入口只认审计查看权限；仅有用户查看权限的人不应看到。
+        var item = Assert.Single(
+            _service.BuildAppMenu(authorized),
+            menu => menu.RouteName == "pos-operation-logs"
+        );
+        Assert.Equal("tabs.posOperationLogs", item.TitleKey);
+        Assert.Equal("clipboard-text-clock-outline", item.Icon);
+        Assert.Equal(Permissions.PosTerminal.Audit.View, item.Permission);
+        Assert.DoesNotContain(
+            _service.BuildAppMenu(unauthorized),
+            menu => menu.RouteName == "pos-operation-logs"
+        );
+    }
+
+    [Fact]
+    public void BuildDeviceAppMenu_HidesPosOperationLogsForDeviceMode()
+    {
+        // 设备会话没有用户角色，后端查询服务会直接拒绝，因此设备模式菜单不应暴露该入口。
+        var menu = _service.BuildDeviceAppMenu("Mobile");
+
+        Assert.DoesNotContain(menu, item => item.RouteName == "pos-operation-logs");
     }
 
     [Fact]

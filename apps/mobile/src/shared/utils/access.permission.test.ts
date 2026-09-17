@@ -23,6 +23,23 @@ function createUser(
   };
 }
 
+const auditViewerAccess = buildAccess(createUser([PERMISSIONS.PosTerminal.AuditView]));
+assertEqual(
+  auditViewerAccess.canViewPosOperationLogs,
+  true,
+  "Permissions.PosTerminal.Audit.View enables POS operation logs entrance"
+);
+assertEqual(
+  buildAccess(createUser(["PosTerminal.Audit.View"])).canViewPosOperationLogs,
+  true,
+  "legacy PosTerminal.Audit.View without prefix is treated as the same permission"
+);
+assertEqual(
+  buildAccess(createUser(["Users.View"])).canViewPosOperationLogs,
+  false,
+  "Users.View alone does not enable POS operation logs"
+);
+
 const purchaseLegacyAccess = buildAccess(
   createUser(["LocalInvocie.View", "LocalInvocie.Edit"])
 );

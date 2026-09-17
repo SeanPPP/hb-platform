@@ -22,6 +22,7 @@ export type AppTabPath =
   | "/(shell)/roles"
   | "/(shell)/employee-profile"
   | "/(shell)/employee-profile-review"
+  | "/(shell)/pos-operation-logs"
   | "/(shell)/device-management"
   | "/(shell)/app-downloads"
   | "/(shell)/wpf-versions"
@@ -51,6 +52,7 @@ export const TAB_PATHS: Record<string, AppTabPath> = {
   roles: "/(shell)/roles",
   "employee-profile": "/(shell)/employee-profile",
   "employee-profile-review": "/(shell)/employee-profile-review",
+  "pos-operation-logs": "/(shell)/pos-operation-logs",
   "device-management": "/(shell)/device-management",
   "app-downloads": "/(shell)/app-downloads",
   "wpf-versions": "/(shell)/wpf-versions",
@@ -66,6 +68,8 @@ const DEVICE_MODE_BLOCKED_ROUTE_NAMES = new Set([
   "attendance-personal",
   "attendance-management",
   "employee-profile-review",
+  // 设备会话没有店长/管理员角色，后端审计查询会直接拒绝，设备模式不展示入口。
+  "pos-operation-logs",
   "device-management",
   "reports",
   "user-admin",
