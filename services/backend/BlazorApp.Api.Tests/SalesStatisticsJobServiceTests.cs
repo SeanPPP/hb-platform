@@ -445,7 +445,8 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
     [Fact]
     public async Task UpdateProductStoreDailyStatistics_失败诊断行替换旧商品时撤销旧发布版本()
     {
-        var date = new DateTime(2026, 1, 5);
+        // HBSales 历史窗口已后移到 2026-05-01；窗口外语义用 6 月日期表达。
+        var date = new DateTime(2026, 6, 5);
         await SeedCompletedProductSnapshotAsync(date, new ProductStoreDailySalesStatistic
         {
             Date = date, BranchCode = "1004", SupplierCode = "112", ProductCode = "P-OLD-COMPLETE",
@@ -538,7 +539,8 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
     [Fact]
     public async Task UpdateProductStoreDailyStatistics_中国供应商写入失败时澳洲表和四类发布应整体回滚()
     {
-        var date = new DateTime(2026, 1, 5);
+        // HBSales 历史窗口已后移到 2026-05-01；窗口外语义用 6 月日期表达。
+        var date = new DateTime(2026, 6, 5);
         await SeedSaleAsync("ROLLBACK-SUPPLIER", "ROLLBACK-SUPPLIER-DETAIL", "P-ROLLBACK", "1004", date.AddHours(9), 1, 10m, "CN-FAIL");
         await SeedStoreSalesStatisticAsync(date, "1004", 10m, 1);
         await _localDb.Insertable(new ChinaSupplier
@@ -663,7 +665,8 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
     [Fact]
     public async Task UpdateProductStoreDailyStatistics_有来源行但无有效主键时应Failed()
     {
-        var targetDate = new DateTime(2026, 1, 4);
+        // HBSales 历史窗口已后移到 2026-05-01；窗口外语义用 6 月日期表达。
+        var targetDate = new DateTime(2026, 6, 4);
         await SeedOrderAsync("ORDER-INVALID-KEY", string.Empty, targetDate.AddHours(10), 1);
         await SeedSaleDetailAsync(
             "ORDER-INVALID-KEY",
@@ -1660,7 +1663,8 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
     [Fact]
     public async Task UpdateStoreStatistics_2026仍只更新分店统计()
     {
-        var requestDate = new DateTime(2026, 4, 12, 19, 15, 0);
+        // HBSales 历史窗口已后移到 2026-05-01；窗口外语义用 6 月日期表达。
+        var requestDate = new DateTime(2026, 6, 12, 19, 15, 0);
         await SeedSaleAsync(
             "POSM-STORE-2026",
             "POSM-STORE-2026-DETAIL",
@@ -2146,9 +2150,10 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task UpdateProductStoreDailyStatistics_2026不应读取HBSales()
+    public async Task UpdateProductStoreDailyStatistics_HBSales历史窗口外不应读取HBSales()
     {
-        var targetDate = new DateTime(2026, 4, 5);
+        // HBSales 最后一笔结账为 2026-04-12，窗口终点为 2026-05-01；窗口外日期不得再读旧系统。
+        var targetDate = new DateTime(2026, 5, 5);
         await SeedStoreSalesStatisticAsync(targetDate, "1004", 10m, 1);
         await SeedSaleAsync("POSM-2026", "POSM-2026-DETAIL", "P-2026", "1004", targetDate.AddHours(9), 1, 10m, "200");
         await SeedHBSalesAsync(6, targetDate, "P-2026", "1004", "200", 9m, 99m, "1");
@@ -2309,6 +2314,81 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
         Assert.NotNull(row);
         Assert.Equal(20m, row!.TotalAmount);
         Assert.Equal(2, row.TotalQuantity);
+        Assert.Equal(1, row.OrderCount);
+    }
+
+    [Fact]
+    public async Task UpdateHourlyStatistics_HBSales历史窗口内应叠加HBSales小时来源()
+    {
+        // 2025-09-18 处于 HBSales 历史窗口：同一分店同一小时 POSM 与 HBSales 都有真实交易，口径是相加。
+        var targetDate = new DateTime(2025, 9, 18);
+        await SeedStoreAsync("S1", "分店一");
+        await SeedOrderAsync("ORDER-POSM-DUAL", "S1", targetDate.AddHours(9), 1);
+        await SeedSaleDetailAsync("ORDER-POSM-DUAL", "DETAIL-POSM-DUAL", "P-1", 2, 40m, null);
+        await SeedPaymentAsync("PAY-POSM-DUAL", "ORDER-POSM-DUAL", 40m, targetDate.AddHours(9).AddMinutes(2));
+        await SeedHBSalesAsync(9101, targetDate, "P-HB-1", "S1", "SUP", 3, 60m, "1", checkoutTime: new TimeSpan(9, 20, 0));
+        await SeedHBSalesAsync(9102, targetDate, "P-HB-2", "S1", "SUP", 1, 25m, "1", checkoutTime: new TimeSpan(10, 5, 0));
+        // 退货单（类型 3）金额与数量取反；类型 2 单据整单排除。
+        await SeedHBSalesAsync(9103, targetDate, "P-HB-3", "S1", "SUP", 1, 5m, "3", checkoutTime: new TimeSpan(10, 30, 0));
+        await SeedHBSalesAsync(9104, targetDate, "P-HB-4", "S1", "SUP", 1, 99m, "2", checkoutTime: new TimeSpan(11, 0, 0));
+
+        await CreateService().UpdateHourlyStatistics(targetDate);
+
+        var rows = await _localDb.Queryable<HourlySalesStatistic>()
+            .Where(row => row.Date == targetDate)
+            .ToListAsync();
+        var hour9 = Assert.Single(rows, row => row.BranchCode == "S1" && row.Hour == 9);
+        Assert.Equal(100m, hour9.TotalAmount);
+        Assert.Equal(5, hour9.TotalQuantity);
+        Assert.Equal(2, hour9.OrderCount);
+        var hour10 = Assert.Single(rows, row => row.BranchCode == "S1" && row.Hour == 10);
+        Assert.Equal(20m, hour10.TotalAmount);
+        Assert.Equal(0, hour10.TotalQuantity);
+        Assert.Equal(2, hour10.OrderCount);
+        Assert.DoesNotContain(rows, row => row.Hour == 11);
+        var all9 = Assert.Single(rows, row => row.BranchCode == "ALL" && row.Hour == 9);
+        Assert.Equal(100m, all9.TotalAmount);
+        Assert.Equal(2, all9.OrderCount);
+    }
+
+    [Fact]
+    public async Task UpdateHourlyStatistics_HBSales历史窗口内按指定小时刷新时只写该小时()
+    {
+        var targetDate = new DateTime(2025, 9, 18);
+        await SeedStoreAsync("S1", "分店一");
+        await SeedHBSalesAsync(9111, targetDate, "P-HB-1", "S1", "SUP", 1, 60m, "1", checkoutTime: new TimeSpan(9, 20, 0));
+        await SeedHBSalesAsync(9112, targetDate, "P-HB-2", "S1", "SUP", 2, 25m, "1", checkoutTime: new TimeSpan(10, 5, 0));
+
+        await CreateService().UpdateHourlyStatistics(targetDate, 10);
+
+        var rows = await _localDb.Queryable<HourlySalesStatistic>()
+            .Where(row => row.Date == targetDate)
+            .ToListAsync();
+        Assert.DoesNotContain(rows, row => row.Hour == 9);
+        var hour10 = Assert.Single(rows, row => row.BranchCode == "S1" && row.Hour == 10);
+        Assert.Equal(25m, hour10.TotalAmount);
+        Assert.Equal(2, hour10.TotalQuantity);
+        Assert.Equal(1, hour10.OrderCount);
+    }
+
+    [Fact]
+    public async Task UpdateHourlyStatistics_HBSales历史窗口外不读取HBSales来源()
+    {
+        var targetDate = new DateTime(2026, 7, 4);
+        await SeedStoreAsync("S1", "分店一");
+        await SeedOrderAsync("ORDER-POSM-ONLY", "S1", targetDate.AddHours(9), 1);
+        await SeedSaleDetailAsync("ORDER-POSM-ONLY", "DETAIL-POSM-ONLY", "P-1", 1, 30m, null);
+        await SeedPaymentAsync("PAY-POSM-ONLY", "ORDER-POSM-ONLY", 30m, targetDate.AddHours(9).AddMinutes(1));
+        await SeedHBSalesAsync(9201, targetDate, "P-HB", "S1", "SUP", 1, 60m, "1", checkoutTime: new TimeSpan(9, 30, 0));
+        _hbSalesDb.Aop.OnLogExecuting = (_, _) => throw new InvalidOperationException("窗口外不得读取 HBSales 来源");
+
+        await CreateService().UpdateHourlyStatistics(targetDate, 9);
+
+        var row = await _localDb.Queryable<HourlySalesStatistic>()
+            .Where(statistic => statistic.Date == targetDate && statistic.Hour == 9 && statistic.BranchCode == "S1")
+            .FirstAsync();
+        Assert.NotNull(row);
+        Assert.Equal(30m, row!.TotalAmount);
         Assert.Equal(1, row.OrderCount);
     }
 
@@ -4693,7 +4773,8 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
         string? barcode = null,
         bool useDefaultBarcode = true,
         string? itemNumber = null,
-        DateTime? mainCheckoutDate = null
+        DateTime? mainCheckoutDate = null,
+        TimeSpan? checkoutTime = null
     )
     {
         var salesOrderNo = $"HB-ORDER-{id}";
@@ -4705,6 +4786,7 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
             B单据类型 = documentType,
             // 主表索引窗口以结账日期为入口；未特化的测试数据保持与明细日期一致。
             B结账日期 = mainCheckoutDate ?? date,
+            B结账时间 = checkoutTime,
             FGC_LastModifyDate = modifiedAt,
         }).ExecuteCommandAsync();
         await _hbSalesDb.Insertable(new SalesOrderDetailRecord
@@ -4713,6 +4795,7 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
             B销售单号 = salesOrderNo,
             B分店代码 = branchCode,
             B结账日期 = date.Date,
+            B结账时间 = checkoutTime,
             B产品编号 = productCode,
             B供应商ID = supplierCode,
             B货号 = itemNumber,
