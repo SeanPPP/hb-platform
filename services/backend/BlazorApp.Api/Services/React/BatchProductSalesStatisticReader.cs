@@ -214,11 +214,10 @@ internal sealed class BatchProductSalesStatisticReader(ISqlSugarClient db)
     private static Expressionable<ProductStoreDailySalesStatistic> BuildDatePredicate(IEnumerable<DateTime> days)
     {
         var predicate = Expressionable.Create<ProductStoreDailySalesStatistic>();
-        foreach (var date in days)
-        {
-            var start = date.Date; var end = start.AddDays(1);
+        // 与折扣快照读取共用区间折叠：连续 ready dates 只生成一组半开区间，不连续日期之间仍保持断开。
+        var sorted = days.Select(date => date.Date).Distinct().OrderBy(date => date).ToList();
+        foreach (var (start, end) in BatchProductSalesDiscountSnapshotReader.CollapseContiguousDays(sorted))
             predicate = predicate.Or(row => row.Date >= start && row.Date < end);
-        }
         return predicate;
     }
 
