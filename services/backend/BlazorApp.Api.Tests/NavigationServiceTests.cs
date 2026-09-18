@@ -255,6 +255,36 @@ public class NavigationServiceTests
     }
 
     [Fact]
+    public void BuildMenu_SystemUsersRequiresWebConsolePermissionInsteadOfUsersView()
+    {
+        // Users.View 只点亮移动端员工列表/用户管理，Web 后台用户管理菜单需要独立的 Users.ViewWebConsole。
+        // Dashboard.View 仅用于满足后台导航准入门槛，与用户管理菜单本身无关。
+        var authorized = CreateUser(
+            new Claim("permission", Permissions.Dashboard.View),
+            new Claim("permission", Permissions.Users.ViewWebConsole)
+        );
+        var usersViewOnly = CreateUser(
+            new Claim("permission", Permissions.Dashboard.View),
+            new Claim("permission", Permissions.Users.View)
+        );
+
+        var authorizedSystem = Assert.Single(
+            _service.BuildMenu(authorized),
+            item => item.Path == "/system"
+        );
+        var usersMenu = Assert.Single(
+            authorizedSystem.Children!,
+            item => item.Path == "/system/users"
+        );
+        Assert.Equal(Permissions.Users.ViewWebConsole, usersMenu.Permission);
+
+        Assert.DoesNotContain(
+            _service.BuildMenu(usersViewOnly).SelectMany(item => item.Children ?? new List<NavigationMenuDto>()),
+            item => item.Path == "/system/users"
+        );
+    }
+
+    [Fact]
     public void BuildMenu_EmergencyLoginKeysRequiresSystemManageSettings()
     {
         var authorized = CreateUser(

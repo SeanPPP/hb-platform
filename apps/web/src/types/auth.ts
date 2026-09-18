@@ -42,6 +42,7 @@ export interface AccessControl {
   canWriteProduct: boolean
   canDeleteProduct: boolean
   canReadUser: boolean
+  canReadUserConsole: boolean
   canWriteUser: boolean
   canDeleteUser: boolean
   canReadRole: boolean

@@ -667,7 +667,11 @@
     },
     "Users.View": {
       "name": "查看用户",
-      "description": "Web 页面 /system/users 与移动端「用户」「用户管理」- 查看用户列表与详情"
+      "description": "移动端「员工列表」「用户管理」与用户查询接口 - 查看用户列表与详情；Web 后台 /system/users 菜单另由 Users.ViewWebConsole 控制"
+    },
+    "Users.ViewWebConsole": {
+      "name": "查看 Web 用户管理",
+      "description": "Web 页面 /system/users - 显示并进入 Web 后台用户管理页"
     },
     "Warehouse.Manage": {
       "name": "管理仓库",
