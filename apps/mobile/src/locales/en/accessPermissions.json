@@ -667,7 +667,11 @@
     },
     "Users.View": {
       "name": "View users",
-      "description": "View user lists and details."
+      "description": "View user lists and details in the mobile staff and user management pages."
+    },
+    "Users.ViewWebConsole": {
+      "name": "View Web user management",
+      "description": "Show and open the Web admin user management page."
     },
     "Warehouse.Manage": {
       "name": "Warehouse Manage",

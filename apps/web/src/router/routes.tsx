@@ -256,7 +256,7 @@ export const appRoutes: AppRouteItem[] = [
           title: 'menu.systemUsers',
           icon: 'UserOutlined',
           keepAlive: true,
-          accessKey: 'canReadUser',
+          accessKey: 'canReadUserConsole',
         },
         element: <SystemUsersPage />,
       },

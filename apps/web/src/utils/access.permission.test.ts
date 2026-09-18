@@ -452,6 +452,34 @@ assertEqual(
   'PosTerminal.Audit.View should unlock employee operation audit visibility',
 )
 
+const usersViewOnlyAccess = buildAccess(createCurrentUser({ permissions: [P.Users.View] }))
+
+assertEqual(
+  usersViewOnlyAccess.canReadUser,
+  true,
+  'Users.View should keep unlocking user read access for mobile pages and APIs',
+)
+
+assertEqual(
+  usersViewOnlyAccess.canReadUserConsole,
+  false,
+  'Users.View alone should not show the Web system users menu or page',
+)
+
+const usersConsoleAccess = buildAccess(createCurrentUser({ permissions: [P.Users.ViewWebConsole] }))
+
+assertEqual(
+  usersConsoleAccess.canReadUserConsole,
+  true,
+  'Users.ViewWebConsole should unlock the Web system users menu and page',
+)
+
+assertEqual(
+  adminAccess.canReadUserConsole,
+  true,
+  'Admin should continue to see the Web system users menu',
+)
+
 const appDownloadAccess = buildAccess(
   createCurrentUser({
     permissions: [P.System.ViewAppDownloads],
@@ -1097,6 +1125,12 @@ assertEqual(
   getAccessKeyPermissionCodes('canManageSystemSettings').join(','),
   P.System.ManageSettings,
   'Web menu preview should map system settings access to System.ManageSettings',
+)
+
+assertEqual(
+  getAccessKeyPermissionCodes('canReadUserConsole').join(','),
+  P.Users.ViewWebConsole,
+  'Web menu preview should map the system users menu to Users.ViewWebConsole only',
 )
 
 assertEqual(

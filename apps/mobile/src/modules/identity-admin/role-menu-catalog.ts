@@ -7,7 +7,8 @@ type MenuRow = [string, string, string, string[], Partial<MenuSource>?];
 const WEB_MENU: MenuSource[] = ([
   ["/dashboard", "Dashboard", "数据看板", ["Dashboard"]],
   ["/system/stores", "Stores", "分店管理", ["Stores.View"]],
-  ["/system/users", "Users", "用户管理", ["Users.View"]],
+  // 与 NavigationService 一致：Web 用户管理菜单只认 Users.ViewWebConsole，移动端 users / user-admin 仍用 Users.View。
+  ["/system/users", "Users", "用户管理", ["Users.ViewWebConsole"]],
   ["/system/employee-profiles", "Employee profiles", "员工档案", ["EmployeeProfiles.View"]],
   ["/system/roles", "Roles", "角色管理", ["Roles.View"]],
   ["/system/permissions", "Permissions", "权限管理", ["Roles.View"]],
