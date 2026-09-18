@@ -9,6 +9,8 @@ export { default as PurchaseSalesDailyChart } from './PurchaseSalesDailyChart'
 export { default as PurchaseSalesSparkline } from './PurchaseSalesSparkline'
 export {
   buildPurchaseSalesTrendMetrics,
+  resolveAccordionExpandedKeys,
+  resolveDefaultExpandedKeys,
   toWholeQuantity,
   type PurchaseSalesTrendMetrics,
   type PurchaseSalesTrendRow,

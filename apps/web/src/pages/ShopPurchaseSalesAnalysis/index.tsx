@@ -10,6 +10,8 @@ import {
   PurchaseSalesDailyChart,
   PurchaseSalesSparkline,
   buildPurchaseSalesTrendMetrics,
+  resolveAccordionExpandedKeys,
+  resolveDefaultExpandedKeys,
   toWholeQuantity,
 } from '../../components/PurchaseSalesTrend'
 import {
@@ -167,8 +169,8 @@ function StorePurchaseSalesPanel() {
       .then((data) => {
         setResult(data)
         setForbidden(false)
-        // 每次新结果默认展开第一行，让用户直接看到大图的读法。
-        setExpandedKeys(data.items[0]?.dailySales.length ? [rowKey(data.items[0])] : [])
+        // 每次新结果默认只展开第一行，让用户直接看到大图的读法。
+        setExpandedKeys(resolveDefaultExpandedKeys(data.items, rowKey))
       })
       .catch((error) => {
         if (controller.signal.aborted) return
@@ -413,7 +415,8 @@ function StorePurchaseSalesPanel() {
               expandable={{
                 expandRowByClick: true,
                 expandedRowKeys: expandedKeys,
-                onExpandedRowsChange: (keys) => setExpandedKeys(keys.map(String)),
+                // 手风琴展开：展开一个商品时收起其它商品，页面只保留一张大图。
+                onExpand: (expanded, row) => setExpandedKeys(resolveAccordionExpandedKeys(expanded, rowKey(row))),
                 rowExpandable: (row) => row.dailySales.length > 0,
                 expandedRowRender: (row) => (
                   <div style={{ padding: '4px 8px 8px', overflowX: 'auto' }}>
