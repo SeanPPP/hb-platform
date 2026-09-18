@@ -71,9 +71,11 @@ const desktopDestinations = [
   "to=\"/shop\"",
   'onClick={handleOpenPreorder}',
   "to=\"/shop/best-sellers\"",
+  "to=\"/shop/batch-product-sales\"",
   "to=\"/shop/coming-soon\"",
   "to=\"/shop/orders\"",
   "to=\"/shop/local-supplier-invoices\"",
+  "to=\"/shop/purchase-sales-analysis\"",
 ]
 let previousDestinationIndex = -1
 for (const destination of desktopDestinations) {
@@ -83,6 +85,7 @@ for (const destination of desktopDestinations) {
 }
 assert.match(desktopNav, /aria-current=\{isShopHomePage \? 'page' : undefined\}/, 'Shop Home 必须暴露当前页语义')
 assert.match(desktopNav, /aria-current=\{isOrdersPage \? 'page' : undefined\}/, 'Orders 必须暴露当前页语义')
+assert.ok(desktopNav.includes('access.canViewShopBatchProductSales ? ('), '货号销量入口必须按前台权限显示')
 
 assert.ok(layout.includes('className="shop-ordering-toolbar"'), '桌面必须有独立白色交易工具栏')
 assert.ok(layout.includes('className="shop-ordering-search"'), '交易工具栏必须保留商品搜索')

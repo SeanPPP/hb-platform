@@ -40,6 +40,7 @@ public class NavigationServiceTests
         yield return new object[] { "SalesDashboard.WarehouseFlow.View", "/executive-sales-intelligence/warehouse-product-flow-analysis" };
         yield return new object[] { "SalesDashboard.LocalProductAnalysis.View", "/executive-sales-intelligence/local-product-sales-analysis" };
         yield return new object[] { "SalesDashboard.PurchaseAmount.View", "/executive-sales-intelligence/purchase-amount-dashboard" };
+        yield return new object[] { "SalesDashboard.LocalSupplierPurchaseSales.View", "/executive-sales-intelligence/local-supplier-purchase-sales-analysis" };
     }
 
     [Theory]
@@ -252,6 +253,36 @@ public class NavigationServiceTests
         Assert.Contains(systemMenu.Children!, item => item.Path == "/system/app-downloads");
         Assert.Contains(systemMenu.Children!, item => item.Path == "/system/wpf-versions");
         Assert.DoesNotContain(menu, item => item.Path == "/dashboard");
+    }
+
+    [Fact]
+    public void BuildMenu_SystemUsersRequiresWebConsolePermissionInsteadOfUsersView()
+    {
+        // Users.View 只点亮移动端员工列表/用户管理，Web 后台用户管理菜单需要独立的 Users.ViewWebConsole。
+        // Dashboard.View 仅用于满足后台导航准入门槛，与用户管理菜单本身无关。
+        var authorized = CreateUser(
+            new Claim("permission", Permissions.Dashboard.View),
+            new Claim("permission", Permissions.Users.ViewWebConsole)
+        );
+        var usersViewOnly = CreateUser(
+            new Claim("permission", Permissions.Dashboard.View),
+            new Claim("permission", Permissions.Users.View)
+        );
+
+        var authorizedSystem = Assert.Single(
+            _service.BuildMenu(authorized),
+            item => item.Path == "/system"
+        );
+        var usersMenu = Assert.Single(
+            authorizedSystem.Children!,
+            item => item.Path == "/system/users"
+        );
+        Assert.Equal(Permissions.Users.ViewWebConsole, usersMenu.Permission);
+
+        Assert.DoesNotContain(
+            _service.BuildMenu(usersViewOnly).SelectMany(item => item.Children ?? new List<NavigationMenuDto>()),
+            item => item.Path == "/system/users"
+        );
     }
 
     [Fact]
@@ -500,11 +531,12 @@ public class NavigationServiceTests
         );
         Assert.Equal(Permissions.LocalPurchase.View, item.Permission);
 
-        var analysisItem = Assert.Single(
+        // 分店进货销量分析已挪到销售看板并使用独立权限，本地进货权限不再点亮它，也不显示销售看板父菜单。
+        Assert.DoesNotContain(
             posAdmin.Children!,
-            child => child.Path == "/pos-admin/local-supplier-purchase-sales-analysis"
+            child => child.Path.Contains("local-supplier-purchase-sales-analysis")
         );
-        Assert.Equal(Permissions.LocalPurchase.View, analysisItem.Permission);
+        Assert.DoesNotContain(menu, item => item.Path == "/executive-sales-intelligence");
     }
 
     [Fact]
@@ -827,8 +859,11 @@ public class NavigationServiceTests
         var menu = _service.BuildAppMenu(user);
 
         // 管理员可见完整 App 菜单；商品查询与同权限的商品进销查询都必须保留。
-        Assert.Equal(26, menu.Count);
+        Assert.Equal(29, menu.Count);
+        Assert.Contains(menu, item => item.RouteName == "sales-orders");
+        Assert.Contains(menu, item => item.RouteName == "permissions");
         Assert.Contains(menu, item => item.RouteName == "product-query");
+        Assert.Contains(menu, item => item.RouteName == "pos-operation-logs");
         Assert.Contains(menu, item => item.RouteName == "product-insights");
         Assert.Contains(menu, item => item.RouteName == "warehouse-product-insights");
         Assert.Contains(menu, item => item.RouteName == "users");
@@ -848,10 +883,24 @@ public class NavigationServiceTests
     }
 
     [Fact]
+    public void BuildAppMenu_ShowsSalesOrdersOnlyWithSalesOrdersViewPermission()
+    {
+        var salesOrdersUser = CreateUser(new Claim("permission", Permissions.SalesOrders.View));
+        var ordersUser = CreateUser(new Claim("permission", Permissions.Orders.View));
+
+        var salesOrdersMenu = _service.BuildAppMenu(salesOrdersUser);
+        var ordersMenu = _service.BuildAppMenu(ordersUser);
+
+        // 移动端销售订单查询只认独立权限；Web 收银记录页的 Orders.View 不得顺带放行。
+        Assert.Single(salesOrdersMenu, item => item.RouteName == "sales-orders");
+        Assert.DoesNotContain(ordersMenu, item => item.RouteName == "sales-orders");
+    }
+
+    [Fact]
     public void BuildAppMenu_ShowsWarehouseProductInsightsOnlyWithWarehouseFlowPermission()
     {
         var flowUser = CreateUser(new Claim("permission", Permissions.SalesDashboard.WarehouseFlowView));
-        var warehouseOnlyUser = CreateUser(new Claim("permission", Permissions.Warehouse.View));
+        var warehouseOnlyUser = CreateUser(new Claim("permission", Permissions.Warehouse.ManageProducts));
 
         var flowMenu = _service.BuildAppMenu(flowUser);
         var warehouseOnlyMenu = _service.BuildAppMenu(warehouseOnlyUser);
@@ -1232,6 +1281,64 @@ public class NavigationServiceTests
     }
 
     [Fact]
+    public void BuildAppMenu_ShowsPosOperationLogsOnlyWithAuditViewPermission()
+    {
+        var authorized = CreateUser(new Claim("permission", Permissions.PosTerminal.Audit.View));
+        var unauthorized = CreateUser(new Claim("permission", Permissions.Users.View));
+
+        // 员工操作日志入口只认审计查看权限；仅有用户查看权限的人不应看到。
+        var item = Assert.Single(
+            _service.BuildAppMenu(authorized),
+            menu => menu.RouteName == "pos-operation-logs"
+        );
+        Assert.Equal("tabs.posOperationLogs", item.TitleKey);
+        Assert.Equal("clipboard-text-clock-outline", item.Icon);
+        Assert.Equal(Permissions.PosTerminal.Audit.View, item.Permission);
+        Assert.DoesNotContain(
+            _service.BuildAppMenu(unauthorized),
+            menu => menu.RouteName == "pos-operation-logs"
+        );
+    }
+
+    [Fact]
+    public void BuildDeviceAppMenu_HidesPosOperationLogsForDeviceMode()
+    {
+        // 设备会话没有用户角色，后端查询服务会直接拒绝，因此设备模式菜单不应暴露该入口。
+        var menu = _service.BuildDeviceAppMenu("Mobile");
+
+        Assert.DoesNotContain(menu, item => item.RouteName == "pos-operation-logs");
+    }
+
+    [Fact]
+    public void BuildAppMenu_ShowsPermissionsOnlyWithRolesViewPermission()
+    {
+        var authorized = CreateUser(new Claim("permission", Permissions.Roles.View));
+        var unauthorized = CreateUser(new Claim("permission", Permissions.Users.View));
+
+        // 权限管理入口与 Web 端 /system/permissions 一致，只认 Roles.View；仅有用户查看权限的人不应看到。
+        var item = Assert.Single(
+            _service.BuildAppMenu(authorized),
+            menu => menu.RouteName == "permissions"
+        );
+        Assert.Equal("tabs.permissions", item.TitleKey);
+        Assert.Equal("key-outline", item.Icon);
+        Assert.Equal(Permissions.Roles.View, item.Permission);
+        Assert.DoesNotContain(
+            _service.BuildAppMenu(unauthorized),
+            menu => menu.RouteName == "permissions"
+        );
+    }
+
+    [Fact]
+    public void BuildDeviceAppMenu_HidesPermissionsForDeviceMode()
+    {
+        // 设备会话没有用户角色，RoleService 的管理员校验会直接拒绝，设备模式菜单不应暴露该入口。
+        var menu = _service.BuildDeviceAppMenu("Mobile");
+
+        Assert.DoesNotContain(menu, item => item.RouteName == "permissions");
+    }
+
+    [Fact]
     public void BuildAppMenu_ShowsUserAdminWithUsersViewPermissionWithoutUnlockingRoles()
     {
         var menu = _service.BuildAppMenu(CreateUser(new Claim("permission", Permissions.Users.View)));
@@ -1444,11 +1551,10 @@ public class NavigationServiceTests
         );
     }
 
+    // 分店进货销量分析三个接口改为方法内校验「销售看板新权限码或 LocalPurchase.View」，
+    // 其授权行为由 ReactLocalSupplierInvoiceSalesAnalysisShopEndpointTests 覆盖；这里只保留仍挂策略的单据销量分析接口。
     [Theory]
     [InlineData(nameof(ReactLocalSupplierInvoiceSalesAnalysisController.GetSalesAnalysis))]
-    [InlineData(nameof(ReactLocalSupplierInvoiceSalesAnalysisController.GetPurchaseSalesAnalysis))]
-    [InlineData(nameof(ReactLocalSupplierInvoiceSalesAnalysisController.GetPurchaseSalesAnalysisStoreOptions))]
-    [InlineData(nameof(ReactLocalSupplierInvoiceSalesAnalysisController.GetPurchaseSalesAnalysisSupplierOptions))]
     public void LocalSupplierInvoiceSalesAnalysisEndpoints_RequireLocalPurchaseViewPermission(
         string methodName
     )

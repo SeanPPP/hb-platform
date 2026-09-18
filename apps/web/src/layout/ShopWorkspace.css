@@ -1,4 +1,4 @@
-/* 仅压缩到货与本地发票三个工作页面的外壳，保留其他订货页面的布局。 */
+/* 仅压缩即将上新、历史订单与本地发票这几个工作台页面的外壳，保留其他订货页面的布局。 */
 .shop-layout.shop-workspace-layout {
   --shop-radius-control: 6px;
   --shop-radius-panel: 8px;

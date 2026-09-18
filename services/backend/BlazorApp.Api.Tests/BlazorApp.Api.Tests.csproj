@@ -127,6 +127,7 @@
     <Compile Include="SalesStatisticsProductStoreDailyCostRulesTests.cs" />
     <Compile Include="SalesCostBackfillSqlServerTests.cs" />
     <Compile Include="SalesStatisticsBusinessDateTests.cs" />
+    <Compile Include="SalesStatisticsHBSalesHistoryWindowTests.cs" />
     <Compile Include="SalesDetailLookupReuseTests.cs" />
     <Compile Include="SalesDetailQueryProjectionTests.cs" />
     <Compile Include="RevenueReportSnapshotTests.cs" />
@@ -170,6 +171,8 @@
     <Compile Include="ProductReportChinaMappingTests.cs" />
     <Compile Include="ProductMovementReportSqlBuilderTests.cs" />
     <Compile Include="LocalSupplierInvoiceSalesAnalysisSqlBuilderTests.cs" />
+    <Compile Include="LocalSupplierPurchaseSalesDailySeriesBuilderTests.cs" />
+    <Compile Include="ReactLocalSupplierInvoiceSalesAnalysisShopEndpointTests.cs" />
     <Compile Include="LocalSupplierPurchaseSalesSqlServerTests.cs" />
     <Compile Include="LocalPurchaseDashboardTests.cs" />
     <Compile Include="LocalPurchaseDashboardSqlServerIntegrationTests.cs" />
@@ -230,6 +233,7 @@
     <Compile Include="ProductSetCodeHqIncrementalSyncTests.cs" />
     <Compile Include="ProductSetCodeReactServiceTests.cs" />
     <Compile Include="PosmSalesOrderReactServiceTests.cs" />
+    <Compile Include="PosmSalesOrderMobileRulesTests.cs" />
     <Compile Include="InstallmentOrderReactServiceTests.cs" />
     <Compile Include="InstallmentOrdersControllerTests.cs" />
     <Compile Include="InstallmentOrderContractTests.cs" />

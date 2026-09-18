@@ -1430,22 +1430,6 @@ public sealed class SpecialProductsViewModelTests
         return lines.Any(line => line.Contains(text, StringComparison.OrdinalIgnoreCase));
     }
 
-    private static async Task WaitUntilAsync(Func<bool> condition)
-    {
-        var timeoutAt = DateTimeOffset.UtcNow.AddSeconds(3);
-        while (DateTimeOffset.UtcNow < timeoutAt)
-        {
-            if (condition())
-            {
-                return;
-            }
-
-            await Task.Delay(10);
-        }
-
-        Assert.True(condition());
-    }
-
     private sealed class DisposableAction(Action dispose) : IDisposable
     {
         public void Dispose()

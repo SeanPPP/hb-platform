@@ -1,4 +1,5 @@
 import { resolveShopBannerCopy } from './shopBannerCopy'
+import { shopNavMessages } from './shopNavMessages'
 import en from '../i18n/locales/en.json'
 import zh from '../i18n/locales/zh.json'
 
@@ -23,6 +24,23 @@ assertEqual(
   'shop.comingSoonBannerSubtitle',
   '即将上新页副标题不应复用历史订单文案',
 )
+
+const batchProductSalesCopy = resolveShopBannerCopy('/shop/batch-product-sales')
+assertEqual(batchProductSalesCopy.titleKey, 'shop.batchProductSales', '货号销量页标题应使用专属文案')
+assertEqual(
+  batchProductSalesCopy.subtitleKey,
+  'batchProductSalesAnalysis.subtitle',
+  '货号销量页副标题应复用页面命名空间文案而非历史订单文案',
+)
+assertEqual(en.shop.batchProductSales, 'Item Sales', '英文货号销量标题资源应存在')
+assertEqual(zh.shop.batchProductSales, '货号销量', '中文货号销量标题资源应存在')
+
+const purchaseSalesCopy = resolveShopBannerCopy('/shop/purchase-sales-analysis')
+assertEqual(purchaseSalesCopy.titleKey, 'shop.purchaseSalesAnalysis', '进货销量分析页标题应使用专属文案')
+assertEqual(purchaseSalesCopy.subtitleKey, 'shop.purchaseSalesAnalysisSubtitle', '进货销量分析页副标题不应复用历史订单文案')
+assertEqual(shopNavMessages.en.shop.purchaseSalesAnalysis, 'Purchase & Sales', '英文进货销量分析导航文案应随布局懒注册')
+assertEqual(shopNavMessages.zh.shop.purchaseSalesAnalysis, '进货销量分析', '中文进货销量分析导航文案应随布局懒注册')
+assertEqual((zh.shop as Record<string, unknown>).purchaseSalesAnalysis, undefined, '导航增量文案不得进入首屏主文案包')
 
 const ordersCopy = resolveShopBannerCopy('/shop/orders')
 assertEqual(ordersCopy.titleKey, 'shop.orderHistory', '历史订单页标题应保持历史订单文案')

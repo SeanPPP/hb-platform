@@ -28,6 +28,8 @@ namespace BlazorApp.Shared.Constants
         public static class Users
         {
             public const string View = "Users.View";
+            // Web 后台 /system/users 菜单与页面单独授权；移动端「员工列表」「用户管理」及用户接口仍由 Users.View 控制。
+            public const string ViewWebConsole = "Users.ViewWebConsole";
             public const string Create = "Users.Create";
             public const string Edit = "Users.Edit";
             public const string Delete = "Users.Delete";
@@ -216,6 +218,12 @@ namespace BlazorApp.Shared.Constants
             public const string Delete = "Orders.Delete";
         }
 
+        /// <summary>移动端销售订单查询；与 Web 收银记录页的 Orders.View 分开授权。</summary>
+        public static class SalesOrders
+        {
+            public const string View = "SalesOrders.View";
+        }
+
         public static class InstallmentOrders
         {
             public const string View = "InstallmentOrders.View";
@@ -236,7 +244,6 @@ namespace BlazorApp.Shared.Constants
 
         public static class Warehouse
         {
-            public const string View = "Warehouse.View";
             public const string Manage = "Warehouse.Manage";
             public const string ManageProducts = "Warehouse.ManageProducts";
             public const string ManageCategories = "Warehouse.ManageCategories";
@@ -246,23 +253,14 @@ namespace BlazorApp.Shared.Constants
 
         public static class DomesticPurchase
         {
-            public const string View = "DomesticPurchase.View";
             public const string ManageSuppliers = "DomesticPurchase.ManageSuppliers";
             public const string ManageProducts = "DomesticPurchase.ManageProducts";
             public const string ManagePrefixCodes = "DomesticPurchase.ManagePrefixCodes";
         }
 
-        public static class Prices
-        {
-            public const string View = "Prices.View";
-            public const string Modify = "Prices.Modify";
-            public const string Delete = "Prices.Delete";
-        }
-
         public static class Reports
         {
             public const string View = "Reports.View";
-            public const string Export = "Reports.Export";
             public const string ProductMovementView = "Reports.ProductMovement.View";
         }
 
@@ -277,6 +275,10 @@ namespace BlazorApp.Shared.Constants
             public const string LocalProductAnalysisView =
                 "SalesDashboard.LocalProductAnalysis.View";
             public const string PurchaseAmountView = "SalesDashboard.PurchaseAmount.View";
+
+            // 销售看板「分店进货销量分析」页面的逐页权限码。
+            public const string LocalSupplierPurchaseSalesView =
+                "SalesDashboard.LocalSupplierPurchaseSales.View";
         }
 
         public static class StoreProducts
@@ -350,7 +352,6 @@ namespace BlazorApp.Shared.Constants
         public static class Store
         {
             public const string ManageOperations = "Store.ManageOperations";
-            public const string ManageInfo = "Store.ManageInfo";
         }
 
         public static class Attendance
@@ -432,6 +433,8 @@ namespace BlazorApp.Shared.Constants
         public static class OrderFront
         {
             public const string View = "OrderFront";
+            /// <summary>订货前台「货号销量」页面：允许前台用户按导入货号查看全部分店的销量，与后台销售看板权限相互独立。</summary>
+            public const string BatchProductSalesView = "OrderFront.BatchProductSales.View";
         }
 
         public static bool IsSuperAdminRole(string? roleName)

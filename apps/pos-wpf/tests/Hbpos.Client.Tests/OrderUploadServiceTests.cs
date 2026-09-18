@@ -121,11 +121,7 @@ public sealed class OrderUploadServiceTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-            if (File.Exists(databasePath))
-            {
-                File.Delete(databasePath);
-            }
+            await SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -162,9 +158,11 @@ public sealed class OrderUploadServiceTests
                 uploadRepository);
 
             var execution = executor.ExecuteSelectedAsync([first.OrderGuid, alreadySynced.OrderGuid]);
-            await handler.FirstRequestStarted.WaitAsync(TimeSpan.FromSeconds(2));
+            await handler.FirstRequestStarted.WaitUntilCompletedAsync();
             var transition = await endpointState.BeginTransitionAsync(newAddress, CancellationToken.None);
-            var interrupted = await execution.WaitAsync(TimeSpan.FromSeconds(2));
+            // 中断后仍要回写 SQLite 状态，CI 慢盘上 2 秒预算不够，使用共享预算。
+            var interrupted = await execution.WaitUntilCompletedAsync(
+                () => $"requestUris=[{string.Join(", ", handler.RequestUris)}]");
 
             Assert.Equal(new OrderUploadExecutionResult(2, 0, 2, WasInterrupted: true), interrupted);
             Assert.Equal([new Uri($"{oldAddress}api/v1/orders/sync")], handler.RequestUris);
@@ -189,11 +187,7 @@ public sealed class OrderUploadServiceTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-            if (File.Exists(databasePath))
-            {
-                File.Delete(databasePath);
-            }
+            await SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -237,11 +231,7 @@ public sealed class OrderUploadServiceTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-            if (File.Exists(databasePath))
-            {
-                File.Delete(databasePath);
-            }
+            await SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -302,7 +292,7 @@ public sealed class OrderUploadServiceTests
         using var cancellation = new CancellationTokenSource();
 
         var execution = executor.ExecuteSelectedAsync([first, second], cancellation.Token);
-        await uploader.FirstRequestStarted.WaitAsync(TimeSpan.FromSeconds(2));
+        await uploader.FirstRequestStarted.WaitUntilCompletedAsync();
         await cancellation.CancelAsync();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
@@ -318,7 +308,7 @@ public sealed class OrderUploadServiceTests
         var executor = new OrderUploadExecutionService(uploader, new StubOrderUploadRepository());
 
         var automatic = executor.ExecuteOneAsync(orderGuid);
-        await uploader.FirstRequestStarted.WaitAsync(TimeSpan.FromSeconds(2));
+        await uploader.FirstRequestStarted.WaitUntilCompletedAsync();
         var manual = executor.ExecuteSelectedAsync([orderGuid]);
         await Task.Yield();
 
@@ -326,7 +316,7 @@ public sealed class OrderUploadServiceTests
         Assert.Equal(1, uploader.MaximumConcurrency);
 
         uploader.ReleaseFirstRequest();
-        await Task.WhenAll(automatic, manual).WaitAsync(TimeSpan.FromSeconds(2));
+        await Task.WhenAll(automatic, manual).WaitUntilCompletedAsync();
 
         Assert.Equal([orderGuid, orderGuid], uploader.Attempts);
         Assert.Equal(1, uploader.MaximumConcurrency);
@@ -367,11 +357,7 @@ public sealed class OrderUploadServiceTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-            if (File.Exists(databasePath))
-            {
-                File.Delete(databasePath);
-            }
+            await SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -411,11 +397,7 @@ public sealed class OrderUploadServiceTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-            if (File.Exists(databasePath))
-            {
-                File.Delete(databasePath);
-            }
+            await SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -454,11 +436,7 @@ public sealed class OrderUploadServiceTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-            if (File.Exists(databasePath))
-            {
-                File.Delete(databasePath);
-            }
+            await SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -498,11 +476,7 @@ public sealed class OrderUploadServiceTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-            if (File.Exists(databasePath))
-            {
-                File.Delete(databasePath);
-            }
+            await SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -532,11 +506,7 @@ public sealed class OrderUploadServiceTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-            if (File.Exists(databasePath))
-            {
-                File.Delete(databasePath);
-            }
+            await SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -570,11 +540,7 @@ public sealed class OrderUploadServiceTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-            if (File.Exists(databasePath))
-            {
-                File.Delete(databasePath);
-            }
+            await SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -690,11 +656,7 @@ public sealed class OrderUploadServiceTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-            if (File.Exists(databasePath))
-            {
-                File.Delete(databasePath);
-            }
+            await SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -735,11 +697,7 @@ public sealed class OrderUploadServiceTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-            if (File.Exists(databasePath))
-            {
-                File.Delete(databasePath);
-            }
+            await SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -767,11 +725,7 @@ public sealed class OrderUploadServiceTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-            if (File.Exists(databasePath))
-            {
-                File.Delete(databasePath);
-            }
+            await SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -803,11 +757,7 @@ public sealed class OrderUploadServiceTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-            if (File.Exists(databasePath))
-            {
-                File.Delete(databasePath);
-            }
+            await SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -848,11 +798,7 @@ public sealed class OrderUploadServiceTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-            if (File.Exists(databasePath))
-            {
-                File.Delete(databasePath);
-            }
+            await SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(databasePath);
         }
     }
 

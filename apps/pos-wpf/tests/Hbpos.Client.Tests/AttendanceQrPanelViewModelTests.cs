@@ -889,20 +889,6 @@ public sealed class AttendanceQrPanelViewModelTests
         }
     }
 
-    private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
-    {
-        var started = DateTime.UtcNow;
-        while (!condition())
-        {
-            if (DateTime.UtcNow - started >= timeout)
-            {
-                throw new TimeoutException("等待测试条件超时");
-            }
-
-            await Task.Delay(10);
-        }
-    }
-
     private static string? DecodeQr(byte[] pngBytes)
     {
         using var stream = new MemoryStream(pngBytes);

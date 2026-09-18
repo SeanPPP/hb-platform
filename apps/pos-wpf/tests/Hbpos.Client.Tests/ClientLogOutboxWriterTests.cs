@@ -119,6 +119,24 @@ public sealed class ClientLogOutboxWriterTests
         try
         {
             await writer.StartAsync(CancellationToken.None);
+            // 先用一条预热事件等后台循环完成初始化并落库：writer 启动时会再次调用 store.InitializeAsync，
+            // 它同样要拿 _writeGate，若此时测试已持闸，消费循环会卡在初始化而不是落库步骤。
+            var warmupEventId = Guid.NewGuid();
+            writer.Record(new OperationAuditEventDto
+            {
+                EventId = warmupEventId,
+                OperationType = "OPERATION_FLUSH_WARMUP",
+                Outcome = "Succeeded"
+            });
+            _ = await WaitForSinglePendingAsync(store, ClientLogOutboxKind.OperationAudit);
+            await WaitUntilAsync(() => writer.PendingOperationAuditPersistenceCount == 0, diagnostics: () => DescribeWriter(writer));
+            await store.ApplyResultsAsync(
+                ClientLogOutboxKind.OperationAudit,
+                [warmupEventId],
+                [],
+                DateTimeOffset.UtcNow,
+                CancellationToken.None);
+
             await writeGate.WaitAsync(CancellationToken.None);
             writer.Record(new OperationAuditEventDto
             {
@@ -128,13 +146,18 @@ public sealed class ClientLogOutboxWriterTests
             });
 
             var flush = writer.WaitForOperationAuditFlushAsync(CancellationToken.None);
-            await Task.Delay(50);
+            // 确定性同步点：等消费者把事件从 channel 取走（此时它必然卡在被测试持有的 _writeGate 上），
+            // 取代原先"睡 50ms 假装同步"的做法。
+            var channelField = typeof(ClientLogOutboxWriter)
+                .GetField("_operationChannel", BindingFlags.Instance | BindingFlags.NonPublic);
+            var channel = Assert.IsAssignableFrom<Channel<QueuedClientLog>>(channelField!.GetValue(writer));
+            await WaitUntilAsync(() => !channel.Reader.TryPeek(out _), diagnostics: () => DescribeWriter(writer));
 
             Assert.Equal(1, writer.PendingOperationAuditPersistenceCount);
-            Assert.False(flush.IsCompleted);
+            Assert.False(flush.IsCompleted, "事件尚未落库（写闸仍被测试持有）时 flush 不应完成。");
 
             writeGate.Release();
-            await flush.WaitAsync(TimeSpan.FromSeconds(2));
+            await flush.WaitUntilCompletedAsync(() => DescribeWriter(writer));
             Assert.Equal(0, writer.PendingOperationAuditPersistenceCount);
         }
         finally
@@ -243,6 +266,9 @@ public sealed class ClientLogOutboxWriterTests
                 Outcome = "Succeeded"
             });
             _ = await WaitForSinglePendingAsync(store, ClientLogOutboxKind.OperationAudit);
+            // 落库可见与 CompleteOperationAuditPersistence 之间有微小窗口，等计数归零后再持闸，
+            // 否则下面 "pending == 11" 的断言可能多算预热事件。
+            await WaitUntilAsync(() => writer.PendingOperationAuditPersistenceCount == 0, diagnostics: () => DescribeWriter(writer));
             await store.ApplyResultsAsync(
                 ClientLogOutboxKind.OperationAudit,
                 [warmupEventId],
@@ -260,7 +286,7 @@ public sealed class ClientLogOutboxWriterTests
             var channelField = typeof(ClientLogOutboxWriter)
                 .GetField("_operationChannel", BindingFlags.Instance | BindingFlags.NonPublic);
             var channel = Assert.IsAssignableFrom<Channel<QueuedClientLog>>(channelField!.GetValue(writer));
-            await WaitUntilAsync(() => !channel.Reader.TryPeek(out _));
+            await WaitUntilAsync(() => !channel.Reader.TryPeek(out _), diagnostics: () => DescribeWriter(writer));
 
             for (var index = 1; index < eventIds.Length; index++)
             {
@@ -275,10 +301,11 @@ public sealed class ClientLogOutboxWriterTests
             var flush = writer.WaitForOperationAuditFlushAsync(CancellationToken.None);
             Assert.Equal(1L, writer.OperationAuditQueueDroppedCount);
             Assert.Equal(11L, writer.PendingOperationAuditPersistenceCount);
-            Assert.False(flush.IsCompleted);
+            Assert.False(flush.IsCompleted, "写闸仍被测试持有时 flush 不应完成。");
 
             writeGate.Release();
-            await flush.WaitAsync(TimeSpan.FromSeconds(5));
+            // 11 条逐条落库（每条新建连接 + 事务），CI 慢盘上耗时不可控，使用共享预算并在失败时输出 writer 状态。
+            await flush.WaitUntilCompletedAsync(() => DescribeWriter(writer));
 
             var persistedIds = (await store.ReadPendingAsync(
                     ClientLogOutboxKind.OperationAudit,
@@ -646,19 +673,23 @@ public sealed class ClientLogOutboxWriterTests
                 Outcome = "Succeeded"
             });
 
-            using var shutdownBudget = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-            await writer.StopAsync(shutdownBudget.Token);
+            // 本测试验证的是"两条通道共用同一个关停令牌仍能把最后事件落库"，而不是 2 秒这个数字本身。
+            // 关停路径要在这里完成冷启动建库 + 两次落库，预算与墙钟解耦后 CI 慢盘不再能让令牌先于落库到期。
+            using var shutdownBudget = new CancellationTokenSource(AsyncTestWaitSupport.DefaultTimeout);
+            await writer.StopAsync(shutdownBudget.Token).WaitUntilCompletedAsync(() => DescribeWriter(writer));
 
-            Assert.Single(await store.ReadPendingAsync(
+            var runtimeRecords = await store.ReadPendingAsync(
                 ClientLogOutboxKind.Runtime,
                 DateTimeOffset.UtcNow.AddMinutes(1),
                 100,
-                CancellationToken.None));
-            Assert.Single(await store.ReadPendingAsync(
+                CancellationToken.None);
+            var operationRecords = await store.ReadPendingAsync(
                 ClientLogOutboxKind.OperationAudit,
                 DateTimeOffset.UtcNow.AddMinutes(1),
                 100,
-                CancellationToken.None));
+                CancellationToken.None);
+            Assert.True(runtimeRecords.Count == 1, $"运行日志应恰好落库 1 条，实际 {runtimeRecords.Count} 条；{DescribeWriter(writer)}");
+            Assert.True(operationRecords.Count == 1, $"操作审计应恰好落库 1 条，实际 {operationRecords.Count} 条；{DescribeWriter(writer)}");
         }
         finally
         {
@@ -874,35 +905,26 @@ public sealed class ClientLogOutboxWriterTests
         ClientLogOutboxStore store,
         ClientLogOutboxKind kind)
     {
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            var records = await store.ReadPendingAsync(kind, DateTimeOffset.UtcNow.AddDays(1), 100, CancellationToken.None);
-            if (records.Count == 1)
+        // 复用共享等待工具，失败时输出实际读到的条数而不是裸 TimeoutException。
+        IReadOnlyList<ClientLogOutboxRecord> records = [];
+        await WaitUntilAsync(
+            async () =>
             {
-                return records[0];
-            }
-
-            await Task.Delay(20);
-        }
-
-        throw new TimeoutException("日志未在预期时间内落入本地 outbox。");
+                records = await store.ReadPendingAsync(kind, DateTimeOffset.UtcNow.AddDays(1), 100, CancellationToken.None);
+                return records.Count == 1;
+            },
+            diagnostics: () => $"kind={kind} 当前待上传条数={records.Count} database={store.DatabasePath}");
+        return records[0];
     }
 
-    private static async Task WaitUntilAsync(Func<bool> predicate)
+    /// <summary>等待超时时输出 writer 的关键状态，便于从 CI 日志判断卡在初始化、落库还是重试退避。</summary>
+    private static string DescribeWriter(ClientLogOutboxWriter writer)
     {
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            if (predicate())
-            {
-                return;
-            }
-
-            await Task.Delay(10);
-        }
-
-        throw new TimeoutException("未在预期时间内进入受控并发状态。");
+        var executeTask = writer.ExecuteTask;
+        return $"ExecuteTask={executeTask?.Status.ToString() ?? "<null>"} " +
+               $"pendingOperationAudit={writer.PendingOperationAuditPersistenceCount} " +
+               $"operationDropped={writer.OperationAuditQueueDroppedCount} " +
+               $"exception={executeTask?.Exception?.GetBaseException().Message ?? "<none>"}";
     }
 
     private sealed class BlockingTraceListener(
@@ -938,35 +960,8 @@ public sealed class ClientLogOutboxWriterTests
     private static string CreateDatabasePath() =>
         Path.Combine(Path.GetTempPath(), $"hbpos-logs-writer-test-{Guid.NewGuid():N}.db");
 
-    private static async Task DeleteDatabaseFilesAsync(string databasePath)
+    private static Task DeleteDatabaseFilesAsync(string databasePath)
     {
-        // 与仓库其他 SQLite 测试一致，先清理 Microsoft.Data.Sqlite 的全局句柄，再删除 Windows 临时文件。
-        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-        foreach (var suffix in new[] { string.Empty, "-wal", "-shm" })
-        {
-            var path = databasePath + suffix;
-            for (var attempt = 0; attempt < 20 && File.Exists(path); attempt++)
-            {
-                try
-                {
-                    File.Delete(path);
-                }
-                catch (IOException) when (attempt < 19)
-                {
-                    // Windows 可能在 SQLite 连接 Dispose 后极短时间仍持有句柄，按文件状态重试测试清理。
-                    await Task.Delay(25);
-                }
-                catch (IOException)
-                {
-                    // 临时库最终仍被系统持有时采用 best-effort，不能覆盖已经通过的行为断言。
-                    break;
-                }
-                catch (UnauthorizedAccessException)
-                {
-                    // 对齐仓库 SqliteTempFileCleanup：测试清理权限竞态不作为业务失败。
-                    break;
-                }
-            }
-        }
+        return SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(databasePath);
     }
 }

@@ -11,7 +11,8 @@ namespace BlazorApp.Api.Controllers.React;
 
 [ApiController]
 [Route("api/react/v1/dashboard/batch-product-sales-analysis")]
-[Authorize(Policy = Permissions.SalesDashboard.BatchProductSalesView)]
+// 后台销售看板与订货前台共用本控制器；两种权限码任一即可，具体授权与门店范围由 ResolveStoreScopeAsync 按实时快照逐请求核验。
+[Authorize]
 public sealed class BatchProductSalesAnalysisController : ControllerBase
 {
     private readonly IBatchProductSalesAnalysisService _service;
@@ -109,10 +110,14 @@ public sealed class BatchProductSalesAnalysisController : ControllerBase
         var snapshot = await _roleService.GetUserPermissionSnapshotAsync(userGuid);
         if (snapshot?.Success != true || snapshot.Data == null) throw new BatchProductSalesAnalysisForbiddenException();
         // JWT 可能仍包含已撤销权限；每次读取都以实时精确授权为准。
-        if (!snapshot.Data.IsSuperAdmin && !(snapshot.Data.ExactPermissionCodes ?? [])
-            .Contains(Permissions.SalesDashboard.BatchProductSalesView, StringComparer.OrdinalIgnoreCase))
+        var exactPermissions = snapshot.Data.ExactPermissionCodes ?? [];
+        var hasDashboardPermission = exactPermissions.Contains(Permissions.SalesDashboard.BatchProductSalesView, StringComparer.OrdinalIgnoreCase);
+        var hasOrderFrontPermission = exactPermissions.Contains(Permissions.OrderFront.BatchProductSalesView, StringComparer.OrdinalIgnoreCase);
+        if (!snapshot.Data.IsSuperAdmin && !hasDashboardPermission && !hasOrderFrontPermission)
             throw new BatchProductSalesAnalysisForbiddenException();
         if (snapshot.Data.IsSuperAdmin) return null;
+        // 订货前台权限与热销榜口径一致：面向前台用户展示全部分店，不受用户名下门店限制。
+        if (hasOrderFrontPermission) return null;
         var roles = snapshot.Data.RoleNames ?? [];
         if (roles.Any(role => Permissions.SuperAdminRoleNames.Contains(role, StringComparer.OrdinalIgnoreCase)
             || Permissions.WarehouseManagerRoleNames.Contains(role, StringComparer.OrdinalIgnoreCase))) return null;

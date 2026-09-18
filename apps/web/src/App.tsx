@@ -24,6 +24,7 @@ const ShopLayout = lazy(loadShopLayout)
 const BrowserExtensionPrivacyPage = lazy(() => import('./pages/BrowserExtensionPrivacy'))
 const HbSupplierOrderSupportPage = lazy(() => import('./pages/HbSupplierOrderSupport'))
 const MobilePrivacyPage = lazy(() => import('./pages/MobilePrivacy'))
+const ShopBatchProductSalesPage = lazy(() => import('./pages/ShopBatchProductSales'))
 const ShopBestSellersPage = lazy(() => import('./pages/ShopBestSellers'))
 const ShopComingSoonPage = lazy(() => import('./pages/ShopComingSoon'))
 const ShopHomePage = lazy(() => import('./pages/ShopHome'))
@@ -32,6 +33,7 @@ const ShopLocalSupplierInvoicesPage = lazy(() => import('./pages/ShopLocalSuppli
 const ShopOrderDetailPage = lazy(() => import('./pages/ShopOrderDetail'))
 const ShopOrdersPage = lazy(() => import('./pages/ShopOrders'))
 const ShopPreorderPage = lazy(() => import('./pages/ShopPreorder'))
+const ShopPurchaseSalesAnalysisPage = lazy(() => import('./pages/ShopPurchaseSalesAnalysis'))
 
 function AppBootstrap() {
   const { t } = useTranslation()
@@ -118,11 +120,14 @@ function AppBootstrap() {
       >
         <Route index element={<ShopHomePage />} />
         <Route path="best-sellers" element={<ShopBestSellersPage />} />
+        {/* 货号销量页单独授权：订货员未获授权时看到禁止页，而不是静默跳回首页。 */}
+        <Route path="batch-product-sales" element={access.canViewShopBatchProductSales ? <ShopBatchProductSalesPage /> : portalDeniedPage} />
         <Route path="coming-soon" element={<ShopComingSoonPage />} />
         <Route path="orders" element={<ShopOrdersPage />} />
         <Route path="orders/:id" element={<ShopOrderDetailPage />} />
         <Route path="local-supplier-invoices" element={<ShopLocalSupplierInvoicesPage />} />
         <Route path="local-supplier-invoices/:invoiceGuid" element={<ShopLocalSupplierInvoiceDetailPage />} />
+        <Route path="purchase-sales-analysis" element={<ShopPurchaseSalesAnalysisPage />} />
         <Route path="preorders/:activationGuid" element={<ShopPreorderPage />} />
       </Route>
       <Route

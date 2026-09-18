@@ -37,7 +37,6 @@ namespace BlazorApp.Shared.DTOs
         public string? DeviceCodeKeyword { get; set; }
         public TimeSpan? TimeStart { get; set; }
         public TimeSpan? TimeEnd { get; set; }
-        public int? ClientUtcOffsetMinutes { get; set; }
         public int? SkuCountMin { get; set; }
         public int? SkuCountMax { get; set; }
         public int? ItemCountMin { get; set; }
@@ -67,7 +66,10 @@ namespace BlazorApp.Shared.DTOs
         public string? DeviceCode { get; set; }
         public DateTime? OrderTime { get; set; }
         public int? SkuCount { get; set; }
+        /// <summary>POS 写入的 ItemCount 实际是明细行数，不是件数。</summary>
         public int? ItemCount { get; set; }
+        /// <summary>件数：明细数量之和，仅列表查询聚合返回。</summary>
+        public int? QuantityTotal { get; set; }
         public decimal? TotalAmount { get; set; }
         public decimal? DiscountAmount { get; set; }
         public decimal? ActualAmount { get; set; }
@@ -81,6 +83,8 @@ namespace BlazorApp.Shared.DTOs
     {
         public string? ProductImage { get; set; }
         public string? ProductCode { get; set; }
+        /// <summary>货号来自商品主档，POSM 明细本身不存；主档没有对应商品时为空。</summary>
+        public string? ItemNumber { get; set; }
         public string? ProductName { get; set; }
         public int? Quantity { get; set; }
         public decimal? UnitPrice { get; set; }
@@ -107,5 +111,101 @@ namespace BlazorApp.Shared.DTOs
         public PosmSalesOrderDto? Order { get; set; }
         public List<PosmSalesOrderDetailDto>? OrderDetails { get; set; }
         public List<PosmPaymentDetailDto>? PaymentDetails { get; set; }
+    }
+
+    /// <summary>
+    /// 移动端销售订单查询参数：区间必填并受 30 天上限约束，只保留移动端页面用到的筛选项。
+    /// 日期使用 YYYY-MM-DD 字符串，避免设备时区把 DateTime 反序列化成前一天。
+    /// </summary>
+    public class PosmSalesOrderMobileQueryDto
+    {
+        public string? StartDate { get; set; }
+        public string? EndDate { get; set; }
+        public List<string>? BranchCodes { get; set; }
+        public OrderType? OrderType { get; set; }
+        public string? Keyword { get; set; }
+        /// <summary>按下单时间排序：asc / desc，缺省 desc（最新在前）。</summary>
+        public string? SortDirection { get; set; }
+        public int PageNumber { get; set; } = 1;
+        public int PageSize { get; set; } = 20;
+    }
+
+    /// <summary>关键词命中的明细商品；按货号/条码/商品名搜索时告诉用户这单为什么被搜出来。</summary>
+    public class PosmSalesOrderMatchedProductDto
+    {
+        public string ProductCode { get; set; } = string.Empty;
+        public string? ItemNumber { get; set; }
+        public string? ProductName { get; set; }
+        public string? Barcode { get; set; }
+        public int Quantity { get; set; }
+    }
+
+    public class PosmSalesOrderMobileItemDto
+    {
+        public string? OrderGuid { get; set; }
+        public string? BranchCode { get; set; }
+        public string? BranchName { get; set; }
+        public string? DeviceCode { get; set; }
+        public DateTime? OrderTime { get; set; }
+        public int? SkuCount { get; set; }
+        public int? ItemCount { get; set; }
+        public int? QuantityTotal { get; set; }
+        public decimal? TotalAmount { get; set; }
+        public decimal? DiscountAmount { get; set; }
+        public decimal? ActualAmount { get; set; }
+        public int? Status { get; set; }
+        public List<PosmSalesOrderMatchedProductDto> MatchedProducts { get; set; } = new();
+
+        public static PosmSalesOrderMobileItemDto From(
+            PosmSalesOrderDto source,
+            List<PosmSalesOrderMatchedProductDto>? matchedProducts
+        ) =>
+            new()
+            {
+                OrderGuid = source.OrderGuid,
+                BranchCode = source.BranchCode,
+                BranchName = source.BranchName,
+                DeviceCode = source.DeviceCode,
+                OrderTime = source.OrderTime,
+                SkuCount = source.SkuCount,
+                ItemCount = source.ItemCount,
+                QuantityTotal = source.QuantityTotal,
+                TotalAmount = source.TotalAmount,
+                DiscountAmount = source.DiscountAmount,
+                ActualAmount = source.ActualAmount,
+                Status = source.Status,
+                MatchedProducts = matchedProducts ?? new(),
+            };
+    }
+
+    public class PosmSalesOrderMobileRangeDto
+    {
+        public string StartDate { get; set; } = string.Empty;
+        public string EndDate { get; set; } = string.Empty;
+        public int DayCount { get; set; }
+    }
+
+    public class PosmSalesOrderMobileListDto
+    {
+        public List<PosmSalesOrderMobileItemDto> Items { get; set; } = new();
+        public int Total { get; set; }
+        public int PageNumber { get; set; }
+        public int PageSize { get; set; }
+        /// <summary>all-stores / authorized-stores，与仓库商品进销查询的口径一致。</summary>
+        public string Scope { get; set; } = "authorized-stores";
+        public PosmSalesOrderMobileRangeDto Range { get; set; } = new();
+        public string SortDirection { get; set; } = "desc";
+    }
+
+    public class PosmSalesOrderBranchDto
+    {
+        public string StoreCode { get; set; } = string.Empty;
+        public string StoreName { get; set; } = string.Empty;
+    }
+
+    public class PosmSalesOrderMobileBranchesDto
+    {
+        public string Scope { get; set; } = "authorized-stores";
+        public List<PosmSalesOrderBranchDto> Branches { get; set; } = new();
     }
 }

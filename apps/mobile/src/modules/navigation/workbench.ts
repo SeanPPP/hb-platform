@@ -24,6 +24,7 @@ const WORKBENCH_SECTIONS: WorkbenchNavigationSection[] = [
       { routeName: "home", labelKey: "routes.storeOrdering", icon: "storefront-outline" },
       { routeName: "cart", labelKey: "routes.cart", icon: "cart-outline" },
       { routeName: "orders", labelKey: "routes.orders", icon: "clipboard-list-outline" },
+      { routeName: "sales-orders", labelKey: "routes.salesOrders", icon: "receipt-text-outline" },
       { routeName: "local-supplier-invoices", labelKey: "routes.localSupplierInvoices", icon: "receipt-text-outline" },
       { routeName: "installment-orders", labelKey: "routes.installmentOrders", icon: "cash-clock" },
       { routeName: "store-vouchers", labelKey: "routes.storeVouchers", icon: "ticket-confirmation-outline" },
@@ -46,6 +47,7 @@ const WORKBENCH_SECTIONS: WorkbenchNavigationSection[] = [
       { routeName: "advertisements", labelKey: "routes.advertisements", icon: "bullhorn-outline" },
       { routeName: "promotions", labelKey: "routes.promotions", icon: "sale-outline" },
       { routeName: "reports", labelKey: "routes.reports", icon: "chart-line" },
+      { routeName: "pos-operation-logs", labelKey: "routes.posOperationLogs", icon: "clipboard-text-clock-outline" },
     ],
   },
   {
@@ -57,6 +59,7 @@ const WORKBENCH_SECTIONS: WorkbenchNavigationSection[] = [
       { routeName: "users", labelKey: "routes.users", icon: "account-group-outline" },
       { routeName: "user-admin", labelKey: "routes.userAdmin", icon: "account-cog-outline" },
       { routeName: "roles", labelKey: "routes.roles", icon: "shield-account-outline" },
+      { routeName: "permissions", labelKey: "routes.permissions", icon: "key-outline" },
       { routeName: "employee-profile", labelKey: "routes.employeeProfile", icon: "card-account-details-outline" },
       { routeName: "employee-profile-review", labelKey: "routes.employeeProfileReview", icon: "account-check-outline" },
       { routeName: "device-management", labelKey: "routes.deviceManagement", icon: "cellphone-cog" },

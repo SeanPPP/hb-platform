@@ -22,6 +22,16 @@ export function resolveShopBannerCopy(pathname: string): ShopBannerCopy {
     }
   }
 
+  if (pathname.startsWith('/shop/purchase-sales-analysis')) {
+    // 副标题键随页面代码块懒注册；横幅在商城布局下隐藏，这里仅保证标题语义正确。
+    return {
+      titleKey: 'shop.purchaseSalesAnalysis',
+      titleFallback: '进货销量分析',
+      subtitleKey: 'shop.purchaseSalesAnalysisSubtitle',
+      subtitleFallback: '按供应商和订单日期范围查看本店商品最近进货与进货后的每日销量。',
+    }
+  }
+
   if (pathname.startsWith('/shop/preorders/')) {
     return {
       titleKey: 'shop.preorderTitle',
@@ -37,6 +47,16 @@ export function resolveShopBannerCopy(pathname: string): ShopBannerCopy {
       titleFallback: '热销商品',
       subtitleKey: 'shop.bestSellersBannerSubtitle',
       subtitleFallback: '查看热销商品销量、销售额和排名汇总。',
+    }
+  }
+
+  if (pathname.startsWith('/shop/batch-product-sales')) {
+    // 副标题复用页面命名空间的既有文案，避免为已隐藏的横幅再往首屏 i18n 增加键值。
+    return {
+      titleKey: 'shop.batchProductSales',
+      titleFallback: '货号销量',
+      subtitleKey: 'batchProductSalesAnalysis.subtitle',
+      subtitleFallback: '批量查询商品在指定时间范围内的销量，支持按分店查看每日销量明细。',
     }
   }
 

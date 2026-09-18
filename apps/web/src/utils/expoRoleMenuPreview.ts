@@ -135,6 +135,7 @@ PERMISSION_ALIAS_GROUPS.forEach(({ canonicalCode, aliasCodes }) => {
 const TAB_PATHS: Record<string, string> = {
   home: '/(shell)/home',
   orders: '/(shell)/orders',
+  'sales-orders': '/(shell)/sales-orders',
   cart: '/(shell)/cart',
   warehouse: '/(shell)/warehouse',
   'domestic-purchase': '/(shell)/domestic-purchase',
@@ -151,8 +152,10 @@ const TAB_PATHS: Record<string, string> = {
   'product-insights': '/(shell)/product-insights',
   'warehouse-product-insights': '/(shell)/warehouse-product-insights',
   users: '/(shell)/users',
+  'pos-operation-logs': '/(shell)/pos-operation-logs',
   'user-admin': '/(shell)/user-admin',
   roles: '/(shell)/roles',
+  permissions: '/(shell)/permissions',
   'employee-profile': '/(shell)/employee-profile',
   'employee-profile-review': '/(shell)/employee-profile-review',
   'device-management': '/(shell)/device-management',
@@ -164,6 +167,7 @@ const TAB_PATHS: Record<string, string> = {
 const ROUTE_LABELS: Record<string, Pick<ExpoAppMenuDefinition, 'zhTitle' | 'enTitle'>> = {
   home: { zhTitle: '商品', enTitle: 'Home' },
   orders: { zhTitle: '订单', enTitle: 'Orders' },
+  'sales-orders': { zhTitle: '销售订单', enTitle: 'Sales Records' },
   cart: { zhTitle: '购物车', enTitle: 'Cart' },
   warehouse: { zhTitle: '仓库', enTitle: 'Warehouse' },
   'domestic-purchase': { zhTitle: '中国采购', enTitle: 'China Purchase' },
@@ -180,8 +184,10 @@ const ROUTE_LABELS: Record<string, Pick<ExpoAppMenuDefinition, 'zhTitle' | 'enTi
   'product-insights': { zhTitle: '商品进销', enTitle: 'Product Insights' },
   'warehouse-product-insights': { zhTitle: '仓库商品进销', enTitle: 'Warehouse Insights' },
   users: { zhTitle: '用户', enTitle: 'Users' },
+  'pos-operation-logs': { zhTitle: '员工操作日志', enTitle: 'POS Operation Logs' },
   'user-admin': { zhTitle: '用户管理', enTitle: 'User Management' },
   roles: { zhTitle: '角色管理', enTitle: 'Role Management' },
+  permissions: { zhTitle: '权限管理', enTitle: 'Permission Management' },
   'employee-profile': { zhTitle: '员工', enTitle: 'Employee' },
   'employee-profile-review': { zhTitle: '员工资料审核', enTitle: 'Employee Profile Review' },
   'device-management': { zhTitle: '设备管理', enTitle: 'Devices' },
@@ -211,6 +217,15 @@ const EXPO_APP_MENU_DEFINITIONS: ExpoAppMenuDefinition[] = [
     ],
     order: 20,
     ...ROUTE_LABELS.orders,
+  },
+  {
+    routeName: 'sales-orders',
+    titleKey: 'tabs.salesOrders',
+    icon: 'receipt-text-outline',
+    // 与后端 FullAppMenu 一致：移动端销售订单查询使用独立权限。
+    permissionCodes: [P.SalesOrders.View],
+    order: 21,
+    ...ROUTE_LABELS['sales-orders'],
   },
   {
     routeName: 'cart',
@@ -337,6 +352,15 @@ const EXPO_APP_MENU_DEFINITIONS: ExpoAppMenuDefinition[] = [
     ...ROUTE_LABELS.users,
   },
   {
+    routeName: 'pos-operation-logs',
+    titleKey: 'tabs.posOperationLogs',
+    icon: 'clipboard-text-clock-outline',
+    // 与后端 FullAppMenu 一致：复用 Web 后台 /pos-admin/operation-logs 的审计查看权限，两端可见范围保持相同。
+    permissionCodes: [P.PosTerminal.AuditView],
+    order: 57,
+    ...ROUTE_LABELS['pos-operation-logs'],
+  },
+  {
     routeName: 'user-admin',
     titleKey: 'tabs.userAdmin',
     icon: 'account-cog-outline',
@@ -351,6 +375,15 @@ const EXPO_APP_MENU_DEFINITIONS: ExpoAppMenuDefinition[] = [
     permissionCodes: [P.Roles.View],
     order: 58,
     ...ROUTE_LABELS.roles,
+  },
+  {
+    routeName: 'permissions',
+    titleKey: 'tabs.permissions',
+    icon: 'key-outline',
+    // 与后端 FullAppMenu 一致：权限管理与 Web 后台 /system/permissions 同样只认 Roles.View。
+    permissionCodes: [P.Roles.View],
+    order: 58,
+    ...ROUTE_LABELS.permissions,
   },
   {
     routeName: 'employee-profile',

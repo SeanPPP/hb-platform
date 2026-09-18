@@ -384,7 +384,6 @@ namespace BlazorApp.Api.Tests
             );
             var expectedPermissionCodes = new[]
             {
-                Permissions.Warehouse.View,
                 Permissions.Warehouse.Manage,
                 Permissions.Warehouse.ManageProducts,
                 Permissions.Warehouse.ManageLocations,
@@ -447,7 +446,7 @@ namespace BlazorApp.Api.Tests
 
             Assert.Equal("推送本地进货到 HQ", seed.Name);
             Assert.Equal("本地进货管理", seed.Category);
-            Assert.Equal("页面 /pos-admin/local-supplier-invoices - 推送本地进货单到 HQ", seed.Description);
+            Assert.Equal("Web 页面 /pos-admin/local-supplier-invoices - 推送本地进货单到 HQ", seed.Description);
         }
 
         [Fact]
@@ -458,12 +457,12 @@ namespace BlazorApp.Api.Tests
             var installmentOrders = Assert.Single(seeds, seed => seed.Code == InstallmentOrdersPermission);
             Assert.Equal("查看分期付款订单", installmentOrders.Name);
             Assert.Equal("分店财务", installmentOrders.Category);
-            Assert.Equal("分店财务 - 查看分店分期付款订单与支付记录", installmentOrders.Description);
+            Assert.Equal("移动端「分期订单」- 查看分店分期付款订单与支付记录", installmentOrders.Description);
 
             var storeVouchers = Assert.Single(seeds, seed => seed.Code == StoreVouchersPermission);
             Assert.Equal("查看分店代金券", storeVouchers.Name);
             Assert.Equal("分店财务", storeVouchers.Category);
-            Assert.Equal("分店财务 - 查看分店代金券使用情况与关联订单", storeVouchers.Description);
+            Assert.Equal("移动端「分店代金券」- 查看分店代金券使用情况与关联订单", storeVouchers.Description);
         }
 
         [Fact]
@@ -517,7 +516,7 @@ namespace BlazorApp.Api.Tests
             );
             Assert.Equal("查看管理分店季节卡剩余", viewSeed.Name);
             Assert.Equal("季节卡片", viewSeed.Category);
-            Assert.Contains("/seasonal-cards", viewSeed.Description);
+            Assert.Contains("移动端「季节卡」", viewSeed.Description);
 
             var submitSeed = Assert.Single(
                 seeds,
@@ -525,7 +524,7 @@ namespace BlazorApp.Api.Tests
             );
             Assert.Equal("提交管理分店季节卡剩余", submitSeed.Name);
             Assert.Equal("季节卡片", submitSeed.Category);
-            Assert.Contains("/seasonal-cards", submitSeed.Description);
+            Assert.Contains("移动端「季节卡」", submitSeed.Description);
 
             var storeManagerTemplate = Assert.Single(
                 PermissionSeedData.RolePermissionTemplates,
@@ -594,7 +593,7 @@ namespace BlazorApp.Api.Tests
                     {
                         Id = "warehouse-staff-existing-template",
                         RoleGuid = warehouseStaffRole.RoleGUID,
-                        PermissionCode = Permissions.Warehouse.View,
+                        PermissionCode = Permissions.Warehouse.ManageLocations,
                     },
                     new SysRolePermission
                     {

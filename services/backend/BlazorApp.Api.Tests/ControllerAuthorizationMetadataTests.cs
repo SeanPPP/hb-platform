@@ -375,6 +375,76 @@ public class ControllerAuthorizationMetadataTests
             nameof(SalesDashboardController.GetBranchDailyPerformance),
             Permissions.Reports.View
         );
+
+        // 定价策略：读写分别落到 PricingStrategy.View / Edit，防止仅凭登录态改动分店售价规则。
+        yield return Policy<ReactPricingStrategiesController>(
+            nameof(ReactPricingStrategiesController.Grid),
+            Permissions.PricingStrategy.View
+        );
+        yield return Policy<ReactPricingStrategiesController>(
+            nameof(ReactPricingStrategiesController.Get),
+            Permissions.PricingStrategy.View
+        );
+        yield return Policy<ReactPricingStrategiesController>(
+            nameof(ReactPricingStrategiesController.Evaluate),
+            Permissions.PricingStrategy.View
+        );
+        yield return Policy<ReactPricingStrategiesController>(
+            nameof(ReactPricingStrategiesController.Create),
+            Permissions.PricingStrategy.Edit
+        );
+        yield return Policy<ReactPricingStrategiesController>(
+            nameof(ReactPricingStrategiesController.Update),
+            Permissions.PricingStrategy.Edit
+        );
+        yield return Policy<ReactPricingStrategiesController>(
+            nameof(ReactPricingStrategiesController.Delete),
+            Permissions.PricingStrategy.Edit
+        );
+
+        // 澳洲供应商：分页列表按 View，写操作按 Edit；active / check-code 为公共下拉源不设策略。
+        yield return Policy<LocalSuppliersController>(
+            nameof(LocalSuppliersController.GetList),
+            Permissions.AustralianSuppliers.View
+        );
+        yield return Policy<LocalSuppliersController>(
+            nameof(LocalSuppliersController.Sync),
+            Permissions.AustralianSuppliers.Edit
+        );
+        yield return Policy<LocalSuppliersController>(
+            nameof(LocalSuppliersController.SyncToHq),
+            Permissions.AustralianSuppliers.Edit
+        );
+        yield return Policy<LocalSuppliersController>(
+            nameof(LocalSuppliersController.Create),
+            Permissions.AustralianSuppliers.Edit
+        );
+        yield return Policy<LocalSuppliersController>(
+            nameof(LocalSuppliersController.Update),
+            Permissions.AustralianSuppliers.Edit
+        );
+        yield return Policy<LocalSuppliersController>(
+            nameof(LocalSuppliersController.Delete),
+            Permissions.AustralianSuppliers.Edit
+        );
+        yield return Policy<LocalSuppliersController>(
+            nameof(LocalSuppliersController.ToggleStatus),
+            Permissions.AustralianSuppliers.Edit
+        );
+
+        // Web 收银记录：list / detail / tax-invoice 与菜单权限 Orders.View 对齐。
+        yield return Policy<PosmSalesOrderController>(
+            nameof(PosmSalesOrderController.GetSalesOrderList),
+            Permissions.Orders.View
+        );
+        yield return Policy<PosmSalesOrderController>(
+            nameof(PosmSalesOrderController.GetSalesOrderDetail),
+            Permissions.Orders.View
+        );
+        yield return Policy<PosmSalesOrderController>(
+            nameof(PosmSalesOrderController.GetTaxInvoicePdf),
+            Permissions.Orders.View
+        );
         yield return Policy<ServiceApiTokensController>(
             nameof(ServiceApiTokensController.List),
             Permissions.System.ManageAppDownloads

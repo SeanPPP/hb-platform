@@ -17,11 +17,14 @@ export type AppTabPath =
   | "/(shell)/product-query"
   | "/(shell)/product-insights"
   | "/(shell)/warehouse-product-insights"
+  | "/(shell)/sales-orders"
   | "/(shell)/users"
   | "/(shell)/user-admin"
   | "/(shell)/roles"
+  | "/(shell)/permissions"
   | "/(shell)/employee-profile"
   | "/(shell)/employee-profile-review"
+  | "/(shell)/pos-operation-logs"
   | "/(shell)/device-management"
   | "/(shell)/app-downloads"
   | "/(shell)/wpf-versions"
@@ -46,11 +49,14 @@ export const TAB_PATHS: Record<string, AppTabPath> = {
   "product-query": "/(shell)/product-query",
   "product-insights": "/(shell)/product-insights",
   "warehouse-product-insights": "/(shell)/warehouse-product-insights",
+  "sales-orders": "/(shell)/sales-orders",
   users: "/(shell)/users",
   "user-admin": "/(shell)/user-admin",
   roles: "/(shell)/roles",
+  permissions: "/(shell)/permissions",
   "employee-profile": "/(shell)/employee-profile",
   "employee-profile-review": "/(shell)/employee-profile-review",
+  "pos-operation-logs": "/(shell)/pos-operation-logs",
   "device-management": "/(shell)/device-management",
   "app-downloads": "/(shell)/app-downloads",
   "wpf-versions": "/(shell)/wpf-versions",
@@ -66,10 +72,14 @@ const DEVICE_MODE_BLOCKED_ROUTE_NAMES = new Set([
   "attendance-personal",
   "attendance-management",
   "employee-profile-review",
+  // 设备会话没有店长/管理员角色，后端审计查询会直接拒绝，设备模式不展示入口。
+  "pos-operation-logs",
   "device-management",
   "reports",
   "user-admin",
   "roles",
+  // 权限管理与角色管理同属全局管理，设备会话没有管理员身份，服务层会直接拒绝。
+  "permissions",
 ]);
 const LEGACY_ATTENDANCE_ROUTE_NAME = "attendance";
 export const SUPPORTED_APP_MENU_ROUTE_NAMES = new Set([

@@ -1,0 +1,41 @@
+{
+  "purchaseSalesTrend": {
+    "columns": {
+      "dailyTrend": "Daily Sales & Purchases",
+      "sellThrough": "Sell-through",
+      "trendCaption": "Latest purchase {{purchased}} · {{total}} sold in {{days}} days · {{average}}/day",
+      "noPurchase": "No purchase record"
+    },
+    "chart": {
+      "ariaSparkline": "Daily sales and purchases sparkline",
+      "ariaDetail": "Daily sales, purchases and cumulative sales chart",
+      "since": "{{days}} days since latest purchase on {{date}}",
+      "purchased": "Latest purchase",
+      "total": "Sold since purchase",
+      "sellThrough": "Sell-through",
+      "average": "Per day",
+      "soldOutOn": "Sold out around {{date}}",
+      "remaining": "Estimated remaining {{value}}",
+      "latestMarker": "Latest purchase",
+      "previousMarker": "Previous purchase",
+      "purchaseLine": "Purchased {{value}}",
+      "daily": "Daily sales (left axis)",
+      "weekend": "Weekend",
+      "beforeLatest": "Before latest purchase",
+      "purchaseEvent": "Purchase event & quantity",
+      "cumulative": "Cumulative sales since purchase (right axis)",
+      "purchaseLineLegend": "Purchase quantity line",
+      "pointTitle": "{{date}}: {{quantity}} units",
+      "purchaseTitle": "{{date}} purchased {{quantity}} units",
+      "noDaily": "No daily sales statistics for this item yet."
+    },
+    "calculationNote": "Purchases are filtered by order date and grouped by purchase date. Daily sales are shown from the previous purchase; sell-through and cumulative sales count from the latest purchase date.",
+    "loadingHint": "Querying purchases and daily sales for this store. This can take a few seconds."
+  },
+  "shop": {
+    "purchaseSalesAnalysisTitle": "Purchase & Sales",
+    "purchaseSalesAnalysisSubtitle": "Review this store's latest purchases and daily sales after each purchase by supplier and order date range.",
+    "purchaseSalesAnalysisPickSupplier": "Choose a supplier and click Search to review purchases and daily sales for this store.",
+    "purchaseSalesAnalysisNoStore": "Select the current store at the top first."
+  }
+}

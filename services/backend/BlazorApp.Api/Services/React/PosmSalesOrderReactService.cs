@@ -36,30 +36,22 @@ namespace BlazorApp.Api.Services.React
             var pageNumber = Math.Max(1, queryParams.PageNumber);
             // 限制单页上限，避免异常请求生成过大的 SQL Take 和响应体。
             var pageSize = queryParams.PageSize > 0 ? Math.Min(queryParams.PageSize, 1000) : 20;
-            var clientUtcOffsetMinutes = Math.Clamp(
-                queryParams.ClientUtcOffsetMinutes ?? 0,
-                -840,
-                840
-            );
-            var clientUtcOffsetSeconds = clientUtcOffsetMinutes * 60;
+            // POS 写入的 OrderTime 是门店本地墙钟时间（非 UTC），日期与时段边界一律按墙钟直接比较，
+            // 不能再按客户端时区平移，否则"今天"会整体前移十小时。
             var baseQuery = _posmContext
                 .Db.Queryable<SalesOrder>()
                 .LeftJoin<SalesOrderDetail>((o, d) => o.OrderGuid == d.OrderGuid);
 
             if (queryParams.StartDate.HasValue)
             {
-                // 当地日期边界先转换成 UTC 常量，保持 OrderTime 列可直接走索引。
-                var startUtc = queryParams.StartDate.Value.Date.AddMinutes(
-                    -clientUtcOffsetMinutes
-                );
-                baseQuery = baseQuery.Where(o => o.OrderTime >= startUtc);
+                // 边界用常量参数，保持 OrderTime 列可直接走索引。
+                var start = queryParams.StartDate.Value.Date;
+                baseQuery = baseQuery.Where(o => o.OrderTime >= start);
             }
             if (queryParams.EndDate.HasValue)
             {
-                var endExclusiveUtc = queryParams
-                    .EndDate.Value.Date.AddDays(1)
-                    .AddMinutes(-clientUtcOffsetMinutes);
-                baseQuery = baseQuery.Where(o => o.OrderTime < endExclusiveUtc);
+                var endExclusive = queryParams.EndDate.Value.Date.AddDays(1);
+                baseQuery = baseQuery.Where(o => o.OrderTime < endExclusive);
             }
 
             if (queryParams.TimeStart.HasValue)
@@ -67,14 +59,9 @@ namespace BlazorApp.Api.Services.React
                 var startSeconds = (int)queryParams.TimeStart.Value.TotalSeconds;
                 baseQuery = baseQuery.Where(o =>
                     o.OrderTime.HasValue
-                    // UTC 当日秒数平移后取模，得到客户端当地时分秒。
-                    && (
-                            o.OrderTime.Value.Hour * 3600
-                                + o.OrderTime.Value.Minute * 60
-                                + o.OrderTime.Value.Second
-                                + clientUtcOffsetSeconds
-                                + 86400
-                        ) % 86400
+                    && o.OrderTime.Value.Hour * 3600
+                        + o.OrderTime.Value.Minute * 60
+                        + o.OrderTime.Value.Second
                         >= startSeconds
                 );
             }
@@ -83,13 +70,9 @@ namespace BlazorApp.Api.Services.React
                 var endSeconds = (int)queryParams.TimeEnd.Value.TotalSeconds;
                 baseQuery = baseQuery.Where(o =>
                     o.OrderTime.HasValue
-                    && (
-                            o.OrderTime.Value.Hour * 3600
-                                + o.OrderTime.Value.Minute * 60
-                                + o.OrderTime.Value.Second
-                                + clientUtcOffsetSeconds
-                                + 86400
-                        ) % 86400
+                    && o.OrderTime.Value.Hour * 3600
+                        + o.OrderTime.Value.Minute * 60
+                        + o.OrderTime.Value.Second
                         <= endSeconds
                 );
             }
@@ -187,24 +170,51 @@ namespace BlazorApp.Api.Services.React
             if (!string.IsNullOrWhiteSpace(queryParams.Keyword))
             {
                 var keyword = queryParams.Keyword.Trim();
-                baseQuery = baseQuery.Where((o, d) =>
-                    (o.OrderGuid != null && o.OrderGuid.Contains(keyword))
-                    || (o.DeviceCode != null && o.DeviceCode.Contains(keyword))
-                    || SqlFunc
-                        .Subqueryable<SalesOrderDetail>()
-                        .Where(detail =>
-                            detail.OrderGuid == o.OrderGuid
-                            && (
-                                detail.ProductCode.Contains(keyword)
-                                || (detail.Barcode != null && detail.Barcode.Contains(keyword))
-                                || (
-                                    detail.ProductName != null
-                                    && detail.ProductName.Contains(keyword)
+                // POSM 明细没有货号列，货号 / 主档条码先在商品主档解析成商品编码再参与匹配。
+                var masterProductCodes = await ResolveMasterProductCodesAsync(keyword);
+                if (masterProductCodes.Count > 0)
+                {
+                    baseQuery = baseQuery.Where((o, d) =>
+                        (o.OrderGuid != null && o.OrderGuid.Contains(keyword))
+                        || (o.DeviceCode != null && o.DeviceCode.Contains(keyword))
+                        || SqlFunc
+                            .Subqueryable<SalesOrderDetail>()
+                            .Where(detail =>
+                                detail.OrderGuid == o.OrderGuid
+                                && (
+                                    detail.ProductCode.Contains(keyword)
+                                    || masterProductCodes.Contains(detail.ProductCode)
+                                    || (detail.Barcode != null && detail.Barcode.Contains(keyword))
+                                    || (
+                                        detail.ProductName != null
+                                        && detail.ProductName.Contains(keyword)
+                                    )
                                 )
                             )
-                        )
-                        .Any()
-                );
+                            .Any()
+                    );
+                }
+                else
+                {
+                    baseQuery = baseQuery.Where((o, d) =>
+                        (o.OrderGuid != null && o.OrderGuid.Contains(keyword))
+                        || (o.DeviceCode != null && o.DeviceCode.Contains(keyword))
+                        || SqlFunc
+                            .Subqueryable<SalesOrderDetail>()
+                            .Where(detail =>
+                                detail.OrderGuid == o.OrderGuid
+                                && (
+                                    detail.ProductCode.Contains(keyword)
+                                    || (detail.Barcode != null && detail.Barcode.Contains(keyword))
+                                    || (
+                                        detail.ProductName != null
+                                        && detail.ProductName.Contains(keyword)
+                                    )
+                                )
+                            )
+                            .Any()
+                    );
+                }
             }
 
             var q = baseQuery
@@ -237,6 +247,8 @@ namespace BlazorApp.Api.Services.React
                             ItemCount = o.ItemCount,
                             Status = o.Status,
                             SkuCount = SqlFunc.AggregateDistinctCount(d.ProductCode),
+                            // ItemCount 是行数；件数需要按明细数量求和，移动端卡片以此显示。
+                            QuantityTotal = SqlFunc.AggregateSum(d.Quantity),
                         }
                 )
                 .MergeTable();
@@ -335,6 +347,146 @@ namespace BlazorApp.Api.Services.React
             };
         }
 
+        public async Task<Dictionary<string, List<PosmSalesOrderMatchedProductDto>>> GetMatchedProductsAsync(
+            IReadOnlyCollection<string> orderGuids,
+            string keyword
+        )
+        {
+            var result = new Dictionary<string, List<PosmSalesOrderMatchedProductDto>>(
+                StringComparer.Ordinal
+            );
+            var normalizedKeyword = keyword?.Trim();
+            var guids = orderGuids
+                .Where(guid => !string.IsNullOrWhiteSpace(guid))
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+            if (string.IsNullOrEmpty(normalizedKeyword) || guids.Count == 0)
+            {
+                return result;
+            }
+
+            // 命中条件必须与列表关键词过滤里的明细子查询保持一致，否则会出现"被搜出来却没有命中商品"的订单。
+            var masterProductCodes = await ResolveMasterProductCodesAsync(normalizedKeyword);
+            var detailQuery = _posmContext
+                .Db.Queryable<SalesOrderDetail>()
+                .Where(d => d.OrderGuid != null && guids.Contains(d.OrderGuid));
+            detailQuery = masterProductCodes.Count > 0
+                ? detailQuery.Where(d =>
+                    d.ProductCode.Contains(normalizedKeyword)
+                    || masterProductCodes.Contains(d.ProductCode)
+                    || (d.Barcode != null && d.Barcode.Contains(normalizedKeyword))
+                    || (d.ProductName != null && d.ProductName.Contains(normalizedKeyword))
+                )
+                : detailQuery.Where(d =>
+                    d.ProductCode.Contains(normalizedKeyword)
+                    || (d.Barcode != null && d.Barcode.Contains(normalizedKeyword))
+                    || (d.ProductName != null && d.ProductName.Contains(normalizedKeyword))
+                );
+            var rows = await detailQuery
+                .Select(d => new
+                {
+                    d.OrderGuid,
+                    d.ProductCode,
+                    d.ProductName,
+                    d.Barcode,
+                    d.Quantity,
+                })
+                .ToListAsync();
+            var itemNumbers = await LookupItemNumbersAsync(
+                rows.Select(row => row.ProductCode).Where(code => !string.IsNullOrWhiteSpace(code))!
+            );
+
+            foreach (var orderGroup in rows.GroupBy(row => row.OrderGuid!))
+            {
+                // 同一订单同一商品可能因不同折扣拆成多行，按货号聚合数量，避免命中提示重复。
+                result[orderGroup.Key] = orderGroup
+                    .GroupBy(row => row.ProductCode ?? string.Empty)
+                    .Select(productGroup => new PosmSalesOrderMatchedProductDto
+                    {
+                        ProductCode = productGroup.Key,
+                        ItemNumber = itemNumbers.TryGetValue(productGroup.Key, out var itemNumber)
+                            ? itemNumber
+                            : null,
+                        ProductName = productGroup
+                            .Select(row => row.ProductName)
+                            .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name)),
+                        Barcode = productGroup
+                            .Select(row => row.Barcode)
+                            .FirstOrDefault(barcode => !string.IsNullOrWhiteSpace(barcode)),
+                        Quantity = productGroup.Sum(row => row.Quantity ?? 0),
+                    })
+                    .ToList();
+            }
+
+            return result;
+        }
+
+        /// <summary>主档里一次最多解析的商品数；关键词过泛时不让 IN 列表无限膨胀。</summary>
+        private const int MaxMasterProductCodes = 500;
+
+        /// <summary>
+        /// 把关键词按货号 / 主档条码解析成 POSM 商品编码。
+        /// 主档不可用时返回空列表，列表查询退回只按明细自身字段匹配，不能整体失败。
+        /// </summary>
+        private async Task<List<string>> ResolveMasterProductCodesAsync(string keyword)
+        {
+            try
+            {
+                var codes = await _context
+                    .Db.Queryable<Product>()
+                    .Where(p =>
+                        !p.IsDeleted
+                        && p.ProductCode != null
+                        && (
+                            (p.ItemNumber != null && p.ItemNumber.Contains(keyword))
+                            || (p.Barcode != null && p.Barcode.Contains(keyword))
+                        )
+                    )
+                    .Select(p => p.ProductCode)
+                    .Take(MaxMasterProductCodes)
+                    .ToListAsync();
+                return codes
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code!.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "按货号解析商品编码失败，关键词将只匹配明细自身字段");
+                return new List<string>();
+            }
+        }
+
+        /// <summary>按商品编码回查主档货号，供命中提示与明细行展示。</summary>
+        private async Task<Dictionary<string, string>> LookupItemNumbersAsync(IEnumerable<string> productCodes)
+        {
+            var codes = productCodes
+                .Select(code => code.Trim())
+                .Where(code => code.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (codes.Count == 0)
+            {
+                return result;
+            }
+
+            var products = await _context
+                .Db.Queryable<Product>()
+                .Where(p => p.ProductCode != null && codes.Contains(p.ProductCode))
+                .Select(p => new { p.ProductCode, p.ItemNumber })
+                .ToListAsync();
+            foreach (var product in products)
+            {
+                if (!string.IsNullOrWhiteSpace(product.ProductCode) && !string.IsNullOrWhiteSpace(product.ItemNumber))
+                {
+                    result[product.ProductCode] = product.ItemNumber.Trim();
+                }
+            }
+            return result;
+        }
+
         public async Task<ApiResponse<PosmSalesOrderDetailResponse>> GetSalesOrderDetailAsync(
             string orderGuid
         )
@@ -384,10 +536,30 @@ namespace BlazorApp.Api.Services.React
                     _logger.LogError(ex, "查询分店信息失败");
                 }
 
+                var detailDtos = _mapper.Map<List<PosmSalesOrderDetailDto>>(orderDetails);
+                try
+                {
+                    var itemNumbers = await LookupItemNumbersAsync(
+                        detailDtos.Select(d => d.ProductCode).Where(code => !string.IsNullOrWhiteSpace(code))!
+                    );
+                    foreach (var detail in detailDtos)
+                    {
+                        if (detail.ProductCode != null && itemNumbers.TryGetValue(detail.ProductCode, out var itemNumber))
+                        {
+                            detail.ItemNumber = itemNumber;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // 货号只是展示增强，主档查询失败不能让整个详情失败。
+                    _logger.LogError(ex, "查询商品货号失败，明细将只显示商品编码");
+                }
+
                 var response = new PosmSalesOrderDetailResponse
                 {
                     Order = orderDto,
-                    OrderDetails = _mapper.Map<List<PosmSalesOrderDetailDto>>(orderDetails),
+                    OrderDetails = detailDtos,
                     PaymentDetails = _mapper.Map<List<PosmPaymentDetailDto>>(paymentDetails),
                 };
 

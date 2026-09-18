@@ -534,17 +534,6 @@ public sealed class OperationAuthorizationServiceTests
             AuthorizationToken: $"ticket-{cashierId}",
             AuthorizationExpiresAtUtc: Now.AddYears(1));
 
-    private static async Task WaitUntilAsync(Func<bool> predicate)
-    {
-        var timeout = DateTime.UtcNow.AddSeconds(2);
-        while (!predicate() && DateTime.UtcNow < timeout)
-        {
-            await Task.Delay(10);
-        }
-
-        Assert.True(predicate());
-    }
-
     private sealed class FakeCashierLoginService(params CashierLoginResult[] results) : ICashierLoginService
     {
         private readonly Queue<CashierLoginResult> _results = new(results);

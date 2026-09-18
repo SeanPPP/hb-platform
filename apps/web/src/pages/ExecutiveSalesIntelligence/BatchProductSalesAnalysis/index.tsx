@@ -17,6 +17,12 @@ import DiscountDailyChart from './DiscountDailyChart'
 import type { DiscountChartDaily } from './chartModel'
 import ProductScopeModal from './ProductScopeModal'
 import styles from './index.module.css'
+import { registerPageMessages } from '../../../i18n/registerPageMessages'
+import messagesEn from './messages.en.json'
+import messagesZh from './messages.zh.json'
+
+// 本页文案随页面代码块懒注册：后台页面与订货前台「货号销量」共用，避免整套文案进入首屏 i18n 包。
+registerPageMessages({ zh: messagesZh, en: messagesEn })
 
 const { RangePicker } = DatePicker
 const ALL_PRODUCTS = '__batch-product-sales-all__'
