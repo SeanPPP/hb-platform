@@ -1,5 +1,5 @@
 import { ReloadOutlined, SearchOutlined } from '@ant-design/icons'
-import { Alert, Button, Card, DatePicker, Empty, Input, Select, Space, Spin, Table, Tag, Typography, message } from 'antd'
+import { Alert, Button, Card, DatePicker, Empty, Input, Select, Space, Spin, Tag, Typography, message } from 'antd'
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table'
 import type { FilterValue, SorterResult } from 'antd/es/table/interface'
 import dayjs, { type Dayjs } from 'dayjs'
@@ -22,6 +22,7 @@ import type {
   LocalSupplierPurchaseSalesAnalysisSupplierOptionDto,
 } from '../../types/localSupplierInvoice'
 import { RequestError } from '../../utils/request'
+import { MeasuredTable } from '../../components/MeasuredTable'
 import ProductImageCell from '../PosAdmin/LocalSupplierPurchaseSalesAnalysis/ProductImageCell'
 import {
   DEFAULT_PURCHASE_SALES_ANALYSIS_PAGE_SIZE,
@@ -391,7 +392,8 @@ export default function ShopPurchaseSalesAnalysisPage() {
                   {result.salesStatisticLastUpdate ? dayjs(result.salesStatisticLastUpdate).format('YYYY-MM-DD HH:mm:ss') : '--'}
                 </Text>
               </Space>
-              <Table<Row>
+              <MeasuredTable<Row>
+                metricId="shop.purchase-sales-analysis.table"
                 size="small"
                 rowKey={rowKey}
                 columns={columns}
