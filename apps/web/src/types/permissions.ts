@@ -147,6 +147,8 @@ export const P = {
   },
   OrderFront: {
     View: 'OrderFront',
+    // 订货前台「货号销量」页面，独立于后台销售看板权限。
+    BatchProductSalesView: 'OrderFront.BatchProductSales.View',
   },
   Attendance: {
     ScheduleViewSelf: 'Attendance.Schedule.ViewSelf',

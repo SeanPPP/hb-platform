@@ -61,6 +61,8 @@ export interface AccessControl {
   canViewCompactSalesBoard: boolean
   canViewProductMovementReport: boolean
   canViewBatchProductSalesAnalysis: boolean
+  // 订货前台「货号销量」页面，独立于后台销售看板权限。
+  canViewShopBatchProductSales: boolean
   canViewWarehouseProductFlowAnalysis: boolean
   canViewLocalProductSalesAnalysis: boolean
   canViewPurchaseAmountDashboard: boolean

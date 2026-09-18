@@ -71,6 +71,7 @@ const moreDrawer = layout.slice(moreDrawerStart, moreDrawerEnd)
 for (const destination of [
   'onClick={() => {\n              setMobileMoreVisible(false)\n              handleOpenPreorder()',
   'to="/shop/best-sellers"',
+  'to="/shop/batch-product-sales"',
   'to="/shop/coming-soon"',
   'to="/shop/local-supplier-invoices"',
 ]) {

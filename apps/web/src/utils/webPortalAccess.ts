@@ -7,6 +7,7 @@ type WebPortalAccess = Pick<
   | 'onlyOrder'
   | 'canAccessDashboard'
   | 'canAccessOrderFront'
+  | 'canViewShopBatchProductSales'
   | 'canManageWarehouse'
   | 'canManageWarehouseOrders'
   | 'canManageStoreOrderImportPriceVariance'
@@ -30,7 +31,8 @@ type AdminEntryRule = {
   canAccess: (access: BackendNavigationAccess) => boolean
 }
 
-export type BackendNavigationAccess = Omit<WebPortalAccess, 'canAccessOrderFront' | 'onlyOrder'>
+// 前台货号销量权限只影响订货前台，不参与后台入口判定。
+export type BackendNavigationAccess = Omit<WebPortalAccess, 'canAccessOrderFront' | 'onlyOrder' | 'canViewShopBatchProductSales'>
 
 // 与后端 NavigationService.HasBackendNavigationAccess 的权限集合保持同一入口语义。
 const ADMIN_ENTRY_RULES: readonly AdminEntryRule[] = [
@@ -163,6 +165,10 @@ export function getDefaultWebPath(access: WebPortalAccess) {
 export function resolveAuthorizedWebTarget(target: string | null | undefined, access: WebPortalAccess) {
   if (!target || !target.startsWith('/') || target.startsWith('//') || target === '/login') {
     return undefined
+  }
+  // 订货前台货号销量页需单独授权；未授权时不保留历史地址，由默认落点（纯订货角色为 /shop）接管。
+  if (target.startsWith('/shop/batch-product-sales')) {
+    return access.canAccessOrderFront && access.canViewShopBatchProductSales ? target : undefined
   }
   // 纯订货角色不保留任何后台历史地址，只允许回到订货前台及其现有子路由。
   if (access.onlyOrder) {

@@ -429,6 +429,8 @@ namespace BlazorApp.Shared.Constants
         public static class OrderFront
         {
             public const string View = "OrderFront";
+            /// <summary>订货前台「货号销量」页面：允许前台用户按导入货号查看全部分店的销量，与后台销售看板权限相互独立。</summary>
+            public const string BatchProductSalesView = "OrderFront.BatchProductSales.View";
         }
 
         public static bool IsSuperAdminRole(string? roleName)

@@ -205,6 +205,10 @@
       "name": "前台订货",
       "description": "Web 订货前台与移动端「订货单」- 进入前台订货入口（Order / 订货员角色核心权限）"
     },
+    "OrderFront.BatchProductSales.View": {
+      "name": "前台查看货号销量",
+      "description": "Web 订货前台页面 /shop/batch-product-sales - 按导入货号查看全部分店的销量、每日趋势及折扣成交情况"
+    },
     "Orders.Create": {
       "name": "创建订单",
       "description": "移动端「首页」「购物车」与浏览器扩展 - 提交分店订货单"

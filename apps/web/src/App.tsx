@@ -24,6 +24,7 @@ const ShopLayout = lazy(loadShopLayout)
 const BrowserExtensionPrivacyPage = lazy(() => import('./pages/BrowserExtensionPrivacy'))
 const HbSupplierOrderSupportPage = lazy(() => import('./pages/HbSupplierOrderSupport'))
 const MobilePrivacyPage = lazy(() => import('./pages/MobilePrivacy'))
+const ShopBatchProductSalesPage = lazy(() => import('./pages/ShopBatchProductSales'))
 const ShopBestSellersPage = lazy(() => import('./pages/ShopBestSellers'))
 const ShopComingSoonPage = lazy(() => import('./pages/ShopComingSoon'))
 const ShopHomePage = lazy(() => import('./pages/ShopHome'))
@@ -118,6 +119,8 @@ function AppBootstrap() {
       >
         <Route index element={<ShopHomePage />} />
         <Route path="best-sellers" element={<ShopBestSellersPage />} />
+        {/* 货号销量页单独授权：订货员未获授权时看到禁止页，而不是静默跳回首页。 */}
+        <Route path="batch-product-sales" element={access.canViewShopBatchProductSales ? <ShopBatchProductSalesPage /> : portalDeniedPage} />
         <Route path="coming-soon" element={<ShopComingSoonPage />} />
         <Route path="orders" element={<ShopOrdersPage />} />
         <Route path="orders/:id" element={<ShopOrderDetailPage />} />
