@@ -116,25 +116,36 @@ namespace BlazorApp.Api.Services.React
                     normalized.PageSize
                 );
 
-                var summaryRows =
-                    await _db.Ado.SqlQueryAsync<LocalSupplierPurchaseSalesAnalysisSummaryRow>(
-                        sql.SummarySql,
-                        sql.Parameters.ToArray()
-                    );
-                var summary = summaryRows.FirstOrDefault();
                 var rows = await _db.Ado.SqlQueryAsync<LocalSupplierPurchaseSalesAnalysisSqlRow>(
                     sql.PagedSql,
                     sql.Parameters.ToArray()
                 );
 
+                // 分页结果本身已带总数与统计更新时间；只有当前页为空（无数据或页码越界）才需要单独汇总。
+                var totalCount = rows.Count > 0 ? rows[0].TotalCount : 0;
+                var salesStatisticLastUpdate = rows.Count > 0
+                    ? rows[0].OverallSalesStatisticLastUpdate
+                    : null;
+                if (rows.Count == 0)
+                {
+                    var summaryRows =
+                        await _db.Ado.SqlQueryAsync<LocalSupplierPurchaseSalesAnalysisSummaryRow>(
+                            sql.SummarySql,
+                            sql.Parameters.ToArray()
+                        );
+                    var summary = summaryRows.FirstOrDefault();
+                    totalCount = summary?.TotalCount ?? 0;
+                    salesStatisticLastUpdate = summary?.SalesStatisticLastUpdate;
+                }
+
                 return ApiResponse<LocalSupplierPurchaseSalesAnalysisResponseDto>.OK(
                     new LocalSupplierPurchaseSalesAnalysisResponseDto
                     {
-                        Items = rows.Cast<LocalSupplierPurchaseSalesAnalysisRowDto>().ToList(),
-                        Total = summary?.TotalCount ?? 0,
+                        Items = rows.Select(row => row.ToDto()).ToList(),
+                        Total = totalCount,
                         Page = normalized.Page,
                         PageSize = normalized.PageSize,
-                        SalesStatisticLastUpdate = summary?.SalesStatisticLastUpdate,
+                        SalesStatisticLastUpdate = salesStatisticLastUpdate,
                     }
                 );
             }
@@ -199,6 +210,32 @@ namespace BlazorApp.Api.Services.React
             : LocalSupplierPurchaseSalesAnalysisRowDto
         {
             public int TotalCount { get; set; }
+            public DateTime? OverallSalesStatisticLastUpdate { get; set; }
+
+            // 窗口列只服务于分页响应头，不能随行数据一起序列化给前端。
+            public LocalSupplierPurchaseSalesAnalysisRowDto ToDto() =>
+                new()
+                {
+                    StoreCode = StoreCode,
+                    StoreName = StoreName,
+                    ProductCode = ProductCode,
+                    ItemNumber = ItemNumber,
+                    Barcode = Barcode,
+                    ProductName = ProductName,
+                    ProductImage = ProductImage,
+                    SupplierCode = SupplierCode,
+                    SupplierName = SupplierName,
+                    LatestPurchaseDate = LatestPurchaseDate,
+                    LatestPurchaseQty = LatestPurchaseQty,
+                    PreviousPurchaseDate = PreviousPurchaseDate,
+                    PreviousPurchaseQty = PreviousPurchaseQty,
+                    PurchaseIntervalDays = PurchaseIntervalDays,
+                    SalesBetweenPurchases = SalesBetweenPurchases,
+                    SalesQty30 = SalesQty30,
+                    SalesQty60 = SalesQty60,
+                    SalesQty90 = SalesQty90,
+                    SalesStatisticLastUpdate = SalesStatisticLastUpdate,
+                };
         }
 
         private sealed class LocalSupplierPurchaseSalesAnalysisSummaryRow
@@ -246,13 +283,13 @@ namespace BlazorApp.Api.Services.React
                 + "FROM [StoreLocalSupplierInvoice] h\n"
                 + "LEFT JOIN [Store] st\n"
                 + "    ON st.StoreCode = h.StoreCode\n"
-                + "    AND COALESCE(st.IsDeleted, 0) = 0\n"
+                + "    AND st.IsDeleted = 0\n"
                 + "LEFT JOIN [LocalSupplier] sup\n"
                 + "    ON sup.LocalSupplierCode = h.SupplierCode\n"
-                + "    AND COALESCE(sup.IsDeleted, 0) = 0\n"
+                + "    AND sup.IsDeleted = 0\n"
                 + "WHERE\n"
                 + "    h.InvoiceGUID = @InvoiceGuid\n"
-                + "    AND COALESCE(h.IsDeleted, 0) = 0";
+                + "    AND h.IsDeleted = 0";
 
             return new LocalSupplierInvoiceSalesAnalysisSqlBuildResult
             {
@@ -287,16 +324,17 @@ namespace BlazorApp.Api.Services.React
                 + "    FROM [StoreLocalSupplierInvoiceDetails] d\n"
                 + "    INNER JOIN [StoreLocalSupplierInvoice] h\n"
                 + "        ON h.InvoiceGUID = d.InvoiceGUID\n"
-                + "        AND COALESCE(h.IsDeleted, 0) = 0\n"
+                + "        AND h.IsDeleted = 0\n"
                 + "    LEFT JOIN [StoreRetailPrice] srp\n"
                 + "        ON srp.UUID = d.StoreProductCode\n"
-                + "        AND COALESCE(srp.IsDeleted, 0) = 0\n"
+                + "        AND srp.IsDeleted = 0\n"
                 + "    LEFT JOIN [Product] p\n"
                 + "        ON p.ProductCode = COALESCE(NULLIF(d.ProductCode, N''), NULLIF(srp.ProductCode, N''))\n"
-                + "        AND COALESCE(p.IsDeleted, 0) = 0\n"
+                + "        AND p.IsDeleted = 0\n"
+                + "    -- 删除标记统一写成 IsDeleted = 0，才能命中明细表 InvoiceGUID 过滤索引，避免 65 万行全表扫描。\n"
                 + "    WHERE\n"
                 + "        d.InvoiceGUID = @InvoiceGuid\n"
-                + "        AND COALESCE(d.IsDeleted, 0) = 0\n"
+                + "        AND d.IsDeleted = 0\n"
                 + "),\n"
                 + "CurrentProducts AS (\n"
                 + "    SELECT\n"
@@ -317,17 +355,19 @@ namespace BlazorApp.Api.Services.React
                 + "        cp.ProductCode,\n"
                 + "        MAX(COALESCE(pi.InboundDate, pi.OrderDate)) AS PreviousPurchaseDate\n"
                 + "    FROM CurrentProducts cp\n"
+                + "    -- 历史明细已有商品编码，直接按商品命中 (ProductCode, InvoiceGUID) 过滤索引，再回连单据校验门店与日期；\n"
+                + "    -- 列上不能包 NULLIF，且要显式写 ProductCode <> N'' 才能匹配过滤索引定义，否则会按门店枚举全部单据逐张回表。\n"
+                + "    INNER JOIN [StoreLocalSupplierInvoiceDetails] pd\n"
+                + "        ON pd.ProductCode = cp.ProductCode\n"
+                + "        AND pd.ProductCode <> N''\n"
+                + "        AND pd.IsDeleted = 0\n"
                 + "    INNER JOIN [StoreLocalSupplierInvoice] pi\n"
-                + "        ON pi.StoreCode = cp.StoreCode\n"
-                + "        AND COALESCE(pi.IsDeleted, 0) = 0\n"
+                + "        ON pi.InvoiceGUID = pd.InvoiceGUID\n"
+                + "        AND pi.StoreCode = cp.StoreCode\n"
+                + "        AND pi.IsDeleted = 0\n"
                 + "        AND COALESCE(pi.InboundDate, pi.OrderDate) IS NOT NULL\n"
                 + "        AND CAST(COALESCE(pi.InboundDate, pi.OrderDate) AS date) < cp.AnalysisDate\n"
                 + "        AND pi.InvoiceGUID <> @InvoiceGuid\n"
-                + "    INNER JOIN [StoreLocalSupplierInvoiceDetails] pd\n"
-                + "        ON pd.InvoiceGUID = pi.InvoiceGUID\n"
-                + "        AND COALESCE(pd.IsDeleted, 0) = 0\n"
-                + "        -- 历史明细已有商品编码，直接匹配可避开 400 万级分店价格表回填。\n"
-                + "        AND NULLIF(pd.ProductCode, N'') = cp.ProductCode\n"
                 + "    GROUP BY\n"
                 + "        cp.StoreCode,\n"
                 + "        cp.ProductCode\n"
@@ -540,8 +580,10 @@ WITH FilteredInvoices AS (
         h.OrderDate,
         CAST(COALESCE(h.InboundDate, h.OrderDate, h.CreatedAt) AS date) AS PurchaseDate
     FROM [StoreLocalSupplierInvoice] h
+    -- 删除标记统一写成 IsDeleted = 0：实体层该列不可空且库内没有 NULL，
+    -- 而 COALESCE(IsDeleted, 0) = 0 会让优化器放弃所有 WHERE IsDeleted = 0 的过滤索引，退化成 65 万行明细全表扫描。
     WHERE
-        COALESCE(h.IsDeleted, 0) = 0
+        h.IsDeleted = 0
         AND CAST(COALESCE(h.InboundDate, h.OrderDate, h.CreatedAt) AS date) IS NOT NULL{{invoiceStoreFilter}}{{invoiceDateFilter}}
 ),
 PurchaseDailyAggregation AS (
@@ -560,19 +602,19 @@ PurchaseDailyAggregation AS (
     FROM FilteredInvoices fi
     INNER JOIN [StoreLocalSupplierInvoiceDetails] d
         ON d.InvoiceGUID = fi.InvoiceGUID
-        AND COALESCE(d.IsDeleted, 0) = 0
+        AND d.IsDeleted = 0
     LEFT JOIN [StoreRetailPrice] srp
         ON srp.UUID = d.StoreProductCode
-        AND COALESCE(srp.IsDeleted, 0) = 0
+        AND srp.IsDeleted = 0
     LEFT JOIN [Product] p
         ON p.ProductCode = COALESCE(NULLIF(d.ProductCode, N''), NULLIF(srp.ProductCode, N''))
-        AND COALESCE(p.IsDeleted, 0) = 0
+        AND p.IsDeleted = 0
     LEFT JOIN [Store] st
         ON st.StoreCode = fi.StoreCode
-        AND COALESCE(st.IsDeleted, 0) = 0
+        AND st.IsDeleted = 0
     LEFT JOIN [LocalSupplier] sup
         ON sup.LocalSupplierCode = COALESCE(NULLIF(p.LocalSupplierCode, N''), NULLIF(srp.SupplierCode, N''))
-        AND COALESCE(sup.IsDeleted, 0) = 0
+        AND sup.IsDeleted = 0
     WHERE
         NULLIF(fi.StoreCode, N'') IS NOT NULL
         AND NULLIF(COALESCE(NULLIF(d.ProductCode, N''), NULLIF(srp.ProductCode, N'')), N'') IS NOT NULL{{productFilter}}
@@ -710,7 +752,10 @@ SELECT
     SalesQty30,
     SalesQty60,
     SalesQty90,
-    SalesStatisticLastUpdate
+    SalesStatisticLastUpdate,
+    -- 总数与统计更新时间随分页一起带出，避免同一套 CTE 为汇总再完整执行一遍。
+    COUNT(1) OVER () AS TotalCount,
+    MAX(SalesStatisticLastUpdate) OVER () AS OverallSalesStatisticLastUpdate
 FROM FinalRows
 ORDER BY
     {{orderBy}}
@@ -753,12 +798,12 @@ FROM (
         h.StoreCode
     FROM [StoreLocalSupplierInvoice] h
     WHERE
-        COALESCE(h.IsDeleted, 0) = 0
+        h.IsDeleted = 0
         AND NULLIF(h.StoreCode, N'') IS NOT NULL{{storeFilter}}
 ) source
 LEFT JOIN [Store] st
     ON st.StoreCode = source.StoreCode
-    AND COALESCE(st.IsDeleted, 0) = 0
+    AND st.IsDeleted = 0
 ORDER BY
     source.StoreCode
 """;
@@ -781,33 +826,48 @@ ORDER BY
             var storeFilter = BuildStoreFilter("h.StoreCode", storeParameterNames);
 
             // 供应商候选和主查询保持同一口径：商品主供应商优先，分店价格表供应商兜底。
+            // 先把门店全部历史明细收敛成不重复的 (商品编码, 分店价格 UUID) 对，再回填价格表与商品表，
+            // 避免对几万行明细逐行查 470 万行的分店价格表。
             var sql =
                 $$"""
+WITH StorePairs AS (
+    SELECT DISTINCT
+        NULLIF(d.ProductCode, N'') AS ProductCode,
+        d.StoreProductCode
+    FROM [StoreLocalSupplierInvoice] h
+    INNER JOIN [StoreLocalSupplierInvoiceDetails] d
+        ON d.InvoiceGUID = h.InvoiceGUID
+        AND d.IsDeleted = 0
+    WHERE
+        h.IsDeleted = 0
+        AND NULLIF(h.StoreCode, N'') IS NOT NULL{{storeFilter}}
+),
+ResolvedPairs AS (
+    SELECT
+        COALESCE(sp.ProductCode, NULLIF(srp.ProductCode, N'')) AS ProductCode,
+        NULLIF(srp.SupplierCode, N'') AS PriceSupplierCode
+    FROM StorePairs sp
+    LEFT JOIN [StoreRetailPrice] srp
+        ON srp.UUID = sp.StoreProductCode
+        AND srp.IsDeleted = 0
+)
 SELECT
     COALESCE(NULLIF(sup.Name, N''), source.SupplierCode) AS Label,
     source.SupplierCode AS Value
 FROM (
     SELECT DISTINCT
-        COALESCE(NULLIF(p.LocalSupplierCode, N''), NULLIF(srp.SupplierCode, N'')) AS SupplierCode
-    FROM [StoreLocalSupplierInvoice] h
-    INNER JOIN [StoreLocalSupplierInvoiceDetails] d
-        ON d.InvoiceGUID = h.InvoiceGUID
-        AND COALESCE(d.IsDeleted, 0) = 0
-    LEFT JOIN [StoreRetailPrice] srp
-        ON srp.UUID = d.StoreProductCode
-        AND COALESCE(srp.IsDeleted, 0) = 0
+        COALESCE(NULLIF(p.LocalSupplierCode, N''), rp.PriceSupplierCode) AS SupplierCode
+    FROM ResolvedPairs rp
     LEFT JOIN [Product] p
-        ON p.ProductCode = COALESCE(NULLIF(d.ProductCode, N''), NULLIF(srp.ProductCode, N''))
-        AND COALESCE(p.IsDeleted, 0) = 0
+        ON p.ProductCode = rp.ProductCode
+        AND p.IsDeleted = 0
     WHERE
-        COALESCE(h.IsDeleted, 0) = 0
-        AND NULLIF(h.StoreCode, N'') IS NOT NULL{{storeFilter}}
-        AND NULLIF(COALESCE(NULLIF(d.ProductCode, N''), NULLIF(srp.ProductCode, N'')), N'') IS NOT NULL
-        AND NULLIF(COALESCE(NULLIF(p.LocalSupplierCode, N''), NULLIF(srp.SupplierCode, N'')), N'') IS NOT NULL
+        rp.ProductCode IS NOT NULL
+        AND COALESCE(NULLIF(p.LocalSupplierCode, N''), rp.PriceSupplierCode) IS NOT NULL
 ) source
 LEFT JOIN [LocalSupplier] sup
     ON sup.LocalSupplierCode = source.SupplierCode
-    AND COALESCE(sup.IsDeleted, 0) = 0
+    AND sup.IsDeleted = 0
 ORDER BY
     Label,
     Value

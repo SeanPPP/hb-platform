@@ -353,8 +353,9 @@ export default function LocalSupplierPurchaseSalesAnalysisPage() {
     () => buildStoreOptionsFromUserStores(currentUser?.stores, { manageableOnly: true }),
     [currentUser?.stores],
   )
-  const requiresStoreSelectionBeforeSupplierOptions =
-    Array.isArray(scopedStoreCodes) && scopedStoreCodes.length > 1 && !draftFilters.storeCode
+  // 查询本身必须同时选定分店和供应商，未选分店时预拉全部门店的供应商候选要在库里扫几十万行进货明细、
+  // 耗时接近 10 秒且对结果没有帮助，所以所有角色都等分店选定后再加载供应商。
+  const requiresStoreSelectionBeforeSupplierOptions = !draftFilters.storeCode
   const hasRequiredDraftFilters = Boolean(draftFilters.storeCode && draftFilters.supplierCode)
   const hasRequiredCommittedFilters = Boolean(filters.storeCode && filters.supplierCode)
 
@@ -842,7 +843,9 @@ export default function LocalSupplierPurchaseSalesAnalysisPage() {
                 notFoundContent={
                   supplierOptionsLoading
                     ? t('common.loading', '加载中')
-                    : t('posAdmin.localSupplierPurchaseSalesAnalysis.filters.noSuppliers', '暂无可选供应商')
+                    : requiresStoreSelectionBeforeSupplierOptions
+                      ? t('posAdmin.localSupplierPurchaseSalesAnalysis.filters.selectStoreFirst', '请先选择分店')
+                      : t('posAdmin.localSupplierPurchaseSalesAnalysis.filters.noSuppliers', '暂无可选供应商')
                 }
                 options={supplierOptions}
                 onChange={(value) => {

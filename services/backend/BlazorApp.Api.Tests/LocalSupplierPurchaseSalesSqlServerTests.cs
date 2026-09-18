@@ -28,54 +28,58 @@ public sealed class LocalSupplierPurchaseSalesSqlServerTests
         "PURCHASE_SALES_SQLSERVER_TEST_CONNECTION";
 
     // 关键位置：七个同名 CTE 只用 VALUES 构造数据，确保真实 SQL Server 验证不读写业务表。
+    // IsDeleted 与实体层一致为非空 bit：0 参与统计、1 被排除；查询不再兼容 NULL 删除标记。
     private const string FixturePrefix =
         """
 WITH StoreLocalSupplierInvoice
     (InvoiceGUID, StoreCode, OrderDate, InboundDate, CreatedAt, IsDeleted) AS (
     SELECT * FROM (VALUES
-        (CAST(N'H-P1-OLD' AS nvarchar(50)), CAST(N'1004' AS nvarchar(50)), CAST('2026-03-30' AS datetime2), CAST('2026-03-20' AS datetime2), CAST('2026-03-20' AS datetime2), CAST(NULL AS bit)),
-        (N'H-P1-NEW', N'1004', CAST('2026-03-21' AS datetime2), CAST('2026-04-01' AS datetime2), CAST('2026-04-01' AS datetime2), NULL),
-        (N'H-P2', N'1004', CAST('2026-04-02' AS datetime2), CAST('2026-04-02' AS datetime2), CAST('2026-04-02' AS datetime2), NULL),
-        (N'H-P3', N'1004', CAST('2026-04-03' AS datetime2), CAST('2026-04-03' AS datetime2), CAST('2026-04-03' AS datetime2), NULL),
-        (N'H-P4', N'1004', CAST('2026-04-04' AS datetime2), CAST('2026-04-04' AS datetime2), CAST('2026-04-04' AS datetime2), NULL),
-        (N'H-ORDER-OUTSIDE', N'1004', CAST('2026-03-12' AS datetime2), CAST('2026-05-01' AS datetime2), CAST('2026-03-12' AS datetime2), NULL)
+        (CAST(N'H-P1-OLD' AS nvarchar(50)), CAST(N'1004' AS nvarchar(50)), CAST('2026-03-30' AS datetime2), CAST('2026-03-20' AS datetime2), CAST('2026-03-20' AS datetime2), CAST(0 AS bit)),
+        (N'H-P1-NEW', N'1004', CAST('2026-03-21' AS datetime2), CAST('2026-04-01' AS datetime2), CAST('2026-04-01' AS datetime2), 0),
+        (N'H-P2', N'1004', CAST('2026-04-02' AS datetime2), CAST('2026-04-02' AS datetime2), CAST('2026-04-02' AS datetime2), 0),
+        (N'H-P3', N'1004', CAST('2026-04-03' AS datetime2), CAST('2026-04-03' AS datetime2), CAST('2026-04-03' AS datetime2), 0),
+        (N'H-P4', N'1004', CAST('2026-04-04' AS datetime2), CAST('2026-04-04' AS datetime2), CAST('2026-04-04' AS datetime2), 0),
+        (N'H-ORDER-OUTSIDE', N'1004', CAST('2026-03-12' AS datetime2), CAST('2026-05-01' AS datetime2), CAST('2026-03-12' AS datetime2), 0),
+        (N'H-DELETED', N'1004', CAST('2026-04-05' AS datetime2), CAST('2026-04-05' AS datetime2), CAST('2026-04-05' AS datetime2), 1)
     ) value(InvoiceGUID, StoreCode, OrderDate, InboundDate, CreatedAt, IsDeleted)
 ),
 StoreLocalSupplierInvoiceDetails
     (InvoiceGUID, StoreProductCode, ProductCode, ItemNumber, Barcode, ProductName, Quantity, IsDeleted) AS (
     SELECT * FROM (VALUES
-        (CAST(N'H-P1-OLD' AS nvarchar(50)), CAST(N'SRP-P1' AS nvarchar(50)), CAST(N'P1' AS nvarchar(50)), CAST(N'ITEM-P1' AS nvarchar(50)), CAST(N'BAR-P1' AS nvarchar(50)), CAST(N'Product 1' AS nvarchar(100)), CAST(5 AS decimal(18, 2)), CAST(NULL AS bit)),
-        (N'H-P1-NEW', N'SRP-P1', N'P1', N'ITEM-P1', N'BAR-P1', N'Product 1', CAST(10 AS decimal(18, 2)), NULL),
-        (N'H-P2', N'SRP-P2', N'P2', N'ITEM-P2', N'BAR-P2', N'Product 2', CAST(4 AS decimal(18, 2)), NULL),
-        (N'H-P3', N'SRP-P3', N'P3', N'ITEM-P3', N'BAR-P3', N'Product 3', CAST(8 AS decimal(18, 2)), NULL),
-        (N'H-P4', N'SRP-P4', N'P4', N'ITEM-P4', N'BAR-P4', N'Product 4', CAST(6 AS decimal(18, 2)), NULL),
-        (N'H-ORDER-OUTSIDE', N'SRP-P1', N'P1', N'ITEM-P1', N'BAR-P1', N'Product 1', CAST(999 AS decimal(18, 2)), NULL)
+        (CAST(N'H-P1-OLD' AS nvarchar(50)), CAST(N'SRP-P1' AS nvarchar(50)), CAST(N'P1' AS nvarchar(50)), CAST(N'ITEM-P1' AS nvarchar(50)), CAST(N'BAR-P1' AS nvarchar(50)), CAST(N'Product 1' AS nvarchar(100)), CAST(5 AS decimal(18, 2)), CAST(0 AS bit)),
+        (N'H-P1-NEW', N'SRP-P1', N'P1', N'ITEM-P1', N'BAR-P1', N'Product 1', CAST(10 AS decimal(18, 2)), 0),
+        (N'H-P2', N'SRP-P2', N'P2', N'ITEM-P2', N'BAR-P2', N'Product 2', CAST(4 AS decimal(18, 2)), 0),
+        (N'H-P3', N'SRP-P3', N'P3', N'ITEM-P3', N'BAR-P3', N'Product 3', CAST(8 AS decimal(18, 2)), 0),
+        (N'H-P4', N'SRP-P4', N'P4', N'ITEM-P4', N'BAR-P4', N'Product 4', CAST(6 AS decimal(18, 2)), 0),
+        (N'H-ORDER-OUTSIDE', N'SRP-P1', N'P1', N'ITEM-P1', N'BAR-P1', N'Product 1', CAST(999 AS decimal(18, 2)), 0),
+        (N'H-DELETED', N'SRP-P2', N'P2', N'ITEM-P2', N'BAR-P2', N'Product 2', CAST(500 AS decimal(18, 2)), 0),
+        (N'H-P2', N'SRP-P2', N'P2', N'ITEM-P2', N'BAR-P2', N'Product 2', CAST(300 AS decimal(18, 2)), 1)
     ) value(InvoiceGUID, StoreProductCode, ProductCode, ItemNumber, Barcode, ProductName, Quantity, IsDeleted)
 ),
 StoreRetailPrice (UUID, ProductCode, SupplierCode, IsDeleted) AS (
     SELECT * FROM (VALUES
-        (CAST(N'SRP-P1' AS nvarchar(50)), CAST(N'P1' AS nvarchar(50)), CAST(N'243' AS nvarchar(50)), CAST(NULL AS bit)),
-        (N'SRP-P2', N'P2', N'243', NULL),
-        (N'SRP-P3', N'P3', N'243', NULL),
-        (N'SRP-P4', N'P4', N'243', NULL)
+        (CAST(N'SRP-P1' AS nvarchar(50)), CAST(N'P1' AS nvarchar(50)), CAST(N'243' AS nvarchar(50)), CAST(0 AS bit)),
+        (N'SRP-P2', N'P2', N'243', 0),
+        (N'SRP-P3', N'P3', N'243', 0),
+        (N'SRP-P4', N'P4', N'243', 0)
     ) value(UUID, ProductCode, SupplierCode, IsDeleted)
 ),
 Product
     (ProductCode, ItemNumber, Barcode, ProductName, ProductImage, LocalSupplierCode, IsDeleted) AS (
     SELECT * FROM (VALUES
-        (CAST(N'P1' AS nvarchar(50)), CAST(N'ITEM-P1' AS nvarchar(50)), CAST(N'BAR-P1' AS nvarchar(50)), CAST(N'Product 1' AS nvarchar(100)), CAST(N'p1.jpg' AS nvarchar(200)), CAST(N'243' AS nvarchar(50)), CAST(NULL AS bit)),
-        (N'P2', N'ITEM-P2', N'BAR-P2', N'Product 2', N'p2.jpg', N'243', NULL),
-        (N'P3', N'ITEM-P3', N'BAR-P3', N'Product 3', N'p3.jpg', N'OTHER', NULL),
-        (N'P4', N'ITEM-P4', N'BAR-P4', N'Product 4', N'p4.jpg', NULL, NULL)
+        (CAST(N'P1' AS nvarchar(50)), CAST(N'ITEM-P1' AS nvarchar(50)), CAST(N'BAR-P1' AS nvarchar(50)), CAST(N'Product 1' AS nvarchar(100)), CAST(N'p1.jpg' AS nvarchar(200)), CAST(N'243' AS nvarchar(50)), CAST(0 AS bit)),
+        (N'P2', N'ITEM-P2', N'BAR-P2', N'Product 2', N'p2.jpg', N'243', 0),
+        (N'P3', N'ITEM-P3', N'BAR-P3', N'Product 3', N'p3.jpg', N'OTHER', 0),
+        (N'P4', N'ITEM-P4', N'BAR-P4', N'Product 4', N'p4.jpg', NULL, 0)
     ) value(ProductCode, ItemNumber, Barcode, ProductName, ProductImage, LocalSupplierCode, IsDeleted)
 ),
 Store (StoreCode, StoreName, IsDeleted) AS (
-    SELECT CAST(N'1004' AS nvarchar(50)), CAST(N'Campbelltown' AS nvarchar(100)), CAST(NULL AS bit)
+    SELECT CAST(N'1004' AS nvarchar(50)), CAST(N'Campbelltown' AS nvarchar(100)), CAST(0 AS bit)
 ),
 LocalSupplier (LocalSupplierCode, Name, IsDeleted) AS (
     SELECT * FROM (VALUES
-        (CAST(N'243' AS nvarchar(50)), CAST(N'Brazco' AS nvarchar(100)), CAST(NULL AS bit)),
-        (N'OTHER', N'Other Supplier', NULL)
+        (CAST(N'243' AS nvarchar(50)), CAST(N'Brazco' AS nvarchar(100)), CAST(0 AS bit)),
+        (N'OTHER', N'Other Supplier', 0)
     ) value(LocalSupplierCode, Name, IsDeleted)
 ),
 ProductStoreDailySalesStatistic (BranchCode, ProductCode, Date, TotalQuantity, UpdateTime) AS (
@@ -94,13 +98,23 @@ ProductStoreDailySalesStatistic (BranchCode, ProductCode, Date, TotalQuantity, U
 """;
 
     [LocalSupplierPurchaseSalesSqlServerFact]
-    public async Task 查询遵守供应商优先订单日期最近两次与Null删除标记语义()
+    public async Task 查询遵守供应商优先订单日期最近两次与删除标记语义()
     {
         var sql = BuildQuery();
         var rows = await QueryAsync(sql.PagedSql, sql.Parameters);
 
         Assert.Equal(3, rows.Count);
         Assert.DoesNotContain(rows, row => Text(row, "ProductCode") == "P3");
+        // 分页行自带总数与统计更新时间，且已删除单据/明细不计入进货数量。
+        // 06-30 的销量落在 P1 最近进货 90 天窗口之外，所以全局最后更新时间是 06-29 那条的 08:00。
+        Assert.All(rows, row => Assert.Equal(3, Integer(row, "TotalCount")));
+        Assert.All(
+            rows,
+            row => Assert.Equal(new DateTime(2026, 7, 1, 8, 0, 0), Date(row, "OverallSalesStatisticLastUpdate"))
+        );
+        var p2 = Assert.Single(rows, row => Text(row, "ProductCode") == "P2");
+        Assert.Equal(new DateTime(2026, 4, 2), Date(p2, "LatestPurchaseDate"));
+        Assert.Equal(4m, Decimal(p2, "LatestPurchaseQty"));
 
         var p1 = Assert.Single(rows, row => Text(row, "ProductCode") == "P1");
         Assert.Equal("243", Text(p1, "SupplierCode"));
