@@ -419,6 +419,64 @@ public sealed class BatchProductSalesMiddleTableTests : IDisposable
     }
 
     [Fact]
+    public async Task DailyStore_canonical重算已失败时按退避时间落库且到期前不再领取()
+    {
+        var day = _day.AddDays(3);
+        var now = new DateTime(2026, 9, 18, 8, 40, 0, DateTimeKind.Utc);
+        var failedAt = now.AddMinutes(-4);
+        _db.Insertable(new SalesStatisticRefreshState
+        {
+            StatisticType = SalesStatisticType.ProductStoreDaily, Date = day, Status = "Failed", LastCheckedAtUtc = failedAt,
+            ErrorMessage = "商品统计与分店营业额统计不一致",
+        }).ExecuteCommand();
+        _db.Insertable(new BatchProductSalesDiscountRefreshState
+        {
+            Date = day, Status = BatchProductSalesDiscountDailyStore.WaitingForCanonicalStatus, RuleVersion = 1,
+            RequestedAtUtc = failedAt, NextAttemptAtUtc = now, ReconcileRequested = true,
+        }).ExecuteCommand();
+        var store = new BatchProductSalesDiscountDailyStore(_db);
+
+        var claim = await store.ClaimNextAsync(now, [], default);
+        Assert.NotNull(claim);
+        Assert.Equal(day, claim!.State.Date.Date);
+        var canonical = await store.ReadCanonicalStateAsync(day, default);
+        Assert.Equal("Failed", canonical.Status);
+        Assert.Equal(failedAt, canonical.CheckedAtUtc);
+        var decision = BatchProductSalesDiscountDailyStore.DecideCanonicalReconciliation(
+            claim.State.ReconcileRequested, canonical.Status, canonical.CheckedAtUtc, now);
+        Assert.False(decision.Request);
+        await store.WaitForCanonicalRefreshAsync(claim, now, default, "日统计重算失败", decision.NextAttemptAtUtc);
+
+        var persisted = ReadDiscountState(day);
+        Assert.Equal(BatchProductSalesDiscountDailyStore.WaitingForCanonicalStatus, persisted.Status);
+        Assert.Equal(failedAt.Add(BatchProductSalesDiscountDailyStore.FailedCanonicalRetryDelay), persisted.NextAttemptAtUtc);
+        Assert.True(persisted.ReconcileRequested);
+        Assert.Equal("日统计重算失败", persisted.LastError);
+        Assert.Equal(0, persisted.Attempts);
+        // 退避期内即使 worker 每轮都来领取，也拿不到这一天。
+        var early = await store.ClaimNextAsync(now.AddHours(1), [], default);
+        Assert.NotEqual(day, early?.State.Date.Date);
+    }
+
+    [Fact]
+    public async Task DailyStore_canonical等待不接受早于常规短等待的检查时间()
+    {
+        var day = _day.AddDays(4);
+        var now = new DateTime(2026, 9, 18, 8, 40, 0, DateTimeKind.Utc);
+        _db.Insertable(new BatchProductSalesDiscountRefreshState
+        {
+            Date = day, Status = "Queued", RuleVersion = 1, RequestedAtUtc = now, NextAttemptAtUtc = now,
+        }).ExecuteCommand();
+        var store = new BatchProductSalesDiscountDailyStore(_db);
+        var claim = (await store.ClaimNextAsync(now, [], default))!;
+        Assert.Equal(day, claim.State.Date.Date);
+
+        await store.WaitForCanonicalRefreshAsync(claim, now, default, nextAttemptAtUtc: now.AddHours(-1));
+
+        Assert.Equal(now.Add(BatchProductSalesDiscountDailyStore.CanonicalWaitDelay), ReadDiscountState(day).NextAttemptAtUtc);
+    }
+
+    [Fact]
     public async Task Detail_越权门店范围继续被拒绝()
     {
         Publish(_day, "source-1", Facts());
@@ -454,6 +512,9 @@ public sealed class BatchProductSalesMiddleTableTests : IDisposable
     }
 
     private BatchProductSalesAnalysisService CreateService() => new(_db, Mock.Of<IProductStoreDailyStatisticQueueService>(), NullLogger<BatchProductSalesAnalysisService>.Instance);
+    // SQLite 上 DateTime 等值比较会读不到行，测试按单日半开区间读取折扣日状态。
+    private BatchProductSalesDiscountRefreshState ReadDiscountState(DateTime date) => _db.Queryable<BatchProductSalesDiscountRefreshState>()
+        .Where(x => x.Date >= date.Date && x.Date < date.Date.AddDays(1)).Single();
     private void AddStatisticState(DateTime date) => _db.Insertable(new SalesStatisticRefreshState { StatisticType = SalesStatisticType.ProductStoreDaily, Date = date, Status = "Fresh", CompletedAtUtc = date }).ExecuteCommand();
     private void AddRefreshState(DateTime date, string sourceVersion, int snapshotCount = 1) => _db.Insertable(new BatchProductSalesDiscountRefreshState { Date = date, Status = "Fresh", RuleVersion = 1, SourceVersion = sourceVersion, StatisticsVersion = "sales-only", RequestedAtUtc = date, NextAttemptAtUtc = date, CompletedAtUtc = date, SnapshotCount = snapshotCount }).ExecuteCommand();
     private void Publish(DateTime date, string sourceVersion, List<BatchProductSalesAggregateRow> rows, string? payload = null) => _db.Insertable(new BatchProductSalesDiscountSnapshot { Id = $"snapshot-{date:yyyyMMdd}-{Guid.NewGuid():N}", SnapshotFormat = 2, SourceVersion = sourceVersion, ProductCode = "P1", StartDate = date, EndDate = date, Status = "Fresh", StoreCodesJson = "[]", RequestedAtUtc = date, NextAttemptAtUtc = date, CompletedAtUtc = date, PayloadJson = payload ?? JsonSerializer.Serialize(rows) }).ExecuteCommand();
