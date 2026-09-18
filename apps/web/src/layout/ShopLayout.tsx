@@ -467,7 +467,9 @@ export default function ShopLayout() {
   }
 
   return (
-    <div className={`shop-layout${isComingSoonPage || isLocalSupplierInvoicesPage ? ' shop-workspace-layout' : ''}`}>
+    <div
+      className={`shop-layout${isComingSoonPage || isOrdersPage || isLocalSupplierInvoicesPage ? ' shop-workspace-layout' : ''}`}
+    >
       <header className="shop-main-header">
         <div className="shop-shell">
           <button

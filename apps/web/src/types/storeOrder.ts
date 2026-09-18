@@ -34,6 +34,8 @@ export interface StoreOrderBranchOption {
 
 export interface StoreOrderListQuery {
   keyword?: string
+  /** 商品维度关键字：按货号、条码或商品名筛选包含该商品的订单。 */
+  productKeyword?: string
   storeCode?: string
   storeCodes?: string[]
   startDate?: string
