@@ -1,6 +1,7 @@
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.React;
+using BlazorApp.Shared.Models;
 using Microsoft.Extensions.Options;
 using System.Text.Json;
 using System.Diagnostics;
@@ -114,11 +115,22 @@ public sealed class BatchProductSalesDiscountWorker(
             var canonicalStatus = await canonical.StatusAsync(day, day, dayToken);
             if (!canonicalStatus.IsFresh)
             {
-                var stateStatus = await store.ReadCanonicalStatusAsync(day, dayToken);
-                if (BatchProductSalesDiscountDailyStore.ShouldRequestCanonicalReconciliation(
-                        claim.State.ReconcileRequested, stateStatus))
+                var canonicalState = await store.ReadCanonicalStateAsync(day, dayToken);
+                var decision = BatchProductSalesDiscountDailyStore.DecideCanonicalReconciliation(
+                    claim.State.ReconcileRequested, canonicalState.Status, canonicalState.CheckedAtUtc, DateTime.UtcNow);
+                if (decision.Request)
+                {
                     await RequestCanonicalReconciliationAsync(services, day, dayToken);
-                await store.WaitForCanonicalRefreshAsync(claim, DateTime.UtcNow, dayToken);
+                    await store.WaitForCanonicalRefreshAsync(claim, DateTime.UtcNow, dayToken);
+                    return;
+                }
+                // 已请求的重算仍失败时进入退避：保留 canonical 的失败原因，便于在折扣状态中直接看到卡点。
+                var backoffDiagnostic = string.Equals(canonicalState.Status, SalesStatisticRefreshStatus.Failed,
+                        StringComparison.OrdinalIgnoreCase)
+                    ? $"日统计重算失败，{decision.NextAttemptAtUtc:yyyy-MM-dd HH:mm} UTC 后再请求重算"
+                    : null;
+                await store.WaitForCanonicalRefreshAsync(claim, DateTime.UtcNow, dayToken, backoffDiagnostic,
+                    decision.NextAttemptAtUtc);
                 return;
             }
             await store.BeginComputationAsync(claim, DateTime.UtcNow, dayToken);
@@ -164,8 +176,8 @@ public sealed class BatchProductSalesDiscountWorker(
                     await PersistFailureAsync(claim, mismatchDiagnostic, preserveExistingReconcileRequested: false);
                     return;
                 }
-                if (BatchProductSalesDiscountDailyStore.ShouldRequestCanonicalReconciliation(claim.State.ReconcileRequested, null))
-                    await RequestCanonicalReconciliationAsync(services, day, dayToken);
+                // 上面已处理 ReconcileRequested=true；此处首次发现不一致，总是请求一次 canonical 重算。
+                await RequestCanonicalReconciliationAsync(services, day, dayToken);
                 await store.WaitForCanonicalRefreshAsync(claim, DateTime.UtcNow, dayToken, mismatchDiagnostic);
                 return;
             }

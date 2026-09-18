@@ -16,6 +16,9 @@ internal sealed class BatchProductSalesDiscountDailyStore(ISqlSugarClient db)
     internal const string WaitingForCanonicalStatus = "WaitingCanonical";
     internal static readonly TimeSpan ExecutionLeaseDuration = TimeSpan.FromMinutes(10);
     internal static readonly TimeSpan CanonicalWaitDelay = TimeSpan.FromSeconds(30);
+    // 已请求过的 canonical 重算仍然失败时，距该次失败满此间隔才再请求。对账不一致这类确定性失败
+    // 每次重算结果都相同，立即重试只会每 3~4 分钟跑一次重型重算并与其他统计任务死锁。
+    internal static readonly TimeSpan FailedCanonicalRetryDelay = TimeSpan.FromHours(6);
 
     internal bool SchemaReady
     {
@@ -122,9 +125,23 @@ internal sealed class BatchProductSalesDiscountDailyStore(ISqlSugarClient db)
     internal static int AttemptsAfterCanonicalWait(int claimedAttempts, string priorStatus) =>
         ShouldConsumeFailureAttempt(priorStatus) ? Math.Max(0, claimedAttempts - 1) : claimedAttempts;
 
-    internal static bool ShouldRequestCanonicalReconciliation(bool reconcileRequested, string? canonicalStatus) =>
-        !reconcileRequested || string.IsNullOrWhiteSpace(canonicalStatus)
-            || string.Equals(canonicalStatus, SalesStatisticRefreshStatus.Failed, StringComparison.OrdinalIgnoreCase);
+    internal sealed record CanonicalReconciliationDecision(bool Request, DateTime NextAttemptAtUtc);
+
+    /// <summary>
+    /// 决定是否请求 canonical 日统计重算，以及折扣日下次何时再检查。
+    /// 首次请求、状态缺失照旧立即请求；排队/运行中短间隔等待。
+    /// 已请求过且 canonical 失败时，以失败时间（LastCheckedAtUtc）为起点退避，到期前既不重新入队也不短轮询。
+    /// </summary>
+    internal static CanonicalReconciliationDecision DecideCanonicalReconciliation(bool reconcileRequested,
+        string? canonicalStatus, DateTime? canonicalCheckedAtUtc, DateTime nowUtc)
+    {
+        var shortWait = nowUtc.Add(CanonicalWaitDelay);
+        if (!reconcileRequested || string.IsNullOrWhiteSpace(canonicalStatus)) return new(true, shortWait);
+        if (!string.Equals(canonicalStatus, SalesStatisticRefreshStatus.Failed, StringComparison.OrdinalIgnoreCase))
+            return new(false, shortWait);
+        var retryAt = canonicalCheckedAtUtc?.Add(FailedCanonicalRetryDelay);
+        return retryAt == null || retryAt <= nowUtc ? new(true, shortWait) : new(false, retryAt.Value);
+    }
 
     /// <summary>最近业务日的已发布数据按短间隔刷新；历史回填/恢复从范围起点向后推进。</summary>
     internal static IReadOnlyList<BatchProductSalesDiscountRefreshState> OrderEligibleCandidates(
@@ -157,13 +174,17 @@ internal sealed class BatchProductSalesDiscountDailyStore(ISqlSugarClient db)
                 && (x.Status == "Queued" || x.Status == "Failed" || x.Status == WaitingForCanonicalStatus)
                 && x.NextAttemptAtUtc <= nowUtc);
 
-    internal async Task<string?> ReadCanonicalStatusAsync(DateTime date, CancellationToken token)
+    /// <summary>读取 canonical 日统计状态；失败行的 LastCheckedAtUtc 即失败时间，用于重算退避。</summary>
+    internal async Task<(string? Status, DateTime? CheckedAtUtc)> ReadCanonicalStateAsync(DateTime date, CancellationToken token)
     {
-        var status = await db.Queryable<SalesStatisticRefreshState>().With(SqlWith.Null)
-            .Where(x => x.StatisticType == SalesStatisticType.ProductStoreDaily && x.Date == date.Date)
-            .Select(x => x.Status).FirstAsync();
+        // 半开区间与其他日期读取一致：SqlSugar 在 SQLite 上的 DateTime 等值比较会格式错位而读不到行。
+        var day = date.Date;
+        var nextDay = day.AddDays(1);
+        var state = await db.Queryable<SalesStatisticRefreshState>().With(SqlWith.Null)
+            .Where(x => x.StatisticType == SalesStatisticType.ProductStoreDaily && x.Date >= day && x.Date < nextDay)
+            .Select(x => new { x.Status, x.LastCheckedAtUtc }).FirstAsync();
         token.ThrowIfCancellationRequested();
-        return status;
+        return (state?.Status, state?.LastCheckedAtUtc);
     }
 
     internal async Task EnsureOwnershipAsync(ClaimedDay claim, DateTime nowUtc, CancellationToken token)
@@ -278,14 +299,17 @@ internal sealed class BatchProductSalesDiscountDailyStore(ISqlSugarClient db)
 
     /// <summary>canonical 队列已受理时仅短暂等待，不消耗折扣计算的失败重试次数。</summary>
     internal async Task WaitForCanonicalRefreshAsync(ClaimedDay claim, DateTime nowUtc, CancellationToken token,
-        string? diagnostic = null)
+        string? diagnostic = null, DateTime? nextAttemptAtUtc = null)
     {
         await EnsureOwnershipAsync(claim, nowUtc, token);
         var attemptsAfterWait = AttemptsAfterCanonicalWait(claim.State.Attempts, claim.State.Status);
         var persistedDiagnostic = diagnostic is { Length: > 2000 } ? diagnostic[..2000] : diagnostic;
+        // 退避时由调用方给出更晚的检查时间；不允许早于常规短等待，避免误传过去时间造成忙轮询。
+        var nextAttempt = nextAttemptAtUtc is { } requested && requested > nowUtc.Add(CanonicalWaitDelay)
+            ? requested : nowUtc.Add(CanonicalWaitDelay);
         var changed = await db.Updateable<BatchProductSalesDiscountRefreshState>()
             .SetColumns(x => x.Status == WaitingForCanonicalStatus)
-            .SetColumns(x => x.NextAttemptAtUtc == nowUtc.Add(CanonicalWaitDelay))
+            .SetColumns(x => x.NextAttemptAtUtc == nextAttempt)
             // Claim 阶段尚不知 canonical 是否可读；进入普通等待时归还本轮未发生计算的尝试计数。
             .SetColumns(x => x.Attempts == attemptsAfterWait)
             .SetColumns(x => x.ReconcileRequested == true)
