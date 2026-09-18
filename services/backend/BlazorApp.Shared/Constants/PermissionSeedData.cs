@@ -356,7 +356,7 @@ namespace BlazorApp.Shared.Constants
                 new(Permissions.Dashboard.View, "访问后台", "后台管理", "Web 页面 /dashboard - 访问后台工作台"),
                 new(Permissions.OrderFront.View, "前台订货", "前台订货", "Web 订货前台与移动端「订货单」- 进入前台订货入口（Order / 订货员角色核心权限）"),
                 // 仅注册权限，不写入订货员角色模板；由管理员显式授予后才能在前台查看全部分店销量。
-                new(Permissions.OrderFront.BatchProductSalesView, "前台查看货号销量", "前台订货", "Web 订货前台页面 /shop/batch-product-sales - 按导入货号查看全部分店的销量、每日趋势及折扣成交情况"),
+                new(Permissions.OrderFront.BatchProductSalesView, "前台查看货号销量", "前台订货", "Web 订货前台页面 /shop/purchase-sales-analysis「粘贴数据查看」标签 - 按导入货号查看全部分店的销量、每日趋势及折扣成交情况"),
             };
 
         public static IReadOnlyList<RolePermissionTemplateDefinition> RolePermissionTemplates { get; } =

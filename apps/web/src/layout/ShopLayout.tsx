@@ -133,12 +133,11 @@ export default function ShopLayout() {
   const isShopHomePage = location.pathname === '/shop'
   const isPreorderPage = location.pathname.startsWith('/shop/preorders/')
   const isBestSellersPage = location.pathname.startsWith('/shop/best-sellers')
-  const isBatchProductSalesPage = location.pathname.startsWith('/shop/batch-product-sales')
   const isComingSoonPage = location.pathname.startsWith('/shop/coming-soon')
   const isOrdersPage = location.pathname.startsWith('/shop/orders')
   const isLocalSupplierInvoicesPage = location.pathname.startsWith('/shop/local-supplier-invoices')
   const isPurchaseSalesAnalysisPage = location.pathname.startsWith('/shop/purchase-sales-analysis')
-  const isMorePage = isPreorderPage || isBestSellersPage || isBatchProductSalesPage || isComingSoonPage || isLocalSupplierInvoicesPage || isPurchaseSalesAnalysisPage
+  const isMorePage = isPreorderPage || isBestSellersPage || isComingSoonPage || isLocalSupplierInvoicesPage || isPurchaseSalesAnalysisPage
   const shopBannerCopy = useMemo(() => resolveShopBannerCopy(location.pathname), [location.pathname])
   const preorderDateTimeFormatter = useMemo(
     () => new Intl.DateTimeFormat(i18n.resolvedLanguage || i18n.language, { dateStyle: 'medium', timeStyle: 'short' }),
@@ -476,7 +475,7 @@ export default function ShopLayout() {
 
   return (
     <div
-      className={`shop-layout${isComingSoonPage || isOrdersPage || isLocalSupplierInvoicesPage || isBatchProductSalesPage || isPurchaseSalesAnalysisPage ? ' shop-workspace-layout' : ''}`}
+      className={`shop-layout${isComingSoonPage || isOrdersPage || isLocalSupplierInvoicesPage || isPurchaseSalesAnalysisPage ? ' shop-workspace-layout' : ''}`}
     >
       <header className="shop-main-header">
         <div className="shop-shell">
@@ -516,15 +515,6 @@ export default function ShopLayout() {
             >
               {t('shop.bestSellers', 'Best Sellers')}
             </Link>
-            {access.canViewShopBatchProductSales ? (
-              <Link
-                to="/shop/batch-product-sales"
-                className={`shop-primary-nav__item${isBatchProductSalesPage ? ' active' : ''}`}
-                aria-current={isBatchProductSalesPage ? 'page' : undefined}
-              >
-                {t('shop.batchProductSales', 'Item Sales')}
-              </Link>
-            ) : null}
             <Link
               to="/shop/coming-soon"
               className={`shop-primary-nav__item${isComingSoonPage ? ' active' : ''}`}
@@ -901,16 +891,6 @@ export default function ShopLayout() {
           >
             <AppstoreOutlined /><span>{t('shop.bestSellers', 'Best Sellers')}</span>
           </Link>
-          {access.canViewShopBatchProductSales ? (
-            <Link
-              to="/shop/batch-product-sales"
-              className={isBatchProductSalesPage ? 'active' : ''}
-              onClick={() => setMobileMoreVisible(false)}
-              aria-current={isBatchProductSalesPage ? 'page' : undefined}
-            >
-              <BarChartOutlined /><span>{t('shop.batchProductSales', 'Item Sales')}</span>
-            </Link>
-          ) : null}
           <Link
             to="/shop/coming-soon"
             className={isComingSoonPage ? 'active' : ''}

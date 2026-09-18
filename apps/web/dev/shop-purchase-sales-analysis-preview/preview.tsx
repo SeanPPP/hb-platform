@@ -88,23 +88,24 @@ window.fetch = async (input, init) => {
 const language = new URLSearchParams(location.search).get('lang') === 'en' ? 'en' : 'zh'
 await i18n.changeLanguage(language)
 const adminMode = new URLSearchParams(location.search).get('mode') === 'admin'
-// 前台：订货员仅前台权限、一家门店；后台：仅持销售看板「分店进货销量分析」权限的用户。
+// 前台：订货员一家门店，带前台货号销量权限以显示两个标签，本入口停在「选择分店查看」；后台：仅持销售看板「分店进货销量分析」权限的用户。
 const user = adminMode
   ? { userGUID: 'purchase-analysis-admin-preview', username: '本地验收', email: '', roleNames: [], storeNames: ['Springfield', 'Sunnybank'],
       permissions: ['SalesDashboard.LocalSupplierPurchaseSales.View'], exactPermissions: ['SalesDashboard.LocalSupplierPurchaseSales.View'],
       stores: [store, { ...store, storeGUID: 'store-b2', storeName: 'Sunnybank', storeCode: 'B2' }] }
   : { userGUID: 'shop-purchase-analysis-preview', username: 'springfield.staff', email: '',
-      permissions: ['OrderFront'], exactPermissions: ['OrderFront'], roleNames: ['订货员'], storeNames: ['Springfield'], stores: [store] }
+      permissions: ['OrderFront', 'OrderFront.BatchProductSales.View'], exactPermissions: ['OrderFront', 'OrderFront.BatchProductSales.View'],
+      roleNames: ['订货员'], storeNames: ['Springfield'], stores: [store] }
 useAuthStore.setState({ currentUser: user, access: buildAccess(user), initialized: true })
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <ConfigProvider locale={language === 'en' ? enUS : zhCN} theme={{ token: { colorPrimary: '#1677ff', borderRadius: 6,
     fontFamily: '-apple-system,BlinkMacSystemFont,Segoe UI,PingFang SC,sans-serif' } }}>
-    <div style={{ padding: '4px 18px', background: '#fff8e7', color: '#775b22', fontSize: 12 }}>本地交互验收 · 演示数据 · {adminMode ? '后台 AdminLayout + 销售看板「分店进货销量分析」' : '订货前台 ShopLayout + 「进货销量分析」'}</div>
+    <div style={{ padding: '4px 18px', background: '#fff8e7', color: '#775b22', fontSize: 12 }}>本地交互验收 · 演示数据 · {adminMode ? '后台 AdminLayout + 销售看板「分店进货销量分析」' : '订货前台 ShopLayout + 「进货销量分析 · 选择分店查看」'}</div>
     {adminMode ? (
       <MemoryRouter initialEntries={['/executive-sales-intelligence/local-supplier-purchase-sales-analysis']}><AdminLayout /></MemoryRouter>
     ) : (
-      <MemoryRouter initialEntries={['/shop/purchase-sales-analysis']}>
+      <MemoryRouter initialEntries={['/shop/purchase-sales-analysis?tab=store']}>
         <Routes>
           <Route path="/shop" element={<ShopPreorderLeaveProvider><ShopLayout /></ShopPreorderLeaveProvider>}>
             <Route path="purchase-sales-analysis" element={<ShopPurchaseSalesAnalysisPage />} />
