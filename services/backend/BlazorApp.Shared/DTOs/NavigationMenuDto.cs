@@ -14,6 +14,11 @@ namespace BlazorApp.Shared.DTOs
         /// 精确权限节点标记。为 true 时仅按精确权限代码判定可见性，不展开别名。
         /// </summary>
         public bool RequireExactPermission { get; set; }
+        /// <summary>
+        /// 任一权限即可见。用于一个菜单页承载多个独立授权标签的场景（如进货销量分析），
+        /// 仅在 Permission 为空时生效，现有单权限节点不受影响。
+        /// </summary>
+        public List<string>? AnyPermissions { get; set; }
         public List<NavigationMenuDto>? Children { get; set; }
     }
 

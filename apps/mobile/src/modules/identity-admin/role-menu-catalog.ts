@@ -37,7 +37,8 @@ const WEB_MENU: MenuSource[] = ([
   ["/executive-sales-intelligence/product-movement-report", "Product movement", "商品流动", ["SalesDashboard.ProductMovement.View"]],
   ["/executive-sales-intelligence/warehouse-product-flow-analysis", "Warehouse product flow", "仓库商品流向", ["SalesDashboard.WarehouseFlow.View"]],
   ["/executive-sales-intelligence/local-product-sales-analysis", "Local product sales", "本地商品销售", ["SalesDashboard.LocalProductAnalysis.View"]],
-  ["/executive-sales-intelligence/local-supplier-purchase-sales-analysis", "Local purchase analysis", "分店进货销量分析", ["SalesDashboard.LocalSupplierPurchaseSales.View"]],
+  // 批量货号销量与分店进货销量分析已合并为「进货销量分析」双标签页，任一标签权限即显示入口。
+  ["/executive-sales-intelligence/purchase-sales-analysis", "Purchase & sales analysis", "进货销量分析", ["SalesDashboard.BatchProductSales.View", "SalesDashboard.LocalSupplierPurchaseSales.View"]],
   ["/executive-sales-intelligence/purchase-amount-dashboard", "Purchase amount", "采购金额", ["SalesDashboard.PurchaseAmount.View"]],
   ["/pos-admin/suppliers", "Suppliers", "供应商", ["AustralianSuppliers.View"]],
   ["/pos-admin/products", "Product management", "商品管理", ["PosProducts.View"]],

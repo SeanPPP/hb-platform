@@ -254,7 +254,12 @@ function getAnalysisRowKey(record: LocalSupplierPurchaseSalesAnalysisRowDto) {
   return `${record.storeCode}-${record.supplierCode}-${record.productCode}-${record.itemNumber || ''}`
 }
 
-export default function LocalSupplierPurchaseSalesAnalysisPage() {
+interface LocalSupplierPurchaseSalesAnalysisPageProps {
+  /** 嵌入「进货销量分析」标签页时由外层页面提供标题，这里不再渲染自带的页头。 */
+  embedded?: boolean
+}
+
+export default function LocalSupplierPurchaseSalesAnalysisPage({ embedded = false }: LocalSupplierPurchaseSalesAnalysisPageProps = {}) {
   const { t } = useTranslation()
   const currentUser = useAuthStore((state) => state.currentUser)
   const access = useAuthStore((state) => state.access)
@@ -313,7 +318,10 @@ export default function LocalSupplierPurchaseSalesAnalysisPage() {
 
   useLayoutEffect(() => {
     const calc = () => {
-      const containerHeight = wrapRef.current?.clientHeight || window.innerHeight
+      // 嵌入标签页时外层没有固定高度，clientHeight 只是内容高度；改按视口剩余空间估算表格可用高度。
+      const containerHeight = embedded
+        ? window.innerHeight - (wrapRef.current?.getBoundingClientRect().top ?? 0)
+        : wrapRef.current?.clientHeight || window.innerHeight
       const toolbarHeight = toolbarRef.current?.getBoundingClientRect().height || 0
       const available = containerHeight - toolbarHeight - 250
       setTableScrollY(available > 320 ? available : 320)
@@ -322,7 +330,7 @@ export default function LocalSupplierPurchaseSalesAnalysisPage() {
     calc()
     window.addEventListener('resize', calc)
     return () => window.removeEventListener('resize', calc)
-  }, [result?.items.length])
+  }, [embedded, result?.items.length])
 
   useEffect(() => {
     let cancelled = false
@@ -758,17 +766,19 @@ export default function LocalSupplierPurchaseSalesAnalysisPage() {
   return (
     <div ref={wrapRef} style={{ height: '100%' }}>
       <Space direction="vertical" size={12} style={{ width: '100%' }}>
-        <Space direction="vertical" size={4}>
-          <Title level={4} style={{ margin: 0 }}>
-            {t('posAdmin.localSupplierPurchaseSalesAnalysis.title', '分店供应商进货销量分析')}
-          </Title>
-          <Text type="secondary">
-            {t(
-              'posAdmin.localSupplierPurchaseSalesAnalysis.subtitle',
-              '按分店、供应商和订单日期范围查看商品最近进货与后续销量表现。',
-            )}
-          </Text>
-        </Space>
+        {embedded ? null : (
+          <Space direction="vertical" size={4}>
+            <Title level={4} style={{ margin: 0 }}>
+              {t('posAdmin.localSupplierPurchaseSalesAnalysis.title', '分店供应商进货销量分析')}
+            </Title>
+            <Text type="secondary">
+              {t(
+                'posAdmin.localSupplierPurchaseSalesAnalysis.subtitle',
+                '按分店、供应商和订单日期范围查看商品最近进货与后续销量表现。',
+              )}
+            </Text>
+          </Space>
+        )}
 
         <div ref={toolbarRef}>
           <Card size="small">

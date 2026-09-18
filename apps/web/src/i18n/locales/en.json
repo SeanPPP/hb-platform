@@ -120,6 +120,7 @@
     "salesOrders": "Sales Records",
     "localSupplierInvoices": "Local Invoices",
     "localSupplierPurchaseSalesAnalysis": "Local Purchase Sales Analysis",
+    "purchaseSalesAnalysis": "Purchase & Sales Analysis",
     "invoiceDetail": "Invoice Detail",
     "localSupplierInvoiceSalesAnalysis": "Invoice Sales Analysis",
     "editInvoice": "Edit Invoice",

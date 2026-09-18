@@ -34,7 +34,7 @@ const audFormatter = new Intl.NumberFormat('en-AU', {
 
 interface BatchProductSalesAnalysisPageProps {
   api?: BatchProductSalesApi
-  /** 嵌入订货前台标签页时由外层页面提供标题，这里不再渲染自带的页头。 */
+  /** 嵌入订货前台或后台「进货销量分析」标签页时由外层页面提供标题，这里不再渲染自带的页头。 */
   embedded?: boolean
 }
 

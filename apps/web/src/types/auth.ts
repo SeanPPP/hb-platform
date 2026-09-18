@@ -67,6 +67,8 @@ export interface AccessControl {
   canViewLocalProductSalesAnalysis: boolean
   canViewPurchaseAmountDashboard: boolean
   canViewLocalSupplierPurchaseSalesAnalysis: boolean
+  // 「进货销量分析」合并页入口：批量货号销量或分店进货销量分析任一权限即可进入。
+  canViewPurchaseSalesAnalysis: boolean
   canViewProductSalesAnalysis: boolean
   // 新细粒度权限
   canManageWarehouseProducts: boolean
