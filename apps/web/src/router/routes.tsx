@@ -643,6 +643,16 @@ export const appRoutes: AppRouteItem[] = [
         element: <LocalProductSalesAnalysisPage />,
       },
       {
+        path: '/executive-sales-intelligence/local-supplier-purchase-sales-analysis',
+        meta: {
+          title: 'menu.localSupplierPurchaseSalesAnalysis',
+          icon: 'BarChartOutlined',
+          keepAlive: true,
+          accessKey: 'canViewLocalSupplierPurchaseSalesAnalysis',
+        },
+        element: <LocalSupplierPurchaseSalesAnalysisPage />,
+      },
+      {
         path: '/executive-sales-intelligence/product-sales-analysis',
         meta: {
           title: 'menu.warehouseProductFlowAnalysis',
@@ -802,14 +812,14 @@ export const appRoutes: AppRouteItem[] = [
         element: <LocalSupplierInvoicesPage />,
       },
       {
+        // 旧地址兼容：页面已挪到销售看板，书签与历史链接重定向到新路径。
         path: '/pos-admin/local-supplier-purchase-sales-analysis',
         meta: {
           title: 'menu.localSupplierPurchaseSalesAnalysis',
-          icon: 'BarChartOutlined',
-          keepAlive: true,
-          accessKey: 'canManageLocalPurchase',
+          hidden: true,
+          accessKey: 'canViewLocalSupplierPurchaseSalesAnalysis',
         },
-        element: <LocalSupplierPurchaseSalesAnalysisPage />,
+        element: <Navigate replace to="/executive-sales-intelligence/local-supplier-purchase-sales-analysis" />,
       },
       {
         path: '/pos-admin/invoice-detail/:id',

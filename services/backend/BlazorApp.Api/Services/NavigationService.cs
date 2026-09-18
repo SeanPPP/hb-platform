@@ -133,6 +133,7 @@ namespace BlazorApp.Api.Services
                     new() { Path = "/executive-sales-intelligence/batch-product-sales-analysis", TitleKey = "menu.batchProductSalesAnalysis", Icon = "BarChartOutlined", Permission = Permissions.SalesDashboard.BatchProductSalesView },
                     new() { Path = "/executive-sales-intelligence/warehouse-product-flow-analysis", TitleKey = "menu.warehouseProductFlowAnalysis", Icon = "BarChartOutlined", Permission = Permissions.SalesDashboard.WarehouseFlowView },
                     new() { Path = "/executive-sales-intelligence/local-product-sales-analysis", TitleKey = "menu.localProductSalesAnalysis", Icon = "BarChartOutlined", Permission = Permissions.SalesDashboard.LocalProductAnalysisView },
+                    new() { Path = "/executive-sales-intelligence/local-supplier-purchase-sales-analysis", TitleKey = "menu.localSupplierPurchaseSalesAnalysis", Icon = "BarChartOutlined", Permission = Permissions.SalesDashboard.LocalSupplierPurchaseSalesView },
                     new() { Path = "/executive-sales-intelligence/purchase-amount-dashboard", TitleKey = "menu.purchaseAmountDashboard", Icon = "DollarOutlined", Permission = Permissions.SalesDashboard.PurchaseAmountView },
                 },
             },
@@ -155,7 +156,6 @@ namespace BlazorApp.Api.Services
                     new() { Path = "/pos-admin/schedule-attendance",   TitleKey = "menu.scheduleAttendance",     Icon = "CalendarOutlined",           Permission = Permissions.Attendance.Schedule.ViewStore },
                     new() { Path = "/pos-admin/sales-orders",          TitleKey = "menu.salesOrders",            Icon = "FileDoneOutlined",           Permission = Permissions.Orders.View },
                     new() { Path = "/pos-admin/local-supplier-invoices", TitleKey = "menu.localSupplierInvoices", Icon = "ReconciliationOutlined",     Permission = Permissions.LocalPurchase.View },
-                    new() { Path = "/pos-admin/local-supplier-purchase-sales-analysis", TitleKey = "menu.localSupplierPurchaseSalesAnalysis", Icon = "BarChartOutlined", Permission = Permissions.LocalPurchase.View },
                 },
             },
         };
@@ -637,6 +637,7 @@ namespace BlazorApp.Api.Services
                 Permissions.SalesDashboard.WarehouseFlowView,
                 Permissions.SalesDashboard.LocalProductAnalysisView,
                 Permissions.SalesDashboard.PurchaseAmountView,
+                Permissions.SalesDashboard.LocalSupplierPurchaseSalesView,
                 Permissions.System.ManageSettings,
                 Permissions.System.ViewAppDownloads,
                 Permissions.System.ManageAppDownloads,

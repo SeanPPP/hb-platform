@@ -549,6 +549,10 @@
       "name": "View product performance analysis",
       "description": "View product performance and recommended store manager actions."
     },
+    "SalesDashboard.LocalSupplierPurchaseSales.View": {
+      "name": "View local purchase sales analysis",
+      "description": "Web page /executive-sales-intelligence/local-supplier-purchase-sales-analysis - Review latest purchases, daily sales charts and sell-through by store and supplier."
+    },
     "SalesDashboard.PurchaseAmount.View": {
       "name": "View purchase amount dashboard",
       "description": "View warehouse orders, local supplier purchase amounts and revenue by store."

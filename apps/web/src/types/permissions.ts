@@ -85,6 +85,8 @@ export const P = {
     WarehouseFlowView: 'SalesDashboard.WarehouseFlow.View',
     LocalProductAnalysisView: 'SalesDashboard.LocalProductAnalysis.View',
     PurchaseAmountView: 'SalesDashboard.PurchaseAmount.View',
+    // 分店进货销量分析已挪到销售看板，按该菜单的逐页授权模式使用独立权限码。
+    LocalSupplierPurchaseSalesView: 'SalesDashboard.LocalSupplierPurchaseSales.View',
   },
   System: {
     ViewLogs: 'System.ViewLogs',

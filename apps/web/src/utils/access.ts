@@ -72,6 +72,7 @@ function createEmptyAccess(): AccessControl {
     canViewWarehouseProductFlowAnalysis: false,
     canViewLocalProductSalesAnalysis: false,
     canViewPurchaseAmountDashboard: false,
+    canViewLocalSupplierPurchaseSalesAnalysis: false,
     canViewProductSalesAnalysis: false,
     // 新细粒度权限
     canManageWarehouseProducts: false,
@@ -249,6 +250,8 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canViewWarehouseProductFlowAnalysis = hasPermission(P.SalesDashboard.WarehouseFlowView)
   const canViewLocalProductSalesAnalysis = hasPermission(P.SalesDashboard.LocalProductAnalysisView)
   const canViewPurchaseAmountDashboard = hasPermission(P.SalesDashboard.PurchaseAmountView)
+  // 分店进货销量分析挪到销售看板后只认本页权限；LocalPurchase.View 不再连带放开它，也不点亮销售看板父菜单。
+  const canViewLocalSupplierPurchaseSalesAnalysis = hasPermission(P.SalesDashboard.LocalSupplierPurchaseSalesView)
   // 商品销量分析是精确权限契约节点：只读 exactPermissions，不做 Reports.View 别名展开，
   // 字段缺失时非管理员拒绝，超级管理员别名由 isAdmin 兼容放行。
   const canViewProductSalesAnalysis =
@@ -257,7 +260,8 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canViewSalesIntelligence =
     canViewSalesData || canViewSalesDetail || canViewCompactSalesBoard ||
     canViewProductMovementReport || canViewWarehouseProductFlowAnalysis ||
-    canViewLocalProductSalesAnalysis || canViewPurchaseAmountDashboard || canViewBatchProductSalesAnalysis
+    canViewLocalProductSalesAnalysis || canViewPurchaseAmountDashboard || canViewBatchProductSalesAnalysis ||
+    canViewLocalSupplierPurchaseSalesAnalysis
   // --- 新细粒度权限 ---
   // 仓库
   const canManageWarehouseProducts =
@@ -428,6 +432,7 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     canViewWarehouseProductFlowAnalysis,
     canViewLocalProductSalesAnalysis,
     canViewPurchaseAmountDashboard,
+    canViewLocalSupplierPurchaseSalesAnalysis,
     canViewProductSalesAnalysis,
     // 新细粒度
     canManageWarehouseProducts,

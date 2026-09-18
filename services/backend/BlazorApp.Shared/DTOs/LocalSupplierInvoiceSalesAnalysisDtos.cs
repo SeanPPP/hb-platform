@@ -63,6 +63,9 @@ namespace BlazorApp.Shared.DTOs
         public string? SortOrder { get; set; }
         public int Page { get; set; } = 1;
         public int PageSize { get; set; } = 100;
+
+        /// <summary>false 时跳过逐日销量补充，让表格先出；逐日数据由前端随后单独请求。</summary>
+        public bool IncludeDailySales { get; set; } = true;
     }
 
     /// <summary>
@@ -88,7 +91,30 @@ namespace BlazorApp.Shared.DTOs
         public int SalesQty30 { get; set; }
         public int SalesQty60 { get; set; }
         public int SalesQty90 { get; set; }
+
+        /// <summary>最近进货当天起至今的累计净销量（含退货负数）；与售出比、图表口径一致，可用于排序。</summary>
+        public int TotalSalesSinceLatestPurchase { get; set; }
         public DateTime? SalesStatisticLastUpdate { get; set; }
+
+        /// <summary>逐日净销量序列：从上次进货日（无上次进货则最近进货前 30 天）到布里斯班今天，缺失日期补 0。</summary>
+        public List<LocalSupplierPurchaseSalesDailyPointDto> DailySales { get; set; } = new();
+
+        /// <summary>图表窗口内的进货事件：上次进货（如有）与最近进货。</summary>
+        public List<LocalSupplierPurchaseSalesPurchaseEventDto> Purchases { get; set; } = new();
+    }
+
+    /// <summary>逐日销量点；Quantity 为净销量，退货可为负。</summary>
+    public class LocalSupplierPurchaseSalesDailyPointDto
+    {
+        public DateTime Date { get; set; }
+        public int Quantity { get; set; }
+    }
+
+    /// <summary>图表窗口内的进货事件，数量取整数。</summary>
+    public class LocalSupplierPurchaseSalesPurchaseEventDto
+    {
+        public DateTime Date { get; set; }
+        public int Quantity { get; set; }
     }
 
     /// <summary>
@@ -102,7 +128,7 @@ namespace BlazorApp.Shared.DTOs
         public int PageSize { get; set; }
         public DateTime? SalesStatisticLastUpdate { get; set; }
         public string CalculationNote { get; set; } =
-            "进货按订单日期范围过滤、按进货发生日期汇总；最近一次后的30/60/90天销量从最近进货当天开始统计。";
+            "进货按订单日期范围过滤、按进货发生日期汇总；日销量从上次进货起逐日展示，售出比与累计销量从最近进货当天起统计。";
     }
 
     /// <summary>

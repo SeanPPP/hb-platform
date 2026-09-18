@@ -64,6 +64,7 @@ namespace BlazorApp.Shared.Constants
                 new(Permissions.SalesDashboard.WarehouseFlowView, "查看仓库商品流转分析", "销售看板", "Web 页面 /executive-sales-intelligence/warehouse-product-flow-analysis 与移动端「仓库商品进销」- 查看仓库商品的进货、发货和销售流转"),
                 new(Permissions.SalesDashboard.LocalProductAnalysisView, "查看澳洲本地商品分析", "销售看板", "Web 页面 /executive-sales-intelligence/local-product-sales-analysis - 查看澳洲本地商品的进货与销售表现"),
                 new(Permissions.SalesDashboard.PurchaseAmountView, "查看进货金额看板", "销售看板", "Web 页面 /executive-sales-intelligence/purchase-amount-dashboard - 查看各分店仓库订单、本地供应商进货金额及营业额"),
+                new(Permissions.SalesDashboard.LocalSupplierPurchaseSalesView, "查看分店进货销量分析", "销售看板", "Web 页面 /executive-sales-intelligence/local-supplier-purchase-sales-analysis - 按分店和供应商查看最近进货、逐日销量图与售出比"),
             };
 
         private static IReadOnlyList<string> AttendanceSelfServicePermissionCodes { get; } =
@@ -336,7 +337,7 @@ namespace BlazorApp.Shared.Constants
                 new(Permissions.DeviceRegistration.ActivationCodes.Manage, "管理设备开通码", "系统管理", "Web 页面 /system/device-registration - 为可管理分店创建和撤销一次性 POS 设备开通码"),
                 // Mobile 设备绑定可直接继承目标账号权限，必须与 POS 开通码使用独立的高敏权限。
                 new(Permissions.DeviceRegistration.MobileActivationCodes.Manage, "管理移动端设备开通码", "系统管理", "Web 页面 /system/device-registration - 为指定账号创建和撤销一次性 Mobile 设备开通码"),
-                new(Permissions.LocalPurchase.View, "查看本地进货", "本地进货管理", "Web 页面 /pos-admin/local-supplier-invoices、/pos-admin/local-supplier-purchase-sales-analysis 与移动端「进货单」- 查看分店进货单与进货销售分析"),
+                new(Permissions.LocalPurchase.View, "查看本地进货", "本地进货管理", "Web 页面 /pos-admin/local-supplier-invoices 与移动端「进货单」- 查看分店进货单"),
                 new(Permissions.LocalPurchase.MobileView, "移动端查看澳洲进货", "本地进货管理", "移动端「进货单」- 查看已授权分店的澳洲进货单列表与详情"),
                 new(Permissions.LocalPurchase.Edit, "编辑本地进货", "本地进货管理", "Web 页面 /pos-admin/local-supplier-invoices - 新增、编辑、提交和维护分店进货单"),
                 new(Permissions.LocalPurchase.PushToHq, "推送本地进货到 HQ", "本地进货管理", "Web 页面 /pos-admin/local-supplier-invoices - 推送本地进货单到 HQ"),

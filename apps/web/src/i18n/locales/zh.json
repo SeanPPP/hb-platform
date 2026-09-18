@@ -3908,9 +3908,6 @@
         "previousPurchase": "上次进货",
         "intervalDays": "间隔天数",
         "intervalSales": "间隔销量",
-        "salesQty30": "30 天销量",
-        "salesQty60": "60 天销量",
-        "salesQty90": "90 天销量",
         "updatedAt": "统计更新时间"
       },
       "summary": {
