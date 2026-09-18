@@ -38,6 +38,8 @@ export const permissionQueryKeys = {
   roleCounts: (actorKey: string) => ["identity-admin", actorKey, "permissionRoleCounts"] as const,
   permissionRoles: (actorKey: string, code: string) => ["identity-admin", actorKey, "permissionRoles", code.toLocaleLowerCase()] as const,
   allRoles: (actorKey: string) => ["identity-admin", actorKey, "permissionAllRoles"] as const,
+  permissionUsers: (actorKey: string, code: string) => ["identity-admin", actorKey, "permissionUsers", code.toLocaleLowerCase()] as const,
+  permissionUserCandidates: (actorKey: string, search: string) => ["identity-admin", actorKey, "permissionUserCandidates", search] as const,
 };
 
 /**

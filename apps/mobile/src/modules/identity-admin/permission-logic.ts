@@ -300,6 +300,26 @@ export function areRoleGuidsEqual(left: Iterable<string>, right: Iterable<string
   return a.length === b.length && a.every((guid, index) => guid === b[index]);
 }
 
+/**
+ * 权限直接授权用户的增量读回核验。
+ * 服务端按增量写入，其他管理员可能同时调整了未涉及的用户，所以只核对本次新增已存在、本次移除已消失，
+ * 不要求整份名单与草稿完全一致。GUID 按不区分大小写比较，与服务端 SQL Server 排序规则一致。
+ */
+export function isPermissionUserDeltaApplied(
+  delta: { added: string[]; removed: string[] },
+  verifiedUserGuids: Iterable<string>,
+) {
+  const verified = new Set(Array.from(verifiedUserGuids, (guid) => guid.trim().toLocaleLowerCase()));
+  return delta.added.every((guid) => verified.has(guid.trim().toLocaleLowerCase()))
+    && delta.removed.every((guid) => !verified.has(guid.trim().toLocaleLowerCase()));
+}
+
+/** 用户展示名：有姓名时「姓名（用户名）」，否则仅用户名。 */
+export function formatPermissionUserName(user: { username: string; fullName?: string }) {
+  const fullName = user.fullName?.trim();
+  return fullName && fullName !== user.username ? `${fullName}（${user.username}）` : user.username;
+}
+
 /** 超级管理员角色隐式拥有全部权限，服务端分配时会直接跳过，因此在分配弹层中只读展示。 */
 export function isImplicitAllRoleName(roleName: string, superAdminRoleNames: Iterable<string> = ["Admin", "管理员"]) {
   const normalized = roleName.trim().toLocaleLowerCase();

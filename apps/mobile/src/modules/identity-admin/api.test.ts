@@ -223,6 +223,12 @@ async function run() {
     if (url === "/Roles/permissions/Store.Events%2FView/roles") {
       return { data: { success: true, data: [{ RoleGUID: "role-1", RoleName: "Manager", IsActive: true, CreatedAt: "", UpdatedAt: "" }] } };
     }
+    if (url === "/Roles/permissions/Store.Events%2FView/users") {
+      return { data: { success: true, data: [{ UserGUID: "user-9", Username: "zoe", Email: "zoe@example.test", FullName: "Zoe", IsActive: false, AssignedAt: "2026-09-01T00:00:00" }] } };
+    }
+    if (url === "/Roles/permissions/Empty.Code/users") {
+      return { data: { success: true, data: null } };
+    }
     if (url === "/Roles/guid/role%2F1/users") {
       return { data: { items: [{ userGUID: "user-1", username: "alice", email: "alice@example.test", isActive: true, assignedAt: "2026-01-01" }], total: 1, page: 1, pageSize: 10_000 } };
     }
@@ -345,6 +351,16 @@ async function run() {
     assert.equal(permissionRoles[0]?.userCount, 0);
     await api.assignIdentityPermissionRoles("Store.Events/View", [" role-1 ", "role-1", "", "role-2"], "actor-1");
     assert.deepEqual(requests.find((item) => item.method === "post" && item.url === "/Roles/permissions/Store.Events%2FView/roles")?.body, ["role-1", "role-2"], "权限代码须 URL 编码，角色 GUID 去重去空");
+    const permissionUsers = await api.fetchIdentityPermissionUsers(" Store.Events/View ", "actor-1");
+    assert.deepEqual(permissionUsers, [{ userGUID: "user-9", username: "zoe", email: "zoe@example.test", fullName: "Zoe", isActive: false, assignedAt: "2026-09-01T00:00:00" }]);
+    assert.deepEqual(await api.fetchIdentityPermissionUsers("Empty.Code", "actor-1"), [], "data 为 null 视为无直接授权用户");
+    await api.assignIdentityPermissionUsers("Store.Events/View", { addUserGuids: [" user-1 ", "user-1", ""], removeUserGuids: ["user-9"] }, "actor-1");
+    assert.deepEqual(
+      requests.find((item) => item.method === "post" && item.url === "/Roles/permissions/Store.Events%2FView/users")?.body,
+      { addUserGuids: ["user-1"], removeUserGuids: ["user-9"] },
+      "用户授权按增量提交，GUID 去重去空且权限代码 URL 编码",
+    );
+    await assert.rejects(api.assignIdentityPermissionUsers(" ", { addUserGuids: ["user-1"], removeUserGuids: [] }, "actor-1"), /Permission code is required/);
     await api.createIdentitySysPermission({ code: " StoreEvents ", name: " 门店活动 ", category: "StoreEvents", description: "  ", actions: ["Create", " Create ", ""] }, "actor-1");
     assert.deepEqual(requests.find((item) => item.method === "post" && item.url === "/Roles/permissions")?.body, {
       code: "StoreEvents", name: "门店活动", category: "StoreEvents", description: null, actions: ["Create"],

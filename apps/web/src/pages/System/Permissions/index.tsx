@@ -1,5 +1,6 @@
-import { DeleteOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, TeamOutlined } from '@ant-design/icons'
+import { DeleteOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, TeamOutlined, UserOutlined } from '@ant-design/icons'
 import {
+  Alert,
   Button,
   Card,
   Checkbox,
@@ -18,21 +19,34 @@ import {
 import type { TransferDirection } from 'antd/es/transfer'
 import type { ColumnsType } from 'antd/es/table'
 import type { Key } from 'react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import PageContainer from '../../../components/PageContainer'
 import {
   assignRolesToPermission,
+  assignUsersToPermission,
   createPermission,
   deletePermission,
   getActiveRoles,
   getPermissionCatalog,
   getPermissionRoles,
+  getPermissionUsers,
   getSysPermissions,
 } from '../../../services/roleService'
+import { getUsers } from '../../../services/userService'
 import type { CreateSysPermissionDto, PermissionCategoryDto, RoleOptionDto, SysPermissionDto } from '../../../types/role'
 import { useAuthStore } from '../../../store/auth'
+import { RequestError } from '../../../utils/request'
 import { canManageSystemPermissions } from './permissionsAccess'
+import {
+  buildPermissionUserDelta,
+  buildPermissionUserOptions,
+  isPermissionUserDeltaEmpty,
+  loadAllUserPages,
+  matchesPermissionUserKeyword,
+  toAssignedUserGuids,
+  type PermissionUserOption,
+} from './permissionUserAssignment'
 import { MeasuredTable } from '../../../components/MeasuredTable'
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -111,6 +125,17 @@ export default function SystemPermissionsPage() {
   const [currentPermission, setCurrentPermission] = useState<PermissionTableItem | null>(null)
   const [allRoles, setAllRoles] = useState<RoleOptionDto[]>([])
   const [roleTargetKeys, setRoleTargetKeys] = useState<string[]>([])
+
+  const [userAssignOpen, setUserAssignOpen] = useState(false)
+  const [userAssignLoading, setUserAssignLoading] = useState(false)
+  const [userAssignSaving, setUserAssignSaving] = useState(false)
+  const [userAssignPermission, setUserAssignPermission] = useState<PermissionTableItem | null>(null)
+  const [userOptions, setUserOptions] = useState<PermissionUserOption[]>([])
+  // baseline 为打开弹窗时服务端的直接授权用户，保存时据此计算增量。
+  const [userBaselineKeys, setUserBaselineKeys] = useState<string[]>([])
+  const [userTargetKeys, setUserTargetKeys] = useState<string[]>([])
+  // 每次打开/关闭都递增序号，迟到的旧请求结果不得覆盖当前弹窗。
+  const userAssignRequestRef = useRef(0)
 
   const loadData = async () => {
     setLoading(true)
@@ -240,6 +265,79 @@ export default function SystemPermissionsPage() {
     }
   }
 
+  const handleAssignUsers = async (record: PermissionTableItem) => {
+    if (!canWritePermissions) {
+      message.warning(t('system.permissions.noManagePermission', '无权限管理权限'))
+      return
+    }
+
+    const requestId = ++userAssignRequestRef.current
+    setUserAssignPermission(record)
+    setUserAssignOpen(true)
+    setUserAssignLoading(true)
+    setUserOptions([])
+    setUserBaselineKeys([])
+    setUserTargetKeys([])
+    try {
+      const [allUsers, assignedUsers] = await Promise.all([
+        loadAllUserPages((page) => getUsers({ page, pageSize: 100 })),
+        getPermissionUsers(record.code),
+      ])
+      if (requestId !== userAssignRequestRef.current) return
+      const assignedKeys = toAssignedUserGuids(assignedUsers)
+      setUserOptions(buildPermissionUserOptions(allUsers, assignedUsers))
+      setUserBaselineKeys(assignedKeys)
+      setUserTargetKeys(assignedKeys)
+    } catch (error) {
+      if (requestId !== userAssignRequestRef.current) return
+      console.error(error)
+      message.error(t('system.permissions.loadUsersFailed', '加载用户数据失败'))
+      // 加载失败时关闭弹窗，避免在不完整的基线上计算增量。
+      closeUserAssign()
+    } finally {
+      if (requestId === userAssignRequestRef.current) setUserAssignLoading(false)
+    }
+  }
+
+  const closeUserAssign = () => {
+    userAssignRequestRef.current += 1
+    setUserAssignOpen(false)
+    setUserAssignPermission(null)
+    setUserAssignLoading(false)
+  }
+
+  const handleSaveUsers = async () => {
+    if (!userAssignPermission) return
+    if (!canWritePermissions) {
+      message.warning(t('system.permissions.noManagePermission', '无权限管理权限'))
+      return
+    }
+
+    const delta = buildPermissionUserDelta(userBaselineKeys, userTargetKeys)
+    if (isPermissionUserDeltaEmpty(delta)) {
+      closeUserAssign()
+      return
+    }
+
+    setUserAssignSaving(true)
+    try {
+      await assignUsersToPermission(userAssignPermission.code, delta)
+      message.success(t('system.permissions.userAssignSuccess', {
+        name: userAssignPermission.name,
+        defaultValue: '已更新「{{name}}」的用户授权',
+      }))
+      closeUserAssign()
+    } catch (error) {
+      console.error(error)
+      // 后端会给出「权限尚未入库」「用户不存在」等具体原因，直接附在提示后便于管理员处理。
+      const detail = error instanceof RequestError ? error.message : ''
+      const failed = t('system.permissions.userAssignFailed', '分配用户失败')
+      message.error(detail ? `${failed}：${detail}` : failed)
+    } finally {
+      setUserAssignSaving(false)
+    }
+  }
+
   const handleDelete = async (record: PermissionTableItem) => {
     if (!canWritePermissions) {
       message.warning(t('system.permissions.noManagePermission', '无权限管理权限'))
@@ -290,12 +388,17 @@ export default function SystemPermissionsPage() {
     {
       title: t('column.action'),
       key: 'action',
-      width: 180,
+      width: 300,
       render: (_, record) => (
-        <Space>
+        <Space size={0}>
           {canWritePermissions ? (
             <Button type="link" icon={<TeamOutlined />} onClick={() => void handleAssignRoles(record)}>
               {t('system.permissions.assignRoles')}
+            </Button>
+          ) : null}
+          {canWritePermissions ? (
+            <Button type="link" icon={<UserOutlined />} onClick={() => void handleAssignUsers(record)}>
+              {t('system.permissions.assignUsers', '分配用户')}
             </Button>
           ) : null}
           {canWritePermissions && record.deletable ? (
@@ -444,6 +547,55 @@ export default function SystemPermissionsPage() {
             render={(item) => item.title}
             titles={[t('system.users.availableRoles'), t('system.users.assignedRolesLabel')]}
             listStyle={{ width: 280, height: 400 }}
+            showSearch
+          />
+        )}
+      </Modal>
+
+      <Modal
+        title={userAssignPermission
+          ? t('system.permissions.assignUsersTitle', { name: userAssignPermission.name, defaultValue: '分配用户 - {{name}}' })
+          : t('system.permissions.assignUsers', '分配用户')}
+        open={userAssignOpen}
+        onCancel={closeUserAssign}
+        onOk={() => void handleSaveUsers()}
+        confirmLoading={userAssignSaving}
+        okButtonProps={{ disabled: !canWritePermissions || userAssignLoading }}
+        width={760}
+        destroyOnHidden
+      >
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={t(
+            'system.permissions.assignUsersHint',
+            '此处只维护用户的直接授权；通过角色获得该权限的用户不在右侧列出，请使用「分配角色」调整。',
+          )}
+        />
+        {userAssignLoading ? (
+          <div style={{ textAlign: 'center', padding: 40 }}>{t('system.permissions.loading')}</div>
+        ) : (
+          <Transfer
+            dataSource={userOptions}
+            targetKeys={userTargetKeys}
+            onChange={(nextTargetKeys: Key[], _direction: TransferDirection, _moveKeys: Key[]) => {
+              setUserTargetKeys(nextTargetKeys.map(String))
+            }}
+            render={(item) => (
+              <span title={item.description}>
+                {item.title}
+                {item.isActive ? null : (
+                  <Tag style={{ marginLeft: 6 }}>{t('common.inactive')}</Tag>
+                )}
+              </span>
+            )}
+            filterOption={(input, item) => matchesPermissionUserKeyword(item, input)}
+            titles={[
+              t('system.permissions.availableUsers', '可选用户'),
+              t('system.permissions.assignedUsers', '已直接授权用户'),
+            ]}
+            listStyle={{ width: 330, height: 420 }}
             showSearch
           />
         )}
