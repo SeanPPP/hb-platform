@@ -1,4 +1,5 @@
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -19,8 +20,10 @@ namespace BlazorApp.Api.Controllers.React
             _logger = logger;
         }
 
+        // 分页列表是 /pos-admin/suppliers 页面专用，按 AustralianSuppliers.View 授权；
+        // active / check-code 是多个页面的下拉数据源，保持登录即可访问。
         [HttpGet]
-
+        [Authorize(Policy = Permissions.AustralianSuppliers.View)]
         public async Task<IActionResult> GetList([FromQuery] int pageIndex = 1, [FromQuery] int pageSize = 20, [FromQuery] string? keyword = null, [FromQuery] int? status = null, [FromQuery] string? sortBy = null, [FromQuery] string? sortOrder = null)
         {
             try
@@ -51,8 +54,9 @@ namespace BlazorApp.Api.Controllers.React
             }
         }
 
+        // 写操作从角色硬编码改为权限策略，WarehouseManager 通过角色模板保留原有能力。
         [HttpPost("sync")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.AustralianSuppliers.Edit)]
         public async Task<IActionResult> Sync([FromBody] SyncRequest? body)
         {
             try
@@ -74,7 +78,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("sync-to-hq")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.AustralianSuppliers.Edit)]
         public async Task<IActionResult> SyncToHq([FromBody] SyncToHqRequest? body)
         {
             try
@@ -97,7 +101,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.AustralianSuppliers.Edit)]
         public async Task<IActionResult> Create([FromBody] CreateLocalSupplierDto dto)
         {
             var res = await _service.CreateAsync(dto);
@@ -105,7 +109,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPut("{code}")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.AustralianSuppliers.Edit)]
         public async Task<IActionResult> Update(string code, [FromBody] UpdateLocalSupplierDto dto)
         {
             var res = await _service.UpdateAsync(code, dto);
@@ -113,7 +117,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpDelete("{code}")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.AustralianSuppliers.Edit)]
         public async Task<IActionResult> Delete(string code)
         {
             var res = await _service.DeleteAsync(code);
@@ -121,7 +125,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPatch("{code}/status/{status}")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.AustralianSuppliers.Edit)]
         public async Task<IActionResult> ToggleStatus(string code, int status)
         {
             var res = await _service.ToggleStatusAsync(code, status);

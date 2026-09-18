@@ -44,7 +44,6 @@ export const P = {
     Delete: 'Orders.Delete',
   },
   Warehouse: {
-    View: 'Warehouse.View',
     Manage: 'Warehouse.Manage',
     ManageProducts: 'Warehouse.ManageProducts',
     ManageCategories: 'Warehouse.ManageCategories',
@@ -67,19 +66,12 @@ export const P = {
     View: 'StoreVouchers.View',
   },
   DomesticPurchase: {
-    View: 'DomesticPurchase.View',
     ManageSuppliers: 'DomesticPurchase.ManageSuppliers',
     ManageProducts: 'DomesticPurchase.ManageProducts',
     ManagePrefixCodes: 'DomesticPurchase.ManagePrefixCodes',
   },
-  Prices: {
-    View: 'Prices.View',
-    Modify: 'Prices.Modify',
-    Delete: 'Prices.Delete',
-  },
   Reports: {
     View: 'Reports.View',
-    Export: 'Reports.Export',
     ProductMovementView: 'Reports.ProductMovement.View',
   },
   SalesDashboard: {
@@ -140,7 +132,6 @@ export const P = {
   },
   Store: {
     ManageOperations: 'Store.ManageOperations',
-    ManageInfo: 'Store.ManageInfo',
   },
   PosProducts: {
     View: 'PosProducts.View',

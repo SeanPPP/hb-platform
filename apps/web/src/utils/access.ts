@@ -71,9 +71,6 @@ function createEmptyAccess(): AccessControl {
     canViewLocalProductSalesAnalysis: false,
     canViewPurchaseAmountDashboard: false,
     canViewProductSalesAnalysis: false,
-    canExportData: false,
-    canModifyPrice: false,
-    canDeletePrice: false,
     // 新细粒度权限
     canManageWarehouseProducts: false,
     canManageWarehouseOrders: false,
@@ -255,10 +252,6 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     canViewSalesData || canViewSalesDetail || canViewCompactSalesBoard ||
     canViewProductMovementReport || canViewWarehouseProductFlowAnalysis ||
     canViewLocalProductSalesAnalysis || canViewPurchaseAmountDashboard || canViewBatchProductSalesAnalysis
-  const canExportData = isAdmin || hasPermission(P.Reports.Export)
-  const canModifyPrice = isAdmin || hasPermission(P.Prices.Modify)
-  const canDeletePrice = isAdmin || hasPermission(P.Prices.Delete)
-
   // --- 新细粒度权限 ---
   // 仓库
   const canManageWarehouseProducts =
@@ -428,9 +421,6 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     canViewLocalProductSalesAnalysis,
     canViewPurchaseAmountDashboard,
     canViewProductSalesAnalysis,
-    canExportData,
-    canModifyPrice,
-    canDeletePrice,
     // 新细粒度
     canManageWarehouseProducts,
     canManageWarehouseOrders,

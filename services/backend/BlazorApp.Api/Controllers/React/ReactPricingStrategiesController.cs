@@ -2,6 +2,7 @@ using System.Threading.Tasks;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Services.Pricing;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -25,7 +26,9 @@ namespace BlazorApp.Api.Controllers.React
             _autoPricing = autoPricing;
         }
 
+        // 定价策略直接影响分店售价，读写分别按 PricingStrategy.View / Edit 授权，不再仅依赖登录态。
         [HttpPost("grid")]
+        [Authorize(Policy = Permissions.PricingStrategy.View)]
         public async Task<ActionResult<GridResponseDto<PricingStrategyListDto>>> Grid(
             [FromBody] GridRequestDto request
         )
@@ -35,6 +38,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpGet("{id}")]
+        [Authorize(Policy = Permissions.PricingStrategy.View)]
         public async Task<ActionResult<ApiResponse<PricingStrategyDetailDto>>> Get(string id)
         {
             var res = await _service.GetByIdAsync(id);
@@ -42,6 +46,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost]
+        [Authorize(Policy = Permissions.PricingStrategy.Edit)]
         public async Task<ActionResult<ApiResponse<PricingStrategyDetailDto>>> Create(
             [FromBody] CreatePricingStrategyDto dto
         )
@@ -51,6 +56,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPut("{id}")]
+        [Authorize(Policy = Permissions.PricingStrategy.Edit)]
         public async Task<ActionResult<ApiResponse<PricingStrategyDetailDto>>> Update(
             string id,
             [FromBody] UpdatePricingStrategyDto dto
@@ -61,6 +67,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpDelete("{id}")]
+        [Authorize(Policy = Permissions.PricingStrategy.Edit)]
         public async Task<ActionResult<ApiResponse<bool>>> Delete(string id)
         {
             var res = await _service.DeleteAsync(id);
@@ -68,6 +75,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("evaluate")]
+        [Authorize(Policy = Permissions.PricingStrategy.View)]
         public async Task<ActionResult<ApiResponse<PricingEvaluateResponse>>> Evaluate(
             [FromBody] PricingEvaluateRequest req
         )

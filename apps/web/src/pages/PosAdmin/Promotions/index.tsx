@@ -10,6 +10,7 @@ import {
   updatePromotion,
 } from '../../../services/promotionService'
 import { getActiveStores } from '../../../services/storeService'
+import { useAuthStore } from '../../../store/auth'
 import type {
   CreatePromotionDto,
   PromotionDetailDto,
@@ -49,6 +50,9 @@ type DataType = PromotionListDto & { key: string }
 
 export default function PromotionsPage() {
   const { t } = useTranslation()
+  // 与后端 Promotions.Edit 策略对齐；全局促销的写接口还要求管理员角色，由后端最终把关。
+  const access = useAuthStore((state) => state.access)
+  const canEdit = access.canEditPromotions
   const [form] = Form.useForm()
   const [loading, setLoading] = useState(false)
   const [data, setData] = useState<DataType[]>([])
@@ -217,7 +221,7 @@ export default function PromotionsPage() {
 
   const columns: ColumnsType<DataType> = [
     { title: t('posAdmin.promotions.name', '名称'), dataIndex: 'name', key: 'name', sorter: true },
-    { title: t('posAdmin.promotions.isEnabled', '启用'), dataIndex: 'isEnabled', key: 'isEnabled', sorter: true, width: 100, render: (_, record) => <Switch checked={record.isEnabled} onChange={(val) => toggleEnable(record, val)} /> },
+    { title: t('posAdmin.promotions.isEnabled', '启用'), dataIndex: 'isEnabled', key: 'isEnabled', sorter: true, width: 100, render: (_, record) => <Switch checked={record.isEnabled} disabled={!canEdit} onChange={(val) => toggleEnable(record, val)} /> },
     { title: t('posAdmin.promotions.isExclusive', '排他'), dataIndex: 'isExclusive', key: 'isExclusive', width: 100, render: (v: boolean) => <Tag color={v ? 'red' : 'default'}>{v ? t('common.yes') : t('common.no')}</Tag> },
     { title: t('posAdmin.promotions.priority', '优先级'), dataIndex: 'priority', key: 'priority', sorter: true, width: 100 },
     { title: t('posAdmin.promotions.startTime', '开始'), dataIndex: 'effectiveStart', key: 'effectiveStart', sorter: true, render: (v: string) => (v ? new Date(v).toLocaleString() : '-') },
@@ -230,9 +234,9 @@ export default function PromotionsPage() {
       title: t('column.action'), key: 'actions', width: 200,
       render: (_, record) => (
         <Space>
-          <Button type="link" onClick={() => openEdit(String(record.id))}>{t('common.edit')}</Button>
-          <Popconfirm title={t('posAdmin.promotions.confirmDeletePromotion')} description={t('posAdmin.promotions.deleteIrreversible')} okText={t('common.delete')} cancelText={t('common.cancel')} okButtonProps={{ danger: true }} onConfirm={() => handleDelete(String(record.id))}>
-            <Button type="link" danger>{t('common.delete')}</Button>
+          <Button type="link" disabled={!canEdit} onClick={() => openEdit(String(record.id))}>{t('common.edit')}</Button>
+          <Popconfirm title={t('posAdmin.promotions.confirmDeletePromotion')} description={t('posAdmin.promotions.deleteIrreversible')} okText={t('common.delete')} cancelText={t('common.cancel')} okButtonProps={{ danger: true }} disabled={!canEdit} onConfirm={() => handleDelete(String(record.id))}>
+            <Button type="link" danger disabled={!canEdit}>{t('common.delete')}</Button>
           </Popconfirm>
         </Space>
       ),
@@ -260,7 +264,7 @@ export default function PromotionsPage() {
   const editorUsesAllStoresScope = !selectedEditorStores?.length
 
   return (
-    <Card title={t('posAdmin.promotions.title', '促销管理（满减/固定组合价）')} extra={<Button type="primary" onClick={openCreate}>{t('posAdmin.promotions.createPromotion', '新建促销')}</Button>}>
+    <Card title={t('posAdmin.promotions.title', '促销管理（满减/固定组合价）')} extra={<Button type="primary" disabled={!canEdit} onClick={openCreate}>{t('posAdmin.promotions.createPromotion', '新建促销')}</Button>}>
       <Form form={form} layout="inline" onFinish={loadData} style={{ marginBottom: 16 }}>
         <Form.Item name="storeCode" label={t('common.store')}><Select allowClear showSearch optionFilterProp="label" options={storeOptions} style={{ width: 240 }} /></Form.Item>
         <Form.Item name="keyword" label={t('posAdmin.promotions.keyword', '关键词')}><Input allowClear placeholder={t('posAdmin.promotions.searchName', '搜索名称')} style={{ width: 240 }} /></Form.Item>
@@ -269,8 +273,8 @@ export default function PromotionsPage() {
 
       <MeasuredTable metricId="pos-admin.promotions.table-1" rowKey="key" loading={loading} dataSource={data} columns={columns} pagination={{ total, current: page, pageSize, showSizeChanger: true, pageSizeOptions: ['10', '20', '50', '100', '200'] }} onChange={onTableChange} />
 
-      <Modal open={editorOpen} title={editingId === null ? t('posAdmin.promotions.createPromotion', '新建促销') : t('posAdmin.promotions.editPromotion', '编辑促销')} onCancel={() => setEditorOpen(false)} onOk={saveEditor} width={900} forceRender>
-        <Form form={editorForm} layout="vertical">
+      <Modal open={editorOpen} title={editingId === null ? t('posAdmin.promotions.createPromotion', '新建促销') : t('posAdmin.promotions.editPromotion', '编辑促销')} onCancel={() => setEditorOpen(false)} onOk={saveEditor} okButtonProps={{ disabled: !canEdit }} width={900} forceRender>
+        <Form form={editorForm} layout="vertical" disabled={!canEdit}>
           <Space style={{ width: '100%' }} wrap>
             <Form.Item name="name" label={t('posAdmin.promotions.name', '名称')} rules={[{ required: true }]} style={{ width: 300 }}><Input /></Form.Item>
             <Form.Item name="priority" label={t('posAdmin.promotions.priority', '优先级')} style={{ width: 180 }}><InputNumber min={0} style={{ width: '100%' }} /></Form.Item>

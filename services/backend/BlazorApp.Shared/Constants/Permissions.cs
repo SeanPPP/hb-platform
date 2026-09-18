@@ -242,7 +242,6 @@ namespace BlazorApp.Shared.Constants
 
         public static class Warehouse
         {
-            public const string View = "Warehouse.View";
             public const string Manage = "Warehouse.Manage";
             public const string ManageProducts = "Warehouse.ManageProducts";
             public const string ManageCategories = "Warehouse.ManageCategories";
@@ -252,23 +251,14 @@ namespace BlazorApp.Shared.Constants
 
         public static class DomesticPurchase
         {
-            public const string View = "DomesticPurchase.View";
             public const string ManageSuppliers = "DomesticPurchase.ManageSuppliers";
             public const string ManageProducts = "DomesticPurchase.ManageProducts";
             public const string ManagePrefixCodes = "DomesticPurchase.ManagePrefixCodes";
         }
 
-        public static class Prices
-        {
-            public const string View = "Prices.View";
-            public const string Modify = "Prices.Modify";
-            public const string Delete = "Prices.Delete";
-        }
-
         public static class Reports
         {
             public const string View = "Reports.View";
-            public const string Export = "Reports.Export";
             public const string ProductMovementView = "Reports.ProductMovement.View";
         }
 
@@ -356,7 +346,6 @@ namespace BlazorApp.Shared.Constants
         public static class Store
         {
             public const string ManageOperations = "Store.ManageOperations";
-            public const string ManageInfo = "Store.ManageInfo";
         }
 
         public static class Attendance

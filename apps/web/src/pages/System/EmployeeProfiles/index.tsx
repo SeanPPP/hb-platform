@@ -30,6 +30,7 @@ import {
   getAdminSensitiveChangeRequests,
   saveAdminEmployeeProfile,
 } from '../../../services/employeeProfileService'
+import { useAuthStore } from '../../../store/auth'
 import type {
   EmployeeEmploymentType,
   EmployeeProfileDetailDto,
@@ -129,6 +130,9 @@ function mapProfileToFormValues(profile: EmployeeProfileDetailDto): EmployeeProf
 
 export default function SystemEmployeeProfilesPage() {
   const { t, i18n } = useTranslation()
+  // 后台编辑接口同时要求管理员角色与 EmployeeProfiles.Edit，管理员天然拥有全部权限，因此只按角色门控。
+  const access = useAuthStore((state) => state.access)
+  const canEditProfiles = access.isAdmin
   const [loading, setLoading] = useState(false)
   const [keyword, setKeyword] = useState('')
   const [data, setData] = useState<EmployeeProfileSummaryDto[]>([])
@@ -393,7 +397,7 @@ export default function SystemEmployeeProfilesPage() {
       key: 'action',
       width: 120,
       render: (_, record) => (
-        <Button type="link" icon={<EditOutlined />} onClick={() => void handleEdit(record)}>
+        <Button type="link" icon={<EditOutlined />} disabled={!canEditProfiles} onClick={() => void handleEdit(record)}>
           {t('common.edit')}
         </Button>
       ),
@@ -482,7 +486,7 @@ export default function SystemEmployeeProfilesPage() {
         extra={
           <Space>
             <Button onClick={() => setEditOpen(false)}>{t('common.cancel')}</Button>
-            <Button type="primary" loading={editLoading} onClick={() => void handleSubmit()}>
+            <Button type="primary" loading={editLoading} disabled={!canEditProfiles} onClick={() => void handleSubmit()}>
               {t('common.save')}
             </Button>
           </Space>
