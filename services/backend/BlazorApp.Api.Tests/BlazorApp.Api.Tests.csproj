@@ -157,6 +157,7 @@
     <Compile Include="WarehouseProductInsightServiceTests.cs" />
     <Compile Include="LocalSupplierProductSalesAnalysisLogicTests.cs" />
     <Compile Include="LocalSupplierProductSalesAnalysisServiceTests.cs" />
+    <Compile Include="LocalSupplierProductSalesAnalysisSqlServerTests.cs" />
     <Compile Include="ContainerAllocationSalesReportServiceTests.cs" />
     <Compile Include="ContainerAllocationSalesAuthorizationPipelineTests.cs" />
     <Compile Include="BrowserExtensionTests.cs" />
