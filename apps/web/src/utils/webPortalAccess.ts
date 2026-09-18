@@ -166,10 +166,9 @@ export function resolveAuthorizedWebTarget(target: string | null | undefined, ac
   if (!target || !target.startsWith('/') || target.startsWith('//') || target === '/login') {
     return undefined
   }
-  // 订货前台货号销量页需单独授权；未授权的历史地址回落到订货前台首页或拒绝。
-  if (/^\/shop\/batch-product-sales(?:\/|[?#]|$)/.test(target)) {
-    if (access.canAccessOrderFront && access.canViewShopBatchProductSales) return target
-    return access.onlyOrder ? '/shop' : undefined
+  // 订货前台货号销量页需单独授权；未授权时不保留历史地址，由默认落点（纯订货角色为 /shop）接管。
+  if (target.startsWith('/shop/batch-product-sales')) {
+    return access.canAccessOrderFront && access.canViewShopBatchProductSales ? target : undefined
   }
   // 纯订货角色不保留任何后台历史地址，只允许回到订货前台及其现有子路由。
   if (access.onlyOrder) {

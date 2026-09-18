@@ -41,11 +41,12 @@ export function resolveShopBannerCopy(pathname: string): ShopBannerCopy {
   }
 
   if (pathname.startsWith('/shop/batch-product-sales')) {
+    // 副标题复用页面命名空间的既有文案，避免为已隐藏的横幅再往首屏 i18n 增加键值。
     return {
       titleKey: 'shop.batchProductSales',
       titleFallback: '货号销量',
-      subtitleKey: 'shop.batchProductSalesBannerSubtitle',
-      subtitleFallback: '按导入货号查看全部分店的销量、每日趋势和折扣成交情况。',
+      subtitleKey: 'batchProductSalesAnalysis.subtitle',
+      subtitleFallback: '批量查询商品在指定时间范围内的销量，支持按分店查看每日销量明细。',
     }
   }
 

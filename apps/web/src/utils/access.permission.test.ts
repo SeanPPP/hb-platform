@@ -1726,9 +1726,10 @@ const shopWithoutBatchSalesAccess = buildAccess(
 assertEqual(shopWithoutBatchSalesAccess.canViewShopBatchProductSales, false, '未授权的订货员不应看到货号销量入口')
 assertEqual(
   resolveAuthorizedWebTarget('/shop/batch-product-sales?x=1', shopWithoutBatchSalesAccess),
-  '/shop',
-  '纯订货角色未授权时货号销量历史地址应回落到订货前台首页',
+  undefined,
+  '纯订货角色未授权时不应保留货号销量历史地址',
 )
+assertEqual(getDefaultWebPath(shopWithoutBatchSalesAccess), '/shop', '未授权的纯订货角色默认落点仍是订货前台首页')
 
 const backendOnlyBatchSalesAccess = buildAccess(
   createCurrentUser({ roleNames: ['User'], permissions: [P.SalesDashboard.BatchProductSalesView] }),
