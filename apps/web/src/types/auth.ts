@@ -64,9 +64,6 @@ export interface AccessControl {
   canViewLocalProductSalesAnalysis: boolean
   canViewPurchaseAmountDashboard: boolean
   canViewProductSalesAnalysis: boolean
-  canExportData: boolean
-  canModifyPrice: boolean
-  canDeletePrice: boolean
   // 新细粒度权限
   canManageWarehouseProducts: boolean
   canManageWarehouseOrders: boolean

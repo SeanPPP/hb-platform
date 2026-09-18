@@ -868,7 +868,7 @@ public class NavigationServiceTests
     public void BuildAppMenu_ShowsWarehouseProductInsightsOnlyWithWarehouseFlowPermission()
     {
         var flowUser = CreateUser(new Claim("permission", Permissions.SalesDashboard.WarehouseFlowView));
-        var warehouseOnlyUser = CreateUser(new Claim("permission", Permissions.Warehouse.View));
+        var warehouseOnlyUser = CreateUser(new Claim("permission", Permissions.Warehouse.ManageProducts));
 
         var flowMenu = _service.BuildAppMenu(flowUser);
         var warehouseOnlyMenu = _service.BuildAppMenu(warehouseOnlyUser);

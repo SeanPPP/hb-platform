@@ -76,7 +76,9 @@ namespace BlazorApp.Api.Controllers.React
             return result;
         }
 
+        // Web 收银记录页沿用 Orders.View（历史决策：移动端销售订单查询独立使用 SalesOrders.View）。
         [HttpPost("list")]
+        [Authorize(Policy = Permissions.Orders.View)]
         public async Task<IActionResult> GetSalesOrderList([FromBody] PosmSalesOrderQueryParams queryParams)
         {
             try
@@ -111,6 +113,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpGet("detail/{orderGuid}")]
+        [Authorize(Policy = Permissions.Orders.View)]
         public async Task<IActionResult> GetSalesOrderDetail(string orderGuid)
         {
             try
@@ -300,6 +303,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpGet("tax-invoice/{orderGuid}")]
+        [Authorize(Policy = Permissions.Orders.View)]
         public async Task<IActionResult> GetTaxInvoicePdf(string orderGuid)
         {
             try
