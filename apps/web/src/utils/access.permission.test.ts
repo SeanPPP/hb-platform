@@ -1703,4 +1703,51 @@ assertEqual(
   '超级管理员角色预览即使 explicit 为空也应允许商品销量分析',
 )
 
+// 订货前台货号销量：只认前台权限码，不放开后台入口；历史地址按页面权限核验。
+const shopBatchSalesOrderAccess = buildAccess(
+  createCurrentUser({
+    roleNames: ['订货员'],
+    permissions: [P.OrderFront.View, P.OrderFront.BatchProductSalesView],
+  }),
+)
+assertEqual(shopBatchSalesOrderAccess.canViewShopBatchProductSales, true, '订货员获前台货号销量权限后应可查看该页')
+assertEqual(shopBatchSalesOrderAccess.canViewBatchProductSalesAnalysis, false, '前台货号销量权限不能放行后台批量货号销量页')
+assertEqual(shopBatchSalesOrderAccess.canAccessAdminShell, false, '前台货号销量权限不能让订货员进入后台')
+assertEqual(getDefaultWebPath(shopBatchSalesOrderAccess), '/shop', '持有前台货号销量权限的订货员仍默认进入订货前台')
+assertEqual(
+  resolveAuthorizedWebTarget('/shop/batch-product-sales', shopBatchSalesOrderAccess),
+  '/shop/batch-product-sales',
+  '已授权时应保留货号销量页历史地址',
+)
+
+const shopWithoutBatchSalesAccess = buildAccess(
+  createCurrentUser({ roleNames: ['订货员'], permissions: [P.OrderFront.View] }),
+)
+assertEqual(shopWithoutBatchSalesAccess.canViewShopBatchProductSales, false, '未授权的订货员不应看到货号销量入口')
+assertEqual(
+  resolveAuthorizedWebTarget('/shop/batch-product-sales?x=1', shopWithoutBatchSalesAccess),
+  undefined,
+  '纯订货角色未授权时不应保留货号销量历史地址',
+)
+assertEqual(getDefaultWebPath(shopWithoutBatchSalesAccess), '/shop', '未授权的纯订货角色默认落点仍是订货前台首页')
+
+const backendOnlyBatchSalesAccess = buildAccess(
+  createCurrentUser({ roleNames: ['User'], permissions: [P.SalesDashboard.BatchProductSalesView] }),
+)
+assertEqual(backendOnlyBatchSalesAccess.canViewShopBatchProductSales, false, '后台批量货号销量权限不能反向放行前台页面')
+assertEqual(
+  resolveAuthorizedWebTarget('/shop/batch-product-sales', backendOnlyBatchSalesAccess),
+  undefined,
+  '没有前台权限时不得进入前台货号销量页',
+)
+
+const orderFrontWithBackendBatchSalesAccess = buildAccess(
+  createCurrentUser({ roleNames: ['User'], permissions: [P.OrderFront.View, P.SalesDashboard.BatchProductSalesView] }),
+)
+assertEqual(
+  resolveAuthorizedWebTarget('/shop/batch-product-sales', orderFrontWithBackendBatchSalesAccess),
+  undefined,
+  '可进前台但缺少前台货号销量权限时，历史地址不应放行',
+)
+
 console.log('access.permission.test: ok')

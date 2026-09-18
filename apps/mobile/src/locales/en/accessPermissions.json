@@ -205,6 +205,10 @@
       "name": "Order Front",
       "description": "Allows access to Order Front."
     },
+    "OrderFront.BatchProductSales.View": {
+      "name": "View item sales in Order Front",
+      "description": "Web Order Front page /shop/batch-product-sales - View sales quantity, daily trends and discount sales across all stores for imported item numbers."
+    },
     "Orders.Create": {
       "name": "Orders Create",
       "description": "Allows access to Orders Create."
