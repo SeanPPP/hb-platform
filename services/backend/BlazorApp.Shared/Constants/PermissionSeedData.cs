@@ -205,7 +205,9 @@ namespace BlazorApp.Shared.Constants
         private static IReadOnlyList<PermissionSeedDefinition> SharedPermissionSeeds { get; } =
             new List<PermissionSeedDefinition>
             {
-                new(Permissions.Users.View, "查看用户", "用户管理", "Web 页面 /system/users 与移动端「用户」「用户管理」- 查看用户列表与详情"),
+                new(Permissions.Users.View, "查看用户", "用户管理", "移动端「员工列表」「用户管理」与用户查询接口 - 查看用户列表与详情；Web 后台 /system/users 菜单另由 Users.ViewWebConsole 控制"),
+                // 店长主要用移动端管理店员，Web 后台用户管理页单独授权，避免 Users.View 同时点亮两端菜单。
+                new(Permissions.Users.ViewWebConsole, "查看 Web 用户管理", "用户管理", "Web 页面 /system/users - 显示并进入 Web 后台用户管理页"),
                 new(Permissions.Users.Create, "创建用户", "用户管理", "Web 页面 /system/users - 创建后台用户"),
                 new(Permissions.Users.Edit, "编辑用户", "用户管理", "Web 页面 /system/users - 编辑用户基础信息"),
                 new(Permissions.Users.Delete, "删除用户", "用户管理", "Web 页面 /system/users - 删除或停用用户"),

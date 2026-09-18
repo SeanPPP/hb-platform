@@ -8,6 +8,8 @@
 export const P = {
   Users: {
     View: 'Users.View',
+    // Web 后台 /system/users 菜单与页面的独立授权，与移动端复用的 Users.View 分开。
+    ViewWebConsole: 'Users.ViewWebConsole',
     Create: 'Users.Create',
     Edit: 'Users.Edit',
     Delete: 'Users.Delete',

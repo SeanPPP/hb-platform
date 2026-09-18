@@ -48,7 +48,7 @@ const accessKeyPermissionMap: Partial<Record<keyof AccessControl, string[]>> = {
   canManageScheduledTasks: [P.System.ManageScheduledTasks],
   canManageSystemSettings: [P.System.ManageSettings],
   canViewAppDownloads: [P.System.ViewAppDownloads, P.System.ManageAppDownloads],
-  canReadUser: [P.Users.View],
+  canReadUserConsole: [P.Users.ViewWebConsole],
   canReadRole: [P.Roles.View],
   canViewDeviceRegistration: [
     P.DeviceRegistration.View,
@@ -105,7 +105,7 @@ const webMenuPreviewRoutes: WebMenuPreviewRoute[] = [
       { path: '/system/invoice-email-settings', title: 'menu.invoiceEmailSettings', accessKey: 'canManageSystemSettings' },
       { path: '/system/payment-terminal-settings', title: 'menu.paymentTerminalSettings', accessKey: 'canManageSystemSettings' },
       { path: '/system/emergency-login-keys', title: 'menu.emergencyLoginKeys', accessKey: 'canManageSystemSettings' },
-      { path: '/system/users', title: 'menu.systemUsers', accessKey: 'canReadUser' },
+      { path: '/system/users', title: 'menu.systemUsers', accessKey: 'canReadUserConsole' },
       { path: '/system/roles', title: 'menu.systemRoles', accessKey: 'canReadRole' },
       { path: '/system/permissions', title: 'menu.systemPermissions', accessKey: 'canReadRole' },
       { path: '/system/device-registration', title: 'menu.deviceRegistration', accessKey: 'canViewDeviceRegistration' },

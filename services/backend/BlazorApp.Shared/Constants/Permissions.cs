@@ -28,6 +28,8 @@ namespace BlazorApp.Shared.Constants
         public static class Users
         {
             public const string View = "Users.View";
+            // Web 后台 /system/users 菜单与页面单独授权；移动端「员工列表」「用户管理」及用户接口仍由 Users.View 控制。
+            public const string ViewWebConsole = "Users.ViewWebConsole";
             public const string Create = "Users.Create";
             public const string Edit = "Users.Edit";
             public const string Delete = "Users.Delete";
