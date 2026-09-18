@@ -166,7 +166,7 @@ export function resolveAuthorizedWebTarget(target: string | null | undefined, ac
   if (!target || !target.startsWith('/') || target.startsWith('//') || target === '/login') {
     return undefined
   }
-  // 订货前台货号销量页需单独授权；未授权时不保留历史地址，由默认落点（纯订货角色为 /shop）接管。
+  // 旧货号销量地址（现重定向到进货销量分析的「粘贴数据查看」标签）需单独授权；未授权时不保留历史地址，由默认落点（纯订货角色为 /shop）接管。
   if (target.startsWith('/shop/batch-product-sales')) {
     return access.canAccessOrderFront && access.canViewShopBatchProductSales ? target : undefined
   }

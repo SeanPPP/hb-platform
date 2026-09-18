@@ -25,15 +25,9 @@ assertEqual(
   '即将上新页副标题不应复用历史订单文案',
 )
 
-const batchProductSalesCopy = resolveShopBannerCopy('/shop/batch-product-sales')
-assertEqual(batchProductSalesCopy.titleKey, 'shop.batchProductSales', '货号销量页标题应使用专属文案')
-assertEqual(
-  batchProductSalesCopy.subtitleKey,
-  'batchProductSalesAnalysis.subtitle',
-  '货号销量页副标题应复用页面命名空间文案而非历史订单文案',
-)
-assertEqual(en.shop.batchProductSales, 'Item Sales', '英文货号销量标题资源应存在')
-assertEqual(zh.shop.batchProductSales, '货号销量', '中文货号销量标题资源应存在')
+// 货号销量已并入进货销量分析的「粘贴数据查看」标签，独立导航文案不应再留在首屏主文案包。
+assertEqual((en.shop as Record<string, unknown>).batchProductSales, undefined, '英文主文案包不应保留货号销量导航文案')
+assertEqual((zh.shop as Record<string, unknown>).batchProductSales, undefined, '中文主文案包不应保留货号销量导航文案')
 
 const purchaseSalesCopy = resolveShopBannerCopy('/shop/purchase-sales-analysis')
 assertEqual(purchaseSalesCopy.titleKey, 'shop.purchaseSalesAnalysis', '进货销量分析页标题应使用专属文案')

@@ -9,6 +9,7 @@ const read = (relativePath: string) => readFileSync(path.join(root, relativePath
 const indexHtml = read('index.html')
 const layout = read('src/layout/ShopLayout.tsx')
 const shopHome = read('src/pages/ShopHome/index.tsx')
+const purchaseSalesPage = read('src/pages/ShopPurchaseSalesAnalysis/index.tsx')
 const scanBar = read('src/components/ShopScanBar.tsx')
 const productCard = read('src/pages/ShopHome/components/ProductCard.tsx')
 const bestSellers = read('src/pages/ShopHome/components/BestSellersSection.tsx')
@@ -71,7 +72,6 @@ const desktopDestinations = [
   "to=\"/shop\"",
   'onClick={handleOpenPreorder}',
   "to=\"/shop/best-sellers\"",
-  "to=\"/shop/batch-product-sales\"",
   "to=\"/shop/coming-soon\"",
   "to=\"/shop/orders\"",
   "to=\"/shop/local-supplier-invoices\"",
@@ -85,7 +85,12 @@ for (const destination of desktopDestinations) {
 }
 assert.match(desktopNav, /aria-current=\{isShopHomePage \? 'page' : undefined\}/, 'Shop Home 必须暴露当前页语义')
 assert.match(desktopNav, /aria-current=\{isOrdersPage \? 'page' : undefined\}/, 'Orders 必须暴露当前页语义')
-assert.ok(desktopNav.includes('access.canViewShopBatchProductSales ? ('), '货号销量入口必须按前台权限显示')
+// 货号销量并入「进货销量分析」的「粘贴数据查看」标签：布局不再有独立入口，标签由页面按前台权限显示。
+assert.ok(!layout.includes('/shop/batch-product-sales'), '货号销量已并入进货销量分析，商城布局不得保留独立入口')
+assert.ok(
+  purchaseSalesPage.includes('state.access.canViewShopBatchProductSales'),
+  '粘贴数据查看标签必须按前台货号销量权限显示',
+)
 
 assert.ok(layout.includes('className="shop-ordering-toolbar"'), '桌面必须有独立白色交易工具栏')
 assert.ok(layout.includes('className="shop-ordering-search"'), '交易工具栏必须保留商品搜索')

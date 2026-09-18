@@ -8,12 +8,12 @@ import '../../src/styles/global.css'
 import i18n from '../../src/i18n'
 import ShopLayout from '../../src/layout/ShopLayout'
 import { ShopPreorderLeaveProvider } from '../../src/pages/ShopPreorder/preorderLeaveContext'
-import ShopBatchProductSalesPage from '../../src/pages/ShopBatchProductSales'
+import ShopPurchaseSalesAnalysisPage from '../../src/pages/ShopPurchaseSalesAnalysis'
 import { useAuthStore } from '../../src/store/auth'
 import { buildAccess } from '../../src/utils/access'
 import type { BatchSalesMetrics, BatchSalesProduct, BatchSalesScope } from '../../src/types/batchProductSalesAnalysis'
 
-// 订货前台本地验收入口：真实 ShopLayout + 正式前台货号销量页面，仅在本入口内模拟 fetch；未登记生产路由。
+// 订货前台本地验收入口：真实 ShopLayout + 正式「进货销量分析 · 粘贴数据查看」标签，仅在本入口内模拟货号销量接口；未登记生产路由。
 const stores = [
   { code: 'B1', name: 'Springfield' }, { code: 'B2', name: 'Sunnybank' },
   { code: 'B3', name: 'Browns Plains' }, { code: 'B4', name: 'Logan Central' },
@@ -139,7 +139,7 @@ window.fetch = async (input, init) => {
 
 const language = new URLSearchParams(location.search).get('lang') === 'en' ? 'en' : 'zh'
 await i18n.changeLanguage(language)
-// 订货员角色：仅一家门店、只有前台权限，凭前台货号销量权限查看全部分店数据；导航入口由正式 ShopLayout 按权限渲染。
+// 订货员角色：仅一家门店、只有前台权限，凭前台货号销量权限看到「粘贴数据查看」标签并查看全部分店数据。
 const user = { userGUID: 'shop-batch-sales-preview', username: 'springfield.staff', email: '',
   permissions: ['OrderFront', 'OrderFront.BatchProductSales.View'], exactPermissions: ['OrderFront', 'OrderFront.BatchProductSales.View'],
   roleNames: ['订货员'], storeNames: ['Springfield'] }
@@ -149,11 +149,11 @@ useAuthStore.setState({ currentUser: user, access: buildAccess(user), initialize
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <ConfigProvider locale={language === 'en' ? enUS : zhCN} theme={{ token: { colorPrimary: '#1677ff', borderRadius: 6,
     fontFamily: '-apple-system,BlinkMacSystemFont,Segoe UI,PingFang SC,sans-serif' } }}>
-    <div style={{ padding: '4px 18px', background: '#fff8e7', color: '#775b22', fontSize: 12 }}>本地交互验收 · 演示数据 · 订货前台 ShopLayout + 正式「货号销量」页面</div>
-    <MemoryRouter initialEntries={['/shop/batch-product-sales']}>
+    <div style={{ padding: '4px 18px', background: '#fff8e7', color: '#775b22', fontSize: 12 }}>本地交互验收 · 演示数据 · 订货前台 ShopLayout + 「进货销量分析 · 粘贴数据查看」</div>
+    <MemoryRouter initialEntries={['/shop/purchase-sales-analysis?tab=paste']}>
       <Routes>
         <Route path="/shop" element={<ShopPreorderLeaveProvider><ShopLayout /></ShopPreorderLeaveProvider>}>
-          <Route path="batch-product-sales" element={<ShopBatchProductSalesPage />} />
+          <Route path="purchase-sales-analysis" element={<ShopPurchaseSalesAnalysisPage />} />
         </Route>
       </Routes>
     </MemoryRouter>
