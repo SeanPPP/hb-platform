@@ -265,3 +265,94 @@ export function toFlowTrendData(data: Array<{ date: string; purchaseQuantity?: n
     averageUnitPrice: item.averageUnitPrice,
   }))
 }
+
+/** 除数不为正时返回 null，供均价、日均等派生指标展示为 “—”。 */
+export function safeDivide(numerator: number | null | undefined, denominator: number | null | undefined): number | null {
+  if (numerator === null || numerator === undefined || denominator === null || denominator === undefined) return null
+  return denominator > 0 ? numerator / denominator : null
+}
+
+/** 日期范围含首尾两天；只按 yyyy-MM-dd 文本计算，避免浏览器时区偏移。 */
+export function countInclusiveDays(startDate: string, endDate: string): number {
+  const start = Date.parse(`${startDate}T00:00:00Z`)
+  const end = Date.parse(`${endDate}T00:00:00Z`)
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return 0
+  return Math.round((end - start) / 86_400_000) + 1
+}
+
+export type SellThroughLevel = 'none' | 'restock' | 'healthy' | 'slow' | 'stale'
+
+/**
+ * 售进比状态分级。入参为百分数（316.7 即 316.7%）。
+ * 阈值为业务约定：>150 补货预警、60–150 健康、30–60 偏慢、<30 滞销；无进货（null）不评级。
+ */
+export function getSellThroughLevel(rate: number | null | undefined): SellThroughLevel {
+  if (rate === null || rate === undefined || !Number.isFinite(rate)) return 'none'
+  if (rate > 150) return 'restock'
+  if (rate >= 60) return 'healthy'
+  if (rate >= 30) return 'slow'
+  return 'stale'
+}
+
+export interface BranchPriceTier { price: number; branchCount: number }
+
+/** 按分店均价（四舍五入到分）归档，用于提示同一商品在各分店的定价是否一致。 */
+export function buildBranchPriceTiers(branches: readonly Pick<LocalSupplierProductSalesAnalysisBranch, 'averageUnitPrice'>[]): BranchPriceTier[] {
+  const tiers = new Map<number, number>()
+  for (const branch of branches) {
+    if (branch.averageUnitPrice === null || branch.averageUnitPrice === undefined) continue
+    const price = Math.round(branch.averageUnitPrice * 100) / 100
+    tiers.set(price, (tiers.get(price) ?? 0) + 1)
+  }
+  return [...tiers.entries()].sort((a, b) => a[0] - b[0]).map(([price, branchCount]) => ({ price, branchCount }))
+}
+
+export type TrendChartMode = 'daily' | 'cumulative'
+
+export interface TrendChartModel {
+  purchase: number[]
+  sales: number[]
+  /** 数量轴刻度；负向只保留不超过最小值的整步，少量退货不会把下界拉到整十。 */
+  ticks: number[]
+  domainMin: number
+  domainMax: number
+  /** 均价面板值域；期间无销售时为 null。 */
+  priceDomain: [number, number] | null
+  xTickIndices: number[]
+}
+
+function niceStep(range: number, count: number) {
+  const raw = Math.max(range / count, 1)
+  const power = 10 ** Math.floor(Math.log10(raw))
+  const factor = [1, 2, 5, 10].find((item) => item * power >= raw) ?? 10
+  return factor * power
+}
+
+/**
+ * 进销趋势图模型：数量与均价分属上下两个面板、各自独立纵轴，不做双轴叠加。
+ * cumulative 模式把进货与净销逐日累加，直接呈现售进比的追赶关系。
+ */
+export function buildTrendChartModel(data: readonly LocalSupplierProductSalesAnalysisDaily[], mode: TrendChartMode, tickCount = 4): TrendChartModel {
+  let purchaseTotal = 0
+  let salesTotal = 0
+  const purchase = data.map((item) => mode === 'cumulative' ? (purchaseTotal += item.purchaseQuantity) : item.purchaseQuantity)
+  const sales = data.map((item) => mode === 'cumulative' ? (salesTotal += item.netSalesQuantity) : item.netSalesQuantity)
+  const minValue = Math.min(0, ...sales, ...purchase)
+  const maxValue = Math.max(1, ...sales, ...purchase)
+  const step = niceStep(maxValue - minValue, tickCount)
+  const lowestTick = -Math.floor(-minValue / step) * step
+  const highestTick = Math.ceil(maxValue / step) * step
+  const ticks: number[] = []
+  for (let value = lowestTick; value <= highestTick + 1e-9; value += step) ticks.push(Math.round(value))
+  const prices = data.map((item) => item.averageUnitPrice).filter((value): value is number => value !== null && value !== undefined)
+  let priceDomain: [number, number] | null = null
+  if (prices.length) {
+    const low = Math.min(...prices)
+    const high = Math.max(...prices)
+    // 全期同价时给出上下留白，避免折线贴边。
+    priceDomain = high - low < 0.1 ? [low - 0.25, high + 0.25] : [low, high]
+  }
+  const labelEvery = data.length <= 7 ? 1 : data.length <= 31 ? 5 : Math.ceil(data.length / 6)
+  const xTickIndices = data.map((_, index) => index).filter((index) => index % labelEvery === 0)
+  return { purchase, sales, ticks, domainMin: Math.min(lowestTick, minValue), domainMax: highestTick, priceDomain, xTickIndices }
+}

@@ -54,7 +54,7 @@ for (const token of [
   'clearAnalysisState',
   'canSetCurrentProduct',
   'ProductImage',
-  'FlowTrendChart',
+  "import TrendChart from './TrendChart'",
   'localProductSalesAnalysis.invoiceDetails',
   'localProductSalesAnalysis.branchRanking',
   'localProductSalesAnalysis.selectAllFiltered',
@@ -157,9 +157,20 @@ for (const token of ['setBranchDaily([])', 'setSelectedBranchCode(undefined)', '
   if (!clearBlock.includes(token)) throw new Error(`新筛选必须立即清空分店日趋势遗留：${token}`)
 }
 
-for (const token of ['29fr', '43fr', '28fr', '@media (max-width: 1199px)', '@media (max-width: 768px)']) {
+for (const token of ['grid-template-columns: 330px minmax(0, 1fr) 340px', '@container (max-width: 760px)', '@media (max-width: 1199px)', '@media (max-width: 768px)']) {
   if (!css.includes(token)) throw new Error(`页面缺少响应式三栏契约：${token}`)
 }
+
+// 改版契约：唯一查询入口、列表行内指标、图表不叠双轴、分店趋势不留空
+assert(count(page, 'onClick={applyFilters}') === 1, '查询按钮全页只能有一个入口')
+assert(count(page, 'onClick={resetFilters}') === 1, '重置按钮全页只能有一个入口')
+assert(page.includes('summaryByCode.get(candidate.productCode)'), '商品列表必须复用汇总分段的逐商品指标，不得新增请求')
+assert(page.includes('getSellThroughLevel') && page.includes('SellThroughChip'), '售进比必须带状态标签')
+assert(!page.includes('FlowTrendChart'), '本页趋势图不得回退到数量与均价叠双轴的共享图')
+assert(!page.includes('localProductSalesAnalysis.selectBranch'), '分店趋势不得再出现“点击分店”空占位')
+const autoBranchBlock = block(page, '// 分店排行默认选中第一名', 'const analysisLoading')
+assert(autoBranchBlock.includes('loadBranchDaily(first.branchCode)') && autoBranchBlock.includes('if (selectedBranchCode ||'), '默认分店只在未选中时加载一次，不得循环请求')
+assert(!page.includes('currentProduct?.productCode}</span>'), '当前商品头不得展示内部商品编码')
 
 const prohibited = ['Pend' + 'ing', 'Fail' + 'ed', '水' + '位', '对' + '账', '统计' + '状态']
 const displaySource = page.split('forceRefreshPending').join('')

@@ -2,6 +2,11 @@ import {
   applyCandidateSelection,
   applyLocalProductSalesAnalysisBootstrapResult,
   applyLocalProductSalesAnalysisSectionResult,
+  buildBranchPriceTiers,
+  buildTrendChartModel,
+  countInclusiveDays,
+  getSellThroughLevel,
+  safeDivide,
   buildBrisbaneDefaultRange,
   buildLocalProductSalesAnalysisBootstrapRequest,
   canSetCurrentProduct,
@@ -150,5 +155,36 @@ const sectionError = setLocalProductSalesAnalysisSectionError(sectionRetry, 'bra
 equal(sectionError.sectionErrors.branches, '分店加载失败', '分段失败必须写入对应错误')
 const clearedError = clearLocalProductSalesAnalysisSectionError(sectionError, 'branches')
 equal(clearedError.sectionErrors.branches, undefined, '清除分段错误必须只清除目标键')
+
+// 改版派生指标与图表模型
+equal(safeDivide(26.64, 24)?.toFixed(2), '1.11', '进货均价必须由进货额除以进货量得到')
+equal(safeDivide(10, 0), null, '除数为零时派生指标必须为空')
+equal(countInclusiveDays('2026-08-20', '2026-09-18'), 30, '日期范围天数必须含首尾两天')
+equal(countInclusiveDays('2026-09-18', '2026-08-20'), 0, '倒置日期范围不得产生负天数')
+equal(getSellThroughLevel(null), 'none', '无进货不评级')
+equal(getSellThroughLevel(316.7), 'restock', '售进比超过 150% 必须提示补货')
+equal(getSellThroughLevel(150), 'healthy', '150% 属于健康上界')
+equal(getSellThroughLevel(60), 'healthy', '60% 属于健康下界')
+equal(getSellThroughLevel(59.9), 'slow', '30%–60% 属于偏慢')
+equal(getSellThroughLevel(0), 'stale', '低于 30% 属于滞销')
+deepEqual(
+  buildBranchPriceTiers([{ averageUnitPrice: 2.99 }, { averageUnitPrice: 3.99 }, { averageUnitPrice: 2.990001 }, { averageUnitPrice: null }]),
+  [{ price: 2.99, branchCount: 2 }, { price: 3.99, branchCount: 1 }],
+  '分店价位必须按分归档并忽略无均价分店',
+)
+const trendDays = [
+  { date: '2026-09-11', purchaseQuantity: 0, purchaseAmount: 0, netSalesQuantity: 3, netSalesAmount: 8.97, averageUnitPrice: 2.99 },
+  { date: '2026-09-12', purchaseQuantity: 0, purchaseAmount: 0, netSalesQuantity: -1, netSalesAmount: -2.99, averageUnitPrice: null },
+  { date: '2026-09-13', purchaseQuantity: 24, purchaseAmount: 26.64, netSalesQuantity: 5, netSalesAmount: 19.95, averageUnitPrice: 3.99 },
+]
+const dailyModel = buildTrendChartModel(trendDays, 'daily')
+deepEqual(dailyModel.sales, [3, -1, 5], '按日模式必须保留当日净销量（含退货负数）')
+deepEqual(dailyModel.ticks, [0, 10, 20, 30], '少量退货不得把刻度下界拉到 -10')
+equal(dailyModel.domainMin, -1, '坐标下界必须覆盖真实最小值')
+deepEqual(dailyModel.priceDomain, [2.99, 3.99], '均价面板值域取有销售日的最小与最大均价')
+const cumulativeModel = buildTrendChartModel(trendDays, 'cumulative')
+deepEqual(cumulativeModel.purchase, [0, 0, 24], '累计模式必须逐日累加进货量')
+deepEqual(cumulativeModel.sales, [3, 2, 7], '累计模式必须逐日累加净销量')
+equal(buildTrendChartModel([], 'daily').priceDomain, null, '无数据时均价值域为空')
 
 console.log('LocalProductSalesAnalysis.logic.test: ok')

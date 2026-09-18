@@ -2554,21 +2554,28 @@ ORDER BY [NetSalesQuantity] DESC, [BranchCode] ASC;";
                 .MergeTable();
         }
 
+        /// <summary>
+        /// 与过滤索引 IX_LSPSA_Product_ProductCode_UUID 的 WHERE 定义逐项一致的字面量谓词；
+        /// 方括号标识符在 SQL Server 与测试用 SQLite 上均有效。
+        /// </summary>
+        internal const string EligibleLocalProductLiteralPredicate =
+            "[IsDeleted] = 0 AND [IsActive] = 1"
+            + " AND [LocalSupplierCode] IS NOT NULL AND [LocalSupplierCode] <> ''"
+            + " AND [ProductCode] IS NOT NULL AND [ProductCode] <> ''";
+
         private ISugarQueryable<Product> BuildCanonicalLocalProductQuery()
         {
             // ProductCode 不是数据库主键；按 Trim + 不区分大小写编码固定最小 UUID，
             // 让过滤、计数、分页、选择和汇总使用完全一致的去重语义。
+            // 判别谓词必须写成字面量：SqlSugar 会把 lambda 里的 false/true/"" 参数化，
+            // SQL Server 无法在编译期证明参数化谓词蕴含过滤索引条件，
+            // 带关键词/分类/供应商筛选的查询就会退化为两次 Product 宽表聚集扫描（线上实测 4.8 秒）。
             var eligibleProducts = _db
                 .Queryable<Product>()
+                .Where(EligibleLocalProductLiteralPredicate)
                 .Where(product =>
-                    product.IsDeleted == false
-                    && product.IsActive == true
-                    && product.ProductCode != null
-                    && product.ProductCode != ""
-                    && product.ProductCode.Trim() != ""
-                    && product.LocalSupplierCode != null
-                    && product.LocalSupplierCode != ""
-                    && product.LocalSupplierCode.Trim() != ""
+                    product.ProductCode!.Trim() != ""
+                    && product.LocalSupplierCode!.Trim() != ""
                 );
 
             if (
@@ -2637,6 +2644,29 @@ ORDER BY [NetSalesQuantity] DESC, [BranchCode] ASC;";
             if (!string.IsNullOrWhiteSpace(keyword))
             {
                 var normalizedKeyword = keyword.ToUpperInvariant();
+                if (_db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+                {
+                    // 合格商品约 17 万行，CI 排序规则下 5 列前导通配 LIKE 单次约 1.4 秒，
+                    // 且同一请求内会被计数、分页、汇总重复执行；改为 UPPER + BIN2 逐字节比较后约 0.16 秒。
+                    // 随后 MergeTable 封口，避免后续连接进货单派生表时未限定列名产生歧义。
+                    return ApplyRemainingProductFilters(
+                        query
+                            .Where(
+                                SqlServerKeywordPredicate,
+                                new
+                                {
+                                    lspaKeywordPattern = BuildSqlServerLikePattern(
+                                        normalizedKeyword
+                                    ),
+                                }
+                            )
+                            .MergeTable(),
+                        context,
+                        filter,
+                        scopedStoreCodes
+                    );
+                }
+
                 query = query.Where(product =>
                     product.ProductCode!.Trim().ToUpper().Contains(normalizedKeyword)
                     || (product.ItemNumber != null
@@ -2650,6 +2680,47 @@ ORDER BY [NetSalesQuantity] DESC, [BranchCode] ASC;";
                 );
             }
 
+            return ApplyRemainingProductFilters(query, context, filter, scopedStoreCodes);
+        }
+
+        internal const string SqlServerBinaryCollation = "Latin1_General_100_BIN2";
+
+        /// <summary>
+        /// SQL Server 关键词谓词：与回退 lambda 同样匹配编码、货号、条码、中英文名称，
+        /// 大小写不敏感由 UPPER 保证；BIN2 比较不再做全半角折叠，货号/条码检索不受影响。
+        /// </summary>
+        internal static readonly string SqlServerKeywordPredicate =
+            "(" + SqlServerKeywordColumn("ProductCode")
+            + " OR " + SqlServerKeywordColumn("ItemNumber")
+            + " OR " + SqlServerKeywordColumn("Barcode")
+            + " OR " + SqlServerKeywordColumn("ProductName")
+            + " OR " + SqlServerKeywordColumn("EnglishName") + ")";
+
+        /// <summary>
+        /// 先转 nvarchar 再套 BIN2：列若是 varchar，直接 COLLATE 到 Latin1 会按 1252 代码页重解释，
+        /// 中文名称会变成问号而永远匹配不到；nvarchar 与代码页无关，转换后再逐字节比较才安全。
+        /// </summary>
+        private static string SqlServerKeywordColumn(string column) =>
+            "UPPER(CAST([" + column + "] AS nvarchar(4000))) COLLATE "
+            + SqlServerBinaryCollation + " LIKE @lspaKeywordPattern";
+
+        /// <summary>把用户输入里的 LIKE 通配符按方括号转义后包成包含匹配。</summary>
+        internal static string BuildSqlServerLikePattern(string normalizedKeyword)
+        {
+            var escaped = normalizedKeyword
+                .Replace("[", "[[]", StringComparison.Ordinal)
+                .Replace("%", "[%]", StringComparison.Ordinal)
+                .Replace("_", "[_]", StringComparison.Ordinal);
+            return "%" + escaped + "%";
+        }
+
+        private ISugarQueryable<Product> ApplyRemainingProductFilters(
+            ISugarQueryable<Product> query,
+            LocalSupplierProductSalesMasterContext context,
+            LocalSupplierProductSalesAnalysisFilterDto filter,
+            IReadOnlyList<string>? scopedStoreCodes
+        )
+        {
             var categoryGuids = LocalSupplierProductSalesAnalysisLogic.ResolveCategoryGuids(
                 filter
             );
