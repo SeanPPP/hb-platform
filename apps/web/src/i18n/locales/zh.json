@@ -120,6 +120,7 @@
     "salesOrders": "收银记录",
     "localSupplierInvoices": "分店进货单",
     "localSupplierPurchaseSalesAnalysis": "分店进货销量分析",
+    "purchaseSalesAnalysis": "进货销量分析",
     "invoiceDetail": "进货单详情",
     "localSupplierInvoiceSalesAnalysis": "进货单销量分析",
     "editInvoice": "编辑进货单",

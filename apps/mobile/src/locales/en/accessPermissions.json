@@ -551,7 +551,7 @@
     },
     "SalesDashboard.LocalSupplierPurchaseSales.View": {
       "name": "View local purchase sales analysis",
-      "description": "Web page /executive-sales-intelligence/local-supplier-purchase-sales-analysis - Review latest purchases, daily sales charts and sell-through by store and supplier."
+      "description": "Web page /executive-sales-intelligence/purchase-sales-analysis, Local purchase analysis tab - Review latest purchases, daily sales charts and sell-through by store and supplier."
     },
     "SalesDashboard.PurchaseAmount.View": {
       "name": "View purchase amount dashboard",

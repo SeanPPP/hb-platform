@@ -130,10 +130,10 @@ namespace BlazorApp.Api.Services
                     new() { Path = "/executive-sales-intelligence/sales-detail-v2", TitleKey = "menu.salesDetail", Icon = "FileTextOutlined",  Permission = Permissions.SalesDashboard.SalesDetailView },
                     new() { Path = "/executive-sales-intelligence/compact-sales-board", TitleKey = "menu.compactSalesBoard", Icon = "BarChartOutlined", Permission = Permissions.SalesDashboard.CompactBoardView },
                     new() { Path = "/executive-sales-intelligence/product-movement-report", TitleKey = "menu.productMovementReport", Icon = "ReconciliationOutlined", Permission = Permissions.SalesDashboard.ProductMovementView },
-                    new() { Path = "/executive-sales-intelligence/batch-product-sales-analysis", TitleKey = "menu.batchProductSalesAnalysis", Icon = "BarChartOutlined", Permission = Permissions.SalesDashboard.BatchProductSalesView },
+                    // 进货销量分析：批量货号销量与分店进货销量分析合为一页两个标签，任一页权限即显示入口，标签再按各自权限显示。
+                    new() { Path = "/executive-sales-intelligence/purchase-sales-analysis", TitleKey = "menu.purchaseSalesAnalysis", Icon = "BarChartOutlined", AnyPermissions = new List<string> { Permissions.SalesDashboard.BatchProductSalesView, Permissions.SalesDashboard.LocalSupplierPurchaseSalesView } },
                     new() { Path = "/executive-sales-intelligence/warehouse-product-flow-analysis", TitleKey = "menu.warehouseProductFlowAnalysis", Icon = "BarChartOutlined", Permission = Permissions.SalesDashboard.WarehouseFlowView },
                     new() { Path = "/executive-sales-intelligence/local-product-sales-analysis", TitleKey = "menu.localProductSalesAnalysis", Icon = "BarChartOutlined", Permission = Permissions.SalesDashboard.LocalProductAnalysisView },
-                    new() { Path = "/executive-sales-intelligence/local-supplier-purchase-sales-analysis", TitleKey = "menu.localSupplierPurchaseSalesAnalysis", Icon = "BarChartOutlined", Permission = Permissions.SalesDashboard.LocalSupplierPurchaseSalesView },
                     new() { Path = "/executive-sales-intelligence/purchase-amount-dashboard", TitleKey = "menu.purchaseAmountDashboard", Icon = "DollarOutlined", Permission = Permissions.SalesDashboard.PurchaseAmountView },
                 },
             },
@@ -569,6 +569,7 @@ namespace BlazorApp.Api.Services
                             Permission = node.Permission,
                             RequireAdmin = node.RequireAdmin,
                             RequireExactPermission = node.RequireExactPermission,
+                            AnyPermissions = node.AnyPermissions,
                             Children = filteredChildren,
                         });
                     }
@@ -585,6 +586,7 @@ namespace BlazorApp.Api.Services
                             Permission = node.Permission,
                             RequireAdmin = node.RequireAdmin,
                             RequireExactPermission = node.RequireExactPermission,
+                            AnyPermissions = node.AnyPermissions,
                             Children = null,
                         });
                     }
@@ -603,6 +605,13 @@ namespace BlazorApp.Api.Services
 
             if (string.IsNullOrEmpty(node.Permission))
             {
+                // 多权限入口：任一权限可见；未配置 AnyPermissions 的节点保持原有「无权限即公开」语义。
+                if (node.AnyPermissions is { Count: > 0 })
+                {
+                    return context.IsAdmin
+                        || node.AnyPermissions.Any(permission => HasPermission(context, permission));
+                }
+
                 return true;
             }
 
