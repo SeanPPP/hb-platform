@@ -24,6 +24,26 @@ assertEqual(
   '即将上新页副标题不应复用历史订单文案',
 )
 
+const batchProductSalesCopy = resolveShopBannerCopy('/shop/batch-product-sales')
+assertEqual(batchProductSalesCopy.titleKey, 'shop.batchProductSales', '货号销量页标题应使用专属文案')
+assertEqual(
+  batchProductSalesCopy.subtitleKey,
+  'shop.batchProductSalesBannerSubtitle',
+  '货号销量页副标题不应复用历史订单文案',
+)
+assertEqual(en.shop.batchProductSales, 'Item Sales', '英文货号销量标题资源应存在')
+assertEqual(zh.shop.batchProductSales, '货号销量', '中文货号销量标题资源应存在')
+assertEqual(
+  en.shop.batchProductSalesBannerSubtitle,
+  'Review sales volume, daily trends, and discount sales across all stores for imported item numbers.',
+  '英文货号销量副标题资源应完整',
+)
+assertEqual(
+  zh.shop.batchProductSalesBannerSubtitle,
+  '按导入货号查看全部分店的销量、每日趋势和折扣成交情况。',
+  '中文货号销量副标题资源应与页面语义一致',
+)
+
 const ordersCopy = resolveShopBannerCopy('/shop/orders')
 assertEqual(ordersCopy.titleKey, 'shop.orderHistory', '历史订单页标题应保持历史订单文案')
 assertEqual(ordersCopy.subtitleKey, 'shop.ordersBannerSubtitle', '历史订单页副标题应保持订单汇总文案')

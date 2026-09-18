@@ -40,6 +40,15 @@ export function resolveShopBannerCopy(pathname: string): ShopBannerCopy {
     }
   }
 
+  if (pathname.startsWith('/shop/batch-product-sales')) {
+    return {
+      titleKey: 'shop.batchProductSales',
+      titleFallback: '货号销量',
+      subtitleKey: 'shop.batchProductSalesBannerSubtitle',
+      subtitleFallback: '按导入货号查看全部分店的销量、每日趋势和折扣成交情况。',
+    }
+  }
+
   if (pathname.startsWith('/shop/coming-soon')) {
     return {
       titleKey: 'shop.comingSoon',

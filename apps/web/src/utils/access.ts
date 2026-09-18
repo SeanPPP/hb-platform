@@ -68,6 +68,7 @@ function createEmptyAccess(): AccessControl {
     canViewCompactSalesBoard: false,
     canViewProductMovementReport: false,
     canViewBatchProductSalesAnalysis: false,
+    canViewShopBatchProductSales: false,
     canViewWarehouseProductFlowAnalysis: false,
     canViewLocalProductSalesAnalysis: false,
     canViewPurchaseAmountDashboard: false,
@@ -243,6 +244,8 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canViewCompactSalesBoard = hasPermission(P.SalesDashboard.CompactBoardView)
   const canViewProductMovementReport = hasPermission(P.SalesDashboard.ProductMovementView)
   const canViewBatchProductSalesAnalysis = hasPermission(P.SalesDashboard.BatchProductSalesView)
+  // 订货前台货号销量页只认前台权限码，不与后台销售看板权限互相放行，避免订货员被判定为拥有后台入口。
+  const canViewShopBatchProductSales = hasPermission(P.OrderFront.BatchProductSalesView)
   const canViewWarehouseProductFlowAnalysis = hasPermission(P.SalesDashboard.WarehouseFlowView)
   const canViewLocalProductSalesAnalysis = hasPermission(P.SalesDashboard.LocalProductAnalysisView)
   const canViewPurchaseAmountDashboard = hasPermission(P.SalesDashboard.PurchaseAmountView)
@@ -421,6 +424,7 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     canViewCompactSalesBoard,
     canViewProductMovementReport,
     canViewBatchProductSalesAnalysis,
+    canViewShopBatchProductSales,
     canViewWarehouseProductFlowAnalysis,
     canViewLocalProductSalesAnalysis,
     canViewPurchaseAmountDashboard,

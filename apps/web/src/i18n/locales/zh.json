@@ -5336,6 +5336,8 @@
     "loadingCategories": "分类加载中...",
     "bestSellersBannerSubtitle": "查看热销商品销量、销售额和排名汇总。",
     "comingSoonBannerSubtitle": "查看即将到货货柜，快速筛选补货和新品。",
+    "batchProductSales": "货号销量",
+    "batchProductSalesBannerSubtitle": "按导入货号查看全部分店的销量、每日趋势和折扣成交情况。",
     "comingSoonFilterAll": "全部",
     "comingSoonFilterReorder": "返单",
     "comingSoonFilterNew": "新商品",
