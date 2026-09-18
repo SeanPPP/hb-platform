@@ -1,10 +1,11 @@
 import { ReloadOutlined, SearchOutlined } from '@ant-design/icons'
-import { Alert, Button, Card, DatePicker, Empty, Input, Select, Space, Spin, Tag, Typography, message } from 'antd'
+import { Alert, Button, Card, DatePicker, Empty, Input, Select, Space, Spin, Tabs, Tag, Typography, message } from 'antd'
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table'
 import type { FilterValue, SorterResult } from 'antd/es/table/interface'
 import dayjs, { type Dayjs } from 'dayjs'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useSearchParams } from 'react-router-dom'
 import {
   PurchaseSalesDailyChart,
   PurchaseSalesSparkline,
@@ -15,6 +16,7 @@ import {
   getShopLocalSupplierPurchaseSalesAnalysis,
   getShopLocalSupplierPurchaseSalesAnalysisSupplierOptions,
 } from '../../services/localSupplierInvoiceService'
+import { useAuthStore } from '../../store/auth'
 import { useShopStore } from '../../store/shop'
 import type {
   LocalSupplierPurchaseSalesAnalysisResponseDto,
@@ -33,6 +35,10 @@ import {
   normalizePurchaseSalesAnalysisPageSize,
   toPurchaseSalesAnalysisSort,
 } from '../PosAdmin/LocalSupplierPurchaseSalesAnalysis/helpers'
+import { SHOP_PURCHASE_SALES_TAB_PARAM, resolveShopPurchaseSalesTab, type ShopPurchaseSalesTab } from './tabs'
+
+// 「粘贴数据查看」复用货号销量页，单独成块：未获前台货号销量权限的订货员不会下载这部分代码。
+const BatchProductSalesAnalysisPage = lazy(() => import('../ExecutiveSalesIntelligence/BatchProductSalesAnalysis'))
 
 const { RangePicker } = DatePicker
 const { Text, Title } = Typography
@@ -84,8 +90,8 @@ function Badge({ value, tone }: { value?: number | null; tone: keyof typeof BADG
   )
 }
 
-/** 订货前台「进货销量分析」：分店跟随顶部当前分店，数据走前台只读接口（只认订货前台权限、限本人门店）。 */
-export default function ShopPurchaseSalesAnalysisPage() {
+/** 「选择分店查看」：分店跟随顶部当前分店，数据走前台只读接口（只认订货前台权限、限本人门店）。 */
+function StorePurchaseSalesPanel() {
   const { t } = useTranslation()
   const selectedStore = useShopStore((state) => state.selectedStore)
   const storeCode = selectedStore?.storeCode
@@ -335,111 +341,160 @@ export default function ShopPurchaseSalesAnalysisPage() {
   )
 
   return (
+    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+      {forbidden ? <Alert type="error" showIcon message={t('forbidden.subTitle', '你当前没有权限访问这个页面。')} /> : null}
+      {!storeCode ? <Alert type="info" showIcon message={t('shop.purchaseSalesAnalysisNoStore', '请先在顶部选择当前分店。')} /> : null}
+
+      <Card size="small">
+        <Space wrap size={8}>
+          <Select
+            allowClear
+            showSearch
+            style={{ width: 240 }}
+            placeholder={t('posAdmin.localSupplierPurchaseSalesAnalysis.filters.supplier', '供应商')}
+            optionFilterProp="label"
+            options={supplierOptions}
+            loading={supplierOptionsLoading}
+            disabled={!storeCode}
+            value={supplierCode}
+            onChange={(value) => {
+              setSupplierCode(value)
+              setCommitted(null)
+              setResult(null)
+            }}
+          />
+          <RangePicker allowClear={false} value={range} onChange={(value) => value?.[0] && value?.[1] && setRange([value[0], value[1]])} />
+          <Input
+            allowClear
+            style={{ width: 260 }}
+            placeholder={t('posAdmin.localSupplierPurchaseSalesAnalysis.filters.keyword', '货号 / 条码 / 名称')}
+            value={keyword}
+            onChange={(event) => setKeyword(event.target.value)}
+            onPressEnter={handleSearch}
+          />
+          <Button type="primary" icon={<SearchOutlined />} disabled={!storeCode || !supplierCode} loading={loading} onClick={handleSearch}>
+            {t('common.search', '查询')}
+          </Button>
+          <Button onClick={handleReset}>{t('common.reset', '重置')}</Button>
+          <Button icon={<ReloadOutlined />} disabled={!committed} onClick={() => setQueryVersion((current) => current + 1)}>
+            {t('posAdmin.localSupplierPurchaseSalesAnalysis.refresh', '刷新')}
+          </Button>
+        </Space>
+      </Card>
+
+      <Card size="small">
+        {committed && result ? (
+          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+            <Space wrap size={16}>
+              <Text type="secondary">{t('purchaseSalesTrend.calculationNote', '进货按订单日期范围过滤、按进货发生日期汇总；日销量从上次进货起逐日展示，售出比与累计销量从最近进货当天起统计。')}</Text>
+              <Text type="secondary">
+                {t('posAdmin.localSupplierPurchaseSalesAnalysis.summary.updatedAt', '统计更新时间')}：
+                {result.salesStatisticLastUpdate ? dayjs(result.salesStatisticLastUpdate).format('YYYY-MM-DD HH:mm:ss') : '--'}
+              </Text>
+            </Space>
+            <MeasuredTable<Row>
+              metricId="shop.purchase-sales-analysis.table"
+              size="small"
+              rowKey={rowKey}
+              columns={columns}
+              dataSource={result.items}
+              loading={loading}
+              scroll={{ x: 1250 }}
+              onChange={handleTableChange}
+              locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('posAdmin.localSupplierPurchaseSalesAnalysis.empty', '当前条件下暂无分店供应商进货销量数据。')} /> }}
+              pagination={{
+                current: page,
+                pageSize,
+                total: result.total,
+                showSizeChanger: true,
+                pageSizeOptions: PURCHASE_SALES_ANALYSIS_PAGE_SIZE_OPTIONS.map(String),
+                showTotal: (total) => t('posAdmin.localSupplierPurchaseSalesAnalysis.summary.total', '共 {{count}} 条', { count: total }),
+              }}
+              expandable={{
+                expandRowByClick: true,
+                expandedRowKeys: expandedKeys,
+                onExpandedRowsChange: (keys) => setExpandedKeys(keys.map(String)),
+                rowExpandable: (row) => row.dailySales.length > 0,
+                expandedRowRender: (row) => (
+                  <div style={{ padding: '4px 8px 8px', overflowX: 'auto' }}>
+                    <PurchaseSalesDailyChart row={row} title={`${row.itemNumber || row.productCode} · ${row.productName || ''}`.trim()} />
+                  </div>
+                ),
+              }}
+            />
+          </Space>
+        ) : (
+          loading ? (
+            // 主查询在大数据量下要数秒，给出明确的进度反馈而不是空状态。
+            <div style={{ padding: '32px 0', textAlign: 'center' }}>
+              <Spin />
+              <div style={{ marginTop: 12, color: '#718096' }}>
+                {t('purchaseSalesTrend.loadingHint', '正在查询本店进货与日销量，数据量大时需要几秒…')}
+              </div>
+            </div>
+          ) : (
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description={t('shop.purchaseSalesAnalysisPickSupplier', '选择供应商后点击搜索，查看本店商品的进货与每日销量。')}
+            />
+          )
+        )}
+      </Card>
+    </Space>
+  )
+}
+
+/**
+ * 订货前台「进货销量分析」：两个标签页。
+ * - 粘贴数据查看：粘贴或导入货号，查看全部分店销量（需前台货号销量权限）。
+ * - 选择分店查看：跟随顶部当前分店，按供应商查看进货与进货后的日销量。
+ * 当前标签写在地址栏 ?tab= 中，刷新与旧地址 /shop/batch-product-sales 重定向都能落到正确标签。
+ */
+export default function ShopPurchaseSalesAnalysisPage() {
+  const { t } = useTranslation()
+  const canViewPasteTab = useAuthStore((state) => state.access.canViewShopBatchProductSales)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const activeTab = resolveShopPurchaseSalesTab(searchParams.get(SHOP_PURCHASE_SALES_TAB_PARAM), canViewPasteTab)
+
+  const handleTabChange = (key: string) => {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current)
+      next.set(SHOP_PURCHASE_SALES_TAB_PARAM, key)
+      return next
+    }, { replace: true })
+  }
+
+  const subtitle = activeTab === 'paste'
+    ? t('shop.purchaseSalesAnalysisPasteSubtitle', '粘贴或导入货号，查看这些商品在全部分店的销量、每日趋势及折扣成交情况。')
+    : t('shop.purchaseSalesAnalysisSubtitle', '按供应商和订单日期范围查看本店商品最近进货与进货后的每日销量。')
+
+  const tabItems: { key: ShopPurchaseSalesTab; label: string; children: ReactNode }[] = [
+    {
+      key: 'paste',
+      label: t('shop.purchaseSalesAnalysisPasteTab', '粘贴数据查看'),
+      children: (
+        <Suspense fallback={<div style={{ padding: '48px 0', textAlign: 'center' }}><Spin /></div>}>
+          <BatchProductSalesAnalysisPage embedded />
+        </Suspense>
+      ),
+    },
+    { key: 'store', label: t('shop.purchaseSalesAnalysisStoreTab', '选择分店查看'), children: <StorePurchaseSalesPanel /> },
+  ]
+
+  return (
     <div className="shop-feature-page">
       <Space direction="vertical" size={12} style={{ width: '100%' }}>
         <Space direction="vertical" size={4}>
           <Title level={4} style={{ margin: 0 }}>{t('shop.purchaseSalesAnalysisTitle', '进货销量分析')}</Title>
-          <Text type="secondary">{t('shop.purchaseSalesAnalysisSubtitle', '按供应商和订单日期范围查看本店商品最近进货与进货后的每日销量。')}</Text>
+          <Text type="secondary">{subtitle}</Text>
         </Space>
-
-        {forbidden ? <Alert type="error" showIcon message={t('forbidden.subTitle', '你当前没有权限访问这个页面。')} /> : null}
-        {!storeCode ? <Alert type="info" showIcon message={t('shop.purchaseSalesAnalysisNoStore', '请先在顶部选择当前分店。')} /> : null}
-
-        <Card size="small">
-          <Space wrap size={8}>
-            <Select
-              allowClear
-              showSearch
-              style={{ width: 240 }}
-              placeholder={t('posAdmin.localSupplierPurchaseSalesAnalysis.filters.supplier', '供应商')}
-              optionFilterProp="label"
-              options={supplierOptions}
-              loading={supplierOptionsLoading}
-              disabled={!storeCode}
-              value={supplierCode}
-              onChange={(value) => {
-                setSupplierCode(value)
-                setCommitted(null)
-                setResult(null)
-              }}
-            />
-            <RangePicker allowClear={false} value={range} onChange={(value) => value?.[0] && value?.[1] && setRange([value[0], value[1]])} />
-            <Input
-              allowClear
-              style={{ width: 260 }}
-              placeholder={t('posAdmin.localSupplierPurchaseSalesAnalysis.filters.keyword', '货号 / 条码 / 名称')}
-              value={keyword}
-              onChange={(event) => setKeyword(event.target.value)}
-              onPressEnter={handleSearch}
-            />
-            <Button type="primary" icon={<SearchOutlined />} disabled={!storeCode || !supplierCode} loading={loading} onClick={handleSearch}>
-              {t('common.search', '查询')}
-            </Button>
-            <Button onClick={handleReset}>{t('common.reset', '重置')}</Button>
-            <Button icon={<ReloadOutlined />} disabled={!committed} onClick={() => setQueryVersion((current) => current + 1)}>
-              {t('posAdmin.localSupplierPurchaseSalesAnalysis.refresh', '刷新')}
-            </Button>
-          </Space>
-        </Card>
-
-        <Card size="small">
-          {committed && result ? (
-            <Space direction="vertical" size={8} style={{ width: '100%' }}>
-              <Space wrap size={16}>
-                <Text type="secondary">{t('purchaseSalesTrend.calculationNote', '进货按订单日期范围过滤、按进货发生日期汇总；日销量从上次进货起逐日展示，售出比与累计销量从最近进货当天起统计。')}</Text>
-                <Text type="secondary">
-                  {t('posAdmin.localSupplierPurchaseSalesAnalysis.summary.updatedAt', '统计更新时间')}：
-                  {result.salesStatisticLastUpdate ? dayjs(result.salesStatisticLastUpdate).format('YYYY-MM-DD HH:mm:ss') : '--'}
-                </Text>
-              </Space>
-              <MeasuredTable<Row>
-                metricId="shop.purchase-sales-analysis.table"
-                size="small"
-                rowKey={rowKey}
-                columns={columns}
-                dataSource={result.items}
-                loading={loading}
-                scroll={{ x: 1250 }}
-                onChange={handleTableChange}
-                locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('posAdmin.localSupplierPurchaseSalesAnalysis.empty', '当前条件下暂无分店供应商进货销量数据。')} /> }}
-                pagination={{
-                  current: page,
-                  pageSize,
-                  total: result.total,
-                  showSizeChanger: true,
-                  pageSizeOptions: PURCHASE_SALES_ANALYSIS_PAGE_SIZE_OPTIONS.map(String),
-                  showTotal: (total) => t('posAdmin.localSupplierPurchaseSalesAnalysis.summary.total', '共 {{count}} 条', { count: total }),
-                }}
-                expandable={{
-                  expandRowByClick: true,
-                  expandedRowKeys: expandedKeys,
-                  onExpandedRowsChange: (keys) => setExpandedKeys(keys.map(String)),
-                  rowExpandable: (row) => row.dailySales.length > 0,
-                  expandedRowRender: (row) => (
-                    <div style={{ padding: '4px 8px 8px', overflowX: 'auto' }}>
-                      <PurchaseSalesDailyChart row={row} title={`${row.itemNumber || row.productCode} · ${row.productName || ''}`.trim()} />
-                    </div>
-                  ),
-                }}
-              />
-            </Space>
-          ) : (
-            loading ? (
-              // 主查询在大数据量下要数秒，给出明确的进度反馈而不是空状态。
-              <div style={{ padding: '32px 0', textAlign: 'center' }}>
-                <Spin />
-                <div style={{ marginTop: 12, color: '#718096' }}>
-                  {t('purchaseSalesTrend.loadingHint', '正在查询本店进货与日销量，数据量大时需要几秒…')}
-                </div>
-              </div>
-            ) : (
-              <Empty
-                image={Empty.PRESENTED_IMAGE_SIMPLE}
-                description={t('shop.purchaseSalesAnalysisPickSupplier', '选择供应商后点击搜索，查看本店商品的进货与每日销量。')}
-              />
-            )
-          )}
-        </Card>
+        {/* 未获货号销量权限时只剩一个标签，不再显示标签栏，直接展示选择分店查看。 */}
+        {canViewPasteTab ? (
+          // 标签内容只在首次切到时挂载、切走后保留，来回切换不会丢失已查询的结果。
+          <Tabs activeKey={activeTab} onChange={handleTabChange} items={tabItems} />
+        ) : (
+          <StorePurchaseSalesPanel />
+        )}
       </Space>
     </div>
   )

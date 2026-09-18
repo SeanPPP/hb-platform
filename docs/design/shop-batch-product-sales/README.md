@@ -2,6 +2,8 @@
 
 日期：2026-09-18。目标：让订货前台（`/shop`）用户按导入货号查看**全部分店**的销量，页面完整复用后台「批量货号销量」组件，后端沿用同一组接口。
 
+> **后续变更（2026-09-18）**：独立的「货号销量」导航已并入「进货销量分析」（`/shop/purchase-sales-analysis`），成为其「粘贴数据查看」标签（`?tab=paste`），另一个标签「选择分店查看」（`?tab=store`）跟随顶部当前分店。旧地址 `/shop/batch-product-sales` 重定向到粘贴数据查看；未获 `OrderFront.BatchProductSales.View` 的用户不显示标签栏，只看到选择分店查看。`apps/web/src/pages/ShopBatchProductSales` 包装页与 `shop.batchProductSales` 首屏文案随之移除。下文保留合并前的设计记录。
+
 ## 设计结论
 
 - 导航：桌面一级导航「热销商品」之后新增「货号销量 / Item Sales」，移动端进入「更多」抽屉；路由 `/shop/batch-product-sales`，套用 `shop-workspace-layout` 紧凑外壳。

@@ -36,6 +36,9 @@
     "purchaseSalesAnalysisTitle": "Purchase & Sales",
     "purchaseSalesAnalysisSubtitle": "Review this store's latest purchases and daily sales after each purchase by supplier and order date range.",
     "purchaseSalesAnalysisPickSupplier": "Choose a supplier and click Search to review purchases and daily sales for this store.",
-    "purchaseSalesAnalysisNoStore": "Select the current store at the top first."
+    "purchaseSalesAnalysisNoStore": "Select the current store at the top first.",
+    "purchaseSalesAnalysisPasteTab": "Paste Item Numbers",
+    "purchaseSalesAnalysisStoreTab": "By Store",
+    "purchaseSalesAnalysisPasteSubtitle": "Paste or import item numbers to review sales, daily trends and discount sales across all stores."
   }
 }

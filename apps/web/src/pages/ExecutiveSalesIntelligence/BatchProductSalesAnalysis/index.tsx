@@ -2,7 +2,7 @@ import { DownloadOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/ic
 import { Alert, Button, DatePicker, Dropdown, Empty, Input, Select, Skeleton, Tag } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import dayjs, { type Dayjs } from 'dayjs'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PropsWithChildren } from 'react'
 import { useTranslation } from 'react-i18next'
 import PageContainer from '../../../components/PageContainer'
 import { MeasuredTable } from '../../../components/MeasuredTable'
@@ -21,7 +21,7 @@ import { registerPageMessages } from '../../../i18n/registerPageMessages'
 import messagesEn from './messages.en.json'
 import messagesZh from './messages.zh.json'
 
-// 本页文案随页面代码块懒注册：后台页面与订货前台「货号销量」共用，避免整套文案进入首屏 i18n 包。
+// 本页文案随页面代码块懒注册：后台页面与订货前台「进货销量分析 · 粘贴数据查看」共用，避免整套文案进入首屏 i18n 包。
 registerPageMessages({ zh: messagesZh, en: messagesEn })
 
 const { RangePicker } = DatePicker
@@ -34,6 +34,12 @@ const audFormatter = new Intl.NumberFormat('en-AU', {
 
 interface BatchProductSalesAnalysisPageProps {
   api?: BatchProductSalesApi
+  /** 嵌入订货前台标签页时由外层页面提供标题，这里不再渲染自带的页头。 */
+  embedded?: boolean
+}
+
+function PageFrame({ embedded, title, subtitle, children }: PropsWithChildren<{ embedded: boolean; title: string; subtitle: string }>) {
+  return embedded ? <>{children}</> : <PageContainer title={title} subtitle={subtitle}>{children}</PageContainer>
 }
 interface BranchRankingRow extends BatchSalesBranch {
   rank: number
@@ -205,7 +211,7 @@ function LoadState({ loading, error, empty, onRetry, children }: { loading: bool
   return <>{children}</>
 }
 
-export default function BatchProductSalesAnalysisPage({ api = batchProductSalesApi }: BatchProductSalesAnalysisPageProps) {
+export default function BatchProductSalesAnalysisPage({ api = batchProductSalesApi, embedded = false }: BatchProductSalesAnalysisPageProps) {
   const { t } = useTranslation()
   const currentUser = useAuthStore((state) => state.currentUser)
   // 同一 GUID 的角色、精确权限或可见门店变动也必须隔离旧查询缓存。
@@ -927,7 +933,7 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
 
   return (
     <div className={styles.screen}>
-      <PageContainer title={t('batchProductSalesAnalysis.title')} subtitle={t('batchProductSalesAnalysis.subtitle')}>
+      <PageFrame embedded={embedded} title={t('batchProductSalesAnalysis.title')} subtitle={t('batchProductSalesAnalysis.subtitle')}>
         <div className={styles.page}>
           <section className={styles.toolbar} aria-label={t('batchProductSalesAnalysis.query')}>
             <Button onClick={() => setScopeOpen(true)}>
@@ -1250,7 +1256,7 @@ export default function BatchProductSalesAnalysisPage({ api = batchProductSalesA
             />
           ) : null}
         </div>
-      </PageContainer>
+      </PageFrame>
     </div>
   )
 }

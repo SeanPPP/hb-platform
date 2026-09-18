@@ -36,6 +36,9 @@
     "purchaseSalesAnalysisTitle": "进货销量分析",
     "purchaseSalesAnalysisSubtitle": "按供应商和订单日期范围查看本店商品最近进货与进货后的每日销量。",
     "purchaseSalesAnalysisPickSupplier": "选择供应商后点击搜索，查看本店商品的进货与每日销量。",
-    "purchaseSalesAnalysisNoStore": "请先在顶部选择当前分店。"
+    "purchaseSalesAnalysisNoStore": "请先在顶部选择当前分店。",
+    "purchaseSalesAnalysisPasteTab": "粘贴数据查看",
+    "purchaseSalesAnalysisStoreTab": "选择分店查看",
+    "purchaseSalesAnalysisPasteSubtitle": "粘贴或导入货号，查看这些商品在全部分店的销量、每日趋势及折扣成交情况。"
   }
 }

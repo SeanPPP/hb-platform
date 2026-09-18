@@ -207,7 +207,7 @@
     },
     "OrderFront.BatchProductSales.View": {
       "name": "前台查看货号销量",
-      "description": "Web 订货前台页面 /shop/batch-product-sales - 按导入货号查看全部分店的销量、每日趋势及折扣成交情况"
+      "description": "Web 订货前台页面 /shop/purchase-sales-analysis「粘贴数据查看」标签 - 按导入货号查看全部分店的销量、每日趋势及折扣成交情况"
     },
     "Orders.Create": {
       "name": "创建订单",
