@@ -24,6 +24,7 @@ import type {
   IdentityPermissionCatalog,
   IdentityPermissionCategory,
   IdentityPermissionRoleCounts,
+  IdentityPermissionUserAssignmentInput,
   IdentityRole,
   IdentityRoleDetail,
   IdentityRolePermissionState,
@@ -523,6 +524,26 @@ export async function assignIdentityPermissionRoles(code: string, roleGuids: str
   const response = await apiClient.post(
     permissionPath(code, "roles"),
     Array.from(new Set(roleGuids.map((value) => value.trim()).filter(Boolean))),
+    accountBoundRequestConfig(actorGuid),
+  );
+  return normalizeBoolean(response.data);
+}
+
+/** 获取被直接授予该权限的用户（不含通过角色继承的用户） */
+export async function fetchIdentityPermissionUsers(code: string, actorGuid: string, signal?: AbortSignal) {
+  const response = await apiClient.get(permissionPath(code, "users"), accountBoundRequestConfig(actorGuid, signal));
+  const normalized = unwrap(response.data);
+  if (normalized === null || normalized === undefined) return [] as IdentityRoleUser[];
+  if (!Array.isArray(normalized)) throw new Error(INVALID_RESPONSE_MESSAGE);
+  return normalized.map(normalizeRoleUser);
+}
+
+/** 按增量调整权限的直接授权用户；服务端只处理 add/remove，未提交的用户保持不变。 */
+export async function assignIdentityPermissionUsers(code: string, input: IdentityPermissionUserAssignmentInput, actorGuid: string) {
+  const normalize = (values: string[]) => Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+  const response = await apiClient.post(
+    permissionPath(code, "users"),
+    { addUserGuids: normalize(input.addUserGuids), removeUserGuids: normalize(input.removeUserGuids) },
     accountBoundRequestConfig(actorGuid),
   );
   return normalizeBoolean(response.data);

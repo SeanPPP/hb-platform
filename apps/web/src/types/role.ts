@@ -27,6 +27,12 @@ export interface RoleUserDto {
   assignedAt: string
 }
 
+/** 权限直接授权用户的增量调整；与后端 PermissionUserAssignmentDto 对应 */
+export interface PermissionUserAssignmentDto {
+  addUserGuids: string[]
+  removeUserGuids: string[]
+}
+
 export interface RoleDetailDto extends RoleDto {
   users: RoleUserDto[]
   permissions: string[]

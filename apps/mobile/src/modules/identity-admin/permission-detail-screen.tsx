@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Alert, StyleSheet, View } from "react-native";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { ActivityIndicator, Button, Checkbox, Icon, IconButton, Snackbar, Text, TouchableRipple } from "react-native-paper";
 import { BusinessSheet } from "@/components/ui/BusinessSheet";
@@ -9,26 +9,41 @@ import { useAuthStore } from "@/store/auth-store";
 import { localizeAccessRoleName } from "@/modules/users/access-permission-presentation";
 import {
   assignIdentityPermissionRoles,
+  assignIdentityPermissionUsers,
   deleteIdentitySysPermission,
   fetchIdentityPermissionRoles,
+  fetchIdentityPermissionUsers,
   fetchIdentityRoles,
+  fetchIdentityUsers,
   getIdentityAdminErrorMeta,
 } from "./api";
-import type { IdentityRole } from "./types";
+import type { IdentityRole, IdentityRoleUser } from "./types";
 import { isUncertainRoleWrite } from "./role-logic";
 import {
   areRoleGuidsEqual,
   createRoleAssignmentDraft,
   findPermissionListItem,
+  formatPermissionUserName,
   getRoleAssignmentDelta,
   isImplicitAllRoleName,
+  isPermissionUserDeltaApplied,
   isRoleAssignmentDirty,
   toggleRoleAssignment,
   type RoleAssignmentDraft,
 } from "./permission-logic";
 import { interpolatePermissionCopy as interpolate, permissionQueryKeys, usePermissionCopy, usePermissionItems, usePermissionSession } from "./permission-hooks";
 import { AdminEmpty, AdminError, AdminRow, AdminScreen, AdminScroll, SearchField, StatusTag, styles } from "./ui";
-import { identityDate } from "./user-hooks";
+import { identityDate, useIdentitySearch } from "./user-hooks";
+
+type PermissionUserLite = Pick<IdentityRoleUser, "userGUID" | "username" | "email" | "fullName" | "isActive">;
+
+function toPermissionUserLite(user: PermissionUserLite): PermissionUserLite {
+  return { userGUID: user.userGUID, username: user.username, email: user.email, isActive: user.isActive, ...(user.fullName ? { fullName: user.fullName } : {}) };
+}
+
+function matchesPermissionUser(user: PermissionUserLite, keyword: string) {
+  return !keyword || [user.username, user.fullName ?? "", user.email].some((value) => value.toLocaleLowerCase().includes(keyword));
+}
 
 function firstParam(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] : value;
@@ -56,13 +71,23 @@ function PermissionDetailContent({ code }: { code: string }) {
   const router = useRouter();
   const queryClient = useQueryClient();
   const { copy, appLanguage } = usePermissionCopy();
-  const { allowed, actorKey, capabilities } = usePermissionSession();
+  const { allowed, actorKey, capabilities, access } = usePermissionSession();
+  // 权限反查用户是管理员专属接口（服务端 ADMIN_REQUIRED），非管理员不发请求也不展示该区块。
+  const canViewUsers = allowed && access.isAdmin;
   const [assignOpen, setAssignOpen] = useState(false);
   const [assignSearch, setAssignSearch] = useState("");
   const [onlySelected, setOnlySelected] = useState(false);
   const [assignment, setAssignment] = useState<RoleAssignmentDraft | null>(null);
   const [writeForbidden, setWriteForbidden] = useState(false);
   const [notice, setNotice] = useState("");
+  const [userAssignOpen, setUserAssignOpen] = useState(false);
+  const [userSearch, setUserSearch] = useState("");
+  const debouncedUserSearch = useIdentitySearch(userSearch);
+  const [onlySelectedUsers, setOnlySelectedUsers] = useState(false);
+  // 复用 GUID 集合草稿：baseline 为服务端直接授权用户，保存时只提交增量。
+  const [userAssignment, setUserAssignment] = useState<RoleAssignmentDraft | null>(null);
+  // 搜索结果按关键字分页，切换关键字后旧页不在当前数据里；这里记住见过的用户，「仅看已选」时仍能显示名称。
+  const [seenUsers, setSeenUsers] = useState<Map<string, PermissionUserLite>>(() => new Map());
 
   const permissions = usePermissionItems({ actorKey, enabled: allowed, appLanguage });
   const item = useMemo(() => findPermissionListItem(permissions.items, code), [code, permissions.items]);
@@ -81,6 +106,21 @@ function PermissionDetailContent({ code }: { code: string }) {
     queryFn: ({ signal }) => fetchAllRoles(actorKey, signal),
   });
 
+  const assignedUsersQuery = useQuery({
+    queryKey: permissionQueryKeys.permissionUsers(actorKey, code),
+    enabled: canViewUsers && Boolean(code),
+    retry: false,
+    queryFn: ({ signal }) => fetchIdentityPermissionUsers(code, actorKey, signal),
+  });
+  const userCandidatesQuery = useInfiniteQuery({
+    queryKey: permissionQueryKeys.permissionUserCandidates(actorKey, debouncedUserSearch),
+    enabled: userAssignOpen && capabilities.canManage && !writeForbidden,
+    retry: false,
+    initialPageParam: 1,
+    queryFn: ({ pageParam, signal }) => fetchIdentityUsers({ page: pageParam, pageSize: 50, search: debouncedUserSearch || undefined }, actorKey, signal),
+    getNextPageParam: (lastPage) => lastPage.page < lastPage.totalPages ? lastPage.page + 1 : undefined,
+  });
+
   const isLockedRole = useCallback(
     (role: Pick<IdentityRole, "roleName">) => isImplicitAllRoleName(role.roleName, superAdminRoleNames),
     [superAdminRoleNames],
@@ -95,6 +135,32 @@ function PermissionDetailContent({ code }: { code: string }) {
     // 后台刷新不能覆盖用户尚未保存的勾选；仅干净草稿接受服务器最新值。
     setAssignment((current) => current && isRoleAssignmentDirty(current) ? current : createRoleAssignmentDraft(explicitGuids));
   }, [assignedQuery.data, explicitGuids]);
+
+  const assignedUsers = useMemo(() => assignedUsersQuery.data ?? [], [assignedUsersQuery.data]);
+  const assignedUserGuids = useMemo(() => assignedUsers.map((user) => user.userGUID), [assignedUsers]);
+
+  useEffect(() => {
+    if (!assignedUsersQuery.data) return;
+    // 与角色草稿相同：后台刷新只覆盖干净草稿，不吞掉尚未保存的勾选。
+    setUserAssignment((current) => current && isRoleAssignmentDirty(current) ? current : createRoleAssignmentDraft(assignedUserGuids));
+  }, [assignedUsersQuery.data, assignedUserGuids]);
+
+  useEffect(() => {
+    const incoming = [...assignedUsers, ...(userCandidatesQuery.data?.pages.flatMap((page) => page.items) ?? [])];
+    if (incoming.length === 0) return;
+    setSeenUsers((current) => {
+      let changed = false;
+      const next = new Map(current);
+      for (const user of incoming) {
+        const previous = next.get(user.userGUID);
+        if (!previous || previous.username !== user.username || previous.fullName !== user.fullName || previous.email !== user.email || previous.isActive !== user.isActive) {
+          next.set(user.userGUID, toPermissionUserLite(user));
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [assignedUsers, userCandidatesQuery.data]);
 
   const assertCurrentSession = useCallback((permission: string) => {
     const state = useAuthStore.getState();
@@ -167,6 +233,7 @@ function PermissionDetailContent({ code }: { code: string }) {
         queryClient.invalidateQueries({ queryKey: permissionQueryKeys.sysPermissions(actorKey) }),
         queryClient.invalidateQueries({ queryKey: permissionQueryKeys.roleCounts(actorKey) }),
         queryClient.invalidateQueries({ queryKey: ["identity-admin", actorKey, "rolePermissionState"] }),
+        queryClient.invalidateQueries({ queryKey: permissionQueryKeys.permissionUsers(actorKey, code) }),
       ]);
       if (router.canGoBack()) router.back();
       else router.replace("/(shell)/permissions");
@@ -174,25 +241,88 @@ function PermissionDetailContent({ code }: { code: string }) {
     onError: handleMutationError,
   });
 
+  const userAssignMutation = useMutation({
+    retry: false,
+    mutationFn: async () => {
+      if (!userAssignment) throw new Error("User assignment draft unavailable");
+      const delta = getRoleAssignmentDelta(userAssignment);
+      assertCurrentSession("Roles.ManagePermissions");
+      await assignIdentityPermissionUsers(code, { addUserGuids: delta.added, removeUserGuids: delta.removed }, actorKey);
+      assertCurrentSession("Roles.ManagePermissions");
+      const verified = await fetchIdentityPermissionUsers(code, actorKey);
+      assertCurrentSession("Roles.ManagePermissions");
+      if (!isPermissionUserDeltaApplied(delta, verified.map((user) => user.userGUID))) throw new Error("PERMISSION_USER_READBACK_MISMATCH");
+      return verified;
+    },
+    onSuccess: async (verified) => {
+      if (!canApplyMutationResult("Roles.ManagePermissions")) return;
+      queryClient.setQueryData(permissionQueryKeys.permissionUsers(actorKey, code), verified);
+      setUserAssignment(createRoleAssignmentDraft(verified.map((user) => user.userGUID)));
+      await Promise.all([
+        // 用户授权页与员工访问管理读取同一张直接权限表，需一并失效。
+        queryClient.invalidateQueries({ queryKey: ["identity-admin", actorKey, "access-permissions"] }),
+        queryClient.invalidateQueries({ queryKey: ["userAccessManagement"] }),
+      ]);
+      if (!canApplyMutationResult("Roles.ManagePermissions")) return;
+      setUserAssignOpen(false);
+      setNotice(copy.userAssignmentSaved);
+    },
+    onError: (error) => {
+      // 权限未入库是确定的业务拒绝，给出可操作的原因而不是冻结写入。
+      if (getIdentityAdminErrorMeta(error).code === "PERMISSION_NOT_FOUND") {
+        setNotice(copy.permissionNotPersisted);
+        return;
+      }
+      handleMutationError(error);
+    },
+  });
+
   const handleVerifyRefresh = useCallback(async () => {
     if (!canApplyMutationResult("Roles.View")) return;
     try {
       assertCurrentSession("Roles.View");
-      const [verified] = await Promise.all([fetchIdentityPermissionRoles(code, actorKey), permissions.refetch()]);
+      const [verified, verifiedUsers] = await Promise.all([
+        fetchIdentityPermissionRoles(code, actorKey),
+        canViewUsers ? fetchIdentityPermissionUsers(code, actorKey) : Promise.resolve(null),
+        permissions.refetch(),
+      ]);
       assertCurrentSession("Roles.View");
       queryClient.setQueryData(permissionQueryKeys.permissionRoles(actorKey, code), verified);
       setAssignment(createRoleAssignmentDraft(verified.filter((role) => !isLockedRole(role)).map((role) => role.roleGUID)));
+      if (verifiedUsers) {
+        queryClient.setQueryData(permissionQueryKeys.permissionUsers(actorKey, code), verifiedUsers);
+        setUserAssignment(createRoleAssignmentDraft(verifiedUsers.map((user) => user.userGUID)));
+      }
       setWriteForbidden(false);
       setNotice(copy.verificationComplete);
     } catch {
       if (canApplyMutationResult("Roles.View")) setNotice(copy.verificationFailed);
     }
-  }, [actorKey, assertCurrentSession, canApplyMutationResult, code, copy.verificationComplete, copy.verificationFailed, isLockedRole, permissions, queryClient]);
+  }, [actorKey, assertCurrentSession, canApplyMutationResult, canViewUsers, code, copy.verificationComplete, copy.verificationFailed, isLockedRole, permissions, queryClient]);
 
-  const saving = assignMutation.isPending || deleteMutation.isPending;
+  const saving = assignMutation.isPending || deleteMutation.isPending || userAssignMutation.isPending;
   const canWrite = capabilities.canManage && !writeForbidden && !saving;
   const delta = assignment ? getRoleAssignmentDelta(assignment) : { added: [], removed: [] };
   const assignmentDirty = Boolean(assignment && isRoleAssignmentDirty(assignment));
+  const userDelta = userAssignment ? getRoleAssignmentDelta(userAssignment) : { added: [], removed: [] };
+  const userAssignmentDirty = Boolean(userAssignment && isRoleAssignmentDirty(userAssignment));
+  const resetUserAssignment = () => setUserAssignment(createRoleAssignmentDraft(assignedUserGuids));
+
+  const sheetUsers = useMemo<PermissionUserLite[]>(() => {
+    const keyword = userSearch.trim().toLocaleLowerCase();
+    if (onlySelectedUsers) {
+      // 已选名单可能跨多次搜索，改为本地过滤；未见过详情的 GUID 以 GUID 兜底展示，保证仍可取消勾选。
+      return (userAssignment?.selected ?? [])
+        .map((guid) => seenUsers.get(guid) ?? { userGUID: guid, username: guid, email: "", isActive: true })
+        .filter((user) => matchesPermissionUser(user, keyword))
+        .sort((a, b) => formatPermissionUserName(a).localeCompare(formatPermissionUserName(b)));
+    }
+    const unique = new Map<string, PermissionUserLite>();
+    for (const user of userCandidatesQuery.data?.pages.flatMap((page) => page.items) ?? []) {
+      if (!unique.has(user.userGUID)) unique.set(user.userGUID, toPermissionUserLite(user));
+    }
+    return Array.from(unique.values());
+  }, [onlySelectedUsers, seenUsers, userAssignment?.selected, userCandidatesQuery.data, userSearch]);
 
   const sheetRoles = useMemo(() => {
     const keyword = assignSearch.trim().toLocaleLowerCase();
@@ -224,7 +354,11 @@ function PermissionDetailContent({ code }: { code: string }) {
   const deleteHint = item.isSystem ? copy.deleteSystemHint : !item.deletable ? copy.deleteUnsavedHint : "";
   const footer = capabilities.canManage ? (
     <>
-      <Button mode="contained" style={styles.button} disabled={!canWrite || assignedQuery.isPending || allRolesQuery.isPending} onPress={() => { setAssignSearch(""); setOnlySelected(false); setAssignOpen(true); }}>{copy.assignRoles}</Button>
+      <View style={localStyles.footerRow}>
+        <Button mode="contained" style={[styles.button, { flex: 1 }]} disabled={!canWrite || assignedQuery.isPending || allRolesQuery.isPending} onPress={() => { setAssignSearch(""); setOnlySelected(false); setAssignOpen(true); }}>{copy.assignRoles}</Button>
+        <Button mode="contained" style={[styles.button, { flex: 1 }]} disabled={!canWrite || !canViewUsers || assignedUsersQuery.isPending || Boolean(assignedUsersQuery.error)}
+          onPress={() => { setUserSearch(""); setOnlySelectedUsers(false); setUserAssignOpen(true); }}>{copy.assignUsers}</Button>
+      </View>
       <Button mode="outlined" textColor={C.danger} style={styles.button} disabled={!canWrite || !item.deletable} loading={deleteMutation.isPending} onPress={confirmDelete}>
         {deleteHint ? `${copy.deletePermission}（${deleteHint}）` : copy.deletePermission}
       </Button>
@@ -287,6 +421,25 @@ function PermissionDetailContent({ code }: { code: string }) {
             </View>
           )}
         </View>
+
+        {canViewUsers ? (
+          <View>
+            <Text style={styles.value}>{interpolate(copy.assignedUsersCount, { count: assignedUsers.length })}</Text>
+            <Text style={[styles.muted, { marginTop: 2 }]}>{copy.assignedUsersHint}</Text>
+            {assignedUsersQuery.isPending ? <ActivityIndicator style={{ marginVertical: 16 }} /> : assignedUsersQuery.error ? (
+              <AdminError error={assignedUsersQuery.error} onRetry={() => void assignedUsersQuery.refetch()} />
+            ) : assignedUsers.length === 0 ? <AdminEmpty text={copy.noAssignedUsers} /> : (
+              <View style={[styles.section, { marginTop: 8 }]}>
+                {assignedUsers.map((user) => (
+                  <AdminRow key={user.userGUID} icon="account-outline" title={formatPermissionUserName(user)}
+                    subtitle={[user.email, interpolate(copy.grantedAt, { time: identityDate(user.assignedAt) })].filter(Boolean).join(" · ")}
+                    trailing={<StatusTag active={user.isActive} />}
+                    onPress={() => router.push({ pathname: "/(shell)/user-admin/[userGuid]", params: { userGuid: user.userGUID } })} />
+                ))}
+              </View>
+            )}
+          </View>
+        ) : null}
       </AdminScroll>
 
       <BusinessSheet
@@ -336,6 +489,57 @@ function PermissionDetailContent({ code }: { code: string }) {
           );
         })}
       </BusinessSheet>
+      <BusinessSheet
+        visible={userAssignOpen}
+        title={copy.assignUsers}
+        subtitle={`${item.name} · ${item.code}`}
+        dismissable={!userAssignMutation.isPending}
+        onDismiss={() => {
+          if (userAssignmentDirty) {
+            Alert.alert(copy.unsavedTitle, copy.unsavedMessage, [
+              { text: copy.cancel, style: "cancel" },
+              { text: copy.discard, style: "destructive", onPress: () => { resetUserAssignment(); setUserAssignOpen(false); } },
+            ]);
+            return;
+          }
+          setUserAssignOpen(false);
+        }}
+        footer={
+          <View style={localStyles.sheetFooter}>
+            <Button mode="outlined" style={[styles.button, { flex: 1 }]} disabled={userAssignMutation.isPending} onPress={() => { resetUserAssignment(); setUserAssignOpen(false); }}>{copy.cancel}</Button>
+            <Button mode="contained" style={[styles.button, { flex: 2 }]} disabled={!canWrite || !userAssignmentDirty} loading={userAssignMutation.isPending} onPress={() => userAssignMutation.mutate()}>
+              {userAssignmentDirty ? interpolate(copy.saveAssignment, { added: userDelta.added.length, removed: userDelta.removed.length }) : copy.saveAssignmentIdle}
+            </Button>
+          </View>
+        }
+      >
+        <SearchField value={userSearch} onChange={setUserSearch} placeholder={copy.assignUsersSearch} />
+        <View style={localStyles.sheetToolbar}>
+          <Text style={styles.muted}>{interpolate(copy.selectedUsers, { count: userAssignment?.selected.length ?? 0 })}</Text>
+          <Button compact onPress={() => setOnlySelectedUsers((value) => !value)}>{onlySelectedUsers ? copy.showAll : copy.onlySelected}</Button>
+        </View>
+        {!onlySelectedUsers && userCandidatesQuery.isPending ? <ActivityIndicator style={{ marginVertical: 16 }} /> : !onlySelectedUsers && userCandidatesQuery.error ? (
+          <AdminError error={userCandidatesQuery.error} onRetry={() => void userCandidatesQuery.refetch()} />
+        ) : sheetUsers.length === 0 ? <AdminEmpty text={copy.noUsers} /> : sheetUsers.map((user) => {
+          const checked = Boolean(userAssignment?.selected.includes(user.userGUID));
+          return (
+            <TouchableRipple key={user.userGUID} disabled={!canWrite} accessibilityRole="checkbox" accessibilityState={{ checked, disabled: !canWrite }}
+              onPress={() => setUserAssignment((current) => current ? toggleRoleAssignment(current, user.userGUID) : current)}>
+              <View style={localStyles.sheetRow}>
+                <Checkbox status={checked ? "checked" : "unchecked"} disabled={!canWrite} />
+                <View style={{ flex: 1 }}>
+                  <Text>{formatPermissionUserName(user)}</Text>
+                  {user.email ? <Text style={styles.muted}>{user.email}</Text> : null}
+                </View>
+                <StatusTag active={user.isActive} />
+              </View>
+            </TouchableRipple>
+          );
+        })}
+        {!onlySelectedUsers && userCandidatesQuery.hasNextPage ? (
+          <Button compact loading={userCandidatesQuery.isFetchingNextPage} disabled={userCandidatesQuery.isFetchingNextPage} onPress={() => void userCandidatesQuery.fetchNextPage()}>{copy.loadMoreUsers}</Button>
+        ) : null}
+      </BusinessSheet>
       <Snackbar visible={Boolean(notice)} onDismiss={() => setNotice("")} duration={5000}>{notice}</Snackbar>
     </AdminScreen>
   );
@@ -353,6 +557,7 @@ const localStyles = StyleSheet.create({
   tagText: { fontSize: 11, fontWeight: "600", color: C.action },
   body: { fontSize: 14, lineHeight: 21, color: C.textPrimary },
   sheetFooter: { flexDirection: "row", gap: 8, paddingBottom: 4 },
+  footerRow: { flexDirection: "row", gap: 8 },
   sheetToolbar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   sheetRow: { minHeight: 52, flexDirection: "row", alignItems: "center", gap: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.outlineMuted },
 });

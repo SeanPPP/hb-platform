@@ -3026,6 +3026,258 @@ namespace BlazorApp.Api.Services
         }
 
         /// <summary>
+        /// 获取被直接授予指定权限的用户列表（不含通过角色继承的用户）
+        /// </summary>
+        public async Task<ApiResponse<List<RoleUserDto>>> GetPermissionUsersAsync(
+            string permissionCode
+        )
+        {
+            try
+            {
+                var db = _context.Db;
+                // 与 GetPermissionRolesAsync 相同：权限反查属于全局授权视图，仅管理员可读。
+                var adminDecision = await UserAccessMutationSecurity.ValidateAdminOperationAsync(
+                    db,
+                    _manageableStoreScopeService
+                );
+                if (!adminDecision.IsAllowed)
+                {
+                    return ApiResponse<List<RoleUserDto>>.Error(
+                        adminDecision.Message,
+                        adminDecision.ErrorCode
+                    );
+                }
+
+                var normalizedCode = permissionCode?.Trim() ?? string.Empty;
+                if (string.IsNullOrEmpty(normalizedCode))
+                {
+                    return ApiResponse<List<RoleUserDto>>.Error(
+                        "权限代码不能为空",
+                        "PERMISSION_CODE_REQUIRED"
+                    );
+                }
+
+                var rows = await db.Queryable<SysUserPermission>()
+                    .InnerJoin<User>((up, u) => up.UserGuid == u.UserGUID)
+                    .Where((up, u) =>
+                        up.PermissionCode == normalizedCode
+                        && up.IsDeleted == false
+                        && u.IsDeleted == false
+                    )
+                    .Select((up, u) => new RoleUserDto
+                    {
+                        UserGUID = u.UserGUID,
+                        Username = u.Username,
+                        Email = u.Email,
+                        FullName = u.FullName,
+                        IsActive = u.IsActive,
+                        AssignedAt = up.CreatedAt,
+                    })
+                    .ToListAsync();
+
+                // 历史数据可能存在同一用户的重复授权行，按用户去重并保留最早授权时间。
+                var users = rows
+                    .GroupBy(item => item.UserGUID, StringComparer.OrdinalIgnoreCase)
+                    .Select(group => group.OrderBy(item => item.AssignedAt).First())
+                    .OrderBy(item => item.Username, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                return ApiResponse<List<RoleUserDto>>.OK(users, "获取权限用户列表成功");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "获取权限用户列表失败，PermissionCode: {PermissionCode}",
+                    permissionCode
+                );
+                return ApiResponse<List<RoleUserDto>>.Error(
+                    "获取权限用户列表失败",
+                    "GET_PERMISSION_USERS_FAILED"
+                );
+            }
+        }
+
+        /// <summary>
+        /// 按增量调整指定权限的直接授权用户
+        /// </summary>
+        public async Task<ApiResponse<bool>> AssignUsersToPermissionAsync(
+            string permissionCode,
+            PermissionUserAssignmentDto dto
+        )
+        {
+            try
+            {
+                var db = _context.Db;
+                var adminDecision = await UserAccessMutationSecurity.ValidateAdminOperationAsync(
+                    db,
+                    _manageableStoreScopeService
+                );
+                if (!adminDecision.IsAllowed)
+                {
+                    return ApiResponse<bool>.Error(
+                        adminDecision.Message,
+                        adminDecision.ErrorCode
+                    );
+                }
+
+                var normalizedCode = permissionCode?.Trim() ?? string.Empty;
+                if (string.IsNullOrEmpty(normalizedCode))
+                {
+                    return ApiResponse<bool>.Error("权限代码不能为空", "PERMISSION_CODE_REQUIRED");
+                }
+
+                var addGuids = NormalizeUserGuidList(dto?.AddUserGuids);
+                var removeGuids = NormalizeUserGuidList(dto?.RemoveUserGuids);
+                if (addGuids.Any(guid => removeGuids.Contains(guid, StringComparer.OrdinalIgnoreCase)))
+                {
+                    return ApiResponse<bool>.Error(
+                        "同一用户不能同时新增和移除授权",
+                        "PERMISSION_USER_ASSIGNMENT_CONFLICT"
+                    );
+                }
+
+                if (addGuids.Count == 0 && removeGuids.Count == 0)
+                {
+                    return ApiResponse<bool>.OK(true, "权限用户授权无变化");
+                }
+
+                // 优先使用库内权限的原始代码写入，保证与角色授权、鉴权查询使用同一拼写。
+                var persistedCode = await db.Queryable<SysPermission>()
+                    .Where(item => item.Code == normalizedCode && !item.IsDeleted)
+                    .Select(item => item.Code)
+                    .FirstAsync();
+                var builtInCode = PermissionSeedData.SalesDashboardPermissions
+                    .Select(item => item.Code)
+                    .FirstOrDefault(code =>
+                        code.Equals(normalizedCode, StringComparison.OrdinalIgnoreCase)
+                    );
+                var assignableCode = !string.IsNullOrWhiteSpace(persistedCode)
+                    ? persistedCode
+                    : builtInCode;
+
+                // 新增授权要求权限已入库（或为内置销售看板权限），否则写入后既不生效也无法在用户侧看到；
+                // 移除授权不做该限制，允许清理已下线权限的残留授权。
+                if (addGuids.Count > 0 && string.IsNullOrWhiteSpace(assignableCode))
+                {
+                    return ApiResponse<bool>.Error(
+                        "权限不存在或尚未入库，无法直接授权给用户",
+                        "PERMISSION_NOT_FOUND"
+                    );
+                }
+
+                var storedCode = assignableCode ?? normalizedCode;
+                var targetUserGuids = new List<string>();
+                if (addGuids.Count > 0)
+                {
+                    targetUserGuids = await db.Queryable<User>()
+                        .Where(item => addGuids.Contains(item.UserGUID) && !item.IsDeleted)
+                        .Select(item => item.UserGUID)
+                        .ToListAsync();
+                    if (
+                        addGuids.Any(guid =>
+                            !targetUserGuids.Contains(guid, StringComparer.OrdinalIgnoreCase)
+                        )
+                    )
+                    {
+                        // 任一目标无效即整体拒绝，避免部分成功导致前端读回核验不一致。
+                        return ApiResponse<bool>.Error(
+                            "部分用户不存在或已删除",
+                            "USER_NOT_FOUND"
+                        );
+                    }
+                }
+
+                await db.Ado.BeginTranAsync();
+                try
+                {
+                    if (removeGuids.Count > 0)
+                    {
+                        await db.Deleteable<SysUserPermission>()
+                            .Where(item =>
+                                item.PermissionCode == storedCode
+                                && removeGuids.Contains(item.UserGuid)
+                            )
+                            .ExecuteCommandAsync();
+                    }
+
+                    if (targetUserGuids.Count > 0)
+                    {
+                        // 已持有该直接权限的用户保持原记录，保留其授权时间与审计字段。
+                        var alreadyGranted = await db.Queryable<SysUserPermission>()
+                            .Where(item =>
+                                item.PermissionCode == storedCode
+                                && !item.IsDeleted
+                                && targetUserGuids.Contains(item.UserGuid)
+                            )
+                            .Select(item => item.UserGuid)
+                            .ToListAsync();
+                        var alreadyGrantedSet = alreadyGranted.ToHashSet(
+                            StringComparer.OrdinalIgnoreCase
+                        );
+                        var now = DateTime.Now;
+                        var operatorName = GetCurrentUsername();
+                        var newLinks = targetUserGuids
+                            .Where(guid => !alreadyGrantedSet.Contains(guid))
+                            .Select(guid => new SysUserPermission
+                            {
+                                Id = UuidHelper.GenerateUuid7(),
+                                UserGuid = guid,
+                                PermissionCode = storedCode,
+                                CreatedAt = now,
+                                CreatedBy = operatorName,
+                                UpdatedAt = now,
+                                UpdatedBy = operatorName,
+                                IsDeleted = false,
+                            })
+                            .ToList();
+
+                        if (newLinks.Count > 0)
+                        {
+                            await db.Insertable(newLinks).ExecuteCommandAsync();
+                        }
+                    }
+
+                    await db.Ado.CommitTranAsync();
+
+                    _logger.LogInformation(
+                        "调整权限直接授权用户成功，PermissionCode: {PermissionCode}, Added: {AddedCount}, Removed: {RemovedCount}",
+                        storedCode,
+                        addGuids.Count,
+                        removeGuids.Count
+                    );
+                    return ApiResponse<bool>.OK(true, "权限用户授权已更新");
+                }
+                catch
+                {
+                    await db.Ado.RollbackTranAsync();
+                    throw;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "调整权限直接授权用户失败，PermissionCode: {PermissionCode}",
+                    permissionCode
+                );
+                return ApiResponse<bool>.Error(
+                    "权限用户授权失败",
+                    "ASSIGN_USERS_TO_PERMISSION_FAILED"
+                );
+            }
+        }
+
+        private static List<string> NormalizeUserGuidList(IEnumerable<string>? values)
+        {
+            return (values ?? Enumerable.Empty<string>())
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        /// <summary>
         /// 创建新权限
         /// </summary>
         public async Task<ApiResponse<List<SysPermission>>> CreatePermissionAsync(CreateSysPermissionDto dto)
