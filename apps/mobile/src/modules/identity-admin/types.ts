@@ -220,6 +220,12 @@ export interface IdentityCreateSysPermissionInput {
 /** 权限代码 → 显式分配的角色数量（GET /Roles/permissions/role-counts） */
 export type IdentityPermissionRoleCounts = Record<string, number>;
 
+/** 权限直接授权用户的增量调整（POST /Roles/permissions/{code}/users） */
+export interface IdentityPermissionUserAssignmentInput {
+  addUserGuids: string[];
+  removeUserGuids: string[];
+}
+
 export interface IdentityAdminErrorMeta {
   message: string;
   status?: number;

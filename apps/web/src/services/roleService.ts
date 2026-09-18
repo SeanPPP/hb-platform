@@ -4,6 +4,7 @@ import type {
   CreateSysPermissionDto,
   PermissionCatalogDto,
   PermissionCategoryDto,
+  PermissionUserAssignmentDto,
   RoleDetailDto,
   RoleDto,
   RoleOptionDto,
@@ -115,5 +116,20 @@ export async function getPermissionRoles(code: string): Promise<RoleOptionDto[]>
 
 export async function assignRolesToPermission(code: string, roleGuids: string[]): Promise<boolean> {
   const response = await request.post<ApiResponse<boolean>>(`/api/Roles/permissions/${encodeURIComponent(code)}/roles`, roleGuids)
+  return unwrapApiData(response)
+}
+
+/** 获取被直接授予该权限的用户（不含通过角色继承的用户） */
+export async function getPermissionUsers(code: string): Promise<RoleUserDto[]> {
+  const response = await request.get<ApiResponse<RoleUserDto[]>>(`/api/Roles/permissions/${encodeURIComponent(code)}/users`)
+  return unwrapApiData(response) ?? []
+}
+
+/** 按增量调整该权限的直接授权用户 */
+export async function assignUsersToPermission(code: string, dto: PermissionUserAssignmentDto): Promise<boolean> {
+  const response = await request.post<ApiResponse<boolean>>(`/api/Roles/permissions/${encodeURIComponent(code)}/users`, {
+    addUserGuids: dto.addUserGuids,
+    removeUserGuids: dto.removeUserGuids,
+  })
   return unwrapApiData(response)
 }

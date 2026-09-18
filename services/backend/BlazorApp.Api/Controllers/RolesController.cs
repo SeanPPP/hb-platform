@@ -715,6 +715,64 @@ namespace BlazorApp.Api.Controllers
         }
 
         /// <summary>
+        /// 获取被直接授予指定权限的用户列表（不含通过角色继承的用户）
+        /// </summary>
+        [HttpGet("permissions/{code}/users")]
+        [Authorize(Policy = Permissions.Roles.View)]
+        public async Task<IActionResult> GetPermissionUsers(string code)
+        {
+            try
+            {
+                var result = await _roleService.GetPermissionUsersAsync(code);
+                return ToRoleAccessMutationActionResult(result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "获取权限用户列表失败，PermissionCode: {PermissionCode}",
+                    code
+                );
+                return StatusCode(
+                    500,
+                    ApiResponse<List<RoleUserDto>>.Error("服务器内部错误", "INTERNAL_SERVER_ERROR")
+                );
+            }
+        }
+
+        /// <summary>
+        /// 按增量调整指定权限的直接授权用户
+        /// </summary>
+        [HttpPost("permissions/{code}/users")]
+        [Authorize(Policy = Permissions.Roles.ManagePermissions)]
+        public async Task<IActionResult> AssignUsersToPermission(
+            string code,
+            [FromBody] PermissionUserAssignmentDto dto
+        )
+        {
+            try
+            {
+                if (dto == null || !ModelState.IsValid)
+                {
+                    return BadRequest(
+                        ApiResponse<bool>.Error("请求参数验证失败", "VALIDATION_ERROR", ModelState)
+                    );
+                }
+
+                var result = await _roleService.AssignUsersToPermissionAsync(code, dto);
+                return ToRoleAccessMutationActionResult(result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "为权限分配用户失败，PermissionCode: {PermissionCode}", code);
+                return StatusCode(
+                    500,
+                    ApiResponse<bool>.Error("服务器内部错误", "INTERNAL_SERVER_ERROR")
+                );
+            }
+        }
+
+        /// <summary>
         /// 创建新权限
         /// </summary>
         [HttpPost("permissions")]

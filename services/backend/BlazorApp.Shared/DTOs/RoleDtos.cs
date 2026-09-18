@@ -134,6 +134,17 @@ namespace BlazorApp.Shared.DTOs
     }
 
     /// <summary>
+    /// 权限直接授权用户的增量调整DTO
+    /// 采用增量而非整表替换：用户规模远大于角色，客户端可能只加载了部分用户，
+    /// 增量写入可避免误删未加载用户的授权，也不会覆盖其他管理员的并发修改。
+    /// </summary>
+    public class PermissionUserAssignmentDto
+    {
+        public List<string> AddUserGuids { get; set; } = new();
+        public List<string> RemoveUserGuids { get; set; } = new();
+    }
+
+    /// <summary>
     /// 角色权限分配DTO
     /// </summary>
     public class RolePermissionAssignmentDto

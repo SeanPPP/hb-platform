@@ -6,11 +6,13 @@ import {
   createRoleAssignmentDraft,
   filterPermissionListItems,
   findPermissionListItem,
+  formatPermissionUserName,
   getPermissionCapabilities,
   getRoleAssignmentDelta,
   groupPermissionsByCategory,
   isImplicitAllRoleName,
   isPermissionCreationVerified,
+  isPermissionUserDeltaApplied,
   isRoleAssignmentDirty,
   listPermissionCategoryOptions,
   previewGeneratedPermissions,
@@ -133,5 +135,13 @@ assert.equal(areRoleGuidsEqual(["a"], ["a", "b"]), false);
 assert.equal(isImplicitAllRoleName(" admin "), true);
 assert.equal(isImplicitAllRoleName("超级管理员", ["Admin", "超级管理员"]), true);
 assert.equal(isImplicitAllRoleName("StoreManager"), false);
+
+// ---- 直接授权用户：增量读回核验只看本次涉及的用户 ----
+assert.equal(isPermissionUserDeltaApplied({ added: ["U1"], removed: ["u2"] }, ["u1", "u3"]), true, "他人并发新增的 u3 不影响核验，GUID 不区分大小写");
+assert.equal(isPermissionUserDeltaApplied({ added: ["u1"], removed: [] }, ["u3"]), false, "新增未落库必须判定失败");
+assert.equal(isPermissionUserDeltaApplied({ added: [], removed: ["u2"] }, ["u2"]), false, "移除未生效必须判定失败");
+assert.equal(formatPermissionUserName({ username: "alice", fullName: " Alice Wang " }), "Alice Wang（alice）");
+assert.equal(formatPermissionUserName({ username: "bob", fullName: "bob" }), "bob");
+assert.equal(formatPermissionUserName({ username: "carol" }), "carol");
 
 console.log("permission-logic tests passed");
