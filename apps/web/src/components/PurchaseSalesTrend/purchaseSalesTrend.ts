@@ -75,3 +75,20 @@ export function isWeekendDate(date: string) {
 export function formatMonthDay(date: string) {
   return date.length >= 10 ? date.slice(5, 10) : date
 }
+
+/**
+ * 大图展开采用手风琴：同一时间只展开一个商品。
+ * 展开某行时只保留该行，收起当前行后不再展开任何行。
+ */
+export function resolveAccordionExpandedKeys(expanded: boolean, rowKey: string): string[] {
+  return expanded ? [rowKey] : []
+}
+
+/** 每次拿到新结果时默认只展开第一行；首行没有日销量（无大图可看）时全部收起。 */
+export function resolveDefaultExpandedKeys<T extends Pick<PurchaseSalesTrendRow, 'dailySales'>>(
+  items: readonly T[],
+  getRowKey: (row: T) => string,
+): string[] {
+  const first = items[0]
+  return first && first.dailySales.length > 0 ? [getRowKey(first)] : []
+}

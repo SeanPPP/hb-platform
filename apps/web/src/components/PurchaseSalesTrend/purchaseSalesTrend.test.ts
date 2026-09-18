@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { buildPurchaseSalesTrendMetrics, formatMonthDay, isWeekendDate, toWholeQuantity } from './purchaseSalesTrend'
+import {
+  buildPurchaseSalesTrendMetrics,
+  formatMonthDay,
+  isWeekendDate,
+  resolveAccordionExpandedKeys,
+  resolveDefaultExpandedKeys,
+  toWholeQuantity,
+} from './purchaseSalesTrend'
 
 const daily = (entries: Array<[string, number]>) => entries.map(([date, quantity]) => ({ date, quantity }))
 
@@ -62,5 +69,16 @@ const mainZh = JSON.parse(readFileSync('src/i18n/locales/zh.json', 'utf8'))
 assert.equal(mainZh.purchaseSalesTrend, undefined, '图表文案必须懒注册，不能进入首屏主文案包')
 assert.equal(mainZh.posAdmin.localSupplierPurchaseSalesAnalysis.columns.salesQty30, undefined, '已下线的 30/60/90 天列文案应从主文案包移除')
 assert.equal(mainZh.shop.purchaseSalesAnalysis, undefined, '前台导航增量文案随 ShopLayout 懒注册')
+
+// 展开行为手风琴：默认只展开第一行，展开一行即收起其它行。
+const expandRows = [
+  { key: 'a', dailySales: daily([['2026-06-01', 1]]) },
+  { key: 'b', dailySales: daily([['2026-06-01', 2]]) },
+]
+assert.deepEqual(resolveDefaultExpandedKeys(expandRows, (row) => row.key), ['a'])
+assert.deepEqual(resolveDefaultExpandedKeys([{ key: 'x', dailySales: [] }, ...expandRows], (row) => row.key), [], '首行无日销量时不默认展开')
+assert.deepEqual(resolveDefaultExpandedKeys([], (row: { key: string; dailySales: [] }) => row.key), [])
+assert.deepEqual(resolveAccordionExpandedKeys(true, 'b'), ['b'], '展开新行只保留该行')
+assert.deepEqual(resolveAccordionExpandedKeys(false, 'b'), [], '收起当前行后不展开任何行')
 
 console.log('purchaseSalesTrend.test: ok')

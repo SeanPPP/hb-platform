@@ -79,6 +79,8 @@ import {
   PurchaseSalesDailyChart,
   PurchaseSalesSparkline,
   buildPurchaseSalesTrendMetrics,
+  resolveAccordionExpandedKeys,
+  resolveDefaultExpandedKeys,
   toWholeQuantity,
 } from '../../../components/PurchaseSalesTrend'
 
@@ -247,6 +249,11 @@ function buildInitialFilters(): SearchFilters {
   }
 }
 
+// 展开状态与表格共用同一行键，保证默认展开和手风琴切换命中同一行。
+function getAnalysisRowKey(record: LocalSupplierPurchaseSalesAnalysisRowDto) {
+  return `${record.storeCode}-${record.supplierCode}-${record.productCode}-${record.itemNumber || ''}`
+}
+
 export default function LocalSupplierPurchaseSalesAnalysisPage() {
   const { t } = useTranslation()
   const currentUser = useAuthStore((state) => state.currentUser)
@@ -275,6 +282,7 @@ export default function LocalSupplierPurchaseSalesAnalysisPage() {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<LocalSupplierPurchaseSalesAnalysisResponseDto | null>(null)
   const [hasSearched, setHasSearched] = useState(false)
+  const [expandedKeys, setExpandedKeys] = useState<string[]>([])
   const [queryVersion, setQueryVersion] = useState(0)
   const [tableScrollY, setTableScrollY] = useState<number>(520)
   const [columnOrder, setColumnOrder] = useState<LocalSupplierPurchaseSalesAnalysisColumnKey[]>([])
@@ -427,6 +435,8 @@ export default function LocalSupplierPurchaseSalesAnalysisPage() {
       try {
         const data = await getLocalSupplierPurchaseSalesAnalysis(query, signal)
         setResult(data)
+        // 每次新结果默认只展开第一行，与订货前台保持一致。
+        setExpandedKeys(resolveDefaultExpandedKeys(data.items, getAnalysisRowKey))
       } catch (error) {
         if (!signal?.aborted) {
           message.error(
@@ -884,9 +894,7 @@ export default function LocalSupplierPurchaseSalesAnalysisPage() {
               >
                 <MeasuredTable<LocalSupplierPurchaseSalesAnalysisRowDto> metricId="pos-admin.local-supplier-purchase-sales-analysis.table-1"
                   size="small"
-                  rowKey={(record) =>
-                    `${record.storeCode}-${record.supplierCode}-${record.productCode}-${record.itemNumber || ''}`
-                  }
+                  rowKey={getAnalysisRowKey}
                   loading={loading}
                   components={{ header: { cell: DraggableHeaderCell } }}
                   columns={orderedColumns}
@@ -913,6 +921,10 @@ export default function LocalSupplierPurchaseSalesAnalysisPage() {
                   expandable={{
                     // 点击行展开大图：日销量柱、进货事件标记与进货后累计销量线。
                     expandRowByClick: true,
+                    // 手风琴展开：展开一个商品时收起其它商品，页面只保留一张大图。
+                    expandedRowKeys: expandedKeys,
+                    onExpand: (expanded, record) =>
+                      setExpandedKeys(resolveAccordionExpandedKeys(expanded, getAnalysisRowKey(record))),
                     rowExpandable: (record) => record.dailySales.length > 0,
                     expandedRowRender: (record) => (
                       <div style={{ padding: '4px 8px 8px' }}>
