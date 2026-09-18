@@ -359,6 +359,15 @@ namespace BlazorApp.Api.Services
             },
             new()
             {
+                RouteName = "permissions",
+                TitleKey = "tabs.permissions",
+                Icon = "key-outline",
+                // 与 Web 后台 /system/permissions 一致：读取只需 Roles.View，写操作由页面内按 Roles.ManagePermissions 控制。
+                Permission = Permissions.Roles.View,
+                Order = 58,
+            },
+            new()
+            {
                 RouteName = "employee-profile",
                 TitleKey = "tabs.employeeProfile",
                 Icon = "card-account-details-outline",

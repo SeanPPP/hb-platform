@@ -13,6 +13,8 @@ import { LOG_UI, OUTCOME_TONES, platformIcon } from "./log-ui";
 
 export interface PosOperationLogRowProps {
   item: PosOperationLogItem;
+  /** 门店主档名称；缺失时回退显示门店编码。 */
+  storeName?: string | null;
   operationLabel: (operationType: string) => string;
   outcomeLabel: (outcome: PosOperationLogItem["outcome"]) => string;
   t: (key: string, options?: Record<string, unknown>) => string;
@@ -47,6 +49,7 @@ function summaryText(
 /** 三行固定结构：操作+结果 / 员工+终端 / 摘要；右列金额与商品数。异常行左侧描边。 */
 function PosOperationLogRowComponent({
   item,
+  storeName,
   operationLabel,
   outcomeLabel,
   t,
@@ -84,7 +87,7 @@ function PosOperationLogRowComponent({
         </View>
         <View style={styles.metaLine}>
           <Text numberOfLines={1} style={styles.meta}>
-            {employee} · {item.deviceCode}
+            {employee} · {storeName || item.storeCode} · {item.deviceCode}
           </Text>
           <Icon source={platformIcon(item.deviceSystem)} size={13} color={HB_COLORS.textSecondary} />
           {item.isOfflineCached ? (

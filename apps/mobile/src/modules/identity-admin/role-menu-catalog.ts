@@ -76,6 +76,7 @@ const MOBILE_MENU: MenuSource[] = ([
   ["users", "Users", "用户", ["Users.View"]],
   ["user-admin", "User management", "用户管理", ["Users.View"]],
   ["roles", "Role management", "角色管理", ["Roles.View"]],
+  ["permissions", "Permission management", "权限管理", ["Roles.View"]],
   ["employee-profile", "Employee profile", "员工档案", ["EmployeeProfiles.View"]],
   ["employee-profile-review", "Profile review", "档案审核", ["EmployeeProfiles.ReviewSensitiveManagedStore"]],
   ["device-management", "Device management", "设备管理", ["DeviceRegistration.View"]],

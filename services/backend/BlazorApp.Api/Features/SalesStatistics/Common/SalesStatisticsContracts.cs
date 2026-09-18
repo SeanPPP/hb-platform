@@ -246,6 +246,28 @@ internal class HBSalesStoreAggregateRow
     public int OrderCount { get; set; }
 }
 
+/// <summary>HBSales 按销售单聚合的分时来源行；小时在内存中按结账时间分桶。</summary>
+internal class HBSalesHourlySourceRow
+{
+    public string? BranchCode { get; set; }
+    public string? SalesOrderNo { get; set; }
+    public string? DocumentType { get; set; }
+    public TimeSpan? DetailCheckoutTime { get; set; }
+    public TimeSpan? MainCheckoutTime { get; set; }
+    public decimal TotalAmount { get; set; }
+    public decimal TotalQuantity { get; set; }
+}
+
+/// <summary>HBSales 按分店与小时聚合后的分时来源行。</summary>
+internal class HBSalesHourlyAggregateRow
+{
+    public string BranchCode { get; set; } = string.Empty;
+    public int Hour { get; set; }
+    public decimal TotalAmount { get; set; }
+    public decimal TotalQuantity { get; set; }
+    public int OrderCount { get; set; }
+}
+
 internal class HourlyStatisticSourceRow
 {
     public DateTime Date { get; set; }

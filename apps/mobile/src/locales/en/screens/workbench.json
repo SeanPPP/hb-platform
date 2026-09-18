@@ -51,6 +51,7 @@
     "users": "Employees",
     "userAdmin": "User administration",
     "roles": "Roles",
+    "permissions": "Permissions",
     "employeeProfile": "My profile",
     "employeeProfileReview": "Profile reviews",
     "deviceManagement": "Device management",

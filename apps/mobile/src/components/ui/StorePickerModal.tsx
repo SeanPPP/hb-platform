@@ -1,5 +1,12 @@
 import type { ReactNode } from "react";
-import { Pressable, ScrollView, StyleSheet, useWindowDimensions, View } from "react-native";
+import {
+  Modal as NativeModal,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  useWindowDimensions,
+  View,
+} from "react-native";
 import { Button, Modal, Portal, RadioButton, Text } from "react-native-paper";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { HB_COLORS } from "@/shared/theme/tokens";
@@ -7,6 +14,11 @@ import type { Store } from "@/modules/shop/types";
 
 interface StorePickerModalProps {
   presentation?: "dialog" | "sheet";
+  /**
+   * 默认通过 Paper Portal 渲染在应用根部；当调用方本身位于原生 Modal（如 BusinessSheet）内时，
+   * PortalHost 会被那个原生 Modal 盖住，必须改用原生 Modal 承载才能显示在最上层。
+   */
+  host?: "portal" | "native-modal";
   visible: boolean;
   stores: Store[];
   selectedStoreCode?: string | null;
@@ -22,6 +34,7 @@ interface StorePickerModalProps {
 
 export function StorePickerModal({
   presentation = "dialog",
+  host = "portal",
   visible,
   stores,
   selectedStoreCode,
@@ -41,8 +54,7 @@ export function StorePickerModal({
   const maxListHeight = Math.max(160, Math.min(480, height * 0.58));
   const listHeight = Math.min(rowCount * 48, maxListHeight);
 
-  return (
-    <Portal>
+  const content = (
       <Modal
         visible={visible}
         onDismiss={onDismiss}
@@ -85,8 +97,23 @@ export function StorePickerModal({
           <Button contentStyle={isSheet ? { minHeight: 44 } : undefined} onPress={onDismiss}>{cancelLabel}</Button>
         </View>
       </Modal>
-    </Portal>
   );
+
+  if (host === "native-modal") {
+    return (
+      <NativeModal
+        transparent
+        visible={visible}
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={onDismiss}
+      >
+        {content}
+      </NativeModal>
+    );
+  }
+
+  return <Portal>{content}</Portal>;
 }
 
 function PickerRow({

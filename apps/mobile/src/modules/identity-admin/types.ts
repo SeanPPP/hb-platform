@@ -199,6 +199,27 @@ export interface IdentityRolePermissionState {
   effectivePermissionCodes: string[];
 }
 
+/** GET /Roles/sys-permissions 返回的数据库权限行（仅含自定义与已落库的系统权限） */
+export interface IdentitySysPermission {
+  id: string;
+  code: string;
+  name: string;
+  category: string;
+  description?: string;
+}
+
+/** POST /Roles/permissions 请求体；actions 非空时服务端按 `${code}.${action}` 批量生成 */
+export interface IdentityCreateSysPermissionInput {
+  code: string;
+  name: string;
+  category: string;
+  description?: string;
+  actions?: string[];
+}
+
+/** 权限代码 → 显式分配的角色数量（GET /Roles/permissions/role-counts） */
+export type IdentityPermissionRoleCounts = Record<string, number>;
+
 export interface IdentityAdminErrorMeta {
   message: string;
   status?: number;

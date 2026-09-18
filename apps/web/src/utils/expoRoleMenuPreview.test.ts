@@ -99,6 +99,7 @@ assertArrayEqual(
     'pos-operation-logs',
     'user-admin',
     'roles',
+    'permissions',
     'employee-profile',
     'employee-profile-review',
     'device-management',
