@@ -40,6 +40,7 @@ public class NavigationServiceTests
         yield return new object[] { "SalesDashboard.WarehouseFlow.View", "/executive-sales-intelligence/warehouse-product-flow-analysis" };
         yield return new object[] { "SalesDashboard.LocalProductAnalysis.View", "/executive-sales-intelligence/local-product-sales-analysis" };
         yield return new object[] { "SalesDashboard.PurchaseAmount.View", "/executive-sales-intelligence/purchase-amount-dashboard" };
+        yield return new object[] { "SalesDashboard.LocalSupplierPurchaseSales.View", "/executive-sales-intelligence/local-supplier-purchase-sales-analysis" };
     }
 
     [Theory]
@@ -530,11 +531,12 @@ public class NavigationServiceTests
         );
         Assert.Equal(Permissions.LocalPurchase.View, item.Permission);
 
-        var analysisItem = Assert.Single(
+        // 分店进货销量分析已挪到销售看板并使用独立权限，本地进货权限不再点亮它，也不显示销售看板父菜单。
+        Assert.DoesNotContain(
             posAdmin.Children!,
-            child => child.Path == "/pos-admin/local-supplier-purchase-sales-analysis"
+            child => child.Path.Contains("local-supplier-purchase-sales-analysis")
         );
-        Assert.Equal(Permissions.LocalPurchase.View, analysisItem.Permission);
+        Assert.DoesNotContain(menu, item => item.Path == "/executive-sales-intelligence");
     }
 
     [Fact]
@@ -1549,11 +1551,10 @@ public class NavigationServiceTests
         );
     }
 
+    // 分店进货销量分析三个接口改为方法内校验「销售看板新权限码或 LocalPurchase.View」，
+    // 其授权行为由 ReactLocalSupplierInvoiceSalesAnalysisShopEndpointTests 覆盖；这里只保留仍挂策略的单据销量分析接口。
     [Theory]
     [InlineData(nameof(ReactLocalSupplierInvoiceSalesAnalysisController.GetSalesAnalysis))]
-    [InlineData(nameof(ReactLocalSupplierInvoiceSalesAnalysisController.GetPurchaseSalesAnalysis))]
-    [InlineData(nameof(ReactLocalSupplierInvoiceSalesAnalysisController.GetPurchaseSalesAnalysisStoreOptions))]
-    [InlineData(nameof(ReactLocalSupplierInvoiceSalesAnalysisController.GetPurchaseSalesAnalysisSupplierOptions))]
     public void LocalSupplierInvoiceSalesAnalysisEndpoints_RequireLocalPurchaseViewPermission(
         string methodName
     )

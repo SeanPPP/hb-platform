@@ -33,6 +33,7 @@ const ShopLocalSupplierInvoicesPage = lazy(() => import('./pages/ShopLocalSuppli
 const ShopOrderDetailPage = lazy(() => import('./pages/ShopOrderDetail'))
 const ShopOrdersPage = lazy(() => import('./pages/ShopOrders'))
 const ShopPreorderPage = lazy(() => import('./pages/ShopPreorder'))
+const ShopPurchaseSalesAnalysisPage = lazy(() => import('./pages/ShopPurchaseSalesAnalysis'))
 
 function AppBootstrap() {
   const { t } = useTranslation()
@@ -126,6 +127,7 @@ function AppBootstrap() {
         <Route path="orders/:id" element={<ShopOrderDetailPage />} />
         <Route path="local-supplier-invoices" element={<ShopLocalSupplierInvoicesPage />} />
         <Route path="local-supplier-invoices/:invoiceGuid" element={<ShopLocalSupplierInvoiceDetailPage />} />
+        <Route path="purchase-sales-analysis" element={<ShopPurchaseSalesAnalysisPage />} />
         <Route path="preorders/:activationGuid" element={<ShopPreorderPage />} />
       </Route>
       <Route

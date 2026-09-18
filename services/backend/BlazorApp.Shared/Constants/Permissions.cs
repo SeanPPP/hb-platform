@@ -275,6 +275,10 @@ namespace BlazorApp.Shared.Constants
             public const string LocalProductAnalysisView =
                 "SalesDashboard.LocalProductAnalysis.View";
             public const string PurchaseAmountView = "SalesDashboard.PurchaseAmount.View";
+
+            // 销售看板「分店进货销量分析」页面的逐页权限码。
+            public const string LocalSupplierPurchaseSalesView =
+                "SalesDashboard.LocalSupplierPurchaseSales.View";
         }
 
         public static class StoreProducts

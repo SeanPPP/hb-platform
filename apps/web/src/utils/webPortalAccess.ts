@@ -84,6 +84,7 @@ const ADMIN_ENTRY_RULES: readonly AdminEntryRule[] = [
     ['batch-product-sales-analysis', P.SalesDashboard.BatchProductSalesView],
     ['warehouse-product-flow-analysis', P.SalesDashboard.WarehouseFlowView],
     ['local-product-sales-analysis', P.SalesDashboard.LocalProductAnalysisView],
+    ['local-supplier-purchase-sales-analysis', P.SalesDashboard.LocalSupplierPurchaseSalesView],
     ['purchase-amount-dashboard', P.SalesDashboard.PurchaseAmountView],
   ] as const).map(([path, permission]) => ({
     defaultPath: `/executive-sales-intelligence/${path}`,
@@ -98,7 +99,6 @@ const ADMIN_ENTRY_RULES: readonly AdminEntryRule[] = [
     defaultPath: '/pos-admin/local-supplier-invoices',
     targetPrefixes: [
       '/pos-admin/local-supplier-invoices',
-      '/pos-admin/local-supplier-purchase-sales-analysis',
       '/pos-admin/invoice-detail',
     ],
     canAccess: (access) => access.canManageLocalPurchase,

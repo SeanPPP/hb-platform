@@ -37,12 +37,17 @@ import {
 import { useAuthStore } from '../store/auth'
 import { useShopStore } from '../store/shop'
 import { resolveShopBannerCopy } from './shopBannerCopy'
+import { shopNavMessages } from './shopNavMessages'
+import { registerPageMessages } from '../i18n/registerPageMessages'
 import {
   resolvePreorderPromptPresentation,
   resolveShopPreorderNavigation,
 } from '../pages/ShopPreorder/preorderNavigation'
 import { getPreorderDateDisplay } from '../pages/ShopPreorder/preorderDate'
 import { changeStoreAfterDurableLeave, runAfterDurableLeave, usePreorderLeave } from '../pages/ShopPreorder/preorderLeaveContext'
+
+// 导航增量文案在布局代码块加载时注册，早于首次渲染。
+registerPageMessages(shopNavMessages)
 
 const { Search } = Input
 const PREORDER_GATE_TIMEOUT_MS = 8_000
@@ -132,7 +137,8 @@ export default function ShopLayout() {
   const isComingSoonPage = location.pathname.startsWith('/shop/coming-soon')
   const isOrdersPage = location.pathname.startsWith('/shop/orders')
   const isLocalSupplierInvoicesPage = location.pathname.startsWith('/shop/local-supplier-invoices')
-  const isMorePage = isPreorderPage || isBestSellersPage || isBatchProductSalesPage || isComingSoonPage || isLocalSupplierInvoicesPage
+  const isPurchaseSalesAnalysisPage = location.pathname.startsWith('/shop/purchase-sales-analysis')
+  const isMorePage = isPreorderPage || isBestSellersPage || isBatchProductSalesPage || isComingSoonPage || isLocalSupplierInvoicesPage || isPurchaseSalesAnalysisPage
   const shopBannerCopy = useMemo(() => resolveShopBannerCopy(location.pathname), [location.pathname])
   const preorderDateTimeFormatter = useMemo(
     () => new Intl.DateTimeFormat(i18n.resolvedLanguage || i18n.language, { dateStyle: 'medium', timeStyle: 'short' }),
@@ -470,7 +476,7 @@ export default function ShopLayout() {
 
   return (
     <div
-      className={`shop-layout${isComingSoonPage || isOrdersPage || isLocalSupplierInvoicesPage || isBatchProductSalesPage ? ' shop-workspace-layout' : ''}`}
+      className={`shop-layout${isComingSoonPage || isOrdersPage || isLocalSupplierInvoicesPage || isBatchProductSalesPage || isPurchaseSalesAnalysisPage ? ' shop-workspace-layout' : ''}`}
     >
       <header className="shop-main-header">
         <div className="shop-shell">
@@ -539,6 +545,13 @@ export default function ShopLayout() {
               aria-current={isLocalSupplierInvoicesPage ? 'page' : undefined}
             >
               {t('shop.localSupplierInvoices', 'Local Invoices')}
+            </Link>
+            <Link
+              to="/shop/purchase-sales-analysis"
+              className={`shop-primary-nav__item${isPurchaseSalesAnalysisPage ? ' active' : ''}`}
+              aria-current={isPurchaseSalesAnalysisPage ? 'page' : undefined}
+            >
+              {t('shop.purchaseSalesAnalysis', 'Purchase & Sales')}
             </Link>
           </nav>
 
@@ -913,6 +926,14 @@ export default function ShopLayout() {
             aria-current={isLocalSupplierInvoicesPage ? 'page' : undefined}
           >
             <FileTextOutlined /><span>{t('shop.localSupplierInvoices', 'Local Invoices')}</span>
+          </Link>
+          <Link
+            to="/shop/purchase-sales-analysis"
+            className={isPurchaseSalesAnalysisPage ? 'active' : ''}
+            onClick={() => setMobileMoreVisible(false)}
+            aria-current={isPurchaseSalesAnalysisPage ? 'page' : undefined}
+          >
+            <BarChartOutlined /><span>{t('shop.purchaseSalesAnalysis', 'Purchase & Sales')}</span>
           </Link>
           <div className="shop-mobile-more-menu__separator" />
           {isShopHomePage && isMobileShopLayout

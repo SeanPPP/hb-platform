@@ -12,21 +12,41 @@ namespace BlazorApp.Api.Controllers.React
 {
     [ApiController]
     [Route("api/react/v1/local-supplier-invoices")]
-    [Authorize(Policy = Permissions.LocalPurchase.View)]
+    // 类级只要求登录：按单据分析的 action 仍声明 LocalPurchase.View 策略；
+    // 后台进货销量分析三个 action 在方法内校验「销售看板新权限码 或 LocalPurchase.View」；
+    // 订货前台 shop/* action 在方法内校验订货前台权限，前后台权限互不放开。
+    [Authorize]
     public class ReactLocalSupplierInvoiceSalesAnalysisController : ControllerBase
     {
         private readonly ILocalSupplierInvoiceSalesAnalysisService _service;
         private readonly IUserService _userService;
         private readonly SqlSugarContext _dbContext;
         private readonly ILogger<ReactLocalSupplierInvoiceSalesAnalysisController> _logger;
+        private readonly IAuthorizationService? _authorizationService;
+
+        // 后台分析页已挪到「销售看板」：新逐页权限码或原 LocalPurchase.View 任一即可访问。
+        private static readonly string[] PurchaseSalesAnalysisReadPermissions =
+        {
+            Permissions.SalesDashboard.LocalSupplierPurchaseSalesView,
+            Permissions.LocalPurchase.View,
+        };
+
+        // 前台只读接口只认订货前台权限，不放开后台 LocalPurchase.View。
+        private static readonly string[] ShopPurchaseSalesAnalysisReadPermissions =
+        {
+            Permissions.OrderFront.View,
+        };
 
         public ReactLocalSupplierInvoiceSalesAnalysisController(
             ILocalSupplierInvoiceSalesAnalysisService service,
             IUserService userService,
             SqlSugarContext dbContext,
-            ILogger<ReactLocalSupplierInvoiceSalesAnalysisController> logger
+            ILogger<ReactLocalSupplierInvoiceSalesAnalysisController> logger,
+            // 可选参数：保持既有构造调用（含测试）不被破坏；缺失时前台接口一律拒绝。
+            IAuthorizationService? authorizationService = null
         )
         {
+            _authorizationService = authorizationService;
             _service = service;
             _userService = userService;
             _dbContext = dbContext;
@@ -64,7 +84,7 @@ namespace BlazorApp.Api.Controllers.React
             return NotFound(new { success = false, message = result.Message });
         }
 
-        [Authorize(Policy = Permissions.LocalPurchase.View)]
+        // 授权在方法内校验：销售看板新权限码或 LocalPurchase.View 任一即可。
         [HttpGet("purchase-sales-analysis")]
         public async Task<IActionResult> GetPurchaseSalesAnalysis(
             [FromQuery] LocalSupplierPurchaseSalesAnalysisQueryDto query
@@ -72,6 +92,11 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                if (!await HasPurchaseSalesAnalysisReadPermissionAsync())
+                {
+                    return Forbid();
+                }
+
                 if (string.IsNullOrWhiteSpace(query.StoreCode))
                 {
                     return BadRequest(
@@ -139,12 +164,17 @@ namespace BlazorApp.Api.Controllers.React
             }
         }
 
-        [Authorize(Policy = Permissions.LocalPurchase.View)]
+        // 授权在方法内校验：销售看板新权限码或 LocalPurchase.View 任一即可。
         [HttpGet("purchase-sales-analysis/store-options")]
         public async Task<IActionResult> GetPurchaseSalesAnalysisStoreOptions()
         {
             try
             {
+                if (!await HasPurchaseSalesAnalysisReadPermissionAsync())
+                {
+                    return Forbid();
+                }
+
                 var storeScope = await ResolveStoreScopeAsync(null, requireStoreSelectionWhenMissing: false);
                 if (storeScope.Forbidden)
                 {
@@ -166,7 +196,7 @@ namespace BlazorApp.Api.Controllers.React
             }
         }
 
-        [Authorize(Policy = Permissions.LocalPurchase.View)]
+        // 授权在方法内校验：销售看板新权限码或 LocalPurchase.View 任一即可。
         [HttpGet("purchase-sales-analysis/supplier-options")]
         public async Task<IActionResult> GetPurchaseSalesAnalysisSupplierOptions(
             [FromQuery] string? storeCode
@@ -174,6 +204,11 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                if (!await HasPurchaseSalesAnalysisReadPermissionAsync())
+                {
+                    return Forbid();
+                }
+
                 // 供应商候选跟随门店权限收口，避免普通用户看到无权门店的进货供应商。
                 var storeScope = await ResolveStoreScopeAsync(
                     storeCode,
@@ -202,6 +237,191 @@ namespace BlazorApp.Api.Controllers.React
                     )
                 );
             }
+        }
+
+        /// <summary>
+        /// 订货前台：分店供应商进货销量分析（只读）。
+        /// 只认订货前台权限（OrderFront.View，或纯仓库员工 + Orders.Create），不放开后台 LocalPurchase.View；
+        /// 门店范围沿用 ResolveStoreScopeAsync，非管理员只能查本人名下门店。
+        /// </summary>
+        [HttpGet("shop/purchase-sales-analysis")]
+        public async Task<IActionResult> GetShopPurchaseSalesAnalysis(
+            [FromQuery] LocalSupplierPurchaseSalesAnalysisQueryDto query
+        )
+        {
+            try
+            {
+                if (!await HasShopPurchaseSalesAnalysisReadPermissionAsync())
+                {
+                    return Forbid();
+                }
+
+                if (string.IsNullOrWhiteSpace(query.StoreCode))
+                {
+                    return BadRequest(
+                        ApiResponse<LocalSupplierPurchaseSalesAnalysisResponseDto>.Error(
+                            "请先选择分店。",
+                            "VALIDATION_ERROR"
+                        )
+                    );
+                }
+
+                if (string.IsNullOrWhiteSpace(query.SupplierCode))
+                {
+                    return BadRequest(
+                        ApiResponse<LocalSupplierPurchaseSalesAnalysisResponseDto>.Error(
+                            "请先选择供应商。",
+                            "VALIDATION_ERROR"
+                        )
+                    );
+                }
+
+                var storeScope = await ResolveStoreScopeAsync(query.StoreCode);
+                if (storeScope.Forbidden)
+                {
+                    return Forbid();
+                }
+
+                query.StoreCode = storeScope.SelectedStoreCode ?? query.StoreCode;
+                var result = await _service.GetPurchaseSalesAnalysisAsync(
+                    query,
+                    storeScope.ScopedStoreCodes
+                );
+
+                if (result.Success)
+                {
+                    return Ok(result);
+                }
+
+                return string.Equals(
+                    result.ErrorCode,
+                    "VALIDATION_ERROR",
+                    StringComparison.OrdinalIgnoreCase
+                )
+                    ? BadRequest(result)
+                    : StatusCode(StatusCodes.Status500InternalServerError, result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "订货前台分店供应商进货销量分析查询失败");
+                return StatusCode(
+                    StatusCodes.Status500InternalServerError,
+                    ApiResponse<LocalSupplierPurchaseSalesAnalysisResponseDto>.Error(
+                        "分店供应商进货销量分析查询失败"
+                    )
+                );
+            }
+        }
+
+        /// <summary>
+        /// 订货前台：进货销量分析的供应商候选（只读）。权限口径与前台分析接口一致，同样不放开后台 LocalPurchase.View。
+        /// </summary>
+        [HttpGet("shop/purchase-sales-analysis/supplier-options")]
+        public async Task<IActionResult> GetShopPurchaseSalesAnalysisSupplierOptions(
+            [FromQuery] string? storeCode
+        )
+        {
+            try
+            {
+                if (!await HasShopPurchaseSalesAnalysisReadPermissionAsync())
+                {
+                    return Forbid();
+                }
+
+                // 前台必须带门店：管理员缺省门店会变成全部门店，候选范围过大且与页面语义不符。
+                if (string.IsNullOrWhiteSpace(storeCode))
+                {
+                    return BadRequest(
+                        ApiResponse<List<LocalSupplierPurchaseSalesAnalysisSupplierOptionDto>>.Error(
+                            "请先选择分店。",
+                            "VALIDATION_ERROR"
+                        )
+                    );
+                }
+
+                var storeScope = await ResolveStoreScopeAsync(
+                    storeCode,
+                    requireStoreSelectionWhenMissing: false
+                );
+                if (storeScope.Forbidden)
+                {
+                    return Forbid();
+                }
+
+                var result = await _service.GetSupplierOptionsAsync(
+                    storeScope.ScopedStoreCodes,
+                    storeScope.SelectedStoreCode ?? storeCode
+                );
+                return Ok(
+                    ApiResponse<List<LocalSupplierPurchaseSalesAnalysisSupplierOptionDto>>.OK(result)
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "订货前台分店供应商进货销量分析供应商选项加载失败");
+                return StatusCode(
+                    StatusCodes.Status500InternalServerError,
+                    ApiResponse<List<LocalSupplierPurchaseSalesAnalysisSupplierOptionDto>>.Error(
+                        "分店供应商进货销量分析供应商选项加载失败"
+                    )
+                );
+            }
+        }
+
+        /// <summary>
+        /// 后台分析接口读取权限：销售看板新权限码或 LocalPurchase.View 任一通过即放行；未注入授权服务时一律拒绝。
+        /// </summary>
+        private async Task<bool> HasPurchaseSalesAnalysisReadPermissionAsync()
+        {
+            if (_authorizationService == null)
+            {
+                return false;
+            }
+
+            foreach (var permission in PurchaseSalesAnalysisReadPermissions)
+            {
+                if ((await _authorizationService.AuthorizeAsync(User, null, permission)).Succeeded)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// 订货前台读取权限：与 ReactLocalSupplierInvoicesController 的前台规则对齐，
+        /// 但这里刻意不接受后台 LocalPurchase.View / MobileView，前台接口只认订货前台权限。
+        /// </summary>
+        private async Task<bool> HasShopPurchaseSalesAnalysisReadPermissionAsync()
+        {
+            if (_authorizationService == null)
+            {
+                return false;
+            }
+
+            foreach (var permission in ShopPurchaseSalesAnalysisReadPermissions)
+            {
+                if ((await _authorizationService.AuthorizeAsync(User, null, permission)).Succeeded)
+                {
+                    return true;
+                }
+            }
+
+            // 与 Web canAccessOrderFront 对齐：Orders.Create 只兼容纯仓库员工，不能扩成通用读取权限。
+            return IsWarehouseStaffOnly()
+                && (
+                    await _authorizationService.AuthorizeAsync(
+                        User,
+                        null,
+                        Permissions.Orders.Create
+                    )
+                ).Succeeded;
+        }
+
+        private bool IsWarehouseStaffOnly()
+        {
+            return (HasRole("WarehouseStaff") || HasRole("仓库员工")) && !IsAdminOrWarehouseManager();
         }
 
         private async Task<StoreScopeResult> ResolveStoreScopeAsync(

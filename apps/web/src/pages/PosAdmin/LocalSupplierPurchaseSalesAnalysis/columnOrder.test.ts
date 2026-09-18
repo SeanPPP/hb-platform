@@ -35,18 +35,16 @@ const pageSource = readFileSync('src/pages/PosAdmin/LocalSupplierPurchaseSalesAn
 
 assertDeepEqual(
   mergeLocalSupplierPurchaseSalesAnalysisColumnOrder(
-    ['salesQty90', 'removed', 'supplierName', 'salesQty90'],
+    ['sellThrough', 'removed', 'supplierName', 'sellThrough'],
     defaultOrder,
   ),
   [
-    'salesQty90',
+    'sellThrough',
     'supplierName',
     'previousPurchaseDate',
     'latestPurchaseDate',
-    'purchaseIntervalDays',
     'salesBetweenPurchases',
-    'salesQty30',
-    'salesQty60',
+    'dailyTrend',
     'salesStatisticLastUpdate',
   ],
   '分店进货销量分析列顺序应过滤未知列、去重并补齐新增列',
@@ -59,16 +57,14 @@ assertDeepEqual(
 )
 
 assertDeepEqual(
-  moveLocalSupplierPurchaseSalesAnalysisColumnOrder(defaultOrder, 'salesQty90', 'supplierName'),
+  moveLocalSupplierPurchaseSalesAnalysisColumnOrder(defaultOrder, 'sellThrough', 'supplierName'),
   [
-    'salesQty90',
-    'supplierName',
     'previousPurchaseDate',
     'latestPurchaseDate',
-    'purchaseIntervalDays',
     'salesBetweenPurchases',
-    'salesQty30',
-    'salesQty60',
+    'dailyTrend',
+    'supplierName',
+    'sellThrough',
     'salesStatisticLastUpdate',
   ],
   '分店进货销量分析列拖拽应把 active 列移动到 over 列位置',
@@ -81,7 +77,7 @@ assertDeepEqual(
 )
 
 assertDeepEqual(
-  moveLocalSupplierPurchaseSalesAnalysisColumnOrder(defaultOrder, 'salesQty90', 'missing'),
+  moveLocalSupplierPurchaseSalesAnalysisColumnOrder(defaultOrder, 'sellThrough', 'missing'),
   defaultOrder,
   '分店进货销量分析列拖拽遇到未知 over 列时应保持原顺序',
 )
@@ -100,7 +96,7 @@ assertEqual(
 
 assertEqual(
   isLocalSupplierPurchaseSalesAnalysisColumnOrderCustomized(
-    moveLocalSupplierPurchaseSalesAnalysisColumnOrder(defaultOrder, 'salesQty90', 'supplierName'),
+    moveLocalSupplierPurchaseSalesAnalysisColumnOrder(defaultOrder, 'sellThrough', 'supplierName'),
     defaultOrder,
   ),
   true,
@@ -141,7 +137,7 @@ assert(
 
 assert(
   pageSource.includes("const LOCAL_SUPPLIER_PURCHASE_SALES_ANALYSIS_COLUMN_ORDER_STORAGE_KEY =") &&
-    pageSource.includes("hbweb_rv.localSupplierPurchaseSalesAnalysis.columnOrder.v1") &&
+    pageSource.includes("hbweb_rv.localSupplierPurchaseSalesAnalysis.columnOrder.v2") &&
     pageSource.includes('localStorage.setItem(') &&
     pageSource.includes('localStorage.removeItem(') &&
     pageSource.includes('mergeLocalSupplierPurchaseSalesAnalysisColumnOrder('),

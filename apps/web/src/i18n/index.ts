@@ -2,8 +2,6 @@ import i18n from 'i18next'
 import { initReactI18next } from 'react-i18next'
 import zh from './locales/zh.json'
 import en from './locales/en.json'
-import batchProductSalesZh from '../pages/ExecutiveSalesIntelligence/BatchProductSalesAnalysis/messages.zh.json'
-import batchProductSalesEn from '../pages/ExecutiveSalesIntelligence/BatchProductSalesAnalysis/messages.en.json'
 
 const STORAGE_KEY = 'lang'
 
@@ -16,8 +14,9 @@ function detectLanguage(): string {
 
 i18n.use(initReactI18next).init({
   resources: {
-    zh: { translation: { ...zh, ...batchProductSalesZh } },
-    en: { translation: { ...en, ...batchProductSalesEn } },
+    // 页面级文案（如批量货号销量、进货销量图表）由各页面代码块通过 registerPageMessages 懒注册，不进入首屏包。
+    zh: { translation: zh },
+    en: { translation: en },
   },
   lng: detectLanguage(),
   fallbackLng: 'zh',

@@ -75,6 +75,7 @@ const desktopDestinations = [
   "to=\"/shop/coming-soon\"",
   "to=\"/shop/orders\"",
   "to=\"/shop/local-supplier-invoices\"",
+  "to=\"/shop/purchase-sales-analysis\"",
 ]
 let previousDestinationIndex = -1
 for (const destination of desktopDestinations) {

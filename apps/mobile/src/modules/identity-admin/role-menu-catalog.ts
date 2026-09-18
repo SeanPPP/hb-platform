@@ -37,6 +37,7 @@ const WEB_MENU: MenuSource[] = ([
   ["/executive-sales-intelligence/product-movement-report", "Product movement", "商品流动", ["SalesDashboard.ProductMovement.View"]],
   ["/executive-sales-intelligence/warehouse-product-flow-analysis", "Warehouse product flow", "仓库商品流向", ["SalesDashboard.WarehouseFlow.View"]],
   ["/executive-sales-intelligence/local-product-sales-analysis", "Local product sales", "本地商品销售", ["SalesDashboard.LocalProductAnalysis.View"]],
+  ["/executive-sales-intelligence/local-supplier-purchase-sales-analysis", "Local purchase analysis", "分店进货销量分析", ["SalesDashboard.LocalSupplierPurchaseSales.View"]],
   ["/executive-sales-intelligence/purchase-amount-dashboard", "Purchase amount", "采购金额", ["SalesDashboard.PurchaseAmount.View"]],
   ["/pos-admin/suppliers", "Suppliers", "供应商", ["AustralianSuppliers.View"]],
   ["/pos-admin/products", "Product management", "商品管理", ["PosProducts.View"]],
@@ -50,7 +51,6 @@ const WEB_MENU: MenuSource[] = ([
   ["/pos-admin/schedule-attendance", "Schedule and attendance", "排班考勤", ["Attendance.Schedule.ViewStore"]],
   ["/pos-admin/sales-orders", "Sales orders", "销售订单", ["Orders.View"]],
   ["/pos-admin/local-supplier-invoices", "Local supplier invoices", "本地供应商发票", ["LocalPurchase.View"]],
-  ["/pos-admin/local-supplier-purchase-sales-analysis", "Local purchase analysis", "本地采购销售分析", ["LocalPurchase.View"]],
 ] as MenuRow[]).map(toSource("web"));
 
 const MOBILE_MENU: MenuSource[] = ([

@@ -3908,9 +3908,6 @@
         "previousPurchase": "Previous Purchase",
         "intervalDays": "Interval Days",
         "intervalSales": "Interval Sales",
-        "salesQty30": "30-day Sales",
-        "salesQty60": "60-day Sales",
-        "salesQty90": "90-day Sales",
         "updatedAt": "Statistics Updated At"
       },
       "summary": {

@@ -14,6 +14,7 @@ const pages: Array<[string, keyof AccessControl, string]> = [
   ['batch-product-sales-analysis', 'canViewBatchProductSalesAnalysis', 'SalesDashboard.BatchProductSales.View'],
   ['warehouse-product-flow-analysis', 'canViewWarehouseProductFlowAnalysis', 'SalesDashboard.WarehouseFlow.View'],
   ['local-product-sales-analysis', 'canViewLocalProductSalesAnalysis', 'SalesDashboard.LocalProductAnalysis.View'],
+  ['local-supplier-purchase-sales-analysis', 'canViewLocalSupplierPurchaseSalesAnalysis', 'SalesDashboard.LocalSupplierPurchaseSales.View'],
   ['purchase-amount-dashboard', 'canViewPurchaseAmountDashboard', 'SalesDashboard.PurchaseAmount.View'],
 ]
 const prefix = '/executive-sales-intelligence'

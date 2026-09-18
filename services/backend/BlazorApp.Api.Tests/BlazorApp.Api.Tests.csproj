@@ -171,6 +171,8 @@
     <Compile Include="ProductReportChinaMappingTests.cs" />
     <Compile Include="ProductMovementReportSqlBuilderTests.cs" />
     <Compile Include="LocalSupplierInvoiceSalesAnalysisSqlBuilderTests.cs" />
+    <Compile Include="LocalSupplierPurchaseSalesDailySeriesBuilderTests.cs" />
+    <Compile Include="ReactLocalSupplierInvoiceSalesAnalysisShopEndpointTests.cs" />
     <Compile Include="LocalSupplierPurchaseSalesSqlServerTests.cs" />
     <Compile Include="LocalPurchaseDashboardTests.cs" />
     <Compile Include="LocalPurchaseDashboardSqlServerIntegrationTests.cs" />
