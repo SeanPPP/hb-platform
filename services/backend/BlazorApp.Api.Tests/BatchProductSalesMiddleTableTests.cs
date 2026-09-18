@@ -353,6 +353,72 @@ public sealed class BatchProductSalesMiddleTableTests : IDisposable
     }
 
     [Fact]
+    public async Task SnapshotReader_快照格式以字面量下发且连续日期合并为单个区间()
+    {
+        var nextDay = _day.AddDays(1);
+        AddRefreshState(nextDay, "source-2");
+        Publish(_day, "source-1", Facts());
+        var snapshotSql = new List<(string Sql, int ParameterCount)>();
+        _db.Aop.OnLogExecuting = (sql, parameters) =>
+        {
+            // SQLite 方言的表名引号与 SQL Server 不同；以读取 PayloadJson 的快照 SELECT 识别目标语句。
+            if (sql.Contains("BatchProductSalesDiscountSnapshot", StringComparison.OrdinalIgnoreCase)
+                && sql.Contains("PayloadJson", StringComparison.OrdinalIgnoreCase)
+                && sql.TrimStart().StartsWith("SELECT", StringComparison.OrdinalIgnoreCase))
+                snapshotSql.Add((sql, parameters?.Length ?? 0));
+        };
+        try
+        {
+            await new BatchProductSalesDiscountSnapshotReader(_db).ReadManyAsync(
+                ["P1"], [_day, nextDay, _day.AddDays(2)], ["S1"], [], default);
+        }
+        finally { _db.Aop.OnLogExecuting = null; }
+
+        var (text, parameterCount) = Assert.Single(snapshotSql);
+        // 参数化的 SnapshotFormat 会让 SQL Server 放弃过滤索引 IX_BatchSalesDiscount_DailyProduct，必须保持字面量。
+        Assert.Contains("[SnapshotFormat] = 2", text);
+        Assert.DoesNotContain("@SnapshotFormat", text, StringComparison.OrdinalIgnoreCase);
+        // 三个连续日期只剩一组半开区间的起止两个参数。
+        Assert.Equal(2, parameterCount);
+    }
+
+    [Fact]
+    public async Task SnapshotReader_不连续日期之间的快照不会被读取()
+    {
+        var gapDay = _day.AddDays(1);
+        var lastDay = _day.AddDays(2);
+        AddRefreshState(gapDay, "source-gap");
+        AddRefreshState(lastDay, "source-3");
+        Publish(_day, "source-1", Facts());
+        Publish(gapDay, "source-gap", [new() { Date = gapDay, BranchCode = "S1", ProductCode = "P1", Quantity = 100, DiscountQuantity = 100, SalesAmount = 1000 }]);
+        Publish(lastDay, "source-3", [new() { Date = lastDay, BranchCode = "S1", ProductCode = "P1", Quantity = 3, DiscountQuantity = 3, SalesAmount = 30 }]);
+        var statistics = new List<BatchProductSalesAggregateRow>
+        {
+            new() { Date = _day, BranchCode = "S1", ProductCode = "P1", Quantity = 1, SalesAmount = 10 },
+            new() { Date = lastDay, BranchCode = "S1", ProductCode = "P1", Quantity = 3, SalesAmount = 30 },
+        };
+
+        var result = await new BatchProductSalesDiscountSnapshotReader(_db).ReadManyAsync(
+            ["P1"], [_day, lastDay], ["S1"], statistics, default);
+
+        var read = Assert.Single(result).Value;
+        Assert.Equal("Fresh", read.Status);
+        Assert.Equal(4m, read.Rows.Sum(row => row.Quantity));
+        Assert.DoesNotContain(read.Rows, row => row.Date.Date == gapDay);
+    }
+
+    [Fact]
+    public void CollapseContiguousDays_连续合并而断点分段()
+    {
+        var ranges = BatchProductSalesDiscountSnapshotReader.CollapseContiguousDays(
+            [_day, _day.AddDays(1), _day.AddDays(3), _day.AddDays(4), _day.AddDays(7)]);
+        Assert.Equal(
+            [(_day, _day.AddDays(2)), (_day.AddDays(3), _day.AddDays(5)), (_day.AddDays(7), _day.AddDays(8))],
+            ranges);
+        Assert.Empty(BatchProductSalesDiscountSnapshotReader.CollapseContiguousDays([]));
+    }
+
+    [Fact]
     public async Task Detail_越权门店范围继续被拒绝()
     {
         Publish(_day, "source-1", Facts());
