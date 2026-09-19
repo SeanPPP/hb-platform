@@ -213,6 +213,7 @@
     <Compile Include="CashierBarcodeMutationLockTests.cs" />
     <Compile Include="CashierBarcodeSyncGuardTests.cs" />
     <Compile Include="PromotionReactServiceTests.cs" />
+    <Compile Include="PromoPosterTests.cs" />
     <Compile Include="ProductPriceFilterTests.cs" />
     <Compile Include="ProductReactServiceHqSyncTests.cs" />
     <Compile Include="ProductStoreRecordsTests.cs" />
