@@ -305,7 +305,8 @@ function DetailCard({
       />
       <Card.Content>
         <View style={styles.chipRow}>
-          <Chip compact>{detail.是否新商品 ? "新商品" : "已有商品"}</Chip>
+          {/* 按本柜新品展示：本柜建档后 是否新商品 变 false，仍需标为新商品 */}
+          <Chip compact>{(detail.isContainerNewProduct ?? detail.是否新商品) ? "新商品" : "已有商品"}</Chip>
           <Chip compact>{detail.warehouseIsActive === false ? "停用" : "启用"}</Chip>
           {detail.matchType || detail.MatchType || hasConflict ? <Chip compact>{getMatchTypeLabel(matchType)}</Chip> : null}
         </View>

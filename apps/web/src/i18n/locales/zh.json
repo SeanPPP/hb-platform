@@ -552,7 +552,8 @@
       "new": "新",
       "existing": "已有",
       "newProduct": "新商品",
-      "existingProduct": "已有商品"
+      "existingProduct": "已有商品",
+      "newCreatedHint": "本柜新品，已由本货柜建档"
     },
     "filters": {
       "allTags": "全部标签",

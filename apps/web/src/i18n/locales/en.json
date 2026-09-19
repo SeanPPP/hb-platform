@@ -552,7 +552,8 @@
       "new": "New",
       "existing": "Existing",
       "newProduct": "New Product",
-      "existingProduct": "Existing Product"
+      "existingProduct": "Existing Product",
+      "newCreatedHint": "New in this container; product already created from it"
     },
     "filters": {
       "allTags": "All Tags",
