@@ -182,8 +182,40 @@ export function getTaskPriceChange(task: StorePriceUpdateTask, t: Translate) {
   }
 }
 
-/** 按商品页签「变更」列：零售价与建议折扣目标可能同时存在。 */
-export function getProductChangeLines(row: Pick<StorePriceUpdateTaskProductRow, 'targetRetailPrice' | 'targetDiscountRate'>, t: Translate): string[] {
+function distinctFinite(values: (number | null | undefined)[]): number[] {
+  return [...new Set(values.filter((value): value is number => value !== null && value !== undefined && Number.isFinite(value)))]
+}
+
+/**
+ * 分店同步：分店价已被改成来源分店的价格，任务只剩换标签，变更应显示分店现价；
+ * 行上的 targetRetailPrice 是仓库零售价，与这次同步无关。优先取仍待换标签的分店，全部完成后取全部分店。
+ */
+function getStoreSyncChangeLines(
+  stores: StorePriceUpdateTaskProductRow['stores'],
+  t: Translate,
+): string[] | null {
+  const labelOnly = stores.filter((store) => store.state === 'LabelOnly')
+  const pool = labelOnly.length ? labelOnly : stores
+  const prices = distinctFinite(pool.map((store) => store.storeRetailPrice))
+  if (!prices.length) return null
+  const lines = [t(`${I18N}.change.retailPrice`, { value: prices.map((price) => formatMoney(price)).join(' / ') })]
+  const discounts = distinctFinite(pool.map((store) => store.storeDiscountRate)).filter((rate) => rate > 0)
+  if (discounts.length) {
+    lines.push(t(`${I18N}.change.discount`, { value: discounts.map((rate) => formatDiscount(rate, t)).join(' / ') }))
+  }
+  return lines
+}
+
+/** 按商品页签「变更」列：零售价与建议折扣目标可能同时存在；分店同步改为显示同步后的分店价。 */
+export function getProductChangeLines(
+  row: Pick<StorePriceUpdateTaskProductRow, 'targetRetailPrice' | 'targetDiscountRate'>
+    & Partial<Pick<StorePriceUpdateTaskProductRow, 'initiatorSource' | 'stores'>>,
+  t: Translate,
+): string[] {
+  if (row.initiatorSource === 'StoreSync' && row.stores?.length) {
+    const storeSyncLines = getStoreSyncChangeLines(row.stores, t)
+    if (storeSyncLines) return storeSyncLines
+  }
   const lines: string[] = []
   if (row.targetRetailPrice !== null && row.targetRetailPrice !== undefined) {
     lines.push(t(`${I18N}.change.retailPrice`, { value: formatMoney(row.targetRetailPrice) }))

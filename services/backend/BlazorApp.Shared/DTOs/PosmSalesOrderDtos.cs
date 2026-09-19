@@ -41,9 +41,9 @@ namespace BlazorApp.Shared.DTOs
         public int? SkuCountMax { get; set; }
         public int? ItemCountMin { get; set; }
         public int? ItemCountMax { get; set; }
-        /// <summary>件数（明细 Quantity 求和）区间；ItemCount 是行数，不能当件数筛选。</summary>
-        public int? QuantityTotalMin { get; set; }
-        public int? QuantityTotalMax { get; set; }
+        /// <summary>件数（明细数量之和）区间；需逐单汇总明细，全部分店时受 7 天上限约束。</summary>
+        public int? QuantityMin { get; set; }
+        public int? QuantityMax { get; set; }
         public decimal? TotalAmountMin { get; set; }
         public decimal? TotalAmountMax { get; set; }
         public decimal? DiscountAmountMin { get; set; }
@@ -77,6 +77,25 @@ namespace BlazorApp.Shared.DTOs
         public decimal? DiscountAmount { get; set; }
         public decimal? ActualAmount { get; set; }
         public int? Status { get; set; }
+        /// <summary>支付方式（去重、升序），仅列表当前页返回：1 现金、2 刷卡、3 代金券。</summary>
+        public List<int>? PaymentMethods { get; set; }
+        /// <summary>关键词命中的明细商品，仅带关键词的列表查询返回。</summary>
+        public List<PosmSalesOrderMatchedProductDto>? MatchedProducts { get; set; }
+    }
+
+    /// <summary>按订单状态汇总的单数与金额；汇总不受状态筛选影响，页面据此展示各状态并切换。</summary>
+    public class PosmSalesOrderStatusSummaryDto
+    {
+        public int? Status { get; set; }
+        public int OrderCount { get; set; }
+        public decimal TotalAmount { get; set; }
+        public decimal DiscountAmount { get; set; }
+    }
+
+    /// <summary>收银记录列表结果：分页数据加按状态汇总（Total 为当前状态筛选下的单数）。</summary>
+    public class PosmSalesOrderListResultDto : PagedListReactDto<PosmSalesOrderDto>
+    {
+        public List<PosmSalesOrderStatusSummaryDto> Summary { get; set; } = new();
     }
 
     /// <summary>
