@@ -27,6 +27,7 @@ namespace BlazorApp.Shared.DTOs
         public string ProductCode { get; set; } = string.Empty;
         public string? ProductName { get; set; }
         public string? Barcode { get; set; }
+        public string? ImageUrl { get; set; }
         public int SalesQty30 { get; set; }
         public int SalesQty90 { get; set; }
         public decimal DailySalesQty30 { get; set; }
@@ -76,6 +77,8 @@ namespace BlazorApp.Shared.DTOs
         public List<ProductMovementReportSummaryDto> SuggestionSummary { get; set; } = new();
         public List<ProductMovementReportSummaryDto> CredibilitySummary { get; set; } = new();
         public DateTime? SalesStatisticLastUpdate { get; set; }
+        /// <summary>数据来自预计算快照时为快照生成时间（UTC）；实时计算时为 null。</summary>
+        public DateTime? SnapshotGeneratedAtUtc { get; set; }
         public string CalculationNote { get; set; } =
             "估算剩余量=近180天进货单数量-近180天销售数量；不是货架库存、后仓库存或财务库存。";
         public string DataScopeNote { get; set; } =

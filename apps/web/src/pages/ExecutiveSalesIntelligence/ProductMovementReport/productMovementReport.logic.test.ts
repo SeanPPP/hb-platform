@@ -1,10 +1,13 @@
 import { readFileSync } from 'node:fs'
 import {
   PRODUCT_MOVEMENT_ACTION_HINTS,
+  PRODUCT_MOVEMENT_SUGGESTION_CARDS,
   formatAud,
   formatPercent,
+  getCoverDaysRatio,
   getCredibilityTagColor,
   getSuggestionTagColor,
+  isCoverDaysTight,
 } from './logic'
 
 function assertEqual<T>(actual: T, expected: T, message: string) {
@@ -51,5 +54,34 @@ assertEqual(
   true,
   '商品经营分析服务应提供同权限的分店选项请求',
 )
+
+// 可卖天数进度条：30 天满格，14 天及以下判定紧张；无销量时按满格，避免空条被误读成缺货。
+assertEqual(getCoverDaysRatio(15), 0.5, '可卖 15 天应占进度条一半')
+assertEqual(getCoverDaysRatio(45), 1, '超过 30 天的可卖天数按满格封顶')
+assertEqual(getCoverDaysRatio(-3), 0, '估算剩余为负时进度条应为空')
+assertEqual(getCoverDaysRatio(null), 1, '近 30 天无销量时进度条按满格处理')
+assertEqual(isCoverDaysTight(14), true, '可卖 14 天应判定为紧张')
+assertEqual(isCoverDaysTight(14.1), false, '可卖超过 14 天不应判定为紧张')
+assertEqual(isCoverDaysTight(null), false, '无销量不应判定为紧张')
+
+// 建议卡片即筛选入口：第一张为「全部」，其余每张都要有对应的完整动作说明作为提示。
+assertEqual(PRODUCT_MOVEMENT_SUGGESTION_CARDS[0].key, '', '第一张卡片应为不筛选的全部商品')
+assertEqual(
+  PRODUCT_MOVEMENT_SUGGESTION_CARDS.some((card) => card.key === '好卖'),
+  true,
+  '去掉建议下拉后，好卖必须仍能通过卡片单独筛选',
+)
+
+// 店长动作列已取消，页面不应再渲染该字段。
+assertEqual(pageSource.includes('storeManagerAction'), false, '商品经营分析页面不应再展示店长动作列')
+assertEqual(pageSource.includes('imageUrl'), true, '商品经营分析页面应展示商品图片')
+assertEqual(serviceSource.includes('record.imageUrl ?? record.ImageUrl'), true, '服务层应兼容大小写的图片字段')
+
+assertEqual(
+  serviceSource.includes('record.snapshotGeneratedAtUtc ?? record.SnapshotGeneratedAtUtc'),
+  true,
+  '服务层应透传快照生成时间',
+)
+assertEqual(pageSource.includes('数据生成于'), true, '走快照时页面应提示数据生成时间，避免误读为实时数据')
 
 console.log('productMovementReport.logic.test: ok')
