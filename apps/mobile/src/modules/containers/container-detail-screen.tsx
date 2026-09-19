@@ -18,6 +18,7 @@ import {
   Switch,
   Text,
   TextInput,
+  useTheme,
 } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -263,8 +264,11 @@ function DetailCard({
   onAlign: () => void;
   onToggle: () => void;
 }) {
+  const theme = useTheme();
   const imageUrl = getDetailImageUrl(detail);
   const [imageFailed, setImageFailed] = useState(false);
+  // 按本柜新品展示：本柜建档后 是否新商品 变 false，仍需标为新商品
+  const isContainerNewProduct = Boolean(detail.isContainerNewProduct ?? detail.是否新商品);
   const showImage = Boolean(imageUrl && !imageFailed);
   const localProductCode = getDetailLocalProductCode(detail);
   const domesticProductCode = getDetailDomesticProductCode(detail);
@@ -305,8 +309,18 @@ function DetailCard({
       />
       <Card.Content>
         <View style={styles.chipRow}>
-          {/* 按本柜新品展示：本柜建档后 是否新商品 变 false，仍需标为新商品 */}
-          <Chip compact>{(detail.isContainerNewProduct ?? detail.是否新商品) ? "新商品" : "已有商品"}</Chip>
+          {isContainerNewProduct ? (
+            // 新商品用品牌浅蓝底色，与其它默认标签和 Web 蓝色「新」标签区分；已有商品保持默认样式。
+            <Chip
+              compact
+              style={{ backgroundColor: theme.colors.primaryContainer }}
+              textStyle={{ color: theme.colors.onPrimaryContainer }}
+            >
+              新商品
+            </Chip>
+          ) : (
+            <Chip compact>已有商品</Chip>
+          )}
           <Chip compact>{detail.warehouseIsActive === false ? "停用" : "启用"}</Chip>
           {detail.matchType || detail.MatchType || hasConflict ? <Chip compact>{getMatchTypeLabel(matchType)}</Chip> : null}
         </View>
