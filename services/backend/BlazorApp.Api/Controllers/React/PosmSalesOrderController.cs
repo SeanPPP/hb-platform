@@ -92,7 +92,7 @@ namespace BlazorApp.Api.Controllers.React
                         {
                             if (!userStoreCodes.Contains(queryParams.BranchCode))
                             {
-                                return Ok(new { success = true, data = new PagedListReactDto<PosmSalesOrderDto> { Items = new List<PosmSalesOrderDto>(), Total = 0, PageNumber = queryParams.PageNumber, PageSize = queryParams.PageSize } });
+                                return Ok(new { success = true, data = new PosmSalesOrderListResultDto { Items = new List<PosmSalesOrderDto>(), Total = 0, PageNumber = queryParams.PageNumber, PageSize = queryParams.PageSize } });
                             }
                         }
                         else
@@ -102,8 +102,18 @@ namespace BlazorApp.Api.Controllers.React
                     }
                 }
 
+                // 分店范围确定后再校验：授权范围只有一家分店时，件数/种数条件同样允许 92 天。
+                if (!PosmSalesOrderListRules.TryValidateWebQuery(queryParams, out var error, out var errorCode))
+                {
+                    return BadRequest(new { success = false, message = error, errorCode });
+                }
+
                 var result = await _service.GetSalesOrderListAsync(queryParams);
                 return Ok(new { success = true, data = result });
+            }
+            catch (PosmSalesOrderQueryRejectedException ex)
+            {
+                return BadRequest(new { success = false, message = ex.Message, errorCode = ex.ErrorCode });
             }
             catch (Exception ex)
             {
@@ -230,27 +240,16 @@ namespace BlazorApp.Api.Controllers.React
                     }
                 );
 
-                var matchedProducts = new Dictionary<string, List<PosmSalesOrderMatchedProductDto>>();
-                if (!string.IsNullOrEmpty(keyword) && result.Items.Count > 0)
-                {
-                    matchedProducts = await _service.GetMatchedProductsAsync(
-                        result.Items.Select(item => item.OrderGuid ?? string.Empty).ToList(),
-                        keyword
-                    );
-                }
-
+                // 列表查询已按同一套关键词口径为当前页算出命中商品，不再二次解析关键词。
                 response.Total = result.Total;
                 response.Items = result
-                    .Items.Select(item =>
-                        PosmSalesOrderMobileItemDto.From(
-                            item,
-                            item.OrderGuid != null && matchedProducts.TryGetValue(item.OrderGuid, out var matched)
-                                ? matched
-                                : null
-                        )
-                    )
+                    .Items.Select(item => PosmSalesOrderMobileItemDto.From(item, item.MatchedProducts))
                     .ToList();
                 return Ok(ApiResponse<PosmSalesOrderMobileListDto>.OK(response));
+            }
+            catch (PosmSalesOrderQueryRejectedException ex)
+            {
+                return BadRequest(ApiResponse<PosmSalesOrderMobileListDto>.Error(ex.Message, ex.ErrorCode));
             }
             catch (Exception ex)
             {
