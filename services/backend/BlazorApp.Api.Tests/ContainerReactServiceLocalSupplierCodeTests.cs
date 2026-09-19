@@ -48,6 +48,25 @@ public sealed class ContainerReactServiceLocalSupplierCodeTests : IDisposable
             typeof(WarehouseProduct),
             typeof(WarehouseCategory)
         );
+        // 明细查询用商品修改历史判定「本柜新品」；SQLite 下 long 自增主键需手写建表。
+        _localDb.Ado.ExecuteCommand(
+            """
+            CREATE TABLE WarehouseProductChangeHistory (
+                Id INTEGER PRIMARY KEY AUTOINCREMENT,
+                EventGuid TEXT NOT NULL,
+                ProductCode TEXT NOT NULL,
+                Action TEXT NOT NULL,
+                Source TEXT NOT NULL,
+                SourceReference TEXT NULL,
+                BatchGuid TEXT NULL,
+                ActorUserGuid TEXT NULL,
+                ActorName TEXT NOT NULL,
+                ActorType TEXT NOT NULL,
+                OccurredAtUtc TEXT NOT NULL,
+                ChangesJson TEXT NOT NULL
+            )
+            """
+        );
 
         _mapper = new MapperConfiguration(
             cfg => cfg.AddProfile<ContainerMappingProfile>(),

@@ -224,6 +224,13 @@ namespace BlazorApp.Shared.DTOs
         public bool 是否新商品 { get; set; }
 
         /// <summary>
+        /// 是否本柜新品：本地主档尚未建档，或主档正是由本货柜「创建新商品/提交货柜」建立。
+        /// 是否新商品 在建档后即变为 false，本字段在建档后仍保持 true，仅用于展示与筛选；
+        /// 建档、零售价来源等操作判断仍以 是否新商品 为准。
+        /// </summary>
+        public bool IsContainerNewProduct { get; set; }
+
+        /// <summary>
         /// 上次进货价格（货柜明细快照）
         /// </summary>
         public decimal? LastImportPrice { get; set; }
