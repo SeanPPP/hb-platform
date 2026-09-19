@@ -470,6 +470,114 @@ public sealed class ProductStoreRecordsTests : IDisposable
     }
 
     [Fact]
+    public async Task GetPagedListAsync_未按聚合字段筛选排序时只为当前页商品聚合分店记录()
+    {
+        await SeedProductAsync("P001", "A001", updatedAt: new DateTime(2026, 1, 3));
+        await SeedProductAsync("P002", "A002", updatedAt: new DateTime(2026, 1, 2));
+        await SeedProductAsync("P003", "A003", updatedAt: new DateTime(2026, 1, 1));
+        await SeedStoreRetailPriceAsync("price-p1-1", "P001", "S01", false);
+        await SeedStoreRetailPriceAsync("price-p1-2", "P001", "S02", false);
+        await SeedStoreRetailPriceAsync("price-p3-1", "P003", "S01", false);
+        await SeedChinaSupplierAsync("SUP-CN-1", "国内供应商一");
+        await SeedDomesticProductAsync("P002", "SUP-CN-1");
+
+        var executedSql = new List<string>();
+        _localDb.Aop.OnLogExecuting = (sql, _) => executedSql.Add(sql);
+
+        PagedListReactDto<ProductDto> result;
+        try
+        {
+            result = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+            {
+                PageNumber = 1,
+                PageSize = 2,
+            });
+        }
+        finally
+        {
+            _localDb.Aop.OnLogExecuting = null;
+        }
+
+        // 总数仍是全部命中商品，分页与默认更新时间倒序不受快路径影响。
+        Assert.Equal(3, result.Total);
+        Assert.Equal(new[] { "P001", "P002" }, result.Items.Select(item => item.ProductCode).ToArray());
+        Assert.Equal(new[] { 2, 0 }, result.Items.Select(item => item.StoreRecordCount).ToArray());
+        Assert.Equal("SUP-CN-1", result.Items[1].DomesticSupplierCode);
+        Assert.Equal("国内供应商一", result.Items[1].DomesticSupplierName);
+        Assert.Null(result.Items[0].DomesticSupplierCode);
+
+        // 分店价格表只应按当前页编码聚合一次，不得再与商品表联接做全表预聚合。
+        var storeRecordSql = executedSql
+            .Where(sql => sql.Contains("StoreRetailPrice", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        var storeRecordStatement = Assert.Single(storeRecordSql);
+        Assert.Contains("GROUP BY", storeRecordStatement, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("'P001'", storeRecordStatement, StringComparison.Ordinal);
+        Assert.DoesNotContain("'P003'", storeRecordStatement, StringComparison.Ordinal);
+        Assert.DoesNotContain("JOIN", storeRecordStatement, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task GetPagedListAsync_关键词搜索覆盖英文名称()
+    {
+        await SeedProductAsync("P-EN-1", "E001", productName: "陶瓷杯");
+        await SeedProductAsync("P-EN-2", "E002", productName: "玻璃杯");
+        await _localDb.Updateable<Product>()
+            .SetColumns(product => product.EnglishName == "Ceramic Mug")
+            .Where(product => product.ProductCode == "P-EN-1")
+            .ExecuteCommandAsync();
+
+        var result = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 20,
+            Search = "ceramic",
+        });
+
+        Assert.Equal(new[] { "P-EN-1" }, result.Items.Select(item => item.ProductCode).ToArray());
+    }
+
+    [Fact]
+    public async Task GetPagedListAsync_带关键词时按商品编码作次级排序键()
+    {
+        var sameUpdatedAt = new DateTime(2026, 2, 1);
+        await SeedProductAsync("P-KW-B", "K002", productName: "Candle B", updatedAt: sameUpdatedAt);
+        await SeedProductAsync("P-KW-A", "K001", productName: "Candle A", updatedAt: sameUpdatedAt);
+        await SeedProductAsync("P-KW-C", "K003", productName: "Candle C", updatedAt: new DateTime(2026, 1, 1));
+
+        var executedSql = new List<string>();
+        _localDb.Aop.OnLogExecuting = (sql, _) => executedSql.Add(sql);
+
+        PagedListReactDto<ProductDto> result;
+        try
+        {
+            result = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+            {
+                PageNumber = 1,
+                PageSize = 20,
+                Search = "candle",
+            });
+        }
+        finally
+        {
+            _localDb.Aop.OnLogExecuting = null;
+        }
+
+        // 更新时间相同的商品按商品编码升序，分页顺序确定。
+        Assert.Equal(
+            new[] { "P-KW-A", "P-KW-B", "P-KW-C" },
+            result.Items.Select(item => item.ProductCode).ToArray()
+        );
+        var pageSql = Assert.Single(
+            executedSql,
+            sql => sql.Contains("ORDER BY", StringComparison.OrdinalIgnoreCase)
+                && !sql.Contains("COUNT(", StringComparison.OrdinalIgnoreCase)
+        );
+        var orderBy = pageSql[pageSql.LastIndexOf("ORDER BY", StringComparison.OrdinalIgnoreCase)..];
+        Assert.Contains("ProductCode", orderBy, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task GetPagedListAsync_国内供应商代码名称来自未删除映射且未映射商品保留()
     {
         await SeedProductAsync("P-MAPPED", "M001");
