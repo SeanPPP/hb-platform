@@ -1,21 +1,29 @@
 import type { ApiResponse } from '../types/api'
 import type {
-  PosmSalesOrder,
   PosmSalesOrderDetailResponse,
+  PosmSalesOrderListResult,
   PosmSalesOrderQueryParams,
 } from '../types/posmSalesOrder'
 import request, { unwrapApiData } from '../utils/request'
 
 const API_BASE = '/api/react/v1/posm-sales-orders'
 
+/** signal 用于换条件时取消上一次还没返回的查询，避免慢响应覆盖新结果。 */
 export async function getSalesOrderList(
   params: PosmSalesOrderQueryParams,
-): Promise<{ items: PosmSalesOrder[]; total: number }> {
-  const response = await request.post<ApiResponse<{ items: PosmSalesOrder[]; total: number }>>(
+  signal?: AbortSignal,
+): Promise<PosmSalesOrderListResult> {
+  const response = await request.post<ApiResponse<PosmSalesOrderListResult>>(
     `${API_BASE}/list`,
     params,
+    { signal },
   )
-  return unwrapApiData(response)
+  const result = unwrapApiData(response)
+  return {
+    items: result?.items ?? [],
+    total: result?.total ?? 0,
+    summary: result?.summary ?? [],
+  }
 }
 
 export async function getSalesOrderDetail(orderGuid: string): Promise<PosmSalesOrderDetailResponse> {
