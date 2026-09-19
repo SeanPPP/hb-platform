@@ -26,15 +26,19 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       JSON.stringify({
         success: true,
         data: {
-          Stores: [{ BranchCode: 'S1', BranchName: 'Store 1', TotalAmount: 100, TotalQuantity: 10, DomesticSupplierAmount: 70 }],
-          ChinaSuppliers: [{ SupplierCode: 'SUP-CN', SupplierName: '国内供应商', TotalAmount: 70, TotalQuantity: 7 }],
+          Stores: [{ BranchCode: 'S1', BranchName: 'Store 1', TotalAmount: 100, TotalQuantity: 10, DomesticSupplierAmount: 70, ProductCount: 3 }],
+          ChinaSuppliers: [{ SupplierCode: 'SUP-CN', SupplierName: '国内供应商', TotalAmount: 70, TotalQuantity: 7, ProductCount: 2 }],
           ProductDetails: {
             Data: [{ ProductCode: 'P001', ItemNumber: 'HB001', ProductName: '国内商品', ChinaSupplierCode: 'SUP-CN', TotalQuantity: 7, UnitPrice: 10, TotalAmount: 70 }],
             Total: 1,
             PageIndex: 1,
             PageSize: 80,
+            ScopeAmount: 70,
           },
+          Summary: { TotalAmount: 70, TotalQuantity: 7, ProductCount: 1, StoreCount: 1, SupplierCount: 1, OverallAmount: 100, OverallQuantity: 10 },
           StatisticStatus: 'Fresh',
+          StatisticUpdatedAt: '2026-06-17T09:31:00Z',
+          FromCache: true,
         },
       }),
       { status: 200, headers: { 'content-type': 'application/json' } },
@@ -117,22 +121,34 @@ try {
   assertEqual(result.pageIndex, 2, '热销商品响应应继续解包 pageIndex')
 
   const board = await getCompactSalesBoard(
-    { startDate: '2026-06-17', endDate: '2026-06-17' },
-    ['S1'],
-    ['SUP-CN'],
-    'P001',
-    1,
-    80,
+    {
+      dateRange: { startDate: '2026-06-17', endDate: '2026-06-17' },
+      branchCodes: ['S1'],
+      selectedBranchCode: 'S1',
+      selectedChinaSupplierCode: 'SUP-CN',
+      selectedProductCode: 'P001',
+      keyword: '  canvas 60 ',
+      sortField: 'quantity',
+      sortOrder: 'asc',
+      pageIndex: 2,
+      pageSize: 50,
+      forceRefresh: true,
+    },
     controller.signal,
-    true,
   )
   const boardRequestUrl = new URL(capturedUrl, 'http://localhost')
   assertEqual(boardRequestUrl.pathname, '/api/react/v1/dashboard/compact-sales-board', '销售看板应请求独立接口')
   assertEqual(boardRequestUrl.searchParams.get('startDate'), '2026-06-17', '销售看板应传递开始日期')
   assertEqual(boardRequestUrl.searchParams.get('endDate'), '2026-06-17', '销售看板应传递结束日期')
-  assertEqual(boardRequestUrl.searchParams.getAll('branchCodes').join(','), 'S1', '销售看板应传递分店筛选')
-  assertEqual(boardRequestUrl.searchParams.getAll('chinaSupplierCodes').join(','), 'SUP-CN', '销售看板应传递国内供应商筛选')
-  assertEqual(boardRequestUrl.searchParams.get('productCode'), 'P001', '销售看板应传递商品联动筛选')
+  assertEqual(boardRequestUrl.searchParams.getAll('branchCodes').join(','), 'S1', '销售看板应传递授权分店范围')
+  assertEqual(boardRequestUrl.searchParams.get('selectedBranchCode'), 'S1', '销售看板应单独传递选中分店')
+  assertEqual(boardRequestUrl.searchParams.get('selectedChinaSupplierCode'), 'SUP-CN', '销售看板应传递选中国内供应商')
+  assertEqual(boardRequestUrl.searchParams.get('selectedProductCode'), 'P001', '销售看板应传递选中商品')
+  assertEqual(boardRequestUrl.searchParams.get('keyword'), 'canvas 60', '销售看板应传递去除首尾空白的关键词')
+  assertEqual(boardRequestUrl.searchParams.get('sortField'), 'quantity', '销售看板应传递排序字段')
+  assertEqual(boardRequestUrl.searchParams.get('sortOrder'), 'asc', '销售看板应传递排序方向')
+  assertEqual(boardRequestUrl.searchParams.get('pageIndex'), '2', '销售看板应传递页码')
+  assertEqual(boardRequestUrl.searchParams.get('pageSize'), '50', '销售看板应传递每页条数')
   assertEqual(boardRequestUrl.searchParams.get('forceRefresh'), 'true', '销售看板手动刷新应传递强制刷新标记')
   assertEqual(capturedInit?.method, 'GET', '销售看板接口应使用 GET 请求')
   assertEqual(capturedInit?.signal, controller.signal, '销售看板接口应继续透传 AbortSignal')
@@ -140,6 +156,14 @@ try {
   assertEqual(board.chinaSuppliers[0]?.supplierCode, 'SUP-CN', '销售看板应归一化国内供应商')
   assertEqual(board.productDetails.data[0]?.itemNumber, 'HB001', '销售看板应归一化商品货号')
   assertEqual(board.productDetails.data[0]?.unitPrice, 10, '销售看板应归一化商品单价')
+  assertEqual(board.stores[0]?.productCount, 3, '销售看板应归一化分店动销款数')
+  assertEqual(board.chinaSuppliers[0]?.productCount, 2, '销售看板应归一化供应商动销款数')
+  assertEqual(board.summary.overallAmount, 100, '销售看板应归一化全部范围营业额')
+  assertEqual(board.summary.totalAmount, 70, '销售看板应归一化筛选后营业额')
+  assertEqual(board.summary.storeCount, 1, '销售看板应归一化有销售分店数')
+  assertEqual(board.statisticUpdatedAt, '2026-06-17T09:31:00Z', '销售看板应归一化统计更新时间')
+  assertEqual(board.fromCache, true, '销售看板应归一化服务端缓存命中标记')
+  assertEqual(board.productDetails.scopeAmount, 70, '销售看板应归一化商品占比分母')
 
   console.log('salesDashboardService.test: ok')
 } finally {
