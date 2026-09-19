@@ -183,6 +183,89 @@ public class ProductMovementReportSqlBuilderTests
     }
 
     [Fact]
+    public void NormalizeQuery_ShouldOnlyAcceptWhitelistedSort()
+    {
+        var ascending = ProductMovementReportSqlBuilder.NormalizeQuery(
+            new ProductMovementReportQueryDto { SortBy = " SalesQty30 ", SortDirection = "ASC" }
+        );
+        Assert.Equal("salesQty30", ascending.SortBy);
+        Assert.Equal("asc", ascending.SortDirection);
+
+        // 只给字段不给方向时，销量默认从高到低。
+        var defaultDirection = ProductMovementReportSqlBuilder.NormalizeQuery(
+            new ProductMovementReportQueryDto { SortBy = "salesQty30" }
+        );
+        Assert.Equal("desc", defaultDirection.SortDirection);
+
+        // 白名单外的字段一律丢弃，方向也随之清空，回到默认的建议紧急程度排序。
+        var injected = ProductMovementReportSqlBuilder.NormalizeQuery(
+            new ProductMovementReportQueryDto { SortBy = "ProductName; DROP TABLE Product", SortDirection = "asc" }
+        );
+        Assert.Null(injected.SortBy);
+        Assert.Null(injected.SortDirection);
+    }
+
+    [Theory]
+    [InlineData(null, null, "ActionPriority,\n    BranchCode,\n    SalesQty30 DESC,\n    SalesAmount90Aud DESC,\n    ProductCode")]
+    [InlineData("salesQty30", "desc", "SalesQty30 DESC,\n    SalesQty90 DESC,\n    SalesAmount90Aud DESC,\n    BranchCode,\n    ProductCode")]
+    [InlineData("salesQty30", "asc", "SalesQty30,\n    SalesQty90,\n    SalesAmount90Aud,\n    BranchCode,\n    ProductCode")]
+    public void Build_ShouldOrderPageBySelectedSort(string? sortBy, string? sortDirection, string expectedOrder)
+    {
+        var query = ProductMovementReportSqlBuilder.NormalizeQuery(
+            new ProductMovementReportQueryDto { StoreCode = "1003", SortBy = sortBy, SortDirection = sortDirection }
+        );
+        var sql = ProductMovementReportSqlBuilder.Build(query, null).Sql;
+
+        // 内层决定取哪一页，外层按同一次序输出；两处必须一致，末尾都有门店与商品编码兜底保证翻页稳定。
+        Assert.Contains("ORDER BY\n    " + expectedOrder + "\n    OFFSET @Offset ROWS", sql, StringComparison.Ordinal);
+        Assert.Contains(
+            "ORDER BY\n    " + expectedOrder.Replace("\n    ", "\n    pg.", StringComparison.Ordinal).Insert(0, "pg.") + ";",
+            sql,
+            StringComparison.Ordinal
+        );
+    }
+
+    [Fact]
+    public void Build_ShouldSearchItemNumberFromProductMasterBeforeFiltering()
+    {
+        var sql = ProductMovementReportSqlBuilder.Build(
+            new ProductMovementReportQueryDto { StoreCode = "1003", Keyword = "WEW1379" },
+            null
+        ).Sql;
+
+        // 货号只在商品档案里；先物化命中的商品编码，再与编码/名称/条码并列参与范围过滤。
+        var keywordProducts = sql.IndexOf("INTO #KeywordProducts", StringComparison.Ordinal);
+        var finalRows = sql.IndexOf("INTO #FinalRows", StringComparison.Ordinal);
+        Assert.True(keywordProducts > 0 && keywordProducts < finalRows, "货号命中商品必须在物化 #FinalRows 之前取出。");
+        Assert.Contains("p.IsDeleted = 0\n    AND p.ItemNumber LIKE @Keyword", sql, StringComparison.Ordinal);
+        Assert.Contains("OR ProductCode IN (SELECT ProductCode FROM #KeywordProducts))", sql, StringComparison.Ordinal);
+        Assert.False(ProductMovementReportSqlBuilder.ContainsWriteKeyword(sql));
+
+        var withoutKeyword = ProductMovementReportSqlBuilder.Build(
+            new ProductMovementReportQueryDto { StoreCode = "1003" },
+            null
+        ).Sql;
+        Assert.DoesNotContain("#KeywordProducts", withoutKeyword, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Build_ShouldLookupItemNumberOnlyForPagedRows()
+    {
+        var sql = ProductMovementReportSqlBuilder.Build(
+            new ProductMovementReportQueryDto { StoreCode = "1003" },
+            null
+        ).Sql;
+        var page = sql[sql.IndexOf("-- 结果集 1", StringComparison.Ordinal)..sql.IndexOf("-- 结果集 2", StringComparison.Ordinal)];
+
+        // 先分页再查货号，避免为全部分店约 30 万行关联商品表。
+        var offset = page.IndexOf("OFFSET @Offset ROWS", StringComparison.Ordinal);
+        var lookup = page.IndexOf("OUTER APPLY", StringComparison.Ordinal);
+        Assert.True(offset > 0 && offset < lookup, "货号查找必须放在分页之后。");
+        Assert.Contains("AND p.ProductCode = pg.ProductCode", page, StringComparison.Ordinal);
+        Assert.Contains("im.ItemNumber AS ItemNumber", page, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Build_ShouldUseLastMovementDateForClearanceInsteadOfNullNoSaleDays()
     {
         var sql = ProductMovementReportSqlBuilder.Build(

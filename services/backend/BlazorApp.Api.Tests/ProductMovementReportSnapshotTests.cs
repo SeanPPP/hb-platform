@@ -93,6 +93,10 @@ public class ProductMovementReportSnapshotTests
         // 带关键词时先把命中行物化一次，分页与两段汇总复用，关键词匹配只做一遍。
         Assert.Contains("SELECT * INTO #FinalRows FROM", snapshot, StringComparison.Ordinal);
         Assert.Contains("ProductCode LIKE @Keyword", snapshot, StringComparison.Ordinal);
+        // 快照里没有货号，关键词要先从商品档案按货号取出命中商品，再物化命中行。
+        var keywordProducts = snapshot.IndexOf("INTO #KeywordProducts", StringComparison.Ordinal);
+        var hitRows = snapshot.IndexOf("SELECT * INTO #FinalRows FROM", StringComparison.Ordinal);
+        Assert.True(keywordProducts > 0 && keywordProducts < hitRows, "快照读取也必须支持按货号检索。");
         Assert.Contains("COALESCE(RowSalesStatLastUpdate, @SalesStatLastUpdate) AS SalesStatLastUpdate", snapshot, StringComparison.Ordinal);
 
         // 不带关键词时快照已是物化结果，直接读快照表，不再整批复制进临时表。

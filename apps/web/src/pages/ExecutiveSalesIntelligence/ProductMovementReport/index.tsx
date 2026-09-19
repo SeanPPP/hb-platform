@@ -22,6 +22,7 @@ import {
   message,
 } from 'antd'
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table'
+import type { FilterValue, SorterResult, SortOrder, TableCurrentDataSource } from 'antd/es/table/interface'
 import dayjs, { type Dayjs } from 'dayjs'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
@@ -47,6 +48,8 @@ import {
   formatPercent,
   getCoverDaysRatio,
   getCredibilityTagColor,
+  getListOrderDescription,
+  getSalesSortQuery,
   getSuggestionTagColor,
   isCoverDaysTight,
 } from './logic'
@@ -106,6 +109,10 @@ function buildUserStoreOptions(userStores?: UserStoreDto[]) {
       label: store.storeName ? `${store.storeCode} - ${store.storeName}` : store.storeCode,
       value: store.storeCode,
     }))
+}
+
+function getRowKey(record: ProductMovementReportRow) {
+  return `${record.storeCode}-${record.productCode}`
 }
 
 function getSummaryCount(result: ProductMovementReportResponse | null, key: string) {
@@ -179,6 +186,7 @@ export default function ProductMovementReportPage() {
   const [asOfDate, setAsOfDate] = useState<Dayjs>(() => dayjs())
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
+  const [salesSortOrder, setSalesSortOrder] = useState<SortOrder>(null)
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<ProductMovementReportResponse | null>(null)
   const [expandedKeys, setExpandedKeys] = useState<readonly string[]>([])
@@ -231,6 +239,7 @@ export default function ProductMovementReportPage() {
             asOfDate: asOfDate.format('YYYY-MM-DD'),
             page,
             pageSize,
+            ...getSalesSortQuery(salesSortOrder),
           },
           signal,
         )
@@ -246,7 +255,7 @@ export default function ProductMovementReportPage() {
         }
       }
     },
-    [asOfDate, dataCredibility, keyword, page, pageSize, requiresStoreSelection, storeCode, suggestion],
+    [asOfDate, dataCredibility, keyword, page, pageSize, requiresStoreSelection, salesSortOrder, storeCode, suggestion],
   )
 
   useEffect(() => {
@@ -255,10 +264,10 @@ export default function ProductMovementReportPage() {
     return () => controller.abort()
   }, [loadData])
 
-  // 翻页或换筛选后，上一页展开的行不应留在展开状态。
+  // 翻页、换筛选或换排序后，上一页展开的行不应留在展开状态。
   useEffect(() => {
     setExpandedKeys([])
-  }, [page, pageSize, storeCode, suggestion, dataCredibility, keyword, asOfDate])
+  }, [page, pageSize, storeCode, suggestion, dataCredibility, keyword, asOfDate, salesSortOrder])
 
   const handleSearch = () => {
     setPage(1)
@@ -272,6 +281,7 @@ export default function ProductMovementReportPage() {
     setKeywordInput('')
     setKeyword('')
     setAsOfDate(dayjs())
+    setSalesSortOrder(null)
     if (canQueryAllStores) {
       setStoreCode(undefined)
     }
@@ -314,7 +324,8 @@ export default function ProductMovementReportPage() {
                 <div className={styles.productName}>{record.productName || '--'}</div>
               </Tooltip>
               <div className={styles.productMeta}>
-                {record.productCode}
+                {/* 店长认货号不认内部商品编码；商品档案缺失时才退回编码。 */}
+                {record.itemNumber || record.productCode}
                 {record.barcode ? ` · ${record.barcode}` : ''}
               </div>
             </div>
@@ -327,6 +338,10 @@ export default function ProductMovementReportPage() {
         key: 'salesQty30',
         width: 140,
         align: 'right',
+        // 服务端分页，排序交给后端；先降序（最常用的「卖得最好」），再升序，第三次点击回到默认排序。
+        sorter: true,
+        sortOrder: salesSortOrder,
+        sortDirections: ['descend', 'ascend'],
         render: (_value, record) => (
           <>
             <div className={styles.metricMain}>{formatNumber(record.salesQty30)}</div>
@@ -463,9 +478,21 @@ export default function ProductMovementReportPage() {
         render: (value: string) => <Tag color={getSuggestionTagColor(value)}>{value}</Tag>,
       },
     ]
-  }, [showStoreColumn])
+  }, [salesSortOrder, showStoreColumn])
 
-  const handleTableChange = (pagination: TablePaginationConfig) => {
+  const handleTableChange = (
+    pagination: TablePaginationConfig,
+    _filters: Record<string, FilterValue | null>,
+    sorter: SorterResult<ProductMovementReportRow> | SorterResult<ProductMovementReportRow>[],
+    extra: TableCurrentDataSource<ProductMovementReportRow>,
+  ) => {
+    if (extra.action === 'sort') {
+      // 只有销量列可排序；换排序后回到第一页，不停在新次序的中间页。
+      const current = Array.isArray(sorter) ? sorter[0] : sorter
+      setSalesSortOrder(current?.columnKey === 'salesQty30' ? current.order ?? null : null)
+      setPage(1)
+      return
+    }
     setPage(pagination.current ?? 1)
     setPageSize(pagination.pageSize ?? DEFAULT_PAGE_SIZE)
   }
@@ -559,7 +586,7 @@ export default function ProductMovementReportPage() {
         <Input
           allowClear
           className={styles.filterKeyword}
-          placeholder="商品编码 / 条码 / 名称"
+          placeholder="货号 / 条码 / 名称"
           value={keywordInput}
           onChange={(event) => setKeywordInput(event.target.value)}
           onPressEnter={handleSearch}
@@ -629,23 +656,22 @@ export default function ProductMovementReportPage() {
             <span className={styles.listHeadTitle}>{listTitle}</span>
             <span className={styles.listHeadMeta}>{formatNumber(listCount)} 个商品</span>
             <span className={styles.listHeadDivider} />
-            <span className={styles.listHeadMeta}>
-              {suggestion ? '按近30天销量从高到低排列' : '按建议紧急程度排列，订货和备货在前'}
-            </span>
+            <span className={styles.listHeadMeta}>{getListOrderDescription(salesSortOrder, Boolean(suggestion))}</span>
             <span className={styles.listHeadDivider} />
             <span className={styles.listHeadMeta}>{result?.calculationNote}</span>
           </div>
           <MeasuredTable<ProductMovementReportRow>
             metricId="executive-sales-intelligence.product-movement-report.table-1"
             size="small"
-            rowKey={(record) => `${record.storeCode}-${record.productCode}`}
+            rowKey={getRowKey}
             loading={loading}
             columns={columns}
             dataSource={result?.items ?? []}
             scroll={{ x: showStoreColumn ? 1440 : 1300 }}
             expandable={{
               expandedRowKeys: expandedKeys,
-              onExpandedRowsChange: (keys) => setExpandedKeys(keys as string[]),
+              // 手风琴：同一时间只展开一行，展开新行时收起上一行，详情区不会越堆越长。
+              onExpand: (expanded, record) => setExpandedKeys(expanded ? [getRowKey(record)] : []),
               expandedRowRender: (record) => (
                 <div className={styles.detail}>
                   <ProductDetailThumb
@@ -753,7 +779,19 @@ export default function ProductMovementReportPage() {
                     </div>
 
                     <div className={styles.detailGroup}>
-                      <div className={styles.detailGroupTitle}>分店</div>
+                      <div className={styles.detailGroupTitle}>商品与分店</div>
+                      <div className={styles.detailItem}>
+                        <span className={styles.detailLabel}>货号</span>
+                        <span className={styles.detailValue}>{record.itemNumber || '--'}</span>
+                      </div>
+                      <div className={styles.detailItem}>
+                        <span className={styles.detailLabel}>条码</span>
+                        <span className={styles.detailValue}>{record.barcode || '--'}</span>
+                      </div>
+                      <div className={styles.detailItem}>
+                        <span className={styles.detailLabel}>商品编码</span>
+                        <span className={styles.detailValue}>{record.productCode}</span>
+                      </div>
                       <div className={styles.detailItem}>
                         <span className={styles.detailLabel}>分店名称</span>
                         <span className={styles.detailValue}>{record.storeName || '--'}</span>
@@ -761,10 +799,6 @@ export default function ProductMovementReportPage() {
                       <div className={styles.detailItem}>
                         <span className={styles.detailLabel}>分店编码</span>
                         <span className={styles.detailValue}>{record.storeCode}</span>
-                      </div>
-                      <div className={styles.detailItem}>
-                        <span className={styles.detailLabel}>条码</span>
-                        <span className={styles.detailValue}>{record.barcode || '--'}</span>
                       </div>
                     </div>
                   </div>

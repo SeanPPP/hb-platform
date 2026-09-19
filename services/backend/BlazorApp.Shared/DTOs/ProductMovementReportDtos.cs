@@ -15,6 +15,12 @@ namespace BlazorApp.Shared.DTOs
         public string? Keyword { get; set; }
         public int Page { get; set; } = 1;
         public int PageSize { get; set; } = 50;
+
+        /// <summary>排序字段：salesQty30（近 30 天销量）；为空时按建议紧急程度排序。</summary>
+        public string? SortBy { get; set; }
+
+        /// <summary>排序方向：asc / desc，只在指定排序字段时生效。</summary>
+        public string? SortDirection { get; set; }
     }
 
     /// <summary>
@@ -25,6 +31,8 @@ namespace BlazorApp.Shared.DTOs
         public string StoreCode { get; set; } = string.Empty;
         public string? StoreName { get; set; }
         public string ProductCode { get; set; } = string.Empty;
+        /// <summary>货号，取自商品档案；与内部商品编码 ProductCode 不是同一个值。</summary>
+        public string? ItemNumber { get; set; }
         public string? ProductName { get; set; }
         public string? Barcode { get; set; }
         public string? ImageUrl { get; set; }
