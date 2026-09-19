@@ -193,34 +193,16 @@ namespace BlazorApp.Api.Cache
         }
 
         /// <summary>
-        /// 紧凑销售看板缓存键必须包含授权分店、所有筛选和统计水位，避免跨权限或旧统计结果串用。
+        /// 紧凑销售看板「门店×商品」聚合立方体的缓存键：只由日期范围和统计水位决定。
+        /// 立方体包含全部门店，授权范围、联动筛选、排序和分页都在读取后于内存中处理，
+        /// 因此同一日期范围的所有点选都复用同一份聚合，不会因为筛选组合不同而重复查库。
         /// </summary>
-        public static string CompactSalesBoard(
-            DateRangeDto dateRange,
-            List<string>? branchCodes,
-            List<string>? chinaSupplierCodes,
-            string? productCode,
-            int pageIndex,
-            int pageSize,
-            string? cacheVersion
-        )
+        public static string CompactSalesBoardCube(DateRangeDto dateRange, string? cacheVersion)
         {
-            static List<string>? Canonicalize(IEnumerable<string>? codes)
-            {
-                return codes?
-                    .Where(code => !string.IsNullOrWhiteSpace(code))
-                    .Select(code => code.Trim().ToUpperInvariant())
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .OrderBy(code => code, StringComparer.OrdinalIgnoreCase)
-                    .ToList();
-            }
-
-            var canonicalBranchCodes = Canonicalize(branchCodes);
-            var canonicalChinaSupplierCodes = Canonicalize(chinaSupplierCodes);
-            var key = $"{PREFIX}:CompactSalesBoard:{Hash(dateRange, canonicalBranchCodes, canonicalChinaSupplierCodes, productCode?.Trim(), pageIndex, pageSize, cacheVersion)}";
-            // 紧凑看板使用商品销量分析的 generation 生命周期登记，不能作为普通键 TrackKey；
+            var key = $"{PREFIX}:CompactSalesBoardCube:{Hash(dateRange.StartDate.Date.ToString("yyyyMMdd"), dateRange.EndDate.Date.ToString("yyyyMMdd"), cacheVersion)}";
+            // 立方体使用商品销量分析的 generation 生命周期登记，不能作为普通键 TrackKey；
             // 否则清理期间按 key Remove 会误删同 key 的新代缓存。
-            LogKeyGenerated("CompactSalesBoard", key, dateRange, canonicalBranchCodes, canonicalChinaSupplierCodes, pageIndex, pageSize, cacheVersion);
+            LogKeyGenerated("CompactSalesBoardCube", key, dateRange, cacheVersion);
             return key;
         }
 

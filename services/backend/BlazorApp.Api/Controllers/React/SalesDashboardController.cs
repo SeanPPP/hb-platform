@@ -1006,6 +1006,8 @@ namespace BlazorApp.Api.Controllers.React
         /// <summary>
         /// 获取紧凑销售看板。
         /// 分店范围统一从实时用户关系解析，任何解析失败都拒绝请求，不能退化成全分店查询。
+        /// branchCodes 只表示授权范围；页面上选中的分店走 selectedBranchCode，
+        /// 服务端只在授权范围内匹配选中分店，越权选中只会得到空结果。
         /// </summary>
         [HttpGet("compact-sales-board")]
         [Authorize(Policy = Permissions.SalesDashboard.CompactBoardView)]
@@ -1013,8 +1015,12 @@ namespace BlazorApp.Api.Controllers.React
             [FromQuery] DateTime startDate,
             [FromQuery] DateTime endDate,
             [FromQuery] List<string>? branchCodes = null,
-            [FromQuery] List<string>? chinaSupplierCodes = null,
-            [FromQuery] string? productCode = null,
+            [FromQuery] string? selectedBranchCode = null,
+            [FromQuery] string? selectedChinaSupplierCode = null,
+            [FromQuery] string? selectedProductCode = null,
+            [FromQuery] string? keyword = null,
+            [FromQuery] string? sortField = null,
+            [FromQuery] string? sortOrder = null,
             [FromQuery] int pageIndex = 1,
             [FromQuery] int pageSize = 80,
             [FromQuery] bool forceRefresh = false
@@ -1026,20 +1032,25 @@ namespace BlazorApp.Api.Controllers.React
                 if (!branchScope.HasAccess)
                     return Forbid();
 
-                var result = await _service.GetCompactSalesBoardAsync(
-                    new DateRangeDto
+                var result = await _service.GetCompactSalesBoardAsync(new CompactSalesBoardQuery
+                {
+                    DateRange = new DateRangeDto
                     {
                         StartDate = startDate,
                         EndDate = endDate,
                         CompareMode = CompareMode.ByDate,
                     },
-                    branchScope.BranchCodes,
-                    chinaSupplierCodes,
-                    productCode,
-                    pageIndex,
-                    pageSize,
-                    forceRefresh
-                );
+                    BranchCodes = branchScope.BranchCodes,
+                    SelectedBranchCode = selectedBranchCode,
+                    SelectedChinaSupplierCode = selectedChinaSupplierCode,
+                    SelectedProductCode = selectedProductCode,
+                    Keyword = keyword,
+                    SortField = sortField,
+                    SortOrder = sortOrder,
+                    PageIndex = pageIndex,
+                    PageSize = pageSize,
+                    ForceRefresh = forceRefresh,
+                });
                 return Ok(new { success = true, data = result });
             }
             catch (ArgumentException exception)

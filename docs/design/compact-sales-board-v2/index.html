@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>独立销售看板 v2</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="shell">
+<main class="page" id="page">
+  <header class="board-head">
+    <div class="head-row">
+      <div class="title">
+        <h1>销售看板</h1>
+        <span class="scope"><b>口径</b>澳洲供应商 200-hotbargain · 已映射国内供应商的商品</span>
+      </div>
+      <div class="controls">
+        <div class="segmented" role="radiogroup" aria-label="快捷日期" id="quickRange">
+          <button role="radio" data-range="today">今天</button>
+          <button role="radio" data-range="yesterday">昨天</button>
+          <button role="radio" data-range="week">本周</button>
+          <button role="radio" data-range="month">本月</button>
+        </div>
+        <div class="range-picker" id="rangeText">
+          <span>2026-09-19</span><svg viewBox="0 0 16 16"><path d="M3 8h10M10 5l3 3-3 3"/></svg><span>2026-09-19</span>
+          <svg class="cal" viewBox="0 0 16 16"><rect x="2.5" y="3.5" width="11" height="10" rx="1.5"/><path d="M2.5 6.5h11M5.5 2v3M10.5 2v3"/></svg>
+        </div>
+        <button class="icon-btn primary" id="refreshBtn" aria-label="强制刷新销售看板" title="强制刷新（绕过缓存）">
+          <svg viewBox="0 0 16 16"><path d="M13 3.5v3h-3"/><path d="M12.6 6.5A5 5 0 1 0 13 9"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="kpis" id="kpis"></div>
+    <div class="filters" id="filters"></div>
+  </header>
+
+  <div class="grid" id="grid">
+    <section class="panel" data-dim="branch" aria-label="分店销售">
+      <div class="progress" aria-hidden="true"></div>
+      <header class="panel-head">
+        <div class="ph-title"><i class="dot"></i><h2>分店销售</h2><span class="count" id="branchCount"></span></div>
+        <span class="ph-hint" id="branchHint"></span>
+      </header>
+      <div class="table-wrap"><table class="tbl">
+        <colgroup><col><col style="width:84px"><col style="width:58px"><col style="width:96px"></colgroup>
+        <thead id="branchHead"></thead><tbody id="branchBody"></tbody>
+      </table></div>
+    </section>
+
+    <section class="panel" data-dim="supplier" aria-label="国内供应商销售">
+      <div class="progress" aria-hidden="true"></div>
+      <header class="panel-head">
+        <div class="ph-title"><i class="dot"></i><h2>国内供应商</h2><span class="count" id="supplierCount"></span></div>
+        <label class="search sm"><svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14"/></svg><input id="supplierSearch" placeholder="名称 / 代码" aria-label="搜索国内供应商"></label>
+      </header>
+      <div class="table-wrap"><table class="tbl">
+        <colgroup><col><col style="width:84px"><col style="width:58px"><col style="width:96px"></colgroup>
+        <thead id="supplierHead"></thead><tbody id="supplierBody"></tbody>
+      </table></div>
+    </section>
+
+    <section class="panel wide" data-dim="product" aria-label="国内商品明细">
+      <div class="progress" aria-hidden="true"></div>
+      <header class="panel-head">
+        <div class="ph-title"><i class="dot"></i><h2>国内商品明细</h2><span class="count" id="productCount"></span></div>
+        <label class="search"><svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14"/></svg><input id="productSearch" placeholder="货号 / 名称，空格分隔多个词" aria-label="搜索商品"></label>
+      </header>
+      <div class="table-wrap" id="productWrap"><table class="tbl product-tbl">
+        <colgroup><col style="width:34px"><col style="width:46px"><col><col style="width:70px"><col style="width:56px"><col style="width:70px"><col style="width:78px"><col style="width:96px"></colgroup>
+        <thead id="productHead"></thead><tbody id="productBody"></tbody>
+      </table></div>
+      <footer class="pager" id="productPager"></footer>
+    </section>
+  </div>
+</main>
+
+<aside class="notes-aside" id="notesAside" aria-label="设计说明">
+  <h3>设计说明</h3>
+  <ol>
+    <li><b>KPI 汇总条</b>随全部筛选即时变化；有筛选时显示「占全部」比例，一眼看出筛选范围的体量。</li>
+    <li><b>联动筛选条</b>：每个条件都能单独 ×；「清除全部」或按 Esc 一键复位。未筛选时给出操作提示。</li>
+    <li><b>交叉筛选</b>：每栏只受<em>其他栏</em>的选中项约束。选中行保持高亮、不会把自身收窄成 1 行，可以直接改选别的行。</li>
+    <li><b>表头排序</b>：点击 数量 / 单价 / 金额 / 货号 排序，依次切换 降序 → 升序 → 默认。商品明细<em>在服务端对全部结果排序</em>，# 排名跨页连续；分店、供应商在本地排序。</li>
+    <li><b>商品搜索</b>：按货号或名称搜索，空格分隔的多个词必须全部命中。搜索只用来找商品，点选之后才参与联动。</li>
+    <li><b>供应商代码可点击</b>：点商品行里的供应商代码，直接切换到该供应商。</li>
+    <li><b>占比条</b>：分母是本栏在其他筛选条件下的合计，悬停可看分母。</li>
+    <li><b>局部加载</b>：只刷新受影响的栏，旧数据保留、顶部 2px 进度条；不再整页转圈、锁住所有行。</li>
+    <li><b>状态区</b>：显示统计是否最新、本次查询耗时、是否命中缓存。</li>
+  </ol>
+  <div class="perf">
+    <h4>性能（「3 秒不出数据」）</h4>
+    <p>现状（生产计划缓存实测）：未选供应商时一次请求串行执行 <b>52 条 SQL</b>（26 批 × 门店/商品两种聚合，每批带 500 个 GUID 字面量）。每条执行约 8 ms，但因为文本都不同，每条都要重新编译约 50 ms，整次请求共 <b>3.9 秒</b>。</p>
+    <p>方案：按日期范围只查 1 次 <code>门店×商品</code> 聚合（本月约 5.2 万行），放进服务端缓存，之后联动、排序、翻页都在内存里算。</p>
+    <p>目标：首屏 &lt; 1 s，点击联动 &lt; 150 ms。</p>
+  </div>
+</aside>
+</div>
+<div class="note-layer" id="noteLayer" aria-hidden="true"></div>
+<script type="module" src="app.mjs"></script>
+</body>
+</html>
