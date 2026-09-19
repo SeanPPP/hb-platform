@@ -6764,7 +6764,7 @@
     "date": "日期",
     "time": "时间",
     "skuCount": "SKU数",
-    "itemCount": "件数",
+    "quantityTotal": "件数",
     "totalAmount": "总金额",
     "discount": "折扣",
     "actualPay": "实付金额",

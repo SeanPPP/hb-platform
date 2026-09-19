@@ -22,7 +22,10 @@ export interface PosmSalesOrder {
   deviceCode?: string
   orderTime?: string
   skuCount?: number
+  /** POS 写入的 ItemCount 是明细行数，不是件数 */
   itemCount?: number
+  /** 件数：明细 Quantity 求和 */
+  quantityTotal?: number
   totalAmount?: number
   discountAmount?: number
   actualAmount?: number
@@ -67,6 +70,8 @@ export interface PosmSalesOrderQueryParams {
   skuCountMax?: number
   itemCountMin?: number
   itemCountMax?: number
+  quantityTotalMin?: number
+  quantityTotalMax?: number
   totalAmountMin?: number
   totalAmountMax?: number
   discountAmountMin?: number
@@ -85,7 +90,7 @@ export type PosmSalesOrderSortField =
   | 'deviceCode'
   | 'orderTime'
   | 'skuCount'
-  | 'itemCount'
+  | 'quantityTotal'
   | 'totalAmount'
   | 'discountAmount'
   | 'actualPay'
@@ -107,8 +112,8 @@ export interface PosmSalesOrderColumnFilters {
   timeEnd?: string
   skuCountMin?: number
   skuCountMax?: number
-  itemCountMin?: number
-  itemCountMax?: number
+  quantityTotalMin?: number
+  quantityTotalMax?: number
   totalAmountMin?: number
   totalAmountMax?: number
   discountAmountMin?: number

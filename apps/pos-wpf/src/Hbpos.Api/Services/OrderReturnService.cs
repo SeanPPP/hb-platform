@@ -21,6 +21,7 @@ public interface IOrderReturnService
 public sealed class OrderReturnService(
     IOrderHistoryRepository orderHistoryRepository,
     IOrderReturnRepository returnRepository,
+    IStoreTimeZoneResolver storeTimeZoneResolver,
     ILogger<OrderReturnService>? logger = null) : IOrderReturnService
 {
     public async Task<OrderReturnContextDto?> GetReturnContextAsync(
@@ -59,9 +60,10 @@ public sealed class OrderReturnService(
             recordsElapsedMs,
             paymentsElapsedMs,
             totalStopwatch.ElapsedMilliseconds);
+        var storeTimeZone = await storeTimeZoneResolver.ResolveAsync(order.StoreCode, cancellationToken);
         return new OrderReturnContextDto(
             order,
-            records.Select(MapRecord).ToList(),
+            records.Select(record => MapRecord(record, storeTimeZone)).ToList(),
             lineCapacities,
             paymentCapacities);
     }
@@ -75,7 +77,9 @@ public sealed class OrderReturnService(
             throw new InvalidOperationException("Return records cannot be empty.");
         }
 
-        var now = DateTime.UtcNow;
+        // 退货记录的时间同样写门店本地墙钟时间，与 sales_order 的口径保持一致。
+        var storeTimeZone = await storeTimeZoneResolver.ResolveAsync(request.StoreCode, cancellationToken);
+        var now = StoreWallClock.ToWallClock(DateTimeOffset.UtcNow, storeTimeZone);
         var records = request.Lines.Select(line => new SalesReturnRecord
         {
             ReturnDetailGuid = Guid.NewGuid().ToString("D"),
@@ -94,7 +98,9 @@ public sealed class OrderReturnService(
         }).ToList();
 
         var persistedRecords = await returnRepository.InsertValidatedAsync(records, cancellationToken);
-        return new OrderReturnRecordCreateResponse(request.ReturnOrderGuid, persistedRecords.Select(MapRecord).ToList());
+        return new OrderReturnRecordCreateResponse(
+            request.ReturnOrderGuid,
+            persistedRecords.Select(record => MapRecord(record, storeTimeZone)).ToList());
     }
 
     private static IReadOnlyList<OrderReturnLineCapacityDto> BuildLineCapacities(
@@ -366,7 +372,7 @@ public sealed class OrderReturnService(
         return allocations;
     }
 
-    private static OrderReturnRecordDto MapRecord(SalesReturnRecord record)
+    private static OrderReturnRecordDto MapRecord(SalesReturnRecord record, TimeZoneInfo storeTimeZone)
     {
         return new OrderReturnRecordDto(
             TryParseGuid(record.ReturnDetailGuid) ?? Guid.Empty,
@@ -378,7 +384,7 @@ public sealed class OrderReturnService(
             record.ReturnQuantity ?? 0m,
             record.ReturnAmount ?? 0m,
             record.StaffCode ?? string.Empty,
-            ToDateTimeOffset(record.CreatedTime));
+            ToDateTimeOffset(record.CreatedTime, storeTimeZone));
     }
 
     private static Guid? TryParseGuid(string? value)
@@ -386,9 +392,11 @@ public sealed class OrderReturnService(
         return Guid.TryParse(value, out var guid) ? guid : null;
     }
 
-    private static DateTimeOffset ToDateTimeOffset(DateTime? value)
+    private static DateTimeOffset ToDateTimeOffset(DateTime? value, TimeZoneInfo storeTimeZone)
     {
-        return new DateTimeOffset(DateTime.SpecifyKind(value ?? DateTime.MinValue, DateTimeKind.Utc));
+        return value is null
+            ? new DateTimeOffset(DateTime.SpecifyKind(DateTime.MinValue, DateTimeKind.Utc))
+            : StoreWallClock.ToDateTimeOffset(value.Value, storeTimeZone);
     }
 
     private static string? NormalizeReference(string? reference)

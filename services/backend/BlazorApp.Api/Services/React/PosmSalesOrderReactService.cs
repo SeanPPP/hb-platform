@@ -253,11 +253,15 @@ namespace BlazorApp.Api.Services.React
                 )
                 .MergeTable();
 
-            // SKU 是明细聚合值，必须在 GroupBy/Select 之后过滤，避免改变完整订单的聚合口径。
+            // SKU 与件数都是明细聚合值，必须在 GroupBy/Select 之后过滤，避免改变完整订单的聚合口径。
             if (queryParams.SkuCountMin.HasValue)
                 q = q.Where(o => o.SkuCount >= queryParams.SkuCountMin.Value);
             if (queryParams.SkuCountMax.HasValue)
                 q = q.Where(o => o.SkuCount <= queryParams.SkuCountMax.Value);
+            if (queryParams.QuantityTotalMin.HasValue)
+                q = q.Where(o => o.QuantityTotal >= queryParams.QuantityTotalMin.Value);
+            if (queryParams.QuantityTotalMax.HasValue)
+                q = q.Where(o => o.QuantityTotal <= queryParams.QuantityTotalMax.Value);
 
             var total = await q.CountAsync();
 
@@ -279,6 +283,7 @@ namespace BlazorApp.Api.Services.React
                 "ordertime" => q.OrderBy(o => o.OrderTime, orderByType),
                 "skucount" => q.OrderBy(o => o.SkuCount, orderByType),
                 "itemcount" => q.OrderBy(o => o.ItemCount, orderByType),
+                "quantitytotal" => q.OrderBy(o => o.QuantityTotal, orderByType),
                 "totalamount" => q.OrderBy(o => o.TotalAmount, orderByType),
                 "discountamount" => q.OrderBy(o => o.DiscountAmount, orderByType),
                 "actualpay" => q.OrderBy(

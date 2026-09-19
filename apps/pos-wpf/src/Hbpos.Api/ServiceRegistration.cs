@@ -255,6 +255,8 @@ public static class ServiceRegistration
         services.AddSingleton<ICatalogBaseDataCache, CatalogBaseDataCache>();
         services.AddSingleton<IPriceIndexBuilder, PriceIndexBuilder>();
         services.AddSingleton<IOrderSyncPlanner, OrderSyncPlanner>();
+        // 门店时区缓存跨请求复用，内部按需创建作用域查询 HBweb 的门店表。
+        services.AddSingleton<IStoreTimeZoneResolver, StoreTimeZoneResolver>();
         services.AddScoped<IStoreVoucherReservationService, SqlSugarStoreVoucherReservationService>();
         services.AddHttpClient<ILocalAppUpdateService, LocalAppUpdateService>(client =>
         {

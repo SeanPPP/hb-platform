@@ -31,7 +31,7 @@ export interface PosmSalesOrderTopFilterDraft extends PosmSalesOrderTopColumnFil
 
 export type PosmSalesOrderNumberRangeName =
   | 'skuCount'
-  | 'itemCount'
+  | 'quantityTotal'
   | 'totalAmount'
   | 'discountAmount'
   | 'actualPay'
@@ -49,7 +49,7 @@ const SORT_FIELD_BY_COLUMN: Record<string, PosmSalesOrderSortField> = {
   time: 'orderTime',
   orderTime: 'orderTime',
   skuCount: 'skuCount',
-  itemCount: 'itemCount',
+  quantityTotal: 'quantityTotal',
   totalAmount: 'totalAmount',
   discountAmount: 'discountAmount',
   actualAmount: 'actualPay',
@@ -62,7 +62,7 @@ const NUMBER_RANGES: Array<{
   max: keyof PosmSalesOrderColumnFilters
 }> = [
   { name: 'skuCount', min: 'skuCountMin', max: 'skuCountMax' },
-  { name: 'itemCount', min: 'itemCountMin', max: 'itemCountMax' },
+  { name: 'quantityTotal', min: 'quantityTotalMin', max: 'quantityTotalMax' },
   { name: 'totalAmount', min: 'totalAmountMin', max: 'totalAmountMax' },
   { name: 'discountAmount', min: 'discountAmountMin', max: 'discountAmountMax' },
   { name: 'actualPay', min: 'actualPayMin', max: 'actualPayMax' },
@@ -150,8 +150,8 @@ export function createResetPosmSalesOrderState(
       timeEnd: undefined,
       skuCountMin: undefined,
       skuCountMax: undefined,
-      itemCountMin: undefined,
-      itemCountMax: undefined,
+      quantityTotalMin: undefined,
+      quantityTotalMax: undefined,
       totalAmountMin: undefined,
       totalAmountMax: undefined,
       discountAmountMin: undefined,
@@ -228,8 +228,8 @@ export function buildPosmSalesOrderListQuery(
     timeEnd: filters.timeEnd,
     skuCountMin: filters.skuCountMin,
     skuCountMax: filters.skuCountMax,
-    itemCountMin: filters.itemCountMin,
-    itemCountMax: filters.itemCountMax,
+    quantityTotalMin: filters.quantityTotalMin,
+    quantityTotalMax: filters.quantityTotalMax,
     totalAmountMin: filters.totalAmountMin,
     totalAmountMax: filters.totalAmountMax,
     discountAmountMin: filters.discountAmountMin,

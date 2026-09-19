@@ -6764,7 +6764,7 @@
     "date": "Date",
     "time": "Time",
     "skuCount": "SKU Count",
-    "itemCount": "Item Count",
+    "quantityTotal": "Item Count",
     "totalAmount": "Total Amount",
     "discount": "Discount",
     "actualPay": "Paid Amount",

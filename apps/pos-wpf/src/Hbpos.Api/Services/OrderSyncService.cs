@@ -17,6 +17,7 @@ public sealed class OrderSyncService(
     IOrderRepository repository,
     IOrderSyncPlanner planner,
     IStoreVoucherReservationService reservationService,
+    IStoreTimeZoneResolver storeTimeZoneResolver,
     ILogger<OrderSyncService>? logger = null) : IOrderSyncService
 {
     public async Task<OrderSyncResponse> SyncAsync(
@@ -46,10 +47,12 @@ public sealed class OrderSyncService(
 
         var voucherRedemptions = await BuildVoucherRedemptionsAsync(request, cancellationToken);
         Log($"voucher redemptions prepared orderGuid={request.OrderGuid:D} count={voucherRedemptions.Count}");
-        var plan = planner.CreatePlan(request);
+        var storeTimeZone = await storeTimeZoneResolver.ResolveAsync(request.StoreCode, cancellationToken);
+        var plan = planner.CreatePlan(request, storeTimeZone);
         Log(
             $"plan created orderGuid={request.OrderGuid:D} saleLines={plan.Lines.Count} payments={plan.Payments.Count} " +
-            $"bankTransactions={plan.BankTransactions.Count} returns={plan.ReturnRecords.Count}");
+            $"bankTransactions={plan.BankTransactions.Count} returns={plan.ReturnRecords.Count} " +
+            $"timeZone={storeTimeZone.Id} orderTime={plan.Order.OrderTime:yyyy-MM-dd HH:mm:ss}");
         var insertResult = await repository.InsertAsync(
             plan,
             voucherRedemptions,

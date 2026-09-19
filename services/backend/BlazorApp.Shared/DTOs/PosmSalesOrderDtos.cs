@@ -41,6 +41,9 @@ namespace BlazorApp.Shared.DTOs
         public int? SkuCountMax { get; set; }
         public int? ItemCountMin { get; set; }
         public int? ItemCountMax { get; set; }
+        /// <summary>件数（明细 Quantity 求和）区间；ItemCount 是行数，不能当件数筛选。</summary>
+        public int? QuantityTotalMin { get; set; }
+        public int? QuantityTotalMax { get; set; }
         public decimal? TotalAmountMin { get; set; }
         public decimal? TotalAmountMax { get; set; }
         public decimal? DiscountAmountMin { get; set; }
