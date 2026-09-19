@@ -18,7 +18,6 @@ import {
   Space,
   Spin,
   Switch,
-  Table,
   Tag,
   Tooltip,
   Typography,
@@ -28,6 +27,8 @@ import dayjs from 'dayjs'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
+// 统一用带埋点的表格封装：仓库门禁禁止页面直接从 antd 引入 Table
+import { MeasuredTable } from '../../../components/MeasuredTable'
 import { registerPageMessages } from '../../../i18n/registerPageMessages'
 import { createPromoPosterPdf, fetchPromoPosterDefaults } from '../../../services/promoPosterService'
 import { RequestError } from '../../../utils/request'
@@ -597,7 +598,8 @@ export default function PromoPosterModal({ storeCode, products, onClose }: Promo
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             {t(`${I18N}.englishOnlyHint`, '海报内容为英文：品名只能使用英文字母、数字和常见标点；没有英文名的商品需手动填写。')}
           </Typography.Text>
-          <Table<PromoPosterRowState>
+          <MeasuredTable<PromoPosterRowState>
+            metricId="pos-admin.store-product-price.promo-poster-table"
             rowKey="key"
             size="small"
             columns={columns}
