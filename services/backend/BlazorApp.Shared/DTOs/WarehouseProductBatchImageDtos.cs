@@ -110,4 +110,10 @@ public sealed class WarehouseProductBatchUpdateJobDto
     public string? Message { get; set; }
 
     public WarehouseProductBatchUpdateResultDto? Result { get; set; }
+
+    /// <summary>
+    /// 本次批量改价产生的分店价格通知汇总。后台任务不在 HTTP 请求作用域内，
+    /// 无法通过 X-Price-Notification 响应头回传，因此挂在任务快照上。
+    /// </summary>
+    public PriceNotificationSummaryDto? PriceNotification { get; set; }
 }

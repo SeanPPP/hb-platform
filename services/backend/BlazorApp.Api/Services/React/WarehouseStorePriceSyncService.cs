@@ -21,15 +21,20 @@ public sealed class WarehouseStorePriceSyncService : IWarehouseStorePriceSyncSer
     private readonly IProductHqSyncService _hqSyncService;
     private readonly ILogger<WarehouseStorePriceSyncService> _logger;
 
+    private readonly IStorePriceUpdateTaskService? _priceTaskService;
+
     public WarehouseStorePriceSyncService(
         SqlSugarContext context,
         IProductHqSyncService hqSyncService,
-        ILogger<WarehouseStorePriceSyncService> logger
+        ILogger<WarehouseStorePriceSyncService> logger,
+        // 可选：仓库价批量下发覆盖分店价后，为分店登记「待换标签」通知。
+        IStorePriceUpdateTaskService? priceTaskService = null
     )
     {
         _context = context;
         _hqSyncService = hqSyncService;
         _logger = logger;
+        _priceTaskService = priceTaskService;
     }
 
     public async Task<List<WarehouseStorePriceSyncTargetStoreDto>> GetTargetStoresAsync(
@@ -217,6 +222,7 @@ public sealed class WarehouseStorePriceSyncService : IWarehouseStorePriceSyncSer
             );
             // 后台 job 没有 HttpContext；保护显式审计字段，避免全局 AOP 把操作人覆盖成 System。
             using var auditScope = SqlSugarAuditScope.PreserveExplicitAuditFields();
+            var overwrittenPrices = new List<StorePriceOverwrite>();
             var writeCounts = await UpsertLocalPricesAsync(
                 localDb,
                 eligibleProducts,
@@ -224,8 +230,10 @@ public sealed class WarehouseStorePriceSyncService : IWarehouseStorePriceSyncSer
                 result.TargetStoreCodes,
                 effectiveUpdatedBy,
                 now,
-                cancellationToken
+                cancellationToken,
+                overwrittenPrices
             );
+            await RecordStorePriceOverwritesAsync(overwrittenPrices, effectiveUpdatedBy);
             result.LocalCreatedCount = writeCounts.Created;
             result.LocalUpdatedCount = writeCounts.Updated;
             // 只重算本请求指定的门店-主商品组；结构或主成本异常会由统一服务抛出并回滚本次写入。
@@ -532,7 +540,8 @@ public sealed class WarehouseStorePriceSyncService : IWarehouseStorePriceSyncSer
         IReadOnlyCollection<string> targetStoreCodes,
         string updatedBy,
         DateTime now,
-        CancellationToken cancellationToken
+        CancellationToken cancellationToken,
+        ICollection<StorePriceOverwrite>? overwrittenPrices = null
     )
     {
         if (warehouseProducts.Count == 0)
@@ -603,6 +612,13 @@ public sealed class WarehouseStorePriceSyncService : IWarehouseStorePriceSyncSer
                         continue;
                     }
 
+                    // 覆盖前的零售价/折扣就是货架标签上的价格，下面会就地改写，必须先留存。
+                    overwrittenPrices?.Add(new StorePriceOverwrite(
+                        existing.StoreCode!,
+                        existing.ProductCode!,
+                        existing.StoreRetailPriceValue,
+                        existing.DiscountRate
+                    ));
                     existing.PurchasePrice = warehouseProduct.ImportPrice;
                     existing.StoreRetailPriceValue = warehouseProduct.OEMPrice;
                     existing.DiscountRate = 0m;
@@ -663,6 +679,33 @@ public sealed class WarehouseStorePriceSyncService : IWarehouseStorePriceSyncSer
         }
 
         return new LocalWriteCounts(inserts.Count, updates.Count);
+    }
+
+    /// <summary>
+    /// 与本次同步共用同一连接和事务：同步回滚时通知一并回滚。
+    /// 登记失败只记日志，不影响价格同步；移动端列表与定时对账会兜底。
+    /// </summary>
+    private async Task RecordStorePriceOverwritesAsync(
+        IReadOnlyCollection<StorePriceOverwrite> overwrites,
+        string updatedBy
+    )
+    {
+        if (_priceTaskService == null || overwrites.Count == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            await _priceTaskService.RecordStoreOverwritesAsync(
+                overwrites,
+                new PriceTaskInitiator(updatedBy, "WarehouseAutoSync")
+            );
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "登记分店待换标签通知失败: Count={Count}", overwrites.Count);
+        }
     }
 
     private static bool HasLocalPriceDifference(

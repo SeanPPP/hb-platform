@@ -33,10 +33,11 @@ import { useAuthStore } from "@/store/auth-store";
 import { useCartStore } from "@/store/cart-store";
 import { useDeviceStore } from "@/store/device-store";
 
+// 常用功能按顺序取当前账号可见的前 4 项；价格更新占原购物车的位置（购物车仍在「全部功能」里）。
 const QUICK_ACTION_ROUTE_ORDER = [
   "product-query",
   "home",
-  "cart",
+  "price-updates",
   "warehouse",
   "attendance-personal",
   "orders",
@@ -100,7 +101,7 @@ function FunctionButton({
       >
         {label}
       </Text>
-      {!compact && pendingCount > 0 ? (
+      {pendingCount > 0 ? (
         <View style={styles.countBadge}>
           <Text variant="labelSmall" style={styles.countBadgeText}>
             {visiblePendingCount}
@@ -172,9 +173,15 @@ export function WorkbenchScreen() {
     navigationErrorMessage,
     navigationLoading,
     pendingProfileReviewCount,
+    pendingPriceUpdateCount,
     isDeviceMode,
     isWarehouseStaffOnly,
   } = useAppNavigationAccess();
+  // 工作台入口角标按路由名查表；未登记的路由不显示角标。
+  const pendingCountByRouteName: Record<string, number> = {
+    "employee-profile-review": pendingProfileReviewCount,
+    "price-updates": pendingPriceUpdateCount,
+  };
   const fetchMenu = useAppNavigationStore((state) => state.fetchMenu);
   const currentUser = useAuthStore((state) => state.user);
   const deviceSession = useDeviceStore((state) => state.session);
@@ -474,6 +481,7 @@ export function WorkbenchScreen() {
                       key={item.routeName}
                       item={item}
                       label={t(item.labelKey)}
+                      pendingCount={pendingCountByRouteName[item.routeName] ?? 0}
                       compact
                       onPress={() => navigateTo(item.routeName)}
                     />
@@ -519,11 +527,7 @@ export function WorkbenchScreen() {
                           <FunctionButton
                             item={item}
                             label={t(item.labelKey)}
-                            pendingCount={
-                              item.routeName === "employee-profile-review"
-                                ? pendingProfileReviewCount
-                                : 0
-                            }
+                            pendingCount={pendingCountByRouteName[item.routeName] ?? 0}
                             onPress={() => navigateTo(item.routeName)}
                           />
                         </View>

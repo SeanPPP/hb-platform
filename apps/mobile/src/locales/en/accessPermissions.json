@@ -589,6 +589,14 @@
       "name": "Store Products Edit",
       "description": "Allows access to Store Products Edit."
     },
+    "StoreProducts.PriceUpdates": {
+      "name": "Store Products Price Updates",
+      "description": "Allows viewing this store's price update and label replacement notices, applying warehouse prices, and printing or marking labels in the mobile Price updates screen."
+    },
+    "StoreProducts.SyncToOtherStores": {
+      "name": "Store Products Sync To Other Stores",
+      "description": "Allows syncing this store's retail price and discount to other manageable stores from mobile product maintenance."
+    },
     "StoreProducts.View": {
       "name": "Store Products View",
       "description": "Allows access to Store Products View."

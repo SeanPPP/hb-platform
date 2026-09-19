@@ -1,0 +1,32 @@
+{
+  "warehouse": {
+    "priceNotification": {
+      "sentTitle": "Store notifications sent",
+      "noneTitle": "Saved, no notifications created",
+      "noneDescription": "Store prices and discounts already match the warehouse",
+      "cancelledTitle": "Price reverted; pending notifications for {{count}} stores were withdrawn",
+      "cancelledAlso": "Pending notifications for another {{count}} stores were withdrawn",
+      "needsPriceUpdate": "Price update: {{count}} stores",
+      "labelOnly": "Label pending: {{count}} stores",
+      "skippedSpecial": "Skipped special products: {{count}} stores",
+      "viewTasks": "View store progress",
+      "previewRetail": "After saving, the price is pushed to stores automatically and stores receive a \"Label pending\" notification. {{count}} stores currently have a different price",
+      "previewDiscountOnly": "After saving, {{count}} stores with a different discount receive a \"Price update\" notification to confirm",
+      "previewSkipped": ", {{count}} stores treat it as a special product and will be skipped",
+      "previewEnd": ".",
+      "suggestedDiscount": "Suggested discount %",
+      "suggestedDiscountPlaceholder": "Empty = not set",
+      "suggestedDiscountHint": "Empty = do not compare store discounts; 0 = explicitly no discount. The suggested discount is never pushed to stores automatically.",
+      "suggestedDiscountedPrice": "Suggested discounted price",
+      "suggestedDiscountSaveFailed": "Product saved, but saving the suggested discount failed",
+      "retailPriceLine": "Retail price {{from}} → {{to}}",
+      "suggestedDiscountLine": "Suggested discount {{from}} → {{to}}",
+      "notSet": "Not set",
+      "productCountLine": "{{count}} products",
+      "batchSetSuggestedDiscount": "Also set suggested discount",
+      "batchSuggestedDiscountHint": "Only applies when checked; empty = clear the suggested discount, 0 = explicitly no discount.",
+      "batchSuggestedDiscountConfirm": "Suggested discount: {{value}}",
+      "batchSuggestedDiscountFailed": "Failed to set suggested discounts in batch"
+    }
+  }
+}

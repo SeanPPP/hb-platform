@@ -1,0 +1,233 @@
+{
+  "title": "Price updates",
+  "tabs": {
+    "pending": "To do {{count}}",
+    "completed": "Done {{count}}"
+  },
+  "filters": {
+    "all": "All",
+    "priceUpdate": "Price change {{count}}",
+    "labelOnly": "Relabel {{count}}",
+    "hqSyncFailed": "HQ sync failed"
+  },
+  "kinds": {
+    "priceUpdate": "Price change",
+    "labelOnly": "Relabel"
+  },
+  "changedFields": {
+    "retailPrice": "Retail price",
+    "discountRate": "Discount",
+    "both": "Retail price + discount"
+  },
+  "card": {
+    "storePrice": "Store",
+    "warehousePrice": "Warehouse",
+    "shelfLabel": "Label",
+    "currentPrice": "Now",
+    "discount": "Discount",
+    "finalPrice": "{{price}} after discount",
+    "deltaUp": "Up {{amount}}",
+    "deltaDown": "Down {{amount}}",
+    "changeCount": "{{count}} changes"
+  },
+  "discount": {
+    "off": "{{percent}}% off",
+    "none": "No discount"
+  },
+  "initiator": {
+    "system": "System"
+  },
+  "sources": {
+    "warehouseProducts": "Warehouse product edit",
+    "mobileWarehouse": "Mobile warehouse",
+    "batchUpdate": "Batch price update",
+    "warehouseAutoSync": "Warehouse push",
+    "storeSync": "Store sync",
+    "storeSyncFrom": "Store sync from {{store}}",
+    "localSupplierInvoice": "Supplier invoice",
+    "domesticImport": "Domestic product import",
+    "storeOrderImportPriceVariance": "Order price variance",
+    "dataSync": "HQ data sync",
+    "container": "Container",
+    "domesticProduct": "Domestic purchase product",
+    "nonDomesticImport": "Non-HB product import",
+    "storeOrder": "Store order",
+    "legacyApi": "Legacy product API",
+    "other": "Other entry"
+  },
+  "time": {
+    "today": "Today {{time}}",
+    "yesterday": "Yesterday {{time}}",
+    "todayLabel": "Today",
+    "yesterdayLabel": "Yesterday"
+  },
+  "actions": {
+    "more": "More",
+    "keepStorePrice": "Keep store price",
+    "viewProduct": "View product",
+    "applyOnly": "Update only",
+    "applyAndPrint": "Update & print",
+    "markReplaced": "Mark replaced",
+    "printLabel": "Print label",
+    "reprint": "Print another",
+    "retryHqSync": "Retry sync"
+  },
+  "completed": {
+    "status": {
+      "updated": "Updated",
+      "printed": "Printed",
+      "markedReplaced": "Marked replaced (not printed)",
+      "keptStorePrice": "Kept store price",
+      "priceAligned": "Price already aligned",
+      "hqSynced": "HQ synced",
+      "hqSyncing": "HQ syncing",
+      "hqSyncFailed": "HQ sync failed"
+    },
+    "initiated": "From {{name}} {{time}}",
+    "handled": "By {{name}} {{time}}"
+  },
+  "selection": {
+    "enter": "Select",
+    "selectedCount": "{{count}} selected",
+    "selectAll": "Select all",
+    "summary": "{{apply}} price changes · {{print}} labels",
+    "hqSyncHint": "Price changes will sync to the HQ database",
+    "applyOnly": "Update only ({{count}})",
+    "applyAndPrint": "Update & print ({{count}})",
+    "summaryByKind": "Price update {{priceUpdate}} · Label pending {{labelOnly}}",
+    "keepStorePrice": "Keep store price ({{count}})",
+    "markReplaced": "Mark replaced ({{count}})",
+    "printLabels": "Print labels ({{count}})"
+  },
+  "printer": {
+    "notConfigured": "No label printer",
+    "connected": "Printer connected",
+    "connecting": "Printer connecting",
+    "paused": "Printer paused",
+    "disconnected": "Printer offline",
+    "smallLabel": "Small label",
+    "openSettingsHint": "Open label printer settings"
+  },
+  "store": {
+    "lockedToDevice": "This device is bound to one store",
+    "readOnly": "This store is view-only; price updates cannot be handled here",
+    "requiredTitle": "Select a store",
+    "requiredDescription": "Choose a store to see its price update notices"
+  },
+  "list": {
+    "loading": "Loading price updates",
+    "loadFailed": "Could not load price updates",
+    "retryHint": "Check the network and try again",
+    "loadingMore": "Loading more",
+    "loadMoreFailed": "Could not load more. Tap to retry",
+    "emptyPending": "No price updates to do",
+    "emptyPendingDescription": "Warehouse price changes and syncs from other stores will show up here",
+    "emptyCompleted": "Nothing completed yet",
+    "emptyCompletedDescription": "Handled price updates are listed here by date"
+  },
+  "messages": {
+    "operationFailed": "Action failed. Try again",
+    "printerUnavailable": "No label printer connected. Prices will be updated; print labels later from Relabel",
+    "printerRequired": "Connect a label printer in Settings first",
+    "targetChanged": "The warehouse price changed again. List refreshed",
+    "applyPartlyFailed": "{{success}} updated, {{failed}} failed",
+    "applied": "{{count}} updated. Replace the shelf labels",
+    "markedReplaced": "Marked as relabelled",
+    "keptStorePrice": "Store price kept",
+    "reprinted": "Printed another label",
+    "printBusy": "The label printer is busy. Try again shortly",
+    "printFailed": "Print failed. Check the label printer",
+    "hqSyncRetried": "HQ sync resubmitted",
+    "hqSyncRetryFailed": "Could not retry HQ sync",
+    "storeSwitchFailed": "Could not switch store",
+    "batchMarkedReplaced": "Marked {{count}} labels as replaced",
+    "batchKeptStorePrice": "Kept store price for {{count}} items",
+    "batchPartial": "{{success}} succeeded, {{failed}} failed"
+  },
+  "keepDialog": {
+    "title": "Keep store price?",
+    "description": "\"{{name}}\" keeps the current store price and this notice is marked done.",
+    "batchDescription": "The {{count}} selected items will keep this store's current price and these notices will be marked completed."
+  },
+  "progress": {
+    "titlePrint": "Update & print",
+    "titleApply": "Update prices",
+    "applying": "Working",
+    "applyRow": "{{count}} price changes",
+    "applyResult": "{{success}} done",
+    "applyResultWithFailed": "{{success}} done · {{failed}} failed",
+    "targetChanged": "{{count}} warehouse prices changed again. List refreshed, please confirm again",
+    "hqSyncRow": "Sync to HQ database",
+    "hqSyncSubmitted": "{{count}} submitted",
+    "printerUnavailable": "No label printer connected. Only prices were updated.",
+    "printRow": "Print labels",
+    "nothingToPrint": "No labels to print",
+    "failedHint": "Products that fail to print stay in To do as Relabel",
+    "stop": "Stop printing",
+    "stopping": "Stopping",
+    "done": "Done",
+    "retry": "Retry",
+    "status": {
+      "pending": "Waiting",
+      "printing": "Printing",
+      "printed": "Printed",
+      "failed": "Print failed",
+      "skipped": "Stopped, not printed",
+      "confirmFailed": "Printed, but not recorded (retry will not print again)"
+    }
+  },
+  "notification": {
+    "needsPriceUpdate": "{{count}} stores need a price change",
+    "labelOnly": "{{count}} stores need relabelling",
+    "skippedSpecial": "{{count}} special-product stores skipped",
+    "savedAndSent": "Saved. Stores notified: {{detail}}",
+    "cancelledSuffix": "; pending notices withdrawn for {{count}} stores",
+    "reverted": "Price reverted. Pending notices withdrawn for {{count}} stores",
+    "savedOnlySkipped": "Saved. {{count}} special-product stores skipped, no notices sent",
+    "savedNoNotification": "Saved. Store prices already match, no notices sent",
+    "syncedStores": "Synced to {{count}} stores",
+    "syncedStoresWithLabels": "Synced to {{count}} stores, {{labelCount}} received a relabel notice",
+    "previewAutoSync": "After saving, {{count}} stores update automatically and get a Relabel notice",
+    "previewNeedsUpdate": "After saving, {{count}} stores with a different price get a Price change notice",
+    "previewSkippedSuffix": "; {{count}} special-product stores will be skipped"
+  },
+  "syncSheet": {
+    "entryTitle": "Sync to other stores",
+    "entrySubtitle": "Apply this store's retail price and discount to other stores",
+    "entryAction": "Sync",
+    "entrySaveAndSync": "Save & sync",
+    "title": "Sync to other stores",
+    "subtitle": "Apply this store's retail price and discount to other stores",
+    "source": "Source",
+    "fields": {
+      "retailPrice": "Retail price",
+      "discountRate": "Discount",
+      "purchasePrice": "Cost"
+    },
+    "targets": "Target stores {{selected}}/{{total}}",
+    "selectAll": "Select all",
+    "clearAll": "Clear all",
+    "specialProduct": "Special product · off by default",
+    "noRecord": "Product not stocked",
+    "same": "Already matches",
+    "discountOnly": "Discount only",
+    "empty": "No other stores to sync",
+    "loadFailed": "Could not load target stores",
+    "failed": "Sync failed. Try again",
+    "footerHint": "Synced stores receive a relabel notice",
+    "submit": "Sync to {{count}} stores"
+  },
+  "suggestedDiscount": {
+    "label": "Suggested discount",
+    "finalPrice": "Suggested final price",
+    "unset": "Not set",
+    "editorTitle": "Suggested discount (%)",
+    "inputHint": "Enter 0-100; clear = not set",
+    "invalid": "Suggested discount must be between 0 and 100",
+    "helper": "Empty = store discounts are not compared; 0 = explicitly no discount. Suggested discounts are never pushed automatically; stores confirm them in Price updates.",
+    "saved": "Suggested discount saved",
+    "saveFailed": "Could not save the suggested discount",
+    "previewWhenSync": "Sync stores: {{message}}",
+    "previewWhenProductOnly": "Product only: {{message}}"
+  }
+}

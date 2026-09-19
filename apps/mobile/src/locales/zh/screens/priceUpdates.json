@@ -1,0 +1,233 @@
+{
+  "title": "价格更新",
+  "tabs": {
+    "pending": "未完成 {{count}}",
+    "completed": "已完成 {{count}}"
+  },
+  "filters": {
+    "all": "全部",
+    "priceUpdate": "需改价 {{count}}",
+    "labelOnly": "待换标签 {{count}}",
+    "hqSyncFailed": "总部同步失败"
+  },
+  "kinds": {
+    "priceUpdate": "需改价",
+    "labelOnly": "待换标签"
+  },
+  "changedFields": {
+    "retailPrice": "零售价",
+    "discountRate": "折扣",
+    "both": "零售价+折扣"
+  },
+  "card": {
+    "storePrice": "本店",
+    "warehousePrice": "仓库",
+    "shelfLabel": "标签",
+    "currentPrice": "现价",
+    "discount": "折扣",
+    "finalPrice": "折后 {{price}}",
+    "deltaUp": "涨 {{amount}}",
+    "deltaDown": "降 {{amount}}",
+    "changeCount": "共 {{count}} 次"
+  },
+  "discount": {
+    "off": "减 {{percent}}%",
+    "none": "无折扣"
+  },
+  "initiator": {
+    "system": "系统"
+  },
+  "sources": {
+    "warehouseProducts": "仓库商品编辑",
+    "mobileWarehouse": "移动端仓库维护",
+    "batchUpdate": "批量改价",
+    "warehouseAutoSync": "仓库下发",
+    "storeSync": "分店同步",
+    "storeSyncFrom": "{{store}} 分店同步",
+    "localSupplierInvoice": "供应商发票",
+    "domesticImport": "国内商品导入",
+    "storeOrderImportPriceVariance": "订货价差",
+    "dataSync": "总部数据同步",
+    "container": "货柜",
+    "domesticProduct": "国内采购商品",
+    "nonDomesticImport": "非 HB 商品导入",
+    "storeOrder": "分店订货",
+    "legacyApi": "旧版商品接口",
+    "other": "其它入口"
+  },
+  "time": {
+    "today": "今天 {{time}}",
+    "yesterday": "昨天 {{time}}",
+    "todayLabel": "今天",
+    "yesterdayLabel": "昨天"
+  },
+  "actions": {
+    "more": "更多",
+    "keepStorePrice": "保持本店价",
+    "viewProduct": "查看商品",
+    "applyOnly": "仅更新",
+    "applyAndPrint": "更新并打印",
+    "markReplaced": "标记已换",
+    "printLabel": "打印标签",
+    "reprint": "再打一张",
+    "retryHqSync": "重试同步"
+  },
+  "completed": {
+    "status": {
+      "updated": "已更新",
+      "printed": "已打印",
+      "markedReplaced": "标记已换（未打印）",
+      "keptStorePrice": "保持本店价",
+      "priceAligned": "价格已一致",
+      "hqSynced": "总部已同步",
+      "hqSyncing": "总部同步中",
+      "hqSyncFailed": "总部同步失败"
+    },
+    "initiated": "发起 {{name}} {{time}}",
+    "handled": "处理 {{name}} {{time}}"
+  },
+  "selection": {
+    "enter": "多选",
+    "selectedCount": "已选 {{count}} 项",
+    "selectAll": "全选",
+    "summary": "改价 {{apply}} 项 · 打印 {{print}} 张",
+    "hqSyncHint": "改价会同步到总部数据库",
+    "applyOnly": "仅更新 ({{count}})",
+    "applyAndPrint": "更新并打印 ({{count}})",
+    "summaryByKind": "需改价 {{priceUpdate}} · 待换标签 {{labelOnly}}",
+    "keepStorePrice": "保持本店价 ({{count}})",
+    "markReplaced": "标记已换 ({{count}})",
+    "printLabels": "打印标签 ({{count}})"
+  },
+  "printer": {
+    "notConfigured": "未设置标签机",
+    "connected": "标签机已连接",
+    "connecting": "标签机连接中",
+    "paused": "标签机已暂停",
+    "disconnected": "标签机未连接",
+    "smallLabel": "小标签",
+    "openSettingsHint": "打开标签打印机设置"
+  },
+  "store": {
+    "lockedToDevice": "设备已绑定分店，不能切换",
+    "readOnly": "当前分店仅可查看，不能处理价格更新",
+    "requiredTitle": "请选择分店",
+    "requiredDescription": "选择分店后查看该店的价格更新通知"
+  },
+  "list": {
+    "loading": "正在加载价格更新",
+    "loadFailed": "价格更新加载失败",
+    "retryHint": "请检查网络后重试",
+    "loadingMore": "正在加载更多",
+    "loadMoreFailed": "加载更多失败，点击重试",
+    "emptyPending": "没有未完成的价格更新",
+    "emptyPendingDescription": "仓库改价或其它分店同步后，会在这里提醒本店改价、换标签",
+    "emptyCompleted": "还没有已完成的记录",
+    "emptyCompletedDescription": "处理过的价格更新会按日期显示在这里"
+  },
+  "messages": {
+    "operationFailed": "操作失败，请重试",
+    "printerUnavailable": "未连接标签机，本次只更新价格，标签稍后在「待换标签」里打印",
+    "printerRequired": "请先在设置里连接标签机",
+    "targetChanged": "仓库价格已再次变化，已刷新",
+    "applyPartlyFailed": "已更新 {{success}} 项，{{failed}} 项失败",
+    "applied": "已更新 {{count}} 项，请更换货架标签",
+    "markedReplaced": "已标记为已换标签",
+    "keptStorePrice": "已保持本店价",
+    "reprinted": "已再打一张",
+    "printBusy": "标签机正在打印，请稍后再试",
+    "printFailed": "打印失败，请检查标签机",
+    "hqSyncRetried": "已重新提交总部同步",
+    "hqSyncRetryFailed": "重试总部同步失败",
+    "storeSwitchFailed": "切换分店失败",
+    "batchMarkedReplaced": "已标记 {{count}} 项为已换标签",
+    "batchKeptStorePrice": "已保持本店价 {{count}} 项",
+    "batchPartial": "成功 {{success}} 项，失败 {{failed}} 项"
+  },
+  "keepDialog": {
+    "title": "保持本店价？",
+    "description": "「{{name}}」将继续使用本店当前价格，这条通知会标记为已完成。",
+    "batchDescription": "所选 {{count}} 项将继续使用本店当前价格，这些通知会标记为已完成。"
+  },
+  "progress": {
+    "titlePrint": "更新并打印",
+    "titleApply": "更新价格",
+    "applying": "处理中",
+    "applyRow": "改价 {{count}} 项",
+    "applyResult": "成功 {{success}} 项",
+    "applyResultWithFailed": "成功 {{success}} · 失败 {{failed}}",
+    "targetChanged": "{{count}} 项仓库价格已再次变化，已刷新，请重新确认",
+    "hqSyncRow": "同步总部数据库",
+    "hqSyncSubmitted": "已提交 {{count}} 项",
+    "printerUnavailable": "未连接标签机，本次只更新了价格。",
+    "printRow": "打印标签",
+    "nothingToPrint": "没有需要打印的标签",
+    "failedHint": "打印失败的商品会转为待换标签留在未完成",
+    "stop": "停止打印",
+    "stopping": "正在停止",
+    "done": "完成",
+    "retry": "重试",
+    "status": {
+      "pending": "等待打印",
+      "printing": "打印中",
+      "printed": "已打印",
+      "failed": "打印失败",
+      "skipped": "已停止，未打印",
+      "confirmFailed": "已出纸，回写失败（重试不会重复打印）"
+    }
+  },
+  "notification": {
+    "needsPriceUpdate": "需改价 {{count}} 家",
+    "labelOnly": "待换标签 {{count}} 家",
+    "skippedSpecial": "跳过特殊商品 {{count}} 家",
+    "savedAndSent": "已保存，并发送到分店通知：{{detail}}",
+    "cancelledSuffix": "；已撤销 {{count}} 家分店的未处理通知",
+    "reverted": "价格已改回，已撤销 {{count}} 家分店的未处理通知",
+    "savedOnlySkipped": "已保存。{{count}} 家特殊商品已跳过，未产生通知",
+    "savedNoNotification": "已保存。各分店价格已一致，未产生通知",
+    "syncedStores": "已同步 {{count}} 家分店",
+    "syncedStoresWithLabels": "已同步 {{count}} 家分店，{{labelCount}} 家已收到待换标签通知",
+    "previewAutoSync": "保存后，{{count}} 家分店的价格会自动更新，并收到『待换标签』通知",
+    "previewNeedsUpdate": "保存后，{{count}} 家价格不同的分店会收到『需改价』通知",
+    "previewSkippedSuffix": "；{{count}} 家特殊商品将跳过"
+  },
+  "syncSheet": {
+    "entryTitle": "同步其它分店",
+    "entrySubtitle": "把本店零售价、折扣应用到其它分店",
+    "entryAction": "同步",
+    "entrySaveAndSync": "保存并同步",
+    "title": "同步其它分店",
+    "subtitle": "把本店零售价、折扣应用到其它分店",
+    "source": "来源",
+    "fields": {
+      "retailPrice": "零售价",
+      "discountRate": "折扣",
+      "purchasePrice": "进价"
+    },
+    "targets": "目标分店 {{selected}}/{{total}}",
+    "selectAll": "全选",
+    "clearAll": "取消全选",
+    "specialProduct": "特殊商品 · 默认不选",
+    "noRecord": "无该商品",
+    "same": "已一致",
+    "discountOnly": "仅折扣变化",
+    "empty": "没有可同步的其它分店",
+    "loadFailed": "目标分店加载失败",
+    "failed": "同步失败，请重试",
+    "footerHint": "被同步的分店会收到一条待换标签通知",
+    "submit": "同步到 {{count}} 家分店"
+  },
+  "suggestedDiscount": {
+    "label": "建议折扣",
+    "finalPrice": "建议折后价",
+    "unset": "未设置",
+    "editorTitle": "建议折扣（%）",
+    "inputHint": "输入 0~100；清空 = 未设置",
+    "invalid": "建议折扣需在 0~100 之间",
+    "helper": "留空 = 不比较分店折扣；填 0 = 明确无折扣。建议折扣不会自动下发，由分店在「价格更新」中确认。",
+    "saved": "建议折扣已保存",
+    "saveFailed": "建议折扣保存失败",
+    "previewWhenSync": "同步分店：{{message}}",
+    "previewWhenProductOnly": "仅改商品：{{message}}"
+  }
+}

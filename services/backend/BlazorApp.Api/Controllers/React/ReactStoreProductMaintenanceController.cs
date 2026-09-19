@@ -17,7 +17,7 @@ namespace BlazorApp.Api.Controllers.React
     [ApiController]
     [Route("api/react/v1/store-product-maintenance")]
     [AllowAnonymous]
-    public class ReactStoreProductMaintenanceController : ControllerBase
+    public partial class ReactStoreProductMaintenanceController : ControllerBase
     {
         private readonly IStoreProductMaintenanceReactService _service;
         private readonly IDeviceRegistrationService _deviceRegistrationService;
@@ -25,6 +25,8 @@ namespace BlazorApp.Api.Controllers.React
         private readonly ISqlSugarClient _db;
         private readonly ILogger<ReactStoreProductMaintenanceController> _logger;
         private readonly IAuthorizationService _authorizationService;
+        private readonly IStorePriceUpdateTaskService? _priceTaskService;
+        private readonly IStoreProductPriceReactService? _storePriceService;
 
         public ReactStoreProductMaintenanceController(
             IStoreProductMaintenanceReactService service,
@@ -32,7 +34,10 @@ namespace BlazorApp.Api.Controllers.React
             IMapper mapper,
             SqlSugarContext context,
             ILogger<ReactStoreProductMaintenanceController> logger,
-            IAuthorizationService authorizationService
+            IAuthorizationService authorizationService,
+            // 价格更新通知相关依赖为可选：既有测试直接构造本控制器，不应因新增功能被迫改动。
+            IStorePriceUpdateTaskService? priceTaskService = null,
+            IStoreProductPriceReactService? storePriceService = null
         )
         {
             _service = service;
@@ -41,6 +46,8 @@ namespace BlazorApp.Api.Controllers.React
             _db = context.Db;
             _logger = logger;
             _authorizationService = authorizationService;
+            _priceTaskService = priceTaskService;
+            _storePriceService = storePriceService;
         }
 
         [HttpPost("lookup")]

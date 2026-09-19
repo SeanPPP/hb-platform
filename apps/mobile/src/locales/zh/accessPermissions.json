@@ -589,6 +589,14 @@
       "name": "编辑分店商品",
       "description": "Web 页面 /pos-admin/store-product-price - 编辑分店商品价格"
     },
+    "StoreProducts.PriceUpdates": {
+      "name": "处理价格更新通知",
+      "description": "移动端「价格更新」- 查看本店价格更新与换标签通知，按仓库价更新本店零售价/折扣，打印或标记标签"
+    },
+    "StoreProducts.SyncToOtherStores": {
+      "name": "同步价格到其它分店",
+      "description": "移动端「商品维护」- 把本店零售价/折扣同步到其它可管理分店，被同步分店会收到「待换标签」通知"
+    },
     "StoreProducts.View": {
       "name": "查看分店商品",
       "description": "Web 页面 /pos-admin/store-product-price 与移动端「商品查询」「商品洞察」- 查看分店商品价格"

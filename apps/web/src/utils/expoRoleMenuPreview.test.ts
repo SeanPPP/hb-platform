@@ -61,6 +61,8 @@ const completePreview = buildPreview([
   P.Advertisements.View,
   P.Promotions.View,
   P.StoreProducts.View,
+  P.StoreProducts.Edit,
+  P.StoreProducts.PriceUpdates,
   P.InstallmentOrders.View,
   P.StoreVouchers.View,
   P.Attendance.ScheduleViewSelf,
@@ -88,6 +90,7 @@ assertArrayEqual(
     'advertisements',
     'promotions',
     'product-query',
+    'price-updates',
     'product-insights',
     'warehouse-product-insights',
     'installment-orders',
@@ -152,12 +155,26 @@ assertArrayEqual(
     'cart',
     'local-supplier-invoices',
     'product-query',
+    'price-updates',
     'product-insights',
     'installment-orders',
     'store-vouchers',
     'seasonal-cards',
   ],
   'Web 权限预览的门店业务分组应包含商品进销和节日贺卡',
+)
+
+// 价格更新使用专用权限：只有「编辑分店商品」不应看到入口。
+const editOnlyPreview = buildPreview([P.StoreProducts.View, P.StoreProducts.Edit])
+assertEqual(
+  editOnlyPreview.allRoutes.find((route) => route.routeName === 'price-updates')?.visible,
+  false,
+  '仅有 StoreProducts.Edit 时不应显示价格更新入口',
+)
+assertEqual(
+  buildPreview([P.StoreProducts.PriceUpdates]).allRoutes.find((route) => route.routeName === 'price-updates')?.visible,
+  true,
+  '拥有 StoreProducts.PriceUpdates 时应显示价格更新入口',
 )
 
 const warehouseRoute = completePreview.allRoutes.find((route) => route.routeName === 'warehouse')

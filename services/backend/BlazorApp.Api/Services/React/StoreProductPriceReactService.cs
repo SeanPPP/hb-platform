@@ -26,13 +26,18 @@ namespace BlazorApp.Api.Services.React
         /// <summary>
         /// 构造函数
         /// </summary>
+        private readonly IStorePriceUpdateTaskService? _priceTaskService;
+
         public StoreProductPriceReactService(
             SqlSugarContext context,
-            ILogger<StoreProductPriceReactService> logger
+            ILogger<StoreProductPriceReactService> logger,
+            // 可选：同步其它分店覆盖了对方的价格后，为其登记「待换标签」通知。
+            IStorePriceUpdateTaskService? priceTaskService = null
         )
         {
             _context = context;
             _logger = logger;
+            _priceTaskService = priceTaskService;
         }
 
         /// <summary>
@@ -562,6 +567,36 @@ namespace BlazorApp.Api.Services.React
                         }
                     }
 
+                    // 目标分店被覆盖前的零售价/折扣就是其货架标签上的价格，覆盖后无从推断，必须先留存。
+                    var overwrittenPrices = new List<StorePriceOverwrite>();
+                    if (_priceTaskService != null && (dto.SyncRetailPrice || dto.SyncDiscountRate))
+                    {
+                        var targetRows = await db.Queryable<StoreRetailPrice>()
+                            .Where(x =>
+                                x.StoreCode != null
+                                && dto.TargetStoreCodes.Contains(x.StoreCode)
+                                && x.ProductCode != null
+                                && dto.ProductCodes.Contains(x.ProductCode)
+                                && x.IsDeleted == false
+                            )
+                            .Select(x => new
+                            {
+                                x.StoreCode,
+                                x.ProductCode,
+                                x.StoreRetailPriceValue,
+                                x.DiscountRate,
+                            })
+                            .ToListAsync();
+                        overwrittenPrices = targetRows
+                            .Select(x => new StorePriceOverwrite(
+                                x.StoreCode!,
+                                x.ProductCode!,
+                                x.StoreRetailPriceValue,
+                                x.DiscountRate
+                            ))
+                            .ToList();
+                    }
+
                     var affectedRows = await updateable
                         .Where(x =>
                             x.StoreCode != null
@@ -571,6 +606,22 @@ namespace BlazorApp.Api.Services.React
                             && x.IsDeleted == false
                         )
                         .ExecuteCommandAsync();
+
+                    if (_priceTaskService != null && overwrittenPrices.Count > 0)
+                    {
+                        try
+                        {
+                            await _priceTaskService.RecordStoreOverwritesAsync(
+                                overwrittenPrices,
+                                new PriceTaskInitiator(updatedBy, "StoreSync", dto.SourceStoreCode)
+                            );
+                        }
+                        catch (Exception notifyEx)
+                        {
+                            // 通知失败不应回滚价格同步；移动端列表与定时对账会兜底。
+                            _logger.LogError(notifyEx, "登记分店待换标签通知失败");
+                        }
+                    }
 
                     if (dto.SyncPurchasePrice)
                     {

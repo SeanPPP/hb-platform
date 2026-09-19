@@ -111,6 +111,9 @@ export const P = {
     View: 'StoreProducts.View',
     Create: 'StoreProducts.Create',
     Edit: 'StoreProducts.Edit',
+    // 移动端「商品维护」把本店零售价/折扣同步到其它可管理分店；名称与说明由后端权限种子提供。
+    SyncToOtherStores: 'StoreProducts.SyncToOtherStores',
+    PriceUpdates: 'StoreProducts.PriceUpdates',
   },
   Promotions: {
     View: 'Promotions.View',

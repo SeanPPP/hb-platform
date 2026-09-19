@@ -262,6 +262,15 @@ namespace BlazorApp.Api.Services
             },
             new()
             {
+                RouteName = "price-updates",
+                TitleKey = "tabs.priceUpdates",
+                Icon = "tag-arrow-up-outline",
+                // 专用权限：持有者只能按仓库目标价改本店价格，与"编辑分店商品"解耦。
+                Permission = Permissions.StoreProducts.PriceUpdates,
+                Order = 50,
+            },
+            new()
+            {
                 RouteName = "product-insights",
                 TitleKey = "tabs.productInsights",
                 Icon = "chart-timeline-variant",
@@ -428,7 +437,8 @@ namespace BlazorApp.Api.Services
         };
 
         private static readonly HashSet<string> DeviceBaseRouteNames = new(
-            new[] { "home", "orders", "cart", "product-query", "product-insights", "settings" },
+            // price-updates：绑定分店的设备同样要处理本店的价格更新与换标签通知。
+            new[] { "home", "orders", "cart", "product-query", "price-updates", "product-insights", "settings" },
             StringComparer.OrdinalIgnoreCase
         );
 

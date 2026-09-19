@@ -16,6 +16,7 @@ export type AppTabPath =
   | "/(shell)/attendance-management"
   | "/(shell)/product-query"
   | "/(shell)/product-insights"
+  | "/(shell)/price-updates"
   | "/(shell)/warehouse-product-insights"
   | "/(shell)/sales-orders"
   | "/(shell)/users"
@@ -48,6 +49,7 @@ export const TAB_PATHS: Record<string, AppTabPath> = {
   "attendance-management": "/(shell)/attendance-management",
   "product-query": "/(shell)/product-query",
   "product-insights": "/(shell)/product-insights",
+  "price-updates": "/(shell)/price-updates",
   "warehouse-product-insights": "/(shell)/warehouse-product-insights",
   "sales-orders": "/(shell)/sales-orders",
   users: "/(shell)/users",

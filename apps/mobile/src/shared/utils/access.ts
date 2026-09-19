@@ -46,6 +46,8 @@ export const PERMISSIONS = {
     View: "StoreProducts.View",
     Create: "StoreProducts.Create",
     Edit: "StoreProducts.Edit",
+    SyncToOtherStores: "StoreProducts.SyncToOtherStores",
+    PriceUpdates: "StoreProducts.PriceUpdates",
   },
   Container: {
     View: "Container.View",

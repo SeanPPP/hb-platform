@@ -1570,6 +1570,10 @@
         "lastChangedAt": "最后改价时间（布里斯班）"
       }
     },
+    "priceUpdateTasks": {
+      "entry": "价格变更任务",
+      "title": "价格变更任务"
+    },
     "discountRate": "折扣率",
     "autoPricing": "自动定价",
     "changeHistory": {

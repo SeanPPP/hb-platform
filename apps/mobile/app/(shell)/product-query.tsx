@@ -35,6 +35,7 @@ import { SetCodeCompactSection } from "@/components/product-maintenance/SetCodeC
 import { StickyActionBar } from "@/components/product-maintenance/StickyActionBar";
 import { StoreClearancePriceCard } from "@/components/product-maintenance/StoreClearancePriceCard";
 import { StorePriceStrategyCard } from "@/components/product-maintenance/StorePriceStrategyCard";
+import { SyncToOtherStoresSection } from "@/components/product-maintenance/SyncToOtherStoresSheet";
 import { WarehousePriceSyncModal } from "@/components/product-maintenance/WarehousePriceSyncModal";
 import { CameraScanSheet } from "@/components/ui/CameraScanSheet";
 import { StorePickerModal } from "@/components/ui/StorePickerModal";
@@ -118,8 +119,10 @@ import {
   preloadScanFeedbackSounds,
 } from "@/modules/scanner/scan-sound";
 import type { ScanSource } from "@/modules/scanner/types";
+import { getManageableStoresForSession, isStoreManageable } from "@/modules/shop/store-scope";
 import { useStores } from "@/modules/shop/use-stores";
 import type { Store } from "@/modules/shop/types";
+import { PERMISSIONS } from "@/shared/utils/access";
 import { useAuthStore } from "@/store/auth-store";
 import { useDeviceStore } from "@/store/device-store";
 import {
@@ -477,6 +480,15 @@ function ProductQueryContent() {
     : globalSelectedStore;
   const access = useAuthStore((state) => state.access);
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
+  // 同步其它分店：仅登录账号（非设备模式）+ 权限码 + 当前分店可管理（isPrimary 或管理员）时开放，后端同样校验。
+  const canSyncToOtherStores =
+    !isDeviceMode &&
+    isAuthenticated &&
+    access.hasPermission(PERMISSIONS.StoreProducts.SyncToOtherStores) &&
+    isStoreManageable(
+      selectedStoreCode,
+      getManageableStoresForSession({ stores, isDeviceMode, isAdmin: access.isAdmin }),
+    );
   const printerAutoReconnectPaused = usePrinterStore(
     (state) => state.autoReconnectPaused,
   );
@@ -4054,6 +4066,18 @@ function ProductQueryContent() {
                   </Text>
                 </View>
               )}
+
+              {storePrice && canSyncToOtherStores && selectedStoreCode ? (
+                <SyncToOtherStoresSection
+                  productCode={detail.productCode}
+                  storeCode={selectedStoreCode}
+                  storeName={storePrice.storeName ?? selectedStore?.storeName}
+                  hasUnsavedChanges={isStorePriceDirty(detail, initialDetail)}
+                  disabled={saving}
+                  onSaveBeforeSync={handleSaveAll}
+                  onMessage={setSnackbarMessage}
+                />
+              ) : null}
 
               <LabelPrintCard
                 isPrintingProduct={printingAction === "product"}

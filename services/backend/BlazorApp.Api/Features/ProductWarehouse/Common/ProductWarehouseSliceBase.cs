@@ -29,7 +29,8 @@ internal sealed record ProductWarehouseSliceContext(
     IMapper Mapper,
     IDataSyncFullService DataSyncFullService,
     IWarehouseProductChangeHistoryService ChangeHistoryService,
-    ITranslationService? TranslationService
+    ITranslationService? TranslationService,
+    IStorePriceUpdateTaskService? PriceTaskService = null
 );
 
 internal abstract class ProductWarehouseSliceBase
@@ -46,6 +47,7 @@ internal abstract class ProductWarehouseSliceBase
     protected readonly IDataSyncFullService _dataSyncFullService;
     protected readonly IWarehouseProductChangeHistoryService _changeHistoryService;
     protected readonly ITranslationService? _translationService;
+    protected readonly IStorePriceUpdateTaskService? _priceTaskService;
 
     protected ProductWarehouseSliceBase(ProductWarehouseSliceContext context)
     {
@@ -56,6 +58,7 @@ internal abstract class ProductWarehouseSliceBase
         _dataSyncFullService = context.DataSyncFullService;
         _changeHistoryService = context.ChangeHistoryService;
         _translationService = context.TranslationService;
+        _priceTaskService = context.PriceTaskService;
     }
 
     protected sealed record ImportProductNameResolution(
@@ -259,6 +262,33 @@ internal abstract class ProductWarehouseSliceBase
         );
     }
 
+    /// <summary>
+    /// 仓库自动下发覆盖分店零售价后，为价格确实发生变化的分店登记「待换标签」通知。
+    /// 通知失败不能影响改价本身，因此只记录日志；移动端列表与定时对账会兜底。
+    /// </summary>
+    protected async Task RecordStorePriceOverwritesAsync(
+        IReadOnlyCollection<StorePriceOverwrite> overwrites,
+        string updatedBy
+    )
+    {
+        if (_priceTaskService == null || overwrites.Count == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            await _priceTaskService.RecordStoreOverwritesAsync(
+                overwrites,
+                new PriceTaskInitiator(ResolveUpdatedBy(updatedBy), "WarehouseAutoSync")
+            );
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "登记分店待换标签通知失败: Count={Count}", overwrites.Count);
+        }
+    }
+
     protected async Task UpsertActiveStoreRetailPricesAsync(
         Product product,
         decimal? purchasePrice,
@@ -301,6 +331,20 @@ internal abstract class ProductWarehouseSliceBase
             .Where(code => !string.IsNullOrWhiteSpace(code))
             .ToHashSet();
 
+        // 覆盖前的分店零售价就是货架标签上的价格，覆盖之后无从推断，必须在这里先留存。
+        // 下面的循环会就地改写 price 对象，所以要先拷贝出来。
+        var overwrittenPrices = retailPrice.HasValue
+            ? existingPrices
+                .Where(price => !string.IsNullOrWhiteSpace(price.StoreCode))
+                .Select(price => new StorePriceOverwrite(
+                    price.StoreCode!,
+                    product.ProductCode!,
+                    price.StoreRetailPriceValue,
+                    price.DiscountRate
+                ))
+                .ToList()
+            : new List<StorePriceOverwrite>();
+
         foreach (var price in existingPrices)
         {
             if (purchasePrice.HasValue)
@@ -331,6 +375,7 @@ internal abstract class ProductWarehouseSliceBase
                 update = update.SetColumns(price => price.StoreRetailPriceValue == retailPrice);
             }
             await update.ExecuteCommandAsync();
+            await RecordStorePriceOverwritesAsync(overwrittenPrices, updatedBy);
         }
 
         var insertPrices = activeStoreCodes

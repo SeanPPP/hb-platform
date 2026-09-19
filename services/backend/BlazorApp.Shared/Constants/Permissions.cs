@@ -286,6 +286,15 @@ namespace BlazorApp.Shared.Constants
             public const string View = "StoreProducts.View";
             public const string Create = "StoreProducts.Create";
             public const string Edit = "StoreProducts.Edit";
+
+            /// <summary>把本店零售价/折扣同步到其它分店。跨店改价风险高于改本店，单独授权。</summary>
+            public const string SyncToOtherStores = "StoreProducts.SyncToOtherStores";
+
+            /// <summary>
+            /// 移动端「价格更新」：查看本店通知、按仓库价更新本店价格、处理标签。
+            /// 与 Edit 分开：持有者只能把价格改成仓库下发的目标值，不能随意改价。
+            /// </summary>
+            public const string PriceUpdates = "StoreProducts.PriceUpdates";
         }
 
         public static class Promotions
