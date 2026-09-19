@@ -5,6 +5,8 @@ export interface AppNavigationAccessValue {
   navigationErrorMessage: string | null;
   navigationLoading: boolean;
   pendingProfileReviewCount: number;
+  /** 当前分店未完成的价格更新任务数，用于工作台入口角标。 */
+  pendingPriceUpdateCount: number;
   isDeviceMode: boolean;
   isWarehouseStaffOnly: boolean;
 }

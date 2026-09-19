@@ -880,7 +880,8 @@ public class NavigationServiceTests
         var menu = _service.BuildAppMenu(user);
 
         // 管理员可见完整 App 菜单；商品查询与同权限的商品进销查询都必须保留。
-        Assert.Equal(29, menu.Count);
+        Assert.Equal(30, menu.Count);
+        Assert.Contains(menu, item => item.RouteName == "price-updates");
         Assert.Contains(menu, item => item.RouteName == "sales-orders");
         Assert.Contains(menu, item => item.RouteName == "permissions");
         Assert.Contains(menu, item => item.RouteName == "product-query");
@@ -1021,6 +1022,34 @@ public class NavigationServiceTests
         Assert.Equal("chart-timeline-variant", item.Icon);
         Assert.Equal(Permissions.StoreProducts.View, item.Permission);
         Assert.DoesNotContain(unauthorized, item => item.RouteName == "product-insights");
+    }
+
+    [Fact]
+    public void BuildAppMenu_PriceUpdatesRequiresDedicatedPermission()
+    {
+        var authorized = _service.BuildAppMenu(
+            CreateUser(new Claim("permission", Permissions.StoreProducts.PriceUpdates))
+        );
+        // 编辑分店商品权限不再附带价格更新入口。
+        var editOnly = _service.BuildAppMenu(
+            CreateUser(
+                new Claim("permission", Permissions.StoreProducts.Edit),
+                new Claim("permission", Permissions.StoreProducts.View)
+            )
+        );
+
+        var item = Assert.Single(authorized, item => item.RouteName == "price-updates");
+        Assert.Equal("tabs.priceUpdates", item.TitleKey);
+        Assert.Equal(Permissions.StoreProducts.PriceUpdates, item.Permission);
+        Assert.DoesNotContain(editOnly, item => item.RouteName == "price-updates");
+    }
+
+    [Fact]
+    public void BuildDeviceAppMenu_IncludesPriceUpdatesForBoundStoreDevices()
+    {
+        var menu = _service.BuildDeviceAppMenu("Mobile");
+
+        Assert.Contains(menu, item => item.RouteName == "price-updates");
     }
 
     [Fact]

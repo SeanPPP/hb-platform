@@ -16,6 +16,7 @@ namespace BlazorApp.Api.Data
             {
                 await ProductHqSyncOutboxSchemaMigrator.EnsureAsync(db, logger);
                 await EnsureWarehouseProductChangeHistorySqliteSchemaAsync(db, logger);
+                await StorePriceUpdateTaskSchemaMigrator.EnsureAsync(db, logger);
                 return;
             }
             if (db.CurrentConnectionConfig.DbType != DbType.SqlServer)
@@ -44,6 +45,7 @@ namespace BlazorApp.Api.Data
             await EnsureUserStorePosPermissionSchemaAsync(db, logger);
             await EnsurePreorderSchemaAsync(db, logger);
             await EnsureWarehouseProductChangeHistoryIndexesAsync(db, logger);
+            await StorePriceUpdateTaskSchemaMigrator.EnsureAsync(db, logger);
         }
 
         private static async Task EnsureWarehouseProductChangeHistoryIndexesAsync(

@@ -3,7 +3,8 @@
   "currentStore": "当前分店：{{store}}",
   "search": {
     "placeholder": "条码 / 货号 / 编码",
-    "lastHit": "最近命中：{{value}}"
+    "lastHit": "最近命中：{{value}}",
+    "scan": "扫码查询"
   },
   "actions": {
     "returnToInvoiceDetails": "返回发票明细",
@@ -12,7 +13,9 @@
     "unsavedTitle": "有未保存的价格修改",
     "unsavedDescription": "离开页面会放弃当前分店价格修改。已单独保存的商品类型、清货价、套码或多码不会受影响。",
     "continueEditing": "继续编辑",
-    "discardAndReturn": "放弃并离开"
+    "discardAndReturn": "放弃并离开",
+    "saveAndPrint": "保存并打印",
+    "reset": "重置"
   },
   "createProduct": {
     "action": "创建商品",
@@ -146,12 +149,18 @@
   "sections": {
     "moreInfo": "更多信息",
     "priceAndLabels": "价格与标签",
-    "codes": "套码 / 多码"
+    "codes": "套码 / 多码",
+    "priceTab": "价格",
+    "codesTab": "编码 {{count}}",
+    "unsaved": "有未保存修改"
   },
   "promotion": {
     "title": "满减活动",
     "unnamed": "未命名活动",
-    "rule": "满 {{count}} 件 ${{price}}"
+    "rule": "满 {{count}} 件 ${{price}}",
+    "active": "促销中",
+    "until": "至 {{date}}",
+    "more": "等 {{count}} 个活动"
   },
   "hero": {
     "unnamedProduct": "未命名商品",
@@ -173,7 +182,11 @@
       "normal": "普通商品，使用主条码自己的分店价格。",
       "set": "套装零售价可自定义，进货价按主条码零售价和进货价比例换算。",
       "multi": "多码零售价和进货价都与主条码当前分店价格一致。"
-    }
+    },
+    "showBarcode": "显示条码",
+    "hideBarcode": "收起",
+    "mainBarcode": "主条码 {{value}}",
+    "noBarcode": "无条码"
   },
   "storePrice": {
     "fallbackTitle": "分店商品信息",
@@ -184,7 +197,22 @@
     "rate": "Rate {{value}}",
     "calculating": "计算中...",
     "auto": "自动",
-    "special": "特殊"
+    "special": "特殊",
+    "original": "{{label}} · 原 {{value}}",
+    "on": "开",
+    "off": "关",
+    "autoPricing": "自动定价",
+    "specialProduct": "特殊商品",
+    "rateLabel": "倍率",
+    "gp": "毛利",
+    "discountedGp": "折后毛利",
+    "strategy": "策略",
+    "grid": {
+      "purchase": "进价",
+      "retail": "零售价",
+      "discountPercent": "折扣 %",
+      "discountedRetail": "折后价"
+    }
   },
   "clearancePrice": {
     "title": "分店清货价",
@@ -192,7 +220,9 @@
     "barcode": "清货条码",
     "price": "清货价",
     "save": "保存清货",
-    "pendingBarcode": "保存后自动生成"
+    "pendingBarcode": "保存后自动生成",
+    "rowTitle": "清货",
+    "setAction": "设置清货价"
   },
   "setCode": {
     "title": "套装条码",
@@ -269,6 +299,26 @@
     "continuousPrint": "自动打印",
     "smallLabel": "小标签 (60mm)",
     "quantity": "打印数量",
-    "quantitySingleUse": "单次有效"
+    "quantitySingleUse": "单次有效",
+    "label": "标签"
+  },
+  "codes": {
+    "loaded": "已加载 {{loaded}} / {{total}}",
+    "barcodeColumn": "条码",
+    "retailColumn": "零售价",
+    "setPriceColumn": "套装价",
+    "actionsColumn": "操作",
+    "follow": "跟随",
+    "loadMore": "加载更多（还有 {{count}} 个）",
+    "saveRow": "保存该行",
+    "printRow": "打印该行标签"
+  },
+  "codeAdd": {
+    "submit": "添加到列表",
+    "barcodePlaceholder": "扫描或输入条码",
+    "setRetail": "套装零售价",
+    "unitPrice": "单件 ${{price}} × ?",
+    "equivalent": "相当于约 {{count}} 件的价",
+    "scan": "扫码填入条码"
   }
 }

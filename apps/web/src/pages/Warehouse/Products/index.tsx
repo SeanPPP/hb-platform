@@ -1,8 +1,8 @@
-import { AppstoreOutlined, CloudSyncOutlined, CloudUploadOutlined, CopyOutlined, DownloadOutlined, EditOutlined, GiftOutlined, HistoryOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, SettingOutlined, UploadOutlined } from '@ant-design/icons';
+import { AppstoreOutlined, CloudSyncOutlined, CloudUploadOutlined, CopyOutlined, DownloadOutlined, EditOutlined, GiftOutlined, HistoryOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, SettingOutlined, TagsOutlined, UploadOutlined } from '@ant-design/icons';
 import { DndContext, PointerSensor, closestCenter, type DragEndEvent, useSensor, useSensors, } from '@dnd-kit/core';
 import { SortableContext, horizontalListSortingStrategy, useSortable, } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { Button, Card, Checkbox, Form, Image, Input, InputNumber, Modal, Popconfirm, Select, Space, Switch, Tag, Tooltip, TreeSelect, Typography, message, notification, } from 'antd';
+import { Alert, Button, Card, Checkbox, Form, Image, Input, InputNumber, Modal, Popconfirm, Select, Space, Switch, Tag, Tooltip, TreeSelect, Typography, message, notification, } from 'antd';
 import type { DefaultOptionType } from 'antd/es/select';
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table';
 import type { FilterDropdownProps, FilterValue, SorterResult } from 'antd/es/table/interface';
@@ -27,6 +27,8 @@ import type { PushProductsToHqResult, PushProductsToHqStoreOption, PushProductsT
 import { copyTextToClipboard } from '../../../utils/clipboard';
 import { createLatestRequestGuard, runLatestGuardedRequest } from '../../../utils/latestRequestGuard';
 import { RequestError } from '../../../utils/request';
+import { lookupSuggestedDiscounts, previewPriceNotification, setSuggestedDiscounts } from '../../../services/storePriceUpdateTaskService';
+import { buildPriceNotificationPreviewText, buildPriceNotificationView, buildPriceUpdateTasksLink, computeSuggestedDiscountedPrice, createPriceNotificationCapture, suggestedDiscountPercentToRate, suggestedDiscountRateToPercent, type PriceNotificationPreview, type PriceNotificationSummary } from '../../../utils/priceNotification';
 import { isWarehouseProductColumnOrderCustomized, mergeWarehouseProductColumnOrder, moveWarehouseProductColumnOrder, type WarehouseProductTableColumnKey, } from './columnOrder';
 import CreateProductModal from './CreateProductModal';
 import CategoryTreePicker from './CategoryTreePicker';
@@ -43,6 +45,12 @@ import { createPushToHqStoreOptionsGuard } from '../../../components/posHqPush/s
 import WarehouseProductStorePriceSyncModal from './WarehouseProductStorePriceSyncModal';
 import WarehouseProductChangeHistoryDrawer from './WarehouseProductChangeHistoryDrawer';
 import { MeasuredTable } from '../../../components/MeasuredTable';
+import { registerPageMessages } from '../../../i18n/registerPageMessages';
+import priceNotificationMessagesEn from './priceNotificationMessages.en.json';
+import priceNotificationMessagesZh from './priceNotificationMessages.zh.json';
+
+// 分店价格通知文案只在仓库商品页使用，随本页代码块懒注册，不进入首屏 i18n 包。
+registerPageMessages({ zh: priceNotificationMessagesZh, en: priceNotificationMessagesEn });
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null;
@@ -98,6 +106,8 @@ interface ProductFormValues {
     productType: ProductType;
     domesticPrice?: number;
     oemPrice?: number;
+    // 建议折扣 %（0~100）；留空 = 未设置。不随 full-update 提交，保存时单独走 suggested-discounts 接口。
+    suggestedDiscountPercent?: number | null;
     importPrice?: number;
     packingQuantity?: number;
     unitVolume?: number;
@@ -120,6 +130,16 @@ interface BatchEditFormValues {
     generateImageUrls?: boolean;
     imageBaseUrl?: string;
     syncImageToHq?: boolean;
+    // 仅当勾选「同时设置建议折扣」时生效；任务完成后单独调用 suggested-discounts。
+    setSuggestedDiscount?: boolean;
+    suggestedDiscountPercent?: number | null;
+}
+// 建议折扣不属于批量任务的商品字段，不能计入「是否填写了修改字段」的判断。
+const WAREHOUSE_PRODUCT_BATCH_SUGGESTED_DISCOUNT_FIELDS = new Set(['setSuggestedDiscount', 'suggestedDiscountPercent']);
+interface EditingSuggestedDiscountState {
+    // lookup 失败时 loaded=false：禁用字段并跳过保存，避免把未知的原值误清空。
+    loaded: boolean;
+    percent: number | null;
 }
 const WAREHOUSE_PRODUCT_IMAGE_DEFAULT_BASE_URL = 'https://hotbargain-yw-2023-1300114625.cos.ap-shanghai.myqcloud.com/YW200/';
 const WAREHOUSE_PRODUCT_IMAGE_EXAMPLE_FILE = 'MC164-3.jpg';
@@ -422,6 +442,8 @@ type ActiveWarehouseProductBatchUpdateJob = {
     status?: WarehouseProductBatchUpdateJobStatus | string;
     message?: string;
     submittedProductCodes: string[];
+    // 勾选了「同时设置建议折扣」时随任务持久化，刷新页面恢复轮询后仍能在任务完成时补发。
+    suggestedDiscount?: { rate: number | null };
 };
 const WAREHOUSE_PRODUCT_HQ_SYNC_ACTIVE_JOB_STORAGE_KEY = 'warehouse.products.activeHqSyncJob';
 const WAREHOUSE_PRODUCT_BATCH_UPDATE_ACTIVE_JOB_STORAGE_KEY = 'warehouse.products.activeBatchUpdateJob';
@@ -594,17 +616,58 @@ function renderWarehouseProductCategoryCell(record: WarehouseProductListItem, ca
       <div className="warehouse-products-category-cell">{displayName}</div>
     </Tooltip>);
 }
-function ProductFormModal({ open, saving, editingItem, suppliers, form, onCancel, onSubmit, }: {
+function ProductFormModal({ open, saving, editingItem, suppliers, form, suggestedDiscount, onCancel, onSubmit, }: {
     open: boolean;
     saving: boolean;
     editingItem: WarehouseProductListItem | null;
     suppliers: SupplierOption[];
     form: ReturnType<typeof Form.useForm<ProductFormValues>>[0];
+    suggestedDiscount: EditingSuggestedDiscountState;
     onCancel: () => void;
     onSubmit: () => void;
 }) {
     const { t } = useTranslation();
     const productTypeOptions = getProductTypeOptions(t);
+    const watchedRetailPrice = Form.useWatch('oemPrice', form);
+    const watchedSuggestedDiscountPercent = Form.useWatch('suggestedDiscountPercent', form);
+    const [pricePreview, setPricePreview] = useState<{ preview: PriceNotificationPreview; retailPriceChanged: boolean } | null>(null);
+    const productCode = editingItem?.productCode;
+    const originalRetailPrice = editingItem?.labelPrice ?? null;
+    useEffect(() => {
+        setPricePreview(null);
+        if (!open || !productCode) return;
+        const nextRetailPrice = typeof watchedRetailPrice === 'number' ? watchedRetailPrice : null;
+        const nextPercent = typeof watchedSuggestedDiscountPercent === 'number' ? watchedSuggestedDiscountPercent : null;
+        const retailPriceChanged = nextRetailPrice !== null && nextRetailPrice !== originalRetailPrice;
+        const discountChanged = suggestedDiscount.loaded && nextPercent !== suggestedDiscount.percent;
+        if (!retailPriceChanged && !discountChanged) return;
+        const controller = new AbortController();
+        // 输入过程中 500ms 防抖；字段再次变化或弹窗关闭时终止上一次预告请求。
+        const timer = window.setTimeout(() => {
+            previewPriceNotification({
+                productCode,
+                retailPrice: retailPriceChanged ? nextRetailPrice : undefined,
+                suggestedDiscountSpecified: discountChanged,
+                suggestedDiscountRate: suggestedDiscountPercentToRate(nextPercent),
+            }, { signal: controller.signal })
+                .then((preview) => {
+                if (!controller.signal.aborted) setPricePreview({ preview, retailPriceChanged });
+            })
+                // 预告只是提示，失败时静默，不能妨碍保存。
+                .catch(() => undefined);
+        }, 500);
+        return () => {
+            window.clearTimeout(timer);
+            controller.abort();
+        };
+    }, [open, productCode, originalRetailPrice, suggestedDiscount.loaded, suggestedDiscount.percent, watchedRetailPrice, watchedSuggestedDiscountPercent]);
+    const pricePreviewText = pricePreview
+        ? buildPriceNotificationPreviewText(pricePreview.preview, pricePreview.retailPriceChanged, t)
+        : null;
+    const suggestedDiscountedPrice = computeSuggestedDiscountedPrice(
+        typeof watchedRetailPrice === 'number' ? watchedRetailPrice : null,
+        typeof watchedSuggestedDiscountPercent === 'number' ? watchedSuggestedDiscountPercent : null,
+    );
     return (<Modal title={editingItem ? t('warehouse.editProductTitle', { name: editingItem.itemNumber || editingItem.name }) : t('warehouse.editProduct')} open={open} width={920} destroyOnHidden okText={t('common.save')} cancelText={t('common.cancel')} confirmLoading={saving} onCancel={onCancel} onOk={onSubmit}>
       <Form form={form} layout="vertical" preserve={false}>
         <Space size={16} style={{ display: 'flex' }} align="start">
@@ -651,6 +714,18 @@ function ProductFormModal({ open, saving, editingItem, suppliers, form, onCancel
             <InputNumber min={0} precision={2} style={{ width: '100%' }}/>
           </Form.Item>
         </Space>
+
+        {editingItem ? (<>
+          <Space size={16} style={{ display: 'flex' }} align="start">
+            <Form.Item name="suggestedDiscountPercent" label={t('warehouse.priceNotification.suggestedDiscount')} extra={t('warehouse.priceNotification.suggestedDiscountHint')} style={{ flex: 2 }}>
+              <InputNumber min={0} max={100} precision={2} suffix="%" disabled={!suggestedDiscount.loaded} placeholder={t('warehouse.priceNotification.suggestedDiscountPlaceholder')} style={{ width: '100%' }}/>
+            </Form.Item>
+            <Form.Item label={t('warehouse.priceNotification.suggestedDiscountedPrice')} style={{ flex: 1 }}>
+              <InputNumber value={suggestedDiscountedPrice} precision={2} prefix="$" readOnly controls={false} placeholder="--" style={{ width: '100%' }}/>
+            </Form.Item>
+          </Space>
+          {pricePreviewText ? (<Alert type="info" showIcon message={pricePreviewText} style={{ marginBottom: 16 }}/>) : null}
+        </>) : null}
 
         <Space size={16} style={{ display: 'flex' }} align="start">
           <Form.Item name="packingQuantity" label={t('warehouse.packingQuantity')} style={{ flex: 1 }}>
@@ -756,11 +831,14 @@ export default function WarehouseProductsPage() {
     const [batchEditForm] = Form.useForm<BatchEditFormValues>();
     const batchGenerateImageUrls = Form.useWatch('generateImageUrls', batchEditForm) === true;
     const batchImageBaseUrl = Form.useWatch('imageBaseUrl', batchEditForm);
+    const batchSetSuggestedDiscount = Form.useWatch('setSuggestedDiscount', batchEditForm) === true;
     const [loading, setLoading] = useState(false);
     const [saving, setSaving] = useState(false);
     const [modalOpen, setModalOpen] = useState(false);
     const [createModalOpen, setCreateModalOpen] = useState(false);
     const [editingItem, setEditingItem] = useState<WarehouseProductListItem | null>(null);
+    const [editingSuggestedDiscount, setEditingSuggestedDiscount] = useState<EditingSuggestedDiscountState>({ loaded: false, percent: null });
+    const editingProductCodeRef = useRef<string | null>(null);
     const [suppliers, setSuppliers] = useState<SupplierOption[]>([]);
     const [localSupplierNameMap, setLocalSupplierNameMap] = useState<Record<string, string>>({});
     const [categories, setCategories] = useState<WarehouseCategoryNode[]>([]);
@@ -1225,6 +1303,58 @@ export default function WarehouseProductsPage() {
         ]));
         refreshBatchUpdateListWithSelection(keysToKeep);
     }, [refreshBatchUpdateListWithSelection]);
+    const showPriceNotification = useCallback((summary: PriceNotificationSummary | null, context: { lines?: string[]; keyword?: string } = {}) => {
+        const view = buildPriceNotificationView(summary, t);
+        if (!view) return;
+        notification[view.tone]({
+            message: view.title,
+            description: (<Space direction="vertical" size={4}>
+              {[...(context.lines ?? []), ...view.lines].map((line) => (<div key={line}>{line}</div>))}
+              {view.tags.length ? (<Space size={4} wrap>
+                {view.tags.map((tag) => (<Tag key={tag.kind} color={tag.kind === 'priceUpdate' ? 'warning' : 'processing'}>{tag.text}</Tag>))}
+              </Space>) : null}
+              {view.showTasksLink ? (<Typography.Link onClick={() => navigate(buildPriceUpdateTasksLink({ tab: 'by-product', keyword: context.keyword }))}>
+                {t('warehouse.priceNotification.viewTasks')}
+              </Typography.Link>) : null}
+            </Space>),
+            duration: view.tone === 'success' ? 8 : 5,
+            placement: 'topRight',
+        });
+    }, [navigate, t]);
+    const finishBatchPriceNotification = useCallback(async (
+        result: WarehouseProductBatchUpdateJobResult,
+        job: ActiveWarehouseProductBatchUpdateJob,
+    ) => {
+        // 后台任务拿不到响应头，汇总来自任务快照；若随后还补发了建议折扣，以那次（最后一次）响应头为准，不相加。
+        const priceNotificationCapture = createPriceNotificationCapture();
+        priceNotificationCapture.accept(result.priceNotification);
+        // 任务信息可能来自 localStorage 恢复，rate 形状不可信时宁可跳过也不能误清空建议折扣。
+        const suggestedRate = job.suggestedDiscount?.rate;
+        const hasSuggestedDiscount = job.suggestedDiscount !== undefined
+            && (suggestedRate === null || (typeof suggestedRate === 'number' && suggestedRate >= 0 && suggestedRate <= 1));
+        if (hasSuggestedDiscount && result.status !== 'Failed') {
+            try {
+                await setSuggestedDiscounts({
+                    productCodes: job.submittedProductCodes,
+                    suggestedDiscountRate: suggestedRate ?? null,
+                    source: 'BatchUpdate',
+                }, { onResponse: priceNotificationCapture.onResponse });
+            }
+            catch (error) {
+                console.error(error);
+                notification.error({
+                    message: t('warehouse.priceNotification.batchSuggestedDiscountFailed'),
+                    description: error instanceof Error ? error.message : undefined,
+                    duration: 0,
+                    placement: 'topRight',
+                });
+            }
+        }
+        if (!isMountedRef.current) return;
+        showPriceNotification(priceNotificationCapture.getSummary(), {
+            lines: [t('warehouse.priceNotification.productCountLine', { count: job.submittedProductCodes.length })],
+        });
+    }, [showPriceNotification, t]);
     const showBatchUpdateJobResult = useCallback((
         result: WarehouseProductBatchUpdateJobResult,
         submittedProductCodes: string[],
@@ -1312,6 +1442,7 @@ export default function WarehouseProductsPage() {
             clearActiveBatchUpdateJob();
             stopBatchUpdateJobPollingRef.current = null;
             showBatchUpdateJobResult(result, job.submittedProductCodes);
+            void finishBatchPriceNotification(result, job);
         })
             .catch((error) => {
             if (!isMountedRef.current || error instanceof HqProductSyncPollingCancelledError) {
@@ -1350,7 +1481,7 @@ export default function WarehouseProductsPage() {
                 placement: 'topRight',
             });
         });
-    }, [clearActiveBatchUpdateJob, restoreSubmittedBatchUpdateSelection, saveActiveBatchUpdateJob, showBatchUpdateJobResult, stopBatchUpdateJobPolling, t]);
+    }, [clearActiveBatchUpdateJob, finishBatchPriceNotification, restoreSubmittedBatchUpdateSelection, saveActiveBatchUpdateJob, showBatchUpdateJobResult, stopBatchUpdateJobPolling, t]);
     const showActiveBatchUpdateJobStatus = useCallback((job: ActiveWarehouseProductBatchUpdateJob | null = activeBatchUpdateJob) => {
         if (!job) {
             return;
@@ -1434,8 +1565,22 @@ export default function WarehouseProductsPage() {
     const handleOpenCreate = () => {
         setCreateModalOpen(true);
     };
+    const formatSuggestedDiscountPercent = (percent: number | null) => percent === null
+        ? t('warehouse.priceNotification.notSet')
+        : `${percent}%`;
     const handleOpenEdit = (record: WarehouseProductListItem) => {
         setEditingItem(record);
+        editingProductCodeRef.current = record.productCode;
+        setEditingSuggestedDiscount({ loaded: false, percent: null });
+        lookupSuggestedDiscounts([record.productCode])
+            .then((items) => {
+            // 期间用户可能已关闭弹窗或改开了另一个商品，过期结果不能回填。
+            if (!isMountedRef.current || editingProductCodeRef.current !== record.productCode) return;
+            const percent = suggestedDiscountRateToPercent(items.find((item) => item.productCode === record.productCode)?.suggestedDiscountRate);
+            setEditingSuggestedDiscount({ loaded: true, percent });
+            form.setFieldsValue({ suggestedDiscountPercent: percent });
+        })
+            .catch((error) => console.error(error));
         form.setFieldsValue({
             supplierCode: record.domesticSupplierCode,
             productName: record.name,
@@ -1457,6 +1602,8 @@ export default function WarehouseProductsPage() {
     const handleCloseModal = () => {
         setModalOpen(false);
         setEditingItem(null);
+        editingProductCodeRef.current = null;
+        setEditingSuggestedDiscount({ loaded: false, percent: null });
         form.resetFields();
     };
     const handleSave = async () => {
@@ -1466,6 +1613,8 @@ export default function WarehouseProductsPage() {
         try {
             const values = await form.validateFields();
             setSaving(true);
+            // 一次保存可能连发两个请求，通知汇总以最后一个带头的响应为准（不相加）。
+            const priceNotificationCapture = createPriceNotificationCapture();
             await updateWarehouseProductFull(editingItem.productCode, {
                 productName: values.productName,
                 englishName: values.englishProductName,
@@ -1483,8 +1632,40 @@ export default function WarehouseProductsPage() {
                 productImage: values.productImage,
                 isActive: values.isActive,
                 supplierCode: values.supplierCode,
-            });
+            }, { onResponse: priceNotificationCapture.onResponse });
+            const nextSuggestedDiscountPercent = values.suggestedDiscountPercent ?? null;
+            const suggestedDiscountChanged = editingSuggestedDiscount.loaded
+                && nextSuggestedDiscountPercent !== editingSuggestedDiscount.percent;
+            if (suggestedDiscountChanged) {
+                try {
+                    await setSuggestedDiscounts({
+                        productCodes: [editingItem.productCode],
+                        suggestedDiscountRate: suggestedDiscountPercentToRate(nextSuggestedDiscountPercent),
+                        source: 'WarehouseProducts',
+                    }, { onResponse: priceNotificationCapture.onResponse });
+                }
+                catch (error) {
+                    // 商品主体已保存成功，建议折扣失败只单独提示，不回滚也不阻断后续刷新。
+                    console.error(error);
+                    message.warning(`${t('warehouse.priceNotification.suggestedDiscountSaveFailed')}${error instanceof Error ? `: ${error.message}` : ''}`);
+                }
+            }
             message.success(t('warehouse.updateProductSuccess'));
+            const retailPriceChanged = typeof values.oemPrice === 'number' && values.oemPrice !== (editingItem.labelPrice ?? null);
+            showPriceNotification(priceNotificationCapture.getSummary(), {
+                keyword: editingItem.itemNumber,
+                lines: [
+                    [editingItem.itemNumber, values.productName].filter(Boolean).join(' · '),
+                    ...(retailPriceChanged ? [t('warehouse.priceNotification.retailPriceLine', {
+                            from: editingItem.labelPrice == null ? '--' : `$${editingItem.labelPrice.toFixed(2)}`,
+                            to: `$${(values.oemPrice as number).toFixed(2)}`,
+                        })] : []),
+                    ...(suggestedDiscountChanged ? [t('warehouse.priceNotification.suggestedDiscountLine', {
+                            from: formatSuggestedDiscountPercent(editingSuggestedDiscount.percent),
+                            to: formatSuggestedDiscountPercent(nextSuggestedDiscountPercent),
+                        })] : []),
+                ],
+            });
             handleCloseModal();
             void refreshCurrentList();
         }
@@ -1554,8 +1735,22 @@ export default function WarehouseProductsPage() {
         inlineSaveLockRef.current = cellKey;
         setInlineSavingCellKey(cellKey);
         try {
-            await patchWarehouseProduct(cell.productCode, payload);
+            const priceNotificationCapture = createPriceNotificationCapture();
+            await patchWarehouseProduct(cell.productCode, payload, { onResponse: priceNotificationCapture.onResponse });
             if (!isMountedRef.current) return;
+            if (cell.field === 'labelPrice') {
+                const record = data.find((item) => item.productCode === cell.productCode);
+                showPriceNotification(priceNotificationCapture.getSummary(), {
+                    keyword: record?.itemNumber,
+                    lines: [
+                        [record?.itemNumber, record?.name].filter(Boolean).join(' · '),
+                        t('warehouse.priceNotification.retailPriceLine', {
+                            from: cell.originalValue == null ? '--' : `$${Number(cell.originalValue).toFixed(2)}`,
+                            to: `$${value.toFixed(2)}`,
+                        }),
+                    ].filter(Boolean),
+                });
+            }
             setData((current) => current.map((item) => item.productCode === cell.productCode
                 ? { ...item, [cell.field]: value }
                 : item));
@@ -1901,7 +2096,7 @@ export default function WarehouseProductsPage() {
         generateImageUrls?: boolean;
         imageBaseUrl?: string;
         syncImageToHq?: boolean;
-    }) => {
+    }, suggestedDiscount?: { rate: number | null }) => {
         if (!selectedRowKeys.length) {
             message.warning(t('warehouse.selectProductsFirst', '请先选择商品'));
             return;
@@ -1941,6 +2136,7 @@ export default function WarehouseProductsPage() {
                 status: job.status,
                 message: job.message,
                 submittedProductCodes,
+                ...(suggestedDiscount ? { suggestedDiscount } : {}),
             };
             setBatchEditOpen(false);
             batchEditForm.resetFields();
@@ -1965,6 +2161,28 @@ export default function WarehouseProductsPage() {
             setBatchEditSaving(false);
         }
     };
+    const submitBatchSuggestedDiscountOnly = async (suggestedDiscount: { rate: number | null }) => {
+        // 只勾选了建议折扣、没有其它商品字段：无需创建后台任务，直接设置并按响应头提示。
+        const productCodes = selectedRowKeys.map(String);
+        try {
+            setBatchEditSaving(true);
+            const priceNotificationCapture = createPriceNotificationCapture();
+            await setSuggestedDiscounts({ productCodes, suggestedDiscountRate: suggestedDiscount.rate, source: 'BatchUpdate' }, { onResponse: priceNotificationCapture.onResponse });
+            setBatchEditOpen(false);
+            batchEditForm.resetFields();
+            message.success(t('warehouse.batchEditSuccess', '批量修改成功'));
+            showPriceNotification(priceNotificationCapture.getSummary(), {
+                lines: [t('warehouse.priceNotification.productCountLine', { count: productCodes.length })],
+            });
+        }
+        catch (error) {
+            console.error(error);
+            message.error(error instanceof Error ? error.message : t('warehouse.priceNotification.batchSuggestedDiscountFailed'));
+        }
+        finally {
+            setBatchEditSaving(false);
+        }
+    };
     const handleBatchEditSave = async () => {
         if (!selectedRowKeys.length) {
             message.warning(t('warehouse.selectProductsFirst', '请先选择商品'));
@@ -1981,7 +2199,13 @@ export default function WarehouseProductsPage() {
             throw error;
         }
         const generateImageUrls = values.generateImageUrls === true;
+        const suggestedDiscount = values.setSuggestedDiscount === true
+            ? { rate: suggestedDiscountPercentToRate(values.suggestedDiscountPercent) }
+            : undefined;
         const hasChanges = Object.entries(values).some(([field, value]) => {
+            if (WAREHOUSE_PRODUCT_BATCH_SUGGESTED_DISCOUNT_FIELDS.has(field)) {
+                return false;
+            }
             if (isWarehouseProductBatchImageField(field)) {
                 if (generateImageUrls) {
                     return field === 'generateImageUrls';
@@ -1991,7 +2215,7 @@ export default function WarehouseProductsPage() {
             }
             return value !== undefined && value !== null;
         });
-        if (!hasChanges) {
+        if (!hasChanges && !suggestedDiscount) {
             message.warning(t('warehouse.batchEditNoChanges', '请至少填写一个修改字段'));
             return;
         }
@@ -2016,14 +2240,19 @@ export default function WarehouseProductsPage() {
               <div>{t('warehouse.batchImageConfirmOverwrite', '本地覆盖：是（将覆盖选中商品现有图片地址）')}</div>
               <div>{t('warehouse.batchImageConfirmHq', '同步 HQ：{{value}}', { value: syncImageToHq ? t('common.yes') : t('common.no') })}</div>
             </>) : null}
+            {suggestedDiscount ? (<div>{t('warehouse.priceNotification.batchSuggestedDiscountConfirm', {
+                value: suggestedDiscount.rate === null ? t('warehouse.priceNotification.notSet') : `${suggestedDiscountRateToPercent(suggestedDiscount.rate)}%`,
+            })}</div>) : null}
           </Space>),
             okText: t('warehouse.batchEditConfirmOk', '确认保存'),
             cancelText: t('common.cancel'),
-            onOk: () => submitBatchEdit(values, {
-                generateImageUrls,
-                imageBaseUrl,
-                syncImageToHq,
-            }),
+            onOk: () => hasChanges
+                ? submitBatchEdit(values, {
+                    generateImageUrls,
+                    imageBaseUrl,
+                    syncImageToHq,
+                }, suggestedDiscount)
+                : submitBatchSuggestedDiscountOnly(suggestedDiscount!),
         });
     };
     const handleToggleSingleActive = async (record: WarehouseProductListItem, nextIsActive: boolean) => {
@@ -2544,6 +2773,9 @@ export default function WarehouseProductsPage() {
           {access.canManageWarehouseProducts ? (<Button icon={<HistoryOutlined />} onClick={() => navigate('/warehouse/products/retail-price-changes')}>
             {t('warehouse.retailPriceChanges.entry')}
           </Button>) : null}
+          {access.canManageWarehouseProducts ? (<Button icon={<TagsOutlined />} onClick={() => navigate('/warehouse/products/price-update-tasks')}>
+            {t('warehouse.priceUpdateTasks.entry')}
+          </Button>) : null}
           {access.isAdmin ? (<Button icon={<CloudSyncOutlined />} loading={syncingFromHq || Boolean(activeHqSyncJob)} disabled={syncingFromHq} onClick={handleSyncWarehouseProductsFromHq}>
             {t('warehouse.hqSync', '从HQ同步库存')}
           </Button>) : null}
@@ -2727,7 +2959,7 @@ export default function WarehouseProductsPage() {
           </DndContext>
         </Card>
 
-      <ProductFormModal open={modalOpen} saving={saving} editingItem={editingItem} suppliers={suppliers} form={form} onCancel={handleCloseModal} onSubmit={() => void handleSave()}/>
+      <ProductFormModal open={modalOpen} saving={saving} editingItem={editingItem} suppliers={suppliers} form={form} suggestedDiscount={editingSuggestedDiscount} onCancel={handleCloseModal} onSubmit={() => void handleSave()}/>
 
       <CreateProductModal open={createModalOpen} suppliers={suppliers} onCancel={() => setCreateModalOpen(false)} onSuccess={() => {
             setCreateModalOpen(false);
@@ -2789,6 +3021,14 @@ export default function WarehouseProductsPage() {
             </Form.Item>
             <Form.Item name="importPrice" label={t('warehouse.importPrice')} style={{ flex: 1 }}>
               <InputNumber min={0} precision={2} style={{ width: '100%' }} placeholder={t('warehouse.batchEditKeepEmpty', '留空不修改')}/>
+            </Form.Item>
+          </Space>
+          <Space size={16} style={{ display: 'flex' }} align="start">
+            <Form.Item name="setSuggestedDiscount" valuePropName="checked" label={t('warehouse.priceNotification.suggestedDiscount')} style={{ flex: 1 }}>
+              <Checkbox>{t('warehouse.priceNotification.batchSetSuggestedDiscount')}</Checkbox>
+            </Form.Item>
+            <Form.Item name="suggestedDiscountPercent" label=" " colon={false} extra={t('warehouse.priceNotification.batchSuggestedDiscountHint')} style={{ flex: 2 }}>
+              <InputNumber min={0} max={100} precision={2} suffix="%" disabled={!batchSetSuggestedDiscount} style={{ width: '100%' }} placeholder={t('warehouse.priceNotification.suggestedDiscountPlaceholder')}/>
             </Form.Item>
           </Space>
           <Space size={16} style={{ display: 'flex' }} align="start">

@@ -22,6 +22,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { CreateSupplierSheet } from "@/components/product-maintenance/CreateSupplierSheet";
 import { CreateBarcodeScanner } from "@/components/product-maintenance/CreateBarcodeScanner";
 import { CreateProductDialog } from "@/components/product-maintenance/CreateProductDialog";
+import { CodeAddSheet } from "@/components/product-maintenance/CodeAddSheet";
 import { LookupResultSheet } from "@/components/product-maintenance/LookupResultSheet";
 import { LabelPrintCard } from "@/components/product-maintenance/LabelPrintCard";
 import { PrintSettingsModal } from "@/components/product-maintenance/PrintSettingsModal";
@@ -29,12 +30,15 @@ import { MultiCodeCompactList } from "@/components/product-maintenance/MultiCode
 import { NumericInputModal } from "@/components/product-maintenance/NumericInputModal";
 import { ProductHeroCard } from "@/components/product-maintenance/ProductHeroCard";
 import { ProductPromotionCard } from "@/components/product-maintenance/ProductPromotionCard";
-import { QueryHeader } from "@/components/product-maintenance/QueryHeader";
 import { SearchPanel } from "@/components/product-maintenance/SearchPanel";
 import { SetCodeCompactSection } from "@/components/product-maintenance/SetCodeCompactSection";
 import { StickyActionBar } from "@/components/product-maintenance/StickyActionBar";
 import { StoreClearancePriceCard } from "@/components/product-maintenance/StoreClearancePriceCard";
-import { StorePriceStrategyCard } from "@/components/product-maintenance/StorePriceStrategyCard";
+import {
+  StorePriceStrategyCard,
+  StoreSwitchButton,
+} from "@/components/product-maintenance/StorePriceStrategyCard";
+import { SyncToOtherStoresSection } from "@/components/product-maintenance/SyncToOtherStoresSheet";
 import { WarehousePriceSyncModal } from "@/components/product-maintenance/WarehousePriceSyncModal";
 import { CameraScanSheet } from "@/components/ui/CameraScanSheet";
 import { StorePickerModal } from "@/components/ui/StorePickerModal";
@@ -68,6 +72,13 @@ import {
 } from "@/modules/product-maintenance/api";
 import { resolveExternalQueryStore } from "@/modules/product-maintenance/external-query-store";
 import { validateCreateProductForm } from "@/modules/product-maintenance/create-product-validation";
+import {
+  calcGrossMarginPercent,
+  getDirtyCodeIds,
+  getMarginTrend,
+  resolveCodeSections,
+  resolveOriginalDisplay,
+} from "@/modules/product-maintenance/product-query-presentation";
 import type {
   EvaluateAutoPricingResult,
   LocalSupplierOption,
@@ -118,8 +129,10 @@ import {
   preloadScanFeedbackSounds,
 } from "@/modules/scanner/scan-sound";
 import type { ScanSource } from "@/modules/scanner/types";
+import { getManageableStoresForSession, isStoreManageable } from "@/modules/shop/store-scope";
 import { useStores } from "@/modules/shop/use-stores";
 import type { Store } from "@/modules/shop/types";
+import { PERMISSIONS } from "@/shared/utils/access";
 import { useAuthStore } from "@/store/auth-store";
 import { useDeviceStore } from "@/store/device-store";
 import {
@@ -477,6 +490,15 @@ function ProductQueryContent() {
     : globalSelectedStore;
   const access = useAuthStore((state) => state.access);
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
+  // 同步其它分店：仅登录账号（非设备模式）+ 权限码 + 当前分店可管理（isPrimary 或管理员）时开放，后端同样校验。
+  const canSyncToOtherStores =
+    !isDeviceMode &&
+    isAuthenticated &&
+    access.hasPermission(PERMISSIONS.StoreProducts.SyncToOtherStores) &&
+    isStoreManageable(
+      selectedStoreCode,
+      getManageableStoresForSession({ stores, isDeviceMode, isAdmin: access.isAdmin }),
+    );
   const printerAutoReconnectPaused = usePrinterStore(
     (state) => state.autoReconnectPaused,
   );
@@ -576,6 +598,9 @@ function ProductQueryContent() {
   >(null);
   const invoiceExitSavingRef = useRef(false);
   const [editorTab, setEditorTab] = useState<"price" | "codes">("price");
+  const [savingAndPrinting, setSavingAndPrinting] = useState(false);
+  // 新增编码面板里的相机扫码：打开时临时隐藏面板，避免两个原生 Modal 叠加。
+  const [codeAddScannerVisible, setCodeAddScannerVisible] = useState(false);
   const getErrorMessage = useCallback(
     (error: unknown, fallbackKey: string) =>
       resolveLocalizedErrorMessage(error, {
@@ -3520,14 +3545,18 @@ function ProductQueryContent() {
 
   saveClearanceRef.current = handleSaveClearancePrice;
 
-  const handleSaveAll = useCallback(async (): Promise<boolean> => {
+  /**
+   * 保存分店价格草稿：无改动时直接返回当前详情；保存成功返回服务端回读后的详情，失败返回 null。
+   * 「保存」与「保存并打印」共用同一保存流程。
+   */
+  const saveStorePriceDraft = useCallback(async (): Promise<ProductDetail | null> => {
     if (!detail?.storePrice || !isStorePriceDirty(detail, initialDetail)) {
-      return true;
+      return detail;
     }
 
     setSaving(true);
     try {
-      const savedDetail = await persistStorePrice(detail, {
+      return await persistStorePrice(detail, {
         purchasePrice: detail.storePrice.purchasePrice ?? null,
         retailPrice: detail.storePrice.retailPrice ?? null,
         discountRate: normalizeDiscountRateValue(
@@ -3537,14 +3566,20 @@ function ProductQueryContent() {
         isSpecialProduct: detail.storePrice.isSpecialProduct,
         isActive: detail.storePrice.isActive,
       });
-      return Boolean(savedDetail);
     } catch (error) {
       setSnackbarMessage(getErrorMessage(error, "messages.saveFailed"));
-      return false;
+      return null;
     } finally {
       setSaving(false);
     }
   }, [detail, getErrorMessage, initialDetail, persistStorePrice]);
+
+  const handleSaveAll = useCallback(async (): Promise<boolean> => {
+    if (!detail?.storePrice || !isStorePriceDirty(detail, initialDetail)) {
+      return true;
+    }
+    return Boolean(await saveStorePriceDraft());
+  }, [detail, initialDetail, saveStorePriceDraft]);
 
   const handleReset = useCallback(() => {
     setDetail(cloneDetail(initialDetail));
@@ -3608,20 +3643,25 @@ function ProductQueryContent() {
   );
 
   const handlePrint = useCallback(
-    async (kind: "product" | "discount" | "clearance" | "bigDiscount") => {
-      if (!detail) {
+    async (
+      kind: "product" | "discount" | "clearance" | "bigDiscount",
+      // 保存并打印需要用刚保存回读的详情，不能读闭包里尚未刷新的 detail。
+      targetDetail?: ProductDetail | null,
+    ) => {
+      const source = targetDetail ?? detail;
+      if (!source) {
         return;
       }
 
       if (
         (kind === "discount" || kind === "bigDiscount") &&
-        !(detail.storePrice?.discountRate && detail.storePrice.discountRate > 0)
+        !(source.storePrice?.discountRate && source.storePrice.discountRate > 0)
       ) {
         setSnackbarMessage(t("messages.discountPrintUnavailable"));
         return;
       }
 
-      if (kind === "clearance" && !detail.clearancePrice) {
+      if (kind === "clearance" && !source.clearancePrice) {
         setSnackbarMessage(t("messages.clearancePrintUnavailable"));
         return;
       }
@@ -3630,22 +3670,22 @@ function ProductQueryContent() {
       try {
         const printType = smallLabel ? "small" : null;
         if (kind === "product") {
-          await sendProductLabel(detail, { action: "product", printType });
+          await sendProductLabel(source, { action: "product", printType });
           return;
         } else if (kind === "discount") {
-          await printDiscountLabel(detail, printType);
+          await printDiscountLabel(source, printType);
           for (let i = 1; i < printQuantity; i++) {
-            await printDiscountLabel(detail, printType);
+            await printDiscountLabel(source, printType);
           }
         } else if (kind === "bigDiscount") {
-          await printBigDiscountLabel(detail);
+          await printBigDiscountLabel(source);
           for (let i = 1; i < printQuantity; i++) {
-            await printBigDiscountLabel(detail);
+            await printBigDiscountLabel(source);
           }
         } else {
-          await printClearanceLabel(detail);
+          await printClearanceLabel(source);
           for (let i = 1; i < printQuantity; i++) {
-            await printClearanceLabel(detail);
+            await printClearanceLabel(source);
           }
         }
         setSnackbarMessage(t("messages.printSuccess"));
@@ -3668,6 +3708,37 @@ function ProductQueryContent() {
       t,
     ],
   );
+
+  const handleSaveAndPrint = useCallback(async () => {
+    if (savingAndPrinting || saving || printingAction || !detail?.storePrice) {
+      return;
+    }
+    setSavingAndPrinting(true);
+    try {
+      // 保存失败时 persistStorePrice 已提示错误，不再打印。
+      const savedDetail = await saveStorePriceDraft();
+      if (!savedDetail?.storePrice) {
+        return;
+      }
+      // 按保存后的门店价格选择标签：有折扣打折扣标签，否则打普通标签；打印设置与打印机校验沿用 handlePrint。
+      const discountRate = normalizeDiscountRateValue(
+        savedDetail.storePrice.discountRate,
+      );
+      await handlePrint(
+        discountRate && discountRate > 0 ? "discount" : "product",
+        savedDetail,
+      );
+    } finally {
+      setSavingAndPrinting(false);
+    }
+  }, [
+    detail?.storePrice,
+    handlePrint,
+    printingAction,
+    saveStorePriceDraft,
+    saving,
+    savingAndPrinting,
+  ]);
 
   const isInvoiceEditorSessionActive = useCallback(() => {
     const auth = useAuthStore.getState();
@@ -3789,13 +3860,68 @@ function ProductQueryContent() {
     discountedRetailPrice,
     storePrice?.purchasePrice,
   );
-  const hasCodeSection = Boolean(
-    detail &&
-      (detail.productType === 1 ||
-        detail.productType === 2 ||
-        detail.setCodeCount > 0 ||
-        detail.multiCodeCount > 0),
+  const codeSections = resolveCodeSections(detail);
+  const hasCodeSection = codeSections.hasCodeSection;
+  const dirtyCodeIds = useMemo(
+    () => getDirtyCodeIds(detail, initialDetail),
+    [detail, initialDetail],
   );
+  // 「原值」与毛利变化都以现有 baseline（initialDetail）为准，且仅在同一商品、价格有改动时显示。
+  const baselineStorePrice =
+    dirtyCount > 0 && initialDetail?.productCode === detail?.productCode
+      ? initialDetail?.storePrice
+      : null;
+  const baselineDiscountRate = normalizeDiscountRateValue(
+    baselineStorePrice?.discountRate,
+  );
+  const baselineDiscountedRetailPrice = getDiscountedRetailPrice(
+    baselineStorePrice?.retailPrice,
+    baselineDiscountRate,
+  );
+  const storePriceOriginals = baselineStorePrice
+    ? {
+        purchasePrice: resolveOriginalDisplay(
+          formatFixedDecimal(storePrice?.purchasePrice),
+          formatFixedDecimal(baselineStorePrice.purchasePrice),
+        ),
+        retailPrice: resolveOriginalDisplay(
+          formatFixedDecimal(storePrice?.retailPrice),
+          formatFixedDecimal(baselineStorePrice.retailPrice),
+        ),
+        discountPercent: resolveOriginalDisplay(
+          formatPercentValue(normalizedStoreDiscountRate),
+          formatPercentValue(baselineDiscountRate),
+        ),
+        discountedRetailPrice: resolveOriginalDisplay(
+          formatCurrency(discountedRetailPrice),
+          formatCurrency(baselineDiscountedRetailPrice),
+        ),
+      }
+    : undefined;
+  const retailGpTrend = baselineStorePrice
+    ? getMarginTrend(
+        calcGrossMarginPercent(storePrice?.retailPrice, storePrice?.purchasePrice),
+        calcGrossMarginPercent(
+          baselineStorePrice.retailPrice,
+          baselineStorePrice.purchasePrice,
+        ),
+      )
+    : null;
+  const discountedRetailGpTrend = baselineStorePrice
+    ? getMarginTrend(
+        calcGrossMarginPercent(discountedRetailPrice, storePrice?.purchasePrice),
+        calcGrossMarginPercent(
+          baselineDiscountedRetailPrice,
+          baselineStorePrice.purchasePrice,
+        ),
+      )
+    : null;
+  const storeDisplayName = selectedStore?.storeName || selectedStoreCode;
+  const handleOpenStorePicker = () => {
+    if (!isProductQueryBusy()) {
+      setStorePickerVisible(true);
+    }
+  };
   const renderCameraScanner = () => {
     if (!isFocused) {
       return null;
@@ -3840,15 +3966,14 @@ function ProductQueryContent() {
       ]}
       edges={["top", "left", "right"]}
     >
-      <QueryHeader
-        storeName={selectedStore?.storeName || selectedStoreCode}
-        canSelectStore={canSelectStore}
-        storeLocked={editorStoreScope.locked}
-        onStorePress={() => {
-          if (!isProductQueryBusy()) {
-            setStorePickerVisible(true);
-          }
-        }}
+      <SearchPanel
+        value={keyword}
+        loading={loading || storesLoading || scannerInputBlocked}
+        lastHitLabel={detail ? undefined : lastHitLabel}
+        refreshing={refreshing}
+        onChangeText={setKeyword}
+        onFocus={pauseHiddenScannerFocus}
+        onBlur={resumeHiddenScannerFocusLater}
         onScanPress={() => {
           if (isProductQueryBusy()) {
             return;
@@ -3857,17 +3982,9 @@ function ProductQueryContent() {
           updateCameraSheetSession({ type: "open" }, cameraScanModeRef.current);
         }}
         onRefreshPress={() => void handleRefresh()}
-        refreshing={refreshing}
-      />
-
-      <SearchPanel
-        value={keyword}
-        loading={loading || storesLoading || scannerInputBlocked}
-        lastHitLabel={detail ? undefined : lastHitLabel}
-        onChangeText={setKeyword}
-        onFocus={pauseHiddenScannerFocus}
-        onBlur={resumeHiddenScannerFocusLater}
         onOpenPrintSettings={() => setPrintSettingsVisible(true)}
+        onCreateProduct={access.canCreateStoreProducts && detail ? openCreateProductModal : undefined}
+        createProductDisabled={createProductBusy}
         onSubmit={() => void handleLookup()}
         onClear={handleClear}
       />
@@ -3895,7 +4012,18 @@ function ProductQueryContent() {
         contentContainerStyle={styles.content}
         pointerEvents={scannerInputBlocked ? "none" : "auto"}
       >
-        {access.canCreateStoreProducts ? (
+        {!storePrice ? (
+          // 门店名已移入价格卡页眉；未查到商品或当前分店无价格记录时在这里保留切换入口。
+          <View style={styles.storeRow}>
+            <StoreSwitchButton
+              storeName={storeDisplayName}
+              canSelectStore={canSelectStore}
+              storeLocked={editorStoreScope.locked}
+              onPress={handleOpenStorePicker}
+            />
+          </View>
+        ) : null}
+        {access.canCreateStoreProducts && !detail ? (
           <View style={styles.createProductBar}>
             <Button
               icon="plus"
@@ -3977,42 +4105,45 @@ function ProductQueryContent() {
               barcode={detail.barcode}
               productType={detail.productType}
               grade={detail.grade}
+              variant={hasCodeSection && editorTab === "codes" ? "compact" : "full"}
+              mainRetailPrice={formatFixedDecimal(storePrice?.retailPrice)}
               onPressProductType={() => setProductTypeDialogVisible(true)}
+              onOpenInsights={
+                !isIosReviewSessionActive() ? handleOpenProductInsights : undefined
+              }
+              insightsDisabled={scannerInputBlocked}
             />
-
-            {!isIosReviewSessionActive() ? (
-              <Button
-                icon="chart-timeline-variant"
-                mode="outlined"
-                onPress={handleOpenProductInsights}
-                disabled={scannerInputBlocked}
-              >
-                {t("common:tabs.productInsights")}
-              </Button>
-            ) : null}
 
             {hasCodeSection ? (
               <View accessibilityRole="tablist" style={styles.editorTabs}>
-                <Pressable
-                  accessibilityRole="tab"
-                  accessibilityState={{ selected: editorTab === "price" }}
-                  onPress={() => setEditorTab("price")}
-                  style={[styles.editorTab, editorTab === "price" ? styles.editorTabActive : null]}
-                >
-                  <Text style={[styles.editorTabText, editorTab === "price" ? styles.editorTabTextActive : null]}>
-                    {t("sections.priceAndLabels")}
-                  </Text>
-                </Pressable>
-                <Pressable
-                  accessibilityRole="tab"
-                  accessibilityState={{ selected: editorTab === "codes" }}
-                  onPress={() => setEditorTab("codes")}
-                  style={[styles.editorTab, editorTab === "codes" ? styles.editorTabActive : null]}
-                >
-                  <Text style={[styles.editorTabText, editorTab === "codes" ? styles.editorTabTextActive : null]}>
-                    {t("sections.codes")}
-                  </Text>
-                </Pressable>
+                {([
+                  ["price", t("sections.priceTab"), dirtyCount > 0],
+                  [
+                    "codes",
+                    t("sections.codesTab", { count: codeSections.count }),
+                    dirtyCodeIds.size > 0,
+                  ],
+                ] as const).map(([tab, label, tabDirty]) => {
+                  const selected = editorTab === tab;
+                  return (
+                    <Pressable
+                      key={tab}
+                      accessibilityRole="tab"
+                      accessibilityState={{ selected }}
+                      accessibilityHint={tabDirty ? t("sections.unsaved") : undefined}
+                      onPress={() => setEditorTab(tab)}
+                      style={[styles.editorTab, selected ? styles.editorTabActive : null]}
+                    >
+                      <Text
+                        style={[styles.editorTabText, selected ? styles.editorTabTextActive : null]}
+                        numberOfLines={1}
+                      >
+                        {label}
+                      </Text>
+                      {tabDirty ? <View style={styles.editorTabDot} /> : null}
+                    </Pressable>
+                  );
+                })}
               </View>
             ) : null}
 
@@ -4022,15 +4153,35 @@ function ProductQueryContent() {
 
               {storePrice ? (
                 <StorePriceStrategyCard
-                  storeName={storePrice.storeName}
+                  storeName={storePrice.storeName || storeDisplayName}
+                  canSelectStore={canSelectStore}
+                  storeLocked={editorStoreScope.locked}
+                  onStorePress={handleOpenStorePicker}
                   purchasePrice={storePurchaseInput}
                   retailPrice={storeRetailInput}
                   retailGp={retailGp}
+                  retailGpTrend={retailGpTrend}
                   discountPercent={formatPercentValue(
                     normalizedStoreDiscountRate,
                   )}
                   discountedRetailPrice={formatCurrency(discountedRetailPrice)}
                   discountedRetailGp={discountedRetailGp}
+                  discountedRetailGpTrend={discountedRetailGpTrend}
+                  originalValues={storePriceOriginals}
+                  footer={
+                    canSyncToOtherStores && selectedStoreCode ? (
+                      <SyncToOtherStoresSection
+                        variant="inline"
+                        productCode={detail.productCode}
+                        storeCode={selectedStoreCode}
+                        storeName={storePrice.storeName ?? selectedStore?.storeName}
+                        hasUnsavedChanges={isStorePriceDirty(detail, initialDetail)}
+                        disabled={saving}
+                        onSaveBeforeSync={handleSaveAll}
+                        onMessage={setSnackbarMessage}
+                      />
+                    ) : null
+                  }
                   autoPricing={storePrice.isAutoPricing}
                   isSpecialProduct={storePrice.isSpecialProduct}
                   rate={formatFixedDecimal(storePrice.rate)}
@@ -4083,17 +4234,18 @@ function ProductQueryContent() {
                     : () => void handlePrint("bigDiscount")
                 }
                 onOpenSettings={() => setPrintSettingsVisible(true)}
-              />
-
-              <StoreClearancePriceCard
-                clearanceBarcode={clearancePrice?.clearanceBarcode}
-                clearancePrice={clearancePriceInput}
-                isPrintingClearance={printingAction === "clearance"}
-                onEditClearancePrice={openClearancePriceEditor}
-                onPrintClearance={
-                  printingAction && printingAction !== "clearance"
-                    ? undefined
-                    : () => void handlePrint("clearance")
+                footer={
+                  <StoreClearancePriceCard
+                    clearanceBarcode={clearancePrice?.clearanceBarcode}
+                    clearancePrice={clearancePriceInput}
+                    isPrintingClearance={printingAction === "clearance"}
+                    onEditClearancePrice={openClearancePriceEditor}
+                    onPrintClearance={
+                      printingAction && printingAction !== "clearance"
+                        ? undefined
+                        : () => void handlePrint("clearance")
+                    }
+                  />
                 }
               />
               </View>
@@ -4101,16 +4253,11 @@ function ProductQueryContent() {
 
             {hasCodeSection && editorTab === "codes" ? (
               <View style={styles.secondarySection}>
-                <Text variant="titleSmall" style={styles.secondaryTitle}>
-                  {t("sections.codes")}
-                </Text>
-                {detail.productType === 1 ||
-                (detail.productType !== 2 &&
-                  detail.setCodeCount > 0 &&
-                  detail.multiCodeCount === 0) ? (
+                {codeSections.showSet ? (
                   <SetCodeCompactSection
                     items={detail.setCodes}
                     savingItemId={savingItemId}
+                    dirtyItemIds={dirtyCodeIds}
                     printingItemId={
                       printingAction?.startsWith("set:")
                         ? printingAction.slice(4)
@@ -4132,10 +4279,11 @@ function ProductQueryContent() {
                     onLoadMore={handleLoadMoreCodes}
                   />
                 ) : null}
-                {detail.productType === 2 || detail.multiCodeCount > 0 ? (
+                {codeSections.showMulti ? (
                   <MultiCodeCompactList
                     items={detail.multiCodes}
                     savingItemId={savingItemId}
+                    dirtyItemIds={dirtyCodeIds}
                     printingItemId={
                       printingAction?.startsWith("multi:")
                         ? printingAction.slice(6)
@@ -4191,11 +4339,17 @@ function ProductQueryContent() {
         visible={dirtyCount > 0 && !scannerInputBlocked}
         dirtyCount={dirtyCount}
         saving={saving}
+        savingAndPrinting={savingAndPrinting}
         onReset={handleReset}
         onSaveAll={() => void handleSaveAll()}
         onSaveAndReturn={
           invoiceReturnState
             ? () => void handleSaveAndReturnToInvoices()
+            : undefined
+        }
+        onSaveAndPrint={
+          !invoiceReturnState && storePrice
+            ? () => void handleSaveAndPrint()
             : undefined
         }
       />
@@ -4500,55 +4654,38 @@ function ProductQueryContent() {
               </View>
             </Modal>
 
-            <Modal
-              visible={Boolean(codeAddModal)}
+            <CodeAddSheet
+              visible={Boolean(codeAddModal) && !codeAddScannerVisible}
+              codeType={codeAddModal?.codeType ?? "set"}
+              barcode={codeAddModal?.value ?? ""}
+              retailPrice={codeAddModal?.retailPrice ?? ""}
+              unitRetailPrice={detail?.storePrice?.retailPrice}
+              onChangeBarcode={(value) =>
+                setCodeAddModal((current) =>
+                  current ? { ...current, value } : current,
+                )
+              }
+              onChangeRetailPrice={(retailPrice) =>
+                setCodeAddModal((current) =>
+                  current ? { ...current, retailPrice } : current,
+                )
+              }
+              onScan={() => setCodeAddScannerVisible(true)}
               onDismiss={() => setCodeAddModal(null)}
-              contentContainerStyle={styles.textEditModal}
-            >
-              <View style={styles.textEditModalContent}>
-                <Text variant="titleMedium" style={styles.textEditModalTitle}>
-                  {codeAddModal?.codeType === "set"
-                    ? t("setCode.addTitle")
-                    : t("multiCode.addTitle")}
-                </Text>
-                <TextInput
-                  style={styles.textEditInput}
-                  value={codeAddModal?.value ?? ""}
-                  onChangeText={(value) =>
-                    setCodeAddModal((current) =>
-                      current ? { ...current, value } : current,
-                    )
-                  }
-                  placeholder={t("setCode.barcode")}
-                  autoFocus
-                  selectTextOnFocus
-                />
-                {codeAddModal?.codeType === "set" ? (
-                  <TextInput
-                    style={styles.textEditInput}
-                    value={codeAddModal.retailPrice}
-                    onChangeText={(retailPrice) =>
-                      setCodeAddModal((current) =>
-                        current ? { ...current, retailPrice } : current,
-                      )
-                    }
-                    placeholder={t("setCode.retail")}
-                    keyboardType="decimal-pad"
-                  />
-                ) : null}
-                <View style={styles.textEditModalFooter}>
-                  <Button mode="text" onPress={() => setCodeAddModal(null)}>
-                    {t("common:actions.cancel")}
-                  </Button>
-                  <Button
-                    mode="contained"
-                    onPress={() => void handleConfirmCodeAdd()}
-                  >
-                    {t("common:actions.apply")}
-                  </Button>
-                </View>
-              </View>
-            </Modal>
+              onSubmit={() => void handleConfirmCodeAdd()}
+            />
+            {codeAddModal && codeAddScannerVisible ? (
+              <CreateBarcodeScanner
+                onDismiss={() => setCodeAddScannerVisible(false)}
+                onScan={(barcode) => {
+                  // 只回填条码，不触发查询或保存；提交仍由面板按钮走原新增流程。
+                  setCodeAddModal((current) =>
+                    current ? { ...current, value: barcode } : current,
+                  );
+                  setCodeAddScannerVisible(false);
+                }}
+              />
+            ) : null}
 
             <Modal
               visible={productTypeDialogVisible}
@@ -4786,6 +4923,12 @@ const styles = StyleSheet.create({
   returnContextMeta: {
     color: "#475467",
   },
+  storeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    minHeight: 36,
+    paddingHorizontal: 4,
+  },
   createProductBar: {
     alignItems: "flex-start",
     paddingTop: 8,
@@ -4826,27 +4969,37 @@ const styles = StyleSheet.create({
   firstScreenSection: {
     gap: 8,
   },
+  // 紧凑分段：价格 / 编码 两个页签只占 34pt，把首屏高度留给内容。
   editorTabs: {
     flexDirection: "row",
-    minHeight: 44,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#D0D5DD",
+    minHeight: 34,
+    borderWidth: 1,
+    borderColor: "#D0D5DD",
+    borderRadius: 8,
+    overflow: "hidden",
     backgroundColor: "#FFFFFF",
   },
   editorTab: {
     flex: 1,
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    borderBottomWidth: 3,
-    borderBottomColor: "transparent",
+    paddingVertical: 6,
   },
   editorTabActive: {
-    borderBottomColor: "#1677FF",
+    backgroundColor: "#E8F1FF",
   },
   editorTabText: {
     color: "#475467",
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: "600",
+  },
+  editorTabDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    marginLeft: 6,
+    backgroundColor: "#F79009",
   },
   editorTabTextActive: {
     color: "#0958D9",
@@ -4855,11 +5008,6 @@ const styles = StyleSheet.create({
   secondarySection: {
     gap: 8,
     paddingTop: 4,
-  },
-  secondaryTitle: {
-    fontWeight: "700",
-    color: "#111827",
-    paddingHorizontal: 4,
   },
   emptyBlock: {
     borderRadius: 12,

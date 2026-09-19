@@ -5324,6 +5324,136 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task PatchAsync_OEMPrice_自动下发后为价格变化的分店登记待换标签_特殊商品不建任务()
+        {
+            const string productCode = "P-PATCH-NOTIFY";
+            await SeedPatchProductAsync(
+                productCode,
+                domesticPrice: 1.1m,
+                oemPrice: 10m,
+                importPrice: 3.3m,
+                productPurchasePrice: 3.3m,
+                productRetailPrice: 10m
+            );
+            await SeedPriceNotificationStoresAsync(productCode);
+            var (service, summary) = CreatePriceNotifyingService();
+
+            var result = await service.PatchAsync(
+                productCode,
+                new WarehouseProductPatchDto { OEMPrice = 12m },
+                "张伟"
+            );
+
+            Assert.NotNull(result);
+            Assert.True(result!.Success, result.Message);
+            var tasks = await _db.Queryable<StorePriceUpdateTask>()
+                .Where(task => task.ProductCode == productCode)
+                .ToListAsync();
+            // N1：10 → 12 被自动下发覆盖，货架标签仍是 10 → 待换标签
+            // N2：原本就是 12，标签没过期 → 不建任务；N3：特殊商品 → 不建任务
+            var task = Assert.Single(tasks);
+            Assert.Equal("N1", task.StoreCode);
+            Assert.Equal(StorePriceUpdateTaskKinds.LabelOnly, task.Kind);
+            Assert.Equal(10m, task.ShelfRetailPrice);
+            Assert.Equal(12m, task.StoreRetailPrice);
+            Assert.Equal("张伟", task.InitiatorName);
+            Assert.Equal(1, task.ChangeCount);
+            Assert.Equal(1, summary.GetSummary()!.LabelOnlyStores);
+        }
+
+        /// <summary>三家分店：N1 与旧价一致（会被覆盖）、N2 已是新价、N3 为特殊商品。</summary>
+        private async Task SeedPriceNotificationStoresAsync(string productCode)
+        {
+            await BlazorApp.Api.Data.StorePriceUpdateTaskSchemaMigrator.EnsureAsync(_db, NullLogger.Instance);
+            foreach (var (storeCode, retail, special) in new[] { ("N1", 10m, false), ("N2", 12m, false), ("N3", 9m, true) })
+            {
+                await _db.Insertable(new Store { StoreCode = storeCode, StoreName = storeCode, IsActive = true })
+                    .ExecuteCommandAsync();
+                await _db.Insertable(
+                        new StoreRetailPrice
+                        {
+                            StoreCode = storeCode,
+                            ProductCode = productCode,
+                            StoreProductCode = storeCode + productCode,
+                            StoreRetailPriceValue = retail,
+                            IsSpecialProduct = special,
+                            IsActive = true,
+                        }
+                    )
+                    .ExecuteCommandAsync();
+            }
+        }
+
+        /// <summary>按生产方式装配：审计服务与仓库商品服务都注入真实的价格任务服务。</summary>
+        private (ProductWarehouseReactService Service, BlazorApp.Api.Services.React.PriceNotificationSummaryAccessor Summary)
+            CreatePriceNotifyingService()
+        {
+            var configuration = new ConfigurationBuilder().Build();
+            var context = CreateSqlSugarContext(_db);
+            var summary = new BlazorApp.Api.Services.React.PriceNotificationSummaryAccessor();
+            var taskService = new BlazorApp.Api.Services.React.StorePriceUpdateTaskService(
+                context,
+                NullLogger<BlazorApp.Api.Services.React.StorePriceUpdateTaskService>.Instance,
+                configuration,
+                summary,
+                Mock.Of<IServiceProvider>()
+            );
+            var historyService = new WarehouseProductChangeHistoryService(
+                context,
+                NullLogger<WarehouseProductChangeHistoryService>.Instance,
+                Mock.Of<ICurrentUserService>(),
+                taskService
+            );
+            var service = new ProductWarehouseReactService(
+                context,
+                CreateHqSqlSugarContext(),
+                NullLogger<ProductWarehouseReactService>.Instance,
+                configuration,
+                new ItemBarcodeService(context, NullLogger<ItemBarcodeService>.Instance, configuration),
+                Mock.Of<IMapper>(),
+                Mock.Of<IDataSyncFullService>(),
+                historyService,
+                CreateDefaultTranslationService(),
+                taskService
+            );
+            return (service, summary);
+        }
+
+        [Fact]
+        public async Task FullUpdateAsync_Web编辑改零售价覆盖分店后_为价格变化的分店登记待换标签()
+        {
+            // 回归：Web 编辑表单走 full-update，它自己覆盖全部分店零售价，不经过 UpsertActiveStoreRetailPricesAsync。
+            const string productCode = "P-FULL-NOTIFY";
+            await SeedPriceSyncProductAsync(productCode, 3.3m, 10m, 3.3m, 10m);
+            await SeedPriceNotificationStoresAsync(productCode);
+            var (service, summary) = CreatePriceNotifyingService();
+
+            var result = await service.FullUpdateAsync(
+                productCode,
+                new WarehouseProductFullUpdateDto { IsActive = true, ProductType = 0, OEMPrice = 12m },
+                "admin"
+            );
+
+            Assert.True(result.Success, result.Message);
+            Assert.All(
+                await _db.Queryable<StoreRetailPrice>().Where(x => x.ProductCode == productCode).ToListAsync(),
+                price => Assert.Equal(12m, price.StoreRetailPriceValue)
+            );
+            var tasks = await _db.Queryable<StorePriceUpdateTask>()
+                .Where(task => task.ProductCode == productCode)
+                .ToListAsync();
+            // N1：货架标签 10 → 现价 12 → 待换标签；N2 原本就是 12 → 不建；N3 特殊商品 → 不建
+            var task = Assert.Single(tasks);
+            Assert.Equal("N1", task.StoreCode);
+            Assert.Equal(StorePriceUpdateTaskStatuses.Pending, task.Status);
+            Assert.Equal(StorePriceUpdateTaskKinds.LabelOnly, task.Kind);
+            Assert.Equal(10m, task.ShelfRetailPrice);
+            Assert.Equal(12m, task.StoreRetailPrice);
+            Assert.Equal("admin", task.InitiatorName);
+            Assert.Equal(1, summary.GetSummary()!.LabelOnlyStores);
+        }
+
+        [Fact]
         public async Task PatchAsync_MinOrderQuantity_NarrowUpdateDoesNotWriteOtherWarehouseColumns()
         {
             const string productCode = "P-PATCH-NARROW-MIN";

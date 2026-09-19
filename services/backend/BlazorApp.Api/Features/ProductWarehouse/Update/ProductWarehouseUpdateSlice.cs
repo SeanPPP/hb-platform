@@ -299,6 +299,17 @@ internal sealed class ProductWarehouseUpdateSlice
             // 5. 强联动：批量更新 StoreRetailPrice（主表零售价/进货价覆盖）
             var mainRetail = dto.OEMPrice ?? product.RetailPrice;
             var mainPurchase = dto.ImportPrice ?? product.PurchasePrice;
+            // 覆盖前的分店零售价就是货架标签上的价格，下面的循环会就地改写，必须先留存，
+            // 否则无法为分店登记「待换标签」通知。
+            var overwrittenStorePrices = storeRetailPrices
+                .Where(srp => !string.IsNullOrWhiteSpace(srp.StoreCode))
+                .Select(srp => new StorePriceOverwrite(
+                    srp.StoreCode!,
+                    productCode,
+                    srp.StoreRetailPriceValue,
+                    srp.DiscountRate
+                ))
+                .ToList();
             foreach (var srp in storeRetailPrices)
             {
                 srp.StoreRetailPriceValue = mainRetail;
@@ -318,6 +329,7 @@ internal sealed class ProductWarehouseUpdateSlice
                         srp.UpdatedAt,
                     })
                     .ExecuteCommandAsync();
+                await RecordStorePriceOverwritesAsync(overwrittenStorePrices, effectiveUpdatedBy);
             }
 
             // 6. 强联动：批量更新 StoreMultiCodeProduct

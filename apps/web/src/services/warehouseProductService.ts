@@ -1,6 +1,7 @@
 import type { ApiResponse } from '../types/api'
 import type { SyncResult } from '../types/container'
 import request from '../utils/request'
+import { normalizePriceNotificationSummary, type PriceNotificationSummary } from '../utils/priceNotification'
 import {
   HqProductSyncPollingCancelledError,
   HqProductSyncPollingTimeoutError,
@@ -257,6 +258,13 @@ export interface WarehouseProductBatchUpdateJobResult {
   expiresAt?: string
   message?: string
   result?: WarehouseImportActionResult
+  /** 后台任务不在请求作用域内拿不到响应头，通知汇总随任务快照返回；null = 本次未涉及价格通知。 */
+  priceNotification?: PriceNotificationSummary | null
+}
+
+/** 会触发分店价格通知的写接口：调用方通过 onResponse 读取 X-Price-Notification 响应头。 */
+export interface WarehouseProductWriteRequestOptions {
+  onResponse?: (response: Response) => void
 }
 
 export type WarehouseProductBatchUpdatePollingOptions = HqProductSyncPollingOptions
@@ -716,6 +724,7 @@ function normalizeWarehouseProductBatchUpdateJob(
     expiresAt: readString(value.expiresAt, value.ExpiresAt),
     message: readString(value.message, value.Message),
     result: normalizeWarehouseProductBatchUpdateResult(rawResult),
+    priceNotification: normalizePriceNotificationSummary(value.priceNotification ?? value.PriceNotification),
   }
 }
 
@@ -1096,9 +1105,11 @@ export async function getWarehouseProductHqSyncJob(
 export async function updateWarehouseProductFull(
   productCode: string,
   payload: UpdateWarehouseProductFullPayload,
+  requestOptions: WarehouseProductWriteRequestOptions = {},
 ): Promise<{ success: boolean; message?: string }> {
   return request(`${API_BASE}/${productCode}/full-update`, {
     method: 'PUT',
+    onResponse: requestOptions.onResponse,
     data: {
       ProductName: payload.productName,
       EnglishName: payload.englishName,
@@ -1128,13 +1139,14 @@ export async function updateWarehouseProductFull(
 export async function patchWarehouseProduct(
   productCode: string,
   payload: PatchWarehouseProductPayload,
+  requestOptions: WarehouseProductWriteRequestOptions = {},
 ): Promise<{ success: boolean; message?: string }> {
   return request.patch(`${API_BASE}/${encodeURIComponent(productCode)}`, {
     ...(payload.minOrderQuantity !== undefined ? { MinOrderQuantity: payload.minOrderQuantity } : {}),
     ...(payload.domesticPrice !== undefined ? { DomesticPrice: payload.domesticPrice } : {}),
     ...(payload.importPrice !== undefined ? { ImportPrice: payload.importPrice } : {}),
     ...(payload.oemPrice !== undefined ? { OEMPrice: payload.oemPrice } : {}),
-  })
+  }, { onResponse: requestOptions.onResponse })
 }
 
 export async function batchToggleWarehouseProductsActive(

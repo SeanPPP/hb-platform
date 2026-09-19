@@ -10,6 +10,8 @@ export interface RequestOptions {
   signal?: AbortSignal
   cache?: RequestCache
   skipAuthRedirect?: boolean
+  /** 仅在最终成功的响应上回调，供调用方读取响应头（如 X-Price-Notification）；回调异常不影响请求结果。 */
+  onResponse?: (response: Response) => void
 }
 
 export class RequestError extends Error {
@@ -154,6 +156,14 @@ async function rawFetch<T>(url: string, options: RequestOptions = {}): Promise<{
   return { response, payload }
 }
 
+function notifyResponse(options: RequestOptions, response: Response) {
+  try {
+    options.onResponse?.(response)
+  } catch {
+    // 读取响应头只是附加信息，不能让它把一次成功的保存变成失败。
+  }
+}
+
 async function request<T>(url: string, options: RequestOptions = {}): Promise<T> {
   const { skipAuthRedirect = false } = options
   const normalizedUrl = url.replace(API_BASE_URL, '')
@@ -181,6 +191,7 @@ async function request<T>(url: string, options: RequestOptions = {}): Promise<T>
       if (refreshed) {
         const retryResult = await rawFetch<T>(url, options)
         if (retryResult.response.ok) {
+          notifyResponse(options, retryResult.response)
           return retryResult.payload
         }
       }
@@ -208,6 +219,7 @@ async function request<T>(url: string, options: RequestOptions = {}): Promise<T>
     throw new RequestError(message, response.status, payload)
   }
 
+  notifyResponse(options, response)
   return payload as T
 }
 

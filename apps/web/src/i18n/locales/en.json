@@ -1572,6 +1572,10 @@
         "lastChangedAt": "Last Price Change (Brisbane)"
       }
     },
+    "priceUpdateTasks": {
+      "entry": "Price update tasks",
+      "title": "Price Update Tasks"
+    },
     "discountRate": "Discount Rate",
     "autoPricing": "Auto Pricing",
     "changeHistory": {

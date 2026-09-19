@@ -1,0 +1,177 @@
+{
+  "warehouse": {
+    "priceUpdateTasks": {
+      "subtitle": "Monitor how stores apply warehouse price changes and replace shelf labels (read-only)",
+      "loadFailed": "Failed to load price update tasks",
+      "empty": "No data for the current filters",
+      "total": "{{count}} records",
+      "tabs": {
+        "byStore": "By store",
+        "byProduct": "By product",
+        "tasks": "Task details"
+      },
+      "filters": {
+        "store": "All stores",
+        "allKinds": "All types",
+        "initiator": "Initiator",
+        "keyword": "Item no. / name / barcode",
+        "hqSyncFailedOnly": "HQ sync failures only"
+      },
+      "kind": {
+        "PriceUpdate": "Price update",
+        "LabelOnly": "Label pending"
+      },
+      "status": {
+        "Pending": "Pending",
+        "Completed": "Completed",
+        "Cancelled": "Cancelled",
+        "All": "All"
+      },
+      "state": {
+        "Completed": "Completed",
+        "LabelOnly": "Label pending",
+        "PriceUpdate": "Price update",
+        "Skipped": "Skipped"
+      },
+      "tags": {
+        "priceUpdate": "Price {{count}}",
+        "labelOnly": "Label {{count}}"
+      },
+      "summary": {
+        "pending": "Pending",
+        "pendingHint": "Price update {{priceUpdate}} · Label pending {{labelOnly}}",
+        "completed": "Completed in range",
+        "completedHint": "Completion rate {{percent}}%",
+        "overdue": "Pending over {{days}} days",
+        "overdueHint": "{{count}} stores involved",
+        "hqSyncFailed": "HQ sync failed",
+        "hqSyncFailedHint": "Click to view details",
+        "priceUpdate": "Price update",
+        "priceUpdateHint": "Store price not yet updated to warehouse price",
+        "labelOnly": "Label pending",
+        "labelOnlyHint": "Price updated, shelf label still shows old price",
+        "clickToView": "Click to view"
+      },
+      "columns": {
+        "store": "Store",
+        "storeCode": "Store code",
+        "storeName": "Store name",
+        "pending": "Pending",
+        "completed": "Completed",
+        "completionRate": "Completion rate",
+        "oldestPending": "Oldest pending",
+        "lastCompleted": "Last handled",
+        "lastCompletedBy": "Last handled by",
+        "lastCompletedAt": "Last handled at",
+        "product": "Product",
+        "itemNumber": "Item no.",
+        "productName": "Product name",
+        "barcode": "Barcode",
+        "change": "Change",
+        "changeCount": "Change count",
+        "initiator": "Initiator",
+        "source": "Source",
+        "initiatorAndSource": "Initiator / Source",
+        "initiatedAt": "Initiated at",
+        "progress": "Store progress",
+        "image": "Image",
+        "kind": "Type",
+        "priceChange": "Price change",
+        "priceFrom": "Before",
+        "priceTo": "After",
+        "status": "Status",
+        "completedBy": "Handled by",
+        "completedAt": "Handled at",
+        "labelStatus": "Label status",
+        "hqSync": "HQ sync",
+        "pendingPriceUpdate": "Price update",
+        "pendingLabelOnly": "Label pending"
+      },
+      "change": {
+        "retailPrice": "Retail price → {{value}}",
+        "discount": "Suggested discount → {{value}}",
+        "count": "{{count}} changes"
+      },
+      "discount": {
+        "none": "No discount",
+        "off": "{{percent}}% off"
+      },
+      "priceChange": {
+        "shelf": "Label",
+        "current": "Current",
+        "store": "Store",
+        "warehouse": "Warehouse"
+      },
+      "initiator": {
+        "system": "System"
+      },
+      "sources": {
+        "WarehouseProducts": "Warehouse product edit",
+        "MobileWarehouse": "Mobile warehouse maintenance",
+        "BatchUpdate": "Batch price update",
+        "WarehouseAutoSync": "Warehouse auto sync",
+        "StoreSync": "Store sync",
+        "StoreSyncWithStore": "Store sync from {{store}}",
+        "LocalSupplierInvoice": "Supplier invoice",
+        "DomesticImport": "Domestic product import",
+        "StoreOrderImportPriceVariance": "Order price variance",
+        "DataSync": "HQ data sync",
+        "Container": "Container",
+        "DomesticProduct": "Domestic purchase product",
+        "NonDomesticImport": "Non-HB product import",
+        "StoreOrder": "Store order",
+        "LegacyApi": "Legacy product API",
+        "Other": "Other entry"
+      },
+      "age": {
+        "today": "Today",
+        "days": "{{count}} days"
+      },
+      "waiting": {
+        "days": "Waiting {{count}} days",
+        "hours": "Waiting {{count}} hours"
+      },
+      "relative": {
+        "justNow": "Just now",
+        "minutes": "{{count}} min ago",
+        "hours": "{{count}} h ago",
+        "days": "{{count}} d ago"
+      },
+      "completionMode": {
+        "Printed": "Printed",
+        "MarkedReplaced": "Marked replaced",
+        "KeptStorePrice": "Kept store price",
+        "PriceAligned": "Price already aligned"
+      },
+      "storeCard": {
+        "labelOnly": "Price updated · label pending",
+        "priceUpdate": "Store price still {{price}}",
+        "skipped": "Special product, skipped by rule"
+      },
+      "labelStatus": {
+        "pending": "Label pending",
+        "waitingPrice": "Awaiting price update"
+      },
+      "hqSync": {
+        "pending": "Pending",
+        "processing": "Syncing",
+        "retrying": "Retrying",
+        "succeeded": "Synced",
+        "blocked": "Failed",
+        "superseded": "Superseded"
+      },
+      "progressFilter": {
+        "label": "Progress",
+        "incomplete": "Not fully completed",
+        "all": "All"
+      },
+      "export": {
+        "button": "Export",
+        "empty": "Nothing to export for the current filters",
+        "success": "Exported {{count}} records",
+        "failed": "Export failed",
+        "fileName": "price-update-tasks"
+      }
+    }
+  }
+}

@@ -134,6 +134,10 @@ public sealed class WarehouseProductBatchUpdateJobService
                     CloneRequest(state.Request),
                     state.UpdatedBy
                 );
+                // 任务在自己的 DI 作用域内执行，通知汇总也在这个作用域里累积；用 GetService 兼容未注册的测试容器。
+                state.PriceNotification = scope.ServiceProvider
+                    .GetService<IPriceNotificationSummaryAccessor>()
+                    ?.GetSummary();
                 var status = ResolveStatus(result);
                 CompleteJob(state, status, result, ResolveMessage(status, result));
             }
@@ -384,6 +388,7 @@ public sealed class WarehouseProductBatchUpdateJobService
                 ExpiresAt = state.ExpiresAt,
                 Message = state.Message,
                 Result = CloneResult(state.Result),
+                PriceNotification = state.PriceNotification,
             };
         }
     }
@@ -579,5 +584,6 @@ public sealed class WarehouseProductBatchUpdateJobService
         public DateTime? ExpiresAt { get; set; }
         public string? Message { get; set; }
         public WarehouseProductBatchUpdateResultDto? Result { get; set; }
+        public PriceNotificationSummaryDto? PriceNotification { get; set; }
     }
 }

@@ -59,6 +59,18 @@ namespace BlazorApp.Api.Interfaces.React
             List<string>? accessibleStoreCodes
         );
 
+        /// <summary>
+        /// 与上面的重载行为一致，但允许调用方决定是否入队 HQ 投影。
+        /// 目前仅"价格更新通知"使用：其 HQ 同步由配置开关控制，后期可能关闭。
+        /// </summary>
+        Task<ApiResponse<StoreProductStorePriceDto>> UpdateStorePriceAsync(
+            string uuid,
+            UpdateStoreProductPriceDto request,
+            string updatedBy,
+            List<string>? accessibleStoreCodes,
+            bool enqueueHqProjection
+        );
+
         Task<ApiResponse<SyncStoreProductWarehousePriceResultDto>> SyncWarehousePriceAsync(
             string uuid,
             SyncStoreProductWarehousePriceRequestDto request,

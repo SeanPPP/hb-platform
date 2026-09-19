@@ -100,6 +100,7 @@ const ContainersPage = lazy(() => import('../pages/Warehouse/Containers'))
 const WarehouseLocationsPage = lazy(() => import('../pages/Warehouse/Locations'))
 const WarehouseProductsPage = lazy(() => import('../pages/Warehouse/Products'))
 const RetailPriceChangesPage = lazy(() => import('../pages/Warehouse/RetailPriceChanges'))
+const PriceUpdateTasksPage = lazy(() => import('../pages/Warehouse/PriceUpdateTasks'))
 const WarehouseProductRecordsPage = lazy(() => import('../pages/Warehouse/ProductRecords'))
 const StoreOrderDetailPage = lazy(() => import('../pages/Warehouse/StoreOrders/Detail'))
 const StoreOrderInvoicePage = lazy(() => import('../pages/Warehouse/StoreOrders/Invoice'))
@@ -522,6 +523,18 @@ export const appRoutes: AppRouteItem[] = [
           activeMenu: '/warehouse/products',
         },
         element: <RetailPriceChangesPage />,
+      },
+      {
+        // 静态路径必须排在 :productCode 动态路由之前，否则会被当成商品编码匹配。
+        path: '/warehouse/products/price-update-tasks',
+        meta: {
+          title: 'warehouse.priceUpdateTasks.title',
+          hidden: true,
+          keepAlive: true,
+          accessKey: 'canManageWarehouseProducts',
+          activeMenu: '/warehouse/products',
+        },
+        element: <PriceUpdateTasksPage />,
       },
       {
         path: '/warehouse/products/:productCode/records',

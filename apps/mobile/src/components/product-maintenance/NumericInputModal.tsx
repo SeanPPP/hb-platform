@@ -8,6 +8,10 @@ interface NumericInputModalProps {
   value: string;
   allowDecimal?: boolean;
   confirmLabel?: string;
+  /** 输入为空时的显示文本，默认 "0"。留空与 0 语义不同的字段（如建议折扣）用它区分。 */
+  emptyValueText?: string;
+  /** 数值下方的说明或预告文字。 */
+  helperText?: string;
   onChangeValue: (value: string) => void;
   onConfirm: () => void;
   onDismiss: () => void;
@@ -53,6 +57,8 @@ export function NumericInputModal({
   value,
   allowDecimal = true,
   confirmLabel,
+  emptyValueText,
+  helperText,
   onChangeValue,
   onConfirm,
   onDismiss,
@@ -68,9 +74,14 @@ export function NumericInputModal({
           </Text>
           <View style={styles.valueCard}>
             <Text variant="headlineMedium" style={styles.valueText}>
-              {value || "0"}
+              {value || emptyValueText || "0"}
             </Text>
           </View>
+          {helperText ? (
+            <Text variant="bodySmall" style={styles.helperText}>
+              {helperText}
+            </Text>
+          ) : null}
 
           <View style={styles.keypad}>
             {["1", "2", "3", "4", "5", "6", "7", "8", "9"].map((digit) => (
@@ -158,6 +169,9 @@ const styles = StyleSheet.create({
   valueText: {
     color: "#111827",
     fontWeight: "700",
+  },
+  helperText: {
+    color: "#475467",
   },
   keypad: {
     flexDirection: "row",

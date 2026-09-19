@@ -126,7 +126,11 @@ if (schemaCommand.Mode != SchemaCommandMode.Server)
 // --------------------- 基础Web API服务 ---------------------
 // 注册MVC控制器服务，启用基于控制器的API端点
 builder
-    .Services.AddControllers()
+    .Services.AddControllers(options =>
+    {
+        // 仓库改价后把"已通知几家分店"的汇总写入响应头，供前端提示"已发送到通知列表"。
+        options.Filters.Add<BlazorApp.Api.Filters.PriceNotificationHeaderFilter>();
+    })
     .AddJsonOptions(options =>
     {
         // 使用 camelCase 命名策略（前端 JavaScript 标准）
@@ -413,6 +417,8 @@ builder.Services.AddCors(options =>
                 .WithOrigins(corsOrigins) // 📍 指定允许的源（域名列表）
                 .AllowAnyMethod() // 🔓 允许所有 HTTP 方法（GET, POST, PUT, DELETE 等）
                 .AllowAnyHeader() // 🔓 允许所有请求头
+                // 跨域场景下浏览器默认读不到自定义响应头，必须显式暴露。
+                .WithExposedHeaders(BlazorApp.Api.Filters.PriceNotificationHeaderFilter.HeaderName)
                 .AllowCredentials(); // 🍪 允许发送凭据（Cookie、Authorization 头等）
             // ⚠️ 这是 Cookie 认证的关键配置
             // ✅ 前端请求时必须设置 withCredentials: true 或 credentials: 'include'
@@ -905,6 +911,16 @@ builder.Services.AddScoped<
     BlazorApp.Api.Interfaces.React.IWarehouseProductChangeHistoryService,
     BlazorApp.Api.Services.React.WarehouseProductChangeHistoryService
 >();
+// 分店价格更新通知：汇总收集器按请求隔离；任务服务挂在上面的审计收口上，覆盖所有仓库改价入口。
+builder.Services.AddScoped<
+    BlazorApp.Api.Interfaces.React.IPriceNotificationSummaryAccessor,
+    BlazorApp.Api.Services.React.PriceNotificationSummaryAccessor
+>();
+builder.Services.AddScoped<
+    BlazorApp.Api.Interfaces.React.IStorePriceUpdateTaskService,
+    BlazorApp.Api.Services.React.StorePriceUpdateTaskService
+>();
+builder.Services.AddHostedService<BlazorApp.Api.Services.Background.StorePriceUpdateTaskReconcileWorker>();
 builder.Services.AddScoped<
     BlazorApp.Api.Interfaces.React.IWarehouseRetailPriceChangeService,
     BlazorApp.Api.Services.React.WarehouseRetailPriceChangeService

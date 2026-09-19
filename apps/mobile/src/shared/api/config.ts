@@ -3,7 +3,8 @@ import { AppAsyncStorage } from "@/shared/storage/async-storage";
 const API_HOST_STORAGE_KEY = "hbweb_api_host";
 export const DEFAULT_API_HOST = normalizeApiHost(process.env.EXPO_PUBLIC_API_BASE_URL) || "hotbargain.vip";
 export const API_PROTOCOL = "http";
-export const API_PORT = "5002";
+// 本机常同时跑多个 worktree 的后端（5002/5003/...），开发时可用 EXPO_PUBLIC_API_PORT 指向其中一个；未设置时仍是发布端口。
+export const API_PORT = process.env.EXPO_PUBLIC_API_PORT?.trim() || "5002";
 export const API_PATH = "/api";
 const PRODUCTION_API_HOST = "hotbargain.vip";
 export const DEFAULT_API_BASE_URL = buildApiBaseUrl(DEFAULT_API_HOST);

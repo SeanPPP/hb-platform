@@ -249,7 +249,7 @@ namespace BlazorApp.Shared.Constants
                 new(Permissions.Container.Delete, "删除货柜", "货柜管理", "Web 页面 /warehouse/containers - 删除货柜"),
                 // Warehouse.Manage 是历史总权限：前端把它当作四项仓库管理权限的并集，后端预订/零售价变更/商品记录接口也直接放行。
                 new(Permissions.Warehouse.Manage, "管理仓库", "仓库管理", "仓库兼容总权限 - 等价于同时拥有仓库商品、订货、分类、标签四项管理权限，并放行预订、零售价变更、商品记录接口"),
-                new(Permissions.Warehouse.ManageProducts, "管理仓库商品", "仓库管理", "Web 页面 /warehouse/products、/warehouse/products/retail-price-changes、/warehouse/product-grade-management 与移动端「仓库」- 管理仓库商品、零售价变更和等级"),
+                new(Permissions.Warehouse.ManageProducts, "管理仓库商品", "仓库管理", "Web 页面 /warehouse/products、/warehouse/products/retail-price-changes、/warehouse/products/price-update-tasks、/warehouse/product-grade-management 与移动端「仓库」- 管理仓库商品、零售价变更、建议折扣、分店价格变更任务执行情况和等级"),
                 new(Permissions.Warehouse.ManageCategories, "管理仓库分类", "仓库管理", "Web 页面 /warehouse/categories - 管理仓库分类"),
                 new(Permissions.Warehouse.ManageLocations, "管理仓库标签", "仓库管理", "Web 页面 /warehouse/locations - 管理仓库标签"),
                 new(Permissions.Warehouse.ManageOrders, "管理仓库订货", "仓库管理", "Web 页面 /warehouse/store-orders、/warehouse/preorders、/warehouse/store-order-import-price-variance 与移动端「订货单」- 管理分店订货、预订、配货单和发票"),
@@ -263,6 +263,8 @@ namespace BlazorApp.Shared.Constants
                 new(Permissions.StoreProducts.View, "查看分店商品", "分店商品管理", "Web 页面 /pos-admin/store-product-price 与移动端「商品查询」「商品洞察」- 查看分店商品价格"),
                 new(Permissions.StoreProducts.Create, "创建分店商品", "分店商品管理", "Web 页面 /pos-admin/store-product-price - 创建分店商品价格"),
                 new(Permissions.StoreProducts.Edit, "编辑分店商品", "分店商品管理", "Web 页面 /pos-admin/store-product-price - 编辑分店商品价格"),
+                new(Permissions.StoreProducts.PriceUpdates, "处理价格更新通知", "分店商品管理", "移动端「价格更新」- 查看本店价格更新与换标签通知，按仓库价更新本店零售价/折扣，打印或标记标签"),
+                new(Permissions.StoreProducts.SyncToOtherStores, "同步价格到其它分店", "分店商品管理", "移动端「商品维护」- 把本店零售价/折扣同步到其它可管理分店，被同步分店会收到「待换标签」通知"),
                 new(Permissions.PosProducts.View, "查看 POS 商品管理", "POS 管理", "Web 页面 /pos-admin/products - 查看 POS 商品、分类、套装码、同步和完整性检查入口"),
                 new(Permissions.PosProducts.Manage, "管理 POS 商品", "POS 管理", "Web 页面 /pos-admin/products - 编辑 POS 商品、批量改价、同步总部/分店、维护分类/套装码、执行完整性修复"),
                 new(Permissions.PosTerminal.Sales.View, "查看销售页", "POS 销售", "收银端销售页 - 进入销售页面"),
