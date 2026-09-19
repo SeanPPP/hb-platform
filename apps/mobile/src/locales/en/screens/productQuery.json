@@ -3,7 +3,8 @@
   "currentStore": "Store: {{store}}",
   "search": {
     "placeholder": "Barcode / item / code",
-    "lastHit": "Last hit: {{value}}"
+    "lastHit": "Last hit: {{value}}",
+    "scan": "Scan to search"
   },
   "actions": {
     "returnToInvoiceDetails": "Back to invoice details",
@@ -12,7 +13,9 @@
     "unsavedTitle": "Unsaved store price changes",
     "unsavedDescription": "Leaving now will discard the current store price changes. Product type, clearance price, set codes, and multi-codes that were saved separately are kept.",
     "continueEditing": "Continue editing",
-    "discardAndReturn": "Discard and leave"
+    "discardAndReturn": "Discard and leave",
+    "saveAndPrint": "Save & print",
+    "reset": "Reset"
   },
   "createProduct": {
     "action": "Create product",
@@ -146,12 +149,18 @@
   "sections": {
     "moreInfo": "More details",
     "priceAndLabels": "Price & labels",
-    "codes": "Set / multi codes"
+    "codes": "Set / multi codes",
+    "priceTab": "Price",
+    "codesTab": "Codes {{count}}",
+    "unsaved": "Unsaved changes"
   },
   "promotion": {
     "title": "Promotion",
     "unnamed": "Unnamed promotion",
-    "rule": "{{count}} items for ${{price}}"
+    "rule": "{{count}} items for ${{price}}",
+    "active": "On promotion",
+    "until": "until {{date}}",
+    "more": "{{count}} promotions"
   },
   "hero": {
     "unnamedProduct": "Unnamed product",
@@ -173,7 +182,11 @@
       "normal": "Regular products use the main barcode's own store price.",
       "set": "Set retail can be customized, and purchase price follows the main barcode retail-to-cost ratio.",
       "multi": "Multi barcode retail and purchase prices always stay aligned with the current store price of the main barcode."
-    }
+    },
+    "showBarcode": "Show barcode",
+    "hideBarcode": "Hide",
+    "mainBarcode": "Main {{value}}",
+    "noBarcode": "No barcode"
   },
   "storePrice": {
     "fallbackTitle": "Store product info",
@@ -184,7 +197,22 @@
     "rate": "Rate {{value}}",
     "calculating": "Calculating...",
     "auto": "Auto",
-    "special": "Special"
+    "special": "Special",
+    "original": "{{label}} · was {{value}}",
+    "on": "On",
+    "off": "Off",
+    "autoPricing": "Auto pricing",
+    "specialProduct": "Special",
+    "rateLabel": "Rate",
+    "gp": "GP",
+    "discountedGp": "Disc. GP",
+    "strategy": "Strategy",
+    "grid": {
+      "purchase": "Cost",
+      "retail": "Retail",
+      "discountPercent": "Discount %",
+      "discountedRetail": "Disc. price"
+    }
   },
   "clearancePrice": {
     "title": "Store clearance price",
@@ -192,7 +220,9 @@
     "barcode": "Clearance barcode",
     "price": "Clearance price",
     "save": "Save clearance",
-    "pendingBarcode": "Generated after save"
+    "pendingBarcode": "Generated after save",
+    "rowTitle": "Clearance",
+    "setAction": "Set price"
   },
   "setCode": {
     "title": "Set barcodes",
@@ -269,6 +299,26 @@
     "continuousPrint": "Auto print",
     "smallLabel": "Small label (60mm)",
     "quantity": "Print quantity",
-    "quantitySingleUse": "Single use"
+    "quantitySingleUse": "Single use",
+    "label": "Labels"
+  },
+  "codes": {
+    "loaded": "Loaded {{loaded}} / {{total}}",
+    "barcodeColumn": "Barcode",
+    "retailColumn": "Retail",
+    "setPriceColumn": "Set price",
+    "actionsColumn": "Actions",
+    "follow": "Follow",
+    "loadMore": "Load more ({{count}} left)",
+    "saveRow": "Save row",
+    "printRow": "Print row label"
+  },
+  "codeAdd": {
+    "submit": "Add to list",
+    "barcodePlaceholder": "Scan or enter barcode",
+    "setRetail": "Set retail price",
+    "unitPrice": "Unit ${{price}} × ?",
+    "equivalent": "≈ price of {{count}} units",
+    "scan": "Scan barcode"
   }
 }

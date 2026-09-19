@@ -215,7 +215,9 @@
     "loadFailed": "目标分店加载失败",
     "failed": "同步失败，请重试",
     "footerHint": "被同步的分店会收到一条待换标签通知",
-    "submit": "同步到 {{count}} 家分店"
+    "submit": "同步到 {{count}} 家分店",
+    "inlineEntry": "同步其它分店 · 零售价、折扣",
+    "inlineSaveAndSync": "保存并同步其它分店"
   },
   "suggestedDiscount": {
     "label": "建议折扣",

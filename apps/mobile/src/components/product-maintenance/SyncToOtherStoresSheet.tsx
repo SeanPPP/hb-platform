@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ActivityIndicator, Button, Card, Checkbox, Switch, Text } from "react-native-paper";
+import { ActivityIndicator, Button, Card, Checkbox, Icon, Switch, Text } from "react-native-paper";
 import { BusinessSheet } from "@/components/ui/BusinessSheet";
 import { getSyncTargets, syncToOtherStores } from "@/modules/price-updates/api";
 import { buildSyncToOtherStoresMessage } from "@/modules/price-updates/price-notification";
@@ -248,6 +248,8 @@ interface SyncToOtherStoresSectionProps {
   /** 分店价格有未保存修改：入口变为「保存并同步」，先保存成功才打开面板。 */
   hasUnsavedChanges: boolean;
   disabled?: boolean;
+  /** card：独立卡片（默认）；inline：嵌在价格卡底部的一行入口。 */
+  variant?: "card" | "inline";
   onSaveBeforeSync: () => Promise<boolean>;
   onMessage: (message: string) => void;
 }
@@ -259,6 +261,7 @@ export function SyncToOtherStoresSection({
   storeName,
   hasUnsavedChanges,
   disabled = false,
+  variant = "card",
   onSaveBeforeSync,
   onMessage,
 }: SyncToOtherStoresSectionProps) {
@@ -285,26 +288,52 @@ export function SyncToOtherStoresSection({
     setSheetVisible(true);
   };
 
+  const entryDisabled = disabled || saving;
+
   return (
     <>
-      <Card mode="contained" style={styles.entryCard}>
-        <Card.Content style={styles.entryContent}>
-          <View style={styles.flex}>
-            <Text variant="titleSmall" style={styles.entryTitle}>{t("syncSheet.entryTitle")}</Text>
-            <Text variant="bodySmall" style={styles.secondary}>{t("syncSheet.entrySubtitle")}</Text>
-          </View>
-          <Button
-            compact
-            mode="outlined"
-            icon="store-cog-outline"
-            loading={saving}
-            disabled={disabled || saving}
-            onPress={() => void handleOpen()}
-          >
-            {t(hasUnsavedChanges ? "syncSheet.entrySaveAndSync" : "syncSheet.entryAction")}
-          </Button>
-        </Card.Content>
-      </Card>
+      {variant === "inline" ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ disabled: entryDisabled, busy: saving }}
+          disabled={entryDisabled}
+          onPress={() => void handleOpen()}
+          style={({ pressed }) => [
+            styles.inlineEntry,
+            entryDisabled ? styles.inlineEntryDisabled : null,
+            pressed ? styles.inlineEntryPressed : null,
+          ]}
+        >
+          {saving ? (
+            <ActivityIndicator size={16} color={HB_COLORS.action} />
+          ) : (
+            <Icon source="swap-horizontal" size={18} color={HB_COLORS.action} />
+          )}
+          <Text variant="labelLarge" style={styles.inlineEntryText} numberOfLines={1}>
+            {t(hasUnsavedChanges ? "syncSheet.inlineSaveAndSync" : "syncSheet.inlineEntry")}
+          </Text>
+          <Icon source="chevron-right" size={18} color={HB_COLORS.textSecondary} />
+        </Pressable>
+      ) : (
+        <Card mode="contained" style={styles.entryCard}>
+          <Card.Content style={styles.entryContent}>
+            <View style={styles.flex}>
+              <Text variant="titleSmall" style={styles.entryTitle}>{t("syncSheet.entryTitle")}</Text>
+              <Text variant="bodySmall" style={styles.secondary}>{t("syncSheet.entrySubtitle")}</Text>
+            </View>
+            <Button
+              compact
+              mode="outlined"
+              icon="store-cog-outline"
+              loading={saving}
+              disabled={disabled || saving}
+              onPress={() => void handleOpen()}
+            >
+              {t(hasUnsavedChanges ? "syncSheet.entrySaveAndSync" : "syncSheet.entryAction")}
+            </Button>
+          </Card.Content>
+        </Card>
+      )}
       <SyncToOtherStoresSheet
         visible={sheetVisible}
         productCode={productCode}
@@ -339,4 +368,8 @@ const styles = StyleSheet.create({
   entryCard: { borderRadius: 12, borderWidth: 1, borderColor: "#E4E7EC", backgroundColor: "#fff" },
   entryContent: { flexDirection: "row", alignItems: "center", gap: HB_SPACING.xs, paddingVertical: 12 },
   entryTitle: { fontWeight: "700", color: "#111827" },
+  inlineEntry: { flexDirection: "row", alignItems: "center", gap: HB_SPACING.xs, minHeight: 44, paddingHorizontal: HB_SPACING.sm },
+  inlineEntryDisabled: { opacity: 0.5 },
+  inlineEntryPressed: { backgroundColor: HB_COLORS.surfaceMuted },
+  inlineEntryText: { flex: 1, minWidth: 0, color: HB_COLORS.action, fontWeight: "600" },
 });

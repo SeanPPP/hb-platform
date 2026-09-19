@@ -94,6 +94,14 @@ function FunctionButton({
           color={HB_COLORS.action}
           size={compact ? 23 : 21}
         />
+        {/* 常用功能格子窄：角标挂在图标右上角，不挤占文字宽度（英文 Price updates 否则会折行）。 */}
+        {compact && pendingCount > 0 ? (
+          <View style={[styles.countBadge, styles.iconCornerBadge]}>
+            <Text variant="labelSmall" style={styles.countBadgeText}>
+              {visiblePendingCount}
+            </Text>
+          </View>
+        ) : null}
       </View>
       <Text
         variant={compact ? "labelLarge" : "bodyMedium"}
@@ -101,7 +109,7 @@ function FunctionButton({
       >
         {label}
       </Text>
-      {pendingCount > 0 ? (
+      {!compact && pendingCount > 0 ? (
         <View style={styles.countBadge}>
           <Text variant="labelSmall" style={styles.countBadgeText}>
             {visiblePendingCount}
@@ -727,6 +735,16 @@ const styles = StyleSheet.create({
     borderRightWidth: StyleSheet.hairlineWidth,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderColor: HB_COLORS.outlineMuted,
+  },
+  iconCornerBadge: {
+    position: "absolute",
+    top: -8,
+    right: -10,
+    minWidth: 20,
+    minHeight: 18,
+    paddingHorizontal: 5,
+    borderWidth: 1.5,
+    borderColor: HB_COLORS.white,
   },
   quickIcon: {
     width: 34,
