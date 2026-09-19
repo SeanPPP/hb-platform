@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using AutoMapper;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Features.PosmSalesOrders;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
@@ -33,7 +34,7 @@ public sealed class PosmSalesOrderReactServiceTests : IDisposable
                 InitKeyType = InitKeyType.Attribute,
             }
         );
-        _db.CodeFirst.InitTables(typeof(SalesOrder), typeof(SalesOrderDetail), typeof(Store), typeof(Product));
+        _db.CodeFirst.InitTables(typeof(SalesOrder), typeof(SalesOrderDetail), typeof(PaymentDetail), typeof(Store), typeof(Product));
     }
 
     [Fact]
@@ -58,6 +59,11 @@ public sealed class PosmSalesOrderReactServiceTests : IDisposable
         await SeedOrderAsync("ORDER-001", new DateTime(2026, 7, 1, 9, 0, 0), "DEVICE-A");
         await SeedOrderAsync("ORDER-002", new DateTime(2026, 7, 1, 10, 0, 0), "DEVICE-A");
         await SeedOrderAsync("ORDER-003", new DateTime(2026, 7, 1, 11, 0, 0), "DEVICE-A");
+        // 商品名经商品主档解析成编码后再匹配明细。
+        await SeedProductAsync("jm-001", "保温杯");
+        await SeedProductAsync("jm-002", "纸巾");
+        await SeedProductAsync("jm-003", "保温杯 大号");
+        await SeedProductAsync("jm-004", "收纳箱");
         // 同一订单同一货号两行（不同折扣），命中后必须合并为一条并累计数量。
         await SeedDetailAsync("ORDER-001", "jm-001", "BAR-001", "保温杯");
         await SeedDetailAsync("ORDER-001", "jm-001", "BAR-001", "保温杯");
@@ -92,6 +98,10 @@ public sealed class PosmSalesOrderReactServiceTests : IDisposable
         var orderOne = list.Items.Single(item => item.OrderGuid == "ORDER-001");
         Assert.Equal(3, orderOne.QuantityTotal);
         Assert.Equal(2, orderOne.SkuCount);
+        // 列表本身也随单带回命中商品，Web 与移动端不必二次解析关键词。
+        var listHit = Assert.Single(orderOne.MatchedProducts!);
+        Assert.Equal("jm-001", listHit.ProductCode);
+        Assert.Equal(2, listHit.Quantity);
     }
 
     [Fact]
@@ -131,9 +141,10 @@ public sealed class PosmSalesOrderReactServiceTests : IDisposable
         var hit = Assert.Single(matched["ORDER-ITEM"]);
         Assert.Equal("81C5AF52", hit.ProductCode);
         Assert.Equal("HB034-80", hit.ItemNumber);
-        // 主档没有对应商品的编码不回带货号。
-        var otherMatched = await service.GetMatchedProductsAsync(new[] { "ORDER-OTHER" }, "别的");
+        // 主档没有的 POS 临时商品只能按完整编码命中，且不回带货号；明细里的商品名不再模糊匹配。
+        var otherMatched = await service.GetMatchedProductsAsync(new[] { "ORDER-OTHER" }, "OTHER-CODE");
         Assert.Null(Assert.Single(otherMatched["ORDER-OTHER"]).ItemNumber);
+        Assert.Empty(await service.GetMatchedProductsAsync(new[] { "ORDER-OTHER" }, "别的"));
     }
 
     public static TheoryData<string, string, string> SortCases =>
@@ -149,6 +160,8 @@ public sealed class PosmSalesOrderReactServiceTests : IDisposable
             { "orderTime", "desc", "ORDER-C" },
             { "skuCount", "asc", "ORDER-B" },
             { "skuCount", "desc", "ORDER-C" },
+            { "quantity", "asc", "ORDER-B" },
+            { "quantity", "desc", "ORDER-C" },
             { "itemCount", "asc", "ORDER-B" },
             { "itemCount", "desc", "ORDER-C" },
             { "totalAmount", "asc", "ORDER-B" },
@@ -182,22 +195,106 @@ public sealed class PosmSalesOrderReactServiceTests : IDisposable
     }
 
     [Theory]
-    [InlineData("ORDER-ALPHA")]
-    [InlineData("DEVICE-ALPHA")]
+    [InlineData("1B4D21")]
+    [InlineData("hb-alpha-01")]
     [InlineData("BAR-ALPHA")]
     [InlineData("苹果汁")]
-    public async Task GetSalesOrderListAsync_通用关键词匹配订单设备条码和商品名(string keyword)
+    [InlineData("apple juice")]
+    public async Task GetSalesOrderListAsync_关键词按订单号片段与主档商品匹配(string keyword)
     {
-        await SeedOrderAsync("ORDER-ALPHA", new DateTime(2026, 7, 2, 10, 30, 0), "DEVICE-ALPHA");
-        await SeedDetailAsync("ORDER-ALPHA", "P-ALPHA", "BAR-ALPHA", "苹果汁");
-        await SeedOrderAsync("ORDER-BETA", new DateTime(2026, 7, 2, 11, 30, 0), "DEVICE-BETA");
-        await SeedDetailAsync("ORDER-BETA", "P-BETA", "BAR-BETA", "橙汁");
+        await SeedOrderAsync("01A0B860-80A2-7A2A-B0F2-C9B5AF1B4D21", new DateTime(2026, 7, 2, 10, 30, 0), "DEVICE-ALPHA");
+        await SeedDetailAsync("01A0B860-80A2-7A2A-B0F2-C9B5AF1B4D21", "P-ALPHA", "BAR-ALPHA", "苹果汁");
+        await SeedOrderAsync("01A0B861-0000-7000-8000-000000BE7A00", new DateTime(2026, 7, 2, 11, 30, 0), "DEVICE-BETA");
+        await SeedDetailAsync("01A0B861-0000-7000-8000-000000BE7A00", "P-BETA", "BAR-BETA", "橙汁");
+        await SeedProductAsync("P-ALPHA", "苹果汁", itemNumber: "HB-ALPHA-01", barcode: "BAR-ALPHA", englishName: "Apple Juice");
+        await SeedProductAsync("P-BETA", "橙汁", itemNumber: "HB-BETA-01", barcode: "BAR-BETA", englishName: "Orange Juice");
 
         var result = await CreateService().GetSalesOrderListAsync(
             new PosmSalesOrderQueryParams { Keyword = $" {keyword} " }
         );
 
-        Assert.Equal("ORDER-ALPHA", Assert.Single(result.Items).OrderGuid);
+        Assert.Equal("01A0B860-80A2-7A2A-B0F2-C9B5AF1B4D21", Assert.Single(result.Items).OrderGuid);
+    }
+
+    [Theory]
+    [InlineData("DEVICE-ALPHA")]
+    [InlineData("ORDER-ALPHA")]
+    public async Task GetSalesOrderListAsync_关键词不再匹配收银机号或非订单号格式的订单号(string keyword)
+    {
+        // 收银机有独立筛选；订单号只在关键词像订单号片段（≥4 位十六进制）时匹配，省下全范围逐单比较。
+        await SeedOrderAsync("ORDER-ALPHA", new DateTime(2026, 7, 2, 10, 30, 0), "DEVICE-ALPHA");
+        await SeedDetailAsync("ORDER-ALPHA", "P-ALPHA", "BAR-ALPHA", "苹果汁");
+
+        var result = await CreateService().GetSalesOrderListAsync(
+            new PosmSalesOrderQueryParams { Keyword = keyword }
+        );
+
+        Assert.Empty(result.Items);
+        Assert.Equal(0, result.Total);
+    }
+
+    [Fact]
+    public async Task GetSalesOrderListAsync_关键词匹配到的主档商品过多时拒绝查询()
+    {
+        var products = Enumerable.Range(1, PosmSalesOrderListRules.MaxKeywordProductCodes + 1)
+            .Select(index => new Product { ProductCode = $"WIDE-{index:D6}", ProductName = "宽泛商品" })
+            .ToList();
+        await _db.Insertable(products).ExecuteCommandAsync();
+
+        var error = await Assert.ThrowsAsync<PosmSalesOrderQueryRejectedException>(() =>
+            CreateService().GetSalesOrderListAsync(new PosmSalesOrderQueryParams { Keyword = "宽泛" })
+        );
+
+        Assert.Equal(PosmSalesOrderListRules.ErrorKeywordTooBroad, error.ErrorCode);
+        // 命中商品提示接口遇到过宽关键词只返回空结果，不抛出。
+        Assert.Empty(await CreateService().GetMatchedProductsAsync(new[] { "ANY" }, "宽泛"));
+    }
+
+    [Fact]
+    public async Task GetSalesOrderListAsync_按状态汇总不受状态筛选影响且总数只算当前状态()
+    {
+        await SeedOrderAsync("PAID-1", new DateTime(2026, 7, 2, 9, 0, 0), "D", totalAmount: 10m, discountAmount: 1m);
+        await SeedOrderAsync("PAID-2", new DateTime(2026, 7, 2, 9, 5, 0), "D", totalAmount: 20m, discountAmount: 0m);
+        await SeedOrderAsync("REFUND-1", new DateTime(2026, 7, 2, 9, 10, 0), "D", totalAmount: -5m, discountAmount: 0m, status: OrderType.Refunded);
+        await SeedOrderAsync("CANCEL-1", new DateTime(2026, 7, 2, 9, 15, 0), "D", totalAmount: 30m, discountAmount: 3m, status: OrderType.Cancelled);
+
+        var result = await CreateService().GetSalesOrderListAsync(
+            new PosmSalesOrderQueryParams { OrderType = OrderType.Refunded }
+        );
+
+        Assert.Equal("REFUND-1", Assert.Single(result.Items).OrderGuid);
+        Assert.Equal(1, result.Total);
+        var paid = result.Summary.Single(row => row.Status == (int)OrderType.Paid);
+        Assert.Equal(2, paid.OrderCount);
+        Assert.Equal(30m, paid.TotalAmount);
+        Assert.Equal(1m, paid.DiscountAmount);
+        Assert.Equal(-5m, result.Summary.Single(row => row.Status == (int)OrderType.Refunded).TotalAmount);
+        Assert.Equal(1, result.Summary.Single(row => row.Status == (int)OrderType.Cancelled).OrderCount);
+    }
+
+    [Fact]
+    public async Task GetSalesOrderListAsync_件数按明细数量之和筛选并补齐当前页支付方式()
+    {
+        await SeedOrderAsync("SMALL", new DateTime(2026, 7, 2, 9, 0, 0), "D");
+        await SeedDetailAsync("SMALL", "P-1", "B-1", "一", quantity: 1);
+        await SeedOrderAsync("BULK", new DateTime(2026, 7, 2, 9, 5, 0), "D");
+        await SeedDetailAsync("BULK", "P-1", "B-1", "一", quantity: 4);
+        await SeedDetailAsync("BULK", "P-2", "B-2", "二", quantity: 2);
+        await SeedPaymentAsync("BULK", 2);
+        await SeedPaymentAsync("BULK", 1);
+        await SeedPaymentAsync("BULK", 2);
+
+        var result = await CreateService().GetSalesOrderListAsync(
+            new PosmSalesOrderQueryParams { QuantityMin = 5, QuantityMax = 6 }
+        );
+
+        var item = Assert.Single(result.Items);
+        Assert.Equal("BULK", item.OrderGuid);
+        Assert.Equal(6, item.QuantityTotal);
+        Assert.Equal(2, item.SkuCount);
+        Assert.Equal(new[] { 1, 2 }, item.PaymentMethods);
+        // 不带关键词时不返回命中商品。
+        Assert.Null(item.MatchedProducts);
     }
 
     [Fact]
@@ -536,7 +633,8 @@ public sealed class PosmSalesOrderReactServiceTests : IDisposable
         int itemCount = 2,
         decimal totalAmount = 20m,
         decimal discountAmount = 2m,
-        decimal? storedActualAmount = null
+        decimal? storedActualAmount = null,
+        OrderType status = OrderType.Paid
     ) =>
         _db.Insertable(
                 new SalesOrder
@@ -549,7 +647,7 @@ public sealed class PosmSalesOrderReactServiceTests : IDisposable
                     TotalAmount = totalAmount,
                     DiscountAmount = discountAmount,
                     ActualAmount = storedActualAmount ?? totalAmount - discountAmount,
-                    Status = (int)OrderType.Paid,
+                    Status = (int)status,
                 }
             )
             .ExecuteCommandAsync();
@@ -558,7 +656,8 @@ public sealed class PosmSalesOrderReactServiceTests : IDisposable
         string orderGuid,
         string productCode,
         string barcode,
-        string productName
+        string productName,
+        int quantity = 1
     ) =>
         _db.Insertable(
                 new SalesOrderDetail
@@ -568,7 +667,38 @@ public sealed class PosmSalesOrderReactServiceTests : IDisposable
                     ProductCode = productCode,
                     Barcode = barcode,
                     ProductName = productName,
-                    Quantity = 1,
+                    Quantity = quantity,
+                }
+            )
+            .ExecuteCommandAsync();
+
+    private Task SeedProductAsync(
+        string productCode,
+        string productName,
+        string? itemNumber = null,
+        string? barcode = null,
+        string? englishName = null
+    ) =>
+        _db.Insertable(
+                new Product
+                {
+                    ProductCode = productCode,
+                    ProductName = productName,
+                    ItemNumber = itemNumber,
+                    Barcode = barcode,
+                    EnglishName = englishName,
+                }
+            )
+            .ExecuteCommandAsync();
+
+    private Task SeedPaymentAsync(string orderGuid, int paymentMethod) =>
+        _db.Insertable(
+                new PaymentDetail
+                {
+                    PaymentGuid = Guid.NewGuid().ToString("N"),
+                    OrderGuid = orderGuid,
+                    PaymentMethod = paymentMethod,
+                    Amount = 1m,
                 }
             )
             .ExecuteCommandAsync();

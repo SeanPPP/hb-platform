@@ -4,7 +4,10 @@ namespace BlazorApp.Api.Interfaces.React
 {
     public interface IPosmSalesOrderReactService
     {
-        Task<PagedListReactDto<PosmSalesOrderDto>> GetSalesOrderListAsync(PosmSalesOrderQueryParams queryParams);
+        /// <summary>
+        /// 收银记录分页列表与按状态汇总；关键词解析出的商品过多时抛出 PosmSalesOrderQueryRejectedException。
+        /// </summary>
+        Task<PosmSalesOrderListResultDto> GetSalesOrderListAsync(PosmSalesOrderQueryParams queryParams);
         Task<ApiResponse<PosmSalesOrderDetailResponse>> GetSalesOrderDetailAsync(string orderGuid);
 
         /// <summary>

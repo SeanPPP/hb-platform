@@ -8,7 +8,9 @@ import type {
   CompactSalesBoard,
   CompactSalesBoardChinaSupplier,
   CompactSalesBoardProduct,
+  CompactSalesBoardRequest,
   CompactSalesBoardStore,
+  CompactSalesBoardSummary,
   DateRange,
   ExecutiveBranchPerformance,
   ExecutiveHourlyTraffic,
@@ -26,7 +28,11 @@ export type {
   CompactSalesBoard,
   CompactSalesBoardChinaSupplier,
   CompactSalesBoardProduct,
+  CompactSalesBoardRequest,
+  CompactSalesBoardSortField,
+  CompactSalesBoardSortOrder,
   CompactSalesBoardStore,
+  CompactSalesBoardSummary,
   DateRange,
   ExecutiveBranchPerformance,
   ExecutiveHourlyTraffic,
@@ -217,6 +223,7 @@ function normalizeCompactStore(raw: unknown): CompactSalesBoardStore | null {
     domesticSupplierAmount: readNumber(record.domesticSupplierAmount ?? record.DomesticSupplierAmount),
     australianSupplierCode: readString(record.australianSupplierCode ?? record.AustralianSupplierCode) ?? '200',
     australianSupplierName: readString(record.australianSupplierName ?? record.AustralianSupplierName) ?? '200-hotbargain',
+    productCount: readNumber(record.productCount ?? record.ProductCount),
   }
 }
 
@@ -231,6 +238,20 @@ function normalizeCompactChinaSupplier(raw: unknown): CompactSalesBoardChinaSupp
     supplierName: readString(record.supplierName ?? record.SupplierName) ?? supplierCode,
     totalAmount: readNumber(record.totalAmount ?? record.TotalAmount),
     totalQuantity: readNumber(record.totalQuantity ?? record.TotalQuantity),
+    productCount: readNumber(record.productCount ?? record.ProductCount),
+  }
+}
+
+function normalizeCompactSummary(raw: unknown): CompactSalesBoardSummary {
+  const record = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  return {
+    totalAmount: readNumber(record.totalAmount ?? record.TotalAmount),
+    totalQuantity: readNumber(record.totalQuantity ?? record.TotalQuantity),
+    productCount: readNumber(record.productCount ?? record.ProductCount),
+    storeCount: readNumber(record.storeCount ?? record.StoreCount),
+    supplierCount: readNumber(record.supplierCount ?? record.SupplierCount),
+    overallAmount: readNumber(record.overallAmount ?? record.OverallAmount),
+    overallQuantity: readNumber(record.overallQuantity ?? record.OverallQuantity),
   }
 }
 
@@ -274,9 +295,13 @@ function normalizeCompactSalesBoard(payload: ApiResponse<CompactSalesBoard> | Co
       total: readNumber(productDetails.total ?? productDetails.Total),
       pageIndex: readNumber(productDetails.pageIndex ?? productDetails.PageIndex, 1),
       pageSize: readNumber(productDetails.pageSize ?? productDetails.PageSize),
+      scopeAmount: readNumber(productDetails.scopeAmount ?? productDetails.ScopeAmount),
     },
+    summary: normalizeCompactSummary(result.summary ?? result.Summary),
     statisticStatus: readString(result.statisticStatus ?? result.StatisticStatus),
     statisticMessage: readString(result.statisticMessage ?? result.StatisticMessage),
+    statisticUpdatedAt: readString(result.statisticUpdatedAt ?? result.StatisticUpdatedAt),
+    fromCache: (result.fromCache ?? result.FromCache) === true,
   }
 }
 
@@ -370,14 +395,8 @@ export async function getBranchSalesAggregate(
 }
 
 export async function getCompactSalesBoard(
-  dateRange: DateRange,
-  branchCodes?: string[],
-  chinaSupplierCodes?: string[],
-  productCode?: string,
-  pageIndex = 1,
-  pageSize = 80,
+  query: CompactSalesBoardRequest,
   signal?: AbortSignal,
-  forceRefresh = false,
 ): Promise<CompactSalesBoard> {
   const response = await request<ApiResponse<CompactSalesBoard> | CompactSalesBoard>(
     '/api/react/v1/dashboard/compact-sales-board',
@@ -385,14 +404,18 @@ export async function getCompactSalesBoard(
       method: 'GET',
       signal,
       params: {
-        startDate: dateRange.startDate,
-        endDate: dateRange.endDate,
-        branchCodes,
-        chinaSupplierCodes,
-        productCode,
-        pageIndex,
-        pageSize,
-        forceRefresh,
+        startDate: query.dateRange.startDate,
+        endDate: query.dateRange.endDate,
+        branchCodes: query.branchCodes,
+        selectedBranchCode: query.selectedBranchCode,
+        selectedChinaSupplierCode: query.selectedChinaSupplierCode,
+        selectedProductCode: query.selectedProductCode,
+        keyword: query.keyword?.trim() || undefined,
+        sortField: query.sortField,
+        sortOrder: query.sortOrder,
+        pageIndex: query.pageIndex ?? 1,
+        pageSize: query.pageSize ?? 80,
+        forceRefresh: query.forceRefresh ?? false,
       },
     },
   )
