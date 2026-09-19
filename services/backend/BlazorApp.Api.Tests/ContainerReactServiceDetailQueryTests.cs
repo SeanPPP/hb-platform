@@ -48,6 +48,140 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
             typeof(WarehouseCategory),
             typeof(StoreRetailPrice)
         );
+        // 明细查询用商品修改历史判定「本柜新品」；SQLite 下 long 自增主键需手写建表。
+        _localDb.Ado.ExecuteCommand(
+            """
+            CREATE TABLE WarehouseProductChangeHistory (
+                Id INTEGER PRIMARY KEY AUTOINCREMENT,
+                EventGuid TEXT NOT NULL,
+                ProductCode TEXT NOT NULL,
+                Action TEXT NOT NULL,
+                Source TEXT NOT NULL,
+                SourceReference TEXT NULL,
+                BatchGuid TEXT NULL,
+                ActorUserGuid TEXT NULL,
+                ActorName TEXT NOT NULL,
+                ActorType TEXT NOT NULL,
+                OccurredAtUtc TEXT NOT NULL,
+                ChangesJson TEXT NOT NULL
+            )
+            """
+        );
+    }
+
+    [Fact]
+    public async Task QueryContainerDetailsAsync_本柜建档后的商品仍应计为新商品且可筛选排序()
+    {
+        await SeedContainerAsync("C-OWN", "TGBU5893494");
+        // 已由本柜建档：主档存在，但仍是本柜新品。
+        await SeedDetailAsync("D-OWN-CREATED", "C-OWN", "P-OWN-CREATED", "HB301", oemPrice: 0m, localExists: true);
+        await SeedProductChangeHistoryAsync("P-OWN-CREATED", "Create", "C-OWN");
+        // 尚未建档：两种口径都是新商品。
+        await SeedDetailAsync("D-OWN-PENDING", "C-OWN", "P-OWN-PENDING", "HB302", oemPrice: 0m, localExists: false);
+        // 由其它货柜建档：对本柜来说是已有商品。
+        await SeedDetailAsync("D-OWN-OTHER", "C-OWN", "P-OWN-OTHER", "HB303", localExists: true);
+        await SeedProductChangeHistoryAsync("P-OWN-OTHER", "Create", "C-EARLIER");
+        // 本柜提交只更新了已有商品：不能被误判为新商品。
+        await SeedDetailAsync("D-OWN-UPDATED", "C-OWN", "P-OWN-UPDATED", "HB304", localExists: true);
+        await SeedProductChangeHistoryAsync("P-OWN-UPDATED", "BatchUpdate", "C-OWN");
+        var service = CreateService();
+
+        var all = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto { ContainerGuid = "C-OWN", PageSize = 50 }
+        );
+
+        var created = all.Items.Single(x => x.HGUID == "D-OWN-CREATED");
+        Assert.False(created.是否新商品);
+        Assert.True(created.IsContainerNewProduct);
+        Assert.True(all.Items.Single(x => x.HGUID == "D-OWN-PENDING").IsContainerNewProduct);
+        Assert.False(all.Items.Single(x => x.HGUID == "D-OWN-OTHER").IsContainerNewProduct);
+        Assert.False(all.Items.Single(x => x.HGUID == "D-OWN-UPDATED").IsContainerNewProduct);
+        Assert.Equal(2, all.TagStats.New);
+        Assert.Equal(2, all.TagStats.Existing);
+        // 缺零售价是建档前的操作提醒，仍只统计未建档商品。
+        Assert.Equal(1, all.TagStats.NoOemPrice);
+
+        var newOnly = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-OWN",
+                PageSize = 50,
+                NewProductStates = new List<string> { "new" },
+            }
+        );
+        Assert.Equal(
+            new[] { "D-OWN-CREATED", "D-OWN-PENDING" },
+            newOnly.Items.Select(x => x.HGUID).OrderBy(x => x).ToArray()
+        );
+
+        var existingTag = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-OWN",
+                PageSize = 50,
+                SelectedTags = new List<string> { "existing" },
+            }
+        );
+        Assert.Equal(
+            new[] { "D-OWN-OTHER", "D-OWN-UPDATED" },
+            existingTag.Items.Select(x => x.HGUID).OrderBy(x => x).ToArray()
+        );
+
+        var sorted = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-OWN",
+                PageSize = 50,
+                SortBy = "newProduct",
+                SortOrder = "descend",
+            }
+        );
+        Assert.All(sorted.Items.Take(2), item => Assert.True(item.IsContainerNewProduct));
+        Assert.All(sorted.Items.Skip(2), item => Assert.False(item.IsContainerNewProduct));
+    }
+
+    [Fact]
+    public async Task QueryContainerDetailsAsync_匹配方式全局路径的新商品统计与标签应按本柜新品口径()
+    {
+        await SeedContainerAsync("C-OWN-MATCH", "TGBU5893495");
+        await SeedDetailAsync("D-OWN-MATCH-CREATED", "C-OWN-MATCH", "P-OWN-MATCH-CREATED", "HB311", localExists: true);
+        await SeedProductChangeHistoryAsync("P-OWN-MATCH-CREATED", "Create", "C-OWN-MATCH");
+        await SeedDetailAsync("D-OWN-MATCH-OTHER", "C-OWN-MATCH", "P-OWN-MATCH-OTHER", "HB312", localExists: true);
+        var service = CreateService();
+
+        var result = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-OWN-MATCH",
+                PageSize = 50,
+                MatchTypes = new List<string> { "productCode", "supplierItem", "unmatched" },
+                SelectedTags = new List<string> { "new" },
+            }
+        );
+
+        Assert.Equal(1, result.TagStats.New);
+        Assert.Equal(1, result.TagStats.Existing);
+        var item = Assert.Single(result.Items);
+        Assert.Equal("D-OWN-MATCH-CREATED", item.HGUID);
+        Assert.True(item.IsContainerNewProduct);
+        Assert.False(item.是否新商品);
+    }
+
+    [Fact]
+    public async Task GetContainerProductsAsync_即将上新列表应保留本柜建档商品的新品标记()
+    {
+        await SeedContainerAsync("C-OWN-SOON", "OOLU6966452");
+        await SeedDetailAsync("D-OWN-SOON-CREATED", "C-OWN-SOON", "P-OWN-SOON-CREATED", "HB321", localExists: true);
+        await SeedProductChangeHistoryAsync("P-OWN-SOON-CREATED", "Create", "C-OWN-SOON");
+        await SeedDetailAsync("D-OWN-SOON-REPEAT", "C-OWN-SOON", "P-OWN-SOON-REPEAT", "HB322", localExists: true);
+        var service = CreateService();
+
+        var products = await service.GetContainerProductsAsync("C-OWN-SOON");
+
+        var created = products.Single(x => x.HGUID == "D-OWN-SOON-CREATED");
+        Assert.False(created.是否新商品);
+        Assert.True(created.IsContainerNewProduct);
+        Assert.False(products.Single(x => x.HGUID == "D-OWN-SOON-REPEAT").IsContainerNewProduct);
     }
 
     [Fact]
@@ -1684,6 +1818,25 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
                 }
             ).ExecuteCommandAsync();
         }
+    }
+
+    private async Task SeedProductChangeHistoryAsync(
+        string productCode,
+        string action,
+        string sourceReference
+    )
+    {
+        await _localDb.Insertable(
+            new WarehouseProductChangeHistory
+            {
+                ProductCode = productCode,
+                Action = action,
+                Source = "ContainerSubmit",
+                SourceReference = sourceReference,
+                ActorName = "测试",
+                ActorType = "User",
+            }
+        ).ExecuteCommandAsync();
     }
 
     private async Task SeedMatchScopeAsync(string containerCode)

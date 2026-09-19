@@ -186,6 +186,8 @@ import {
   getUpdateFieldSelectionState,
   hasContainerDetailProductCodeConflict,
   isContainerDetailColumnOrderCustomized,
+  isContainerDetailContainerNewProduct,
+  isContainerDetailCreatedContainerNewProduct,
   isContainerDetailSortField,
   isValidContainerFreightVolume,
   normalizeContainerFreightInput,
@@ -6040,7 +6042,14 @@ export default function ContainerDetailPage() {
         value,
         label: value === 'new' ? t('containers.tags.newProduct') : t('containers.tags.existingProduct'),
       }))),
-      render: (_, row) => (row.是否新商品 ? <Tag color="blue">{t('containers.tags.new')}</Tag> : <Tag>{t('containers.tags.existing')}</Tag>),
+      render: (_, row) => {
+        if (!isContainerDetailContainerNewProduct(row)) return <Tag>{t('containers.tags.existing')}</Tag>
+        const newTag = <Tag color="blue">{t('containers.tags.new')}</Tag>
+        // 列宽有限：本柜已建档的新品沿用同一个「新」标签，悬停说明已建档，避免与未建档混淆。
+        return isContainerDetailCreatedContainerNewProduct(row)
+          ? <Tooltip title={t('containers.tags.newCreatedHint')}>{newTag}</Tooltip>
+          : newTag
+      },
     },
     {
       title: renderColumnTitle('productType', t('containers.fields.productType')),
