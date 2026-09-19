@@ -1061,6 +1061,7 @@ builder.Services.AddScoped<ISalesDashboardCacheWarmer, SalesDashboardCacheWarmer
 builder.Services.AddScoped<IProductMovementReportService, ProductMovementReportService>();
 builder.Services.AddScoped<IBatchProductSalesAnalysisService, BatchProductSalesAnalysisService>();
 builder.Services.AddHostedService<BatchProductSalesDiscountWorker>();
+builder.Services.AddHostedService<ProductMovementReportSnapshotWorker>();
 builder.Services.AddScoped<
     IWarehouseProductFlowAnalysisService,
     WarehouseProductFlowAnalysisService
