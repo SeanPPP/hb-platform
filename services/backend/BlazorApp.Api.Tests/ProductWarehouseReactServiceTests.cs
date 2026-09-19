@@ -6,6 +6,7 @@ using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 using AutoMapper;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Features.ProductWarehouse;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
@@ -3078,6 +3079,331 @@ namespace BlazorApp.Api.Tests
             Assert.NotNull(detailItem);
             Assert.False(detailItem!.WarehouseIsActive);
             Assert.False(detailItem.IsActive);
+        }
+
+        [Fact]
+        public async Task LookupMobileProductsAsync_MatchesChineseEnglishCaseAndLocationCodes()
+        {
+            await SeedMobileLookupScenarioAsync(_db);
+
+            await AssertMobileLookupScenarioAsync(CreateService());
+        }
+
+        [Fact]
+        public void LookupMobileProductsAsync_SqlServerPatternEscapesLikeWildcards()
+        {
+            Assert.Equal(
+                "%50[%]OFF%",
+                ProductWarehouseMobileSlice.BuildSqlServerContainsPattern("50%OFF")
+            );
+            Assert.Equal(
+                "%HB[_]7%",
+                ProductWarehouseMobileSlice.BuildSqlServerContainsPattern("HB_7")
+            );
+            Assert.Equal(
+                "%[[]A]-01%",
+                ProductWarehouseMobileSlice.BuildSqlServerContainsPattern("[A]-01")
+            );
+            Assert.Equal(
+                "%不锈钢%",
+                ProductWarehouseMobileSlice.BuildSqlServerContainsPattern("不锈钢")
+            );
+        }
+
+        [Fact]
+        public void LookupMobileProductsAsync_SqlServerFilterUsesCandidateUnionAndLiteralDeleteFlags()
+        {
+            var filter = ProductWarehouseMobileSlice.MobileLookupSqlServerFilter;
+
+            // 先 UNION 候选再取货号前 50 个商品，避免宽 OR 跨 7 表逐行求值。
+            Assert.Contains("SELECT TOP 50 [mc].[ProductCode]", filter, StringComparison.Ordinal);
+            Assert.Equal(3, CountOccurrences(filter, " UNION SELECT "));
+            Assert.DoesNotContain("UNION ALL", filter, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("ORDER BY [mcp].[ItemNumber]", filter, StringComparison.Ordinal);
+            // 主数据编码为 nvarchar，候选统一转 varchar，与仓库编码比较时不转换索引列。
+            Assert.Equal(2, CountOccurrences(filter, "AS varchar(255))"));
+            // 判别列必须是字面量才能命中 IsDeleted=0 过滤索引。
+            Assert.Equal(8, CountOccurrences(filter, "[IsDeleted] = 0"));
+            Assert.DoesNotContain("LOWER(", filter, StringComparison.OrdinalIgnoreCase);
+            // 候选 9 列 + 外层复核 9 列，全部走 UPPER + BIN2 且共用同一参数。
+            Assert.Equal(18, CountOccurrences(filter, "COLLATE Latin1_General_100_BIN2 LIKE @mobileLookupPattern"));
+            Assert.Equal(18, CountOccurrences(filter, "UPPER(CAST("));
+            foreach (var column in new[]
+            {
+                "[w].[ProductCode]",
+                "[p].[ProductName]",
+                "[p].[ItemNumber]",
+                "[p].[Barcode]",
+                "[p].[LocalSupplierCode]",
+                "[s].[SupplierName]",
+                "[s].[SupplierCode]",
+                "[l].[LocationCode]",
+                "[l].[LocationBarcode]",
+            })
+            {
+                Assert.Contains($"UPPER(CAST({column} AS nvarchar(4000)))", filter, StringComparison.Ordinal);
+            }
+        }
+
+        [ProductWarehouseMobileLookupSqlServerFact]
+        [Trait("Category", "SQL")]
+        public async Task LookupMobileProductsAsync_SqlServerMatchesScenarioAndTreatsWildcardsLiterally()
+        {
+            var serverConnection = Environment.GetEnvironmentVariable(
+                ProductWarehouseMobileLookupSqlServerFactAttribute.ConnectionEnvironmentVariable
+            )!;
+            var databaseName = "hb_mobile_lookup_" + Guid.NewGuid().ToString("N");
+            var builder = new Microsoft.Data.SqlClient.SqlConnectionStringBuilder(serverConnection)
+            {
+                InitialCatalog = "master",
+            };
+            using var master = CreateSqlServerClient(builder.ConnectionString);
+            // 与生产同排序规则，确保中文、大小写与隐式转换行为一致。
+            await master.Ado.ExecuteCommandAsync(
+                $"CREATE DATABASE [{databaseName}] COLLATE Chinese_PRC_90_CI_AS"
+            );
+            try
+            {
+                builder.InitialCatalog = databaseName;
+                using var db = CreateSqlServerClient(builder.ConnectionString);
+                await CreateMobileLookupSqlServerSchemaAsync(db);
+                await SeedMobileLookupScenarioAsync(db);
+
+                var executedSql = new List<string>();
+                db.Aop.OnLogExecuting = (sql, _) => executedSql.Add(sql);
+                var service = CreateService(database: db);
+
+                await AssertMobileLookupScenarioAsync(service);
+
+                // SQL Server 分支按字面匹配 LIKE 通配符，诱饵商品不能被 % _ [ 误命中。
+                Assert.Equal(
+                    new[] { "MLK-PCT" },
+                    (await service.LookupMobileProductsAsync("50%off")).Select(item => item.ProductCode)
+                );
+                Assert.Equal(
+                    new[] { "MLK-UND" },
+                    (await service.LookupMobileProductsAsync("hb_7")).Select(item => item.ProductCode)
+                );
+                Assert.Equal(
+                    new[] { "MLK-BRK" },
+                    (await service.LookupMobileProductsAsync("[a]")).Select(item => item.ProductCode)
+                );
+
+                var lookupSql = Assert.Single(
+                    executedSql.Distinct(),
+                    sql => sql.Contains("[mc].[ProductCode]", StringComparison.Ordinal)
+                );
+                Assert.Contains("@mobileLookupPattern", lookupSql, StringComparison.Ordinal);
+                Assert.DoesNotContain("LOWER(", lookupSql, StringComparison.OrdinalIgnoreCase);
+            }
+            finally
+            {
+                await master.Ado.ExecuteCommandAsync(
+                    $"ALTER DATABASE [{databaseName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{databaseName}]"
+                );
+            }
+        }
+
+        private static SqlSugarClient CreateSqlServerClient(string connectionString) =>
+            new(new ConnectionConfig
+            {
+                ConnectionString = connectionString,
+                DbType = DbType.SqlServer,
+                IsAutoCloseConnection = true,
+                InitKeyType = InitKeyType.Attribute,
+                MoreSettings = new ConnMoreSettings(),
+            });
+
+        private static async Task CreateMobileLookupSqlServerSchemaAsync(ISqlSugarClient db)
+        {
+            db.CodeFirst.InitTables(
+                typeof(Product),
+                typeof(WarehouseProduct),
+                typeof(DomesticProduct),
+                typeof(ChinaSupplier),
+                typeof(ProductLocation),
+                typeof(Location),
+                typeof(ProductGrade)
+            );
+            // CodeFirst 默认建 nvarchar；按生产把仓库、货位、供应商相关列改回 varchar，
+            // 覆盖 varchar 列存中文供应商名、nvarchar/varchar 编码联接两类真实差异。
+            await db.Ado.ExecuteCommandAsync(
+                """
+                DECLARE @pk sysname = (
+                    SELECT name FROM sys.key_constraints
+                    WHERE parent_object_id = OBJECT_ID('WarehouseProduct') AND type = 'PK'
+                );
+                EXEC('ALTER TABLE [WarehouseProduct] DROP CONSTRAINT ' + @pk);
+                ALTER TABLE [WarehouseProduct] ALTER COLUMN [ProductCode] varchar(255) NOT NULL;
+                ALTER TABLE [WarehouseProduct] ADD CONSTRAINT [PK_WarehouseProduct_ProductCode] PRIMARY KEY ([ProductCode]);
+                CREATE NONCLUSTERED INDEX [IX_WarehouseProduct_ProductCode_NotDeleted]
+                    ON [WarehouseProduct]([ProductCode]) WHERE [IsDeleted] = (0);
+                ALTER TABLE [ProductLocation] ALTER COLUMN [ProductCode] varchar(50) NOT NULL;
+                ALTER TABLE [ChinaSupplier] ALTER COLUMN [SupplierCode] varchar(255) NULL;
+                ALTER TABLE [ChinaSupplier] ALTER COLUMN [SupplierName] varchar(255) NULL;
+                ALTER TABLE [Location] ALTER COLUMN [LocationCode] varchar(255) NULL;
+                ALTER TABLE [Location] ALTER COLUMN [LocationBarcode] varchar(255) NULL;
+                """
+            );
+        }
+
+        /// <summary>
+        /// 移动端查询共用场景：中文名称/供应商、英文大小写、货号、仓库编码、多货位商品、已删除商品、
+        /// 通配符诱饵以及超过 50 个命中的批量商品；SQLite 与 SQL Server 两条路径使用同一份数据。
+        /// </summary>
+        private static async Task SeedMobileLookupScenarioAsync(ISqlSugarClient db)
+        {
+            await db.Insertable(new ChinaSupplier
+            {
+                Guid = "mlk-supplier-cn",
+                SupplierCode = "HB201",
+                SupplierName = "义乌针织厂",
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var products = new (string Code, string Name, string ItemNumber, string Barcode, bool Deleted)[]
+            {
+                ("MLK-CN", "不锈钢汤勺", "HB201-01", "6900000000011", false),
+                ("MLK-EN", "Towel Rail Chrome", "HB202-02", "9300000000022", false),
+                ("MLK-LOC", "Loc Widget", "HB203-03", "9300000000033", false),
+                ("MLK-DEL", "Towel Deleted", "HB209-09", "9300000000099", true),
+                ("MLK-PCT", "Promo Sticker", "50%OFF-01", "9300000000044", false),
+                ("MLK-PCT-DECOY", "Promo Decoy", "50-SALE-OFF-02", "9300000000055", false),
+                ("MLK-UND", "Underscore Item", "HB_7-01", "9300000000066", false),
+                ("MLK-UND-DECOY", "Underscore Decoy", "HBX7-02", "9300000000077", false),
+                ("MLK-BRK", "Bracket Item", "[A]-01", "9300000000088", false),
+                ("MLK-BRK-DECOY", "Bracket Decoy", "QA-02", "9300000000111", false),
+            };
+            var bulk = Enumerable
+                .Range(1, 55)
+                .Select(index =>
+                    (
+                        Code: $"MLK-BULK-{index:000}",
+                        Name: "Bulk Carton Item",
+                        ItemNumber: $"BULK-{index:000}",
+                        Barcode: $"93100000{index:00000}",
+                        Deleted: false
+                    )
+                );
+            var allProducts = products.Concat(bulk).ToList();
+
+            await db.Insertable(
+                allProducts
+                    .Select(item => new Product
+                    {
+                        UUID = "uuid-" + item.Code,
+                        ProductCode = item.Code,
+                        ProductName = item.Name,
+                        ItemNumber = item.ItemNumber,
+                        Barcode = item.Barcode,
+                        IsActive = true,
+                        IsDeleted = false,
+                    })
+                    .ToList()
+            ).ExecuteCommandAsync();
+            await db.Insertable(
+                allProducts
+                    .Select(item => new WarehouseProduct
+                    {
+                        ProductCode = item.Code,
+                        StockQuantity = 1,
+                        IsActive = true,
+                        IsDeleted = item.Deleted,
+                    })
+                    .ToList()
+            ).ExecuteCommandAsync();
+            await db.Insertable(new DomesticProduct
+            {
+                ProductCode = "MLK-CN",
+                SupplierCode = "HB201",
+                ProductName = "不锈钢汤勺",
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            await db.Insertable(new List<Location>
+            {
+                new()
+                {
+                    LocationGuid = "mlk-loc-a",
+                    LocationCode = "A-01-01-01",
+                    LocationBarcode = "5180000000001",
+                    LocationType = 1,
+                    Status = 1,
+                    IsDeleted = false,
+                },
+                new()
+                {
+                    LocationGuid = "mlk-loc-b",
+                    LocationCode = "B-02-03-04",
+                    LocationBarcode = "5180000000002",
+                    LocationType = 1,
+                    Status = 1,
+                    IsDeleted = false,
+                },
+            }).ExecuteCommandAsync();
+            await db.Insertable(new List<ProductLocation>
+            {
+                new() { Guid = "mlk-pl-a", ProductCode = "MLK-LOC", LocationGuid = "mlk-loc-a", IsDeleted = false },
+                new() { Guid = "mlk-pl-b", ProductCode = "MLK-LOC", LocationGuid = "mlk-loc-b", IsDeleted = false },
+            }).ExecuteCommandAsync();
+        }
+
+        private static async Task AssertMobileLookupScenarioAsync(ProductWarehouseReactService service)
+        {
+            async Task<string[]> CodesAsync(string keyword) =>
+                (await service.LookupMobileProductsAsync(keyword))
+                    .Select(item => item.ProductCode)
+                    .ToArray();
+
+            // 中文：商品名称与 varchar 列里的中文供应商名称都要命中。
+            Assert.Equal(new[] { "MLK-CN" }, await CodesAsync("汤勺"));
+            Assert.Equal(new[] { "MLK-CN" }, await CodesAsync("义乌针织"));
+
+            // 英文大小写不敏感，已删除仓库商品不返回。
+            Assert.Equal(new[] { "MLK-EN" }, await CodesAsync("towel"));
+            Assert.Equal(new[] { "MLK-EN" }, await CodesAsync("TOWEL"));
+            Assert.Equal(new[] { "MLK-EN" }, await CodesAsync("ToWeL rAiL"));
+
+            // 仓库编码、货号、条码、供应商编码都参与匹配。
+            Assert.Equal(new[] { "MLK-EN" }, await CodesAsync("mlk-en"));
+            Assert.Equal(new[] { "MLK-CN" }, await CodesAsync("hb201"));
+            Assert.Equal(new[] { "MLK-EN" }, await CodesAsync("9300000000022"));
+
+            // 货位编码与货位条码命中时，多货位商品返回命中的那条货位。
+            var byLocationCode = Assert.Single(await service.LookupMobileProductsAsync("b-02-03"));
+            Assert.Equal("MLK-LOC", byLocationCode.ProductCode);
+            Assert.Equal("B-02-03-04", byLocationCode.LocationCode);
+            var byLocationBarcode = Assert.Single(await service.LookupMobileProductsAsync("5180000000001"));
+            Assert.Equal("MLK-LOC", byLocationBarcode.ProductCode);
+            Assert.Equal("A-01-01-01", byLocationBarcode.LocationCode);
+            Assert.Equal("5180000000001", byLocationBarcode.LocationBarcode);
+
+            // 按货号升序，多货位商品只返回一条。
+            Assert.Equal(new[] { "MLK-CN", "MLK-EN", "MLK-LOC" }, await CodesAsync("hb20"));
+
+            // 超过 50 个命中时只取货号最小的 50 个。
+            Assert.Equal(
+                Enumerable.Range(1, 50).Select(index => $"MLK-BULK-{index:000}"),
+                await CodesAsync("bulk carton")
+            );
+
+            Assert.Empty(await CodesAsync("no-such-keyword"));
+        }
+
+        private static int CountOccurrences(string text, string value)
+        {
+            var count = 0;
+            for (
+                var index = text.IndexOf(value, StringComparison.Ordinal);
+                index >= 0;
+                index = text.IndexOf(value, index + value.Length, StringComparison.Ordinal)
+            )
+            {
+                count++;
+            }
+
+            return count;
         }
 
         [Fact]
@@ -6240,6 +6566,20 @@ namespace BlazorApp.Api.Tests
             dbField!.SetValue(context, new Mock<ISqlSugarClient>().Object);
 
             return context;
+        }
+    }
+
+    public sealed class ProductWarehouseMobileLookupSqlServerFactAttribute : FactAttribute
+    {
+        internal const string ConnectionEnvironmentVariable =
+            "HB_TEST_SQLSERVER_CONNECTION";
+
+        public ProductWarehouseMobileLookupSqlServerFactAttribute()
+        {
+            if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(ConnectionEnvironmentVariable)))
+            {
+                Skip = $"未配置 {ConnectionEnvironmentVariable}，跳过真实 SQL Server 移动端仓库商品查询验证。";
+            }
         }
     }
 }
