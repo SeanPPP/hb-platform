@@ -782,7 +782,9 @@ try {
           商品编码: 'P-3',
           商品信息: { 货号: 'HB10', 条形码: '9300000000100', 商品名称: 'Item 10', 零售价格: 1.99 },
           装柜数量: 10,
+          // 本柜建档后 是否新商品 变 false，但仍是本柜新品。
           是否新商品: false,
+          isContainerNewProduct: true,
         },
         {
           id: 2,
@@ -829,6 +831,16 @@ try {
     products.find((item) => item.itemNumber === 'HB10')?.retailPrice,
     1.99,
     'Coming Soon 单货柜商品应映射商品建议零售价',
+  )
+  assertEqual(
+    products.find((item) => item.itemNumber === 'HB10')?.isNewProduct,
+    true,
+    'Coming Soon 应按本柜新品标记新品，本柜建档后仍显示为新商品',
+  )
+  assertEqual(
+    products.find((item) => item.hguid === 'DETAIL-3')?.isNewProduct,
+    false,
+    '后端未返回本柜新品字段时应回退到是否新商品',
   )
 
   const setCodeAbortController = new AbortController()

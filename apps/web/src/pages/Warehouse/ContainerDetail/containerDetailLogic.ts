@@ -987,6 +987,20 @@ export interface ContainerDetailSortState {
   order: ContainerDetailSortOrder
 }
 
+/**
+ * 本柜新品：未建档，或由本货柜「创建新商品/提交货柜」建档。
+ * 是否新商品 在建档后变为 false（建档、零售价来源等操作仍以它为准），
+ * 新商品列、新商品/已有商品筛选与排序改用本口径，建档后仍能区分新品。
+ */
+export function isContainerDetailContainerNewProduct(row: ContainerDetail) {
+  return row.isContainerNewProduct ?? Boolean(row.是否新商品)
+}
+
+/** 本柜新品且已建档：用于在新商品标签上补充「已建档」说明。 */
+export function isContainerDetailCreatedContainerNewProduct(row: ContainerDetail) {
+  return isContainerDetailContainerNewProduct(row) && !row.是否新商品
+}
+
 export function getContainerDetailProductName(row: ContainerDetail) {
   return row.商品名称 ?? row.商品信息?.商品名称
 }
@@ -1352,7 +1366,7 @@ export function buildContainerDetailExportRow(
     lastOEMPrice: getContainerDetailRealtimeRetailPrice(row) ?? missingNumericValue,
     oemPrice: getContainerDetailVisibleOemPrice(row) ?? missingNumericValue,
     productType: options.getProductTypeLabel?.(productType) ?? productType,
-    newProduct: row.是否新商品
+    newProduct: isContainerDetailContainerNewProduct(row)
       ? (options.newProductLabel ?? '新商品')
       : (options.existingProductLabel ?? '已有商品'),
     matchType: options.getMatchTypeLabel?.(matchType) ?? matchType,
@@ -1427,8 +1441,8 @@ export function reconcilePendingContainerDetailSaveFailureKeys(
 }
 
 export function matchesContainerDetailTagFilter(row: ContainerDetail, filter: ContainerDetailTagFilter) {
-  if (filter === 'new') return Boolean(row.是否新商品)
-  if (filter === 'existing') return !row.是否新商品
+  if (filter === 'new') return isContainerDetailContainerNewProduct(row)
+  if (filter === 'existing') return !isContainerDetailContainerNewProduct(row)
   if (isContainerDetailProductTypeTag(filter)) {
     return getContainerDetailProductTypeFilterKey(row) === filter
   }
@@ -1605,7 +1619,7 @@ function getColumnSortValue(row: ContainerDetail, field: ContainerDetailSortFiel
       return 0
     }
     case 'newProduct':
-      return row.是否新商品 ? 1 : 0
+      return isContainerDetailContainerNewProduct(row) ? 1 : 0
     case 'matchType':
       return getContainerDetailMatchType(row)
     case 'containerPieces':
@@ -1665,7 +1679,7 @@ export function applyContainerDetailColumnState(
     matchesTextFilter(getContainerDetailEnglishName(row), filters.englishName) &&
     matchesTextFilter(row.备注, filters.remark) &&
     matchesOneOf(getContainerDetailProductTypeFilterKey(row), filters.productTypes) &&
-    matchesOneOf(row.是否新商品 ? 'new' : 'existing', filters.newProductStates) &&
+    matchesOneOf(isContainerDetailContainerNewProduct(row) ? 'new' : 'existing', filters.newProductStates) &&
     matchesOneOf(getContainerDetailMatchType(row), filters.matchTypes) &&
     matchesOneOf(getContainerDetailWarehouseStatusFilterKey(row), filters.warehouseStatus) &&
     matchesNumberRange(row.装柜件数, filters.containerPieces) &&

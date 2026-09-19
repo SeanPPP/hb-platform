@@ -106,6 +106,11 @@ namespace BlazorApp.Api.Mappings.Profiles
                     dest => dest.是否新商品,
                     opt => opt.MapFrom(src => src.LocalProduct == null)
                 )
+                // 旧映射路径不读修改历史，至少保证未建档商品同时是本柜新品。
+                .ForMember(
+                    dest => dest.IsContainerNewProduct,
+                    opt => opt.MapFrom(src => src.LocalProduct == null)
+                )
                 .ForMember(dest => dest.装柜类型, opt => opt.MapFrom(src => src.LoadingType))
                 .ForMember(dest => dest.商品类型, opt => opt.MapFrom(src => src.ProductType))
                 .ForMember(dest => dest.套装数量, opt => opt.MapFrom(src => src.SetQuantity))
