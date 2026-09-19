@@ -90,19 +90,23 @@ public class ProductMovementReportSnapshotTests
 
         Assert.Contains("FROM dbo.ProductMovementReportSnapshot\n    WHERE RunId IN (@Run0, @Run1)", snapshot, StringComparison.Ordinal);
         Assert.Contains("AND DataCredibility = @DataCredibility", snapshot, StringComparison.Ordinal);
-        // 快照已是物化结果，不再整批复制进临时表。
-        Assert.DoesNotContain("#FinalRows", snapshot, StringComparison.Ordinal);
+        // 带关键词时先把命中行物化一次，分页与两段汇总复用，关键词匹配只做一遍。
+        Assert.Contains("SELECT * INTO #FinalRows FROM", snapshot, StringComparison.Ordinal);
         Assert.Contains("ProductCode LIKE @Keyword", snapshot, StringComparison.Ordinal);
         Assert.Contains("COALESCE(RowSalesStatLastUpdate, @SalesStatLastUpdate) AS SalesStatLastUpdate", snapshot, StringComparison.Ordinal);
+
+        // 不带关键词时快照已是物化结果，直接读快照表，不再整批复制进临时表。
+        var withoutKeyword = ProductMovementReportSqlBuilder.BuildSnapshotRead(
+            ProductMovementReportSqlBuilder.NormalizeQuery(new ProductMovementReportQueryDto { Suggestion = "需要订货" }),
+            new[] { Guid.NewGuid() }
+        ).Sql;
+        Assert.DoesNotContain("#FinalRows", withoutKeyword, StringComparison.Ordinal);
 
         // 两条路径的三个结果集除数据来源外必须逐字相同，输出列、排序和汇总口径才能保证一致。
         var marker = "-- 结果集 1";
         var liveResultSets = live[live.IndexOf(marker, StringComparison.Ordinal)..];
         var snapshotResultSets = snapshot[snapshot.IndexOf(marker, StringComparison.Ordinal)..];
-        var sourceStart = snapshotResultSets.IndexOf("(\n    SELECT", StringComparison.Ordinal);
-        var sourceEnd = snapshotResultSets.IndexOf(") FinalRows", StringComparison.Ordinal) + ") FinalRows".Length;
-        var snapshotSource = snapshotResultSets[sourceStart..sourceEnd];
-        Assert.Equal(liveResultSets, snapshotResultSets.Replace(snapshotSource, "#FinalRows"));
+        Assert.Equal(liveResultSets, snapshotResultSets);
         Assert.False(ProductMovementReportSqlBuilder.ContainsWriteKeyword(snapshot));
     }
 }
