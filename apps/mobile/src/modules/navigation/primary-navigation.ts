@@ -161,3 +161,27 @@ export function buildPrimaryNavigation({
 
   return items;
 }
+
+interface ResolveMeTabLabelOptions {
+  fullName?: string | null;
+  username?: string | null;
+  isDeviceMode?: boolean;
+  fallbackLabel: string;
+}
+
+/**
+ * 底栏「我的」直接显示当前登录人，方便在共用设备上一眼确认账号。
+ * 优先姓名，其次用户名；设备模式没有个人账号，或两者都为空时回落到「我的」。
+ */
+export function resolveMeTabLabel({
+  fullName,
+  username,
+  isDeviceMode = false,
+  fallbackLabel,
+}: ResolveMeTabLabelOptions): string {
+  if (isDeviceMode) {
+    return fallbackLabel;
+  }
+
+  return fullName?.trim() || username?.trim() || fallbackLabel;
+}

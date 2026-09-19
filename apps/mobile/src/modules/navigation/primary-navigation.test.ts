@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   buildPrimaryNavigation,
+  resolveMeTabLabel,
   resolvePrimaryNavigationAction,
 } from "./primary-navigation";
 import { buildWorkbenchSections } from "./workbench";
@@ -438,4 +439,30 @@ assert.deepEqual(
   buildWorkbenchSections(["task-center", "unknown-route"]),
   [],
   "任务中心和未知路由不得成为工作台入口"
+);
+
+assert.equal(
+  resolveMeTabLabel({ fullName: "张伟", username: "zhangwei", fallbackLabel: "我的" }),
+  "张伟",
+  "底栏「我的」优先显示姓名"
+);
+assert.equal(
+  resolveMeTabLabel({ fullName: "  ", username: "zhangwei", fallbackLabel: "我的" }),
+  "zhangwei",
+  "姓名为空白时回落到用户名"
+);
+assert.equal(
+  resolveMeTabLabel({ fallbackLabel: "我的" }),
+  "我的",
+  "未登录时保持「我的」"
+);
+assert.equal(
+  resolveMeTabLabel({
+    fullName: "张伟",
+    username: "zhangwei",
+    isDeviceMode: true,
+    fallbackLabel: "我的",
+  }),
+  "我的",
+  "设备模式没有个人账号，不显示残留的用户名"
 );

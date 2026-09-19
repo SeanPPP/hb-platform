@@ -6,9 +6,11 @@ import { useAppNavigationAccess } from "@/modules/navigation/access-context";
 import { TAB_PATHS } from "@/modules/navigation/default-route";
 import {
   buildPrimaryNavigation,
+  resolveMeTabLabel,
   resolvePrimaryNavigationAction,
 } from "@/modules/navigation/primary-navigation";
 import { markReportHubNavigationStart } from "@/modules/reports/report-load-performance";
+import { useAuthStore } from "@/store/auth-store";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { HB_COLORS } from "@/shared/theme/tokens";
 
@@ -21,6 +23,8 @@ export function PrimaryTabBar({ activeRouteName }: PrimaryTabBarProps) {
   const insets = useSafeAreaInsets();
   const { t } = useAppTranslation("common");
   const { orderedVisibleRouteNames, isDeviceMode } = useAppNavigationAccess();
+  const fullName = useAuthStore((state) => state.user?.fullName);
+  const username = useAuthStore((state) => state.user?.username);
   const items = buildPrimaryNavigation({
     activeRouteName,
     visibleRouteNames: orderedVisibleRouteNames,
@@ -38,7 +42,13 @@ export function PrimaryTabBar({ activeRouteName }: PrimaryTabBarProps) {
     >
       {items.map((item) => {
         const targetPath = TAB_PATHS[item.targetRouteName];
-        const label = t(item.labelKey);
+        const baseLabel = t(item.labelKey);
+        // 「我的」换成当前登录人姓名；无障碍标签保留「我的」前缀，读屏仍能识别入口用途。
+        const label =
+          item.key === "me"
+            ? resolveMeTabLabel({ fullName, username, isDeviceMode, fallbackLabel: baseLabel })
+            : baseLabel;
+        const accessibilityLabel = label === baseLabel ? baseLabel : `${baseLabel} ${label}`;
         const iconColor = item.active ? HB_COLORS.brand : HB_COLORS.textSecondary;
         const labelColor = item.active ? HB_COLORS.action : HB_COLORS.textSecondary;
 
@@ -67,7 +77,7 @@ export function PrimaryTabBar({ activeRouteName }: PrimaryTabBarProps) {
           <Pressable
             key={item.key}
             accessibilityRole="button"
-            accessibilityLabel={label}
+            accessibilityLabel={accessibilityLabel}
             accessibilityState={{ selected: item.active }}
             onPress={onPress}
             style={({ pressed }) => [
@@ -83,6 +93,7 @@ export function PrimaryTabBar({ activeRouteName }: PrimaryTabBarProps) {
               allowFontScaling
               maxFontSizeMultiplier={1.6}
               numberOfLines={2}
+              ellipsizeMode="tail"
               style={[
                 styles.label,
                 item.active ? styles.labelActive : null,
