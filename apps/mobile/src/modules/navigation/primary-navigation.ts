@@ -57,9 +57,15 @@ const ATTENDANCE_CONTEXT_ROUTE_NAMES = new Set([
   "attendance-management",
 ]);
 const ME_CONTEXT_ROUTE_NAMES = new Set(["employee-profile", "settings"]);
+// 促销海报编辑 / 待打印都从扫码查询页进入，属于扫码子页，继续高亮「扫码查询」。
+const SCAN_CONTEXT_ROUTE_NAMES = new Set([
+  "product-query",
+  "promo-poster-editor",
+  "promo-poster-queue",
+]);
 
 function resolveActivePrimaryKey(routeName: string | undefined): PrimaryNavigationKey {
-  if (routeName === "product-query") {
+  if (routeName && SCAN_CONTEXT_ROUTE_NAMES.has(routeName)) {
     return "scan";
   }
 

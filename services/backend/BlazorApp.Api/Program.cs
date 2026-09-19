@@ -1059,6 +1059,8 @@ builder.Services.AddScoped<IPreorderGateService>(provider =>
     provider.GetRequiredService<PreorderReactService>()
 );
 builder.Services.AddScoped<IStoreProductMaintenanceReactService, StoreProductMaintenanceReactService>();
+// 促销海报：扫码查询页生成特价 / 多件价 / 新品 / 清仓海报 PDF（经典、现代两种风格）
+builder.Services.AddScoped<BlazorApp.Api.Features.PromoPosters.IPromoPosterService, BlazorApp.Api.Features.PromoPosters.PromoPosterService>();
 builder.Services.AddScoped<IAustralianPublicHolidayProvider, AustralianPublicHolidayProvider>();
 builder.Services.AddScoped<IAttendancePublicHolidaySyncService, AttendancePublicHolidaySyncService>();
 builder.Services.AddScoped<IAttendanceReactService, AttendanceReactService>();

@@ -34,6 +34,8 @@ import { SearchPanel } from "@/components/product-maintenance/SearchPanel";
 import { SetCodeCompactSection } from "@/components/product-maintenance/SetCodeCompactSection";
 import { StickyActionBar } from "@/components/product-maintenance/StickyActionBar";
 import { StoreClearancePriceCard } from "@/components/product-maintenance/StoreClearancePriceCard";
+import { PosterEntryRow } from "@/components/product-maintenance/PosterEntryRow";
+import { PosterQueueBar } from "@/components/promo-posters/PosterQueueBar";
 import {
   StorePriceStrategyCard,
   StoreSwitchButton,
@@ -148,6 +150,8 @@ import { fetchValidPromotionsByProduct } from "@/modules/promotions/api";
 import type { PromotionListItem } from "@/modules/promotions/types";
 import { isIosReviewSessionActive } from "@/modules/ios-review/session";
 import { IOS_REVIEW_SAMPLE_BARCODE } from "@/modules/ios-review/helpers";
+import { resolveScanPosterAvailability } from "@/modules/promo-posters/logic";
+import type { PromoPosterKind } from "@/modules/promo-posters/types";
 
 type LookupTrigger = "manual" | "scan" | "refresh" | "deep-link";
 
@@ -2245,6 +2249,30 @@ function ProductQueryContent() {
       },
     } as unknown as Parameters<typeof router.push>[0]);
   }, [detail?.productCode, isProductQueryBusy, router, selectedStoreCode]);
+  const handleOpenPromoPoster = useCallback(
+    (kind: PromoPosterKind) => {
+      if (!detail?.productCode || !selectedStoreCode || isProductQueryBusy()) {
+        return;
+      }
+
+      // 海报编辑页以后端已保存的价格为准；push 保留扫码页当前商品，加入待打印后返回继续扫码。
+      router.push({
+        pathname: "/(shell)/promo-poster-editor",
+        params: {
+          productCode: detail.productCode,
+          storeCode: selectedStoreCode,
+          kind,
+        },
+      } as unknown as Parameters<typeof router.push>[0]);
+    },
+    [detail?.productCode, isProductQueryBusy, router, selectedStoreCode],
+  );
+  const handleOpenPromoPosterQueue = useCallback(() => {
+    if (isProductQueryBusy()) {
+      return;
+    }
+    router.push("/(shell)/promo-poster-queue" as unknown as Parameters<typeof router.push>[0]);
+  }, [isProductQueryBusy, router]);
   const updateCameraSheetSession = useCallback(
     (
       event: Parameters<typeof reduceCameraSheetSession>[1],
@@ -3848,6 +3876,14 @@ function ProductQueryContent() {
   const hasActiveDiscount = Boolean(
     normalizedStoreDiscountRate && normalizedStoreDiscountRate > 0,
   );
+  // 海报入口：审核演示会话离线不可用；无商品或无门店时不显示（启用规则与「折扣」标签按钮一致）。
+  const showPosterEntry =
+    !isIosReviewSessionActive() && Boolean(detail?.productCode && selectedStoreCode);
+  const posterAvailability = resolveScanPosterAvailability({
+    discountRate: normalizedStoreDiscountRate,
+    activePromotionCount: activePromotions.length,
+    clearancePrice: clearancePrice?.clearancePrice,
+  });
   const discountedRetailPrice = getDiscountedRetailPrice(
     storePrice?.retailPrice,
     normalizedStoreDiscountRate,
@@ -4235,17 +4271,28 @@ function ProductQueryContent() {
                 }
                 onOpenSettings={() => setPrintSettingsVisible(true)}
                 footer={
-                  <StoreClearancePriceCard
-                    clearanceBarcode={clearancePrice?.clearanceBarcode}
-                    clearancePrice={clearancePriceInput}
-                    isPrintingClearance={printingAction === "clearance"}
-                    onEditClearancePrice={openClearancePriceEditor}
-                    onPrintClearance={
-                      printingAction && printingAction !== "clearance"
-                        ? undefined
-                        : () => void handlePrint("clearance")
-                    }
-                  />
+                  <View>
+                    <StoreClearancePriceCard
+                      clearanceBarcode={clearancePrice?.clearanceBarcode}
+                      clearancePrice={clearancePriceInput}
+                      isPrintingClearance={printingAction === "clearance"}
+                      onEditClearancePrice={openClearancePriceEditor}
+                      onPrintClearance={
+                        printingAction && printingAction !== "clearance"
+                          ? undefined
+                          : () => void handlePrint("clearance")
+                      }
+                    />
+                    {showPosterEntry ? (
+                      <View style={styles.posterFooterRow}>
+                        <PosterEntryRow
+                          availability={posterAvailability}
+                          disabled={scannerInputBlocked}
+                          onOpen={handleOpenPromoPoster}
+                        />
+                      </View>
+                    ) : null}
+                  </View>
                 }
               />
               </View>
@@ -4334,6 +4381,11 @@ function ProductQueryContent() {
           </View>
         )}
       </ScrollView>
+
+      {/* 待打印海报浮条：有未保存修改时让位给保存操作条，避免底部叠两层操作。 */}
+      {!isIosReviewSessionActive() && !(dirtyCount > 0 && !scannerInputBlocked) ? (
+        <PosterQueueBar onOpen={handleOpenPromoPosterQueue} />
+      ) : null}
 
       <StickyActionBar
         visible={dirtyCount > 0 && !scannerInputBlocked}
@@ -4880,6 +4932,10 @@ const styles = StyleSheet.create({
     paddingTop: 8,
     paddingBottom: 20,
     gap: 12,
+  },
+  posterFooterRow: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#E4E7EC",
   },
   cameraModeSelector: {
     marginHorizontal: 12,
