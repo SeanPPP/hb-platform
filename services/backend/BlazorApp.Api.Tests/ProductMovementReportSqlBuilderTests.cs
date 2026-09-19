@@ -55,6 +55,8 @@ public class ProductMovementReportSqlBuilderTests
         Assert.Contains("ProductCode LIKE @Keyword", sql.Sql, StringComparison.Ordinal);
         Assert.Contains(sql.Parameters, parameter => parameter.ParameterName == "@StoreCode0" && (string)parameter.Value == "1001");
         Assert.Contains(sql.Parameters, parameter => parameter.ParameterName == "@Keyword" && !((string)parameter.Value).Contains("ABC%'_", StringComparison.Ordinal));
+        // 保留库排序规则的 LIKE（不区分全半角），不能为提速改成 BIN2。
+        Assert.DoesNotContain("BIN2", sql.Sql, StringComparison.Ordinal);
     }
 
     [Fact]
