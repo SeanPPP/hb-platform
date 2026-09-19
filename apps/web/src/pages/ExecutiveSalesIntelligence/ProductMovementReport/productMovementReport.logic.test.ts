@@ -6,6 +6,8 @@ import {
   formatPercent,
   getCoverDaysRatio,
   getCredibilityTagColor,
+  getListOrderDescription,
+  getSalesSortQuery,
   getSuggestionTagColor,
   isCoverDaysTight,
 } from './logic'
@@ -83,5 +85,26 @@ assertEqual(
   '服务层应透传快照生成时间',
 )
 assertEqual(pageSource.includes('数据生成于'), true, '走快照时页面应提示数据生成时间，避免误读为实时数据')
+
+// 销量排序交给后端：服务端分页下前端只能排当前页。未排序时不传参数，后端按建议紧急程度排序。
+assertEqual(JSON.stringify(getSalesSortQuery('descend')), '{"sortBy":"salesQty30","sortDirection":"desc"}', '销量降序应传 desc')
+assertEqual(JSON.stringify(getSalesSortQuery('ascend')), '{"sortBy":"salesQty30","sortDirection":"asc"}', '销量升序应传 asc')
+assertEqual(JSON.stringify(getSalesSortQuery(null)), '{}', '取消排序时不应传排序参数')
+assertEqual(getListOrderDescription('ascend', true), '按近30天销量从低到高排列', '排序说明应跟随用户选择的销量排序')
+assertEqual(getListOrderDescription(null, false), '按建议紧急程度排列，订货和备货在前', '未排序时说明默认的建议紧急程度排序')
+assertEqual(pageSource.includes("extra.action === 'sort'"), true, '换排序应单独处理并回到第一页')
+
+// 关键词覆盖货号、条码、名称；货号取自商品档案，列表优先显示货号而不是内部商品编码。
+assertEqual(pageSource.includes('placeholder="货号 / 条码 / 名称"'), true, '搜索框应提示可按货号、条码、名称查询')
+assertEqual(pageSource.includes('record.itemNumber || record.productCode'), true, '商品行应优先显示货号')
+assertEqual(serviceSource.includes('record.itemNumber ?? record.ItemNumber'), true, '服务层应透传货号')
+
+// 展开行为手风琴：展开新行时只保留这一行。
+assertEqual(
+  pageSource.includes('setExpandedKeys(expanded ? [getRowKey(record)] : [])'),
+  true,
+  '同一时间只应展开一行',
+)
+assertEqual(pageSource.includes('onExpandedRowsChange'), false, '不应再允许多行同时展开')
 
 console.log('productMovementReport.logic.test: ok')

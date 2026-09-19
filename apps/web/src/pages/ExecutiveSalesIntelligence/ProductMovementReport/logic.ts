@@ -1,4 +1,8 @@
-import type { ProductMovementCredibility, ProductMovementSuggestion } from '../../../types/productMovementReport'
+import type {
+  ProductMovementCredibility,
+  ProductMovementReportQuery,
+  ProductMovementSuggestion,
+} from '../../../types/productMovementReport'
 
 export const PRODUCT_MOVEMENT_SUGGESTIONS: ProductMovementSuggestion[] = [
   '需要订货',
@@ -43,6 +47,34 @@ export const COVER_DAYS_FULL_SCALE = 30
 
 /** 销售统计超过该天数未更新时，页头的更新时间要提示风险。 */
 export const STALE_STATISTIC_DAYS = 1
+
+/** 表格销量列的排序状态，取值与 antd Table 的 sortOrder 一致。 */
+export type SalesSortOrder = 'ascend' | 'descend' | null | undefined
+
+/**
+ * 销量列排序换成接口参数。列表是服务端分页，排序必须交给后端，前端只排当前页会得到错误结果；
+ * 未排序时不传参数，后端按建议紧急程度排序。
+ */
+export function getSalesSortQuery(order: SalesSortOrder): Pick<ProductMovementReportQuery, 'sortBy' | 'sortDirection'> {
+  if (order === 'ascend') {
+    return { sortBy: 'salesQty30', sortDirection: 'asc' }
+  }
+  if (order === 'descend') {
+    return { sortBy: 'salesQty30', sortDirection: 'desc' }
+  }
+  return {}
+}
+
+/** 列表标题旁的排序说明，要和后端实际采用的排序一致。 */
+export function getListOrderDescription(order: SalesSortOrder, hasSuggestionFilter: boolean) {
+  if (order === 'descend') {
+    return '按近30天销量从高到低排列'
+  }
+  if (order === 'ascend') {
+    return '按近30天销量从低到高排列'
+  }
+  return hasSuggestionFilter ? '按近30天销量从高到低排列' : '按建议紧急程度排列，订货和备货在前'
+}
 
 /**
  * 可卖天数换算成进度条占比：无销量（天数为空）按满格处理，避免空条误读成缺货。

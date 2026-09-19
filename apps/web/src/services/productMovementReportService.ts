@@ -53,6 +53,7 @@ function normalizeRow(raw: unknown): ProductMovementReportRow | null {
     storeCode,
     storeName: readString(record.storeName ?? record.StoreName),
     productCode,
+    itemNumber: readString(record.itemNumber ?? record.ItemNumber),
     productName: readString(record.productName ?? record.ProductName),
     barcode: readString(record.barcode ?? record.Barcode),
     imageUrl: readString(record.imageUrl ?? record.ImageUrl),

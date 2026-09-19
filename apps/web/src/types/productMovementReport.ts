@@ -17,12 +17,17 @@ export interface ProductMovementReportQuery {
   keyword?: string
   page?: number
   pageSize?: number
+  /** 服务端排序：目前只支持近30天销量；不传时按建议紧急程度排序。 */
+  sortBy?: 'salesQty30'
+  sortDirection?: 'asc' | 'desc'
 }
 
 export interface ProductMovementReportRow {
   storeCode: string
   storeName?: string
   productCode: string
+  /** 货号，取自商品档案；与内部商品编码 productCode 不是同一个值。 */
+  itemNumber?: string
   productName?: string
   barcode?: string
   imageUrl?: string

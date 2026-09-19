@@ -29,10 +29,12 @@ namespace BlazorApp.Api.Services.React
             var sql = ProductMovementReportSqlBuilder.Build(normalized, scopedStoreCodes);
 
             _logger.LogInformation(
-                "查询商品经营分析报表 StoreScope={StoreScope}, Suggestion={Suggestion}, Credibility={Credibility}, Page={Page}, PageSize={PageSize}",
+                "查询商品经营分析报表 StoreScope={StoreScope}, Suggestion={Suggestion}, Credibility={Credibility}, Sort={SortBy} {SortDirection}, Page={Page}, PageSize={PageSize}",
                 scopedStoreCodes == null ? "ALL" : string.Join(",", scopedStoreCodes),
                 normalized.Suggestion,
                 normalized.DataCredibility,
+                normalized.SortBy ?? "default",
+                normalized.SortDirection,
                 normalized.Page,
                 normalized.PageSize
             );
@@ -218,8 +220,16 @@ namespace BlazorApp.Api.Services.React
         private const decimal LowGrossMarginRate = 0.1500m;
         private const decimal GrowthRateForStockUp = 0.2000m;
 
+        /// <summary>唯一允许的排序字段：近 30 天销量。</summary>
+        public const string SalesQty30SortKey = "salesQty30";
+
         public static ProductMovementReportQueryDto NormalizeQuery(ProductMovementReportQueryDto query)
         {
+            // 排序走白名单：拼进 ORDER BY 的只有代码里的常量，请求里的原值不会进入 SQL。
+            var sortBy = string.Equals(NormalizeText(query.SortBy), SalesQty30SortKey, StringComparison.OrdinalIgnoreCase)
+                ? SalesQty30SortKey
+                : null;
+
             return new ProductMovementReportQueryDto
             {
                 StoreCode = NormalizeText(query.StoreCode),
@@ -229,6 +239,13 @@ namespace BlazorApp.Api.Services.React
                 Keyword = NormalizeText(query.Keyword),
                 Page = query.Page <= 0 ? 1 : query.Page,
                 PageSize = Math.Clamp(query.PageSize <= 0 ? 50 : query.PageSize, 1, 200),
+                SortBy = sortBy,
+                // 销量排序默认从高到低，只有明确传 asc 才反过来。
+                SortDirection = sortBy == null
+                    ? null
+                    : string.Equals(NormalizeText(query.SortDirection), "asc", StringComparison.OrdinalIgnoreCase)
+                        ? "asc"
+                        : "desc",
             };
         }
 
@@ -249,8 +266,8 @@ namespace BlazorApp.Api.Services.React
             {
                 Parameters = parameters,
                 // 可信度与关键词同时约束明细和汇总，物化进 #FinalRows 前就过滤掉。
-                Sql = BuildLiveMaterializeSql(storeParameterNames, BuildScopeWhere(query))
-                    + BuildResultSetsSql(BuildSuggestionWhere(query)),
+                Sql = BuildLiveMaterializeSql(storeParameterNames, BuildScopeWhere(query), BuildKeywordProductsSql(query))
+                    + BuildResultSetsSql(query),
             };
         }
 
@@ -272,7 +289,7 @@ namespace BlazorApp.Api.Services.React
             {
                 Parameters = parameters,
                 Sql = "SET XACT_ABORT ON;\n"
-                    + BuildLiveMaterializeSql(storeParameterNames, "\n")
+                    + BuildLiveMaterializeSql(storeParameterNames, "\n", keywordProductsSql: string.Empty)
                     + """
 
 BEGIN TRANSACTION;
@@ -343,6 +360,7 @@ COMMIT;
             // 宽行写一遍 tempdb（本机 38 万行实测占整次读取 2.2 秒中的 1.65 秒）。
             // 例外是关键词：库排序规则下的前导通配 LIKE 很贵，分页与两段汇总会各做一遍（生产全部分店
             // 「card」7–8 秒）；命中行通常只占少数，先物化一次再复用，降到 1.6–2.2 秒且结果不变。
+            // 货号不在快照里，关键词先在商品档案里按货号取出命中商品（#KeywordProducts），再参与上面的过滤。
             var source = $$"""
 (
     SELECT
@@ -368,9 +386,10 @@ DECLARE @SalesStatLastUpdate datetime = (
 );
 """
                     + (string.IsNullOrWhiteSpace(query.Keyword)
-                        ? BuildResultSetsSql(BuildSuggestionWhere(query), source)
-                        : "\nSELECT * INTO #FinalRows FROM " + source + ";\n"
-                            + BuildResultSetsSql(BuildSuggestionWhere(query))),
+                        ? BuildResultSetsSql(query, source)
+                        : BuildKeywordProductsSql(query)
+                            + "\nSELECT * INTO #FinalRows FROM " + source + ";\n"
+                            + BuildResultSetsSql(query)),
             };
         }
 
@@ -414,7 +433,11 @@ DECLARE @SalesStatLastUpdate datetime = (
             }
         }
 
-        private static string BuildLiveMaterializeSql(IReadOnlyList<string> storeParameterNames, string scopeWhere)
+        private static string BuildLiveMaterializeSql(
+            IReadOnlyList<string> storeParameterNames,
+            string scopeWhere,
+            string keywordProductsSql
+        )
         {
             return BuildMaterializeSql(
                 BuildSalesSource(storeParameterNames),
@@ -423,55 +446,113 @@ DECLARE @SalesStatLastUpdate datetime = (
                 // IX_LSPSA_Invoice_EffectiveDate_Store_Invoice；三路 COALESCE 表达式只能全表扫描。
                 BuildStoreFilter("i.StoreCode", storeParameterNames),
                 BuildStoreFilter("u.BranchCode", storeParameterNames),
-                scopeWhere
+                scopeWhere,
+                keywordProductsSql
             );
+        }
+
+        /// <summary>
+        /// 货号（ItemNumber）只在商品档案里维护，与 ProductCode 从不相同（2026-09-19 生产 17.3 万商品核对），
+        /// 快照和日统计里都没有这一列。有关键词时先按货号取出命中商品编码，再在范围过滤里与编码/名称/条码并列匹配。
+        /// 必须先物化：写成 IN 子查询时优化器会逐行回查商品表，生产单店从 0.3 秒涨到 1.4 秒；物化后只多约 0.2 秒。
+        /// </summary>
+        private static string BuildKeywordProductsSql(ProductMovementReportQueryDto query)
+        {
+            if (string.IsNullOrWhiteSpace(query.Keyword))
+            {
+                return string.Empty;
+            }
+
+            // IsDeleted = 0 写成字面量，才能命中 WHERE IsDeleted = 0 的货号过滤索引。
+            return """
+
+SELECT DISTINCT p.ProductCode
+INTO #KeywordProducts
+FROM [Product] p
+WHERE
+    p.IsDeleted = 0
+    AND p.ItemNumber LIKE @Keyword;
+
+""";
+        }
+
+        /// <summary>
+        /// 分页排序。默认按建议紧急程度；按销量排序时跨门店统一比较，并列时依次看 90 天销量、90 天销售额，
+        /// 最后用门店与商品编码兜底，保证翻页时次序确定、不重不漏。
+        /// </summary>
+        private static string BuildPageOrderBy(ProductMovementReportQueryDto query, string prefix)
+        {
+            string[] keys = query.SortBy != SalesQty30SortKey
+                ? new[] { "ActionPriority", "BranchCode", "SalesQty30 DESC", "SalesAmount90Aud DESC", "ProductCode" }
+                : query.SortDirection == "asc"
+                    ? new[] { "SalesQty30", "SalesQty90", "SalesAmount90Aud", "BranchCode", "ProductCode" }
+                    : new[] { "SalesQty30 DESC", "SalesQty90 DESC", "SalesAmount90Aud DESC", "BranchCode", "ProductCode" };
+
+            return string.Join(",\n    ", keys.Select(key => prefix + key));
         }
 
         /// <summary>
         /// 三个结果集：分页明细、汇总、最后更新时间。实时查询与快照读取共用同一段 SQL，
         /// 只换数据来源：实时查询读 #FinalRows，快照读取直接读快照表子查询。
         /// </summary>
-        private static string BuildResultSetsSql(string suggestionWhere, string source = "#FinalRows")
+        private static string BuildResultSetsSql(ProductMovementReportQueryDto query, string source = "#FinalRows")
         {
             // 系统建议只约束明细：前台用各建议的计数卡片当筛选入口，
             // 选中其中一类时，其余卡片仍要显示同一门店/关键词范围内的真实计数。
+            var suggestionWhere = BuildSuggestionWhere(query);
+
+            // 先按排序取出当前页，再只为这一页（最多 200 行）按商品编码查货号：放在分页之后，
+            // 不必为全部分店约 30 万行关联商品表，生产实测分页耗时不变。外层重复同一排序，保证输出次序。
             return $$"""
 
 -- 结果集 1：分页明细
 SELECT
-    BranchCode AS StoreCode,
-    StoreName AS StoreName,
-    ProductCode AS ProductCode,
-    ProductName AS ProductName,
-    Barcode AS Barcode,
-    ImageUrl AS ImageUrl,
-    SalesQty30 AS SalesQty30,
-    SalesQty90 AS SalesQty90,
-    CAST(DailySalesQty30 AS decimal(18, 2)) AS DailySalesQty30,
-    CAST(SalesAmount90Aud AS decimal(18, 2)) AS SalesAmount90Aud,
-    CAST(GrossProfit90Aud AS decimal(18, 2)) AS GrossProfit90Aud,
-    CAST(GrossMarginRate90 AS decimal(18, 4)) AS GrossMarginRate90,
-    LastSaleDate AS LastSaleDate,
-    NoSaleDays AS NoSaleDays,
-    CAST(PurchaseQty180 AS decimal(18, 2)) AS PurchaseQty180,
-    SalesQty180 AS SalesQty180,
-    CAST(EstimatedRemainingQty AS decimal(18, 2)) AS EstimatedRemainingQty,
-    CAST(EstimatedCoverDays AS decimal(18, 2)) AS EstimatedCoverDays,
-    DataCredibility AS DataCredibility,
-    DataExceptionFlag AS DataExceptionFlag,
-    SystemSuggestion AS SystemSuggestion,
-    StoreManagerAction AS StoreManagerAction,
-    SalesStatLastUpdate AS SalesStatisticLastUpdate,
-    COUNT(1) OVER() AS TotalCount
-FROM {{source}}{{suggestionWhere}}
-
+    pg.BranchCode AS StoreCode,
+    pg.StoreName AS StoreName,
+    pg.ProductCode AS ProductCode,
+    im.ItemNumber AS ItemNumber,
+    pg.ProductName AS ProductName,
+    pg.Barcode AS Barcode,
+    pg.ImageUrl AS ImageUrl,
+    pg.SalesQty30 AS SalesQty30,
+    pg.SalesQty90 AS SalesQty90,
+    CAST(pg.DailySalesQty30 AS decimal(18, 2)) AS DailySalesQty30,
+    CAST(pg.SalesAmount90Aud AS decimal(18, 2)) AS SalesAmount90Aud,
+    CAST(pg.GrossProfit90Aud AS decimal(18, 2)) AS GrossProfit90Aud,
+    CAST(pg.GrossMarginRate90 AS decimal(18, 4)) AS GrossMarginRate90,
+    pg.LastSaleDate AS LastSaleDate,
+    pg.NoSaleDays AS NoSaleDays,
+    CAST(pg.PurchaseQty180 AS decimal(18, 2)) AS PurchaseQty180,
+    pg.SalesQty180 AS SalesQty180,
+    CAST(pg.EstimatedRemainingQty AS decimal(18, 2)) AS EstimatedRemainingQty,
+    CAST(pg.EstimatedCoverDays AS decimal(18, 2)) AS EstimatedCoverDays,
+    pg.DataCredibility AS DataCredibility,
+    pg.DataExceptionFlag AS DataExceptionFlag,
+    pg.SystemSuggestion AS SystemSuggestion,
+    pg.StoreManagerAction AS StoreManagerAction,
+    pg.SalesStatLastUpdate AS SalesStatisticLastUpdate,
+    pg.TotalCount AS TotalCount
+FROM (
+    SELECT
+        BranchCode, StoreName, ProductCode, ProductName, Barcode, ImageUrl,
+        SalesQty30, SalesQty90, DailySalesQty30, SalesAmount90Aud, GrossProfit90Aud, GrossMarginRate90,
+        LastSaleDate, NoSaleDays, PurchaseQty180, SalesQty180, EstimatedRemainingQty, EstimatedCoverDays,
+        DataCredibility, DataExceptionFlag, SystemSuggestion, StoreManagerAction, ActionPriority, SalesStatLastUpdate,
+        COUNT(1) OVER() AS TotalCount
+    FROM {{source}}{{suggestionWhere}}
+    ORDER BY
+    {{BuildPageOrderBy(query, string.Empty)}}
+    OFFSET @Offset ROWS FETCH NEXT @PageSize ROWS ONLY
+) pg
+OUTER APPLY (
+    SELECT MAX(NULLIF(p.ItemNumber, N'')) AS ItemNumber
+    FROM [Product] p
+    WHERE
+        p.IsDeleted = 0
+        AND p.ProductCode = pg.ProductCode
+) im
 ORDER BY
-    ActionPriority,
-    BranchCode,
-    SalesQty30 DESC,
-    SalesAmount90Aud DESC,
-    ProductCode
-OFFSET @Offset ROWS FETCH NEXT @PageSize ROWS ONLY;
+    {{BuildPageOrderBy(query, "pg.")}};
 
 -- 结果集 2：建议与可信度汇总（不受系统建议筛选影响）
 SELECT N'Suggestion' AS SummaryType, SystemSuggestion AS [Key], COUNT(1) AS [Count]
@@ -504,12 +585,13 @@ SELECT @SalesStatLastUpdate AS SalesStatisticLastUpdate;
             string salesStoreFilter,
             string purchaseStoreFilter,
             string metricsStoreFilter,
-            string scopeWhere
+            string scopeWhere,
+            string keywordProductsSql
         )
         {
             return $$"""
 SET NOCOUNT ON;
-
+{{keywordProductsSql}}
 SELECT
     s.BranchCode,
     s.ProductCode,
@@ -837,7 +919,9 @@ INNER LOOP JOIN [ProductStoreDailySalesStatistic] s
                 clauses.Add(
                     // 保留库排序规则的 LIKE：BIN2 虽快约 7 倍，但不折叠全半角，搜「$2」会漏掉「＄2 CARDS」
                     // （2026-09-19 生产核对全部分店少 25 行）。关键词的速度改由快照读取时先物化命中行解决。
-                    "(ProductCode LIKE @Keyword OR ProductName LIKE @Keyword OR Barcode LIKE @Keyword)"
+                    // 货号命中的商品由 BuildKeywordProductsSql 预先物化在 #KeywordProducts。
+                    "(ProductCode LIKE @Keyword OR ProductName LIKE @Keyword OR Barcode LIKE @Keyword"
+                        + " OR ProductCode IN (SELECT ProductCode FROM #KeywordProducts))"
                 );
             }
 
