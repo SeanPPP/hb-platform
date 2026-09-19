@@ -1,12 +1,11 @@
 import { ClearOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
-import { Alert, Button, Card, Checkbox, DatePicker, Empty, Input, Pagination, Select, Skeleton, Space, Typography } from 'antd'
+import { Alert, Button, Card, Checkbox, DatePicker, Empty, Input, Pagination, Segmented, Select, Skeleton, Space } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import dayjs, { type Dayjs } from 'dayjs'
 import type { TFunction } from 'i18next'
 import { useTranslation } from 'react-i18next'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import PageContainer from '../../../components/PageContainer'
-import FlowTrendChart from '../ProductFlowShared/FlowTrendChart'
 import ProductImage from '../ProductFlowShared/ProductImage'
 import {
   getLocalSupplierProductSalesAnalysisOptions,
@@ -32,11 +31,13 @@ import {
   applyCandidateSelection,
   applyLocalProductSalesAnalysisBootstrapResult,
   applyLocalProductSalesAnalysisSectionResult,
+  buildBranchPriceTiers,
   buildBrisbaneDefaultRange,
   buildLocalProductSalesAnalysisBootstrapRequest,
   canSetCurrentProduct,
   clearLocalProductSalesAnalysisSectionError,
   clearLocalProductSalesAnalysisDetailSections,
+  countInclusiveDays,
   createEmptyLocalProductSalesAnalysisState,
   createIncludedSelection,
   createLatestRequestGuard,
@@ -44,15 +45,19 @@ import {
   formatAud,
   getDateRangeError,
   getCurrentProductAfterCancellation,
+  getSellThroughLevel,
   isSelected,
   PAGE_BOOTSTRAP_TIMEOUT_SECONDS,
   PAGE_SECTION_TIMEOUT_SECONDS,
+  safeDivide,
   setLocalProductSalesAnalysisSectionError,
-  toFlowTrendData,
   type LocalProductSalesAnalysisBootstrapState,
   type LocalProductSalesAnalysisSectionKey,
   type PageRequestTimeout,
+  type SellThroughLevel,
+  type TrendChartMode,
 } from './logic'
+import TrendChart from './TrendChart'
 import styles from './index.module.css'
 import { MeasuredTable } from '../../../components/MeasuredTable'
 
@@ -94,31 +99,57 @@ function queryAnalysisSection(key: LocalProductSalesAnalysisSectionKey, body: Lo
   return queryLocalSupplierProductSalesAnalysisBranches(body, signal)
 }
 
-function PanelState({ loading, error, empty, retry, children }: { loading: boolean; error?: string; empty?: boolean; retry: () => void; children: ReactNode }) {
+function PanelState({ loading, error, empty, emptyText, retry, children }: { loading: boolean; error?: string; empty?: boolean; emptyText?: string; retry: () => void; children: ReactNode }) {
   const { t, i18n } = useTranslation()
   if (loading) return <div className={styles.state}><Skeleton active title={false} paragraph={{ rows: 3, width: ['92%', '76%', '84%'] }} /></div>
   if (error) return <Alert type="error" showIcon message={t('localProductSalesAnalysis.errors.title')} description={localErrorDescription(error, t, i18n.resolvedLanguage)} action={<Button size="small" onClick={retry}>{t('common.retry')}</Button>} />
-  if (empty) return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('common.noData')} />
+  // 传入 emptyText 时空态收成一行文字，不再用大图标占半屏。
+  if (empty) return emptyText ? <div className={styles.emptyLine}>{emptyText}</div> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('common.noData')} />
   return <>{children}</>
 }
 
-function DailyTrend({ data, label }: { data: LocalSupplierProductSalesAnalysisDaily[]; label: string }) {
+function DailyTrend({ data, label, mode, compact }: { data: LocalSupplierProductSalesAnalysisDaily[]; label: string; mode?: TrendChartMode; compact?: boolean }) {
   const { t } = useTranslation()
-  if (!data.length) return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('localProductSalesAnalysis.noTrendData')} />
-  return <FlowTrendChart data={toFlowTrendData(data)} ariaLabel={label} />
+  if (!data.length) return <div className={styles.emptyLine}>{t('localProductSalesAnalysis.noTrendData')}</div>
+  return <TrendChart data={data} ariaLabel={label} mode={mode} compact={compact} />
 }
 
-function Totals({ summary }: { summary: LocalSupplierProductSalesAnalysisSummary | null }) {
+function formatPercent(value: number | null | undefined) { return value === null || value === undefined ? '—' : `${value.toFixed(1)}%` }
+
+const CHIP_CLASS: Record<SellThroughLevel, string> = {
+  none: styles.chipIdle,
+  restock: styles.chipWarn,
+  healthy: styles.chipGood,
+  slow: styles.chipWarn,
+  stale: styles.chipCritical,
+}
+
+/** 售进比状态标签：文案自带符号，不只靠颜色传达状态。 */
+function SellThroughChip({ rate }: { rate: number | null | undefined }) {
+  const { t } = useTranslation()
+  const level = getSellThroughLevel(rate)
+  return <span className={`${styles.chip} ${CHIP_CLASS[level]}`}>{t(`localProductSalesAnalysis.sellThrough.${level}`)}</span>
+}
+
+function Totals({ summary, caption, days }: { summary: LocalSupplierProductSalesAnalysisSummary | null; caption: ReactNode; days: number }) {
   const { t } = useTranslation()
   const totals = summary?.totals
-  const values: Array<[string, number | null | undefined, (value: number | null | undefined) => string]> = [
-    [t('localProductSalesAnalysis.metrics.purchaseQuantity'), totals?.purchaseQuantity, (value) => formatQuantity(value ?? 0)],
-    [t('localProductSalesAnalysis.metrics.purchaseAmount'), totals?.purchaseAmount, formatAud],
-    [t('localProductSalesAnalysis.metrics.netSalesQuantity'), totals?.netSalesQuantity, (value) => formatQuantity(value ?? 0)],
-    [t('localProductSalesAnalysis.metrics.netSalesAmount'), totals?.netSalesAmount, formatAud],
-    [t('localProductSalesAnalysis.metrics.sellThroughRate'), totals?.sellThroughRate, (value) => value === null || value === undefined ? '—' : `${value.toFixed(1)}%`],
+  // 派生值全部由现有合计字段相除得到，不新增接口字段。
+  const cells: [string, string, string, string?][] = [
+    [t('localProductSalesAnalysis.metrics.purchaseQuantity'), formatQuantity(totals?.purchaseQuantity ?? 0), t('localProductSalesAnalysis.metrics.productCount', { count: summary?.total ?? 0 }), styles.dotPurchase],
+    [t('localProductSalesAnalysis.metrics.purchaseAmount'), formatAud(totals?.purchaseAmount), t('localProductSalesAnalysis.metrics.averagePurchasePrice', { value: formatAud(safeDivide(totals?.purchaseAmount, totals?.purchaseQuantity)) })],
+    [t('localProductSalesAnalysis.metrics.netSalesQuantity'), formatQuantity(totals?.netSalesQuantity ?? 0), t('localProductSalesAnalysis.metrics.dailyAverage', { value: (safeDivide(totals?.netSalesQuantity, days) ?? 0).toFixed(1) }), styles.dotSales],
+    [t('localProductSalesAnalysis.metrics.netSalesAmount'), formatAud(totals?.netSalesAmount), t('localProductSalesAnalysis.metrics.averageSalesPrice', { value: formatAud(safeDivide(totals?.netSalesAmount, totals?.netSalesQuantity)) })],
   ]
-  return <div className={`${styles.totals} ${styles.topTotals}`}>{values.map(([label, value, render]) => <div key={label}><span>{label}</span><strong>{render(value)}</strong></div>)}</div>
+  return <div className={styles.kpis}>
+    <div className={styles.kpiCaption}>{caption}</div>
+    {cells.map(([label, value, sub, dot]) => <div key={label} className={styles.kpi}><span className={styles.kpiLabel}>{dot ? <i className={`${styles.dot} ${dot}`} /> : null}{label}</span><strong>{value}</strong><small>{sub}</small></div>)}
+    <div className={styles.kpi}>
+      <span className={styles.kpiLabel}>{t('localProductSalesAnalysis.metrics.sellThroughRate')}<SellThroughChip rate={totals?.sellThroughRate} /></span>
+      <strong>{formatPercent(totals?.sellThroughRate)}</strong>
+      <div className={styles.meter}><i style={{ width: `${Math.min(100, Math.max(0, totals?.sellThroughRate ?? 0))}%` }} /></div>
+    </div>
+  </div>
 }
 
 export default function LocalProductSalesAnalysisPage() {
@@ -144,6 +175,7 @@ export default function LocalProductSalesAnalysisPage() {
   const [selectedBranchCode, setSelectedBranchCode] = useState<string>()
   const [branchDailyLoading, setBranchDailyLoading] = useState(false)
   const [branchDailyError, setBranchDailyError] = useState<string>()
+  const [chartMode, setChartMode] = useState<TrendChartMode>('daily')
   const analysisRef = useRef(analysis)
   const filterRef = useRef<LocalSupplierProductSalesAnalysisFilter>(requestFilter(defaultRange, ''))
   const selectionRef = useRef<LocalSupplierProductSalesAnalysisSelection>(createIncludedSelection())
@@ -526,76 +558,151 @@ export default function LocalProductSalesAnalysisPage() {
     )
   }
 
+  // 分店排行默认选中第一名并加载其日趋势，右栏不再出现“点击分店”的空占位；
+  // 切换商品/新查询会把 selectedBranchCode 清空，分店分段返回后在此重新选中。
+  useEffect(() => {
+    if (selectedBranchCode || !analysis.currentProduct || !analysis.branches.length) return
+    const first = analysis.branches[0]
+    setSelectedBranchCode(first.branchCode)
+    loadBranchDaily(first.branchCode)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [analysis.branches, analysis.currentProduct, selectedBranchCode])
+
+  const analysisLoading = loadPhase === 'bootstrap' || loadPhase === 'switch'
+  const current = analysis.currentProduct
+  const currentName = current?.productName || current?.itemNumber || current?.productCode
+  // 汇总分段已带回每个已选商品的指标（每页 50 条），按商品编码索引后直接用于列表行与当前商品头。
+  const summaryByCode = useMemo(() => new Map((analysis.summary?.items ?? []).map((item) => [item.productCode, item])), [analysis.summary])
+  const currentSummary = current ? summaryByCode.get(current.productCode) : undefined
+  const branchSalesTotal = useMemo(() => analysis.branches.reduce((sum, item) => sum + item.netSalesQuantity, 0), [analysis.branches])
+  const branchSalesMax = useMemo(() => Math.max(1, ...analysis.branches.map((item) => item.netSalesQuantity)), [analysis.branches])
+  const priceTiers = useMemo(() => buildBranchPriceTiers(analysis.branches), [analysis.branches])
+  const activeDays = useMemo(() => [...analysis.productDaily].reverse().filter((item) => item.purchaseQuantity !== 0 || item.netSalesQuantity !== 0), [analysis.productDaily])
+  const appliedFilter = filterRef.current
+  const appliedDays = countInclusiveDays(appliedFilter.startDate, appliedFilter.endDate)
+  const selectedBranch = analysis.branches.find((item) => item.branchCode === selectedBranchCode)
+  const invoiceItems = analysis.invoiceDetails?.items ?? []
+  const invoiceQuantity = invoiceItems.reduce((sum, item) => sum + item.quantity, 0)
+  const invoiceAmount = invoiceItems.reduce((sum, item) => sum + item.amount, 0)
+  const invoicePartial = (analysis.invoiceDetails?.total ?? 0) > invoiceItems.length
+
   const detailColumns: ColumnsType<LocalSupplierProductSalesAnalysisInvoiceDetail> = [
     { title: t('localProductSalesAnalysis.columns.invoiceNo'), dataIndex: 'invoiceNo', width: 118, render: (value) => value || '—' }, { title: t('localProductSalesAnalysis.columns.store'), width: 130, render: (_, row) => row.storeName || row.storeCode || '—' },
     { title: t('localProductSalesAnalysis.columns.supplier'), width: 140, render: (_, row) => row.supplierName || row.supplierCode || '—' }, { title: t('localProductSalesAnalysis.columns.date'), dataIndex: 'purchaseDate', width: 106, render: (value) => value || '—' },
     { title: t('localProductSalesAnalysis.columns.quantity'), dataIndex: 'quantity', align: 'right', width: 88, render: formatQuantity }, { title: t('localProductSalesAnalysis.columns.purchasePrice'), dataIndex: 'purchasePrice', align: 'right', width: 108, render: formatAud }, { title: t('localProductSalesAnalysis.columns.amount'), dataIndex: 'amount', align: 'right', width: 108, render: formatAud },
   ]
   const branchColumns: ColumnsType<LocalSupplierProductSalesAnalysisBranch> = [
-    { title: t('localProductSalesAnalysis.columns.authorizedStore'), render: (_, row) => <button type="button" className={styles.branchButton} onClick={() => { setSelectedBranchCode(row.branchCode); loadBranchDaily(row.branchCode) }}>{row.branchName || row.branchCode}</button> }, { title: t('localProductSalesAnalysis.columns.netSalesQuantity'), dataIndex: 'netSalesQuantity', align: 'right', render: formatQuantity }, { title: t('localProductSalesAnalysis.columns.averageUnitPrice'), dataIndex: 'averageUnitPrice', align: 'right', render: formatAud },
+    { title: '#', width: 36, render: (_, __, index) => <span className={styles.rank}>{index + 1}</span> },
+    { title: t('localProductSalesAnalysis.columns.authorizedStore'), render: (_, row) => <><button type="button" className={styles.branchButton} onClick={() => { setSelectedBranchCode(row.branchCode); loadBranchDaily(row.branchCode) }}>{row.branchName || row.branchCode}</button><i className={styles.branchBar} style={{ width: `${Math.max(0, row.netSalesQuantity) / branchSalesMax * 100}%` }} /></> },
+    { title: t('localProductSalesAnalysis.columns.netSalesQuantity'), dataIndex: 'netSalesQuantity', align: 'right', width: 72, render: formatQuantity },
+    { title: t('localProductSalesAnalysis.columns.share'), align: 'right', width: 56, render: (_, row) => <span className={styles.rank}>{branchSalesTotal > 0 ? `${Math.round(row.netSalesQuantity / branchSalesTotal * 100)}%` : '—'}</span> },
+    { title: t('localProductSalesAnalysis.columns.averageUnitPrice'), dataIndex: 'averageUnitPrice', align: 'right', width: 72, render: formatAud },
   ]
-  const analysisLoading = loadPhase === 'bootstrap' || loadPhase === 'switch'
-  const currentName = analysis.currentProduct?.productName || analysis.currentProduct?.itemNumber || analysis.currentProduct?.productCode
+  const dailyColumns: ColumnsType<LocalSupplierProductSalesAnalysisDaily> = [
+    { title: t('localProductSalesAnalysis.columns.date'), dataIndex: 'date' },
+    { title: t('localProductSalesAnalysis.metrics.purchaseQuantity'), dataIndex: 'purchaseQuantity', align: 'right', render: (value: number) => value ? formatQuantity(value) : '—' },
+    { title: t('localProductSalesAnalysis.columns.netSalesQuantity'), dataIndex: 'netSalesQuantity', align: 'right', render: formatQuantity },
+    { title: t('localProductSalesAnalysis.columns.averageUnitPrice'), dataIndex: 'averageUnitPrice', align: 'right', render: formatAud },
+  ]
   const supplierOptions = useMemo(() => {
     // 复制后按供应商名称排序，避免改动接口返回的共享选项；无名称时使用编码。
     return [...analysis.options.suppliers]
       .sort((a, b) => (a.name || a.code).localeCompare(b.name || b.code, 'en-AU', { sensitivity: 'base', numeric: true }))
       .map((item) => ({ value: item.code, label: item.name ? `${item.name} (${item.code})` : item.code }))
   }, [analysis.options.suppliers])
+  const selectionLabel = analysis.effectiveSelection.mode === 'included' ? t('localProductSalesAnalysis.selectedCount', { count: analysis.effectiveSelection.includedProductCodes.length }) : t('localProductSalesAnalysis.allFilteredSelected')
 
   return <PageContainer title={t('localProductSalesAnalysis.title')}>
+    {/* 全页唯一一组查询入口：日期、快捷天数与四个筛选条件同处一条筛选栏 */}
     <Card className={styles.toolbar} bordered={false}>
-      <Space wrap>
+      <div className={styles.filterBar}>
         <RangePicker value={draftRange} disabledDate={(date) => date.isAfter(brisbaneYesterday, 'day')} onChange={(value) => value?.[0] && value?.[1] && (setDraftRange([value[0], value[1]]), setQuickDays(null))} allowClear={false} />
-        {[7, 30, 90].map((days) => <Button key={days} type={quickDays === days ? 'primary' : 'default'} onClick={() => setRangeDays(days)}>{t('localProductSalesAnalysis.quickDays', { count: days })}</Button>)}
-        <Button icon={<SearchOutlined />} type="primary" onClick={applyFilters}>{t('common.query')}</Button>
-        <Button icon={<ClearOutlined />} onClick={resetFilters}>{t('common.reset')}</Button>
-        <Button icon={<ReloadOutlined />} loading={loadPhase === 'refresh'} onClick={refresh}>{t('common.refresh')}</Button>
-      </Space>
+        <Segmented value={quickDays ?? ''} options={[7, 30, 90].map((days) => ({ value: days, label: t('localProductSalesAnalysis.quickDays', { count: days }) }))} onChange={(value) => setRangeDays(Number(value))} />
+        <Input className={styles.filterKeyword} value={draftKeyword} onChange={(event) => setDraftKeyword(event.target.value)} onPressEnter={applyFilters} placeholder={t('localProductSalesAnalysis.filters.keyword')} allowClear />
+        <Select className={styles.filterSelect} value={draftCategoryGuid} onChange={setDraftCategoryGuid} placeholder={t('localProductSalesAnalysis.filters.category')} allowClear options={analysis.options.warehouseCategories.map((item) => ({ value: item.guid, label: item.name || item.guid }))} notFoundContent={t('localProductSalesAnalysis.noCategories')} />
+        <Select className={styles.filterSelect} value={draftSupplierCode} onChange={setDraftSupplierCode} placeholder={t('localProductSalesAnalysis.filters.supplier')} allowClear showSearch optionFilterProp="label" options={supplierOptions} notFoundContent={t('localProductSalesAnalysis.noSuppliers')} />
+        <Input className={styles.filterSelect} value={draftDocumentKeyword} onChange={(event) => setDraftDocumentKeyword(event.target.value)} onPressEnter={applyFilters} placeholder={t('localProductSalesAnalysis.filters.invoiceNo')} allowClear />
+        <Space>
+          <Button icon={<SearchOutlined />} type="primary" loading={loadPhase === 'bootstrap'} onClick={applyFilters}>{t('common.query')}</Button>
+          <Button icon={<ClearOutlined />} onClick={resetFilters}>{t('common.reset')}</Button>
+          <Button icon={<ReloadOutlined />} loading={loadPhase === 'refresh'} onClick={refresh}>{t('common.refresh')}</Button>
+        </Space>
+      </div>
     </Card>
     {analysis.sectionErrors.options ? <Alert className={styles.optionsAlert} type="warning" showIcon message={t('localProductSalesAnalysis.errors.options')} description={localErrorDescription(analysis.sectionErrors.options, t, i18n.resolvedLanguage)} action={<Button size="small" onClick={() => retrySection('options')}>{t('common.retry')}</Button>} /> : null}
     {bootstrapError ? <Alert className={styles.optionsAlert} type="error" showIcon message={t('localProductSalesAnalysis.errors.title')} description={localErrorDescription(bootstrapError, t, i18n.resolvedLanguage)} action={<Button size="small" onClick={retryBootstrap}>{t('common.retry')}</Button>} /> : null}
     <Card className={styles.summaryCard} bordered={false}>
-      <PanelState loading={analysisLoading || !!sectionLoading.summary} error={analysis.sectionErrors.summary} empty={!hasSelection(analysis.effectiveSelection)} retry={() => retrySection('summary')}><Totals summary={analysis.summary} /></PanelState>
+      <PanelState loading={analysisLoading || !!sectionLoading.summary} error={analysis.sectionErrors.summary} empty={!hasSelection(analysis.effectiveSelection)} emptyText={t('localProductSalesAnalysis.emptySelection')} retry={() => retrySection('summary')}>
+        <Totals summary={analysis.summary} days={appliedDays} caption={<><strong>{t('localProductSalesAnalysis.totalsCaption')}</strong><span>{selectionLabel}</span><span>{appliedFilter.startDate} ~ {appliedFilter.endDate}</span><span>{t('localProductSalesAnalysis.salesNotRealtime')}</span></>} />
+      </PanelState>
     </Card>
     <div className={styles.layout}>
-      <Card className={styles.panel} title={t('localProductSalesAnalysis.productScope')} bordered={false}>
-        <div className={styles.filters}>
-          <Input value={draftKeyword} onChange={(event) => setDraftKeyword(event.target.value)} placeholder={t('localProductSalesAnalysis.filters.keyword')} allowClear />
-          <Select value={draftCategoryGuid} onChange={setDraftCategoryGuid} placeholder={t('localProductSalesAnalysis.filters.category')} allowClear options={analysis.options.warehouseCategories.map((item) => ({ value: item.guid, label: item.name || item.guid }))} notFoundContent={t('localProductSalesAnalysis.noCategories')} />
-          <Select value={draftSupplierCode} onChange={setDraftSupplierCode} placeholder={t('localProductSalesAnalysis.filters.supplier')} allowClear showSearch optionFilterProp="label" options={supplierOptions} notFoundContent={t('localProductSalesAnalysis.noSuppliers')} />
-          <Input value={draftDocumentKeyword} onChange={(event) => setDraftDocumentKeyword(event.target.value)} placeholder={t('localProductSalesAnalysis.filters.invoiceNo')} allowClear />
-          <Space wrap>
-            <Button icon={<SearchOutlined />} type="primary" onClick={applyFilters}>{t('common.query')}</Button>
-            <Button icon={<ClearOutlined />} onClick={resetFilters}>{t('common.reset')}</Button>
-          </Space>
-        </div>
-        <div className={styles.selectionBar}><span>{analysis.effectiveSelection.mode === 'included' ? t('localProductSalesAnalysis.selectedCount', { count: analysis.effectiveSelection.includedProductCodes.length }) : t('localProductSalesAnalysis.allFilteredSelected')}</span><Space size={4}><Button type="link" size="small" onClick={selectAllFiltered}>{t('localProductSalesAnalysis.selectAllFiltered')}</Button><Button type="link" size="small" onClick={clearSelection}>{t('common.clearSelection')}</Button></Space></div>
-        <PanelState loading={loadPhase === 'bootstrap' || candidatePaging} error={undefined} empty={analysis.candidates !== null && !analysis.candidates.items.length} retry={retryBootstrap}>
-          <div className={styles.candidates}>{analysis.candidates?.items.map((candidate) => <div key={candidate.productCode} className={`${styles.candidate} ${analysis.currentProduct?.productCode === candidate.productCode ? styles.currentCandidate : ''}`}>
-            <Checkbox checked={isSelected(analysis.effectiveSelection, candidate.productCode)} onClick={(event) => event.stopPropagation()} onChange={(event) => updateCandidate(candidate, event.target.checked)} />
-            <button type="button" className={styles.candidateMain} disabled={!canSetCurrentProduct(analysis.effectiveSelection, candidate.productCode)} onClick={() => { if (canSetCurrentProduct(analysis.effectiveSelection, candidate.productCode)) loadCurrentProductSections(candidate, selectionRef.current) }}><ProductImage src={candidate.imageUrl} alt={candidate.productName || candidate.productCode} size={48} />
-              <span className={styles.candidateText}><strong>{candidate.productName || candidate.itemNumber || candidate.productCode}</strong><span>{candidate.itemNumber || '—'} · {candidate.barcode || '—'}</span><small>{candidate.warehouseCategoryName || t('localProductSalesAnalysis.uncategorized')}</small></span>
-            </button>
-          </div>)}</div>
-          <Pagination className={styles.pagination} size="small" current={candidatePage} pageSize={candidatePageSize} total={analysis.candidates?.total ?? 0} showSizeChanger onChange={(page, size) => loadCandidatePage(page, size)} />
+      <Card className={styles.panel} title={t('localProductSalesAnalysis.productScope')} extra={<Space size={8}><span className={styles.muted}>{selectionLabel}</span><Button type="link" size="small" onClick={selectAllFiltered}>{t('localProductSalesAnalysis.selectAllFiltered')}</Button><Button type="link" size="small" onClick={clearSelection}>{t('common.clearSelection')}</Button></Space>} bordered={false}>
+        <PanelState loading={loadPhase === 'bootstrap' || candidatePaging} error={undefined} empty={analysis.candidates !== null && !analysis.candidates.items.length} emptyText={t('localProductSalesAnalysis.emptyCandidates')} retry={retryBootstrap}>
+          <div className={styles.candidates}>{analysis.candidates?.items.map((candidate) => {
+            const metrics = isSelected(analysis.effectiveSelection, candidate.productCode) ? summaryByCode.get(candidate.productCode) : undefined
+            return <div key={candidate.productCode} className={`${styles.candidate} ${current?.productCode === candidate.productCode ? styles.currentCandidate : ''}`}>
+              <Checkbox checked={isSelected(analysis.effectiveSelection, candidate.productCode)} onClick={(event) => event.stopPropagation()} onChange={(event) => updateCandidate(candidate, event.target.checked)} />
+              <button type="button" className={styles.candidateMain} disabled={!canSetCurrentProduct(analysis.effectiveSelection, candidate.productCode)} onClick={() => { if (canSetCurrentProduct(analysis.effectiveSelection, candidate.productCode)) loadCurrentProductSections(candidate, selectionRef.current) }}><ProductImage src={candidate.imageUrl} alt={candidate.productName || candidate.productCode} size={48} />
+                <span className={styles.candidateText}><strong>{candidate.productName || candidate.itemNumber || candidate.productCode}</strong><span>{candidate.itemNumber || '—'} · {metrics ? t('localProductSalesAnalysis.candidateMetrics', { purchase: formatQuantity(metrics.purchaseQuantity), sales: formatQuantity(metrics.netSalesQuantity) }) : candidate.barcode || '—'}</span></span>
+              </button>
+              {metrics ? <span className={styles.candidateStat}><strong>{formatPercent(metrics.sellThroughRate)}</strong><SellThroughChip rate={metrics.sellThroughRate} /></span> : null}
+            </div>
+          })}</div>
+          <Pagination className={styles.pagination} size="small" current={candidatePage} pageSize={candidatePageSize} total={analysis.candidates?.total ?? 0} showSizeChanger showTotal={(total) => t('localProductSalesAnalysis.candidateTotal', { count: total })} onChange={(page, size) => loadCandidatePage(page, size)} />
         </PanelState>
       </Card>
-      <Card className={styles.panel} title={t('localProductSalesAnalysis.currentProduct')} bordered={false}>
-        <PanelState loading={analysisLoading} error={undefined} empty={!analysis.currentProduct} retry={() => retrySection('summary')}>
-          <div className={styles.productHeader}>{analysis.currentProduct ? <ProductImage src={analysis.currentProduct.imageUrl} alt={currentName || t('localProductSalesAnalysis.product')} size={64} /> : null}<div><Typography.Text type="secondary">{t('localProductSalesAnalysis.currentProduct')}</Typography.Text><Typography.Title level={4}>{currentName}</Typography.Title><span>{analysis.currentProduct?.productCode}</span></div></div>
-          <Typography.Title level={5}>{t('localProductSalesAnalysis.invoiceDetails')}</Typography.Title>
-          <PanelState loading={analysisLoading || !!sectionLoading.invoiceDetails} error={analysis.sectionErrors.invoiceDetails} empty={analysis.invoiceDetails !== null && !analysis.invoiceDetails.items.length} retry={() => retrySection('invoiceDetails')}><MeasuredTable metricId="executive-sales-intelligence.local-product-sales-analysis.table-1" size="small" rowKey="detailGuid" columns={detailColumns} dataSource={analysis.invoiceDetails?.items} pagination={false} scroll={{ x: 'max-content' }} /></PanelState>
-          <Typography.Title level={5} className={styles.trendTitle}>{t('localProductSalesAnalysis.dailyTrend')}</Typography.Title>
-          <PanelState loading={analysisLoading || !!sectionLoading.productDaily} error={analysis.sectionErrors.productDaily} empty={!analysis.productDaily.length} retry={() => retrySection('productDaily')}><DailyTrend data={analysis.productDaily} label={t('localProductSalesAnalysis.productTrendLabel', { product: currentName || t('localProductSalesAnalysis.currentProduct') })} /></PanelState>
-        </PanelState>
-      </Card>
-      <Card className={`${styles.panel} ${styles.rightColumn}`} title={t('localProductSalesAnalysis.branchRanking')} bordered={false}>
-        <PanelState loading={analysisLoading || !!sectionLoading.branches} error={analysis.sectionErrors.branches} empty={!analysis.branches.length} retry={() => retrySection('branches')}>
-          <MeasuredTable metricId="executive-sales-intelligence.local-product-sales-analysis.table-2" size="small" rowKey="branchCode" columns={branchColumns} dataSource={analysis.branches} pagination={false} onRow={(record) => ({ className: selectedBranchCode === record.branchCode ? styles.currentBranch : '' })} />
-          {selectedBranchCode ? <><Typography.Title level={5} className={styles.trendTitle}>{t('localProductSalesAnalysis.branchTrendTitle', { branch: analysis.branches.find((item) => item.branchCode === selectedBranchCode)?.branchName || selectedBranchCode })}</Typography.Title><PanelState loading={branchDailyLoading} error={branchDailyError} empty={!branchDaily.length} retry={() => loadBranchDaily(selectedBranchCode)}><DailyTrend data={branchDaily} label={t('localProductSalesAnalysis.branchTrendLabel')} /></PanelState></> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('localProductSalesAnalysis.selectBranch')} />}
-        </PanelState>
-      </Card>
+      <div className={styles.column}>
+        <Card className={styles.panel} bordered={false}>
+          <PanelState loading={analysisLoading} error={undefined} empty={!current} emptyText={t('localProductSalesAnalysis.emptyCurrent')} retry={() => retrySection('summary')}>
+            <div className={styles.productHeader}>
+              {current ? <ProductImage src={current.imageUrl} alt={currentName || t('localProductSalesAnalysis.product')} size={64} /> : null}
+              <div className={styles.productTitle}>
+                <h2>{currentName} {currentSummary ? <SellThroughChip rate={currentSummary.sellThroughRate} /> : null}</h2>
+                <div className={styles.productMeta}>
+                  <span>{t('localProductSalesAnalysis.meta.itemNumber')} <b>{current?.itemNumber || '—'}</b></span>
+                  <span>{t('localProductSalesAnalysis.meta.barcode')} <b>{current?.barcode || '—'}</b></span>
+                  <span>{current?.warehouseCategoryName || t('localProductSalesAnalysis.uncategorized')}</span>
+                  {currentSummary?.suppliers.length ? <span>{currentSummary.suppliers.map((item) => item.name || item.code).join(' / ')}</span> : null}
+                </div>
+              </div>
+              {currentSummary ? <div className={styles.productStats}>
+                <div><span>{t('localProductSalesAnalysis.meta.purchaseAndSales')}</span><strong>{formatQuantity(currentSummary.purchaseQuantity)} / {formatQuantity(currentSummary.netSalesQuantity)}</strong></div>
+                <div><span>{t('localProductSalesAnalysis.metrics.sellThroughRate')}</span><strong>{formatPercent(currentSummary.sellThroughRate)}</strong></div>
+                <div><span>{t('localProductSalesAnalysis.meta.averagePurchasePrice')}</span><strong>{formatAud(safeDivide(currentSummary.purchaseAmount, currentSummary.purchaseQuantity))}</strong></div>
+                <div><span>{t('localProductSalesAnalysis.meta.averageSalesPrice')}</span><strong>{formatAud(safeDivide(currentSummary.netSalesAmount, currentSummary.netSalesQuantity))}</strong></div>
+              </div> : null}
+            </div>
+          </PanelState>
+        </Card>
+        <Card className={styles.panel} title={t('localProductSalesAnalysis.dailyTrend')} extra={<Space size={12} wrap><span className={styles.legend}><i className={`${styles.dot} ${styles.dotPurchase}`} />{t('localProductSalesAnalysis.metrics.purchaseQuantity')}</span><span className={styles.legend}><i className={`${styles.dot} ${styles.dotSales}`} />{t('localProductSalesAnalysis.metrics.netSalesQuantity')}</span><Segmented size="small" value={chartMode} onChange={(value) => setChartMode(value as TrendChartMode)} options={[{ value: 'daily', label: t('localProductSalesAnalysis.chart.modeDaily') }, { value: 'cumulative', label: t('localProductSalesAnalysis.chart.modeCumulative') }]} /></Space>} bordered={false}>
+          <PanelState loading={analysisLoading || !!sectionLoading.productDaily} error={analysis.sectionErrors.productDaily} empty={!analysis.productDaily.length} emptyText={t('localProductSalesAnalysis.noTrendData')} retry={() => retrySection('productDaily')}>
+            <DailyTrend data={analysis.productDaily} mode={chartMode} label={t('localProductSalesAnalysis.productTrendLabel', { product: currentName || t('localProductSalesAnalysis.currentProduct') })} />
+            <details className={styles.dailyDetails}><summary>{t('localProductSalesAnalysis.chart.showTable')}</summary><MeasuredTable metricId="executive-sales-intelligence.local-product-sales-analysis.table-3" size="small" rowKey="date" columns={dailyColumns} dataSource={activeDays} pagination={false} scroll={{ y: 260 }} /></details>
+          </PanelState>
+        </Card>
+        <Card className={styles.panel} title={t('localProductSalesAnalysis.invoiceDetails')} extra={invoiceItems.length ? <span className={styles.muted}>{t('localProductSalesAnalysis.invoiceSummary', { count: analysis.invoiceDetails?.total ?? invoiceItems.length })}</span> : null} bordered={false}>
+          <PanelState loading={analysisLoading || !!sectionLoading.invoiceDetails} error={analysis.sectionErrors.invoiceDetails} empty={analysis.invoiceDetails !== null && !analysis.invoiceDetails.items.length} emptyText={t('localProductSalesAnalysis.emptyInvoices')} retry={() => retrySection('invoiceDetails')}>
+            <MeasuredTable metricId="executive-sales-intelligence.local-product-sales-analysis.table-1" size="small" rowKey="detailGuid" columns={detailColumns} dataSource={analysis.invoiceDetails?.items} pagination={false} scroll={{ x: 'max-content' }}
+              summary={() => invoiceItems.length ? <MeasuredTable.Summary.Row className={styles.tableTotal}><MeasuredTable.Summary.Cell index={0} colSpan={4}>{t(invoicePartial ? 'localProductSalesAnalysis.pageTotal' : 'localProductSalesAnalysis.total')}</MeasuredTable.Summary.Cell><MeasuredTable.Summary.Cell index={4} align="right">{formatQuantity(invoiceQuantity)}</MeasuredTable.Summary.Cell><MeasuredTable.Summary.Cell index={5} align="right">{formatAud(safeDivide(invoiceAmount, invoiceQuantity))}</MeasuredTable.Summary.Cell><MeasuredTable.Summary.Cell index={6} align="right">{formatAud(invoiceAmount)}</MeasuredTable.Summary.Cell></MeasuredTable.Summary.Row> : null} />
+          </PanelState>
+        </Card>
+      </div>
+      <div className={`${styles.column} ${styles.rightColumn}`}>
+        <Card className={styles.panel} title={t('localProductSalesAnalysis.branchRanking')} extra={analysis.branches.length ? <span className={styles.muted}>{t('localProductSalesAnalysis.branchCount', { count: analysis.branches.length })}</span> : null} bordered={false}>
+          <PanelState loading={analysisLoading || !!sectionLoading.branches} error={analysis.sectionErrors.branches} empty={!analysis.branches.length} emptyText={t('localProductSalesAnalysis.emptyBranches')} retry={() => retrySection('branches')}>
+            {priceTiers.length ? <div className={styles.priceTiers}>
+              {priceTiers.length > 1 ? <span className={`${styles.chip} ${styles.chipWarn}`}>{t('localProductSalesAnalysis.priceTiers.multiple', { count: priceTiers.length })}</span> : <span className={`${styles.chip} ${styles.chipGood}`}>{t('localProductSalesAnalysis.priceTiers.single')}</span>}
+              {/* 价位过多时只给区间，避免把一长串均价塞进一行 */}
+              <span>{priceTiers.length <= 3 ? priceTiers.map((tier) => t('localProductSalesAnalysis.priceTiers.item', { price: formatAud(tier.price), count: tier.branchCount })).join(' · ') : `${formatAud(priceTiers[0].price)} ~ ${formatAud(priceTiers[priceTiers.length - 1].price)}`}</span>
+            </div> : null}
+            <MeasuredTable metricId="executive-sales-intelligence.local-product-sales-analysis.table-2" size="small" rowKey="branchCode" columns={branchColumns} dataSource={analysis.branches} pagination={false} onRow={(record) => ({ className: selectedBranchCode === record.branchCode ? styles.currentBranch : '' })} />
+          </PanelState>
+        </Card>
+        {selectedBranchCode ? <Card className={styles.panel} title={t('localProductSalesAnalysis.branchTrendTitle', { branch: selectedBranch?.branchName || selectedBranchCode })} extra={selectedBranch ? <span className={styles.muted}>{formatQuantity(selectedBranch.netSalesQuantity)} · {formatAud(selectedBranch.averageUnitPrice)}</span> : null} bordered={false}>
+          <PanelState loading={branchDailyLoading} error={branchDailyError} empty={!branchDaily.length} emptyText={t('localProductSalesAnalysis.noTrendData')} retry={() => loadBranchDaily(selectedBranchCode)}><DailyTrend compact data={branchDaily} label={t('localProductSalesAnalysis.branchTrendLabel')} /></PanelState>
+        </Card> : null}
+      </div>
     </div>
   </PageContainer>
 }

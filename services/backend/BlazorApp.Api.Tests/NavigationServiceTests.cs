@@ -36,11 +36,12 @@ public class NavigationServiceTests
         yield return new object[] { "SalesDashboard.SalesDetail.View", "/executive-sales-intelligence/sales-detail-v2" };
         yield return new object[] { "SalesDashboard.CompactBoard.View", "/executive-sales-intelligence/compact-sales-board" };
         yield return new object[] { "SalesDashboard.ProductMovement.View", "/executive-sales-intelligence/product-movement-report" };
-        yield return new object[] { "SalesDashboard.BatchProductSales.View", "/executive-sales-intelligence/batch-product-sales-analysis" };
+        // 批量货号销量与分店进货销量分析已合并为「进货销量分析」一页，任一权限都只点亮这一项。
+        yield return new object[] { "SalesDashboard.BatchProductSales.View", "/executive-sales-intelligence/purchase-sales-analysis" };
         yield return new object[] { "SalesDashboard.WarehouseFlow.View", "/executive-sales-intelligence/warehouse-product-flow-analysis" };
         yield return new object[] { "SalesDashboard.LocalProductAnalysis.View", "/executive-sales-intelligence/local-product-sales-analysis" };
         yield return new object[] { "SalesDashboard.PurchaseAmount.View", "/executive-sales-intelligence/purchase-amount-dashboard" };
-        yield return new object[] { "SalesDashboard.LocalSupplierPurchaseSales.View", "/executive-sales-intelligence/local-supplier-purchase-sales-analysis" };
+        yield return new object[] { "SalesDashboard.LocalSupplierPurchaseSales.View", "/executive-sales-intelligence/purchase-sales-analysis" };
     }
 
     [Theory]
@@ -57,6 +58,24 @@ public class NavigationServiceTests
             item => item.Path == "/executive-sales-intelligence"
         );
         Assert.Equal(new[] { expectedPath }, salesMenu.Children!.Select(item => item.Path));
+    }
+
+    [Fact]
+    public void BuildMenu_PurchaseSalesAnalysisShowsOnceWhenBothTabPermissionsGranted()
+    {
+        var menu = _service.BuildMenu(CreateUser(
+            new Claim("permission", Permissions.SalesDashboard.BatchProductSalesView),
+            new Claim("permission", Permissions.SalesDashboard.LocalSupplierPurchaseSalesView)
+        ));
+
+        var salesMenu = Assert.Single(menu, item => item.Path == "/executive-sales-intelligence");
+        var entry = Assert.Single(salesMenu.Children!);
+        Assert.Equal("/executive-sales-intelligence/purchase-sales-analysis", entry.Path);
+        Assert.Equal("menu.purchaseSalesAnalysis", entry.TitleKey);
+        // 旧的两个独立入口不能与合并入口同时出现。
+        Assert.DoesNotContain(salesMenu.Children!, item =>
+            item.Path.EndsWith("/batch-product-sales-analysis")
+            || item.Path.EndsWith("/local-supplier-purchase-sales-analysis"));
     }
 
     [Theory]
@@ -207,8 +226,10 @@ public class NavigationServiceTests
             item => item.Path == "/executive-sales-intelligence"
         );
         Assert.Equal(
+            // 两个页面权限共用「进货销量分析」一个入口，期望路径需去重。
             SalesDashboardPageMenuCases()
                 .Select(values => Assert.IsType<string>(values[1]))
+                .Distinct()
                 .OrderBy(path => path),
             salesIntelligence.Children!.Select(item => item.Path).OrderBy(path => path)
         );
@@ -531,10 +552,10 @@ public class NavigationServiceTests
         );
         Assert.Equal(Permissions.LocalPurchase.View, item.Permission);
 
-        // 分店进货销量分析已挪到销售看板并使用独立权限，本地进货权限不再点亮它，也不显示销售看板父菜单。
+        // 分店进货销量分析已并入销售看板「进货销量分析」并使用独立权限，本地进货权限不再点亮它，也不显示销售看板父菜单。
         Assert.DoesNotContain(
             posAdmin.Children!,
-            child => child.Path.Contains("local-supplier-purchase-sales-analysis")
+            child => child.Path.Contains("purchase-sales-analysis")
         );
         Assert.DoesNotContain(menu, item => item.Path == "/executive-sales-intelligence");
     }

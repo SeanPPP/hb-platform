@@ -539,7 +539,7 @@
     },
     "SalesDashboard.BatchProductSales.View": {
       "name": "查看批量货号销量",
-      "description": "Web 页面 /executive-sales-intelligence/batch-product-sales-analysis - 按导入货号查看商品每日销量、分店销量及折扣成交情况"
+      "description": "Web 页面 /executive-sales-intelligence/purchase-sales-analysis「批量货号销量」标签 - 按导入货号查看商品每日销量、分店销量及折扣成交情况"
     },
     "SalesDashboard.LocalProductAnalysis.View": {
       "name": "查看澳洲本地商品分析",
@@ -551,7 +551,7 @@
     },
     "SalesDashboard.LocalSupplierPurchaseSales.View": {
       "name": "查看分店进货销量分析",
-      "description": "Web 页面 /executive-sales-intelligence/local-supplier-purchase-sales-analysis - 按分店和供应商查看最近进货、逐日销量图与售出比"
+      "description": "Web 页面 /executive-sales-intelligence/purchase-sales-analysis「分店进货销量分析」标签 - 按分店和供应商查看最近进货、逐日销量图与售出比"
     },
     "SalesDashboard.PurchaseAmount.View": {
       "name": "查看进货金额看板",

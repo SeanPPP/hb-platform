@@ -60,11 +60,11 @@ namespace BlazorApp.Shared.Constants
                 new(Permissions.SalesDashboard.SalesDetailView, "查看销售明细", "销售看板", "Web 页面 /executive-sales-intelligence/sales-detail-v2 - 按供应商、分店和商品查看销售明细"),
                 new(Permissions.SalesDashboard.CompactBoardView, "查看独立销售看板", "销售看板", "Web 页面 /executive-sales-intelligence/compact-sales-board - 查看紧凑布局的分店、供应商和商品销售数据"),
                 new(Permissions.SalesDashboard.ProductMovementView, "查看商品经营分析", "销售看板", "Web 页面 /executive-sales-intelligence/product-movement-report - 查看商品经营表现和店长动作建议"),
-                new(Permissions.SalesDashboard.BatchProductSalesView, "查看批量货号销量", "销售看板", "Web 页面 /executive-sales-intelligence/batch-product-sales-analysis - 按导入货号查看商品每日销量、分店销量及折扣成交情况"),
+                new(Permissions.SalesDashboard.BatchProductSalesView, "查看批量货号销量", "销售看板", "Web 页面 /executive-sales-intelligence/purchase-sales-analysis「批量货号销量」标签 - 按导入货号查看商品每日销量、分店销量及折扣成交情况"),
                 new(Permissions.SalesDashboard.WarehouseFlowView, "查看仓库商品流转分析", "销售看板", "Web 页面 /executive-sales-intelligence/warehouse-product-flow-analysis 与移动端「仓库商品进销」- 查看仓库商品的进货、发货和销售流转"),
                 new(Permissions.SalesDashboard.LocalProductAnalysisView, "查看澳洲本地商品分析", "销售看板", "Web 页面 /executive-sales-intelligence/local-product-sales-analysis - 查看澳洲本地商品的进货与销售表现"),
                 new(Permissions.SalesDashboard.PurchaseAmountView, "查看进货金额看板", "销售看板", "Web 页面 /executive-sales-intelligence/purchase-amount-dashboard - 查看各分店仓库订单、本地供应商进货金额及营业额"),
-                new(Permissions.SalesDashboard.LocalSupplierPurchaseSalesView, "查看分店进货销量分析", "销售看板", "Web 页面 /executive-sales-intelligence/local-supplier-purchase-sales-analysis - 按分店和供应商查看最近进货、逐日销量图与售出比"),
+                new(Permissions.SalesDashboard.LocalSupplierPurchaseSalesView, "查看分店进货销量分析", "销售看板", "Web 页面 /executive-sales-intelligence/purchase-sales-analysis「分店进货销量分析」标签 - 按分店和供应商查看最近进货、逐日销量图与售出比"),
             };
 
         private static IReadOnlyList<string> AttendanceSelfServicePermissionCodes { get; } =

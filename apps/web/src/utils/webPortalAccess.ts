@@ -76,24 +76,25 @@ const ADMIN_ENTRY_RULES: readonly AdminEntryRule[] = [
     canAccess: (access) => access.canViewContainers,
   },
   // 每个销售页面独立授权；仅有单页权限时，登录后直接落到该页。
+  // 进货销量分析合并了批量货号销量与分店进货销量分析：任一标签权限即可落地，
+  // 两个旧地址仍视为本页入口，由路由重定向到对应标签后再按权限选标签。
   ...([
-    ['overview', P.SalesDashboard.SalesDataView],
-    ['sales-detail-v2', P.SalesDashboard.SalesDetailView],
-    ['compact-sales-board', P.SalesDashboard.CompactBoardView],
-    ['product-movement-report', P.SalesDashboard.ProductMovementView],
-    ['batch-product-sales-analysis', P.SalesDashboard.BatchProductSalesView],
-    ['warehouse-product-flow-analysis', P.SalesDashboard.WarehouseFlowView],
-    ['local-product-sales-analysis', P.SalesDashboard.LocalProductAnalysisView],
-    ['local-supplier-purchase-sales-analysis', P.SalesDashboard.LocalSupplierPurchaseSalesView],
-    ['purchase-amount-dashboard', P.SalesDashboard.PurchaseAmountView],
-  ] as const).map(([path, permission]) => ({
-    defaultPath: `/executive-sales-intelligence/${path}`,
-    targetPrefixes: [
-      `/executive-sales-intelligence/${path}`,
-      ...(permission === P.SalesDashboard.WarehouseFlowView
-        ? ['/executive-sales-intelligence/product-sales-analysis'] : []),
+    ['overview', [P.SalesDashboard.SalesDataView]],
+    ['sales-detail-v2', [P.SalesDashboard.SalesDetailView]],
+    ['compact-sales-board', [P.SalesDashboard.CompactBoardView]],
+    ['product-movement-report', [P.SalesDashboard.ProductMovementView]],
+    [
+      'purchase-sales-analysis',
+      [P.SalesDashboard.BatchProductSalesView, P.SalesDashboard.LocalSupplierPurchaseSalesView],
+      ['batch-product-sales-analysis', 'local-supplier-purchase-sales-analysis'],
     ],
-    canAccess: (access: BackendNavigationAccess) => access.hasPermission(permission),
+    ['warehouse-product-flow-analysis', [P.SalesDashboard.WarehouseFlowView], ['product-sales-analysis']],
+    ['local-product-sales-analysis', [P.SalesDashboard.LocalProductAnalysisView]],
+    ['purchase-amount-dashboard', [P.SalesDashboard.PurchaseAmountView]],
+  ] as [string, string[], string[]?][]).map(([path, permissions, legacyPaths = []]) => ({
+    defaultPath: `/executive-sales-intelligence/${path}`,
+    targetPrefixes: [path, ...legacyPaths].map((item) => `/executive-sales-intelligence/${item}`),
+    canAccess: (access: BackendNavigationAccess) => permissions.some((permission) => access.hasPermission(permission)),
   })),
   {
     defaultPath: '/pos-admin/local-supplier-invoices',
