@@ -148,6 +148,36 @@ assertDeepEqual(
 )
 assertDeepEqual(getProductChangeLines({ targetRetailPrice: undefined, targetDiscountRate: undefined }, t), ['--'], '无目标值占位')
 
+// 分店同步：分店价已改成来源分店价，变更显示分店现价而不是仓库零售价（生产 test 商品：仓库 $10、同步后 $2.50）
+const syncStore = (storeCode: string, state: 'LabelOnly' | 'Completed' | 'PriceUpdate', storeRetailPrice: number, storeDiscountRate: number | null = null) => ({
+  storeCode, state, shelfRetailPrice: 10, storeRetailPrice, storeDiscountRate,
+})
+assertDeepEqual(
+  getProductChangeLines({ targetRetailPrice: 10, targetDiscountRate: null, initiatorSource: 'StoreSync', stores: [syncStore('1042', 'LabelOnly', 2.5)] }, t),
+  ['change.retailPrice{"value":"$2.50"}'],
+  '分店同步显示同步后的分店价',
+)
+assertDeepEqual(
+  getProductChangeLines({
+    targetRetailPrice: 10,
+    targetDiscountRate: null,
+    initiatorSource: 'StoreSync',
+    stores: [syncStore('1042', 'LabelOnly', 2.5, 0.1), syncStore('1043', 'LabelOnly', 3), syncStore('1044', 'PriceUpdate', 9)],
+  }, t),
+  ['change.retailPrice{"value":"$2.50 / $3.00"}', 'change.discount{"value":"discount.off{\\"percent\\":\\"10\\"}"}'],
+  '分店同步只看待换标签分店，多个价格并列显示',
+)
+assertDeepEqual(
+  getProductChangeLines({ targetRetailPrice: 10, targetDiscountRate: null, initiatorSource: 'StoreSync', stores: [syncStore('1042', 'Completed', 2.5)] }, t),
+  ['change.retailPrice{"value":"$2.50"}'],
+  '分店同步全部完成后仍显示同步后的分店价',
+)
+assertDeepEqual(
+  getProductChangeLines({ targetRetailPrice: 8.99, targetDiscountRate: null, initiatorSource: 'WarehouseProducts', stores: [syncStore('1001', 'PriceUpdate', 8.97)] }, t),
+  ['change.retailPrice{"value":"$8.99"}'],
+  '仓库改价仍显示仓库目标价',
+)
+
 const baseTask: StorePriceUpdateTask = {
   id: 1, storeCode: '1001', storeName: 'A', productCode: 'P1', productName: '=cmd', itemNumber: 'HB001', status: 'Pending', kind: 'PriceUpdate',
   shelfRetailPrice: 8, shelfDiscountRate: 0, storeRetailPrice: 9, storeDiscountRate: 0.1, targetRetailPrice: 10, targetDiscountRate: null,
