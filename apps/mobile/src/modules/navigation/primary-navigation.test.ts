@@ -133,6 +133,24 @@ assert.equal(
   "商品查询页必须高亮扫码查询"
 );
 assert.equal(
+  compactPrimaryItems("promo-poster-editor", fullMenu)[1]?.active,
+  true,
+  "促销海报编辑页从扫码查询进入，必须继续高亮扫码查询"
+);
+assert.equal(
+  compactPrimaryItems("promo-poster-queue", fullMenu)[1]?.active,
+  true,
+  "待打印海报页从扫码查询进入，必须继续高亮扫码查询"
+);
+assert.equal(
+  resolvePrimaryNavigationAction(
+    "promo-poster-queue",
+    buildPrimaryNavigation({ activeRouteName: "promo-poster-queue", visibleRouteNames: fullMenu })[1]!
+  ),
+  "dismiss-to",
+  "在海报子页点扫码查询必须弹回扫码页，而不是再推一个新页面"
+);
+assert.equal(
   compactPrimaryItems("product-insights", [...fullMenu, "product-insights"])[0]?.active,
   true,
   "商品进销查询作为商品功能子页必须回归工作台上下文，不能新增一级导航"

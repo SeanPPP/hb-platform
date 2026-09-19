@@ -49,12 +49,15 @@ import type {
   SyncFromHqRequest,
   SyncToOtherStoresDto,
 } from '../../../types/storeProductPrice'
-import { CheckSquareOutlined, CopyOutlined, SwapOutlined } from '@ant-design/icons'
+import { CheckSquareOutlined, CopyOutlined, PrinterOutlined, SwapOutlined } from '@ant-design/icons'
 import { copyTextToClipboard } from '../../../utils/clipboard'
 import { discountRateToDecimal, formatDiscountRate } from '../../../utils/discountRate'
 import { useAuthStore } from '../../../store/auth'
 import { formatPaginationTotalText } from './pagination'
 import { MeasuredTable } from '../../../components/MeasuredTable'
+
+import type { PromoPosterProduct } from './promoPosterLogic'
+import PromoPosterModal from './PromoPosterModal'
 
 type DataType = StoreProductPriceListDto & { key: string }
 const PRICE_TRANSFER_POLL_TIMEOUT_MS = 45 * 60 * 1000
@@ -128,6 +131,9 @@ export default function StoreProductPricePage() {
   const [priceTransferSubmitting, setPriceTransferSubmitting] = useState(false)
   const [priceTransferJob, setPriceTransferJob] = useState<StorePriceTransferJobDto | null>(null)
   const priceTransferPollerRef = useRef<{ stop: () => void } | null>(null)
+
+  // 促销海报弹窗：打开时对「分店 + 选中商品」取快照，关闭动画结束后置空卸载
+  const [promoPosterSession, setPromoPosterSession] = useState<{ storeCode: string; products: PromoPosterProduct[] } | null>(null)
 
   const inFlightRef = useRef(false)
 
@@ -354,6 +360,22 @@ export default function StoreProductPricePage() {
     })
     setCopyProgress(null)
     setCopyModalOpen(true)
+  }
+
+  const openPromoPosterModal = () => {
+    if (!selectedStoreCode || selectedRowKeys.length === 0) {
+      message.warning(t('posAdmin.productPrice.selectProducts', '请先选择商品'))
+      return
+    }
+    // 选中键即商品编码；列表每次加载都会清空选择，所以选中项都能在当前页数据里找到名称与货号
+    const rowsByCode = new Map(data.map((row) => [row.key, row]))
+    setPromoPosterSession({
+      storeCode: selectedStoreCode,
+      products: selectedRowKeys.map((key) => {
+        const row = rowsByCode.get(String(key))
+        return { productCode: String(key), productName: row?.productName, itemNumber: row?.itemNumber }
+      }),
+    })
   }
 
   const openHqSyncModal = () => {
@@ -742,6 +764,10 @@ export default function StoreProductPricePage() {
                 </Button>
               </>
             )}
+            {/* 海报只读商品与价格，不要求编辑权限；门店范围由后端校验 */}
+            <Button icon={<PrinterOutlined />} disabled={selectedCount === 0 || !selectedStoreCode} onClick={openPromoPosterModal}>
+              {t('posAdmin.productPrice.promoPoster.button', '打印促销海报')} {selectedCount > 0 ? `(${selectedCount})` : ''}
+            </Button>
             {access.isAdmin && (
               <Button onClick={openCopyModal}>{t('posAdmin.productPrice.copyStoreData', '复制分店数据')}</Button>
             )}
@@ -1139,6 +1165,14 @@ export default function StoreProductPricePage() {
           </Form.Item>
         </Form>
       </Modal>
+
+      {promoPosterSession && (
+        <PromoPosterModal
+          storeCode={promoPosterSession.storeCode}
+          products={promoPosterSession.products}
+          onClose={() => setPromoPosterSession(null)}
+        />
+      )}
     </PageContainer>
   )
 }

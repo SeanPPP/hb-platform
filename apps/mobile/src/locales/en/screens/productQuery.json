@@ -320,5 +320,136 @@
     "unitPrice": "Unit ${{price}} × ?",
     "equivalent": "≈ price of {{count}} units",
     "scan": "Scan barcode"
+  },
+  "poster": {
+    "rowTitle": "Poster",
+    "entryAccessibility": "Make a {{kind}} poster",
+    "back": "Back",
+    "kinds": {
+      "special": "Special",
+      "multibuy": "Multi-buy",
+      "new": "New",
+      "clearance": "Clearance"
+    },
+    "styles": {
+      "classic": "Classic",
+      "modern": "Modern"
+    },
+    "unavailable": {
+      "special": "no store discount",
+      "multibuy": "no active multi-buy promotion",
+      "clearance": "no clearance price set"
+    },
+    "unavailableItem": "{{kind}}: {{reason}}",
+    "unavailableSeparator": "; ",
+    "queueBar": {
+      "title": "Posters to print: {{count}}",
+      "go": "Print"
+    },
+    "summary": {
+      "sizeCount": "{{size}} × {{count}}",
+      "imposedPages": "{{count}} A4 page(s) imposed",
+      "pages": "{{count}} page(s)"
+    },
+    "editor": {
+      "title": "Promo poster",
+      "itemNumber": "Item {{value}}",
+      "kindLabel": "Type",
+      "styleLabel": "Style",
+      "sizeLabel": "Size",
+      "previewSize": "{{size}} actual size",
+      "previewMm": "{{width}} × {{height}} mm",
+      "previewImpose": "{{count}} per A4 when imposed",
+      "previewImposeA4": "One per A4 page",
+      "previewHint": "Live preview updates as you edit; the PDF is final",
+      "titleLabel": "English name (printed)",
+      "titlePlaceholder": "e.g. Stainless Steel Vacuum Flask",
+      "titleEmptyHint": "No printable English name for this product. Please type one (posters print English only).",
+      "priceNow": "Now",
+      "clearancePrice": "Clearance price",
+      "priceWas": "Was (struck through)",
+      "salePrice": "Price",
+      "hintDiscounted": "Store discounted price {{price}}",
+      "hintClearance": "Clearance price set {{price}}",
+      "hintRetail": "Retail {{price}}",
+      "inStoreSince": "In store since",
+      "offerLabel": "Multi-buy promotion",
+      "offerSummary": "{{quantity}} for {{price}}",
+      "unitPriceLabel": "Unit price (retail)",
+      "offerValidityLabel": "Promotion period",
+      "offerValidity": "{{from}} to {{to}}",
+      "mixAndMatch": "Promotion covers {{count}} products; poster shows \"Mix & match any {{quantity}}\"",
+      "offerReadonly": "Multi-buy prices come from the POS promotion. Edit the promotion to change them.",
+      "validity": "Valid dates (optional)",
+      "validFrom": "From",
+      "validTo": "To",
+      "addToQueue": "Add to print list",
+      "printNow": "Print now",
+      "loading": "Loading product...",
+      "loadFailed": "Failed to load product",
+      "retry": "Retry",
+      "missingParams": "Missing product or store. Go back to Scan and try again.",
+      "reviewUnavailable": "Promo posters are not available in demo mode"
+    },
+    "errors": {
+      "titleRequired": "Enter the English name",
+      "titleTooLong": "English name can be up to {{max}} characters",
+      "titleUnprintable": "Contains characters that cannot be printed: {{chars}} (English only)",
+      "priceRequired": "Enter a price",
+      "priceInvalid": "Invalid price (above 0, up to 2 decimals)",
+      "wasNotHigher": "Was price must be higher than the current price",
+      "validity": {
+        "required": "Choose both the start and end dates",
+        "invalid": "Invalid date",
+        "rangeInvalid": "Start date cannot be after the end date"
+      },
+      "offerRequired": "Choose a multi-buy promotion",
+      "unitPriceMissing": "This product has no retail price for the unit price",
+      "offerInvalid": "Invalid promotion quantity or price. Check the promotion.",
+      "fixBeforeSubmit": "Fix the fields marked in red first"
+    },
+    "mismatch": {
+      "special": "Differs from the store discounted price {{price}}. The POS still charges the discounted price.",
+      "clearance": "Differs from the clearance price {{price}}. The POS still charges the clearance price."
+    },
+    "messages": {
+      "queueFull": "The print list holds up to {{max}} posters. Generate the PDF first.",
+      "storeConflictTitle": "Switch store",
+      "storeConflictBody": "The print list has {{count}} poster(s) from another store, and one PDF covers one store. Adding this will clear the list. Continue?",
+      "storeConflictConfirm": "Clear and add",
+      "pdfFailed": "Failed to generate the PDF",
+      "openFailed": "Failed to open the PDF",
+      "shareUnavailable": "Sharing is not available on this device",
+      "scaleTip": "Print at \"Actual size / 100%\". \"Fit to page\" makes the cut posters smaller."
+    },
+    "queue": {
+      "title": "Posters to print",
+      "subtitle": "{{count}} poster(s) · {{pages}}",
+      "clear": "Clear",
+      "imposeTitle": "Put small sizes on A4 paper",
+      "imposeDescription": "2 × A5 / 4 × A6 / 8 × A7 per page, with cut marks",
+      "groupTitle": "{{size}} · {{count}}",
+      "groupImposed": "{{count}} A4 page(s)",
+      "groupPages": "{{count}} page(s)",
+      "itemNumber": "Item {{value}}",
+      "remove": "Remove",
+      "removed": "Removed 1 poster",
+      "undo": "Undo",
+      "empty": "No posters to print yet",
+      "emptyHint": "Scan a product, then tap a type in the Poster row to add one",
+      "continueScan": "Keep scanning",
+      "generate": "Generate PDF",
+      "generating": "Generating...",
+      "clearConfirmTitle": "Clear the print list?",
+      "clearConfirmBody": "All {{count}} poster(s) will be removed.",
+      "clearConfirm": "Clear",
+      "resultTitle": "PDF ready",
+      "resultBody": "{{fileName}} · {{pages}} page(s)",
+      "preview": "Preview / Print",
+      "share": "Share / Save",
+      "keep": "Keep list",
+      "clearAfter": "Clear printed",
+      "resultQuestion": "Once printed, clear this batch and scan the next one."
+    }
   }
 }

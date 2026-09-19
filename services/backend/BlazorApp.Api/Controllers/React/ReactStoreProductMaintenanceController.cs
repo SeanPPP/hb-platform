@@ -27,6 +27,7 @@ namespace BlazorApp.Api.Controllers.React
         private readonly IAuthorizationService _authorizationService;
         private readonly IStorePriceUpdateTaskService? _priceTaskService;
         private readonly IStoreProductPriceReactService? _storePriceService;
+        private readonly Features.PromoPosters.IPromoPosterService? _promoPosterService;
 
         public ReactStoreProductMaintenanceController(
             IStoreProductMaintenanceReactService service,
@@ -35,9 +36,10 @@ namespace BlazorApp.Api.Controllers.React
             SqlSugarContext context,
             ILogger<ReactStoreProductMaintenanceController> logger,
             IAuthorizationService authorizationService,
-            // 价格更新通知相关依赖为可选：既有测试直接构造本控制器，不应因新增功能被迫改动。
+            // 价格更新通知、促销海报相关依赖为可选：既有测试直接构造本控制器，不应因新增功能被迫改动。
             IStorePriceUpdateTaskService? priceTaskService = null,
-            IStoreProductPriceReactService? storePriceService = null
+            IStoreProductPriceReactService? storePriceService = null,
+            Features.PromoPosters.IPromoPosterService? promoPosterService = null
         )
         {
             _service = service;
@@ -48,6 +50,7 @@ namespace BlazorApp.Api.Controllers.React
             _authorizationService = authorizationService;
             _priceTaskService = priceTaskService;
             _storePriceService = storePriceService;
+            _promoPosterService = promoPosterService;
         }
 
         [HttpPost("lookup")]
