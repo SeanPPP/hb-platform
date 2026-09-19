@@ -1,0 +1,177 @@
+/* 列表页工具栏共用样式（普通 CSS + 全局类名：测试打包把 .css 当空模块，不能用 CSS Modules）：页头操作行、筛选行、已生效筛选条、勾选后操作条 */
+
+.list-toolbar-header-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.list-toolbar-header-title {
+  margin: 0 !important;
+  font-size: 18px !important;
+}
+
+.list-toolbar-header-count {
+  color: var(--ant-color-text-secondary, rgba(0, 0, 0, 0.45));
+  font-variant-numeric: tabular-nums;
+}
+
+.list-toolbar-header-spacer {
+  flex: 1 1 auto;
+}
+
+.list-toolbar-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.list-toolbar-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.list-toolbar-filter-spacer {
+  flex: 1 1 auto;
+}
+
+.list-toolbar-filter-divider {
+  width: 1px;
+  height: 20px;
+  background: var(--ant-color-split, rgba(5, 5, 5, 0.06));
+}
+
+.list-toolbar-active-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  font-size: 12px;
+}
+
+.list-toolbar-active-label {
+  color: var(--ant-color-text-secondary, rgba(0, 0, 0, 0.45));
+  margin-right: 2px;
+}
+
+.list-toolbar-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 320px;
+  padding: 0 4px 0 8px;
+  line-height: 22px;
+  border-radius: 6px;
+  border: 1px solid #cfe0ff;
+  background: #eef4ff;
+  color: #1554c0;
+}
+
+/* 列头来源的条件用紫色区分，提示它来自表头放大镜而不是顶部筛选栏 */
+.list-toolbar-chip-column {
+  border-color: #ddd3ff;
+  background: #f4f0ff;
+  color: #5a3fc0;
+}
+
+.list-toolbar-chip-source {
+  font-size: 11px;
+  opacity: 0.75;
+}
+
+.list-toolbar-chip-text {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.list-toolbar-chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font-size: 10px;
+  opacity: 0.6;
+  cursor: pointer;
+}
+
+.list-toolbar-chip-remove:hover {
+  opacity: 1;
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.list-toolbar-chip-remove:focus-visible {
+  opacity: 1;
+  outline: 2px solid currentColor;
+  outline-offset: 1px;
+}
+
+.list-toolbar-clear-all {
+  padding-inline: 4px !important;
+  font-size: 12px !important;
+}
+
+.list-toolbar-empty-hint {
+  font-size: 12px;
+}
+
+.list-toolbar-active-extra {
+  margin-left: auto;
+}
+
+.list-toolbar-selection-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 6px 12px;
+  border: 1px solid #cfe0ff;
+  border-radius: 8px;
+  background: #e8f1ff;
+  color: #1554c0;
+}
+
+.list-toolbar-selection-count {
+  font-variant-numeric: tabular-nums;
+}
+
+.list-toolbar-selection-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.list-toolbar-selection-clear {
+  margin-left: auto;
+}
+
+.list-toolbar-more-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 280px;
+}
+
+.list-toolbar-more-panel > * {
+  width: 100% !important;
+}
+
+.list-toolbar-more-badge {
+  margin-left: 4px;
+}
+
+.list-toolbar-more-badge .ant-badge-count {
+  box-shadow: none;
+}

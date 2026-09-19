@@ -58,9 +58,11 @@ async function main() {
   const accessGuardFailure = await runTest('仓库商品页仅对后端允许的导入角色显示非国内商品入口', () => {
     assert(
       pageSource.includes('const canImportNonHbProducts = access.isAdmin || access.isWarehouseManager') &&
-        pageSource.includes("{canImportNonHbProducts ? (<Button icon={<UploadOutlined />} onClick={() => setImportNonHbOpen(true)}>") &&
-        pageSource.includes("{t('warehouse.importNonHb.title')}") &&
-        pageSource.includes('</Button>) : null}'),
+        // 入口已收进页头「导入 / 导出」菜单，可见性仍由同一权限控制。
+        pageSource.includes("key: 'importNonHb',") &&
+        pageSource.includes("label: t('warehouse.importNonHb.title'),") &&
+        pageSource.includes('visible: canImportNonHbProducts,') &&
+        pageSource.includes('onClick: () => setImportNonHbOpen(true),'),
       '导入非国内商品按钮应与后端 Admin/WarehouseManager 导入权限保持一致',
     )
   })
