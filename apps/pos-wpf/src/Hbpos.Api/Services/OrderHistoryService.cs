@@ -49,13 +49,18 @@ public interface IOrderHistoryRepository
         CancellationToken cancellationToken);
 }
 
-public sealed class SqlSugarOrderHistoryRepository(HbposSqlSugarContext dbContext) : IOrderHistoryRepository
+public sealed class SqlSugarOrderHistoryRepository(
+    HbposSqlSugarContext dbContext,
+    IStoreTimeZoneResolver storeTimeZoneResolver) : IOrderHistoryRepository
 {
     public async Task<OrderHistoryQueryResponse> QueryAsync(
         OrderHistoryQueryRequest request,
         CancellationToken cancellationToken)
     {
         var storeCode = request.StoreCode.Trim();
+
+        // POSM 的 OrderTime 是门店本地墙钟时间，查询区间要先换算到门店时区再比较。
+        var storeTimeZone = await storeTimeZoneResolver.ResolveAsync(storeCode, cancellationToken);
         var query = dbContext.PosmDb.Queryable<SalesOrder>()
             .Where(x => x.BranchCode == storeCode);
 
@@ -67,13 +72,13 @@ public sealed class SqlSugarOrderHistoryRepository(HbposSqlSugarContext dbContex
 
         if (request.SoldFrom is not null)
         {
-            var soldFrom = request.SoldFrom.Value.UtcDateTime;
+            var soldFrom = StoreWallClock.ToWallClock(request.SoldFrom.Value, storeTimeZone);
             query = query.Where(x => x.OrderTime >= soldFrom);
         }
 
         if (request.SoldTo is not null)
         {
-            var soldTo = request.SoldTo.Value.UtcDateTime;
+            var soldTo = StoreWallClock.ToWallClock(request.SoldTo.Value, storeTimeZone);
             query = query.Where(x => x.OrderTime <= soldTo);
         }
 
@@ -106,7 +111,7 @@ public sealed class SqlSugarOrderHistoryRepository(HbposSqlSugarContext dbContex
             order.BranchCode ?? string.Empty,
             order.DeviceCode ?? string.Empty,
             order.CashierName ?? string.Empty,
-            ToDateTimeOffset(order.OrderTime),
+            ToDateTimeOffset(order.OrderTime, storeTimeZone),
             Amount(order.TotalAmount),
             Amount(order.DiscountAmount),
             Amount(order.ActualAmount),
@@ -224,6 +229,15 @@ public sealed class SqlSugarOrderHistoryRepository(HbposSqlSugarContext dbContex
                 group => group.Key,
                 group => group.ToList(),
                 StringComparer.OrdinalIgnoreCase);
+        // 一次可能查多家门店的订单，时间要按各自门店的时区还原。
+        var storeTimeZones = new Dictionary<string, TimeZoneInfo>(StringComparer.OrdinalIgnoreCase);
+        foreach (var branchCode in orders
+            .Select(order => order.BranchCode?.Trim() ?? string.Empty)
+            .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            storeTimeZones[branchCode] = await storeTimeZoneResolver.ResolveAsync(branchCode, cancellationToken);
+        }
+
         var result = new Dictionary<Guid, OrderHistoryDetailsDto>();
         foreach (var order in orders)
         {
@@ -238,7 +252,8 @@ public sealed class SqlSugarOrderHistoryRepository(HbposSqlSugarContext dbContex
                 order,
                 linesByOrder.GetValueOrDefault(orderGuidText) ?? [],
                 paymentsByOrder.GetValueOrDefault(orderGuidText) ?? [],
-                bankTransactionsByOrder.GetValueOrDefault(orderGuidText) ?? []);
+                bankTransactionsByOrder.GetValueOrDefault(orderGuidText) ?? [],
+                storeTimeZones[order.BranchCode?.Trim() ?? string.Empty]);
         }
 
         return result;
@@ -249,7 +264,8 @@ public sealed class SqlSugarOrderHistoryRepository(HbposSqlSugarContext dbContex
         SalesOrder order,
         IReadOnlyList<SalesOrderDetail> lines,
         IReadOnlyList<PaymentDetail> payments,
-        IReadOnlyList<BankTransaction> bankTransactions)
+        IReadOnlyList<BankTransaction> bankTransactions,
+        TimeZoneInfo storeTimeZone)
     {
         var bankTransactionsByPayment = bankTransactions
             .Where(transaction => !string.IsNullOrWhiteSpace(transaction.PaymentGuid))
@@ -264,7 +280,7 @@ public sealed class SqlSugarOrderHistoryRepository(HbposSqlSugarContext dbContex
             order.BranchCode ?? string.Empty,
             order.DeviceCode ?? string.Empty,
             order.CashierName ?? string.Empty,
-            ToDateTimeOffset(order.OrderTime),
+            ToDateTimeOffset(order.OrderTime, storeTimeZone),
             Amount(order.TotalAmount),
             Amount(order.DiscountAmount),
             Amount(order.ActualAmount),
@@ -289,11 +305,14 @@ public sealed class SqlSugarOrderHistoryRepository(HbposSqlSugarContext dbContex
                 Amount(payment.Amount),
                 payment.Reference,
                 payment.PaymentGuid is not null && bankTransactionsByPayment.TryGetValue(payment.PaymentGuid, out var cardTransactions)
-                    ? cardTransactions.Select(transaction => ToCardTransactionDto(payment.Reference, transaction)).ToList()
+                    ? cardTransactions.Select(transaction => ToCardTransactionDto(payment.Reference, transaction, storeTimeZone)).ToList()
                     : null)).ToList());
     }
 
-    private static CardTransactionDto ToCardTransactionDto(string? paymentReference, BankTransaction transaction)
+    private static CardTransactionDto ToCardTransactionDto(
+        string? paymentReference,
+        BankTransaction transaction,
+        TimeZoneInfo storeTimeZone)
     {
         return new CardTransactionDto(
             InferCardProcessor(paymentReference),
@@ -308,7 +327,7 @@ public sealed class SqlSugarOrderHistoryRepository(HbposSqlSugarContext dbContex
             transaction.Stan,
             transaction.BankDateTime is null
                 ? null
-                : new DateTimeOffset(DateTime.SpecifyKind(transaction.BankDateTime.Value, DateTimeKind.Utc)),
+                : StoreWallClock.ToDateTimeOffset(transaction.BankDateTime.Value, storeTimeZone),
             Amount(transaction.Amount),
             transaction.ReceiptText,
             TryGetLinklyRefundReference(paymentReference));
@@ -371,9 +390,11 @@ public sealed class SqlSugarOrderHistoryRepository(HbposSqlSugarContext dbContex
         return end < 0 ? remark[start..].Trim() : remark[start..end].Trim();
     }
 
-    private static DateTimeOffset ToDateTimeOffset(DateTime? value)
+    private static DateTimeOffset ToDateTimeOffset(DateTime? value, TimeZoneInfo storeTimeZone)
     {
-        return new DateTimeOffset(DateTime.SpecifyKind(value ?? DateTime.MinValue, DateTimeKind.Utc));
+        return value is null
+            ? new DateTimeOffset(DateTime.SpecifyKind(DateTime.MinValue, DateTimeKind.Utc))
+            : StoreWallClock.ToDateTimeOffset(value.Value, storeTimeZone);
     }
 
     private static decimal Amount(decimal? value)

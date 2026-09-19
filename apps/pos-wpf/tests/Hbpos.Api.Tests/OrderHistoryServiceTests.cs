@@ -41,7 +41,7 @@ public sealed class OrderHistoryServiceTests
             ResponseText = "Manually confirmed by cashier"
         }).ExecuteCommandAsync();
 
-        var details = await new SqlSugarOrderHistoryRepository(database.DbContext).GetDetailsAsync(orderGuid, CancellationToken.None);
+        var details = await new SqlSugarOrderHistoryRepository(database.DbContext, new StubStoreTimeZoneResolver()).GetDetailsAsync(orderGuid, CancellationToken.None);
         var payment = Assert.Single(details!.Payments);
         Assert.Equal(reference, payment.Reference);
         var transaction = Assert.Single(payment.CardTransactions!);
@@ -54,7 +54,7 @@ public sealed class OrderHistoryServiceTests
     public async Task QueryAsync_matches_item_number_and_barcode_within_two_seconds_without_global_detail_materialization()
     {
         using var database = await OrderHistorySqliteFixture.CreateAsync(orderCount: 10_000);
-        var repository = new SqlSugarOrderHistoryRepository(database.DbContext);
+        var repository = new SqlSugarOrderHistoryRepository(database.DbContext, new StubStoreTimeZoneResolver());
 
         await AssertFastLookupAsync(repository, database, "SKU-TARGET");
         await AssertFastLookupAsync(repository, database, "ITEM-TARGET");
@@ -62,10 +62,41 @@ public sealed class OrderHistoryServiceTests
     }
 
     [Fact]
+    public async Task QueryAsync_treats_order_time_as_store_wall_clock()
+    {
+        // 库里的 OrderTime 是门店本地墙钟时间（2026-08-25 10:00 布里斯班 = 00:00Z）。
+        using var database = await OrderHistorySqliteFixture.CreateAsync(orderCount: 1);
+        var repository = new SqlSugarOrderHistoryRepository(
+            database.DbContext,
+            new StubStoreTimeZoneResolver(TestStoreTimeZones.Brisbane));
+
+        var localDay = await repository.QueryAsync(
+            new OrderHistoryQueryRequest(
+                "S001",
+                // 门店本地当天 00:00–23:59，对应 UTC 前一天 14:00 起。
+                SoldFrom: DateTimeOffset.Parse("2026-08-24T14:00:00Z"),
+                SoldTo: DateTimeOffset.Parse("2026-08-25T13:59:59Z"),
+                Take: 100),
+            CancellationToken.None);
+        var previousDay = await repository.QueryAsync(
+            new OrderHistoryQueryRequest(
+                "S001",
+                SoldFrom: DateTimeOffset.Parse("2026-08-23T14:00:00Z"),
+                SoldTo: DateTimeOffset.Parse("2026-08-24T13:59:59Z"),
+                Take: 100),
+            CancellationToken.None);
+
+        var order = Assert.Single(localDay.Orders, x => x.OrderGuid == OrderHistorySqliteFixture.TargetOrderGuid);
+        Assert.Equal(DateTime.Parse("2026-08-25T10:00:00"), order.SoldAt.DateTime);
+        Assert.Equal(TimeSpan.FromHours(10), order.SoldAt.Offset);
+        Assert.Empty(previousDay.Orders);
+    }
+
+    [Fact]
     public async Task QueryAsync_does_not_partially_match_item_number_marker()
     {
         using var database = await OrderHistorySqliteFixture.CreateAsync(orderCount: 100);
-        var repository = new SqlSugarOrderHistoryRepository(database.DbContext);
+        var repository = new SqlSugarOrderHistoryRepository(database.DbContext, new StubStoreTimeZoneResolver());
 
         var response = await repository.QueryAsync(
             new OrderHistoryQueryRequest(
@@ -86,7 +117,7 @@ public sealed class OrderHistoryServiceTests
     public async Task QueryAsync_hyphen_only_keyword_does_not_match_every_order_guid(string keyword)
     {
         using var database = await OrderHistorySqliteFixture.CreateAsync(orderCount: 100);
-        var repository = new SqlSugarOrderHistoryRepository(database.DbContext);
+        var repository = new SqlSugarOrderHistoryRepository(database.DbContext, new StubStoreTimeZoneResolver());
 
         var response = await repository.QueryAsync(
             new OrderHistoryQueryRequest(
@@ -129,7 +160,7 @@ public sealed class OrderHistoryServiceTests
             .ExecuteCommandAsync();
 
         var statements = database.CaptureSql();
-        var repository = new SqlSugarOrderHistoryRepository(database.DbContext);
+        var repository = new SqlSugarOrderHistoryRepository(database.DbContext, new StubStoreTimeZoneResolver());
         var response = await repository.QueryAsync(
             new OrderHistoryQueryRequest(
                 "S001",

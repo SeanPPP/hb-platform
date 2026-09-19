@@ -119,7 +119,7 @@ public sealed class PosmSchemaBoundaryTests
                             "receipt",
                             "RFN-1")
                     ])
-            ]));
+            ]), TestStoreTimeZones.Sydney);
 
         Assert.Equal(orderGuid.ToString("D"), plan.Order.OrderGuid);
         Assert.Empty(plan.Lines);
