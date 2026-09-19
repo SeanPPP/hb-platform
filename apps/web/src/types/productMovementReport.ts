@@ -25,6 +25,7 @@ export interface ProductMovementReportRow {
   productCode: string
   productName?: string
   barcode?: string
+  imageUrl?: string
   salesQty30: number
   salesQty90: number
   dailySalesQty30: number
@@ -57,6 +58,8 @@ export interface ProductMovementReportResponse {
   suggestionSummary: ProductMovementReportSummary[]
   credibilitySummary: ProductMovementReportSummary[]
   salesStatisticLastUpdate?: string | null
+  /** 数据来自后台预计算快照时为快照生成时间（UTC）；实时计算时为空。 */
+  snapshotGeneratedAtUtc?: string | null
   calculationNote: string
   dataScopeNote: string
 }
