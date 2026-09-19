@@ -37,8 +37,10 @@ assert(
   /path: '\/warehouse\/products\/price-update-tasks',[\s\S]{0,420}accessKey: 'canManageWarehouseProducts',[\s\S]{0,220}activeMenu: '\/warehouse\/products'/.test(routesSource),
   '价格变更任务路由必须继承仓库商品权限（Warehouse.ManageProducts）并保持父级菜单激活',
 )
+// 仓库商品页改版后，价格类入口收进页头「价格」菜单，与零售价变化入口并列。
 assert(
-  /access\.canManageWarehouseProducts\s*\?\s*\(<Button[\s\S]{0,320}\/warehouse\/products\/price-update-tasks/.test(productsSource),
+  /key: 'priceUpdateTasks',[\s\S]{0,200}visible: access\.canManageWarehouseProducts,[\s\S]{0,120}\/warehouse\/products\/price-update-tasks/.test(productsSource) &&
+    /key: 'retailPriceChanges',[\s\S]{0,400}key: 'priceUpdateTasks'/.test(productsSource),
   '仓库商品页必须在零售价变化入口旁提供价格变更任务入口，并复用 canManageWarehouseProducts 权限',
 )
 

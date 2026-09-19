@@ -37,8 +37,9 @@ assert(
   '零售价月度变化路由必须继承仓库商品权限并保持父级菜单激活',
 )
 assert(productsSource.includes("'/warehouse/products/retail-price-changes'"), '仓库商品页必须提供零售价变化入口')
+// 仓库商品页改版后，零售价变化入口收进页头「价格」菜单，权限由菜单项 visible 控制。
 assert(
-  /access\.canManageWarehouseProducts\s*\?\s*\(<Button[\s\S]{0,320}\/warehouse\/products\/retail-price-changes/.test(productsSource),
+  /key: 'retailPriceChanges',[\s\S]{0,200}visible: access\.canManageWarehouseProducts,[\s\S]{0,120}\/warehouse\/products\/retail-price-changes/.test(productsSource),
   '仓库商品页零售价变化入口必须显式复用 canManageWarehouseProducts 权限',
 )
 

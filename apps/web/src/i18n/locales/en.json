@@ -625,6 +625,23 @@
     "en": "English"
   },
   "common": {
+    "listToolbar": {
+      "activeFilters": "Active",
+      "clearAllFilters": "Clear all",
+      "noActiveFilters": "No filters applied. Filters set in column headers also appear here.",
+      "removeFilter": "Remove filter: {{label}}",
+      "columnFilterSource": "Column",
+      "moreFilters": "More filters",
+      "selectedCount": "{{count}} selected",
+      "cancelSelection": "Clear selection",
+      "sync": "Sync",
+      "importExport": "Import / Export",
+      "price": "Price",
+      "tools": "Tools",
+      "columnSettings": "Columns",
+      "searchEnterHint": "press Enter to search",
+      "filterValueAny": "Set"
+    },
     "query": "Query",
     "reset": "Reset",
     "refresh": "Refresh",
@@ -2308,6 +2325,9 @@
     "failureReason": "Failure Reason",
     "productManagement": "Products",
     "productManagementSubtitle": "Manage warehouse products with search, filter, edit, set item maintenance and batch operations.",
+    "productTotalCount": "{{count}} items",
+    "activeFilter": { "keyword": "Keyword" },
+    "onlyUncategorized": "Uncategorized only",
     "hqSync": "Sync Warehouse Inventory from HQ",
     "hqSyncTitle": "Sync Warehouse Inventory from HQ",
     "hqSyncContent": "This action will create or update warehouse inventory fields from HQ by product code and will not delete local-only products. Continue?",
@@ -2590,6 +2610,10 @@
       "confirmDelete": "Delete this advertisement?"
     },
     "products": {
+      "showBarcodeImage": "Show barcode",
+      "storeRecordFilterCustomHint": "Press Enter or click Search to apply the range",
+      "activeFilterListSeparator": ", ",
+      "activeFilterKeyword": "Keyword",
       "title": "Product Management",
       "subtitle": "{{count}} records total",
       "integrityCheck": "Integrity Check",

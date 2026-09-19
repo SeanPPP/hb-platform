@@ -371,6 +371,26 @@ body {
   box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04);
 }
 
+/* 紧凑页头：标题与总数同行、上下留白收窄，省下的高度留给数据表格 */
+.page-header.page-header-compact {
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 12px 20px;
+}
+
+.page-header-compact-title {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+}
+
+.page-header-compact-subtitle {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
 .login-container {
   display: flex;
   min-height: 100vh;
@@ -3899,6 +3919,41 @@ body {
   border-top: 1px solid #f0f0f0;
 }
 
+/* 商品管理工具栏：筛选行、已生效筛选条、勾选后操作条纵向排列，整体高度参与表格高度计算 */
+.pos-products-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 0 8px;
+}
+
+/* 「更多筛选」弹层内每项带小标题，选中值后仍能看出是哪个条件 */
+.pos-products-more-filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pos-products-more-filter-label {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.pos-products-more-filter-range {
+  display: flex;
+  width: 100%;
+}
+
+.pos-products-more-filter-range .ant-input-number {
+  flex: 1 1 0;
+  width: auto;
+}
+
+.pos-products-more-filter-hint {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+}
+
 .pos-products-compact-table .ant-tag,
 .store-product-price-compact-table .ant-tag {
   margin-inline-end: 0;
@@ -3921,7 +3976,6 @@ body {
 
 .pos-products-code-cell .ant-space,
 .store-product-price-code-cell .ant-space,
-.pos-products-barcode-cell .ant-space,
 .store-product-price-barcode-cell .ant-space {
   flex-wrap: nowrap !important;
 }
@@ -3957,12 +4011,27 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-.pos-products-barcode-preview,
 .store-product-price-barcode-preview {
   overflow: hidden;
 }
 
-.pos-products-barcode-preview canvas,
+/* 收银商品列表的条码列只显示等宽数字，条形码图形悬停时才绘制 */
+.pos-products-barcode-text-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+  white-space: nowrap;
+}
+
+.pos-products-barcode-text {
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+}
+
 .store-product-price-barcode-preview canvas {
   max-width: 112px;
   max-height: 22px;

@@ -625,6 +625,23 @@
     "en": "English"
   },
   "common": {
+    "listToolbar": {
+      "activeFilters": "已生效",
+      "clearAllFilters": "清空全部",
+      "noActiveFilters": "暂无筛选条件，列头里设置的条件也会显示在这里",
+      "removeFilter": "移除筛选条件：{{label}}",
+      "columnFilterSource": "列",
+      "moreFilters": "更多筛选",
+      "selectedCount": "已选 {{count}} 项",
+      "cancelSelection": "取消选择",
+      "sync": "同步",
+      "importExport": "导入 / 导出",
+      "price": "价格",
+      "tools": "工具",
+      "columnSettings": "列设置",
+      "searchEnterHint": "回车查询",
+      "filterValueAny": "已设置"
+    },
     "query": "查询",
     "reset": "重置",
     "refresh": "刷新",
@@ -2308,6 +2325,9 @@
     "failureReason": "失败原因",
     "productManagement": "商品管理",
     "productManagementSubtitle": "管理仓库中的商品信息，支持搜索、筛选、编辑、套装子项维护与批量操作。",
+    "productTotalCount": "共 {{count}} 条",
+    "activeFilter": { "keyword": "关键词" },
+    "onlyUncategorized": "只看未分类",
     "hqSync": "从HQ同步库存",
     "hqSyncTitle": "从HQ同步库存",
     "hqSyncContent": "该操作会从 HQ 按商品编码匹配新增/更新库存业务字段，不会删除本地缺失商品。确认继续同步吗？",
@@ -2590,6 +2610,10 @@
       "confirmDelete": "确认删除这条广告吗？"
     },
     "products": {
+      "showBarcodeImage": "查看条形码",
+      "storeRecordFilterCustomHint": "填写范围后按回车或点「查询」生效",
+      "activeFilterListSeparator": "、",
+      "activeFilterKeyword": "关键词",
       "title": "商品管理",
       "subtitle": "共 {{count}} 条记录",
       "integrityCheck": "一致性检查",

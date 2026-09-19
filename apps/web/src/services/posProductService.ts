@@ -395,7 +395,7 @@ function normalizePushProductsToHqJobResult(payload: unknown, fallbackJobId = ''
   }
 }
 
-export async function getProducts(params: PosProductFilterParams) {
+export async function getProducts(params: PosProductFilterParams, options: { signal?: AbortSignal } = {}) {
   const sortOrderMap: Record<string, string> = { ascend: 'asc', descend: 'desc' }
   // 顶部 categoryGuid/warehouseCategoryGuid 优先于同列头过滤，分别发送 productCategoryGUIDs/warehouseCategoryGUIDs。
   const categoryGuids = params.categoryGuid
@@ -450,6 +450,8 @@ export async function getProducts(params: PosProductFilterParams) {
   const response = await request.post<ApiResponse<PagedResult<PosProductDto>> | PagedResult<PosProductDto> | PosProductDto[]>(
     `${API_BASE}/list`,
     payload,
+    // 页面快速切换筛选时用于取消已过期的列表请求。
+    { signal: options.signal },
   )
 
   if (Array.isArray(response)) {

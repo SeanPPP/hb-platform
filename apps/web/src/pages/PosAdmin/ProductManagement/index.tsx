@@ -11,6 +11,8 @@ import {
   SafetyCertificateOutlined,
   SearchOutlined,
   SettingOutlined,
+  SyncOutlined,
+  ToolOutlined,
   TranslationOutlined,
 } from '@ant-design/icons'
 import {
@@ -21,7 +23,6 @@ import {
   Col,
   DatePicker,
   Descriptions,
-  Divider,
   Form,
   Image,
   Input,
@@ -51,6 +52,10 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useTranslation } from 'react-i18next'
 import BarcodePreview from '../../../components/BarcodePreview'
 import PageContainer from '../../../components/PageContainer'
+import ActiveFilterBar, { type ActiveFilterItem } from '../../../components/listToolbar/ActiveFilterBar'
+import MoreFiltersButton from '../../../components/listToolbar/MoreFiltersButton'
+import SelectionActionBar from '../../../components/listToolbar/SelectionActionBar'
+import ToolbarMenuButton from '../../../components/listToolbar/ToolbarMenuButton'
 import { getAllChinaSuppliers } from '../../../services/chinaSupplierService'
 import { getActiveLocalSuppliers } from '../../../services/localSupplierService'
 import {
@@ -151,6 +156,16 @@ import {
   type SetCodePasteField,
 } from './setCodeColumnPaste'
 import { loadCompleteSetCodeDraftRows, MAX_SET_CODE_DRAFT_ROWS } from './setCodeDraftLoader'
+import BarcodeTextCell from './BarcodeTextCell'
+import {
+  buildColumnFilterChips,
+  buildToolbarFilterChips,
+  getPresetStoreRecordCountRange,
+  type ColumnFilterMeta,
+  type ToolbarFilterKey,
+} from './activeFilterChips'
+import { createLatestRequestGuard, runLatestGuardedRequest } from '../../../utils/latestRequestGuard'
+import ProductListImage from '../../../components/ProductListImage'
 
 type ProductRow = (PosProductDto & {
   warehouseCategoryGuid?: string
@@ -194,6 +209,9 @@ function isSameSetCodePasteTarget(
   return left?.productType === right.productType && left.field === right.field
 }
 
+// 商品列表容器距视口底部的留白，以及容器最小高度（窗口很矮时也保证表格可用）。
+const PRODUCT_LIST_BOTTOM_GAP = 16
+const PRODUCT_LIST_MIN_HEIGHT = 360
 const PRODUCT_HQ_SYNC_ACTIVE_JOB_STORAGE_KEY = 'posAdmin.products.activeHqSyncJob'
 const PRODUCT_HQ_SYNC_POLL_INTERVAL_MS = 2000
 const PRODUCT_HQ_SYNC_TIMEOUT_MS = 10 * 60 * 1000
@@ -898,11 +916,14 @@ export default function ProductManagementPage() {
   })
 
   const wrapRef = useRef<HTMLDivElement>(null)
+  const [productListHeight, setProductListHeight] = useState<number>()
   const toolbarRef = useRef<HTMLDivElement>(null)
   const pagerRef = useRef<HTMLDivElement>(null)
   const productTableRef = useRef<TableRef | null>(null)
   const lastProductTableScrollTopRef = useRef(0)
   const productTableHasDataRef = useRef(data.length > 0)
+  const productListRequestGuardRef = useRef(createLatestRequestGuard())
+  const productListAbortRef = useRef<AbortController | null>(null)
   const wasProductManagementTabActiveRef = useRef(active)
   const productTableRestoreFrameRef = useRef<number | null>(null)
   productTableHasDataRef.current = data.length > 0
@@ -923,32 +944,43 @@ export default function ProductManagementPage() {
   }, [])
 
   const loadData = useCallback(async () => {
-    setLoading(true)
-    try {
-      const params: ProductFilterParams = {
-        pageIndex: page,
-        pageSize,
-        keyword: keyword || undefined,
-        supplierCode: supplierCode || undefined,
-        categoryGuid: categoryGuid || undefined,
-        warehouseCategoryGuid: warehouseCategoryGuid || undefined,
-        isActive: isActiveFilter,
-        isSet: isSetFilter,
-        storeRecordCountMin: storeRecordCountMin,
-        storeRecordCountMax: storeRecordCountMax,
-        sortBy: SORT_FIELD_MAP[sortBy] || sortBy,
-        sortOrder,
-        columnFilters,
-      }
-      const result = await getProducts(params)
-      const items = (result?.items ?? []).map((it) => ({ ...it, key: it.productCode }))
-      setData(items)
-      setTotal(result?.total ?? 0)
-    } catch {
-      message.error(t('posAdmin.products.loadFailed', '加载商品列表失败'))
-    } finally {
-      setLoading(false)
+    const params: ProductFilterParams = {
+      pageIndex: page,
+      pageSize,
+      keyword: keyword || undefined,
+      supplierCode: supplierCode || undefined,
+      categoryGuid: categoryGuid || undefined,
+      warehouseCategoryGuid: warehouseCategoryGuid || undefined,
+      isActive: isActiveFilter,
+      isSet: isSetFilter,
+      storeRecordCountMin: storeRecordCountMin,
+      storeRecordCountMax: storeRecordCountMax,
+      sortBy: SORT_FIELD_MAP[sortBy] || sortBy,
+      sortOrder,
+      columnFilters,
     }
+    // 关键位置：快速切换筛选、排序、翻页时，先取消上一个仍在途的列表请求，
+    // 且只允许最后一次请求写入列表、总数和 loading，避免后发先至时旧结果覆盖新结果。
+    productListAbortRef.current?.abort()
+    const controller = new AbortController()
+    productListAbortRef.current = controller
+    await runLatestGuardedRequest(
+      productListRequestGuardRef.current,
+      () => getProducts(params, { signal: controller.signal }),
+      {
+        onStart: () => setLoading(true),
+        onSuccess: (result) => {
+          const items = (result?.items ?? []).map((it) => ({ ...it, key: it.productCode }))
+          setData(items)
+          setTotal(result?.total ?? 0)
+        },
+        // 被取消的总是已过期的请求，守卫不会把它的失败回调放进来。
+        onError: () => {
+          message.error(t('posAdmin.products.loadFailed', '加载商品列表失败'))
+        },
+        onSettled: () => setLoading(false),
+      },
+    )
   }, [page, pageSize, keyword, supplierCode, categoryGuid, warehouseCategoryGuid, isActiveFilter, isSetFilter, storeRecordCountMin, storeRecordCountMax, sortBy, sortOrder, columnFilters, queryVersion])
 
   const stopHqSyncJobPolling = useCallback(() => {
@@ -1461,36 +1493,47 @@ export default function ProductManagementPage() {
   }, [supplierNameMap, t])
 
   const loadOptions = useCallback(async () => {
-    await refreshSupplierOptions()
-    try {
-      const tree = await getProductCategoryTree()
-      setCategoryTree(tree ?? [])
-      setCategoryLoadFailed(false)
-    } catch {
-      setCategoryLoadFailed(true)
-      message.error(t('posAdmin.products.categoryLoadFailed', '商品分类加载失败，请刷新后重试'))
-    }
-    try {
-      const tree = await getWarehouseCategoryTree()
-      setWarehouseCategoryTree(tree ?? [])
-      setWarehouseCategoryLoadFailed(false)
-    } catch {
-      setWarehouseCategoryLoadFailed(true)
-      message.error(t('posAdmin.products.warehouseCategoryLoadFailed', '仓库分类加载失败，请刷新后重试'))
-    }
-    try {
-      const suppliers = await getAllChinaSuppliers()
-      setChinaSupplierOptions(suppliers.map((supplier) => ({
-        label: supplier.supplierName ? `${supplier.supplierName} (${supplier.supplierCode})` : supplier.supplierCode,
-        value: supplier.supplierCode,
-      })))
-    } catch {
-      message.error(t('posAdmin.products.domesticSupplierLoadFailed', '国内供应商选项加载失败，请刷新后重试'))
-    }
-    try {
-      const stores = await getActiveStores()
-      setStoreOptions(stores)
-    } catch { /* ignore */ }
+    // 五类下拉选项互不依赖、各自处理失败，并行加载；原先逐个 await 串行，总耗时是五者之和。
+    await Promise.all([
+      refreshSupplierOptions(),
+      (async () => {
+        try {
+          const tree = await getProductCategoryTree()
+          setCategoryTree(tree ?? [])
+          setCategoryLoadFailed(false)
+        } catch {
+          setCategoryLoadFailed(true)
+          message.error(t('posAdmin.products.categoryLoadFailed', '商品分类加载失败，请刷新后重试'))
+        }
+      })(),
+      (async () => {
+        try {
+          const tree = await getWarehouseCategoryTree()
+          setWarehouseCategoryTree(tree ?? [])
+          setWarehouseCategoryLoadFailed(false)
+        } catch {
+          setWarehouseCategoryLoadFailed(true)
+          message.error(t('posAdmin.products.warehouseCategoryLoadFailed', '仓库分类加载失败，请刷新后重试'))
+        }
+      })(),
+      (async () => {
+        try {
+          const suppliers = await getAllChinaSuppliers()
+          setChinaSupplierOptions(suppliers.map((supplier) => ({
+            label: supplier.supplierName ? `${supplier.supplierName} (${supplier.supplierCode})` : supplier.supplierCode,
+            value: supplier.supplierCode,
+          })))
+        } catch {
+          message.error(t('posAdmin.products.domesticSupplierLoadFailed', '国内供应商选项加载失败，请刷新后重试'))
+        }
+      })(),
+      (async () => {
+        try {
+          const stores = await getActiveStores()
+          setStoreOptions(stores)
+        } catch { /* ignore */ }
+      })(),
+    ])
   }, [refreshSupplierOptions, t])
 
   useEffect(() => {
@@ -1500,6 +1543,12 @@ export default function ProductManagementPage() {
   useEffect(() => {
     loadData()
   }, [loadData])
+
+  useEffect(() => () => {
+    // 卸载时先让守卫失效再取消，在途请求的任何回调都不会再写入已卸载的页面。
+    productListRequestGuardRef.current.invalidate()
+    productListAbortRef.current?.abort()
+  }, [])
 
   useEffect(() => {
     const wasActive = wasProductManagementTabActiveRef.current
@@ -1556,7 +1605,11 @@ export default function ProductManagementPage() {
 
   useLayoutEffect(() => {
     const calc = () => {
-      const containerH = wrapRef.current?.clientHeight || window.innerHeight
+      // 关键位置：容器高度按它在视口里的实际起点计算，而不是写死 100vh 减去估算值。
+      // 原先的 200px 是按旧页头估的，实际偏小导致整页多出滚动条；页头变矮后省下的空间也用不上。
+      const wrapTop = wrapRef.current?.getBoundingClientRect().top ?? 0
+      const containerH = Math.max(window.innerHeight - wrapTop - PRODUCT_LIST_BOTTOM_GAP, PRODUCT_LIST_MIN_HEIGHT)
+      setProductListHeight(containerH)
       const tbarH = toolbarRef.current?.getBoundingClientRect().height || 0
       const pagerH = pagerRef.current?.getBoundingClientRect().height || 0
       const available = containerH - tbarH - pagerH - 8
@@ -1564,7 +1617,15 @@ export default function ProductManagementPage() {
     }
     calc()
     window.addEventListener('resize', calc)
-    return () => window.removeEventListener('resize', calc)
+    // 关键位置：工具栏里的已生效筛选条、勾选后操作条会随条件和勾选出现/消失或换行，
+    // 窗口尺寸不变时也要重算表格高度，否则表格被截断或底部分页被挤出视口。
+    const resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => calc())
+    if (toolbarRef.current) resizeObserver?.observe(toolbarRef.current)
+    if (pagerRef.current) resizeObserver?.observe(pagerRef.current)
+    return () => {
+      window.removeEventListener('resize', calc)
+      resizeObserver?.disconnect()
+    }
   }, [pageSize, total])
 
   const resetProductTableScroll = () => {
@@ -1696,6 +1757,174 @@ export default function ProductManagementPage() {
     }
     return findPath(nodes, [])
   }
+
+  // 下拉类筛选「选完即查」：同时写输入态和生效态，回到第一页并清空跨条件选择。
+  // loadData 依赖生效态，会由 useEffect 自动重新请求；这里不再 bump queryVersion，避免重复请求。
+  const applyToolbarFilterChange = () => {
+    resetProductTableScroll()
+    setPage(1)
+    setSelectedRowKeys([])
+  }
+
+  const handleSupplierFilterChange = (value: string | undefined) => {
+    setSupplierCodeInput(value)
+    setSupplierCode(value)
+    applyToolbarFilterChange()
+  }
+
+  const handleCategoryFilterChange = (value: unknown) => {
+    const guid = resolveCascaderLeafValue(value)
+    setCategoryGuidInput(guid)
+    setCategoryGuid(guid)
+    applyToolbarFilterChange()
+  }
+
+  const handleWarehouseCategoryFilterChange = (value: unknown) => {
+    const guid = resolveCascaderLeafValue(value)
+    setWarehouseCategoryGuidInput(guid)
+    setWarehouseCategoryGuid(guid)
+    applyToolbarFilterChange()
+  }
+
+  const handleActiveFilterChange = (value: boolean | undefined) => {
+    setIsActiveFilterInput(value)
+    setIsActiveFilter(value)
+    applyToolbarFilterChange()
+  }
+
+  const handleSetFilterChange = (value: boolean | undefined) => {
+    setIsSetFilterInput(value)
+    setIsSetFilter(value)
+    applyToolbarFilterChange()
+  }
+
+  const handleStoreRecordCountModeChange = (value: 'all' | 'hasRecords' | 'noRecords' | 'custom') => {
+    setStoreRecordCountModeInput(value)
+    // 自定义范围要等最小/最大值填好后按查询（或回车）生效，沿用 handleSearch 的校验，这里不立即请求。
+    if (value === 'custom') return
+    const presetRange = getPresetStoreRecordCountRange(value)
+    setStoreRecordCountMode(value)
+    setStoreRecordCountMin(presetRange.min)
+    setStoreRecordCountMax(presetRange.max)
+    applyToolbarFilterChange()
+  }
+
+  // 移除已生效标签：输入态和生效态一起清空，生效态变化后自动重新请求。
+  const removeToolbarFilter = (key: ToolbarFilterKey) => {
+    if (key === 'keyword') {
+      setKeywordInput('')
+      setKeyword('')
+    } else if (key === 'supplierCode') {
+      setSupplierCodeInput(undefined)
+      setSupplierCode(undefined)
+    } else if (key === 'categoryGuid') {
+      setCategoryGuidInput(undefined)
+      setCategoryGuid(undefined)
+    } else if (key === 'warehouseCategoryGuid') {
+      setWarehouseCategoryGuidInput(undefined)
+      setWarehouseCategoryGuid(undefined)
+    } else if (key === 'isActive') {
+      setIsActiveFilterInput(undefined)
+      setIsActiveFilter(undefined)
+    } else if (key === 'isSet') {
+      setIsSetFilterInput(undefined)
+      setIsSetFilter(undefined)
+    } else if (key === 'storeRecordCount') {
+      setStoreRecordCountModeInput('all')
+      setStoreRecordCountMode('all')
+      setStoreRecordCountMinInput(undefined)
+      setStoreRecordCountMaxInput(undefined)
+      setStoreRecordCountMin(undefined)
+      setStoreRecordCountMax(undefined)
+    }
+    applyToolbarFilterChange()
+  }
+
+  const removeColumnFilter = (filterKey: string) => {
+    setColumnFilters((current) => {
+      const next = { ...current }
+      delete next[filterKey]
+      return next
+    })
+    applyToolbarFilterChange()
+  }
+
+  // 列头筛选标签用列标题作为名称，枚举列按列头选项把值翻译成文字。
+  const productColumnFilterMeta: Record<string, ColumnFilterMeta> = {
+    itemNumber: { label: t('posAdmin.invoiceDetail.itemNumber', '货号'), kind: 'text' },
+    barcode: { label: t('posAdmin.invoiceDetail.barcode', '条码'), kind: 'text' },
+    productName: { label: t('posAdmin.invoiceDetail.productName', '商品名称'), kind: 'text' },
+    productCode: { label: t('posAdmin.products.productCode', '商品编码'), kind: 'text' },
+    localSupplierCode: { label: t('posAdmin.products.australianSupplier', '澳洲供应商'), kind: 'enum', options: supplierColumnFilterOptions },
+    domesticSupplierCode: { label: t('posAdmin.products.domesticSupplier', '国内供应商'), kind: 'enum', options: domesticSupplierColumnFilterOptions },
+    categoryGuid: { label: t('posAdmin.products.productCategoryLabel', '商品分类'), kind: 'enum', options: categoryColumnFilterOptions },
+    warehouseCategoryGuid: { label: t('posAdmin.products.warehouseCategory', '仓库分类'), kind: 'enum', options: warehouseCategoryColumnFilterOptions },
+    purchasePrice: { label: t('posAdmin.invoiceDetail.purchasePrice', '进货价'), kind: 'number' },
+    retailPrice: { label: t('posAdmin.invoiceDetail.retailPrice', '零售价'), kind: 'number' },
+    isAutoPricing: { label: t('posAdmin.products.autoPricing', '自动定价'), kind: 'enum', options: booleanColumnFilterOptions },
+    isActive: { label: t('posAdmin.cashierUsers.status', '状态'), kind: 'enum', options: activeColumnFilterOptions },
+    productType: { label: t('posAdmin.products.productTypeLabel', '商品类型'), kind: 'enum', options: productTypeColumnFilterOptions },
+    storeRecordCount: { label: t('posAdmin.products.storeRecords', '分店记录'), kind: 'number' },
+    createdAt: { label: t('column.createTime', '创建时间'), kind: 'date' },
+    updatedAt: { label: t('posAdmin.productPrice.updatedAt', '更新时间'), kind: 'date' },
+  }
+
+  // 已生效筛选条只展示「生效态」条件：顶部筛选在前，列头筛选在后。
+  const activeFilterItems: ActiveFilterItem[] = [
+    ...buildToolbarFilterChips(
+      {
+        keyword,
+        supplierCode,
+        categoryGuid,
+        warehouseCategoryGuid,
+        isActive: isActiveFilter,
+        isSet: isSetFilter,
+        storeRecordCountMode,
+        storeRecordCountMin,
+        storeRecordCountMax,
+      },
+      {
+        supplierName: (code) => supplierNameMap.get(code),
+        categoryPath: (guid) => categoryPathMaps.pathByGuid.get(guid),
+        warehouseCategoryPath: (guid) => warehouseCategoryPathMaps.pathByGuid.get(guid),
+      },
+      {
+        keyword: t('posAdmin.products.activeFilterKeyword', '关键词'),
+        supplier: t('posAdmin.products.supplierPlaceholder', '澳洲供应商'),
+        category: t('posAdmin.products.categoryPlaceholder', '商品分类'),
+        warehouseCategory: t('posAdmin.products.warehouseCategoryPlaceholder', '仓库分类'),
+        status: t('posAdmin.products.statusPlaceholder', '状态'),
+        setType: t('posAdmin.products.setPlaceholder', '套装'),
+        storeRecord: t('posAdmin.products.storeRecordFilterPlaceholder', '分店记录'),
+        active: t('posAdmin.products.enable', '启用'),
+        inactive: t('posAdmin.products.disable', '禁用'),
+        setProduct: t('posAdmin.products.setProduct', '套装'),
+        normalProduct: t('posAdmin.products.normalProduct', '单品'),
+        hasRecords: t('posAdmin.products.storeRecordFilterHasRecords', '有记录'),
+        noRecords: t('posAdmin.products.storeRecordFilterNoRecords', '无记录'),
+      },
+    ).map((chip): ActiveFilterItem => ({
+      ...chip,
+      source: 'toolbar',
+      onRemove: () => removeToolbarFilter(chip.key),
+    })),
+    ...buildColumnFilterChips(columnFilters, productColumnFilterMeta, {
+      textOperators: Object.fromEntries(textOperatorOptions.map((option) => [option.value, option.label])),
+      listSeparator: t('posAdmin.products.activeFilterListSeparator', '、'),
+    }).map((chip): ActiveFilterItem => ({
+      key: chip.key,
+      label: chip.label,
+      value: chip.value,
+      source: 'column',
+      onRemove: () => removeColumnFilter(chip.filterKey),
+    })),
+  ]
+  // 「更多筛选」角标按弹层内已设置的输入项计数，自定义范围未查询时也能提醒用户。
+  const moreFiltersActiveCount = [
+    warehouseCategoryGuidInput !== undefined,
+    isSetFilterInput !== undefined,
+    storeRecordCountModeInput !== 'all',
+  ].filter(Boolean).length
 
   const categoryParentDisabledGuids = useMemo(
     () => new Set(editingCategory ? [editingCategory.guid, ...collectCategoryGuids(editingCategory.children)] : []),
@@ -3156,7 +3385,8 @@ export default function ProductManagementPage() {
       align: 'center',
       render: (v: string) =>
         v ? (
-          <Image className="pos-products-image-cell" src={v} width={34} height={34} style={{ objectFit: 'contain' }} preview={{ mask: '' }} fallback={PRODUCT_IMAGE_FALLBACK} />
+          // 表格内用 COS 缩略图并懒加载，预览时才取原图。
+          <ProductListImage className="pos-products-image-cell" src={v} size={34} fit="contain" previewMask="" fallback={PRODUCT_IMAGE_FALLBACK} />
         ) : (
           <span className="pos-products-image-cell">-</span>
         ),
@@ -3165,24 +3395,12 @@ export default function ProductManagementPage() {
       title: t('posAdmin.invoiceDetail.barcode', '条码'),
       dataIndex: 'barcode',
       key: 'barcode',
-      width: 132,
+      width: 172,
       sorter: true,
       sortOrder: sortBy === 'barcode' ? sortOrder : undefined,
       ...textFilterProps('barcode', t('posAdmin.invoiceDetail.barcode', '条码')),
-      render: (v: string) => (
-        <div className="pos-products-barcode-cell">
-          <BarcodePreview
-            value={v}
-            compactCopy
-            align="left"
-            className="pos-products-barcode-preview"
-            gap={2}
-            options={{ height: 22, width: 1, margin: 0 }}
-            textMaxWidth={104}
-            textNoWrap
-          />
-        </div>
-      ),
+      // 列表内只显示条码数字，条形码图形悬停时才绘制，避免每行常驻一个 canvas。
+      render: (v: string) => <BarcodeTextCell value={v} />,
     },
     {
       title: t('posAdmin.invoiceDetail.productName', '商品名称'),
@@ -3436,16 +3654,71 @@ export default function ProductManagementPage() {
 
   return (
     <PageContainer
+      compact
       title={t('posAdmin.products.title')}
       subtitle={t('posAdmin.products.subtitle', { count: total })}
       extra={
-        <Space>
-          <Button icon={<SafetyCertificateOutlined />} onClick={() => { setIntegrityVisible(true); setIntegrityResult(null) }}>
-            {t('posAdmin.products.integrityCheck', '一致性检查')}
-          </Button>
-          {canManagePosProducts && (
-            <Button icon={<SettingOutlined />} onClick={handleOpenCategoryModal}>
-              {t('posAdmin.products.categoryManagement', '商品分类管理')}
+        <Space wrap>
+          {/* 页头只保留分组菜单和唯一的主按钮「创建商品」；批量操作移到勾选后操作条。 */}
+          <ToolbarMenuButton
+            label={t('common.listToolbar.sync', '同步')}
+            // HQ 同步任务进行中时只让图标转动，不用按钮 loading：loading 会屏蔽点击，菜单就打不开了。
+            icon={<SyncOutlined spin={Boolean(activeHqSyncJob) || hqSyncSubmitting} />}
+            actions={[
+              {
+                key: 'incrementalHqSync',
+                icon: <CloudSyncOutlined />,
+                label: activeHqSyncJob ? t('posAdmin.products.hqSyncInProgress', '同步中') : t('posAdmin.products.incrementalSyncFromHQ', '增量同步'),
+                visible: isAdmin,
+                disabled: hqSyncSubmitting,
+                onClick: () => openHqSyncModal('incremental'),
+              },
+              {
+                key: 'fullHqSync',
+                icon: <CloudDownloadOutlined />,
+                label: activeHqSyncJob ? t('posAdmin.products.hqSyncInProgress', '同步中') : t('posAdmin.products.fullSyncFromHQ', '全量同步'),
+                visible: isAdmin,
+                disabled: hqSyncSubmitting,
+                onClick: () => openHqSyncModal('full'),
+              },
+              {
+                key: 'syncToStore',
+                icon: <CloudUploadOutlined />,
+                label: t('posAdmin.products.syncToStore', '同步到分店'),
+                visible: canManagePosProducts,
+                onClick: openSyncToStoreModal,
+              },
+            ]}
+          />
+          <ToolbarMenuButton
+            label={t('common.listToolbar.tools', '工具')}
+            icon={<ToolOutlined />}
+            actions={[
+              {
+                key: 'integrityCheck',
+                icon: <SafetyCertificateOutlined />,
+                label: t('posAdmin.products.integrityCheck', '一致性检查'),
+                onClick: () => { setIntegrityVisible(true); setIntegrityResult(null) },
+              },
+              {
+                key: 'batchImageUpdate',
+                icon: <FileImageOutlined />,
+                label: t('posAdmin.products.batchImageUpdate', '图片批量修改'),
+                visible: canManagePosProducts,
+                onClick: openImageBatch,
+              },
+              {
+                key: 'categoryManagement',
+                icon: <SettingOutlined />,
+                label: t('posAdmin.products.categoryManagement', '商品分类管理'),
+                visible: canManagePosProducts,
+                onClick: handleOpenCategoryModal,
+              },
+            ]}
+          />
+          {canCreateStoreProducts && (
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>
+              {t('posAdmin.products.createProduct', '创建商品')}
             </Button>
           )}
         </Space>
@@ -3454,14 +3727,16 @@ export default function ProductManagementPage() {
       <div
         ref={wrapRef}
         style={{
-          height: 'calc(100vh - 200px)',
+          // 首次测量前沿用原估算值，测量后改为按实际起点计算的高度。
+          height: productListHeight ?? 'calc(100vh - 200px)',
           display: 'flex',
           flexDirection: 'column',
           overflow: 'hidden',
         }}
       >
-        <div ref={toolbarRef} style={{ padding: '12px 0' }}>
-          <Space wrap>
+        {/* 筛选行、已生效筛选条、勾选后操作条都在 toolbarRef 内，高度变化由 ResizeObserver 触发表格高度重算。 */}
+        <div ref={toolbarRef} className="pos-products-toolbar">
+          <div className="list-toolbar-filter-row">
             <Input
               allowClear
               placeholder={t('posAdmin.products.searchPlaceholder')}
@@ -3477,7 +3752,7 @@ export default function ProductManagementPage() {
               placeholder={t('posAdmin.products.supplierPlaceholder', '澳洲供应商')}
               style={{ width: 200 }}
               value={supplierCodeInput}
-              onChange={setSupplierCodeInput}
+              onChange={handleSupplierFilterChange}
               options={supplierOptions}
             />
             <Cascader
@@ -3485,19 +3760,9 @@ export default function ProductManagementPage() {
               placeholder={t('posAdmin.products.categoryPlaceholder', '商品分类')}
               style={{ width: 200 }}
               value={getCategoryValueFromGuid(categoryGuidInput, categoryTree)}
-              onChange={(v) => setCategoryGuidInput(v?.[v.length - 1])}
+              onChange={handleCategoryFilterChange}
               options={buildCategoryCascaderOptions(categoryTree)}
               disabled={categoryLoadFailed}
-              changeOnSelect
-            />
-            <Cascader
-              allowClear
-              placeholder={t('posAdmin.products.warehouseCategoryPlaceholder', '仓库分类')}
-              style={{ width: 200 }}
-              value={getWarehouseCategoryValueFromGuid(warehouseCategoryGuidInput, warehouseCategoryTree)}
-              onChange={(v) => setWarehouseCategoryGuidInput(v?.[v.length - 1])}
-              options={buildWarehouseCategoryCascaderOptions(warehouseCategoryTree)}
-              disabled={warehouseCategoryLoadFailed}
               changeOnSelect
             />
             <Select
@@ -3505,113 +3770,107 @@ export default function ProductManagementPage() {
               placeholder={t('posAdmin.products.statusPlaceholder', '状态')}
               style={{ width: 100 }}
               value={isActiveFilterInput}
-              onChange={setIsActiveFilterInput}
+              onChange={handleActiveFilterChange}
               options={[
                 { label: t('posAdmin.products.enable', '启用'), value: true },
                 { label: t('posAdmin.products.disable', '禁用'), value: false },
               ]}
             />
-            <Select
-              allowClear
-              placeholder={t('posAdmin.products.setPlaceholder', '套装')}
-              style={{ width: 100 }}
-              value={isSetFilterInput}
-              onChange={setIsSetFilterInput}
-              options={[
-                { label: t('posAdmin.products.setProduct', '套装'), value: true },
-                { label: t('posAdmin.products.normalProduct', '单品'), value: false },
-              ]}
-            />
-            <Select
-              placeholder={t('posAdmin.products.storeRecordFilterPlaceholder', '分店记录')}
-              style={{ width: 120 }}
-              value={storeRecordCountModeInput}
-              className={hasAppliedStoreRecordCountFilter ? 'store-record-filter-active' : undefined}
-              onChange={(value) => setStoreRecordCountModeInput(value)}
-              options={[
-                { label: t('posAdmin.products.storeRecordFilterAll', '全部'), value: 'all' },
-                { label: t('posAdmin.products.storeRecordFilterHasRecords', '有记录'), value: 'hasRecords' },
-                { label: t('posAdmin.products.storeRecordFilterNoRecords', '无记录'), value: 'noRecords' },
-                { label: t('posAdmin.products.storeRecordFilterCustom', '自定义范围'), value: 'custom' },
-              ]}
-            />
-            {isStoreRecordCountCustomMode ? (
-              <Space.Compact>
-                <InputNumber
-                  min={0}
-                  precision={0}
-                  placeholder={t('posAdmin.products.storeRecordFilterMin', '最小数量')}
-                  style={{ width: 110 }}
-                  value={storeRecordCountMinInput}
-                  onChange={(value) => setStoreRecordCountMinInput(value ?? undefined)}
+            <MoreFiltersButton activeCount={moreFiltersActiveCount}>
+              <div className="pos-products-more-filter-field">
+                <span className="pos-products-more-filter-label">{t('posAdmin.products.warehouseCategoryPlaceholder', '仓库分类')}</span>
+                <Cascader
+                  allowClear
+                  placeholder={t('posAdmin.products.warehouseCategoryPlaceholder', '仓库分类')}
+                  style={{ width: '100%' }}
+                  value={getWarehouseCategoryValueFromGuid(warehouseCategoryGuidInput, warehouseCategoryTree)}
+                  onChange={handleWarehouseCategoryFilterChange}
+                  options={buildWarehouseCategoryCascaderOptions(warehouseCategoryTree)}
+                  disabled={warehouseCategoryLoadFailed}
+                  changeOnSelect
                 />
-                <InputNumber
-                  min={0}
-                  precision={0}
-                  placeholder={t('posAdmin.products.storeRecordFilterMax', '最大数量')}
-                  style={{ width: 110 }}
-                  value={storeRecordCountMaxInput}
-                  onChange={(value) => setStoreRecordCountMaxInput(value ?? undefined)}
+              </div>
+              <div className="pos-products-more-filter-field">
+                <span className="pos-products-more-filter-label">{t('posAdmin.products.setPlaceholder', '套装')}</span>
+                <Select
+                  allowClear
+                  placeholder={t('posAdmin.products.setPlaceholder', '套装')}
+                  style={{ width: '100%' }}
+                  value={isSetFilterInput}
+                  onChange={handleSetFilterChange}
+                  options={[
+                    { label: t('posAdmin.products.setProduct', '套装'), value: true },
+                    { label: t('posAdmin.products.normalProduct', '单品'), value: false },
+                  ]}
                 />
-              </Space.Compact>
-            ) : null}
+              </div>
+              <div className="pos-products-more-filter-field">
+                <span className="pos-products-more-filter-label">{t('posAdmin.products.storeRecordFilterPlaceholder', '分店记录')}</span>
+                <Select
+                  placeholder={t('posAdmin.products.storeRecordFilterPlaceholder', '分店记录')}
+                  style={{ width: '100%' }}
+                  value={storeRecordCountModeInput}
+                  className={hasAppliedStoreRecordCountFilter ? 'store-record-filter-active' : undefined}
+                  onChange={handleStoreRecordCountModeChange}
+                  options={[
+                    { label: t('posAdmin.products.storeRecordFilterAll', '全部'), value: 'all' },
+                    { label: t('posAdmin.products.storeRecordFilterHasRecords', '有记录'), value: 'hasRecords' },
+                    { label: t('posAdmin.products.storeRecordFilterNoRecords', '无记录'), value: 'noRecords' },
+                    { label: t('posAdmin.products.storeRecordFilterCustom', '自定义范围'), value: 'custom' },
+                  ]}
+                />
+                {isStoreRecordCountCustomMode ? (
+                  <>
+                    <Space.Compact className="pos-products-more-filter-range">
+                      <InputNumber
+                        min={0}
+                        precision={0}
+                        placeholder={t('posAdmin.products.storeRecordFilterMin', '最小数量')}
+                        value={storeRecordCountMinInput}
+                        onChange={(value) => setStoreRecordCountMinInput(value ?? undefined)}
+                        onPressEnter={handleSearch}
+                      />
+                      <InputNumber
+                        min={0}
+                        precision={0}
+                        placeholder={t('posAdmin.products.storeRecordFilterMax', '最大数量')}
+                        value={storeRecordCountMaxInput}
+                        onChange={(value) => setStoreRecordCountMaxInput(value ?? undefined)}
+                        onPressEnter={handleSearch}
+                      />
+                    </Space.Compact>
+                    <span className="pos-products-more-filter-hint">
+                      {t('posAdmin.products.storeRecordFilterCustomHint', '填写范围后按回车或点「查询」生效')}
+                    </span>
+                  </>
+                ) : null}
+              </div>
+            </MoreFiltersButton>
+            <span className="list-toolbar-filter-spacer" />
             <Button type="primary" icon={<SearchOutlined />} onClick={handleSearch}>
               {t('common.query', '查询')}
             </Button>
             <Button icon={<ReloadOutlined />} onClick={handleReset}>
               {t('posAdmin.products.reset', '重置')}
             </Button>
-            <Divider type="vertical" style={{ height: 32 }} />
-            {isAdmin && (
-              <>
-                <Button
-                  icon={<CloudDownloadOutlined />}
-                  loading={hqSyncSubmitting && hqSyncMode === 'full'}
-                  disabled={hqSyncSubmitting}
-                  onClick={() => openHqSyncModal('full')}
-                >
-                  {activeHqSyncJob ? t('posAdmin.products.hqSyncInProgress', '同步中') : t('posAdmin.products.fullSyncFromHQ', '全量同步')}
-                </Button>
-                <Button
-                  icon={<CloudSyncOutlined />}
-                  loading={hqSyncSubmitting && hqSyncMode === 'incremental'}
-                  disabled={hqSyncSubmitting}
-                  onClick={() => openHqSyncModal('incremental')}
-                >
-                  {activeHqSyncJob ? t('posAdmin.products.hqSyncInProgress', '同步中') : t('posAdmin.products.incrementalSyncFromHQ', '增量同步')}
-                </Button>
-                <Button
-                  icon={<CloudDownloadOutlined />}
-                  loading={selectedFromHqLoading}
-                  disabled={!selectedRowKeys.length || selectedFromHqLoading}
-                  onClick={handleSyncSelectedFromHq}
-                >
-                  {t('posAdmin.products.syncSelectedFromHq', '从HQ同步选中')}
-                </Button>
-              </>
-            )}
-            {canCreateStoreProducts && (
-              <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>
-                {t('posAdmin.products.createProduct', '创建商品')}
-              </Button>
-            )}
+          </div>
+          <ActiveFilterBar items={activeFilterItems} onClearAll={handleReset} />
+          <SelectionActionBar selectedCount={selectedRowKeys.length} onClearSelection={() => setSelectedRowKeys([])}>
             {canManagePosProducts && (
               <>
+                <Button size="small" icon={<EditOutlined />} onClick={openBatchEdit} disabled={!selectedRowKeys.length || categoryLoadFailed}>
+                  {t('posAdmin.products.batchEdit', '批量编辑')}
+                </Button>
+                <Popconfirm title={t('posAdmin.products.confirmBatchEnable', '确认启用选中的商品？')} onConfirm={() => handleBatchEnable(true)}>
+                  <Button size="small" disabled={!selectedRowKeys.length}>{t('posAdmin.products.batchEnable', '批量启用')}</Button>
+                </Popconfirm>
+                <Popconfirm title={t('posAdmin.products.confirmBatchDisable', '确认禁用选中的商品？')} onConfirm={() => handleBatchEnable(false)}>
+                  <Button size="small" danger disabled={!selectedRowKeys.length}>
+                    {t('posAdmin.products.batchDisable', '批量禁用')}
+                  </Button>
+                </Popconfirm>
                 <Button
-                  icon={<CloudUploadOutlined />}
-                  loading={pushToHqLoading}
-                  disabled={!selectedRowKeys.length || pushToHqLoading || pushToHqModalOpen}
-                  onClick={handlePushToHq}
-                >
-                  {t('posAdmin.products.pushToHq', '发送到HQ')}
-                </Button>
-                <Button icon={<CloudUploadOutlined />} onClick={openSyncToStoreModal}>
-                  {t('posAdmin.products.syncToStore', '同步到分店')}
-                </Button>
-                <Button icon={<FileImageOutlined />} onClick={openImageBatch}>
-                  {t('posAdmin.products.batchImageUpdate', '图片批量修改')}
-                </Button>
-                <Button
+                  size="small"
                   icon={<TranslationOutlined />}
                   loading={translating}
                   disabled={!selectedRowKeys.length || translating}
@@ -3619,20 +3878,31 @@ export default function ProductManagementPage() {
                 >
                   {t('posAdmin.products.batchTranslate', '批量翻译')}
                 </Button>
-                <Button onClick={openBatchEdit} disabled={!selectedRowKeys.length || categoryLoadFailed}>
-                  {t('posAdmin.products.batchEdit', '批量编辑')}
-                </Button>
-                <Popconfirm title={t('posAdmin.products.confirmBatchEnable', '确认启用选中的商品？')} onConfirm={() => handleBatchEnable(true)}>
-                  <Button disabled={!selectedRowKeys.length}>{t('posAdmin.products.batchEnable', '批量启用')}</Button>
-                </Popconfirm>
-                <Popconfirm title={t('posAdmin.products.confirmBatchDisable', '确认禁用选中的商品？')} onConfirm={() => handleBatchEnable(false)}>
-                  <Button danger disabled={!selectedRowKeys.length}>
-                    {t('posAdmin.products.batchDisable', '批量禁用')}
-                  </Button>
-                </Popconfirm>
               </>
             )}
-          </Space>
+            {isAdmin && (
+              <Button
+                size="small"
+                icon={<CloudDownloadOutlined />}
+                loading={selectedFromHqLoading}
+                disabled={!selectedRowKeys.length || selectedFromHqLoading}
+                onClick={handleSyncSelectedFromHq}
+              >
+                {t('posAdmin.products.syncSelectedFromHq', '从HQ同步选中')}
+              </Button>
+            )}
+            {canManagePosProducts && (
+              <Button
+                size="small"
+                icon={<CloudUploadOutlined />}
+                loading={pushToHqLoading}
+                disabled={!selectedRowKeys.length || pushToHqLoading || pushToHqModalOpen}
+                onClick={handlePushToHq}
+              >
+                {t('posAdmin.products.pushToHq', '发送到HQ')}
+              </Button>
+            )}
+          </SelectionActionBar>
         </div>
 
         <div style={{ flex: 1, minHeight: 0 }}>
@@ -3647,7 +3917,7 @@ export default function ProductManagementPage() {
             dataSource={data}
             columns={columns}
             pagination={false}
-            scroll={{ x: 1880, y: tableScrollY }}
+            scroll={{ x: 1920, y: tableScrollY }}
             rowSelection={{
               selectedRowKeys,
               onChange: (keys) => setSelectedRowKeys(keys),
@@ -3681,23 +3951,14 @@ export default function ProductManagementPage() {
           style={{
             padding: '8px 0',
             display: 'flex',
-            justifyContent: 'space-between',
+            // 选中数量与「取消选择」已由工具栏里的勾选后操作条展示，分页栏只保留分页器。
+            justifyContent: 'flex-end',
             alignItems: 'center',
             width: '100%',
             background: '#fff',
             zIndex: 1,
           }}
         >
-          <Space>
-            <span>
-              {t('posAdmin.products.selectedCount', '已选 {{count}} 项', { count: selectedRowKeys.length })}
-            </span>
-            {selectedRowKeys.length > 0 && (
-              <Button type="link" size="small" onClick={() => setSelectedRowKeys([])}>
-                {t('posAdmin.products.clearSelection', '清空选择')}
-              </Button>
-            )}
-          </Space>
           <Pagination
             current={page}
             pageSize={pageSize}
