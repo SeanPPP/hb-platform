@@ -1544,11 +1544,54 @@ namespace BlazorApp.Shared.DTOs
     /// </summary>
     public sealed class CompactSalesBoardDto
     {
+        /// <summary>分店栏：受国内供应商、商品的选中项约束，不受已选分店自身约束。</summary>
         public List<CompactSalesBoardStoreDto> Stores { get; set; } = new();
+        /// <summary>国内供应商栏：受分店、商品的选中项约束，不受已选供应商自身约束。</summary>
         public List<CompactSalesBoardChinaSupplierDto> ChinaSuppliers { get; set; } = new();
+        /// <summary>商品明细：受分店、国内供应商的选中项与关键词约束，服务端全量排序后分页。</summary>
         public PagedCompactSalesBoardProductDto ProductDetails { get; set; } = new();
+        /// <summary>KPI 汇总：同时受三个维度的选中项约束；Overall* 仅受授权分店范围约束。</summary>
+        public CompactSalesBoardSummaryDto Summary { get; set; } = new();
         public string StatisticStatus { get; set; } = string.Empty;
         public string? StatisticMessage { get; set; }
+        public DateTime? StatisticUpdatedAt { get; set; }
+        /// <summary>本次是否复用了服务端已缓存的聚合立方体。</summary>
+        public bool FromCache { get; set; }
+    }
+
+    public sealed class CompactSalesBoardSummaryDto
+    {
+        public decimal TotalAmount { get; set; }
+        public int TotalQuantity { get; set; }
+        public int ProductCount { get; set; }
+        public int StoreCount { get; set; }
+        public int SupplierCount { get; set; }
+        public decimal OverallAmount { get; set; }
+        public int OverallQuantity { get; set; }
+    }
+
+    /// <summary>
+    /// 紧凑销售看板查询条件。BranchCodes 是授权分店范围（null 表示全部），
+    /// Selected* 是页面上的联动选中项，二者含义不同，不能互相替代。
+    /// </summary>
+    public sealed class CompactSalesBoardQuery
+    {
+        public const string SortByAmount = "amount";
+        public const string SortByQuantity = "quantity";
+        public const string SortByUnitPrice = "unitPrice";
+        public const string SortByItemNumber = "itemNumber";
+
+        public DateRangeDto DateRange { get; set; } = new();
+        public List<string>? BranchCodes { get; set; }
+        public string? SelectedBranchCode { get; set; }
+        public string? SelectedChinaSupplierCode { get; set; }
+        public string? SelectedProductCode { get; set; }
+        public string? Keyword { get; set; }
+        public string? SortField { get; set; }
+        public string? SortOrder { get; set; }
+        public int PageIndex { get; set; } = 1;
+        public int PageSize { get; set; } = 80;
+        public bool ForceRefresh { get; set; }
     }
 
     public sealed class CompactSalesBoardStoreDto
@@ -1560,6 +1603,8 @@ namespace BlazorApp.Shared.DTOs
         public decimal DomesticSupplierAmount { get; set; }
         public string AustralianSupplierCode { get; set; } = "200";
         public string AustralianSupplierName { get; set; } = "200-hotbargain";
+        /// <summary>该分店在当前筛选下有销售的商品款数。</summary>
+        public int ProductCount { get; set; }
     }
 
     public sealed class CompactSalesBoardChinaSupplierDto
@@ -1568,6 +1613,8 @@ namespace BlazorApp.Shared.DTOs
         public string SupplierName { get; set; } = string.Empty;
         public decimal TotalAmount { get; set; }
         public int TotalQuantity { get; set; }
+        /// <summary>该供应商在当前筛选下有销售的商品款数。</summary>
+        public int ProductCount { get; set; }
     }
 
     public sealed class PagedCompactSalesBoardProductDto
@@ -1576,6 +1623,8 @@ namespace BlazorApp.Shared.DTOs
         public int Total { get; set; }
         public int PageIndex { get; set; }
         public int PageSize { get; set; }
+        /// <summary>商品栏在分店、供应商约束下（关键词过滤前）的营业额合计，作为商品占比的分母。</summary>
+        public decimal ScopeAmount { get; set; }
     }
 
     public sealed class CompactSalesBoardProductDto

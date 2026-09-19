@@ -3922,30 +3922,16 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
 
         Assert.IsType<ForbidResult>(response);
         serviceMock.Verify(service => service.GetCompactSalesBoardAsync(
-            It.IsAny<DateRangeDto>(),
-            It.IsAny<List<string>?>(),
-            It.IsAny<List<string>?>(),
-            It.IsAny<string?>(),
-            It.IsAny<int>(),
-            It.IsAny<int>(),
-            It.IsAny<bool>()), Times.Never);
+            It.IsAny<CompactSalesBoardQuery>()), Times.Never);
     }
 
     [Fact]
     public async Task GetCompactSalesBoard_普通用户请求越权分店时仅传授权交集()
     {
-        List<string>? capturedBranchCodes = null;
+        CompactSalesBoardQuery? capturedQuery = null;
         var serviceMock = new Mock<ISalesDashboardReactService>();
-        serviceMock.Setup(service => service.GetCompactSalesBoardAsync(
-                It.IsAny<DateRangeDto>(),
-                It.IsAny<List<string>?>(),
-                It.IsAny<List<string>?>(),
-                It.IsAny<string?>(),
-                It.IsAny<int>(),
-                It.IsAny<int>(),
-                It.IsAny<bool>()))
-            .Callback<DateRangeDto, List<string>?, List<string>?, string?, int, int, bool>(
-                (_, branchCodes, _, _, _, _, _) => capturedBranchCodes = branchCodes)
+        serviceMock.Setup(service => service.GetCompactSalesBoardAsync(It.IsAny<CompactSalesBoardQuery>()))
+            .Callback<CompactSalesBoardQuery>(query => capturedQuery = query)
             .ReturnsAsync(new CompactSalesBoardDto());
         var controller = CreateController(serviceMock.Object, CreateUserService(new[] { "S1", "S3" }));
 
@@ -3956,7 +3942,41 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         );
 
         Assert.IsType<OkObjectResult>(response);
-        Assert.Equal(new[] { "S1" }, capturedBranchCodes);
+        Assert.Equal(new[] { "S1" }, capturedQuery?.BranchCodes);
+    }
+
+    [Fact]
+    public async Task GetCompactSalesBoard_授权范围与联动选中项分开传给服务()
+    {
+        CompactSalesBoardQuery? capturedQuery = null;
+        var serviceMock = new Mock<ISalesDashboardReactService>();
+        serviceMock.Setup(service => service.GetCompactSalesBoardAsync(It.IsAny<CompactSalesBoardQuery>()))
+            .Callback<CompactSalesBoardQuery>(query => capturedQuery = query)
+            .ReturnsAsync(new CompactSalesBoardDto());
+        var controller = CreateController(serviceMock.Object, CreateUserService(new[] { "S1", "S3" }));
+
+        var response = await controller.GetCompactSalesBoard(
+            new DateTime(2026, 8, 1),
+            new DateTime(2026, 8, 2),
+            selectedBranchCode: "S3",
+            selectedChinaSupplierCode: "HB215",
+            selectedProductCode: "P-1",
+            keyword: "canvas",
+            sortField: "quantity",
+            sortOrder: "asc",
+            pageIndex: 2,
+            pageSize: 50,
+            forceRefresh: true
+        );
+
+        Assert.IsType<OkObjectResult>(response);
+        Assert.NotNull(capturedQuery);
+        // 未显式请求分店时，普通用户的授权范围取自身关联分店，不能退化为全分店。
+        Assert.Equal(new[] { "S1", "S3" }, capturedQuery!.BranchCodes);
+        Assert.Equal(("S3", "HB215", "P-1"), (capturedQuery.SelectedBranchCode, capturedQuery.SelectedChinaSupplierCode, capturedQuery.SelectedProductCode));
+        Assert.Equal(("canvas", "quantity", "asc"), (capturedQuery.Keyword, capturedQuery.SortField, capturedQuery.SortOrder));
+        Assert.Equal((2, 50, true), (capturedQuery.PageIndex, capturedQuery.PageSize, capturedQuery.ForceRefresh));
+        Assert.Equal(new DateTime(2026, 8, 2), capturedQuery.DateRange.EndDate);
     }
 
     private async Task<TwentyEightStorePerformanceFixture> SeedTwentyEightStorePerformanceFixtureAsync()

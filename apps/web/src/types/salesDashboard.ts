@@ -125,6 +125,8 @@ export interface CompactSalesBoardStore {
   domesticSupplierAmount: number
   australianSupplierCode: string
   australianSupplierName: string
+  /** 当前筛选下该分店有销售的商品款数 */
+  productCount: number
 }
 
 export interface CompactSalesBoardChinaSupplier {
@@ -132,6 +134,8 @@ export interface CompactSalesBoardChinaSupplier {
   supplierName: string
   totalAmount: number
   totalQuantity: number
+  /** 当前筛选下该供应商有销售的商品款数 */
+  productCount: number
 }
 
 export interface CompactSalesBoardProduct {
@@ -151,14 +155,52 @@ export interface PagedCompactSalesBoardProduct {
   total: number
   pageIndex: number
   pageSize: number
+  /** 商品栏在分店、供应商约束下（关键词过滤前）的营业额合计，商品占比的分母 */
+  scopeAmount: number
+}
+
+/** KPI 汇总：total* 同时受三个维度选中项约束，overall* 只受授权分店范围约束。 */
+export interface CompactSalesBoardSummary {
+  totalAmount: number
+  totalQuantity: number
+  productCount: number
+  storeCount: number
+  supplierCount: number
+  overallAmount: number
+  overallQuantity: number
 }
 
 export interface CompactSalesBoard {
   stores: CompactSalesBoardStore[]
   chinaSuppliers: CompactSalesBoardChinaSupplier[]
   productDetails: PagedCompactSalesBoardProduct
+  summary: CompactSalesBoardSummary
   statisticStatus?: string
   statisticMessage?: string
+  statisticUpdatedAt?: string
+  /** 服务端是否复用了已缓存的「门店×商品」聚合 */
+  fromCache: boolean
+}
+
+export type CompactSalesBoardSortField = 'amount' | 'quantity' | 'unitPrice' | 'itemNumber'
+export type CompactSalesBoardSortOrder = 'asc' | 'desc'
+
+/**
+ * branchCodes 是授权分店范围（undefined 表示全部），selected* 是页面联动选中项；
+ * 每栏只受其他栏的选中项约束，由服务端统一计算。
+ */
+export interface CompactSalesBoardRequest {
+  dateRange: DateRange
+  branchCodes?: string[]
+  selectedBranchCode?: string | null
+  selectedChinaSupplierCode?: string | null
+  selectedProductCode?: string | null
+  keyword?: string
+  sortField?: CompactSalesBoardSortField
+  sortOrder?: CompactSalesBoardSortOrder
+  pageIndex?: number
+  pageSize?: number
+  forceRefresh?: boolean
 }
 
 export interface WeeklyHierarchyData {
