@@ -341,6 +341,8 @@ COMMIT;
 
             // 快照本身已是物化结果，按批次号走主键查找直接读；复制进临时表反而要把全部分店约 30 万行
             // 宽行写一遍 tempdb（本机 38 万行实测占整次读取 2.2 秒中的 1.65 秒）。
+            // 例外是关键词：库排序规则下的前导通配 LIKE 很贵，分页与两段汇总会各做一遍（生产全部分店
+            // 「card」7–8 秒）；命中行通常只占少数，先物化一次再复用，降到 1.6–2.2 秒且结果不变。
             var source = $$"""
 (
     SELECT
@@ -364,7 +366,11 @@ SET NOCOUNT ON;
 DECLARE @SalesStatLastUpdate datetime = (
     SELECT MAX(SalesStatLastUpdate) FROM dbo.ProductMovementReportSnapshotRun WHERE {{runFilter}}
 );
-""" + BuildResultSetsSql(BuildSuggestionWhere(query), source),
+"""
+                    + (string.IsNullOrWhiteSpace(query.Keyword)
+                        ? BuildResultSetsSql(BuildSuggestionWhere(query), source)
+                        : "\nSELECT * INTO #FinalRows FROM " + source + ";\n"
+                            + BuildResultSetsSql(BuildSuggestionWhere(query))),
             };
         }
 
@@ -829,6 +835,8 @@ INNER LOOP JOIN [ProductStoreDailySalesStatistic] s
             if (!string.IsNullOrWhiteSpace(query.Keyword))
             {
                 clauses.Add(
+                    // 保留库排序规则的 LIKE：BIN2 虽快约 7 倍，但不折叠全半角，搜「$2」会漏掉「＄2 CARDS」
+                    // （2026-09-19 生产核对全部分店少 25 行）。关键词的速度改由快照读取时先物化命中行解决。
                     "(ProductCode LIKE @Keyword OR ProductName LIKE @Keyword OR Barcode LIKE @Keyword)"
                 );
             }
