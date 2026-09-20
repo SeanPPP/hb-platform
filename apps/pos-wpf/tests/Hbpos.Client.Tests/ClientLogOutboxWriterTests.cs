@@ -383,7 +383,7 @@ public sealed class ClientLogOutboxWriterTests
             lockCommand.CommandText = "COMMIT;";
             await lockCommand.ExecuteNonQueryAsync();
             lockHeld = false;
-            await flush.WaitAsync(TimeSpan.FromSeconds(5));
+            await flush.WaitAsync(TestWaitTimeouts.Default);
 
             var pending = await store.ReadPendingAsync(
                 ClientLogOutboxKind.OperationAudit,
@@ -549,7 +549,7 @@ public sealed class ClientLogOutboxWriterTests
 
             await writer.StartAsync(CancellationToken.None);
             await writer.WaitForOperationAuditFlushAsync(CancellationToken.None)
-                .WaitAsync(TimeSpan.FromSeconds(5));
+                .WaitAsync(TestWaitTimeouts.Default);
             Assert.Equal(0L, writer.PendingOperationAuditPersistenceCount);
             Assert.Equal(10, await store.CountPendingAsync(ClientLogOutboxKind.OperationAudit, CancellationToken.None));
         }

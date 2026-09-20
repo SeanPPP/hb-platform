@@ -224,7 +224,7 @@ public sealed class SingleInstanceStartupGuardTests
         finally
         {
             releaseOwner.Set();
-            Assert.True(ownerThread.Join(TimeSpan.FromSeconds(5)), "Mutex owner thread did not shut down.");
+            Assert.True(ownerThread.Join(TestWaitTimeouts.Default), "Mutex owner thread did not shut down.");
         }
 
         Assert.Null(ownerFailure);
@@ -265,7 +265,7 @@ public sealed class SingleInstanceStartupGuardTests
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
 
-        var dispatcher = await dispatcherReady.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var dispatcher = await dispatcherReady.Task.WaitAsync(TestWaitTimeouts.Default);
         try
         {
             var operation = dispatcher.InvokeAsync(action, DispatcherPriority.Normal);
@@ -278,7 +278,7 @@ public sealed class SingleInstanceStartupGuardTests
                 dispatcher.BeginInvokeShutdown(DispatcherPriority.Send);
             }
 
-            Assert.True(thread.Join(TimeSpan.FromSeconds(5)), "WPF Dispatcher thread did not shut down.");
+            Assert.True(thread.Join(TestWaitTimeouts.Default), "WPF Dispatcher thread did not shut down.");
         }
     }
 
