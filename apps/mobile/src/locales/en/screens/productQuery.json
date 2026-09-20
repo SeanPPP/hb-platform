@@ -52,6 +52,8 @@
     "generateBarcode": "Generate barcode",
     "barcodeHint": "EAN-13: 9529 + YYMMDD + two-digit sequence + check digit. Up to 100 reservations per day.",
     "formHint": "Add product details and pricing",
+    "accuracyHint": "Enter the correct supplier, item number, barcode, product name, purchase price, and retail price.",
+    "permissionWarning": "Careless entries will result in your permission to create products being revoked.",
     "namePlaceholder": "Product name",
     "itemPlaceholder": "At least 5 characters",
     "barcodePlaceholder": "Enter or generate",
