@@ -9,6 +9,32 @@ import {
 import { PricingCart } from "@/features/sales/domain";
 import { ActivePricingCartSession } from "@/features/sales/runtime";
 
+test("小数数量拒绝取得支付独占锁后，原购物车仍可修改", async () => {
+  const source = cartWithDiscount().stateSnapshot();
+  const active = session(PricingCart.restore({
+    ...source,
+    lines: [{ ...source.lines[0]!, quantity: 1.25 }],
+  }));
+  const coordinator = createCoordinator(active, null);
+
+  await assert.rejects(
+    () => coordinator.acquireExact({
+      checkoutIntentId: "checkout-fractional",
+      expectedRevision: active.read().cart.revision,
+    }),
+    hasCode("PAYMENT_QUANTITY_UNSUPPORTED"),
+  );
+  assert.equal(active.hasPendingExclusiveOperation(), false);
+  assert.equal(active.setLineQuantity("line-1", 2), true);
+  assert.equal(active.read().cart.lines[0]?.quantity, "2");
+
+  const lease = await coordinator.acquireExact({
+    checkoutIntentId: "checkout-integer",
+    expectedRevision: active.read().cart.revision,
+  });
+  await coordinator.releaseAfterSafeCancel(lease, "order-integer");
+});
+
 test("支付 lease 跨异步生命周期独占购物车，安全取消后保留原定价车", async () => {
   const cart = cartWithDiscount();
   const active = session(cart);

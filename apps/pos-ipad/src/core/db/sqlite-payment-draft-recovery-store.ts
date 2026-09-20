@@ -894,10 +894,18 @@ implements PersistedOrderDraftPort {
       const tenderCount = integer(usage?.tender_count, "draft tender count");
       const attemptCount = integer(usage?.attempt_count, "draft attempt count");
       const actionCount = integer(usage?.action_count, "draft action count");
+      // 单个 binding 尚无 attempt 时，Abandoned 与 attempt INSERT 在同一排他事务序列化；
+      // 旧异步流程之后会被 abandoned-draft 触发器拒绝，无法越过首次 provider 调用门。
+      // 手动刷卡的 binding 表示外部卡机已确认付款，即使本地 attempt 尚未落库也不能放弃。
+      const untouchedBoundAction =
+        attemptCount === 0 &&
+        actionCount === 1 &&
+        unresolvedBoundAction !== null &&
+        unresolvedBoundAction.provider !== "manual-card";
+      const resolvedHistory = attemptCount === actionCount && unresolvedBoundAction === null;
       if (
         tenderCount !== 0 ||
-        attemptCount !== actionCount ||
-        unresolvedBoundAction !== null
+        !(resolvedHistory || untouchedBoundAction)
       ) {
         throw new Error(
           "Payment draft with tender or unresolved payment history cannot be abandoned.",

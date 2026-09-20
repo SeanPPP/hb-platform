@@ -3819,7 +3819,7 @@ test("真实 SQLite：仅有已拒付历史的 DraftPrepared 可安全 abandon �
   });
 });
 
-test("真实 SQLite：孤立 attempt 或 binding 均阻止 DraftPrepared abandon", async () => {
+test("真实 SQLite：孤立 attempt 禁止 abandon；单个未提交 binding 可安全关闭并阻断陈旧 attempt", async () => {
   for (const history of ["attempt-only", "binding-only"] as const) {
     await withDatabase(`draft-abandon-${history}`, async (connection) => {
       await migrateFresh(connection);
@@ -3860,16 +3860,31 @@ test("真实 SQLite：孤立 attempt 或 binding 均阻止 DraftPrepared abandon
         );
       }
 
-      await assert.rejects(
-        () => store.abandonPreparedDraft({
-          actionId: `abandon-${history}`,
-          draftId: input.draftId,
-          orderGuid: created.orderGuid,
-          actor: paymentAuditActor(),
-          ...input.identity,
-        }),
-        /tender or unresolved payment history/,
-      );
+      const abandon = () => store.abandonPreparedDraft({
+        actionId: `abandon-${history}`,
+        draftId: input.draftId,
+        orderGuid: created.orderGuid,
+        actor: paymentAuditActor(),
+        ...input.identity,
+      });
+      if (history === "attempt-only") {
+        await assert.rejects(abandon, /tender or unresolved payment history/);
+      } else {
+        assert.equal((await abandon()).replayed, false);
+        await assert.rejects(
+          () => insertAttempt(connection, {
+            attemptId: "attempt-abandon-orphan",
+            idempotencyKey: "idempotency-abandon-orphan",
+            orderGuid: created.orderGuid,
+            provider: "linkly-cloud",
+            operation: "purchase",
+            amountCents: 900,
+            state: "Created",
+          }),
+          /PAYMENT_ORDER_DRAFT_ABANDONED/,
+        );
+        assert.equal(await store.findBlockingRecovery(input.identity), null);
+      }
       assert.equal(
         await scalar(
           connection,
@@ -3878,7 +3893,7 @@ test("真实 SQLite：孤立 attempt 或 binding 均阻止 DraftPrepared abandon
            WHERE order_guid = ? AND state = 'Active'`,
           [created.orderGuid],
         ),
-        1,
+        history === "attempt-only" ? 1 : 0,
       );
     });
   }
@@ -4305,6 +4320,47 @@ test("手动刷卡action先落库后崩溃仍恢复明确确认，缺少确认�
       } else await assert.rejects(() => store.findBlockingRecovery(input.identity), /confirmation signature/);
     });
   }
+});
+
+test("真实 SQLite：手动刷卡已确认 binding 即使无 attempt 也禁止放弃", async () => {
+  await withDatabase("manual-confirmed-abandon-blocked", async (connection) => {
+    await migrateFresh(connection);
+    const store = new SqlitePaymentDraftRecoveryStore(
+      connection,
+      sequenceIds("manual-abandon-order", "manual-abandon-audit"),
+      () => T1,
+    );
+    const input = draftInput({ draftId: "manual-abandon-draft" });
+    const created = await store.createOrReuseDraft(input);
+    await insertActionBinding(
+      connection,
+      created.orderGuid,
+      "manual-abandon-binding",
+      "manual-abandon-attempt",
+      "manual-abandon-key",
+      ["manual-card", "purchase", "AUD", 900, "confirmed"],
+    );
+
+    await assert.rejects(
+      () => store.abandonPreparedDraft({
+        actionId: "manual-unsafe-abandon",
+        draftId: input.draftId,
+        orderGuid: created.orderGuid,
+        actor: paymentAuditActor(),
+        ...input.identity,
+      }),
+      /unresolved payment history/,
+    );
+    assert.equal(
+      await scalar(
+        connection,
+        "SELECT COUNT(*) AS count FROM payment_order_draft_bindings WHERE order_guid = ? AND state = 'Active'",
+        [created.orderGuid],
+      ),
+      1,
+    );
+    assert.equal((await store.findBlockingRecovery(input.identity))?.boundAction?.manualConfirmed, true);
+  });
 });
 
 test("真实 SQLite：blocking attempt 与无 attempt prepared draft 均跨重启恢复，完成态 binding 不再阻塞", async () => {

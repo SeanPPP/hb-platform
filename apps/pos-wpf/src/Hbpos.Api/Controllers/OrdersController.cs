@@ -53,6 +53,11 @@ public sealed class OrdersController(
                 $"alreadySynced={response.AlreadySynced} message={response.Message} elapsedMs={stopwatch.ElapsedMilliseconds}");
             return Ok(ApiResult<OrderSyncResponse>.Ok(response));
         }
+        catch (OrderSyncQuantityUnsupportedException ex)
+        {
+            Log($"sync request unsupported quantity orderGuid={request.OrderGuid:D} message={ex.Message} elapsedMs={stopwatch.ElapsedMilliseconds}");
+            return BadRequest(ApiResult<OrderSyncResponse>.Fail("ORDER_SYNC_QUANTITY_UNSUPPORTED", ex.Message));
+        }
         catch (InvalidOperationException ex)
         {
             Log(

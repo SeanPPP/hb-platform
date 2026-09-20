@@ -140,6 +140,27 @@ test("远端稳定拒绝或跨门店结果绝不回退本地订单", async () =>
   assert.equal(local.calls.length, 0);
 });
 
+test("公开退款上下文使用 Vault 复用后余额及现金证明余额", async () => {
+  const remote = new FakeHistoryApi();
+  remote.contextResult = remoteContext();
+  const adapter = createAdapter({
+    historyApi: remote,
+    capacityVault: {
+      async protect(input) {
+        return input.capacities.map((capacity) => ({
+          sourceKey: capacity.sourceKey,
+          capacityId: `opaque-${capacity.sourceKey}`,
+          remainingCents: 0,
+          offlineCashEvidenceId: capacity.method === "cash" ? `proof-${capacity.sourceKey}` : null,
+        }));
+      },
+    },
+  });
+  const context = await adapter.lookupReceipt(orderGuid);
+  assert.deepEqual(context?.tenderCapacities.map((capacity) => capacity.remainingCents), [0, 0]);
+  assert.equal(context?.tenderCapacities[0]?.offlineCashProof?.remainingCents, 0);
+});
+
 test("只有传输失败才回退同门店本地订单，并始终标记 stale", async () => {
   const remote = new FakeHistoryApi();
   remote.searchError = new HbposApiError("offline", { kind: "transport" });
@@ -283,11 +304,13 @@ test("Vault 未原子提交或返回敏感值作为 capacityId 时不产出公�
       {
         sourceKey: "remote-capacity:0",
         capacityId: "opaque-cash",
+        remainingCents: 0,
         offlineCashEvidenceId: "proof",
       },
       {
         sourceKey: "remote-capacity:1",
         capacityId: "SQ:payment-secret",
+        remainingCents: 0,
         offlineCashEvidenceId: null,
       },
     ],
@@ -392,6 +415,7 @@ class RecordingVault implements ReturnCapacityVaultPort {
     return input.capacities.map((capacity) => ({
       sourceKey: capacity.sourceKey,
       capacityId: `opaque-${capacity.sourceKey}`,
+      remainingCents: capacity.remainingCents,
       offlineCashEvidenceId:
         capacity.method === "cash"
           ? `cash-proof-${capacity.sourceKey}`

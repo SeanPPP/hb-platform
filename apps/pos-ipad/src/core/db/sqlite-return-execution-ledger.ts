@@ -1564,6 +1564,69 @@ async function insertReturnLine(
   );
 }
 
+async function loadLineCapacityBalances(
+  connection: SqliteConnectionPort,
+  orderGuid: string,
+  detailGuid: string,
+  inputQuantity: number,
+  inputAmount: number,
+): Promise<Readonly<{
+  quantities: number[];
+  amounts: number[];
+  originalQuantity: number;
+  originalAmount: number;
+  completedQuantity: number;
+  completedAmount: number;
+  ambiguousHistory: boolean;
+}>> {
+  const quantityRows = await connection.getAll<{
+    original_quantity: unknown;
+    remaining_quantity: unknown;
+  }>(
+    `SELECT original_quantity, remaining_quantity FROM return_capacity
+     WHERE original_order_guid = ? AND original_order_detail_guid = ?`,
+    [orderGuid, detailGuid],
+  );
+  const amountRows = await connection.getAll<{
+    original_amount_cents: unknown;
+    remaining_amount_cents: unknown;
+  }>(
+    `SELECT original_amount_cents, remaining_amount_cents FROM return_amount_capacity
+     WHERE original_order_guid = ? AND original_order_detail_guid = ?`,
+    [orderGuid, detailGuid],
+  );
+  const completed = await connection.getFirst<{
+    quantity: unknown;
+    amount: unknown;
+    source_count: unknown;
+  }>(
+    `SELECT COALESCE(SUM(line.quantity), 0) AS quantity,
+       COALESCE(SUM(-line.signed_amount_cents), 0) AS amount,
+       COUNT(DISTINCT line.return_source_key) AS source_count
+     FROM return_action_lines line
+     INNER JOIN return_actions action ON action.action_id = line.action_id
+     WHERE line.original_order_guid = ? AND line.original_order_detail_guid = ?
+       AND line.source_kind = 'receipt' AND action.state = 'completed'`,
+    [orderGuid, detailGuid],
+  );
+  const quantities = quantityRows.map((row) => nonNegativeInteger(row.remaining_quantity, "return sibling quantity"));
+  const amounts = amountRows.map((row) => nonNegativeInteger(row.remaining_amount_cents, "return sibling amount"));
+  const originalQuantities = quantityRows.map((row) => nonNegativeInteger(row.original_quantity, "return original quantity"));
+  const originalAmounts = amountRows.map((row) => nonNegativeInteger(row.original_amount_cents, "return original amount"));
+  // 新快照可能已经包含服务端退款；旧别名若分别完成且基线不一，无法还原时序。
+  // 只在无歧义时沿用最大的历史原额，再扣本机已完成量，并与每份余额取小。
+  return {
+    quantities,
+    amounts,
+    originalQuantity: originalQuantities.length ? Math.max(...originalQuantities) : inputQuantity,
+    originalAmount: originalAmounts.length ? Math.max(...originalAmounts) : inputAmount,
+    completedQuantity: nonNegativeInteger(completed?.quantity ?? 0, "completed return quantity"),
+    completedAmount: nonNegativeInteger(completed?.amount ?? 0, "completed return amount"),
+    ambiguousHistory: nonNegativeInteger(completed?.source_count ?? 0, "completed source count") > 1
+      && (new Set(originalQuantities).size > 1 || new Set(originalAmounts).size > 1),
+  };
+}
+
 async function reserveLineCapacity(
   transaction: SqliteConnectionPort,
   actionId: string,
@@ -1582,6 +1645,25 @@ async function reserveLineCapacity(
   const remainingAmountCents =
     line.remainingAmountCents ??
     invalid<number>("Receipt return amount capacity is missing.");
+  // 历史版本分别用了 local-receipt/receipt 键；同一原单明细只能共享一份余额。
+  const siblingBalances = await loadLineCapacityBalances(
+    transaction, originalOrderGuid, originalDetailGuid,
+    availableQuantity, remainingAmountCents,
+  );
+  if (siblingBalances.ambiguousHistory) {
+    throw new Error("Historical return line capacity has ambiguous source balances.");
+  }
+  const quantityFloor = Math.min(
+    availableQuantity, ...siblingBalances.quantities,
+    siblingBalances.originalQuantity - siblingBalances.completedQuantity,
+  );
+  const amountFloor = Math.min(
+    remainingAmountCents, ...siblingBalances.amounts,
+    siblingBalances.originalAmount - siblingBalances.completedAmount,
+  );
+  if (quantityFloor < 0 || amountFloor < 0) {
+    throw new Error("Historical return line capacity is inconsistent.");
+  }
   const existingQuantity = await transaction.getFirst<{
     original_order_guid: unknown;
     original_order_detail_guid: unknown;
@@ -1605,8 +1687,8 @@ async function reserveLineCapacity(
         line.returnSourceKey,
         originalOrderGuid,
         originalDetailGuid,
-        String(availableQuantity),
-        String(availableQuantity),
+        String(siblingBalances.originalQuantity),
+        String(quantityFloor),
         createdAtIso,
       ],
     );
@@ -1623,17 +1705,17 @@ async function reserveLineCapacity(
       existingQuantity.remaining_quantity,
       "return remaining quantity",
     );
-    if (availableQuantity < current) {
+    if (quantityFloor < current) {
       await transaction.run(
         `UPDATE return_capacity
          SET remaining_quantity = ?, updated_at_iso = ?
          WHERE return_source_key = ?
            AND CAST(remaining_quantity AS INTEGER) > ?`,
         [
-          String(availableQuantity),
+          String(quantityFloor),
           createdAtIso,
           line.returnSourceKey,
-          availableQuantity,
+          quantityFloor,
         ],
       );
     }
@@ -1660,8 +1742,8 @@ async function reserveLineCapacity(
         line.returnSourceKey,
         originalOrderGuid,
         originalDetailGuid,
-        remainingAmountCents,
-        remainingAmountCents,
+        siblingBalances.originalAmount,
+        amountFloor,
         createdAtIso,
       ],
     );
@@ -1675,7 +1757,7 @@ async function reserveLineCapacity(
       throw new Error("Return amount capacity identity is inconsistent.");
     }
     if (
-      remainingAmountCents <
+      amountFloor <
       nonNegativeInteger(
         existingAmount.remaining_amount_cents,
         "return remaining amount",
@@ -1686,10 +1768,10 @@ async function reserveLineCapacity(
          SET remaining_amount_cents = ?, updated_at_iso = ?
          WHERE return_source_key = ? AND remaining_amount_cents > ?`,
         [
-          remainingAmountCents,
+          amountFloor,
           createdAtIso,
           line.returnSourceKey,
-          remainingAmountCents,
+          amountFloor,
         ],
       );
     }
@@ -1703,14 +1785,20 @@ async function reserveLineCapacity(
         COALESCE((
           SELECT SUM(reservation.quantity)
           FROM return_line_capacity_reservations reservation
-          WHERE reservation.return_source_key = ?
+          WHERE reservation.return_source_key IN (
+            SELECT return_source_key FROM return_capacity
+            WHERE original_order_guid = ? AND original_order_detail_guid = ?
+          )
             AND reservation.state = 'Reserved'
         ), 0) AS quantity,
       amount_capacity.remaining_amount_cents -
         COALESCE((
           SELECT SUM(reservation.amount_cents)
           FROM return_line_capacity_reservations reservation
-          WHERE reservation.return_source_key = ?
+          WHERE reservation.return_source_key IN (
+            SELECT return_source_key FROM return_capacity
+            WHERE original_order_guid = ? AND original_order_detail_guid = ?
+          )
             AND reservation.state = 'Reserved'
         ), 0) AS amount
      FROM return_capacity quantity_capacity
@@ -1718,7 +1806,7 @@ async function reserveLineCapacity(
        ON amount_capacity.return_source_key =
          quantity_capacity.return_source_key
      WHERE quantity_capacity.return_source_key = ?`,
-    [line.returnSourceKey, line.returnSourceKey, line.returnSourceKey],
+    [originalOrderGuid, originalDetailGuid, originalOrderGuid, originalDetailGuid, line.returnSourceKey],
   );
   if (
     !available ||

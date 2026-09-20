@@ -183,10 +183,10 @@
     {
       "path": "core/sync/hbpos-sync-adapters.ts",
       "package": "pos-sync",
-      "reason": "人工结案与 provider 终态冲突时必须交回 outbox 重试，不能按业务拒绝永久丢弃订单",
+      "reason": "人工结案与 provider 终态冲突时必须交回 outbox 重试，不能按业务拒绝永久丢弃订单；历史已付款小数订单仅对专用数量错误保留耐久重试，并携带安全错误码供主管核对",
       "baselineCanonicalRuntimeSha256": "1320cf6ac0ade04e774ee613faf5fff1c562384f7e8d6397c3a45a3e3adaac58",
-      "canonicalRuntimeSha256": "4d2bf28fe1254f015c5a853696b105b1b07eff3fa1b46122897e1c72b9da4c78",
-      "canonicalTypeSha256": "62ada3b04b9dabec10b18642f7d6dee43eb46af39f26a4ed0462b684ace07730",
+      "canonicalRuntimeSha256": "2a92c1ccb38a7cba447ddf094c662a49d3727968c0fcf8dc0aa9e69f66216789",
+      "canonicalTypeSha256": "12d04d23b8f16891df9ca81c3e37a9439d881f582d7912f120580f7f2d707f3a",
       "behaviorTests": [
         {
           "workspace": "apps/pos-ipad",
@@ -205,10 +205,10 @@
     {
       "path": "core/sync/sync-coordinator.ts",
       "package": "pos-sync",
-      "reason": "换店门禁需要同步协调器在更新切换释放后补做定时唤醒，并向双端运行时发布脱敏的单飞 drain 终态",
+      "reason": "换店门禁需要同步协调器在更新切换释放后补做定时唤醒，并向双端运行时发布脱敏的单飞 drain 终态；历史已付款小数订单仅对专用数量错误保留耐久重试，并携带安全错误码供主管核对",
       "baselineCanonicalRuntimeSha256": "3ea1a760b8bef7d1df2cd3e2db0a3a10597e193bfa8fb3dd5b9af5e5657cc7dc",
-      "canonicalRuntimeSha256": "4267724517a55341b4163a2224afaa6b5bea0eb12f7d16c489f4bff381ac243f",
-      "canonicalTypeSha256": "3cd166460bda67dd6d694866cdf55af607338063d833e8ea65ce79b456621534",
+      "canonicalRuntimeSha256": "20282b6bfc47e3b74610ce33bbebe64299cb343fd34ebeda7527ce785c52d0de",
+      "canonicalTypeSha256": "79ad15d1622fd17bb1a66267767b4dd65193083ffdc083ab5dd45275c21f8b17",
       "behaviorTests": [
         {
           "workspace": "packages/pos-sync",
@@ -421,6 +421,26 @@
           "script": "test:db",
           "path": "src/core/db/payment-attempt-repository.integration.test.ts",
           "pattern": "src/core/db/*.test.ts"
+        }
+      ]
+    },
+    {
+      "path": "core/contracts/sync.ts",
+      "package": "pos-domain",
+      "reason": "同步重试结果增加可选安全错误码，历史已付款小数订单保留待同步并展示核对提示，避免永久拒绝丢失订单",
+      "canonicalTypeSha256": "0d234c33f6213dc2968054d53956e2b9e2596dd3811589bd78dc0e6129454937",
+      "behaviorTests": [
+        {
+          "workspace": "apps/pos-ipad",
+          "script": "test:sync",
+          "path": "src/core/sync/hbpos-sync-adapters.test.ts",
+          "pattern": "src/core/sync/*.test.ts"
+        },
+        {
+          "workspace": "apps/pos-handheld",
+          "script": "test:sync",
+          "path": "src/core/sync/hbpos-sync-adapters.test.ts",
+          "pattern": "src/core/sync/*.test.ts"
         }
       ]
     }

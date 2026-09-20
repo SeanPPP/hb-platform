@@ -99,6 +99,8 @@ export type ReturnCapacityVaultInput = Readonly<{
 export type ProtectedReturnCapacityHandle = Readonly<{
   sourceKey: string;
   capacityId: string;
+  /** Vault 已扣减后的真实余额。 */
+  remainingCents: number;
   /** 仅现金容量允许生成可离线验证的一次性证据。 */
   offlineCashEvidenceId: string | null;
 }>;
@@ -440,6 +442,9 @@ export class ReturnLookupAdapter implements ReturnLookupPort {
       if (
         !handle ||
         !handle.capacityId.trim() ||
+        !Number.isSafeInteger(handle.remainingCents) ||
+        handle.remainingCents < 0 ||
+        handle.remainingCents > material.remainingCents ||
         publicIds.has(handle.capacityId) ||
         protectedValues.has(handle.capacityId)
       ) {
@@ -459,14 +464,14 @@ export class ReturnLookupAdapter implements ReturnLookupPort {
         capacityId: handle.capacityId,
         originalOrderGuid,
         method: material.method,
-        remainingCents: material.remainingCents,
+        remainingCents: handle.remainingCents,
         offlineCashProof:
           material.method === "cash" && handle.offlineCashEvidenceId
             ? {
                 evidenceId: handle.offlineCashEvidenceId,
                 capacityId: handle.capacityId,
                 originalOrderGuid,
-                remainingCents: material.remainingCents,
+                remainingCents: handle.remainingCents,
               }
             : null,
       };

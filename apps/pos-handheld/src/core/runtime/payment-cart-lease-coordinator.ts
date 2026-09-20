@@ -2,6 +2,7 @@ import type {
   PaymentCartLease,
   PaymentCartLeasePort,
 } from "../../features/payments/runtime/payment-checkout-runtime";
+import { PaymentCheckoutRuntimeError } from "../../features/payments/runtime/payment-checkout-runtime";
 import {
   ACTIVE_PRICING_CART_BUSY,
   ACTIVE_PRICING_CART_TERMINAL_RECOVERY_REQUIRED,
@@ -76,6 +77,13 @@ implements PaymentCartLeasePort {
     checkoutIntentId: string;
     expectedRevision: number;
   }): Promise<PaymentCartLease> {
+    return this.acquireExactCore(input, false);
+  }
+
+  private async acquireExactCore(input: {
+    checkoutIntentId: string;
+    expectedRevision: number;
+  }, allowRecoveryQuantity: boolean): Promise<PaymentCartLease> {
     const expected = normalizeAcquisition(input);
     if (this.held) {
       return Promise.resolve(assertHeldMatches(this.held, expected));
@@ -86,7 +94,7 @@ implements PaymentCartLeasePort {
       );
     }
 
-    const operation = this.acquireNew(expected).finally(() => {
+    const operation = this.acquireNew(expected, allowRecoveryQuantity).finally(() => {
       if (this.acquireInFlight === operation) {
         this.acquireInFlight = null;
       }
@@ -162,10 +170,10 @@ implements PaymentCartLeasePort {
       normalized.recallBinding,
     );
     assertCartValueMatches(restored.cart, normalized.cart);
-    const lease = await this.acquireExact({
+    const lease = await this.acquireExactCore({
       checkoutIntentId: normalized.checkoutIntentId,
       expectedRevision: normalized.cart.revision,
-    });
+    }, true);
     this.initialized = true;
     return lease;
   }
@@ -173,7 +181,7 @@ implements PaymentCartLeasePort {
   private acquireNew(input: {
     checkoutIntentId: string;
     expectedRevision: number;
-  }): Promise<PaymentCartLease> {
+  }, allowRecoveryQuantity: boolean): Promise<PaymentCartLease> {
     let acquiredResolve!: (lease: PaymentCartLease) => void;
     let acquiredReject!: (error: unknown) => void;
     let settled = false;
@@ -197,6 +205,24 @@ implements PaymentCartLeasePort {
           "PAYMENT_CART_LEASE_CONFLICT",
           "Payment checkout no longer matches the active cart revision.",
         );
+      }
+      if (!allowRecoveryQuantity) {
+        // 此处仍在短暂独占回调内；拒绝小数时回调退出即可释放写锁，收银员能修改数量。
+        let itemCount = 0;
+        for (const line of snapshot.cart.lines) {
+          const quantity = Number(line.quantity);
+          itemCount += quantity;
+          if (!Number.isSafeInteger(quantity) || quantity <= 0 ||
+              quantity > 2_147_483_647 || itemCount > 2_147_483_647) {
+            throw new PaymentCheckoutRuntimeError("PAYMENT_QUANTITY_UNSUPPORTED");
+          }
+        }
+        if (snapshot.pricingState.lines.some(line =>
+          !Number.isSafeInteger(line.quantity) || line.quantity <= 0 ||
+          line.quantity > 2_147_483_647
+        )) {
+          throw new PaymentCheckoutRuntimeError("PAYMENT_QUANTITY_UNSUPPORTED");
+        }
       }
       const publicLease = Object.freeze({
         leaseId: requiredText(this.createLeaseId(), "payment lease id"),
