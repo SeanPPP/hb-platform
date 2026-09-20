@@ -2785,6 +2785,12 @@ public class LinklyCloudBackendAsyncService(
     {
         var code = (int)statusCode;
         return statusCode == HttpStatusCode.RequestTimeout ||
+            // 关键逻辑：429 是限流，HTTP 语义本身就是“稍后重试”，绝不能当作交易失败。
+            // 它原先落到 ApplyTransportResponse 的兜底分支被写成 Status=Failed +
+            // IsActive=false，此后 ShouldRefreshOfficialTransaction 恒为 false，
+            // 该会话再也不向 Linkly 核对真实结果。终端若已批准，收银员却收到失败提示
+            // 并重刷，就是重复扣款；而那一行会永久停在 Failed 无法自愈。
+            statusCode == HttpStatusCode.TooManyRequests ||
             code is >= 500 and <= 599;
     }
 
