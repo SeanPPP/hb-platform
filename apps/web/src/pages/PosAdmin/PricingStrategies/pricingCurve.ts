@@ -15,7 +15,7 @@ export function tailCeil(value: number): number {
   const n = Math.floor(value), cents = Math.round((value - n) * 1e8) / 1e8
   return cents <= .5 ? n + .5 : cents <= .99 ? n + .99 : n + 1.5
 }
-export function finalPrice(cost: number, raw: number): number {
+export function boundedPrice(cost: number, raw: number): number {
   const lo = tailCeil(1.5 * cost), hi = tailFloor(5 * cost)
   if (lo > hi) return NaN
   // 仅消除二进制浮点在尾数边界的误差，保留真实的分以下价格变化。
@@ -26,6 +26,12 @@ export function finalPrice(cost: number, raw: number): number {
   const n = Math.floor(raw), fraction = raw - n
   const adjusted = raw <= .5 ? .5 : raw === 1 || raw === 2 ? raw : fraction === 0 ? raw - .01 : fraction <= .5 ? n + .5 : n + .99
   return roundMoney(Math.max(lo, Math.min(hi, adjusted)))
+}
+export function finalPrice(cost: number, raw: number): number {
+  const bounded = boundedPrice(cost, raw)
+  // 自动价格最终仅将 0.99 和 1.99 归一到 1 和 2；旧尾数分档及 1.5x/5x 限幅保持不变。
+  // 因此上限或下限卡出这两档时也允许多 1 分钱，其他尾数仍原样返回。
+  return bounded === .99 ? 1 : bounded === 1.99 ? 2 : bounded
 }
 export function rawPrice(rule: PricingStrategyRuleDto, cost: number): number {
   const a = rule.startRetailPrice ?? rule.minPrice * rule.startRate

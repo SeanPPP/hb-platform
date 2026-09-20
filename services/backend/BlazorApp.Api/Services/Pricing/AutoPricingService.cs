@@ -70,7 +70,7 @@ namespace BlazorApp.Api.Services.Pricing
             return PricingCurveMath.TheoreticalRetail(purchasePrice, rule);
         }
 
-        /// <summary>计算建议零售价，尾数只能在合法价格集合内调整，不能突破倍率上下限。</summary>
+        /// <summary>计算建议零售价，先按合法尾数及倍率限幅，再将 0.99/1.99 归整为 1/2。</summary>
         public decimal CalculateRetailPrice(decimal purchasePrice, PricingStrategy? strategy)
         {
             return PricingCurveMath.AdjustTail(purchasePrice, CalculateTheoreticalRetail(purchasePrice, strategy));
