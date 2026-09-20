@@ -21,7 +21,7 @@ public sealed class DailyCloseServiceTests
         var loadTask = service.LoadReportAsync(CreateSession(), new DateTime(2026, 5, 28));
 
         Assert.True(stopwatch.Elapsed < TimeSpan.FromMilliseconds(100));
-        await repository.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await repository.Started.Task.WaitAsync(TestWaitTimeouts.Default);
         Assert.NotEqual(callerThreadId, repository.ExecutionThreadId);
         Assert.False(loadTask.IsCompleted);
 
