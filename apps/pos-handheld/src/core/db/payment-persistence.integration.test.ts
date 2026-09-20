@@ -3084,6 +3084,32 @@ test("真实 SQLite：DraftPrepared 可安全 abandon 并重放，账本不删�
   });
 });
 
+test("真实 SQLite：仅有 binding 的旧草稿可放弃，陈旧异步 attempt 被数据库拦截", async () => {
+  await withDatabase("draft-abandon-bound-no-attempt", async (connection) => {
+    await migrateFresh(connection);
+    const input = draftInput({ draftId: "draft-abandon-bound-no-attempt" });
+    const store = new SqlitePaymentDraftRecoveryStore(
+      connection, sequenceIds("order-abandon-bound", "audit-abandon-bound"), () => T1,
+    );
+    const created = await store.createOrReuseDraft(input);
+    await insertActionBinding(
+      connection, created.orderGuid, "bound-action", "bound-attempt", "bound-key",
+      ["linkly-cloud", "purchase", "AUD", 900],
+    );
+    const result = await store.abandonPreparedDraft({
+      actionId: "abandon-bound", draftId: input.draftId,
+      orderGuid: created.orderGuid, actor: paymentAuditActor(), ...input.identity,
+    });
+    assert.equal(result.replayed, false);
+    assert.equal(await store.findBlockingRecovery(input.identity), null);
+    await assert.rejects(() => insertAttempt(connection, {
+      attemptId: "bound-attempt", idempotencyKey: "bound-key",
+      orderGuid: created.orderGuid, provider: "linkly-cloud",
+      operation: "purchase", amountCents: 900, state: "Created",
+    }), /PAYMENT_ORDER_DRAFT_ABANDONED/);
+  });
+});
+
 test("真实 SQLite：仅有已拒付历史的 DraftPrepared 可安全 abandon 且完整保留账本", async () => {
   await withDatabase("draft-abandon-declined-history", async (connection) => {
     await migrateFresh(connection);

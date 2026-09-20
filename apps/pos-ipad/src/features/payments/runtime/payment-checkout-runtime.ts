@@ -229,6 +229,7 @@ export type PaymentCheckoutErrorCode =
   | "PAYMENT_DRAFT_CONFLICT"
   | "PAYMENT_DRAFT_ABANDON_FORBIDDEN"
   | "PAYMENT_CART_LEASE_CONFLICT"
+  | "PAYMENT_QUANTITY_UNSUPPORTED"
   | "PAYMENT_TENDER_METHOD_ALREADY_ACTIVE"
   | "PAYMENT_CHECKOUT_FAILED"
   | "PAYMENT_PREPARED_ACTION_RECOVERY_REQUIRED"
@@ -542,15 +543,15 @@ export class PaymentCheckoutRuntime implements PaymentCheckoutRuntimePort {
         checkoutIntentId,
         expectedRevision: input.expectedCartRevision,
       });
-      assertLease(lease, checkoutIntentId, input.expectedCartRevision);
+      assertLease(lease, checkoutIntentId, input.expectedCartRevision, true);
       await this.assertCashAction();
-      await this.assertExact(lease);
+      await this.assertExact(lease, true);
       const draft = await this.options.drafts.createOrReuse({
         checkoutIntentId,
         lease,
       });
       await this.assertCashAction();
-      await this.assertExact(lease);
+      await this.assertExact(lease, true);
       assertDraftMatchesLease(draft, lease);
       assertNoActiveTenderMethod(draft, "cash");
       const cashSettlement = cashSettlementForDraft(draft, input.amount);
@@ -583,7 +584,16 @@ export class PaymentCheckoutRuntime implements PaymentCheckoutRuntimePort {
     const attempt = await this.requireAttempt(input.attemptId, input.orderGuid);
     await this.assertProviderAction(attempt.provider);
     const lease = await this.acquireDraftLease(draft);
-    await this.assertExact(lease);
+    // 手动刷卡的 Created 只重放已耐久确认的外部付款记录，不会再次向终端扣款。
+    // 其他 Created 仍是首次金融动作，必须阻止旧小数数量进入 POSM。
+    const durableManualCardAction =
+      attempt.provider === "manual-card" && attempt.state === "Created"
+        ? await this.cancelPreparedActionOrNull(draft, attempt)
+        : null;
+    await this.assertExact(
+      lease,
+      attempt.state === "Created" && durableManualCardAction?.manualConfirmed !== true,
+    );
 
     const mixed = await this.options.mixed.recoverOnlineAttempt({
       orderGuid: draft.orderGuid,
@@ -698,7 +708,7 @@ export class PaymentCheckoutRuntime implements PaymentCheckoutRuntimePort {
       !recovery ||
       recovery.draft.orderGuid !== input.orderGuid ||
       recovery.attemptId !== null ||
-      recovery.preparedAction !== null ||
+      recovery.preparedAction?.provider === "manual-card" ||
       recovery.draft.tenders.length !== 0 ||
       !canAbandonDraft(recovery.draft)
     ) {
@@ -731,7 +741,7 @@ export class PaymentCheckoutRuntime implements PaymentCheckoutRuntimePort {
     assertPositiveAud(input.amount);
     assertNoActiveTenderMethod(draft, "cash");
     const lease = await this.acquireDraftLease(draft);
-    await this.assertExact(lease);
+    await this.assertExact(lease, true);
     const cashSettlement = cashSettlementForDraft(draft, input.amount);
     const result = await this.options.mixed.addCashTender({
       actionId: input.actionId,
@@ -783,15 +793,15 @@ export class PaymentCheckoutRuntime implements PaymentCheckoutRuntimePort {
       checkoutIntentId: input.checkoutIntentId,
       expectedRevision: input.expectedCartRevision,
     });
-    assertLease(lease, input.checkoutIntentId, input.expectedCartRevision);
+    assertLease(lease, input.checkoutIntentId, input.expectedCartRevision, true);
     await this.assertProviderAction(input.provider);
-    await this.assertExact(lease);
+    await this.assertExact(lease, true);
     const draft = await this.options.drafts.createOrReuse({
       checkoutIntentId: input.checkoutIntentId,
       lease,
     });
     await this.assertProviderAction(input.provider);
-    await this.assertExact(lease);
+    await this.assertExact(lease, true);
     assertDraftMatchesLease(draft, lease);
     return this.startPreparedDraft(draft, lease, input);
   }
@@ -824,6 +834,13 @@ export class PaymentCheckoutRuntime implements PaymentCheckoutRuntimePort {
       draft,
       input.provider === "voucher" ? "voucher" : "card",
     );
+    // 只有已耐久确认的手动刷卡 Prepared 是外部已付款的本地记账恢复；
+    // 新动作及其他 provider 的 Prepared 仍须通过 POSM 数量门禁。
+    const durableManualCardRecovery =
+      recovery.voucherContextAlreadyPrepared &&
+      input.provider === "manual-card" &&
+      input.manualConfirmed === true;
+    await this.assertExact(lease, !durableManualCardRecovery);
 
     if (input.provider === "voucher") {
       if (!recovery.voucherContextAlreadyPrepared) {
@@ -991,7 +1008,7 @@ export class PaymentCheckoutRuntime implements PaymentCheckoutRuntimePort {
     return lease;
   }
 
-  private async assertExact(lease: PaymentCartLease): Promise<void> {
+  private async assertExact(lease: PaymentCartLease, requireSupportedQuantity = false): Promise<void> {
     const current = await this.options.cartLease.readExact(lease);
     if (
       current.leaseId !== lease.leaseId ||
@@ -1002,7 +1019,7 @@ export class PaymentCheckoutRuntime implements PaymentCheckoutRuntimePort {
     ) {
       throw new PaymentCheckoutRuntimeError("PAYMENT_CART_LEASE_CONFLICT");
     }
-    assertLease(current, lease.checkoutIntentId, lease.revision);
+    assertLease(current, lease.checkoutIntentId, lease.revision, requireSupportedQuantity);
   }
 
   private assertProviderAvailable(provider: PaymentProvider): void {
@@ -1309,8 +1326,8 @@ function publicSnapshot(
           (["Created", "Submitted", "Pending"].includes(attempt.state) ||
             canCloseCancelled)) ||
           (attempt === null &&
-            preparedAction === null &&
-            status === "draft-prepared" &&
+            (status === "draft-prepared" || preparedAction !== null) &&
+            preparedAction?.provider !== "manual-card" &&
             draft.tenders.length === 0 &&
             canAbandonDraft(draft))),
       addCash: !completed && !blocking && draft.remaining.cents > 0,
@@ -1474,6 +1491,7 @@ function assertLease(
   lease: PaymentCartLease,
   checkoutIntentId: string,
   revision: number,
+  requireSupportedQuantity = false,
 ): void {
   if (
     !lease.leaseId.trim() ||
@@ -1488,8 +1506,8 @@ function assertLease(
   ) {
     throw new PaymentCheckoutRuntimeError("PAYMENT_CART_LEASE_CONFLICT");
   }
-  validateCart(lease.cart);
-  validatePricingState(lease.pricingState, lease.cart);
+  validateCart(lease.cart, requireSupportedQuantity);
+  validatePricingState(lease.pricingState, lease.cart, requireSupportedQuantity);
 }
 
 function assertDraftMatchesLease(
@@ -1597,7 +1615,7 @@ function isNonNegativeAud(value: Money): boolean {
   );
 }
 
-function validateCart(cart: CartSnapshot): void {
+function validateCart(cart: CartSnapshot, requireSupportedQuantity: boolean): void {
   if (
     cart.mode !== "sale" ||
     cart.lines.length === 0 ||
@@ -1607,7 +1625,17 @@ function validateCart(cart: CartSnapshot): void {
   ) {
     throw new PaymentCheckoutRuntimeError("PAYMENT_CART_LEASE_CONFLICT");
   }
+  let itemCount = 0;
   for (const line of cart.lines) {
+    // POSM 明细数量是整数；先阻止收款，避免付款完成后上传时丢失小数件数。
+    const quantity = Number(line.quantity);
+    itemCount += quantity;
+    if (requireSupportedQuantity && (
+      !Number.isSafeInteger(quantity) || quantity <= 0 ||
+      quantity > 2_147_483_647 || itemCount > 2_147_483_647
+    )) {
+      throw new PaymentCheckoutRuntimeError("PAYMENT_QUANTITY_UNSUPPORTED");
+    }
     if (
       !line.lineId.trim() ||
       !line.lookupCode.trim() ||
@@ -1623,6 +1651,7 @@ function validateCart(cart: CartSnapshot): void {
 function validatePricingState(
   pricingState: PricingCartStateSnapshot,
   cart: CartSnapshot,
+  requireSupportedQuantity: boolean,
 ): void {
   if (
     pricingState.revision !== cart.revision ||
@@ -1634,6 +1663,12 @@ function validatePricingState(
   }
   const cartLineIds = new Set(cart.lines.map((line) => line.lineId));
   for (const line of pricingState.lines) {
+    if (requireSupportedQuantity && (
+      !Number.isSafeInteger(line.quantity) || line.quantity <= 0 ||
+      line.quantity > 2_147_483_647
+    )) {
+      throw new PaymentCheckoutRuntimeError("PAYMENT_QUANTITY_UNSUPPORTED");
+    }
     if (
       !cartLineIds.has(line.lineId) ||
       !line.productCode.trim() ||

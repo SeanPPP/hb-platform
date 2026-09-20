@@ -1031,6 +1031,29 @@ public sealed class OrderSyncServiceTests
     }
 
     [Fact]
+    public void Planner_RejectsSaleQuantitiesThatPosmCannotStoreWithoutLoss()
+    {
+        var baseline = CreateRequest(Guid.NewGuid());
+        var original = Assert.Single(baseline.Lines);
+        foreach (var quantity in new[] { 0m, -1m, 0.5m, 1.25m, (decimal)int.MaxValue + 1m })
+        {
+            var request = baseline with { Lines = [original with { Quantity = quantity }] };
+            Assert.Throws<OrderSyncQuantityUnsupportedException>(() => new OrderSyncPlanner().CreatePlan(request, TestStoreTimeZones.Sydney));
+        }
+
+        var overflow = baseline with
+        {
+            Lines = [original with { Quantity = int.MaxValue }, original with { Quantity = 1m }]
+        };
+        Assert.Throws<OrderSyncQuantityUnsupportedException>(() => new OrderSyncPlanner().CreatePlan(overflow, TestStoreTimeZones.Sydney));
+
+        var valid = baseline with { Lines = [original with { Quantity = 2m }] };
+        var plan = new OrderSyncPlanner().CreatePlan(valid, TestStoreTimeZones.Sydney);
+        Assert.Equal(2, Assert.Single(plan.Lines).Quantity);
+        Assert.Equal(1, plan.Order.ItemCount);
+    }
+
+    [Fact]
     public void Planner_SanitizesSalesOrderDetailTextBeforeInsert()
     {
         var request = new OrderSyncRequest(
