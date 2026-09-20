@@ -64,7 +64,7 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<CatalogSnapshotCacheKey, SnapshotEntry> _snapshots = [];
     private readonly Dictionary<CatalogSnapshotCacheKey, PendingSnapshotEntry> _pendingSnapshots = [];
-    private readonly Dictionary<CatalogSnapshotCacheKey, CatalogSnapshotDescriptor> _lazySnapshotDescriptors = [];
+    private readonly Dictionary<CatalogSnapshotCacheKey, LazySnapshotEntry> _lazySnapshotDescriptors = [];
     private readonly Dictionary<CatalogSnapshotCacheKey, RawArtifactEntry> _rawArtifacts = [];
     private readonly HashSet<CatalogSnapshotCacheKey> _rawArtifactVersions = [];
     private readonly LinkedList<CatalogSnapshotCacheKey> _rawArtifactLru = [];
@@ -151,6 +151,21 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
         TimeSpan snapshotTtl,
         int maxSnapshotsPerStore,
         ICatalogSnapshotStore snapshotStore,
+        ICatalogBackgroundRefreshScheduler backgroundRefreshScheduler,
+        int softItemCapacity,
+        int hardItemCapacity)
+        : this(timeProvider, ttl, snapshotTtl, maxSnapshotsPerStore, snapshotStore, backgroundRefreshScheduler,
+            scopeFactory: null, applicationLifetime: null,
+            softItemCapacity: softItemCapacity, hardItemCapacity: hardItemCapacity)
+    {
+    }
+
+    internal CatalogIndexCache(
+        TimeProvider timeProvider,
+        TimeSpan ttl,
+        TimeSpan snapshotTtl,
+        int maxSnapshotsPerStore,
+        ICatalogSnapshotStore snapshotStore,
         int softItemCapacity,
         int hardItemCapacity,
         int rawArtifactCapacity = DefaultRawArtifactCapacity,
@@ -175,6 +190,8 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
             maxSnapshotsPerStore,
             snapshotStore: null,
             backgroundRefreshScheduler: null,
+            scopeFactory: null,
+            applicationLifetime: null,
             softItemCapacity: softItemCapacity,
             hardItemCapacity: hardItemCapacity)
     {
@@ -624,10 +641,11 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
                 return ProjectLegacySince(entry: null, snapshot.Result, since);
             }
 
-            if (_lazySnapshotDescriptors.TryGetValue(key, out var descriptor))
+            if (_lazySnapshotDescriptors.TryGetValue(key, out var lazySnapshot))
             {
                 try
                 {
+                    var descriptor = lazySnapshot.Descriptor;
                     var loaded = _snapshotStore?.Load(descriptor.StoreCode, descriptor.Since, descriptor.CatalogVersion);
                     if (loaded is null)
                     {
@@ -638,7 +656,7 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
 
                     var result = new CatalogIndexBuildResult(key.StoreCode, loaded.GeneratedAt, loaded.SellableItems,
                         new CatalogSellableIndex(key.StoreCode, loaded.GeneratedAt, loaded.SellableItems, key.CatalogVersion));
-                    if (TryAdmitLoadedSnapshotLocked(key, result, loaded.ExpiresAt))
+                    if (TryAdmitLoadedSnapshotLocked(key, result, loaded.ExpiresAt, lazySnapshot.Sequence))
                     {
                         _lazySnapshotDescriptors.Remove(key);
                         return ProjectLegacySince(entry: null, result, since);
@@ -1108,7 +1126,9 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
                 _snapshots[snapshotKey] = new SnapshotEntry(
                     result,
                     expiresAt,
-                    Interlocked.Increment(ref _snapshotSequence));
+                    Interlocked.Increment(ref _snapshotSequence),
+                    IsPersisted: _snapshotStore is not null);
+                _lazySnapshotDescriptors.Remove(snapshotKey);
             }
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
@@ -1134,28 +1154,28 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
         lock (_snapshotGate)
         {
             PruneExpiredSnapshots(now);
-            var snapshot = _snapshots
+            // 按原发布序号合并驻留与磁盘版本；读取旧版分页不能使它盖过磁盘上的新版 LKG。
+            var candidates = _snapshots
                 .Where(pair => string.Equals(pair.Key.StoreCode, key.StoreCode, StringComparison.OrdinalIgnoreCase)
                     && pair.Key.Since == key.Since)
-                .OrderByDescending(pair => pair.Value.Sequence)
-                .Select(pair => pair.Value.Result)
-                .FirstOrDefault();
-            if (snapshot is not null)
-            {
-                return snapshot;
-            }
-
-            var descriptors = _lazySnapshotDescriptors
-                .Where(pair => string.Equals(pair.Key.StoreCode, key.StoreCode, StringComparison.OrdinalIgnoreCase)
-                    && pair.Key.Since == key.Since)
-                .OrderByDescending(pair => pair.Value.GeneratedAt)
-                .Select(pair => (pair.Key, pair.Value))
+                .Select(pair => (pair.Key, pair.Value.Sequence, Resident: (CatalogIndexBuildResult?)pair.Value.Result, Lazy: (LazySnapshotEntry?)null))
+                .Concat(_lazySnapshotDescriptors
+                    .Where(pair => string.Equals(pair.Key.StoreCode, key.StoreCode, StringComparison.OrdinalIgnoreCase)
+                        && pair.Key.Since == key.Since)
+                    .Select(pair => (pair.Key, pair.Value.Sequence, Resident: (CatalogIndexBuildResult?)null, Lazy: (LazySnapshotEntry?)pair.Value)))
+                .OrderByDescending(candidate => candidate.Sequence)
                 .ToArray();
-            foreach (var (descriptorKey, descriptor) in descriptors)
+            foreach (var (descriptorKey, _, resident, lazySnapshot) in candidates)
             {
+                if (resident is not null)
+                {
+                    return resident;
+                }
+
                 // 损坏或被并发删除的最新持久化版本不能遮蔽仍可用的次新版本。
                 try
                 {
+                    var descriptor = lazySnapshot!.Descriptor;
                     var loaded = _snapshotStore?.Load(descriptor.StoreCode, descriptor.Since, descriptor.CatalogVersion);
                     if (loaded is null)
                     {
@@ -1165,7 +1185,7 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
 
                     var result = new CatalogIndexBuildResult(key.StoreCode, loaded.GeneratedAt, loaded.SellableItems,
                         new CatalogSellableIndex(key.StoreCode, loaded.GeneratedAt, loaded.SellableItems, descriptor.CatalogVersion));
-                    if (TryAdmitLoadedSnapshotLocked(descriptorKey, result, loaded.ExpiresAt))
+                    if (TryAdmitLoadedSnapshotLocked(descriptorKey, result, loaded.ExpiresAt, lazySnapshot.Sequence))
                     {
                         _lazySnapshotDescriptors.Remove(descriptorKey);
                         return result;
@@ -1185,7 +1205,8 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
     private bool TryAdmitLoadedSnapshotLocked(
         CatalogSnapshotCacheKey snapshotKey,
         CatalogIndexBuildResult result,
-        DateTimeOffset expiresAt)
+        DateTimeOffset expiresAt,
+        long sequence)
     {
         if (!TryPrepareAdmissionLocked([result]))
         {
@@ -1195,7 +1216,8 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
         _snapshots[snapshotKey] = new SnapshotEntry(
             result,
             expiresAt,
-            Interlocked.Increment(ref _snapshotSequence));
+            sequence,
+            IsPersisted: true);
         return true;
     }
 
@@ -1225,7 +1247,8 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
                         continue;
                     }
                     // 启动只登记 manifest 描述，不解压正文；首次按门店/版本真正需要时再 lazy load。
-                    _lazySnapshotDescriptors.Add(key, snapshot);
+                    _lazySnapshotDescriptors.Add(key, new LazySnapshotEntry(
+                        snapshot, Interlocked.Increment(ref _snapshotSequence)));
                 }
 
                 PruneExpiredSnapshots(now);
@@ -1295,48 +1318,45 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
 
     private void PruneExpiredSnapshots(DateTimeOffset now)
     {
-        // 中文注释：超过保留期（RetentionHours，默认 72h）且非该店最新版本、未被下载租约
-        // 引用的驻留快照先淘汰；最新 LKG 永不因时间淘汰，磁盘描述符仍保留供懒加载。
+        // 超过保留期且非该店最新版本、未被下载租约引用的驻留与磁盘索引都要淘汰；最新 LKG 保留。
         lock (_snapshotGate)
         {
-            if (_snapshots.Count == 0)
-            {
-                return;
-            }
-
-            var latestSequenceByStore = _snapshots
+            var latestByStore = _snapshots
                 .Where(pair => pair.Key.Since is null)
+                .Select(pair => (pair.Key, pair.Value.Sequence))
+                .Concat(_lazySnapshotDescriptors
+                    .Where(pair => pair.Key.Since is null)
+                    .Select(pair => (pair.Key, pair.Value.Sequence)))
                 .GroupBy(pair => pair.Key.StoreCode, StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(
                     group => group.Key,
-                    group => group.MaxBy(pair => pair.Value.Sequence)!.Key,
+                    group => group.MaxBy(pair => pair.Sequence).Key,
                     StringComparer.OrdinalIgnoreCase);
 
             foreach (var (key, snapshot) in _snapshots.ToArray())
             {
-                if (key.Since is not null)
-                {
-                    continue;
-                }
-
-                if (snapshot.ExpiresAt > now)
-                {
-                    continue;
-                }
-
-                if (latestSequenceByStore.TryGetValue(key.StoreCode, out var latest) &&
-                    latest.Equals(key))
-                {
-                    continue;
-                }
-
-                if (_downloadLeases.IsVersionLeased(key.StoreCode, key.CatalogVersion))
+                if (!ShouldPrune(key, snapshot.ExpiresAt))
                 {
                     continue;
                 }
 
                 _snapshots.Remove(key);
+                _lazySnapshotDescriptors.Remove(key);
             }
+
+            foreach (var (key, lazySnapshot) in _lazySnapshotDescriptors.ToArray())
+            {
+                if (ShouldPrune(key, lazySnapshot.Descriptor.ExpiresAt))
+                {
+                    _lazySnapshotDescriptors.Remove(key);
+                }
+            }
+
+            bool ShouldPrune(CatalogSnapshotCacheKey key, DateTimeOffset expiresAt) =>
+                key.Since is null &&
+                expiresAt <= now &&
+                (!latestByStore.TryGetValue(key.StoreCode, out var latest) || !latest.Equals(key)) &&
+                !_downloadLeases.IsVersionLeased(key.StoreCode, key.CatalogVersion);
         }
     }
 
@@ -1577,7 +1597,18 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
 
     private void RemoveSnapshotLocked(CatalogSnapshotCacheKey key)
     {
-        _snapshots.Remove(key);
+        if (_snapshots.Remove(key, out var snapshot) && snapshot.IsPersisted)
+        {
+            // 容量淘汰只降级为轻量磁盘索引；读取时仍由 store.Load 核验 manifest 和正文。
+            _lazySnapshotDescriptors[key] = new LazySnapshotEntry(
+                new CatalogSnapshotDescriptor(
+                    key.StoreCode,
+                    key.Since,
+                    snapshot.Result.GeneratedAt,
+                    snapshot.ExpiresAt,
+                    key.CatalogVersion),
+                snapshot.Sequence);
+        }
         RemoveRawArtifact(key);
         RemoveActiveReferences(key);
     }
@@ -1786,7 +1817,10 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
     private sealed record SnapshotEntry(
         CatalogIndexBuildResult Result,
         DateTimeOffset ExpiresAt,
-        long Sequence);
+        long Sequence,
+        bool IsPersisted);
+
+    private sealed record LazySnapshotEntry(CatalogSnapshotDescriptor Descriptor, long Sequence);
 
     private sealed class PendingSnapshotEntry
     {

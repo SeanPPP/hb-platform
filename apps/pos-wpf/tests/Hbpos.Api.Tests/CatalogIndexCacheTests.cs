@@ -1075,6 +1075,114 @@ public sealed class CatalogIndexCacheTests
     }
 
     [Fact]
+    public async Task Persisted_store_evicted_for_capacity_can_be_loaded_repeatedly_without_sql_build()
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new GzipCatalogSnapshotStore(directory.Path);
+        var scheduler = new RecordingRefreshScheduler();
+        var cache = new CatalogIndexCache(
+            new MutableTimeProvider(GeneratedAt), TimeSpan.FromMinutes(20), TimeSpan.FromHours(2),
+            maxSnapshotsPerStore: 8, store, scheduler, softItemCapacity: 1, hardItemCapacity: 1);
+        var first = CreateSizedResult("S01", "catalog-v1:first", 1);
+        var second = CreateSizedResult("S02", "catalog-v1:second", 1);
+        await cache.GetOrBuildAsync("S01", null, _ => Task.FromResult<CatalogIndexBuildResult?>(first), CancellationToken.None);
+        await cache.GetOrBuildAsync("S02", null, _ => Task.FromResult<CatalogIndexBuildResult?>(second), CancellationToken.None);
+
+        for (var round = 0; round < 2; round++)
+        {
+            Assert.Equal(first.CatalogIndex.CatalogVersion,
+                cache.GetByVersion("S01", null, first.CatalogIndex.CatalogVersion)?.CatalogIndex.CatalogVersion);
+            var recoveredFirst = await cache.GetOrBuildAsync("S01", null,
+                _ => throw new InvalidOperationException("磁盘 LKG 不应触发 SQL 构建"), CancellationToken.None);
+            Assert.Equal(first.CatalogIndex.CatalogVersion, recoveredFirst?.CatalogIndex.CatalogVersion);
+
+            Assert.Equal(second.CatalogIndex.CatalogVersion,
+                cache.GetByVersion("S02", null, second.CatalogIndex.CatalogVersion)?.CatalogIndex.CatalogVersion);
+            var recoveredSecond = await cache.GetOrBuildAsync("S02", null,
+                _ => throw new InvalidOperationException("磁盘 LKG 不应触发 SQL 构建"), CancellationToken.None);
+            Assert.Equal(second.CatalogIndex.CatalogVersion, recoveredSecond?.CatalogIndex.CatalogVersion);
+        }
+
+        // 磁盘恢复仅提供 LKG，不能把它装成未过期的 active：每次仍排后台刷新。
+        Assert.Equal(4, scheduler.QueueCount);
+        Assert.Equal(1, cache.PinnedVersionCountForTests);
+        Assert.Equal(0, cache.ActiveEntryCountForTests);
+    }
+
+    [Fact]
+    public async Task Evicted_descriptor_does_not_resurrect_version_removed_from_manifest()
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new GzipCatalogSnapshotStore(directory.Path, maxSnapshotsPerStore: 1);
+        var cache = new CatalogIndexCache(
+            new MutableTimeProvider(GeneratedAt), TimeSpan.FromMinutes(20), TimeSpan.FromHours(2),
+            maxSnapshotsPerStore: 8, store, softItemCapacity: 1, hardItemCapacity: 1);
+        var first = CreateSizedResult("S01", "catalog-v1:first", 1);
+        var second = CreateSizedResult("S02", "catalog-v1:second", 1);
+        await cache.GetOrBuildAsync("S01", null, _ => Task.FromResult<CatalogIndexBuildResult?>(first), CancellationToken.None);
+        await cache.GetOrBuildAsync("S02", null, _ => Task.FromResult<CatalogIndexBuildResult?>(second), CancellationToken.None);
+        Assert.Equal(1, cache.PinnedVersionCountForTests);
+
+        // 模拟同一进程外部维护 manifest：旧版本已不在发布点，轻量索引必须失效。
+        store.Save(new CatalogPersistedSnapshot("S01", null, GeneratedAt.AddMinutes(1),
+            GeneratedAt.AddHours(2), "catalog-v1:replacement", []));
+        Assert.Null(store.Load("S01", null, first.CatalogIndex.CatalogVersion));
+        Assert.Null(cache.GetByVersion("S01", null, first.CatalogIndex.CatalogVersion));
+        Assert.Null(cache.GetByVersion("S01", null, first.CatalogIndex.CatalogVersion));
+    }
+
+    [Fact]
+    public async Task Reading_older_version_does_not_replace_newer_disk_lkg()
+    {
+        using var directory = new TemporaryDirectory();
+        var scheduler = new RecordingRefreshScheduler();
+        var cache = new CatalogIndexCache(
+            new MutableTimeProvider(GeneratedAt), TimeSpan.FromMinutes(20), TimeSpan.FromHours(2),
+            maxSnapshotsPerStore: 8, new GzipCatalogSnapshotStore(directory.Path), scheduler,
+            softItemCapacity: 2, hardItemCapacity: 2);
+        // 两版生成时间相同，必须按原发布顺序判断，不能按最近从磁盘读取的顺序判断。
+        var old = CreateResult("S01", "catalog-v1:old");
+        var current = CreateResult("S01", "catalog-v1:current");
+        await cache.GetOrBuildAsync("S01", null, _ => Task.FromResult<CatalogIndexBuildResult?>(old), CancellationToken.None);
+        await cache.ForceRefreshAndPublishAsync("S01", null,
+            _ => Task.FromResult<CatalogIndexBuildResult?>(current), CancellationToken.None);
+        await cache.GetOrBuildAsync("S02", null,
+            _ => Task.FromResult<CatalogIndexBuildResult?>(CreateResult("S02", "catalog-v1:other")),
+            CancellationToken.None);
+
+        Assert.Equal(old.CatalogIndex.CatalogVersion,
+            cache.GetByVersion("S01", null, old.CatalogIndex.CatalogVersion)?.CatalogIndex.CatalogVersion);
+        var lkg = await cache.GetOrBuildAsync("S01", null,
+            _ => throw new InvalidOperationException("新版磁盘 LKG 不应触发 SQL 构建"), CancellationToken.None);
+        Assert.Equal(current.CatalogIndex.CatalogVersion, lkg?.CatalogIndex.CatalogVersion);
+        Assert.Equal(1, scheduler.QueueCount);
+    }
+
+    [Fact]
+    public async Task Expired_non_latest_persisted_version_is_not_restored_after_capacity_eviction()
+    {
+        using var directory = new TemporaryDirectory();
+        var clock = new MutableTimeProvider(GeneratedAt);
+        var cache = new CatalogIndexCache(clock, TimeSpan.FromMinutes(20), TimeSpan.FromHours(1),
+            maxSnapshotsPerStore: 8, new GzipCatalogSnapshotStore(directory.Path),
+            softItemCapacity: 2, hardItemCapacity: 2);
+        var old = CreateResult("S01", "catalog-v1:old");
+        var current = CreateResult("S01", "catalog-v1:current");
+        await cache.GetOrBuildAsync("S01", null, _ => Task.FromResult<CatalogIndexBuildResult?>(old), CancellationToken.None);
+        clock.Advance(TimeSpan.FromMinutes(30));
+        await cache.ForceRefreshAndPublishAsync("S01", null,
+            _ => Task.FromResult<CatalogIndexBuildResult?>(current), CancellationToken.None);
+        await cache.GetOrBuildAsync("S02", null,
+            _ => Task.FromResult<CatalogIndexBuildResult?>(CreateSizedResult("S02", "catalog-v1:other", 1)),
+            CancellationToken.None);
+        // 旧版先因容量降级到 descriptor，再跨过它的到期时间。
+        clock.Advance(TimeSpan.FromMinutes(31));
+
+        Assert.Null(cache.GetByVersion("S01", null, old.CatalogIndex.CatalogVersion));
+        Assert.NotNull(cache.GetByVersion("S01", null, current.CatalogIndex.CatalogVersion));
+    }
+
+    [Fact]
     public async Task Capacity_rejected_normal_refresh_returns_pinned_last_good_version()
     {
         var clock = new MutableTimeProvider(GeneratedAt);
