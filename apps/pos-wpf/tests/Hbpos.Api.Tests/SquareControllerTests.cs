@@ -503,6 +503,79 @@ public sealed class SquareControllerTests
     }
 
     [Fact]
+    public async Task CreateRefund_WithPaymentOriginatingFromSameDevice_CallsBackend()
+    {
+        var repository = new InMemorySquareCheckoutSessionRepository();
+        await repository.UpsertCheckoutSessionAsync(
+            CreateCheckoutSession("S01", "POS-01", paymentId: "payment-001"),
+            CancellationToken.None);
+        var backendService = new CapturingSquareTerminalBackendService();
+        var controller = CreateController(repository, backendService);
+
+        var result = await controller.CreateRefund(
+            new SquareRefundRequest(
+                "Production",
+                "idem-refund-001",
+                "payment-001",
+                new SquareMoneyDto(1299, "AUD")),
+            CancellationToken.None);
+
+        Assert.IsType<OkObjectResult>(result.Result);
+        Assert.Equal(1, backendService.CreateRefundCalls);
+    }
+
+    [Fact]
+    public async Task CreateRefund_WithPaymentFromAnotherStore_IsRejectedBeforeReachingSquare()
+    {
+        // Square access token 按环境全局共享，一旦漏掉归属校验，任一门店的终端都能
+        // 对别店的付款打出真实退款。这里断言请求在到达 Square 之前就被拒绝。
+        var repository = new InMemorySquareCheckoutSessionRepository();
+        await repository.UpsertCheckoutSessionAsync(
+            CreateCheckoutSession("S02", "POS-99", paymentId: "payment-foreign"),
+            CancellationToken.None);
+        var backendService = new CapturingSquareTerminalBackendService();
+        var controller = CreateController(repository, backendService);
+
+        var result = await controller.CreateRefund(
+            new SquareRefundRequest(
+                "Production",
+                "idem-refund-002",
+                "payment-foreign",
+                new SquareMoneyDto(9999, "AUD")),
+            CancellationToken.None);
+
+        var objectResult = Assert.IsType<ObjectResult>(result.Result);
+        Assert.Equal(StatusCodes.Status403Forbidden, objectResult.StatusCode);
+        var apiResult = Assert.IsType<ApiResult<SquareRefundResponse>>(objectResult.Value);
+        Assert.Equal("DEVICE_SCOPE_FORBIDDEN", apiResult.ErrorCode);
+        Assert.Equal(0, backendService.CreateRefundCalls);
+    }
+
+    [Fact]
+    public async Task CreateRefund_WithPaymentHavingNoTrustedOrigin_IsRejectedBeforeReachingSquare()
+    {
+        // 历史无来源行不能用当前收银员身份补写来源，必须一律拒绝续接。
+        var repository = new InMemorySquareCheckoutSessionRepository();
+        await repository.UpsertCheckoutSessionAsync(
+            CreateCheckoutSession(null, null, paymentId: "payment-legacy"),
+            CancellationToken.None);
+        var backendService = new CapturingSquareTerminalBackendService();
+        var controller = CreateController(repository, backendService);
+
+        var result = await controller.CreateRefund(
+            new SquareRefundRequest(
+                "Production",
+                "idem-refund-003",
+                "payment-legacy",
+                new SquareMoneyDto(500, "AUD")),
+            CancellationToken.None);
+
+        var objectResult = Assert.IsType<ObjectResult>(result.Result);
+        Assert.Equal(StatusCodes.Status403Forbidden, objectResult.StatusCode);
+        Assert.Equal(0, backendService.CreateRefundCalls);
+    }
+
+    [Fact]
     public async Task GetCheckout_WhenCompletedBindsPaymentIdForSameDeviceContinuation()
     {
         var repository = new InMemorySquareCheckoutSessionRepository();
@@ -831,7 +904,8 @@ public sealed class SquareControllerTests
 
     private static SquareCheckoutSessionRecord CreateCheckoutSession(
         string? originStoreCode,
-        string? originDeviceCode)
+        string? originDeviceCode,
+        string? paymentId = null)
     {
         return new SquareCheckoutSessionRecord
         {
@@ -841,6 +915,7 @@ public sealed class SquareControllerTests
             RawCheckoutJson = "{}",
             OriginStoreCode = originStoreCode,
             OriginDeviceCode = originDeviceCode,
+            PaymentId = paymentId,
             UpdatedAt = new DateTimeOffset(2026, 7, 14, 0, 0, 0, TimeSpan.Zero)
         };
     }
