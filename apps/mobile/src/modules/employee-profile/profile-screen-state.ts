@@ -25,12 +25,13 @@ function areValuesEqual(
 
 export function hasBasicProfileChanges(
   draft: UpdateEmployeeProfilePayload,
-  profile: EmployeeProfile | null | undefined
+  profile: EmployeeProfile | null | undefined,
+  options: { canEditPositionType?: boolean } = {}
 ) {
   if (!profile) return false;
   return !areValuesEqual(
-    buildNonSensitiveProfilePayload(draft),
-    buildNonSensitiveProfilePayload(toEmployeeProfileDraft(profile))
+    buildNonSensitiveProfilePayload(draft, options),
+    buildNonSensitiveProfilePayload(toEmployeeProfileDraft(profile), options)
   );
 }
 

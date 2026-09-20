@@ -207,6 +207,19 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public void EmployeeProfilePositionTypePermission_独立登记且不自动授予角色()
+        {
+            var permission = Assert.Single(
+                PermissionSeedData.AllPermissions,
+                item => item.Code == Permissions.EmployeeProfiles.EditPositionType
+            );
+            Assert.Equal("修改职位类型", permission.Name);
+            Assert.Equal("用户管理", permission.Category);
+            Assert.All(PermissionSeedData.RolePermissionTemplates, template =>
+                Assert.DoesNotContain(Permissions.EmployeeProfiles.EditPositionType, template.PermissionCodes));
+        }
+
+        [Fact]
         public void EmployeeProfileReviewPermissionSeeds_三个店长模板仅增加独立审核权限()
         {
             var permission = Assert.Single(

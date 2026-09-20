@@ -218,6 +218,7 @@ namespace BlazorApp.Shared.Constants
                 new(Permissions.Users.ResetPassword, "重置密码", "用户管理", "Web 页面 /system/users - 重置用户登录密码"),
                 new(Permissions.EmployeeProfiles.View, "查看员工个人信息", "用户管理", "Web 页面 /system/employee-profiles 与移动端「员工资料」- 查看员工个人信息列表与详情"),
                 new(Permissions.EmployeeProfiles.Edit, "维护员工个人信息", "用户管理", "移动端「员工资料」编辑本人资料；Web 页面 /system/employee-profiles 后台编辑另需管理员角色 - 维护身份、银行、养老金、地址等资料"),
+                new(Permissions.EmployeeProfiles.EditPositionType, "修改职位类型", "用户管理", "个人信息 - 修改全职、兼职、临时工等职位类型，保存时仍需维护员工个人信息权限"),
                 new(Permissions.EmployeeProfiles.ReviewSensitiveManagedStore, "审核管理分店员工敏感资料", "用户管理", "移动端员工敏感资料审核 - 审核管理分店内普通员工提交的敏感资料变更"),
                 new(Permissions.Roles.View, "查看角色", "角色管理", "Web 页面 /system/roles、/system/permissions 与移动端「角色」- 查看角色和权限配置"),
                 new(Permissions.Roles.Create, "创建角色", "角色管理", "Web 页面 /system/roles - 创建角色"),

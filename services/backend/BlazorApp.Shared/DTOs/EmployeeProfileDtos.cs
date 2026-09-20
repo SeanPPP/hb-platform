@@ -68,6 +68,24 @@ namespace BlazorApp.Shared.DTOs
 
     public class EmployeeProfileUpsertDto
     {
+        private string? _email;
+
+        // setter 用于区分旧客户端省略 Email 与显式提交 Email:null。
+        [StringLength(254)]
+        [EmailAddress]
+        public string? Email
+        {
+            get => _email;
+            set
+            {
+                _email = value;
+                HasEmail = true;
+            }
+        }
+
+        [System.Text.Json.Serialization.JsonIgnore]
+        public bool HasEmail { get; private set; }
+
         public string? UserGUID { get; set; }
 
         [StringLength(50)]
@@ -92,7 +110,19 @@ namespace BlazorApp.Shared.DTOs
 
         public string? Gender { get; set; }
 
-        public string? EmploymentType { get; set; }
+        private string? _employmentType;
+        public string? EmploymentType
+        {
+            get => _employmentType;
+            set
+            {
+                _employmentType = value;
+                HasEmploymentType = true;
+            }
+        }
+
+        [System.Text.Json.Serialization.JsonIgnore]
+        public bool HasEmploymentType { get; private set; }
 
         [StringLength(500)]
         public string? AvatarUrl { get; set; }

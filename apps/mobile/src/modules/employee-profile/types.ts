@@ -14,6 +14,7 @@ export interface EmployeeProfile {
   username: string;
   displayName?: string;
   phone: string;
+  email?: string;
   bankBsb: string;
   bankAccountNumber: string;
   superannuationCompanyName: string;
@@ -35,9 +36,10 @@ export interface EmployeeProfile {
 
 export interface UpdateEmployeeProfilePayload {
   phone: string;
+  email?: string;
   birthday: string;
   gender: string;
-  employmentType: string;
+  employmentType?: string;
   address: string;
 }
 

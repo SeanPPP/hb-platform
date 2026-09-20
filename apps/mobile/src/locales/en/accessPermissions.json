@@ -169,6 +169,10 @@
       "name": "Domestic Purchase Manage Suppliers",
       "description": "Allows access to Domestic Purchase Manage Suppliers."
     },
+    "EmployeeProfiles.EditPositionType": {
+      "name": "Edit position type",
+      "description": "Change position type, such as full-time, part-time or casual. Saving also requires permission to edit employee profiles."
+    },
     "EmployeeProfiles.Edit": {
       "name": "Edit employee profiles",
       "description": "Edit your own profile on mobile; editing other employees on the web admin also requires the administrator role."

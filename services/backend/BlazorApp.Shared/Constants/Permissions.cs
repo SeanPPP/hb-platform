@@ -44,6 +44,7 @@ namespace BlazorApp.Shared.Constants
         {
             public const string View = "EmployeeProfiles.View";
             public const string Edit = "EmployeeProfiles.Edit";
+            public const string EditPositionType = "EmployeeProfiles.EditPositionType";
             public const string ReviewSensitiveManagedStore =
                 "EmployeeProfiles.ReviewSensitiveManagedStore";
         }
