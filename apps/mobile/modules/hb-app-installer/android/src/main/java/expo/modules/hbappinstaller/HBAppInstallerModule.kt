@@ -269,7 +269,10 @@ class HBAppInstallerModule : Module() {
     val uri = try { Uri.parse(value) } catch (error: Exception) {
       throw InstallerException(code, "APK 本地文件 URI 无效。", error)
     }
-    if (uri.scheme != "file" || uri.authority != null || uri.query != null || uri.fragment != null || uri.path.isNullOrEmpty()) {
+    // Uri.fromFile 产出的 file:///path 经 Uri.parse 解析后 authority 是空字符串而不是 null，
+    // 早期用 `!= null` 判断会把所有合法的本地路径一律拒掉，自动更新因此永远下载不了。
+    // 这里只拒绝真正带主机名的 file://host/path。
+    if (uri.scheme != "file" || !uri.authority.isNullOrEmpty() || uri.query != null || uri.fragment != null || uri.path.isNullOrEmpty()) {
       throw InstallerException(code, "APK 只允许本地 file URI。")
     }
     return File(requireNotNull(uri.path)).canonicalFile
