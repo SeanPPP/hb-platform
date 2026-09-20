@@ -353,6 +353,130 @@ public sealed class BatchProductSalesMiddleTableTests : IDisposable
     }
 
     [Fact]
+    public async Task SnapshotReader_快照格式以字面量下发且连续日期合并为单个区间()
+    {
+        var nextDay = _day.AddDays(1);
+        AddRefreshState(nextDay, "source-2");
+        Publish(_day, "source-1", Facts());
+        var snapshotSql = new List<(string Sql, int ParameterCount)>();
+        _db.Aop.OnLogExecuting = (sql, parameters) =>
+        {
+            // SQLite 方言的表名引号与 SQL Server 不同；以读取 PayloadJson 的快照 SELECT 识别目标语句。
+            if (sql.Contains("BatchProductSalesDiscountSnapshot", StringComparison.OrdinalIgnoreCase)
+                && sql.Contains("PayloadJson", StringComparison.OrdinalIgnoreCase)
+                && sql.TrimStart().StartsWith("SELECT", StringComparison.OrdinalIgnoreCase))
+                snapshotSql.Add((sql, parameters?.Length ?? 0));
+        };
+        try
+        {
+            await new BatchProductSalesDiscountSnapshotReader(_db).ReadManyAsync(
+                ["P1"], [_day, nextDay, _day.AddDays(2)], ["S1"], [], default);
+        }
+        finally { _db.Aop.OnLogExecuting = null; }
+
+        var (text, parameterCount) = Assert.Single(snapshotSql);
+        // 参数化的 SnapshotFormat 会让 SQL Server 放弃过滤索引 IX_BatchSalesDiscount_DailyProduct，必须保持字面量。
+        Assert.Contains("[SnapshotFormat] = 2", text);
+        Assert.DoesNotContain("@SnapshotFormat", text, StringComparison.OrdinalIgnoreCase);
+        // 三个连续日期只剩一组半开区间的起止两个参数。
+        Assert.Equal(2, parameterCount);
+    }
+
+    [Fact]
+    public async Task SnapshotReader_不连续日期之间的快照不会被读取()
+    {
+        var gapDay = _day.AddDays(1);
+        var lastDay = _day.AddDays(2);
+        AddRefreshState(gapDay, "source-gap");
+        AddRefreshState(lastDay, "source-3");
+        Publish(_day, "source-1", Facts());
+        Publish(gapDay, "source-gap", [new() { Date = gapDay, BranchCode = "S1", ProductCode = "P1", Quantity = 100, DiscountQuantity = 100, SalesAmount = 1000 }]);
+        Publish(lastDay, "source-3", [new() { Date = lastDay, BranchCode = "S1", ProductCode = "P1", Quantity = 3, DiscountQuantity = 3, SalesAmount = 30 }]);
+        var statistics = new List<BatchProductSalesAggregateRow>
+        {
+            new() { Date = _day, BranchCode = "S1", ProductCode = "P1", Quantity = 1, SalesAmount = 10 },
+            new() { Date = lastDay, BranchCode = "S1", ProductCode = "P1", Quantity = 3, SalesAmount = 30 },
+        };
+
+        var result = await new BatchProductSalesDiscountSnapshotReader(_db).ReadManyAsync(
+            ["P1"], [_day, lastDay], ["S1"], statistics, default);
+
+        var read = Assert.Single(result).Value;
+        Assert.Equal("Fresh", read.Status);
+        Assert.Equal(4m, read.Rows.Sum(row => row.Quantity));
+        Assert.DoesNotContain(read.Rows, row => row.Date.Date == gapDay);
+    }
+
+    [Fact]
+    public void CollapseContiguousDays_连续合并而断点分段()
+    {
+        var ranges = BatchProductSalesDiscountSnapshotReader.CollapseContiguousDays(
+            [_day, _day.AddDays(1), _day.AddDays(3), _day.AddDays(4), _day.AddDays(7)]);
+        Assert.Equal(
+            [(_day, _day.AddDays(2)), (_day.AddDays(3), _day.AddDays(5)), (_day.AddDays(7), _day.AddDays(8))],
+            ranges);
+        Assert.Empty(BatchProductSalesDiscountSnapshotReader.CollapseContiguousDays([]));
+    }
+
+    [Fact]
+    public async Task DailyStore_canonical重算已失败时按退避时间落库且到期前不再领取()
+    {
+        var day = _day.AddDays(3);
+        var now = new DateTime(2026, 9, 18, 8, 40, 0, DateTimeKind.Utc);
+        var failedAt = now.AddMinutes(-4);
+        _db.Insertable(new SalesStatisticRefreshState
+        {
+            StatisticType = SalesStatisticType.ProductStoreDaily, Date = day, Status = "Failed", LastCheckedAtUtc = failedAt,
+            ErrorMessage = "商品统计与分店营业额统计不一致",
+        }).ExecuteCommand();
+        _db.Insertable(new BatchProductSalesDiscountRefreshState
+        {
+            Date = day, Status = BatchProductSalesDiscountDailyStore.WaitingForCanonicalStatus, RuleVersion = 1,
+            RequestedAtUtc = failedAt, NextAttemptAtUtc = now, ReconcileRequested = true,
+        }).ExecuteCommand();
+        var store = new BatchProductSalesDiscountDailyStore(_db);
+
+        var claim = await store.ClaimNextAsync(now, [], default);
+        Assert.NotNull(claim);
+        Assert.Equal(day, claim!.State.Date.Date);
+        var canonical = await store.ReadCanonicalStateAsync(day, default);
+        Assert.Equal("Failed", canonical.Status);
+        Assert.Equal(failedAt, canonical.CheckedAtUtc);
+        var decision = BatchProductSalesDiscountDailyStore.DecideCanonicalReconciliation(
+            claim.State.ReconcileRequested, canonical.Status, canonical.CheckedAtUtc, now);
+        Assert.False(decision.Request);
+        await store.WaitForCanonicalRefreshAsync(claim, now, default, "日统计重算失败", decision.NextAttemptAtUtc);
+
+        var persisted = ReadDiscountState(day);
+        Assert.Equal(BatchProductSalesDiscountDailyStore.WaitingForCanonicalStatus, persisted.Status);
+        Assert.Equal(failedAt.Add(BatchProductSalesDiscountDailyStore.FailedCanonicalRetryDelay), persisted.NextAttemptAtUtc);
+        Assert.True(persisted.ReconcileRequested);
+        Assert.Equal("日统计重算失败", persisted.LastError);
+        Assert.Equal(0, persisted.Attempts);
+        // 退避期内即使 worker 每轮都来领取，也拿不到这一天。
+        var early = await store.ClaimNextAsync(now.AddHours(1), [], default);
+        Assert.NotEqual(day, early?.State.Date.Date);
+    }
+
+    [Fact]
+    public async Task DailyStore_canonical等待不接受早于常规短等待的检查时间()
+    {
+        var day = _day.AddDays(4);
+        var now = new DateTime(2026, 9, 18, 8, 40, 0, DateTimeKind.Utc);
+        _db.Insertable(new BatchProductSalesDiscountRefreshState
+        {
+            Date = day, Status = "Queued", RuleVersion = 1, RequestedAtUtc = now, NextAttemptAtUtc = now,
+        }).ExecuteCommand();
+        var store = new BatchProductSalesDiscountDailyStore(_db);
+        var claim = (await store.ClaimNextAsync(now, [], default))!;
+        Assert.Equal(day, claim.State.Date.Date);
+
+        await store.WaitForCanonicalRefreshAsync(claim, now, default, nextAttemptAtUtc: now.AddHours(-1));
+
+        Assert.Equal(now.Add(BatchProductSalesDiscountDailyStore.CanonicalWaitDelay), ReadDiscountState(day).NextAttemptAtUtc);
+    }
+
+    [Fact]
     public async Task Detail_越权门店范围继续被拒绝()
     {
         Publish(_day, "source-1", Facts());
@@ -388,6 +512,9 @@ public sealed class BatchProductSalesMiddleTableTests : IDisposable
     }
 
     private BatchProductSalesAnalysisService CreateService() => new(_db, Mock.Of<IProductStoreDailyStatisticQueueService>(), NullLogger<BatchProductSalesAnalysisService>.Instance);
+    // SQLite 上 DateTime 等值比较会读不到行，测试按单日半开区间读取折扣日状态。
+    private BatchProductSalesDiscountRefreshState ReadDiscountState(DateTime date) => _db.Queryable<BatchProductSalesDiscountRefreshState>()
+        .Where(x => x.Date >= date.Date && x.Date < date.Date.AddDays(1)).Single();
     private void AddStatisticState(DateTime date) => _db.Insertable(new SalesStatisticRefreshState { StatisticType = SalesStatisticType.ProductStoreDaily, Date = date, Status = "Fresh", CompletedAtUtc = date }).ExecuteCommand();
     private void AddRefreshState(DateTime date, string sourceVersion, int snapshotCount = 1) => _db.Insertable(new BatchProductSalesDiscountRefreshState { Date = date, Status = "Fresh", RuleVersion = 1, SourceVersion = sourceVersion, StatisticsVersion = "sales-only", RequestedAtUtc = date, NextAttemptAtUtc = date, CompletedAtUtc = date, SnapshotCount = snapshotCount }).ExecuteCommand();
     private void Publish(DateTime date, string sourceVersion, List<BatchProductSalesAggregateRow> rows, string? payload = null) => _db.Insertable(new BatchProductSalesDiscountSnapshot { Id = $"snapshot-{date:yyyyMMdd}-{Guid.NewGuid():N}", SnapshotFormat = 2, SourceVersion = sourceVersion, ProductCode = "P1", StartDate = date, EndDate = date, Status = "Fresh", StoreCodesJson = "[]", RequestedAtUtc = date, NextAttemptAtUtc = date, CompletedAtUtc = date, PayloadJson = payload ?? JsonSerializer.Serialize(rows) }).ExecuteCommand();

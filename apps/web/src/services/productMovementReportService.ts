@@ -53,8 +53,10 @@ function normalizeRow(raw: unknown): ProductMovementReportRow | null {
     storeCode,
     storeName: readString(record.storeName ?? record.StoreName),
     productCode,
+    itemNumber: readString(record.itemNumber ?? record.ItemNumber),
     productName: readString(record.productName ?? record.ProductName),
     barcode: readString(record.barcode ?? record.Barcode),
+    imageUrl: readString(record.imageUrl ?? record.ImageUrl),
     salesQty30: readNumber(record.salesQty30 ?? record.SalesQty30),
     salesQty90: readNumber(record.salesQty90 ?? record.SalesQty90),
     dailySalesQty30: readNumber(record.dailySalesQty30 ?? record.DailySalesQty30),
@@ -105,6 +107,8 @@ function normalizeResponse(raw: unknown): ProductMovementReportResponse {
     credibilitySummary,
     salesStatisticLastUpdate:
       readString(record.salesStatisticLastUpdate ?? record.SalesStatisticLastUpdate) ?? null,
+    snapshotGeneratedAtUtc:
+      readString(record.snapshotGeneratedAtUtc ?? record.SnapshotGeneratedAtUtc) ?? null,
     calculationNote:
       readString(record.calculationNote ?? record.CalculationNote) ??
       '估算剩余量=近180天进货单数量-近180天销售数量；不是货架库存、后仓库存或财务库存。',

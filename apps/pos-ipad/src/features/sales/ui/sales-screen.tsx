@@ -135,6 +135,7 @@ export type SalesScreenProps = Readonly<{
   onOpenHeldOrders?: () => void;
   onOpenInstallments?: () => void;
   onOpenLocalHistory?: () => void;
+  onOpenPaymentRecovery?: () => void;
   onOpenPayment?: (cart: CartSnapshot) => void;
   onOpenRequiredUpdate?: () => void;
   onReprintReceipt?: () => Promise<SalesUtilityActionResult>;
@@ -183,6 +184,7 @@ export function SalesScreen({
   onOpenHeldOrders,
   onOpenInstallments,
   onOpenLocalHistory,
+  onOpenPaymentRecovery,
   onOpenPayment,
   onOpenRequiredUpdate,
   onReprintReceipt,
@@ -1387,6 +1389,13 @@ export function SalesScreen({
                   style={styles.functionAction}
                   testID="sales-open-returns"
                   tone="secondary"
+                />
+              ) : null}
+              {onOpenPaymentRecovery ? (
+                <ActionButton
+                  label={t("functions.paymentRecovery")}
+                  onPress={onOpenPaymentRecovery}
+                  testID="sales-open-payment-recovery"
                 />
               ) : null}
               {onOpenLocalHistory ? (

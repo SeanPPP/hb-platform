@@ -517,6 +517,14 @@ export async function printDiscountLabel(detail: ProductDetail, printType?: stri
   return printNativeDiscountLabel(buildPayload(detail), printType);
 }
 
+export async function printDiscountLabelPayload(payload: ProductLabelPrintPayload, printType?: string | null) {
+  if (isIosReviewSessionActive()) {
+    return true;
+  }
+  await ensureConnectedPrinter();
+  return printNativeDiscountLabel(payload, printType);
+}
+
 export async function printClearanceLabel(detail: ProductDetail) {
   if (isIosReviewSessionActive()) {
     return true;

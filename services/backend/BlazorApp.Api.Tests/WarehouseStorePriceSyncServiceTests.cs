@@ -651,6 +651,56 @@ public sealed class WarehouseStorePriceSyncServiceTests : IDisposable
         SqliteTempFileCleanup.DeleteIfExists(_dbPath);
     }
 
+    [Fact]
+    public async Task 本地同步_覆盖分店既有价格后为该分店登记待换标签()
+    {
+        await BlazorApp.Api.Data.StorePriceUpdateTaskSchemaMigrator.EnsureAsync(_db, NullLogger.Instance);
+        await SeedStoreAsync("S01", "一店");
+        await SeedProductAsync("P01", true, false, 1.25m, 2.5m);
+        await _db.Insertable(new StoreRetailPrice
+        {
+            UUID = "shelf-price",
+            StoreCode = "S01",
+            ProductCode = "P01",
+            StoreProductCode = "S01P01",
+            PurchasePrice = 1m,
+            StoreRetailPriceValue = 3m,
+            DiscountRate = 0.2m,
+            IsActive = true,
+        }).ExecuteCommandAsync();
+        var summary = new BlazorApp.Api.Services.React.PriceNotificationSummaryAccessor();
+        var taskService = new BlazorApp.Api.Services.React.StorePriceUpdateTaskService(
+            CreateSqlSugarContext(_db),
+            NullLogger<BlazorApp.Api.Services.React.StorePriceUpdateTaskService>.Instance,
+            new Microsoft.Extensions.Configuration.ConfigurationBuilder().Build(),
+            summary,
+            Mock.Of<IServiceProvider>()
+        );
+        var service = new WarehouseStorePriceSyncService(
+            CreateSqlSugarContext(_db),
+            Mock.Of<IProductHqSyncService>(),
+            NullLogger<WarehouseStorePriceSyncService>.Instance,
+            taskService
+        );
+
+        var response = await service.ExecuteAsync(
+            new WarehouseStorePriceSyncRequestDto { ProductCodes = ["P01"], TargetStoreCodes = ["S01"] },
+            "price-admin"
+        );
+
+        Assert.True(response.Success, response.Message);
+        // 货架标签是 3 元减 20%，同步后现价 2.5 元无折扣：标签过期 → 待换标签
+        var task = await _db.Queryable<StorePriceUpdateTask>().SingleAsync();
+        Assert.Equal("S01", task.StoreCode);
+        Assert.Equal(StorePriceUpdateTaskKinds.LabelOnly, task.Kind);
+        Assert.Equal(3m, task.ShelfRetailPrice);
+        Assert.Equal(0.2m, task.ShelfDiscountRate);
+        Assert.Equal(2.5m, task.StoreRetailPrice);
+        Assert.Equal("WarehouseAutoSync", task.InitiatorSource);
+        Assert.Equal("price-admin", task.InitiatorName);
+        Assert.Equal(1, summary.GetSummary()!.LabelOnlyStores);
+    }
+
     private WarehouseStorePriceSyncService CreateService(IProductHqSyncService hqService)
     {
         return new WarehouseStorePriceSyncService(

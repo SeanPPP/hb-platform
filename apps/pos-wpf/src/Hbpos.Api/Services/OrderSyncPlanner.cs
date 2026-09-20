@@ -5,7 +5,8 @@ namespace Hbpos.Api.Services;
 
 public interface IOrderSyncPlanner
 {
-    OrderSyncPlan CreatePlan(OrderSyncRequest request);
+    /// <param name="storeTimeZone">门店时区。POSM 的时间列存门店本地墙钟时间，必须按门店时区换算后写入。</param>
+    OrderSyncPlan CreatePlan(OrderSyncRequest request, TimeZoneInfo storeTimeZone);
 }
 
 public sealed class OrderSyncPlanner : IOrderSyncPlanner
@@ -17,9 +18,11 @@ public sealed class OrderSyncPlanner : IOrderSyncPlanner
     private const int DetailRemarkMaxLength = 50;
     private const int AuditUserMaxLength = 50;
 
-    public OrderSyncPlan CreatePlan(OrderSyncRequest request)
+    public OrderSyncPlan CreatePlan(OrderSyncRequest request, TimeZoneInfo storeTimeZone)
     {
-        var now = DateTime.UtcNow;
+        // 发生时刻（下单、明细、支付、银行流水）与上传时刻都写门店本地墙钟时间，与旧 POS 的历史数据口径一致。
+        var soldAt = StoreWallClock.ToWallClock(request.SoldAt, storeTimeZone);
+        var now = StoreWallClock.ToWallClock(DateTimeOffset.UtcNow, storeTimeZone);
         var orderGuid = request.OrderGuid.ToString("D");
         var auditUser = BuildPosmAuditUser(request);
         var saleLines = request.Lines
@@ -28,12 +31,14 @@ public sealed class OrderSyncPlanner : IOrderSyncPlanner
         var returnLines = request.Lines
             .Where(line => line.Kind == OrderLineKind.Return)
             .ToList();
-        var itemCount = saleLines.Sum(x => (int)x.Quantity);
+
+        // 旧 POS 的 ItemCount 写的是明细行数，全表沿用该口径；件数由明细 Quantity 求和得到。
+        var itemCount = saleLines.Count;
 
         var order = new SalesOrder
         {
             OrderGuid = orderGuid,
-            OrderTime = request.SoldAt.UtcDateTime,
+            OrderTime = soldAt,
             BranchCode = request.StoreCode,
             DeviceCode = request.DeviceCode,
             TotalAmount = request.TotalAmount,
@@ -45,7 +50,7 @@ public sealed class OrderSyncPlanner : IOrderSyncPlanner
             Status = 1,
             LastUploadTime = now,
             CreatedBy = auditUser,
-            CreatedTime = now,
+            CreatedTime = soldAt,
             UpdatedBy = auditUser,
             UpdatedTime = now
         };
@@ -64,7 +69,7 @@ public sealed class OrderSyncPlanner : IOrderSyncPlanner
             DiscountAmount = line.DiscountAmount,
             ActualAmount = line.ActualAmount,
             CreatedBy = auditUser,
-            CreatedTime = now,
+            CreatedTime = soldAt,
             UpdatedBy = auditUser,
             UpdatedTime = now,
             LastUploadTime = now,
@@ -81,7 +86,7 @@ public sealed class OrderSyncPlanner : IOrderSyncPlanner
             CashierId = request.CashierId,
             CashierName = request.CashierName,
             CreatedBy = auditUser,
-            CreatedTime = now,
+            CreatedTime = soldAt,
             UpdatedBy = auditUser,
             UpdatedTime = now,
             LastUploadTime = now
@@ -100,7 +105,9 @@ public sealed class OrderSyncPlanner : IOrderSyncPlanner
                 CardType = transaction.CardType,
                 CardBIN = transaction.CardBin,
                 CardNumber = transaction.MaskedCardNumber,
-                BankDateTime = transaction.BankDateTime?.UtcDateTime,
+                BankDateTime = transaction.BankDateTime is null
+                    ? null
+                    : StoreWallClock.ToWallClock(transaction.BankDateTime.Value, storeTimeZone),
                 ResponseCode = transaction.ResponseCode,
                 ResponseText = transaction.ResponseText,
                 Stan = transaction.Stan,
@@ -122,7 +129,7 @@ public sealed class OrderSyncPlanner : IOrderSyncPlanner
             ReturnAmount = Math.Abs(line.ActualAmount),
             StaffCode = request.CashierId,
             CreatedBy = auditUser,
-            CreatedTime = now,
+            CreatedTime = soldAt,
             UpdatedBy = auditUser,
             UpdatedTime = now
         }).ToList();

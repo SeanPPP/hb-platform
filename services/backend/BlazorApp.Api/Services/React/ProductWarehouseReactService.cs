@@ -41,7 +41,9 @@ public class ProductWarehouseReactService : IProductWarehouseReactService
         IMapper mapper,
         IDataSyncFullService dataSyncFullService,
         IWarehouseProductChangeHistoryService changeHistoryService,
-        ITranslationService? translationService = null
+        ITranslationService? translationService = null,
+        // 可选：用于在仓库自动下发分店价时登记「待换标签」通知；缺省时该功能静默关闭。
+        IStorePriceUpdateTaskService? priceTaskService = null
     )
         : this(
             ProductWarehouseLegacyFactory.Create(
@@ -53,7 +55,8 @@ public class ProductWarehouseReactService : IProductWarehouseReactService
                 mapper,
                 dataSyncFullService,
                 changeHistoryService,
-                translationService
+                translationService,
+                priceTaskService
             )
         ) { }
 

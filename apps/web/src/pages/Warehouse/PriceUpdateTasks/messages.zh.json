@@ -1,0 +1,177 @@
+{
+  "warehouse": {
+    "priceUpdateTasks": {
+      "subtitle": "监控仓库改价后各分店的改价与换标签执行情况（只读）",
+      "loadFailed": "加载价格变更任务失败",
+      "empty": "当前筛选条件下暂无数据",
+      "total": "共 {{count}} 条",
+      "tabs": {
+        "byStore": "按分店",
+        "byProduct": "按商品",
+        "tasks": "任务明细"
+      },
+      "filters": {
+        "store": "全部分店",
+        "allKinds": "全部类型",
+        "initiator": "发起人",
+        "keyword": "货号 / 品名 / 条码",
+        "hqSyncFailedOnly": "仅看总部同步失败"
+      },
+      "kind": {
+        "PriceUpdate": "需改价",
+        "LabelOnly": "待换标签"
+      },
+      "status": {
+        "Pending": "未完成",
+        "Completed": "已完成",
+        "Cancelled": "已取消",
+        "All": "全部"
+      },
+      "state": {
+        "Completed": "已完成",
+        "LabelOnly": "待换标签",
+        "PriceUpdate": "需改价",
+        "Skipped": "已跳过"
+      },
+      "tags": {
+        "priceUpdate": "改价 {{count}}",
+        "labelOnly": "标签 {{count}}"
+      },
+      "summary": {
+        "pending": "未完成",
+        "pendingHint": "需改价 {{priceUpdate}} · 待换标签 {{labelOnly}}",
+        "completed": "时间范围内已完成",
+        "completedHint": "完成率 {{percent}}%",
+        "overdue": "超 {{days}} 天未处理",
+        "overdueHint": "涉及 {{count}} 家分店",
+        "hqSyncFailed": "总部同步失败",
+        "hqSyncFailedHint": "点击查看明细",
+        "priceUpdate": "需改价",
+        "priceUpdateHint": "分店价格还没按仓库价更新",
+        "labelOnly": "待换标签",
+        "labelOnlyHint": "价格已更新，货架标签仍是旧价",
+        "clickToView": "点击查看"
+      },
+      "columns": {
+        "store": "分店",
+        "storeCode": "分店代码",
+        "storeName": "分店名称",
+        "pending": "未完成",
+        "completed": "已完成",
+        "completionRate": "完成率",
+        "oldestPending": "最久未处理",
+        "lastCompleted": "最近处理",
+        "lastCompletedBy": "最近处理人",
+        "lastCompletedAt": "最近处理时间",
+        "product": "商品",
+        "itemNumber": "货号",
+        "productName": "品名",
+        "barcode": "条码",
+        "change": "变更",
+        "changeCount": "变更次数",
+        "initiator": "发起人",
+        "source": "来源",
+        "initiatorAndSource": "发起人 / 来源",
+        "initiatedAt": "发起时间",
+        "progress": "各店进度",
+        "image": "图片",
+        "kind": "类型",
+        "priceChange": "价格变化",
+        "priceFrom": "变化前",
+        "priceTo": "变化后",
+        "status": "状态",
+        "completedBy": "处理人",
+        "completedAt": "处理时间",
+        "labelStatus": "标签状态",
+        "hqSync": "总部同步",
+        "pendingPriceUpdate": "需改价",
+        "pendingLabelOnly": "待换标签"
+      },
+      "change": {
+        "retailPrice": "零售价 → {{value}}",
+        "discount": "建议折扣 → {{value}}",
+        "count": "共 {{count}} 次"
+      },
+      "discount": {
+        "none": "无折扣",
+        "off": "减 {{percent}}%"
+      },
+      "priceChange": {
+        "shelf": "标签",
+        "current": "现价",
+        "store": "本店",
+        "warehouse": "仓库"
+      },
+      "initiator": {
+        "system": "系统"
+      },
+      "sources": {
+        "WarehouseProducts": "仓库商品编辑",
+        "MobileWarehouse": "移动端仓库维护",
+        "BatchUpdate": "批量改价",
+        "WarehouseAutoSync": "仓库下发",
+        "StoreSync": "分店同步",
+        "StoreSyncWithStore": "{{store}} 分店同步",
+        "LocalSupplierInvoice": "供应商发票",
+        "DomesticImport": "国内商品导入",
+        "StoreOrderImportPriceVariance": "订货价差",
+        "DataSync": "总部数据同步",
+        "Container": "货柜",
+        "DomesticProduct": "国内采购商品",
+        "NonDomesticImport": "非 HB 商品导入",
+        "StoreOrder": "分店订货",
+        "LegacyApi": "旧版商品接口",
+        "Other": "其它入口"
+      },
+      "age": {
+        "today": "今天",
+        "days": "{{count}} 天"
+      },
+      "waiting": {
+        "days": "已等待 {{count}} 天",
+        "hours": "已等待 {{count}} 小时"
+      },
+      "relative": {
+        "justNow": "刚刚",
+        "minutes": "{{count}} 分钟前",
+        "hours": "{{count}} 小时前",
+        "days": "{{count}} 天前"
+      },
+      "completionMode": {
+        "Printed": "已打印",
+        "MarkedReplaced": "标记已换",
+        "KeptStorePrice": "保持本店价",
+        "PriceAligned": "价格已一致"
+      },
+      "storeCard": {
+        "labelOnly": "价格已更新 · 标签未处理",
+        "priceUpdate": "本店仍为 {{price}}",
+        "skipped": "特殊商品，按规则跳过"
+      },
+      "labelStatus": {
+        "pending": "标签未处理",
+        "waitingPrice": "待改价"
+      },
+      "hqSync": {
+        "pending": "待同步",
+        "processing": "同步中",
+        "retrying": "重试中",
+        "succeeded": "已同步",
+        "blocked": "同步失败",
+        "superseded": "已被覆盖"
+      },
+      "progressFilter": {
+        "label": "进度",
+        "incomplete": "未全部完成",
+        "all": "全部"
+      },
+      "export": {
+        "button": "导出",
+        "empty": "当前筛选条件没有可导出的数据",
+        "success": "已导出 {{count}} 条记录",
+        "failed": "导出失败",
+        "fileName": "价格变更任务"
+      }
+    }
+  }
+}

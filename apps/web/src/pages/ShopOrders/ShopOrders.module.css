@@ -1,0 +1,556 @@
+/* 分店历史订单工作台：布局规则对齐 ComingSoonSection.module.css，保持两页观感一致。 */
+.section {
+  min-width: 0;
+  color: var(--shop-text);
+}
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 18px;
+}
+.eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--shop-orange-ink);
+  font-size: 12px;
+  font-weight: 600;
+}
+.title {
+  margin: 0 0 5px !important;
+  color: var(--shop-navy) !important;
+}
+.subtitle {
+  color: var(--shop-muted);
+}
+.headerAside {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+.summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+}
+.summary span {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--shop-muted);
+  font-size: 12px;
+}
+.summary strong {
+  color: var(--shop-navy);
+  font-size: 21px;
+  font-variant-numeric: tabular-nums;
+}
+.summary .amount {
+  color: var(--shop-orange-ink);
+}
+.storeBadge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 14px;
+  background: var(--shop-surface);
+  border: 1px solid var(--shop-border);
+  border-radius: 6px;
+  color: var(--shop-navy);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  margin-bottom: 18px;
+  color: var(--shop-muted);
+  font-size: 12px;
+}
+.toolbarFilters,
+.toolbarActions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.toolbar :global(.ant-segmented) {
+  background: #edf1f5;
+}
+.toolbar :global(.ant-segmented-item-selected),
+.panelMeta :global(.ant-segmented-item-selected) {
+  background: var(--shop-navy);
+  color: #fff;
+  box-shadow: none;
+}
+.panelMeta :global(.ant-segmented) {
+  background: #edf1f5;
+}
+.dateRange {
+  width: 250px;
+}
+.orderSearch {
+  width: 190px;
+}
+/* 商品查询是这一页的主入口，用深色描边与订单号输入框区分。 */
+.productSearch {
+  width: 300px;
+}
+.productSearch :global(.ant-input-group-addon) {
+  background: #edf1f5;
+  color: var(--shop-navy);
+  font-size: 12px;
+  font-weight: 600;
+}
+.productSearchActive :global(.ant-input-affix-wrapper),
+.productSearchActive :global(.ant-input-group-addon) {
+  border-color: var(--shop-navy);
+}
+.loading {
+  min-height: 360px;
+  display: grid;
+  place-items: center;
+}
+.workspace {
+  display: grid;
+  grid-template-columns: 272px minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+.index {
+  position: sticky;
+  top: 16px;
+  background: var(--shop-surface);
+  border: 1px solid var(--shop-border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.indexLabel {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 14px 16px;
+  color: var(--shop-muted);
+  font-size: 12px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--shop-border);
+}
+.indexLabelFiltered {
+  color: var(--shop-navy);
+}
+.indexItem {
+  display: block;
+  width: 100%;
+  padding: 14px 16px;
+  text-align: left;
+  background: var(--shop-surface);
+  border: 0;
+  border-bottom: 1px solid #edf0f4;
+  border-radius: 0 !important;
+  cursor: pointer;
+}
+.indexItem:last-of-type {
+  border-bottom: 0;
+}
+.indexItem:hover {
+  background: #f5f8fb;
+}
+.indexItemActive {
+  background: #edf4fc;
+  box-shadow: inset 3px 0 var(--shop-navy);
+}
+.indexItem:focus-visible {
+  outline: 2px solid var(--shop-navy);
+  outline-offset: -3px;
+}
+.indexMain {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.indexTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.indexTop strong {
+  color: var(--shop-navy);
+  font-size: 14px;
+}
+.indexTop :global(.ant-tag) {
+  margin: 0;
+}
+.indexStore {
+  color: var(--shop-text);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.indexMeta {
+  color: var(--shop-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.indexPager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--shop-border);
+  color: var(--shop-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.panel {
+  min-width: 0;
+  padding: 16px;
+  background: var(--shop-surface);
+  border: 1px solid var(--shop-border);
+  border-radius: 6px;
+  scroll-margin-top: 16px;
+}
+.panelHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--shop-border);
+}
+.panelTitle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.panelTitle h3 {
+  margin: 0 !important;
+  color: var(--shop-navy);
+  font-size: 22px;
+}
+.panelFact {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--shop-muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.stats {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+  padding: 14px 0;
+}
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  background: var(--shop-page);
+  border-radius: 6px;
+}
+.stat span {
+  color: var(--shop-muted);
+  font-size: 12px;
+}
+.stat strong {
+  color: var(--shop-navy);
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+}
+.statAccent strong {
+  color: var(--shop-orange-ink);
+}
+.statDanger {
+  background: #fff1ee;
+}
+.statDanger span,
+.statDanger strong {
+  color: var(--shop-orange-ink);
+}
+.remarks {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  background: #fff7f4;
+  border-left: 3px solid var(--shop-orange-action);
+  border-radius: 0 6px 6px 0;
+  color: var(--shop-text);
+  font-size: 13px;
+}
+.remarksLabel {
+  color: var(--shop-orange-ink);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.remarks p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.panelMeta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 0;
+}
+.panelMetaMain {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.lineSearch {
+  width: 280px;
+}
+.lineCount {
+  color: var(--shop-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.barcodeToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--shop-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.lineLoading {
+  padding: 24px;
+}
+.lineList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.line {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) repeat(4, minmax(80px, 100px)) 96px;
+  gap: 14px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--shop-border);
+  border-radius: 6px;
+}
+/* 缺货行左侧橙色描边，与订单明细页的 shortage 样式呼应。 */
+.lineShortage {
+  border-left: 3px solid var(--shop-orange-action);
+}
+.lineMedia {
+  width: 64px;
+  height: 64px;
+  background: var(--shop-page);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.lineMedia :global(.ant-image),
+.lineMedia :global(.ant-image-img) {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.lineMain {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.lineName {
+  color: var(--shop-navy);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.lineTags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.lineTags :global(.ant-tag) {
+  margin: 0;
+  font-size: 11px;
+}
+.lineBarcode {
+  overflow-x: auto;
+  padding-top: 4px;
+}
+.lineBarcode :global(.ant-typography) {
+  font-size: 12px;
+}
+.lineMetric {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.lineMetric span {
+  color: var(--shop-muted);
+  font-size: 11px;
+}
+.lineMetric strong {
+  color: var(--shop-navy);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+.lineMetricDanger span,
+.lineMetricDanger strong {
+  color: var(--shop-orange-ink);
+}
+.lineStatus {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+.lineStatus :global(.ant-tag) {
+  margin: 0;
+  font-size: 11px;
+}
+.pagination {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding-top: 18px;
+  color: var(--shop-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.pagination > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.panelEmpty {
+  padding: 24px 0;
+}
+@media (max-width: 1280px) {
+  .stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .line {
+    grid-template-columns: 64px minmax(0, 1fr) repeat(3, minmax(76px, 92px)) 88px;
+  }
+  /* 窄屏优先保留缺货与金额，隐藏进货价一列。 */
+  .lineMetricOptional {
+    display: none;
+  }
+}
+@media (max-width: 1200px) {
+  .header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .headerAside {
+    flex-wrap: wrap;
+    gap: 12px 20px;
+  }
+  .workspace {
+    grid-template-columns: 240px minmax(0, 1fr);
+  }
+}
+@media (max-width: 1080px) {
+  .line {
+    grid-template-columns: 56px minmax(0, 1fr);
+    gap: 10px 12px;
+    align-items: start;
+  }
+  .lineMedia {
+    width: 56px;
+    height: 56px;
+  }
+  /* 中等屏幕下指标横向排成一行，跨越整行宽度。 */
+  .lineMetric {
+    grid-column: 2;
+    flex-direction: row;
+    align-items: baseline;
+    gap: 6px;
+  }
+  .lineStatus {
+    grid-column: 2;
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-start;
+  }
+}
+@media (max-width: 768px) {
+  .workspace {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+  .index {
+    position: static;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .indexLabel,
+  .indexPager {
+    grid-column: 1 / -1;
+  }
+  .indexItem {
+    padding: 12px;
+  }
+  .indexItem:last-of-type {
+    border-bottom: 1px solid #edf0f4;
+  }
+  .panel {
+    padding: 12px;
+    /* 手机顶部导航固定显示，翻页定位时为订单标题留出空间。 */
+    scroll-margin-top: 104px;
+  }
+  .panelTitle h3 {
+    font-size: 20px;
+  }
+  .stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .dateRange,
+  .orderSearch,
+  .productSearch,
+  .lineSearch {
+    width: 100%;
+  }
+  .toolbarFilters,
+  .toolbarActions {
+    width: 100%;
+  }
+}
+@media (max-width: 480px) {
+  .summary {
+    gap: 8px 14px;
+  }
+  .summary strong {
+    font-size: 18px;
+  }
+  .stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .indexTop strong {
+    font-size: 12px;
+  }
+  .indexStore,
+  .indexMeta {
+    font-size: 11px;
+  }
+  .indexItem {
+    padding: 12px 8px;
+  }
+}

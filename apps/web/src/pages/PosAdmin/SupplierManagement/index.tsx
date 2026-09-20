@@ -21,6 +21,7 @@ import {
   syncLocalSuppliersToHq,
   updateLocalSupplier,
 } from '../../../services/localSupplierService'
+import { useAuthStore } from '../../../store/auth'
 import type { LocalSupplierDto } from '../../../types/localSupplier'
 import {
   createLatestRequestGuard,
@@ -41,6 +42,9 @@ const SORT_FIELD_MAP: Record<string, string> = {
 
 export default function SupplierManagementPage() {
   const { t } = useTranslation()
+  // 同步、新增、编辑与后端 AustralianSuppliers.Edit 策略对齐，仅有 View 的用户只能浏览列表。
+  const access = useAuthStore((state) => state.access)
+  const canEdit = access.canEditAustralianSuppliers
   const [loading, setLoading] = useState(false)
   const [data, setData] = useState<LocalSupplierDto[]>([])
   const [total, setTotal] = useState(0)
@@ -327,7 +331,7 @@ export default function SupplierManagementPage() {
           <Button
             icon={<ReloadOutlined />}
             loading={syncingFromHq}
-            disabled={syncingToHq}
+            disabled={!canEdit || syncingToHq}
             onClick={handleSyncFromHq}
           >
             {t('posAdmin.suppliers.syncFromHq', '从 HQ 同步')}
@@ -335,12 +339,12 @@ export default function SupplierManagementPage() {
           <Button
             icon={<CloudUploadOutlined />}
             loading={syncingToHq}
-            disabled={!selectedRowKeys.length || syncingFromHq}
+            disabled={!canEdit || !selectedRowKeys.length || syncingFromHq}
             onClick={handleSyncToHq}
           >
             {t('posAdmin.suppliers.syncToHq', '同步所选到 HQ')}
           </Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateVisible(true)}>
+          <Button type="primary" icon={<PlusOutlined />} disabled={!canEdit} onClick={() => setCreateVisible(true)}>
             {t('posAdmin.suppliers.createSupplier')}
           </Button>
         </Space>
@@ -435,7 +439,7 @@ export default function SupplierManagementPage() {
                 width: 90,
                 fixed: 'right',
                 render: (_, record) => (
-                  <Button type="link" size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>
+                  <Button type="link" size="small" icon={<EditOutlined />} disabled={!canEdit} onClick={() => openEdit(record)}>
                     {t('common.edit', '编辑')}
                   </Button>
                 ),

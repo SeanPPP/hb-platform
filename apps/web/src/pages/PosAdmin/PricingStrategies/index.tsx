@@ -28,6 +28,7 @@ import {
   updateStrategy,
 } from '../../../services/pricingStrategyService'
 import { getActiveStores } from '../../../services/storeService'
+import { useAuthStore } from '../../../store/auth'
 import type {
   CreatePricingStrategyDto,
   PricingStrategyDetailDto,
@@ -49,6 +50,9 @@ type DataType = PricingStrategyListDto & { key: string }
 
 export default function PricingStrategiesPage() {
   const { t } = useTranslation()
+  // 写操作与后端 PricingStrategy.Edit 策略对齐，仅有 View 的用户只能查看与试算。
+  const access = useAuthStore((state) => state.access)
+  const canEdit = access.canEditPricing
   const [form] = Form.useForm()
   const [loading, setLoading] = useState(false)
   const [data, setData] = useState<DataType[]>([])
@@ -369,9 +373,9 @@ export default function PricingStrategiesPage() {
       title: t('column.actions', '操作'), key: 'actions', width: 200,
       render: (_, record) => (
         <Space>
-          <Button type="link" onClick={() => openEdit(String(record.id))}>{t('common.edit', '编辑')}</Button>
-          <Popconfirm title={t('posAdmin.pricing.confirmDeleteStrategy', '确认删除该策略？')} description={t('posAdmin.pricing.deleteIrreversible', '删除后无法恢复')} okText={t('common.delete', '删除')} cancelText={t('common.cancel', '取消')} okButtonProps={{ danger: true }} onConfirm={() => handleDelete(String(record.id))}>
-            <Button type="link" danger>{t('common.delete', '删除')}</Button>
+          <Button type="link" disabled={!canEdit} onClick={() => openEdit(String(record.id))}>{t('common.edit', '编辑')}</Button>
+          <Popconfirm title={t('posAdmin.pricing.confirmDeleteStrategy', '确认删除该策略？')} description={t('posAdmin.pricing.deleteIrreversible', '删除后无法恢复')} okText={t('common.delete', '删除')} cancelText={t('common.cancel', '取消')} okButtonProps={{ danger: true }} disabled={!canEdit} onConfirm={() => handleDelete(String(record.id))}>
+            <Button type="link" danger disabled={!canEdit}>{t('common.delete', '删除')}</Button>
           </Popconfirm>
         </Space>
       ),
@@ -409,7 +413,7 @@ export default function PricingStrategiesPage() {
   }, [page, pageSize, sortField, sortOrder])
 
   return (
-    <Card title={t('posAdmin.pricing.title', '自动价格策略管理')} extra={<Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>{t('posAdmin.pricing.createStrategy', '新建策略')}</Button>}>
+    <Card title={t('posAdmin.pricing.title', '自动价格策略管理')} extra={<Button type="primary" icon={<PlusOutlined />} disabled={!canEdit} onClick={openCreate}>{t('posAdmin.pricing.createStrategy', '新建策略')}</Button>}>
       <Form form={form} layout="inline" onFinish={loadData} style={{ marginBottom: 16 }}>
         <Form.Item name="storeCode" label={t('posAdmin.pricing.targetStores', '分店')}><Select allowClear showSearch optionFilterProp="label" options={storeOptions} style={{ width: 240 }} /></Form.Item>
         <Form.Item name="supplierCode" label={t('posAdmin.pricing.targetSuppliers', '供应商')}><Select allowClear showSearch optionFilterProp="label" options={supplierOptions} style={{ width: 240 }} /></Form.Item>
@@ -453,8 +457,8 @@ export default function PricingStrategiesPage() {
         }}
       />
 
-      <Modal open={editorOpen} title={editingId === null ? t('posAdmin.pricing.newStrategy', '新建策略') : t('posAdmin.pricing.editStrategy', '编辑策略')} onCancel={() => setEditorOpen(false)} onOk={saveEditor} width={1100} forceRender>
-        <Form form={editorForm} layout="vertical">
+      <Modal open={editorOpen} title={editingId === null ? t('posAdmin.pricing.newStrategy', '新建策略') : t('posAdmin.pricing.editStrategy', '编辑策略')} onCancel={() => setEditorOpen(false)} onOk={saveEditor} okButtonProps={{ disabled: !canEdit }} width={1100} forceRender>
+        <Form form={editorForm} layout="vertical" disabled={!canEdit}>
           <Space style={{ width: '100%' }} wrap>
             <Form.Item name="name" label={t('posAdmin.pricing.strategyName', '名称')} rules={[{ required: true }]} style={{ width: 300 }}><Input /></Form.Item>
             <Form.Item name="level" label={t('posAdmin.pricing.level', '级别')} rules={[{ required: true }]} style={{ width: 160 }}>

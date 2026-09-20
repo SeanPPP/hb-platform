@@ -18,10 +18,10 @@
     "POS 钱箱": "POS 钱箱",
     "POS 销售": "POS 销售",
     "仓库管理": "仓库管理",
-    "价格管理": "价格管理",
     "促销管理": "促销管理",
     "分店商品管理": "分店商品管理",
     "分店管理": "分店管理",
+    "分店订货": "分店订货",
     "分店财务": "分店财务",
     "分店运营": "分店运营",
     "前台订货": "前台订货",
@@ -37,146 +37,141 @@
     "用户管理": "用户管理",
     "系统管理": "系统管理",
     "角色管理": "角色管理",
-    "订单管理": "订单管理",
     "货柜管理": "货柜管理",
     "销售看板": "销售看板"
   },
   "permissions": {
     "Advertisements.Edit": {
       "name": "编辑广告素材",
-      "description": "页面 /pos-admin/advertisements - 新增、编辑、删除、启用与上传广告素材"
+      "description": "Web 页面 /pos-admin/advertisements - 新增、编辑、删除、启用与上传广告素材"
     },
     "Advertisements.View": {
       "name": "查看广告素材",
-      "description": "页面 /pos-admin/advertisements - 查看广告素材列表与详情"
+      "description": "Web 页面 /pos-admin/advertisements 与移动端「广告」- 查看广告素材列表与详情"
     },
     "Attendance.Admin.View": {
       "name": "查看全部考勤管理",
-      "description": "页面 /pos-admin/schedule-attendance - 查看全部考勤管理"
+      "description": "Web 页面 /pos-admin/schedule-attendance 与移动端「考勤管理」- 查看全部分店考勤管理"
     },
     "Attendance.Approval.ReviewManagedStore": {
       "name": "审核管理分店考勤",
-      "description": "页面 /pos-admin/schedule-attendance - 审核管理分店考勤"
+      "description": "Web 页面 /pos-admin/schedule-attendance 与移动端「考勤管理」- 审核管理分店考勤"
     },
     "Attendance.Approval.ViewManagedStore": {
       "name": "查看管理分店审核记录",
-      "description": "页面 /pos-admin/schedule-attendance - 查看管理分店审核记录"
+      "description": "Web 页面 /pos-admin/schedule-attendance 与移动端「考勤管理」- 查看管理分店审核记录"
     },
     "Attendance.Availability.SubmitSelf": {
       "name": "上报自己的可上班时间",
-      "description": "页面 /pos-admin/schedule-attendance - 上报自己的可上班时间"
+      "description": "移动端「个人考勤」- 上报自己的可上班时间"
     },
     "Attendance.Availability.ViewManagedStore": {
       "name": "查看管理分店可上班时间",
-      "description": "页面 /pos-admin/schedule-attendance - 查看管理分店可上班时间"
+      "description": "Web 页面 /pos-admin/schedule-attendance 与移动端「考勤管理」- 查看管理分店可上班时间"
     },
     "Attendance.Holiday.EditManagedStore": {
       "name": "编辑管理分店公共假期",
-      "description": "页面 /pos-admin/schedule-attendance - 编辑管理分店公共假期"
+      "description": "Web 页面 /pos-admin/schedule-attendance 与移动端「考勤管理」- 编辑管理分店公共假期"
     },
     "Attendance.Holiday.ViewStore": {
       "name": "查看分店公共假期",
-      "description": "页面 /pos-admin/schedule-attendance - 查看分店公共假期"
+      "description": "Web 页面 /pos-admin/schedule-attendance 与移动端「考勤管理」- 查看分店公共假期"
     },
     "Attendance.Leave.ApplySelf": {
       "name": "本人提交请假申请",
-      "description": "页面 /pos-admin/schedule-attendance - 本人提交请假申请"
+      "description": "移动端「个人考勤」- 本人提交请假申请"
     },
     "Attendance.Leave.ReviewManagedStore": {
       "name": "审核管理分店请假申请",
-      "description": "页面 /pos-admin/schedule-attendance - 审核管理分店请假申请"
+      "description": "Web 页面 /pos-admin/schedule-attendance 与移动端「考勤管理」- 审核管理分店请假申请"
     },
     "Attendance.Leave.ViewManagedStore": {
       "name": "查看管理分店请假申请",
-      "description": "页面 /pos-admin/schedule-attendance - 查看管理分店请假申请"
+      "description": "Web 页面 /pos-admin/schedule-attendance 与移动端「考勤管理」- 查看管理分店请假申请"
     },
     "Attendance.Punch.Self": {
       "name": "本人打卡",
-      "description": "页面 /pos-admin/schedule-attendance - 本人打卡"
+      "description": "移动端「个人考勤」- 本人打卡"
     },
     "Attendance.Punch.ViewManagedStore": {
       "name": "查看管理分店打卡记录",
-      "description": "页面 /pos-admin/schedule-attendance - 查看管理分店打卡记录"
+      "description": "Web 页面 /pos-admin/schedule-attendance 与移动端「考勤管理」- 查看管理分店打卡记录"
     },
     "Attendance.Schedule.EditManagedStore": {
       "name": "编辑管理分店排班",
-      "description": "页面 /pos-admin/schedule-attendance - 编辑管理分店排班"
+      "description": "Web 页面 /pos-admin/schedule-attendance 与移动端「考勤管理」- 编辑管理分店排班"
     },
     "Attendance.Schedule.ViewSelf": {
       "name": "查看自己的排班",
-      "description": "页面 /pos-admin/schedule-attendance - 查看自己的排班"
+      "description": "移动端「个人考勤」- 查看自己的排班"
     },
     "Attendance.Schedule.ViewStore": {
       "name": "查看相关分店排班",
-      "description": "页面 /pos-admin/schedule-attendance - 查看相关分店排班"
+      "description": "Web 页面 /pos-admin/schedule-attendance 与移动端「考勤管理」- 查看相关分店排班"
     },
     "Attendance.Settings.Edit": {
       "name": "编辑考勤设置",
-      "description": "页面 /pos-admin/schedule-attendance - 编辑考勤设置"
+      "description": "Web 页面 /pos-admin/schedule-attendance 与移动端「考勤管理」- 编辑考勤设置"
     },
     "AustralianSuppliers.Edit": {
       "name": "编辑澳洲供应商",
-      "description": "页面 /pos-admin/suppliers - 编辑供应商资料"
+      "description": "Web 页面 /pos-admin/suppliers - 新增、编辑、启停澳洲供应商并与 HQ 同步"
     },
     "AustralianSuppliers.View": {
       "name": "查看澳洲供应商",
-      "description": "页面 /pos-admin/suppliers - 查看供应商列表与详情"
+      "description": "Web 页面 /pos-admin/suppliers - 查看澳洲供应商分页列表"
     },
     "Container.Create": {
       "name": "创建货柜",
-      "description": "页面 /warehouse/containers - 创建货柜"
+      "description": "Web 页面 /warehouse/containers - 创建货柜"
     },
     "Container.Delete": {
       "name": "删除货柜",
-      "description": "页面 /warehouse/containers - 删除货柜"
+      "description": "Web 页面 /warehouse/containers - 删除货柜"
     },
     "Container.Edit": {
       "name": "编辑货柜",
-      "description": "页面 /warehouse/containers - 编辑货柜"
+      "description": "Web 页面 /warehouse/containers - 编辑货柜"
     },
     "Container.View": {
       "name": "查看货柜",
-      "description": "页面 /warehouse/containers - 查看货柜列表与明细"
+      "description": "Web 页面 /warehouse/containers 与移动端「仓库」- 查看货柜列表与明细"
     },
     "Dashboard": {
       "name": "访问后台",
-      "description": "页面 /dashboard - 访问后台工作台"
+      "description": "Web 页面 /dashboard - 访问后台工作台"
     },
     "DeviceRegistration.ActivationCodes.Manage": {
       "name": "管理设备开通码",
-      "description": "页面 /system/device-registration - 为可管理分店创建和撤销一次性 POS 设备开通码"
+      "description": "Web 页面 /system/device-registration - 为可管理分店创建和撤销一次性 POS 设备开通码"
     },
     "DeviceRegistration.Manage": {
       "name": "管理设备注册",
-      "description": "页面 /system/device-registration - 审核、维护或管理设备注册"
+      "description": "Web 页面 /system/device-registration - 审核、维护或管理设备注册"
     },
     "DeviceRegistration.MobileActivationCodes.Manage": {
       "name": "管理移动端设备开通码",
-      "description": "页面 /system/device-registration - 为指定账号创建和撤销一次性 Mobile 设备开通码"
+      "description": "Web 页面 /system/device-registration - 为指定账号创建和撤销一次性 Mobile 设备开通码"
     },
     "DeviceRegistration.View": {
       "name": "查看设备注册",
-      "description": "页面 /system/device-registration - 查看 POS 设备注册列表与状态"
+      "description": "Web 页面 /system/device-registration 与移动端「设备管理」- 查看 POS 设备注册列表与状态"
     },
     "DomesticPurchase.ManagePrefixCodes": {
       "name": "管理前缀码",
-      "description": "页面 /domestic-purchase/prefix-code-management - 管理商品前缀码"
+      "description": "Web 页面 /domestic-purchase/prefix-code-management - 管理商品前缀码"
     },
     "DomesticPurchase.ManageProducts": {
       "name": "管理国内商品",
-      "description": "页面 /domestic-purchase/product-creation 与 /product-import - 创建和导入商品"
+      "description": "Web 页面 /domestic-purchase/product-creation 与 /product-import - 创建和导入商品"
     },
     "DomesticPurchase.ManageSuppliers": {
       "name": "管理国内供应商",
-      "description": "页面 /domestic-purchase/china-suppliers - 管理国内供应商"
-    },
-    "DomesticPurchase.View": {
-      "name": "查看国内采购",
-      "description": "页面 /domestic-purchase - 查看国内采购模块"
+      "description": "Web 页面 /domestic-purchase/china-suppliers - 管理国内供应商"
     },
     "EmployeeProfiles.Edit": {
       "name": "维护员工个人信息",
-      "description": "页面 /system/employee-profiles - 编辑员工身份、银行、养老金、地址等资料"
+      "description": "移动端「员工资料」编辑本人资料；Web 页面 /system/employee-profiles 后台编辑另需管理员角色 - 维护身份、银行、养老金、地址等资料"
     },
     "EmployeeProfiles.ReviewSensitiveManagedStore": {
       "name": "审核管理分店员工敏感资料",
@@ -184,47 +179,55 @@
     },
     "EmployeeProfiles.View": {
       "name": "查看员工个人信息",
-      "description": "页面 /system/employee-profiles - 查看员工个人信息维护列表与详情"
+      "description": "Web 页面 /system/employee-profiles 与移动端「员工资料」- 查看员工个人信息列表与详情"
     },
     "InstallmentOrders.View": {
       "name": "查看分期付款订单",
-      "description": "分店财务 - 查看分店分期付款订单与支付记录"
+      "description": "移动端「分期订单」- 查看分店分期付款订单与支付记录"
     },
     "LocalPurchase.Edit": {
       "name": "编辑本地进货",
-      "description": "页面 /pos-admin/local-supplier-invoices - 新增、编辑、提交和维护分店进货单"
+      "description": "Web 页面 /pos-admin/local-supplier-invoices - 新增、编辑、提交和维护分店进货单"
     },
     "LocalPurchase.MobileView": {
       "name": "移动端查看澳洲进货",
-      "description": "移动端 - 查看已授权分店的澳洲进货单列表与详情"
+      "description": "移动端「进货单」- 查看已授权分店的澳洲进货单列表与详情"
     },
     "LocalPurchase.PushToHq": {
       "name": "推送本地进货到 HQ",
-      "description": "页面 /pos-admin/local-supplier-invoices - 推送本地进货单到 HQ"
+      "description": "Web 页面 /pos-admin/local-supplier-invoices - 推送本地进货单到 HQ"
     },
     "LocalPurchase.View": {
       "name": "查看本地进货",
-      "description": "页面 /pos-admin/local-supplier-invoices - 查看分店进货单列表与详情"
+      "description": "Web 页面 /pos-admin/local-supplier-invoices 与移动端「进货单」- 查看分店进货单"
     },
     "OrderFront": {
       "name": "前台订货",
-      "description": "前台订货 - 前台订货"
+      "description": "Web 订货前台与移动端「订货单」- 进入前台订货入口（Order / 订货员角色核心权限）"
+    },
+    "OrderFront.BatchProductSales.View": {
+      "name": "前台查看货号销量",
+      "description": "Web 订货前台页面 /shop/purchase-sales-analysis「粘贴数据查看」标签 - 按导入货号查看全部分店的销量、每日趋势及折扣成交情况"
     },
     "Orders.Create": {
       "name": "创建订单",
-      "description": "订单管理 - 创建订单"
+      "description": "移动端「首页」「购物车」与浏览器扩展 - 提交分店订货单"
     },
     "Orders.Delete": {
       "name": "删除订单",
-      "description": "订单管理 - 删除订单"
+      "description": "分店订货接口 - 删除分店订货单"
     },
     "Orders.Edit": {
       "name": "编辑订单",
-      "description": "订单管理 - 编辑订单"
+      "description": "分店订货接口 - 编辑分店订货单"
     },
     "Orders.View": {
       "name": "查看订单",
-      "description": "页面 /pos-admin/sales-orders - 查看收银记录"
+      "description": "Web 页面 /pos-admin/sales-orders 收银记录与移动端「订货单」- 查看收银记录、分店订货单与到货预告"
+    },
+    "SalesOrders.View": {
+      "name": "查看销售订单",
+      "description": "移动端「销售订单」- 按分店、日期与订单类型查看销售订单、明细及发票"
     },
     "Permissions.PosTerminal.Audit.View": {
       "name": "查看员工操作日志",
@@ -460,175 +463,167 @@
     },
     "PosProducts.Manage": {
       "name": "管理 POS 商品",
-      "description": "页面 /pos-admin/products - 编辑 POS 商品、批量改价、同步总部/分店、维护分类/套装码、执行完整性修复"
+      "description": "Web 页面 /pos-admin/products - 编辑 POS 商品、批量改价、同步总部/分店、维护分类/套装码、执行完整性修复"
     },
     "PosProducts.View": {
       "name": "查看 POS 商品管理",
-      "description": "页面 /pos-admin/products - 查看 POS 商品、分类、套装码、同步和完整性检查入口"
-    },
-    "Prices.Delete": {
-      "name": "删除价格",
-      "description": "价格管理 - 删除价格"
-    },
-    "Prices.Modify": {
-      "name": "修改价格",
-      "description": "价格管理 - 修改价格"
-    },
-    "Prices.View": {
-      "name": "查看价格",
-      "description": "价格管理 - 查看价格"
+      "description": "Web 页面 /pos-admin/products - 查看 POS 商品、分类、套装码、同步和完整性检查入口"
     },
     "PricingStrategy.Edit": {
       "name": "编辑定价策略",
-      "description": "页面 /pos-admin/pricing-strategies - 编辑自动价格策略"
+      "description": "Web 页面 /pos-admin/pricing-strategies - 新增、编辑、删除自动价格策略"
     },
     "PricingStrategy.View": {
       "name": "查看定价策略",
-      "description": "页面 /pos-admin/pricing-strategies - 查看自动价格策略"
+      "description": "Web 页面 /pos-admin/pricing-strategies - 查看与试算自动价格策略"
     },
     "Products.Create": {
       "name": "创建商品",
-      "description": "商品管理 - 创建商品"
+      "description": "Web 页面 /domestic-purchase/domestic-products - 新增国内商品"
     },
     "Products.Delete": {
       "name": "删除商品",
-      "description": "商品管理 - 删除商品"
+      "description": "Web 页面 /domestic-purchase/domestic-products - 删除国内商品"
     },
     "Products.Edit": {
       "name": "编辑商品",
-      "description": "商品管理 - 编辑商品"
+      "description": "Web 页面 /domestic-purchase/domestic-products 与 /warehouse/container 明细 - 编辑国内商品、对齐货柜明细国内货号"
     },
     "Products.View": {
       "name": "查看商品",
-      "description": "页面 /domestic-purchase/domestic-products - 查看国内商品"
+      "description": "Web 页面 /domestic-purchase/domestic-products - 查看国内商品"
     },
     "Promotions.Edit": {
       "name": "编辑促销",
-      "description": "页面 /pos-admin/promotions - 编辑促销活动"
+      "description": "Web 页面 /pos-admin/promotions - 编辑分店促销；全局促销的新增、修改、删除、启停另需管理员角色"
     },
     "Promotions.View": {
       "name": "查看促销",
-      "description": "页面 /pos-admin/promotions - 查看促销活动"
-    },
-    "Reports.Export": {
-      "name": "导出数据",
-      "description": "页面 /executive-sales-intelligence - 导出销售报表数据"
+      "description": "Web 页面 /pos-admin/promotions 与移动端「促销」- 查看促销活动"
     },
     "Reports.ProductMovement.View": {
-      "name": "查看商品经营分析",
-      "description": "页面 /executive-sales-intelligence/product-movement-report - 查看商品经营分析和店长动作建议"
+      "name": "查看供应商与分店销售明细",
+      "description": "Web 页面 /warehouse/products/:code/records 销售分析、移动端「报表」与销售看板供应商/分店销售明细接口 - 查看跨分店供应商与商品销售明细"
     },
     "Reports.View": {
       "name": "查看报表",
-      "description": "页面 /executive-sales-intelligence - 查看销售看板和销售明细"
+      "description": "高管看板接口 - 时段客流、分店日绩效与周绩效层级接口；同时视为 Reports.ProductMovement.View 的别名"
     },
     "Roles.Create": {
       "name": "创建角色",
-      "description": "页面 /system/roles - 创建角色"
+      "description": "Web 页面 /system/roles - 创建角色"
     },
     "Roles.Delete": {
       "name": "删除角色",
-      "description": "页面 /system/roles - 删除角色"
+      "description": "Web 页面 /system/roles - 删除角色"
     },
     "Roles.Edit": {
       "name": "编辑角色",
-      "description": "页面 /system/roles - 编辑角色基础信息"
+      "description": "Web 页面 /system/roles - 编辑角色基础信息"
     },
     "Roles.ManagePermissions": {
       "name": "管理角色权限",
-      "description": "页面 /system/permissions - 分配或移除角色权限"
+      "description": "Web 页面 /system/roles 与 /system/permissions - 分配或移除角色权限"
     },
     "Roles.ManageUsers": {
       "name": "管理角色用户",
-      "description": "页面 /system/roles - 管理角色关联用户"
+      "description": "Web 页面 /system/roles - 管理角色关联用户"
     },
     "Roles.View": {
       "name": "查看角色",
-      "description": "页面 /system/roles 与 /system/permissions - 查看角色和权限配置"
+      "description": "Web 页面 /system/roles、/system/permissions 与移动端「角色」- 查看角色和权限配置"
     },
     "SalesDashboard.CompactBoard.View": {
       "name": "查看独立销售看板",
-      "description": "查看紧凑布局的分店、供应商和商品销售数据"
+      "description": "Web 页面 /executive-sales-intelligence/compact-sales-board - 查看紧凑布局的分店、供应商和商品销售数据"
     },
     "SalesDashboard.BatchProductSales.View": {
       "name": "查看批量货号销量",
-      "description": "按导入货号查看商品每日销量、分店销量及折扣成交情况"
+      "description": "Web 页面 /executive-sales-intelligence/purchase-sales-analysis「批量货号销量」标签 - 按导入货号查看商品每日销量、分店销量及折扣成交情况"
     },
     "SalesDashboard.LocalProductAnalysis.View": {
       "name": "查看澳洲本地商品分析",
-      "description": "查看澳洲本地商品的进货与销售表现"
+      "description": "Web 页面 /executive-sales-intelligence/local-product-sales-analysis - 查看澳洲本地商品的进货与销售表现"
     },
     "SalesDashboard.ProductMovement.View": {
       "name": "查看商品经营分析",
-      "description": "查看商品经营表现和店长动作建议"
+      "description": "Web 页面 /executive-sales-intelligence/product-movement-report - 查看商品经营表现和店长动作建议"
+    },
+    "SalesDashboard.LocalSupplierPurchaseSales.View": {
+      "name": "查看分店进货销量分析",
+      "description": "Web 页面 /executive-sales-intelligence/purchase-sales-analysis「分店进货销量分析」标签 - 按分店和供应商查看最近进货、逐日销量图与售出比"
     },
     "SalesDashboard.PurchaseAmount.View": {
       "name": "查看进货金额看板",
-      "description": "查看各分店仓库订单、本地供应商进货金额及营业额"
+      "description": "Web 页面 /executive-sales-intelligence/purchase-amount-dashboard - 查看各分店仓库订单、本地供应商进货金额及营业额"
     },
     "SalesDashboard.SalesData.View": {
       "name": "查看销售数据",
-      "description": "查看营业额、订单、客流及分店销售表现"
+      "description": "Web 页面 /executive-sales-intelligence/overview - 查看营业额、订单、客流及分店销售表现"
     },
     "SalesDashboard.SalesDetail.View": {
       "name": "查看销售明细",
-      "description": "按供应商、分店和商品查看销售明细"
+      "description": "Web 页面 /executive-sales-intelligence/sales-detail-v2 - 按供应商、分店和商品查看销售明细"
     },
     "SalesDashboard.WarehouseFlow.View": {
       "name": "查看仓库商品流转分析",
-      "description": "查看仓库商品的进货、发货和销售流转"
+      "description": "Web 页面 /executive-sales-intelligence/warehouse-product-flow-analysis 与移动端「仓库商品进销」- 查看仓库商品的进货、发货和销售流转"
     },
     "SeasonalCards.Remaining.SubmitManagedStore": {
       "name": "提交管理分店季节卡剩余",
-      "description": "页面 /seasonal-cards - 提交管理分店季节卡剩余"
+      "description": "移动端「季节卡」- 提交管理分店季节卡剩余"
     },
     "SeasonalCards.Remaining.ViewManagedStore": {
       "name": "查看管理分店季节卡剩余",
-      "description": "页面 /seasonal-cards - 查看管理分店季节卡剩余上报记录"
-    },
-    "Store.ManageInfo": {
-      "name": "管理分店信息",
-      "description": "分店运营 - 管理分店信息"
+      "description": "移动端「季节卡」- 查看管理分店季节卡剩余上报记录"
     },
     "Store.ManageOperations": {
       "name": "管理分店运营",
-      "description": "页面 /pos-admin/cash-register-users - 管理收银用户条码"
+      "description": "Web 页面 /pos-admin/cash-register-users - 管理收银用户条码"
     },
     "StoreProducts.Create": {
       "name": "创建分店商品",
-      "description": "页面 /pos-admin/store-product-price - 创建分店商品价格"
+      "description": "Web 页面 /pos-admin/store-product-price - 创建分店商品价格"
     },
     "StoreProducts.Edit": {
       "name": "编辑分店商品",
-      "description": "页面 /pos-admin/store-product-price - 编辑分店商品价格"
+      "description": "Web 页面 /pos-admin/store-product-price - 编辑分店商品价格"
+    },
+    "StoreProducts.PriceUpdates": {
+      "name": "处理价格更新通知",
+      "description": "移动端「价格更新」- 查看本店价格更新与换标签通知，按仓库价更新本店零售价/折扣，打印或标记标签"
+    },
+    "StoreProducts.SyncToOtherStores": {
+      "name": "同步价格到其它分店",
+      "description": "移动端「商品维护」- 把本店零售价/折扣同步到其它可管理分店，被同步分店会收到「待换标签」通知"
     },
     "StoreProducts.View": {
       "name": "查看分店商品",
-      "description": "页面 /pos-admin/store-product-price - 查看分店商品价格"
+      "description": "Web 页面 /pos-admin/store-product-price 与移动端「商品查询」「商品洞察」- 查看分店商品价格"
     },
     "Stores.Create": {
       "name": "创建分店",
-      "description": "页面 /system/stores - 创建分店"
+      "description": "Web 页面 /system/stores - 创建分店"
     },
     "Stores.Delete": {
       "name": "删除分店",
-      "description": "页面 /system/stores - 删除分店"
+      "description": "Web 页面 /system/stores - 删除分店"
     },
     "Stores.Edit": {
       "name": "编辑分店",
-      "description": "页面 /system/stores - 编辑分店资料"
+      "description": "Web 页面 /system/stores - 编辑分店资料"
     },
     "Stores.Sync": {
       "name": "同步分店数据",
-      "description": "页面 /system/stores - 同步分店数据"
+      "description": "Web 页面 /system/stores - 同步分店数据"
     },
     "Stores.View": {
       "name": "查看分店",
-      "description": "页面 /system/stores - 查看分店列表与详情"
+      "description": "Web 页面 /system/stores - 查看分店列表与详情"
     },
     "StoreVouchers.View": {
       "name": "查看分店代金券",
-      "description": "分店财务 - 查看分店代金券使用情况与关联订单"
+      "description": "移动端「分店代金券」- 查看分店代金券使用情况与关联订单"
     },
     "System.ManageAppDownloads": {
       "name": "管理 App 下载",
@@ -636,83 +631,83 @@
     },
     "System.ManagePerformanceBaseline": {
       "name": "管理性能与质量基线",
-      "description": "页面 /system/performance-baseline - 冻结已满足观察期和覆盖率的基线"
+      "description": "Web 页面 /system/performance-baseline - 冻结已满足观察期和覆盖率的基线"
     },
     "System.ManageScheduledTasks": {
       "name": "管理定时任务",
-      "description": "系统管理 - 切换定时任务调度实例和运行开关"
+      "description": "Web 页面 /system/scheduled-statistics - 切换定时任务调度实例和运行开关"
     },
     "System.ManageSettings": {
       "name": "管理设置",
-      "description": "系统管理 - 管理设置"
+      "description": "Web 页面 /system/invoice-email-settings、/system/payment-terminal-settings、/system/emergency-login-keys - 管理发票邮箱、支付终端与紧急登录密钥"
     },
     "System.ViewAppDownloads": {
       "name": "查看 App 下载",
-      "description": "系统管理 - 查看 App 下载页"
+      "description": "Web 页面 /system/app-downloads、/system/wpf-versions（移动端同名入口另需管理员）- 查看 App 下载与 WPF 版本"
     },
     "System.ViewLogs": {
       "name": "查看日志",
-      "description": "系统管理 - 查看日志"
+      "description": "Web 页面 /system/center-logs - 查看系统中心日志"
     },
     "System.ViewPerformanceBaseline": {
       "name": "查看性能与质量基线",
-      "description": "页面 /system/performance-baseline - 查看性能与质量指标"
+      "description": "Web 页面 /system/performance-baseline - 查看性能与质量指标"
     },
     "Users.Create": {
       "name": "创建用户",
-      "description": "页面 /system/users - 创建后台用户"
+      "description": "Web 页面 /system/users - 创建后台用户"
     },
     "Users.Delete": {
       "name": "删除用户",
-      "description": "页面 /system/users - 删除或停用用户"
+      "description": "Web 页面 /system/users - 删除或停用用户"
     },
     "Users.Edit": {
       "name": "编辑用户",
-      "description": "页面 /system/users - 编辑用户基础信息"
+      "description": "Web 页面 /system/users - 编辑用户基础信息"
     },
     "Users.ManagePosTerminalPermissions": {
       "name": "管理分店 POS 权限",
-      "description": "页面 /system/users - 按分店维护收银员 POS 终端业务权限"
+      "description": "Web 页面 /system/users - 按分店维护收银员 POS 终端业务权限"
     },
     "Users.ManageRoles": {
       "name": "管理用户角色",
-      "description": "页面 /system/users - 分配或移除用户角色"
+      "description": "Web 页面 /system/users - 分配或移除用户角色"
     },
     "Users.ManageStores": {
       "name": "管理用户分店",
-      "description": "页面 /system/users - 维护用户关联分店"
+      "description": "Web 页面 /system/users - 维护用户关联分店"
     },
     "Users.ResetPassword": {
       "name": "重置密码",
-      "description": "页面 /system/users - 重置用户登录密码"
+      "description": "Web 页面 /system/users - 重置用户登录密码"
     },
     "Users.View": {
       "name": "查看用户",
-      "description": "页面 /system/users - 查看用户列表与详情"
+      "description": "移动端「员工列表」「用户管理」与用户查询接口 - 查看用户列表与详情；Web 后台 /system/users 菜单另由 Users.ViewWebConsole 控制"
+    },
+    "Users.ViewWebConsole": {
+      "name": "查看 Web 用户管理",
+      "description": "Web 页面 /system/users - 显示并进入 Web 后台用户管理页"
     },
     "Warehouse.Manage": {
       "name": "管理仓库",
-      "description": "页面 /warehouse - 管理仓库模块"
+      "description": "仓库兼容总权限 - 等价于同时拥有仓库商品、订货、分类、标签四项管理权限，并放行预订、零售价变更、商品记录接口"
     },
     "Warehouse.ManageCategories": {
       "name": "管理仓库分类",
-      "description": "页面 /warehouse/categories - 管理仓库分类"
+      "description": "Web 页面 /warehouse/categories - 管理仓库分类"
     },
     "Warehouse.ManageLocations": {
       "name": "管理仓库标签",
-      "description": "页面 /warehouse/locations - 管理仓库标签"
+      "description": "Web 页面 /warehouse/locations - 管理仓库标签"
     },
     "Warehouse.ManageOrders": {
       "name": "管理仓库订货",
-      "description": "页面 /warehouse/store-orders - 管理分店订货、明细、配货单和发票"
+      "description": "Web 页面 /warehouse/store-orders、/warehouse/preorders、/warehouse/store-order-import-price-variance 与移动端「订货单」- 管理分店订货、预订、配货单和发票"
     },
     "Warehouse.ManageProducts": {
       "name": "管理仓库商品",
-      "description": "页面 /warehouse/products 与 /warehouse/product-grade-management - 管理仓库商品和等级"
-    },
-    "Warehouse.View": {
-      "name": "查看仓库",
-      "description": "页面 /warehouse - 查看仓库模块"
+      "description": "Web 页面 /warehouse/products、/warehouse/products/retail-price-changes、/warehouse/product-grade-management 与移动端「仓库」- 管理仓库商品、零售价变更和等级"
     }
   },
   "roles": {

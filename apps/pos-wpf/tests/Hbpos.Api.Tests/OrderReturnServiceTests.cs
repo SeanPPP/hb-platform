@@ -63,7 +63,7 @@ public sealed class OrderReturnServiceTests
                     new OrderHistoryPaymentDto(Guid.NewGuid(), PaymentMethodKind.Card, -1m, CardRefundReference.Format("ANZ:REFUND-9", "ANZ:SALE-1"))
                 ]),
                 returnOrderGuid),
-            repository);
+            repository, new StubStoreTimeZoneResolver());
 
         var context = await service.GetReturnContextAsync(orderGuid, CancellationToken.None);
 
@@ -102,7 +102,7 @@ public sealed class OrderReturnServiceTests
         {
             OriginalOrders = [CreateOriginalOrder(originalOrder)]
         };
-        var service = new OrderReturnService(new FakeOrderHistoryRepository(originalOrder), repository);
+        var service = new OrderReturnService(new FakeOrderHistoryRepository(originalOrder), repository, new StubStoreTimeZoneResolver());
 
         var response = await service.CreateRecordsAsync(
             new OrderReturnRecordCreateRequest(
@@ -149,7 +149,7 @@ public sealed class OrderReturnServiceTests
                 }
             ]
         };
-        var service = new OrderReturnService(new FakeOrderHistoryRepository(CreateOrder(orderGuid, lineGuid, quantity: 1m)), repository);
+        var service = new OrderReturnService(new FakeOrderHistoryRepository(CreateOrder(orderGuid, lineGuid, quantity: 1m)), repository, new StubStoreTimeZoneResolver());
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => service.CreateRecordsAsync(
             new OrderReturnRecordCreateRequest(
@@ -193,7 +193,7 @@ public sealed class OrderReturnServiceTests
         {
             ExistingRecords = [existingRecord]
         };
-        var service = new OrderReturnService(new FakeOrderHistoryRepository(CreateOrder(orderGuid, lineGuid, quantity: 2m)), repository);
+        var service = new OrderReturnService(new FakeOrderHistoryRepository(CreateOrder(orderGuid, lineGuid, quantity: 2m)), repository, new StubStoreTimeZoneResolver());
 
         var response = await service.CreateRecordsAsync(
             new OrderReturnRecordCreateRequest(
@@ -254,7 +254,7 @@ public sealed class OrderReturnServiceTests
         ]) with { OrderGuid = returnOrderGuid };
         var service = new OrderReturnService(
             new FakeOrderHistoryRepository([originalOrder, returnOrder]),
-            repository);
+            repository, new StubStoreTimeZoneResolver());
 
         var context = await service.GetReturnContextAsync(orderGuid, CancellationToken.None);
 
@@ -299,7 +299,7 @@ public sealed class OrderReturnServiceTests
         ]) with { OrderGuid = returnOrderGuid };
         var service = new OrderReturnService(
             new FakeOrderHistoryRepository([originalOrder, returnOrder]),
-            repository);
+            repository, new StubStoreTimeZoneResolver());
 
         var context = await service.GetReturnContextAsync(orderGuid, CancellationToken.None);
 
@@ -321,7 +321,7 @@ public sealed class OrderReturnServiceTests
         {
             OriginalOrders = [CreateOriginalOrder(originalOrder)]
         };
-        var service = new OrderReturnService(new FakeOrderHistoryRepository(originalOrder), repository);
+        var service = new OrderReturnService(new FakeOrderHistoryRepository(originalOrder), repository, new StubStoreTimeZoneResolver());
         var firstRequest = CreateReturnRequest(Guid.NewGuid(), orderGuid, lineGuid);
         var secondRequest = CreateReturnRequest(Guid.NewGuid(), orderGuid, lineGuid);
 
@@ -415,7 +415,7 @@ public sealed class OrderReturnServiceTests
                         new OrderHistoryPaymentDto(Guid.NewGuid(), PaymentMethodKind.Card, -10m, CardRefundReference.Format("ANZ:REFUND-9", "ANZ:SALE-1"))
                     ]) with { OrderGuid = returnOrderGuid })
                 ]),
-            repository);
+            repository, new StubStoreTimeZoneResolver());
 
         var context = await service.GetReturnContextAsync(currentOrderGuid, CancellationToken.None);
 
@@ -519,7 +519,7 @@ public sealed class OrderReturnServiceTests
 
         var service = new OrderReturnService(
             new FakeOrderHistoryRepository([originalOrder, otherOrder, firstReturnOrder, secondReturnOrder]),
-            repository);
+            repository, new StubStoreTimeZoneResolver());
 
         var context = await service.GetReturnContextAsync(orderGuid, CancellationToken.None);
 
@@ -586,7 +586,7 @@ public sealed class OrderReturnServiceTests
         ]) with { OrderGuid = returnOrderGuid };
         var service = new OrderReturnService(
             new FakeOrderHistoryRepository([orderA, orderB, returnOrder]),
-            repository);
+            repository, new StubStoreTimeZoneResolver());
 
         var contextA = await service.GetReturnContextAsync(orderAGuid, CancellationToken.None);
         var contextB = await service.GetReturnContextAsync(orderBGuid, CancellationToken.None);
@@ -663,7 +663,7 @@ public sealed class OrderReturnServiceTests
         ]) with { OrderGuid = returnOrderGuid };
         var service = new OrderReturnService(
             new FakeOrderHistoryRepository([orderA, orderB, returnOrder]),
-            repository);
+            repository, new StubStoreTimeZoneResolver());
 
         var contextA = await service.GetReturnContextAsync(orderAGuid, CancellationToken.None);
         var contextB = await service.GetReturnContextAsync(orderBGuid, CancellationToken.None);
@@ -753,7 +753,7 @@ public sealed class OrderReturnServiceTests
         ]) with { OrderGuid = laterReturnOrderGuid };
         var service = new OrderReturnService(
             new FakeOrderHistoryRepository([originalOrder, otherOrder, earlierReturnOrder, laterReturnOrder]),
-            repository);
+            repository, new StubStoreTimeZoneResolver());
 
         var context = await service.GetReturnContextAsync(orderGuid, CancellationToken.None);
 
@@ -802,7 +802,7 @@ public sealed class OrderReturnServiceTests
 
         var orderRepository = new FakeOrderHistoryRepository([originalOrder, .. returnOrders]);
         var returnRepository = new FakeReturnRepository { ExistingRecords = returnRecords };
-        var service = new OrderReturnService(orderRepository, returnRepository);
+        var service = new OrderReturnService(orderRepository, returnRepository, new StubStoreTimeZoneResolver());
 
         var context = await service.GetReturnContextAsync(orderGuid, CancellationToken.None);
 
@@ -822,7 +822,7 @@ public sealed class OrderReturnServiceTests
         var orderRepository = new FakeOrderHistoryRepository(
             CreateOrder(orderGuid, Guid.NewGuid(), quantity: 1m));
         var returnRepository = new FakeReturnRepository();
-        var service = new OrderReturnService(orderRepository, returnRepository);
+        var service = new OrderReturnService(orderRepository, returnRepository, new StubStoreTimeZoneResolver());
 
         var context = await service.GetReturnContextAsync(orderGuid, CancellationToken.None);
 
@@ -870,7 +870,7 @@ public sealed class OrderReturnServiceTests
             ],
             AfterGetByReturnOrderGuids = cancellationSource.Cancel
         };
-        var service = new OrderReturnService(orderRepository, returnRepository);
+        var service = new OrderReturnService(orderRepository, returnRepository, new StubStoreTimeZoneResolver());
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => service.GetReturnContextAsync(orderGuid, cancellationSource.Token));

@@ -1,8 +1,8 @@
-import { AppstoreOutlined, CloudSyncOutlined, CloudUploadOutlined, CopyOutlined, DownloadOutlined, EditOutlined, GiftOutlined, HistoryOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, SettingOutlined, UploadOutlined } from '@ant-design/icons';
+import { AppstoreOutlined, CloudSyncOutlined, CloudUploadOutlined, CopyOutlined, DownloadOutlined, EditOutlined, GiftOutlined, HistoryOutlined, LoadingOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, SettingOutlined, TagsOutlined, UploadOutlined } from '@ant-design/icons';
 import { DndContext, PointerSensor, closestCenter, type DragEndEvent, useSensor, useSensors, } from '@dnd-kit/core';
 import { SortableContext, horizontalListSortingStrategy, useSortable, } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { Button, Card, Checkbox, Form, Image, Input, InputNumber, Modal, Popconfirm, Select, Space, Switch, Tag, Tooltip, TreeSelect, Typography, message, notification, } from 'antd';
+import { Alert, Button, Card, Checkbox, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Switch, Tag, Tooltip, TreeSelect, Typography, message, notification, } from 'antd';
 import type { DefaultOptionType } from 'antd/es/select';
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table';
 import type { FilterDropdownProps, FilterValue, SorterResult } from 'antd/es/table/interface';
@@ -11,7 +11,12 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import BarcodePreview from '../../../components/BarcodePreview';
+import ProductListImage from '../../../components/ProductListImage';
 import PageContainer from '../../../components/PageContainer';
+import ActiveFilterBar from '../../../components/listToolbar/ActiveFilterBar';
+import MoreFiltersButton from '../../../components/listToolbar/MoreFiltersButton';
+import SelectionActionBar from '../../../components/listToolbar/SelectionActionBar';
+import ToolbarMenuButton from '../../../components/listToolbar/ToolbarMenuButton';
 import { getSupplierOptions, } from '../../../services/domesticProductService';
 import { exportDomesticProductsToExcel, type ExportResult } from '../../../services/exportService';
 import { getActiveLocalSuppliers as getActiveAustralianSuppliers } from '../../../services/localSupplierService';
@@ -27,6 +32,8 @@ import type { PushProductsToHqResult, PushProductsToHqStoreOption, PushProductsT
 import { copyTextToClipboard } from '../../../utils/clipboard';
 import { createLatestRequestGuard, runLatestGuardedRequest } from '../../../utils/latestRequestGuard';
 import { RequestError } from '../../../utils/request';
+import { lookupSuggestedDiscounts, previewPriceNotification, setSuggestedDiscounts } from '../../../services/storePriceUpdateTaskService';
+import { buildPriceNotificationPreviewText, buildPriceNotificationView, buildPriceUpdateTasksLink, computeSuggestedDiscountedPrice, createPriceNotificationCapture, suggestedDiscountPercentToRate, suggestedDiscountRateToPercent, type PriceNotificationPreview, type PriceNotificationSummary } from '../../../utils/priceNotification';
 import { isWarehouseProductColumnOrderCustomized, mergeWarehouseProductColumnOrder, moveWarehouseProductColumnOrder, type WarehouseProductTableColumnKey, } from './columnOrder';
 import CreateProductModal from './CreateProductModal';
 import CategoryTreePicker from './CategoryTreePicker';
@@ -38,11 +45,18 @@ import { buildWarehouseCategoryLookup, formatWarehouseCategoryNodeName, getWareh
 import { ALL_PRODUCTS_FILTER_KEY, UNCATEGORIZED_PRODUCTS_FILTER_KEY, buildFilterCategoryOptions, buildFilterCategoryTreeOptions, } from '../Categories/categoryProductFilters';
 import { buildCategoryQueryValue, buildComparableFilterTokens, buildTextFilterTokens, getSingleFilterValue, normalizeTableFilters, normalizeWarehouseProductSortField, parseComparableFilterTokens, parseTextFilterTokens, resolveCategoryFilterValueFromTableFilters, setFilterValues, type ComparableFilterMode, type TextFilterMode, type WarehouseProductColumnFilters, } from './columnFilters';
 import { areWarehouseProductCodeSelectionsEqual, buildWarehouseProductHqPushPayload } from './hqPush';
+import { ACTIVE_FILTER_CATEGORY_KEY, ACTIVE_FILTER_SEARCH_KEY, buildActiveFilterChips, buildActiveFilterRemovalOverrides, type ActiveFilterColumnMeta, } from './activeFilters';
 import PosHqPushModal from '../../../components/posHqPush/PosHqPushModal';
 import { createPushToHqStoreOptionsGuard } from '../../../components/posHqPush/storeSelection';
 import WarehouseProductStorePriceSyncModal from './WarehouseProductStorePriceSyncModal';
 import WarehouseProductChangeHistoryDrawer from './WarehouseProductChangeHistoryDrawer';
 import { MeasuredTable } from '../../../components/MeasuredTable';
+import { registerPageMessages } from '../../../i18n/registerPageMessages';
+import priceNotificationMessagesEn from './priceNotificationMessages.en.json';
+import priceNotificationMessagesZh from './priceNotificationMessages.zh.json';
+
+// 分店价格通知文案只在仓库商品页使用，随本页代码块懒注册，不进入首屏 i18n 包。
+registerPageMessages({ zh: priceNotificationMessagesZh, en: priceNotificationMessagesEn });
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null;
@@ -98,6 +112,8 @@ interface ProductFormValues {
     productType: ProductType;
     domesticPrice?: number;
     oemPrice?: number;
+    // 建议折扣 %（0~100）；留空 = 未设置。不随 full-update 提交，保存时单独走 suggested-discounts 接口。
+    suggestedDiscountPercent?: number | null;
     importPrice?: number;
     packingQuantity?: number;
     unitVolume?: number;
@@ -120,6 +136,16 @@ interface BatchEditFormValues {
     generateImageUrls?: boolean;
     imageBaseUrl?: string;
     syncImageToHq?: boolean;
+    // 仅当勾选「同时设置建议折扣」时生效；任务完成后单独调用 suggested-discounts。
+    setSuggestedDiscount?: boolean;
+    suggestedDiscountPercent?: number | null;
+}
+// 建议折扣不属于批量任务的商品字段，不能计入「是否填写了修改字段」的判断。
+const WAREHOUSE_PRODUCT_BATCH_SUGGESTED_DISCOUNT_FIELDS = new Set(['setSuggestedDiscount', 'suggestedDiscountPercent']);
+interface EditingSuggestedDiscountState {
+    // lookup 失败时 loaded=false：禁用字段并跳过保存，避免把未知的原值误清空。
+    loaded: boolean;
+    percent: number | null;
 }
 const WAREHOUSE_PRODUCT_IMAGE_DEFAULT_BASE_URL = 'https://hotbargain-yw-2023-1300114625.cos.ap-shanghai.myqcloud.com/YW200/';
 const WAREHOUSE_PRODUCT_IMAGE_EXAMPLE_FILE = 'MC164-3.jpg';
@@ -199,6 +225,13 @@ function getProductTypeOptions(t: ReturnType<typeof useTranslation>['t']) {
 }
 const WAREHOUSE_TABLE_ROW_MAX_HEIGHT = 60;
 const warehouseProductsTableStyle = `
+  /* 筛选行、已生效筛选条、勾选后操作条纵向排列，与表格之间留出间距。 */
+  .warehouse-products-toolbar {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
   /* 主表紧凑模式压缩行高、间距和媒体尺寸，减少首屏横向滚动。 */
   .warehouse-products-table .ant-table-thead > tr > th,
   .warehouse-products-table .ant-table-tbody > tr > td {
@@ -422,6 +455,8 @@ type ActiveWarehouseProductBatchUpdateJob = {
     status?: WarehouseProductBatchUpdateJobStatus | string;
     message?: string;
     submittedProductCodes: string[];
+    // 勾选了「同时设置建议折扣」时随任务持久化，刷新页面恢复轮询后仍能在任务完成时补发。
+    suggestedDiscount?: { rate: number | null };
 };
 const WAREHOUSE_PRODUCT_HQ_SYNC_ACTIVE_JOB_STORAGE_KEY = 'warehouse.products.activeHqSyncJob';
 const WAREHOUSE_PRODUCT_BATCH_UPDATE_ACTIVE_JOB_STORAGE_KEY = 'warehouse.products.activeBatchUpdateJob';
@@ -594,17 +629,58 @@ function renderWarehouseProductCategoryCell(record: WarehouseProductListItem, ca
       <div className="warehouse-products-category-cell">{displayName}</div>
     </Tooltip>);
 }
-function ProductFormModal({ open, saving, editingItem, suppliers, form, onCancel, onSubmit, }: {
+function ProductFormModal({ open, saving, editingItem, suppliers, form, suggestedDiscount, onCancel, onSubmit, }: {
     open: boolean;
     saving: boolean;
     editingItem: WarehouseProductListItem | null;
     suppliers: SupplierOption[];
     form: ReturnType<typeof Form.useForm<ProductFormValues>>[0];
+    suggestedDiscount: EditingSuggestedDiscountState;
     onCancel: () => void;
     onSubmit: () => void;
 }) {
     const { t } = useTranslation();
     const productTypeOptions = getProductTypeOptions(t);
+    const watchedRetailPrice = Form.useWatch('oemPrice', form);
+    const watchedSuggestedDiscountPercent = Form.useWatch('suggestedDiscountPercent', form);
+    const [pricePreview, setPricePreview] = useState<{ preview: PriceNotificationPreview; retailPriceChanged: boolean } | null>(null);
+    const productCode = editingItem?.productCode;
+    const originalRetailPrice = editingItem?.labelPrice ?? null;
+    useEffect(() => {
+        setPricePreview(null);
+        if (!open || !productCode) return;
+        const nextRetailPrice = typeof watchedRetailPrice === 'number' ? watchedRetailPrice : null;
+        const nextPercent = typeof watchedSuggestedDiscountPercent === 'number' ? watchedSuggestedDiscountPercent : null;
+        const retailPriceChanged = nextRetailPrice !== null && nextRetailPrice !== originalRetailPrice;
+        const discountChanged = suggestedDiscount.loaded && nextPercent !== suggestedDiscount.percent;
+        if (!retailPriceChanged && !discountChanged) return;
+        const controller = new AbortController();
+        // 输入过程中 500ms 防抖；字段再次变化或弹窗关闭时终止上一次预告请求。
+        const timer = window.setTimeout(() => {
+            previewPriceNotification({
+                productCode,
+                retailPrice: retailPriceChanged ? nextRetailPrice : undefined,
+                suggestedDiscountSpecified: discountChanged,
+                suggestedDiscountRate: suggestedDiscountPercentToRate(nextPercent),
+            }, { signal: controller.signal })
+                .then((preview) => {
+                if (!controller.signal.aborted) setPricePreview({ preview, retailPriceChanged });
+            })
+                // 预告只是提示，失败时静默，不能妨碍保存。
+                .catch(() => undefined);
+        }, 500);
+        return () => {
+            window.clearTimeout(timer);
+            controller.abort();
+        };
+    }, [open, productCode, originalRetailPrice, suggestedDiscount.loaded, suggestedDiscount.percent, watchedRetailPrice, watchedSuggestedDiscountPercent]);
+    const pricePreviewText = pricePreview
+        ? buildPriceNotificationPreviewText(pricePreview.preview, pricePreview.retailPriceChanged, t)
+        : null;
+    const suggestedDiscountedPrice = computeSuggestedDiscountedPrice(
+        typeof watchedRetailPrice === 'number' ? watchedRetailPrice : null,
+        typeof watchedSuggestedDiscountPercent === 'number' ? watchedSuggestedDiscountPercent : null,
+    );
     return (<Modal title={editingItem ? t('warehouse.editProductTitle', { name: editingItem.itemNumber || editingItem.name }) : t('warehouse.editProduct')} open={open} width={920} destroyOnHidden okText={t('common.save')} cancelText={t('common.cancel')} confirmLoading={saving} onCancel={onCancel} onOk={onSubmit}>
       <Form form={form} layout="vertical" preserve={false}>
         <Space size={16} style={{ display: 'flex' }} align="start">
@@ -651,6 +727,18 @@ function ProductFormModal({ open, saving, editingItem, suppliers, form, onCancel
             <InputNumber min={0} precision={2} style={{ width: '100%' }}/>
           </Form.Item>
         </Space>
+
+        {editingItem ? (<>
+          <Space size={16} style={{ display: 'flex' }} align="start">
+            <Form.Item name="suggestedDiscountPercent" label={t('warehouse.priceNotification.suggestedDiscount')} extra={t('warehouse.priceNotification.suggestedDiscountHint')} style={{ flex: 2 }}>
+              <InputNumber min={0} max={100} precision={2} suffix="%" disabled={!suggestedDiscount.loaded} placeholder={t('warehouse.priceNotification.suggestedDiscountPlaceholder')} style={{ width: '100%' }}/>
+            </Form.Item>
+            <Form.Item label={t('warehouse.priceNotification.suggestedDiscountedPrice')} style={{ flex: 1 }}>
+              <InputNumber value={suggestedDiscountedPrice} precision={2} prefix="$" readOnly controls={false} placeholder="--" style={{ width: '100%' }}/>
+            </Form.Item>
+          </Space>
+          {pricePreviewText ? (<Alert type="info" showIcon message={pricePreviewText} style={{ marginBottom: 16 }}/>) : null}
+        </>) : null}
 
         <Space size={16} style={{ display: 'flex' }} align="start">
           <Form.Item name="packingQuantity" label={t('warehouse.packingQuantity')} style={{ flex: 1 }}>
@@ -756,11 +844,14 @@ export default function WarehouseProductsPage() {
     const [batchEditForm] = Form.useForm<BatchEditFormValues>();
     const batchGenerateImageUrls = Form.useWatch('generateImageUrls', batchEditForm) === true;
     const batchImageBaseUrl = Form.useWatch('imageBaseUrl', batchEditForm);
+    const batchSetSuggestedDiscount = Form.useWatch('setSuggestedDiscount', batchEditForm) === true;
     const [loading, setLoading] = useState(false);
     const [saving, setSaving] = useState(false);
     const [modalOpen, setModalOpen] = useState(false);
     const [createModalOpen, setCreateModalOpen] = useState(false);
     const [editingItem, setEditingItem] = useState<WarehouseProductListItem | null>(null);
+    const [editingSuggestedDiscount, setEditingSuggestedDiscount] = useState<EditingSuggestedDiscountState>({ loaded: false, percent: null });
+    const editingProductCodeRef = useRef<string | null>(null);
     const [suppliers, setSuppliers] = useState<SupplierOption[]>([]);
     const [localSupplierNameMap, setLocalSupplierNameMap] = useState<Record<string, string>>({});
     const [categories, setCategories] = useState<WarehouseCategoryNode[]>([]);
@@ -779,6 +870,10 @@ export default function WarehouseProductsPage() {
     const [inlineSavingCellKey, setInlineSavingCellKey] = useState<string | null>(null);
     const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
     const [searchText, setSearchText] = useState('');
+    // 关键词只在回车或点「查询」时提交；翻页、下拉即查等请求都用已提交的关键词，而不是输入框里未提交的草稿。
+    const [submittedSearchText, setSubmittedSearchText] = useState('');
+    // 最近一次成功返回的查询条件，已生效筛选条据此展示「表格数据实际是按什么条件查出来的」。
+    const [appliedQuery, setAppliedQuery] = useState<WarehouseProductsTableQuery | null>(null);
     const [supplierCode, setSupplierCode] = useState<string>();
     const [productType, setProductType] = useState<ProductType>();
     const [isActive, setIsActive] = useState<boolean>();
@@ -885,7 +980,7 @@ export default function WarehouseProductsPage() {
         return {
             page,
             pageSize,
-            searchText,
+            searchText: submittedSearchText,
             supplierCode,
             productType,
             isActive,
@@ -1041,6 +1136,7 @@ export default function WarehouseProductsPage() {
                 setPage(result.page);
                 setPageSize(result.pageSize);
                 setSelectedRowKeys([]);
+                setAppliedQuery(query);
             },
             onError: (error) => {
                 console.error(error);
@@ -1225,6 +1321,58 @@ export default function WarehouseProductsPage() {
         ]));
         refreshBatchUpdateListWithSelection(keysToKeep);
     }, [refreshBatchUpdateListWithSelection]);
+    const showPriceNotification = useCallback((summary: PriceNotificationSummary | null, context: { lines?: string[]; keyword?: string } = {}) => {
+        const view = buildPriceNotificationView(summary, t);
+        if (!view) return;
+        notification[view.tone]({
+            message: view.title,
+            description: (<Space direction="vertical" size={4}>
+              {[...(context.lines ?? []), ...view.lines].map((line) => (<div key={line}>{line}</div>))}
+              {view.tags.length ? (<Space size={4} wrap>
+                {view.tags.map((tag) => (<Tag key={tag.kind} color={tag.kind === 'priceUpdate' ? 'warning' : 'processing'}>{tag.text}</Tag>))}
+              </Space>) : null}
+              {view.showTasksLink ? (<Typography.Link onClick={() => navigate(buildPriceUpdateTasksLink({ tab: 'by-product', keyword: context.keyword }))}>
+                {t('warehouse.priceNotification.viewTasks')}
+              </Typography.Link>) : null}
+            </Space>),
+            duration: view.tone === 'success' ? 8 : 5,
+            placement: 'topRight',
+        });
+    }, [navigate, t]);
+    const finishBatchPriceNotification = useCallback(async (
+        result: WarehouseProductBatchUpdateJobResult,
+        job: ActiveWarehouseProductBatchUpdateJob,
+    ) => {
+        // 后台任务拿不到响应头，汇总来自任务快照；若随后还补发了建议折扣，以那次（最后一次）响应头为准，不相加。
+        const priceNotificationCapture = createPriceNotificationCapture();
+        priceNotificationCapture.accept(result.priceNotification);
+        // 任务信息可能来自 localStorage 恢复，rate 形状不可信时宁可跳过也不能误清空建议折扣。
+        const suggestedRate = job.suggestedDiscount?.rate;
+        const hasSuggestedDiscount = job.suggestedDiscount !== undefined
+            && (suggestedRate === null || (typeof suggestedRate === 'number' && suggestedRate >= 0 && suggestedRate <= 1));
+        if (hasSuggestedDiscount && result.status !== 'Failed') {
+            try {
+                await setSuggestedDiscounts({
+                    productCodes: job.submittedProductCodes,
+                    suggestedDiscountRate: suggestedRate ?? null,
+                    source: 'BatchUpdate',
+                }, { onResponse: priceNotificationCapture.onResponse });
+            }
+            catch (error) {
+                console.error(error);
+                notification.error({
+                    message: t('warehouse.priceNotification.batchSuggestedDiscountFailed'),
+                    description: error instanceof Error ? error.message : undefined,
+                    duration: 0,
+                    placement: 'topRight',
+                });
+            }
+        }
+        if (!isMountedRef.current) return;
+        showPriceNotification(priceNotificationCapture.getSummary(), {
+            lines: [t('warehouse.priceNotification.productCountLine', { count: job.submittedProductCodes.length })],
+        });
+    }, [showPriceNotification, t]);
     const showBatchUpdateJobResult = useCallback((
         result: WarehouseProductBatchUpdateJobResult,
         submittedProductCodes: string[],
@@ -1312,6 +1460,7 @@ export default function WarehouseProductsPage() {
             clearActiveBatchUpdateJob();
             stopBatchUpdateJobPollingRef.current = null;
             showBatchUpdateJobResult(result, job.submittedProductCodes);
+            void finishBatchPriceNotification(result, job);
         })
             .catch((error) => {
             if (!isMountedRef.current || error instanceof HqProductSyncPollingCancelledError) {
@@ -1350,7 +1499,7 @@ export default function WarehouseProductsPage() {
                 placement: 'topRight',
             });
         });
-    }, [clearActiveBatchUpdateJob, restoreSubmittedBatchUpdateSelection, saveActiveBatchUpdateJob, showBatchUpdateJobResult, stopBatchUpdateJobPolling, t]);
+    }, [clearActiveBatchUpdateJob, finishBatchPriceNotification, restoreSubmittedBatchUpdateSelection, saveActiveBatchUpdateJob, showBatchUpdateJobResult, stopBatchUpdateJobPolling, t]);
     const showActiveBatchUpdateJobStatus = useCallback((job: ActiveWarehouseProductBatchUpdateJob | null = activeBatchUpdateJob) => {
         if (!job) {
             return;
@@ -1434,8 +1583,22 @@ export default function WarehouseProductsPage() {
     const handleOpenCreate = () => {
         setCreateModalOpen(true);
     };
+    const formatSuggestedDiscountPercent = (percent: number | null) => percent === null
+        ? t('warehouse.priceNotification.notSet')
+        : `${percent}%`;
     const handleOpenEdit = (record: WarehouseProductListItem) => {
         setEditingItem(record);
+        editingProductCodeRef.current = record.productCode;
+        setEditingSuggestedDiscount({ loaded: false, percent: null });
+        lookupSuggestedDiscounts([record.productCode])
+            .then((items) => {
+            // 期间用户可能已关闭弹窗或改开了另一个商品，过期结果不能回填。
+            if (!isMountedRef.current || editingProductCodeRef.current !== record.productCode) return;
+            const percent = suggestedDiscountRateToPercent(items.find((item) => item.productCode === record.productCode)?.suggestedDiscountRate);
+            setEditingSuggestedDiscount({ loaded: true, percent });
+            form.setFieldsValue({ suggestedDiscountPercent: percent });
+        })
+            .catch((error) => console.error(error));
         form.setFieldsValue({
             supplierCode: record.domesticSupplierCode,
             productName: record.name,
@@ -1457,6 +1620,8 @@ export default function WarehouseProductsPage() {
     const handleCloseModal = () => {
         setModalOpen(false);
         setEditingItem(null);
+        editingProductCodeRef.current = null;
+        setEditingSuggestedDiscount({ loaded: false, percent: null });
         form.resetFields();
     };
     const handleSave = async () => {
@@ -1466,6 +1631,8 @@ export default function WarehouseProductsPage() {
         try {
             const values = await form.validateFields();
             setSaving(true);
+            // 一次保存可能连发两个请求，通知汇总以最后一个带头的响应为准（不相加）。
+            const priceNotificationCapture = createPriceNotificationCapture();
             await updateWarehouseProductFull(editingItem.productCode, {
                 productName: values.productName,
                 englishName: values.englishProductName,
@@ -1483,8 +1650,40 @@ export default function WarehouseProductsPage() {
                 productImage: values.productImage,
                 isActive: values.isActive,
                 supplierCode: values.supplierCode,
-            });
+            }, { onResponse: priceNotificationCapture.onResponse });
+            const nextSuggestedDiscountPercent = values.suggestedDiscountPercent ?? null;
+            const suggestedDiscountChanged = editingSuggestedDiscount.loaded
+                && nextSuggestedDiscountPercent !== editingSuggestedDiscount.percent;
+            if (suggestedDiscountChanged) {
+                try {
+                    await setSuggestedDiscounts({
+                        productCodes: [editingItem.productCode],
+                        suggestedDiscountRate: suggestedDiscountPercentToRate(nextSuggestedDiscountPercent),
+                        source: 'WarehouseProducts',
+                    }, { onResponse: priceNotificationCapture.onResponse });
+                }
+                catch (error) {
+                    // 商品主体已保存成功，建议折扣失败只单独提示，不回滚也不阻断后续刷新。
+                    console.error(error);
+                    message.warning(`${t('warehouse.priceNotification.suggestedDiscountSaveFailed')}${error instanceof Error ? `: ${error.message}` : ''}`);
+                }
+            }
             message.success(t('warehouse.updateProductSuccess'));
+            const retailPriceChanged = typeof values.oemPrice === 'number' && values.oemPrice !== (editingItem.labelPrice ?? null);
+            showPriceNotification(priceNotificationCapture.getSummary(), {
+                keyword: editingItem.itemNumber,
+                lines: [
+                    [editingItem.itemNumber, values.productName].filter(Boolean).join(' · '),
+                    ...(retailPriceChanged ? [t('warehouse.priceNotification.retailPriceLine', {
+                            from: editingItem.labelPrice == null ? '--' : `$${editingItem.labelPrice.toFixed(2)}`,
+                            to: `$${(values.oemPrice as number).toFixed(2)}`,
+                        })] : []),
+                    ...(suggestedDiscountChanged ? [t('warehouse.priceNotification.suggestedDiscountLine', {
+                            from: formatSuggestedDiscountPercent(editingSuggestedDiscount.percent),
+                            to: formatSuggestedDiscountPercent(nextSuggestedDiscountPercent),
+                        })] : []),
+                ],
+            });
             handleCloseModal();
             void refreshCurrentList();
         }
@@ -1554,8 +1753,22 @@ export default function WarehouseProductsPage() {
         inlineSaveLockRef.current = cellKey;
         setInlineSavingCellKey(cellKey);
         try {
-            await patchWarehouseProduct(cell.productCode, payload);
+            const priceNotificationCapture = createPriceNotificationCapture();
+            await patchWarehouseProduct(cell.productCode, payload, { onResponse: priceNotificationCapture.onResponse });
             if (!isMountedRef.current) return;
+            if (cell.field === 'labelPrice') {
+                const record = data.find((item) => item.productCode === cell.productCode);
+                showPriceNotification(priceNotificationCapture.getSummary(), {
+                    keyword: record?.itemNumber,
+                    lines: [
+                        [record?.itemNumber, record?.name].filter(Boolean).join(' · '),
+                        t('warehouse.priceNotification.retailPriceLine', {
+                            from: cell.originalValue == null ? '--' : `$${Number(cell.originalValue).toFixed(2)}`,
+                            to: `$${value.toFixed(2)}`,
+                        }),
+                    ].filter(Boolean),
+                });
+            }
             setData((current) => current.map((item) => item.productCode === cell.productCode
                 ? { ...item, [cell.field]: value }
                 : item));
@@ -1901,7 +2114,7 @@ export default function WarehouseProductsPage() {
         generateImageUrls?: boolean;
         imageBaseUrl?: string;
         syncImageToHq?: boolean;
-    }) => {
+    }, suggestedDiscount?: { rate: number | null }) => {
         if (!selectedRowKeys.length) {
             message.warning(t('warehouse.selectProductsFirst', '请先选择商品'));
             return;
@@ -1941,6 +2154,7 @@ export default function WarehouseProductsPage() {
                 status: job.status,
                 message: job.message,
                 submittedProductCodes,
+                ...(suggestedDiscount ? { suggestedDiscount } : {}),
             };
             setBatchEditOpen(false);
             batchEditForm.resetFields();
@@ -1965,6 +2179,28 @@ export default function WarehouseProductsPage() {
             setBatchEditSaving(false);
         }
     };
+    const submitBatchSuggestedDiscountOnly = async (suggestedDiscount: { rate: number | null }) => {
+        // 只勾选了建议折扣、没有其它商品字段：无需创建后台任务，直接设置并按响应头提示。
+        const productCodes = selectedRowKeys.map(String);
+        try {
+            setBatchEditSaving(true);
+            const priceNotificationCapture = createPriceNotificationCapture();
+            await setSuggestedDiscounts({ productCodes, suggestedDiscountRate: suggestedDiscount.rate, source: 'BatchUpdate' }, { onResponse: priceNotificationCapture.onResponse });
+            setBatchEditOpen(false);
+            batchEditForm.resetFields();
+            message.success(t('warehouse.batchEditSuccess', '批量修改成功'));
+            showPriceNotification(priceNotificationCapture.getSummary(), {
+                lines: [t('warehouse.priceNotification.productCountLine', { count: productCodes.length })],
+            });
+        }
+        catch (error) {
+            console.error(error);
+            message.error(error instanceof Error ? error.message : t('warehouse.priceNotification.batchSuggestedDiscountFailed'));
+        }
+        finally {
+            setBatchEditSaving(false);
+        }
+    };
     const handleBatchEditSave = async () => {
         if (!selectedRowKeys.length) {
             message.warning(t('warehouse.selectProductsFirst', '请先选择商品'));
@@ -1981,7 +2217,13 @@ export default function WarehouseProductsPage() {
             throw error;
         }
         const generateImageUrls = values.generateImageUrls === true;
+        const suggestedDiscount = values.setSuggestedDiscount === true
+            ? { rate: suggestedDiscountPercentToRate(values.suggestedDiscountPercent) }
+            : undefined;
         const hasChanges = Object.entries(values).some(([field, value]) => {
+            if (WAREHOUSE_PRODUCT_BATCH_SUGGESTED_DISCOUNT_FIELDS.has(field)) {
+                return false;
+            }
             if (isWarehouseProductBatchImageField(field)) {
                 if (generateImageUrls) {
                     return field === 'generateImageUrls';
@@ -1991,7 +2233,7 @@ export default function WarehouseProductsPage() {
             }
             return value !== undefined && value !== null;
         });
-        if (!hasChanges) {
+        if (!hasChanges && !suggestedDiscount) {
             message.warning(t('warehouse.batchEditNoChanges', '请至少填写一个修改字段'));
             return;
         }
@@ -2016,14 +2258,19 @@ export default function WarehouseProductsPage() {
               <div>{t('warehouse.batchImageConfirmOverwrite', '本地覆盖：是（将覆盖选中商品现有图片地址）')}</div>
               <div>{t('warehouse.batchImageConfirmHq', '同步 HQ：{{value}}', { value: syncImageToHq ? t('common.yes') : t('common.no') })}</div>
             </>) : null}
+            {suggestedDiscount ? (<div>{t('warehouse.priceNotification.batchSuggestedDiscountConfirm', {
+                value: suggestedDiscount.rate === null ? t('warehouse.priceNotification.notSet') : `${suggestedDiscountRateToPercent(suggestedDiscount.rate)}%`,
+            })}</div>) : null}
           </Space>),
             okText: t('warehouse.batchEditConfirmOk', '确认保存'),
             cancelText: t('common.cancel'),
-            onOk: () => submitBatchEdit(values, {
-                generateImageUrls,
-                imageBaseUrl,
-                syncImageToHq,
-            }),
+            onOk: () => hasChanges
+                ? submitBatchEdit(values, {
+                    generateImageUrls,
+                    imageBaseUrl,
+                    syncImageToHq,
+                }, suggestedDiscount)
+                : submitBatchSuggestedDiscountOnly(suggestedDiscount!),
         });
     };
     const handleToggleSingleActive = async (record: WarehouseProductListItem, nextIsActive: boolean) => {
@@ -2277,8 +2524,9 @@ export default function WarehouseProductsPage() {
             title: t('column.image'),
             dataIndex: 'productImage',
             width: 64,
+            // 表格内用 COS 缩略图并懒加载，预览时才取原图。
             render: (value: string | undefined) => (<div className="warehouse-products-image-cell">
-            <Image src={value} alt="" width={36} height={36} style={{ borderRadius: 4, objectFit: 'cover' }} fallback="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs="/>
+            {value ? (<ProductListImage src={value} size={36} radius={4} fit="cover" fallback="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs="/>) : null}
           </div>),
         },
         {
@@ -2538,75 +2786,230 @@ export default function WarehouseProductsPage() {
             }),
         })) as ColumnsType<WarehouseProductListItem>;
     }, [baseColumns, columnOrder, draggableColumnKeys.join('|')]);
+    // 回车或点「查询」才提交关键词；下拉类筛选在各自 onChange 里立即请求。
+    const handleSubmitSearch = () => {
+        setSubmittedSearchText(searchText);
+        void loadData({ page: 1, searchText });
+    };
+    // 重置筛选：清空顶部栏与列头条件并恢复默认排序，不动列顺序。「清空全部」与之等价。
+    const handleResetFilters = () => {
+        setSearchText('');
+        setSubmittedSearchText('');
+        setSupplierCode(undefined);
+        setCategoryFilterValue(ALL_PRODUCTS_FILTER_KEY);
+        setProductType(undefined);
+        setIsActive(undefined);
+        setColumnFilters({});
+        setSortField('createdAt');
+        setSortOrder('descend');
+        void loadData({
+            page: 1,
+            searchText: '',
+            supplierCode: undefined,
+            filters: {},
+            categoryGuid: undefined,
+            uncategorizedOnly: false,
+            productType: undefined,
+            isActive: undefined,
+            sortField: 'createdAt',
+            sortOrder: 'descend',
+        });
+    };
+    const isUncategorizedOnly = categoryFilterValue === UNCATEGORIZED_PRODUCTS_FILTER_KEY;
+    // 「只看未分类」开关：打开时行为与原「未分类商品」按钮一致，再点一次回到全部分类。
+    const handleToggleUncategorizedOnly = () => {
+        if (isUncategorizedOnly) {
+            setCategoryFilterValue(ALL_PRODUCTS_FILTER_KEY);
+            void loadData({
+                page: 1,
+                filters: columnFilters,
+                categoryGuid: undefined,
+                uncategorizedOnly: false,
+            });
+            return;
+        }
+        setCategoryFilterValue(UNCATEGORIZED_PRODUCTS_FILTER_KEY);
+        void loadData({
+            page: 1,
+            filters: columnFilters,
+            categoryGuid: undefined,
+            uncategorizedOnly: true,
+        });
+    };
+    // 列头筛选键 → 标签名与取值格式，键名与 normalizeTableFilters 输出一致（name→productName、labelPrice→oemPrice）。
+    const activeFilterColumns = useMemo<Record<string, ActiveFilterColumnMeta>>(() => ({
+        itemNumber: { label: t('column.hbItemNumber'), kind: 'text' },
+        domesticSupplierCode: { label: t('warehouse.domesticSupplier', '国内供应商'), kind: 'enum', options: domesticSupplierFilterOptions },
+        nameEn: { label: t('column.englishName'), kind: 'text' },
+        minOrderQuantity: { label: t('warehouse.middlePackQuantity', '中包数'), kind: 'comparable' },
+        domesticPrice: { label: t('column.domesticPrice'), kind: 'comparable' },
+        importPrice: { label: t('column.importPrice'), kind: 'comparable' },
+        oemPrice: { label: t('column.oemPrice'), kind: 'comparable' },
+        isActive: {
+            label: t('column.status'),
+            kind: 'enum',
+            options: [
+                { text: getShelfStatusLabel(true, t), value: 'true' },
+                { text: getShelfStatusLabel(false, t), value: 'false' },
+            ],
+        },
+        productType: {
+            label: t('column.productType'),
+            kind: 'enum',
+            options: productTypeOptions.map((option) => ({ text: String(option.label), value: String(option.value) })),
+        },
+        barcode: { label: t('column.barcode'), kind: 'text' },
+        locationCodes: { label: t('location.location', '货位'), kind: 'text' },
+        productName: { label: t('column.productName'), kind: 'text' },
+        packingQty: { label: t('column.packingQuantity'), kind: 'comparable' },
+        volume: { label: t('column.volume'), kind: 'comparable' },
+        localSupplierCode: { label: t('column.australianSupplier', '澳洲供应商'), kind: 'enum', options: localSupplierFilterOptions },
+        updatedAt: { label: t('column.updateTime'), kind: 'comparable' },
+    }), [domesticSupplierFilterOptions, localSupplierFilterOptions, productTypeOptions, t]);
+    const activeFilterChips = useMemo(() => buildActiveFilterChips({
+        query: appliedQuery,
+        labels: {
+            searchText: t('warehouse.activeFilter.keyword', '关键词'),
+            category: t('warehouse.categories.category', '分类'),
+            uncategorized: t('warehouse.categories.uncategorizedOption', '未分类商品'),
+        },
+        columns: activeFilterColumns,
+        categoryLabel: appliedQuery?.categoryGuid
+            ? getWarehouseProductCategoryTooltip({ warehouseCategoryGUID: appliedQuery.categoryGuid, categoryName: findWarehouseCategory(categories, appliedQuery.categoryGuid)?.categoryName }, categoryLookup, i18n.language)
+            : undefined,
+        textModeLabels: {
+            contains: t('warehouse.filterMode.contains', '包含'),
+            eq: t('warehouse.filterMode.equals', '等于'),
+            starts: t('warehouse.filterMode.startsWith', '开头是'),
+            ends: t('warehouse.filterMode.endsWith', '结尾是'),
+        },
+    }), [activeFilterColumns, appliedQuery, categories, categoryLookup, i18n.language, t]);
+    // 移除单个已生效条件：同步清掉对应界面 state，并立即按剩余条件请求第 1 页。
+    const handleRemoveActiveFilter = (chipKey: string) => {
+        const overrides = buildActiveFilterRemovalOverrides(chipKey, columnFilters);
+        if (chipKey === ACTIVE_FILTER_SEARCH_KEY) {
+            setSearchText('');
+            setSubmittedSearchText('');
+        }
+        else if (chipKey === ACTIVE_FILTER_CATEGORY_KEY) {
+            setCategoryFilterValue(ALL_PRODUCTS_FILTER_KEY);
+        }
+        else if (chipKey === 'domesticSupplierCode') {
+            setSupplierCode(undefined);
+        }
+        else if (chipKey === 'productType') {
+            setProductType(undefined);
+        }
+        else if (chipKey === 'isActive') {
+            setIsActive(undefined);
+        }
+        setColumnFilters(overrides.filters);
+        void loadData(overrides);
+    };
     return (<>
       <style>{warehouseProductsTableStyle}</style>
-      <PageContainer title={t('warehouse.productManagement')} subtitle={t('warehouse.productManagementSubtitle')} extra={<Space wrap>
-          {access.canManageWarehouseProducts ? (<Button icon={<HistoryOutlined />} onClick={() => navigate('/warehouse/products/retail-price-changes')}>
-            {t('warehouse.retailPriceChanges.entry')}
-          </Button>) : null}
-          {access.isAdmin ? (<Button icon={<CloudSyncOutlined />} loading={syncingFromHq || Boolean(activeHqSyncJob)} disabled={syncingFromHq} onClick={handleSyncWarehouseProductsFromHq}>
-            {t('warehouse.hqSync', '从HQ同步库存')}
-          </Button>) : null}
-          {access.canManagePosProducts ? (<Button icon={<CloudUploadOutlined />} loading={pushToHqLoading} disabled={!selectedRowKeys.length || pushToHqLoading || pushToHqModalOpen} onClick={() => void handlePushToHq()}>
-            {t('posAdmin.products.pushToHq', '发送到HQ')}
-          </Button>) : null}
-          {canManageWarehouseStorePriceSync ? (<Button icon={<CloudSyncOutlined />} disabled={storePriceSyncOpen} onClick={() => setStorePriceSyncOpen(true)}>
-            {t('warehouse.storePriceSync.title', '更新分店价格')}
-          </Button>) : null}
-          <Button icon={<DownloadOutlined />} loading={exporting} disabled={exporting} onClick={() => setExportConfigOpen(true)}>
-            {t('warehouse.exportExcel')}
-          </Button>
-          <Button icon={<UploadOutlined />} onClick={() => setImportFromDomesticOpen(true)}>
-            {t('warehouse.importFromDomestic')}
-          </Button>
-          {canImportNonHbProducts ? (<Button icon={<UploadOutlined />} onClick={() => setImportNonHbOpen(true)}>
-              {t('warehouse.importNonHb.title')}
-            </Button>) : null}
-          <Button icon={<GiftOutlined />} onClick={() => message.info(t('warehouse.batchSetMigrated'))}>
-            {t('warehouse.batchCreateSet')}
-          </Button>
-          <Button icon={<UploadOutlined />} onClick={() => message.info(t('warehouse.batchImageUploadMigrated'))}>
-            {t('warehouse.batchImageUpload')}
-          </Button>
-          {access.canWriteProduct ? (<Popconfirm title={t('warehouse.confirmBatchActivate')} okText={getShelfStatusLabel(true, t)} cancelText={t('common.cancel')} disabled={!selectedRowKeys.length} onConfirm={() => void handleBatchToggleActive(true)}>
-              <Button loading={batchActionLoading} disabled={!selectedRowKeys.length || batchActionLoading}>
-                {t('warehouse.batchActivate')}
-              </Button>
-            </Popconfirm>) : null}
-          {access.canWriteProduct ? (<Popconfirm title={t('warehouse.confirmBatchDeactivate')} okText={getShelfStatusLabel(false, t)} cancelText={t('common.cancel')} disabled={!selectedRowKeys.length} onConfirm={() => void handleBatchToggleActive(false)}>
-              <Button loading={batchActionLoading} disabled={!selectedRowKeys.length || batchActionLoading}>
-                {t('warehouse.batchDeactivate')}
-              </Button>
-            </Popconfirm>) : null}
-          {access.canWriteProduct ? (<Button loading={batchEditSaving || Boolean(activeBatchUpdateJob)} disabled={!selectedRowKeys.length || batchEditSaving} onClick={openBatchEdit}>
-              {t('warehouse.batchEdit', '批量修改')}
-            </Button>) : null}
-          {access.canWriteProduct ? (<Button icon={<AppstoreOutlined />} loading={batchCategorySaving} disabled={!selectedRowKeys.length || batchCategorySaving} onClick={openBatchCategory}>
-              {t('warehouse.batchSetCategory', '批量分类')}
-            </Button>) : null}
+      <PageContainer compact title={t('warehouse.productManagement')} subtitle={t('warehouse.productTotalCount', { count: total })} extra={<Space wrap>
+          {exporting ? (<Typography.Text type="secondary">
+              {exportMessage} ({exportProgress}%)
+            </Typography.Text>) : null}
+          {/* 页头只放低频入口：同步、导入导出收进菜单；批量操作移到勾选后操作条。
+              任务进行中只把菜单图标换成转圈，不用 Button 的 loading：antd 的 loading 会吞掉点击，
+              菜单就打不开，后台同步期间既看不了任务状态也用不了同组的其它入口。 */}
+          <ToolbarMenuButton label={t('common.listToolbar.sync', '同步')} icon={syncingFromHq || Boolean(activeHqSyncJob) ? <LoadingOutlined /> : <CloudSyncOutlined />} actions={[
+                {
+                    key: 'hqSync',
+                    label: t('warehouse.hqSync', '从HQ同步库存'),
+                    icon: <CloudSyncOutlined />,
+                    visible: access.isAdmin,
+                    disabled: syncingFromHq,
+                    onClick: handleSyncWarehouseProductsFromHq,
+                },
+                {
+                    key: 'storePriceSync',
+                    label: t('warehouse.storePriceSync.title', '更新分店价格'),
+                    icon: <CloudSyncOutlined />,
+                    visible: canManageWarehouseStorePriceSync,
+                    disabled: storePriceSyncOpen,
+                    onClick: () => setStorePriceSyncOpen(true),
+                },
+            ]}/>
+          <ToolbarMenuButton label={t('common.listToolbar.importExport', '导入 / 导出')} icon={exporting ? <LoadingOutlined /> : <DownloadOutlined />} actions={[
+                {
+                    key: 'exportExcel',
+                    label: t('warehouse.exportExcel'),
+                    icon: <DownloadOutlined />,
+                    disabled: exporting,
+                    onClick: () => setExportConfigOpen(true),
+                },
+                {
+                    key: 'importFromDomestic',
+                    label: t('warehouse.importFromDomestic'),
+                    icon: <UploadOutlined />,
+                    onClick: () => setImportFromDomesticOpen(true),
+                },
+                {
+                    key: 'importNonHb',
+                    label: t('warehouse.importNonHb.title'),
+                    icon: <UploadOutlined />,
+                    visible: canImportNonHbProducts,
+                    onClick: () => setImportNonHbOpen(true),
+                },
+                {
+                    key: 'batchImageUpload',
+                    label: t('warehouse.batchImageUpload'),
+                    icon: <UploadOutlined />,
+                    onClick: () => message.info(t('warehouse.batchImageUploadMigrated')),
+                },
+                {
+                    key: 'batchCreateSet',
+                    label: t('warehouse.batchCreateSet'),
+                    icon: <GiftOutlined />,
+                    onClick: () => message.info(t('warehouse.batchSetMigrated')),
+                },
+            ]}/>
+          {/* 价格类入口：零售价月度变化与价格变更任务（分店改价、换标签监控）归入同一菜单。 */}
+          <ToolbarMenuButton label={t('common.listToolbar.price', '价格')} icon={<TagsOutlined />} actions={[
+                {
+                    key: 'retailPriceChanges',
+                    label: t('warehouse.retailPriceChanges.entry'),
+                    icon: <HistoryOutlined />,
+                    visible: access.canManageWarehouseProducts,
+                    onClick: () => navigate('/warehouse/products/retail-price-changes'),
+                },
+                {
+                    key: 'priceUpdateTasks',
+                    label: t('warehouse.priceUpdateTasks.entry'),
+                    icon: <TagsOutlined />,
+                    visible: access.canManageWarehouseProducts,
+                    onClick: () => navigate('/warehouse/products/price-update-tasks'),
+                },
+            ]}/>
           {access.canManageWarehouseCategories ? (<Button icon={<SettingOutlined />} onClick={() => setCategoryManageOpen(true)}>
               {t('containers.actions.manageCategories', '管理分类')}
             </Button>) : null}
           {access.canWriteProduct ? (<Button type="primary" icon={<PlusOutlined />} onClick={handleOpenCreate}>
               {t('warehouse.createProduct')}
             </Button>) : null}
-          {exporting ? (<Typography.Text type="secondary">
-              {exportMessage} ({exportProgress}%)
-            </Typography.Text>) : null}
           </Space>}>
         <Card>
-          <Space wrap style={{ marginBottom: 16 }}>
-          <Input value={searchText} onChange={(event) => setSearchText(event.target.value)} prefix={<SearchOutlined />} placeholder={t('warehouse.searchProductFull')} style={{ width: 300 }} allowClear/>
+          <div className="warehouse-products-toolbar">
+          <div className="list-toolbar-filter-row">
+          <Input value={searchText} onChange={(event) => setSearchText(event.target.value)} onPressEnter={handleSubmitSearch} prefix={<SearchOutlined />} placeholder={`${t('warehouse.searchProductFull')} · ${t('common.listToolbar.searchEnterHint', '回车查询')}`} style={{ width: 300 }} allowClear/>
+          {/* 下拉选完即查：用 loadData 覆盖参数立即请求第 1 页，不依赖 setState 之后才生效的值。 */}
           <Select value={supplierCode} onChange={(value) => {
+            const nextFilters = setFilterValues(columnFilters, 'domesticSupplierCode', value ? [value] : undefined);
             setSupplierCode(value);
-            setColumnFilters((current) => setFilterValues(current, 'domesticSupplierCode', value ? [value] : undefined));
+            setColumnFilters(nextFilters);
+            void loadData({ page: 1, supplierCode: value, filters: nextFilters });
         }} options={buildSupplierOptions(suppliers)} placeholder={t('warehouse.allDomesticSuppliers')} style={{ width: 240 }} showSearch filterOption={filterSupplierOption} allowClear/>
           {/* 顶部筛选使用真实分类树，避免多级分类继续依赖 -- 前缀伪缩进。 */}
           <TreeSelect
             value={categoryFilterValue}
             onChange={(value) => {
+              const nextCategoryFilterValue = value || ALL_PRODUCTS_FILTER_KEY;
               setCategoryFilterValue(value || ALL_PRODUCTS_FILTER_KEY);
               setCategoryFilterSearchText('');
+              void loadData({ page: 1, ...buildCategoryQueryValue(nextCategoryFilterValue) });
             }}
             treeData={categoryFilterTreeOptions}
             placeholder={t('warehouse.categories.category', '分类')}
@@ -2627,57 +3030,62 @@ export default function WarehouseProductsPage() {
             allowClear
             notFoundContent={categoryLoading ? t('common.loading', '加载中') : t('warehouse.categories.noCategoryData', '暂无分类数据')}
           />
-          <Select value={productType} onChange={(value) => {
-            setProductType(value);
-            setColumnFilters((current) => setFilterValues(current, 'productType', value === undefined ? undefined : [String(value)]));
-        }} options={productTypeOptions} placeholder={t('warehouse.allProductTypes')} style={{ width: 160 }} allowClear/>
           <Select value={isActive} onChange={(value) => {
+            const nextFilters = setFilterValues(columnFilters, 'isActive', value === undefined ? undefined : [String(value)]);
             setIsActive(value);
-            setColumnFilters((current) => setFilterValues(current, 'isActive', value === undefined ? undefined : [String(value)]));
+            setColumnFilters(nextFilters);
+            void loadData({ page: 1, isActive: value, filters: nextFilters });
         }} options={getStatusOptions(t)} placeholder={t('warehouse.allStatus')} style={{ width: 140 }} allowClear/>
-          <Button onClick={() => {
-            setCategoryFilterValue(UNCATEGORIZED_PRODUCTS_FILTER_KEY);
-            void loadData({
-                page: 1,
-                filters: columnFilters,
-                categoryGuid: undefined,
-                uncategorizedOnly: true,
-            });
-        }}>
-            {t('warehouse.categories.uncategorizedOption', '未分类商品')}
-          </Button>
-          <Button type="primary" onClick={() => void loadData({ page: 1 })}>
+          {/* 低频的商品类型收进「更多筛选」，角标为弹层内生效条件数。 */}
+          <MoreFiltersButton activeCount={productType === undefined ? 0 : 1}>
+            <Select value={productType} onChange={(value) => {
+                const nextFilters = setFilterValues(columnFilters, 'productType', value === undefined ? undefined : [String(value)]);
+                setProductType(value);
+                setColumnFilters(nextFilters);
+                void loadData({ page: 1, productType: value, filters: nextFilters });
+            }} options={productTypeOptions} placeholder={t('warehouse.allProductTypes')} allowClear/>
+          </MoreFiltersButton>
+          <span className="list-toolbar-filter-spacer"/>
+          <Button type="primary" onClick={handleSubmitSearch}>
             {t('common.query')}
           </Button>
-          <Button icon={<ReloadOutlined />} onClick={() => {
-            setSearchText('');
-            setSupplierCode(undefined);
-            setCategoryFilterValue(ALL_PRODUCTS_FILTER_KEY);
-            setProductType(undefined);
-            setIsActive(undefined);
-            setColumnFilters({});
-            setSortField('createdAt');
-            setSortOrder('descend');
-            void loadData({
-                page: 1,
-                searchText: '',
-                supplierCode: undefined,
-                filters: {},
-                categoryGuid: undefined,
-                uncategorizedOnly: false,
-                productType: undefined,
-                isActive: undefined,
-                sortField: 'createdAt',
-                sortOrder: 'descend',
-            });
-        }}>
+          <Button icon={<ReloadOutlined />} onClick={handleResetFilters}>
             {t('common.reset')}
           </Button>
+          <span className="list-toolbar-filter-divider"/>
           <Button icon={<ReloadOutlined />} disabled={!isColumnOrderCustomized} onClick={handleResetColumnOrder}>
             {t('warehouse.resetColumns', '重置列')}
           </Button>
-        </Space>
-
+          </div>
+          <ActiveFilterBar items={activeFilterChips.map((chip) => ({
+                ...chip,
+                onRemove: () => handleRemoveActiveFilter(chip.key),
+            }))} onClearAll={handleResetFilters} extra={<Button size="small" type={isUncategorizedOnly ? 'primary' : 'default'} ghost={isUncategorizedOnly} aria-pressed={isUncategorizedOnly} onClick={handleToggleUncategorizedOnly}>
+                {t('warehouse.onlyUncategorized', '只看未分类')}
+              </Button>}/>
+          {/* 勾选后操作条：只对选中行生效的批量操作，未勾选时整条隐藏。 */}
+          <SelectionActionBar selectedCount={selectedRowKeys.length} onClearSelection={() => setSelectedRowKeys([])}>
+            {access.canWriteProduct ? (<Popconfirm title={t('warehouse.confirmBatchActivate')} okText={getShelfStatusLabel(true, t)} cancelText={t('common.cancel')} disabled={!selectedRowKeys.length} onConfirm={() => void handleBatchToggleActive(true)}>
+                <Button size="small" loading={batchActionLoading} disabled={!selectedRowKeys.length || batchActionLoading}>
+                  {t('warehouse.batchActivate')}
+                </Button>
+              </Popconfirm>) : null}
+            {access.canWriteProduct ? (<Popconfirm title={t('warehouse.confirmBatchDeactivate')} okText={getShelfStatusLabel(false, t)} cancelText={t('common.cancel')} disabled={!selectedRowKeys.length} onConfirm={() => void handleBatchToggleActive(false)}>
+                <Button size="small" loading={batchActionLoading} disabled={!selectedRowKeys.length || batchActionLoading}>
+                  {t('warehouse.batchDeactivate')}
+                </Button>
+              </Popconfirm>) : null}
+            {access.canWriteProduct ? (<Button size="small" loading={batchEditSaving || Boolean(activeBatchUpdateJob)} disabled={!selectedRowKeys.length || batchEditSaving} onClick={openBatchEdit}>
+                {t('warehouse.batchEdit', '批量修改')}
+              </Button>) : null}
+            {access.canWriteProduct ? (<Button size="small" icon={<AppstoreOutlined />} loading={batchCategorySaving} disabled={!selectedRowKeys.length || batchCategorySaving} onClick={openBatchCategory}>
+                {t('warehouse.batchSetCategory', '批量分类')}
+              </Button>) : null}
+            {access.canManagePosProducts ? (<Button size="small" icon={<CloudUploadOutlined />} loading={pushToHqLoading} disabled={!selectedRowKeys.length || pushToHqLoading || pushToHqModalOpen} onClick={() => void handlePushToHq()}>
+                {t('posAdmin.products.pushToHq', '发送到HQ')}
+              </Button>) : null}
+          </SelectionActionBar>
+          </div>
           <DndContext sensors={columnDragSensors} collisionDetection={closestCenter} onDragEnd={handleColumnDragEnd}>
             <SortableContext items={columnOrder} strategy={horizontalListSortingStrategy}>
               <MeasuredTable metricId="warehouse.products.table-2" className="warehouse-products-table" rowKey="productCode" virtual loading={loading} components={{ header: { cell: DraggableHeaderCell } }} columns={orderedColumns} dataSource={data} rowSelection={{
@@ -2727,7 +3135,7 @@ export default function WarehouseProductsPage() {
           </DndContext>
         </Card>
 
-      <ProductFormModal open={modalOpen} saving={saving} editingItem={editingItem} suppliers={suppliers} form={form} onCancel={handleCloseModal} onSubmit={() => void handleSave()}/>
+      <ProductFormModal open={modalOpen} saving={saving} editingItem={editingItem} suppliers={suppliers} form={form} suggestedDiscount={editingSuggestedDiscount} onCancel={handleCloseModal} onSubmit={() => void handleSave()}/>
 
       <CreateProductModal open={createModalOpen} suppliers={suppliers} onCancel={() => setCreateModalOpen(false)} onSuccess={() => {
             setCreateModalOpen(false);
@@ -2789,6 +3197,14 @@ export default function WarehouseProductsPage() {
             </Form.Item>
             <Form.Item name="importPrice" label={t('warehouse.importPrice')} style={{ flex: 1 }}>
               <InputNumber min={0} precision={2} style={{ width: '100%' }} placeholder={t('warehouse.batchEditKeepEmpty', '留空不修改')}/>
+            </Form.Item>
+          </Space>
+          <Space size={16} style={{ display: 'flex' }} align="start">
+            <Form.Item name="setSuggestedDiscount" valuePropName="checked" label={t('warehouse.priceNotification.suggestedDiscount')} style={{ flex: 1 }}>
+              <Checkbox>{t('warehouse.priceNotification.batchSetSuggestedDiscount')}</Checkbox>
+            </Form.Item>
+            <Form.Item name="suggestedDiscountPercent" label=" " colon={false} extra={t('warehouse.priceNotification.batchSuggestedDiscountHint')} style={{ flex: 2 }}>
+              <InputNumber min={0} max={100} precision={2} suffix="%" disabled={!batchSetSuggestedDiscount} style={{ width: '100%' }} placeholder={t('warehouse.priceNotification.suggestedDiscountPlaceholder')}/>
             </Form.Item>
           </Space>
           <Space size={16} style={{ display: 'flex' }} align="start">

@@ -22,6 +22,9 @@ import {
 } from "@/modules/employee-profile-review/access";
 import { getEmployeeProfileReviewRequestsApi } from "@/modules/employee-profile-review/api";
 import { AppNavigationAccessProvider } from "@/modules/navigation/access-context";
+import { getPriceUpdatePendingCount } from "@/modules/price-updates/api";
+import { priceUpdateCountQueryKey } from "@/modules/price-updates/query-keys";
+import { useCartStore } from "@/store/cart-store";
 import { canAccessVersionManagement, filterVersionManagementRoutes } from "@/modules/navigation/version-management-access";
 import { resolveIdentityAdminRouteNames } from "@/modules/navigation/identity-admin-access";
 import { isNetworkUnavailableError } from "@/shared/network/network-error";
@@ -32,6 +35,7 @@ export const unstable_settings = {
 
 /** 离线设备会话补校验的重试间隔：网络恢复前不断重试，恢复后立刻补上设备校验。 */
 const OFFLINE_DEVICE_REVALIDATE_INTERVAL_MS = 60_000;
+const PRICE_UPDATES_ROUTE = "price-updates";
 
 export default function ShellLayout() {
   const router = useRouter();
@@ -46,6 +50,7 @@ export default function ShellLayout() {
   const clearLocalAuthSession = useAuthStore((state) => state.clearLocalSession);
   const setSessionKind = useAuthStore((state) => state.setSessionKind);
   const deviceSession = useDeviceStore((state) => state.session);
+  const selectedStoreCode = useCartStore((state) => state.selectedStore?.storeCode);
   const accountBinding = useDeviceStore((state) => state.accountBinding);
   const deviceHydrated = useDeviceStore((state) => state.isReady);
   const validateDevice = useDeviceStore((state) => state.validate);
@@ -408,6 +413,19 @@ export default function ShellLayout() {
     }),
     staleTime: 30_000,
   });
+  // 角标跟随当前分店：设备模式固定为绑定分店，账号模式取全局选中的分店。
+  const priceUpdateStoreCode = isDeviceMode
+    ? deviceSession?.storeCode ?? null
+    : selectedStoreCode ?? null;
+  const pendingPriceUpdateQuery = useQuery({
+    queryKey: priceUpdateCountQueryKey(priceUpdateStoreCode),
+    enabled:
+      navigationReady
+      && Boolean(priceUpdateStoreCode)
+      && visibleRouteNames.has(PRICE_UPDATES_ROUTE),
+    queryFn: () => getPriceUpdatePendingCount(priceUpdateStoreCode!),
+    staleTime: 30_000,
+  });
   const shouldWaitForNavigation =
     (hasUserSession || isDeviceMode) && (!navigationReady || navigationLoading);
   const preferredDefaultRoute = resolvePreferredDefaultTabRoute({
@@ -507,6 +525,7 @@ export default function ShellLayout() {
         navigationErrorMessage,
         navigationLoading,
         pendingProfileReviewCount: pendingReviewQuery.data?.total ?? 0,
+        pendingPriceUpdateCount: pendingPriceUpdateQuery.data ?? 0,
         isDeviceMode,
         isWarehouseStaffOnly,
       }}

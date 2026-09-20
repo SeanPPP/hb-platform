@@ -16,10 +16,13 @@ export type AppTabPath =
   | "/(shell)/attendance-management"
   | "/(shell)/product-query"
   | "/(shell)/product-insights"
+  | "/(shell)/price-updates"
   | "/(shell)/warehouse-product-insights"
+  | "/(shell)/sales-orders"
   | "/(shell)/users"
   | "/(shell)/user-admin"
   | "/(shell)/roles"
+  | "/(shell)/permissions"
   | "/(shell)/employee-profile"
   | "/(shell)/employee-profile-review"
   | "/(shell)/pos-operation-logs"
@@ -46,10 +49,13 @@ export const TAB_PATHS: Record<string, AppTabPath> = {
   "attendance-management": "/(shell)/attendance-management",
   "product-query": "/(shell)/product-query",
   "product-insights": "/(shell)/product-insights",
+  "price-updates": "/(shell)/price-updates",
   "warehouse-product-insights": "/(shell)/warehouse-product-insights",
+  "sales-orders": "/(shell)/sales-orders",
   users: "/(shell)/users",
   "user-admin": "/(shell)/user-admin",
   roles: "/(shell)/roles",
+  permissions: "/(shell)/permissions",
   "employee-profile": "/(shell)/employee-profile",
   "employee-profile-review": "/(shell)/employee-profile-review",
   "pos-operation-logs": "/(shell)/pos-operation-logs",
@@ -74,6 +80,8 @@ const DEVICE_MODE_BLOCKED_ROUTE_NAMES = new Set([
   "reports",
   "user-admin",
   "roles",
+  // 权限管理与角色管理同属全局管理，设备会话没有管理员身份，服务层会直接拒绝。
+  "permissions",
 ]);
 const LEGACY_ATTENDANCE_ROUTE_NAME = "attendance";
 export const SUPPORTED_APP_MENU_ROUTE_NAMES = new Set([

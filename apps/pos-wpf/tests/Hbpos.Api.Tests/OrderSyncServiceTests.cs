@@ -13,7 +13,7 @@ public sealed class OrderSyncServiceTests
     {
         var orderGuid = Guid.NewGuid();
         var repository = new FakeOrderRepository(exists: true);
-        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService(), new StubStoreTimeZoneResolver());
 
         var response = await service.SyncAsync(CreateRequest(orderGuid), CancellationToken.None);
 
@@ -33,7 +33,7 @@ public sealed class OrderSyncServiceTests
         };
         var reservationService = new FakeReservationService();
         reservationService.Add(new StoreVoucherReservation("token-1", "S01", "V001", 5m, DateTimeOffset.UtcNow.AddMinutes(5)));
-        var service = new OrderSyncService(repository, new OrderSyncPlanner(), reservationService);
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), reservationService, new StubStoreTimeZoneResolver());
 
         var response = await service.SyncAsync(
             CreateRequest(
@@ -57,7 +57,7 @@ public sealed class OrderSyncServiceTests
     {
         var orderGuid = Guid.NewGuid();
         var repository = new FakeOrderRepository(exists: false);
-        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService(), new StubStoreTimeZoneResolver());
 
         var response = await service.SyncAsync(CreateRequest(orderGuid), CancellationToken.None);
 
@@ -88,7 +88,7 @@ public sealed class OrderSyncServiceTests
                 CreateOriginalOrder(originalOrderGuid, originalDetailGuid, quantity: 1m, actualAmount: 9.99m)
             ]
         };
-        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService(), new StubStoreTimeZoneResolver());
 
         var response = await service.SyncAsync(
             CreateRequest(
@@ -141,7 +141,7 @@ public sealed class OrderSyncServiceTests
                 CreateOriginalOrder(originalOrderGuid, originalDetailGuid, quantity: 1m, actualAmount: 9.99m)
             ]
         };
-        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService(), new StubStoreTimeZoneResolver());
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => service.SyncAsync(
             CreateRequest(
@@ -187,7 +187,7 @@ public sealed class OrderSyncServiceTests
                 }
             ]
         };
-        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService(), new StubStoreTimeZoneResolver());
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => service.SyncAsync(
             CreateRequest(
@@ -229,7 +229,7 @@ public sealed class OrderSyncServiceTests
                 }
             ]
         };
-        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService(), new StubStoreTimeZoneResolver());
 
         var response = await service.SyncAsync(
             CreateRequest(
@@ -265,7 +265,7 @@ public sealed class OrderSyncServiceTests
                 CreateOriginalOrder(originalOrderGuid, originalDetailGuid, quantity: 1m, actualAmount: 9.99m)
             ]
         };
-        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService(), new StubStoreTimeZoneResolver());
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => service.SyncAsync(
             CreateRequest(
@@ -307,7 +307,7 @@ public sealed class OrderSyncServiceTests
                 ["SQ:payment-1"] = 9.99m
             }
         };
-        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService(), new StubStoreTimeZoneResolver());
 
         var response = await service.SyncAsync(
             CreateRequest(
@@ -352,7 +352,7 @@ public sealed class OrderSyncServiceTests
                 ["SQ:card-2"] = 7m
             }
         };
-        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService(), new StubStoreTimeZoneResolver());
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => service.SyncAsync(
             CreateRequest(
@@ -405,7 +405,7 @@ public sealed class OrderSyncServiceTests
                 ["SQ:card-b"] = originalOrderB
             }
         };
-        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService(), new StubStoreTimeZoneResolver());
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => service.SyncAsync(
             CreateRequest(
@@ -490,7 +490,7 @@ public sealed class OrderSyncServiceTests
                 ]
             }
         };
-        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService(), new StubStoreTimeZoneResolver());
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => service.SyncAsync(
             CreateRequest(
@@ -521,7 +521,7 @@ public sealed class OrderSyncServiceTests
     public async Task SyncAsync_RequiresReservationTokenForVoucherPayments()
     {
         var repository = new FakeOrderRepository(exists: false);
-        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService(), new StubStoreTimeZoneResolver());
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => service.SyncAsync(
             CreateRequest(
@@ -543,7 +543,7 @@ public sealed class OrderSyncServiceTests
         var repository = new FakeOrderRepository(exists: false);
         var reservationService = new FakeReservationService();
         reservationService.Add(new StoreVoucherReservation("token-1", "S01", "V001", 5m, DateTimeOffset.UtcNow.AddMinutes(5)));
-        var service = new OrderSyncService(repository, new OrderSyncPlanner(), reservationService);
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), reservationService, new StubStoreTimeZoneResolver());
 
         var response = await service.SyncAsync(
             CreateRequest(
@@ -569,7 +569,7 @@ public sealed class OrderSyncServiceTests
         var orderGuid = Guid.NewGuid();
         var repository = new FakeOrderRepository(exists: false);
         var reservationService = new FakeReservationService();
-        var service = new OrderSyncService(repository, new OrderSyncPlanner(), reservationService);
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), reservationService, new StubStoreTimeZoneResolver());
 
         var response = await service.SyncAsync(
             CreateRequest(
@@ -590,7 +590,7 @@ public sealed class OrderSyncServiceTests
     public async Task SyncAsync_WithoutHeldSource_ReturnsNoneDisposition()
     {
         var repository = new FakeOrderRepository(exists: false);
-        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService(), new StubStoreTimeZoneResolver());
 
         var response = await service.SyncAsync(CreateRequest(Guid.NewGuid()), CancellationToken.None);
 
@@ -609,7 +609,7 @@ public sealed class OrderSyncServiceTests
         store.AddHold(holdGuid, "S01", SharedHeldOrderStatus.Claimed);
         store.AddClaim(claimGuid, holdGuid, "S01", SharedHeldOrderClaimStatus.Active);
         var repository = new FakeOrderRepository(exists: false) { HeldOrderStore = store };
-        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService(), new StubStoreTimeZoneResolver());
 
         var response = await service.SyncAsync(
             CreateRequest(orderGuid, heldSource: new HeldOrderSourceDto(holdGuid, claimGuid)),
@@ -633,7 +633,7 @@ public sealed class OrderSyncServiceTests
         store.AddHold(holdGuid, "S01", SharedHeldOrderStatus.Pending);
         store.AddClaim(claimGuid, holdGuid, "S01", SharedHeldOrderClaimStatus.Prepared);
         var repository = new FakeOrderRepository(exists: false) { HeldOrderStore = store };
-        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService(), new StubStoreTimeZoneResolver());
         var source = new HeldOrderSourceDto(holdGuid, claimGuid);
 
         // 服务端 claim 仍为 Prepared：首笔真实订单必须 Primary，hold 完成、claim 推进为 Superseded。
@@ -669,7 +669,7 @@ public sealed class OrderSyncServiceTests
         var store = new FakeHeldOrderAssociationStore();
         store.AddHold(holdGuid, "S01", SharedHeldOrderStatus.Pending);
         var repository = new FakeOrderRepository(exists: false) { HeldOrderStore = store };
-        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService(), new StubStoreTimeZoneResolver());
 
         var response = await service.SyncAsync(
             CreateRequest(
@@ -693,7 +693,7 @@ public sealed class OrderSyncServiceTests
         store.AddHold(holdGuid, "S01", SharedHeldOrderStatus.Claimed);
         store.AddClaim(claimGuid, holdGuid, "S01", SharedHeldOrderClaimStatus.Active);
         var repository = new FakeOrderRepository(exists: false) { HeldOrderStore = store };
-        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService(), new StubStoreTimeZoneResolver());
 
         var first = await service.SyncAsync(
             CreateRequest(Guid.NewGuid(), heldSource: new HeldOrderSourceDto(holdGuid, claimGuid)),
@@ -717,7 +717,7 @@ public sealed class OrderSyncServiceTests
         var store = new FakeHeldOrderAssociationStore();
         store.AddHold(holdGuid, "S02", SharedHeldOrderStatus.Pending);
         var repository = new FakeOrderRepository(exists: false) { HeldOrderStore = store };
-        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService(), new StubStoreTimeZoneResolver());
 
         var response = await service.SyncAsync(
             CreateRequest(
@@ -744,7 +744,7 @@ public sealed class OrderSyncServiceTests
         // claim 属于另一个 hold：来源无效，但订单照常接受。
         store.AddClaim(claimGuid, otherHoldGuid, "S01", SharedHeldOrderClaimStatus.Active);
         var repository = new FakeOrderRepository(exists: false) { HeldOrderStore = store };
-        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService(), new StubStoreTimeZoneResolver());
 
         var response = await service.SyncAsync(
             CreateRequest(orderGuid, heldSource: new HeldOrderSourceDto(holdGuid, claimGuid)),
@@ -774,7 +774,7 @@ public sealed class OrderSyncServiceTests
         store.AddHold(holdGuid, "S01", SharedHeldOrderStatus.Claimed);
         store.AddClaim(claimGuid, holdGuid, "S01", SharedHeldOrderClaimStatus.Active);
         var repository = new FakeOrderRepository(exists: false) { HeldOrderStore = store };
-        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService(), new StubStoreTimeZoneResolver());
         var source = new HeldOrderSourceDto(holdGuid, claimGuid);
 
         var first = await service.SyncAsync(
@@ -799,8 +799,8 @@ public sealed class OrderSyncServiceTests
         store.AddClaim(claimGuid, holdGuid, "S01", SharedHeldOrderClaimStatus.Active);
         var firstRepository = new FakeOrderRepository(exists: false) { HeldOrderStore = store };
         var secondRepository = new FakeOrderRepository(exists: false) { HeldOrderStore = store };
-        var firstService = new OrderSyncService(firstRepository, new OrderSyncPlanner(), new FakeReservationService());
-        var secondService = new OrderSyncService(secondRepository, new OrderSyncPlanner(), new FakeReservationService());
+        var firstService = new OrderSyncService(firstRepository, new OrderSyncPlanner(), new FakeReservationService(), new StubStoreTimeZoneResolver());
+        var secondService = new OrderSyncService(secondRepository, new OrderSyncPlanner(), new FakeReservationService(), new StubStoreTimeZoneResolver());
         var start = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var source = new HeldOrderSourceDto(holdGuid, claimGuid);
 
@@ -837,10 +837,9 @@ public sealed class OrderSyncServiceTests
     {
         // 成功插入路径：disposition 由 InsertAsync 同事务直接返回，不查关联表。
         var insertedRepository = new FakeOrderRepository(exists: false);
-        var insertedService = new OrderSyncService(
-            insertedRepository,
+        var insertedService = new OrderSyncService(insertedRepository,
             new OrderSyncPlanner(),
-            new FakeReservationService());
+            new FakeReservationService(), new StubStoreTimeZoneResolver());
         var inserted = await insertedService.SyncAsync(
             CreateRequest(Guid.NewGuid()),
             CancellationToken.None);
@@ -854,10 +853,9 @@ public sealed class OrderSyncServiceTests
         {
             InsertResult = false
         };
-        var loserService = new OrderSyncService(
-            loserRepository,
+        var loserService = new OrderSyncService(loserRepository,
             new OrderSyncPlanner(),
-            new FakeReservationService());
+            new FakeReservationService(), new StubStoreTimeZoneResolver());
         var loser = await loserService.SyncAsync(
             CreateRequest(Guid.NewGuid()),
             CancellationToken.None);
@@ -868,10 +866,9 @@ public sealed class OrderSyncServiceTests
 
         // already-exists 路径：同订单重试同样不查关联表。
         var existingRepository = new FakeOrderRepository(exists: true);
-        var existingService = new OrderSyncService(
-            existingRepository,
+        var existingService = new OrderSyncService(existingRepository,
             new OrderSyncPlanner(),
-            new FakeReservationService());
+            new FakeReservationService(), new StubStoreTimeZoneResolver());
         var existing = await existingService.SyncAsync(
             CreateRequest(Guid.NewGuid()),
             CancellationToken.None);
@@ -893,7 +890,7 @@ public sealed class OrderSyncServiceTests
         store.AddHold(holdGuid, "S01", SharedHeldOrderStatus.Claimed);
         store.AddClaim(claimGuid, holdGuid, "S01", SharedHeldOrderClaimStatus.Active);
         var repository = new FakeOrderRepository(exists: false) { HeldOrderStore = store };
-        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService(), new StubStoreTimeZoneResolver());
         var source = new HeldOrderSourceDto(holdGuid, claimGuid);
 
         var first = await service.SyncAsync(
@@ -925,7 +922,7 @@ public sealed class OrderSyncServiceTests
         store.AddHold(holdGuid, "S01", SharedHeldOrderStatus.Pending);
         store.AddClaim(claimGuid, holdGuid, "S01", SharedHeldOrderClaimStatus.Active);
         var repository = new FakeOrderRepository(exists: false) { HeldOrderStore = store };
-        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService(), new StubStoreTimeZoneResolver());
 
         var response = await service.SyncAsync(
             CreateRequest(
@@ -954,7 +951,7 @@ public sealed class OrderSyncServiceTests
         store.AddHold(holdGuid, "S01", SharedHeldOrderStatus.Completed);
         store.AddClaim(claimGuid, holdGuid, "S01", SharedHeldOrderClaimStatus.Active);
         var repository = new FakeOrderRepository(exists: false) { HeldOrderStore = store };
-        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService(), new StubStoreTimeZoneResolver());
 
         var response = await service.SyncAsync(
             CreateRequest(
@@ -975,7 +972,7 @@ public sealed class OrderSyncServiceTests
         var orderGuid = Guid.NewGuid();
         var store = new FakeHeldOrderAssociationStore();
         var repository = new FakeOrderRepository(exists: false) { HeldOrderStore = store };
-        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService());
+        var service = new OrderSyncService(repository, new OrderSyncPlanner(), new FakeReservationService(), new StubStoreTimeZoneResolver());
 
         var response = await service.SyncAsync(
             CreateRequest(
@@ -1026,7 +1023,7 @@ public sealed class OrderSyncServiceTests
     {
         var request = CreateRequest(Guid.NewGuid(), itemNumber: "ITEM-1001");
 
-        var plan = new OrderSyncPlanner().CreatePlan(request);
+        var plan = new OrderSyncPlanner().CreatePlan(request, TestStoreTimeZones.Sydney);
 
         var line = Assert.Single(plan.Lines);
         Assert.Equal("P01", line.ProductCode);
@@ -1062,7 +1059,7 @@ public sealed class OrderSyncServiceTests
             ],
             []);
 
-        var plan = new OrderSyncPlanner().CreatePlan(request);
+        var plan = new OrderSyncPlanner().CreatePlan(request, TestStoreTimeZones.Sydney);
 
         var line = Assert.Single(plan.Lines);
         Assert.Equal(50, line.ProductCode.Length);
@@ -1105,7 +1102,7 @@ public sealed class OrderSyncServiceTests
             ],
             []);
 
-        var plan = new OrderSyncPlanner().CreatePlan(request);
+        var plan = new OrderSyncPlanner().CreatePlan(request, TestStoreTimeZones.Sydney);
 
         var line = Assert.Single(plan.Lines);
         Assert.Equal(string.Empty, line.ProductCode);
@@ -1125,7 +1122,7 @@ public sealed class OrderSyncServiceTests
             storeCode: "1042",
             deviceCode: "POS_1042_1234");
 
-        var plan = new OrderSyncPlanner().CreatePlan(request);
+        var plan = new OrderSyncPlanner().CreatePlan(request, TestStoreTimeZones.Sydney);
 
         Assert.Equal("POS_1042_1234", plan.Order.CreatedBy);
         Assert.Equal("POS_1042_1234", plan.Order.UpdatedBy);
@@ -1142,7 +1139,7 @@ public sealed class OrderSyncServiceTests
             storeCode: "1042",
             deviceCode: "POS_1042_TILL_01");
 
-        var plan = new OrderSyncPlanner().CreatePlan(request);
+        var plan = new OrderSyncPlanner().CreatePlan(request, TestStoreTimeZones.Sydney);
 
         Assert.Equal("POS_1042_TILL_01", plan.Order.CreatedBy);
         Assert.Equal("POS_1042_TILL_01", Assert.Single(plan.Lines).CreatedBy);
@@ -1156,7 +1153,7 @@ public sealed class OrderSyncServiceTests
             storeCode: "1042",
             deviceCode: "Register-A");
 
-        var plan = new OrderSyncPlanner().CreatePlan(request);
+        var plan = new OrderSyncPlanner().CreatePlan(request, TestStoreTimeZones.Sydney);
 
         Assert.Equal("POS_1042_Register-A", plan.Order.CreatedBy);
         Assert.Equal("POS_1042_Register-A", Assert.Single(plan.Lines).UpdatedBy);
@@ -1172,7 +1169,7 @@ public sealed class OrderSyncServiceTests
             deviceCode: "   ",
             cashierId: "Cashier-7");
 
-        var plan = new OrderSyncPlanner().CreatePlan(request);
+        var plan = new OrderSyncPlanner().CreatePlan(request, TestStoreTimeZones.Sydney);
 
         Assert.Equal("POS_1042_Cashier-7", plan.Order.CreatedBy);
         Assert.Equal("POS_1042_Cashier-7", Assert.Single(plan.Lines).UpdatedBy);
@@ -1186,7 +1183,7 @@ public sealed class OrderSyncServiceTests
             storeCode: "1042",
             deviceCode: $"POS_1042_{new string('X', 80)}");
 
-        var plan = new OrderSyncPlanner().CreatePlan(request);
+        var plan = new OrderSyncPlanner().CreatePlan(request, TestStoreTimeZones.Sydney);
 
         Assert.Equal(50, plan.Order.CreatedBy!.Length);
         Assert.StartsWith("POS_1042_", plan.Order.CreatedBy);
@@ -1267,7 +1264,7 @@ public sealed class OrderSyncServiceTests
                     ])
             ]);
 
-        var plan = new OrderSyncPlanner().CreatePlan(request);
+        var plan = new OrderSyncPlanner().CreatePlan(request, TestStoreTimeZones.Sydney);
 
         var bankTransaction = Assert.Single(plan.BankTransactions);
         Assert.Equal(paymentGuid.ToString("D"), bankTransaction.PaymentGuid);
@@ -1317,7 +1314,7 @@ public sealed class OrderSyncServiceTests
                     ])
             ]);
 
-        var plan = new OrderSyncPlanner().CreatePlan(request);
+        var plan = new OrderSyncPlanner().CreatePlan(request, TestStoreTimeZones.Sydney);
 
         var bankTransaction = Assert.Single(plan.BankTransactions);
         Assert.Equal(paymentGuid.ToString("D"), bankTransaction.PaymentGuid);
@@ -1370,11 +1367,13 @@ public sealed class OrderSyncServiceTests
             ],
             []);
 
-        var plan = new OrderSyncPlanner().CreatePlan(request);
+        var plan = new OrderSyncPlanner().CreatePlan(request, TestStoreTimeZones.Sydney);
 
         var saleLine = Assert.Single(plan.Lines);
         Assert.Equal(saleLineGuid.ToString("D"), saleLine.OrderDetailGuid);
-        Assert.Equal(2, plan.Order.ItemCount);
+        // ItemCount 是销售明细行数（退货行不计入），与旧 POS 的历史数据口径一致。
+        Assert.Equal(1, plan.Order.ItemCount);
+        Assert.Equal(2, saleLine.Quantity);
         var returnRecord = Assert.Single(plan.ReturnRecords);
         Assert.Equal(returnLineGuid.ToString("D"), returnRecord.ReturnDetailGuid);
         Assert.Equal(request.OrderGuid.ToString("D"), returnRecord.ReturnOrderGuid);

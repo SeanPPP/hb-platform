@@ -1,52 +1,51 @@
 import { Pressable, StyleSheet, View } from "react-native";
-import { IconButton, Text } from "react-native-paper";
+import { Button, IconButton, Text } from "react-native-paper";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
+import { HB_COLORS, HB_SPACING } from "@/shared/theme/tokens";
 
 interface StoreClearancePriceCardProps {
   clearanceBarcode?: string | null;
   clearancePrice: string;
   isPrintingClearance?: boolean;
-  /** 离线模式：清货价只读，打印按钮保留。 */
-  readOnly?: boolean;
   onEditClearancePrice: () => void;
   onPrintClearance?: () => void;
+  /** 离线态只读：价格与「设置清货价」不可编辑，打印清货标签保留。 */
+  readOnly?: boolean;
 }
 
+/** 清货行：嵌在标签卡第二行，行为与原清货卡一致（点价格或「设置清货价」编辑，右侧打印清货标签）。 */
 export function StoreClearancePriceCard({
   clearanceBarcode,
   clearancePrice,
   isPrintingClearance = false,
-  readOnly = false,
   onEditClearancePrice,
   onPrintClearance,
+  readOnly = false,
 }: StoreClearancePriceCardProps) {
   const { t } = useAppTranslation(["productQuery", "common"]);
 
   return (
     <View style={styles.container}>
-      <Text
-        variant="bodySmall"
-        style={styles.barcode}
-        numberOfLines={1}
-      >
-        {clearanceBarcode || t("clearancePrice.pendingBarcode")}
-      </Text>
-
+      <Text style={styles.rowTitle} numberOfLines={1}>{t("clearancePrice.rowTitle")}</Text>
       <Pressable
-        onPress={onEditClearancePrice}
-        style={[styles.pricePressable, readOnly ? styles.readOnly : null]}
+        accessibilityRole="button"
+        accessibilityLabel={`${t("clearancePrice.price")} ${clearancePrice || "--"}`}
+        onPress={readOnly ? undefined : onEditClearancePrice}
         accessibilityState={{ disabled: readOnly }}
+        style={[styles.info, readOnly ? styles.readOnly : null]}
       >
-        <View style={styles.priceContent} pointerEvents="none">
-          <Text variant="labelSmall" style={styles.priceLabel}>
-            {t("clearancePrice.price")}
-          </Text>
-          <Text variant="bodyMedium" style={styles.priceValue}>
-            {clearancePrice || "--"}
-          </Text>
-        </View>
+        <Text style={styles.priceValue} numberOfLines={1}>
+          {clearancePrice ? `$${clearancePrice}` : "--"}
+        </Text>
+        <Text style={styles.barcode} numberOfLines={1}>
+          {clearanceBarcode || t("clearancePrice.pendingBarcode")}
+        </Text>
       </Pressable>
-
+      {readOnly ? null : (
+        <Button compact mode="text" onPress={onEditClearancePrice} labelStyle={styles.setLabel}>
+          {t("clearancePrice.setAction")}
+        </Button>
+      )}
       <IconButton
         icon="tag-outline"
         size={20}
@@ -64,36 +63,45 @@ const styles = StyleSheet.create({
   container: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#fff",
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#E4E7EC",
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    gap: 10,
-  },
-  barcode: {
-    flex: 1,
-    flexShrink: 1,
-    color: "#666",
-  },
-  pricePressable: {
-    flexShrink: 0,
+    gap: HB_SPACING.xs,
+    minHeight: 48,
+    paddingLeft: HB_SPACING.sm,
+    paddingRight: HB_SPACING.xxs,
   },
   readOnly: {
     opacity: 0.6,
   },
-  priceContent: {
-    alignItems: "center",
-    gap: 1,
+  rowTitle: {
+    minWidth: 32,
+    flexShrink: 0,
+    fontSize: 13,
+    fontWeight: "700",
+    color: HB_COLORS.textPrimary,
   },
-  priceLabel: {
-    color: "#999",
-    fontSize: 10,
+  info: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "baseline",
+    gap: HB_SPACING.xs,
   },
   priceValue: {
-    color: "#0F172A",
+    fontSize: 15,
     fontWeight: "700",
+    color: HB_COLORS.textPrimary,
+    fontVariant: ["tabular-nums"],
+    flexShrink: 0,
+  },
+  barcode: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 12,
+    color: HB_COLORS.textSecondary,
+    fontVariant: ["tabular-nums"],
+  },
+  setLabel: {
+    marginHorizontal: 6,
+    fontSize: 13,
   },
   printIcon: {
     margin: 0,

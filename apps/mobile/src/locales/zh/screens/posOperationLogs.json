@@ -30,6 +30,13 @@
     "allTypes": "全部事件",
     "platform": "平台"
   },
+  "pickers": {
+    "range": "选择时间范围",
+    "store": "选择门店",
+    "type": "选择事件类型",
+    "platform": "选择平台",
+    "searchType": "搜索事件类型"
+  },
   "quick": {
     "all": "全部",
     "succeeded": "成功",

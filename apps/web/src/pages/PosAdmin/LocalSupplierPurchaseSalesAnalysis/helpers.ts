@@ -6,18 +6,16 @@ export const DEFAULT_PRODUCT_IMAGE_BASE_URL =
   'https://hotbargain-yw-2023-1300114625.cos.ap-shanghai.myqcloud.com/YW200'
 export const DEFAULT_PURCHASE_SALES_ANALYSIS_PAGE_SIZE = 100
 export const PURCHASE_SALES_ANALYSIS_PAGE_SIZE_OPTIONS = [50, 100, 200] as const
-export const PURCHASE_SALES_ANALYSIS_DEFAULT_SORT_BY = 'latestPurchaseDate'
+// 默认按总销量（最近进货后累计销量）降序：进货销量分析的第一诉求是先看卖得最多的。
+export const PURCHASE_SALES_ANALYSIS_DEFAULT_SORT_BY = 'totalSalesSinceLatestPurchase'
 export const PURCHASE_SALES_ANALYSIS_DEFAULT_SORT_ORDER = 'desc' as const
 export const PURCHASE_SALES_ANALYSIS_SORT_FIELDS = [
   'itemNumber',
   'productName',
   'latestPurchaseDate',
   'previousPurchaseDate',
-  'purchaseIntervalDays',
   'salesBetweenPurchases',
-  'salesQty30',
-  'salesQty60',
-  'salesQty90',
+  'totalSalesSinceLatestPurchase',
 ] as const
 
 export type PurchaseSalesAnalysisSorterOrder = 'ascend' | 'descend' | undefined | null

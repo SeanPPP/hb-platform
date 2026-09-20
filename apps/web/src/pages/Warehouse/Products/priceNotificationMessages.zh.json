@@ -1,0 +1,32 @@
+{
+  "warehouse": {
+    "priceNotification": {
+      "sentTitle": "已发送到分店通知",
+      "noneTitle": "已保存，未产生通知",
+      "noneDescription": "各分店的价格与折扣已与仓库一致",
+      "cancelledTitle": "价格已改回，已撤销 {{count}} 家分店的未处理通知",
+      "cancelledAlso": "另有 {{count}} 家分店的未处理通知已撤销",
+      "needsPriceUpdate": "需改价 {{count}} 家",
+      "labelOnly": "待换标签 {{count}} 家",
+      "skippedSpecial": "跳过特殊商品 {{count}} 家",
+      "viewTasks": "查看各店执行情况",
+      "previewRetail": "保存后，价格会自动下发到各分店，并向分店发送「待换标签」通知。当前有 {{count}} 家分店的价格与新价不同",
+      "previewDiscountOnly": "保存后，{{count}} 家折扣不同的分店会收到「需改价」通知，由分店确认后生效",
+      "previewSkipped": "，{{count}} 家为特殊商品将跳过",
+      "previewEnd": "。",
+      "suggestedDiscount": "建议折扣 %",
+      "suggestedDiscountPlaceholder": "留空 = 未设置",
+      "suggestedDiscountHint": "留空 = 不比较分店折扣；填 0 = 明确无折扣。建议折扣不会自动下发到分店。",
+      "suggestedDiscountedPrice": "建议折后价",
+      "suggestedDiscountSaveFailed": "商品已保存，但建议折扣保存失败",
+      "retailPriceLine": "零售价 {{from}} → {{to}}",
+      "suggestedDiscountLine": "建议折扣 {{from}} → {{to}}",
+      "notSet": "未设置",
+      "productCountLine": "共 {{count}} 个商品",
+      "batchSetSuggestedDiscount": "同时设置建议折扣",
+      "batchSuggestedDiscountHint": "勾选后才生效；留空 = 清除建议折扣，填 0 = 明确无折扣。",
+      "batchSuggestedDiscountConfirm": "建议折扣：{{value}}",
+      "batchSuggestedDiscountFailed": "批量设置建议折扣失败"
+    }
+  }
+}

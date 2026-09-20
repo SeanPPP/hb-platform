@@ -77,7 +77,7 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
     }
 
     [Fact]
-    public async Task GetCompactSalesBoardAsync_供应商筛选先缩小商品并联动三个区域()
+    public async Task GetCompactSalesBoardAsync_选中供应商时联动分店与商品()
     {
         var date = new DateTime(2026, 8, 1);
         await SeedStatisticStateAsync(date, SalesStatisticRefreshStatus.Fresh);
@@ -101,14 +101,23 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
             .Where(row => row.Date >= date.Date && row.Date < date.Date.AddDays(1) && row.SupplierCode == "200" && row.ProductCode == "P-COMPACT")
             .CountAsync());
 
-        var result = await service.GetCompactSalesBoardAsync(
-            new DateRangeDto { StartDate = date, EndDate = date },
-            chinaSupplierCodes: new List<string> { "CN-COMPACT" });
+        var result = await service.GetCompactSalesBoardAsync(new CompactSalesBoardQuery
+        {
+            DateRange = new DateRangeDto { StartDate = date, EndDate = date },
+            SelectedChinaSupplierCode = "CN-COMPACT",
+        });
 
         Assert.Equal(SalesStatisticRefreshStatus.Fresh, result.StatisticStatus);
         Assert.Equal(40m, Assert.Single(result.Stores).TotalAmount);
         Assert.Equal("CN-COMPACT", Assert.Single(result.ChinaSuppliers).SupplierCode);
-        Assert.Equal("P-COMPACT", Assert.Single(result.ProductDetails.Data).ProductCode);
+        var product = Assert.Single(result.ProductDetails.Data);
+        Assert.Equal("P-COMPACT", product.ProductCode);
+        Assert.Equal("I-COMPACT", product.ItemNumber);
+        Assert.Equal("紧凑商品", product.ProductName);
+        Assert.Equal("紧凑供应商", product.ChinaSupplierName);
+        Assert.Equal(10m, product.UnitPrice);
+        Assert.Equal(40m, result.Summary.TotalAmount);
+        Assert.Equal(1, result.Summary.ProductCount);
     }
 
     [Fact]
@@ -179,19 +188,20 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
 
         using var cache = new MemoryCache(new MemoryCacheOptions());
         var service = CreateService(cache);
-        var first = await service.GetCompactSalesBoardAsync(
-            new DateRangeDto { StartDate = date, EndDate = date });
+        var first = await service.GetCompactSalesBoardAsync(BoardQuery(date));
         await _localDb.Updateable<ProductStoreDailySalesStatistic>()
             .SetColumns(row => row.TotalAmount == 90m)
             .SetColumns(row => row.TotalQuantity == 9)
             .Where(row => row.ProductCode == "P-CACHE")
             .ExecuteCommandAsync();
 
-        var cached = await service.GetCompactSalesBoardAsync(
-            new DateRangeDto { StartDate = date, EndDate = date });
-        var refreshed = await service.GetCompactSalesBoardAsync(
-            new DateRangeDto { StartDate = date, EndDate = date }, forceRefresh: true);
+        // 不同筛选组合复用同一份立方体：选中分店也不会绕过缓存。
+        var cached = await service.GetCompactSalesBoardAsync(BoardQuery(date, query => query.SelectedBranchCode = "S-CACHE"));
+        var refreshed = await service.GetCompactSalesBoardAsync(BoardQuery(date, query => query.ForceRefresh = true));
 
+        Assert.False(first.FromCache);
+        Assert.True(cached.FromCache);
+        Assert.False(refreshed.FromCache);
         Assert.Equal(10m, Assert.Single(first.Stores).TotalAmount);
         Assert.Equal(10m, Assert.Single(cached.Stores).TotalAmount);
         Assert.Equal(90m, Assert.Single(refreshed.Stores).TotalAmount);
@@ -203,27 +213,22 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
     {
         var start = new DateTime(2025, 1, 1);
         var exception = await Assert.ThrowsAsync<ArgumentException>(() => CreateService().GetCompactSalesBoardAsync(
-            new DateRangeDto { StartDate = start, EndDate = start.AddDays(366) }));
+            new CompactSalesBoardQuery { DateRange = new DateRangeDto { StartDate = start, EndDate = start.AddDays(366) } }));
 
         Assert.Contains("366", exception.Message);
     }
 
     [Fact]
-    public void CompactSalesBoardCacheKey_筛选顺序不同仍复用同一缓存()
+    public void CompactSalesBoardCubeCacheKey_只由日期范围和统计水位决定()
     {
         var range = new DateRangeDto { StartDate = new DateTime(2026, 8, 3), EndDate = new DateTime(2026, 8, 3) };
-        var first = SalesDashboardCacheKeys.CompactSalesBoard(
-            range,
-            new List<string> { "S2", "S1" },
-            new List<string> { "CN2", "CN1" },
-            " P-1 ", 1, 80, "watermark");
-        var second = SalesDashboardCacheKeys.CompactSalesBoard(
-            range,
-            new List<string> { "S1", "S2" },
-            new List<string> { "cn1", "cn2" },
-            "P-1", 1, 80, "watermark");
+        var sameDayWithTime = new DateRangeDto { StartDate = new DateTime(2026, 8, 3, 9, 30, 0), EndDate = new DateTime(2026, 8, 3, 18, 0, 0) };
+        var first = SalesDashboardCacheKeys.CompactSalesBoardCube(range, "watermark");
 
-        Assert.Equal(first, second);
+        Assert.Equal(first, SalesDashboardCacheKeys.CompactSalesBoardCube(sameDayWithTime, "watermark"));
+        Assert.NotEqual(first, SalesDashboardCacheKeys.CompactSalesBoardCube(range, "watermark-2"));
+        Assert.NotEqual(first, SalesDashboardCacheKeys.CompactSalesBoardCube(
+            new DateRangeDto { StartDate = range.StartDate, EndDate = range.EndDate.AddDays(1) }, "watermark"));
     }
 
     [Fact]
@@ -257,9 +262,9 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
 
         var range = new DateRangeDto { StartDate = date, EndDate = date };
         var service = CreateService();
-        var firstPage = await service.GetCompactSalesBoardAsync(range, pageIndex: 1, pageSize: 20);
-        var secondPage = await service.GetCompactSalesBoardAsync(range, pageIndex: 2, pageSize: 20);
-        var thirdPage = await service.GetCompactSalesBoardAsync(range, pageIndex: 3, pageSize: 20);
+        var firstPage = await service.GetCompactSalesBoardAsync(new CompactSalesBoardQuery { DateRange = range, PageIndex = 1, PageSize = 20 });
+        var secondPage = await service.GetCompactSalesBoardAsync(new CompactSalesBoardQuery { DateRange = range, PageIndex = 2, PageSize = 20 });
+        var thirdPage = await service.GetCompactSalesBoardAsync(new CompactSalesBoardQuery { DateRange = range, PageIndex = 3, PageSize = 20 });
 
         Assert.Equal(new[] { "S-EQUAL-A", "S-EQUAL-B" }, firstPage.Stores.Select(row => row.BranchCode));
         Assert.Equal(new[] { "CN-EQUAL-A", "CN-EQUAL-B" }, firstPage.ChinaSuppliers.Select(row => row.SupplierCode));
@@ -292,22 +297,20 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
         using var cache = new MemoryCache(new MemoryCacheOptions());
         var service = CreateService(cache);
         service.ProductSalesAnalysisCacheWriteInterceptor = () => SalesDashboardCacheKeys.ClearActiveKeys();
-        var first = await service.GetCompactSalesBoardAsync(
-            new DateRangeDto { StartDate = date, EndDate = date });
+        var first = await service.GetCompactSalesBoardAsync(BoardQuery(date));
         await _localDb.Updateable<ProductStoreDailySalesStatistic>()
             .SetColumns(row => row.TotalAmount == 20m)
             .Where(row => row.ProductCode == "P-CLEAR")
             .ExecuteCommandAsync();
-        var second = await service.GetCompactSalesBoardAsync(
-            new DateRangeDto { StartDate = date, EndDate = date });
+        var second = await service.GetCompactSalesBoardAsync(BoardQuery(date));
 
         Assert.Equal(10m, Assert.Single(first.Stores).TotalAmount);
         Assert.Equal(20m, Assert.Single(second.Stores).TotalAmount);
-        Assert.DoesNotContain(SalesDashboardCacheKeys.ActiveKeys, key => key.StartsWith("SalesDashboard:CompactSalesBoard:", StringComparison.Ordinal));
+        Assert.DoesNotContain(SalesDashboardCacheKeys.ActiveKeys, key => key.StartsWith("SalesDashboard:CompactSalesBoardCube:", StringComparison.Ordinal));
     }
 
     [Fact]
-    public async Task GetCompactSalesBoardAsync_超过2100个国内供应商时分批读取名称和统计()
+    public async Task GetCompactSalesBoardAsync_超过2100个国内供应商时一次读取名称和统计()
     {
         var date = new DateTime(2026, 8, 4);
         const int count = 2105;
@@ -342,9 +345,7 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
         foreach (var batch in mappings.Chunk(250))
             await _posmDb.Insertable(batch.ToList()).ExecuteCommandAsync();
 
-        var result = await CreateService().GetCompactSalesBoardAsync(
-            new DateRangeDto { StartDate = date, EndDate = date },
-            chinaSupplierCodes: suppliers.Select(supplier => supplier.SupplierCode!).ToList());
+        var result = await CreateService().GetCompactSalesBoardAsync(BoardQuery(date));
 
         Assert.Equal(count, result.ProductDetails.Total);
         Assert.Equal(count, result.ChinaSuppliers.Count);
@@ -352,7 +353,7 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
     }
 
     [Fact]
-    public async Task GetCompactSalesBoardAsync_未筛选供应商时大映射集合仍分批聚合()
+    public async Task GetCompactSalesBoardAsync_未筛选供应商时大映射集合单次聚合()
     {
         var date = new DateTime(2026, 8, 5);
         const int count = 2105;
@@ -378,12 +379,194 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
             }).ToList()).ExecuteCommandAsync();
         }
 
-        var result = await CreateService().GetCompactSalesBoardAsync(
-            new DateRangeDto { StartDate = date, EndDate = date });
+        var statisticStatements = new List<string>();
+        _localDb.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (sql.Contains("ProductStoreDailySalesStatistic", StringComparison.OrdinalIgnoreCase))
+                statisticStatements.Add(sql);
+        };
+        var result = await CreateService().GetCompactSalesBoardAsync(BoardQuery(date));
+        _localDb.Aop.OnLogExecuting = null;
 
         Assert.Equal(count, result.ProductDetails.Total);
         Assert.Equal(count, result.ChinaSuppliers.Count);
         Assert.Equal(1m, Assert.Single(result.Stores).TotalAmount / count);
+        // 立方体聚合 + 商品资料 EXISTS 半连接各 1 条；不再随商品数量分批，也不带商品编码 IN 列表。
+        Assert.Equal(2, statisticStatements.Count);
+        Assert.All(statisticStatements, sql => Assert.DoesNotContain("P-UNFILTERED-", sql, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task GetCompactSalesBoardAsync_交叉筛选时各栏不被自身选中项收窄()
+    {
+        var date = await SeedCompactCrossFilterFixtureAsync(new DateTime(2026, 8, 6));
+        var service = CreateService();
+
+        var byBranch = await service.GetCompactSalesBoardAsync(BoardQuery(date, query => query.SelectedBranchCode = "S-A"));
+
+        // 分店栏不受已选分店约束，仍保留两家，便于直接改选；未映射商品与非 200 行都不计入。
+        Assert.Equal(new[] { ("S-A", 50m, 2), ("S-B", 35m, 2) },
+            byBranch.Stores.Select(row => (row.BranchCode, row.TotalAmount, row.ProductCount)));
+        Assert.Equal(new[] { ("CN-2", 30m, 1), ("CN-1", 20m, 1) },
+            byBranch.ChinaSuppliers.Select(row => (row.SupplierCode, row.TotalAmount, row.ProductCount)));
+        Assert.Equal(new[] { "P-3", "P-1" }, byBranch.ProductDetails.Data.Select(row => row.ProductCode));
+        Assert.Equal(50m, byBranch.Summary.TotalAmount);
+        Assert.Equal(3, byBranch.Summary.TotalQuantity);
+        Assert.Equal((2, 1, 2), (byBranch.Summary.ProductCount, byBranch.Summary.StoreCount, byBranch.Summary.SupplierCount));
+        Assert.Equal(85m, byBranch.Summary.OverallAmount);
+        Assert.Equal(9, byBranch.Summary.OverallQuantity);
+
+        var byBranchAndSupplier = await service.GetCompactSalesBoardAsync(BoardQuery(date, query =>
+        {
+            query.SelectedBranchCode = "S-A";
+            query.SelectedChinaSupplierCode = "CN-1";
+        }));
+
+        Assert.Equal(new[] { ("S-B", 35m), ("S-A", 20m) },
+            byBranchAndSupplier.Stores.Select(row => (row.BranchCode, row.TotalAmount)));
+        Assert.Equal(new[] { "CN-2", "CN-1" }, byBranchAndSupplier.ChinaSuppliers.Select(row => row.SupplierCode));
+        Assert.Equal("P-1", Assert.Single(byBranchAndSupplier.ProductDetails.Data).ProductCode);
+        Assert.Equal(20m, byBranchAndSupplier.ProductDetails.ScopeAmount);
+        Assert.Equal(20m, byBranchAndSupplier.Summary.TotalAmount);
+
+        var byProduct = await service.GetCompactSalesBoardAsync(BoardQuery(date, query => query.SelectedProductCode = "P-1"));
+
+        // 选中商品反查：分店栏只剩卖过该商品的分店，商品栏仍保留全部候选（同额按商品编码稳定排序）。
+        Assert.Equal(new[] { ("S-A", 20m), ("S-B", 10m) }, byProduct.Stores.Select(row => (row.BranchCode, row.TotalAmount)));
+        Assert.Equal(("CN-1", 30m), (Assert.Single(byProduct.ChinaSuppliers).SupplierCode, byProduct.ChinaSuppliers[0].TotalAmount));
+        Assert.Equal(new[] { "P-1", "P-3", "P-2" }, byProduct.ProductDetails.Data.Select(row => row.ProductCode));
+        Assert.Equal((30m, 2), (byProduct.Summary.TotalAmount, byProduct.Summary.StoreCount));
+    }
+
+    [Fact]
+    public async Task GetCompactSalesBoardAsync_授权范围外的分店不可见且选中也不返回数据()
+    {
+        var date = await SeedCompactCrossFilterFixtureAsync(new DateTime(2026, 8, 7));
+        var service = CreateService();
+
+        var scoped = await service.GetCompactSalesBoardAsync(BoardQuery(date, query => query.BranchCodes = new List<string> { "s-b" }));
+        var outOfScope = await service.GetCompactSalesBoardAsync(BoardQuery(date, query =>
+        {
+            query.BranchCodes = new List<string> { "S-B" };
+            query.SelectedBranchCode = "S-A";
+        }));
+        var emptyScope = await service.GetCompactSalesBoardAsync(BoardQuery(date, query => query.BranchCodes = new List<string>()));
+
+        Assert.Equal("S-B", Assert.Single(scoped.Stores).BranchCode);
+        Assert.Equal(new[] { "P-1", "P-2" }, scoped.ProductDetails.Data.Select(row => row.ProductCode).OrderBy(code => code));
+        Assert.Equal(35m, scoped.Summary.OverallAmount);
+        Assert.Empty(outOfScope.ProductDetails.Data);
+        Assert.Empty(outOfScope.ChinaSuppliers);
+        Assert.Equal(0m, outOfScope.Summary.TotalAmount);
+        Assert.Empty(emptyScope.Stores);
+        Assert.Empty(emptyScope.ProductDetails.Data);
+    }
+
+    [Theory]
+    [InlineData("quantity", "desc", new[] { "P-2", "P-1", "P-3" })]
+    [InlineData("unitPrice", "asc", new[] { "P-2", "P-1", "P-3" })]
+    [InlineData("unitPrice", "desc", new[] { "P-3", "P-1", "P-2" })]
+    [InlineData("itemNumber", null, new[] { "P-1", "P-2", "P-3" })]
+    [InlineData("itemNumber", "desc", new[] { "P-3", "P-2", "P-1" })]
+    [InlineData("unknown", null, new[] { "P-1", "P-3", "P-2" })]
+    public async Task GetCompactSalesBoardAsync_商品明细按字段全量排序(string sortField, string? sortOrder, string[] expected)
+    {
+        var date = await SeedCompactCrossFilterFixtureAsync(new DateTime(2026, 8, 8));
+
+        var result = await CreateService().GetCompactSalesBoardAsync(BoardQuery(date, query =>
+        {
+            query.SortField = sortField;
+            query.SortOrder = sortOrder;
+        }));
+
+        Assert.Equal(expected, result.ProductDetails.Data.Select(row => row.ProductCode));
+    }
+
+    [Fact]
+    public async Task GetCompactSalesBoardAsync_关键词多词全部命中且只过滤商品栏()
+    {
+        var date = await SeedCompactCrossFilterFixtureAsync(new DateTime(2026, 8, 9));
+        var service = CreateService();
+
+        var canvas = await service.GetCompactSalesBoardAsync(BoardQuery(date, query => query.Keyword = " CANVAS "));
+        var canvas60 = await service.GetCompactSalesBoardAsync(BoardQuery(date, query => query.Keyword = "canvas  60"));
+        var byItemNumber = await service.GetCompactSalesBoardAsync(BoardQuery(date, query => query.Keyword = "it-3"));
+
+        Assert.Equal(new[] { "P-1", "P-2" }, canvas.ProductDetails.Data.Select(row => row.ProductCode));
+        Assert.Equal(2, canvas.ProductDetails.Total);
+        // 占比分母不随关键词变化：仍是分店、供应商约束下全部商品的合计。
+        Assert.Equal(85m, canvas.ProductDetails.ScopeAmount);
+        Assert.Equal(2, canvas.Stores.Count);
+        Assert.Equal(85m, canvas.Summary.TotalAmount);
+        Assert.Equal("P-1", Assert.Single(canvas60.ProductDetails.Data).ProductCode);
+        Assert.Equal("P-3", Assert.Single(byItemNumber.ProductDetails.Data).ProductCode);
+    }
+
+    [Fact]
+    public async Task GetCompactSalesBoardAsync_商品资料读取使用IsDeleted字面量以命中过滤索引()
+    {
+        var date = await SeedCompactCrossFilterFixtureAsync(new DateTime(2026, 8, 10));
+        var productStatements = new List<string>();
+        _localDb.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (sql.Contains("EXISTS", StringComparison.OrdinalIgnoreCase))
+                productStatements.Add(sql);
+        };
+
+        await CreateService().GetCompactSalesBoardAsync(BoardQuery(date));
+        _localDb.Aop.OnLogExecuting = null;
+
+        var sql = Assert.Single(productStatements);
+        Assert.Contains("[IsDeleted] = 0", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("@IsDeleted", sql, StringComparison.Ordinal);
+    }
+
+    private static CompactSalesBoardQuery BoardQuery(DateTime date, Action<CompactSalesBoardQuery>? configure = null)
+    {
+        var query = new CompactSalesBoardQuery { DateRange = new DateRangeDto { StartDate = date, EndDate = date } };
+        configure?.Invoke(query);
+        return query;
+    }
+
+    /// <summary>
+    /// 两家分店 × 两个国内供应商 × 三个商品的交叉筛选夹具，另含未映射商品与非 200 统计行作为干扰项。
+    /// S-A：P-1(2 件 $20)、P-3(1 件 $30)；S-B：P-1(1 件 $10)、P-2(5 件 $25)。
+    /// </summary>
+    private async Task<DateTime> SeedCompactCrossFilterFixtureAsync(DateTime date)
+    {
+        await SeedStatisticStateAsync(date, SalesStatisticRefreshStatus.Fresh);
+        await SeedStoreAsync("S-A", "分店A");
+        await SeedStoreAsync("S-B", "分店B");
+        await SeedProductAsync("P-1", "IT-1", null, "Canvas Frame 60*90cm", true, true, 1);
+        await SeedProductAsync("P-2", "IT-2", null, "Canvas Board 20*25cm", true, true, 1);
+        await SeedProductAsync("P-3", "IT-3", null, "Sketch Pad A4", true, true, 1);
+        await _localDb.Insertable(new List<ChinaSupplier>
+        {
+            new() { Guid = "cross-cn-1", SupplierCode = "CN-1", SupplierName = "供应商一" },
+            new() { Guid = "cross-cn-2", SupplierCode = "CN-2", SupplierName = "供应商二" },
+        }).ExecuteCommandAsync();
+        await _posmDb.Insertable(new List<PosmProductSupplierMapping>
+        {
+            new() { ProductCode = "P-1", LocalSupplierCode = "200", ChinaSupplierCode = "CN-1" },
+            new() { ProductCode = "P-2", LocalSupplierCode = "200", ChinaSupplierCode = "CN-1" },
+            new() { ProductCode = "P-3", LocalSupplierCode = "200", ChinaSupplierCode = "CN-2" },
+        }).ExecuteCommandAsync();
+
+        ProductStoreDailySalesStatistic Row(string branchCode, string supplierCode, string productCode, int quantity, decimal amount) => new()
+        {
+            Date = date, BranchCode = branchCode, SupplierCode = supplierCode, ProductCode = productCode,
+            ProductName = productCode, TotalQuantity = quantity, TotalAmount = amount, OrderCount = 1,
+        };
+        await _localDb.Insertable(new List<ProductStoreDailySalesStatistic>
+        {
+            Row("S-A", "200", "P-1", 2, 20m),
+            Row("S-A", "200", "P-3", 1, 30m),
+            Row("S-B", "200", "P-1", 1, 10m),
+            Row("S-B", "200", "P-2", 5, 25m),
+            Row("S-A", "200", "P-UNMAPPED", 9, 99m),
+            Row("S-B", "999", "P-2", 7, 70m),
+        }).ExecuteCommandAsync();
+        return date;
     }
 
     [Fact]

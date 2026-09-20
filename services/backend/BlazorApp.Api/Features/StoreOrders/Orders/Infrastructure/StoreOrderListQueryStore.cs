@@ -143,6 +143,36 @@ internal sealed class StoreOrderListQueryStore(
             );
         }
 
+        if (!string.IsNullOrWhiteSpace(filter.ProductKeyword))
+        {
+            var productKeyword = filter.ProductKeyword.Trim();
+            // 商品维度筛选：单个相关 EXISTS 子查询内同时匹配货号、条码和商品名，
+            // 避免每多一个字段就多扫一遍明细表。
+            query = query.Where(order =>
+                SqlFunc.Subqueryable<WareHouseOrderDetails>()
+                    .InnerJoin<Product>((detail, product) =>
+                        detail.ProductCode == product.ProductCode
+                    )
+                    .Where((detail, product) =>
+                        !detail.IsDeleted
+                        && !product.IsDeleted
+                        && detail.OrderGUID == order.OrderGUID
+                        && (
+                            (
+                                product.ItemNumber != null
+                                && product.ItemNumber.Contains(productKeyword)
+                            )
+                            || (
+                                product.Barcode != null
+                                && product.Barcode.Contains(productKeyword)
+                            )
+                            || product.ProductName.Contains(productKeyword)
+                        )
+                    )
+                    .Any()
+            );
+        }
+
         if (filter.StatusList != null && filter.StatusList.Any())
         {
             query = query.Where(order =>

@@ -18,10 +18,10 @@
     "POS 钱箱": "POS cash drawer",
     "POS 销售": "POS sales",
     "仓库管理": "Warehouse management",
-    "价格管理": "Price management",
     "促销管理": "Promotion management",
     "分店商品管理": "Store product management",
     "分店管理": "Store management",
+    "分店订货": "Store orders",
     "分店财务": "Store finance",
     "分店运营": "Store operations",
     "前台订货": "Store ordering",
@@ -37,7 +37,6 @@
     "用户管理": "User management",
     "系统管理": "System management",
     "角色管理": "Role management",
-    "订单管理": "Order management",
     "货柜管理": "Container management",
     "销售看板": "Sales dashboard"
   },
@@ -115,12 +114,12 @@
       "description": "Allows access to Attendance Settings Edit."
     },
     "AustralianSuppliers.Edit": {
-      "name": "Australian Suppliers Edit",
-      "description": "Allows access to Australian Suppliers Edit."
+      "name": "Edit Australian suppliers",
+      "description": "Create, edit, enable or disable Australian suppliers and sync them with HQ."
     },
     "AustralianSuppliers.View": {
-      "name": "Australian Suppliers View",
-      "description": "Allows access to Australian Suppliers View."
+      "name": "View Australian suppliers",
+      "description": "View the Australian supplier list on the web admin."
     },
     "Container.Create": {
       "name": "Create containers",
@@ -170,13 +169,9 @@
       "name": "Domestic Purchase Manage Suppliers",
       "description": "Allows access to Domestic Purchase Manage Suppliers."
     },
-    "DomesticPurchase.View": {
-      "name": "Domestic Purchase View",
-      "description": "Allows access to Domestic Purchase View."
-    },
     "EmployeeProfiles.Edit": {
       "name": "Edit employee profiles",
-      "description": "Maintain employee profile details."
+      "description": "Edit your own profile on mobile; editing other employees on the web admin also requires the administrator role."
     },
     "EmployeeProfiles.ReviewSensitiveManagedStore": {
       "name": "Review sensitive employee changes",
@@ -210,6 +205,10 @@
       "name": "Order Front",
       "description": "Allows access to Order Front."
     },
+    "OrderFront.BatchProductSales.View": {
+      "name": "View item sales in Order Front",
+      "description": "Web Order Front page /shop/purchase-sales-analysis (Paste Item Numbers tab) - View sales quantity, daily trends and discount sales across all stores for imported item numbers."
+    },
     "Orders.Create": {
       "name": "Orders Create",
       "description": "Allows access to Orders Create."
@@ -223,8 +222,12 @@
       "description": "Allows access to Orders Edit."
     },
     "Orders.View": {
-      "name": "Orders View",
-      "description": "Allows access to Orders View."
+      "name": "View orders",
+      "description": "View cashier records on the web admin and store orders on mobile."
+    },
+    "SalesOrders.View": {
+      "name": "Sales records view",
+      "description": "Mobile sales records - view sales orders, lines and invoices by store, date and order type."
     },
     "Permissions.PosTerminal.Audit.View": {
       "name": "View POS audit logs",
@@ -466,25 +469,13 @@
       "name": "Pos Products View",
       "description": "Allows access to Pos Products View."
     },
-    "Prices.Delete": {
-      "name": "Prices Delete",
-      "description": "Allows access to Prices Delete."
-    },
-    "Prices.Modify": {
-      "name": "Prices Modify",
-      "description": "Allows access to Prices Modify."
-    },
-    "Prices.View": {
-      "name": "Prices View",
-      "description": "Allows access to Prices View."
-    },
     "PricingStrategy.Edit": {
-      "name": "Pricing Strategy Edit",
-      "description": "Allows access to Pricing Strategy Edit."
+      "name": "Edit pricing rules",
+      "description": "Create, edit and delete automatic pricing rules."
     },
     "PricingStrategy.View": {
-      "name": "Pricing Strategy View",
-      "description": "Allows access to Pricing Strategy View."
+      "name": "View pricing rules",
+      "description": "View and test automatic pricing rules."
     },
     "Products.Create": {
       "name": "Products Create",
@@ -503,24 +494,20 @@
       "description": "Allows access to Products View."
     },
     "Promotions.Edit": {
-      "name": "Promotions Edit",
-      "description": "Allows access to Promotions Edit."
+      "name": "Edit promotions",
+      "description": "Edit store promotions; global promotions also require the administrator role."
     },
     "Promotions.View": {
       "name": "Promotions View",
       "description": "Allows access to Promotions View."
     },
-    "Reports.Export": {
-      "name": "Reports Export",
-      "description": "Allows access to Reports Export."
-    },
     "Reports.ProductMovement.View": {
-      "name": "Reports Product Movement View",
-      "description": "Allows access to Reports Product Movement View."
+      "name": "View supplier and store sales details",
+      "description": "View cross-store supplier and product sales details on the web admin, the mobile reports tab and the sales dashboard APIs."
     },
     "Reports.View": {
-      "name": "Reports View",
-      "description": "Allows access to Reports View."
+      "name": "View reports",
+      "description": "Executive dashboard APIs for hourly traffic, daily and weekly store performance; also treated as an alias of Reports.ProductMovement.View."
     },
     "Roles.Create": {
       "name": "Roles Create",
@@ -562,6 +549,10 @@
       "name": "View product performance analysis",
       "description": "View product performance and recommended store manager actions."
     },
+    "SalesDashboard.LocalSupplierPurchaseSales.View": {
+      "name": "View local purchase sales analysis",
+      "description": "Web page /executive-sales-intelligence/purchase-sales-analysis, Local purchase analysis tab - Review latest purchases, daily sales charts and sell-through by store and supplier."
+    },
     "SalesDashboard.PurchaseAmount.View": {
       "name": "View purchase amount dashboard",
       "description": "View warehouse orders, local supplier purchase amounts and revenue by store."
@@ -586,10 +577,6 @@
       "name": "Seasonal Cards Remaining View Managed Store",
       "description": "Allows access to Seasonal Cards Remaining View Managed Store."
     },
-    "Store.ManageInfo": {
-      "name": "Store Manage Info",
-      "description": "Allows access to Store Manage Info."
-    },
     "Store.ManageOperations": {
       "name": "Store Manage Operations",
       "description": "Allows access to Store Manage Operations."
@@ -601,6 +588,14 @@
     "StoreProducts.Edit": {
       "name": "Store Products Edit",
       "description": "Allows access to Store Products Edit."
+    },
+    "StoreProducts.PriceUpdates": {
+      "name": "Store Products Price Updates",
+      "description": "Allows viewing this store's price update and label replacement notices, applying warehouse prices, and printing or marking labels in the mobile Price updates screen."
+    },
+    "StoreProducts.SyncToOtherStores": {
+      "name": "Store Products Sync To Other Stores",
+      "description": "Allows syncing this store's retail price and discount to other manageable stores from mobile product maintenance."
     },
     "StoreProducts.View": {
       "name": "Store Products View",
@@ -688,7 +683,11 @@
     },
     "Users.View": {
       "name": "View users",
-      "description": "View user lists and details."
+      "description": "View user lists and details in the mobile staff and user management pages."
+    },
+    "Users.ViewWebConsole": {
+      "name": "View Web user management",
+      "description": "Show and open the Web admin user management page."
     },
     "Warehouse.Manage": {
       "name": "Warehouse Manage",
@@ -709,10 +708,6 @@
     "Warehouse.ManageProducts": {
       "name": "Warehouse Manage Products",
       "description": "Allows access to Warehouse Manage Products."
-    },
-    "Warehouse.View": {
-      "name": "Warehouse View",
-      "description": "Allows access to Warehouse View."
     }
   },
   "roles": {

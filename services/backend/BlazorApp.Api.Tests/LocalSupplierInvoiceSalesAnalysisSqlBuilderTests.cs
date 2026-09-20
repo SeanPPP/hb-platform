@@ -17,6 +17,8 @@ public class LocalSupplierInvoiceSalesAnalysisSqlBuilderTests
 
         Assert.Contains("[LocalSupplier] sup", sql.Sql, StringComparison.Ordinal);
         Assert.DoesNotContain("[HBLocalSupplier]", sql.Sql, StringComparison.Ordinal);
+        Assert.Contains("AND h.IsDeleted = 0", sql.Sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("COALESCE(h.IsDeleted", sql.Sql, StringComparison.OrdinalIgnoreCase);
         Assert.False(LocalSupplierInvoiceSalesAnalysisSqlBuilder.ContainsWriteKeyword(sql.Sql));
     }
 
@@ -34,6 +36,12 @@ public class LocalSupplierInvoiceSalesAnalysisSqlBuilderTests
         Assert.Contains("[StoreLocalSupplierInvoiceDetails]", sql.Sql, StringComparison.Ordinal);
         Assert.Contains("[ProductStoreDailySalesStatistic]", sql.Sql, StringComparison.Ordinal);
         Assert.Contains("CurrentProducts AS", sql.Sql, StringComparison.OrdinalIgnoreCase);
+        // 删除标记必须能命中 WHERE IsDeleted = 0 过滤索引；本次单据与历史单据的明细都不能用 COALESCE 包一层。
+        Assert.Contains("AND d.IsDeleted = 0", sql.Sql, StringComparison.Ordinal);
+        Assert.Contains("AND pd.IsDeleted = 0", sql.Sql, StringComparison.Ordinal);
+        Assert.Contains("AND pi.IsDeleted = 0", sql.Sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("COALESCE(d.IsDeleted", sql.Sql, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("COALESCE(pd.IsDeleted", sql.Sql, StringComparison.OrdinalIgnoreCase);
         Assert.Contains(
             "CAST(COALESCE(h.InboundDate, h.OrderDate, h.CreatedAt) AS date) AS AnalysisDate",
             sql.Sql,
@@ -45,11 +53,11 @@ public class LocalSupplierInvoiceSalesAnalysisSqlBuilderTests
             StringComparison.OrdinalIgnoreCase
         );
         Assert.Contains("pi.InvoiceGUID <> @InvoiceGuid", sql.Sql, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains(
-            "NULLIF(pd.ProductCode, N'') = cp.ProductCode",
-            sql.Sql,
-            StringComparison.OrdinalIgnoreCase
-        );
+        // 历史明细按商品编码走过滤索引：列上不能包 NULLIF，且要显式声明非空串以匹配索引过滤条件。
+        Assert.Contains("ON pd.ProductCode = cp.ProductCode", sql.Sql, StringComparison.Ordinal);
+        Assert.Contains("AND pd.ProductCode <> N''", sql.Sql, StringComparison.Ordinal);
+        Assert.Contains("ON pi.InvoiceGUID = pd.InvoiceGUID", sql.Sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("NULLIF(pd.ProductCode", sql.Sql, StringComparison.OrdinalIgnoreCase);
         Assert.Contains(
             "NULLIF(p.ProductImage, N'') AS ProductImage",
             sql.Sql,
@@ -116,16 +124,29 @@ public class LocalSupplierInvoiceSalesAnalysisSqlBuilderTests
 
         Assert.Contains("h.OrderDate >= @OrderDateStart", sql.PagedSql, StringComparison.Ordinal);
         Assert.Contains("h.OrderDate < @OrderDateEndExclusive", sql.PagedSql, StringComparison.Ordinal);
+        // 删除标记必须是可命中 WHERE IsDeleted = 0 过滤索引的写法，COALESCE 会让明细表退化为全表扫描。
+        Assert.Contains("h.IsDeleted = 0", sql.PagedSql, StringComparison.Ordinal);
+        Assert.Contains("AND d.IsDeleted = 0", sql.PagedSql, StringComparison.Ordinal);
+        Assert.Contains("AND srp.IsDeleted = 0", sql.PagedSql, StringComparison.Ordinal);
+        Assert.Contains("AND p.IsDeleted = 0", sql.PagedSql, StringComparison.Ordinal);
+        Assert.DoesNotContain("COALESCE(h.IsDeleted", sql.PagedSql, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("COALESCE(d.IsDeleted", sql.PagedSql, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("COALESCE(h.IsDeleted", sql.SummarySql, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("COALESCE(d.IsDeleted", sql.SummarySql, StringComparison.OrdinalIgnoreCase);
+        // 供应商取值仍是「商品档案优先、分店零售价兜底」；零售价来源列在 DetailResolved 中别名为 RetailSupplierCode。
         Assert.Contains(
-            "COALESCE(NULLIF(p.LocalSupplierCode, N''), NULLIF(srp.SupplierCode, N'')) = @SupplierCode",
+            "COALESCE(NULLIF(p.LocalSupplierCode, N''), NULLIF(dr.RetailSupplierCode, N'')) = @SupplierCode",
             sql.PagedSql,
             StringComparison.Ordinal
         );
         Assert.Contains(
-            "NULLIF(COALESCE(NULLIF(p.LocalSupplierCode, N''), NULLIF(srp.SupplierCode, N'')), N'') IS NOT NULL",
+            "NULLIF(COALESCE(NULLIF(p.LocalSupplierCode, N''), NULLIF(dr.RetailSupplierCode, N'')), N'') IS NOT NULL",
             sql.PagedSql,
             StringComparison.Ordinal
         );
+        Assert.Contains("srp.SupplierCode AS RetailSupplierCode", sql.PagedSql, StringComparison.Ordinal);
+        // Product 必须用单列等值条件 JOIN，才能走 ProductCode 索引而不是整表扫描。
+        Assert.Contains("ON p.ProductCode = dr.ProductCode", sql.PagedSql, StringComparison.Ordinal);
         Assert.Contains(
             "NULLIF(p.ProductImage, N'') AS ProductImage",
             sql.PagedSql,
@@ -167,8 +188,8 @@ public class LocalSupplierInvoiceSalesAnalysisSqlBuilderTests
         );
         var pagedSql = NormalizeLineEndings(sql.PagedSql);
 
-        Assert.Contains("SUM(COALESCE(d.Quantity, 0)) AS PurchaseQty", sql.PagedSql, StringComparison.Ordinal);
-        Assert.Contains("fi.PurchaseDate AS PurchaseDate", sql.PagedSql, StringComparison.Ordinal);
+        Assert.Contains("SUM(COALESCE(dr.Quantity, 0)) AS PurchaseQty", sql.PagedSql, StringComparison.Ordinal);
+        Assert.Contains("dr.PurchaseDate AS PurchaseDate", sql.PagedSql, StringComparison.Ordinal);
         Assert.Contains(
             "ROW_NUMBER() OVER (\n            PARTITION BY pda.StoreCode, pda.ProductCode\n            ORDER BY pda.PurchaseDate DESC\n        ) AS PurchaseRank",
             pagedSql,
@@ -184,7 +205,13 @@ public class LocalSupplierInvoiceSalesAnalysisSqlBuilderTests
             sql.PagedSql,
             StringComparison.Ordinal
         );
-        Assert.DoesNotContain("COUNT(1) OVER()", sql.PagedSql, StringComparison.OrdinalIgnoreCase);
+        // 分页 SQL 自带总数与统计更新时间，服务层只在当前页为空时才回退到汇总 SQL。
+        Assert.Contains("COUNT(1) OVER () AS TotalCount", sql.PagedSql, StringComparison.Ordinal);
+        Assert.Contains(
+            "MAX(SalesStatisticLastUpdate) OVER () AS OverallSalesStatisticLastUpdate",
+            sql.PagedSql,
+            StringComparison.Ordinal
+        );
         Assert.Contains("COUNT(1) AS TotalCount", sql.SummarySql, StringComparison.Ordinal);
         Assert.Contains(
             "MAX(SalesStatisticLastUpdate) AS SalesStatisticLastUpdate",
@@ -233,6 +260,56 @@ public class LocalSupplierInvoiceSalesAnalysisSqlBuilderTests
     }
 
     [Fact]
+    public void BuildPurchaseSalesAnalysis_ShouldAggregateTotalSalesSinceLatestPurchaseAndAllowSortingByIt()
+    {
+        var referenceToday = new DateTime(2026, 6, 25);
+        var result = LocalSupplierInvoiceSalesAnalysisSqlBuilder.BuildPurchaseSalesAnalysis(
+            new LocalSupplierPurchaseSalesAnalysisQueryDto
+            {
+                StoreCode = "1001",
+                SupplierCode = "SUP01",
+                SortBy = "totalSalesSinceLatestPurchase",
+                SortOrder = "desc",
+            },
+            null,
+            referenceToday
+        );
+
+        // 总销量以最近进货当天为起点、不设自身上界；窗口末端由 90 天与"今天"取较晚者，避免久未进货的商品被截断。
+        Assert.Contains(
+            "CASE WHEN s.Date >= lp.LatestPurchaseDate THEN COALESCE(s.TotalQuantity, 0) ELSE 0 END AS TotalSalesSinceLatestPurchase",
+            result.PagedSql
+        );
+        Assert.Contains("SUM(daily.TotalSalesSinceLatestPurchase) AS TotalSalesSinceLatestPurchase", result.PagedSql);
+        Assert.Contains("@SalesWindowEndExclusive", result.PagedSql);
+        Assert.Contains("ORDER BY\n    TotalSalesSinceLatestPurchase DESC", result.PagedSql);
+
+        // 半开区间：窗口末端取"今天的次日零点"，保证包含今天当天的销量。
+        var windowEnd = Assert.Single(result.Parameters, parameter => parameter.ParameterName == "@SalesWindowEndExclusive");
+        Assert.Equal(new DateTime(2026, 6, 26), windowEnd.Value);
+
+        // 30/60/90 天窗口口径不受影响。
+        Assert.Contains("DATEADD(day, 30, lp.LatestPurchaseDate)", result.PagedSql);
+        Assert.Contains("DATEADD(day, 90, lp.LatestPurchaseDate)", result.PagedSql);
+    }
+
+    [Fact]
+    public void NormalizePurchaseSalesAnalysisQuery_ShouldKeepTotalSalesSortAndRejectRetiredIntervalDaysAlias()
+    {
+        var total = LocalSupplierInvoiceSalesAnalysisSqlBuilder.NormalizePurchaseSalesAnalysisQuery(
+            new LocalSupplierPurchaseSalesAnalysisQueryDto { SortBy = "totalSalesSinceLatestPurchase", SortOrder = "desc" }
+        );
+        Assert.Equal("totalSalesSinceLatestPurchase", total.SortBy);
+        Assert.Equal("desc", total.SortOrder);
+
+        // 间隔天数列已从页面下线，但后端仍兼容旧请求，不应回落为默认排序。
+        var legacy = LocalSupplierInvoiceSalesAnalysisSqlBuilder.NormalizePurchaseSalesAnalysisQuery(
+            new LocalSupplierPurchaseSalesAnalysisQueryDto { SortBy = "purchaseIntervalDays", SortOrder = "asc" }
+        );
+        Assert.Equal("purchaseIntervalDays", legacy.SortBy);
+    }
+
+    [Fact]
     public void NormalizePurchaseSalesAnalysisQuery_ShouldWhitelistSortFieldAndRestrictPageSize()
     {
         var normalized =
@@ -248,7 +325,8 @@ public class LocalSupplierInvoiceSalesAnalysisSqlBuilderTests
 
         Assert.Equal(1, normalized.Page);
         Assert.Equal(100, normalized.PageSize);
-        Assert.Equal("latestPurchaseDate", normalized.SortBy);
+        // 默认排序已改为总销量降序。
+        Assert.Equal("totalSalesSinceLatestPurchase", normalized.SortBy);
         Assert.Equal("desc", normalized.SortOrder);
         Assert.Equal(DateTime.Today.AddDays(-180), normalized.OrderDateStart);
         Assert.Equal(DateTime.Today, normalized.OrderDateEnd);
@@ -392,6 +470,8 @@ public class LocalSupplierInvoiceSalesAnalysisSqlBuilderTests
         Assert.Contains("FROM [StoreLocalSupplierInvoice] h", sql.Sql, StringComparison.Ordinal);
         Assert.Contains("LEFT JOIN [Store] st", sql.Sql, StringComparison.Ordinal);
         Assert.Contains("AND h.StoreCode IN (@StoreCode0, @StoreCode1)", sql.Sql, StringComparison.Ordinal);
+        Assert.Contains("h.IsDeleted = 0", sql.Sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("COALESCE(h.IsDeleted", sql.Sql, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("COALESCE(s.IsActive", sql.Sql, StringComparison.OrdinalIgnoreCase);
         Assert.Contains(sql.Parameters, p => p.ParameterName == "@StoreCode0" && (string)p.Value == "1001");
         Assert.False(LocalSupplierInvoiceSalesAnalysisSqlBuilder.ContainsWriteKeyword(sql.Sql));
@@ -408,11 +488,17 @@ public class LocalSupplierInvoiceSalesAnalysisSqlBuilderTests
         Assert.Contains("FROM [StoreLocalSupplierInvoice] h", sql.Sql, StringComparison.Ordinal);
         Assert.Contains("[StoreRetailPrice] srp", sql.Sql, StringComparison.Ordinal);
         Assert.Contains("[LocalSupplier] sup", sql.Sql, StringComparison.Ordinal);
+        // 先按 (商品编码, 分店价格 UUID) 去重再回填，供应商仍是商品主供应商优先、价格表供应商兜底。
+        Assert.Contains("WITH StorePairs AS (", sql.Sql, StringComparison.Ordinal);
+        Assert.Contains("SELECT DISTINCT\n        NULLIF(d.ProductCode, N'') AS ProductCode", NormalizeLineEndings(sql.Sql), StringComparison.Ordinal);
+        Assert.Contains("NULLIF(srp.SupplierCode, N'') AS PriceSupplierCode", sql.Sql, StringComparison.Ordinal);
         Assert.Contains(
-            "COALESCE(NULLIF(p.LocalSupplierCode, N''), NULLIF(srp.SupplierCode, N'')) AS SupplierCode",
+            "COALESCE(NULLIF(p.LocalSupplierCode, N''), rp.PriceSupplierCode) AS SupplierCode",
             sql.Sql,
             StringComparison.Ordinal
         );
+        Assert.Contains("AND d.IsDeleted = 0", sql.Sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("COALESCE(d.IsDeleted", sql.Sql, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("AND h.StoreCode IN (@StoreCode0)", sql.Sql, StringComparison.Ordinal);
         Assert.Contains(sql.Parameters, p => p.ParameterName == "@StoreCode0" && (string)p.Value == "1001");
         Assert.False(LocalSupplierInvoiceSalesAnalysisSqlBuilder.ContainsWriteKeyword(sql.Sql));

@@ -78,8 +78,8 @@ assert(
   '供应商表格应以供应商代码保留跨页选择',
 )
 assert(
-  pageSource.includes('disabled={!selectedRowKeys.length || syncingFromHq}'),
-  '未选择供应商或正在从 HQ 同步时应禁用写入 HQ',
+  pageSource.includes('disabled={!canEdit || !selectedRowKeys.length || syncingFromHq}'),
+  '无编辑权限、未选择供应商或正在从 HQ 同步时应禁用写入 HQ',
 )
 assert(
   pageSource.includes('const result = await syncLocalSuppliersToHq(selectedRowKeys.map(String))'),

@@ -88,6 +88,10 @@ async function runTest(name: string, execute: () => void | Promise<void>): Promi
   }
 }
 
+function countOccurrences(source: string, text: string) {
+  return source.split(text).length - 1
+}
+
 function extractSection(source: string, startText: string, endText: string) {
   const startIndex = source.indexOf(startText)
   assert(startIndex >= 0, `未找到代码片段：${startText}`)
@@ -290,10 +294,15 @@ async function main() {
       '取消只关闭弹窗、使过期选项响应失效并释放锁，且提交进行中不得释放锁',
     )
 
+    // 发送到HQ 只对选中行生效，已从页头移到勾选后操作条。
     const toolbarSection = extractSection(
       pageSource,
-      "<PageContainer title={t('warehouse.productManagement')}",
-      '<Card>',
+      '<SelectionActionBar selectedCount={selectedRowKeys.length}',
+      '</SelectionActionBar>',
+    )
+    assert(
+      !extractSection(pageSource, "<PageContainer compact title={t('warehouse.productManagement')}", '<Card>').includes('handlePushToHq'),
+      '发送到HQ 不应再出现在页头',
     )
     assert(
       toolbarSection.includes('access.canManagePosProducts ?') &&
@@ -302,7 +311,7 @@ async function main() {
         toolbarSection.includes('disabled={!selectedRowKeys.length || pushToHqLoading || pushToHqModalOpen}') &&
         toolbarSection.includes('onClick={() => void handlePushToHq()}') &&
         toolbarSection.includes("t('posAdmin.products.pushToHq', '发送到HQ')"),
-      '工具栏发送按钮应只对 POS 商品管理员显示，并正确绑定选择、loading 与点击行为',
+      '勾选后操作条的发送按钮应只对 POS 商品管理员显示，并正确绑定选择、loading 与点击行为',
     )
     const resultSection = extractSection(
       pageSource,
@@ -593,13 +602,14 @@ async function main() {
 
     const toolbarSection = extractSection(
       pageSource,
-      '<PageContainer title={t(\'warehouse.productManagement\')}',
-      '<Card>',
+      '<SelectionActionBar selectedCount={selectedRowKeys.length}',
+      '</SelectionActionBar>',
     )
     assert(
       toolbarSection.includes("t('warehouse.batchEdit', '批量修改')") &&
-        toolbarSection.includes('onClick={openBatchEdit}'),
-      '工具栏应提供批量修改按钮',
+        toolbarSection.includes('onClick={openBatchEdit}') &&
+        toolbarSection.includes('disabled={!selectedRowKeys.length || batchEditSaving}'),
+      '勾选后操作条应提供批量修改按钮',
     )
 
     const modalSection = extractSection(
@@ -959,7 +969,7 @@ async function main() {
     assert(
       columnsSection.includes("key: 'productImage'") &&
         columnsSection.includes('width: 64') &&
-        columnsSection.includes('<Image src={value} alt="" width={36} height={36}') &&
+        columnsSection.includes('<ProductListImage src={value} size={36}') &&
         columnsSection.includes("key: 'itemNumber'") &&
         columnsSection.includes('width: 122') &&
         columnsSection.includes("key: 'isActive'") &&
@@ -1052,10 +1062,20 @@ async function main() {
   if (modalConfirmFailure) failures.push(modalConfirmFailure)
 
   const loadingFailure = await runTest('同步按钮应在后台任务提交中或运行中展示 loading，提交请求中 disabled', () => {
+    // 同步入口收进「同步」菜单：菜单图标在提交中或后台运行中转圈；菜单项只在提交请求中禁用，
+    // 运行中仍可点击查看任务状态（因此不能用会吞掉点击的 Button loading）。
+    const syncMenuSection = extractSection(
+      pageSource,
+      "<ToolbarMenuButton label={t('common.listToolbar.sync', '同步')}",
+      "<ToolbarMenuButton label={t('common.listToolbar.importExport'",
+    )
     assert(
-      pageSource.includes('loading={syncingFromHq || Boolean(activeHqSyncJob)}') &&
-      pageSource.includes('disabled={syncingFromHq}'),
-      '同步按钮应绑定提交中和后台运行中状态，并允许运行中点击查看状态',
+      syncMenuSection.includes('icon={syncingFromHq || Boolean(activeHqSyncJob) ? <LoadingOutlined /> : <CloudSyncOutlined />}') &&
+        !syncMenuSection.includes('loading={') &&
+        syncMenuSection.includes("key: 'hqSync'") &&
+        syncMenuSection.includes('disabled: syncingFromHq,') &&
+        syncMenuSection.includes('onClick: handleSyncWarehouseProductsFromHq,'),
+      '同步菜单应绑定提交中和后台运行中状态，并允许运行中点击查看状态',
     )
   })
   if (loadingFailure) failures.push(loadingFailure)
@@ -1341,9 +1361,10 @@ async function main() {
       '页面应维护 columnFilters 状态，并在 buildGridQuery 中把普通列头筛选发到后端 Filters',
     )
     assert(
-      pageSource.includes("setColumnFilters((current) => setFilterValues(current, 'domesticSupplierCode'") &&
-        pageSource.includes("setColumnFilters((current) => setFilterValues(current, 'productType'") &&
-        pageSource.includes("setColumnFilters((current) => setFilterValues(current, 'isActive'"),
+      pageSource.includes("const nextFilters = setFilterValues(columnFilters, 'domesticSupplierCode'") &&
+        pageSource.includes("const nextFilters = setFilterValues(columnFilters, 'productType'") &&
+        pageSource.includes("const nextFilters = setFilterValues(columnFilters, 'isActive'") &&
+        countOccurrences(pageSource, 'setColumnFilters(nextFilters);') === 3,
       '顶部供应商、商品类型和状态筛选变化时应同步 columnFilters，避免旧列头值残留',
     )
   })
@@ -1546,14 +1567,19 @@ async function main() {
   const resetColumnFilterFailure = await runTest('重置查询应清空列头筛选状态', () => {
     const resetSection = extractSection(
       pageSource,
-      "<Button icon={<ReloadOutlined />} onClick={() => {",
-      "{t('common.reset')}",
+      'const handleResetFilters = () => {',
+      'const isUncategorizedOnly',
     )
 
     assert(
       resetSection.includes('setColumnFilters({});') &&
-        resetSection.includes('filters: {},'),
-      '点击重置时应清空 columnFilters，并按空 Filters 重查列表',
+        resetSection.includes('filters: {},') &&
+        resetSection.includes("setSubmittedSearchText('');") &&
+        resetSection.includes("searchText: '',") &&
+        !resetSection.includes('setColumnOrder') &&
+        pageSource.includes('<Button icon={<ReloadOutlined />} onClick={handleResetFilters}>') &&
+        pageSource.includes('onClearAll={handleResetFilters}'),
+      '点击重置或「清空全部」时应清空 columnFilters 与已提交关键词，并按空 Filters 重查列表，且不改动列顺序',
     )
   })
   if (resetColumnFilterFailure) failures.push(resetColumnFilterFailure)
@@ -1670,6 +1696,188 @@ async function main() {
     )
   })
   if (inlineEditFailure) failures.push(inlineEditFailure)
+
+  const headerMenuLayoutFailure = await runTest('页头按钮应归入同步、导入导出菜单，只保留一个主按钮', () => {
+    const headerSection = extractSection(
+      pageSource,
+      "<PageContainer compact title={t('warehouse.productManagement')}",
+      '<Card>',
+    )
+    const syncMenuSection = extractSection(
+      headerSection,
+      "<ToolbarMenuButton label={t('common.listToolbar.sync', '同步')}",
+      "<ToolbarMenuButton label={t('common.listToolbar.importExport'",
+    )
+    const importExportMenuSection = extractSection(
+      headerSection,
+      "<ToolbarMenuButton label={t('common.listToolbar.importExport', '导入 / 导出')}",
+      "<ToolbarMenuButton label={t('common.listToolbar.price', '价格')}",
+    )
+    const priceMenuSection = extractSection(
+      headerSection,
+      "<ToolbarMenuButton label={t('common.listToolbar.price', '价格')}",
+      '{access.canManageWarehouseCategories ?',
+    )
+    assert(
+      priceMenuSection.includes("label: t('warehouse.retailPriceChanges.entry'),") &&
+        priceMenuSection.includes("onClick: () => navigate('/warehouse/products/retail-price-changes'),") &&
+        priceMenuSection.includes("label: t('warehouse.priceUpdateTasks.entry'),") &&
+        priceMenuSection.includes("onClick: () => navigate('/warehouse/products/price-update-tasks'),") &&
+        (priceMenuSection.match(/visible: access\.canManageWarehouseProducts,/g) ?? []).length === 2,
+      '「价格」菜单应包含零售价月度变化与价格变更任务，均按仓库商品管理权限显示',
+    )
+    assert(
+      headerSection.includes("subtitle={t('warehouse.productTotalCount', { count: total })}") &&
+        !pageSource.includes("t('warehouse.productManagementSubtitle')"),
+      '紧凑页头副标题应显示记录总数，不再显示原说明文字',
+    )
+    assert(
+      syncMenuSection.includes("t('warehouse.hqSync', '从HQ同步库存')") &&
+        syncMenuSection.includes('visible: access.isAdmin,') &&
+        syncMenuSection.includes("t('warehouse.storePriceSync.title', '更新分店价格')") &&
+        syncMenuSection.includes('visible: canManageWarehouseStorePriceSync,') &&
+        syncMenuSection.includes('disabled: storePriceSyncOpen,') &&
+        syncMenuSection.includes('onClick: () => setStorePriceSyncOpen(true),'),
+      '「同步」菜单应包含按权限显示的从HQ同步库存和更新分店价格',
+    )
+    assert(
+      importExportMenuSection.includes('icon={exporting ? <LoadingOutlined /> : <DownloadOutlined />}') &&
+        importExportMenuSection.includes("label: t('warehouse.exportExcel'),") &&
+        importExportMenuSection.includes('disabled: exporting,') &&
+        importExportMenuSection.includes('onClick: () => setExportConfigOpen(true),') &&
+        importExportMenuSection.includes('onClick: () => setImportFromDomesticOpen(true),') &&
+        importExportMenuSection.includes('visible: canImportNonHbProducts,') &&
+        importExportMenuSection.includes("onClick: () => message.info(t('warehouse.batchImageUploadMigrated')),") &&
+        importExportMenuSection.includes("onClick: () => message.info(t('warehouse.batchSetMigrated')),"),
+      '「导入 / 导出」菜单应包含导出、国内导入、非国内导入（按权限）以及两个已迁移提示入口',
+    )
+    assert(
+      headerSection.includes('{exporting ? (<Typography.Text type="secondary">') &&
+        headerSection.includes('{exportMessage} ({exportProgress}%)'),
+      '导出进度文字仍应显示在页头',
+    )
+    assert(
+      // 零售价月度变化已归入「价格」菜单（上方单独断言），页头不再保留独立按钮。
+      !headerSection.includes("{access.canManageWarehouseProducts ? (<Button icon={<HistoryOutlined />}") &&
+        headerSection.includes("{access.canManageWarehouseCategories ? (<Button icon={<SettingOutlined />} onClick={() => setCategoryManageOpen(true)}>") &&
+        headerSection.includes('{access.canWriteProduct ? (<Button type="primary" icon={<PlusOutlined />} onClick={handleOpenCreate}>') &&
+        countOccurrences(headerSection, 'type="primary"') === 1,
+      '页头应保留管理分类，价格入口不再平铺，新建商品为唯一主按钮',
+    )
+    for (const batchText of ["t('warehouse.batchActivate')", "t('warehouse.batchDeactivate')", "t('warehouse.batchEdit'", "t('warehouse.batchSetCategory'", 'handlePushToHq']) {
+      assert(!headerSection.includes(batchText), `页头不应再出现只对勾选行生效的操作：${batchText}`)
+    }
+  })
+  if (headerMenuLayoutFailure) failures.push(headerMenuLayoutFailure)
+
+  const selectionBarFailure = await runTest('批量操作应位于勾选后操作条，并保留确认、权限与禁用逻辑', () => {
+    const selectionSection = extractSection(
+      pageSource,
+      '<SelectionActionBar selectedCount={selectedRowKeys.length} onClearSelection={() => setSelectedRowKeys([])}>',
+      '</SelectionActionBar>',
+    )
+    assert(
+      selectionSection.includes("<Popconfirm title={t('warehouse.confirmBatchActivate')}") &&
+        selectionSection.includes('onConfirm={() => void handleBatchToggleActive(true)}') &&
+        selectionSection.includes("<Popconfirm title={t('warehouse.confirmBatchDeactivate')}") &&
+        selectionSection.includes('onConfirm={() => void handleBatchToggleActive(false)}') &&
+        selectionSection.includes('disabled={!selectedRowKeys.length || batchActionLoading}') &&
+        selectionSection.includes('onClick={openBatchEdit}') &&
+        selectionSection.includes('onClick={openBatchCategory}') &&
+        selectionSection.includes('disabled={!selectedRowKeys.length || batchCategorySaving}') &&
+        selectionSection.includes('onClick={() => void handlePushToHq()}') &&
+        countOccurrences(selectionSection, '{access.canWriteProduct ?') === 4 &&
+        countOccurrences(selectionSection, '{access.canManagePosProducts ?') === 1,
+      '勾选后操作条应包含批量上下架（带确认）、批量修改、批量分类和发送到HQ，且权限不变',
+    )
+    const cardSection = extractSection(pageSource, '<Card>', '</Card>')
+    const filterRowIndex = cardSection.indexOf('<div className="list-toolbar-filter-row">')
+    const activeBarIndex = cardSection.indexOf('<ActiveFilterBar')
+    const selectionIndex = cardSection.indexOf('<SelectionActionBar')
+    const tableIndex = cardSection.indexOf('<DndContext')
+    assert(
+      filterRowIndex >= 0 && filterRowIndex < activeBarIndex && activeBarIndex < selectionIndex && selectionIndex < tableIndex,
+      '顺序应为筛选行 → 已生效筛选条 → 勾选后操作条 → 表格',
+    )
+  })
+  if (selectionBarFailure) failures.push(selectionBarFailure)
+
+  const instantFilterFailure = await runTest('下拉筛选选完即查，关键词回车或点查询才提交', () => {
+    const filterRowSection = extractSection(
+      pageSource,
+      '<div className="list-toolbar-filter-row">',
+      '<ActiveFilterBar',
+    )
+    assert(
+      filterRowSection.includes('void loadData({ page: 1, supplierCode: value, filters: nextFilters });') &&
+        filterRowSection.includes('void loadData({ page: 1, isActive: value, filters: nextFilters });') &&
+        filterRowSection.includes('void loadData({ page: 1, productType: value, filters: nextFilters });') &&
+        filterRowSection.includes('void loadData({ page: 1, ...buildCategoryQueryValue(nextCategoryFilterValue) });'),
+      '国内供应商、状态、商品类型、分类变化后应用覆盖参数立即请求第 1 页',
+    )
+    const moreFiltersSection = extractSection(filterRowSection, '<MoreFiltersButton', '</MoreFiltersButton>')
+    assert(
+      moreFiltersSection.includes('activeCount={productType === undefined ? 0 : 1}') &&
+        moreFiltersSection.includes('<Select value={productType}'),
+      '商品类型应收进「更多筛选」，角标为弹层内生效条件数',
+    )
+    assert(
+      filterRowSection.includes('onPressEnter={handleSubmitSearch}') &&
+        filterRowSection.includes("t('common.listToolbar.searchEnterHint', '回车查询')") &&
+        filterRowSection.includes('<Button type="primary" onClick={handleSubmitSearch}>') &&
+        filterRowSection.includes('<span className="list-toolbar-filter-spacer"/>') &&
+        filterRowSection.includes('<span className="list-toolbar-filter-divider"/>') &&
+        !filterRowSection.includes("t('warehouse.categories.uncategorizedOption'"),
+      '搜索框回车与查询按钮提交关键词；筛选行按设计含弹性空白与分隔线，未分类入口移到已生效筛选条',
+    )
+    const submitSection = extractSection(pageSource, 'const handleSubmitSearch = () => {', 'const handleResetFilters')
+    assert(
+      submitSection.includes('setSubmittedSearchText(searchText);') &&
+        submitSection.includes('void loadData({ page: 1, searchText });') &&
+        pageSource.includes('searchText: submittedSearchText,'),
+      '其余请求应使用已提交关键词，而非输入框里未提交的草稿',
+    )
+  })
+  if (instantFilterFailure) failures.push(instantFilterFailure)
+
+  const activeFilterBarFailure = await runTest('已生效筛选条应按实际查询条件展示并可单独移除', () => {
+    const loadDataSection = extractSection(pageSource, 'const loadData = async (', 'useLayoutEffect(() => {')
+    assert(
+      extractSection(loadDataSection, 'onSuccess: (result) => {', 'onError: (error) => {').includes('setAppliedQuery(query);'),
+      '已生效条件应取自最新成功返回的查询，而不是界面上尚未提交的 state',
+    )
+    const activeBarSection = extractSection(pageSource, '<ActiveFilterBar', '<SelectionActionBar')
+    assert(
+      activeBarSection.includes('items={activeFilterChips.map((chip) => ({') &&
+        activeBarSection.includes('onRemove: () => handleRemoveActiveFilter(chip.key),') &&
+        activeBarSection.includes('onClearAll={handleResetFilters}') &&
+        activeBarSection.includes('aria-pressed={isUncategorizedOnly}') &&
+        activeBarSection.includes('onClick={handleToggleUncategorizedOnly}') &&
+        activeBarSection.includes("t('warehouse.onlyUncategorized', '只看未分类')"),
+      '已生效筛选条应接入标签移除、清空全部和「只看未分类」开关',
+    )
+    assert(
+      pageSource.includes('const activeFilterChips = useMemo(() => buildActiveFilterChips({') &&
+        pageSource.includes('query: appliedQuery,'),
+      '标签应由纯函数 buildActiveFilterChips 根据 appliedQuery 生成',
+    )
+    const removeSection = extractSection(pageSource, 'const handleRemoveActiveFilter = (chipKey: string) => {', 'return (<>')
+    assert(
+      removeSection.includes('const overrides = buildActiveFilterRemovalOverrides(chipKey, columnFilters);') &&
+        removeSection.includes('setColumnFilters(overrides.filters);') &&
+        removeSection.includes('void loadData(overrides);'),
+      '移除单个标签应同步 columnFilters 并立即按覆盖参数重查',
+    )
+    const toggleSection = extractSection(pageSource, 'const handleToggleUncategorizedOnly = () => {', 'const activeFilterColumns')
+    assert(
+      toggleSection.includes('setCategoryFilterValue(UNCATEGORIZED_PRODUCTS_FILTER_KEY);') &&
+        toggleSection.includes('uncategorizedOnly: true,') &&
+        toggleSection.includes('setCategoryFilterValue(ALL_PRODUCTS_FILTER_KEY);') &&
+        toggleSection.includes('uncategorizedOnly: false,'),
+      '「只看未分类」打开时按 UncategorizedOnly 查询，再点回到全部分类',
+    )
+  })
+  if (activeFilterBarFailure) failures.push(activeFilterBarFailure)
 
   if (failures.length > 0) {
     throw new Error(`共有 ${failures.length} 个测试失败\n- ${failures.join('\n- ')}`)

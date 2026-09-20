@@ -464,11 +464,19 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
-        public async Task<ApiResponse<StoreProductStorePriceDto>> UpdateStorePriceAsync(
+        public Task<ApiResponse<StoreProductStorePriceDto>> UpdateStorePriceAsync(
             string uuid,
             UpdateStoreProductPriceDto request,
             string updatedBy,
             List<string>? accessibleStoreCodes
+        ) => UpdateStorePriceAsync(uuid, request, updatedBy, accessibleStoreCodes, enqueueHqProjection: true);
+
+        public async Task<ApiResponse<StoreProductStorePriceDto>> UpdateStorePriceAsync(
+            string uuid,
+            UpdateStoreProductPriceDto request,
+            string updatedBy,
+            List<string>? accessibleStoreCodes,
+            bool enqueueHqProjection
         )
         {
             try
@@ -569,15 +577,19 @@ namespace BlazorApp.Api.Services.React
                         })
                         .ExecuteCommandAsync();
                     await SyncCurrentStoreProjectedRecordsAsync(entity, updatedBy, lockScope);
-                    hqSync = await EnqueueHqProjectionAsync(
-                        ProductMaintenanceHqOperationKinds.StorePriceUpdated,
-                        entity.ProductCode!,
-                        new[] { entity.StoreCode! },
-                        ProductMaintenanceHqFieldMasks.StorePriceAndMultiCode,
-                        "react-store-product-maintenance.update-store-price",
-                        updatedBy,
-                        accessibleStoreCodes
-                    );
+                    // 价格更新通知可通过配置关闭 HQ 同步；其余入口恒为 true，行为不变。
+                    if (enqueueHqProjection)
+                    {
+                        hqSync = await EnqueueHqProjectionAsync(
+                            ProductMaintenanceHqOperationKinds.StorePriceUpdated,
+                            entity.ProductCode!,
+                            new[] { entity.StoreCode! },
+                            ProductMaintenanceHqFieldMasks.StorePriceAndMultiCode,
+                            "react-store-product-maintenance.update-store-price",
+                            updatedBy,
+                            accessibleStoreCodes
+                        );
+                    }
                     dto = await BuildStorePriceDtoAsync(entity, entity.SupplierCode);
                     dto.HqSync = hqSync;
                     await _db.Ado.CommitTranAsync();

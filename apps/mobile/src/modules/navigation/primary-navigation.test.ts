@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   buildPrimaryNavigation,
+  resolveMeTabLabel,
   resolvePrimaryNavigationAction,
 } from "./primary-navigation";
 import { buildWorkbenchSections } from "./workbench";
@@ -132,6 +133,24 @@ assert.equal(
   "商品查询页必须高亮扫码查询"
 );
 assert.equal(
+  compactPrimaryItems("promo-poster-editor", fullMenu)[1]?.active,
+  true,
+  "促销海报编辑页从扫码查询进入，必须继续高亮扫码查询"
+);
+assert.equal(
+  compactPrimaryItems("promo-poster-queue", fullMenu)[1]?.active,
+  true,
+  "待打印海报页从扫码查询进入，必须继续高亮扫码查询"
+);
+assert.equal(
+  resolvePrimaryNavigationAction(
+    "promo-poster-queue",
+    buildPrimaryNavigation({ activeRouteName: "promo-poster-queue", visibleRouteNames: fullMenu })[1]!
+  ),
+  "dismiss-to",
+  "在海报子页点扫码查询必须弹回扫码页，而不是再推一个新页面"
+);
+assert.equal(
   compactPrimaryItems("product-insights", [...fullMenu, "product-insights"])[0]?.active,
   true,
   "商品进销查询作为商品功能子页必须回归工作台上下文，不能新增一级导航"
@@ -143,6 +162,11 @@ assert.equal(
   ])[0]?.active,
   true,
   "仓库商品进销查询同样从工作台进入，不能新增一级导航"
+);
+assert.equal(
+  compactPrimaryItems("sales-orders", [...fullMenu, "sales-orders"])[0]?.active,
+  true,
+  "销售订单查询从工作台进入，不能新增一级导航"
 );
 assert.equal(
   compactPrimaryItems("pos-operation-logs", [...fullMenu, "pos-operation-logs"])[0]?.active,
@@ -362,6 +386,21 @@ assert.deepEqual(
   "商品查询与商品进销查询必须同属销售与商品，并且只依赖后端显式菜单"
 );
 assert.deepEqual(
+  buildWorkbenchSections(["orders", "sales-orders"]).map((section) => ({
+    key: section.key,
+    itemRouteNames: section.items.map((item) => item.routeName),
+  })),
+  [{ key: "sales-product", itemRouteNames: ["orders", "sales-orders"] }],
+  "销售订单查询必须归入销售与商品并紧跟 HB订单，同样只依赖后端显式菜单"
+);
+assert.equal(
+  buildWorkbenchSections(["orders"]).some((section) =>
+    section.items.some((item) => item.routeName === "sales-orders")
+  ),
+  false,
+  "后端菜单未显式下发 sales-orders 时工作台不得自行显示销售订单入口"
+);
+assert.deepEqual(
   buildWorkbenchSections(["warehouse", "warehouse-product-insights"]).map((section) => ({
     key: section.key,
     itemRouteNames: section.items.map((item) => item.routeName),
@@ -418,4 +457,30 @@ assert.deepEqual(
   buildWorkbenchSections(["task-center", "unknown-route"]),
   [],
   "任务中心和未知路由不得成为工作台入口"
+);
+
+assert.equal(
+  resolveMeTabLabel({ fullName: "张伟", username: "zhangwei", fallbackLabel: "我的" }),
+  "张伟",
+  "底栏「我的」优先显示姓名"
+);
+assert.equal(
+  resolveMeTabLabel({ fullName: "  ", username: "zhangwei", fallbackLabel: "我的" }),
+  "zhangwei",
+  "姓名为空白时回落到用户名"
+);
+assert.equal(
+  resolveMeTabLabel({ fallbackLabel: "我的" }),
+  "我的",
+  "未登录时保持「我的」"
+);
+assert.equal(
+  resolveMeTabLabel({
+    fullName: "张伟",
+    username: "zhangwei",
+    isDeviceMode: true,
+    fallbackLabel: "我的",
+  }),
+  "我的",
+  "设备模式没有个人账号，不显示残留的用户名"
 );

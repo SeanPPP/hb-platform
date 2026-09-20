@@ -396,14 +396,16 @@ namespace BlazorApp.Api.Data
 
                 var indexStatements = new[]
                 {
-                    // sales_order 表索引
-                    "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_sales_order_OrderTime' AND object_id = OBJECT_ID('sales_order')) CREATE NONCLUSTERED INDEX IX_sales_order_OrderTime ON sales_order(OrderTime) INCLUDE (OrderGuid, BranchCode, DeviceCode, TotalAmount, DiscountAmount, ActualAmount, ItemCount)",
+                    // sales_order 表索引；时间索引包含 Status 供收银记录按状态汇总（生产 2026-09-19 已在线重建）
+                    "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_sales_order_OrderTime' AND object_id = OBJECT_ID('sales_order')) CREATE NONCLUSTERED INDEX IX_sales_order_OrderTime ON sales_order(OrderTime) INCLUDE (OrderGuid, BranchCode, DeviceCode, TotalAmount, DiscountAmount, ActualAmount, ItemCount, Status)",
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_sales_order_BranchCode' AND object_id = OBJECT_ID('sales_order')) CREATE NONCLUSTERED INDEX IX_sales_order_BranchCode ON sales_order(BranchCode) INCLUDE (OrderGuid, OrderTime, DeviceCode, TotalAmount, DiscountAmount, ActualAmount, ItemCount)",
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_sales_order_DeviceCode' AND object_id = OBJECT_ID('sales_order')) CREATE NONCLUSTERED INDEX IX_sales_order_DeviceCode ON sales_order(DeviceCode) INCLUDE (OrderGuid, OrderTime, BranchCode, TotalAmount, DiscountAmount, ActualAmount, ItemCount)",
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_sales_order_OrderTime_BranchCode' AND object_id = OBJECT_ID('sales_order')) CREATE NONCLUSTERED INDEX IX_sales_order_OrderTime_BranchCode ON sales_order(OrderTime, BranchCode) INCLUDE (OrderGuid, DeviceCode, TotalAmount, DiscountAmount, ActualAmount, ItemCount)",
-                    // sales_order_detail 表索引
-                    "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_sales_order_detail_OrderGuid' AND object_id = OBJECT_ID('sales_order_detail')) CREATE NONCLUSTERED INDEX IX_sales_order_detail_OrderGuid ON sales_order_detail(OrderGuid) INCLUDE (ProductCode, OrderDetailGuid)",
+                    // sales_order_detail 表索引；订单号索引包含 Quantity 供件数汇总（生产 2026-09-19 已在线重建）
+                    "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_sales_order_detail_OrderGuid' AND object_id = OBJECT_ID('sales_order_detail')) CREATE NONCLUSTERED INDEX IX_sales_order_detail_OrderGuid ON sales_order_detail(OrderGuid) INCLUDE (ProductCode, OrderDetailGuid, Quantity)",
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_sales_order_detail_OrderGuid_ProductCode' AND object_id = OBJECT_ID('sales_order_detail')) CREATE NONCLUSTERED INDEX IX_sales_order_detail_OrderGuid_ProductCode ON sales_order_detail(OrderGuid, ProductCode)",
+                    // 收银记录关键词按商品编码定位订单；生产已于 2026-09-19 用 SqlScripts/PosmSalesOrderDetailProductCodeIndex.sql 在线创建。
+                    "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_sales_order_detail_ProductCode' AND object_id = OBJECT_ID('sales_order_detail')) CREATE NONCLUSTERED INDEX IX_sales_order_detail_ProductCode ON sales_order_detail(ProductCode) INCLUDE (OrderGuid)",
                 };
 
                 foreach (var sql in indexStatements)

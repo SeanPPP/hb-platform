@@ -99,21 +99,24 @@ internal sealed class BatchProductSalesDiscountSnapshotReader(ISqlSugarClient db
             }
             return unavailable;
         }
-        // SqlSugar 在 SQLite 上会把 DateTime IN 参数格式化为无法匹配的值；逐日半开区间既保持精确日期集合，
+        // SqlSugar 在 SQLite 上会把 DateTime IN 参数格式化为无法匹配的值；半开区间既保持精确日期集合，
         // 也让 SQL Server 可用 Date 列索引，避免把非连续 ready dates 之间的快照传回应用层。
+        // 连续日期合并为一个区间：30 天连续范围只产生 1 组谓词而不是 30 组 OR，每个商品一次索引范围查找即可。
         var stateDates = Expressionable.Create<BatchProductSalesDiscountRefreshState>();
         var snapshotDates = Expressionable.Create<BatchProductSalesDiscountSnapshot>();
-        foreach (var day in days)
+        foreach (var (rangeStart, rangeEnd) in CollapseContiguousDays(days))
         {
-            var dayStart = day;
-            var dayEnd = day.AddDays(1);
-            stateDates = stateDates.Or(state => state.Date >= dayStart && state.Date < dayEnd);
-            snapshotDates = snapshotDates.Or(snapshot => snapshot.StartDate >= dayStart && snapshot.StartDate < dayEnd);
+            stateDates = stateDates.Or(state => state.Date >= rangeStart && state.Date < rangeEnd);
+            snapshotDates = snapshotDates.Or(snapshot => snapshot.StartDate >= rangeStart && snapshot.StartDate < rangeEnd);
         }
         var states = await db.Queryable<BatchProductSalesDiscountRefreshState>().With(SqlWith.Null)
             .Where(stateDates.ToExpression()).ToListAsync(token);
+        // SnapshotFormat 必须以字面量进入 SQL：表达式常量会被 SqlSugar 参数化为 @SnapshotFormat0，
+        // SQL Server 无法为参数化谓词选用过滤索引 IX_BatchSalesDiscount_DailyProduct (WHERE SnapshotFormat = 2)，
+        // 会退化为带 LOB 的全表聚集扫描，这是折扣分类晚到的主要原因。
         var snapshots = await db.Queryable<BatchProductSalesDiscountSnapshot>().With(SqlWith.Null)
-            .Where(snapshot => snapshot.SnapshotFormat == 2 && codes.Contains(snapshot.ProductCode) && snapshot.EndDate == snapshot.StartDate)
+            .Where(SnapshotFormatLiteralPredicate)
+            .Where(snapshot => codes.Contains(snapshot.ProductCode) && snapshot.EndDate == snapshot.StartDate)
             .Where(snapshotDates.ToExpression()).ToListAsync(token);
         token.ThrowIfCancellationRequested();
         var stateByDay = states.GroupBy(x => x.Date.Date).ToDictionary(g => g.Key, g => g.ToList());
@@ -149,6 +152,21 @@ internal sealed class BatchProductSalesDiscountSnapshotReader(ISqlSugarClient db
         {
             RestoreAdoCancellationToken(previousToken);
         }
+    }
+
+    /// <summary>与过滤索引定义逐字一致的字面量谓词；方括号标识符在 SQL Server 与测试用 SQLite 上均有效。</summary>
+    internal const string SnapshotFormatLiteralPredicate = "[SnapshotFormat] = 2";
+
+    /// <summary>把已去重升序的日期折叠为若干 [start, endExclusive) 区间；不连续的 ready dates 之间保持断开。</summary>
+    internal static List<(DateTime Start, DateTime EndExclusive)> CollapseContiguousDays(IReadOnlyList<DateTime> sortedDistinctDays)
+    {
+        var ranges = new List<(DateTime Start, DateTime EndExclusive)>();
+        foreach (var day in sortedDistinctDays)
+        {
+            if (ranges.Count > 0 && ranges[^1].EndExclusive == day) ranges[^1] = (ranges[^1].Start, day.AddDays(1));
+            else ranges.Add((day, day.AddDays(1)));
+        }
+        return ranges;
     }
 
     /// <summary>SqlSugar 的 token 查询会写入 client ADO；请求结束前必须还原嵌套调用的原令牌。</summary>

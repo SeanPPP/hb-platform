@@ -1009,6 +1009,42 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
     }
 
     [Fact]
+    public async Task GetExecutiveHourlyTrafficAsync_同期仅HBSales有单据时补算并返回去年小时数据()
+    {
+        // 2025-07-05 在 HBSales 历史窗口内，且该分店当天只有旧系统单据：
+        // 完整性核验必须把它视为应有数据，补算后同期小时行才不会是 0。
+        await SeedStoreAsync("S1", "Store A");
+        // 本期用真实 POSM 订单，没有来源覆盖的裸统计行会被视为残留快照而重算掉。
+        await SeedPosmOrderWithPaymentAsync("current-dual-1", new DateTime(2026, 7, 4, 10, 10, 0), "S1", 50m, 1);
+        await SeedPosmOrderWithPaymentAsync("current-dual-2", new DateTime(2026, 7, 4, 10, 40, 0), "S1", 70m, 1);
+        await SeedHbSalesOrderAsync("hb-old-hour-1", new DateTime(2025, 7, 5, 10, 10, 0), "S1", 35m, 1);
+        await SeedHbSalesOrderAsync("hb-old-hour-2", new DateTime(2025, 7, 5, 10, 40, 0), "S1", 45m, 2);
+        var service = CreateService();
+        var range = new DateRangeDto
+        {
+            StartDate = new DateTime(2026, 7, 4),
+            EndDate = new DateTime(2026, 7, 4),
+            CompareStartDate = new DateTime(2025, 7, 5),
+            CompareEndDate = new DateTime(2025, 7, 5),
+        };
+
+        var result = await service.GetExecutiveHourlyTrafficAsync(range, new List<string> { "S1" });
+        for (var attempt = 0; result.StatisticsPending && attempt < 200; attempt++)
+        {
+            await Task.Delay(50);
+            result = await service.GetExecutiveHourlyTrafficAsync(range, new List<string> { "S1" });
+        }
+
+        Assert.False(result.StatisticsPending);
+        var row = Assert.Single(result);
+        Assert.Equal("10:00", row.Hour);
+        Assert.Equal(120m, row.Revenue);
+        Assert.Equal(2, row.OrderCount);
+        Assert.Equal(80m, row.RevenueLY);
+        Assert.Equal(2, row.OrderCountLY);
+    }
+
+    [Fact]
     public async Task GetExecutiveHourlyTrafficAsync_本期小时客单缺失时重算当前日期()
     {
         await SeedStoreAsync("S1", "Store A");
@@ -3886,30 +3922,16 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
 
         Assert.IsType<ForbidResult>(response);
         serviceMock.Verify(service => service.GetCompactSalesBoardAsync(
-            It.IsAny<DateRangeDto>(),
-            It.IsAny<List<string>?>(),
-            It.IsAny<List<string>?>(),
-            It.IsAny<string?>(),
-            It.IsAny<int>(),
-            It.IsAny<int>(),
-            It.IsAny<bool>()), Times.Never);
+            It.IsAny<CompactSalesBoardQuery>()), Times.Never);
     }
 
     [Fact]
     public async Task GetCompactSalesBoard_普通用户请求越权分店时仅传授权交集()
     {
-        List<string>? capturedBranchCodes = null;
+        CompactSalesBoardQuery? capturedQuery = null;
         var serviceMock = new Mock<ISalesDashboardReactService>();
-        serviceMock.Setup(service => service.GetCompactSalesBoardAsync(
-                It.IsAny<DateRangeDto>(),
-                It.IsAny<List<string>?>(),
-                It.IsAny<List<string>?>(),
-                It.IsAny<string?>(),
-                It.IsAny<int>(),
-                It.IsAny<int>(),
-                It.IsAny<bool>()))
-            .Callback<DateRangeDto, List<string>?, List<string>?, string?, int, int, bool>(
-                (_, branchCodes, _, _, _, _, _) => capturedBranchCodes = branchCodes)
+        serviceMock.Setup(service => service.GetCompactSalesBoardAsync(It.IsAny<CompactSalesBoardQuery>()))
+            .Callback<CompactSalesBoardQuery>(query => capturedQuery = query)
             .ReturnsAsync(new CompactSalesBoardDto());
         var controller = CreateController(serviceMock.Object, CreateUserService(new[] { "S1", "S3" }));
 
@@ -3920,7 +3942,41 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         );
 
         Assert.IsType<OkObjectResult>(response);
-        Assert.Equal(new[] { "S1" }, capturedBranchCodes);
+        Assert.Equal(new[] { "S1" }, capturedQuery?.BranchCodes);
+    }
+
+    [Fact]
+    public async Task GetCompactSalesBoard_授权范围与联动选中项分开传给服务()
+    {
+        CompactSalesBoardQuery? capturedQuery = null;
+        var serviceMock = new Mock<ISalesDashboardReactService>();
+        serviceMock.Setup(service => service.GetCompactSalesBoardAsync(It.IsAny<CompactSalesBoardQuery>()))
+            .Callback<CompactSalesBoardQuery>(query => capturedQuery = query)
+            .ReturnsAsync(new CompactSalesBoardDto());
+        var controller = CreateController(serviceMock.Object, CreateUserService(new[] { "S1", "S3" }));
+
+        var response = await controller.GetCompactSalesBoard(
+            new DateTime(2026, 8, 1),
+            new DateTime(2026, 8, 2),
+            selectedBranchCode: "S3",
+            selectedChinaSupplierCode: "HB215",
+            selectedProductCode: "P-1",
+            keyword: "canvas",
+            sortField: "quantity",
+            sortOrder: "asc",
+            pageIndex: 2,
+            pageSize: 50,
+            forceRefresh: true
+        );
+
+        Assert.IsType<OkObjectResult>(response);
+        Assert.NotNull(capturedQuery);
+        // 未显式请求分店时，普通用户的授权范围取自身关联分店，不能退化为全分店。
+        Assert.Equal(new[] { "S1", "S3" }, capturedQuery!.BranchCodes);
+        Assert.Equal(("S3", "HB215", "P-1"), (capturedQuery.SelectedBranchCode, capturedQuery.SelectedChinaSupplierCode, capturedQuery.SelectedProductCode));
+        Assert.Equal(("canvas", "quantity", "asc"), (capturedQuery.Keyword, capturedQuery.SortField, capturedQuery.SortOrder));
+        Assert.Equal((2, 50, true), (capturedQuery.PageIndex, capturedQuery.PageSize, capturedQuery.ForceRefresh));
+        Assert.Equal(new DateTime(2026, 8, 2), capturedQuery.DateRange.EndDate);
     }
 
     private async Task<TwentyEightStorePerformanceFixture> SeedTwentyEightStorePerformanceFixtureAsync()

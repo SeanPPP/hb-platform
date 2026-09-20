@@ -46,6 +46,8 @@ export const PERMISSIONS = {
     View: "StoreProducts.View",
     Create: "StoreProducts.Create",
     Edit: "StoreProducts.Edit",
+    SyncToOtherStores: "StoreProducts.SyncToOtherStores",
+    PriceUpdates: "StoreProducts.PriceUpdates",
   },
   Container: {
     View: "Container.View",
@@ -184,9 +186,6 @@ function createEmptyAccess(): AccessControl {
     canDeleteContainer: false,
     canManageStore: false,
     canViewReports: false,
-    canExportData: false,
-    canModifyPrice: false,
-    canDeletePrice: false,
     canViewDeviceRegistration: false,
     canViewPosOperationLogs: false,
     canManageDeviceRegistration: false,
@@ -323,9 +322,6 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canDeleteProduct = hasPermission("Products.Delete");
 
   const canViewReports = hasPermission("Reports.View");
-  const canExportData = hasPermission("Reports.Export");
-  const canModifyPrice = hasPermission("Prices.Modify");
-  const canDeletePrice = hasPermission("Prices.Delete");
   const canManageDeviceRegistration = hasPermission(PERMISSIONS.DeviceRegistration.Manage);
   const canManageDeviceActivationCodes = hasPermission(
     PERMISSIONS.DeviceRegistration.ActivationCodesManage
@@ -415,9 +411,6 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     canDeleteContainer,
     canManageStore,
     canViewReports,
-    canExportData,
-    canModifyPrice,
-    canDeletePrice,
     canViewDeviceRegistration,
     canViewPosOperationLogs,
     canManageDeviceRegistration,

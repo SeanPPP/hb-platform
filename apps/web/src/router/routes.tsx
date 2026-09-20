@@ -35,6 +35,10 @@ import type { MenuProps } from 'antd'
 import { lazy } from 'react'
 import { matchPath, Navigate } from 'react-router-dom'
 import i18n from '../i18n'
+import {
+  ADMIN_PURCHASE_SALES_PATH,
+  buildAdminPurchaseSalesTabPath,
+} from '../pages/ExecutiveSalesIntelligence/PurchaseSalesAnalysis/tabs'
 import ForbiddenPage from '../pages/Forbidden'
 import NotFoundPage from '../pages/NotFound'
 import type { AccessControl } from '../types/auth'
@@ -55,7 +59,7 @@ const CompactSalesBoardPage = lazy(() => import('../pages/ExecutiveSalesIntellig
 const SalesDetailAnalysisPage = lazy(() => import('../pages/ExecutiveSalesIntelligence/SalesDetailAnalysisV2'))
 const ProductMovementReportPage = lazy(() => import('../pages/ExecutiveSalesIntelligence/ProductMovementReport'))
 const WarehouseProductFlowAnalysisPage = lazy(() => import('../pages/ExecutiveSalesIntelligence/WarehouseProductFlowAnalysis'))
-const BatchProductSalesAnalysisPage = lazy(() => import('../pages/ExecutiveSalesIntelligence/BatchProductSalesAnalysis'))
+const PurchaseSalesAnalysisPage = lazy(() => import('../pages/ExecutiveSalesIntelligence/PurchaseSalesAnalysis'))
 const LocalProductSalesAnalysisPage = lazy(() => import('../pages/ExecutiveSalesIntelligence/LocalProductSalesAnalysis'))
 const PurchaseAmountDashboardPage = lazy(() => import('../pages/ExecutiveSalesIntelligence/PurchaseAmountDashboard'))
 const PosmSalesOrdersPage = lazy(() => import('../pages/PosmSalesOrders'))
@@ -74,7 +78,6 @@ const LinklySettlementDetailPage = lazy(() => import('../pages/PosAdmin/LinklySe
 const LocalSupplierInvoicesPage = lazy(() => import('../pages/PosAdmin/LocalSupplierInvoices'))
 const LocalSupplierInvoiceDetailPage = lazy(() => import('../pages/PosAdmin/LocalSupplierInvoiceDetailPage'))
 const LocalSupplierInvoiceSalesAnalysisPage = lazy(() => import('../pages/PosAdmin/LocalSupplierInvoiceSalesAnalysis'))
-const LocalSupplierPurchaseSalesAnalysisPage = lazy(() => import('../pages/PosAdmin/LocalSupplierPurchaseSalesAnalysis'))
 const InvoiceEditPage = lazy(() => import('../pages/PosAdmin/LocalSupplierInvoices/InvoiceEdit'))
 const SystemAppDownloadsPage = lazy(() => import('../pages/System/AppDownloads'))
 const SystemRemoteMaintenancePage = lazy(() => import('../pages/System/RemoteMaintenance'))
@@ -97,6 +100,7 @@ const ContainersPage = lazy(() => import('../pages/Warehouse/Containers'))
 const WarehouseLocationsPage = lazy(() => import('../pages/Warehouse/Locations'))
 const WarehouseProductsPage = lazy(() => import('../pages/Warehouse/Products'))
 const RetailPriceChangesPage = lazy(() => import('../pages/Warehouse/RetailPriceChanges'))
+const PriceUpdateTasksPage = lazy(() => import('../pages/Warehouse/PriceUpdateTasks'))
 const WarehouseProductRecordsPage = lazy(() => import('../pages/Warehouse/ProductRecords'))
 const StoreOrderDetailPage = lazy(() => import('../pages/Warehouse/StoreOrders/Detail'))
 const StoreOrderInvoicePage = lazy(() => import('../pages/Warehouse/StoreOrders/Invoice'))
@@ -256,7 +260,7 @@ export const appRoutes: AppRouteItem[] = [
           title: 'menu.systemUsers',
           icon: 'UserOutlined',
           keepAlive: true,
-          accessKey: 'canReadUser',
+          accessKey: 'canReadUserConsole',
         },
         element: <SystemUsersPage />,
       },
@@ -521,6 +525,18 @@ export const appRoutes: AppRouteItem[] = [
         element: <RetailPriceChangesPage />,
       },
       {
+        // 静态路径必须排在 :productCode 动态路由之前，否则会被当成商品编码匹配。
+        path: '/warehouse/products/price-update-tasks',
+        meta: {
+          title: 'warehouse.priceUpdateTasks.title',
+          hidden: true,
+          keepAlive: true,
+          accessKey: 'canManageWarehouseProducts',
+          activeMenu: '/warehouse/products',
+        },
+        element: <PriceUpdateTasksPage />,
+      },
+      {
         path: '/warehouse/products/:productCode/records',
         meta: {
           title: 'menu.warehouseProductRecords',
@@ -613,14 +629,25 @@ export const appRoutes: AppRouteItem[] = [
         element: <ProductMovementReportPage />,
       },
       {
+        // 进货销量分析：批量货号销量与分店进货销量分析合为一页两个标签，任一页权限即可进入。
+        path: ADMIN_PURCHASE_SALES_PATH,
+        meta: {
+          title: 'menu.purchaseSalesAnalysis',
+          icon: 'BarChartOutlined',
+          keepAlive: true,
+          accessKey: 'canViewPurchaseSalesAnalysis',
+        },
+        element: <PurchaseSalesAnalysisPage />,
+      },
+      {
+        // 旧地址兼容：批量货号销量已并入进货销量分析，书签与历史链接跳到对应标签。
         path: '/executive-sales-intelligence/batch-product-sales-analysis',
         meta: {
           title: 'menu.batchProductSalesAnalysis',
-          icon: 'BarChartOutlined',
-          keepAlive: true,
-          accessKey: 'canViewBatchProductSalesAnalysis',
+          hidden: true,
+          accessKey: 'canViewPurchaseSalesAnalysis',
         },
-        element: <BatchProductSalesAnalysisPage />,
+        element: <Navigate replace to={buildAdminPurchaseSalesTabPath('batch')} />,
       },
       {
         path: '/executive-sales-intelligence/warehouse-product-flow-analysis',
@@ -641,6 +668,16 @@ export const appRoutes: AppRouteItem[] = [
           accessKey: 'canViewLocalProductSalesAnalysis',
         },
         element: <LocalProductSalesAnalysisPage />,
+      },
+      {
+        // 旧地址兼容：分店进货销量分析已并入进货销量分析，书签与历史链接跳到对应标签。
+        path: '/executive-sales-intelligence/local-supplier-purchase-sales-analysis',
+        meta: {
+          title: 'menu.localSupplierPurchaseSalesAnalysis',
+          hidden: true,
+          accessKey: 'canViewPurchaseSalesAnalysis',
+        },
+        element: <Navigate replace to={buildAdminPurchaseSalesTabPath('store')} />,
       },
       {
         path: '/executive-sales-intelligence/product-sales-analysis',
@@ -802,14 +839,14 @@ export const appRoutes: AppRouteItem[] = [
         element: <LocalSupplierInvoicesPage />,
       },
       {
+        // 旧地址兼容：页面已挪到销售看板，书签与历史链接重定向到新路径。
         path: '/pos-admin/local-supplier-purchase-sales-analysis',
         meta: {
           title: 'menu.localSupplierPurchaseSalesAnalysis',
-          icon: 'BarChartOutlined',
-          keepAlive: true,
-          accessKey: 'canManageLocalPurchase',
+          hidden: true,
+          accessKey: 'canViewPurchaseSalesAnalysis',
         },
-        element: <LocalSupplierPurchaseSalesAnalysisPage />,
+        element: <Navigate replace to={buildAdminPurchaseSalesTabPath('store')} />,
       },
       {
         path: '/pos-admin/invoice-detail/:id',

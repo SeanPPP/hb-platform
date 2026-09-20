@@ -102,7 +102,17 @@ assert.match(source, /<StoreClearancePriceCard[\s\S]*?readOnly=\{offlineMode\}/,
 assert.match(source, /<SetCodeCompactSection[\s\S]*?readOnly=\{offlineMode\}/, "套码列表必须传 readOnly");
 assert.match(source, /<MultiCodeCompactList[\s\S]*?readOnly=\{offlineMode\}/, "多码列表必须传 readOnly");
 assert.match(source, /visible=\{dirtyCount > 0 && !scannerInputBlocked && !offlineMode\}/, "离线时不得出现未保存底栏");
-assert.match(source, /access\.canCreateStoreProducts && !offlineMode/, "离线时不得显示创建商品");
+// 创建商品有两个入口：搜索面板上的按钮与查无结果时的横条，离线态都必须关掉。
+assert.match(
+  source,
+  /onCreateProduct=\{[\s\S]{0,160}?access\.canCreateStoreProducts && detail && !offlineMode/,
+  "离线时搜索面板不得给出创建商品入口",
+);
+assert.match(
+  source,
+  /\{access\.canCreateStoreProducts && !detail && !offlineMode \? \(/,
+  "离线时查无结果横条不得显示创建商品",
+);
 assert.match(source, /onPressProductType=\{\s*offlineMode \? undefined : \(\) => setProductTypeDialogVisible\(true\)\s*\}/, "离线时商品类型徽标必须只读");
 
 // 离线横幅必须显示数据更新时间；恢复在线必须立即退出并重跑查询。

@@ -1,0 +1,44 @@
+{
+  "purchaseSalesTrend": {
+    "columns": {
+      "dailyTrend": "日销量与进货",
+      "sellThrough": "售出比",
+      "trendCaption": "最近进货 {{purchased}} 件 · 其后 {{days}} 天售出 {{total}} 件 · 日均 {{average}}",
+      "noPurchase": "暂无进货记录"
+    },
+    "chart": {
+      "ariaSparkline": "日销量与进货迷你图",
+      "ariaDetail": "日销量、进货与累计销量图",
+      "since": "最近进货 {{date}} 起 {{days}} 天",
+      "purchased": "本次进货",
+      "total": "进货后累计销量",
+      "sellThrough": "售出比",
+      "average": "日均",
+      "soldOutOn": "约 {{date}} 卖完",
+      "remaining": "按进货量估算剩余 {{value}}",
+      "latestMarker": "最近进货",
+      "previousMarker": "上次进货",
+      "purchaseLine": "进货量 {{value}}",
+      "daily": "日销量（左轴）",
+      "weekend": "周末",
+      "beforeLatest": "最近进货之前",
+      "purchaseEvent": "进货事件与数量",
+      "cumulative": "进货后累计销量（右轴）",
+      "purchaseLineLegend": "进货量参考线",
+      "pointTitle": "{{date}}：{{quantity}} 件",
+      "purchaseTitle": "{{date}} 进货 {{quantity}} 件",
+      "noDaily": "该商品尚无逐日销量统计。"
+    },
+    "calculationNote": "进货按订单日期范围过滤、按进货发生日期汇总；日销量从上次进货起逐日展示，售出比与累计销量从最近进货当天起统计。",
+    "loadingHint": "正在查询本店进货与日销量，数据量大时需要几秒…"
+  },
+  "shop": {
+    "purchaseSalesAnalysisTitle": "进货销量分析",
+    "purchaseSalesAnalysisSubtitle": "按供应商和订单日期范围查看本店商品最近进货与进货后的每日销量。",
+    "purchaseSalesAnalysisPickSupplier": "选择供应商后点击搜索，查看本店商品的进货与每日销量。",
+    "purchaseSalesAnalysisNoStore": "请先在顶部选择当前分店。",
+    "purchaseSalesAnalysisPasteTab": "粘贴数据查看",
+    "purchaseSalesAnalysisStoreTab": "选择分店查看",
+    "purchaseSalesAnalysisPasteSubtitle": "粘贴或导入货号，查看这些商品在全部分店的销量、每日趋势及折扣成交情况。"
+  }
+}

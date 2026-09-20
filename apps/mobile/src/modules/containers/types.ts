@@ -63,7 +63,10 @@ export interface ContainerDetail {
   运输成本?: number;
   备注?: string;
   商品信息?: ContainerProductInfo;
+  /** 本地主档尚未建档；建档后即为 false，推送/价格等操作以它为准 */
   是否新商品?: boolean;
+  /** 本柜新品：未建档或由本货柜建档，建档后仍为 true，仅用于展示 */
+  isContainerNewProduct?: boolean;
   IsActive?: boolean;
   warehouseIsActive?: boolean;
   lastImportPrice?: number;

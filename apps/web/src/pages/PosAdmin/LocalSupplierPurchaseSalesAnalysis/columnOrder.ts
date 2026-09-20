@@ -1,14 +1,13 @@
 export type LocalSupplierPurchaseSalesAnalysisColumnKey = string
 
+// 供应商是查询必选条件、整页取值相同，排在图表之后，保证常见 1440 宽度下「日销量与进货」列无需横向滚动即可见。
 export const LOCAL_SUPPLIER_PURCHASE_SALES_ANALYSIS_DEFAULT_COLUMN_ORDER = [
-  'supplierName',
   'previousPurchaseDate',
   'latestPurchaseDate',
-  'purchaseIntervalDays',
   'salesBetweenPurchases',
-  'salesQty30',
-  'salesQty60',
-  'salesQty90',
+  'dailyTrend',
+  'sellThrough',
+  'supplierName',
   'salesStatisticLastUpdate',
 ] as const
 

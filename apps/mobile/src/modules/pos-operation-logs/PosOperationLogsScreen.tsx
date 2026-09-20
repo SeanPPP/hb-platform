@@ -3,6 +3,8 @@ import { Keyboard, StyleSheet } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { ActivityIndicator, Button, Text } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { OptionPickerSheet } from "@/components/ui/OptionPickerSheet";
+import { StorePickerModal } from "@/components/ui/StorePickerModal";
 import { PosOperationLogFilterSheet } from "@/components/pos-operation-logs/PosOperationLogFilterSheet";
 import { PosOperationLogsView } from "@/components/pos-operation-logs/PosOperationLogsView";
 import { createProductInsightRequestGate } from "@/modules/product-insights/request-gate";
@@ -18,6 +20,10 @@ import {
   buildPosOperationLogQueryParams,
   canViewPosOperationLogs,
   createDefaultPosOperationLogFilters,
+  operationTypeI18nKey,
+  POS_OPERATION_DEVICE_SYSTEMS,
+  POS_OPERATION_RANGE_PRESETS,
+  POS_OPERATION_TYPE_GROUPS,
 } from "./logic";
 import type {
   PosOperationLogFilters,
@@ -117,6 +123,7 @@ function PosOperationLogsContent({
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filterVisible, setFilterVisible] = useState(false);
+  const [picker, setPicker] = useState<"range" | "store" | "type" | "platform" | null>(null);
   const listGate = useRef(createProductInsightRequestGate()).current;
   const summaryGate = useRef(createProductInsightRequestGate()).current;
 
@@ -252,6 +259,10 @@ function PosOperationLogsContent({
         }}
         onQuickFilter={(quick: PosOperationQuickFilter) => applyFilters(applyQuickFilter(filters, quick))}
         onOpenFilters={() => setFilterVisible(true)}
+        onPickRange={() => setPicker("range")}
+        onPickStore={() => setPicker("store")}
+        onPickType={() => setPicker("type")}
+        onPickPlatform={() => setPicker("platform")}
         onClearOrderTrace={() => applyFilters({ ...filters, orderGuid: "", preset: "today" })}
         onRefresh={() => void load(filters, "refresh")}
         onLoadMore={() => void loadMore()}
@@ -263,6 +274,90 @@ function PosOperationLogsContent({
           })
         }
         onBack={onBack}
+      />
+      <OptionPickerSheet
+        visible={picker === "range"}
+        title={t("pickers.range")}
+        cancelLabel={t("actions.cancel")}
+        options={POS_OPERATION_RANGE_PRESETS.map((preset) => ({
+          value: preset,
+          label: t(`presets.${preset}`),
+          icon: preset === "custom" ? "calendar-edit" : undefined,
+        }))}
+        selectedValue={filters.preset}
+        onDismiss={() => setPicker(null)}
+        onSelect={(value) => {
+          setPicker(null);
+          // 自定义区间需要输入起止日期，交给完整筛选面板处理。
+          if (value === "custom") {
+            setFilterVisible(true);
+            return;
+          }
+          applyFilters({ ...filters, preset: value as PosOperationLogFilters["preset"] });
+        }}
+      />
+      <StorePickerModal
+        presentation="sheet"
+        visible={picker === "store"}
+        stores={stores}
+        selectedStoreCode={filters.storeCode}
+        title={t("pickers.store")}
+        cancelLabel={t("actions.cancel")}
+        includeAllOption
+        allLabel={t("filters.storeAll")}
+        onDismiss={() => setPicker(null)}
+        onSelectStore={(store) => {
+          setPicker(null);
+          applyFilters({ ...filters, storeCode: store?.storeCode ?? null });
+        }}
+      />
+      <OptionPickerSheet
+        visible={picker === "type"}
+        title={t("pickers.type")}
+        cancelLabel={t("actions.cancel")}
+        searchable
+        searchPlaceholder={t("pickers.searchType")}
+        options={[
+          { value: "", label: t("filters.operationTypeAll") },
+          ...POS_OPERATION_TYPE_GROUPS.flatMap((group) =>
+            group.types.map((type) => {
+              const key = `operations.${operationTypeI18nKey(type)}`;
+              const label = t(key);
+              return {
+                value: type,
+                label: label === key ? type : label,
+                group: t(`typeGroups.${group.key}`),
+              };
+            }),
+          ),
+        ]}
+        selectedValue={filters.operationType}
+        onDismiss={() => setPicker(null)}
+        onSelect={(value) => {
+          setPicker(null);
+          applyFilters({ ...filters, operationType: value || null });
+        }}
+      />
+      <OptionPickerSheet
+        visible={picker === "platform"}
+        title={t("pickers.platform")}
+        cancelLabel={t("actions.cancel")}
+        options={[
+          { value: "", label: t("platforms.all") },
+          ...POS_OPERATION_DEVICE_SYSTEMS.map((system) => ({
+            value: system,
+            label: t(`platforms.${system}`),
+          })),
+        ]}
+        selectedValue={filters.deviceSystem}
+        onDismiss={() => setPicker(null)}
+        onSelect={(value) => {
+          setPicker(null);
+          applyFilters({
+            ...filters,
+            deviceSystem: (value || null) as PosOperationLogFilters["deviceSystem"],
+          });
+        }}
       />
       <PosOperationLogFilterSheet
         visible={filterVisible}

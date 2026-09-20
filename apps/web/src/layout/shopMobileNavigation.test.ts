@@ -73,6 +73,7 @@ for (const destination of [
   'to="/shop/best-sellers"',
   'to="/shop/coming-soon"',
   'to="/shop/local-supplier-invoices"',
+  'to="/shop/purchase-sales-analysis"',
 ]) {
   assert.ok(moreDrawer.includes(destination), `More 抽屉必须保留入口: ${destination}`)
 }
