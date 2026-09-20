@@ -248,6 +248,8 @@ function seedFromContext(
       return { provider, paymentId: requireTextField(context, "paymentId") };
     case "linkly-cloud":
       return { provider, rfn: requireTextField(context, "rfn") };
+    case "manual-card":
+      throw new ReturnRefundAdapterError("REFUND_CONTEXT_INVALID");
   }
 }
 

@@ -154,6 +154,17 @@ test("远端 Linkly capacity 仅保存 RFN 与原始 ANZ reference，拒绝缺�
   }));
 });
 
+test("手动刷卡原付款不生成集成刷卡机退款凭据", async () => {
+  const seeded: unknown[] = [];
+  await assert.rejects(() => createVault(seeded).protect({
+    storeCode: "S01", originalOrderGuid: orderGuid, loadedFrom: "remote", capacities: [{
+      sourceKey: "manual-remote", method: "card", originalOrderGuid: orderGuid, remainingCents: 400,
+      protectedProviderMaterial: { reference: "MANUAL:attempt-1", cardTransactions: [{ ...linklyTransaction(null), processor: "Manual" }] },
+    }],
+  }));
+  assert.equal(seeded.length, 0);
+});
+
 test("远端 voucher capacity 允许保护，但 context 不含原券引用", async () => {
   const seeded: unknown[] = [];
   const handles = await createVault(seeded).protect({

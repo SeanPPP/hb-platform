@@ -1,7 +1,7 @@
 import type { Money } from "./money";
 import type { PaymentAttemptState } from "./state-machines";
 
-export type PaymentProvider = "square" | "linkly-cloud" | "voucher";
+export type PaymentProvider = "square" | "linkly-cloud" | "voucher" | "manual-card";
 export type PaymentOperation = "purchase" | "refund";
 
 /**
@@ -10,9 +10,9 @@ export type PaymentOperation = "purchase" | "refund";
  */
 export type CardSyncEvidenceV1 = Readonly<{
   version: 1;
-  provider: "square" | "linkly-cloud";
+  provider: "square" | "linkly-cloud" | "manual-card";
   operation: PaymentOperation;
-  processor: "Square" | "ANZ";
+  processor: "Square" | "ANZ" | "Manual";
   txnRef: string | null;
   authCode: string | null;
   cardType: string | null;
@@ -123,10 +123,12 @@ export function normalizeCardSyncEvidence(
   }
   if (
     input.version !== 1 ||
-    (input.provider !== "square" && input.provider !== "linkly-cloud") ||
+    (input.provider !== "square" && input.provider !== "linkly-cloud" && input.provider !== "manual-card") ||
     (input.operation !== "purchase" && input.operation !== "refund") ||
-    (input.processor !== "Square" && input.processor !== "ANZ") ||
-    (input.provider === "square") !== (input.processor === "Square")
+    (input.processor !== "Square" && input.processor !== "ANZ" && input.processor !== "Manual") ||
+    (input.provider === "square") !== (input.processor === "Square") ||
+    (input.provider === "manual-card") !== (input.processor === "Manual") ||
+    (input.provider === "manual-card" && input.operation !== "purchase")
   ) {
     throw new TypeError("Card sync evidence provider processor is invalid.");
   }
@@ -135,6 +137,14 @@ export function normalizeCardSyncEvidence(
     throw new TypeError(
       "Card sync evidence amount must be positive integer cents.",
     );
+  }
+  // 人工确认不是银行授权：只携带本地确认引用，不接收或伪造银行卡/授权/退款资料。
+  if (input.provider === "manual-card" && (
+    typeof input.txnRef !== "string" || !/^MANUAL:[^\s:]+$/u.test(input.txnRef) ||
+    [input.authCode, input.cardType, input.cardBin, input.maskedCardNumber,
+      input.merchantId, input.stan, input.bankDateTimeIso, input.refundReference].some((value) => value !== null)
+  )) {
+    throw new TypeError("Manual card confirmation evidence is invalid.");
   }
   const maskedCardNumber = nullableMaskedCardNumber(input.maskedCardNumber);
   const cardBin =

@@ -1035,6 +1035,8 @@ async function prepareLocalEvidence(
   nowIsoInput: string,
 ): Promise<PreparedOriginalTenderEvidence> {
   const attempt = record.attempt;
+  // 手动刷卡仅用于普通销售，不得转成分期原卡退款凭据。
+  if (attempt.provider === "manual-card") throw new Error("Manual card installment evidence is unsupported.");
   const seed = localEvidenceSeed(attempt, material);
   const envelope: OriginalTenderEnvelopeV1 = Object.freeze({
     format: "hb-pos-installment-original-tender-v1",

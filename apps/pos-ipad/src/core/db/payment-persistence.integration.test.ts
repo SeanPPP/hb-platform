@@ -47,7 +47,7 @@ const T0 = "2026-07-28T00:00:00.000Z";
 const T1 = "2026-07-28T00:01:00.000Z";
 const T2 = "2026-07-28T00:02:00.000Z";
 
-test("真实 SQLite：M44 旧支付事实升级 M45 保留 active draft、Linkly ACK 与 Square attempt，重复 apply 幂等", async () => {
+test("真实 SQLite：M44 经 M45 升级 M46 保留 active draft、Linkly ACK 与 Square attempt，重复 apply 幂等", async () => {
   await withDatabase("m44-to-m45-recovery-fixture", async (connection) => {
     await applyMigrations(connection, () => T0, POS_DATABASE_MIGRATIONS.filter((migration) => migration.version <= 44));
     await insertOrder(connection, {
@@ -90,6 +90,11 @@ test("真实 SQLite：M44 旧支付事实升级 M45 保留 active draft、Linkly
       ))?.version),
       45,
     );
+    await applyMigrations(connection, () => T2, POS_DATABASE_MIGRATIONS.filter((migration) => migration.version === 46));
+    await applyMigrations(connection, () => T2, POS_DATABASE_MIGRATIONS.filter((migration) => migration.version === 46));
+    assert.equal(Number((await connection.getFirst<{ version: unknown }>(
+      "SELECT MAX(version) AS version FROM schema_migrations",
+    ))?.version), 46);
     assert.deepEqual({
       ...(await connection.getFirst<{ state: string; provider_environment: string; session_id: string }>(
         "SELECT state, provider_environment, session_id FROM payment_attempts WHERE attempt_id = 'm44-linkly-attempt'",
@@ -4283,6 +4288,25 @@ test("真实 SQLite：全反冲关闭拒绝不完整或不安全的历史 paymen
   }
 });
 
+test("手动刷卡action先落库后崩溃仍恢复明确确认，缺少确认标记失败关闭", async () => {
+  for (const confirmed of [true, false]) {
+    await withDatabase(confirmed ? "manual-confirmed-recovery" : "manual-unconfirmed-recovery", async (connection) => {
+      await migrateFresh(connection);
+      const store = new SqlitePaymentDraftRecoveryStore(connection, sequenceIds("manual-order", "manual-audit"), () => T1);
+      const input = draftInput({ draftId: "manual-draft" });
+      const created = await store.createOrReuseDraft(input);
+      await insertActionBinding(connection, created.orderGuid, "manual-action", "manual-attempt", "manual-key",
+        confirmed ? ["manual-card", "purchase", "AUD", 900, "confirmed"] : ["manual-card", "purchase", "AUD", 900]);
+      if (confirmed) {
+        const recovered = await store.findBlockingRecovery(input.identity);
+        assert.equal(recovered?.kind, "DraftPrepared");
+        assert.equal(recovered?.boundAction?.manualConfirmed, true);
+        assert.equal(recovered?.boundAction?.provider, "manual-card");
+      } else await assert.rejects(() => store.findBlockingRecovery(input.identity), /confirmation signature/);
+    });
+  }
+});
+
 test("真实 SQLite：blocking attempt 与无 attempt prepared draft 均跨重启恢复，完成态 binding 不再阻塞", async () => {
   const folder = mkdtempSync(join(tmpdir(), "hb-pos-payment-recovery-"));
   const path = join(folder, "recovery.db");
@@ -6679,7 +6703,7 @@ function insertActionBinding(
   actionId: string,
   attemptId: string,
   idempotencyKey: string,
-  signature: readonly [string, string, "AUD", number] = [
+  signature: readonly [string, string, "AUD", number, ...string[]] = [
     "square",
     "purchase",
     "AUD",

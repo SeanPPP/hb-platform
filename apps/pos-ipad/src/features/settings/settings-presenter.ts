@@ -26,6 +26,12 @@ import type {
   PendingWorkSnapshot,
 } from "@hb/pos-domain";
 
+import {
+  DEFAULT_PAYMENT_METHOD_SETTINGS,
+  normalizePaymentMethodSettings,
+  type PaymentMethodSettings,
+} from "./payment-method-settings";
+
 export type SettingsPane =
   "general" | "payments" | "peripherals" | "device" | "hardware";
 
@@ -258,6 +264,7 @@ export type SettingsSnapshot = Readonly<{
   hardware: SettingsHardwareSnapshot;
   linkly: SettingsPaymentProviderSnapshot;
   paymentProvider: SettingsPaymentProvider | null;
+  paymentMethods?: PaymentMethodSettings;
   printer: ReceiptPrinterSettings;
   square: SettingsSquareSnapshot;
 }>;
@@ -469,6 +476,8 @@ export interface SettingsControlPort {
   /** 只允许读取 health；配对必须经过 executeDangerousAction。 */
   linklySetup?: SettingsLinklySetupReadPort | undefined;
   loadSnapshot(signal: AbortSignal): Promise<SettingsSnapshot>;
+  /** 组合根在互斥临界区内复核权限、cashier lease 与未决支付后保存。 */
+  savePaymentMethods?(input: PaymentMethodSettings, signal: AbortSignal): Promise<void>;
   getCatalogRefreshState(): CatalogRefreshState;
   subscribeCatalogRefresh(listener: () => void): () => void;
   /** 凭据已不可逆提交后的脱敏终态通知；无 payload，必须由实现只发布一次。 */
@@ -535,6 +544,8 @@ export interface SettingsControlPort {
 }
 
 export type SettingsStatusCode =
+  | "payment-method-settings-blocked"
+  | "payment-method-settings-unavailable"
   | "api-address-saved"
   | "api-health-check-failed"
   | "api-health-check-passed"
@@ -632,6 +643,9 @@ export type SettingsState = Readonly<{
   linklySetup: SettingsLinklySetupState | null;
   paymentProvider: SettingsPaymentProvider | null;
   paymentProviderDraft: SettingsPaymentProvider | null;
+  paymentMethods: PaymentMethodSettings;
+  paymentMethodsDraft: PaymentMethodSettings;
+  paymentMethodsAvailable: boolean;
   printer: ReceiptPrinterSettings;
   printerDevices: readonly SettingsPrinterDevice[];
   square: SettingsSquareSnapshot;
@@ -757,6 +771,9 @@ export class SettingsPresenter {
           : null,
         paymentProvider: snapshot.paymentProvider,
         paymentProviderDraft: snapshot.paymentProvider,
+        paymentMethods: normalizePaymentMethodSettings(snapshot.paymentMethods),
+        paymentMethodsDraft: normalizePaymentMethodSettings(snapshot.paymentMethods),
+        paymentMethodsAvailable: this.options.port.savePaymentMethods !== undefined,
         printer: snapshot.printer,
         square: snapshot.square,
         squareDraft: {
@@ -1598,6 +1615,45 @@ export class SettingsPresenter {
   public setTerminalName(value: string): void {
     if (!this.canEdit()) return;
     this.patch({ terminalNameDraft: value, statusCode: null });
+  }
+
+  public setUseManualCard(value: boolean): void {
+    if (!this.canEditPayments() || !this.state.paymentMethodsAvailable) return;
+    this.patch({ paymentMethodsDraft: Object.freeze({ ...this.state.paymentMethodsDraft, useManualCard: value }), statusCode: null });
+  }
+
+  public setGiftCardEnabled(value: boolean): void {
+    if (!this.canEditPayments() || !this.state.paymentMethodsAvailable) return;
+    this.patch({ paymentMethodsDraft: Object.freeze({ ...this.state.paymentMethodsDraft, giftCardEnabled: value }), statusCode: null });
+  }
+
+  public savePaymentMethods(): Promise<void> {
+    if (!this.requirePermission(this.state.access.canConfigurePayments) || !this.canEdit()) return Promise.resolve();
+    const save = this.options.port.savePaymentMethods;
+    if (!save || this.catalogRefreshRunning()) {
+      this.patch({ statusCode: "safety-check-failed" });
+      return Promise.resolve();
+    }
+    const input = this.state.paymentMethodsDraft;
+    return this.runAction(async () => {
+      try {
+        await save.call(this.options.port, input, this.lifetime.signal);
+        if (this.destroyed) return;
+        // 仅耐久保存成功后更新生效值，失败时保留草稿供重新保存。
+        this.patch({ paymentMethods: input, statusCode: "payment-settings-saved" });
+      } catch (error) {
+        if (!this.destroyed) {
+          const code = error instanceof Error ? error.message : "";
+          this.patch({ statusCode: code === "SETTINGS_PERMISSION_DENIED"
+            ? "permission-required"
+            : code === "PAYMENT_METHOD_SETTINGS_BLOCKED"
+              ? "payment-method-settings-blocked"
+              : code === "PAYMENT_METHOD_SETTINGS_UNAVAILABLE"
+                ? "payment-method-settings-unavailable"
+                : "payment-settings-save-failed" });
+        }
+      }
+    });
   }
 
   public savePaymentSettings(): Promise<void> {
@@ -3385,6 +3441,9 @@ function initialState(
       : null,
     paymentProvider: null,
     paymentProviderDraft: null,
+    paymentMethods: DEFAULT_PAYMENT_METHOD_SETTINGS,
+    paymentMethodsDraft: DEFAULT_PAYMENT_METHOD_SETTINGS,
+    paymentMethodsAvailable: false,
     printer,
     printerDevices: Object.freeze([]),
     square,
@@ -3613,6 +3672,7 @@ function normalizeSnapshot(snapshot: SettingsSnapshot): SettingsSnapshot {
     }),
     linkly,
     paymentProvider,
+    paymentMethods: normalizePaymentMethodSettings(snapshot.paymentMethods),
     printer: normalizePrinterSettings(snapshot.printer),
     square,
   });
