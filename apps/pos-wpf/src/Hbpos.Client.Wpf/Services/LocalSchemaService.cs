@@ -1547,6 +1547,17 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
         );
         """,
         """
+        -- LocalPromotions 的商品明细。此前 promotion 链路误用了 catalog 链路的
+        -- LocalPromotionProducts，两条链路各自“按门店全删再全插”，在同一次同步里互相清空。
+        CREATE TABLE IF NOT EXISTS LocalPromotionRuleProducts (
+            StoreCode TEXT NOT NULL,
+            PromotionId TEXT NOT NULL,
+            ProductCode TEXT NOT NULL,
+            UnitWeight INTEGER NOT NULL,
+            PRIMARY KEY (StoreCode, PromotionId, ProductCode)
+        );
+        """,
+        """
         CREATE TABLE IF NOT EXISTS SuspendedOrders (
             SuspendedOrderGuid TEXT PRIMARY KEY,
             StoreCode TEXT NOT NULL,
@@ -1624,8 +1635,18 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
         ON LocalPromotionProducts (StoreCode, ProductCode);
         """,
         """
+        -- 注意：本索引名中的 LocalPromotions 与它实际所在的 LocalPromotionRules 不符，
+        -- 属历史命名瑕疵。此处不改名，避免为删除旧索引引入迁移步骤。
         CREATE INDEX IF NOT EXISTS IX_LocalPromotions_Store_EffectiveRange
         ON LocalPromotionRules (StoreCode, EffectiveStart, EffectiveEnd);
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS IX_LocalPromotionsTable_Store_EffectiveRange
+        ON LocalPromotions (StoreCode, EffectiveStart, EffectiveEnd);
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS IX_LocalPromotionRuleProducts_Store_ProductCode
+        ON LocalPromotionRuleProducts (StoreCode, ProductCode);
         """,
         """
         CREATE INDEX IF NOT EXISTS IX_LocalPromotionProducts_Store_ProductCode
