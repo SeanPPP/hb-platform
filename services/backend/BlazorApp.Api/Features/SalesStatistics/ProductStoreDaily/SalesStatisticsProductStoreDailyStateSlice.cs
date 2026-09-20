@@ -302,42 +302,41 @@ namespace BlazorApp.Api.Services
     {
         var targetDate = date.Date;
         var nextDate = targetDate.AddDays(1);
-        var watermarks = new List<DateTime?>
-        {
-            await posmContext.Db.Queryable<SalesOrder>()
-                .Where(order =>
-                    order.Status != null
-                    && (order.Status == 1 || order.Status == 4)
-                    && order.OrderTime != null
-                    && order.OrderTime >= targetDate
-                    && order.OrderTime < nextDate
-                )
-                .MaxAsync(order => order.LastUploadTime),
-            await posmContext.Db.Queryable<PaymentDetail, SalesOrder>(
-                    (payment, order) => payment.OrderGuid == order.OrderGuid
-                )
-                .Where((payment, order) =>
-                    order.Status != null
-                    && (order.Status == 1 || order.Status == 4)
-                    && order.OrderTime != null
-                    && order.OrderTime >= targetDate
-                    && order.OrderTime < nextDate
-                )
-                .MaxAsync((payment, order) => payment.LastUploadTime),
-            await posmContext.Db.Queryable<SalesOrderDetail, SalesOrder>(
-                    (detail, order) => detail.OrderGuid == order.OrderGuid
-                )
-                .Where((detail, order) =>
-                    order.Status != null
-                    && (order.Status == 1 || order.Status == 4)
-                    && order.OrderTime != null
-                    && order.OrderTime >= targetDate
-                    && order.OrderTime < nextDate
-                )
-                .MaxAsync((detail, order) => detail.LastUploadTime),
-        };
-        var values = watermarks.Where(value => value.HasValue).Select(value => value!.Value).ToList();
-        return values.Count == 0 ? null : values.Max();
+
+        // ADO 不会自动应用 Queryable 的 NOLOCK 配置，显式保持原查询的隔离规则。
+        var settings = posmContext.Db.CurrentConnectionConfig.MoreSettings;
+        var noLockHint = posmContext.Db.CurrentConnectionConfig.DbType == SqlSugar.DbType.SqlServer
+            && settings?.IsWithNoLockQuery == true
+            && !(settings.DisableWithNoLockWithTran == true && posmContext.Db.Ado.Transaction != null)
+                ? " WITH (NOLOCK)"
+                : string.Empty;
+
+        // 用固定参数化 SQL 替换本次失败经过的 MaxAsync 查询路径，一次读取三个来源的水位。
+        // 保留传入的连接，使当天统计继续参与调用方的 Snapshot 事务。
+        return await posmContext.Db.Ado.SqlQuerySingleAsync<DateTime?>(
+            $"""
+            SELECT MAX([SourceWatermark])
+            FROM (
+                SELECT MAX([LastUploadTime]) AS [SourceWatermark]
+                FROM [sales_order]{noLockHint}
+                WHERE [Status] IN (1, 4)
+                  AND [OrderTime] >= @TargetDate AND [OrderTime] < @NextDate
+                UNION ALL
+                SELECT MAX([payment].[LastUploadTime]) AS [SourceWatermark]
+                FROM [payment_detail] AS [payment]{noLockHint}
+                INNER JOIN [sales_order] AS [orders]{noLockHint} ON [payment].[OrderGuid] = [orders].[OrderGuid]
+                WHERE [orders].[Status] IN (1, 4)
+                  AND [orders].[OrderTime] >= @TargetDate AND [orders].[OrderTime] < @NextDate
+                UNION ALL
+                SELECT MAX([detail].[LastUploadTime]) AS [SourceWatermark]
+                FROM [sales_order_detail] AS [detail]{noLockHint}
+                INNER JOIN [sales_order] AS [orders]{noLockHint} ON [detail].[OrderGuid] = [orders].[OrderGuid]
+                WHERE [orders].[Status] IN (1, 4)
+                  AND [orders].[OrderTime] >= @TargetDate AND [orders].[OrderTime] < @NextDate
+            ) AS [watermarks]
+            """,
+            new { TargetDate = targetDate, NextDate = nextDate }
+        );
     }
 
     internal static async Task<DateTime?> QueryDailySourceWatermarkAsync(
