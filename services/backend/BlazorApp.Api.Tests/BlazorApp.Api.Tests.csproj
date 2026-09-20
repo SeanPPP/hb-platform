@@ -310,5 +310,11 @@
     <Compile Include="WarehouseProductChangeHistoryServiceTests.cs" />
     <Compile Include="WarehouseProductChangeHistoryTestDouble.cs" />
     <Compile Include="SqliteTempFileCleanup.cs" />
+    <Compile Include="OfflineCatalogIndexTests.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 与移动端 offline-catalog-checksum.test.ts 共享的校验和测试向量。 -->
+    <None Include="OfflineCatalogChecksumVectors.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

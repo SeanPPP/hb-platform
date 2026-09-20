@@ -252,6 +252,41 @@
     "confirmFailed": "Warehouse retail price update failed. Try again.",
     "conflict": "The prices changed. The latest values are shown; please confirm again."
   },
+  "offline": {
+    "bannerTitle": "Offline mode · Data updated {{time}}",
+    "bannerMeta": "{{count}} items · Downloaded {{time}}",
+    "bannerNoData": "Offline mode · No offline data for this store",
+    "bannerNoDataHint": "Offline data downloads automatically once the network is back",
+    "retryConnection": "Retry",
+    "backOnline": "Back online. Live data restored.",
+    "statusReady": "Offline data · Updated {{time}} · {{count}} items",
+    "statusSyncing": "Downloading offline data · {{step}} {{percent}}% · {{completed}} / {{total}}",
+    "statusFailed": "Offline data update failed: {{reason}}",
+    "statusMissing": "Offline data not downloaded yet",
+    "steps": {
+      "prepare": "Preparing",
+      "products": "Products",
+      "activate": "Activating"
+    },
+    "errors": {
+      "network": "Network unavailable",
+      "capacityBusy": "Server is busy. Try again later.",
+      "expired": "Server snapshot expired. It will download again.",
+      "verification": "Data verification failed",
+      "api": "Server returned an error",
+      "failed": "Unknown error"
+    },
+    "download": "Download",
+    "update": "Update",
+    "retry": "Retry",
+    "editingUnavailable": "Prices, barcodes, and product details cannot be edited in offline mode.",
+    "insightsUnavailable": "Product insights are unavailable in offline mode.",
+    "catalogMissing": "Offline data for this store has not been downloaded yet. It downloads automatically once the network is back.",
+    "notInCatalog": "This product is not in the offline data.",
+    "refreshCompleted": "Offline data updated ({{count}} items).",
+    "refreshNoChange": "Offline data is already up to date.",
+    "refreshCancelled": "Offline data download cancelled."
+  },
   "print": {
     "title": "Label printing",
     "quick": "Print",

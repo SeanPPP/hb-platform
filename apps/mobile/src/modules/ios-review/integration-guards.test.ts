@@ -269,10 +269,26 @@ async function run() {
     /iosReviewBuildEnabled\s*\|\|\s*isIosReviewSessionActive\(\)/,
     "review 构建的显式登录意图不能提前启动 Root 后台副作用"
   );
+  // 存在性断言抓不到新增的第二处调用，这里改成计数 + 逐处定性。
+  assert.equal(
+    tabsLayout.match(/setSessionKind\("device"\)/g)?.length,
+    2,
+    "设备会话标记只应出现在在线校验成功与断网离线回退两处"
+  );
   assert.match(
     tabsLayout,
-    /if \(isReady && !cancelled\) \{[\s\S]*setSessionKind\("device"\)/,
+    /if \(isReady && !cancelled\) \{[\s\S]{0,240}?setSessionKind\("device"\)/,
     "已保存设备必须验证成功后才标记普通设备会话完成"
+  );
+  assert.match(
+    tabsLayout,
+    /setSessionKind\("device"\);[\s\S]{0,240}?setOfflineDeviceFallback\(true\)/,
+    "断网离线回退解除了守卫，必须同时标记待补校验，网络恢复后补上设备校验"
+  );
+  assert.match(
+    tabsLayout,
+    /if \(!offlineDeviceFallback\) \{[\s\S]{0,4000}?await validateDevice\(\)/,
+    "待补校验状态必须有重试设备校验的路径"
   );
 
   assert.match(

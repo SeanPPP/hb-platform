@@ -16,6 +16,8 @@ interface StorePriceStrategyCardProps {
   strategySourceLabel?: string | null;
   strategyRuleLabel?: string | null;
   evaluatingRate?: boolean;
+  /** 离线模式：价格与开关只读，点击交给 onEditPurchasePrice 等回调自行提示。 */
+  readOnly?: boolean;
   onEditPurchasePrice: () => void;
   onEditRetailPrice: () => void;
   onEditDiscountPercent: () => void;
@@ -38,6 +40,7 @@ export function StorePriceStrategyCard({
   strategySourceLabel,
   strategyRuleLabel,
   evaluatingRate = false,
+  readOnly = false,
   onEditPurchasePrice,
   onEditRetailPrice,
   onEditDiscountPercent,
@@ -105,11 +108,11 @@ export function StorePriceStrategyCard({
           <View style={styles.toggleRow}>
             <View style={styles.toggleItem}>
               <Text variant="bodySmall" style={styles.toggleLabel}>{t("storePrice.auto")}</Text>
-              <Switch value={autoPricing} onValueChange={onToggleAutoPricing} />
+              <Switch value={autoPricing} onValueChange={onToggleAutoPricing} disabled={readOnly} />
             </View>
             <View style={styles.toggleItem}>
               <Text variant="bodySmall" style={styles.toggleLabel}>{t("storePrice.special")}</Text>
-              <Switch value={isSpecialProduct} onValueChange={onToggleSpecial} />
+              <Switch value={isSpecialProduct} onValueChange={onToggleSpecial} disabled={readOnly} />
             </View>
           </View>
         </View>

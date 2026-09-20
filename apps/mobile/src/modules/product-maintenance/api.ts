@@ -38,6 +38,11 @@ import { normalizeHqSyncOperation } from "@/modules/product-maintenance/hq-sync"
 const BASE_PATH = "/react/v1/store-product-maintenance";
 const PRODUCTS_PATH = "/react/v1/products";
 const ACTIVE_LOCAL_SUPPLIERS_PATH = "/react/v1/local-suppliers/active";
+/**
+ * 查询类请求的专用超时：默认 30s 在「Wi-Fi 已连接但无外网」时会让每次扫码等 30s 才能降级离线；
+ * 这三个接口后端本就期望毫秒级响应，10s 足够覆盖慢网络。
+ */
+export const PRODUCT_QUERY_REQUEST_TIMEOUT_MS = 10_000;
 
 function buildRequestConfig(): AxiosRequestConfig {
   const session = useDeviceStore.getState().session;
@@ -83,7 +88,7 @@ function normalizeDiscountRate(value: unknown): number | null {
   return null;
 }
 
-function normalizeLookupItem(payload: unknown): ProductLookupItem {
+export function normalizeLookupItem(payload: unknown): ProductLookupItem {
   const data = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
   return {
     productCode: String(data.productCode ?? data.ProductCode ?? ""),
@@ -247,8 +252,33 @@ function normalizeProductTypeUpdate(payload: unknown): UpdateProductTypeResult {
 export async function lookupProducts(
   payload: StoreProductLookupRequest
 ): Promise<ProductLookupItem[]> {
-  const response = await apiClient.post(BASE_PATH + "/lookup", payload, buildRequestConfig());
+  const response = await apiClient.post(BASE_PATH + "/lookup", payload, {
+    ...buildRequestConfig(),
+    timeout: PRODUCT_QUERY_REQUEST_TIMEOUT_MS,
+  });
   return Array.isArray(response.data) ? response.data.map(normalizeLookupItem) : [];
+}
+
+/**
+ * 离线目录同步接口的传输层：复用 apiClient 的设备头/鉴权与信封解包，
+ * 不设固定超时（整页下载可能很慢），由 AbortSignal 负责取消。
+ */
+export function createOfflineCatalogTransport() {
+  return {
+    async get<T>(
+      path: string,
+      params: Record<string, string | number | undefined>,
+      signal?: AbortSignal
+    ): Promise<T> {
+      const response = await apiClient.get(path, {
+        ...buildRequestConfig(),
+        params,
+        signal,
+        timeout: 0,
+      });
+      return response.data as T;
+    },
+  };
 }
 
 export async function fetchActiveLocalSuppliers(): Promise<LocalSupplierOption[]> {
@@ -306,6 +336,7 @@ export async function getProductFastDetail(
     `${BASE_PATH}/${encodeURIComponent(productCode)}/fast-detail`,
     {
       ...buildRequestConfig(),
+      timeout: PRODUCT_QUERY_REQUEST_TIMEOUT_MS,
       params: {
         ...(storeCode ? { storeCode } : {}),
       },
@@ -360,6 +391,7 @@ export async function getProductCodes(
     `${BASE_PATH}/${encodeURIComponent(productCode)}/codes`,
     {
       ...buildRequestConfig(),
+      timeout: PRODUCT_QUERY_REQUEST_TIMEOUT_MS,
       params: {
         ...(storeCode ? { storeCode } : {}),
         type,

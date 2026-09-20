@@ -6,6 +6,8 @@ interface StoreClearancePriceCardProps {
   clearanceBarcode?: string | null;
   clearancePrice: string;
   isPrintingClearance?: boolean;
+  /** 离线模式：清货价只读，打印按钮保留。 */
+  readOnly?: boolean;
   onEditClearancePrice: () => void;
   onPrintClearance?: () => void;
 }
@@ -14,6 +16,7 @@ export function StoreClearancePriceCard({
   clearanceBarcode,
   clearancePrice,
   isPrintingClearance = false,
+  readOnly = false,
   onEditClearancePrice,
   onPrintClearance,
 }: StoreClearancePriceCardProps) {
@@ -29,7 +32,11 @@ export function StoreClearancePriceCard({
         {clearanceBarcode || t("clearancePrice.pendingBarcode")}
       </Text>
 
-      <Pressable onPress={onEditClearancePrice} style={styles.pricePressable}>
+      <Pressable
+        onPress={onEditClearancePrice}
+        style={[styles.pricePressable, readOnly ? styles.readOnly : null]}
+        accessibilityState={{ disabled: readOnly }}
+      >
         <View style={styles.priceContent} pointerEvents="none">
           <Text variant="labelSmall" style={styles.priceLabel}>
             {t("clearancePrice.price")}
@@ -72,6 +79,9 @@ const styles = StyleSheet.create({
   },
   pricePressable: {
     flexShrink: 0,
+  },
+  readOnly: {
+    opacity: 0.6,
   },
   priceContent: {
     alignItems: "center",

@@ -61,6 +61,16 @@ import {
 } from "@/shared/api/config";
 import { DeviceActivationDialog } from "@/modules/device-activation/DeviceActivationDialog";
 import type { MobileDeviceActivationMode } from "@/modules/device-activation/types";
+import {
+  describeOfflineCatalogSummary,
+  OfflineCatalogManagementPanel,
+} from "@/components/product-maintenance/OfflineCatalogManagementPanel";
+import {
+  hasStoredDeviceSession,
+  isOfflineProductQueryEligible,
+} from "@/modules/product-maintenance/offline-eligibility";
+import { useOfflineCatalogStore } from "@/modules/product-maintenance/offline-catalog/offline-catalog-store";
+import { useStores } from "@/modules/shop/use-stores";
 import { HB_COLORS, HB_RADIUS, HB_SPACING } from "@/shared/theme/tokens";
 
 function resolveDeviceStatusText(
@@ -366,7 +376,7 @@ function PrinterDeviceList({
 
 export default function Settings() {
   const router = useRouter();
-  const { t, language } = useAppTranslation(["settings", "common"]);
+  const { t, language } = useAppTranslation(["settings", "common", "productQuery"]);
   const checkMobileOtaUpdate = useMobileOtaManualCheck();
   const user = useAuthStore((state) => state.user);
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
@@ -403,6 +413,7 @@ export default function Settings() {
   const [printerSettingsVisible, setPrinterSettingsVisible] = useState(false);
   const [activationVisible, setActivationVisible] = useState(false);
   const [activationMode, setActivationMode] = useState<MobileDeviceActivationMode>("redeem");
+  const [offlineDataVisible, setOfflineDataVisible] = useState(false);
   const modalReturnFocusHandleRef = useRef<number | null>(null);
   const diagnosticsHeaderTriggerRef = useRef<View>(null);
   const diagnosticsAboutTriggerRef = useRef<View>(null);
@@ -410,6 +421,7 @@ export default function Settings() {
   const labelPrinterTriggerRef = useRef<View>(null);
   const receiptPrinterTriggerRef = useRef<View>(null);
   const apiHostTriggerRef = useRef<View>(null);
+  const offlineDataTriggerRef = useRef<View>(null);
 
   const rememberModalTrigger = (triggerRef: RefObject<View | null>) => {
     modalReturnFocusHandleRef.current = findNodeHandle(triggerRef.current);
@@ -445,12 +457,48 @@ export default function Settings() {
     restoreModalTriggerFocus();
   };
 
+  const dismissOfflineDataSettings = () => {
+    setOfflineDataVisible(false);
+    restoreModalTriggerFocus();
+  };
+
   const settingsAuthMode = resolveSettingsAuthMode({
     hasUser: Boolean(user),
     hasDeviceSession: Boolean(deviceSession),
   });
   const showProfileAction = shouldShowProfileAction(settingsAuthMode);
   const canViewDeviceCard = Boolean(user || deviceSession || accountBinding);
+  // 离线商品数据只对设备注册绑定会话开放，与商品查询页的离线资格口径一致。
+  const offlineEligible = isOfflineProductQueryEligible({
+    sessionKind,
+    hasStoredDeviceSession: hasStoredDeviceSession(deviceSession),
+  });
+  const { selectedStore: offlineSelectedStore, selectedStoreCode: offlineSelectedStoreCode } =
+    useStores();
+  const offlineActiveMeta = useOfflineCatalogStore((state) =>
+    offlineSelectedStoreCode ? (state.activeMeta[offlineSelectedStoreCode] ?? null) : null
+  );
+  const offlineRefresh = useOfflineCatalogStore((state) => state.refresh);
+  const offlineSummary = describeOfflineCatalogSummary({
+    refresh: offlineRefresh,
+    storeCode: offlineSelectedStoreCode,
+    activeMeta: offlineActiveMeta,
+    language,
+    t,
+  });
+
+  useEffect(() => {
+    // 设置首页的离线数据行要在不打开面板时也能显示状态，这里先读当前分店的快照摘要。
+    if (!offlineEligible || !offlineSelectedStoreCode) {
+      return;
+    }
+    void useOfflineCatalogStore
+      .getState()
+      .open()
+      .then((ready) =>
+        ready ? useOfflineCatalogStore.getState().loadActiveMeta(offlineSelectedStoreCode) : null
+      );
+  }, [offlineEligible, offlineSelectedStoreCode]);
 
   const deviceStatusText = resolveDeviceStatusText(
     deviceSession?.status,
@@ -722,6 +770,11 @@ export default function Settings() {
     rememberModalTrigger(apiHostTriggerRef);
     setApiHostDraft(apiHost);
     setApiHostModalVisible(true);
+  };
+
+  const openOfflineDataSettings = () => {
+    rememberModalTrigger(offlineDataTriggerRef);
+    setOfflineDataVisible(true);
   };
 
   const handleSaveApiHost = async () => {
@@ -1112,6 +1165,28 @@ export default function Settings() {
             onPress={() => openPrinterSettings(receiptPrinterTriggerRef)}
             accessibilityLabel={t("overview.managePrinters")}
           />
+
+          {offlineEligible ? (
+            <>
+              <View style={styles.sectionDivider} />
+              <CompactRow
+                icon="database-outline"
+                label={t("offlineData.title")}
+                value={
+                  offlineSelectedStore?.storeName ||
+                  offlineSelectedStoreCode ||
+                  t("offlineData.storeNotSelected")
+                }
+                meta={offlineSummary.summary}
+                status={t(`offlineData.${offlineSummary.statusKey}`)}
+                statusTone={offlineSummary.tone}
+                actionRef={offlineDataTriggerRef}
+                onPress={openOfflineDataSettings}
+                accessibilityLabel={t("offlineData.manage")}
+                testID="settings-offline-data"
+              />
+            </>
+          ) : null}
         </CompactSection>
 
         <CompactSection
@@ -1549,6 +1624,27 @@ export default function Settings() {
               </View>
             </ScrollView>
       </AccessibleSettingsModal>
+
+      {offlineEligible ? (
+        <AccessibleSettingsModal
+          visible={offlineDataVisible}
+          title={t("offlineData.title")}
+          description={t("offlineData.description")}
+          dismissLabel={t("common:actions.close")}
+          testID="settings-offline-data-details"
+          onDismiss={dismissOfflineDataSettings}
+        >
+          <ScrollView
+            style={styles.sheetScroll}
+            contentContainerStyle={styles.sheetContent}
+            showsVerticalScrollIndicator={false}
+          >
+            <OfflineCatalogManagementPanel
+              onNotify={(message) => Alert.alert(t("offlineData.title"), message)}
+            />
+          </ScrollView>
+        </AccessibleSettingsModal>
+      ) : null}
 
       <AccessibleSettingsModal
         visible={diagnosticsVisible}

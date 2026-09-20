@@ -1043,6 +1043,20 @@ builder.Services.AddScoped<IPreorderGateService>(provider =>
     provider.GetRequiredService<PreorderReactService>()
 );
 builder.Services.AddScoped<IStoreProductMaintenanceReactService, StoreProductMaintenanceReactService>();
+// 移动端离线商品目录：索引缓存为进程级单例（每店保留多版本供 delta），服务按请求作用域。
+builder.Services.AddSingleton<
+    BlazorApp.Api.Services.React.OfflineCatalog.IOfflineCatalogIndexCache,
+    BlazorApp.Api.Services.React.OfflineCatalog.OfflineCatalogIndexCache
+>();
+builder.Services.AddScoped<BlazorApp.Api.Services.React.OfflineCatalog.StoreProductOfflineCatalogService>();
+builder.Services.AddScoped<IStoreProductOfflineCatalogService>(sp =>
+    sp.GetRequiredService<BlazorApp.Api.Services.React.OfflineCatalog.StoreProductOfflineCatalogService>()
+);
+// 索引构建在独立 scope 中解析，避免后台构建捕获已释放的 HTTP 请求 DbContext。
+builder.Services.AddScoped<IOfflineCatalogIndexBuilder>(sp =>
+    sp.GetRequiredService<BlazorApp.Api.Services.React.OfflineCatalog.StoreProductOfflineCatalogService>()
+);
+builder.Services.AddScoped<StoreAccessContextResolver>();
 builder.Services.AddScoped<IAustralianPublicHolidayProvider, AustralianPublicHolidayProvider>();
 builder.Services.AddScoped<IAttendancePublicHolidaySyncService, AttendancePublicHolidaySyncService>();
 builder.Services.AddScoped<IAttendanceReactService, AttendanceReactService>();

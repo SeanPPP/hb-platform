@@ -33,11 +33,15 @@ export type BackendHealthCheckOptions = {
 
 /**
  * 由 API 基础地址推导健康检查 URL。
- * apiBaseUrl 形如 `https://host/api`（生产）或 `http://host:5002/api`（本地），
- * 后端 health 端点位于根路径，因此去掉尾部 `/api` 后拼接 `/health`。
+ *
+ * 后端 HealthController 的路由是 `api/health`（[Route("api/[controller]")]），
+ * 因此必须拼在 `/api` 之后。生产域名经 Nginx 代理时 `/health` 与 `/api/health` 均可用，
+ * 但本地或局域网直连 5002 时只有 `/api/health` 存在；早期实现去掉 `/api` 会在开发环境
+ * 恒定返回 404，使离线恢复探测永远判定“后端不可达”。
  */
 export function buildHealthUrl(apiBaseUrl: string): string {
-  return `${apiBaseUrl.replace(/\/api$/, "")}/health`;
+  const normalized = apiBaseUrl.replace(/\/+$/, "");
+  return normalized.endsWith("/api") ? `${normalized}/health` : `${normalized}/api/health`;
 }
 
 /**

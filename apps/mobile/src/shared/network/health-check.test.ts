@@ -11,10 +11,15 @@ import {
   NETWORK_CHECK_TIMEOUT_MS,
 } from "./health-check";
 
-test("buildHealthUrl 去除 /api 尾部并拼接 /health", () => {
-  assert.equal(buildHealthUrl("https://hotbargain.vip/api"), "https://hotbargain.vip/health");
-  assert.equal(buildHealthUrl("http://192.168.31.247:5002/api"), "http://192.168.31.247:5002/health");
-  assert.equal(buildHealthUrl("http://host:5002"), "http://host:5002/health");
+test("buildHealthUrl 指向后端实际存在的 api/health 路由", () => {
+  assert.equal(buildHealthUrl("https://hotbargain.vip/api"), "https://hotbargain.vip/api/health");
+  assert.equal(
+    buildHealthUrl("http://192.168.31.247:5002/api"),
+    "http://192.168.31.247:5002/api/health",
+  );
+  // 传入不带 /api 的基础地址时补全，避免请求到不存在的根路径 /health。
+  assert.equal(buildHealthUrl("http://host:5002"), "http://host:5002/api/health");
+  assert.equal(buildHealthUrl("http://host:5002/api/"), "http://host:5002/api/health");
 });
 
 test("后端返回 2xx 时 checkBackendReachable 返回 ok=true", async () => {
