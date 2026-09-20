@@ -5,6 +5,9 @@ services:
       dockerfile: apps/pos-wpf/src/Hbpos.Api/Dockerfile
     image: hbpos-api:local
     container_name: hbpos-api
+    # 限制 POS 目录构建的整机影响；禁止占用 swap 拖慢主 API。
+    mem_limit: 3g
+    memswap_limit: 3g
     ports:
       - "5003:5003"
     environment:
@@ -13,10 +16,15 @@ services:
       - ASPNETCORE_HTTP_PORTS=5003
       - DataProtection__KeysPath=/app/App_Data/DataProtectionKeys
       - CatalogSnapshot__RootPath=/app/App_Data/CatalogSnapshots
+      # 约 35 万项/店：软限优先淘汰，硬限为下载租约保留约三个版本。
+      - CatalogSnapshot__SoftItemCapacity=500000
+      - CatalogSnapshot__HardItemCapacity=1200000
+      # 保留两店原始数据，避免旧版 since 下载在两店间交替时反复全量重建。
+      - CatalogSnapshot__RawArtifactCapacity=2
       # 紧急回滚时设为 false，sync-plan 将只发放 full 租约。
       - CatalogSync__DeltaEnabled=${HBPOS_CATALOG_DELTA_ENABLED:-true}
-      # 生产 compose 显式开启每日 01:00 Brisbane 预构建；紧急回滚时可设为 false。
-      - CatalogDailyPrebuild__Enabled=${HBPOS_CATALOG_DAILY_PREBUILD_ENABLED:-true}
+      # 完成容量验收后才显式开启每日预构建，避免默认触发全店负载。
+      - CatalogDailyPrebuild__Enabled=${HBPOS_CATALOG_DAILY_PREBUILD_ENABLED:-false}
       - AttendanceQrDataProtection__KeysPath=/app/App_Data/AttendanceQrDataProtectionKeys
       - AttendanceQrDataProtection__LegacyProtectedKeyCutoffUtc=${ATTENDANCE_QR_LEGACY_PROTECTED_KEY_CUTOFF_UTC:-}
       - LinklyCloudCredentialDataProtection__KeysPath=/app/App_Data/LinklyCloudCredentialDataProtectionKeys

@@ -56,7 +56,7 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
     private static readonly TimeSpan DefaultSnapshotTtl = TimeSpan.FromHours(2);
     // 每个门店默认保留八个完整版本，覆盖短时间内的多台 iPad 下载与回退窗口。
     private const int DefaultMaxSnapshotsPerStore = 8;
-    private const int RawArtifactCapacity = 2;
+    private const int DefaultRawArtifactCapacity = 2;
     private const int DefaultSoftItemCapacity = 1_500_000;
     private const int DefaultHardItemCapacity = 2_500_000;
     private readonly ConcurrentDictionary<CatalogIndexCacheKey, CacheEntry> _entries = new();
@@ -76,6 +76,8 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
     private readonly int _maxSnapshotsPerStore;
     private readonly int _softItemCapacity;
     private readonly int _hardItemCapacity;
+    private readonly int _rawArtifactCapacity;
+    private readonly TimeSpan _buildGateWaitTimeout;
     private readonly ICatalogSnapshotStore? _snapshotStore;
     private readonly ICatalogBackgroundRefreshScheduler? _backgroundRefreshScheduler;
     private readonly CatalogDownloadLeaseRegistry _downloadLeases;
@@ -84,6 +86,8 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
     private long _snapshotSequence;
     // 中文注释：v2 标准页预热单并发门；检测到 WPF v1 下载时暂停后续预热页。
     private readonly SemaphoreSlim _v2WarmUpGate = new(1, 1);
+    // 所有门店共用一扇门，直到正文持久化与 active 发布结束才允许下一店开始构建。
+    private readonly SemaphoreSlim _catalogBuildGate = new(1, 1);
     private const long V2WarmUpV1BackoffMs = 30_000;
     // 中文注释：预热时间预算；无宿主取消信号（测试场景）时兜底，避免大目录长期占用线程池。
     private const long V2WarmUpBudgetMs = 60_000;
@@ -148,9 +152,12 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
         int maxSnapshotsPerStore,
         ICatalogSnapshotStore snapshotStore,
         int softItemCapacity,
-        int hardItemCapacity)
+        int hardItemCapacity,
+        int rawArtifactCapacity = DefaultRawArtifactCapacity,
+        TimeSpan? buildGateWaitTimeout = null)
         : this(timeProvider, ttl, snapshotTtl, maxSnapshotsPerStore, snapshotStore, null,
-            softItemCapacity: softItemCapacity, hardItemCapacity: hardItemCapacity)
+            softItemCapacity: softItemCapacity, hardItemCapacity: hardItemCapacity,
+            rawArtifactCapacity: rawArtifactCapacity, buildGateWaitTimeout: buildGateWaitTimeout)
     {
     }
 
@@ -232,7 +239,11 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
             snapshotStore,
             backgroundRefreshScheduler,
             scopeFactory,
-            applicationLifetime)
+            applicationLifetime,
+            softItemCapacity: ResolveSoftItemCapacity(options),
+            hardItemCapacity: ResolveHardItemCapacity(options),
+            rawArtifactCapacity: ResolveRawArtifactCapacity(options),
+            buildGateWaitTimeout: ResolveBuildGateWaitTimeout(options))
     {
     }
 
@@ -251,6 +262,24 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
             : DefaultMaxSnapshotsPerStore;
     }
 
+    private static int ResolveSoftItemCapacity(
+        Microsoft.Extensions.Options.IOptions<CatalogSnapshotOptions> options) =>
+        options.Value.SoftItemCapacity > 0 ? options.Value.SoftItemCapacity : DefaultSoftItemCapacity;
+
+    private static int ResolveHardItemCapacity(
+        Microsoft.Extensions.Options.IOptions<CatalogSnapshotOptions> options) =>
+        options.Value.HardItemCapacity > 0 ? options.Value.HardItemCapacity : DefaultHardItemCapacity;
+
+    private static int ResolveRawArtifactCapacity(
+        Microsoft.Extensions.Options.IOptions<CatalogSnapshotOptions> options) =>
+        options.Value.RawArtifactCapacity > 0 ? options.Value.RawArtifactCapacity : DefaultRawArtifactCapacity;
+
+    private static TimeSpan ResolveBuildGateWaitTimeout(
+        Microsoft.Extensions.Options.IOptions<CatalogSnapshotOptions> options) =>
+        TimeSpan.FromSeconds(options.Value.BuildGateWaitSeconds > 0
+            ? options.Value.BuildGateWaitSeconds
+            : 30);
+
     private CatalogIndexCache(
         TimeProvider timeProvider,
         TimeSpan ttl,
@@ -261,7 +290,9 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
         IServiceScopeFactory? scopeFactory = null,
         IHostApplicationLifetime? applicationLifetime = null,
         int softItemCapacity = DefaultSoftItemCapacity,
-        int hardItemCapacity = DefaultHardItemCapacity)
+        int hardItemCapacity = DefaultHardItemCapacity,
+        int rawArtifactCapacity = DefaultRawArtifactCapacity,
+        TimeSpan? buildGateWaitTimeout = null)
     {
         ArgumentNullException.ThrowIfNull(timeProvider);
         if (ttl <= TimeSpan.Zero)
@@ -284,12 +315,24 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
             throw new ArgumentOutOfRangeException(nameof(softItemCapacity));
         }
 
+        if (rawArtifactCapacity <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(rawArtifactCapacity));
+        }
+
+        if (buildGateWaitTimeout is { } waitTimeout && waitTimeout <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(buildGateWaitTimeout));
+        }
+
         _timeProvider = timeProvider;
         _ttl = ttl;
         _snapshotTtl = snapshotTtl;
         _maxSnapshotsPerStore = maxSnapshotsPerStore;
         _softItemCapacity = softItemCapacity;
         _hardItemCapacity = hardItemCapacity;
+        _rawArtifactCapacity = rawArtifactCapacity;
+        _buildGateWaitTimeout = buildGateWaitTimeout ?? TimeSpan.FromSeconds(30);
         _snapshotStore = snapshotStore;
         _backgroundRefreshScheduler = backgroundRefreshScheduler;
         _downloadLeases = new CatalogDownloadLeaseRegistry(timeProvider);
@@ -316,6 +359,19 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
             }
         }
     }
+
+    internal int PinnedVersionCountForTests
+    {
+        get
+        {
+            lock (_snapshotGate)
+            {
+                return _snapshots.Count;
+            }
+        }
+    }
+
+    internal int ActiveEntryCountForTests => _entries.Count;
 
     internal int RawArtifactVersionCountForTests
     {
@@ -475,7 +531,19 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
                 }
 
                 var cachedResult = await AwaitBuildAsync(existing, cancellationToken);
-                await AwaitPublicationForCallerAsync(existing, requirePublished: !allowStale, cancellationToken);
+                var publication = await AwaitPublicationForCallerAsync(existing, requirePublished: !allowStale, cancellationToken);
+                if (publication.Status == PublicationStatus.CapacityRejected)
+                {
+                    // 失败退路必须仍有已发布版本；构建期间旧引用可能已被别店容量淘汰。
+                    var lastGood = GetLatestSnapshot(key, _timeProvider.GetUtcNow());
+                    if (lastGood is null || (since is not null && RequiresRawRebuild(lastGood)))
+                    {
+                        throw new CatalogCapacityBusyException("Catalog snapshot capacity is busy.");
+                    }
+
+                    // 容量不足时绝不能把未固定的新版本交给分页调用方。
+                    return ProjectLegacySince(existing, lastGood, since);
+                }
                 if (since is not null &&
                     cachedResult is { RawPriceIndexInput: null } &&
                     RequiresRawRebuild(cachedResult))
@@ -517,7 +585,18 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
                 }
                 PublishWhenCompleted(key, newEntry);
                 var built = await AwaitBuildAsync(newEntry, cancellationToken);
-                await AwaitPublicationForCallerAsync(newEntry, requirePublished: !allowStale, cancellationToken);
+                var publication = await AwaitPublicationForCallerAsync(newEntry, requirePublished: !allowStale, cancellationToken);
+                if (publication.Status == PublicationStatus.CapacityRejected)
+                {
+                    var lastGood = GetLatestSnapshot(key, _timeProvider.GetUtcNow());
+                    if (lastGood is null || (since is not null && RequiresRawRebuild(lastGood)))
+                    {
+                        throw new CatalogCapacityBusyException("Catalog snapshot capacity is busy.");
+                    }
+
+                    return ProjectLegacySince(newEntry, lastGood, since);
+                }
+
                 return ProjectLegacySince(newEntry, built, since);
             }
         }
@@ -635,6 +714,8 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
         long storePublicationGeneration)
     {
         var sharedBuildCancellationToken = _applicationLifetime?.ApplicationStopping ?? CancellationToken.None;
+        var buildGateLease = new CatalogBuildGateLease(_catalogBuildGate, _buildGateWaitTimeout);
+        var publication = CreatePublication();
         return new CacheEntry(
             // 构建及发布完成前使用永不过期占位，避免长构建刚完成就被判定过期。
             DateTimeOffset.MaxValue,
@@ -644,12 +725,15 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
                     staleResult,
                     key.StoreCode,
                     buildAsync,
-                    sharedBuildCancellationToken),
+                    sharedBuildCancellationToken,
+                    buildGateLease,
+                    publication),
                 LazyThreadSafetyMode.ExecutionAndPublication),
-            CreatePublication(),
+            publication,
             staleResult,
             new CatalogLegacySinceCache(),
-            storePublicationGeneration);
+            storePublicationGeneration,
+            buildGateLease);
     }
 
     private static CatalogIndexBuildResult? GetCompletedResult(CacheEntry? entry)
@@ -701,7 +785,7 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
         }
     }
 
-    private static async Task AwaitPublicationForCallerAsync(
+    private static async Task<CatalogPublicationOutcome> AwaitPublicationForCallerAsync(
         CacheEntry entry,
         bool requirePublished,
         CancellationToken cancellationToken)
@@ -711,10 +795,10 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
         {
             case PublicationStatus.Published:
             case PublicationStatus.Empty:
-                return;
+                return outcome;
             case PublicationStatus.CapacityRejected when !requirePublished:
             case PublicationStatus.PersistenceFailed when !requirePublished:
-                return;
+                return outcome;
             case PublicationStatus.CapacityRejected:
                 throw new CatalogCapacityBusyException("Catalog snapshot capacity is busy.");
             case PublicationStatus.PersistenceFailed:
@@ -792,9 +876,7 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
                 var completedEntry = entry with
                 {
                     ExpiresAt = CalculateActiveExpiry(_timeProvider.GetUtcNow(), cacheResult.SourceValidUntil),
-                    BuildTask = new Lazy<Task<CatalogIndexBuildResult?>>(
-                        () => Task.FromResult<CatalogIndexBuildResult?>(cacheResult),
-                        LazyThreadSafetyMode.ExecutionAndPublication)
+                    BuildTask = CreateCompletedBuildTask(cacheResult)
                 };
                 _entries.TryUpdate(key, completedEntry, entry);
                 // 同代次的 owner 替换不等同于门店失效，durable version 仍可正常发布给 waiter。
@@ -818,6 +900,10 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
 
             entry.PublicationCompletion.TrySetException(exception);
         }
+        finally
+        {
+            entry.BuildGateLease?.Release();
+        }
     }
 
     private void RestoreStaleOrRemove(CatalogIndexCacheKey key, CacheEntry entry)
@@ -832,21 +918,39 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
             key,
             new CacheEntry(
                 _timeProvider.GetUtcNow(),
-                new Lazy<Task<CatalogIndexBuildResult?>>(
-                    () => Task.FromResult<CatalogIndexBuildResult?>(entry.StaleResult),
-                    LazyThreadSafetyMode.ExecutionAndPublication),
+                CreateCompletedBuildTask(entry.StaleResult),
                 CreateCompletedPublication(),
                 entry.StaleResult,
                 new CatalogLegacySinceCache()),
             entry);
     }
 
+    private static Lazy<Task<CatalogIndexBuildResult?>> CreateCompletedBuildTask(CatalogIndexBuildResult result)
+    {
+        var completed = new Lazy<Task<CatalogIndexBuildResult?>>(
+            () => Task.FromResult<CatalogIndexBuildResult?>(result),
+            LazyThreadSafetyMode.ExecutionAndPublication);
+        // 已完成 entry 必须可被逐出逻辑识别；未求值 Lazy 的闭包会长期引用旧目录。
+        _ = completed.Value;
+        return completed;
+    }
+
     private async Task<CatalogIndexBuildResult?> BuildStableResultAsync(
         CatalogIndexBuildResult? staleResult,
         string storeCode,
         Func<CancellationToken, Task<CatalogIndexBuildResult?>> buildAsync,
-        CancellationToken sharedBuildCancellationToken)
+        CancellationToken sharedBuildCancellationToken,
+        CatalogBuildGateLease buildGateLease,
+        TaskCompletionSource<CatalogPublicationOutcome> publication)
     {
+        await buildGateLease.AcquireAsync(sharedBuildCancellationToken);
+        // 排队期间若门店已失效，取得槽位后直接跳过整库查询。
+        if (publication.Task.IsCompletedSuccessfully &&
+            publication.Task.Result.Status == PublicationStatus.Invalidated)
+        {
+            throw CreateInvalidatedPublicationException();
+        }
+
         var result = _scopeFactory is null
             ? await buildAsync(sharedBuildCancellationToken)
             : await BuildInOwnedScopeAsync(storeCode, sharedBuildCancellationToken);
@@ -1257,7 +1361,7 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
             var node = _rawArtifactLru.AddFirst(key);
             _rawArtifacts.Add(key, new RawArtifactEntry(result.RawPriceIndexInput, node));
             _rawArtifactVersions.Add(key);
-            while (_rawArtifacts.Count > RawArtifactCapacity)
+            while (_rawArtifacts.Count > _rawArtifactCapacity)
             {
                 var leastRecent = _rawArtifactLru.Last!;
                 _rawArtifacts.Remove(leastRecent.Value);
@@ -1527,7 +1631,31 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
         TaskCompletionSource<CatalogPublicationOutcome> PublicationCompletion,
         CatalogIndexBuildResult? StaleResult = null,
         CatalogLegacySinceCache? LegacySinceCache = null,
-        long StorePublicationGeneration = 0);
+        long StorePublicationGeneration = 0,
+        CatalogBuildGateLease? BuildGateLease = null);
+
+    private sealed class CatalogBuildGateLease(SemaphoreSlim gate, TimeSpan waitTimeout)
+    {
+        private int _held;
+
+        public async Task AcquireAsync(CancellationToken cancellationToken)
+        {
+            // 排队超时只结束本次 flight，绝不能释放仍由上一门店持有的槽位。
+            if (!await gate.WaitAsync(waitTimeout, cancellationToken))
+            {
+                throw new CatalogCapacityBusyException("Catalog build capacity is busy.");
+            }
+            Volatile.Write(ref _held, 1);
+        }
+
+        public void Release()
+        {
+            if (Interlocked.Exchange(ref _held, 0) == 1)
+            {
+                gate.Release();
+            }
+        }
+    }
 
     private static TaskCompletionSource<CatalogPublicationOutcome> CreatePublication()
     {
