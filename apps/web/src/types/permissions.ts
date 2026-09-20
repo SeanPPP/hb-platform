@@ -106,6 +106,7 @@ export const P = {
   EmployeeProfiles: {
     View: 'EmployeeProfiles.View',
     Edit: 'EmployeeProfiles.Edit',
+    EditPositionType: 'EmployeeProfiles.EditPositionType',
   },
   StoreProducts: {
     View: 'StoreProducts.View',

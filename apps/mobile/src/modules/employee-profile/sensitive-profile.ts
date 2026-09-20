@@ -50,15 +50,40 @@ export function selectSensitiveDraft(
 }
 
 export function buildNonSensitiveProfilePayload(
-  draft: UpdateEmployeeProfilePayload
+  draft: UpdateEmployeeProfilePayload,
+  options: { canEditPositionType?: boolean; initialEmail?: string } = {}
 ): UpdateEmployeeProfilePayload {
-  return {
+  const payload: UpdateEmployeeProfilePayload = {
     phone: draft.phone.trim(),
     birthday: draft.birthday.trim(),
     gender: draft.gender.trim(),
-    employmentType: draft.employmentType.trim(),
     address: draft.address.trim(),
   };
+  const email = normalizeEmail(draft.email);
+  if (email !== normalizeEmail(options.initialEmail)) payload.email = email;
+  if (options.canEditPositionType !== false) {
+    payload.employmentType = draft.employmentType?.trim() ?? "";
+  }
+  return payload;
+}
+
+export function normalizeEmail(value: string | null | undefined) {
+  return value?.trim() ?? "";
+}
+
+export function isValidEmail(value: string | null | undefined) {
+  const normalized = normalizeEmail(value);
+  return normalized === "" || normalized.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized);
+}
+
+export function hasEmailChanged(initial: string | null | undefined, current: string | null | undefined) {
+  return normalizeEmail(initial) !== normalizeEmail(current);
+}
+
+export function isEmailChangeValid(initial: string | null | undefined, current: string | null | undefined) {
+  if (!hasEmailChanged(initial, current)) return true;
+  const normalized = normalizeEmail(current);
+  return Boolean(normalized) && isValidEmail(normalized);
 }
 
 export function normalizeSensitiveDraft(

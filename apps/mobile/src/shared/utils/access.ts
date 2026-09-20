@@ -16,6 +16,8 @@ export const PERMISSIONS = {
   },
   EmployeeProfiles: {
     View: "EmployeeProfiles.View",
+    Edit: "EmployeeProfiles.Edit",
+    EditPositionType: "EmployeeProfiles.EditPositionType",
   },
   Users: {
     View: "Users.View",

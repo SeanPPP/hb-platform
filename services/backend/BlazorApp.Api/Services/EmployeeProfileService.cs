@@ -1,6 +1,8 @@
 using System.Data;
+using System.Net.Mail;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using SqlSugar;
@@ -17,13 +19,15 @@ namespace BlazorApp.Api.Services
         private readonly ILogger<EmployeeProfileService> _logger;
         private readonly TencentCloudUploadService? _uploadService;
         private readonly EmployeeProfileSensitiveChangeService? _sensitiveChangeService;
+        private readonly IRoleService? _roleService;
 
         public EmployeeProfileService(
             SqlSugarContext context,
             ICurrentUserService currentUserService,
             ILogger<EmployeeProfileService> logger,
             TencentCloudUploadService? uploadService = null,
-            EmployeeProfileSensitiveChangeService? sensitiveChangeService = null
+            EmployeeProfileSensitiveChangeService? sensitiveChangeService = null,
+            IRoleService? roleService = null
         )
         {
             _context = context;
@@ -31,6 +35,7 @@ namespace BlazorApp.Api.Services
             _logger = logger;
             _uploadService = uploadService;
             _sensitiveChangeService = sensitiveChangeService;
+            _roleService = roleService;
         }
 
         public async Task<ApiResponse<PagedResult<EmployeeProfileListItemDto>>> GetAdminListAsync(
@@ -454,6 +459,15 @@ namespace BlazorApp.Api.Services
 
             try
             {
+                string? requestedEmail = null;
+                if (dto.HasEmail)
+                {
+                    requestedEmail = dto.Email?.Trim();
+                    if (!IsValidEmail(requestedEmail))
+                    {
+                        return ApiResponse<EmployeeProfileDetailDto>.Error("邮箱格式无效", "INVALID_EMAIL");
+                    }
+                }
                 var db = _context.Db;
                 var user = await db.Queryable<User>()
                     .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
@@ -598,6 +612,23 @@ namespace BlazorApp.Api.Services
                             }
                             profile.SensitiveRevision = nextRevision;
                         }
+                        if (dto.HasEmail && !string.Equals(user.Email, requestedEmail, StringComparison.Ordinal))
+                        {
+                            var duplicate = await db.Queryable<User>().AnyAsync(item =>
+                                item.UserGUID != userGuid && !item.IsDeleted && item.Email == requestedEmail);
+                            if (duplicate)
+                            {
+                                await db.Ado.RollbackTranAsync();
+                                return ApiResponse<EmployeeProfileDetailDto>.Error("邮箱已存在", "EMAIL_EXISTS");
+                            }
+                            await db.Updateable<User>()
+                                .SetColumns(item => item.Email == requestedEmail!)
+                                .SetColumns(item => item.UpdatedAt == now)
+                                .SetColumns(item => item.UpdatedBy == actor)
+                                .Where(item => item.UserGUID == userGuid && !item.IsDeleted)
+                                .ExecuteCommandAsync();
+                            user.Email = requestedEmail!;
+                        }
                         if (sensitiveChanged && _sensitiveChangeService is not null)
                         {
                             // 管理员直改与待审申请失效必须处在同一事务内。
@@ -605,6 +636,11 @@ namespace BlazorApp.Api.Services
                                 .SupersedePendingWithinTransactionAsync(userGuid, actor);
                         }
                         await db.Ado.CommitTranAsync();
+                    }
+                    catch (Exception ex) when (IsUniqueConstraintViolation(ex))
+                    {
+                        await db.Ado.RollbackTranAsync();
+                        return ApiResponse<EmployeeProfileDetailDto>.Error("邮箱已被其他用户使用", "EMAIL_EXISTS");
                     }
                     catch
                     {
@@ -614,25 +650,24 @@ namespace BlazorApp.Api.Services
                 }
                 else
                 {
-                    profile = await db.Queryable<EmployeeProfile>()
-                        .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
-                    var createdProfile = false;
-                    if (profile == null)
+                    // 自助保存与管理员保存共用生命周期锁，职位权限判断必须基于锁内最新资料。
+                    await using var selfProfileLock = await EmployeeProfileMediaLock
+                        .AcquireProfileLifecycleAsync(db, userGuid, _logger);
+                    await db.Ado.BeginTranAsync();
+                    try
                     {
-                        await using var selfLifecycleLock = await EmployeeProfileMediaLock
-                            .AcquireProfileLifecycleAsync(db, userGuid, _logger);
+                        // 锁内重读用户，避免用户在锁外查询后被删除或邮箱被并发修改。
                         user = await db.Queryable<User>()
                             .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
                         if (user == null)
                         {
-                            return ApiResponse<EmployeeProfileDetailDto>.Error(
-                                "用户不存在",
-                                "USER_NOT_FOUND"
-                            );
+                            await db.Ado.RollbackTranAsync();
+                            return ApiResponse<EmployeeProfileDetailDto>.Error("用户不存在", "USER_NOT_FOUND");
                         }
-
                         profile = await db.Queryable<EmployeeProfile>()
                             .FirstAsync(item => item.UserGUID == userGuid && !item.IsDeleted);
+                        var existingEmployeeType = profile?.EmployeeType;
+                        var createdProfile = false;
                         if (profile == null)
                         {
                             profile = new EmployeeProfile
@@ -669,29 +704,77 @@ namespace BlazorApp.Api.Services
                                 }
                             }
                         }
+                        // 权限与写入共用锁和事务，避免并发请求依据旧职位类型放行。
+                        if (dto.HasEmploymentType
+                            && ParseEmployeeType(dto.EmploymentType) != existingEmployeeType)
+                        {
+                            var hasPermission = _roleService is not null
+                                && (await _roleService.UserHasPermissionAsync(
+                                    userGuid,
+                                    Permissions.EmployeeProfiles.EditPositionType
+                                )).Data == true;
+                            if (!hasPermission)
+                            {
+                                await db.Ado.RollbackTranAsync();
+                                return ApiResponse<EmployeeProfileDetailDto>.Error(
+                                    "无权修改职位类型",
+                                    "FORBIDDEN"
+                                );
+                            }
+                        }
+                        if (!createdProfile)
+                        {
+                            // 员工自助保存只更新非敏感白名单列，绝不写回敏感字段或 revision。
+                            var birthday = dto.Birthday?.Date;
+                            var profileUpdate = db.Updateable<EmployeeProfile>()
+                                .SetColumns(item => item.Phone == Normalize(dto.Phone))
+                                .SetColumns(item => item.Birthday == birthday)
+                                .SetColumns(item => item.Gender == ParseGender(dto.Gender))
+                                .SetColumns(item => item.Address == Normalize(dto.Address))
+                                .SetColumns(item => item.UpdatedAt == now)
+                                .SetColumns(item => item.UpdatedBy == actor)
+                                .SetColumns(item => item.IsDeleted == false);
+                            if (dto.HasEmploymentType)
+                            {
+                                profileUpdate = profileUpdate.SetColumns(item => item.EmployeeType == ParseEmployeeType(dto.EmploymentType));
+                            }
+                            await profileUpdate.Where(item => item.EmployeeInfoId == profile.EmployeeInfoId).ExecuteCommandAsync();
+                            profile = await db.Queryable<EmployeeProfile>()
+                                .FirstAsync(item => item.EmployeeInfoId == profile.EmployeeInfoId);
+                        }
+                        if (dto.HasEmail && !string.Equals(user.Email, requestedEmail, StringComparison.Ordinal))
+                        {
+                            var duplicate = await db.Queryable<User>().AnyAsync(item =>
+                                item.UserGUID != userGuid && !item.IsDeleted && item.Email == requestedEmail);
+                            if (duplicate)
+                            {
+                                await db.Ado.RollbackTranAsync();
+                                return ApiResponse<EmployeeProfileDetailDto>.Error("邮箱已存在", "EMAIL_EXISTS");
+                            }
+                            await db.Updateable<User>()
+                                .SetColumns(item => item.Email == requestedEmail!)
+                                .SetColumns(item => item.UpdatedAt == now)
+                                .SetColumns(item => item.UpdatedBy == actor)
+                                .Where(item => item.UserGUID == userGuid && !item.IsDeleted)
+                                .ExecuteCommandAsync();
+                            user.Email = requestedEmail!;
+                        }
+                        if (HasLegacySensitivePayload(dto) && HasLegacySensitiveChanges(profile, dto))
+                        {
+                            // 旧 App 会在普通保存中回传完整敏感字段；等值回传不得覆盖真实待审申请。
+                            legacySensitiveDto = BuildLegacySensitiveSnapshot(profile, dto);
+                        }
+                        await db.Ado.CommitTranAsync();
                     }
-                    if (!createdProfile)
+                    catch (Exception ex) when (IsUniqueConstraintViolation(ex))
                     {
-                        // 员工自助保存只更新非敏感白名单列，绝不写回敏感字段或 revision。
-                        var birthday = dto.Birthday?.Date;
-                        await db.Updateable<EmployeeProfile>()
-                            .SetColumns(item => item.Phone == Normalize(dto.Phone))
-                            .SetColumns(item => item.Birthday == birthday)
-                            .SetColumns(item => item.Gender == ParseGender(dto.Gender))
-                            .SetColumns(item => item.EmployeeType == ParseEmployeeType(dto.EmploymentType))
-                            .SetColumns(item => item.Address == Normalize(dto.Address))
-                            .SetColumns(item => item.UpdatedAt == now)
-                            .SetColumns(item => item.UpdatedBy == actor)
-                            .SetColumns(item => item.IsDeleted == false)
-                            .Where(item => item.EmployeeInfoId == profile.EmployeeInfoId)
-                            .ExecuteCommandAsync();
-                        profile = await db.Queryable<EmployeeProfile>()
-                            .FirstAsync(item => item.EmployeeInfoId == profile.EmployeeInfoId);
+                        await db.Ado.RollbackTranAsync();
+                        return ApiResponse<EmployeeProfileDetailDto>.Error("邮箱已被其他用户使用", "EMAIL_EXISTS");
                     }
-                    if (HasLegacySensitivePayload(dto) && HasLegacySensitiveChanges(profile, dto))
+                    catch
                     {
-                        // 旧 App 会在普通保存中回传完整敏感字段；等值回传不得覆盖真实待审申请。
-                        legacySensitiveDto = BuildLegacySensitiveSnapshot(profile, dto);
+                        await db.Ado.RollbackTranAsync();
+                        throw;
                     }
                 }
 
@@ -743,7 +826,10 @@ namespace BlazorApp.Api.Services
             }
             profile.Birthday = dto.Birthday?.Date;
             profile.Gender = ParseGender(dto.Gender);
-            profile.EmployeeType = ParseEmployeeType(dto.EmploymentType);
+            if (dto.HasEmploymentType)
+            {
+                profile.EmployeeType = ParseEmployeeType(dto.EmploymentType);
+            }
             if (allowLegacyImageUrls)
             {
                 profile.AvatarUrl = Normalize(dto.AvatarUrl);
@@ -813,6 +899,24 @@ namespace BlazorApp.Api.Services
         private static string? Normalize(string? value)
         {
             return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        }
+
+        private static bool IsValidEmail(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value) || value.Length > 254)
+            {
+                return false;
+            }
+
+            try
+            {
+                var address = new MailAddress(value);
+                return string.Equals(address.Address, value, StringComparison.OrdinalIgnoreCase);
+            }
+            catch (FormatException)
+            {
+                return false;
+            }
         }
 
         private static string? MaskAccount(string? value)

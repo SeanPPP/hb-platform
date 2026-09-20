@@ -45,6 +45,17 @@ const purchaseLegacyAccess = buildAccess(
 );
 
 assertEqual(
+  buildAccess(createUser(["EmployeeProfiles.Edit"])).hasPermission(PERMISSIONS.EmployeeProfiles.EditPositionType),
+  false,
+  "普通资料编辑权限不隐式授予职位类型修改权限"
+);
+assertEqual(
+  buildAccess(createUser([PERMISSIONS.EmployeeProfiles.EditPositionType])).hasPermission(PERMISSIONS.EmployeeProfiles.EditPositionType),
+  true,
+  "显式职位类型权限允许修改该字段"
+);
+
+assertEqual(
   purchaseLegacyAccess.hasPermission(PERMISSIONS.LocalPurchase.View),
   true,
   "legacy LocalInvocie.View aliases to LocalPurchase.View"

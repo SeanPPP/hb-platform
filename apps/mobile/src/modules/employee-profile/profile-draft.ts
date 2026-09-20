@@ -3,9 +3,10 @@ import type { EmployeeProfile, UpdateEmployeeProfilePayload } from "./types";
 export function toEmployeeProfileDraft(profile: EmployeeProfile): UpdateEmployeeProfilePayload {
   return {
     phone: profile.phone ?? "",
+    email: profile.email ?? "",
     birthday: profile.birthday,
     gender: profile.gender,
-    employmentType: profile.employmentType,
+    employmentType: profile.employmentType ?? "",
     address: profile.address,
   };
 }

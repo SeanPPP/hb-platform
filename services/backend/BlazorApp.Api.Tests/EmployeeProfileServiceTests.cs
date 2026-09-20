@@ -4,12 +4,14 @@ using System.IO;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Security.Claims;
+using System.Text.Json;
 using System.Threading.Tasks;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Controllers;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Services;
 using BlazorApp.Shared.DTOs;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -309,6 +311,273 @@ namespace BlazorApp.Api.Tests
             Assert.Equal(EmployeeGender.Female, selfProfile.Gender);
             Assert.Equal(EmployeeType.PartTime, selfProfile.EmployeeType);
             Assert.Equal("Original other address", otherProfile.Address);
+        }
+
+        [Fact]
+        public async Task UpsertSelfAsync_WhenEmailAndEmploymentTypeAreOmitted_PreservesThemAndSavesPhone()
+        {
+            await SeedUsersAsync();
+            await _db.Insertable(new EmployeeProfile
+            {
+                UserGUID = "user-self",
+                Phone = "0400000000",
+                EmployeeType = EmployeeType.FullTime,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService("user-self", "self_user").UpsertSelfAsync(new()
+            {
+                Phone = "0499999999",
+            });
+
+            Assert.True(result.Success);
+            var user = await _db.Queryable<User>().FirstAsync(item => item.UserGUID == "user-self");
+            var profile = await _db.Queryable<EmployeeProfile>().FirstAsync(item => item.UserGUID == "user-self");
+            Assert.Equal("self@example.com", user.Email);
+            Assert.Equal("0499999999", profile.Phone);
+            Assert.Equal(EmployeeType.FullTime, profile.EmployeeType);
+        }
+
+        [Fact]
+        public void EmployeeProfileUpsertDto_TracksJsonFieldPresence()
+        {
+            var omitted = JsonSerializer.Deserialize<EmployeeProfileUpsertDto>("{}");
+            var explicitNull = JsonSerializer.Deserialize<EmployeeProfileUpsertDto>(
+                "{\"Email\":null,\"EmploymentType\":null}"
+            );
+
+            Assert.NotNull(omitted);
+            Assert.False(omitted!.HasEmail);
+            Assert.False(omitted.HasEmploymentType);
+            Assert.NotNull(explicitNull);
+            Assert.True(explicitNull!.HasEmail);
+            Assert.True(explicitNull.HasEmploymentType);
+        }
+
+        [Fact]
+        public async Task UpsertSelfAsync_WhenEmailIsExplicit_TrimAndUpdateOnlyCurrentUser()
+        {
+            await SeedUsersAsync();
+            var result = await CreateService("user-self", "self_user").UpsertSelfAsync(new()
+            {
+                UserGUID = "user-other",
+                Email = "  self-new@example.com  ",
+            });
+
+            Assert.True(result.Success);
+            Assert.Equal("self-new@example.com", (await _db.Queryable<User>().FirstAsync(item => item.UserGUID == "user-self")).Email);
+            Assert.Equal("other@example.com", (await _db.Queryable<User>().FirstAsync(item => item.UserGUID == "user-other")).Email);
+        }
+
+        [Theory]
+        [InlineData(null)]
+        [InlineData("")]
+        [InlineData("not-an-email")]
+        [InlineData("a@")]
+        public async Task UpsertSelfAsync_WhenEmailIsInvalid_ReturnsValidationErrorAndDoesNotWrite(string? email)
+        {
+            await SeedUsersAsync();
+            var result = await CreateService("user-self", "self_user").UpsertSelfAsync(new()
+            {
+                Email = email,
+                Phone = "0499999999",
+            });
+
+            Assert.False(result.Success);
+            Assert.Equal("INVALID_EMAIL", result.ErrorCode);
+            Assert.Equal("self@example.com", (await _db.Queryable<User>().FirstAsync(item => item.UserGUID == "user-self")).Email);
+            Assert.Null(await _db.Queryable<EmployeeProfile>().FirstAsync(item => item.UserGUID == "user-self"));
+        }
+
+        [Fact]
+        public async Task UpsertSelfAsync_WhenEmailIsTooLong_ReturnsValidationError()
+        {
+            await SeedUsersAsync();
+            var result = await CreateService("user-self", "self_user").UpsertSelfAsync(new()
+            {
+                Email = new string('a', 250) + "@x.com",
+            });
+
+            Assert.False(result.Success);
+            Assert.Equal("INVALID_EMAIL", result.ErrorCode);
+        }
+
+        [Fact]
+        public async Task UpsertSelfAsync_WhenEmailAlreadyExists_ReturnsEmailExistsWithoutPartialProfileWrite()
+        {
+            await SeedUsersAsync();
+            await _db.Insertable(new EmployeeProfile
+            {
+                UserGUID = "user-self",
+                Phone = "0400000000",
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService("user-self", "self_user").UpsertSelfAsync(new()
+            {
+                Email = "other@example.com",
+                Phone = "0499999999",
+            });
+
+            Assert.False(result.Success);
+            Assert.Equal("EMAIL_EXISTS", result.ErrorCode);
+            var profile = await _db.Queryable<EmployeeProfile>().FirstAsync(item => item.UserGUID == "user-self");
+            Assert.Equal("0400000000", profile.Phone);
+            Assert.Equal("self@example.com", (await _db.Queryable<User>().FirstAsync(item => item.UserGUID == "user-self")).Email);
+        }
+
+        [Fact]
+        public async Task UpsertSelfAsync_WhenSoftDeletedEmailHitsUnfilteredUniqueIndex_RollsBackAndReturnsEmailExists()
+        {
+            await SeedUsersAsync();
+            await _db.Ado.ExecuteCommandAsync("CREATE UNIQUE INDEX UX_User_Email ON User(Email);");
+            await _db.Updateable<User>()
+                .SetColumns(item => item.IsDeleted == true)
+                .Where(item => item.UserGUID == "user-other")
+                .ExecuteCommandAsync();
+            await _db.Insertable(new EmployeeProfile
+            {
+                UserGUID = "user-self",
+                Phone = "0400000000",
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService("user-self", "self_user").UpsertSelfAsync(new()
+            {
+                Email = "other@example.com",
+                Phone = "0499999999",
+            });
+
+            Assert.False(result.Success);
+            Assert.Equal("EMAIL_EXISTS", result.ErrorCode);
+            Assert.Equal("self@example.com", (await _db.Queryable<User>().FirstAsync(item => item.UserGUID == "user-self")).Email);
+            Assert.Equal("0400000000", (await _db.Queryable<EmployeeProfile>().FirstAsync(item => item.UserGUID == "user-self")).Phone);
+        }
+
+        [Fact]
+        public async Task UpsertSelfAsync_WhenPositionChangesWithoutPermission_ReturnsForbiddenWithoutOtherChanges()
+        {
+            await SeedUsersAsync();
+            await _db.Insertable(new EmployeeProfile
+            {
+                UserGUID = "user-self",
+                Phone = "0400000000",
+                EmployeeType = EmployeeType.FullTime,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            var result = await CreateService("user-self", "self_user", _db, omitRoleService: true).UpsertSelfAsync(new()
+            {
+                EmploymentType = "partTime",
+                Email = "changed@example.com",
+                Phone = "0499999999",
+            });
+
+            Assert.False(result.Success);
+            Assert.Equal("FORBIDDEN", result.ErrorCode);
+            var profile = await _db.Queryable<EmployeeProfile>().FirstAsync(item => item.UserGUID == "user-self");
+            Assert.Equal("0400000000", profile.Phone);
+            Assert.Equal(EmployeeType.FullTime, profile.EmployeeType);
+            Assert.Equal("self@example.com", (await _db.Queryable<User>().FirstAsync(item => item.UserGUID == "user-self")).Email);
+        }
+
+        [Fact]
+        public async Task UpsertSelfAsync_WhenRoleServiceDeniesPositionChange_ReturnsForbidden()
+        {
+            await SeedUsersAsync();
+            await _db.Insertable(new EmployeeProfile
+            {
+                UserGUID = "user-self",
+                EmployeeType = EmployeeType.FullTime,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            var role = new Mock<IRoleService>();
+            role.Setup(mock => mock.UserHasPermissionAsync("user-self", Permissions.EmployeeProfiles.EditPositionType))
+                .ReturnsAsync(ApiResponse<bool>.OK(false));
+
+            var result = await CreateService("user-self", "self_user", _db, roleService: role.Object).UpsertSelfAsync(new()
+            {
+                EmploymentType = "partTime",
+            });
+
+            Assert.False(result.Success);
+            Assert.Equal("FORBIDDEN", result.ErrorCode);
+        }
+
+        [Fact]
+        public async Task UpsertSelfAsync_WhenPositionAliasIsEquivalent_DoesNotRequirePermission()
+        {
+            await SeedUsersAsync();
+            await _db.Insertable(new EmployeeProfile
+            {
+                UserGUID = "user-self",
+                EmployeeType = EmployeeType.FullTime,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            var role = new Mock<IRoleService>();
+            var result = await CreateService("user-self", "self_user", _db, roleService: role.Object).UpsertSelfAsync(new()
+            {
+                EmploymentType = "full_time",
+                Phone = "0499999999",
+            });
+
+            Assert.True(result.Success);
+            role.Verify(mock => mock.UserHasPermissionAsync(It.IsAny<string>(), It.IsAny<string>()), Times.Never);
+            Assert.Equal("0499999999", (await _db.Queryable<EmployeeProfile>().FirstAsync(item => item.UserGUID == "user-self")).Phone);
+        }
+
+        [Fact]
+        public async Task UpsertSelfAsync_WhenPositionPermissionGranted_UpdatesPosition()
+        {
+            await SeedUsersAsync();
+            await _db.Insertable(new EmployeeProfile
+            {
+                UserGUID = "user-self",
+                EmployeeType = EmployeeType.FullTime,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            var role = new Mock<IRoleService>();
+            role.Setup(mock => mock.UserHasPermissionAsync("user-self", Permissions.EmployeeProfiles.EditPositionType))
+                .ReturnsAsync(ApiResponse<bool>.OK(true));
+
+            var result = await CreateService("user-self", "self_user", _db, roleService: role.Object).UpsertSelfAsync(new()
+            {
+                EmploymentType = "temporary",
+            });
+
+            Assert.True(result.Success);
+            Assert.Equal(EmployeeType.Temporary, (await _db.Queryable<EmployeeProfile>().FirstAsync(item => item.UserGUID == "user-self")).EmployeeType);
+        }
+
+        [Fact]
+        public async Task UpsertSelfAsync_WhenEmailWriteFails_RollsBackProfileAndEmailTogether()
+        {
+            await SeedUsersAsync();
+            await _db.Insertable(new EmployeeProfile
+            {
+                UserGUID = "user-self",
+                Phone = "0400000000",
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+            await _db.Ado.ExecuteCommandAsync("CREATE TRIGGER fail_profile_email AFTER UPDATE OF Email ON User BEGIN SELECT RAISE(ABORT, 'email write failed'); END;");
+
+            var result = await CreateService("user-self", "self_user").UpsertSelfAsync(new()
+            {
+                Email = "changed@example.com",
+                Phone = "0499999999",
+            });
+
+            Assert.False(result.Success);
+            Assert.Equal("UPSERT_EMPLOYEE_PROFILE_FAILED", result.ErrorCode);
+            Assert.Equal("self@example.com", (await _db.Queryable<User>().FirstAsync(item => item.UserGUID == "user-self")).Email);
+            Assert.Equal("0400000000", (await _db.Queryable<EmployeeProfile>().FirstAsync(item => item.UserGUID == "user-self")).Phone);
         }
 
         [Fact]
@@ -1421,7 +1690,9 @@ namespace BlazorApp.Api.Tests
             string userGuid,
             string username,
             ISqlSugarClient db,
-            bool includeSensitiveChangeService = false
+            bool includeSensitiveChangeService = false,
+            IRoleService? roleService = null,
+            bool omitRoleService = false
         )
         {
             var httpContextAccessor = new HttpContextAccessor
@@ -1447,11 +1718,23 @@ namespace BlazorApp.Api.Tests
                 )
                 : null;
 
+            if (roleService is null)
+            {
+                var roleMock = new Mock<IRoleService>();
+                roleMock
+                    .Setup(mock => mock.UserHasPermissionAsync(
+                        It.IsAny<string>(),
+                        Permissions.EmployeeProfiles.EditPositionType))
+                    .ReturnsAsync(ApiResponse<bool>.OK(true));
+                roleService = roleMock.Object;
+            }
+
             return new EmployeeProfileService(
                 context,
                 currentUserService,
                 NullLogger<EmployeeProfileService>.Instance,
-                sensitiveChangeService: sensitiveChangeService
+                sensitiveChangeService: sensitiveChangeService,
+                roleService: omitRoleService ? null : roleService
             );
         }
 

@@ -52,6 +52,8 @@ import {
   getChangedSensitiveFields,
   getSensitiveAccountSummary,
   getSensitiveStatusView,
+  isEmailChangeValid,
+  isValidEmail,
   refreshEmployeeProfileAfterIdentityMutation,
   selectSensitiveDraft,
   shouldRefreshSensitiveProfile,
@@ -74,11 +76,13 @@ import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { resolveLocaleTag } from "@/shared/i18n/types";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { HB_COLORS, HB_RADIUS, HB_SPACING } from "@/shared/theme/tokens";
+import { PERMISSIONS } from "@/shared/utils/access";
 import { useAuthStore } from "@/store/auth-store";
 
 const PROFILE_BLUE = "#1256DB";
 const EMPTY_FORM: UpdateEmployeeProfilePayload = {
   phone: "",
+  email: "",
   birthday: "",
   gender: "",
   employmentType: "",
@@ -115,6 +119,10 @@ export default function EmployeeProfileScreen() {
   const { t, language } = useAppTranslation(["employeeProfile", "common"]);
   const { fontScale } = useWindowDimensions();
   const user = useAuthStore((state) => state.user);
+  const access = useAuthStore((state) => state.access);
+  const canEditPositionType =
+    access.hasPermission(PERMISSIONS.EmployeeProfiles.Edit) &&
+    access.hasPermission(PERMISSIONS.EmployeeProfiles.EditPositionType);
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
   const [view, setView] = useState<EmployeeProfileView>("overview");
   const [avatarEditing, setAvatarEditing] = useState(false);
@@ -194,8 +202,8 @@ export default function EmployeeProfileScreen() {
     refetchInterval: (query) => getIdentityPhotoRefetchDelay(query.state.data?.identityPhotoUrlExpiresAt),
   });
   const isBasicDirty = useMemo(
-    () => hasBasicProfileChanges(formValues, profileQuery.data),
-    [formValues, profileQuery.data]
+    () => hasBasicProfileChanges(formValues, profileQuery.data, { canEditPositionType }),
+    [canEditPositionType, formValues, profileQuery.data]
   );
   const isSensitiveDirty = useMemo(
     () => hasSensitiveProfileChanges(sensitiveFormValues, initialSensitiveDraftRef.current),
@@ -461,6 +469,10 @@ export default function EmployeeProfileScreen() {
   };
 
   const handleSave = async () => {
+    if (!isEmailChangeValid(profileQuery.data?.email, formValues.email)) {
+      showMessage(t("messages.invalidEmail"));
+      return;
+    }
     const submittedIdentity = userIdentity;
     const submittedScope = currentIdentityScope;
     saveMutationIdentityRef.current = submittedIdentity;
@@ -469,7 +481,7 @@ export default function EmployeeProfileScreen() {
       await saveMutation.mutateAsync({
         identity: submittedIdentity,
         scope: submittedScope,
-        payload: buildNonSensitiveProfilePayload(formValues),
+        payload: buildNonSensitiveProfilePayload(formValues, { canEditPositionType, initialEmail: profileQuery.data?.email }),
       });
     } catch {
       // mutation 回调展示错误；当前草稿继续保留。
@@ -746,6 +758,7 @@ export default function EmployeeProfileScreen() {
               </View>
               <View style={styles.summaryGrid}>
                 <ProfileSummaryRow inline icon="phone-outline" label={t("fields.phone")} value={formValues.phone || t("common:na")} />
+                <ProfileSummaryRow inline icon="email-outline" label={t("fields.email")} value={formValues.email || t("common:na")} />
                 <ProfileSummaryRow inline icon="calendar-blank-outline" label={t("fields.birthday")} value={formValues.birthday || t("common:na")} />
                 <ProfileSummaryRow inline icon="account-outline" label={t("fields.gender")} value={formValues.gender ? t(`genderOptions.${formValues.gender}`, formValues.gender) : t("common:na")} />
                 <ProfileSummaryRow inline icon="briefcase-outline" label={t("fields.employmentType")} value={formValues.employmentType ? t(`employmentTypeOptions.${formValues.employmentType}`, formValues.employmentType) : t("common:na")} />
@@ -793,6 +806,7 @@ export default function EmployeeProfileScreen() {
           <Surface style={styles.card} elevation={0}>
             <Text variant="bodySmall" style={styles.editHint}>{t("edit.basicHint")}</Text>
             <TextInput mode="outlined" label={t("fields.phone")} value={formValues.phone} onChangeText={(value) => setFieldValue("phone", value)} keyboardType="phone-pad" />
+            <TextInput mode="outlined" label={t("fields.email")} value={formValues.email} onChangeText={(value) => setFieldValue("email", value)} keyboardType="email-address" autoCapitalize="none" autoCorrect={false} maxLength={254} error={Boolean(formValues.email && !isValidEmail(formValues.email))} />
             <TextInput mode="outlined" label={t("fields.birthday")} placeholder={t("placeholders.birthday")} value={formValues.birthday} onChangeText={(value) => setFieldValue("birthday", value)} autoCapitalize="none" />
             <View style={styles.segmentBlock}>
               <Text variant="labelLarge">{t("fields.gender")}</Text>
@@ -800,7 +814,8 @@ export default function EmployeeProfileScreen() {
             </View>
             <View style={styles.segmentBlock}>
               <Text variant="labelLarge">{t("fields.employmentType")}</Text>
-              <SegmentedButtons value={formValues.employmentType} onValueChange={(value) => setFieldValue("employmentType", value)} buttons={EMPLOYMENT_TYPES.map((value) => ({ value, label: t(`employmentTypeOptions.${value}`) }))} />
+              <SegmentedButtons value={formValues.employmentType ?? ""} onValueChange={(value) => setFieldValue("employmentType", value)} buttons={EMPLOYMENT_TYPES.map((value) => ({ value, label: t(`employmentTypeOptions.${value}`), disabled: !canEditPositionType }))} />
+              {!canEditPositionType ? <HelperText type="info">{t("messages.positionTypeReadonly")}</HelperText> : null}
             </View>
             <TextInput mode="outlined" label={t("fields.address")} placeholder={t("placeholders.address")} value={formValues.address} onChangeText={(value) => setFieldValue("address", value)} multiline numberOfLines={4} />
             <View style={styles.formActions}>
