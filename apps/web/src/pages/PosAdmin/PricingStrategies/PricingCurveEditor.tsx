@@ -1,7 +1,7 @@
 import { Alert, Button, InputNumber, Select, Slider, Space, Tag, Typography } from 'antd'
 import { useMemo, useRef, useState } from 'react'
 import type { PricingStrategyRuleDto } from '../../../types/pricingStrategy'
-import { curveError, finalPrice, nodesFromRules, rawPrice, roundMoney, rulesFromNodes, safeBend, tailCeil, tailFloor } from './pricingCurve'
+import { boundedPrice, curveError, finalPrice, nodesFromRules, rawPrice, roundMoney, rulesFromNodes, safeBend, tailCeil, tailFloor } from './pricingCurve'
 
 interface Props { value?: PricingStrategyRuleDto[]; onChange?: (rules: PricingStrategyRuleDto[]) => void }
 export default function PricingCurveEditor({ value = [], onChange }: Props) {
@@ -38,7 +38,7 @@ export default function PricingCurveEditor({ value = [], onChange }: Props) {
     const hi = Math.min(5 * cost, next?.price ?? Infinity, previous ? cost * previous.price / previous.cost : Infinity)
     const bottom = tailCeil(lo), top = tailFloor(hi)
     if (bottom > top + 1e-8) { setNotice('该位置没有满足成率和相邻节点约束的尾数售价'); return }
-    const price = roundMoney(Math.min(top, Math.max(bottom, finalPrice(cost, wanted))))
+    const price = roundMoney(Math.min(top, Math.max(bottom, boundedPrice(cost, wanted))))
     const changed = nodes.map((n, j) => j === i ? { cost, price } : n)
     apply(rulesFromNodes(changed, value))
   }
@@ -78,7 +78,7 @@ export default function PricingCurveEditor({ value = [], onChange }: Props) {
       <Button disabled={index === 0 || index === nodes.length - 1} danger onClick={() => { const kept = value.filter((_, i) => i !== index); kept[index - 1] = { ...kept[index - 1], algorithm: 'Linear', curveBend: 0 }; if (apply(rulesFromNodes(nodes.filter((_, i) => i !== index), kept))) setSelected(Math.max(0, index - 1)) }}>删除节点</Button>
       <Button onClick={() => {
         const r = value[segment], cost = roundMoney((r.minPrice + r.maxPrice) / 2)
-        const added = [...nodes]; added.splice(segment + 1, 0, { cost, price: finalPrice(cost, rawPrice(r, cost)) })
+        const added = [...nodes]; added.splice(segment + 1, 0, { cost, price: boundedPrice(cost, rawPrice(r, cost)) })
         const split = [...value]; split.splice(segment, 1, { ...r, algorithm: 'Linear', curveBend: 0 }, { ...r, algorithm: 'Linear', curveBend: 0 }); if (apply(rulesFromNodes(added, split))) setSelected(segment + 1)
       }}>在本区间添加节点</Button><Typography.Text type="secondary">增删节点仅将相邻区间重置为直线</Typography.Text>
     </Space>
