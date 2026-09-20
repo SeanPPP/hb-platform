@@ -9,6 +9,8 @@ interface StoreClearancePriceCardProps {
   isPrintingClearance?: boolean;
   onEditClearancePrice: () => void;
   onPrintClearance?: () => void;
+  /** 离线态只读：价格与「设置清货价」不可编辑，打印清货标签保留。 */
+  readOnly?: boolean;
 }
 
 /** 清货行：嵌在标签卡第二行，行为与原清货卡一致（点价格或「设置清货价」编辑，右侧打印清货标签）。 */
@@ -18,6 +20,7 @@ export function StoreClearancePriceCard({
   isPrintingClearance = false,
   onEditClearancePrice,
   onPrintClearance,
+  readOnly = false,
 }: StoreClearancePriceCardProps) {
   const { t } = useAppTranslation(["productQuery", "common"]);
 
@@ -27,8 +30,9 @@ export function StoreClearancePriceCard({
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={`${t("clearancePrice.price")} ${clearancePrice || "--"}`}
-        onPress={onEditClearancePrice}
-        style={styles.info}
+        onPress={readOnly ? undefined : onEditClearancePrice}
+        accessibilityState={{ disabled: readOnly }}
+        style={[styles.info, readOnly ? styles.readOnly : null]}
       >
         <Text style={styles.priceValue} numberOfLines={1}>
           {clearancePrice ? `$${clearancePrice}` : "--"}
@@ -37,9 +41,11 @@ export function StoreClearancePriceCard({
           {clearanceBarcode || t("clearancePrice.pendingBarcode")}
         </Text>
       </Pressable>
-      <Button compact mode="text" onPress={onEditClearancePrice} labelStyle={styles.setLabel}>
-        {t("clearancePrice.setAction")}
-      </Button>
+      {readOnly ? null : (
+        <Button compact mode="text" onPress={onEditClearancePrice} labelStyle={styles.setLabel}>
+          {t("clearancePrice.setAction")}
+        </Button>
+      )}
       <IconButton
         icon="tag-outline"
         size={20}
@@ -61,6 +67,9 @@ const styles = StyleSheet.create({
     minHeight: 48,
     paddingLeft: HB_SPACING.sm,
     paddingRight: HB_SPACING.xxs,
+  },
+  readOnly: {
+    opacity: 0.6,
   },
   rowTitle: {
     minWidth: 32,

@@ -94,6 +94,35 @@ test("中英文设置文案同时提供新分组和诊断入口", () => {
   }
 });
 
+test("绑定设备会话可在设置中管理离线商品数据", () => {
+  const source = read("app/(shell)/settings.tsx");
+  const panel = read("src/components/product-maintenance/OfflineCatalogManagementPanel.tsx");
+
+  // 入口与面板都必须挂在离线资格门禁之后，普通账号登录看不到任何离线 UI。
+  assert.match(source, /isOfflineProductQueryEligible\(\{/);
+  assert.match(source, /\{offlineEligible \? \([\s\S]*?testID="settings-offline-data"/);
+  assert.match(source, /\{offlineEligible \? \([\s\S]*?testID="settings-offline-data-details"/);
+  assert.match(source, /<OfflineCatalogManagementPanel/);
+
+  // 面板必须提供：自动更新开关、手动更新/取消、切换分店。
+  assert.match(panel, /setAutoRefreshEnabled\(/);
+  assert.match(panel, /refreshCatalog\(/);
+  assert.match(panel, /cancelRefresh\(/);
+  assert.match(panel, /await selectStore\(store\)/);
+  // 分店列表必须内联渲染：设置页详情是原生 Modal，Paper Portal 弹出的选择器会被盖住。
+  // 只断言真实引用（import 与 JSX），否则解释这一点的注释本身会让断言失败。
+  assert.doesNotMatch(panel, /^\s*import[\s\S]*?StorePickerModal/m, "面板不得 import StorePickerModal");
+  assert.doesNotMatch(panel, /<StorePickerModal/, "面板不得渲染 StorePickerModal");
+
+  const zh = JSON.parse(read("src/locales/zh/screens/settings.json"));
+  const en = JSON.parse(read("src/locales/en/screens/settings.json"));
+  for (const locale of [zh, en]) {
+    for (const key of ["title", "switchStore", "updateNow", "cancelUpdate", "autoRefresh", "summaryReady"]) {
+      assert.equal(typeof locale.offlineData[key], "string", `offlineData.${key} 缺失`);
+    }
+  }
+});
+
 test("设置页手动检查复用受控 OTA 唯一发布通道", () => {
   const settings = read("app/(shell)/settings.tsx");
   const layout = read("app/_layout.tsx");

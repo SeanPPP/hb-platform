@@ -12,6 +12,8 @@ interface MultiCodeCompactListProps {
   loading?: boolean;
   loadingMore?: boolean;
   hasMore?: boolean;
+  /** 离线模式：隐藏新增与加载更多，条码/价格不可编辑，打印保留。 */
+  readOnly?: boolean;
   onEditItemBarcode: (setCodeId: string) => void;
   onEditItemRetailPrice: (setCodeId: string) => void;
   onSaveItem: (setCodeId: string) => void;
@@ -29,6 +31,7 @@ export function MultiCodeCompactList({
   loading,
   loadingMore,
   hasMore,
+  readOnly = false,
   onEditItemBarcode,
   onEditItemRetailPrice,
   onSaveItem,
@@ -68,6 +71,7 @@ export function MultiCodeCompactList({
       onPrintItem={onPrintItem}
       onAddItem={onAddItem}
       onLoadMore={onLoadMore}
+      readOnly={readOnly}
     />
   );
 }

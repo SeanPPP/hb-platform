@@ -45,6 +45,8 @@ interface StorePriceStrategyCardProps {
   onEditDiscountedRetailPrice: () => void;
   onToggleAutoPricing: (value: boolean) => void;
   onToggleSpecial: (value: boolean) => void;
+  /** 离线态只读：价格单元与自动/特殊开关全部不可编辑，打印不受影响。 */
+  readOnly?: boolean;
 }
 
 /** 门店名 + 下拉；锁定或不可切换时只显示名称，不可点。 */
@@ -82,16 +84,16 @@ export function StoreSwitchButton({
   );
 }
 
-function TogglePill({ label, value, onToggle }: { label: string; value: boolean; onToggle: (value: boolean) => void }) {
+function TogglePill({ label, value, onToggle, readOnly = false }: { label: string; value: boolean; onToggle: (value: boolean) => void; readOnly?: boolean }) {
   const { t } = useAppTranslation("productQuery");
   return (
     <Pressable
       accessibilityRole="switch"
-      accessibilityState={{ checked: value }}
+      accessibilityState={{ checked: value, disabled: readOnly }}
       accessibilityLabel={label}
-      onPress={() => onToggle(!value)}
+      onPress={readOnly ? undefined : () => onToggle(!value)}
       hitSlop={4}
-      style={({ pressed }) => [styles.pill, value ? styles.pillOn : null, pressed ? styles.pressed : null]}
+      style={({ pressed }) => [styles.pill, value ? styles.pillOn : null, readOnly ? styles.readOnly : null, pressed ? styles.pressed : null]}
     >
       <View style={[styles.pillDot, value ? styles.pillDotOn : null]} />
       <Text style={[styles.pillText, value ? styles.pillTextOn : null]} numberOfLines={1}>
@@ -108,6 +110,7 @@ function PriceField({
   onPress,
   valueColor,
   muted = false,
+  readOnly = false,
 }: {
   label: string;
   value?: string;
@@ -115,6 +118,7 @@ function PriceField({
   onPress: () => void;
   valueColor?: string;
   muted?: boolean;
+  readOnly?: boolean;
 }) {
   const { t } = useAppTranslation("productQuery");
   const changed = original != null;
@@ -122,11 +126,13 @@ function PriceField({
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={`${label} ${value || "--"}`}
-      onPress={onPress}
+      accessibilityState={{ disabled: readOnly }}
+      onPress={readOnly ? undefined : onPress}
       style={({ pressed }) => [
         styles.field,
         muted ? styles.fieldMuted : null,
         changed ? styles.fieldChanged : null,
+        readOnly ? styles.readOnly : null,
         pressed ? styles.pressed : null,
       ]}
     >
@@ -182,6 +188,7 @@ export function StorePriceStrategyCard({
   onEditDiscountedRetailPrice,
   onToggleAutoPricing,
   onToggleSpecial,
+  readOnly = false,
 }: StorePriceStrategyCardProps) {
   const { t } = useAppTranslation("productQuery");
   const strategyText = evaluatingRate
@@ -202,20 +209,20 @@ export function StorePriceStrategyCard({
           />
         </View>
         <View style={styles.pills}>
-          <TogglePill label={t("storePrice.autoPricing")} value={autoPricing} onToggle={onToggleAutoPricing} />
-          <TogglePill label={t("storePrice.specialProduct")} value={isSpecialProduct} onToggle={onToggleSpecial} />
+          <TogglePill readOnly={readOnly} label={t("storePrice.autoPricing")} value={autoPricing} onToggle={onToggleAutoPricing} />
+          <TogglePill readOnly={readOnly} label={t("storePrice.specialProduct")} value={isSpecialProduct} onToggle={onToggleSpecial} />
         </View>
       </View>
 
       <View style={styles.body}>
         <View style={styles.grid}>
-          <PriceField
+          <PriceField readOnly={readOnly}
             label={t("storePrice.grid.purchase")}
             value={purchasePrice}
             original={originalValues?.purchasePrice}
             onPress={onEditPurchasePrice}
           />
-          <PriceField
+          <PriceField readOnly={readOnly}
             label={t("storePrice.grid.retail")}
             value={retailPrice}
             original={originalValues?.retailPrice}
@@ -223,7 +230,7 @@ export function StorePriceStrategyCard({
           />
         </View>
         <View style={styles.grid}>
-          <PriceField
+          <PriceField readOnly={readOnly}
             label={t("storePrice.grid.discountPercent")}
             value={discountPercent}
             original={originalValues?.discountPercent}
@@ -231,7 +238,7 @@ export function StorePriceStrategyCard({
             valueColor={HB_COLORS.danger}
           />
           {/* 折后价由零售价和折扣推算，视觉上按只读灰底呈现；仍保留原来的点击反推折扣入口。 */}
-          <PriceField
+          <PriceField readOnly={readOnly}
             label={t("storePrice.grid.discountedRetail")}
             value={discountedRetailPrice}
             original={originalValues?.discountedRetailPrice}
@@ -266,6 +273,9 @@ export function StorePriceStrategyCard({
 }
 
 const styles = StyleSheet.create({
+  readOnly: {
+    opacity: 0.6,
+  },
   card: {
     borderRadius: HB_RADIUS.surface,
     borderWidth: 1,

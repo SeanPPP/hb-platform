@@ -282,6 +282,41 @@
     "confirmFailed": "仓库零售价更新失败，请重试",
     "conflict": "价格已发生变化，已刷新为最新内容，请重新确认"
   },
+  "offline": {
+    "bannerTitle": "离线模式 · 数据更新于 {{time}}",
+    "bannerMeta": "{{count}} 件 · 下载于 {{time}}",
+    "bannerNoData": "离线模式 · 当前分店没有离线数据",
+    "bannerNoDataHint": "恢复网络后会自动下载离线数据",
+    "retryConnection": "重试连接",
+    "backOnline": "已恢复在线，数据已切回实时",
+    "statusReady": "离线数据 · 更新于 {{time}} · {{count}} 件",
+    "statusSyncing": "正在下载离线数据 · {{step}} {{percent}}% · {{completed}} / {{total}}",
+    "statusFailed": "离线数据更新失败：{{reason}}",
+    "statusMissing": "尚未下载离线数据",
+    "steps": {
+      "prepare": "准备",
+      "products": "商品",
+      "activate": "激活"
+    },
+    "errors": {
+      "network": "网络不可用",
+      "capacityBusy": "服务器繁忙，请稍后再试",
+      "expired": "服务端快照已过期，将重新下载",
+      "verification": "数据校验失败",
+      "api": "服务器返回错误",
+      "failed": "未知错误"
+    },
+    "download": "下载",
+    "update": "更新",
+    "retry": "重试",
+    "editingUnavailable": "离线模式下不能修改价格、条码或商品信息",
+    "insightsUnavailable": "离线模式下无法查看商品洞察",
+    "catalogMissing": "当前分店尚未下载离线数据，恢复网络后会自动下载",
+    "notInCatalog": "离线数据中没有该商品",
+    "refreshCompleted": "离线数据已更新（{{count}} 件）",
+    "refreshNoChange": "离线数据已是最新",
+    "refreshCancelled": "已取消离线数据下载"
+  },
   "print": {
     "title": "标签打印",
     "quick": "打",

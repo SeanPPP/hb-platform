@@ -18,6 +18,7 @@ import { STORE_SELECTION_STORAGE_KEY } from "@/modules/shop/types";
 import { useCartStore } from "@/store/cart-store";
 import { useAppNavigationStore } from "@/modules/navigation/store";
 import { DeviceStorage } from "@/modules/device/storage";
+import { closeOfflineCatalogRuntime } from "@/modules/product-maintenance/offline-catalog/offline-catalog-teardown";
 import { useDeviceStore } from "@/store/device-store";
 import {
   isIosReviewBuildEnabled,
@@ -48,6 +49,7 @@ import {
   setAuthSessionMarker,
 } from "@/modules/device-activation/auth-session-marker";
 import { deriveEffectiveAuthSessionKind } from "@/modules/device-activation/device-account-request-policy";
+import { resolveOfflineSessionRestore } from "@/modules/auth/offline-session-restore";
 
 export function getIosReviewBuildContext(): IosReviewBuildContext {
   return {
@@ -226,7 +228,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
       clearSensitiveQueryCache(queryClient);
       useCartStore.getState().reset();
-      useAppNavigationStore.getState().reset();
+      // 同一设备同一绑定重建会话：保留菜单缓存。冷启动断网时这里会先跑到再失败，
+      // 若把缓存清掉，随后的离线恢复就只剩设置页，商品查询 tab 消失。
+      useAppNavigationStore.getState().reset({ keepMenuCache: true });
       await SecureStorage.clearAll();
       await clearAuthSessionMarker();
 
@@ -384,8 +388,42 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         hasBinding: Boolean(deviceAccountBinding),
       });
       if (effectiveSessionKind === "deviceAccount" && deviceAccountBinding) {
-        await get().loginDeviceAccount();
-        return true;
+        // loginDeviceAccount 会先清空本地令牌与用户缓存再联网交换；冷启动断网时
+        // 需要先读出缓存用户，网络类失败才允许用它恢复设备绑定账号会话。
+        const [cachedUser, storedDeviceSession] = await Promise.all([
+          SecureStorage.getUser<CurrentUser>().catch(() => null),
+          DeviceStorage.getSession().catch(() => null),
+        ]);
+        try {
+          await get().loginDeviceAccount();
+          return true;
+        } catch (error) {
+          const decision = resolveOfflineSessionRestore({
+            error,
+            sessionKind: "deviceAccount",
+            hasStoredDeviceSession: Boolean(
+              storedDeviceSession?.hardwareId && storedDeviceSession.authCode
+            ),
+            cachedUser,
+          });
+          if (decision !== "restore-from-cache" || !cachedUser) {
+            throw error;
+          }
+          // 离线恢复：重新落盘缓存用户与会话标记，联网后 401 刷新链路会用设备绑定重新换取 token。
+          await SecureStorage.setUser(cachedUser);
+          await setAuthSessionMarker("deviceAccount");
+          set({
+            user: cachedUser,
+            access: buildAccess(cachedUser),
+            sessionKind: "deviceAccount",
+            iosReviewOfflineGuardActive: false,
+            standardAuthIntent: null,
+            isAuthenticated: true,
+            isLoading: false,
+          });
+          await useAppNavigationStore.getState().fetchMenu();
+          return true;
+        }
       }
       if (!token) {
         // 已保存设备验证失败后可能已放行全局 gate；无账号可恢复时必须重新 fail-closed。
@@ -448,7 +486,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       clearSensitiveQueryCache(queryClient);
     }
     useCartStore.getState().reset();
-    useAppNavigationStore.getState().reset();
+    // 释放离线目录：中止进行中的下载并关闭 SQLite，否则登出后仍持有句柄、
+    // 仍在用新会话的设备头继续拉旧门店数据。
+    void closeOfflineCatalogRuntime();
+    // 保留菜单缓存：它按 hardwareId + 账号 GUID 隔离，换账号或换绑都不会命中旧菜单，
+    // 而纯设备模式冷启动会先经过这里再做设备校验，清掉就等于断网时没有商品查询入口。
+    // 真正需要清除的是设备解绑与设备校验被拒，那两条路径在 device-store 里无参调用 reset()。
+    useAppNavigationStore.getState().reset({ keepMenuCache: true });
     set({
       user: null,
       access: buildAccess(null),
@@ -510,7 +554,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     // 专用于设备登录切换：清账号 token，但不重置审核 pre-auth gate 或持久设备绑定。
     clearSensitiveQueryCache(queryClient);
     useCartStore.getState().reset();
-    useAppNavigationStore.getState().reset();
+    // 同上：设备登录切换保留同一台设备的菜单缓存，隔离交给 scopeKey。
+    useAppNavigationStore.getState().reset({ keepMenuCache: true });
     await SecureStorage.clearAll();
     await clearAuthSessionMarker();
     await AppAsyncStorage.removeItem(STORE_SELECTION_STORAGE_KEY);

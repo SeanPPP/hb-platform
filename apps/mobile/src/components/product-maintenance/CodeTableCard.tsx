@@ -31,6 +31,11 @@ interface CodeTableCardProps {
   onPrintItem: (id: string) => void;
   onAddItem: () => void;
   onLoadMore?: () => void;
+  /**
+   * 离线态只读：隐藏新增与整行保存、关闭「加载更多」（离线快照已含全部码），
+   * 打印保留 —— 打标签是纯本地的蓝牙操作，断网时正是最需要的功能。
+   */
+  readOnly?: boolean;
 }
 
 /** 套装 / 多码共用的「条码 | 价格 | 操作」表格卡。 */
@@ -52,6 +57,7 @@ export function CodeTableCard({
   onPrintItem,
   onAddItem,
   onLoadMore,
+  readOnly = false,
 }: CodeTableCardProps) {
   const { t } = useAppTranslation("productQuery");
   const remaining = totalCount != null ? Math.max(totalCount - rows.length, 0) : 0;
@@ -67,16 +73,18 @@ export function CodeTableCard({
             </Text>
           ) : null}
         </View>
-        <Button
-          compact
-          mode="contained-tonal"
-          icon="plus"
-          onPress={onAddItem}
-          loading={adding}
-          disabled={adding}
-        >
-          {t("setCode.add")}
-        </Button>
+        {readOnly ? null : (
+          <Button
+            compact
+            mode="contained-tonal"
+            icon="plus"
+            onPress={onAddItem}
+            loading={adding}
+            disabled={adding}
+          >
+            {t("setCode.add")}
+          </Button>
+        )}
       </View>
 
       <View style={styles.columns}>
@@ -100,7 +108,7 @@ export function CodeTableCard({
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={`${t("codes.barcodeColumn")} ${row.barcode ?? "--"}`}
-              onPress={() => onEditItemBarcode(row.id)}
+              onPress={readOnly ? undefined : () => onEditItemBarcode(row.id)}
               style={[styles.cell, styles.barcodeColumn, row.dirty ? styles.cellDirty : null]}
             >
               <Text style={styles.barcodeText} numberOfLines={1}>{row.barcode ?? "--"}</Text>
@@ -108,7 +116,7 @@ export function CodeTableCard({
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={`${priceColumnLabel} ${row.followsMain ? t("codes.follow") : row.price ?? "--"}`}
-              onPress={() => onEditItemRetailPrice(row.id)}
+              onPress={readOnly ? undefined : () => onEditItemRetailPrice(row.id)}
               style={[
                 styles.cell,
                 styles.priceColumn,
@@ -125,6 +133,7 @@ export function CodeTableCard({
             </Pressable>
             <View style={[styles.actionsColumn, styles.actions]}>
               {/* 编码为单行即时保存：无改动时保存按钮置灰禁用，有改动才可点。 */}
+              {readOnly ? null : (
               <IconButton
                 icon="content-save-outline"
                 accessibilityLabel={t("codes.saveRow")}
@@ -137,6 +146,7 @@ export function CodeTableCard({
                 disabled={!row.dirty || saving}
                 style={styles.actionButton}
               />
+              )}
               <IconButton
                 icon="printer-outline"
                 accessibilityLabel={t("codes.printRow")}
@@ -151,7 +161,7 @@ export function CodeTableCard({
         );
       })}
 
-      {hasMore && onLoadMore ? (
+      {hasMore && onLoadMore && !readOnly ? (
         <Button
           compact
           mode="text"
