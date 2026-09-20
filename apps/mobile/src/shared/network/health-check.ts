@@ -7,7 +7,7 @@
  */
 import { reviewAwareFetch } from "@/modules/ios-review/network";
 import { isIosReviewSessionActive } from "@/modules/ios-review/session";
-import { buildApiBaseUrl, getStoredApiHost } from "@/shared/api/config";
+import { resolveEffectiveApiBaseUrl } from "@/shared/api/effective-api-host";
 
 /** 健康探测默认超时（毫秒），与考勤模块一致。 */
 export const NETWORK_CHECK_TIMEOUT_MS = 5000;
@@ -25,7 +25,7 @@ export type BackendHealthCheckOptions = {
   isReviewActive?: () => boolean;
   /** 请求执行器；默认 reviewAwareFetch（审核态外等同全局 fetch）。 */
   fetchImpl?: typeof fetch;
-  /** 当前 API 基础地址来源；默认 getStoredApiHost + buildApiBaseUrl。 */
+  /** 当前 API 基础地址来源；默认与 apiClient 请求拦截器同一套解析。 */
   getApiBaseUrl?: () => Promise<string>;
   /** 时间戳来源，便于测试固定时间。 */
   nowIso?: () => string;
@@ -58,9 +58,11 @@ export async function checkBackendReachable(
   const nowIso = options.nowIso ?? (() => new Date().toISOString());
   const isReviewActive =
     options.isReviewActive ?? isIosReviewSessionActive;
+  // 必须与业务请求解析出同一个 host：设备账号会话下以绑定 host 为准。
+  // 否则绑定 host 与偏好 host 不一致时，探测会稳定成功而业务请求稳定失败，
+  // 把离线态拖进「判定恢复→重跑失败→再判定恢复」的循环。
   const getApiBaseUrl =
-    options.getApiBaseUrl ??
-    (async () => buildApiBaseUrl(await getStoredApiHost()));
+    options.getApiBaseUrl ?? (() => resolveEffectiveApiBaseUrl());
 
   if (isReviewActive()) {
     // 审核态下健康检查不触网，直接报告可用，避免审核环境产生真实请求。

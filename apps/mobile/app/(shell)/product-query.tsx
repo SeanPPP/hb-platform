@@ -83,6 +83,7 @@ import {
 import {
   INITIAL_PRODUCT_QUERY_CONNECTIVITY,
   reduceProductQueryConnectivity,
+  shouldAutoRelookupAfterRecovery,
 } from "@/modules/product-maintenance/offline-mode";
 import { useOfflineReconnectProbe } from "@/modules/product-maintenance/use-offline-reconnect-probe";
 import { shouldAutoRefreshOfflineCatalog } from "@/modules/product-maintenance/offline-catalog/offline-catalog-freshness";
@@ -2407,6 +2408,7 @@ function ProductQueryContent() {
   );
 
   const wasOfflineRef = useRef(false);
+  const lastAutoRelookupAtRef = useRef<number | null>(null);
   useEffect(() => {
     // 检测到在线：提示、触发全局补传，并把离线期间的最后一次查询自动重跑为实时结果。
     const wasOffline = wasOfflineRef.current;
@@ -2418,7 +2420,15 @@ function ProductQueryContent() {
     void triggerRecovery();
     const pendingKeyword = connectivity.pendingKeyword;
     dispatchConnectivity({ type: "reset" });
-    if (pendingKeyword && selectedStoreCode) {
+    // 自动重跑设最小间隔：探测与业务请求若看到不同的后端，会「判定恢复→重跑失败
+    // →再判定恢复」地空转，这里兜底掐断；用户手动查询不受影响。
+    const recoveredAtMs = Date.now();
+    const canAutoRelookup = shouldAutoRelookupAfterRecovery({
+      lastAutoRelookupAtMs: lastAutoRelookupAtRef.current,
+      nowMs: recoveredAtMs,
+    });
+    if (pendingKeyword && selectedStoreCode && canAutoRelookup) {
+      lastAutoRelookupAtRef.current = recoveredAtMs;
       setKeyword(pendingKeyword);
       void handleLookup(pendingKeyword, "refresh");
     }
