@@ -27,6 +27,48 @@ const CLEAR: SettingsPendingDataSnapshot = {
 const DEVICE_ACTIVATION_CODE =
   "HBDEV1-0123456789ABCDEFGHJKMNPQRS-STVWXYZ0123456789ABCDEFGHJ";
 
+test("支付方式在全局保护内保存；提交后页面取消不伪报失败，也不依赖重启", async () => {
+  const events: string[] = [];
+  const controller = new AbortController();
+  const subject = new ProductionSettingsControl(deps({
+    pendingData: { read: async () => CLEAR },
+    paymentConfigurationTransition: { run: async (operation) => {
+      events.push("enter");
+      try { return await operation(); } finally { events.push("exit"); }
+    } },
+    paymentMethods: { save: async (value) => {
+      assert.deepEqual(value, { useManualCard: true, giftCardEnabled: false });
+      events.push("save");
+      controller.abort();
+    } },
+    runtimeReload: { reload: async () => { throw new Error("must not reload"); } },
+  }));
+  await subject.savePaymentMethods({ useManualCard: true, giftCardEnabled: false }, controller.signal, () => events.push("lease"));
+  assert.deepEqual(events, ["enter", "lease", "lease", "save", "exit"]);
+});
+
+test("支付方式保存复核未决数据与等待期间会话，任何失败都不写设置", async () => {
+  for (const pending of [{ ...CLEAR, hasActiveCart: true }, { ...CLEAR, unresolvedPaymentCount: 1 }, { ...CLEAR, paymentConfigurationSensitiveOrderCount: 1 }]) {
+    let saves = 0;
+    const subject = new ProductionSettingsControl(deps({
+      pendingData: { read: async () => pending },
+      paymentMethods: { save: async () => { saves++; } },
+    }));
+    await assert.rejects(subject.savePaymentMethods({ useManualCard: true, giftCardEnabled: true }, new AbortController().signal), /PAYMENT_METHOD_SETTINGS_BLOCKED/);
+    assert.equal(saves, 0);
+  }
+  let active = true;
+  let saves = 0;
+  const subject = new ProductionSettingsControl(deps({
+    pendingData: { read: async () => { active = false; return CLEAR; } },
+    paymentMethods: { save: async () => { saves++; } },
+  }));
+  await assert.rejects(subject.savePaymentMethods({ useManualCard: true, giftCardEnabled: true }, new AbortController().signal, () => {
+    if (!active) throw new Error("SESSION_REPLACED");
+  }), /SESSION_REPLACED/);
+  assert.equal(saves, 0);
+});
+
 function pendingBlocked(pending: SettingsPendingDataSnapshot) {
   return {
     status: "blocked" as const,

@@ -24,6 +24,46 @@ import type {
   PaymentProviderAvailabilityPort,
 } from "@/features/payments/runtime/payment-provider-registry";
 
+test("手动刷卡必须显式确认且一次收齐余额，拒绝时不调用支付服务", async () => {
+  const harness = createHarness();
+  harness.providers.unblock("manual-card");
+  const runtime = harness.runtime();
+  await assert.rejects(runtime.start({ ...startInput(), provider: "manual-card" }), /MANUAL_CARD_CONFIRMATION_REQUIRED/);
+  assert.equal(harness.drafts.createCalls, 0);
+  await assert.rejects(runtime.start({ ...startInput(), provider: "manual-card", manualConfirmed: true, amount: aud(500) }), /MANUAL_CARD_FULL_BALANCE_REQUIRED/);
+  assert.equal(harness.mixed.onlineCalls, 0);
+  await runtime.start({ ...startInput(), provider: "manual-card", manualConfirmed: true });
+  assert.equal(harness.mixed.onlineCalls, 1);
+  assert.equal(harness.mixed.lastOnlineInput?.manualConfirmed, true);
+});
+
+test("已持久化的手动确认可在开关关闭后恢复，Created 不允许取消", async () => {
+  const harness = createHarness();
+  harness.drafts.recovery = {
+    draft: harness.drafts.current, attemptId: null,
+    preparedAction: { actionId: "manual-durable", provider: "manual-card", operation: "purchase", amount: aud(1000), manualConfirmed: true },
+  };
+  await harness.runtime().resumeCurrent();
+  assert.equal(harness.mixed.onlineCalls, 1);
+  assert.equal(harness.mixed.lastOnlineInput?.actionId, "manual-durable");
+  assert.equal(harness.mixed.lastOnlineInput?.manualConfirmed, true);
+  const created = attempt({ provider: "manual-card", state: "Created" });
+  harness.attempts.put(created);
+  harness.drafts.recovery.attemptId = created.attemptId;
+  const snapshot = await harness.runtime().findRecoveryRequired();
+  assert.equal(snapshot?.allowedActions.cancel, false);
+  assert.equal(snapshot?.allowedActions.recover, true);
+});
+
+test("含退货行的销售不能绕过界面开启手动刷卡", async () => {
+  const harness = createHarness();
+  harness.providers.unblock("manual-card");
+  Object.assign(harness.lease.value.cart.lines[0]!, { kind: "return" });
+  Object.assign(harness.lease.value.pricingState.lines[0]!, { kind: "return" });
+  await assert.rejects(harness.runtime().start({ ...startInput(), provider: "manual-card", manualConfirmed: true }), /MANUAL_CARD_SALE_ONLY/);
+  assert.equal(harness.mixed.onlineCalls, 0);
+});
+
 test("重复点击共享同一 action，provider/completion/clear 各执行一次且公开 JSON 无秘密", async () => {
   const harness = createHarness();
   const pending = deferred<void>();
@@ -1946,6 +1986,7 @@ class MemoryDrafts implements PaymentCheckoutDraftPort {
       provider: PaymentProvider;
       operation: "purchase";
       amount: ReturnType<typeof aud>;
+      manualConfirmed?: boolean;
     } | null;
   } | null = null;
   public afterCash: PaymentCheckoutDraft | null = null;
@@ -2115,6 +2156,7 @@ class MemoryMixed implements PaymentCheckoutMixedCoordinatorPort {
     orderGuid: string;
     provider: PaymentProvider;
     amount: ReturnType<typeof aud>;
+    manualConfirmed?: boolean;
   } | null = null;
   public lastCashInput: {
     actionId: string;
