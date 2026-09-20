@@ -678,7 +678,12 @@ internal static class SalesReturnRecordPersistence
         var existingRecords = new List<SalesReturnRecord>();
         foreach (var returnOrderGuid in returnOrderGuids)
         {
+            // 关键逻辑：连接级 IsWithNoLockQuery 会给这条读加 WITH(NOLOCK)，表提示会覆盖
+            // 会话隔离级别，使外层 Serializable 事务失效。退货幂等判断脏读到未提交的记录
+            // 会把新退货误判为重复提交；UPDLOCK 串行化同一退货单的并发判断，
+            // HOLDLOCK 补范围锁防止判断与插入之间插入同一 ReturnOrderGuid 的行。
             var records = await db.Queryable<SalesReturnRecord>()
+                .With("WITH(UPDLOCK, HOLDLOCK)")
                 .Where(record => record.ReturnOrderGuid == returnOrderGuid)
                 .ToListAsync(cancellationToken);
             existingRecords.AddRange(records);
@@ -693,7 +698,9 @@ internal static class SalesReturnRecordPersistence
         CancellationToken cancellationToken)
     {
         var orderGuidText = orderGuid.ToString("D");
+        // 原单是只读参考，但仍不能脏读——读到别的事务尚未提交的订单会允许对可能回滚的单退货。
         var orderExists = await db.Queryable<SalesOrder>()
+            .With("WITH(READCOMMITTED)")
             .AnyAsync(order => order.OrderGuid == orderGuidText, cancellationToken);
         if (!orderExists)
         {
@@ -701,6 +708,7 @@ internal static class SalesReturnRecordPersistence
         }
 
         var lines = await db.Queryable<SalesOrderDetail>()
+            .With("WITH(READCOMMITTED)")
             .Where(line => line.OrderGuid == orderGuidText)
             .ToListAsync(cancellationToken);
 
@@ -727,7 +735,12 @@ internal static class SalesReturnRecordPersistence
         CancellationToken cancellationToken)
     {
         var orderGuidText = orderGuid.ToString("D");
+        // 关键逻辑：这是剩余可退额度的计算依据。NOLOCK 让两笔并发退款各自读到相同的
+        // “已退数量/金额”且互不阻塞，双方都能通过额度校验，导致同一商品行被退两次；
+        // sales_return_record 上只有非唯一索引，没有约束兜底。
+        // HOLDLOCK 的范围锁是必需的——要挡住的正是另一事务插入新的退款行。
         return await db.Queryable<SalesReturnRecord>()
+            .With("WITH(UPDLOCK, HOLDLOCK)")
             .Where(record => record.OriginalOrderGuid == orderGuidText)
             .ToListAsync(cancellationToken);
     }
@@ -786,6 +799,7 @@ internal static class SalesReturnRecordPersistence
         {
             var orderGuidText = originalOrderGuid.ToString("D");
             var originalPayments = await db.Queryable<PaymentDetail>()
+                .With("WITH(UPDLOCK, HOLDLOCK)")
                 .Where(payment => payment.OrderGuid == orderGuidText)
                 .Where(payment => payment.Amount != null && payment.Amount > 0m)
                 .Where(payment => payment.PaymentMethod == cardPaymentMethod)
@@ -832,6 +846,7 @@ internal static class SalesReturnRecordPersistence
                     .Distinct()
                     .ToList();
                 var existingRefundPayments = await db.Queryable<PaymentDetail>()
+                    .With("WITH(UPDLOCK, HOLDLOCK)")
                     .Where(payment => payment.OrderGuid == returnOrderGuid)
                     .Where(payment => payment.Amount != null && payment.Amount < 0m)
                     .Where(payment => payment.PaymentMethod == cardPaymentMethod)
