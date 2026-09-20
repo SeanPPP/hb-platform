@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   INITIAL_PRODUCT_QUERY_CONNECTIVITY,
+  OFFLINE_AUTO_RELOOKUP_MIN_INTERVAL_MS,
   reduceProductQueryConnectivity,
+  shouldAutoRelookupAfterRecovery,
 } from "./offline-mode";
 
 test("网络失败进入离线并记录时刻与关键字", () => {
@@ -80,5 +82,40 @@ test("在线请求成功立即回到初始状态", () => {
   assert.equal(
     reduceProductQueryConnectivity(INITIAL_PRODUCT_QUERY_CONNECTIVITY, { type: "request_succeeded" }),
     INITIAL_PRODUCT_QUERY_CONNECTIVITY,
+  );
+});
+
+test("首次恢复在线允许自动重跑查询", () => {
+  assert.equal(
+    shouldAutoRelookupAfterRecovery({ lastAutoRelookupAtMs: null, nowMs: 10_000 }),
+    true,
+  );
+});
+
+test("刚自动重跑过就再次恢复在线时不再重跑，掐断空转", () => {
+  // 探测与业务请求若解析出不同后端，会「判定恢复→重跑失败→再判定恢复」地循环；
+  // 实测曾达到每 400ms 一轮，这里保证第二轮就被挡下。
+  const lastAutoRelookupAtMs = 10_000;
+  assert.equal(
+    shouldAutoRelookupAfterRecovery({ lastAutoRelookupAtMs, nowMs: lastAutoRelookupAtMs + 400 }),
+    false,
+  );
+  assert.equal(
+    shouldAutoRelookupAfterRecovery({
+      lastAutoRelookupAtMs,
+      nowMs: lastAutoRelookupAtMs + OFFLINE_AUTO_RELOOKUP_MIN_INTERVAL_MS - 1,
+    }),
+    false,
+  );
+});
+
+test("间隔足够久后恢复自动重跑，真实断网恢复不受影响", () => {
+  const lastAutoRelookupAtMs = 10_000;
+  assert.equal(
+    shouldAutoRelookupAfterRecovery({
+      lastAutoRelookupAtMs,
+      nowMs: lastAutoRelookupAtMs + OFFLINE_AUTO_RELOOKUP_MIN_INTERVAL_MS,
+    }),
+    true,
   );
 });

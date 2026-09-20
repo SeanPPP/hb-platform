@@ -217,11 +217,12 @@ export const useOfflineCatalogStore = create<OfflineCatalogState>((set, get) => 
           }));
           return null;
         }
-        if (get().refresh.kind === "failed") {
-          set((state) => ({
-            lastFailedAtMs: { ...state.lastFailedAtMs, [normalized]: Date.now() },
-          }));
-        }
+        // 非取消失败一律记账，不看协调器状态：切店抢占等情况会把 refresh.kind
+        // 覆盖成别的值，此时漏记退避时刻，焦点副作用就会在同一帧把下载重新拉起来，
+        // 形成每秒数次的紧密重试（实测断网时 9 秒内打了 71 次）。
+        set((state) => ({
+          lastFailedAtMs: { ...state.lastFailedAtMs, [normalized]: Date.now() },
+        }));
         console.warn("[offline-catalog] refresh failed", {
           storeCode: normalized,
           message: error instanceof Error ? error.message : String(error),

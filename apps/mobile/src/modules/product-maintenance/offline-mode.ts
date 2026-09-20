@@ -27,6 +27,28 @@ export const INITIAL_PRODUCT_QUERY_CONNECTIVITY: ProductQueryConnectivityState =
   pendingKeyword: null,
 };
 
+/** 恢复在线后自动重跑查询的最小间隔（毫秒）。 */
+export const OFFLINE_AUTO_RELOOKUP_MIN_INTERVAL_MS = 10_000;
+
+/**
+ * 判定恢复在线后是否允许自动重跑离线期间的查询。
+ *
+ * 可达性探测与业务请求一旦解析出不同的后端（例如设备绑定 host 与设置页偏好 host
+ * 不一致），就会「探测成功→退出离线→自动重跑→请求失败→回到离线」地空转。
+ * 根因由 resolveEffectiveApiBaseUrl 统一 host 解析来修，这里再加一道兜底：
+ * 两次自动重跑之间必须间隔足够久，任何未来的误判都无法把它拖成紧密循环。
+ * 用户手动查询不受此限制。
+ */
+export function shouldAutoRelookupAfterRecovery(input: {
+  lastAutoRelookupAtMs: number | null;
+  nowMs: number;
+}): boolean {
+  if (input.lastAutoRelookupAtMs === null) {
+    return true;
+  }
+  return input.nowMs - input.lastAutoRelookupAtMs >= OFFLINE_AUTO_RELOOKUP_MIN_INTERVAL_MS;
+}
+
 export function reduceProductQueryConnectivity(
   state: ProductQueryConnectivityState,
   event: ProductQueryConnectivityEvent,
