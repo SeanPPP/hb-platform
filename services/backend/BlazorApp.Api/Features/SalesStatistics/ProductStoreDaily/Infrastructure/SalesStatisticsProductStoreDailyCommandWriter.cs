@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.Models;
@@ -15,7 +16,7 @@ internal sealed class SalesStatisticsProductStoreDailyCommandWriter
         SalesStatisticsProductStoreDailyStateSlice.ProductStatisticStatusResult Status,
         ProductStoreDailyBatchFence? BatchFence);
 
-    internal async Task<PersistResult> PersistAsync(
+    internal Task<PersistResult> PersistAsync(
         SqlSugarContext context,
         POSMSqlSugarContext posmContext,
         ILogger logger,
@@ -27,6 +28,68 @@ internal sealed class SalesStatisticsProductStoreDailyCommandWriter
         string? atomicSuccessStatusOverride,
         Guid? expectedJobId = null,
         Func<Task>? validateExecutionOwnershipBeforeCommitAsync = null)
+    {
+        var rollbackCompleted = false;
+        return PersistWithLockRetryAsync(
+            persistOnceAsync: () =>
+            {
+                rollbackCompleted = false;
+                return PersistOnceAsync(
+                    context, posmContext, logger, input, build, atomicStoreStatistics,
+                    sourceWatermarkOverride, validateSourceWatermarkBeforeCommitAsync,
+                    atomicSuccessStatusOverride, expectedJobId,
+                    validateExecutionOwnershipBeforeCommitAsync,
+                    () => rollbackCompleted = true);
+            },
+            // 仅恢复当日报表；历史批次的来源签名回调可能持有跨调用状态，保留其原有失败边界。
+            canRetryAfterRollback: () => input.TargetDate.Date == SalesStatisticsBusinessDate.Today()
+                && rollbackCompleted && context.Db.Ado.Transaction == null,
+            targetDate: input.TargetDate,
+            logger: logger);
+    }
+
+    internal static async Task<PersistResult> PersistWithLockRetryAsync(
+        Func<Task<PersistResult>> persistOnceAsync,
+        Func<bool> canRetryAfterRollback,
+        DateTime targetDate,
+        ILogger logger,
+        Func<TimeSpan, Task>? delayAsync = null)
+    {
+        delayAsync ??= delay => Task.Delay(delay);
+        const int maxAttempts = 3;
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return await persistOnceAsync();
+            }
+            catch (SetChildPurchasePriceLockException ex) when (
+                ex.ResultCode == -1 && attempt < maxAttempts && canRetryAfterRollback())
+            {
+                // 部分商品锁可能已获取，必须确认整笔事务回滚后才重试；不能在原事务内继续。
+                // 只重试等待超时，取消、死锁及调用错误保留原有失败语义。
+                var delay = TimeSpan.FromSeconds(attempt == 1 ? 1 : 3);
+                logger.LogWarning(ex,
+                    "商品分店每日统计成本锁等待超时，事务已回滚后重试 Date={Date:yyyy-MM-dd} Attempt={Attempt} MaxAttempts={MaxAttempts} ResultCode={ResultCode} Resource={Resource} RetryDelayMs={RetryDelayMs}",
+                    targetDate, attempt, maxAttempts, ex.ResultCode, ex.Resource, delay.TotalMilliseconds);
+                await delayAsync(delay);
+            }
+        }
+    }
+
+    private async Task<PersistResult> PersistOnceAsync(
+        SqlSugarContext context,
+        POSMSqlSugarContext posmContext,
+        ILogger logger,
+        ProductStoreDailyRefreshInput input,
+        ProductStoreDailyRefreshBuildResult build,
+        IReadOnlyList<StoreSalesStatistic>? atomicStoreStatistics,
+        DateTime? sourceWatermarkOverride,
+        Func<Task>? validateSourceWatermarkBeforeCommitAsync,
+        string? atomicSuccessStatusOverride,
+        Guid? expectedJobId,
+        Func<Task>? validateExecutionOwnershipBeforeCommitAsync,
+        Action onRollbackCompleted)
     {
         var effectiveSourceWatermark = sourceWatermarkOverride ?? input.LastSourceUploadTime;
         SupplierStoreStatisticBuildResult? supplierBuild = null;
@@ -65,7 +128,18 @@ internal sealed class SalesStatisticsProductStoreDailyCommandWriter
                 if (productCodes.Count > 0)
                 {
                     // 一次 SQL 批量按规范顺序取锁，兼顾上万商品的往返开销和商品级隔离。
-                    await SetChildPurchasePriceMutationLock.AcquireProductsInBatchWithinBudgetAsync(context.Db, productCodes);
+                    var lockStopwatch = Stopwatch.StartNew();
+                    try
+                    {
+                        await SetChildPurchasePriceMutationLock.AcquireProductsInBatchWithinBudgetAsync(context.Db, productCodes);
+                    }
+                    catch (SetChildPurchasePriceLockException ex)
+                    {
+                        logger.LogWarning(ex,
+                            "商品分店每日统计获取成本锁失败 Date={Date:yyyy-MM-dd} ResultCode={ResultCode} Resource={Resource} ProductCount={ProductCount} ElapsedMs={ElapsedMs}",
+                            input.TargetDate, ex.ResultCode, ex.Resource, productCodes.Count, lockStopwatch.ElapsedMilliseconds);
+                        throw;
+                    }
 
                     // 成本表必须在业务锁内重读；POSM/HBSales 原明细和销售金额仍沿用锁外快照，
                     // 仅替换会受商品/分店成本写入影响的三张成本来源表。
@@ -240,7 +314,12 @@ internal sealed class SalesStatisticsProductStoreDailyCommandWriter
                 }
             },
             commitAsync: () => context.Db.Ado.CommitTranAsync(),
-            rollbackAsync: () => context.Db.Ado.RollbackTranAsync(),
+            rollbackAsync: async () =>
+            {
+                await context.Db.Ado.RollbackTranAsync();
+                // 事务执行器保留原始异常，即使回滚失败也会抛出锁异常；必须单独确认回滚成功。
+                onRollbackCompleted();
+            },
             logger: logger,
             operationName: "商品分店每日统计更新");
         return new PersistResult(status, capturedBatchFence);
