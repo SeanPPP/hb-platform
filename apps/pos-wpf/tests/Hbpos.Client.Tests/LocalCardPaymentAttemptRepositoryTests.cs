@@ -56,6 +56,62 @@ public sealed class LocalCardPaymentAttemptRepositoryTests
     }
 
     [Fact]
+    public async Task Mark_order_completed_refuses_to_overwrite_a_terminal_attempt()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            await new LocalSchemaService(store).InitializeAsync();
+            var repository = new LocalCardPaymentAttemptRepository(store);
+            var attempt = CreateAttempt(status: LocalCardPaymentAttemptStatus.Declined);
+            await repository.CreateAsync(attempt);
+
+            // 修复前这里是 WHERE AttemptGuid 的无条件 UPDATE，会把已被终端拒绝的交易
+            // 直接改写成“订单已完成”。带守卫后冲突必须显式抛出，交由调用方回滚。
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => repository.MarkOrderCompletedAsync(attempt.AttemptGuid, DateTimeOffset.UtcNow));
+
+            var stored = await repository.GetAttemptAsync(attempt.AttemptGuid);
+            Assert.NotNull(stored);
+            Assert.Equal(LocalCardPaymentAttemptStatus.Declined, stored!.Status);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task Mark_acknowledged_refuses_a_terminal_attempt_and_keeps_acknowledged_at_null()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            await new LocalSchemaService(store).InitializeAsync();
+            var repository = new LocalCardPaymentAttemptRepository(store);
+            var attempt = CreateAttempt(status: LocalCardPaymentAttemptStatus.OrderCompleted);
+            await repository.CreateAsync(attempt);
+
+            // ack 原本也是无条件 UPDATE：调用方在读取与写入之间还隔着一次 Linkly 网络请求，
+            // 期间状态若已变化，盖上 ack 章会把该行挤出以 AcknowledgedAt IS NULL 为条件的恢复队列。
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => repository.MarkAcknowledgedAsync(attempt.AttemptGuid, DateTimeOffset.UtcNow));
+
+            var stored = await repository.GetAttemptAsync(attempt.AttemptGuid);
+            Assert.NotNull(stored);
+            Assert.Null(stored!.AcknowledgedAt);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
     public async Task Local_schema_service_creates_local_card_payment_attempts_table_and_indexes()
     {
         var databasePath = CreateTempDatabasePath();
