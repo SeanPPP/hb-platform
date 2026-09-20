@@ -44,7 +44,7 @@ import {
 import { MeasuredTable } from '../../../components/MeasuredTable'
 
 import PricingCurveEditor from './PricingCurveEditor'
-import { curveError, defaultCurve, finalPrice, nodesFromRules, rulesFromNodes } from './pricingCurve'
+import { boundedPrice, curveError, defaultCurve, nodesFromRules, rulesFromNodes } from './pricingCurve'
 
 type DataType = PricingStrategyListDto & { key: string }
 
@@ -475,7 +475,7 @@ export default function PricingStrategiesPage() {
           <Alert type="info" showIcon style={{ marginBottom: 12 }} message="原有区间规则" description="已有 Linear 计算已升级为零售价插值。打开时保留现有配置；转换按钮切换为图形编辑，并将节点吸附到合法尾数、应用 1.5～5 成率约束。编辑结果保存后生效。" action={<Button onClick={() => {
             const old = editorForm.getFieldValue('details') as PricingStrategyRuleDto[]
             if (!old?.length || old.some((r, i) => i > 0 && (r.minPrice !== old[i - 1].maxPrice || Math.abs(r.minPrice * r.startRate - old[i - 1].maxPrice * old[i - 1].endRate) > .000001))) { message.warning('原有区间不连续，请先对齐相邻成本与售价端点'); return }
-            const converted = rulesFromNodes(nodesFromRules(old).map(n => ({ cost: n.cost, price: finalPrice(n.cost, n.price) })))
+            const converted = rulesFromNodes(nodesFromRules(old).map(n => ({ cost: n.cost, price: boundedPrice(n.cost, n.price) })))
             const error = curveError(converted)
             if (error) { message.warning(error); return }
             editorForm.setFieldValue('details', converted); setCurveMode(true)

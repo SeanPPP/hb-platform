@@ -510,6 +510,10 @@ export class SqliteOrderSyncMaterialResolver {
         linklyEnvironmentInput,
       );
     }
+    if (attempt.provider === "manual-card") {
+      if (attempt.operation !== "purchase" || attempt.txnRef !== `MANUAL:${attempt.attemptId}` || attempt.paymentId !== null || attempt.sessionId !== null || attempt.rfn !== null || attempt.checkoutId !== null) throw materialError("ORDER_SYNC_ATTEMPT_MISMATCH");
+      return frozenTender(tender, attempt.txnRef, null);
+    }
     return this.resolveVoucher(
       tender,
       attempt,
@@ -1235,7 +1239,7 @@ type ReturnBindingRow = Readonly<{
 type ApprovedAttempt = Readonly<{
   attemptId: string;
   idempotencyKey: string;
-  provider: "square" | "linkly-cloud" | "voucher";
+  provider: "square" | "linkly-cloud" | "voucher" | "manual-card";
   operation: "purchase" | "refund";
   checkoutId: string | null;
   paymentId: string | null;
@@ -1278,7 +1282,7 @@ function readApprovedAttempt(
     (operation === "refund" && tender.amount.cents >= 0) ||
     (tender.method === "card" &&
       provider !== "square" &&
-      provider !== "linkly-cloud") ||
+      provider !== "linkly-cloud" && provider !== "manual-card") ||
     (tender.method === "voucher" && provider !== "voucher")
   ) {
     throw materialError("ORDER_SYNC_ATTEMPT_MISMATCH");
@@ -1782,7 +1786,7 @@ function paymentProvider(
   if (
     value === "square" ||
     value === "linkly-cloud" ||
-    value === "voucher"
+    (value === "voucher" || value === "manual-card")
   ) {
     return value;
   }

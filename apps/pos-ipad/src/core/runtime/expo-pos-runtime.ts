@@ -701,10 +701,13 @@ async function createExpoPosRuntimeServicesCore(): Promise<ExpoPosRuntimeService
         undefined,
         deviceLock,
       );
+    const paymentMethodSettingsRepository = database.paymentMethodSettings();
+    let paymentMethods = await paymentMethodSettingsRepository.load();
     const paymentBootstrap =
       await createPaymentProviderRuntimeBootstrap({
         transport,
         extra: paymentPublicConfiguration,
+        readPaymentMethods: () => paymentMethods,
         voucherProtectedTokens: database.voucherProtectedTokens(
           encryptor,
           createId,
@@ -716,6 +719,8 @@ async function createExpoPosRuntimeServicesCore(): Promise<ExpoPosRuntimeService
       await createPaymentProviderRuntimeBootstrap({
         transport,
         extra: paymentPublicConfiguration,
+        readPaymentMethods: () => paymentMethods,
+        allowManualCard: false,
         voucherProtectedTokens:
           installmentPaymentPersistence.voucherProtectedTokens,
       });
@@ -963,6 +968,13 @@ async function createExpoPosRuntimeServicesCore(): Promise<ExpoPosRuntimeService
         bootstrap: installmentPaymentBootstrap,
       },
       settings: {
+        paymentMethods: {
+          load: () => paymentMethodSettingsRepository.load(),
+          save: async (settings) => {
+            // 全局写租约内先耐久保存，再同步发布新快照；无需重启重建 provider。
+            paymentMethods = await paymentMethodSettingsRepository.save(settings);
+          },
+        },
         apiBaseUrl,
         appVersion,
         updateChannel,

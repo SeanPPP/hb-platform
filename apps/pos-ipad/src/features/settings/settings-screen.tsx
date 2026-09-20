@@ -86,6 +86,9 @@ export type SettingsScreenPresenter = Pick<
   | "refreshLinklySetup"
   | "refreshSquareDeviceCode"
   | "savePaymentSettings"
+  | "savePaymentMethods"
+  | "setUseManualCard"
+  | "setGiftCardEnabled"
   | "savePrinterSettings"
   | "scanPrinters"
   | "selectLinklyTerminal"
@@ -875,6 +878,38 @@ function PaymentsPane({
         subtitle={t("payments.subtitle")}
         title={t("payments.title")}
       /> : null}
+      <SectionCard eyebrow={t("payments.methodsEyebrow")} title={t("payments.methodsTitle")}>
+        <Text style={styles.sectionCopy}>{t("payments.methodsHint")}</Text>
+        {([
+          { key: "manual", label: "payments.manualCard", hint: "payments.manualCardHint", value: state.paymentMethodsDraft.useManualCard, change: (value: boolean) => presenter.setUseManualCard(value) },
+          { key: "gift", label: "payments.giftCard", hint: "payments.giftCardHint", value: state.paymentMethodsDraft.giftCardEnabled, change: (value: boolean) => presenter.setGiftCardEnabled(value) },
+        ] as const).map((method) => (
+          <View key={method.key} style={styles.soundPreferenceRow}>
+            <View style={styles.soundPreferenceCopy}>
+              <Text style={styles.soundPreferenceLabel}>{t(method.label)}</Text>
+              <Text style={[styles.sectionCopy, styles.soundPreferenceHint]}>{t(method.hint)}</Text>
+            </View>
+            <PosSwitch
+              accessibilityLabel={t(method.label)}
+              accessibilityRole="switch"
+              accessibilityState={{ checked: method.value, disabled: disabled || catalogRefreshRunning || !state.paymentMethodsAvailable }}
+              disabled={disabled || catalogRefreshRunning || !state.paymentMethodsAvailable}
+              onValueChange={method.change}
+              style={styles.soundSwitch}
+              testID={`settings-payment-method-${method.key}`}
+              thumbColor={method.value ? posColors.blue : undefined}
+              trackColor={{ false: "#A8B2BC", true: posColors.blueSoft }}
+              value={method.value}
+            />
+          </View>
+        ))}
+        <ActionButton
+          disabled={disabled || catalogRefreshRunning || !state.paymentMethodsAvailable}
+          label={t("payments.saveMethods")}
+          onPress={() => void presenter.savePaymentMethods()}
+          testID="settings-payment-methods-save"
+        />
+      </SectionCard>
       {!modernLayout ? <SectionCard
         eyebrow={t("eyebrow.activeCardTerminal")}
         title={t("payments.provider")}

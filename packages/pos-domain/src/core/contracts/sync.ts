@@ -7,7 +7,7 @@ export type SyncFailureKind =
 
 export type SyncOrderResult =
   | Readonly<{ kind: "synced"; alreadySynced: boolean }>
-  | Readonly<{ kind: "retry"; failure: Extract<SyncFailureKind, "network" | "server" | "unauthorized"> }>
+  | Readonly<{ kind: "retry"; failure: Extract<SyncFailureKind, "network" | "server" | "unauthorized">; code?: string }>
   | Readonly<{ kind: "blocked"; failure: "forbidden"; code: string }>
   | Readonly<{ kind: "rejected"; failure: "business-rejection"; code: string }>;
 

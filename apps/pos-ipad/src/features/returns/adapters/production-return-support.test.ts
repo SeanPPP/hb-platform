@@ -36,7 +36,7 @@ test("本地订单只接受同门店已完成销售单，且只封存公开可�
     selectionKey: `local-receipt-line:${orderGuid}:detail-1`,
     originalOrderGuid: orderGuid,
     originalOrderDetailGuid: "detail-1",
-    returnSourceKey: `local-receipt:${orderGuid}:detail-1`,
+    returnSourceKey: `receipt:${orderGuid}:detail-1`,
     productCode: "P1", itemNumber: "I1", lookupCode: "P1", displayName: "Product", availableQuantity: 2,
     unitRefundCents: 250, remainingAmountCents: 500,
     syncProvenance: {
@@ -73,6 +73,18 @@ test("本地小票旧订单缺失冻结来源时失败关闭，不按当前目�
         query: orderGuid,
       }),
   );
+});
+
+test("整行一分优惠按远端四舍五入单价及尾差提供本地退货", async () => {
+  const sale = makeOrder();
+  const lookup = new OrderRepositoryLocalReturnLookup(new FakeOrders([makeOrder({
+    lines: [{ ...sale.lines[0]!, quantity: "2", actualAmount: money(1999), discount: money(1) }],
+    actualAmount: money(1999),
+  })]));
+  const receipt = await lookup.findSameStore({ storeCode: "S01", query: orderGuid });
+  assert.equal(receipt?.lines[0]?.availableQuantity, 2);
+  assert.equal(receipt?.lines[0]?.unitRefundCents, 1000);
+  assert.equal(receipt?.lines[0]?.remainingAmountCents, 1999);
 });
 
 test("GUID 查询优先 getByGuid，非 returnable 或跨店命中均 fail closed", async () => {
@@ -152,6 +164,17 @@ test("远端 Linkly capacity 仅保存 RFN 与原始 ANZ reference，拒绝缺�
       cardTransactions: [{ ...linklyTransaction("RFN-1"), processor: "Square" }],
     })],
   }));
+});
+
+test("手动刷卡原付款不生成集成刷卡机退款凭据", async () => {
+  const seeded: unknown[] = [];
+  await assert.rejects(() => createVault(seeded).protect({
+    storeCode: "S01", originalOrderGuid: orderGuid, loadedFrom: "remote", capacities: [{
+      sourceKey: "manual-remote", method: "card", originalOrderGuid: orderGuid, remainingCents: 400,
+      protectedProviderMaterial: { reference: "MANUAL:attempt-1", cardTransactions: [{ ...linklyTransaction(null), processor: "Manual" }] },
+    }],
+  }));
+  assert.equal(seeded.length, 0);
 });
 
 test("远端 voucher capacity 允许保护，但 context 不含原券引用", async () => {

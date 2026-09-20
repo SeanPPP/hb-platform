@@ -34,6 +34,22 @@ import type {
   VoucherProtectedTokenPort,
 } from "@/features/payments/voucher/voucher-payment-adapter";
 
+test("手动刷卡默认关闭，开关控制新入口而保留已确认交易恢复adapter", async () => {
+  for (const enabled of [false, true]) {
+    const registry = await createConfiguredPaymentProviderRegistry({
+      transport: new NeverTransport(),
+      squareConfiguration: new ClassSquareConfiguration("device-1"),
+      linklyConfiguration: new ClassLinklyConfiguration(null),
+      voucherConfiguration: new ClassVoucherConfiguration(false),
+      manualCardConfiguration: { async load() { return { enabled }; } },
+      voucherProtectedTokens: new EmptyVoucherTokens(),
+      voucherContextProvider: async () => { throw new Error("not called"); },
+    });
+    assert.equal(registry.getAvailability("manual-card").available, enabled);
+    assert.equal(registry.get("manual-card").provider, "manual-card");
+  }
+});
+
 test("class 配置仓储保留 this 绑定，且只声明真实配置有效的 provider", async () => {
   const registry = await createConfiguredPaymentProviderRegistry({
     transport: new NeverTransport(),
@@ -162,6 +178,7 @@ test("缺失、非法、load 失败和运行时未知 provider 均 fail closed �
       "SQUARE_CONFIGURATION_INVALID",
       "LINKLY_CONFIGURATION_LOAD_FAILED",
       "VOUCHER_CONFIGURATION_DISABLED",
+      "MANUAL_CARD_CONFIGURATION_DISABLED",
     ],
   );
   assert.throws(

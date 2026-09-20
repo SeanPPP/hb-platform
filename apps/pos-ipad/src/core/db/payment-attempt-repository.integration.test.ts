@@ -140,8 +140,9 @@ function payment(overrides: Partial<PaymentAttempt> = {}): PaymentAttempt {
 test("真实 SQLite：支付尝试保留身份、Approved 仅匹配正确 tender 解锁，并且重开连接后仍然成立", async () => {
   const folder = mkdtempSync(join(tmpdir(), "hb-pos-payment-db-"));
   const databasePath = join(folder, "payment.db");
+  const connection = new SystemSqliteConnection(databasePath);
+  let reopenedConnection: SystemSqliteConnection | undefined;
   try {
-    const connection = new SystemSqliteConnection(databasePath);
     await connection.exec(POS_DATABASE_MIGRATIONS.map((migration) => migration.sql).join("\n"));
     await insertDraftOrder(connection, "order-1", 1, 500);
     const encryptor = {
@@ -177,6 +178,7 @@ test("真实 SQLite：支付尝试保留身份、Approved 仅匹配正确 tender
 
     // 重开连接模拟批准回执已落库、应用在写 tender 前被杀；金额不同仍不能解除阻塞。
     const reopened = new SystemSqliteConnection(databasePath);
+    reopenedConnection = reopened;
     await connection.run(
       "INSERT INTO order_tenders (tender_guid, order_guid, method, amount_cents, payment_attempt_id, created_at_iso) VALUES (?, ?, ?, ?, ?, ?)",
       ["wrong-amount", "order-1", "card", 499, "attempt-1", "2026-07-28T00:01:00.000Z"],
@@ -318,6 +320,8 @@ test("真实 SQLite：支付尝试保留身份、Approved 仅匹配正确 tender
     assert.equal(await repositories.payments.compareAndUpdate(created, stale), false);
     assert.equal((await repositories.payments.get("attempt-1"))?.state, "Approved");
   } finally {
+    await reopenedConnection?.close();
+    await connection.close();
     rmSync(folder, { recursive: true, force: true });
   }
 });
@@ -464,8 +468,8 @@ test("真实 SQLite 竞态：订单完成先提交时，Created attempt 持久�
 test("真实 SQLite：订单读取只从同订单 Approved attempt 恢复可证明的支付引用", async () => {
   const folder = mkdtempSync(join(tmpdir(), "hb-pos-order-tender-db-"));
   const databasePath = join(folder, "order-tender.db");
+  const connection = new SystemSqliteConnection(databasePath);
   try {
-    const connection = new SystemSqliteConnection(databasePath);
     await connection.exec(POS_DATABASE_MIGRATIONS.map((migration) => migration.sql).join("\n"));
     const encryptor = {
       async encrypt(plaintext: string) { return new TextEncoder().encode(plaintext); },
@@ -609,6 +613,7 @@ test("真实 SQLite：订单读取只从同订单 Approved attempt 恢复可证�
       },
     );
   } finally {
+    await connection.close();
     rmSync(folder, { recursive: true, force: true });
   }
 });

@@ -390,12 +390,12 @@ public sealed class CatalogSyncServiceTests
         var service = new LocalCatalogSyncService(repository, apiClient, uiPriority);
 
         var syncTask = service.FullSyncAsync("S01");
-        await uiPriority.FirstWaitStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await uiPriority.FirstWaitStarted.Task.WaitAsync(TestWaitTimeouts.Default);
 
         Assert.Empty(apiClient.PageRequests);
 
         uiPriority.ReleaseFirstWait();
-        await syncTask.WaitAsync(TimeSpan.FromSeconds(3));
+        await syncTask.WaitAsync(TestWaitTimeouts.Default);
 
         Assert.Single(apiClient.PageRequests);
     }

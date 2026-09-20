@@ -267,12 +267,12 @@ public sealed class LinklySettlementUploadServiceTests
         using var stopping = new CancellationTokenSource();
 
         await worker.StartAsync(stopping.Token);
-        await executor.FirstFailure.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await executor.FirstFailure.Task.WaitAsync(TestWaitTimeouts.Default);
         worker.RequestUpload();
-        await executor.SecondExecution.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await executor.SecondExecution.Task.WaitAsync(TestWaitTimeouts.Default);
 
         stopping.Cancel();
-        await worker.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+        await worker.StopAsync(CancellationToken.None).WaitAsync(TestWaitTimeouts.Default);
         Assert.True(executor.CallCount >= 2);
     }
 
@@ -290,10 +290,10 @@ public sealed class LinklySettlementUploadServiceTests
             executor.Executed.Task.WaitAsync(TimeSpan.FromMilliseconds(150)));
         await schema.InitializeAsync();
         schema.SignalReady();
-        await executor.Executed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await executor.Executed.Task.WaitAsync(TestWaitTimeouts.Default);
 
         stopping.Cancel();
-        await worker.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+        await worker.StopAsync(CancellationToken.None).WaitAsync(TestWaitTimeouts.Default);
     }
 
     private sealed class FakeSyncApiClient : ILinklySettlementSyncApiClient

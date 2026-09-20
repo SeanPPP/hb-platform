@@ -91,6 +91,83 @@ export class SqliteReturnCapacityVault {
         return requireCapacity(transaction, seed.capacityId);
       }
 
+      // 旧版本每次查询都生成随机 ID。按原单、支付方式及解密后的支付上下文
+      // 找回历史容量，取最小余额；不能让联网重查重新建立一份可退额度。
+      const candidates = await transaction.getAll<CapacityRow>(
+        `SELECT capacity_id, original_order_guid, method,
+          original_amount_cents, remaining_amount_cents,
+          protected_context_ciphertext, observed_at_iso
+         FROM return_tender_capacities
+         WHERE original_order_guid = ? AND method = ?`,
+        [seed.originalOrderGuid, seed.method],
+      );
+      const matching: CapacityRow[] = [];
+      for (const candidate of candidates) {
+        const bytes = optionalBytes(candidate.protected_context_ciphertext);
+        const candidateContext = bytes === null ? null : await this.encryptor.decrypt(bytes);
+        if (candidateContext === contextJson) matching.push(candidate);
+      }
+      if (matching.length) {
+        const ids = matching.map((row) => text(row.capacity_id, "capacity id"));
+        const reserved = await transaction.getFirst<{ total: unknown }>(
+          `SELECT COUNT(*) AS total FROM return_action_allocations allocation
+           INNER JOIN return_actions action ON action.action_id = allocation.action_id
+           WHERE allocation.capacity_id IN (${ids.map(() => "?").join(",")})
+             AND allocation.capacity_reservation_state = 'Reserved'
+             AND action.state IN ('processing', 'unknown')`,
+          ids,
+        );
+        if (integer(reserved?.total ?? 0, "reserved capacity count") > 0) {
+          throw new Error("Return tender capacity is already reserved.");
+        }
+        const completed = await transaction.getFirst<{ amount: unknown; source_count: unknown }>(
+          `SELECT COALESCE(SUM(-allocation.signed_amount_cents), 0) AS amount,
+             COUNT(DISTINCT allocation.capacity_id) AS source_count
+           FROM return_action_allocations allocation
+           INNER JOIN return_actions action ON action.action_id = allocation.action_id
+           WHERE action.state = 'completed'
+             AND allocation.capacity_id IN (${ids.map(() => "?").join(",")})`,
+          ids,
+        );
+        const historicalOriginal = Math.max(
+          ...matching.map((row) => integer(row.original_amount_cents, "capacity original amount")),
+        );
+        // 旧版现金按 tender 分行，新版按原单汇总；若新容量大于所有旧行，
+        // 旧行也可能是重复随机 ID，缺少 tenderGuid 无法安全判定，须人工核对。
+        if (seed.method === "cash" && seed.originalAmountCents > historicalOriginal) {
+          throw new Error("Historical cash tender capacities have ambiguous aggregation.");
+        }
+        if (
+          integer(completed?.source_count ?? 0, "completed capacity source count") > 1 &&
+          new Set(matching.map((row) => integer(row.original_amount_cents, "capacity original amount"))).size > 1
+        ) {
+          throw new Error("Historical return tender capacity has ambiguous source balances.");
+        }
+        const remainingAfterCompleted = historicalOriginal -
+          integer(completed?.amount ?? 0, "completed refund amount");
+        if (remainingAfterCompleted < 0) {
+          throw new Error("Historical return tender capacity is inconsistent.");
+        }
+        const lowest = matching.reduce((left, right) =>
+          integer(left.remaining_amount_cents, "capacity remaining amount") <=
+          integer(right.remaining_amount_cents, "capacity remaining amount")
+            ? left : right,
+        );
+        const capacityId = text(lowest.capacity_id, "capacity id");
+        const remaining = Math.min(
+          seed.remainingAmountCents,
+          remainingAfterCompleted,
+          ...matching.map((row) => integer(row.remaining_amount_cents, "capacity remaining amount")),
+        );
+        await transaction.run(
+          `UPDATE return_tender_capacities
+           SET remaining_amount_cents = ?, observed_at_iso = ?, updated_at_iso = ?
+           WHERE capacity_id = ? AND remaining_amount_cents > ?`,
+          [remaining, seed.observedAtIso, this.nowIso(), capacityId, remaining],
+        );
+        return requireCapacity(transaction, capacityId);
+      }
+
       const createdAtIso = canonicalIso(
         this.nowIso(),
         "capacity created time",
