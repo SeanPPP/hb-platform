@@ -1,5 +1,8 @@
 using System.Diagnostics;
+using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.React;
+using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Logging.Abstractions;
 using SqlSugar;
 using Xunit;
 
@@ -119,7 +122,7 @@ public sealed class SetChildPurchasePriceSqlServerIntegrationTests
                         totalWaitMilliseconds: 250
                     ));
                 Assert.True(tailException.Resource.EndsWith(batchCodes[^1], StringComparison.Ordinal));
-                Assert.True(tailException.ResultCode < 0);
+                Assert.Equal(-1, tailException.ResultCode);
             }
             finally
             {
@@ -198,7 +201,7 @@ public sealed class SetChildPurchasePriceSqlServerIntegrationTests
                     totalWaitMilliseconds: 250
                 ));
             Assert.True(sameProduct.Resource.EndsWith(productCode, StringComparison.Ordinal));
-            Assert.True(sameProduct.ResultCode < 0);
+            Assert.Equal(-1, sameProduct.ResultCode);
             await productWaiterDb.Ado.RollbackTranAsync();
             await productWaiterDb.Ado.BeginTranAsync();
             await productHolderDb.Ado.RollbackTranAsync();
@@ -212,7 +215,7 @@ public sealed class SetChildPurchasePriceSqlServerIntegrationTests
                     totalWaitMilliseconds: 250
                 ));
             Assert.Equal("HB:SetChildPurchasePrice:Gate", global.Resource);
-            Assert.True(global.ResultCode < 0);
+            Assert.Equal(-1, global.ResultCode);
         }
         finally
         {
@@ -259,7 +262,7 @@ public sealed class SetChildPurchasePriceSqlServerIntegrationTests
                     totalWaitMilliseconds: 250
                 ));
             Assert.True(exception.Resource.EndsWith(blockedCode, StringComparison.Ordinal));
-            Assert.True(exception.ResultCode < 0);
+            Assert.Equal(-1, exception.ResultCode);
 
             await waiterDb.Ado.RollbackTranAsync();
             await holderDb.Ado.RollbackTranAsync();
@@ -333,6 +336,125 @@ public sealed class SetChildPurchasePriceSqlServerIntegrationTests
         }
         finally
         {
+            if (holderDb.Ado.Transaction != null)
+                await holderDb.Ado.RollbackTranAsync();
+        }
+    }
+
+    [SetChildPurchasePriceSqlServerFact]
+    [Trait("Category", "SQL")]
+    public async Task 统计批量成本锁冲突_回滚部分锁后下一事务重试成功()
+    {
+        var connectionString = Environment.GetEnvironmentVariable(ConnectionEnvironmentVariable);
+        Assert.False(string.IsNullOrWhiteSpace(connectionString));
+        var dataSource = new SqlConnectionStringBuilder(connectionString).DataSource.Trim();
+        if (dataSource.StartsWith("tcp:", StringComparison.OrdinalIgnoreCase))
+            dataSource = dataSource[4..];
+        var host = dataSource.Split(',', 2)[0].Trim('[', ']');
+        Assert.Contains(host, new[] { "127.0.0.1", "localhost", "::1" }, StringComparer.OrdinalIgnoreCase);
+
+        var suffix = Guid.NewGuid().ToString("N").ToUpperInvariant();
+        var availableCode = $"RETRY-A-{suffix}";
+        var blockedCode = $"RETRY-Z-{suffix}";
+        var codes = new[] { blockedCode, availableCode };
+        using var holderDb = CreateClient(connectionString);
+        using var writerDb = CreateClient(connectionString);
+        using var verifyDb = CreateClient(connectionString);
+        var attempts = 0;
+        var rollbackConfirmed = false;
+        var partialLockObserved = false;
+        var releaseChecked = false;
+        var expected = new SalesStatisticsProductStoreDailyCommandWriter.PersistResult(
+            new SalesStatisticsProductStoreDailyStateSlice.ProductStatisticStatusResult("Fresh", null),
+            null);
+
+        await holderDb.Ado.BeginTranAsync();
+        try
+        {
+            await SetChildPurchasePriceMutationLock.AcquireProductsInBatchWithinBudgetAsync(
+                holderDb, new[] { blockedCode }, totalWaitMilliseconds: 0);
+
+            var actual = await SalesStatisticsProductStoreDailyCommandWriter.PersistWithLockRetryAsync(
+                persistOnceAsync: async () =>
+                {
+                    attempts++;
+                    Assert.Null(writerDb.Ado.Transaction);
+                    rollbackConfirmed = false;
+                    await SalesStatisticsTransactionExecutor.ExecuteAsync(
+                        beginAsync: () => writerDb.Ado.BeginTranAsync(),
+                        workAsync: async () =>
+                        {
+                            var scope = await SetChildPurchasePriceMutationLock
+                                .AcquireProductsInBatchWithinBudgetAsync(
+                                    writerDb, codes, totalWaitMilliseconds: 100);
+                            scope.EnsureCovers(writerDb, codes);
+                        },
+                        commitAsync: () => writerDb.Ado.CommitTranAsync(),
+                        rollbackAsync: async () =>
+                        {
+                            // 冲突发生时第一轮仍持有 A；回滚前第三连接不能越过这把部分锁。
+                            await verifyDb.Ado.BeginTranAsync();
+                            try
+                            {
+                                var partialLock = await Assert.ThrowsAsync<SetChildPurchasePriceLockException>(() =>
+                                    SetChildPurchasePriceMutationLock.AcquireProductsInBatchWithinBudgetAsync(
+                                        verifyDb, new[] { availableCode }, totalWaitMilliseconds: 0));
+                                Assert.Equal(-1, partialLock.ResultCode);
+                                partialLockObserved = true;
+                            }
+                            finally
+                            {
+                                if (verifyDb.Ado.Transaction != null)
+                                    await verifyDb.Ado.RollbackTranAsync();
+                            }
+                            await writerDb.Ado.RollbackTranAsync();
+                            rollbackConfirmed = writerDb.Ado.Transaction == null;
+                        },
+                        logger: NullLogger.Instance,
+                        operationName: "测试统计批量成本锁重试");
+                    return expected;
+                },
+                canRetryAfterRollback: () => rollbackConfirmed && writerDb.Ado.Transaction == null,
+                targetDate: new DateTime(2026, 9, 20),
+                logger: NullLogger.Instance,
+                delayAsync: async delay =>
+                {
+                    Assert.Equal(TimeSpan.FromSeconds(1), delay);
+                    Assert.Equal(1, attempts);
+                    Assert.True(rollbackConfirmed);
+                    Assert.Null(writerDb.Ado.Transaction);
+
+                    // 第三连接能立即取得 A，证明第一轮已持有的部分锁随回滚释放。
+                    await verifyDb.Ado.BeginTranAsync();
+                    try
+                    {
+                        var scope = await SetChildPurchasePriceMutationLock
+                            .AcquireProductsInBatchWithinBudgetAsync(
+                                verifyDb, new[] { availableCode }, totalWaitMilliseconds: 0);
+                        scope.EnsureCovers(verifyDb, new[] { availableCode });
+                        releaseChecked = true;
+                    }
+                    finally
+                    {
+                        if (verifyDb.Ado.Transaction != null)
+                            await verifyDb.Ado.RollbackTranAsync();
+                    }
+                    // 持锁连接此时才退出，第二轮必须新开事务才能取得整批锁。
+                    await holderDb.Ado.RollbackTranAsync();
+                });
+
+            Assert.Same(expected, actual);
+            Assert.Equal(2, attempts);
+            Assert.True(partialLockObserved);
+            Assert.True(releaseChecked);
+            Assert.Null(writerDb.Ado.Transaction);
+        }
+        finally
+        {
+            if (verifyDb.Ado.Transaction != null)
+                await verifyDb.Ado.RollbackTranAsync();
+            if (writerDb.Ado.Transaction != null)
+                await writerDb.Ado.RollbackTranAsync();
             if (holderDb.Ado.Transaction != null)
                 await holderDb.Ado.RollbackTranAsync();
         }
