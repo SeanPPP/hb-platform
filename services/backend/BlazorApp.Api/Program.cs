@@ -379,6 +379,7 @@ builder.Services.Configure<ScheduledTaskOptions>(
     builder.Configuration.GetSection("ScheduledTasks")
 );
 builder.Services.AddHostedService<ProductStoreDailyStatisticRecoveryService>();
+builder.Services.AddHostedService<SalesStatisticsOrphanRunningStateRecoveryService>();
 builder.Services.AddHostedService<ReportReadConnectionWarmupService>();
 builder.Services.AddHostedService<ScheduledTaskService>();
 

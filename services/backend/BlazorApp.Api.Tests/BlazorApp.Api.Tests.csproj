@@ -141,6 +141,7 @@
     <Compile Include="SalesReportStoreScopeTests.cs" />
     <Compile Include="ProductStoreDailyStatisticQueueServiceTests.cs" />
     <Compile Include="ProductStoreDailyStatisticRecoveryServiceTests.cs" />
+    <Compile Include="SalesStatisticsOrphanRunningStateRecoveryTests.cs" />
     <Compile Include="SalesDashboardBestSellersTests.cs" />
     <Compile Include="ProductSalesAnalysisLogicTests.cs" />
     <Compile Include="BatchProductSalesAnalysisLogicTests.cs" />
