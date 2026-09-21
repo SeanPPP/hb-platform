@@ -20,6 +20,13 @@ internal static class AsyncTestWaitSupport
     /// 默认等待预算。条件满足时立即返回，所以放宽预算不会拖慢通过的测试；
     /// 它只决定 CI runner 负载抖动（线程池饥饿、Dispatcher 多跳调度、SQLite 冷启动）时的容忍上限。
     /// </summary>
+    /// <remarks>
+    /// 也用于 <c>task.WaitAsync(...)</c>、<c>ManualResetEventSlim.Wait(...)</c>、<c>Thread.Join(...)</c>
+    /// 这类"防挂死"的保险等待——判断标准是这个超时的用途，而不是它原来设了几秒：
+    /// 只要被等待的工作已被触发、失败时由其它断言或永不放开的闸门兜底，就应使用本预算。
+    /// 被测行为自身的时间参数——终端超时、业务等待预算、耗时断言、虚拟时钟推进，
+    /// 以及"在短时间内不应完成"的反向等待——保持各自原值，不要改用本常量。
+    /// </remarks>
     public static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(30);
 
     /// <summary>轮询间隔。</summary>

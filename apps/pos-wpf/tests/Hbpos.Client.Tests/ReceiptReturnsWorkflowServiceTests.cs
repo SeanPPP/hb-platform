@@ -77,7 +77,7 @@ public sealed class ReceiptReturnsWorkflowServiceTests
             .LookupOrderAsync(CreateOnlineSession(), Guid.NewGuid().ToString("D"))
             .WaitAsync(TimeSpan.FromSeconds(30));
 
-        await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await cancellationObserved.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         Assert.Null(result.Order);
         Assert.Equal("Online order lookup timed out. Please retry.", result.StatusMessage);
     }

@@ -128,7 +128,7 @@ public sealed class ReceiptReturnsViewModelTests
         };
 
         var lookupTask = viewModel.LookupCommand.ExecuteAsync(null);
-        await lookupStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await lookupStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         Assert.True(viewModel.IsBusy);
         Assert.True(viewModel.ProcessScannerBarcode("930002", "scanner-device", "raw"));
@@ -136,7 +136,7 @@ public sealed class ReceiptReturnsViewModelTests
         Assert.Equal(1, workflow.NoReceiptLookupCallCount);
 
         viewModel.Dispose();
-        await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await cancellationObserved.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         await lookupTask;
 
         Assert.Empty(viewModel.PendingLines);

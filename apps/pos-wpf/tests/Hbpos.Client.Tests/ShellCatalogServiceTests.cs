@@ -70,7 +70,7 @@ public sealed class ShellCatalogServiceTests
         var reports = new ConcurrentQueue<CatalogSyncProgress>();
 
         var firstSync = service.SyncCatalogAndReloadAsync("S01", forceFullDownload: false);
-        await sync.RegularStarted.Task.WaitAsync(TestWaitTimeouts.Default);
+        await sync.RegularStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         var secondSync = service.SyncCatalogAndReloadAsync(
             "S01",
             forceFullDownload: false,
@@ -79,8 +79,8 @@ public sealed class ShellCatalogServiceTests
         Assert.False(sync.SecondRegularStarted.Task.IsCompleted);
 
         sync.ReleaseRegularIfNotCanceled();
-        await sync.SecondRegularStarted.Task.WaitAsync(TestWaitTimeouts.Default);
-        await Task.WhenAll(firstSync, secondSync).WaitAsync(TestWaitTimeouts.Default);
+        await sync.SecondRegularStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
+        await Task.WhenAll(firstSync, secondSync).WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         var comparing = Assert.Single(reports.Where(report =>
             report.Stage == CatalogSyncProgressStage.Comparing));
@@ -144,8 +144,8 @@ public sealed class ShellCatalogServiceTests
         });
 
         thread.Start();
-        var loadedItems = await completion.Task.WaitAsync(TestWaitTimeouts.Default);
-        thread.Join(TestWaitTimeouts.Default);
+        var loadedItems = await completion.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
+        thread.Join(AsyncTestWaitSupport.DefaultTimeout);
 
         Assert.Single(loadedItems);
         Assert.Equal("RESET-ITEM", loadedItems[0].ProductCode);

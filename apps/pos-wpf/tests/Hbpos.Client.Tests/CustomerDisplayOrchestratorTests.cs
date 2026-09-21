@@ -225,7 +225,7 @@ public sealed class CustomerDisplayOrchestratorTests
 
         orchestrator.LoadFromCart(customerDisplay, CreateSession(), new PosCartService());
 
-        await secondRefresh.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await secondRefresh.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         Assert.True(callCount >= 2);
     }
 
@@ -333,14 +333,11 @@ public sealed class CustomerDisplayOrchestratorTests
         Assert.Equal(1, Volatile.Read(ref callCount));
     }
 
-    private static async Task WaitForCallCountAsync(Func<int> getCallCount, int expectedCallCount)
-    {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-        while (getCallCount() < expectedCallCount)
-        {
-            await Task.Delay(10, timeout.Token);
-        }
-    }
+    // 复用共享等待：原私有副本只有 2 秒预算，超时时只抛无上下文的 TaskCanceledException。
+    private static Task WaitForCallCountAsync(Func<int> getCallCount, int expectedCallCount) =>
+        WaitUntilAsync(
+            () => getCallCount() >= expectedCallCount,
+            diagnostics: () => $"callCount={getCallCount()} expected>={expectedCallCount}");
 
     private static AdvertisementPlaybackResponse CreateResponse(params AdvertisementPlaybackItemDto[] items)
     {
