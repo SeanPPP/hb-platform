@@ -464,6 +464,135 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
+        public async Task<ApiResponse<StoreProductStorePriceDto>> EnsureStorePriceAsync(
+            string productCode,
+            string? storeCode,
+            string updatedBy,
+            List<string>? accessibleStoreCodes
+        )
+        {
+            var normalizedProductCode = productCode?.Trim();
+            var normalizedStoreCode = storeCode?.Trim();
+            if (string.IsNullOrWhiteSpace(normalizedProductCode))
+                return ApiResponse<StoreProductStorePriceDto>.Error("商品编码不能为空");
+            // 补建必须指定当前分店，不能从多店权限中猜测目标或批量创建。
+            if (string.IsNullOrWhiteSpace(normalizedStoreCode))
+                return ApiResponse<StoreProductStorePriceDto>.Error("请选择需要补建价格的分店");
+            if (!CanAccessStore(normalizedStoreCode, accessibleStoreCodes))
+                return ApiResponse<StoreProductStorePriceDto>.Error("当前账号或设备无权修改该分店商品");
+
+            try
+            {
+                await _db.Ado.BeginTranAsync();
+                try
+                {
+                    await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                        _db, new[] { normalizedProductCode }
+                    );
+                    // 与价格同步入口保持主商品在前、分店价格在后的取锁顺序。
+                    var product = await WithWarehouseSyncUpdateLock(_db.Queryable<Product>()
+                            .Where(x => x.ProductCode == normalizedProductCode && !x.IsDeleted))
+                        .FirstAsync();
+                    var query = _db.Queryable<StoreRetailPrice>()
+                        .Where(x => x.ProductCode == normalizedProductCode
+                            && x.StoreCode == normalizedStoreCode && !x.IsDeleted);
+                    if (_db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+                    {
+                        // 业务锁后复查，并保护缺失业务键的范围，防止并发扫码或同步任务重复插入。
+                        query = query.With("UPDLOCK, HOLDLOCK");
+                    }
+                    var existing = await query.Take(2).ToListAsync();
+                    if (existing.Count > 1)
+                        throw new StoreProductMaintenanceBusinessException("当前分店存在多条商品价格记录，请先处理重复记录");
+
+                    var entity = existing.FirstOrDefault();
+                    ProductHqSyncOperationStatusDto? hqSync = null;
+                    if (entity == null)
+                    {
+                        var store = await _db.Queryable<Store>()
+                            .Where(x => x.StoreCode == normalizedStoreCode && !x.IsDeleted && x.IsActive)
+                            .FirstAsync();
+                        if (store == null)
+                            throw new StoreProductMaintenanceBusinessException("分店不存在或已停用");
+
+                        if (product == null)
+                            throw new StoreProductMaintenanceBusinessException("商品不存在");
+
+                        var now = DateTime.UtcNow;
+                        // 与商品完整性补建一致：继承主档默认值，保留空价格，不借用其他分店价格。
+                        // 软删除历史不复活；已有有效行（含停用行）完全保留。
+                        entity = new StoreRetailPrice
+                        {
+                            StoreCode = store.StoreCode,
+                            ProductCode = product.ProductCode,
+                            StoreProductCode = store.StoreCode + product.ProductCode,
+                            SupplierCode = product.LocalSupplierCode,
+                            PurchasePrice = product.PurchasePrice,
+                            StoreRetailPriceValue = product.RetailPrice,
+                            DiscountRate = 1m,
+                            IsActive = product.IsActive,
+                            IsAutoPricing = product.IsAutoPricing,
+                            IsSpecialProduct = product.IsSpecialProduct,
+                            IsDeleted = false,
+                            CreatedAt = now,
+                            UpdatedAt = now,
+                            CreatedBy = updatedBy,
+                            UpdatedBy = updatedBy,
+                        };
+                        // 低于自动定价器的最低成本时保留主档售价，补建不强制改价。
+                        if (entity.IsAutoPricing && entity.PurchasePrice >= 0.1m)
+                        {
+                            var strategy = await _autoPricingService.FindStrategyForPriceAsync(
+                                entity.PurchasePrice.Value, entity.SupplierCode, entity.StoreCode
+                            );
+                            entity.StoreRetailPriceValue = _autoPricingService.CalculateRetailPrice(
+                                entity.PurchasePrice.Value, strategy
+                            );
+                        }
+
+                        await _db.Insertable(entity).ExecuteCommandAsync();
+                        // 本入口只补主价格；多码/套装已有价格和状态不属于本次补建范围。
+                        hqSync = await EnqueueHqProjectionAsync(
+                            ProductMaintenanceHqOperationKinds.StorePriceUpdated,
+                            entity.ProductCode!,
+                            new[] { entity.StoreCode! },
+                            new[]
+                            {
+                                ProductMaintenanceHqFieldMasks.StorePurchasePrice,
+                                ProductMaintenanceHqFieldMasks.StoreRetailPrice,
+                                ProductMaintenanceHqFieldMasks.StoreDiscountRate,
+                                ProductMaintenanceHqFieldMasks.StoreAutoPricing,
+                                ProductMaintenanceHqFieldMasks.StoreSpecialProduct,
+                                ProductMaintenanceHqFieldMasks.StoreActive,
+                            },
+                            "react-store-product-maintenance.ensure-store-price",
+                            updatedBy,
+                            accessibleStoreCodes
+                        );
+                    }
+
+                    var dto = await BuildStorePriceDtoAsync(entity, entity.SupplierCode);
+                    dto.HqSync = hqSync;
+                    await _db.Ado.CommitTranAsync();
+                    return ApiResponse<StoreProductStorePriceDto>.OK(dto);
+                }
+                catch
+                {
+                    await _db.Ado.RollbackTranAsync();
+                    throw;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "补建分店商品价格失败: {ProductCode}/{StoreCode}", productCode, storeCode);
+                if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
+                    return BuildSetChildPurchasePriceBusyResponse<StoreProductStorePriceDto>();
+                return ApiResponse<StoreProductStorePriceDto>.Error(
+                    ResolveSafeMutationFailureMessage(ex, "补建分店商品价格失败，请稍后重试")
+                );
+            }
+        }
+
         public Task<ApiResponse<StoreProductStorePriceDto>> UpdateStorePriceAsync(
             string uuid,
             UpdateStoreProductPriceDto request,
@@ -1235,7 +1364,8 @@ namespace BlazorApp.Api.Services.React
                     CurrentRetailPriceFormatted = FormatPrice(entity.StoreRetailPriceValue),
                     DiscountRate = entity.DiscountRate,
                     IsAutoPricing = entity.IsAutoPricing,
-                    HasValidPurchasePrice = entity.PurchasePrice.HasValue && entity.PurchasePrice.Value > 0,
+                    // 与补建和定价器的最低成本一致，避免补建后的扫码评估再次报错。
+                    HasValidPurchasePrice = entity.PurchasePrice.HasValue && entity.PurchasePrice.Value >= 0.1m,
                     ShouldUpdate = false,
                 };
 
@@ -3389,7 +3519,8 @@ namespace BlazorApp.Api.Services.React
             Action<(decimal? Rate, string? StrategySourceLabel, string? StrategyRuleLabel)> assign
         )
         {
-            if (!purchasePrice.HasValue || purchasePrice.Value <= 0)
+            // 倍率只用于展示；不支持自动定价的低成本商品仍须能够查询、补建价格。
+            if (!purchasePrice.HasValue || purchasePrice.Value < 0.1m)
             {
                 assign((null, null, null));
                 return;
@@ -3423,7 +3554,7 @@ namespace BlazorApp.Api.Services.React
             Action<(decimal? Rate, string? StrategySourceLabel, string? StrategyRuleLabel)> assign
         )
         {
-            if (!purchasePrice.HasValue || purchasePrice.Value <= 0)
+            if (!purchasePrice.HasValue || purchasePrice.Value < 0.1m)
             {
                 assign((null, null, null));
                 return;
