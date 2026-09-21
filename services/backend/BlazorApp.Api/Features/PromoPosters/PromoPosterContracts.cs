@@ -70,6 +70,9 @@ public sealed class PromoPosterPdfRequest
     /// <summary>小尺寸（A5/A6/A7）是否拼到 A4 纸并画裁切线。</summary>
     public bool Impose { get; set; } = true;
 
+    /// <summary>是否在海报页脚显示门店 Logo；旧客户端未传时默认显示。</summary>
+    public bool ShowLogo { get; set; } = true;
+
     public List<PromoPosterItemRequest>? Posters { get; set; }
 }
 
@@ -179,6 +182,16 @@ public static class PromoPosterRequestParser
         if (price <= 0) throw new PromoPosterValidationException($"第 {index} 张海报的价格必须大于 0");
         if (item.WasPrice.HasValue) EnsureMoney(item.WasPrice.Value, index, "原价");
         if (item.UnitPrice.HasValue) EnsureMoney(item.UnitPrice.Value, index, "单价");
+        if (kind == PromoPosterKind.Clearance && !item.WasPrice.HasValue)
+        {
+            throw new PromoPosterValidationException($"第 {index} 张清仓海报缺少原价");
+        }
+        if (kind is PromoPosterKind.Special or PromoPosterKind.Clearance
+            && item.WasPrice.HasValue
+            && item.WasPrice.Value <= price)
+        {
+            throw new PromoPosterValidationException($"第 {index} 张海报的原价必须高于价格");
+        }
 
         var quantity = 0;
         if (kind == PromoPosterKind.MultiBuy)
