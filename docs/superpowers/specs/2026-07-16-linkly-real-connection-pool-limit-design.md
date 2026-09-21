@@ -1,5 +1,7 @@
 # Linkly 真实连接池上限设计
 
+> **2026-09-21 更新**：本文的"Token 与 REST 各一条连接"已放宽为每个 origin 最多 16 条（`LinklyCloudHttpConnectionPolicy`），按终端闸门不变。单连接让所有门店的 Linkly 请求在同一条 HTTP/1.1 连接上排队，一台终端 11–17 秒的登录/状态测试就会挡住其他门店的收款（WPF 收银审查报告 3-12）。"合计两条"是本设计自定的目标，没有 Linkly 的外部要求。
+
 ## 目标
 
 在当前单个 `Hbpos.Api` 容器内，生产或沙箱环境中的 Linkly Cloud Token 与 REST 两个目标合计最多保留两条 TCP 连接，同时保留现有“同终端最多两个在途 HTTP 请求”的业务闸门。
