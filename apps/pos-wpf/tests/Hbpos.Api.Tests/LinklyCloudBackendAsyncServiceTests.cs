@@ -439,8 +439,9 @@ namespace Hbpos.Api.Tests;
         var terminalId = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
         var repository = new InMemoryLinklyCloudBackendAsyncRepository();
         var tokenProvider = new CapturingLinklyCloudBackendTokenProvider();
+        var transport = new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted);
         var service = CreateService(
-            new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted),
+            transport,
             tokenProvider,
             repository: repository,
             terminalService: new FixedLinklyCloudTerminalService(terminalId, "Front Counter", 9));
@@ -455,6 +456,37 @@ namespace Hbpos.Api.Tests;
         Assert.Equal(terminalId, response.TerminalId);
         Assert.Equal("Front Counter", response.TerminalDisplayName);
         Assert.Contains(terminalId, tokenProvider.TerminalCalls);
+        Assert.Equal(terminalId, transport.LastSettlement?.TerminalId);
+    }
+
+    [Fact]
+    public async Task Active_mode_transaction_path_binds_every_transport_request_to_the_physical_terminal()
+    {
+        var terminalId = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        var transport = new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted);
+        var tokenProvider = new CapturingLinklyCloudBackendTokenProvider();
+        var service = CreateService(
+            transport,
+            tokenProvider,
+            terminalService: new FixedLinklyCloudTerminalService(terminalId, "Front Counter", 9));
+
+        // Token 已按实体终端取；同一会话的每个 REST 请求也必须带上实体终端，才能与 Token 落进同一个闸门。
+        var started = await service.StartTransactionAsync(
+            "S01",
+            "POS-01",
+            new LinklyCloudBackendTransactionRequest("Sandbox", "P", 1000, null, terminalId, 9),
+            CancellationToken.None);
+        await service.GetStatusAsync("S01", "POS-01", "Sandbox", started.SessionId, CancellationToken.None);
+        await service.RecoverAsync(
+            "S01", "POS-01", started.SessionId, new LinklyCloudBackendRecoverRequest("Sandbox"), CancellationToken.None);
+        await service.SendKeyAsync(
+            "S01", "POS-01", started.SessionId, new LinklyCloudBackendSendKeyRequest("Sandbox", "OK", null), CancellationToken.None);
+
+        Assert.All(tokenProvider.TerminalCalls, call => Assert.Equal(terminalId, call));
+        Assert.Equal(terminalId, transport.LastTransaction?.TerminalId);
+        Assert.Equal(terminalId, transport.LastGetTransaction?.TerminalId);
+        Assert.Equal(terminalId, transport.LastRecover?.TerminalId);
+        Assert.Equal(terminalId, transport.LastSendKey?.TerminalId);
     }
 
     [Fact]
@@ -2870,6 +2902,67 @@ namespace Hbpos.Api.Tests;
             provider.GetTokenAsync("Sandbox", "S01", "POS-02", CancellationToken.None));
 
         Assert.Equal(4, handler.MaxConcurrency);
+    }
+
+    [Fact]
+    public async Task Same_physical_terminal_shares_two_request_limit_across_token_and_transaction_operations()
+    {
+        // 闸门是进程级静态字典：用本用例独有的门店与终端，避免与其他用例共用信号量。
+        var terminalId = Guid.Parse("cccccccc-cccc-4ccc-8ccc-cccccccccccc");
+        const string storeCode = "S-GATE";
+        var cloudTerminalRepository = new FixedCloudTerminalRepository(new LinklyCloudTerminalRecord
+        {
+            TerminalId = terminalId,
+            Environment = "Sandbox",
+            StoreCode = storeCode,
+            LaneNo = 1,
+            DisplayName = "Front",
+            Username = "lane-user",
+            Password = "lane-password",
+            Secret = "physical-terminal-secret",
+            PosId = "11111111-1111-4111-8111-111111111111",
+            PairingState = "Ready"
+        });
+        using var handler = new ConcurrentLinklyHttpMessageHandler();
+        using var tokenHttpClient = new HttpClient(handler, disposeHandler: false);
+        using var transportHttpClient = new HttpClient(handler, disposeHandler: false);
+        var provider = new HttpLinklyCloudBackendTokenProvider(
+            new CapturingCredentialRepository(null),
+            new CapturingTerminalCredentialRepository(),
+            tokenHttpClient,
+            Options.Create(new LinklyCloudBackendAsyncOptions
+            {
+                SandboxAuthBaseUrl = "https://auth.sandbox.example/v1/",
+                SandboxRestBaseUrl = "https://rest.sandbox.example/v1/",
+                SandboxPosVendorId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                PosName = "HBPOS",
+                PosVersion = "2026.5.1"
+            }),
+            cloudTerminalRepository: cloudTerminalRepository);
+        var transport = new HttpLinklyCloudBackendAsyncTransport(transportHttpClient);
+        const string restBaseUrl = "https://rest.sandbox.example/v1/";
+        var notification = new LinklyCloudBackendNotificationRequest("https://pos.example/notify/{{type}}", "Bearer notify");
+
+        // 同一台实体刷卡机：Token、发起交易、按键、状态查询合计在途不得超过 2。
+        await Task.WhenAll(
+            provider.GetTokenAsync("Sandbox", storeCode, "POS-01", terminalId, CancellationToken.None),
+            transport.StartTransactionAsync(
+                new LinklyCloudBackendTransportTransactionRequest(
+                    "Sandbox", restBaseUrl, "access-token", "session-start", "P", 1000, "TXN-GATE", null,
+                    notification, storeCode, "POS-01", terminalId),
+                CancellationToken.None),
+            transport.SendKeyAsync(
+                new LinklyCloudBackendTransportSendKeyRequest(
+                    "Sandbox", restBaseUrl, "access-token", "session-start", "0", null, storeCode, "POS-01", terminalId),
+                CancellationToken.None),
+            transport.GetTransactionAsync(
+                new LinklyCloudBackendTransportSessionRequest(
+                    "Sandbox", restBaseUrl, "access-token", "session-start", storeCode, "POS-01", terminalId),
+                CancellationToken.None));
+
+        Assert.True(
+            handler.MaxConcurrency <= 2,
+            $"同一实体终端的 Linkly 出站请求峰值并发为 {handler.MaxConcurrency}，必须不超过 2。");
     }
 
     [Fact]
