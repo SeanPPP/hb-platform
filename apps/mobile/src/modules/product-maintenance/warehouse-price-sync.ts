@@ -297,9 +297,8 @@ export function reduceWarehousePriceSyncState(
     case "preview_started":
       return { phase: "previewing", snapshot: null, errorMessage: null };
     case "preview_succeeded":
-      return event.snapshot.retailConfirmationRequired
-        ? { phase: "confirmation", snapshot: event.snapshot, errorMessage: null }
-        : { phase: "idle", snapshot: event.snapshot, errorMessage: null };
+      // 零售价差异只在页面提示，不再进入等待用户确认的阻塞状态。
+      return { phase: "idle", snapshot: event.snapshot, errorMessage: null };
     case "preview_failed":
       return { phase: "idle", snapshot: null, errorMessage: event.message };
     case "confirm_started":
@@ -351,10 +350,10 @@ export function shouldAutoPrintWarehousePrice(input: {
     return false;
   }
 
-  // 明确选择保留门店售价时继续本次扫码打印；关闭弹窗不代表同意打印。
-  if (input.stage === "retail_update_skipped") {
+  // 预览只对账进货价；零售价有差异时仍用有效的当前门店售价打印。
+  if (input.stage === "preview_succeeded" || input.stage === "retail_update_skipped") {
     const storePrice = input.snapshot.storePrice;
-    return (
+    const canPrintCurrentPrice = (
       input.snapshot.status === "confirmation_required" &&
       input.snapshot.retailConfirmationRequired &&
       Boolean(storePrice?.uuid) &&
@@ -362,6 +361,9 @@ export function shouldAutoPrintWarehousePrice(input: {
       Number.isFinite(storePrice.retailPrice) &&
       storePrice.retailPrice >= 0
     );
+    if (canPrintCurrentPrice || input.stage === "retail_update_skipped") {
+      return canPrintCurrentPrice;
+    }
   }
 
   if (input.snapshot.status !== "synced" || input.snapshot.retailConfirmationRequired) {

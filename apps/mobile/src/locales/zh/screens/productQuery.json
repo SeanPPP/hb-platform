@@ -209,6 +209,10 @@
     "gp": "毛利",
     "discountedGp": "折后毛利",
     "strategy": "策略",
+    "warehouseNotice": {
+      "label": "仓库零售价有差异",
+      "value": "仓库参考价：{{value}}"
+    },
     "grid": {
       "purchase": "进价",
       "retail": "零售价",
@@ -267,6 +271,7 @@
     "confirm": "更新价格并更新标签"
   },
   "warehousePriceSync": {
+    "currentPriceUnavailable": "当前门店售价无法确认，请重新扫码后再打印。",
     "title": "仓库零售价有变化",
     "product": "{{name}}（{{code}}）",
     "currentRetail": "当前零售价",

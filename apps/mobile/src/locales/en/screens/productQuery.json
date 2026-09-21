@@ -209,6 +209,10 @@
     "gp": "GP",
     "discountedGp": "Disc. GP",
     "strategy": "Strategy",
+    "warehouseNotice": {
+      "label": "Warehouse retail differs",
+      "value": "Warehouse: {{value}}"
+    },
     "grid": {
       "purchase": "Cost",
       "retail": "Retail",
@@ -267,6 +271,7 @@
     "confirm": "Update price and label"
   },
   "warehousePriceSync": {
+    "currentPriceUnavailable": "The current store price could not be verified. Scan again before printing.",
     "title": "Warehouse retail price changed",
     "product": "{{name}} ({{code}})",
     "currentRetail": "Current retail",
