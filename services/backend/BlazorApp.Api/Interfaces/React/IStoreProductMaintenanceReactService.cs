@@ -71,6 +71,13 @@ namespace BlazorApp.Api.Interfaces.React
             bool enqueueHqProjection
         );
 
+        Task<ApiResponse<StoreProductStorePriceDto>> EnsureStorePriceAsync(
+            string productCode,
+            string? storeCode,
+            string updatedBy,
+            List<string>? accessibleStoreCodes
+        );
+
         Task<ApiResponse<SyncStoreProductWarehousePriceResultDto>> SyncWarehousePriceAsync(
             string uuid,
             SyncStoreProductWarehousePriceRequestDto request,
