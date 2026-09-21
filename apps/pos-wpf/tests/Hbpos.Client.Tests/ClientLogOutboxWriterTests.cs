@@ -699,6 +699,55 @@ public sealed class ClientLogOutboxWriterTests
     }
 
     [Fact]
+    public async Task Stop_persists_recorded_events_even_when_execute_never_started()
+    {
+        var databasePath = CreateDatabasePath();
+        var store = new ClientLogOutboxStore(databasePath);
+        var writer = new ClientLogOutboxWriter(
+            store,
+            new DeviceAuthorizationState(),
+            CreateCashierContext(),
+            new ClientLogIdentity("never-started-instance", "1.0.0"),
+            runtimeQueueCapacity: 20);
+
+        try
+        {
+            // Hosting 10 的 BackgroundService 以 Task.Run(ExecuteAsync, stoppingToken) 启动，停止令牌在调度前已取消时
+            // 委托根本不会执行。用已取消的启动令牌把"启动后立即停止"的偶发竞态固定为必现路径。
+            await writer.StartAsync(new CancellationToken(canceled: true));
+            Assert.True(
+                writer.ExecuteTask is { IsCanceled: true },
+                $"前提不成立：ExecuteAsync 已被执行，status={writer.ExecuteTask?.Status}");
+
+            writer.Enqueue(new ApplicationLogEntry(
+                "Information",
+                "runtime event before execute",
+                DateTimeOffset.UtcNow,
+                "hbpos_win",
+                "test",
+                "POS"));
+            writer.Record(new OperationAuditEventDto
+            {
+                EventId = Guid.Parse("efefefef-efef-efef-efef-efefefefefef"),
+                OperationType = "CASHIER_LOGOUT",
+                Outcome = "Succeeded"
+            });
+
+            using var shutdownBudget = new CancellationTokenSource(AsyncTestWaitSupport.DefaultTimeout);
+            await writer.StopAsync(shutdownBudget.Token).WaitUntilCompletedAsync(() => DescribeWriter(writer));
+
+            Assert.Equal(1, await store.CountPendingAsync(ClientLogOutboxKind.Runtime, CancellationToken.None));
+            Assert.Equal(1, await store.CountPendingAsync(ClientLogOutboxKind.OperationAudit, CancellationToken.None));
+            Assert.Equal(0L, writer.PendingOperationAuditPersistenceCount);
+        }
+        finally
+        {
+            writer.Dispose();
+            await DeleteDatabaseFilesAsync(databasePath);
+        }
+    }
+
+    [Fact]
     public void Runtime_burst_coalesces_wakeup_signal_instead_of_accumulating_empty_work()
     {
         var writer = new ClientLogOutboxWriter(
