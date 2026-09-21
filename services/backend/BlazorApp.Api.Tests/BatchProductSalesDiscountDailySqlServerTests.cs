@@ -91,6 +91,52 @@ public sealed partial class BatchProductSalesAnalysisSqlServerIntegrationTests
     }
 
     [BatchSalesSqlServerFact]
+    public async Task StatisticStatus_SQLServer同日重算持有状态行时读取最近已提交状态而不等待()
+    {
+        _catalog!.CodeFirst.InitTables<SalesStatisticRefreshState>();
+        var day = new DateTime(2025, 12, 23);
+        // 与生产一致：队列领取时已提交 Running，重算写事务最后把状态改成 Fresh，并持有该行 X 锁直到提交。
+        await _catalog.Insertable(new SalesStatisticRefreshState
+        {
+            StatisticType = SalesStatisticType.ProductStoreDaily,
+            Date = day,
+            Status = SalesStatisticRefreshStatus.Running,
+        }).ExecuteCommandAsync();
+
+        await using var writer = new SqlConnection(WithDatabase(_master!, CatalogName));
+        await writer.OpenAsync();
+        await using var transaction = (SqlTransaction)await writer.BeginTransactionAsync();
+        await using (var command = new SqlCommand(
+            "UPDATE dbo.SalesStatisticRefreshState SET [Status] = N'Fresh' WHERE StatisticType = N'ProductStoreDaily' AND [Date] = @day",
+            writer, transaction))
+        {
+            command.Parameters.AddWithValue("@day", day);
+            await command.ExecuteNonQueryAsync();
+        }
+
+        // 已提交读要等到重算提交；5 秒命令超时足以区分「快照读取立即返回」与「被挡到超时」。
+        var reader = new BatchProductSalesStatisticReader(_catalog);
+        var originalTimeout = _catalog.Ado.CommandTimeOut;
+        _catalog.Ado.CommandTimeOut = 5;
+        try
+        {
+            var status = await reader.StatusAsync(day, day, default);
+            Assert.False(status.IsFresh);
+            Assert.Equal([day], status.PendingDates);
+            var coverage = await reader.CoverageAsync(day, day, default);
+            Assert.Empty(coverage.ReadyDates);
+            Assert.Equal("running", coverage.PendingReasons[day]);
+            // 快照事务必须已结束，不能残留在共享的 SqlSugar 连接上。
+            Assert.Null(_catalog.Ado.Transaction);
+        }
+        finally
+        {
+            _catalog.Ado.CommandTimeOut = originalTimeout;
+            await transaction.RollbackAsync();
+        }
+    }
+
+    [BatchSalesSqlServerFact]
     public async Task DailySnapshot_SQLServer过期接管后拒绝旧执行者提交()
     {
         await InstallDailySchemaAsync();
