@@ -4014,6 +4014,182 @@ public sealed class CashPaymentWorkflowServiceTests
     }
 
     [Theory]
+    [InlineData("http-timeout")]
+    [InlineData("endpoint-switch")]
+    public async Task Payment_workflow_voucher_upload_canceled_without_caller_cancel_keeps_saved_order_retryable(string cancelKind)
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-304", "Voucher Timeout Tea", "930304", 8m));
+        var orders = new RecordingOrderRepository();
+        // HttpClient 超时与 API 端点切换都表现为"调用方并未取消的取消异常"，上传服务会原样抛出。
+        var uploads = new CanceledOnceOrderUploadService(cancelKind == "http-timeout"
+            ? new TaskCanceledException("The request was canceled due to the configured HttpClient.Timeout of 15 seconds elapsing.", new TimeoutException())
+            : new OperationCanceledException("endpoint generation canceled"));
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            orders,
+            new StubSyncQueueRepository(pendingCount: 1),
+            orderUploadService: uploads);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+        var tenders = new[]
+        {
+            new PaymentTender(PaymentMethodKind.Voucher, 3m, "VOUCHER:ABC123:token-1"),
+            new PaymentTender(PaymentMethodKind.Cash, 5m)
+        };
+
+        // 此时订单已经落库、购物车也没清。若取消异常原样冒出去，支付页只会提示"支付未能完成"，
+        // 收银员再点一次完成就会用新订单号再存一单，并复用同一张券的预占 token，两单必有一单永远传不上去。
+        var failed = await Assert.ThrowsAsync<PaymentUploadFailedException>(() => workflow.CompletePaymentAsync(
+            cart,
+            session,
+            tenders,
+            cashTenderedAmount: 5m));
+
+        var saved = Assert.Single(orders.SavedOrders);
+        Assert.Equal(saved.OrderGuid, failed.OrderGuid);
+        Assert.IsAssignableFrom<OperationCanceledException>(failed.InnerException);
+        Assert.NotEmpty(cart.Lines);
+
+        // 重试阶段再次超时，也必须留在"重试上传"状态，不能退回普通付款失败。
+        uploads.CancelNextUpload = true;
+        var retryFailed = await Assert.ThrowsAsync<PaymentUploadFailedException>(() => workflow.RetryVoucherUploadAsync(
+            failed.OrderGuid,
+            cart,
+            session,
+            failed.TenderedAmount,
+            failed.ChangeAmount));
+        Assert.Equal(failed.OrderGuid, retryFailed.OrderGuid);
+
+        var result = await workflow.RetryVoucherUploadAsync(
+            failed.OrderGuid,
+            cart,
+            session,
+            failed.TenderedAmount,
+            failed.ChangeAmount);
+
+        Assert.Single(orders.SavedOrders);
+        Assert.Equal(failed.OrderGuid, result.Order.OrderGuid);
+        Assert.Equal([failed.OrderGuid, failed.OrderGuid, failed.OrderGuid], uploads.AttemptedOrderGuids);
+        Assert.Empty(cart.Lines);
+    }
+
+    [Fact]
+    public async Task Payment_workflow_voucher_upload_timeout_through_real_upload_service_retries_the_same_pending_order()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"hbpos-voucher-upload-timeout-{Guid.NewGuid():N}.db");
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            await new LocalSchemaService(store).InitializeAsync();
+            var orders = new LocalOrderRepository(store);
+            var api = new TimingOutOnceOrderSyncApiClient();
+            // 用真实的上传服务与本地库，确认它在 HttpClient 超时下的真实行为：订单恢复为 Pending，并原样抛出取消异常。
+            var workflow = new CashPaymentWorkflowService(
+                new CashCheckoutService(),
+                orders,
+                new SyncQueueRepository(store),
+                orderUploadService: new OrderUploadService(orders, api, new LocalOrderUploadRepository(store)));
+            var cart = new PosCartService();
+            cart.AddItem(CreateItem("SKU-306", "Voucher Real Upload Tea", "930306", 8m));
+            var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+
+            var failed = await Assert.ThrowsAsync<PaymentUploadFailedException>(() => workflow.CompletePaymentAsync(
+                cart,
+                session,
+                [
+                    new PaymentTender(PaymentMethodKind.Voucher, 3m, "VOUCHER:ABC123:token-1"),
+                    new PaymentTender(PaymentMethodKind.Cash, 5m)
+                ],
+                cashTenderedAmount: 5m));
+
+            var pending = Assert.Single(await orders.GetRecentOrdersAsync());
+            Assert.Equal(failed.OrderGuid, pending.OrderGuid);
+            Assert.Equal("Pending", pending.SyncStatus);
+
+            var result = await workflow.RetryVoucherUploadAsync(
+                failed.OrderGuid,
+                cart,
+                session,
+                failed.TenderedAmount,
+                failed.ChangeAmount);
+
+            var synced = Assert.Single(await orders.GetRecentOrdersAsync());
+            Assert.Equal(failed.OrderGuid, result.Order.OrderGuid);
+            Assert.Equal("Synced", synced.SyncStatus);
+            Assert.Equal([failed.OrderGuid, failed.OrderGuid], api.RequestedOrderGuids);
+            Assert.Empty(cart.Lines);
+        }
+        finally
+        {
+            await SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task Payment_workflow_refund_voucher_issue_timeout_keeps_saved_order_and_idempotency_key_for_retry()
+    {
+        var cart = CreateReturnCart(6m);
+        var orders = new RecordingOrderRepository();
+        var vouchers = new TimingOutOnceVoucherTenderClient("VOUCHER_REFUND:RF-TIMEOUT");
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            orders,
+            new StubSyncQueueRepository(pendingCount: 1),
+            voucherTenderClient: vouchers);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+
+        // 发券请求超时时服务端可能已经发出退款券。必须用同一订单、同一幂等键重试；
+        // 若被当成普通付款失败，再点完成会生成新订单号和新幂等键，给顾客再发一张券。
+        var failed = await Assert.ThrowsAsync<PaymentUploadFailedException>(() => workflow.CompletePaymentAsync(
+            cart,
+            session,
+            [new PaymentTender(PaymentMethodKind.Voucher, -6m, "VOUCHER_REFUND_PENDING")],
+            cashTenderedAmount: 0m));
+
+        var savedBeforeRetry = Assert.Single(orders.SavedOrders);
+        Assert.Equal(savedBeforeRetry.OrderGuid, failed.OrderGuid);
+        var result = await workflow.RetryVoucherUploadAsync(
+            failed.OrderGuid,
+            cart,
+            session,
+            failed.TenderedAmount,
+            failed.ChangeAmount);
+
+        Assert.Single(orders.SavedOrders);
+        Assert.Equal(2, vouchers.IssueRefundIdempotencyKeys.Count);
+        Assert.Equal(vouchers.IssueRefundIdempotencyKeys[0], vouchers.IssueRefundIdempotencyKeys[1]);
+        Assert.Equal("VOUCHER_REFUND:RF-TIMEOUT", Assert.Single(result.Order.Payments).Reference);
+        Assert.Empty(cart.Lines);
+    }
+
+    [Fact]
+    public async Task Payment_workflow_voucher_upload_still_propagates_cancellation_requested_by_the_caller()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-305", "Voucher Caller Cancel Tea", "930305", 8m));
+        using var callerCancellation = new CancellationTokenSource();
+        var uploads = new CallerCanceledOrderUploadService(callerCancellation);
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 1),
+            orderUploadService: uploads);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+
+        // 调用方自己发起的取消保持 .NET 惯例原样传播；只有"不是调用方取消"的取消才折算成上传失败。
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => workflow.CompletePaymentAsync(
+            cart,
+            session,
+            [
+                new PaymentTender(PaymentMethodKind.Voucher, 3m, "VOUCHER:ABC123:token-1"),
+                new PaymentTender(PaymentMethodKind.Cash, 5m)
+            ],
+            cashTenderedAmount: 5m,
+            callerCancellation.Token));
+    }
+
+    [Theory]
     [InlineData("oom")]
     [InlineData("stack")]
     public async Task Payment_workflow_refund_voucher_issue_and_retry_propagate_fatal_exception_instance(string fatalKind)
@@ -7943,6 +8119,96 @@ public sealed class CashPaymentWorkflowServiceTests
     {
         public Task UploadOrderAsync(Guid orderGuid, CancellationToken cancellationToken = default) =>
             Task.FromException(uploadException);
+    }
+
+    private sealed class CanceledOnceOrderUploadService(OperationCanceledException canceled) : IOrderUploadService
+    {
+        public bool CancelNextUpload { get; set; } = true;
+
+        public List<Guid> AttemptedOrderGuids { get; } = [];
+
+        public Task UploadOrderAsync(Guid orderGuid, CancellationToken cancellationToken = default)
+        {
+            AttemptedOrderGuids.Add(orderGuid);
+            if (!CancelNextUpload)
+            {
+                return Task.CompletedTask;
+            }
+
+            CancelNextUpload = false;
+            return Task.FromException(canceled);
+        }
+    }
+
+    private sealed class TimingOutOnceOrderSyncApiClient : IOrderSyncApiClient
+    {
+        public List<Guid> RequestedOrderGuids { get; } = [];
+
+        public Task<OrderSyncResponse> SyncAsync(OrderSyncRequest request, CancellationToken cancellationToken = default)
+        {
+            RequestedOrderGuids.Add(request.OrderGuid);
+            // HttpClient 超时抛出的就是这个形状：TaskCanceledException 包一层 TimeoutException，调用方令牌并未触发。
+            return RequestedOrderGuids.Count == 1
+                ? Task.FromException<OrderSyncResponse>(new TaskCanceledException(
+                    "The request was canceled due to the configured HttpClient.Timeout of 15 seconds elapsing.",
+                    new TimeoutException()))
+                : Task.FromResult(new OrderSyncResponse(request.OrderGuid, true, false, "Synced"));
+        }
+    }
+
+    private sealed class CallerCanceledOrderUploadService(CancellationTokenSource callerCancellation) : IOrderUploadService
+    {
+        public Task UploadOrderAsync(Guid orderGuid, CancellationToken cancellationToken = default)
+        {
+            // 模拟上传进行到一半时调用方取消：令牌已触发，异常也携带同一个令牌。
+            callerCancellation.Cancel();
+            return Task.FromCanceled(cancellationToken);
+        }
+    }
+
+    private sealed class TimingOutOnceVoucherTenderClient(string reference) : IVoucherTenderClient
+    {
+        private bool _hasTimedOut;
+
+        public List<string> IssueRefundIdempotencyKeys { get; } = [];
+
+        public Task<PaymentAuthorizationResult> RedeemAsync(
+            decimal amount,
+            PosSessionState session,
+            string? voucherCode,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<PaymentAuthorizationResult> IssueRefundAsync(
+            decimal amount,
+            PosSessionState session,
+            string orderReference,
+            string idempotencyKey,
+            string? reason = null,
+            CancellationToken cancellationToken = default)
+        {
+            IssueRefundIdempotencyKeys.Add(idempotencyKey);
+            if (_hasTimedOut)
+            {
+                return Task.FromResult(new PaymentAuthorizationResult(true, reference, AuthorizedAmount: amount));
+            }
+
+            _hasTimedOut = true;
+            return Task.FromException<PaymentAuthorizationResult>(new TaskCanceledException(
+                "The request was canceled due to the configured HttpClient.Timeout of 10 seconds elapsing.",
+                new TimeoutException()));
+        }
+
+        public Task<bool> ReleaseAsync(
+            PosSessionState session,
+            string voucherCode,
+            string reservationToken,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
     }
 }
 
