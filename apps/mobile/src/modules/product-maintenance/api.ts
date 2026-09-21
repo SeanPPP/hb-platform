@@ -345,6 +345,29 @@ export async function getProductFastDetail(
   return normalizeDetail(response.data);
 }
 
+export async function ensureStorePrice(
+  productCode: string,
+  storeCode: string,
+): Promise<StorePriceEditable> {
+  const response = await apiClient.post(
+    `${BASE_PATH}/${encodeURIComponent(productCode)}/ensure-store-price`,
+    null,
+    {
+      ...buildRequestConfig(),
+      params: { storeCode },
+    },
+  );
+  const storePrice = normalizeStorePrice(response.data);
+  if (
+    !storePrice?.uuid.trim() ||
+    storePrice.productCode !== productCode ||
+    storePrice.storeCode !== storeCode
+  ) {
+    throw new Error("INVALID_STORE_PRICE_RESPONSE");
+  }
+  return storePrice;
+}
+
 function normalizeCodePage<T>(
   payload: unknown,
   normalizeItem: (item: unknown) => T
