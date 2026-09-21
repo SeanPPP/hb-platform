@@ -1,5 +1,5 @@
 import { ShoppingCartOutlined } from '@ant-design/icons'
-import { Breadcrumb, Button, Empty, Pagination, Select, Space, Spin, Tag, Tooltip, message } from 'antd'
+import { Breadcrumb, Button, Empty, Pagination, Select, Space, Spin, Tag, Tooltip, Typography, message } from 'antd'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
@@ -9,6 +9,8 @@ import {
 } from '../../components/shopBarcodeSubmitGate'
 import { withShopBarcodeRequestTimeout } from '../../components/shopBarcodeRequestTimeout'
 import ShopScanBar from '../../components/ShopScanBar'
+import SupplyStatusCard from '../../components/SupplyNotice/SupplyStatusCard'
+import { useSupplyStatusLookup } from '../../components/SupplyNotice/useSupplyStatusLookup'
 import type { ShopCameraSubmitOutcome } from '../../components/ShopCameraScanner'
 import ShopScanResultPicker from '../../components/ShopScanResultPicker'
 import { PRODUCT_GRADE_CONFIG } from '../../types/productGrade'
@@ -83,6 +85,8 @@ const SHOP_PRODUCT_QUANTITY_UPDATE_DEBOUNCE_MS = 300
 export default function ShopHomePage() {
   const { t, i18n } = useTranslation()
   const navigate = useNavigate()
+  // 搜索 / 扫码零结果时补查“暂停供货”的商品，让分店知道是下架了而不是扫错码。
+  const supplyLookup = useSupplyStatusLookup(selectedStore?.storeCode ?? null)
   const [searchParams] = useSearchParams()
   const categoryId = searchParams.get('category')
   const keyword = searchParams.get('keyword')
@@ -380,6 +384,11 @@ export default function ShopHomePage() {
 
         setProducts(result.items)
         setTotal(result.total)
+        if (!result.items.length && keyword && !cartOnlyFilter) {
+          void supplyLookup.lookup(keyword)
+        } else {
+          supplyLookup.clear()
+        }
         logShopHomePerf('products.done', {
           storeCode: selectedStore.storeCode,
           pageNumber: currentPage,
@@ -783,7 +792,11 @@ export default function ShopHomePage() {
         }
 
         if (!result.items.length) {
-          updateScanFeedback('not_found', t('shop.scan.barcodeNotFound'), {
+          const paused = await supplyLookup.lookup(barcode)
+          if (selectedStoreCodeRef.current !== storeCode) {
+            return 'ignored'
+          }
+          updateScanFeedback('not_found', paused.length ? t('supplyStatusCard.pausedHeading') : t('shop.scan.barcodeNotFound'), {
             barcode,
             tone: 'not-found',
           })
@@ -1288,7 +1301,25 @@ export default function ShopHomePage() {
           </div>
         </>
       ) : (
-        <Empty description={cartOnlyFilter ? t('shop.noCartProductsFound') : t('shop.noProductsFound')} />
+        supplyLookup.items.length ? (
+          <div className="shop-supply-status-list" data-testid="shop-supply-status-list">
+            <Typography.Text strong style={{ display: 'block', marginBottom: 4 }}>{t('supplyStatusCard.pausedHeading')}</Typography.Text>
+            <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>{t('supplyStatusCard.pausedHint')}</Typography.Text>
+            <Space direction="vertical" size={8} style={{ width: '100%', maxWidth: 560 }}>
+              {supplyLookup.items.map((status) => (
+                <SupplyStatusCard
+                  key={status.productCode}
+                  status={status}
+                  busy={supplyLookup.busyCode === status.productCode}
+                  onWatch={(item) => void supplyLookup.toggleWatch(item, true)}
+                  onUnwatch={(item) => void supplyLookup.toggleWatch(item, false)}
+                />
+              ))}
+            </Space>
+          </div>
+        ) : (
+          <Empty description={cartOnlyFilter ? t('shop.noCartProductsFound') : t('shop.noProductsFound')} />
+        )
       )}
 
       <ShopScanResultPicker
