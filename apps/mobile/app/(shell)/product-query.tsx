@@ -2924,22 +2924,73 @@ function ProductQueryContent() {
     warehousePriceInteractionLocked,
   ]);
 
-  const handleCancelWarehousePriceSync = useCallback(() => {
-    if (warehousePriceSyncState.phase === "confirming") {
+  const handleCancelWarehousePriceSync = useCallback(async (resumeAutoPrint = false) => {
+    if (
+      warehousePriceSyncState.phase !== "confirmation" ||
+      warehousePriceRequestInFlightRef.current
+    ) {
       return;
     }
 
-    const scanSource = warehousePriceSyncContext?.scanSource;
-    setWarehousePriceSyncState((current) =>
-      reduceWarehousePriceSyncState(current, { type: "cancelled" }),
-    );
-    setWarehousePriceSyncContext(null);
-    // 取消只放弃零售价更新；首轮已同步的进货价继续保留。
-    restoreScanAbility(scanSource);
+    const context = warehousePriceSyncContext;
+    // 确认曾失败时可能已在服务端改价；本次仅关闭，重新扫码取得可靠快照后再打印。
+    const shouldPrint = resumeAutoPrint && context?.autoPrintEnabled &&
+      !warehousePriceSyncState.errorMessage &&
+      shouldAutoPrintWarehousePrice({
+        lookupOrigin: context.lookupOrigin,
+        stage: "retail_update_skipped",
+        snapshot: warehousePriceSyncState.snapshot,
+        alreadyPrinted: context.alreadyPrinted,
+      });
+    warehousePriceRequestInFlightRef.current = true;
+    try {
+      if (shouldPrint && context && ensureCurrentDetailStoreScope(
+        context.detail,
+        context.detail.storePrice?.storeCode,
+      )) {
+        const scannedCode = context.scanKeyword.trim();
+        // 条码分页尚未加载到本次扫码项时，不能回退打印主商品的条码和价格。
+        const knownCodes = [
+          context.detail.barcode,
+          context.detail.productCode,
+          context.detail.itemNumber,
+          context.detail.storePrice?.storeProductCode,
+          context.detail.clearancePrice?.clearanceBarcode,
+          ...context.detail.setCodes.map((item) => item.setBarcode),
+          ...context.detail.multiCodes.map((item) => item.barcode),
+        ];
+        if (!scannedCode || !knownCodes.some((code) => code?.trim() === scannedCode)) {
+          setSnackbarMessage(t("messages.codesLoadFailed"));
+          return;
+        }
+        setWarehousePriceSyncState((current) =>
+          reduceWarehousePriceSyncState(current, { type: "print_started" }),
+        );
+        // 仅放弃零售价更新，沿用预览后保留原售价和折扣的详情及本次扫码条码。
+        await smartAutoPrint(context.scanKeyword, context.detail);
+      } else if (resumeAutoPrint && context?.autoPrintEnabled && warehousePriceSyncState.errorMessage) {
+        setSnackbarMessage(warehousePriceSyncState.errorMessage);
+      }
+    } catch (error) {
+      setSnackbarMessage(getErrorMessage(error, "messages.printFailed"));
+    } finally {
+      warehousePriceRequestInFlightRef.current = false;
+      setWarehousePriceSyncState((current) =>
+        reduceWarehousePriceSyncState(current, { type: "cancelled" }),
+      );
+      setWarehousePriceSyncContext(null);
+      restoreScanAbility(context?.scanSource);
+    }
   }, [
+    ensureCurrentDetailStoreScope,
+    getErrorMessage,
     restoreScanAbility,
-    warehousePriceSyncContext?.scanSource,
+    smartAutoPrint,
+    t,
+    warehousePriceSyncContext,
     warehousePriceSyncState.phase,
+    warehousePriceSyncState.snapshot,
+    warehousePriceSyncState.errorMessage,
   ]);
 
   const handleConfirmWarehousePriceSync = useCallback(async () => {
@@ -4129,6 +4180,7 @@ function ProductQueryContent() {
     () => invoiceExitSavingRef.current || saving || Boolean(savingItemId) ||
       savingClearance || productTypeSaving || createProductBusy || hqSyncRetrying ||
       autoPricingDialogSaving || warehousePriceSyncState.phase === "confirming" ||
+      warehousePriceSyncState.phase === "printing" ||
       Boolean(printingAction),
     [autoPricingDialogSaving, createProductBusy, hqSyncRetrying, printingAction,
       productTypeSaving, saving, savingClearance, savingItemId, warehousePriceSyncState.phase],
@@ -4834,7 +4886,8 @@ function ProductQueryContent() {
         visible={
           isFocused &&
           (warehousePriceSyncState.phase === "confirmation" ||
-            warehousePriceSyncState.phase === "confirming")
+            warehousePriceSyncState.phase === "confirming" ||
+            warehousePriceSyncState.phase === "printing")
         }
         productName={warehousePriceSyncContext?.detail.productName}
         productCode={
@@ -4842,9 +4895,10 @@ function ProductQueryContent() {
           warehousePriceSyncContext?.detail.productCode
         }
         snapshot={warehousePriceSyncState.snapshot}
-        loading={warehousePriceSyncState.phase === "confirming"}
+        loading={warehousePriceSyncState.phase === "confirming" || warehousePriceSyncState.phase === "printing"}
         errorMessage={warehousePriceSyncState.errorMessage}
-        onCancel={handleCancelWarehousePriceSync}
+        onCancel={() => void handleCancelWarehousePriceSync(true)}
+        onDismiss={() => void handleCancelWarehousePriceSync()}
         onConfirm={() => void handleConfirmWarehousePriceSync()}
       />
 

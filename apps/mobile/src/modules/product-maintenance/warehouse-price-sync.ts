@@ -14,7 +14,7 @@ const WAREHOUSE_SYNC_STATUSES = new Set<WarehousePriceSyncStatus>([
   "confirmation_required",
 ]);
 
-type WarehousePriceSyncPhase = "idle" | "previewing" | "confirmation" | "confirming";
+type WarehousePriceSyncPhase = "idle" | "previewing" | "confirmation" | "confirming" | "printing";
 
 export interface WarehousePriceSyncState {
   phase: WarehousePriceSyncPhase;
@@ -27,6 +27,7 @@ export type WarehousePriceSyncEvent =
   | { type: "preview_succeeded"; snapshot: WarehousePriceSyncResult }
   | { type: "preview_failed"; message: string }
   | { type: "confirm_started" }
+  | { type: "print_started" }
   | { type: "confirm_succeeded"; snapshot: WarehousePriceSyncResult }
   | { type: "confirm_failed"; message: string }
   | { type: "conflict_received"; snapshot: WarehousePriceSyncResult; message: string }
@@ -37,6 +38,7 @@ export type WarehousePriceLookupOrigin = "scan" | "manual" | "refresh" | "deep-l
 export type WarehousePricePrintStage =
   | "preview_succeeded"
   | "confirmation_succeeded"
+  | "retail_update_skipped"
   | "cancelled"
   | "failed";
 
@@ -302,6 +304,8 @@ export function reduceWarehousePriceSyncState(
       return { phase: "idle", snapshot: null, errorMessage: event.message };
     case "confirm_started":
       return { ...state, phase: "confirming", errorMessage: null };
+    case "print_started":
+      return { ...state, phase: "printing", errorMessage: null };
     case "confirm_succeeded":
       return { phase: "idle", snapshot: event.snapshot, errorMessage: null };
     case "confirm_failed":
@@ -345,6 +349,19 @@ export function shouldAutoPrintWarehousePrice(input: {
 }): boolean {
   if (input.lookupOrigin !== "scan" || input.alreadyPrinted || !input.snapshot) {
     return false;
+  }
+
+  // 明确选择保留门店售价时继续本次扫码打印；关闭弹窗不代表同意打印。
+  if (input.stage === "retail_update_skipped") {
+    const storePrice = input.snapshot.storePrice;
+    return (
+      input.snapshot.status === "confirmation_required" &&
+      input.snapshot.retailConfirmationRequired &&
+      Boolean(storePrice?.uuid) &&
+      storePrice?.retailPrice != null &&
+      Number.isFinite(storePrice.retailPrice) &&
+      storePrice.retailPrice >= 0
+    );
   }
 
   if (input.snapshot.status !== "synced" || input.snapshot.retailConfirmationRequired) {
