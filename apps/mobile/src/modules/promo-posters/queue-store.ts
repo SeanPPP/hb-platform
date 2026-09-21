@@ -28,6 +28,7 @@ interface PromoPosterQueueState extends PromoPosterQueueSnapshot {
   setStyle: (style: PromoPosterStyle) => void;
   setSize: (size: PromoPosterSize) => void;
   setImpose: (impose: boolean) => void;
+  setShowLogo: (showLogo: boolean) => void;
 }
 
 function createItemId() {
@@ -45,7 +46,7 @@ function toQueueItem(input: { storeCode: string; productName: string; poster: Pr
 }
 
 function snapshotOf(state: PromoPosterQueueSnapshot): PromoPosterQueueSnapshot {
-  return { items: state.items, style: state.style, size: state.size, impose: state.impose };
+  return { items: state.items, style: state.style, size: state.size, impose: state.impose, showLogo: state.showLogo };
 }
 
 let persistChain: Promise<void> = Promise.resolve();
@@ -63,6 +64,8 @@ function persist(state: PromoPosterQueueSnapshot) {
 export const usePromoPosterQueueStore = create<PromoPosterQueueState>((set, get) => {
   // 每次修改后落盘；hydrate 完成前的修改也会在 hydrate 合并后一起写入。
   const update = (partial: Partial<PromoPosterQueueSnapshot>) => {
+    // 最后一张被移除或整批清空后，下个批次恢复默认显示 Logo。
+    if (partial.items?.length === 0) partial = { ...partial, showLogo: true };
     set(partial);
     if (get().hydrated) persist(get());
   };
@@ -77,7 +80,8 @@ export const usePromoPosterQueueStore = create<PromoPosterQueueState>((set, get)
       update({ items: [...get().items, toQueueItem(input)] });
       return "ok";
     },
-    replaceAll: (input) => update({ items: [toQueueItem(input)] }),
+    // 跨店替换会清空旧批次，因此恢复新批次默认设置。
+    replaceAll: (input) => update({ items: [toQueueItem(input)], showLogo: true }),
     remove: (id) => update({ items: get().items.filter((item) => item.id !== id) }),
     removeMany: (ids) => {
       const removed = new Set(ids);
@@ -94,6 +98,7 @@ export const usePromoPosterQueueStore = create<PromoPosterQueueState>((set, get)
     setStyle: (style) => update({ style }),
     setSize: (size) => update({ size }),
     setImpose: (impose) => update({ impose }),
+    setShowLogo: (showLogo) => update({ showLogo }),
   };
 });
 
@@ -116,6 +121,7 @@ export function hydratePromoPosterQueue() {
           style: stored.style,
           size: stored.size,
           impose: stored.impose,
+          showLogo: stored.showLogo,
           hydrated: true,
         });
       } else {
