@@ -95,6 +95,7 @@
     "selectStoreFirst": "请先选择门店",
     "loginFailed": "登录失败",
     "network": "网络连接失败，请稍后重试。",
+    "printerDisconnected": "打印机连接已中断。请确认打印机已开机，在设置中重新连接后再试。",
     "timeout": "请求超时，请稍后重试。",
     "unauthorized": "登录已失效或当前无权限，请重新登录。",
     "server": "服务器暂时不可用，请稍后重试。",
