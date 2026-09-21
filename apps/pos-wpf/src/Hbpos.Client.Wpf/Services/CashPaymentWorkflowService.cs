@@ -2143,13 +2143,13 @@ public sealed class CashPaymentWorkflowService(
             attemptGuid,
             null,
             // LocalIp 引用只绑定已落库 attempt 身份；Cloud 退款继续沿用既有原交易派生规则。
+            // 销售在三种模式下都必须在发请求前确定引用并随 attempt 落库：CloudBackendAsync 过去等服务端生成，
+            // 请求发出后一旦断电或响应丢失，这一行 SessionId 与 TxnRef 皆空，自动恢复和主管结案都无法认领它。
             isRefund
                 ? mode == LinklyConnectionMode.LocalIp
                     ? LinklyLocalTxnRef.Create('R', attemptGuid.ToString("D"))
                     : BuildRefundTxnRef(referenceText)
-                : mode is LinklyConnectionMode.LocalIp or LinklyConnectionMode.CloudDirectSync
-                    ? LinklyLocalTxnRef.Create('P', attemptGuid.ToString("D"))
-                    : null,
+                : LinklyLocalTxnRef.Create('P', attemptGuid.ToString("D")),
             settings.Processor.ToString(),
             settings.Environment.ToString(),
             CardTerminalSettings.FormatLinklyConnectionMode(mode),

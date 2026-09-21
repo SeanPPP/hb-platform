@@ -1621,7 +1621,10 @@ public sealed class CashPaymentWorkflowServiceTests
                 var attempt = Assert.Single(attempts.Attempts);
                 Assert.Equal(LocalCardPaymentAttemptStatus.Pending, attempt.Status);
                 Assert.Null(attempt.SessionId);
-                Assert.Null(attempt.TxnRef);
+                // 后端模式的销售引用也必须在请求终端之前落库，并经上下文交给终端客户端随请求发出；
+                // 否则请求发出后断电，这一行 SessionId 与 TxnRef 皆空，恢复和主管结案都无法认领。
+                Assert.Equal(LinklyLocalTxnRef.Create('P', attempt.AttemptGuid.ToString("D")), attempt.TxnRef);
+                Assert.Equal(attempt.TxnRef, linklyAttemptContextAccessor.Current?.TxnRef);
             },
             afterBind: () =>
             {
@@ -2351,7 +2354,10 @@ public sealed class CashPaymentWorkflowServiceTests
                 var attempt = Assert.Single(attempts.Attempts);
                 Assert.Equal(LocalCardPaymentAttemptStatus.Pending, attempt.Status);
                 Assert.Null(attempt.SessionId);
-                Assert.Null(attempt.TxnRef);
+                // 后端模式的销售引用也必须在请求终端之前落库，并经上下文交给终端客户端随请求发出；
+                // 否则请求发出后断电，这一行 SessionId 与 TxnRef 皆空，恢复和主管结案都无法认领。
+                Assert.Equal(LinklyLocalTxnRef.Create('P', attempt.AttemptGuid.ToString("D")), attempt.TxnRef);
+                Assert.Equal(attempt.TxnRef, linklyAttemptContextAccessor.Current?.TxnRef);
             },
             afterBind: () =>
             {
