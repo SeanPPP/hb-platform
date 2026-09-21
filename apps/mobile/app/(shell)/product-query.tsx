@@ -2697,15 +2697,27 @@ function ProductQueryContent() {
       }
     },
   });
-  const hidScanner = useHidBarcodeScanner({
-    enabled: isFocused && !scannerInputBlocked,
-    onScan: async (barcode) => {
+  const lastHidScanRef = useRef<{ barcode: string; time: number } | null>(null);
+  const handleHidScan = useCallback(
+    async (barcode: string) => {
       if (!isFocused || isProductQueryBusy()) {
         return;
       }
+      const now = Date.now();
+      const lastScan = lastHidScanRef.current;
+      // 可见框失焦时，同一扫码可能交给两个输入框；避免重复发起查询。
+      if (lastScan?.barcode === barcode && now - lastScan.time < 100) {
+        return;
+      }
+      lastHidScanRef.current = { barcode, time: now };
       setKeyword(barcode);
       await handleLookup(barcode, "scan", "hid");
     },
+    [handleLookup, isFocused, isProductQueryBusy],
+  );
+  const hidScanner = useHidBarcodeScanner({
+    enabled: isFocused && !scannerInputBlocked,
+    onScan: handleHidScan,
   });
   useEffect(() => {
     if (!isFocused) {
@@ -4126,6 +4138,7 @@ function ProductQueryContent() {
         lastHitLabel={detail ? undefined : lastHitLabel}
         refreshing={refreshing}
         onChangeText={setKeyword}
+        onScannerInput={handleHidScan}
         onFocus={pauseHiddenScannerFocus}
         onBlur={resumeHiddenScannerFocusLater}
         onScanPress={() => {
@@ -5067,7 +5080,11 @@ function ProductQueryContent() {
         {snackbarMessage}
       </Snackbar>
 
-      {hidScanner.mode === "textInput" && hidScanner.textInputProps ? (
+      {/* 查询期间卸载扫码输入框，避免 Android 禁用后丢失原生焦点而 JS 仍认为已聚焦。 */}
+      {isFocused &&
+      !scannerInputBlocked &&
+      hidScanner.mode === "textInput" &&
+      hidScanner.textInputProps ? (
         <TextInput style={styles.hiddenInput} {...hidScanner.textInputProps} />
       ) : null}
     </SafeAreaView>
