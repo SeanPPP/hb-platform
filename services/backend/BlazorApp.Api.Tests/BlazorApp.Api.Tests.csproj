@@ -175,6 +175,7 @@
     <Compile Include="ProductReportPagingSqlTests.cs" />
     <Compile Include="HbSalesCoverageSqlTests.cs" />
     <Compile Include="HbSalesSourceRowsSqlTests.cs" />
+    <Compile Include="BatchProductSalesDiscountStatisticsSqlTests.cs" />
     <Compile Include="ProductReportChinaMappingTests.cs" />
     <Compile Include="ProductReportSortingSqlServerIntegrationTests.cs" />
     <Compile Include="ProductMovementReportSqlBuilderTests.cs" />

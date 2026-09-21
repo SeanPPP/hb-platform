@@ -379,35 +379,32 @@ internal sealed class BatchProductSalesDiscountDailyStore(ISqlSugarClient db)
     internal async Task<List<BatchProductSalesAggregateRow>> ReadDailyStatisticsAsync(DateTime date, CancellationToken token)
     {
         var day = date.Date;
-        // 调用方已开事务时不能再嵌套开启，沿用调用方的隔离级别。
-        if (db.CurrentConnectionConfig.DbType != DbType.SqlServer || db.Ado.Transaction != null)
-            return await QueryDailyStatisticsAsync(day, token);
-
-        await db.Ado.BeginTranAsync(System.Data.IsolationLevel.Snapshot);
-        try
-        {
-            var rows = await QueryDailyStatisticsAsync(day, token);
-            await db.Ado.CommitTranAsync();
-            return rows;
-        }
-        catch (Exception original)
-        {
-            // 与 PublishAsync 相同：已取消的业务令牌不能取消回滚，否则事务会残留在共享的 SqlSugar 连接上。
-            var previousToken = db.Ado.CancellationToken;
-            db.Ado.RemoveCancellationToken();
-            try { await db.Ado.RollbackTranAsync(); }
-            catch (Exception rollback) { original.Data["DiscountStatisticsSnapshotRollbackError"] = rollback.Message; }
-            finally
-            {
-                if (previousToken.HasValue) db.Ado.CancellationToken = previousToken.Value;
-            }
-            throw;
-        }
+        var rows = await SqlServerSnapshotRead.ExecuteAsync(db, () => QueryDailyStatisticsAsync(day));
+        token.ThrowIfCancellationRequested();
+        return rows;
     }
 
-    private async Task<List<BatchProductSalesAggregateRow>> QueryDailyStatisticsAsync(DateTime day, CancellationToken token)
+    private async Task<List<BatchProductSalesAggregateRow>> QueryDailyStatisticsAsync(DateTime day)
     {
-        var rows = await db.Queryable<ProductStoreDailySalesStatistic>().With(SqlWith.Null)
+        if (db.CurrentConnectionConfig.DbType != DbType.SqlServer)
+            return await BuildDailyStatisticsQuery(db, day).ToListAsync();
+        var sql = BuildDailyStatisticsSql(db, day);
+        return await db.Ado.SqlQueryAsync<BatchProductSalesAggregateRow>(sql.Key, sql.Value.ToArray());
+    }
+
+    /// <summary>
+    /// 批量重算不断改写这张约 745 万行的表，统计信息频繁过期；HBweb 自动更新统计是同步的，这条查询每次因统计变化
+    /// 重编译都要当场等统计更新（2026-09-21 累计编译 606 次、平均 5.9 秒，最长撞上 60 秒命令超时）。
+    /// 它按日期打头的主键读一天，计划与统计无关，KEEPFIXED PLAN 让它不再因统计变化重编译。
+    /// </summary>
+    internal static KeyValuePair<string, List<SugarParameter>> BuildDailyStatisticsSql(ISqlSugarClient db, DateTime day)
+    {
+        var sql = BuildDailyStatisticsQuery(db, day).ToSql();
+        return new KeyValuePair<string, List<SugarParameter>>(sql.Key + " OPTION (KEEPFIXED PLAN)", sql.Value);
+    }
+
+    private static ISugarQueryable<BatchProductSalesAggregateRow> BuildDailyStatisticsQuery(ISqlSugarClient db, DateTime day) =>
+        db.Queryable<ProductStoreDailySalesStatistic>().With(SqlWith.Null)
             .Where(x => x.Date >= day && x.Date < day.AddDays(1))
             .GroupBy(x => new { x.Date, x.BranchCode, x.ProductCode })
             .Select(x => new BatchProductSalesAggregateRow
@@ -418,10 +415,7 @@ internal sealed class BatchProductSalesDiscountDailyStore(ISqlSugarClient db)
                 Quantity = SqlFunc.AggregateSum(x.TotalQuantity),
                 UnknownQuantity = SqlFunc.AggregateSum(x.TotalQuantity),
                 SalesAmount = SqlFunc.AggregateSum(x.TotalAmount),
-            }).ToListAsync();
-        token.ThrowIfCancellationRequested();
-        return rows;
-    }
+            });
 
     /// <summary>只对已发布的销量金额事实做排序哈希，刻意排除成本与刷新时间戳。</summary>
     internal async Task<string> ReadStatisticsVersionAsync(DateTime date, CancellationToken token)
