@@ -178,7 +178,13 @@ public partial class CustomerDisplayView : UserControl
             bitmap.BeginInit();
             bitmap.UriSource = mediaUri;
             bitmap.CreateOptions = BitmapCreateOptions.IgnoreImageCache;
+            // IgnoreImageCache 已绕开 WPF 的图像缓存，若再用默认的 OnDemand，
+            // 位图会一直持有素材文件的流，缓存清理的 File.Delete 会失败、过期素材持续累积。
+            // 客显空闲广告每 8 秒轮换、收银机连开数天，这个占用会不断堆积。
+            bitmap.CacheOption = BitmapCacheOption.OnLoad;
             bitmap.EndInit();
+            // 冻结后可跨线程访问，并省去后续的变更通知开销。
+            bitmap.Freeze();
 
             AdvertisementVideo.Visibility = Visibility.Collapsed;
             AdvertisementImage.Source = bitmap;

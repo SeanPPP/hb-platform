@@ -22,15 +22,47 @@ import {
   shouldAutoPrintWarehousePrice,
 } from "./warehouse-price-sync";
 
-// 执行页面真实回调，只替换网络和打印边界，防止策略正确但按钮仍丢弃打印任务。
+// 执行页面真实详情后处理及扫码打印回调，只替换网络与打印机边界。
 const pageSource = readFileSync(resolve(__dirname, "../../../app/(shell)/product-query.tsx"), "utf8");
 const pageAst = ts.createSourceFile("product-query.tsx", pageSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const productQuery = pageAst.statements.find((node): node is ts.FunctionDeclaration =>
   ts.isFunctionDeclaration(node) && node.name?.text === "ProductQueryContent");
-const skipHandlerStatement = productQuery?.body?.statements.find((node) =>
-  ts.isVariableStatement(node) && node.declarationList.declarations.some((declaration) =>
-    ts.isIdentifier(declaration.name) && declaration.name.text === "handleCancelWarehousePriceSync"));
-assert.ok(skipHandlerStatement, "页面必须保留可执行的仓库价跳过处理器");
+function callbackStatement(name: string): ts.VariableStatement {
+  const statement = productQuery?.body?.statements.find((node) =>
+    ts.isVariableStatement(node) && node.declarationList.declarations.some((declaration) =>
+      ts.isIdentifier(declaration.name) && declaration.name.text === name));
+  assert.ok(statement && ts.isVariableStatement(statement), `页面必须保留可执行的 ${name} 回调`);
+  return statement;
+}
+const processLoadedDetailStatement = callbackStatement("processLoadedDetail");
+const smartAutoPrintStatement = callbackStatement("smartAutoPrint");
+
+const warehouseRetailPriceDeclaration = productQuery?.body?.statements
+  .filter(ts.isVariableStatement)
+  .flatMap((statement) => [...statement.declarationList.declarations])
+  .find((declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === "warehouseRetailPrice");
+const warehouseRetailPriceExpression = warehouseRetailPriceDeclaration?.initializer;
+assert.ok(warehouseRetailPriceExpression, "页面必须计算当前门店的仓库零售价差异提示");
+const warehouseRetailPriceSource = warehouseRetailPriceExpression.getText(pageAst);
+function evaluateWarehouseRetailPrice(input: {
+  offlineMode?: boolean;
+  storePrice: { uuid: string; retailPrice: number | null } | null;
+  warehousePriceSnapshot: typeof camelSnapshot | null;
+}): string | null {
+  const deps = {
+    offlineMode: input.offlineMode === true,
+    storePrice: input.storePrice,
+    warehousePriceSnapshot: input.warehousePriceSnapshot,
+    normalizeWarehouseMoney,
+    formatCurrency: (value: number) => `$${value.toFixed(2)}`,
+  };
+  return new Function("deps", `const { ${Object.keys(deps).join(", ")} } = deps; return (${warehouseRetailPriceSource});`)(deps) as string | null;
+}
+
+function compileCallback<T>(statement: ts.VariableStatement, name: string, deps: Record<string, unknown>): T {
+  const source = `const { ${Object.keys(deps).join(", ")} } = deps;\n${statement.getText(pageAst)}\nreturn ${name};`;
+  return new Function("deps", ts.transpile(source, { target: ts.ScriptTarget.ES2022 }))(deps) as T;
+}
 
 function assertEqual(actual: unknown, expected: unknown, label: string) {
   if (actual !== expected) {
@@ -73,6 +105,23 @@ const camelSnapshot = normalizeWarehousePriceSyncResponse({
 assertEqual(camelSnapshot.status, "confirmation_required", "camel response normalizes status");
 assertEqual(camelSnapshot.storePrice?.purchasePrice, 3.25, "camel response normalizes latest purchase");
 assertEqual(camelSnapshot.storePrice?.isAutoPricing, true, "camel response preserves auto pricing flag");
+assertEqual(
+  evaluateWarehouseRetailPrice({
+    storePrice: { uuid: "price-1", retailPrice: 5 },
+    warehousePriceSnapshot: camelSnapshot,
+  }),
+  "$6.00",
+  "仓库与当前门店零售价不同则在页面展示仓库价"
+);
+for (const [label, input] of [
+  ["同价", { storePrice: { uuid: "price-1", retailPrice: 6 }, warehousePriceSnapshot: camelSnapshot }],
+  ["不同门店价 UUID", { storePrice: { uuid: "price-other", retailPrice: 5 }, warehousePriceSnapshot: camelSnapshot }],
+  ["离线", { offlineMode: true, storePrice: { uuid: "price-1", retailPrice: 5 }, warehousePriceSnapshot: camelSnapshot }],
+  ["缺失门店金额", { storePrice: { uuid: "price-1", retailPrice: null }, warehousePriceSnapshot: camelSnapshot }],
+  ["缺失仓库金额", { storePrice: { uuid: "price-1", retailPrice: 5 }, warehousePriceSnapshot: { ...camelSnapshot, warehouseRetailPrice: null } }],
+] as const) {
+  assertEqual(evaluateWarehouseRetailPrice(input), null, `${label}不显示过期或无意义的仓库价差异`);
+}
 
 const pascalSnapshot = normalizeWarehousePriceSyncResponse({
   Success: true,
@@ -273,9 +322,11 @@ flowState = reduceWarehousePriceSyncState(flowState, {
   type: "preview_succeeded",
   snapshot: camelSnapshot,
 });
-assertEqual(flowState.phase, "confirmation", "retail difference opens confirmation state");
-assertEqual(isWarehousePriceInteractionLocked(flowState), true, "confirmation keeps scanner disabled");
+assertEqual(flowState.phase, "idle", "retail difference does not open a confirmation state");
+assertEqual(isWarehousePriceInteractionLocked(flowState), false, "completed preview releases scanner state");
 
+// 旧确认事件暂保留 API 契约；页面不再进入此流程。
+flowState = { phase: "confirmation", snapshot: camelSnapshot, errorMessage: null };
 flowState = reduceWarehousePriceSyncState(flowState, { type: "confirm_started" });
 assertEqual(flowState.phase, "confirming", "confirm transition enters submit state");
 
@@ -347,7 +398,17 @@ assertEqual(
     alreadyPrinted: false,
   }),
   true,
-  "scan prints once when no retail confirmation is required"
+  "same-price warehouse sync still auto prints"
+);
+assertEqual(
+  shouldAutoPrintWarehousePrice({
+    lookupOrigin: "scan",
+    stage: "preview_succeeded",
+    snapshot: camelSnapshot,
+    alreadyPrinted: false,
+  }),
+  true,
+  "retail difference auto prints the verified current store price"
 );
 assertEqual(
   shouldAutoPrintWarehousePrice({
@@ -421,6 +482,23 @@ for (const status of ["missing_source", "not_applicable"] as const) {
     `${status} does not print an unverified warehouse label`
   );
 }
+for (const [label, storePrice] of [
+  ["missing UUID", { ...camelSnapshot.storePrice!, uuid: "" }],
+  ["missing price", { ...camelSnapshot.storePrice!, retailPrice: null }],
+  ["negative price", { ...camelSnapshot.storePrice!, retailPrice: -1 }],
+  ["non-finite price", { ...camelSnapshot.storePrice!, retailPrice: Number.NaN }],
+] as const) {
+  assertEqual(
+    shouldAutoPrintWarehousePrice({
+      lookupOrigin: "scan",
+      stage: "preview_succeeded",
+      snapshot: { ...camelSnapshot, storePrice },
+      alreadyPrinted: false,
+    }),
+    false,
+    `retail difference preview rejects ${label}`
+  );
+}
 for (const [label, input] of [
   [
     "manual lookup never auto prints",
@@ -485,130 +563,239 @@ assertEqual(
 const currentDetail = {
   productCode: "PRODUCT-1",
   barcode: "MAIN-1",
-  storePrice: { ...camelSnapshot.storePrice! },
-  setCodes: [{ setBarcode: "SET-1", setRetailPrice: 10 }],
-  multiCodes: [{ barcode: "MULTI-1", retailPrice: 5 }],
+  itemNumber: "ITEM-1",
+  localSupplierCode: "200",
+  storePrice: { ...camelSnapshot.storePrice!, storeProductCode: "STORE-1" },
+  setCodes: [{ setCodeId: "set-id", setBarcode: "SET-1", setRetailPrice: 10 }],
+  multiCodes: [{ multiCodeId: "multi-id", barcode: "MULTI-1", retailPrice: 5 }],
 };
-function createSkipHandler(options: {
-  autoPrint?: boolean;
-  scopeCurrent?: boolean;
-  errorMessage?: string;
+type Detail = typeof currentDetail;
+type FlowResult = { foregroundPending?: boolean; labelPrinted: boolean; autoPricingStatus: string };
+type PrintCall = { detail: Detail; options?: { barcode: string; retailPrice: number; action: string; printType: string | null } };
+
+function createPageFlow(options: {
+  snapshot?: typeof camelSnapshot;
   scanKeyword?: string;
+  autoPrintEnabled?: boolean;
+  lookupOrigin?: "scan" | "manual";
+  localSupplierCode?: string;
+  scopeCurrent?: boolean;
+  offline?: boolean;
+  syncError?: Error;
   print?: () => Promise<boolean>;
+  refreshedStorePrice?: { uuid?: string; retailPrice?: number | null };
 } = {}) {
-  let state: WarehousePriceSyncState = {
-    phase: "confirmation", snapshot: camelSnapshot, errorMessage: options.errorMessage ?? null,
-  };
+  let state = createWarehousePriceSyncState();
   const requestRef = { current: false };
-  const prints: { keyword: string; detail: typeof currentDetail }[] = [];
-  const restored: unknown[] = [];
+  const syncCalls: { uuid: string; request: Record<string, unknown> }[] = [];
+  const prints: PrintCall[] = [];
   const messages: string[] = [];
-  let contextCleared = false;
-  let writes = 0;
-  const context = {
-    detail: structuredClone(currentDetail), lookupOrigin: "scan", storeCodeOverride: "S01",
-    scanSource: "camera", scanKeyword: options.scanKeyword ?? "MULTI-1", autoPrintEnabled: options.autoPrint !== false,
-    alreadyPrinted: false,
-  };
-  const deps = {
+  const feedback: string[] = [];
+  const contexts: unknown[] = [];
+  const phases: WarehousePriceSyncState["phase"][] = [];
+  const detail: Detail = structuredClone({
+    ...currentDetail,
+    localSupplierCode: options.localSupplierCode ?? "200",
+  });
+  const snapshot = options.snapshot ?? camelSnapshot;
+  let failedMutation = false;
+  const printDeps = {
     useCallback: (callback: unknown) => callback,
-    warehousePriceSyncState: state,
-    warehousePriceSyncContext: context,
-    warehousePriceRequestInFlightRef: requestRef,
-    shouldAutoPrintWarehousePrice,
-    reduceWarehousePriceSyncState,
-    ensureCurrentDetailStoreScope: () => options.scopeCurrent !== false,
-    setWarehousePriceSyncState: (reduce: (value: WarehousePriceSyncState) => WarehousePriceSyncState) => {
-      state = reduce(state);
-    },
-    setWarehousePriceSyncContext: (value: unknown) => { contextCleared = value === null; },
-    restoreScanAbility: (value: unknown) => { restored.push(value); },
     getErrorMessage: (_error: unknown, fallback: string) => fallback,
-    t: (key: string) => key,
-    setSnackbarMessage: (message: string) => { messages.push(message); },
-    smartAutoPrint: async (keyword: string, detail: typeof currentDetail) => {
-      prints.push({ keyword, detail });
+    printQuantity: 1,
+    quantitySingleUse: false,
+    sendProductLabel: async (targetDetail: Detail, printOptions?: PrintCall["options"]) => {
+      prints.push({ detail: targetDetail, options: printOptions });
       return options.print ? options.print() : true;
     },
-    syncWarehousePrice: () => { writes += 1; throw new Error("跳过更新不能写价格"); },
+    getMultiCodeItemId: (code: Detail["multiCodes"][number]) => code.multiCodeId,
+    smallLabel: false,
+    t: (key: string) => key,
   };
-  const handler = new Function("deps", ts.transpile(
-    `const { ${Object.keys(deps).join(", ")} } = deps;\n${skipHandlerStatement!.getText(pageAst)}\nreturn handleCancelWarehousePriceSync;`,
-    { target: ts.ScriptTarget.ES2022 },
-  ))(deps) as (resumeAutoPrint?: boolean) => Promise<void>;
+  const smartAutoPrint = compileCallback<(keyword: string, targetDetail: Detail) => Promise<boolean>>(
+    smartAutoPrintStatement, "smartAutoPrint", printDeps,
+  );
+  const deps = {
+    useCallback: (callback: unknown) => callback,
+    ensureCurrentDetailStoreScope: () => options.scopeCurrent !== false,
+    offlineModeRef: { current: options.offline === true },
+    playQueryFeedback: (value: string) => { feedback.push(value); },
+    smartAutoPrint,
+    DEFAULT_LOOKUP_FLOW_RESULT: { keepCameraOpen: false, labelPrinted: false, autoPricingStatus: "no_action" },
+    getWarehousePriceSyncApplicability,
+    maybeHandleAutoPricing: async () => ({ keepCameraOpen: false, labelPrinted: false, autoPricingStatus: "no_action" }),
+    warehousePriceRequestInFlightRef: requestRef,
+    beginHqSyncMutation: () => "mutation-1",
+    selectedStoreCode: "S01",
+    setWarehousePriceSyncState: (reduce: (value: WarehousePriceSyncState) => WarehousePriceSyncState) => {
+      state = reduce(state);
+      phases.push(state.phase);
+    },
+    reduceWarehousePriceSyncState,
+    syncWarehousePrice: async (uuid: string, request: Record<string, unknown>) => {
+      syncCalls.push({ uuid, request });
+      if (options.syncError) throw options.syncError;
+      return snapshot;
+    },
+    normalizeDiscountRateValue: normalizeWarehouseDiscountRate,
+    presentHqSyncOperation: () => {},
+    replaceStorePriceDetail: (value: Detail, storePrice: Detail["storePrice"]) => ({ ...value, storePrice }),
+    loadDetail: async () => ({
+      ...detail,
+      storePrice: {
+        ...detail.storePrice,
+        purchasePrice: snapshot.storePrice?.purchasePrice ?? 3.25,
+        ...options.refreshedStorePrice,
+      },
+    }),
+    setDetail: () => {},
+    setInitialDetail: () => {},
+    cloneDetail: (value: Detail) => structuredClone(value),
+    setSnackbarMessage: (value: string) => { messages.push(value); },
+    t: (key: string) => key,
+    setWarehousePriceSyncContext: (value: unknown) => { contexts.push(value); },
+    shouldAutoPrintWarehousePrice,
+    getErrorMessage: (_error: unknown, fallback: string) => fallback,
+    hqSyncMutationCoordinatorRef: { current: { fail: () => { failedMutation = true; } } },
+    isAxiosError: () => false,
+  };
+  const processLoadedDetail = compileCallback<(value: Detail, input: Record<string, unknown>) => Promise<FlowResult>>(
+    processLoadedDetailStatement, "processLoadedDetail", deps,
+  );
+  const run = () => processLoadedDetail(detail, {
+    lookupOrigin: options.lookupOrigin ?? "scan",
+    storeCodeOverride: "S01",
+    scanSource: "camera",
+    scanKeyword: options.scanKeyword ?? "MAIN-1",
+    autoPrintEnabled: options.autoPrintEnabled !== false,
+  });
   return {
-    handler, requestRef, prints, restored, messages, context,
+    run, requestRef, syncCalls, prints, messages, feedback, contexts, phases, detail,
     get state() { return state; },
+    get failedMutation() { return failedMutation; },
     assertReleased() {
-      assert.equal(requestRef.current, false);
-      assert.equal(state.phase, "idle");
-      assert.equal(contextCleared, true);
-      assert.deepEqual(restored, ["camera"]);
-      assert.equal(writes, 0);
-      assert.deepEqual(context.detail, currentDetail, "保留门店价、折扣及条码价");
+      assert.equal(requestRef.current, false, "请求锁必须释放");
+      assert.equal(state.phase, "idle", "结束后仓库价流程回到 idle");
+      assert.ok(phases.every((phase) => phase !== "confirmation"), "页面流程不能进入零售价确认态");
+      assert.ok(contexts.every((value) => value === null), "零售价差异不能保存弹窗上下文");
+      assert.equal(detail.storePrice.retailPrice, 5, "原始门店售价保持不变");
+      assert.equal(detail.storePrice.discountRate, 0.2, "原始折扣保持不变");
     },
   };
 }
 
-async function runSkipHandlerRegression() {
-  const skip = createSkipHandler();
-  await skip.handler(true);
-  assert.equal(skip.prints.length, 1, "明确跳过更新应继续扫码打印");
-  assert.equal(skip.prints[0].keyword, "MULTI-1");
-  assert.equal(skip.prints[0].detail, skip.context.detail);
-  assert.equal(skip.prints[0].detail.storePrice.retailPrice, 5, "不能使用仓库新价 6");
-  skip.assertReleased();
-
-  for (const scanKeyword of ["MAIN-1", "PRODUCT-1", "SET-1"]) {
-    const known = createSkipHandler({ scanKeyword });
-    await known.handler(true);
-    assert.equal(known.prints.length, 1, "主条码、商品码及已加载的组码均可打印");
-    assert.equal(known.prints[0].keyword, scanKeyword);
-    known.assertReleased();
+async function runInlineWarehousePriceRegression() {
+  for (const [scanKeyword, expectedOptions] of [
+    ["MAIN-1", undefined],
+    ["PRODUCT-1", undefined],
+    ["SET-1", { barcode: "SET-1", retailPrice: 10, action: "set:set-id", printType: null }],
+    ["MULTI-1", { barcode: "MULTI-1", retailPrice: 5, action: "multi:multi-id", printType: null }],
+  ] as const) {
+    const flow = createPageFlow({ scanKeyword });
+    const result = await flow.run();
+    assert.equal(result.foregroundPending, undefined, "零售价差异不能挂起前台等待弹窗");
+    assert.equal(result.labelPrinted, true, "扫码应自动打印当前门店价");
+    assert.equal(flow.syncCalls.length, 1, "每次查询只做一次仓库价对账");
+    assert.equal(flow.syncCalls[0].uuid, "price-1");
+    assert.equal(flow.syncCalls[0].request.confirmRetailPrice, false, "不得确认写入仓库零售价");
+    assert.equal(flow.prints.length, 1);
+    assert.deepEqual(flow.prints[0].options, expectedOptions);
+    assert.equal(flow.prints[0].detail.storePrice.retailPrice, 5, "标签使用门店原售价 5 而非仓库价 6");
+    assert.equal(flow.prints[0].detail.storePrice.discountRate, 0.2, "标签保留门店折扣");
+    flow.assertReleased();
   }
-  const unloadedCode = createSkipHandler({ scanKeyword: "MULTI-ON-PAGE-2" });
-  await unloadedCode.handler(true);
-  assert.equal(unloadedCode.prints.length, 0, "未加载的多码不能回退打印主条码和主价");
-  assert.deepEqual(unloadedCode.messages, ["messages.codesLoadFailed"]);
-  unloadedCode.assertReleased();
 
-  for (const options of [{}, { autoPrint: false }, { scopeCurrent: false }]) {
-    const closed = createSkipHandler(options);
-    await closed.handler(Object.keys(options).length > 0);
-    assert.equal(closed.prints.length, 0, "关闭、关闭自动打印或失效门店不打印");
-    closed.assertReleased();
+  const unknown = createPageFlow({ scanKeyword: "MULTI-ON-PAGE-2" });
+  const unknownResult = await unknown.run();
+  assert.equal(unknownResult.labelPrinted, false);
+  assert.equal(unknown.prints.length, 0, "未加载的多码不能回退打印主价");
+  assert.deepEqual(unknown.messages, ["warehousePriceSync.purchaseUpdated", "messages.codesLoadFailed"]);
+  unknown.assertReleased();
+
+  for (const [label, refreshedStorePrice] of [
+    ["缺失售价", { retailPrice: null }],
+    ["负售价", { retailPrice: -1 }],
+    ["非有限售价", { retailPrice: Number.NaN }],
+    ["不同价记录", { uuid: "price-other", retailPrice: 5 }],
+  ] as const) {
+    const invalidRefresh = createPageFlow({ refreshedStorePrice });
+    const result = await invalidRefresh.run();
+    assert.equal(result.labelPrinted, false, `${label}的二次详情不得打印`);
+    assert.equal(invalidRefresh.prints.length, 0, `${label}不能沿用预览价或回退主价`);
+    assert.deepEqual(invalidRefresh.messages, [
+      "warehousePriceSync.purchaseUpdated",
+      "warehousePriceSync.currentPriceUnavailable",
+    ]);
+    invalidRefresh.assertReleased();
+  }
+
+  for (const retailPrice of [5.25, 0]) {
+    const concurrentPrice = createPageFlow({ refreshedStorePrice: { retailPrice } });
+    assert.equal((await concurrentPrice.run()).labelPrinted, true, "同一价记录的合法门店售价仍可打印");
+    assert.equal(concurrentPrice.prints[0].detail.storePrice.retailPrice, retailPrice, "标签必须采用刷新后的门店价");
+    concurrentPrice.assertReleased();
+  }
+
+  for (const flow of [
+    createPageFlow({ autoPrintEnabled: false }),
+    createPageFlow({ lookupOrigin: "manual" }),
+    createPageFlow({ scopeCurrent: false }),
+  ]) {
+    const result = await flow.run();
+    assert.equal(result.labelPrinted, false);
+    assert.equal(flow.prints.length, 0, "关闭自动打印、手动查询或门店范围失效不打印");
+    flow.assertReleased();
   }
 
   let finishPrint!: (value: boolean) => void;
   const pendingPrint = new Promise<boolean>((resolve) => { finishPrint = resolve; });
-  const doubleClick = createSkipHandler({ print: () => pendingPrint });
-  const first = doubleClick.handler(true);
-  assert.equal(doubleClick.state.phase, "printing");
-  assert.equal(isWarehousePriceInteractionLocked(doubleClick.state), true);
-  await doubleClick.handler(true);
-  await doubleClick.handler();
-  assert.equal(doubleClick.prints.length, 1, "打印过程中连点或关闭不得重复打印/提前恢复扫码");
-  assert.equal(doubleClick.restored.length, 0);
+  const duplicate = createPageFlow({ print: () => pendingPrint });
+  const first = duplicate.run();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(duplicate.state.phase, "previewing", "打印未完成前继续锁定扫码");
+  assert.equal(isWarehousePriceInteractionLocked(duplicate.state), true);
+  await duplicate.run();
+  assert.equal(duplicate.syncCalls.length, 1, "重复详情回调不能再发对账请求");
+  assert.equal(duplicate.prints.length, 1, "重复详情回调不能重复打印");
   finishPrint(true);
-  await first;
-  doubleClick.assertReleased();
+  assert.equal((await first).labelPrinted, true);
+  duplicate.assertReleased();
 
   for (const print of [async () => false, async () => { throw new Error("printer disconnected"); }]) {
-    const failed = createSkipHandler({ print });
-    await failed.handler(true);
-    assert.equal(failed.prints.length, 1);
-    failed.assertReleased();
+    const failedPrint = createPageFlow({ print });
+    const result = await failedPrint.run();
+    assert.equal(result.labelPrinted, false, "打印返回失败或抛错不能报告成功");
+    assert.equal(failedPrint.prints.length, 1);
+    failedPrint.assertReleased();
   }
 
-  const uncertain = createSkipHandler({ errorMessage: "confirmation timed out" });
-  await uncertain.handler(true);
-  assert.equal(uncertain.prints.length, 0, "确认结果不确定时不能按旧快照打印");
-  assert.deepEqual(uncertain.messages, ["confirmation timed out"]);
-  uncertain.assertReleased();
-  console.log("仓库零售价跳过更新与打印回归通过");
+  const networkFailure = createPageFlow({ syncError: new Error("offline") });
+  const failureResult = await networkFailure.run();
+  assert.equal(failureResult.autoPricingStatus, "failed");
+  assert.equal(networkFailure.prints.length, 0);
+  assert.equal(networkFailure.failedMutation, true, "网络失败须标记 HQ mutation 失败");
+  networkFailure.assertReleased();
+
+  const samePrice = createPageFlow({ snapshot: {
+    ...camelSnapshot, status: "synced", retailConfirmationRequired: false, warehouseRetailPrice: 5,
+  } });
+  assert.equal((await samePrice.run()).labelPrinted, true, "同价流程仍可打印");
+  samePrice.assertReleased();
+
+  const otherSupplier = createPageFlow({ localSupplierCode: "100" });
+  assert.equal((await otherSupplier.run()).labelPrinted, true, "非 200 供应商保留原自动打印路径");
+  assert.equal(otherSupplier.syncCalls.length, 0);
+  otherSupplier.assertReleased();
+
+  const offline = createPageFlow({ offline: true });
+  assert.equal((await offline.run()).labelPrinted, true, "离线路径保留已有标签打印行为");
+  assert.equal(offline.syncCalls.length, 0, "离线时不得调用仓库价 API");
+  offline.assertReleased();
+  console.log("仓库价页面内差异提示与扫码打印回归通过");
 }
 
-void runSkipHandlerRegression().catch((error) => {
+void runInlineWarehousePriceRegression().catch((error) => {
   console.error(error);
   process.exitCode = 1;
 });
