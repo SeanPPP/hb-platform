@@ -124,7 +124,7 @@ public sealed class ClientLogUploadServiceTests
         try
         {
             await service.StartAsync(CancellationToken.None);
-            await uploaded.Task.WaitAsync(TestWaitTimeouts.Default);
+            await uploaded.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
             await WaitForRuntimePendingCountAsync(store, expectedCount: 0);
             using var shutdownBudget = new CancellationTokenSource(TimeSpan.FromSeconds(2));
             await service.StopAsync(shutdownBudget.Token);
@@ -326,7 +326,7 @@ public sealed class ClientLogUploadServiceTests
         {
             await service.StartAsync(CancellationToken.None);
             started = true;
-            await secondRequest.Task.WaitAsync(TestWaitTimeouts.Default);
+            await secondRequest.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
             await WaitForOperationPendingCountAsync(store, expectedCount: 0);
 
             Assert.Equal([8, 1], batchSizes);
@@ -557,9 +557,9 @@ public sealed class ClientLogUploadServiceTests
         try
         {
             var upload = service.UploadOnceAsync(now, CancellationToken.None);
-            await terminal.FirstRequestStarted.WaitAsync(TimeSpan.FromSeconds(2));
+            await terminal.FirstRequestStarted.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
             var transition = await endpointState.BeginTransitionAsync(newAddress, CancellationToken.None);
-            await upload.WaitAsync(TimeSpan.FromSeconds(2));
+            await upload.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
             var pending = Assert.Single(await store.ReadPendingAsync(
                 ClientLogOutboxKind.OperationAudit,
@@ -1161,7 +1161,7 @@ public sealed class ClientLogUploadServiceTests
 
             service.RequestUpload();
 
-            await called.Task.WaitAsync(TestWaitTimeouts.Default);
+            await called.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
             await WaitForOperationPendingCountAsync(store, 0);
         }
         finally
@@ -1229,7 +1229,7 @@ public sealed class ClientLogUploadServiceTests
         }
 
         public Task WaitUntilPeriodicDelayAsync() =>
-            _periodicDelayStarted.Task.WaitAsync(TestWaitTimeouts.Default);
+            _periodicDelayStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
     }
 
     private static async Task WaitForOutboxSchemaAsync(ClientLogOutboxStore store)

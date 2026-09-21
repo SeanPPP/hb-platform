@@ -553,7 +553,7 @@ public sealed class InstallmentOperationServiceTests
             var service = CreateService(repository, new ClaimAwareInstallmentApiTestAdapter(api, request, claimState), terminal);
 
             var firstRecovery = service.RecoverAsync(Session);
-            await api.AppendStarted.Task.WaitAsync(TestWaitTimeouts.Default);
+            await api.AppendStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
             var secondRecovery = service.RecoverAsync(Session);
             api.AppendGate.SetResult();
             await Task.WhenAll(firstRecovery, secondRecovery);
@@ -1242,7 +1242,7 @@ public sealed class InstallmentOperationServiceTests
                 squareTerminalPaymentClient: lookup);
 
             var cancelTask = service.ExecuteCancelAsync(order, Session, "客户取消");
-            await terminal.RefundStarted.Task.WaitAsync(TestWaitTimeouts.Default);
+            await terminal.RefundStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
             var recovery = await service.RecoverAsync(Session);
             terminal.ReleaseCallback.TrySetResult();
             var cancel = await cancelTask;
