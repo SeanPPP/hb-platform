@@ -335,8 +335,8 @@ internal sealed class LinklyHttpConnectionMetricsService : IHostedService, IDisp
                 totalConnections = snapshot.Totals.Total,
                 activeConnections = snapshot.Active,
                 idleConnections = snapshot.Idle,
-                limit = 2,
-                withinLimit = snapshot.Totals.Total <= 2,
+                limit = LinklyCloudHttpConnectionPolicy.MaxTotalConnections,
+                withinLimit = snapshot.Totals.Total <= LinklyCloudHttpConnectionPolicy.MaxTotalConnections,
                 tokenOrigin = snapshot.TokenOrigin,
                 restOrigin = snapshot.RestOrigin,
                 sharedOrigins = snapshot.SharedOrigins,
@@ -346,7 +346,7 @@ internal sealed class LinklyHttpConnectionMetricsService : IHostedService, IDisp
         });
         var message = LogPrefix + json;
 
-        if (snapshot.Totals.Total <= 2)
+        if (snapshot.Totals.Total <= LinklyCloudHttpConnectionPolicy.MaxTotalConnections)
         {
             _logger.LogInformation("{Message}", message);
         }

@@ -1123,12 +1123,16 @@ public sealed class CashPaymentWorkflowService(
             }
 
             // LocalIp 在 socket 写入前已持久化 TxnRef；没有 SessionId 也不能把其取消当作未提交。
+            // 后端异步模式的销售引用则在建 attempt 时就已派生落库（远早于发请求），它的存在不说明终端是否接单：
+            // 该模式由终端客户端掌握提交边界——POST 之前失败会返回可回退结果或抛 CardTerminalNotSubmittedException，
+            // POST 之后失败会返回未知结果；异常走到这里时以会话是否已绑定为准。退款在各模式下维持原有的保守判定。
+            var txnRefMarksDispatch = isRefund || !IsCloudBackendAsyncAttempt(linklyAttemptAfterException);
             var wasSubmitted = !definitelyNotSubmitted && (
                 linklySubmissionObserved ||
                 squareSubmissionObserved ||
                 refundDispatchBoundaryPersisted ||
                 !string.IsNullOrWhiteSpace(linklyAttemptAfterException?.SessionId) ||
-                !string.IsNullOrWhiteSpace(linklyAttemptAfterException?.TxnRef) ||
+                (txnRefMarksDispatch && !string.IsNullOrWhiteSpace(linklyAttemptAfterException?.TxnRef)) ||
                 !string.IsNullOrWhiteSpace(squareAttemptAfterException?.CheckoutId));
 
             if (wasSubmitted)
@@ -2143,13 +2147,13 @@ public sealed class CashPaymentWorkflowService(
             attemptGuid,
             null,
             // LocalIp 引用只绑定已落库 attempt 身份；Cloud 退款继续沿用既有原交易派生规则。
+            // 销售在三种模式下都必须在发请求前确定引用并随 attempt 落库：CloudBackendAsync 过去等服务端生成，
+            // 请求发出后一旦断电或响应丢失，这一行 SessionId 与 TxnRef 皆空，自动恢复和主管结案都无法认领它。
             isRefund
                 ? mode == LinklyConnectionMode.LocalIp
                     ? LinklyLocalTxnRef.Create('R', attemptGuid.ToString("D"))
                     : BuildRefundTxnRef(referenceText)
-                : mode is LinklyConnectionMode.LocalIp or LinklyConnectionMode.CloudDirectSync
-                    ? LinklyLocalTxnRef.Create('P', attemptGuid.ToString("D"))
-                    : null,
+                : LinklyLocalTxnRef.Create('P', attemptGuid.ToString("D")),
             settings.Processor.ToString(),
             settings.Environment.ToString(),
             CardTerminalSettings.FormatLinklyConnectionMode(mode),
@@ -2205,6 +2209,14 @@ public sealed class CashPaymentWorkflowService(
             persistedAttempt,
             persistedAttempt.AttemptGuid != attempt.AttemptGuid,
             isRefund && RequiresLinklyRefundRecoveryForCurrentMode(persistedAttempt, mode));
+    }
+
+    private static bool IsCloudBackendAsyncAttempt(LocalCardPaymentAttempt? attempt)
+    {
+        return string.Equals(
+            attempt?.ConnectionMode?.Trim(),
+            nameof(LinklyConnectionMode.CloudBackendAsync),
+            StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool RequiresLinklyRefundRecoveryForCurrentMode(

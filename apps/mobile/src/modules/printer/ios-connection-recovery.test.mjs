@@ -70,6 +70,15 @@ const skipReason = swiftUnavailable
     ? "native Swift harness requires Darwin Foundation/CoreFoundation bridging"
     : false;
 
+test("继承 RCTEventEmitter 的生产 Swift 模块必须显式 import React", () => {
+  // 回归测试 harness 自带 RCTEventEmitter 桩类，覆盖不到真实工程；RN 0.81 预编译核心下
+  // 只靠桥接头会在 EAS 构建时报 cannot find type 'RCTEventEmitter' in scope（1.0.6 build 49）。
+  const source = readFileSync(productionSource, "utf8");
+  if (/class\s+HbPrinterModule\s*:\s*RCTEventEmitter\b/.test(source)) {
+    assert.match(source, /^import React$/m, "HbPrinterModule 继承 RCTEventEmitter 时必须 import React");
+  }
+});
+
 test("iOS 原生写失败会退役旧会话并隔离迟到 ACK", { skip: skipReason }, () => {
   if (swiftVersion.status !== 0) {
     assert.fail(`swiftc --version failed:\n${swiftVersion.stderr || swiftVersion.error}`);

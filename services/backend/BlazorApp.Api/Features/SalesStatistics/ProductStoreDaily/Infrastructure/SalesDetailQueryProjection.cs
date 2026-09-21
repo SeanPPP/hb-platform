@@ -48,6 +48,10 @@ DROP TABLE IF EXISTS #SalesDetailProjectionChinaSupplier;
 DROP TABLE IF EXISTS #SalesDetailProjectionMapping;
 
 DECLARE @sdpDay date = CONVERT(date, @sdpDate);
+-- 状态表主键是 (StatisticType, [Date] datetime)，日期只存零点。按完整主键等值查找只锁本日期这一行；
+-- 按日期范围读取时 HOLDLOCK 会顺带锁住下一个键（相邻日期的状态行），相邻日期并行重算时互相死锁。
+-- 变量类型必须与列一致为 datetime，否则列侧隐式转换会退回范围查找。
+DECLARE @sdpStateDate datetime = CONVERT(datetime, @sdpDay);
 DECLARE @sdpStatus nvarchar(20), @sdpProductVersion nvarchar(128),
         @sdpLastAggregatedAtUtc datetime2, @sdpCompletedAtUtc datetime2,
         @sdpJobId uniqueidentifier, @sdpMappingVersion varchar(64), @sdpMappingHasFanout bit = 0;
@@ -56,7 +60,7 @@ SELECT @sdpStatus = [Status], @sdpProductVersion = [SourceProductVersion],
        @sdpLastAggregatedAtUtc = [LastAggregatedAtUtc], @sdpCompletedAtUtc = [CompletedAtUtc],
        @sdpJobId = [JobId]
 FROM [dbo].[SalesStatisticRefreshState] WITH (UPDLOCK, HOLDLOCK)
-WHERE [StatisticType] = N'ProductStoreDaily' AND [Date] >= @sdpDay AND [Date] < DATEADD(day, 1, @sdpDay);
+WHERE [StatisticType] = N'ProductStoreDaily' AND [Date] = @sdpStateDate;
 
 -- 状态未发布或版本为空时撤销旧覆盖，查询端会自动回退到原事实流程。
 IF @sdpStatus NOT IN (N'Fresh', N'ProvisionalFresh')
