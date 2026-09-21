@@ -79,7 +79,10 @@ public partial class SettingsView : UserControl
         finally
         {
             ClearLinklyCloudPasswordBoxes();
-            _viewModel.RaiseLinklyCloudPasswordInputChanged(hasPassword: false);
+            // await 期间页面可能已卸载（Unloaded 或 DataContext 换成非 SettingsViewModel），
+            // 此时 _viewModel 为 null；finally 在 catch 的保护范围之外，
+            // 裸解引用抛出的 NRE 会逃逸出 async void 直接终止收银客户端。
+            _viewModel?.RaiseLinklyCloudPasswordInputChanged(hasPassword: false);
         }
     }
 
@@ -106,7 +109,10 @@ public partial class SettingsView : UserControl
         finally
         {
             ClearLinklyCloudPasswordBoxes();
-            _viewModel.RaiseLinklyCloudPasswordInputChanged(hasPassword: false);
+            // await 期间页面可能已卸载（Unloaded 或 DataContext 换成非 SettingsViewModel），
+            // 此时 _viewModel 为 null；finally 在 catch 的保护范围之外，
+            // 裸解引用抛出的 NRE 会逃逸出 async void 直接终止收银客户端。
+            _viewModel?.RaiseLinklyCloudPasswordInputChanged(hasPassword: false);
         }
     }
 
