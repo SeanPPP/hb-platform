@@ -53,6 +53,8 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
         _localDb.CodeFirst.InitTables(
             typeof(Product),
             typeof(WarehouseProduct),
+            // 直写开关打开时，读取器按「仓库商品 -> 国内商品」解析国内供应商。
+            typeof(DomesticProduct),
             typeof(Store),
             typeof(StoreRetailPrice),
             typeof(StoreSalesStatistic),
@@ -1512,6 +1514,182 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
         Assert.NotNull(state.LastAggregatedAtUtc);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UpdateProductStoreDailyStatistics_直写开关只改变国内货的SupplierCode不改变成本(bool writeDirectChinaSupplierCode)
+    {
+        var date = new DateTime(2026, 6, 2);
+        await SeedDirectCodeFixtureAsync(date);
+
+        await CreateStatisticsJobService(writeDirectChinaSupplierCode).UpdateProductStoreDailyStatistics(date);
+
+        var rows = await _localDb.Queryable<ProductStoreDailySalesStatistic>()
+            .Where(x => x.Date == date)
+            .ToListAsync();
+        Assert.Equal(5, rows.Count);
+        var resolved = rows.Single(x => x.ProductCode == "P-W-RESOLVED");
+        // 开关关闭时与改造前完全一致：国内货仍写 200。
+        Assert.Equal(writeDirectChinaSupplierCode ? "CN-W" : "200", resolved.SupplierCode);
+        // 成本始终按本地供应商 200 匹配分店价格表；拿 CN-W 去匹配会落到商品进价 9。
+        Assert.Equal("StoreRetailPrice", resolved.CostSource);
+        Assert.Equal(2m, resolved.UnitCostSnapshot);
+        Assert.Equal(10m, resolved.TotalCost);
+        Assert.Equal(15m, resolved.GrossProfit);
+        // 解析不出国内供应商、编码不在国内供应商目录里、国内商品或仓库商品已软删除的，都保持 200（与映射同步的规则一致）。
+        Assert.All(
+            new[] { "P-W-NO-RELATION", "P-W-ORPHAN", "P-W-DELETED", "P-W-WAREHOUSE-DELETED" },
+            productCode => Assert.Equal("200", rows.Single(x => x.ProductCode == productCode).SupplierCode));
+
+        // 两张拆分表的口径不随开关变化：澳洲侧国内货恒为 200；国内侧直写行不再需要 POSM 映射。
+        var australian = await _localDb.Queryable<AustralianSupplierStoreSalesDetail>().Where(x => x.Date == date).ToListAsync();
+        Assert.Equal(65m, Assert.Single(australian, x => x.SupplierCode == "200").TotalAmount);
+        var china = await _localDb.Queryable<ChinaSupplierStoreSalesDetail>().Where(x => x.Date == date).ToListAsync();
+        if (writeDirectChinaSupplierCode)
+            Assert.Equal(25m, Assert.Single(china, x => x.SupplierCode == "CN-W").TotalAmount);
+        else
+            Assert.Empty(china);
+
+        var state = await _localDb.Queryable<SalesStatisticRefreshState>()
+            .Where(x => x.StatisticType == SalesStatisticType.ProductStoreDaily && x.Date == date)
+            .FirstAsync();
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh, state.Status);
+    }
+
+    [Fact]
+    public async Task UpdateProductStoreDailyStatistics_历史日期重算时归属编码变化不丢历史成本快照()
+    {
+        var date = new DateTime(2026, 6, 3);
+        await SeedDirectCodeFixtureAsync(date);
+
+        // 第一次：开关关闭，国内货写 200，成本取当时的分店进价 2。
+        await CreateStatisticsJobService().UpdateProductStoreDailyStatistics(date);
+        // 之后分店进价涨到 3。历史日期重算不能用它覆盖已审计的成本快照。
+        await _localDb.Updateable<StoreRetailPrice>()
+            .SetColumns(x => x.PurchasePrice == 3m)
+            .Where(x => x.ProductCode == "P-W-RESOLVED")
+            .ExecuteCommandAsync();
+
+        async Task AssertSnapshotAsync(string expectedSupplierCode)
+        {
+            var row = Assert.Single(await _localDb.Queryable<ProductStoreDailySalesStatistic>()
+                .Where(x => x.Date == date && x.ProductCode == "P-W-RESOLVED")
+                .ToListAsync());
+            Assert.Equal(expectedSupplierCode, row.SupplierCode);
+            Assert.Equal(2m, row.UnitCostSnapshot);
+            Assert.Equal(10m, row.TotalCost);
+            Assert.Equal(15m, row.GrossProfit);
+        }
+
+        // 200 -> 直写：打开开关后重算，行键从 200 变成 CN-W。
+        await CreateStatisticsJobService(writeDirectChinaSupplierCode: true).UpdateProductStoreDailyStatistics(date);
+        await AssertSnapshotAsync("CN-W");
+
+        // 直写 -> 另一国内编码：主数据里换了国内供应商后再重算。
+        await _localDb.Updateable<DomesticProduct>()
+            .SetColumns(x => x.SupplierCode == "CN-W2")
+            .Where(x => x.ProductCode == "P-W-RESOLVED")
+            .ExecuteCommandAsync();
+        await CreateStatisticsJobService(writeDirectChinaSupplierCode: true).UpdateProductStoreDailyStatistics(date);
+        await AssertSnapshotAsync("CN-W2");
+
+        // 直写 -> 200：关掉开关后重算（回退路径）。
+        await CreateStatisticsJobService().UpdateProductStoreDailyStatistics(date);
+        await AssertSnapshotAsync("200");
+    }
+
+    [Fact]
+    public async Task UpdateProductStoreDailyStatistics_当天营业中快照路径同样直写国内供应商编码()
+    {
+        // 当天走的是独立的营业中快照读取入口，开关必须一并传到。
+        var today = SalesStatisticsBusinessDate.Today();
+        await SeedDirectCodeFixtureAsync(today);
+
+        await CreateStatisticsJobService(writeDirectChinaSupplierCode: true).UpdateProductStoreDailyStatistics(today);
+
+        var resolved = Assert.Single(await _localDb.Queryable<ProductStoreDailySalesStatistic>()
+            .Where(x => x.ProductCode == "P-W-RESOLVED")
+            .ToListAsync());
+        Assert.Equal("CN-W", resolved.SupplierCode);
+        Assert.Equal("StoreRetailPrice", resolved.CostSource);
+        Assert.Equal(10m, resolved.TotalCost);
+    }
+
+    /// <summary>
+    /// 分店 S1 在指定日期卖出五个本地供应商为 200 的商品（每行 5 件），用于直写开关的端到端用例：
+    /// P-W-RESOLVED 能解析出国内供应商 CN-W，有按 200 登记的分店进价 2（商品进价 9）；
+    /// P-W-NO-RELATION 没有国内商品关系；P-W-ORPHAN 的国内编码不在国内供应商目录里；
+    /// P-W-DELETED 的国内商品已软删除；P-W-WAREHOUSE-DELETED 的仓库商品已软删除。
+    /// </summary>
+    private async Task SeedDirectCodeFixtureAsync(DateTime date)
+    {
+        await _localDb.Insertable(new List<ChinaSupplier>
+        {
+            new() { Guid = "cn-w", SupplierCode = "CN-W", SupplierName = "直写国内供应商" },
+            new() { Guid = "cn-w2", SupplierCode = "CN-W2", SupplierName = "变更后的国内供应商" },
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new HBLocalSupplier { Guid = "local-200-w", LocalSupplierCode = "200", Name = "hotbargain" })
+            .ExecuteCommandAsync();
+
+        var products = new (string ProductCode, string? ChinaSupplierCode, bool RelationDeleted, decimal Amount)[]
+        {
+            ("P-W-RESOLVED", "CN-W", false, 25m),
+            ("P-W-NO-RELATION", null, false, 10m),
+            ("P-W-ORPHAN", "CN-NOT-IN-CATALOG", false, 10m),
+            ("P-W-DELETED", "CN-W", true, 10m),
+            ("P-W-WAREHOUSE-DELETED", "CN-W", false, 10m),
+        };
+        foreach (var product in products)
+        {
+            await SeedProductAsync(product.ProductCode, $"IT-{product.ProductCode}", null, product.ProductCode, true, true, 1);
+            if (product.ChinaSupplierCode != null)
+            {
+                await _localDb.Insertable(new DomesticProduct
+                {
+                    ProductCode = product.ProductCode,
+                    SupplierCode = product.ChinaSupplierCode,
+                    IsDeleted = product.RelationDeleted,
+                }).ExecuteCommandAsync();
+            }
+            await SeedSaleAsync($"O-{product.ProductCode}-{date:MMdd}", $"D-{product.ProductCode}-{date:MMdd}", product.ProductCode, "S1", date.AddHours(10), 5, product.Amount);
+            await _posmDb.Insertable(new PaymentDetail
+            {
+                PaymentGuid = $"PAY-{product.ProductCode}-{date:MMdd}",
+                OrderGuid = $"O-{product.ProductCode}-{date:MMdd}",
+                Amount = product.Amount,
+            }).ExecuteCommandAsync();
+        }
+        await _localDb.Updateable<WarehouseProduct>()
+            .SetColumns(p => p.IsDeleted == true)
+            .Where(p => p.ProductCode == "P-W-WAREHOUSE-DELETED")
+            .ExecuteCommandAsync();
+        await _localDb.Updateable<Product>()
+            .SetColumns(p => p.PurchasePrice == 9m)
+            .Where(p => p.ProductCode == "P-W-RESOLVED")
+            .ExecuteCommandAsync();
+        await _localDb.Insertable(new StoreRetailPrice
+        {
+            UUID = $"srp-w-{date:MMdd}",
+            StoreCode = "S1",
+            ProductCode = "P-W-RESOLVED",
+            SupplierCode = "200",
+            PurchasePrice = 2m,
+            IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new StoreSalesStatistic
+        {
+            Date = date,
+            BranchCode = "S1",
+            BranchName = "Store 1",
+            TotalQuantity = 25,
+            TotalAmount = 65m,
+            OrderCount = 5,
+            CustomerCount = 5,
+            AverageOrderValue = 13m,
+        }).ExecuteCommandAsync();
+    }
+
     [Fact]
     public async Task GetBestSellersAsync_商品统计重算中返回空结果避免读取旧统计()
     {
@@ -2571,7 +2749,7 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
         );
     }
 
-    private SalesStatisticsJobService CreateStatisticsJobService()
+    private SalesStatisticsJobService CreateStatisticsJobService(bool writeDirectChinaSupplierCode = false)
     {
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -2579,6 +2757,7 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
                 ["ScheduledTasks:MaxConcurrentUpdates"] = "2",
                 ["ScheduledTasks:MaxDaysForConcurrentUpdate"] = "30",
                 ["ScheduledTasks:MaxDaysPerChunk"] = "7",
+                ["SalesStatistics:WriteDirectChinaSupplierCode"] = writeDirectChinaSupplierCode ? "true" : "false",
             })
             .Build();
 

@@ -19,7 +19,8 @@ internal sealed class SalesStatisticsProductStoreDailySourceReader
         POSMSqlSugarContext posmContext,
         ILogger logger,
         DateTime date,
-        Func<Task<List<StoreSalesStatistic>>> loadStoreStatisticsAsync)
+        Func<Task<List<StoreSalesStatistic>>> loadStoreStatisticsAsync,
+        bool writeDirectChinaSupplierCode = false)
     {
         if (!SalesStatisticsBusinessDate.IsToday(date) || date.Year == 2025)
             throw new ArgumentException("营业中快照只接受当天非 2025 日期", nameof(date));
@@ -37,7 +38,9 @@ internal sealed class SalesStatisticsProductStoreDailySourceReader
             workAsync: async () =>
             {
                 stores = await loadStoreStatisticsAsync();
-                input = await LoadAsync(context, posmContext, null, logger, date, null, null);
+                input = await LoadAsync(
+                    context, posmContext, null, logger, date, null, null,
+                    writeDirectChinaSupplierCode: writeDirectChinaSupplierCode);
             },
             commitAsync: () => posmContext.Db.Ado.CommitTranAsync(),
             rollbackAsync: () => posmContext.Db.Ado.RollbackTranAsync(),
@@ -53,7 +56,8 @@ internal sealed class SalesStatisticsProductStoreDailySourceReader
         DateTime date,
         IReadOnlyList<ProductStoreDailySourceRow>? preloadedHBSalesRows,
         Posm2025DailySnapshot? preloadedPosmSnapshot,
-        IReadOnlyCollection<string>? costProductCodes = null)
+        IReadOnlyCollection<string>? costProductCodes = null,
+        bool writeDirectChinaSupplierCode = false)
     {
         var targetDate = date.Date;
         var nextDate = targetDate.AddDays(1);
@@ -214,10 +218,68 @@ internal sealed class SalesStatisticsProductStoreDailySourceReader
             .Select(product => new WarehouseCostRow { ProductCode = product.ProductCode, ImportPrice = product.ImportPrice })
             .ToListAsync();
 
+        // 国内供应商编码目录与开关无关，总要加载：库里可能已有直写行，写入端按行键找旧行时
+        // 要把国内编码族视为同一个供应商，否则历史成本快照会因为键对不上而被当前进价覆盖。
+        var chinaSupplierCodes = await ChinaSupplierCodeFamily.LoadChinaSupplierCodesAsync(context.Db);
+        // 只有开关打开才解析。原始明细行保持不动（成本回填的来源哈希和证据都基于它），改写发生在聚合器里。
+        var chinaSupplierByProduct = writeDirectChinaSupplierCode
+            ? await LoadChinaSupplierByProductAsync(context, chinaSupplierCodes)
+            : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
         return new ProductStoreDailyRefreshInput(
             targetDate, rawRows, supplementalReturnRows.ToHashSet(), orderAmountMaps.PaymentAmounts,
             orderAmountMaps.DetailAmounts, deviceBranchMap, storeCosts, productCosts, warehouseCosts,
-            lastSourceUploadTime);
+            lastSourceUploadTime)
+        {
+            ChinaSupplierByProduct = chinaSupplierByProduct,
+            ChinaSupplierCodes = chinaSupplierCodes,
+        };
+    }
+
+    /// <summary>
+    /// 按主数据解析国内货的国内供应商：未删除的仓库商品关联到未删除的国内商品，取它的供应商编码。
+    /// 规则与 POSM 商品映射同步一致，但直接读主数据，不依赖映射是否同步及时。
+    /// 编码必须存在于国内供应商目录：读取侧靠「编码是否属于目录」识别直写行，
+    /// 目录外的编码写进去会被澳洲侧报表当成普通供应商，这种商品保持 200。
+    /// 两张主数据表各约两万行，一条固定文本的查询整表读出；按当天商品编码分批 IN 查询的话，
+    /// 每批 SQL 文本不同都要重新编译，批量重算多天时反而更慢。
+    /// </summary>
+    internal static async Task<Dictionary<string, string>> LoadChinaSupplierByProductAsync(
+        SqlSugarContext context,
+        HashSet<string> chinaSupplierCodes)
+    {
+        var rows = await context.Db.Queryable<WarehouseProduct>()
+            .InnerJoin<DomesticProduct>((warehouse, domestic) => warehouse.ProductCode == domestic.ProductCode)
+            .Where((warehouse, domestic) =>
+                warehouse.IsDeleted == false
+                && domestic.IsDeleted == false
+                && domestic.SupplierCode != null
+                && domestic.SupplierCode != "")
+            .Select((warehouse, domestic) => new ChinaSupplierProductRow
+            {
+                ProductCode = warehouse.ProductCode,
+                SupplierCode = domestic.SupplierCode,
+            })
+            .ToListAsync();
+
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in rows)
+        {
+            var productCode = row.ProductCode?.Trim();
+            var supplierCode = row.SupplierCode?.Trim();
+            if (string.IsNullOrWhiteSpace(productCode) || string.IsNullOrWhiteSpace(supplierCode))
+                continue;
+            // 取目录里的规范写法，避免主数据与目录大小写不一致时写出两种编码。
+            if (chinaSupplierCodes.TryGetValue(supplierCode, out var catalogCode))
+                result[productCode] = catalogCode;
+        }
+        return result;
+    }
+
+    internal sealed class ChinaSupplierProductRow
+    {
+        public string? ProductCode { get; set; }
+        public string? SupplierCode { get; set; }
     }
 
     private static async Task ValidateAndResolveHBSalesRowsAsync(

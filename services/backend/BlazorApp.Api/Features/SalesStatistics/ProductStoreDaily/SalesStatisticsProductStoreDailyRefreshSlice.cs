@@ -61,20 +61,31 @@ namespace BlazorApp.Api.Services
         try
         {
             logger.LogInformation("开始更新商品分店每日统计: {Date}", targetDate);
+            // 开关只影响本次写出的 SupplierCode；库里新旧两种写法的行可以混存，读取侧都认。
+            var writeDirectChinaSupplierCode =
+                _configuration?.GetValue<bool>(ChinaSupplierCodeFamily.WriteDirectCodeConfigKey) ?? false;
             ProductStoreDailyRefreshInput input = null!;
             if (useCurrentDaySnapshot)
             {
                 (input, atomicStoreStatistics) = await new SalesStatisticsProductStoreDailySourceReader()
                     .LoadCurrentDaySnapshotAsync(context, posmContext, logger, targetDate,
                         () => _productSupport.BuildStoreStatisticsAsync(
-                            context, posmContext, hbSalesContext, targetDate, null));
+                            context, posmContext, hbSalesContext, targetDate, null),
+                        writeDirectChinaSupplierCode);
                 currentDaySourceWatermark = input.LastSourceUploadTime;
             }
             else
             {
                 input = await new SalesStatisticsProductStoreDailySourceReader().LoadAsync(
                     context, posmContext, hbSalesContext, logger, targetDate,
-                    preloadedHBSalesRows, preloadedPosmSnapshot);
+                    preloadedHBSalesRows, preloadedPosmSnapshot,
+                    writeDirectChinaSupplierCode: writeDirectChinaSupplierCode);
+            }
+            if (writeDirectChinaSupplierCode)
+            {
+                logger.LogInformation(
+                    "商品分店每日统计直写国内供应商编码: {Date}, 解析出国内供应商的商品 {ResolvedProductCount} 个",
+                    targetDate, input.ChinaSupplierByProduct.Count);
             }
             var build = new SalesStatisticsProductStoreDailyBuilder().Build(input);
             var sourceWatermarkValidator = validateSourceWatermarkBeforeCommitAsync;
