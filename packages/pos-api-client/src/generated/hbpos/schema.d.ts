@@ -6422,6 +6422,8 @@ export interface components {
             terminalId?: string | null;
             /** Format: int64 */
             selectionRevision?: number | null;
+            /** Format: uuid */
+            attemptGuid?: string | null;
         };
         LinklyCloudCredentialResponse: {
             storeCode?: string | null;

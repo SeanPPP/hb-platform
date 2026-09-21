@@ -42,7 +42,16 @@ public sealed class CatalogController(ICatalogService catalogService) : Controll
             return DeviceAuthorizationExtensions.DeviceScopeForbidden<SellableItemsResponse>("Device is not authorized for this store.");
         }
 
-        var response = await catalogService.GetSellableItemsAsync(storeCode, since, cancellationToken);
+        SellableItemsResponse? response;
+        try
+        {
+            response = await catalogService.GetSellableItemsAsync(storeCode, since, cancellationToken);
+        }
+        catch (CatalogCapacityBusyException)
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable,
+                ApiResult<SellableItemsResponse>.Fail("CATALOG_CAPACITY_BUSY", "catalog download capacity is busy"));
+        }
         return response is null
             ? NotFound(ApiResult<SellableItemsResponse>.Fail("STORE_NOT_FOUND", "门店不存在或已停用"))
             : Ok(ApiResult<SellableItemsResponse>.Ok(response));
@@ -112,6 +121,11 @@ public sealed class CatalogController(ICatalogService catalogService) : Controll
             return Conflict(ApiResult<CatalogSyncPageResponse>.Fail(
                 "CATALOG_SNAPSHOT_EXPIRED",
                 "catalog snapshot expired; restart the download"));
+        }
+        catch (CatalogCapacityBusyException)
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable,
+                ApiResult<CatalogSyncPageResponse>.Fail("CATALOG_CAPACITY_BUSY", "catalog download capacity is busy"));
         }
         catch (CatalogSnapshotIsolationUnavailableException)
         {
@@ -223,6 +237,11 @@ public sealed class CatalogController(ICatalogService catalogService) : Controll
                 "CATALOG_SNAPSHOT_EXPIRED",
                 "catalog snapshot expired; restart with a full download"));
         }
+        catch (CatalogCapacityBusyException)
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable,
+                ApiResult<CatalogDeltaPageResponse>.Fail("CATALOG_CAPACITY_BUSY", "catalog download capacity is busy"));
+        }
     }
 
     [HttpPost("sellable-items/compare")]
@@ -247,7 +266,16 @@ public sealed class CatalogController(ICatalogService catalogService) : Controll
 
         var stopwatch = Stopwatch.StartNew();
         Log($"compare request store={request.StoreCode} localLookups={request.LocalLookups.Count}");
-        var response = await catalogService.CompareSellableItemsAsync(request, cancellationToken);
+        CatalogCompareResponse? response;
+        try
+        {
+            response = await catalogService.CompareSellableItemsAsync(request, cancellationToken);
+        }
+        catch (CatalogCapacityBusyException)
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable,
+                ApiResult<CatalogCompareResponse>.Fail("CATALOG_CAPACITY_BUSY", "catalog download capacity is busy"));
+        }
         stopwatch.Stop();
         Log(response is null
             ? $"compare response store={request.StoreCode} status=404 elapsedMs={stopwatch.ElapsedMilliseconds}"
@@ -349,11 +377,20 @@ public sealed class CatalogController(ICatalogService catalogService) : Controll
 
         var stopwatch = Stopwatch.StartNew();
         Log($"special products page request store={storeCode} cursor={cursor ?? "<start>"} pageSize={pageSize}");
-        var response = await catalogService.GetSpecialProductsPageAsync(
-            storeCode,
-            cursor,
-            pageSize,
-            cancellationToken);
+        CatalogSpecialProductsPageResponse? response;
+        try
+        {
+            response = await catalogService.GetSpecialProductsPageAsync(
+                storeCode,
+                cursor,
+                pageSize,
+                cancellationToken);
+        }
+        catch (CatalogCapacityBusyException)
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable,
+                ApiResult<CatalogSpecialProductsPageResponse>.Fail("CATALOG_CAPACITY_BUSY", "catalog download capacity is busy"));
+        }
         stopwatch.Stop();
         Log(response is null
             ? $"special products page response store={storeCode} status=404 elapsedMs={stopwatch.ElapsedMilliseconds}"

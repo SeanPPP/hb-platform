@@ -3881,6 +3881,129 @@ public sealed class LinklyBackendTerminalClientTests
     }
 
     [Fact]
+    public async Task PurchaseAsync_sends_attempt_identity_so_backend_derives_the_txn_ref_already_persisted_locally()
+    {
+        var attemptGuid = Guid.Parse("00000000-0000-0000-0000-000000000001");
+        const string attemptTxnRef = "PMND6WYVF2GBVY6G";
+        var requests = new List<HttpRequestMessage>();
+        string? boundTxnRef = null;
+        var accessor = new LinklyPaymentAttemptContextAccessor();
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            requests.Add(CloneRequestWithBody(request));
+            return request.RequestUri!.AbsolutePath switch
+            {
+                "/api/v1/linkly/cloud-backend/transactions/active" => new HttpResponseMessage(HttpStatusCode.NotFound),
+                "/api/v1/linkly/cloud-backend/transactions" => JsonResponse(PendingSessionJson("recoverable-session", attemptTxnRef)),
+                "/api/v1/linkly/cloud-backend/transactions/recoverable-session/status" => JsonResponse(ApprovedSessionJson("recoverable-session", attemptTxnRef)),
+                _ => throw new InvalidOperationException($"Unexpected request: {request.RequestUri}")
+            };
+        });
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService(), TimeSpan.Zero, null, null, accessor);
+        using var scope = accessor.Begin(new LinklyPaymentAttemptContext(
+            attemptGuid,
+            (_, txnRef, _, _) =>
+            {
+                boundTxnRef = txnRef;
+                return Task.CompletedTask;
+            },
+            TxnRef: LinklyLocalTxnRef.Create('P', attemptGuid.ToString("D"))));
+
+        await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        // 交易引用仍由后端生成，客户端只交出 attempt 身份；后端用同一算法派生出的引用必须等于本地已落库的值，
+        // 请求发出后若断电，本地记录才能靠它认领会话。请求体里不得出现 txnRef（契约守卫测试禁止客户端指定）。
+        var start = Assert.Single(requests, request => request.RequestUri!.AbsolutePath.EndsWith("/transactions", StringComparison.Ordinal));
+        var body = await start.Content!.ReadAsStringAsync();
+        Assert.Equal(attemptGuid.ToString("D"), ReadJsonString(body, "attemptGuid"));
+        Assert.Null(TryReadJsonString(body, "txnRef"));
+        Assert.Equal(attemptTxnRef, LinklyLocalTxnRef.Create('P', attemptGuid.ToString("D")));
+        Assert.Equal(attemptTxnRef, boundTxnRef);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("0123456789abcdef0123456789abcdef")]
+    [InlineData("P0123456789ABCDE")]
+    public async Task PurchaseAsync_leaves_txn_ref_to_backend_when_local_reference_is_not_derived_from_the_attempt(string? attemptTxnRef)
+    {
+        var requests = new List<HttpRequestMessage>();
+        var accessor = new LinklyPaymentAttemptContextAccessor();
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            requests.Add(CloneRequestWithBody(request));
+            return request.RequestUri!.AbsolutePath switch
+            {
+                "/api/v1/linkly/cloud-backend/transactions/active" => new HttpResponseMessage(HttpStatusCode.NotFound),
+                "/api/v1/linkly/cloud-backend/transactions" => JsonResponse(PendingSessionJson("backend-ref-session", "260601120020ABCD")),
+                "/api/v1/linkly/cloud-backend/transactions/backend-ref-session/status" => JsonResponse(ApprovedSessionJson("backend-ref-session", "260601120020ABCD")),
+                _ => throw new InvalidOperationException($"Unexpected request: {request.RequestUri}")
+            };
+        });
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService(), TimeSpan.Zero, null, null, accessor);
+        using var scope = accessor.Begin(new LinklyPaymentAttemptContext(
+            Guid.Parse("bbbbbbbb-cccc-dddd-eeee-ffffffffffff"),
+            (_, _, _, _) => Task.CompletedTask,
+            TxnRef: attemptTxnRef));
+
+        await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        // 本地引用不是由该 attempt 身份派生时，后端派生出的值会与本地记录对不上；这时宁可让后端随机生成。
+        var start = Assert.Single(requests, request => request.RequestUri!.AbsolutePath.EndsWith("/transactions", StringComparison.Ordinal));
+        Assert.Null(TryReadJsonString(await start.Content!.ReadAsStringAsync(), "attemptGuid"));
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_takes_over_finished_but_unacknowledged_session_when_conflict_has_no_active_session()
+    {
+        var requests = new List<HttpRequestMessage>();
+        LinklyCloudBackendSessionResponse? takenOver = null;
+        var accessor = new LinklyPaymentAttemptContextAccessor();
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            requests.Add(CloneRequestWithBody(request));
+            return request.RequestUri!.AbsolutePath switch
+            {
+                // 上一笔在绑定会话前断电，顾客随后在终端完成了刷卡：会话已到终态（不再 active），但 POS 从未确认。
+                "/api/v1/linkly/cloud-backend/transactions/active" => new HttpResponseMessage(HttpStatusCode.NotFound),
+                "/api/v1/linkly/cloud-backend/transactions" => JsonResponse(
+                    """
+                    {
+                      "success": false,
+                      "errorCode": "LINKLY_CLOUD_BACKEND_ACTIVE_TRANSACTION",
+                      "message": "Active session exists."
+                    }
+                    """,
+                    HttpStatusCode.Conflict),
+                "/api/v1/linkly/cloud-backend/transactions/resumable" => JsonResponse(ApprovedSessionJson("orphan-session", "P0123456789ABCDE")),
+                _ => throw new InvalidOperationException($"Unexpected request: {request.RequestUri}")
+            };
+        });
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService(), TimeSpan.Zero, null, null, accessor);
+        using var scope = accessor.Begin(new LinklyPaymentAttemptContext(
+            Guid.Parse("bbbbbbbb-cccc-dddd-eeee-ffffffffffff"),
+            (_, _, _, _) => Task.CompletedTask,
+            TxnRef: "PZZZZZZZZZZZZZZZ",
+            TakeOverActiveSessionAsync: (_, status, _) =>
+            {
+                takenOver = status;
+                return Task.FromResult(LinklyActiveSessionTakeoverResult.Success);
+            }));
+
+        var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        // 过去这里只会提示"稍后再试"，而后端闸门会一直拒绝，这台设备的 Cloud 刷卡只能靠改库解除。
+        Assert.Equal("orphan-session", takenOver?.SessionId);
+        Assert.Equal("P0123456789ABCDE", takenOver?.TxnRef);
+        Assert.False(result.Approved);
+        Assert.False(result.ResultUnknown);
+        Assert.Equal("linkly.backend.activeSessionRequiresRecovery", result.StatusKey);
+        Assert.Single(requests, request =>
+            request.Method == HttpMethod.Post &&
+            request.RequestUri!.AbsolutePath.EndsWith("/transactions", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task PurchaseAsync_unknown_conflict_does_not_take_over_or_replay_transaction()
     {
         var requests = new List<HttpRequestMessage>();

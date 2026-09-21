@@ -194,9 +194,10 @@ public static class ServiceRegistration
             .SetHandlerLifetime(Timeout.InfiniteTimeSpan)
             .UseSocketsHttpHandler((handler, _) =>
             {
-                // 固定工厂 Handler，并由连接生命周期定期刷新 DNS；REST 池始终最多一条真实连接。
+                // 固定工厂 Handler，并由连接生命周期定期刷新 DNS；并发由按终端闸门控制，
+                // 连接数只设保险上限，避免跨门店请求挤在同一条连接上排队（见 LinklyCloudHttpConnectionPolicy）。
                 handler.PooledConnectionLifetime = TimeSpan.FromMinutes(15);
-                handler.MaxConnectionsPerServer = 1;
+                handler.MaxConnectionsPerServer = LinklyCloudHttpConnectionPolicy.MaxConnectionsPerOrigin;
             });
         services.AddHttpClient<ILinklyCloudBackendTokenProvider, HttpLinklyCloudBackendTokenProvider>(client =>
         {
@@ -205,9 +206,9 @@ public static class ServiceRegistration
             .SetHandlerLifetime(Timeout.InfiniteTimeSpan)
             .UseSocketsHttpHandler((handler, _) =>
             {
-                // 固定工厂 Handler，并由连接生命周期定期刷新 DNS；Token 与 REST 合计最多两条连接。
+                // 固定工厂 Handler，并由连接生命周期定期刷新 DNS；Token 与 REST 使用同一上限口径。
                 handler.PooledConnectionLifetime = TimeSpan.FromMinutes(15);
-                handler.MaxConnectionsPerServer = 1;
+                handler.MaxConnectionsPerServer = LinklyCloudHttpConnectionPolicy.MaxConnectionsPerOrigin;
             });
         services.AddHttpClient<ILinklyCloudPairingTransport, HttpLinklyCloudPairingTransport>(client =>
         {

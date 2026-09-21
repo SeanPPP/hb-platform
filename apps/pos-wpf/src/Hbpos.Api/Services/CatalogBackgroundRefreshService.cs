@@ -24,11 +24,11 @@ public interface ICatalogIndexRefreshWorker
 
 /// <summary>
 /// 目录后台刷新队列。每个门店的排队、构建和重试始终合并为同一项工作；
-/// 构建最多并发两项，重试等待不占用构建槽位。
+/// 构建最多并发一项，重试等待不占用构建槽位。
 /// </summary>
 public sealed class CatalogBackgroundRefreshService : BackgroundService, ICatalogBackgroundRefreshScheduler
 {
-    private const int MaxConcurrentBuilds = 2;
+    private const int MaxConcurrentBuilds = 1;
     private static readonly TimeSpan[] RetryDelays =
     [
         TimeSpan.FromMinutes(15),
