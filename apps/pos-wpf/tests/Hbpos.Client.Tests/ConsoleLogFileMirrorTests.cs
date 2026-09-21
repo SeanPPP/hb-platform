@@ -37,7 +37,7 @@ public sealed class ConsoleLogFileMirrorTests
             var flushAsync = workerType.GetMethod("FlushAsync", flags)!;
 
             Assert.True((bool)tryWrite.Invoke(worker, ["first"])!);
-            using (var flushTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
+            using (var flushTimeout = new CancellationTokenSource(AsyncTestWaitSupport.DefaultTimeout))
             {
                 await (Task)flushAsync.Invoke(worker, [flushTimeout.Token])!;
             }
@@ -46,7 +46,7 @@ public sealed class ConsoleLogFileMirrorTests
             File.Delete(blockedDirectory);
             Directory.CreateDirectory(blockedDirectory);
             Assert.True((bool)tryWrite.Invoke(worker, ["second"])!);
-            using (var flushTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
+            using (var flushTimeout = new CancellationTokenSource(AsyncTestWaitSupport.DefaultTimeout))
             {
                 await (Task)flushAsync.Invoke(worker, [flushTimeout.Token])!;
             }
@@ -121,10 +121,10 @@ public sealed class ConsoleLogFileMirrorTests
                     writer.Start();
                 }
 
-                Assert.True(writersStarted.Wait(TimeSpan.FromSeconds(2)));
+                Assert.True(writersStarted.Wait(AsyncTestWaitSupport.DefaultTimeout));
                 Assert.True(SpinWait.SpinUntil(
                     () => writers.All(writer => (writer.ThreadState & ThreadState.WaitSleepJoin) != 0),
-                    TimeSpan.FromSeconds(2)));
+                    AsyncTestWaitSupport.DefaultTimeout));
 
                 // 精确模拟 StopFileLogAsync 已持锁完成状态切换、但旧写线程仍在门外等待的交错。
                 stoppedField.SetValue(null, 1);
@@ -138,7 +138,7 @@ public sealed class ConsoleLogFileMirrorTests
 
             foreach (var writer in writers)
             {
-                Assert.True(writer.Join(TimeSpan.FromSeconds(2)));
+                Assert.True(writer.Join(AsyncTestWaitSupport.DefaultTimeout));
             }
 
             Assert.Empty(writerErrors);

@@ -488,7 +488,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
 
         var stopwatch = Stopwatch.StartNew();
         viewModel.ScanText = "slow";
-        await searchStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await searchStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         var maxHeartbeatGap = TimeSpan.Zero;
         var previousHeartbeat = stopwatch.Elapsed;
@@ -535,7 +535,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         try
         {
             viewModel.NumberInputCommand.Execute("Enter");
-            await firstSearchStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await firstSearchStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
             var stopwatch = Stopwatch.StartNew();
             var previousHeartbeat = stopwatch.Elapsed;
@@ -601,7 +601,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         try
         {
             viewModel.ScanText = "old";
-            await oldSearchStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            await oldSearchStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
             var oldCancellation = Assert.IsType<CancellationTokenSource>(typeof(PosTerminalViewModel)
                 .GetField("_matchesRefreshCts", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
                 .GetValue(viewModel));
@@ -643,10 +643,10 @@ public sealed class PosTerminalCashPaymentViewModelTests
         };
 
         viewModel.ScanText = "dispose";
-        await searchStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await searchStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         viewModel.Dispose();
 
-        await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await cancellationObserved.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         Assert.Empty(viewModel.Matches);
     }
 
@@ -2535,12 +2535,12 @@ public sealed class PosTerminalCashPaymentViewModelTests
             });
 
         var execution = viewModel.SyncCommand.ExecuteAsync(null);
-        await downloadStarted.Task.WaitAsync(TestWaitTimeouts.Default);
+        await downloadStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         viewModel.SyncCommand.Cancel();
         var wasCancellationRequested = receivedToken.IsCancellationRequested;
         releaseDownload.TrySetResult();
-        await execution.WaitAsync(TestWaitTimeouts.Default);
+        await execution.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         Assert.True(receivedToken.CanBeCanceled);
         Assert.True(wasCancellationRequested);
@@ -2576,12 +2576,12 @@ public sealed class PosTerminalCashPaymentViewModelTests
             });
 
         var execution = viewModel.SyncCommand.ExecuteAsync(null);
-        await refreshStarted.Task.WaitAsync(TestWaitTimeouts.Default);
+        await refreshStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         viewModel.SyncCommand.Cancel();
         var wasCancellationRequested = receivedToken.IsCancellationRequested;
         releaseRefresh.TrySetResult();
-        await execution.WaitAsync(TestWaitTimeouts.Default);
+        await execution.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         Assert.True(receivedToken.CanBeCanceled);
         Assert.True(wasCancellationRequested);
@@ -3429,7 +3429,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         viewModel.PaymentCompleted += (_, args) => completed = args;
 
         var payment = viewModel.SelectCardCommand.ExecuteAsync(null);
-        await workflow.AddTenderStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await workflow.AddTenderStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         authorization.RevokeAll();
         workflow.AddTenderResult.SetResult(PaymentTenderAttemptResult.Success(
             new PaymentTender(PaymentMethodKind.Card, 10m, "CARD-REAUTHORIZED"),
@@ -3464,7 +3464,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var viewModel = new PaymentViewModel(cart, workflow, Session);
 
         var automaticCompletion = viewModel.SelectCardCommand.ExecuteAsync(null);
-        await workflow.CompletePaymentStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await workflow.CompletePaymentStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         Assert.True(viewModel.IsPaymentInteractionLocked);
         await viewModel.ConfirmPaymentCommand.ExecuteAsync(null);
@@ -4378,14 +4378,14 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var beginStartedAt = Stopwatch.GetTimestamp();
         _ = viewModel.BeginShutdown();
         Assert.True(Stopwatch.GetElapsedTime(beginStartedAt) < TimeSpan.FromSeconds(1));
-        await callbackStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await callbackStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         var disposeStartedAt = Stopwatch.GetTimestamp();
         viewModel.Dispose();
         Assert.True(Stopwatch.GetElapsedTime(disposeStartedAt) < TimeSpan.FromSeconds(1));
         Assert.True(viewModel.IsPaymentInteractionLocked);
 
-        await callbackCompleted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await callbackCompleted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         await paymentTask;
     }
 
@@ -4410,7 +4410,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         using var registration = workflow.LastAddTenderCancellationToken.Register(() => throw fatal);
         var shutdownCancellationTask = viewModel.BeginShutdown();
         var thrown = await Assert.ThrowsAnyAsync<Exception>(
-            () => shutdownCancellationTask.WaitAsync(TimeSpan.FromSeconds(1)));
+            () => shutdownCancellationTask.WaitAsync(AsyncTestWaitSupport.DefaultTimeout));
 
         Assert.Same(fatal, thrown);
         Assert.True(workflow.LastAddTenderCancellationToken.IsCancellationRequested);
@@ -4452,7 +4452,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
             cardSession.GetType()
                 .GetField("_shutdownCancellationTask", BindingFlags.Instance | BindingFlags.NonPublic)!
                 .GetValue(cardSession));
-        await shutdownCancellationTask.WaitAsync(TimeSpan.FromSeconds(1));
+        await shutdownCancellationTask.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         Assert.True(activeCancellation.IsCancellationRequested);
         Assert.False(paymentTask.IsCompleted);
 
@@ -6014,7 +6014,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
 
         qualification.TrySetResult(candidate);
         handoff.TrySetResult(true);
-        await opening.WaitAsync(TestWaitTimeouts.Default);
+        await opening.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         Assert.Equal(2, prepareCalls);
         Assert.Equal(1, handoffCalls);

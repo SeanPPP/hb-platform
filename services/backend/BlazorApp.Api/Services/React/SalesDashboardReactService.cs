@@ -200,8 +200,19 @@ namespace BlazorApp.Api.Services.React
     {
         public string BranchCode { get; set; } = string.Empty;
         public string ProductCode { get; set; } = string.Empty;
+        /// <summary>日统计行上的供应商编码：旧写法为 200，新写法为直写的国内供应商编码。</summary>
+        public string SupplierCode { get; set; } = string.Empty;
         public int TotalQuantity { get; set; }
         public decimal TotalAmount { get; set; }
+        /// <summary>该分组最近的销售日，用于同一商品解析出多个国内供应商时取最新归属。</summary>
+        public DateTime LastDate { get; set; }
+    }
+
+    internal sealed class CompactSalesBoardChinaSupplierRow
+    {
+        public string SupplierCode { get; set; } = string.Empty;
+        public string? SupplierName { get; set; }
+        public bool IsDeleted { get; set; }
     }
 
     internal sealed class CompactSalesBoardProductInfoRow
@@ -226,7 +237,7 @@ namespace BlazorApp.Api.Services.React
     internal readonly record struct CompactSalesBoardCubeCell(int BranchIndex, int ProductIndex, int Quantity, decimal Amount);
 
     /// <summary>
-    /// 紧凑销售看板的「门店×商品」聚合立方体（仅已映射国内供应商的 200 商品），按日期范围与统计水位缓存。
+    /// 紧凑销售看板的「门店×商品」聚合立方体（仅能还原出国内供应商的国内货：直写行，或已映射的 200 行），按日期范围与统计水位缓存。
     /// 本月约 5.2 万格；缓存后三栏联动、排序、分页都在内存中完成，不再逐次查库。
     /// </summary>
     internal sealed record CompactSalesBoardCube(
@@ -5440,46 +5451,77 @@ namespace BlazorApp.Api.Services.React
                     using var scope = _serviceScopeFactory.CreateScope();
                     var hbSalesContext = scope.ServiceProvider.GetService<HBSalesRecordSqlSugarContext>()
                         ?? throw new InvalidOperationException("HBSales 来源覆盖查询缺少数据库上下文");
-                    var nextDate = endDate.Date.AddDays(1);
-                    var mainWindowStart = startDate.Date.AddDays(-7);
-                    var mainWindowEnd = nextDate.AddDays(7);
-                    var query = hbSalesContext.Db.Queryable<SalesOrderMain>()
-                        .LeftJoin<SalesOrderDetailRecord>((main, detail) =>
-                            main.B销售单号 == detail.B销售单号
-                        )
-                        .Where((main, detail) =>
-                            detail.B结账日期.HasValue
-                            && detail.B结账日期.Value >= startDate.Date
-                            && detail.B结账日期.Value < nextDate
-                            && main.B结账日期.HasValue
-                            && main.B结账日期.Value >= mainWindowStart
-                            && main.B结账日期.Value < mainWindowEnd
-                            && (main.B单据类型 == null || main.B单据类型.Trim() != "2")
-                            && detail.B分店代码 != null
-                            && detail.B分店代码.Trim() != ""
-                        );
-
-                    if (branchCodes.Count > 0)
+                    if (hbSalesContext.Db.CurrentConnectionConfig.DbType == DbType.SqlServer)
                     {
-                        query = query.Where((main, detail) =>
-                            branchCodes.Contains(detail.B分店代码!.Trim())
-                        );
+                        var sql = BuildHbSalesStoreSalesCoverageSql(hbSalesContext.Db, startDate, endDate, branchCodes);
+                        return await hbSalesContext.Db.Ado.SqlQueryAsync<StatisticDateBranchRow>(sql.Key, sql.Value.ToArray());
                     }
-
-                    return await query
-                        .GroupBy((main, detail) => new
-                        {
-                            Date = detail.B结账日期!.Value.Date,
-                            BranchCode = detail.B分店代码!.Trim(),
-                        })
-                        .Select((main, detail) => new StatisticDateBranchRow
-                        {
-                            Date = detail.B结账日期!.Value.Date,
-                            BranchCode = detail.B分店代码!.Trim(),
-                        })
+                    return await BuildHbSalesStoreSalesCoverageQuery(hbSalesContext.Db, startDate, endDate, branchCodes)
                         .ToListAsync();
                 }
             );
+        }
+
+        internal static ISugarQueryable<StatisticDateBranchRow> BuildHbSalesStoreSalesCoverageQuery(
+            ISqlSugarClient db,
+            DateTime startDate,
+            DateTime endDate,
+            List<string> branchCodes
+        )
+        {
+            var nextDate = endDate.Date.AddDays(1);
+            var mainWindowStart = startDate.Date.AddDays(-7);
+            var mainWindowEnd = nextDate.AddDays(7);
+            var query = db.Queryable<SalesOrderMain>()
+                .LeftJoin<SalesOrderDetailRecord>((main, detail) =>
+                    main.B销售单号 == detail.B销售单号
+                )
+                .Where((main, detail) =>
+                    detail.B结账日期.HasValue
+                    && detail.B结账日期.Value >= startDate.Date
+                    && detail.B结账日期.Value < nextDate
+                    && main.B结账日期.HasValue
+                    && main.B结账日期.Value >= mainWindowStart
+                    && main.B结账日期.Value < mainWindowEnd
+                    && (main.B单据类型 == null || main.B单据类型.Trim() != "2")
+                    && detail.B分店代码 != null
+                    && detail.B分店代码.Trim() != ""
+                );
+
+            if (branchCodes.Count > 0)
+            {
+                query = query.Where((main, detail) =>
+                    branchCodes.Contains(detail.B分店代码!.Trim())
+                );
+            }
+
+            return query
+                .GroupBy((main, detail) => new
+                {
+                    Date = detail.B结账日期!.Value.Date,
+                    BranchCode = detail.B分店代码!.Trim(),
+                })
+                .Select((main, detail) => new StatisticDateBranchRow
+                {
+                    Date = detail.B结账日期!.Value.Date,
+                    BranchCode = detail.B分店代码!.Trim(),
+                });
+        }
+
+        /// <summary>
+        /// HBSales 来源覆盖在 SQL Server 上按实际日期重编译。日期窗口随请求逐日变化，
+        /// 带参编译的计划会退化为约 40 万逻辑读的联表扫描：2026-09-21 生产实测原句 11.3 秒、
+        /// 加 OPTION (RECOMPILE) 后 0.1 秒。分时报表每次打开都要核验去年同日，这条语句决定首屏耗时。
+        /// </summary>
+        internal static KeyValuePair<string, List<SugarParameter>> BuildHbSalesStoreSalesCoverageSql(
+            ISqlSugarClient db,
+            DateTime startDate,
+            DateTime endDate,
+            List<string> branchCodes
+        )
+        {
+            var sql = BuildHbSalesStoreSalesCoverageQuery(db, startDate, endDate, branchCodes).ToSql();
+            return new KeyValuePair<string, List<SugarParameter>>(sql.Key + " OPTION (RECOMPILE)", sql.Value);
         }
 
         private async Task<Dictionary<DateTime, HashSet<string>>?> GetCachedSalesSourceCoverageAsync(
@@ -6039,24 +6081,16 @@ namespace BlazorApp.Api.Services.React
         )
         {
             var codes = NormalizeCodes(seedCodes).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var suppliers = await _context
-                .Db.Queryable<ChinaSupplier>()
-                .Where(s => !s.IsDeleted && s.SupplierCode != null && s.SupplierCode != "")
-                .Select(s => s.SupplierCode ?? string.Empty)
-                .ToListAsync();
-
-            foreach (var supplierCode in suppliers)
-            {
-                if (!string.IsNullOrWhiteSpace(supplierCode))
-                    codes.Add(supplierCode.Trim());
-            }
-
+            // 集合包含停用和软删除的国内供应商：直写行只能靠编码是否属于该集合来识别，
+            // 供应商被删除后，它的历史销售在澳洲侧仍要归 200，不能变成一个普通澳洲供应商。
+            // 旧 200 行不受影响：它们的国内编码来自调用方传入的映射种子，本来就不看删除标记。
+            codes.UnionWith(await ChinaSupplierCodeFamily.LoadChinaSupplierCodesAsync(_context.Db));
             return codes;
         }
 
         /// <summary>
         /// 商品销量分析专用国内供应商目录：包含停用/软删除记录，保证期间直写历史代码
-        /// 仍能按国内供应商口径识别并保留历史名称；不影响旧报表 active-only 共享 helper。
+        /// 仍能按国内供应商口径识别并保留历史名称。
         /// </summary>
         private async Task<ProductSalesChinaCatalog> GetProductSalesChinaCatalogAsync()
         {
@@ -7448,38 +7482,95 @@ namespace BlazorApp.Api.Services.React
         }
 
         /// <summary>
-        /// 构建「门店×商品」聚合立方体：6 条固定文本的 SQL（统计状态之外），不带随商品集合变化的 IN 列表。
+        /// 构建「门店×商品」聚合立方体：6 条 SQL（统计状态之外），不带随商品集合变化的 IN 列表。
+        /// 日统计的两条查询内联了国内供应商编码族，它只随供应商目录变化，同一份目录下 SQL 文本不变。
         /// </summary>
         private async Task<CompactSalesBoardCube> BuildCompactSalesBoardCubeAsync(DateRangeDto dateRange)
         {
             var startDate = dateRange.StartDate.Date;
             var endExclusive = dateRange.EndDate.Date.AddDays(1);
 
-            // 只有存在有效 POSM 映射的 200 商品才计入看板（未映射商品约占国内货金额 14%，不能混入）。
-            var productSupplierMap = await GetChinaSupplierProductMapAsync();
-            if (productSupplierMap.Count == 0)
-                return CompactSalesBoardCube.Empty;
+            // 国内供应商目录只读一次：名称用于展示，编码集合用于识别直写行（含停用和软删除，见 ChinaSupplierCodeFamily）。
+            var chinaSupplierRows = await _context.Db.Queryable<ChinaSupplier>()
+                .Where(s => s.SupplierCode != null && s.SupplierCode != "")
+                .Select(s => new CompactSalesBoardChinaSupplierRow
+                {
+                    SupplierCode = s.SupplierCode ?? string.Empty,
+                    SupplierName = s.SupplierName,
+                    IsDeleted = s.IsDeleted,
+                })
+                .ToListAsync();
+            var chinaSupplierCodes = chinaSupplierRows
+                .Where(s => !string.IsNullOrWhiteSpace(s.SupplierCode))
+                .Select(s => s.SupplierCode.Trim())
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var chinaFamilyCodes = ChinaSupplierCodeFamily.BuildStatisticFilterCodes(chinaSupplierCodes);
 
-            var cubeRows = await _context.Db.Queryable<ProductStoreDailySalesStatistic>()
-                .Where(s => s.Date >= startDate && s.Date < endExclusive && s.SupplierCode == CHINA_LOCAL_SUPPLIER_CODE)
-                .GroupBy(s => new { s.BranchCode, s.ProductCode })
+            // 旧 200 行靠 POSM 映射还原国内供应商；直写行自带编码，不依赖映射，所以映射为空也不能直接返回空看板。
+            var productSupplierMap = await GetChinaSupplierProductMapAsync();
+
+            var statisticRows = await _context.Db.Queryable<ProductStoreDailySalesStatistic>()
+                .Where(s => s.Date >= startDate && s.Date < endExclusive && chinaFamilyCodes.Contains(s.SupplierCode))
+                .GroupBy(s => new { s.BranchCode, s.ProductCode, s.SupplierCode })
                 .Select(s => new CompactSalesBoardCubeRow
                 {
                     BranchCode = s.BranchCode,
                     ProductCode = s.ProductCode,
+                    SupplierCode = s.SupplierCode,
                     TotalQuantity = SqlFunc.AggregateSum(s.TotalQuantity),
                     TotalAmount = SqlFunc.AggregateSum(s.TotalAmount),
+                    LastDate = SqlFunc.AggregateMax(s.Date),
                 })
                 .ToListAsync();
-            cubeRows = cubeRows
-                .Where(row =>
-                    !string.IsNullOrWhiteSpace(row.BranchCode)
-                    && !string.IsNullOrWhiteSpace(row.ProductCode)
-                    && productSupplierMap.ContainsKey(row.ProductCode)
-                )
+
+            // 逐行还原国内供应商：直写行用行上的编码，旧 200 行查映射。
+            // 未映射的 200 商品仍不计入看板（约占国内货金额 14%），与其他国内供应商报表的口径一致。
+            var resolvedRows = statisticRows
+                .Where(row => !string.IsNullOrWhiteSpace(row.BranchCode) && !string.IsNullOrWhiteSpace(row.ProductCode))
+                .Select(row => new
+                {
+                    Row = row,
+                    ChinaSupplierCode = ResolveChinaSupplierCodeFromStatistic(
+                        row.SupplierCode,
+                        row.ProductCode,
+                        productSupplierMap,
+                        chinaSupplierCodes
+                    )?.Trim(),
+                })
+                .Where(item => !string.IsNullOrWhiteSpace(item.ChinaSupplierCode))
                 .ToList();
-            if (cubeRows.Count == 0)
+            if (resolvedRows.Count == 0)
                 return CompactSalesBoardCube.Empty;
+
+            // 立方体里每个商品只挂一个国内供应商。同一商品在区间内解析出多个编码（归属中途变更，极少见）时，
+            // 取最近销售日那一条；日期相同时直写行优先于映射，再按编码排序，保证结果稳定。
+            var productSupplierCodes = resolvedRows
+                .GroupBy(item => item.Row.ProductCode, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group
+                        .OrderByDescending(item => item.Row.LastDate)
+                        .ThenBy(item => ChinaSupplierCodeFamily.IsLocalSupplierCode(item.Row.SupplierCode))
+                        .ThenBy(item => item.ChinaSupplierCode, StringComparer.Ordinal)
+                        .First()
+                        .ChinaSupplierCode!,
+                    StringComparer.OrdinalIgnoreCase
+                );
+
+            // 新旧两种写法的行在这里合并回「每个门店×商品一格」，下游按格计数门店动销款数依赖这个不变量。
+            var cubeRows = resolvedRows
+                .GroupBy(item => (
+                    BranchCode: item.Row.BranchCode.Trim().ToUpperInvariant(),
+                    ProductCode: item.Row.ProductCode.ToUpperInvariant()
+                ))
+                .Select(group => new CompactSalesBoardCubeRow
+                {
+                    BranchCode = group.First().Row.BranchCode,
+                    ProductCode = group.First().Row.ProductCode,
+                    TotalQuantity = group.Sum(item => item.Row.TotalQuantity),
+                    TotalAmount = group.Sum(item => item.Row.TotalAmount),
+                })
+                .ToList();
 
             // EXISTS 半连接一次取回区间内全部国内货商品资料；IsDeleted 写成字面量才能命中
             // 过滤索引 IX_Product_ProductCode_Active（lambda 常量会被参数化）。
@@ -7490,7 +7581,7 @@ namespace BlazorApp.Api.Services.React
                         .Where(s => s.ProductCode == p.ProductCode
                             && s.Date >= startDate
                             && s.Date < endExclusive
-                            && s.SupplierCode == CHINA_LOCAL_SUPPLIER_CODE)
+                            && chinaFamilyCodes.Contains(s.SupplierCode))
                         .Any())
                 .Select(p => new CompactSalesBoardProductInfoRow
                 {
@@ -7505,14 +7596,16 @@ namespace BlazorApp.Api.Services.React
                 .GroupBy(row => row.ProductCode, StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
 
-            var supplierNameMap = (await _context.Db.Queryable<ChinaSupplier>()
-                    .Where(s => !s.IsDeleted && s.SupplierCode != null && s.SupplierCode != "")
-                    .Select(s => new { SupplierCode = s.SupplierCode ?? string.Empty, s.SupplierName })
-                    .ToListAsync())
-                .GroupBy(s => s.SupplierCode, StringComparer.OrdinalIgnoreCase)
+            // 同一编码有多条目录记录时优先用未删除那条的名称；只剩软删除记录时保留历史名称。
+            var supplierNameMap = chinaSupplierRows
+                .Where(s => !string.IsNullOrWhiteSpace(s.SupplierCode))
+                .GroupBy(s => s.SupplierCode.Trim(), StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(
                     group => group.Key,
-                    group => group.Select(s => s.SupplierName).FirstOrDefault(name => !string.IsNullOrWhiteSpace(name)) ?? group.Key,
+                    group => group
+                        .OrderBy(s => s.IsDeleted)
+                        .Select(s => s.SupplierName)
+                        .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name)) ?? group.Key,
                     StringComparer.OrdinalIgnoreCase
                 );
             var storeNameMap = await GetStoreNameMapAsync(
@@ -7542,7 +7635,7 @@ namespace BlazorApp.Api.Services.React
 
                 if (!productIndex.TryGetValue(row.ProductCode, out var p))
                 {
-                    var supplierCode = productSupplierMap[row.ProductCode].Trim();
+                    var supplierCode = productSupplierCodes[row.ProductCode];
                     if (!supplierIndex.TryGetValue(supplierCode, out var s))
                     {
                         s = suppliers.Count;
@@ -8001,11 +8094,16 @@ namespace BlazorApp.Api.Services.React
                 );
             }
 
+            // 热销榜只看国内货。日统计里国内货既可能是旧写法的 200，也可能是直写的国内供应商编码，
+            // 只认 200 会让直写行整行掉出榜单；主查询和下面两个补充查询必须用同一份编码族。
+            var chinaFamilyCodes = ChinaSupplierCodeFamily.BuildStatisticFilterCodes(
+                await ChinaSupplierCodeFamily.LoadChinaSupplierCodesAsync(_context.Db)
+            );
             var query = _context.Db.Queryable<ProductStoreDailySalesStatistic>()
                 .Where(s =>
                     s.Date >= startDate
                     && s.Date <= endDate
-                    && s.SupplierCode == "200"
+                    && chinaFamilyCodes.Contains(s.SupplierCode)
                 );
 
             if (branchCodes != null && branchCodes.Any())
@@ -8058,8 +8156,8 @@ namespace BlazorApp.Api.Services.React
                 pageSize,
                 statisticStatus.Status,
                 statisticStatus.Message,
-                productCodes => GetBranchSalesFromStatisticsAsync(startDate, endDate, branchCodes, productCodes),
-                productCodes => GetBestSellerInfoFromStatisticsAsync(startDate, endDate, branchCodes, productCodes)
+                productCodes => GetBranchSalesFromStatisticsAsync(startDate, endDate, branchCodes, productCodes, chinaFamilyCodes),
+                productCodes => GetBestSellerInfoFromStatisticsAsync(startDate, endDate, branchCodes, productCodes, chinaFamilyCodes)
             );
         }
 
@@ -8205,7 +8303,8 @@ namespace BlazorApp.Api.Services.React
             DateTime startDate,
             DateTime endDate,
             List<string>? branchCodes,
-            List<string> productCodes
+            List<string> productCodes,
+            List<string> chinaFamilyCodes
         )
         {
             if (!productCodes.Any())
@@ -8215,7 +8314,7 @@ namespace BlazorApp.Api.Services.React
                 .Where(s =>
                     s.Date >= startDate
                     && s.Date <= endDate
-                    && s.SupplierCode == "200"
+                    && chinaFamilyCodes.Contains(s.SupplierCode)
                     && productCodes.Contains(s.ProductCode)
                 );
             if (branchCodes != null && branchCodes.Any())
@@ -8257,7 +8356,8 @@ namespace BlazorApp.Api.Services.React
             DateTime startDate,
             DateTime endDate,
             List<string>? branchCodes,
-            List<string> productCodes
+            List<string> productCodes,
+            List<string> chinaFamilyCodes
         )
         {
             if (!productCodes.Any())
@@ -8267,7 +8367,7 @@ namespace BlazorApp.Api.Services.React
                 .Where(s =>
                     s.Date >= startDate
                     && s.Date <= endDate
-                    && s.SupplierCode == "200"
+                    && chinaFamilyCodes.Contains(s.SupplierCode)
                     && productCodes.Contains(s.ProductCode)
                 );
             if (branchCodes != null && branchCodes.Any())

@@ -169,6 +169,87 @@ public sealed class DataSyncIncrementalPosmSupplierMappingsTests : IDisposable
     }
 
     [Fact]
+    public async Task SyncPosmProductSupplierMappingsIncrementalAsync_定时运行会捕获上次成功之后的关系变更()
+    {
+        var now = DateTime.UtcNow;
+        // 上一次定时运行 20 分钟前成功；本次由调度外层先写好运行中日志，服务内复用它。
+        await SeedScheduledTaskLogAsync(now.AddMinutes(-20), HbTaskStatus.Success);
+        var currentTaskLog = await SeedScheduledTaskLogAsync(now, HbTaskStatus.Running);
+
+        // 复刻 G093096：商品本身 UpdatedAt 很旧，仓库/国内商品关系在上次成功之后才建立，POSM 映射仍为空。
+        await SeedProductAsync("P-RELATION-AFTER-LAST-RUN", "200", now.AddYears(-3));
+        await SeedWarehouseProductWithDomesticSupplierAsync(
+            "P-RELATION-AFTER-LAST-RUN", "HB038", now.AddMinutes(-5));
+        await SeedPosmMappingAsync("P-RELATION-AFTER-LAST-RUN", "200", null, now.AddMonths(-5));
+
+        // 早于上次成功且超出重叠区的变更应已由上一次运行处理，本次不会回扫到它。
+        await SeedProductAsync("P-RELATION-BEFORE-LAST-RUN", "200", now.AddYears(-3));
+        await SeedWarehouseProductWithDomesticSupplierAsync(
+            "P-RELATION-BEFORE-LAST-RUN", "CN-NEW", now.AddHours(-3));
+        await SeedPosmMappingAsync("P-RELATION-BEFORE-LAST-RUN", "200", "CN-OLD", now.AddMonths(-5));
+
+        var result = await CreateService().SyncPosmProductSupplierMappingsIncrementalAsync();
+
+        Assert.True(result.IsSuccess, result.Message);
+        Assert.Equal(0, result.AddedCount);
+        Assert.Equal(1, result.UpdatedCount);
+
+        var mappings = await _posmDb.Queryable<PosmProductSupplierMapping>().ToListAsync();
+        var changedAfterLastRun = Assert.Single(mappings, x => x.ProductCode == "P-RELATION-AFTER-LAST-RUN");
+        Assert.Equal("HB038", changedAfterLastRun.ChinaSupplierCode);
+        var changedBeforeLastRun = Assert.Single(mappings, x => x.ProductCode == "P-RELATION-BEFORE-LAST-RUN");
+        Assert.Equal("CN-OLD", changedBeforeLastRun.ChinaSupplierCode);
+
+        var taskLog = await _localDb.Queryable<ScheduledTaskLog>()
+            .SingleAsync(x => x.Id == currentTaskLog.Id);
+        Assert.Equal(HbTaskStatus.Success, taskLog.Status);
+    }
+
+    [Fact]
+    public void ResolvePosmMappingIncrementalStart_上次成功在几分钟前时从上次开始时间向前重叠而不按整天截断()
+    {
+        var utcNow = new DateTime(2026, 9, 21, 6, 6, 50, DateTimeKind.Utc);
+        // 从 SQL Server 读回的任务日志时间值是 UTC，但 Kind 为 Unspecified。
+        var lastSuccessStartedAt = DateTime.SpecifyKind(utcNow.AddMinutes(-20), DateTimeKind.Unspecified);
+
+        var start = DataSyncIncrementalService.ResolvePosmMappingIncrementalStart(lastSuccessStartedAt, utcNow);
+
+        Assert.Equal(utcNow.AddMinutes(-30), start);
+        Assert.Equal(DateTimeKind.Utc, start.Kind);
+    }
+
+    [Fact]
+    public void ResolvePosmMappingIncrementalStart_上次成功在几小时前时覆盖整段间隔()
+    {
+        // 悉尼 20 点停调度、次日 7 点恢复，间隔约 11 小时，整天截断同样会得到 0 天。
+        var utcNow = new DateTime(2026, 9, 21, 21, 6, 50, DateTimeKind.Utc);
+
+        var start = DataSyncIncrementalService.ResolvePosmMappingIncrementalStart(utcNow.AddHours(-11), utcNow);
+
+        Assert.Equal(utcNow.AddHours(-11).AddMinutes(-10), start);
+    }
+
+    [Fact]
+    public void ResolvePosmMappingIncrementalStart_上次成功超过30天时最多回溯30天()
+    {
+        var utcNow = new DateTime(2026, 9, 21, 6, 6, 50, DateTimeKind.Utc);
+
+        var start = DataSyncIncrementalService.ResolvePosmMappingIncrementalStart(utcNow.AddDays(-45), utcNow);
+
+        Assert.Equal(utcNow.AddDays(-30), start);
+    }
+
+    [Fact]
+    public void ResolvePosmMappingIncrementalStart_没有成功记录时回溯最近30天()
+    {
+        var utcNow = new DateTime(2026, 9, 21, 6, 6, 50, DateTimeKind.Utc);
+
+        var start = DataSyncIncrementalService.ResolvePosmMappingIncrementalStart(null, utcNow);
+
+        Assert.Equal(utcNow.AddDays(-30), start);
+    }
+
+    [Fact]
     public void SyncPosmProductSupplierMappingsAsync_全量同步契约保留历史并可激活软删除映射()
     {
         var repositoryRoot = FindRepositoryRoot();
@@ -339,14 +420,18 @@ public sealed class DataSyncIncrementalPosmSupplierMappingsTests : IDisposable
         );
     }
 
-    private async Task<ScheduledTaskLog> SeedRunningScheduledTaskLogAsync(DateTime startedAt)
+    private Task<ScheduledTaskLog> SeedRunningScheduledTaskLogAsync(DateTime startedAt) =>
+        SeedScheduledTaskLogAsync(startedAt, HbTaskStatus.Running);
+
+    private async Task<ScheduledTaskLog> SeedScheduledTaskLogAsync(DateTime startedAt, string status)
     {
         var taskLog = new ScheduledTaskLog
         {
             Id = Guid.NewGuid(),
             TaskType = TaskType.SyncPosmProductSupplierMappingsIncremental,
-            Status = HbTaskStatus.Running,
+            Status = status,
             StartedAt = startedAt,
+            CompletedAt = status == HbTaskStatus.Running ? null : startedAt.AddSeconds(2),
             ScheduledTime = startedAt,
             TriggeredBy = TaskTrigger.Scheduled,
             RetryCount = 0,

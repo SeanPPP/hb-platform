@@ -267,12 +267,12 @@ public sealed class LinklySettlementUploadServiceTests
         using var stopping = new CancellationTokenSource();
 
         await worker.StartAsync(stopping.Token);
-        await executor.FirstFailure.Task.WaitAsync(TestWaitTimeouts.Default);
+        await executor.FirstFailure.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         worker.RequestUpload();
-        await executor.SecondExecution.Task.WaitAsync(TestWaitTimeouts.Default);
+        await executor.SecondExecution.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         stopping.Cancel();
-        await worker.StopAsync(CancellationToken.None).WaitAsync(TestWaitTimeouts.Default);
+        await worker.StopAsync(CancellationToken.None).WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         Assert.True(executor.CallCount >= 2);
     }
 
@@ -285,15 +285,15 @@ public sealed class LinklySettlementUploadServiceTests
         using var worker = new LinklySettlementUploadWorker(schema, executor);
         using var stopping = new CancellationTokenSource();
 
-        await worker.StartAsync(stopping.Token).WaitAsync(TimeSpan.FromSeconds(1));
+        await worker.StartAsync(stopping.Token).WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         await Assert.ThrowsAsync<TimeoutException>(() =>
             executor.Executed.Task.WaitAsync(TimeSpan.FromMilliseconds(150)));
         await schema.InitializeAsync();
         schema.SignalReady();
-        await executor.Executed.Task.WaitAsync(TestWaitTimeouts.Default);
+        await executor.Executed.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         stopping.Cancel();
-        await worker.StopAsync(CancellationToken.None).WaitAsync(TestWaitTimeouts.Default);
+        await worker.StopAsync(CancellationToken.None).WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
     }
 
     private sealed class FakeSyncApiClient : ILinklySettlementSyncApiClient

@@ -50,7 +50,7 @@ public sealed class ConfiguredCardTerminalClientTests
             linklyTerminalSelectionTransitionGate: gate);
 
         var authorization = client.AuthorizeAsync(10m, CreateSession());
-        await terminal.PurchaseStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await terminal.PurchaseStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         Assert.Null(await gate.TryEnterAssignmentAsync());
         completion.SetResult(new PaymentAuthorizationResult(true, "approved"));

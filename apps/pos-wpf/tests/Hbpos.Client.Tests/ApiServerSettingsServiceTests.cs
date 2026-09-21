@@ -130,7 +130,7 @@ public sealed class ApiServerSettingsServiceTests
         using var cancellation = new CancellationTokenSource();
 
         var testTask = service.TestConnectionAsync("https://api.example.com", cancellation.Token);
-        await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await started.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         cancellation.Cancel();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => testTask);
