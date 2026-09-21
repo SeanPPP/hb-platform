@@ -442,6 +442,7 @@
   <data name="shell.sync.retryingAll" xml:space="preserve"><value>Retrying uploads...</value></data>
   <data name="shell.sync.retryCompleted" xml:space="preserve"><value>Upload retry completed: {0} succeeded, {1} not completed.</value></data>
   <data name="shell.sync.retryFailed" xml:space="preserve"><value>Upload retry failed: {0}</value></data>
+  <data name="shell.sync.retryInterrupted" xml:space="preserve"><value>Upload paused while the server address was switching: {0} succeeded, {1} not completed. The rest will continue after the switch.</value></data>
   <data name="shell.sync.caption" xml:space="preserve"><value>Review and retry order uploads, Linkly settlements, or operation audit logs.</value></data>
   <data name="shell.sync.entity.order" xml:space="preserve"><value>Order</value></data>
   <data name="shell.sync.entity.linklySettlement" xml:space="preserve"><value>Linkly Settlement</value></data>
