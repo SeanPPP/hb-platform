@@ -1,13 +1,93 @@
 using BlazorApp.Shared.Models.POSM;
+using Hbpos.Api.Data;
 using Hbpos.Api.Services;
 using Hbpos.Contracts.Catalog;
 using Hbpos.Contracts.HeldOrders;
 using Hbpos.Contracts.Orders;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Hbpos.Api.Tests;
 
 public sealed class OrderSyncServiceTests
 {
+    // 连接级 MoreSettings.IsWithNoLockQuery = true 会给所有 Queryable 自动加 WITH(NOLOCK)，
+    // 而表提示会覆盖会话隔离级别。订单幂等判断一旦脏读到别的事务尚未提交的订单行，
+    // 就会返回 AlreadySynced，客户端据此标记 Synced，对方回滚后这笔销售永久丢失
+    // （SyncQueue 只重试 Pending/Failed，且全仓没有上传后对账）。
+    // 以下两个用例直接捕获真实仓储生成的 SQL，确保这两处读永远不会退回 NOLOCK。
+    [Fact]
+    public async Task ExistsAsync_does_not_dirty_read_the_order_table()
+    {
+        var (repository, capturedSql) = CreateRepositoryCapturingSql();
+
+        try
+        {
+            await repository.ExistsAsync(Guid.NewGuid(), CancellationToken.None);
+        }
+        catch
+        {
+            // 测试用的是不可达的连接串，只关心 SQL 文本，不关心执行结果。
+        }
+
+        var sql = Assert.Single(capturedSql);
+        Assert.DoesNotContain("NOLOCK", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("READCOMMITTED", sql, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Order_idempotency_read_inside_the_insert_transaction_takes_update_and_range_locks()
+    {
+        // InsertAsync 需要真实事务才能执行到该语句，这里退一步校验源码契约：
+        // 事务内的幂等判断必须带 UPDLOCK（串行化同 OrderGuid 的并发判断）
+        // 与 HOLDLOCK（范围锁，防止判断与插入之间插入同 OrderGuid 的行）。
+        var source = ReadOrderSyncServiceSource();
+        var marker = source.IndexOf("AnyAsync(x => x.OrderGuid == plan.Order.OrderGuid", StringComparison.Ordinal);
+        Assert.True(marker > 0, "未找到事务内的订单幂等判断。");
+
+        var windowStart = Math.Max(0, marker - 400);
+        var window = source[windowStart..marker];
+        Assert.Contains("UPDLOCK", window, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("HOLDLOCK", window, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static (SqlSugarOrderRepository Repository, List<string> CapturedSql) CreateRepositoryCapturingSql()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ConnectionStrings:MainConnection"] =
+                    "Server=127.0.0.1,1;Database=hb_sql_probe;User Id=sa;Password=x;Encrypt=False;TrustServerCertificate=True;Connect Timeout=1",
+                ["ConnectionStrings:PosmConnection"] =
+                    "Server=127.0.0.1,1;Database=hb_sql_probe;User Id=sa;Password=x;Encrypt=False;TrustServerCertificate=True;Connect Timeout=1"
+            })
+            .Build();
+
+        var context = new HbposSqlSugarContext(
+            configuration,
+            NullLogger<HbposSqlSugarContext>.Instance);
+        var capturedSql = new List<string>();
+        context.PosmDb.Aop.OnLogExecuting = (sql, _) => capturedSql.Add(sql);
+
+        return (
+            new SqlSugarOrderRepository(context, NullLogger<SqlSugarOrderRepository>.Instance),
+            capturedSql);
+    }
+
+    private static string ReadOrderSyncServiceSource()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null &&
+               !File.Exists(Path.Combine(directory.FullName, "src", "Hbpos.Api", "Services", "OrderSyncService.cs")))
+        {
+            directory = directory.Parent;
+        }
+
+        Assert.NotNull(directory);
+        return File.ReadAllText(
+            Path.Combine(directory!.FullName, "src", "Hbpos.Api", "Services", "OrderSyncService.cs"));
+    }
+
     [Fact]
     public async Task SyncAsync_ReturnsAlreadySyncedWhenOrderExists()
     {
