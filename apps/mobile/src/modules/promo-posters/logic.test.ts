@@ -76,8 +76,8 @@ function createDefaults(overrides: Partial<PromoPosterDefaults> = {}): PromoPost
 
 assert.deepEqual(
   resolveScanPosterAvailability({ discountRate: 0.3, activePromotionCount: 0, clearancePrice: null }),
-  { special: true, multibuy: false, new: true, clearance: false },
-  "特价始终可用；无促销、无清货价时对应按钮不可用；新品始终可用",
+  { special: true, multibuy: true, new: true, clearance: false },
+  "特价和多件价始终可用；无清货价时清仓不可用；新品始终可用",
 );
 assert.deepEqual(
   resolveScanPosterAvailability({ discountRate: 0, activePromotionCount: 2, clearancePrice: 5 }),
@@ -85,7 +85,7 @@ assert.deepEqual(
 );
 assert.deepEqual(
   resolveScanPosterAvailability({ discountRate: null, activePromotionCount: 0, clearancePrice: 0 }),
-  { special: true, multibuy: false, new: true, clearance: false },
+  { special: true, multibuy: true, new: true, clearance: false },
   "清货价为 0 视为未设置",
 );
 
@@ -93,8 +93,8 @@ const defaults = createDefaults();
 assert.deepEqual(resolveDefaultsAvailability(defaults), { special: true, multibuy: true, new: true, clearance: false });
 assert.equal(
   resolveDefaultsAvailability(createDefaults({ multiBuyOffers: [] })).multibuy,
-  false,
-  "canMultiBuy 为真但没有促销数据时多件价仍不可用",
+  true,
+  "没有预设促销时多件价仍可手填",
 );
 assert.equal(resolveInitialPosterKind("special", resolveDefaultsAvailability(defaults)), "special");
 assert.equal(resolveInitialPosterKind("clearance", resolveDefaultsAvailability(defaults)), "new", "不可用类型回落到新品");
@@ -177,6 +177,34 @@ const secondOffer = applyMultiBuyOffer(multi, defaults, "promo-2");
 assert.equal(secondOffer.quantity, "2");
 assert.equal(secondOffer.price, "20.00");
 assert.equal(secondOffer.mixAndMatch, false, "只含本商品的促销不是 Mix & match");
+
+const manualMultiDefaults = createDefaults({ multiBuyOffers: [], canMultiBuy: false, retailPrice: 12.99 });
+const manualMulti = createPosterDraft(manualMultiDefaults, { kind: "multibuy", style: "classic", size: "A6", today: TODAY });
+assert.equal(manualMulti.offerId, null, "没有预设促销时不虚构促销选择");
+assert.equal(manualMulti.quantity, "", "没有预设促销时件数留空待手填");
+assert.equal(manualMulti.price, "", "没有预设促销时组合价留空待手填");
+assert.equal(manualMulti.unitPrice, "12.99", "没有预设促销时单价预填零售价");
+const manualMultiResult = buildPosterSpec({ ...manualMulti, quantity: "3", price: "10", validFrom: TODAY, validTo: "2026-10-02" }, manualMultiDefaults);
+assert.equal(manualMultiResult.ok, true, "无预设促销时可手填件数、组合价和有效期");
+const incompleteManualDates = buildPosterSpec({ ...manualMulti, quantity: "3", price: "10", validFrom: TODAY }, manualMultiDefaults);
+assert.equal(!incompleteManualDates.ok && incompleteManualDates.errors.validity, "required", "手填有效期必须同时填写起止日期");
+for (const quantity of ["", "1", "100", "2.5"]) {
+  const result = buildPosterSpec({ ...manualMulti, quantity, price: "10" }, manualMultiDefaults);
+  assert.equal(result.ok, false, `手填件数 ${quantity || "空"} 必须被拦截`);
+  assert.equal(!result.ok && result.errors.quantity, quantity ? "invalid" : "required");
+}
+for (const price of ["", "0", "bad", "1.234"]) {
+  const result = buildPosterSpec({ ...manualMulti, quantity: "3", price }, manualMultiDefaults);
+  assert.equal(result.ok, false, `手填组合价 ${price || "空"} 必须被拦截`);
+  assert.equal(!result.ok && result.errors.price, price ? "invalid" : "required");
+}
+for (const dates of [["2026-10-02", TODAY], ["not-a-date", "2026-10-02"]]) {
+  const result = buildPosterSpec({ ...manualMulti, quantity: "3", price: "10", validFrom: dates[0], validTo: dates[1] }, manualMultiDefaults);
+  assert.equal(result.ok, false, "手填有效期反序或非法日期必须被拦截");
+  assert.equal(!result.ok && result.errors.validity, dates[0] === "not-a-date" ? "invalid" : "rangeInvalid");
+}
+const noRetailManual = createPosterDraft(createDefaults({ multiBuyOffers: [], retailPrice: null }), { kind: "multibuy", style: "classic", size: "A6", today: TODAY });
+assert.equal(buildPosterSpec({ ...noRetailManual, quantity: "3", price: "10", unitPrice: "4" }, createDefaults({ multiBuyOffers: [], retailPrice: null })).ok, true, "无零售价时可手填单价");
 
 // 切换类型只重置价格与日期，保留店员改过的品名、风格、尺寸
 const edited = { ...special, title: "Custom Flask", style: "modern" as const, size: "A4" as const, validFrom: TODAY, validTo: "2026-10-02" };
@@ -268,7 +296,7 @@ assert.deepEqual(multiResult.ok && multiResult.spec, {
   validTo: "2026-10-02",
 });
 const noOffer = buildPosterSpec({ ...multi, offerId: "missing" }, defaults);
-assert.equal(!noOffer.ok && noOffer.errors.offer, "required");
+assert.equal(noOffer.ok, true, "预设促销不存在时仍可按手填多件价提交");
 
 // ---------------------------------------------------------------- 收银价不一致提示
 
