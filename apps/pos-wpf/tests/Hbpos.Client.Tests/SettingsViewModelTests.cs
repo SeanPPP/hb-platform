@@ -579,13 +579,13 @@ public sealed class SettingsViewModelTests
             : viewModel.DownloadCatalogCommand;
 
         var execution = catalogCommand.ExecuteAsync(null);
-        await operationStarted.Task.WaitAsync(TestWaitTimeouts.Default);
+        await operationStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         Assert.True(viewModel.BackCommand.CanExecute(null));
         viewModel.BackCommand.Execute(null);
-        await cancellationObserved.Task.WaitAsync(TestWaitTimeouts.Default);
+        await cancellationObserved.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         var wasCancellationRequested = receivedToken.IsCancellationRequested;
-        await execution.WaitAsync(TestWaitTimeouts.Default);
+        await execution.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         operationCancellationRegistration.Dispose();
 
         Assert.True(returnedToPos);
@@ -3583,7 +3583,7 @@ public sealed class SettingsViewModelTests
         completion.SetResult(new RemoteMaintenanceProvisionResult(false,
             "settings.remoteMaintenance.result.installationFailed", remoteService.Status));
         context.RunQueued();
-        await installTask.WaitAsync(TestWaitTimeouts.Default);
+        await installTask.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         Assert.False(viewModel.IsRemoteMaintenanceInstalling);
         Assert.Contains("但安装未完成", viewModel.RemoteMaintenanceProgressText);
 

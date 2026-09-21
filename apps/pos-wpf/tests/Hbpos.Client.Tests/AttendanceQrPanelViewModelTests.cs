@@ -271,13 +271,13 @@ public sealed class AttendanceQrPanelViewModelTests
             }
         };
 
-        await fixture.Localization.TickCatchEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await fixture.Localization.TickCatchEntered.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         var refresh = viewModel.RefreshAsync();
         await Task.WhenAny(refresh, Task.Delay(200));
         fixture.Localization.ReleaseTickCatch();
 
-        await qrCleared.Task.WaitAsync(TimeSpan.FromSeconds(1));
-        await refresh.WaitAsync(TimeSpan.FromSeconds(2));
+        await qrCleared.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
+        await refresh.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         Assert.NotNull(viewModel.QrToken);
         Assert.Equal("Scan to clock in / out", viewModel.MessageText);
@@ -490,11 +490,11 @@ public sealed class AttendanceQrPanelViewModelTests
 
         fixture.Api.BlockRefresh = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var refresh = viewModel.RefreshAsync();
-        await fixture.Api.RefreshBlocked.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await fixture.Api.RefreshBlocked.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         try
         {
             fixture.Time.Advance(TimeSpan.FromSeconds(15));
-            await viewModel.TickAsync().WaitAsync(TimeSpan.FromMilliseconds(200));
+            await viewModel.TickAsync().WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
             Assert.NotEqual(firstToken, viewModel.QrToken);
             Assert.Contains(null, imageChanges);
@@ -553,7 +553,7 @@ public sealed class AttendanceQrPanelViewModelTests
             startTimer: true,
             tickInterval: TimeSpan.FromMilliseconds(10),
             refreshInterval: TimeSpan.FromHours(1));
-        await fixture.Api.RefreshBlocked.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await fixture.Api.RefreshBlocked.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         var startedAt = Stopwatch.GetTimestamp();
         viewModel.Dispose();

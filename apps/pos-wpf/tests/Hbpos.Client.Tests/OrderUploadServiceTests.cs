@@ -384,7 +384,7 @@ public sealed class OrderUploadServiceTests
         await cancellation.CancelAsync();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            execution.WaitAsync(TimeSpan.FromSeconds(2)));
+            execution.WaitAsync(AsyncTestWaitSupport.DefaultTimeout));
         Assert.Equal([first], uploader.Attempts);
     }
 

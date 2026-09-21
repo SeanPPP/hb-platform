@@ -114,7 +114,7 @@ public sealed class SharedHeldOrderCoordinatorTests
         var coordinator = CreateCoordinator(scope, api, cart);
         var firstClaimGuid = Guid.NewGuid();
         var first = coordinator.TakeRemoteHoldAsync(Guid.NewGuid(), session, firstClaimGuid);
-        await firstPrepareStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await firstPrepareStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         try
         {
@@ -128,7 +128,7 @@ public sealed class SharedHeldOrderCoordinatorTests
             allowFirstPrepare.TrySetResult();
         }
 
-        var result = await first.WaitAsync(TimeSpan.FromSeconds(2));
+        var result = await first.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         Assert.Equal(firstClaimGuid, result.ClaimId);
         Assert.Equal(1, Volatile.Read(ref prepareCount));
         Assert.Equal(firstClaimGuid, cart.CreateSnapshot().SharedHeldOrderClaimId);

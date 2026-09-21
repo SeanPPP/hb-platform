@@ -1130,7 +1130,7 @@ public sealed class CardRefundRecoveryPresenterTests
 
         await presenter.ResolveCardPaymentCommand.ExecuteAsync(CardPaymentSupervisorDecision.ConfirmPaid);
 
-        Assert.False(await recoveryTask.WaitAsync(TimeSpan.FromSeconds(1)));
+        Assert.False(await recoveryTask.WaitAsync(AsyncTestWaitSupport.DefaultTimeout));
         Assert.False(presenter.IsCardRecoveryResultDialogOpen);
     }
 
@@ -1170,7 +1170,7 @@ public sealed class CardRefundRecoveryPresenterTests
         await WaitUntilAsync(() => presenter.IsCardRecoveryResultDialogOpen);
         presenter.CloseCardRecoveryResultDialogCommand.Execute(null);
 
-        Assert.False(await recoveryTask.WaitAsync(TimeSpan.FromSeconds(1)));
+        Assert.False(await recoveryTask.WaitAsync(AsyncTestWaitSupport.DefaultTimeout));
     }
 
     private static CardRecoveryPresenter CreatePresenter(
