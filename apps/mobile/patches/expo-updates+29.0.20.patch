@@ -1,0 +1,34 @@
+diff --git a/node_modules/expo-updates/android/src/main/java/expo/modules/updates/launcher/DatabaseLauncher.kt b/node_modules/expo-updates/android/src/main/java/expo/modules/updates/launcher/DatabaseLauncher.kt
+index 1f7610f..e183403 100644
+--- a/node_modules/expo-updates/android/src/main/java/expo/modules/updates/launcher/DatabaseLauncher.kt
++++ b/node_modules/expo-updates/android/src/main/java/expo/modules/updates/launcher/DatabaseLauncher.kt
+@@ -18,6 +18,7 @@ import expo.modules.updates.manifest.EmbeddedManifestUtils
+ import expo.modules.updates.manifest.EmbeddedUpdate
+ import expo.modules.updates.manifest.ManifestMetadata
+ import expo.modules.updates.selectionpolicy.SelectionPolicy
++import expo.modules.updates.selectionpolicy.SelectionPolicies
+ import expo.modules.updates.utils.AndroidResourceAssetUtils
+ import kotlinx.coroutines.CoroutineScope
+ import kotlinx.coroutines.Deferred
+@@ -164,7 +165,20 @@ class DatabaseLauncher(
+       filteredLaunchableUpdates.add(update)
+     }
+     val manifestFilters = ManifestMetadata.getManifestFilters(database, configuration)
+-    return selectionPolicy.selectUpdateToLaunch(filteredLaunchableUpdates, manifestFilters)
++    selectionPolicy.selectUpdateToLaunch(filteredLaunchableUpdates, manifestFilters)?.let { return it }
++
++    // channel override 失效时，只允许当前二进制内置的 bundle 恢复启动。
++    // 必须同时确认原始 URL、runtime、manifest filters 和 embedded ID，避免启动旧 OTA。
++    if (configuration.hasEmbeddedUpdate && configuration.updateUrl == configuration.originalEmbeddedUpdateUrl) {
++      val currentEmbeddedId = embeddedUpdate?.updateEntity?.id ?: return null
++      return filteredLaunchableUpdates.firstOrNull {
++        it.id == currentEmbeddedId &&
++          it.runtimeVersion == configuration.getRuntimeVersion() &&
++          SelectionPolicies.matchesFilters(it, manifestFilters)
++      }
++    }
++
++    return null
+   }
+ 
+   private fun embeddedAssetFileMap(): MutableMap<AssetEntity, String> {
