@@ -8,7 +8,7 @@ type ModuleLoader = (request: string, parent: unknown, isMain: boolean) => unkno
 test("整批 Logo 设置恢复、持久化、部分打印和新批次重置", async () => {
   const item: PromoPosterQueueItem = {
     id: "saved", storeCode: "S1", productName: "Paper", addedAt: "2026-09-21",
-    poster: { kind: "special", style: "classic", size: "A4", productCode: "P1", itemNumber: "HB038-003", title: "PURPLE SHREDDED PAPER", price: 2.5 },
+    poster: { kind: "special", style: "low-ink", size: "A4", productCode: "P1", itemNumber: "HB038-003", title: "PURPLE SHREDDED PAPER", price: 2.5 },
   };
   let saved: unknown = { items: [item], style: "classic", size: "A4", impose: true, showLogo: false };
   const moduleWithLoader = Module as unknown as { _load: ModuleLoader };

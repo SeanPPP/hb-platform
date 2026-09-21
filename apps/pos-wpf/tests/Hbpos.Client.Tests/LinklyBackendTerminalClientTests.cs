@@ -3386,6 +3386,248 @@ public sealed class LinklyBackendTerminalClientTests
         Assert.Equal("CUSTOMER RECEIPT", Assert.Single(result.CardTransactions!).ReceiptText);
     }
 
+    [Theory]
+    [InlineData("network")]
+    [InlineData("server-error")]
+    [InlineData("invalid-json")]
+    [InlineData("local-cancel")]
+    public async Task PurchaseAsync_keeps_approved_result_when_receipt_refresh_fails(string failure)
+    {
+        var dialog = new FakeLinklyTerminalDialogService();
+        var statusRequests = 0;
+        var handler = new StubHttpMessageHandler((request, cancellationToken) =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (path.EndsWith("/active", StringComparison.Ordinal))
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+            }
+
+            if (request.Method == HttpMethod.Post && path.EndsWith("/transactions", StringComparison.Ordinal))
+            {
+                return Task.FromResult(JsonResponse(CompletedWithoutReceiptJson("receipt-refresh-approved", "260601120101", approved: true)));
+            }
+
+            statusRequests++;
+            switch (failure)
+            {
+                case "network":
+                    throw new HttpRequestException("backend offline while fetching receipt");
+                case "server-error":
+                    return Task.FromResult(JsonResponse(
+                        """{ "success": false, "message": "backend unavailable" }""",
+                        HttpStatusCode.ServiceUnavailable));
+                case "invalid-json":
+                    return Task.FromResult(JsonResponse("{ not json"));
+                default:
+                    // 收银员在补取小票期间点了"停止等待"：终态已确定，不能被本地取消改写成结果未知。
+                    dialog.RequestLocalCancel();
+                    return new TaskCompletionSource<HttpResponseMessage>().Task.WaitAsync(cancellationToken);
+            }
+        });
+        var client = CreateClient(handler, dialog);
+
+        var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        Assert.True(result.Approved);
+        Assert.False(result.ResultUnknown);
+        Assert.Equal("receipt-refresh-approved", result.SessionId);
+        Assert.Null(Assert.Single(result.CardTransactions!).ReceiptText);
+        Assert.Equal(1, statusRequests);
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_keeps_declined_result_when_receipt_refresh_fails()
+    {
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (path.EndsWith("/active", StringComparison.Ordinal))
+            {
+                return new HttpResponseMessage(HttpStatusCode.NotFound);
+            }
+
+            return request.Method == HttpMethod.Post
+                ? JsonResponse(CompletedWithoutReceiptJson("receipt-refresh-declined", "260601120102", approved: false))
+                : throw new HttpRequestException("backend offline while fetching receipt");
+        });
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+
+        var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        Assert.False(result.Approved);
+        Assert.False(result.ResultUnknown);
+        Assert.Equal("receipt-refresh-declined", result.SessionId);
+        Assert.Equal("05", Assert.Single(result.CardTransactions!).ResponseCode);
+    }
+
+    [Theory]
+    [InlineData("not-final")]
+    [InlineData("other-session")]
+    [InlineData("outcome-changed")]
+    public async Task PurchaseAsync_does_not_adopt_inconsistent_receipt_refresh(string refresh)
+    {
+        var statusRequests = 0;
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (path.EndsWith("/active", StringComparison.Ordinal))
+            {
+                return new HttpResponseMessage(HttpStatusCode.NotFound);
+            }
+
+            if (request.Method == HttpMethod.Post)
+            {
+                return JsonResponse(CompletedWithoutReceiptJson("receipt-refresh-original", "260601120103", approved: true));
+            }
+
+            statusRequests++;
+            return JsonResponse(refresh switch
+            {
+                "not-final" => """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "storeCode": "S01",
+                        "deviceCode": "TERM-1",
+                        "sessionId": "receipt-refresh-original",
+                        "status": "Pending",
+                        "txnRef": "260601120103",
+                        "recoveryAction": "Retry",
+                        "displayText": "PROCESSING",
+                        "receiptText": "UNTRUSTED RECEIPT",
+                        "recoveryCount": 1,
+                        "lastHttpStatus": 503,
+                        "notifications": []
+                      }
+                    }
+                    """,
+                "other-session" => CompletedWithoutReceiptJson("receipt-refresh-other", "260601120103", approved: true)
+                    .Replace("\"receiptText\": null", "\"receiptText\": \"UNTRUSTED RECEIPT\"", StringComparison.Ordinal),
+                _ => CompletedWithoutReceiptJson("receipt-refresh-original", "260601120103", approved: false)
+                    .Replace("\"receiptText\": null", "\"receiptText\": \"UNTRUSTED RECEIPT\"", StringComparison.Ordinal)
+            });
+        });
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+
+        var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        Assert.True(result.Approved);
+        Assert.False(result.ResultUnknown);
+        Assert.Equal("receipt-refresh-original", result.SessionId);
+        Assert.Null(Assert.Single(result.CardTransactions!).ReceiptText);
+        Assert.Equal(1, statusRequests);
+    }
+
+    [Fact]
+    public async Task ResumeSessionUntilFinalAsync_keeps_final_status_when_business_window_expires_during_receipt_wait()
+    {
+        var handler = new StubHttpMessageHandler((request, cancellationToken) =>
+            request.RequestUri!.AbsolutePath.EndsWith("/transactions/receipt-resume-session/status", StringComparison.Ordinal)
+                ? new TaskCompletionSource<HttpResponseMessage>().Task.WaitAsync(cancellationToken)
+                : throw new InvalidOperationException($"Unexpected request {request.RequestUri}"));
+        var client = CreateClient(
+            handler,
+            new FakeLinklyTerminalDialogService(),
+            TimeSpan.Zero,
+            delayAsync: null,
+            localization: null,
+            businessWait: TimeSpan.FromMilliseconds(50));
+
+        var status = await client.ResumeSessionUntilFinalAsync(CreateSettings(), CompletedWithoutReceiptStatus("receipt-resume-session"));
+
+        Assert.Equal("receipt-resume-session", status.SessionId);
+        Assert.Equal("Completed", status.Status);
+        Assert.True(LinklyBackendTerminalClient.IsApprovedFinalTransaction(status));
+    }
+
+    [Fact]
+    public async Task ResumeSessionUntilFinalAsync_propagates_caller_cancellation_during_receipt_wait()
+    {
+        using var callerCts = new CancellationTokenSource();
+        var handler = new StubHttpMessageHandler(request =>
+            throw new InvalidOperationException($"Unexpected request {request.RequestUri}"));
+        var client = CreateClient(
+            handler,
+            new FakeLinklyTerminalDialogService(),
+            TimeSpan.FromMilliseconds(1),
+            delayAsync: (_, cancellationToken) =>
+            {
+                // 调用方取消（如关闭支付页）仍须原样上抛，不能被"尽力补取小票"吞掉。
+                callerCts.Cancel();
+                cancellationToken.ThrowIfCancellationRequested();
+                return Task.CompletedTask;
+            });
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => client.ResumeSessionUntilFinalAsync(
+                CreateSettings(),
+                CompletedWithoutReceiptStatus("receipt-resume-cancelled"),
+                callerCts.Token));
+    }
+
+    private static string CompletedWithoutReceiptJson(string sessionId, string txnRef, bool approved)
+    {
+        var responseCode = approved ? "00" : "05";
+        var responseText = approved ? "APPROVED" : "DECLINED";
+        var transactionSuccess = approved ? "true" : "false";
+        return $$"""
+            {
+              "success": true,
+              "data": {
+                "environment": "Sandbox",
+                "storeCode": "S01",
+                "deviceCode": "TERM-1",
+                "sessionId": "{{sessionId}}",
+                "status": "Completed",
+                "txnRef": "{{txnRef}}",
+                "responseCode": "{{responseCode}}",
+                "responseText": "{{responseText}}",
+                "transactionSuccess": {{transactionSuccess}},
+                "displayText": "{{responseText}}",
+                "receiptText": null,
+                "recoveryCount": 0,
+                "receiptPrintedAt": null,
+                "lastHttpStatus": 200,
+                "notifications": []
+              }
+            }
+            """;
+    }
+
+    private static LinklyCloudBackendSessionResponse CompletedWithoutReceiptStatus(string sessionId)
+    {
+        return new LinklyCloudBackendSessionResponse(
+            "Sandbox",
+            "S01",
+            "TERM-1",
+            sessionId,
+            "Completed",
+            "TXN-RECEIPT-RESUME",
+            ResponseCode: "00",
+            ResponseText: "APPROVED",
+            RecoveryAction: null,
+            DisplayText: "APPROVED",
+            CancelKeyFlag: false,
+            OKKeyFlag: false,
+            AcceptYesKeyFlag: false,
+            DeclineNoKeyFlag: false,
+            AuthoriseKeyFlag: false,
+            InputType: null,
+            GraphicCode: null,
+            DisplayLines: null,
+            ReceiptText: null,
+            RecoveryCount: 0,
+            ReceiptPrintedAt: null,
+            ClientAcknowledgedAt: null,
+            LastHttpStatus: 200,
+            Notifications: [])
+        {
+            TransactionSuccess = true
+        };
+    }
+
     [Fact]
     public async Task PurchaseAsync_locks_when_completed_terminal_amount_differs()
     {
@@ -3636,6 +3878,129 @@ public sealed class LinklyBackendTerminalClientTests
         Assert.True(finalState.IsFinal);
         Assert.Contains("unfinished card transaction", finalState.DisplayText, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(1, dialog.CloseCallCount);
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_sends_attempt_identity_so_backend_derives_the_txn_ref_already_persisted_locally()
+    {
+        var attemptGuid = Guid.Parse("00000000-0000-0000-0000-000000000001");
+        const string attemptTxnRef = "PMND6WYVF2GBVY6G";
+        var requests = new List<HttpRequestMessage>();
+        string? boundTxnRef = null;
+        var accessor = new LinklyPaymentAttemptContextAccessor();
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            requests.Add(CloneRequestWithBody(request));
+            return request.RequestUri!.AbsolutePath switch
+            {
+                "/api/v1/linkly/cloud-backend/transactions/active" => new HttpResponseMessage(HttpStatusCode.NotFound),
+                "/api/v1/linkly/cloud-backend/transactions" => JsonResponse(PendingSessionJson("recoverable-session", attemptTxnRef)),
+                "/api/v1/linkly/cloud-backend/transactions/recoverable-session/status" => JsonResponse(ApprovedSessionJson("recoverable-session", attemptTxnRef)),
+                _ => throw new InvalidOperationException($"Unexpected request: {request.RequestUri}")
+            };
+        });
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService(), TimeSpan.Zero, null, null, accessor);
+        using var scope = accessor.Begin(new LinklyPaymentAttemptContext(
+            attemptGuid,
+            (_, txnRef, _, _) =>
+            {
+                boundTxnRef = txnRef;
+                return Task.CompletedTask;
+            },
+            TxnRef: LinklyLocalTxnRef.Create('P', attemptGuid.ToString("D"))));
+
+        await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        // 交易引用仍由后端生成，客户端只交出 attempt 身份；后端用同一算法派生出的引用必须等于本地已落库的值，
+        // 请求发出后若断电，本地记录才能靠它认领会话。请求体里不得出现 txnRef（契约守卫测试禁止客户端指定）。
+        var start = Assert.Single(requests, request => request.RequestUri!.AbsolutePath.EndsWith("/transactions", StringComparison.Ordinal));
+        var body = await start.Content!.ReadAsStringAsync();
+        Assert.Equal(attemptGuid.ToString("D"), ReadJsonString(body, "attemptGuid"));
+        Assert.Null(TryReadJsonString(body, "txnRef"));
+        Assert.Equal(attemptTxnRef, LinklyLocalTxnRef.Create('P', attemptGuid.ToString("D")));
+        Assert.Equal(attemptTxnRef, boundTxnRef);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("0123456789abcdef0123456789abcdef")]
+    [InlineData("P0123456789ABCDE")]
+    public async Task PurchaseAsync_leaves_txn_ref_to_backend_when_local_reference_is_not_derived_from_the_attempt(string? attemptTxnRef)
+    {
+        var requests = new List<HttpRequestMessage>();
+        var accessor = new LinklyPaymentAttemptContextAccessor();
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            requests.Add(CloneRequestWithBody(request));
+            return request.RequestUri!.AbsolutePath switch
+            {
+                "/api/v1/linkly/cloud-backend/transactions/active" => new HttpResponseMessage(HttpStatusCode.NotFound),
+                "/api/v1/linkly/cloud-backend/transactions" => JsonResponse(PendingSessionJson("backend-ref-session", "260601120020ABCD")),
+                "/api/v1/linkly/cloud-backend/transactions/backend-ref-session/status" => JsonResponse(ApprovedSessionJson("backend-ref-session", "260601120020ABCD")),
+                _ => throw new InvalidOperationException($"Unexpected request: {request.RequestUri}")
+            };
+        });
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService(), TimeSpan.Zero, null, null, accessor);
+        using var scope = accessor.Begin(new LinklyPaymentAttemptContext(
+            Guid.Parse("bbbbbbbb-cccc-dddd-eeee-ffffffffffff"),
+            (_, _, _, _) => Task.CompletedTask,
+            TxnRef: attemptTxnRef));
+
+        await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        // 本地引用不是由该 attempt 身份派生时，后端派生出的值会与本地记录对不上；这时宁可让后端随机生成。
+        var start = Assert.Single(requests, request => request.RequestUri!.AbsolutePath.EndsWith("/transactions", StringComparison.Ordinal));
+        Assert.Null(TryReadJsonString(await start.Content!.ReadAsStringAsync(), "attemptGuid"));
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_takes_over_finished_but_unacknowledged_session_when_conflict_has_no_active_session()
+    {
+        var requests = new List<HttpRequestMessage>();
+        LinklyCloudBackendSessionResponse? takenOver = null;
+        var accessor = new LinklyPaymentAttemptContextAccessor();
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            requests.Add(CloneRequestWithBody(request));
+            return request.RequestUri!.AbsolutePath switch
+            {
+                // 上一笔在绑定会话前断电，顾客随后在终端完成了刷卡：会话已到终态（不再 active），但 POS 从未确认。
+                "/api/v1/linkly/cloud-backend/transactions/active" => new HttpResponseMessage(HttpStatusCode.NotFound),
+                "/api/v1/linkly/cloud-backend/transactions" => JsonResponse(
+                    """
+                    {
+                      "success": false,
+                      "errorCode": "LINKLY_CLOUD_BACKEND_ACTIVE_TRANSACTION",
+                      "message": "Active session exists."
+                    }
+                    """,
+                    HttpStatusCode.Conflict),
+                "/api/v1/linkly/cloud-backend/transactions/resumable" => JsonResponse(ApprovedSessionJson("orphan-session", "P0123456789ABCDE")),
+                _ => throw new InvalidOperationException($"Unexpected request: {request.RequestUri}")
+            };
+        });
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService(), TimeSpan.Zero, null, null, accessor);
+        using var scope = accessor.Begin(new LinklyPaymentAttemptContext(
+            Guid.Parse("bbbbbbbb-cccc-dddd-eeee-ffffffffffff"),
+            (_, _, _, _) => Task.CompletedTask,
+            TxnRef: "PZZZZZZZZZZZZZZZ",
+            TakeOverActiveSessionAsync: (_, status, _) =>
+            {
+                takenOver = status;
+                return Task.FromResult(LinklyActiveSessionTakeoverResult.Success);
+            }));
+
+        var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        // 过去这里只会提示"稍后再试"，而后端闸门会一直拒绝，这台设备的 Cloud 刷卡只能靠改库解除。
+        Assert.Equal("orphan-session", takenOver?.SessionId);
+        Assert.Equal("P0123456789ABCDE", takenOver?.TxnRef);
+        Assert.False(result.Approved);
+        Assert.False(result.ResultUnknown);
+        Assert.Equal("linkly.backend.activeSessionRequiresRecovery", result.StatusKey);
+        Assert.Single(requests, request =>
+            request.Method == HttpMethod.Post &&
+            request.RequestUri!.AbsolutePath.EndsWith("/transactions", StringComparison.Ordinal));
     }
 
     [Fact]

@@ -1,14 +1,14 @@
 /** 海报类型：特价 / 多件价 / 新品 / 清仓。 */
 export type PromoPosterKind = "special" | "multibuy" | "new" | "clearance";
 
-/** 海报风格：经典（直角卡片 + 横幅）/ 现代（圆角色块 + 贴纸）。 */
-export type PromoPosterStyle = "classic" | "modern";
+/** 海报风格：经典 / 现代 / 省彩墨。 */
+export type PromoPosterStyle = "classic" | "modern" | "low-ink";
 
 /** 海报成品尺寸。 */
 export type PromoPosterSize = "A4" | "A5" | "A6" | "A7";
 
 export const PROMO_POSTER_KINDS: readonly PromoPosterKind[] = ["special", "multibuy", "new", "clearance"];
-export const PROMO_POSTER_STYLES: readonly PromoPosterStyle[] = ["classic", "modern"];
+export const PROMO_POSTER_STYLES: readonly PromoPosterStyle[] = ["classic", "modern", "low-ink"];
 export const PROMO_POSTER_SIZES: readonly PromoPosterSize[] = ["A4", "A5", "A6", "A7"];
 
 /** 商品当前生效的多件促销（来自 defaults 接口）。 */

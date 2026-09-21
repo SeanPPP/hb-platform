@@ -334,6 +334,7 @@ function PosterEditorForm({ defaults, storeCode, requestedKind, onBack }: Poster
               options={PROMO_POSTER_STYLES.map((style) => ({ value: style, label: t(`poster.styles.${style}`) }))}
               onChange={handleStyle}
             />
+            {draft.style === "low-ink" ? <Text style={styles.fieldLabel}>{t("poster.lowInkHint")}</Text> : null}
             <PosterSegmented
               label={t("poster.editor.sizeLabel")}
               value={draft.size}

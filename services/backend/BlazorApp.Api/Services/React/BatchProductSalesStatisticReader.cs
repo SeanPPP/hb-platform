@@ -25,9 +25,7 @@ internal sealed class BatchProductSalesStatisticReader(ISqlSugarClient db)
         try
         {
         var endExclusive = end.Date.AddDays(1);
-        var states = await db.Queryable<SalesStatisticRefreshState>().With(SqlWith.Null)
-            .Where(s => s.StatisticType == SalesStatisticType.ProductStoreDaily && s.Date >= start && s.Date < endExclusive)
-            .OrderBy(s => s.Date).ToListAsync(token);
+        var states = await ReadProductStoreDailyStatesAsync(start, endExclusive, token);
         token.ThrowIfCancellationRequested();
         var byDate = states.GroupBy(s => s.Date.Date).ToDictionary(g => g.Key, g => g.ToList());
         var pending = new List<DateTime>();
@@ -60,9 +58,7 @@ internal sealed class BatchProductSalesStatisticReader(ISqlSugarClient db)
         try
         {
         var endExclusive = end.Date.AddDays(1);
-        var states = await db.Queryable<SalesStatisticRefreshState>().With(SqlWith.Null)
-            .Where(s => s.StatisticType == SalesStatisticType.ProductStoreDaily && s.Date >= start.Date && s.Date < endExclusive)
-            .OrderBy(s => s.Date).ToListAsync(token);
+        var states = await ReadProductStoreDailyStatesAsync(start.Date, endExclusive, token);
         token.ThrowIfCancellationRequested();
         var byDate = states.GroupBy(s => s.Date.Date).ToDictionary(g => g.Key, g => g.ToList());
         var ready = new List<DateTime>();
@@ -262,5 +258,50 @@ internal sealed class BatchProductSalesStatisticReader(ISqlSugarClient db)
         }).OrderBy(r => r.Date).ThenBy(r => r.BranchCode, StringComparer.Ordinal).ToList();
     }
 
+    /// <summary>
+    /// 读取商品分店日统计的状态行。日统计重算在自己的写事务里持有该日期状态行的 X 锁直到提交（12 月的大日子超过
+    /// 60 秒），HBweb 未开 RCSI，已提交读要一直等：2026-09-21 批量重算期间折扣 worker 因此多次 60 秒超时（锁等待 303 秒）。
+    /// 快照读拿到的是最近一次已提交的状态（重算中即 Running），判定结果与等锁后读取相同，只是不再等待。
+    /// </summary>
+    private Task<List<SalesStatisticRefreshState>> ReadProductStoreDailyStatesAsync(
+        DateTime start, DateTime endExclusive, CancellationToken token) =>
+        SqlServerSnapshotRead.ExecuteAsync(db, () => db.Queryable<SalesStatisticRefreshState>().With(SqlWith.Null)
+            .Where(s => s.StatisticType == SalesStatisticType.ProductStoreDaily && s.Date >= start && s.Date < endExclusive)
+            .OrderBy(s => s.Date).ToListAsync(token));
+
     internal static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
+}
+
+/// <summary>
+/// SQL Server 上把一次只读查询放进 SNAPSHOT 事务：只读已提交版本、不加共享锁、不等写锁（HBweb 已允许快照隔离、未开 RCSI）。
+/// 调用方已开事务或非 SQL Server 时直接执行，沿用调用方的隔离级别。
+/// </summary>
+internal static class SqlServerSnapshotRead
+{
+    internal static async Task<T> ExecuteAsync<T>(ISqlSugarClient db, Func<Task<T>> read)
+    {
+        if (db.CurrentConnectionConfig.DbType != DbType.SqlServer || db.Ado.Transaction != null)
+            return await read();
+
+        await db.Ado.BeginTranAsync(System.Data.IsolationLevel.Snapshot);
+        try
+        {
+            var result = await read();
+            await db.Ado.CommitTranAsync();
+            return result;
+        }
+        catch (Exception original)
+        {
+            // 已取消的业务令牌不能取消回滚，否则事务会残留在共享的 SqlSugar 连接上，后续写入都进了这个事务。
+            var previousToken = db.Ado.CancellationToken;
+            db.Ado.RemoveCancellationToken();
+            try { await db.Ado.RollbackTranAsync(); }
+            catch (Exception rollback) { original.Data["SnapshotReadRollbackError"] = rollback.Message; }
+            finally
+            {
+                if (previousToken.HasValue) db.Ado.CancellationToken = previousToken.Value;
+            }
+            throw;
+        }
+    }
 }
