@@ -15,6 +15,7 @@ interface WarehousePriceSyncModalProps {
   loading?: boolean;
   errorMessage?: string | null;
   onCancel: () => void;
+  onDismiss: () => void;
   onConfirm: () => void;
 }
 
@@ -30,6 +31,7 @@ export function WarehousePriceSyncModal({
   loading = false,
   errorMessage,
   onCancel,
+  onDismiss,
   onConfirm,
 }: WarehousePriceSyncModalProps) {
   const { t } = useAppTranslation("productQuery");
@@ -47,7 +49,7 @@ export function WarehousePriceSyncModal({
     <Portal>
       <Modal
         visible={visible}
-        onDismiss={loading ? undefined : onCancel}
+        onDismiss={loading ? undefined : onDismiss}
         contentContainerStyle={styles.modal}
       >
         <View style={styles.content} accessibilityViewIsModal>
