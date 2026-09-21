@@ -492,10 +492,7 @@ public sealed class CashPaymentWorkflowService(
         {
             order = await IssuePendingRefundVouchersAsync(order, session, cancellationToken);
         }
-        catch (Exception ex) when (
-            ex is not OperationCanceledException and
-            not OutOfMemoryException and
-            not StackOverflowException)
+        catch (Exception ex) when (IsRetryableFailureAfterOrderPersisted(ex, cancellationToken))
         {
             // 中文注释：退款券签发的致命异常必须原样传播，不能降级成可重试上传失败。
             throw new PaymentUploadFailedException(
@@ -522,10 +519,7 @@ public sealed class CashPaymentWorkflowService(
             {
                 await orderUploadService.UploadOrderAsync(result.Order.OrderGuid, cancellationToken);
             }
-            catch (Exception ex) when (
-                ex is not OperationCanceledException and
-                not OutOfMemoryException and
-                not StackOverflowException)
+            catch (Exception ex) when (IsRetryableFailureAfterOrderPersisted(ex, cancellationToken))
             {
                 // 中文注释：代金券订单上传的致命异常必须原样传播，不能包装成普通上传失败。
                 throw new PaymentUploadFailedException(
@@ -604,10 +598,7 @@ public sealed class CashPaymentWorkflowService(
         {
             order = await IssuePendingRefundVouchersAsync(order, session, cancellationToken);
         }
-        catch (Exception ex) when (
-            ex is not OperationCanceledException and
-            not OutOfMemoryException and
-            not StackOverflowException)
+        catch (Exception ex) when (IsRetryableFailureAfterOrderPersisted(ex, cancellationToken))
         {
             // 中文注释：重试退款券签发同样不拦截 OOM/StackOverflowException。
             throw new PaymentUploadFailedException(
@@ -632,10 +623,7 @@ public sealed class CashPaymentWorkflowService(
             {
                 await orderUploadService.UploadOrderAsync(orderGuid, cancellationToken);
             }
-            catch (Exception ex) when (
-                ex is not OperationCanceledException and
-                not OutOfMemoryException and
-                not StackOverflowException)
+            catch (Exception ex) when (IsRetryableFailureAfterOrderPersisted(ex, cancellationToken))
             {
                 // 中文注释：重试代金券上传的致命异常必须保持原实例传播。
                 throw new PaymentUploadFailedException(
@@ -699,6 +687,21 @@ public sealed class CashPaymentWorkflowService(
             pendingSyncCount,
             updatedSession,
             hasPostCommitWarning);
+    }
+
+    // 订单落库之后的联网步骤（签发退款券、上传代金券订单）失败时，能否折算成"可用同一订单重试"的上传失败。
+    // HttpClient 超时和 API 端点切换都表现为取消异常，而调用方并没有取消；此时订单已经存在、购物车未清，
+    // 若原样冒到支付页只会提示"支付未能完成"，收银员再点一次完成就会用新订单号重复落单：
+    // 正向代金券会复用同一个预占 token（两单必有一单永远传不上去），退款券会换新幂等键再发一张。
+    // 调用方自己发起的取消按惯例原样传播；OOM/StackOverflow 属致命异常，同样不拦截。
+    private static bool IsRetryableFailureAfterOrderPersisted(Exception exception, CancellationToken callerCancellationToken)
+    {
+        return exception switch
+        {
+            OutOfMemoryException or StackOverflowException => false,
+            OperationCanceledException => !callerCancellationToken.IsCancellationRequested,
+            _ => true
+        };
     }
 
     private async Task<(int PendingSyncCount, bool HasPostCommitWarning)> ReadPendingSyncCountAfterCommitAsync(
@@ -1123,12 +1126,16 @@ public sealed class CashPaymentWorkflowService(
             }
 
             // LocalIp 在 socket 写入前已持久化 TxnRef；没有 SessionId 也不能把其取消当作未提交。
+            // 后端异步模式的销售引用则在建 attempt 时就已派生落库（远早于发请求），它的存在不说明终端是否接单：
+            // 该模式由终端客户端掌握提交边界——POST 之前失败会返回可回退结果或抛 CardTerminalNotSubmittedException，
+            // POST 之后失败会返回未知结果；异常走到这里时以会话是否已绑定为准。退款在各模式下维持原有的保守判定。
+            var txnRefMarksDispatch = isRefund || !IsCloudBackendAsyncAttempt(linklyAttemptAfterException);
             var wasSubmitted = !definitelyNotSubmitted && (
                 linklySubmissionObserved ||
                 squareSubmissionObserved ||
                 refundDispatchBoundaryPersisted ||
                 !string.IsNullOrWhiteSpace(linklyAttemptAfterException?.SessionId) ||
-                !string.IsNullOrWhiteSpace(linklyAttemptAfterException?.TxnRef) ||
+                (txnRefMarksDispatch && !string.IsNullOrWhiteSpace(linklyAttemptAfterException?.TxnRef)) ||
                 !string.IsNullOrWhiteSpace(squareAttemptAfterException?.CheckoutId));
 
             if (wasSubmitted)
@@ -2143,13 +2150,13 @@ public sealed class CashPaymentWorkflowService(
             attemptGuid,
             null,
             // LocalIp 引用只绑定已落库 attempt 身份；Cloud 退款继续沿用既有原交易派生规则。
+            // 销售在三种模式下都必须在发请求前确定引用并随 attempt 落库：CloudBackendAsync 过去等服务端生成，
+            // 请求发出后一旦断电或响应丢失，这一行 SessionId 与 TxnRef 皆空，自动恢复和主管结案都无法认领它。
             isRefund
                 ? mode == LinklyConnectionMode.LocalIp
                     ? LinklyLocalTxnRef.Create('R', attemptGuid.ToString("D"))
                     : BuildRefundTxnRef(referenceText)
-                : mode is LinklyConnectionMode.LocalIp or LinklyConnectionMode.CloudDirectSync
-                    ? LinklyLocalTxnRef.Create('P', attemptGuid.ToString("D"))
-                    : null,
+                : LinklyLocalTxnRef.Create('P', attemptGuid.ToString("D")),
             settings.Processor.ToString(),
             settings.Environment.ToString(),
             CardTerminalSettings.FormatLinklyConnectionMode(mode),
@@ -2205,6 +2212,14 @@ public sealed class CashPaymentWorkflowService(
             persistedAttempt,
             persistedAttempt.AttemptGuid != attempt.AttemptGuid,
             isRefund && RequiresLinklyRefundRecoveryForCurrentMode(persistedAttempt, mode));
+    }
+
+    private static bool IsCloudBackendAsyncAttempt(LocalCardPaymentAttempt? attempt)
+    {
+        return string.Equals(
+            attempt?.ConnectionMode?.Trim(),
+            nameof(LinklyConnectionMode.CloudBackendAsync),
+            StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool RequiresLinklyRefundRecoveryForCurrentMode(
@@ -3195,18 +3210,27 @@ public sealed class CashPaymentWorkflowService(
             }
 
             var outcome = MapActiveSessionOutcome(finalStatus);
+            var isGenericActiveSession = string.Equals(activeAttempt.OperationKind, "ActiveSession", StringComparison.Ordinal);
+            // 旧销售/退款一旦记为 Approved，恢复会把它当作已持久化的金融事实、按草稿金额自动落单，
+            // 所以已到终态的批准在这里也必须核验金额；核验不过就不落 Approved、不确认会话，留给恢复流程判为未知。
+            // 无草稿的 generic 记录本来就降级为待复核、不会自动落单，仍照常确认以释放终端。
             if (outcome == LocalCardPaymentAttemptStatus.Approved &&
-                !LinklyBackendTerminalClient.HasPendingApprovalEvidenceMatchingAttempt(
-                    finalStatus,
-                    finalTxnRef,
-                    activeAttempt.Amount,
-                    activeAttempt.TxnType))
+                (!LinklyBackendTerminalClient.HasPendingApprovalEvidenceMatchingAttempt(
+                     finalStatus,
+                     finalTxnRef,
+                     activeAttempt.Amount,
+                     activeAttempt.TxnType) ||
+                 (!isGenericActiveSession &&
+                  !LinklyBackendTerminalClient.HasFinalApprovalEvidenceMatchingAttempt(
+                      finalStatus,
+                      finalTxnRef,
+                      activeAttempt.Amount))))
             {
                 return LinklyActiveSessionTakeoverResult.Failed(
                     "The previous Linkly approval evidence does not match the persisted transaction and was not acknowledged.");
             }
 
-            if (string.Equals(activeAttempt.OperationKind, "ActiveSession", StringComparison.Ordinal) &&
+            if (isGenericActiveSession &&
                 outcome == LocalCardPaymentAttemptStatus.Approved)
             {
                 // 无订单草稿的 generic 记录不能自动完成旧单；ack 后继续留在异常中心等待主管核实。

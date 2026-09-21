@@ -6234,6 +6234,7 @@ export interface components {
         };
         LinklyCloudBackendAcknowledgeRequest: {
             environment?: string | null;
+            supervisorResolved?: boolean;
         };
         LinklyCloudBackendCardTransactionDto: {
             txnRef?: string | null;
@@ -6422,6 +6423,8 @@ export interface components {
             terminalId?: string | null;
             /** Format: int64 */
             selectionRevision?: number | null;
+            /** Format: uuid */
+            attemptGuid?: string | null;
         };
         LinklyCloudCredentialResponse: {
             storeCode?: string | null;
