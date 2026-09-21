@@ -209,6 +209,10 @@
     "gp": "GP",
     "discountedGp": "Disc. GP",
     "strategy": "Strategy",
+    "warehouseNotice": {
+      "label": "Warehouse retail differs",
+      "value": "Warehouse: {{value}}"
+    },
     "grid": {
       "purchase": "Cost",
       "retail": "Retail",
@@ -267,6 +271,7 @@
     "confirm": "Update price and label"
   },
   "warehousePriceSync": {
+    "currentPriceUnavailable": "The current store price could not be verified. Scan again before printing.",
     "title": "Warehouse retail price changed",
     "product": "{{name}} ({{code}})",
     "currentRetail": "Current retail",
@@ -337,6 +342,18 @@
     "smallLabel": "Small label (60mm)",
     "quantity": "Print quantity",
     "quantitySingleUse": "Single use",
+    "printerStatus": {
+      "unselected": "No printer selected",
+      "idle": "Ready to connect",
+      "connecting": "Connecting",
+      "connected": "Connected",
+      "reconnecting": "Reconnecting",
+      "disconnected": "Disconnected",
+      "paused": "Connection paused",
+      "error": "Connection issue",
+      "errorHint": "Open settings to check the connection",
+      "openSettingsHint": "Open printer settings"
+    },
     "label": "Labels"
   },
   "codes": {
@@ -370,15 +387,18 @@
     },
     "styles": {
       "classic": "Classic",
-      "modern": "Modern"
+      "modern": "Modern",
+      "low-ink": "Low ink"
     },
+    "lowInkHint": "White paper, black text, with colour only in the heading and short rule. Turn off the logo if preferred.",
     "unavailable": {
-      "special": "no store discount",
       "multibuy": "no active multi-buy promotion",
       "clearance": "no clearance price set"
     },
     "unavailableItem": "{{kind}}: {{reason}}",
     "unavailableSeparator": "; ",
+    "showLogo": "Show logo",
+    "showLogoHint": "Applies to all posters in this batch",
     "queueBar": {
       "title": "Posters to print: {{count}}",
       "go": "Print"
@@ -405,6 +425,7 @@
       "priceNow": "Now",
       "clearancePrice": "Clearance price",
       "priceWas": "Was (struck through)",
+      "priceWasOptional": "Was (optional)",
       "salePrice": "Price",
       "hintDiscounted": "Store discounted price {{price}}",
       "hintClearance": "Clearance price set {{price}}",

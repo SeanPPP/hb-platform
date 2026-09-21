@@ -298,7 +298,8 @@ public class LinklyCloudBackendAsyncService(
             purchaseAnalysisData,
             notification,
             normalizedStoreCode,
-            normalizedDeviceCode);
+            normalizedDeviceCode,
+            session.TerminalId);
 
         var response = await SendWithRecoverableFailureAsync(
             () => transport.StartTransactionAsync(transportRequest, cancellationToken));
@@ -375,7 +376,8 @@ public class LinklyCloudBackendAsyncService(
             session.SessionId,
             BuildNotificationRequest(environment, session.SessionId, notificationBaseUri),
             normalizedStoreCode,
-            normalizedDeviceCode);
+            normalizedDeviceCode,
+            session.TerminalId);
         var response = await SendWithRecoverableFailureAsync(
             () => transport.StartSettlementAsync(transportRequest, cancellationToken));
         ApplySettlementTransportResponse(session, response);
@@ -441,7 +443,8 @@ public class LinklyCloudBackendAsyncService(
                 token.AccessToken,
                 normalizedSessionId,
                 normalizedStoreCode,
-                normalizedDeviceCode);
+                normalizedDeviceCode,
+                session.TerminalId);
             var transportResponse = await SendWithRecoverableFailureAsync(
                 () => transport.GetTransactionAsync(transportRequest, cancellationToken));
             if (refreshesCompletedMissingSuccess)
@@ -622,7 +625,8 @@ public class LinklyCloudBackendAsyncService(
             token.AccessToken,
             session.SessionId,
             session.StoreCode,
-            session.DeviceCode);
+            session.DeviceCode,
+            session.TerminalId);
 
         var response = await SendWithRecoverableFailureAsync(
             () => transport.RecoverTransactionAsync(transportRequest, cancellationToken));
@@ -678,7 +682,8 @@ public class LinklyCloudBackendAsyncService(
             normalizedKey,
             NormalizeOptional(request.Data),
             session.StoreCode,
-            session.DeviceCode);
+            session.DeviceCode,
+            session.TerminalId);
 
         var response = await SendWithRecoverableFailureAsync(
             () => transport.SendKeyAsync(transportRequest, cancellationToken));
@@ -2785,6 +2790,12 @@ public class LinklyCloudBackendAsyncService(
     {
         var code = (int)statusCode;
         return statusCode == HttpStatusCode.RequestTimeout ||
+            // 关键逻辑：429 是限流，HTTP 语义本身就是“稍后重试”，绝不能当作交易失败。
+            // 它原先落到 ApplyTransportResponse 的兜底分支被写成 Status=Failed +
+            // IsActive=false，此后 ShouldRefreshOfficialTransaction 恒为 false，
+            // 该会话再也不向 Linkly 核对真实结果。终端若已批准，收银员却收到失败提示
+            // 并重刷，就是重复扣款；而那一行会永久停在 Failed 无法自愈。
+            statusCode == HttpStatusCode.TooManyRequests ||
             code is >= 500 and <= 599;
     }
 
@@ -3711,13 +3722,17 @@ internal static class LinklyCloudTerminalConcurrencyGate
         string environment,
         string storeCode,
         string deviceCode,
+        Guid? terminalId,
         Func<CancellationToken, Task<T>> action,
         CancellationToken cancellationToken)
     {
+        // 闸门按实体刷卡机计：有 TerminalId（线路管理）就用它，否则一台 POS 对应一台刷卡机，用设备码。
+        // 由闸门统一取键，调用方只传原始身份，避免 Token 与各 REST 操作各自拼键而落进不同信号量。
+        var terminalKey = terminalId is { } id && id != Guid.Empty ? id.ToString("D") : deviceCode;
         var key = (
             environment.Trim().ToUpperInvariant(),
             storeCode.Trim().ToUpperInvariant(),
-            deviceCode.Trim().ToUpperInvariant());
+            terminalKey.Trim().ToUpperInvariant());
         var gate = Gates.GetOrAdd(
             key,
             static _ => new SemaphoreSlim(MaximumConcurrency, MaximumConcurrency));
@@ -3855,7 +3870,8 @@ public sealed class HttpLinklyCloudBackendTokenProvider(
         return await LinklyCloudTerminalConcurrencyGate.RunAsync(
             normalizedEnvironment,
             normalizedStoreCode,
-            terminalId?.ToString("D") ?? normalizedDeviceCode,
+            normalizedDeviceCode,
+            terminalId,
             async gateCancellationToken =>
             {
                 var stopwatch = Stopwatch.StartNew();
@@ -4559,7 +4575,8 @@ public sealed record LinklyCloudBackendTransportTransactionRequest(
     IReadOnlyDictionary<string, string>? PurchaseAnalysisData,
     LinklyCloudBackendNotificationRequest Notification,
     string StoreCode,
-    string DeviceCode);
+    string DeviceCode,
+    Guid? TerminalId = null);
 
 public sealed record LinklyCloudBackendTransportSettlementRequest(
     string Environment,
@@ -4568,7 +4585,8 @@ public sealed record LinklyCloudBackendTransportSettlementRequest(
     string SessionId,
     LinklyCloudBackendNotificationRequest Notification,
     string StoreCode,
-    string DeviceCode);
+    string DeviceCode,
+    Guid? TerminalId = null);
 
 public sealed record LinklyCloudBackendTransportSessionRequest(
     string Environment,
@@ -4596,7 +4614,8 @@ public sealed record LinklyCloudBackendTransportSendKeyRequest(
     string Key,
     string? Data,
     string StoreCode,
-    string DeviceCode);
+    string DeviceCode,
+    Guid? TerminalId = null);
 
 public sealed class HttpLinklyCloudBackendAsyncTransport(
     HttpClient httpClient,
@@ -4635,6 +4654,7 @@ public sealed class HttpLinklyCloudBackendAsyncTransport(
             request.Environment,
             request.StoreCode,
             request.DeviceCode,
+            request.TerminalId,
             request.RestBaseUrl,
             request.AccessToken,
             request.SessionId,
@@ -4668,6 +4688,7 @@ public sealed class HttpLinklyCloudBackendAsyncTransport(
             request.Environment,
             request.StoreCode,
             request.DeviceCode,
+            request.TerminalId,
             request.RestBaseUrl,
             request.AccessToken,
             request.SessionId,
@@ -4692,7 +4713,8 @@ public sealed class HttpLinklyCloudBackendAsyncTransport(
         return SendAsync(
             request.Environment,
             request.StoreCode,
-            request.TerminalId?.ToString("D") ?? request.DeviceCode,
+            request.DeviceCode,
+            request.TerminalId,
             request.RestBaseUrl,
             request.AccessToken,
             request.SessionId,
@@ -4713,7 +4735,8 @@ public sealed class HttpLinklyCloudBackendAsyncTransport(
         return SendAsync(
             request.Environment,
             request.StoreCode,
-            request.TerminalId?.ToString("D") ?? request.DeviceCode,
+            request.DeviceCode,
+            request.TerminalId,
             request.RestBaseUrl,
             request.AccessToken,
             request.SessionId,
@@ -4744,7 +4767,8 @@ public sealed class HttpLinklyCloudBackendAsyncTransport(
         return SendAsync(
             request.Environment,
             request.StoreCode,
-            request.TerminalId?.ToString("D") ?? request.DeviceCode,
+            request.DeviceCode,
+            request.TerminalId,
             request.RestBaseUrl,
             request.AccessToken,
             request.SessionId,
@@ -4772,7 +4796,8 @@ public sealed class HttpLinklyCloudBackendAsyncTransport(
         return SendAsync(
             request.Environment,
             request.StoreCode,
-            request.TerminalId?.ToString("D") ?? request.DeviceCode,
+            request.DeviceCode,
+            request.TerminalId,
             request.RestBaseUrl,
             request.AccessToken,
             request.SessionId,
@@ -4803,6 +4828,7 @@ public sealed class HttpLinklyCloudBackendAsyncTransport(
             request.Environment,
             request.StoreCode,
             request.DeviceCode,
+            request.TerminalId,
             request.RestBaseUrl,
             request.AccessToken,
             request.SessionId,
@@ -4821,6 +4847,7 @@ public sealed class HttpLinklyCloudBackendAsyncTransport(
         string environment,
         string storeCode,
         string deviceCode,
+        Guid? terminalId,
         string restBaseUrl,
         string accessToken,
         string sessionId,
@@ -4857,6 +4884,7 @@ public sealed class HttpLinklyCloudBackendAsyncTransport(
             environment,
             storeCode,
             deviceCode,
+            terminalId,
             async gateCancellationToken =>
             {
                 var stopwatch = Stopwatch.StartNew();

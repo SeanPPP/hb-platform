@@ -11,6 +11,94 @@ namespace Hbpos.Client.Tests;
 
 public sealed class OrderUploadServiceTests
 {
+    [Theory]
+    [InlineData(HeldOrderDisposition.Unmatched, true)]
+    [InlineData(HeldOrderDisposition.Primary, false)]
+    [InlineData(HeldOrderDisposition.Duplicate, false)]
+    public async Task Held_order_unmatched_disposition_is_reported_for_manual_reconciliation(
+        HeldOrderDisposition disposition,
+        bool expectsError)
+    {
+        var databasePath = Path.Combine(
+            Path.GetTempPath(),
+            $"hbpos-order-upload-disposition-{Guid.NewGuid():N}.db");
+        var sink = new CapturingApplicationLogSink();
+        ConsoleLog.ConfigureCenterSink(sink);
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            await new LocalSchemaService(store).InitializeAsync();
+            var orders = new LocalOrderRepository(store);
+            var uploadRepository = new LocalOrderUploadRepository(store);
+            var order = CreateLocalOrder();
+            await orders.SavePendingOrderAsync(order);
+
+            await new OrderUploadService(
+                    orders,
+                    new StubOrderSyncApiClient(new OrderSyncResponse(
+                        order.OrderGuid,
+                        Accepted: true,
+                        AlreadySynced: false,
+                        Message: "Synced",
+                        HeldOrderDisposition: disposition)),
+                    uploadRepository)
+                .UploadOrderAsync(order.OrderGuid);
+
+            // 无论 disposition 是什么，订单都必须落库——钱已经收了，
+            // 不能因为挂单关联失败就把这笔销售丢掉。
+            Assert.Single(await orders.GetRecentOrdersAsync());
+
+            var unmatchedErrors = sink.Entries
+                .Where(entry =>
+                    string.Equals(entry.Level, "Error", StringComparison.OrdinalIgnoreCase) &&
+                    entry.Message.Contains("held-order unmatched", StringComparison.Ordinal))
+                .ToList();
+
+            if (expectsError)
+            {
+                // Unmatched 说明订单没能关联到对应的共享挂单，可能与其他收银机重复销售，
+                // 必须留下错误级别的可告警信号交人工对账。
+                var error = Assert.Single(unmatchedErrors);
+                Assert.Contains(order.StoreCode, error.Message, StringComparison.Ordinal);
+                Assert.Contains(order.DeviceCode, error.Message, StringComparison.Ordinal);
+            }
+            else
+            {
+                Assert.Empty(unmatchedErrors);
+            }
+        }
+        finally
+        {
+            ConsoleLog.ConfigureCenterSink(null);
+            await SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(databasePath);
+        }
+    }
+
+    private sealed class CapturingApplicationLogSink : IApplicationLogSink
+    {
+        private readonly List<ApplicationLogEntry> _entries = [];
+
+        public IReadOnlyList<ApplicationLogEntry> Entries
+        {
+            get
+            {
+                lock (_entries)
+                {
+                    return _entries.ToArray();
+                }
+            }
+        }
+
+        public void Enqueue(ApplicationLogEntry entry)
+        {
+            lock (_entries)
+            {
+                _entries.Add(entry);
+            }
+        }
+    }
+
     [Fact]
     public async Task ExecuteSelectedAsync_preserves_order_deduplicates_and_summarizes_failures()
     {
@@ -296,7 +384,7 @@ public sealed class OrderUploadServiceTests
         await cancellation.CancelAsync();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            execution.WaitAsync(TimeSpan.FromSeconds(2)));
+            execution.WaitAsync(AsyncTestWaitSupport.DefaultTimeout));
         Assert.Equal([first], uploader.Attempts);
     }
 

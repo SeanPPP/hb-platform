@@ -9,6 +9,7 @@ import {
   appUpdateMutualExclusion,
   createUpdateLaneRetryGate,
 } from "./app-update-mutual-exclusion";
+import { useForegroundUpdateCheckInterval } from "./foreground-update-interval";
 import {
   checkAndDownloadNativeAppUpdate,
   getBuildBoundNativeAppDownloadUrl,
@@ -313,4 +314,9 @@ export function useAutomaticNativeAppUpdate(options: { enabled: boolean }) {
       appUpdateMutualExclusion.clearNativeInstaller();
     };
   }, []);
+
+  // 常驻前台的设备也要定时发现新 APK；同一安装包每次运行仍只提示一次。
+  useForegroundUpdateCheckInterval(() => {
+    void check(optionsRef.current);
+  }, { enabled: options.enabled });
 }

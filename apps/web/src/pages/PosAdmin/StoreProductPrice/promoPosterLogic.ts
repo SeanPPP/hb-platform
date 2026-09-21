@@ -100,6 +100,7 @@ export interface PromoPosterItemRequest {
 export interface PromoPosterPdfRequest {
   storeCode: string
   impose: boolean
+  showLogo: boolean
   posters: PromoPosterItemRequest[]
 }
 
@@ -227,20 +228,27 @@ export function normalizePromoPosterDefaults(raw: unknown): PromoPosterDefaults 
 
 // ---------------------------------------------------------------- 类型可用性与默认草稿
 
-/** 各类型是否可用：以后端 can* 为准；多件价还要求确实有促销；新品始终可用。 */
+/** 特价和新品始终可用；多件价和清仓仍依赖门店促销数据。 */
 export function resolvePosterKindAvailability(defaults: PromoPosterDefaults): Record<PromoPosterKind, boolean> {
   return {
-    special: defaults.canSpecial,
+    // Special 允许店员手填价格，即使当前没有系统折扣；默认类型仍由真实折扣单独决定。
+    special: true,
     multibuy: defaults.canMultiBuy && defaults.multiBuyOffers.length > 0,
     new: true,
     clearance: defaults.canClearance,
   }
 }
 
-/** 默认类型：按 特价 > 清仓 > 多件价 > 新品 取第一个可用的。 */
+/** 有真实折扣时优先特价，否则按 清仓 > 多件价 > 新品 选择。 */
 export function pickDefaultPosterKind(defaults: PromoPosterDefaults): PromoPosterKind {
   const availability = resolvePosterKindAvailability(defaults)
-  return PROMO_POSTER_KIND_PRIORITY.find((kind) => availability[kind]) ?? 'new'
+  const hasEffectiveDiscount = defaults.retailPrice !== null
+    && defaults.discountedPrice !== null
+    && defaults.discountedPrice < defaults.retailPrice
+  const defaultPriority: readonly PromoPosterKind[] = hasEffectiveDiscount
+    ? PROMO_POSTER_KIND_PRIORITY
+    : ['clearance', 'multibuy', 'new']
+  return defaultPriority.find((kind) => availability[kind]) ?? 'new'
 }
 
 /** 切换类型：按新类型重置价格与促销，品名保持店员当前输入。 */
@@ -251,7 +259,18 @@ export function applyPosterKind(
 ): PromoPosterDraft {
   switch (kind) {
     case 'special':
-      return { ...draft, kind, price: defaults.discountedPrice, wasPrice: defaults.retailPrice, offerId: null }
+      {
+        const hasEffectiveDiscount = defaults.retailPrice !== null
+          && defaults.discountedPrice !== null
+          && defaults.discountedPrice < defaults.retailPrice
+        return {
+          ...draft,
+          kind,
+          price: hasEffectiveDiscount ? defaults.discountedPrice : defaults.retailPrice,
+          wasPrice: hasEffectiveDiscount ? defaults.retailPrice : null,
+          offerId: null,
+        }
+      }
     case 'clearance':
       return { ...draft, kind, price: defaults.clearancePrice, wasPrice: defaults.retailPrice, offerId: null }
     case 'new':
@@ -346,10 +365,10 @@ export function validatePosterDraft(draft: PromoPosterDraft, defaults: PromoPost
   else if (!priceOk) issues.push({ code: 'priceInvalid', max: PROMO_POSTER_PRICE_MAX })
 
   if (draft.kind === 'special' || draft.kind === 'clearance') {
-    // 原价用于 WAS / SAVE / % OFF，必须高于海报价，否则海报上会出现负数节省
-    if (draft.wasPrice === null) issues.push({ code: 'wasPriceRequired' })
-    else if (!isValidPosterPrice(draft.wasPrice)) issues.push({ code: 'wasPriceInvalid', max: PROMO_POSTER_PRICE_MAX })
-    else if (priceOk && roundMoney(draft.wasPrice) <= roundMoney(draft.price!)) issues.push({ code: 'wasPriceNotHigher' })
+    // Special 可只印海报价；Clearance 仍必须有高于海报价的原价。
+    if (draft.wasPrice === null && draft.kind === 'clearance') issues.push({ code: 'wasPriceRequired' })
+    else if (draft.wasPrice !== null && !isValidPosterPrice(draft.wasPrice)) issues.push({ code: 'wasPriceInvalid', max: PROMO_POSTER_PRICE_MAX })
+    else if (draft.wasPrice !== null && priceOk && roundMoney(draft.wasPrice) <= roundMoney(draft.price!)) issues.push({ code: 'wasPriceNotHigher' })
   }
 
   if (draft.kind === 'multibuy' && !findPosterOffer(draft, defaults)) issues.push({ code: 'offerRequired' })
@@ -486,14 +505,14 @@ export function buildPosterItemRequest(
 export function buildPromoPosterPdfRequest(
   storeCode: string,
   rows: readonly PromoPosterRowState[],
-  options: { style: PromoPosterStyle; size: PromoPosterSize; impose: boolean; today: string },
+  options: { style: PromoPosterStyle; size: PromoPosterSize; impose: boolean; today: string; showLogo?: boolean },
 ): PromoPosterPdfRequest {
   const posters: PromoPosterItemRequest[] = []
   for (const row of rows) {
     if (row.status !== 'ready') continue
     posters.push(buildPosterItemRequest(row.draft, row.defaults, { ...options, itemNumber: row.product.itemNumber }))
   }
-  return { storeCode, impose: options.impose, posters }
+  return { storeCode, impose: options.impose, showLogo: options.showLogo ?? true, posters }
 }
 
 // ---------------------------------------------------------------- 响应解析

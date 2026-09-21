@@ -183,7 +183,7 @@ public sealed class MainViewModelScannerTests
         Assert.Equal(0, recovery.CallCount);
 
         recoveryCompletion.SetResult([]);
-        await reinitialize.WaitAsync(TimeSpan.FromSeconds(2));
+        await reinitialize.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
     }
 
     [Fact]
@@ -304,7 +304,7 @@ public sealed class MainViewModelScannerTests
         command.Execute(null);
         var firstToggle = command.ExecutionTask;
         Assert.NotNull(firstToggle);
-        await firstWriteStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await firstWriteStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         Assert.True(command.CanExecute(null));
         command.Execute(null);
         var secondToggle = command.ExecutionTask;
@@ -337,7 +337,7 @@ public sealed class MainViewModelScannerTests
         command.Execute(null);
         var firstToggle = command.ExecutionTask;
         Assert.NotNull(firstToggle);
-        await firstWriteStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await firstWriteStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         Assert.True(command.CanExecute(null));
         command.Execute(null);
         var secondToggle = command.ExecutionTask;
@@ -586,7 +586,7 @@ public sealed class MainViewModelScannerTests
         await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
 
         var loginTask = viewModel.LoginCashierByBarcodeAsync("BAR-1");
-        await runtimeStatus.Started.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await runtimeStatus.Started.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         Assert.Same(cashierSession, viewModel.Session.CashierSession);
         Assert.False(viewModel.IsCashierLoginOverlayOpen);
@@ -737,7 +737,7 @@ public sealed class MainViewModelScannerTests
         connectivity.PendingResponse = delayedOnlineResult;
 
         var refreshTask = InvokeRefreshOnlineStateAsync(viewModel, autoRetryOrders: true);
-        await connectivityStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await connectivityStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         viewModel.BeginShutdown();
         var offlineTask = viewModel.ReportOfflineForShutdownAsync();
         Assert.False(offlineTask.IsCompleted);
@@ -760,7 +760,7 @@ public sealed class MainViewModelScannerTests
         await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
 
         var refreshTask = InvokeRefreshOnlineStateAsync(viewModel, autoRetryOrders: true);
-        await runtimeStatus.OnlineStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await runtimeStatus.OnlineStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         var offlineTask = viewModel.ReportOfflineForShutdownAsync();
 
         Assert.False(offlineTask.IsCompleted);
@@ -783,7 +783,7 @@ public sealed class MainViewModelScannerTests
         await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
 
         var refreshTask = InvokeRefreshOnlineStateAsync(viewModel, autoRetryOrders: true);
-        await runtimeStatus.OnlineStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await runtimeStatus.OnlineStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         using var exhaustedBudget = new CancellationTokenSource();
         exhaustedBudget.Cancel();
 
@@ -817,7 +817,7 @@ public sealed class MainViewModelScannerTests
         runtimeStatus.Reports.Clear();
 
         var refreshTask = InvokeRefreshOnlineStateAsync(viewModel, autoRetryOrders: true);
-        await connectivityStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await connectivityStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         viewModel.Dispose();
         delayedOnlineResult.TrySetResult(true);
         await refreshTask;
@@ -853,18 +853,18 @@ public sealed class MainViewModelScannerTests
         var beginStartedAt = Stopwatch.GetTimestamp();
         viewModel.BeginShutdown();
         Assert.True(Stopwatch.GetElapsedTime(beginStartedAt) < TimeSpan.FromSeconds(1));
-        await callbackStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await callbackStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         var disposeStartedAt = Stopwatch.GetTimestamp();
         viewModel.Dispose();
         Assert.True(Stopwatch.GetElapsedTime(disposeStartedAt) < TimeSpan.FromSeconds(1));
 
-        await callbackCompleted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await callbackCompleted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         var shutdownCancellationTask = Assert.IsAssignableFrom<Task>(
             typeof(MainViewModel)
                 .GetField("_shutdownCancellationTask", BindingFlags.Instance | BindingFlags.NonPublic)!
                 .GetValue(viewModel));
-        await shutdownCancellationTask.WaitAsync(TimeSpan.FromSeconds(1));
+        await shutdownCancellationTask.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
     }
 
     [Theory]
@@ -1193,11 +1193,11 @@ public sealed class MainViewModelScannerTests
         history.IsOnlineSourceSelected = true;
 
         var navigationTask = viewModel.ShowHistoryCommand.ExecuteAsync(null);
-        await remoteHistory.DetailsStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await remoteHistory.DetailsStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         try
         {
-            var completed = await Task.WhenAny(navigationTask, Task.Delay(500));
+            var completed = await Task.WhenAny(navigationTask, Task.Delay(AsyncTestWaitSupport.DefaultTimeout));
 
             Assert.Same(navigationTask, completed);
             Assert.Same(history, viewModel.CurrentScreen);
@@ -2246,7 +2246,7 @@ public sealed class MainViewModelScannerTests
         try
         {
             selectCardTask = payment.SelectCardCommand.ExecuteAsync(null);
-            await syncQueue.OverviewReadStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            await syncQueue.OverviewReadStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
             await WaitUntilAsync(() => completedOrder is not null);
 
             Assert.Same(viewModel.PaymentSuccess, viewModel.CurrentScreen);

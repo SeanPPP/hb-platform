@@ -95,6 +95,7 @@
     "selectStoreFirst": "Please select a store first.",
     "loginFailed": "Login failed",
     "network": "Network connection failed. Please try again.",
+    "printerDisconnected": "The printer connection was interrupted. Make sure the printer is on, reconnect it in Settings, then try again.",
     "timeout": "The request timed out. Please try again.",
     "unauthorized": "Your session has expired or access is not available. Please sign in again.",
     "server": "The server is temporarily unavailable. Please try again later.",
@@ -191,6 +192,45 @@
       "errorTitle": "Failed to load revenue data",
       "showingSnapshot": "Showing complete snapshot from {{time}} while refreshing"
     },
+    "cumulative": {
+      "title": "Cumulative revenue",
+      "compareWith": "vs LY · {{date}}",
+      "asOf": "As of {{time}} · {{scope}}",
+      "asOfShort": "As of {{time}}",
+      "fullDay": "Full day · {{scope}}",
+      "behind": "{{amount}} behind the same time last year",
+      "ahead": "{{amount}} ahead of the same time last year",
+      "level": "Level with the same time last year",
+      "behindFullDay": "{{amount}} below the same day last year",
+      "aheadFullDay": "{{amount}} above the same day last year",
+      "levelFullDay": "Level with the same day last year",
+      "lowBaseNote": "Low base last year, so the dollar difference is shown",
+      "lySameTime": "LY same time",
+      "liveAt": "Live · {{time}}",
+      "dayTotal": "Day total",
+      "lyFullDay": "LY full day",
+      "legendToday": "Today",
+      "legendSelectedDay": "Selected day",
+      "legendCompare": "LY {{date}}",
+      "legendGap": "Behind / ahead",
+      "changeByHour": "Cumulative change by hour",
+      "tapHint": "Tap to set cut-off",
+      "lowBase": "low base",
+      "compareAsOf": "Compare as of {{time}}, {{change}}",
+      "noCompleteHour": "Comparison starts at {{time}}",
+      "noData": "No sales recorded yet",
+      "loadFailed": "Failed to load hourly revenue",
+      "cutoffUnavailable": "Waiting for the latest statistics time",
+      "chartLabel": "Cumulative revenue for {{scope}} as of {{time}}: {{current}}, last year {{compare}}",
+      "rankingAsOf": "As of {{time}} · vs same time LY",
+      "cumulative": "Cumulative",
+      "perHour": "Per hour",
+      "upTo": "Up to",
+      "live": "Live {{time}}",
+      "upcoming": "Upcoming",
+      "comparedAt": "at {{time}}",
+      "footnote": "Cumulative from opening, in store local time. The current hour is compared once it completes."
+    },
     "accessibility": {
       "openHourlyDetail": "View hourly revenue details for {{branch}}",
       "openDailyDetail": "View daily revenue details for {{branch}}"
@@ -273,6 +313,12 @@
     "drilldown": {
       "supplier": "Supplier Branch Data",
       "product": "Product Branch Data"
+    },
+    "sort": {
+      "accessibilityLabel": "Sort by {{column}}, currently {{state}}",
+      "desc": "descending",
+      "asc": "ascending",
+      "none": "not sorted"
     }
   }
 }

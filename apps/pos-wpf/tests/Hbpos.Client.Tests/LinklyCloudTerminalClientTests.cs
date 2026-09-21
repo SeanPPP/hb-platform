@@ -961,14 +961,14 @@ public sealed class LinklyCloudTerminalClientTests
             Assert.False(purchaseTask.IsCompleted);
 
             apiClient.PendingTransactionCompletion.SetResult(Approved(apiClient.LastTransactionSessionId!, "TXN-5"));
-            var result = await purchaseTask.WaitAsync(TimeSpan.FromSeconds(5));
+            var result = await purchaseTask.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
             Assert.True(result.Approved);
         }
         finally
         {
             // 断言失败也结束待响应交易，不能把后台任务带到后续测试。
             cancellation.Cancel();
-            await purchaseTask.WaitAsync(TimeSpan.FromSeconds(5));
+            await purchaseTask.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         }
     }
 

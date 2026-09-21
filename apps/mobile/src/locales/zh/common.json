@@ -95,6 +95,7 @@
     "selectStoreFirst": "请先选择门店",
     "loginFailed": "登录失败",
     "network": "网络连接失败，请稍后重试。",
+    "printerDisconnected": "打印机连接已中断。请确认打印机已开机，在设置中重新连接后再试。",
     "timeout": "请求超时，请稍后重试。",
     "unauthorized": "登录已失效或当前无权限，请重新登录。",
     "server": "服务器暂时不可用，请稍后重试。",
@@ -191,6 +192,45 @@
       "errorTitle": "营业额数据加载失败",
       "showingSnapshot": "刷新期间显示 {{time}} 的完整快照"
     },
+    "cumulative": {
+      "title": "累计营业额",
+      "compareWith": "对比同期 · {{date}}",
+      "asOf": "截至 {{time}} · {{scope}}",
+      "asOfShort": "截至 {{time}}",
+      "fullDay": "全天 · {{scope}}",
+      "behind": "比去年同一时刻少 {{amount}}",
+      "ahead": "比去年同一时刻多 {{amount}}",
+      "level": "与去年同一时刻持平",
+      "behindFullDay": "比去年同日少 {{amount}}",
+      "aheadFullDay": "比去年同日多 {{amount}}",
+      "levelFullDay": "与去年同日持平",
+      "lowBaseNote": "同期基数太小，改显示金额差",
+      "lySameTime": "去年同时刻",
+      "liveAt": "实时 · {{time}}",
+      "dayTotal": "当日合计",
+      "lyFullDay": "去年全天",
+      "legendToday": "今天",
+      "legendSelectedDay": "所选日期",
+      "legendCompare": "去年 {{date}}",
+      "legendGap": "落后 / 领先",
+      "changeByHour": "逐小时累计涨跌",
+      "tapHint": "点选截止时刻",
+      "lowBase": "基数小",
+      "compareAsOf": "对比截至 {{time}}，{{change}}",
+      "noCompleteHour": "{{time}} 起开始对比",
+      "noData": "暂无销售记录",
+      "loadFailed": "分时营业额加载失败",
+      "cutoffUnavailable": "正在等待最新统计时间",
+      "chartLabel": "{{scope}}截至 {{time}} 的累计营业额：本期 {{current}}，同期 {{compare}}",
+      "rankingAsOf": "截至 {{time}} · 对比去年同时刻",
+      "cumulative": "累计",
+      "perHour": "逐小时",
+      "upTo": "截至",
+      "live": "实时 {{time}}",
+      "upcoming": "未到",
+      "comparedAt": "{{time}} 后",
+      "footnote": "从开门起累计，按门店本地时间；进行中的小时结束后才参与比较。"
+    },
     "accessibility": {
       "openHourlyDetail": "查看 {{branch}} 分时营业额明细",
       "openDailyDetail": "查看 {{branch}} 每日营业额明细"
@@ -273,6 +313,12 @@
     "drilldown": {
       "supplier": "供应商分店数据",
       "product": "商品分店数据"
+    },
+    "sort": {
+      "accessibilityLabel": "按{{column}}排序，当前{{state}}",
+      "desc": "降序",
+      "asc": "升序",
+      "none": "未排序"
     }
   }
 }

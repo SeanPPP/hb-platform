@@ -5480,7 +5480,7 @@ public sealed class LinklyBackendTerminalClientTests
         try
         {
             // 必须进入交易查询后再计时，预检耗时不能替代业务等待的验证。
-            await statusStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await statusStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
             await Task.Delay(120);
 
             if (purchaseTask.IsCompleted)
@@ -5490,14 +5490,14 @@ public sealed class LinklyBackendTerminalClientTests
             }
 
             statusWait.SetResult(JsonResponse(ApprovedSessionJson("short-timeout-session", "TXN-SHORT")));
-            var result = await purchaseTask.WaitAsync(TimeSpan.FromSeconds(5));
+            var result = await purchaseTask.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
             Assert.True(result.Approved);
         }
         finally
         {
             // 失败路径也取消并观察交易任务，避免影响同进程其他测试。
             cancellation.Cancel();
-            await purchaseTask.WaitAsync(TimeSpan.FromSeconds(5));
+            await purchaseTask.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         }
     }
 

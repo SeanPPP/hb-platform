@@ -209,6 +209,10 @@
     "gp": "毛利",
     "discountedGp": "折后毛利",
     "strategy": "策略",
+    "warehouseNotice": {
+      "label": "仓库零售价有差异",
+      "value": "仓库参考价：{{value}}"
+    },
     "grid": {
       "purchase": "进价",
       "retail": "零售价",
@@ -267,6 +271,7 @@
     "confirm": "更新价格并更新标签"
   },
   "warehousePriceSync": {
+    "currentPriceUnavailable": "当前门店售价无法确认，请重新扫码后再打印。",
     "title": "仓库零售价有变化",
     "product": "{{name}}（{{code}}）",
     "currentRetail": "当前零售价",
@@ -337,6 +342,18 @@
     "smallLabel": "小标签 (60mm)",
     "quantity": "打印数量",
     "quantitySingleUse": "单次有效",
+    "printerStatus": {
+      "unselected": "未选择打印机",
+      "idle": "待连接",
+      "connecting": "连接中",
+      "connected": "已连接",
+      "reconnecting": "正在重新连接",
+      "disconnected": "已断开",
+      "paused": "连接已暂停",
+      "error": "连接异常",
+      "errorHint": "请打开设置检查连接",
+      "openSettingsHint": "打开打印机设置"
+    },
     "label": "标签"
   },
   "codes": {
@@ -370,15 +387,18 @@
     },
     "styles": {
       "classic": "经典",
-      "modern": "现代"
+      "modern": "现代",
+      "low-ink": "省彩墨"
     },
+    "lowInkHint": "白底黑字，仅标题与短线用彩色；Logo 可按需关闭。",
     "unavailable": {
-      "special": "本店没有折扣",
       "multibuy": "没有进行中的多件促销",
       "clearance": "未设清货价"
     },
     "unavailableItem": "{{kind}}：{{reason}}",
     "unavailableSeparator": "；",
+    "showLogo": "显示 Logo",
+    "showLogoHint": "应用于整批海报",
     "queueBar": {
       "title": "待打印海报 {{count}} 张",
       "go": "去打印"
@@ -405,6 +425,7 @@
       "priceNow": "现价",
       "clearancePrice": "清仓价",
       "priceWas": "原价（划线）",
+      "priceWasOptional": "原价（可选）",
       "salePrice": "售价",
       "hintDiscounted": "本店折后价 {{price}}",
       "hintClearance": "已设清货价 {{price}}",

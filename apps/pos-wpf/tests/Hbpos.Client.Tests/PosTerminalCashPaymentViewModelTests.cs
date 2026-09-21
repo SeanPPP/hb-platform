@@ -488,7 +488,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
 
         var stopwatch = Stopwatch.StartNew();
         viewModel.ScanText = "slow";
-        await searchStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await searchStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         var maxHeartbeatGap = TimeSpan.Zero;
         var previousHeartbeat = stopwatch.Elapsed;
@@ -535,7 +535,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         try
         {
             viewModel.NumberInputCommand.Execute("Enter");
-            await firstSearchStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await firstSearchStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
             var stopwatch = Stopwatch.StartNew();
             var previousHeartbeat = stopwatch.Elapsed;
@@ -601,7 +601,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         try
         {
             viewModel.ScanText = "old";
-            await oldSearchStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            await oldSearchStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
             var oldCancellation = Assert.IsType<CancellationTokenSource>(typeof(PosTerminalViewModel)
                 .GetField("_matchesRefreshCts", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
                 .GetValue(viewModel));
@@ -643,10 +643,10 @@ public sealed class PosTerminalCashPaymentViewModelTests
         };
 
         viewModel.ScanText = "dispose";
-        await searchStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await searchStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         viewModel.Dispose();
 
-        await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await cancellationObserved.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         Assert.Empty(viewModel.Matches);
     }
 
@@ -2535,12 +2535,12 @@ public sealed class PosTerminalCashPaymentViewModelTests
             });
 
         var execution = viewModel.SyncCommand.ExecuteAsync(null);
-        await downloadStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await downloadStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         viewModel.SyncCommand.Cancel();
         var wasCancellationRequested = receivedToken.IsCancellationRequested;
         releaseDownload.TrySetResult();
-        await execution.WaitAsync(TimeSpan.FromSeconds(5));
+        await execution.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         Assert.True(receivedToken.CanBeCanceled);
         Assert.True(wasCancellationRequested);
@@ -2576,12 +2576,12 @@ public sealed class PosTerminalCashPaymentViewModelTests
             });
 
         var execution = viewModel.SyncCommand.ExecuteAsync(null);
-        await refreshStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await refreshStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         viewModel.SyncCommand.Cancel();
         var wasCancellationRequested = receivedToken.IsCancellationRequested;
         releaseRefresh.TrySetResult();
-        await execution.WaitAsync(TimeSpan.FromSeconds(5));
+        await execution.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         Assert.True(receivedToken.CanBeCanceled);
         Assert.True(wasCancellationRequested);
@@ -2605,7 +2605,31 @@ public sealed class PosTerminalCashPaymentViewModelTests
         await viewModel.SelectCashCommand.ExecuteAsync(null);
 
         Assert.Equal(2.2m, viewModel.ChangeDue);
+        // 澳币现金最小面额 0.05，顾客给整钞后超收是常态。超收时剩余应收必须是 0：
+        // 若同屏在找零 2.20 旁边再显示"还差 2.20"，收银员可能据此重复收款。
+        Assert.Equal(0m, viewModel.RemainingAmount);
         Assert.True(viewModel.ConfirmPaymentCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task Payment_page_keeps_positive_remaining_amount_when_cash_is_insufficient()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-112", "Partial Cash Juice", "930112", PriceSourceKind.ProductBase, 7.8m));
+        var viewModel = new PaymentViewModel(
+            cart,
+            new CashCheckoutService(),
+            new InMemoryOrderRepository(),
+            new InMemorySyncQueueRepository(),
+            Session);
+
+        viewModel.TenderAmountText = "5";
+        await viewModel.SelectCashCommand.ExecuteAsync(null);
+
+        // 未收够时剩余应收仍要显示真实差额，且不产生找零。
+        Assert.Equal(2.8m, viewModel.RemainingAmount);
+        Assert.Equal(0m, viewModel.ChangeDue);
+        Assert.False(viewModel.ConfirmPaymentCommand.CanExecute(null));
     }
 
     [Fact]
@@ -3405,7 +3429,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         viewModel.PaymentCompleted += (_, args) => completed = args;
 
         var payment = viewModel.SelectCardCommand.ExecuteAsync(null);
-        await workflow.AddTenderStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await workflow.AddTenderStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         authorization.RevokeAll();
         workflow.AddTenderResult.SetResult(PaymentTenderAttemptResult.Success(
             new PaymentTender(PaymentMethodKind.Card, 10m, "CARD-REAUTHORIZED"),
@@ -3440,7 +3464,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var viewModel = new PaymentViewModel(cart, workflow, Session);
 
         var automaticCompletion = viewModel.SelectCardCommand.ExecuteAsync(null);
-        await workflow.CompletePaymentStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await workflow.CompletePaymentStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         Assert.True(viewModel.IsPaymentInteractionLocked);
         await viewModel.ConfirmPaymentCommand.ExecuteAsync(null);
@@ -4354,14 +4378,14 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var beginStartedAt = Stopwatch.GetTimestamp();
         _ = viewModel.BeginShutdown();
         Assert.True(Stopwatch.GetElapsedTime(beginStartedAt) < TimeSpan.FromSeconds(1));
-        await callbackStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await callbackStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         var disposeStartedAt = Stopwatch.GetTimestamp();
         viewModel.Dispose();
         Assert.True(Stopwatch.GetElapsedTime(disposeStartedAt) < TimeSpan.FromSeconds(1));
         Assert.True(viewModel.IsPaymentInteractionLocked);
 
-        await callbackCompleted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await callbackCompleted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         await paymentTask;
     }
 
@@ -4386,7 +4410,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         using var registration = workflow.LastAddTenderCancellationToken.Register(() => throw fatal);
         var shutdownCancellationTask = viewModel.BeginShutdown();
         var thrown = await Assert.ThrowsAnyAsync<Exception>(
-            () => shutdownCancellationTask.WaitAsync(TimeSpan.FromSeconds(1)));
+            () => shutdownCancellationTask.WaitAsync(AsyncTestWaitSupport.DefaultTimeout));
 
         Assert.Same(fatal, thrown);
         Assert.True(workflow.LastAddTenderCancellationToken.IsCancellationRequested);
@@ -4428,7 +4452,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
             cardSession.GetType()
                 .GetField("_shutdownCancellationTask", BindingFlags.Instance | BindingFlags.NonPublic)!
                 .GetValue(cardSession));
-        await shutdownCancellationTask.WaitAsync(TimeSpan.FromSeconds(1));
+        await shutdownCancellationTask.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         Assert.True(activeCancellation.IsCancellationRequested);
         Assert.False(paymentTask.IsCompleted);
 
@@ -5990,7 +6014,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
 
         qualification.TrySetResult(candidate);
         handoff.TrySetResult(true);
-        await opening.WaitAsync(TimeSpan.FromSeconds(5));
+        await opening.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         Assert.Equal(2, prepareCalls);
         Assert.Equal(1, handoffCalls);

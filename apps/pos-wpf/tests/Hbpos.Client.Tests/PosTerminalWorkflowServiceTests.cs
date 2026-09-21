@@ -336,7 +336,7 @@ public sealed class PosTerminalWorkflowServiceTests
         Assert.Single(cart.Lines);
 
         remoteLookup.SetResult(new RemoteLookupRefreshResult("S001", "930241", Found: false, Item: null, DeletedCount: 1));
-        var catalogRefresh = await catalogReloaded.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        var catalogRefresh = await catalogReloaded.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         Assert.False(catalogRefresh.HasCatalogSnapshot);
         Assert.Empty(catalogRefresh.CatalogItems);
@@ -596,7 +596,7 @@ public sealed class PosTerminalWorkflowServiceTests
         Assert.True(HasLog(logs, "cart add completed"));
 
         uiPriority.Release();
-        await remoteLookupStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await remoteLookupStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         await WaitUntilAsync(() => HasLog(logs, "remote lookup dispatch"));
 
         var orderedLogs = logs.ToArray();
@@ -629,13 +629,13 @@ public sealed class PosTerminalWorkflowServiceTests
 
         service.AddSelectedItem(Session, localItem, clearScanText: true, closeMatchesPopup: false, operation: "manual-add-selected");
         remoteLookup.SetResult(new RemoteLookupRefreshResult("S001", "930291", Found: true, Item: remoteItem, DeletedCount: 0));
-        await uiPriority.SecondWaitEntered.WaitAsync(TimeSpan.FromSeconds(3));
+        await uiPriority.SecondWaitEntered.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         Assert.Equal("Workflow Idle Local", Assert.Single(cart.Lines).DisplayName);
         Assert.False(catalogReloaded.Task.IsCompleted);
 
         uiPriority.ReleaseSecondWait();
-        await catalogReloaded.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await catalogReloaded.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         await WaitUntilAsync(() => HasLog(logs, "remote lookup apply completed"));
 
         Assert.Equal("Workflow Idle Remote", Assert.Single(cart.Lines).DisplayName);
@@ -701,8 +701,8 @@ public sealed class PosTerminalWorkflowServiceTests
         };
 
         thread.Start();
-        var threadIds = await completion.Task.WaitAsync(TimeSpan.FromSeconds(3));
-        Assert.True(thread.Join(TimeSpan.FromSeconds(3)));
+        var threadIds = await completion.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
+        Assert.True(thread.Join(AsyncTestWaitSupport.DefaultTimeout));
 
         Assert.Equal(threadIds.Caller, threadIds.CartChanged);
         Assert.Equal(threadIds.Caller, threadIds.CatalogReloaded);

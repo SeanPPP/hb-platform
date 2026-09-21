@@ -274,7 +274,7 @@ public sealed class TouchScrollFeedbackTests
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
 
-        var dispatcher = await dispatcherReady.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var dispatcher = await dispatcherReady.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         try
         {
             await dispatcher.InvokeAsync(action, DispatcherPriority.Normal).Task;
@@ -286,7 +286,7 @@ public sealed class TouchScrollFeedbackTests
                 dispatcher.BeginInvokeShutdown(DispatcherPriority.Send);
             }
 
-            Assert.True(thread.Join(TimeSpan.FromSeconds(5)), "WPF Dispatcher thread did not shut down.");
+            Assert.True(thread.Join(AsyncTestWaitSupport.DefaultTimeout), "WPF Dispatcher thread did not shut down.");
         }
     }
 }

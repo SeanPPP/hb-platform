@@ -43,7 +43,7 @@ public static class PromoPosterPdfRenderer
         });
     }
 
-    public static byte[] Render(IReadOnlyList<PromoPosterSpec> specs, bool impose)
+    public static byte[] Render(IReadOnlyList<PromoPosterSpec> specs, bool impose, bool showLogo = true)
     {
         if (specs.Count == 0) throw new ArgumentException("没有可生成的海报", nameof(specs));
 
@@ -56,7 +56,7 @@ public static class PromoPosterPdfRenderer
         document.Open();
 
         // 同一张 logo 在整份文档里只写一次（iText 按 Image 实例复用 XObject）
-        var logoBytes = PromoPosterAssets.LogoBytes;
+        var logoBytes = showLogo ? PromoPosterAssets.LogoBytes : null;
         var logo = logoBytes != null ? Image.GetInstance(logoBytes) : null;
 
         var firstPage = true;
@@ -127,17 +127,24 @@ public static class PromoPosterPdfRenderer
     /// <summary>在 (left, top) 起、宽高为 w×h 点的格子里画一张海报；设计像素按宽高较小比例缩放并居中。</summary>
     private static void PaintPoster(PdfContentByte cb, PromoPosterSpec spec, float left, float top, float w, float h, Image? logo)
     {
-        var (designW, designH) = spec.Style == PromoPosterStyle.Classic
-            ? (ClassicPosterPainter.For(spec.Size).W, ClassicPosterPainter.For(spec.Size).H)
-            : (ModernPosterPainter.For(spec.Size).W, ModernPosterPainter.For(spec.Size).H);
+        var (designW, designH) = spec.Style switch
+        {
+            PromoPosterStyle.Classic => (ClassicPosterPainter.For(spec.Size).W, ClassicPosterPainter.For(spec.Size).H),
+            PromoPosterStyle.Modern => (ModernPosterPainter.For(spec.Size).W, ModernPosterPainter.For(spec.Size).H),
+            _ => (LowInkPosterPainter.For(spec.Size).W, LowInkPosterPainter.For(spec.Size).H),
+        };
         var scale = Math.Min(w / designW, h / designH);
         var offsetX = left + (w - designW * scale) / 2;
         var offsetTop = top - (h - designH * scale) / 2;
 
         cb.SaveState();
         var canvas = new PosterCanvas(cb, offsetX, offsetTop, scale, logo);
-        if (spec.Style == PromoPosterStyle.Classic) ClassicPosterPainter.Paint(canvas, spec);
-        else ModernPosterPainter.Paint(canvas, spec);
+        switch (spec.Style)
+        {
+            case PromoPosterStyle.Classic: ClassicPosterPainter.Paint(canvas, spec); break;
+            case PromoPosterStyle.Modern: ModernPosterPainter.Paint(canvas, spec); break;
+            default: LowInkPosterPainter.Paint(canvas, spec); break;
+        }
         cb.RestoreState();
     }
 

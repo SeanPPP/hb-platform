@@ -56,6 +56,95 @@ public sealed class LocalCardPaymentAttemptRepositoryTests
     }
 
     [Fact]
+    public async Task Mark_order_completed_refuses_to_overwrite_a_terminal_attempt()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            await new LocalSchemaService(store).InitializeAsync();
+            var repository = new LocalCardPaymentAttemptRepository(store);
+            var attempt = CreateAttempt(status: LocalCardPaymentAttemptStatus.Declined);
+            await repository.CreateAsync(attempt);
+
+            // 修复前这里是 WHERE AttemptGuid 的无条件 UPDATE，会把已被终端拒绝的交易
+            // 直接改写成“订单已完成”。带守卫后冲突必须显式抛出，交由调用方回滚。
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => repository.MarkOrderCompletedAsync(attempt.AttemptGuid, DateTimeOffset.UtcNow));
+
+            var stored = await repository.GetAttemptAsync(attempt.AttemptGuid);
+            Assert.NotNull(stored);
+            Assert.Equal(LocalCardPaymentAttemptStatus.Declined, stored!.Status);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task Mark_acknowledged_refuses_an_attempt_pending_recovery_finalization()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            await new LocalSchemaService(store).InitializeAsync();
+            var repository = new LocalCardPaymentAttemptRepository(store);
+            // ack 的守卫不看 Status——完成的交易本来就应该被 ack——它挡的是
+            // RecoveryPhase=FinalizePending，即恢复服务或主管结案已经接管该行。
+            // RecoveryTargetStatus 保持 null，使守卫中针对 Linkly 销售的放行特例不成立。
+            var attempt = CreateAttempt(status: LocalCardPaymentAttemptStatus.Approved) with
+            {
+                RecoveryPhase = CardRecoveryPhases.FinalizePending
+            };
+            await repository.CreateAsync(attempt);
+
+            // ack 原本是 WHERE AttemptGuid 的无条件 UPDATE：调用方在读取与写入之间还隔着
+            // 一次 Linkly 网络请求，期间该行若被推进为 FinalizePending，盖上 ack 章会把这笔
+            // 结果尚未确定的交易挤出以 AcknowledgedAt IS NULL 为条件的恢复队列。
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => repository.MarkAcknowledgedAsync(attempt.AttemptGuid, DateTimeOffset.UtcNow));
+
+            var stored = await repository.GetAttemptAsync(attempt.AttemptGuid);
+            Assert.NotNull(stored);
+            Assert.Null(stored!.AcknowledgedAt);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task Mark_acknowledged_allows_a_completed_attempt_without_pending_finalization()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            await new LocalSchemaService(store).InitializeAsync();
+            var repository = new LocalCardPaymentAttemptRepository(store);
+            var attempt = CreateAttempt(status: LocalCardPaymentAttemptStatus.OrderCompleted);
+            await repository.CreateAsync(attempt);
+
+            // 正常路径必须保持放行：订单已完成的交易正是应该被 ack 的对象。
+            await repository.MarkAcknowledgedAsync(attempt.AttemptGuid, DateTimeOffset.UtcNow);
+
+            var stored = await repository.GetAttemptAsync(attempt.AttemptGuid);
+            Assert.NotNull(stored);
+            Assert.NotNull(stored!.AcknowledgedAt);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
     public async Task Local_schema_service_creates_local_card_payment_attempts_table_and_indexes()
     {
         var databasePath = CreateTempDatabasePath();

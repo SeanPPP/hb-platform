@@ -23,6 +23,7 @@ import {
   normalizeSupplierRows,
 } from "../product-report/api";
 import {
+  normalizeBranchHourlyRevenueSnapshot,
   normalizeDailyRevenueSnapshot,
   normalizeExecutiveBranchPerformance,
   normalizeHourlyRevenueSnapshot,
@@ -1325,7 +1326,8 @@ async function run() {
     undefined,
     { startDate: "2026-07-16", endDate: "2026-07-16" },
   );
-  const reviewHourlySnapshot = normalizeHourlyRevenueSnapshot(
+  // 与真实接口一致：多店分时按「店×小时」返回，日报累计对比才能按店对齐排行。
+  const reviewHourlySnapshot = normalizeBranchHourlyRevenueSnapshot(
     reviewHourlyPayload,
   );
   assert.equal(
@@ -1335,15 +1337,36 @@ async function run() {
   );
   assert.equal(
     reviewHourlySnapshot.rows.length,
-    14,
-    "单日分时表必须覆盖 08:00 至 21:00 的 14 个营业时段",
+    IOS_REVIEW_STORES.length * 14,
+    "单日分时表必须逐店覆盖 08:00 至 21:00 的 14 个营业时段",
   );
   assert.deepEqual(
-    reviewHourlySnapshot.rows.map((row) => row.hour),
+    [...new Set(reviewHourlySnapshot.rows.map((row) => row.hour))],
     Array.from({ length: 14 }, (_, index) => index + 8),
   );
-  assert.equal(reviewHourlyPayload.statisticsExpectedItemCount, 14);
-  assert.equal(reviewHourlyPayload.statisticsSnapshotItemCount, 14);
+  assert.equal(
+    new Set(reviewHourlySnapshot.rows.map((row) => row.branchCode)).size,
+    IOS_REVIEW_STORES.length,
+    "多店分时每行都必须带分店代码",
+  );
+  assert.equal(reviewHourlyPayload.statisticsExpectedItemCount, IOS_REVIEW_STORES.length * 14);
+  assert.equal(reviewHourlyPayload.statisticsSnapshotItemCount, IOS_REVIEW_STORES.length * 14);
+  const reviewDayExecutiveRows = normalizeExecutiveBranchPerformance(
+    await request(
+      "GET",
+      "/react/v1/dashboard/executive-branch-performance",
+      undefined,
+      { startDate: "2026-07-16", endDate: "2026-07-16" },
+    ),
+  ).rows;
+  for (const branchRow of reviewDayExecutiveRows) {
+    const branchHours = reviewHourlySnapshot.rows.filter((row) => row.branchCode === branchRow.branchCode);
+    const sum = (pick: (row: (typeof branchHours)[number]) => number) =>
+      Math.round(branchHours.reduce((total, row) => total + pick(row), 0) * 100) / 100;
+    assert.equal(sum((row) => row.revenue), branchRow.revenue, `${branchRow.branchCode} 分时营业额必须与排行守恒`);
+    assert.equal(sum((row) => row.compareRevenue), branchRow.compareRevenue, `${branchRow.branchCode} 分时同期必须与排行守恒`);
+    assert.equal(sum((row) => row.transactions), branchRow.transactions, `${branchRow.branchCode} 分时交易数必须与排行守恒`);
+  }
 
   const selectedStoreHourlyPayload = await request(
     "GET",
@@ -1630,7 +1653,11 @@ async function run() {
       undefined,
       params,
     );
-    assert.equal(hourlyPayload.items.length, 14, `${label}：必须保留 14 个营业时段`);
+    assert.equal(
+      hourlyPayload.items.length,
+      14 * executivePayload.items.length,
+      `${label}：必须逐店保留 14 个营业时段`,
+    );
     assertReviewRevenueMetricsConserved(
       sumReviewRevenueMetrics(hourlyPayload.items),
       sumReviewRevenueMetrics(executivePayload.items),
@@ -2170,6 +2197,16 @@ async function run() {
     24,
     "两页商品代码必须保持 24 个唯一值且不能重复",
   );
+  // 排序参数与后端口径一致：未传时保持金额降序，数量升序时数量最少的商品排第一。
+  assert.equal(firstProductPage.rows[0]?.itemNumber, "RPT-00001", "未传排序参数时必须保持金额降序");
+  const quantityAscPage = normalizeProductPage(await request(
+    "GET",
+    "/react/v1/dashboard/enhanced-sales-product-details",
+    undefined,
+    { pageIndex: 1, pageSize: 20, sortField: "quantity", sortOrder: "asc" },
+  ));
+  assert.equal(quantityAscPage.rows[0]?.itemNumber, "RPT-00024", "数量升序时首行必须是数量最少的商品");
+  assert.equal(quantityAscPage.total, 24, "排序不能改变商品总数");
   const searchedProductPayload = await request(
     "GET",
     "/react/v1/dashboard/enhanced-sales-product-details",

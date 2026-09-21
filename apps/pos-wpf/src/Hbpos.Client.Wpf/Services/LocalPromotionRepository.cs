@@ -116,14 +116,14 @@ public sealed class LocalPromotionRepository(LocalSqliteStore store) : ILocalPro
         await using (var deleteProducts = connection.CreateCommand())
         {
             deleteProducts.Transaction = transaction;
-            deleteProducts.CommandText = "DELETE FROM LocalPromotionProducts WHERE StoreCode = $StoreCode;";
+            deleteProducts.CommandText = "DELETE FROM LocalPromotionRuleProducts WHERE StoreCode = $StoreCode;";
             deleteProducts.Parameters.AddWithValue("$StoreCode", storeCode);
             await deleteProducts.ExecuteNonQueryAsync(cancellationToken);
         }
 
         await using var deletePromotions = connection.CreateCommand();
         deletePromotions.Transaction = transaction;
-        deletePromotions.CommandText = "DELETE FROM LocalPromotionRules WHERE StoreCode = $StoreCode;";
+        deletePromotions.CommandText = "DELETE FROM LocalPromotions WHERE StoreCode = $StoreCode;";
         deletePromotions.Parameters.AddWithValue("$StoreCode", storeCode);
         await deletePromotions.ExecuteNonQueryAsync(cancellationToken);
     }
@@ -146,7 +146,7 @@ public sealed class LocalPromotionRepository(LocalSqliteStore store) : ILocalPro
                 ApplyQuantity,
                 FixedPrice,
                 MaxApplicationsPerOrder
-            FROM LocalPromotionRules
+            FROM LocalPromotions
             WHERE StoreCode = $StoreCode
               AND EffectiveStart <= $AsOf
               AND EffectiveEnd >= $AsOf
@@ -196,7 +196,7 @@ public sealed class LocalPromotionRepository(LocalSqliteStore store) : ILocalPro
 
         command.CommandText = $"""
             SELECT PromotionId, ProductCode, UnitWeight
-            FROM LocalPromotionProducts
+            FROM LocalPromotionRuleProducts
             WHERE StoreCode = $StoreCode
               AND PromotionId IN ({string.Join(", ", parameterNames)})
             ORDER BY PromotionId ASC, ProductCode ASC;
@@ -328,7 +328,7 @@ public sealed class LocalPromotionRepository(LocalSqliteStore store) : ILocalPro
         int? MaxApplicationsPerOrder);
 
     private const string InsertPromotionSql = """
-        INSERT INTO LocalPromotionRules (
+        INSERT INTO LocalPromotions (
             StoreCode,
             PromotionId,
             Name,
@@ -355,7 +355,7 @@ public sealed class LocalPromotionRepository(LocalSqliteStore store) : ILocalPro
         """;
 
     private const string InsertPromotionProductSql = """
-        INSERT INTO LocalPromotionProducts (
+        INSERT INTO LocalPromotionRuleProducts (
             StoreCode,
             PromotionId,
             ProductCode,

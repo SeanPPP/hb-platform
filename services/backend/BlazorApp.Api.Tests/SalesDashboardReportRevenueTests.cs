@@ -2262,6 +2262,35 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
     }
 
     [Fact]
+    public async Task GetSupplierSalesRankAsync_软删除国内供应商的直写行仍汇总到200()
+    {
+        await SeedLocalSupplierAsync("AUS1", "澳洲供应商");
+        await SeedLocalSupplierAsync("200", "hotbargain");
+        // 国内供应商日后被软删除，它的历史直写销售仍是国内货，不能在澳洲报表里冒出一个叫 CN-SOFT 的供应商。
+        await _localDb.Insertable(new ChinaSupplier
+        {
+            Guid = "china-CN-SOFT",
+            SupplierCode = "CN-SOFT",
+            SupplierName = "已删除国内供应商",
+            IsDeleted = true,
+        }).ExecuteCommandAsync();
+        await SeedProductStoreDailySalesAsync(new DateTime(2026, 7, 2), "S1", "AUS1", "P-AUS", "澳洲商品", 100m, 10, 2);
+        await SeedProductStoreDailySalesAsync(new DateTime(2026, 7, 2), "S1", "CN-SOFT", "P-CN-SOFT", "软删除供应商商品", 40m, 4, 2);
+        var service = CreateService();
+
+        var result = await service.GetSupplierSalesRankAsync(
+            new DateRangeDto { StartDate = new DateTime(2026, 7, 2), EndDate = new DateTime(2026, 7, 2) },
+            branchCodes: new List<string> { "S1" },
+            topN: 1000
+        );
+
+        var chinaRow = Assert.Single(result, row => row.SupplierCode == "200");
+        Assert.Equal(40m, chinaRow.TotalAmount);
+        Assert.DoesNotContain(result, row => row.SupplierCode == "CN-SOFT");
+        Assert.Contains(result, row => row.SupplierCode == "AUS1" && row.TotalAmount == 100m);
+    }
+
+    [Fact]
     public async Task GetSupplierStoreSalesAsync_澳洲200分店下钻包含中国货()
     {
         await SeedLocalSupplierAsync("200", "hotbargain");
@@ -3145,6 +3174,129 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         );
     }
 
+    // 期望顺序按“本期值 → 同期值 → 商品编码升序”手工推导，字母对应 P-SORT-{字母}；
+    // 未知字段（含 itemNumber）和未知方向回退为金额降序。
+    [Theory]
+    [InlineData(null, null, "ABCFDEHIG")]
+    [InlineData("amount", "desc", "ABCFDEHIG")]
+    [InlineData("amount", "asc", "GHIEDFCBA")]
+    [InlineData("quantity", "desc", "BACFDEHIG")]
+    [InlineData("quantity", "asc", "GHIEDFCAB")]
+    [InlineData("unitPrice", "desc", "ACFDEHIBG")]
+    [InlineData("unitPrice", "asc", "GBHIEDFCA")]
+    [InlineData("itemNumber", "sideways", "ABCFDEHIG")]
+    public async Task GetEnhancedSalesProductDetailsAsync_Sort_快速路径跨页顺序稳定且无重复(
+        string? sortField,
+        string? sortOrder,
+        string expectedOrder
+    )
+    {
+        await SeedProductSortFixtureAsync("AUS-SORT");
+        var executedSql = new List<string>();
+        _localDb.Aop.OnLogExecuting = (sql, _) => executedSql.Add(sql);
+        var service = CreateService();
+
+        var pages = new List<PagedSalesProductDetailWithDiscountDto>();
+        for (var pageIndex = 1; pageIndex <= 3; pageIndex++)
+        {
+            pages.Add(await service.GetEnhancedSalesProductDetailsAsync(
+                CreateProductSortDateRange(),
+                localSupplierCodes: new List<string> { "AUS-SORT" },
+                pageIndex: pageIndex,
+                pageSize: 4,
+                sortField: sortField,
+                sortOrder: sortOrder
+            ));
+        }
+
+        AssertProductSortPages(pages, expectedOrder);
+        // 快速路径在数据库内分页；均价排序必须使用固定的实数除法片段，而不是按 TEXT 或整数除法比较。
+        Assert.Contains(executedSql, sql => sql.Contains("LIMIT", StringComparison.OrdinalIgnoreCase));
+        var sort = ProductReportSort.Parse(sortField, sortOrder);
+        if (sort.Field == ProductReportSortField.UnitPrice)
+        {
+            Assert.Contains(
+                executedSql,
+                sql => sql.Contains(
+                    SalesDashboardReactService.BuildFastPathUnitPriceOrderBy(sort.Ascending),
+                    StringComparison.Ordinal
+                )
+            );
+        }
+    }
+
+    [Fact]
+    public async Task GetEnhancedSalesProductDetailsAsync_Sort_快速路径缓存按排序隔离()
+    {
+        await SeedProductSortFixtureAsync("AUS-SORT");
+        var pagingQueryCount = 0;
+        _localDb.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (sql.Contains("LIMIT", StringComparison.OrdinalIgnoreCase))
+                pagingQueryCount++;
+        };
+        var service = CreateService();
+
+        async Task<string> FirstPageAsync(string? sortField, string? sortOrder)
+        {
+            var page = await service.GetEnhancedSalesProductDetailsAsync(
+                CreateProductSortDateRange(),
+                localSupplierCodes: new List<string> { "AUS-SORT" },
+                pageIndex: 1,
+                pageSize: 4,
+                sortField: sortField,
+                sortOrder: sortOrder
+            );
+            Assert.Equal(9, page.Total);
+            return ToProductSortLetters(page.Data);
+        }
+
+        // 同一服务实例、同一页码：不同排序若共用缓存键，第二、三次会直接拿到默认排序的缓存页。
+        Assert.Equal("ABCF", await FirstPageAsync(null, null));
+        Assert.Equal("ACFD", await FirstPageAsync("unitPrice", "desc"));
+        Assert.Equal("GHIE", await FirstPageAsync("quantity", "asc"));
+        Assert.Equal(3, pagingQueryCount);
+        // 再次请求默认排序命中自己的缓存，不被其它排序覆盖，也不再查询数据库分页。
+        Assert.Equal("ABCF", await FirstPageAsync(null, null));
+        Assert.Equal(3, pagingQueryCount);
+    }
+
+    [Theory]
+    [InlineData(null, null, "ABCFDEHIG")]
+    [InlineData("amount", "desc", "ABCFDEHIG")]
+    [InlineData("amount", "asc", "GHIEDFCBA")]
+    [InlineData("quantity", "desc", "BACFDEHIG")]
+    [InlineData("quantity", "asc", "GHIEDFCAB")]
+    [InlineData("unitPrice", "desc", "ACFDEHIBG")]
+    [InlineData("unitPrice", "asc", "GBHIEDFCA")]
+    [InlineData("itemNumber", "sideways", "ABCFDEHIG")]
+    public async Task GetEnhancedSalesProductDetailsAsync_Sort_中国范围内存路径跨页顺序稳定且无重复(
+        string? sortField,
+        string? sortOrder,
+        string expectedOrder
+    )
+    {
+        // 未开启供应商汇总且为中国供应商范围时走内存排序分页，必须与数据库路径同一口径。
+        await SeedChinaSupplierAsync("CN-SORT", "中国排序供应商");
+        await SeedProductSortFixtureAsync("CN-SORT");
+        var service = CreateService();
+
+        var pages = new List<PagedSalesProductDetailWithDiscountDto>();
+        for (var pageIndex = 1; pageIndex <= 3; pageIndex++)
+        {
+            pages.Add(await service.GetEnhancedSalesProductDetailsAsync(
+                CreateProductSortDateRange(),
+                pageIndex: pageIndex,
+                pageSize: 4,
+                chinaSupplierScope: true,
+                sortField: sortField,
+                sortOrder: sortOrder
+            ));
+        }
+
+        AssertProductSortPages(pages, expectedOrder);
+    }
+
     [Fact]
     public async Task 二十八分店生产形态_三十次冷请求报表旅程均在两秒内完成()
     {
@@ -3308,6 +3460,68 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         );
 
         Assert.NotEqual(allProducts, chinaProducts);
+    }
+
+    [Fact]
+    public void EnhancedProductDetail_Sort_排序参与缓存键且默认排序沿用原键()
+    {
+        var logger = new ConcurrentRecordingLogger();
+        var dateRange = new DateRangeDto
+        {
+            StartDate = new DateTime(2026, 7, 1),
+            EndDate = new DateTime(2026, 7, 1),
+        };
+        // 服务层只会传 ProductReportSort.CacheToken：默认排序为 null，其余为 5 个白名单标记。
+        var sortTokens = new[] { "amount:asc", "quantity:desc", "quantity:asc", "unitPrice:desc", "unitPrice:asc" };
+        string Key(string? sortToken) => SalesDashboardCacheKeys.EnhancedProductDetail(
+            dateRange,
+            new List<string> { "S1" },
+            localSupplierCodes: null,
+            chinaSupplierCodes: null,
+            pageIndex: 1,
+            pageSize: 20,
+            productSearch: null,
+            productStatisticCacheVersion: "v1",
+            chinaSupplierScope: false,
+            sortToken: sortToken
+        );
+
+        string omittedKey;
+        string defaultKey;
+        Dictionary<string, string> sortedKeys;
+        SalesDashboardCacheKeys.SetLogger(logger);
+        try
+        {
+            omittedKey = SalesDashboardCacheKeys.EnhancedProductDetail(
+                dateRange,
+                new List<string> { "S1" },
+                localSupplierCodes: null,
+                chinaSupplierCodes: null,
+                pageIndex: 1,
+                pageSize: 20,
+                productSearch: null,
+                productStatisticCacheVersion: "v1",
+                chinaSupplierScope: false
+            );
+            defaultKey = Key(ProductReportSort.Parse(null, null).CacheToken);
+            sortedKeys = sortTokens.ToDictionary(token => token, token => Key(token));
+        }
+        finally
+        {
+            SalesDashboardCacheKeys.SetLogger(NullLogger.Instance);
+        }
+
+        // 默认排序与不传参数的历史调用逐字节相同，缓存键和 single-flight 去重键都不变。
+        Assert.Equal(omittedKey, defaultKey);
+        Assert.Equal(sortTokens.Length, sortedKeys.Values.Distinct(StringComparer.Ordinal).Count());
+        Assert.DoesNotContain(defaultKey, sortedKeys.Values);
+        var messages = logger.Messages;
+        Assert.Contains(messages, message =>
+            message.Contains(sortedKeys["unitPrice:asc"], StringComparison.Ordinal)
+            && message.Contains("Sort=unitPrice:asc", StringComparison.Ordinal));
+        Assert.Contains(messages, message =>
+            message.Contains(defaultKey, StringComparison.Ordinal)
+            && message.Contains("Sort=default", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -3852,7 +4066,26 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
                 It.IsAny<int>(),
                 It.IsAny<int>(),
                 It.IsAny<string?>(),
-                It.IsAny<bool>()
+                It.IsAny<bool>(),
+                It.IsAny<string?>(),
+                It.IsAny<string?>()
+            ),
+            Times.Never
+        );
+        // 控制器实际调用的是带统计状态的重载，两个重载都必须未被调用。
+        serviceMock.Verify(
+            service => service.GetEnhancedSalesProductDetailsAsync(
+                It.IsAny<DateRangeDto>(),
+                It.IsAny<List<string>?>(),
+                It.IsAny<List<string>?>(),
+                It.IsAny<List<string>?>(),
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<string?>(),
+                It.IsAny<ProductReportStatisticStatusDto>(),
+                It.IsAny<bool>(),
+                It.IsAny<string?>(),
+                It.IsAny<string?>()
             ),
             Times.Never
         );
@@ -3864,6 +4097,8 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         List<string>? capturedBranchCodes = null;
         string? capturedProductSearch = null;
         var capturedChinaSupplierScope = false;
+        string? capturedSortField = "not-called";
+        string? capturedSortOrder = "not-called";
         var serviceMock = new Mock<ISalesDashboardReactService>();
         serviceMock
             .Setup(service => service.GetProductReportStatisticStatusAsync(It.IsAny<DateRangeDto>()))
@@ -3882,14 +4117,18 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
                 It.IsAny<int>(),
                 It.IsAny<string?>(),
                 It.IsAny<ProductReportStatisticStatusDto>(),
-                It.IsAny<bool>()
+                It.IsAny<bool>(),
+                It.IsAny<string?>(),
+                It.IsAny<string?>()
             ))
-            .Callback<DateRangeDto, List<string>?, List<string>?, List<string>?, int, int, string?, ProductReportStatisticStatusDto, bool>(
-                (_, branchCodes, _, _, _, _, productSearch, _, chinaSupplierScope) =>
+            .Callback<DateRangeDto, List<string>?, List<string>?, List<string>?, int, int, string?, ProductReportStatisticStatusDto, bool, string?, string?>(
+                (_, branchCodes, _, _, _, _, productSearch, _, chinaSupplierScope, sortField, sortOrder) =>
                 {
                     capturedBranchCodes = branchCodes;
                     capturedProductSearch = productSearch;
                     capturedChinaSupplierScope = chinaSupplierScope;
+                    capturedSortField = sortField;
+                    capturedSortOrder = sortOrder;
                 }
             )
             .ReturnsAsync(new PagedSalesProductDetailWithDiscountDto());
@@ -3907,6 +4146,104 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         Assert.Equal(new[] { "S1", "S3" }, capturedBranchCodes);
         Assert.Equal("HB001", capturedProductSearch);
         Assert.True(capturedChinaSupplierScope);
+        // 未传排序时透传 null，由服务层回退为金额降序。
+        Assert.Null(capturedSortField);
+        Assert.Null(capturedSortOrder);
+    }
+
+    [Theory]
+    [InlineData(" UnitPrice ", "ASC", "unitPrice:asc")]
+    [InlineData("unitPrice\r\n[FAKE] admin login", "asc", "amount:asc")]
+    public async Task GetEnhancedSalesProductDetails_Sort_原样透传排序参数且日志只记录归一化标记(
+        string sortField,
+        string sortOrder,
+        string expectedLoggedToken
+    )
+    {
+        string? capturedSortField = "not-called";
+        string? capturedSortOrder = "not-called";
+        var serviceMock = new Mock<ISalesDashboardReactService>();
+        serviceMock
+            .Setup(service => service.GetProductReportStatisticStatusAsync(It.IsAny<DateRangeDto>()))
+            .ReturnsAsync(new ProductReportStatisticStatusDto
+            {
+                StatisticStatus = SalesStatisticRefreshStatus.Fresh,
+                CacheVersion = "fresh-v1",
+            });
+        serviceMock
+            .Setup(service => service.GetEnhancedSalesProductDetailsAsync(
+                It.IsAny<DateRangeDto>(),
+                It.IsAny<List<string>?>(),
+                It.IsAny<List<string>?>(),
+                It.IsAny<List<string>?>(),
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<string?>(),
+                It.IsAny<ProductReportStatisticStatusDto>(),
+                It.IsAny<bool>(),
+                It.IsAny<string?>(),
+                It.IsAny<string?>()
+            ))
+            .Callback<DateRangeDto, List<string>?, List<string>?, List<string>?, int, int, string?, ProductReportStatisticStatusDto, bool, string?, string?>(
+                (_, _, _, _, _, _, _, _, _, capturedField, capturedOrder) =>
+                {
+                    capturedSortField = capturedField;
+                    capturedSortOrder = capturedOrder;
+                }
+            )
+            .ReturnsAsync(new PagedSalesProductDetailWithDiscountDto());
+        // 与 CreateController 相同的装配，只把日志器换成可记录的实现，用来确认原始排序参数不进日志。
+        var logger = new ConcurrentRecordingLogger<SalesDashboardController>();
+        var controller = new SalesDashboardController(
+            serviceMock.Object,
+            logger,
+            CreateUserService(new[] { "S1" }),
+            Mock.Of<ISalesDashboardCacheWarmer>(),
+            Mock.Of<IRoleService>()
+        )
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(new ClaimsIdentity(
+                        new[] { new Claim(ClaimTypes.NameIdentifier, "user-1") },
+                        "TestAuth"
+                    )),
+                },
+            },
+        };
+
+        var response = await controller.GetEnhancedSalesProductDetails(
+            new DateTime(2026, 7, 1),
+            new DateTime(2026, 7, 1),
+            pageIndex: 1,
+            pageSize: 20,
+            sortField: sortField,
+            sortOrder: sortOrder
+        );
+
+        AssertOk(response);
+        // 控制器不做归一化，原样交给服务层统一解析，避免两处白名单口径分叉。
+        Assert.Equal(sortField, capturedSortField);
+        Assert.Equal(sortOrder, capturedSortOrder);
+        Assert.Contains(logger.Messages, message => message.Contains($"Sort={expectedLoggedToken}", StringComparison.Ordinal));
+        Assert.DoesNotContain(logger.Messages, message => message.Contains(sortField, StringComparison.Ordinal));
+        serviceMock.Verify(
+            service => service.GetEnhancedSalesProductDetailsAsync(
+                It.IsAny<DateRangeDto>(),
+                It.IsAny<List<string>?>(),
+                It.IsAny<List<string>?>(),
+                It.IsAny<List<string>?>(),
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<string?>(),
+                It.IsAny<bool>(),
+                It.IsAny<string?>(),
+                It.IsAny<string?>()
+            ),
+            Times.Never
+        );
     }
 
     [Fact]
@@ -5120,6 +5457,134 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
             })
             .ToList();
         await _posmDb.Insertable(entities).ExecuteCommandAsync();
+    }
+
+    /// <summary>
+    /// 商品明细排序夹具：P-SORT-A..I 共 9 个商品，本期 2026-07-01、同期 2025-07-01。
+    /// A、C 本期和 G 同期拆在 S1/S2 两店以覆盖 SUM；金额全部是整数，整数除法或 TEXT 比较都会打乱均价顺序。
+    /// 另有其它供应商的高额干扰商品，筛选失效时会排到金额降序首位并把 Total 变成 10。
+    /// </summary>
+    private async Task SeedProductSortFixtureAsync(string supplierCode)
+    {
+        var current = new DateTime(2026, 7, 1);
+        var compare = new DateTime(2025, 7, 1);
+        foreach (var letter in "ABCDEFGHI")
+        {
+            await SeedProductAsync($"P-SORT-{letter}", $"HB-SORT-{letter}", $"BAR-SORT-{letter}");
+        }
+
+        Task SeedAsync(DateTime date, string branchCode, char letter, decimal amount, int quantity) =>
+            SeedProductStoreDailySalesAsync(
+                date,
+                branchCode,
+                supplierCode,
+                $"P-SORT-{letter}",
+                $"排序商品{letter}",
+                amount,
+                quantity,
+                1,
+                barcode: $"BAR-SORT-{letter}"
+            );
+
+        await SeedAsync(current, "S1", 'A', 60m, 6);
+        await SeedAsync(current, "S2", 'A', 40m, 4);
+        await SeedAsync(current, "S1", 'B', 90m, 30);
+        await SeedAsync(current, "S1", 'C', 20m, 3);
+        await SeedAsync(current, "S2", 'C', 27m, 3);
+        await SeedAsync(current, "S1", 'D', 39m, 5);
+        await SeedAsync(current, "S2", 'E', 39m, 5);
+        await SeedAsync(current, "S1", 'F', 47m, 6);
+        await SeedAsync(current, "S1", 'H', 10m, 2);
+        await SeedAsync(current, "S2", 'I', 10m, 2);
+        await SeedAsync(compare, "S1", 'A', 50m, 5);
+        await SeedAsync(compare, "S2", 'C', 20m, 2);
+        await SeedAsync(compare, "S1", 'D', 36m, 3);
+        await SeedAsync(compare, "S1", 'G', 50m, 2);
+        await SeedAsync(compare, "S2", 'G', 30m, 2);
+        await SeedProductStoreDailySalesAsync(current, "S1", "OTHER-SORT", "P-SORT-NOISE", "其它供应商干扰商品", 999m, 1, 1);
+        await SeedProductStoreDailySalesAsync(compare, "S1", "OTHER-SORT", "P-SORT-NOISE", "其它供应商干扰商品", 999m, 1, 1);
+    }
+
+    /// <summary>排序夹具每个商品两店合计后的本期金额/数量与同期金额/数量。</summary>
+    private static readonly IReadOnlyDictionary<char, (decimal Amount, int Quantity, decimal AmountLY, int QuantityLY)>
+        ProductSortExpectedValues = new Dictionary<char, (decimal, int, decimal, int)>
+        {
+            ['A'] = (100m, 10, 50m, 5),
+            ['B'] = (90m, 30, 0m, 0),
+            ['C'] = (47m, 6, 20m, 2),
+            ['D'] = (39m, 5, 36m, 3),
+            ['E'] = (39m, 5, 0m, 0),
+            ['F'] = (47m, 6, 0m, 0),
+            ['G'] = (0m, 0, 80m, 4),
+            ['H'] = (10m, 2, 0m, 0),
+            ['I'] = (10m, 2, 0m, 0),
+        };
+
+    private static DateRangeDto CreateProductSortDateRange() => new()
+    {
+        StartDate = new DateTime(2026, 7, 1),
+        EndDate = new DateTime(2026, 7, 1),
+        CompareStartDate = new DateTime(2025, 7, 1),
+        CompareEndDate = new DateTime(2025, 7, 1),
+    };
+
+    private static string ToProductSortLetters(IEnumerable<SalesProductDetailWithDiscountDto> rows) =>
+        string.Concat(rows.Select(row => row.ProductCode.StartsWith("P-SORT-", StringComparison.Ordinal)
+            ? row.ProductCode["P-SORT-".Length..]
+            : $"[{row.ProductCode}]"));
+
+    /// <summary>
+    /// 三页（每页 4 条）拼接后必须恰好是期望顺序：无重复、无遗漏、Total 恒为 9，且每行金额数量按两店合计。
+    /// </summary>
+    private static void AssertProductSortPages(
+        IReadOnlyList<PagedSalesProductDetailWithDiscountDto> pages,
+        string expectedOrder
+    )
+    {
+        var rows = pages.SelectMany(page => page.Data).ToList();
+        Assert.Equal(expectedOrder, ToProductSortLetters(rows));
+        Assert.All(pages, page => Assert.Equal(9, page.Total));
+        Assert.Equal(new[] { 4, 4, 1 }, pages.Select(page => page.Data.Count));
+        Assert.Equal(rows.Count, rows.Select(row => row.ProductCode).Distinct(StringComparer.OrdinalIgnoreCase).Count());
+        foreach (var row in rows)
+        {
+            var letter = row.ProductCode[^1];
+            var expected = ProductSortExpectedValues[letter];
+            Assert.Equal($"HB-SORT-{letter}", row.ItemNumber);
+            Assert.Equal(expected.Amount, row.SalesAmount);
+            Assert.Equal(expected.Quantity, row.Quantity);
+            Assert.Equal(expected.AmountLY, row.SalesAmountLY);
+            Assert.Equal(expected.QuantityLY, row.QuantityLY);
+        }
+    }
+
+    /// <summary>
+    /// 线程安全的日志记录器。SalesDashboardCacheKeys 的日志器是静态的，并行测试类可能同时写入。
+    /// </summary>
+    private class ConcurrentRecordingLogger : ILogger
+    {
+        private readonly System.Collections.Concurrent.ConcurrentQueue<string> _messages = new();
+
+        public IReadOnlyCollection<string> Messages => _messages.ToArray();
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter
+        )
+        {
+            _messages.Enqueue(formatter(state, exception));
+        }
+    }
+
+    private sealed class ConcurrentRecordingLogger<T> : ConcurrentRecordingLogger, ILogger<T>
+    {
     }
 
     private sealed class RecordingLogger : ILogger

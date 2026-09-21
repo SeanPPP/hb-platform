@@ -21,13 +21,17 @@ public sealed class DailyCloseServiceTests
         var loadTask = service.LoadReportAsync(CreateSession(), new DateTime(2026, 5, 28));
 
         Assert.True(stopwatch.Elapsed < TimeSpan.FromMilliseconds(100));
-        await repository.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await repository.Started.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         Assert.NotEqual(callerThreadId, repository.ExecutionThreadId);
         Assert.False(loadTask.IsCompleted);
 
         var report = await loadTask;
 
-        Assert.True(stopwatch.Elapsed >= TimeSpan.FromMilliseconds(500));
+        // 仓储慢读是 Task.Delay(500ms)，由约 15.6ms 粒度的系统计时器驱动，用高精度 Stopwatch 量可能只有
+        // 499.x ms（CI 已两次误报）。要证明的是调用方等到了慢读结果，而不是精确计时，留出计时器误差余量。
+        Assert.True(
+            stopwatch.Elapsed >= TimeSpan.FromMilliseconds(450),
+            $"LoadReportAsync 应等待仓储慢读完成，实际耗时 {stopwatch.Elapsed.TotalMilliseconds:F1}ms");
         Assert.Equal(1, report.OrderCount);
     }
 

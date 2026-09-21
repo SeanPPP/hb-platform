@@ -173,6 +173,8 @@ function PosterEditorForm({ defaults, storeCode, requestedKind, onBack }: Poster
   const { width: windowWidth } = useWindowDimensions();
   const queueCount = usePromoPosterQueueStore((state) => state.items.length);
   const impose = usePromoPosterQueueStore((state) => state.impose);
+  const showLogo = usePromoPosterQueueStore((state) => state.showLogo);
+  const setShowLogo = usePromoPosterQueueStore((state) => state.setShowLogo);
   const addToQueue = usePromoPosterQueueStore((state) => state.add);
   const replaceQueue = usePromoPosterQueueStore((state) => state.replaceAll);
   const rememberStyle = usePromoPosterQueueStore((state) => state.setStyle);
@@ -241,8 +243,9 @@ function PosterEditorForm({ defaults, storeCode, requestedKind, onBack }: Poster
       validFrom: draft.validFrom,
       validTo: draft.validTo,
       inStoreSince: draft.inStoreSince,
+      showLogo,
     };
-  }, [defaults.itemNumber, draft]);
+  }, [defaults.itemNumber, draft, showLogo]);
 
   const validSpec = () => {
     if (result.ok) return result.spec;
@@ -278,7 +281,7 @@ function PosterEditorForm({ defaults, storeCode, requestedKind, onBack }: Poster
     if (!spec || printing) return;
     setPrinting(true);
     try {
-      const file = await downloadPromoPosterPdf(buildPromoPosterPdfRequest(storeCode, impose, [spec]));
+      const file = await downloadPromoPosterPdf(buildPromoPosterPdfRequest(storeCode, impose, [spec], showLogo));
       await openPromoPosterPdf(file.fileUri, "preview");
       if (mountedRef.current) setSnackbar(t("poster.messages.scaleTip"));
     } catch (error) {
@@ -331,12 +334,20 @@ function PosterEditorForm({ defaults, storeCode, requestedKind, onBack }: Poster
               options={PROMO_POSTER_STYLES.map((style) => ({ value: style, label: t(`poster.styles.${style}`) }))}
               onChange={handleStyle}
             />
+            {draft.style === "low-ink" ? <Text style={styles.fieldLabel}>{t("poster.lowInkHint")}</Text> : null}
             <PosterSegmented
               label={t("poster.editor.sizeLabel")}
               value={draft.size}
               options={PROMO_POSTER_SIZES.map((size) => ({ value: size, label: size }))}
               onChange={handleSize}
             />
+            <View style={styles.logoRow}>
+              <View style={styles.flex}>
+                <Text style={styles.validityTitle}>{t("poster.showLogo")}</Text>
+                <Text style={styles.fieldLabel}>{t("poster.showLogoHint")}</Text>
+              </View>
+              <Switch value={showLogo} onValueChange={setShowLogo} disabled={printing} accessibilityLabel={t("poster.showLogo")} />
+            </View>
           </View>
 
           <View style={styles.previewPanel}>
@@ -390,7 +401,7 @@ function PosterEditorForm({ defaults, storeCode, requestedKind, onBack }: Poster
                   error={visible(errors.price)}
                 />
                 <PriceField
-                  label={t("poster.editor.priceWas")}
+                  label={t(draft.kind === "special" ? "poster.editor.priceWasOptional" : "poster.editor.priceWas")}
                   value={draft.wasPrice}
                   onChange={(wasPrice) => setField({ wasPrice })}
                   hint={defaults.retailPrice !== null ? t("poster.editor.hintRetail", { price: formatPosterMoney(defaults.retailPrice) }) : undefined}
@@ -711,6 +722,12 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 17,
     color: HB_COLORS.textSecondary,
+  },
+  logoRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: HB_SPACING.sm,
+    minHeight: 44,
   },
   previewPanel: {
     flexDirection: "row",

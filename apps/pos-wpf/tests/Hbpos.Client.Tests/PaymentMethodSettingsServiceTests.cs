@@ -73,7 +73,7 @@ public sealed class PaymentMethodSettingsServiceTests
         var repository = new SettingsRepository { BlockRead = true };
         var service = new PaymentMethodSettingsService(repository);
         var load = service.LoadAsync();
-        await repository.ReadStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await repository.ReadStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         var save = service.SaveAsync(new(true, true));
         Assert.False(save.IsCompleted);
         repository.ReadRelease.SetResult();

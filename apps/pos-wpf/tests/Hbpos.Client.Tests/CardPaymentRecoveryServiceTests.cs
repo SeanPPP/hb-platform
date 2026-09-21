@@ -7725,7 +7725,7 @@ public sealed class CardPaymentRecoveryServiceTests
         var recovery = service.RecoverLatestAsync(new PosCartService(), Session);
 
         Assert.True(Environment.TickCount64 - startedAt < 150);
-        Assert.True(entered.Wait(TimeSpan.FromSeconds(1)));
+        Assert.True(entered.Wait(AsyncTestWaitSupport.DefaultTimeout));
         Assert.False(recovery.IsCompleted);
 
         release.Set();
@@ -7748,7 +7748,7 @@ public sealed class CardPaymentRecoveryServiceTests
         var recovery = service.RecoverLatestAsync(new PosCartService(), Session);
 
         Assert.True(Environment.TickCount64 - startedAt < 150);
-        Assert.True(entered.Wait(TimeSpan.FromSeconds(1)));
+        Assert.True(entered.Wait(AsyncTestWaitSupport.DefaultTimeout));
         Assert.False(recovery.IsCompleted);
 
         release.Set();

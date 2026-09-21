@@ -58,7 +58,7 @@ public sealed class PromoPosterTests : IDisposable
     // ---------------------------------------------------------------- 渲染
 
     [Fact]
-    public void Render_四类两风格四尺寸不拼版时每张一页且为实际纸张尺寸()
+    public void Render_四类三风格四尺寸不拼版时每张一页且为实际纸张尺寸()
     {
         var specs = (from kind in Enum.GetValues<PromoPosterKind>()
                      from style in Enum.GetValues<PromoPosterStyle>()
@@ -145,6 +145,122 @@ public sealed class PromoPosterTests : IDisposable
         Assert.Contains(fontNames, n => n.Contains("BigShoulders"));
     }
 
+    [Theory]
+    [InlineData(PromoPosterStyle.Classic, PromoPosterSize.A4, false)]
+    [InlineData(PromoPosterStyle.Classic, PromoPosterSize.A5, true)]
+    [InlineData(PromoPosterStyle.Classic, PromoPosterSize.A6, true)]
+    [InlineData(PromoPosterStyle.Classic, PromoPosterSize.A7, true)]
+    [InlineData(PromoPosterStyle.Modern, PromoPosterSize.A4, false)]
+    [InlineData(PromoPosterStyle.Modern, PromoPosterSize.A5, true)]
+    [InlineData(PromoPosterStyle.Modern, PromoPosterSize.A6, true)]
+    [InlineData(PromoPosterStyle.Modern, PromoPosterSize.A7, true)]
+    [InlineData(PromoPosterStyle.LowInk, PromoPosterSize.A4, false)]
+    [InlineData(PromoPosterStyle.LowInk, PromoPosterSize.A5, true)]
+    [InlineData(PromoPosterStyle.LowInk, PromoPosterSize.A6, true)]
+    [InlineData(PromoPosterStyle.LowInk, PromoPosterSize.A7, true)]
+    public void Render_Logo默认显示且关闭时不加载图片(PromoPosterStyle style, PromoPosterSize size, bool impose)
+    {
+        var spec = Spec(PromoPosterKind.Special, style, size);
+
+        using var defaultReader = new PdfReader(PromoPosterPdfRenderer.Render(new[] { spec }, impose));
+        using var hiddenReader = new PdfReader(PromoPosterPdfRenderer.Render(new[] { spec }, impose, showLogo: false));
+
+        var defaultXObjects = defaultReader.GetPageN(1).GetAsDict(new PdfName("Resources"))?.GetAsDict(new PdfName("XObject"));
+        var hiddenXObjects = hiddenReader.GetPageN(1).GetAsDict(new PdfName("Resources"))?.GetAsDict(new PdfName("XObject"));
+        Assert.NotNull(PromoPosterAssets.LogoBytes);
+        Assert.NotNull(defaultXObjects);
+        Assert.Empty(hiddenXObjects?.Keys ?? Array.Empty<PdfName>());
+    }
+
+    [Fact]
+    public void PdfRequest_旧JSON未传ShowLogo时默认开启且服务转发关闭值()
+    {
+        var legacyRequest = System.Text.Json.JsonSerializer.Deserialize<PromoPosterPdfRequest>("{}");
+        Assert.NotNull(legacyRequest);
+        Assert.True(legacyRequest.ShowLogo);
+        var service = new PromoPosterService(Context(), Mock.Of<IPromotionReactService>());
+        var item = Item() with { Size = "A4", WasPrice = null };
+
+        using var hiddenReader = new PdfReader(service.BuildPdf(new PromoPosterPdfRequest
+        {
+            StoreCode = StoreCode,
+            ShowLogo = false,
+            Impose = false,
+            Posters = new() { item },
+        }, new DateTime(2026, 9, 21)).Content);
+        var hiddenXObjects = hiddenReader.GetPageN(1).GetAsDict(new PdfName("Resources"))?.GetAsDict(new PdfName("XObject"));
+        Assert.Empty(hiddenXObjects?.Keys ?? Array.Empty<PdfName>());
+    }
+
+    [Theory]
+    [InlineData(PromoPosterStyle.Classic)]
+    [InlineData(PromoPosterStyle.Modern)]
+    [InlineData(PromoPosterStyle.LowInk)]
+    public void Render_无原价的特价不显示WAS或SAVE(PromoPosterStyle style)
+    {
+        var spec = Spec(PromoPosterKind.Special, style, PromoPosterSize.A4) with { WasPrice = null };
+        using var document = UglyToad.PdfPig.PdfDocument.Open(PromoPosterPdfRenderer.Render(new[] { spec }, impose: false));
+        var text = document.GetPage(1).Text;
+        Assert.DoesNotContain("WAS", text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("SAVE", text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Parse_lowInk风格并保留默认业务字段()
+    {
+        var spec = Parse(Item() with { Style = "low-ink", Size = "A4" });
+        Assert.Equal(PromoPosterStyle.LowInk, spec.Style);
+        Assert.Equal(PromoPosterKind.Special, spec.Kind);
+        Assert.Equal(9.09m, spec.Price);
+        Assert.Equal(12.99m, spec.WasPrice);
+    }
+
+    [Fact]
+    public void Render_LowInk业务文字包含EACH和WAS_SAVE且只在混搭时显示Mix()
+    {
+        var mixed = Spec(PromoPosterKind.MultiBuy, PromoPosterStyle.LowInk, PromoPosterSize.A4);
+        var single = Spec(PromoPosterKind.Special, PromoPosterStyle.LowInk, PromoPosterSize.A4);
+        using var pdf = UglyToad.PdfPig.PdfDocument.Open(PromoPosterPdfRenderer.Render(new[] { mixed, single, mixed with { MixAndMatch = false } }, false));
+        var mixedText = pdf.GetPage(1).Text;
+        var singleText = pdf.GetPage(2).Text;
+        Assert.Contains("EACH", mixedText);
+        Assert.Contains("SAVE", mixedText);
+        Assert.Contains("MIX & MATCH", mixedText);
+        Assert.Contains("WAS", singleText);
+        Assert.Contains("SAVE", singleText);
+        Assert.Contains("EACH", singleText);
+        Assert.DoesNotContain("MIX & MATCH", singleText);
+        var fixedBundleText = pdf.GetPage(3).Text;
+        Assert.Contains("FOR 3 ITEMS", fixedBundleText);
+        Assert.DoesNotContain("MIX & MATCH", fixedBundleText);
+    }
+
+    [Fact]
+    public void Render_LowInk大金额长货号A7文字不越界且单价单位在优惠区上方()
+    {
+        var spec = Spec(PromoPosterKind.Special, PromoPosterStyle.LowInk, PromoPosterSize.A7) with
+        {
+            Price = 99998.99m,
+            WasPrice = 99999.99m,
+            ItemNumber = "LONG-ITEM-1234567890",
+            Title = "Extra Large Heavy Duty Storage Box"
+        };
+        using var pdf = UglyToad.PdfPig.PdfDocument.Open(PromoPosterPdfRenderer.Render(new[] { spec }, false));
+        var page = pdf.GetPage(1);
+        Assert.Contains("WAS $99999.99", page.Text);
+        Assert.Contains("SAVE $1.00", page.Text);
+        // EACH 必须在单独的条件行，不能成为优惠区第三行而落到分割线上。
+        var each = Assert.Single(page.GetWords(), word => word.Text == "EACH");
+        Assert.True(each.BoundingBox.Bottom > page.Height * .25);
+        Assert.All(page.Letters, letter =>
+        {
+            Assert.InRange(letter.BoundingBox.Left, 0, page.Width);
+            Assert.InRange(letter.BoundingBox.Right, 0, page.Width);
+            Assert.InRange(letter.BoundingBox.Bottom, 0, page.Height);
+            Assert.InRange(letter.BoundingBox.Top, 0, page.Height);
+        });
+    }
+
     [Fact]
     public void Render_超长品名与三位数价格不会抛异常()
     {
@@ -215,8 +331,25 @@ public sealed class PromoPosterTests : IDisposable
         Assert.Null(multi.WasPrice);
         Assert.True(multi.MixAndMatch);
 
-        var noSaving = Parse(Item() with { WasPrice = 9.09m });
-        Assert.Null(noSaving.SpecialSaving); // 原价不高于现价时不显示 SAVE
+        var noSaving = Parse(Item() with { WasPrice = null });
+        Assert.Null(noSaving.SpecialSaving); // 未提供原价时不显示 SAVE
+    }
+
+    [Fact]
+    public void Parse_Special原价可省略但填写时必须高于现价()
+    {
+        Assert.Throws<PromoPosterValidationException>(() => Parse(Item() with { WasPrice = 9.09m }));
+        Assert.Throws<PromoPosterValidationException>(() => Parse(Item() with { WasPrice = 9m }));
+        Assert.Null(Parse(Item() with { WasPrice = null }).WasPrice);
+    }
+
+    [Fact]
+    public void Parse_Clearance必须有高于现价的原价()
+    {
+        Assert.Throws<PromoPosterValidationException>(() => Parse(Item() with { Kind = "clearance", Price = 5m, WasPrice = null }));
+        Assert.Throws<PromoPosterValidationException>(() => Parse(Item() with { Kind = "clearance", Price = 5m, WasPrice = 5m }));
+        Assert.Throws<PromoPosterValidationException>(() => Parse(Item() with { Kind = "clearance", Price = 5m, WasPrice = 4.99m }));
+        Assert.Equal(14.99m, Parse(Item() with { Kind = "clearance", Price = 5m, WasPrice = 14.99m }).WasPrice);
     }
 
     [Fact]
@@ -281,7 +414,7 @@ public sealed class PromoPosterTests : IDisposable
     }
 
     [Fact]
-    public async Task GetDefaults_门店未定价时回退商品零售价且无折扣不可做特价()
+    public async Task GetDefaults_门店未定价时回退商品零售价且无折扣仍可做特价()
     {
         SeedProduct(englishName: null, retail: 6.49m, productName: "不锈钢保温瓶");
         var promotions = new Mock<IPromotionReactService>();
@@ -293,7 +426,8 @@ public sealed class PromoPosterTests : IDisposable
         Assert.Equal(6.49m, defaults!.RetailPrice);
         Assert.Null(defaults.DiscountedPrice);
         Assert.Equal(string.Empty, defaults.PosterTitle); // 只有中文名，需要店员手填英文名
-        Assert.False(defaults.CanSpecial || defaults.CanMultiBuy || defaults.CanClearance);
+        Assert.True(defaults.CanSpecial);
+        Assert.False(defaults.CanMultiBuy || defaults.CanClearance);
         Assert.Null(await new PromoPosterService(Context(), promotions.Object).GetDefaultsAsync(StoreCode, "missing"));
     }
 

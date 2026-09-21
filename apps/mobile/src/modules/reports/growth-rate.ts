@@ -1,7 +1,8 @@
 export type GrowthTone = "up" | "down" | "flat";
 
 export const GROWTH_COLORS: Record<GrowthTone, string> = {
-  up: "#16A34A",
+  // 增长率是 11–12px 小字：#16A34A 在白底上只有 3.3:1，调深到 #15803D（5.0:1）。
+  up: "#15803D",
   down: "#DC2626",
   flat: "#6B7280",
 };
