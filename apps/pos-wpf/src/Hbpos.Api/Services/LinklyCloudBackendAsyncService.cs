@@ -222,12 +222,15 @@ public class LinklyCloudBackendAsyncService(
         var normalizedStoreCode = NormalizeRequired(storeCode, "storeCode");
         var normalizedDeviceCode = NormalizeRequired(deviceCode, "deviceCode");
         var txnType = NormalizeRequired(request.TxnType, "txnType");
+        // 不合规的 attempt 身份必须在创建 Pending 会话和请求终端之前拒绝，避免留下占用终端的假会话。
+        var attemptTxnRef = DeriveAttemptTxnRef(txnType, request.AttemptGuid);
         var purchaseAnalysisDataSnapshot = request.PurchaseAnalysisData is null
             ? null
             : new Dictionary<string, string>(request.PurchaseAnalysisData, StringComparer.OrdinalIgnoreCase);
         Log(
             $"transaction start environment={LogValue(environment)} " +
             $"store={LogValue(normalizedStoreCode)} device={LogValue(normalizedDeviceCode)} " +
+            $"attemptTxnRef={LogValue(attemptTxnRef)} " +
             $"componentVersion={GetComponentVersion()}");
         var notificationBaseUri = GetPublicNotificationBaseUri();
         // 配置缺失必须在创建本地 Pending 前失败，避免产生未提交但占用终端的假 active session。
@@ -279,7 +282,8 @@ public class LinklyCloudBackendAsyncService(
             cancellationToken,
             requestTxnType: txnType,
             requestAmountCents: request.AmtPurchase,
-            requestPurchaseAnalysisData: purchaseAnalysisDataSnapshot);
+            requestPurchaseAnalysisData: purchaseAnalysisDataSnapshot,
+            attemptTxnRef: attemptTxnRef);
 
         var notification = BuildNotificationRequest(environment, session.SessionId, notificationBaseUri);
         var purchaseAnalysisData = EnsurePurchaseAnalysisData(
@@ -1486,18 +1490,21 @@ public class LinklyCloudBackendAsyncService(
         string operationType = OperationTypeTransaction,
         string? requestTxnType = null,
         long? requestAmountCents = null,
-        IReadOnlyDictionary<string, string>? requestPurchaseAnalysisData = null)
+        IReadOnlyDictionary<string, string>? requestPurchaseAnalysisData = null,
+        string? attemptTxnRef = null)
     {
         if (terminalContext is not null && terminalContext.Terminal.UpdatedAt is null)
         {
             throw new LinklyCloudTerminalSelectionConflictException();
         }
 
-        for (var attempt = 0; attempt < MaxTxnRefCreateAttempts; attempt++)
+        // 由 attempt 身份派生的引用已落在 POS 本地 attempt 上，碰撞时换号会让本地记录再也对不上这笔会话，所以只尝试一次。
+        var maxAttempts = attemptTxnRef is null ? MaxTxnRefCreateAttempts : 1;
+        for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
             var now = DateTimeOffset.UtcNow;
             var txnRef = string.Equals(operationType, OperationTypeTransaction, StringComparison.OrdinalIgnoreCase)
-                ? CreateTxnRef()
+                ? attemptTxnRef ?? CreateTxnRef()
                 : null;
             var effectivePurchaseAnalysisData = txnRef is null || requestTxnType is null || requestAmountCents is null
                 ? null
@@ -1575,6 +1582,13 @@ public class LinklyCloudBackendAsyncService(
                     throw new LinklyCloudBackendActiveTransactionException(null);
                 }
             }
+        }
+
+        if (attemptTxnRef is not null)
+        {
+            // 在途会话、终端占用、配置漂移都已排除，剩下的只能是同一个 attempt 已经提交过一次。
+            throw new LinklyCloudBackendValidationException(
+                "This payment attempt has already been submitted to Linkly Cloud. Start a new payment.");
         }
 
         throw new LinklyCloudBackendValidationException("Failed to allocate a unique Linkly Cloud transaction reference.");
@@ -3672,6 +3686,24 @@ public class LinklyCloudBackendAsyncService(
         Span<byte> bytes = stackalloc byte[2];
         Random.Shared.NextBytes(bytes);
         return $"{DateTimeOffset.UtcNow:yyMMddHHmmss}{Convert.ToHexString(bytes)}";
+    }
+
+    // 交易引用始终由 API 生成：客户端只提供本地 attempt 身份，由与 POS 共用的算法派生出 16 位引用。
+    // POS 因此能在发请求前算出并落库同一个值，却无法指定任意引用去碰撞别的交易。
+    private static string? DeriveAttemptTxnRef(string txnType, Guid? attemptGuid)
+    {
+        if (attemptGuid is null)
+        {
+            return null;
+        }
+
+        if (attemptGuid.Value == Guid.Empty || txnType is not ("P" or "R"))
+        {
+            throw new LinklyCloudBackendValidationException(
+                "attemptGuid must be a non-empty GUID and is only supported for purchase (P) and refund (R) transactions.");
+        }
+
+        return LinklyAttemptTxnRef.Create(txnType[0], attemptGuid.Value);
     }
 }
 
