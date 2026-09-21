@@ -58,7 +58,7 @@ public sealed class PromoPosterTests : IDisposable
     // ---------------------------------------------------------------- 渲染
 
     [Fact]
-    public void Render_四类两风格四尺寸不拼版时每张一页且为实际纸张尺寸()
+    public void Render_四类三风格四尺寸不拼版时每张一页且为实际纸张尺寸()
     {
         var specs = (from kind in Enum.GetValues<PromoPosterKind>()
                      from style in Enum.GetValues<PromoPosterStyle>()
@@ -154,6 +154,10 @@ public sealed class PromoPosterTests : IDisposable
     [InlineData(PromoPosterStyle.Modern, PromoPosterSize.A5, true)]
     [InlineData(PromoPosterStyle.Modern, PromoPosterSize.A6, true)]
     [InlineData(PromoPosterStyle.Modern, PromoPosterSize.A7, true)]
+    [InlineData(PromoPosterStyle.LowInk, PromoPosterSize.A4, false)]
+    [InlineData(PromoPosterStyle.LowInk, PromoPosterSize.A5, true)]
+    [InlineData(PromoPosterStyle.LowInk, PromoPosterSize.A6, true)]
+    [InlineData(PromoPosterStyle.LowInk, PromoPosterSize.A7, true)]
     public void Render_Logo默认显示且关闭时不加载图片(PromoPosterStyle style, PromoPosterSize size, bool impose)
     {
         var spec = Spec(PromoPosterKind.Special, style, size);
@@ -191,6 +195,7 @@ public sealed class PromoPosterTests : IDisposable
     [Theory]
     [InlineData(PromoPosterStyle.Classic)]
     [InlineData(PromoPosterStyle.Modern)]
+    [InlineData(PromoPosterStyle.LowInk)]
     public void Render_无原价的特价不显示WAS或SAVE(PromoPosterStyle style)
     {
         var spec = Spec(PromoPosterKind.Special, style, PromoPosterSize.A4) with { WasPrice = null };
@@ -198,6 +203,62 @@ public sealed class PromoPosterTests : IDisposable
         var text = document.GetPage(1).Text;
         Assert.DoesNotContain("WAS", text, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("SAVE", text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Parse_lowInk风格并保留默认业务字段()
+    {
+        var spec = Parse(Item() with { Style = "low-ink", Size = "A4" });
+        Assert.Equal(PromoPosterStyle.LowInk, spec.Style);
+        Assert.Equal(PromoPosterKind.Special, spec.Kind);
+        Assert.Equal(9.09m, spec.Price);
+        Assert.Equal(12.99m, spec.WasPrice);
+    }
+
+    [Fact]
+    public void Render_LowInk业务文字包含EACH和WAS_SAVE且只在混搭时显示Mix()
+    {
+        var mixed = Spec(PromoPosterKind.MultiBuy, PromoPosterStyle.LowInk, PromoPosterSize.A4);
+        var single = Spec(PromoPosterKind.Special, PromoPosterStyle.LowInk, PromoPosterSize.A4);
+        using var pdf = UglyToad.PdfPig.PdfDocument.Open(PromoPosterPdfRenderer.Render(new[] { mixed, single, mixed with { MixAndMatch = false } }, false));
+        var mixedText = pdf.GetPage(1).Text;
+        var singleText = pdf.GetPage(2).Text;
+        Assert.Contains("EACH", mixedText);
+        Assert.Contains("SAVE", mixedText);
+        Assert.Contains("MIX & MATCH", mixedText);
+        Assert.Contains("WAS", singleText);
+        Assert.Contains("SAVE", singleText);
+        Assert.Contains("EACH", singleText);
+        Assert.DoesNotContain("MIX & MATCH", singleText);
+        var fixedBundleText = pdf.GetPage(3).Text;
+        Assert.Contains("FOR 3 ITEMS", fixedBundleText);
+        Assert.DoesNotContain("MIX & MATCH", fixedBundleText);
+    }
+
+    [Fact]
+    public void Render_LowInk大金额长货号A7文字不越界且单价单位在优惠区上方()
+    {
+        var spec = Spec(PromoPosterKind.Special, PromoPosterStyle.LowInk, PromoPosterSize.A7) with
+        {
+            Price = 99998.99m,
+            WasPrice = 99999.99m,
+            ItemNumber = "LONG-ITEM-1234567890",
+            Title = "Extra Large Heavy Duty Storage Box"
+        };
+        using var pdf = UglyToad.PdfPig.PdfDocument.Open(PromoPosterPdfRenderer.Render(new[] { spec }, false));
+        var page = pdf.GetPage(1);
+        Assert.Contains("WAS $99999.99", page.Text);
+        Assert.Contains("SAVE $1.00", page.Text);
+        // EACH 必须在单独的条件行，不能成为优惠区第三行而落到分割线上。
+        var each = Assert.Single(page.GetWords(), word => word.Text == "EACH");
+        Assert.True(each.BoundingBox.Bottom > page.Height * .25);
+        Assert.All(page.Letters, letter =>
+        {
+            Assert.InRange(letter.BoundingBox.Left, 0, page.Width);
+            Assert.InRange(letter.BoundingBox.Right, 0, page.Width);
+            Assert.InRange(letter.BoundingBox.Bottom, 0, page.Height);
+            Assert.InRange(letter.BoundingBox.Top, 0, page.Height);
+        });
     }
 
     [Fact]
