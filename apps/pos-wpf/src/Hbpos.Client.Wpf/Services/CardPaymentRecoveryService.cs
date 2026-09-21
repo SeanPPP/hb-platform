@@ -954,39 +954,46 @@ public sealed class CardPaymentRecoveryService(
 
         if (IsApproved(status))
         {
-            if (status.CardTransaction is not null)
+            // 与实时收款共用同一套证据核验，服务端没给卡交易明细时也不能跳过：那正是证据没核验上的情形
+            // （例如终端批准的金额与请求不一致），跳过就等于拿草稿金额补造终端批准金额并自动落单。
+            // 旧服务端不返回明细但会带原始 transaction 通知，ReadTransactionResult 会从通知里读出金额，兼容路径不受影响。
+            var transactionResult = LinklyBackendTerminalClient.ReadTransactionResult(
+                status,
+                Math.Abs(attempt.Amount),
+                attempt.TxnRef ?? string.Empty);
+            var isAttemptAmountVerified = LinklyBackendTerminalClient.IsTransactionResultVerified(
+                status,
+                transactionResult,
+                Math.Abs(attempt.Amount));
+            var isDraftAmountVerified = draft is null || LinklyBackendTerminalClient.IsTransactionResultVerified(
+                status,
+                transactionResult,
+                Math.Abs(draft.CardAmount));
+            if (!transactionResult.Succeeded || !isAttemptAmountVerified || !isDraftAmountVerified)
             {
-                var transactionResult = LinklyBackendTerminalClient.ReadTransactionResult(
+                // 先核验支付证据，即使草稿缺失也不能持久化未经验证的批准状态、保存订单或确认 session。
+                LogRecoveryResult(
+                    settings,
+                    attempt,
                     status,
-                    Math.Abs(attempt.Amount),
-                    attempt.TxnRef ?? string.Empty);
-                var isAttemptAmountVerified = LinklyBackendTerminalClient.IsTransactionResultVerified(
-                    status,
-                    transactionResult,
-                    Math.Abs(attempt.Amount));
-                var isDraftAmountVerified = draft is null || LinklyBackendTerminalClient.IsTransactionResultVerified(
-                    status,
-                    transactionResult,
-                    Math.Abs(draft.CardAmount));
-                if (!transactionResult.Succeeded || !isAttemptAmountVerified || !isDraftAmountVerified)
-                {
-                    // 先核验支付证据，即使草稿缺失也不能持久化未经验证的批准状态、保存订单或确认 session。
-                    LogRecoveryResult(settings, attempt, status, CardPaymentRecoveryOutcome.Unknown, "approved-transaction-evidence-mismatch");
-                    return new CardPaymentRecoveryResult(
-                        CardPaymentRecoveryOutcome.Unknown,
-                        T("cardRecovery.linkly.unknown", "The previous card result cannot be confirmed. Ask a supervisor to confirm the Linkly backend status before continuing."),
-                        DialogDetails: BuildDialogDetails(attempt, status),
-                        PaymentSupervisorDetails: BuildPaymentSupervisorDetails(attempt));
-                }
-
-                // 统一使用解析后的响应码、文案与终端引用；旧服务端没有 DTO 时继续走原有兼容路径。
-                status = status with
-                {
-                    TxnRef = NormalizeOptional(transactionResult.TxnRef) ?? status.TxnRef,
-                    ResponseCode = NormalizeOptional(transactionResult.ResponseCode) ?? status.ResponseCode,
-                    ResponseText = NormalizeOptional(transactionResult.ResponseText) ?? status.ResponseText
-                };
+                    CardPaymentRecoveryOutcome.Unknown,
+                    status.CardTransaction is null
+                        ? "approved-transaction-evidence-missing"
+                        : "approved-transaction-evidence-mismatch");
+                return new CardPaymentRecoveryResult(
+                    CardPaymentRecoveryOutcome.Unknown,
+                    T("cardRecovery.linkly.unknown", "The previous card result cannot be confirmed. Ask a supervisor to confirm the Linkly backend status before continuing."),
+                    DialogDetails: BuildDialogDetails(attempt, status),
+                    PaymentSupervisorDetails: BuildPaymentSupervisorDetails(attempt));
             }
+
+            // 统一使用解析后的响应码、文案与终端引用。
+            status = status with
+            {
+                TxnRef = NormalizeOptional(transactionResult.TxnRef) ?? status.TxnRef,
+                ResponseCode = NormalizeOptional(transactionResult.ResponseCode) ?? status.ResponseCode,
+                ResponseText = NormalizeOptional(transactionResult.ResponseText) ?? status.ResponseText
+            };
 
             if (draft is null)
             {

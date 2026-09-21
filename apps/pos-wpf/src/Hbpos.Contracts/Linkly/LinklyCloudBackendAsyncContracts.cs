@@ -108,13 +108,20 @@ public static class LinklyBackendPaymentReference
     }
 }
 
+/// <param name="AttemptGuid">
+/// 可选。POS 本地 attempt 的身份。传入后 API 用 <see cref="LinklyAttemptTxnRef"/> 由它派生交易引用，
+/// 不再随机生成；POS 用同一算法在发请求前就把该引用落到本地 attempt，请求发出后即使断电或响应丢失，
+/// 本地记录仍能按 TxnRef 找回这笔会话。交易引用始终由 API 生成，客户端不能直接指定（见
+/// CloudBackendAsyncRequests_DoNotExposeClientCredentialsOrDeviceScopeFields）。不传时行为与旧客户端一致。
+/// </param>
 public sealed record LinklyCloudBackendTransactionRequest(
     string Environment,
     string TxnType,
     long AmtPurchase,
     IReadOnlyDictionary<string, string>? PurchaseAnalysisData,
     Guid? TerminalId = null,
-    long? SelectionRevision = null);
+    long? SelectionRevision = null,
+    Guid? AttemptGuid = null);
 
 public sealed record LinklyCloudBackendSettlementRequest(
     string Environment,

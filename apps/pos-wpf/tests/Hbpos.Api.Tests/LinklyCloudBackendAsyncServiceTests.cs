@@ -439,8 +439,9 @@ namespace Hbpos.Api.Tests;
         var terminalId = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
         var repository = new InMemoryLinklyCloudBackendAsyncRepository();
         var tokenProvider = new CapturingLinklyCloudBackendTokenProvider();
+        var transport = new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted);
         var service = CreateService(
-            new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted),
+            transport,
             tokenProvider,
             repository: repository,
             terminalService: new FixedLinklyCloudTerminalService(terminalId, "Front Counter", 9));
@@ -455,6 +456,37 @@ namespace Hbpos.Api.Tests;
         Assert.Equal(terminalId, response.TerminalId);
         Assert.Equal("Front Counter", response.TerminalDisplayName);
         Assert.Contains(terminalId, tokenProvider.TerminalCalls);
+        Assert.Equal(terminalId, transport.LastSettlement?.TerminalId);
+    }
+
+    [Fact]
+    public async Task Active_mode_transaction_path_binds_every_transport_request_to_the_physical_terminal()
+    {
+        var terminalId = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        var transport = new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted);
+        var tokenProvider = new CapturingLinklyCloudBackendTokenProvider();
+        var service = CreateService(
+            transport,
+            tokenProvider,
+            terminalService: new FixedLinklyCloudTerminalService(terminalId, "Front Counter", 9));
+
+        // Token 已按实体终端取；同一会话的每个 REST 请求也必须带上实体终端，才能与 Token 落进同一个闸门。
+        var started = await service.StartTransactionAsync(
+            "S01",
+            "POS-01",
+            new LinklyCloudBackendTransactionRequest("Sandbox", "P", 1000, null, terminalId, 9),
+            CancellationToken.None);
+        await service.GetStatusAsync("S01", "POS-01", "Sandbox", started.SessionId, CancellationToken.None);
+        await service.RecoverAsync(
+            "S01", "POS-01", started.SessionId, new LinklyCloudBackendRecoverRequest("Sandbox"), CancellationToken.None);
+        await service.SendKeyAsync(
+            "S01", "POS-01", started.SessionId, new LinklyCloudBackendSendKeyRequest("Sandbox", "OK", null), CancellationToken.None);
+
+        Assert.All(tokenProvider.TerminalCalls, call => Assert.Equal(terminalId, call));
+        Assert.Equal(terminalId, transport.LastTransaction?.TerminalId);
+        Assert.Equal(terminalId, transport.LastGetTransaction?.TerminalId);
+        Assert.Equal(terminalId, transport.LastRecover?.TerminalId);
+        Assert.Equal(terminalId, transport.LastSendKey?.TerminalId);
     }
 
     [Fact]
@@ -980,6 +1012,95 @@ namespace Hbpos.Api.Tests;
         Assert.Equal("0000", purchaseAnalysisData["PCM"]);
     }
 
+    [Fact]
+    public async Task StartTransactionAsync_derives_txn_ref_from_pos_attempt_so_pos_can_recover_before_session_binding()
+    {
+        var transport = new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted);
+        var service = CreateService(transport);
+        var attemptGuid = Guid.Parse("00000000-0000-0000-0000-000000000001");
+
+        // POS 在发请求前已用同一算法把该引用落到本地 attempt；API 必须派生出完全相同的值，
+        // 断电后本地记录才能按 TxnRef 找回这笔会话。字面量与 POS 端的已知向量测试一致，钉住两端算法不漂移。
+        var response = await service.StartTransactionAsync(
+            "S01",
+            "POS-01",
+            CreateTransactionRequest() with { AttemptGuid = attemptGuid },
+            CancellationToken.None);
+
+        Assert.Equal("PMND6WYVF2GBVY6G", response.TxnRef);
+        Assert.Equal(LinklyAttemptTxnRef.Create('P', attemptGuid), response.TxnRef);
+        Assert.Equal("PMND6WYVF2GBVY6G", transport.LastTransaction?.TxnRef);
+        var purchaseAnalysisData = Assert.IsAssignableFrom<IReadOnlyDictionary<string, string>>(
+            transport.LastTransaction?.PurchaseAnalysisData);
+        Assert.Equal("PMND6WYVF2GBVY6G", purchaseAnalysisData["RFN"]);
+        var resumable = await service.GetResumableSessionAsync("S01", "POS-01", "Sandbox", CancellationToken.None);
+        Assert.Equal("PMND6WYVF2GBVY6G", resumable?.TxnRef);
+    }
+
+    [Fact]
+    public async Task StartTransactionAsync_derives_refund_txn_ref_with_refund_prefix_and_keeps_original_rfn()
+    {
+        var transport = new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted);
+        var service = CreateService(transport);
+
+        var response = await service.StartTransactionAsync(
+            "S01",
+            "POS-01",
+            new LinklyCloudBackendTransactionRequest(
+                "Sandbox",
+                "R",
+                1000,
+                new Dictionary<string, string> { ["RFN"] = "PMND6WYVF2GBVY6G" },
+                AttemptGuid: Guid.Parse("00000000-0000-0000-0000-000000000001")),
+            CancellationToken.None);
+
+        // 退款引用带 R 前缀，与同一 attempt 身份的销售引用不会相同；PAD 里的 RFN 仍指向原交易，不能被派生值覆盖。
+        Assert.Equal("RB7VFXNSJNPBZ6QX", response.TxnRef);
+        Assert.Equal("RB7VFXNSJNPBZ6QX", transport.LastTransaction?.TxnRef);
+        var purchaseAnalysisData = Assert.IsAssignableFrom<IReadOnlyDictionary<string, string>>(
+            transport.LastTransaction?.PurchaseAnalysisData);
+        Assert.Equal("PMND6WYVF2GBVY6G", purchaseAnalysisData["RFN"]);
+    }
+
+    [Theory]
+    [InlineData("P", "00000000-0000-0000-0000-000000000000")]
+    [InlineData("X", "00000000-0000-0000-0000-000000000001")]
+    public async Task StartTransactionAsync_rejects_unusable_attempt_identity_before_creating_session(
+        string txnType,
+        string attemptGuid)
+    {
+        var transport = new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted);
+        var service = CreateService(transport);
+
+        await Assert.ThrowsAsync<LinklyCloudBackendValidationException>(() =>
+            service.StartTransactionAsync(
+                "S01",
+                "POS-01",
+                CreateTransactionRequest() with { TxnType = txnType, AttemptGuid = Guid.Parse(attemptGuid) },
+                CancellationToken.None));
+
+        Assert.Null(transport.LastTransaction);
+        Assert.Null(await service.GetResumableSessionAsync("S01", "POS-01", "Sandbox", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task StartTransactionAsync_never_replaces_attempt_txn_ref_when_the_attempt_was_already_submitted()
+    {
+        var transport = new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted);
+        var service = CreateService(transport);
+        var request = CreateTransactionRequest() with { AttemptGuid = Guid.Parse("00000000-0000-0000-0000-000000000001") };
+        var first = await service.StartTransactionAsync("S01", "POS-01", request, CancellationToken.None);
+        await service.AcknowledgeSessionAsync("S01", "POS-01", "Sandbox", first.SessionId, CancellationToken.None);
+
+        // API 随机生成的引用碰撞时可以换号重试；由 attempt 派生的引用一旦换号，POS 本地记录就再也对不上这笔会话，
+        // 而且同一个 attempt 再次提交本身就意味着可能重复扣款。
+        await Assert.ThrowsAsync<LinklyCloudBackendValidationException>(() =>
+            service.StartTransactionAsync("S01", "POS-01", request, CancellationToken.None));
+
+        Assert.Equal(first.SessionId, transport.LastTransaction?.SessionId);
+        Assert.Null(await service.GetResumableSessionAsync("S01", "POS-01", "Sandbox", CancellationToken.None));
+    }
+
     [Theory]
     [InlineData("00")]
     [InlineData("08")]
@@ -1359,6 +1480,65 @@ namespace Hbpos.Api.Tests;
         Assert.Null(recovered?.CardTransaction);
         Assert.DoesNotContain(recovered?.Notifications ?? [], notification =>
             string.Equals(notification.Type, "transaction", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Theory]
+    [InlineData("260921123456AB12")]
+    [InlineData("2609211234560A1F")]
+    [InlineData("2609211234561234")]
+    public async Task Official_get_alone_verifies_card_transaction_when_the_webhook_never_arrived(string txnRef)
+    {
+        // API 生成的交易引用是 12 位时间戳加 4 位十六进制。后 4 位只要含字母（约 85%），脱敏器就会把前面
+        // 那串数字当成卡号掩掉；GET 刷新写入的通知若不保留身份字段，就永远对不上会话的交易引用。
+        // webhook 没送达时 GET 是唯一的官方证据，这时也必须能核验出金额，否则实时收款只能报"结果未知"。
+        var repository = new InMemoryLinklyCloudBackendAsyncRepository();
+        await repository.UpsertSessionAsync(new LinklyCloudBackendSessionRecord
+        {
+            Environment = "Sandbox",
+            StoreCode = "S01",
+            DeviceCode = "POS-01",
+            SessionId = "get-only-session",
+            Status = "Pending",
+            OperationType = "Transaction",
+            TxnRef = txnRef,
+            RequestTxnType = "P",
+            RequestAmountCents = 1000,
+            RequestRfn = txnRef,
+            IsActive = true,
+            UpdatedAt = DateTimeOffset.UtcNow
+        }, CancellationToken.None);
+        var transport = new CapturingLinklyCloudBackendAsyncTransport(
+            HttpStatusCode.Accepted,
+            getTransactionStatusCode: HttpStatusCode.OK,
+            getTransactionBody: JsonSerializer.Serialize(new
+            {
+                Response = new
+                {
+                    Success = true,
+                    TxnRef = txnRef,
+                    TxnType = "P",
+                    AmtPurchase = 1000,
+                    ResponseCode = "00",
+                    ResponseText = "APPROVED",
+                    Pan = "4111111111111111",
+                    PurchaseAnalysisData = new { RFN = txnRef }
+                }
+            }));
+        var service = CreateService(transport, repository: repository);
+
+        var recovered = await service.GetStatusAsync(
+            "S01", "POS-01", "Sandbox", "get-only-session", CancellationToken.None);
+
+        Assert.Equal("Completed", recovered?.Status);
+        Assert.Equal(txnRef, recovered?.CardTransaction?.TxnRef);
+        Assert.Equal(1000, recovered?.CardTransaction?.AmountCents);
+        // 保留的只是交易引用与 RFN 两项身份字段，卡号等敏感内容仍必须脱敏后才落库和返回。
+        var stored = await repository.GetNotificationsAsync(
+            "Sandbox", "S01", "POS-01", "get-only-session", CancellationToken.None);
+        Assert.DoesNotContain(stored, notification =>
+            notification.PayloadJson.Contains("4111111111111111", StringComparison.Ordinal));
+        Assert.DoesNotContain(recovered?.Notifications ?? [], notification =>
+            notification.PayloadJson.Contains("4111111111111111", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -2953,6 +3133,67 @@ namespace Hbpos.Api.Tests;
             provider.GetTokenAsync("Sandbox", "S01", "POS-02", CancellationToken.None));
 
         Assert.Equal(4, handler.MaxConcurrency);
+    }
+
+    [Fact]
+    public async Task Same_physical_terminal_shares_two_request_limit_across_token_and_transaction_operations()
+    {
+        // 闸门是进程级静态字典：用本用例独有的门店与终端，避免与其他用例共用信号量。
+        var terminalId = Guid.Parse("cccccccc-cccc-4ccc-8ccc-cccccccccccc");
+        const string storeCode = "S-GATE";
+        var cloudTerminalRepository = new FixedCloudTerminalRepository(new LinklyCloudTerminalRecord
+        {
+            TerminalId = terminalId,
+            Environment = "Sandbox",
+            StoreCode = storeCode,
+            LaneNo = 1,
+            DisplayName = "Front",
+            Username = "lane-user",
+            Password = "lane-password",
+            Secret = "physical-terminal-secret",
+            PosId = "11111111-1111-4111-8111-111111111111",
+            PairingState = "Ready"
+        });
+        using var handler = new ConcurrentLinklyHttpMessageHandler();
+        using var tokenHttpClient = new HttpClient(handler, disposeHandler: false);
+        using var transportHttpClient = new HttpClient(handler, disposeHandler: false);
+        var provider = new HttpLinklyCloudBackendTokenProvider(
+            new CapturingCredentialRepository(null),
+            new CapturingTerminalCredentialRepository(),
+            tokenHttpClient,
+            Options.Create(new LinklyCloudBackendAsyncOptions
+            {
+                SandboxAuthBaseUrl = "https://auth.sandbox.example/v1/",
+                SandboxRestBaseUrl = "https://rest.sandbox.example/v1/",
+                SandboxPosVendorId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                PosName = "HBPOS",
+                PosVersion = "2026.5.1"
+            }),
+            cloudTerminalRepository: cloudTerminalRepository);
+        var transport = new HttpLinklyCloudBackendAsyncTransport(transportHttpClient);
+        const string restBaseUrl = "https://rest.sandbox.example/v1/";
+        var notification = new LinklyCloudBackendNotificationRequest("https://pos.example/notify/{{type}}", "Bearer notify");
+
+        // 同一台实体刷卡机：Token、发起交易、按键、状态查询合计在途不得超过 2。
+        await Task.WhenAll(
+            provider.GetTokenAsync("Sandbox", storeCode, "POS-01", terminalId, CancellationToken.None),
+            transport.StartTransactionAsync(
+                new LinklyCloudBackendTransportTransactionRequest(
+                    "Sandbox", restBaseUrl, "access-token", "session-start", "P", 1000, "TXN-GATE", null,
+                    notification, storeCode, "POS-01", terminalId),
+                CancellationToken.None),
+            transport.SendKeyAsync(
+                new LinklyCloudBackendTransportSendKeyRequest(
+                    "Sandbox", restBaseUrl, "access-token", "session-start", "0", null, storeCode, "POS-01", terminalId),
+                CancellationToken.None),
+            transport.GetTransactionAsync(
+                new LinklyCloudBackendTransportSessionRequest(
+                    "Sandbox", restBaseUrl, "access-token", "session-start", storeCode, "POS-01", terminalId),
+                CancellationToken.None));
+
+        Assert.True(
+            handler.MaxConcurrency <= 2,
+            $"同一实体终端的 Linkly 出站请求峰值并发为 {handler.MaxConcurrency}，必须不超过 2。");
     }
 
     [Fact]

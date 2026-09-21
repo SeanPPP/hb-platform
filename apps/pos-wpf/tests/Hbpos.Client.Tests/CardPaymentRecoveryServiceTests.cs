@@ -535,7 +535,7 @@ public sealed class CardPaymentRecoveryServiceTests
         var orders = new FakeLocalOrderRepository();
         var backend = new FakeLinklyBackendTerminalClient
         {
-            Status = CreateStatus("Completed", sessionId: "SESSION-001", txnRef: "TXN-001", responseCode: "00", responseText: "APPROVED", transactionSuccess: true)
+            Status = WithVerifiedCardTransaction(CreateStatus("Completed", sessionId: "SESSION-001", txnRef: "TXN-001", responseCode: "00", responseText: "APPROVED", transactionSuccess: true), 10m)
         };
         var service = CreateService(attempts, orders, backend);
 
@@ -1032,7 +1032,7 @@ public sealed class CardPaymentRecoveryServiceTests
         var orders = new FakeLocalOrderRepository();
         var backend = new FakeLinklyBackendTerminalClient
         {
-            Status = CreateStatus("Completed", sessionId: "SESSION-001", txnRef: "TXN-001", responseCode: "00", responseText: "APPROVED", transactionSuccess: true)
+            Status = WithVerifiedCardTransaction(CreateStatus("Completed", sessionId: "SESSION-001", txnRef: "TXN-001", responseCode: "00", responseText: "APPROVED", transactionSuccess: true), 10m)
         };
         var service = CreateService(attempts, orders, backend, sharedHeldOrderRepository: scope.Repository);
 
@@ -1072,7 +1072,7 @@ public sealed class CardPaymentRecoveryServiceTests
         var orders = new FakeLocalOrderRepository();
         var backend = new FakeLinklyBackendTerminalClient
         {
-            Status = CreateStatus("Completed", sessionId: "SESSION-NOMATCH", txnRef: "TXN-NOMATCH", responseCode: "00", responseText: "APPROVED", transactionSuccess: true)
+            Status = WithVerifiedCardTransaction(CreateStatus("Completed", sessionId: "SESSION-NOMATCH", txnRef: "TXN-NOMATCH", responseCode: "00", responseText: "APPROVED", transactionSuccess: true), 10m)
         };
         var service = CreateService(attempts, orders, backend, sharedHeldOrderRepository: scope.Repository);
 
@@ -1122,13 +1122,13 @@ public sealed class CardPaymentRecoveryServiceTests
             "CARD_ATTEMPT:aaaaaaaabbbbccccddddeeeeeeeeeeee"));
         var backend = new FakeLinklyBackendTerminalClient
         {
-            Status = CreateStatus(
+            Status = WithVerifiedCardTransaction(CreateStatus(
                 "Completed",
                 sessionId: "SESSION-EXISTING",
                 txnRef: "TXN-EXISTING",
                 responseCode: "00",
                 responseText: "APPROVED",
-                transactionSuccess: true)
+                transactionSuccess: true), 10m)
         };
         var service = CreateService(attempts, orders, backend, sharedHeldOrderRepository: scope.Repository);
 
@@ -1153,13 +1153,13 @@ public sealed class CardPaymentRecoveryServiceTests
             "CARD_ATTEMPT:11111111222233334444555555555555"));
         var backend = new FakeLinklyBackendTerminalClient
         {
-            Status = CreateStatus(
+            Status = WithVerifiedCardTransaction(CreateStatus(
                 "Completed",
                 sessionId: "SESSION-EXISTING-MISMATCH",
                 txnRef: "TXN-EXISTING-MISMATCH",
                 responseCode: "00",
                 responseText: "APPROVED",
-                transactionSuccess: true)
+                transactionSuccess: true), 10m)
         };
         var cart = new PosCartService();
         var service = CreateService(attempts, orders, backend);
@@ -1249,7 +1249,7 @@ public sealed class CardPaymentRecoveryServiceTests
         var orders = new FakeLocalOrderRepository();
         var backend = new FakeLinklyBackendTerminalClient
         {
-            Status = CreateStatus("Completed", sessionId: "SESSION-PARTIAL", txnRef: "TXN-PARTIAL", responseCode: "00", responseText: "APPROVED", transactionSuccess: true)
+            Status = WithVerifiedCardTransaction(CreateStatus("Completed", sessionId: "SESSION-PARTIAL", txnRef: "TXN-PARTIAL", responseCode: "00", responseText: "APPROVED", transactionSuccess: true), 5m)
         };
         var cart = new PosCartService();
         var service = CreateService(attempts, orders, backend);
@@ -1332,7 +1332,7 @@ public sealed class CardPaymentRecoveryServiceTests
         var orders = new FakeLocalOrderRepository();
         var backend = new FakeLinklyBackendTerminalClient
         {
-            Status = CreateStatus("Completed", sessionId: "SESSION-INVALID", txnRef: "TXN-INVALID", responseCode: "00", responseText: "APPROVED", transactionSuccess: true)
+            Status = WithVerifiedCardTransaction(CreateStatus("Completed", sessionId: "SESSION-INVALID", txnRef: "TXN-INVALID", responseCode: "00", responseText: "APPROVED", transactionSuccess: true), 15m)
         };
         var cart = new PosCartService();
         var service = CreateService(attempts, orders, backend);
@@ -1359,13 +1359,13 @@ public sealed class CardPaymentRecoveryServiceTests
         };
         var backend = new FakeLinklyBackendTerminalClient
         {
-            Status = CreateStatus(
+            Status = WithVerifiedCardTransaction(CreateStatus(
                 "Completed",
                 sessionId: "SESSION-SAVE-FAIL",
                 txnRef: "TXN-SAVE-FAIL",
                 responseCode: "00",
                 responseText: "APPROVED",
-                transactionSuccess: true)
+                transactionSuccess: true), 10m)
         };
         var service = CreateService(attempts, orders, backend);
 
@@ -1391,13 +1391,13 @@ public sealed class CardPaymentRecoveryServiceTests
         var orders = new FakeLocalOrderRepository();
         var backend = new FakeLinklyBackendTerminalClient
         {
-            Status = CreateStatus(
+            Status = WithVerifiedCardTransaction(CreateStatus(
                 "Completed",
                 sessionId: "SESSION-BAD-SNAP",
                 txnRef: "TXN-BAD-SNAP",
                 responseCode: "00",
                 responseText: "APPROVED",
-                transactionSuccess: true)
+                transactionSuccess: true), 10m)
         };
         var cart = CreateCurrentCart();
         var service = CreateService(attempts, orders, backend);
@@ -1557,13 +1557,13 @@ public sealed class CardPaymentRecoveryServiceTests
         };
         var backend = new FakeLinklyBackendTerminalClient
         {
-            Status = CreateStatus(
+            Status = WithVerifiedCardTransaction(CreateStatus(
                 "Completed",
                 sessionId: "SESSION-PERSIST-OOM",
                 txnRef: "TXN-PERSIST-OOM",
                 responseCode: "00",
                 responseText: "APPROVED",
-                transactionSuccess: true)
+                transactionSuccess: true), 10m)
         };
         var service = CreateService(attempts, new FakeLocalOrderRepository(), backend);
 
@@ -1582,13 +1582,13 @@ public sealed class CardPaymentRecoveryServiceTests
         var orders = new FakeLocalOrderRepository();
         var backend = new FakeLinklyBackendTerminalClient
         {
-            Status = CreateStatus(
+            Status = WithVerifiedCardTransaction(CreateStatus(
                 "Completed",
                 sessionId: "SESSION-FINALIZE-FAIL",
                 txnRef: "TXN-FINALIZE-FAIL",
                 responseCode: "00",
                 responseText: "APPROVED",
-                transactionSuccess: true)
+                transactionSuccess: true), 10m)
         };
         var service = CreateService(attempts, orders, backend);
 
@@ -1612,7 +1612,7 @@ public sealed class CardPaymentRecoveryServiceTests
         var orders = new FakeLocalOrderRepository();
         var backend = new FakeLinklyBackendTerminalClient
         {
-            Status = CreateStatus("Completed", sessionId: "SESSION-EMERGENCY", txnRef: "TXN-EMERGENCY", responseCode: "00", responseText: "APPROVED", transactionSuccess: true)
+            Status = WithVerifiedCardTransaction(CreateStatus("Completed", sessionId: "SESSION-EMERGENCY", txnRef: "TXN-EMERGENCY", responseCode: "00", responseText: "APPROVED", transactionSuccess: true), 10m)
         };
         var service = CreateService(attempts, orders, backend);
 
@@ -1633,7 +1633,7 @@ public sealed class CardPaymentRecoveryServiceTests
         var orders = new FakeLocalOrderRepository();
         var backend = new FakeLinklyBackendTerminalClient
         {
-            Status = CreateStatus("Completed", sessionId: "SESSION-001", txnRef: "TXN-001", responseCode: "00", responseText: "APPROVED", transactionSuccess: true),
+            Status = WithVerifiedCardTransaction(CreateStatus("Completed", sessionId: "SESSION-001", txnRef: "TXN-001", responseCode: "00", responseText: "APPROVED", transactionSuccess: true), 10m),
             AcknowledgeException = new InvalidOperationException("ack failed")
         };
         var service = CreateService(attempts, orders, backend);
@@ -2147,13 +2147,13 @@ public sealed class CardPaymentRecoveryServiceTests
         var orders = new FakeLocalOrderRepository();
         var backend = new FakeLinklyBackendTerminalClient
         {
-            Status = CreateStatus(
+            Status = WithVerifiedCardTransaction(CreateStatus(
                 "Completed",
                 sessionId: "SESSION-PARTIAL-BAD-SNAPSHOT",
                 txnRef: "TXN-PARTIAL-BAD-SNAPSHOT",
                 responseCode: "00",
                 responseText: "APPROVED",
-                transactionSuccess: true)
+                transactionSuccess: true), 5m)
         };
         var cart = new PosCartService();
         var service = CreateService(attempts, orders, backend);
@@ -2188,13 +2188,13 @@ public sealed class CardPaymentRecoveryServiceTests
         var orders = new FakeLocalOrderRepository();
         var backend = new FakeLinklyBackendTerminalClient
         {
-            Status = CreateStatus(
+            Status = WithVerifiedCardTransaction(CreateStatus(
                 "Completed",
                 sessionId: "SESSION-PARTIAL-NOTIFY",
                 txnRef: "TXN-PARTIAL-NOTIFY",
                 responseCode: "00",
                 responseText: "APPROVED",
-                transactionSuccess: true)
+                transactionSuccess: true), 5m)
         };
         var cart = new PosCartService();
         cart.CartChanged += (_, _) => throw new InvalidOperationException("subscriber failed");
@@ -2230,13 +2230,13 @@ public sealed class CardPaymentRecoveryServiceTests
         var orders = new FakeLocalOrderRepository();
         var backend = new FakeLinklyBackendTerminalClient
         {
-            Status = CreateStatus(
+            Status = WithVerifiedCardTransaction(CreateStatus(
                 "Completed",
                 sessionId: "SESSION-REBUILD-LOG-FAIL",
                 txnRef: "TXN-REBUILD-LOG-FAIL",
                 responseCode: "00",
                 responseText: "APPROVED",
-                transactionSuccess: true)
+                transactionSuccess: true), 10m)
         };
         var service = CreateService(attempts, orders, backend);
         void ThrowFromApprovedRebuildLog(string line)
@@ -2280,13 +2280,13 @@ public sealed class CardPaymentRecoveryServiceTests
         var attempts = new FakeCardPaymentAttemptRepository(attempt);
         var backend = new FakeLinklyBackendTerminalClient
         {
-            Status = CreateStatus(
+            Status = WithVerifiedCardTransaction(CreateStatus(
                 "Completed",
                 sessionId: "SESSION-PARTIAL-OOM",
                 txnRef: "TXN-PARTIAL-OOM",
                 responseCode: "00",
                 responseText: "APPROVED",
-                transactionSuccess: true)
+                transactionSuccess: true), 5m)
         };
         var cart = new PosCartService();
         cart.CartChanged += (_, _) => throw new OutOfMemoryException("fatal subscriber failure");
@@ -3057,7 +3057,7 @@ public sealed class CardPaymentRecoveryServiceTests
         var orders = new FakeLocalOrderRepository();
         var backend = new FakeLinklyBackendTerminalClient
         {
-            Status = CreateStatus("Completed", sessionId: "SESSION-BACKEND", txnRef: "TXN-BACKEND", responseCode: "00", responseText: "APPROVED", transactionSuccess: true)
+            Status = WithVerifiedCardTransaction(CreateStatus("Completed", sessionId: "SESSION-BACKEND", txnRef: "TXN-BACKEND", responseCode: "00", responseText: "APPROVED", transactionSuccess: true), 10m)
         };
         var localTerminal = new FakeLinklyTerminalClient(new PaymentAuthorizationResult(false, "ANZ:TXN-BACKEND"));
         var service = CreateService(
@@ -3396,7 +3396,7 @@ public sealed class CardPaymentRecoveryServiceTests
         var backend = new FakeLinklyBackendTerminalClient
         {
             ResumableStatus = CreateStatus("Pending", sessionId: "SESSION-PENDING", txnRef: "TXN-PENDING", responseCode: null, responseText: "PRESENT CARD"),
-            Status = CreateStatus("Completed", sessionId: "SESSION-PENDING", txnRef: "TXN-PENDING", responseCode: "00", responseText: "APPROVED", transactionSuccess: true)
+            Status = WithVerifiedCardTransaction(CreateStatus("Completed", sessionId: "SESSION-PENDING", txnRef: "TXN-PENDING", responseCode: "00", responseText: "APPROVED", transactionSuccess: true), 10m)
         };
         var service = CreateService(attempts, orders, backend);
 
@@ -3634,7 +3634,7 @@ public sealed class CardPaymentRecoveryServiceTests
                 [
                     new LinklyCloudBackendNotificationDto(
                         "transaction",
-                        """{ "Response": { "Success": true, "TxnRef": "TXN-RFN", "ResponseCode": "08", "ResponseText": "APPROVE WITH SIG", "AmtPurchase": 1008, "PurchaseAnalysisData": { "RFN": "RFN-OFFICIAL" } } }""",
+                        """{ "Response": { "Success": true, "TxnRef": "TXN-RFN", "ResponseCode": "08", "ResponseText": "APPROVE WITH SIG", "AmtPurchase": 1000, "PurchaseAnalysisData": { "RFN": "RFN-OFFICIAL" } } }""",
                         DateTimeOffset.Parse("2026-06-05T10:01:00+10:00"))
                 ])
         };
@@ -3646,6 +3646,70 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.Equal(
             "ANZBACKEND:TXN-RFN:RFN-OFFICIAL:session=SESSION-RFN:environment=Sandbox",
             attempts.PaymentReference);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_approved_without_any_verified_amount_evidence_stays_unknown_without_save_or_ack()
+    {
+        // 服务端核验不出卡交易明细时（例如终端批准的金额与请求不一致），返回的就是这个形状：
+        // 已完成、成功，但既没有明细、也没有 transaction 通知。实时收款遇到它会报"结果未知"，
+        // 恢复路径不能反而拿草稿金额补造批准金额、自动落单并确认会话。
+        var attempt = CreateAttempt(sessionId: "SESSION-NO-EVIDENCE", txnRef: "TXN-NO-EVIDENCE");
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            Status = CreateStatus(
+                "Completed",
+                sessionId: "SESSION-NO-EVIDENCE",
+                txnRef: "TXN-NO-EVIDENCE",
+                responseCode: "00",
+                responseText: "APPROVED",
+                transactionSuccess: true)
+        };
+        var service = CreateService(attempts, orders, backend);
+
+        var result = await service.RecoverLatestAsync(new PosCartService(), Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.Outcome);
+        Assert.NotNull(result.PaymentSupervisorDetails);
+        Assert.Equal(0, orders.SaveCount);
+        Assert.Equal(0, backend.AcknowledgeCallCount);
+        Assert.NotEqual(LocalCardPaymentAttemptStatus.Approved, attempts.Status);
+        Assert.NotEqual(LocalCardPaymentAttemptStatus.OrderCompleted, attempts.Status);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_legacy_notification_with_different_approved_amount_stays_unknown_without_save_or_ack()
+    {
+        // 旧服务端不返回明细，金额只能从原始 transaction 通知里读。终端批准 10.08 而订单是 10.00 时不能按 10.00 落单。
+        var attempt = CreateAttempt(sessionId: "SESSION-LEGACY-AMOUNT", txnRef: "TXN-LEGACY-AMOUNT");
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            Status = CreateStatus(
+                "Completed",
+                sessionId: "SESSION-LEGACY-AMOUNT",
+                txnRef: "TXN-LEGACY-AMOUNT",
+                responseCode: "00",
+                responseText: "APPROVED",
+                transactionSuccess: true,
+                notifications:
+                [
+                    new LinklyCloudBackendNotificationDto(
+                        "transaction",
+                        """{ "Response": { "Success": true, "TxnRef": "TXN-LEGACY-AMOUNT", "ResponseCode": "00", "ResponseText": "APPROVED", "AmtPurchase": 1008 } }""",
+                        DateTimeOffset.Parse("2026-06-05T10:01:00+10:00"))
+                ])
+        };
+        var service = CreateService(attempts, orders, backend);
+
+        var result = await service.RecoverLatestAsync(new PosCartService(), Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.Outcome);
+        Assert.Equal(0, orders.SaveCount);
+        Assert.Equal(0, backend.AcknowledgeCallCount);
     }
 
     [Fact]
@@ -3727,7 +3791,7 @@ public sealed class CardPaymentRecoveryServiceTests
         var orders = new FakeLocalOrderRepository();
         var backend = new FakeLinklyBackendTerminalClient
         {
-            Status = CreateStatus("Completed", sessionId: "SESSION-001", txnRef: "TXN-001", responseCode: "00", responseText: "APPROVED", transactionSuccess: true)
+            Status = WithVerifiedCardTransaction(CreateStatus("Completed", sessionId: "SESSION-001", txnRef: "TXN-001", responseCode: "00", responseText: "APPROVED", transactionSuccess: true), 10m)
         };
         var cart = CreateCurrentCart();
         var service = CreateService(attempts, orders, backend);
@@ -7771,7 +7835,7 @@ public sealed class CardPaymentRecoveryServiceTests
         var orders = new FakeLocalOrderRepository();
         var backend = new FakeLinklyBackendTerminalClient
         {
-            Status = CreateStatus("Completed", "SESSION-001", "TXN-001", "00", "APPROVED", transactionSuccess: true),
+            Status = WithVerifiedCardTransaction(CreateStatus("Completed", "SESSION-001", "TXN-001", "00", "APPROVED", transactionSuccess: true), 10m),
             OnGetSessionStatus = cancelled.Cancel
         };
         var service = CreateService(attempts, orders, backend);
@@ -7982,6 +8046,21 @@ public sealed class CardPaymentRecoveryServiceTests
             DateTimeOffset.UtcNow,
             amount,
             "MERCHANT COPY");
+    }
+
+    // 服务端核验通过的批准结果都会带卡交易明细（金额按分）；恢复路径拿不到经核验的金额就不会自动落单。
+    private static LinklyCloudBackendSessionResponse WithVerifiedCardTransaction(
+        LinklyCloudBackendSessionResponse status,
+        decimal approvedAmount)
+    {
+        return status with
+        {
+            CardTransaction = CreateCloudCardTransaction((long)(approvedAmount * 100m), txnRef: null) with
+            {
+                ResponseCode = status.ResponseCode ?? "00",
+                ResponseText = status.ResponseText ?? "APPROVED"
+            }
+        };
     }
 
     private static LinklyCloudBackendCardTransactionDto CreateCloudCardTransaction(
