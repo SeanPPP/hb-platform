@@ -228,7 +228,7 @@ export function computePosterSaving(spec: Pick<PromoPosterSpec, "kind" | "price"
 
 /**
  * 扫码页海报入口的启用规则（与同页标签按钮一致）：
- * 特价和新品可手填价格，始终可用；多件价和清仓仍需对应促销数据。
+ * 特价、新品和多件价都允许店员手填；清仓仍需对应清货价。
  */
 export function resolveScanPosterAvailability(input: {
   discountRate: number | null | undefined;
@@ -237,17 +237,17 @@ export function resolveScanPosterAvailability(input: {
 }): PromoPosterAvailability {
   return {
     special: true,
-    multibuy: input.activePromotionCount > 0,
+    multibuy: true,
     new: true,
     clearance: typeof input.clearancePrice === "number" && input.clearancePrice > 0,
   };
 }
 
-/** 特价不依赖折扣状态；多件价和清仓以后端 defaults 为准。 */
+/** 特价和多件价不依赖促销状态；清仓以后端 defaults 为准。 */
 export function resolveDefaultsAvailability(defaults: PromoPosterDefaults): PromoPosterAvailability {
   return {
     special: true,
-    multibuy: defaults.canMultiBuy && defaults.multiBuyOffers.length > 0,
+    multibuy: true,
     new: true,
     clearance: defaults.canClearance,
   };
@@ -520,19 +520,24 @@ export function buildPosterSpec(draft: PromoPosterDraft, defaults: PromoPosterDe
     else if (!isValidDateOnly(since)) errors.inStoreSince = "invalid";
     else extra = { inStoreSince: since };
   } else {
-    const offer = defaults.multiBuyOffers.find((item) => item.promotionId === draft.offerId);
-    if (!offer) errors.offer = "required";
     const quantity = Number(draft.quantity.trim());
     if (!draft.quantity.trim()) errors.quantity = "required";
     else if (!Number.isInteger(quantity) || quantity < 2 || quantity > 99) errors.quantity = "invalid";
     errors.unitPrice = priceError(draft.unitPrice);
     const unitPrice = parsePosterPrice(draft.unitPrice);
+    const from = draft.validFrom.trim();
+    const to = draft.validTo.trim();
+    if (from || to) {
+      if (!from || !to) errors.validity = "required";
+      else if (!isValidDateOnly(from) || !isValidDateOnly(to)) errors.validity = "invalid";
+      else if (from > to) errors.validity = "rangeInvalid";
+    }
     extra = {
       quantity: Number.isInteger(quantity) ? quantity : undefined,
       unitPrice: unitPrice ?? undefined,
       mixAndMatch: draft.mixAndMatch,
-      validFrom: isValidDateOnly(draft.validFrom) ? draft.validFrom : undefined,
-      validTo: isValidDateOnly(draft.validTo) ? draft.validTo : undefined,
+      validFrom: from && to && isValidDateOnly(from) && isValidDateOnly(to) && from <= to ? from : undefined,
+      validTo: from && to && isValidDateOnly(from) && isValidDateOnly(to) && from <= to ? to : undefined,
     };
   }
 
