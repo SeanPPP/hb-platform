@@ -32,6 +32,7 @@ internal sealed class ProductWarehouseUpdateSlice
     /// <summary>
     /// 仓库商品完整更新：同一 db 顺序查、一次性取列表，事务内更新 DomesticProduct、Product、WarehouseProduct、StoreRetailPrice、StoreMultiCodeProduct、ProductSetCode。
     /// 分店零售价强联动：StoreRetailPriceValue / MultiCodeRetailPrice 用主表零售价（OEM）覆盖，PurchasePrice 用进口价覆盖。
+    /// 上下架只写 WarehouseProduct.IsActive（是否继续向分店供货），不联动其它表的启用状态，避免仓库下架导致门店 POS 无法销售现有库存。
     /// </summary>
     public Task<WarehouseProductFullUpdateResultDto> FullUpdateAsync(
         string productCode,
@@ -150,7 +151,8 @@ internal sealed class ProductWarehouseUpdateSlice
                         UnitVolume = warehouseProduct.Volume,
                         MiddlePackQuantity = warehouseProduct.MinOrderQuantity,
                         ProductImage = product.ProductImage,
-                        IsActive = warehouseProduct.IsActive,
+                        // 仅补建映射时按本次保存的仓库供货状态初始化；已有映射的状态不随仓库上下架变化。
+                        IsActive = dto.IsActive,
                         IsDeleted = false,
                         CreatedAt = now,
                         CreatedBy = effectiveUpdatedBy,
@@ -172,7 +174,8 @@ internal sealed class ProductWarehouseUpdateSlice
                     domesticProduct.UnitVolume = warehouseProduct.Volume;
                     domesticProduct.MiddlePackQuantity = warehouseProduct.MinOrderQuantity;
                     domesticProduct.ProductImage = product.ProductImage;
-                    domesticProduct.IsActive = warehouseProduct.IsActive;
+                    // 恢复软删映射等同补建，同样只在此刻初始化一次状态。
+                    domesticProduct.IsActive = dto.IsActive;
                     domesticProduct.IsDeleted = false;
                 }
             }
@@ -209,7 +212,6 @@ internal sealed class ProductWarehouseUpdateSlice
                         domesticProduct.HBProductNo ?? domesticProduct.ProductCode
                     );
                 }
-                domesticProduct.IsActive = dto.IsActive;
                 if (dto.SupplierCode != null)
                     domesticProduct.SupplierCode = dto.SupplierCode;
                 domesticProduct.UpdatedAt = now;
@@ -244,7 +246,8 @@ internal sealed class ProductWarehouseUpdateSlice
                     product.ItemNumber ?? product.ProductCode ?? string.Empty
                 );
             }
-            product.IsActive = dto.IsActive;
+            // 仓库上下架只表示是否继续向分店供货。商品主档的启用状态决定门店 POS 能否销售，
+            // 由 HQ 同步维护，这里不得连带改写。
             product.UpdatedAt = now;
             product.UpdatedBy = effectiveUpdatedBy;
             await _context
@@ -261,7 +264,6 @@ internal sealed class ProductWarehouseUpdateSlice
                     p.MiddlePackageQuantity,
                     p.LocalSupplierCode,
                     p.ProductImage,
-                    p.IsActive,
                     p.UpdatedAt,
                     p.UpdatedBy,
                 })
@@ -314,7 +316,7 @@ internal sealed class ProductWarehouseUpdateSlice
             {
                 srp.StoreRetailPriceValue = mainRetail;
                 srp.PurchasePrice = mainPurchase;
-                srp.IsActive = dto.IsActive;
+                // 分店价的启用状态属于门店销售侧，仓库保存只覆盖价格。
                 srp.UpdatedAt = now;
             }
             if (storeRetailPrices.Any())
@@ -325,7 +327,6 @@ internal sealed class ProductWarehouseUpdateSlice
                     {
                         srp.StoreRetailPriceValue,
                         srp.PurchasePrice,
-                        srp.IsActive,
                         srp.UpdatedAt,
                     })
                     .ExecuteCommandAsync();
@@ -355,7 +356,6 @@ internal sealed class ProductWarehouseUpdateSlice
                     mcp.MultiCodeRetailPrice = mainRetail;
                     mcp.PurchasePrice = mainPurchase;
                 }
-                mcp.IsActive = dto.IsActive;
                 mcp.UpdatedAt = now;
             }
             if (storeMultiCodeProducts.Any())
@@ -366,7 +366,6 @@ internal sealed class ProductWarehouseUpdateSlice
                     {
                         mcp.MultiCodeRetailPrice,
                         mcp.PurchasePrice,
-                        mcp.IsActive,
                         mcp.UpdatedAt,
                     })
                     .ExecuteCommandAsync();
@@ -838,52 +837,15 @@ internal sealed class ProductWarehouseUpdateSlice
 
             if (validWarehouseProductCodes.Any())
             {
+                // 仓库上下架只表示是否继续向分店供货，只写 WarehouseProduct。
+                // 商品主档、国内商品、分店零售价、分店多码的启用状态决定门店 POS 能否销售现有库存，
+                // 不得随仓库上下架连带改写（与移动端、货柜回写、供应商同步等入口保持一致）。
                 await _context
                     .Db.Updateable<WarehouseProduct>()
                     .SetColumns(w => w.IsActive == request.IsActive)
                     .SetColumns(w => w.UpdatedAt == now)
                     .SetColumns(w => w.UpdatedBy == effectiveUpdatedBy)
                     .Where(w => validWarehouseProductCodes.Contains(w.ProductCode) && !w.IsDeleted)
-                    .ExecuteCommandAsync();
-
-                await _context
-                    .Db.Updateable<Product>()
-                    .SetColumns(p => p.IsActive == request.IsActive)
-                    .SetColumns(p => p.UpdatedAt == now)
-                    .SetColumns(p => p.UpdatedBy == effectiveUpdatedBy)
-                    .Where(p =>
-                        p.ProductCode != null && validWarehouseProductCodes.Contains(p.ProductCode)
-                    )
-                    .ExecuteCommandAsync();
-
-                await _context
-                    .Db.Updateable<DomesticProduct>()
-                    .SetColumns(dp => dp.IsActive == request.IsActive)
-                    .SetColumns(dp => dp.UpdatedAt == now)
-                    .SetColumns(dp => dp.UpdatedBy == effectiveUpdatedBy)
-                    .Where(dp => validWarehouseProductCodes.Contains(dp.ProductCode) && !dp.IsDeleted)
-                    .ExecuteCommandAsync();
-
-                await _context
-                    .Db.Updateable<StoreRetailPrice>()
-                    .SetColumns(srp => srp.IsActive == request.IsActive)
-                    .SetColumns(srp => srp.UpdatedAt == now)
-                    .Where(srp =>
-                        srp.ProductCode != null
-                        && validWarehouseProductCodes.Contains(srp.ProductCode)
-                        && !srp.IsDeleted
-                    )
-                    .ExecuteCommandAsync();
-
-                await _context
-                    .Db.Updateable<StoreMultiCodeProduct>()
-                    .SetColumns(mcp => mcp.IsActive == request.IsActive)
-                    .SetColumns(mcp => mcp.UpdatedAt == now)
-                    .Where(mcp =>
-                        mcp.ProductCode != null
-                        && validWarehouseProductCodes.Contains(mcp.ProductCode)
-                        && !mcp.IsDeleted
-                    )
                     .ExecuteCommandAsync();
             }
 
