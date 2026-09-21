@@ -18,6 +18,7 @@ import {
 import { fetchIosNativeUpdateDecision } from "./ios-native-app-update-api";
 import { resolveIosNativeUpdateCenterBaseUrl } from "./ios-native-update-center";
 import { appUpdateMutualExclusion } from "./app-update-mutual-exclusion";
+import { useForegroundUpdateCheckInterval } from "./foreground-update-interval";
 
 type IosNativeUpdateSnapshot = {
   initialized: boolean;
@@ -382,6 +383,13 @@ export function useIosNativeAppUpdate(options: { enabled: boolean }) {
       appUpdateMutualExclusion.releasePrompt("native");
     };
   }, []);
+
+  // 前台定时补查 App Store 新版本；可选提醒仍由 optionalReminderSession 按会话去重。
+  useForegroundUpdateCheckInterval(() => {
+    if (enabledRef.current) {
+      void runServerCheckRef.current();
+    }
+  }, { enabled: options.enabled });
 
   return {
     ...snapshot,
