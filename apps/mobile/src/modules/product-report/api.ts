@@ -1,6 +1,7 @@
 import type { ProductReportDateRange } from "./date-ranges";
 import { getDashboardCompareMode, getProductReportCompareRange } from "./date-ranges";
 import { PRODUCT_PAGE_SIZE } from "./pagination";
+import { DEFAULT_REPORT_SORT, isDefaultReportSort, type ReportSort } from "./sorting";
 import { REPORT_QUERY_TIMEOUT_MS } from "../reports/report-config";
 import {
   normalizeExecutiveBranchPerformance,
@@ -850,10 +851,11 @@ export async function fetchProductReportProductRows(
   pageIndex: number,
   pageSize = PRODUCT_PAGE_SIZE,
   productSearch?: string,
+  sort: ReportSort = DEFAULT_REPORT_SORT,
   options: ProductReportPollingOptions = {},
 ) {
   const apiClient = await getApiClient();
-  const params = buildProductReportProductParams(kind, query, supplierCodes, pageIndex, pageSize, productSearch);
+  const params = buildProductReportProductParams(kind, query, supplierCodes, pageIndex, pageSize, productSearch, sort);
   return pollProductReportSnapshot(async (signal) => {
     const response = await apiClient.get("/react/v1/dashboard/enhanced-sales-product-details", {
       params,
@@ -869,7 +871,8 @@ export function buildProductReportProductParams(
   supplierCodes: string[] | undefined,
   pageIndex: number,
   pageSize = PRODUCT_PAGE_SIZE,
-  productSearch?: string
+  productSearch?: string,
+  sort: ReportSort = DEFAULT_REPORT_SORT,
 ) {
   const params = buildBaseParams(query);
   params.set("pageIndex", String(pageIndex));
@@ -882,6 +885,11 @@ export function buildProductReportProductParams(
   const normalizedProductSearch = productSearch?.trim();
   if (normalizedProductSearch) {
     params.set("productSearch", normalizedProductSearch);
+  }
+  // 商品明细是服务端分页，排序必须交给后端在分页前完成；默认金额降序不带参数，请求与旧版一致。
+  if (!isDefaultReportSort(sort)) {
+    params.set("sortField", sort.field);
+    params.set("sortOrder", sort.order);
   }
   return params;
 }

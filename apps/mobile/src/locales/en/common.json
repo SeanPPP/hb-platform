@@ -274,6 +274,12 @@
     "drilldown": {
       "supplier": "Supplier Branch Data",
       "product": "Product Branch Data"
+    },
+    "sort": {
+      "accessibilityLabel": "Sort by {{column}}, currently {{state}}",
+      "desc": "descending",
+      "asc": "ascending",
+      "none": "not sorted"
     }
   }
 }
