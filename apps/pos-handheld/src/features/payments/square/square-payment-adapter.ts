@@ -291,15 +291,20 @@ export class SquarePaymentAdapter implements OnlinePaymentPort {
       return unknown(checkoutReferences, "SQUARE_REFERENCE_CONFLICT");
     }
 
-    const payment = await this.requestData<SquarePaymentStatusDto>(
-      {
-        method: "GET",
-        url: `/api/v1/square/payments/${encodeURIComponent(paymentId.value)}`,
-        params: { environment: configuration.environment },
-      },
-      control,
-    );
-    return verifyPayment(attempt, paymentReferences, paymentId.value, payment);
+    try {
+      const payment = await this.requestData<SquarePaymentStatusDto>(
+        {
+          method: "GET",
+          url: `/api/v1/square/payments/${encodeURIComponent(paymentId.value)}`,
+          params: { environment: configuration.environment },
+        },
+        control,
+      );
+      return verifyPayment(attempt, paymentReferences, paymentId.value, payment);
+    } catch (error) {
+      // checkout 已验证的标识必须随 Unknown 保存，后续恢复才能继续查询原交易。
+      return unknown(paymentReferences, errorCode(error));
+    }
   }
 
   private async refundWithConfiguration(

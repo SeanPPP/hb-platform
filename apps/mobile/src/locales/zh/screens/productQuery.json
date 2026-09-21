@@ -52,6 +52,8 @@
     "generateBarcode": "自动生成条码",
     "barcodeHint": "条码格式：9529 + 日期 YYMMDD + 两位序号 + 校验位；每天最多预留 100 个。",
     "formHint": "填写商品资料与售价，完成后即可创建",
+    "accuracyHint": "请正确填写供应商、货号、条码、商品名称、进货价和零售价。",
+    "permissionWarning": "随意填写将被取消商品创建权限。",
     "namePlaceholder": "输入商品名称",
     "itemPlaceholder": "至少 5 个字符",
     "barcodePlaceholder": "输入条码或自动生成",

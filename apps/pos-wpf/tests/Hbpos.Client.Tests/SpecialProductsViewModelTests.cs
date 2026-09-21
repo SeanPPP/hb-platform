@@ -103,7 +103,7 @@ public sealed class SpecialProductsViewModelTests
             "add" => viewModel.AddSpecialProductCommand.ExecuteAsync(item),
             _ => viewModel.RemoveSpecialProductCommand.ExecuteAsync(item)
         };
-        await operationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await operationStarted.Task.WaitAsync(TestWaitTimeouts.Default);
 
         Task navigationExecution = Task.CompletedTask;
         if (navigation == "back")
@@ -118,9 +118,9 @@ public sealed class SpecialProductsViewModelTests
                 .ExecuteAsync(item);
         }
         await WaitUntilAsync(() => navigated);
-        await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await cancellationObserved.Task.WaitAsync(TestWaitTimeouts.Default);
         var wasCancellationRequested = receivedToken.IsCancellationRequested;
-        await Task.WhenAll(execution, navigationExecution).WaitAsync(TimeSpan.FromSeconds(5));
+        await Task.WhenAll(execution, navigationExecution).WaitAsync(TestWaitTimeouts.Default);
         operationCancellationRegistration.Dispose();
 
         Assert.True(navigated);

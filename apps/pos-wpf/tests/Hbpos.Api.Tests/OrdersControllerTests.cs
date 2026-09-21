@@ -45,6 +45,20 @@ public sealed class OrdersControllerTests
         Assert.Equal("ORDER_PAYMENTS_REQUIRED", apiResult.ErrorCode);
     }
 
+    [Fact]
+    public async Task Sync_ReturnsDedicatedQuantityCodeForHistoricalFractionalOrder()
+    {
+        var service = new FakeOrderSyncService { RejectQuantity = true };
+        var controller = new OrdersController(service, new FakeOrderHistoryService(), new FakeOrderReturnService());
+        SetAuthenticatedDevice(controller, "S01", "POS01");
+
+        var result = await controller.Sync(CreateRequest(actualAmount: 0m, payments: []), CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(result.Result);
+        var apiResult = Assert.IsType<ApiResult<OrderSyncResponse>>(badRequest.Value);
+        Assert.Equal("ORDER_SYNC_QUANTITY_UNSUPPORTED", apiResult.ErrorCode);
+    }
+
     private static OrderSyncRequest CreateRequest(decimal actualAmount, IReadOnlyList<PaymentSyncDto> payments)
     {
         return new OrderSyncRequest(
@@ -97,10 +111,12 @@ public sealed class OrdersControllerTests
     private sealed class FakeOrderSyncService : IOrderSyncService
     {
         public OrderSyncRequest? LastRequest { get; private set; }
+        public bool RejectQuantity { get; set; }
 
         public Task<OrderSyncResponse> SyncAsync(OrderSyncRequest request, CancellationToken cancellationToken)
         {
             LastRequest = request;
+            if (RejectQuantity) throw new OrderSyncQuantityUnsupportedException();
             return Task.FromResult(new OrderSyncResponse(request.OrderGuid, true, false, "Synced"));
         }
     }

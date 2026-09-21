@@ -1,5 +1,7 @@
 import { paymentProviderAmountCents } from "@hb/pos-payments-core/features/payments/payment-amount";
 
+import type { PaymentStatusQueryResult } from "../runtime/payment-status-query-result";
+
 import {
   HbposApiError,
   unwrapHbposEnvelope,
@@ -170,16 +172,18 @@ export class SquarePaymentAdapter implements OnlinePaymentPort {
   }
 
   /** 人工核实后的状态查询只读取已存在 checkout，禁止缺少 ID 时重新创建。 */
-  public queryExistingPayment(attempt: PaymentAttempt, control: SquareRecoveryControl = {
+  public async queryExistingPayment(attempt: PaymentAttempt, control: SquareRecoveryControl = {
     signal: new AbortController().signal,
     deadlineAtMs: Date.now() + 10_000,
-  }): Promise<PaymentProviderResult> {
-    return this.safely(attempt, async () => {
+  }): Promise<PaymentStatusQueryResult> {
+    const result = await this.safely(attempt, async () => {
       assertPurchaseAttempt(attempt);
       requiredReference(attempt.references.checkoutId, "SQUARE_CHECKOUT_ID_REQUIRED");
       const configuration = environmentForAttempt(attempt);
       return this.getStatusWithConfiguration(attempt, configuration, control);
     });
+    // Unknown 包含网络、本地校验和交易证据错误，不能证明已取得有效原交易状态。
+    return { ...result, queryVerified: result.state !== "Unknown" };
   }
 
   private async createOrReplayCheckout(
@@ -301,15 +305,20 @@ export class SquarePaymentAdapter implements OnlinePaymentPort {
       return unknown(checkoutReferences, "SQUARE_REFERENCE_CONFLICT");
     }
 
-    const payment = await this.requestData<SquarePaymentStatusDto>(
-      {
-        method: "GET",
-        url: `/api/v1/square/payments/${encodeURIComponent(paymentId.value)}`,
-        params: { environment: configuration.environment },
-      },
-      control,
-    );
-    return verifyPayment(attempt, paymentReferences, paymentId.value, payment);
+    try {
+      const payment = await this.requestData<SquarePaymentStatusDto>(
+        {
+          method: "GET",
+          url: `/api/v1/square/payments/${encodeURIComponent(paymentId.value)}`,
+          params: { environment: configuration.environment },
+        },
+        control,
+      );
+      return verifyPayment(attempt, paymentReferences, paymentId.value, payment);
+    } catch (error) {
+      // checkout 已验证的标识必须随 Unknown 保存，后续恢复才能继续查询原交易。
+      return unknown(paymentReferences, errorCode(error));
+    }
   }
 
   private async refundWithConfiguration(

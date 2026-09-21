@@ -88,13 +88,48 @@ public class PricingCurveTests
     }
 
     [Fact]
-    public void 显式节点和所有合法尾数保持原值()
+    public void 显式节点和其他合法尾数保持原值()
     {
-        foreach (var price in new[] { .5m, .99m, 1m, 1.5m, 1.99m, 2m, 2.5m, 2.99m, 49.99m })
+        foreach (var price in new[] { .5m, 1m, 1.5m, 2m, 2.5m, 2.99m, 49.99m })
             Assert.Equal(price, PricingCurveMath.AdjustTail(price / 2m, price));
         var rule = Rule(10, 20, 4, 2.5m); rule.StartRetailPrice = 39.99m; rule.EndRetailPrice = 49.99m;
         Assert.Equal(39.99m, _service.CalculateRetailPrice(10, Strategy(rule)));
         Assert.Equal(49.99m, _service.CalculateRetailPrice(20, Strategy(rule)));
+    }
+
+    [Theory]
+    [InlineData(.3, .99, 1)]
+    [InlineData(.7, 1.99, 2)]
+    [InlineData(.3, .75, 1)]
+    [InlineData(.7, 1.75, 2)]
+    [InlineData(.198, 1.5, 1)]
+    [InlineData(.398, 2.5, 2)]
+    [InlineData(.6, .5, 1)]
+    [InlineData(1.2, .5, 2)]
+    public void 小额尾数在分档和上下限处理后归整(double cost, double theoretical, double expected)
+    {
+        Assert.Equal((decimal)expected, PricingCurveMath.AdjustTail((decimal)cost, (decimal)theoretical));
+    }
+
+    [Fact]
+    public void 自动定价仅将零点九九和一点九九归整()
+    {
+        Assert.Equal(1m, _service.CalculateRetailPrice(.3m, null));
+        Assert.Equal(2m, _service.CalculateRetailPrice(.7m, null));
+        Assert.Equal(1m, _service.CalculateRetailPrice(.4m, null));
+        Assert.Equal(2m, _service.CalculateRetailPrice(.8m, null));
+        Assert.Equal(2.99m, _service.CalculateRetailPrice(1.1m, null));
+        Assert.Equal(4.99m, _service.CalculateRetailPrice(2m, null));
+
+        // 兼容已保存的小额曲线节点，归整只作用于最终自动价。
+        var rule = Rule(.3m, .7m, 3.3m, 1.99m / .7m);
+        rule.StartRetailPrice = .99m;
+        rule.EndRetailPrice = 1.99m;
+        PricingCurveMath.Validate(new[] { rule });
+        Assert.Equal(.99m, PricingCurveMath.TheoreticalRetail(.3m, rule));
+        Assert.Equal(1.99m, PricingCurveMath.TheoreticalRetail(.7m, rule));
+        Assert.Equal(1m, _service.CalculateRetailPrice(.3m, Strategy(rule)));
+        Assert.Equal(2m, _service.CalculateRetailPrice(.7m, Strategy(rule)));
     }
 
     [Fact]
@@ -109,7 +144,9 @@ public class PricingCurveTests
             foreach (var rate in new[] { 1.5m, 5m })
             {
                 var p = PricingCurveMath.AdjustTail(cost, cost * rate);
-                Assert.InRange(p / cost, 1.5m, 5m);
+                Assert.True(p >= 1.5m * cost);
+                // 只允许 0.99→1、1.99→2 的一分钱归整突破原上限，其他价格严格保持。
+                Assert.True(p <= 5m * cost || ((p is 1m or 2m) && p - .01m <= 5m * cost));
                 Assert.True(PricingCurveMath.IsLegalTail(p));
             }
         }

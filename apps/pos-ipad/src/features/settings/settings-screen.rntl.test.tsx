@@ -81,6 +81,34 @@ afterEach(() => {
 });
 
 describe("SettingsScreen", () => {
+  it("支付方式默认关闭，开关只修改草稿并由保存按钮提交", async () => {
+    const port = new ScreenSettingsPort();
+    const saved: unknown[] = [];
+    Object.assign(port, { savePaymentMethods: async (input: unknown) => { saved.push(input); } });
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(<SettingsScreen locale="zh" presenter={presenter} />);
+    await fireEvent.press(screen.getByTestId("settings-nav-payments"));
+    expect(screen.getByTestId("settings-payment-method-manual").props.value).toBe(false);
+    expect(screen.getByTestId("settings-payment-method-gift").props.value).toBe(false);
+    await fireEvent(screen.getByTestId("settings-payment-method-manual"), "valueChange", true);
+    await fireEvent(screen.getByTestId("settings-payment-method-gift"), "valueChange", true);
+    expect(saved).toEqual([]);
+    expect(presenter.getState().paymentMethods.useManualCard).toBe(false);
+    await fireEvent.press(screen.getByTestId("settings-payment-methods-save"));
+    await waitFor(() => expect(saved).toEqual([{ useManualCard: true, giftCardEnabled: true }]));
+    expect(presenter.getState().paymentMethods.useManualCard).toBe(true);
+  });
+
+  it("旧运行时未提供支付方式保存能力时开关保持禁用", async () => {
+    const presenter = createPresenter(new ScreenSettingsPort());
+    await presenter.load();
+    const screen = await render(<SettingsScreen locale="en" presenter={presenter} />);
+    await fireEvent.press(screen.getByTestId("settings-nav-payments"));
+    expect(screen.getByTestId("settings-payment-method-manual").props.disabled).toBe(true);
+    expect(screen.getByTestId("settings-payment-method-gift").props.disabled).toBe(true);
+  });
+
   it("设置内容滚动区采用系统键盘避让合同", async () => {
     const port = new ScreenSettingsPort();
     const presenter = createPresenter(port);

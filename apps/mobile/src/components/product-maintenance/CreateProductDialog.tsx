@@ -122,6 +122,14 @@ export function CreateProductDialog(props: Props) {
         keyboardDismissMode="on-drag"
         showsVerticalScrollIndicator
       >
+        <View style={styles.accuracyNotice}>
+          <Text style={styles.accuracyNoticeText}>
+            {t("createProduct.accuracyHint")}
+          </Text>
+          <Text style={[styles.accuracyNoticeText, styles.accuracyConsequence]}>
+            {t("createProduct.permissionWarning")}
+          </Text>
+        </View>
         <View style={styles.field}>
           <Text style={styles.label}>{t("createProduct.fields.supplier")}</Text>
           <Button
@@ -351,6 +359,16 @@ const styles = StyleSheet.create({
   close: { margin: -6, marginLeft: 8 },
   scroll: { flexShrink: 1, minHeight: 0 },
   body: { padding: 20, paddingTop: 16, gap: 14 },
+  accuracyNotice: {
+    backgroundColor: "#FFFAEB",
+    borderWidth: 1,
+    borderColor: "#FEE4B5",
+    borderRadius: 8,
+    padding: 12,
+    gap: 4,
+  },
+  accuracyNoticeText: { color: C.warning, fontSize: 13, lineHeight: 20 },
+  accuracyConsequence: { fontWeight: "600" },
   field: { gap: 6, flexShrink: 1, flexGrow: 1, minWidth: 0 },
   label: { color: C.textSecondary, fontSize: 12, fontWeight: "600" },
   supplier: {

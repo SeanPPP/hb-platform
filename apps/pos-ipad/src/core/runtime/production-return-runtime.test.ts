@@ -184,7 +184,7 @@ test("小票退货当前收银员直通；完整非敏感行冻结入 ledger，�
       lineId: harness.ledger.prepared[0]?.lines[0]?.lineId,
       selectionKey: `local-receipt-line:${ORDER_GUID}:detail-1`,
       sourceKind: "receipt",
-      returnSourceKey: `local-receipt:${ORDER_GUID}:detail-1`,
+      returnSourceKey: `receipt:${ORDER_GUID}:detail-1`,
       originalOrderGuid: ORDER_GUID,
       originalOrderDetailGuid: "detail-1",
       productCode: "P1",

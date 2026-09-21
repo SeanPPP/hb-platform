@@ -1,3 +1,4 @@
+import { ManualCardPaymentAdapter } from "@/features/payments/manual/manual-card-payment-adapter";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -35,6 +36,67 @@ const references = (): PaymentProviderReferences => ({
   txnRef: null,
   rfn: null,
   voucherReservationToken: null,
+});
+
+test("手动刷卡：未确认和退款不能创建 attempt，离线确认可持久恢复且不调用终端", async () => {
+  await withSqlite(async (connection, restartConnection) => {
+    const first = await createHarness(connection, false);
+    const manual = { ...input(), provider: "manual-card" as const, manualConfirmed: true };
+    await assert.rejects(() => first.service.startAttempt({ ...manual, manualConfirmed: false }), /explicitly confirmed/);
+    await assert.rejects(() => first.service.startAttempt({ ...manual, operation: "refund", amount: { currency: "AUD", cents: -500 } }), /explicitly confirmed/);
+    assert.equal(await scalar(connection, "SELECT COUNT(*) AS count FROM payment_attempts"), 0);
+    const prepared = await first.service.prepareAttempt(manual);
+    assert.equal(prepared.attempt.references.txnRef, `MANUAL:${prepared.attempt.attemptId}`);
+    await assert.rejects(() => first.service.cancelAttempt(prepared.attempt.attemptId), /cannot be cancelled/);
+    const reopened = await restartConnection();
+    const restarted = await createHarness(reopened, false);
+    let failCommit = true;
+    const committer = new SqliteApprovedPaymentOrderCommitter(reopened, testEncryptor, () => T0);
+    const completion = new ApprovedPaymentOrderCompletionService({
+      planner: { async plan() { return {
+        tenderGuid: "manual-tender", completionAuditEvents: [],
+        outbox: { messageId: "manual-outbox", aggregateId: manual.orderGuid, kind: "order-sync", payloadJson: JSON.stringify({ orderGuid: manual.orderGuid }), nextAttemptAtIso: T0 },
+        fulfilment: { print: null, drawer: null },
+      }; } },
+      committer: { async completeApprovedPaymentOrder(commit) {
+        if (failCommit) { failCommit = false; throw new Error("simulated commit failure"); }
+        return committer.completeApprovedPaymentOrder(commit);
+      } },
+    });
+    const coordinator = new MixedPaymentCoordinator({
+      actor: manual.actor,
+      orderTruth: new SqliteMixedPaymentOrderTruthStore(reopened),
+      paymentAttempts: restarted.service,
+      approvedCompletion: completion,
+    });
+    const recoveryInput = { orderGuid: manual.orderGuid, attemptId: prepared.attempt.attemptId };
+    // 经过正式结账使用的 mixed 恢复入口，同时覆盖 Created 冷恢复和 Approved 提交失败重试。
+    const failedCompletion = await coordinator.recoverOnlineAttempt(recoveryInput);
+    assert.equal(failedCompletion.status, "recovery-required");
+    const approvedAttempt = await restarted.service.getBlockingAttempt(manual.orderGuid);
+    assert.equal(approvedAttempt?.attemptId, prepared.attempt.attemptId);
+    assert.equal(approvedAttempt?.state, "Approved");
+    const recovered = await coordinator.recoverOnlineAttempt(recoveryInput);
+    assert.equal(recovered.status, "completed");
+    assert.equal(recovered.orderGuid, manual.orderGuid);
+    assert.equal((await coordinator.recoverOnlineAttempt(recoveryInput)).status, "completed");
+    const replay = await restarted.service.startAttempt(manual);
+    assert.equal(replay.attempt.attemptId, prepared.attempt.attemptId);
+    assert.equal(restarted.square.submitCalls + restarted.square.recoverCalls + restarted.linkly.submitCalls + restarted.linkly.recoverCalls, 0);
+    assert.equal(await scalar(reopened, "SELECT COUNT(*) AS count FROM order_tenders"), 1);
+    assert.equal(await scalar(reopened, "SELECT COUNT(*) AS count FROM outbox_messages"), 1);
+    assert.equal(await restarted.service.getBlockingAttempt(manual.orderGuid), null);
+  });
+});
+
+test("手动刷卡不能覆盖已有 Unknown 卡交易", async () => {
+  await withSqlite(async (connection) => {
+    const harness = await createHarness(connection, true);
+    harness.square.submitImpl = async () => ({ state: "Unknown", references: references(), receiptText: null, responseCode: "TIMEOUT" });
+    await harness.service.startAttempt(input());
+    await assert.rejects(() => harness.service.startAttempt({ ...input(), actionId: "manual-after-unknown", provider: "manual-card", manualConfirmed: true }), PaymentAttemptBlockedError);
+    assert.equal(await scalar(connection, "SELECT COUNT(*) AS count FROM payment_attempts"), 1);
+  });
 });
 
 test("fault matrix: known offline binds the action but never creates an attempt or crosses a provider boundary", async () => {
@@ -249,7 +311,7 @@ async function createHarness(connection: NodeSqliteConnection, online: boolean) 
     },
     providers: {
       get(provider) {
-        return provider === "square" ? square : linkly;
+        return provider === "manual-card" ? new ManualCardPaymentAdapter() : provider === "square" ? square : linkly;
       },
     },
     connectivity: { isOnline: async () => online },

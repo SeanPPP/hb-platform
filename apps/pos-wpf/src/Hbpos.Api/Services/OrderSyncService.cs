@@ -220,7 +220,12 @@ public sealed class SqlSugarOrderRepository(
     public async Task<bool> ExistsAsync(Guid orderGuid, CancellationToken cancellationToken)
     {
         var orderGuidText = orderGuid.ToString("D");
+        // 关键逻辑：这是上传入口的第一道幂等判断，命中即直接返回 AlreadySynced 且根本不进事务。
+        // 连接级 IsWithNoLockQuery 会让它脏读到另一个事务尚未提交的订单行，客户端据此把订单
+        // 标记为 Synced；对方事务一旦回滚，这笔销售就永久丢失。
+        // 事务外持有 UPDLOCK 没有意义（语句结束即释放），这里只需显式回到已提交读。
         return await dbContext.PosmDb.Queryable<SalesOrder>()
+            .With("WITH(READCOMMITTED)")
             .AnyAsync(x => x.OrderGuid == orderGuidText, cancellationToken);
     }
 
@@ -251,7 +256,15 @@ public sealed class SqlSugarOrderRepository(
 
         try
         {
+            // 关键逻辑：连接级 IsWithNoLockQuery 会给这条读加 WITH(NOLOCK)，而表提示会覆盖
+            // 会话隔离级别，使外层 Serializable 事务对幂等判断完全失效。一旦脏读到另一个
+            // 事务尚未提交的订单行，就会返回 AlreadySynced；客户端据此把订单标记为 Synced，
+            // 而对方事务回滚后这笔销售会永久丢失——SyncQueue 只重试 Pending/Failed，
+            // 且全仓没有任何上传后对账。
+            // UPDLOCK 以更新锁串行化同一 OrderGuid 的并发判断，HOLDLOCK 补范围锁，
+            // 防止另一事务在判断与插入之间插入同 OrderGuid 的行。
             var existing = await db.Queryable<SalesOrder>()
+                .With("WITH(UPDLOCK, HOLDLOCK)")
                 .AnyAsync(x => x.OrderGuid == plan.Order.OrderGuid, cancellationToken);
 
             if (existing)

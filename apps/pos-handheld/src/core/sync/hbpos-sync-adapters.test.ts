@@ -178,6 +178,17 @@ test("HTTP 仅明确设备撤销码锁机，普通 401 与权限/门禁/scope 40
   }
 });
 
+test("已收款历史订单小数数量 400 保留待同步，其余 400 仍是拒绝", async () => {
+  const unsupported = new HbposApiError("quantity", { kind: "http", status: 400, code: "ORDER_SYNC_QUANTITY_UNSUPPORTED" });
+  assert.deepEqual(await orderAdapter(unsupported).adapter.sync(orderGuid, JSON.stringify({ orderGuid })), {
+    kind: "retry", failure: "server", code: "ORDER_SYNC_QUANTITY_UNSUPPORTED",
+  });
+  const invalid = new HbposApiError("invalid", { kind: "http", status: 400, code: "ORDER_SYNC_INVALID" });
+  assert.deepEqual(await orderAdapter(invalid).adapter.sync(orderGuid, JSON.stringify({ orderGuid })), {
+    kind: "rejected", failure: "business-rejection", code: "ORDER_SYNC_INVALID",
+  });
+});
+
 test("受信任材料只进入本次 HTTP 载荷，仓储中的脱敏订单保持不变", async () => {
   const local = order("card");
   const resolverInputs: LocalOrder[] = [];
