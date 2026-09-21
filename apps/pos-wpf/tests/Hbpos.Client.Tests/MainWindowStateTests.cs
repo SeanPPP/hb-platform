@@ -156,7 +156,7 @@ public sealed class MainWindowStateTests
         {
             await MainWindow.WaitForClosePreparationAsync(
                 () => stuckSave.Task,
-                coordinator).WaitAsync(TimeSpan.FromSeconds(1));
+                coordinator).WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
             Assert.True(shutdownStepCalled);
             Assert.True(coordinator.IsPrepared);
@@ -180,7 +180,7 @@ public sealed class MainWindowStateTests
         {
             await MainWindow.WaitForClosePreparationAsync(
                 () => stuckSave.Task,
-                coordinator).WaitAsync(TimeSpan.FromSeconds(1));
+                coordinator).WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
             Assert.Contains(lines, line =>
                 line.Contains(

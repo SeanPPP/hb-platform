@@ -2170,6 +2170,16 @@ async function run() {
     24,
     "两页商品代码必须保持 24 个唯一值且不能重复",
   );
+  // 排序参数与后端口径一致：未传时保持金额降序，数量升序时数量最少的商品排第一。
+  assert.equal(firstProductPage.rows[0]?.itemNumber, "RPT-00001", "未传排序参数时必须保持金额降序");
+  const quantityAscPage = normalizeProductPage(await request(
+    "GET",
+    "/react/v1/dashboard/enhanced-sales-product-details",
+    undefined,
+    { pageIndex: 1, pageSize: 20, sortField: "quantity", sortOrder: "asc" },
+  ));
+  assert.equal(quantityAscPage.rows[0]?.itemNumber, "RPT-00024", "数量升序时首行必须是数量最少的商品");
+  assert.equal(quantityAscPage.total, 24, "排序不能改变商品总数");
   const searchedProductPayload = await request(
     "GET",
     "/react/v1/dashboard/enhanced-sales-product-details",

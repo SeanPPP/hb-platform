@@ -759,7 +759,7 @@ public sealed class DailyCloseViewModelTests
 
         await viewModel.LoadAsync();
         var execution = viewModel.SettleAndPrintCommand.ExecuteAsync(null);
-        await settlementStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await settlementStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         viewModel.SettleAndPrintCommand.Cancel();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => execution);

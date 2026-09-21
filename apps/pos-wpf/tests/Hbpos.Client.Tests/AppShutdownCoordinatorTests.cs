@@ -134,7 +134,7 @@ public sealed class AppShutdownCoordinatorTests
 
         try
         {
-            await coordinator.PrepareAsync().WaitAsync(TimeSpan.FromSeconds(1));
+            await coordinator.PrepareAsync().WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
             Assert.True(secondStepCalled);
             Assert.True(coordinator.IsPrepared);
@@ -142,7 +142,7 @@ public sealed class AppShutdownCoordinatorTests
         finally
         {
             neverCompletes.TrySetResult();
-            await timedOutStepCompleted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            await timedOutStepCompleted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         }
     }
 
@@ -173,7 +173,7 @@ public sealed class AppShutdownCoordinatorTests
         ConsoleLog.LineWritten += CaptureLine;
         try
         {
-            await coordinator.PrepareAsync().WaitAsync(TimeSpan.FromSeconds(1));
+            await coordinator.PrepareAsync().WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         }
         finally
         {
@@ -219,11 +219,11 @@ public sealed class AppShutdownCoordinatorTests
 
         try
         {
-            await coordinator.PrepareAsync().WaitAsync(TimeSpan.FromSeconds(1));
+            await coordinator.PrepareAsync().WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         }
         finally
         {
-            await blockingStepCompleted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            await blockingStepCompleted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         }
 
         Assert.True(secondStepCalled);
@@ -309,8 +309,8 @@ public sealed class AppShutdownCoordinatorTests
 
         try
         {
-            await coordinator.PrepareAsync().WaitAsync(TimeSpan.FromSeconds(1));
-            await callbackStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            await coordinator.PrepareAsync().WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
+            await callbackStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
             Assert.True(nextStepCalled);
             Assert.True(coordinator.IsPrepared);
@@ -318,10 +318,10 @@ public sealed class AppShutdownCoordinatorTests
         finally
         {
             neverCompletes.TrySetResult();
-            await timedOutStepCompleted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            await timedOutStepCompleted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
             if (callbackStarted.Task.IsCompleted)
             {
-                await callbackCompleted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+                await callbackCompleted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
             }
         }
     }
@@ -381,13 +381,13 @@ public sealed class AppShutdownCoordinatorTests
 
             Assert.Same(fatal, thrown);
             Assert.True(nextStepCalled);
-            await callbackStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            await callbackStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         }
         finally
         {
             releaseCallback.Set();
             neverCompletes.TrySetResult();
-            await timedOutStepCompleted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            await timedOutStepCompleted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         }
     }
 
@@ -485,7 +485,7 @@ public sealed class AppShutdownCoordinatorTests
                 await release.Task;
             });
         var firstPreparation = coordinator.PrepareAsync();
-        await started.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await started.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         var exitWait = Task.Run(() =>
             App.WaitForShutdownPreparation(coordinator, TimeSpan.FromSeconds(1)));
@@ -518,7 +518,7 @@ public sealed class AppShutdownCoordinatorTests
         {
             // 固定延时会受测试运行器调度影响；断言完成后再开门，确保 Dispose 必然跨过 20ms 超时边界。
             disposable.Release();
-            await disposable.Completed.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            await disposable.Completed.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         }
     }
 

@@ -119,7 +119,7 @@ public sealed class ApiEndpointDatabasePartitionTests
             Assert.False(begin.IsCompleted);
             await Assert.ThrowsAsync<LocalDatabaseTransitionException>(() => store.OpenConnectionAsync());
             await oldConnection.DisposeAsync();
-            var transition = await begin.WaitAsync(TimeSpan.FromSeconds(2));
+            var transition = await begin.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
             Assert.NotEqual(prepared.TargetDatabasePath, store.ActiveDatabasePath);
 
             store.Publish(transition);

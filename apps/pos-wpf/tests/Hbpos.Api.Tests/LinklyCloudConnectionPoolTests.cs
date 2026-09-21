@@ -194,7 +194,9 @@ public sealed class LinklyCloudConnectionPoolTests
             // 关键断言：连续请求仍在复用连接时，固定 250ms 窗口必须已经输出首次物理连接快照。
             Assert.False(trafficTask.IsCompleted);
             Assert.True(Volatile.Read(ref requestCount) >= 3);
-            Assert.True(Stopwatch.GetElapsedTime(startedAt) >= TimeSpan.FromMilliseconds(250));
+            // 250ms 窗口从首个连接事件起算，距 startedAt 只差本机建连的亚毫秒级时间，而计时器可能比
+            // Stopwatch 早触发约 1ms，零余量的 >= 250ms 会误报。要证明的是快照等了窗口、不是启动即输出，留出余量。
+            Assert.True(Stopwatch.GetElapsedTime(startedAt) >= TimeSpan.FromMilliseconds(200));
             Assert.Equal(1, snapshot.TokenConnections);
         }
         finally

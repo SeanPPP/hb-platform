@@ -50,6 +50,15 @@ import {
   isValidProductReportDateRange,
   type ProductReportQuickRangeKey,
 } from "@/modules/product-report/date-ranges";
+import {
+  DEFAULT_REPORT_SORT,
+  getReportSortKey,
+  sortReportRows,
+  toggleReportSort,
+  type ReportSort,
+  type ReportSortField,
+  type ReportSortValues,
+} from "@/modules/product-report/sorting";
 import { formatMoney } from "@/modules/reports/format";
 import {
   getCashierEnabledStoreCodes,
@@ -101,6 +110,28 @@ interface ProductPageSummary {
 }
 
 const MAIN_REPORT_CACHE_VERSION_REFETCH_LIMIT = 2;
+
+type SupplierMetricSortRow = Pick<
+  SupplierReportRow,
+  "revenue" | "compareRevenue" | "totalQuantity" | "compareTotalQuantity" | "averagePrice" | "compareAveragePrice"
+>;
+
+// 供应商表与供应商分店弹窗字段相同；均价在数量为 0 时是 null，排序时统一排在最后。
+const SUPPLIER_METRIC_SORT_VALUES: ReportSortValues<SupplierMetricSortRow> = {
+  amount: (row) => [row.revenue, row.compareRevenue],
+  quantity: (row) => [row.totalQuantity, row.compareTotalQuantity],
+  unitPrice: (row) => [row.averagePrice, row.compareAveragePrice],
+};
+
+// 商品分店均价由后端给出，数量为 0 时是 0，与商品明细的服务端排序口径一致。
+const PRODUCT_BRANCH_SORT_VALUES: ReportSortValues<ProductBranchBreakdownRow> = {
+  amount: (row) => [row.salesAmount, row.compareSalesAmount],
+  quantity: (row) => [row.quantity, row.compareQuantity],
+  unitPrice: (row) => [row.averageUnitPrice, row.compareAverageUnitPrice],
+};
+
+// 表头只有 38pt 高，上下扩大点击区域接近 44pt 触控下限。
+const SORT_HEADER_HIT_SLOP = { top: 10, bottom: 10 };
 
 type CompleteProductMainReport = {
   totalRevenue: ProductReportTotalRevenue;
@@ -184,6 +215,51 @@ function TableCell({
     >
       {children}
     </Text>
+  );
+}
+
+function SortableHeaderCell({
+  label,
+  field,
+  sort,
+  onSort,
+  style,
+}: {
+  label: string;
+  field: ReportSortField;
+  sort: ReportSort;
+  onSort: (field: ReportSortField) => void;
+  style?: StyleProp<ViewStyle>;
+}) {
+  const { t } = useAppTranslation("common");
+  const active = sort.field === field;
+  const descending = sort.order === "desc";
+  const state = !active
+    ? t("productReport.sort.none")
+    : descending
+      ? t("productReport.sort.desc")
+      : t("productReport.sort.asc");
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{ selected: active }}
+      accessibilityLabel={t("productReport.sort.accessibilityLabel", { column: label, state })}
+      hitSlop={SORT_HEADER_HIT_SLOP}
+      onPress={() => onSort(field)}
+      style={[styles.sortableHeader, style]}
+    >
+      <Text
+        variant="bodySmall"
+        numberOfLines={1}
+        style={[styles.tableCellText, styles.headerText, styles.sortableHeaderLabel, active ? styles.sortActiveText : null]}
+      >
+        {label}
+      </Text>
+      {/* 箭头单独成段：标签被列宽截断时，排序状态仍然可见。 */}
+      <Text variant="bodySmall" style={[styles.sortIndicator, active ? styles.sortActiveText : null]}>
+        {active ? (descending ? "▼" : "▲") : "⇅"}
+      </Text>
+    </Pressable>
   );
 }
 
@@ -344,6 +420,11 @@ export function ProductReportScreen({
   const [productSearchDraft, setProductSearchDraft] = useState("");
   const [productSearch, setProductSearch] = useState("");
   const [drilldown, setDrilldown] = useState<Drilldown | null>(null);
+  // 各表独立记住排序：主表排序在切换筛选时保留，分店弹窗每次打开回到默认金额降序。
+  const [supplierSort, setSupplierSort] = useState<ReportSort>(DEFAULT_REPORT_SORT);
+  const [productSort, setProductSort] = useState<ReportSort>(DEFAULT_REPORT_SORT);
+  const [drilldownSort, setDrilldownSort] = useState<ReportSort>(DEFAULT_REPORT_SORT);
+  const productSortKey = getReportSortKey(productSort);
   const [mainReportVersionSyncExhausted, setMainReportVersionSyncExhausted] = useState(false);
 
   const dateRangeValid = isValidProductReportDateRange(draftStartDate, draftEndDate);
@@ -486,8 +567,9 @@ export function ProductReportScreen({
       supplierFilterCodes,
       productSearch,
       productPage,
+      productSortKey,
     ] as const,
-    [accountIdentity, cashierStoreScopeVersion, kind, productPage, productSearch, queryParams, supplierFilterCodes],
+    [accountIdentity, cashierStoreScopeVersion, kind, productPage, productSearch, productSortKey, queryParams, supplierFilterCodes],
   );
   const productLoadSessionKey = useMemo(
     () => ({ totalRevenueQueryKey, supplierQueryKey, productQueryKey }),
@@ -510,9 +592,11 @@ export function ProductReportScreen({
           search: productSearch,
           page: productPage,
           pageSize: PRODUCT_PAGE_SIZE,
+          // 商品明细由后端排序后分页，不同排序的完整快照不能互相替代。
+          sort: productSortKey,
         })
       : null,
-    [accountIdentity, kind, productPage, productSearch, snapshotQueryParams, range.key, selectedSupplierCode],
+    [accountIdentity, kind, productPage, productSearch, productSortKey, snapshotQueryParams, range.key, selectedSupplierCode],
   );
 
   const startProductLoad = useCallback((cacheState: ReportLoadCacheState) => {
@@ -616,6 +700,7 @@ export function ProductReportScreen({
           productPage,
           PRODUCT_PAGE_SIZE,
           productSearch,
+          productSort,
           { signal },
         );
       } catch (error) {
@@ -798,9 +883,17 @@ export function ProductReportScreen({
         product: productQuery.data!,
       }
     : mainReportSnapshot?.data;
-  const supplierRows = displayedMainReport?.supplier.data ?? [];
-  const supplierPageCount = Math.max(1, Math.ceil(supplierRows.length / SUPPLIER_PAGE_SIZE));
-  const supplierPageRows = getPageRows(supplierRows, supplierPage, SUPPLIER_PAGE_SIZE);
+  const supplierRows = useMemo(
+    () => displayedMainReport?.supplier.data ?? [],
+    [displayedMainReport?.supplier.data],
+  );
+  // 供应商表是全量数据、前端分页：先排序再分页，# 即当前排序下的名次；小计与顺序无关，仍用原数组。
+  const sortedSupplierRows = useMemo(
+    () => sortReportRows(supplierRows, supplierSort, SUPPLIER_METRIC_SORT_VALUES, (row) => row.supplierCode),
+    [supplierRows, supplierSort],
+  );
+  const supplierPageCount = Math.max(1, Math.ceil(sortedSupplierRows.length / SUPPLIER_PAGE_SIZE));
+  const supplierPageRows = getPageRows(sortedSupplierRows, supplierPage, SUPPLIER_PAGE_SIZE);
   const supplierSubtotal = supplierRows.reduce((sum, row) => sum + row.revenue, 0);
   const supplierCompareSubtotal = supplierRows.reduce((sum, row) => sum + row.compareRevenue, 0);
   const totalRevenue = displayedMainReport?.totalRevenue ?? { revenue: 0, compareRevenue: 0 };
@@ -1376,6 +1469,27 @@ export function ProductReportScreen({
     storeOptionsQuery.data?.find((item) => item.value === selectedStoreCode)?.label ??
     t("productReport.filters.allStores");
 
+  const applySupplierSort = (field: ReportSortField) => {
+    setSupplierSort((current) => toggleReportSort(current, field));
+    setSupplierPage(1);
+  };
+
+  const applyProductSort = (field: ReportSortField) => {
+    setProductSort((current) => toggleReportSort(current, field));
+    // 商品明细由后端排序后分页，换排序必须从第 1 页重新取。
+    setProductPage(1);
+  };
+
+  const applyDrilldownSort = (field: ReportSortField) => {
+    setDrilldownSort((current) => toggleReportSort(current, field));
+  };
+
+  const openDrilldown = (next: Drilldown) => {
+    // 每次打开分店弹窗都回到默认金额降序，不沿用上一个弹窗的排序。
+    setDrilldownSort(DEFAULT_REPORT_SORT);
+    setDrilldown(next);
+  };
+
   const renderSupplierRow = ({
     item,
     rowNumber,
@@ -1429,7 +1543,7 @@ export function ProductReportScreen({
         </FrozenLeadingColumns>
         <Pressable
           // 营业额列只打开供应商分店数据，不改变下方商品明细筛选。
-          onPress={() => setDrilldown({ type: "supplier", kind, supplier: item })}
+          onPress={() => openDrilldown({ type: "supplier", kind, supplier: item })}
           accessibilityRole="button"
           accessibilityLabel={`${getSupplierTitle(item)} ${t("productReport.drilldown.supplier")}`}
           style={[styles.supplierMoneyColumn, styles.fullHeightCell]}
@@ -1474,7 +1588,7 @@ export function ProductReportScreen({
   }) => (
     <Pressable
       style={[styles.tableRow, styles.productTableRow]}
-      onPress={() => setDrilldown({ type: "product", product: item })}
+      onPress={() => openDrilldown({ type: "product", product: item })}
       accessibilityRole="button"
       accessibilityLabel={`${item.itemNumber || item.productCode} ${item.productName || ""} ${t("productReport.drilldown.product")}`}
     >
@@ -1676,7 +1790,7 @@ export function ProductReportScreen({
                 <FrozenHorizontalTable>
                   {(scrollX) => (
                     <View style={[styles.table, kind === "china" ? styles.chinaSupplierTable : styles.supplierTable]}>
-                      <SupplierTableHeader kind={kind} scrollX={scrollX} />
+                      <SupplierTableHeader kind={kind} scrollX={scrollX} sort={supplierSort} onSort={applySupplierSort} />
                       <ScrollView
                         bounces={false}
                         nestedScrollEnabled
@@ -1747,7 +1861,7 @@ export function ProductReportScreen({
                 <FrozenHorizontalTable>
                   {(scrollX) => (
                   <View style={[styles.table, styles.productTable]}>
-                    <ProductTableHeader scrollX={scrollX} />
+                    <ProductTableHeader scrollX={scrollX} sort={productSort} onSort={applyProductSort} />
                     <ScrollView
                       bounces={false}
                       nestedScrollEnabled
@@ -1831,6 +1945,8 @@ export function ProductReportScreen({
           : t("productReport.states.error")}
         emptyLabel={drilldownEmptyLabel}
         kind={drilldownKind}
+        sort={drilldownSort}
+        onSortChange={applyDrilldownSort}
         growthNewLabel={growthNewLabel}
         costPendingLabel={costPendingLabel}
         costNoActivityLabel={costNoActivityLabel}
@@ -1884,7 +2000,17 @@ function SectionHeader({
   );
 }
 
-function SupplierTableHeader({ kind, scrollX }: { kind: SupplierReportKind; scrollX: Animated.Value }) {
+function SupplierTableHeader({
+  kind,
+  scrollX,
+  sort,
+  onSort,
+}: {
+  kind: SupplierReportKind;
+  scrollX: Animated.Value;
+  sort: ReportSort;
+  onSort: (field: ReportSortField) => void;
+}) {
   const { t } = useAppTranslation("common");
   return (
     <View style={[styles.tableRow, styles.tableHeaderRow, styles.supplierTableRow]}>
@@ -1897,7 +2023,7 @@ function SupplierTableHeader({ kind, scrollX }: { kind: SupplierReportKind; scro
         </View>
       </FrozenLeadingColumns>
       <View style={styles.supplierMoneyColumn}>
-        <TableCell numeric style={styles.headerText}>{t("productReport.metrics.revenue")}</TableCell>
+        <SortableHeaderCell label={t("productReport.metrics.revenue")} field="amount" sort={sort} onSort={onSort} style={styles.supplierMoneyHeaderCell} />
       </View>
       <View style={styles.supplierGrowthColumn}>
         <TableCell numeric style={styles.headerText}>{t("productReport.metrics.growthRate")}</TableCell>
@@ -1911,10 +2037,10 @@ function SupplierTableHeader({ kind, scrollX }: { kind: SupplierReportKind; scro
         </View>
       ) : null}
       <View style={styles.supplierCountColumn}>
-        <TableCell numeric style={styles.headerText}>{t("productReport.metrics.productQuantity")}</TableCell>
+        <SortableHeaderCell label={t("productReport.metrics.productQuantity")} field="quantity" sort={sort} onSort={onSort} />
       </View>
       <View style={styles.supplierMoneyColumn}>
-        <TableCell numeric style={styles.headerText}>{t("productReport.metrics.productAveragePrice")}</TableCell>
+        <SortableHeaderCell label={t("productReport.metrics.productAveragePrice")} field="unitPrice" sort={sort} onSort={onSort} style={styles.supplierMoneyHeaderCell} />
       </View>
       <View style={styles.grossProfitColumn}>
         <TableCell numeric style={styles.headerText}>{t("productReport.metrics.grossProfit")}</TableCell>
@@ -1926,7 +2052,15 @@ function SupplierTableHeader({ kind, scrollX }: { kind: SupplierReportKind; scro
   );
 }
 
-function ProductTableHeader({ scrollX }: { scrollX: Animated.Value }) {
+function ProductTableHeader({
+  scrollX,
+  sort,
+  onSort,
+}: {
+  scrollX: Animated.Value;
+  sort: ReportSort;
+  onSort: (field: ReportSortField) => void;
+}) {
   const { t } = useAppTranslation("common");
   return (
     <View style={[styles.tableRow, styles.tableHeaderRow, styles.productTableRow]}>
@@ -1939,16 +2073,16 @@ function ProductTableHeader({ scrollX }: { scrollX: Animated.Value }) {
         </View>
       </FrozenLeadingColumns>
       <View style={styles.productMoneyColumn}>
-        <TableCell numeric style={styles.headerText}>{t("productReport.columns.amount")}</TableCell>
+        <SortableHeaderCell label={t("productReport.columns.amount")} field="amount" sort={sort} onSort={onSort} />
       </View>
       <View style={styles.productImageColumn}>
         <TableCell style={styles.headerText}>{t("productReport.columns.image")}</TableCell>
       </View>
       <View style={styles.productCountColumn}>
-        <TableCell numeric style={styles.headerText}>{t("productReport.columns.quantity")}</TableCell>
+        <SortableHeaderCell label={t("productReport.columns.quantity")} field="quantity" sort={sort} onSort={onSort} />
       </View>
       <View style={styles.productAverageColumn}>
-        <TableCell numeric style={styles.headerText}>{t("productReport.columns.averagePrice")}</TableCell>
+        <SortableHeaderCell label={t("productReport.columns.averagePrice")} field="unitPrice" sort={sort} onSort={onSort} />
       </View>
       <View style={styles.productGrowthColumn}>
         <TableCell numeric style={styles.headerText}>{t("productReport.metrics.growthRate")}</TableCell>
@@ -2054,6 +2188,8 @@ function BranchDrilldownModal({
   errorLabel,
   emptyLabel,
   kind,
+  sort,
+  onSortChange,
   growthNewLabel,
   costPendingLabel,
   costNoActivityLabel,
@@ -2073,6 +2209,8 @@ function BranchDrilldownModal({
   errorLabel: string;
   emptyLabel: string;
   kind: "supplier" | "product" | null;
+  sort: ReportSort;
+  onSortChange: (field: ReportSortField) => void;
   growthNewLabel: string;
   costPendingLabel: string;
   costNoActivityLabel: string;
@@ -2082,6 +2220,15 @@ function BranchDrilldownModal({
   const { t } = useAppTranslation("common");
   const { height: windowHeight } = useWindowDimensions();
   const rows = kind === "supplier" ? supplierRows : productRows;
+  // 分店弹窗是全量数据，直接在前端排序；序号即当前排序下的名次，同值按分店编码兜底。
+  const sortedSupplierRows = useMemo(
+    () => sortReportRows(supplierRows, sort, SUPPLIER_METRIC_SORT_VALUES, (row) => row.branchCode),
+    [sort, supplierRows],
+  );
+  const sortedProductRows = useMemo(
+    () => sortReportRows(productRows, sort, PRODUCT_BRANCH_SORT_VALUES, (row) => row.branchCode),
+    [productRows, sort],
+  );
   const firstRowRef = useRef<View>(null);
   const visibilityTaskRef = useRef<{ cancel: () => void } | null>(null);
   const visibilityGenerationRef = useRef(0);
@@ -2180,13 +2327,13 @@ function BranchDrilldownModal({
                   {kind === "product" ? (
                     <>
                       <View style={styles.productBranchCountColumn}>
-                        <TableCell numeric style={styles.headerText}>{t("productReport.columns.quantity")}</TableCell>
+                        <SortableHeaderCell label={t("productReport.columns.quantity")} field="quantity" sort={sort} onSort={onSortChange} />
                       </View>
                       <View style={styles.productBranchMoneyColumn}>
-                        <TableCell numeric style={styles.headerText}>{t("productReport.columns.amount")}</TableCell>
+                        <SortableHeaderCell label={t("productReport.columns.amount")} field="amount" sort={sort} onSort={onSortChange} />
                       </View>
                       <View style={styles.productBranchAverageColumn}>
-                        <TableCell numeric style={styles.headerText}>{t("productReport.columns.averagePrice")}</TableCell>
+                        <SortableHeaderCell label={t("productReport.columns.averagePrice")} field="unitPrice" sort={sort} onSort={onSortChange} />
                       </View>
                       <View style={styles.productBranchGrowthColumn}>
                         <TableCell numeric style={styles.headerText}>{t("productReport.metrics.growthRate")}</TableCell>
@@ -2201,16 +2348,16 @@ function BranchDrilldownModal({
                   ) : (
                     <>
                       <View style={styles.moneyColumn}>
-                        <TableCell numeric style={styles.headerText}>{t("productReport.columns.amount")}</TableCell>
+                        <SortableHeaderCell label={t("productReport.columns.amount")} field="amount" sort={sort} onSort={onSortChange} />
                       </View>
                       <View style={styles.growthColumn}>
                         <TableCell numeric style={styles.headerText}>{t("productReport.metrics.growthRate")}</TableCell>
                       </View>
                       <View style={styles.countColumn}>
-                        <TableCell numeric style={styles.headerText}>{t("productReport.metrics.productQuantity")}</TableCell>
+                        <SortableHeaderCell label={t("productReport.metrics.productQuantity")} field="quantity" sort={sort} onSort={onSortChange} />
                       </View>
                       <View style={styles.moneyColumn}>
-                        <TableCell numeric style={styles.headerText}>{t("productReport.metrics.productAveragePrice")}</TableCell>
+                        <SortableHeaderCell label={t("productReport.metrics.productAveragePrice")} field="unitPrice" sort={sort} onSort={onSortChange} />
                       </View>
                       <View style={styles.grossProfitColumn}>
                         <TableCell numeric style={styles.headerText}>{t("productReport.metrics.grossProfit")}</TableCell>
@@ -2222,7 +2369,7 @@ function BranchDrilldownModal({
                   )}
                 </View>
                 {kind === "supplier"
-                  ? supplierRows.map((row, index) => (
+                  ? sortedSupplierRows.map((row, index) => (
                       <SupplierBranchRow
                         key={row.id}
                         row={row}
@@ -2234,7 +2381,7 @@ function BranchDrilldownModal({
                         scrollX={scrollX}
                       />
                     ))
-                  : productRows.map((row, index) => (
+                  : sortedProductRows.map((row, index) => (
                       <ProductBranchRow
                         key={row.id}
                         row={row}
@@ -2630,7 +2777,8 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   supplierCountColumn: {
-    width: 58,
+    // 表头「商品数量」加排序箭头约 61pt；表格 minWidth 仍有余量，加宽不影响其他列。
+    width: 64,
     minWidth: 0,
   },
   productNameColumn: {
@@ -2739,6 +2887,29 @@ const styles = StyleSheet.create({
   headerText: {
     color: "#374151",
     fontWeight: "700",
+  },
+  sortableHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    gap: 2,
+    minWidth: 0,
+  },
+  sortableHeaderLabel: {
+    flexShrink: 1,
+  },
+  sortIndicator: {
+    color: "#9CA3AF",
+    fontSize: 10,
+    lineHeight: 14,
+  },
+  sortActiveText: {
+    color: "#2563EB",
+  },
+  supplierMoneyHeaderCell: {
+    // 供应商金额列右侧 10pt 是行内 › 箭头的留白；表头把排序箭头放进这段留白，
+    // 标签与下方数字右对齐，英文 Revenue 不会被箭头挤到截断。
+    marginRight: -10,
   },
   row: {
     borderWidth: 1,

@@ -208,7 +208,7 @@ public sealed class ApiServerSwitchRuntimeTests
         }
 
         public Task WaitUntilPeriodicDelayAsync() =>
-            _periodicDelayStarted.Task.WaitAsync(TestWaitTimeouts.Default);
+            _periodicDelayStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
     }
 
     private sealed class SwitchActivationRecoveryStore : IDeviceActivationRecoveryStore
@@ -287,7 +287,7 @@ public sealed class ApiServerSwitchRuntimeTests
 
         public async Task<Uri> ReadNextAsync()
         {
-            await _signal.WaitAsync().WaitAsync(TestWaitTimeouts.Default);
+            await _signal.WaitAsync().WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
             lock (_requests)
             {
                 return _requests.Dequeue();

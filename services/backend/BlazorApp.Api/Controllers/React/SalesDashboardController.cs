@@ -926,6 +926,8 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="pageSize">每页记录数</param>
         /// <param name="productSearch">货号或条码查询（可选）</param>
         /// <param name="supplierScope">供应商范围；china 表示全部中国供应商（可选）</param>
+        /// <param name="sortField">排序字段 amount/quantity/unitPrice（可选，默认金额）</param>
+        /// <param name="sortOrder">排序方向 asc/desc（可选，默认降序）</param>
         /// <returns>分页增强版销售商品明细</returns>
         [HttpGet("enhanced-sales-product-details")]
         [Authorize(Policy = Permissions.Reports.ProductMovementView)]
@@ -941,13 +943,17 @@ namespace BlazorApp.Api.Controllers.React
             [FromQuery] int pageIndex = 1,
             [FromQuery] int pageSize = 100,
             [FromQuery] string? productSearch = null,
-            [FromQuery] string? supplierScope = null
+            [FromQuery] string? supplierScope = null,
+            [FromQuery] string? sortField = null,
+            [FromQuery] string? sortOrder = null
         )
         {
             try
             {
-                _logger.LogInformation("[GetEnhancedSalesProductDetails] Received request: StartDate={StartDate}, EndDate={EndDate}, CompareStartDate={CompareStartDate}, CompareEndDate={CompareEndDate}, CompareMode={CompareMode}, PageIndex={PageIndex}, PageSize={PageSize}, HasProductSearch={HasProductSearch}",
-                    startDate, endDate, compareStartDate, compareEndDate, compareMode, pageIndex, pageSize, !string.IsNullOrWhiteSpace(productSearch));
+                // 排序参数是用户输入，日志只记录白名单归一化后的标记，避免日志伪造。
+                _logger.LogInformation("[GetEnhancedSalesProductDetails] Received request: StartDate={StartDate}, EndDate={EndDate}, CompareStartDate={CompareStartDate}, CompareEndDate={CompareEndDate}, CompareMode={CompareMode}, PageIndex={PageIndex}, PageSize={PageSize}, HasProductSearch={HasProductSearch}, Sort={Sort}",
+                    startDate, endDate, compareStartDate, compareEndDate, compareMode, pageIndex, pageSize, !string.IsNullOrWhiteSpace(productSearch),
+                    ProductReportSort.Parse(sortField, sortOrder).Token);
 
                 // 商品报告入口统一用安全范围解析，避免普通用户解析失败时退化为全分店。
                 var branchScope = await ResolveTargetBranchCodesAsync(branchCodes);
@@ -992,7 +998,9 @@ namespace BlazorApp.Api.Controllers.React
                     pageSize,
                     productSearch,
                     statisticStatus,
-                    chinaSupplierScope
+                    chinaSupplierScope,
+                    sortField,
+                    sortOrder
                 );
                 return Ok(CreateProductReportResponse(result, statisticStatus));
             }
