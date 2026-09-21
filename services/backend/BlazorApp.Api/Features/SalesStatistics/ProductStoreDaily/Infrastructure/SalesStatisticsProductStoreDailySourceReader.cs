@@ -629,10 +629,6 @@ internal static async Task<List<ProductStoreDailySourceRow>> LoadHBSalesProductS
 )
 {
     var originalCommandTimeout = hbSalesContext.Db.Ado.CommandTimeOut;
-    var mainCheckoutDateWindowStart = targetDate.AddDays(
-        -HBSalesMainCheckoutDateWindowDays
-    );
-    var mainCheckoutDateWindowEnd = nextDate.AddDays(HBSalesMainCheckoutDateWindowDays);
     hbSalesContext.Db.Ado.CommandTimeOut = Math.Max(
         originalCommandTimeout,
         CommandTimeoutSeconds
@@ -640,7 +636,74 @@ internal static async Task<List<ProductStoreDailySourceRow>> LoadHBSalesProductS
     List<ProductStoreDailySourceRow> rows;
     try
     {
-        var query = hbSalesContext.Db.Queryable<SalesOrderMain>()
+        if (hbSalesContext.Db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+        {
+            var sql = BuildHBSalesProductStoreDailyRowsSql(hbSalesContext.Db, targetDate, nextDate, maxRows);
+            rows = await hbSalesContext.Db.Ado.SqlQueryAsync<ProductStoreDailySourceRow>(sql.Key, sql.Value.ToArray());
+        }
+        else
+        {
+            var query = BuildHBSalesProductStoreDailyRowsQuery(hbSalesContext.Db, targetDate, nextDate);
+            rows = maxRows.HasValue
+                ? await query.Take(maxRows.Value + 1).ToListAsync()
+                : await query.ToListAsync();
+        }
+    }
+    finally
+    {
+        // 共享上下文可能被后续查询复用，必须还原调用方原有超时。
+        hbSalesContext.Db.Ado.CommandTimeOut = originalCommandTimeout;
+    }
+
+    if (maxRows.HasValue && rows.Count > maxRows.Value)
+    {
+        throw new InvalidOperationException(
+            $"2025 HBSales 批量快照超过 {maxRows.Value:N0} 行内存保护上限，请缩小日期范围"
+        );
+    }
+
+    foreach (var row in rows.Where(row =>
+        SalesStatisticsCodeRules.Normalize(row.DocumentType) == "3"
+        || SalesStatisticsCodeRules.Normalize(row.DocumentType) == "4"
+    ))
+    {
+        // HBSales 年度统计口径：类型 3/4 为退货/退款，数量和金额统一取反。
+        row.Quantity = -row.Quantity;
+        row.ActualAmount = -row.ActualAmount;
+    }
+
+    return rows;
+}
+
+/// <summary>
+/// HBSales 明细在 SQL Server 上按实际日期重编译。结账日期是 date 列，而 SqlSugar 把日期变量下发为 datetime 参数，
+/// 带参缓存的计划用不上 IX_B销售清单详情表副本_折扣日日期单号 覆盖索引（BatchProductSalesDiscountSourceIndexes.sql），
+/// 每次聚集扫描明细表约 40 万页：2026-09-21 生产原句 sp_executesql 复现 17.6 秒，
+/// 加 OPTION (RECOMPILE) 后 CPU 15 毫秒、明细表逻辑读 60 次，结果逐行一致。
+/// </summary>
+internal static KeyValuePair<string, List<SugarParameter>> BuildHBSalesProductStoreDailyRowsSql(
+    ISqlSugarClient db,
+    DateTime targetDate,
+    DateTime nextDate,
+    int? maxRows = null
+)
+{
+    var query = BuildHBSalesProductStoreDailyRowsQuery(db, targetDate, nextDate);
+    var sql = (maxRows.HasValue ? query.Take(maxRows.Value + 1) : query).ToSql();
+    return new KeyValuePair<string, List<SugarParameter>>(sql.Key + " OPTION (RECOMPILE)", sql.Value);
+}
+
+internal static ISugarQueryable<ProductStoreDailySourceRow> BuildHBSalesProductStoreDailyRowsQuery(
+    ISqlSugarClient db,
+    DateTime targetDate,
+    DateTime nextDate
+)
+{
+    var mainCheckoutDateWindowStart = targetDate.AddDays(
+        -HBSalesMainCheckoutDateWindowDays
+    );
+    var mainCheckoutDateWindowEnd = nextDate.AddDays(HBSalesMainCheckoutDateWindowDays);
+    return db.Queryable<SalesOrderMain>()
             .LeftJoin<SalesOrderDetailRecord>((main, detail) =>
                 main.B销售单号 == detail.B销售单号
             )
@@ -692,34 +755,6 @@ internal static async Task<List<ProductStoreDailySourceRow>> LoadHBSalesProductS
                 DetailLastUploadTime = detail.FGC_LastModifyDate ?? detail.FGC_CreateDate,
                 DocumentType = main.B单据类型,
             });
-        rows = maxRows.HasValue
-            ? await query.Take(maxRows.Value + 1).ToListAsync()
-            : await query.ToListAsync();
-    }
-    finally
-    {
-        // 共享上下文可能被后续查询复用，必须还原调用方原有超时。
-        hbSalesContext.Db.Ado.CommandTimeOut = originalCommandTimeout;
-    }
-
-    if (maxRows.HasValue && rows.Count > maxRows.Value)
-    {
-        throw new InvalidOperationException(
-            $"2025 HBSales 批量快照超过 {maxRows.Value:N0} 行内存保护上限，请缩小日期范围"
-        );
-    }
-
-    foreach (var row in rows.Where(row =>
-        SalesStatisticsCodeRules.Normalize(row.DocumentType) == "3"
-        || SalesStatisticsCodeRules.Normalize(row.DocumentType) == "4"
-    ))
-    {
-        // HBSales 年度统计口径：类型 3/4 为退货/退款，数量和金额统一取反。
-        row.Quantity = -row.Quantity;
-        row.ActualAmount = -row.ActualAmount;
-    }
-
-    return rows;
 }
 
 
