@@ -680,6 +680,143 @@ public sealed class ProductStoreDailyStatisticQueueServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task RecoverExpiredRunningClaimsAsync_Sqlsess1租约的Session已退出_不再阻塞回收()
+    {
+        var date = new DateTime(2026, 5, 11);
+        var jobId = Guid.NewGuid();
+        await SeedTaskLogAsync(jobId, new[] { date });
+        await SeedStateAsync(date, SalesStatisticRefreshStatus.Running, jobId, DateTime.UtcNow.AddHours(-3));
+        await SeedSessionGuardedLeaseAsync(date);
+        var probedScopes = new List<string>();
+        var queue = CreateQueue(sessionLockProbe: scopes =>
+        {
+            probedScopes.AddRange(scopes);
+            return Task.FromResult<HashSet<string>?>(new HashSet<string>());
+        });
+
+        var recovered = await queue.RecoverExpiredRunningClaimsAsync();
+
+        Assert.Equal(1, recovered);
+        Assert.Equal(new[] { "2026-05-11" }, probedScopes);
+        var state = await _db.Queryable<SalesStatisticRefreshState>()
+            .SingleAsync(x => x.Date == date && x.StatisticType == SalesStatisticType.ProductStoreDaily);
+        Assert.Equal(SalesStatisticRefreshStatus.Queued, state.Status);
+        Assert.Equal(jobId, state.JobId);
+    }
+
+    [Fact]
+    public async Task RecoverExpiredRunningClaimsAsync_Sqlsess1租约的Session仍持锁_保持Running()
+    {
+        var date = new DateTime(2026, 5, 12);
+        var jobId = Guid.NewGuid();
+        await SeedTaskLogAsync(jobId, new[] { date });
+        await SeedStateAsync(date, SalesStatisticRefreshStatus.Running, jobId, DateTime.UtcNow.AddHours(-3));
+        await SeedSessionGuardedLeaseAsync(date);
+        var queue = CreateQueue(sessionLockProbe: _ =>
+            Task.FromResult<HashSet<string>?>(new HashSet<string> { "2026-05-12" })
+        );
+
+        var recovered = await queue.RecoverExpiredRunningClaimsAsync();
+
+        Assert.Equal(0, recovered);
+        var state = await _db.Queryable<SalesStatisticRefreshState>()
+            .SingleAsync(x => x.Date == date && x.StatisticType == SalesStatisticType.ProductStoreDaily);
+        Assert.Equal(SalesStatisticRefreshStatus.Running, state.Status);
+    }
+
+    [Fact]
+    public async Task RecoverExpiredRunningClaimsAsync_Sqlsess1探测失败_保守视为活跃()
+    {
+        var date = new DateTime(2026, 5, 13);
+        var jobId = Guid.NewGuid();
+        await SeedTaskLogAsync(jobId, new[] { date });
+        await SeedStateAsync(date, SalesStatisticRefreshStatus.Running, jobId, DateTime.UtcNow.AddHours(-3));
+        await SeedSessionGuardedLeaseAsync(date);
+        var queue = CreateQueue(sessionLockProbe: _ =>
+            throw new InvalidOperationException("模拟 applock 探测连接失败")
+        );
+
+        var recovered = await queue.RecoverExpiredRunningClaimsAsync();
+
+        Assert.Equal(0, recovered);
+        var state = await _db.Queryable<SalesStatisticRefreshState>()
+            .SingleAsync(x => x.Date == date && x.StatisticType == SalesStatisticType.ProductStoreDaily);
+        Assert.Equal(SalesStatisticRefreshStatus.Running, state.Status);
+    }
+
+    [Fact]
+    public async Task RecoverExpiredRunningClaimsAsync_未过期TTL租约不走Session探测_保持Running()
+    {
+        var date = new DateTime(2026, 5, 14);
+        var jobId = Guid.NewGuid();
+        await SeedTaskLogAsync(jobId, new[] { date });
+        await SeedStateAsync(date, SalesStatisticRefreshStatus.Running, jobId, DateTime.UtcNow.AddHours(-3));
+        await _db.Insertable(new ScheduledTaskLease
+        {
+            TaskType = SalesStatisticsAlignmentService.DailyFullRefreshLeaseTaskType,
+            ScopeKey = "2026-05-14",
+            Status = ScheduledTaskLeaseStatus.Running,
+            OwnerInstanceId = "ttl-worker",
+            LeaseToken = "ttl-token",
+            LeaseUntilUtc = DateTime.UtcNow.AddMinutes(30),
+            StartedAtUtc = DateTime.UtcNow.AddHours(-1),
+            UpdatedAtUtc = DateTime.UtcNow,
+        }).ExecuteCommandAsync();
+        var probeCalls = 0;
+        var queue = CreateQueue(sessionLockProbe: _ =>
+        {
+            probeCalls++;
+            return Task.FromResult<HashSet<string>?>(new HashSet<string>());
+        });
+
+        var recovered = await queue.RecoverExpiredRunningClaimsAsync();
+
+        Assert.Equal(0, recovered);
+        Assert.Equal(0, probeCalls);
+        var state = await _db.Queryable<SalesStatisticRefreshState>()
+            .SingleAsync(x => x.Date == date && x.StatisticType == SalesStatisticType.ProductStoreDaily);
+        Assert.Equal(SalesStatisticRefreshStatus.Running, state.Status);
+    }
+
+    [Fact]
+    public async Task FinalizeJobsAsync_Manifest日期仅剩Session已退出的Sqlsess1租约_正常终结()
+    {
+        var date = new DateTime(2026, 5, 15);
+        var jobId = Guid.NewGuid();
+        await SeedTaskLogAsync(jobId, new[] { date });
+        await SeedStateAsync(date, SalesStatisticRefreshStatus.Fresh, jobId);
+        await SeedSessionGuardedLeaseAsync(date);
+        var queue = CreateQueue(sessionLockProbe: _ =>
+            Task.FromResult<HashSet<string>?>(new HashSet<string>())
+        );
+
+        var finalized = await queue.FinalizeJobsAsync();
+
+        Assert.Equal(1, finalized);
+        var log = await _db.Queryable<ScheduledTaskLog>().SingleAsync(x => x.Id == jobId);
+        Assert.Equal(TaskStatus.Success, log.Status);
+    }
+
+    [Fact]
+    public async Task FinalizeJobsAsync_Sqlsess1租约的Session仍持锁_保持Running()
+    {
+        var date = new DateTime(2026, 5, 16);
+        var jobId = Guid.NewGuid();
+        await SeedTaskLogAsync(jobId, new[] { date });
+        await SeedStateAsync(date, SalesStatisticRefreshStatus.Fresh, jobId);
+        await SeedSessionGuardedLeaseAsync(date);
+        var queue = CreateQueue(sessionLockProbe: _ =>
+            Task.FromResult<HashSet<string>?>(new HashSet<string> { "2026-05-16" })
+        );
+
+        var finalized = await queue.FinalizeJobsAsync();
+
+        Assert.Equal(0, finalized);
+        var log = await _db.Queryable<ScheduledTaskLog>().SingleAsync(x => x.Id == jobId);
+        Assert.Equal(TaskStatus.Running, log.Status);
+    }
+
+    [Fact]
     public async Task FinalizeJobsAsync_Manifest日期仍有有效全刷新租约_保持Running()
     {
         var date = new DateTime(2026, 5, 8);
@@ -957,10 +1094,11 @@ public sealed class ProductStoreDailyStatisticQueueServiceTests : IDisposable
     private ProductStoreDailyStatisticQueueService CreateQueue(
         IProductStoreDailyStatisticExecutor? executor = null,
         ISalesDashboardCacheWarmer? cacheWarmer = null,
-        string instanceId = "queue-test"
+        string instanceId = "queue-test",
+        Func<IReadOnlyCollection<string>, Task<HashSet<string>?>>? sessionLockProbe = null
     )
     {
-        return CreateQueueForDb(_db, executor, cacheWarmer, instanceId);
+        return CreateQueueForDb(_db, executor, cacheWarmer, instanceId, sessionLockProbe);
     }
 
     private (ProductStoreDailyStatisticQueueService Queue, SqlSugarClient Db) CreateIndependentQueue(
@@ -983,7 +1121,8 @@ public sealed class ProductStoreDailyStatisticQueueServiceTests : IDisposable
         ISqlSugarClient db,
         IProductStoreDailyStatisticExecutor? executor,
         ISalesDashboardCacheWarmer? cacheWarmer,
-        string instanceId
+        string instanceId,
+        Func<IReadOnlyCollection<string>, Task<HashSet<string>?>>? sessionLockProbe = null
     )
     {
         executor ??= new RecordingExecutor((_, _, _, _) =>
@@ -993,11 +1132,17 @@ public sealed class ProductStoreDailyStatisticQueueServiceTests : IDisposable
         var context = CreateSqlSugarContext(db);
         var services = new ServiceCollection();
         services.AddScoped(_ => CreateSqlSugarContext(db));
-        services.AddScoped(_ => new ScheduledTaskLeaseService(
-            CreateSqlSugarContext(db),
-            Options.Create(new ScheduledTaskOptions { InstanceId = instanceId }),
-            NullLogger<ScheduledTaskLeaseService>.Instance
-        ));
+        services.AddScoped<ScheduledTaskLeaseService>(_ => sessionLockProbe == null
+            ? new ScheduledTaskLeaseService(
+                CreateSqlSugarContext(db),
+                Options.Create(new ScheduledTaskOptions { InstanceId = instanceId }),
+                NullLogger<ScheduledTaskLeaseService>.Instance
+            )
+            : new SessionLockProbingLeaseService(
+                CreateSqlSugarContext(db),
+                Options.Create(new ScheduledTaskOptions { InstanceId = instanceId }),
+                sessionLockProbe
+            ));
         services.AddSingleton(executor);
         services.AddSingleton(cacheWarmer);
         var provider = services.BuildServiceProvider();
@@ -1176,6 +1321,43 @@ public sealed class ProductStoreDailyStatisticQueueServiceTests : IDisposable
     {
         return sql.StartsWith("UPDATE", StringComparison.OrdinalIgnoreCase)
             && sql.Contains("ScheduledTaskLog", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// SQLite 无 applock，用可替换的探测结果模拟完整刷新 owner 的 SQL Session 存活/退出/探测失败。
+    /// </summary>
+    private sealed class SessionLockProbingLeaseService : ScheduledTaskLeaseService
+    {
+        private readonly Func<IReadOnlyCollection<string>, Task<HashSet<string>?>> _probe;
+
+        public SessionLockProbingLeaseService(
+            SqlSugarContext context,
+            IOptions<ScheduledTaskOptions> options,
+            Func<IReadOnlyCollection<string>, Task<HashSet<string>?>> probe
+        ) : base(context, options, NullLogger<ScheduledTaskLeaseService>.Instance)
+        {
+            _probe = probe;
+        }
+
+        internal override Task<HashSet<string>?> ProbeHeldSessionScopeKeysAsync(
+            IReadOnlyCollection<string> scopeKeys
+        ) => _probe(scopeKeys);
+    }
+
+    private async Task SeedSessionGuardedLeaseAsync(DateTime date)
+    {
+        // 完整刷新崩溃后遗留的 marker：sqlsess1 前缀 + 9999 截止，Running 永不按 TTL 到期。
+        await _db.Insertable(new ScheduledTaskLease
+        {
+            TaskType = SalesStatisticsAlignmentService.DailyFullRefreshLeaseTaskType,
+            ScopeKey = date.ToString("yyyy-MM-dd"),
+            Status = ScheduledTaskLeaseStatus.Running,
+            OwnerInstanceId = "crashed-full-refresh",
+            LeaseToken = SalesStatisticsDateExecutionGuard.SessionLeaseTokenPrefix + Guid.NewGuid().ToString("N"),
+            LeaseUntilUtc = new DateTime(9999, 12, 31, 23, 59, 59, DateTimeKind.Utc),
+            StartedAtUtc = DateTime.UtcNow.AddHours(-5),
+            UpdatedAtUtc = DateTime.UtcNow.AddHours(-5),
+        }).ExecuteCommandAsync();
     }
 
     private sealed class RecordingExecutor : IProductStoreDailyStatisticExecutor

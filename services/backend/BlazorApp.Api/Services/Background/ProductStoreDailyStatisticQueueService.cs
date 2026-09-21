@@ -258,7 +258,7 @@ public sealed class ProductStoreDailyStatisticQueueService
             {
                 continue;
             }
-            if (await HasActiveDateLeaseAsync(state.Date, nowUtc))
+            if (await HasActiveDateLeaseAsync(state.Date))
             {
                 continue;
             }
@@ -307,7 +307,7 @@ public sealed class ProductStoreDailyStatisticQueueService
             }
 
             // Fresh 状态可能先于计算租约 completion 落库；任一 manifest 日期仍有有效租约时不得抢先终结日志。
-            if (await HasAnyActiveDateLeaseAsync(manifestDates, DateTime.UtcNow))
+            if (await HasAnyActiveDateLeaseAsync(manifestDates))
             {
                 continue;
             }
@@ -1008,38 +1008,41 @@ public sealed class ProductStoreDailyStatisticQueueService
         return progress;
     }
 
-    private Task<bool> HasActiveDateLeaseAsync(DateTime date, DateTime nowUtc)
+    private async Task<bool> HasActiveDateLeaseAsync(DateTime date)
     {
-        var scopeKey = date.Date.ToString("yyyy-MM-dd");
-        return _context.Db.Queryable<ScheduledTaskLease>()
-            .Where(lease =>
-                lease.TaskType == SalesStatisticsAlignmentService.DailyFullRefreshLeaseTaskType
-                && lease.ScopeKey == scopeKey
-                && lease.Status == ScheduledTaskLeaseStatus.Running
-                && lease.LeaseUntilUtc != null
-                && lease.LeaseUntilUtc > nowUtc
-            )
-            .AnyAsync();
+        return (await QueryActiveDateLeaseScopesAsync(date.Date, date.Date)).Count > 0;
     }
 
-    private async Task<bool> HasAnyActiveDateLeaseAsync(
-        IReadOnlyCollection<DateTime> dates,
-        DateTime nowUtc
-    )
+    private async Task<bool> HasAnyActiveDateLeaseAsync(IReadOnlyCollection<DateTime> dates)
     {
         var manifestScopes = dates
             .Select(date => date.Date.ToString("yyyy-MM-dd"))
             .ToHashSet(StringComparer.Ordinal);
-        var activeScopes = await _context.Db.Queryable<ScheduledTaskLease>()
-            .Where(lease =>
-                lease.TaskType == SalesStatisticsAlignmentService.DailyFullRefreshLeaseTaskType
-                && lease.Status == ScheduledTaskLeaseStatus.Running
-                && lease.LeaseUntilUtc != null
-                && lease.LeaseUntilUtc > nowUtc
-            )
-            .Select(lease => lease.ScopeKey)
-            .ToListAsync();
+        var activeScopes = await QueryActiveDateLeaseScopesAsync(
+            dates.Min().Date,
+            dates.Max().Date
+        );
         return activeScopes.Any(manifestScopes.Contains);
+    }
+
+    /// <summary>
+    /// 日期执行者判定统一走租约服务：完整刷新的 sqlsess1 租约恒为 9999 标记，进程崩溃后
+    /// 会一直停在 Running，只能用 session applock 探测其 owner 是否仍存活；旧 TTL 租约保持
+    /// 原到期语义，探测失败时租约服务保守保留，避免把仍在执行的日期误退回队列。
+    /// </summary>
+    private async Task<List<string>> QueryActiveDateLeaseScopesAsync(
+        DateTime startDate,
+        DateTime endDate
+    )
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var leaseService = scope.ServiceProvider.GetRequiredService<ScheduledTaskLeaseService>();
+        var leases = await leaseService.GetRunningLeasesAsync(
+            SalesStatisticsAlignmentService.DailyFullRefreshLeaseTaskType,
+            startDate,
+            endDate
+        );
+        return leases.Select(lease => lease.ScopeKey).ToList();
     }
 
     private async Task<bool> FailMalformedManifestAsync(Guid jobId, string manifestError)
