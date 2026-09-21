@@ -5966,6 +5966,36 @@ public sealed class LinklyBackendTerminalClientTests
         Assert.Contains("result is unknown", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AcknowledgeSession_sends_supervisor_resolution_flag_only_for_supervisor_decisions(bool supervisorResolved)
+    {
+        string? path = null;
+        string? body = null;
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return JsonResponse(PendingSessionJson("ack-flag-session", "TXN-ACK-FLAG"));
+        });
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+
+        if (supervisorResolved)
+        {
+            await client.AcknowledgeSupervisorResolvedSessionAsync(CreateSettings(), "ack-flag-session");
+        }
+        else
+        {
+            await client.AcknowledgeSessionAsync(CreateSettings(), "ack-flag-session");
+        }
+
+        Assert.Equal("/api/v1/linkly/cloud-backend/transactions/ack-flag-session/acknowledge", path);
+        using var document = JsonDocument.Parse(body!);
+        Assert.Equal("Sandbox", document.RootElement.GetProperty("environment").GetString());
+        Assert.Equal(supervisorResolved, document.RootElement.GetProperty("supervisorResolved").GetBoolean());
+    }
+
     private static LinklyBackendTerminalClient CreateClient(
         StubHttpMessageHandler handler,
         FakeLinklyTerminalDialogService dialog)

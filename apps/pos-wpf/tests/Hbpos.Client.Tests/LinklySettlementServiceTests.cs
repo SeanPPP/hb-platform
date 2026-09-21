@@ -1453,6 +1453,9 @@ public sealed class LinklySettlementServiceTests
 
         public Task AcknowledgeSessionAsync(CardTerminalSettings settings, string sessionId, CancellationToken cancellationToken = default) => Task.CompletedTask;
 
+        public Task AcknowledgeSupervisorResolvedSessionAsync(CardTerminalSettings settings, string sessionId, CancellationToken cancellationToken = default) =>
+            AcknowledgeSessionAsync(settings, sessionId, cancellationToken);
+
         private static Task<PaymentAuthorizationResult> UnsupportedPaymentAsync() => Task.FromException<PaymentAuthorizationResult>(new NotSupportedException());
 
         private static Task<T> UnsupportedSessionAsync<T>() => Task.FromException<T>(new NotSupportedException());

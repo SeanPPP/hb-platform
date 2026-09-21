@@ -125,6 +125,13 @@ public interface ILinklyBackendTerminalClient
         CardTerminalSettings settings,
         string sessionId,
         CancellationToken cancellationToken = default);
+
+    // 主管已在 POS 上对该会话作出结案决定时使用：服务端会把仍非终态的会话记为 SupervisorResolved，
+    // 让终端管理（换线、配对、连接测试）不再被这笔结果未知的会话永久挡住。
+    Task AcknowledgeSupervisorResolvedSessionAsync(
+        CardTerminalSettings settings,
+        string sessionId,
+        CancellationToken cancellationToken = default);
 }
 
 public sealed class LinklyBackendTerminalClient(
@@ -567,14 +574,31 @@ public sealed class LinklyBackendTerminalClient(
         return GetStatusAsync(settings, sessionId, cancellationToken);
     }
 
-    public async Task AcknowledgeSessionAsync(
+    public Task AcknowledgeSessionAsync(
         CardTerminalSettings settings,
         string sessionId,
         CancellationToken cancellationToken = default)
     {
+        return AcknowledgeSessionCoreAsync(settings, sessionId, supervisorResolved: false, cancellationToken);
+    }
+
+    public Task AcknowledgeSupervisorResolvedSessionAsync(
+        CardTerminalSettings settings,
+        string sessionId,
+        CancellationToken cancellationToken = default)
+    {
+        return AcknowledgeSessionCoreAsync(settings, sessionId, supervisorResolved: true, cancellationToken);
+    }
+
+    private async Task AcknowledgeSessionCoreAsync(
+        CardTerminalSettings settings,
+        string sessionId,
+        bool supervisorResolved,
+        CancellationToken cancellationToken)
+    {
         var stopwatch = Stopwatch.StartNew();
         var relativeUrl = $"api/v1/linkly/cloud-backend/transactions/{Uri.EscapeDataString(sessionId)}/acknowledge";
-        var request = new LinklyCloudBackendAcknowledgeRequest(settings.Environment.ToString());
+        var request = new LinklyCloudBackendAcknowledgeRequest(settings.Environment.ToString(), supervisorResolved);
         LogHttpRequest(
             "acknowledge",
             HttpMethod.Post,

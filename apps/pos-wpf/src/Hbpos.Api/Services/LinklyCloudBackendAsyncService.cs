@@ -149,6 +149,7 @@ public interface ILinklyCloudBackendAsyncService
         string deviceCode,
         string environment,
         string sessionId,
+        bool supervisorResolved,
         CancellationToken cancellationToken);
 
     Task<LinklyCloudBackendSessionResponse> AcknowledgeSettlementSessionAsync(
@@ -777,6 +778,7 @@ public class LinklyCloudBackendAsyncService(
         string deviceCode,
         string environment,
         string sessionId,
+        bool supervisorResolved,
         CancellationToken cancellationToken)
     {
         var acknowledgedAt = DateTimeOffset.UtcNow;
@@ -795,7 +797,7 @@ public class LinklyCloudBackendAsyncService(
             normalizedSessionId,
             "POST",
             evidenceUrl,
-            requestJson: null,
+            requestJson: supervisorResolved ? SerializeEvidenceJson(new { supervisorResolved }) : null,
             responseJson: null,
             success: null,
             reason: null,
@@ -807,6 +809,7 @@ public class LinklyCloudBackendAsyncService(
             normalizedDeviceCode,
             normalizedSessionId,
             acknowledgedAt,
+            supervisorResolved,
             cancellationToken);
 
         var result = session is null
@@ -859,6 +862,7 @@ public class LinklyCloudBackendAsyncService(
             normalizedDeviceCode,
             normalizedSessionId,
             DateTimeOffset.UtcNow,
+            supervisorResolved: false,
             cancellationToken) ?? throw new LinklyCloudBackendSessionNotFoundException();
         return await BuildResponseAsync(acknowledged, cancellationToken);
     }
@@ -5335,6 +5339,7 @@ public interface ILinklyCloudBackendAsyncRepository
         string deviceCode,
         string sessionId,
         DateTimeOffset acknowledgedAt,
+        bool supervisorResolved,
         CancellationToken cancellationToken);
 
     Task AddNotificationAsync(
@@ -5575,6 +5580,7 @@ public sealed class InMemoryLinklyCloudBackendAsyncRepository : ILinklyCloudBack
         string deviceCode,
         string sessionId,
         DateTimeOffset acknowledgedAt,
+        bool supervisorResolved,
         CancellationToken cancellationToken)
     {
         lock (_gate)
@@ -5588,6 +5594,12 @@ public sealed class InMemoryLinklyCloudBackendAsyncRepository : ILinklyCloudBack
             var next = Clone(session);
             // 客户端确认后同步关闭 active 标记，人工确认 pending session 时也不能继续阻塞下一笔付款。
             next.ClientAcknowledgedAt = acknowledgedAt;
+            if (supervisorResolved && !IsFinalForClientRecovery(next))
+            {
+                // 与 SQL 实现一致：只有主管结案才把非终态改为可审计的结案终态，已有终态保持原样。
+                next.Status = StatusSupervisorResolved;
+            }
+
             next.IsActive = false;
             next.UpdatedAt = acknowledgedAt;
             _sessions[key] = Clone(next);
@@ -6177,11 +6189,20 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
         string deviceCode,
         string sessionId,
         DateTimeOffset acknowledgedAt,
+        bool supervisorResolved,
         CancellationToken cancellationToken)
     {
+        // 普通 ack 只释放付款闸门、不改 Status：非终态会话仍被终端管理闸门视为结果未知。
+        // 主管结案才把非终态写成 SupervisorResolved，已有的 Linkly 终态一律保留。
         const string sql = """
             UPDATE [dbo].[POSM_LinklyCloudBackendSession]
             SET [ClientAcknowledgedAt] = @ClientAcknowledgedAt,
+                [Status] = CASE
+                    WHEN @SupervisorResolved = 1
+                     AND ([Status] IS NULL OR [Status] NOT IN (N'Completed', N'Cancelled', N'Failed', N'NotSubmitted'))
+                    THEN N'SupervisorResolved'
+                    ELSE [Status]
+                END,
                 [IsActive] = 0,
                 [UpdatedAt] = @ClientAcknowledgedAt
             WHERE [Environment] = @Environment
@@ -6194,6 +6215,7 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
         var affected = await dbContext.PosmDb.Ado.ExecuteCommandAsync(
             sql,
             new SugarParameter("@ClientAcknowledgedAt", acknowledgedAtUtc),
+            new SugarParameter("@SupervisorResolved", supervisorResolved),
             new SugarParameter("@Environment", environment),
             new SugarParameter("@StoreCode", storeCode),
             new SugarParameter("@DeviceCode", deviceCode),

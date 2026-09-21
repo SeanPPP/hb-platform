@@ -818,6 +818,49 @@ public sealed class PaymentTerminalSettingsServiceTests : IDisposable
         Assert.Equal(revision, retained.Revision);
     }
 
+    [Theory]
+    [InlineData("HISTORICAL-POS", false)]
+    [InlineData("HISTORICAL-POS", true)]
+    [InlineData("POS-01", false)]
+    [InlineData("POS-01", true)]
+    public async Task LinklySelectionMutation_AllowsSupervisorResolvedAcknowledgedSession(string sessionDevice, bool release)
+    {
+        var service = CreateService();
+        SeedStore("001", "City Store");
+        SeedPosDevice("POS-01", "001");
+        var created = await service.CreateLinklyTerminalAsync(new CreateLinklyTerminalDto
+        {
+            StoreCode = "001", Environment = "Production", LaneNo = 1,
+            DisplayName = "Counter", Username = "test-user", Password = "test-password",
+        }, "admin");
+        var terminalId = created.Data!.Terminals.Single().TerminalId;
+        var selected = await service.SetLinklyDeviceSelectionAsync("POS-01", new UpdateLinklyDeviceSelectionDto
+        {
+            StoreCode = "001", Environment = "Production", TerminalId = terminalId,
+        }, "admin");
+        Assert.True(selected.Success);
+        var revision = selected.Data!.Devices.Single(device => device.DeviceCode == "POS-01").Revision;
+        // POS API 在主管结案时写入的终态：已确认、非活动，与 Linkly 终态一样不应再挡住线路（按终端、按设备两个谓词）。
+        await SeedBlockingSessionAsync(terminalId, sessionDevice, "SupervisorResolved", false);
+        await _posmDb.Ado.ExecuteCommandAsync(
+            "UPDATE POSM_LinklyCloudBackendSession SET ClientAcknowledgedAt = @Ack WHERE TerminalId = @Terminal AND DeviceCode = @Device",
+            new SugarParameter("@Ack", DateTime.UtcNow),
+            new SugarParameter("@Terminal", terminalId),
+            new SugarParameter("@Device", sessionDevice));
+
+        var result = release
+            ? await service.DeleteLinklyDeviceSelectionAsync("POS-01", new DeleteLinklyDeviceSelectionDto
+            {
+                StoreCode = "001", Environment = "Production", ExpectedRevision = revision,
+            }, "admin")
+            : await service.SetLinklyDeviceSelectionAsync("POS-01", new UpdateLinklyDeviceSelectionDto
+            {
+                StoreCode = "001", Environment = "Production", TerminalId = terminalId, ExpectedRevision = revision,
+            }, "admin");
+
+        Assert.True(result.Success, result.ErrorCode);
+    }
+
     [Fact]
     public async Task DeleteLinklyDeviceSelectionAsync_ExposesAndReleasesDisabledOrMissingDeviceSelection()
     {
