@@ -149,6 +149,8 @@ export type StartPaymentAttemptInput = Readonly<{
   actor: AuditActorSnapshot;
   /** 原支付容量的 opaque Vault 句柄；只允许 refund 使用，绝不能承载 provider reference。 */
   refundCapacityId?: string;
+  /** 仅人工确认成功后允许创建手动刷卡的耐久确认事实。 */
+  manualConfirmed?: boolean;
 }>;
 
 export type PaymentAttemptExecutionResult = Readonly<{
@@ -365,7 +367,7 @@ export class PaymentAttemptService {
     }
 
     // 已知离线时保留 action 绑定，但不创建会阻塞订单的 Created attempt。
-    await this.assertOnline();
+    if (input.provider !== "manual-card") await this.assertOnline();
     const emptyCreated = attemptFromBinding(
       binding,
       input,
@@ -578,7 +580,7 @@ export class PaymentAttemptService {
       return outcome(attempt);
     }
 
-    await this.assertOnline();
+    if (attempt.provider !== "manual-card") await this.assertOnline();
     const provider = this.providerFor(attempt.provider);
     if (attempt.state === "Created") {
       // Created → Submitted 的 CAS 成功后才能第一次越过 provider 边界。
@@ -665,6 +667,9 @@ export class PaymentAttemptService {
   private async cancelAttemptOnce(
     attempt: PaymentAttempt,
   ): Promise<PaymentAttemptExecutionResult> {
+    if (attempt.provider === "manual-card") {
+      throw new PaymentAttemptStateError("Confirmed manual card must complete its original order and cannot be cancelled.");
+    }
     if (attempt.state === "Created") {
       const cancelled = transition(
         attempt,
@@ -970,6 +975,9 @@ function protectedEvidenceForAttempt(
       "Protected sync evidence does not match the payment attempt.",
     );
   }
+  if (attempt.provider === "manual-card" && evidence.txnRef !== attempt.references.txnRef) {
+    throw new PaymentAttemptStateError("Manual confirmation reference does not match the payment attempt.");
+  }
   return evidence;
 }
 
@@ -1027,7 +1035,7 @@ function trustedRefundSeedInput(
 ): TrustedRefundReferenceSeedInput {
   if (
     attempt.operation !== "refund" ||
-    attempt.provider === "voucher"
+    (attempt.provider === "voucher" || attempt.provider === "manual-card")
   ) {
     throw new PaymentAttemptReferenceSeedError(
       "TRUSTED_REFUND_REFERENCE_SEED_INVALID",
@@ -1064,7 +1072,7 @@ function applyTrustedRefundReferenceSeed(
 ): PaymentAttempt {
   if (
     attempt.operation !== "refund" ||
-    attempt.provider === "voucher"
+    (attempt.provider === "voucher" || attempt.provider === "manual-card")
   ) {
     throw new PaymentAttemptReferenceSeedError(
       "TRUSTED_REFUND_REFERENCE_SEED_INVALID",
@@ -1170,6 +1178,9 @@ function trustedSeedText(value: unknown): string {
 }
 
 function assertStartInput(input: StartPaymentAttemptInput): void {
+  if (input.provider === "manual-card" && (input.operation !== "purchase" || input.manualConfirmed !== true)) {
+    throw new PaymentAttemptStateError("Manual card requires an explicitly confirmed purchase.");
+  }
   if (!input.actionId.trim()) throw new TypeError("actionId is required.");
   if (!input.orderGuid.trim()) throw new TypeError("orderGuid is required.");
   normalizedActor(input.actor);
@@ -1217,6 +1228,7 @@ function startSignature(input: StartPaymentAttemptInput): string {
   if (input.operation === "refund") {
     signature.push(input.refundCapacityId ?? null);
   }
+  if (input.provider === "manual-card") signature.push(String(input.manualConfirmed === true));
   return signature.join("|");
 }
 
@@ -1230,6 +1242,7 @@ function actionRequestSignature(input: StartPaymentAttemptInput): string {
   if (input.operation === "refund") {
     signature.push(input.refundCapacityId ?? null);
   }
+  if (input.provider === "manual-card") signature.push(input.manualConfirmed === true ? "confirmed" : null);
   return JSON.stringify(signature);
 }
 
@@ -1277,7 +1290,8 @@ function attemptFromBinding(
     operation: input.operation,
     amount: { ...input.amount },
     state: "Created",
-    references: emptyReferences(),
+    // 中文注释：引用由服务生成并与收银员/action一起耐久保存，页面不能伪造终端引用。
+    references: { ...emptyReferences(), txnRef: input.provider === "manual-card" ? `MANUAL:${binding.attemptId}` : null },
     createdAtIso: binding.createdAtIso,
     updatedAtIso: binding.createdAtIso,
     lastErrorCode: null,

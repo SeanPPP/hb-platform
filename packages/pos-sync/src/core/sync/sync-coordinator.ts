@@ -344,7 +344,9 @@ export class PosSyncCoordinator {
       return;
     }
     if (result.kind === "retry") {
-      await this.retry(item, `SYNC_${result.failure.toUpperCase()}`);
+      await this.retry(item, result.code === "ORDER_SYNC_QUANTITY_UNSUPPORTED"
+        ? result.code
+        : `SYNC_${result.failure.toUpperCase()}`);
       report.orderRetried += 1;
       return;
     }

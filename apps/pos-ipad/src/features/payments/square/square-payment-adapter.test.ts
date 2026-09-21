@@ -17,11 +17,26 @@ import type {
 test("人工结论后 Square 查询缺少 checkout 不创建，已有 checkout 只 GET", async () => {
   const transport = new ScriptedTransport([ok({ checkoutId: "checkout-existing", environment: "Sandbox", status: "PENDING", paymentIds: [] })]);
   const adapter = createAdapter(transport);
-  await adapter.queryExistingPayment(attempt({ state: "Unknown" }));
+  assert.equal((await adapter.queryExistingPayment(attempt({ state: "Unknown" }))).queryVerified, false);
   assert.equal(transport.calls.length, 0);
-  await adapter.queryExistingPayment(attempt({ state: "Unknown", references: references({ checkoutId: "checkout-existing" }) }));
+  assert.equal((await adapter.queryExistingPayment(attempt({ state: "Unknown", references: references({ checkoutId: "checkout-existing" }) }))).queryVerified, true);
   assert.equal(transport.calls.length, 1);
   assert.equal(transport.calls[0]?.method, "GET");
+});
+
+test("Square 只读查询失败或身份冲突不能作为人工收款的有效查询证据", async () => {
+  for (const responses of [
+    [new Error("GET timeout")],
+    [{ status: 503, data: { success: false } }],
+    [ok({ checkoutId: "other-checkout", environment: "Sandbox", status: "PENDING" })],
+    [ok({ checkoutId: "checkout-1", environment: "Sandbox", status: "COMPLETED", paymentIds: ["payment-1"] }), new Error("payment timeout")],
+  ]) {
+    const result = await createAdapter(new ScriptedTransport(responses)).queryExistingPayment(
+      attempt({ state: "Unknown", references: references({ checkoutId: "checkout-1" }) }),
+    );
+    assert.equal(result.state, "Unknown");
+    assert.equal(result.queryVerified, false);
+  }
 });
 
 test("恢复只使用 attempt 冻结的 Sandbox 环境，不随当前 Production 配置漂移", async () => {
@@ -1021,6 +1036,37 @@ test("refund 零、正数和 MIN_SAFE 金额均在 Square 请求前 fail closed"
     assert.equal(transport.calls.length, 0);
   }
 });
+
+for (const operation of ["submit", "recover"] as const) {
+  test(`${operation} 取得交易标识后 payment 查询失败仍保留标识，后续仅查询原交易`, async () => {
+    const checkout = { checkoutId: "checkout-recovered", environment: "Sandbox", status: "COMPLETED", paymentIds: ["payment-recovered"] };
+    const transport = new ScriptedTransport([
+      ok(checkout),
+      new Error("payment response timeout"),
+      ok(checkout),
+      ok({ paymentId: "payment-recovered", status: "COMPLETED", approvedMoney: { amount: 1_250, currency: "AUD" } }),
+    ]);
+    const adapter = createAdapter(transport);
+    const original = attempt({ state: "Unknown" });
+    const failed = await adapter[operation](original);
+
+    assert.equal(failed.state, "Unknown");
+    assert.equal(failed.responseCode, "SQUARE_TRANSPORT_ERROR");
+    assert.equal(failed.references.checkoutId, "checkout-recovered");
+    assert.equal(failed.references.paymentId, "payment-recovered");
+    assert.equal(original.references.checkoutId, null);
+    assert.equal(failed.protectedSyncEvidence, undefined);
+
+    const recovered = await adapter.getStatus({ ...original, references: failed.references });
+    assert.equal(recovered.state, "Approved");
+    assert.deepEqual(transport.calls.map(({ method, url }) => ({ method, url })), [
+      { method: "POST", url: "/api/v1/square/checkouts" },
+      { method: "GET", url: "/api/v1/square/payments/payment-recovered" },
+      { method: "GET", url: "/api/v1/square/checkouts/checkout-recovered" },
+      { method: "GET", url: "/api/v1/square/payments/payment-recovered" },
+    ]);
+  });
+}
 
 class ScriptedTransport implements HbposTransport {
   public readonly calls: HbposTransportRequest[] = [];

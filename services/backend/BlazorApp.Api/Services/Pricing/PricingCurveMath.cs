@@ -108,6 +108,8 @@ public static class PricingCurveMath
         // 合法节点保持原值；其它数值沿用原来的 .50/.99 分档，确保整个映射单调。
         var candidate = IsLegalTail(theoretical) ? theoretical : theoretical <= 0.5m ? 0.5m
             : fraction == 0m ? n - 0.01m : fraction <= 0.5m ? n + 0.5m : n + 0.99m;
-        return Math.Min(upper, Math.Max(lower, candidate));
+        var retail = Math.Min(upper, Math.Max(lower, candidate));
+        // 先保留原有分档和成率限幅，再将两个小额尾数归整；仅这两档允许比上限多一分钱。
+        return retail switch { 0.99m => 1m, 1.99m => 2m, _ => retail };
     }
 }

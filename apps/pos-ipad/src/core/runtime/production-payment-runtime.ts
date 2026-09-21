@@ -87,6 +87,7 @@ import {
 import type {
   VoucherApprovedPurchaseReleasePort,
 } from "@/features/payments/runtime/payment-provider-registry";
+import type { PaymentStatusQueryResult } from "@/features/payments/runtime/payment-status-query-result";
 import { DurableVoucherPreparationService } from "@/features/payments/runtime/voucher-preparation";
 import {
   PaymentPresenter,
@@ -324,9 +325,32 @@ export function createProductionPaymentRuntime(
         requireScopedCurrentCashier(input);
         let reconciliationId: string | undefined;
         if (commandSnapshot.finding === "paid") {
-          // 主管确认已扣款前先只读查询原 attempt；provider 终态会先进入账本并阻断人工 tender。
-          await queryOnlyAttempts.recoverAttempt(current.attemptId);
+          if (!input.bootstrap) throw new Error("PAYMENT_RECOVERY_PROVIDER_UNAVAILABLE");
+          const attempt = await input.repositories.payments.get(current.attemptId);
           requireScopedCurrentCashier(input);
+          if (!attempt || attempt.orderGuid !== current.orderGuid || attempt.provider !== current.provider) {
+            throw new Error("PAYMENT_RECOVERY_EXACT_ORDER_MISMATCH");
+          }
+          // Created 尚未向支付方提交，不能借只读适配器的提交异常伪造 Unknown。
+          if (!["Submitted", "Pending", "Unknown"].includes(attempt.state)) {
+            throw new Error("PAYMENT_RECOVERY_RECONCILIATION_NOT_UNRESOLVED");
+          }
+          if (attempt.operation !== "purchase" || !attempt.providerEnvironment?.trim() ||
+              !(attempt.provider === "square" ? attempt.references.checkoutId?.trim()
+                : attempt.provider === "linkly-cloud" ? attempt.references.sessionId?.trim() : false)) {
+            throw new Error("PAYMENT_RECOVERY_QUERY_ONLY_IDENTITY_REQUIRED");
+          }
+          let queryCompleted = false;
+          let queryUnresolved = false;
+          // 主管确认已扣款前先只读查询原 attempt；provider 终态会先进入账本并阻断人工 tender。
+          await createQueryOnlyAttempts((result) => {
+            queryCompleted = true;
+            queryUnresolved = result.state === "Unknown" || result.state === "Pending";
+          }).recoverAttempt(current.attemptId);
+          requireScopedCurrentCashier(input);
+          // 通用状态机可能把本地异常写为 Unknown；这不构成已查询支付方的证据。
+          if (!queryCompleted) throw new Error("PAYMENT_RECOVERY_RECONCILIATION_REQUIRED");
+          if (!queryUnresolved) throw new Error("PAYMENT_RECOVERY_RECONCILIATION_NOT_UNRESOLVED");
           reconciliationId = await recoveryCenterStore.recordProviderReconciliation({
             ...terminalScope,
             recordId: current.recordId,
@@ -423,11 +447,12 @@ export function createProductionPaymentRuntime(
       return returnRefund.trustedRefundReferenceSeed(request);
     },
   });
-  const queryOnlyAttempts = new PaymentAttemptService({
+  const recoveryProviders = input.bootstrap.providers;
+  const createQueryOnlyAttempts = (onQueryCompleted?: (result: PaymentStatusQueryResult) => void) => new PaymentAttemptService({
     ledger: input.repositories.payments,
     actionBindings: input.database.paymentActionBindings(),
     drafts,
-    providers: queryOnlyPaymentProviders(input.bootstrap.providers),
+    providers: queryOnlyPaymentProviders(recoveryProviders, onQueryCompleted),
     connectivity: input.connectivity,
     createAttemptId: input.createId,
     createIdempotencyKey: input.createId,
@@ -436,6 +461,7 @@ export function createProductionPaymentRuntime(
       throw new Error("PAYMENT_RECOVERY_QUERY_ONLY_REFUND_FORBIDDEN");
     },
   });
+  const queryOnlyAttempts = createQueryOnlyAttempts();
   const acknowledgements = linklyAcknowledger
     ? new PaymentAcknowledgementService({
         ledger: input.repositories.payments,
@@ -1091,6 +1117,7 @@ async function toCheckoutRecovery(
           provider: action.provider,
           operation: "purchase",
           amount: copyMoney(action.amount),
+          ...(action.manualConfirmed === undefined ? {} : { manualConfirmed: action.manualConfirmed }),
         }
       : null,
   };
@@ -1664,6 +1691,7 @@ function copyMoney(value: Money): Money {
 
 function queryOnlyPaymentProviders(
   providers: PaymentProviderRuntimeBootstrap["providers"],
+  onQueryCompleted?: (result: PaymentStatusQueryResult) => void,
 ): PaymentProviderRegistryPort {
   return {
     get(providerName) {
@@ -1671,25 +1699,25 @@ function queryOnlyPaymentProviders(
         queryExistingPayment?: (
           attempt: PaymentAttempt,
           control?: PaymentRecoveryControl,
-        ) => Promise<PaymentProviderResult>;
+        ) => Promise<PaymentStatusQueryResult>;
       }>;
       const query = provider.queryExistingPayment;
       const forbidden = async (): Promise<PaymentProviderResult> => {
         throw new Error("PAYMENT_RECOVERY_QUERY_ONLY_FINANCIAL_ACTION_FORBIDDEN");
+      };
+      const queryExisting = async (attempt: PaymentAttempt, control?: PaymentRecoveryControl) => {
+        if (!query) throw new Error("PAYMENT_RECOVERY_QUERY_ONLY_UNAVAILABLE");
+        const result = await query.call(provider, attempt, control);
+        if (result.queryVerified) onQueryCompleted?.(result);
+        return result;
       };
       return {
         provider: provider.provider,
         submit: forbidden,
         refund: forbidden,
         cancel: forbidden,
-        async recover(attempt) {
-          if (!query) throw new Error("PAYMENT_RECOVERY_QUERY_ONLY_UNAVAILABLE");
-          return query.call(provider, attempt);
-        },
-        async recoverWithControl(attempt: PaymentAttempt, control: PaymentRecoveryControl) {
-          if (!query) throw new Error("PAYMENT_RECOVERY_QUERY_ONLY_UNAVAILABLE");
-          return query.call(provider, attempt, control);
-        },
+        recover: queryExisting,
+        recoverWithControl: queryExisting,
       };
     },
   };

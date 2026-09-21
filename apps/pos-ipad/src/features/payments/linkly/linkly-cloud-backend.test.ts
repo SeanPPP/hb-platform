@@ -54,7 +54,7 @@ test("人工结论后只 GET 原 Linkly 状态，恢复提示也不触发 POST",
   const provider = new LinklyCloudBackendProvider(new LinklyCloudBackendApi(transport), providerOptions());
   const source = attempt({ state: "Unknown", references: { ...attempt().references, sessionId: "session-1", txnRef: "TXN-1" } });
   transport.responses.push(ok(session({ status: "Unknown", recoveryAction: "Recover" })));
-  await provider.queryExistingPayment(source);
+  assert.equal((await provider.queryExistingPayment(source)).queryVerified, true);
   assert.equal(transport.requests.length, 1);
   assert.equal(transport.requests[0]?.method, "GET");
   assert.equal(transport.requests[0]?.url, "/api/v1/linkly/cloud-backend/transactions/session-1/status");
@@ -66,6 +66,19 @@ test("人工结论后只 GET 原 Linkly 状态，恢复提示也不触发 POST",
   await provider.queryExistingPayment(attempt());
   await provider.queryExistingPayment(attempt({ state: "Unknown" }));
   assert.equal(transport.requests.length, before);
+});
+
+test("Linkly 只读查询找不到交易或身份不匹配不能生成有效对账证据", async () => {
+  const source = attempt({ state: "Unknown", references: { ...attempt().references, sessionId: "session-1", txnRef: "TXN-1" } });
+  for (const response of [none(), ok(session({ sessionId: "other-session", status: "Unknown" }))]) {
+    const transport = new FakeTransport();
+    transport.responses.push(response);
+    const provider = new LinklyCloudBackendProvider(new LinklyCloudBackendApi(transport), providerOptions());
+    const result = await provider.queryExistingPayment(source);
+    assert.equal(result.state, "Unknown");
+    assert.equal(result.queryVerified, false);
+    assert.equal(transport.requests.length, 1);
+  }
 });
 
 const terminalSelection = (

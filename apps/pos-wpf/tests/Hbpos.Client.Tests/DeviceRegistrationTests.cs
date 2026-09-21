@@ -387,7 +387,7 @@ public sealed class DeviceRegistrationTests
 
         await viewModel.InitializeAsync(cached);
         viewModel.SelectedStore = viewModel.Stores.Single(store => store.StoreCode == "1003");
-        await pollingDelayCancelled.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await pollingDelayCancelled.Task.WaitAsync(TestWaitTimeouts.Default);
         await viewModel.RegisterCommand.ExecuteAsync(null);
 
         Assert.Equal(0, workflow.VerifyCallCount);
@@ -441,7 +441,7 @@ public sealed class DeviceRegistrationTests
         {
             apiServerSettings.ServerAddressText = "https://new.example.com";
             await apiServerSettings.SaveCommand.ExecuteAsync(null);
-            await originalPollingTask!.WaitAsync(TimeSpan.FromSeconds(3));
+            await originalPollingTask!.WaitAsync(TestWaitTimeouts.Default);
 
             viewModel.SelectedStore = viewModel.Stores.Single(store => store.StoreCode == "1003");
             viewModel.SelectedStore = viewModel.Stores.Single(store => store.StoreCode == "1002");
@@ -514,11 +514,11 @@ public sealed class DeviceRegistrationTests
         {
             apiServerSettings.ServerAddressText = "https://new.example.com";
             await apiServerSettings.SaveCommand.ExecuteAsync(null);
-            await originalPollingTask!.WaitAsync(TimeSpan.FromSeconds(3));
+            await originalPollingTask!.WaitAsync(TestWaitTimeouts.Default);
 
             apiServerSettings.ServerAddressText = "https://current.example.com/";
             await apiServerSettings.SaveCommand.ExecuteAsync(null);
-            await workflow.WaitForVerifyStartedAsync().WaitAsync(TimeSpan.FromSeconds(3));
+            await workflow.WaitForVerifyStartedAsync().WaitAsync(TestWaitTimeouts.Default);
 
             Assert.False(apiServerSettings.RestartRequired);
             Assert.NotSame(originalPollingTask, viewModel.ApprovalPollingTask);
@@ -597,7 +597,7 @@ public sealed class DeviceRegistrationTests
                 return Task.CompletedTask;
             }
         });
-        await oldPollingTask.WaitAsync(TimeSpan.FromSeconds(3));
+        await oldPollingTask.WaitAsync(TestWaitTimeouts.Default);
 
         Assert.Null(activated);
         Assert.False(oldResultPersistenceStarted.Task.IsCompleted);

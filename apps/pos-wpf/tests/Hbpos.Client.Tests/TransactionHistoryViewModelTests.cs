@@ -105,7 +105,7 @@ public sealed class TransactionHistoryViewModelTests
         viewModel.SearchText = "FIRST-001";
 
         var loadTask = viewModel.LoadAsync();
-        await queryStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await queryStarted.Task.WaitAsync(TestWaitTimeouts.Default);
 
         var secondScanConsumed = viewModel.ProcessScannerBarcode("SECOND-002", "scanner-device", "raw");
         queryGate.SetResult([]);
@@ -546,7 +546,7 @@ public sealed class TransactionHistoryViewModelTests
         }
 
         var initialLoad = viewModel.LoadAsync();
-        await firstRequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await firstRequestStarted.Task.WaitAsync(TestWaitTimeouts.Default);
 
         var secondRow = Assert.Single(viewModel.Orders, order => order.OrderGuid == secondOrderGuid);
         viewModel.SelectedOrder = secondRow;
@@ -1489,7 +1489,7 @@ public sealed class TransactionHistoryViewModelTests
         Assert.True(viewModel.ReprintCommand.CanExecute(null));
 
         viewModel.IsOnlineSourceSelected = true;
-        await queryStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await queryStarted.Task.WaitAsync(TestWaitTimeouts.Default);
 
         Assert.Equal(orderGuid, viewModel.SelectedOrder?.OrderGuid);
         Assert.Equal(orderGuid, viewModel.SelectedReceipt?.OrderGuid);
@@ -1584,7 +1584,7 @@ public sealed class TransactionHistoryViewModelTests
 
         viewModel.IsOnlineSourceSelected = true;
         var initialLoad = viewModel.LoadAsync();
-        await firstRequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await firstRequestStarted.Task.WaitAsync(TestWaitTimeouts.Default);
 
         viewModel.SelectedOrder = Assert.Single(
             viewModel.Orders,
@@ -1688,11 +1688,11 @@ public sealed class TransactionHistoryViewModelTests
             CreateSession());
 
         viewModel.SelectedOrder = firstOrder;
-        await firstRequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await firstRequestStarted.Task.WaitAsync(TestWaitTimeouts.Default);
         viewModel.SelectedOrder = secondOrder;
-        await secondRequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await secondRequestStarted.Task.WaitAsync(TestWaitTimeouts.Default);
         viewModel.SelectedOrder = firstOrder;
-        await currentRequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await currentRequestStarted.Task.WaitAsync(TestWaitTimeouts.Default);
 
         firstRequestGate.SetResult(staleFirstReceipt);
         await Task.Delay(100);
@@ -1749,7 +1749,7 @@ public sealed class TransactionHistoryViewModelTests
 
         viewModel.IsOnlineSourceSelected = true;
         var loadTask = viewModel.LoadAsync();
-        await detailsStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await detailsStarted.Task.WaitAsync(TestWaitTimeouts.Default);
 
         try
         {
@@ -2343,7 +2343,7 @@ public sealed class TransactionHistoryViewModelTests
 
         viewModel.IsInstallmentSourceSelected = true;
         var loadTask = viewModel.LoadAsync();
-        await detailsStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await detailsStarted.Task.WaitAsync(TestWaitTimeouts.Default);
 
         try
         {
