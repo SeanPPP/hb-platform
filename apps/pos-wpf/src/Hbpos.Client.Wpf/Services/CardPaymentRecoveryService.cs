@@ -2516,7 +2516,8 @@ public sealed class CardPaymentRecoveryService(
 
         try
         {
-            await backendTerminalClient.AcknowledgeSessionAsync(settings, normalizedSessionId, cancellationToken);
+            // 人工核实后手动清除同样是主管决定，服务端据此把仍非终态的会话记为已结案。
+            await backendTerminalClient.AcknowledgeSupervisorResolvedSessionAsync(settings, normalizedSessionId, cancellationToken);
             return new CardPaymentRecoveryResult(
                 CardPaymentRecoveryOutcome.ActiveSessionManuallyCleared,
                 T("cardRecovery.linkly.activeSessionManuallyCleared", "The previous Linkly session was manually checked and cleared. Continue the current order."),
@@ -4204,7 +4205,7 @@ public sealed class CardPaymentRecoveryService(
     {
         try
         {
-            await backendTerminalClient.AcknowledgeSessionAsync(settings, sessionId, cancellationToken);
+            await AcknowledgeBackendSessionAsync(settings, attempt, sessionId, cancellationToken);
             return await TryPersistAcknowledgedMarkerAsync(attempt.AttemptGuid, cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException and not OutOfMemoryException and not StackOverflowException)
@@ -4215,6 +4216,18 @@ public sealed class CardPaymentRecoveryService(
                 $"recover acknowledge failed attemptGuid={attempt.AttemptGuid} sessionId={LogValue(sessionId)} txnRef={LogValue(txnRef)} error={ex.GetType().Name}");
             return false;
         }
+    }
+
+    private Task AcknowledgeBackendSessionAsync(
+        CardTerminalSettings settings,
+        LocalCardPaymentAttempt attempt,
+        string sessionId,
+        CancellationToken cancellationToken)
+    {
+        // 主管结案码已随 attempt 落库，重启续跑或补发 ack 时同样能识别；自动恢复确认的终态走普通 ack。
+        return IsSupervisorResolvedPayment(attempt)
+            ? backendTerminalClient.AcknowledgeSupervisorResolvedSessionAsync(settings, sessionId, cancellationToken)
+            : backendTerminalClient.AcknowledgeSessionAsync(settings, sessionId, cancellationToken);
     }
 
     private async Task<bool> TryAcknowledgeActiveSessionAsync(
@@ -4336,8 +4349,9 @@ public sealed class CardPaymentRecoveryService(
         {
             try
             {
-                await backendTerminalClient.AcknowledgeSessionAsync(
+                await AcknowledgeBackendSessionAsync(
                     settings,
+                    attempt,
                     sessionId,
                     cancellationToken);
                 return true;

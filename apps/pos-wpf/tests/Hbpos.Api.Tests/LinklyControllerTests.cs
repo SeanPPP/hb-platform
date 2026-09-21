@@ -836,7 +836,31 @@ public sealed class LinklyControllerTests
         Assert.Equal("POS-01", backendService.LastAcknowledgeDeviceCode);
         Assert.Equal("session-ack", backendService.LastAcknowledgeSessionId);
         Assert.Equal("Sandbox", backendService.LastAcknowledgeEnvironment);
+        Assert.False(backendService.LastAcknowledgeSupervisorResolved);
         Assert.NotNull(apiResult.Data?.ClientAcknowledgedAt);
+    }
+
+    [Theory]
+    [InlineData("{ \"environment\": \"Sandbox\", \"supervisorResolved\": true }", true)]
+    [InlineData("{ \"environment\": \"Sandbox\", \"supervisorResolved\": false }", false)]
+    [InlineData("{ \"environment\": \"Sandbox\" }", false)]
+    [InlineData(null, false)]
+    public async Task AcknowledgeCloudBackendTransaction_PassesSupervisorResolutionFlagFromBody(
+        string? body,
+        bool expected)
+    {
+        var backendService = new CapturingLinklyCloudBackendAsyncService();
+        await using var factory = new LinklyApiFactory(linklyCloudBackendAsyncService: backendService);
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
+
+        using var response = await client.PostAsync(
+            "/api/v1/linkly/cloud-backend/transactions/session-ack/acknowledge?environment=Sandbox",
+            body is null ? null : new StringContent(body, System.Text.Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        // 旧客户端不带标记或空请求体时必须保持普通 ack，不能被当成主管结案。
+        Assert.Equal(expected, backendService.LastAcknowledgeSupervisorResolved);
     }
 
     [Fact]
@@ -1253,6 +1277,8 @@ public sealed class LinklyControllerTests
 
         public string? LastAcknowledgeSessionId { get; private set; }
 
+        public bool? LastAcknowledgeSupervisorResolved { get; private set; }
+
         public Task<LinklyCloudBackendSessionResponse> StartTransactionAsync(
             string storeCode,
             string deviceCode,
@@ -1445,6 +1471,7 @@ public sealed class LinklyControllerTests
             string deviceCode,
             string environment,
             string sessionId,
+            bool supervisorResolved,
             CancellationToken cancellationToken)
         {
             if (acknowledgeException is not null)
@@ -1456,6 +1483,7 @@ public sealed class LinklyControllerTests
             LastAcknowledgeDeviceCode = deviceCode;
             LastAcknowledgeEnvironment = environment;
             LastAcknowledgeSessionId = sessionId;
+            LastAcknowledgeSupervisorResolved = supervisorResolved;
             return Task.FromResult(acknowledgeResponse ?? CreateBackendResponse(sessionId, "Completed"));
         }
 

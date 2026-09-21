@@ -132,8 +132,13 @@ public sealed record LinklyCloudBackendSendKeyRequest(
 public sealed record LinklyCloudBackendMarkReceiptPrintedRequest(
     string Environment);
 
+/// <param name="SupervisorResolved">
+/// 主管已在 POS 上对该会话作出结案决定。服务端仅在会话仍非终态时据此写入 SupervisorResolved，
+/// 使终端管理闸门可以放行；普通 ack 不带此标记，非终态会话仍按未知处理。
+/// </param>
 public sealed record LinklyCloudBackendAcknowledgeRequest(
-    string? Environment);
+    string? Environment,
+    bool SupervisorResolved = false);
 
 public sealed record LinklyCloudBackendTerminalCredentialUpsertRequest(
     string Environment,

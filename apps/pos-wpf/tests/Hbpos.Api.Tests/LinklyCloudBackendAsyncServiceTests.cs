@@ -517,7 +517,7 @@ namespace Hbpos.Api.Tests;
                 failCredentialMaterialization: true));
 
         var response = await service.AcknowledgeSessionAsync(
-            "S01", "POS-01", "Sandbox", "completed-terminal-session", CancellationToken.None);
+            "S01", "POS-01", "Sandbox", "completed-terminal-session", supervisorResolved: false, CancellationToken.None);
         var persisted = await repository.GetSessionAsync(
             "Sandbox", "S01", "POS-01", "completed-terminal-session", CancellationToken.None);
 
@@ -2132,6 +2132,7 @@ namespace Hbpos.Api.Tests;
             "POS-01",
             "Sandbox",
             "completed-session",
+            supervisorResolved: false,
             CancellationToken.None);
 
         Assert.NotNull(acknowledged.ClientAcknowledgedAt);
@@ -2160,6 +2161,7 @@ namespace Hbpos.Api.Tests;
             "POS-01",
             "Sandbox",
             "pending-session",
+            supervisorResolved: false,
             CancellationToken.None);
 
         var persisted = await service.Repository.GetSessionAsync(
@@ -2172,8 +2174,88 @@ namespace Hbpos.Api.Tests;
         Assert.NotNull(acknowledged.ClientAcknowledgedAt);
         Assert.NotNull(persisted);
         Assert.False(persisted.IsActive);
+        // 普通 ack 不能把结果未知的会话说成已结束，终端管理闸门继续按未知处理。
+        Assert.Equal("Pending", persisted.Status);
         Assert.Null(await service.GetActiveSessionAsync("S01", "POS-01", "Sandbox", CancellationToken.None));
         Assert.Null(await service.GetResumableSessionAsync("S01", "POS-01", "Sandbox", CancellationToken.None));
+    }
+
+    [Theory]
+    [InlineData("Pending", true, "SupervisorResolved")]
+    [InlineData("TokenRefreshRequired", true, "SupervisorResolved")]
+    [InlineData("Completed", false, "Completed")]
+    [InlineData("Cancelled", false, "Cancelled")]
+    [InlineData("Failed", false, "Failed")]
+    [InlineData("NotSubmitted", false, "NotSubmitted")]
+    public async Task AcknowledgeSessionAsync_supervisor_resolution_only_replaces_non_final_status(
+        string status,
+        bool isActive,
+        string expectedStatus)
+    {
+        var service = CreateService(new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted));
+        await service.Repository.UpsertSessionAsync(new LinklyCloudBackendSessionRecord
+        {
+            Environment = "Sandbox",
+            StoreCode = "S01",
+            DeviceCode = "POS-01",
+            SessionId = "supervisor-session",
+            Status = status,
+            TxnRef = "TXN-SUPERVISOR",
+            IsActive = isActive,
+            UpdatedAt = DateTimeOffset.UtcNow
+        }, CancellationToken.None);
+
+        var acknowledged = await service.AcknowledgeSessionAsync(
+            "S01",
+            "POS-01",
+            "Sandbox",
+            "supervisor-session",
+            supervisorResolved: true,
+            CancellationToken.None);
+        var persisted = await service.Repository.GetSessionAsync(
+            "Sandbox", "S01", "POS-01", "supervisor-session", CancellationToken.None);
+
+        Assert.Equal(expectedStatus, acknowledged.Status);
+        Assert.NotNull(persisted);
+        Assert.Equal(expectedStatus, persisted.Status);
+        Assert.False(persisted.IsActive);
+        Assert.NotNull(persisted.ClientAcknowledgedAt);
+    }
+
+    [Fact]
+    public async Task Late_linkly_final_result_replaces_supervisor_resolved_marker_and_stays_final()
+    {
+        var service = CreateService(new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted));
+        await service.Repository.UpsertSessionAsync(new LinklyCloudBackendSessionRecord
+        {
+            Environment = "Sandbox",
+            StoreCode = "S01",
+            DeviceCode = "POS-01",
+            SessionId = "late-final-session",
+            Status = "Pending",
+            TxnRef = "TXN-LATE",
+            IsActive = true,
+            UpdatedAt = DateTimeOffset.UtcNow
+        }, CancellationToken.None);
+        await service.AcknowledgeSessionAsync(
+            "S01", "POS-01", "Sandbox", "late-final-session", supervisorResolved: true, CancellationToken.None);
+
+        await service.ReceiveNotificationAsync(
+            "Sandbox",
+            "late-final-session",
+            "transaction",
+            "Bearer sandbox-notify",
+            JsonDocument.Parse("""{ "Response": { "Success": false, "ResponseCode": "05", "ResponseText": "DECLINED", "TxnRef": "TXN-LATE" } }""").RootElement,
+            CancellationToken.None);
+        var persisted = await service.Repository.GetSessionAsync(
+            "Sandbox", "S01", "POS-01", "late-final-session", CancellationToken.None);
+
+        // Linkly 的真实终态优先于主管结案标记；两者都是终态，不会重新挡住付款或终端管理。
+        Assert.NotNull(persisted);
+        Assert.Equal("Completed", persisted.Status);
+        Assert.Equal("05", persisted.ResponseCode);
+        Assert.False(persisted.IsActive);
+        Assert.NotNull(persisted.ClientAcknowledgedAt);
     }
 
     [Fact]
@@ -2225,7 +2307,7 @@ namespace Hbpos.Api.Tests;
             "recover-session",
             new LinklyCloudBackendRecoverRequest("Sandbox"),
             CancellationToken.None);
-        await service.AcknowledgeSessionAsync("S01", "POS-01", "Sandbox", "recover-session", CancellationToken.None);
+        await service.AcknowledgeSessionAsync("S01", "POS-01", "Sandbox", "recover-session", supervisorResolved: false, CancellationToken.None);
         await service.MarkReceiptPrintedAsync(
             "S01",
             "POS-01",
@@ -2271,6 +2353,7 @@ namespace Hbpos.Api.Tests;
                 "POS-01",
                 "Sandbox",
                 "missing-session",
+                supervisorResolved: false,
                 CancellationToken.None));
     }
 
@@ -4319,9 +4402,10 @@ namespace Hbpos.Api.Tests;
             string deviceCode,
             string sessionId,
             DateTimeOffset acknowledgedAt,
+            bool supervisorResolved,
             CancellationToken cancellationToken)
         {
-            return _inner.AcknowledgeSessionAsync(environment, storeCode, deviceCode, sessionId, acknowledgedAt, cancellationToken);
+            return _inner.AcknowledgeSessionAsync(environment, storeCode, deviceCode, sessionId, acknowledgedAt, supervisorResolved, cancellationToken);
         }
 
         public Task AddNotificationAsync(
@@ -4601,9 +4685,10 @@ namespace Hbpos.Api.Tests;
             string deviceCode,
             string sessionId,
             DateTimeOffset acknowledgedAt,
+            bool supervisorResolved,
             CancellationToken cancellationToken) =>
             _inner.AcknowledgeSessionAsync(
-                environment, storeCode, deviceCode, sessionId, acknowledgedAt, cancellationToken);
+                environment, storeCode, deviceCode, sessionId, acknowledgedAt, supervisorResolved, cancellationToken);
 
         public Task AddNotificationAsync(
             LinklyCloudBackendNotificationRecord notification,
@@ -4977,9 +5062,10 @@ namespace Hbpos.Api.Tests;
             string deviceCode,
             string sessionId,
             DateTimeOffset acknowledgedAt,
+            bool supervisorResolved,
             CancellationToken cancellationToken) =>
             _inner.AcknowledgeSessionAsync(
-                environment, storeCode, deviceCode, sessionId, acknowledgedAt, cancellationToken);
+                environment, storeCode, deviceCode, sessionId, acknowledgedAt, supervisorResolved, cancellationToken);
 
         public Task AddNotificationAsync(
             LinklyCloudBackendNotificationRecord notification,
