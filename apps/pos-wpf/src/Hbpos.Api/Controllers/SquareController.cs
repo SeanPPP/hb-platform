@@ -442,6 +442,19 @@ public sealed class SquareController(
             return validation.Result;
         }
 
+        // 关键逻辑：Square access token 按环境全局共享、不分门店，退款金额与 PaymentId 又完全由请求方指定。
+        // 不校验归属就等于任一门店的终端都能对别店的付款打出真实退款，因此必须与同文件其余
+        // checkout 端点一样按 PaymentId 反查会话来源并比对当前设备。
+        var scopeResult = await ValidateCheckoutDeviceScopeAsync<SquareRefundResponse>(
+            validation.Environment!,
+            checkoutId: null,
+            request.PaymentId,
+            cancellationToken);
+        if (scopeResult is not null)
+        {
+            return scopeResult;
+        }
+
         return await ExecuteBackendAsync(
             "refund",
             backendService => backendService.CreateRefundAsync(request with { Environment = validation.Environment! }, cancellationToken));

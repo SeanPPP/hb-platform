@@ -1193,7 +1193,7 @@ public sealed class MainViewModelScannerTests
         history.IsOnlineSourceSelected = true;
 
         var navigationTask = viewModel.ShowHistoryCommand.ExecuteAsync(null);
-        await remoteHistory.DetailsStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await remoteHistory.DetailsStarted.Task.WaitAsync(TestWaitTimeouts.Default);
 
         try
         {
@@ -2246,7 +2246,7 @@ public sealed class MainViewModelScannerTests
         try
         {
             selectCardTask = payment.SelectCardCommand.ExecuteAsync(null);
-            await syncQueue.OverviewReadStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            await syncQueue.OverviewReadStarted.Task.WaitAsync(TestWaitTimeouts.Default);
             await WaitUntilAsync(() => completedOrder is not null);
 
             Assert.Same(viewModel.PaymentSuccess, viewModel.CurrentScreen);

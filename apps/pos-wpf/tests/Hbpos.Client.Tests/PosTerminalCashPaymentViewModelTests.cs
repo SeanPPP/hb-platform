@@ -2535,12 +2535,12 @@ public sealed class PosTerminalCashPaymentViewModelTests
             });
 
         var execution = viewModel.SyncCommand.ExecuteAsync(null);
-        await downloadStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await downloadStarted.Task.WaitAsync(TestWaitTimeouts.Default);
 
         viewModel.SyncCommand.Cancel();
         var wasCancellationRequested = receivedToken.IsCancellationRequested;
         releaseDownload.TrySetResult();
-        await execution.WaitAsync(TimeSpan.FromSeconds(5));
+        await execution.WaitAsync(TestWaitTimeouts.Default);
 
         Assert.True(receivedToken.CanBeCanceled);
         Assert.True(wasCancellationRequested);
@@ -2576,12 +2576,12 @@ public sealed class PosTerminalCashPaymentViewModelTests
             });
 
         var execution = viewModel.SyncCommand.ExecuteAsync(null);
-        await refreshStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await refreshStarted.Task.WaitAsync(TestWaitTimeouts.Default);
 
         viewModel.SyncCommand.Cancel();
         var wasCancellationRequested = receivedToken.IsCancellationRequested;
         releaseRefresh.TrySetResult();
-        await execution.WaitAsync(TimeSpan.FromSeconds(5));
+        await execution.WaitAsync(TestWaitTimeouts.Default);
 
         Assert.True(receivedToken.CanBeCanceled);
         Assert.True(wasCancellationRequested);
@@ -5990,7 +5990,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
 
         qualification.TrySetResult(candidate);
         handoff.TrySetResult(true);
-        await opening.WaitAsync(TimeSpan.FromSeconds(5));
+        await opening.WaitAsync(TestWaitTimeouts.Default);
 
         Assert.Equal(2, prepareCalls);
         Assert.Equal(1, handoffCalls);

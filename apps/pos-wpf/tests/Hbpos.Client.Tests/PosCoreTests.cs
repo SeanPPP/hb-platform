@@ -84,24 +84,24 @@ public sealed class PosCoreTests
         });
         try
         {
-            await gateHeld.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await gateHeld.Task.WaitAsync(TestWaitTimeouts.Default);
 
             var workerBlocked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             index.ExactLookupGateWaitForTests = () => workerBlocked.TrySetResult();
             using var cancellationSource = new CancellationTokenSource();
             var lookupTask = index.FindExactMatchesAsync("S001", "690001", cancellationSource.Token);
-            await workerBlocked.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await workerBlocked.Task.WaitAsync(TestWaitTimeouts.Default);
 
             cancellationSource.Cancel();
 
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-                lookupTask.WaitAsync(TimeSpan.FromSeconds(5)));
+                lookupTask.WaitAsync(TestWaitTimeouts.Default));
         }
         finally
         {
             index.ExactLookupGateWaitForTests = null;
             releaseGate.Set();
-            await holder.WaitAsync(TimeSpan.FromSeconds(5));
+            await holder.WaitAsync(TestWaitTimeouts.Default);
         }
 
         Assert.Single(index.FindExactMatches("S001", "690001"));
@@ -1022,7 +1022,7 @@ public sealed class PosCoreTests
                 var dispatcherThreadId = Environment.CurrentManagedThreadId;
 
                 var broadSearch = index.SearchAsync("S001", "catalog", CancellationToken.None, take: 20);
-                await searchStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                await searchStarted.Task.WaitAsync(TestWaitTimeouts.Default);
 
                 var inputQueuedAt = Stopwatch.GetTimestamp();
                 var inputThreadId = 0;
@@ -1098,7 +1098,7 @@ public sealed class PosCoreTests
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
 
-        var dispatcher = await dispatcherReady.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var dispatcher = await dispatcherReady.Task.WaitAsync(TestWaitTimeouts.Default);
         try
         {
             var operation = dispatcher.InvokeAsync(() => action(dispatcher), DispatcherPriority.Normal);
@@ -1111,7 +1111,7 @@ public sealed class PosCoreTests
                 dispatcher.BeginInvokeShutdown(DispatcherPriority.Send);
             }
 
-            Assert.True(thread.Join(TimeSpan.FromSeconds(5)), "WPF Dispatcher thread did not shut down.");
+            Assert.True(thread.Join(TestWaitTimeouts.Default), "WPF Dispatcher thread did not shut down.");
         }
     }
 
