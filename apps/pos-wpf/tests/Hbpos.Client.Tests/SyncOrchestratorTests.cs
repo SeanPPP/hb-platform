@@ -7,6 +7,37 @@ namespace Hbpos.Client.Tests;
 
 public sealed class SyncOrchestratorTests
 {
+    [Theory]
+    [InlineData(2, 0, 0)]
+    [InlineData(2, 0, 2)]
+    [InlineData(3, 1, 0)]
+    public async Task Retry_reports_endpoint_switch_interruption_with_all_unfinished_uploads(
+        int attempted,
+        int uploaded,
+        int failed)
+    {
+        var pending = CreateItem("Pending");
+        var executor = new CapturingOrderExecutor(
+            new OrderUploadExecutionResult(attempted, uploaded, failed, WasInterrupted: true));
+        var status = string.Empty;
+        var orchestrator = new SyncOrchestrator(
+            new StaticSyncCenterService(new ShellSyncCenterSnapshot(
+                new SyncQueueOverview(1, 0, 0, null),
+                [pending])),
+            executor,
+            new LocalizationService(),
+            setStatusMessage: value => status = value);
+        await orchestrator.RefreshPendingSyncAsync();
+
+        orchestrator.SelectAllSyncOrdersCommand.Execute(null);
+        await orchestrator.RetrySelectedSyncOrdersCommand.ExecuteAsync(null);
+
+        // 端点切换中断时，批量上传可能没把未尝试的订单计入失败；提示要说明是切换暂停，未完成数按"尝试减成功"算。
+        Assert.Equal(
+            $"Upload paused while the server address was switching: {uploaded} succeeded, {attempted - uploaded} not completed. The rest will continue after the switch.",
+            status);
+    }
+
     [Fact]
     public async Task Select_all_orders_selects_only_retryable_items_and_selected_retry_keeps_partial_failure_summary()
     {
