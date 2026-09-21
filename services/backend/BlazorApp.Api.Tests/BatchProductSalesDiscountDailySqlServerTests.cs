@@ -6,6 +6,7 @@ using BlazorApp.Api.Services.Background;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HBweb;
+using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -44,6 +45,49 @@ public sealed partial class BatchProductSalesAnalysisSqlServerIntegrationTests
         Assert.Equal(3m, both.Rows.Sum(x => x.DiscountQuantity));
         Assert.Equal(1, await _catalog.Queryable<BatchProductSalesDiscountSnapshot>().CountAsync());
         Assert.Equal(0, (await store.GetAsync(day))!.Attempts);
+    }
+
+    [BatchSalesSqlServerFact]
+    public async Task DailyStatistics_SQLServer重算持有整表写锁时仍按快照读取已提交版本()
+    {
+        _catalog!.CodeFirst.InitTables<ProductStoreDailySalesStatistic>();
+        var day = new DateTime(2025, 11, 26);
+        await _catalog.Insertable(new List<ProductStoreDailySalesStatistic>
+        {
+            new() { Date = day, ProductCode = "P1", BranchCode = "S1", SupplierCode = "A", TotalQuantity = 2, TotalAmount = 20m },
+            new() { Date = day, ProductCode = "P1", BranchCode = "S2", SupplierCode = "A", TotalQuantity = 3, TotalAmount = 30m },
+        }).ExecuteCommandAsync();
+        var store = new BatchProductSalesDiscountDailyStore(_catalog);
+        var committedVersion = await store.ReadStatisticsVersionAsync(day, default);
+
+        // 模拟日统计重算：另一个连接改写当天并持有整表 X 锁、尚未提交（生产上由锁升级产生）。
+        await using var writer = new SqlConnection(WithDatabase(_master!, CatalogName));
+        await writer.OpenAsync();
+        await using var transaction = (SqlTransaction)await writer.BeginTransactionAsync();
+        await using (var command = new SqlCommand(
+            "UPDATE dbo.ProductStoreDailySalesStatistic WITH (TABLOCKX) SET TotalQuantity = TotalQuantity + 100",
+            writer, transaction))
+        {
+            await command.ExecuteNonQueryAsync();
+        }
+
+        // 已提交读会一直等写锁；5 秒命令超时足以区分「快照读取立即返回」与「被挡到超时」。
+        var originalTimeout = _catalog.Ado.CommandTimeOut;
+        _catalog.Ado.CommandTimeOut = 5;
+        try
+        {
+            var rows = await store.ReadDailyStatisticsAsync(day, default);
+            Assert.Equal(5m, rows.Sum(row => row.Quantity));
+            Assert.Equal(50m, rows.Sum(row => row.SalesAmount));
+            Assert.Equal(committedVersion, await store.ReadStatisticsVersionAsync(day, default));
+            // 快照事务必须已结束，不能残留在共享的 SqlSugar 连接上影响后续写入。
+            Assert.Null(_catalog.Ado.Transaction);
+        }
+        finally
+        {
+            _catalog.Ado.CommandTimeOut = originalTimeout;
+            await transaction.RollbackAsync();
+        }
     }
 
     [BatchSalesSqlServerFact]
