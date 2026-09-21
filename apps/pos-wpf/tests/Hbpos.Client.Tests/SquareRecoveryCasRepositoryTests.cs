@@ -204,9 +204,13 @@ public sealed class SquareRecoveryCasRepositoryTests
                 AttemptGuid = Guid.Parse("a1000000-0000-0000-0000-000000000002"),
                 Status = LocalSquarePaymentAttemptStatus.Canceled
             };
+            const string lateBindToken = "late-bind-token";
             var finalizePending = CreateSaleAttempt() with
             {
-                AttemptGuid = Guid.Parse("a1000000-0000-0000-0000-000000000003")
+                AttemptGuid = Guid.Parse("a1000000-0000-0000-0000-000000000003"),
+                // 带上提交令牌：让 SubmissionToken 栅栏本身可通过，
+                // 这样下面的断言考察的就是新增的 FinalizePending 护栏本身。
+                SubmissionToken = lateBindToken
             };
             await repository.CreateAsync(terminal);
             await repository.CreateAsync(finalizePending);
@@ -244,13 +248,23 @@ public sealed class SquareRecoveryCasRepositoryTests
                 finalizePending.Status,
                 finalizePending.UpdatedAt,
                 finalizePending.UpdatedAt.AddMinutes(1)));
+            // 带 token 的 checkout 绑定此前缺 FinalizePending 与主管结案码护栏：
+            // Recovering 命中它的状态 IN 列表，于是迟到的回调会把该行改回
+            // CheckoutCreated 并顶掉 UpdatedAt，让后续终结 CAS 失效。
+            Assert.False(await repository.TryMarkCheckoutCreatedAsync(
+                finalizePending.AttemptGuid,
+                lateBindToken,
+                "checkout-late-bind",
+                "PENDING",
+                finalizePending.UpdatedAt.AddMinutes(1)));
 
             Assert.Equal(
                 LocalSquarePaymentAttemptStatus.Canceled,
                 (await repository.GetAttemptAsync(terminal.AttemptGuid))?.Status);
-            Assert.Equal(
-                LocalSquarePaymentAttemptStatus.Recovering,
-                (await repository.GetAttemptAsync(finalizePending.AttemptGuid))?.Status);
+            var storedFinalizePending = await repository.GetAttemptAsync(finalizePending.AttemptGuid);
+            Assert.Equal(LocalSquarePaymentAttemptStatus.Recovering, storedFinalizePending?.Status);
+            // 迟到的 checkoutId 不得落库，否则等于复活被主管判定“未发生”的支付证据。
+            Assert.NotEqual("checkout-late-bind", storedFinalizePending?.CheckoutId);
         }
         finally
         {

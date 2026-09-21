@@ -1166,7 +1166,20 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                 UpdatedAt = $UpdatedAt
             WHERE AttemptGuid = $AttemptGuid
               AND SubmissionToken = $SubmissionToken
-              AND Status IN ($PendingStatus, $RecoveringStatus, $CheckoutCreatedStatus);
+              AND Status IN ($PendingStatus, $RecoveringStatus, $CheckoutCreatedStatus)
+              -- 关键逻辑：迟到的 checkout 回调不得改写已被恢复服务或主管接管的行。
+              -- 缺这两道护栏时 Status=Recovering 会命中上面的 IN 列表，于是把
+              -- Status 改回 CheckoutCreated 并顶掉 UpdatedAt：对“确认已付款”会让
+              -- 后续终结 CAS 失效，主管确认的收款推不到 OrderCompleted；
+              -- 对“确认未付款”更糟——刚被清空的 CheckoutId 被重新写回，
+              -- 等于复活了主管判定“未发生”的支付证据。
+              AND COALESCE(RecoveryPhase, $NoRecoveryPhase) <> $FinalizePending
+              AND COALESCE(ResponseCode, '') NOT IN (
+                    $SupervisorPaid,
+                    $SupervisorNotPaid,
+                    $SupervisorRefunded,
+                    $SupervisorNotRefunded
+                  );
             """,
             command =>
             {
@@ -1179,6 +1192,7 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                 command.Parameters.AddWithValue("$RecoveringStatus", LocalSquarePaymentAttemptStatus.Recovering.ToString());
                 command.Parameters.AddWithValue("$CheckoutCreatedStatus", LocalSquarePaymentAttemptStatus.CheckoutCreated.ToString());
                 command.Parameters.AddWithValue("$UpdatedAt", updatedAt.ToString("O"));
+                AddAutomaticWriteGuardParameters(command);
             },
             cancellationToken) == 1;
     }
@@ -1269,6 +1283,9 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                 UPDATE LocalSquarePaymentAttempts
                 SET Status = $Status,
                     SupervisorFinancialReference = $SupervisorFinancialReference,
+                    -- 结案后吊销提交令牌：它是旧 worker 的 fencing token，
+                    -- 留着它迟到的回调仍能通过 SubmissionToken 栅栏写回。
+                    SubmissionToken = NULL,
                     ResponseCode = $ResponseCode,
                     ResponseText = $ResponseText,
                     RecoveryPhase = $RecoveryPhase,
@@ -1295,6 +1312,9 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                     PaymentId = NULL,
                     PaymentStatus = NULL,
                     SupervisorFinancialReference = NULL,
+                    -- 同上：确认未付款已把支付证据清空，必须一并吊销提交令牌，
+                    -- 否则迟到的回调会把 CheckoutId 重新写回。
+                    SubmissionToken = NULL,
                     ResponseCode = $ResponseCode,
                     ResponseText = $ResponseText,
                     RecoveryPhase = $RecoveryPhase,
