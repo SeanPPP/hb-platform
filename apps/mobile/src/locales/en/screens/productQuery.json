@@ -390,12 +390,13 @@
       "modern": "Modern"
     },
     "unavailable": {
-      "special": "no store discount",
       "multibuy": "no active multi-buy promotion",
       "clearance": "no clearance price set"
     },
     "unavailableItem": "{{kind}}: {{reason}}",
     "unavailableSeparator": "; ",
+    "showLogo": "Show logo",
+    "showLogoHint": "Applies to all posters in this batch",
     "queueBar": {
       "title": "Posters to print: {{count}}",
       "go": "Print"
@@ -422,6 +423,7 @@
       "priceNow": "Now",
       "clearancePrice": "Clearance price",
       "priceWas": "Was (struck through)",
+      "priceWasOptional": "Was (optional)",
       "salePrice": "Price",
       "hintDiscounted": "Store discounted price {{price}}",
       "hintClearance": "Clearance price set {{price}}",
