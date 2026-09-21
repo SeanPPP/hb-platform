@@ -15,6 +15,51 @@ public sealed class SalesCostBackfillTests
     };
 
     [Fact]
+    public void 库内直写国内编码的缺口行能配对到仍是200的重建行并给出成本提案()
+    {
+        var chinaCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "CN-A" };
+        // 库内行已直写国内供应商编码，成本缺失；成本回填重建的行不解析归属，国内货仍是 200。
+        var stored = Row(); stored.SupplierCode = "CN-A";
+        var rebuilt = Row(); rebuilt.SupplierCode = "200";
+        rebuilt.UnitCostSnapshot = 2m; rebuilt.TotalCost = 4m; rebuilt.CostSource = "StoreRetailPrice";
+
+        var calculated = SalesCostBackfillRules.BuildRebuiltLookup(new[] { rebuilt }, chinaCodes)(stored);
+        var proposal = SalesCostBackfillRules.Propose(stored, calculated);
+
+        // 行键里的编码对不上时，这里会得到 SourceMissing 或 SourceFactsDiffer，缺口永远补不上。
+        Assert.Equal("VerifiedCostGap", proposal.Reason);
+        Assert.Equal(4m, proposal.Cost!.TotalCost);
+        Assert.Equal("StoreRetailPrice", proposal.Cost.CostSource);
+        // 回填只改成本列，库内行的归属保持不变。
+        Assert.Equal("CN-A", stored.SupplierCode);
+    }
+
+    [Fact]
+    public void 重建行配对只在国内编码族内折叠且族内多行时不配对()
+    {
+        var chinaCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "CN-A", "CN-B" };
+        var stored = Row(); stored.SupplierCode = "200";
+
+        // 澳洲供应商的重建行（Row 默认 240）不能配给国内货的缺口行。
+        Assert.Null(SalesCostBackfillRules.BuildRebuiltLookup(new[] { Row() }, chinaCodes)(stored));
+
+        // 库内行是澳洲供应商时也不折叠。
+        var rebuilt200 = Row(); rebuilt200.SupplierCode = "200";
+        Assert.Null(SalesCostBackfillRules.BuildRebuiltLookup(new[] { rebuilt200 }, chinaCodes)(Row()));
+
+        // 精确键仍然优先。
+        Assert.Same(rebuilt200, SalesCostBackfillRules.BuildRebuiltLookup(new[] { rebuilt200 }, chinaCodes)(stored));
+
+        // 族内同一商品有两条重建行，无法确定对应关系，不配对。
+        var rebuiltA = Row(); rebuiltA.SupplierCode = "CN-A";
+        var rebuiltB = Row(); rebuiltB.SupplierCode = "CN-B";
+        Assert.Null(SalesCostBackfillRules.BuildRebuiltLookup(new[] { rebuiltA, rebuiltB }, chinaCodes)(stored));
+
+        // 没有国内编码目录时只做精确匹配。
+        Assert.Null(SalesCostBackfillRules.BuildRebuiltLookup(new[] { rebuiltA }, null)(stored));
+    }
+
+    [Fact]
     public void 已有单位快照优先且成本修复不改销售事实()
     {
         var row = Row(); row.UnitCostSnapshot = 1.94m; row.CostSource = "StoreRetailPrice";
