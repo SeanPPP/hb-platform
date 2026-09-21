@@ -17,6 +17,18 @@ public sealed class CatalogSnapshotOptions
 
     /// <summary>目录快照保留时长（小时）；超过保留期且非最新版本的驻留快照先淘汰。</summary>
     public int RetentionHours { get; set; } = 72;
+
+    /// <summary>驻留目录条目软上限；超过后先淘汰无租约的旧版本。</summary>
+    public int SoftItemCapacity { get; set; } = 1_500_000;
+
+    /// <summary>含租约与待发布目录在内的硬上限。</summary>
+    public int HardItemCapacity { get; set; } = 2_500_000;
+
+    /// <summary>用于旧版增量查询的原始候选工件驻留版本数。</summary>
+    public int RawArtifactCapacity { get; set; } = 2;
+
+    /// <summary>等待全局目录构建槽位的最长秒数；超时返回容量繁忙。</summary>
+    public int BuildGateWaitSeconds { get; set; } = 30;
 }
 
 public sealed record CatalogPersistedSnapshot(
@@ -234,9 +246,12 @@ public sealed class GzipCatalogSnapshotStore : ICatalogSnapshotStore
                 throw new InvalidDataException("目录快照 manifest 中找不到要刷新的版本。");
             }
 
-            // expiresAt 现在表示建议刷新时间，而不是快照失效时间。
-            // 只有正文仍通过 checksum、解压和元数据校验时，才允许推进刷新时间。
-            if (TryReadSnapshot(manifestSnapshots[index]) is null)
+            // 续期只改 manifest；正文由 Save 原子发布，校验磁盘字节即可避免再复制整份目录。
+            // 真正读取目录时 TryReadSnapshot 仍会校验解压及正文元数据。
+            var entry = manifestSnapshots[index];
+            var bodyPath = ResolveRelativePath(entry.FileName);
+            if (!File.Exists(bodyPath) ||
+                !string.Equals(ComputeSha256(bodyPath), entry.Sha256, StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidDataException("目录快照正文损坏，不能更新刷新时间。");
             }
@@ -423,14 +438,8 @@ public sealed class GzipCatalogSnapshotStore : ICatalogSnapshotStore
                 throw new InvalidDataException("目录快照临时文件 SHA-256 校验失败。");
             }
 
-            var staged = ReadSnapshot(temporaryPath);
-            if (!string.Equals(staged.StoreCode, snapshot.StoreCode, StringComparison.OrdinalIgnoreCase)
-                || staged.Since != snapshot.Since
-                || staged.GeneratedAt != snapshot.GeneratedAt
-                || !string.Equals(staged.CatalogVersion, snapshot.CatalogVersion, StringComparison.Ordinal))
-            {
-                throw new InvalidDataException("目录快照临时文件元数据校验失败。");
-            }
+            // 正文由当前 snapshot 直接序列化；磁盘字节与写入时哈希一致后，
+            // 再完整反序列化只会复制整份目录，无法增加对元数据或落盘内容的保证。
 
             File.Move(temporaryPath, targetPath, overwrite: true);
             return sha256;

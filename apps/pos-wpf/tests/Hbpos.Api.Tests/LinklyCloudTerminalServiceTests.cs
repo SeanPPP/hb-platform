@@ -45,6 +45,29 @@ public sealed class LinklyCloudTerminalServiceTests
     }
 
     [Fact]
+    public void Management_gates_share_final_status_set_including_supervisor_resolution()
+    {
+        // 主管结案写入的终态必须在每条管理闸门里与 Linkly 终态同口径，漏掉一条就会留下永久阻塞的入口。
+        var gates = new[]
+        {
+            SqlSugarLinklyCloudTerminalRepository.AssignTerminalSql,
+            SqlSugarLinklyCloudTerminalRepository.TryAcquireConnectionTestLeaseSql,
+            SqlSugarLinklyCloudTerminalRepository.UpsertSelectionSql,
+            SqlSugarLinklyCloudTerminalRepository.TryBeginPairingSql,
+            SqlSugarLinklyCloudTerminalRepository.TryAcquireOperationLeaseSql,
+        };
+
+        foreach (var sql in gates)
+        {
+            var finalSets = System.Text.RegularExpressions.Regex.Matches(sql, @"\[Status\] NOT IN \(([^)]*)\)");
+            Assert.NotEmpty(finalSets);
+            Assert.All(finalSets, match => Assert.Equal(
+                "N'Completed', N'Cancelled', N'Failed', N'NotSubmitted', N'SupervisorResolved'",
+                match.Groups[1].Value));
+        }
+    }
+
+    [Fact]
     public void Sql_repository_datetime_parameters_preserve_datetime2_precision()
     {
         var value = new DateTime(2026, 9, 6, 3, 57, 54, 558, DateTimeKind.Utc)

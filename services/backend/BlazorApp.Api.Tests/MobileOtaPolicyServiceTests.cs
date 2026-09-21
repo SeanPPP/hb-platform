@@ -308,6 +308,216 @@ public sealed class MobileOtaPolicyServiceTests : IDisposable
         Assert.Equal(AppUpdateStates.Required, idWithWrongGroup!.State);
     }
 
+    [Fact]
+    public async Task Mobile策略_主目标与附加runtime精确分发_未映射返回none_并支持保留清空和禁用清空()
+    {
+        var release105 = (await CreateReleaseService().RegisterAsync(
+            ReleaseRequest("production", "ios", "runtime-105", "1.0.5"), "publisher"
+        )).Data!.Release;
+        var release106 = (await CreateReleaseService().RegisterAsync(
+            ReleaseRequest("production", "ios", "runtime-106", "1.0.6"), "publisher"
+        )).Data!.Release;
+        var release107 = (await CreateReleaseService().RegisterAsync(
+            ReleaseRequest("production", "ios", "runtime-107", "1.0.7"), "publisher"
+        )).Data!.Release;
+        var service = CreatePolicyService();
+        var saved = await service.SetAsync("production", "ios", new MobileOtaPolicyRequest
+        {
+            ExpectedPolicyVersion = 0,
+            Enabled = true,
+            TargetReleaseId = release105.Id,
+            AdditionalTargetReleaseIds = [release106.Id, release107.Id],
+        }, "admin");
+
+        Assert.True(saved.Success, saved.Message);
+        Assert.Equal(2, saved.Data!.AdditionalTargets.Count);
+        var decision106 = await service.GetDecisionAsync(new MobileOtaDecisionRequest
+        {
+            Platform = "ios", ClientChannel = "production", RuntimeVersion = "1.0.6",
+        });
+        var decisionUnknown = await service.GetDecisionAsync(new MobileOtaDecisionRequest
+        {
+            Platform = "ios", ClientChannel = "production", RuntimeVersion = "1.0.8",
+        });
+        Assert.Equal(AppUpdateStates.Optional, decision106!.State);
+        Assert.Equal(release106.UpdateId, decision106.UpdateId);
+        Assert.Equal(AppUpdateStates.None, decisionUnknown!.State);
+
+        var preserved = await service.SetAsync("production", "ios", new MobileOtaPolicyRequest
+        {
+            ExpectedPolicyVersion = saved.Data.PolicyVersion,
+            Enabled = true,
+            TargetReleaseId = release105.Id,
+        }, "admin");
+        Assert.Equal(2, preserved.Data!.AdditionalTargets.Count);
+
+        var reordered = await service.SetAsync("production", "ios", new MobileOtaPolicyRequest
+        {
+            ExpectedPolicyVersion = preserved.Data.PolicyVersion,
+            Enabled = true,
+            TargetReleaseId = release105.Id,
+            AdditionalTargetReleaseIds = [release107.Id, release106.Id],
+        }, "admin");
+        Assert.Equal(preserved.Data.PolicyVersion, reordered.Data!.PolicyVersion);
+
+        var cleared = await service.SetAsync("production", "ios", new MobileOtaPolicyRequest
+        {
+            ExpectedPolicyVersion = reordered.Data.PolicyVersion,
+            Enabled = true,
+            TargetReleaseId = release105.Id,
+            AdditionalTargetReleaseIds = [],
+        }, "admin");
+        Assert.Empty(cleared.Data!.AdditionalTargets);
+
+        var disabled = await service.SetAsync("production", "ios", new MobileOtaPolicyRequest
+        {
+            ExpectedPolicyVersion = cleared.Data.PolicyVersion,
+            Enabled = false,
+            AdditionalTargetReleaseIds = [release106.Id],
+        }, "admin");
+        Assert.False(disabled.Data!.Enabled);
+        Assert.Empty(disabled.Data.AdditionalTargets);
+    }
+
+    [Fact]
+    public async Task Mobile策略_重复runtime附加目标原子拒绝且JSON损坏按required失败关闭optional返回none()
+    {
+        var release105 = (await CreateReleaseService().RegisterAsync(
+            ReleaseRequest("preview", "android", "runtime-105", "1.0.5"), "publisher"
+        )).Data!.Release;
+        var release106 = (await CreateReleaseService().RegisterAsync(
+            ReleaseRequest("preview", "android", "runtime-106", "1.0.6"), "publisher"
+        )).Data!.Release;
+        var release106b = (await CreateReleaseService().RegisterAsync(
+            ReleaseRequest("preview", "android", "runtime-106b", "1.0.6"), "publisher"
+        )).Data!.Release;
+        var service = CreatePolicyService();
+        var duplicate = await service.SetAsync("preview", "android", new MobileOtaPolicyRequest
+        {
+            ExpectedPolicyVersion = 0,
+            Enabled = true,
+            TargetReleaseId = release105.Id,
+            AdditionalTargetReleaseIds = [release105.Id],
+        }, "admin");
+        Assert.False(duplicate.Success);
+        Assert.Equal(0, await db.Queryable<MobileOtaPolicy>().CountAsync());
+        var duplicateRuntime = await service.SetAsync("preview", "android", new MobileOtaPolicyRequest
+        {
+            ExpectedPolicyVersion = 0,
+            Enabled = true,
+            TargetReleaseId = release105.Id,
+            AdditionalTargetReleaseIds = [release106.Id, release106b.Id],
+        }, "admin");
+        Assert.False(duplicateRuntime.Success);
+        Assert.Equal(0, await db.Queryable<MobileOtaPolicy>().CountAsync());
+
+        var saved = await service.SetAsync("preview", "android", new MobileOtaPolicyRequest
+        {
+            ExpectedPolicyVersion = 0,
+            Enabled = true,
+            Required = false,
+            TargetReleaseId = release105.Id,
+            AdditionalTargetReleaseIds = [release106.Id],
+        }, "admin");
+        var entity = await db.Queryable<MobileOtaPolicy>().FirstAsync(item => item.Environment == "preview" && item.Platform == "android");
+        entity.AdditionalTargetsJson = "[{\"broken\":true}]";
+        await db.Updateable(entity).ExecuteCommandAsync();
+        var optionalDecision = await service.GetDecisionAsync(new MobileOtaDecisionRequest
+        {
+            Platform = "android", ClientChannel = "preview", RuntimeVersion = "1.0.6",
+        });
+        Assert.Equal(AppUpdateStates.None, optionalDecision!.State);
+
+        entity = await db.Queryable<MobileOtaPolicy>().FirstAsync(item => item.Environment == "preview" && item.Platform == "android");
+        entity.Required = true;
+        entity.AdditionalTargetsJson = "{bad";
+        await db.Updateable(entity).ExecuteCommandAsync();
+        var requiredDecision = await service.GetDecisionAsync(new MobileOtaDecisionRequest
+        {
+            Platform = "android", ClientChannel = "preview", RuntimeVersion = "1.0.6",
+        });
+        Assert.Null(requiredDecision);
+        Assert.True(saved.Success);
+    }
+
+    [Fact]
+    public async Task Mobile策略_旧页面省略附加字段切换到相同runtime时原子拒绝()
+    {
+        var release105 = (await CreateReleaseService().RegisterAsync(
+            ReleaseRequest("production", "ios", "primary-105", "1.0.5"), "publisher"
+        )).Data!.Release;
+        var release106 = (await CreateReleaseService().RegisterAsync(
+            ReleaseRequest("production", "ios", "additional-106", "1.0.6"), "publisher"
+        )).Data!.Release;
+        var service = CreatePolicyService();
+        var saved = await service.SetAsync("production", "ios", new MobileOtaPolicyRequest
+        {
+            ExpectedPolicyVersion = 0, Enabled = true, TargetReleaseId = release105.Id,
+            AdditionalTargetReleaseIds = [release106.Id],
+        }, "admin");
+        Assert.True(saved.Success, saved.Message);
+
+        var collision = await service.SetAsync("production", "ios", new MobileOtaPolicyRequest
+        {
+            ExpectedPolicyVersion = saved.Data!.PolicyVersion,
+            Enabled = true, TargetReleaseId = release106.Id,
+        }, "admin");
+        Assert.False(collision.Success);
+        var current = (await service.GetAsync("production", "ios")).Data!;
+        Assert.Equal(saved.Data.PolicyVersion, current.PolicyVersion);
+        Assert.Equal(release105.Id, current.TargetReleaseId);
+        Assert.Equal(release106.Id, Assert.Single(current.AdditionalTargets).TargetReleaseId);
+        var revision = Assert.Single(await db.Queryable<MobileOtaPolicyRevision>().ToListAsync());
+        Assert.Contains(release106.Id.ToString(), revision.SnapshotJson);
+
+        var primaryDecision = await service.GetDecisionAsync(new MobileOtaDecisionRequest
+        {
+            Platform = "ios", ClientChannel = "production", RuntimeVersion = "1.0.5",
+        });
+        Assert.Equal(release105.UpdateId, primaryDecision!.UpdateId);
+        var alreadyCurrent = await service.GetDecisionAsync(new MobileOtaDecisionRequest
+        {
+            Platform = "ios", ClientChannel = "production", RuntimeVersion = "1.0.6",
+            CurrentUpdateId = release106.UpdateId, CurrentUpdateGroupId = release106.UpdateGroupId,
+        });
+        Assert.Equal(AppUpdateStates.None, alreadyCurrent!.State);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Mobile策略_坏JSON仍可停用或显式替换并完整记录修复(bool disable)
+    {
+        var release = (await CreateReleaseService().RegisterAsync(
+            ReleaseRequest("production", "android", "recover", "1.0.5"), "publisher"
+        )).Data!.Release;
+        var service = CreatePolicyService();
+        var saved = await service.SetAsync("production", "android", new MobileOtaPolicyRequest
+        {
+            ExpectedPolicyVersion = 0, Enabled = true, Required = true, TargetReleaseId = release.Id,
+        }, "admin");
+        var entity = await db.Queryable<MobileOtaPolicy>().FirstAsync();
+        entity.AdditionalTargetsJson = "[null]";
+        await db.Updateable(entity).ExecuteCommandAsync();
+        Assert.False((await service.GetAsync("production", "android")).Success);
+
+        var repaired = await service.SetAsync("production", "android", new MobileOtaPolicyRequest
+        {
+            ExpectedPolicyVersion = saved.Data!.PolicyVersion,
+            Enabled = !disable, Required = true, TargetReleaseId = disable ? Guid.NewGuid() : release.Id,
+            AdditionalTargetReleaseIds = disable ? [Guid.NewGuid()] : [],
+        }, "admin");
+        Assert.True(repaired.Success, repaired.Message);
+        Assert.Equal(saved.Data.PolicyVersion + 1, repaired.Data!.PolicyVersion);
+        Assert.Equal(!disable, repaired.Data.Enabled);
+        Assert.Equal(!disable, repaired.Data.Required);
+        Assert.Empty(repaired.Data.AdditionalTargets);
+        Assert.Null((await db.Queryable<MobileOtaPolicy>().FirstAsync()).AdditionalTargetsJson);
+        Assert.Equal(2, await db.Queryable<MobileOtaPolicyRevision>().CountAsync());
+        Assert.True((await service.GetAsync("production", "android")).Success);
+        if (disable) Assert.Null(repaired.Data.TargetReleaseId);
+    }
+
     [Theory]
     [InlineData("clientChannel", false)]
     [InlineData("releaseChannel", false)]
@@ -1182,7 +1392,8 @@ public sealed class MobileOtaPolicyServiceTests : IDisposable
     private static AppOtaReleaseRegisterRequest ReleaseRequest(
         string environment,
         string platform,
-        string discriminator
+        string discriminator,
+        string runtimeVersion = "1.0.2"
     )
     {
         var releaseChannel = $"mobile-{environment}-{platform}-release-{discriminator}";
@@ -1196,7 +1407,7 @@ public sealed class MobileOtaPolicyServiceTests : IDisposable
             EasBranch = releaseChannel,
             ProjectName = "hb-mobile",
             Platform = platform,
-            RuntimeVersion = "1.0.2",
+            RuntimeVersion = runtimeVersion,
             UpdateGroupId = Guid.NewGuid().ToString(),
             UpdateId = Guid.NewGuid().ToString(),
             Message = "发布说明",

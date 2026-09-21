@@ -1292,6 +1292,14 @@ public sealed class CardTerminalSetupServiceTests
         {
             throw new NotSupportedException();
         }
+
+        public Task AcknowledgeSupervisorResolvedSessionAsync(
+            CardTerminalSettings settings,
+            string sessionId,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
     }
 
     private sealed class FakeUnresolvedSettlementReader(bool hasUnresolved) : ILinklyUnresolvedSettlementReader
