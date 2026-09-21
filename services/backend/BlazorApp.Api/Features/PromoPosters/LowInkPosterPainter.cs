@@ -23,10 +23,12 @@ internal static class LowInkPosterPainter
 
     internal static Tokens For(PromoPosterSize size) => size switch
     {
-        PromoPosterSize.A4 => new(794, 1123, 44, 40, 38, 52, 340, 28, 17, 18, false),
-        PromoPosterSize.A5 => new(559, 794, 32, 30, 27, 37, 240, 20, 13, 13, false),
-        PromoPosterSize.A6 => new(397, 559, 24, 23, 19, 26, 168, 15, 11, 9, false),
-        _ => new(280, 397, 19, 18, 15, 19, 116, 12, 10, 7, true),
+        // 促销标题需要在小尺寸海报上保持醒目；沿用设计稿比例放大约 2 倍，
+        // 并让短线跟随标题的实际 token 间距，避免压到下面的品名。
+        PromoPosterSize.A4 => new(794, 1123, 44, 40, 76, 52, 340, 28, 17, 18, false),
+        PromoPosterSize.A5 => new(559, 794, 32, 30, 54, 37, 240, 20, 13, 13, false),
+        PromoPosterSize.A6 => new(397, 559, 24, 23, 38, 26, 168, 15, 11, 9, false),
+        _ => new(280, 397, 19, 18, 27, 19, 116, 12, 10, 7, true),
     };
 
     private static BaseColor Accent(PromoPosterKind kind) => kind == PromoPosterKind.New ? Green : Red;
@@ -49,7 +51,7 @@ internal static class LowInkPosterPainter
 
         // 顶部只印促销字和短色线，避免整页色块消耗彩墨。
         var label = Label(spec.Kind);
-        var labelSize = MathF.Min(t.Label, MathF.Floor(width * .82f / PosterCanvas.TextWidth(LabelFont, 1, label, .04f)));
+        var labelSize = MathF.Min(t.Label, MathF.Floor(width * .96f / PosterCanvas.TextWidth(LabelFont, 1, label, .04f)));
         var labelBaseline = PosterCanvas.Baseline(LabelFont, labelSize, 1.1f, t.M);
         cv.Text(LabelFont, labelSize, label, left, labelBaseline, accent, .04f);
         var lineY = t.M + 1.3f * t.Label + t.Gap;

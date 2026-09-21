@@ -10211,6 +10211,11 @@
             "type": "integer",
             "format": "int64",
             "nullable": true
+          },
+          "attemptGuid": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
           }
         },
         "additionalProperties": false

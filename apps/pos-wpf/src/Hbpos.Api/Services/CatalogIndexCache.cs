@@ -56,7 +56,7 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
     private static readonly TimeSpan DefaultSnapshotTtl = TimeSpan.FromHours(2);
     // 每个门店默认保留八个完整版本，覆盖短时间内的多台 iPad 下载与回退窗口。
     private const int DefaultMaxSnapshotsPerStore = 8;
-    private const int RawArtifactCapacity = 2;
+    private const int DefaultRawArtifactCapacity = 2;
     private const int DefaultSoftItemCapacity = 1_500_000;
     private const int DefaultHardItemCapacity = 2_500_000;
     private readonly ConcurrentDictionary<CatalogIndexCacheKey, CacheEntry> _entries = new();
@@ -64,7 +64,7 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<CatalogSnapshotCacheKey, SnapshotEntry> _snapshots = [];
     private readonly Dictionary<CatalogSnapshotCacheKey, PendingSnapshotEntry> _pendingSnapshots = [];
-    private readonly Dictionary<CatalogSnapshotCacheKey, CatalogSnapshotDescriptor> _lazySnapshotDescriptors = [];
+    private readonly Dictionary<CatalogSnapshotCacheKey, LazySnapshotEntry> _lazySnapshotDescriptors = [];
     private readonly Dictionary<CatalogSnapshotCacheKey, RawArtifactEntry> _rawArtifacts = [];
     private readonly HashSet<CatalogSnapshotCacheKey> _rawArtifactVersions = [];
     private readonly LinkedList<CatalogSnapshotCacheKey> _rawArtifactLru = [];
@@ -76,6 +76,8 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
     private readonly int _maxSnapshotsPerStore;
     private readonly int _softItemCapacity;
     private readonly int _hardItemCapacity;
+    private readonly int _rawArtifactCapacity;
+    private readonly TimeSpan _buildGateWaitTimeout;
     private readonly ICatalogSnapshotStore? _snapshotStore;
     private readonly ICatalogBackgroundRefreshScheduler? _backgroundRefreshScheduler;
     private readonly CatalogDownloadLeaseRegistry _downloadLeases;
@@ -84,6 +86,8 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
     private long _snapshotSequence;
     // 中文注释：v2 标准页预热单并发门；检测到 WPF v1 下载时暂停后续预热页。
     private readonly SemaphoreSlim _v2WarmUpGate = new(1, 1);
+    // 所有门店共用一扇门，直到正文持久化与 active 发布结束才允许下一店开始构建。
+    private readonly SemaphoreSlim _catalogBuildGate = new(1, 1);
     private const long V2WarmUpV1BackoffMs = 30_000;
     // 中文注释：预热时间预算；无宿主取消信号（测试场景）时兜底，避免大目录长期占用线程池。
     private const long V2WarmUpBudgetMs = 60_000;
@@ -147,10 +151,28 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
         TimeSpan snapshotTtl,
         int maxSnapshotsPerStore,
         ICatalogSnapshotStore snapshotStore,
+        ICatalogBackgroundRefreshScheduler backgroundRefreshScheduler,
         int softItemCapacity,
         int hardItemCapacity)
-        : this(timeProvider, ttl, snapshotTtl, maxSnapshotsPerStore, snapshotStore, null,
+        : this(timeProvider, ttl, snapshotTtl, maxSnapshotsPerStore, snapshotStore, backgroundRefreshScheduler,
+            scopeFactory: null, applicationLifetime: null,
             softItemCapacity: softItemCapacity, hardItemCapacity: hardItemCapacity)
+    {
+    }
+
+    internal CatalogIndexCache(
+        TimeProvider timeProvider,
+        TimeSpan ttl,
+        TimeSpan snapshotTtl,
+        int maxSnapshotsPerStore,
+        ICatalogSnapshotStore snapshotStore,
+        int softItemCapacity,
+        int hardItemCapacity,
+        int rawArtifactCapacity = DefaultRawArtifactCapacity,
+        TimeSpan? buildGateWaitTimeout = null)
+        : this(timeProvider, ttl, snapshotTtl, maxSnapshotsPerStore, snapshotStore, null,
+            softItemCapacity: softItemCapacity, hardItemCapacity: hardItemCapacity,
+            rawArtifactCapacity: rawArtifactCapacity, buildGateWaitTimeout: buildGateWaitTimeout)
     {
     }
 
@@ -168,6 +190,8 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
             maxSnapshotsPerStore,
             snapshotStore: null,
             backgroundRefreshScheduler: null,
+            scopeFactory: null,
+            applicationLifetime: null,
             softItemCapacity: softItemCapacity,
             hardItemCapacity: hardItemCapacity)
     {
@@ -232,7 +256,11 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
             snapshotStore,
             backgroundRefreshScheduler,
             scopeFactory,
-            applicationLifetime)
+            applicationLifetime,
+            softItemCapacity: ResolveSoftItemCapacity(options),
+            hardItemCapacity: ResolveHardItemCapacity(options),
+            rawArtifactCapacity: ResolveRawArtifactCapacity(options),
+            buildGateWaitTimeout: ResolveBuildGateWaitTimeout(options))
     {
     }
 
@@ -251,6 +279,24 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
             : DefaultMaxSnapshotsPerStore;
     }
 
+    private static int ResolveSoftItemCapacity(
+        Microsoft.Extensions.Options.IOptions<CatalogSnapshotOptions> options) =>
+        options.Value.SoftItemCapacity > 0 ? options.Value.SoftItemCapacity : DefaultSoftItemCapacity;
+
+    private static int ResolveHardItemCapacity(
+        Microsoft.Extensions.Options.IOptions<CatalogSnapshotOptions> options) =>
+        options.Value.HardItemCapacity > 0 ? options.Value.HardItemCapacity : DefaultHardItemCapacity;
+
+    private static int ResolveRawArtifactCapacity(
+        Microsoft.Extensions.Options.IOptions<CatalogSnapshotOptions> options) =>
+        options.Value.RawArtifactCapacity > 0 ? options.Value.RawArtifactCapacity : DefaultRawArtifactCapacity;
+
+    private static TimeSpan ResolveBuildGateWaitTimeout(
+        Microsoft.Extensions.Options.IOptions<CatalogSnapshotOptions> options) =>
+        TimeSpan.FromSeconds(options.Value.BuildGateWaitSeconds > 0
+            ? options.Value.BuildGateWaitSeconds
+            : 30);
+
     private CatalogIndexCache(
         TimeProvider timeProvider,
         TimeSpan ttl,
@@ -261,7 +307,9 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
         IServiceScopeFactory? scopeFactory = null,
         IHostApplicationLifetime? applicationLifetime = null,
         int softItemCapacity = DefaultSoftItemCapacity,
-        int hardItemCapacity = DefaultHardItemCapacity)
+        int hardItemCapacity = DefaultHardItemCapacity,
+        int rawArtifactCapacity = DefaultRawArtifactCapacity,
+        TimeSpan? buildGateWaitTimeout = null)
     {
         ArgumentNullException.ThrowIfNull(timeProvider);
         if (ttl <= TimeSpan.Zero)
@@ -284,12 +332,24 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
             throw new ArgumentOutOfRangeException(nameof(softItemCapacity));
         }
 
+        if (rawArtifactCapacity <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(rawArtifactCapacity));
+        }
+
+        if (buildGateWaitTimeout is { } waitTimeout && waitTimeout <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(buildGateWaitTimeout));
+        }
+
         _timeProvider = timeProvider;
         _ttl = ttl;
         _snapshotTtl = snapshotTtl;
         _maxSnapshotsPerStore = maxSnapshotsPerStore;
         _softItemCapacity = softItemCapacity;
         _hardItemCapacity = hardItemCapacity;
+        _rawArtifactCapacity = rawArtifactCapacity;
+        _buildGateWaitTimeout = buildGateWaitTimeout ?? TimeSpan.FromSeconds(30);
         _snapshotStore = snapshotStore;
         _backgroundRefreshScheduler = backgroundRefreshScheduler;
         _downloadLeases = new CatalogDownloadLeaseRegistry(timeProvider);
@@ -316,6 +376,19 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
             }
         }
     }
+
+    internal int PinnedVersionCountForTests
+    {
+        get
+        {
+            lock (_snapshotGate)
+            {
+                return _snapshots.Count;
+            }
+        }
+    }
+
+    internal int ActiveEntryCountForTests => _entries.Count;
 
     internal int RawArtifactVersionCountForTests
     {
@@ -475,7 +548,19 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
                 }
 
                 var cachedResult = await AwaitBuildAsync(existing, cancellationToken);
-                await AwaitPublicationForCallerAsync(existing, requirePublished: !allowStale, cancellationToken);
+                var publication = await AwaitPublicationForCallerAsync(existing, requirePublished: !allowStale, cancellationToken);
+                if (publication.Status == PublicationStatus.CapacityRejected)
+                {
+                    // 失败退路必须仍有已发布版本；构建期间旧引用可能已被别店容量淘汰。
+                    var lastGood = GetLatestSnapshot(key, _timeProvider.GetUtcNow());
+                    if (lastGood is null || (since is not null && RequiresRawRebuild(lastGood)))
+                    {
+                        throw new CatalogCapacityBusyException("Catalog snapshot capacity is busy.");
+                    }
+
+                    // 容量不足时绝不能把未固定的新版本交给分页调用方。
+                    return ProjectLegacySince(existing, lastGood, since);
+                }
                 if (since is not null &&
                     cachedResult is { RawPriceIndexInput: null } &&
                     RequiresRawRebuild(cachedResult))
@@ -517,7 +602,18 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
                 }
                 PublishWhenCompleted(key, newEntry);
                 var built = await AwaitBuildAsync(newEntry, cancellationToken);
-                await AwaitPublicationForCallerAsync(newEntry, requirePublished: !allowStale, cancellationToken);
+                var publication = await AwaitPublicationForCallerAsync(newEntry, requirePublished: !allowStale, cancellationToken);
+                if (publication.Status == PublicationStatus.CapacityRejected)
+                {
+                    var lastGood = GetLatestSnapshot(key, _timeProvider.GetUtcNow());
+                    if (lastGood is null || (since is not null && RequiresRawRebuild(lastGood)))
+                    {
+                        throw new CatalogCapacityBusyException("Catalog snapshot capacity is busy.");
+                    }
+
+                    return ProjectLegacySince(newEntry, lastGood, since);
+                }
+
                 return ProjectLegacySince(newEntry, built, since);
             }
         }
@@ -545,10 +641,11 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
                 return ProjectLegacySince(entry: null, snapshot.Result, since);
             }
 
-            if (_lazySnapshotDescriptors.TryGetValue(key, out var descriptor))
+            if (_lazySnapshotDescriptors.TryGetValue(key, out var lazySnapshot))
             {
                 try
                 {
+                    var descriptor = lazySnapshot.Descriptor;
                     var loaded = _snapshotStore?.Load(descriptor.StoreCode, descriptor.Since, descriptor.CatalogVersion);
                     if (loaded is null)
                     {
@@ -559,7 +656,7 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
 
                     var result = new CatalogIndexBuildResult(key.StoreCode, loaded.GeneratedAt, loaded.SellableItems,
                         new CatalogSellableIndex(key.StoreCode, loaded.GeneratedAt, loaded.SellableItems, key.CatalogVersion));
-                    if (TryAdmitLoadedSnapshotLocked(key, result, loaded.ExpiresAt))
+                    if (TryAdmitLoadedSnapshotLocked(key, result, loaded.ExpiresAt, lazySnapshot.Sequence))
                     {
                         _lazySnapshotDescriptors.Remove(key);
                         return ProjectLegacySince(entry: null, result, since);
@@ -635,6 +732,8 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
         long storePublicationGeneration)
     {
         var sharedBuildCancellationToken = _applicationLifetime?.ApplicationStopping ?? CancellationToken.None;
+        var buildGateLease = new CatalogBuildGateLease(_catalogBuildGate, _buildGateWaitTimeout);
+        var publication = CreatePublication();
         return new CacheEntry(
             // 构建及发布完成前使用永不过期占位，避免长构建刚完成就被判定过期。
             DateTimeOffset.MaxValue,
@@ -644,12 +743,15 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
                     staleResult,
                     key.StoreCode,
                     buildAsync,
-                    sharedBuildCancellationToken),
+                    sharedBuildCancellationToken,
+                    buildGateLease,
+                    publication),
                 LazyThreadSafetyMode.ExecutionAndPublication),
-            CreatePublication(),
+            publication,
             staleResult,
             new CatalogLegacySinceCache(),
-            storePublicationGeneration);
+            storePublicationGeneration,
+            buildGateLease);
     }
 
     private static CatalogIndexBuildResult? GetCompletedResult(CacheEntry? entry)
@@ -701,7 +803,7 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
         }
     }
 
-    private static async Task AwaitPublicationForCallerAsync(
+    private static async Task<CatalogPublicationOutcome> AwaitPublicationForCallerAsync(
         CacheEntry entry,
         bool requirePublished,
         CancellationToken cancellationToken)
@@ -711,10 +813,10 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
         {
             case PublicationStatus.Published:
             case PublicationStatus.Empty:
-                return;
+                return outcome;
             case PublicationStatus.CapacityRejected when !requirePublished:
             case PublicationStatus.PersistenceFailed when !requirePublished:
-                return;
+                return outcome;
             case PublicationStatus.CapacityRejected:
                 throw new CatalogCapacityBusyException("Catalog snapshot capacity is busy.");
             case PublicationStatus.PersistenceFailed:
@@ -792,9 +894,7 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
                 var completedEntry = entry with
                 {
                     ExpiresAt = CalculateActiveExpiry(_timeProvider.GetUtcNow(), cacheResult.SourceValidUntil),
-                    BuildTask = new Lazy<Task<CatalogIndexBuildResult?>>(
-                        () => Task.FromResult<CatalogIndexBuildResult?>(cacheResult),
-                        LazyThreadSafetyMode.ExecutionAndPublication)
+                    BuildTask = CreateCompletedBuildTask(cacheResult)
                 };
                 _entries.TryUpdate(key, completedEntry, entry);
                 // 同代次的 owner 替换不等同于门店失效，durable version 仍可正常发布给 waiter。
@@ -818,6 +918,10 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
 
             entry.PublicationCompletion.TrySetException(exception);
         }
+        finally
+        {
+            entry.BuildGateLease?.Release();
+        }
     }
 
     private void RestoreStaleOrRemove(CatalogIndexCacheKey key, CacheEntry entry)
@@ -832,21 +936,39 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
             key,
             new CacheEntry(
                 _timeProvider.GetUtcNow(),
-                new Lazy<Task<CatalogIndexBuildResult?>>(
-                    () => Task.FromResult<CatalogIndexBuildResult?>(entry.StaleResult),
-                    LazyThreadSafetyMode.ExecutionAndPublication),
+                CreateCompletedBuildTask(entry.StaleResult),
                 CreateCompletedPublication(),
                 entry.StaleResult,
                 new CatalogLegacySinceCache()),
             entry);
     }
 
+    private static Lazy<Task<CatalogIndexBuildResult?>> CreateCompletedBuildTask(CatalogIndexBuildResult result)
+    {
+        var completed = new Lazy<Task<CatalogIndexBuildResult?>>(
+            () => Task.FromResult<CatalogIndexBuildResult?>(result),
+            LazyThreadSafetyMode.ExecutionAndPublication);
+        // 已完成 entry 必须可被逐出逻辑识别；未求值 Lazy 的闭包会长期引用旧目录。
+        _ = completed.Value;
+        return completed;
+    }
+
     private async Task<CatalogIndexBuildResult?> BuildStableResultAsync(
         CatalogIndexBuildResult? staleResult,
         string storeCode,
         Func<CancellationToken, Task<CatalogIndexBuildResult?>> buildAsync,
-        CancellationToken sharedBuildCancellationToken)
+        CancellationToken sharedBuildCancellationToken,
+        CatalogBuildGateLease buildGateLease,
+        TaskCompletionSource<CatalogPublicationOutcome> publication)
     {
+        await buildGateLease.AcquireAsync(sharedBuildCancellationToken);
+        // 排队期间若门店已失效，取得槽位后直接跳过整库查询。
+        if (publication.Task.IsCompletedSuccessfully &&
+            publication.Task.Result.Status == PublicationStatus.Invalidated)
+        {
+            throw CreateInvalidatedPublicationException();
+        }
+
         var result = _scopeFactory is null
             ? await buildAsync(sharedBuildCancellationToken)
             : await BuildInOwnedScopeAsync(storeCode, sharedBuildCancellationToken);
@@ -1004,7 +1126,9 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
                 _snapshots[snapshotKey] = new SnapshotEntry(
                     result,
                     expiresAt,
-                    Interlocked.Increment(ref _snapshotSequence));
+                    Interlocked.Increment(ref _snapshotSequence),
+                    IsPersisted: _snapshotStore is not null);
+                _lazySnapshotDescriptors.Remove(snapshotKey);
             }
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
@@ -1030,28 +1154,28 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
         lock (_snapshotGate)
         {
             PruneExpiredSnapshots(now);
-            var snapshot = _snapshots
+            // 按原发布序号合并驻留与磁盘版本；读取旧版分页不能使它盖过磁盘上的新版 LKG。
+            var candidates = _snapshots
                 .Where(pair => string.Equals(pair.Key.StoreCode, key.StoreCode, StringComparison.OrdinalIgnoreCase)
                     && pair.Key.Since == key.Since)
-                .OrderByDescending(pair => pair.Value.Sequence)
-                .Select(pair => pair.Value.Result)
-                .FirstOrDefault();
-            if (snapshot is not null)
-            {
-                return snapshot;
-            }
-
-            var descriptors = _lazySnapshotDescriptors
-                .Where(pair => string.Equals(pair.Key.StoreCode, key.StoreCode, StringComparison.OrdinalIgnoreCase)
-                    && pair.Key.Since == key.Since)
-                .OrderByDescending(pair => pair.Value.GeneratedAt)
-                .Select(pair => (pair.Key, pair.Value))
+                .Select(pair => (pair.Key, pair.Value.Sequence, Resident: (CatalogIndexBuildResult?)pair.Value.Result, Lazy: (LazySnapshotEntry?)null))
+                .Concat(_lazySnapshotDescriptors
+                    .Where(pair => string.Equals(pair.Key.StoreCode, key.StoreCode, StringComparison.OrdinalIgnoreCase)
+                        && pair.Key.Since == key.Since)
+                    .Select(pair => (pair.Key, pair.Value.Sequence, Resident: (CatalogIndexBuildResult?)null, Lazy: (LazySnapshotEntry?)pair.Value)))
+                .OrderByDescending(candidate => candidate.Sequence)
                 .ToArray();
-            foreach (var (descriptorKey, descriptor) in descriptors)
+            foreach (var (descriptorKey, _, resident, lazySnapshot) in candidates)
             {
+                if (resident is not null)
+                {
+                    return resident;
+                }
+
                 // 损坏或被并发删除的最新持久化版本不能遮蔽仍可用的次新版本。
                 try
                 {
+                    var descriptor = lazySnapshot!.Descriptor;
                     var loaded = _snapshotStore?.Load(descriptor.StoreCode, descriptor.Since, descriptor.CatalogVersion);
                     if (loaded is null)
                     {
@@ -1061,7 +1185,7 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
 
                     var result = new CatalogIndexBuildResult(key.StoreCode, loaded.GeneratedAt, loaded.SellableItems,
                         new CatalogSellableIndex(key.StoreCode, loaded.GeneratedAt, loaded.SellableItems, descriptor.CatalogVersion));
-                    if (TryAdmitLoadedSnapshotLocked(descriptorKey, result, loaded.ExpiresAt))
+                    if (TryAdmitLoadedSnapshotLocked(descriptorKey, result, loaded.ExpiresAt, lazySnapshot.Sequence))
                     {
                         _lazySnapshotDescriptors.Remove(descriptorKey);
                         return result;
@@ -1081,7 +1205,8 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
     private bool TryAdmitLoadedSnapshotLocked(
         CatalogSnapshotCacheKey snapshotKey,
         CatalogIndexBuildResult result,
-        DateTimeOffset expiresAt)
+        DateTimeOffset expiresAt,
+        long sequence)
     {
         if (!TryPrepareAdmissionLocked([result]))
         {
@@ -1091,7 +1216,8 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
         _snapshots[snapshotKey] = new SnapshotEntry(
             result,
             expiresAt,
-            Interlocked.Increment(ref _snapshotSequence));
+            sequence,
+            IsPersisted: true);
         return true;
     }
 
@@ -1121,7 +1247,8 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
                         continue;
                     }
                     // 启动只登记 manifest 描述，不解压正文；首次按门店/版本真正需要时再 lazy load。
-                    _lazySnapshotDescriptors.Add(key, snapshot);
+                    _lazySnapshotDescriptors.Add(key, new LazySnapshotEntry(
+                        snapshot, Interlocked.Increment(ref _snapshotSequence)));
                 }
 
                 PruneExpiredSnapshots(now);
@@ -1191,48 +1318,45 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
 
     private void PruneExpiredSnapshots(DateTimeOffset now)
     {
-        // 中文注释：超过保留期（RetentionHours，默认 72h）且非该店最新版本、未被下载租约
-        // 引用的驻留快照先淘汰；最新 LKG 永不因时间淘汰，磁盘描述符仍保留供懒加载。
+        // 超过保留期且非该店最新版本、未被下载租约引用的驻留与磁盘索引都要淘汰；最新 LKG 保留。
         lock (_snapshotGate)
         {
-            if (_snapshots.Count == 0)
-            {
-                return;
-            }
-
-            var latestSequenceByStore = _snapshots
+            var latestByStore = _snapshots
                 .Where(pair => pair.Key.Since is null)
+                .Select(pair => (pair.Key, pair.Value.Sequence))
+                .Concat(_lazySnapshotDescriptors
+                    .Where(pair => pair.Key.Since is null)
+                    .Select(pair => (pair.Key, pair.Value.Sequence)))
                 .GroupBy(pair => pair.Key.StoreCode, StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(
                     group => group.Key,
-                    group => group.MaxBy(pair => pair.Value.Sequence)!.Key,
+                    group => group.MaxBy(pair => pair.Sequence).Key,
                     StringComparer.OrdinalIgnoreCase);
 
             foreach (var (key, snapshot) in _snapshots.ToArray())
             {
-                if (key.Since is not null)
-                {
-                    continue;
-                }
-
-                if (snapshot.ExpiresAt > now)
-                {
-                    continue;
-                }
-
-                if (latestSequenceByStore.TryGetValue(key.StoreCode, out var latest) &&
-                    latest.Equals(key))
-                {
-                    continue;
-                }
-
-                if (_downloadLeases.IsVersionLeased(key.StoreCode, key.CatalogVersion))
+                if (!ShouldPrune(key, snapshot.ExpiresAt))
                 {
                     continue;
                 }
 
                 _snapshots.Remove(key);
+                _lazySnapshotDescriptors.Remove(key);
             }
+
+            foreach (var (key, lazySnapshot) in _lazySnapshotDescriptors.ToArray())
+            {
+                if (ShouldPrune(key, lazySnapshot.Descriptor.ExpiresAt))
+                {
+                    _lazySnapshotDescriptors.Remove(key);
+                }
+            }
+
+            bool ShouldPrune(CatalogSnapshotCacheKey key, DateTimeOffset expiresAt) =>
+                key.Since is null &&
+                expiresAt <= now &&
+                (!latestByStore.TryGetValue(key.StoreCode, out var latest) || !latest.Equals(key)) &&
+                !_downloadLeases.IsVersionLeased(key.StoreCode, key.CatalogVersion);
         }
     }
 
@@ -1257,7 +1381,7 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
             var node = _rawArtifactLru.AddFirst(key);
             _rawArtifacts.Add(key, new RawArtifactEntry(result.RawPriceIndexInput, node));
             _rawArtifactVersions.Add(key);
-            while (_rawArtifacts.Count > RawArtifactCapacity)
+            while (_rawArtifacts.Count > _rawArtifactCapacity)
             {
                 var leastRecent = _rawArtifactLru.Last!;
                 _rawArtifacts.Remove(leastRecent.Value);
@@ -1473,7 +1597,18 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
 
     private void RemoveSnapshotLocked(CatalogSnapshotCacheKey key)
     {
-        _snapshots.Remove(key);
+        if (_snapshots.Remove(key, out var snapshot) && snapshot.IsPersisted)
+        {
+            // 容量淘汰只降级为轻量磁盘索引；读取时仍由 store.Load 核验 manifest 和正文。
+            _lazySnapshotDescriptors[key] = new LazySnapshotEntry(
+                new CatalogSnapshotDescriptor(
+                    key.StoreCode,
+                    key.Since,
+                    snapshot.Result.GeneratedAt,
+                    snapshot.ExpiresAt,
+                    key.CatalogVersion),
+                snapshot.Sequence);
+        }
         RemoveRawArtifact(key);
         RemoveActiveReferences(key);
     }
@@ -1527,7 +1662,31 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
         TaskCompletionSource<CatalogPublicationOutcome> PublicationCompletion,
         CatalogIndexBuildResult? StaleResult = null,
         CatalogLegacySinceCache? LegacySinceCache = null,
-        long StorePublicationGeneration = 0);
+        long StorePublicationGeneration = 0,
+        CatalogBuildGateLease? BuildGateLease = null);
+
+    private sealed class CatalogBuildGateLease(SemaphoreSlim gate, TimeSpan waitTimeout)
+    {
+        private int _held;
+
+        public async Task AcquireAsync(CancellationToken cancellationToken)
+        {
+            // 排队超时只结束本次 flight，绝不能释放仍由上一门店持有的槽位。
+            if (!await gate.WaitAsync(waitTimeout, cancellationToken))
+            {
+                throw new CatalogCapacityBusyException("Catalog build capacity is busy.");
+            }
+            Volatile.Write(ref _held, 1);
+        }
+
+        public void Release()
+        {
+            if (Interlocked.Exchange(ref _held, 0) == 1)
+            {
+                gate.Release();
+            }
+        }
+    }
 
     private static TaskCompletionSource<CatalogPublicationOutcome> CreatePublication()
     {
@@ -1658,7 +1817,10 @@ public sealed class CatalogIndexCache : ICatalogIndexCache
     private sealed record SnapshotEntry(
         CatalogIndexBuildResult Result,
         DateTimeOffset ExpiresAt,
-        long Sequence);
+        long Sequence,
+        bool IsPersisted);
+
+    private sealed record LazySnapshotEntry(CatalogSnapshotDescriptor Descriptor, long Sequence);
 
     private sealed class PendingSnapshotEntry
     {
