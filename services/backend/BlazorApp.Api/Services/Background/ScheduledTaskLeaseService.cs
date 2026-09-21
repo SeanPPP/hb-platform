@@ -459,42 +459,27 @@ namespace BlazorApp.Api.Services.Background
                     SalesStatisticsDateExecutionGuard.SessionLeaseTokenPrefix,
                     StringComparison.Ordinal) == true)
                 .ToList();
-            if (sessionLeases.Count == 0
-                || _context.Db.CurrentConnectionConfig.DbType != DbType.SqlServer)
+            if (sessionLeases.Count == 0)
             {
                 return leases;
             }
 
-            var activeScopeKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            HashSet<string>? activeScopeKeys;
             try
             {
-                await using var connection = new SqlConnection(
-                    _context.Db.CurrentConnectionConfig.ConnectionString
+                activeScopeKeys = await ProbeHeldSessionScopeKeysAsync(
+                    sessionLeases.Select(lease => lease.ScopeKey)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList()
                 );
-                await connection.OpenAsync();
-                foreach (var scopeKey in sessionLeases.Select(lease => lease.ScopeKey).Distinct(StringComparer.OrdinalIgnoreCase))
-                {
-                    await using var command = connection.CreateCommand();
-                    command.CommandText = """
-                        SELECT CASE
-                            WHEN APPLOCK_MODE(N'public', @resource, N'Session') = N'Exclusive' THEN 1
-                            WHEN APPLOCK_TEST(N'public', @resource, N'Exclusive', N'Session') = 0 THEN 1
-                            ELSE 0
-                        END;
-                        """;
-                    command.Parameters.AddWithValue(
-                        "@resource",
-                        SalesStatisticsDateExecutionGuard.GetLockResource(scopeKey)
-                    );
-                    if (Convert.ToInt32(await command.ExecuteScalarAsync()) == 1)
-                    {
-                        activeScopeKeys.Add(scopeKey);
-                    }
-                }
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "探测 SQL session 日期锁失败，保守保留运行中 sqlsess1 租约");
+                return leases;
+            }
+            if (activeScopeKeys == null)
+            {
                 return leases;
             }
 
@@ -502,6 +487,47 @@ namespace BlazorApp.Api.Services.Background
                 !sessionLeases.Contains(lease)
                 || activeScopeKeys.Contains(lease.ScopeKey)
             ).ToList();
+        }
+
+        /// <summary>
+        /// 以独立连接探测哪些日期的 session applock 仍被持有；返回 null 表示当前数据库不支持
+        /// 探测（非 SQL Server），调用方须保留原租约语义。异常由调用方按"保守视为活跃"处理。
+        /// </summary>
+        internal virtual async Task<HashSet<string>?> ProbeHeldSessionScopeKeysAsync(
+            IReadOnlyCollection<string> scopeKeys
+        )
+        {
+            if (_context.Db.CurrentConnectionConfig.DbType != DbType.SqlServer)
+            {
+                return null;
+            }
+
+            var activeScopeKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            await using var connection = new SqlConnection(
+                _context.Db.CurrentConnectionConfig.ConnectionString
+            );
+            await connection.OpenAsync();
+            foreach (var scopeKey in scopeKeys)
+            {
+                await using var command = connection.CreateCommand();
+                command.CommandText = """
+                    SELECT CASE
+                        WHEN APPLOCK_MODE(N'public', @resource, N'Session') = N'Exclusive' THEN 1
+                        WHEN APPLOCK_TEST(N'public', @resource, N'Exclusive', N'Session') = 0 THEN 1
+                        ELSE 0
+                    END;
+                    """;
+                command.Parameters.AddWithValue(
+                    "@resource",
+                    SalesStatisticsDateExecutionGuard.GetLockResource(scopeKey)
+                );
+                if (Convert.ToInt32(await command.ExecuteScalarAsync()) == 1)
+                {
+                    activeScopeKeys.Add(scopeKey);
+                }
+            }
+
+            return activeScopeKeys;
         }
 
         private async Task<ScheduledTaskLease?> QueryLeaseAsync(string taskType, string scopeKey)
