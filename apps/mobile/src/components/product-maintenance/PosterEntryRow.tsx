@@ -11,7 +11,7 @@ interface PosterEntryRowProps {
   onOpen: (kind: PromoPosterKind) => void;
 }
 
-/** 海报行：嵌在标签卡清货行下面，四个类型按商品状态启用（规则同「折扣」标签按钮），点击进入海报编辑页。 */
+/** 海报行：特价与新品可直接编辑，多件价和清仓按促销状态启用。 */
 export function PosterEntryRow({ availability, disabled = false, onOpen }: PosterEntryRowProps) {
   const { t } = useAppTranslation(["productQuery"]);
 

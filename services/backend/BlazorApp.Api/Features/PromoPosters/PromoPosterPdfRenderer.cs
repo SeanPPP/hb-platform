@@ -43,7 +43,7 @@ public static class PromoPosterPdfRenderer
         });
     }
 
-    public static byte[] Render(IReadOnlyList<PromoPosterSpec> specs, bool impose)
+    public static byte[] Render(IReadOnlyList<PromoPosterSpec> specs, bool impose, bool showLogo = true)
     {
         if (specs.Count == 0) throw new ArgumentException("没有可生成的海报", nameof(specs));
 
@@ -56,7 +56,7 @@ public static class PromoPosterPdfRenderer
         document.Open();
 
         // 同一张 logo 在整份文档里只写一次（iText 按 Image 实例复用 XObject）
-        var logoBytes = PromoPosterAssets.LogoBytes;
+        var logoBytes = showLogo ? PromoPosterAssets.LogoBytes : null;
         var logo = logoBytes != null ? Image.GetInstance(logoBytes) : null;
 
         var firstPage = true;

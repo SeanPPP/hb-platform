@@ -228,7 +228,7 @@ export function computePosterSaving(spec: Pick<PromoPosterSpec, "kind" | "price"
 
 /**
  * 扫码页海报入口的启用规则（与同页标签按钮一致）：
- * 特价=本店折扣率>0；多件价=有进行中的多件促销；清仓=设置了清货价；新品始终可用。
+ * 特价和新品可手填价格，始终可用；多件价和清仓仍需对应促销数据。
  */
 export function resolveScanPosterAvailability(input: {
   discountRate: number | null | undefined;
@@ -236,17 +236,17 @@ export function resolveScanPosterAvailability(input: {
   clearancePrice: number | null | undefined;
 }): PromoPosterAvailability {
   return {
-    special: typeof input.discountRate === "number" && input.discountRate > 0,
+    special: true,
     multibuy: input.activePromotionCount > 0,
     new: true,
     clearance: typeof input.clearancePrice === "number" && input.clearancePrice > 0,
   };
 }
 
-/** 编辑页以后端 defaults 为准：多件价还要求确实返回了促销。 */
+/** 特价不依赖折扣状态；多件价和清仓以后端 defaults 为准。 */
 export function resolveDefaultsAvailability(defaults: PromoPosterDefaults): PromoPosterAvailability {
   return {
-    special: defaults.canSpecial,
+    special: true,
     multibuy: defaults.canMultiBuy && defaults.multiBuyOffers.length > 0,
     new: true,
     clearance: defaults.canClearance,
@@ -333,12 +333,15 @@ export function applyPosterKind(
     inStoreSince: "",
   };
   switch (kind) {
-    case "special":
+    case "special": {
+      const hasDiscount = defaults.discountedPrice !== null && defaults.retailPrice !== null
+        && defaults.discountedPrice > 0 && defaults.discountedPrice < defaults.retailPrice;
       return {
         ...base,
-        price: formatPriceInput(defaults.discountedPrice),
-        wasPrice: formatPriceInput(defaults.retailPrice),
+        price: formatPriceInput(hasDiscount ? defaults.discountedPrice : defaults.retailPrice),
+        wasPrice: hasDiscount ? formatPriceInput(defaults.retailPrice) : "",
       };
+    }
     case "clearance":
       return {
         ...base,
@@ -486,7 +489,10 @@ export function buildPosterSpec(draft: PromoPosterDraft, defaults: PromoPosterDe
   let extra: Partial<PromoPosterSpec> = {};
 
   if (draft.kind === "special" || draft.kind === "clearance") {
-    errors.wasPrice = priceError(draft.wasPrice);
+    // 特价允许只印售价；主动填写原价时仍校验，清仓继续要求原价。
+    if (draft.kind === "clearance" || draft.wasPrice.trim()) {
+      errors.wasPrice = priceError(draft.wasPrice);
+    }
     const wasPrice = parsePosterPrice(draft.wasPrice);
     // WAS 必须高于现价，否则海报上的 SAVE / % OFF 会是负数。
     if (price !== null && wasPrice !== null && wasPrice <= price) {
@@ -617,10 +623,12 @@ export function buildPromoPosterPdfRequest(
   storeCode: string,
   impose: boolean,
   posters: readonly PromoPosterSpec[],
+  showLogo = true,
 ): PromoPosterPdfRequest {
   return {
     storeCode,
     impose,
+    showLogo,
     posters: posters.map((poster) => {
       const base = {
         kind: poster.kind,
@@ -666,6 +674,7 @@ export interface PromoPosterQueueSnapshot {
   style: PromoPosterStyle;
   size: PromoPosterSize;
   impose: boolean;
+  showLogo: boolean;
 }
 
 export const DEFAULT_PROMO_POSTER_QUEUE_SNAPSHOT: PromoPosterQueueSnapshot = {
@@ -673,6 +682,7 @@ export const DEFAULT_PROMO_POSTER_QUEUE_SNAPSHOT: PromoPosterQueueSnapshot = {
   style: "classic",
   size: "A6",
   impose: true,
+  showLogo: true,
 };
 
 function normalizeStoredSpec(raw: unknown): PromoPosterSpec | null {
@@ -730,6 +740,8 @@ export function normalizeStoredQueueSnapshot(raw: unknown): PromoPosterQueueSnap
     style: isPromoPosterStyle(record.style) ? record.style : DEFAULT_PROMO_POSTER_QUEUE_SNAPSHOT.style,
     size: isPromoPosterSize(record.size) ? record.size : DEFAULT_PROMO_POSTER_QUEUE_SNAPSHOT.size,
     impose: typeof record.impose === "boolean" ? record.impose : DEFAULT_PROMO_POSTER_QUEUE_SNAPSHOT.impose,
+    // 无待打印条目即为新批次；旧快照缺少开关时也默认显示 Logo。
+    showLogo: items.length > 0 && typeof record.showLogo === "boolean" ? record.showLogo : true,
   };
 }
 
