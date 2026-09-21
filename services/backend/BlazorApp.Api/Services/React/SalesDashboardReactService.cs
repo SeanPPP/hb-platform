@@ -5440,46 +5440,77 @@ namespace BlazorApp.Api.Services.React
                     using var scope = _serviceScopeFactory.CreateScope();
                     var hbSalesContext = scope.ServiceProvider.GetService<HBSalesRecordSqlSugarContext>()
                         ?? throw new InvalidOperationException("HBSales 来源覆盖查询缺少数据库上下文");
-                    var nextDate = endDate.Date.AddDays(1);
-                    var mainWindowStart = startDate.Date.AddDays(-7);
-                    var mainWindowEnd = nextDate.AddDays(7);
-                    var query = hbSalesContext.Db.Queryable<SalesOrderMain>()
-                        .LeftJoin<SalesOrderDetailRecord>((main, detail) =>
-                            main.B销售单号 == detail.B销售单号
-                        )
-                        .Where((main, detail) =>
-                            detail.B结账日期.HasValue
-                            && detail.B结账日期.Value >= startDate.Date
-                            && detail.B结账日期.Value < nextDate
-                            && main.B结账日期.HasValue
-                            && main.B结账日期.Value >= mainWindowStart
-                            && main.B结账日期.Value < mainWindowEnd
-                            && (main.B单据类型 == null || main.B单据类型.Trim() != "2")
-                            && detail.B分店代码 != null
-                            && detail.B分店代码.Trim() != ""
-                        );
-
-                    if (branchCodes.Count > 0)
+                    if (hbSalesContext.Db.CurrentConnectionConfig.DbType == DbType.SqlServer)
                     {
-                        query = query.Where((main, detail) =>
-                            branchCodes.Contains(detail.B分店代码!.Trim())
-                        );
+                        var sql = BuildHbSalesStoreSalesCoverageSql(hbSalesContext.Db, startDate, endDate, branchCodes);
+                        return await hbSalesContext.Db.Ado.SqlQueryAsync<StatisticDateBranchRow>(sql.Key, sql.Value.ToArray());
                     }
-
-                    return await query
-                        .GroupBy((main, detail) => new
-                        {
-                            Date = detail.B结账日期!.Value.Date,
-                            BranchCode = detail.B分店代码!.Trim(),
-                        })
-                        .Select((main, detail) => new StatisticDateBranchRow
-                        {
-                            Date = detail.B结账日期!.Value.Date,
-                            BranchCode = detail.B分店代码!.Trim(),
-                        })
+                    return await BuildHbSalesStoreSalesCoverageQuery(hbSalesContext.Db, startDate, endDate, branchCodes)
                         .ToListAsync();
                 }
             );
+        }
+
+        internal static ISugarQueryable<StatisticDateBranchRow> BuildHbSalesStoreSalesCoverageQuery(
+            ISqlSugarClient db,
+            DateTime startDate,
+            DateTime endDate,
+            List<string> branchCodes
+        )
+        {
+            var nextDate = endDate.Date.AddDays(1);
+            var mainWindowStart = startDate.Date.AddDays(-7);
+            var mainWindowEnd = nextDate.AddDays(7);
+            var query = db.Queryable<SalesOrderMain>()
+                .LeftJoin<SalesOrderDetailRecord>((main, detail) =>
+                    main.B销售单号 == detail.B销售单号
+                )
+                .Where((main, detail) =>
+                    detail.B结账日期.HasValue
+                    && detail.B结账日期.Value >= startDate.Date
+                    && detail.B结账日期.Value < nextDate
+                    && main.B结账日期.HasValue
+                    && main.B结账日期.Value >= mainWindowStart
+                    && main.B结账日期.Value < mainWindowEnd
+                    && (main.B单据类型 == null || main.B单据类型.Trim() != "2")
+                    && detail.B分店代码 != null
+                    && detail.B分店代码.Trim() != ""
+                );
+
+            if (branchCodes.Count > 0)
+            {
+                query = query.Where((main, detail) =>
+                    branchCodes.Contains(detail.B分店代码!.Trim())
+                );
+            }
+
+            return query
+                .GroupBy((main, detail) => new
+                {
+                    Date = detail.B结账日期!.Value.Date,
+                    BranchCode = detail.B分店代码!.Trim(),
+                })
+                .Select((main, detail) => new StatisticDateBranchRow
+                {
+                    Date = detail.B结账日期!.Value.Date,
+                    BranchCode = detail.B分店代码!.Trim(),
+                });
+        }
+
+        /// <summary>
+        /// HBSales 来源覆盖在 SQL Server 上按实际日期重编译。日期窗口随请求逐日变化，
+        /// 带参编译的计划会退化为约 40 万逻辑读的联表扫描：2026-09-21 生产实测原句 11.3 秒、
+        /// 加 OPTION (RECOMPILE) 后 0.1 秒。分时报表每次打开都要核验去年同日，这条语句决定首屏耗时。
+        /// </summary>
+        internal static KeyValuePair<string, List<SugarParameter>> BuildHbSalesStoreSalesCoverageSql(
+            ISqlSugarClient db,
+            DateTime startDate,
+            DateTime endDate,
+            List<string> branchCodes
+        )
+        {
+            var sql = BuildHbSalesStoreSalesCoverageQuery(db, startDate, endDate, branchCodes).ToSql();
+            return new KeyValuePair<string, List<SugarParameter>>(sql.Key + " OPTION (RECOMPILE)", sql.Value);
         }
 
         private async Task<Dictionary<DateTime, HashSet<string>>?> GetCachedSalesSourceCoverageAsync(

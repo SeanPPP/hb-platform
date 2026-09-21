@@ -4,7 +4,7 @@ import Foundation
 import UIKit
 
 @objc(HbPrinterModule)
-class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
+class HbPrinterModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeripheralDelegate {
   private struct PriceParts {
     let integer: String
     let decimal: String
@@ -39,6 +39,9 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
   private var connectResolve: RCTPromiseResolveBlock?
   private var connectReject: RCTPromiseRejectBlock?
   private var connectTimeoutWorkItem: DispatchWorkItem?
+  private var connectionGeneration = 0
+  private var activeConnectGeneration: Int?
+  private var retiringPeripheralIDs: Set<ObjectIdentifier> = []
   private var pendingCharacteristicServiceCount = 0
   private var printResolve: RCTPromiseResolveBlock?
   private var printReject: RCTPromiseRejectBlock?
@@ -46,10 +49,23 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
   private var pendingWriteType: CBCharacteristicWriteType?
   private var pendingWriteCharacteristic: CBCharacteristic?
   private var printTimeoutWorkItem: DispatchWorkItem?
+  private var hasStatusListeners = false
 
   override init() {
     super.init()
     centralManager = CBCentralManager(delegate: self, queue: bluetoothQueue)
+  }
+
+  override func supportedEvents() -> [String]! {
+    [Self.statusEvent]
+  }
+
+  override func startObserving() {
+    hasStatusListeners = true
+  }
+
+  override func stopObserving() {
+    hasStatusListeners = false
   }
 
   @objc(getStatus:rejecter:)
@@ -129,7 +145,30 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
         return
       }
 
+      // 手动选择或自动恢复可能再次连接同一台健康打印机；直接成功，避免无意义取消后短暂报错。
+      if peripheral === self.connectedPeripheral,
+         self.connectedAddress == address,
+         peripheral.state == .connected,
+         self.writeCharacteristic != nil {
+        self.resolve(resolve, true)
+        return
+      }
+
+      // 同一 CBPeripheral 在取消完成前可能继续回送上一轮委托；等终止回调后再允许复用。
+      guard !self.retiringPeripheralIDs.contains(ObjectIdentifier(peripheral)) else {
+        self.reject(reject, "CONNECT_ERROR", "Previous Bluetooth printer connection is still disconnecting. Please retry.")
+        return
+      }
+
       self.disconnectInternal()
+      guard !self.retiringPeripheralIDs.contains(ObjectIdentifier(peripheral)) else {
+        self.emitStatusChanged()
+        self.reject(reject, "CONNECT_ERROR", "Previous Bluetooth printer connection is still disconnecting. Please retry.")
+        return
+      }
+      self.connectionGeneration += 1
+      let attemptGeneration = self.connectionGeneration
+      self.activeConnectGeneration = attemptGeneration
       self.connectResolve = resolve
       self.connectReject = reject
       peripheral.delegate = self
@@ -142,7 +181,12 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
         guard let self else {
           return
         }
-        self.failPendingConnect("CONNECT_TIMEOUT", "Bluetooth printer connection timed out.")
+        self.failPendingConnect(
+          "CONNECT_TIMEOUT",
+          "Bluetooth printer connection timed out.",
+          expectedPeripheral: peripheral,
+          expectedGeneration: attemptGeneration
+        )
       }
       self.connectTimeoutWorkItem = workItem
       self.bluetoothQueue.asyncAfter(deadline: .now() + .seconds(12), execute: workItem)
@@ -153,6 +197,7 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
   func disconnect(_ resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
     bluetoothQueue.async {
       self.disconnectInternal()
+      self.emitStatusChanged()
       self.resolve(resolve, true)
     }
   }
@@ -246,8 +291,14 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
       failPendingScan("BLUETOOTH_DISABLED", "Bluetooth is turned off.")
       if connectResolve != nil {
         failPendingConnect("BLUETOOTH_DISABLED", "Bluetooth is turned off.")
+      } else {
+        disconnectInternal()
       }
+      // 无线电关闭后 CoreBluetooth 不一定再补发每个 peripheral 的终止回调；恢复时允许重新取回实例。
+      retiringPeripheralIDs.removeAll()
     }
+    // poweredOn 同样通知 JS，让系统蓝牙恢复后可以立刻重新读取状态并重连。
+    emitStatusChanged()
   }
 
   func centralManager(
@@ -270,25 +321,55 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
   }
 
   func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+    guard peripheral === connectedPeripheral, connectResolve != nil else {
+      return
+    }
     peripheral.discoverServices(nil)
   }
 
   func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
-    failPendingConnect("CONNECT_ERROR", error?.localizedDescription ?? "Failed to connect Bluetooth printer.")
+    let peripheralID = ObjectIdentifier(peripheral)
+    let wasCurrent = peripheral === connectedPeripheral
+    if wasCurrent {
+      failPendingConnect("CONNECT_ERROR", error?.localizedDescription ?? "Failed to connect Bluetooth printer.")
+    }
+    // didFailToConnect 是该次取消/连接的终止回调，到这里才允许同一实例开始下一轮连接。
+    let finishedRetiring = retiringPeripheralIDs.remove(peripheralID) != nil
+    if wasCurrent || finishedRetiring {
+      emitStatusChanged()
+    }
   }
 
   func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
-    if peripheral.identifier.uuidString == connectedAddress {
-      if printResolve != nil {
+    // 同时核对当前 peripheral 实例，降低旧连接回调误清后续连接的风险。
+    let peripheralID = ObjectIdentifier(peripheral)
+    let wasCurrent = peripheral === connectedPeripheral
+    if wasCurrent {
+      if connectResolve != nil || connectReject != nil {
+        // 发现服务期间断开也必须立即结算连接 Promise，不能让超时门禁留下永久 pending。
+        failPendingConnect(
+          "CONNECT_ERROR",
+          error?.localizedDescription ?? "Bluetooth printer disconnected while connecting."
+        )
+      } else if printResolve != nil {
         failPendingPrint("PRINT_ERROR", error?.localizedDescription ?? "Bluetooth printer disconnected while printing.")
       }
       writeCharacteristic = nil
       connectedPeripheral = nil
       connectedAddress = nil
+      emitStatusChanged()
+    }
+    // 所有蓝牙委托都在 bluetoothQueue 串行执行，以终止回调作为允许复用该实例的边界。
+    let finishedRetiring = retiringPeripheralIDs.remove(peripheralID) != nil
+    if !wasCurrent && finishedRetiring {
+      emitStatusChanged()
     }
   }
 
   func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+    guard peripheral === connectedPeripheral, connectResolve != nil else {
+      return
+    }
     if let error {
       failPendingConnect("CONNECT_ERROR", error.localizedDescription)
       return
@@ -307,6 +388,9 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
   }
 
   func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
+    guard peripheral === connectedPeripheral, service.peripheral === connectedPeripheral, connectResolve != nil else {
+      return
+    }
     defer {
       pendingCharacteristicServiceCount = max(0, pendingCharacteristicServiceCount - 1)
       if writeCharacteristic == nil && pendingCharacteristicServiceCount == 0 && connectResolve != nil {
@@ -331,12 +415,17 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
     let resolve = connectResolve
     connectResolve = nil
     connectReject = nil
+    activeConnectGeneration = nil
+    emitStatusChanged()
     self.resolve(resolve, true)
   }
 
   func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
+    guard peripheral === connectedPeripheral, characteristic === pendingWriteCharacteristic else {
+      return
+    }
     if let error {
-      failPendingPrint("PRINT_ERROR", error.localizedDescription)
+      failPendingWrite("PRINT_ERROR", error.localizedDescription)
       return
     }
 
@@ -344,6 +433,9 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
   }
 
   func peripheralIsReady(toSendWriteWithoutResponse peripheral: CBPeripheral) {
+    guard peripheral === connectedPeripheral else {
+      return
+    }
     flushPendingWrites()
   }
 
@@ -389,7 +481,7 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
         guard let self else {
           return
         }
-        self.failPendingPrint("PRINT_TIMEOUT", "Bluetooth printer write timed out.")
+        self.failPendingWrite("PRINT_TIMEOUT", "Bluetooth printer write timed out.")
       }
       printTimeoutWorkItem = workItem
       bluetoothQueue.asyncAfter(deadline: .now() + .seconds(timeoutSeconds), execute: workItem)
@@ -448,18 +540,22 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
     self.reject(reject, code, message)
   }
 
-  private func failPendingConnect(_ code: String, _ message: String) {
+  private func failPendingConnect(
+    _ code: String,
+    _ message: String,
+    expectedPeripheral: CBPeripheral? = nil,
+    expectedGeneration: Int? = nil
+  ) {
+    if let expectedPeripheral, expectedPeripheral !== connectedPeripheral {
+      return
+    }
+    if let expectedGeneration, expectedGeneration != activeConnectGeneration {
+      return
+    }
     guard connectResolve != nil || connectReject != nil else {
       return
     }
-
-    let reject = connectReject
-    connectTimeoutWorkItem?.cancel()
-    connectTimeoutWorkItem = nil
-    connectResolve = nil
-    connectReject = nil
-    disconnectInternal()
-    self.reject(reject, code, message)
+    disconnectInternal(pendingConnectCode: code, pendingConnectMessage: message)
   }
 
   private func flushPendingWrites() {
@@ -467,7 +563,7 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
           peripheral.state == .connected,
           let characteristic = pendingWriteCharacteristic,
           let writeType = pendingWriteType else {
-      failPendingPrint("PRINT_ERROR", "No Bluetooth printer is connected.")
+      failPendingWrite("PRINT_ERROR", "No Bluetooth printer is connected.")
       return
     }
 
@@ -498,6 +594,16 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
     self.resolve(resolve, true)
   }
 
+  private func failPendingWrite(_ code: String, _ message: String) {
+    guard printResolve != nil || printReject != nil else {
+      return
+    }
+    // 写失败后旧 ACK 仍可能到达；先结算本次打印并退出会话，禁止旧回调推进下一张标签。
+    failPendingPrint(code, message)
+    disconnectInternal()
+    emitStatusChanged()
+  }
+
   private func failPendingPrint(_ code: String, _ message: String) {
     guard printResolve != nil || printReject != nil else {
       return
@@ -514,17 +620,50 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
     self.reject(reject, code, message)
   }
 
-  private func disconnectInternal() {
+  private func disconnectInternal(
+    pendingConnectCode: String = "CONNECT_CANCELLED",
+    pendingConnectMessage: String = "Bluetooth printer connection was cancelled."
+  ) {
+    let pendingConnectReject = connectReject
+    connectTimeoutWorkItem?.cancel()
+    connectTimeoutWorkItem = nil
+    connectResolve = nil
+    connectReject = nil
+    connectionGeneration += 1
+    activeConnectGeneration = nil
+    pendingCharacteristicServiceCount = 0
     if printResolve != nil {
       failPendingPrint("PRINT_ERROR", "Bluetooth printer disconnected while printing.")
     }
-    if let peripheral = connectedPeripheral {
+    if let peripheral = connectedPeripheral, peripheral.state != .disconnected {
+      // cancelPeripheralConnection 异步完成；终止回调前隔离该实例，避免旧回调污染快速重连。
+      retiringPeripheralIDs.insert(ObjectIdentifier(peripheral))
       centralManager.cancelPeripheralConnection(peripheral)
     }
     writeCharacteristic = nil
     connectedPeripheral = nil
     connectedAddress = nil
+    self.reject(pendingConnectReject, pendingConnectCode, pendingConnectMessage)
   }
+
+  private func emitStatusChanged() {
+    let state = centralManager.state
+    let status: [String: Any] = [
+      "supported": state != .unsupported,
+      "enabled": state == .poweredOn,
+      "connected": connectedPeripheral?.state == .connected && writeCharacteristic != nil,
+      "address": connectedAddress ?? NSNull(),
+    ]
+    // RN 事件必须回到主线程；无订阅者时不调用 sendEvent，避免 RCTEventEmitter 警告。
+    DispatchQueue.main.async { [weak self] in
+      guard let self, self.hasStatusListeners else {
+        return
+      }
+      self.sendEvent(withName: Self.statusEvent, body: status)
+    }
+  }
+
+  private static let statusEvent = "HbPrinterStatusChanged"
 
   private func buildProductLabelCommand(_ payload: NSDictionary, printType: String?) -> String {
     let isSmall = printType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "small"

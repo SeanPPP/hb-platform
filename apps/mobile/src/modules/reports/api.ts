@@ -81,6 +81,18 @@ export interface HourlyRevenueRow {
   compareAverageTransaction: number;
 }
 
+/** 多店小时接口的逐店×逐小时行；单店下钻仍用 HourlyRevenueRow。 */
+export interface BranchHourlyRevenueRow {
+  id: string;
+  branchCode: string;
+  branchName: string;
+  hour: number;
+  revenue: number;
+  compareRevenue: number;
+  transactions: number;
+  compareTransactions: number;
+}
+
 export interface DailyRevenueRow {
   id: string;
   date: string;
@@ -335,6 +347,23 @@ function normalizeHourlyRow(raw: unknown, index: number): HourlyRevenueRow {
   };
 }
 
+function normalizeBranchHourlyRow(raw: unknown, index: number): BranchHourlyRevenueRow {
+  const item = asRecord(raw) ?? {};
+  const hourly = normalizeHourlyRow(raw, index);
+  const branchCode = asString(pick(item, "branchCode", "BranchCode", "storeCode", "StoreCode"));
+  return {
+    // 同一小时会有多家店，id 必须带上分店，不能沿用单店下钻的小时 id。
+    id: `${branchCode || index}:${hourly.hour}`,
+    branchCode,
+    branchName: asString(pick(item, "branchName", "BranchName", "storeName", "StoreName"), branchCode),
+    hour: hourly.hour,
+    revenue: hourly.revenue,
+    compareRevenue: hourly.compareRevenue,
+    transactions: hourly.transactions,
+    compareTransactions: hourly.compareTransactions,
+  };
+}
+
 function normalizeDailyRow(raw: unknown, index: number): DailyRevenueRow {
   const item = asRecord(raw) ?? {};
   const date = normalizeDateLabel(pick(item, "date", "Date", "businessDate", "BusinessDate"), String(index));
@@ -545,6 +574,10 @@ export function normalizeDailyRevenueSnapshot(payload: unknown) {
   return normalizeRevenueDetailSnapshot(payload, normalizeDailyRow);
 }
 
+export function normalizeBranchHourlyRevenueSnapshot(payload: unknown) {
+  return normalizeRevenueDetailSnapshot(payload, normalizeBranchHourlyRow);
+}
+
 export async function fetchExecutiveBranchPerformance(
   query: RevenueReportQuery,
   options: Pick<ExecutiveBranchPerformancePollingOptions, "signal"> = {},
@@ -574,6 +607,24 @@ export async function fetchExecutiveHourlyTraffic(
         ...getRevenueReportRequestConfig(signal),
       });
       return normalizeHourlyRevenueSnapshot(response.data);
+    },
+    options,
+  );
+}
+
+/** 日报累计对比：一次取范围内每家店的逐小时本期与同期，客户端再按截止整点累计。 */
+export async function fetchExecutiveHourlyTrafficByBranch(
+  query: RevenueReportQuery,
+  options: Pick<RevenueDetailPollingOptions, "signal"> = {},
+) {
+  const apiClient = await getApiClient();
+  return pollRevenueDetailSnapshot(
+    async (signal) => {
+      const response = await apiClient.get("/react/v1/dashboard/executive-hourly-traffic", {
+        params: buildParams(query),
+        ...getRevenueReportRequestConfig(signal),
+      });
+      return normalizeBranchHourlyRevenueSnapshot(response.data);
     },
     options,
   );

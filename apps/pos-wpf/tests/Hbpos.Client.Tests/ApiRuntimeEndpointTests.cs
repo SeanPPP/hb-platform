@@ -56,11 +56,11 @@ public sealed class ApiRuntimeEndpointTests
         });
 
         var request = endpointClient.GetAsync("https://old.example.com/pos-api/api/v1/catalog");
-        await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await started.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         state.Switch("https://new.example.com/pos-api/");
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            request.WaitAsync(TimeSpan.FromSeconds(2)));
+            request.WaitAsync(AsyncTestWaitSupport.DefaultTimeout));
     }
 
     [Fact]
@@ -74,7 +74,7 @@ public sealed class ApiRuntimeEndpointTests
             InnerHandler = new DrainControlledHandler(started, complete)
         });
         var request = client.GetAsync("https://old.example.com/pos-api/api/v1/catalog");
-        await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await started.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         var begin = state.BeginTransitionAsync("https://new.example.com/pos-api/", CancellationToken.None);
         await Task.Delay(50);
@@ -82,7 +82,7 @@ public sealed class ApiRuntimeEndpointTests
         Assert.False(begin.IsCompleted);
         complete.SetResult(new HttpResponseMessage(HttpStatusCode.OK));
         using var response = await request;
-        var transition = await begin.WaitAsync(TimeSpan.FromSeconds(2));
+        var transition = await begin.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         Assert.Equal("https://old.example.com/pos-api/", state.CurrentAddress.AbsoluteUri);
 
         state.Commit(transition);
