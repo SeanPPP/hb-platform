@@ -111,6 +111,7 @@
     <Compile Include="WarehouseStorePriceSyncJobServiceTests.cs" />
     <Compile Include="DataSyncFullServiceWarehouseProductsTests.cs" />
     <Compile Include="DataSyncIncrementalPosmSupplierMappingsTests.cs" />
+    <Compile Include="DataSyncIncrementalHqStartTests.cs" />
     <Compile Include="DataSyncIncrementalStoreRetailPriceTests.cs" />
     <Compile Include="DataSyncLegacyHistoryTests.cs" />
     <Compile Include="ScheduledTaskServiceTests.cs" />
