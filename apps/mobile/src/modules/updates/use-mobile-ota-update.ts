@@ -7,6 +7,7 @@ import {
   appUpdateMutualExclusion,
   createUpdateLaneRetryGate,
 } from "./app-update-mutual-exclusion";
+import { useForegroundUpdateCheckInterval } from "./foreground-update-interval";
 import {
   checkMobileOtaUpdate,
   readCachedMobileOtaRequiredDecision,
@@ -403,6 +404,11 @@ export function useMobileOtaUpdate(options: UseMobileOtaUpdateOptions) {
       subscription.remove();
     };
   }, []);
+
+  // 前台定时补查新 OTA 目标；已提示过的目标由 optionalPromptTargetRef 去重，不会重复弹窗。
+  useForegroundUpdateCheckInterval(() => {
+    void runCheckRef.current();
+  }, { enabled: effectiveEnabled });
 
   async function checkManually(): Promise<MobileOtaManualCheckResult> {
     if (!enabledRef.current) {

@@ -387,8 +387,10 @@
     },
     "styles": {
       "classic": "Classic",
-      "modern": "Modern"
+      "modern": "Modern",
+      "low-ink": "Low ink"
     },
+    "lowInkHint": "White paper, black text, with colour only in the heading and short rule. Turn off the logo if preferred.",
     "unavailable": {
       "multibuy": "no active multi-buy promotion",
       "clearance": "no clearance price set"
