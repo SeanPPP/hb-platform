@@ -295,6 +295,8 @@
     "mobileOtaRequiredMessage": "此更新不可跳过；仅适用于当前兼容 Runtime 和已包含受控更新器的客户端。",
     "mobileOtaDownloadAction": "下载更新",
     "mobileOtaRestartAction": "立即重启",
+    "mobileOtaRestartFailedTitle": "重启失败",
+    "mobileOtaRestartFailedMessage": "更新暂时无法应用。你可以继续使用应用，稍后在设置中重试。",
     "mobileOtaLaterAction": "稍后",
     "mobileOtaRetryAction": "重新检查",
     "mobileOtaRetryHelper": "更新暂未就绪，请检查网络后重试。",

@@ -295,6 +295,8 @@
     "mobileOtaRequiredMessage": "This update cannot be skipped. It only covers compatible runtimes that already include the managed updater.",
     "mobileOtaDownloadAction": "Download update",
     "mobileOtaRestartAction": "Restart now",
+    "mobileOtaRestartFailedTitle": "Restart failed",
+    "mobileOtaRestartFailedMessage": "The update could not be applied right now. You can continue using the app and retry later in Settings.",
     "mobileOtaLaterAction": "Later",
     "mobileOtaRetryAction": "Check again",
     "mobileOtaRetryHelper": "The update is not ready yet. Check the network and retry.",
