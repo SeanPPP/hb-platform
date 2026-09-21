@@ -433,6 +433,8 @@
       "inStoreSince": "In store since",
       "offerLabel": "Multi-buy promotion",
       "offerSummary": "{{quantity}} for {{price}}",
+      "quantityLabel": "Quantity (2–99)",
+      "comboPriceLabel": "Combination price",
       "unitPriceLabel": "Unit price (retail)",
       "offerValidityLabel": "Promotion period",
       "offerValidity": "{{from}} to {{to}}",
@@ -462,6 +464,7 @@
         "rangeInvalid": "Start date cannot be after the end date"
       },
       "offerRequired": "Choose a multi-buy promotion",
+      "quantityInvalid": "Quantity must be an integer from 2 to 99",
       "unitPriceMissing": "This product has no retail price for the unit price",
       "offerInvalid": "Invalid promotion quantity or price. Check the promotion.",
       "fixBeforeSubmit": "Fix the fields marked in red first"
