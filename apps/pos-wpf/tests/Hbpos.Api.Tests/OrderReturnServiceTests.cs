@@ -6,6 +6,68 @@ namespace Hbpos.Api.Tests;
 
 public sealed class OrderReturnServiceTests
 {
+    // 连接级 MoreSettings.IsWithNoLockQuery = true 会给所有 Queryable 自动加 WITH(NOLOCK)，
+    // 而表提示会覆盖会话隔离级别，使 BeginSerializableTransactionAsync 的范围锁保护完全落空。
+    // 退货额度校验一旦互不阻塞，两笔并发退款会读到相同的“已退数量/金额”并双双通过校验，
+    // 同一商品行被退两次；sales_return_record 上只有非唯一索引，没有约束兜底。
+    // 现有的并发用例走 FakeReturnRepository，不经过真实 SQL，捕获不到隔离级别问题，
+    // 因此这里以源码契约的方式锁定表提示，防止日后被删除或新增查询时漏加。
+    [Fact]
+    public void Return_capacity_reads_do_not_dirty_read_and_take_range_locks()
+    {
+        var source = ReadOrderReturnServiceSource();
+
+        // 决定“还能退多少”的四处读：UPDLOCK 串行化并发判断，
+        // HOLDLOCK 的范围锁用于挡住另一事务插入新的退款行。
+        AssertTableHintBeforeQuery(source, "record.ReturnOrderGuid == returnOrderGuid", "UPDLOCK", "HOLDLOCK");
+        AssertTableHintBeforeQuery(source, "record.OriginalOrderGuid == orderGuidText", "UPDLOCK", "HOLDLOCK");
+        AssertTableHintBeforeQuery(source, "payment.OrderGuid == orderGuidText", "UPDLOCK", "HOLDLOCK");
+        AssertTableHintBeforeQuery(source, "payment.OrderGuid == returnOrderGuid", "UPDLOCK", "HOLDLOCK");
+
+        // 只读原单的两处不参与额度计算，但仍不能脏读到可能回滚的订单。
+        AssertTableHintBeforeQuery(source, "order.OrderGuid == orderGuidText", "READCOMMITTED");
+        AssertTableHintBeforeQuery(source, "line.OrderGuid == orderGuidText", "READCOMMITTED");
+    }
+
+    private static void AssertTableHintBeforeQuery(string source, string anchor, params string[] expectedHints)
+    {
+        var occurrences = source.Split(anchor).Length - 1;
+        Assert.True(occurrences == 1, $"查询锚点不唯一，无法定位：{anchor}（出现 {occurrences} 次）");
+
+        // 只取 .With("...") 的实参本身来判断，避免把解释性注释里的字样误当成表提示。
+        var index = source.IndexOf(anchor, StringComparison.Ordinal);
+        var window = source[Math.Max(0, index - 300)..index];
+        const string marker = ".With(\"";
+        var hintStart = window.LastIndexOf(marker, StringComparison.Ordinal);
+        Assert.True(hintStart >= 0, $"查询 [{anchor}] 没有任何表提示：连接级 NOLOCK 会让它脏读。");
+
+        var valueStart = hintStart + marker.Length;
+        var valueEnd = window.IndexOf('"', valueStart);
+        Assert.True(valueEnd > valueStart, $"查询 [{anchor}] 的表提示无法解析。");
+        var tableHint = window[valueStart..valueEnd];
+
+        foreach (var hint in expectedHints)
+        {
+            Assert.Contains(hint, tableHint, StringComparison.OrdinalIgnoreCase);
+        }
+
+        Assert.DoesNotContain("NOLOCK", tableHint, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string ReadOrderReturnServiceSource()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null &&
+               !File.Exists(Path.Combine(directory.FullName, "src", "Hbpos.Api", "Services", "OrderReturnService.cs")))
+        {
+            directory = directory.Parent;
+        }
+
+        Assert.NotNull(directory);
+        return File.ReadAllText(
+            Path.Combine(directory!.FullName, "src", "Hbpos.Api", "Services", "OrderReturnService.cs"));
+    }
+
     [Fact]
     public async Task GetReturnContextAsync_ReturnsOrderAndRelatedReturnRecords()
     {
