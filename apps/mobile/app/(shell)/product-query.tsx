@@ -27,6 +27,7 @@ import { CodeAddSheet } from "@/components/product-maintenance/CodeAddSheet";
 import { LookupResultSheet } from "@/components/product-maintenance/LookupResultSheet";
 import { LabelPrintCard } from "@/components/product-maintenance/LabelPrintCard";
 import { PrintSettingsModal } from "@/components/product-maintenance/PrintSettingsModal";
+import { PrinterConnectionStatus } from "@/components/product-maintenance/PrinterConnectionStatus";
 import { MultiCodeCompactList } from "@/components/product-maintenance/MultiCodeCompactList";
 import { NumericInputModal } from "@/components/product-maintenance/NumericInputModal";
 import { OfflineCatalogStatusRow } from "@/components/product-maintenance/OfflineCatalogStatusRow";
@@ -554,6 +555,9 @@ function ProductQueryContent() {
   const printerAutoReconnectPaused = usePrinterStore(
     (state) => state.autoReconnectPaused,
   );
+  const savedPrinter = usePrinterStore((state) => state.savedPrinter);
+  const printerConnectionStatus = usePrinterStore((state) => state.status);
+  const printerLastError = usePrinterStore((state) => state.lastError);
   const [keyword, setKeyword] = useState("");
   const [lookupItems, setLookupItems] = useState<ProductLookupItem[]>([]);
   const [selectedLookupProductCode, setSelectedLookupProductCode] =
@@ -4513,6 +4517,12 @@ function ProductQueryContent() {
           style={styles.printDock}
           pointerEvents={scannerInputBlocked ? "none" : "auto"}
         >
+          <PrinterConnectionStatus
+            savedPrinter={savedPrinter}
+            status={printerConnectionStatus}
+            lastError={printerLastError}
+            onPress={() => router.navigate("/(shell)/settings")}
+          />
           <LabelPrintCard
             isPrintingProduct={printingAction === "product"}
             isPrintingDiscount={printingAction === "discount"}
@@ -5081,6 +5091,7 @@ const styles = StyleSheet.create({
   },
   printDock: {
     flexShrink: 0,
+    gap: 6,
     paddingHorizontal: 16,
     paddingTop: 8,
     paddingBottom: 12,

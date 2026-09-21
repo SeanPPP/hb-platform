@@ -23,6 +23,7 @@ import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.ReadableMap
+import com.facebook.react.modules.core.DeviceEventManagerModule
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.MultiFormatWriter
@@ -48,6 +49,7 @@ class HbPrinterModule(
     manager?.adapter
   }
   private val handler = Handler(Looper.getMainLooper())
+  private val connectionLock = Any()
   private val printerUuid: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
   private val labelWidth = 570
   private val labelHeight = 400
@@ -59,7 +61,94 @@ class HbPrinterModule(
   @Volatile
   private var connectedAddress: String? = null
 
+  private var connectionGeneration = 0L
+  private var statusReceiverRegistered = false
+  @Volatile
+  private var listenerCount = 0
+  private var pendingAclDisconnect: Runnable? = null
+  private var pendingAclDisconnectAddress: String? = null
+
+  private val statusReceiver = object : BroadcastReceiver() {
+    @SuppressLint("MissingPermission")
+    override fun onReceive(context: Context?, intent: Intent?) {
+      when (intent?.action) {
+        BluetoothDevice.ACTION_ACL_DISCONNECTED -> {
+          val device = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+          } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+          }
+          val disconnectedAddress = device?.address
+          val activeSocket = synchronized(connectionLock) {
+            if (disconnectedAddress == connectedAddress) socket else null
+          }
+          if (activeSocket != null && disconnectedAddress != null) {
+            pendingAclDisconnect?.let(handler::removeCallbacks)
+            val task = Runnable {
+              pendingAclDisconnect = null
+              pendingAclDisconnectAddress = null
+              // 延后一轮等候同设备 ACL_CONNECTED；仍校验 socket 身份，避免过期广播清新连接。
+              if (clearConnection(activeSocket)) {
+                emitStatusChanged()
+              }
+            }
+            pendingAclDisconnect = task
+            pendingAclDisconnectAddress = disconnectedAddress
+            handler.postDelayed(task, ACL_DISCONNECT_SETTLE_MS)
+          }
+        }
+        BluetoothDevice.ACTION_ACL_CONNECTED -> {
+          val device = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+          } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+          }
+          if (device?.address == pendingAclDisconnectAddress) {
+            pendingAclDisconnect?.let(handler::removeCallbacks)
+            pendingAclDisconnect = null
+            pendingAclDisconnectAddress = null
+          }
+        }
+        BluetoothAdapter.ACTION_STATE_CHANGED -> {
+          val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
+          if (state == BluetoothAdapter.STATE_OFF || state == BluetoothAdapter.STATE_TURNING_OFF) {
+            invalidateConnectionAttempt()
+            clearConnection()
+          }
+          // STATE_ON 也必须通知 JS，才能在用户重新打开蓝牙后立即触发重连判断。
+          emitStatusChanged()
+        }
+      }
+    }
+  }
+
   override fun getName(): String = "HbPrinterModule"
+
+  override fun initialize() {
+    super.initialize()
+    registerStatusReceiver()
+  }
+
+  override fun invalidate() {
+    unregisterStatusReceiver()
+    invalidateConnectionAttempt()
+    clearConnection()
+    super.invalidate()
+  }
+
+  @ReactMethod
+  fun addListener(eventName: String) {
+    if (eventName == STATUS_EVENT) {
+      listenerCount += 1
+    }
+  }
+
+  @ReactMethod
+  fun removeListeners(count: Int) {
+    listenerCount = (listenerCount - count).coerceAtLeast(0)
+  }
 
   @ReactMethod
   fun getStatus(promise: Promise) {
@@ -68,8 +157,9 @@ class HbPrinterModule(
       val map = Arguments.createMap()
       map.putBoolean("supported", adapter != null)
       map.putBoolean("enabled", adapter?.isEnabled == true)
-      map.putBoolean("connected", socket?.isConnected == true)
-      map.putString("address", connectedAddress)
+      val connection = synchronized(connectionLock) { socket to connectedAddress }
+      map.putBoolean("connected", connection.first?.isConnected == true)
+      map.putString("address", connection.second)
       promise.resolve(map)
     } catch (error: Exception) {
       promise.reject("STATUS_ERROR", error.message, error)
@@ -166,7 +256,8 @@ class HbPrinterModule(
 
     try {
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        appContext.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        // 蓝牙发现广播来自系统蓝牙组件；Android 13+ 需允许特权系统发送方。
+        appContext.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
       } else {
         @Suppress("DEPRECATION")
         appContext.registerReceiver(receiver, filter)
@@ -201,20 +292,37 @@ class HbPrinterModule(
     }
 
     Thread {
+      var nextSocket: BluetoothSocket? = null
       try {
-        disconnectInternal()
+        val attemptGeneration = beginConnectionAttempt()
         if (adapter.isDiscovering) {
           adapter.cancelDiscovery()
         }
 
         val device = adapter.getRemoteDevice(address)
-        val nextSocket = device.createRfcommSocketToServiceRecord(printerUuid)
+        nextSocket = device.createRfcommSocketToServiceRecord(printerUuid)
         nextSocket.connect()
-        socket = nextSocket
-        connectedAddress = address
+        val installed = synchronized(connectionLock) {
+          if (connectionGeneration != attemptGeneration || adapter.isEnabled != true) {
+            false
+          } else {
+            socket = nextSocket
+            connectedAddress = address
+            true
+          }
+        }
+        if (!installed) {
+          throw IllegalStateException("Bluetooth printer connection was cancelled.")
+        }
+        nextSocket = null
+        emitStatusChanged()
         promise.resolve(true)
       } catch (error: Exception) {
-        disconnectInternal()
+        // connect() 失败时 socket 尚未写入共享状态，必须单独关闭，避免 RFCOMM 资源泄漏。
+        try {
+          nextSocket?.close()
+        } catch (_: Exception) {
+        }
         promise.reject("CONNECT_ERROR", error.message, error)
       }
     }.start()
@@ -223,7 +331,9 @@ class HbPrinterModule(
   @ReactMethod
   fun disconnect(promise: Promise) {
     try {
-      disconnectInternal()
+      invalidateConnectionAttempt()
+      clearConnection()
+      emitStatusChanged()
       promise.resolve(true)
     } catch (error: Exception) {
       promise.reject("DISCONNECT_ERROR", error.message, error)
@@ -321,15 +431,23 @@ class HbPrinterModule(
   }
 
   private fun writePrinterCommand(command: String, encoding: String) {
-    val activeSocket = socket
+    val activeSocket = synchronized(connectionLock) { socket }
     if (activeSocket == null || !activeSocket.isConnected) {
       throw IllegalStateException("No Bluetooth printer is connected.")
     }
 
     val charset = Charset.forName(encoding)
-    val outputStream = activeSocket.outputStream
-    outputStream.write(command.toByteArray(charset))
-    outputStream.flush()
+    try {
+      val outputStream = activeSocket.outputStream
+      outputStream.write(command.toByteArray(charset))
+      outputStream.flush()
+    } catch (error: Exception) {
+      // 数据是否已被打印机接收不可判定：只失效连接并保留原始异常，禁止自动重放。
+      if (clearConnection(activeSocket)) {
+        emitStatusChanged()
+      }
+      throw error
+    }
   }
 
   private fun buildProductLabelCommand(payload: ReadableMap, printType: String = ""): String {
@@ -1016,14 +1134,98 @@ class HbPrinterModule(
     return luminance < 200
   }
 
-  private fun disconnectInternal() {
-    try {
-      socket?.close()
-    } catch (_: Exception) {
-    } finally {
+  private fun beginConnectionAttempt(): Long {
+    val previousSocket: BluetoothSocket?
+    val generation: Long
+    synchronized(connectionLock) {
+      previousSocket = socket
       socket = null
       connectedAddress = null
+      connectionGeneration += 1
+      generation = connectionGeneration
     }
+    closeSocket(previousSocket)
+    return generation
+  }
+
+  private fun invalidateConnectionAttempt() {
+    synchronized(connectionLock) {
+      connectionGeneration += 1
+    }
+  }
+
+  private fun clearConnection(expectedSocket: BluetoothSocket? = null): Boolean {
+    val socketToClose: BluetoothSocket?
+    synchronized(connectionLock) {
+      if (expectedSocket != null && socket !== expectedSocket) {
+        return false
+      }
+      socketToClose = socket
+      if (socketToClose == null && connectedAddress == null) {
+        return false
+      }
+      socket = null
+      connectedAddress = null
+      connectionGeneration += 1
+    }
+    closeSocket(socketToClose)
+    return true
+  }
+
+  private fun closeSocket(target: BluetoothSocket?) {
+    try {
+      target?.close()
+    } catch (_: Exception) {
+    }
+  }
+
+  @SuppressLint("MissingPermission")
+  private fun registerStatusReceiver() {
+    if (statusReceiverRegistered) {
+      return
+    }
+    val filter = IntentFilter().apply {
+      addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
+      addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
+      addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
+    }
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      // 蓝牙状态广播由特权系统组件发送，NOT_EXPORTED 会漏收这类广播。
+      appContext.registerReceiver(statusReceiver, filter, Context.RECEIVER_EXPORTED)
+    } else {
+      @Suppress("DEPRECATION")
+      appContext.registerReceiver(statusReceiver, filter)
+    }
+    statusReceiverRegistered = true
+  }
+
+  private fun unregisterStatusReceiver() {
+    if (!statusReceiverRegistered) {
+      return
+    }
+    try {
+      appContext.unregisterReceiver(statusReceiver)
+    } catch (_: IllegalArgumentException) {
+    } finally {
+      pendingAclDisconnect?.let(handler::removeCallbacks)
+      pendingAclDisconnect = null
+      pendingAclDisconnectAddress = null
+      statusReceiverRegistered = false
+    }
+  }
+
+  private fun emitStatusChanged() {
+    if (listenerCount <= 0 || !reactApplicationContext.hasActiveReactInstance()) {
+      return
+    }
+    reactApplicationContext
+      .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+      .emit(STATUS_EVENT, Arguments.createMap())
+  }
+
+  companion object {
+    private const val STATUS_EVENT = "HbPrinterStatusChanged"
+    private const val ACL_DISCONNECT_SETTLE_MS = 250L
   }
 
   data class WritablePrinterDevice(
