@@ -273,6 +273,20 @@ test("AlreadySynced 等同成功；retry/403/业务拒绝保持各自的 outbox 
   assert.deepEqual(locked, ["DEVICE_DISABLED"]);
 });
 
+test("不支持的小数数量仅以专用码持久重试，保留原订单", async () => {
+  const outbox = new FakeOutbox([[lease("quantity")]]);
+  const coordinator = createCoordinator(outbox, {
+    "order-quantity": { kind: "retry", failure: "server", code: "ORDER_SYNC_QUANTITY_UNSUPPORTED" },
+  });
+  await coordinator.requestDrain();
+  assert.deepEqual(outbox.retries, [{
+    messageId: "quantity",
+    nextAttemptAtIso: "2026-07-28T00:00:01.000Z",
+    errorCode: "ORDER_SYNC_QUANTITY_UNSUPPORTED",
+  }]);
+  assert.deepEqual(outbox.rejected, []);
+});
+
 test("启动、前台、联网恢复共享同一个单飞 drain，不会重复补传同一 OrderGuid", async () => {
   const outbox = new FakeOutbox([[lease("one")]]);
   let calls = 0;

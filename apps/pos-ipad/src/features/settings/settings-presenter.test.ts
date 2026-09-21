@@ -61,6 +61,86 @@ const allPermissions = [
   SETTINGS_CUSTOMER_DISPLAY_PERMISSION,
 ] as const;
 
+test("支付方式默认关闭，草稿保存后生效且不改变原刷卡 provider", async () => {
+  const port = new FakeSettingsPort();
+  const saved: unknown[] = [];
+  Object.assign(port, { savePaymentMethods: async (input: unknown) => { saved.push(input); } });
+  const presenter = new SettingsPresenter({ permissions: allPermissions, port });
+  await presenter.load();
+  const provider = presenter.getState().paymentProvider;
+  assert.deepEqual(presenter.getState().paymentMethods, { useManualCard: false, giftCardEnabled: false });
+  presenter.setUseManualCard(true);
+  presenter.setGiftCardEnabled(true);
+  assert.equal(presenter.getState().paymentMethods.useManualCard, false);
+  await presenter.savePaymentMethods();
+  assert.deepEqual(saved, [{ useManualCard: true, giftCardEnabled: true }]);
+  assert.equal(presenter.getState().paymentProvider, provider);
+  assert.equal(presenter.getState().paymentMethods.giftCardEnabled, true);
+  presenter.setUseManualCard(false);
+  await presenter.savePaymentMethods();
+  assert.equal(presenter.getState().paymentProvider, provider);
+  assert.equal(presenter.getState().paymentMethods.giftCardEnabled, true);
+  presenter.destroy();
+});
+
+test("支付方式保存失败保持原生效值，无权限不允许编辑和保存", async () => {
+  const port = new FakeSettingsPort();
+  let calls = 0;
+  Object.assign(port, { savePaymentMethods: async () => { calls++; throw new Error("payment unresolved"); } });
+  const presenter = new SettingsPresenter({ permissions: allPermissions, port });
+  await presenter.load();
+  presenter.setUseManualCard(true);
+  await presenter.savePaymentMethods();
+  assert.equal(presenter.getState().paymentMethods.useManualCard, false);
+  assert.equal(presenter.getState().paymentMethodsDraft.useManualCard, true);
+  assert.equal(presenter.getState().statusCode, "payment-settings-save-failed");
+  presenter.destroy();
+  const restricted = new SettingsPresenter({ permissions: [SETTINGS_VIEW_PERMISSION], port });
+  await restricted.load();
+  restricted.setUseManualCard(true);
+  await restricted.savePaymentMethods();
+  assert.equal(restricted.getState().paymentMethodsDraft.useManualCard, false);
+  assert.equal(calls, 1);
+  restricted.destroy();
+});
+
+test("支付方式保存进行中冻结编辑与重复提交", async () => {
+  const port = new FakeSettingsPort();
+  let resolve!: () => void;
+  let calls = 0;
+  Object.assign(port, { savePaymentMethods: () => { calls++; return new Promise<void>((done) => { resolve = done; }); } });
+  const presenter = new SettingsPresenter({ permissions: allPermissions, port });
+  await presenter.load();
+  presenter.setUseManualCard(true);
+  const save = presenter.savePaymentMethods();
+  presenter.setUseManualCard(false);
+  await presenter.savePaymentMethods();
+  assert.equal(calls, 1);
+  assert.equal(presenter.getState().paymentMethodsDraft.useManualCard, true);
+  resolve();
+  await save;
+  assert.equal(presenter.getState().paymentMethods.useManualCard, true);
+  presenter.destroy();
+});
+
+test("支付方式保存运行时门禁错误映射为可操作提示，保留已保存值", async () => {
+  for (const [code, expected] of [
+    ["PAYMENT_METHOD_SETTINGS_BLOCKED", "payment-method-settings-blocked"],
+    ["PAYMENT_METHOD_SETTINGS_UNAVAILABLE", "payment-method-settings-unavailable"],
+    ["SETTINGS_PERMISSION_DENIED", "permission-required"],
+  ]) {
+    const port = new FakeSettingsPort();
+    Object.assign(port, { savePaymentMethods: async () => { throw new Error(code); } });
+    const presenter = new SettingsPresenter({ permissions: allPermissions, port });
+    await presenter.load();
+    presenter.setGiftCardEnabled(true);
+    await presenter.savePaymentMethods();
+    assert.equal(presenter.getState().statusCode, expected);
+    assert.equal(presenter.getState().paymentMethods.giftCardEnabled, false);
+    presenter.destroy();
+  }
+});
+
 test("无 View 权限时 fail closed 且不读取任何运行时设置", async () => {
   const port = new FakeSettingsPort();
   const presenter = new SettingsPresenter({ permissions: [], port });

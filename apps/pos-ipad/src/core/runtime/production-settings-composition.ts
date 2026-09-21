@@ -1,4 +1,8 @@
 import type { CurrentCashierSession } from "./current-cashier-session";
+import {
+  DEFAULT_PAYMENT_METHOD_SETTINGS,
+  type PaymentMethodSettings,
+} from "@/features/settings/payment-method-settings";
 import type { RuntimePrinterAdapter } from "./lazy-printer-adapter";
 import {
   ProductionSettingsControl,
@@ -71,6 +75,10 @@ type LeaseAwareClearSavedPrinter = (
 ) => Promise<SettingsClearSavedPrinterResult>;
 
 export type ProductionSettingsCompositionInput = Readonly<{
+  paymentMethods?: Readonly<{
+    load(): Promise<PaymentMethodSettings>;
+    save(input: PaymentMethodSettings): Promise<unknown>;
+  }>;
   currentCashier: CurrentCashierSession;
   terminal: TerminalScope;
   activeCart: Pick<
@@ -193,7 +201,7 @@ export function createProductionSettingsComposition(
   const productionControl = new ProductionSettingsControl({
     readSnapshot: async (signal) => {
       throwIfAborted(signal);
-      const [device, catalog, printer, printerStatus, displayStatus] =
+      const [device, catalog, printer, printerStatus, displayStatus, paymentMethods] =
         await Promise.all([
           input.readDevicePresentation(),
           input.catalog.getActiveMetadata(),
@@ -201,6 +209,7 @@ export function createProductionSettingsComposition(
           input.printer.getStatus(),
           input.externalDisplay?.getStatus() ??
             Promise.resolve("disconnected" as const),
+          input.paymentMethods?.load() ?? Promise.resolve(DEFAULT_PAYMENT_METHOD_SETTINGS),
         ]);
       throwIfAborted(signal);
       assertDeviceScope(device, terminal);
@@ -240,6 +249,7 @@ export function createProductionSettingsComposition(
         },
         paymentProvider:
           input.paymentConfiguration.current?.provider ?? null,
+        paymentMethods,
         printer,
         square: {
           ...input.paymentConfiguration.availability.square,
@@ -284,6 +294,9 @@ export function createProductionSettingsComposition(
         input.paymentConfiguration.save(configuration),
     },
     paymentConfigurationTransition: input.paymentConfigurationTransition,
+    ...(input.paymentMethods ? { paymentMethods: {
+      save: async (settings: PaymentMethodSettings) => { await input.paymentMethods!.save(settings); },
+    } } : {}),
     ...(input.linklySetup
       ? {
           linklySetup: {

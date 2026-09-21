@@ -10,6 +10,8 @@ import {
   type SettingsSquareSetupControlPort,
 } from "../../features/settings/settings-presenter";
 import type { SettingsRuntimeFactory } from "../../features/settings/settings-runtime";
+import { resolveSettingsAccess } from "@/features/settings/settings-authorization";
+import type { PaymentMethodSettings } from "@/features/settings/payment-method-settings";
 
 export type SettingsTrustedSession = Readonly<{
   storeCode: string;
@@ -40,6 +42,11 @@ export type ProductionSettingsRuntimeDependencies = Readonly<{
 
 type LeaseAwareSettingsControlPort = SettingsControlPort &
   Readonly<{
+    savePaymentMethods?(
+      input: PaymentMethodSettings,
+      signal: AbortSignal,
+      assertActive?: () => void,
+    ): Promise<void>;
     executeDangerousAction(
       action: SettingsDangerousConfirmation,
       signal: AbortSignal,
@@ -321,6 +328,18 @@ function securedSettingsPort(
       ),
     savePrinterSettings: (settings, signal) =>
       run(() => input.control.savePrinterSettings(settings, signal)),
+    ...(leaseAwareControl.savePaymentMethods ? {
+      savePaymentMethods: async (settings: PaymentMethodSettings, signal: AbortSignal) => {
+        const assertAccess = () => {
+          const current = lease.get();
+          assertSameSession(current, identity);
+          const access = resolveSettingsAccess(current.permissionCodes);
+          if (!access.canView || !access.canConfigurePayments) throw new Error("SETTINGS_PERMISSION_DENIED");
+        };
+        assertAccess();
+        await leaseAwareControl.savePaymentMethods!(settings, signal, assertAccess);
+      },
+    } : {}),
     loadReceiptProfile: (signal) =>
       run(() => input.control.loadReceiptProfile(signal)),
     scanPrinters: (signal) =>

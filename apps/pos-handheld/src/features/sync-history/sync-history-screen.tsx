@@ -496,11 +496,13 @@ function SyncHistoryOrderRow({
         ) : null}
         {row.outbox?.lastErrorCode ? (
           <Text
-            numberOfLines={1}
+            numberOfLines={row.outbox.lastErrorCode === "ORDER_SYNC_QUANTITY_UNSUPPORTED" ? 4 : 1}
             style={styles.safeError}
             testID={`sync-history-error-${row.orderGuid}`}
           >
-            {t("list.error", { code: row.outbox.lastErrorCode })}
+            {t(row.outbox.lastErrorCode === "ORDER_SYNC_QUANTITY_UNSUPPORTED"
+              ? "list.quantityUnsupported"
+              : "list.error", { code: row.outbox.lastErrorCode })}
           </Text>
         ) : null}
         {row.outbox?.nextAttemptAtIso ? (
@@ -592,7 +594,9 @@ function SyncHistoryDetail({
         ) : null}
         {row.outbox?.lastErrorCode ? (
           <Text style={styles.safeError}>
-            {t("list.error", { code: row.outbox.lastErrorCode })}
+            {t(row.outbox.lastErrorCode === "ORDER_SYNC_QUANTITY_UNSUPPORTED"
+              ? "list.quantityUnsupported"
+              : "list.error", { code: row.outbox.lastErrorCode })}
           </Text>
         ) : null}
         {row.outbox?.nextAttemptAtIso ? (

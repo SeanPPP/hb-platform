@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { curveError, defaultCurve, finalPrice, rawPrice, rulesFromNodes } from './pricingCurve'
+import { boundedPrice, curveError, defaultCurve, finalPrice, nodesFromRules, rawPrice, rulesFromNodes } from './pricingCurve'
 
 const rules = defaultCurve()
 assert.equal(curveError(rules), null)
@@ -14,7 +14,25 @@ for (const rule of rules) {
   assert.equal(finalPrice(rule.minPrice, rule.startRetailPrice!), rule.startRetailPrice)
   assert.equal(finalPrice(rule.maxPrice, rule.endRetailPrice!), rule.endRetailPrice)
 }
-for (const [raw, expected] of [[.99, .99], [1, 1], [1.99, 1.99], [2, 2], [10, 9.99], [10.51, 10.99], [10.5, 10.5]]) assert.equal(finalPrice(raw / 3, raw), expected)
+// 直接命中自动价格归一档，以及其他旧尾数规则保持不变。
+for (const [raw, expected] of [[.99, 1], [1, 1], [1.99, 2], [2, 2], [10, 9.99], [10.51, 10.99], [10.5, 10.5]]) assert.equal(finalPrice(raw / 3, raw), expected)
+assert.equal(finalPrice(1, 1.99), 2)
+assert.equal(finalPrice(1, 2.99), 2.99)
+// 理论价落到 .99 / 1.99 时归一，邻近尾数不受影响。
+assert.equal(finalPrice(1, 1.994), 2)
+assert.equal(finalPrice(1, 2.004), 2.5)
+// 下限/上限尾数卡出 .99 / 1.99 时允许归一后多 1 分钱。
+assert.equal(finalPrice(.4, .5), 1)
+assert.equal(finalPrice(.398, 10), 2)
+assert.equal(boundedPrice(.198, .99), .99)
+assert.equal(finalPrice(.198, .99), 1)
+assert.equal(finalPrice(1.2, .5), 2)
+assert.equal(finalPrice(.3, .75), 1)
+assert.equal(finalPrice(.7, 1.75), 2)
+const legacyRules = [{ minPrice: .1, maxPrice: .198, startRate: 5, endRate: 5, algorithm: 'Linear' as const }]
+const legacyNodeRules = rulesFromNodes(nodesFromRules(legacyRules).map(n => ({ cost: n.cost, price: boundedPrice(n.cost, n.price) })))
+assert.equal(legacyNodeRules[0].endRetailPrice, .99)
+assert.equal(curveError(legacyNodeRules), null)
 const precisionRule = rulesFromNodes([{ cost: .1, price: .5 }, { cost: 1.65, price: 5.5 }])[0]
 assert.equal(finalPrice(1.03, rawPrice(precisionRule, 1.03)), 3.5)
 assert.equal(finalPrice(1, 3.004), 3.5)

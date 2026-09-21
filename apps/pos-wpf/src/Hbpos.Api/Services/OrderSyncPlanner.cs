@@ -28,6 +28,14 @@ public sealed class OrderSyncPlanner : IOrderSyncPlanner
         var saleLines = request.Lines
             .Where(line => line.Kind == OrderLineKind.Sale)
             .ToList();
+        // POSM 销售明细仍为整数列；与客户端保持相同数量上限，拒绝有损写入。
+        if (saleLines.Any(line => line.Quantity <= 0m ||
+                                  line.Quantity != decimal.Truncate(line.Quantity) ||
+                                  line.Quantity > int.MaxValue) ||
+            saleLines.Sum(line => line.Quantity) > int.MaxValue)
+        {
+            throw new OrderSyncQuantityUnsupportedException();
+        }
         var returnLines = request.Lines
             .Where(line => line.Kind == OrderLineKind.Return)
             .ToList();
@@ -257,6 +265,14 @@ public sealed class OrderSyncPlanner : IOrderSyncPlanner
             .Select(ch => char.IsLetterOrDigit(ch) || ch == '_' || ch == '-' ? ch : '_')
             .ToArray());
         return string.IsNullOrWhiteSpace(cleaned) ? fallback : cleaned;
+    }
+}
+
+public sealed class OrderSyncQuantityUnsupportedException : InvalidOperationException
+{
+    public OrderSyncQuantityUnsupportedException()
+        : base("Sale quantity must be a positive whole number within the POSM integer range.")
+    {
     }
 }
 

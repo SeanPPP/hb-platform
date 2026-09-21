@@ -42,6 +42,7 @@ import type {
 import type {
   VoucherApprovedPurchaseReleasePort,
 } from "@/features/payments/runtime/payment-provider-registry";
+import { SquarePaymentAdapter } from "@/features/payments/square/square-payment-adapter";
 import { PricingCart } from "@/features/sales/domain";
 import { ActivePricingCartSession } from "@/features/sales/runtime";
 
@@ -1097,7 +1098,7 @@ test("无 provider bootstrap 时人工已收款缺失 tender 可按原 action �
 for (const queryState of ["Approved", "Unknown"] as const) {
   test(`人工已收款先只读对账原 attempt：${queryState} 时${queryState === "Approved" ? "拒绝人工入账" : "持久绑定后提交"}`, async () => {
     const calls = { query: 0, submit: 0, refund: 0, recover: 0, cancel: 0 };
-    const attempt = recoveryAttempt("Unknown");
+    const attempt = { ...recoveryAttempt("Unknown"), providerEnvironment: "Sandbox" };
     const repositoryBundle = repositories(attempt);
     const record = recoveryCenterRecord({ status: "result-unknown", attemptState: "Unknown" });
     let reconciliationCalls = 0;
@@ -1158,7 +1159,7 @@ for (const queryState of ["Approved", "Unknown"] as const) {
     });
     if (queryState === "Approved") {
       await assert.rejects(action, /RECONCILIATION_NOT_UNRESOLVED/);
-      assert.deepEqual({ reconciliationCalls, findingCalls, commitCalls }, { reconciliationCalls: 1, findingCalls: 0, commitCalls: 0 });
+      assert.deepEqual({ reconciliationCalls, findingCalls, commitCalls }, { reconciliationCalls: 0, findingCalls: 0, commitCalls: 0 });
     } else {
       await action;
       assert.deepEqual({ reconciliationCalls, findingCalls, commitCalls }, { reconciliationCalls: 1, findingCalls: 1, commitCalls: 1 });
@@ -1166,6 +1167,79 @@ for (const queryState of ["Approved", "Unknown"] as const) {
     assert.equal(calls.query, 1);
     assert.deepEqual({ submit: calls.submit, refund: calls.refund, recover: calls.recover, cancel: calls.cancel },
       { submit: 0, refund: 0, recover: 0, cancel: 0 });
+  });
+}
+
+for (const scenario of ["Created", "stale-record", "query-unavailable", "query-throws", "square-transport-error", "missing-checkout", "bootstrap-unavailable"] as const) {
+  test(`人工已收款 ${scenario} 不得伪造对账或继续入账`, async () => {
+    const calls = { query: 0, submit: 0, refund: 0, recover: 0, cancel: 0 };
+    const source = {
+      ...recoveryAttempt(scenario === "Created" || scenario === "stale-record" ? "Created" : "Unknown"),
+      providerEnvironment: "Sandbox",
+    };
+    const attempt = scenario === "missing-checkout"
+      ? { ...source, references: { ...source.references, checkoutId: null } }
+      : source;
+    const repositoryBundle = repositories(attempt);
+    // 页面记录可能过时，必须以耐久 attempt 的状态复核。
+    const record = recoveryCenterRecord({ status: "result-unknown", attemptState: scenario === "Created" ? "Created" : "Unknown" });
+    let reconciliationCalls = 0;
+    let findingCalls = 0;
+    let commitCalls = 0;
+    const providerBootstrap = queryOnlyBootstrap(calls, () => {
+      if (scenario === "query-throws") throw new Error("query transport failed");
+    }, "Unknown");
+    if (scenario === "query-unavailable") {
+      const provider = providerBootstrap.providers.get("square");
+      const { queryExistingPayment: _query, ...withoutQuery } = provider as typeof provider & { queryExistingPayment?: unknown };
+      providerBootstrap.providers.get = () => withoutQuery;
+    }
+    if (scenario === "square-transport-error") {
+      const square = new SquarePaymentAdapter({
+        async request(request) {
+          calls.query += 1;
+          assert.equal(request.method, "GET");
+          throw new Error("network timeout");
+        },
+      }, async () => ({ environment: "Sandbox", deviceId: "device-1", locationId: "location-1" }), "Sandbox");
+      providerBootstrap.providers.get = () => square;
+    }
+    const runtime = createProductionPaymentRuntime({
+      database: {
+        ...database(),
+        paymentRecoveryCenter: () => ({
+          async getExact() { return record; },
+          async recordProviderReconciliation() { reconciliationCalls += 1; return "reconciliation-1"; },
+          async recordManualFinding(input: ManualPaymentRecoveryFindingInput) {
+            findingCalls += 1;
+            return { record, actionId: "manual-action-1", authorizationId: input.authorizationId, replayed: false };
+          },
+        }),
+        manualPaymentOrderCommitter: () => ({
+          async completeManualPaymentOrder() { commitCalls += 1; return { replayed: false }; },
+        }),
+      } as unknown as PosDatabase,
+      repositories: repositoryBundle, encryptor,
+      activeCart: new ActivePricingCartSession(new PricingCart(), () => new PricingCart()),
+      currentCashier: activeCashier(),
+      terminal: { storeCode: "S1", deviceCode: "IPAD-1" }, clock: testClock(),
+      createId: idFactory(), connectivity: { async isOnline() { return true; } },
+      ...(scenario === "bootstrap-unavailable" ? {} : { bootstrap: providerBootstrap }),
+      authorizeRecovery: async (_request, run) => run({
+        authorizationId: "authorization-1",
+        authorizingActor: { cashierId: "supervisor-2", cashierName: "Supervisor", userGuid: "supervisor-user-2" },
+      }),
+      async drainFulfilment() {},
+    });
+    const center = runtime.service.recoveryCenter;
+    assert.ok(center);
+    await assert.rejects(center.submitManualVerification({
+      recordId: record.recordId, finding: "paid", verifiedAmountCents: record.amountCents,
+      evidenceReference: "terminal-history", note: "Checked terminal history",
+    }), /PAYMENT_RECOVERY_/);
+    assert.deepEqual({ reconciliationCalls, findingCalls, commitCalls }, { reconciliationCalls: 0, findingCalls: 0, commitCalls: 0 });
+    assert.deepEqual(calls, { query: scenario === "query-throws" || scenario === "square-transport-error" ? 1 : 0, submit: 0, refund: 0, recover: 0, cancel: 0 });
+    assert.equal((await repositoryBundle.payments.get(attempt.attemptId))?.state, attempt.state);
   });
 }
 
@@ -1552,6 +1626,7 @@ function queryOnlyBootstrap(
       calls.query += 1;
       onQuery();
       return {
+        queryVerified: true,
         state: queryState,
         references: source.references,
         receiptText: null,

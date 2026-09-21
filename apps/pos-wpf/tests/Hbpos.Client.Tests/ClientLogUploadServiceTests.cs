@@ -124,7 +124,7 @@ public sealed class ClientLogUploadServiceTests
         try
         {
             await service.StartAsync(CancellationToken.None);
-            await uploaded.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await uploaded.Task.WaitAsync(TestWaitTimeouts.Default);
             await WaitForRuntimePendingCountAsync(store, expectedCount: 0);
             using var shutdownBudget = new CancellationTokenSource(TimeSpan.FromSeconds(2));
             await service.StopAsync(shutdownBudget.Token);
@@ -326,7 +326,7 @@ public sealed class ClientLogUploadServiceTests
         {
             await service.StartAsync(CancellationToken.None);
             started = true;
-            await secondRequest.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await secondRequest.Task.WaitAsync(TestWaitTimeouts.Default);
             await WaitForOperationPendingCountAsync(store, expectedCount: 0);
 
             Assert.Equal([8, 1], batchSizes);
@@ -1161,7 +1161,7 @@ public sealed class ClientLogUploadServiceTests
 
             service.RequestUpload();
 
-            await called.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            await called.Task.WaitAsync(TestWaitTimeouts.Default);
             await WaitForOperationPendingCountAsync(store, 0);
         }
         finally
@@ -1229,7 +1229,7 @@ public sealed class ClientLogUploadServiceTests
         }
 
         public Task WaitUntilPeriodicDelayAsync() =>
-            _periodicDelayStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            _periodicDelayStarted.Task.WaitAsync(TestWaitTimeouts.Default);
     }
 
     private static async Task WaitForOutboxSchemaAsync(ClientLogOutboxStore store)
