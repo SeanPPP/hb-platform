@@ -64,6 +64,7 @@ import {
   getProductHqSyncOperation,
   getProductCodes,
   getProductFastDetail,
+  ensureStorePrice,
   lookupProducts,
   retryProductHqSyncOperation,
   syncWarehousePrice,
@@ -1288,9 +1289,33 @@ function ProductQueryContent() {
         return null;
       }
       dispatchConnectivity({ type: "request_succeeded" });
+      let detailWithStorePrice = payload;
+      if (
+        !payload.storePrice &&
+        detailRequestCoordinatorRef.current.isCurrent(request)
+      ) {
+        const mutation = beginHqSyncMutation(productCode, targetStoreCode);
+        try {
+          const storePrice = await ensureStorePrice(productCode, targetStoreCode);
+          if (!detailRequestCoordinatorRef.current?.isCurrent(request)) {
+            return null;
+          }
+          presentHqSyncOperation(mutation, storePrice.hqSync);
+          detailWithStorePrice = { ...payload, storePrice };
+        } catch (error) {
+          hqSyncMutationCoordinatorRef.current?.fail(mutation);
+          if (!detailRequestCoordinatorRef.current?.isCurrent(request)) {
+            return null;
+          }
+          // 只读用户仍可查询商品；其他补建失败交由既有查询错误流程处理。
+          if (!(isAxiosError(error) && error.response?.status === 403)) {
+            throw error;
+          }
+        }
+      }
       loadActivePromotions(payload.productCode, targetStoreCode);
-      setDetail(payload);
-      setInitialDetail(cloneDetail(payload));
+      setDetail(detailWithStorePrice);
+      setInitialDetail(cloneDetail(detailWithStorePrice));
       setSelectedLookupProductCode(productCode);
       setLastHitLabel(
         `${payload.itemNumber || payload.productCode} / ${payload.barcode || "--"}`,
@@ -1299,7 +1324,7 @@ function ProductQueryContent() {
       setCodePage(1);
       setCodesHasMore(false);
       const detailWithCodes = await loadProductCodes(
-        payload,
+        detailWithStorePrice,
         1,
         false,
         targetStoreCode,
@@ -1312,13 +1337,15 @@ function ProductQueryContent() {
       ) {
         return null;
       }
-      return detailWithCodes ?? payload;
+      return detailWithCodes ?? detailWithStorePrice;
     },
     [
       activateHqSyncScope,
+      beginHqSyncMutation,
       invalidateActivePromotions,
       loadActivePromotions,
       loadProductCodes,
+      presentHqSyncOperation,
       selectedStoreCode,
       t,
     ],
