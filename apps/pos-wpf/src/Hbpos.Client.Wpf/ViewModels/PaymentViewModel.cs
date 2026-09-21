@@ -1861,7 +1861,9 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             method == PaymentMethodKind.Card &&
             _workflowService.TryParseTenderedAmount(amountText, out var tenderAmount) &&
             tenderAmount > 0m &&
-            tenderAmount < RemainingAmount)
+            // 已收够（含现金超收）时剩余应收为 0，不能再追加卡笔；
+            // 未收够时仍要求卡是足额的最后一笔。
+            (IsSettlementComplete() || tenderAmount < RemainingAmount))
         {
             SetStatus("payment.status.cardMustBeFinalTender");
             NotifyPaymentCommandStates();
@@ -2894,7 +2896,13 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         var targetAmount = GetPaymentTargetAmount();
         TotalTendered = _workflowService.CalculateTenderedAmount(PaymentTenders.ToList());
         _workflowRemainingAmount = _workflowService.CalculateRemainingAmount(targetAmount, PaymentTenders.ToList());
-        RemainingAmount = Math.Abs(_workflowRemainingAmount);
+        // 澳币现金最小面额 0.05，顾客给整钞后超收是常态，此时剩余额为负。
+        // 取绝对值会把找零显示成"还差这么多"，与同屏的找零金额自相矛盾，
+        // 收银员可能据此重复收款；付款模式下已收够就按 0 收口。
+        // 退款模式沿用绝对值语义（剩余额为正表示还需退给顾客）。
+        RemainingAmount = IsPaymentMode
+            ? Math.Max(0m, _workflowRemainingAmount)
+            : Math.Abs(_workflowRemainingAmount);
         ChangeDue = IsPaymentMode &&
             PaymentTenders.Count == 0 &&
             _workflowService.TryParseTenderedAmount(TenderAmountText, out var tenderedAmount)
