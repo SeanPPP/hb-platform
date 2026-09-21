@@ -1467,6 +1467,9 @@ namespace Hbpos.Api.Tests;
 
     [Theory]
     [InlineData(HttpStatusCode.RequestTimeout, "Pending", "Retry")]
+    // 429 是限流，语义即“稍后重试”。此前它落到兜底分支被写成 Failed + IsActive=false，
+    // 该会话再也不向 Linkly 核对真实结果，已批准的交易会被报成失败并引发重刷。
+    [InlineData(HttpStatusCode.TooManyRequests, "Pending", "Retry")]
     [InlineData(HttpStatusCode.InternalServerError, "Pending", "Retry")]
     [InlineData((HttpStatusCode)599, "Pending", "Retry")]
     [InlineData(HttpStatusCode.Unauthorized, "TokenRefreshRequired", "RefreshToken")]
