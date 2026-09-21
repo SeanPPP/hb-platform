@@ -330,6 +330,99 @@ public sealed class SalesStatisticsProductStoreDailyCommandWriterTests
     }
 
     [Fact]
+    public void 国内货的行键编码在国内编码族内变化时仍沿用旧成本快照()
+    {
+        var chinaCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "CN-A", "CN-B" };
+        var old = new[]
+        {
+            // 旧写法的 200 行 -> 本次直写 CN-A。
+            Statistic("TO-DIRECT", 2, 20m, 3m, 6m, "StoreRetailPrice", "200"),
+            // 归属中途变更：旧行直写 CN-A -> 本次直写 CN-B。
+            Statistic("MOVED", 2, 20m, 4m, 8m, "StoreRetailPrice", "CN-A"),
+            // 开关关闭后的回退：旧行直写 CN-A -> 本次写回 200。
+            Statistic("BACK-TO-200", 2, 20m, 5m, 10m, "StoreRetailPrice", "CN-A"),
+            // 销售事实变了：只能沿用旧单价，不能沿用旧总成本。
+            Statistic("FACTS-CHANGED", 2, 20m, 6m, 12m, "StoreRetailPrice", "200"),
+        };
+        var rebuilt = new[]
+        {
+            Statistic("TO-DIRECT", 2, 20m, 99m, 198m, "StoreRetailPrice", "CN-A"),
+            Statistic("MOVED", 2, 20m, 99m, 198m, "StoreRetailPrice", "CN-B"),
+            Statistic("BACK-TO-200", 2, 20m, 99m, 198m, "StoreRetailPrice", "200"),
+            Statistic("FACTS-CHANGED", 3, 30m, 99m, 297m, "StoreRetailPrice", "CN-A"),
+        };
+
+        // 旧快照都找得到，这些商品不依赖当前进价，不需要再取成本业务锁。
+        var codes = SalesStatisticsProductStoreDailyCommandWriter.ResolveCurrentCostProductCodes(
+            old[0].Date, rebuilt.Select(row => row.ProductCode).ToList(), rebuilt, old, chinaCodes);
+        Assert.Empty(codes);
+
+        SalesStatisticsProductStoreDailyCommandWriter.PreserveHistoricalCostSnapshots(rebuilt, old, chinaCodes);
+
+        // 99 是「当前进价」。键对不上时它会覆盖历史成本，且无法恢复。
+        Assert.Equal(new decimal?[] { 6m, 8m, 10m, 18m }, rebuilt.Select(row => row.TotalCost));
+        Assert.Equal(new decimal?[] { 3m, 4m, 5m, 6m }, rebuilt.Select(row => row.UnitCostSnapshot));
+        // 只沿用成本，本次写出的归属不变。
+        Assert.Equal(new[] { "CN-A", "CN-B", "200", "CN-A" }, rebuilt.Select(row => row.SupplierCode));
+    }
+
+    [Fact]
+    public void 国内编码族之外的供应商行键变化不做折叠匹配()
+    {
+        var chinaCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "CN-A" };
+        var old = new[]
+        {
+            Statistic("AU-TO-CHINA", 2, 20m, 3m, 6m, "StoreRetailPrice", "105"),
+            Statistic("CHINA-TO-AU", 2, 20m, 4m, 8m, "StoreRetailPrice", "200"),
+        };
+        var rebuilt = new[]
+        {
+            // 同一商品编码换了澳洲供应商，分店成本身份不同，不能沿用对方的成本快照。
+            Statistic("AU-TO-CHINA", 2, 20m, 9m, 18m, "StoreRetailPrice", "CN-A"),
+            Statistic("CHINA-TO-AU", 2, 20m, 9m, 18m, "StoreRetailPrice", "105"),
+        };
+
+        var codes = SalesStatisticsProductStoreDailyCommandWriter.ResolveCurrentCostProductCodes(
+            old[0].Date, rebuilt.Select(row => row.ProductCode).ToList(), rebuilt, old, chinaCodes);
+        SalesStatisticsProductStoreDailyCommandWriter.PreserveHistoricalCostSnapshots(rebuilt, old, chinaCodes);
+
+        Assert.Equal(new[] { "AU-TO-CHINA", "CHINA-TO-AU" }, codes);
+        Assert.Equal(new decimal?[] { 18m, 18m }, rebuilt.Select(row => row.TotalCost));
+    }
+
+    [Fact]
+    public void 未提供国内编码目录时行键仍按精确匹配()
+    {
+        var old = new[] { Statistic("P1", 2, 20m, 3m, 6m, "StoreRetailPrice", "200") };
+        var rebuilt = new[] { Statistic("P1", 2, 20m, 9m, 18m, "StoreRetailPrice", "CN-A") };
+
+        var codes = SalesStatisticsProductStoreDailyCommandWriter.ResolveCurrentCostProductCodes(
+            old[0].Date, ["P1"], rebuilt, old);
+        SalesStatisticsProductStoreDailyCommandWriter.PreserveHistoricalCostSnapshots(rebuilt, old);
+
+        Assert.Equal(new[] { "P1" }, codes);
+        Assert.Equal(18m, rebuilt[0].TotalCost);
+    }
+
+    [Fact]
+    public void 同一商品在国内编码族内有多条旧行时优先取200那行()
+    {
+        var chinaCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "CN-A", "CN-B" };
+        var old = new[]
+        {
+            Statistic("P1", 1, 10m, 7m, 7m, "StoreRetailPrice", "CN-B"),
+            Statistic("P1", 1, 10m, 3m, 3m, "StoreRetailPrice", "200"),
+        };
+        var rebuilt = new[] { Statistic("P1", 2, 20m, 9m, 18m, "StoreRetailPrice", "CN-A") };
+
+        SalesStatisticsProductStoreDailyCommandWriter.PreserveHistoricalCostSnapshots(rebuilt, old, chinaCodes);
+
+        // 事实已变（两行合成一行），沿用选中旧行的历史单价 3，而不是当前进价 9。
+        Assert.Equal(3m, rebuilt[0].UnitCostSnapshot);
+        Assert.Equal(6m, rebuilt[0].TotalCost);
+    }
+
+    [Fact]
     public void 当日统计仍保护新旧全部商品避免当前成本发布竞态()
     {
         var rebuilt = new[] { Statistic("P1", 2, 20m, 3m, 6m, "ProductPurchasePrice") };
@@ -575,11 +668,12 @@ public sealed class SalesStatisticsProductStoreDailyCommandWriterTests
         decimal amount,
         decimal? unitCost,
         decimal? totalCost,
-        string source) => new()
+        string source,
+        string supplierCode = "S") => new()
         {
             Date = new DateTime(2025, 1, 2),
             BranchCode = "A",
-            SupplierCode = "S",
+            SupplierCode = supplierCode,
             ProductCode = productCode,
             TotalQuantity = quantity,
             TotalAmount = amount,
