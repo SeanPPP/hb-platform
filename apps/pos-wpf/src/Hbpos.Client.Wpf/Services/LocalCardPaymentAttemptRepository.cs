@@ -782,20 +782,22 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
         DateTimeOffset completedAt,
         CancellationToken cancellationToken = default)
     {
-        await using var connection = await store.OpenConnectionAsync(cancellationToken);
-        await using var command = connection.CreateCommand();
-        command.CommandText = """
-            UPDATE LocalCardPaymentAttempts
-            SET
-                Status = $Status,
-                CompletedAt = COALESCE(CompletedAt, $CompletedAt),
-                UpdatedAt = $CompletedAt
-            WHERE AttemptGuid = $AttemptGuid;
-            """;
-        command.Parameters.AddWithValue("$AttemptGuid", attemptGuid.ToString());
-        command.Parameters.AddWithValue("$Status", LocalCardPaymentAttemptStatus.OrderCompleted.ToString());
-        command.Parameters.AddWithValue("$CompletedAt", completedAt.ToString("O"));
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        // 关键逻辑：调用方读出 attempt 后要跨两跳 Task.Run 才写回，窗口内恢复服务或主管结案
+        // 可能已把该行推进为 FinalizePending。无守卫的无条件写入会让同一行同时断言
+        // “订单已收钱”与“主管确认未扣款”，且 RecoveryPhase 停在 FinalizePending 后
+        // 本文件所有写入都会被排斥，该行再也无法被任何代码修复，并持续占住恢复队列。
+        // 与 Square 侧同名方法保持一致：读当前版本、走带守卫的 CAS、失败即抛出由调用方回滚。
+        var current = await GetAttemptAsync(attemptGuid, cancellationToken)
+            ?? throw new InvalidOperationException("卡支付 attempt 不存在。");
+        if (!await TryMarkOrderCompletedAsync(
+                attemptGuid,
+                current.Status,
+                current.UpdatedAt,
+                completedAt,
+                cancellationToken))
+        {
+            throw new InvalidOperationException("卡支付 attempt 状态已变化，旧任务不得继续写入完成标记。");
+        }
     }
 
     public async Task MarkAcknowledgedAsync(
@@ -803,18 +805,21 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
         DateTimeOffset acknowledgedAt,
         CancellationToken cancellationToken = default)
     {
-        await using var connection = await store.OpenConnectionAsync(cancellationToken);
-        await using var command = connection.CreateCommand();
-        command.CommandText = """
-            UPDATE LocalCardPaymentAttempts
-            SET
-                AcknowledgedAt = $AcknowledgedAt,
-                UpdatedAt = $AcknowledgedAt
-            WHERE AttemptGuid = $AttemptGuid;
-            """;
-        command.Parameters.AddWithValue("$AttemptGuid", attemptGuid.ToString());
-        command.Parameters.AddWithValue("$AcknowledgedAt", acknowledgedAt.ToString("O"));
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        // 关键逻辑：调用方在读出 attempt 与写回之间还隔着一次 Linkly 网络请求，是典型的
+        // TOCTOU 窗口。无守卫地盖上 ack 章会把结果尚未确定的交易挤出恢复队列——
+        // GetLatestOpenAttemptAsync 等多处查询都以 AcknowledgedAt IS NULL 为条件。
+        // 这里同样改为读当前版本后走带守卫的 CAS，冲突时交由调用方的 catch 处理。
+        var current = await GetAttemptAsync(attemptGuid, cancellationToken)
+            ?? throw new InvalidOperationException("卡支付 attempt 不存在。");
+        if (!await TryMarkAcknowledgedAsync(
+                attemptGuid,
+                current.Status,
+                current.UpdatedAt,
+                acknowledgedAt,
+                cancellationToken))
+        {
+            throw new InvalidOperationException("卡支付 attempt 状态已变化，不得补记 acknowledge。");
+        }
     }
 
     public async Task MarkRecoveringAsync(

@@ -3542,6 +3542,11 @@ public sealed class LinklyBackendTerminalClient(
     private static bool IsRecoveryHttpStatus(int? httpStatus)
     {
         return httpStatus == (int)HttpStatusCode.RequestTimeout ||
+            // 关键逻辑：必须与服务端 IsTransportRecoveryFailure 覆盖同一组状态码。
+            // 服务端把 429 标成可恢复之后，RequiresRecovery 仍要本判定为真才会真正走恢复；
+            // 同时 GetNextPollDelay 也以此决定是否启用指数退避——被限流时正该退避，
+            // 而不是继续按固定间隔猛打。
+            httpStatus == (int)HttpStatusCode.TooManyRequests ||
             httpStatus is >= 500 and <= 599;
     }
 
