@@ -1795,7 +1795,12 @@ public sealed class CashPaymentWorkflowServiceTests
         Assert.False(tenderResult.Succeeded);
         Assert.Equal("payment.status.cardCancelled", tenderResult.StatusKey);
         Assert.Equal(CardPaymentTerminalOutcome.Cancelled, tenderResult.CardResult?.Outcome);
-        Assert.Equal(LocalCardPaymentAttemptStatus.Cancelled, Assert.Single(attempts.Attempts).Status);
+        var cancelledAttempt = Assert.Single(attempts.Attempts);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Cancelled, cancelledAttempt.Status);
+        // 后端模式的销售引用在建 attempt 时就已落库，它的存在不代表终端已接单：
+        // 会话未绑定时的取消仍须按"未提交"解锁，不能像 LocalIp 那样保守锁进未知结果。
+        Assert.False(string.IsNullOrWhiteSpace(cancelledAttempt.TxnRef));
+        Assert.Null(cancelledAttempt.SessionId);
     }
 
     [Fact]

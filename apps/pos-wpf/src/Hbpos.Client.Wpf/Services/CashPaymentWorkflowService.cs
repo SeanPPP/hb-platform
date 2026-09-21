@@ -1123,12 +1123,16 @@ public sealed class CashPaymentWorkflowService(
             }
 
             // LocalIp 在 socket 写入前已持久化 TxnRef；没有 SessionId 也不能把其取消当作未提交。
+            // 后端异步模式的销售引用则在建 attempt 时就已派生落库（远早于发请求），它的存在不说明终端是否接单：
+            // 该模式由终端客户端掌握提交边界——POST 之前失败会返回可回退结果或抛 CardTerminalNotSubmittedException，
+            // POST 之后失败会返回未知结果；异常走到这里时以会话是否已绑定为准。退款在各模式下维持原有的保守判定。
+            var txnRefMarksDispatch = isRefund || !IsCloudBackendAsyncAttempt(linklyAttemptAfterException);
             var wasSubmitted = !definitelyNotSubmitted && (
                 linklySubmissionObserved ||
                 squareSubmissionObserved ||
                 refundDispatchBoundaryPersisted ||
                 !string.IsNullOrWhiteSpace(linklyAttemptAfterException?.SessionId) ||
-                !string.IsNullOrWhiteSpace(linklyAttemptAfterException?.TxnRef) ||
+                (txnRefMarksDispatch && !string.IsNullOrWhiteSpace(linklyAttemptAfterException?.TxnRef)) ||
                 !string.IsNullOrWhiteSpace(squareAttemptAfterException?.CheckoutId));
 
             if (wasSubmitted)
@@ -2205,6 +2209,14 @@ public sealed class CashPaymentWorkflowService(
             persistedAttempt,
             persistedAttempt.AttemptGuid != attempt.AttemptGuid,
             isRefund && RequiresLinklyRefundRecoveryForCurrentMode(persistedAttempt, mode));
+    }
+
+    private static bool IsCloudBackendAsyncAttempt(LocalCardPaymentAttempt? attempt)
+    {
+        return string.Equals(
+            attempt?.ConnectionMode?.Trim(),
+            nameof(LinklyConnectionMode.CloudBackendAsync),
+            StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool RequiresLinklyRefundRecoveryForCurrentMode(
