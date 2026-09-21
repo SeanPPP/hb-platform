@@ -24,6 +24,8 @@ interface StorePriceStrategyCardProps {
   onStorePress?: () => void;
   purchasePrice?: string;
   retailPrice?: string;
+  /** 仓库参考零售价；仅在当前门店价确实存在差异时传入。 */
+  warehouseRetailPrice?: string | null;
   retailGp?: string;
   retailGpTrend?: MarginTrend;
   discountPercent?: string;
@@ -110,6 +112,7 @@ function PriceField({
   onPress,
   valueColor,
   muted = false,
+  warning = false,
   readOnly = false,
 }: {
   label: string;
@@ -118,6 +121,7 @@ function PriceField({
   onPress: () => void;
   valueColor?: string;
   muted?: boolean;
+  warning?: boolean;
   readOnly?: boolean;
 }) {
   const { t } = useAppTranslation("productQuery");
@@ -131,6 +135,7 @@ function PriceField({
       style={({ pressed }) => [
         styles.field,
         muted ? styles.fieldMuted : null,
+        warning ? styles.fieldWarning : null,
         changed ? styles.fieldChanged : null,
         readOnly ? styles.readOnly : null,
         pressed ? styles.pressed : null,
@@ -168,6 +173,7 @@ export function StorePriceStrategyCard({
   onStorePress,
   purchasePrice,
   retailPrice,
+  warehouseRetailPrice,
   retailGp,
   retailGpTrend = null,
   discountPercent,
@@ -196,6 +202,7 @@ export function StorePriceStrategyCard({
     : [strategySourceLabel, strategyRuleLabel].filter(Boolean).join(" ");
   const gpColor = getMarginTrendColor(retailGpTrend, HB_COLORS.action);
   const discountedGpColor = getMarginTrendColor(discountedRetailGpTrend, HB_COLORS.action);
+  const hasWarehouseRetailDifference = Boolean(warehouseRetailPrice);
 
   return (
     <Card style={styles.card} mode="contained">
@@ -227,8 +234,19 @@ export function StorePriceStrategyCard({
             value={retailPrice}
             original={originalValues?.retailPrice}
             onPress={onEditRetailPrice}
+            warning={hasWarehouseRetailDifference}
           />
         </View>
+        {hasWarehouseRetailDifference ? (
+          <View accessibilityLiveRegion="polite" style={styles.warehousePriceNotice}>
+            <Text style={styles.warehousePriceNoticeLabel}>
+              {t("storePrice.warehouseNotice.label")}
+            </Text>
+            <Text style={styles.warehousePriceNoticeValue}>
+              {t("storePrice.warehouseNotice.value", { value: warehouseRetailPrice })}
+            </Text>
+          </View>
+        ) : null}
         <View style={styles.grid}>
           <PriceField readOnly={readOnly}
             label={t("storePrice.grid.discountPercent")}
@@ -373,6 +391,10 @@ const styles = StyleSheet.create({
     borderColor: HB_COLORS.outlineMuted,
     backgroundColor: HB_COLORS.surfaceMuted,
   },
+  fieldWarning: {
+    borderColor: HB_COLORS.warning,
+    backgroundColor: "#FFFAEB",
+  },
   fieldChanged: {
     borderWidth: 2,
     borderColor: HB_COLORS.brand,
@@ -393,6 +415,37 @@ const styles = StyleSheet.create({
     lineHeight: 22,
     fontWeight: "700",
     color: HB_COLORS.textPrimary,
+    fontVariant: ["tabular-nums"],
+  },
+  warehousePriceNotice: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: HB_SPACING.xs,
+    minHeight: 32,
+    paddingHorizontal: HB_SPACING.sm,
+    paddingVertical: 6,
+    borderRadius: HB_RADIUS.control,
+    backgroundColor: "#FFFAEB",
+    borderWidth: 1,
+    borderColor: "#FEDF89",
+  },
+  warehousePriceNoticeLabel: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 12,
+    lineHeight: 16,
+    color: HB_COLORS.warning,
+    fontWeight: "600",
+  },
+  warehousePriceNoticeValue: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 13,
+    lineHeight: 18,
+    color: HB_COLORS.warning,
+    fontWeight: "700",
+    textAlign: "right",
     fontVariant: ["tabular-nums"],
   },
   metrics: {

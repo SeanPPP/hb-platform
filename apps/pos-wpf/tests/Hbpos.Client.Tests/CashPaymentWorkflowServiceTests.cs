@@ -294,7 +294,7 @@ public sealed class CashPaymentWorkflowServiceTests
             cart,
             new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0),
             "5");
-        await orders.SaveStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await orders.SaveStarted.Task.WaitAsync(TestWaitTimeouts.Default);
 
         Assert.NotEqual(callingThreadId, orders.SaveThreadId);
         Assert.NotEmpty(cart.Lines);

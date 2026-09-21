@@ -27,6 +27,7 @@
   <ItemGroup>
     <Compile Include="MobileReportStoreOptionsTests.cs" />
     <Compile Include="StoreProductMaintenanceWarehousePriceSyncTests.cs" />
+    <Compile Include="StoreProductMaintenanceEnsureStorePriceTests.cs" />
     <Compile Include="StorePriceUpdateTaskServiceTests.cs" />
     <Compile Include="StoreProductMaintenanceLookupTests.cs" />
     <Compile Include="ProductChangeHistoryLegacyEntryPointTests.cs" />

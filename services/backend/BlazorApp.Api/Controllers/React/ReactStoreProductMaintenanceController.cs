@@ -245,6 +245,26 @@ namespace BlazorApp.Api.Controllers.React
             return Ok(result);
         }
 
+        [HttpPost("{productCode}/ensure-store-price")]
+        public async Task<IActionResult> EnsureStorePrice(
+            string productCode,
+            [FromQuery] string? storeCode = null
+        )
+        {
+            var access = await ResolveAccessContextAsync();
+            if (!access.IsAllowed)
+            {
+                return Unauthorized(ApiResponse<StoreProductStorePriceDto>.Error(access.Message));
+            }
+            var permissionFailure = await RequireEditPermissionAsync();
+            if (permissionFailure != null) return permissionFailure;
+
+            var result = await _service.EnsureStorePriceAsync(
+                productCode, storeCode, access.ActorLabel, access.StoreCodes
+            );
+            return BuildMutationResult(result);
+        }
+
         [HttpPut("store-prices/{uuid}")]
         public async Task<IActionResult> UpdateStorePrice(
             string uuid,

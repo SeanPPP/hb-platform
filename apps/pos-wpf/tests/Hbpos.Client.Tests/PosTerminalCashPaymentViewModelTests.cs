@@ -2535,12 +2535,12 @@ public sealed class PosTerminalCashPaymentViewModelTests
             });
 
         var execution = viewModel.SyncCommand.ExecuteAsync(null);
-        await downloadStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await downloadStarted.Task.WaitAsync(TestWaitTimeouts.Default);
 
         viewModel.SyncCommand.Cancel();
         var wasCancellationRequested = receivedToken.IsCancellationRequested;
         releaseDownload.TrySetResult();
-        await execution.WaitAsync(TimeSpan.FromSeconds(5));
+        await execution.WaitAsync(TestWaitTimeouts.Default);
 
         Assert.True(receivedToken.CanBeCanceled);
         Assert.True(wasCancellationRequested);
@@ -2576,12 +2576,12 @@ public sealed class PosTerminalCashPaymentViewModelTests
             });
 
         var execution = viewModel.SyncCommand.ExecuteAsync(null);
-        await refreshStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await refreshStarted.Task.WaitAsync(TestWaitTimeouts.Default);
 
         viewModel.SyncCommand.Cancel();
         var wasCancellationRequested = receivedToken.IsCancellationRequested;
         releaseRefresh.TrySetResult();
-        await execution.WaitAsync(TimeSpan.FromSeconds(5));
+        await execution.WaitAsync(TestWaitTimeouts.Default);
 
         Assert.True(receivedToken.CanBeCanceled);
         Assert.True(wasCancellationRequested);
@@ -2605,7 +2605,31 @@ public sealed class PosTerminalCashPaymentViewModelTests
         await viewModel.SelectCashCommand.ExecuteAsync(null);
 
         Assert.Equal(2.2m, viewModel.ChangeDue);
+        // 澳币现金最小面额 0.05，顾客给整钞后超收是常态。超收时剩余应收必须是 0：
+        // 若同屏在找零 2.20 旁边再显示"还差 2.20"，收银员可能据此重复收款。
+        Assert.Equal(0m, viewModel.RemainingAmount);
         Assert.True(viewModel.ConfirmPaymentCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task Payment_page_keeps_positive_remaining_amount_when_cash_is_insufficient()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-112", "Partial Cash Juice", "930112", PriceSourceKind.ProductBase, 7.8m));
+        var viewModel = new PaymentViewModel(
+            cart,
+            new CashCheckoutService(),
+            new InMemoryOrderRepository(),
+            new InMemorySyncQueueRepository(),
+            Session);
+
+        viewModel.TenderAmountText = "5";
+        await viewModel.SelectCashCommand.ExecuteAsync(null);
+
+        // 未收够时剩余应收仍要显示真实差额，且不产生找零。
+        Assert.Equal(2.8m, viewModel.RemainingAmount);
+        Assert.Equal(0m, viewModel.ChangeDue);
+        Assert.False(viewModel.ConfirmPaymentCommand.CanExecute(null));
     }
 
     [Fact]
@@ -5990,7 +6014,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
 
         qualification.TrySetResult(candidate);
         handoff.TrySetResult(true);
-        await opening.WaitAsync(TimeSpan.FromSeconds(5));
+        await opening.WaitAsync(TestWaitTimeouts.Default);
 
         Assert.Equal(2, prepareCalls);
         Assert.Equal(1, handoffCalls);
