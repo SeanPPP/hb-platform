@@ -111,6 +111,7 @@
     <Compile Include="WarehouseStorePriceSyncJobServiceTests.cs" />
     <Compile Include="DataSyncFullServiceWarehouseProductsTests.cs" />
     <Compile Include="DataSyncIncrementalPosmSupplierMappingsTests.cs" />
+    <Compile Include="DataSyncIncrementalHqStartTests.cs" />
     <Compile Include="DataSyncIncrementalStoreRetailPriceTests.cs" />
     <Compile Include="DataSyncLegacyHistoryTests.cs" />
     <Compile Include="ScheduledTaskServiceTests.cs" />
@@ -173,6 +174,7 @@
     <Compile Include="SupplierReportReadTests.cs" />
     <Compile Include="ProductReportPagingSqlTests.cs" />
     <Compile Include="HbSalesCoverageSqlTests.cs" />
+    <Compile Include="HbSalesSourceRowsSqlTests.cs" />
     <Compile Include="ProductReportChinaMappingTests.cs" />
     <Compile Include="ProductReportSortingSqlServerIntegrationTests.cs" />
     <Compile Include="ProductMovementReportSqlBuilderTests.cs" />

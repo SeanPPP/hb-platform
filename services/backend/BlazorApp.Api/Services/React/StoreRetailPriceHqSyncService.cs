@@ -154,10 +154,41 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
-        public async Task<SyncResult> SyncIncrementalAsync(
+        public Task<SyncResult> SyncIncrementalAsync(
             List<string>? selectedStoreCodes = null,
             DateTime? startDate = null,
             DateTime? endDate = null
+        )
+        {
+            // 页面同步和旧接口的局部同步都走这里：记录分店与起止日期，
+            // 这类日志不会被旧增量接口当作全分店水位。
+            return SyncIncrementalCoreAsync(
+                selectedStoreCodes,
+                startDate,
+                endDate,
+                StoreRetailPriceIncrementalTaskScope.BuildScopedParameters(
+                    selectedStoreCodes,
+                    startDate,
+                    endDate
+                )
+            );
+        }
+
+        public Task<SyncResult> SyncAllStoresFromWatermarkAsync(DateTime? watermarkStart = null)
+        {
+            return SyncIncrementalCoreAsync(
+                null,
+                watermarkStart,
+                null,
+                StoreRetailPriceIncrementalTaskScope.BuildWatermarkParameters(watermarkStart)
+            );
+        }
+
+        private async Task<SyncResult> SyncIncrementalCoreAsync(
+            List<string>? selectedStoreCodes,
+            DateTime? startDate,
+            DateTime? endDate,
+            TaskParameters taskParameters
         )
         {
             if (!await SyncLock.WaitAsync(TimeSpan.FromSeconds(5)))
@@ -174,7 +205,7 @@ namespace BlazorApp.Api.Services.React
             {
                 taskLog = await _taskLogService.LogTaskStartAsync(
                     TaskIncremental,
-                    new TaskParameters(),
+                    taskParameters,
                     TaskTrigger.Manual
                 );
                 db = _localContext.Db;

@@ -370,9 +370,43 @@ internal sealed class BatchProductSalesDiscountDailyStore(ISqlSugarClient db)
 
     }
 
+    /// <summary>
+    /// 读取当天已发布的日统计。日统计重算会把当天几万行的删改升级为整表 X 锁并持有到提交，
+    /// HBweb 未开 RCSI，已提交读会一直等到命令超时，相邻日期并行重算时还会被卷进死锁
+    /// （2026-09-21 批量重算期间该读取每小时锁等待 110–280 秒）。SQL Server 上改在 SNAPSHOT 事务里读：
+    /// 仍只看已提交版本、结果在一次读取内一致，但不加共享锁、不等写锁。
+    /// </summary>
     internal async Task<List<BatchProductSalesAggregateRow>> ReadDailyStatisticsAsync(DateTime date, CancellationToken token)
     {
         var day = date.Date;
+        // 调用方已开事务时不能再嵌套开启，沿用调用方的隔离级别。
+        if (db.CurrentConnectionConfig.DbType != DbType.SqlServer || db.Ado.Transaction != null)
+            return await QueryDailyStatisticsAsync(day, token);
+
+        await db.Ado.BeginTranAsync(System.Data.IsolationLevel.Snapshot);
+        try
+        {
+            var rows = await QueryDailyStatisticsAsync(day, token);
+            await db.Ado.CommitTranAsync();
+            return rows;
+        }
+        catch (Exception original)
+        {
+            // 与 PublishAsync 相同：已取消的业务令牌不能取消回滚，否则事务会残留在共享的 SqlSugar 连接上。
+            var previousToken = db.Ado.CancellationToken;
+            db.Ado.RemoveCancellationToken();
+            try { await db.Ado.RollbackTranAsync(); }
+            catch (Exception rollback) { original.Data["DiscountStatisticsSnapshotRollbackError"] = rollback.Message; }
+            finally
+            {
+                if (previousToken.HasValue) db.Ado.CancellationToken = previousToken.Value;
+            }
+            throw;
+        }
+    }
+
+    private async Task<List<BatchProductSalesAggregateRow>> QueryDailyStatisticsAsync(DateTime day, CancellationToken token)
+    {
         var rows = await db.Queryable<ProductStoreDailySalesStatistic>().With(SqlWith.Null)
             .Where(x => x.Date >= day && x.Date < day.AddDays(1))
             .GroupBy(x => new { x.Date, x.BranchCode, x.ProductCode })
