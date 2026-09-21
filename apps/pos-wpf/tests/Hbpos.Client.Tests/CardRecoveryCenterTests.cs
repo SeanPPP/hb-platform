@@ -1538,6 +1538,9 @@ public sealed class CardRecoveryCenterTests
 
         public Task AcknowledgeSessionAsync(CardTerminalSettings settings, string sessionId, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
+
+        public Task AcknowledgeSupervisorResolvedSessionAsync(CardTerminalSettings settings, string sessionId, CancellationToken cancellationToken = default) =>
+            AcknowledgeSessionAsync(settings, sessionId, cancellationToken);
     }
 
     private sealed class FakeLinklyAttemptRepository : ILocalCardPaymentAttemptRepository

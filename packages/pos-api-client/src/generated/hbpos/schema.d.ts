@@ -6234,6 +6234,7 @@ export interface components {
         };
         LinklyCloudBackendAcknowledgeRequest: {
             environment?: string | null;
+            supervisorResolved?: boolean;
         };
         LinklyCloudBackendCardTransactionDto: {
             txnRef?: string | null;

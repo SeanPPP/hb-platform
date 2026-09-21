@@ -383,6 +383,7 @@ public sealed class LinklySanitizedCardTransactionTests
             string deviceCode,
             string environment,
             string sessionId,
+            bool supervisorResolved,
             CancellationToken cancellationToken) => throw new NotSupportedException();
 
         public Task ReceiveNotificationAsync(

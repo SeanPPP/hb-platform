@@ -9574,6 +9574,9 @@
           "environment": {
             "type": "string",
             "nullable": true
+          },
+          "supervisorResolved": {
+            "type": "boolean"
           }
         },
         "additionalProperties": false
