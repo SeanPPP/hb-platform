@@ -99,6 +99,46 @@ assert.equal(
   false,
   "澳洲/全部商品请求必须保持现有默认范围",
 );
+assert.equal(australiaProductParams.has("sortField"), false, "默认金额降序不带排序参数，请求与旧版保持一致");
+assert.equal(australiaProductParams.has("sortOrder"), false);
+
+const quantityDescParams = buildProductReportProductParams(
+  "australia",
+  productQuery,
+  undefined,
+  1,
+  20,
+  undefined,
+  { field: "quantity", order: "desc" },
+);
+assert.equal(quantityDescParams.get("sortField"), "quantity", "商品明细服务端分页，数量排序必须交给后端");
+assert.equal(quantityDescParams.get("sortOrder"), "desc");
+
+const unitPriceAscParams = buildProductReportProductParams(
+  "china",
+  productQuery,
+  ["CN-1"],
+  2,
+  20,
+  " HB001 ",
+  { field: "unitPrice", order: "asc" },
+);
+assert.equal(unitPriceAscParams.get("sortField"), "unitPrice");
+assert.equal(unitPriceAscParams.get("sortOrder"), "asc");
+assert.equal(unitPriceAscParams.get("productSearch"), "HB001", "排序参数不能影响已有的搜索与分页参数");
+assert.equal(unitPriceAscParams.get("pageIndex"), "2");
+
+const amountAscParams = buildProductReportProductParams(
+  "australia",
+  productQuery,
+  undefined,
+  1,
+  20,
+  undefined,
+  { field: "amount", order: "asc" },
+);
+assert.equal(amountAscParams.get("sortField"), "amount", "金额升序不是默认排序，必须显式传给后端");
+assert.equal(amountAscParams.get("sortOrder"), "asc");
 
 for (const statisticStatus of ["Pending", "Stale", "Failed"] as const) {
   const snapshot = normalizeSupplierReportSnapshot({

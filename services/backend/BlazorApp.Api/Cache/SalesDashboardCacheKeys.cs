@@ -218,15 +218,21 @@ namespace BlazorApp.Api.Cache
             int pageSize,
             string? productSearch = null,
             string? productStatisticCacheVersion = null,
-            bool chinaSupplierScope = false
+            bool chinaSupplierScope = false,
+            string? sortToken = null
         )
         {
             var normalizedProductSearch = string.IsNullOrWhiteSpace(productSearch) ? null : productSearch.Trim();
-            var key = $"{PREFIX}:EnhancedProductDetail:{Hash(dateRange, branchCodes, localSupplierCodes, chinaSupplierCodes, pageIndex, pageSize, normalizedProductSearch, productStatisticCacheVersion, chinaSupplierScope)}";
+            // sortToken 只能传 ProductReportSort.CacheToken（白名单常量）；默认排序为 null，
+            // 此时 hash 参数与历史完全一致，默认排序的缓存键和 single-flight 去重键保持不变。
+            var hash = sortToken is null
+                ? Hash(dateRange, branchCodes, localSupplierCodes, chinaSupplierCodes, pageIndex, pageSize, normalizedProductSearch, productStatisticCacheVersion, chinaSupplierScope)
+                : Hash(dateRange, branchCodes, localSupplierCodes, chinaSupplierCodes, pageIndex, pageSize, normalizedProductSearch, productStatisticCacheVersion, chinaSupplierScope, sortToken);
+            var key = $"{PREFIX}:EnhancedProductDetail:{hash}";
             TrackKey(key);
             // 搜索词可能包含货号/条码，缓存隔离要参与 hash，但日志只能记录是否有搜索；
             // 中国供应商全范围也必须隔离，避免复用未筛选商品缓存。
-            LogKeyGenerated("EnhancedProductDetail", key, dateRange, branchCodes, localSupplierCodes, chinaSupplierCodes, pageIndex, pageSize, $"HasProductSearch={normalizedProductSearch is not null};ChinaSupplierScope={chinaSupplierScope}", productStatisticCacheVersion);
+            LogKeyGenerated("EnhancedProductDetail", key, dateRange, branchCodes, localSupplierCodes, chinaSupplierCodes, pageIndex, pageSize, $"HasProductSearch={normalizedProductSearch is not null};ChinaSupplierScope={chinaSupplierScope};Sort={sortToken ?? "default"}", productStatisticCacheVersion);
             return key;
         }
 

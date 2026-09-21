@@ -2324,6 +2324,8 @@ namespace BlazorApp.Api.Services.React
         /// <param name="pageSize">每页大小，默认 100</param>
         /// <param name="productSearch">商品货号/条码搜索词（可选）</param>
         /// <param name="chinaSupplierScope">是否限制为全部中国供应商商品</param>
+        /// <param name="sortField">排序字段 amount/quantity/unitPrice（可选，默认金额）</param>
+        /// <param name="sortOrder">排序方向 asc/desc（可选，默认降序）</param>
         /// <returns>分页的含折扣信息的产品销售明细</returns>
         public async Task<PagedSalesProductDetailWithDiscountDto> GetEnhancedSalesProductDetailsAsync(
             DateRangeDto dateRange,
@@ -2333,7 +2335,9 @@ namespace BlazorApp.Api.Services.React
             int pageIndex = 1,
             int pageSize = 100,
             string? productSearch = null,
-            bool chinaSupplierScope = false
+            bool chinaSupplierScope = false,
+            string? sortField = null,
+            string? sortOrder = null
         )
         {
             var statisticStatus = await GetProductReportStatisticStatusAsync(dateRange);
@@ -2346,7 +2350,9 @@ namespace BlazorApp.Api.Services.React
                 pageSize,
                 productSearch,
                 statisticStatus,
-                chinaSupplierScope
+                chinaSupplierScope,
+                sortField,
+                sortOrder
             );
         }
 
@@ -2359,7 +2365,9 @@ namespace BlazorApp.Api.Services.React
             int pageSize,
             string? productSearch,
             ProductReportStatisticStatusDto statisticStatus,
-            bool chinaSupplierScope = false
+            bool chinaSupplierScope = false,
+            string? sortField = null,
+            string? sortOrder = null
         )
         {
             try
@@ -2367,6 +2375,8 @@ namespace BlazorApp.Api.Services.React
                 ValidateDateRange(dateRange);
                 pageIndex = Math.Max(1, pageIndex);
                 pageSize = Math.Clamp(pageSize, 1, 100);
+                // 排序在分页之前完成；三条读取路径共用同一个归一化结果，未知参数一律回退为金额降序。
+                var sort = ProductReportSort.Parse(sortField, sortOrder);
                 if (!IsProductStatisticFresh(statisticStatus))
                 {
                     return new PagedSalesProductDetailWithDiscountDto
@@ -2391,10 +2401,11 @@ namespace BlazorApp.Api.Services.React
                         statisticStatus,
                         version => SalesDashboardCacheKeys.EnhancedProductDetail(
                             dateRange, branchCodes, localSupplierCodes, chinaSupplierCodes,
-                            pageIndex, pageSize, normalizedProductSearch, version, chinaSupplierScope),
+                            pageIndex, pageSize, normalizedProductSearch, version, chinaSupplierScope,
+                            sort.CacheToken),
                         service => service.GetEnhancedSalesProductDetailsSqlServerAsync(
                             dateRange, branchCodes, localSupplierCodes, chinaSupplierCodes,
-                            pageIndex, pageSize, normalizedProductSearch, chinaSupplierScope),
+                            pageIndex, pageSize, normalizedProductSearch, chinaSupplierScope, sort),
                         () => new PagedSalesProductDetailWithDiscountDto
                         {
                             Data = new(), Total = 0, PageIndex = pageIndex, PageSize = pageSize,
@@ -2402,7 +2413,7 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 _logger.LogInformation(
-                    "[GetEnhancedSalesProductDetailsAsync] Processing request: StartDate={StartDate}, EndDate={EndDate}, CompareStartDate={CompareStartDate}, CompareEndDate={CompareEndDate}, HasSupplierFilter={HasSupplierFilter}, HasProductSearch={HasProductSearch}, ChinaSupplierScope={ChinaSupplierScope}",
+                    "[GetEnhancedSalesProductDetailsAsync] Processing request: StartDate={StartDate}, EndDate={EndDate}, CompareStartDate={CompareStartDate}, CompareEndDate={CompareEndDate}, HasSupplierFilter={HasSupplierFilter}, HasProductSearch={HasProductSearch}, ChinaSupplierScope={ChinaSupplierScope}, Sort={Sort}",
                     dateRange.StartDate,
                     dateRange.EndDate,
                     dateRange.CompareStartDate,
@@ -2411,7 +2422,8 @@ namespace BlazorApp.Api.Services.React
                         || (localSupplierCodes != null && localSupplierCodes.Any())
                         || (chinaSupplierCodes != null && chinaSupplierCodes.Any()),
                     normalizedProductSearch != null,
-                    chinaSupplierScope
+                    chinaSupplierScope,
+                    sort.Token
                 );
 
                 var cacheKey = SalesDashboardCacheKeys.EnhancedProductDetail(
@@ -2423,7 +2435,8 @@ namespace BlazorApp.Api.Services.React
                     pageSize,
                     normalizedProductSearch,
                     statisticStatus.CacheVersion,
-                    chinaSupplierScope
+                    chinaSupplierScope,
+                    sort.CacheToken
                 );
 
                 if (
@@ -2464,7 +2477,8 @@ namespace BlazorApp.Api.Services.React
                         effectiveLocalSupplierCodes,
                         pageIndex,
                         pageSize,
-                        normalizedProductSearch
+                        normalizedProductSearch,
+                        sort
                     );
                     var fastPathCacheOptions = new MemoryCacheEntryOptions()
                         .SetAbsoluteExpiration(DETAIL_CACHE_DURATION)
@@ -2535,15 +2549,19 @@ namespace BlazorApp.Api.Services.React
                     .ToList();
                 var totalCount = productCodes.Count;
                 var skip = (pageIndex - 1) * pageSize;
-                var pageRows = productCodes
-                    .Select(code => new
-                    {
-                        ProductCode = code,
-                        Current = currentDataDict.GetValueOrDefault(code),
-                        Compare = compareDataDict.GetValueOrDefault(code),
-                    })
-                    .OrderByDescending(x => x.Current?.SalesAmount ?? 0)
-                    .ThenByDescending(x => x.Compare?.SalesAmount ?? 0)
+                var candidates = productCodes.Select(code => new
+                {
+                    ProductCode = code,
+                    Current = currentDataDict.GetValueOrDefault(code),
+                    Compare = compareDataDict.GetValueOrDefault(code),
+                });
+                // 与数据库分页同一口径：本期值 → 同期值 → 商品编码；某期无数据按 0 参与排序。
+                decimal SortValue(ProductReportProductAggregateRow? row) =>
+                    row is null ? 0m : sort.ValueOf(row.SalesAmount, row.Quantity);
+                var orderedCandidates = sort.Ascending
+                    ? candidates.OrderBy(x => SortValue(x.Current)).ThenBy(x => SortValue(x.Compare))
+                    : candidates.OrderByDescending(x => SortValue(x.Current)).ThenByDescending(x => SortValue(x.Compare));
+                var pageRows = orderedCandidates
                     .ThenBy(x => x.ProductCode)
                     .Skip(skip)
                     .Take(pageSize)
@@ -6356,7 +6374,8 @@ namespace BlazorApp.Api.Services.React
             List<string>? localSupplierCodes,
             int pageIndex,
             int pageSize,
-            string? productSearch
+            string? productSearch,
+            ProductReportSort sort
         )
         {
             var currentStatisticQuery = await BuildProductReportStatisticQueryAsync(
@@ -6459,9 +6478,21 @@ namespace BlazorApp.Api.Services.React
                 };
             }
 
-            var pageRows = await combinedQuery
-                .OrderBy(row => row.CurrentSalesAmount, OrderByType.Desc)
-                .OrderBy(row => row.CompareSalesAmount, OrderByType.Desc)
+            // 排序在 CountAsync 之后追加（queryable 会被就地修改）；本期值 → 同期值 → 商品编码，保证翻页无重复无遗漏。
+            var direction = sort.Ascending ? OrderByType.Asc : OrderByType.Desc;
+            var orderedQuery = sort.Field switch
+            {
+                ProductReportSortField.Quantity => combinedQuery
+                    .OrderBy(row => row.CurrentQuantity, direction)
+                    .OrderBy(row => row.CompareQuantity, direction),
+                // 均价用固定常量片段排序，避免 SQLite 把 decimal 常量参数按 TEXT 比较以及整数除法截断。
+                ProductReportSortField.UnitPrice => combinedQuery
+                    .OrderBy(BuildFastPathUnitPriceOrderBy(sort.Ascending)),
+                _ => combinedQuery
+                    .OrderBy(row => row.CurrentSalesAmount, direction)
+                    .OrderBy(row => row.CompareSalesAmount, direction),
+            };
+            var pageRows = await orderedQuery
                 .OrderBy(row => row.ProductCode, OrderByType.Asc)
                 .Skip((int)skip)
                 .Take(pageSize)

@@ -47,7 +47,8 @@ public partial class SalesDashboardReactService
         int pageIndex,
         int pageSize,
         string? productSearch,
-        bool chinaSupplierScope
+        bool chinaSupplierScope,
+        ProductReportSort sort = default
     )
     {
         ValidateDateRange(dateRange);
@@ -129,7 +130,7 @@ public partial class SalesDashboardReactService
         }
 
         var rows = await _context.Db.Ado.SqlQueryAsync<ProductReportPagingSqlRow>(
-            BuildProductReportPagingSql(hasCompare),
+            BuildProductReportPagingSql(hasCompare, sort),
             parameters.ToArray()
         );
         // 先确定实际页，避免优化器把商品图片等宽字段连接提前到全量汇总之前。
@@ -225,9 +226,10 @@ public partial class SalesDashboardReactService
         return (await selected.ToListAsync()).ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
-    internal static string BuildProductReportPagingSql(bool includeCompare)
+    internal static string BuildProductReportPagingSql(bool includeCompare, ProductReportSort sort = default)
     {
         // 排名只聚合销售额；页码确定后再读取本页的名称、数量和成本覆盖，避免对全部商品做宽行聚合。
+        // 按数量或均价排序时才在排名阶段额外汇总数量，默认排序的 SQL 文本保持不变。
         return $"""
             BEGIN TRY
             -- 筛选集合只解析一次；显式标记空筛选，避免逐商品重复执行 OPENJSON/NOT EXISTS。
@@ -264,7 +266,7 @@ public partial class SalesDashboardReactService
             {BuildProductReportSourceCtes(includeCompare, pageOnly: false)}
             SELECT [ProductCode],
                 SUM(CASE WHEN [Period] = 0 THEN [TotalAmount] ELSE 0 END) AS [CurrentSalesAmount],
-                SUM(CASE WHEN [Period] = 1 THEN [TotalAmount] ELSE 0 END) AS [CompareSalesAmount]
+                SUM(CASE WHEN [Period] = 1 THEN [TotalAmount] ELSE 0 END) AS [CompareSalesAmount]{(sort.RequiresQuantity ? ProductReportRankingQuantityColumns : string.Empty)}
             INTO #ProductReportAggregates
             FROM PeriodRows
             WHERE [ProductCode] IS NOT NULL AND LTRIM(RTRIM([ProductCode])) <> N''
@@ -280,7 +282,7 @@ public partial class SalesDashboardReactService
                     CONVERT(int, COUNT(*) OVER ()) AS [TotalCount],
                     ROW_NUMBER() OVER
                     (
-                        ORDER BY a.[CurrentSalesAmount] DESC, a.[CompareSalesAmount] DESC, a.[ProductCode] ASC
+                        ORDER BY {BuildProductReportRankingOrderBy(sort)}
                     ) AS [RowNumber]
                 FROM #ProductReportAggregates AS a
             )
@@ -362,6 +364,43 @@ public partial class SalesDashboardReactService
                 THROW;
             END CATCH;
             """;
+    }
+
+    private const string ProductReportRankingQuantityColumns = """
+        ,
+                        SUM(CASE WHEN [Period] = 0 THEN [TotalQuantity] ELSE 0 END) AS [CurrentQuantity],
+                        SUM(CASE WHEN [Period] = 1 THEN [TotalQuantity] ELSE 0 END) AS [CompareQuantity]
+        """;
+
+    /// <summary>
+    /// 排名阶段的 ORDER BY：本期值 → 同期值 → 商品编码。只从固定片段中选择，排序参数不会拼进 SQL；
+    /// 均价口径与 AverageUnitPrice 一致，数量不大于 0 时按 0。
+    /// </summary>
+    internal static string BuildProductReportRankingOrderBy(ProductReportSort sort)
+    {
+        var direction = sort.Ascending ? "ASC" : "DESC";
+        return sort.Field switch
+        {
+            ProductReportSortField.Quantity =>
+                $"a.[CurrentQuantity] {direction}, a.[CompareQuantity] {direction}, a.[ProductCode] ASC",
+            ProductReportSortField.UnitPrice =>
+                $"CASE WHEN a.[CurrentQuantity] > 0 THEN a.[CurrentSalesAmount] / a.[CurrentQuantity] ELSE 0 END {direction}, "
+                + $"CASE WHEN a.[CompareQuantity] > 0 THEN a.[CompareSalesAmount] / a.[CompareQuantity] ELSE 0 END {direction}, "
+                + "a.[ProductCode] ASC",
+            _ => $"a.[CurrentSalesAmount] {direction}, a.[CompareSalesAmount] {direction}, a.[ProductCode] ASC",
+        };
+    }
+
+    /// <summary>
+    /// SqlSugar 快速路径的均价排序片段（不含商品编码兜底）。
+    /// SQLite 会把 decimal 常量参数按 TEXT 绑定、SUM/SUM 又是整数除法，所以用常量片段并乘 1.0 强制实数除法；
+    /// SQL Server 上仍是 decimal 运算，结果与路径 A 一致。
+    /// </summary>
+    internal static string BuildFastPathUnitPriceOrderBy(bool ascending)
+    {
+        var direction = ascending ? "ASC" : "DESC";
+        return $"CASE WHEN [CurrentQuantity] > 0 THEN [CurrentSalesAmount] * 1.0 / [CurrentQuantity] ELSE 0 END {direction}, "
+            + $"CASE WHEN [CompareQuantity] > 0 THEN [CompareSalesAmount] * 1.0 / [CompareQuantity] ELSE 0 END {direction}";
     }
 
     private static string BuildProductReportSourceCtes(bool includeCompare, bool pageOnly)
