@@ -14,6 +14,31 @@ export function formatSignedMoney(value: number | null | undefined) {
   return `${sign}${formatMoney(Math.abs(amount))}`;
 }
 
+/** 整数金额：累计卡片与排行的营业额列一致，只显示到元。 */
+export function formatWholeDollars(value: number | null | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "—";
+  }
+  return `$${Math.round(value).toLocaleString("en-AU")}`;
+}
+
+/** 带正负号的整数金额；同期基数太小时用它代替百分比。 */
+export function formatSignedWholeDollars(value: number | null | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "—";
+  }
+  const amount = Math.round(value);
+  const sign = amount > 0 ? "+" : amount < 0 ? "-" : "";
+  return `${sign}$${Math.abs(amount).toLocaleString("en-AU")}`;
+}
+
+export function formatWholeCount(value: number | null | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "—";
+  }
+  return Math.round(value).toLocaleString("en-AU");
+}
+
 export function formatRatio(value: number | null | undefined) {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return "--";

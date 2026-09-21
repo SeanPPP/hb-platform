@@ -15,6 +15,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ActivityIndicator,
   Button,
+  Icon,
   IconButton,
   Modal,
   Portal,
@@ -29,12 +30,32 @@ import {
   BranchRevenueRow,
   DailyRevenueRow,
   HourlyRevenueRow,
+  type BranchHourlyRevenueRow,
   type ExecutiveBranchPerformanceSnapshot,
   type RevenueDetailSnapshot,
   fetchBranchDailyPerformance,
   fetchExecutiveBranchPerformance,
   fetchExecutiveHourlyTraffic,
+  fetchExecutiveHourlyTrafficByBranch,
 } from "@/modules/reports/api";
+import { CumulativeRevenueCard } from "@/modules/reports/CumulativeRevenueCard";
+import { CumulativeRevenueChart } from "@/modules/reports/CumulativeRevenueChart";
+import {
+  FULL_DAY_CUTOFF_HOUR,
+  alignBranchRowsToCutoff,
+  buildCumulativeChartModel,
+  buildHourlyDetailRows,
+  buildHourlySeries,
+  formatHourLabel,
+  formatLocalClockTime,
+  getCumulativeTotals,
+  getDisplayCutoffHour,
+  groupHourlySeriesByBranch,
+  resolveDefaultCutoff,
+  resolveEffectiveCutoff,
+  type HourlyDetailView,
+} from "@/modules/reports/hourly-cumulative";
+import { useStatisticsFreshnessQuery } from "@/modules/reports/statistics-freshness";
 import {
   RevenuePeriod,
   RevenuePeriodMode,
@@ -84,6 +105,15 @@ type Drilldown =
   | { type: "daily"; branch: BranchRevenueRow };
 
 type DetailRow = HourlyRevenueRow | DailyRevenueRow;
+
+type HourlyDetailMode = "cumulative" | "perHour";
+
+// 空明细用稳定引用，避免下游 useMemo 每次渲染都重算。
+const EMPTY_DETAIL_ROWS: DetailRow[] = [];
+
+function isHourlyDetailView(row: DetailRow): row is HourlyDetailView {
+  return "status" in row;
+}
 
 interface RevenueReportScreenProps {
   embedded?: boolean;
@@ -365,6 +395,10 @@ export function RevenueReportScreen({
   const completeDetailSnapshotsRef = useRef(
     new Map<string, CompleteReportSnapshot<DetailRow[]>>(),
   ).current;
+  // 日报累计对比的逐店小时数据：刷新期间沿用同条件下最后一份完整数据，避免排行闪回旧口径。
+  const completeCumulativeSnapshotsRef = useRef(
+    new Map<string, BranchHourlyRevenueRow[]>(),
+  ).current;
   const previousRevenueScopeCodesRef = useRef("");
   const summaryViewabilityConfig = useRef({
     itemVisiblePercentThreshold: 50,
@@ -383,6 +417,9 @@ export function RevenueReportScreen({
   const [branchSearchVisible, setBranchSearchVisible] = useState(false);
   const [branchSearch, setBranchSearch] = useState("");
   const [drilldown, setDrilldown] = useState<Drilldown | null>(null);
+  // 用户点选的截止整点；null 表示跟随默认（当天最近完整整点 / 历史日期整天）。
+  const [selectedCutoffHour, setSelectedCutoffHour] = useState<number | null>(null);
+  const [hourlyDetailMode, setHourlyDetailMode] = useState<HourlyDetailMode>("cumulative");
   const [dateBounds, setDateBounds] = useState(() => getRevenueDateBounds());
   useFocusEffect(
     useCallback(() => {
@@ -392,9 +429,12 @@ export function RevenueReportScreen({
         setSelectedDate(refreshed.selectedDate);
         setPeriod(getRevenuePeriodForDate(mode, refreshed.selectedDate));
         setDrilldown(null);
+        setSelectedCutoffHour(null);
       }
     }, [mode, selectedDate]),
   );
+  const statisticsFreshnessQuery = useStatisticsFreshnessQuery();
+  const statisticsCompletedAtUtc = statisticsFreshnessQuery.data?.lastSuccessfulAtUtc ?? null;
 
   const cashierStoreOptionsQuery = useQuery({
     queryKey: ["reports", "cashier-enabled-stores", accountIdentity],
@@ -502,12 +542,14 @@ export function RevenueReportScreen({
       // 收银授权范围变化或身份切换后，旧分店数据不可继续下钻或显示。
       completeSummarySnapshotsRef.clear();
       completeDetailSnapshotsRef.clear();
+      completeCumulativeSnapshotsRef.clear();
       setDrilldown(null);
     }
     previousRevenueScopeCodesRef.current = scopeFingerprint;
     if (!reportScopeValid) {
       completeSummarySnapshotsRef.clear();
       completeDetailSnapshotsRef.clear();
+      completeCumulativeSnapshotsRef.clear();
       setDrilldown(null);
     }
   }, [
@@ -517,6 +559,7 @@ export function RevenueReportScreen({
     cashierStoreOptionsQuery.isSuccess,
     cashierEnabledStoreCodes,
     cashierStoreScopeVersion,
+    completeCumulativeSnapshotsRef,
     completeDetailSnapshotsRef,
     completeSummarySnapshotsRef,
   ]);
@@ -775,9 +818,97 @@ export function RevenueReportScreen({
     };
   }, [detailLoadGate, detailQueryKey, drilldown, recordDetailMeasurement]);
 
+  // —— 日报按小时累计的同期对比 ——
+  // 一次取范围内每家店的逐小时本期与同期；截止整点在客户端计算，点选整点不需要重新请求。
+  const cumulativeQueryEnabled = summaryQueryEnabled && mode === "day";
+  const cumulativeQueryKey = useMemo(
+    () => ["reports", "revenue-cumulative", accountIdentity, cashierStoreScopeVersion, queryParams] as const,
+    [accountIdentity, cashierStoreScopeVersion, queryParams],
+  );
+  const cumulativeQuery = useQuery({
+    queryKey: cumulativeQueryKey,
+    queryFn: ({ signal }) => fetchExecutiveHourlyTrafficByBranch(queryParams, { signal }),
+    enabled: cumulativeQueryEnabled,
+    ...REPORT_QUERY_OPTIONS,
+  });
+  useLayoutEffect(() => {
+    if (!reportScopeValid || !cumulativeQuery.data?.isComplete || cumulativeQuery.isFetching) return;
+    completeCumulativeSnapshotsRef.set(summarySnapshotKey, cumulativeQuery.data.rows);
+  }, [
+    completeCumulativeSnapshotsRef,
+    cumulativeQuery.data,
+    cumulativeQuery.isFetching,
+    reportScopeValid,
+    summarySnapshotKey,
+  ]);
+  const cumulativeRows = !reportScopeValid || mode !== "day"
+    ? null
+    : cumulativeQuery.data?.isComplete
+      ? cumulativeQuery.data.rows
+      : completeCumulativeSnapshotsRef.get(summarySnapshotKey) ?? null;
+  const cumulativeSeriesByBranch = useMemo(
+    () => (cumulativeRows ? groupHourlySeriesByBranch(cumulativeRows) : null),
+    [cumulativeRows],
+  );
+  const cumulativeScopeSeries = useMemo(
+    () => cumulativeRows
+      ? buildHourlySeries(selectedBranchCode
+          ? cumulativeRows.filter((row) => row.branchCode === selectedBranchCode)
+          : cumulativeRows)
+      : null,
+    [cumulativeRows, selectedBranchCode],
+  );
+  const cumulativeCutoff = useMemo(
+    () => mode === "day"
+      ? resolveDefaultCutoff({
+          selectedDate: period.startDate,
+          todayKey: dateBounds.maxDate,
+          statisticsCompletedAtUtc,
+        })
+      : null,
+    [dateBounds.maxDate, mode, period.startDate, statisticsCompletedAtUtc],
+  );
+  const effectiveCutoffHour = cumulativeCutoff
+    ? resolveEffectiveCutoff(selectedCutoffHour, cumulativeCutoff.cutoffHour)
+    : null;
+  const liveTimeLabel = formatLocalClockTime(statisticsCompletedAtUtc);
+  // 当天比到最近完整整点；历史日期默认比整天（沿用日统计原值），只有点选了整点才截断。
+  const rankingAlignmentNeeded =
+    mode === "day" && effectiveCutoffHour !== null && effectiveCutoffHour < FULL_DAY_CUTOFF_HOUR;
+  const cumulativeSettledWithoutData =
+    !cumulativeQueryEnabled
+    || cumulativeQuery.isError
+    || Boolean(cumulativeQuery.data && !cumulativeQuery.data.isComplete && cumulativeQuery.data.pollingExhausted);
+  const cutoffPendingForToday =
+    mode === "day"
+    && period.startDate === dateBounds.maxDate
+    && cumulativeCutoff === null
+    && statisticsFreshnessQuery.isLoading;
+  // 当天排行必须等逐店小时数据就绪后按同一截止整点显示，不能先闪出「今天部分值 vs 去年全天」。
+  // 小时数据失败或补算耗尽时退回日统计原值，排行本身不受影响。
+  const rankingAwaitsAlignment =
+    summaryQueryEnabled
+    && (cutoffPendingForToday
+      || (rankingAlignmentNeeded && !cumulativeSeriesByBranch && !cumulativeSettledWithoutData));
+  const rankingCutoffHour = rankingAlignmentNeeded && cumulativeSeriesByBranch ? effectiveCutoffHour : null;
+  const rankingCutoffLabel = rankingCutoffHour === null
+    ? null
+    : formatHourLabel(cumulativeScopeSeries
+      ? getDisplayCutoffHour(cumulativeScopeSeries, rankingCutoffHour)
+      : rankingCutoffHour);
+  const selectCutoffHour = (hour: number) => {
+    if (!cumulativeCutoff) return;
+    const defaultDisplay = cumulativeScopeSeries
+      ? getDisplayCutoffHour(cumulativeScopeSeries, cumulativeCutoff.cutoffHour)
+      : cumulativeCutoff.cutoffHour;
+    // 选回默认截止时恢复跟随最新统计，下一轮统计完成后截止整点会自动前移。
+    setSelectedCutoffHour(hour >= defaultDisplay ? null : hour);
+  };
+
   const summaryLoading =
     cashierStoreOptionsQuery.isFetching
-    || (summaryQueryEnabled && summaryQuery.isLoading);
+    || (summaryQueryEnabled && summaryQuery.isLoading)
+    || rankingAwaitsAlignment;
   const summaryError = cashierStoreOptionsQuery.isError || summaryQuery.isError;
   const summaryRefreshing =
     cashierStoreOptionsQuery.isRefetching || summaryQuery.isRefetching;
@@ -810,6 +941,7 @@ export function RevenueReportScreen({
     setPeriod(nextPeriod);
     setSelectedDate(dateBounds.maxDate);
     setDrilldown(null);
+    setSelectedCutoffHour(null);
   };
 
   const setActivePeriod = (nextPeriod: RevenuePeriod, anchorDate?: string) => {
@@ -817,6 +949,7 @@ export function RevenueReportScreen({
     setPeriod(nextPeriod);
     setSelectedDate(anchorDate ?? (nextPeriod.startDate < dateBounds.minDate ? dateBounds.minDate : nextPeriod.startDate));
     setDrilldown(null);
+    setSelectedCutoffHour(null);
   };
   const previousPeriod = getPreviousRevenuePeriod(period);
   const nextPeriod = getNextRevenuePeriod(period);
@@ -848,7 +981,7 @@ export function RevenueReportScreen({
   const isPreviousShortcutPeriod =
     period.startDate === previousShortcutPeriod.startDate && period.endDate === previousShortcutPeriod.endDate;
 
-  const rows = useMemo(() => {
+  const statisticRows = useMemo(() => {
     return getReportSnapshotDisplay(
       summaryQuery,
       getCompleteReportSnapshot(completeSummarySnapshotsRef, summarySnapshotKey),
@@ -856,6 +989,12 @@ export function RevenueReportScreen({
       reportScopeValid,
     ) ?? [];
   }, [completeSummarySnapshotsRef, reportScopeValid, summaryQuery, summarySnapshotKey]);
+  // 排行对齐到截止整点后按对齐营业额重排；搜索、分店数、汇总与下钻都使用同一份对齐结果。
+  const rows = useMemo(() => {
+    if (rankingAwaitsAlignment) return [];
+    if (rankingCutoffHour === null || !cumulativeSeriesByBranch) return statisticRows;
+    return alignBranchRowsToCutoff(statisticRows, cumulativeSeriesByBranch, rankingCutoffHour);
+  }, [cumulativeSeriesByBranch, rankingAwaitsAlignment, rankingCutoffHour, statisticRows]);
   const summaryPending = summaryQuery.data !== undefined && !summaryQuery.data.isComplete;
   const summaryPollingExhausted = summaryPending && Boolean(summaryQuery.data?.pollingExhausted);
   const selectedBranch = useMemo(
@@ -894,11 +1033,41 @@ export function RevenueReportScreen({
     detailSnapshot,
     (snapshot) => snapshot.isComplete ? completeDetailRows : undefined,
     reportScopeValid,
-  ) ?? [];
+  ) ?? EMPTY_DETAIL_ROWS;
   const detailShowingSnapshot = detailSnapshot !== undefined
     && (detailQuery.isFetching || !detailQuery.data?.isComplete || detailQuery.isError);
   const detailPending = detailQuery.data !== undefined && !detailQuery.data.isComplete;
   const detailPollingExhausted = detailPending && Boolean(detailQuery.data?.pollingExhausted);
+  // 分时下钻：累计 / 逐小时两种口径；状态按最近完整整点判断，高亮跟随用户点选的整点。
+  const hourlyDetailSourceRows = useMemo(
+    () => drilldown?.type === "hourly"
+      ? detailRows.filter((row): row is HourlyRevenueRow => !isDailyRow(row))
+      : [],
+    [detailRows, drilldown?.type],
+  );
+  const hourlyDetailRows = useMemo(
+    () => drilldown?.type === "hourly"
+      ? buildHourlyDetailRows(hourlyDetailSourceRows, {
+          cutoffHour: cumulativeCutoff?.cutoffHour ?? FULL_DAY_CUTOFF_HOUR,
+          live: cumulativeCutoff?.live ?? false,
+          cumulative: hourlyDetailMode === "cumulative",
+          highlightCutoffHour: effectiveCutoffHour ?? FULL_DAY_CUTOFF_HOUR,
+        })
+      : null,
+    [cumulativeCutoff, drilldown?.type, effectiveCutoffHour, hourlyDetailMode, hourlyDetailSourceRows],
+  );
+  const detailListRows: DetailRow[] = hourlyDetailRows ?? detailRows;
+  const detailSeries = useMemo(
+    () => (hourlyDetailSourceRows.length > 0 ? buildHourlySeries(hourlyDetailSourceRows) : null),
+    [hourlyDetailSourceRows],
+  );
+  const detailChartModel = useMemo(
+    () => (detailSeries && cumulativeCutoff ? buildCumulativeChartModel(detailSeries, cumulativeCutoff) : null),
+    [cumulativeCutoff, detailSeries],
+  );
+  const detailMarkerHour = detailSeries
+    ? getDisplayCutoffHour(detailSeries, effectiveCutoffHour ?? FULL_DAY_CUTOFF_HOUR)
+    : FULL_DAY_CUTOFF_HOUR;
   useLayoutEffect(() => {
     if (
       !reportScopeValid
@@ -1049,35 +1218,71 @@ export function RevenueReportScreen({
     </View>
   );
 
-  const renderDetailRow = (item: DetailRow, index: number) => (
-    <View
-      style={[
-        styles.tableRow,
-        styles.detailTableRow,
-        index === detailRows.length - 1 ? styles.lastTableRow : null,
-      ]}
-    >
-      <View style={styles.detailRankColumn}>
-        <TableText style={styles.rankText}>{formatOrdinal(index)}</TableText>
+  const renderDetailRow = (item: DetailRow, index: number) => {
+    const hourlyView = isHourlyDetailView(item) ? item : null;
+    const upcoming = hourlyView?.status === "upcoming";
+    const inProgress = hourlyView?.status === "live";
+    // 进行中的小时只有半截数据，数值弱化显示且不算增长率；未到的小时只保留去年值。
+    const currentStyle = inProgress ? styles.detailLiveValue : styles.strongText;
+    return (
+      <View
+        style={[
+          styles.tableRow,
+          styles.summaryTableRow,
+          styles.detailTableRow,
+          // 高亮「截至所选整点」的累计行；逐小时口径下这一行是 11–12 点，易被误读为 12 点，故不高亮。
+          hourlyView?.isCutoffRow && hourlyDetailMode === "cumulative" ? styles.detailCutoffRow : null,
+          upcoming ? styles.detailUpcomingRow : null,
+          index === detailListRows.length - 1 ? styles.lastSummaryTableRow : null,
+        ]}
+      >
+        <View style={styles.detailRankColumn}>
+          <TableText style={styles.rankText}>{formatOrdinal(index)}</TableText>
+        </View>
+        <View style={styles.detailPeriodColumn}>
+          {hourlyView && hourlyDetailMode === "cumulative" ? (
+            <TableText style={styles.strongText}>{formatHourLabel(hourlyView.boundaryHour)}</TableText>
+          ) : (
+            <DetailPeriodText item={item} getWeekdayLabel={getWeekdayLabel} />
+          )}
+          {inProgress ? (
+            <Text style={styles.detailLiveTag} numberOfLines={1}>
+              {t("reports.cumulative.live", { time: liveTimeLabel ?? "" })}
+            </Text>
+          ) : upcoming ? (
+            <TableText style={styles.muted}>{t("reports.cumulative.upcoming")}</TableText>
+          ) : null}
+        </View>
+        <View style={styles.detailAmountColumn}>
+          <TableText numeric style={upcoming ? styles.muted : currentStyle}>
+            {upcoming ? "—" : formatWholeMoney(item.revenue)}
+          </TableText>
+          <TableText numeric style={styles.muted}>{formatWholeMoney(item.compareRevenue)}</TableText>
+        </View>
+        {inProgress || upcoming ? (
+          <View style={[styles.growthColumn, styles.detailGrowthColumn]}>
+            <TableText numeric style={[styles.compactGrowthText, styles.muted]}>
+              {inProgress && hourlyView
+                ? t("reports.cumulative.comparedAt", { time: formatHourLabel(hourlyView.boundaryHour) })
+                : "—"}
+            </TableText>
+          </View>
+        ) : renderGrowthCell(item.revenue, item.compareRevenue, styles.detailGrowthColumn)}
+        <View style={styles.detailCountColumn}>
+          <TableText numeric style={upcoming ? styles.muted : currentStyle}>
+            {upcoming ? "—" : formatCount(item.transactions)}
+          </TableText>
+          <TableText numeric style={styles.muted}>{formatCount(item.compareTransactions)}</TableText>
+        </View>
+        <View style={styles.detailAmountColumn}>
+          <TableText numeric style={upcoming ? styles.muted : currentStyle}>
+            {upcoming ? "—" : formatMoney(item.averageTransaction)}
+          </TableText>
+          <TableText numeric style={styles.muted}>{formatMoney(item.compareAverageTransaction)}</TableText>
+        </View>
       </View>
-      <View style={styles.detailPeriodColumn}>
-        <DetailPeriodText item={item} getWeekdayLabel={getWeekdayLabel} />
-      </View>
-      <View style={styles.detailAmountColumn}>
-        <TableText numeric style={styles.strongText}>{formatWholeMoney(item.revenue)}</TableText>
-        <TableText numeric style={styles.muted}>{formatWholeMoney(item.compareRevenue)}</TableText>
-      </View>
-      {renderGrowthCell(item.revenue, item.compareRevenue, styles.detailGrowthColumn)}
-      <View style={styles.detailCountColumn}>
-        <TableText numeric style={styles.strongText}>{formatCount(item.transactions)}</TableText>
-        <TableText numeric style={styles.muted}>{formatCount(item.compareTransactions)}</TableText>
-      </View>
-      <View style={styles.detailAmountColumn}>
-        <TableText numeric style={styles.strongText}>{formatMoney(item.averageTransaction)}</TableText>
-        <TableText numeric style={styles.muted}>{formatMoney(item.compareAverageTransaction)}</TableText>
-      </View>
-    </View>
-  );
+    );
+  };
 
   return (
     <View style={styles.container}>
@@ -1190,6 +1395,22 @@ export function RevenueReportScreen({
               </View>
             </View>
 
+            {mode === "day" && summaryQueryEnabled ? (
+              <CumulativeRevenueCard
+                scopeLabel={selectedBranch?.branchName || selectedBranchCode || t("productReport.filters.allStores")}
+                compareDate={queryParams.compareStartDate}
+                series={cumulativeScopeSeries}
+                cutoff={cumulativeCutoff}
+                effectiveCutoffHour={effectiveCutoffHour}
+                liveTimeLabel={liveTimeLabel}
+                loading={(cumulativeQuery.isLoading && !cumulativeRows) || cutoffPendingForToday}
+                error={cumulativeQuery.isError && !cumulativeRows}
+                statisticsIncomplete={Boolean(cumulativeQuery.data?.pollingExhausted) && !cumulativeRows}
+                onRetry={retrySummary}
+                onSelectCutoff={selectCutoffHour}
+              />
+            ) : null}
+
             <View style={styles.rankingTitleRow}>
               <Text variant="titleMedium" style={styles.sectionTitle}>
                 {t("reports.sections.branchRanking")}
@@ -1236,6 +1457,16 @@ export function RevenueReportScreen({
                 />
               </View>
             </View>
+            {rankingCutoffLabel ? (
+              <View style={styles.rankingCutoffRow}>
+                <View style={styles.rankingCutoffPill}>
+                  <Icon source="clock-outline" size={14} color="#073B83" />
+                  <Text variant="labelMedium" style={styles.rankingCutoffText} numberOfLines={1}>
+                    {t("reports.cumulative.rankingAsOf", { time: rankingCutoffLabel })}
+                  </Text>
+                </View>
+              </View>
+            ) : null}
             {branchSearchVisible ? (
               <TextInput
                 dense
@@ -1292,7 +1523,9 @@ export function RevenueReportScreen({
               <View style={styles.summaryFooter}>
                 <RevenueSummaryCard
                   title={t("reports.sections.summary")}
-                  caption={`${t("reports.branchCount", { count: scopedRows.length })} · ${getPeriodLabel(period)}`}
+                  caption={`${t("reports.branchCount", { count: scopedRows.length })} · ${getPeriodLabel(period)}${
+                    rankingCutoffLabel ? ` · ${t("reports.cumulative.asOfShort", { time: rankingCutoffLabel })}` : ""
+                  }`}
                   summary={summary}
                 />
               </View>
@@ -1330,58 +1563,76 @@ export function RevenueReportScreen({
             {freshnessLabel ? <Text variant="bodySmall" style={styles.positiveText}>{freshnessLabel}</Text> : null}
           </View>
 
-          <RevenueSummaryCard
-            title={t("reports.sections.branchSummary")}
-            summary={selectedBranchSummary}
-          />
+          {/* 汇总、累计曲线、口径切换与表头放进列表头部，整张抽屉一起滚动；业务行仍是列表条目以保留首行可见计时。 */}
+          <FlatList
+            data={detailListRows}
+            keyExtractor={(item) => item.id}
+            renderItem={({ item, index }) => renderDetailRow(item, index)}
+            initialNumToRender={12}
+            maxToRenderPerBatch={16}
+            windowSize={5}
+            viewabilityConfig={detailViewabilityConfig}
+            onViewableItemsChanged={onDetailViewableItemsChanged}
+            bounces={false}
+            style={styles.modalList}
+            ListHeaderComponent={
+              <View style={styles.detailListHeader}>
+                <RevenueSummaryCard
+                  title={t("reports.sections.branchSummary")}
+                  caption={rankingCutoffLabel
+                    ? t("reports.cumulative.asOfShort", { time: rankingCutoffLabel })
+                    : undefined}
+                  summary={selectedBranchSummary}
+                />
 
-          <View style={styles.detailSectionHeader}>
-            <Text variant="titleMedium" style={styles.sectionTitle}>
-              {t(mode === "day" ? "reports.sections.hourlyDetail" : "reports.sections.dailyDetail")}
-            </Text>
-            <Text variant="bodySmall" style={styles.muted}>
-              {t("reports.detailCount", { count: detailRows.length })}
-            </Text>
-          </View>
+                {detailChartModel && detailSeries ? (
+                  <View style={styles.detailChartCard}>
+                    <View style={styles.detailChartTitleRow}>
+                      <Text variant="titleSmall" style={styles.sectionTitle}>
+                        {t("reports.cumulative.title")}
+                      </Text>
+                      <Text variant="bodySmall" style={[styles.muted, styles.detailChartCaption]} numberOfLines={1}>
+                        {`${cumulativeCutoff?.live
+                          ? t("reports.cumulative.liveAt", { time: liveTimeLabel ?? "" })
+                          : t("reports.cumulative.dayTotal")} ${formatWholeMoney(getCumulativeTotals(detailSeries, FULL_DAY_CUTOFF_HOUR).revenue)}`}
+                      </Text>
+                    </View>
+                    <CumulativeRevenueChart
+                      model={detailChartModel}
+                      markerHour={detailMarkerHour}
+                      compareFullDayLabel={`${t("reports.cumulative.lyFullDay")} ${formatWholeMoney(
+                        getCumulativeTotals(detailSeries, FULL_DAY_CUTOFF_HOUR).compareRevenue,
+                      )}`}
+                      accessibilityLabel={t("reports.cumulative.chartLabel", {
+                        scope: drilldown?.branch.branchName || drilldown?.branch.branchCode || "",
+                        time: formatHourLabel(detailMarkerHour),
+                        current: formatWholeMoney(getCumulativeTotals(detailSeries, detailMarkerHour).revenue),
+                        compare: formatWholeMoney(getCumulativeTotals(detailSeries, detailMarkerHour).compareRevenue),
+                      })}
+                    />
+                  </View>
+                ) : null}
 
-          <View style={[styles.table, styles.detailTable]}>
-            <View style={[styles.tableRow, styles.tableHeaderRow, styles.detailTableRow]}>
-              <View style={styles.detailRankColumn}><TableText style={styles.headerText}>#</TableText></View>
-              <View style={styles.detailPeriodColumn}>
-                <TableText style={styles.headerText}>
-                  {mode === "day" ? t("reports.periods.time") : t("reports.periods.date")}
-                </TableText>
-              </View>
-              <View style={styles.detailAmountColumn}>
-                <TableText numeric style={styles.headerText}>{t("reports.metrics.revenue")}</TableText>
-              </View>
-              <View style={styles.detailGrowthColumn}>
-                <TableText numeric style={styles.headerText}>{t("reports.metrics.growthRate")}</TableText>
-              </View>
-              <View style={styles.detailCountColumn}>
-                <TableText numeric style={styles.headerText}>{t("reports.metrics.transactions")}</TableText>
-              </View>
-              <View style={styles.detailAmountColumn}>
-                <TableText numeric style={styles.headerText}>{t("reports.metrics.averageTransaction")}</TableText>
-              </View>
-            </View>
-            {detailQuery.isLoading && detailRows.length === 0 ? (
-              <StateBox label={t("loading")} loading />
-            ) : detailQuery.isError && detailRows.length === 0 ? (
-              <StateBox label={t("reports.states.errorTitle")} actionLabel={t("actions.retry")} onAction={retryDetail} />
-            ) : detailPending && detailRows.length === 0 ? (
-              <StateBox
-                label={t(detailPollingExhausted
-                  ? "reports.states.statisticsIncomplete"
-                  : "reports.states.refreshingStatistics")}
-                actionLabel={detailPollingExhausted ? t("actions.retry") : undefined}
-                onAction={detailPollingExhausted ? retryDetail : undefined}
-              />
-            ) : detailRows.length === 0 ? (
-              <StateBox label={t("reports.states.empty")} />
-            ) : (
-              <>
-                {detailShowingSnapshot ? (
+                <View style={styles.detailSectionHeader}>
+                  <Text variant="titleMedium" style={styles.sectionTitle}>
+                    {t(mode === "day" ? "reports.sections.hourlyDetail" : "reports.sections.dailyDetail")}
+                  </Text>
+                  <Text variant="bodySmall" style={styles.muted}>
+                    {t("reports.detailCount", { count: detailRows.length })}
+                  </Text>
+                </View>
+                {drilldown?.type === "hourly" ? (
+                  <SegmentedButtons
+                    value={hourlyDetailMode}
+                    onValueChange={(value) => setHourlyDetailMode(value as HourlyDetailMode)}
+                    buttons={[
+                      { value: "cumulative", label: t("reports.cumulative.cumulative") },
+                      { value: "perHour", label: t("reports.cumulative.perHour") },
+                    ]}
+                  />
+                ) : null}
+
+                {detailShowingSnapshot && detailRows.length > 0 ? (
                   <Text variant="labelSmall" style={styles.snapshotNotice}>
                     {t("reports.states.showingSnapshot", {
                       time: formatReportSnapshotTime(detailSnapshot?.statisticUpdatedAt ?? null)
@@ -1389,21 +1640,64 @@ export function RevenueReportScreen({
                     })}
                   </Text>
                 ) : null}
-                <FlatList
-                data={detailRows}
-                keyExtractor={(item) => item.id}
-                renderItem={({ item, index }) => renderDetailRow(item, index)}
-                initialNumToRender={12}
-                maxToRenderPerBatch={16}
-                windowSize={5}
-                viewabilityConfig={detailViewabilityConfig}
-                onViewableItemsChanged={onDetailViewableItemsChanged}
-                bounces={false}
-                style={styles.modalList}
-                />
-              </>
-            )}
-          </View>
+
+                <View
+                  style={[
+                    styles.tableRow,
+                    styles.summaryTableRow,
+                    styles.tableHeaderRow,
+                    styles.summaryTableHeaderRow,
+                    styles.detailTableRow,
+                  ]}
+                >
+                  <View style={styles.detailRankColumn}><TableText style={styles.headerText}>#</TableText></View>
+                  <View style={styles.detailPeriodColumn}>
+                    <TableText style={styles.headerText}>
+                      {drilldown?.type === "hourly" && hourlyDetailMode === "cumulative"
+                        ? t("reports.cumulative.upTo")
+                        : mode === "day" ? t("reports.periods.time") : t("reports.periods.date")}
+                    </TableText>
+                  </View>
+                  <View style={styles.detailAmountColumn}>
+                    <TableText numeric style={styles.headerText}>{t("reports.metrics.revenue")}</TableText>
+                  </View>
+                  <View style={styles.detailGrowthColumn}>
+                    <TableText numeric style={styles.headerText}>{t("reports.metrics.growthRate")}</TableText>
+                  </View>
+                  <View style={styles.detailCountColumn}>
+                    <TableText numeric style={styles.headerText}>{t("reports.metrics.transactions")}</TableText>
+                  </View>
+                  <View style={styles.detailAmountColumn}>
+                    <TableText numeric style={styles.headerText}>{t("reports.metrics.averageTransaction")}</TableText>
+                  </View>
+                </View>
+              </View>
+            }
+            ListEmptyComponent={
+              <View style={styles.summaryTableState}>
+                {detailQuery.isLoading && detailRows.length === 0 ? (
+                  <StateBox label={t("loading")} loading />
+                ) : detailQuery.isError && detailRows.length === 0 ? (
+                  <StateBox label={t("reports.states.errorTitle")} actionLabel={t("actions.retry")} onAction={retryDetail} />
+                ) : detailPending && detailRows.length === 0 ? (
+                  <StateBox
+                    label={t(detailPollingExhausted
+                      ? "reports.states.statisticsIncomplete"
+                      : "reports.states.refreshingStatistics")}
+                    actionLabel={detailPollingExhausted ? t("actions.retry") : undefined}
+                    onAction={detailPollingExhausted ? retryDetail : undefined}
+                  />
+                ) : (
+                  <StateBox label={t("reports.states.empty")} />
+                )}
+              </View>
+            }
+            ListFooterComponent={drilldown?.type === "hourly" && detailListRows.length > 0 ? (
+              <Text variant="bodySmall" style={styles.detailFootnote}>
+                {t("reports.cumulative.footnote")}
+              </Text>
+            ) : null}
+          />
         </Modal>
 
         <Modal
@@ -1555,7 +1849,8 @@ const styles = StyleSheet.create({
     color: "#6B7280",
   },
   positiveText: {
-    color: "#16A34A",
+    // 与 GROWTH_COLORS.up 一致；#16A34A 在白底上对比度只有 3.3:1，小字看不清。
+    color: "#15803D",
     fontWeight: "700",
   },
   snapshotNotice: {
@@ -1655,7 +1950,8 @@ const styles = StyleSheet.create({
     borderBottomWidth: 0,
   },
   summaryLabelColumn: {
-    width: 50,
+    // 58px 才能完整放下 Current / Growth（原 50px 会截成 Curr… / Grow…）。
+    width: 58,
     minWidth: 0,
     paddingHorizontal: 2,
   },
@@ -1694,13 +1990,6 @@ const styles = StyleSheet.create({
   },
   rankingSearchInput: {
     marginHorizontal: 4,
-    backgroundColor: "#FFFFFF",
-  },
-  table: {
-    overflow: "hidden",
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-    borderRadius: 8,
     backgroundColor: "#FFFFFF",
   },
   tableRow: {
@@ -1749,9 +2038,6 @@ const styles = StyleSheet.create({
   summaryFooter: {
     marginTop: 8,
   },
-  lastTableRow: {
-    borderBottomWidth: 0,
-  },
   rankColumn: {
     width: 26,
     minWidth: 0,
@@ -1790,11 +2076,6 @@ const styles = StyleSheet.create({
   growthColumn: {
     width: 60,
     minWidth: 0,
-  },
-  detailTable: {
-    width: "100%",
-    flex: 1,
-    minHeight: 0,
   },
   detailTableRow: {
     minHeight: 54,
@@ -1961,5 +2242,75 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: "700",
     textAlign: "right",
+  },
+  rankingCutoffRow: {
+    flexDirection: "row",
+    paddingHorizontal: 4,
+    paddingBottom: 2,
+  },
+  rankingCutoffPill: {
+    flexShrink: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 9,
+    paddingVertical: 3,
+    borderRadius: 999,
+    backgroundColor: "#EAF2FF",
+  },
+  rankingCutoffText: {
+    flexShrink: 1,
+    color: "#073B83",
+    fontWeight: "600",
+  },
+  detailListHeader: {
+    gap: 8,
+  },
+  detailChartCard: {
+    gap: 6,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingTop: 8,
+    paddingBottom: 10,
+    backgroundColor: "#FFFFFF",
+  },
+  detailChartTitleRow: {
+    flexDirection: "row",
+    alignItems: "baseline",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  detailChartCaption: {
+    flexShrink: 1,
+    textAlign: "right",
+  },
+  detailCutoffRow: {
+    backgroundColor: "#EFF6FF",
+  },
+  detailUpcomingRow: {
+    backgroundColor: "#FAFBFC",
+  },
+  detailLiveValue: {
+    color: "#344054",
+    fontWeight: "700",
+  },
+  detailLiveTag: {
+    alignSelf: "flex-start",
+    marginTop: 2,
+    paddingHorizontal: 6,
+    borderRadius: 999,
+    overflow: "hidden",
+    backgroundColor: "#E7F6EC",
+    color: "#054F31",
+    fontSize: 10,
+    lineHeight: 16,
+    fontWeight: "700",
+  },
+  detailFootnote: {
+    color: "#6B7280",
+    paddingTop: 10,
+    paddingHorizontal: 2,
   },
 });
