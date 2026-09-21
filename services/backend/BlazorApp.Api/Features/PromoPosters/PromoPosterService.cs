@@ -82,7 +82,8 @@ public sealed class PromoPosterService : IPromoPosterService
             DiscountedPrice = discounted,
             ClearancePrice = clearancePrice,
             MultiBuyOffers = offers,
-            CanSpecial = discounted.HasValue && retail.HasValue && discounted.Value < retail.Value,
+            // Special 可以手工填写价格，因此商品存在即可进入；有折扣时仍预填折后价。
+            CanSpecial = true,
             CanMultiBuy = offers.Count > 0,
             CanClearance = clearancePrice.HasValue,
         };
@@ -91,7 +92,7 @@ public sealed class PromoPosterService : IPromoPosterService
     public PromoPosterPdfResult BuildPdf(PromoPosterPdfRequest request, DateTime now)
     {
         var specs = PromoPosterRequestParser.Parse(request, PromoPosterAssets.CanPrintTitleChar);
-        var bytes = PromoPosterPdfRenderer.Render(specs, request.Impose);
+        var bytes = PromoPosterPdfRenderer.Render(specs, request.Impose, request.ShowLogo);
         var pages = PromoPosterPdfRenderer.CountPages(specs, request.Impose);
         return new PromoPosterPdfResult(bytes, $"HB-Posters-{now:yyyyMMdd-HHmm}.pdf", pages, specs.Count);
     }

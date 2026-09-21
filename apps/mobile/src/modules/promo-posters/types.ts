@@ -92,5 +92,6 @@ export interface PromoPosterQueueItem {
 export interface PromoPosterPdfRequest {
   storeCode: string;
   impose: boolean;
+  showLogo: boolean;
   posters: PromoPosterSpec[];
 }
