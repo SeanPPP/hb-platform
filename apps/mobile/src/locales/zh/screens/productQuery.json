@@ -387,8 +387,10 @@
     },
     "styles": {
       "classic": "经典",
-      "modern": "现代"
+      "modern": "现代",
+      "low-ink": "省彩墨"
     },
+    "lowInkHint": "白底黑字，仅标题与短线用彩色；Logo 可按需关闭。",
     "unavailable": {
       "multibuy": "没有进行中的多件促销",
       "clearance": "未设清货价"

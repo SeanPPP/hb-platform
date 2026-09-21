@@ -47,13 +47,11 @@ internal sealed class SalesStatisticsProductStoreDailyBuilder
         var statistics = resolvedRows.GroupBy(row => new ProductStoreDailyGroupKey(
                 row.Row.Date,
                 row.BranchCode,
-                SalesStatisticsProductStoreDailyDomainRules.ResolveStatisticSupplierCode(
-                    row.Row.SupplierCode,
-                    null
-                ),
+                ResolveWrittenSupplierCode(input, row.Row),
                 row.Row.ProductCode!.Trim()))
             .Select(group => BuildStatistic(
                 group,
+                ResolveCostSupplierCode(input, group),
                 storeCostMap.TryGetValue(group.Key.ProductCode, out var matchingStoreCosts)
                     ? matchingStoreCosts
                     : Array.Empty<StoreCostRow>(),
@@ -66,6 +64,39 @@ internal sealed class SalesStatisticsProductStoreDailyBuilder
             .Select(group => new ProductStoreDailyBranchRollup(group.Key, group.Sum(row => row.StatisticAmount), (int)group.Sum(row => row.Row.Quantity)))
             .ToList();
         return new ProductStoreDailyRefreshBuildResult(statistics, diagnostics, returnAdjustments);
+    }
+
+    /// <summary>
+    /// 写进日统计 SupplierCode 的编码。读取器只在开关打开时给出「商品 → 国内供应商编码」，
+    /// 此时国内货的本地供应商 200 改写成具体国内供应商编码；解析不出的保持 200，读取侧继续靠映射还原。
+    /// 开关关闭时映射为空，输出与改造前完全一致。
+    /// </summary>
+    private static string ResolveWrittenSupplierCode(ProductStoreDailyRefreshInput input, ProductStoreDailySourceRow row)
+    {
+        var supplierCode = SalesStatisticsProductStoreDailyDomainRules.ResolveStatisticSupplierCode(
+            row.SupplierCode,
+            null
+        );
+        return ChinaSupplierCodeFamily.IsLocalSupplierCode(supplierCode)
+            && input.ChinaSupplierByProduct.TryGetValue(row.ProductCode!.Trim(), out var chinaSupplierCode)
+            && !string.IsNullOrWhiteSpace(chinaSupplierCode)
+            ? chinaSupplierCode.Trim()
+            : supplierCode;
+    }
+
+    /// <summary>
+    /// 成本解析用的供应商身份。分店价格表和进货明细里国内货记的是本地供应商 200，
+    /// 直写行不能拿国内供应商编码去匹配，否则会匹配不到分店成本、退回商品进价。
+    /// </summary>
+    private static string ResolveCostSupplierCode(
+        ProductStoreDailyRefreshInput input,
+        IGrouping<ProductStoreDailyGroupKey, ProductStoreDailyResolvedRow> group)
+    {
+        var writtenFromLocal = group.Any(row => ChinaSupplierCodeFamily.IsLocalSupplierCode(
+            SalesStatisticsProductStoreDailyDomainRules.ResolveStatisticSupplierCode(row.Row.SupplierCode, null)));
+        return writtenFromLocal || ChinaSupplierCodeFamily.IsFamilyCode(group.Key.SupplierCode, input.ChinaSupplierCodes)
+            ? ChinaSupplierCodeFamily.LocalSupplierCode
+            : group.Key.SupplierCode;
     }
 
     private static ProductStatisticDiagnostics BuildDiagnostics(IReadOnlyList<ProductStoreDailyResolvedRow> resolvedRows)
@@ -91,6 +122,7 @@ internal sealed class SalesStatisticsProductStoreDailyBuilder
 
     private static ProductStoreDailySalesStatistic BuildStatistic(
         IGrouping<ProductStoreDailyGroupKey, ProductStoreDailyResolvedRow> group,
+        string costSupplierCode,
         IReadOnlyList<StoreCostRow> storeCosts,
         Dictionary<string, decimal?> productCostMap,
         Dictionary<string, decimal?> warehouseCostMap,
@@ -105,7 +137,7 @@ internal sealed class SalesStatisticsProductStoreDailyBuilder
         var cost = SalesStatisticsProductStoreDailyDomainRules.ResolveCost(
             sourceRows,
             group.Key.BranchCode,
-            group.Key.SupplierCode,
+            costSupplierCode,
             group.Key.ProductCode,
             storeCosts,
             productCostMap,
@@ -150,7 +182,25 @@ internal sealed record ProductStoreDailyRefreshInput(
     IReadOnlyList<StoreCostRow> StoreCosts,
     IReadOnlyList<ProductCostRow> ProductCosts,
     IReadOnlyList<WarehouseCostRow> WarehouseCosts,
-    DateTime? LastSourceUploadTime);
+    DateTime? LastSourceUploadTime)
+{
+    private static readonly IReadOnlyDictionary<string, string> NoChinaSupplierByProduct =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    private static readonly IReadOnlySet<string> NoChinaSupplierCodes =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// 「商品 → 国内供应商编码」，按主数据解析。只有直写开关打开时读取器才会填充；
+    /// 为空表示不改写 SupplierCode。
+    /// </summary>
+    public IReadOnlyDictionary<string, string> ChinaSupplierByProduct { get; init; } = NoChinaSupplierByProduct;
+
+    /// <summary>
+    /// 全部国内供应商编码（含停用、软删除）。与开关无关，读取器总会加载：
+    /// 库里可能已有直写行，按行键找旧行时要把国内编码族视为同一个供应商。
+    /// </summary>
+    public IReadOnlySet<string> ChinaSupplierCodes { get; init; } = NoChinaSupplierCodes;
+}
 
 internal sealed record ProductStoreDailyResolvedRow(ProductStoreDailySourceRow Row, string BranchCode, decimal StatisticAmount);
 internal sealed record ProductStoreDailyGroupKey(DateTime Date, string BranchCode, string SupplierCode, string ProductCode);

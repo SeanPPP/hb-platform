@@ -11,7 +11,6 @@ namespace BlazorApp.Api.Services.React;
 /// </summary>
 public sealed class ContainerAllocationSalesReportService : IContainerAllocationSalesReportService
 {
-    private const string ChinaContainerSupplierCode = "200";
     private const string ReconciliationFailurePrefix = "商品统计与分店营业额统计不一致:";
     private readonly SqlSugarContext _context;
     private readonly IContainerReactService _containerService;
@@ -298,12 +297,13 @@ public sealed class ContainerAllocationSalesReportService : IContainerAllocation
             return new List<SalesRow>();
 
         var productCodeList = productCodes.ToList();
+        var chinaFamilyCodes = await LoadChinaFamilyCodesAsync();
         // 商品编码在 SQL 中按 Trim + Upper 归一化，和内存合并口径保持一致。
         var query = _context.Db.Queryable<ProductStoreDailySalesStatistic>()
             .Where(x =>
                 x.Date >= startDate
                 && x.Date < endDate.AddDays(1)
-                && x.SupplierCode == ChinaContainerSupplierCode
+                && chinaFamilyCodes.Contains(x.SupplierCode)
                 && productCodeList.Contains(SqlFunc.ToUpper(x.ProductCode.Trim()))
             );
 
@@ -356,6 +356,15 @@ public sealed class ContainerAllocationSalesReportService : IContainerAllocation
             ))
             .ToList();
     }
+
+    /// <summary>
+    /// 柜货都是国内货。日统计里国内货既可能是旧写法的本地供应商 200，也可能是直写的国内供应商编码，
+    /// 只认 200 会漏掉直写行；同一商品编码挂在其他澳洲供应商下的销售仍然排除在外。
+    /// </summary>
+    private async Task<List<string>> LoadChinaFamilyCodesAsync() =>
+        ChinaSupplierCodeFamily.BuildStatisticFilterCodes(
+            await ChinaSupplierCodeFamily.LoadChinaSupplierCodesAsync(_context.Db)
+        );
 
     private async Task<StatisticStatus> GetStatisticStatusAsync(DateTime startDate, DateTime endDate)
     {
@@ -415,11 +424,12 @@ public sealed class ContainerAllocationSalesReportService : IContainerAllocation
             return new List<string>();
 
         var productCodeList = productCodes.ToList();
+        var chinaFamilyCodes = await LoadChinaFamilyCodesAsync();
         var rows = await _context.Db.Queryable<ProductStoreDailySalesStatistic>()
             .Where(x =>
                 x.Date >= startDate
                 && x.Date < endDate.AddDays(1)
-                && x.SupplierCode == ChinaContainerSupplierCode
+                && chinaFamilyCodes.Contains(x.SupplierCode)
                 && productCodeList.Contains(SqlFunc.ToUpper(x.ProductCode.Trim()))
             )
             .GroupBy(x => SqlFunc.ToUpper(x.BranchCode.Trim()))
