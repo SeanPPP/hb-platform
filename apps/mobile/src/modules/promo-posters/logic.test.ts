@@ -77,15 +77,15 @@ function createDefaults(overrides: Partial<PromoPosterDefaults> = {}): PromoPost
 assert.deepEqual(
   resolveScanPosterAvailability({ discountRate: 0.3, activePromotionCount: 0, clearancePrice: null }),
   { special: true, multibuy: false, new: true, clearance: false },
-  "有折扣才可做特价；无促销、无清货价时对应按钮不可用；新品始终可用",
+  "特价始终可用；无促销、无清货价时对应按钮不可用；新品始终可用",
 );
 assert.deepEqual(
   resolveScanPosterAvailability({ discountRate: 0, activePromotionCount: 2, clearancePrice: 5 }),
-  { special: false, multibuy: true, new: true, clearance: true },
+  { special: true, multibuy: true, new: true, clearance: true },
 );
 assert.deepEqual(
   resolveScanPosterAvailability({ discountRate: null, activePromotionCount: 0, clearancePrice: 0 }),
-  { special: false, multibuy: false, new: true, clearance: false },
+  { special: true, multibuy: false, new: true, clearance: false },
   "清货价为 0 视为未设置",
 );
 
@@ -130,6 +130,28 @@ assert.equal(special.price, "9.09", "特价现价取本店折后价");
 assert.equal(special.wasPrice, "12.99", "特价原价取零售价");
 assert.equal(special.validFrom, "");
 assert.equal(special.validTo, "");
+
+const noDiscountDefaults = createDefaults({ retailPrice: 2.5, discountRate: 0, discountedPrice: null, canSpecial: false });
+assert.equal(resolveDefaultsAvailability(noDiscountDefaults).special, true, "兼容旧接口 canSpecial=false，特价不要求系统折扣");
+const regularSpecial = createPosterDraft(noDiscountDefaults, { kind: "special", style: "classic", size: "A4", today: TODAY });
+assert.equal(regularSpecial.price, "2.50");
+assert.equal(regularSpecial.wasPrice, "");
+const regularResult = buildPosterSpec(regularSpecial, noDiscountDefaults);
+assert.ok(regularResult.ok);
+assert.equal(regularResult.spec.price, 2.5);
+assert.equal("wasPrice" in regularResult.spec, false);
+assert.equal(computePosterSaving(regularResult.spec), null);
+for (const discountedPrice of [2.5, 3]) {
+  const draft = createPosterDraft({ ...noDiscountDefaults, discountedPrice }, { kind: "special", style: "classic", size: "A4", today: TODAY });
+  assert.equal(draft.price, "2.50", "非真实折扣不能填成优惠价");
+  assert.equal(draft.wasPrice, "");
+}
+const noRetailDefaults = createDefaults({ retailPrice: null, discountedPrice: null, canSpecial: false });
+const manualSpecial = createPosterDraft(noRetailDefaults, { kind: "special", style: "classic", size: "A4", today: TODAY });
+assert.equal(manualSpecial.price, "");
+assert.equal(buildPosterSpec(manualSpecial, noRetailDefaults).ok, false);
+assert.equal(buildPosterSpec({ ...manualSpecial, price: "2.50" }, noRetailDefaults).ok, true, "无零售价可手填后打印");
+
 
 const clearanceDefaults = createDefaults({ clearancePrice: 5, canClearance: true });
 const clearance = createPosterDraft(clearanceDefaults, { kind: "clearance", style: "modern", size: "A4", today: TODAY });
@@ -213,6 +235,12 @@ assert.equal(!reversed.ok && reversed.errors.validity, "rangeInvalid");
 
 const wasLower = buildPosterSpec({ ...special, wasPrice: "8.00" }, defaults);
 assert.equal(!wasLower.ok && wasLower.errors.wasPrice, "wasNotHigher", "原价必须高于现价");
+
+assert.equal(buildPosterSpec({ ...special, wasPrice: "" }, defaults).ok, true, "Special 原价可留空");
+for (const wasPrice of ["0", "-1", "bad", "1.234", "9.09"]) {
+  assert.equal(buildPosterSpec({ ...special, wasPrice }, defaults).ok, false, "填写的原价须有效且高于现价");
+}
+assert.equal(buildPosterSpec({ ...clearance, wasPrice: "" }, clearanceDefaults).ok, false, "清仓仍要求原价");
 
 const badTitle = buildPosterSpec({ ...special, title: "保温瓶" }, defaults);
 assert.equal(!badTitle.ok && badTitle.errors.title?.code, "unprintable");
@@ -330,6 +358,11 @@ const request = buildPromoPosterPdfRequest("S1", true, [
 ]);
 assert.equal(request.storeCode, "S1");
 assert.equal(request.impose, true);
+assert.equal(request.showLogo, true, "未指定时默认显示 Logo");
+const hiddenLogoRequest = buildPromoPosterPdfRequest("S1", true, [regularResult.spec], false);
+assert.equal(hiddenLogoRequest.showLogo, false);
+assert.equal("wasPrice" in hiddenLogoRequest.posters[0], false);
+assert.equal(buildPromoPosterPdfRequest("S1", false, [regularResult.spec], true).showLogo, true);
 assert.deepEqual(request.posters[0], {
   kind: "special",
   style: "classic",
@@ -382,12 +415,16 @@ assert.deepEqual(restored.items.map((item) => item.id), ["ok"], "结构不对的
 assert.equal(restored.style, "modern");
 assert.equal(restored.size, "A5");
 assert.equal(restored.impose, false);
-assert.deepEqual(normalizeStoredQueueSnapshot(null), { items: [], style: "classic", size: "A6", impose: true });
+assert.equal(restored.showLogo, true, "旧队列没有 Logo 字段时默认开启");
+assert.equal(normalizeStoredQueueSnapshot({ ...restored, showLogo: false }).showLogo, false, "恢复未完成批次时保留关闭设置");
+assert.equal(normalizeStoredQueueSnapshot({ items: [], showLogo: false }).showLogo, true, "无待打印条目时恢复新批次默认值");
+assert.deepEqual(normalizeStoredQueueSnapshot(null), { items: [], style: "classic", size: "A6", impose: true, showLogo: true });
 assert.deepEqual(normalizeStoredQueueSnapshot({ style: "retro", size: "B5", impose: "yes" }), {
   items: [],
   style: "classic",
   size: "A6",
   impose: true,
+  showLogo: true,
 });
 
 // ---------------------------------------------------------------- 错误体解码

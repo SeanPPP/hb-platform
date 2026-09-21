@@ -49,6 +49,8 @@ export function PromoPosterQueueScreen() {
   const items = usePromoPosterQueueStore((state) => state.items);
   const impose = usePromoPosterQueueStore((state) => state.impose);
   const setImpose = usePromoPosterQueueStore((state) => state.setImpose);
+  const showLogo = usePromoPosterQueueStore((state) => state.showLogo);
+  const setShowLogo = usePromoPosterQueueStore((state) => state.setShowLogo);
   const removeItem = usePromoPosterQueueStore((state) => state.remove);
   const removeMany = usePromoPosterQueueStore((state) => state.removeMany);
   const restoreItem = usePromoPosterQueueStore((state) => state.restore);
@@ -59,7 +61,7 @@ export function PromoPosterQueueScreen() {
   const [result, setResult] = useState<GeneratedResult | null>(null);
   const [opening, setOpening] = useState<PromoPosterPdfAction | null>(null);
   const [clearConfirmVisible, setClearConfirmVisible] = useState(false);
-  const [snackbar, setSnackbar] = useState<{ message: string; undo?: { item: PromoPosterQueueItem; index: number } } | null>(null);
+  const [snackbar, setSnackbar] = useState<{ message: string; undo?: { item: PromoPosterQueueItem; index: number; showLogo: boolean } } | null>(null);
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;
@@ -92,7 +94,7 @@ export function PromoPosterQueueScreen() {
   const handleRemove = (item: PromoPosterQueueItem) => {
     const index = items.findIndex((candidate) => candidate.id === item.id);
     removeItem(item.id);
-    setSnackbar({ message: t("poster.queue.removed"), undo: { item, index } });
+    setSnackbar({ message: t("poster.queue.removed"), undo: { item, index, showLogo } });
   };
 
   const handleGenerate = async () => {
@@ -103,7 +105,7 @@ export function PromoPosterQueueScreen() {
     const itemIds = items.map((item) => item.id);
     setGenerating(true);
     try {
-      const file = await downloadPromoPosterPdf(buildPromoPosterPdfRequest(storeCode, impose, posters));
+      const file = await downloadPromoPosterPdf(buildPromoPosterPdfRequest(storeCode, impose, posters, showLogo));
       if (!mountedRef.current) return;
       setResult({
         file,
@@ -168,15 +170,24 @@ export function PromoPosterQueueScreen() {
         keyExtractor={(item) => item.id}
         stickySectionHeadersEnabled={false}
         contentContainerStyle={styles.content}
-        ListHeaderComponent={
-          <View style={[styles.card, styles.imposeCard]}>
-            <View style={styles.imposeCopy}>
-              <Text style={styles.imposeTitle}>{t("poster.queue.imposeTitle")}</Text>
-              <Text style={styles.imposeDescription}>{t("poster.queue.imposeDescription")}</Text>
+        ListHeaderComponent={hydrated ? (
+          <View>
+            <View style={[styles.card, styles.imposeCard]}>
+              <View style={styles.imposeCopy}>
+                <Text style={styles.imposeTitle}>{t("poster.showLogo")}</Text>
+                <Text style={styles.imposeDescription}>{t("poster.showLogoHint")}</Text>
+              </View>
+              <Switch value={showLogo} onValueChange={setShowLogo} disabled={busy} accessibilityLabel={t("poster.showLogo")} />
             </View>
-            <Switch value={impose} onValueChange={setImpose} disabled={busy} accessibilityLabel={t("poster.queue.imposeTitle")} />
+            <View style={[styles.card, styles.imposeCard]}>
+              <View style={styles.imposeCopy}>
+                <Text style={styles.imposeTitle}>{t("poster.queue.imposeTitle")}</Text>
+                <Text style={styles.imposeDescription}>{t("poster.queue.imposeDescription")}</Text>
+              </View>
+              <Switch value={impose} onValueChange={setImpose} disabled={busy} accessibilityLabel={t("poster.queue.imposeTitle")} />
+            </View>
           </View>
-        }
+        ) : null}
         renderSectionHeader={({ section }) => (
           <View style={styles.groupHeader}>
             <Text style={styles.groupTitle}>{t("poster.queue.groupTitle", { size: section.size, count: section.count })}</Text>
@@ -193,7 +204,7 @@ export function PromoPosterQueueScreen() {
           return (
             <View style={[styles.itemRow, isFirst ? styles.itemFirst : styles.itemDivider, isLast ? styles.itemLast : null]}>
               <View style={styles.thumb}>
-                <PromoPosterPreview data={item.poster} width={THUMB_WIDTH} />
+                <PromoPosterPreview data={{ ...item.poster, showLogo }} width={THUMB_WIDTH} />
               </View>
               <View style={styles.itemCopy}>
                 <Text style={styles.itemTitle} numberOfLines={1}>
@@ -331,7 +342,12 @@ export function PromoPosterQueueScreen() {
             ? {
                 label: t("poster.queue.undo"),
                 onPress: () => {
-                  if (snackbar.undo) restoreItem(snackbar.undo.item, snackbar.undo.index);
+                  if (snackbar.undo) {
+                    const wasEmpty = usePromoPosterQueueStore.getState().items.length === 0;
+                    restoreItem(snackbar.undo.item, snackbar.undo.index);
+                    // 撤销最后一张的移除时，也恢复该批次原来的 Logo 设置。
+                    if (wasEmpty) setShowLogo(snackbar.undo.showLogo);
+                  }
                 },
               }
             : undefined
