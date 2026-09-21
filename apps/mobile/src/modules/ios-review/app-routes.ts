@@ -4815,10 +4815,7 @@ function registerReportRoutes(
     ["GET"],
     "/react/v1/dashboard/executive-hourly-traffic",
     ({ query }) => {
-      const scopedTotals = sumStorePerformanceFixtures(
-        getReportDateRange(query),
-        getScopedStores(query).map((store) => store.storeCode),
-      );
+      const dates = getReportDateRange(query);
       // 与设计原型一致：完整营业时段为 08:00–21:00，共 14 段。
       const weights = Array.from(
         { length: 14 },
@@ -4827,34 +4824,24 @@ function registerReportRoutes(
       const compareWeights = weights.map(
         (weight, index) => weight * (0.94 + (index % 5) * 0.022),
       );
-      // 末段接收分配后的余数，确保 14 段在分/整数精度上与摘要严格守恒。
-      const revenueByHour = distributeReportTotal(
-        scopedTotals.revenue,
-        weights,
-        2,
-      );
-      const revenueLYByHour = distributeReportTotal(
-        scopedTotals.revenueLY,
-        compareWeights,
-        2,
-      );
-      const transactionsByHour = distributeReportTotal(
-        scopedTotals.transactions,
-        weights,
-        0,
-      );
-      const transactionsLYByHour = distributeReportTotal(
-        scopedTotals.transactionsLY,
-        compareWeights,
-        0,
-      );
-      const items = weights.map((_, index) => ({
-        hour: index + 8,
-        revenue: revenueByHour[index]!,
-        revenueLY: revenueLYByHour[index]!,
-        transactions: transactionsByHour[index]!,
-        transactionsLY: transactionsLYByHour[index]!,
-      }));
+      // 与真实接口一致按「店×小时」返回：日报累计对比要按店对齐排行，单店下钻仍是 14 行。
+      // 末段接收分配后的余数，确保每家店 14 段在分/整数精度上与该店摘要严格守恒。
+      const items = getScopedStores(query).flatMap((store) => {
+        const storeTotals = sumStorePerformanceFixtures(dates, [store.storeCode]);
+        const revenueByHour = distributeReportTotal(storeTotals.revenue, weights, 2);
+        const revenueLYByHour = distributeReportTotal(storeTotals.revenueLY, compareWeights, 2);
+        const transactionsByHour = distributeReportTotal(storeTotals.transactions, weights, 0);
+        const transactionsLYByHour = distributeReportTotal(storeTotals.transactionsLY, compareWeights, 0);
+        return weights.map((_, index) => ({
+          hour: index + 8,
+          branchCode: store.storeCode,
+          branchName: store.storeName,
+          revenue: revenueByHour[index]!,
+          revenueLY: revenueLYByHour[index]!,
+          transactions: transactionsByHour[index]!,
+          transactionsLY: transactionsLYByHour[index]!,
+        }));
+      });
       return {
         data: {
           ...freshReportMetadata(),
