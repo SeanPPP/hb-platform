@@ -503,6 +503,85 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
     }
 
     [Fact]
+    public async Task GetCompactSalesBoardAsync_直写国内供应商编码无需POSM映射即可计入看板()
+    {
+        var date = new DateTime(2026, 8, 11);
+        await SeedStatisticStateAsync(date, SalesStatisticRefreshStatus.Fresh);
+        await SeedStoreAsync("S-DIRECT", "直写分店");
+        await SeedProductAsync("P-BOARD-DIRECT", "IT-BOARD-DIRECT", null, "直写商品", true, true, 1);
+        await _localDb.Insertable(new List<ChinaSupplier>
+        {
+            new() { Guid = "board-direct", SupplierCode = "CN-BOARD", SupplierName = "直写供应商" },
+            new() { Guid = "board-soft", SupplierCode = "CN-BOARD-SOFT", SupplierName = "已删除供应商", IsDeleted = true },
+        }).ExecuteCommandAsync();
+        // 整个 POSM 映射表为空：直写行自带国内供应商编码，看板不能因此返回空。
+        await _localDb.Insertable(new List<ProductStoreDailySalesStatistic>
+        {
+            new() { Date = date, BranchCode = "S-DIRECT", SupplierCode = "CN-BOARD", ProductCode = "P-BOARD-DIRECT", TotalQuantity = 4, TotalAmount = 40m, OrderCount = 1 },
+            new() { Date = date, BranchCode = "S-DIRECT", SupplierCode = "CN-BOARD-SOFT", ProductCode = "P-BOARD-SOFT", TotalQuantity = 1, TotalAmount = 5m, OrderCount = 1 },
+            // 未映射的旧 200 行和澳洲供应商行仍不计入。
+            new() { Date = date, BranchCode = "S-DIRECT", SupplierCode = "200", ProductCode = "P-BOARD-UNMAPPED", TotalQuantity = 9, TotalAmount = 99m, OrderCount = 1 },
+            new() { Date = date, BranchCode = "S-DIRECT", SupplierCode = "105", ProductCode = "P-BOARD-DIRECT", TotalQuantity = 7, TotalAmount = 70m, OrderCount = 1 },
+        }).ExecuteCommandAsync();
+
+        var result = await CreateService().GetCompactSalesBoardAsync(BoardQuery(date));
+
+        Assert.Equal(45m, result.Summary.TotalAmount);
+        Assert.Equal(new[] { "CN-BOARD", "CN-BOARD-SOFT" }, result.ChinaSuppliers.Select(supplier => supplier.SupplierCode).OrderBy(code => code));
+        Assert.Equal("已删除供应商", result.ChinaSuppliers.Single(supplier => supplier.SupplierCode == "CN-BOARD-SOFT").SupplierName);
+        var product = result.ProductDetails.Data.Single(row => row.ProductCode == "P-BOARD-DIRECT");
+        Assert.Equal("直写商品", product.ProductName);
+        Assert.Equal("直写供应商", product.ChinaSupplierName);
+        Assert.Equal(40m, product.TotalAmount);
+    }
+
+    [Fact]
+    public async Task GetCompactSalesBoardAsync_新旧写法混存时每个门店商品只有一格且归属取最近销售日()
+    {
+        var firstDay = new DateTime(2026, 8, 12);
+        var secondDay = firstDay.AddDays(1);
+        await SeedStatisticStateAsync(firstDay, SalesStatisticRefreshStatus.Fresh);
+        await SeedStatisticStateAsync(secondDay, SalesStatisticRefreshStatus.Fresh);
+        await SeedStoreAsync("S-MIXED", "混存分店");
+        await _localDb.Insertable(new List<ChinaSupplier>
+        {
+            new() { Guid = "mixed-old", SupplierCode = "CN-OLD", SupplierName = "旧归属" },
+            new() { Guid = "mixed-new", SupplierCode = "CN-NEW", SupplierName = "新归属" },
+        }).ExecuteCommandAsync();
+        await _posmDb.Insertable(new List<PosmProductSupplierMapping>
+        {
+            new() { ProductCode = "P-SAME", LocalSupplierCode = "200", ChinaSupplierCode = "CN-OLD" },
+            new() { ProductCode = "P-MOVED", LocalSupplierCode = "200", ChinaSupplierCode = "CN-OLD" },
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new List<ProductStoreDailySalesStatistic>
+        {
+            // 切换前一天是旧 200 行，切换后是直写行，两种写法解析出同一个供应商。
+            new() { Date = firstDay, BranchCode = "S-MIXED", SupplierCode = "200", ProductCode = "P-SAME", TotalQuantity = 2, TotalAmount = 20m, OrderCount = 1 },
+            new() { Date = secondDay, BranchCode = "S-MIXED", SupplierCode = "CN-OLD", ProductCode = "P-SAME", TotalQuantity = 3, TotalAmount = 30m, OrderCount = 1 },
+            // 归属中途变更：旧行映射到 CN-OLD，最近一天直写 CN-NEW，商品整体归最近的 CN-NEW。
+            new() { Date = firstDay, BranchCode = "S-MIXED", SupplierCode = "200", ProductCode = "P-MOVED", TotalQuantity = 1, TotalAmount = 10m, OrderCount = 1 },
+            new() { Date = secondDay, BranchCode = "S-MIXED", SupplierCode = "CN-NEW", ProductCode = "P-MOVED", TotalQuantity = 4, TotalAmount = 40m, OrderCount = 1 },
+        }).ExecuteCommandAsync();
+
+        var result = await CreateService().GetCompactSalesBoardAsync(new CompactSalesBoardQuery
+        {
+            DateRange = new DateRangeDto { StartDate = firstDay, EndDate = secondDay },
+        });
+
+        var store = Assert.Single(result.Stores);
+        Assert.Equal(100m, store.TotalAmount);
+        // 门店动销款数按格计数：两种写法的行必须合并成一格，否则同一商品会被数两次。
+        Assert.Equal(2, store.ProductCount);
+        Assert.Equal(2, result.ProductDetails.Total);
+        var same = result.ProductDetails.Data.Single(row => row.ProductCode == "P-SAME");
+        Assert.Equal(50m, same.TotalAmount);
+        Assert.Equal("CN-OLD", same.ChinaSupplierCode);
+        var moved = result.ProductDetails.Data.Single(row => row.ProductCode == "P-MOVED");
+        Assert.Equal(50m, moved.TotalAmount);
+        Assert.Equal("CN-NEW", moved.ChinaSupplierCode);
+    }
+
+    [Fact]
     public async Task GetCompactSalesBoardAsync_商品资料读取使用IsDeleted字面量以命中过滤索引()
     {
         var date = await SeedCompactCrossFilterFixtureAsync(new DateTime(2026, 8, 10));
@@ -952,6 +1031,83 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
                 Assert.Equal(12m, row.GrossProfit);
             }
         );
+    }
+
+    [Fact]
+    public async Task GetBestSellersAsync_直写国内供应商编码的统计行计入榜单分店明细和商品资料()
+    {
+        var date = new DateTime(2026, 6, 3);
+        await SeedStatisticStateAsync(date, SalesStatisticRefreshStatus.Fresh);
+        await SeedStoreAsync("S1", "Store 1");
+        await SeedStoreAsync("S2", "Store 2");
+        await _localDb.Insertable(new ChinaSupplier { Guid = "cn-best-direct", SupplierCode = "CN-BEST", SupplierName = "直写供应商" }).ExecuteCommandAsync();
+
+        ProductStoreDailySalesStatistic Row(DateTime day, string branchCode, string supplierCode, string productCode, int quantity) => new()
+        {
+            Date = day, BranchCode = branchCode, SupplierCode = supplierCode, ProductCode = productCode,
+            ProductName = $"统计名称-{productCode}", Barcode = $"BAR-{productCode}",
+            TotalQuantity = quantity, TotalAmount = quantity * 2m, OrderCount = 1,
+            UnitCostSnapshot = 1m, TotalCost = quantity, GrossProfit = quantity, CostSource = "StoreRetailPrice",
+        };
+        // 逐行插入：SQLite 的批量插入与单行插入写出的日期文本格式不同，会让「Date <= 结束日」的文本比较失真。
+        foreach (var statistic in new[]
+        {
+            // 只有直写行的商品：没有 200 行也必须上榜，条码和品名只能从统计行取到。
+            Row(date, "S1", "CN-BEST", "P-DIRECT", 7),
+            Row(date, "S2", "CN-BEST", "P-DIRECT", 2),
+            // 同一商品新旧写法混存（切换前后各一天）：数量合并成一行。
+            Row(date, "S1", "200", "P-MIXED", 3),
+            Row(date.AddDays(1), "S1", "CN-BEST", "P-MIXED", 4),
+            // 澳洲供应商的销售不属于国内货，销量再大也不上榜。
+            Row(date, "S1", "105", "P-AUSTRALIAN", 100),
+        })
+        {
+            await _localDb.Insertable(statistic).ExecuteCommandAsync();
+        }
+        await SeedStatisticStateAsync(date.AddDays(1), SalesStatisticRefreshStatus.Fresh);
+
+        var result = await CreateService().GetBestSellersAsync(
+            new DateRangeDto { StartDate = date, EndDate = date.AddDays(1) },
+            null,
+            pageIndex: 1,
+            pageSize: 50
+        );
+
+        Assert.Equal(2, result.Total);
+        Assert.Equal(new[] { "P-DIRECT", "P-MIXED" }, result.Products.Select(product => product.ProductCode));
+        var direct = result.Products[0];
+        Assert.Equal(9, direct.Quantity);
+        Assert.Equal("BAR-P-DIRECT", direct.Barcode);
+        Assert.Equal("统计名称-P-DIRECT", direct.ProductName);
+        Assert.Equal(new[] { "S1", "S2" }, direct.BranchSales.Select(row => row.BranchCode));
+        Assert.Equal(7, result.Products[1].Quantity);
+        Assert.Equal(7, Assert.Single(result.Products[1].BranchSales).Quantity);
+    }
+
+    [Fact]
+    public async Task GetBestSellersAsync_软删除国内供应商的直写行仍计入热销榜()
+    {
+        var date = new DateTime(2026, 6, 5);
+        await SeedStatisticStateAsync(date, SalesStatisticRefreshStatus.Fresh);
+        await SeedStoreAsync("S1", "Store 1");
+        await _localDb.Insertable(new ChinaSupplier
+        {
+            Guid = "cn-best-soft", SupplierCode = "CN-BEST-SOFT", SupplierName = "已删除供应商", IsDeleted = true,
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new ProductStoreDailySalesStatistic
+        {
+            Date = date, BranchCode = "S1", SupplierCode = "CN-BEST-SOFT", ProductCode = "P-SOFT",
+            ProductName = "软删除供应商商品", TotalQuantity = 5, TotalAmount = 10m, OrderCount = 1,
+        }).ExecuteCommandAsync();
+
+        var result = await CreateService().GetBestSellersAsync(
+            new DateRangeDto { StartDate = date, EndDate = date },
+            null,
+            pageIndex: 1,
+            pageSize: 50
+        );
+
+        Assert.Equal("P-SOFT", Assert.Single(result.Products).ProductCode);
     }
 
     [Fact]

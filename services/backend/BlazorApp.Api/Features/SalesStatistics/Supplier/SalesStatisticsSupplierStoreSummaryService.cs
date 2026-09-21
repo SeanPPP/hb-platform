@@ -40,7 +40,9 @@ internal sealed class SalesStatisticsSupplierStoreSummaryService
             .GroupBy(row => row.ProductCode.Trim(), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
 
-        var chinaSuppliers = await context.ChinaSupplierDb.GetListAsync(row => row.SupplierCode != null && !row.IsDeleted);
+        // 目录包含停用和软删除的国内供应商：直写行靠编码是否属于该集合来识别，供应商被删除后，
+        // 它的历史销售仍要归国内侧，不能在澳洲侧汇总里变成一个普通供应商（见 ChinaSupplierCodeFamily）。
+        var chinaSuppliers = await context.ChinaSupplierDb.GetListAsync(row => row.SupplierCode != null);
         var chinaCodes = chinaSuppliers.Where(row => !string.IsNullOrWhiteSpace(row.SupplierCode))
             .Select(row => row.SupplierCode!.Trim()).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var chinaNames = chinaCodes.Count == 0
@@ -48,7 +50,11 @@ internal sealed class SalesStatisticsSupplierStoreSummaryService
             : chinaSuppliers
                 .Where(row => !string.IsNullOrWhiteSpace(row.SupplierCode))
                 .GroupBy(row => row.SupplierCode!.Trim(), StringComparer.OrdinalIgnoreCase)
-                .ToDictionary(group => group.Key, group => group.First().SupplierName ?? group.Key, StringComparer.OrdinalIgnoreCase);
+                // 同一编码有多条记录时，名称优先取未删除那条。
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.OrderBy(row => row.IsDeleted).First().SupplierName ?? group.Key,
+                    StringComparer.OrdinalIgnoreCase);
 
         // 直接中国供应商码也归属澳洲报表 200；先加载中国码集合，确保 direct-only 日期仍会加载本地 200 名称。
         var localCodes = productStatistics.Select(row =>
