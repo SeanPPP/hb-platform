@@ -274,6 +274,12 @@
     "drilldown": {
       "supplier": "供应商分店数据",
       "product": "商品分店数据"
+    },
+    "sort": {
+      "accessibilityLabel": "按{{column}}排序，当前{{state}}",
+      "desc": "降序",
+      "asc": "升序",
+      "none": "未排序"
     }
   }
 }

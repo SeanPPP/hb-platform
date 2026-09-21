@@ -12,6 +12,11 @@ import {
   type ReviewTransportResult,
 } from "./transport";
 import { normalizeAttendanceToday } from "../attendance/attendance-today-normalization";
+import {
+  sortReportRows,
+  type ReportSort,
+  type ReportSortValues,
+} from "../product-report/sorting";
 
 type ReviewMethod = ReviewTransportRequest["method"];
 type JsonRecord = Record<string, any>;
@@ -1010,6 +1015,33 @@ function page(items: JsonRecord[], pageNumber = 1, pageSize = 20) {
     page: pageNumber,
     pageNumber,
     pageSize,
+  };
+}
+
+function reportUnitPrice(amount: unknown, quantity: unknown) {
+  const safeQuantity = Number(quantity);
+  return safeQuantity > 0 ? Number(amount) / safeQuantity : 0;
+}
+
+// 与后端商品明细排序口径一致：本期值 → 同期值 → 商品编码；均价在数量不大于 0 时按 0。
+const REVIEW_REPORT_PRODUCT_SORT_VALUES: ReportSortValues<JsonRecord> = {
+  amount: (row) => [Number(row.salesAmount), Number(row.compareSalesAmount)],
+  quantity: (row) => [Number(row.quantity), Number(row.compareQuantity)],
+  unitPrice: (row) => [
+    reportUnitPrice(row.salesAmount, row.quantity),
+    reportUnitPrice(row.compareSalesAmount, row.compareQuantity),
+  ],
+};
+
+// 与后端 ProductReportSort.Parse 一致：字段只认白名单、未知回退金额；asc/ascend 为升序，其余降序。
+// 两个参数都没传时返回 null，保持 fixture 原有顺序。
+function parseReviewReportSort(query: URLSearchParams): ReportSort | null {
+  const field = query.get("sortField")?.trim().toLowerCase() ?? "";
+  const order = query.get("sortOrder")?.trim().toLowerCase() ?? "";
+  if (!field && !order) return null;
+  return {
+    field: field === "quantity" ? "quantity" : field === "unitprice" ? "unitPrice" : "amount",
+    order: order === "asc" || order === "ascend" ? "asc" : "desc",
   };
 }
 
@@ -5023,7 +5055,11 @@ function registerReportRoutes(
             compareOrderCount: Math.round(product.compareOrderCount * storeScale),
           };
         });
-      const result = pagedSlice(filteredRows, pageNumber, pageSize);
+      const sort = parseReviewReportSort(query);
+      const orderedRows = sort
+        ? sortReportRows(filteredRows, sort, REVIEW_REPORT_PRODUCT_SORT_VALUES, (row) => String(row.productCode))
+        : filteredRows;
+      const result = pagedSlice(orderedRows, pageNumber, pageSize);
       return {
         data: {
           ...freshReportMetadata(),
