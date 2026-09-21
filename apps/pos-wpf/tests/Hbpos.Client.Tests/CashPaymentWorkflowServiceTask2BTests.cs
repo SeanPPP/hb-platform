@@ -843,6 +843,9 @@ public sealed class CashPaymentWorkflowServiceTask2BTests
                 : Task.FromException(ackException);
         }
 
+        public Task AcknowledgeSupervisorResolvedSessionAsync(CardTerminalSettings settings, string sessionId, CancellationToken cancellationToken = default) =>
+            AcknowledgeSessionAsync(settings, sessionId, cancellationToken);
+
         public Task<LinklyConnectionTestResult> TestConnectionAsync(
             CardTerminalEnvironment environment,
             CancellationToken cancellationToken = default) =>

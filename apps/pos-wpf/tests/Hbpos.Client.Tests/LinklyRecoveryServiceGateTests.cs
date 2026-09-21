@@ -631,6 +631,9 @@ public sealed class LinklyRecoveryServiceGateTests
             AcknowledgeCallCount++;
             return Task.CompletedTask;
         }
+
+        public Task AcknowledgeSupervisorResolvedSessionAsync(CardTerminalSettings settings, string sessionId, CancellationToken cancellationToken = default) =>
+            AcknowledgeSessionAsync(settings, sessionId, cancellationToken);
     }
 
     private sealed class FakeOrderRepository(params LocalOrder[] orders) : ILocalOrderRepository

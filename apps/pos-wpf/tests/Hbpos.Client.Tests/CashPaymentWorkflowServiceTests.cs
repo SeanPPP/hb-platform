@@ -7707,6 +7707,9 @@ public sealed class CashPaymentWorkflowServiceTests
 
             return Task.CompletedTask;
         }
+
+        public Task AcknowledgeSupervisorResolvedSessionAsync(CardTerminalSettings settings, string sessionId, CancellationToken cancellationToken = default) =>
+            AcknowledgeSessionAsync(settings, sessionId, cancellationToken);
     }
 
     private sealed class SettingsBoundRecordingCardTerminalClient(

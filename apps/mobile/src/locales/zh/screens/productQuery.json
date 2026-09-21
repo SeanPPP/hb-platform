@@ -433,6 +433,8 @@
       "inStoreSince": "上架日期",
       "offerLabel": "多件促销",
       "offerSummary": "{{quantity}} 件 {{price}}",
+      "quantityLabel": "件数（2–99）",
+      "comboPriceLabel": "组合价",
       "unitPriceLabel": "单价（零售价）",
       "offerValidityLabel": "促销期",
       "offerValidity": "{{from}} 至 {{to}}",
@@ -462,6 +464,7 @@
         "rangeInvalid": "开始日期不能晚于结束日期"
       },
       "offerRequired": "请选择多件促销",
+      "quantityInvalid": "件数必须是 2 到 99 的整数",
       "unitPriceMissing": "商品没有零售价，无法计算单价",
       "offerInvalid": "促销件数或组合价无效，请检查促销设置",
       "fixBeforeSubmit": "请先修正标红的内容"
