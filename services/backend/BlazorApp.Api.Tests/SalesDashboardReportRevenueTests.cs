@@ -2262,6 +2262,35 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
     }
 
     [Fact]
+    public async Task GetSupplierSalesRankAsync_软删除国内供应商的直写行仍汇总到200()
+    {
+        await SeedLocalSupplierAsync("AUS1", "澳洲供应商");
+        await SeedLocalSupplierAsync("200", "hotbargain");
+        // 国内供应商日后被软删除，它的历史直写销售仍是国内货，不能在澳洲报表里冒出一个叫 CN-SOFT 的供应商。
+        await _localDb.Insertable(new ChinaSupplier
+        {
+            Guid = "china-CN-SOFT",
+            SupplierCode = "CN-SOFT",
+            SupplierName = "已删除国内供应商",
+            IsDeleted = true,
+        }).ExecuteCommandAsync();
+        await SeedProductStoreDailySalesAsync(new DateTime(2026, 7, 2), "S1", "AUS1", "P-AUS", "澳洲商品", 100m, 10, 2);
+        await SeedProductStoreDailySalesAsync(new DateTime(2026, 7, 2), "S1", "CN-SOFT", "P-CN-SOFT", "软删除供应商商品", 40m, 4, 2);
+        var service = CreateService();
+
+        var result = await service.GetSupplierSalesRankAsync(
+            new DateRangeDto { StartDate = new DateTime(2026, 7, 2), EndDate = new DateTime(2026, 7, 2) },
+            branchCodes: new List<string> { "S1" },
+            topN: 1000
+        );
+
+        var chinaRow = Assert.Single(result, row => row.SupplierCode == "200");
+        Assert.Equal(40m, chinaRow.TotalAmount);
+        Assert.DoesNotContain(result, row => row.SupplierCode == "CN-SOFT");
+        Assert.Contains(result, row => row.SupplierCode == "AUS1" && row.TotalAmount == 100m);
+    }
+
+    [Fact]
     public async Task GetSupplierStoreSalesAsync_澳洲200分店下钻包含中国货()
     {
         await SeedLocalSupplierAsync("200", "hotbargain");
