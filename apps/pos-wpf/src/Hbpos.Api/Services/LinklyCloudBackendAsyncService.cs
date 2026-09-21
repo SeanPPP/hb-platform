@@ -2617,6 +2617,14 @@ public class LinklyCloudBackendAsyncService(
         }
 
         // 官方 GET transaction 的完整 payload 要作为恢复证据返回给 POS，用于 RFN、金额和收据证据解析。
+        var payloadJson = LinklyReceiptTextSanitizer.SanitizeSettlementData(response.Body) ?? "{}";
+        if (HasPersistedRequestEvidence(session))
+        {
+            // 与 webhook 通知同一口径：脱敏器会把交易引用、RFN 里的长数字串当成卡号掩掉，证据记录必须保留这两项
+            // 身份字段才能和会话精确匹配。webhook 未送达时 GET 是唯一的官方证据，缺了它就核验不出卡交易明细。
+            payloadJson = PreserveTransactionIdentityFields(response.Body, payloadJson);
+        }
+
         await repository.AddNotificationAsync(new LinklyCloudBackendNotificationRecord
         {
             Environment = session.Environment,
@@ -2624,7 +2632,7 @@ public class LinklyCloudBackendAsyncService(
             DeviceCode = session.DeviceCode,
             SessionId = session.SessionId,
             Type = "transaction",
-            PayloadJson = LinklyReceiptTextSanitizer.SanitizeSettlementData(response.Body) ?? "{}",
+            PayloadJson = payloadJson,
             ReceivedAt = DateTimeOffset.UtcNow
         }, cancellationToken);
     }

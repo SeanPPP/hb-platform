@@ -1361,6 +1361,65 @@ namespace Hbpos.Api.Tests;
             string.Equals(notification.Type, "transaction", StringComparison.OrdinalIgnoreCase));
     }
 
+    [Theory]
+    [InlineData("260921123456AB12")]
+    [InlineData("2609211234560A1F")]
+    [InlineData("2609211234561234")]
+    public async Task Official_get_alone_verifies_card_transaction_when_the_webhook_never_arrived(string txnRef)
+    {
+        // API 生成的交易引用是 12 位时间戳加 4 位十六进制。后 4 位只要含字母（约 85%），脱敏器就会把前面
+        // 那串数字当成卡号掩掉；GET 刷新写入的通知若不保留身份字段，就永远对不上会话的交易引用。
+        // webhook 没送达时 GET 是唯一的官方证据，这时也必须能核验出金额，否则实时收款只能报"结果未知"。
+        var repository = new InMemoryLinklyCloudBackendAsyncRepository();
+        await repository.UpsertSessionAsync(new LinklyCloudBackendSessionRecord
+        {
+            Environment = "Sandbox",
+            StoreCode = "S01",
+            DeviceCode = "POS-01",
+            SessionId = "get-only-session",
+            Status = "Pending",
+            OperationType = "Transaction",
+            TxnRef = txnRef,
+            RequestTxnType = "P",
+            RequestAmountCents = 1000,
+            RequestRfn = txnRef,
+            IsActive = true,
+            UpdatedAt = DateTimeOffset.UtcNow
+        }, CancellationToken.None);
+        var transport = new CapturingLinklyCloudBackendAsyncTransport(
+            HttpStatusCode.Accepted,
+            getTransactionStatusCode: HttpStatusCode.OK,
+            getTransactionBody: JsonSerializer.Serialize(new
+            {
+                Response = new
+                {
+                    Success = true,
+                    TxnRef = txnRef,
+                    TxnType = "P",
+                    AmtPurchase = 1000,
+                    ResponseCode = "00",
+                    ResponseText = "APPROVED",
+                    Pan = "4111111111111111",
+                    PurchaseAnalysisData = new { RFN = txnRef }
+                }
+            }));
+        var service = CreateService(transport, repository: repository);
+
+        var recovered = await service.GetStatusAsync(
+            "S01", "POS-01", "Sandbox", "get-only-session", CancellationToken.None);
+
+        Assert.Equal("Completed", recovered?.Status);
+        Assert.Equal(txnRef, recovered?.CardTransaction?.TxnRef);
+        Assert.Equal(1000, recovered?.CardTransaction?.AmountCents);
+        // 保留的只是交易引用与 RFN 两项身份字段，卡号等敏感内容仍必须脱敏后才落库和返回。
+        var stored = await repository.GetNotificationsAsync(
+            "Sandbox", "S01", "POS-01", "get-only-session", CancellationToken.None);
+        Assert.DoesNotContain(stored, notification =>
+            notification.PayloadJson.Contains("4111111111111111", StringComparison.Ordinal));
+        Assert.DoesNotContain(recovered?.Notifications ?? [], notification =>
+            notification.PayloadJson.Contains("4111111111111111", StringComparison.Ordinal));
+    }
+
     [Fact]
     public async Task Completed_notification_rejects_wrong_refund_reference()
     {
