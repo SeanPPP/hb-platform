@@ -29,6 +29,7 @@ export interface PromoPosterPreviewData {
   validFrom?: string;
   validTo?: string;
   inStoreSince?: string;
+  showLogo?: boolean;
 }
 
 interface PromoPosterPreviewProps {
@@ -243,13 +244,14 @@ function ClassicBand({ kind, z }: { kind: Exclude<PromoPosterKind, "new">; z: Cl
   const band = CLASSIC_BAND[kind];
   const available = z.w - 2 * z.m - 2 * z.b - 2 * z.bpx;
   const fontSize = Math.floor((available / band.em) * 0.95);
+  // 自动缩放的文字使用字体自然行高，避免 iOS 将大标题压缩到不可见。
   return (
     <View style={{ backgroundColor: band.bg, paddingVertical: z.bpy, paddingHorizontal: z.bpx, alignItems: "center" }}>
       <Text
         numberOfLines={1}
         adjustsFontSizeToFit
         minimumFontScale={0.5}
-        style={[FONT_CONDENSED, textStyle(fontSize, 0.95), { color: band.fg, letterSpacing: fontSize * 0.01, alignSelf: "stretch", textAlign: "center" }]}
+        style={[FONT_CONDENSED, { fontSize, color: band.fg, letterSpacing: fontSize * 0.01, alignSelf: "stretch", textAlign: "center", includeFontPadding: false }]}
       >
         {band.word}
       </Text>
@@ -374,7 +376,7 @@ function ClassicPoster({ data, z }: { data: PromoPosterPreviewData; z: ClassicSi
     priceBlock = <BigPrice value={data.price} size={fitPriceSize(data.price, inner, round(z.P * 1.2))} color={INK} underlineCents />;
   } else {
     priceBlock = <BigPrice value={data.price} size={fitPriceSize(data.price, inner, z.P)} color={RED} underlineCents />;
-    if (data.wasPrice) info.push(<WasText key="was" value={data.wasPrice} fontSize={z.wz} strikeColor={RED} color={INK} />);
+    if (saving && data.wasPrice) info.push(<WasText key="was" value={data.wasPrice} fontSize={z.wz} strikeColor={RED} color={INK} />);
     if (saving) info.push(<Pill key="save" text={`SAVE ${formatPosterMoney(saving.amount)}`} fontSize={z.wz} bg={INK} fg="#FFFFFF" />);
   }
 
@@ -396,8 +398,8 @@ function ClassicPoster({ data, z }: { data: PromoPosterPreviewData; z: ClassicSi
           </View>
         </View>
         <View style={[styles.row, { alignItems: "center", justifyContent: "space-between", gap: 8, paddingVertical: z.fpy, paddingHorizontal: z.pad, borderTopWidth: 1, borderTopColor: LINE }]}>
-          <Wordmark height={z.lg} />
-          <View style={{ alignItems: "flex-end", gap: 2, flexShrink: 1 }}>
+          {data.showLogo !== false ? <Wordmark height={z.lg} /> : null}
+          <View style={{ alignItems: "flex-end", gap: 2, flex: 1 }}>
             {lines.map((line) => (
               <Text key={line} numberOfLines={1} style={[FONT_BOLD, textStyle(z.f, 1.3), { color: GREY }]}>
                 {line}
@@ -420,7 +422,7 @@ function Sticker({ z, bg, fg, small, big, bigFirst }: { z: ModernSize; bg: strin
     </Text>
   );
   const bigText = (
-    <Text key="big" numberOfLines={1} adjustsFontSizeToFit style={[FONT_CONDENSED, textStyle(z.S * 0.34, 0.95), { color: fg, maxWidth: z.S * 0.86 }]}>
+    <Text key="big" numberOfLines={1} adjustsFontSizeToFit style={[FONT_CONDENSED, { fontSize: z.S * 0.34, color: fg, maxWidth: z.S * 0.86, includeFontPadding: false }]}>
       {big}
     </Text>
   );
@@ -474,7 +476,7 @@ function ModernPoster({ data, z }: { data: PromoPosterPreviewData; z: ModernSize
       info = <Text style={infoStyle}>just arrived</Text>;
       sticker = <Sticker z={z} bg={theme.stickerBg} fg={theme.stickerFg} small="in store" big="NOW" />;
     } else {
-      if (data.wasPrice) info = <WasText value={data.wasPrice} fontSize={z.info} strikeColor={GREY} color={GREY} lower />;
+      if (saving && data.wasPrice) info = <WasText value={data.wasPrice} fontSize={z.info} strikeColor={GREY} color={GREY} lower />;
       if (saving) {
         sticker =
           data.kind === "clearance" ? (
@@ -498,7 +500,7 @@ function ModernPoster({ data, z }: { data: PromoPosterPreviewData; z: ModernSize
             numberOfLines={1}
             adjustsFontSizeToFit
             minimumFontScale={0.5}
-            style={[FONT_HEAVY, textStyle(wordSize, 0.95), { flex: 1, color: theme.on, letterSpacing: -wordSize * 0.035 }]}
+            style={[FONT_HEAVY, { fontSize: wordSize, flex: 1, color: theme.on, letterSpacing: -wordSize * 0.035, includeFontPadding: false }]}
           >
             {theme.word}
           </Text>
@@ -514,10 +516,12 @@ function ModernPoster({ data, z }: { data: PromoPosterPreviewData; z: ModernSize
           {info}
         </View>
         <View style={[styles.row, { alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: z.gap }]}>
-          <View style={{ backgroundColor: "#FFFFFF", borderRadius: round(z.lg * 0.25), paddingHorizontal: round(z.lg * 0.25), paddingVertical: round(z.lg * 0.12) }}>
-            <Wordmark height={z.lg} />
-          </View>
-          <View style={{ alignItems: "flex-end", gap: 2, flexShrink: 1 }}>
+          {data.showLogo !== false ? (
+            <View style={{ backgroundColor: "#FFFFFF", borderRadius: round(z.lg * 0.25), paddingHorizontal: round(z.lg * 0.25), paddingVertical: round(z.lg * 0.12) }}>
+              <Wordmark height={z.lg} />
+            </View>
+          ) : null}
+          <View style={{ alignItems: "flex-end", gap: 2, flex: 1 }}>
             {lines.map((line) => (
               <Text key={line} numberOfLines={1} style={[FONT_HEAVY, textStyle(z.f, 1.25), { color: theme.on }]}>
                 {line}

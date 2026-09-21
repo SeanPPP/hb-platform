@@ -114,21 +114,26 @@ async function main() {
 
   await test('默认类型按 特价 > 清仓 > 多件价 > 新品 取第一个可用', () => {
     assert.equal(pickDefaultPosterKind(makeDefaults()), 'special')
-    assert.equal(pickDefaultPosterKind(makeDefaults({ canSpecial: false })), 'clearance')
-    assert.equal(pickDefaultPosterKind(makeDefaults({ canSpecial: false, canClearance: false })), 'multibuy')
+    assert.equal(pickDefaultPosterKind(makeDefaults({ discountedPrice: null })), 'clearance')
+    assert.equal(pickDefaultPosterKind(makeDefaults({ discountedPrice: null, canClearance: false })), 'multibuy')
     assert.equal(
-      pickDefaultPosterKind(makeDefaults({ canSpecial: false, canClearance: false, canMultiBuy: true, multiBuyOffers: [] })),
+      pickDefaultPosterKind(makeDefaults({ discountedPrice: null, canClearance: false, canMultiBuy: true, multiBuyOffers: [] })),
       'new',
       'canMultiBuy 但没有促销时多件价不可用',
     )
     const availability = resolvePosterKindAvailability(makeDefaults({ canSpecial: false, canClearance: false, canMultiBuy: false }))
-    assert.deepEqual(availability, { special: false, multibuy: false, new: true, clearance: false })
+    assert.deepEqual(availability, { special: true, multibuy: false, new: true, clearance: false })
   })
 
   await test('草稿按类型预填价格，切换类型时保留品名', () => {
     const defaults = makeDefaults()
     const special = createPosterDraft(defaults)
     assert.deepEqual(special, { kind: 'special', title: 'Steel Mug', price: 9.09, wasPrice: 12.99, offerId: null })
+
+    const noDiscount = makeDefaults({ discountedPrice: null })
+    assert.deepEqual(applyPosterKind(createPosterDraft(noDiscount), noDiscount, 'special'), {
+      kind: 'special', title: 'Steel Mug', price: 12.99, wasPrice: null, offerId: null,
+    })
 
     const edited = { ...special, title: 'Big Steel Mug' }
     const clearance = applyPosterKind(edited, defaults, 'clearance')
@@ -166,7 +171,7 @@ async function main() {
     assert.deepEqual(validatePosterDraft({ ...base, price: null }, defaults).map((i) => i.code), ['priceRequired'])
     assert.deepEqual(validatePosterDraft({ ...base, price: 0 }, defaults).map((i) => i.code), ['priceInvalid'])
     assert.deepEqual(validatePosterDraft({ ...base, price: 10000 }, defaults).map((i) => i.code), ['priceInvalid'])
-    assert.deepEqual(validatePosterDraft({ ...base, wasPrice: null }, defaults).map((i) => i.code), ['wasPriceRequired'])
+    assert.deepEqual(validatePosterDraft({ ...base, wasPrice: null }, defaults), [], '特价原价可留空')
     assert.deepEqual(validatePosterDraft({ ...base, wasPrice: 9.09 }, defaults).map((i) => i.code), ['wasPriceNotHigher'])
 
     const fresh = applyPosterKind(base, defaults, 'new')
@@ -254,6 +259,7 @@ async function main() {
 
     assert.equal(body.storeCode, 'S01')
     assert.equal(body.impose, true)
+    assert.equal(body.showLogo, true, '旧调用未传 showLogo 时默认开启')
     assert.equal(body.posters.length, 4, '非 ready 行不进请求')
     assert.deepEqual(body.posters[0], {
       kind: 'special', style: 'modern', size: 'A6', productCode: 'P001', itemNumber: 'HB-1001', title: 'Steel Mug', price: 9.09, wasPrice: 12.99,
@@ -278,6 +284,11 @@ async function main() {
     }], { style: 'classic', size: 'A4', impose: false, today: '2026-09-19' })
     assert.equal(single.posters[0].mixAndMatch, false, '促销只含一个商品时不是 Mix & match')
     assert.equal(single.posters[0].unitPrice, 12.99)
+
+    const withoutLogo = buildPromoPosterPdfRequest('S01', [special], {
+      style: 'classic', size: 'A4', impose: false, showLogo: false, today: '2026-09-19',
+    })
+    assert.equal(withoutLogo.showLogo, false)
   })
 
   await test('日期、文件名与页数响应头解析', () => {
