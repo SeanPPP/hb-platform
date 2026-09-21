@@ -10,7 +10,7 @@ import {
 import type { PromoPosterKind, PromoPosterSize, PromoPosterStyle } from "@/modules/promo-posters/types";
 
 /**
- * 海报实时预览：用 RN View/Text 近似还原后端 PDF 的两种风格。
+ * 海报实时预览：用 RN View/Text 近似还原后端 PDF 的三种风格。
  * 做法：按设计稿的像素尺寸（A4 = 794 × 1123）排版，再整体 scale 到目标宽度，
  * 这样各尺寸的字号比例与设计稿一致；字体用系统自带的窄体/粗体近似，最终以 PDF 为准。
  */
@@ -64,8 +64,24 @@ const MODERN_SIZES = {
   A7: { w: 280, h: 397, m: 15, R: 12, fp: 9, wcap: 66, pad: 11, pr: 10, n: 17, P: 128, S: 62, f: 12, lg: 18, gap: 7, info: 12, short: true },
 } as const;
 
+/** 省彩墨版仅标题和短线着色；参数与 LowInkPosterPainter 保持一致。 */
+const LOW_INK_SIZES = {
+  A4: { w: 794, h: 1123, m: 44, lg: 40, label: 38, n: 52, P: 340, info: 28, f: 17, gap: 18 },
+  A5: { w: 559, h: 794, m: 32, lg: 30, label: 27, n: 37, P: 240, info: 20, f: 13, gap: 13 },
+  A6: { w: 397, h: 559, m: 24, lg: 23, label: 19, n: 26, P: 168, info: 15, f: 11, gap: 9 },
+  A7: { w: 280, h: 397, m: 19, lg: 18, label: 15, n: 19, P: 116, info: 12, f: 10, gap: 7 },
+} as const;
+
 type ClassicSize = (typeof CLASSIC_SIZES)[PromoPosterSize];
 type ModernSize = (typeof MODERN_SIZES)[PromoPosterSize];
+type LowInkSize = (typeof LOW_INK_SIZES)[PromoPosterSize];
+
+const LOW_INK_THEME: Record<PromoPosterKind, { label: string; color: string }> = {
+  special: { label: "SPECIAL", color: "#C6222A" },
+  multibuy: { label: "MULTI-BUY", color: "#C6222A" },
+  new: { label: "NEW ARRIVAL", color: "#176447" },
+  clearance: { label: "CLEARANCE", color: "#C6222A" },
+};
 
 const MODERN_THEME: Record<PromoPosterKind, { bg: string; on: string; price: string; word: string; stickerBg: string; stickerFg: string }> = {
   special: { bg: "#E4252C", on: "#FFFFFF", price: "#E4252C", word: "special", stickerBg: INK, stickerFg: "#FFFFFF" },
@@ -534,17 +550,82 @@ function ModernPoster({ data, z }: { data: PromoPosterPreviewData; z: ModernSize
   );
 }
 
+// ---------------------------------------------------------------- 省彩墨风格
+
+function LowInkPoster({ data, z }: { data: PromoPosterPreviewData; z: LowInkSize }) {
+  const theme = LOW_INK_THEME[data.kind];
+  const available = z.w - 2 * z.m;
+  const saving = savingOf(data);
+  const multi = data.kind === "multibuy";
+  const hasSaving = saving !== null && saving.amount > 0;
+  const priceSize = Math.min(fitPriceSize(data.price, available, z.P), z.h * 0.23);
+  const info = multi
+    ? [data.unitPrice ? `${formatPosterMoney(data.unitPrice)} EACH` : "", hasSaving ? `SAVE ${formatPosterMoney(saving.amount)} WHEN YOU BUY ${data.quantity}` : ""]
+    : hasSaving && data.wasPrice
+      ? [`WAS ${formatPosterMoney(data.wasPrice)}`, `SAVE ${formatPosterMoney(saving.amount)}`]
+      : [];
+  const validity = data.kind === "clearance"
+    ? "While stocks last"
+    : data.kind === "new"
+      ? data.inStoreSince ? `In store since ${formatPosterDay(data.inStoreSince, data.size !== "A7")}` : ""
+      : formatPosterValidity(data.validFrom, data.validTo, data.size === "A7");
+  const field = (top: number) => ({ position: "absolute" as const, left: z.m, top, width: available });
+
+  return (
+    <View style={{ width: z.w, height: z.h, backgroundColor: "#FFFFFF" }}>
+      <Text style={[FONT_BOLD, textStyle(z.label), field(z.m), { color: theme.color, letterSpacing: z.label * 0.04 }]}>
+        {theme.label}
+      </Text>
+      <View style={{ ...field(z.m + z.label * 1.3 + z.gap), width: available * 0.18, height: Math.max(1, z.w / 397), backgroundColor: theme.color }} />
+      <Text numberOfLines={3} adjustsFontSizeToFit minimumFontScale={0.7}
+        style={[FONT_BOLD, textStyle(z.n, 1.15), field(z.h * 0.18), { height: z.h * 0.18, color: "#000000" }]}>
+        {displayTitle(data)}
+      </Text>
+      {multi ? (
+        <Text style={[FONT_BOLD, textStyle(z.info * 1.5), field(z.h * 0.39), { color: "#000000" }]}>
+          {data.quantity ?? "-"} FOR
+        </Text>
+      ) : null}
+      <View style={field(z.h * 0.46)}>
+        <BigPrice value={data.price} size={priceSize} color="#000000" underlineCents={false} />
+      </View>
+      <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}
+        style={[FONT_BOLD, textStyle(z.info), field(z.h * 0.70), { color: "#000000" }]}>
+        {multi ? data.mixAndMatch ? `MIX & MATCH ANY ${data.quantity ?? "-"}` : `FOR ${data.quantity ?? "-"} ITEMS` : "EACH"}
+      </Text>
+      <View style={field(z.h * 0.75)}>
+        {info.filter(Boolean).map((line) => (
+          <Text key={line} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}
+            style={[FONT_BOLD, textStyle(z.info, 1.25), { color: "#000000" }]}>{line}</Text>
+        ))}
+      </View>
+      <View style={{ ...field(z.h * 0.835), height: 1, backgroundColor: "#000000" }} />
+      <Text numberOfLines={2} adjustsFontSizeToFit minimumFontScale={0.8}
+        style={[FONT_BOLD, textStyle(z.f, 1.2), field(z.h * 0.85), { color: "#000000" }]}>{validity}</Text>
+      <View style={{ position: "absolute", left: z.m, right: z.m, bottom: z.m, flexDirection: "row", alignItems: "flex-end", gap: z.gap }}>
+        {data.showLogo !== false ? <Wordmark height={z.lg} /> : null}
+        <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.65}
+          style={[FONT_BOLD, textStyle(z.f, 1.2), { color: "#000000", flex: 1, textAlign: "right" }]}>
+          {data.itemNumber ? `Item ${data.itemNumber}` : ""}
+        </Text>
+      </View>
+    </View>
+  );
+}
+
 // ---------------------------------------------------------------- 入口
 
 function PromoPosterPreviewComponent({ data, width }: PromoPosterPreviewProps) {
-  const base = data.style === "modern" ? MODERN_SIZES[data.size] : CLASSIC_SIZES[data.size];
+  const base = data.style === "low-ink" ? LOW_INK_SIZES[data.size] : data.style === "modern" ? MODERN_SIZES[data.size] : CLASSIC_SIZES[data.size];
   const scale = width / base.w;
   const height = round(base.h * scale);
   return (
     <View style={[styles.frame, { width, height }]} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
       {/* 按设计稿像素排版后整体缩放；transformOrigin 左上角，外框裁掉多余的布局尺寸 */}
       <View style={{ width: base.w, height: base.h, transform: [{ scale }], transformOrigin: "top left" }}>
-        {data.style === "modern" ? (
+        {data.style === "low-ink" ? (
+          <LowInkPoster data={data} z={LOW_INK_SIZES[data.size]} />
+        ) : data.style === "modern" ? (
           <ModernPoster data={data} z={MODERN_SIZES[data.size]} />
         ) : (
           <ClassicPoster data={data} z={CLASSIC_SIZES[data.size]} />
@@ -558,7 +639,7 @@ export const PromoPosterPreview = memo(PromoPosterPreviewComponent);
 
 /** 纸张宽高比（所有 A 系列一致，按设计稿像素取）。 */
 export function promoPosterAspectRatio(style: PromoPosterStyle, size: PromoPosterSize) {
-  const base = style === "modern" ? MODERN_SIZES[size] : CLASSIC_SIZES[size];
+  const base = style === "low-ink" ? LOW_INK_SIZES[size] : style === "modern" ? MODERN_SIZES[size] : CLASSIC_SIZES[size];
   return base.h / base.w;
 }
 
