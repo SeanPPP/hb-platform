@@ -43,7 +43,6 @@ import {
   StoreSwitchButton,
 } from "@/components/product-maintenance/StorePriceStrategyCard";
 import { SyncToOtherStoresSection } from "@/components/product-maintenance/SyncToOtherStoresSheet";
-import { WarehousePriceSyncModal } from "@/components/product-maintenance/WarehousePriceSyncModal";
 import { CameraScanSheet } from "@/components/ui/CameraScanSheet";
 import { StorePickerModal } from "@/components/ui/StorePickerModal";
 import {
@@ -118,15 +117,12 @@ import {
   type ProductHqSyncMutationToken,
 } from "@/modules/product-maintenance/hq-sync";
 import {
-  buildWarehousePriceSyncRequest,
   createWarehousePriceSyncState,
-  extractWarehousePriceSyncConflict,
   getWarehousePriceSyncApplicability,
   isProductQueryInteractionBlocked,
-  isWarehousePriceConflictSnapshotComplete,
   isWarehousePriceInteractionLocked,
+  normalizeWarehouseMoney,
   reduceWarehousePriceSyncState,
-  resolveWarehousePriceConfirmationFeedback,
   shouldAutoPrintWarehousePrice,
   type WarehousePriceLookupOrigin,
   type WarehousePriceSyncState,
@@ -356,16 +352,6 @@ interface DetailPostLoadOptions {
   scanSource?: ScanSource | null;
   scanKeyword?: string;
   autoPrintEnabled?: boolean;
-}
-
-interface WarehousePriceSyncContext {
-  detail: ProductDetail;
-  lookupOrigin: WarehousePriceLookupOrigin;
-  storeCodeOverride?: string;
-  scanSource: ScanSource | null;
-  scanKeyword: string;
-  autoPrintEnabled: boolean;
-  alreadyPrinted: boolean;
 }
 
 interface NumericInputModalState {
@@ -620,8 +606,6 @@ function ProductQueryContent() {
   const [autoPricingDialogSaving, setAutoPricingDialogSaving] = useState(false);
   const [warehousePriceSyncState, setWarehousePriceSyncState] =
     useState<WarehousePriceSyncState>(createWarehousePriceSyncState);
-  const [warehousePriceSyncContext, setWarehousePriceSyncContext] =
-    useState<WarehousePriceSyncContext | null>(null);
   const [createProductVisible, setCreateProductVisible] = useState(false);
   const [createSupplierPickerVisible, setCreateSupplierPickerVisible] =
     useState(false);
@@ -2081,7 +2065,7 @@ function ProductQueryContent() {
       const currentStorePrice = targetDetail.storePrice;
       if (applicability === "missing_store_price" || !currentStorePrice?.uuid) {
         playQueryFeedback("found");
-        // 缺少目标分店价时无法证明标签价格来自仓库，禁止自动打印旧标签。
+        // 缺少目标分店价时没有可靠的当前售价，禁止自动打印旧标签。
         return DEFAULT_LOOKUP_FLOW_RESULT;
       }
 
@@ -2139,27 +2123,6 @@ function ProductQueryContent() {
           setInitialDetail(cloneDetail(latestDetail));
         }
 
-        setWarehousePriceSyncState((current) =>
-          reduceWarehousePriceSyncState(current, {
-            type: "preview_succeeded",
-            snapshot,
-          }),
-        );
-        if (snapshot.retailConfirmationRequired) {
-          setWarehousePriceSyncContext({
-            detail: latestDetail,
-            lookupOrigin: options.lookupOrigin,
-            storeCodeOverride: options.storeCodeOverride,
-            scanSource: options.scanSource ?? null,
-            scanKeyword: options.scanKeyword ?? "",
-            autoPrintEnabled: options.autoPrintEnabled === true,
-            alreadyPrinted: false,
-          });
-          playQueryFeedback("price_update_required");
-          return { ...DEFAULT_LOOKUP_FLOW_RESULT, foregroundPending: true };
-        }
-
-        setWarehousePriceSyncContext(null);
         playQueryFeedback("found");
         const shouldPrint =
           options.autoPrintEnabled === true &&
@@ -2170,22 +2133,46 @@ function ProductQueryContent() {
             alreadyPrinted: false,
           });
         let labelPrinted = false;
-        if (shouldPrint) {
-          try {
-            labelPrinted = await smartAutoPrint(
-              options.scanKeyword ?? "",
-              latestDetail,
-            );
-          } catch (error) {
-            console.warn(
-              "[product-query] print after warehouse price sync failed",
-              {
-                message: isAxiosError(error) ? error.message : String(error),
-              },
-            );
+        if (shouldPrint && ensureCurrentDetailStoreScope(
+          latestDetail,
+          latestDetail.storePrice?.storeCode,
+        )) {
+          const scannedCode = options.scanKeyword?.trim();
+          // 条码分页未加载到本次扫码项时，不回退打印主商品的条码和价格。
+          const knownCodes = [
+            latestDetail.barcode,
+            latestDetail.productCode,
+            latestDetail.itemNumber,
+            latestDetail.storePrice?.storeProductCode,
+            latestDetail.clearancePrice?.clearanceBarcode,
+            ...latestDetail.setCodes.map((item) => item.setBarcode),
+            ...latestDetail.multiCodes.map((item) => item.barcode),
+          ];
+          const printStorePrice = latestDetail.storePrice;
+          // 进货价同步后的详情回读可能遇到并发改价，必须校验实际用于打印的记录和金额。
+          if (!printStorePrice?.uuid || printStorePrice.uuid !== snapshot.storePrice?.uuid ||
+              printStorePrice.retailPrice == null || !Number.isFinite(printStorePrice.retailPrice) ||
+              printStorePrice.retailPrice < 0) {
+            setSnackbarMessage(t("warehousePriceSync.currentPriceUnavailable"));
+          } else if (!scannedCode || !knownCodes.some((code) => code?.trim() === scannedCode)) {
+            setSnackbarMessage(t("messages.codesLoadFailed"));
+          } else {
+            try {
+              // 仓库零售价差异仅作页面提示，直接沿用门店售价、折扣及本次扫描条码。
+              labelPrinted = await smartAutoPrint(scannedCode, latestDetail);
+            } catch (error) {
+              setSnackbarMessage(getErrorMessage(error, "messages.printFailed"));
+            }
           }
         }
 
+        // 对账和打印全部结束后再释放交互锁，防止下一次扫描插入当前打印。
+        setWarehousePriceSyncState((current) =>
+          reduceWarehousePriceSyncState(current, {
+            type: "preview_succeeded",
+            snapshot,
+          }),
+        );
         return {
           keepCameraOpen: false,
           labelPrinted,
@@ -2203,7 +2190,6 @@ function ProductQueryContent() {
             message,
           }),
         );
-        setWarehousePriceSyncContext(null);
         setSnackbarMessage(message);
         playQueryFeedback("error");
         return {
@@ -2882,7 +2868,6 @@ function ProductQueryContent() {
     setLookupSelectionSource(null);
     setAutoPrintOnLookupConfirm(false);
     setQueryFeedback({ type: "idle" });
-    setWarehousePriceSyncContext(null);
     setWarehousePriceSyncState(createWarehousePriceSyncState());
   }, [activateHqSyncScope, invalidateActivePromotions, isProductQueryBusy]);
 
@@ -2949,322 +2934,6 @@ function ProductQueryContent() {
     selectedLookupProductCode,
     t,
     warehousePriceInteractionLocked,
-  ]);
-
-  const handleCancelWarehousePriceSync = useCallback(async (resumeAutoPrint = false) => {
-    if (
-      warehousePriceSyncState.phase !== "confirmation" ||
-      warehousePriceRequestInFlightRef.current
-    ) {
-      return;
-    }
-
-    const context = warehousePriceSyncContext;
-    // 确认曾失败时可能已在服务端改价；本次仅关闭，重新扫码取得可靠快照后再打印。
-    const shouldPrint = resumeAutoPrint && context?.autoPrintEnabled &&
-      !warehousePriceSyncState.errorMessage &&
-      shouldAutoPrintWarehousePrice({
-        lookupOrigin: context.lookupOrigin,
-        stage: "retail_update_skipped",
-        snapshot: warehousePriceSyncState.snapshot,
-        alreadyPrinted: context.alreadyPrinted,
-      });
-    warehousePriceRequestInFlightRef.current = true;
-    try {
-      if (shouldPrint && context && ensureCurrentDetailStoreScope(
-        context.detail,
-        context.detail.storePrice?.storeCode,
-      )) {
-        const scannedCode = context.scanKeyword.trim();
-        // 条码分页尚未加载到本次扫码项时，不能回退打印主商品的条码和价格。
-        const knownCodes = [
-          context.detail.barcode,
-          context.detail.productCode,
-          context.detail.itemNumber,
-          context.detail.storePrice?.storeProductCode,
-          context.detail.clearancePrice?.clearanceBarcode,
-          ...context.detail.setCodes.map((item) => item.setBarcode),
-          ...context.detail.multiCodes.map((item) => item.barcode),
-        ];
-        if (!scannedCode || !knownCodes.some((code) => code?.trim() === scannedCode)) {
-          setSnackbarMessage(t("messages.codesLoadFailed"));
-          return;
-        }
-        setWarehousePriceSyncState((current) =>
-          reduceWarehousePriceSyncState(current, { type: "print_started" }),
-        );
-        // 仅放弃零售价更新，沿用预览后保留原售价和折扣的详情及本次扫码条码。
-        await smartAutoPrint(context.scanKeyword, context.detail);
-      } else if (resumeAutoPrint && context?.autoPrintEnabled && warehousePriceSyncState.errorMessage) {
-        setSnackbarMessage(warehousePriceSyncState.errorMessage);
-      }
-    } catch (error) {
-      setSnackbarMessage(getErrorMessage(error, "messages.printFailed"));
-    } finally {
-      warehousePriceRequestInFlightRef.current = false;
-      setWarehousePriceSyncState((current) =>
-        reduceWarehousePriceSyncState(current, { type: "cancelled" }),
-      );
-      setWarehousePriceSyncContext(null);
-      restoreScanAbility(context?.scanSource);
-    }
-  }, [
-    ensureCurrentDetailStoreScope,
-    getErrorMessage,
-    restoreScanAbility,
-    smartAutoPrint,
-    t,
-    warehousePriceSyncContext,
-    warehousePriceSyncState.phase,
-    warehousePriceSyncState.snapshot,
-    warehousePriceSyncState.errorMessage,
-  ]);
-
-  const handleConfirmWarehousePriceSync = useCallback(async () => {
-    const snapshot = warehousePriceSyncState.snapshot;
-    const context = warehousePriceSyncContext;
-    const storePriceUuid =
-      snapshot?.storePrice?.uuid || context?.detail.storePrice?.uuid;
-    if (
-      !snapshot ||
-      !context ||
-      !storePriceUuid ||
-      warehousePriceRequestInFlightRef.current
-    ) {
-      return;
-    }
-    if (
-      !ensureCurrentDetailStoreScope(
-        context.detail,
-        context.detail.storePrice?.storeCode,
-      )
-    ) {
-      return;
-    }
-    warehousePriceRequestInFlightRef.current = true;
-    const mutation = beginHqSyncMutation(
-      context.detail.productCode,
-      context.storeCodeOverride ?? selectedStoreCode,
-    );
-
-    setWarehousePriceSyncState((current) =>
-      reduceWarehousePriceSyncState(current, { type: "confirm_started" }),
-    );
-    try {
-      const confirmed = await syncWarehousePrice(
-        storePriceUuid,
-        buildWarehousePriceSyncRequest(snapshot, true),
-      );
-      // 确认 mutation 已完成；详情刷新或打印失败都不能丢失该持久同步任务。
-      presentHqSyncOperation(mutation, confirmed.hqSync);
-      let latestDetail = confirmed.storePrice
-        ? replaceStorePriceDetail(context.detail, confirmed.storePrice)
-        : context.detail;
-
-      // 零售价确认会同步派生条码，成功后统一读取最终详情再决定打印。
-      try {
-        latestDetail =
-          (await loadDetail(
-            context.detail.productCode,
-            context.storeCodeOverride,
-          )) ?? latestDetail;
-      } catch (error) {
-        console.warn(
-          "[product-query] refresh after warehouse price confirmation failed",
-          {
-            message: isAxiosError(error) ? error.message : String(error),
-          },
-        );
-        setDetail(latestDetail);
-        setInitialDetail(cloneDetail(latestDetail));
-      }
-      const shouldPrint =
-        context.autoPrintEnabled &&
-        shouldAutoPrintWarehousePrice({
-          lookupOrigin: context.lookupOrigin,
-          stage: "confirmation_succeeded",
-          snapshot: confirmed,
-          alreadyPrinted: context.alreadyPrinted,
-        });
-      let labelPrinted = false;
-      if (shouldPrint) {
-        try {
-          labelPrinted = await smartAutoPrint(
-            context.scanKeyword,
-            latestDetail,
-          );
-        } catch (error) {
-          console.warn(
-            "[product-query] print after warehouse price confirmation failed",
-            {
-              message: isAxiosError(error) ? error.message : String(error),
-            },
-          );
-        }
-      }
-
-      setWarehousePriceSyncState((current) =>
-        reduceWarehousePriceSyncState(current, {
-          type: "confirm_succeeded",
-          snapshot: confirmed,
-        }),
-      );
-      setWarehousePriceSyncContext(null);
-      const feedback = resolveWarehousePriceConfirmationFeedback({
-        retailUpdated: confirmed.retailUpdated,
-        printAttempted: shouldPrint,
-        labelPrinted,
-      });
-      if (feedback === "retail_updated_print_failed") {
-        setSnackbarMessage(t("warehousePriceSync.retailUpdatedPrintFailed"));
-      } else if (feedback === "retail_updated") {
-        setSnackbarMessage(t("warehousePriceSync.retailUpdated"));
-      }
-      restoreScanAbility(context.scanSource);
-    } catch (error) {
-      hqSyncMutationCoordinatorRef.current?.fail(mutation);
-      let latestSnapshot = extractWarehousePriceSyncConflict(error);
-      if (latestSnapshot) {
-        if (latestSnapshot.hqSync) {
-          const conflictMutation = beginHqSyncMutation(
-            context.detail.productCode,
-            context.storeCodeOverride ?? selectedStoreCode,
-          );
-          presentHqSyncOperation(conflictMutation, latestSnapshot.hqSync);
-        }
-        let latestDetail = latestSnapshot.storePrice
-          ? replaceStorePriceDetail(context.detail, latestSnapshot.storePrice)
-          : context.detail;
-
-        const snapshotComplete =
-          isWarehousePriceConflictSnapshotComplete(latestSnapshot);
-        if (!snapshotComplete) {
-          const latestStorePrice =
-            latestSnapshot.storePrice ?? latestDetail.storePrice;
-          if (latestStorePrice?.uuid) {
-            // 冲突响应缺字段时仅重新取一次预览，避免用户基于旧值确认。
-            const refreshMutation = beginHqSyncMutation(
-              context.detail.productCode,
-              context.storeCodeOverride ?? selectedStoreCode,
-            );
-            try {
-              latestSnapshot = await syncWarehousePrice(latestStorePrice.uuid, {
-                confirmRetailPrice: false,
-                expectedWarehousePurchasePrice: null,
-                expectedWarehouseRetailPrice: null,
-                expectedStorePurchasePrice:
-                  latestStorePrice.purchasePrice ?? null,
-                expectedStoreRetailPrice: latestStorePrice.retailPrice ?? null,
-                expectedDiscountRate: normalizeDiscountRateValue(
-                  latestStorePrice.discountRate,
-                ),
-              });
-              latestDetail = latestSnapshot.storePrice
-                ? replaceStorePriceDetail(
-                    latestDetail,
-                    latestSnapshot.storePrice,
-                  )
-                : latestDetail;
-              presentHqSyncOperation(refreshMutation, latestSnapshot.hqSync);
-            } catch (refreshError) {
-              hqSyncMutationCoordinatorRef.current?.fail(refreshMutation);
-              const message = getErrorMessage(
-                refreshError,
-                "warehousePriceSync.confirmFailed",
-              );
-              setWarehousePriceSyncState((current) =>
-                reduceWarehousePriceSyncState(current, {
-                  type: "confirm_failed",
-                  message,
-                }),
-              );
-              return;
-            }
-          } else {
-            const message = t("warehousePriceSync.confirmFailed");
-            setWarehousePriceSyncState((current) =>
-              reduceWarehousePriceSyncState(current, {
-                type: "confirm_failed",
-                message,
-              }),
-            );
-            return;
-          }
-        }
-
-        setDetail(latestDetail);
-        setInitialDetail(cloneDetail(latestDetail));
-        if (!latestSnapshot.retailConfirmationRequired) {
-          const shouldPrint =
-            context.autoPrintEnabled &&
-            shouldAutoPrintWarehousePrice({
-              lookupOrigin: context.lookupOrigin,
-              stage: "preview_succeeded",
-              snapshot: latestSnapshot,
-              alreadyPrinted: context.alreadyPrinted,
-            });
-          if (shouldPrint) {
-            try {
-              await smartAutoPrint(context.scanKeyword, latestDetail);
-            } catch (printError) {
-              console.warn(
-                "[product-query] print after warehouse conflict recovery failed",
-                {
-                  message: isAxiosError(printError)
-                    ? printError.message
-                    : String(printError),
-                },
-              );
-            }
-          }
-          setWarehousePriceSyncState((current) =>
-            reduceWarehousePriceSyncState(current, {
-              type: "confirm_succeeded",
-              snapshot: latestSnapshot!,
-            }),
-          );
-          setWarehousePriceSyncContext(null);
-          restoreScanAbility(context.scanSource);
-          return;
-        }
-
-        const message = t("warehousePriceSync.conflict");
-        setWarehousePriceSyncContext({ ...context, detail: latestDetail });
-        setWarehousePriceSyncState((current) =>
-          reduceWarehousePriceSyncState(current, {
-            type: "conflict_received",
-            snapshot: latestSnapshot!,
-            message,
-          }),
-        );
-        return;
-      }
-
-      const message = getErrorMessage(
-        error,
-        "warehousePriceSync.confirmFailed",
-      );
-      setWarehousePriceSyncState((current) =>
-        reduceWarehousePriceSyncState(current, {
-          type: "confirm_failed",
-          message,
-        }),
-      );
-    } finally {
-      warehousePriceRequestInFlightRef.current = false;
-    }
-  }, [
-    beginHqSyncMutation,
-    ensureCurrentDetailStoreScope,
-    getErrorMessage,
-    loadDetail,
-    presentHqSyncOperation,
-    restoreScanAbility,
-    smartAutoPrint,
-    t,
-    selectedStoreCode,
-    warehousePriceSyncContext,
-    warehousePriceSyncState.snapshot,
   ]);
 
   const handleChangeStorePrice = useCallback(
@@ -4206,8 +3875,7 @@ function ProductQueryContent() {
   const isInvoiceExitBusy = useCallback(
     () => invoiceExitSavingRef.current || saving || Boolean(savingItemId) ||
       savingClearance || productTypeSaving || createProductBusy || hqSyncRetrying ||
-      autoPricingDialogSaving || warehousePriceSyncState.phase === "confirming" ||
-      warehousePriceSyncState.phase === "printing" ||
+      autoPricingDialogSaving || warehousePriceSyncState.phase !== "idle" ||
       Boolean(printingAction),
     [autoPricingDialogSaving, createProductBusy, hqSyncRetrying, printingAction,
       productTypeSaving, saving, savingClearance, savingItemId, warehousePriceSyncState.phase],
@@ -4294,6 +3962,17 @@ function ProductQueryContent() {
   }, [allowInvoiceExit, detail, handleSaveAll, initialDetail, invoiceReturnState, isInvoiceExitBusy, performReturnToInvoices]);
 
   const storePrice = detail?.storePrice;
+  const warehousePriceSnapshot = warehousePriceSyncState.snapshot;
+  // 只显示当前门店价记录的差异，避免切换商品/门店或离线后沿用旧对账提示。
+  const warehouseRetailPrice =
+    !offlineMode &&
+    Boolean(storePrice?.uuid) &&
+    warehousePriceSnapshot?.storePrice?.uuid === storePrice?.uuid &&
+    warehousePriceSnapshot?.warehouseRetailPrice != null &&
+    normalizeWarehouseMoney(storePrice?.retailPrice) != null &&
+    normalizeWarehouseMoney(storePrice?.retailPrice) !== warehousePriceSnapshot.warehouseRetailPrice
+      ? formatCurrency(warehousePriceSnapshot.warehouseRetailPrice)
+      : null;
   const clearancePrice = detail?.clearancePrice;
   const hqSyncDisplay = hqSyncOperation
     ? getHqSyncDisplayState(hqSyncOperation)
@@ -4653,6 +4332,7 @@ function ProductQueryContent() {
                   onStorePress={handleOpenStorePicker}
                   purchasePrice={storePurchaseInput}
                   retailPrice={storeRetailInput}
+                  warehouseRetailPrice={warehouseRetailPrice}
                   retailGp={retailGp}
                   retailGpTrend={retailGpTrend}
                   discountPercent={formatPercentValue(
@@ -4907,26 +4587,6 @@ function ProductQueryContent() {
           restoreScanAbility(selectionSource);
         }}
         onConfirm={() => void handleConfirmLookup()}
-      />
-
-      <WarehousePriceSyncModal
-        visible={
-          isFocused &&
-          (warehousePriceSyncState.phase === "confirmation" ||
-            warehousePriceSyncState.phase === "confirming" ||
-            warehousePriceSyncState.phase === "printing")
-        }
-        productName={warehousePriceSyncContext?.detail.productName}
-        productCode={
-          warehousePriceSyncContext?.detail.itemNumber ||
-          warehousePriceSyncContext?.detail.productCode
-        }
-        snapshot={warehousePriceSyncState.snapshot}
-        loading={warehousePriceSyncState.phase === "confirming" || warehousePriceSyncState.phase === "printing"}
-        errorMessage={warehousePriceSyncState.errorMessage}
-        onCancel={() => void handleCancelWarehousePriceSync(true)}
-        onDismiss={() => void handleCancelWarehousePriceSync()}
-        onConfirm={() => void handleConfirmWarehousePriceSync()}
       />
 
       <Portal>
