@@ -1,7 +1,9 @@
-import { StyleSheet, View } from "react-native";
+import { useEffect, useRef } from "react";
+import { Keyboard, Platform, StyleSheet, View } from "react-native";
 import { IconButton, Searchbar, Text } from "react-native-paper";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { HB_COLORS, HB_RADIUS, HB_SPACING } from "@/shared/theme/tokens";
+import { extractVisibleBarcodeInput } from "@/modules/scanner/visible-barcode-input";
 
 interface SearchPanelProps {
   value: string;
@@ -12,6 +14,7 @@ interface SearchPanelProps {
   onFocus: () => void;
   onBlur: () => void;
   onSubmit: () => void;
+  onScannerInput?: (barcode: string) => void;
   onClear: () => void;
   onScanPress?: () => void;
   onRefreshPress?: () => void;
@@ -31,6 +34,7 @@ export function SearchPanel({
   onFocus,
   onBlur,
   onSubmit,
+  onScannerInput,
   onClear,
   onScanPress,
   onRefreshPress,
@@ -39,17 +43,59 @@ export function SearchPanel({
   createProductDisabled = false,
 }: SearchPanelProps) {
   const { t } = useAppTranslation(["productQuery", "common"]);
+  const searchbarRef = useRef<React.ElementRef<typeof Searchbar>>(null);
+  const inputValueRef = useRef(value);
+  useEffect(() => {
+    inputValueRef.current = value;
+  }, [value]);
+
+  useEffect(() => {
+    const subscription = Keyboard.addListener("keyboardDidHide", () => {
+      // Zebra 收起软键盘后输入框仍可能保持焦点；失焦才会交还隐藏扫码输入框。
+      if (searchbarRef.current?.isFocused()) searchbarRef.current.blur();
+    });
+    return () => subscription.remove();
+  }, []);
+
+  const handleSubmit = () => {
+    searchbarRef.current?.blur();
+    onSubmit();
+  };
+
+  const handleChangeText = (nextValue: string) => {
+    const previousValue = inputValueRef.current;
+    const keyboardVisible = Keyboard.isVisible();
+    // DataWedge 可能把整条码交给仍聚焦的搜索框；不能只依赖隐藏输入框接收。
+    const barcode =
+      Platform.OS === "android" &&
+      onScannerInput &&
+      searchbarRef.current?.isFocused() &&
+      !keyboardVisible
+        ? extractVisibleBarcodeInput(previousValue, nextValue)
+        : null;
+    if (barcode) {
+      searchbarRef.current?.blur();
+      if (!loading) {
+        inputValueRef.current = barcode;
+        onScannerInput?.(barcode);
+      }
+      return;
+    }
+    inputValueRef.current = nextValue;
+    onChangeText(nextValue);
+  };
 
   return (
     <View style={styles.container}>
       <View style={styles.searchRow}>
         <Searchbar
+          ref={searchbarRef}
           placeholder={t("search.placeholder")}
           value={value}
-          onChangeText={onChangeText}
+          onChangeText={handleChangeText}
           onFocus={onFocus}
           onBlur={onBlur}
-          onSubmitEditing={onSubmit}
+          onSubmitEditing={handleSubmit}
           icon="barcode-scan"
           iconColor={HB_COLORS.action}
           onIconPress={onScanPress}
@@ -77,7 +123,7 @@ export function SearchPanel({
           size={20}
           loading={loading}
           disabled={loading}
-          onPress={onSubmit}
+          onPress={handleSubmit}
           style={styles.searchButton}
         />
         <IconButton
