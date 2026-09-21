@@ -3175,6 +3175,58 @@ test("取消续付确认弹窗点击遮罩关闭且 busy 时遮罩保留原门�
   await screen.unmount();
 });
 
+test.each(["en", "zh"] as const)("%s 手动刷卡固定余额并要求确认，礼品卡复用已有入口", async (locale) => {
+  const { presenter, spies } = createUiPresenter({
+    providers: [providerAvailability("manual-card"), providerAvailability("voucher")],
+    selectedMethod: "cash",
+  });
+  const screen = await render(<PaymentScreen locale={locale} presenter={presenter} showStatusStrip={false} />);
+  expect(screen.queryByTestId("payment-method-square")).toBeNull();
+  expect(screen.queryByTestId("payment-method-linkly-cloud")).toBeNull();
+  expect(within(screen.getByTestId("payment-method-voucher")).getByText(locale === "zh" ? "礼品卡" : "Gift card")).toBeTruthy();
+  await openPaymentEntry(screen, "manual-card");
+  expect(screen.getByTestId("payment-amount").props.editable).toBe(false);
+  expect(screen.getByTestId("payment-amount").props.value).toBe("10.00");
+  expect(screen.queryByTestId("payment-keypad")).toBeNull();
+  expect(screen.getByTestId("payment-submit").props.accessibilityState.disabled).toBe(true);
+  await fireEvent.press(screen.getByTestId("payment-submit"));
+  expect(spies.submitSelected).not.toHaveBeenCalled();
+  const checkbox = screen.getByTestId("payment-manual-card-check");
+  expect(checkbox.props.accessibilityRole).toBe("checkbox");
+  expect(StyleSheet.flatten(checkbox.props.style).minHeight).toBeGreaterThanOrEqual(PAYMENT_MIN_TOUCH_TARGET);
+  await fireEvent.press(checkbox);
+  expect(presenter.getState().manualCardConfirmed).toBe(true);
+  expect(screen.getByTestId("payment-submit").props.accessibilityState.disabled).toBe(false);
+  await fireEvent.press(screen.getByTestId("payment-submit"));
+  expect(spies.submitSelected).toHaveBeenCalledTimes(1);
+  expect(screen.queryByTestId("payment-entry-modal")).toBeNull();
+  await screen.unmount();
+});
+
+test("手动刷卡退出重进和剩余金额改变必须重新勾选", async () => {
+  const harness = createUiPresenter({ providers: [providerAvailability("manual-card")], selectedMethod: "cash" });
+  const screen = await render(<PaymentScreen locale="zh" presenter={harness.presenter} showStatusStrip={false} />);
+  await openPaymentEntry(screen, "manual-card");
+  await fireEvent.press(screen.getByTestId("payment-manual-card-check"));
+  await fireEvent.press(screen.getByTestId("payment-entry-cancel"));
+  await openPaymentEntry(screen, "manual-card");
+  expect(harness.presenter.getState().manualCardConfirmed).toBe(false);
+  await fireEvent.press(screen.getByTestId("payment-manual-card-check"));
+  await act(async () => harness.publish({ ...harness.presenter.getState(), remaining: aud(650) }));
+  expect(harness.presenter.getState().manualCardConfirmed).toBe(false);
+  expect(screen.getByTestId("payment-amount").props.value).toBe("6.50");
+  expect(screen.getByTestId("payment-submit").props.accessibilityState.disabled).toBe(true);
+  await screen.unmount();
+});
+
+test("分期流程隐藏手动刷卡入口", async () => {
+  const harness = createUiPresenter({ providers: [providerAvailability("manual-card")] });
+  harness.publish({ ...harness.presenter.getState(), checkout: { ...harness.presenter.getState().checkout, flow: "installment-repayment" } });
+  const screen = await render(<PaymentScreen locale="zh" presenter={harness.presenter} showStatusStrip={false} />);
+  expect(screen.queryByTestId("payment-method-manual-card")).toBeNull();
+  await screen.unmount();
+});
+
 function createUiPresenter(
   override: Partial<PaymentPresenterState> = {},
   applySubmittedState?: (
@@ -3259,7 +3311,7 @@ function createUiPresenter(
   };
   const spies = {
     selectMethod: jest.fn((method: PaymentUiMethod) => {
-      publish({ ...state, selectedMethod: method });
+      publish({ ...state, selectedMethod: method, manualCardConfirmed: false });
       return true;
     }),
     selectLinklyTerminal: jest.fn(async (terminalId: string) => {
@@ -3282,6 +3334,9 @@ function createUiPresenter(
       publish({ ...state, amountText: value });
     }),
     setVoucherCode: jest.fn((_value: string) => undefined),
+    setManualCardConfirmed: jest.fn((confirmed: boolean) => {
+      publish({ ...state, manualCardConfirmed: confirmed });
+    }),
     dismissError: jest.fn(() => {
       publish({ ...state, runtimeErrorCode: null });
     }),

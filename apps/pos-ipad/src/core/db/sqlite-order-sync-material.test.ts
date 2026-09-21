@@ -57,6 +57,25 @@ const encryptor = {
   },
 };
 
+test("手动刷卡保持MANUAL引用，无法伪装为Square或Linkly原卡退款", async () => {
+  await withDatabase(async (connection) => {
+    await seedOrderTender(connection, {
+      orderGuid: "order-manual", tenderGuid: "tender-manual", attemptId: "attempt-manual",
+      provider: "manual-card", operation: "purchase", amountCents: 500,
+      syncProvenance: DEFAULT_LINE_SYNC_PROVENANCE, txnRef: "MANUAL:attempt-manual",
+    });
+    const evidence = { version: 1, provider: "manual-card", operation: "purchase", processor: "Manual", txnRef: "MANUAL:attempt-manual", amountCents: 500, authCode: null, cardType: null, cardBin: null, maskedCardNumber: null, merchantId: null, responseCode: "MANUAL_CONFIRMED", responseText: null, stan: null, bankDateTimeIso: null, refundReference: null } as const;
+    const ciphertext = await encryptPaymentProtectedMaterial(encryptor, { voucherReservationToken: null, cardSyncEvidence: evidence });
+    await connection.run("UPDATE payment_attempts SET provider_payload_ciphertext = ? WHERE attempt_id = ?", [ciphertext, "attempt-manual"]);
+    const ordinary = await readOrdinaryOrder(connection, "order-manual");
+    const resolved = await createResolver(connection).resolve(ordinary, null);
+    assert.equal(resolved.tenders[0]?.reference, "MANUAL:attempt-manual");
+    assert.equal(ordinary.tenders[0]?.reference, null);
+    const material = await createResolver(connection).resolveForSync(ordinary, null);
+    assert.deepEqual(material.cardSyncEvidenceByTenderGuid.get("tender-manual"), evidence);
+  });
+});
+
 test("Square 与 Linkly purchase 只在受信任副本恢复 WPF 引用，普通仓储保持脱敏", async () => {
   await withDatabase(async (connection) => {
     await seedOrderTender(connection, {
@@ -1483,7 +1502,7 @@ type SeedTenderInput = Readonly<{
   orderGuid: string;
   tenderGuid: string;
   attemptId: string | null;
-  provider: "square" | "linkly-cloud" | "voucher" | null;
+  provider: "square" | "linkly-cloud" | "voucher" | "manual-card" | null;
   operation: "purchase" | "refund" | null;
   method?: "cash" | "card" | "voucher";
   amountCents: number;

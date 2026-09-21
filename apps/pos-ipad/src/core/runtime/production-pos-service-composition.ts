@@ -513,6 +513,7 @@ export type ProductionSettingsRuntimeConfiguration = Pick<
   | "linklySetup"
   | "readDevicePresentation"
   | "paymentConfiguration"
+  | "paymentMethods"
   | "apiConfiguration"
   | "runtimeReload"
   | "device"

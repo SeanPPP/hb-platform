@@ -62,9 +62,7 @@ export class OrderRepositoryLocalReturnLookup
       originalOrderGuid: order.orderGuid,
       receiptLabel: order.orderGuid,
       lines,
-      capacities: order.tenders.flatMap((tender) =>
-        mapVerifiedTender(order.orderGuid, tender),
-      ),
+      capacities: groupLocalTenderCapacities(order.orderGuid, order.tenders),
     };
   }
 
@@ -143,6 +141,10 @@ export class DurableCapacityVaultAdapter implements ReturnCapacityVaultPort {
     }
     const sources = new Set<string>();
     const handles: ProtectedReturnCapacityHandle[] = [];
+    // 券引用不能进入 Vault context；同单多张券无法安全识别历史容量，必须拒绝歧义。
+    if (input.capacities.filter((material) => material.method === "voucher").length > 1) {
+      throw sourceMismatch();
+    }
     try {
       for (const material of input.capacities) {
         const context = validateCapacityMaterial(
@@ -156,7 +158,7 @@ export class DurableCapacityVaultAdapter implements ReturnCapacityVaultPort {
             ? opaqueId(this.options.createOpaqueId("offline-cash-evidence"))
             : null;
         assertOpaqueIds(capacityId, offlineCashEvidenceId, material);
-        await this.options.vault.seedOrLoad({
+        const protectedCapacity = await this.options.vault.seedOrLoad({
           capacityId,
           originalOrderGuid,
           method: material.method,
@@ -165,7 +167,12 @@ export class DurableCapacityVaultAdapter implements ReturnCapacityVaultPort {
           protectedContext: context,
           observedAtIso: this.options.nowIso(),
         });
-        handles.push({ sourceKey: material.sourceKey, capacityId, offlineCashEvidenceId });
+        handles.push({
+          sourceKey: material.sourceKey,
+          capacityId: protectedCapacity.capacityId,
+          remainingCents: protectedCapacity.remainingAmountCents,
+          offlineCashEvidenceId,
+        });
       }
     } catch {
       // 不能泄露部分 handle；调用方只能把整次 lookup 当作失败。
@@ -274,19 +281,19 @@ function mapSaleLine(order: LocalOrder, line: CartLine): ReceiptReturnLine {
     !line.lineId.trim() || !line.productCode.trim() || !line.displayName.trim()
     || !Number.isSafeInteger(quantity) || quantity <= 0
     || !Number.isSafeInteger(amount) || amount <= 0
-    || amount % quantity !== 0
   ) throw sourceMismatch();
   return {
     selectionKey: `local-receipt-line:${order.orderGuid}:${line.lineId}`,
     originalOrderGuid: order.orderGuid,
     originalOrderDetailGuid: line.lineId,
-    returnSourceKey: line.returnSourceKey?.trim() || `local-receipt:${order.orderGuid}:${line.lineId}`,
+    // 本地及服务端历史查询须使用同一个来源键；旧 local-receipt 键由账本按原单明细兼容。
+    returnSourceKey: line.returnSourceKey?.trim() || `receipt:${order.orderGuid}:${line.lineId}`,
     productCode: line.productCode,
     itemNumber: line.itemNumber,
     lookupCode: line.lookupCode,
     displayName: line.displayName,
     availableQuantity: quantity,
-    unitRefundCents: amount / quantity,
+    unitRefundCents: Math.floor(amount / quantity + 0.5),
     remainingAmountCents: amount,
     syncProvenance: normalizeReturnLineSyncProvenance(
       line.syncProvenance,
@@ -312,6 +319,27 @@ function mapVerifiedTender(originalOrderGuid: string, tender: OrderTender): read
     remainingCents: tender.amount.cents,
     protectedProviderMaterial: { reference: tender.reference, cardTransactions: [] },
   }];
+}
+
+function groupLocalTenderCapacities(
+  originalOrderGuid: string,
+  tenders: readonly OrderTender[],
+): readonly ProtectedTenderCapacityMaterial[] {
+  const grouped = new Map<string, ProtectedTenderCapacityMaterial>();
+  for (const tender of tenders) {
+    for (const material of mapVerifiedTender(originalOrderGuid, tender)) {
+      const key = `${material.method}:${material.protectedProviderMaterial.reference ?? ""}`;
+      const prior = grouped.get(key);
+      const remainingCents = (prior?.remainingCents ?? 0) + material.remainingCents;
+      if (!Number.isSafeInteger(remainingCents)) throw sourceMismatch();
+      grouped.set(key, {
+        ...material,
+        sourceKey: prior?.sourceKey ?? material.sourceKey,
+        remainingCents,
+      });
+    }
+  }
+  return [...grouped.values()];
 }
 
 function mapCatalog(match: LocalCatalogMatch): LocalReturnCatalogItem {

@@ -640,11 +640,11 @@ public sealed class ProductThumbnailImageSourceConverterTests
         try
         {
             ProductThumbnailImageSourceConverter.SetAsyncSourceText(imageBrush, imageUrl);
-            Assert.True(loadStarted.Wait(TimeSpan.FromSeconds(3)));
+            Assert.True(loadStarted.Wait(TestWaitTimeouts.Default));
 
             ProductThumbnailImageSourceConverter.SetAsyncIsEnabled(imageBrush, false);
 
-            Assert.True(loadCanceled.Wait(TimeSpan.FromSeconds(3)));
+            Assert.True(loadCanceled.Wait(TestWaitTimeouts.Default));
             Assert.Null(imageBrush.ImageSource);
         }
         finally
@@ -703,7 +703,7 @@ public sealed class ProductThumbnailImageSourceConverterTests
             blockingPreload = ProductThumbnailImageSourceConverter.PreloadAsync(
                 Enumerable.Range(0, 4)
                     .Select(index => $"https://cdn.example.test/images/{Guid.NewGuid():N}/{index}.png"));
-            Assert.True(remoteLoadsStarted.Wait(TimeSpan.FromSeconds(3)));
+            Assert.True(remoteLoadsStarted.Wait(TestWaitTimeouts.Default));
 
             var cachedPreload = ProductThumbnailImageSourceConverter.PreloadAsync([cachedImageUrl]);
 
@@ -715,7 +715,7 @@ public sealed class ProductThumbnailImageSourceConverterTests
             releaseRemoteLoads.TrySetResult(OnePixelPngBytes());
             if (blockingPreload is not null)
             {
-                await blockingPreload.WaitAsync(TimeSpan.FromSeconds(3));
+                await blockingPreload.WaitAsync(TestWaitTimeouts.Default);
             }
         }
     }
@@ -790,7 +790,7 @@ public sealed class ProductThumbnailImageSourceConverterTests
 
         try
         {
-            Assert.True(remoteLoadsStarted.Wait(TimeSpan.FromSeconds(3)));
+            Assert.True(remoteLoadsStarted.Wait(TestWaitTimeouts.Default));
 
             var dataDecodeStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             using var dataDecode = ProductThumbnailImageSourceConverter.UseDataImageDecodeStartingForTests(
@@ -807,9 +807,9 @@ public sealed class ProductThumbnailImageSourceConverterTests
 
             releaseRemoteLoads.TrySetResult(OnePixelPngBytes());
 
-            Assert.Equal(4, await remotePreload.WaitAsync(TimeSpan.FromSeconds(3)));
-            await dataDecodeStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
-            Assert.Equal(1, await dataPreload.WaitAsync(TimeSpan.FromSeconds(3)));
+            Assert.Equal(4, await remotePreload.WaitAsync(TestWaitTimeouts.Default));
+            await dataDecodeStarted.Task.WaitAsync(TestWaitTimeouts.Default);
+            Assert.Equal(1, await dataPreload.WaitAsync(TestWaitTimeouts.Default));
             Assert.NotEmpty(cacheKeyUtf8Chunks);
             Assert.All(cacheKeyUtf8Chunks, bytesUsed => Assert.InRange(bytesUsed, 1, 4 * 1024));
             Assert.Contains(expectedCacheKey, ProductThumbnailImageSourceConverter.GetImageCacheKeysForTests());
@@ -821,8 +821,8 @@ public sealed class ProductThumbnailImageSourceConverterTests
             try
             {
                 await Task.WhenAll(
-                    remotePreload.WaitAsync(TimeSpan.FromSeconds(3)),
-                    dataPreload?.WaitAsync(TimeSpan.FromSeconds(3)) ?? Task.CompletedTask);
+                    remotePreload.WaitAsync(TestWaitTimeouts.Default),
+                    dataPreload?.WaitAsync(TestWaitTimeouts.Default) ?? Task.CompletedTask);
             }
             catch (Exception ex)
             {
@@ -907,25 +907,25 @@ public sealed class ProductThumbnailImageSourceConverterTests
             successPreload = ProductThumbnailImageSourceConverter.PreloadAsync(
                 [imageUrl],
                 cancellationToken: preloadCancellation.Token);
-            Assert.True(successStarted.Wait(TimeSpan.FromSeconds(3)));
+            Assert.True(successStarted.Wait(TestWaitTimeouts.Default));
             failurePreload = ProductThumbnailImageSourceConverter.PreloadAsync(
                 [imageUrl],
                 cancellationToken: preloadCancellation.Token);
-            Assert.True(failureStarted.Wait(TimeSpan.FromSeconds(3)));
+            Assert.True(failureStarted.Wait(TestWaitTimeouts.Default));
 
             if (failureCompletesFirst)
             {
                 failureRelease.TrySetResult();
-                Assert.Equal(0, await failurePreload.WaitAsync(TimeSpan.FromSeconds(3)));
+                Assert.Equal(0, await failurePreload.WaitAsync(TestWaitTimeouts.Default));
                 successRelease.TrySetResult(OnePixelPngBytes());
-                Assert.Equal(1, await successPreload.WaitAsync(TimeSpan.FromSeconds(3)));
+                Assert.Equal(1, await successPreload.WaitAsync(TestWaitTimeouts.Default));
             }
             else
             {
                 successRelease.TrySetResult(OnePixelPngBytes());
-                Assert.Equal(1, await successPreload.WaitAsync(TimeSpan.FromSeconds(3)));
+                Assert.Equal(1, await successPreload.WaitAsync(TestWaitTimeouts.Default));
                 failureRelease.TrySetResult();
-                Assert.Equal(0, await failurePreload.WaitAsync(TimeSpan.FromSeconds(3)));
+                Assert.Equal(0, await failurePreload.WaitAsync(TestWaitTimeouts.Default));
             }
 
             var cacheCounts = ProductThumbnailImageSourceConverter.GetCacheCountsForTests();
@@ -944,8 +944,8 @@ public sealed class ProductThumbnailImageSourceConverterTests
             try
             {
                 await Task.WhenAll(
-                    successPreload?.WaitAsync(TimeSpan.FromSeconds(3)) ?? Task.CompletedTask,
-                    failurePreload?.WaitAsync(TimeSpan.FromSeconds(3)) ?? Task.CompletedTask);
+                    successPreload?.WaitAsync(TestWaitTimeouts.Default) ?? Task.CompletedTask,
+                    failurePreload?.WaitAsync(TestWaitTimeouts.Default) ?? Task.CompletedTask);
             }
             catch (Exception ex)
             {
@@ -994,14 +994,14 @@ public sealed class ProductThumbnailImageSourceConverterTests
             successPreload = ProductThumbnailImageSourceConverter.PreloadAsync(
                 [imageUrl],
                 cancellationToken: preloadCancellation.Token);
-            Assert.True(successStarted.Wait(TimeSpan.FromSeconds(3)));
+            Assert.True(successStarted.Wait(TestWaitTimeouts.Default));
             failurePreload = ProductThumbnailImageSourceConverter.PreloadAsync(
                 [imageUrl],
                 cancellationToken: preloadCancellation.Token);
-            Assert.True(failureStarted.Wait(TimeSpan.FromSeconds(3)));
+            Assert.True(failureStarted.Wait(TestWaitTimeouts.Default));
 
             failureRelease.TrySetResult();
-            Assert.Equal(0, failurePreload.WaitAsync(TimeSpan.FromSeconds(3)).GetAwaiter().GetResult());
+            Assert.Equal(0, failurePreload.WaitAsync(TestWaitTimeouts.Default).GetAwaiter().GetResult());
 
             ProductThumbnailImageSourceConverter.SetAsyncSourceText(imageBrush, imageUrl);
             Assert.Null(imageBrush.ImageSource);
@@ -1012,7 +1012,7 @@ public sealed class ProductThumbnailImageSourceConverterTests
             }
 
             successRelease.TrySetResult(OnePixelPngBytes());
-            Assert.Equal(1, successPreload.WaitAsync(TimeSpan.FromSeconds(3)).GetAwaiter().GetResult());
+            Assert.Equal(1, successPreload.WaitAsync(TestWaitTimeouts.Default).GetAwaiter().GetResult());
 
             if (!disableBeforeSuccess)
             {
@@ -1063,8 +1063,8 @@ public sealed class ProductThumbnailImageSourceConverterTests
             try
             {
                 Task.WhenAll(
-                        successPreload?.WaitAsync(TimeSpan.FromSeconds(3)) ?? Task.CompletedTask,
-                        failurePreload?.WaitAsync(TimeSpan.FromSeconds(3)) ?? Task.CompletedTask)
+                        successPreload?.WaitAsync(TestWaitTimeouts.Default) ?? Task.CompletedTask,
+                        failurePreload?.WaitAsync(TestWaitTimeouts.Default) ?? Task.CompletedTask)
                     .GetAwaiter()
                     .GetResult();
             }
@@ -1112,7 +1112,7 @@ public sealed class ProductThumbnailImageSourceConverterTests
         {
             try
             {
-                Assert.True(remoteLoadsStarted.Wait(TimeSpan.FromSeconds(3)));
+                Assert.True(remoteLoadsStarted.Wait(TestWaitTimeouts.Default));
                 ProductThumbnailImageSourceConverter.SetAsyncSourceText(
                     imageBrush,
                     dataImage);
@@ -1127,8 +1127,8 @@ public sealed class ProductThumbnailImageSourceConverterTests
                 releaseRemoteLoads.TrySetResult(OnePixelPngBytes());
             }
 
-            Assert.Equal(4, remotePreload.WaitAsync(TimeSpan.FromSeconds(3)).GetAwaiter().GetResult());
-            dataDecodeStarted.Task.WaitAsync(TimeSpan.FromSeconds(3)).GetAwaiter().GetResult();
+            Assert.Equal(4, remotePreload.WaitAsync(TestWaitTimeouts.Default).GetAwaiter().GetResult());
+            dataDecodeStarted.Task.WaitAsync(TestWaitTimeouts.Default).GetAwaiter().GetResult();
             Assert.NotEmpty(cacheKeyUtf8Chunks);
             Assert.All(cacheKeyUtf8Chunks, bytesUsed => Assert.InRange(bytesUsed, 1, 4 * 1024));
 
@@ -1205,12 +1205,12 @@ public sealed class ProductThumbnailImageSourceConverterTests
                 Enumerable.Range(0, 4)
                     .Select(_ => $"https://cdn.example.test/images/{Guid.NewGuid():N}/product.png"));
 
-            Assert.True(remoteLoadsStarted.Wait(TimeSpan.FromSeconds(3)));
+            Assert.True(remoteLoadsStarted.Wait(TestWaitTimeouts.Default));
             ProductThumbnailImageSourceConverter.SetAsyncSourceText(localImage, filePath);
             File.Delete(filePath);
             releaseRemoteLoads.TrySetResult(OnePixelPngBytes());
 
-            await fileMissing.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            await fileMissing.Task.WaitAsync(TestWaitTimeouts.Default);
             await remotePreload;
         }
         finally
@@ -1218,7 +1218,7 @@ public sealed class ProductThumbnailImageSourceConverterTests
             releaseRemoteLoads.TrySetResult(OnePixelPngBytes());
             if (remotePreload is not null)
             {
-                await remotePreload.WaitAsync(TimeSpan.FromSeconds(3));
+                await remotePreload.WaitAsync(TestWaitTimeouts.Default);
             }
 
             ConsoleLog.LineWritten -= HandleLog;
