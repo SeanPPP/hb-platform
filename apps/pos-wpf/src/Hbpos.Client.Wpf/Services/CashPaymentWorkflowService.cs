@@ -1126,12 +1126,16 @@ public sealed class CashPaymentWorkflowService(
             }
 
             // LocalIp 在 socket 写入前已持久化 TxnRef；没有 SessionId 也不能把其取消当作未提交。
+            // 后端异步模式的销售引用则在建 attempt 时就已派生落库（远早于发请求），它的存在不说明终端是否接单：
+            // 该模式由终端客户端掌握提交边界——POST 之前失败会返回可回退结果或抛 CardTerminalNotSubmittedException，
+            // POST 之后失败会返回未知结果；异常走到这里时以会话是否已绑定为准。退款在各模式下维持原有的保守判定。
+            var txnRefMarksDispatch = isRefund || !IsCloudBackendAsyncAttempt(linklyAttemptAfterException);
             var wasSubmitted = !definitelyNotSubmitted && (
                 linklySubmissionObserved ||
                 squareSubmissionObserved ||
                 refundDispatchBoundaryPersisted ||
                 !string.IsNullOrWhiteSpace(linklyAttemptAfterException?.SessionId) ||
-                !string.IsNullOrWhiteSpace(linklyAttemptAfterException?.TxnRef) ||
+                (txnRefMarksDispatch && !string.IsNullOrWhiteSpace(linklyAttemptAfterException?.TxnRef)) ||
                 !string.IsNullOrWhiteSpace(squareAttemptAfterException?.CheckoutId));
 
             if (wasSubmitted)
@@ -2146,13 +2150,13 @@ public sealed class CashPaymentWorkflowService(
             attemptGuid,
             null,
             // LocalIp 引用只绑定已落库 attempt 身份；Cloud 退款继续沿用既有原交易派生规则。
+            // 销售在三种模式下都必须在发请求前确定引用并随 attempt 落库：CloudBackendAsync 过去等服务端生成，
+            // 请求发出后一旦断电或响应丢失，这一行 SessionId 与 TxnRef 皆空，自动恢复和主管结案都无法认领它。
             isRefund
                 ? mode == LinklyConnectionMode.LocalIp
                     ? LinklyLocalTxnRef.Create('R', attemptGuid.ToString("D"))
                     : BuildRefundTxnRef(referenceText)
-                : mode is LinklyConnectionMode.LocalIp or LinklyConnectionMode.CloudDirectSync
-                    ? LinklyLocalTxnRef.Create('P', attemptGuid.ToString("D"))
-                    : null,
+                : LinklyLocalTxnRef.Create('P', attemptGuid.ToString("D")),
             settings.Processor.ToString(),
             settings.Environment.ToString(),
             CardTerminalSettings.FormatLinklyConnectionMode(mode),
@@ -2208,6 +2212,14 @@ public sealed class CashPaymentWorkflowService(
             persistedAttempt,
             persistedAttempt.AttemptGuid != attempt.AttemptGuid,
             isRefund && RequiresLinklyRefundRecoveryForCurrentMode(persistedAttempt, mode));
+    }
+
+    private static bool IsCloudBackendAsyncAttempt(LocalCardPaymentAttempt? attempt)
+    {
+        return string.Equals(
+            attempt?.ConnectionMode?.Trim(),
+            nameof(LinklyConnectionMode.CloudBackendAsync),
+            StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool RequiresLinklyRefundRecoveryForCurrentMode(
@@ -3198,18 +3210,27 @@ public sealed class CashPaymentWorkflowService(
             }
 
             var outcome = MapActiveSessionOutcome(finalStatus);
+            var isGenericActiveSession = string.Equals(activeAttempt.OperationKind, "ActiveSession", StringComparison.Ordinal);
+            // 旧销售/退款一旦记为 Approved，恢复会把它当作已持久化的金融事实、按草稿金额自动落单，
+            // 所以已到终态的批准在这里也必须核验金额；核验不过就不落 Approved、不确认会话，留给恢复流程判为未知。
+            // 无草稿的 generic 记录本来就降级为待复核、不会自动落单，仍照常确认以释放终端。
             if (outcome == LocalCardPaymentAttemptStatus.Approved &&
-                !LinklyBackendTerminalClient.HasPendingApprovalEvidenceMatchingAttempt(
-                    finalStatus,
-                    finalTxnRef,
-                    activeAttempt.Amount,
-                    activeAttempt.TxnType))
+                (!LinklyBackendTerminalClient.HasPendingApprovalEvidenceMatchingAttempt(
+                     finalStatus,
+                     finalTxnRef,
+                     activeAttempt.Amount,
+                     activeAttempt.TxnType) ||
+                 (!isGenericActiveSession &&
+                  !LinklyBackendTerminalClient.HasFinalApprovalEvidenceMatchingAttempt(
+                      finalStatus,
+                      finalTxnRef,
+                      activeAttempt.Amount))))
             {
                 return LinklyActiveSessionTakeoverResult.Failed(
                     "The previous Linkly approval evidence does not match the persisted transaction and was not acknowledged.");
             }
 
-            if (string.Equals(activeAttempt.OperationKind, "ActiveSession", StringComparison.Ordinal) &&
+            if (isGenericActiveSession &&
                 outcome == LocalCardPaymentAttemptStatus.Approved)
             {
                 // 无订单草稿的 generic 记录不能自动完成旧单；ack 后继续留在异常中心等待主管核实。

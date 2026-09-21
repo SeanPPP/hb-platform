@@ -401,6 +401,40 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task SupplierStoreSummary_软删除国内供应商的直写行仍归国内侧且澳洲侧归200()
+    {
+        await _localDb.Insertable(new[]
+        {
+            // 同一编码一条已软删除、一条在用时，名称取在用那条；只剩软删除记录时保留历史名称。
+            new ChinaSupplier { Guid = "CHINA-SOFT", SupplierCode = "CN-SOFT", SupplierName = "已删除国内供应商", IsDeleted = true },
+            new ChinaSupplier { Guid = "CHINA-DUP-DELETED", SupplierCode = "CN-DUP", SupplierName = "旧名称", IsDeleted = true },
+            new ChinaSupplier { Guid = "CHINA-DUP-ACTIVE", SupplierCode = "CN-DUP", SupplierName = "在用名称", IsDeleted = false },
+        }).ExecuteCommandAsync();
+
+        var date = new DateTime(2026, 1, 5);
+        ProductStoreDailySalesStatistic Row(string supplierCode, string productCode, decimal amount) => new()
+        {
+            Date = date, BranchCode = "1004", SupplierCode = supplierCode, ProductCode = productCode,
+            ProductName = productCode, TotalAmount = amount, TotalQuantity = 1, OrderCount = 1,
+        };
+
+        var result = await new SalesStatisticsSupplierStoreSummaryService()
+            .BuildFromProductStatisticsAsync(
+                CreateSqlSugarContext(_localDb),
+                CreatePosmSqlSugarContext(_posmDb),
+                new[] { Row("CN-SOFT", "P-SOFT", 10m), Row("CN-DUP", "P-DUP", 20m) },
+                date);
+
+        // 供应商被软删除后，它的历史直写销售不能在澳洲侧变成一个叫 CN-SOFT 的普通供应商。
+        var australian = Assert.Single(result.Australian);
+        Assert.Equal("200", australian.SupplierCode);
+        Assert.Equal(30m, australian.TotalAmount);
+        Assert.Equal(new[] { "CN-DUP", "CN-SOFT" }, result.China.Select(row => row.SupplierCode).OrderBy(code => code));
+        Assert.Equal("已删除国内供应商", result.China.Single(row => row.SupplierCode == "CN-SOFT").SupplierName);
+        Assert.Equal("在用名称", result.China.Single(row => row.SupplierCode == "CN-DUP").SupplierName);
+    }
+
+    [Fact]
     public async Task UpdateCurrentHourStatistics_重试应通过完成商品快照各派生一次供应商汇总()
     {
         var date = SalesStatisticsBusinessDate.Today();

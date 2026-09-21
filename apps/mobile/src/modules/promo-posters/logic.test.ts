@@ -33,6 +33,9 @@ import type { PromoPosterDefaults, PromoPosterQueueItem, PromoPosterSpec } from 
 
 const TODAY = "2026-09-19";
 
+// 风格值会贯穿草稿、PDF 请求和本地队列，避免新增风格只停留在 UI 选项。
+const LOW_INK_STYLE = "low-ink" as const;
+
 function createDefaults(overrides: Partial<PromoPosterDefaults> = {}): PromoPosterDefaults {
   const normalized = normalizePromoPosterDefaults({
     productCode: "P1",
@@ -158,6 +161,8 @@ const clearance = createPosterDraft(clearanceDefaults, { kind: "clearance", styl
 assert.equal(clearance.price, "5.00", "清仓价取已设清货价");
 assert.equal(clearance.wasPrice, "12.99");
 assert.equal(clearance.style, "modern");
+const lowInkDraft = createPosterDraft(defaults, { kind: "special", style: LOW_INK_STYLE, size: "A6", today: TODAY });
+assert.equal(lowInkDraft.style, LOW_INK_STYLE, "省彩墨风格应保留在初始草稿");
 
 const fresh = createPosterDraft(defaults, { kind: "new", style: "classic", size: "A5", today: TODAY });
 assert.equal(fresh.price, "12.99", "新品售价取零售价");
@@ -355,6 +360,7 @@ const request = buildPromoPosterPdfRequest("S1", true, [
   multiResult.ok ? multiResult.spec : ({} as PromoPosterSpec),
   { kind: "clearance", style: "modern", size: "A4", productCode: "P2", itemNumber: "W2093", title: "Boots", price: 5, wasPrice: 14.99, validFrom: TODAY },
   { kind: "new", style: "classic", size: "A5", productCode: "P3", itemNumber: "K5031", title: "Bowl", price: 6.49, wasPrice: 9, inStoreSince: TODAY },
+  { kind: "new", style: LOW_INK_STYLE, size: "A7", productCode: "P4", itemNumber: "K5032", title: "Mug", price: 3.5, inStoreSince: TODAY },
 ]);
 assert.equal(request.storeCode, "S1");
 assert.equal(request.impose, true);
@@ -394,25 +400,28 @@ assert.deepEqual(request.posters[3], {
   price: 6.49,
   inStoreSince: TODAY,
 }, "新品不传 wasPrice");
+assert.equal(request.posters[4].style, LOW_INK_STYLE, "PDF 请求应保留省彩墨风格");
 
 assert.equal(buildPromoPosterFileName(new Date(2026, 8, 19, 15, 30, 45)), "HB-Posters-20260919-153045.pdf");
 
 // ---------------------------------------------------------------- 本地队列恢复
 
 const restored = normalizeStoredQueueSnapshot({
-  style: "modern",
+  style: LOW_INK_STYLE,
   size: "A5",
   impose: false,
   items: [
     queueItem("ok", "A6"),
+    { ...queueItem("low-ink", "A7"), poster: { ...queueItem("low-ink-source", "A7").poster, style: LOW_INK_STYLE } },
     { ...queueItem("bad-kind", "A6"), poster: { ...queueItem("x", "A6").poster, kind: "sale" } },
     { ...queueItem("bad-title", "A6"), poster: { ...queueItem("x", "A6").poster, title: "中文" } },
     { id: "", storeCode: "S1", poster: queueItem("x", "A6").poster },
     "garbage",
   ],
 });
-assert.deepEqual(restored.items.map((item) => item.id), ["ok"], "结构不对的条目直接丢弃");
-assert.equal(restored.style, "modern");
+assert.deepEqual(restored.items.map((item) => item.id), ["ok", "low-ink"], "结构不对的条目直接丢弃");
+assert.equal(restored.items[1].poster.style, LOW_INK_STYLE, "恢复队列条目应保留省彩墨风格");
+assert.equal(restored.style, LOW_INK_STYLE);
 assert.equal(restored.size, "A5");
 assert.equal(restored.impose, false);
 assert.equal(restored.showLogo, true, "旧队列没有 Logo 字段时默认开启");

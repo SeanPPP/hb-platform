@@ -1,6 +1,9 @@
 import CoreBluetooth
 import CoreImage
 import Foundation
+// RN 0.81 预编译核心（React-Core-prebuilt）下，桥接头里的 #import <React/RCTEventEmitter.h>
+// 不能让 Swift 看到 RCTEventEmitter，EAS 构建会报 cannot find type；必须显式导入 React 模块。
+import React
 import UIKit
 
 @objc(HbPrinterModule)

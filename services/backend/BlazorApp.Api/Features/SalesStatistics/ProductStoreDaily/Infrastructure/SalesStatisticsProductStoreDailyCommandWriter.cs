@@ -121,7 +121,7 @@ internal sealed class SalesStatisticsProductStoreDailyCommandWriter
                     input.RawRows.Select(row => row.ProductCode)
                         .Concat(previousRows.Select(row => row.ProductCode)));
                 var productCodes = ResolveCurrentCostProductCodes(
-                    input.TargetDate, allProductCodes, build.Statistics, previousRows);
+                    input.TargetDate, allProductCodes, build.Statistics, previousRows, input.ChinaSupplierCodes);
                 logger.LogInformation(
                     "商品分店每日统计成本锁范围 Date={Date:yyyy-MM-dd} ReferencedProductCount={ReferencedProductCount} CurrentCostProductCount={CurrentCostProductCount}",
                     input.TargetDate, allProductCodes.Count, productCodes.Count);
@@ -189,7 +189,7 @@ internal sealed class SalesStatisticsProductStoreDailyCommandWriter
                 if (input.TargetDate.Date < SalesStatisticsBusinessDate.Today())
                 {
                     // 历史日期的队列恢复只修复销售事实；沿用旧快照的成本，不能按恢复当天的进价重算毛利。
-                    PreserveHistoricalCostSnapshots(build.Statistics, previousRows);
+                    PreserveHistoricalCostSnapshots(build.Statistics, previousRows, input.ChinaSupplierCodes);
                 }
 
                 status = await SalesStatisticsProductStoreDailyStateSlice.BuildProductStatisticStatusAsync(
@@ -329,21 +329,21 @@ internal sealed class SalesStatisticsProductStoreDailyCommandWriter
         DateTime targetDate,
         IReadOnlyList<string> allProductCodes,
         IReadOnlyList<ProductStoreDailySalesStatistic> rebuilt,
-        IReadOnlyList<ProductStoreDailySalesStatistic> previous)
+        IReadOnlyList<ProductStoreDailySalesStatistic> previous,
+        IReadOnlySet<string>? chinaSupplierCodes = null)
     {
         if (targetDate.Date >= SalesStatisticsBusinessDate.Today())
             return SetChildPurchasePriceMutationLock.NormalizeProductCodes(allProductCodes);
 
-        var previousByKey = previous.ToDictionary(
-            row => (row.Date.Date, row.BranchCode, row.SupplierCode, row.ProductCode));
+        var previousRows = new PreviousRowIndex(previous, chinaSupplierCodes);
         return SetChildPurchasePriceMutationLock.NormalizeProductCodes(rebuilt
             .Where(row =>
             {
                 // OpenItem/身份冲突可能依赖目录条码推断，保留原有商品身份互斥，不能与目录编辑交错提交。
                 if (IsOpenItemCostSource(row.CostSource) || IsOpenItemIdentityConflict(row.CostSource))
                     return true;
-                if (!previousByKey.TryGetValue(
-                    (row.Date.Date, row.BranchCode, row.SupplierCode, row.ProductCode), out var old))
+                var old = previousRows.Find(row);
+                if (old == null)
                     return true;
 
                 // 与 PreserveHistoricalCostSnapshots 的两条保留规则保持一致：日期锁已保护旧快照，
@@ -356,13 +356,13 @@ internal sealed class SalesStatisticsProductStoreDailyCommandWriter
 
     internal static void PreserveHistoricalCostSnapshots(
         IReadOnlyList<ProductStoreDailySalesStatistic> rebuilt,
-        IReadOnlyList<ProductStoreDailySalesStatistic> previous)
+        IReadOnlyList<ProductStoreDailySalesStatistic> previous,
+        IReadOnlySet<string>? chinaSupplierCodes = null)
     {
-        var previousByKey = previous.ToDictionary(
-            row => (row.Date.Date, row.BranchCode, row.SupplierCode, row.ProductCode));
+        var previousRows = new PreviousRowIndex(previous, chinaSupplierCodes);
         foreach (var row in rebuilt)
         {
-            previousByKey.TryGetValue((row.Date.Date, row.BranchCode, row.SupplierCode, row.ProductCode), out var old);
+            var old = previousRows.Find(row);
             var rebuiltIsOpenItem = IsOpenItemCostSource(row.CostSource);
             var rebuiltHasCredibleCost = row.CostSource != "Missing"
                 && (row.TotalCost.HasValue || row.UnitCostSnapshot.HasValue);
@@ -428,6 +428,57 @@ internal sealed class SalesStatisticsProductStoreDailyCommandWriter
 
             if (!rebuiltHasCredibleCost)
                 ClearCost(row);
+        }
+    }
+
+    /// <summary>
+    /// 按行键找旧快照行。SupplierCode 是行键的一部分，而同一商品的国内货在不同时间可能被写成
+    /// 国内编码族内不同的编码：旧写法的 200、直写的国内供应商编码、归属变更后的新编码，
+    /// 开关关闭后又会写回 200。精确键找不到时，族内按「日期 + 分店 + 商品」再找一次；
+    /// 否则历史日期一重算，国内货的旧成本快照就会因为键对不上，被当成新行按当前进价重算，且无法恢复。
+    /// </summary>
+    private sealed class PreviousRowIndex
+    {
+        private readonly Dictionary<(DateTime, string, string, string), ProductStoreDailySalesStatistic> _byKey;
+        private readonly Dictionary<(DateTime, string, string), List<ProductStoreDailySalesStatistic>> _familyRows = new();
+        private readonly IReadOnlySet<string>? _chinaSupplierCodes;
+
+        internal PreviousRowIndex(
+            IReadOnlyList<ProductStoreDailySalesStatistic> previous,
+            IReadOnlySet<string>? chinaSupplierCodes)
+        {
+            _chinaSupplierCodes = chinaSupplierCodes;
+            _byKey = previous.ToDictionary(
+                row => (row.Date.Date, row.BranchCode, row.SupplierCode, row.ProductCode));
+            if (chinaSupplierCodes == null)
+                return;
+
+            foreach (var row in previous.Where(row =>
+                ChinaSupplierCodeFamily.IsFamilyCode(row.SupplierCode, chinaSupplierCodes)))
+            {
+                var key = (row.Date.Date, row.BranchCode, row.ProductCode);
+                if (!_familyRows.TryGetValue(key, out var rows))
+                    _familyRows[key] = rows = new List<ProductStoreDailySalesStatistic>();
+                rows.Add(row);
+            }
+        }
+
+        internal ProductStoreDailySalesStatistic? Find(ProductStoreDailySalesStatistic rebuilt)
+        {
+            if (_byKey.TryGetValue(
+                (rebuilt.Date.Date, rebuilt.BranchCode, rebuilt.SupplierCode, rebuilt.ProductCode), out var exact))
+                return exact;
+            if (_chinaSupplierCodes == null
+                || !ChinaSupplierCodeFamily.IsFamilyCode(rebuilt.SupplierCode, _chinaSupplierCodes)
+                || !_familyRows.TryGetValue((rebuilt.Date.Date, rebuilt.BranchCode, rebuilt.ProductCode), out var candidates))
+                return null;
+
+            // 正常情况下族内只有一行。真有多行时取 200 那行，再按编码排序，保证结果稳定；
+            // 同一商品的成本与归属无关，取哪一行都不会引入当前进价。
+            return candidates
+                .OrderByDescending(row => ChinaSupplierCodeFamily.IsLocalSupplierCode(row.SupplierCode))
+                .ThenBy(row => row.SupplierCode, StringComparer.Ordinal)
+                .First();
         }
     }
 

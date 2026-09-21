@@ -44,7 +44,11 @@ public static class PromoPosterAssets
     {
         if (ch == ' ') return true;
         if (char.IsControl(ch) || char.IsSurrogate(ch)) return false;
-        var font = style == PromoPosterStyle.Classic ? ArchivoBold : BricolageBold;
+        var font = style switch
+        {
+            PromoPosterStyle.Classic or PromoPosterStyle.LowInk => ArchivoBold,
+            _ => BricolageBold,
+        };
         return font.CharExists(ch);
     }
 
