@@ -4630,7 +4630,7 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
-        public async Task BatchToggleActiveAsync_UpdatesLinkedProductStatusTables()
+        public async Task BatchToggleActiveAsync_只改仓库供货状态_不联动商品主档国内商品分店价与多码()
         {
             await SeedPriceSyncProductAsync(
                 "P-TOGGLE-LINKED",
@@ -4675,12 +4675,87 @@ namespace BlazorApp.Api.Tests
             Assert.True(result.Success);
             Assert.Equal(1, result.SuccessCount);
             Assert.Equal(0, result.FailedCount);
+            // 仓库下架只表示“暂停向分店供货”；门店现有库存仍要能在 POS 销售，
+            // 因此商品主档、国内商品、分店零售价、分店多码的启用状态都不应被连带关闭。
             Assert.False(warehouseProduct.IsActive);
-            Assert.False(product.IsActive);
-            Assert.False(domesticProduct.IsActive);
-            Assert.False(storeRetailPrice.IsActive);
-            Assert.False(storeMultiCodeProduct.IsActive);
-            Assert.Equal("System", domesticProduct.UpdatedBy);
+            Assert.True(product.IsActive);
+            Assert.True(domesticProduct.IsActive);
+            Assert.True(storeRetailPrice.IsActive);
+            Assert.True(storeMultiCodeProduct.IsActive);
+            Assert.Null(domesticProduct.UpdatedBy);
+        }
+
+        [Fact]
+        public async Task FullUpdateAsync_下架只改仓库供货状态_不联动商品主档国内商品分店价与多码()
+        {
+            const string productCode = "P-FULL-DELIST";
+            await SeedFullUpdateStatusProductAsync(productCode, storeRowsActive: true);
+            var service = CreateService();
+
+            var result = await service.FullUpdateAsync(
+                productCode,
+                new WarehouseProductFullUpdateDto { IsActive = false },
+                "仓库员P12"
+            );
+
+            Assert.True(result.Success, result.Message);
+            Assert.False((await _db.Queryable<WarehouseProduct>().SingleAsync(x => x.ProductCode == productCode)).IsActive);
+            Assert.True((await _db.Queryable<Product>().SingleAsync(x => x.ProductCode == productCode)).IsActive);
+            Assert.True((await _db.Queryable<DomesticProduct>().SingleAsync(x => x.ProductCode == productCode)).IsActive);
+            Assert.True((await _db.Queryable<StoreRetailPrice>().SingleAsync(x => x.ProductCode == productCode)).IsActive);
+            Assert.True((await _db.Queryable<StoreMultiCodeProduct>().SingleAsync(x => x.ProductCode == productCode)).IsActive);
+        }
+
+        [Fact]
+        public async Task FullUpdateAsync_保存在架商品_不会重新启用已停用的分店价与多码()
+        {
+            const string productCode = "P-FULL-KEEP-OFF";
+            await SeedFullUpdateStatusProductAsync(productCode, storeRowsActive: false);
+            var service = CreateService();
+
+            var result = await service.FullUpdateAsync(
+                productCode,
+                new WarehouseProductFullUpdateDto { IsActive = true },
+                "仓库员P12"
+            );
+
+            Assert.True(result.Success, result.Message);
+            Assert.True((await _db.Queryable<WarehouseProduct>().SingleAsync(x => x.ProductCode == productCode)).IsActive);
+            // 分店价、多码的停用可能是门店或商品维护有意为之，仓库保存不得把它们重新打开。
+            Assert.False((await _db.Queryable<StoreRetailPrice>().SingleAsync(x => x.ProductCode == productCode)).IsActive);
+            Assert.False((await _db.Queryable<StoreMultiCodeProduct>().SingleAsync(x => x.ProductCode == productCode)).IsActive);
+        }
+
+        private async Task SeedFullUpdateStatusProductAsync(string productCode, bool storeRowsActive)
+        {
+            await SeedPriceSyncProductAsync(
+                productCode,
+                purchasePrice: 4.28m,
+                retailPrice: 11.99m,
+                importPrice: 4.28m,
+                oemPrice: 11.99m
+            );
+            await _db.Insertable(new DomesticProduct
+            {
+                ProductCode = productCode,
+                ProductName = "Full Update Status",
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await SeedStoreRetailPriceAsync("S01", productCode, purchasePrice: 4.28m, retailPrice: 11.99m);
+            await _db.Updateable<StoreRetailPrice>()
+                .SetColumns(x => x.IsActive == storeRowsActive)
+                .Where(x => x.ProductCode == productCode)
+                .ExecuteCommandAsync();
+            await _db.Insertable(new StoreMultiCodeProduct
+            {
+                UUID = $"multi-code-{productCode}",
+                StoreCode = "S01",
+                ProductCode = productCode,
+                MultiBarcode = $"BAR-{productCode}",
+                IsActive = storeRowsActive,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
         }
 
         [Fact]

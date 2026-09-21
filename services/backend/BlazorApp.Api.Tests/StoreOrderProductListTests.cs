@@ -7468,6 +7468,12 @@ public sealed class StoreOrderProductListTests : IDisposable
             IsActive = true,
             IsDeleted = false,
         }).ExecuteCommandAsync();
+        await _db.Insertable(new WarehouseProduct
+        {
+            ProductCode = "P-STATUS-1",
+            IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
         var history = CreateStatusHistoryMock();
         WarehouseProductChangeHistoryContextDto? recordedContext = null;
         history
@@ -7496,10 +7502,15 @@ public sealed class StoreOrderProductListTests : IDisposable
             });
 
         Assert.True(result.Success, result.Message);
+        // 订货页的上下架开关表达“仓库是否继续向分店供货”，与页面展示同源（WarehouseProduct），
+        // 不得改动决定门店 POS 能否销售的商品主档状态。
+        var warehouseProduct = await _db.Queryable<WarehouseProduct>()
+            .SingleAsync(x => x.ProductCode == "P-STATUS-1");
         var product = await _db.Queryable<Product>()
             .SingleAsync(x => x.ProductCode == "P-STATUS-1");
-        Assert.False(product.IsActive);
-        Assert.Equal("status-user", product.UpdatedBy);
+        Assert.False(warehouseProduct.IsActive);
+        Assert.Equal("status-user", warehouseProduct.UpdatedBy);
+        Assert.True(product.IsActive);
         Assert.Equal("Update", recordedContext?.Action);
         Assert.Equal("StoreOrderProductStatus", recordedContext?.Source);
         Assert.Equal("P-STATUS-1", recordedContext?.SourceReference);
@@ -7529,6 +7540,11 @@ public sealed class StoreOrderProductListTests : IDisposable
                 IsDeleted = false,
             },
         }).ExecuteCommandAsync();
+        await _db.Insertable(new[]
+        {
+            new WarehouseProduct { ProductCode = "P-STATUS-2", IsActive = true, IsDeleted = false },
+            new WarehouseProduct { ProductCode = "P-STATUS-3", IsActive = true, IsDeleted = false },
+        }).ExecuteCommandAsync();
         var history = CreateStatusHistoryMock();
         history
             .Setup(x =>
@@ -7550,10 +7566,11 @@ public sealed class StoreOrderProductListTests : IDisposable
             });
 
         Assert.False(result.Success);
-        var products = await _db.Queryable<Product>()
+        var warehouseProducts = await _db.Queryable<WarehouseProduct>()
             .Where(x => new[] { "P-STATUS-2", "P-STATUS-3" }.Contains(x.ProductCode))
             .ToListAsync();
-        Assert.All(products, product => Assert.True(product.IsActive));
+        Assert.Equal(2, warehouseProducts.Count);
+        Assert.All(warehouseProducts, item => Assert.True(item.IsActive));
     }
 
     private static Mock<IWarehouseProductChangeHistoryService> CreateStatusHistoryMock()
