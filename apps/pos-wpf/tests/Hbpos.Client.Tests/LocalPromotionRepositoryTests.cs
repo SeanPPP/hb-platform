@@ -1,6 +1,7 @@
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Contracts.Promotions;
 using Microsoft.Data.Sqlite;
+using Hbpos.Contracts.Catalog;
 
 namespace Hbpos.Client.Tests;
 
@@ -23,6 +24,59 @@ public sealed class LocalPromotionRepositoryTests
             Assert.Equal(1, await ReadScalarIntAsync(connection, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'LocalPromotionProducts';"));
             Assert.Equal(1, await ReadScalarIntAsync(connection, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'IX_LocalPromotions_Store_EffectiveRange';"));
             Assert.Equal(1, await ReadScalarIntAsync(connection, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'IX_LocalPromotionProducts_Store_ProductCode';"));
+            // promotion 链路自己的明细表与索引：此前它误用了 catalog 链路的 LocalPromotionProducts，
+            // 两条链路各自“按门店全删再全插”，在同一次同步里互相清空。
+            Assert.Equal(1, await ReadScalarIntAsync(connection, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'LocalPromotionRuleProducts';"));
+            Assert.Equal(1, await ReadScalarIntAsync(connection, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'IX_LocalPromotionRuleProducts_Store_ProductCode';"));
+            Assert.Equal(1, await ReadScalarIntAsync(connection, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'IX_LocalPromotionsTable_Store_EffectiveRange';"));
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task Catalog_and_promotion_caches_do_not_clear_each_other()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            await new LocalSchemaService(store).InitializeAsync();
+            var catalogRepository = new LocalCatalogRepository(store);
+            var promotionRepository = new LocalPromotionRepository(store);
+            var current = DateTimeOffset.Parse("2026-06-13T12:00:00Z");
+
+            // 按 LocalCatalogSyncService 的真实顺序：catalog 链路先写，promotion 链路紧接着写。
+            // 修复前两者共用 LocalPromotionRules + LocalPromotionProducts 且各自“按门店全删再全插”，
+            // 后写的一方会把先写的一方整店清空，收银端因此拿到另一条链路口径的规则。
+            await catalogRepository.ReplacePromotionRulesAsync(
+                "S01",
+                [
+                    new CatalogPromotionRuleDto(
+                        "PROMO-CATALOG",
+                        "Catalog rule",
+                        true,
+                        0,
+                        2,
+                        5m,
+                        null,
+                        current.AddDays(-1),
+                        current.AddDays(1),
+                        current,
+                        [new CatalogPromotionProductDto("SKU-CATALOG", 1)])
+                ]);
+            await promotionRepository.ReplaceStoreRulesAsync(
+                "S01",
+                CreateRulesResponse("S01", current, CreateRule("PROMO-RULES", current, ["SKU-RULES"])));
+
+            var catalogRules = await catalogRepository.LoadPromotionRulesAsync("S01");
+            var promotionRules = await promotionRepository.GetActiveRulesAsync("S01", current);
+
+            Assert.Equal("PROMO-CATALOG", Assert.Single(catalogRules).PromotionId);
+            Assert.Equal("PROMO-RULES", Assert.Single(promotionRules).Id);
         }
         finally
         {
