@@ -215,6 +215,41 @@ public sealed class PosCartServiceTests
     }
 
     [Fact]
+    public void Automatic_fixed_price_uses_unit_weight_only_for_threshold_count_not_group_total()
+    {
+        var cart = new PosCartService();
+        var weightedLine = cart.AddItem(CreateItem(
+            productCode: "SKU-WEIGHTED",
+            lookupCode: "WEIGHTED-001",
+            price: 12m));
+        var regularLine = cart.AddItem(CreateItem(
+            productCode: "SKU-REGULAR",
+            lookupCode: "REGULAR-001",
+            price: 6m));
+
+        cart.SetAutomaticPromotionRules(
+        [
+            CreatePromotionRule(
+                applyQuantity: 3,
+                fixedPrice: 15m,
+                products:
+                [
+                    new CatalogPromotionProductDto("SKU-WEIGHTED", 2),
+                    new CatalogPromotionProductDto("SKU-REGULAR", 1)
+                ])
+        ]);
+
+        // UnitWeight=2 只让 SKU-WEIGHTED 在阈值计数里占 2 件、凑满 ApplyQuantity=3，
+        // 组内原价仍只能计一次 12.00：18.00 - 15.00 = 3.00 折扣，按原价比例分摊为 2.00 / 1.00。
+        // 若权重展开单位被重复计价，原价会变成 30.00、折扣放大到 15.00，应收从 15.00 掉到 3.00。
+        Assert.Equal(2m, weightedLine.DiscountAmount);
+        Assert.Equal(1m, regularLine.DiscountAmount);
+        Assert.Equal(3m, weightedLine.DiscountAmount + regularLine.DiscountAmount);
+        Assert.True(weightedLine.IsAutomaticPromotionDiscount);
+        Assert.True(regularLine.IsAutomaticPromotionDiscount);
+    }
+
+    [Fact]
     public void Order_discount_zero_allocation_overrides_catalog_and_snapshot_preserves_the_override()
     {
         var cart = new PosCartService();
