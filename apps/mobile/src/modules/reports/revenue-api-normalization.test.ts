@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  normalizeBranchHourlyRevenueSnapshot,
   normalizeBranchRevenueRows,
   normalizeDailyRevenueSnapshot,
   normalizeDailyRevenueRows,
@@ -113,6 +114,33 @@ assert.equal(
   "后端根级 data 数组与完整性元数据必须归一化为严格完整快照",
 );
 assert.equal(backendDataEnvelopeHourlyDetail.rows[0]?.hour, 10);
+
+// 日报累计对比一次取多家店：后端按「店×小时」返回，Hour 是 "HH:00" 字符串
+const multiBranchHourly = normalizeBranchHourlyRevenueSnapshot({
+  success: true,
+  data: [
+    { hour: "09:00", branchCode: "1013", branchName: "Orion", revenue: 120, revenueLY: 90, orderCount: 6, orderCountLY: 5 },
+    { hour: "09:00", branchCode: "1017", branchName: "Waratah", revenue: 40, revenueLY: 0, orderCount: 2, orderCountLY: 0 },
+  ],
+  statisticsPending: false,
+  statisticsExpectedItemCount: 2,
+  statisticsSnapshotItemCount: 2,
+});
+assert.equal(multiBranchHourly.isComplete, true, "多店小时快照同样按条目数核对完整性");
+assert.deepEqual(
+  multiBranchHourly.rows.map((row) => row.id),
+  ["1013:9", "1017:9"],
+  "同一小时的多家店必须保留分店，id 不能重复",
+);
+assert.equal(multiBranchHourly.rows[0]?.branchName, "Orion");
+assert.equal(multiBranchHourly.rows[0]?.hour, 9);
+assert.equal(multiBranchHourly.rows[0]?.compareRevenue, 90);
+assert.equal(multiBranchHourly.rows[1]?.transactions, 2);
+assert.equal(
+  normalizeBranchHourlyRevenueSnapshot({ data: [{ hour: "09:00", branchCode: "1013", revenue: 1 }] }).isComplete,
+  false,
+  "缺完整性元数据时多店小时快照同样 fail-closed",
+);
 
 for (const [label, snapshot] of [
   ["裸数组", normalizeHourlyRevenueSnapshot([{ Hour: 9, Revenue: 80 }])],
