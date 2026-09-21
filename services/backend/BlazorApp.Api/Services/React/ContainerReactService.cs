@@ -2,6 +2,7 @@ using AutoMapper;
 using System.Text.Json;
 using Microsoft.AspNetCore.DataProtection;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Features.SupplyNotices;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
@@ -4959,6 +4960,22 @@ namespace BlazorApp.Api.Services.React
                     + $"WHERE ProductCode IN ({string.Join(", ", productCodeParameters)}) "
                     + "AND (IsDeleted = 0 OR IsDeleted IS NULL)";
                 await _context.Db.Ado.ExecuteCommandAsync(sql, parameters);
+
+                // 货柜到货后在这里重新上架是最常见的恢复供货路径：关闭已在架商品的供货说明，
+                // 否则下次无说明下架时旧说明会重新浮现。按商品当前状态判断，幂等。
+                var reactivatedCodes = batch
+                    .Where(plan => plan.IsActive == true)
+                    .Select(plan => plan.ProductCode)
+                    .ToList();
+                if (reactivatedCodes.Count > 0)
+                {
+                    await WarehouseProductSupplyNoticeWriter.CloseNoticesForActiveProductsAsync(
+                        _context.Db,
+                        reactivatedCodes,
+                        updatedBy ?? "System",
+                        DateTime.UtcNow
+                    );
+                }
             }
         }
 

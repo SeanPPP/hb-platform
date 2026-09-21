@@ -7,6 +7,7 @@ using System.Linq.Expressions;
 using System.Threading.Tasks;
 using AutoMapper;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Features.SupplyNotices;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
@@ -60,6 +61,21 @@ internal sealed class ProductWarehouseUpdateSlice
         }
 
         var effectiveUpdatedBy = ResolveUpdatedBy(updatedBy);
+
+        // 供货说明只在下架时有意义；录入有误在开事务前拒绝。
+        NormalizedSupplyNotice? supplyNotice = null;
+        if (!dto.IsActive && dto.SupplyNotice != null)
+        {
+            var (normalizedNotice, noticeError) = WarehouseProductSupplyNoticeRules.Normalize(
+                dto.SupplyNotice
+            );
+            if (noticeError != null)
+            {
+                result.Message = noticeError;
+                return result;
+            }
+            supplyNotice = normalizedNotice;
+        }
 
         try
         {
@@ -297,6 +313,17 @@ internal sealed class ProductWarehouseUpdateSlice
                     w.UpdatedBy,
                 })
                 .ExecuteCommandAsync();
+
+            // 同一事务：下架登记供货说明，上架关闭说明。
+            await WarehouseProductSupplyNoticeWriter.ApplyStatusChangeAsync(
+                _context.Db,
+                new[] { productCode },
+                dto.IsActive,
+                supplyNotice,
+                effectiveUpdatedBy,
+                source: "WarehouseProducts",
+                DateTime.UtcNow
+            );
 
             // 5. 强联动：批量更新 StoreRetailPrice（主表零售价/进货价覆盖）
             var mainRetail = dto.OEMPrice ?? product.RetailPrice;
@@ -804,6 +831,21 @@ internal sealed class ProductWarehouseUpdateSlice
         var effectiveUpdatedBy = ResolveUpdatedBy(updatedBy);
         var batchGuid = Guid.NewGuid();
 
+        // 供货说明只在下架时有意义；录入有误要在开事务前就拒绝，避免“已下架但说明没记上”。
+        NormalizedSupplyNotice? supplyNotice = null;
+        if (!request.IsActive && request.SupplyNotice != null)
+        {
+            var (normalizedNotice, noticeError) = WarehouseProductSupplyNoticeRules.Normalize(
+                request.SupplyNotice
+            );
+            if (noticeError != null)
+            {
+                result.Message = noticeError;
+                return result;
+            }
+            supplyNotice = normalizedNotice;
+        }
+
         var productCodes = request
             .ProductCodes.Where(code => !string.IsNullOrWhiteSpace(code))
             .Distinct()
@@ -848,6 +890,17 @@ internal sealed class ProductWarehouseUpdateSlice
                     .Where(w => validWarehouseProductCodes.Contains(w.ProductCode) && !w.IsDeleted)
                     .ExecuteCommandAsync();
             }
+
+            // 与上下架同一事务：下架登记供货说明，上架关闭说明。
+            await WarehouseProductSupplyNoticeWriter.ApplyStatusChangeAsync(
+                _context.Db,
+                validWarehouseProductCodes,
+                request.IsActive,
+                supplyNotice,
+                effectiveUpdatedBy,
+                source: "WarehouseProducts",
+                DateTime.UtcNow
+            );
 
             await RecordProductChangeHistoryAsync(
                 beforeSnapshots,

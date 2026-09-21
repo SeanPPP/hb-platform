@@ -1,4 +1,5 @@
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Features.SupplyNotices;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services.React;
@@ -853,6 +854,17 @@ namespace BlazorApp.Api.Services
 
                     result.AffectedCount = affected;
                     result.Success = affected > 0;
+
+                    if (request.IsActive)
+                    {
+                        // 旧入口没有录入界面：只在上架时关闭供货说明，下架不登记。
+                        await WarehouseProductSupplyNoticeWriter.CloseNoticesForActiveProductsAsync(
+                            _db,
+                            productCodes,
+                            actorName,
+                            occurredAtUtc
+                        );
+                    }
 
                     var afterSnapshots = await CaptureChangeSnapshotsAsync(productCodes);
                     await RecordChangeHistoryAsync(

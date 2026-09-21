@@ -55,6 +55,8 @@ internal sealed class SqlSugarStoreOrderCartStore(
                         Grade = grade.Grade,
                         ProductName = product.ProductName,
                         ProductImage = product.ProductImage,
+                        // 仓库是否仍在供货；false 时前端标明“已暂停供货”。左连接缺行按不可订处理。
+                        IsActive = SqlFunc.IsNull(warehouseProduct.IsActive, false),
                         Price = detail.OEMPrice ?? 0,
                         Quantity = detail.Quantity ?? 0,
                         AllocQuantity = detail.AllocQuantity,
@@ -274,6 +276,15 @@ internal sealed class SqlSugarStoreOrderCartStore(
         var now = DateTime.Now;
         var actor = ResolveActorName();
         var detail = await FindActiveDetailAsync(order.OrderGUID, productCode);
+        // 暂停供货的商品：分店侧不能新增或加量；减量、移除放行，让分店能把这行清掉。
+        if (
+            !warehouseProduct.IsActive
+            && quantity > (detail?.Quantity ?? 0)
+            && !StoreOrderSupplyGuard.CanOrderPausedProducts(actorContext)
+        )
+        {
+            return StoreOrderCartMutationOutcome.SupplyPaused();
+        }
         var removed = false;
         var detailGuid = detail?.DetailGUID;
         if (detail == null)
@@ -386,6 +397,46 @@ internal sealed class SqlSugarStoreOrderCartStore(
             .CountAsync();
     }
 
+    public async Task<IReadOnlyList<string>> GetSupplyPausedItemLabelsAsync(string orderGuid)
+    {
+        if (StoreOrderSupplyGuard.CanOrderPausedProducts(actorContext))
+        {
+            return Array.Empty<string>();
+        }
+
+        // 加购之后才被下架的商品会留在购物车里，提交时必须再查一次当前状态。
+        var rows = await _db.Queryable<WareHouseOrderDetails>()
+            .InnerJoin<WarehouseProduct>(
+                (detail, warehouseProduct) => detail.ProductCode == warehouseProduct.ProductCode
+            )
+            .LeftJoin<Product>(
+                (detail, warehouseProduct, product) => detail.ProductCode == product.ProductCode
+            )
+            .Where(
+                (detail, warehouseProduct, product) =>
+                    detail.OrderGUID == orderGuid
+                    && !detail.IsDeleted
+                    && !warehouseProduct.IsDeleted
+                    && !warehouseProduct.IsActive
+            )
+            .Select(
+                (detail, warehouseProduct, product) =>
+                    new SupplyPausedLineRow
+                    {
+                        ProductCode = detail.ProductCode,
+                        ItemNumber = product.ItemNumber,
+                    }
+            )
+            .ToListAsync();
+
+        return rows
+            .Select(row => string.IsNullOrWhiteSpace(row.ItemNumber) ? row.ProductCode : row.ItemNumber)
+            .Where(label => !string.IsNullOrWhiteSpace(label))
+            .Select(label => label!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
     public Task<int> CompareExchangeSubmitAsync(
         StoreOrderCartSubmissionSnapshot snapshot,
         string orderNo,
@@ -473,12 +524,23 @@ internal sealed class SqlSugarStoreOrderCartStore(
                         {
                             Price = warehouseProduct.OEMPrice,
                             ImportPrice = warehouseProduct.ImportPrice,
+                            WarehouseIsActive = warehouseProduct.IsActive,
                         }
                 )
                 .FirstAsync();
             if (productPrice == null)
             {
                 return StoreOrderCartMutationOutcome.ProductMissing();
+            }
+
+            // 加购一定是加量：暂停供货的商品分店侧一律拦截。
+            // knownProduct 分支不用查：它来自订货选品查询，本身只返回在供货的商品。
+            if (
+                !productPrice.WarehouseIsActive
+                && !StoreOrderSupplyGuard.CanOrderPausedProducts(actorContext)
+            )
+            {
+                return StoreOrderCartMutationOutcome.SupplyPaused();
             }
 
             price = productPrice.Price ?? 0;
@@ -621,6 +683,8 @@ internal sealed class SqlSugarStoreOrderCartStore(
                         Grade = grade.Grade,
                         ProductName = product.ProductName,
                         ProductImage = product.ProductImage,
+                        // 仓库是否仍在供货；false 时前端标明“已暂停供货”。左连接缺行按不可订处理。
+                        IsActive = SqlFunc.IsNull(warehouseProduct.IsActive, false),
                         Price = detail.OEMPrice ?? 0,
                         Quantity = detail.Quantity ?? 0,
                         AllocQuantity = detail.AllocQuantity,
@@ -768,10 +832,17 @@ internal sealed class SqlSugarStoreOrderCartStore(
         new StoreOrderCartMutationSummary(0, 0, 0, 0, 0)
     );
 
+    private sealed class SupplyPausedLineRow
+    {
+        public string? ProductCode { get; init; }
+        public string? ItemNumber { get; init; }
+    }
+
     private sealed class CartProductPriceRow
     {
         public decimal? Price { get; init; }
         public decimal? ImportPrice { get; init; }
+        public bool WarehouseIsActive { get; init; }
     }
 
     private sealed class CartMutationSummaryRow

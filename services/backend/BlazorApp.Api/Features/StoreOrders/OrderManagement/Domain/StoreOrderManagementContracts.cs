@@ -1,3 +1,5 @@
+using BlazorApp.Api.Features.SupplyNotices;
+
 namespace BlazorApp.Api.Features.StoreOrders.OrderManagement.Domain;
 
 internal sealed record AddOrderLineInput(
@@ -68,11 +70,16 @@ internal sealed record UpdateOrderOutboundDateInput(
 
 internal sealed record DeleteOrderInput(string OrderGuid);
 
-internal sealed record UpdateProductStatusInput(string ProductCode, bool IsActive);
+internal sealed record UpdateProductStatusInput(
+    string ProductCode,
+    bool IsActive,
+    NormalizedSupplyNotice? SupplyNotice = null
+);
 
 internal sealed record BatchUpdateProductStatusInput(
     IReadOnlyList<string> ProductCodes,
-    bool IsActive
+    bool IsActive,
+    NormalizedSupplyNotice? SupplyNotice = null
 );
 
 internal sealed class StoreOrderManagementResult<T>

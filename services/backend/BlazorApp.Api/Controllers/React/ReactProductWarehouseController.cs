@@ -129,6 +129,19 @@ namespace BlazorApp.Api.Controllers.React
                     return BadRequest(new { success = false, message = "请求参数不能为空" });
                 }
 
+                // 供货说明录入有误属于用户可修正的输入问题，返回 400 和具体文案，而不是落到下方的 500。
+                if (dto.SupplyNotice != null)
+                {
+                    var (_, noticeError) =
+                        BlazorApp.Api.Features.SupplyNotices.WarehouseProductSupplyNoticeRules.Normalize(
+                            dto.SupplyNotice
+                        );
+                    if (noticeError != null)
+                    {
+                        return BadRequest(new { success = false, message = noticeError });
+                    }
+                }
+
                 var item = await _service.PatchMobileProductAsync(productCode, dto, GetCurrentUsername());
                 if (item == null)
                 {
