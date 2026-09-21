@@ -66,10 +66,10 @@ const MODERN_SIZES = {
 
 /** 省彩墨版仅标题和短线着色；参数与 LowInkPosterPainter 保持一致。 */
 const LOW_INK_SIZES = {
-  A4: { w: 794, h: 1123, m: 44, lg: 40, label: 38, n: 52, P: 340, info: 28, f: 17, gap: 18 },
-  A5: { w: 559, h: 794, m: 32, lg: 30, label: 27, n: 37, P: 240, info: 20, f: 13, gap: 13 },
-  A6: { w: 397, h: 559, m: 24, lg: 23, label: 19, n: 26, P: 168, info: 15, f: 11, gap: 9 },
-  A7: { w: 280, h: 397, m: 19, lg: 18, label: 15, n: 19, P: 116, info: 12, f: 10, gap: 7 },
+  A4: { w: 794, h: 1123, m: 44, lg: 40, label: 76, n: 52, P: 340, info: 28, f: 17, gap: 18 },
+  A5: { w: 559, h: 794, m: 32, lg: 30, label: 54, n: 37, P: 240, info: 20, f: 13, gap: 13 },
+  A6: { w: 397, h: 559, m: 24, lg: 23, label: 38, n: 26, P: 168, info: 15, f: 11, gap: 9 },
+  A7: { w: 280, h: 397, m: 19, lg: 18, label: 27, n: 19, P: 116, info: 12, f: 10, gap: 7 },
 } as const;
 
 type ClassicSize = (typeof CLASSIC_SIZES)[PromoPosterSize];
@@ -115,9 +115,22 @@ function round(value: number) {
 }
 
 function textStyle(fontSize: number, lineHeightRatio = 1.1): TextStyle {
-  // Android 行高小于字号会裁掉字形顶部，至少取 1 倍字号。
-  const ratio = Platform.OS === "android" ? Math.max(lineHeightRatio, 1) : lineHeightRatio;
+  // iOS 的 Avenir Next 需要额外顶部空间；NEW 等紧凑标签也不能压到 1em 以下。
+  const minimumRatio = Platform.OS === "ios" ? 1.15 : Platform.OS === "android" ? 1 : 0;
+  const ratio = Math.max(lineHeightRatio, minimumRatio);
   return { fontSize, lineHeight: round(fontSize * ratio), includeFontPadding: false };
+}
+
+function priceTextStyle(fontSize: number): TextStyle {
+  if (Platform.OS !== "ios") return textStyle(fontSize, 1);
+  // Avenir Next 的自然行高约为 1.366em；压成 1em 会裁掉数字顶部。
+  // 保留自然行高，仅收回基线下的空白，避免挤占 A7 价格区后面的说明。
+  return { fontSize, marginBottom: -fontSize * 0.366, includeFontPadding: false };
+}
+
+function priceTopOffset(size: number, small: number) {
+  // iOS 自然行高的字形顶部约为 0.29em，让美元符号和角分随整数顶端对齐。
+  return round((Platform.OS === "ios" ? 0.29 : 0.17) * (size - small));
 }
 
 // ---------------------------------------------------------------- 公共块
@@ -127,15 +140,14 @@ function BigPrice({ value, size, color, underlineCents }: { value: number | null
   const { dollars, cents } = value === null ? { dollars: "--", cents: "" } : splitPosterPrice(value);
   const dollarSize = size * 0.36;
   const centSize = size * 0.42;
-  // 上标与整数顶端对齐：行高=字号时字形顶部约在 0.17em 处，按字号差补偿。
-  const topOffset = (small: number) => round(0.17 * (size - small));
+  const topOffset = (small: number) => priceTopOffset(size, small);
   return (
     <View style={styles.row}>
-      <Text style={[FONT_CONDENSED, textStyle(dollarSize, 1), { color, marginTop: topOffset(dollarSize), marginRight: round(size * 0.02) }]}>$</Text>
-      <Text style={[FONT_CONDENSED, textStyle(size, 1), { color, letterSpacing: -size * 0.02 }]}>{dollars}</Text>
+      <Text style={[FONT_CONDENSED, priceTextStyle(dollarSize), { color, marginTop: topOffset(dollarSize), marginRight: round(size * 0.02) }]}>$</Text>
+      <Text style={[FONT_CONDENSED, priceTextStyle(size), { color, letterSpacing: -size * 0.02 }]}>{dollars}</Text>
       {cents ? (
         <View style={{ marginTop: topOffset(centSize), marginLeft: round(size * 0.035) }}>
-          <Text style={[FONT_CONDENSED, textStyle(centSize, 1), { color }]}>{cents}</Text>
+          <Text style={[FONT_CONDENSED, priceTextStyle(centSize), { color }]}>{cents}</Text>
           {underlineCents ? (
             <View style={{ height: Math.max(2, round(size * 0.028)), backgroundColor: color, marginTop: round(size * 0.01) }} />
           ) : null}
@@ -167,23 +179,23 @@ function DealPrice({
   const dollarSize = size * 0.36;
   const centSize = size * 0.42;
   const forSize = size * 0.21;
-  const topOffset = (small: number) => round(0.17 * (size - small));
+  const topOffset = (small: number) => priceTopOffset(size, small);
   return (
     <View style={styles.row}>
-      <Text style={[FONT_CONDENSED, textStyle(size, 1), { color }]}>{quantity ?? "-"}</Text>
+      <Text style={[FONT_CONDENSED, priceTextStyle(size), { color }]}>{quantity ?? "-"}</Text>
       <Text
         style={[
           forStyle,
-          textStyle(forSize, 1),
+          priceTextStyle(forSize),
           { color: forColor, marginTop: round(size * 0.42), marginHorizontal: round(size * 0.06), letterSpacing: forSize * 0.04 },
         ]}
       >
         {forText}
       </Text>
-      <Text style={[FONT_CONDENSED, textStyle(dollarSize, 1), { color, marginTop: topOffset(dollarSize), marginRight: round(size * 0.02) }]}>$</Text>
-      <Text style={[FONT_CONDENSED, textStyle(size, 1), { color, letterSpacing: -size * 0.02 }]}>{dollars}</Text>
+      <Text style={[FONT_CONDENSED, priceTextStyle(dollarSize), { color, marginTop: topOffset(dollarSize), marginRight: round(size * 0.02) }]}>$</Text>
+      <Text style={[FONT_CONDENSED, priceTextStyle(size), { color, letterSpacing: -size * 0.02 }]}>{dollars}</Text>
       {cents !== "00" ? (
-        <Text style={[FONT_CONDENSED, textStyle(centSize, 1), { color, marginTop: topOffset(centSize), marginLeft: round(size * 0.035) }]}>
+        <Text style={[FONT_CONDENSED, priceTextStyle(centSize), { color, marginTop: topOffset(centSize), marginLeft: round(size * 0.035) }]}>
           {cents}
         </Text>
       ) : null}
