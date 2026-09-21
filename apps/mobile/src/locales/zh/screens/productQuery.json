@@ -390,12 +390,13 @@
       "modern": "现代"
     },
     "unavailable": {
-      "special": "本店没有折扣",
       "multibuy": "没有进行中的多件促销",
       "clearance": "未设清货价"
     },
     "unavailableItem": "{{kind}}：{{reason}}",
     "unavailableSeparator": "；",
+    "showLogo": "显示 Logo",
+    "showLogoHint": "应用于整批海报",
     "queueBar": {
       "title": "待打印海报 {{count}} 张",
       "go": "去打印"
@@ -422,6 +423,7 @@
       "priceNow": "现价",
       "clearancePrice": "清仓价",
       "priceWas": "原价（划线）",
+      "priceWasOptional": "原价（可选）",
       "salePrice": "售价",
       "hintDiscounted": "本店折后价 {{price}}",
       "hintClearance": "已设清货价 {{price}}",
