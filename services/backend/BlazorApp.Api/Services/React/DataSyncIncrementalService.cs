@@ -31,6 +31,14 @@ namespace BlazorApp.Api.Services.React
         private readonly ICurrentUserService _currentUserService;
         private const string StoreRetailPricesIncrementalTaskType = "SyncStoreRetailPricesIncremental";
 
+        // 映射增量起点在上次成功任务开始时间之前多重叠的余量：兜住 UpdatedAt 已打点、
+        // 但事务晚于上次源快照才提交的写入，以及多实例之间的少量时钟偏差。
+        // 重叠区内的商品会重新计算出相同映射，比较后不会产生多余写入。
+        internal static readonly TimeSpan PosmMappingIncrementalOverlap = TimeSpan.FromMinutes(10);
+
+        // 没有成功记录、或上次成功距今过久时的最大回溯范围，沿用原实现的 30 天上限。
+        internal static readonly TimeSpan PosmMappingIncrementalMaxLookback = TimeSpan.FromDays(30);
+
         public DataSyncIncrementalService(
             SqlSugarContext localContext,
             HqSqlSugarContext hqContext,
@@ -91,31 +99,39 @@ namespace BlazorApp.Api.Services.React
                         t.Status == BlazorApp.Shared.Models.HBweb.TaskStatus.Success
                     );
 
-                    DateTime? syncStartTime = lastSuccessTask?.StartedAt;
-                    var daysRange = 30;
+                    var utcNow = DateTime.UtcNow;
+                    effectiveStart = ResolvePosmMappingIncrementalStart(
+                        lastSuccessTask?.StartedAt,
+                        utcNow
+                    );
 
-                    if (syncStartTime.HasValue)
+                    if (lastSuccessTask == null)
                     {
-                        daysRange = Math.Min(
-                            daysRange,
-                            (int)(DateTime.UtcNow - syncStartTime.Value).TotalDays
-                        );
                         _logger.LogInformation(
-                            "[ReactSync] 商品-供应商映射增量：上次成功同步时间: {Time}, 范围: {Days} 天",
-                            syncStartTime,
-                            daysRange
+                            "[ReactSync] 商品-供应商映射增量：最近任务日志中没有成功记录，回溯最近 {Days} 天，起点 {Start}（UTC）",
+                            PosmMappingIncrementalMaxLookback.TotalDays,
+                            effectiveStart
+                        );
+                    }
+                    else if (lastSuccessTask.StartedAt < utcNow - PosmMappingIncrementalMaxLookback)
+                    {
+                        // 超过回溯上限时更早的变更不会再被增量捕获，只能靠手动全量同步补齐。
+                        _logger.LogWarning(
+                            "[ReactSync] 商品-供应商映射增量：上次成功同步开始于 {LastSuccess}（UTC），已超过 {Days} 天，本次只回溯到 {Start}（UTC），更早的变更需手动执行全量同步",
+                            lastSuccessTask.StartedAt,
+                            PosmMappingIncrementalMaxLookback.TotalDays,
+                            effectiveStart
                         );
                     }
                     else
                     {
                         _logger.LogInformation(
-                            "[ReactSync] 商品-供应商映射增量：未找到历史记录，同步最近 {Days} 天的数据",
-                            daysRange
+                            "[ReactSync] 商品-供应商映射增量：上次成功同步开始于 {LastSuccess}（UTC），本次起点 {Start}（UTC，向前重叠 {OverlapMinutes} 分钟）",
+                            lastSuccessTask.StartedAt,
+                            effectiveStart,
+                            PosmMappingIncrementalOverlap.TotalMinutes
                         );
                     }
-
-                    var startDate = DateTime.UtcNow.AddDays(-daysRange);
-                    effectiveStart = startDate;
                 }
 
                 taskLog = await StartPosmIncrementalTaskLogAsync(taskType);
@@ -381,6 +397,30 @@ namespace BlazorApp.Api.Services.React
                 && task.CompletedAt == null
                 && task.StartedAt >= cutoff
             );
+        }
+
+        /// <summary>
+        /// 计算商品-供应商映射增量同步的候选起点（UTC）。
+        /// 任务日志 StartedAt 与 Product/WarehouseProduct/DomesticProduct 的 UpdatedAt 都按
+        /// DateTime.UtcNow 写入，从 SQL Server 读回时 Kind 为 Unspecified，这里统一按 UTC 解释。
+        /// </summary>
+        internal static DateTime ResolvePosmMappingIncrementalStart(
+            DateTime? lastSuccessStartedAtUtc,
+            DateTime utcNow
+        )
+        {
+            var earliestStart = utcNow - PosmMappingIncrementalMaxLookback;
+            if (!lastSuccessStartedAtUtc.HasValue)
+            {
+                return earliestStart;
+            }
+
+            // 以上次成功任务的开始时间为水位（它早于该次读取源快照的时刻），再向前重叠一小段。
+            // 不能按整天截断：调度每 20 分钟一次，整天截断会得到 0 天，起点等于当前时间而漏掉全部变更。
+            var start =
+                DateTime.SpecifyKind(lastSuccessStartedAtUtc.Value, DateTimeKind.Utc)
+                - PosmMappingIncrementalOverlap;
+            return start < earliestStart ? earliestStart : start;
         }
 
         public async Task<SyncResult> SyncStoreLocalSupplierInvoicesFromHqIncrementalAsync(
