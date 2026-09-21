@@ -41,7 +41,9 @@ const warehouseRetailPriceDeclaration = productQuery?.body?.statements
   .filter(ts.isVariableStatement)
   .flatMap((statement) => [...statement.declarationList.declarations])
   .find((declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === "warehouseRetailPrice");
-assert.ok(warehouseRetailPriceDeclaration?.initializer, "页面必须计算当前门店的仓库零售价差异提示");
+const warehouseRetailPriceExpression = warehouseRetailPriceDeclaration?.initializer;
+assert.ok(warehouseRetailPriceExpression, "页面必须计算当前门店的仓库零售价差异提示");
+const warehouseRetailPriceSource = warehouseRetailPriceExpression.getText(pageAst);
 function evaluateWarehouseRetailPrice(input: {
   offlineMode?: boolean;
   storePrice: { uuid: string; retailPrice: number | null } | null;
@@ -54,8 +56,7 @@ function evaluateWarehouseRetailPrice(input: {
     normalizeWarehouseMoney,
     formatCurrency: (value: number) => `$${value.toFixed(2)}`,
   };
-  const expression = warehouseRetailPriceDeclaration.initializer.getText(pageAst);
-  return new Function("deps", `const { ${Object.keys(deps).join(", ")} } = deps; return (${expression});`)(deps) as string | null;
+  return new Function("deps", `const { ${Object.keys(deps).join(", ")} } = deps; return (${warehouseRetailPriceSource});`)(deps) as string | null;
 }
 
 function compileCallback<T>(statement: ts.VariableStatement, name: string, deps: Record<string, unknown>): T {
