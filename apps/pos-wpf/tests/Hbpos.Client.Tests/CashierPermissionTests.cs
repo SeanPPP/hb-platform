@@ -1021,7 +1021,7 @@ public sealed class CashierPermissionTests
         var processed = viewModel.ProcessScannerBarcode("1234567890123", "scanner-device", "raw");
 
         Assert.True(processed);
-        Assert.Equal("1234567890123", await cashierBarcode.Task.WaitAsync(TimeSpan.FromSeconds(3)));
+        Assert.Equal("1234567890123", await cashierBarcode.Task.WaitAsync(TestWaitTimeouts.Default));
         for (var attempt = 0; attempt < 20 && viewModel.ScanText.Length > 0; attempt++)
         {
             await Task.Delay(25);
@@ -1064,12 +1064,12 @@ public sealed class CashierPermissionTests
         viewModel.ScanText = "CASHIER-OLD";
 
         var searchTask = viewModel.ScanCommand.ExecuteAsync(null);
-        var cancellationToken = await fallbackStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        var cancellationToken = await fallbackStarted.Task.WaitAsync(TestWaitTimeouts.Default);
 
         Assert.True(cancellationToken.CanBeCanceled);
         viewModel.ScanText = "CASHIER-NEW";
 
-        await fallbackCanceled.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await fallbackCanceled.Task.WaitAsync(TestWaitTimeouts.Default);
         await searchTask;
         Assert.Empty(viewModel.CartLines);
         Assert.Equal("CASHIER-NEW", viewModel.ScanText);
@@ -1141,7 +1141,7 @@ public sealed class CashierPermissionTests
         using var cancellationSource = new CancellationTokenSource();
 
         var loginTask = viewModel.TryLoginCashierFromScannerFallbackAsync("CASHIER-OLD", cancellationSource.Token);
-        await loginService.Started.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await loginService.Started.Task.WaitAsync(TestWaitTimeouts.Default);
         cancellationSource.Cancel();
         loginService.Complete();
 
@@ -1188,7 +1188,7 @@ public sealed class CashierPermissionTests
             enforcePermissionsWhenNoCashier: true);
 
         Assert.True(viewModel.ProcessScannerBarcode("1234567890123", "scanner-device", "raw"));
-        Assert.Equal("1234567890123", await cashierBarcode.Task.WaitAsync(TimeSpan.FromSeconds(3)));
+        Assert.Equal("1234567890123", await cashierBarcode.Task.WaitAsync(TestWaitTimeouts.Default));
         for (var attempt = 0; attempt < 20 && viewModel.StatusFeedbackKind != StatusFeedbackKind.Success; attempt++)
         {
             await Task.Delay(25);
@@ -1227,7 +1227,7 @@ public sealed class CashierPermissionTests
         var processed = viewModel.ProcessScannerBarcode("930001", "scanner-device", "raw");
 
         Assert.True(processed);
-        Assert.Equal("930001", await cashierBarcode.Task.WaitAsync(TimeSpan.FromSeconds(3)));
+        Assert.Equal("930001", await cashierBarcode.Task.WaitAsync(TestWaitTimeouts.Default));
         Assert.Equal(0, workflow.ProcessScanAsyncCalls);
         Assert.Empty(cart.Lines);
         Assert.Empty(viewModel.CartLines);
@@ -1253,7 +1253,7 @@ public sealed class CashierPermissionTests
             enforcePermissionsWhenNoCashier: false);
 
         Assert.True(viewModel.ProcessScannerBarcode("HBPOSE1-K1-AA-BB", "scanner", "raw"));
-        Assert.Equal("HBPOSE1-K1-AA-BB", await scanned.Task.WaitAsync(TimeSpan.FromSeconds(3)));
+        Assert.Equal("HBPOSE1-K1-AA-BB", await scanned.Task.WaitAsync(TestWaitTimeouts.Default));
         Assert.Equal(0, workflow.ProcessScanAsyncCalls);
     }
 
@@ -1409,7 +1409,7 @@ public sealed class CashierPermissionTests
         var processed = viewModel.ProcessScannerBarcode("1234567890123", "scanner-device", "raw");
 
         Assert.True(processed);
-        Assert.Equal("1234567890123", await cashierBarcode.Task.WaitAsync(TimeSpan.FromSeconds(3)));
+        Assert.Equal("1234567890123", await cashierBarcode.Task.WaitAsync(TestWaitTimeouts.Default));
         for (var attempt = 0; attempt < 20 && viewModel.ScanText.Length > 0; attempt++)
         {
             await Task.Delay(25);
