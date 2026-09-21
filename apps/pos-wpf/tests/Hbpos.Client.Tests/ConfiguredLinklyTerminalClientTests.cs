@@ -671,6 +671,9 @@ public sealed class ConfiguredLinklyTerminalClientTests
         {
             return Task.CompletedTask;
         }
+
+        public Task AcknowledgeSupervisorResolvedSessionAsync(CardTerminalSettings settings, string sessionId, CancellationToken cancellationToken = default) =>
+            AcknowledgeSessionAsync(settings, sessionId, cancellationToken);
     }
 
     private sealed class FakeLinklyEftClientFactory(bool connectResult = true) : ILinklyEftClientFactory

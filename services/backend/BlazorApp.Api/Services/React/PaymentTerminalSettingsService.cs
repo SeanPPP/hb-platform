@@ -1307,6 +1307,7 @@ public sealed class PaymentTerminalSettingsService(
     }
 
     // 只有已确认且明确结束的会话可放行；未知状态即使误写 ACK 也不能释放线路。
+    // SupervisorResolved 是 POS API 在主管结案时写入的终态，与 Linkly 终态同样放行（下面三个谓词口径一致）。
     private async Task<bool> HasBlockingLinklySessionAsync(
         Guid terminalId,
         string storeCode,
@@ -1324,7 +1325,8 @@ public sealed class PaymentTerminalSettingsService(
                             || (row.Status != "Completed"
                                 && row.Status != "Cancelled"
                                 && row.Status != "Failed"
-                                && row.Status != "NotSubmitted")))
+                                && row.Status != "NotSubmitted"
+                                && row.Status != "SupervisorResolved")))
             )
             .AnyAsync();
     }
@@ -1346,7 +1348,8 @@ public sealed class PaymentTerminalSettingsService(
                             || (row.Status != "Completed"
                                 && row.Status != "Cancelled"
                                 && row.Status != "Failed"
-                                && row.Status != "NotSubmitted")))
+                                && row.Status != "NotSubmitted"
+                                && row.Status != "SupervisorResolved")))
             )
             .AnyAsync();
     }
@@ -1366,7 +1369,8 @@ public sealed class PaymentTerminalSettingsService(
                             || (row.Status != "Completed"
                                 && row.Status != "Cancelled"
                                 && row.Status != "Failed"
-                                && row.Status != "NotSubmitted")))
+                                && row.Status != "NotSubmitted"
+                                && row.Status != "SupervisorResolved")))
             )
             .AnyAsync();
     }

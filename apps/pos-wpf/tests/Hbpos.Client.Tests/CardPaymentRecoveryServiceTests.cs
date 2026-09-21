@@ -425,6 +425,7 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.Equal(CardPaymentRecoveryOutcome.DraftRestored, result.Outcome);
         Assert.Single(cart.Lines);
         Assert.Equal(1, backend.AcknowledgeCallCount);
+        Assert.Equal(1, backend.SupervisorResolvedAcknowledgeCallCount);
         Assert.NotNull(attempts.AcknowledgedAt);
     }
 
@@ -519,6 +520,7 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.Equal(0, backend.StatusCallCount);
         Assert.Equal(0, backend.ResumeCallCount);
         Assert.Equal(1, backend.AcknowledgeCallCount);
+        Assert.Equal(0, backend.SupervisorResolvedAcknowledgeCallCount);
         Assert.Equal("SESSION-ORDER-COMPLETED-ACK", backend.AcknowledgedSessionId);
         Assert.Equal(0, orders.SaveCount);
         Assert.Equal(LocalCardPaymentAttemptStatus.OrderCompleted, attempts.Status);
@@ -3264,6 +3266,7 @@ public sealed class CardPaymentRecoveryServiceTests
 
         Assert.Equal(CardPaymentRecoveryOutcome.ActiveSessionManuallyCleared, result.Outcome);
         Assert.Equal(1, backend.AcknowledgeCallCount);
+        Assert.Equal(1, backend.SupervisorResolvedAcknowledgeCallCount);
         Assert.Equal("ACTIVE-MANUAL", backend.AcknowledgedSessionId);
         Assert.Equal(0, orders.SaveCount);
         Assert.Single(cart.Lines);
@@ -4960,6 +4963,7 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.Equal(LocalCardPaymentAttemptStatus.Abandoned, attempts.Status);
         Assert.True(cart.IsEmpty);
         Assert.Equal(1, backend.AcknowledgeCallCount);
+        Assert.Equal(1, backend.SupervisorResolvedAcknowledgeCallCount);
     }
 
     [Fact]
@@ -6078,7 +6082,8 @@ public sealed class CardPaymentRecoveryServiceTests
             LocalCardPaymentAttemptStatus.Recovering);
         var attempts = new FakeCardPaymentAttemptRepository(attempt);
         var orders = new FakeLocalOrderRepository();
-        var service = CreateService(attempts, orders, new FakeLinklyBackendTerminalClient());
+        var backend = new FakeLinklyBackendTerminalClient();
+        var service = CreateService(attempts, orders, backend);
 
         var result = await service.ResolvePaymentAsync(
             new CardPaymentSupervisorResolution(
@@ -6095,6 +6100,9 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.False(result.LockRetained);
         Assert.Equal(CardPaymentRecoveryOutcome.OrderCompleted, result.RecoveryResult?.Outcome);
         Assert.Equal(1, orders.SaveCount);
+        // 主管确认已付后按草稿落单，ack 必须带主管结案标记，服务端才会释放终端管理闸门。
+        Assert.Equal(1, backend.AcknowledgeCallCount);
+        Assert.Equal(1, backend.SupervisorResolvedAcknowledgeCallCount);
         var journal = Assert.IsType<LocalFinancialSupervisorResolution>(attempts.LastPaymentJournal);
         Assert.Equal(string.Empty, journal.Reason);
         Assert.Equal("BANK-PAYMENT-001", journal.FinancialReference);
@@ -9929,6 +9937,14 @@ public sealed class CardPaymentRecoveryServiceTests
             }
 
             return Task.CompletedTask;
+        }
+
+        public int SupervisorResolvedAcknowledgeCallCount { get; private set; }
+
+        public Task AcknowledgeSupervisorResolvedSessionAsync(CardTerminalSettings settings, string sessionId, CancellationToken cancellationToken = default)
+        {
+            SupervisorResolvedAcknowledgeCallCount++;
+            return AcknowledgeSessionAsync(settings, sessionId, cancellationToken);
         }
     }
 
