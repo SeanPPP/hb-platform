@@ -1090,7 +1090,7 @@ namespace Hbpos.Api.Tests;
         var service = CreateService(transport);
         var request = CreateTransactionRequest() with { AttemptGuid = Guid.Parse("00000000-0000-0000-0000-000000000001") };
         var first = await service.StartTransactionAsync("S01", "POS-01", request, CancellationToken.None);
-        await service.AcknowledgeSessionAsync("S01", "POS-01", "Sandbox", first.SessionId, CancellationToken.None);
+        await service.AcknowledgeSessionAsync("S01", "POS-01", "Sandbox", first.SessionId, supervisorResolved: false, CancellationToken.None);
 
         // API 随机生成的引用碰撞时可以换号重试；由 attempt 派生的引用一旦换号，POS 本地记录就再也对不上这笔会话，
         // 而且同一个 attempt 再次提交本身就意味着可能重复扣款。
