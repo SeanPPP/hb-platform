@@ -148,6 +148,7 @@ export default function PromoPosterModal({ storeCode, products, onClose }: Promo
   const [style, setStyle] = useState<PromoPosterStyle>('classic')
   const [size, setSize] = useState<PromoPosterSize>('A6')
   const [impose, setImpose] = useState(true)
+  const [showLogo, setShowLogo] = useState(true)
   const [generating, setGenerating] = useState(false)
   const [preview, setPreview] = useState<PosterPreview | null>(null)
   const [frameReady, setFrameReady] = useState(false)
@@ -345,7 +346,12 @@ export default function PromoPosterModal({ storeCode, products, onClose }: Promo
                 invalid={priceInvalid}
                 onChange={setPrice}
               />
-              <PriceField label={wasLabel} value={draft.wasPrice} invalid={wasInvalid} onChange={setWasPrice} />
+              <PriceField
+                label={draft.kind === 'special' ? t(`${I18N}.priceWasOptional`, '原价（可选）') : wasLabel}
+                value={draft.wasPrice}
+                invalid={wasInvalid}
+                onChange={setWasPrice}
+              />
             </Space>
           )
         } else if (draft.kind === 'new') {
@@ -450,6 +456,7 @@ export default function PromoPosterModal({ storeCode, products, onClose }: Promo
       style,
       size,
       impose,
+      showLogo,
       today: dayjs().format('YYYY-MM-DD'),
     })
     setGenerating(true)
@@ -591,6 +598,15 @@ export default function PromoPosterModal({ storeCode, products, onClose }: Promo
                 <Typography.Text type={size === 'A4' ? 'secondary' : undefined}>{t(`${I18N}.impose`, '小尺寸拼到 A4 纸（带裁切线）')}</Typography.Text>
               </Space>
             </Tooltip>
+            <Space size={8}>
+              <Switch
+                size="small"
+                checked={showLogo}
+                onChange={setShowLogo}
+                aria-label={t(`${I18N}.showLogo`, '显示 Logo')}
+              />
+              <Typography.Text>{t(`${I18N}.showLogo`, '显示 Logo')}</Typography.Text>
+            </Space>
             <Typography.Text strong style={{ marginLeft: 'auto' }}>
               {t(`${I18N}.pageEstimate`, '预计 {{pages}} 页 · {{count}} 张海报', { pages: estimatedPages, count: rows.length })}
             </Typography.Text>

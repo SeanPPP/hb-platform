@@ -95,6 +95,7 @@
     "selectStoreFirst": "Please select a store first.",
     "loginFailed": "Login failed",
     "network": "Network connection failed. Please try again.",
+    "printerDisconnected": "The printer connection was interrupted. Make sure the printer is on, reconnect it in Settings, then try again.",
     "timeout": "The request timed out. Please try again.",
     "unauthorized": "Your session has expired or access is not available. Please sign in again.",
     "server": "The server is temporarily unavailable. Please try again later.",
