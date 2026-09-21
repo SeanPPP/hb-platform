@@ -209,6 +209,59 @@ namespace BlazorApp.Api.Services.Background
             return ScheduledTaskLeaseAcquireResult.CreateRunning(runningLease);
         }
 
+        /// <summary>
+        /// 把崩溃遗留的 sqlsess1 标记行转换为调用方的普通 TTL 租约。调用方必须持有同一日期的
+        /// Session applock（证明原 owner 的 SQL Session 已退出），并以观测到的旧 token 做 CAS；
+        /// 期间 token 若已被其他执行者换掉则不接管。转换后按旧 TTL 语义运行，完整刷新的
+        /// session CAS 不会越过未过期的 TTL 租约。
+        /// </summary>
+        internal async Task<ScheduledTaskLeaseAcquireResult> TryTakeOverOrphanSessionLeaseAsync(
+            string taskType,
+            string scopeKey,
+            string observedSessionLeaseToken,
+            TimeSpan leaseDuration,
+            SalesStatisticsDateExecutionGuard guard
+        )
+        {
+            if (!guard.IsSqlServerSessionGuarded)
+                throw new InvalidOperationException("接管 sqlsess1 租约必须持有全日统计 Session guard");
+            if (!guard.IsBoundTo(_context.Db, scopeKey))
+                throw new InvalidOperationException("接管 sqlsess1 租约的 guard 与当前数据库或日期范围不匹配");
+            if (!observedSessionLeaseToken.StartsWith(
+                    SalesStatisticsDateExecutionGuard.SessionLeaseTokenPrefix,
+                    StringComparison.Ordinal))
+                throw new InvalidOperationException("只允许接管 sqlsess1 标记租约");
+            await guard.EnsureActiveAsync("接管遗留日期租约");
+
+            var normalizedTaskType = NormalizeKey(taskType);
+            var normalizedScopeKey = NormalizeKey(scopeKey);
+            var ownerInstanceId = ResolveInstanceId();
+            var now = DateTime.UtcNow;
+            var leaseUntil = now.Add(leaseDuration);
+            var leaseToken = Guid.NewGuid().ToString("N");
+
+            var updatedRows = await _context.Db.Updateable<ScheduledTaskLease>()
+                .SetColumns(x => x.Status == ScheduledTaskLeaseStatus.Running)
+                .SetColumns(x => x.OwnerInstanceId == ownerInstanceId)
+                .SetColumns(x => x.LeaseToken == leaseToken)
+                .SetColumns(x => x.LeaseUntilUtc == leaseUntil)
+                .SetColumns(x => x.StartedAtUtc == now)
+                .SetColumns(x => x.CompletedAtUtc == null)
+                .SetColumns(x => x.LastError == null)
+                .SetColumns(x => x.UpdatedAtUtc == now)
+                .Where(x =>
+                    x.TaskType == normalizedTaskType
+                    && x.ScopeKey == normalizedScopeKey
+                    && x.Status == ScheduledTaskLeaseStatus.Running
+                    && x.LeaseToken == observedSessionLeaseToken
+                )
+                .ExecuteCommandAsync();
+            var lease = await QueryLeaseAsync(normalizedTaskType, normalizedScopeKey);
+            return updatedRows > 0
+                ? ScheduledTaskLeaseAcquireResult.CreateAcquired(lease!)
+                : ScheduledTaskLeaseAcquireResult.CreateRunning(lease);
+        }
+
         public async Task<bool> CompleteAsync(
             string taskType,
             string scopeKey,
