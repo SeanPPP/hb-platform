@@ -27,7 +27,7 @@ public sealed class ClientLogOutboxTests
         }
         finally
         {
-            DeleteDatabaseFiles(databasePath);
+            await DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -54,7 +54,7 @@ public sealed class ClientLogOutboxTests
         }
         finally
         {
-            DeleteDatabaseFiles(databasePath);
+            await DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -91,7 +91,7 @@ public sealed class ClientLogOutboxTests
         }
         finally
         {
-            DeleteDatabaseFiles(databasePath);
+            await DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -126,7 +126,7 @@ public sealed class ClientLogOutboxTests
         }
         finally
         {
-            DeleteDatabaseFiles(databasePath);
+            await DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -161,7 +161,7 @@ public sealed class ClientLogOutboxTests
         }
         finally
         {
-            DeleteDatabaseFiles(databasePath);
+            await DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -189,7 +189,7 @@ public sealed class ClientLogOutboxTests
         }
         finally
         {
-            DeleteDatabaseFiles(databasePath);
+            await DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -230,7 +230,7 @@ public sealed class ClientLogOutboxTests
         }
         finally
         {
-            DeleteDatabaseFiles(databasePath);
+            await DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -255,15 +255,9 @@ public sealed class ClientLogOutboxTests
         return Convert.ToInt64(await command.ExecuteScalarAsync()) == 1;
     }
 
-    private static void DeleteDatabaseFiles(string databasePath)
+    private static Task DeleteDatabaseFilesAsync(string databasePath)
     {
-        foreach (var suffix in new[] { string.Empty, "-wal", "-shm" })
-        {
-            var path = databasePath + suffix;
-            if (File.Exists(path))
-            {
-                File.Delete(path);
-            }
-        }
+        // Windows 上连接 Dispose 后句柄可能短暂保留，统一走共享的 best-effort 清理，避免清理阶段误报。
+        return SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(databasePath);
     }
 }

@@ -86,7 +86,7 @@ public sealed class ClientLogUploadServiceTests
         {
             runtimeUploader.Dispose();
             operationUploader.Dispose();
-            DeleteDatabaseFiles(databasePath);
+            await DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -138,7 +138,7 @@ public sealed class ClientLogUploadServiceTests
         finally
         {
             service.Dispose();
-            DeleteDatabaseFiles(databasePath);
+            await DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -170,7 +170,7 @@ public sealed class ClientLogUploadServiceTests
         finally
         {
             service.Dispose();
-            DeleteDatabaseFiles(databasePath);
+            await DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -265,7 +265,7 @@ public sealed class ClientLogUploadServiceTests
         finally
         {
             service.Dispose();
-            DeleteDatabaseFiles(databasePath);
+            await DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -340,7 +340,7 @@ public sealed class ClientLogUploadServiceTests
             }
 
             service.Dispose();
-            DeleteDatabaseFiles(databasePath);
+            await DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -430,7 +430,7 @@ public sealed class ClientLogUploadServiceTests
         finally
         {
             service.Dispose();
-            DeleteDatabaseFiles(databasePath);
+            await DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -469,7 +469,7 @@ public sealed class ClientLogUploadServiceTests
         finally
         {
             service.Dispose();
-            DeleteDatabaseFiles(databasePath);
+            await DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -518,7 +518,7 @@ public sealed class ClientLogUploadServiceTests
         {
             service.Dispose();
             client.Dispose();
-            DeleteDatabaseFiles(databasePath);
+            await DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -588,7 +588,7 @@ public sealed class ClientLogUploadServiceTests
         finally
         {
             Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-            DeleteDatabaseFiles(databasePath);
+            await DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -671,7 +671,7 @@ public sealed class ClientLogUploadServiceTests
         finally
         {
             Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-            DeleteDatabaseFiles(databasePath);
+            await DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -714,7 +714,7 @@ public sealed class ClientLogUploadServiceTests
             Console.SetOut(originalOutput);
             ConsoleLog.ConfigureCenterSink(null);
             service.Dispose();
-            DeleteDatabaseFiles(databasePath);
+            await DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -760,7 +760,7 @@ public sealed class ClientLogUploadServiceTests
             ConsoleLog.ConfigureCenterSink(null);
             service.Dispose();
             client.Dispose();
-            DeleteDatabaseFiles(databasePath);
+            await DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -803,7 +803,7 @@ public sealed class ClientLogUploadServiceTests
         {
             service.Dispose();
             client.Dispose();
-            DeleteDatabaseFiles(databasePath);
+            await DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -874,7 +874,7 @@ public sealed class ClientLogUploadServiceTests
         {
             service.Dispose();
             client.Dispose();
-            DeleteDatabaseFiles(databasePath);
+            await DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -927,7 +927,7 @@ public sealed class ClientLogUploadServiceTests
             ConsoleLog.ConfigureCenterSink(null);
             service.Dispose();
             client.Dispose();
-            DeleteDatabaseFiles(databasePath);
+            await DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -970,7 +970,7 @@ public sealed class ClientLogUploadServiceTests
         {
             service.Dispose();
             client.Dispose();
-            DeleteDatabaseFiles(databasePath);
+            await DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -1005,7 +1005,7 @@ public sealed class ClientLogUploadServiceTests
         finally
         {
             service.Dispose();
-            DeleteDatabaseFiles(databasePath);
+            await DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -1061,7 +1061,7 @@ public sealed class ClientLogUploadServiceTests
         finally
         {
             service.Dispose();
-            DeleteDatabaseFiles(databasePath);
+            await DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -1170,7 +1170,7 @@ public sealed class ClientLogUploadServiceTests
             service.Dispose();
             client.Dispose();
             Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-            DeleteDatabaseFiles(databasePath);
+            await DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -1276,16 +1276,10 @@ public sealed class ClientLogUploadServiceTests
         throw new TimeoutException($"系统日志 Pending 数未在预期时间内变为 {expectedCount}。");
     }
 
-    private static void DeleteDatabaseFiles(string databasePath)
+    private static Task DeleteDatabaseFilesAsync(string databasePath)
     {
-        foreach (var suffix in new[] { string.Empty, "-wal", "-shm" })
-        {
-            var path = databasePath + suffix;
-            if (File.Exists(path))
-            {
-                File.Delete(path);
-            }
-        }
+        // Windows 上连接 Dispose 后句柄可能短暂保留，统一走共享的 best-effort 清理，避免清理阶段误报。
+        return SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(databasePath);
     }
 
     private sealed class StubHttpMessageHandler(Func<HttpRequestMessage, Task<HttpResponseMessage>> handler) : HttpMessageHandler
