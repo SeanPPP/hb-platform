@@ -1215,9 +1215,11 @@ public sealed class PosCartService
             var quantity = decimal.ToInt64(line.Quantity);
             for (long quantityIndex = 0; quantityIndex < quantity; quantityIndex++)
             {
+                // 权重语义与 Web 端一致：按 qty * UnitWeight 展开同价单位，每个展开单位自身权重视为 1。
+                // SortOrder 记录该单位属于本行第几件实物，供组内金额折叠使用。
                 for (var weightIndex = 0; weightIndex < unitWeight; weightIndex++)
                 {
-                    yield return new PromotionCartUnit(line, line.UnitPrice);
+                    yield return new PromotionCartUnit(line, line.UnitPrice, quantityIndex);
                     emittedUnits++;
                     if (emittedUnits >= plan.Budget.WorkUnits)
                     {
@@ -1233,7 +1235,16 @@ public sealed class PosCartService
         IReadOnlyList<PromotionCartUnit> group,
         Dictionary<CartLine, decimal> automaticDiscounts)
     {
-        var grossAmount = group.Sum(unit => unit.UnitPrice);
+        // 关键逻辑：UnitWeight 只用于凑够 ApplyQuantity 的阈值计数，不参与组内金额累加。
+        // 同一件实物按权重展开成多个单位，这里必须按 (行, 实物序号) 折叠回去让单价只计一次；
+        // 否则权重大于 1 的商品单价会被重复累加，固定总价折扣随之放大，直接少收钱。
+        // 该语义与 PromotionEvaluationService.AddGroupDiscount 的 (Line, SortOrder) 分组保持一致。
+        var physicalUnits = group
+            .GroupBy(unit => (unit.Line, unit.SortOrder))
+            .Select(units => units.First())
+            .ToList();
+
+        var grossAmount = physicalUnits.Sum(unit => unit.UnitPrice);
         var bundleDiscount = decimal.Round(grossAmount - rule.FixedPrice, 2, MidpointRounding.AwayFromZero);
         if (bundleDiscount <= 0m)
         {
@@ -1241,10 +1252,10 @@ public sealed class PosCartService
         }
 
         var remainingDiscount = bundleDiscount;
-        for (var i = 0; i < group.Count; i++)
+        for (var i = 0; i < physicalUnits.Count; i++)
         {
-            var unit = group[i];
-            var unitDiscount = i == group.Count - 1
+            var unit = physicalUnits[i];
+            var unitDiscount = i == physicalUnits.Count - 1
                 ? remainingDiscount
                 : decimal.Round(bundleDiscount * unit.UnitPrice / grossAmount, 2, MidpointRounding.AwayFromZero);
             unitDiscount = Math.Clamp(unitDiscount, 0m, remainingDiscount);
@@ -1326,7 +1337,7 @@ public sealed class PosCartService
         IReadOnlyDictionary<string, int> ProductWeights,
         PromotionRuleBudget Budget);
 
-    private sealed record PromotionCartUnit(CartLine Line, decimal UnitPrice);
+    private sealed record PromotionCartUnit(CartLine Line, decimal UnitPrice, long SortOrder);
 }
 
 public sealed record PosCartSnapshot(

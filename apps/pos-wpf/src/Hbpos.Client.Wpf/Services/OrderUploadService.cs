@@ -77,7 +77,9 @@ public sealed class OrderUploadService(
             await uploadRepository.MarkSyncedAsync(orderGuid, cancellationToken);
             Log(
                 $"upload completed orderGuid={orderGuid:D} accepted={response.Accepted} alreadySynced={response.AlreadySynced} " +
+                $"heldOrderDisposition={response.HeldOrderDisposition} " +
                 $"message={response.Message ?? "<null>"} elapsedMs={stopwatch.ElapsedMilliseconds}");
+            WarnWhenHeldOrderUnmatched(orderGuid, order, response);
         }
         catch (CatalogApiException ex) when (
             ex.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
@@ -171,6 +173,26 @@ public sealed class OrderUploadService(
     private static void Log(string message)
     {
         ConsoleLog.Write("OrderSync", message);
+    }
+
+    private static void WarnWhenHeldOrderUnmatched(
+        Guid orderGuid,
+        LocalOrder order,
+        OrderSyncResponse response)
+    {
+        if (response.HeldOrderDisposition != HeldOrderDisposition.Unmatched)
+        {
+            return;
+        }
+
+        // 关键逻辑：Unmatched 表示订单本身已落库，但服务端没能把它关联到对应的共享挂单。
+        // 典型成因是本机离线期间该挂单被主管强制释放、并被另一台收银机取走卖出，
+        // 此时同一批货会存在两张正式订单。订单不能因此不落库——钱已经收了——
+        // 但必须留下错误级别的可告警信号交人工对账，不能静默通过。
+        ConsoleLog.WriteError(
+            "OrderSync",
+            $"upload held-order unmatched orderGuid={orderGuid:D} store={order.StoreCode} device={order.DeviceCode} " +
+            $"actualAmount={order.ActualAmount} 挂单关联失败，可能与其他收银机重复销售，需人工对账。");
     }
 }
 
