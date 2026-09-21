@@ -3395,6 +3395,23 @@ public sealed class LinklyBackendTerminalClient(
         return TryReadVerifiedApprovedTransactionNotification(status, out _);
     }
 
+    // 已到终态的批准与实时收款、自动恢复共用同一套金额核验；仍在 Pending 的批准由
+    // HasPendingApprovalEvidenceMatchingAttempt 负责，两者按会话状态分工。
+    internal static bool HasFinalApprovalEvidenceMatchingAttempt(
+        LinklyCloudBackendSessionResponse status,
+        string? expectedTxnRef,
+        decimal expectedAmount)
+    {
+        if (string.Equals(status.Status, StatusPending, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var requestedAmount = Math.Abs(expectedAmount);
+        var result = ReadTransactionResult(status, requestedAmount, NormalizeOptional(expectedTxnRef) ?? string.Empty);
+        return result.Succeeded && IsTransactionResultVerified(status, result, requestedAmount);
+    }
+
     internal static bool HasPendingApprovalEvidenceMatchingAttempt(
         LinklyCloudBackendSessionResponse status,
         string? expectedTxnRef,

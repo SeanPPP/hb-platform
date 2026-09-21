@@ -3207,18 +3207,27 @@ public sealed class CashPaymentWorkflowService(
             }
 
             var outcome = MapActiveSessionOutcome(finalStatus);
+            var isGenericActiveSession = string.Equals(activeAttempt.OperationKind, "ActiveSession", StringComparison.Ordinal);
+            // 旧销售/退款一旦记为 Approved，恢复会把它当作已持久化的金融事实、按草稿金额自动落单，
+            // 所以已到终态的批准在这里也必须核验金额；核验不过就不落 Approved、不确认会话，留给恢复流程判为未知。
+            // 无草稿的 generic 记录本来就降级为待复核、不会自动落单，仍照常确认以释放终端。
             if (outcome == LocalCardPaymentAttemptStatus.Approved &&
-                !LinklyBackendTerminalClient.HasPendingApprovalEvidenceMatchingAttempt(
-                    finalStatus,
-                    finalTxnRef,
-                    activeAttempt.Amount,
-                    activeAttempt.TxnType))
+                (!LinklyBackendTerminalClient.HasPendingApprovalEvidenceMatchingAttempt(
+                     finalStatus,
+                     finalTxnRef,
+                     activeAttempt.Amount,
+                     activeAttempt.TxnType) ||
+                 (!isGenericActiveSession &&
+                  !LinklyBackendTerminalClient.HasFinalApprovalEvidenceMatchingAttempt(
+                      finalStatus,
+                      finalTxnRef,
+                      activeAttempt.Amount))))
             {
                 return LinklyActiveSessionTakeoverResult.Failed(
                     "The previous Linkly approval evidence does not match the persisted transaction and was not acknowledged.");
             }
 
-            if (string.Equals(activeAttempt.OperationKind, "ActiveSession", StringComparison.Ordinal) &&
+            if (isGenericActiveSession &&
                 outcome == LocalCardPaymentAttemptStatus.Approved)
             {
                 // 无订单草稿的 generic 记录不能自动完成旧单；ack 后继续留在异常中心等待主管核实。
