@@ -19,6 +19,7 @@ import {
   Text,
 } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { HB_COLORS, HB_RADIUS } from "@/shared/theme/tokens";
 import { CreateSupplierSheet } from "@/components/product-maintenance/CreateSupplierSheet";
 import { CreateBarcodeScanner } from "@/components/product-maintenance/CreateBarcodeScanner";
 import { CreateProductDialog } from "@/components/product-maintenance/CreateProductDialog";
@@ -4176,6 +4177,7 @@ function ProductQueryContent() {
       ) : null}
 
       <ScrollView
+        style={styles.scrollArea}
         contentContainerStyle={styles.content}
         pointerEvents={scannerInputBlocked ? "none" : "auto"}
       >
@@ -4393,62 +4395,31 @@ function ProductQueryContent() {
                 </View>
               )}
 
-              <LabelPrintCard
-                isPrintingProduct={printingAction === "product"}
-                isPrintingDiscount={printingAction === "discount"}
-                isPrintingBigDiscount={printingAction === "bigDiscount"}
-                canPrintDiscount={Boolean(
-                  normalizedStoreDiscountRate &&
-                  normalizedStoreDiscountRate > 0,
-                )}
-                canPrintBigDiscount={Boolean(
-                  normalizedStoreDiscountRate &&
-                  normalizedStoreDiscountRate > 0,
-                )}
-                onPrintProduct={
-                  printingAction && printingAction !== "product"
-                    ? undefined
-                    : () => void handlePrint("product")
-                }
-                onPrintDiscount={
-                  printingAction && printingAction !== "discount"
-                    ? undefined
-                    : () => void handlePrint("discount")
-                }
-                onPrintBigDiscount={
-                  printingAction && printingAction !== "bigDiscount"
-                    ? undefined
-                    : () => void handlePrint("bigDiscount")
-                }
-                onOpenSettings={() => setPrintSettingsVisible(true)}
-                footer={
-                  <View>
-                    <StoreClearancePriceCard
-                      clearanceBarcode={clearancePrice?.clearanceBarcode}
-                      clearancePrice={clearancePriceInput}
-                      isPrintingClearance={printingAction === "clearance"}
-                      readOnly={offlineMode}
-                      onEditClearancePrice={
-                        offlineMode ? notifyOfflineEditing : openClearancePriceEditor
-                      }
-                      onPrintClearance={
-                        printingAction && printingAction !== "clearance"
-                          ? undefined
-                          : () => void handlePrint("clearance")
-                      }
+              <Card style={styles.printExtrasCard} mode="contained">
+                <StoreClearancePriceCard
+                  clearanceBarcode={clearancePrice?.clearanceBarcode}
+                  clearancePrice={clearancePriceInput}
+                  isPrintingClearance={printingAction === "clearance"}
+                  readOnly={offlineMode}
+                  onEditClearancePrice={
+                    offlineMode ? notifyOfflineEditing : openClearancePriceEditor
+                  }
+                  onPrintClearance={
+                    printingAction && printingAction !== "clearance"
+                      ? undefined
+                      : () => void handlePrint("clearance")
+                  }
+                />
+                {showPosterEntry ? (
+                  <View style={styles.posterFooterRow}>
+                    <PosterEntryRow
+                      availability={posterAvailability}
+                      disabled={scannerInputBlocked || offlineMode}
+                      onOpen={handleOpenPromoPoster}
                     />
-                    {showPosterEntry ? (
-                      <View style={styles.posterFooterRow}>
-                        <PosterEntryRow
-                          availability={posterAvailability}
-                          disabled={scannerInputBlocked || offlineMode}
-                          onOpen={handleOpenPromoPoster}
-                        />
-                      </View>
-                    ) : null}
                   </View>
-                }
-              />
+                ) : null}
+              </Card>
               </View>
             ) : null}
 
@@ -4549,6 +4520,44 @@ function ProductQueryContent() {
           </View>
         )}
       </ScrollView>
+
+      {/* 固定区只放标签操作，清货价与海报仍可滚动，避免占满 Zebra 小屏。 */}
+      {detail && (editorTab === "price" || !hasCodeSection) ? (
+        <View
+          style={styles.printDock}
+          pointerEvents={scannerInputBlocked ? "none" : "auto"}
+        >
+          <LabelPrintCard
+            isPrintingProduct={printingAction === "product"}
+            isPrintingDiscount={printingAction === "discount"}
+            isPrintingBigDiscount={printingAction === "bigDiscount"}
+            canPrintDiscount={Boolean(
+              normalizedStoreDiscountRate &&
+              normalizedStoreDiscountRate > 0,
+            )}
+            canPrintBigDiscount={Boolean(
+              normalizedStoreDiscountRate &&
+              normalizedStoreDiscountRate > 0,
+            )}
+            onPrintProduct={
+              printingAction && printingAction !== "product"
+                ? undefined
+                : () => void handlePrint("product")
+            }
+            onPrintDiscount={
+              printingAction && printingAction !== "discount"
+                ? undefined
+                : () => void handlePrint("discount")
+            }
+            onPrintBigDiscount={
+              printingAction && printingAction !== "bigDiscount"
+                ? undefined
+                : () => void handlePrint("bigDiscount")
+            }
+            onOpenSettings={() => setPrintSettingsVisible(true)}
+          />
+        </View>
+      ) : null}
 
       {/* 待打印海报浮条：有未保存修改时让位给保存操作条，避免底部叠两层操作。 */}
       {!isIosReviewSessionActive() && !(dirtyCount > 0 && !scannerInputBlocked) ? (
@@ -5076,6 +5085,22 @@ const styles = StyleSheet.create({
   },
   discountedSafeArea: {
     backgroundColor: "#FFE0B2",
+  },
+  scrollArea: {
+    flex: 1,
+  },
+  printDock: {
+    flexShrink: 0,
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 12,
+  },
+  printExtrasCard: {
+    borderRadius: HB_RADIUS.surface,
+    borderWidth: 1,
+    borderColor: HB_COLORS.outlineMuted,
+    backgroundColor: HB_COLORS.white,
+    overflow: "hidden",
   },
   content: {
     paddingHorizontal: 16,
