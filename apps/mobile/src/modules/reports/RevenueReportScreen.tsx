@@ -995,6 +995,14 @@ export function RevenueReportScreen({
     if (rankingCutoffHour === null || !cumulativeSeriesByBranch) return statisticRows;
     return alignBranchRowsToCutoff(statisticRows, cumulativeSeriesByBranch, rankingCutoffHour);
   }, [cumulativeSeriesByBranch, rankingAwaitsAlignment, rankingCutoffHour, statisticRows]);
+  // 日视图的首屏业务数据是顶部累计卡片，排行常被推到首屏之外：卡片与排行都就绪即视为首条数据可见，
+  // 否则日视图的首屏计时要等用户滚动才完成。放在数据归一化的 layout effect 之后，同一次提交内先归一化再完成。
+  const cumulativeCardReady = mode === "day" && cumulativeScopeSeries !== null && rows.length > 0;
+  useLayoutEffect(() => {
+    if (!cumulativeCardReady) return;
+    const measurement = revenueLoadTimer.markFirstRowVisible();
+    if (measurement) recordReportLoadPerformance("revenue", measurement);
+  }, [cumulativeCardReady, revenueLoadTimer, summaryQuery.dataUpdatedAt]);
   const summaryPending = summaryQuery.data !== undefined && !summaryQuery.data.isComplete;
   const summaryPollingExhausted = summaryPending && Boolean(summaryQuery.data?.pollingExhausted);
   const selectedBranch = useMemo(
