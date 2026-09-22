@@ -88,7 +88,6 @@ import {
   shouldAutoRelookupAfterRecovery,
 } from "@/modules/product-maintenance/offline-mode";
 import { useOfflineReconnectProbe } from "@/modules/product-maintenance/use-offline-reconnect-probe";
-import { shouldAutoRefreshOfflineCatalog } from "@/modules/product-maintenance/offline-catalog/offline-catalog-freshness";
 import { useOfflineCatalogStore } from "@/modules/product-maintenance/offline-catalog/offline-catalog-store";
 import { useNetworkRecovery } from "@/shared/network";
 import { isNetworkUnavailableError } from "@/shared/network/network-error";
@@ -528,19 +527,6 @@ function ProductQueryContent() {
     selectedStoreCode ? (state.activeMeta[selectedStoreCode] ?? null) : null,
   );
   const offlineCatalogRefresh = useOfflineCatalogStore((state) => state.refresh);
-  const offlineCatalogLastFailedAtMs = useOfflineCatalogStore((state) =>
-    selectedStoreCode ? (state.lastFailedAtMs[selectedStoreCode] ?? null) : null,
-  );
-  const offlineCatalogLastCancelledAtMs = useOfflineCatalogStore((state) =>
-    selectedStoreCode ? (state.lastCancelledAtMs[selectedStoreCode] ?? null) : null,
-  );
-  const offlineCatalogLastRefreshedAtMs = useOfflineCatalogStore((state) =>
-    selectedStoreCode ? (state.lastRefreshedAtMs[selectedStoreCode] ?? null) : null,
-  );
-  const offlineCatalogDbReady = useOfflineCatalogStore((state) => state.dbReady);
-  const offlineCatalogAutoRefreshEnabled = useOfflineCatalogStore(
-    (state) => state.autoRefreshEnabled,
-  );
   const [appActive, setAppActive] = useState(
     AppState.currentState === "active" || AppState.currentState === "unknown",
   );
@@ -2454,41 +2440,6 @@ function ProductQueryContent() {
       void useOfflineCatalogStore.getState().loadActiveMeta(selectedStoreCode);
     }
   }, [connectivity.pendingKeyword, handleLookup, offlineMode, selectedStoreCode, t, triggerRecovery]);
-
-  useFocusEffect(
-    useCallback(() => {
-      // 在线且快照缺失/过期时后台自动刷新，不弹窗不阻塞查询。
-      // 必须等数据库（连同「自动更新」偏好）就绪，否则会用默认开启值抢先下载。
-      if (!offlineEligible || !selectedStoreCode || offlineMode || !offlineCatalogDbReady) {
-        return;
-      }
-      if (
-        shouldAutoRefreshOfflineCatalog({
-          activeMeta: offlineCatalogActiveMeta,
-          isOnline: true,
-          isRefreshing: offlineCatalogRefresh.kind === "running",
-          lastFailedAtMs: offlineCatalogLastFailedAtMs,
-          lastCancelledAtMs: offlineCatalogLastCancelledAtMs,
-          lastRefreshedAtMs: offlineCatalogLastRefreshedAtMs,
-          nowMs: Date.now(),
-          autoRefreshEnabled: offlineCatalogAutoRefreshEnabled,
-        })
-      ) {
-        void useOfflineCatalogStore.getState().refreshCatalog(selectedStoreCode);
-      }
-    }, [
-      offlineCatalogActiveMeta,
-      offlineCatalogAutoRefreshEnabled,
-      offlineCatalogDbReady,
-      offlineCatalogLastCancelledAtMs,
-      offlineCatalogLastFailedAtMs,
-      offlineCatalogLastRefreshedAtMs,
-      offlineCatalogRefresh.kind,
-      offlineEligible,
-      offlineMode,
-      selectedStoreCode,
-    ]),
-  );
 
   useEffect(() => {
     const productCodeParam = firstParam(queryParams.productCode);

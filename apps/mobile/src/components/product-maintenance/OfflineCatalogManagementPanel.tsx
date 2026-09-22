@@ -8,7 +8,7 @@
  */
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
-import { Button, ProgressBar, RadioButton, Switch, Text } from "react-native-paper";
+import { Button, ProgressBar, RadioButton, Text } from "react-native-paper";
 import type { OfflineCatalogRefreshState } from "@/modules/product-maintenance/offline-catalog/offline-catalog-refresh-coordinator";
 import { useOfflineCatalogStore } from "@/modules/product-maintenance/offline-catalog/offline-catalog-store";
 import type { ActiveOfflineCatalogMetadata } from "@/modules/product-maintenance/offline-catalog/types";
@@ -100,7 +100,6 @@ export function OfflineCatalogManagementPanel({ onNotify }: OfflineCatalogManage
   const { stores, selectedStore, selectedStoreCode, selectStore, isDeviceMode } = useStores();
   const activeMetaMap = useOfflineCatalogStore((state) => state.activeMeta);
   const refresh = useOfflineCatalogStore((state) => state.refresh);
-  const autoRefreshEnabled = useOfflineCatalogStore((state) => state.autoRefreshEnabled);
   const dbError = useOfflineCatalogStore((state) => state.dbError);
   const [storeListVisible, setStoreListVisible] = useState(false);
   const [switching, setSwitching] = useState(false);
@@ -160,10 +159,6 @@ export function OfflineCatalogManagementPanel({ onNotify }: OfflineCatalogManage
 
   const handleCancel = useCallback(() => {
     useOfflineCatalogStore.getState().cancelRefresh();
-  }, []);
-
-  const handleToggleAutoRefresh = useCallback((enabled: boolean) => {
-    void useOfflineCatalogStore.getState().setAutoRefreshEnabled(enabled);
   }, []);
 
   const handleSelectStore = useCallback(
@@ -320,23 +315,9 @@ export function OfflineCatalogManagementPanel({ onNotify }: OfflineCatalogManage
         )}
       </View>
 
-      <View style={styles.toggleRow}>
-        <View style={styles.infoText}>
-          <Text variant="bodyMedium" style={styles.value}>
-            {t("offlineData.autoRefresh")}
-          </Text>
-          <Text variant="bodySmall" style={styles.meta}>
-            {autoRefreshEnabled
-              ? t("offlineData.autoRefreshDescription")
-              : t("offlineData.autoRefreshOff")}
-          </Text>
-        </View>
-        <Switch
-          value={autoRefreshEnabled}
-          onValueChange={handleToggleAutoRefresh}
-          accessibilityLabel={t("offlineData.autoRefresh")}
-        />
-      </View>
+      <Text variant="bodySmall" style={styles.meta}>
+        {t("offlineData.manualRefreshHint")}
+      </Text>
     </View>
   );
 }
@@ -412,16 +393,5 @@ const styles = StyleSheet.create({
   },
   actionButton: {
     flex: 1,
-  },
-  toggleRow: {
-    minHeight: 56,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: HB_SPACING.sm,
-    paddingHorizontal: HB_SPACING.sm,
-    paddingVertical: HB_SPACING.xs,
-    borderRadius: HB_RADIUS.control,
-    backgroundColor: HB_COLORS.surfaceMuted,
   },
 });

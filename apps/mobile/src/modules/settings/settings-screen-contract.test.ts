@@ -104,11 +104,11 @@ test("绑定设备会话可在设置中管理离线商品数据", () => {
   assert.match(source, /\{offlineEligible \? \([\s\S]*?testID="settings-offline-data-details"/);
   assert.match(source, /<OfflineCatalogManagementPanel/);
 
-  // 面板必须提供：自动更新开关、手动更新/取消、切换分店。
-  assert.match(panel, /setAutoRefreshEnabled\(/);
+  // 离线数据仅由员工手动下载/更新，面板保留取消与切换分店入口。
   assert.match(panel, /refreshCatalog\(/);
   assert.match(panel, /cancelRefresh\(/);
   assert.match(panel, /await selectStore\(store\)/);
+  assert.doesNotMatch(panel, /setAutoRefreshEnabled\(|<Switch/);
   // 分店列表必须内联渲染：设置页详情是原生 Modal，Paper Portal 弹出的选择器会被盖住。
   // 只断言真实引用（import 与 JSX），否则解释这一点的注释本身会让断言失败。
   assert.doesNotMatch(panel, /^\s*import[\s\S]*?StorePickerModal/m, "面板不得 import StorePickerModal");
@@ -117,7 +117,7 @@ test("绑定设备会话可在设置中管理离线商品数据", () => {
   const zh = JSON.parse(read("src/locales/zh/screens/settings.json"));
   const en = JSON.parse(read("src/locales/en/screens/settings.json"));
   for (const locale of [zh, en]) {
-    for (const key of ["title", "switchStore", "updateNow", "cancelUpdate", "autoRefresh", "summaryReady"]) {
+    for (const key of ["title", "switchStore", "updateNow", "cancelUpdate", "manualRefreshHint", "summaryReady"]) {
       assert.equal(typeof locale.offlineData[key], "string", `offlineData.${key} 缺失`);
     }
   }
