@@ -105,12 +105,23 @@ async function run() {
     assert.equal(usePrinterStore.getState().status, "connected");
   });
 
-  test("已 hydration 的热连接打印复用内存地址，只读取一次原生状态", async () => {
+  test("已 hydration 的热连接打印只调用原生写入，不读取状态或存储", async () => {
     assert.equal((await api.getSavedPrinter())?.address, "label");
     await api.printProductLabelPayload(payload);
-    assert.equal(statusReads, 1);
+    assert.equal(statusReads, 0);
     assert.equal(storageReads, 0);
     assert.deepEqual(events, ["print:label"]);
+  });
+
+  test("热连接状态过期时保留失败且不自动重印，下一次扫码才重连", async () => {
+    nativeStatus.connected = false;
+    writeError = new Error("No Bluetooth printer is connected.");
+    await assert.rejects(api.printProductLabelPayload(payload), /No Bluetooth printer/);
+    assert.deepEqual(events, ["print:label", "disconnect"]);
+    assert.equal(usePrinterStore.getState().status, "disconnected");
+    writeError = null;
+    await api.printProductLabelPayload(payload);
+    assert.deepEqual(events, ["print:label", "disconnect", "connect:label", "print:label"]);
   });
 
   test("切换标签打印机时先更新内存地址，再连接并向新设备打印", async () => {
