@@ -128,6 +128,16 @@ namespace BlazorApp.Api.Interfaces.React
         );
 
         /// <summary>
+        /// 按分店汇总全部中国供应商的销售额（移动端「分店中国货占比」的分子）。
+        /// branchCodes 为 null 表示不限分店；显式空列表表示无授权分店，返回空结果。
+        /// </summary>
+        Task<List<ChinaSupplierBranchTotalDto>> GetChinaSupplierBranchTotalsAsync(
+            DateRangeDto dateRange,
+            List<string>? branchCodes,
+            ProductReportStatisticStatusDto statisticStatus
+        );
+
+        /// <summary>
         /// 获取商品日分店统计完整性与缓存版本；不会触发聚合。
         /// </summary>
         Task<ProductReportStatisticStatusDto> GetProductReportStatisticStatusAsync(

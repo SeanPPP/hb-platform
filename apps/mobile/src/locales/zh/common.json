@@ -319,6 +319,31 @@
       "desc": "降序",
       "asc": "升序",
       "none": "未排序"
+    },
+    "chinaGoods": {
+      "revenue": "中国货营业额",
+      "shareOfTotal": "占总营业额",
+      "grossMarginRate": "中国货毛利率",
+      "pointsValue": "{{value}} 个百分点",
+      "branchSection": "分店中国货占比",
+      "branchFormula": "中国货金额 ÷ 分店营业额",
+      "branch": "分店",
+      "branchRevenue": "营业额",
+      "chinaAmount": "中国货金额",
+      "branchShare": "占分店营业额",
+      "shareDelta": "增减",
+      "points": "百分点",
+      "emptyBranches": "暂无分店数据",
+      "expandBranches": "展开全部 {{count}} 家",
+      "collapseBranches": "收起",
+      "shareGroup": "占比",
+      "shareOfChina": "中国货",
+      "shareOfTotalShort": "总营业",
+      "compareShareOfChina": "占中国货",
+      "compareShareOfTotal": "占总营业",
+      "pageTotal": "本页合计",
+      "supplierHint": "点供应商筛商品 · 点金额看分店 · 左滑看占比、增长率与同期",
+      "productHint": "点商品看分店 · 左滑看均价、毛利、增长率与同期"
     }
   }
 }

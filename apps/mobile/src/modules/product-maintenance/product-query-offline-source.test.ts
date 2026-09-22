@@ -23,9 +23,21 @@ assert.match(
 );
 assert.match(source, /const offlineMode = offlineEligible && connectivity\.offline;/, "离线模式必须受资格门禁约束");
 
+// 下载只允许由状态行按钮触发；进页、切店和快照过期不再自动发起下载。
+const manualRefreshStart = indexOfOrFail("const handleRefreshOfflineCatalog = useCallback(", "手动下载入口必须存在");
+const manualRefreshSource = source.slice(manualRefreshStart, source.indexOf("const playQueryFeedback = useCallback(", manualRefreshStart));
+assert.match(manualRefreshSource, /\.refreshCatalog\(selectedStoreCode\)/, "手动入口必须调用离线目录下载");
+assert.match(source, /onRefresh=\{handleRefreshOfflineCatalog\}/, "状态行必须保留手动下载按钮");
+assert.equal((source.match(/\.refreshCatalog\(/g) ?? []).length, 1, "查询页不得在焦点或其他副作用中自动下载");
+
 // handleLookup：在线失败时先判定网络不可用，再进入离线并回退本地查询。
 const lookupStart = indexOfOrFail("const handleLookup = useCallback(", "商品查询入口必须存在");
 const lookupSource = source.slice(lookupStart, source.indexOf("const wasOfflineRef = useRef(false);", lookupStart));
+assert.match(
+  lookupSource,
+  /trigger === "scan" &&[\s\S]*?!isIosReviewSessionActive\(\)[\s\S]*?scanProductLabel\(lookupRequest\)/,
+  "iOS 审核模拟接口没有 scan-label 路由，扫码必须继续使用既有 lookup",
+);
 assert.ok(
   lookupSource.indexOf("isNetworkUnavailableError(error)") < lookupSource.indexOf("enterOfflineMode(nextKeyword)"),
   "必须先判定网络不可用再进入离线模式",
@@ -36,14 +48,14 @@ assert.ok(
 );
 assert.match(lookupSource, /if \(offlineModeRef\.current\) \{[\s\S]*?\.lookup\(selectedStoreCode, nextKeyword\)/, "离线态查询必须直接读本地快照");
 
-// processLoadedDetail：离线早退必须位于自动价评估与仓库价对账之前。
+// processLoadedDetail：离线早退必须位于在线自动价评估之前。
 const processStart = indexOfOrFail("const processLoadedDetail = useCallback(", "详情后处理必须存在");
 const processSource = source.slice(processStart, source.indexOf("processLoadedDetailRef.current = processLoadedDetail;", processStart));
 const offlineReturn = processSource.indexOf("if (offlineModeRef.current) {");
 assert.notEqual(offlineReturn, -1, "详情后处理必须有离线早退");
-assert.ok(offlineReturn < processSource.indexOf("getWarehousePriceSyncApplicability("), "离线早退必须在仓库价对账之前");
 assert.ok(offlineReturn < processSource.indexOf("maybeHandleAutoPricing(targetDetail"), "离线早退必须在自动价评估之前");
-assert.doesNotMatch(processSource.slice(offlineReturn, processSource.indexOf("const applicability")), /evaluateAutoPricing|syncWarehousePrice/, "离线分支不得调用服务器");
+assert.doesNotMatch(processSource.slice(offlineReturn, processSource.indexOf("if (targetDetail.localSupplierCode")), /evaluateAutoPricing|syncWarehousePrice/, "离线分支不得调用服务器");
+assert.doesNotMatch(processSource, /syncWarehousePrice\s*\(/, "查询页不得在详情后处理时发起仓库价对账");
 
 // loadDetail：离线态不得请求 fast-detail。
 const loadDetailStart = indexOfOrFail("const loadDetail = useCallback(", "详情加载必须存在");

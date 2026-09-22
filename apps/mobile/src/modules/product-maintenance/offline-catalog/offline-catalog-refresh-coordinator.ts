@@ -23,6 +23,7 @@ const OFFLINE_CATALOG_CANCELLED_CODE = "OFFLINE_CATALOG_CANCELLED";
 export type OfflineCatalogRefreshErrorCode =
   | "network"
   | "capacityBusy"
+  | "preparationTimeout"
   | "expired"
   | "verification"
   | "api"
@@ -200,6 +201,9 @@ export function classifyOfflineCatalogRefreshError(error: unknown): OfflineCatal
   const httpStatus = typeof status?.status === "number" ? status.status : status?.response?.status;
   if (code === "OFFLINE_CATALOG_CAPACITY_BUSY" || httpStatus === 503) {
     return "capacityBusy";
+  }
+  if (code === "OFFLINE_CATALOG_PREPARATION_TIMEOUT") {
+    return "preparationTimeout";
   }
   if (code === "OFFLINE_CATALOG_SNAPSHOT_EXPIRED" || httpStatus === 409) {
     return "expired";

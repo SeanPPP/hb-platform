@@ -9,6 +9,11 @@ namespace BlazorApp.Api.Interfaces.React
             List<string>? accessibleStoreCodes
         );
 
+        Task<ApiResponse<StoreProductScanLabelResultDto>> ScanLabelAsync(
+            StoreProductLookupRequestDto request,
+            List<string>? accessibleStoreCodes
+        );
+
         Task<ApiResponse<StoreProductDetailDto>> GetDetailAsync(
             string productCode,
             string? storeCode,

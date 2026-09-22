@@ -4,6 +4,7 @@ using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
@@ -88,6 +89,30 @@ namespace BlazorApp.Api.Controllers.React
                 request.Keyword,
                 request.StoreCode,
                 true,
+                totalSw.ElapsedMilliseconds
+            );
+            return Ok(result);
+        }
+
+        [HttpPost("scan-label")]
+        public async Task<IActionResult> ScanLabel([FromBody] StoreProductLookupRequestDto request)
+        {
+            var totalSw = Stopwatch.StartNew();
+            var access = await ResolveAccessContextAsync(reuseValidatedDeviceScope: true);
+            if (!access.IsAllowed)
+            {
+                _logger.LogWarning(
+                    "StoreProductMaintenance scan-label unauthorized message={Message} total_ms={TotalMs}",
+                    access.Message,
+                    totalSw.ElapsedMilliseconds
+                );
+                return Unauthorized(ApiResponse<StoreProductScanLabelResultDto>.Error(access.Message));
+            }
+
+            var result = await _service.ScanLabelAsync(request, access.StoreCodes);
+            _logger.LogInformation(
+                "StoreProductMaintenance scan-label request completed requestedStore={RequestedStore} total_ms={TotalMs}",
+                request.StoreCode,
                 totalSw.ElapsedMilliseconds
             );
             return Ok(result);
@@ -474,7 +499,7 @@ namespace BlazorApp.Api.Controllers.React
             return Ok(result);
         }
 
-        private async Task<StoreAccessContext> ResolveAccessContextAsync()
+        private async Task<StoreAccessContext> ResolveAccessContextAsync(bool reuseValidatedDeviceScope = false)
         {
             var sw = Stopwatch.StartNew();
             if (User?.Identity?.IsAuthenticated == true)
@@ -510,6 +535,23 @@ namespace BlazorApp.Api.Controllers.React
                         {
                             IsAllowed = false,
                             Message = "未找到当前用户信息",
+                            AccessResolveMs = sw.ElapsedMilliseconds,
+                            UserLookupMs = userLookupSw.ElapsedMilliseconds,
+                        };
+                    }
+
+                    // 仅扫码只读入口复用本次认证实时读取的门店范围；按用户核对，不跨请求缓存。
+                    if (reuseValidatedDeviceScope
+                        && HttpContext.Items.TryGetValue(typeof(AuthMobileDeviceValidationResult), out var snapshot)
+                        && snapshot is AuthMobileDeviceValidationResult { IsValid: true } validated
+                        && string.Equals(validated.UserGuid, userGuid, StringComparison.Ordinal)
+                        && validated.AccessibleStoreCodes != null)
+                    {
+                        return new StoreAccessContext
+                        {
+                            IsAllowed = true,
+                            ActorLabel = actorLabel,
+                            StoreCodes = validated.AccessibleStoreCodes.ToList(),
                             AccessResolveMs = sw.ElapsedMilliseconds,
                             UserLookupMs = userLookupSw.ElapsedMilliseconds,
                         };

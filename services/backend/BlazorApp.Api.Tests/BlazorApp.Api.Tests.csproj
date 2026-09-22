@@ -30,6 +30,7 @@
     <Compile Include="StoreProductMaintenanceEnsureStorePriceTests.cs" />
     <Compile Include="StorePriceUpdateTaskServiceTests.cs" />
     <Compile Include="StoreProductMaintenanceLookupTests.cs" />
+    <Compile Include="StoreProductScanLabelAccessTests.cs" />
     <Compile Include="ProductChangeHistoryLegacyEntryPointTests.cs" />
     <Compile Include="StoreProductMaintenanceSyncHelperTests.cs" />
     <Compile Include="SetChildPurchasePriceAllocatorTests.cs" />
@@ -173,6 +174,7 @@
     <Compile Include="WeeklyReportTests.cs" />
     <Compile Include="SalesDetailQueryFlightsTests.cs" />
     <Compile Include="SupplierReportReadTests.cs" />
+    <Compile Include="MobileProductReportRangeTests.cs" />
     <Compile Include="ProductReportPagingSqlTests.cs" />
     <Compile Include="HbSalesCoverageSqlTests.cs" />
     <Compile Include="HbSalesSourceRowsSqlTests.cs" />
