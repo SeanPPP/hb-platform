@@ -6,6 +6,7 @@ import {
   connectPrinter,
   disconnectPrinter,
   getPrinterStatus as getNativePrinterStatus,
+  pairPrinter,
   printNativeBigDiscountLabel,
   printNativeClearanceLabel,
   printNativeDiscountLabel,
@@ -261,13 +262,65 @@ export async function selectPrinter(device: PrinterDevice) {
     return true;
   }
   resumePrinterAutoReconnect();
+  const selectionIntent = autoReconnectIntent;
   return runPrinterOperation(async () => {
+    const store = usePrinterStore.getState();
+    const previousPrinter = store.hydrated ? store.savedPrinter : await PrinterStorage.getPrinter();
     const selectedPrinter = toSavedPrinter(device);
-    await PrinterStorage.setPrinter(selectedPrinter);
-    // 热路径从内存取地址，切换打印机时必须先更新内存再重连。
-    usePrinterStore.getState().setSavedPrinter(selectedPrinter);
-    await ensureConnectedPrinter({ force: true });
-    return true;
+    store.setStatus("connecting");
+    store.setLastError(null);
+
+    try {
+      // 只允许手动点选未配对设备时唤起 Android 系统配对；后台重连仍只连接已保存设备。
+      if (!device.bonded) {
+        await pairPrinter(selectedPrinter.address);
+      }
+
+      if (autoReconnectIntent !== selectionIntent || usePrinterStore.getState().autoReconnectPaused) {
+        throw new Error("Printer connection was cancelled.");
+      }
+
+      const currentStatus = await getNativePrinterStatus();
+      if (currentStatus.connected && currentStatus.address !== selectedPrinter.address) {
+        await disconnectPrinter();
+      }
+      const connected = currentStatus.connected && currentStatus.address === selectedPrinter.address
+        ? true
+        : await connectPrinter(selectedPrinter.address);
+      if (!connected) {
+        throw new Error("Unable to connect to the selected label printer.");
+      }
+      if (autoReconnectIntent !== selectionIntent || usePrinterStore.getState().autoReconnectPaused) {
+        await disconnectPrinter();
+        throw new Error("Printer connection was cancelled.");
+      }
+
+      // 配对与连接都成功后才保存，避免取消配对的同名地址进入自动重连。
+      await PrinterStorage.setPrinter(selectedPrinter);
+      store.setSavedPrinter(selectedPrinter);
+      labelConnectionInvalidated = false;
+      store.setLastError(null);
+      store.setStatus("connected");
+      return true;
+    } catch (error) {
+      store.setSavedPrinter(previousPrinter);
+      store.setLastError(error instanceof Error ? error.message : String(error));
+      if (usePrinterStore.getState().autoReconnectPaused) {
+        store.setStatus("paused");
+        throw error;
+      }
+      try {
+        const currentStatus = await getNativePrinterStatus();
+        store.setStatus(
+          currentStatus.connected && currentStatus.address === previousPrinter?.address
+            ? "connected"
+            : "error"
+        );
+      } catch {
+        store.setStatus("error");
+      }
+      throw error;
+    }
   });
 }
 

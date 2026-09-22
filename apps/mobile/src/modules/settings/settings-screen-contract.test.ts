@@ -94,6 +94,47 @@ test("中英文设置文案同时提供新分组和诊断入口", () => {
   }
 });
 
+test("打印机列表明确区分配对状态并复用已配对优先排序", () => {
+  const settings = read("app/(shell)/settings.tsx");
+  const setupSheet = read("src/components/printer/LabelPrinterSetupSheet.tsx");
+  const zh = JSON.parse(read("src/locales/zh/screens/settings.json"));
+  const en = JSON.parse(read("src/locales/en/screens/settings.json"));
+
+  assert.match(settings, /orderPrinterDevices/);
+  assert.match(settings, /unbondedLabel=\{t\("printer\.unbonded"\)\}/);
+  assert.match(settings, /!printer\.bonded\s*&&\s*styles\.unbondedMeta/);
+  assert.match(setupSheet, /orderPrinterDevices/);
+  assert.match(setupSheet, /device\.bonded\s*\?\s*t\("printer\.bonded"\)\s*:\s*t\("printer\.unbonded"\)/);
+  assert.match(setupSheet, /!device\.bonded\s*&&\s*styles\.unbondedMeta/);
+
+  assert.equal(zh.printer.bonded, "已配对");
+  assert.equal(zh.printer.unbonded, "未配对");
+  assert.equal(en.printer.bonded, "Paired");
+  assert.equal(en.printer.unbonded, "Not paired");
+});
+
+test("未配对打印机连接前明确说明系统配对步骤", () => {
+  const settings = read("app/(shell)/settings.tsx");
+  const setupSheet = read("src/components/printer/LabelPrinterSetupSheet.tsx");
+  const zh = JSON.parse(read("src/locales/zh/screens/settings.json"));
+  const en = JSON.parse(read("src/locales/en/screens/settings.json"));
+
+  for (const source of [settings, setupSheet]) {
+    assert.match(source, /Platform\.OS\s*!==\s*"android"\s*\|\|\s*device\.bonded/);
+    assert.match(source, /device\.bonded/);
+    assert.match(source, /dialogs\.printerPairingTitle/);
+    assert.match(source, /dialogs\.printerPairingMessage/);
+    assert.match(source, /dialogs\.printerPairingAction/);
+  }
+
+  assert.equal(zh.dialogs.printerPairingTitle, "需要先配对打印机");
+  assert.match(zh.dialogs.printerPairingMessage, /系统配对窗口/);
+  assert.equal(zh.dialogs.printerPairingAction, "开始配对");
+  assert.equal(en.dialogs.printerPairingTitle, "Pair printer first");
+  assert.match(en.dialogs.printerPairingMessage, /system pairing prompt/i);
+  assert.equal(en.dialogs.printerPairingAction, "Start pairing");
+});
+
 test("绑定设备会话可在设置中管理离线商品数据", () => {
   const source = read("app/(shell)/settings.tsx");
   const panel = read("src/components/product-maintenance/OfflineCatalogManagementPanel.tsx");

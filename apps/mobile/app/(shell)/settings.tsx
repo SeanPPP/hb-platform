@@ -7,6 +7,7 @@ import {
   findNodeHandle,
   InteractionManager,
   Modal as NativeModal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -38,6 +39,7 @@ import {
   testReceiptPrinterConnection,
   testPrinterConnection,
 } from "@/modules/printer/api";
+import { orderPrinterDevices } from "@/modules/printer/device-list";
 import { usePrinterStore, useReceiptPrinterStore, type PrinterConnectionState } from "@/modules/printer/state";
 import type { PrinterDevice } from "@/modules/printer/types";
 import { i18n, setAppLanguage } from "@/shared/i18n/i18n";
@@ -327,6 +329,7 @@ interface PrinterDeviceListProps {
   devices: PrinterDevice[];
   selectedAddress?: string | null;
   bondedLabel: string;
+  unbondedLabel: string;
   actionLabel: string;
   disabled: boolean;
   onSelect: (printer: PrinterDevice) => void;
@@ -336,6 +339,7 @@ function PrinterDeviceList({
   devices,
   selectedAddress,
   bondedLabel,
+  unbondedLabel,
   actionLabel,
   disabled,
   onSelect,
@@ -353,11 +357,12 @@ function PrinterDeviceList({
               <Text variant="bodySmall" style={styles.meta} numberOfLines={1}>
                 {printer.address}
               </Text>
-              {printer.bonded ? (
-                <Text variant="bodySmall" style={styles.meta}>
-                  {bondedLabel}
-                </Text>
-              ) : null}
+              <Text
+                variant="bodySmall"
+                style={[styles.meta, !printer.bonded && styles.unbondedMeta]}
+              >
+                {printer.bonded ? bondedLabel : unbondedLabel}
+              </Text>
             </View>
             <Button
               compact
@@ -524,17 +529,20 @@ export default function Settings() {
   );
 
   const visiblePrinters = useMemo(() => {
-    if (!filterXPOnly) {
-      return rawPrinters;
-    }
+    const filteredPrinters = filterXPOnly
+      ? rawPrinters.filter((printer) => {
+          const name = printer.name?.trim();
+          return typeof name === "string" && name.toUpperCase().startsWith("XP");
+        })
+      : rawPrinters;
 
-    return rawPrinters.filter((printer) => {
-      const name = printer.name?.trim();
-      return typeof name === "string" && name.toUpperCase().startsWith("XP");
-    });
+    return orderPrinterDevices(filteredPrinters);
   }, [filterXPOnly, rawPrinters]);
 
-  const visibleReceiptPrinters = useMemo(() => receiptRawPrinters, [receiptRawPrinters]);
+  const visibleReceiptPrinters = useMemo(
+    () => orderPrinterDevices(receiptRawPrinters),
+    [receiptRawPrinters]
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -595,6 +603,14 @@ export default function Settings() {
       language,
       t,
       fallbackKey,
+    });
+
+  const getPrinterErrorMessage = (error: unknown) =>
+    resolveLocalizedErrorMessage(error, {
+      language,
+      t,
+      fallbackKey: "dialogs.printerConnectFailedMessage",
+      allowRawMessageInChinese: false,
     });
 
   function resolvePrinterStatusText(
@@ -892,22 +908,44 @@ export default function Settings() {
     }
   };
 
-  const handleConnectPrinter = async (device: PrinterDevice) => {
+  const connectPrinterDevice = async (device: PrinterDevice) => {
     setPrinterBusy(true);
     try {
       await selectPrinter(device);
       Alert.alert(
-        t("dialogs.printerSavedTitle"),
-        t("dialogs.printerSavedMessage", { printer: device.name || device.address })
+        t("dialogs.printerConnectedTitle"),
+        t("dialogs.printerConnectedMessage", { printer: device.name || device.address })
       );
     } catch (error) {
       Alert.alert(
         t("dialogs.printerConnectFailedTitle"),
-        getErrorMessage(error, "dialogs.refreshFailedMessage")
+        getPrinterErrorMessage(error)
       );
     } finally {
       setPrinterBusy(false);
     }
+  };
+
+  const handleConnectPrinter = (device: PrinterDevice) => {
+    if (Platform.OS !== "android" || device.bonded) {
+      void connectPrinterDevice(device);
+      return;
+    }
+
+    Alert.alert(
+      t("dialogs.printerPairingTitle"),
+      t("dialogs.printerPairingMessage", {
+        printer: device.name || device.address,
+        address: device.address,
+      }),
+      [
+        { text: t("common:actions.cancel"), style: "cancel" },
+        {
+          text: t("dialogs.printerPairingAction"),
+          onPress: () => void connectPrinterDevice(device),
+        },
+      ]
+    );
   };
 
   const handleTestPrinter = async () => {
@@ -1499,6 +1537,7 @@ export default function Settings() {
                         devices={visiblePrinters}
                         selectedAddress={savedPrinter?.address}
                         bondedLabel={t("printer.bonded")}
+                        unbondedLabel={t("printer.unbonded")}
                         actionLabel={t("printer.connect")}
                         disabled={printerNativeBusy}
                         onSelect={(printer) => void handleConnectPrinter(printer)}
@@ -1597,6 +1636,7 @@ export default function Settings() {
                         devices={visibleReceiptPrinters}
                         selectedAddress={savedReceiptPrinter?.address}
                         bondedLabel={t("printer.bonded")}
+                        unbondedLabel={t("printer.unbonded")}
                         actionLabel={t("receiptPrinter.save")}
                         disabled={printerNativeBusy}
                         onSelect={(printer) => void handleSaveReceiptPrinter(printer)}
@@ -1958,6 +1998,10 @@ const styles = StyleSheet.create({
   },
   meta: {
     color: HB_COLORS.textSecondary,
+  },
+  unbondedMeta: {
+    color: HB_COLORS.warning,
+    fontWeight: "700",
   },
   updateInfoCompactList: {
     gap: HB_SPACING.xs,
