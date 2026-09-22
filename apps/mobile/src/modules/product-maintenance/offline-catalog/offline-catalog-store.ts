@@ -150,7 +150,12 @@ export const useOfflineCatalogStore = create<OfflineCatalogState>((set, get) => 
       const activeRuntime = runtime;
       try {
         const result = await coordinator.start(normalized, ({ signal, onProgress }) =>
-          activeRuntime.syncService.refresh({ storeCode: normalized, signal, onProgress }),
+          activeRuntime.syncService.refresh({
+            storeCode: normalized,
+            signal,
+            onProgress,
+            retrySyncPlanGatewayTimeout: true,
+          }),
         );
         set((state) => ({
           activeMeta: { ...state.activeMeta, [normalized]: result.metadata },
