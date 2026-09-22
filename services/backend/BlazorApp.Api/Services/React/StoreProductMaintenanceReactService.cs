@@ -89,7 +89,9 @@ namespace BlazorApp.Api.Services.React
 
                 var matchSw = Stopwatch.StartNew();
                 var hits = (await QueryLookupHitsAsync(keyword, selectedStoreCodes))
-                    .Where(item => !string.IsNullOrWhiteSpace(item.ProductCode))
+                    // SQL Server 的排序规则可能忽略大小写；保留原快照字典的精确编码匹配语义。
+                    .Where(item => !string.IsNullOrWhiteSpace(item.ProductCode)
+                        && string.Equals(item.ProductCode, item.MatchedProductCode, StringComparison.Ordinal))
                     .ToList();
                 matchSw.Stop();
 
@@ -99,31 +101,18 @@ namespace BlazorApp.Api.Services.React
                 var setMatches = hits.Count(item => item.MatchSource == "SetBarcode");
                 var clearanceMatches = hits.Count(item => item.MatchSource == "ClearanceBarcode");
 
-                var enrichSw = Stopwatch.StartNew();
-                var productCodeList = hits
-                    .Select(item => item.ProductCode)
-                    .Distinct(StringComparer.Ordinal)
-                    .ToList();
-                var productSnapshotMap = await QueryLookupProductSnapshotsAsync(productCodeList);
-                enrichSw.Stop();
-
                 var normalized = hits
-                    .Where(item => productSnapshotMap.ContainsKey(item.ProductCode))
-                    .Select(item =>
+                    .Select(item => new StoreProductLookupItemDto
                     {
-                        var snapshot = productSnapshotMap[item.ProductCode];
-                        return new StoreProductLookupItemDto
-                        {
-                            ProductCode = snapshot.ProductCode,
-                            ProductName = snapshot.ProductName,
-                            ItemNumber = item.ItemNumber ?? snapshot.ItemNumber,
-                            Barcode = item.Barcode ?? snapshot.Barcode,
-                            ProductImage = snapshot.ProductImage,
-                            Grade = snapshot.Grade,
-                            ProductTypeLabel = NormalizeProductTypeLabel(snapshot.ProductType?.ToString()),
-                            MatchSource = item.MatchSource,
-                            MatchValue = item.MatchValue,
-                        };
+                        ProductCode = item.ProductCode,
+                        ProductName = item.ProductName,
+                        ItemNumber = item.ItemNumber,
+                        Barcode = item.Barcode,
+                        ProductImage = item.ProductImage,
+                        Grade = item.Grade,
+                        ProductTypeLabel = NormalizeProductTypeLabel(item.ProductType?.ToString()),
+                        MatchSource = item.MatchSource,
+                        MatchValue = item.MatchValue,
                     })
                     .GroupBy(item => $"{item.ProductCode}|{item.MatchSource}|{item.Barcode}|{item.ItemNumber}")
                     .Select(group =>
@@ -134,12 +123,11 @@ namespace BlazorApp.Api.Services.React
                     .ToList();
 
                 _logger.LogInformation(
-                    "StoreProductMaintenance lookup timing keyword={Keyword} requestedStore={RequestedStore} scope={Scope} lookup_match_ms={LookupMatchMs} lookup_enrich_ms={LookupEnrichMs} product_hits={ProductHits} set_hits={SetHits} clearance_hits={ClearanceHits} raw_hit_count={RawHitCount} deduped_result_count={DedupedResultCount} total_ms={TotalMs}",
+                    "StoreProductMaintenance lookup timing keyword={Keyword} requestedStore={RequestedStore} scope={Scope} lookup_match_ms={LookupMatchMs} product_hits={ProductHits} set_hits={SetHits} clearance_hits={ClearanceHits} raw_hit_count={RawHitCount} deduped_result_count={DedupedResultCount} total_ms={TotalMs}",
                     keyword,
                     request.StoreCode,
                     FormatStoreScope(selectedStoreCodes),
                     matchSw.ElapsedMilliseconds,
-                    enrichSw.ElapsedMilliseconds,
                     productMatches,
                     setMatches,
                     clearanceMatches,
@@ -3338,41 +3326,28 @@ namespace BlazorApp.Api.Services.React
             );
             sql.AppendLine(storeFilterSql);
 
-            return await _db.Ado.SqlQueryAsync<LookupHit>(sql.ToString(), parameters.ToArray());
-        }
-
-        private async Task<Dictionary<string, LookupProductSnapshot>> QueryLookupProductSnapshotsAsync(
-            List<string> productCodes
-        )
-        {
-            if (productCodes.Count == 0)
-            {
-                return new Dictionary<string, LookupProductSnapshot>(StringComparer.Ordinal);
-            }
-
-            var snapshots = await _db.Queryable<Product>()
-                .LeftJoin<ProductGrade>((p, pg) => p.ProductCode == pg.ProductCode && !pg.IsDeleted)
-                .Where((p, pg) =>
-                    !p.IsDeleted
-                    && p.ProductCode != null
-                    && productCodes.Contains(p.ProductCode)
+            // 命中来源与商品资料在同一条 SQL 中读取，省去逐请求补查商品快照的网络往返。
+            // 套码、清货条码仍需关联未删除的主商品，避免孤立记录成为可打印候选。
+            var lookupSql = $"""
+                WITH lookupHits AS (
+                    {sql}
                 )
-                .Select((p, pg) => new LookupProductSnapshot
-                {
-                    ProductCode = p.ProductCode ?? string.Empty,
-                    ProductName = p.ProductName,
-                    ItemNumber = p.ItemNumber,
-                    Barcode = p.Barcode,
-                    ProductImage = p.ProductImage,
-                    Grade = pg.Grade,
-                    ProductType = p.ProductType,
-                })
-                .ToListAsync();
-
-            return snapshots
-                .Where(x => !string.IsNullOrWhiteSpace(x.ProductCode))
-                .GroupBy(x => x.ProductCode, StringComparer.Ordinal)
-                .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+                SELECT
+                    p.ProductCode AS ProductCode,
+                    h.ProductCode AS MatchedProductCode,
+                    p.ProductName AS ProductName,
+                    COALESCE(h.ItemNumber, p.ItemNumber) AS ItemNumber,
+                    COALESCE(h.Barcode, p.Barcode) AS Barcode,
+                    p.ProductImage AS ProductImage,
+                    pg.Grade AS Grade,
+                    p.ProductType AS ProductType,
+                    h.MatchSource AS MatchSource,
+                    h.MatchValue AS MatchValue
+                FROM lookupHits h
+                INNER JOIN [Product] p ON p.ProductCode = h.ProductCode AND p.IsDeleted = 0
+                LEFT JOIN [ProductGrade] pg ON pg.ProductCode = p.ProductCode AND pg.IsDeleted = 0
+                """;
+            return await _db.Ado.SqlQueryAsync<LookupHit>(lookupSql, parameters.ToArray());
         }
 
         private async Task<StoreRetailPrice?> QueryStorePriceByStoreAsync(
@@ -4639,21 +4614,15 @@ namespace BlazorApp.Api.Services.React
         private sealed class LookupHit
         {
             public string ProductCode { get; set; } = string.Empty;
-            public string? ItemNumber { get; set; }
-            public string? Barcode { get; set; }
-            public string MatchSource { get; set; } = string.Empty;
-            public string MatchValue { get; set; } = string.Empty;
-        }
-
-        private sealed class LookupProductSnapshot
-        {
-            public string ProductCode { get; set; } = string.Empty;
+            public string MatchedProductCode { get; set; } = string.Empty;
             public string ProductName { get; set; } = string.Empty;
             public string? ItemNumber { get; set; }
             public string? Barcode { get; set; }
             public string? ProductImage { get; set; }
             public string? Grade { get; set; }
             public int? ProductType { get; set; }
+            public string MatchSource { get; set; } = string.Empty;
+            public string MatchValue { get; set; } = string.Empty;
         }
 
         private sealed class ProductSetCodeCounts

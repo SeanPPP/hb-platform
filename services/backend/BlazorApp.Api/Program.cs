@@ -551,33 +551,16 @@ authenticationBuilder.AddJwtBearer(options =>
                         MobileDeviceAccountTokenIssuer.TokenUse,
                         StringComparison.Ordinal))
                 {
-                    // 移动设备令牌保留原有 User、设备绑定和角色读取顺序；它不依赖 RefreshToken。
-                    var user = await dbContext.Db.Queryable<User>()
-                        .FirstAsync(item => item.UserGUID == userGuid && item.IsActive && !item.IsDeleted);
-
-                    if (user == null)
+                    var validation = await authSessionValidator.ValidateMobileDeviceAccessAsync(
+                        userGuid,
+                        principal,
+                        context.HttpContext.RequestAborted);
+                    if (!validation.IsValid)
                     {
-                        context.Fail("用户已失效");
+                        context.Fail("用户、设备绑定或登录会话已失效");
                         return;
                     }
-
-                    if (!await authSessionValidator.IsAccessSessionActiveAsync(userGuid, principal))
-                    {
-                        context.Fail("登录会话已失效");
-                        return;
-                    }
-
-                    activeRoleNames = await dbContext.Db.Queryable<UserRole>()
-                        .InnerJoin<Role>((userRole, role) => userRole.RoleGUID == role.RoleGUID)
-                        .Where((userRole, role) =>
-                            userRole.UserGUID == userGuid
-                            && !userRole.IsDeleted
-                            && role.IsActive
-                            && !role.IsDeleted
-                        )
-                        .Select((userRole, role) => role.RoleName)
-                        .Distinct()
-                        .ToListAsync();
+                    activeRoleNames = validation.ActiveRoleNames;
                 }
                 else
                 {

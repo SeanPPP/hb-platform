@@ -123,6 +123,67 @@ public sealed class StoreProductMaintenanceLookupTests : IDisposable
     }
 
     [Fact]
+    public async Task Lookup_一次往返返回所有命中来源及最新商品资料()
+    {
+        await SeedProduct("product", "shared-code", "shared-code");
+        await _db.Insertable(new ProductGrade { ProductCode = "product", Grade = "A" }).ExecuteCommandAsync();
+        await _db.Insertable(new ProductSetCode
+        {
+            ProductCode = "product", SetItemNumber = "set-item", SetBarcode = "shared-code",
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new StoreClearancePrice
+        {
+            ProductCode = "product", StoreCode = "allowed", ClearanceBarcode = "shared-code",
+        }).ExecuteCommandAsync();
+
+        var queries = 0;
+        _db.Aop.OnLogExecuting = (_, _) => queries++;
+        var matches = await Lookup("shared-code");
+        Assert.Equal(1, queries);
+        Assert.Equal(4, matches.Count);
+        Assert.All(matches, item =>
+        {
+            Assert.Equal("product", item.ProductName);
+            Assert.Equal("A", item.Grade);
+        });
+        Assert.Equal("set-item", matches.Single(item => item.MatchSource == "SetBarcode").ItemNumber);
+        Assert.Equal("shared-code", matches.Single(item => item.MatchSource == "ClearanceBarcode").ItemNumber);
+
+        await _db.Updateable<Product>().SetColumns(product => product.ProductName == "new-name")
+            .Where(product => product.ProductCode == "product").ExecuteCommandAsync();
+        queries = 0;
+        Assert.All(await Lookup("shared-code"), item => Assert.Equal("new-name", item.ProductName));
+        Assert.Equal(1, queries);
+    }
+
+    [Fact]
+    public async Task Lookup_排除孤立和已删除商品的套码及清货码()
+    {
+        await SeedProduct("deleted", "item", deleted: true);
+        foreach (var code in new[] { "deleted", "missing" })
+        {
+            await _db.Insertable(new ProductSetCode { ProductCode = code, SetBarcode = "shared-code" }).ExecuteCommandAsync();
+            await _db.Insertable(new StoreClearancePrice
+            {
+                ProductCode = code, StoreCode = "allowed", ClearanceBarcode = "shared-code",
+            }).ExecuteCommandAsync();
+        }
+        var queries = 0;
+        _db.Aop.OnLogExecuting = (_, _) => queries++;
+        Assert.Empty(await Lookup("shared-code"));
+        Assert.Equal(1, queries);
+    }
+
+    [Fact]
+    public async Task Lookup_无门店权限时不执行商品查询()
+    {
+        var queries = 0;
+        _db.Aop.OnLogExecuting = (_, _) => queries++;
+        Assert.Empty(await Lookup("shared-code", new List<string>()));
+        Assert.Equal(0, queries);
+    }
+
+    [Fact]
     public async Task ScanLabel_多商品歧义只返回候选且不自动选择()
     {
         await SeedProduct("product", "ITEM123", "9529260910023");
