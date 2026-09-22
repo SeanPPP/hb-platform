@@ -326,6 +326,7 @@
     "refreshCancelled": "已取消离线数据下载"
   },
   "print": {
+    "inProgress": "正在打印…",
     "title": "标签打印",
     "quick": "打",
     "product": "普通标签",

@@ -181,17 +181,6 @@ async function redirectToLoginAfterUnauthenticated(message?: string) {
 
 apiClient.interceptors.request.use(
   async (config: InternalAxiosRequestConfig) => {
-    const lookupStartedAt = config.url === "/react/v1/store-product-maintenance/lookup"
-      ? Date.now()
-      : null;
-    const logLookupPreparation = (stage: string) => {
-      if (lookupStartedAt !== null) {
-        console.log("[product-query] request preparation", {
-          stage,
-          elapsedMs: Date.now() - lookupStartedAt,
-        });
-      }
-    };
     const guardedConfig = config as InternalAxiosRequestConfig & {
       _expectedAccountGuid?: string;
     };
@@ -240,7 +229,7 @@ apiClient.interceptors.request.use(
       typeof apiHost === "string" && apiHost
         ? apiHost
         : await getStoredApiHost();
-    logLookupPreparation("host");
+
     if (skipAuthentication) {
       const requestPolicy = resolveDeviceAccountRequestPolicy({
         requestedApiHost,
@@ -257,13 +246,25 @@ apiClient.interceptors.request.use(
       return config;
     }
 
+    const suppliedDeviceId = config.headers?.get("X-Device-Id");
+    const suppliedAuthCode = config.headers?.get("X-Auth-Code");
+    const deviceSessionPrefetch = config.url === "/react/v1/store-product-maintenance/scan-label"
+      && typeof suppliedDeviceId === "string" && Boolean(suppliedDeviceId)
+      && typeof suppliedAuthCode === "string" && Boolean(suppliedAuthCode)
+      ? Promise.resolve().then(() => DeviceStorage.peekSession()).then(
+          (value) => ({ ok: true as const, value }),
+          (error: unknown) => ({ ok: false as const, error }),
+        )
+      : null;
+    // 预读只触碰只读存储；拒绝也立即收敛，后续 policy 不需要设备会话时不会留下未处理异常。
+
     const [token, refreshToken, persistedSessionKind, accountBinding] = await Promise.all([
       SecureStorage.getToken(),
       SecureStorage.getRefreshToken(),
       getAuthSessionMarker(),
       DeviceAccountStorage.loadBinding().catch(() => null),
     ]);
-    logLookupPreparation("credentials");
+
     // 存储读取期间用户可能切换到审核会话；账号绑定请求必须在异步边界后再次确认。
     if (expectedAccountGuid && isIosReviewSessionActive()) {
       throw Object.assign(new Error("ACCOUNT_SESSION_CHANGED"), { code: "ACCOUNT_SESSION_CHANGED" });
@@ -320,19 +321,29 @@ apiClient.interceptors.request.use(
         config.headers.set("Authorization", `Bearer ${token}`);
       }
       if (sessionKind !== "deviceAccount") {
-        logLookupPreparation("ready");
+
         return config;
       }
     }
 
-    const deviceSession = requestPolicy.allowDeviceHeaders
-      ? await DeviceStorage.getSession()
-      : null;
+    let deviceSession = null;
+    if (requestPolicy.allowDeviceHeaders) {
+      const prefetched = await deviceSessionPrefetch;
+      if (prefetched && !prefetched.ok) throw prefetched.error;
+      // 旧格式留给原读取路径迁移；预读与调用方设备头不符时重读，避免覆盖较新的凭据。
+      deviceSession = prefetched?.ok
+        && !prefetched.value.requiresMigration
+        && DeviceStorage.isSessionSnapshotCurrent(prefetched.value)
+        && prefetched.value.session?.hardwareId === suppliedDeviceId
+        && prefetched.value.session.authCode === suppliedAuthCode
+        ? prefetched.value.session
+        : await DeviceStorage.getSession();
+    }
     if (deviceSession?.hardwareId && deviceSession.authCode && config.headers) {
       config.headers.set("X-Device-Id", deviceSession.hardwareId);
       config.headers.set("X-Auth-Code", deviceSession.authCode);
     }
-    logLookupPreparation("ready");
+
     return config;
   },
   (error) => Promise.reject(error)

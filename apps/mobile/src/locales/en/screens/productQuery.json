@@ -326,6 +326,7 @@
     "refreshCancelled": "Offline data download cancelled."
   },
   "print": {
+    "inProgress": "Printing…",
     "title": "Label printing",
     "quick": "Print",
     "product": "Regular label",

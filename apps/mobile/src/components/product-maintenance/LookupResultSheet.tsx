@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import { Image, Pressable, StyleSheet, View } from "react-native";
 import { Button, Icon, Text } from "react-native-paper";
 import { BusinessSheet } from "@/components/ui/BusinessSheet";
@@ -56,7 +56,7 @@ function ProductThumbnail({ uri, label, fallback }: { uri?: string; label: strin
   );
 }
 
-export function LookupResultSheet({
+export const LookupResultSheet = memo(function LookupResultSheet({
   visible,
   queryText,
   items,
@@ -138,7 +138,10 @@ export function LookupResultSheet({
       })}
     </BusinessSheet>
   );
-}
+}, (previous, next) => {
+  // 关闭期间跳过父页面刷新；开关切换及打开期间始终接收最新数据和回调。
+  return !previous.visible && !next.visible;
+});
 
 const styles = StyleSheet.create({
   query: {
