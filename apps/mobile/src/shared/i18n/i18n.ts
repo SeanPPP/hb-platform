@@ -25,6 +25,7 @@ import warehouseProductInsightsEn from "@/locales/en/screens/warehouseProductIns
 import salesOrdersEn from "@/locales/en/screens/salesOrders.json";
 import posOperationLogsEn from "@/locales/en/screens/posOperationLogs.json";
 import preorderEn from "@/locales/en/screens/preorder.json";
+import supplyNoticeEn from "@/locales/en/screens/supplyNotice.json";
 import seasonalCardsEn from "@/locales/en/screens/seasonalCards.json";
 import settingsEn from "@/locales/en/screens/settings.json";
 import storeVouchersEn from "@/locales/en/screens/storeVouchers.json";
@@ -52,6 +53,7 @@ import warehouseProductInsightsZh from "@/locales/zh/screens/warehouseProductIns
 import salesOrdersZh from "@/locales/zh/screens/salesOrders.json";
 import posOperationLogsZh from "@/locales/zh/screens/posOperationLogs.json";
 import preorderZh from "@/locales/zh/screens/preorder.json";
+import supplyNoticeZh from "@/locales/zh/screens/supplyNotice.json";
 import seasonalCardsZh from "@/locales/zh/screens/seasonalCards.json";
 import settingsZh from "@/locales/zh/screens/settings.json";
 import storeVouchersZh from "@/locales/zh/screens/storeVouchers.json";
@@ -93,6 +95,7 @@ const resources = {
     salesOrders: salesOrdersZh,
     posOperationLogs: posOperationLogsZh,
     preorder: preorderZh,
+    supplyNotice: supplyNoticeZh,
     userManagement: userManagementZh,
     warehouse: warehouseZh,
     workbench: workbenchZh,
@@ -124,6 +127,7 @@ const resources = {
     salesOrders: salesOrdersEn,
     posOperationLogs: posOperationLogsEn,
     preorder: preorderEn,
+    supplyNotice: supplyNoticeEn,
     userManagement: userManagementEn,
     warehouse: warehouseEn,
     workbench: workbenchEn,
