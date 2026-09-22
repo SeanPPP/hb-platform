@@ -254,12 +254,10 @@ function normalizeProductTypeUpdate(payload: unknown): UpdateProductTypeResult {
 export async function lookupProducts(
   payload: StoreProductLookupRequest
 ): Promise<ProductLookupItem[]> {
-  const startedAt = Date.now();
   const response = await apiClient.post(BASE_PATH + "/lookup", payload, {
     ...buildRequestConfig(),
     timeout: PRODUCT_QUERY_REQUEST_TIMEOUT_MS,
   });
-  console.log("[product-query] lookup request complete", { elapsedMs: Date.now() - startedAt });
   return Array.isArray(response.data) ? response.data.map(normalizeLookupItem) : [];
 }
 
@@ -286,7 +284,6 @@ function normalizeScanLabelPrintTarget(payload: unknown): ScanLabelPrintTarget |
 export async function scanProductLabel(
   payload: StoreProductLookupRequest,
 ): Promise<ScanLabelResult> {
-  const startedAt = Date.now();
   const response = await apiClient.post(`${BASE_PATH}/scan-label`, payload, {
     ...buildRequestConfig(),
     timeout: PRODUCT_QUERY_REQUEST_TIMEOUT_MS,
@@ -299,7 +296,6 @@ export async function scanProductLabel(
   }
   const detail = data.detail ?? data.Detail;
   const printTarget = data.printTarget ?? data.PrintTarget;
-  console.log("[product-query] scan-label request complete", { elapsedMs: Date.now() - startedAt });
   return {
     candidates: candidates.map(normalizeLookupItem),
     detail: detail && typeof detail === "object" ? normalizeDetail(detail) : null,
@@ -380,7 +376,6 @@ export async function getProductFastDetail(
   productCode: string,
   storeCode?: string | null
 ): Promise<ProductDetail> {
-  const startedAt = Date.now();
   const response = await apiClient.get(
     `${BASE_PATH}/${encodeURIComponent(productCode)}/fast-detail`,
     {
@@ -391,7 +386,6 @@ export async function getProductFastDetail(
       },
     }
   );
-  console.log("[product-query] fast detail request complete", { elapsedMs: Date.now() - startedAt });
   return normalizeDetail(response.data);
 }
 
