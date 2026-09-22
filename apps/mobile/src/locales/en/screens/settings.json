@@ -165,7 +165,7 @@
   },
   "offlineData": {
     "title": "Offline product data",
-    "description": "The local product snapshot used for offline lookup and label printing. The device checks for updates automatically while online; you can also update manually or switch store here.",
+    "description": "The local product snapshot used for offline lookup and label printing. Download or update data manually, or switch store here.",
     "manage": "Manage offline product data",
     "currentStore": "Current store",
     "storeNotSelected": "No store selected",
