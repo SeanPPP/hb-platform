@@ -44,6 +44,20 @@ class MainApplication : Application(), ReactApplication {
     } catch (e: IllegalArgumentException) {
       ReleaseLevel.STABLE
     }
+    com.facebook.react.modules.network.OkHttpClientProvider.setOkHttpClientFactory {
+      com.facebook.react.modules.network.OkHttpClientProvider.createClientBuilder(applicationContext)
+        .eventListenerFactory { call ->
+          if (call.request().url.encodedPath.endsWith("/react/v1/store-product-maintenance/scan-label")) {
+            object : okhttp3.EventListener() {
+              override fun connectionAcquired(call: okhttp3.Call, connection: okhttp3.Connection) {
+                // 扫码小请求立即发送，避免 HTTP/2 分帧与套接字合包叠加等待。
+                // 此属性作用于复用连接；设置失败时仍按原网络行为继续请求。
+                runCatching { connection.socket().tcpNoDelay = true }
+              }
+            }
+          } else okhttp3.EventListener.NONE
+        }.build()
+    }
     loadReactNative(this)
     ApplicationLifecycleDispatcher.onApplicationCreate(this)
   }

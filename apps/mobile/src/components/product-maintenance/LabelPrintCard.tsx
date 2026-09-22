@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { memo, type ReactNode } from "react";
 import { StyleSheet, View } from "react-native";
 import { Button, Card, IconButton, Text } from "react-native-paper";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
@@ -18,7 +18,7 @@ interface LabelPrintCardProps {
   footer?: ReactNode;
 }
 
-export function LabelPrintCard({
+export const LabelPrintCard = memo(function LabelPrintCard({
   isPrintingProduct = false,
   isPrintingDiscount = false,
   isPrintingBigDiscount = false,
@@ -84,7 +84,7 @@ export function LabelPrintCard({
       {footer ? <View style={styles.footer}>{footer}</View> : null}
     </Card>
   );
-}
+});
 
 const styles = StyleSheet.create({
   card: {
