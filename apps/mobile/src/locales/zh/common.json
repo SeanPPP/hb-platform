@@ -343,7 +343,7 @@
       "compareShareOfTotal": "占总营业",
       "pageTotal": "本页合计",
       "supplierHint": "点供应商筛商品 · 点金额看分店 · 左滑看占比、增长率与同期",
-      "productHint": "点商品看分店 · 左滑看均价、毛利、增长率与同期"
+      "productHint": "点商品看分店 · 左滑看均价、毛利与增长率"
     }
   }
 }
