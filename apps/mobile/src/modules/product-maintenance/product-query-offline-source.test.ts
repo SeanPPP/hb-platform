@@ -23,6 +23,13 @@ assert.match(
 );
 assert.match(source, /const offlineMode = offlineEligible && connectivity\.offline;/, "离线模式必须受资格门禁约束");
 
+// 下载只允许由状态行按钮触发；进页、切店和快照过期不再自动发起下载。
+const manualRefreshStart = indexOfOrFail("const handleRefreshOfflineCatalog = useCallback(", "手动下载入口必须存在");
+const manualRefreshSource = source.slice(manualRefreshStart, source.indexOf("const playQueryFeedback = useCallback(", manualRefreshStart));
+assert.match(manualRefreshSource, /\.refreshCatalog\(selectedStoreCode\)/, "手动入口必须调用离线目录下载");
+assert.match(source, /onRefresh=\{handleRefreshOfflineCatalog\}/, "状态行必须保留手动下载按钮");
+assert.equal((source.match(/\.refreshCatalog\(/g) ?? []).length, 1, "查询页不得在焦点或其他副作用中自动下载");
+
 // handleLookup：在线失败时先判定网络不可用，再进入离线并回退本地查询。
 const lookupStart = indexOfOrFail("const handleLookup = useCallback(", "商品查询入口必须存在");
 const lookupSource = source.slice(lookupStart, source.indexOf("const wasOfflineRef = useRef(false);", lookupStart));

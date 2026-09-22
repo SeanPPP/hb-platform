@@ -308,6 +308,7 @@
     "errors": {
       "network": "网络不可用",
       "capacityBusy": "服务器繁忙，请稍后再试",
+      "preparationTimeout": "服务器准备离线数据超时，请稍后手动重试",
       "expired": "服务端快照已过期，将重新下载",
       "verification": "数据校验失败",
       "api": "服务器返回错误",
