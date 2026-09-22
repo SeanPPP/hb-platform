@@ -550,65 +550,117 @@ class HbPrinterModule(
     val retailPrice = payload.getNullableDouble("retailPrice") ?: 0.0
     val discountRate = payload.getNullableDouble("discountRate") ?: 0.0
     val discountValue = discountRate * 100.0
-    val nowPrice = retailPrice * (1.0 - discountRate)
+    // 先按分舍入，避免 12.34 × 75% 的浮点尾差在两端显示成不同价格。
+    val nowPrice = kotlin.math.round((retailPrice * (1.0 - discountRate)) * 100.0 + 1e-8) / 100.0
+    val showOriginalPrice = retailPrice.isFinite() && nowPrice.isFinite() && retailPrice > nowPrice && nowPrice >= 0
 
-    val nowLabelBitmap = textToBitmap("Now", fontSizeToPixels(8f), true, "sans-serif-black", true, 2)
-    val nowPriceBitmap = textToBitmap("$${formatMoney(nowPrice)}", fontSizeToPixels(16f), true, "sans-serif-black", true, 2)
-    val discountBitmap = textToBitmap(discountValue.roundToInt().toString().padStart(2, '0'), fontSizeToPixels(44f), false, "sans-serif-black")
-    val offBitmap = textToBitmap("OFF", fontSizeToPixels(16f), true, "sans-serif-black")
-    val percentBitmap = textToBitmap("%", fontSizeToPixels(20f), true, "sans-serif-black")
-    val dateBitmap = textToBitmap(todayString(), fontSizeToPixels(8f), false, "Arial", true, 2)
-    val itemBitmap = itemNumber.takeIf { it.isNotBlank() }?.let {
-      textToBitmap(it, fontSizeToPixels(8f), true, "sans-serif-black")
+    // 按实际位图宽度缩小文字，金额始终完整保留，不截断高位或小数。
+    fun fittedText(value: String, size: Float, maxWidth: Int, maxHeight: Int = 64, inverse: Boolean = false, padding: Int = 0): Bitmap {
+      var fittedSize = size
+      var bitmap = textToBitmap(value, fontSizeToPixels(fittedSize), true, "sans-serif-black", inverse, padding)
+      while ((bitmap.width > maxWidth || bitmap.height > maxHeight) && fittedSize > 1f) {
+        fittedSize -= 0.5f
+        bitmap = textToBitmap(value, fontSizeToPixels(fittedSize), true, "sans-serif-black", inverse, padding)
+      }
+      return bitmap
     }
 
-    val startY = 20
-    val startX = w - discountBitmap.width - percentBitmap.width - offBitmap.width + 20
-    val rightMargin = 12
     val columnGap = 10
+    val infoX = 84
+    val infoWidth = if (isSmall) 100 else 124
+    val wasX = infoX + infoWidth + columnGap
+    val wasWidth = if (isSmall) 76 else 96
+    val nowX = if (showOriginalPrice) wasX + wasWidth + columnGap else wasX
+    val nowWidth = w - 12 - nowX
+    val nowPadding = 6
     val nowGroupGap = 6
+    val nowLabelBitmap = fittedText("NOW", 6f, nowWidth, inverse = true)
+    val nowPriceBitmap = fittedText("$${formatMoney(nowPrice)}", 16f, nowWidth - nowLabelBitmap.width - nowGroupGap - nowPadding * 2, 52, inverse = true)
+    val nowHeight = max(nowLabelBitmap.height, nowPriceBitmap.height) + nowPadding * 2
+    val nowBitmap = Bitmap.createBitmap(nowWidth, nowHeight, Bitmap.Config.ARGB_8888)
+    Canvas(nowBitmap).apply {
+      drawColor(Color.BLACK)
+      drawBitmap(nowLabelBitmap, nowPadding.toFloat(), ((nowHeight - nowLabelBitmap.height) / 2).toFloat(), null)
+      drawBitmap(nowPriceBitmap, (nowWidth - nowPadding - nowPriceBitmap.width).toFloat(), ((nowHeight - nowPriceBitmap.height) / 2).toFloat(), null)
+    }
+    val wasLabelBitmap = fittedText("WAS", 6f, wasWidth)
+    val wasPriceBitmap = fittedText("$${formatMoney(retailPrice)}", 8f, wasWidth, 30)
+    val dateBitmap = fittedText(todayString(), 6f, infoWidth, 24, inverse = true, padding = 2)
+    // 超长货号明确显示省略号；二维码继续编码完整条码/货号。
+    val itemDisplay = if (itemNumber.length > 24) itemNumber.take(21) + "..." else itemNumber
+    val itemBitmap = itemDisplay.takeIf { it.isNotBlank() }?.let { fittedText(it, 7f, infoWidth, 28) }
+    val discountBitmap = fittedText(discountValue.roundToInt().toString().padStart(2, '0'), 44f, w / 2, 108)
+    val offBitmap = fittedText("OFF", 16f, 110)
+    val percentBitmap = fittedText("%", 20f, 70)
+    val startY = 20
+    val headerGap = 8 // EG 每行按 8 点补齐，留出字节尾部空白，避免相邻位图覆盖。
+    val startX = w - 12 - discountBitmap.width - headerGap - max(percentBitmap.width, percentBitmap.width / 2 + offBitmap.width)
     val qrBitmap = barcode.takeIf { it.isNotBlank() }?.let { createQrCodeBitmap(it, 64) }
-    val qrVisualWidth = qrBitmap?.width ?: 64
-    val effectiveLabelBottom = 204
-    val bottomMargin = 10
-    val infoBandBottom = effectiveLabelBottom - bottomMargin
+    // 两种纸宽都遵守现有 204 点有效打印区，底部保留 10 点。
+    val infoBandBottom = 194
     val qrX = 10
     val qrY = infoBandBottom - (qrBitmap?.height ?: 64)
-    val nowPriceX = w - rightMargin - nowPriceBitmap.width
-    val nowLabelX = nowPriceX - nowGroupGap - nowLabelBitmap.width
-    val nowLabelY = infoBandBottom - nowLabelBitmap.height
-    val nowPriceY = infoBandBottom - nowPriceBitmap.height
-    val dateX = qrX + qrVisualWidth + columnGap
     val dateY = infoBandBottom - dateBitmap.height
-    val itemX = dateX
     val itemY = dateY - (itemBitmap?.height ?: 0) - 6
-    val nameMaxWidth = max(1, w - discountBitmap.width - percentBitmap.width - offBitmap.width + 10)
-    val nameBitmap = longTextToBitmap(productName, fontSizeToPixels(10f), false, "Arial", 2, nameMaxWidth)
+    val wasPriceY = infoBandBottom - wasPriceBitmap.height
+    val nameMaxWidth = max(1, startX - 15)
+    val namePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+      color = Color.BLACK
+      textSize = fontSizeToPixels(10f)
+      typeface = Typeface.create("Arial", Typeface.NORMAL)
+    }
+    val nameLines = wrapText(cpclText(productName), namePaint, nameMaxWidth, 2).toMutableList()
+    // 英文优先在词间换行；只有单词本身太长时才沿用逐字换行。
+    if (nameLines.size == 2 && !nameLines[0].endsWith(" ") && !nameLines[1].startsWith(" ")) {
+      val split = nameLines[0].lastIndexOf(' ')
+      if (split > 0) {
+        nameLines[1] = nameLines[0].substring(split).trim() + nameLines[1]
+        nameLines[0] = nameLines[0].substring(0, split)
+      }
+    }
+    val nameLineHeight = ceil(namePaint.fontMetrics.descent - namePaint.fontMetrics.ascent).toInt()
+    val nameBitmap = Bitmap.createBitmap(nameMaxWidth, nameLineHeight * nameLines.size, Bitmap.Config.ARGB_8888)
+    Canvas(nameBitmap).apply {
+      drawColor(Color.WHITE)
+      nameLines.forEachIndexed { index, value ->
+        var display = value.trim()
+        if (namePaint.measureText(display) > nameMaxWidth) {
+          while (display.isNotEmpty() && namePaint.measureText(display + "...") > nameMaxWidth) display = display.dropLast(1)
+          display += "..."
+        }
+        drawText(display, 0f, index * nameLineHeight - namePaint.fontMetrics.ascent, namePaint)
+      }
+    }
 
     val commands = mutableListOf(
       "! 0 200 200 $h 1",
       "PAGE-WIDTH $w",
       bitmapCommand(5, 5, nameBitmap),
       bitmapCommand(startX, startY, discountBitmap),
-      bitmapCommand(startX + discountBitmap.width, startY, percentBitmap),
+      bitmapCommand(startX + discountBitmap.width + headerGap, startY, percentBitmap),
       bitmapCommand(
-        startX + discountBitmap.width + percentBitmap.width / 2,
+        startX + discountBitmap.width + headerGap + percentBitmap.width / 2,
         startY + discountBitmap.height - offBitmap.height,
         offBitmap,
       ),
     )
 
     if (itemBitmap != null) {
-      commands += bitmapCommand(itemX, itemY, itemBitmap)
+      commands += bitmapCommand(infoX, itemY, itemBitmap)
     }
 
     if (qrBitmap != null) {
       commands += bitmapCommand(qrX, qrY, qrBitmap)
     }
 
-    commands += bitmapCommand(dateX, dateY, dateBitmap)
-    commands += bitmapCommand(nowLabelX, nowLabelY, nowLabelBitmap)
-    commands += bitmapCommand(nowPriceX, nowPriceY, nowPriceBitmap)
+    commands += bitmapCommand(infoX, dateY, dateBitmap)
+    if (showOriginalPrice) {
+      commands += bitmapCommand(wasX, wasPriceY - wasLabelBitmap.height - 4, wasLabelBitmap)
+      commands += bitmapCommand(wasX, wasPriceY, wasPriceBitmap)
+      val strikeY = wasPriceY + wasPriceBitmap.height / 2
+      commands += "LINE $wasX $strikeY ${wasX + wasPriceBitmap.width - 1} $strikeY 2"
+    }
+    commands += bitmapCommand(nowX, infoBandBottom - nowBitmap.height, nowBitmap)
     commands += "PRINT"
 
     return commands.joinToString("\r\n", postfix = "\r\n")
