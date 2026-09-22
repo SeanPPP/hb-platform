@@ -181,6 +181,17 @@ async function redirectToLoginAfterUnauthenticated(message?: string) {
 
 apiClient.interceptors.request.use(
   async (config: InternalAxiosRequestConfig) => {
+    const lookupStartedAt = config.url === "/react/v1/store-product-maintenance/lookup"
+      ? Date.now()
+      : null;
+    const logLookupPreparation = (stage: string) => {
+      if (lookupStartedAt !== null) {
+        console.log("[product-query] request preparation", {
+          stage,
+          elapsedMs: Date.now() - lookupStartedAt,
+        });
+      }
+    };
     const guardedConfig = config as InternalAxiosRequestConfig & {
       _expectedAccountGuid?: string;
     };
@@ -229,6 +240,7 @@ apiClient.interceptors.request.use(
       typeof apiHost === "string" && apiHost
         ? apiHost
         : await getStoredApiHost();
+    logLookupPreparation("host");
     if (skipAuthentication) {
       const requestPolicy = resolveDeviceAccountRequestPolicy({
         requestedApiHost,
@@ -251,6 +263,7 @@ apiClient.interceptors.request.use(
       getAuthSessionMarker(),
       DeviceAccountStorage.loadBinding().catch(() => null),
     ]);
+    logLookupPreparation("credentials");
     // 存储读取期间用户可能切换到审核会话；账号绑定请求必须在异步边界后再次确认。
     if (expectedAccountGuid && isIosReviewSessionActive()) {
       throw Object.assign(new Error("ACCOUNT_SESSION_CHANGED"), { code: "ACCOUNT_SESSION_CHANGED" });
@@ -307,6 +320,7 @@ apiClient.interceptors.request.use(
         config.headers.set("Authorization", `Bearer ${token}`);
       }
       if (sessionKind !== "deviceAccount") {
+        logLookupPreparation("ready");
         return config;
       }
     }
@@ -318,6 +332,7 @@ apiClient.interceptors.request.use(
       config.headers.set("X-Device-Id", deviceSession.hardwareId);
       config.headers.set("X-Auth-Code", deviceSession.authCode);
     }
+    logLookupPreparation("ready");
     return config;
   },
   (error) => Promise.reject(error)

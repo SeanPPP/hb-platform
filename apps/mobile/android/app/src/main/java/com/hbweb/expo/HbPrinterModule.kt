@@ -17,6 +17,8 @@ import android.graphics.Typeface
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
+import android.util.Log
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
@@ -356,8 +358,12 @@ class HbPrinterModule(
   fun printProductLabel(payload: ReadableMap, printType: String?, promise: Promise) {
     Thread {
       try {
+        val startedAt = SystemClock.elapsedRealtime()
         val command = buildProductLabelCommand(payload, printType?.trim().orEmpty())
+        val builtAt = SystemClock.elapsedRealtime()
         writePrinterCommand(command, "GB18030")
+        val sentAt = SystemClock.elapsedRealtime()
+        Log.i("HbPrinterPerf", "productLabel buildMs=${builtAt - startedAt} writeMs=${sentAt - builtAt} totalMs=${sentAt - startedAt}")
         promise.resolve(true)
       } catch (error: Exception) {
         promise.reject("PRINT_PRODUCT_LABEL_ERROR", error.message, error)

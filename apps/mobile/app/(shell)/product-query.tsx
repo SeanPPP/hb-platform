@@ -69,7 +69,6 @@ import {
   ensureStorePrice,
   lookupProducts,
   retryProductHqSyncOperation,
-  syncWarehousePrice,
   updateMultiCode,
   updateSetCode,
   updateProductType,
@@ -118,15 +117,7 @@ import {
   type ProductHqSyncMutationToken,
 } from "@/modules/product-maintenance/hq-sync";
 import {
-  createWarehousePriceSyncState,
-  getWarehousePriceSyncApplicability,
   isProductQueryInteractionBlocked,
-  isWarehousePriceInteractionLocked,
-  normalizeWarehouseMoney,
-  reduceWarehousePriceSyncState,
-  shouldAutoPrintWarehousePrice,
-  type WarehousePriceLookupOrigin,
-  type WarehousePriceSyncState,
 } from "@/modules/product-maintenance/warehouse-price-sync";
 import {
   useCameraScan,
@@ -348,8 +339,6 @@ interface AutoPricingDialogResolution {
 }
 
 interface DetailPostLoadOptions {
-  lookupOrigin: WarehousePriceLookupOrigin;
-  storeCodeOverride?: string;
   scanSource?: ScanSource | null;
   scanKeyword?: string;
   autoPrintEnabled?: boolean;
@@ -595,8 +584,6 @@ function ProductQueryContent() {
   const [autoPricingDialog, setAutoPricingDialog] =
     useState<AutoPricingDialogState | null>(null);
   const [autoPricingDialogSaving, setAutoPricingDialogSaving] = useState(false);
-  const [warehousePriceSyncState, setWarehousePriceSyncState] =
-    useState<WarehousePriceSyncState>(createWarehousePriceSyncState);
   const [createProductVisible, setCreateProductVisible] = useState(false);
   const [createSupplierPickerVisible, setCreateSupplierPickerVisible] =
     useState(false);
@@ -658,7 +645,6 @@ function ProductQueryContent() {
   const lookupSelectionOpenRef = useRef(false);
   const lookupRequestInFlightRef = useRef(false);
   const storeSelectionInFlightRef = useRef(false);
-  const warehousePriceRequestInFlightRef = useRef(false);
   const resumeHiddenScannerFocusTimerRef = useRef<ReturnType<
     typeof setTimeout
   > | null>(null);
@@ -694,9 +680,6 @@ function ProductQueryContent() {
   const handledExternalQueryRef = useRef<string | null>(null);
   const [numericInputModal, setNumericInputModal] =
     useState<NumericInputModalState | null>(null);
-  const warehousePriceInteractionLocked = isWarehousePriceInteractionLocked(
-    warehousePriceSyncState,
-  );
   const activePromotionCoordinatorRef = useRef<ReturnType<
     typeof createActivePromotionRequestCoordinator
   > | null>(null);
@@ -929,10 +912,8 @@ function ProductQueryContent() {
         lookupSelectionOpen: lookupSelectionOpenRef.current,
         autoPricingVisible: Boolean(autoPricingDialog),
         autoPricingSaving: autoPricingDialogSaving,
-        warehouseLocked: warehousePriceInteractionLocked,
-        requestInFlight:
-          lookupRequestInFlightRef.current ||
-          warehousePriceRequestInFlightRef.current,
+        warehouseLocked: false,
+        requestInFlight: lookupRequestInFlightRef.current,
         storeSelectionInFlight: storeSelectionInFlightRef.current,
       }) ||
       saving ||
@@ -952,7 +933,6 @@ function ProductQueryContent() {
       saving,
       savingClearance,
       savingItemId,
-      warehousePriceInteractionLocked,
     ],
   );
   useEffect(() => {
@@ -1432,8 +1412,6 @@ function ProductQueryContent() {
           );
           if (nextDetail) {
             await processLoadedDetailRef.current?.(nextDetail, {
-              lookupOrigin: "refresh",
-              storeCodeOverride: store.storeCode,
             });
           }
         }
@@ -1798,6 +1776,7 @@ function ProductQueryContent() {
 
       const action = options?.action ?? "product";
       setPrintingAction(action);
+      const printStartedAt = Date.now();
       try {
         console.log("[product-query] sendProductLabel", {
           action,
@@ -1825,6 +1804,7 @@ function ProductQueryContent() {
         console.log("[product-query] sendProductLabel success", {
           action,
           quantity: qty,
+          elapsedMs: Date.now() - printStartedAt,
         });
         setSnackbarMessage(t("messages.printSuccess"));
         if (quantitySingleUse && qty > 1) {
@@ -2020,7 +2000,7 @@ function ProductQueryContent() {
         return DEFAULT_LOOKUP_FLOW_RESULT;
       }
       if (offlineModeRef.current) {
-        // 离线态不做自动价评估与仓库价对账（都需要服务器），只反馈命中并按需自动打印。
+        // 离线态不做自动价评估，只反馈命中并按需自动打印。
         playQueryFeedback("found");
         if (options.autoPrintEnabled) {
           const labelPrinted = await smartAutoPrint(
@@ -2031,11 +2011,7 @@ function ProductQueryContent() {
         }
         return DEFAULT_LOOKUP_FLOW_RESULT;
       }
-      const applicability = getWarehousePriceSyncApplicability(
-        targetDetail.localSupplierCode,
-        targetDetail.storePrice?.uuid,
-      );
-      if (applicability === "not_supplier") {
+      if (targetDetail.localSupplierCode?.trim() !== "200") {
         const autoPricingResult = await maybeHandleAutoPricing(targetDetail, {
           scanSource: options.scanSource,
         });
@@ -2052,155 +2028,50 @@ function ProductQueryContent() {
         return autoPricingResult;
       }
 
-      // 供应商 200 本轮只走仓库权威价对账，明确跳过现有自动定价评估。
+      // 供应商 200 跳过自动定价评估，直接使用刚从服务器取得的当前门店价。
       const currentStorePrice = targetDetail.storePrice;
-      if (applicability === "missing_store_price" || !currentStorePrice?.uuid) {
-        playQueryFeedback("found");
-        // 缺少目标分店价时没有可靠的当前售价，禁止自动打印旧标签。
+      playQueryFeedback("found");
+      if (!options.autoPrintEnabled) {
         return DEFAULT_LOOKUP_FLOW_RESULT;
       }
-
-      if (warehousePriceRequestInFlightRef.current) {
+      if (
+        !currentStorePrice?.uuid ||
+        currentStorePrice.retailPrice == null ||
+        !Number.isFinite(currentStorePrice.retailPrice) ||
+        currentStorePrice.retailPrice < 0
+      ) {
+        // 缺少有效门店价时，不能退回打印商品主价或旧标签。
+        setSnackbarMessage(t("warehousePriceSync.currentPriceUnavailable"));
         return DEFAULT_LOOKUP_FLOW_RESULT;
       }
-      warehousePriceRequestInFlightRef.current = true;
-      const mutation = beginHqSyncMutation(
+      const scannedCode = options.scanKeyword?.trim();
+      // 条码分页未加载到本次扫码项时，不回退打印主商品的条码和价格。
+      const knownCodes = [
+        targetDetail.barcode,
         targetDetail.productCode,
-        options.storeCodeOverride ?? selectedStoreCode,
-      );
-
-      setWarehousePriceSyncState((current) =>
-        reduceWarehousePriceSyncState(current, { type: "preview_started" }),
-      );
+        targetDetail.itemNumber,
+        currentStorePrice.storeProductCode,
+        targetDetail.clearancePrice?.clearanceBarcode,
+        ...targetDetail.setCodes.map((item) => item.setBarcode),
+        ...targetDetail.multiCodes.map((item) => item.barcode),
+      ];
+      if (!scannedCode || !knownCodes.some((code) => code?.trim() === scannedCode)) {
+        setSnackbarMessage(t("messages.codesLoadFailed"));
+        return DEFAULT_LOOKUP_FLOW_RESULT;
+      }
       try {
-        const snapshot = await syncWarehousePrice(currentStorePrice.uuid, {
-          confirmRetailPrice: false,
-          expectedWarehousePurchasePrice: null,
-          expectedWarehouseRetailPrice: null,
-          expectedStorePurchasePrice: currentStorePrice.purchasePrice ?? null,
-          expectedStoreRetailPrice: currentStorePrice.retailPrice ?? null,
-          expectedDiscountRate: normalizeDiscountRateValue(
-            currentStorePrice.discountRate,
-          ),
-        });
-        // 本地 mutation 此时已经提交，必须先保留 operation，再执行任何刷新或打印副作用。
-        presentHqSyncOperation(mutation, snapshot.hqSync);
-
-        let latestDetail = snapshot.storePrice
-          ? replaceStorePriceDetail(targetDetail, snapshot.storePrice)
-          : targetDetail;
-
-        if (snapshot.purchaseUpdated) {
-          // 后端同时更新派生条码价格；重新读取一次，确保主价和条码列表都使用同一新快照。
-          try {
-            latestDetail =
-              (await loadDetail(
-                targetDetail.productCode,
-                options.storeCodeOverride,
-              )) ?? latestDetail;
-          } catch (error) {
-            console.warn(
-              "[product-query] refresh after warehouse price sync failed",
-              {
-                message: isAxiosError(error) ? error.message : String(error),
-              },
-            );
-            setDetail(latestDetail);
-            setInitialDetail(cloneDetail(latestDetail));
-          }
-          setSnackbarMessage(t("warehousePriceSync.purchaseUpdated"));
-        } else if (snapshot.storePrice) {
-          setDetail(latestDetail);
-          setInitialDetail(cloneDetail(latestDetail));
-        }
-
-        playQueryFeedback("found");
-        const shouldPrint =
-          options.autoPrintEnabled === true &&
-          shouldAutoPrintWarehousePrice({
-            lookupOrigin: options.lookupOrigin,
-            stage: "preview_succeeded",
-            snapshot,
-            alreadyPrinted: false,
-          });
-        let labelPrinted = false;
-        if (shouldPrint && ensureCurrentDetailStoreScope(
-          latestDetail,
-          latestDetail.storePrice?.storeCode,
-        )) {
-          const scannedCode = options.scanKeyword?.trim();
-          // 条码分页未加载到本次扫码项时，不回退打印主商品的条码和价格。
-          const knownCodes = [
-            latestDetail.barcode,
-            latestDetail.productCode,
-            latestDetail.itemNumber,
-            latestDetail.storePrice?.storeProductCode,
-            latestDetail.clearancePrice?.clearanceBarcode,
-            ...latestDetail.setCodes.map((item) => item.setBarcode),
-            ...latestDetail.multiCodes.map((item) => item.barcode),
-          ];
-          const printStorePrice = latestDetail.storePrice;
-          // 进货价同步后的详情回读可能遇到并发改价，必须校验实际用于打印的记录和金额。
-          if (!printStorePrice?.uuid || printStorePrice.uuid !== snapshot.storePrice?.uuid ||
-              printStorePrice.retailPrice == null || !Number.isFinite(printStorePrice.retailPrice) ||
-              printStorePrice.retailPrice < 0) {
-            setSnackbarMessage(t("warehousePriceSync.currentPriceUnavailable"));
-          } else if (!scannedCode || !knownCodes.some((code) => code?.trim() === scannedCode)) {
-            setSnackbarMessage(t("messages.codesLoadFailed"));
-          } else {
-            try {
-              // 仓库零售价差异仅作页面提示，直接沿用门店售价、折扣及本次扫描条码。
-              labelPrinted = await smartAutoPrint(scannedCode, latestDetail);
-            } catch (error) {
-              setSnackbarMessage(getErrorMessage(error, "messages.printFailed"));
-            }
-          }
-        }
-
-        // 对账和打印全部结束后再释放交互锁，防止下一次扫描插入当前打印。
-        setWarehousePriceSyncState((current) =>
-          reduceWarehousePriceSyncState(current, {
-            type: "preview_succeeded",
-            snapshot,
-          }),
-        );
-        return {
-          keepCameraOpen: false,
-          labelPrinted,
-          autoPricingStatus: "no_action",
-        };
+        const labelPrinted = await smartAutoPrint(scannedCode, targetDetail);
+        return { ...DEFAULT_LOOKUP_FLOW_RESULT, labelPrinted };
       } catch (error) {
-        hqSyncMutationCoordinatorRef.current?.fail(mutation);
-        const message = getErrorMessage(
-          error,
-          "warehousePriceSync.previewFailed",
-        );
-        setWarehousePriceSyncState((current) =>
-          reduceWarehousePriceSyncState(current, {
-            type: "preview_failed",
-            message,
-          }),
-        );
-        setSnackbarMessage(message);
-        playQueryFeedback("error");
-        return {
-          keepCameraOpen: false,
-          labelPrinted: false,
-          autoPricingStatus: "failed",
-        };
-      } finally {
-        warehousePriceRequestInFlightRef.current = false;
+        setSnackbarMessage(getErrorMessage(error, "messages.printFailed"));
+        return DEFAULT_LOOKUP_FLOW_RESULT;
       }
     },
     [
-      beginHqSyncMutation,
       ensureCurrentDetailStoreScope,
       getErrorMessage,
-      loadDetail,
       maybeHandleAutoPricing,
       playQueryFeedback,
-      presentHqSyncOperation,
-      selectedStoreCode,
       smartAutoPrint,
       t,
     ],
@@ -2239,10 +2110,13 @@ function ProductQueryContent() {
           lookupSelectionOpenRef.current = false;
           setLookupVisible(false);
           setLookupSelectionSource(null);
+          const detailStartedAt = Date.now();
           const nextDetail = await loadDetail(items[0].productCode);
+          if (trigger === "scan") {
+            console.log("[product-query] scan detail ready", { elapsedMs: Date.now() - detailStartedAt });
+          }
           if (nextDetail) {
             return processLoadedDetail(nextDetail, {
-              lookupOrigin: trigger,
               scanSource,
               scanKeyword: nextKeyword,
               autoPrintEnabled: trigger === "scan" && continuousPrintEnabled,
@@ -2294,6 +2168,7 @@ function ProductQueryContent() {
 
       lookupRequestInFlightRef.current = true;
       invalidateActivePromotions();
+      const lookupStartedAt = Date.now();
 
       console.log("[product-query] lookup start", {
         selectedStoreCode,
@@ -2315,9 +2190,15 @@ function ProductQueryContent() {
           if (!activeMeta) {
             throw new OfflineCatalogUnavailableError();
           }
+          if (trigger === "scan") {
+            console.log("[product-query] scan snapshot check", { elapsedMs: Date.now() - lookupStartedAt });
+          }
           const offlineItems = await useOfflineCatalogStore
             .getState()
             .lookup(selectedStoreCode, nextKeyword);
+          if (trigger === "scan") {
+            console.log("[product-query] scan candidates ready", { elapsedMs: Date.now() - lookupStartedAt, offline: true });
+          }
           dispatchConnectivity({ type: "offline_lookup", keyword: nextKeyword });
           return await applyLookupItems(offlineItems, nextKeyword, trigger, scanSource);
         }
@@ -2325,6 +2206,9 @@ function ProductQueryContent() {
           keyword: nextKeyword,
           storeCode: selectedStoreCode,
         });
+        if (trigger === "scan") {
+          console.log("[product-query] scan candidates ready", { elapsedMs: Date.now() - lookupStartedAt, offline: false });
+        }
         dispatchConnectivity({ type: "request_succeeded" });
         return await applyLookupItems(items, nextKeyword, trigger, scanSource);
       } catch (error) {
@@ -2392,6 +2276,9 @@ function ProductQueryContent() {
         playQueryFeedback("error");
         return DEFAULT_LOOKUP_FLOW_RESULT;
       } finally {
+        if (trigger === "scan") {
+          console.log("[product-query] scan flow complete", { elapsedMs: Date.now() - lookupStartedAt, offline: offlineModeRef.current });
+        }
         lookupRequestInFlightRef.current = false;
         setLoading(false);
       }
@@ -2504,7 +2391,6 @@ function ProductQueryContent() {
           const nextDetail = await loadDetail(productCodeParam);
           if (nextDetail) {
             await processLoadedDetail(nextDetail, {
-              lookupOrigin: "deep-link",
             });
           }
           return;
@@ -2798,7 +2684,7 @@ function ProductQueryContent() {
     try {
       const nextDetail = await loadDetail(detail.productCode);
       if (nextDetail) {
-        await processLoadedDetail(nextDetail, { lookupOrigin: "refresh" });
+        await processLoadedDetail(nextDetail, {});
       }
     } catch (error) {
       setSnackbarMessage(getErrorMessage(error, "messages.refreshFailed"));
@@ -2836,7 +2722,6 @@ function ProductQueryContent() {
     setLookupSelectionSource(null);
     setAutoPrintOnLookupConfirm(false);
     setQueryFeedback({ type: "idle" });
-    setWarehousePriceSyncState(createWarehousePriceSyncState());
   }, [activateHqSyncScope, invalidateActivePromotions, isProductQueryBusy]);
 
   const handleConfirmLookup = useCallback(async () => {
@@ -2845,8 +2730,6 @@ function ProductQueryContent() {
       !lookupSelectionOpenRef.current ||
       lookupRequestInFlightRef.current ||
       storeSelectionInFlightRef.current ||
-      warehousePriceRequestInFlightRef.current ||
-      warehousePriceInteractionLocked ||
       autoPricingDialogSaving
     ) {
       return;
@@ -2862,7 +2745,6 @@ function ProductQueryContent() {
       const nextDetail = await loadDetail(selectedLookupProductCode);
       if (nextDetail) {
         flowResult = await processLoadedDetail(nextDetail, {
-          lookupOrigin: selectionSource ? "scan" : "manual",
           scanSource: selectionSource,
           scanKeyword: keyword,
           autoPrintEnabled: autoPrintOnLookupConfirm,
@@ -2901,7 +2783,6 @@ function ProductQueryContent() {
     restoreScanAbility,
     selectedLookupProductCode,
     t,
-    warehousePriceInteractionLocked,
   ]);
 
   const handleChangeStorePrice = useCallback(
@@ -3843,10 +3724,9 @@ function ProductQueryContent() {
   const isInvoiceExitBusy = useCallback(
     () => invoiceExitSavingRef.current || saving || Boolean(savingItemId) ||
       savingClearance || productTypeSaving || createProductBusy || hqSyncRetrying ||
-      autoPricingDialogSaving || warehousePriceSyncState.phase !== "idle" ||
-      Boolean(printingAction),
+      autoPricingDialogSaving || Boolean(printingAction),
     [autoPricingDialogSaving, createProductBusy, hqSyncRetrying, printingAction,
-      productTypeSaving, saving, savingClearance, savingItemId, warehousePriceSyncState.phase],
+      productTypeSaving, saving, savingClearance, savingItemId],
   );
 
   const performReturnToInvoices = useCallback(() => {
@@ -3930,17 +3810,6 @@ function ProductQueryContent() {
   }, [allowInvoiceExit, detail, handleSaveAll, initialDetail, invoiceReturnState, isInvoiceExitBusy, performReturnToInvoices]);
 
   const storePrice = detail?.storePrice;
-  const warehousePriceSnapshot = warehousePriceSyncState.snapshot;
-  // 只显示当前门店价记录的差异，避免切换商品/门店或离线后沿用旧对账提示。
-  const warehouseRetailPrice =
-    !offlineMode &&
-    Boolean(storePrice?.uuid) &&
-    warehousePriceSnapshot?.storePrice?.uuid === storePrice?.uuid &&
-    warehousePriceSnapshot?.warehouseRetailPrice != null &&
-    normalizeWarehouseMoney(storePrice?.retailPrice) != null &&
-    normalizeWarehouseMoney(storePrice?.retailPrice) !== warehousePriceSnapshot.warehouseRetailPrice
-      ? formatCurrency(warehousePriceSnapshot.warehouseRetailPrice)
-      : null;
   const clearancePrice = detail?.clearancePrice;
   const hqSyncDisplay = hqSyncOperation
     ? getHqSyncDisplayState(hqSyncOperation)
@@ -4302,7 +4171,6 @@ function ProductQueryContent() {
                   onStorePress={handleOpenStorePicker}
                   purchasePrice={storePurchaseInput}
                   retailPrice={storeRetailInput}
-                  warehouseRetailPrice={warehouseRetailPrice}
                   retailGp={retailGp}
                   retailGpTrend={retailGpTrend}
                   discountPercent={formatPercentValue(

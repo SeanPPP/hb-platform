@@ -169,8 +169,11 @@ async function ensureConnectedPrinter(options?: { status?: "connecting" | "recon
     // 审核模式只展示打印成功结果，不能读取蓝牙状态或连接真实设备。
     return;
   }
-  const status = await getNativePrinterStatus();
-  const savedPrinter = await PrinterStorage.getPrinter();
+  // 两项只读检查互不依赖，热连接打印时无需串行等待两次原生/存储桥接。
+  const [status, savedPrinter] = await Promise.all([
+    getNativePrinterStatus(),
+    PrinterStorage.getPrinter(),
+  ]);
   const store = usePrinterStore.getState();
   if (store.autoReconnectPaused) {
     store.setStatus("paused");
