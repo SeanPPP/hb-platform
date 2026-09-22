@@ -173,6 +173,7 @@
     <Compile Include="WeeklyReportTests.cs" />
     <Compile Include="SalesDetailQueryFlightsTests.cs" />
     <Compile Include="SupplierReportReadTests.cs" />
+    <Compile Include="MobileProductReportRangeTests.cs" />
     <Compile Include="ProductReportPagingSqlTests.cs" />
     <Compile Include="HbSalesCoverageSqlTests.cs" />
     <Compile Include="HbSalesSourceRowsSqlTests.cs" />

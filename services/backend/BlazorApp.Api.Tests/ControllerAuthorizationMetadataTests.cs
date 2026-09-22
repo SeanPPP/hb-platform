@@ -340,6 +340,10 @@ public class ControllerAuthorizationMetadataTests
             Permissions.Reports.ProductMovementView
         );
         yield return Policy<SalesDashboardController>(
+            nameof(SalesDashboardController.GetChinaSupplierBranchTotalsAsync),
+            Permissions.Reports.ProductMovementView
+        );
+        yield return Policy<SalesDashboardController>(
             nameof(SalesDashboardController.GetSupplierStoreSales),
             Permissions.Reports.ProductMovementView
         );
