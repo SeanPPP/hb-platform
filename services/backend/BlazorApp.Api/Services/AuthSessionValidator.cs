@@ -27,7 +27,9 @@ namespace BlazorApp.Api.Services
 
     public sealed record AuthMobileDeviceValidationResult(
         bool IsValid,
-        IReadOnlyList<string> ActiveRoleNames);
+        IReadOnlyList<string> ActiveRoleNames,
+        IReadOnlyList<string>? AccessibleStoreCodes = null,
+        string? UserGuid = null);
 
     public sealed class AuthSessionValidator(
         SqlSugarContext dbContext,
@@ -92,7 +94,7 @@ namespace BlazorApp.Api.Services
                 || !MobileDeviceBindingContextResolver.TryResolve(principal, out var binding)
                 || !string.Equals(binding.UserGuid, userGuid, StringComparison.Ordinal))
             {
-                return new AuthMobileDeviceValidationResult(false, Array.Empty<string>());
+                return new AuthMobileDeviceValidationResult(false, Array.Empty<string>(), Array.Empty<string>());
             }
 
             // 两个数据库各执行一次实时聚合查询；并行发起，认证路径不再串行等待五次往返。
@@ -105,7 +107,6 @@ namespace BlazorApp.Api.Services
                         user.UserGUID == userStore.UserGUID && !userStore.IsDeleted,
                         JoinType.Left,
                         userStore.StoreGUID == store.StoreGUID
-                            && store.IsActive
                             && !store.IsDeleted,
                         JoinType.Left,
                         user.UserGUID == userRole.UserGUID && !userRole.IsDeleted,
@@ -121,6 +122,7 @@ namespace BlazorApp.Api.Services
                 {
                     UserGuid = user.UserGUID,
                     StoreCode = store.StoreCode,
+                    StoreIsActive = store.IsActive,
                     RoleName = role.RoleName,
                 })
                 .ToListAsync(cancellationToken);
@@ -130,13 +132,13 @@ namespace BlazorApp.Api.Services
             var accountRows = await accountTask;
             var hasStoreAccess = accountRows.Any(row =>
                 string.Equals(row.UserGuid, userGuid, StringComparison.Ordinal)
-                &&
-                string.Equals(row.StoreCode, bindingValidation.StoreCode, StringComparison.OrdinalIgnoreCase));
+                && row.StoreIsActive == true
+                && string.Equals(row.StoreCode, bindingValidation.StoreCode, StringComparison.OrdinalIgnoreCase));
             if (!bindingValidation.IsValid
                 || !string.Equals(bindingValidation.UserGuid, userGuid, StringComparison.Ordinal)
                 || !hasStoreAccess)
             {
-                return new AuthMobileDeviceValidationResult(false, Array.Empty<string>());
+                return new AuthMobileDeviceValidationResult(false, Array.Empty<string>(), Array.Empty<string>());
             }
 
             return new AuthMobileDeviceValidationResult(
@@ -146,7 +148,15 @@ namespace BlazorApp.Api.Services
                     .Where(name => !string.IsNullOrWhiteSpace(name))
                     .Select(name => name!)
                     .Distinct(StringComparer.Ordinal)
-                    .ToArray());
+                    .ToArray(),
+                accountRows
+                    .Where(row => string.Equals(row.UserGuid, userGuid, StringComparison.Ordinal))
+                    .Select(row => row.StoreCode)
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code!)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray(),
+                userGuid);
         }
 
         public async Task<AuthWebSessionValidationResult> ValidateWebAccessSessionAsync(
@@ -214,6 +224,7 @@ namespace BlazorApp.Api.Services
         {
             public string UserGuid { get; set; } = string.Empty;
             public string? StoreCode { get; set; }
+            public bool? StoreIsActive { get; set; }
             public string? RoleName { get; set; }
         }
     }

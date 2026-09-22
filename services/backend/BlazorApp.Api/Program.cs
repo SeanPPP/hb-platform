@@ -560,6 +560,8 @@ authenticationBuilder.AddJwtBearer(options =>
                         context.Fail("用户、设备绑定或登录会话已失效");
                         return;
                     }
+                    // 仅复用本次请求认证时的实时门店快照，避免认证后控制器重复查询且不形成跨请求缓存。
+                    context.HttpContext.Items[typeof(AuthMobileDeviceValidationResult)] = validation;
                     activeRoleNames = validation.ActiveRoleNames;
                 }
                 else

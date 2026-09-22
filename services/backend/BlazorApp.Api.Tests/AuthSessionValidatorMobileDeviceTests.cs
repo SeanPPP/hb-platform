@@ -108,6 +108,17 @@ public sealed class AuthSessionValidatorMobileDeviceTests
     {
         await using var fixture = await MainDatabaseFixture.CreateAsync();
         var binding = CreateBindingContext();
+        var now = DateTime.UtcNow;
+        await fixture.Database.Insertable(new Store
+        {
+            StoreGUID = "store-2", StoreCode = "S002", StoreName = "Inactive Store",
+            IsActive = false, IsDeleted = false, CreatedAt = now, UpdatedAt = now,
+        }).ExecuteCommandAsync();
+        await fixture.Database.Insertable(new UserStore
+        {
+            UserStoreGUID = "user-store-2", UserGUID = binding.UserGuid, StoreGUID = "store-2",
+            IsPrimary = false, IsDeleted = false, AssignedAt = now, CreatedAt = now, UpdatedAt = now,
+        }).ExecuteCommandAsync();
         var bindingGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var mainQueryStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var activationService = new Mock<IMobileDeviceActivationService>(MockBehavior.Strict);
@@ -137,6 +148,7 @@ public sealed class AuthSessionValidatorMobileDeviceTests
 
         Assert.True(result.IsValid);
         Assert.Equal(["StoreUser"], result.ActiveRoleNames);
+        Assert.Equal(["S001", "S002"], result.AccessibleStoreCodes);
         Assert.Equal(1, selectCount);
         activationService.Verify(service => service.ValidateTokenBindingStateAsync(
             binding,
@@ -189,6 +201,23 @@ public sealed class AuthSessionValidatorMobileDeviceTests
 
         Assert.True(result.IsValid);
         Assert.Empty(result.ActiveRoleNames);
+    }
+
+    [Fact]
+    public async Task MobileDeviceAggregateValidation_InactiveBindingStoreFailsClosed()
+    {
+        await using var fixture = await MainDatabaseFixture.CreateAsync(storeActive: false);
+        var binding = CreateBindingContext();
+        var activationService = new Mock<IMobileDeviceActivationService>(MockBehavior.Strict);
+        activationService
+            .Setup(service => service.ValidateTokenBindingStateAsync(binding, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MobileDeviceTokenBindingValidationResult(true, binding.UserGuid, "S001"));
+
+        var result = await new AuthSessionValidator(fixture.Context, activationService.Object)
+            .ValidateMobileDeviceAccessAsync(binding.UserGuid, CreateMobilePrincipal(binding));
+
+        Assert.False(result.IsValid);
+        Assert.Empty(result.AccessibleStoreCodes ?? []);
     }
 
     [Theory]
@@ -276,7 +305,8 @@ public sealed class AuthSessionValidatorMobileDeviceTests
             bool isDeleted = false,
             bool storeAssignmentDeleted = false,
             bool roleActive = true,
-            bool roleDeleted = false)
+            bool roleDeleted = false,
+            bool storeActive = true)
         {
             var connection = new SqliteConnection($"Data Source={Path.Combine(Path.GetTempPath(), $"auth-{Guid.NewGuid():N}.db")}");
             await connection.OpenAsync();
@@ -298,7 +328,7 @@ public sealed class AuthSessionValidatorMobileDeviceTests
             await database.Insertable(new Store
             {
                 StoreGUID = "store-1", StoreCode = "S001", StoreName = "Store 1",
-                IsActive = true, IsDeleted = false, CreatedAt = now, UpdatedAt = now,
+                IsActive = storeActive, IsDeleted = false, CreatedAt = now, UpdatedAt = now,
             }).ExecuteCommandAsync();
             await database.Insertable(new UserStore
             {
