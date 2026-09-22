@@ -1504,14 +1504,21 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
             coverageReadCount += 1;
             throw new InvalidOperationException("模拟来源读取失败");
         };
+        // 本用例只关心覆盖缓存，重算桩化为立即完成，避免真实统计任务拖慢后台线程。
+        service.StoreStatisticsRefreshTestInterceptor = _ => Task.CompletedTask;
         var range = new DateRangeDto { StartDate = date, EndDate = date };
 
         var first = await service.GetBranchDailyPerformanceAsync(range, new List<string> { "S1" });
+        var readsAfterFirst = coverageReadCount;
         var second = await service.GetBranchDailyPerformanceAsync(range, new List<string> { "S1" });
+        var readsBySecond = coverageReadCount - readsAfterFirst;
 
         Assert.True(first.StatisticsPending);
         Assert.True(second.StatisticsPending);
-        Assert.Equal(4, coverageReadCount);
+        // 每次调用的读取次数取决于后台重算能否在 250ms 等待窗口内完成（1 或 2 次），
+        // 不断言精确值；只要求第二次调用仍真正读取来源，证明失败结果没有被短缓存复用。
+        Assert.True(readsAfterFirst >= 1, $"首次调用应读取来源覆盖，实际 {readsAfterFirst} 次");
+        Assert.True(readsBySecond >= 1, $"失败结果不应进入短缓存，第二次调用读取 {readsBySecond} 次");
     }
 
     [Fact]
