@@ -457,20 +457,22 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   amountColumn: {
-    width: 78,
+    // 英文表头 "China sales ▼" 约 82pt，78pt 会截成 "China sa…"。
+    width: 84,
     gap: 2,
   },
   shareColumn: {
-    width: 122,
+    // 占比数字 44 + 间距 6 + 横条 58；再宽就会把分店名挤到 "Lake Ha…"。
+    width: 108,
     gap: 3,
   },
   shareCell: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: 6,
   },
   shareNumbers: {
-    width: 46,
+    width: 44,
     gap: 2,
   },
   deltaColumn: {
