@@ -142,7 +142,7 @@ internal sealed class SalesDetailQueryProjectionMaintenanceRunner(
                 System.Globalization.DateTimeStyles.None, out var start)
             || !DateTime.TryParseExact(endValue, "yyyy-MM-dd", null,
                 System.Globalization.DateTimeStyles.None, out var end)
-            || end.Date < start.Date || (end.Date - start.Date).Days > 365
+            || end.Date < start.Date || (end.Date - start.Date).Days > 730
             || string.IsNullOrWhiteSpace(expectedDatabase)
             || string.IsNullOrWhiteSpace(expectedServer)
             || string.IsNullOrWhiteSpace(mainConnection)

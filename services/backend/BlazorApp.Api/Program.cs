@@ -1081,6 +1081,8 @@ builder.Services.AddHostedService<BatchProductSalesDiscountWorker>();
 builder.Services.AddHostedService<ProductMovementReportSnapshotWorker>();
 // 移动端中国供应商页签默认视图预热：每个实例各自维护内存缓存，无需租约。
 builder.Services.AddHostedService<MobileChinaReportCacheWarmupWorker>();
+builder.Services.AddHostedService<ProductStoreDailyColumnstoreMaintenanceWorker>();
+builder.Services.AddHostedService<SalesDetailMonthlyProjectionWorker>();
 builder.Services.AddScoped<
     IWarehouseProductFlowAnalysisService,
     WarehouseProductFlowAnalysisService
