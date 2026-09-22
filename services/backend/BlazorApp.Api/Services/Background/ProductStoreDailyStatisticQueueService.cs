@@ -742,6 +742,10 @@ public sealed class ProductStoreDailyStatisticQueueService
             );
             if (!lease.Acquired)
             {
+                lease = await TryTakeOverOrphanSessionLeaseAsync(date, dateKey, lease.Lease) ?? lease;
+            }
+            if (!lease.Acquired)
+            {
                 await ReturnClaimToQueueAsync(context, jobId, date);
                 return false;
             }
@@ -1006,6 +1010,73 @@ public sealed class ProductStoreDailyStatisticQueueService
         }
 
         return progress;
+    }
+
+    /// <summary>
+    /// 完整刷新崩溃后遗留的 sqlsess1/9999 标记，普通 TTL 抢占永远越不过去。这里在独立 scope
+    /// 里取同一日期的 Session applock：取不到说明原 owner 仍在执行，保持跳过；取到即证明原
+    /// owner 的 SQL Session 已退出，持锁期间按观测 token CAS 转为本 worker 的 TTL 租约。
+    /// 非 SQL Server 无法证明 owner 已退出，任何探测/接管异常也都保守视为未接管。
+    /// </summary>
+    private async Task<ScheduledTaskLeaseAcquireResult?> TryTakeOverOrphanSessionLeaseAsync(
+        DateTime date,
+        string dateKey,
+        ScheduledTaskLease? observedLease
+    )
+    {
+        var observedToken = observedLease?.LeaseToken;
+        if (
+            observedLease?.Status != ScheduledTaskLeaseStatus.Running
+            || observedToken == null
+            || !observedToken.StartsWith(
+                SalesStatisticsDateExecutionGuard.SessionLeaseTokenPrefix,
+                StringComparison.Ordinal
+            )
+        )
+        {
+            return null;
+        }
+
+        try
+        {
+            // guard 会把所在 context 固定到一条不入池的连接并挂 fail-closed 钩子，
+            // 必须使用独立 scope，不能污染执行统计的 context。
+            using var takeoverScope = _scopeFactory.CreateScope();
+            var takeoverContext = takeoverScope.ServiceProvider.GetRequiredService<SqlSugarContext>();
+            var takeoverLeaseService = takeoverScope.ServiceProvider
+                .GetRequiredService<ScheduledTaskLeaseService>();
+            await using var guard = await SalesStatisticsDateExecutionGuard.TryAcquireAsync(
+                takeoverContext,
+                date,
+                _logger
+            );
+            if (!guard.Acquired || !guard.IsSqlServerSessionGuarded)
+            {
+                return null;
+            }
+
+            var result = await takeoverLeaseService.TryTakeOverOrphanSessionLeaseAsync(
+                SalesStatisticsAlignmentService.DailyFullRefreshLeaseTaskType,
+                dateKey,
+                observedToken,
+                ExecutionLeaseDuration,
+                guard
+            );
+            if (result.Acquired)
+            {
+                _logger.LogWarning(
+                    "商品统计接管了完整刷新崩溃遗留的日期租约: Date={Date}, PreviousOwner={PreviousOwner}",
+                    dateKey,
+                    observedLease.OwnerInstanceId
+                );
+            }
+            return result;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "接管遗留 sqlsess1 日期租约失败，保守跳过: Date={Date}", dateKey);
+            return null;
+        }
     }
 
     private async Task<bool> HasActiveDateLeaseAsync(DateTime date)
