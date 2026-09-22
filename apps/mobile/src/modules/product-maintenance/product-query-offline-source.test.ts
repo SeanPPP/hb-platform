@@ -33,6 +33,11 @@ assert.equal((source.match(/\.refreshCatalog\(/g) ?? []).length, 1, "查询页�
 // handleLookup：在线失败时先判定网络不可用，再进入离线并回退本地查询。
 const lookupStart = indexOfOrFail("const handleLookup = useCallback(", "商品查询入口必须存在");
 const lookupSource = source.slice(lookupStart, source.indexOf("const wasOfflineRef = useRef(false);", lookupStart));
+assert.match(
+  lookupSource,
+  /trigger === "scan" &&[\s\S]*?!isIosReviewSessionActive\(\)[\s\S]*?scanProductLabel\(lookupRequest\)/,
+  "iOS 审核模拟接口没有 scan-label 路由，扫码必须继续使用既有 lookup",
+);
 assert.ok(
   lookupSource.indexOf("isNetworkUnavailableError(error)") < lookupSource.indexOf("enterOfflineMode(nextKeyword)"),
   "必须先判定网络不可用再进入离线模式",

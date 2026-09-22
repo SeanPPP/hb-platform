@@ -157,6 +157,201 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
+        public async Task<ApiResponse<StoreProductScanLabelResultDto>> ScanLabelAsync(
+            StoreProductLookupRequestDto request,
+            List<string>? accessibleStoreCodes
+        )
+        {
+            var totalSw = Stopwatch.StartNew();
+            var keyword = request.Keyword?.Trim();
+            if (string.IsNullOrWhiteSpace(keyword))
+            {
+                return ApiResponse<StoreProductScanLabelResultDto>.Error("查询内容不能为空");
+            }
+
+            try
+            {
+                // 复用既有精确候选查询和授权门店范围；本入口只读，不补建价格、不写仓库价。
+                var candidatesResult = await LookupAsync(
+                    new StoreProductLookupRequestDto { Keyword = keyword, StoreCode = request.StoreCode },
+                    accessibleStoreCodes
+                );
+                var candidates = candidatesResult.Data ?? new List<StoreProductLookupItemDto>();
+                if (!candidatesResult.Success)
+                {
+                    return ApiResponse<StoreProductScanLabelResultDto>.Error(candidatesResult.Message);
+                }
+
+                var result = new StoreProductScanLabelResultDto { Candidates = candidates };
+                var productCodes = candidates
+                    .Select(x => x.ProductCode)
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Distinct(StringComparer.Ordinal)
+                    .ToList();
+                if (productCodes.Count == 1)
+                {
+                    var productCode = productCodes[0];
+                    var detailResult = await GetFastDetailAsync(
+                        productCode,
+                        request.StoreCode,
+                        accessibleStoreCodes
+                    );
+                    if (detailResult.Success && detailResult.Data != null)
+                    {
+                        result.Detail = detailResult.Data;
+                        var matchingCandidates = candidates.Where(x =>
+                            string.Equals(x.ProductCode, productCode, StringComparison.Ordinal));
+                        // 同一商品存在多个不同命中来源时不猜测打印目标，避免条码冲突导致错价签。
+                        if (matchingCandidates.Count() == 1)
+                        {
+                            var matchedCandidate = matchingCandidates.Single();
+                            result.PrintTarget = await BuildScanLabelPrintTargetAsync(
+                                keyword,
+                                matchedCandidate.MatchSource,
+                                result.Detail,
+                                request.StoreCode,
+                                accessibleStoreCodes
+                            );
+                        }
+                    }
+                }
+
+                _logger.LogInformation(
+                    "StoreProductMaintenance scan-label completed requestedStore={RequestedStore} candidate_count={CandidateCount} unique_product_count={UniqueProductCount} printable={Printable} total_ms={TotalMs}",
+                    request.StoreCode,
+                    candidates.Count,
+                    productCodes.Count,
+                    result.PrintTarget != null,
+                    totalSw.ElapsedMilliseconds
+                );
+                return ApiResponse<StoreProductScanLabelResultDto>.OK(result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "扫码价签查询失败");
+                return ApiResponse<StoreProductScanLabelResultDto>.Error("扫码价签查询失败，请稍后重试");
+            }
+        }
+
+        private async Task<StoreProductPrintTargetDto?> BuildScanLabelPrintTargetAsync(
+            string keyword,
+            string? matchSource,
+            StoreProductDetailDto detail,
+            string? requestedStoreCode,
+            List<string>? accessibleStoreCodes
+        )
+        {
+            var storeCode = detail.StorePrice?.StoreCode
+                ?? detail.ClearancePrice?.StoreCode
+                ?? ResolveFastDetailTargetStoreCode(
+                    requestedStoreCode,
+                    ResolveScopedStoreCodes(requestedStoreCode, accessibleStoreCodes)
+                );
+
+            if (string.Equals(matchSource, "ClearanceBarcode", StringComparison.Ordinal))
+            {
+                var clearance = detail.ClearancePrice;
+                return clearance?.ClearancePrice is > 0
+                    && !string.IsNullOrWhiteSpace(clearance.ClearanceBarcode)
+                    ? new StoreProductPrintTargetDto
+                    {
+                        Kind = "clearance",
+                        Barcode = clearance.ClearanceBarcode!,
+                        RetailPrice = clearance.ClearancePrice.Value,
+                        ProductCode = detail.ProductCode,
+                        CodeId = clearance.Uuid,
+                        StoreCode = clearance.StoreCode,
+                    }
+                    : null;
+            }
+
+            if (string.Equals(matchSource, "ProductBarcode", StringComparison.Ordinal)
+                || string.Equals(matchSource, "ItemNumber", StringComparison.Ordinal))
+            {
+                var price = detail.StorePrice;
+                return price?.RetailPrice is > 0
+                    && !string.IsNullOrWhiteSpace(detail.Barcode)
+                    ? new StoreProductPrintTargetDto
+                    {
+                        Kind = "product",
+                        Barcode = detail.Barcode!,
+                        RetailPrice = price.RetailPrice.Value,
+                        DiscountRate = price.DiscountRate,
+                        ProductCode = detail.ProductCode,
+                        CodeId = price.Uuid,
+                        StoreCode = price.StoreCode ?? storeCode,
+                    }
+                    : null;
+            }
+
+            if (!string.Equals(matchSource, "SetBarcode", StringComparison.Ordinal))
+            {
+                return null;
+            }
+
+            var setRows = await _db.Queryable<ProductSetCode>()
+                .Where(x => !x.IsDeleted && x.ProductCode == detail.ProductCode && x.SetBarcode == keyword)
+                .Select(x => new
+                {
+                    x.SetCodeId,
+                    x.SetProductCode,
+                    x.SetBarcode,
+                    x.SetRetailPrice,
+                    x.SetPurchasePrice,
+                    x.IsActive,
+                })
+                .ToListAsync();
+            var set = setRows.Count == 1 ? setRows[0] : null;
+            if (set == null || !set.IsActive || string.IsNullOrWhiteSpace(set.SetBarcode))
+            {
+                return null;
+            }
+
+            decimal? retailPrice = set.SetRetailPrice;
+            decimal? discountRate = null;
+            string? codeId = set.SetCodeId;
+            var kind = "set";
+            var resolvedBarcode = set.SetBarcode!;
+            if (detail.ProductType == 2)
+            {
+                var resolvedSetProductCode = ResolveSetProductCode(set.SetProductCode, set.SetCodeId);
+                var projectionQuery = _db.Queryable<StoreMultiCodeProduct>()
+                    .Where(x => !x.IsDeleted
+                        && x.IsActive
+                        && x.ProductCode == detail.ProductCode
+                        && x.MultiCodeProductCode == resolvedSetProductCode);
+                if (!string.IsNullOrWhiteSpace(storeCode))
+                {
+                    projectionQuery = projectionQuery.Where(x => x.StoreCode == storeCode);
+                }
+                var projections = await projectionQuery.ToListAsync();
+                var projection = projections.Count == 1 ? projections[0] : null;
+                if (projection == null
+                    || !string.Equals(projection.MultiBarcode, keyword, StringComparison.Ordinal))
+                {
+                    return null;
+                }
+                retailPrice = projection.MultiCodeRetailPrice;
+                discountRate = projection.DiscountRate;
+                codeId = projection.UUID;
+                kind = "multi";
+                resolvedBarcode = projection.MultiBarcode!;
+            }
+
+            return retailPrice is > 0
+                ? new StoreProductPrintTargetDto
+                {
+                    Kind = kind,
+                    Barcode = resolvedBarcode,
+                    RetailPrice = retailPrice.Value,
+                    DiscountRate = discountRate,
+                    ProductCode = detail.ProductCode,
+                    CodeId = codeId,
+                    StoreCode = storeCode,
+                }
+                : null;
+        }
+
         public async Task<ApiResponse<StoreProductDetailDto>> GetDetailAsync(
             string productCode,
             string? storeCode,

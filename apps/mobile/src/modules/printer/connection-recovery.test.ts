@@ -25,6 +25,8 @@ async function run() {
   let writeError: Error | null;
   let connectError: Error | null;
   let disconnectError: Error | null;
+  let statusReads: number;
+  let storageReads: number;
   let printGate: ReturnType<typeof deferred> | null;
   let connectGate: ReturnType<typeof deferred> | null;
   let reviewMode = false;
@@ -39,7 +41,7 @@ async function run() {
 
   // 仅替换蓝牙与存储边界，实际执行共享 API 和 Zustand 状态转换。
   mockModule("./native", {
-    getPrinterStatus: async () => ({ ...nativeStatus }),
+    getPrinterStatus: async () => { statusReads += 1; return { ...nativeStatus }; },
     connectPrinter: async (address: string) => {
       events.push(`connect:${address}`);
       await connectGate?.promise;
@@ -63,7 +65,7 @@ async function run() {
   });
   mockModule("./storage", {
     PrinterStorage: {
-      getPrinter: async () => saved,
+      getPrinter: async () => { storageReads += 1; return saved; },
       setPrinter: async (printer: SavedPrinter) => { saved = printer; },
       clearPrinter: async () => { saved = null; },
       getReceiptPrinter: async () => receipt,
@@ -81,6 +83,8 @@ async function run() {
     writeError = null;
     connectError = null;
     disconnectError = null;
+    statusReads = 0;
+    storageReads = 0;
     printGate = null;
     connectGate = null;
     reviewMode = false;
@@ -99,6 +103,22 @@ async function run() {
     await api.printProductLabelPayload(payload);
     assert.deepEqual(events, ["print:label", "disconnect", "connect:label", "print:label"]);
     assert.equal(usePrinterStore.getState().status, "connected");
+  });
+
+  test("已 hydration 的热连接打印复用内存地址，只读取一次原生状态", async () => {
+    assert.equal((await api.getSavedPrinter())?.address, "label");
+    await api.printProductLabelPayload(payload);
+    assert.equal(statusReads, 1);
+    assert.equal(storageReads, 0);
+    assert.deepEqual(events, ["print:label"]);
+  });
+
+  test("切换标签打印机时先更新内存地址，再连接并向新设备打印", async () => {
+    await api.selectPrinter({ name: "Other", address: "other", bonded: true, connected: false });
+    assert.equal((await api.getSavedPrinter())?.address, "other");
+    await api.printProductLabelPayload(payload);
+    assert.deepEqual(events, ["disconnect", "connect:other", "print:other"]);
+    assert.equal(storageReads, 0);
   });
 
   test("旧 iOS 原生包写入超时后也丢弃会话，重试前重新连接且不自动重印", async () => {

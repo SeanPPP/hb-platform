@@ -375,8 +375,12 @@ class HbPrinterModule(
   fun printDiscountLabel(payload: ReadableMap, printType: String?, promise: Promise) {
     Thread {
       try {
+        val startedAt = SystemClock.elapsedRealtime()
         val command = buildDiscountLabelCommand(payload, printType?.trim().orEmpty())
+        val builtAt = SystemClock.elapsedRealtime()
         writePrinterCommand(command, "GB18030")
+        val sentAt = SystemClock.elapsedRealtime()
+        Log.i("HbPrinterPerf", "discountLabel buildMs=${builtAt - startedAt} writeMs=${sentAt - builtAt} totalMs=${sentAt - startedAt}")
         promise.resolve(true)
       } catch (error: Exception) {
         promise.reject("PRINT_DISCOUNT_LABEL_ERROR", error.message, error)

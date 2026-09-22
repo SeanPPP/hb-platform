@@ -68,6 +68,7 @@ import {
   getProductFastDetail,
   ensureStorePrice,
   lookupProducts,
+  scanProductLabel,
   retryProductHqSyncOperation,
   updateMultiCode,
   updateSetCode,
@@ -104,7 +105,10 @@ import type {
   ProductDetail,
   ProductHqSyncOperation,
   ProductLookupItem,
+  ScanLabelPrintTarget,
+  ScanLabelResult,
 } from "@/modules/product-maintenance/types";
+import { getVerifiedScanPrintTarget } from "@/modules/product-maintenance/scan-label";
 import {
   createProductDetailRequestCoordinator,
   createProductHqSyncMutationCoordinator,
@@ -342,6 +346,7 @@ interface DetailPostLoadOptions {
   scanSource?: ScanSource | null;
   scanKeyword?: string;
   autoPrintEnabled?: boolean;
+  printTarget?: ScanLabelPrintTarget | null;
 }
 
 interface NumericInputModalState {
@@ -644,6 +649,7 @@ function ProductQueryContent() {
   const numericInputConfirmRef = useRef<((value: string) => void) | null>(null);
   const lookupSelectionOpenRef = useRef(false);
   const lookupRequestInFlightRef = useRef(false);
+  const scanLabelUnsupportedUntilRef = useRef(0);
   const storeSelectionInFlightRef = useRef(false);
   const resumeHiddenScannerFocusTimerRef = useRef<ReturnType<
     typeof setTimeout
@@ -1757,6 +1763,7 @@ function ProductQueryContent() {
       options?: {
         barcode?: string | null;
         retailPrice?: number | null;
+        discountRate?: number | null;
         action?: PrintAction;
         printType?: string | null;
       },
@@ -1787,6 +1794,7 @@ function ProductQueryContent() {
           {
             barcode: options?.barcode,
             retailPrice: options?.retailPrice,
+            discountRate: options?.discountRate,
           },
           options?.printType,
         );
@@ -1797,6 +1805,7 @@ function ProductQueryContent() {
             {
               barcode: options?.barcode,
               retailPrice: options?.retailPrice,
+              discountRate: options?.discountRate,
             },
             options?.printType,
           );
@@ -1836,10 +1845,26 @@ function ProductQueryContent() {
   );
 
   const smartAutoPrint = useCallback(
-    async (scanKeyword: string, targetDetail: ProductDetail) => {
+    async (
+      scanKeyword: string,
+      targetDetail: ProductDetail,
+      printTarget?: ScanLabelPrintTarget | null,
+    ) => {
       const kw = scanKeyword.trim();
 
-      const setMatch = targetDetail.setCodes.find(
+      if (printTarget && printTarget.kind !== "clearance") {
+        return sendProductLabel(targetDetail, {
+          barcode: printTarget.barcode,
+          retailPrice: printTarget.retailPrice,
+          discountRate: printTarget.discountRate ?? 0,
+          action: printTarget.kind === "product"
+            ? "product"
+            : `${printTarget.kind}:${printTarget.codeId}` as PrintAction,
+          printType: printTarget.kind === "product" ? null : smallLabel ? "small" : null,
+        });
+      }
+
+      const setMatch = printTarget ? undefined : targetDetail.setCodes.find(
         (item) => item.setBarcode?.trim() === kw,
       );
       if (setMatch?.setBarcode?.trim()) {
@@ -1851,7 +1876,7 @@ function ProductQueryContent() {
         });
       }
 
-      const multiMatch = targetDetail.multiCodes.find(
+      const multiMatch = printTarget ? undefined : targetDetail.multiCodes.find(
         (item) => item.barcode?.trim() === kw,
       );
       if (multiMatch?.barcode?.trim()) {
@@ -2006,6 +2031,7 @@ function ProductQueryContent() {
           const labelPrinted = await smartAutoPrint(
             options.scanKeyword ?? "",
             targetDetail,
+            options.printTarget,
           );
           return { ...DEFAULT_LOOKUP_FLOW_RESULT, labelPrinted };
         }
@@ -2021,6 +2047,7 @@ function ProductQueryContent() {
             const labelPrinted = await smartAutoPrint(
               options.scanKeyword ?? "",
               targetDetail,
+              options.printTarget,
             );
             return { ...autoPricingResult, labelPrinted };
           }
@@ -2035,10 +2062,12 @@ function ProductQueryContent() {
         return DEFAULT_LOOKUP_FLOW_RESULT;
       }
       if (
-        !currentStorePrice?.uuid ||
-        currentStorePrice.retailPrice == null ||
-        !Number.isFinite(currentStorePrice.retailPrice) ||
-        currentStorePrice.retailPrice < 0
+        options.printTarget?.kind !== "clearance" && (
+          !currentStorePrice?.uuid ||
+          currentStorePrice.retailPrice == null ||
+          !Number.isFinite(currentStorePrice.retailPrice) ||
+          currentStorePrice.retailPrice < 0
+        )
       ) {
         // 缺少有效门店价时，不能退回打印商品主价或旧标签。
         setSnackbarMessage(t("warehousePriceSync.currentPriceUnavailable"));
@@ -2050,8 +2079,9 @@ function ProductQueryContent() {
         targetDetail.barcode,
         targetDetail.productCode,
         targetDetail.itemNumber,
-        currentStorePrice.storeProductCode,
+        currentStorePrice?.storeProductCode,
         targetDetail.clearancePrice?.clearanceBarcode,
+        options.printTarget?.barcode,
         ...targetDetail.setCodes.map((item) => item.setBarcode),
         ...targetDetail.multiCodes.map((item) => item.barcode),
       ];
@@ -2060,7 +2090,7 @@ function ProductQueryContent() {
         return DEFAULT_LOOKUP_FLOW_RESULT;
       }
       try {
-        const labelPrinted = await smartAutoPrint(scannedCode, targetDetail);
+        const labelPrinted = await smartAutoPrint(scannedCode, targetDetail, options.printTarget);
         return { ...DEFAULT_LOOKUP_FLOW_RESULT, labelPrinted };
       } catch (error) {
         setSnackbarMessage(getErrorMessage(error, "messages.printFailed"));
@@ -2085,7 +2115,9 @@ function ProductQueryContent() {
       nextKeyword: string,
       trigger: LookupTrigger,
       scanSource: ScanSource | undefined,
+      scanResult?: ScanLabelResult,
     ): Promise<LookupFlowResult> => {
+        if (!selectedStoreCode) return DEFAULT_LOOKUP_FLOW_RESULT;
         console.log("[product-query] lookup success", {
           count: items.length,
           trigger,
@@ -2111,16 +2143,58 @@ function ProductQueryContent() {
           setLookupVisible(false);
           setLookupSelectionSource(null);
           const detailStartedAt = Date.now();
-          const nextDetail = await loadDetail(items[0].productCode);
+          const fastResult = scanResult?.detail ? scanResult : undefined;
+          let nextDetail: ProductDetail | null;
+          if (fastResult?.detail) {
+            if (fastResult.detail.productCode !== items[0].productCode) {
+              throw new Error("INVALID_SCAN_LABEL_RESPONSE");
+            }
+            // 单次在线响应已带当前门店详情，先完成打印；码表分页只负责后续编辑展示。
+            nextDetail = fastResult.detail;
+            activateHqSyncScope(nextDetail.productCode, selectedStoreCode);
+            invalidateActivePromotions();
+            activeDetailProductCodeRef.current = nextDetail.productCode;
+            loadedDetailStoreCodeRef.current = selectedStoreCode;
+            detailRequestCoordinatorRef.current!.begin({
+              productCode: nextDetail.productCode,
+              storeCode: selectedStoreCode,
+            });
+            loadActivePromotions(nextDetail.productCode, selectedStoreCode);
+            setDetail(nextDetail);
+            setInitialDetail(cloneDetail(nextDetail));
+            setSelectedLookupProductCode(nextDetail.productCode);
+            setLastHitLabel(
+              `${nextDetail.itemNumber || nextDetail.productCode} / ${nextDetail.barcode || "--"}`,
+            );
+            setQueryFeedback({ type: "idle" });
+            setCodePage(1);
+            setCodesHasMore(false);
+          } else {
+            nextDetail = await loadDetail(items[0].productCode);
+          }
           if (trigger === "scan") {
             console.log("[product-query] scan detail ready", { elapsedMs: Date.now() - detailStartedAt });
           }
           if (nextDetail) {
-            return processLoadedDetail(nextDetail, {
+            const printTarget = fastResult
+              ? getVerifiedScanPrintTarget(fastResult, nextKeyword, selectedStoreCode)
+              : null;
+            if (fastResult && continuousPrintEnabled && !printTarget) {
+              setSnackbarMessage(t(nextDetail.storePrice
+                ? "messages.codesLoadFailed"
+                : "warehousePriceSync.currentPriceUnavailable"));
+            }
+            const flow = await processLoadedDetail(nextDetail, {
               scanSource,
               scanKeyword: nextKeyword,
-              autoPrintEnabled: trigger === "scan" && continuousPrintEnabled,
+              autoPrintEnabled: trigger === "scan" && continuousPrintEnabled && (!fastResult || !!printTarget),
+              printTarget,
             });
+            if (fastResult && flow.autoPricingStatus === "no_action") {
+              // 套码和多码的编辑页仍分页加载，但不占用扫码到打印的关键路径。
+              void loadProductCodes(nextDetail, 1, false, selectedStoreCode);
+            }
+            return flow;
           }
           return DEFAULT_LOOKUP_FLOW_RESULT;
         }
@@ -2138,9 +2212,13 @@ function ProductQueryContent() {
     [
       activateHqSyncScope,
       continuousPrintEnabled,
+      invalidateActivePromotions,
+      loadActivePromotions,
       loadDetail,
+      loadProductCodes,
       playQueryFeedback,
       processLoadedDetail,
+      selectedStoreCode,
       t,
     ],
   );
@@ -2202,15 +2280,34 @@ function ProductQueryContent() {
           dispatchConnectivity({ type: "offline_lookup", keyword: nextKeyword });
           return await applyLookupItems(offlineItems, nextKeyword, trigger, scanSource);
         }
-        const items = await lookupProducts({
-          keyword: nextKeyword,
-          storeCode: selectedStoreCode,
-        });
+        const lookupRequest = { keyword: nextKeyword, storeCode: selectedStoreCode };
+        let scanResult: ScanLabelResult | undefined;
+        let items: ProductLookupItem[];
+        if (
+          trigger === "scan" &&
+          !isIosReviewSessionActive() &&
+          Date.now() >= scanLabelUnsupportedUntilRef.current
+        ) {
+          try {
+            scanResult = await scanProductLabel(lookupRequest);
+            items = scanResult.candidates;
+          } catch (error) {
+            // 客户端可先于后端升级；旧服务没有新路由时仍保留原扫码查询。
+            if (!isAxiosError(error) || ![404, 405].includes(error.response?.status ?? 0)) {
+              throw error;
+            }
+            scanLabelUnsupportedUntilRef.current = Date.now() + 60_000;
+            console.log("[product-query] scan-label unavailable, using existing lookup");
+            items = await lookupProducts(lookupRequest);
+          }
+        } else {
+          items = await lookupProducts(lookupRequest);
+        }
         if (trigger === "scan") {
           console.log("[product-query] scan candidates ready", { elapsedMs: Date.now() - lookupStartedAt, offline: false });
         }
         dispatchConnectivity({ type: "request_succeeded" });
-        return await applyLookupItems(items, nextKeyword, trigger, scanSource);
+        return await applyLookupItems(items, nextKeyword, trigger, scanSource, scanResult);
       } catch (error) {
         if (
           !offlineModeRef.current &&

@@ -93,6 +93,30 @@ namespace BlazorApp.Api.Controllers.React
             return Ok(result);
         }
 
+        [HttpPost("scan-label")]
+        public async Task<IActionResult> ScanLabel([FromBody] StoreProductLookupRequestDto request)
+        {
+            var totalSw = Stopwatch.StartNew();
+            var access = await ResolveAccessContextAsync();
+            if (!access.IsAllowed)
+            {
+                _logger.LogWarning(
+                    "StoreProductMaintenance scan-label unauthorized message={Message} total_ms={TotalMs}",
+                    access.Message,
+                    totalSw.ElapsedMilliseconds
+                );
+                return Unauthorized(ApiResponse<StoreProductScanLabelResultDto>.Error(access.Message));
+            }
+
+            var result = await _service.ScanLabelAsync(request, access.StoreCodes);
+            _logger.LogInformation(
+                "StoreProductMaintenance scan-label request completed requestedStore={RequestedStore} total_ms={TotalMs}",
+                request.StoreCode,
+                totalSw.ElapsedMilliseconds
+            );
+            return Ok(result);
+        }
+
         [HttpGet("{productCode}/fast-detail")]
         public async Task<IActionResult> GetFastDetail(
             string productCode,

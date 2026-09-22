@@ -169,16 +169,17 @@ async function ensureConnectedPrinter(options?: { status?: "connecting" | "recon
     // 审核模式只展示打印成功结果，不能读取蓝牙状态或连接真实设备。
     return;
   }
-  // 两项只读检查互不依赖，热连接打印时无需串行等待两次原生/存储桥接。
-  const [status, savedPrinter] = await Promise.all([
-    getNativePrinterStatus(),
-    PrinterStorage.getPrinter(),
-  ]);
   const store = usePrinterStore.getState();
   if (store.autoReconnectPaused) {
     store.setStatus("paused");
     throw new Error("Printer auto-connect is paused. Reconnect it in Settings first.");
   }
+
+  // 已完成 hydration 时复用内存中的打印机地址，避免每张标签读取一次存储。
+  // 原生状态仍保留为陈旧连接的快速判定；最终写入也会再次校验 socket。
+  const statusPromise = getNativePrinterStatus();
+  const savedPrinterPromise = store.hydrated ? Promise.resolve(store.savedPrinter) : PrinterStorage.getPrinter();
+  const [status, savedPrinter] = await Promise.all([statusPromise, savedPrinterPromise]);
 
   if (!savedPrinter?.address) {
     store.setStatus("disconnected");
@@ -186,7 +187,9 @@ async function ensureConnectedPrinter(options?: { status?: "connecting" | "recon
   }
 
   store.setSavedPrinter(savedPrinter);
-  if (!options?.force && !labelConnectionInvalidated && status.connected && status.address === savedPrinter.address) {
+  if (!options?.force && !labelConnectionInvalidated && store.hydrated &&
+      store.status === "connected" && status.connected && status.address === savedPrinter.address &&
+      store.savedPrinter?.address === savedPrinter.address) {
     store.setStatus("connected");
     store.setLastError(null);
     return;
@@ -252,7 +255,10 @@ export async function selectPrinter(device: PrinterDevice) {
   }
   resumePrinterAutoReconnect();
   return runPrinterOperation(async () => {
-    await PrinterStorage.setPrinter(toSavedPrinter(device));
+    const selectedPrinter = toSavedPrinter(device);
+    await PrinterStorage.setPrinter(selectedPrinter);
+    // 热路径从内存取地址，切换打印机时必须先更新内存再重连。
+    usePrinterStore.getState().setSavedPrinter(selectedPrinter);
     await ensureConnectedPrinter({ force: true });
     return true;
   });
@@ -262,7 +268,8 @@ export async function getSavedPrinter() {
   if (isIosReviewSessionActive()) {
     return IOS_REVIEW_LABEL_PRINTER;
   }
-  return PrinterStorage.getPrinter();
+  const store = usePrinterStore.getState();
+  return store.hydrated ? store.savedPrinter : PrinterStorage.getPrinter();
 }
 
 export async function getSavedReceiptPrinter() {

@@ -31,7 +31,10 @@ public sealed class StoreProductMaintenanceLookupTests : IDisposable
             IsAutoCloseConnection = false,
             InitKeyType = InitKeyType.Attribute,
         });
-        _db.CodeFirst.InitTables(typeof(Product), typeof(ProductGrade), typeof(ProductSetCode), typeof(StoreClearancePrice));
+        _db.CodeFirst.InitTables(
+            typeof(Product), typeof(ProductGrade), typeof(ProductSetCode), typeof(StoreClearancePrice),
+            typeof(Store), typeof(StoreRetailPrice), typeof(StoreMultiCodeProduct), typeof(HBLocalSupplier)
+        );
         var context = (SqlSugarContext)RuntimeHelpers.GetUninitializedObject(typeof(SqlSugarContext));
         typeof(SqlSugarContext).GetField("_db", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(context, _db);
         _service = new StoreProductMaintenanceReactService(
@@ -117,6 +120,109 @@ public sealed class StoreProductMaintenanceLookupTests : IDisposable
         await SeedProduct("product", "ITEM123", "9529260910023");
         Assert.Equal("ItemNumber", Assert.Single(await Lookup("  ITEM123  ")).MatchSource);
         Assert.Equal("ProductBarcode", Assert.Single(await Lookup("9529260910023")).MatchSource);
+    }
+
+    [Fact]
+    public async Task ScanLabel_多商品歧义只返回候选且不自动选择()
+    {
+        await SeedProduct("product", "ITEM123", "9529260910023");
+        await SeedProduct("product-2", "ITEM456", "9529260910023");
+        var response = await _service.ScanLabelAsync(
+            new StoreProductLookupRequestDto { Keyword = "9529260910023" },
+            null
+        );
+
+        Assert.True(response.Success, response.Message);
+        Assert.NotNull(response.Data);
+        Assert.Equal(2, response.Data!.Candidates.Count);
+        Assert.Null(response.Data.Detail);
+        Assert.Null(response.Data.PrintTarget);
+    }
+
+    [Fact]
+    public async Task ScanLabel_主商品有门店价返回原价和折扣率打印目标()
+    {
+        var detail = new StoreProductDetailDto
+        {
+            ProductCode = "product",
+            Barcode = "9529260910023",
+            StorePrice = new StoreProductStorePriceDto
+            {
+                Uuid = "price-1",
+                StoreCode = "allowed",
+                RetailPrice = 1.50m,
+                DiscountRate = 0.80m,
+            },
+        };
+        var method = typeof(StoreProductMaintenanceReactService).GetMethod(
+            "BuildScanLabelPrintTargetAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic
+        );
+        Assert.NotNull(method);
+        var task = (Task<StoreProductPrintTargetDto?>)method!.Invoke(
+            _service,
+            new object?[] { "9529260910023", "ProductBarcode", detail, "allowed", new List<string> { "allowed" } }
+        )!;
+        var target = await task;
+
+        Assert.NotNull(target);
+        Assert.Equal("product", target!.Kind);
+        Assert.Equal("9529260910023", target.Barcode);
+        Assert.Equal(1.50m, target.RetailPrice);
+        Assert.Equal(0.80m, target.DiscountRate);
+        Assert.Equal("price-1", target.CodeId);
+    }
+
+    [Fact]
+    public async Task ScanLabel_多码套码为空时使用SetCodeId匹配门店投影()
+    {
+        await _db.Insertable(new ProductSetCode
+        {
+            SetCodeId = "set-1", ProductCode = "product-2", SetProductCode = string.Empty,
+            SetBarcode = "set-barcode", SetRetailPrice = 4m, IsActive = true,
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new StoreMultiCodeProduct
+        {
+            UUID = "multi-1", StoreCode = "allowed", ProductCode = "product-2",
+            MultiCodeProductCode = "set-1", MultiBarcode = "set-barcode",
+            MultiCodeRetailPrice = 3.20m, DiscountRate = 0.75m, IsActive = true,
+        }).ExecuteCommandAsync();
+
+        var detail = new StoreProductDetailDto { ProductCode = "product-2", ProductType = 2 };
+        var method = typeof(StoreProductMaintenanceReactService).GetMethod(
+            "BuildScanLabelPrintTargetAsync", BindingFlags.Instance | BindingFlags.NonPublic
+        );
+        var task = (Task<StoreProductPrintTargetDto?>)method!.Invoke(
+            _service,
+            new object?[] { "set-barcode", "SetBarcode", detail, "allowed", new List<string> { "allowed" } }
+        )!;
+        var target = await task;
+
+        Assert.NotNull(target);
+        Assert.Equal("multi", target!.Kind);
+        Assert.Equal("multi-1", target.CodeId);
+        Assert.Equal(3.20m, target.RetailPrice);
+        Assert.Equal(0.75m, target.DiscountRate);
+
+        await _db.Updateable<StoreMultiCodeProduct>()
+            .SetColumns(x => new StoreMultiCodeProduct { IsActive = false })
+            .Where(x => x.UUID == "multi-1")
+            .ExecuteCommandAsync();
+        var inactiveTask = (Task<StoreProductPrintTargetDto?>)method.Invoke(
+            _service,
+            new object?[] { "set-barcode", "SetBarcode", detail, "allowed", new List<string> { "allowed" } }
+        )!;
+        Assert.Null(await inactiveTask);
+
+        await _db.Updateable<StoreMultiCodeProduct>()
+            .SetColumns(x => new StoreMultiCodeProduct { IsActive = true, MultiBarcode = "new-barcode" })
+            .Where(x => x.UUID == "multi-1")
+            .ExecuteCommandAsync();
+        var oldBarcodeTask = (Task<StoreProductPrintTargetDto?>)method.Invoke(
+            _service,
+            new object?[] { "set-barcode", "SetBarcode", detail, "allowed", new List<string> { "allowed" } }
+        )!;
+        Assert.Null(await oldBarcodeTask);
     }
 
     private Task<int> SeedProduct(string code, string itemNumber, string? barcode = null, bool deleted = false) =>
