@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { StyleSheet, View } from "react-native";
 import { Button, IconButton, Modal, Switch, Text } from "react-native-paper";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
@@ -15,7 +16,7 @@ interface PrintSettingsModalProps {
   onDismiss: () => void;
 }
 
-export function PrintSettingsModal({
+export const PrintSettingsModal = memo(function PrintSettingsModal({
   visible,
   continuousPrint,
   smallLabel,
@@ -82,7 +83,10 @@ export function PrintSettingsModal({
       </View>
     </Modal>
   );
-}
+}, (previous, next) => {
+  // 关闭期间跳过父页面刷新；开关切换及打开期间始终接收最新数据和回调。
+  return !previous.visible && !next.visible;
+});
 
 const styles = StyleSheet.create({
   modal: {

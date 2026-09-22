@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { Icon, Text } from "react-native-paper";
 import type { PrinterConnectionState } from "@/modules/printer/state";
@@ -24,7 +25,7 @@ const STATUS_PRESENTATION: Record<
   error: { icon: "alert-circle-outline", color: "#B42318" },
 };
 
-export function PrinterConnectionStatus({
+export const PrinterConnectionStatus = memo(function PrinterConnectionStatus({
   savedPrinter,
   status,
   lastError,
@@ -75,7 +76,7 @@ export function PrinterConnectionStatus({
       {onPress ? <Icon source="chevron-right" size={18} color="#98A2B3" /> : null}
     </Pressable>
   );
-}
+});
 
 const styles = StyleSheet.create({
   container: {
