@@ -25,6 +25,8 @@ internal sealed class SchemaMigrationCoordinator
         "20260909.003-sales-detail-query-mapping-use";
     internal const string MobileOtaRuntimeTargetsMigrationId =
         "20260921.001-mobile-ota-runtime-targets";
+    internal const string SalesDetailQueryMonthlyMigrationId =
+        "20260922.001-sales-detail-query-monthly";
     internal const string PosmMigrationId = "20260827.001-hbweb-posm-baseline";
     internal const string MobileDeviceActivationMigrationId =
         "20260831.001-mobile-device-activation";
@@ -76,6 +78,11 @@ internal sealed class SchemaMigrationCoordinator
             MobileOtaRuntimeTargetsMigrationId,
             static (runtime, cancellationToken) =>
                 runtime.ApplyMobileOtaRuntimeTargetsAsync(cancellationToken)
+        ),
+        new(
+            SalesDetailQueryMonthlyMigrationId,
+            static (runtime, cancellationToken) =>
+                runtime.ApplySalesDetailQueryMonthlyAsync(cancellationToken)
         ),
     ];
 

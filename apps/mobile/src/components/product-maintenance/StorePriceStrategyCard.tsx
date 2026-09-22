@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { memo, type ReactNode } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { Card, Icon, Text } from "react-native-paper";
 import {
@@ -84,7 +84,8 @@ export function StoreSwitchButton({
   );
 }
 
-function TogglePill({ label, value, onToggle, readOnly = false }: { label: string; value: boolean; onToggle: (value: boolean) => void; readOnly?: boolean }) {
+// 门店切换按钮随查询忙碌状态更新；未变化的价格单元独立复用，避免整卡重绘。
+const TogglePill = memo(function TogglePill({ label, value, onToggle, readOnly = false }: { label: string; value: boolean; onToggle: (value: boolean) => void; readOnly?: boolean }) {
   const { t } = useAppTranslation("productQuery");
   return (
     <Pressable
@@ -101,9 +102,9 @@ function TogglePill({ label, value, onToggle, readOnly = false }: { label: strin
       </Text>
     </Pressable>
   );
-}
+});
 
-function PriceField({
+const PriceField = memo(function PriceField({
   label,
   value,
   original,
@@ -144,9 +145,9 @@ function PriceField({
       </Text>
     </Pressable>
   );
-}
+});
 
-function Metric({ label, value, color, wide = false }: { label: string; value: string; color?: string; wide?: boolean }) {
+const Metric = memo(function Metric({ label, value, color, wide = false }: { label: string; value: string; color?: string; wide?: boolean }) {
   // 策略文字（如「默认全局 0 - 5」）远长于倍率/毛利数字：加宽该格、字号略小，最多两行，避免被截断。
   return (
     <View style={[styles.metric, wide ? styles.metricWide : null]}>
@@ -159,9 +160,9 @@ function Metric({ label, value, color, wide = false }: { label: string; value: s
       </Text>
     </View>
   );
-}
+});
 
-export function StorePriceStrategyCard({
+export const StorePriceStrategyCard = memo(function StorePriceStrategyCard({
   storeName,
   canSelectStore = false,
   storeLocked = false,
@@ -270,7 +271,7 @@ export function StorePriceStrategyCard({
       {footer ? <View style={styles.footer}>{footer}</View> : null}
     </Card>
   );
-}
+});
 
 const styles = StyleSheet.create({
   readOnly: {

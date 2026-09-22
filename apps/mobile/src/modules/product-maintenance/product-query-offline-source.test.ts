@@ -125,7 +125,12 @@ assert.match(
   /\{access\.canCreateStoreProducts && !detail && !offlineMode \? \(/,
   "离线时查无结果横条不得显示创建商品",
 );
-assert.match(source, /onPressProductType=\{\s*offlineMode \? undefined : \(\) => setProductTypeDialogVisible\(true\)\s*\}/, "离线时商品类型徽标必须只读");
+assert.match(source, /onPressProductType=\{\s*offlineMode \? undefined : handleOpenProductTypeDialog\s*\}/, "离线时商品类型徽标必须只读");
+assert.match(
+  source,
+  /const handleOpenProductTypeDialog = useCallback\(\(\) => \{\s*setProductTypeDialogVisible\(true\);\s*\}, \[\]\);/,
+  "在线商品类型入口必须通过稳定回调打开编辑弹窗",
+);
 
 // 离线横幅必须显示数据更新时间；恢复在线必须立即退出并重跑查询。
 assert.match(source, /\{offlineMode \? \(\s*<OfflineModeBanner/, "离线态必须渲染横幅");
