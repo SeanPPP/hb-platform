@@ -212,6 +212,7 @@ export default function SalesDetailAnalysisV2() {
     </div></div>
     {!allowed && <Alert type="warning" message={text('当前账号没有可查询的分店范围', 'No stores are available for this account')} />}
     {summary.error && <Alert type="warning" message={summary.error} action={<Button onClick={() => retrySection('summary')}>{text('重试汇总', 'Retry totals')}</Button>} />}
+    {bundle.data && bundle.snapshot?.statisticMessage && <Alert type="warning" showIcon message={bundle.snapshot.statisticMessage} />}
     <section className={styles.summary} aria-label={text('全量筛选汇总', 'All matching totals')} data-testid="detail-summary">
       {(['revenue', 'quantity', 'averageUnitPrice', 'grossProfit', 'grossMarginRate'] as MetricKey[]).map(field => <div key={field}>
         <span>{field === 'revenue' ? text(hasFilters ? '当前筛选营业额' : '当前标签营业额', 'Matching revenue') : metricLabel('summary', field)}</span>
