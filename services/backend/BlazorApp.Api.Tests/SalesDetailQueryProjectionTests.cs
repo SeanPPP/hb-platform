@@ -61,14 +61,15 @@ WHERE [StatisticType] = N'ProductStoreDaily' AND [Date] = @sdpStateDate;
     }
 
     [Fact]
-    public void 维护配置_只接受完整且不超过366天的精确日期范围()
+    public void 维护配置_只接受完整且不超过731天的精确日期范围()
     {
-        var valid = BuildMaintenanceConfiguration("2025-09-09", "2026-09-09");
+        // 页面区间上限为两年（731 天），投影回填单次范围与之对齐。
+        var valid = BuildMaintenanceConfiguration("2024-09-09", "2026-09-09");
         Assert.True(SalesDetailQueryProjectionMaintenanceRunner.TryReadSettings(valid, out var settings));
-        Assert.Equal(366, (settings.EndDate - settings.StartDate).Days + 1);
+        Assert.Equal(731, (settings.EndDate - settings.StartDate).Days + 1);
 
         Assert.False(SalesDetailQueryProjectionMaintenanceRunner.TryReadSettings(
-            BuildMaintenanceConfiguration("2025-09-08", "2026-09-09"), out _));
+            BuildMaintenanceConfiguration("2024-09-08", "2026-09-09"), out _));
         Assert.False(SalesDetailQueryProjectionMaintenanceRunner.TryReadSettings(
             BuildMaintenanceConfiguration("09/09/2025", "2026-09-09"), out _));
         Assert.False(SalesDetailQueryProjectionMaintenanceRunner.TryReadSettings(

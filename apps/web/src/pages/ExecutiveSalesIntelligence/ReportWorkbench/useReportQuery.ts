@@ -49,7 +49,9 @@ export function useReportQuery<T>(key: string, loader: (signal: AbortSignal) => 
     const slowTimer = window.setTimeout(() => {
       if (!disposed) setState(current => ({ ...current, slow: true }))
     }, 3000)
-    const timeout = window.setTimeout(() => controller.abort(), 12000)
+    // 2026-09-22 生产实测：列存重建后销售明细 1 年双期仍约 17 秒、2 年约 18 秒（CPU 受限）；
+    // 超时只是兜底，放到 30 秒避免把会成功的长区间查询误判为失败；缩短耗时靠按月预聚合另行处理。
+    const timeout = window.setTimeout(() => controller.abort(), 30000)
     const load = async () => {
       retryTimer = 0
       try {

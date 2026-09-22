@@ -4,6 +4,8 @@ import isoWeek from 'dayjs/plugin/isoWeek'
 dayjs.extend(isoWeek)
 
 export type QuickRange = 'today' | 'yesterday' | 'thisWeek' | 'lastWeek' | 'thisMonth' | 'lastMonth' | 'custom'
+/** 报表最长区间：两年（含闰日），与后端 SalesDetailReportController.MaxReportDays 一致。 */
+export const MAX_REPORT_DAYS = 731
 export interface ReportPeriod {
   startDate: string
   endDate: string
@@ -56,7 +58,7 @@ export function reportPeriod(selection: DateSelection): ReportPeriod {
 
 export function validPeriod(start: string, end: string): boolean {
   return [start, end].every(value => /^\d{4}-\d{2}-\d{2}$/.test(value) && dayjs(value).format('YYYY-MM-DD') === value)
-    && end >= start && dayjs(end).diff(dayjs(start), 'day') < 366
+    && end >= start && dayjs(end).diff(dayjs(start), 'day') < MAX_REPORT_DAYS
 }
 
 export function growth(current: number | null | undefined, previous: number | null | undefined): number | 'new' | null {

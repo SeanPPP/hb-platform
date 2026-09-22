@@ -312,6 +312,70 @@ public sealed class SalesDetailReportTests : IDisposable
     }
 
     [Fact]
+    public void SQLServer默认路径先按原始键聚合再去空格重聚合且分组集合走哈希()
+    {
+        var core = typeof(SalesDashboardReactService).GetMethod(
+            "BuildSalesDetailReportSqlServerCore", BindingFlags.NonPublic | BindingFlags.Static)!;
+        string Build(string? search) => Assert.IsType<string>(core.Invoke(null, new object?[]
+        {
+            "POSM", Range(new DateTime(2026, 7, 4), new DateTime(2026, 7, 4)), SalesDetailKind.China,
+            new List<string> { "S1" }, null, null, null, search, 1, 20,
+            Enum.GetValues<SalesDetailSection>().ToHashSet(), null, false, false,
+        }));
+
+        var sql = Build(null);
+        // 内层只按事实表原始列分组，扫描才能走列存索引的批处理聚合；去空格放到聚合后的窄行上再分组一次。
+        Assert.Contains("GROUP BY periods.[Period], s.[SupplierCode], s.[BranchCode], s.[ProductCode]", sql);
+        Assert.Contains("FROM SourceFacts\n GROUP BY [Period], LTRIM(RTRIM(COALESCE([RawSupplierCode],'')))", sql);
+        Assert.DoesNotContain("GROUP BY periods.[Period], LTRIM(RTRIM(COALESCE(s.[SupplierCode],'')))", sql);
+        Assert.Equal(1, CountOccurrences(sql, "INTO #SalesDetailFacts"));
+        Assert.DoesNotContain("#SalesDetailRawFacts", sql);
+        // GROUPING SETS 强制哈希聚合，避免为几百个供应商/分店键排序几十万行事实。
+        Assert.Contains("SELECT * INTO #SalesDetailAggregates FROM Grouped OPTION (HASH GROUP);", sql);
+        Assert.Contains("DROP TABLE #SalesDetailFacts;", sql);
+
+        // 关键词路径仍由宽事实一段式 SELECT INTO 建表。
+        var searchSql = Build("English");
+        Assert.DoesNotContain("SourceFacts", searchSql);
+        Assert.Contains("INTO #SalesDetailFacts", searchSql);
+    }
+
+    [Fact]
+    public async Task 早于最新状态的历史缺口只提示不阻断而尚未发布的后续日期仍为Pending()
+    {
+        // 2025-05-04～05-31 生产上从未生成商品日统计；这里用 7-10 缺状态、7-11 已发布模拟。
+        var gap = new DateTime(2026, 7, 10);
+        var published = new DateTime(2026, 7, 11);
+        await SeedProductAsync("P-GAP");
+        await SeedStatisticAsync(published, "S1", "A1", "P-GAP", 2, 20m);
+
+        var response = await CreateService().GetSalesDetailReportAsync(
+            new DateRangeDto { StartDate = gap, EndDate = published }, SalesDetailKind.Australia, new() { "S1" });
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh, response.StatisticStatus);
+        Assert.Contains("2026-07-10", response.StatisticMessage);
+        Assert.Contains("没有商品日统计", response.StatisticMessage);
+        Assert.Equal(20m, response.Data!.Summary!.Summary!.Revenue);
+
+        var future = await CreateService().GetSalesDetailReportAsync(
+            new DateRangeDto { StartDate = published, EndDate = published.AddDays(1) }, SalesDetailKind.Australia, new() { "S1" });
+        Assert.Equal(SalesStatisticRefreshStatus.Pending, future.StatisticStatus);
+
+        Assert.Equal("2026-05-04～2026-05-06、2026-05-10共 4 天没有商品日统计，该段金额未计入，需另行回填统计。",
+            SalesDashboardReactService.DescribeMissingHistoryDates(new[] { new DateTime(2026, 5, 4), new DateTime(2026, 5, 5), new DateTime(2026, 5, 6), new DateTime(2026, 5, 10) }));
+    }
+
+    [Fact]
+    public void 对账未通过日期提示按时间列出并在超过五天时汇总()
+    {
+        Assert.Null(SalesDashboardReactService.DescribeReconciliationFailedDates(Array.Empty<DateTime>()));
+        var one = SalesDashboardReactService.DescribeReconciliationFailedDates(new[] { new DateTime(2026, 4, 9, 10, 0, 0) });
+        Assert.StartsWith("2026-04-09的商品统计", one);
+        var many = SalesDashboardReactService.DescribeReconciliationFailedDates(
+            Enumerable.Range(0, 7).Select(offset => new DateTime(2026, 4, 15).AddDays(-offset)).ToList());
+        Assert.StartsWith("2026-04-09、2026-04-10、2026-04-11、2026-04-12、2026-04-13 等 7 天", many);
+    }
+
+    [Fact]
     public async Task 国内原始供应商在澳洲栏按本地供应商解析并支持名称搜索()
     {
         var day = new DateTime(2026, 7, 6);
@@ -343,7 +407,9 @@ public sealed class SalesDetailReportTests : IDisposable
     [InlineData(SalesStatisticRefreshStatus.Queued, true, null, SalesStatisticRefreshStatus.Pending)]
     [InlineData(SalesStatisticRefreshStatus.Running, true, null, SalesStatisticRefreshStatus.Pending)]
     [InlineData(SalesStatisticRefreshStatus.Running, false, null, SalesStatisticRefreshStatus.Pending)]
-    [InlineData(SalesStatisticRefreshStatus.Failed, true, "published", SalesStatisticRefreshStatus.Failed)]
+    [InlineData(SalesStatisticRefreshStatus.Failed, true, "published", SalesStatisticRefreshStatus.Fresh)]
+    [InlineData(SalesStatisticRefreshStatus.Failed, true, null, SalesStatisticRefreshStatus.Fresh)]
+    [InlineData(SalesStatisticRefreshStatus.Failed, false, null, SalesStatisticRefreshStatus.Failed)]
     public async Task 单一商品快照按已发布状态读取且不受供应商汇总失败影响(string state, bool published, string? version, string expected)
     {
         var day = new DateTime(2026, 7, 7);
@@ -367,6 +433,11 @@ public sealed class SalesDetailReportTests : IDisposable
         var response = await CreateService().GetSalesDetailReportAsync(
             Range(day, day), SalesDetailKind.Australia, new() { "S1" });
         Assert.Equal(expected, response.StatisticStatus);
+        // 对账失败但已聚合的日期照常可读，只在提示里列出日期；从未聚合成功的失败日期仍不可读。
+        if (state == SalesStatisticRefreshStatus.Failed && published)
+            Assert.Contains("2026-07-07", response.StatisticMessage);
+        else if (expected == SalesStatisticRefreshStatus.Fresh)
+            Assert.Null(response.StatisticMessage);
         if (expected == SalesStatisticRefreshStatus.Fresh)
         {
             Assert.Equal(30m, response.Data!.Summary!.Summary!.Revenue);

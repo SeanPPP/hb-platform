@@ -1,6 +1,7 @@
 using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Services;
+using BlazorApp.Api.Services.Background;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
@@ -485,7 +486,7 @@ public sealed class SalesDetailReportSqlServerIntegrationTests
     }
 
     [SalesDetailReportSqlServerFact]
-    public async Task 投影范围超过366天拒绝执行且缺少发布时间不能发布但无任务标识仍可使用()
+    public async Task 投影范围超过731天拒绝执行且缺少发布时间不能发布但无任务标识仍可使用()
     {
         await using var fixture = await SalesDetailSqlServerFixture.CreateAsync();
         await fixture.SeedFreshStateAsync(SeedDate);
@@ -495,7 +496,8 @@ public sealed class SalesDetailReportSqlServerIntegrationTests
         await fixture.EnableProjectionAsync(SeedDate);
         Assert.Equal(await fixture.ReadRawReportAsync(Range(), SalesDetailKind.Australia, "Alpha", null, projected: false),
             await fixture.ReadRawReportAsync(Range(), SalesDetailKind.Australia, "Alpha", null, projected: true));
-        foreach (var days in new[] { 367, 1001 })
+        // 页面上限是两年（731 天）；731 天以内必须能走投影，732 天起整份回退原查询。
+        foreach (var days in new[] { 732, 1001 })
         foreach (var compare in new[] { false, true })
         {
             var range = Range();
@@ -596,6 +598,114 @@ public sealed class SalesDetailReportSqlServerIntegrationTests
         for (var column = 12; column <= 17; column++) Assert.Equal(0, summary[column].GetInt32());
         Assert.Equal(JsonValueKind.Null, summary[10].ValueKind);
         Assert.Equal(JsonValueKind.Null, summary[11].ValueKind);
+    }
+
+
+    [SalesDetailReportSqlServerFact]
+    public async Task 月投影与原查询七结果集一致并在月身份或映射变化时自动退回日事实()
+    {
+        await using var fixture = await SalesDetailSqlServerFixture.CreateAsync();
+        await fixture.SeedStoreAsync("B1", "一店");
+        await fixture.SeedStoreAsync("B2", "二店");
+        await fixture.SeedChinaSupplierAsync("C1", "国内一");
+        await fixture.SeedChinaSupplierAsync("C2", "国内二");
+        await fixture.SeedLocalSupplierAsync("200", "HB仓库");
+        await fixture.SeedLocalSupplierAsync("A1", "澳洲一");
+        foreach (var code in new[] { "P-ONE", "P-TWO", "P-THREE", "P-FOUR", "P-FIVE" })
+            await fixture.SeedProductAsync(code, $"商品{code}", $"Product {code}", $"IT-{code}");
+        await fixture.SeedMappingAsync("P-ONE", "C1");
+        // 本期 2025-06-20～08-10：六月和八月不满月、七月整月；同期 2024 年同样日期。
+        var days = new[] { 20, 25, 30 }.Select(d => new DateTime(2025, 6, d))
+            .Concat(new[] { 1, 15, 31 }.Select(d => new DateTime(2025, 7, d)))
+            .Concat(new[] { 1, 5, 10 }.Select(d => new DateTime(2025, 8, d))).ToList();
+        var seed = 0;
+        foreach (var day in days.Concat(days.Select(d => d.AddYears(-1))))
+        {
+            await fixture.SeedFreshStateAsync(day);
+            foreach (var branch in new[] { "B1", "B2" })
+            {
+                seed++;
+                await fixture.SeedFactAsync(day, branch, "200", "P-ONE", 1 + seed % 5, 10m + seed, totalCost: 4m, grossProfit: 6m);
+                await fixture.SeedFactAsync(day, branch, "C1", "P-TWO", 2 + seed % 3, 20m + seed, grossProfit: null, useAmountAsDefaultGrossProfit: false);
+                await fixture.SeedFactAsync(day, branch, "A1", "P-THREE", 3, 30m + seed);
+                if (branch == "B1") await fixture.SeedFactAsync(day, branch, "200", "P-FOUR", 1, 40m + seed);
+                if (day.Day % 2 == 0) await fixture.SeedFactAsync(day, branch, "A1", "P-FIVE", 4, 50m + seed);
+            }
+        }
+        await fixture.EnableMonthlyProjectionAsync();
+        // 日表还没生成时有数据的月份不会列为待办（没有统计状态行的空月份随时可汇总成空状态）；先逐日重算，月份才可汇总。
+        Assert.DoesNotContain(new DateTime(2025, 7, 1), await fixture.ReadStaleMonthsAsync());
+        var staleDays = await fixture.ReadStaleDaysAsync();
+        Assert.Equal(days.Count * 2, staleDays.Count);
+        Assert.Equal(staleDays.OrderByDescending(d => d).ToList(), staleDays);
+        foreach (var day in staleDays) await fixture.RefreshDailyAsync(day);
+        Assert.Empty(await fixture.ReadStaleDaysAsync());
+        var stale = await fixture.ReadStaleMonthsAsync();
+        Assert.Contains(new DateTime(2025, 7, 1), stale);
+        foreach (var month in stale) await fixture.RefreshMonthlyAsync(month);
+        Assert.Empty(await fixture.ReadStaleMonthsAsync());
+
+        var range = new DateRangeDto
+        {
+            StartDate = new DateTime(2025, 6, 20), EndDate = new DateTime(2025, 8, 10),
+            CompareStartDate = new DateTime(2024, 6, 20), CompareEndDate = new DateTime(2024, 8, 10),
+        };
+        var noCompare = new DateRangeDto { StartDate = range.StartDate, EndDate = range.EndDate };
+        async Task AssertEquivalentAsync(string label)
+        {
+            foreach (var kind in new[] { SalesDetailKind.China, SalesDetailKind.Australia })
+            foreach (var period in new[] { range, noCompare })
+            foreach (var supplier in new string?[] { null, "200", "C1" })
+            foreach (var product in new string?[] { null, "P-ONE" })
+            {
+                var raw = await fixture.ReadUnscopedReportAsync(period, kind, supplier, product, monthly: false);
+                var monthly = await fixture.ReadUnscopedReportAsync(period, kind, supplier, product, monthly: true);
+                Assert.True(raw == monthly, $"{label} kind={kind} compare={period.CompareStartDate.HasValue} supplier={supplier} product={product}\n原查询: {raw}\n月投影: {monthly}");
+            }
+            Assert.Equal(
+                await fixture.ReadUnscopedReportAsync(range, SalesDetailKind.China, null, null, monthly: false, SalesDetailSection.Products),
+                await fixture.ReadUnscopedReportAsync(range, SalesDetailKind.China, null, null, monthly: true, SalesDetailSection.Products));
+        }
+        await AssertEquivalentAsync("全部月份有效");
+
+        // 七月某天重新发布：七月身份变化，该日退回日事实、七月其余日期读日表；日表未追上前月份不列为待办。
+        await fixture.ChangeStatisticNameAsync(new DateTime(2025, 7, 15), "改名");
+        Assert.Equal(new[] { new DateTime(2025, 7, 15) }, await fixture.ReadStaleDaysAsync());
+        Assert.Empty(await fixture.ReadStaleMonthsAsync());
+        var notReady = await Assert.ThrowsAsync<SqlException>(() => fixture.RefreshMonthlyAsync(new DateTime(2025, 7, 1)));
+        Assert.Equal(SalesDetailQueryMonthlyProjection.DaysNotReadyErrorNumber, notReady.Number);
+        await AssertEquivalentAsync("七月某日身份失效");
+        // 该日重算后七月整月读日表，月份进入待办；汇总后回到月表。
+        await fixture.RefreshDailyAsync(new DateTime(2025, 7, 15));
+        Assert.Equal(new[] { new DateTime(2025, 7, 1) }, await fixture.ReadStaleMonthsAsync());
+        await AssertEquivalentAsync("七月日表有效月表失效");
+        await fixture.RefreshMonthlyAsync(new DateTime(2025, 7, 1));
+        Assert.Empty(await fixture.ReadStaleMonthsAsync());
+        await AssertEquivalentAsync("七月重新汇总");
+        // 映射变化：商品粒度仍读月表并在查询时用新映射解析，分店粒度全部退回日事实；全部日期待重算。
+        await fixture.ChangeMappingAsync("P-ONE", "C2");
+        Assert.Equal(days.Count * 2, (await fixture.ReadStaleDaysAsync()).Count);
+        Assert.DoesNotContain(new DateTime(2025, 7, 1), await fixture.ReadStaleMonthsAsync());
+        await AssertEquivalentAsync("映射变化");
+        await fixture.CatchUpProjectionAsync();
+        await AssertEquivalentAsync("重算后");
+        // 新增一天（无月表覆盖、无日表）：读日事实；追上后读日表。
+        var added = new DateTime(2025, 8, 9);
+        await fixture.SeedFreshStateAsync(added);
+        await fixture.SeedFactAsync(added, "B2", "200", "P-ONE", 7, 70m, totalCost: 30m, grossProfit: 40m);
+        await AssertEquivalentAsync("新增日期未覆盖");
+        await fixture.CatchUpProjectionAsync();
+        await AssertEquivalentAsync("新增日期已覆盖");
+    }
+
+    [SalesDetailReportSqlServerFact]
+    public async Task 月投影表缺失时查询批次抛出51014供调用方回退()
+    {
+        await using var fixture = await SalesDetailSqlServerFixture.CreateAsync();
+        await fixture.SeedFreshStateAsync(SeedDate);
+        var error = await Assert.ThrowsAsync<SqlException>(() =>
+            fixture.ReadUnscopedReportAsync(Range(), SalesDetailKind.Australia, null, null, monthly: true));
+        Assert.Equal(SalesDetailQueryMonthlyProjection.MissingSchemaErrorNumber, error.Number);
     }
 
     private static DateRangeDto Range() => Range(SeedDate, null);
@@ -738,6 +848,102 @@ public sealed class SalesDetailReportSqlServerIntegrationTests
                     {
                         DBNull => null,
                         decimal number => (object)decimal.Parse(number.ToString("G29", System.Globalization.CultureInfo.InvariantCulture), System.Globalization.CultureInfo.InvariantCulture),
+                        _ => value,
+                    }).ToArray());
+                }
+                sets.Add(rows);
+            } while (await reader.NextResultAsync());
+            Assert.Equal(7, sets.Count);
+            return JsonSerializer.Serialize(sets);
+        }
+
+
+        public Task EnableMonthlyProjectionAsync() => ExecuteNonQueryAsync(_databaseConnectionString, SalesDetailQueryMonthlyProjection.CreateSchemaSql);
+
+        public async Task RefreshMonthlyAsync(DateTime month)
+        {
+            await using var connection = new SqlConnection(_databaseConnectionString);
+            await connection.OpenAsync();
+            await SalesDetailMonthlyProjectionWorker.RefreshMonthAsync(connection, _databaseName, month, CancellationToken.None);
+        }
+
+        public async Task RefreshDailyAsync(DateTime day)
+        {
+            await using var connection = new SqlConnection(_databaseConnectionString);
+            await connection.OpenAsync();
+            await SalesDetailMonthlyProjectionWorker.RefreshDayAsync(connection, _databaseName, day, CancellationToken.None);
+        }
+
+        public async Task<List<DateTime>> ReadStaleDaysAsync(int maxDays = 1000)
+        {
+            await using var connection = new SqlConnection(_databaseConnectionString);
+            await connection.OpenAsync();
+            return await SalesDetailMonthlyProjectionWorker.ReadStaleDaysAsync(connection, _databaseName, maxDays, CancellationToken.None);
+        }
+
+        public async Task<List<DateTime>> ReadStaleMonthsAsync()
+        {
+            await using var connection = new SqlConnection(_databaseConnectionString);
+            await connection.OpenAsync();
+            return await SalesDetailMonthlyProjectionWorker.ReadStaleMonthsAsync(connection, _databaseName, CancellationToken.None);
+        }
+
+        /// <summary>模拟 worker 一轮：先逐日重算待办日期，再汇总待办月份。</summary>
+        public async Task CatchUpProjectionAsync()
+        {
+            foreach (var day in await ReadStaleDaysAsync()) await RefreshDailyAsync(day);
+            foreach (var month in await ReadStaleMonthsAsync()) await RefreshMonthlyAsync(month);
+            Assert.Empty(await ReadStaleDaysAsync());
+            Assert.Empty(await ReadStaleMonthsAsync());
+        }
+
+        /// <summary>全部分店范围（管理员）下读取原查询或月投影的七个结果集。</summary>
+        public async Task<string> ReadUnscopedReportAsync(DateRangeDto range, SalesDetailKind kind, string? selectedSupplier,
+            string? selectedProduct, bool monthly, params SalesDetailSection[] sections)
+        {
+            var wanted = sections.Length == 0 ? Enum.GetValues<SalesDetailSection>().ToHashSet() : sections.ToHashSet();
+            string sql;
+            if (monthly)
+                sql = SalesDashboardReactService.BuildSalesDetailReportSqlMonthly(_databaseName, range, kind, selectedSupplier, selectedProduct, 1, 20, wanted);
+            else
+            {
+                var builder = typeof(SalesDashboardReactService).GetMethod("BuildSalesDetailReportSqlServerCore", BindingFlags.Static | BindingFlags.NonPublic)!;
+                sql = (string)builder.Invoke(null, new object?[] { _databaseName, range, kind, null, null, selectedSupplier,
+                    selectedProduct, null, 1, 20, wanted, null, false, false })!;
+            }
+            await using var connection = new SqlConnection(_databaseConnectionString);
+            await connection.OpenAsync();
+            await using var command = new SqlCommand("SET NOCOUNT ON;SET TRANSACTION ISOLATION LEVEL SNAPSHOT;BEGIN TRANSACTION;" + sql + ";COMMIT TRANSACTION;", connection);
+            command.Parameters.AddWithValue("@sdrCurrentStart", range.StartDate);
+            command.Parameters.AddWithValue("@sdrCurrentEnd", range.EndDate.AddDays(1));
+            command.Parameters.AddWithValue("@sdrCompareStart", (object?)range.CompareStartDate ?? DBNull.Value);
+            command.Parameters.AddWithValue("@sdrCompareEnd", (object?)range.CompareEndDate?.AddDays(1) ?? DBNull.Value);
+            command.Parameters.AddWithValue("@sdrHasCompare", range.CompareStartDate.HasValue ? 1 : 0);
+            command.Parameters.AddWithValue("@sdrKind", kind == SalesDetailKind.China ? 1 : 0);
+            if (selectedSupplier != null) command.Parameters.AddWithValue("@sdrSelectedSupplier", selectedSupplier);
+            if (selectedProduct != null) command.Parameters.AddWithValue("@sdrSelectedProduct", selectedProduct);
+            return await ReadResultSetsAsync(command);
+        }
+
+        private static async Task<string> ReadResultSetsAsync(SqlCommand command)
+        {
+            var sets = new List<List<object?[]>>();
+            await using var reader = await command.ExecuteReaderAsync();
+            do
+            {
+                if (reader.FieldCount == 0) continue;
+                var rows = new List<object?[]>();
+                while (await reader.ReadAsync())
+                {
+                    var values = new object[reader.FieldCount];
+                    reader.GetValues(values);
+                    // 月表的 bigint/decimal(38,4) 与原查询的 int/decimal(18,2) 只比较数值本身。
+                    rows.Add(values.Select(value => value switch
+                    {
+                        DBNull => null,
+                        decimal number => (object)decimal.Parse(number.ToString("G29", System.Globalization.CultureInfo.InvariantCulture), System.Globalization.CultureInfo.InvariantCulture),
+                        long number => (object)number,
+                        int number => (object)(long)number,
                         _ => value,
                     }).ToArray());
                 }
