@@ -509,6 +509,166 @@ assert.match(
   "商品分店表必须固定行号和分店列",
 );
 
+// ===== 中国供应商页签（2026-09-22 重设计）=====
+assert.match(
+  source,
+  /const chinaBranchTotalsQuery = useQuery\(\{[\s\S]*?fetchChinaSupplierBranchTotals\(queryParams!, \{ signal \}\)[\s\S]*?enabled: Boolean\(queryParams\) && isChinaKind,/,
+  "分店中国货合计只在中国页签请求，并透传取消信号",
+);
+assert.match(
+  source,
+  /const mainReportCacheVersionState = getProductReportCacheVersionState\(\[[\s\S]*?productQuery\.data,\s*\.\.\.\(isChinaKind \? \[chinaBranchTotalsQuery\.data\] : \[\]\),\s*\]\)/,
+  "中国页签必须把分店中国货合计并入同一统计批次校验",
+);
+assert.match(
+  source,
+  /const refetchMainReport = useCallback[\s\S]*?isChinaKind[\s\S]*?chinaBranchTotalsQueryKey[\s\S]*?\]\), \[/,
+  "cacheVersion 协调重取在中国页签必须覆盖分店中国货合计",
+);
+assert.match(
+  source,
+  /const mainReportCurrentComplete =[\s\S]*?\(!isChinaKind \|\| chinaBranchTotalsQuery\.data\?\.isComplete === true\)/,
+  "中国页签四块数据都 Fresh 才能展示并保存完整快照",
+);
+assert.match(
+  source,
+  /const mainReportRequestError =[\s\S]*?\(isChinaKind && chinaBranchTotalsQuery\.isError\)/,
+  "分店中国货合计请求失败时必须走统一错误重试",
+);
+assert.match(
+  source,
+  /const CHINA_PRODUCT_DEFAULT_SORT: ReportSort = \{ field: "quantity", order: "desc" \};/,
+  "中国页签商品明细默认按数量降序",
+);
+assert.match(
+  source,
+  /const applyKind = [\s\S]*?setProductSort\(getDefaultProductSort\(next\)\)/,
+  "切换页签时商品排序回到该页签默认值",
+);
+assert.match(
+  source,
+  /\{isChinaKind \? \([\s\S]*?<ChinaGoodsSummaryCard summary=\{chinaGoodsSummary\} \/>[\s\S]*?<ChinaBranchShareSection rows=\{chinaBranchShareRows\} \/>[\s\S]*?\) : productSectionLoading \? \(/,
+  "中国页签顶部展示中国货汇总与分店占比，澳洲页签保留本页商品汇总卡",
+);
+assert.match(
+  source,
+  /<ChinaProductTableHeader[\s\S]*?renderChinaProductPageTotalRow\(scrollX\)[\s\S]*?<ScrollView/,
+  "中国页签「本页合计」固定在商品表头下方，不随商品行纵向滚动",
+);
+
+const chinaSupplierRowStart = source.indexOf("const renderChinaSupplierRow =");
+const chinaProductRowStart = source.indexOf("const renderChinaProductRow =", chinaSupplierRowStart);
+const chinaPageTotalStart = source.indexOf("const renderChinaProductPageTotalRow =", chinaProductRowStart);
+const chinaSupplierHeaderStart = source.indexOf("function ChinaSupplierTableHeader(");
+const chinaProductHeaderStart = source.indexOf("function ChinaProductTableHeader(", chinaSupplierHeaderStart);
+const chinaHeaderEnd = source.indexOf("function LoadingState(", chinaProductHeaderStart);
+assert.ok(chinaSupplierRowStart > productRowStart && chinaProductRowStart > chinaSupplierRowStart, "必须能隔离中国页签行渲染");
+assert.ok(chinaPageTotalStart > chinaProductRowStart, "必须能隔离中国页签本页合计行");
+assert.ok(chinaSupplierHeaderStart > productHeaderStart && chinaHeaderEnd > chinaProductHeaderStart, "必须能隔离中国页签表头");
+const chinaSupplierRowSource = source.slice(chinaSupplierRowStart, chinaProductRowStart);
+const chinaProductRowSource = source.slice(chinaProductRowStart, chinaPageTotalStart);
+const chinaSupplierHeaderSource = source.slice(chinaSupplierHeaderStart, chinaProductHeaderStart);
+const chinaProductHeaderSource = source.slice(chinaProductHeaderStart, chinaHeaderEnd);
+
+const chinaSupplierColumnOrder = [
+  "styles.chinaSupplierAmountColumn",
+  "styles.chinaQuantityColumn",
+  "styles.chinaShareColumn",
+  "styles.chinaShareColumn",
+  "styles.chinaAverageColumn",
+  "styles.grossProfitColumn",
+  "styles.grossMarginColumn",
+  "styles.chinaGrowthColumn",
+  "styles.chinaCompareAmountColumn",
+  "styles.chinaCompareQuantityColumn",
+  "styles.chinaShareColumn",
+  "styles.chinaShareColumn",
+  "styles.chinaAverageColumn",
+  "styles.grossProfitColumn",
+  "styles.grossMarginColumn",
+];
+assertSourceOrder(
+  chinaSupplierRowSource,
+  chinaSupplierColumnOrder,
+  "中国供应商行：首屏金额、数量，其后占比、均价、毛利、增长率，同期在最后",
+);
+assertSourceOrder(chinaSupplierHeaderSource, chinaSupplierColumnOrder, "中国供应商表头必须与行保持相同列顺序");
+assert.match(
+  chinaSupplierRowSource,
+  /<FrozenLeadingColumns[\s\S]*?styles\.rowNumberColumn[\s\S]*?chinaSupplierNameWidth[\s\S]*?<\/FrozenLeadingColumns>/,
+  "中国供应商表固定行号和供应商列",
+);
+assert.doesNotMatch(
+  chinaSupplierRowSource.slice(0, chinaSupplierRowSource.indexOf("renderGrowthCell(")),
+  /item\.compare/,
+  "中国供应商行增长率之前的本期格子不得再上下叠放同期值",
+);
+
+const chinaProductColumnOrder = [
+  "styles.chinaQuantityColumn",
+  "styles.chinaProductAmountColumn",
+  "styles.chinaAverageColumn",
+  "styles.grossProfitColumn",
+  "styles.grossMarginColumn",
+  "styles.chinaGrowthColumn",
+  "styles.chinaCompareQuantityColumn",
+  "styles.chinaCompareAmountColumn",
+  "styles.chinaAverageColumn",
+  "styles.grossProfitColumn",
+  "styles.grossMarginColumn",
+];
+assertSourceOrder(
+  chinaProductRowSource,
+  ["styles.productImageColumn", "chinaProductInfoWidth", ...chinaProductColumnOrder],
+  "中国商品行：图片首列，首屏数量、金额，均价及之后在首屏外，同期在最后",
+);
+assertSourceOrder(
+  chinaProductHeaderSource,
+  ["styles.productImageColumn", "infoWidth", ...chinaProductColumnOrder],
+  "中国商品表头必须与行保持相同列顺序",
+);
+assert.match(
+  chinaProductRowSource,
+  /<FrozenLeadingColumns[\s\S]*?styles\.productImageColumn[\s\S]*?chinaProductInfoWidth[\s\S]*?<\/FrozenLeadingColumns>/,
+  "中国商品表固定图片与货号名称列",
+);
+assert.doesNotMatch(
+  chinaProductRowSource.slice(0, chinaProductRowSource.indexOf("renderGrowthCell(")),
+  /item\.compare/,
+  "中国商品行增长率之前的本期格子不得再上下叠放同期值",
+);
+
+const chinaBranchRowStart = source.indexOf("function ChinaSupplierBranchRow(");
+const chinaBranchRowEnd = source.indexOf("function ProductBranchRow(", chinaBranchRowStart);
+assert.ok(chinaBranchRowStart >= 0 && chinaBranchRowEnd > chinaBranchRowStart, "中国供应商分店行必须存在");
+assertSourceOrder(
+  source.slice(chinaBranchRowStart, chinaBranchRowEnd),
+  [
+    "styles.chinaSupplierAmountColumn",
+    "styles.chinaQuantityColumn",
+    "styles.chinaAverageColumn",
+    "styles.grossProfitColumn",
+    "styles.grossMarginColumn",
+    "styles.chinaGrowthColumn",
+    "styles.chinaCompareAmountColumn",
+    "styles.chinaCompareQuantityColumn",
+    "styles.chinaAverageColumn",
+    "styles.grossProfitColumn",
+    "styles.grossMarginColumn",
+  ],
+  "中国供应商分店行：首屏金额、数量，其后均价、毛利、增长率，同期在最后",
+);
+assert.match(
+  source,
+  /chinaLayout=\{drilldown\?\.type === "supplier" && drilldown\.kind === "china"\}/,
+  "只有中国供应商下钻使用单行同期在后的布局，澳洲与商品下钻保持原样",
+);
+assert.match(
+  source,
+  /<TableHeaderGroup muted columnGap=\{8\} label=\{t\("productReport\.metrics\.compare"\)\}>/,
+  "下钻表同期分组的子列间距必须与下钻数据行的 8pt 间距一致",
+);
+
 console.log("product-report-screen-contract.test.ts: ok");
 
 for (const language of ["zh", "en"]) {
