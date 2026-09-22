@@ -3,6 +3,7 @@ const path = require("path");
 
 const PROJECT_ROOT = path.resolve(__dirname, "..");
 const APP_JSON_PATH = path.join(PROJECT_ROOT, "app.json");
+const EAS_JSON_PATH = path.join(PROJECT_ROOT, "eas.json");
 const ANDROID_STRINGS_PATH = path.join(PROJECT_ROOT, "android/app/src/main/res/values/strings.xml");
 const ANDROID_MANIFEST_PATH = path.join(PROJECT_ROOT, "android/app/src/main/AndroidManifest.xml");
 
@@ -21,16 +22,16 @@ function extractXmlValue(source, pattern, label) {
 
 function main() {
   const appConfig = JSON.parse(readText(APP_JSON_PATH)).expo;
-  const expectedRuntimeVersion = appConfig.version;
+  const easBuildProfiles = JSON.parse(readText(EAS_JSON_PATH)).build;
+  const expectedIosRuntimeVersion = appConfig.runtimeVersion;
   const expectedUpdateUrl = appConfig.updates?.url;
-  const runtimeVersion = appConfig.runtimeVersion;
 
   const failures = [];
 
-  if (typeof runtimeVersion !== "string") {
+  if (typeof expectedIosRuntimeVersion !== "string") {
     failures.push("bare workflow 需要 app.json runtimeVersion 使用显式字符串，不能使用 policy 对象");
-  } else if (runtimeVersion !== expectedRuntimeVersion) {
-    failures.push(`app.json runtimeVersion=${runtimeVersion} 与 version=${expectedRuntimeVersion} 不一致`);
+  } else if (expectedIosRuntimeVersion !== appConfig.version) {
+    failures.push(`app.json runtimeVersion=${expectedIosRuntimeVersion} 与 version=${appConfig.version} 不一致`);
   }
 
   if (!expectedUpdateUrl) {
@@ -45,10 +46,22 @@ function main() {
     "Android expo_runtime_version"
   );
 
-  if (androidRuntimeVersion !== expectedRuntimeVersion) {
-    failures.push(
-      `Android expo_runtime_version=${androidRuntimeVersion} 与 app.json version=${expectedRuntimeVersion} 不一致，请运行 npx expo prebuild --no-install`
-    );
+  for (const profileName of ["development", "preview", "production"]) {
+    const profile = easBuildProfiles[profileName];
+    // EAS 会把平台 env 合并到通用 env；Android 原生资源必须与合并后的运行时一致。
+    const iosRuntimeVersion = profile?.ios?.env?.EXPO_PUBLIC_RUNTIME_VERSION
+      ?? profile?.env?.EXPO_PUBLIC_RUNTIME_VERSION;
+    const androidProfileRuntimeVersion = profile?.android?.env?.EXPO_PUBLIC_RUNTIME_VERSION
+      ?? profile?.env?.EXPO_PUBLIC_RUNTIME_VERSION;
+
+    if (iosRuntimeVersion !== expectedIosRuntimeVersion) {
+      failures.push(`${profileName} iOS runtimeVersion=${iosRuntimeVersion} 与 app.json runtimeVersion=${expectedIosRuntimeVersion} 不一致`);
+    }
+    if (androidProfileRuntimeVersion !== androidRuntimeVersion) {
+      failures.push(
+        `${profileName} Android runtimeVersion=${androidProfileRuntimeVersion} 与原生 expo_runtime_version=${androidRuntimeVersion} 不一致`
+      );
+    }
   }
 
   if (!androidManifest.includes('android:name="expo.modules.updates.ENABLED" android:value="true"')) {

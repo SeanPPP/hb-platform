@@ -165,7 +165,7 @@
   },
   "offlineData": {
     "title": "Offline product data",
-    "description": "The local product snapshot used for offline lookup and label printing. The device checks for updates automatically while online; you can also update manually or switch store here.",
+    "description": "The local product snapshot used for offline lookup and label printing. Download or update data manually, or switch store here.",
     "manage": "Manage offline product data",
     "currentStore": "Current store",
     "storeNotSelected": "No store selected",
@@ -188,9 +188,7 @@
     "updateNow": "Update now",
     "downloadNow": "Download now",
     "cancelUpdate": "Cancel update",
-    "autoRefresh": "Auto update",
-    "autoRefreshDescription": "Checks for and downloads the latest product data every 4 hours while online.",
-    "autoRefreshOff": "Off. Data is only downloaded when you tap Update now.",
+    "manualRefreshHint": "Offline product data downloads only when you tap Download or Update.",
     "refreshCompleted": "Offline data updated ({{count}} items)",
     "refreshNoChange": "Offline data is already up to date"
   },
@@ -295,6 +293,8 @@
     "mobileOtaRequiredMessage": "This update cannot be skipped. It only covers compatible runtimes that already include the managed updater.",
     "mobileOtaDownloadAction": "Download update",
     "mobileOtaRestartAction": "Restart now",
+    "mobileOtaRestartFailedTitle": "Restart failed",
+    "mobileOtaRestartFailedMessage": "The update could not be applied right now. You can continue using the app and retry later in Settings.",
     "mobileOtaLaterAction": "Later",
     "mobileOtaRetryAction": "Check again",
     "mobileOtaRetryHelper": "The update is not ready yet. Check the network and retry.",

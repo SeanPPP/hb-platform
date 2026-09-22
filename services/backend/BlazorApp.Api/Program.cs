@@ -552,33 +552,18 @@ authenticationBuilder.AddJwtBearer(options =>
                         MobileDeviceAccountTokenIssuer.TokenUse,
                         StringComparison.Ordinal))
                 {
-                    // 移动设备令牌保留原有 User、设备绑定和角色读取顺序；它不依赖 RefreshToken。
-                    var user = await dbContext.Db.Queryable<User>()
-                        .FirstAsync(item => item.UserGUID == userGuid && item.IsActive && !item.IsDeleted);
-
-                    if (user == null)
+                    var validation = await authSessionValidator.ValidateMobileDeviceAccessAsync(
+                        userGuid,
+                        principal,
+                        context.HttpContext.RequestAborted);
+                    if (!validation.IsValid)
                     {
-                        context.Fail("用户已失效");
+                        context.Fail("用户、设备绑定或登录会话已失效");
                         return;
                     }
-
-                    if (!await authSessionValidator.IsAccessSessionActiveAsync(userGuid, principal))
-                    {
-                        context.Fail("登录会话已失效");
-                        return;
-                    }
-
-                    activeRoleNames = await dbContext.Db.Queryable<UserRole>()
-                        .InnerJoin<Role>((userRole, role) => userRole.RoleGUID == role.RoleGUID)
-                        .Where((userRole, role) =>
-                            userRole.UserGUID == userGuid
-                            && !userRole.IsDeleted
-                            && role.IsActive
-                            && !role.IsDeleted
-                        )
-                        .Select((userRole, role) => role.RoleName)
-                        .Distinct()
-                        .ToListAsync();
+                    // 仅复用本次请求认证时的实时门店快照，避免认证后控制器重复查询且不形成跨请求缓存。
+                    context.HttpContext.Items[typeof(AuthMobileDeviceValidationResult)] = validation;
+                    activeRoleNames = validation.ActiveRoleNames;
                 }
                 else
                 {
@@ -1095,6 +1080,10 @@ builder.Services.AddScoped<IProductMovementReportService, ProductMovementReportS
 builder.Services.AddScoped<IBatchProductSalesAnalysisService, BatchProductSalesAnalysisService>();
 builder.Services.AddHostedService<BatchProductSalesDiscountWorker>();
 builder.Services.AddHostedService<ProductMovementReportSnapshotWorker>();
+// 移动端中国供应商页签默认视图预热：每个实例各自维护内存缓存，无需租约。
+builder.Services.AddHostedService<MobileChinaReportCacheWarmupWorker>();
+builder.Services.AddHostedService<ProductStoreDailyColumnstoreMaintenanceWorker>();
+builder.Services.AddHostedService<SalesDetailMonthlyProjectionWorker>();
 builder.Services.AddScoped<
     IWarehouseProductFlowAnalysisService,
     WarehouseProductFlowAnalysisService

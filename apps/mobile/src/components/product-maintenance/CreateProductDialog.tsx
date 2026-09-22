@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useRef, useState } from "react";
+import { memo, forwardRef, useEffect, useRef, useState } from "react";
 import {
   Keyboard,
   Platform,
@@ -32,7 +32,7 @@ interface Props {
   onSubmit: () => void;
 }
 
-export function CreateProductDialog(props: Props) {
+export const CreateProductDialog = memo(function CreateProductDialog(props: Props) {
   const { t } = useAppTranslation(["productQuery", "common"]);
   const { height, width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
@@ -306,7 +306,11 @@ export function CreateProductDialog(props: Props) {
       </View>
     </Modal>
   );
-}
+}, (previous, next) => {
+  // 隐藏期间不重复生成整张表单；打开或关闭时仍渲染，保留弹窗动画和键盘清理。
+  // 打开后始终接收最新表单值与回调，不比较或缓存可见状态下的业务数据。
+  return !previous.visible && !next.visible;
+});
 
 const Field = forwardRef<
   TextInput,

@@ -24,6 +24,11 @@ public sealed record MobileDeviceBoundAccountValidationResult(
     string? Username = null,
     IReadOnlyList<string>? Roles = null);
 
+public sealed record MobileDeviceTokenBindingValidationResult(
+    bool IsValid,
+    string? UserGuid = null,
+    string? StoreCode = null);
+
 public sealed record MobileDeviceCredentialValidationResult(
     bool RequiresBoundCredential,
     bool IsValid)
@@ -60,6 +65,10 @@ public interface IMobileDeviceActivationService
         CancellationToken cancellationToken);
 
     Task<MobileDeviceBoundAccountValidationResult> ValidateTokenBindingAsync(
+        MobileDeviceBindingContext currentBinding,
+        CancellationToken cancellationToken);
+
+    Task<MobileDeviceTokenBindingValidationResult> ValidateTokenBindingStateAsync(
         MobileDeviceBindingContext currentBinding,
         CancellationToken cancellationToken);
 
@@ -867,6 +876,76 @@ public sealed class MobileDeviceActivationService : IMobileDeviceActivationServi
         return new MobileDeviceBoundAccountValidationResult(
             true,
             binding!.TargetUserGuid);
+    }
+
+    public async Task<MobileDeviceTokenBindingValidationResult> ValidateTokenBindingStateAsync(
+        MobileDeviceBindingContext currentBinding,
+        CancellationToken cancellationToken)
+    {
+        // 绑定与注册状态同属 POSM 库，一次 JOIN 实时读取，避免认证路径的串行往返。
+        var row = await _posmDb.Queryable<MobileDeviceAccountBinding, POSM_设备注册信息表>(
+                (binding, registration) => new JoinQueryInfos(
+                    JoinType.Inner,
+                    binding.DeviceRegistrationId == registration.ID
+                        && registration.设备硬件识别码 == binding.HardwareId
+                        && registration.设备类型 == "Mobile"
+                        && registration.设备状态 == EnabledStatus))
+            .Where((binding, registration) =>
+                binding.BindingId == currentBinding.BindingId
+                && binding.Version == currentBinding.BindingVersion
+                && binding.DeviceRegistrationId == currentBinding.DeviceRegistrationId
+                && binding.HardwareId == currentBinding.HardwareId
+                && binding.TargetUserGuid == currentBinding.UserGuid
+                && binding.RevokedAtUtc == null)
+            .Select((binding, registration) => new MobileDeviceTokenBindingValidationRow
+            {
+                BindingId = binding.BindingId,
+                BindingVersion = binding.Version,
+                DeviceRegistrationId = binding.DeviceRegistrationId,
+                HardwareId = binding.HardwareId,
+                UserGuid = binding.TargetUserGuid,
+                StoreCode = binding.StoreCode,
+                DeviceCode = binding.DeviceCode,
+                DeviceSystem = binding.DeviceSystem,
+                RegistrationStoreCode = registration.分店代码,
+                RegistrationDeviceCode = registration.系统设备编号,
+                RegistrationDeviceSystem = registration.设备系统,
+                RegistrationHardwareId = registration.设备硬件识别码,
+                RegistrationDeviceType = registration.设备类型,
+            })
+            .FirstAsync(cancellationToken);
+
+        var valid = row != null
+            && row.BindingId == currentBinding.BindingId
+            && row.BindingVersion == currentBinding.BindingVersion
+            && row.DeviceRegistrationId == currentBinding.DeviceRegistrationId
+            && string.Equals(row.HardwareId, currentBinding.HardwareId, StringComparison.Ordinal)
+            && string.Equals(row.UserGuid, currentBinding.UserGuid, StringComparison.Ordinal)
+            && string.Equals(row.HardwareId, row.RegistrationHardwareId, StringComparison.Ordinal)
+            && string.Equals(row.RegistrationDeviceType, "Mobile", StringComparison.Ordinal)
+            && string.Equals(row.DeviceCode, row.RegistrationDeviceCode, StringComparison.Ordinal)
+            && string.Equals(row.StoreCode, row.RegistrationStoreCode, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(row.DeviceSystem, row.RegistrationDeviceSystem, StringComparison.Ordinal);
+        return valid
+            ? new MobileDeviceTokenBindingValidationResult(true, row!.UserGuid, row.StoreCode)
+            : new MobileDeviceTokenBindingValidationResult(false);
+    }
+
+    private sealed class MobileDeviceTokenBindingValidationRow
+    {
+        public Guid BindingId { get; set; }
+        public int BindingVersion { get; set; }
+        public int DeviceRegistrationId { get; set; }
+        public string HardwareId { get; set; } = string.Empty;
+        public string UserGuid { get; set; } = string.Empty;
+        public string StoreCode { get; set; } = string.Empty;
+        public string DeviceCode { get; set; } = string.Empty;
+        public string DeviceSystem { get; set; } = string.Empty;
+        public string? RegistrationStoreCode { get; set; }
+        public string? RegistrationDeviceCode { get; set; }
+        public string? RegistrationDeviceSystem { get; set; }
+        public string? RegistrationHardwareId { get; set; }
+        public string? RegistrationDeviceType { get; set; }
     }
 
     public async Task<MobileDeviceCredentialValidationResult> ValidateBoundDeviceCredentialAsync(

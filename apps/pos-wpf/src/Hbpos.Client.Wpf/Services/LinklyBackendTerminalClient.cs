@@ -125,6 +125,13 @@ public interface ILinklyBackendTerminalClient
         CardTerminalSettings settings,
         string sessionId,
         CancellationToken cancellationToken = default);
+
+    // 主管已在 POS 上对该会话作出结案决定时使用：服务端会把仍非终态的会话记为 SupervisorResolved，
+    // 让终端管理（换线、配对、连接测试）不再被这笔结果未知的会话永久挡住。
+    Task AcknowledgeSupervisorResolvedSessionAsync(
+        CardTerminalSettings settings,
+        string sessionId,
+        CancellationToken cancellationToken = default);
 }
 
 public sealed class LinklyBackendTerminalClient(
@@ -567,14 +574,31 @@ public sealed class LinklyBackendTerminalClient(
         return GetStatusAsync(settings, sessionId, cancellationToken);
     }
 
-    public async Task AcknowledgeSessionAsync(
+    public Task AcknowledgeSessionAsync(
         CardTerminalSettings settings,
         string sessionId,
         CancellationToken cancellationToken = default)
     {
+        return AcknowledgeSessionCoreAsync(settings, sessionId, supervisorResolved: false, cancellationToken);
+    }
+
+    public Task AcknowledgeSupervisorResolvedSessionAsync(
+        CardTerminalSettings settings,
+        string sessionId,
+        CancellationToken cancellationToken = default)
+    {
+        return AcknowledgeSessionCoreAsync(settings, sessionId, supervisorResolved: true, cancellationToken);
+    }
+
+    private async Task AcknowledgeSessionCoreAsync(
+        CardTerminalSettings settings,
+        string sessionId,
+        bool supervisorResolved,
+        CancellationToken cancellationToken)
+    {
         var stopwatch = Stopwatch.StartNew();
         var relativeUrl = $"api/v1/linkly/cloud-backend/transactions/{Uri.EscapeDataString(sessionId)}/acknowledge";
-        var request = new LinklyCloudBackendAcknowledgeRequest(settings.Environment.ToString());
+        var request = new LinklyCloudBackendAcknowledgeRequest(settings.Environment.ToString(), supervisorResolved);
         LogHttpRequest(
             "acknowledge",
             HttpMethod.Post,
@@ -825,7 +849,7 @@ public sealed class LinklyBackendTerminalClient(
             using var localCancelCts = CancellationTokenSource.CreateLinkedTokenSource(
                 transactionTimeoutCts.Token,
                 dialogService.LocalCancelToken);
-            var pollResult = await PollUntilFinalAsync(settings, status, localCancelCts.Token);
+            var pollResult = await PollUntilFinalAsync(settings, status, localCancelCts.Token, cancellationToken);
             status = pollResult.Status;
             var result = ToAuthorizationResult(
                 status,
@@ -982,7 +1006,7 @@ public sealed class LinklyBackendTerminalClient(
                 lastStatus = status;
             }
 
-            var pollResult = await PollUntilFinalAsync(settings, status, timeoutCts.Token);
+            var pollResult = await PollUntilFinalAsync(settings, status, timeoutCts.Token, cancellationToken);
             return pollResult.Status;
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
@@ -1247,7 +1271,8 @@ public sealed class LinklyBackendTerminalClient(
     private async Task<LinklyBackendPollResult> PollUntilFinalAsync(
         CardTerminalSettings settings,
         LinklyCloudBackendSessionResponse status,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        CancellationToken callerCancellationToken)
     {
         var manualCancelRequested = false;
         var signatureDeclineRequested = false;
@@ -1279,16 +1304,52 @@ public sealed class LinklyBackendTerminalClient(
         if (IsCompletedOrPendingSuccess(status) &&
             !HasReceipt(status))
         {
+            // 批准或拒付已经确定，补取小票只是尽力而为：任何一次刷新失败都保留已拿到的终态，
+            // 否则已扣款的批准会被改写成结果未知并锁进恢复流程，确定的拒付也会变成未知。
             for (var attempt = 0; attempt < 3 && !HasReceipt(status); attempt++)
             {
-                await DelayAsync(_pollInterval, cancellationToken);
+                try
+                {
+                    await DelayAsync(_pollInterval, cancellationToken);
 
-                status = await GetStatusAsync(settings, status.SessionId, cancellationToken);
-                status = await PresentStatusAsync(settings, status, message: null, cancellationToken, MarkManualCancelRequested, MarkSignatureDeclineRequested, signatureSlipPrintState);
+                    var refreshed = await GetStatusAsync(settings, status.SessionId, cancellationToken);
+                    if (!IsConsistentReceiptRefresh(status, refreshed))
+                    {
+                        LogStatusSnapshot("receipt refresh ignored inconsistent status", refreshed);
+                        break;
+                    }
+
+                    status = refreshed;
+                    status = await PresentStatusAsync(settings, status, message: null, cancellationToken, MarkManualCancelRequested, MarkSignatureDeclineRequested, signatureSlipPrintState);
+                }
+                catch (Exception ex) when (IsReceiptRefreshFailure(ex, callerCancellationToken))
+                {
+                    Log($"receipt refresh stopped sessionId={status.SessionId} attempt={attempt + 1} error={ex.GetType().Name}");
+                    break;
+                }
             }
         }
 
         return new LinklyBackendPollResult(status, manualCancelRequested, signatureDeclineRequested);
+    }
+
+    private static bool IsConsistentReceiptRefresh(
+        LinklyCloudBackendSessionResponse current,
+        LinklyCloudBackendSessionResponse refreshed)
+    {
+        // 这次刷新只为补小票：必须仍是同一会话、仍为终态，且批准/拒付判定不变，才能替换已确定的终态。
+        return string.Equals(current.SessionId, refreshed.SessionId, StringComparison.Ordinal) &&
+            IsFinal(refreshed) &&
+            IsCompletedOrPendingSuccess(refreshed) &&
+            IsApprovedFinalTransaction(current) == IsApprovedFinalTransaction(refreshed);
+    }
+
+    private static bool IsReceiptRefreshFailure(Exception exception, CancellationToken callerCancellationToken)
+    {
+        // 后端 5xx、网络异常、响应无效、业务窗口到期、收银员停止等待都只结束补取；
+        // 调用方自己的取消（关闭支付页、退出程序）照常上抛，由调用方决定如何收尾。
+        return exception is HttpRequestException or JsonException ||
+            (exception is OperationCanceledException && !callerCancellationToken.IsCancellationRequested);
     }
 
     private async Task NotifyPaymentAttemptSessionStartedAsync(

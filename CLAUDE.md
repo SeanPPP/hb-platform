@@ -41,3 +41,7 @@ This project is indexed by GitNexus as **hb-platform-main** (117305 symbols, 416
 | Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
 
 <!-- gitnexus:end -->
+
+## 发布与 PR 规范
+
+- 见 `AGENTS.md` 的「发布与 PR 规范」：需要重新构建移动端原生包（iOS / APK）的 PR，标题必须写明；纯 OTA 的不加标注。

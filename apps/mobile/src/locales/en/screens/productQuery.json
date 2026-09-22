@@ -308,6 +308,7 @@
     "errors": {
       "network": "Network unavailable",
       "capacityBusy": "Server is busy. Try again later.",
+      "preparationTimeout": "Server preparation timed out. Try updating manually later.",
       "expired": "Server snapshot expired. It will download again.",
       "verification": "Data verification failed",
       "api": "Server returned an error",
@@ -325,6 +326,7 @@
     "refreshCancelled": "Offline data download cancelled."
   },
   "print": {
+    "inProgress": "Printing…",
     "title": "Label printing",
     "quick": "Print",
     "product": "Regular label",
@@ -433,6 +435,8 @@
       "inStoreSince": "In store since",
       "offerLabel": "Multi-buy promotion",
       "offerSummary": "{{quantity}} for {{price}}",
+      "quantityLabel": "Quantity (2–99)",
+      "comboPriceLabel": "Combination price",
       "unitPriceLabel": "Unit price (retail)",
       "offerValidityLabel": "Promotion period",
       "offerValidity": "{{from}} to {{to}}",
@@ -462,6 +466,7 @@
         "rangeInvalid": "Start date cannot be after the end date"
       },
       "offerRequired": "Choose a multi-buy promotion",
+      "quantityInvalid": "Quantity must be an integer from 2 to 99",
       "unitPriceMissing": "This product has no retail price for the unit price",
       "offerInvalid": "Invalid promotion quantity or price. Check the promotion.",
       "fixBeforeSubmit": "Fix the fields marked in red first"

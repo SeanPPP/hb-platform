@@ -385,6 +385,9 @@ namespace BlazorApp.Api.Services.React
         private static readonly TimeSpan RANKING_CACHE_DURATION = TimeSpan.FromMinutes(10);
         private static readonly TimeSpan BEST_SELLERS_CACHE_DURATION = TimeSpan.FromMinutes(30);
         private static readonly TimeSpan DETAIL_CACHE_DURATION = TimeSpan.FromMinutes(3);
+        // 按统计批次版本做键的完整报表条目：见 ReadCompleteReportAsync。
+        private static readonly TimeSpan VERSIONED_REPORT_CACHE_SLIDING = TimeSpan.FromMinutes(30);
+        private static readonly TimeSpan VERSIONED_REPORT_CACHE_ABSOLUTE = TimeSpan.FromHours(6);
         private static readonly TimeSpan PRODUCT_SALES_ANALYSIS_CACHE_DURATION = TimeSpan.FromMinutes(5);
         private static readonly TimeSpan SALES_SOURCE_COVERAGE_CACHE_DURATION = TimeSpan.FromSeconds(20);
         // 缺口统计只短等 250ms；快速补算可随本次返回，慢任务转后台，给查询和渲染保留 2 秒预算。
