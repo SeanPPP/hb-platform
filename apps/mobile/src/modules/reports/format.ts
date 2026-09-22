@@ -8,6 +8,16 @@ export function formatMoney(value: number | null | undefined) {
   })}`;
 }
 
+export function formatWholeMoney(value: number | null | undefined) {
+  const amount = typeof value === "number" && Number.isFinite(value) ? value : 0;
+  // 营业额与毛利额仅在展示时四舍五入；统计、增长率与排序继续使用原始精度。
+  const rounded = Math.sign(amount) * Math.round(Math.abs(amount));
+  return `$${(rounded === 0 ? 0 : rounded).toLocaleString("en-AU", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  })}`;
+}
+
 export function formatSignedMoney(value: number | null | undefined) {
   const amount = typeof value === "number" && Number.isFinite(value) ? value : 0;
   const sign = amount > 0 ? "+" : amount < 0 ? "-" : "";
@@ -19,7 +29,7 @@ export function formatWholeDollars(value: number | null | undefined) {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return "—";
   }
-  return `$${Math.round(value).toLocaleString("en-AU")}`;
+  return formatWholeMoney(value);
 }
 
 /** 带正负号的整数金额；同期基数太小时用它代替百分比。 */
@@ -27,7 +37,7 @@ export function formatSignedWholeDollars(value: number | null | undefined) {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return "—";
   }
-  const amount = Math.round(value);
+  const amount = Math.sign(value) * Math.round(Math.abs(value));
   const sign = amount > 0 ? "+" : amount < 0 ? "-" : "";
   return `${sign}$${Math.abs(amount).toLocaleString("en-AU")}`;
 }

@@ -59,7 +59,7 @@ import {
   type ReportSortField,
   type ReportSortValues,
 } from "@/modules/product-report/sorting";
-import { formatMoney } from "@/modules/reports/format";
+import { formatMoney, formatWholeMoney } from "@/modules/reports/format";
 import {
   getCashierEnabledStoreCodes,
   getCashierScopedBranchCodes,
@@ -147,17 +147,12 @@ function formatRowNumber(value: number) {
   return String(value).padStart(2, "0");
 }
 
-function formatWholeMoney(value: number) {
-  // 高密度排行用整元值避免大金额被箭头或下一列截断，详情仍使用两位小数。
-  const amount = Number.isFinite(value) ? value : 0;
-  return `$${amount.toLocaleString("en-AU", {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  })}`;
-}
-
 function formatNullableMoney(value: number | null) {
   return value === null ? "—" : formatMoney(value);
+}
+
+function formatNullableWholeMoney(value: number | null) {
+  return value === null ? "—" : formatWholeMoney(value);
 }
 
 function formatGrossMarginRate(
@@ -209,7 +204,8 @@ function TableCell({
   return (
     <Text
       variant="bodySmall"
-      numberOfLines={1}
+      // 数值不能省略；超出常规列宽或系统放大字体时允许完整换行。
+      numberOfLines={numeric ? undefined : 1}
       selectable
       style={[styles.tableCellText, numeric ? styles.numericText : null, style]}
     >
@@ -327,14 +323,14 @@ function ProductPageSummaryCard({
     {
       key: "sales",
       label: t("productReport.metrics.revenue"),
-      current: formatMoney(summary.currentSales),
-      compare: formatMoney(summary.compareSales),
+      current: formatWholeMoney(summary.currentSales),
+      compare: formatWholeMoney(summary.compareSales),
     },
     {
       key: "grossProfit",
       label: t("productReport.metrics.grossProfit"),
-      current: formatNullableMoney(summary.currentGrossProfit),
-      compare: formatNullableMoney(summary.compareGrossProfit),
+      current: formatNullableWholeMoney(summary.currentGrossProfit),
+      compare: formatNullableWholeMoney(summary.compareGrossProfit),
     },
     {
       key: "grossMargin",
@@ -354,20 +350,22 @@ function ProductPageSummaryCard({
           {caption}
         </Text>
       </View>
-      <View style={styles.productSummaryGrid}>
-        <View style={styles.productSummaryLabelColumn}>
-          <TableCell style={styles.headerText}> </TableCell>
-          <TableCell style={styles.strongText}>{t("reports.metrics.current")}</TableCell>
-          <TableCell style={styles.muted}>{t("productReport.metrics.compare")}</TableCell>
-        </View>
-        {metrics.map((metric) => (
-          <View key={metric.key} style={styles.productSummaryMetric}>
-            <TableCell numeric style={styles.headerText}>{metric.label}</TableCell>
-            <TableCell numeric style={styles.strongText}>{metric.current}</TableCell>
-            <TableCell numeric style={styles.muted}>{metric.compare}</TableCell>
+      <ScrollView horizontal showsHorizontalScrollIndicator contentContainerStyle={styles.productSummaryScroll}>
+        <View style={styles.productSummaryGrid}>
+          <View style={styles.productSummaryLabelColumn}>
+            <TableCell style={styles.headerText}> </TableCell>
+            <TableCell style={styles.strongText}>{t("reports.metrics.current")}</TableCell>
+            <TableCell style={styles.muted}>{t("productReport.metrics.compare")}</TableCell>
           </View>
-        ))}
-      </View>
+          {metrics.map((metric) => (
+            <View key={metric.key} style={styles.productSummaryMetric}>
+              <TableCell numeric style={styles.headerText}>{metric.label}</TableCell>
+              <TableCell numeric style={styles.strongText}>{metric.current}</TableCell>
+              <TableCell numeric style={styles.muted}>{metric.compare}</TableCell>
+            </View>
+          ))}
+        </View>
+      </ScrollView>
     </View>
   );
 }
@@ -1039,8 +1037,8 @@ export function ProductReportScreen({
     columnStyle?: StyleProp<ViewStyle>
   ) => (
     <View style={[styles.grossProfitColumn, columnStyle]}>
-      <TableCell numeric style={styles.strongText}>{formatNullableMoney(current)}</TableCell>
-      <TableCell numeric style={styles.muted}>{formatNullableMoney(compare)}</TableCell>
+      <TableCell numeric style={styles.strongText}>{formatNullableWholeMoney(current)}</TableCell>
+      <TableCell numeric style={styles.muted}>{formatNullableWholeMoney(compare)}</TableCell>
     </View>
   );
 
@@ -2272,8 +2270,8 @@ function BranchDrilldownModal({
   };
   const renderGrossProfitCell = (current: number | null, compare: number | null) => (
     <View style={styles.grossProfitColumn}>
-      <TableCell numeric style={styles.strongText}>{formatNullableMoney(current)}</TableCell>
-      <TableCell numeric style={styles.muted}>{formatNullableMoney(compare)}</TableCell>
+      <TableCell numeric style={styles.strongText}>{formatNullableWholeMoney(current)}</TableCell>
+      <TableCell numeric style={styles.muted}>{formatNullableWholeMoney(compare)}</TableCell>
     </View>
   );
   const renderGrossMarginCell = (
@@ -2440,8 +2438,8 @@ function SupplierBranchRow({
         </View>
       </FrozenLeadingColumns>
       <View style={styles.moneyColumn}>
-        <TableCell numeric style={styles.strongText}>{formatMoney(row.revenue)}</TableCell>
-        <TableCell numeric style={styles.muted}>{formatMoney(row.compareRevenue)}</TableCell>
+        <TableCell numeric style={styles.strongText}>{formatWholeMoney(row.revenue)}</TableCell>
+        <TableCell numeric style={styles.muted}>{formatWholeMoney(row.compareRevenue)}</TableCell>
       </View>
       {renderGrowthCell(row.revenue, row.compareRevenue)}
       <View style={styles.countColumn}>
@@ -2496,8 +2494,8 @@ function ProductBranchRow({
         <TableCell numeric style={styles.muted}>{formatCount(row.compareQuantity)}</TableCell>
       </View>
       <View style={styles.productBranchMoneyColumn}>
-        <TableCell numeric style={styles.strongText}>{formatMoney(row.salesAmount)}</TableCell>
-        <TableCell numeric style={styles.muted}>{formatMoney(row.compareSalesAmount)}</TableCell>
+        <TableCell numeric style={styles.strongText}>{formatWholeMoney(row.salesAmount)}</TableCell>
+        <TableCell numeric style={styles.muted}>{formatWholeMoney(row.compareSalesAmount)}</TableCell>
       </View>
       <View style={styles.productBranchAverageColumn}>
         <TableCell numeric style={styles.strongText}>{formatMoney(row.averageUnitPrice)}</TableCell>
@@ -2597,18 +2595,24 @@ const styles = StyleSheet.create({
     borderBottomColor: "#E2E8F0",
     paddingBottom: 6,
   },
+  productSummaryScroll: {
+    flexGrow: 1,
+  },
   productSummaryGrid: {
+    flex: 1,
     flexDirection: "row",
     alignItems: "flex-start",
     paddingTop: 4,
   },
   productSummaryLabelColumn: {
     width: 42,
+    flexShrink: 0,
     gap: 2,
   },
   productSummaryMetric: {
     flex: 1,
-    minWidth: 0,
+    minWidth: 112,
+    flexShrink: 0,
     gap: 2,
     paddingHorizontal: 3,
   },
@@ -2653,19 +2657,19 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFFFF",
   },
   supplierTable: {
-    minWidth: 626,
+    minWidth: 832,
   },
   chinaSupplierTable: {
-    minWidth: 696,
+    minWidth: 902,
   },
   productTable: {
-    minWidth: 648,
+    minWidth: 800,
   },
   drilldownTable: {
-    minWidth: 712,
+    minWidth: 868,
   },
   productDrilldownTable: {
-    minWidth: 534,
+    minWidth: 728,
   },
   tableBody: {
     flexGrow: 0,
@@ -2738,8 +2742,9 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   supplierMoneyColumn: {
-    width: 68,
-    minWidth: 0,
+    // 预留整数大额与下钻箭头空间，横向滚动时保持表头、双期金额对齐。
+    width: 128,
+    flexShrink: 0,
     paddingRight: 10,
     position: "relative",
   },
@@ -2777,9 +2782,9 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   supplierCountColumn: {
-    // 表头「商品数量」加排序箭头约 61pt；表格 minWidth 仍有余量，加宽不影响其他列。
-    width: 64,
-    minWidth: 0,
+    // 为排序表头和完整商品数量预留空间，横向滚动时列宽保持稳定。
+    width: 80,
+    flexShrink: 0,
   },
   productNameColumn: {
     width: 190,
@@ -2803,16 +2808,16 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   productCountColumn: {
-    width: 54,
-    minWidth: 0,
+    width: 80,
+    flexShrink: 0,
   },
   productMoneyColumn: {
-    width: 68,
-    minWidth: 0,
+    width: 124,
+    flexShrink: 0,
   },
   productAverageColumn: {
-    width: 68,
-    minWidth: 0,
+    width: 96,
+    flexShrink: 0,
   },
   productGrowthColumn: {
     width: 64,
@@ -2831,28 +2836,28 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   productBranchCountColumn: {
-    width: 46,
-    minWidth: 0,
+    width: 80,
+    flexShrink: 0,
   },
   productBranchMoneyColumn: {
-    width: 76,
-    minWidth: 0,
+    width: 124,
+    flexShrink: 0,
   },
   productBranchAverageColumn: {
-    width: 60,
-    minWidth: 0,
+    width: 96,
+    flexShrink: 0,
   },
   productBranchGrowthColumn: {
     width: 64,
     minWidth: 0,
   },
   moneyColumn: {
-    width: 96,
-    minWidth: 0,
+    width: 124,
+    flexShrink: 0,
   },
   countColumn: {
-    width: 72,
-    minWidth: 0,
+    width: 80,
+    flexShrink: 0,
   },
   shareColumn: {
     width: 80,
@@ -2867,12 +2872,12 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   grossProfitColumn: {
-    width: 72,
-    minWidth: 0,
+    width: 124,
+    flexShrink: 0,
   },
   grossMarginColumn: {
-    width: 72,
-    minWidth: 0,
+    width: 84,
+    flexShrink: 0,
   },
   tableCellText: {
     color: "#111827",
