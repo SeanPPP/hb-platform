@@ -85,6 +85,7 @@
     <Compile Include="StoreProductInsightRulesTests.cs" />
     <Compile Include="StoreProductInsightQueryServiceTests.cs" />
     <Compile Include="StoreProductInsightsControllerTests.cs" />
+    <Compile Include="StaticReportAccessControllerTests.cs" />
     <Compile Include="ProductBranchSalesServiceTests.cs" />
     <Compile Include="ProductBranchSalesControllerTests.cs" />
     <Compile Include="VersionManagementNavigationTests.cs" />
