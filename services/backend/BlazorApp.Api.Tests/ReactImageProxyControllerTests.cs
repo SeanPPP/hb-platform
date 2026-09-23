@@ -1,6 +1,7 @@
 using System.Net;
 using System.Reflection;
 using BlazorApp.Api.Controllers.React;
+using BlazorApp.Shared.Constants;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -14,12 +15,19 @@ public sealed class ReactImageProxyControllerTests
         "https://hotbargain-yw-2023-1300114625.cos.ap-shanghai.myqcloud.com/a.png";
 
     [Fact]
-    public void Controller_RequiresWarehouseRoles()
+    public void Routes_RequireTheirOwnPermissions()
     {
-        var authorize = typeof(ReactImageProxyController).GetCustomAttribute<AuthorizeAttribute>();
+        var controllerAuthorize = typeof(ReactImageProxyController).GetCustomAttribute<AuthorizeAttribute>();
+        var warehouseAuthorize = typeof(ReactImageProxyController)
+            .GetMethod(nameof(ReactImageProxyController.Get))!
+            .GetCustomAttribute<AuthorizeAttribute>();
+        var salesAuthorize = typeof(ReactImageProxyController)
+            .GetMethod(nameof(ReactImageProxyController.GetSalesDetail))!
+            .GetCustomAttribute<AuthorizeAttribute>();
 
-        Assert.NotNull(authorize);
-        Assert.Equal("Admin,WarehouseManager,WarehouseStaff", authorize!.Roles);
+        Assert.NotNull(controllerAuthorize);
+        Assert.Equal("Admin,WarehouseManager,WarehouseStaff", warehouseAuthorize?.Roles);
+        Assert.Equal(Permissions.SalesDashboard.SalesDetailView, salesAuthorize?.Policy);
     }
 
     [Theory]
@@ -192,6 +200,27 @@ public sealed class ReactImageProxyControllerTests
         Assert.Equal("image too large", badRequest.Value);
     }
 
+    [Fact]
+    public async Task GetSalesDetail_StopsUpstreamDownloadWhenBrowserDisconnects()
+    {
+        var upstreamStarted = new TaskCompletionSource<CancellationToken>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var controller = CreateController(async (_, token) =>
+        {
+            upstreamStarted.TrySetResult(token);
+            await Task.Delay(Timeout.InfiniteTimeSpan, token);
+            throw new InvalidOperationException("上游请求应被取消");
+        });
+        using var browserAbort = new CancellationTokenSource();
+        controller.HttpContext.RequestAborted = browserAbort.Token;
+
+        var request = controller.GetSalesDetail(AllowedImageUrl);
+        var upstreamToken = await upstreamStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        browserAbort.Cancel();
+
+        Assert.IsType<EmptyResult>(await request.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.True(upstreamToken.IsCancellationRequested);
+    }
+
     private static T InvokePrivateStatic<T>(string methodName, params object?[] args)
     {
         var method = typeof(ReactImageProxyController).GetMethod(
@@ -215,6 +244,11 @@ public sealed class ReactImageProxyControllerTests
 
     private static ReactImageProxyController CreateController(
         Func<HttpRequestMessage, HttpResponseMessage> responseFactory
+    )
+        => CreateController((request, _) => Task.FromResult(responseFactory(request)));
+
+    private static ReactImageProxyController CreateController(
+        Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> responseFactory
     )
     {
         var client = new HttpClient(new StubHttpMessageHandler(responseFactory))
@@ -248,9 +282,9 @@ public sealed class ReactImageProxyControllerTests
 
     private sealed class StubHttpMessageHandler : HttpMessageHandler
     {
-        private readonly Func<HttpRequestMessage, HttpResponseMessage> _responseFactory;
+        private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _responseFactory;
 
-        public StubHttpMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> responseFactory)
+        public StubHttpMessageHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> responseFactory)
         {
             _responseFactory = responseFactory;
         }
@@ -260,7 +294,7 @@ public sealed class ReactImageProxyControllerTests
             CancellationToken cancellationToken
         )
         {
-            return Task.FromResult(_responseFactory(request));
+            return _responseFactory(request, cancellationToken);
         }
     }
 }

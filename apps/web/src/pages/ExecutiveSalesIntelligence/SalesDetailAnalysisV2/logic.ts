@@ -1,6 +1,9 @@
 import { completeSum, margin, normalizeKeyword, quickDateSelection, validPeriod, type DateSelection } from '../ReportWorkbench/logic'
 import type { SalesDetailQuery, SalesDetailRow, SupplierKind } from './reportService'
 
+// 带图工作簿在浏览器中生成，限制单次行数以控制图片请求和 ExcelJS 内存占用。
+export const MAX_PRODUCT_IMAGE_EXPORT_ROWS = 500
+
 export interface DetailSelection { supplier?: string; branch?: string; product?: string; keyword: string; page: number; pageSize: number }
 export const emptySelection: DetailSelection = { keyword: '', page: 1, pageSize: 20 }
 

@@ -54,7 +54,7 @@ public sealed class SalesDetailReportController : ControllerBase
             cancellationToken.ThrowIfCancellationRequested();
             if (!Enum.IsDefined(kind) || !Enum.IsDefined(compareMode))
                 return BadRequest(new { success = false, message = "kind 或 compareMode 无效" });
-            if (pageIndex < 1 || pageSize < 1 || pageSize > 100)
+            if (pageIndex < 1 || pageSize < 1 || pageSize > 500)
                 return BadRequest(new { success = false, message = "分页参数无效" });
             ValidateDateRange(startDate, endDate, compareStartDate, compareEndDate);
 
