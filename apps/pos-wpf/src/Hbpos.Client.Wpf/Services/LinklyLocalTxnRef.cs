@@ -1,42 +1,13 @@
-using System.Security.Cryptography;
-using System.Text;
+using Hbpos.Contracts.Linkly;
 
 namespace Hbpos.Client.Wpf.Services;
 
 internal static class LinklyLocalTxnRef
 {
-    private const string HashInputPrefix = "HBPOS-LINKLY-TXNREF-V1";
-    private const string Base32Alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-
+    // 派生算法与 Hbpos.Api 共用同一份实现：后端异步链路由 API 按同一 attempt 身份算出同一个引用。
     internal static string Create(char transactionType, string stableIdentity)
     {
-        if (transactionType is not ('P' or 'R'))
-        {
-            throw new ArgumentOutOfRangeException(nameof(transactionType), transactionType, "Linkly Local IP transaction type must be P or R.");
-        }
-
-        ArgumentException.ThrowIfNullOrEmpty(stableIdentity);
-
-        var input = $"{HashInputPrefix}|{transactionType}|{stableIdentity}";
-        var digest = SHA256.HashData(Encoding.UTF8.GetBytes(input));
-        Span<char> result = stackalloc char[16];
-        result[0] = transactionType;
-        for (var index = 0; index < 15; index++)
-        {
-            var value = 0;
-            var bitOffset = index * 5;
-            for (var bit = 0; bit < 5; bit++)
-            {
-                var absoluteBit = bitOffset + bit;
-                var byteValue = digest[absoluteBit / 8];
-                var bitValue = (byteValue >> (7 - (absoluteBit % 8))) & 1;
-                value = (value << 1) | bitValue;
-            }
-
-            result[index + 1] = Base32Alphabet[value];
-        }
-
-        return new string(result);
+        return LinklyAttemptTxnRef.Create(transactionType, stableIdentity);
     }
 
     internal static bool TryNormalizeHistoricalReference(string? reference, out string normalized)

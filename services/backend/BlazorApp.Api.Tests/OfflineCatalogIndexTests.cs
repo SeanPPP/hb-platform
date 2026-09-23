@@ -226,9 +226,12 @@ public sealed class OfflineCatalogIndexTests
     {
         var time = new OfflineCatalogFakeTimeProvider(GeneratedAt);
         var cache = new OfflineCatalogIndexCache(time, TimeSpan.FromMinutes(20), TimeSpan.FromHours(2), 3, 1_000, 2_000, TimeSpan.FromMinutes(30));
-        var baseline = new OfflineCatalogIndex("S001", GeneratedAt, new[] { Item("A") }, "v-base");
-        var target = new OfflineCatalogIndex("S001", GeneratedAt, new[] { Item("A"), Item("B", productCode: "P2") }, "v-target");
-        var lease = cache.CreateDeltaLease(baseline, target, target.GetDeltaOperations(baseline));
+        var baseline = (await cache.GetOrBuildCurrentAsync("S001", _ => Task.FromResult<OfflineCatalogIndex?>(
+            new OfflineCatalogIndex("S001", time.GetUtcNow(), new[] { Item("A") }, "v-base")), CancellationToken.None))!;
+        time.Advance(TimeSpan.FromMinutes(21));
+        var target = (await cache.GetOrBuildCurrentAsync("S001", _ => Task.FromResult<OfflineCatalogIndex?>(
+            new OfflineCatalogIndex("S001", time.GetUtcNow(), new[] { Item("A"), Item("B", productCode: "P2") }, "v-target")), CancellationToken.None))!;
+        var lease = cache.TryCreateDeltaLease(baseline, target, target.GetDeltaOperations(baseline))!;
         Assert.NotNull(cache.GetAndTouchLease(lease.LeaseId, "S001"));
         Assert.Null(cache.GetAndTouchLease(lease.LeaseId, "S002"));
         time.Advance(TimeSpan.FromMinutes(31));
@@ -243,8 +246,224 @@ public sealed class OfflineCatalogIndexTests
         var cache = new OfflineCatalogIndexCache(time, TimeSpan.FromMinutes(20), TimeSpan.FromHours(2), 3, 1, 2);
         Task<OfflineCatalogIndex?> Build(string store) =>
             Task.FromResult<OfflineCatalogIndex?>(new OfflineCatalogIndex(store, time.GetUtcNow(), new[] { Item("A"), Item("B", productCode: "P2") }));
-        await cache.GetOrBuildCurrentAsync("S001", _ => Build("S001"), CancellationToken.None);
+        var first = (await cache.GetOrBuildCurrentAsync("S001", _ => Build("S001"), CancellationToken.None))!;
+        var lease = cache.TryCreateFullLease(first)!;
         await Assert.ThrowsAsync<OfflineCatalogCapacityBusyException>(() =>
             cache.GetOrBuildCurrentAsync("S002", _ => Build("S002"), CancellationToken.None));
+        Assert.NotNull(cache.GetAndTouchLease(lease.LeaseId, "S001"));
     }
+
+    [Fact]
+    public async Task 缓存_活跃完整下载租约不被软容量淘汰()
+    {
+        var time = new OfflineCatalogFakeTimeProvider(GeneratedAt);
+        var cache = new OfflineCatalogIndexCache(time, TimeSpan.FromMinutes(20), TimeSpan.FromHours(2), 3, 2, 4);
+        Task<OfflineCatalogIndex?> Build(string store) => Task.FromResult<OfflineCatalogIndex?>(
+            new OfflineCatalogIndex(store, time.GetUtcNow(), new[] { Item("A"), Item("B", productCode: "P2") }));
+
+        var first = (await cache.GetOrBuildCurrentAsync("S001", _ => Build("S001"), CancellationToken.None))!;
+        var lease = cache.TryCreateFullLease(first)!;
+        await cache.GetOrBuildCurrentAsync("S002", _ => Build("S002"), CancellationToken.None);
+
+        Assert.Same(first, cache.GetByVersion("S001", first.CatalogVersion));
+        Assert.NotNull(cache.GetAndTouchLease(lease.LeaseId, "S001"));
+        Assert.Equal(4, cache.TotalRetainedItems);
+    }
+
+    [Fact]
+    public async Task 缓存_活跃增量租约保护超保留期基线和目标()
+    {
+        var time = new OfflineCatalogFakeTimeProvider(GeneratedAt);
+        var cache = new OfflineCatalogIndexCache(
+            time, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(2), 3, 2, 4, TimeSpan.FromHours(1));
+        var baseline = (await cache.GetOrBuildCurrentAsync("S001", _ => Task.FromResult<OfflineCatalogIndex?>(
+            new OfflineCatalogIndex("S001", time.GetUtcNow(), new[] { Item("A") })), CancellationToken.None))!;
+        time.Advance(TimeSpan.FromMinutes(2));
+        var target = (await cache.GetOrBuildCurrentAsync("S001", _ => Task.FromResult<OfflineCatalogIndex?>(
+            new OfflineCatalogIndex("S001", time.GetUtcNow(), new[] { Item("B") })), CancellationToken.None))!;
+        var lease = cache.TryCreateDeltaLease(baseline, target, target.GetDeltaOperations(baseline))!;
+
+        time.Advance(TimeSpan.FromMinutes(3));
+        await cache.GetOrBuildCurrentAsync("S002", _ => Task.FromResult<OfflineCatalogIndex?>(
+            new OfflineCatalogIndex("S002", time.GetUtcNow(), new[] { Item("C") })), CancellationToken.None);
+
+        Assert.NotNull(cache.GetAndTouchLease(lease.LeaseId, "S001"));
+        Assert.Same(baseline, cache.GetByVersion("S001", baseline.CatalogVersion));
+        Assert.Same(target, cache.GetByVersion("S001", target.CatalogVersion));
+
+        time.Advance(TimeSpan.FromHours(1).Add(TimeSpan.FromMinutes(1)));
+        Assert.Null(cache.GetAndTouchLease(lease.LeaseId, "S001"));
+        Assert.Null(cache.GetByVersion("S001", baseline.CatalogVersion));
+    }
+
+    [Fact]
+    public async Task 缓存_租约占用硬容量时拒绝新目录并保留下载()
+    {
+        var time = new OfflineCatalogFakeTimeProvider(GeneratedAt);
+        var cache = new OfflineCatalogIndexCache(time, TimeSpan.FromMinutes(20), TimeSpan.FromHours(2), 3, 1, 3);
+        Task<OfflineCatalogIndex?> Build(string store) => Task.FromResult<OfflineCatalogIndex?>(
+            new OfflineCatalogIndex(store, time.GetUtcNow(), new[] { Item("A"), Item("B", productCode: "P2") }));
+
+        var first = (await cache.GetOrBuildCurrentAsync("S001", _ => Build("S001"), CancellationToken.None))!;
+        var lease = cache.TryCreateFullLease(first)!;
+        await Assert.ThrowsAsync<OfflineCatalogCapacityBusyException>(() =>
+            cache.GetOrBuildCurrentAsync("S002", _ => Build("S002"), CancellationToken.None));
+
+        Assert.Same(first, cache.GetByVersion("S001", first.CatalogVersion));
+        Assert.NotNull(cache.GetAndTouchLease(lease.LeaseId, "S001"));
+        Assert.Equal(2, cache.TotalRetainedItems);
+    }
+
+    [Fact]
+    public async Task 缓存_发布失败后恢复其他门店的缓存()
+    {
+        var time = new OfflineCatalogFakeTimeProvider(GeneratedAt);
+        var cache = new OfflineCatalogIndexCache(time, TimeSpan.FromMinutes(20), TimeSpan.FromHours(2), 3, 3, 5);
+        OfflineCatalogIndex Build(string store, int count) => new(
+            store, time.GetUtcNow(), Enumerable.Range(0, count)
+                .Select(i => Item($"{store}-{i}", productCode: $"P{i}")));
+
+        var leased = (await cache.GetOrBuildCurrentAsync("S001", _ => Task.FromResult<OfflineCatalogIndex?>(
+            Build("S001", 2)), CancellationToken.None))!;
+        var lease = cache.TryCreateFullLease(leased)!;
+        var other = (await cache.GetOrBuildCurrentAsync("S002", _ => Task.FromResult<OfflineCatalogIndex?>(
+            Build("S002", 2)), CancellationToken.None))!;
+
+        await Assert.ThrowsAsync<OfflineCatalogCapacityBusyException>(() =>
+            cache.GetOrBuildCurrentAsync("S003", _ => Task.FromResult<OfflineCatalogIndex?>(
+                Build("S003", 4)), CancellationToken.None));
+
+        Assert.Same(other, cache.GetByVersion("S002", other.CatalogVersion));
+        Assert.NotNull(cache.GetAndTouchLease(lease.LeaseId, "S001"));
+        Assert.Equal(4, cache.TotalRetainedItems);
+    }
+
+    [Fact]
+    public async Task 缓存_可淘汰同店未租用旧版本以容纳新版本()
+    {
+        var time = new OfflineCatalogFakeTimeProvider(GeneratedAt);
+        var cache = new OfflineCatalogIndexCache(time, TimeSpan.FromMinutes(1), TimeSpan.FromHours(2), 3, 2, 3);
+        Task<OfflineCatalogIndex?> Build(string version, int count) => Task.FromResult<OfflineCatalogIndex?>(
+            new OfflineCatalogIndex("S001", time.GetUtcNow(), Enumerable.Range(0, count)
+                .Select(i => Item($"{version}-{i}", productCode: $"P{i}")), version));
+
+        var first = (await cache.GetOrBuildCurrentAsync("S001", _ => Build("v1", 1), CancellationToken.None))!;
+        var lease = cache.TryCreateFullLease(first)!;
+        time.Advance(TimeSpan.FromMinutes(2));
+        var middle = (await cache.GetOrBuildCurrentAsync("S001", _ => Build("v2", 1), CancellationToken.None))!;
+        time.Advance(TimeSpan.FromMinutes(2));
+        var newest = (await cache.GetOrBuildCurrentAsync("S001", _ => Build("v3", 2), CancellationToken.None))!;
+
+        Assert.Same(first, cache.GetByVersion("S001", first.CatalogVersion));
+        Assert.Null(cache.GetByVersion("S001", middle.CatalogVersion));
+        Assert.Same(newest, cache.GetByVersion("S001", newest.CatalogVersion));
+        Assert.NotNull(cache.GetAndTouchLease(lease.LeaseId, "S001"));
+        Assert.Equal(3, cache.TotalRetainedItems);
+    }
+
+    [Fact]
+    public async Task 缓存_超过版本数量限制仍保留活跃下载版本()
+    {
+        var time = new OfflineCatalogFakeTimeProvider(GeneratedAt);
+        var cache = new OfflineCatalogIndexCache(time, TimeSpan.FromMinutes(1), TimeSpan.FromHours(2), 2, 3, 4);
+        Task<OfflineCatalogIndex?> Build(string version) => Task.FromResult<OfflineCatalogIndex?>(
+            new OfflineCatalogIndex("S001", time.GetUtcNow(), new[] { Item(version) }, version));
+
+        var first = (await cache.GetOrBuildCurrentAsync("S001", _ => Build("v1"), CancellationToken.None))!;
+        var lease = cache.TryCreateFullLease(first)!;
+        time.Advance(TimeSpan.FromMinutes(2));
+        var middle = (await cache.GetOrBuildCurrentAsync("S001", _ => Build("v2"), CancellationToken.None))!;
+        time.Advance(TimeSpan.FromMinutes(2));
+        var newest = (await cache.GetOrBuildCurrentAsync("S001", _ => Build("v3"), CancellationToken.None))!;
+
+        Assert.Same(first, cache.GetByVersion("S001", first.CatalogVersion));
+        Assert.Null(cache.GetByVersion("S001", middle.CatalogVersion));
+        Assert.Same(newest, cache.GetByVersion("S001", newest.CatalogVersion));
+        Assert.NotNull(cache.GetAndTouchLease(lease.LeaseId, "S001"));
+    }
+
+    [Fact]
+    public async Task 缓存_被淘汰的版本不能再创建租约()
+    {
+        var time = new OfflineCatalogFakeTimeProvider(GeneratedAt);
+        var cache = new OfflineCatalogIndexCache(time, TimeSpan.FromMinutes(1), TimeSpan.FromHours(2), 3, 2, 4);
+        Task<OfflineCatalogIndex?> Build(string store) => Task.FromResult<OfflineCatalogIndex?>(
+            new OfflineCatalogIndex(store, time.GetUtcNow(), new[] { Item($"{store}-A"), Item($"{store}-B", productCode: "P2") }));
+
+        var first = (await cache.GetOrBuildCurrentAsync("S001", _ => Build("S001"), CancellationToken.None))!;
+        await cache.GetOrBuildCurrentAsync("S002", _ => Build("S002"), CancellationToken.None);
+        Assert.Null(cache.GetByVersion("S001", first.CatalogVersion));
+        Assert.Null(cache.TryCreateFullLease(first));
+    }
+
+    [Fact]
+    public async Task 缓存_增量基线被淘汰后不能创建租约()
+    {
+        var time = new OfflineCatalogFakeTimeProvider(GeneratedAt);
+        var cache = new OfflineCatalogIndexCache(time, TimeSpan.FromMinutes(1), TimeSpan.FromHours(2), 3, 3, 4);
+        Task<OfflineCatalogIndex?> Build(string store, string version, int count) => Task.FromResult<OfflineCatalogIndex?>(
+            new OfflineCatalogIndex(store, time.GetUtcNow(), Enumerable.Range(0, count)
+                .Select(i => Item($"{store}-{version}-{i}", productCode: $"P{i}")), version));
+
+        var baseline = (await cache.GetOrBuildCurrentAsync("S001", _ => Build("S001", "v1", 1), CancellationToken.None))!;
+        time.Advance(TimeSpan.FromMinutes(2));
+        var target = (await cache.GetOrBuildCurrentAsync("S001", _ => Build("S001", "v2", 1), CancellationToken.None))!;
+        var operations = target.GetDeltaOperations(baseline);
+        await cache.GetOrBuildCurrentAsync("S002", _ => Build("S002", "v1", 2), CancellationToken.None);
+
+        Assert.Null(cache.GetByVersion("S001", baseline.CatalogVersion));
+        Assert.Same(target, cache.GetByVersion("S001", target.CatalogVersion));
+        Assert.Null(cache.TryCreateDeltaLease(baseline, target, operations));
+    }
+
+    [Fact]
+    public async Task 缓存_租约过期后硬容量中的无租约版本可让出空间()
+    {
+        var time = new OfflineCatalogFakeTimeProvider(GeneratedAt);
+        var cache = new OfflineCatalogIndexCache(
+            time, TimeSpan.FromHours(1), TimeSpan.FromHours(2), 3, 2, 3, TimeSpan.FromMinutes(5));
+        Task<OfflineCatalogIndex?> Build(string store, int count) => Task.FromResult<OfflineCatalogIndex?>(
+            new OfflineCatalogIndex(store, time.GetUtcNow(), Enumerable.Range(0, count)
+                .Select(i => Item($"{store}-{i}", productCode: $"P{i}"))));
+
+        var first = (await cache.GetOrBuildCurrentAsync("S001", _ => Build("S001", 2), CancellationToken.None))!;
+        var lease = cache.TryCreateFullLease(first)!;
+        await cache.GetOrBuildCurrentAsync("S002", _ => Build("S002", 1), CancellationToken.None);
+        Assert.Equal(3, cache.TotalRetainedItems);
+
+        time.Advance(TimeSpan.FromMinutes(6));
+        var third = (await cache.GetOrBuildCurrentAsync("S003", _ => Build("S003", 1), CancellationToken.None))!;
+
+        Assert.Same(third, cache.GetByVersion("S003", third.CatalogVersion));
+        Assert.Null(cache.GetAndTouchLease(lease.LeaseId, "S001"));
+        Assert.True(cache.TotalRetainedItems <= 3);
+    }
+
+    [Fact]
+    public async Task 缓存_硬容量仅允许一个门店构建并在完成后释放名额()
+    {
+        var time = new OfflineCatalogFakeTimeProvider(GeneratedAt);
+        var cache = new OfflineCatalogIndexCache(time, TimeSpan.FromMinutes(20), TimeSpan.FromHours(2), 3, 1, 2);
+        OfflineCatalogIndex Build(string store) => new(store, time.GetUtcNow(),
+            new[] { Item($"{store}-A"), Item($"{store}-B", productCode: "P2") });
+        await cache.GetOrBuildCurrentAsync("S001", _ => Task.FromResult<OfflineCatalogIndex?>(Build("S001")), CancellationToken.None);
+
+        var pending = new TaskCompletionSource<OfflineCatalogIndex?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondBuilding = cache.GetOrBuildCurrentAsync("S002", _ => pending.Task, CancellationToken.None);
+        var thirdBuilds = 0;
+        await Assert.ThrowsAsync<OfflineCatalogCapacityBusyException>(() =>
+            cache.GetOrBuildCurrentAsync("S003", _ =>
+            {
+                thirdBuilds++;
+                return Task.FromResult<OfflineCatalogIndex?>(Build("S003"));
+            }, CancellationToken.None));
+        Assert.Equal(0, thirdBuilds);
+
+        pending.SetResult(Build("S002"));
+        await secondBuilding;
+        var third = (await cache.GetOrBuildCurrentAsync("S003", _ => Task.FromResult<OfflineCatalogIndex?>(
+            Build("S003")), CancellationToken.None))!;
+        Assert.Same(third, cache.GetByVersion("S003", third.CatalogVersion));
+    }
+
 }

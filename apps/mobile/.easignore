@@ -18,6 +18,8 @@ ios/Pods/
 ios/build/
 
 # Native private credentials
+credentials.json
+credentials/
 *.orig.*
 *.jks
 *.p8

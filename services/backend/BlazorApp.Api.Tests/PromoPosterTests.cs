@@ -58,7 +58,7 @@ public sealed class PromoPosterTests : IDisposable
     // ---------------------------------------------------------------- 渲染
 
     [Fact]
-    public void Render_四类两风格四尺寸不拼版时每张一页且为实际纸张尺寸()
+    public void Render_四类三风格四尺寸不拼版时每张一页且为实际纸张尺寸()
     {
         var specs = (from kind in Enum.GetValues<PromoPosterKind>()
                      from style in Enum.GetValues<PromoPosterStyle>()
@@ -75,6 +75,138 @@ public sealed class PromoPosterTests : IDisposable
             var (w, h) = PaperMm(specs[i].Size);
             AssertPageSize(reader, i + 1, w, h);
         }
+    }
+
+    [Fact]
+    public void Render_节日两风格四类四尺寸Logo开关共64组合均可生成且尺寸正确()
+    {
+        foreach (var style in new[] { PromoPosterStyle.Christmas, PromoPosterStyle.Halloween })
+        foreach (var kind in Enum.GetValues<PromoPosterKind>())
+        foreach (var size in Enum.GetValues<PromoPosterSize>())
+        {
+            var spec = Spec(kind, style, size) with
+            {
+                Title = "Seasonal Gift Basket Extra Large",
+                Price = kind == PromoPosterKind.MultiBuy ? 19.99m : 129.99m,
+                WasPrice = kind is PromoPosterKind.Special or PromoPosterKind.Clearance ? 199.99m : null,
+                Quantity = kind == PromoPosterKind.MultiBuy ? 12 : 0,
+                UnitPrice = kind == PromoPosterKind.MultiBuy ? 2.99m : null,
+                MixAndMatch = kind == PromoPosterKind.MultiBuy,
+            };
+            var (w, h) = PaperMm(size);
+            foreach (var logo in new[] { true, false })
+            {
+                var bytes = PromoPosterPdfRenderer.Render(new[] { spec }, impose: false, showLogo: logo);
+                using var reader = new PdfReader(bytes);
+                Assert.Equal(1, reader.NumberOfPages);
+                AssertPageSize(reader, 1, w, h);
+                using var textPdf = UglyToad.PdfPig.PdfDocument.Open(bytes);
+                var text = textPdf.GetPage(1).Text;
+                foreach (var titleWord in spec.Title.Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(3))
+                    Assert.Contains(titleWord, text);
+                Assert.Contains(kind switch
+                {
+                    PromoPosterKind.Special => "SPECIAL",
+                    PromoPosterKind.MultiBuy => "MULTI-BUY",
+                    PromoPosterKind.New => "NEW ARRIVAL",
+                    _ => "CLEARANCE",
+                }, text);
+                Assert.All(textPdf.GetPage(1).Letters, letter =>
+                {
+                    Assert.InRange(letter.BoundingBox.Left, 0, textPdf.GetPage(1).Width);
+                    Assert.InRange(letter.BoundingBox.Right, 0, textPdf.GetPage(1).Width);
+                    Assert.InRange(letter.BoundingBox.Bottom, 0, textPdf.GetPage(1).Height);
+                    Assert.InRange(letter.BoundingBox.Top, 0, textPdf.GetPage(1).Height);
+                });
+                AssertPosterTextFits(textPdf.GetPage(1));
+                var xObjects = reader.GetPageN(1).GetAsDict(new PdfName("Resources"))?.GetAsDict(new PdfName("XObject"));
+                if (logo) Assert.NotEmpty(xObjects?.Keys ?? Array.Empty<PdfName>());
+                else Assert.Empty(xObjects?.Keys ?? Array.Empty<PdfName>());
+            }
+        }
+    }
+
+    [Fact]
+    public void Render_节日Logo开关只影响Logo且全部文字坐标稳定()
+    {
+        foreach (var style in new[] { PromoPosterStyle.Christmas, PromoPosterStyle.Halloween })
+        foreach (var kind in Enum.GetValues<PromoPosterKind>())
+        foreach (var size in Enum.GetValues<PromoPosterSize>())
+        {
+            var spec = Spec(kind, style, size);
+            using var on = UglyToad.PdfPig.PdfDocument.Open(PromoPosterPdfRenderer.Render(new[] { spec }, false, true));
+            using var off = UglyToad.PdfPig.PdfDocument.Open(PromoPosterPdfRenderer.Render(new[] { spec }, false, false));
+            var onLetters = on.GetPage(1).Letters;
+            var offLetters = off.GetPage(1).Letters;
+            Assert.Equal(onLetters.Count, offLetters.Count);
+            for (var i = 0; i < onLetters.Count; i++)
+            {
+                Assert.Equal(onLetters[i].Value, offLetters[i].Value);
+                Assert.Equal(onLetters[i].BoundingBox, offLetters[i].BoundingBox);
+            }
+        }
+    }
+
+    [Fact]
+    public void Render_节日混尺寸拼版页数正确且文字在纸内()
+    {
+        var specs = new[]
+        {
+            Spec(PromoPosterKind.Special, PromoPosterStyle.Christmas, PromoPosterSize.A4),
+            Spec(PromoPosterKind.New, PromoPosterStyle.Halloween, PromoPosterSize.A5),
+            Spec(PromoPosterKind.MultiBuy, PromoPosterStyle.Christmas, PromoPosterSize.A6),
+            Spec(PromoPosterKind.Clearance, PromoPosterStyle.Halloween, PromoPosterSize.A7),
+        };
+        using var pdf = UglyToad.PdfPig.PdfDocument.Open(PromoPosterPdfRenderer.Render(specs, true, false));
+        Assert.Equal(4, pdf.NumberOfPages);
+        foreach (var page in pdf.GetPages())
+        {
+            Assert.All(page.Letters, letter =>
+            {
+                Assert.InRange(letter.BoundingBox.Left, 0, page.Width);
+                Assert.InRange(letter.BoundingBox.Right, 0, page.Width);
+                Assert.InRange(letter.BoundingBox.Bottom, 0, page.Height);
+                Assert.InRange(letter.BoundingBox.Top, 0, page.Height);
+            });
+        }
+    }
+
+    [Fact]
+    public void Render_节日A7极值正文页脚不越界也不重叠()
+    {
+        foreach (var style in new[] { PromoPosterStyle.Christmas, PromoPosterStyle.Halloween })
+        foreach (var kind in Enum.GetValues<PromoPosterKind>())
+        {
+            var spec = Spec(kind, style, PromoPosterSize.A7) with
+            {
+                Title = "Extra Large Stainless Steel Vacuum Flask With Handle Assorted Colours Gift Box",
+                ItemNumber = "99887766554433221100",
+                Price = 98765.43m,
+                WasPrice = kind is PromoPosterKind.Special or PromoPosterKind.Clearance ? 99999.99m : null,
+                Quantity = kind == PromoPosterKind.MultiBuy ? 99 : 0,
+                UnitPrice = kind == PromoPosterKind.MultiBuy ? 9999.99m : null,
+                MixAndMatch = kind == PromoPosterKind.MultiBuy,
+            };
+            using var document = UglyToad.PdfPig.PdfDocument.Open(PromoPosterPdfRenderer.Render(new[] { spec }, false));
+            var page = document.GetPage(1);
+            Assert.Contains("#99887766554433221100", page.Text);
+            if (kind == PromoPosterKind.MultiBuy)
+            {
+                Assert.Contains("Mix & match any 99", page.Text);
+                Assert.Contains("SAVE $891233.58", page.Text);
+            }
+            AssertPosterTextFits(page);
+        }
+    }
+
+    [Theory]
+    [InlineData("christmas", PromoPosterStyle.Christmas)]
+    [InlineData("halloween", PromoPosterStyle.Halloween)]
+    public void Parse_节日字符串贯通实际PDF请求(string style, PromoPosterStyle expected)
+    {
+        var item = Item();
+        item.Style = style;
+        Assert.Equal(expected, Parse(item).Style);
     }
 
     [Fact]
@@ -154,6 +286,10 @@ public sealed class PromoPosterTests : IDisposable
     [InlineData(PromoPosterStyle.Modern, PromoPosterSize.A5, true)]
     [InlineData(PromoPosterStyle.Modern, PromoPosterSize.A6, true)]
     [InlineData(PromoPosterStyle.Modern, PromoPosterSize.A7, true)]
+    [InlineData(PromoPosterStyle.LowInk, PromoPosterSize.A4, false)]
+    [InlineData(PromoPosterStyle.LowInk, PromoPosterSize.A5, true)]
+    [InlineData(PromoPosterStyle.LowInk, PromoPosterSize.A6, true)]
+    [InlineData(PromoPosterStyle.LowInk, PromoPosterSize.A7, true)]
     public void Render_Logo默认显示且关闭时不加载图片(PromoPosterStyle style, PromoPosterSize size, bool impose)
     {
         var spec = Spec(PromoPosterKind.Special, style, size);
@@ -191,6 +327,7 @@ public sealed class PromoPosterTests : IDisposable
     [Theory]
     [InlineData(PromoPosterStyle.Classic)]
     [InlineData(PromoPosterStyle.Modern)]
+    [InlineData(PromoPosterStyle.LowInk)]
     public void Render_无原价的特价不显示WAS或SAVE(PromoPosterStyle style)
     {
         var spec = Spec(PromoPosterKind.Special, style, PromoPosterSize.A4) with { WasPrice = null };
@@ -198,6 +335,62 @@ public sealed class PromoPosterTests : IDisposable
         var text = document.GetPage(1).Text;
         Assert.DoesNotContain("WAS", text, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("SAVE", text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Parse_lowInk风格并保留默认业务字段()
+    {
+        var spec = Parse(Item() with { Style = "low-ink", Size = "A4" });
+        Assert.Equal(PromoPosterStyle.LowInk, spec.Style);
+        Assert.Equal(PromoPosterKind.Special, spec.Kind);
+        Assert.Equal(9.09m, spec.Price);
+        Assert.Equal(12.99m, spec.WasPrice);
+    }
+
+    [Fact]
+    public void Render_LowInk业务文字包含EACH和WAS_SAVE且只在混搭时显示Mix()
+    {
+        var mixed = Spec(PromoPosterKind.MultiBuy, PromoPosterStyle.LowInk, PromoPosterSize.A4);
+        var single = Spec(PromoPosterKind.Special, PromoPosterStyle.LowInk, PromoPosterSize.A4);
+        using var pdf = UglyToad.PdfPig.PdfDocument.Open(PromoPosterPdfRenderer.Render(new[] { mixed, single, mixed with { MixAndMatch = false } }, false));
+        var mixedText = pdf.GetPage(1).Text;
+        var singleText = pdf.GetPage(2).Text;
+        Assert.Contains("EACH", mixedText);
+        Assert.Contains("SAVE", mixedText);
+        Assert.Contains("MIX & MATCH", mixedText);
+        Assert.Contains("WAS", singleText);
+        Assert.Contains("SAVE", singleText);
+        Assert.Contains("EACH", singleText);
+        Assert.DoesNotContain("MIX & MATCH", singleText);
+        var fixedBundleText = pdf.GetPage(3).Text;
+        Assert.Contains("FOR 3 ITEMS", fixedBundleText);
+        Assert.DoesNotContain("MIX & MATCH", fixedBundleText);
+    }
+
+    [Fact]
+    public void Render_LowInk大金额长货号A7文字不越界且单价单位在优惠区上方()
+    {
+        var spec = Spec(PromoPosterKind.Special, PromoPosterStyle.LowInk, PromoPosterSize.A7) with
+        {
+            Price = 99998.99m,
+            WasPrice = 99999.99m,
+            ItemNumber = "LONG-ITEM-1234567890",
+            Title = "Extra Large Heavy Duty Storage Box"
+        };
+        using var pdf = UglyToad.PdfPig.PdfDocument.Open(PromoPosterPdfRenderer.Render(new[] { spec }, false));
+        var page = pdf.GetPage(1);
+        Assert.Contains("WAS $99999.99", page.Text);
+        Assert.Contains("SAVE $1.00", page.Text);
+        // EACH 必须在单独的条件行，不能成为优惠区第三行而落到分割线上。
+        var each = Assert.Single(page.GetWords(), word => word.Text == "EACH");
+        Assert.True(each.BoundingBox.Bottom > page.Height * .25);
+        Assert.All(page.Letters, letter =>
+        {
+            Assert.InRange(letter.BoundingBox.Left, 0, page.Width);
+            Assert.InRange(letter.BoundingBox.Right, 0, page.Width);
+            Assert.InRange(letter.BoundingBox.Bottom, 0, page.Height);
+            Assert.InRange(letter.BoundingBox.Top, 0, page.Height);
+        });
     }
 
     [Fact]
@@ -426,10 +619,57 @@ public sealed class PromoPosterTests : IDisposable
             File.WriteAllBytes(Path.Combine(dir, $"posters-{style}.pdf"), PromoPosterPdfRenderer.Render(specs, impose: false));
             var sheet = Enum.GetValues<PromoPosterKind>().Select(kind => Spec(kind, style, PromoPosterSize.A6)).ToList();
             File.WriteAllBytes(Path.Combine(dir, $"sheet-A6-{style}.pdf"), PromoPosterPdfRenderer.Render(sheet, impose: true));
+            if (style is PromoPosterStyle.Christmas or PromoPosterStyle.Halloween)
+            {
+                File.WriteAllBytes(Path.Combine(dir, $"posters-{style}-logo-off.pdf"), PromoPosterPdfRenderer.Render(specs, impose: false, showLogo: false));
+            }
         }
+        // 边界样张含完整日期、长货号、长品名、两位数量及带角分组合价；随后附混尺寸拼版。
+        var extreme = (from style in new[] { PromoPosterStyle.Christmas, PromoPosterStyle.Halloween }
+                       from kind in Enum.GetValues<PromoPosterKind>()
+                       select Spec(kind, style, PromoPosterSize.A7) with
+                       {
+                           Title = "Premium Extra Large Assorted Seasonal Gift Collection With Reusable Storage Box",
+                           ItemNumber = "99887766554433221100",
+                           Price = 9876.54m,
+                           WasPrice = kind is PromoPosterKind.Special or PromoPosterKind.Clearance ? 9999.99m : null,
+                           Quantity = kind == PromoPosterKind.MultiBuy ? 99 : 0,
+                           UnitPrice = kind == PromoPosterKind.MultiBuy ? 1234.56m : null,
+                           MixAndMatch = kind == PromoPosterKind.MultiBuy,
+                           ValidFrom = new DateTime(2026, 10, 1),
+                           ValidTo = new DateTime(2026, 12, 31),
+                       }).ToList();
+        File.WriteAllBytes(Path.Combine(dir, "seasonal-A7-extreme.pdf"), PromoPosterPdfRenderer.Render(extreme, impose: false));
+        var mixed = (from size in Enum.GetValues<PromoPosterSize>()
+                     from style in new[] { PromoPosterStyle.Christmas, PromoPosterStyle.Halloween }
+                     from kind in Enum.GetValues<PromoPosterKind>()
+                     select Spec(kind, style, size)).ToList();
+        File.WriteAllBytes(Path.Combine(dir, "seasonal-mixed-imposed.pdf"), PromoPosterPdfRenderer.Render(mixed, impose: true, showLogo: false));
     }
 
     // ---------------------------------------------------------------- 工具
+
+    /// <summary>从实际 PDF 字形独立检查边界与词块相交，避免只验证渲染器没抛异常。</summary>
+    private static void AssertPosterTextFits(UglyToad.PdfPig.Content.Page page)
+    {
+        Assert.All(page.Letters, letter =>
+        {
+            Assert.InRange(letter.BoundingBox.Left, 0, page.Width);
+            Assert.InRange(letter.BoundingBox.Right, 0, page.Width);
+            Assert.InRange(letter.BoundingBox.Bottom, 0, page.Height);
+            Assert.InRange(letter.BoundingBox.Top, 0, page.Height);
+        });
+        var words = page.GetWords().ToArray();
+        for (var i = 0; i < words.Length; i++)
+        for (var j = i + 1; j < words.Length; j++)
+        {
+            var a = words[i].BoundingBox;
+            var b = words[j].BoundingBox;
+            var overlapW = Math.Min(a.Right, b.Right) - Math.Max(a.Left, b.Left);
+            var overlapH = Math.Min(a.Top, b.Top) - Math.Max(a.Bottom, b.Bottom);
+            Assert.False(overlapW > .5 && overlapH > .5, $"词块重叠: {words[i].Text} / {words[j].Text}");
+        }
+    }
 
     /// <summary>与设计稿示例一致的样例数据。</summary>
     private static PromoPosterSpec Spec(PromoPosterKind kind, PromoPosterStyle style, PromoPosterSize size) => kind switch

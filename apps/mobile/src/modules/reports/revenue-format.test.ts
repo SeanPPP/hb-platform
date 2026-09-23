@@ -1,14 +1,39 @@
 import assert from "node:assert/strict";
 import {
   formatMoney,
+  formatWholeMoney,
   formatRatio,
   formatSignedMoney,
+  formatSignedWholeDollars,
+  formatWholeCount,
+  formatWholeDollars,
   getDeltaIntent,
   getIntentColor,
 } from "./format";
 
+assert.equal(formatWholeDollars(47_825.6), "$47,826");
+assert.equal(formatWholeDollars(Number.NaN), "—");
+assert.equal(formatSignedWholeDollars(-181.4), "-$181");
+assert.equal(formatSignedWholeDollars(-181.5), "-$182");
+assert.equal(formatSignedWholeDollars(-0.5), "-$1");
+assert.equal(formatSignedWholeDollars(1_968.5), "+$1,969");
+assert.equal(formatSignedWholeDollars(-0.4), "$0", "四舍五入为 0 时不带符号");
+assert.equal(formatSignedWholeDollars(undefined), "—");
+assert.equal(formatWholeCount(1_234.4), "1,234");
+assert.equal(formatWholeCount(null), "—");
+
 assert.equal(formatMoney(1234.5), "$1,234.50");
 assert.equal(formatMoney(undefined), "$0.00");
+assert.equal(formatWholeMoney(400426.23), "$400,426");
+assert.equal(formatWholeMoney(238581.5), "$238,582");
+assert.equal(formatWholeMoney(999999.99), "$1,000,000");
+assert.equal(formatWholeMoney(-1234.5), "$-1,235");
+assert.equal(formatWholeMoney(-0.49), "$0");
+assert.equal(formatWholeMoney(0), "$0");
+assert.equal(formatWholeMoney(null), "$0");
+assert.equal(formatWholeMoney(undefined), "$0");
+assert.equal(formatWholeMoney(Number.NaN), "$0");
+assert.equal(formatWholeMoney(Number.POSITIVE_INFINITY), "$0");
 assert.equal(formatSignedMoney(12.3), "+$12.30");
 assert.equal(formatSignedMoney(-12.3), "-$12.30");
 assert.equal(formatSignedMoney(0), "$0.00");

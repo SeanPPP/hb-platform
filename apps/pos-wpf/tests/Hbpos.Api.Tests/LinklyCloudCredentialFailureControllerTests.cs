@@ -182,7 +182,7 @@ public sealed class LinklyCloudCredentialFailureControllerTests
 
         public Task<LinklyCloudBackendSessionResponse> AcknowledgeSessionAsync(
             string storeCode, string deviceCode, string environment, string sessionId,
-            CancellationToken cancellationToken) => throw new NotSupportedException();
+            bool supervisorResolved, CancellationToken cancellationToken) => throw new NotSupportedException();
 
         public Task ReceiveNotificationAsync(
             string environment, string sessionId, string type, string? authorizationHeader,

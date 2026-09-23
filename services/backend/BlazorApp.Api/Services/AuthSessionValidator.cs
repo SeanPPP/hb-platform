@@ -10,6 +10,11 @@ namespace BlazorApp.Api.Services
     {
         Task<bool> IsAccessSessionActiveAsync(string userGuid, ClaimsPrincipal principal);
 
+        Task<AuthMobileDeviceValidationResult> ValidateMobileDeviceAccessAsync(
+            string userGuid,
+            ClaimsPrincipal principal,
+            CancellationToken cancellationToken = default);
+
         Task<AuthWebSessionValidationResult> ValidateWebAccessSessionAsync(
             string userGuid,
             string? sessionId,
@@ -19,6 +24,12 @@ namespace BlazorApp.Api.Services
     public sealed record AuthWebSessionValidationResult(
         bool IsValid,
         IReadOnlyList<string> ActiveRoleNames);
+
+    public sealed record AuthMobileDeviceValidationResult(
+        bool IsValid,
+        IReadOnlyList<string> ActiveRoleNames,
+        IReadOnlyList<string>? AccessibleStoreCodes = null,
+        string? UserGuid = null);
 
     public sealed class AuthSessionValidator(
         SqlSugarContext dbContext,
@@ -71,6 +82,81 @@ namespace BlazorApp.Api.Services
 
             // access token 必须绑定仍有效的 RefreshToken 会话；被挤下线后这里立即失效。
             return activeSession != null;
+        }
+
+        public async Task<AuthMobileDeviceValidationResult> ValidateMobileDeviceAccessAsync(
+            string userGuid,
+            ClaimsPrincipal principal,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(userGuid)
+                || mobileDeviceActivationService == null
+                || !MobileDeviceBindingContextResolver.TryResolve(principal, out var binding)
+                || !string.Equals(binding.UserGuid, userGuid, StringComparison.Ordinal))
+            {
+                return new AuthMobileDeviceValidationResult(false, Array.Empty<string>(), Array.Empty<string>());
+            }
+
+            // 两个数据库各执行一次实时聚合查询；并行发起，认证路径不再串行等待五次往返。
+            var bindingTask = mobileDeviceActivationService
+                .ValidateTokenBindingStateAsync(binding, cancellationToken);
+            var accountTask = dbContext.Db
+                .Queryable<User, UserStore, Store, UserRole, Role>(
+                    (user, userStore, store, userRole, role) => new JoinQueryInfos(
+                        JoinType.Left,
+                        user.UserGUID == userStore.UserGUID && !userStore.IsDeleted,
+                        JoinType.Left,
+                        userStore.StoreGUID == store.StoreGUID
+                            && !store.IsDeleted,
+                        JoinType.Left,
+                        user.UserGUID == userRole.UserGUID && !userRole.IsDeleted,
+                        JoinType.Left,
+                        userRole.RoleGUID == role.RoleGUID
+                            && role.IsActive
+                            && !role.IsDeleted))
+                .Where((user, userStore, store, userRole, role) =>
+                    user.UserGUID == userGuid
+                    && user.IsActive
+                    && !user.IsDeleted)
+                .Select((user, userStore, store, userRole, role) => new AuthMobileDeviceRoleRow
+                {
+                    UserGuid = user.UserGUID,
+                    StoreCode = store.StoreCode,
+                    StoreIsActive = store.IsActive,
+                    RoleName = role.RoleName,
+                })
+                .ToListAsync(cancellationToken);
+
+            await Task.WhenAll(bindingTask, accountTask);
+            var bindingValidation = await bindingTask;
+            var accountRows = await accountTask;
+            var hasStoreAccess = accountRows.Any(row =>
+                string.Equals(row.UserGuid, userGuid, StringComparison.Ordinal)
+                && row.StoreIsActive == true
+                && string.Equals(row.StoreCode, bindingValidation.StoreCode, StringComparison.OrdinalIgnoreCase));
+            if (!bindingValidation.IsValid
+                || !string.Equals(bindingValidation.UserGuid, userGuid, StringComparison.Ordinal)
+                || !hasStoreAccess)
+            {
+                return new AuthMobileDeviceValidationResult(false, Array.Empty<string>(), Array.Empty<string>());
+            }
+
+            return new AuthMobileDeviceValidationResult(
+                true,
+                accountRows
+                    .Select(row => row.RoleName)
+                    .Where(name => !string.IsNullOrWhiteSpace(name))
+                    .Select(name => name!)
+                    .Distinct(StringComparer.Ordinal)
+                    .ToArray(),
+                accountRows
+                    .Where(row => string.Equals(row.UserGuid, userGuid, StringComparison.Ordinal))
+                    .Select(row => row.StoreCode)
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code!)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray(),
+                userGuid);
         }
 
         public async Task<AuthWebSessionValidationResult> ValidateWebAccessSessionAsync(
@@ -131,6 +217,14 @@ namespace BlazorApp.Api.Services
         {
             public string UserGuid { get; set; } = string.Empty;
 
+            public string? RoleName { get; set; }
+        }
+
+        private sealed class AuthMobileDeviceRoleRow
+        {
+            public string UserGuid { get; set; } = string.Empty;
+            public string? StoreCode { get; set; }
+            public bool? StoreIsActive { get; set; }
             public string? RoleName { get; set; }
         }
     }

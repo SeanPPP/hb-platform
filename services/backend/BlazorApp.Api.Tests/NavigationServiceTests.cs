@@ -880,7 +880,9 @@ public class NavigationServiceTests
         var menu = _service.BuildAppMenu(user);
 
         // 管理员可见完整 App 菜单；商品查询与同权限的商品进销查询都必须保留。
-        Assert.Equal(30, menu.Count);
+        Assert.Equal(32, menu.Count);
+        Assert.Contains(menu, item => item.RouteName == "cash-register-users");
+        Assert.Contains(menu, item => item.RouteName == "seasonal-product-insights");
         Assert.Contains(menu, item => item.RouteName == "price-updates");
         Assert.Contains(menu, item => item.RouteName == "sales-orders");
         Assert.Contains(menu, item => item.RouteName == "permissions");
@@ -1347,6 +1349,67 @@ public class NavigationServiceTests
         Assert.DoesNotContain(
             _service.BuildAppMenu(unauthorized),
             menu => menu.RouteName == "pos-operation-logs"
+        );
+    }
+
+    [Theory]
+    [InlineData(Permissions.CashRegisterUsers.MobileManage, true)]
+    [InlineData(Permissions.CashRegisterUsers.MobilePrint, true)]
+    [InlineData(Permissions.Store.ManageOperations, false)]
+    [InlineData(Permissions.Users.View, false)]
+    public void BuildAppMenu_CashRegisterUsersOnlyForMobileIndependentPermissions(
+        string permission,
+        bool expectedVisible
+    )
+    {
+        // 移动端收银用户条码入口只认独立的移动端管理/打印权限，Web 的 Store.ManageOperations 不自动带出。
+        var menu = _service.BuildAppMenu(CreateUser(new Claim("permission", permission)));
+
+        var item = menu.SingleOrDefault(entry => entry.RouteName == "cash-register-users");
+        Assert.Equal(expectedVisible, item != null);
+        if (item != null)
+        {
+            Assert.Equal("tabs.cashRegisterUsers", item.TitleKey);
+            Assert.Equal("barcode", item.Icon);
+        }
+    }
+
+    [Theory]
+    [InlineData(Permissions.SeasonalProductInsights.View, true)]
+    [InlineData(Permissions.StoreProducts.View, false)]
+    [InlineData(Permissions.SalesDashboard.WarehouseFlowView, false)]
+    public void BuildAppMenu_SeasonalProductInsightsOnlyForIndependentPermission(
+        string permission,
+        bool expectedVisible
+    )
+    {
+        // 季节商品查询会展示其他分店库存，只认独立权限，商品查询/仓库流转的查看权限不自动带出。
+        var menu = _service.BuildAppMenu(CreateUser(new Claim("permission", permission)));
+
+        var item = menu.SingleOrDefault(entry => entry.RouteName == "seasonal-product-insights");
+        Assert.Equal(expectedVisible, item != null);
+        if (item != null)
+        {
+            Assert.Equal("tabs.seasonalProductInsights", item.TitleKey);
+            Assert.Equal("calendar-star", item.Icon);
+        }
+    }
+
+    [Fact]
+    public void BuildDeviceAppMenu_HidesSeasonalProductInsightsForDeviceMode()
+    {
+        Assert.DoesNotContain(
+            _service.BuildDeviceAppMenu("Mobile"),
+            item => item.RouteName == "seasonal-product-insights"
+        );
+    }
+
+    [Fact]
+    public void BuildDeviceAppMenu_HidesCashRegisterUsersForDeviceMode()
+    {
+        Assert.DoesNotContain(
+            _service.BuildDeviceAppMenu("Mobile"),
+            item => item.RouteName == "cash-register-users"
         );
     }
 

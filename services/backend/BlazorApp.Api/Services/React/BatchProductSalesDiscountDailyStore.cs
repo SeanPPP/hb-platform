@@ -370,10 +370,41 @@ internal sealed class BatchProductSalesDiscountDailyStore(ISqlSugarClient db)
 
     }
 
+    /// <summary>
+    /// 读取当天已发布的日统计。日统计重算会把当天几万行的删改升级为整表 X 锁并持有到提交，
+    /// HBweb 未开 RCSI，已提交读会一直等到命令超时，相邻日期并行重算时还会被卷进死锁
+    /// （2026-09-21 批量重算期间该读取每小时锁等待 110–280 秒）。SQL Server 上改在 SNAPSHOT 事务里读：
+    /// 仍只看已提交版本、结果在一次读取内一致，但不加共享锁、不等写锁。
+    /// </summary>
     internal async Task<List<BatchProductSalesAggregateRow>> ReadDailyStatisticsAsync(DateTime date, CancellationToken token)
     {
         var day = date.Date;
-        var rows = await db.Queryable<ProductStoreDailySalesStatistic>().With(SqlWith.Null)
+        var rows = await SqlServerSnapshotRead.ExecuteAsync(db, () => QueryDailyStatisticsAsync(day));
+        token.ThrowIfCancellationRequested();
+        return rows;
+    }
+
+    private async Task<List<BatchProductSalesAggregateRow>> QueryDailyStatisticsAsync(DateTime day)
+    {
+        if (db.CurrentConnectionConfig.DbType != DbType.SqlServer)
+            return await BuildDailyStatisticsQuery(db, day).ToListAsync();
+        var sql = BuildDailyStatisticsSql(db, day);
+        return await db.Ado.SqlQueryAsync<BatchProductSalesAggregateRow>(sql.Key, sql.Value.ToArray());
+    }
+
+    /// <summary>
+    /// 批量重算不断改写这张约 745 万行的表，统计信息频繁过期；HBweb 自动更新统计是同步的，这条查询每次因统计变化
+    /// 重编译都要当场等统计更新（2026-09-21 累计编译 606 次、平均 5.9 秒，最长撞上 60 秒命令超时）。
+    /// 它按日期打头的主键读一天，计划与统计无关，KEEPFIXED PLAN 让它不再因统计变化重编译。
+    /// </summary>
+    internal static KeyValuePair<string, List<SugarParameter>> BuildDailyStatisticsSql(ISqlSugarClient db, DateTime day)
+    {
+        var sql = BuildDailyStatisticsQuery(db, day).ToSql();
+        return new KeyValuePair<string, List<SugarParameter>>(sql.Key + " OPTION (KEEPFIXED PLAN)", sql.Value);
+    }
+
+    private static ISugarQueryable<BatchProductSalesAggregateRow> BuildDailyStatisticsQuery(ISqlSugarClient db, DateTime day) =>
+        db.Queryable<ProductStoreDailySalesStatistic>().With(SqlWith.Null)
             .Where(x => x.Date >= day && x.Date < day.AddDays(1))
             .GroupBy(x => new { x.Date, x.BranchCode, x.ProductCode })
             .Select(x => new BatchProductSalesAggregateRow
@@ -384,10 +415,7 @@ internal sealed class BatchProductSalesDiscountDailyStore(ISqlSugarClient db)
                 Quantity = SqlFunc.AggregateSum(x.TotalQuantity),
                 UnknownQuantity = SqlFunc.AggregateSum(x.TotalQuantity),
                 SalesAmount = SqlFunc.AggregateSum(x.TotalAmount),
-            }).ToListAsync();
-        token.ThrowIfCancellationRequested();
-        return rows;
-    }
+            });
 
     /// <summary>只对已发布的销量金额事实做排序哈希，刻意排除成本与刷新时间戳。</summary>
     internal async Task<string> ReadStatisticsVersionAsync(DateTime date, CancellationToken token)

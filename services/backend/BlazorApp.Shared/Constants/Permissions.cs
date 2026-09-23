@@ -280,6 +280,11 @@ namespace BlazorApp.Shared.Constants
             // 销售看板「分店进货销量分析」页面的逐页权限码。
             public const string LocalSupplierPurchaseSalesView =
                 "SalesDashboard.LocalSupplierPurchaseSales.View";
+
+            // 静态报告「KFC 补货信号」（/reports/kfc-uncle-bills/）：查看权限只能看自己关联的门店；
+            // 全部门店权限额外放行全链汇总与其它门店的数据文件。
+            public const string KfcRestockSignalView = "SalesDashboard.KfcRestockSignal.View";
+            public const string KfcRestockSignalAllStores = "SalesDashboard.KfcRestockSignal.AllStores";
         }
 
         public static class StoreProducts
@@ -362,6 +367,22 @@ namespace BlazorApp.Shared.Constants
         public static class Store
         {
             public const string ManageOperations = "Store.ManageOperations";
+        }
+
+        /// <summary>
+        /// 移动端「收银用户条码」独立权限：与 Web 的 Store.ManageOperations 分开授权，
+        /// 管理（查看/创建/更新/启停）与打印（查看/打印并累计打印次数）可以分别授予。
+        /// </summary>
+        public static class CashRegisterUsers
+        {
+            public const string MobileManage = "CashRegisterUsers.MobileManage";
+            public const string MobilePrint = "CashRegisterUsers.MobilePrint";
+        }
+
+        /// <summary>移动端「季节商品查询」：查看本店及其他分店的累计进货、累计销量与理论存货。</summary>
+        public static class SeasonalProductInsights
+        {
+            public const string View = "SeasonalProductInsights.View";
         }
 
         public static class Attendance

@@ -17,6 +17,12 @@ namespace BlazorApp.Api.Interfaces.React
             DateTime? endDate = null
         );
 
+        /// <summary>
+        /// 旧增量接口的全分店水位续跑：不限分店、不设结束日期，从水位（为空时用默认窗口）同步到当前。
+        /// 只有这个入口写出的成功日志才会被当作下一次增量的水位。
+        /// </summary>
+        Task<SyncResult> SyncAllStoresFromWatermarkAsync(DateTime? watermarkStart = null);
+
         Task<ApiResponse<SyncRetailPriceFromHqResult>> SyncForPageAsync(
             List<string>? selectedStoreCodes = null,
             DateTime? startDate = null,

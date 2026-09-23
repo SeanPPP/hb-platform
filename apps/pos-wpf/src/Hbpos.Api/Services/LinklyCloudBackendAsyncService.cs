@@ -149,6 +149,7 @@ public interface ILinklyCloudBackendAsyncService
         string deviceCode,
         string environment,
         string sessionId,
+        bool supervisorResolved,
         CancellationToken cancellationToken);
 
     Task<LinklyCloudBackendSessionResponse> AcknowledgeSettlementSessionAsync(
@@ -222,12 +223,15 @@ public class LinklyCloudBackendAsyncService(
         var normalizedStoreCode = NormalizeRequired(storeCode, "storeCode");
         var normalizedDeviceCode = NormalizeRequired(deviceCode, "deviceCode");
         var txnType = NormalizeRequired(request.TxnType, "txnType");
+        // 不合规的 attempt 身份必须在创建 Pending 会话和请求终端之前拒绝，避免留下占用终端的假会话。
+        var attemptTxnRef = DeriveAttemptTxnRef(txnType, request.AttemptGuid);
         var purchaseAnalysisDataSnapshot = request.PurchaseAnalysisData is null
             ? null
             : new Dictionary<string, string>(request.PurchaseAnalysisData, StringComparer.OrdinalIgnoreCase);
         Log(
             $"transaction start environment={LogValue(environment)} " +
             $"store={LogValue(normalizedStoreCode)} device={LogValue(normalizedDeviceCode)} " +
+            $"attemptTxnRef={LogValue(attemptTxnRef)} " +
             $"componentVersion={GetComponentVersion()}");
         var notificationBaseUri = GetPublicNotificationBaseUri();
         // 配置缺失必须在创建本地 Pending 前失败，避免产生未提交但占用终端的假 active session。
@@ -279,7 +283,8 @@ public class LinklyCloudBackendAsyncService(
             cancellationToken,
             requestTxnType: txnType,
             requestAmountCents: request.AmtPurchase,
-            requestPurchaseAnalysisData: purchaseAnalysisDataSnapshot);
+            requestPurchaseAnalysisData: purchaseAnalysisDataSnapshot,
+            attemptTxnRef: attemptTxnRef);
 
         var notification = BuildNotificationRequest(environment, session.SessionId, notificationBaseUri);
         var purchaseAnalysisData = EnsurePurchaseAnalysisData(
@@ -298,7 +303,8 @@ public class LinklyCloudBackendAsyncService(
             purchaseAnalysisData,
             notification,
             normalizedStoreCode,
-            normalizedDeviceCode);
+            normalizedDeviceCode,
+            session.TerminalId);
 
         var response = await SendWithRecoverableFailureAsync(
             () => transport.StartTransactionAsync(transportRequest, cancellationToken));
@@ -375,7 +381,8 @@ public class LinklyCloudBackendAsyncService(
             session.SessionId,
             BuildNotificationRequest(environment, session.SessionId, notificationBaseUri),
             normalizedStoreCode,
-            normalizedDeviceCode);
+            normalizedDeviceCode,
+            session.TerminalId);
         var response = await SendWithRecoverableFailureAsync(
             () => transport.StartSettlementAsync(transportRequest, cancellationToken));
         ApplySettlementTransportResponse(session, response);
@@ -441,7 +448,8 @@ public class LinklyCloudBackendAsyncService(
                 token.AccessToken,
                 normalizedSessionId,
                 normalizedStoreCode,
-                normalizedDeviceCode);
+                normalizedDeviceCode,
+                session.TerminalId);
             var transportResponse = await SendWithRecoverableFailureAsync(
                 () => transport.GetTransactionAsync(transportRequest, cancellationToken));
             if (refreshesCompletedMissingSuccess)
@@ -622,7 +630,8 @@ public class LinklyCloudBackendAsyncService(
             token.AccessToken,
             session.SessionId,
             session.StoreCode,
-            session.DeviceCode);
+            session.DeviceCode,
+            session.TerminalId);
 
         var response = await SendWithRecoverableFailureAsync(
             () => transport.RecoverTransactionAsync(transportRequest, cancellationToken));
@@ -678,7 +687,8 @@ public class LinklyCloudBackendAsyncService(
             normalizedKey,
             NormalizeOptional(request.Data),
             session.StoreCode,
-            session.DeviceCode);
+            session.DeviceCode,
+            session.TerminalId);
 
         var response = await SendWithRecoverableFailureAsync(
             () => transport.SendKeyAsync(transportRequest, cancellationToken));
@@ -768,6 +778,7 @@ public class LinklyCloudBackendAsyncService(
         string deviceCode,
         string environment,
         string sessionId,
+        bool supervisorResolved,
         CancellationToken cancellationToken)
     {
         var acknowledgedAt = DateTimeOffset.UtcNow;
@@ -786,7 +797,7 @@ public class LinklyCloudBackendAsyncService(
             normalizedSessionId,
             "POST",
             evidenceUrl,
-            requestJson: null,
+            requestJson: supervisorResolved ? SerializeEvidenceJson(new { supervisorResolved }) : null,
             responseJson: null,
             success: null,
             reason: null,
@@ -798,6 +809,7 @@ public class LinklyCloudBackendAsyncService(
             normalizedDeviceCode,
             normalizedSessionId,
             acknowledgedAt,
+            supervisorResolved,
             cancellationToken);
 
         var result = session is null
@@ -850,6 +862,7 @@ public class LinklyCloudBackendAsyncService(
             normalizedDeviceCode,
             normalizedSessionId,
             DateTimeOffset.UtcNow,
+            supervisorResolved: false,
             cancellationToken) ?? throw new LinklyCloudBackendSessionNotFoundException();
         return await BuildResponseAsync(acknowledged, cancellationToken);
     }
@@ -1481,18 +1494,21 @@ public class LinklyCloudBackendAsyncService(
         string operationType = OperationTypeTransaction,
         string? requestTxnType = null,
         long? requestAmountCents = null,
-        IReadOnlyDictionary<string, string>? requestPurchaseAnalysisData = null)
+        IReadOnlyDictionary<string, string>? requestPurchaseAnalysisData = null,
+        string? attemptTxnRef = null)
     {
         if (terminalContext is not null && terminalContext.Terminal.UpdatedAt is null)
         {
             throw new LinklyCloudTerminalSelectionConflictException();
         }
 
-        for (var attempt = 0; attempt < MaxTxnRefCreateAttempts; attempt++)
+        // 由 attempt 身份派生的引用已落在 POS 本地 attempt 上，碰撞时换号会让本地记录再也对不上这笔会话，所以只尝试一次。
+        var maxAttempts = attemptTxnRef is null ? MaxTxnRefCreateAttempts : 1;
+        for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
             var now = DateTimeOffset.UtcNow;
             var txnRef = string.Equals(operationType, OperationTypeTransaction, StringComparison.OrdinalIgnoreCase)
-                ? CreateTxnRef()
+                ? attemptTxnRef ?? CreateTxnRef()
                 : null;
             var effectivePurchaseAnalysisData = txnRef is null || requestTxnType is null || requestAmountCents is null
                 ? null
@@ -1570,6 +1586,13 @@ public class LinklyCloudBackendAsyncService(
                     throw new LinklyCloudBackendActiveTransactionException(null);
                 }
             }
+        }
+
+        if (attemptTxnRef is not null)
+        {
+            // 在途会话、终端占用、配置漂移都已排除，剩下的只能是同一个 attempt 已经提交过一次。
+            throw new LinklyCloudBackendValidationException(
+                "This payment attempt has already been submitted to Linkly Cloud. Start a new payment.");
         }
 
         throw new LinklyCloudBackendValidationException("Failed to allocate a unique Linkly Cloud transaction reference.");
@@ -2617,6 +2640,14 @@ public class LinklyCloudBackendAsyncService(
         }
 
         // 官方 GET transaction 的完整 payload 要作为恢复证据返回给 POS，用于 RFN、金额和收据证据解析。
+        var payloadJson = LinklyReceiptTextSanitizer.SanitizeSettlementData(response.Body) ?? "{}";
+        if (HasPersistedRequestEvidence(session))
+        {
+            // 与 webhook 通知同一口径：脱敏器会把交易引用、RFN 里的长数字串当成卡号掩掉，证据记录必须保留这两项
+            // 身份字段才能和会话精确匹配。webhook 未送达时 GET 是唯一的官方证据，缺了它就核验不出卡交易明细。
+            payloadJson = PreserveTransactionIdentityFields(response.Body, payloadJson);
+        }
+
         await repository.AddNotificationAsync(new LinklyCloudBackendNotificationRecord
         {
             Environment = session.Environment,
@@ -2624,7 +2655,7 @@ public class LinklyCloudBackendAsyncService(
             DeviceCode = session.DeviceCode,
             SessionId = session.SessionId,
             Type = "transaction",
-            PayloadJson = LinklyReceiptTextSanitizer.SanitizeSettlementData(response.Body) ?? "{}",
+            PayloadJson = payloadJson,
             ReceivedAt = DateTimeOffset.UtcNow
         }, cancellationToken);
     }
@@ -3668,6 +3699,24 @@ public class LinklyCloudBackendAsyncService(
         Random.Shared.NextBytes(bytes);
         return $"{DateTimeOffset.UtcNow:yyMMddHHmmss}{Convert.ToHexString(bytes)}";
     }
+
+    // 交易引用始终由 API 生成：客户端只提供本地 attempt 身份，由与 POS 共用的算法派生出 16 位引用。
+    // POS 因此能在发请求前算出并落库同一个值，却无法指定任意引用去碰撞别的交易。
+    private static string? DeriveAttemptTxnRef(string txnType, Guid? attemptGuid)
+    {
+        if (attemptGuid is null)
+        {
+            return null;
+        }
+
+        if (attemptGuid.Value == Guid.Empty || txnType is not ("P" or "R"))
+        {
+            throw new LinklyCloudBackendValidationException(
+                "attemptGuid must be a non-empty GUID and is only supported for purchase (P) and refund (R) transactions.");
+        }
+
+        return LinklyAttemptTxnRef.Create(txnType[0], attemptGuid.Value);
+    }
 }
 
 public sealed class LinklyCloudBackendValidationException(string message) : Exception(message);
@@ -3717,13 +3766,17 @@ internal static class LinklyCloudTerminalConcurrencyGate
         string environment,
         string storeCode,
         string deviceCode,
+        Guid? terminalId,
         Func<CancellationToken, Task<T>> action,
         CancellationToken cancellationToken)
     {
+        // 闸门按实体刷卡机计：有 TerminalId（线路管理）就用它，否则一台 POS 对应一台刷卡机，用设备码。
+        // 由闸门统一取键，调用方只传原始身份，避免 Token 与各 REST 操作各自拼键而落进不同信号量。
+        var terminalKey = terminalId is { } id && id != Guid.Empty ? id.ToString("D") : deviceCode;
         var key = (
             environment.Trim().ToUpperInvariant(),
             storeCode.Trim().ToUpperInvariant(),
-            deviceCode.Trim().ToUpperInvariant());
+            terminalKey.Trim().ToUpperInvariant());
         var gate = Gates.GetOrAdd(
             key,
             static _ => new SemaphoreSlim(MaximumConcurrency, MaximumConcurrency));
@@ -3861,7 +3914,8 @@ public sealed class HttpLinklyCloudBackendTokenProvider(
         return await LinklyCloudTerminalConcurrencyGate.RunAsync(
             normalizedEnvironment,
             normalizedStoreCode,
-            terminalId?.ToString("D") ?? normalizedDeviceCode,
+            normalizedDeviceCode,
+            terminalId,
             async gateCancellationToken =>
             {
                 var stopwatch = Stopwatch.StartNew();
@@ -4565,7 +4619,8 @@ public sealed record LinklyCloudBackendTransportTransactionRequest(
     IReadOnlyDictionary<string, string>? PurchaseAnalysisData,
     LinklyCloudBackendNotificationRequest Notification,
     string StoreCode,
-    string DeviceCode);
+    string DeviceCode,
+    Guid? TerminalId = null);
 
 public sealed record LinklyCloudBackendTransportSettlementRequest(
     string Environment,
@@ -4574,7 +4629,8 @@ public sealed record LinklyCloudBackendTransportSettlementRequest(
     string SessionId,
     LinklyCloudBackendNotificationRequest Notification,
     string StoreCode,
-    string DeviceCode);
+    string DeviceCode,
+    Guid? TerminalId = null);
 
 public sealed record LinklyCloudBackendTransportSessionRequest(
     string Environment,
@@ -4602,7 +4658,8 @@ public sealed record LinklyCloudBackendTransportSendKeyRequest(
     string Key,
     string? Data,
     string StoreCode,
-    string DeviceCode);
+    string DeviceCode,
+    Guid? TerminalId = null);
 
 public sealed class HttpLinklyCloudBackendAsyncTransport(
     HttpClient httpClient,
@@ -4641,6 +4698,7 @@ public sealed class HttpLinklyCloudBackendAsyncTransport(
             request.Environment,
             request.StoreCode,
             request.DeviceCode,
+            request.TerminalId,
             request.RestBaseUrl,
             request.AccessToken,
             request.SessionId,
@@ -4674,6 +4732,7 @@ public sealed class HttpLinklyCloudBackendAsyncTransport(
             request.Environment,
             request.StoreCode,
             request.DeviceCode,
+            request.TerminalId,
             request.RestBaseUrl,
             request.AccessToken,
             request.SessionId,
@@ -4698,7 +4757,8 @@ public sealed class HttpLinklyCloudBackendAsyncTransport(
         return SendAsync(
             request.Environment,
             request.StoreCode,
-            request.TerminalId?.ToString("D") ?? request.DeviceCode,
+            request.DeviceCode,
+            request.TerminalId,
             request.RestBaseUrl,
             request.AccessToken,
             request.SessionId,
@@ -4719,7 +4779,8 @@ public sealed class HttpLinklyCloudBackendAsyncTransport(
         return SendAsync(
             request.Environment,
             request.StoreCode,
-            request.TerminalId?.ToString("D") ?? request.DeviceCode,
+            request.DeviceCode,
+            request.TerminalId,
             request.RestBaseUrl,
             request.AccessToken,
             request.SessionId,
@@ -4750,7 +4811,8 @@ public sealed class HttpLinklyCloudBackendAsyncTransport(
         return SendAsync(
             request.Environment,
             request.StoreCode,
-            request.TerminalId?.ToString("D") ?? request.DeviceCode,
+            request.DeviceCode,
+            request.TerminalId,
             request.RestBaseUrl,
             request.AccessToken,
             request.SessionId,
@@ -4778,7 +4840,8 @@ public sealed class HttpLinklyCloudBackendAsyncTransport(
         return SendAsync(
             request.Environment,
             request.StoreCode,
-            request.TerminalId?.ToString("D") ?? request.DeviceCode,
+            request.DeviceCode,
+            request.TerminalId,
             request.RestBaseUrl,
             request.AccessToken,
             request.SessionId,
@@ -4809,6 +4872,7 @@ public sealed class HttpLinklyCloudBackendAsyncTransport(
             request.Environment,
             request.StoreCode,
             request.DeviceCode,
+            request.TerminalId,
             request.RestBaseUrl,
             request.AccessToken,
             request.SessionId,
@@ -4827,6 +4891,7 @@ public sealed class HttpLinklyCloudBackendAsyncTransport(
         string environment,
         string storeCode,
         string deviceCode,
+        Guid? terminalId,
         string restBaseUrl,
         string accessToken,
         string sessionId,
@@ -4863,6 +4928,7 @@ public sealed class HttpLinklyCloudBackendAsyncTransport(
             environment,
             storeCode,
             deviceCode,
+            terminalId,
             async gateCancellationToken =>
             {
                 var stopwatch = Stopwatch.StartNew();
@@ -5273,6 +5339,7 @@ public interface ILinklyCloudBackendAsyncRepository
         string deviceCode,
         string sessionId,
         DateTimeOffset acknowledgedAt,
+        bool supervisorResolved,
         CancellationToken cancellationToken);
 
     Task AddNotificationAsync(
@@ -5513,6 +5580,7 @@ public sealed class InMemoryLinklyCloudBackendAsyncRepository : ILinklyCloudBack
         string deviceCode,
         string sessionId,
         DateTimeOffset acknowledgedAt,
+        bool supervisorResolved,
         CancellationToken cancellationToken)
     {
         lock (_gate)
@@ -5526,6 +5594,12 @@ public sealed class InMemoryLinklyCloudBackendAsyncRepository : ILinklyCloudBack
             var next = Clone(session);
             // 客户端确认后同步关闭 active 标记，人工确认 pending session 时也不能继续阻塞下一笔付款。
             next.ClientAcknowledgedAt = acknowledgedAt;
+            if (supervisorResolved && !IsFinalForClientRecovery(next))
+            {
+                // 与 SQL 实现一致：只有主管结案才把非终态改为可审计的结案终态，已有终态保持原样。
+                next.Status = StatusSupervisorResolved;
+            }
+
             next.IsActive = false;
             next.UpdatedAt = acknowledgedAt;
             _sessions[key] = Clone(next);
@@ -6115,11 +6189,20 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
         string deviceCode,
         string sessionId,
         DateTimeOffset acknowledgedAt,
+        bool supervisorResolved,
         CancellationToken cancellationToken)
     {
+        // 普通 ack 只释放付款闸门、不改 Status：非终态会话仍被终端管理闸门视为结果未知。
+        // 主管结案才把非终态写成 SupervisorResolved，已有的 Linkly 终态一律保留。
         const string sql = """
             UPDATE [dbo].[POSM_LinklyCloudBackendSession]
             SET [ClientAcknowledgedAt] = @ClientAcknowledgedAt,
+                [Status] = CASE
+                    WHEN @SupervisorResolved = 1
+                     AND ([Status] IS NULL OR [Status] NOT IN (N'Completed', N'Cancelled', N'Failed', N'NotSubmitted'))
+                    THEN N'SupervisorResolved'
+                    ELSE [Status]
+                END,
                 [IsActive] = 0,
                 [UpdatedAt] = @ClientAcknowledgedAt
             WHERE [Environment] = @Environment
@@ -6132,6 +6215,7 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
         var affected = await dbContext.PosmDb.Ado.ExecuteCommandAsync(
             sql,
             new SugarParameter("@ClientAcknowledgedAt", acknowledgedAtUtc),
+            new SugarParameter("@SupervisorResolved", supervisorResolved),
             new SugarParameter("@Environment", environment),
             new SugarParameter("@StoreCode", storeCode),
             new SugarParameter("@DeviceCode", deviceCode),

@@ -377,7 +377,30 @@ internal sealed class BatchProductSalesDiscountSnapshotSourceReader(
 
     private async Task<List<ProductStoreDailySourceRow>> LoadHBSalesRowsAsync(DateTime day, DateTime nextDay, CancellationToken token)
     {
-        var rows = await _hbSalesDb.Queryable<SalesOrderMain>()
+        // CaptureAsync 已要求 HBSales 为 SQL Server，这里总是按实际日期重编译，原因见 BuildHBSalesRowsSql。
+        var sql = BuildHBSalesRowsSql(_hbSalesDb, day, nextDay);
+        var rows = await _hbSalesDb.Ado.SqlQueryAsync<ProductStoreDailySourceRow>(sql.Key, sql.Value.ToArray(), token);
+        token.ThrowIfCancellationRequested();
+        foreach (var row in rows.Where(row => row.DocumentType?.Trim() is "3" or "4"))
+        {
+            row.Quantity = -row.Quantity;
+            row.ActualAmount = -row.ActualAmount;
+        }
+        foreach (var row in rows)
+            row.DetailGuid = row.HBSalesDetailId.ToString(CultureInfo.InvariantCulture);
+        return rows;
+    }
+
+    /// <summary>
+    /// 来源签名每天要巡检 HBSales 窗口内的全部历史日期（生产约 220 次/天）。结账日期是 date 列，
+    /// SqlSugar 却把日期变量下发为 datetime 参数，带参缓存的计划用不上 IX_B销售清单详情表副本_折扣日日期单号
+    /// 覆盖索引，每次聚集扫描明细表约 40 万页、平均 12.9 秒：2026-09-21 生产原句 sp_executesql 复现 13.8 秒，
+    /// 加 OPTION (RECOMPILE) 后 CPU 约 0.15 秒、明细表逻辑读 418 次，结果逐行一致。
+    /// </summary>
+    internal static KeyValuePair<string, List<SugarParameter>> BuildHBSalesRowsSql(
+        ISqlSugarClient db, DateTime day, DateTime nextDay)
+    {
+        var sql = db.Queryable<SalesOrderMain>()
             .LeftJoin<SalesOrderDetailRecord>((main, detail) => main.B销售单号 == detail.B销售单号)
             .Where((main, detail) => detail.B结账日期.HasValue && detail.B结账日期.Value >= day && detail.B结账日期.Value < nextDay
                 && main.B结账日期.HasValue && main.B结账日期.Value >= day.AddDays(-7) && main.B结账日期.Value < nextDay.AddDays(7)
@@ -418,16 +441,8 @@ internal sealed class BatchProductSalesDiscountSnapshotSourceReader(
                 OrderLastUploadTime = main.FGC_LastModifyDate ?? main.FGC_CreateDate,
                 DetailLastUploadTime = detail.FGC_LastModifyDate ?? detail.FGC_CreateDate,
                 DocumentType = main.B单据类型,
-            }).ToListAsync(token);
-        token.ThrowIfCancellationRequested();
-        foreach (var row in rows.Where(row => row.DocumentType?.Trim() is "3" or "4"))
-        {
-            row.Quantity = -row.Quantity;
-            row.ActualAmount = -row.ActualAmount;
-        }
-        foreach (var row in rows)
-            row.DetailGuid = row.HBSalesDetailId.ToString(CultureInfo.InvariantCulture);
-        return rows;
+            }).ToSql();
+        return new KeyValuePair<string, List<SugarParameter>>(sql.Key + " OPTION (RECOMPILE)", sql.Value);
     }
 
     private async Task<List<DiscountSemanticRow>> LoadHBSalesDiscountSemanticRowsAsync(

@@ -657,13 +657,13 @@ public sealed class InstallmentCenterViewModelTests
         };
 
         viewModel.SelectedOrder = firstOrder;
-        await firstRequestStarted.Task.WaitAsync(TestWaitTimeouts.Default);
+        await firstRequestStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         viewModel.SelectedOrder = secondOrder;
 
         Assert.Same(secondStep, Assert.Single(viewModel.RefundStepsForReview));
 
         firstRequestGate.SetResult([firstStep]);
-        await firstRequestReturned.Task.WaitAsync(TestWaitTimeouts.Default);
+        await firstRequestReturned.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         for (var index = 0; index < 10; index++)
         {
             await Task.Yield();
@@ -705,7 +705,7 @@ public sealed class InstallmentCenterViewModelTests
         Assert.True(viewModel.SupervisorResolveRefundCommand.CanExecute(null));
 
         viewModel.SelectedOrder = secondOrder;
-        await secondRequestStarted.Task.WaitAsync(TestWaitTimeouts.Default);
+        await secondRequestStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         Assert.Empty(viewModel.RefundStepsForReview);
         Assert.Null(viewModel.SelectedRefundStep);

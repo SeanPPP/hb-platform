@@ -11,11 +11,14 @@ public enum PromoPosterKind
     Clearance,
 }
 
-/// <summary>海报风格：经典（方案 A）/ 现代（方案 B）。</summary>
+/// <summary>海报风格：经典 / 现代 / 省彩墨 / 圣诞 / 万圣节。</summary>
 public enum PromoPosterStyle
 {
     Classic,
     Modern,
+    LowInk,
+    Christmas,
+    Halloween,
 }
 
 /// <summary>纸张尺寸。</summary>
@@ -249,6 +252,9 @@ public static class PromoPosterRequestParser
         {
             "" or "classic" => PromoPosterStyle.Classic,
             "modern" => PromoPosterStyle.Modern,
+            "low-ink" or "lowink" => PromoPosterStyle.LowInk,
+            "christmas" => PromoPosterStyle.Christmas,
+            "halloween" => PromoPosterStyle.Halloween,
             _ => throw new PromoPosterValidationException($"第 {index} 张海报的风格无效"),
         };
 

@@ -146,7 +146,11 @@ function page(items: OfflineCatalogItem[], overrides: Partial<OfflineCatalogPage
   };
 }
 
-function createService(storage: MemoryStorage, remote: Partial<OfflineCatalogRemote>) {
+function createService(
+  storage: MemoryStorage,
+  remote: Partial<OfflineCatalogRemote>,
+  syncPlanRetryDelaysMs: readonly number[] = [0, 0],
+) {
   let counter = 0;
   const fullRemote: OfflineCatalogRemote = {
     getSyncPlan: async () => { throw new Error("unexpected getSyncPlan"); },
@@ -160,8 +164,88 @@ function createService(storage: MemoryStorage, remote: Partial<OfflineCatalogRem
     pageSize: 2,
     localBatchSize: 1,
     yieldControl: async () => undefined,
+    syncPlanRetryDelaysMs,
   });
 }
+
+function httpError(status: number): Error & { response: { status: number } } {
+  return Object.assign(new Error(`HTTP ${status}`), { response: { status } });
+}
+
+test("手动更新遇到冷目录 504 后复用同一基线重试并完成下载", async () => {
+  const storage = new MemoryStorage();
+  const baseVersions: (string | null)[] = [];
+  const service = createService(storage, {
+    getSyncPlan: async ({ baseCatalogVersion }) => {
+      baseVersions.push(baseCatalogVersion);
+      if (baseVersions.length === 1) throw httpError(504);
+      return plan({ targetTotal: 1 });
+    },
+    getPage: async () => page([item("A")], {}),
+  });
+
+  const result = await service.refresh({ storeCode: "S001", retrySyncPlanGatewayTimeout: true });
+  assert.equal(result.mode, "full");
+  assert.equal(result.metadata.itemCount, 1);
+  assert.deepEqual(baseVersions, [null, null]);
+});
+
+test("手动更新连续 504 只尝试三次，保留旧目录并提示稍后重试", async () => {
+  const storage = new MemoryStorage();
+  let calls = 0;
+  const service = createService(storage, {
+    getSyncPlan: async () => {
+      calls += 1;
+      throw httpError(504);
+    },
+  });
+
+  await assert.rejects(
+    () => service.refresh({ storeCode: "S001", retrySyncPlanGatewayTimeout: true }),
+    (error: unknown) => error instanceof OfflineCatalogError && error.code === "OFFLINE_CATALOG_PREPARATION_TIMEOUT",
+  );
+  assert.equal(calls, 3);
+  assert.equal(storage.active, null);
+  assert.deepEqual(storage.calls, []);
+});
+
+test("手动更新等待重试期间取消后不再请求 sync-plan", async () => {
+  const storage = new MemoryStorage();
+  const controller = new AbortController();
+  let calls = 0;
+  const service = createService(storage, {
+    getSyncPlan: async () => {
+      calls += 1;
+      setTimeout(() => controller.abort(), 0);
+      throw httpError(504);
+    },
+  }, [5_000]);
+
+  await assert.rejects(
+    () => service.refresh({ storeCode: "S001", signal: controller.signal, retrySyncPlanGatewayTimeout: true }),
+    (error: unknown) => error instanceof OfflineCatalogError && error.code === "OFFLINE_CATALOG_CANCELLED",
+  );
+  assert.equal(calls, 1);
+});
+
+test("普通 API 错误与自动刷新遇到 504 均不重试", async () => {
+  for (const [status, manual] of [[403, true], [504, false]] as const) {
+    const storage = new MemoryStorage();
+    const failure = Object.assign(new Error("request failed"), { response: { status } });
+    let calls = 0;
+    const service = createService(storage, {
+      getSyncPlan: async () => {
+        calls += 1;
+        throw failure;
+      },
+    });
+    await assert.rejects(
+      () => service.refresh({ storeCode: "S001", retrySyncPlanGatewayTimeout: manual }),
+      (error: unknown) => error === failure,
+    );
+    assert.equal(calls, 1);
+  }
+});
 
 test("无本地快照：full 分页下载 → staging → activate，并汇报进度", async () => {
   const storage = new MemoryStorage();

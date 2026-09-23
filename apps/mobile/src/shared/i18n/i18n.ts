@@ -22,6 +22,7 @@ import productQueryEn from "@/locales/en/screens/productQuery.json";
 import productInsightsEn from "@/locales/en/screens/productInsights.json";
 import priceUpdatesEn from "@/locales/en/screens/priceUpdates.json";
 import warehouseProductInsightsEn from "@/locales/en/screens/warehouseProductInsights.json";
+import seasonalProductInsightsEn from "@/locales/en/screens/seasonalProductInsights.json";
 import salesOrdersEn from "@/locales/en/screens/salesOrders.json";
 import posOperationLogsEn from "@/locales/en/screens/posOperationLogs.json";
 import preorderEn from "@/locales/en/screens/preorder.json";
@@ -29,6 +30,7 @@ import seasonalCardsEn from "@/locales/en/screens/seasonalCards.json";
 import settingsEn from "@/locales/en/screens/settings.json";
 import storeVouchersEn from "@/locales/en/screens/storeVouchers.json";
 import userManagementEn from "@/locales/en/screens/userManagement.json";
+import cashRegisterUsersEn from "@/locales/en/screens/cashRegisterUsers.json";
 import warehouseEn from "@/locales/en/screens/warehouse.json";
 import workbenchEn from "@/locales/en/screens/workbench.json";
 import commonZh from "@/locales/zh/common.json";
@@ -49,6 +51,7 @@ import productQueryZh from "@/locales/zh/screens/productQuery.json";
 import productInsightsZh from "@/locales/zh/screens/productInsights.json";
 import priceUpdatesZh from "@/locales/zh/screens/priceUpdates.json";
 import warehouseProductInsightsZh from "@/locales/zh/screens/warehouseProductInsights.json";
+import seasonalProductInsightsZh from "@/locales/zh/screens/seasonalProductInsights.json";
 import salesOrdersZh from "@/locales/zh/screens/salesOrders.json";
 import posOperationLogsZh from "@/locales/zh/screens/posOperationLogs.json";
 import preorderZh from "@/locales/zh/screens/preorder.json";
@@ -56,6 +59,7 @@ import seasonalCardsZh from "@/locales/zh/screens/seasonalCards.json";
 import settingsZh from "@/locales/zh/screens/settings.json";
 import storeVouchersZh from "@/locales/zh/screens/storeVouchers.json";
 import userManagementZh from "@/locales/zh/screens/userManagement.json";
+import cashRegisterUsersZh from "@/locales/zh/screens/cashRegisterUsers.json";
 import warehouseZh from "@/locales/zh/screens/warehouse.json";
 import workbenchZh from "@/locales/zh/screens/workbench.json";
 import { getStoredLanguage, setStoredLanguage } from "@/shared/i18n/storage";
@@ -90,10 +94,12 @@ const resources = {
     productInsights: productInsightsZh,
     priceUpdates: priceUpdatesZh,
     warehouseProductInsights: warehouseProductInsightsZh,
+    seasonalProductInsights: seasonalProductInsightsZh,
     salesOrders: salesOrdersZh,
     posOperationLogs: posOperationLogsZh,
     preorder: preorderZh,
     userManagement: userManagementZh,
+    cashRegisterUsers: cashRegisterUsersZh,
     warehouse: warehouseZh,
     workbench: workbenchZh,
   },
@@ -121,10 +127,12 @@ const resources = {
     productInsights: productInsightsEn,
     priceUpdates: priceUpdatesEn,
     warehouseProductInsights: warehouseProductInsightsEn,
+    seasonalProductInsights: seasonalProductInsightsEn,
     salesOrders: salesOrdersEn,
     posOperationLogs: posOperationLogsEn,
     preorder: preorderEn,
     userManagement: userManagementEn,
+    cashRegisterUsers: cashRegisterUsersEn,
     warehouse: warehouseEn,
     workbench: workbenchEn,
   },
@@ -152,7 +160,7 @@ if (!i18n.isInitialized) {
     lng: DEFAULT_APP_LANGUAGE,
     fallbackLng: DEFAULT_APP_LANGUAGE,
     defaultNS: "common",
-    ns: ["appDownloads", "wpfVersions", "common", "advertisements", "attendance", "login", "home", "cart", "domesticPurchase", "deviceManagement", "employeeProfile", "employeeProfileReview", "installmentOrders", "localSupplierInvoices", "orders", "promotions", "preorder", "seasonalCards", "settings", "storeVouchers", "productQuery", "productInsights", "priceUpdates", "warehouseProductInsights", "salesOrders", "posOperationLogs", "userManagement", "warehouse", "workbench"],
+    ns: ["appDownloads", "wpfVersions", "common", "advertisements", "attendance", "login", "home", "cart", "domesticPurchase", "deviceManagement", "employeeProfile", "employeeProfileReview", "installmentOrders", "localSupplierInvoices", "orders", "promotions", "preorder", "seasonalCards", "settings", "storeVouchers", "productQuery", "productInsights", "priceUpdates", "warehouseProductInsights", "seasonalProductInsights", "salesOrders", "posOperationLogs", "userManagement", "cashRegisterUsers", "warehouse", "workbench"],
     interpolation: {
       escapeValue: false,
     },

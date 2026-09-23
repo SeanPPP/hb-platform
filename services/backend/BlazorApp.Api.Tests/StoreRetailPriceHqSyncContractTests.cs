@@ -427,6 +427,62 @@ public class StoreRetailPriceHqSyncContractTests
     }
 
     [Fact]
+    public async Task 增量任务日志_记录同步范围_只有全分店水位续跑可作为水位()
+    {
+        await using var localConnection = new SqliteConnection($"Data Source={Guid.NewGuid():N};Mode=Memory;Cache=Shared");
+        await localConnection.OpenAsync();
+        await using var hqConnection = new SqliteConnection($"Data Source={Guid.NewGuid():N};Mode=Memory;Cache=Shared");
+        await hqConnection.OpenAsync();
+        using var localDb = new SqlSugarClient(CreateConnectionConfig(localConnection.ConnectionString));
+        using var hqDb = new SqlSugarClient(CreateConnectionConfig(hqConnection.ConnectionString));
+        localDb.CodeFirst.InitTables(
+            typeof(Store),
+            typeof(StoreRetailPrice),
+            typeof(ProductSetCode),
+            typeof(StoreMultiCodeProduct)
+        );
+        CreateScheduledTaskLogTable(localDb);
+        InitHqRetailPriceTables(hqDb);
+        await localDb.Insertable(new Store
+        {
+            StoreGUID = "store-S01",
+            StoreCode = "S01",
+            StoreName = "S01",
+            IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        var service = CreateHqSyncService(localDb, hqDb, CreateMapper());
+
+        var pageResult = await service.SyncForPageAsync(
+            new List<string> { "S01" },
+            new DateTime(2026, 5, 1),
+            new DateTime(2026, 5, 31)
+        );
+        var watermarkResult = await service.SyncAllStoresFromWatermarkAsync(
+            new DateTime(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc)
+        );
+
+        Assert.True(pageResult.Success, pageResult.Message);
+        Assert.True(watermarkResult.IsSuccess, watermarkResult.Message);
+        var logs = await localDb.Queryable<ScheduledTaskLog>()
+            .Where(x => x.TaskType == "SyncStoreRetailPricesIncremental")
+            .OrderBy(x => x.StartedAt)
+            .ToListAsync();
+        Assert.Equal(2, logs.Count);
+        var pageParameters = logs[0].GetParameters();
+        Assert.Equal(new List<string> { "S01" }, pageParameters.BranchCodes);
+        Assert.False(string.IsNullOrWhiteSpace(pageParameters.StartDate));
+        Assert.False(string.IsNullOrWhiteSpace(pageParameters.EndDate));
+        Assert.False(StoreRetailPriceIncrementalTaskScope.IsWatermarkEligible(logs[0]));
+        Assert.False(StoreRetailPriceIncrementalTaskScope.IsLegacyUnscoped(logs[0]));
+        Assert.True(StoreRetailPriceIncrementalTaskScope.IsWatermarkEligible(logs[1]));
+        Assert.Contains(
+            StoreRetailPriceIncrementalTaskScope.WatermarkEligibleJsonFragment,
+            logs[1].TaskParameters
+        );
+    }
+
+    [Fact]
     public async Task SyncForPageAsync_HQ商品停用_不写入本地零售价()
     {
         await using var localConnection = new SqliteConnection($"Data Source={Guid.NewGuid():N};Mode=Memory;Cache=Shared");

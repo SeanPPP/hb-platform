@@ -1,4 +1,4 @@
-import { NativeModules, PermissionsAndroid, Platform } from "react-native";
+import { NativeEventEmitter, NativeModules, PermissionsAndroid, Platform } from "react-native";
 import {
   buildBigDiscountLabelCommand,
   buildClearanceLabelCommand,
@@ -16,6 +16,8 @@ import type {
 } from "@/modules/printer/types";
 
 type NativePrinterModule = {
+  addListener?(eventName: string): void;
+  removeListeners?(count: number): void;
   getStatus(): Promise<PrinterStatus>;
   scanPrinters(durationMs?: number): Promise<PrinterDevice[]>;
   connect(address: string): Promise<boolean>;
@@ -104,6 +106,16 @@ export async function getPrinterStatus() {
   }
 
   return getModule().getStatus();
+}
+
+export function subscribePrinterStatusChanged(onChange: () => void): () => void {
+  if (!nativeModule?.addListener || !nativeModule.removeListeners) {
+    // 旧安装包没有事件接口，继续由前台轮询和打印失败恢复兜底。
+    return () => undefined;
+  }
+  const emitter = new NativeEventEmitter(nativeModule as Required<NativePrinterModule>);
+  const subscription = emitter.addListener("HbPrinterStatusChanged", onChange);
+  return () => subscription.remove();
 }
 
 export async function scanPrinters(durationMs = 5000) {

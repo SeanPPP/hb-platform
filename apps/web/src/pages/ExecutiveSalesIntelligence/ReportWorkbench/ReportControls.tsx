@@ -2,7 +2,7 @@ import { Button, DatePicker, Segmented, Select, Switch } from 'antd'
 import { ReloadOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { useTranslation } from 'react-i18next'
-import { quickDateSelection, reportPeriod, validPeriod, type DateSelection, type QuickRange } from './logic'
+import { MAX_REPORT_DAYS, quickDateSelection, reportPeriod, validPeriod, type DateSelection, type QuickRange } from './logic'
 import styles from './report.module.css'
 
 export function useReportText() {
@@ -23,13 +23,13 @@ export function ReportControls({ value, onChange, onRefresh, loading }: {
   ]
   return <div className={styles.controls}>
     <DatePicker.RangePicker allowClear={false} value={[dayjs(value.startDate), dayjs(value.endDate)]}
-      disabledDate={(date, info) => date.isAfter(dayjs(), 'day') || Boolean(info.from && Math.abs(date.diff(info.from, 'day')) >= 366)}
+      disabledDate={(date, info) => date.isAfter(dayjs(), 'day') || Boolean(info.from && Math.abs(date.diff(info.from, 'day')) >= MAX_REPORT_DAYS)}
       onChange={range => {
         if (!range?.[0] || !range[1]) return
         const startDate = range[0].format('YYYY-MM-DD'), endDate = range[1].format('YYYY-MM-DD')
         if (validPeriod(startDate, endDate)) onChange({ ...value, startDate, endDate, quick: 'custom' })
       }}
-      aria-label={text('日期范围，最多366天', 'Date range, up to 366 days')} />
+      aria-label={text('日期范围，最多两年', 'Date range, up to two years')} />
     <Segmented value={value.quick} options={ranges.map(([key, label]) => ({ value: key, label }))}
       onChange={key => onChange({ ...quickDateSelection(key as Exclude<QuickRange, 'custom'>), compare: value.compare, compareMode: value.compareMode })} />
     <div className={styles.compareControls}>

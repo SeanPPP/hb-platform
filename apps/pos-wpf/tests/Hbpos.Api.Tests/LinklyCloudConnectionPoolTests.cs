@@ -50,28 +50,46 @@ public sealed class LinklyCloudConnectionPoolTests
             options.Get(nameof(ILinklyCloudBackendAsyncTransport)).HandlerLifetime);
     }
 
-    [Fact]
-    public async Task Token_and_rest_clients_each_keep_at_most_one_real_connection()
+    [Theory]
+    [InlineData(nameof(ILinklyCloudBackendTokenProvider))]
+    [InlineData(nameof(ILinklyCloudBackendAsyncTransport))]
+    public async Task Linkly_clients_serve_concurrent_requests_on_parallel_connections(string clientName)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        await using var tokenServer = new KeepAliveHttpServer();
-        await using var restServer = new KeepAliveHttpServer();
+        await using var server = new KeepAliveHttpServer(TimeSpan.FromMilliseconds(400));
         var services = new ServiceCollection();
         services.AddHbposApiServices();
 
         await using var provider = services.BuildServiceProvider();
-        var factory = provider.GetRequiredService<IHttpClientFactory>();
-        using var tokenClient = factory.CreateClient(nameof(ILinklyCloudBackendTokenProvider));
-        using var restClient = factory.CreateClient(nameof(ILinklyCloudBackendAsyncTransport));
+        using var client = provider.GetRequiredService<IHttpClientFactory>().CreateClient(clientName);
 
-        // 先让 Token 连接回池中保持空闲，再验证 REST 池，覆盖容器内两个真实连接池的总上限。
-        var tokenCompleted = await SendTwoConcurrentRequestsAsync(tokenClient, tokenServer.BaseAddress, timeout.Token);
-        var restCompleted = await SendTwoConcurrentRequestsAsync(restClient, restServer.BaseAddress, timeout.Token);
+        // 3-12：不同门店的终端同时请求时不能排在同一条 HTTP/1.1 连接后面；
+        // 并发的 4 个请求必须各自建立连接，而不是被单连接串行化。
+        var completed = await SendConcurrentRequestsAsync(client, server.BaseAddress, 4, timeout.Token);
 
-        Assert.Equal(4, tokenCompleted + restCompleted);
-        Assert.Equal(1, tokenServer.AcceptedConnections);
-        Assert.Equal(1, restServer.AcceptedConnections);
-        Assert.Equal(2, tokenServer.AcceptedConnections + restServer.AcceptedConnections);
+        Assert.Equal(4, completed);
+        Assert.Equal(4, server.AcceptedConnections);
+    }
+
+    [Theory]
+    [InlineData(nameof(ILinklyCloudBackendTokenProvider))]
+    [InlineData(nameof(ILinklyCloudBackendAsyncTransport))]
+    public async Task Linkly_clients_keep_real_connections_within_per_origin_limit(string clientName)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await using var server = new KeepAliveHttpServer(TimeSpan.FromMilliseconds(400));
+        var services = new ServiceCollection();
+        services.AddHbposApiServices();
+
+        await using var provider = services.BuildServiceProvider();
+        using var client = provider.GetRequiredService<IHttpClientFactory>().CreateClient(clientName);
+        var requestCount = LinklyCloudHttpConnectionPolicy.MaxConnectionsPerOrigin + 4;
+
+        // 连接上限仍是 socket 保险：超出部分排队复用，全部请求照常完成。
+        var completed = await SendConcurrentRequestsAsync(client, server.BaseAddress, requestCount, timeout.Token);
+
+        Assert.Equal(requestCount, completed);
+        Assert.Equal(LinklyCloudHttpConnectionPolicy.MaxConnectionsPerOrigin, server.AcceptedConnections);
     }
 
     [Fact]
@@ -118,7 +136,7 @@ public sealed class LinklyCloudConnectionPoolTests
                 Assert.Equal("physical-connection-count", openSnapshot.Operation);
                 Assert.Equal("snapshot", openSnapshot.Phase);
                 Assert.Equal("outbound", openSnapshot.Direction);
-                Assert.Equal(2, openSnapshot.Limit);
+                Assert.Equal(LinklyCloudHttpConnectionPolicy.MaxTotalConnections, openSnapshot.Limit);
                 Assert.Equal(ToOrigin(tokenServer.BaseAddress), openSnapshot.TokenOrigin);
                 Assert.Equal(ToOrigin(restServer.BaseAddress), openSnapshot.RestOrigin);
                 Assert.NotEmpty(openSnapshot.PeerAddresses);
@@ -194,7 +212,9 @@ public sealed class LinklyCloudConnectionPoolTests
             // 关键断言：连续请求仍在复用连接时，固定 250ms 窗口必须已经输出首次物理连接快照。
             Assert.False(trafficTask.IsCompleted);
             Assert.True(Volatile.Read(ref requestCount) >= 3);
-            Assert.True(Stopwatch.GetElapsedTime(startedAt) >= TimeSpan.FromMilliseconds(250));
+            // 250ms 窗口从首个连接事件起算，距 startedAt 只差本机建连的亚毫秒级时间，而计时器可能比
+            // Stopwatch 早触发约 1ms，零余量的 >= 250ms 会误报。要证明的是快照等了窗口、不是启动即输出，留出余量。
+            Assert.True(Stopwatch.GetElapsedTime(startedAt) >= TimeSpan.FromMilliseconds(200));
             Assert.Equal(1, snapshot.TokenConnections);
         }
         finally
@@ -399,16 +419,27 @@ public sealed class LinklyCloudConnectionPoolTests
         }
     }
 
-    private static async Task<int> SendTwoConcurrentRequestsAsync(
+    private static async Task<int> SendConcurrentRequestsAsync(
         HttpClient client,
         Uri baseAddress,
+        int count,
         CancellationToken cancellationToken)
     {
-        using var firstRequest = CreateHttp11Request(baseAddress, 1);
-        using var secondRequest = CreateHttp11Request(baseAddress, 2);
-        var responses = await Task.WhenAll(
-            client.SendAsync(firstRequest, cancellationToken),
-            client.SendAsync(secondRequest, cancellationToken));
+        var requests = Enumerable.Range(1, count)
+            .Select(requestNumber => CreateHttp11Request(baseAddress, requestNumber))
+            .ToArray();
+        HttpResponseMessage[] responses;
+        try
+        {
+            responses = await Task.WhenAll(requests.Select(request => client.SendAsync(request, cancellationToken)));
+        }
+        finally
+        {
+            foreach (var request in requests)
+            {
+                request.Dispose();
+            }
+        }
 
         try
         {

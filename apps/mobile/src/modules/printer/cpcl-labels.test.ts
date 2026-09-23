@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   buildBigDiscountLabelCommand,
+  buildCashRegisterUserBarcodeLabelCommand,
   buildClearanceLabelCommand,
   buildEmployeeCashierBarcodeLabelCommand,
   buildDiscountLabelCommand,
@@ -189,17 +190,106 @@ const sanitizedTextCommand = buildProductLabelCommand({
 assert.equal(sanitizedTextCommand.includes("Safe Name\r\nPRINT"), false, "字段换行不能注入 CPCL 指令");
 assert.ok(sanitizedTextCommand.includes("Safe Name PRINT"), "字段换行应压成普通文本");
 
-const discountCommand = buildDiscountLabelCommand(productPayload, "small");
-assert.ok(discountCommand.includes("PAGE-WIDTH 472"), "折扣小标签使用小纸宽度");
-assert.ok(discountCommand.includes("TEXT 7 0 330 35 25% OFF"), "折扣标签包含折扣力度");
-assert.ok(discountCommand.includes("TEXT 7 0 330 92 NOW $9.26"), "折扣标签包含折后价");
-assert.ok(discountCommand.includes("BARCODE 128"), "折扣标签使用 CODE128 条码");
+type DiscountTextBox = { x: number; y: number; w: number; h: number; value: string };
+function assertDiscountGeometry(command: string) {
+  const rows = command.trim().split("\r\n");
+  const width = Number(rows.find((row) => row.startsWith("PAGE-WIDTH "))?.split(" ")[1]);
+  const boxes: DiscountTextBox[] = [];
+  let scaleX = 1;
+  let scaleY = 1;
+  for (const row of rows) {
+    const fields = row.split(" ");
+    if (fields[0] === "SETMAG") {
+      scaleX = Number(fields[1]) || 1;
+      scaleY = Number(fields[2]) || 1;
+    }
+    if (fields[0] !== "TEXT") continue;
+    // 独立采用 Zebra CPCL 字体表的固定格尺寸，连同当前倍率检查输出几何。
+    const font = Number(fields[1]);
+    assert.ok(font === 0 || font === 7, "折扣兼容模板只能使用已知固定宽度字体");
+    const value = fields.slice(5).join(" ");
+    const cells = Array.from(value).reduce((sum, char) => sum + ((char.codePointAt(0) ?? 0) > 127 ? 2 : 1), 0);
+    const box = { x: Number(fields[3]), y: Number(fields[4]), w: cells * (font === 0 ? 8 : 12) * scaleX, h: (font === 0 ? 9 : 24) * scaleY, value };
+    assert.ok(Number.isInteger(box.x) && Number.isInteger(box.y), "CPCL 坐标必须为整数");
+    assert.ok(box.x >= 0 && box.x + box.w <= width && box.y >= 0 && box.y + box.h <= 194, `文字越界: ${row}`);
+    boxes.push(box);
+  }
+  for (let i = 0; i < boxes.length; i++) {
+    for (const other of boxes.slice(i + 1)) {
+      const box = boxes[i];
+      assert.ok(box.x + box.w <= other.x || other.x + other.w <= box.x || box.y + box.h <= other.y || other.y + other.h <= box.y, `文字重叠: ${box.value} / ${other.value}`);
+    }
+  }
+  const inverse = rows.filter((row) => row.startsWith("INVERSE-LINE ")).at(-1)?.split(" ").map(Number);
+  assert.ok(inverse, "必须输出 NOW 黑底区域");
+  const now = boxes.find((box) => box.value === "NOW");
+  const amount = boxes.find((box) => box.value.startsWith("$") && box.x >= inverse[1]);
+  assert.ok(now && amount, "NOW 与当前价必须都在黑底内");
+  for (const box of [now, amount]) {
+    assert.ok(box.x >= inverse[1] + 6 && box.x + box.w <= inverse[3] - 6 && box.y >= inverse[2] && box.y + box.h <= inverse[2] + inverse[5], "NOW 黑底须完整包住文字并保留左右内边距");
+  }
+  const was = boxes.find((box) => box.value === "WAS");
+  const strike = rows.find((row) => row.startsWith("LINE "))?.split(" ").map(Number);
+  if (was) {
+    const original = boxes.find((box) => box.value.startsWith("$") && box.x < inverse[1]);
+    assert.ok(original && strike, "原价金额必须完整保留并带删除线");
+    assert.ok(original.x + original.w < inverse[1], "原价必须放在当前价前面");
+    assert.ok(strike[1] >= original.x && strike[3] < original.x + original.w && strike[2] > original.y && strike[2] < original.y + original.h, "删除线只覆盖原价金额");
+    assert.ok(strike[2] > was.y + was.h, "删除线不能划到 WAS 标题");
+  } else {
+    assert.equal(strike, undefined, "没有实际降价时不输出删除线");
+  }
+  if (rows.some((row) => row.startsWith("BARCODE QR "))) {
+    assert.ok(rows.includes("ENDQR"), "二维码指令必须闭合");
+    for (const box of boxes) {
+      assert.ok(box.x + box.w <= 10 || box.x >= 74 || box.y + box.h <= 130 || box.y >= 194, "二维码 64×64 安全区不能与文字重叠");
+    }
+  }
+  assert.equal(rows.filter((row) => row === "PRINT").length, 1, "每张标签只输出一次 PRINT");
+  assert.equal(scaleX, 1, "打印后必须复位文字倍率");
+  assert.equal(scaleY, 1, "打印后必须复位文字倍率");
+  return boxes;
+}
 
-const discountFallbackCommand = buildDiscountLabelCommand({
-  ...productPayload,
-  barcode: "   ",
-});
-assert.ok(discountFallbackCommand.includes("BARCODE 128 1 2 56 20 132 HB013-108"), "折扣标签空白条码回退到货号");
+for (const paper of ["small", undefined]) {
+  const discountCommand = buildDiscountLabelCommand(productPayload, paper);
+  const boxes = assertDiscountGeometry(discountCommand);
+  assert.ok(discountCommand.includes(`PAGE-WIDTH ${paper ? 472 : 570}`), "保持现有两种纸宽");
+  assert.ok(boxes.some((box) => box.value === "$12.34"), "原价金额必须完整");
+  assert.ok(boxes.some((box) => box.value === "$9.26"), "折后价按分四舍五入");
+  assert.ok(boxes.some((box) => box.value === "25") && boxes.some((box) => box.value === "%"), "保留折扣力度");
+  assert.ok(discountCommand.includes("BARCODE QR 10 130 M 2 U 3"), "短条码使用 63 点二维码");
+  assert.ok(discountCommand.includes(`MA,${productPayload.barcode}\r\nENDQR`), "二维码编码完整商品条码");
+  for (const discountRate of [0, 0.00001, 1]) {
+    const prices = assertDiscountGeometry(buildDiscountLabelCommand({ ...productPayload, discountRate }, paper));
+    assert.equal(prices.some((box) => box.value === "WAS"), discountRate === 1, "按分舍入后确有降价才显示 WAS");
+    assert.ok(prices.some((box) => box.value === (discountRate === 1 ? "$0.00" : "$12.34")), "零折扣与免费价格正确");
+  }
+  for (const retailPrice of [2.01, 1234.56, 123456.78, 99999999.99]) {
+    const prices = assertDiscountGeometry(buildDiscountLabelCommand({ ...productPayload, retailPrice, discountRate: 0.5 }, paper));
+    assert.ok(prices.some((box) => box.value === `$${retailPrice.toFixed(2)}`), "大金额原价不能截断");
+    if (retailPrice === 2.01) assert.ok(prices.some((box) => box.value === "$1.01"), "半分边界向上舍入");
+  }
+  for (const productName of ["Very long Coconut Water Product Name Extra Large 1L ".repeat(2), "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".repeat(2), "中文超长商品名测试完整安全换行".repeat(4)]) {
+    const boxes = assertDiscountGeometry(buildDiscountLabelCommand({ ...productPayload, productName, itemNumber: "中文货号很长".repeat(5) }, paper));
+    const name = boxes.filter((box) => box.x === 5);
+    assert.ok(name.length <= 2 && name.at(-1)?.value.endsWith("..."), "长商品名最多两行并明确省略");
+  }
+}
+for (const [barcode, unit] of [["A".repeat(14), 3], ["A".repeat(15), 2], ["A".repeat(42), 2], ["A".repeat(43), 1], ["A".repeat(64), 1], ["A".repeat(251), 1], ["码".repeat(83), 1]] as const) {
+  const command = buildDiscountLabelCommand({ ...productPayload, barcode }, "small");
+  assertDiscountGeometry(command);
+  assert.ok(command.includes(`MA,${barcode}\r\nENDQR`), "二维码内容不能静默截断");
+  assert.ok(command.includes(`BARCODE QR 10 130 M 2 U ${unit}`), "按 UTF-8 容量选择安全二维码倍率");
+}
+assert.throws(() => buildDiscountLabelCommand({ ...productPayload, barcode: "Q".repeat(252) }, "small"), /QR content is too long/, "物理上无法容纳的二维码要明确报错");
+assert.throws(() => buildDiscountLabelCommand({ ...productPayload, barcode: "码".repeat(84) }, "small"), /QR content is too long/, "多字节二维码也必须检查容量");
+const discountFallbackCommand = buildDiscountLabelCommand({ ...productPayload, barcode: " ", itemNumber: "ITEM-" + "1234567890".repeat(6) }, "small");
+assertDiscountGeometry(discountFallbackCommand);
+assert.ok(discountFallbackCommand.includes(`MA,ITEM-${"1234567890".repeat(6)}`), "货号显示省略时二维码仍保留完整货号");
+const discountInjectionCommand = buildDiscountLabelCommand({ ...productPayload, productName: "Safe\r\nPRINT", barcode: " ", itemNumber: "SKU\r\nPRINT" }, "small");
+assertDiscountGeometry(discountInjectionCommand);
+assert.ok(discountInjectionCommand.includes("MA,SKU PRINT"), "字段换行不能注入 CPCL 指令");
 
 const clearanceCommand = buildClearanceLabelCommand({
   ...productPayload,
@@ -366,3 +456,48 @@ assert.ok(emptyWarehouseLocationCommand.includes("TEXT 7 0 0 21 --"), "货位标
 assert.equal(emptyWarehouseLocationCommand.includes("BARCODE 128"), false, "货位标识全空时不打印空条码");
 
 console.log("cpcl-labels.test.ts: ok");
+
+const cashRegisterUserCommand = buildCashRegisterUserBarcodeLabelCommand({
+  operatorName: "VALINDA",
+  storeName: "Campbelltown",
+  barcode: "6755419997376",
+});
+assert.ok(cashRegisterUserCommand.startsWith("! 0 200 200 400 1\r\n"), "收银用户条码标签使用标准标签高度");
+assert.ok(cashRegisterUserCommand.includes("TEXT 7 0 20 8 VALINDA"), "收银用户条码标签包含操作员名");
+assert.ok(cashRegisterUserCommand.includes("TEXT 4 0 20 44 Campbelltown"), "收银用户条码标签包含分店名");
+assert.ok(
+  cashRegisterUserCommand.includes("BARCODE EAN13 2 2 80 20 96 6755419997376"),
+  "合法 EAN13 收银码输出一维 EAN13 条码，供老收银扫码枪识别"
+);
+assert.ok(cashRegisterUserCommand.includes("TEXT 4 0 330 120 6755419997376"), "条码右侧保留可读编号");
+assert.equal(cashRegisterUserCommand.includes("BARCODE QR"), false, "老收银员工码不使用二维码");
+const cashRegisterUserTextYs = cashRegisterUserCommand
+  .split("\r\n")
+  .filter((line) => line.startsWith("TEXT ") || line.startsWith("BARCODE "))
+  .map((line) => (line.startsWith("TEXT ") ? Number(line.split(" ")[4]) : Number(line.split(" ")[6]) + Number(line.split(" ")[4])));
+assert.ok(
+  cashRegisterUserTextYs.every((y) => y <= 180),
+  "收银用户条码标签所有元素都必须落在普通价格标签的单张安全高度内"
+);
+assert.ok(cashRegisterUserCommand.endsWith("PRINT\r\n"), "收银用户条码标签必须发送 PRINT");
+
+const cashRegisterUserCode128Command = buildCashRegisterUserBarcodeLabelCommand({
+  operatorName: "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+  storeName: null,
+  // 生产 HQ 同步来的历史条码（如截图中的 6755419997372）不一定满足 EAN13 校验位。
+  barcode: "6755419997372",
+});
+assert.ok(
+  cashRegisterUserCode128Command.includes("BARCODE 128 1 2 80 20 96 6755419997372"),
+  "校验位不合法的历史条码按 Web 规则退回 Code128"
+);
+assert.ok(
+  cashRegisterUserCode128Command.includes("TEXT 7 0 20 8 ABCDEFGHIJKLMNOPQR\r\n"),
+  "操作员名按 530 点实际文字宽度截断"
+);
+assert.ok(cashRegisterUserCode128Command.includes("TEXT 4 0 20 44 --"), "缺少分店名时显示占位符");
+assert.throws(
+  () => buildCashRegisterUserBarcodeLabelCommand({ operatorName: "A", barcode: " " }),
+  /barcode is required/,
+  "空条码不能生成打印指令"
+);

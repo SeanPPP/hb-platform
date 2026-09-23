@@ -141,6 +141,15 @@ export const P = {
   Store: {
     ManageOperations: 'Store.ManageOperations',
   },
+  // 移动端「收银用户条码」独立权限；Web 页面仍只认 Store.ManageOperations。
+  CashRegisterUsers: {
+    MobileManage: 'CashRegisterUsers.MobileManage',
+    MobilePrint: 'CashRegisterUsers.MobilePrint',
+  },
+  // 移动端「季节商品查询」独立权限，Web 端暂无对应页面。
+  SeasonalProductInsights: {
+    View: 'SeasonalProductInsights.View',
+  },
   PosProducts: {
     View: 'PosProducts.View',
     Manage: 'PosProducts.Manage',
