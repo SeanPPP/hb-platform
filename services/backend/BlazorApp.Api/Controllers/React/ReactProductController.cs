@@ -259,7 +259,8 @@ namespace BlazorApp.Api.Controllers.React
                 {
                     return Conflict(result);
                 }
-                return BadRequest(new { success = false, message = result.Message });
+                // 带回稳定错误码（如 CATEGORY_SUPPLIER_MISMATCH），前端可据此给出精确提示。
+                return BadRequest(new { success = false, message = result.Message, errorCode = result.ErrorCode });
             }
             catch (Exception ex)
             {

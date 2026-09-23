@@ -172,6 +172,9 @@
     <Compile Include="ContainerAllocationSalesReportServiceTests.cs" />
     <Compile Include="ContainerAllocationSalesAuthorizationPipelineTests.cs" />
     <Compile Include="BrowserExtensionTests.cs" />
+    <Compile Include="LocalSupplierCategoryLogicTests.cs" />
+    <Compile Include="LocalSupplierCategoryServiceTests.cs" />
+    <Compile Include="LocalSupplierCategorySqlServerIntegrationTests.cs" />
     <Compile Include="BrowserExtensionRankingTests.cs" />
     <Compile Include="WarehouseProductRecordQueryServiceTests.cs" />
     <Compile Include="WarehouseProductRecordAuthorizationTests.cs" />

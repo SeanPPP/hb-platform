@@ -27,6 +27,8 @@ internal sealed class SchemaMigrationCoordinator
         "20260921.001-mobile-ota-runtime-targets";
     internal const string SalesDetailQueryMonthlyMigrationId =
         "20260922.001-sales-detail-query-monthly";
+    internal const string LocalSupplierCategoryMigrationId =
+        "20260923.001-local-supplier-category";
     internal const string PosmMigrationId = "20260827.001-hbweb-posm-baseline";
     internal const string MobileDeviceActivationMigrationId =
         "20260831.001-mobile-device-activation";
@@ -84,6 +86,11 @@ internal sealed class SchemaMigrationCoordinator
             static (runtime, cancellationToken) =>
                 runtime.ApplySalesDetailQueryMonthlyAsync(cancellationToken)
         ),
+        new(
+            LocalSupplierCategoryMigrationId,
+            static (runtime, cancellationToken) =>
+                runtime.ApplyLocalSupplierCategoryAsync(cancellationToken)
+        ),
     ];
 
     internal static readonly IReadOnlyList<SchemaMigrationStep> PosmMigrationSteps =
@@ -120,6 +127,8 @@ internal sealed class SchemaMigrationCoordinator
         "linkly-multi-terminal-schema-signature";
     private const string MobileOtaRuntimeTargetsSignatureId =
         "mobile-ota-runtime-targets-schema-signature";
+    private const string LocalSupplierCategorySignatureId =
+        "local-supplier-category-schema-signature";
 
     private readonly ISchemaMigrationRuntime _runtime;
     private readonly ILogger<SchemaMigrationCoordinator> _logger;
@@ -247,6 +256,13 @@ internal sealed class SchemaMigrationCoordinator
                 SchemaDiagnosticCodes.MobileOtaRuntimeTargetsIncompatible
             );
         }
+        catch (LocalSupplierCategorySchemaMismatchException)
+        {
+            return SchemaOperationResult.Failure(
+                SchemaExitCodes.SchemaNotReady,
+                SchemaDiagnosticCodes.LocalSupplierCategoryIncompatible
+            );
+        }
         catch (SchemaProviderNotSupportedException)
         {
             LogResult(
@@ -339,6 +355,13 @@ internal sealed class SchemaMigrationCoordinator
             return SchemaOperationResult.Failure(
                 SchemaExitCodes.SchemaNotReady,
                 SchemaDiagnosticCodes.MobileOtaRuntimeTargetsIncompatible
+            );
+        }
+        catch (LocalSupplierCategorySchemaMismatchException)
+        {
+            return SchemaOperationResult.Failure(
+                SchemaExitCodes.SchemaNotReady,
+                SchemaDiagnosticCodes.LocalSupplierCategoryIncompatible
             );
         }
         catch (SchemaProviderNotSupportedException)
@@ -490,6 +513,7 @@ internal sealed class SchemaMigrationCoordinator
             await _runtime.VerifyPricingCurveAsync(cancellationToken);
             await _runtime.VerifySalesDetailQueryProjectionAsync(cancellationToken);
             await VerifyMobileOtaRuntimeTargetsAsync(cancellationToken);
+            await VerifyLocalSupplierCategoryAsync(cancellationToken);
         }
         if (posmApplied)
         {
@@ -542,6 +566,39 @@ internal sealed class SchemaMigrationCoordinator
                 exception is OperationCanceledException
                     ? SchemaDiagnosticCodes.Cancelled
                     : SchemaDiagnosticCodes.MobileOtaRuntimeTargetsIncompatible
+            );
+            throw;
+        }
+    }
+
+    private async Task VerifyLocalSupplierCategoryAsync(CancellationToken cancellationToken)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        try
+        {
+            await _runtime.VerifyLocalSupplierCategoryAsync(cancellationToken);
+            LogResult(
+                MainScope,
+                LocalSupplierCategorySignatureId,
+                stopwatch.ElapsedMilliseconds,
+                "Ready",
+                SchemaDiagnosticCodes.Ready
+            );
+        }
+        catch (Exception exception)
+        {
+            LogResult(
+                MainScope,
+                LocalSupplierCategorySignatureId,
+                stopwatch.ElapsedMilliseconds,
+                "Failed",
+                exception switch
+                {
+                    OperationCanceledException => SchemaDiagnosticCodes.Cancelled,
+                    LocalSupplierCategorySchemaMismatchException =>
+                        SchemaDiagnosticCodes.LocalSupplierCategoryIncompatible,
+                    _ => SchemaDiagnosticCodes.DatabaseFailure,
+                }
             );
             throw;
         }

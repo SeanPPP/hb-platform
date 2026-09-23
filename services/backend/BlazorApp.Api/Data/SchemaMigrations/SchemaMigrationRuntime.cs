@@ -68,6 +68,10 @@ internal interface ISchemaMigrationRuntime
 
     Task VerifySalesDetailQueryMonthlyAsync(CancellationToken cancellationToken);
 
+    Task ApplyLocalSupplierCategoryAsync(CancellationToken cancellationToken);
+
+    Task VerifyLocalSupplierCategoryAsync(CancellationToken cancellationToken);
+
     Task ApplyPosmBaselineAsync(CancellationToken cancellationToken);
 
     Task ApplyMobileDeviceActivationAsync(CancellationToken cancellationToken);
@@ -107,6 +111,8 @@ internal sealed class SalesDetailQueryProjectionSchemaMismatchException : Except
 internal sealed class LinklyMultiTerminalSchemaMismatchException : Exception;
 
 internal sealed class MobileOtaRuntimeTargetsSchemaMismatchException : Exception;
+
+internal sealed class LocalSupplierCategorySchemaMismatchException : Exception;
 
 internal sealed class SchemaBaselineSqlFailureException(string stepId) : Exception
 {
@@ -397,6 +403,35 @@ internal sealed class SqlServerSchemaMigrationRuntime : ISchemaMigrationRuntime
         catch (SqlException exception) when (exception.Number is >= 51910 and <= 51912)
         {
             throw new MobileOtaRuntimeTargetsSchemaMismatchException();
+        }
+    }
+
+    public async Task ApplyLocalSupplierCategoryAsync(CancellationToken cancellationToken)
+    {
+        await SqlServerSchemaMigrationStore.ExecuteBatchAsync(
+            _mainDatabase.ConnectionString,
+            LocalSupplierCategorySchema.ApplySql,
+            _commandTimeoutSeconds,
+            cancellationToken
+        );
+        // 精确签名通过后协调器才登记账本，已有同名但结构错误的表不会被误标为完成。
+        await VerifyLocalSupplierCategoryAsync(cancellationToken);
+    }
+
+    public async Task VerifyLocalSupplierCategoryAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await SqlServerSchemaMigrationStore.ExecuteReadOnlyBatchAsync(
+                _mainDatabase.ConnectionString,
+                LocalSupplierCategorySchema.VerifySql,
+                _commandTimeoutSeconds,
+                cancellationToken
+            );
+        }
+        catch (SqlException exception) when (exception.Number is >= 51930 and <= 51939)
+        {
+            throw new LocalSupplierCategorySchemaMismatchException();
         }
     }
 

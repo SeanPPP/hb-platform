@@ -49,7 +49,14 @@ public sealed class ProductSupplierImageBatchUpdateTests : IDisposable
         _hqDb = new SqlSugarScope(CreateConnectionConfig(_hqConnection.ConnectionString));
         _mapper = CreateMapper();
 
-        _localDb.CodeFirst.InitTables(typeof(Product), typeof(HBLocalSupplier));
+        _localDb.CodeFirst.InitTables(
+            typeof(Product),
+            typeof(HBLocalSupplier),
+            typeof(WarehouseCategory),
+            typeof(LocalSupplierCategory),
+            typeof(LocalSupplierCategoryCapture),
+            typeof(LocalSupplierCategoryProductAssignment)
+        );
         _hqDb.CodeFirst.InitTables(typeof(DIC_商品信息字典表), typeof(DIC_供应商信息表));
     }
 
