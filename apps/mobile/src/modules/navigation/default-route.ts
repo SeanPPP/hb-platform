@@ -21,6 +21,7 @@ export type AppTabPath =
   | "/(shell)/sales-orders"
   | "/(shell)/users"
   | "/(shell)/user-admin"
+  | "/(shell)/cash-register-users"
   | "/(shell)/roles"
   | "/(shell)/permissions"
   | "/(shell)/employee-profile"
@@ -54,6 +55,7 @@ export const TAB_PATHS: Record<string, AppTabPath> = {
   "sales-orders": "/(shell)/sales-orders",
   users: "/(shell)/users",
   "user-admin": "/(shell)/user-admin",
+  "cash-register-users": "/(shell)/cash-register-users",
   roles: "/(shell)/roles",
   permissions: "/(shell)/permissions",
   "employee-profile": "/(shell)/employee-profile",
@@ -76,6 +78,8 @@ const DEVICE_MODE_BLOCKED_ROUTE_NAMES = new Set([
   "employee-profile-review",
   // 设备会话没有店长/管理员角色，后端审计查询会直接拒绝，设备模式不展示入口。
   "pos-operation-logs",
+  // 收银用户条码按操作人账号的可管理分店授权，设备会话不展示入口。
+  "cash-register-users",
   "device-management",
   "reports",
   "user-admin",

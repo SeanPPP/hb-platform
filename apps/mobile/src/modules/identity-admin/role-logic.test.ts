@@ -90,7 +90,12 @@ assert.equal(implicitPreview[2].visible, false);
 
 const fullMenus = getRoleMenuDefinitions("en");
 assert.equal(fullMenus.filter((item) => item.platform === "web").length, 45);
-assert.equal(fullMenus.filter((item) => item.platform === "mobile").length, 27);
+assert.equal(fullMenus.filter((item) => item.platform === "mobile").length, 28);
+// 移动端收银用户条码入口只认独立的管理/打印权限，不复用 Web 的 Store.ManageOperations。
+assert.deepEqual(
+  fullMenus.find((item) => item.platform === "mobile" && item.key === "cash-register-users")?.permissionCodes,
+  ["CashRegisterUsers.MobileManage", "CashRegisterUsers.MobilePrint"]
+);
 assert.equal(new Set(fullMenus.map((item) => `${item.platform}:${item.key}`)).size, fullMenus.length);
 assert.deepEqual(fullMenus.find((item) => item.key === "/system/roles")?.permissionCodes, ["Roles.View"]);
 assert.equal(fullMenus.find((item) => item.key === "settings")?.fixed, true);

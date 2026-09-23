@@ -1,9 +1,11 @@
 import { useCallback, useMemo, useState, type ComponentProps } from "react";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   Platform,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   View,
@@ -191,6 +193,9 @@ export function WorkbenchScreen() {
     "price-updates": pendingPriceUpdateCount,
   };
   const fetchMenu = useAppNavigationStore((state) => state.fetchMenu);
+  const refreshCurrentUser = useAuthStore((state) => state.refreshCurrentUser);
+  const queryClient = useQueryClient();
+  const [refreshing, setRefreshing] = useState(false);
   const currentUser = useAuthStore((state) => state.user);
   const deviceSession = useDeviceStore((state) => state.session);
   const cartSummary = useCartStore((state) => state.cartSummary);
@@ -328,6 +333,23 @@ export function WorkbenchScreen() {
     void fetchMenu();
   }, [fetchMenu]);
 
+  // 下拉刷新：后台改了角色权限或分店分配后，重新拉取当前账号权限、菜单和分店，无需重新登录。
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await refreshCurrentUser().catch((error) => {
+        console.warn("[workbench] failed to refresh current user", error);
+        return false;
+      });
+      await Promise.all([
+        fetchMenu({ background: true }),
+        queryClient.invalidateQueries({ queryKey: ["userStores"] }),
+      ]);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [fetchMenu, queryClient, refreshCurrentUser]);
+
   const accessState = navigationLoading
     ? "loading"
     : navigationErrorMessage
@@ -345,6 +367,7 @@ export function WorkbenchScreen() {
         contentContainerStyle={styles.content}
         contentInsetAdjustmentBehavior="automatic"
         showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void handleRefresh()} />}
       >
         <View style={styles.header}>
           <View style={styles.headingRow}>

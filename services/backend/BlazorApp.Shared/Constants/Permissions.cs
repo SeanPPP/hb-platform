@@ -364,6 +364,16 @@ namespace BlazorApp.Shared.Constants
             public const string ManageOperations = "Store.ManageOperations";
         }
 
+        /// <summary>
+        /// 移动端「收银用户条码」独立权限：与 Web 的 Store.ManageOperations 分开授权，
+        /// 管理（查看/创建/更新/启停）与打印（查看/打印并累计打印次数）可以分别授予。
+        /// </summary>
+        public static class CashRegisterUsers
+        {
+            public const string MobileManage = "CashRegisterUsers.MobileManage";
+            public const string MobilePrint = "CashRegisterUsers.MobilePrint";
+        }
+
         public static class Attendance
         {
             public static class Schedule

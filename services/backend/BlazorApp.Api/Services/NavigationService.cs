@@ -361,6 +361,19 @@ namespace BlazorApp.Api.Services
             },
             new()
             {
+                RouteName = "cash-register-users",
+                TitleKey = "tabs.cashRegisterUsers",
+                Icon = "barcode",
+                // 移动端独立权限：管理或打印任一即可进入，不借用 Web 的 Store.ManageOperations。
+                AnyPermissions = new[]
+                {
+                    Permissions.CashRegisterUsers.MobileManage,
+                    Permissions.CashRegisterUsers.MobilePrint,
+                },
+                Order = 57,
+            },
+            new()
+            {
                 RouteName = "roles",
                 TitleKey = "tabs.roles",
                 Icon = "shield-account-outline",

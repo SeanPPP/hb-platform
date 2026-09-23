@@ -51,6 +51,7 @@
     "attendanceManagement": "Attendance management",
     "users": "Employees",
     "userAdmin": "User administration",
+    "cashRegisterUsers": "Cashier barcodes",
     "roles": "Roles",
     "permissions": "Permissions",
     "employeeProfile": "My profile",
