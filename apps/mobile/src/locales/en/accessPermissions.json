@@ -557,6 +557,14 @@
       "name": "View local purchase sales analysis",
       "description": "Web page /executive-sales-intelligence/purchase-sales-analysis, Local purchase analysis tab - Review latest purchases, daily sales charts and sell-through by store and supplier."
     },
+    "SalesDashboard.KfcRestockSignal.View": {
+      "name": "View KFC restock signals",
+      "description": "Report page /reports/kfc-uncle-bills/ - view best sellers, forecasts, stock gaps and sell-through for Uncle Bills (KFC), limited to the user's own stores"
+    },
+    "SalesDashboard.KfcRestockSignal.AllStores": {
+      "name": "View KFC restock signals for all stores",
+      "description": "Report page /reports/kfc-uncle-bills/ - on top of View KFC restock signals, view data for every store and the chain summary"
+    },
     "SalesDashboard.PurchaseAmount.View": {
       "name": "View purchase amount dashboard",
       "description": "View warehouse orders, local supplier purchase amounts and revenue by store."
@@ -584,6 +592,18 @@
     "Store.ManageOperations": {
       "name": "Store Manage Operations",
       "description": "Allows access to Store Manage Operations."
+    },
+    "CashRegisterUsers.MobileManage": {
+      "name": "Manage cashier barcodes (mobile)",
+      "description": "Mobile Cashier barcodes - view, create, update, enable and disable legacy POS staff barcodes for managed stores."
+    },
+    "CashRegisterUsers.MobilePrint": {
+      "name": "Print cashier barcodes (mobile)",
+      "description": "Mobile Cashier barcodes - view legacy POS staff barcodes for managed stores, print them on a Bluetooth label printer and count prints."
+    },
+    "SeasonalProductInsights.View": {
+      "name": "View seasonal products",
+      "description": "Mobile Seasonal products - look up by item number or barcode to see cumulative inbound, cumulative sales and theoretical stock for this store and other stores."
     },
     "StoreProducts.Create": {
       "name": "Store Products Create",

@@ -5,6 +5,7 @@ import {
   hydrateSavedPrinter,
   syncPrinterStatus,
 } from "@/modules/printer/api";
+import { subscribePrinterStatusChanged } from "@/modules/printer/native";
 import { usePrinterStore } from "@/modules/printer/state";
 import { i18n } from "@/shared/i18n/i18n";
 
@@ -20,149 +21,77 @@ export function usePrinterAutoConnect(
   const setStatus = usePrinterStore((state) => state.setStatus);
   const setLastError = usePrinterStore((state) => state.setLastError);
 
+  const savedPrinterAddress = savedPrinter?.address;
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
   const connectInFlightRef = useRef(false);
+  const lastConnectAttemptRef = useRef(0);
 
   useEffect(() => {
     if (!enabled) {
       return;
     }
-    void hydrateSavedPrinter();
-  }, [enabled]);
+    void hydrateSavedPrinter().catch((error: unknown) => {
+      setLastError(error instanceof Error ? error.message : i18n.t("common:errors.requestFailed"));
+      setStatus("error");
+    });
+  }, [enabled, setLastError, setStatus]);
 
   useEffect(() => {
-    if (
-      !enabled ||
-      !hydrated ||
-      !savedPrinter ||
-      autoReconnectPaused ||
-      status === "connected" ||
-      status === "connecting" ||
-      status === "reconnecting"
-    ) {
-      return;
-    }
-
+    if (!enabled || !hydrated) return;
     let cancelled = false;
-
-    async function connectOnce(initial: boolean) {
-      if (connectInFlightRef.current || cancelled) {
-        return;
-      }
-
-      connectInFlightRef.current = true;
-      setStatus(initial ? "connecting" : "reconnecting");
-      setLastError(null);
-
-      try {
-        await connectSavedPrinter({ status: initial ? "connecting" : "reconnecting" });
-      } catch (error) {
-        if (!cancelled) {
-          setLastError(
-            error instanceof Error
-              ? error.message
-              : i18n.t("common:errors.requestFailed")
-          );
-          setStatus("error");
-        }
-      } finally {
-        connectInFlightRef.current = false;
-      }
-    }
-
-    void connectOnce(true);
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    autoReconnectPaused,
-    enabled,
-    hydrated,
-    savedPrinter,
-    setLastError,
-    setStatus,
-    status,
-  ]);
-
-  useEffect(() => {
-    if (!enabled || !hydrated || !savedPrinter) {
-      return;
-    }
-
-    let intervalId: ReturnType<typeof setInterval> | null = null;
-    let cancelled = false;
+    appStateRef.current = AppState.currentState;
 
     async function tick() {
-      if (cancelled || appStateRef.current !== "active") {
-        return;
-      }
-
-      let nativeStatus;
+      if (cancelled || appStateRef.current !== "active") return;
       try {
-        nativeStatus = await syncPrinterStatus();
+        // 原生事件到来时立即同步；连接等待期间也允许刷新状态，避免界面滞后。
+        const nativeStatus = await syncPrinterStatus();
+        if (cancelled) return;
+        const current = usePrinterStore.getState();
+        if (current.autoReconnectPaused || !current.savedPrinter) return;
+        if (nativeStatus.connected && nativeStatus.address === current.savedPrinter.address) {
+          lastConnectAttemptRef.current = 0;
+          return;
+        }
+        if (!nativeStatus.supported || !nativeStatus.enabled || connectInFlightRef.current) return;
+        if (Date.now() - lastConnectAttemptRef.current < RECONNECT_INTERVAL_MS) return;
+
+        connectInFlightRef.current = true;
+        lastConnectAttemptRef.current = Date.now();
+        try {
+          await connectSavedPrinter({ status: "reconnecting" });
+        } finally {
+          connectInFlightRef.current = false;
+        }
       } catch (error) {
         if (!cancelled) {
-          setLastError(
-            error instanceof Error
-              ? error.message
-              : i18n.t("common:errors.requestFailed")
-          );
-          setStatus("error");
+          const current = usePrinterStore.getState();
+          setLastError(error instanceof Error ? error.message : i18n.t("common:errors.requestFailed"));
+          setStatus(current.autoReconnectPaused ? "paused" : "error");
         }
-        return;
-      }
-
-      const current = usePrinterStore.getState();
-
-      if (current.autoReconnectPaused || !current.savedPrinter) {
-        return;
-      }
-
-      if (nativeStatus.connected && nativeStatus.address === current.savedPrinter.address) {
-        return;
-      }
-
-      if (connectInFlightRef.current) {
-        return;
-      }
-
-      connectInFlightRef.current = true;
-      try {
-        await connectSavedPrinter({ status: "reconnecting" });
-      } catch (error) {
-        if (!cancelled) {
-          setLastError(
-            error instanceof Error
-              ? error.message
-              : i18n.t("common:errors.requestFailed")
-          );
-          setStatus("error");
-        }
-      } finally {
-        connectInFlightRef.current = false;
       }
     }
 
-    const subscription = AppState.addEventListener("change", (nextState) => {
+    const nativeUnsubscribe = subscribePrinterStatusChanged(() => { void tick(); });
+    const appSubscription = AppState.addEventListener("change", (nextState) => {
       appStateRef.current = nextState;
-      if (nextState === "active") {
-        void tick();
-      }
+      if (nextState === "active") void tick();
     });
-
-    intervalId = setInterval(() => {
-      void tick();
-    }, RECONNECT_INTERVAL_MS);
+    const storeUnsubscribe = usePrinterStore.subscribe((current, previous) => {
+      // 旧包写失败由 JS 清理连接，也应立即触发恢复；连接失败留给定时重试，避免热循环。
+      if (current.status === "disconnected" && previous.status !== "disconnected") void tick();
+    });
+    const intervalId = setInterval(() => { void tick(); }, RECONNECT_INTERVAL_MS);
+    void tick();
 
     return () => {
       cancelled = true;
-      subscription.remove();
-      if (intervalId) {
-        clearInterval(intervalId);
-      }
+      nativeUnsubscribe();
+      appSubscription.remove();
+      storeUnsubscribe();
+      clearInterval(intervalId);
     };
-  }, [enabled, hydrated, savedPrinter, setLastError, setStatus]);
+  }, [autoReconnectPaused, enabled, hydrated, savedPrinterAddress, setLastError, setStatus]);
 
   return {
     status,

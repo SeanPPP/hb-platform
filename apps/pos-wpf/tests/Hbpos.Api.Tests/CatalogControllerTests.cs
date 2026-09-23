@@ -87,6 +87,28 @@ public sealed class CatalogControllerTests
     }
 
     [Fact]
+    public async Task Catalog_reads_return_503_when_snapshot_capacity_is_busy()
+    {
+        var controller = new CatalogController(new FakeCatalogService { ThrowCapacityBusy = true });
+        var responses = new ObjectResult?[]
+        {
+            (await controller.GetSellableItems("S01", null, CancellationToken.None)).Result as ObjectResult,
+            (await controller.GetSellableItemsPage("S01", null, null, cancellationToken: CancellationToken.None)).Result as ObjectResult,
+            (await controller.GetCatalogDeltaPage("S01", "base", "target", null, cancellationToken: CancellationToken.None)).Result as ObjectResult,
+            (await controller.CompareSellableItems(new CatalogCompareRequest("S01", []), CancellationToken.None)).Result as ObjectResult,
+            (await controller.GetSpecialProductsPage("S01", null, cancellationToken: CancellationToken.None)).Result as ObjectResult
+        };
+
+        foreach (var response in responses)
+        {
+            Assert.NotNull(response);
+            Assert.Equal(StatusCodes.Status503ServiceUnavailable, response.StatusCode);
+            var errorCode = response.Value!.GetType().GetProperty(nameof(ApiResult<object>.ErrorCode))!.GetValue(response.Value);
+            Assert.Equal("CATALOG_CAPACITY_BUSY", errorCode);
+        }
+    }
+
+    [Fact]
     public void CatalogController_RequiresAuthorizationExceptStoreList()
     {
         Assert.NotNull(typeof(CatalogController)
@@ -522,6 +544,8 @@ public sealed class CatalogControllerTests
 
         public bool ThrowDeltaSnapshotExpired { get; init; }
 
+        public bool ThrowCapacityBusy { get; init; }
+
         public (
             string StoreCode,
             DateTimeOffset? Since,
@@ -556,7 +580,9 @@ public sealed class CatalogControllerTests
             DateTimeOffset? since,
             CancellationToken cancellationToken)
         {
-            return Task.FromResult<SellableItemsResponse?>(null);
+            return ThrowCapacityBusy
+                ? Task.FromException<SellableItemsResponse?>(new CatalogCapacityBusyException("busy"))
+                : Task.FromResult<SellableItemsResponse?>(null);
         }
 
         public Task<CatalogSyncPageResponse?> GetSellableItemsPageAsync(
@@ -580,6 +606,11 @@ public sealed class CatalogControllerTests
             int checksumVersion)
         {
             LastPageRequest = (storeCode, since, cursor, pageSize, catalogVersion, checksumVersion);
+            if (ThrowCapacityBusy)
+            {
+                return Task.FromException<CatalogSyncPageResponse?>(new CatalogCapacityBusyException("busy"));
+            }
+
             return ThrowSnapshotExpired
                 ? Task.FromException<CatalogSyncPageResponse?>(
                     new CatalogSnapshotExpiredException(storeCode, catalogVersion ?? string.Empty))
@@ -617,6 +648,11 @@ public sealed class CatalogControllerTests
             CancellationToken cancellationToken)
         {
             LastDeltaPageRequest = (storeCode, baseCatalogVersion, targetCatalogVersion, cursor, pageSize);
+            if (ThrowCapacityBusy)
+            {
+                return Task.FromException<CatalogDeltaPageResponse>(new CatalogCapacityBusyException("busy"));
+            }
+
             return ThrowDeltaSnapshotExpired
                 ? Task.FromException<CatalogDeltaPageResponse>(
                     new CatalogSnapshotExpiredException(storeCode, baseCatalogVersion))
@@ -646,7 +682,9 @@ public sealed class CatalogControllerTests
             CancellationToken cancellationToken)
         {
             LastCompareRequest = request;
-            return Task.FromResult(CompareResponse);
+            return ThrowCapacityBusy
+                ? Task.FromException<CatalogCompareResponse?>(new CatalogCapacityBusyException("busy"))
+                : Task.FromResult(CompareResponse);
         }
 
         public Task<CatalogLookupResponse?> LookupSellableItemAsync(
@@ -666,7 +704,9 @@ public sealed class CatalogControllerTests
             CancellationToken cancellationToken)
         {
             LastSpecialProductsPageRequest = (storeCode, cursor, pageSize);
-            return Task.FromResult(SpecialProductsPageResponse);
+            return ThrowCapacityBusy
+                ? Task.FromException<CatalogSpecialProductsPageResponse?>(new CatalogCapacityBusyException("busy"))
+                : Task.FromResult(SpecialProductsPageResponse);
         }
 
         public Task<CatalogPromotionsResponse?> GetPromotionRulesAsync(

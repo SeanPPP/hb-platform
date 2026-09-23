@@ -186,13 +186,13 @@ public sealed class ServiceRegistrationRuntimeEndpointTests
         var endpoint = provider.GetRequiredService<ApiRuntimeEndpointState>();
 
         var request = client.GetAsync("https://logs.example.test/ingest");
-        await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await started.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         endpoint.Switch("https://new.example.test/pos-api/");
         await Task.Delay(50);
 
         Assert.False(request.IsCompleted);
         complete.SetResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK));
-        using var response = await request.WaitAsync(TimeSpan.FromSeconds(2));
+        using var response = await request.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         Assert.True(response.IsSuccessStatusCode);
     }
 

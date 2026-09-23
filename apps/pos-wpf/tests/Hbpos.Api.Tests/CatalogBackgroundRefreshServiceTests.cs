@@ -136,7 +136,7 @@ public sealed class CatalogBackgroundRefreshServiceTests
                 {
                     if (storeCode is "S02" or "S03")
                     {
-                        if (Interlocked.Increment(ref otherStoreStarts) == 2)
+                        if (Interlocked.Increment(ref otherStoreStarts) == 1)
                         {
                             otherStoresStarted.TrySetResult();
                         }
@@ -169,11 +169,13 @@ public sealed class CatalogBackgroundRefreshServiceTests
             var thirdStore = service.QueueRefreshAsync("S03");
             await otherStoresStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
 
-            Assert.Equal(2, Volatile.Read(ref maximumActiveBuilds));
+            Assert.Equal(1, Volatile.Read(ref maximumActiveBuilds));
+            Assert.Equal(1, Volatile.Read(ref otherStoreStarts));
             Assert.False(firstStore.IsCompleted);
 
             releaseOtherStores.TrySetResult();
             await Task.WhenAll(secondStore, thirdStore).WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(2, Volatile.Read(ref otherStoreStarts));
 
             releaseRetryDelay.TrySetResult();
             await firstStore.WaitAsync(TimeSpan.FromSeconds(2));

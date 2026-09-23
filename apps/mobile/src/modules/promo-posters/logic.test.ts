@@ -33,6 +33,9 @@ import type { PromoPosterDefaults, PromoPosterQueueItem, PromoPosterSpec } from 
 
 const TODAY = "2026-09-19";
 
+// 风格值会贯穿草稿、PDF 请求和本地队列，避免新增风格只停留在 UI 选项。
+const LOW_INK_STYLE = "low-ink" as const;
+
 function createDefaults(overrides: Partial<PromoPosterDefaults> = {}): PromoPosterDefaults {
   const normalized = normalizePromoPosterDefaults({
     productCode: "P1",
@@ -76,8 +79,8 @@ function createDefaults(overrides: Partial<PromoPosterDefaults> = {}): PromoPost
 
 assert.deepEqual(
   resolveScanPosterAvailability({ discountRate: 0.3, activePromotionCount: 0, clearancePrice: null }),
-  { special: true, multibuy: false, new: true, clearance: false },
-  "特价始终可用；无促销、无清货价时对应按钮不可用；新品始终可用",
+  { special: true, multibuy: true, new: true, clearance: false },
+  "特价和多件价始终可用；无清货价时清仓不可用；新品始终可用",
 );
 assert.deepEqual(
   resolveScanPosterAvailability({ discountRate: 0, activePromotionCount: 2, clearancePrice: 5 }),
@@ -85,7 +88,7 @@ assert.deepEqual(
 );
 assert.deepEqual(
   resolveScanPosterAvailability({ discountRate: null, activePromotionCount: 0, clearancePrice: 0 }),
-  { special: true, multibuy: false, new: true, clearance: false },
+  { special: true, multibuy: true, new: true, clearance: false },
   "清货价为 0 视为未设置",
 );
 
@@ -93,8 +96,8 @@ const defaults = createDefaults();
 assert.deepEqual(resolveDefaultsAvailability(defaults), { special: true, multibuy: true, new: true, clearance: false });
 assert.equal(
   resolveDefaultsAvailability(createDefaults({ multiBuyOffers: [] })).multibuy,
-  false,
-  "canMultiBuy 为真但没有促销数据时多件价仍不可用",
+  true,
+  "没有预设促销时多件价仍可手填",
 );
 assert.equal(resolveInitialPosterKind("special", resolveDefaultsAvailability(defaults)), "special");
 assert.equal(resolveInitialPosterKind("clearance", resolveDefaultsAvailability(defaults)), "new", "不可用类型回落到新品");
@@ -158,6 +161,8 @@ const clearance = createPosterDraft(clearanceDefaults, { kind: "clearance", styl
 assert.equal(clearance.price, "5.00", "清仓价取已设清货价");
 assert.equal(clearance.wasPrice, "12.99");
 assert.equal(clearance.style, "modern");
+const lowInkDraft = createPosterDraft(defaults, { kind: "special", style: LOW_INK_STYLE, size: "A6", today: TODAY });
+assert.equal(lowInkDraft.style, LOW_INK_STYLE, "省彩墨风格应保留在初始草稿");
 
 const fresh = createPosterDraft(defaults, { kind: "new", style: "classic", size: "A5", today: TODAY });
 assert.equal(fresh.price, "12.99", "新品售价取零售价");
@@ -177,6 +182,34 @@ const secondOffer = applyMultiBuyOffer(multi, defaults, "promo-2");
 assert.equal(secondOffer.quantity, "2");
 assert.equal(secondOffer.price, "20.00");
 assert.equal(secondOffer.mixAndMatch, false, "只含本商品的促销不是 Mix & match");
+
+const manualMultiDefaults = createDefaults({ multiBuyOffers: [], canMultiBuy: false, retailPrice: 12.99 });
+const manualMulti = createPosterDraft(manualMultiDefaults, { kind: "multibuy", style: "classic", size: "A6", today: TODAY });
+assert.equal(manualMulti.offerId, null, "没有预设促销时不虚构促销选择");
+assert.equal(manualMulti.quantity, "", "没有预设促销时件数留空待手填");
+assert.equal(manualMulti.price, "", "没有预设促销时组合价留空待手填");
+assert.equal(manualMulti.unitPrice, "12.99", "没有预设促销时单价预填零售价");
+const manualMultiResult = buildPosterSpec({ ...manualMulti, quantity: "3", price: "10", validFrom: TODAY, validTo: "2026-10-02" }, manualMultiDefaults);
+assert.equal(manualMultiResult.ok, true, "无预设促销时可手填件数、组合价和有效期");
+const incompleteManualDates = buildPosterSpec({ ...manualMulti, quantity: "3", price: "10", validFrom: TODAY }, manualMultiDefaults);
+assert.equal(!incompleteManualDates.ok && incompleteManualDates.errors.validity, "required", "手填有效期必须同时填写起止日期");
+for (const quantity of ["", "1", "100", "2.5"]) {
+  const result = buildPosterSpec({ ...manualMulti, quantity, price: "10" }, manualMultiDefaults);
+  assert.equal(result.ok, false, `手填件数 ${quantity || "空"} 必须被拦截`);
+  assert.equal(!result.ok && result.errors.quantity, quantity ? "invalid" : "required");
+}
+for (const price of ["", "0", "bad", "1.234"]) {
+  const result = buildPosterSpec({ ...manualMulti, quantity: "3", price }, manualMultiDefaults);
+  assert.equal(result.ok, false, `手填组合价 ${price || "空"} 必须被拦截`);
+  assert.equal(!result.ok && result.errors.price, price ? "invalid" : "required");
+}
+for (const dates of [["2026-10-02", TODAY], ["not-a-date", "2026-10-02"]]) {
+  const result = buildPosterSpec({ ...manualMulti, quantity: "3", price: "10", validFrom: dates[0], validTo: dates[1] }, manualMultiDefaults);
+  assert.equal(result.ok, false, "手填有效期反序或非法日期必须被拦截");
+  assert.equal(!result.ok && result.errors.validity, dates[0] === "not-a-date" ? "invalid" : "rangeInvalid");
+}
+const noRetailManual = createPosterDraft(createDefaults({ multiBuyOffers: [], retailPrice: null }), { kind: "multibuy", style: "classic", size: "A6", today: TODAY });
+assert.equal(buildPosterSpec({ ...noRetailManual, quantity: "3", price: "10", unitPrice: "4" }, createDefaults({ multiBuyOffers: [], retailPrice: null })).ok, true, "无零售价时可手填单价");
 
 // 切换类型只重置价格与日期，保留店员改过的品名、风格、尺寸
 const edited = { ...special, title: "Custom Flask", style: "modern" as const, size: "A4" as const, validFrom: TODAY, validTo: "2026-10-02" };
@@ -268,7 +301,43 @@ assert.deepEqual(multiResult.ok && multiResult.spec, {
   validTo: "2026-10-02",
 });
 const noOffer = buildPosterSpec({ ...multi, offerId: "missing" }, defaults);
-assert.equal(!noOffer.ok && noOffer.errors.offer, "required");
+assert.equal(noOffer.ok, true, "预设促销不存在时仍可按手填多件价提交");
+
+// 两种节日风格都必须贯穿四种业务类型并进入 PDF 请求，避免只接通了编辑器选择器。
+const seasonalStyles = ["christmas", "halloween"] as const;
+assert.ok(specialResult.ok);
+assert.ok(multiResult.ok);
+assert.ok(freshResult.ok);
+const seasonalSpecs: PromoPosterSpec[] = [
+  specialResult.spec,
+  multiResult.spec,
+  freshResult.spec,
+  { kind: "clearance", style: "classic", size: "A6", productCode: "P1", itemNumber: "K1048", title: "Clearance Flask", price: 5, wasPrice: 14.99 },
+];
+for (const style of seasonalStyles) {
+  for (const spec of seasonalSpecs) {
+    const request = buildPromoPosterPdfRequest("S1", true, [{ ...spec, style }], false);
+    assert.equal(request.showLogo, false);
+    assert.equal(request.posters[0].style, style);
+    assert.equal(request.posters[0].kind, spec.kind);
+  }
+}
+const seasonalSnapshot = normalizeStoredQueueSnapshot({
+  style: "halloween",
+  size: "A7",
+  impose: true,
+  showLogo: false,
+  items: seasonalStyles.map((style) => ({
+    id: `seasonal-${style}`,
+    storeCode: "S1",
+    productName: "Paper",
+    addedAt: TODAY,
+    poster: { ...seasonalSpecs[0], style, size: "A7" },
+  })),
+});
+assert.equal(seasonalSnapshot.style, "halloween", "读取保存快照时保留万圣节批次风格");
+assert.equal(seasonalSnapshot.showLogo, false, "读取保存快照时保留关闭 Logo");
+assert.deepEqual(seasonalSnapshot.items.map((item) => item.poster.style), ["christmas", "halloween"]);
 
 // ---------------------------------------------------------------- 收银价不一致提示
 
@@ -355,6 +424,7 @@ const request = buildPromoPosterPdfRequest("S1", true, [
   multiResult.ok ? multiResult.spec : ({} as PromoPosterSpec),
   { kind: "clearance", style: "modern", size: "A4", productCode: "P2", itemNumber: "W2093", title: "Boots", price: 5, wasPrice: 14.99, validFrom: TODAY },
   { kind: "new", style: "classic", size: "A5", productCode: "P3", itemNumber: "K5031", title: "Bowl", price: 6.49, wasPrice: 9, inStoreSince: TODAY },
+  { kind: "new", style: LOW_INK_STYLE, size: "A7", productCode: "P4", itemNumber: "K5032", title: "Mug", price: 3.5, inStoreSince: TODAY },
 ]);
 assert.equal(request.storeCode, "S1");
 assert.equal(request.impose, true);
@@ -394,25 +464,28 @@ assert.deepEqual(request.posters[3], {
   price: 6.49,
   inStoreSince: TODAY,
 }, "新品不传 wasPrice");
+assert.equal(request.posters[4].style, LOW_INK_STYLE, "PDF 请求应保留省彩墨风格");
 
 assert.equal(buildPromoPosterFileName(new Date(2026, 8, 19, 15, 30, 45)), "HB-Posters-20260919-153045.pdf");
 
 // ---------------------------------------------------------------- 本地队列恢复
 
 const restored = normalizeStoredQueueSnapshot({
-  style: "modern",
+  style: LOW_INK_STYLE,
   size: "A5",
   impose: false,
   items: [
     queueItem("ok", "A6"),
+    { ...queueItem("low-ink", "A7"), poster: { ...queueItem("low-ink-source", "A7").poster, style: LOW_INK_STYLE } },
     { ...queueItem("bad-kind", "A6"), poster: { ...queueItem("x", "A6").poster, kind: "sale" } },
     { ...queueItem("bad-title", "A6"), poster: { ...queueItem("x", "A6").poster, title: "中文" } },
     { id: "", storeCode: "S1", poster: queueItem("x", "A6").poster },
     "garbage",
   ],
 });
-assert.deepEqual(restored.items.map((item) => item.id), ["ok"], "结构不对的条目直接丢弃");
-assert.equal(restored.style, "modern");
+assert.deepEqual(restored.items.map((item) => item.id), ["ok", "low-ink"], "结构不对的条目直接丢弃");
+assert.equal(restored.items[1].poster.style, LOW_INK_STYLE, "恢复队列条目应保留省彩墨风格");
+assert.equal(restored.style, LOW_INK_STYLE);
 assert.equal(restored.size, "A5");
 assert.equal(restored.impose, false);
 assert.equal(restored.showLogo, true, "旧队列没有 Logo 字段时默认开启");

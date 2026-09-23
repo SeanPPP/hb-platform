@@ -504,6 +504,70 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         /// <summary>
+        /// 按分店汇总全部中国供应商的销售额（移动端商品报告「分店中国货占比」的分子）
+        /// GET api/react/v1/dashboard/china-supplier-branch-totals
+        /// </summary>
+        /// <param name="startDate">开始日期</param>
+        /// <param name="endDate">结束日期</param>
+        /// <param name="compareStartDate">对比开始日期（可选）</param>
+        /// <param name="compareEndDate">对比结束日期（可选）</param>
+        /// <param name="compareMode">对比模式</param>
+        /// <param name="branchCodes">分店代码列表（可选）</param>
+        /// <returns>每个分店一行的中国货销售合计</returns>
+        [HttpGet("china-supplier-branch-totals")]
+        [Authorize(Policy = Permissions.Reports.ProductMovementView)]
+        public async Task<IActionResult> GetChinaSupplierBranchTotalsAsync(
+            [FromQuery] DateTime startDate,
+            [FromQuery] DateTime endDate,
+            [FromQuery] DateTime? compareStartDate = null,
+            [FromQuery] DateTime? compareEndDate = null,
+            [FromQuery] CompareMode compareMode = CompareMode.ByDate,
+            [FromQuery] List<string>? branchCodes = null
+        )
+        {
+            try
+            {
+                // 与排行同一套安全范围解析，普通用户解析失败时不能退化为全分店。
+                var branchScope = await ResolveTargetBranchCodesAsync(branchCodes);
+                if (!branchScope.HasAccess)
+                    return Ok(CreateProductReportResponse(
+                        new List<ChinaSupplierBranchTotalDto>(),
+                        CreateNoAccessProductStatisticStatus()
+                    ));
+
+                var dateRange = new DateRangeDto
+                {
+                    StartDate = startDate,
+                    EndDate = endDate,
+                    CompareStartDate = compareStartDate,
+                    CompareEndDate = compareEndDate,
+                    CompareMode = compareMode,
+                };
+                // 与供应商排行、商品明细共用同一个统计版本，移动端据此把四块数据对齐到同一批次。
+                var statisticStatus = await _service.GetProductReportStatisticStatusAsync(dateRange);
+                if (!IsProductStatisticFresh(statisticStatus))
+                {
+                    return Ok(CreateProductReportResponse(
+                        new List<ChinaSupplierBranchTotalDto>(),
+                        statisticStatus
+                    ));
+                }
+
+                var result = await _service.GetChinaSupplierBranchTotalsAsync(
+                    dateRange,
+                    branchScope.BranchCodes,
+                    statisticStatus
+                );
+                return Ok(CreateProductReportResponse(result, statisticStatus));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetChinaSupplierBranchTotals failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
         /// 获取供应商在各分店的销售数据
         /// GET api/react/v1/dashboard/supplier-store-sales
         /// </summary>
@@ -926,6 +990,8 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="pageSize">每页记录数</param>
         /// <param name="productSearch">货号或条码查询（可选）</param>
         /// <param name="supplierScope">供应商范围；china 表示全部中国供应商（可选）</param>
+        /// <param name="sortField">排序字段 amount/quantity/unitPrice（可选，默认金额）</param>
+        /// <param name="sortOrder">排序方向 asc/desc（可选，默认降序）</param>
         /// <returns>分页增强版销售商品明细</returns>
         [HttpGet("enhanced-sales-product-details")]
         [Authorize(Policy = Permissions.Reports.ProductMovementView)]
@@ -941,13 +1007,17 @@ namespace BlazorApp.Api.Controllers.React
             [FromQuery] int pageIndex = 1,
             [FromQuery] int pageSize = 100,
             [FromQuery] string? productSearch = null,
-            [FromQuery] string? supplierScope = null
+            [FromQuery] string? supplierScope = null,
+            [FromQuery] string? sortField = null,
+            [FromQuery] string? sortOrder = null
         )
         {
             try
             {
-                _logger.LogInformation("[GetEnhancedSalesProductDetails] Received request: StartDate={StartDate}, EndDate={EndDate}, CompareStartDate={CompareStartDate}, CompareEndDate={CompareEndDate}, CompareMode={CompareMode}, PageIndex={PageIndex}, PageSize={PageSize}, HasProductSearch={HasProductSearch}",
-                    startDate, endDate, compareStartDate, compareEndDate, compareMode, pageIndex, pageSize, !string.IsNullOrWhiteSpace(productSearch));
+                // 排序参数是用户输入，日志只记录白名单归一化后的标记，避免日志伪造。
+                _logger.LogInformation("[GetEnhancedSalesProductDetails] Received request: StartDate={StartDate}, EndDate={EndDate}, CompareStartDate={CompareStartDate}, CompareEndDate={CompareEndDate}, CompareMode={CompareMode}, PageIndex={PageIndex}, PageSize={PageSize}, HasProductSearch={HasProductSearch}, Sort={Sort}",
+                    startDate, endDate, compareStartDate, compareEndDate, compareMode, pageIndex, pageSize, !string.IsNullOrWhiteSpace(productSearch),
+                    ProductReportSort.Parse(sortField, sortOrder).Token);
 
                 // 商品报告入口统一用安全范围解析，避免普通用户解析失败时退化为全分店。
                 var branchScope = await ResolveTargetBranchCodesAsync(branchCodes);
@@ -992,7 +1062,9 @@ namespace BlazorApp.Api.Controllers.React
                     pageSize,
                     productSearch,
                     statisticStatus,
-                    chinaSupplierScope
+                    chinaSupplierScope,
+                    sortField,
+                    sortOrder
                 );
                 return Ok(CreateProductReportResponse(result, statisticStatus));
             }
@@ -1147,7 +1219,8 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
-                await _cacheWarmer.ClearCacheAsync();
+                // 管理员手动清理是全量的，连按统计版本缓存的完整报表条目一起清。
+                await _cacheWarmer.ClearAllCacheAsync();
                 return Ok(new { success = true, message = "缓存已清空" });
             }
             catch (Exception ex)

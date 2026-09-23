@@ -99,6 +99,7 @@ interface AuthState {
   logout: () => Promise<void>;
   hydrateIosReviewSession: () => Promise<boolean>;
   restoreSession: () => Promise<boolean>;
+  refreshCurrentUser: () => Promise<boolean>;
   clearLocalSession: () => Promise<void>;
   clearAccountSessionForDeviceLogin: () => Promise<void>;
   beginStandardAuth: (kind?: "account" | "device" | "deviceAccount") => void;
@@ -451,6 +452,27 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       await get().clearLocalSession();
       return false;
     }
+  },
+
+  /**
+   * 重新拉取当前账号（角色、权限、分店）并重建 access，用于后台改权限后免重新登录生效。
+   * 只刷新已登录的账号会话；审核会话与纯设备会话不处理。失败时保留原会话，由调用方提示。
+   */
+  async refreshCurrentUser() {
+    const before = get();
+    if (!before.isAuthenticated || !before.user || isIosReviewSessionActive()) {
+      return false;
+    }
+    const user = await getCurrentUserApi();
+    // 请求期间可能已退出或切换账号：只在同一账号仍在线时覆盖，避免把旧账号数据写回。
+    const current = get();
+    const sameUser = (current.user?.userGUID || current.user?.userGuid) === (user.userGUID || user.userGuid);
+    if (!current.isAuthenticated || !sameUser) {
+      return false;
+    }
+    await SecureStorage.setUser(user);
+    set({ user, access: buildAccess(user) });
+    return true;
   },
 
   async clearLocalSession() {

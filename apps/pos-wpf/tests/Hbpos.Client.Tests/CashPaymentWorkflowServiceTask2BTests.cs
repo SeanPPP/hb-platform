@@ -169,7 +169,10 @@ public sealed class CashPaymentWorkflowServiceTask2BTests
         var accessor = new LinklyPaymentAttemptContextAccessor();
         var backend = new RecordingBackendTerminalClient(
             events,
-            FinalApprovedSession("active-session-1", "TXN-OLD", transactionSuccess: null));
+            FinalApprovedSession("active-session-1", "TXN-OLD", transactionSuccess: null) with
+            {
+                CardTransaction = VerifiedCardTransaction("TXN-OLD", 1000)
+            });
         var settings = CreateBackendLinklySettings();
         var terminal = new TakeoverInvokingCardTerminalClient(
             accessor,
@@ -243,7 +246,11 @@ public sealed class CashPaymentWorkflowServiceTask2BTests
         var existing = CreateExistingAttempt("Sale", "active-session-1", "TXN-OLD", session, Guid.NewGuid());
         var attempts = new RecordingAttemptRepository(events, initialAttempts: [existing]);
         var accessor = new LinklyPaymentAttemptContextAccessor();
-        var finalStatus = FinalApprovedSession("active-session-1", "TXN-OLD") with { TxnRef = null };
+        var finalStatus = FinalApprovedSession("active-session-1", "TXN-OLD") with
+        {
+            TxnRef = null,
+            CardTransaction = VerifiedCardTransaction("TXN-OLD", 1000)
+        };
         var backend = new RecordingBackendTerminalClient(events, finalStatus);
         var settings = CreateBackendLinklySettings();
         var terminal = new TakeoverInvokingCardTerminalClient(
@@ -348,6 +355,51 @@ public sealed class CashPaymentWorkflowServiceTask2BTests
     }
 
     [Theory]
+    [InlineData(1008L)]
+    [InlineData(null)]
+    public async Task Takeover_rejects_final_approval_whose_amount_is_not_verified_for_the_existing_sale(long? approvedAmountMinor)
+    {
+        // 接管把旧销售记为 Approved 之后，恢复会把它当作已持久化的金融事实、按草稿金额自动落单。
+        // 所以已完成的批准在这里也必须核验金额：终端批准 10.08 而订单是 10.00，或服务端根本核验不出明细，
+        // 都不能记为 Approved，也不能确认会话——留给恢复流程判为未知、交主管处理。
+        var events = new List<string>();
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+        var existing = CreateExistingAttempt("Sale", "active-session-1", "TXN-OLD", session, Guid.NewGuid());
+        var attempts = new RecordingAttemptRepository(events, initialAttempts: [existing]);
+        var accessor = new LinklyPaymentAttemptContextAccessor();
+        var finalStatus = FinalApprovedSession("active-session-1", "TXN-OLD") with
+        {
+            CardTransaction = approvedAmountMinor is long amountMinor
+                ? VerifiedCardTransaction("TXN-OLD", amountMinor)
+                : null
+        };
+        var backend = new RecordingBackendTerminalClient(events, finalStatus);
+        var settings = CreateBackendLinklySettings();
+        var terminal = new TakeoverInvokingCardTerminalClient(
+            accessor,
+            settings,
+            ActivePendingSession("active-session-1", "TXN-OLD"),
+            events);
+        var workflow = CreateWorkflow(terminal, attempts, settings, accessor, backend);
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-T2B-FINAL-AMOUNT", "Final Amount Tea", "930T2BFINALAMT", 10m));
+
+        var result = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            10m,
+            [],
+            "10.00",
+            cartSnapshot: cart.CreateSnapshot());
+
+        Assert.False(result.Succeeded);
+        Assert.DoesNotContain("acknowledge", events);
+        Assert.DoesNotContain("new-start", events);
+        var untouched = Assert.Single(attempts.Attempts, attempt => attempt.AttemptGuid == existing.AttemptGuid);
+        Assert.NotEqual(LocalCardPaymentAttemptStatus.Approved, untouched.Status);
+    }
+
+    [Theory]
     [InlineData("TXN-OTHER", 1000L)]
     [InlineData("TXN-OLD", 999L)]
     public async Task Takeover_rejects_pending_approval_evidence_that_does_not_match_attempt(
@@ -440,7 +492,12 @@ public sealed class CashPaymentWorkflowServiceTask2BTests
         var existing = CreateExistingAttempt("Sale", null, "TXN-OLD", session, Guid.NewGuid());
         var attempts = new RecordingAttemptRepository(events, initialAttempts: [existing]);
         var accessor = new LinklyPaymentAttemptContextAccessor();
-        var backend = new RecordingBackendTerminalClient(events, FinalApprovedSession("active-session-1", "TXN-OLD"));
+        var backend = new RecordingBackendTerminalClient(
+            events,
+            FinalApprovedSession("active-session-1", "TXN-OLD") with
+            {
+                CardTransaction = VerifiedCardTransaction("TXN-OLD", 1000)
+            });
         var settings = CreateBackendLinklySettings();
         var terminal = new TakeoverInvokingCardTerminalClient(
             accessor,
@@ -686,6 +743,23 @@ public sealed class CashPaymentWorkflowServiceTask2BTests
             TransactionSuccess: transactionSuccess);
     }
 
+    // 服务端核验通过的批准结果会带卡交易明细（金额按分）。
+    private static LinklyCloudBackendCardTransactionDto VerifiedCardTransaction(string txnRef, long amountMinor)
+    {
+        return new LinklyCloudBackendCardTransactionDto(
+            txnRef,
+            null,
+            "AUTH-T2B",
+            "VISA",
+            "****1111",
+            "MERCHANT-T2B",
+            "00",
+            "APPROVED",
+            "42",
+            DateTimeOffset.Parse("2026-06-05T10:01:00+10:00"),
+            amountMinor);
+    }
+
     private static LinklyCloudBackendSessionResponse PendingApprovedSession(
         string sessionId,
         string txnRef,
@@ -768,6 +842,9 @@ public sealed class CashPaymentWorkflowServiceTask2BTests
                 ? Task.CompletedTask
                 : Task.FromException(ackException);
         }
+
+        public Task AcknowledgeSupervisorResolvedSessionAsync(CardTerminalSettings settings, string sessionId, CancellationToken cancellationToken = default) =>
+            AcknowledgeSessionAsync(settings, sessionId, cancellationToken);
 
         public Task<LinklyConnectionTestResult> TestConnectionAsync(
             CardTerminalEnvironment environment,

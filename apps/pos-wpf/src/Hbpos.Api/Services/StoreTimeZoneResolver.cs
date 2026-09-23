@@ -21,16 +21,28 @@ public sealed class StoreTimeZoneResolver : IStoreTimeZoneResolver
     private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan MissingStoreCacheTtl = TimeSpan.FromMinutes(1);
 
-    private readonly IServiceScopeFactory scopeFactory;
+    private readonly Func<string, CancellationToken, Task<string?>> lookupConfiguredTimeZoneIdAsync;
     private readonly ILogger<StoreTimeZoneResolver>? logger;
+    private readonly TimeProvider timeProvider;
     private readonly ConcurrentDictionary<string, CacheEntry> cache = new(StringComparer.OrdinalIgnoreCase);
 
     public StoreTimeZoneResolver(
         IServiceScopeFactory scopeFactory,
-        ILogger<StoreTimeZoneResolver>? logger = null)
+        ILogger<StoreTimeZoneResolver>? logger = null,
+        TimeProvider? timeProvider = null)
+        : this(CreateStoreLookup(scopeFactory), logger, timeProvider)
     {
-        this.scopeFactory = scopeFactory;
+    }
+
+    // 测试入口：直接注入"按门店码读取 TimeZoneId"的查询，便于构造查库成功与失败交错的时序。
+    internal StoreTimeZoneResolver(
+        Func<string, CancellationToken, Task<string?>> lookupConfiguredTimeZoneIdAsync,
+        ILogger<StoreTimeZoneResolver>? logger = null,
+        TimeProvider? timeProvider = null)
+    {
+        this.lookupConfiguredTimeZoneIdAsync = lookupConfiguredTimeZoneIdAsync;
         this.logger = logger;
+        this.timeProvider = timeProvider ?? TimeProvider.System;
         FallbackTimeZone = FindTimeZone(FallbackTimeZoneIds)
             ?? throw new TimeZoneNotFoundException($"找不到回退时区 {StoreTimeZonePolicy.Sydney}");
     }
@@ -46,39 +58,69 @@ public sealed class StoreTimeZoneResolver : IStoreTimeZoneResolver
             return FallbackTimeZone;
         }
 
-        if (cache.TryGetValue(normalizedStoreCode, out var cached) && cached.ExpiresAt > DateTimeOffset.UtcNow)
+        if (cache.TryGetValue(normalizedStoreCode, out var cached) && cached.ExpiresAt > timeProvider.GetUtcNow())
         {
             return cached.TimeZone;
         }
 
-        var (timeZone, ttl) = await LoadAsync(normalizedStoreCode, cancellationToken);
-        cache[normalizedStoreCode] = new CacheEntry(timeZone, DateTimeOffset.UtcNow.Add(ttl));
-        return timeZone;
+        var lookup = await LoadAsync(normalizedStoreCode, cancellationToken);
+        var now = timeProvider.GetUtcNow();
+        // AddOrUpdate 保证"失败不覆盖成功"在并发下也成立：更新函数看到的是写入时刻的现值。
+        var entry = cache.AddOrUpdate(
+            normalizedStoreCode,
+            _ => new CacheEntry(lookup.TimeZone, now.Add(lookup.Ttl), FromStoreLookup: lookup.Failure is null),
+            (_, existing) => SelectCacheEntry(existing, lookup, now));
+        if (lookup.Failure is not null)
+        {
+            if (entry.FromStoreLookup)
+            {
+                logger?.LogWarning(
+                    lookup.Failure,
+                    "Store timezone lookup failed storeCode={StoreCode}, keeping last resolved {TimeZoneId}",
+                    normalizedStoreCode,
+                    entry.TimeZone.Id);
+            }
+            else
+            {
+                logger?.LogWarning(
+                    lookup.Failure,
+                    "Store timezone lookup failed storeCode={StoreCode}, falling back to {TimeZoneId}",
+                    normalizedStoreCode,
+                    entry.TimeZone.Id);
+            }
+        }
+
+        return entry.TimeZone;
     }
 
-    private async Task<(TimeZoneInfo TimeZone, TimeSpan Ttl)> LoadAsync(
+    private static CacheEntry SelectCacheEntry(CacheEntry existing, StoreTimeZoneLookup lookup, DateTimeOffset now)
+    {
+        if (lookup.Failure is null || !existing.FromStoreLookup)
+        {
+            return new CacheEntry(lookup.TimeZone, now.Add(lookup.Ttl), FromStoreLookup: lookup.Failure is null);
+        }
+
+        // 查库失败但此前查到过该门店时区：沿用它，不能用悉尼覆盖。库里只存墙钟时间，
+        // 布里斯班门店在悉尼夏令时期间按悉尼写入会晚记 1 小时，事后无法识别和更正。
+        // 已被并发的成功查询刷新过就原样保留；否则只把下次重查推迟一小段。
+        return existing.ExpiresAt > now
+            ? existing
+            : existing with { ExpiresAt = now.Add(MissingStoreCacheTtl) };
+    }
+
+    private async Task<StoreTimeZoneLookup> LoadAsync(
         string storeCode,
         CancellationToken cancellationToken)
     {
         string? configuredTimeZoneId;
         try
         {
-            using var scope = scopeFactory.CreateScope();
-            var dbContext = scope.ServiceProvider.GetRequiredService<HbposSqlSugarContext>();
-            configuredTimeZoneId = await dbContext.MainDb.Queryable<Store>()
-                .Where(store => store.StoreCode == storeCode && !store.IsDeleted)
-                .Select(store => store.TimeZoneId)
-                .FirstAsync(cancellationToken);
+            configuredTimeZoneId = await lookupConfiguredTimeZoneIdAsync(storeCode, cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            // 查询门店失败不能让订单上传失败，按回退时区继续，并且只短暂缓存以便尽快恢复。
-            logger?.LogWarning(
-                exception,
-                "Store timezone lookup failed storeCode={StoreCode}, falling back to {TimeZoneId}",
-                storeCode,
-                FallbackTimeZone.Id);
-            return (FallbackTimeZone, MissingStoreCacheTtl);
+            // 查询门店失败不能让订单上传失败：由调用方优先沿用上次查到的时区，没有时才回退悉尼，都只短暂缓存以便尽快重查。
+            return new StoreTimeZoneLookup(FallbackTimeZone, MissingStoreCacheTtl, exception);
         }
 
         if (string.IsNullOrWhiteSpace(configuredTimeZoneId))
@@ -87,7 +129,7 @@ public sealed class StoreTimeZoneResolver : IStoreTimeZoneResolver
                 "Store timezone not configured storeCode={StoreCode}, falling back to {TimeZoneId}",
                 storeCode,
                 FallbackTimeZone.Id);
-            return (FallbackTimeZone, MissingStoreCacheTtl);
+            return new StoreTimeZoneLookup(FallbackTimeZone, MissingStoreCacheTtl, Failure: null);
         }
 
         var timeZone = FindTimeZone([configuredTimeZoneId.Trim(), .. ToWindowsTimeZoneIds(configuredTimeZoneId.Trim())]);
@@ -98,10 +140,23 @@ public sealed class StoreTimeZoneResolver : IStoreTimeZoneResolver
                 storeCode,
                 configuredTimeZoneId,
                 FallbackTimeZone.Id);
-            return (FallbackTimeZone, MissingStoreCacheTtl);
+            return new StoreTimeZoneLookup(FallbackTimeZone, MissingStoreCacheTtl, Failure: null);
         }
 
-        return (timeZone, CacheTtl);
+        return new StoreTimeZoneLookup(timeZone, CacheTtl, Failure: null);
+    }
+
+    private static Func<string, CancellationToken, Task<string?>> CreateStoreLookup(IServiceScopeFactory scopeFactory)
+    {
+        return async (storeCode, cancellationToken) =>
+        {
+            using var scope = scopeFactory.CreateScope();
+            var dbContext = scope.ServiceProvider.GetRequiredService<HbposSqlSugarContext>();
+            return await dbContext.MainDb.Queryable<Store>()
+                .Where(store => store.StoreCode == storeCode && !store.IsDeleted)
+                .Select(store => store.TimeZoneId)
+                .FirstAsync(cancellationToken);
+        };
     }
 
     private static TimeZoneInfo? FindTimeZone(IEnumerable<string> timeZoneIds)
@@ -132,7 +187,11 @@ public sealed class StoreTimeZoneResolver : IStoreTimeZoneResolver
         };
     }
 
-    private sealed record CacheEntry(TimeZoneInfo TimeZone, DateTimeOffset ExpiresAt);
+    // FromStoreLookup 表示该值来自一次成功的查库（含"门店没配时区"这种确定答复），查库失败时只沿用这类值。
+    private sealed record CacheEntry(TimeZoneInfo TimeZone, DateTimeOffset ExpiresAt, bool FromStoreLookup);
+
+    // Failure 非空表示查库本身失败（而不是门店没配时区），TimeZone 此时是回退时区。
+    private sealed record StoreTimeZoneLookup(TimeZoneInfo TimeZone, TimeSpan Ttl, Exception? Failure);
 }
 
 /// <summary>

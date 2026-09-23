@@ -347,6 +347,62 @@ public sealed class LinklyLineManagementSqlServerIntegrationTests : IAsyncLifeti
     }
 
     [LinklyLineSqlServerFact]
+    public async Task Supervisor_resolution_ack_releases_management_gates_but_plain_ack_keeps_them_blocked()
+    {
+        await SeedSelectionAsync("POS-A", lineA, 101);
+        const string sessionId = "supervisor-resolution-session";
+        await ExecuteAsync("""
+            INSERT INTO [dbo].[POSM_LinklyCloudBackendSession]
+                ([Environment],[StoreCode],[DeviceCode],[TerminalId],[SessionId],[Status],[IsActive],[ClientAcknowledgedAt])
+            VALUES (N'Production',N'S001',N'POS-A',@Line,@Session,N'Pending',1,NULL);
+            """, new("@Line", lineA), new("@Session", sessionId));
+
+        // 普通 ack（2.5-7 的现场）：付款闸门已放行，但结果仍未知，终端管理必须继续阻塞。
+        var plain = await BackendRepository().AcknowledgeSessionAsync(
+            "Production", "S001", "POS-A", sessionId, DateTimeOffset.UtcNow, supervisorResolved: false, default);
+        Assert.Equal("Pending", plain!.Status);
+        Assert.False(plain.IsActive);
+        Assert.False(await Repository().TryAcquireConnectionTestLeaseAsync("Production", "S001", lineA,
+            version, Guid.NewGuid(), DateTime.UtcNow.AddMinutes(2), DateTime.UtcNow, default, "POS-A", 101));
+        Assert.Null(await Repository().TryBeginPairingAsync("Production", "S001", lineA, Guid.NewGuid(),
+            DateTime.UtcNow.AddMinutes(2), version, DateTime.UtcNow, "TEST-OPERATOR", default));
+        await Assert.ThrowsAnyAsync<Exception>(() => AssignAsync("POS-A", lineB, null, 0, "POS-A", lineA, 101));
+
+        // 主管结案：非终态写成可审计的 SupervisorResolved，各管理闸门按已结束放行。
+        var resolved = await BackendRepository().AcknowledgeSessionAsync(
+            "Production", "S001", "POS-A", sessionId, DateTimeOffset.UtcNow, supervisorResolved: true, default);
+        Assert.Equal("SupervisorResolved", resolved!.Status);
+        Assert.False(resolved.IsActive);
+        var lease = Guid.NewGuid();
+        Assert.True(await Repository().TryAcquireConnectionTestLeaseAsync("Production", "S001", lineA,
+            version, lease, DateTime.UtcNow.AddMinutes(2), DateTime.UtcNow, default, "POS-A", 101));
+        await Repository().ReleaseConnectionTestLeaseAsync("Production", "S001", lineA, lease, default);
+        await AssignAsync("POS-A", lineB, null, 0, "POS-A", lineA, 101,
+            (await Repository().GetAsync("Production", "S001", lineB, default))!.UpdatedAt);
+        Assert.Equal(lineB, (await SelectionAsync("POS-A"))!.TerminalId);
+        var lineAVersion = (await Repository().GetAsync("Production", "S001", lineA, default))!.UpdatedAt!.Value;
+        Assert.NotNull(await Repository().TryBeginPairingAsync("Production", "S001", lineA, Guid.NewGuid(),
+            DateTime.UtcNow.AddMinutes(2), lineAVersion, DateTime.UtcNow, "TEST-OPERATOR", default));
+    }
+
+    [LinklyLineSqlServerFact]
+    public async Task Supervisor_resolution_ack_keeps_linkly_final_status()
+    {
+        const string sessionId = "supervisor-resolution-final-session";
+        await ExecuteAsync("""
+            INSERT INTO [dbo].[POSM_LinklyCloudBackendSession]
+                ([Environment],[StoreCode],[DeviceCode],[TerminalId],[SessionId],[Status],[IsActive],[ClientAcknowledgedAt])
+            VALUES (N'Production',N'S001',N'POS-A',@Line,@Session,N'Failed',0,NULL);
+            """, new("@Line", lineA), new("@Session", sessionId));
+
+        var resolved = await BackendRepository().AcknowledgeSessionAsync(
+            "Production", "S001", "POS-A", sessionId, DateTimeOffset.UtcNow, supervisorResolved: true, default);
+
+        Assert.Equal("Failed", resolved!.Status);
+        Assert.NotNull(resolved.ClientAcknowledgedAt);
+    }
+
+    [LinklyLineSqlServerFact]
     public async Task Connection_test_rejects_owner_unknown_session_without_terminal_id()
     {
         await SeedSelectionAsync("POS-A", lineA, 101);
@@ -440,6 +496,9 @@ public sealed class LinklyLineManagementSqlServerIntegrationTests : IAsyncLifeti
 
     private SqlSugarLinklyCloudTerminalRepository Repository()
         => new(CreateContext(), new TestProtector());
+
+    private SqlSugarLinklyCloudBackendAsyncRepository BackendRepository()
+        => new(CreateContext());
 
     private HbposSqlSugarContext CreateContext()
     {

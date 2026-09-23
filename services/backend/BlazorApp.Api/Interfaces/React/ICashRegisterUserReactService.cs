@@ -9,8 +9,10 @@ namespace BlazorApp.Api.Interfaces.React
         Task<GridResponseDto<CashRegisterUserListDto>> GetGridDataAsync(GridRequestDto request);
         Task<ApiResponse<List<CashRegisterUserUserOptionDto>>> GetUserOptionsAsync();
         Task<ApiResponse<CashRegisterUserDetailDto>> GetByHGuidAsync(string hGuid);
+        Task<ApiResponse<CashRegisterUserScopeDto>> GetScopeAsync();
         Task<ApiResponse<CashRegisterUserDetailDto>> CreateAsync(CreateCashRegisterUserDto dto, string createdBy);
         Task<ApiResponse<CashRegisterUserDetailDto>> UpdateAsync(string hGuid, UpdateCashRegisterUserDto dto, string updatedBy);
+        Task<ApiResponse<CashRegisterUserPrintConfirmationDto>> ConfirmPrintAsync(string hGuid, ConfirmCashRegisterUserPrintDto dto, string updatedBy);
         Task<ApiResponse<bool>> DeleteAsync(string hGuid, string updatedBy);
         Task<ApiResponse<bool>> BatchDeleteAsync(List<string> hGuids, string updatedBy);
     }

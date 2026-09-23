@@ -16,6 +16,9 @@ namespace BlazorApp.Api.Cache
         private const string PREFIX = "SalesDashboard";
         private static readonly HashSet<string> _activeKeys = new(StringComparer.Ordinal);
         private static readonly object _activeKeysLock = new();
+        // 键里已含统计批次 cacheVersion 的完整报表条目：批次一变键就变，不会返回旧数据，
+        // 统计刷新后的自动清理不再清它们，只有手动全量清理才会移除。
+        private static readonly HashSet<string> _versionedKeys = new(StringComparer.Ordinal);
         private static readonly Dictionary<string, int> _productSalesAnalysisActiveKeys = new(StringComparer.Ordinal);
         private static readonly object _productSalesAnalysisActiveKeysLock = new();
         private static readonly object _productSalesAnalysisCacheLifecycleLock = new();
@@ -161,6 +164,21 @@ namespace BlazorApp.Api.Cache
         }
 
         /// <summary>
+        /// 生成「分店中国货合计」缓存键；按统计批次版本区分，批次更新后自然失效。
+        /// </summary>
+        public static string ChinaSupplierBranchTotals(
+            DateRangeDto dateRange,
+            List<string>? branchCodes,
+            string? productStatisticCacheVersion = null
+        )
+        {
+            var key = $"{PREFIX}:ChinaSupplierBranchTotals:{Hash(dateRange, branchCodes, productStatisticCacheVersion)}";
+            TrackKey(key);
+            LogKeyGenerated("ChinaSupplierBranchTotals", key, dateRange, branchCodes, productStatisticCacheVersion);
+            return key;
+        }
+
+        /// <summary>
         /// 生成分店供应商销售数据缓存键
         /// </summary>
         public static string StoreSupplier(
@@ -218,15 +236,24 @@ namespace BlazorApp.Api.Cache
             int pageSize,
             string? productSearch = null,
             string? productStatisticCacheVersion = null,
-            bool chinaSupplierScope = false
+            bool chinaSupplierScope = false,
+            string? sortToken = null
         )
         {
             var normalizedProductSearch = string.IsNullOrWhiteSpace(productSearch) ? null : productSearch.Trim();
-            var key = $"{PREFIX}:EnhancedProductDetail:{Hash(dateRange, branchCodes, localSupplierCodes, chinaSupplierCodes, pageIndex, pageSize, normalizedProductSearch, productStatisticCacheVersion, chinaSupplierScope)}";
+            // 供应商筛选为空列表与 null 在服务层都是“不筛选”，归一化后预热与真实请求才能命中同一个键。
+            localSupplierCodes = NormalizeOptionalCodes(localSupplierCodes);
+            chinaSupplierCodes = NormalizeOptionalCodes(chinaSupplierCodes);
+            // sortToken 只能传 ProductReportSort.CacheToken（白名单常量）；默认排序为 null，
+            // 此时 hash 参数与历史完全一致，默认排序的缓存键和 single-flight 去重键保持不变。
+            var hash = sortToken is null
+                ? Hash(dateRange, branchCodes, localSupplierCodes, chinaSupplierCodes, pageIndex, pageSize, normalizedProductSearch, productStatisticCacheVersion, chinaSupplierScope)
+                : Hash(dateRange, branchCodes, localSupplierCodes, chinaSupplierCodes, pageIndex, pageSize, normalizedProductSearch, productStatisticCacheVersion, chinaSupplierScope, sortToken);
+            var key = $"{PREFIX}:EnhancedProductDetail:{hash}";
             TrackKey(key);
             // 搜索词可能包含货号/条码，缓存隔离要参与 hash，但日志只能记录是否有搜索；
             // 中国供应商全范围也必须隔离，避免复用未筛选商品缓存。
-            LogKeyGenerated("EnhancedProductDetail", key, dateRange, branchCodes, localSupplierCodes, chinaSupplierCodes, pageIndex, pageSize, $"HasProductSearch={normalizedProductSearch is not null};ChinaSupplierScope={chinaSupplierScope}", productStatisticCacheVersion);
+            LogKeyGenerated("EnhancedProductDetail", key, dateRange, branchCodes, localSupplierCodes, chinaSupplierCodes, pageIndex, pageSize, $"HasProductSearch={normalizedProductSearch is not null};ChinaSupplierScope={chinaSupplierScope};Sort={sortToken ?? "default"}", productStatisticCacheVersion);
             return key;
         }
 
@@ -599,6 +626,49 @@ namespace BlazorApp.Api.Cache
             lock (_activeKeysLock)
             {
                 _activeKeys.Add(key);
+            }
+        }
+
+        private static List<string>? NormalizeOptionalCodes(List<string>? codes)
+        {
+            if (codes == null)
+                return null;
+            var normalized = codes
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Select(code => code.Trim())
+                .ToList();
+            return normalized.Count == 0 ? null : normalized;
+        }
+
+        /// <summary>
+        /// 把一个已生成的键标记为“版本化”：从普通活动键中移出，统计刷新后的自动清理不再处理它。
+        /// 必须在键工厂（TrackKey）之后调用；同一键每次请求都会重新登记，所以这里也每次都移。
+        /// </summary>
+        internal static void MarkVersioned(string key)
+        {
+            lock (_activeKeysLock)
+            {
+                _activeKeys.Remove(key);
+                _versionedKeys.Add(key);
+            }
+        }
+
+        internal static bool IsVersioned(string key)
+        {
+            lock (_activeKeysLock)
+            {
+                return _versionedKeys.Contains(key);
+            }
+        }
+
+        /// <summary>手动全量清理时才移除版本化键；返回待 Remove 的键列表。</summary>
+        internal static IReadOnlyCollection<string> ClearVersionedKeysAndGetKeysToClear()
+        {
+            lock (_activeKeysLock)
+            {
+                var keys = _versionedKeys.ToList();
+                _versionedKeys.Clear();
+                return keys;
             }
         }
 

@@ -1,0 +1,91 @@
+{
+  "title": "Cashier barcodes",
+  "subtitle": "Legacy POS staff login barcodes, {{count}} in total",
+  "subtitleLoading": "Legacy POS staff login barcodes",
+  "filters": {
+    "allStores": "All stores",
+    "pickStore": "Select store",
+    "searchPlaceholder": "Search operator, barcode or remark",
+    "statusAll": "All"
+  },
+  "status": {
+    "active": "Active",
+    "disabled": "Disabled"
+  },
+  "roles": {
+    "admin": "Admin",
+    "cashier": "Cashier"
+  },
+  "printer": {
+    "notConfigured": "No label printer",
+    "connected": "Printer connected",
+    "connecting": "Connecting printer",
+    "disconnected": "Printer disconnected",
+    "openSettingsHint": "Open label printer settings"
+  },
+  "card": {
+    "noLinkedUser": "No linked user",
+    "noStore": "No linked store",
+    "printCount": "Printed {{count}} times"
+  },
+  "actions": {
+    "create": "New",
+    "edit": "Edit",
+    "save": "Save",
+    "enable": "Enable",
+    "disable": "Disable",
+    "print": "Print",
+    "generate": "Generate",
+    "recheckAccess": "Check access again",
+    "regenerate": "New code"
+  },
+  "fields": {
+    "storePlaceholder": "Select store",
+    "userPlaceholder": "Select linked user",
+    "operatorUser": "Operator",
+    "userBarcode": "Barcode (13 digits)",
+    "loginRole": "Login role",
+    "remark": "Remark",
+    "enabled": "Enabled",
+    "singleActiveHint": "Each user keeps only one active barcode. Enabling this one disables their older barcode and personal code."
+  },
+  "dialogs": {
+    "createTitle": "New cashier barcode",
+    "editTitle": "Edit cashier barcode",
+    "pickUserTitle": "Select user",
+    "pickUserSearch": "Search username or name",
+    "pickUserEmpty": "No active users available",
+    "enableTitle": "Enable barcode",
+    "enableDescription": "Enable the cashier barcode for {{name}}?",
+    "disableTitle": "Disable barcode",
+    "disableDescription": "{{name}} will no longer be able to sign in to the legacy POS with this barcode. Disable it?"
+  },
+  "validation": {
+    "storeRequired": "Select a store",
+    "userRequired": "Select a linked user",
+    "barcodeRequired": "Enter a barcode",
+    "barcodeLength": "Barcode must be 13 digits",
+    "operatorTooLong": "Operator must be 100 characters or fewer",
+    "remarkTooLong": "Remark must be 500 characters or fewer",
+    "storeNotManageable": "This store is view-only and cannot be saved"
+  },
+  "messages": {
+    "noManageableStore": "This account has no primary store, so only your own cashier barcode is shown. Creating one requires a primary store.",
+    "noAccessTitle": "No access",
+    "noAccessDescription": "Requires the mobile cashier barcode manage or print permission",
+    "loadFailedTitle": "Failed to load",
+    "loadFailedDescription": "Could not load cashier barcodes. Try again later.",
+    "emptyTitle": "No cashier barcodes",
+    "emptyDescription": "Try a different store, status or search.",
+    "userOptionsFailed": "Could not load users",
+    "created": "Created",
+    "updated": "Saved",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "saveFailed": "Save failed. Try again later.",
+    "printed": "Printed and counted",
+    "printBusy": "Printing in progress, please wait",
+    "printFailed": "Print failed. Check the label printer and try again.",
+    "printCountFailed": "Label printed, but the print count was not recorded: {{reason}}"
+  }
+}

@@ -1,11 +1,13 @@
 import {
   CloseOutlined,
+  HolderOutlined,
   PushpinFilled,
   PushpinOutlined,
   ReloadOutlined,
 } from '@ant-design/icons'
 import {
   DndContext,
+  KeyboardSensor,
   PointerSensor,
   closestCenter,
   type DragEndEvent,
@@ -15,6 +17,7 @@ import {
 import {
   SortableContext,
   horizontalListSortingStrategy,
+  sortableKeyboardCoordinates,
   useSortable,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
@@ -36,18 +39,19 @@ interface AppTabsProps {
 
 interface DraggableTabNodeProps {
   tabKey: string
+  tabTitle: string
   children: ReactNode
 }
 
-function DraggableTabNode({ tabKey, children }: DraggableTabNodeProps) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+function DraggableTabNode({ tabKey, tabTitle, children }: DraggableTabNodeProps) {
+  const { t } = useTranslation()
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({
     id: tabKey,
   })
 
   const style: CSSProperties = {
     transform: CSS.Translate.toString(transform),
     transition,
-    cursor: 'move',
     zIndex: isDragging ? 1 : undefined,
   }
 
@@ -56,10 +60,21 @@ function DraggableTabNode({ tabKey, children }: DraggableTabNodeProps) {
       ref={setNodeRef}
       className="app-tab-sortable-node"
       style={style}
-      {...attributes}
-      {...listeners}
+      data-dnd-kit-dragging={isDragging}
     >
       {children}
+      <button
+        ref={setActivatorNodeRef}
+        type="button"
+        className="app-tab-drag-handle"
+        aria-label={t('common.reorderTab', { title: tabTitle })}
+        title={t('common.reorderTab', { title: tabTitle })}
+        {...attributes}
+        {...listeners}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <HolderOutlined />
+      </button>
     </div>
   )
 }
@@ -79,6 +94,9 @@ export default function AppTabs({
       activationConstraint: {
         distance: 6,
       },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
     }),
   )
   const sortableTabKeys = tabs.filter((tab) => !tab.affix).map((tab) => tab.key)
@@ -157,7 +175,7 @@ export default function AppTabs({
                   }
 
                   return (
-                    <DraggableTabNode key={tabKey} tabKey={tabKey}>
+                    <DraggableTabNode key={tabKey} tabKey={tabKey} tabTitle={tab.title}>
                       {node}
                     </DraggableTabNode>
                   )

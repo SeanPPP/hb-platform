@@ -144,8 +144,8 @@ public sealed class ApiServerSwitchRuntimeTests
             await uploader.StopAsync(CancellationToken.None);
             writer.Dispose();
             Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-            DeleteDatabaseFiles(localDatabasePath);
-            DeleteDatabaseFiles(logDatabasePath);
+            await DeleteDatabaseFilesAsync(localDatabasePath);
+            await DeleteDatabaseFilesAsync(logDatabasePath);
         }
     }
 
@@ -208,7 +208,7 @@ public sealed class ApiServerSwitchRuntimeTests
         }
 
         public Task WaitUntilPeriodicDelayAsync() =>
-            _periodicDelayStarted.Task.WaitAsync(TestWaitTimeouts.Default);
+            _periodicDelayStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
     }
 
     private sealed class SwitchActivationRecoveryStore : IDeviceActivationRecoveryStore
@@ -274,15 +274,10 @@ public sealed class ApiServerSwitchRuntimeTests
             line.OriginalOrderDetailGuid)).ToArray(),
         []);
 
-    private static void DeleteDatabaseFiles(string databasePath)
+    private static Task DeleteDatabaseFilesAsync(string databasePath)
     {
-        foreach (var suffix in new[] { string.Empty, "-wal", "-shm" })
-        {
-            if (File.Exists(databasePath + suffix))
-            {
-                File.Delete(databasePath + suffix);
-            }
-        }
+        // Windows 上连接 Dispose 后句柄可能短暂保留，统一走共享的 best-effort 清理，避免清理阶段误报。
+        return SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(databasePath);
     }
 
     private sealed class CapturingAuditHandler : HttpMessageHandler
@@ -292,7 +287,7 @@ public sealed class ApiServerSwitchRuntimeTests
 
         public async Task<Uri> ReadNextAsync()
         {
-            await _signal.WaitAsync().WaitAsync(TestWaitTimeouts.Default);
+            await _signal.WaitAsync().WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
             lock (_requests)
             {
                 return _requests.Dequeue();

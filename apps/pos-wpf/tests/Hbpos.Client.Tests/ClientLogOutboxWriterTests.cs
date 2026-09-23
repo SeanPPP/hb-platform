@@ -36,7 +36,7 @@ public sealed class ClientLogOutboxWriterTests
                 Outcome = "Succeeded"
             });
             await writer.WaitForOperationAuditFlushAsync(CancellationToken.None)
-                .WaitAsync(TimeSpan.FromSeconds(2));
+                .WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
             var published = false;
             var committed = writer.TryPublishForOperationAuditRevision(revision, () => published = true);
@@ -76,9 +76,9 @@ public sealed class ClientLogOutboxWriterTests
             var commit = Task.Run(() => writer.TryPublishForOperationAuditRevision(revision, () =>
             {
                 publishEntered.TrySetResult();
-                releasePublish.Wait(TimeSpan.FromSeconds(2));
+                releasePublish.Wait(AsyncTestWaitSupport.DefaultTimeout);
             }));
-            await publishEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await publishEntered.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
             var record = Task.Run(() => writer.Record(new OperationAuditEventDto
             {
@@ -90,8 +90,8 @@ public sealed class ClientLogOutboxWriterTests
 
             Assert.False(record.IsCompleted);
             releasePublish.Set();
-            Assert.True(await commit.WaitAsync(TimeSpan.FromSeconds(2)));
-            await record.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.True(await commit.WaitAsync(AsyncTestWaitSupport.DefaultTimeout));
+            await record.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
             Assert.NotEqual(revision, writer.CaptureOperationAuditRevision());
         }
         finally
@@ -383,7 +383,7 @@ public sealed class ClientLogOutboxWriterTests
             lockCommand.CommandText = "COMMIT;";
             await lockCommand.ExecuteNonQueryAsync();
             lockHeld = false;
-            await flush.WaitAsync(TestWaitTimeouts.Default);
+            await flush.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
             var pending = await store.ReadPendingAsync(
                 ClientLogOutboxKind.OperationAudit,
@@ -445,7 +445,7 @@ public sealed class ClientLogOutboxWriterTests
             Assert.Equal(1L, writer.OperationAuditQueueDroppedCount);
             Assert.Equal(0L, writer.PendingOperationAuditPersistenceCount);
             await writer.WaitForOperationAuditFlushAsync(CancellationToken.None)
-                .WaitAsync(TimeSpan.FromSeconds(2));
+                .WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
             Assert.Empty(await store.ReadPendingAsync(
                 ClientLogOutboxKind.OperationAudit,
                 DateTimeOffset.UtcNow.AddMinutes(1),
@@ -494,8 +494,8 @@ public sealed class ClientLogOutboxWriterTests
                 Outcome = "Succeeded"
             }));
 
-            await diagnosticStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
-            await record.WaitAsync(TimeSpan.FromSeconds(1));
+            await diagnosticStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
+            await record.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
             Assert.Equal(1L, writer.OperationAuditQueueDroppedCount);
         }
         finally
@@ -549,7 +549,7 @@ public sealed class ClientLogOutboxWriterTests
 
             await writer.StartAsync(CancellationToken.None);
             await writer.WaitForOperationAuditFlushAsync(CancellationToken.None)
-                .WaitAsync(TestWaitTimeouts.Default);
+                .WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
             Assert.Equal(0L, writer.PendingOperationAuditPersistenceCount);
             Assert.Equal(10, await store.CountPendingAsync(ClientLogOutboxKind.OperationAudit, CancellationToken.None));
         }
@@ -614,7 +614,9 @@ public sealed class ClientLogOutboxWriterTests
             var channel = Assert.IsAssignableFrom<Channel<QueuedClientLog>>(channelField!.GetValue(writer));
             await WaitUntilAsync(() => !channel.Reader.TryPeek(out _));
 
-            using var shutdownBudget = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            // 验证的是"在途事件改用共享关停令牌重试而不丢失"，不是 2 秒这个数字；
+            // 预算先于重试落库到期会让事件被取消丢弃，CI 慢盘上就成了与行为无关的误报。
+            using var shutdownBudget = new CancellationTokenSource(AsyncTestWaitSupport.DefaultTimeout);
             var stopTask = writer.StopAsync(shutdownBudget.Token);
             await Task.Delay(50);
             writeGate.Release();
@@ -690,6 +692,55 @@ public sealed class ClientLogOutboxWriterTests
                 CancellationToken.None);
             Assert.True(runtimeRecords.Count == 1, $"运行日志应恰好落库 1 条，实际 {runtimeRecords.Count} 条；{DescribeWriter(writer)}");
             Assert.True(operationRecords.Count == 1, $"操作审计应恰好落库 1 条，实际 {operationRecords.Count} 条；{DescribeWriter(writer)}");
+        }
+        finally
+        {
+            writer.Dispose();
+            await DeleteDatabaseFilesAsync(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task Stop_persists_recorded_events_even_when_execute_never_started()
+    {
+        var databasePath = CreateDatabasePath();
+        var store = new ClientLogOutboxStore(databasePath);
+        var writer = new ClientLogOutboxWriter(
+            store,
+            new DeviceAuthorizationState(),
+            CreateCashierContext(),
+            new ClientLogIdentity("never-started-instance", "1.0.0"),
+            runtimeQueueCapacity: 20);
+
+        try
+        {
+            // Hosting 10 的 BackgroundService 以 Task.Run(ExecuteAsync, stoppingToken) 启动，停止令牌在调度前已取消时
+            // 委托根本不会执行。用已取消的启动令牌把"启动后立即停止"的偶发竞态固定为必现路径。
+            await writer.StartAsync(new CancellationToken(canceled: true));
+            Assert.True(
+                writer.ExecuteTask is { IsCanceled: true },
+                $"前提不成立：ExecuteAsync 已被执行，status={writer.ExecuteTask?.Status}");
+
+            writer.Enqueue(new ApplicationLogEntry(
+                "Information",
+                "runtime event before execute",
+                DateTimeOffset.UtcNow,
+                "hbpos_win",
+                "test",
+                "POS"));
+            writer.Record(new OperationAuditEventDto
+            {
+                EventId = Guid.Parse("efefefef-efef-efef-efef-efefefefefef"),
+                OperationType = "CASHIER_LOGOUT",
+                Outcome = "Succeeded"
+            });
+
+            using var shutdownBudget = new CancellationTokenSource(AsyncTestWaitSupport.DefaultTimeout);
+            await writer.StopAsync(shutdownBudget.Token).WaitUntilCompletedAsync(() => DescribeWriter(writer));
+
+            Assert.Equal(1, await store.CountPendingAsync(ClientLogOutboxKind.Runtime, CancellationToken.None));
+            Assert.Equal(1, await store.CountPendingAsync(ClientLogOutboxKind.OperationAudit, CancellationToken.None));
+            Assert.Equal(0L, writer.PendingOperationAuditPersistenceCount);
         }
         finally
         {

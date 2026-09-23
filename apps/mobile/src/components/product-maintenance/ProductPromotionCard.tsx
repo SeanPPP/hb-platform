@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { Icon, Text } from "react-native-paper";
 import { summarizePromotions } from "@/modules/product-maintenance/product-query-presentation";
@@ -15,7 +15,7 @@ function formatFixedPrice(value: number) {
 }
 
 /** 默认一行浅橙摘要条，点击展开完整活动列表（内容与原卡片一致）。 */
-export function ProductPromotionCard({ items }: ProductPromotionCardProps) {
+export const ProductPromotionCard = memo(function ProductPromotionCard({ items }: ProductPromotionCardProps) {
   const { t } = useAppTranslation("productQuery");
   const [expanded, setExpanded] = useState(false);
   const summary = summarizePromotions(items);
@@ -73,7 +73,7 @@ export function ProductPromotionCard({ items }: ProductPromotionCardProps) {
       ) : null}
     </View>
   );
-}
+});
 
 const styles = StyleSheet.create({
   card: {

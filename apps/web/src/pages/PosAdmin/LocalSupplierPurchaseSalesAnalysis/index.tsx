@@ -63,7 +63,9 @@ import {
   normalizePurchaseSalesAnalysisPageSize,
   PURCHASE_SALES_ANALYSIS_DEFAULT_SORT_BY,
   PURCHASE_SALES_ANALYSIS_DEFAULT_SORT_ORDER,
+  PURCHASE_SALES_ANALYSIS_MIN_TABLE_BODY_HEIGHT,
   PURCHASE_SALES_ANALYSIS_PAGE_SIZE_OPTIONS,
+  resolvePurchaseSalesAnalysisTableBodyHeight,
   toPurchaseSalesAnalysisSort,
 } from './helpers'
 import {
@@ -289,7 +291,7 @@ export default function LocalSupplierPurchaseSalesAnalysisPage({ embedded = fals
   const [hasSearched, setHasSearched] = useState(false)
   const [expandedKeys, setExpandedKeys] = useState<string[]>([])
   const [queryVersion, setQueryVersion] = useState(0)
-  const [tableScrollY, setTableScrollY] = useState<number>(520)
+  const [tableScrollY, setTableScrollY] = useState<number>(PURCHASE_SALES_ANALYSIS_MIN_TABLE_BODY_HEIGHT)
   const [columnOrder, setColumnOrder] = useState<LocalSupplierPurchaseSalesAnalysisColumnKey[]>([])
 
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -324,7 +326,7 @@ export default function LocalSupplierPurchaseSalesAnalysisPage({ embedded = fals
         : wrapRef.current?.clientHeight || window.innerHeight
       const toolbarHeight = toolbarRef.current?.getBoundingClientRect().height || 0
       const available = containerHeight - toolbarHeight - 250
-      setTableScrollY(available > 320 ? available : 320)
+      setTableScrollY(resolvePurchaseSalesAnalysisTableBodyHeight(available))
     }
 
     calc()

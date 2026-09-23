@@ -20,7 +20,7 @@ public sealed class CatalogSnapshotStorePerformanceTests(ITestOutputHelper outpu
 
     [Fact]
     [Trait("Category", "Performance")]
-    public void Save_344665_items_reports_independent_gzip_duration()
+    public void Save_344665_items_avoids_full_catalog_readback_allocation()
     {
         using var directory = new TemporaryDirectory();
         var dataStartedAt = Stopwatch.GetTimestamp();
@@ -54,6 +54,8 @@ public sealed class CatalogSnapshotStorePerformanceTests(ITestOutputHelper outpu
         Assert.Equal("S01", descriptor.StoreCode);
         Assert.Equal("catalog-perf-344665", descriptor.CatalogVersion);
         Assert.True(gzipBytes > 0);
+        // 保存期间只应产生有界序列化缓冲；完整反序列化 34 万商品会多分配数百 MB。
+        Assert.InRange(allocatedDuringSave, 0, 32L * 1024 * 1024);
         output.WriteLine(
             "catalog_gzip_perf item_count={0} data_ms={1:F1} save_ms={2:F1} " +
             "gzip_bytes={3} bytes_per_item={4:F2} save_allocated_bytes={5} managed_heap_bytes={6}",
@@ -64,6 +66,16 @@ public sealed class CatalogSnapshotStorePerformanceTests(ITestOutputHelper outpu
             (double)gzipBytes / ItemCount,
             allocatedDuringSave,
             GC.GetTotalMemory(forceFullCollection: false));
+
+        var allocatedBeforeRefresh = GC.GetTotalAllocatedBytes(precise: true);
+        store.RefreshExpiration("S01", null, "catalog-perf-344665", GeneratedAt.AddHours(3));
+        var allocatedDuringRefresh =
+            GC.GetTotalAllocatedBytes(precise: true) - allocatedBeforeRefresh;
+        // 无变化续期只核对磁盘哈希，不应再次反序列化完整目录。
+        Assert.InRange(allocatedDuringRefresh, 0, 32L * 1024 * 1024);
+        Assert.Equal(GeneratedAt.AddHours(3),
+            Assert.Single(store.LoadDescriptors(GeneratedAt.AddMinutes(1))).ExpiresAt);
+        output.WriteLine("catalog_gzip_refresh_allocated_bytes={0}", allocatedDuringRefresh);
     }
 
     private static SellableItemDto[] CreateItems()

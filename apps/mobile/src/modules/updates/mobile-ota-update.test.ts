@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { URL } from "node:url";
 import test from "node:test";
 
 import { createAppUpdateMutualExclusion } from "./app-update-mutual-exclusion";
@@ -79,6 +81,63 @@ test("可选 OTA 提示锁竞争失败会回滚目标并允许稍后重试", () 
     ),
     false,
   );
+});
+
+test("可选 OTA 重启失败后保留同一目标去重，手动检查仍可重试", () => {
+  const coordinator = createAppUpdateMutualExclusion({
+    otaInitializationPending: false,
+  });
+  const targetRef: { current: string | null } = { current: null };
+
+  assert.equal(
+    tryClaimMobileOtaOptionalPrompt(
+      targetRef,
+      "failed-reload-target",
+      () => coordinator.tryOwnPrompt("ota"),
+    ),
+    true,
+  );
+
+  // applyDownloadedDecision 失败时释放 prompt 锁，但必须保留 targetRef。
+  coordinator.releasePrompt("ota");
+  assert.equal(targetRef.current, "failed-reload-target");
+  assert.equal(
+    tryClaimMobileOtaOptionalPrompt(
+      targetRef,
+      "failed-reload-target",
+      () => coordinator.tryOwnPrompt("ota"),
+    ),
+    false,
+  );
+
+  // checkManually 会清空去重目标，允许用户主动重试同一版本。
+  targetRef.current = null;
+  assert.equal(
+    tryClaimMobileOtaOptionalPrompt(
+      targetRef,
+      "failed-reload-target",
+      () => coordinator.tryOwnPrompt("ota"),
+    ),
+    true,
+  );
+});
+
+test("hook 的 reload 失败路径只提示一次并保留目标去重", () => {
+  const source = readFileSync(
+    new URL("./use-mobile-ota-update.ts", import.meta.url),
+    "utf8",
+  );
+  const failurePath = source.match(
+    /console\.warn\("\[updates\] apply controlled Mobile OTA failed"[\s\S]*?const downloadedStillReady/,
+  )?.[0];
+  assert.ok(failurePath);
+  assert.match(failurePath, /releasePrompt\("ota"\)/);
+  assert.match(failurePath, /reloadAttempted && decision\.state === "optional"/);
+  assert.match(failurePath, /mobileOtaRestartFailedTitle/);
+  assert.match(failurePath, /mobileOtaRestartFailedMessage/);
+  assert.doesNotMatch(failurePath, /updateCheckFailedTitle|updateCheckFailedMessage/);
+  assert.doesNotMatch(failurePath, /optionalPromptTargetRef\.current\s*=\s*null/);
+  assert.match(source, /reloadAttempted = true;\s*await port\.reload\(\)/);
 });
 
 test("启用后的首次 render 在策略初始化前保持 checking，required 后不渲染业务内容", () => {

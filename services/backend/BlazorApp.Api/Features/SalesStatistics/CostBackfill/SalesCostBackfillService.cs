@@ -210,8 +210,8 @@ public sealed class SalesCostBackfillService(
         var gaps = rows.Where(SalesCostBackfillRules.NeedsRepair).ToList();
         var input = gaps.Count > 0 ? await LoadAsync(day.Date, gaps.Select(x => x.ProductCode).Distinct().ToArray()) : null;
         token.ThrowIfCancellationRequested();
-        var rebuilt = input == null ? new Dictionary<string, ProductStoreDailySalesStatistic>()
-            : new SalesStatisticsProductStoreDailyBuilder().Build(input).Statistics.ToDictionary(SalesCostBackfillRules.Key);
+        var rebuilt = input == null ? new List<ProductStoreDailySalesStatistic>()
+            : new SalesStatisticsProductStoreDailyBuilder().Build(input).Statistics;
         day.SnapshotVersion = SupplierStatisticVersion.ComputeProductVersion(rows);
         day.SourceHash = input == null ? "" : SourceHash(input);
         // 证据按商品预分组，避免每个缺口反复扫描数十万条门店价格。
@@ -219,9 +219,10 @@ public sealed class SalesCostBackfillService(
         var productEvidence = input?.ProductCosts.ToLookup(x => x.ProductCode, StringComparer.OrdinalIgnoreCase);
         var warehouseEvidence = input?.WarehouseCosts.ToLookup(x => x.ProductCode, StringComparer.OrdinalIgnoreCase);
         var rawEvidence = input?.RawRows.ToLookup(x => x.ProductCode, StringComparer.OrdinalIgnoreCase);
+        var findRebuilt = SalesCostBackfillRules.BuildRebuiltLookup(rebuilt, input?.ChinaSupplierCodes);
         var items = gaps.Select(row =>
         {
-            rebuilt.TryGetValue(SalesCostBackfillRules.Key(row), out var calculated);
+            var calculated = findRebuilt(row);
             var proposal = SalesCostBackfillRules.Propose(row, calculated);
             return new SalesCostBackfillItem { Id = Guid.NewGuid(), BatchId = day.BatchId, Date = row.Date,
                 BranchCode = row.BranchCode, SupplierCode = row.SupplierCode, ProductCode = row.ProductCode,

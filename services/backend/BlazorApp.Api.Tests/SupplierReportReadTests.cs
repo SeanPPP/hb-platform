@@ -4,6 +4,7 @@ using System.Collections.Concurrent;
 using BlazorApp.Api.Cache;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
@@ -188,6 +189,67 @@ public sealed class SupplierReportReadTests : IDisposable
     }
 
     [Fact]
+    public async Task 中国货分店合计读汇总表且同期覆盖本期未出现的中国供应商()
+    {
+        var compareDay = _day.AddYears(-1);
+        SeedComplete(_day);
+        SeedComplete(compareDay);
+        _db.Insertable(new[]
+        {
+            new ChinaSupplierStoreSalesDetail
+            {
+                Date = _day, BranchCode = "S1", SupplierCode = "C001", TotalAmount = 125, TotalQuantity = 4, OrderCount = 3,
+                GrossProfit = 25, TotalCost = 100, StatisticRowCount = 2, CostedRowCount = 2, GrossProfitRowCount = 2,
+            },
+            new ChinaSupplierStoreSalesDetail
+            {
+                Date = _day, BranchCode = "S1", SupplierCode = "C002", TotalAmount = 75, TotalQuantity = 6, OrderCount = 2,
+                GrossProfit = 15, TotalCost = 60, StatisticRowCount = 1, CostedRowCount = 1, GrossProfitRowCount = 1,
+            },
+            // S2 本期缺成本：整店毛利不可信，必须返回 null 而不是只算有成本的那部分。
+            new ChinaSupplierStoreSalesDetail
+            {
+                Date = _day, BranchCode = "S2", SupplierCode = "C001", TotalAmount = 40, TotalQuantity = 2, OrderCount = 1,
+                GrossProfit = null, TotalCost = null, StatisticRowCount = 1, CostedRowCount = 0, GrossProfitRowCount = 0,
+            },
+            // C009 只在同期出现：排行的同期会漏掉它，分店中国货同期必须计入。
+            new ChinaSupplierStoreSalesDetail
+            {
+                Date = compareDay, BranchCode = "S1", SupplierCode = "C009", TotalAmount = 70, TotalQuantity = 7, OrderCount = 2,
+                GrossProfit = 20, TotalCost = 50, StatisticRowCount = 1, CostedRowCount = 1, GrossProfitRowCount = 1,
+            },
+        }).ExecuteCommand();
+        _db.Insertable(new Store { StoreGUID = "store-S1", StoreCode = "S1", StoreName = "分店一", IsActive = true }).ExecuteCommand();
+        var service = CreateService();
+        var range = new DateRangeDto { StartDate = _day, EndDate = _day, CompareStartDate = compareDay, CompareEndDate = compareDay };
+        var status = await service.GetProductReportStatisticStatusAsync(range);
+
+        var result = await service.GetChinaSupplierBranchTotalsAsync(range, new() { "S1", "S2" }, status);
+
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh, status.StatisticStatus);
+        Assert.Equal(new[] { "S1", "S2" }, result.Select(row => row.BranchCode));
+        var s1 = result[0];
+        Assert.Equal("分店一", s1.BranchName);
+        Assert.Equal(200m, s1.TotalAmount);
+        Assert.Equal(10, s1.TotalQuantity);
+        Assert.Equal(2, s1.SupplierCount);
+        Assert.Equal(40m, s1.GrossProfit);
+        Assert.Equal("Complete", s1.CostStatus);
+        Assert.Equal(70m, s1.CompareTotalAmount);
+        Assert.Equal(20m, s1.CompareGrossProfit);
+        var s2 = result[1];
+        Assert.Equal(40m, s2.TotalAmount);
+        Assert.Null(s2.GrossProfit);
+        Assert.Equal("Missing", s2.CostStatus);
+        Assert.Equal(0m, s2.CompareTotalAmount);
+        Assert.Equal("NoActivity", s2.CompareCostStatus);
+
+        var rank = await service.GetChinaSupplierSalesRankAsync(range, new() { "S1", "S2" }, 1000);
+        Assert.Equal(rank.Sum(row => row.TotalAmount), result.Sum(row => row.TotalAmount));
+        Assert.Empty(await service.GetChinaSupplierBranchTotalsAsync(range, new(), status));
+    }
+
+    [Fact]
     public async Task 商品分页只保留本期同期授权分店内的遗留中国商品映射()
     {
         var compare = _day.AddYears(-1);
@@ -346,6 +408,33 @@ public sealed class SupplierReportReadTests : IDisposable
         Assert.Equal(1, reads);
         _db.Updateable<SalesStatisticRefreshState>().SetColumns(row => row.SourceProductVersion == "new-version")
             .Where(row => row.Date == _day).ExecuteCommand();
+        await service.GetSupplierSalesRankAsync(Range(), null, 100);
+        Assert.Equal(2, reads);
+    }
+
+    [Fact]
+    public async Task 统计刷新后的自动清理保留版本化完整报表条目而手动全量清理会移除()
+    {
+        SeedComplete(_day);
+        SeedRow(_day, "S1", "250", 100, 5, 40);
+        var reads = 0;
+        _db.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (sql.Contains("FROM [AustralianSupplierStoreSalesDetail]", StringComparison.OrdinalIgnoreCase)) reads++;
+        };
+        var service = CreateService();
+        var warmer = new SalesDashboardCacheWarmer(service, NullLogger<SalesDashboardCacheWarmer>.Instance, _cache);
+
+        await service.GetSupplierSalesRankAsync(Range(), null, 100);
+        Assert.Equal(1, reads);
+
+        // 每半小时统计刷新后的清理：键里已含 cacheVersion 的条目不会陈旧，必须保留。
+        await warmer.ClearCacheAsync();
+        await service.GetSupplierSalesRankAsync(Range(), null, 100);
+        Assert.Equal(1, reads);
+
+        // 管理员手动全量清理仍然要能强制重读（例如门店名、商品图这类非版本化字段变了）。
+        await warmer.ClearAllCacheAsync();
         await service.GetSupplierSalesRankAsync(Range(), null, 100);
         Assert.Equal(2, reads);
     }

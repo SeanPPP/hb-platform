@@ -57,6 +57,8 @@ internal sealed class ClientLogOutboxWriter : BackgroundService, IApplicationLog
     private long _runtimeQueueDroppedCount;
     private long _operationAuditQueueDroppedCount;
     private CancellationToken _hostShutdownToken = CancellationToken.None;
+    // 0 = 尚无人负责消费通道与最终落库；1 = 已由 ExecuteAsync 或 StopAsync 其中一方认领，保证只落库一次。
+    private int _drainOwnershipClaimed;
 
     public ClientLogOutboxWriter(
         ClientLogOutboxStore store,
@@ -272,10 +274,31 @@ internal sealed class ClientLogOutboxWriter : BackgroundService, IApplicationLog
         _runtimeChannel.Writer.TryComplete();
         TryReleaseSignal();
         await base.StopAsync(cancellationToken);
+
+        // 关键：Microsoft.Extensions.Hosting 10 起 BackgroundService 以 Task.Run(ExecuteAsync, stoppingToken) 启动。
+        // 启动后立即停止时，停止令牌先于调度被取消，ExecuteAsync 连同 finally 里的最终落库根本不会执行，
+        // 通道里已接收的审计与运行日志会全部丢失。这里仍能认领，说明 ExecuteAsync 尚未开始消费，由停止路径代为落库。
+        if (TryClaimDrainOwnership())
+        {
+            try
+            {
+                await FlushRemainingAsync();
+            }
+            catch (OperationCanceledException) when (_hostShutdownToken.IsCancellationRequested)
+            {
+                // 宿主退出预算已耗尽：与 ExecuteAsync 路径一样放弃剩余事件，不把取消异常抛给宿主。
+            }
+        }
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (!TryClaimDrainOwnership())
+        {
+            // StopAsync 已抢先认领最终落库（启动即停止），这里不能再并发消费同一批通道。
+            return;
+        }
+
         try
         {
             await InitializeWithRetryAsync(stoppingToken);
@@ -290,16 +313,24 @@ internal sealed class ClientLogOutboxWriter : BackgroundService, IApplicationLog
         }
         finally
         {
-            try
-            {
-                // 启动后立即退出时初始化可能尚未完成，最终落库前必须先保证 outbox 表存在。
-                await _store.InitializeAsync(_hostShutdownToken);
-                await DrainAvailableAsync(_hostShutdownToken);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                WriteInternalDiagnostic($"final local flush failed error={ex.GetType().Name}");
-            }
+            await FlushRemainingAsync();
+        }
+    }
+
+    private bool TryClaimDrainOwnership() =>
+        Interlocked.CompareExchange(ref _drainOwnershipClaimed, 1, 0) == 0;
+
+    private async Task FlushRemainingAsync()
+    {
+        try
+        {
+            // 启动后立即退出时初始化可能尚未完成，最终落库前必须先保证 outbox 表存在。
+            await _store.InitializeAsync(_hostShutdownToken);
+            await DrainAvailableAsync(_hostShutdownToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            WriteInternalDiagnostic($"final local flush failed error={ex.GetType().Name}");
         }
     }
 

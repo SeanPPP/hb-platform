@@ -376,7 +376,7 @@ public sealed class OperationAuthorizationServiceTests
             "Pos",
             "change-price",
             CreateState(requester)));
-        await cashierContext.HasPermissionEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await cashierContext.HasPermissionEntered.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         service.RevokeAll();
         cashierContext.ReleaseHasPermission.TrySetResult();

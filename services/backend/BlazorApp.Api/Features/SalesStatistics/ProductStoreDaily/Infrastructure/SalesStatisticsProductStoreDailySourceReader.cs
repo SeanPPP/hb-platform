@@ -19,7 +19,8 @@ internal sealed class SalesStatisticsProductStoreDailySourceReader
         POSMSqlSugarContext posmContext,
         ILogger logger,
         DateTime date,
-        Func<Task<List<StoreSalesStatistic>>> loadStoreStatisticsAsync)
+        Func<Task<List<StoreSalesStatistic>>> loadStoreStatisticsAsync,
+        bool writeDirectChinaSupplierCode = false)
     {
         if (!SalesStatisticsBusinessDate.IsToday(date) || date.Year == 2025)
             throw new ArgumentException("营业中快照只接受当天非 2025 日期", nameof(date));
@@ -37,7 +38,9 @@ internal sealed class SalesStatisticsProductStoreDailySourceReader
             workAsync: async () =>
             {
                 stores = await loadStoreStatisticsAsync();
-                input = await LoadAsync(context, posmContext, null, logger, date, null, null);
+                input = await LoadAsync(
+                    context, posmContext, null, logger, date, null, null,
+                    writeDirectChinaSupplierCode: writeDirectChinaSupplierCode);
             },
             commitAsync: () => posmContext.Db.Ado.CommitTranAsync(),
             rollbackAsync: () => posmContext.Db.Ado.RollbackTranAsync(),
@@ -53,7 +56,8 @@ internal sealed class SalesStatisticsProductStoreDailySourceReader
         DateTime date,
         IReadOnlyList<ProductStoreDailySourceRow>? preloadedHBSalesRows,
         Posm2025DailySnapshot? preloadedPosmSnapshot,
-        IReadOnlyCollection<string>? costProductCodes = null)
+        IReadOnlyCollection<string>? costProductCodes = null,
+        bool writeDirectChinaSupplierCode = false)
     {
         var targetDate = date.Date;
         var nextDate = targetDate.AddDays(1);
@@ -214,10 +218,68 @@ internal sealed class SalesStatisticsProductStoreDailySourceReader
             .Select(product => new WarehouseCostRow { ProductCode = product.ProductCode, ImportPrice = product.ImportPrice })
             .ToListAsync();
 
+        // 国内供应商编码目录与开关无关，总要加载：库里可能已有直写行，写入端按行键找旧行时
+        // 要把国内编码族视为同一个供应商，否则历史成本快照会因为键对不上而被当前进价覆盖。
+        var chinaSupplierCodes = await ChinaSupplierCodeFamily.LoadChinaSupplierCodesAsync(context.Db);
+        // 只有开关打开才解析。原始明细行保持不动（成本回填的来源哈希和证据都基于它），改写发生在聚合器里。
+        var chinaSupplierByProduct = writeDirectChinaSupplierCode
+            ? await LoadChinaSupplierByProductAsync(context, chinaSupplierCodes)
+            : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
         return new ProductStoreDailyRefreshInput(
             targetDate, rawRows, supplementalReturnRows.ToHashSet(), orderAmountMaps.PaymentAmounts,
             orderAmountMaps.DetailAmounts, deviceBranchMap, storeCosts, productCosts, warehouseCosts,
-            lastSourceUploadTime);
+            lastSourceUploadTime)
+        {
+            ChinaSupplierByProduct = chinaSupplierByProduct,
+            ChinaSupplierCodes = chinaSupplierCodes,
+        };
+    }
+
+    /// <summary>
+    /// 按主数据解析国内货的国内供应商：未删除的仓库商品关联到未删除的国内商品，取它的供应商编码。
+    /// 规则与 POSM 商品映射同步一致，但直接读主数据，不依赖映射是否同步及时。
+    /// 编码必须存在于国内供应商目录：读取侧靠「编码是否属于目录」识别直写行，
+    /// 目录外的编码写进去会被澳洲侧报表当成普通供应商，这种商品保持 200。
+    /// 两张主数据表各约两万行，一条固定文本的查询整表读出；按当天商品编码分批 IN 查询的话，
+    /// 每批 SQL 文本不同都要重新编译，批量重算多天时反而更慢。
+    /// </summary>
+    internal static async Task<Dictionary<string, string>> LoadChinaSupplierByProductAsync(
+        SqlSugarContext context,
+        HashSet<string> chinaSupplierCodes)
+    {
+        var rows = await context.Db.Queryable<WarehouseProduct>()
+            .InnerJoin<DomesticProduct>((warehouse, domestic) => warehouse.ProductCode == domestic.ProductCode)
+            .Where((warehouse, domestic) =>
+                warehouse.IsDeleted == false
+                && domestic.IsDeleted == false
+                && domestic.SupplierCode != null
+                && domestic.SupplierCode != "")
+            .Select((warehouse, domestic) => new ChinaSupplierProductRow
+            {
+                ProductCode = warehouse.ProductCode,
+                SupplierCode = domestic.SupplierCode,
+            })
+            .ToListAsync();
+
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in rows)
+        {
+            var productCode = row.ProductCode?.Trim();
+            var supplierCode = row.SupplierCode?.Trim();
+            if (string.IsNullOrWhiteSpace(productCode) || string.IsNullOrWhiteSpace(supplierCode))
+                continue;
+            // 取目录里的规范写法，避免主数据与目录大小写不一致时写出两种编码。
+            if (chinaSupplierCodes.TryGetValue(supplierCode, out var catalogCode))
+                result[productCode] = catalogCode;
+        }
+        return result;
+    }
+
+    internal sealed class ChinaSupplierProductRow
+    {
+        public string? ProductCode { get; set; }
+        public string? SupplierCode { get; set; }
     }
 
     private static async Task ValidateAndResolveHBSalesRowsAsync(
@@ -567,10 +629,6 @@ internal static async Task<List<ProductStoreDailySourceRow>> LoadHBSalesProductS
 )
 {
     var originalCommandTimeout = hbSalesContext.Db.Ado.CommandTimeOut;
-    var mainCheckoutDateWindowStart = targetDate.AddDays(
-        -HBSalesMainCheckoutDateWindowDays
-    );
-    var mainCheckoutDateWindowEnd = nextDate.AddDays(HBSalesMainCheckoutDateWindowDays);
     hbSalesContext.Db.Ado.CommandTimeOut = Math.Max(
         originalCommandTimeout,
         CommandTimeoutSeconds
@@ -578,7 +636,74 @@ internal static async Task<List<ProductStoreDailySourceRow>> LoadHBSalesProductS
     List<ProductStoreDailySourceRow> rows;
     try
     {
-        var query = hbSalesContext.Db.Queryable<SalesOrderMain>()
+        if (hbSalesContext.Db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+        {
+            var sql = BuildHBSalesProductStoreDailyRowsSql(hbSalesContext.Db, targetDate, nextDate, maxRows);
+            rows = await hbSalesContext.Db.Ado.SqlQueryAsync<ProductStoreDailySourceRow>(sql.Key, sql.Value.ToArray());
+        }
+        else
+        {
+            var query = BuildHBSalesProductStoreDailyRowsQuery(hbSalesContext.Db, targetDate, nextDate);
+            rows = maxRows.HasValue
+                ? await query.Take(maxRows.Value + 1).ToListAsync()
+                : await query.ToListAsync();
+        }
+    }
+    finally
+    {
+        // 共享上下文可能被后续查询复用，必须还原调用方原有超时。
+        hbSalesContext.Db.Ado.CommandTimeOut = originalCommandTimeout;
+    }
+
+    if (maxRows.HasValue && rows.Count > maxRows.Value)
+    {
+        throw new InvalidOperationException(
+            $"2025 HBSales 批量快照超过 {maxRows.Value:N0} 行内存保护上限，请缩小日期范围"
+        );
+    }
+
+    foreach (var row in rows.Where(row =>
+        SalesStatisticsCodeRules.Normalize(row.DocumentType) == "3"
+        || SalesStatisticsCodeRules.Normalize(row.DocumentType) == "4"
+    ))
+    {
+        // HBSales 年度统计口径：类型 3/4 为退货/退款，数量和金额统一取反。
+        row.Quantity = -row.Quantity;
+        row.ActualAmount = -row.ActualAmount;
+    }
+
+    return rows;
+}
+
+/// <summary>
+/// HBSales 明细在 SQL Server 上按实际日期重编译。结账日期是 date 列，而 SqlSugar 把日期变量下发为 datetime 参数，
+/// 带参缓存的计划用不上 IX_B销售清单详情表副本_折扣日日期单号 覆盖索引（BatchProductSalesDiscountSourceIndexes.sql），
+/// 每次聚集扫描明细表约 40 万页：2026-09-21 生产原句 sp_executesql 复现 17.6 秒，
+/// 加 OPTION (RECOMPILE) 后 CPU 15 毫秒、明细表逻辑读 60 次，结果逐行一致。
+/// </summary>
+internal static KeyValuePair<string, List<SugarParameter>> BuildHBSalesProductStoreDailyRowsSql(
+    ISqlSugarClient db,
+    DateTime targetDate,
+    DateTime nextDate,
+    int? maxRows = null
+)
+{
+    var query = BuildHBSalesProductStoreDailyRowsQuery(db, targetDate, nextDate);
+    var sql = (maxRows.HasValue ? query.Take(maxRows.Value + 1) : query).ToSql();
+    return new KeyValuePair<string, List<SugarParameter>>(sql.Key + " OPTION (RECOMPILE)", sql.Value);
+}
+
+internal static ISugarQueryable<ProductStoreDailySourceRow> BuildHBSalesProductStoreDailyRowsQuery(
+    ISqlSugarClient db,
+    DateTime targetDate,
+    DateTime nextDate
+)
+{
+    var mainCheckoutDateWindowStart = targetDate.AddDays(
+        -HBSalesMainCheckoutDateWindowDays
+    );
+    var mainCheckoutDateWindowEnd = nextDate.AddDays(HBSalesMainCheckoutDateWindowDays);
+    return db.Queryable<SalesOrderMain>()
             .LeftJoin<SalesOrderDetailRecord>((main, detail) =>
                 main.B销售单号 == detail.B销售单号
             )
@@ -630,34 +755,6 @@ internal static async Task<List<ProductStoreDailySourceRow>> LoadHBSalesProductS
                 DetailLastUploadTime = detail.FGC_LastModifyDate ?? detail.FGC_CreateDate,
                 DocumentType = main.B单据类型,
             });
-        rows = maxRows.HasValue
-            ? await query.Take(maxRows.Value + 1).ToListAsync()
-            : await query.ToListAsync();
-    }
-    finally
-    {
-        // 共享上下文可能被后续查询复用，必须还原调用方原有超时。
-        hbSalesContext.Db.Ado.CommandTimeOut = originalCommandTimeout;
-    }
-
-    if (maxRows.HasValue && rows.Count > maxRows.Value)
-    {
-        throw new InvalidOperationException(
-            $"2025 HBSales 批量快照超过 {maxRows.Value:N0} 行内存保护上限，请缩小日期范围"
-        );
-    }
-
-    foreach (var row in rows.Where(row =>
-        SalesStatisticsCodeRules.Normalize(row.DocumentType) == "3"
-        || SalesStatisticsCodeRules.Normalize(row.DocumentType) == "4"
-    ))
-    {
-        // HBSales 年度统计口径：类型 3/4 为退货/退款，数量和金额统一取反。
-        row.Quantity = -row.Quantity;
-        row.ActualAmount = -row.ActualAmount;
-    }
-
-    return rows;
 }
 
 

@@ -1222,6 +1222,9 @@
   <data name="shell.sync.retryFailed" xml:space="preserve">
     <value>上传重试失败：{0}</value>
   </data>
+  <data name="shell.sync.retryInterrupted" xml:space="preserve">
+    <value>服务器地址切换中，上传已暂停：成功 {0}，未完成 {1}。其余上传会在切换完成后继续。</value>
+  </data>
   <data name="shell.sync.caption" xml:space="preserve">
     <value>查看并重传订单、Linkly 结算或操作审计日志。</value>
   </data>
