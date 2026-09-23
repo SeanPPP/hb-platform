@@ -120,7 +120,8 @@
     "multipleLookup": "Multiple products matched the barcode. Choose one to view.",
     "multipleCart": "Multiple products matched the barcode. Choose one to add.",
     "failed": "Failed to process the scan",
-    "selected": "Matched product selected"
+    "selected": "Matched product selected",
+    "delisted": "Delisted: {{name}} cannot be ordered"
   },
   "reports": {
     "title": "Reports",
@@ -347,5 +348,35 @@
       "supplierHint": "Tap supplier to filter · tap amount for stores · swipe for share, growth and LY",
       "productHint": "Tap item for stores · swipe for avg, margin and growth"
     }
+  },
+  "orderRow": {
+    "minOrder": "MOQ {{quantity}}",
+    "importPrice": "Import",
+    "retailPrice": "Retail",
+    "unitPrice": "{{amount}} / pc",
+    "subtotal": "Subtotal",
+    "add": "Add",
+    "addWithStep": "Add ×{{step}}",
+    "addAccessibility": "Add {{name}}, quantity {{quantity}}",
+    "decrease": "Decrease by one MOQ",
+    "increase": "Increase by one MOQ",
+    "remove": "Remove from cart",
+    "delisted": "Delisted",
+    "notOrderable": "Not orderable",
+    "justScanned": "Just scanned",
+    "zeroImportPrice": "Import price 0",
+    "quantityLocked": "{{quantity}} · locked"
+  },
+  "orderNotice": {
+    "addedNamed": "Added {{name}}",
+    "addedQuantity": "×{{quantity}}",
+    "delistedNamed": "Delisted · {{name}}",
+    "delistedDetail": "{{itemNumber}} · cannot be ordered, not added",
+    "removedNamed": "Removed {{name}}"
+  },
+  "quantityPresets": {
+    "caption": "Quick quantities (multiples of MOQ {{step}})",
+    "clear": "Clear",
+    "set": "Set to {{quantity}}"
   }
 }

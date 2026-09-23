@@ -144,6 +144,8 @@ export interface StoreOrderCartItem {
   totalVolume?: number;
   minOrderQuantity: number;
   isActive: boolean;
+  /** 仓库商品是否上架；undefined 表示后端未提供（旧版本），按在售处理。 */
+  warehouseIsActive?: boolean;
   locationCode?: string;
   rrp?: number;
   updatedAt?: string;
@@ -180,6 +182,8 @@ export interface StoreOrderScanLookupResult {
   barcode: string;
   matchType?: StoreOrderScanMatchType;
   items: StoreOrderProductItem[];
+  /** 仅在没有在售命中时由后端补查返回：条码对应的商品已下架，不能订货。 */
+  delistedItems: StoreOrderProductItem[];
 }
 
 export type StoreOrderScanStatus =

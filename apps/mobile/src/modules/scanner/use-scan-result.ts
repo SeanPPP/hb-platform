@@ -132,6 +132,14 @@ interface UseScanResultOptions {
     scanTraceId?: string,
     storeCode?: string | null
   ) => void | Promise<void>;
+  /** 条码只命中已下架商品时回调，页面据此展示「已下架 · 不可订货」而不是「未找到」。 */
+  onDelistedProduct?: (
+    product: StoreOrderProductItem,
+    barcode: string,
+    source: ScanSource,
+    scanTraceId?: string,
+    storeCode?: string | null
+  ) => void | Promise<void>;
   storeCode?: string | null;
 }
 
@@ -148,6 +156,7 @@ export function useScanResult({
   mode = "add-to-cart",
   onAddedToCart,
   onProductFound,
+  onDelistedProduct,
   storeCode,
 }: UseScanResultOptions) {
   const queryClient = useQueryClient();
@@ -848,6 +857,35 @@ export function useScanResult({
           return;
         }
 
+        const delistedItems = result.delistedItems ?? [];
+        if (items.length === 0 && delistedItems.length > 0) {
+          // 已下架命中不写入扫码缓存：商品重新上架后下一次扫码必须重新查询。
+          const delistedProduct = delistedItems[0];
+          logScanPerformance("scan.delisted", {
+            scanTraceId,
+            barcode: result.barcode,
+            source,
+            storeCode: activeStoreCode,
+            productCode: delistedProduct.productCode,
+            itemCount: delistedItems.length,
+            totalElapsedMs: getScanPerformanceTimestamp() - scanStartedAt,
+          });
+          applyScanFeedback(
+            {
+              status: "delisted",
+              message: i18n.t("common:scanner.delisted", {
+                name: delistedProduct.productName || delistedProduct.itemNumber || delistedProduct.productCode,
+              }),
+              barcode: result.barcode,
+              productName: delistedProduct.productName || delistedProduct.productCode,
+              itemNumber: delistedProduct.itemNumber || delistedProduct.productCode,
+            },
+            { isAddMode, scanTraceId }
+          );
+          await onDelistedProduct?.(delistedProduct, result.barcode, source, scanTraceId, activeStoreCode);
+          return;
+        }
+
         if (items.length === 0) {
           logScanPerformance("scan.not-found", {
             scanTraceId,
@@ -1014,6 +1052,7 @@ export function useScanResult({
       isCurrentStoreJob,
       logStaleStoreJob,
       mode,
+      onDelistedProduct,
       onProductFound,
       queryClient,
       updateFeedback,
