@@ -82,7 +82,9 @@ namespace BlazorApp.Api.Interfaces.React
             int pageIndex = 1,
             int pageSize = 100,
             string? productSearch = null,
-            bool chinaSupplierScope = false
+            bool chinaSupplierScope = false,
+            string? sortField = null,
+            string? sortOrder = null
         );
 
         Task<PagedSalesProductDetailWithDiscountDto> GetEnhancedSalesProductDetailsAsync(
@@ -94,7 +96,9 @@ namespace BlazorApp.Api.Interfaces.React
             int pageSize,
             string? productSearch,
             ProductReportStatisticStatusDto statisticStatus,
-            bool chinaSupplierScope = false
+            bool chinaSupplierScope = false,
+            string? sortField = null,
+            string? sortOrder = null
         );
 
         Task<List<ProductBranchSalesDto>> GetProductSalesByAllBranchesAsync(
@@ -119,6 +123,16 @@ namespace BlazorApp.Api.Interfaces.React
         Task<List<ChinaSupplierStoreSalesDto>> GetChinaSupplierStoreSalesAsync(
             DateRangeDto dateRange,
             List<string> supplierCodes,
+            List<string>? branchCodes,
+            ProductReportStatisticStatusDto statisticStatus
+        );
+
+        /// <summary>
+        /// 按分店汇总全部中国供应商的销售额（移动端「分店中国货占比」的分子）。
+        /// branchCodes 为 null 表示不限分店；显式空列表表示无授权分店，返回空结果。
+        /// </summary>
+        Task<List<ChinaSupplierBranchTotalDto>> GetChinaSupplierBranchTotalsAsync(
+            DateRangeDto dateRange,
             List<string>? branchCodes,
             ProductReportStatisticStatusDto statisticStatus
         );

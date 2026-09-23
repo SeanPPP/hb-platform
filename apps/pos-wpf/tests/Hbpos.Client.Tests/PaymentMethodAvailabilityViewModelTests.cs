@@ -172,10 +172,10 @@ public sealed class PaymentMethodAvailabilityViewModelTests
                 ? vm.SelectCardCommand.ExecuteAsync(null)
                 : vm.SelectVoucherCommand.ExecuteAsync(null);
         }
-        await authorization.Started.Task.WaitAsync(TestWaitTimeouts.Default);
+        await authorization.Started.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         await settings.SaveAsync(new(UseManualCard: method == "Card", VoucherEnabled: false));
         authorization.Continue.TrySetResult();
-        await operation.WaitAsync(TestWaitTimeouts.Default);
+        await operation.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         Assert.Equal(0, workflow.AddCount);
         Assert.Equal(0, workflow.ManualAddCount);

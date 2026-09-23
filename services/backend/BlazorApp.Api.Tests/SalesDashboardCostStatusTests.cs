@@ -139,6 +139,60 @@ public sealed class SalesDashboardCostStatusTests
         }
     }
 
+    [Theory]
+    [InlineData("unitPrice", "asc")]
+    [InlineData("quantity", "desc")]
+    [InlineData(null, null)]
+    public async Task GetEnhancedSalesProductDetailsSqlServerAsync_Sort_把排序后的分页SQL交给数据库(
+        string? sortField,
+        string? sortOrder
+    )
+    {
+        var sort = ProductReportSort.Parse(sortField, sortOrder);
+        string? capturedSql = null;
+        var ado = new Mock<IAdo>(MockBehavior.Strict);
+        ado.Setup(value => value.SqlQueryAsync<SalesDashboardReactService.ProductReportPagingSqlRow>(
+                It.IsAny<string>(), It.IsAny<SugarParameter[]>()))
+            .Callback<string, SugarParameter[]>((sql, _) => capturedSql = sql)
+            // 无数据页也返回一行 HasData=false；严格 Mock 未配置 Queryable<Product>，证明不会读取商品主表。
+            .ReturnsAsync(new List<SalesDashboardReactService.ProductReportPagingSqlRow>
+            {
+                new() { HasData = false, TotalCount = 0 },
+            });
+        var reportDb = new Mock<ISqlSugarClient>(MockBehavior.Strict);
+        reportDb.SetupGet(value => value.CurrentConnectionConfig)
+            .Returns(new ConnectionConfig { DbType = DbType.SqlServer });
+        reportDb.SetupGet(value => value.Ado).Returns(ado.Object);
+
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = CreateService(reportDb.Object, cache);
+        var page = await service.GetEnhancedSalesProductDetailsSqlServerAsync(
+            new DateRangeDto
+            {
+                StartDate = CurrentDate,
+                EndDate = CurrentDate,
+                CompareStartDate = CompareDate,
+                CompareEndDate = CompareDate,
+            },
+            null,
+            null,
+            null,
+            1,
+            20,
+            null,
+            false,
+            sort
+        );
+
+        // 路径 A 的排序只能通过白名单 SQL 生效：实际执行文本必须与同一排序生成的分页 SQL 逐字相同。
+        Assert.Equal(SalesDashboardReactService.BuildProductReportPagingSql(includeCompare: true, sort), capturedSql);
+        Assert.Contains(SalesDashboardReactService.BuildProductReportRankingOrderBy(sort), capturedSql, StringComparison.Ordinal);
+        Assert.Empty(page.Data);
+        Assert.Equal(0, page.Total);
+        ado.Verify(value => value.SqlQueryAsync<SalesDashboardReactService.ProductReportPagingSqlRow>(
+            It.IsAny<string>(), It.IsAny<SugarParameter[]>()), Times.Once);
+    }
+
     [SalesCostBackfillSqlServerFact]
     [Trait("Category", "SQL")]
     public async Task SqlServer完整报表入口保留商品分店与供应商成本状态()

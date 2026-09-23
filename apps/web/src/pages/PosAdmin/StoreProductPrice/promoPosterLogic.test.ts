@@ -17,6 +17,7 @@ import {
   pickDefaultPosterKind,
   preparePosterProducts,
   PROMO_POSTER_MAX_COUNT,
+  PROMO_POSTER_STYLES,
   resolvePosterKindAvailability,
   resolvePosterPriceMismatch,
   runWithConcurrency,
@@ -289,6 +290,27 @@ async function main() {
       style: 'classic', size: 'A4', impose: false, showLogo: false, today: '2026-09-19',
     })
     assert.equal(withoutLogo.showLogo, false)
+
+    for (const seasonalStyle of ['christmas', 'halloween'] as const) {
+      const seasonalBody = buildPromoPosterPdfRequest('S01', [special, clearance, fresh, multibuy], {
+        style: seasonalStyle,
+        size: 'A6',
+        impose: true,
+        showLogo: false,
+        today: '2026-09-19',
+      })
+      assert.equal(seasonalBody.showLogo, false, `${seasonalStyle} 应保留关闭 Logo 设置`)
+      assert.deepEqual(
+        seasonalBody.posters.map(({ style, ...poster }) => poster),
+        body.posters.map(({ style, ...poster }) => poster),
+        `${seasonalStyle} 不应改变四种类型的请求字段`,
+      )
+      assert.deepEqual(seasonalBody.posters.map((poster) => poster.style), Array(4).fill(seasonalStyle))
+    }
+  })
+
+  await test('风格列表包含现有风格与两种节日风格', () => {
+    assert.deepEqual(PROMO_POSTER_STYLES, ['classic', 'modern', 'christmas', 'halloween'])
   })
 
   await test('日期、文件名与页数响应头解析', () => {

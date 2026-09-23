@@ -31,7 +31,7 @@ public sealed class LinklySettlementServiceTests
             var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
 
             var settling = service.SettleAndPrintAsync(session, DateTime.Today);
-            await terminal.SettlementStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await terminal.SettlementStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
             Assert.Null(await gate.TryEnterAssignmentAsync());
 
             terminal.DeferredSettlementResult.SetResult(new LinklySettlementResult(false, "declined"));
@@ -1049,7 +1049,7 @@ public sealed class LinklySettlementServiceTests
             var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
 
             var first = service.SettleAndPrintAsync(session, businessDate);
-            await terminal.SettlementStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await terminal.SettlementStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
             var second = await service.SettleAndPrintAsync(session, businessDate);
             var pending = Assert.Single(await service.GetHistoryAsync(session, businessDate));
 
@@ -1452,6 +1452,9 @@ public sealed class LinklySettlementServiceTests
         public Task<LinklyCloudBackendSessionResponse> GetSessionStatusAsync(CardTerminalSettings settings, string sessionId, CancellationToken cancellationToken = default) => UnsupportedSessionAsync<LinklyCloudBackendSessionResponse>();
 
         public Task AcknowledgeSessionAsync(CardTerminalSettings settings, string sessionId, CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public Task AcknowledgeSupervisorResolvedSessionAsync(CardTerminalSettings settings, string sessionId, CancellationToken cancellationToken = default) =>
+            AcknowledgeSessionAsync(settings, sessionId, cancellationToken);
 
         private static Task<PaymentAuthorizationResult> UnsupportedPaymentAsync() => Task.FromException<PaymentAuthorizationResult>(new NotSupportedException());
 

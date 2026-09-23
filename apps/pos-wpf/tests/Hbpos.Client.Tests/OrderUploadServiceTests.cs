@@ -371,6 +371,91 @@ public sealed class OrderUploadServiceTests
     }
 
     [Fact]
+    public async Task UploadOrderAsync_http_timeout_keeps_order_queued_with_error_instead_of_endpoint_switch()
+    {
+        await using var harness = await TimeoutUploadHarness.CreateAsync(slowOrderCount: 1, fastOrderCount: 0);
+        var order = harness.SlowOrders[0];
+
+        // 3-20：HttpClient 15 秒超时与端点切换同为 TaskCanceledException，超时不能再被当作端点切换。
+        var exception = await Assert.ThrowsAsync<OrderUploadTimeoutException>(() =>
+            harness.UploadService.UploadOrderAsync(order));
+
+        Assert.IsType<TimeoutException>(exception.InnerException?.InnerException);
+        var summary = await harness.GetOrderAsync(order);
+        Assert.Equal("Pending", summary.SyncStatus);
+        var queued = Assert.Single(await harness.SyncQueue.GetActiveItemsAsync());
+        Assert.Equal("Pending", queued.Status);
+        Assert.Contains("timed out", queued.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("timed out", (await harness.SyncQueue.GetOverviewAsync()).LastError, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ExecuteOneAsync_reports_http_timeout_as_not_completed_not_interrupted()
+    {
+        await using var harness = await TimeoutUploadHarness.CreateAsync(slowOrderCount: 1, fastOrderCount: 0);
+
+        var result = await harness.Executor.ExecuteOneAsync(harness.SlowOrders[0]);
+
+        Assert.Equal(new OrderUploadExecutionResult(1, 0, 1), result);
+    }
+
+    [Fact]
+    public async Task ExecutePendingAsync_http_timeout_counts_not_completed_and_continues_with_next_order()
+    {
+        await using var harness = await TimeoutUploadHarness.CreateAsync(slowOrderCount: 1, fastOrderCount: 1);
+
+        var result = await harness.Executor.ExecutePendingAsync();
+
+        // 超时的订单不能再"占住队首"让后面的订单一笔都不试，计数也不能是"成功 0、失败 0"。
+        Assert.Equal(new OrderUploadExecutionResult(2, 1, 1), result);
+        Assert.Equal(2, harness.Handler.RequestCount);
+        Assert.Equal("Synced", (await harness.GetOrderAsync(harness.FastOrders[0])).SyncStatus);
+        Assert.Equal("Pending", (await harness.GetOrderAsync(harness.SlowOrders[0])).SyncStatus);
+    }
+
+    [Fact]
+    public async Task ExecutePendingAsync_stops_round_after_two_consecutive_timeouts()
+    {
+        await using var harness = await TimeoutUploadHarness.CreateAsync(slowOrderCount: 3, fastOrderCount: 0);
+
+        var result = await harness.Executor.ExecutePendingAsync();
+
+        // 连续两笔超时说明服务端整体不可用：本轮停下，第三笔不再等满超时，留在队列等下一轮。
+        Assert.Equal(new OrderUploadExecutionResult(3, 0, 3), result);
+        Assert.Equal(2, harness.Handler.RequestCount);
+        Assert.All(
+            await harness.Orders.GetRecentOrdersAsync(),
+            order => Assert.Equal("Pending", order.SyncStatus));
+    }
+
+    [Fact]
+    public async Task ExecuteSelectedAsync_http_timeout_is_not_reported_as_endpoint_switch()
+    {
+        await using var harness = await TimeoutUploadHarness.CreateAsync(slowOrderCount: 1, fastOrderCount: 1);
+
+        var result = await harness.Executor.ExecuteSelectedAsync([harness.SlowOrders[0], harness.FastOrders[0]]);
+
+        Assert.Equal(new OrderUploadExecutionResult(2, 1, 1), result);
+        Assert.Equal(2, harness.Handler.RequestCount);
+        Assert.Equal("Synced", (await harness.GetOrderAsync(harness.FastOrders[0])).SyncStatus);
+    }
+
+    [Fact]
+    public async Task ExecuteSelectedAsync_stops_after_two_consecutive_timeouts_without_touching_remaining_orders()
+    {
+        await using var harness = await TimeoutUploadHarness.CreateAsync(slowOrderCount: 2, fastOrderCount: 1);
+        await harness.UploadRepository.MarkSyncedAsync(harness.FastOrders[0]);
+
+        var result = await harness.Executor.ExecuteSelectedAsync(
+            [harness.SlowOrders[0], harness.SlowOrders[1], harness.FastOrders[0]]);
+
+        // 按日期重传一批 500 笔；网络整体不通时不能每笔都等满超时。未尝试的订单保持原状态。
+        Assert.Equal(new OrderUploadExecutionResult(3, 0, 3), result);
+        Assert.Equal(2, harness.Handler.RequestCount);
+        Assert.Equal("Synced", (await harness.GetOrderAsync(harness.FastOrders[0])).SyncStatus);
+    }
+
+    [Fact]
     public async Task ExecuteSelectedAsync_stops_immediately_when_caller_cancels()
     {
         var first = Guid.NewGuid();
@@ -384,7 +469,7 @@ public sealed class OrderUploadServiceTests
         await cancellation.CancelAsync();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            execution.WaitAsync(TimeSpan.FromSeconds(2)));
+            execution.WaitAsync(AsyncTestWaitSupport.DefaultTimeout));
         Assert.Equal([first], uploader.Attempts);
     }
 
@@ -1130,6 +1215,118 @@ public sealed class OrderUploadServiceTests
         }
     }
 
+    // 真实 HttpClient（经过与生产一致的 ApiRuntimeEndpointHandler）+ 真实上传服务与 SQLite 仓储。
+    // "慢单"让服务端一直不响应，由 HttpClient 自身的超时打断，得到与生产完全相同的异常形状。
+    private sealed class TimeoutUploadHarness : IAsyncDisposable
+    {
+        private const string ApiAddress = "https://api.example.test/pos-api/";
+        private readonly string _databasePath;
+        private readonly HttpClient _httpClient;
+
+        private TimeoutUploadHarness(
+            string databasePath,
+            LocalSqliteStore store,
+            SlowOrderSyncHandler handler,
+            IReadOnlyList<Guid> slowOrders,
+            IReadOnlyList<Guid> fastOrders)
+        {
+            _databasePath = databasePath;
+            Handler = handler;
+            SlowOrders = slowOrders;
+            FastOrders = fastOrders;
+            Orders = new LocalOrderRepository(store);
+            UploadRepository = new LocalOrderUploadRepository(store);
+            SyncQueue = new SyncQueueRepository(store);
+            _httpClient = new HttpClient(new ApiRuntimeEndpointHandler(new ApiRuntimeEndpointState(ApiAddress))
+            {
+                InnerHandler = handler
+            })
+            {
+                BaseAddress = new Uri(ApiAddress),
+                // 生产是 15 秒；这里缩短但留足余量，避免慢 CI 上正常请求也被判超时。
+                Timeout = TimeSpan.FromSeconds(1)
+            };
+            UploadService = new OrderUploadService(Orders, new OrderSyncApiClient(_httpClient), UploadRepository);
+            Executor = new OrderUploadExecutionService(UploadService, UploadRepository);
+        }
+
+        public SlowOrderSyncHandler Handler { get; }
+
+        public IReadOnlyList<Guid> SlowOrders { get; }
+
+        public IReadOnlyList<Guid> FastOrders { get; }
+
+        public LocalOrderRepository Orders { get; }
+
+        public LocalOrderUploadRepository UploadRepository { get; }
+
+        public SyncQueueRepository SyncQueue { get; }
+
+        public OrderUploadService UploadService { get; }
+
+        public OrderUploadExecutionService Executor { get; }
+
+        public static async Task<TimeoutUploadHarness> CreateAsync(int slowOrderCount, int fastOrderCount)
+        {
+            var databasePath = Path.Combine(Path.GetTempPath(), $"hbpos-order-upload-timeout-{Guid.NewGuid():N}.db");
+            var store = new LocalSqliteStore(databasePath);
+            await new LocalSchemaService(store).InitializeAsync();
+            var orders = new LocalOrderRepository(store);
+            var slowOrders = new List<Guid>();
+            var fastOrders = new List<Guid>();
+            // 先存慢单再存快单，上传队列按创建时间排序，慢单排在前面。
+            for (var index = 0; index < slowOrderCount + fastOrderCount; index++)
+            {
+                var order = CreateLocalOrder();
+                await orders.SavePendingOrderAsync(order);
+                (index < slowOrderCount ? slowOrders : fastOrders).Add(order.OrderGuid);
+            }
+
+            return new TimeoutUploadHarness(
+                databasePath,
+                store,
+                new SlowOrderSyncHandler(slowOrders),
+                slowOrders,
+                fastOrders);
+        }
+
+        public async Task<LocalOrderSummary> GetOrderAsync(Guid orderGuid) =>
+            (await Orders.GetRecentOrdersAsync()).Single(order => order.OrderGuid == orderGuid);
+
+        public async ValueTask DisposeAsync()
+        {
+            _httpClient.Dispose();
+            await SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(_databasePath);
+        }
+    }
+
+    private sealed class SlowOrderSyncHandler(IReadOnlyCollection<Guid> slowOrders) : HttpMessageHandler
+    {
+        private int _requestCount;
+
+        public int RequestCount => Volatile.Read(ref _requestCount);
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _requestCount);
+            var syncRequest = await request.Content!.ReadFromJsonAsync<OrderSyncRequest>(
+                cancellationToken: cancellationToken);
+            if (slowOrders.Contains(syncRequest!.OrderGuid))
+            {
+                // 服务端迟迟不响应，直到 HttpClient 的超时取消本次请求。
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = JsonContent.Create(ApiResult<OrderSyncResponse>.Ok(
+                    new OrderSyncResponse(syncRequest.OrderGuid, true, false, "Synced")))
+            };
+        }
+    }
+
     private sealed class EndpointSwitchOrderSyncHandler : HttpMessageHandler
     {
         private readonly TaskCompletionSource _firstRequestStarted =
@@ -1190,6 +1387,8 @@ public sealed class OrderUploadServiceTests
             MarkedPendingOrderGuids.Add(orderGuid);
             return Task.CompletedTask;
         }
+        public Task MarkPendingAsync(Guid orderGuid, string errorMessage, CancellationToken cancellationToken = default) =>
+            MarkPendingAsync(orderGuid, cancellationToken);
         public Task MarkSyncedAsync(Guid orderGuid, CancellationToken cancellationToken = default) => Task.CompletedTask;
         public Task MarkFailedAsync(Guid orderGuid, string errorMessage, CancellationToken cancellationToken = default) => Task.CompletedTask;
     }

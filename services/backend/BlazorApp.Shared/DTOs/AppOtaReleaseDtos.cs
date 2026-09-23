@@ -18,6 +18,7 @@ public static class MobileOtaPolicyErrorCodes
     public const string TargetRequired = "MOBILE_OTA_TARGET_REQUIRED";
     public const string TargetInvalid = "MOBILE_OTA_TARGET_INVALID";
     public const string ReleaseMessageInvalid = "MOBILE_OTA_RELEASE_MESSAGE_INVALID";
+    public const string AdditionalTargetsInvalid = "MOBILE_OTA_ADDITIONAL_TARGETS_INVALID";
 }
 
 public sealed class AppOtaReleaseQuery
@@ -141,6 +142,13 @@ public sealed record MobileOtaPolicyRequest
     public bool Required { get; init; }
     public Guid? TargetReleaseId { get; init; }
     public string? ReleaseMessage { get; init; }
+    public IReadOnlyList<Guid>? AdditionalTargetReleaseIds { get; init; }
+}
+
+public sealed class MobileOtaAdditionalTargetDto
+{
+    public Guid TargetReleaseId { get; set; }
+    public string TargetRuntimeVersion { get; set; } = string.Empty;
 }
 
 public sealed class MobileOtaPolicyDto
@@ -154,6 +162,7 @@ public sealed class MobileOtaPolicyDto
     public Guid? TargetReleaseId { get; set; }
     public string? TargetRuntimeVersion { get; set; }
     public string? ReleaseMessage { get; set; }
+    public List<MobileOtaAdditionalTargetDto> AdditionalTargets { get; set; } = [];
     public AppOtaReleaseDto? TargetRelease { get; set; }
     public DateTime? UpdatedAt { get; set; }
     public string? UpdatedBy { get; set; }

@@ -53,3 +53,10 @@ This project is indexed by GitNexus as **hb-platform-main** (117305 symbols, 416
 - 对适合委派的纯文本任务，仅当对应 DeepSeek 角色已配置且当前可调用时，优先使用 `DeepSeek-Flash` 处理常规任务、`DeepSeek-Pro` 处理复杂任务；不可用时直接使用当前原生角色，不尝试未经授权的 provider、凭据或安装变更。
 - 代码审查使用 `code-reviewer`；`DeepSeek-Pro` 已配置且当前可调用时，并发进行不继承完整上下文的独立第二路审查，提供自包含的目标、范围及 diff、commit 或 PR 证据。主代理汇总、去重并依据代码逐条复核；第二路不可用或未返回有效结果时说明该限制，继续完成可执行的审查与验证，不冒充已完成第二路审查。
 - 图片、视频、截图及其他视觉输入仍由主代理先识别并整理为文字事实，再按需交给 `DeepSeek-Pro` 或 `DeepSeek-Flash`。
+
+## 发布与 PR 规范
+
+- **需要重新构建移动端原生包才能生效的 PR，标题必须写明**，例如「…（需重建 iOS 与 Android 包）」「…（需重建 APK）」「…（需重建 iOS）」，写在 GitHub squash 自动追加的 `(#N)` 之前。纯 JS、可走 OTA 的 PR 不加该标注，避免标题噪音。
+- 判定「需要重新出原生包」（OTA 只能送 JS）：改动落在 `apps/mobile/android/**`、`apps/mobile/plugins/**`（配置插件与 `*.swift`/`*.kt`），或改了 `app.json` / `eas.json` 的原生字段（`version`、`runtimeVersion`、权限、`plugins`、图标、scheme），或新增、升级带原生代码的依赖与 Expo SDK。
+- 标题只标注「是否需要原生包」；发布顺序（后端、OTA、原生包）、runtime 影响与构建基线写在描述里。新原生包要从「与同批 OTA 相同的 JS 基线 + 升版本提交」构建，不要直接从 main 构建。
+- 之所以要求写进标题：标题是合并列表与发布清单里唯一始终可见的信息。原生包要走 EAS 构建与上架审核，比 OTA 慢得多，只写在描述里，批量合并后容易被当成能 OTA 的改动而漏发。

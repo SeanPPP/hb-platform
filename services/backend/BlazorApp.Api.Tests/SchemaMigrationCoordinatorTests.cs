@@ -88,6 +88,8 @@ public sealed class SchemaMigrationCoordinatorTests
         Assert.Contains("VerifyProductHqSyncOutboxAsync", runtimeMethods);
         Assert.Contains("ApplySalesDetailQueryProjectionAsync", runtimeMethods);
         Assert.Contains("VerifySalesDetailQueryProjectionAsync", runtimeMethods);
+        Assert.Contains("ApplyMobileOtaRuntimeTargetsAsync", runtimeMethods);
+        Assert.Contains("VerifyMobileOtaRuntimeTargetsAsync", runtimeMethods);
         Assert.Contains("ApplyPosmBaselineAsync", runtimeMethods);
         Assert.Contains("ApplyMobileDeviceActivationAsync", runtimeMethods);
         Assert.Contains("ApplyLinklyMultiTerminalAsync", runtimeMethods);
@@ -397,6 +399,14 @@ public sealed class SchemaMigrationCoordinatorTests
         runtime.MarkApplied(
             SchemaDatabase.Main,
             SchemaMigrationCoordinator.SalesDetailQueryMappingUseMigrationId
+        );
+        runtime.MarkApplied(
+            SchemaDatabase.Main,
+            SchemaMigrationCoordinator.MobileOtaRuntimeTargetsMigrationId
+        );
+        runtime.MarkApplied(
+            SchemaDatabase.Main,
+            SchemaMigrationCoordinator.SalesDetailQueryMonthlyMigrationId
         );
         runtime.MarkApplied(SchemaDatabase.Posm, SchemaMigrationCoordinator.PosmMigrationId);
         runtime.MarkApplied(
@@ -818,6 +828,8 @@ public sealed class SchemaMigrationCoordinatorTests
                 "Check:Main:20260909.001-pricing-curve",
                 "Check:Main:20260909.002-sales-detail-query-projection",
                 "Check:Main:20260909.003-sales-detail-query-mapping-use",
+                "Check:Main:20260921.001-mobile-ota-runtime-targets",
+                "Check:Main:20260922.001-sales-detail-query-monthly",
                 "Check:Posm:20260827.001-hbweb-posm-baseline",
                 "Check:Posm:20260831.001-mobile-device-activation",
                 "Check:Posm:20260903.001-linkly-multi-terminal",
@@ -1036,6 +1048,7 @@ public sealed class SchemaMigrationCoordinatorTests
         public Exception? SalesDetailQueryProjectionVerifyException { get; init; }
         public Exception? ProductHqOutboxVerifyException { get; init; }
         public Exception? LinklyVerifyException { get; init; }
+        public Exception? MobileOtaRuntimeTargetsVerifyException { get; init; }
 
         public void MarkApplied(SchemaDatabase database, string migrationId) =>
             _applied.Add((database, migrationId));
@@ -1144,6 +1157,39 @@ public sealed class SchemaMigrationCoordinatorTests
             Events.Add("VerifySalesDetailQueryProjection");
             if (SalesDetailQueryProjectionVerifyException is not null)
                 throw SalesDetailQueryProjectionVerifyException;
+            return Task.CompletedTask;
+        }
+
+        public Task ApplyMobileOtaRuntimeTargetsAsync(CancellationToken cancellationToken) =>
+            ApplyAsync(
+                SchemaDatabase.Main,
+                SchemaMigrationCoordinator.MobileOtaRuntimeTargetsMigrationId,
+                cancellationToken
+            );
+
+        public Task ApplySalesDetailQueryMonthlyAsync(CancellationToken cancellationToken) =>
+            ApplyAsync(
+                SchemaDatabase.Main,
+                SchemaMigrationCoordinator.SalesDetailQueryMonthlyMigrationId,
+                cancellationToken
+            );
+
+        public Task VerifySalesDetailQueryMonthlyAsync(CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Events.Add("VerifySalesDetailQueryMonthly");
+            return Task.CompletedTask;
+        }
+
+        public Task VerifyMobileOtaRuntimeTargetsAsync(CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Events.Add("VerifyMobileOtaRuntimeTargets");
+            if (MobileOtaRuntimeTargetsVerifyException is not null)
+            {
+                throw MobileOtaRuntimeTargetsVerifyException;
+            }
+
             return Task.CompletedTask;
         }
 

@@ -49,10 +49,14 @@ const SOUND_PATTERNS: Record<GeneratedToneKey, ToneStep[]> = {
     { frequency: 0, durationMs: 30 },
     { frequency: 988, durationMs: 120, volume: 0.32 },
   ],
+  // Zebra 小喇叭放不出 400Hz 以下的低音，会被扫码头自带的解码提示音盖住；
+  // 找不到商品改用喇叭能清楚放出的中频、高音量三连音，与成功的上扬双音明显区分。
   not_found: [
-    { frequency: 392, durationMs: 110, volume: 0.34 },
-    { frequency: 0, durationMs: 30 },
-    { frequency: 330, durationMs: 140, volume: 0.34 },
+    { frequency: 640, durationMs: 170, volume: 0.8 },
+    { frequency: 0, durationMs: 70 },
+    { frequency: 640, durationMs: 170, volume: 0.8 },
+    { frequency: 0, durationMs: 70 },
+    { frequency: 640, durationMs: 170, volume: 0.8 },
   ],
   blocked: [
     { frequency: 440, durationMs: 180, volume: 0.32 },

@@ -4,6 +4,7 @@ using BlazorApp.Api.Authentication;
 using BlazorApp.Api.Controllers;
 using BlazorApp.Api.Controllers.React;
 using BlazorApp.Api.Interfaces;
+using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
@@ -337,6 +338,10 @@ public class ControllerAuthorizationMetadataTests
         );
         yield return Policy<SalesDashboardController>(
             nameof(SalesDashboardController.GetChinaSupplierSalesRankAsync),
+            Permissions.Reports.ProductMovementView
+        );
+        yield return Policy<SalesDashboardController>(
+            nameof(SalesDashboardController.GetChinaSupplierBranchTotalsAsync),
             Permissions.Reports.ProductMovementView
         );
         yield return Policy<SalesDashboardController>(
@@ -691,20 +696,8 @@ public class ControllerAuthorizationMetadataTests
         );
 
         yield return Policy<ReactCashRegisterUserController>(
-            nameof(ReactCashRegisterUserController.Grid),
-            Permissions.Store.ManageOperations
-        );
-        yield return Policy<ReactCashRegisterUserController>(
-            nameof(ReactCashRegisterUserController.GetByHGuid),
-            Permissions.Store.ManageOperations
-        );
-        yield return Policy<ReactCashRegisterUserController>(
-            nameof(ReactCashRegisterUserController.Create),
-            Permissions.Store.ManageOperations
-        );
-        yield return Policy<ReactCashRegisterUserController>(
-            nameof(ReactCashRegisterUserController.Update),
-            Permissions.Store.ManageOperations
+            nameof(ReactCashRegisterUserController.ConfirmPrint),
+            Permissions.CashRegisterUsers.MobilePrint
         );
         yield return Policy<ReactCashRegisterUserController>(
             nameof(ReactCashRegisterUserController.Delete),
@@ -771,6 +764,14 @@ public class ControllerAuthorizationMetadataTests
         yield return Policy<SeasonalCardRemainingController>(
             nameof(SeasonalCardRemainingController.GetSubmission),
             Permissions.SeasonalCards.Remaining.ViewManagedStore
+        );
+        yield return Policy<SeasonalProductInsightsController>(
+            nameof(SeasonalProductInsightsController.Lookup),
+            Permissions.SeasonalProductInsights.View
+        );
+        yield return Policy<SeasonalProductInsightsController>(
+            nameof(SeasonalProductInsightsController.GetStoreInsight),
+            Permissions.SeasonalProductInsights.View
         );
         yield return Policy<ReactAttendanceController>(
             nameof(ReactAttendanceController.GetAttendanceRecords),
@@ -895,6 +896,92 @@ public class ControllerAuthorizationMetadataTests
         );
 
         Assert.True(await task);
+    }
+
+    [Theory]
+    [InlineData(Permissions.Store.ManageOperations, true, true)]
+    [InlineData(Permissions.CashRegisterUsers.MobileManage, true, true)]
+    [InlineData(Permissions.CashRegisterUsers.MobilePrint, true, false)]
+    [InlineData(Permissions.Users.View, false, false)]
+    public async Task ReactCashRegisterUserController_移动端独立权限按读取与管理分开放行(
+        string grantedPermission,
+        bool canRead,
+        bool canManage
+    )
+    {
+        var service = new Mock<ICashRegisterUserReactService>();
+        service
+            .Setup(item => item.GetGridDataAsync(It.IsAny<GridRequestDto>()))
+            .ReturnsAsync(new GridResponseDto<CashRegisterUserListDto>
+            {
+                Success = true,
+                Items = new List<CashRegisterUserListDto>(),
+            });
+        service
+            .Setup(item => item.GetByHGuidAsync(It.IsAny<string>()))
+            .ReturnsAsync(ApiResponse<CashRegisterUserDetailDto>.OK(new CashRegisterUserDetailDto()));
+        service
+            .Setup(item => item.GetScopeAsync())
+            .ReturnsAsync(() => ApiResponse<CashRegisterUserScopeDto>.OK(new CashRegisterUserScopeDto()));
+        service
+            .Setup(item => item.GetUserOptionsAsync())
+            .ReturnsAsync(ApiResponse<List<CashRegisterUserUserOptionDto>>.OK(new List<CashRegisterUserUserOptionDto>()));
+        service
+            .Setup(item => item.CreateAsync(It.IsAny<CreateCashRegisterUserDto>(), It.IsAny<string>()))
+            .ReturnsAsync(ApiResponse<CashRegisterUserDetailDto>.OK(new CashRegisterUserDetailDto()));
+        service
+            .Setup(item => item.UpdateAsync(It.IsAny<string>(), It.IsAny<UpdateCashRegisterUserDto>(), It.IsAny<string>()))
+            .ReturnsAsync(ApiResponse<CashRegisterUserDetailDto>.OK(new CashRegisterUserDetailDto()));
+
+        var authorizationService = new Mock<IAuthorizationService>(MockBehavior.Strict);
+        authorizationService
+            .Setup(item => item.AuthorizeAsync(
+                It.IsAny<ClaimsPrincipal>(),
+                It.IsAny<object?>(),
+                It.IsAny<string>()))
+            .ReturnsAsync((ClaimsPrincipal _, object? _, string policyName) =>
+                string.Equals(policyName, grantedPermission, StringComparison.OrdinalIgnoreCase)
+                    ? AuthorizationResult.Success()
+                    : AuthorizationResult.Failed());
+        var controller = new ReactCashRegisterUserController(service.Object, authorizationService.Object)
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(new ClaimsIdentity(
+                        new[] { new Claim(ClaimTypes.Name, "tester") }, "test")),
+                },
+            },
+        };
+
+        AssertAllowed(canRead, await controller.Grid(new GridRequestDto { StartRow = 0, PageSize = 20 }));
+        AssertAllowed(canRead, await controller.GetByHGuid("cashier-1"));
+        var scopeResult = await controller.GetScope();
+        AssertAllowed(canRead, scopeResult);
+        if (canRead)
+        {
+            // 范围接口回传服务端实时判定：只有移动端独立权限才点亮管理/打印，Web 权限不带出。
+            var scope = (CashRegisterUserScopeDto)((OkObjectResult)scopeResult).Value!
+                .GetType().GetProperty("data")!.GetValue(((OkObjectResult)scopeResult).Value)!;
+            Assert.Equal(grantedPermission == Permissions.CashRegisterUsers.MobileManage, scope.CanManage);
+            Assert.Equal(grantedPermission == Permissions.CashRegisterUsers.MobilePrint, scope.CanPrint);
+        }
+        AssertAllowed(canManage, await controller.GetUserOptions());
+        AssertAllowed(canManage, await controller.Create(new CreateCashRegisterUserDto()));
+        AssertAllowed(canManage, await controller.Update("cashier-1", new UpdateCashRegisterUserDto()));
+
+        static void AssertAllowed(bool expected, IActionResult result)
+        {
+            if (expected)
+            {
+                Assert.IsType<OkObjectResult>(result);
+            }
+            else
+            {
+                Assert.IsType<ForbidResult>(result);
+            }
+        }
     }
 
     [Fact]

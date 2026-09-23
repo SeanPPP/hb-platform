@@ -63,6 +63,7 @@ const completePreview = buildPreview([
   P.StoreProducts.View,
   P.StoreProducts.Edit,
   P.StoreProducts.PriceUpdates,
+  P.SeasonalProductInsights.View,
   P.InstallmentOrders.View,
   P.StoreVouchers.View,
   P.Attendance.ScheduleViewSelf,
@@ -93,6 +94,7 @@ assertArrayEqual(
     'price-updates',
     'product-insights',
     'warehouse-product-insights',
+    'seasonal-product-insights',
     'installment-orders',
     'store-vouchers',
     'attendance-personal',
@@ -101,6 +103,7 @@ assertArrayEqual(
     'users',
     'pos-operation-logs',
     'user-admin',
+    'cash-register-users',
     'roles',
     'permissions',
     'employee-profile',
@@ -157,11 +160,19 @@ assertArrayEqual(
     'product-query',
     'price-updates',
     'product-insights',
+    'seasonal-product-insights',
     'installment-orders',
     'store-vouchers',
     'seasonal-cards',
   ],
   'Web 权限预览的门店业务分组应包含商品进销和节日贺卡',
+)
+
+// 季节商品查询使用独立权限：只有「查看分店商品」不应看到入口。
+assertEqual(
+  buildPreview([P.StoreProducts.View]).allRoutes.find((route) => route.routeName === 'seasonal-product-insights')?.visible,
+  false,
+  '只有查看分店商品权限时不应显示季节商品查询',
 )
 
 // 价格更新使用专用权限：只有「编辑分店商品」不应看到入口。

@@ -19,6 +19,8 @@ export interface ReportSnapshotKeyInput {
   page?: number;
   pageSize?: number;
   detail?: string;
+  /** 服务端排序（如商品明细 "quantity:desc"）；前端排序的表不需要传。 */
+  sort?: string;
 }
 
 export interface CompleteReportSnapshot<T> {
@@ -46,6 +48,8 @@ export function createReportSnapshotKey(input: ReportSnapshotKeyInput): string {
     page: input.page ?? null,
     pageSize: input.pageSize ?? null,
     detail: input.detail ?? null,
+    // 只有服务端排序会改变结果行，未传时不写入，其他报表快照键保持原样。
+    ...(input.sort ? { sort: input.sort } : {}),
   });
 }
 

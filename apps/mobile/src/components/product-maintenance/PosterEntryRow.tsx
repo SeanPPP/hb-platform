@@ -11,7 +11,7 @@ interface PosterEntryRowProps {
   onOpen: (kind: PromoPosterKind) => void;
 }
 
-/** 海报行：特价与新品可直接编辑，多件价和清仓按促销状态启用。 */
+/** 海报行：特价、新品和多件价可直接编辑，清仓按清货价启用。 */
 export function PosterEntryRow({ availability, disabled = false, onOpen }: PosterEntryRowProps) {
   const { t } = useAppTranslation(["productQuery"]);
 

@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>没有权限 · Access denied</title>
+<style>
+  :root { --bg: #F5F4EF; --surface: #FFFFFF; --ink: #1B1E22; --soft: #5B6169; --border: #DDD9CE; --accent: #0E6B63; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #14171A; --surface: #1C2024; --ink: #ECEAE3; --soft: #A3A9AE; --border: #33393F; --accent: #3FCFC0; } }
+  html, body { min-height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', 'Segoe UI', sans-serif;
+    display: flex; align-items: center; justify-content: center; padding: 32px 16px;
+  }
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 22px 22px 18px; max-width: 460px; width: 100%;
+  }
+  h1 { font-size: 18px; margin: 0 0 10px; }
+  p { font-size: 14px; line-height: 1.6; margin: 0 0 10px; }
+  .en { color: var(--soft); font-size: 12.5px; border-top: 1px solid var(--border); padding-top: 10px; margin-top: 12px; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+  a.btn {
+    display: inline-block; padding: 7px 14px; border-radius: 8px; font-size: 13px; font-weight: 600;
+    text-decoration: none; border: 1px solid var(--border); color: var(--ink);
+  }
+  a.btn.primary { background: var(--accent); color: #FFFFFF; border-color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>没有权限查看这份报告</h1>
+  <p>你已登录，但当前账号不能查看这份报告。</p>
+  <p>1. 打开报告需要「查看 KFC 补货信号」权限，默认只能看账号关联的门店；<br>2. 要看全部门店汇总或其它门店，还需要「查看 KFC 补货信号全部门店」权限。</p>
+  <p>如需开通，请联系系统管理员在「角色管理」里授权。</p>
+  <p class="en">You are signed in, but this account cannot view this report. Opening it requires the "View KFC restock signals" permission, which shows only the stores linked to your account. Viewing all stores or other stores also requires "View KFC restock signals for all stores". Ask your system administrator to grant access in role management.</p>
+  <div class="actions">
+    <a class="btn primary" href="/">返回主站 · Back to site</a>
+    <a class="btn" id="switch" href="/login">换个账号登录 · Sign in as someone else</a>
+  </div>
+</div>
+<script>
+  // 换账号登录后仍跳回原报告
+  (function () {
+    var m = /^\/reports\/[a-z0-9][a-z0-9-]{0,63}\//.exec(window.location.pathname);
+    if (m) document.getElementById("switch").href = "/login?redirect=" + encodeURIComponent(m[0]);
+  })();
+</script>
+</body>
+</html>

@@ -14,6 +14,8 @@ import {
   normalizePurchaseSalesAnalysisPageSize,
   PURCHASE_SALES_ANALYSIS_DEFAULT_SORT_BY,
   PURCHASE_SALES_ANALYSIS_DEFAULT_SORT_ORDER,
+  PURCHASE_SALES_ANALYSIS_MIN_TABLE_BODY_HEIGHT,
+  resolvePurchaseSalesAnalysisTableBodyHeight,
   TRANSPARENT_IMAGE_FALLBACK,
   toPurchaseSalesAnalysisSort,
 } from '../pages/PosAdmin/LocalSupplierPurchaseSalesAnalysis/helpers'
@@ -163,6 +165,21 @@ try {
     normalizePurchaseSalesAnalysisPageSize(80),
     DEFAULT_PURCHASE_SALES_ANALYSIS_PAGE_SIZE,
     '不允许的分页值应回退到 100',
+  )
+  assertEqual(
+    PURCHASE_SALES_ANALYSIS_MIN_TABLE_BODY_HEIGHT,
+    520,
+    '明细表格应保留足够高度展示多行趋势数据',
+  )
+  assertEqual(
+    resolvePurchaseSalesAnalysisTableBodyHeight(180),
+    520,
+    '较矮视口也不能把明细表体压缩回只能显示少量数据行',
+  )
+  assertEqual(
+    resolvePurchaseSalesAnalysisTableBodyHeight(680.8),
+    680,
+    '较高视口应继续使用全部可用高度',
   )
 
   assertDeepEqual(

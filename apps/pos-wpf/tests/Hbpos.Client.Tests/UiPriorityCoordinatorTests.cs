@@ -38,6 +38,6 @@ public sealed class UiPriorityCoordinatorTests
         Assert.False(waitTask.IsCompleted);
 
         operation.Dispose();
-        await waitTask.WaitAsync(TimeSpan.FromSeconds(1));
+        await waitTask.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
     }
 }

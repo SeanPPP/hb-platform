@@ -31,6 +31,20 @@ public sealed class SalesDetailQueryProjectionTests
     }
 
     [Fact]
+    public void SQL契约_状态行按完整主键等值加锁不再范围读取相邻日期()
+    {
+        var sql = SalesDetailQueryProjection.BuildRefreshDaySql("POSM");
+
+        // 变量与生产列同为 datetime，等值命中唯一聚集主键时 HOLDLOCK 只锁本日期这一行。
+        Assert.Contains("DECLARE @sdpStateDate datetime = CONVERT(datetime, @sdpDay);", sql);
+        Assert.Contains("""
+FROM [dbo].[SalesStatisticRefreshState] WITH (UPDLOCK, HOLDLOCK)
+WHERE [StatisticType] = N'ProductStoreDaily' AND [Date] = @sdpStateDate;
+""", sql);
+        Assert.DoesNotContain("[StatisticType] = N'ProductStoreDaily' AND [Date] >=", sql);
+    }
+
+    [Fact]
     public void 显式Schema_固定三表关键类型和索引()
     {
         var sql = SalesDetailQueryProjection.CreateSchemaSql;
@@ -47,14 +61,15 @@ public sealed class SalesDetailQueryProjectionTests
     }
 
     [Fact]
-    public void 维护配置_只接受完整且不超过366天的精确日期范围()
+    public void 维护配置_只接受完整且不超过731天的精确日期范围()
     {
-        var valid = BuildMaintenanceConfiguration("2025-09-09", "2026-09-09");
+        // 页面区间上限为两年（731 天），投影回填单次范围与之对齐。
+        var valid = BuildMaintenanceConfiguration("2024-09-09", "2026-09-09");
         Assert.True(SalesDetailQueryProjectionMaintenanceRunner.TryReadSettings(valid, out var settings));
-        Assert.Equal(366, (settings.EndDate - settings.StartDate).Days + 1);
+        Assert.Equal(731, (settings.EndDate - settings.StartDate).Days + 1);
 
         Assert.False(SalesDetailQueryProjectionMaintenanceRunner.TryReadSettings(
-            BuildMaintenanceConfiguration("2025-09-08", "2026-09-09"), out _));
+            BuildMaintenanceConfiguration("2024-09-08", "2026-09-09"), out _));
         Assert.False(SalesDetailQueryProjectionMaintenanceRunner.TryReadSettings(
             BuildMaintenanceConfiguration("09/09/2025", "2026-09-09"), out _));
         Assert.False(SalesDetailQueryProjectionMaintenanceRunner.TryReadSettings(
@@ -336,6 +351,95 @@ INSERT dbo.SalesStatisticRefreshState VALUES
                 "SELECT COUNT(*) FROM dbo.SalesDetailQueryMappingUse WHERE [Date]='2026-09-08';"));
             Assert.Equal(1, await ScalarIntAsync(main,
                 "SELECT COUNT(*) FROM dbo.SalesDetailQueryProductAlias WHERE ProductCode=N' P1 ' AND ProductName=N'旧名;:' AND Barcode=N'01';"));
+        }
+        finally
+        {
+            await ExecuteAsync(rootConnection, $"""
+IF DB_ID(N'{mainDatabase}') IS NOT NULL BEGIN ALTER DATABASE [{mainDatabase}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{mainDatabase}]; END;
+IF DB_ID(N'{posmDatabase}') IS NOT NULL BEGIN ALTER DATABASE [{posmDatabase}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{posmDatabase}]; END;
+""");
+        }
+    }
+
+    [SalesDetailProjectionSqlServerFact]
+    public async Task 刷新日_相邻日期状态行被另一事务写锁持有时不等待()
+    {
+        var root = Environment.GetEnvironmentVariable(
+            SalesDetailProjectionSqlServerFactAttribute.EnvironmentVariable)!;
+        var suffix = Guid.NewGuid().ToString("N");
+        var mainDatabase = $"HB_SDP_MAIN_{suffix}";
+        var posmDatabase = $"HB_SDP_POSM_{suffix}";
+        var rootBuilder = new SqlConnectionStringBuilder(root) { InitialCatalog = "master" };
+
+        await using var rootConnection = new SqlConnection(rootBuilder.ConnectionString);
+        await rootConnection.OpenAsync();
+        try
+        {
+            await ExecuteAsync(rootConnection, $"""
+CREATE DATABASE [{mainDatabase}];
+ALTER DATABASE [{mainDatabase}] SET ALLOW_SNAPSHOT_ISOLATION ON;
+CREATE DATABASE [{posmDatabase}];
+ALTER DATABASE [{posmDatabase}] SET ALLOW_SNAPSHOT_ISOLATION ON;
+""");
+            var mainBuilder = new SqlConnectionStringBuilder(root) { InitialCatalog = mainDatabase };
+            var posmBuilder = new SqlConnectionStringBuilder(root) { InitialCatalog = posmDatabase };
+            await using var main = new SqlConnection(mainBuilder.ConnectionString);
+            await using var neighbour = new SqlConnection(mainBuilder.ConnectionString);
+            await using var posm = new SqlConnection(posmBuilder.ConnectionString);
+            await main.OpenAsync();
+            await neighbour.OpenAsync();
+            await posm.OpenAsync();
+
+            // 状态表与生产同形：datetime 日期列加 (StatisticType, Date) 唯一聚集主键，键范围锁只在索引上出现。
+            await ExecuteAsync(main, """
+CREATE TABLE dbo.ChinaSupplier (SupplierCode nvarchar(50) NULL);
+CREATE TABLE dbo.SalesStatisticRefreshState
+(
+ StatisticType nvarchar(80) NOT NULL, [Date] datetime NOT NULL, [Status] nvarchar(20) NOT NULL,
+ SourceProductVersion nvarchar(128) NULL, LastAggregatedAtUtc datetime2 NULL,
+ CompletedAtUtc datetime2 NULL, JobId uniqueidentifier NULL,
+ CONSTRAINT PK_SalesStatisticRefreshState_StatisticType_Date PRIMARY KEY CLUSTERED (StatisticType, [Date])
+);
+CREATE TABLE dbo.ProductStoreDailySalesStatistic
+(
+ [Date] datetime2 NOT NULL, BranchCode nvarchar(50) NOT NULL, SupplierCode nvarchar(50) NOT NULL,
+ ProductCode nvarchar(50) NOT NULL, ProductName nvarchar(255) NULL, Barcode nvarchar(100) NULL,
+ TotalQuantity int NOT NULL, TotalAmount decimal(18,4) NOT NULL, OrderCount int NOT NULL,
+ GrossProfit decimal(18,4) NULL, TotalCost decimal(18,4) NULL
+);
+INSERT dbo.SalesStatisticRefreshState VALUES
+ (N'ProductStoreDaily', '2026-09-08', N'Fresh', N'v1', '2026-09-09T01:00:00', '2026-09-09T01:01:00', NULL),
+ (N'ProductStoreDaily', '2026-09-09', N'Fresh', N'v2', '2026-09-10T01:00:00', '2026-09-10T01:01:00', NULL);
+INSERT dbo.ProductStoreDailySalesStatistic VALUES
+ ('2026-09-08', N'B1', N'A1', N'P1', N'商品', N'01', 2, 10, 1, 4, 6);
+""");
+            await ExecuteAsync(posm, """
+CREATE TABLE dbo.posm_product_supplier_mapping
+(
+ Id int IDENTITY PRIMARY KEY, ProductCode nvarchar(50) NULL, ChinaSupplierCode nvarchar(50) NULL,
+ LocalSupplierCode nvarchar(50) NOT NULL, IsDeleted bit NOT NULL
+);
+""");
+            await ExecuteAsync(main, SalesDetailQueryProjection.CreateSchemaSql);
+
+            // 相邻日期正在重算：另一事务持有 2026-09-09 状态行的 X 锁且尚未提交。
+            await using var neighbourTransaction = (SqlTransaction)await neighbour.BeginTransactionAsync();
+            await using (var command = neighbour.CreateCommand())
+            {
+                command.Transaction = neighbourTransaction;
+                command.CommandText = """
+UPDATE dbo.SalesStatisticRefreshState SET [Status] = N'Running'
+WHERE StatisticType = N'ProductStoreDaily' AND [Date] = '2026-09-09';
+""";
+                await command.ExecuteNonQueryAsync();
+            }
+
+            // 按日期范围读取时 HOLDLOCK 会申请下一个键（09-09）的 RangeS-U 锁而被挡住，3 秒锁超时即报 1222。
+            await ExecuteAsync(main, "SET LOCK_TIMEOUT 3000;");
+            await RefreshAsync(main, posmDatabase, new DateTime(2026, 9, 8));
+            Assert.Equal(1, await ScalarIntAsync(main,
+                "SELECT COUNT(*) FROM dbo.SalesDetailQueryProjectionState WHERE [Date]='2026-09-08' AND SourceProductVersion=N'v1';"));
+            await neighbourTransaction.RollbackAsync();
         }
         finally
         {

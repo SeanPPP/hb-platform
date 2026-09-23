@@ -396,6 +396,117 @@ public sealed class RevenueReportSnapshotTests : IDisposable
         Assert.Equal(first.Branches[0].Revenue, duringRefresh.Branches[0].Revenue);
     }
 
+    [Fact]
+    public async Task 对账失败但已聚合的日期照常可读并在提示里列出日期()
+    {
+        var day = new DateTime(2026, 4, 9);
+        await SeedStoreAsync(day, "S1", "一店", 100m, 5);
+        await SeedHourlyAsync(day, 9, "S1", 100m, 5);
+        await SeedFreshStateAsync(day, SalesStatisticType.HourlySales);
+        var aggregated = DateTime.UtcNow;
+        await _localDb.Insertable(new SalesStatisticRefreshState
+        {
+            Date = day, StatisticType = SalesStatisticType.StoreSales, Status = SalesStatisticRefreshStatus.Failed,
+            LastAggregatedAtUtc = aggregated, CompletedAtUtc = aggregated,
+            ErrorMessage = "商品统计与分店营业额统计不一致: 2026-04-09 1003",
+        }).ExecuteCommandAsync();
+
+        var result = await _service.GetRevenueReportSnapshotAsync(
+            new DateRangeDto { StartDate = day, EndDate = day }, new List<string> { "S1" }, new List<string> { "S1" });
+
+        Assert.Equal("Fresh", result.StatisticStatus);
+        Assert.False(result.StatisticsPending);
+        Assert.Contains("2026-04-09", result.StatisticMessage);
+        Assert.Equal(100m, Assert.Single(result.Branches).Revenue);
+    }
+
+    [Fact]
+    public async Task 从未聚合的失败日期仍标记Pending()
+    {
+        var day = new DateTime(2026, 4, 10);
+        await SeedStoreAsync(day, "S1", "一店", 100m, 5);
+        await _localDb.Insertable(new SalesStatisticRefreshState
+        {
+            Date = day, StatisticType = SalesStatisticType.StoreSales, Status = SalesStatisticRefreshStatus.Failed,
+        }).ExecuteCommandAsync();
+
+        var result = await _service.GetRevenueReportSnapshotAsync(
+            new DateRangeDto { StartDate = day, EndDate = day }, new List<string> { "S1" }, new List<string> { "S1" });
+
+        Assert.Equal("Pending", result.StatisticStatus);
+        Assert.True(result.StatisticsPending);
+    }
+
+    [Fact]
+    public async Task 早于最新状态的历史缺口和有营业额行的日期视为已发布()
+    {
+        // 2025 年有百余天只有 StoreSalesStatistic 行而没有状态行；2025-04-18 这类休业日既无行也无状态。
+        var gap = new DateTime(2025, 2, 1);
+        var closed = new DateTime(2025, 2, 2);
+        var tracked = new DateTime(2025, 2, 3);
+        await SeedStoreAsync(gap, "S1", "一店", 80m, 4);
+        await SeedHourlyAsync(gap, 9, "S1", 80m, 4);
+        await SeedStoreAsync(tracked, "S1", "一店", 90m, 3);
+        await SeedHourlyAsync(tracked, 9, "S1", 90m, 3);
+        await SeedFreshStateAsync(tracked, SalesStatisticType.StoreSales);
+        await SeedFreshStateAsync(tracked, SalesStatisticType.HourlySales);
+
+        var result = await _service.GetRevenueReportSnapshotAsync(
+            new DateRangeDto { StartDate = gap, EndDate = tracked }, new List<string> { "S1" }, new List<string> { "S1" });
+
+        Assert.Equal("Fresh", result.StatisticStatus);
+        Assert.False(result.HourlyCurrentPending);
+        Assert.Equal(170m, Assert.Single(result.Branches).Revenue);
+
+        // 排在最新状态之后又没有营业额行的日期（尚未排队的今天）仍是未发布。
+        var future = await _service.GetRevenueReportSnapshotAsync(
+            new DateRangeDto { StartDate = tracked, EndDate = tracked.AddDays(1) }, new List<string> { "S1" }, new List<string> { "S1" });
+        Assert.Equal("Pending", future.StatisticStatus);
+        _ = closed;
+    }
+
+    [Fact]
+    public async Task 分时缺口只提示时段面板不再让整页Pending()
+    {
+        var day = new DateTime(2026, 8, 24);
+        await SeedStoreAsync(day, "S1", "一店", 100m, 5);
+        await SeedStoreAsync(day, "S2", "测试店", 1.49m, 2);
+        await SeedHourlyAsync(day, 9, "S1", 100m, 5);
+        await SeedFreshStateAsync(day, SalesStatisticType.StoreSales);
+        await SeedFreshStateAsync(day, SalesStatisticType.HourlySales);
+
+        var result = await _service.GetRevenueReportSnapshotAsync(
+            new DateRangeDto { StartDate = day, EndDate = day }, new List<string> { "S1", "S2" }, new List<string> { "S1", "S2" });
+
+        Assert.Equal("Fresh", result.StatisticStatus);
+        Assert.False(result.StatisticsPending);
+        Assert.True(result.HourlyCurrentPending);
+        Assert.True(result.RefreshInProgress);
+        Assert.Equal(2, result.Branches.Count);
+        Assert.Single(result.Hourly);
+    }
+
+    [Fact]
+    public async Task 无销售的分店和全店休业日不要求分时覆盖()
+    {
+        var closed = new DateTime(2026, 4, 25);
+        var trading = new DateTime(2026, 4, 26);
+        await SeedFreshStateAsync(closed, SalesStatisticType.StoreSales);
+        await SeedFreshStateAsync(closed, SalesStatisticType.HourlySales);
+        await SeedStoreAsync(trading, "S1", "一店", 100m, 5);
+        await SeedStoreAsync(trading, "S2", "二店", 0m, 0);
+        await SeedHourlyAsync(trading, 9, "S1", 100m, 5);
+        await SeedFreshStateAsync(trading, SalesStatisticType.StoreSales);
+        await SeedFreshStateAsync(trading, SalesStatisticType.HourlySales);
+
+        var result = await _service.GetRevenueReportSnapshotAsync(
+            new DateRangeDto { StartDate = closed, EndDate = trading }, new List<string> { "S1", "S2" }, new List<string> { "S1", "S2" });
+
+        Assert.Equal("Fresh", result.StatisticStatus);
+        Assert.False(result.HourlyCurrentPending);
+        Assert.Null(result.StatisticMessage);
+    }
+
     private async Task SeedStoreAsync(DateTime date, string branchCode, string branchName, decimal revenue, int orders)
     {
         await _localDb.Insertable(new StoreSalesStatistic
