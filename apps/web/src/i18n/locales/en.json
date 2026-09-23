@@ -715,6 +715,7 @@
     "exponential": "Exponential",
     "step": "Step",
     "refreshCurrentTab": "Refresh Current Tab",
+    "reorderTab": "Drag to reorder tab: {{title}}",
     "pinTabsBar": "Tab Bar: Pinned",
     "unpinTabsBar": "Tab Bar: Unpinned",
     "closeOtherTabs": "Close Other Tabs",
