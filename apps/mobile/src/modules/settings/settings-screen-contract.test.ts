@@ -40,7 +40,7 @@ test("诊断、设备与双打印机详情入口可操作且共享原生打印�
   assert.match(source, /testID="settings-printer-details"/);
   assert.match(source, /visible=\{printerSettingsVisible\}/);
   assert.match(source, /printerNativeBusy\s*=\s*printerBusy\s*\|\|\s*receiptPrinterBusy/);
-  assert.match(source, /onPress=\{handleScanPrinters\}[\s\S]{0,220}disabled=\{printerNativeBusy\}/);
+  assert.match(source, /onPress=\{handleScanPrinters\}[\s\S]{0,240}disabled=\{printerNativeBusy \|\| !hasSelectedTransport\}/);
   assert.match(source, /onPress=\{handleConnectSavedPrinter\}[\s\S]{0,260}disabled=\{printerNativeBusy\}/);
   assert.match(source, /onPress=\{handleScanReceiptPrinters\}[\s\S]{0,220}disabled=\{printerNativeBusy\}/);
   assert.match(source, /onPress=\{handleTestReceiptPrinter\}[\s\S]{0,260}disabled=\{printerNativeBusy \|\| !savedReceiptPrinter\}/);
@@ -97,15 +97,16 @@ test("中英文设置文案同时提供新分组和诊断入口", () => {
 test("打印机列表明确区分配对状态并复用已配对优先排序", () => {
   const settings = read("app/(shell)/settings.tsx");
   const setupSheet = read("src/components/printer/LabelPrinterSetupSheet.tsx");
+  const details = read("src/components/printer/PrinterDeviceDetails.tsx");
   const zh = JSON.parse(read("src/locales/zh/screens/settings.json"));
   const en = JSON.parse(read("src/locales/en/screens/settings.json"));
 
   assert.match(settings, /orderPrinterDevices/);
-  assert.match(settings, /unbondedLabel=\{t\("printer\.unbonded"\)\}/);
-  assert.match(settings, /!printer\.bonded\s*&&\s*styles\.unbondedMeta/);
-  assert.match(setupSheet, /orderPrinterDevices/);
-  assert.match(setupSheet, /device\.bonded\s*\?\s*t\("printer\.bonded"\)\s*:\s*t\("printer\.unbonded"\)/);
-  assert.match(setupSheet, /!device\.bonded\s*&&\s*styles\.unbondedMeta/);
+  assert.match(settings, /<PrinterDeviceDetails device=\{printer\}/);
+  assert.match(setupSheet, /filterPrinterDevices/);
+  assert.match(setupSheet, /<PrinterDeviceDetails device=\{device\}/);
+  assert.match(details, /device\.bonded\s*\?\s*t\("printer\.bonded"\)\s*:\s*t\("printer\.unbonded"\)/);
+  assert.match(details, /!device\.bonded\s*&&\s*styles\.unbonded/);
 
   assert.equal(zh.printer.bonded, "已配对");
   assert.equal(zh.printer.unbonded, "未配对");
@@ -133,6 +134,35 @@ test("未配对打印机连接前明确说明系统配对步骤", () => {
   assert.equal(en.dialogs.printerPairingTitle, "Pair printer first");
   assert.match(en.dialogs.printerPairingMessage, /system pairing prompt/i);
   assert.equal(en.dialogs.printerPairingAction, "Start pairing");
+});
+
+test("安卓标签打印机按蓝牙类型筛选并阻止选择 BLE 设备", () => {
+  const settings = read("app/(shell)/settings.tsx");
+  const setupSheet = read("src/components/printer/LabelPrinterSetupSheet.tsx");
+  const filters = read("src/components/printer/PrinterTransportFilterControls.tsx");
+  const details = read("src/components/printer/PrinterDeviceDetails.tsx");
+
+  for (const source of [settings, setupSheet]) {
+    assert.match(source, /DEFAULT_PRINTER_TRANSPORT_FILTERS/);
+    assert.match(source, /filterPrinterDevices\(/);
+    assert.match(source, /isUnsupportedPrinterTransport\(device, Platform\.OS\)/);
+    assert.match(source, /<PrinterTransportFilterControls/);
+    assert.match(source, /<PrinterDeviceDetails/);
+    assert.match(source, /printer\.emptyTransportFiltered/);
+  }
+
+  assert.match(settings, /useEffect\(\(\) => \{[\s\S]{0,180}if \(printerSettingsVisible\)[\s\S]{0,180}setTransportFilters\(\{ \.\.\.DEFAULT_PRINTER_TRANSPORT_FILTERS \}\);[\s\S]{0,80}\}, \[printerSettingsVisible\]\)/);
+  assert.match(setupSheet, /useEffect\(\(\) => \{[\s\S]{0,120}if \(visible\)[\s\S]{0,180}setTransportFilters\(\{ \.\.\.DEFAULT_PRINTER_TRANSPORT_FILTERS \}\);[\s\S]{0,80}\}, \[visible\]\)/);
+  assert.match(filters, /Platform\.OS !== "android"/);
+  assert.match(filters, /printer\.showClassic/);
+  assert.match(filters, /printer\.showBle/);
+  assert.match(filters, /printer\.selectTransport/);
+  assert.match(details, /getPrinterDeviceIcon/);
+  assert.match(details, /printer\.bleUnsupported/);
+  for (const source of [settings, setupSheet]) {
+    assert.match(source, /scanCompleted && hasSelectedTransport|printerScanCompleted && hasSelectedTransport/);
+    assert.match(source, /Platform\.OS === "android"[\s\S]{0,180}printer\.emptyTransportFiltered[\s\S]{0,180}printer\.emptyFiltered/);
+  }
 });
 
 test("绑定设备会话可在设置中管理离线商品数据", () => {

@@ -1,4 +1,6 @@
+import { Platform } from "react-native";
 import type { ProductDetail } from "@/modules/product-maintenance/types";
+import { isUnsupportedPrinterTransport } from "@/modules/printer/device-list";
 import {
   buildEmployeeCashierBarcodeLabelCommand,
 } from "@/modules/printer/cpcl-labels";
@@ -254,6 +256,12 @@ export async function getPrinterStatus() {
 }
 
 export async function selectPrinter(device: PrinterDevice) {
+  // 明确不支持的设备必须在恢复自动重连或修改保存/连接状态前拒绝。
+  if (isUnsupportedPrinterTransport(device, Platform.OS)) {
+    throw Object.assign(new Error("Android printing does not support BLE-only devices. Select the classic Bluetooth device with the same name."), {
+      code: "PRINTER_BLE_UNSUPPORTED",
+    });
+  }
   if (isIosReviewSessionActive()) {
     const store = usePrinterStore.getState();
     store.setSavedPrinter(toSavedPrinter(device));

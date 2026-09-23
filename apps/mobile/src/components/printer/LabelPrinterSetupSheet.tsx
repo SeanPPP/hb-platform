@@ -1,8 +1,10 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Alert, Platform, StyleSheet, View } from "react-native";
 import { Button, HelperText, Switch, Text } from "react-native-paper";
 
 import { BusinessSheet } from "@/components/ui/BusinessSheet";
+import { PrinterDeviceDetails } from "@/components/printer/PrinterDeviceDetails";
+import { PrinterTransportFilterControls } from "@/components/printer/PrinterTransportFilterControls";
 import {
   clearSavedPrinter,
   connectSavedPrinter,
@@ -11,7 +13,11 @@ import {
   selectPrinter,
   testPrinterConnection,
 } from "@/modules/printer/api";
-import { orderPrinterDevices } from "@/modules/printer/device-list";
+import {
+  DEFAULT_PRINTER_TRANSPORT_FILTERS,
+  filterPrinterDevices,
+  isUnsupportedPrinterTransport,
+} from "@/modules/printer/device-list";
 import { usePrinterStore, type PrinterConnectionState } from "@/modules/printer/state";
 import type { PrinterDevice } from "@/modules/printer/types";
 import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
@@ -44,19 +50,32 @@ export function LabelPrinterSetupSheet({ visible, onDismiss }: LabelPrinterSetup
   const [devices, setDevices] = useState<PrinterDevice[]>([]);
   const [scanCompleted, setScanCompleted] = useState(false);
   const [filterXPOnly, setFilterXPOnly] = useState(true);
+  const [transportFilters, setTransportFilters] = useState({
+    ...DEFAULT_PRINTER_TRANSPORT_FILTERS,
+  });
   const [busy, setBusy] = useState(false);
 
   const isConnected = status === "connected";
   const isConnecting = status === "connecting" || status === "reconnecting";
 
-  const visibleDevices = useMemo(() => {
-    const filteredDevices = filterXPOnly
-      ? // 与设置页一致：门店标签机统一为 XP 型号，默认只显示 XP 开头的设备，减少误连。
-        devices.filter((device) => device.name?.trim().toUpperCase().startsWith("XP"))
-      : devices;
+  useEffect(() => {
+    if (visible) {
+      // 筛选只服务本次选择；重新打开时回到最安全的经典蓝牙默认视图。
+      setTransportFilters({ ...DEFAULT_PRINTER_TRANSPORT_FILTERS });
+    }
+  }, [visible]);
 
-    return orderPrinterDevices(filteredDevices);
-  }, [devices, filterXPOnly]);
+  const hasSelectedTransport =
+    Platform.OS !== "android" || transportFilters.showClassic || transportFilters.showBle;
+  const visibleDevices = useMemo(
+    () =>
+      filterPrinterDevices(devices, {
+        ...transportFilters,
+        xpOnly: filterXPOnly,
+        platform: Platform.OS,
+      }),
+    [devices, filterXPOnly, transportFilters]
+  );
 
   const getErrorMessage = (error: unknown) =>
     resolveLocalizedErrorMessage(error, { language, t, fallbackKey: "dialogs.refreshFailedMessage" });
@@ -101,6 +120,10 @@ export function LabelPrinterSetupSheet({ visible, onDismiss }: LabelPrinterSetup
     }, "dialogs.printerConnectFailedTitle", getPrinterErrorMessage);
 
   const handleSelect = (device: PrinterDevice) => {
+    if (isUnsupportedPrinterTransport(device, Platform.OS)) {
+      return;
+    }
+
     if (Platform.OS !== "android" || device.bonded) {
       void connectPrinterDevice(device);
       return;
@@ -165,7 +188,7 @@ export function LabelPrinterSetupSheet({ visible, onDismiss }: LabelPrinterSetup
             icon="magnify"
             onPress={handleScan}
             loading={busy && !isConnecting}
-            disabled={busy}
+            disabled={busy || !hasSelectedTransport}
             style={styles.flex}
           >
             {busy && !isConnecting ? t("printer.scanning") : t("printer.scan")}
@@ -195,7 +218,13 @@ export function LabelPrinterSetupSheet({ visible, onDismiss }: LabelPrinterSetup
           <Switch value={filterXPOnly} onValueChange={setFilterXPOnly} disabled={busy} />
         </View>
 
-        {scanCompleted ? (
+        <PrinterTransportFilterControls
+          value={transportFilters}
+          onChange={setTransportFilters}
+          disabled={busy}
+        />
+
+        {scanCompleted && hasSelectedTransport ? (
           visibleDevices.length ? (
             <View>
               <Text variant="labelMedium" style={styles.listLabel}>
@@ -203,25 +232,15 @@ export function LabelPrinterSetupSheet({ visible, onDismiss }: LabelPrinterSetup
               </Text>
               {visibleDevices.map((device) => {
                 const selected = savedPrinter?.address === device.address;
+                const unsupported = isUnsupportedPrinterTransport(device, Platform.OS);
                 return (
                   <View key={device.address} style={styles.deviceRow}>
-                    <View style={styles.flex}>
-                      <Text variant="bodyMedium" numberOfLines={1} style={styles.deviceName}>
-                        {device.name || device.address}
-                      </Text>
-                      <Text
-                        variant="bodySmall"
-                        style={[styles.meta, !device.bonded && styles.unbondedMeta]}
-                        numberOfLines={1}
-                      >
-                        {device.address} · {device.bonded ? t("printer.bonded") : t("printer.unbonded")}
-                      </Text>
-                    </View>
+                    <PrinterDeviceDetails device={device} />
                     <Button
                       compact
                       mode={selected ? "contained-tonal" : "outlined"}
                       onPress={() => void handleSelect(device)}
-                      disabled={busy}
+                      disabled={busy || unsupported}
                     >
                       {t("printer.connect")}
                     </Button>
@@ -231,7 +250,13 @@ export function LabelPrinterSetupSheet({ visible, onDismiss }: LabelPrinterSetup
             </View>
           ) : (
             <HelperText type="info" visible>
-              {devices.length && filterXPOnly ? t("printer.emptyFiltered") : t("printer.empty")}
+              {Platform.OS === "android"
+                ? devices.length
+                  ? t("printer.emptyTransportFiltered")
+                  : t("printer.empty")
+                : devices.length && filterXPOnly
+                  ? t("printer.emptyFiltered")
+                  : t("printer.empty")}
             </HelperText>
           )
         ) : null}
@@ -313,17 +338,6 @@ const styles = StyleSheet.create({
     paddingVertical: HB_SPACING.xs,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderColor: HB_COLORS.outlineMuted,
-  },
-  deviceName: {
-    color: HB_COLORS.textPrimary,
-    fontWeight: "600",
-  },
-  meta: {
-    color: HB_COLORS.textSecondary,
-  },
-  unbondedMeta: {
-    color: HB_COLORS.warning,
-    fontWeight: "700",
   },
   footerActions: {
     flexDirection: "row",

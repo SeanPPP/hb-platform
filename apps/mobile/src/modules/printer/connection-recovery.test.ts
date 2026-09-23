@@ -31,6 +31,7 @@ async function run() {
   let printGate: ReturnType<typeof deferred> | null;
   let connectGate: ReturnType<typeof deferred> | null;
   let reviewMode = false;
+  const platform = { OS: "android" };
   const receipt = { name: "Receipt", address: "receipt" };
 
   const print = async () => {
@@ -41,6 +42,7 @@ async function run() {
   };
 
   // 仅替换蓝牙与存储边界，实际执行共享 API 和 Zustand 状态转换。
+  mockModule("react-native", { Platform: platform });
   mockModule("./native", {
     getPrinterStatus: async () => { statusReads += 1; return { ...nativeStatus }; },
     connectPrinter: async (address: string) => {
@@ -95,8 +97,30 @@ async function run() {
     printGate = null;
     connectGate = null;
     reviewMode = false;
+    platform.OS = "android";
     usePrinterStore.setState({ savedPrinter: saved, status: "connected", autoReconnectPaused: false, lastError: null, hydrated: true });
     useReceiptPrinterStore.setState({ savedPrinter: receipt, status: "idle", autoReconnectPaused: false, lastError: null, hydrated: true });
+  });
+
+  test("Android BLE-only 选择在任何配对、断连、状态或存储变更前拒绝", async () => {
+    usePrinterStore.setState({ autoReconnectPaused: true, status: "paused" });
+    const before = usePrinterStore.getState();
+    for (const bonded of [true, false]) {
+      await assert.rejects(api.selectPrinter({ name: "XP BLE", address: "ble", bonded, connected: false, transport: "ble" }), { code: "PRINTER_BLE_UNSUPPORTED" });
+    }
+    assert.deepEqual(events, []);
+    assert.equal(statusReads, 0);
+    assert.equal(storageReads, 0);
+    assert.equal(usePrinterStore.getState(), before);
+    assert.equal(saved?.address, "label");
+    assert.equal(nativeStatus.address, "label");
+  });
+
+  test("iOS BLE 选择继续沿用现有连接与保存路径", async () => {
+    platform.OS = "ios";
+    await api.selectPrinter({ name: "XP BLE", address: "ble", bonded: true, connected: false, transport: "ble" });
+    assert.deepEqual(events, ["disconnect", "connect:ble"]);
+    assert.equal(saved?.address, "ble");
   });
 
   test("broken pipe 清除假连接，保留原始失败且不自动重印，下一次打印恢复", async () => {

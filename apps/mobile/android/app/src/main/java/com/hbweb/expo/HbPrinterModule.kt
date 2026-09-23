@@ -199,6 +199,11 @@ class HbPrinterModule(
       return
     }
 
+    // BLE-only 地址没有 RFCOMM/SPP 通道，必须在 createBond 前结束，避免系统配对后仍然超时。
+    if (rejectBleOnlyDevice(device, promise)) {
+      return
+    }
+
     if (device.bondState == BluetoothDevice.BOND_BONDED) {
       promise.resolve(true)
       return
@@ -294,7 +299,9 @@ class HbPrinterModule(
         name = device.name,
         address = device.address,
         bonded = true,
-        connected = device.address == connectedAddress && socket?.isConnected == true
+        connected = device.address == connectedAddress && socket?.isConnected == true,
+        transport = bluetoothTransport(device),
+        deviceClass = device.bluetoothClass?.deviceClass,
       )
     }
 
@@ -327,6 +334,12 @@ class HbPrinterModule(
         map.putString("address", printer.address)
         map.putBoolean("bonded", printer.bonded)
         map.putBoolean("connected", printer.connected)
+        map.putString("transport", printer.transport)
+        if (printer.deviceClass == null) {
+          map.putNull("deviceClass")
+        } else {
+          map.putInt("deviceClass", printer.deviceClass)
+        }
         array.pushMap(map)
       }
       promise.resolve(array)
@@ -348,7 +361,9 @@ class HbPrinterModule(
                 name = device.name,
                 address = device.address,
                 bonded = device.bondState == BluetoothDevice.BOND_BONDED,
-                connected = device.address == connectedAddress && socket?.isConnected == true
+                connected = device.address == connectedAddress && socket?.isConnected == true,
+                transport = bluetoothTransport(device),
+                deviceClass = device.bluetoothClass?.deviceClass,
               )
             }
           }
@@ -403,6 +418,11 @@ class HbPrinterModule(
       adapter.getRemoteDevice(address)
     } catch (error: IllegalArgumentException) {
       promise.reject("PRINTER_INVALID_ADDRESS", "The Bluetooth printer address is invalid.", error)
+      return
+    }
+
+    // 在 beginConnectionAttempt 清理旧 socket 前拒绝 BLE，后台重连旧地址也不会打断当前连接。
+    if (rejectBleOnlyDevice(device, promise)) {
       return
     }
 
@@ -1362,6 +1382,26 @@ class HbPrinterModule(
     }
   }
 
+  @SuppressLint("MissingPermission")
+  private fun bluetoothTransport(device: BluetoothDevice): String = when (device.type) {
+    BluetoothDevice.DEVICE_TYPE_CLASSIC -> "classic"
+    BluetoothDevice.DEVICE_TYPE_LE -> "ble"
+    BluetoothDevice.DEVICE_TYPE_DUAL -> "dual"
+    else -> "unknown"
+  }
+
+  @SuppressLint("MissingPermission")
+  private fun rejectBleOnlyDevice(device: BluetoothDevice, promise: Promise): Boolean {
+    if (device.type != BluetoothDevice.DEVICE_TYPE_LE) {
+      return false
+    }
+    promise.reject(
+      "PRINTER_BLE_UNSUPPORTED",
+      "This address only supports Bluetooth Low Energy. Select the classic Bluetooth address for this printer.",
+    )
+    return true
+  }
+
   private fun completePendingPairing(address: String) {
     val pending = synchronized(pairingLock) {
       if (pendingPairingAddress?.equals(address, ignoreCase = true) != true) {
@@ -1468,6 +1508,8 @@ class HbPrinterModule(
     val address: String,
     val bonded: Boolean,
     val connected: Boolean,
+    val transport: String,
+    val deviceClass: Int?,
   )
 
   data class PriceParts(

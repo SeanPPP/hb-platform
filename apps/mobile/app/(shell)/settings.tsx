@@ -26,6 +26,8 @@ import {
   TextInput,
 } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { PrinterDeviceDetails } from "@/components/printer/PrinterDeviceDetails";
+import { PrinterTransportFilterControls } from "@/components/printer/PrinterTransportFilterControls";
 import {
   clearSavedReceiptPrinter,
   clearSavedPrinter,
@@ -39,7 +41,12 @@ import {
   testReceiptPrinterConnection,
   testPrinterConnection,
 } from "@/modules/printer/api";
-import { orderPrinterDevices } from "@/modules/printer/device-list";
+import {
+  DEFAULT_PRINTER_TRANSPORT_FILTERS,
+  filterPrinterDevices,
+  isUnsupportedPrinterTransport,
+  orderPrinterDevices,
+} from "@/modules/printer/device-list";
 import { usePrinterStore, useReceiptPrinterStore, type PrinterConnectionState } from "@/modules/printer/state";
 import type { PrinterDevice } from "@/modules/printer/types";
 import { i18n, setAppLanguage } from "@/shared/i18n/i18n";
@@ -328,8 +335,6 @@ function CompactRow({
 interface PrinterDeviceListProps {
   devices: PrinterDevice[];
   selectedAddress?: string | null;
-  bondedLabel: string;
-  unbondedLabel: string;
   actionLabel: string;
   disabled: boolean;
   onSelect: (printer: PrinterDevice) => void;
@@ -338,8 +343,6 @@ interface PrinterDeviceListProps {
 function PrinterDeviceList({
   devices,
   selectedAddress,
-  bondedLabel,
-  unbondedLabel,
   actionLabel,
   disabled,
   onSelect,
@@ -348,27 +351,15 @@ function PrinterDeviceList({
     <View style={styles.printerList}>
       {devices.map((printer) => {
         const selected = selectedAddress === printer.address;
+        const unsupported = isUnsupportedPrinterTransport(printer, Platform.OS);
         return (
           <View key={printer.address} style={styles.printerRow}>
-            <View style={styles.printerMeta}>
-              <Text variant="bodyMedium" style={styles.printerName} numberOfLines={1}>
-                {printer.name || printer.address}
-              </Text>
-              <Text variant="bodySmall" style={styles.meta} numberOfLines={1}>
-                {printer.address}
-              </Text>
-              <Text
-                variant="bodySmall"
-                style={[styles.meta, !printer.bonded && styles.unbondedMeta]}
-              >
-                {printer.bonded ? bondedLabel : unbondedLabel}
-              </Text>
-            </View>
+            <PrinterDeviceDetails device={printer} />
             <Button
               compact
               mode={selected ? "contained-tonal" : "outlined"}
               onPress={() => onSelect(printer)}
-              disabled={disabled}
+              disabled={disabled || unsupported}
             >
               {actionLabel}
             </Button>
@@ -405,6 +396,9 @@ export default function Settings() {
   const [printerBusy, setPrinterBusy] = useState(false);
   const [printerScanCompleted, setPrinterScanCompleted] = useState(false);
   const [filterXPOnly, setFilterXPOnly] = useState(true);
+  const [transportFilters, setTransportFilters] = useState({
+    ...DEFAULT_PRINTER_TRANSPORT_FILTERS,
+  });
   const [receiptRawPrinters, setReceiptRawPrinters] = useState<PrinterDevice[]>([]);
   const [receiptPrinterBusy, setReceiptPrinterBusy] = useState(false);
   const [receiptPrinterScanCompleted, setReceiptPrinterScanCompleted] = useState(false);
@@ -528,21 +522,29 @@ export default function Settings() {
     [t, updateInfo]
   );
 
-  const visiblePrinters = useMemo(() => {
-    const filteredPrinters = filterXPOnly
-      ? rawPrinters.filter((printer) => {
-          const name = printer.name?.trim();
-          return typeof name === "string" && name.toUpperCase().startsWith("XP");
-        })
-      : rawPrinters;
-
-    return orderPrinterDevices(filteredPrinters);
-  }, [filterXPOnly, rawPrinters]);
+  const hasSelectedTransport =
+    Platform.OS !== "android" || transportFilters.showClassic || transportFilters.showBle;
+  const visiblePrinters = useMemo(
+    () =>
+      filterPrinterDevices(rawPrinters, {
+        ...transportFilters,
+        xpOnly: filterXPOnly,
+        platform: Platform.OS,
+      }),
+    [filterXPOnly, rawPrinters, transportFilters]
+  );
 
   const visibleReceiptPrinters = useMemo(
     () => orderPrinterDevices(receiptRawPrinters),
     [receiptRawPrinters]
   );
+
+  useEffect(() => {
+    if (printerSettingsVisible) {
+      // 筛选不持久化；每次打开详情均优先展示当前 Android 打印通道支持的经典蓝牙。
+      setTransportFilters({ ...DEFAULT_PRINTER_TRANSPORT_FILTERS });
+    }
+  }, [printerSettingsVisible]);
 
   useEffect(() => {
     let cancelled = false;
@@ -927,6 +929,10 @@ export default function Settings() {
   };
 
   const handleConnectPrinter = (device: PrinterDevice) => {
+    if (isUnsupportedPrinterTransport(device, Platform.OS)) {
+      return;
+    }
+
     if (Platform.OS !== "android" || device.bonded) {
       void connectPrinterDevice(device);
       return;
@@ -1481,7 +1487,7 @@ export default function Settings() {
                     icon="magnify"
                     onPress={handleScanPrinters}
                     loading={printerBusy && !isPrinterConnecting}
-                    disabled={printerNativeBusy}
+                    disabled={printerNativeBusy || !hasSelectedTransport}
                     style={styles.primaryActionButton}
                   >
                     {printerBusy && !isPrinterConnecting
@@ -1527,7 +1533,13 @@ export default function Settings() {
                   />
                 </View>
 
-                {printerScanCompleted ? (
+                <PrinterTransportFilterControls
+                  value={transportFilters}
+                  onChange={setTransportFilters}
+                  disabled={printerNativeBusy}
+                />
+
+                {printerScanCompleted && hasSelectedTransport ? (
                   visiblePrinters.length ? (
                     <>
                       <Text variant="labelMedium" style={styles.listLabel}>
@@ -1536,8 +1548,6 @@ export default function Settings() {
                       <PrinterDeviceList
                         devices={visiblePrinters}
                         selectedAddress={savedPrinter?.address}
-                        bondedLabel={t("printer.bonded")}
-                        unbondedLabel={t("printer.unbonded")}
                         actionLabel={t("printer.connect")}
                         disabled={printerNativeBusy}
                         onSelect={(printer) => void handleConnectPrinter(printer)}
@@ -1545,9 +1555,13 @@ export default function Settings() {
                     </>
                   ) : (
                     <HelperText type="info" visible>
-                      {rawPrinters.length && filterXPOnly
-                        ? t("printer.emptyFiltered")
-                        : t("printer.empty")}
+                      {Platform.OS === "android"
+                        ? rawPrinters.length
+                          ? t("printer.emptyTransportFiltered")
+                          : t("printer.empty")
+                        : rawPrinters.length && filterXPOnly
+                          ? t("printer.emptyFiltered")
+                          : t("printer.empty")}
                     </HelperText>
                   )
                 ) : null}
@@ -1635,8 +1649,6 @@ export default function Settings() {
                       <PrinterDeviceList
                         devices={visibleReceiptPrinters}
                         selectedAddress={savedReceiptPrinter?.address}
-                        bondedLabel={t("printer.bonded")}
-                        unbondedLabel={t("printer.unbonded")}
                         actionLabel={t("receiptPrinter.save")}
                         disabled={printerNativeBusy}
                         onSelect={(printer) => void handleSaveReceiptPrinter(printer)}
@@ -2093,15 +2105,6 @@ const styles = StyleSheet.create({
     backgroundColor: HB_COLORS.surfaceMuted,
     paddingHorizontal: HB_SPACING.sm,
     paddingVertical: HB_SPACING.xs,
-  },
-  printerMeta: {
-    flex: 1,
-    minWidth: 0,
-    gap: 2,
-  },
-  printerName: {
-    color: HB_COLORS.textPrimary,
-    fontWeight: "600",
   },
   printerActions: {
     flexDirection: "row",

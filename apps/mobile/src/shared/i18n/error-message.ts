@@ -80,6 +80,7 @@ function resolveCommonErrorKey(error: unknown) {
   const message = getMessage(error);
 
   const printerPairingErrorKey = code ? {
+    PRINTER_BLE_UNSUPPORTED: "common:errors.printerBleUnsupported",
     PRINTER_PAIRING_REQUIRED: "common:errors.printerPairingRequired",
     PRINTER_PAIRING_START_FAILED: "common:errors.printerPairingStartFailed",
     PRINTER_PAIRING_REJECTED: "common:errors.printerPairingRejected",

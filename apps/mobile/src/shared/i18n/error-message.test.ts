@@ -75,6 +75,7 @@ async function main() {
   );
 
   for (const [code, expectedKey] of [
+    ["PRINTER_BLE_UNSUPPORTED", "common:errors.printerBleUnsupported"],
     ["PRINTER_PAIRING_REQUIRED", "common:errors.printerPairingRequired"],
     ["PRINTER_PAIRING_START_FAILED", "common:errors.printerPairingStartFailed"],
     ["PRINTER_PAIRING_REJECTED", "common:errors.printerPairingRejected"],
