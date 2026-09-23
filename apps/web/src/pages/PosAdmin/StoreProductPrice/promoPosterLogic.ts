@@ -5,7 +5,7 @@
  */
 
 export const PROMO_POSTER_KINDS = ['special', 'multibuy', 'new', 'clearance'] as const
-export const PROMO_POSTER_STYLES = ['classic', 'modern'] as const
+export const PROMO_POSTER_STYLES = ['classic', 'modern', 'christmas', 'halloween'] as const
 export const PROMO_POSTER_SIZES = ['A4', 'A5', 'A6', 'A7'] as const
 
 export type PromoPosterKind = (typeof PROMO_POSTER_KINDS)[number]
