@@ -1,4 +1,5 @@
 import type {
+  CashRegisterUserBarcodeLabelPrintPayload,
   EmployeeCashierBarcodeLabelPrintPayload,
   ProductLabelPrintPayload,
   WarehouseLocationLabelPrintPayload,
@@ -280,6 +281,31 @@ export function buildEmployeeCashierBarcodeLabelCommand(
     text(4, barcodeTextX, 180, barcodeValue),
   ];
   lines.push("PRINT");
+  return command(lines);
+}
+
+export function buildCashRegisterUserBarcodeLabelCommand(
+  payload: CashRegisterUserBarcodeLabelPrintPayload
+) {
+  const barcodeValue = cpclText(payload.barcode, 50);
+  if (!barcodeValue) {
+    throw new Error("Cash register user barcode is required.");
+  }
+  const operatorName = truncateTextByWidth(cpclText(payload.operatorName) || "--", 530, 7);
+  const storeName = truncateTextByWidth(cpclText(payload.storeName) || "--", 530, 4);
+  // 老收银扫码枪读一维码：合法 EAN13 用 EAN13（窄条 2 点，约 24mm 宽），否则按 Web 规则退回 Code128。
+  const kind = barcodeKind(barcodeValue);
+  const narrowBarWidth = kind === "EAN13" ? 2 : 1;
+  // 实体价格标签单张安全高度约 220 点：条码 96-176，可读编号放右侧，所有元素都不越过 180。
+  const lines = [
+    `! 0 200 200 ${STANDARD_HEIGHT} 1`,
+    `PAGE-WIDTH ${STANDARD_WIDTH}`,
+    text(7, 20, 8, operatorName),
+    text(4, 20, 44, storeName),
+    `BARCODE ${kind} ${narrowBarWidth} 2 80 20 96 ${barcodeValue}`,
+    text(4, 330, 120, truncateTextByWidth(barcodeValue, 220, 4)),
+    "PRINT",
+  ];
   return command(lines);
 }
 

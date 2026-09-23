@@ -51,6 +51,7 @@
     "attendanceManagement": "考勤管理",
     "users": "员工列表",
     "userAdmin": "用户管理",
+    "cashRegisterUsers": "收银用户条码",
     "roles": "角色管理",
     "permissions": "权限管理",
     "employeeProfile": "个人资料",

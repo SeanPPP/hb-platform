@@ -101,6 +101,7 @@ assertArrayEqual(
     'users',
     'pos-operation-logs',
     'user-admin',
+    'cash-register-users',
     'roles',
     'permissions',
     'employee-profile',

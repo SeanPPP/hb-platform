@@ -347,6 +347,8 @@ namespace BlazorApp.Shared.Constants
                 new(Permissions.AustralianSuppliers.View, "查看澳洲供应商", "澳洲供应商", "Web 页面 /pos-admin/suppliers - 查看澳洲供应商分页列表"),
                 new(Permissions.AustralianSuppliers.Edit, "编辑澳洲供应商", "澳洲供应商", "Web 页面 /pos-admin/suppliers - 新增、编辑、启停澳洲供应商并与 HQ 同步"),
                 new(Permissions.Store.ManageOperations, "管理分店运营", "分店运营", "Web 页面 /pos-admin/cash-register-users - 管理收银用户条码"),
+                new(Permissions.CashRegisterUsers.MobileManage, "移动端管理收银用户条码", "分店运营", "移动端「收银用户条码」- 查看、创建、更新和启停可管理分店的老收银系统员工条码"),
+                new(Permissions.CashRegisterUsers.MobilePrint, "移动端打印收银用户条码", "分店运营", "移动端「收银用户条码」- 查看可管理分店的老收银系统员工条码，用蓝牙标签机打印并累计打印次数"),
                 new(Permissions.System.ViewLogs, "查看日志", "系统管理", "Web 页面 /system/center-logs - 查看系统中心日志"),
                 new(Permissions.System.ManageScheduledTasks, "管理定时任务", "系统管理", "Web 页面 /system/scheduled-statistics - 切换定时任务调度实例和运行开关"),
                 new(Permissions.System.ManageSettings, "管理设置", "系统管理", "Web 页面 /system/invoice-email-settings、/system/payment-terminal-settings、/system/emergency-login-keys - 管理发票邮箱、支付终端与紧急登录密钥"),

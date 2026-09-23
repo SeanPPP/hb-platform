@@ -59,6 +59,7 @@
     "priceUpdates": "价格更新",
     "users": "用户",
     "userAdmin": "用户管理",
+    "cashRegisterUsers": "收银用户条码",
     "roles": "角色管理",
     "permissions": "权限管理",
     "employeeProfile": "员工",

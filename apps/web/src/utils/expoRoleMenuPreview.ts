@@ -156,6 +156,7 @@ const TAB_PATHS: Record<string, string> = {
   users: '/(shell)/users',
   'pos-operation-logs': '/(shell)/pos-operation-logs',
   'user-admin': '/(shell)/user-admin',
+  'cash-register-users': '/(shell)/cash-register-users',
   roles: '/(shell)/roles',
   permissions: '/(shell)/permissions',
   'employee-profile': '/(shell)/employee-profile',
@@ -189,6 +190,7 @@ const ROUTE_LABELS: Record<string, Pick<ExpoAppMenuDefinition, 'zhTitle' | 'enTi
   users: { zhTitle: '用户', enTitle: 'Users' },
   'pos-operation-logs': { zhTitle: '员工操作日志', enTitle: 'POS Operation Logs' },
   'user-admin': { zhTitle: '用户管理', enTitle: 'User Management' },
+  'cash-register-users': { zhTitle: '收银用户条码', enTitle: 'Cashier Barcodes' },
   roles: { zhTitle: '角色管理', enTitle: 'Role Management' },
   permissions: { zhTitle: '权限管理', enTitle: 'Permission Management' },
   'employee-profile': { zhTitle: '员工', enTitle: 'Employee' },
@@ -379,6 +381,15 @@ const EXPO_APP_MENU_DEFINITIONS: ExpoAppMenuDefinition[] = [
     permissionCodes: [P.Users.View],
     order: 57,
     ...ROUTE_LABELS['user-admin'],
+  },
+  {
+    routeName: 'cash-register-users',
+    titleKey: 'tabs.cashRegisterUsers',
+    icon: 'barcode',
+    // 与后端 FullAppMenu 一致：移动端独立的管理/打印权限任一即可，不复用 Web 的 Store.ManageOperations。
+    permissionCodes: [P.CashRegisterUsers.MobileManage, P.CashRegisterUsers.MobilePrint],
+    order: 57,
+    ...ROUTE_LABELS['cash-register-users'],
   },
   {
     routeName: 'roles',

@@ -29,6 +29,11 @@ export const PERMISSIONS = {
     ManagePos: "Users.ManagePosTerminalPermissions",
     ManagePosTerminalPermissions: "Users.ManagePosTerminalPermissions",
   },
+  CashRegisterUsers: {
+    // 移动端「收银用户条码」独立权限：管理（查看/创建/更新/启停）与打印（查看/打印计数）分开授予。
+    MobileManage: "CashRegisterUsers.MobileManage",
+    MobilePrint: "CashRegisterUsers.MobilePrint",
+  },
   LocalPurchase: {
     View: "LocalPurchase.View",
     Edit: "LocalPurchase.Edit",

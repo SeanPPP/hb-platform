@@ -585,6 +585,14 @@
       "name": "管理分店运营",
       "description": "Web 页面 /pos-admin/cash-register-users - 管理收银用户条码"
     },
+    "CashRegisterUsers.MobileManage": {
+      "name": "移动端管理收银用户条码",
+      "description": "移动端「收银用户条码」- 查看、创建、更新和启停可管理分店的老收银系统员工条码"
+    },
+    "CashRegisterUsers.MobilePrint": {
+      "name": "移动端打印收银用户条码",
+      "description": "移动端「收银用户条码」- 查看可管理分店的老收银系统员工条码，用蓝牙标签机打印并累计打印次数"
+    },
     "StoreProducts.Create": {
       "name": "创建分店商品",
       "description": "Web 页面 /pos-admin/store-product-price - 创建分店商品价格"
