@@ -18,6 +18,7 @@ export type AppTabPath =
   | "/(shell)/product-insights"
   | "/(shell)/price-updates"
   | "/(shell)/warehouse-product-insights"
+  | "/(shell)/seasonal-product-insights"
   | "/(shell)/sales-orders"
   | "/(shell)/users"
   | "/(shell)/user-admin"
@@ -51,6 +52,7 @@ export const TAB_PATHS: Record<string, AppTabPath> = {
   "product-insights": "/(shell)/product-insights",
   "price-updates": "/(shell)/price-updates",
   "warehouse-product-insights": "/(shell)/warehouse-product-insights",
+  "seasonal-product-insights": "/(shell)/seasonal-product-insights",
   "sales-orders": "/(shell)/sales-orders",
   users: "/(shell)/users",
   "user-admin": "/(shell)/user-admin",
@@ -76,6 +78,8 @@ const DEVICE_MODE_BLOCKED_ROUTE_NAMES = new Set([
   "employee-profile-review",
   // 设备会话没有店长/管理员角色，后端审计查询会直接拒绝，设备模式不展示入口。
   "pos-operation-logs",
+  // 季节商品查询按账号独立权限授权，设备会话没有该权限，接口会直接拒绝。
+  "seasonal-product-insights",
   "device-management",
   "reports",
   "user-admin",

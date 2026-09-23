@@ -42,6 +42,7 @@
     "cart": "Cart",
     "warehouse": "Warehouse",
     "warehouseProductInsights": "Warehouse activity",
+    "seasonalProductInsights": "Seasonal products",
     "posOperationLogs": "POS logs",
     "domesticPurchase": "China Purchase",
     "localSupplierInvoices": "AU Invoices",

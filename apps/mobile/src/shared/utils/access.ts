@@ -29,6 +29,10 @@ export const PERMISSIONS = {
     ManagePos: "Users.ManagePosTerminalPermissions",
     ManagePosTerminalPermissions: "Users.ManagePosTerminalPermissions",
   },
+  SeasonalProductInsights: {
+    // 移动端「季节商品查询」独立权限：会展示其他分店库存，不借用商品查询的 StoreProducts.View。
+    View: "SeasonalProductInsights.View",
+  },
   LocalPurchase: {
     View: "LocalPurchase.View",
     Edit: "LocalPurchase.Edit",

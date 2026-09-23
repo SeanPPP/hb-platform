@@ -585,6 +585,10 @@
       "name": "Store Manage Operations",
       "description": "Allows access to Store Manage Operations."
     },
+    "SeasonalProductInsights.View": {
+      "name": "View seasonal products",
+      "description": "Mobile Seasonal products - look up by item number or barcode to see cumulative inbound, cumulative sales and theoretical stock for this store and other stores."
+    },
     "StoreProducts.Create": {
       "name": "Store Products Create",
       "description": "Allows access to Store Products Create."

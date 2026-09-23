@@ -90,7 +90,12 @@ assert.equal(implicitPreview[2].visible, false);
 
 const fullMenus = getRoleMenuDefinitions("en");
 assert.equal(fullMenus.filter((item) => item.platform === "web").length, 45);
-assert.equal(fullMenus.filter((item) => item.platform === "mobile").length, 27);
+assert.equal(fullMenus.filter((item) => item.platform === "mobile").length, 28);
+// 季节商品查询会展示其他分店库存，只认独立权限，不复用商品查询的 StoreProducts.View。
+assert.deepEqual(
+  fullMenus.find((item) => item.platform === "mobile" && item.key === "seasonal-product-insights")?.permissionCodes,
+  ["SeasonalProductInsights.View"]
+);
 assert.equal(new Set(fullMenus.map((item) => `${item.platform}:${item.key}`)).size, fullMenus.length);
 assert.deepEqual(fullMenus.find((item) => item.key === "/system/roles")?.permissionCodes, ["Roles.View"]);
 assert.equal(fullMenus.find((item) => item.key === "settings")?.fixed, true);
