@@ -8,6 +8,8 @@ export interface ScanFeedbackState {
   barcode?: string;
   productName?: string;
   addedQuantity?: number;
+  /** 未找到的原因是仓库暂停供货（而非扫错码）；首页据此把条码转成搜索词展示恢复计划。 */
+  pausedSupply?: boolean;
 }
 
 export interface ScanSelectionState {

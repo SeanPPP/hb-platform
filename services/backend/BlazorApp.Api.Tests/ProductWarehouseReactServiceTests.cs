@@ -4689,6 +4689,76 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task BatchToggleActiveAsync_下架登记供货说明_上架关闭说明()
+        {
+            const string productCode = "P-TOGGLE-NOTICE";
+            await BlazorApp.Api.Data.WarehouseProductSupplyNoticeSchemaMigrator.EnsureAsync(_db, NullLogger.Instance);
+            await SeedPriceSyncProductAsync(productCode, purchasePrice: 4.28m, retailPrice: 11.99m, importPrice: 4.28m, oemPrice: 11.99m);
+            var service = CreateService();
+
+            var delisted = await service.BatchToggleActiveAsync(
+                new BatchToggleWarehouseProductsActiveRequestDto
+                {
+                    ProductCodes = new List<string> { productCode },
+                    IsActive = false,
+                    SupplyNotice = new WarehouseProductSupplyNoticeInputDto
+                    {
+                        SupplyPlan = WarehouseProductSupplyPlans.WillRestock,
+                        ExpectedPrecision = WarehouseProductSupplyExpectedPrecisions.Range,
+                        ExpectedFrom = new DateOnly(2099, 10, 5),
+                        ExpectedTo = new DateOnly(2099, 10, 10),
+                        StoreFacingNote = "运输途中，入库后开放订货",
+                    },
+                },
+                "仓库员P12"
+            );
+
+            Assert.True(delisted.Success, delisted.Message);
+            var notice = await _db.Queryable<WarehouseProductSupplyNotice>().SingleAsync(x => x.ProductCode == productCode);
+            Assert.Equal(WarehouseProductSupplyPlans.WillRestock, notice.SupplyPlan);
+            Assert.Equal(new DateTime(2099, 10, 10), notice.ExpectedTo);
+            Assert.Equal("仓库员P12", notice.CreatedBy);
+            Assert.Equal("WarehouseProducts", notice.Source);
+            Assert.Null(notice.ClosedAtUtc);
+
+            var relisted = await service.BatchToggleActiveAsync(
+                new BatchToggleWarehouseProductsActiveRequestDto
+                {
+                    ProductCodes = new List<string> { productCode },
+                    IsActive = true,
+                },
+                "仓库员P12"
+            );
+
+            Assert.True(relisted.Success, relisted.Message);
+            notice = await _db.Queryable<WarehouseProductSupplyNotice>().SingleAsync(x => x.ProductCode == productCode);
+            Assert.NotNull(notice.ClosedAtUtc);
+            Assert.Equal("仓库员P12", notice.ClosedBy);
+        }
+
+        [Fact]
+        public async Task BatchToggleActiveAsync_供货说明录入无效_整单拒绝且商品保持在架()
+        {
+            const string productCode = "P-TOGGLE-BAD-NOTICE";
+            await BlazorApp.Api.Data.WarehouseProductSupplyNoticeSchemaMigrator.EnsureAsync(_db, NullLogger.Instance);
+            await SeedPriceSyncProductAsync(productCode, purchasePrice: 4.28m, retailPrice: 11.99m, importPrice: 4.28m, oemPrice: 11.99m);
+
+            var result = await CreateService().BatchToggleActiveAsync(
+                new BatchToggleWarehouseProductsActiveRequestDto
+                {
+                    ProductCodes = new List<string> { productCode },
+                    IsActive = false,
+                    SupplyNotice = new WarehouseProductSupplyNoticeInputDto { SupplyPlan = "" },
+                }
+            );
+
+            Assert.False(result.Success);
+            // 不能出现“已下架但说明没记上”的半截状态。
+            Assert.True((await _db.Queryable<WarehouseProduct>().SingleAsync(x => x.ProductCode == productCode)).IsActive);
+            Assert.Empty(await _db.Queryable<WarehouseProductSupplyNotice>().ToListAsync());
+        }
+
+        [Fact]
         public async Task FullUpdateAsync_下架只改仓库供货状态_不联动商品主档国内商品分店价与多码()
         {
             const string productCode = "P-FULL-DELIST";

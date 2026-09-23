@@ -5,6 +5,7 @@ import { i18n } from "@/shared/i18n/i18n";
 import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { resolveMinimumOrderQuantity } from "@/modules/shop/use-add-to-cart";
 import { lookupProductsByBarcode } from "@/modules/scanner/api";
+import { lookupStoreSupplyStatus } from "@/modules/supply-notice/api";
 import { addToCart } from "@/modules/shop/api";
 import { playScanFeedbackSound, preloadScanFeedbackSounds } from "@/modules/scanner/scan-sound";
 import {
@@ -856,11 +857,23 @@ export function useScanResult({
             storeCode: activeStoreCode,
             totalElapsedMs: getScanPerformanceTimestamp() - scanStartedAt,
           });
+          // 扫到的是仓库暂停供货的商品，而不是扫错码：提示区分开，并在首页零结果处展示恢复计划。
+          let pausedSupply = false;
+          try {
+            pausedSupply = (await lookupStoreSupplyStatus(activeStoreCode, result.barcode)).length > 0;
+          } catch {
+            pausedSupply = false;
+          }
+          if (!isCurrentStoreJob(job)) {
+            logStaleStoreJob("after-supply-lookup", job);
+            return;
+          }
           applyScanFeedback(
             {
               status: "not_found",
-              message: i18n.t("common:scanner.notFound"),
+              message: i18n.t(pausedSupply ? "supplyNotice:scanPaused" : "common:scanner.notFound"),
               barcode: result.barcode,
+              pausedSupply,
             },
             { isAddMode, scanTraceId }
           );

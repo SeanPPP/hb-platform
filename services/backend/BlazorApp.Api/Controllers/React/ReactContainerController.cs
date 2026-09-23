@@ -1304,6 +1304,11 @@ namespace BlazorApp.Api.Controllers.React
                 var totalUpdated = await _containerReactService.SetStatusByScopeAsync(containerGuid, request);
                 return Ok(new { success = true, data = new { totalUpdated } });
             }
+            catch (ArgumentException ex)
+            {
+                // 供货说明录入有误：用户可修正的输入问题，返回具体文案。
+                return BadRequest(new { success = false, message = ex.Message });
+            }
             catch (ContainerDetailConcurrencyTokenRequiredException)
             {
                 return CreateContainerDetailTokenRequiredResponse();

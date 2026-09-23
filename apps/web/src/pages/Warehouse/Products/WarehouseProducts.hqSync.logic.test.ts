@@ -1779,8 +1779,9 @@ async function main() {
     assert(
       selectionSection.includes("<Popconfirm title={t('warehouse.confirmBatchActivate')}") &&
         selectionSection.includes('onConfirm={() => void handleBatchToggleActive(true)}') &&
-        selectionSection.includes("<Popconfirm title={t('warehouse.confirmBatchDeactivate')}") &&
-        selectionSection.includes('onConfirm={() => void handleBatchToggleActive(false)}') &&
+        // 批量下架不再用 Popconfirm：供货说明弹窗（后续计划必选）本身就是确认步骤。
+        !selectionSection.includes("t('warehouse.confirmBatchDeactivate')") &&
+        selectionSection.includes('onClick={() => void handleBatchToggleActive(false)}') &&
         selectionSection.includes('disabled={!selectedRowKeys.length || batchActionLoading}') &&
         selectionSection.includes('onClick={openBatchEdit}') &&
         selectionSection.includes('onClick={openBatchCategory}') &&
@@ -1788,7 +1789,7 @@ async function main() {
         selectionSection.includes('onClick={() => void handlePushToHq()}') &&
         countOccurrences(selectionSection, '{access.canWriteProduct ?') === 4 &&
         countOccurrences(selectionSection, '{access.canManagePosProducts ?') === 1,
-      '勾选后操作条应包含批量上下架（带确认）、批量修改、批量分类和发送到HQ，且权限不变',
+      '勾选后操作条应包含批量上架（带确认）、批量下架（经供货说明弹窗确认）、批量修改、批量分类和发送到HQ，且权限不变',
     )
     const cardSection = extractSection(pageSource, '<Card>', '</Card>')
     const filterRowIndex = cardSection.indexOf('<div className="list-toolbar-filter-row">')

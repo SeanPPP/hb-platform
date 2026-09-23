@@ -3391,6 +3391,77 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
     }
 
     [Fact]
+    public async Task SetStatusByScopeAsync_下架带供货说明_同事务登记_上架关闭()
+    {
+        await BlazorApp.Api.Data.WarehouseProductSupplyNoticeSchemaMigrator.EnsureAsync(_localDb, NullLogger.Instance);
+        await SeedDetailAndProductAsync("D-SET-NOTICE", "P-SET-NOTICE", "Old English");
+        await SeedRelatedPriceRowsAsync("P-SET-NOTICE");
+        var service = CreateService();
+
+        var delistPreview = await service.PreviewBatchActionAsync("C-TEST", new ContainerDetailBatchPreviewRequestDto
+        {
+            Operation = "set-status",
+            Scope = new ContainerDetailBatchScopeDto { SelectedHguids = new List<string> { "D-SET-NOTICE" } },
+            Parameters = new Dictionary<string, JsonElement> { ["isActive"] = JsonDocument.Parse("false").RootElement.Clone() },
+        });
+        await service.SetStatusByScopeAsync("C-TEST", new ContainerDetailSetStatusRequestDto
+        {
+            IsActive = false,
+            SelectedHguids = new List<string> { "D-SET-NOTICE" },
+            PreviewToken = delistPreview.PreviewToken,
+            SupplyNotice = new WarehouseProductSupplyNoticeInputDto
+            {
+                SupplyPlan = WarehouseProductSupplyPlans.WillRestock,
+                ExpectedPrecision = WarehouseProductSupplyExpectedPrecisions.Day,
+                ExpectedFrom = new DateOnly(2099, 10, 5),
+                StoreFacingNote = "下一柜到货后开放",
+            },
+        });
+
+        var notice = await _localDb.Queryable<WarehouseProductSupplyNotice>().SingleAsync(item => item.ProductCode == "P-SET-NOTICE");
+        Assert.Equal(WarehouseProductSupplyPlans.WillRestock, notice.SupplyPlan);
+        Assert.Equal("ContainerDetail", notice.Source);
+        Assert.Null(notice.ClosedAtUtc);
+
+        var relistPreview = await service.PreviewBatchActionAsync("C-TEST", new ContainerDetailBatchPreviewRequestDto
+        {
+            Operation = "set-status",
+            Scope = new ContainerDetailBatchScopeDto { SelectedHguids = new List<string> { "D-SET-NOTICE" } },
+            Parameters = new Dictionary<string, JsonElement> { ["isActive"] = JsonDocument.Parse("true").RootElement.Clone() },
+        });
+        await service.SetStatusByScopeAsync("C-TEST", new ContainerDetailSetStatusRequestDto
+        {
+            IsActive = true,
+            SelectedHguids = new List<string> { "D-SET-NOTICE" },
+            PreviewToken = relistPreview.PreviewToken,
+        });
+
+        // 货柜到货重新上架走裸 SQL 回写：说明必须被幂等关闭，否则下次无说明下架会重新浮现。
+        notice = await _localDb.Queryable<WarehouseProductSupplyNotice>().SingleAsync(item => item.ProductCode == "P-SET-NOTICE");
+        Assert.NotNull(notice.ClosedAtUtc);
+    }
+
+    [Fact]
+    public async Task SetStatusByScopeAsync_供货说明录入无效_整单拒绝且商品保持在架()
+    {
+        await BlazorApp.Api.Data.WarehouseProductSupplyNoticeSchemaMigrator.EnsureAsync(_localDb, NullLogger.Instance);
+        await SeedDetailAndProductAsync("D-SET-BAD", "P-SET-BAD", "Old English");
+        await SeedRelatedPriceRowsAsync("P-SET-BAD");
+        var service = CreateService();
+
+        await Assert.ThrowsAsync<ArgumentException>(() => service.SetStatusByScopeAsync("C-TEST", new ContainerDetailSetStatusRequestDto
+        {
+            IsActive = false,
+            SelectedHguids = new List<string> { "D-SET-BAD" },
+            PreviewToken = "unused",
+            SupplyNotice = new WarehouseProductSupplyNoticeInputDto { SupplyPlan = "" },
+        }));
+
+        Assert.True((await _localDb.Queryable<WarehouseProduct>().SingleAsync(item => item.ProductCode == "P-SET-BAD")).IsActive);
+        Assert.Empty(await _localDb.Queryable<WarehouseProductSupplyNotice>().ToListAsync());
+    }
+
+    [Fact]
     public async Task AssignCategoryByScopeAsync_预览后本地主档分类变化_应拒绝且零写入()
     {
         await SeedDetailAndProductAsync("D-ASSIGN-CATEGORY", "P-ASSIGN-CATEGORY", "Old English");

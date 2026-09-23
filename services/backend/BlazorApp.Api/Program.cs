@@ -909,6 +909,15 @@ builder.Services.AddScoped<
     BlazorApp.Api.Services.React.StorePriceUpdateTaskService
 >();
 builder.Services.AddHostedService<BlazorApp.Api.Services.Background.StorePriceUpdateTaskReconcileWorker>();
+// 分店订货端：暂停供货商品的状态查询与“关注恢复订货”。
+builder.Services.AddScoped<
+    BlazorApp.Api.Features.SupplyNotices.IStoreProductSupplyService,
+    BlazorApp.Api.Features.SupplyNotices.StoreProductSupplyService
+>();
+builder.Services.AddScoped<
+    BlazorApp.Api.Features.SupplyNotices.IWarehouseProductSupplyNoticeService,
+    BlazorApp.Api.Features.SupplyNotices.WarehouseProductSupplyNoticeService
+>();
 builder.Services.AddScoped<
     BlazorApp.Api.Interfaces.React.IWarehouseRetailPriceChangeService,
     BlazorApp.Api.Services.React.WarehouseRetailPriceChangeService

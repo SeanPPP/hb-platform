@@ -8,6 +8,9 @@ import { Alert, Button, Card, Empty, Pagination, Popover, Select, Space, Spin, T
 import type { ColumnsType } from 'antd/es/table'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useNavigate } from 'react-router-dom'
+import { registerPageMessages } from '../../../i18n/registerPageMessages'
+import { supplyStatusCardMessages } from '../../../components/SupplyNotice/supplyNoticeMessages'
 import BarcodePreview from '../../../components/BarcodePreview'
 import { addStoreOrderCartItem } from '../../../services/storeOrderService'
 import { getBestSellers } from '../../../services/salesDashboardService'
@@ -122,8 +125,17 @@ function getAddQuantity(product: BestSellerProduct) {
   return product.minOrderQuantity && product.minOrderQuantity > 0 ? product.minOrderQuantity : 1
 }
 
+registerPageMessages(supplyStatusCardMessages)
+
 export default function BestSellersSection() {
   const { t } = useTranslation()
+  const navigate = useNavigate()
+  // 下架商品不能加购；跳到按货号搜索，首页零结果时会展示供货状态卡（复用同一条查询链路，不给榜单加请求）。
+  const openSupplyStatus = (code: string | null | undefined) => {
+    if (code) {
+      navigate(`/shop?keyword=${encodeURIComponent(code)}`)
+    }
+  }
   const [products, setProducts] = useState<BestSellerProduct[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -438,21 +450,28 @@ export default function BestSellersSection() {
           const tooltipTitle = !selectedStore?.storeCode
             ? t('shop.selectStoreFirst', 'Please select a store first')
             : record.isActive !== true
-              ? t('common.inactiveUpper', 'Off Shelf')
+              ? t('supplyStatusCard.bestSellerPausedHint')
               : ''
 
           return (
             <Tooltip title={tooltipTitle}>
               <span>
-                <Button
-                  type="primary"
-                  size="small"
-                  icon={<ShoppingCartOutlined />}
-                  disabled={disabled}
-                  onClick={() => void handleAddToCart(record)}
-                >
-                  {t('common.add', 'Add')}
-                </Button>
+                {record.isActive !== true && selectedStore?.storeCode ? (
+                  // 下架商品：改为跳到搜索，零结果时首页会展示供货状态卡（还会不会有、什么时候恢复、关注）。
+                  <Button size="small" onClick={() => openSupplyStatus(record.itemNumber || record.productCode)}>
+                    {t('supplyStatusCard.viewSupplyPlan')}
+                  </Button>
+                ) : (
+                  <Button
+                    type="primary"
+                    size="small"
+                    icon={<ShoppingCartOutlined />}
+                    disabled={disabled}
+                    onClick={() => void handleAddToCart(record)}
+                  >
+                    {t('common.add', 'Add')}
+                  </Button>
+                )}
               </span>
             </Tooltip>
           )
@@ -547,7 +566,7 @@ export default function BestSellersSection() {
             const addTooltip = !selectedStore?.storeCode
               ? t('shop.selectStoreFirst', 'Please select a store first')
               : product.isActive !== true
-                ? t('common.inactiveUpper', 'Off Shelf')
+                ? t('supplyStatusCard.bestSellerPausedHint')
                 : ''
 
             return (
@@ -631,6 +650,11 @@ export default function BestSellersSection() {
                   </Space>
                   <Tooltip title={addTooltip}>
                     <span>
+                      {product.isActive !== true && selectedStore?.storeCode ? (
+                        <Button onClick={() => openSupplyStatus(product.itemNumber || product.productCode)}>
+                          {t('supplyStatusCard.viewSupplyPlan')}
+                        </Button>
+                      ) : (
                       <Button
                         type="primary"
                         icon={<ShoppingCartOutlined />}
@@ -639,6 +663,7 @@ export default function BestSellersSection() {
                       >
                         {t('common.add', 'Add')}
                       </Button>
+                      )}
                     </span>
                   </Tooltip>
                 </div>

@@ -16,6 +16,8 @@ import {
   Popconfirm,
   Space,
   Spin,
+  Tag,
+  Tooltip,
   Typography,
   message,
 } from 'antd'
@@ -29,6 +31,11 @@ import {
 } from '../services/storeOrderService'
 import type { StoreOrderCart } from '../types/storeOrder'
 import { isPreorderRequiredError } from '../services/preorderService'
+import { getSupplyPausedSubmitLabels } from '../services/supplyNoticeService'
+import { registerPageMessages } from '../i18n/registerPageMessages'
+import { supplyStatusCardMessages } from './SupplyNotice/supplyNoticeMessages'
+
+registerPageMessages(supplyStatusCardMessages)
 
 const { Text, Title } = Typography
 
@@ -147,10 +154,15 @@ export default function ShopCartDrawer({
       await onCartChanged()
       onClose()
     } catch (error) {
+      const pausedLabels = getSupplyPausedSubmitLabels(error)
       if (isPreorderRequiredError(error)) {
         // 先给用户可见反馈，再刷新门禁；即使刷新响应畸形也不会静默循环。
         message.warning(t('shop.preorder.submitRequiredWarning'))
         await onPreorderRequired?.()
+      } else if (pausedLabels) {
+        // 购物车里有加购后才被仓库下架的商品：指出是哪几行并刷新购物车，让标红显示出来；不自动删除。
+        message.warning(t('supplyStatusCard.submitBlocked', { count: pausedLabels.length }))
+        await onCartChanged()
       } else message.error(t('shop.orderSubmitFailed', 'Failed to submit order'))
     } finally {
       setSubmitting(false)
@@ -332,9 +344,16 @@ export default function ShopCartDrawer({
                       />
                     }
                     title={
-                      <Text ellipsis style={{ width: 180 }} strong>
-                        {item.productName}
-                      </Text>
+                      <Space size={4}>
+                        <Text ellipsis style={{ width: item.isActive === false ? 120 : 180 }} strong>
+                          {item.productName}
+                        </Text>
+                        {item.isActive === false ? (
+                          <Tooltip title={t('supplyStatusCard.cartPausedHint')}>
+                            <Tag color="error" style={{ marginInlineEnd: 0 }}>{t('supplyStatusCard.cartPausedTag')}</Tag>
+                          </Tooltip>
+                        ) : null}
+                      </Space>
                     }
                     description={
                       <div className="shop-cart-drawer-item-desc">

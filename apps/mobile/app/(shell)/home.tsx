@@ -76,6 +76,11 @@ import { useCartStore } from "@/store/cart-store";
 import { isPreorderRequiredError } from "@/modules/preorder/api";
 import { canBypassPreorderGate } from "@/modules/preorder/gate";
 import { PreorderGateBanner } from "@/modules/preorder/preorder-gate-banner";
+import { SupplyRestockedBanner } from "@/modules/supply-notice/supply-restocked-banner";
+import { SupplyStatusCard } from "@/modules/supply-notice/supply-status-card";
+import { SupplyWatchesSheet } from "@/modules/supply-notice/supply-watches-sheet";
+import type { StoreSupplyStatus } from "@/modules/supply-notice/types";
+import { useSupplyStatusLookup, useSupplyWatchSummary } from "@/modules/supply-notice/use-supply-status";
 import { usePreorderGate } from "@/modules/preorder/use-preorder-gate";
 import { useAuthStore } from "@/store/auth-store";
 import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
@@ -99,7 +104,7 @@ function normalizeStoreCode(value: string | null | undefined) {
 
 export default function Home() {
   const isFocused = useIsFocused();
-  const { t, language } = useAppTranslation(["home", "common"]);
+  const { t, language } = useAppTranslation(["home", "common", "supplyNotice"]);
   const { height: windowHeight, width: windowWidth } = useWindowDimensions();
   const productColumns = resolveHomeProductColumns(windowWidth);
   const router = useRouter();
@@ -654,6 +659,23 @@ export default function Home() {
 
     return productsQuery.data?.items ?? [];
   }, [productsQuery.data?.items, scannedProducts, selectedGrade]);
+  // 关注恢复订货：汇总用于横幅与入口角标；搜索零结果时补查暂停供货商品，让分店知道是下架而不是搜错。
+  const supplyWatchSummary = useSupplyWatchSummary(selectedStoreCode ?? null);
+  const [supplyWatchesVisible, setSupplyWatchesVisible] = useState(false);
+  const supplyLookupEnabled =
+    Boolean(selectedStoreCode) &&
+    Boolean(keyword.trim()) &&
+    !scannedProducts?.length &&
+    productsQuery.isSuccess &&
+    (productsQuery.data?.items.length ?? 0) === 0;
+  const supplyLookup = useSupplyStatusLookup(selectedStoreCode ?? null, keyword, supplyLookupEnabled);
+  const handleSupplyWatchToggle = useCallback(
+    async (status: StoreSupplyStatus, watch: boolean) => {
+      const ok = await supplyLookup.toggleWatch(status, watch);
+      setNoticeMessage(t(ok ? (watch ? "supplyNotice:watchDone" : "supplyNotice:unwatchDone") : "supplyNotice:actionFailed"));
+    },
+    [supplyLookup, t],
+  );
   const displayDynamicDataMap = useMemo(() => {
     const mergedMap = { ...productsQuery.dynamicDataMap };
 
@@ -713,6 +735,26 @@ export default function Home() {
     },
     [applySearchPageAction],
   );
+  const handleSupplyOrder = useCallback(
+    (status: StoreSupplyStatus) => {
+      // 商品已恢复订货：按货号搜索即可在正常列表里命中。
+      const code = status.itemNumber || status.productCode;
+      setScannedProducts(null);
+      setSearchInput(code);
+      applySearchPageAction({ type: "apply", input: code });
+    },
+    [applySearchPageAction],
+  );
+  // 扫到暂停供货的商品：把条码转成搜索词，让零结果处展示恢复计划与关注按钮。
+  const scanFeedback = scanResult.feedback;
+  useEffect(() => {
+    if (scanFeedback.status !== "not_found" || !scanFeedback.pausedSupply || !scanFeedback.barcode) {
+      return;
+    }
+    setScannedProducts(null);
+    setSearchInput(scanFeedback.barcode);
+    applySearchPageAction({ type: "apply", input: scanFeedback.barcode });
+  }, [applySearchPageAction, scanFeedback]);
   const handleVisibleSearchScan = useCallback(
     (barcode: string) => {
       // 扫码不作为文字关键字：清空搜索框（原生文本由 hook 清空），避免与旧关键字拼接。
@@ -1140,6 +1182,25 @@ export default function Home() {
         >
           {t("common:labels.autoAddShort")}
         </Chip>
+        <Chip
+          compact
+          mode={supplyWatchSummary.data?.restockedCount ? "flat" : "outlined"}
+          icon="bell-outline"
+          onPress={() => setSupplyWatchesVisible(true)}
+          accessibilityLabel={t("supplyNotice:watchesTitle")}
+          style={[
+            styles.utilityChip,
+            supplyWatchSummary.data?.restockedCount ? styles.utilityChipActive : null,
+          ]}
+          textStyle={[
+            styles.utilityChipText,
+            supplyWatchSummary.data?.restockedCount ? styles.utilityChipTextActive : null,
+          ]}
+        >
+          {supplyWatchSummary.data?.restockedCount
+            ? `${t("supplyNotice:watchesEntry")} ${supplyWatchSummary.data.restockedCount}`
+            : t("supplyNotice:watchesEntry")}
+        </Chip>
         {scannedProducts?.length ? (
           <Chip
             compact
@@ -1190,6 +1251,18 @@ export default function Home() {
     <SafeAreaView edges={["top", "left", "right"]} style={styles.container}>
       {fixedHeaderContent}
       <PreorderGateBanner gate={preorderGate} onOpen={openPreorder} />
+      <SupplyRestockedBanner
+        restockedCount={supplyWatchSummary.data?.restockedCount ?? 0}
+        onOpen={() => setSupplyWatchesVisible(true)}
+      />
+      <SupplyWatchesSheet
+        visible={supplyWatchesVisible}
+        storeCode={selectedStoreCode ?? null}
+        onDismiss={() => setSupplyWatchesVisible(false)}
+        onOrder={handleSupplyOrder}
+        onChanged={() => void supplyWatchSummary.refetch()}
+        onError={setNoticeMessage}
+      />
       <FlatList
         style={styles.content}
         data={displayProducts}
@@ -1200,6 +1273,21 @@ export default function Home() {
         contentContainerStyle={productListContentStyle}
         keyboardShouldPersistTaps="handled"
         ListEmptyComponent={
+          supplyLookup.items.length ? (
+            <View style={styles.supplyStatusList} testID="home-supply-status-list">
+              <Text variant="titleSmall">{t("supplyNotice:pausedHeading")}</Text>
+              <Text variant="bodySmall" style={styles.supplyStatusHint}>{t("supplyNotice:pausedHint")}</Text>
+              {supplyLookup.items.map((status) => (
+                <SupplyStatusCard
+                  key={status.productCode}
+                  status={status}
+                  busy={supplyLookup.busyCode === status.productCode}
+                  onWatch={(item) => void handleSupplyWatchToggle(item, true)}
+                  onUnwatch={(item) => void handleSupplyWatchToggle(item, false)}
+                />
+              ))}
+            </View>
+          ) : (
           <View style={styles.homeEmptyState}>
             <AnimatedEmptyStateGraphic />
             <EmptyState
@@ -1231,6 +1319,7 @@ export default function Home() {
               }
             />
           </View>
+          )
         }
         ListFooterComponent={
           displayProducts.length ? (
@@ -2032,6 +2121,15 @@ const styles = StyleSheet.create({
   },
   listContentCompact: {
     paddingBottom: 0,
+  },
+  supplyStatusList: {
+    paddingHorizontal: 12,
+    paddingVertical: 16,
+    gap: 10,
+  },
+  supplyStatusHint: {
+    color: "#475467",
+    marginBottom: 4,
   },
   homeEmptyState: {
     flexGrow: 1,

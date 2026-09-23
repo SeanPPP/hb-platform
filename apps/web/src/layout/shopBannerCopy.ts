@@ -32,6 +32,15 @@ export function resolveShopBannerCopy(pathname: string): ShopBannerCopy {
     }
   }
 
+  if (pathname.startsWith('/shop/supply-watches')) {
+    return {
+      titleKey: 'shop.supplyWatches',
+      titleFallback: '我关注的商品',
+      subtitleKey: 'shop.supplyWatchesSubtitle',
+      subtitleFallback: '关注暂停供货的商品，恢复订货时在这里提醒你。',
+    }
+  }
+
   if (pathname.startsWith('/shop/preorders/')) {
     return {
       titleKey: 'shop.preorderTitle',

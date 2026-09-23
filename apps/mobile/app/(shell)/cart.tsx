@@ -234,6 +234,12 @@ function CartListItemCard({
                       {t("item.sku", { value: skuValue })}
                     </Text>
                     <View style={styles.itemTagRow}>
+                      {item.isActive === false ? (
+                        // 加购后被仓库暂停供货：提交会被拦截，先在这里标出来让分店移除。
+                        <View style={[styles.gradeBadge, styles.pausedBadge]}>
+                          <Text style={styles.gradeBadgeText}>{t("supplyNotice:cartPausedTag")}</Text>
+                        </View>
+                      ) : null}
                       {grade ? (
                         <View style={[styles.gradeBadge, { backgroundColor: gradeColor }]}>
                           <Text style={styles.gradeBadgeText}>{t("item.grade", { grade })}</Text>
@@ -314,7 +320,7 @@ export default function Cart() {
   const isFocused = useIsFocused();
   const router = useRouter();
   const viewport = useWindowDimensions();
-  const { t, language } = useAppTranslation(["cart", "common"]);
+  const { t, language } = useAppTranslation(["cart", "common", "supplyNotice"]);
   const queryClient = useQueryClient();
   const { selectedStore, selectedStoreCode } = useStores();
   const access = useAuthStore((state) => state.access);
@@ -1392,6 +1398,9 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     paddingHorizontal: 7,
     paddingVertical: 2,
+  },
+  pausedBadge: {
+    backgroundColor: "#B42318",
   },
   gradeBadgeText: {
     color: "#fff",

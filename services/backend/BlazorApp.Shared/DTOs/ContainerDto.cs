@@ -588,6 +588,9 @@ namespace BlazorApp.Shared.DTOs
     public class ContainerDetailSetStatusRequestDto : ContainerDetailBatchScopeDto
     {
         public bool? IsActive { get; set; }
+
+        /// <summary>下架时随请求登记的供货说明；上架时忽略。不参与预览指纹（不改变作用范围）。</summary>
+        public WarehouseProductSupplyNoticeInputDto? SupplyNotice { get; set; }
     }
 
     /// <summary>
