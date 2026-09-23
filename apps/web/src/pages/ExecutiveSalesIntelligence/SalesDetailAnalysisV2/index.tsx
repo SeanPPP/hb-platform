@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import { Alert, Button, Input, Pagination, Skeleton, Tag, Tooltip } from 'antd'
-import { CloseOutlined, FullscreenExitOutlined, FullscreenOutlined, SearchOutlined } from '@ant-design/icons'
+import { Alert, Button, Input, message, Pagination, Skeleton, Tag, Tooltip } from 'antd'
+import { CloseOutlined, DownloadOutlined, FullscreenExitOutlined, FullscreenOutlined, SearchOutlined } from '@ant-design/icons'
 import { useKeepAliveContext } from 'keepalive-for-react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useIsMobile } from '../../../hooks/useIsMobile'
 import { useAuthStore } from '../../../store/auth'
 import { MetricPair, ReportControls, useReportText } from '../ReportWorkbench/ReportControls'
-import { growth, reportPeriod } from '../ReportWorkbench/logic'
+import { growth, normalizeKeyword, reportPeriod } from '../ReportWorkbench/logic'
 import { useReportQuery, type ReportQueryState } from '../ReportWorkbench/useReportQuery'
-import { applyKeyword, emptySelection, initialDetailState, resizeColumns, selectDimension, sumProductPage } from './logic'
+import { applyKeyword, emptySelection, initialDetailState, MAX_PRODUCT_IMAGE_EXPORT_ROWS, resizeColumns, selectDimension, sumProductPage } from './logic'
 import ProductBranchDrawer from './ProductBranchDrawer'
 import { fetchSalesDetailReport, type ReportSection, type SalesDetailPage, type SalesDetailQuery, type SalesDetailReport, type SalesDetailRow } from './reportService'
 import styles from './styles.module.css'
@@ -33,16 +33,19 @@ function GrowthCell({ current, previous, compare }: { current: number; previous:
   </span>
 }
 
-function Panel({ id, title, subtitle, count, query, expanded, onExpand, filter, children, footer, onRetry }: {
+function Panel({ id, title, subtitle, count, query, expanded, onExpand, action, filter, notice, children, footer, onRetry }: {
   id: PanelKey; title: string; subtitle: string; count?: number; query: ReportQueryState<SalesDetailPage>
-  expanded: boolean; onExpand: () => void; filter: ReactNode; children: ReactNode; footer?: ReactNode; onRetry: () => void
+  expanded: boolean; onExpand: () => void; action?: ReactNode; filter: ReactNode; notice?: ReactNode;
+  children: ReactNode; footer?: ReactNode; onRetry: () => void
 }) {
   const text = useReportText()
   return <section data-panel={id} className={`${styles.panel} ${expanded ? styles.expanded : ''}`} aria-busy={query.loading}>
     <header className={styles.panelHeader}><div><h2><span>{id === 'suppliers' ? '01' : id === 'branches' ? '02' : '03'}</span>{title}<small>{count ?? '—'}</small></h2><p>{subtitle}</p></div>
+      <div className={styles.panelActions}>{action}
       <Button type="text" size="small" icon={expanded ? <FullscreenExitOutlined /> : <FullscreenOutlined />} onClick={onExpand}
-        aria-label={expanded ? text(`收起${title}`, `Collapse ${title}`) : text(`展开${title}`, `Expand ${title}`)} /></header>
+        aria-label={expanded ? text(`收起${title}`, `Collapse ${title}`) : text(`展开${title}`, `Expand ${title}`)} /></div></header>
     <div className={styles.panelFilter}>{filter}</div>
+    {notice}
     {query.slow && query.loading && <div className={styles.slow} role="status">{text('查询超过 3 秒，正在读取完整数据…', 'Over 3 seconds. Loading complete data…')}</div>}
     <div className={styles.scroll} tabIndex={0} aria-label={text(`${title}可滚动表格`, `${title} scrollable table`)}>
       {query.error ? <div className={styles.empty}><Alert type="warning" message={query.error} /><Button onClick={onRetry}>{text('重试', 'Retry')}</Button></div>
@@ -73,6 +76,10 @@ export default function SalesDetailAnalysisV2() {
   const [widths, setWidths] = useState([28, 27, 45])
   const [bundleRefresh, setBundleRefresh] = useState(0)
   const [drawerProduct, setDrawerProduct] = useState<SalesDetailRow | null>(null)
+  const [exporting, setExporting] = useState(false)
+  const [exportFinalizing, setExportFinalizing] = useState(false)
+  const [exportProgress, setExportProgress] = useState('')
+  const exportAbort = useRef<AbortController | null>(null)
   const [sorts, setSorts] = useState<Record<'suppliers' | 'branches', Sort>>({ suppliers: { key: 'revenue', ascending: false }, branches: { key: 'revenue', ascending: false } })
   const grid = useRef<HTMLDivElement>(null)
   const drag = useRef<{ divider: number; startX: number; widths: number[]; width: number }>()
@@ -84,6 +91,7 @@ export default function SalesDetailAnalysisV2() {
     // 抽屉挂载在 body；页面切换或账号变化时关闭，避免覆盖其他保活页面。
     setDrawerProduct(null)
   }, [active, currentUser?.userGUID])
+  useEffect(() => () => exportAbort.current?.abort(), [])
   useEffect(() => {
     // KeepAlive 隐藏期间不消费其他页面的 URL；返回相同地址时保留三栏筛选。
     if (!active || !location.pathname.endsWith('/sales-detail-v2') || appliedSearch.current === location.search) return
@@ -177,6 +185,32 @@ export default function SalesDetailAnalysisV2() {
   const productRows = [...(products.data?.rows ?? [])].sort((left, right) => right.quantity - left.quantity
     || (right.compareQuantity ?? 0) - (left.compareQuantity ?? 0)
     || left.code.localeCompare(right.code))
+  const exportUnavailable = !allowed || products.loading || !products.data?.rows.length || exporting
+    || composing || normalizeKeyword(keywordDraft) !== selection.keyword
+  const runExport = async () => {
+    if (!products.data || exportAbort.current || exportUnavailable) return
+    const controller = new AbortController()
+    exportAbort.current = controller
+    setExporting(true)
+    setExportFinalizing(false)
+    setExportProgress(text('正在准备导出…', 'Preparing export…'))
+    try {
+      const { exportSalesDetailProducts } = await import('./export')
+      const result = await exportSalesDetailProducts(query, { ...products.data, rows: productRows }, {
+        compare: dates.compare, english: text('zh', 'en') === 'en', startDate: dates.startDate, endDate: dates.endDate,
+        signal: controller.signal, onProgress: setExportProgress, onFinalize: () => setExportFinalizing(true),
+      })
+      message.success(text(`已导出 ${result.count} 件商品${result.failedImages ? `，${result.failedImages} 张图片读取失败` : ''}`,
+        `Exported ${result.count} products${result.failedImages ? `; ${result.failedImages} images unavailable` : ''}`))
+    } catch (error) {
+      if (!controller.signal.aborted) message.error(error instanceof Error ? error.message : text('导出失败', 'Export failed'))
+    } finally {
+      if (exportAbort.current === controller) exportAbort.current = null
+      setExporting(false)
+      setExportFinalizing(false)
+      setExportProgress('')
+    }
+  }
   const table = (panel: PanelKey, rows: SalesDetailRow[]) => {
     const dimension = panel === 'suppliers' ? 'supplier' : panel === 'branches' ? 'branch' : 'product'
     return <table className={styles.table}><thead><tr><th>{panel === 'products' ? text('货号 / 商品名称', 'Item / Product') : panel === 'suppliers' ? text('供应商 / 编码', 'Supplier / Code') : text('分店名称', 'Store')}</th>
@@ -238,14 +272,19 @@ export default function SalesDetailAnalysisV2() {
       {resizer(1)}
       <Panel id="products" title={text('商品明细', 'Product detail')} subtitle={text('全量关键字过滤 · 点击商品反查', 'Search all products · Select to reverse-filter')} count={products.data?.total} query={products}
         expanded={expanded === 'products'} onExpand={() => setExpanded(value => value === 'products' ? null : 'products')} onRetry={() => retrySection('products')}
+        action={<Button size="small" icon={<DownloadOutlined />} disabled={exportUnavailable}
+          aria-label={text('导出当前页商品明细 Excel', 'Export current product page to Excel')}
+          onClick={() => { void runExport() }}>{text('导出本页 Excel', 'Export page Excel')}</Button>}
         filter={<><Input prefix={<SearchOutlined />} value={keywordDraft} placeholder={text('名称 / 货号 / 条码 / 供应商', 'Name / item / barcode / supplier')} aria-label={text('商品关键字', 'Product keyword')}
           onChange={event => { searchClear.current = false; setKeywordDraft(event.target.value) }} onCompositionStart={() => setComposing(true)} onCompositionEnd={() => setComposing(false)} />
           {keywordDraft && <Button type="text" size="small" icon={<CloseOutlined />} aria-label={text('清除商品关键字', 'Clear product keyword')} onClick={() => { searchClear.current = true; setKeywordDraft(''); setSelection(value => ({ ...value, keyword: '', page: 1 })) }} />}</>}
+        notice={exporting && <div className={styles.exportStatus} role="status"><span>{exportProgress}</span>
+          {!exportFinalizing && <Button type="link" size="small" onClick={() => exportAbort.current?.abort()}>{text('取消', 'Cancel')}</Button>}</div>}
         footer={<div className={styles.productFooter}>{pageTotal && !products.loading && <div className={styles.pageSummary}><span>{text('本页商品汇总', 'Page totals')}<small>{productRows.length} {text('件 · 本期 / 同期', 'items · current / previous')}</small></span>
           <div><small>{labels.revenue}</small><MetricPair current={pageTotal.revenue} previous={pageTotal.compareRevenue} compare={dates.compare} /></div>
           <div><small>{labels.grossProfit}</small><MetricPair current={pageTotal.grossProfit} previous={pageTotal.compareGrossProfit} compare={dates.compare} costMetric revenue={pageTotal.revenue} compareRevenue={pageTotal.compareRevenue} /></div>
           <div><small>{labels.grossMarginRate}</small><MetricPair current={pageTotal.grossMarginRate} previous={pageTotal.compareGrossMarginRate} compare={dates.compare} format="rate" costMetric revenue={pageTotal.revenue} compareRevenue={pageTotal.compareRevenue} /></div></div>}
-          <Pagination size="small" simple showSizeChanger pageSizeOptions={[10,20,50,100]} current={selection.page} pageSize={selection.pageSize} total={products.data?.total ?? 0} disabled={products.loading}
+          <Pagination size="small" simple showSizeChanger pageSizeOptions={[10,20,50,100,200,MAX_PRODUCT_IMAGE_EXPORT_ROWS]} current={selection.page} pageSize={selection.pageSize} total={products.data?.total ?? 0} disabled={products.loading}
             onChange={(page, pageSize) => setSelection(value => ({ ...value, page: value.pageSize === pageSize ? page : 1, pageSize }))} />
         </div>}>{table('products', productRows)}</Panel>
     </div>

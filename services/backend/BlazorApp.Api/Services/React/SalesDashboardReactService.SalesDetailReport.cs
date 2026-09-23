@@ -78,7 +78,7 @@ public partial class SalesDashboardReactService
         ValidateDateRange(dateRange);
         if (!Enum.IsDefined(kind)) throw new ArgumentException("kind 无效", nameof(kind));
         if (pageIndex < 1) throw new ArgumentException("pageIndex 必须大于 0", nameof(pageIndex));
-        pageSize = Math.Clamp(pageSize, 1, 100);
+        pageSize = Math.Clamp(pageSize, 1, 500);
         var wanted = sections is null || sections.Count == 0
             ? Enum.GetValues<SalesDetailSection>().ToHashSet()
             : sections.ToHashSet();
