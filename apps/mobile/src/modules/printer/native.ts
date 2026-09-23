@@ -20,6 +20,7 @@ type NativePrinterModule = {
   removeListeners?(count: number): void;
   getStatus(): Promise<PrinterStatus>;
   scanPrinters(durationMs?: number): Promise<PrinterDevice[]>;
+  pair?(address: string): Promise<boolean>;
   connect(address: string): Promise<boolean>;
   disconnect(): Promise<boolean>;
   print(command: string, encoding?: string): Promise<boolean>;
@@ -126,6 +127,22 @@ export async function scanPrinters(durationMs = 5000) {
 export async function connectPrinter(address: string) {
   await ensureBluetoothPermissions();
   return getModule().connect(address);
+}
+
+export async function pairPrinter(address: string) {
+  await ensureBluetoothPermissions();
+  if (Platform.OS !== "android") {
+    return true;
+  }
+
+  const module = getModule();
+  if (typeof module.pair !== "function") {
+    throw Object.assign(
+      new Error("This app build does not support Android Bluetooth printer pairing."),
+      { code: "PRINTER_PAIRING_UNAVAILABLE" }
+    );
+  }
+  return module.pair(address);
 }
 
 export async function disconnectPrinter() {
