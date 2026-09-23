@@ -52,6 +52,8 @@ internal static class SeasonalPosterLayout
         var lineH = 1.25f * t.Footer + 2;
         var footerContentH = MathF.Max(t.Logo, 2 * lineH);
         var footerTop = t.H - t.M - footerContentH - 2 * t.FooterPad;
+        if (halloween) HalloweenWebBackground(cv, t, footerTop);
+        else ChristmasSnowflakeBackground(cv, t, footerTop);
         cv.Line(left, footerTop, left + width, footerTop, 1, halloween ? PosterCanvas.Hex("#E9D8BF") : gold);
         cv.Logo(left, footerTop + t.FooterPad + (footerContentH - t.Logo) / 2, t.Logo);
         var footerWidth = width - 3.5f * t.Logo - t.Gap;
@@ -64,7 +66,9 @@ internal static class SeasonalPosterLayout
                 PosterCanvas.Baseline(PromoPosterAssets.ArchivoSemiBold, fs, 1.25f, footerTextTop + i * lineH), ink);
         }
 
-        var titleTop = headerTop + t.Header + t.Pad;
+        // 节日图形使用独立窄条，避免与主标题、品名和页脚共享绘图区。
+        var seasonalStripH = SeasonalStripHeight(t);
+        var titleTop = headerTop + t.Header + seasonalStripH + t.Pad;
         var titleLines = PosterCanvas.Wrap(spec.Title, s => PosterCanvas.TextWidth(PromoPosterAssets.ArchivoBold, t.Name, s), width, 2, true);
         for (var i = 0; i < titleLines.Count; i++)
             cv.Text(PromoPosterAssets.ArchivoBold, t.Name, titleLines[i], left,
@@ -107,52 +111,164 @@ internal static class SeasonalPosterLayout
     private static float Fit(BaseFont font, string text, float cap, float width) =>
         MathF.Min(cap, width * .96f / MathF.Max(.01f, PosterCanvas.TextWidth(font, 1, text)));
 
+    private static float SeasonalStripHeight(Tokens t) => t.W switch
+    {
+        >= 700 => 92,
+        >= 500 => 76,
+        >= 390 => 60,
+        _ => 42,
+    };
+
+    private static void HalloweenWebBackground(PosterCanvas cv, Tokens t, float footerTop)
+    {
+        // 蛛网是内容区的浅色底纹。先于品名、价格绘制，文字始终在最上层。
+        var web = PosterCanvas.Hex("#E8D4B9");
+        var titleTop = t.M + 10 + t.Header + SeasonalStripHeight(t) + t.Pad;
+        DrawWeb(t.W - t.M - 10, titleTop + t.Name * .65f,
+            MathF.Min(t.W * .58f, (footerTop - titleTop) * .68f), false);
+        DrawWeb(t.M + 12, footerTop - t.Pad * .4f,
+            MathF.Min(t.W * .27f, t.H * .13f), true);
+
+        void DrawWeb(float originX, float originY, float radius, bool lowerLeft)
+        {
+            const int spokes = 7;
+            const int rings = 5;
+            for (var spoke = 0; spoke < spokes; spoke++)
+            {
+                var angle = spoke * MathF.PI / (2 * (spokes - 1));
+                var x = originX + (lowerLeft ? 1 : -1) * radius * MathF.Cos(angle);
+                var y = originY + (lowerLeft ? -1 : 1) * radius * MathF.Sin(angle);
+                cv.Line(originX, originY, x, y, MathF.Max(.65f, t.W / 397f), web);
+            }
+            for (var ring = 1; ring <= rings; ring++)
+            {
+                var r = radius * ring / rings;
+                for (var spoke = 0; spoke < spokes - 1; spoke++)
+                {
+                    var a = spoke * MathF.PI / (2 * (spokes - 1));
+                    var b = (spoke + 1) * MathF.PI / (2 * (spokes - 1));
+                    var x1 = originX + (lowerLeft ? 1 : -1) * r * MathF.Cos(a);
+                    var y1 = originY + (lowerLeft ? -1 : 1) * r * MathF.Sin(a);
+                    var x2 = originX + (lowerLeft ? 1 : -1) * r * MathF.Cos(b);
+                    var y2 = originY + (lowerLeft ? -1 : 1) * r * MathF.Sin(b);
+                    cv.Line(x1, y1, x2, y2, MathF.Max(.65f, t.W / 397f), web);
+                }
+            }
+        }
+    }
+
+    private static void ChristmasSnowflakeBackground(PosterCanvas cv, Tokens t, float footerTop)
+    {
+        // 雪花只使用淡色线条，放在内容区底层；不影响 Logo 开关或价格布局。
+        var snow = PosterCanvas.Hex("#C9E0D1");
+        var titleTop = t.M + 10 + t.Header + SeasonalStripHeight(t) + t.Pad;
+        var availableH = footerTop - titleTop;
+        DrawSnowflake(t.W * .78f, titleTop + availableH * .20f, t.W * .075f);
+        DrawSnowflake(t.W * .83f, titleTop + availableH * .67f, t.W * .11f);
+        DrawSnowflake(t.W * .22f, titleTop + availableH * .56f, t.W * .052f);
+
+        void DrawSnowflake(float cx, float cy, float r)
+        {
+            for (var arm = 0; arm < 6; arm++)
+            {
+                var angle = arm * MathF.PI / 3;
+                var dx = MathF.Cos(angle);
+                var dy = MathF.Sin(angle);
+                var px = -dy;
+                var py = dx;
+                cv.Line(cx, cy, cx + r*dx, cy + r*dy, MathF.Max(.8f, t.W/397f), snow);
+                var bx = cx + r*.68f*dx;
+                var by = cy + r*.68f*dy;
+                cv.Line(bx, by, bx - r*.2f*dx + r*.15f*px, by - r*.2f*dy + r*.15f*py, MathF.Max(.8f, t.W/397f), snow);
+                cv.Line(bx, by, bx - r*.2f*dx - r*.15f*px, by - r*.2f*dy - r*.15f*py, MathF.Max(.8f, t.W/397f), snow);
+            }
+        }
+    }
+
     private static void ChristmasDecoration(PosterCanvas cv, Tokens t, BaseColor red, BaseColor green, BaseColor gold)
     {
-        // 冬青沿纸边展开，正文安全区从 M + Pad 开始。
-        void Holly(float cx, float cy, float scale)
-        {
-            cv.FillPolygon(new[] { (cx - 20*scale,cy), (cx-13*scale,cy-5*scale), (cx-13*scale,cy-10*scale), (cx-6*scale,cy-6*scale), (cx,cy), (cx-7*scale,cy+5*scale), (cx-14*scale,cy+4*scale) }, green);
-            cv.FillPolygon(new[] { (cx,cy), (cx+7*scale,cy-13*scale), (cx+11*scale,cy-10*scale), (cx+18*scale,cy-12*scale), (cx+14*scale,cy-5*scale), (cx+16*scale,cy), (cx+7*scale,cy+3*scale) }, green);
-            cv.FillCircle(cx-3*scale,cy,3.5f*scale,red); cv.FillCircle(cx+3*scale,cy+2*scale,3.5f*scale,red); cv.FillCircle(cx,cy-4*scale,3.5f*scale,red);
-        }
-        var s = t.Short ? .55f : t.M / 22;
-        Holly(t.M + 6, t.M / 2 + 3, s);
-        Holly(t.W - t.M - 8, t.H - t.M / 2, s);
-        cv.Line(t.M + 30*s, t.M/2, t.W-t.M-6, t.M/2, 1, gold);
-        if (!t.Short)
-        {
-            Holly(t.M/2+3, t.H*.68f, .65f*s);
-            cv.FillCircle(t.W-t.M/2, t.H*.35f, 3*s, gold);
-        }
+        // 三个主图案占满专属装饰带，四周留白，实际裁切不会截断图形。
+        var stripH = SeasonalStripHeight(t);
+        // 以装饰带高度缩放，最高的树星与南瓜叶也留在底色内。
+        var s = (stripH - 8f) / 42f;
+        var stripTop = t.M + 10 + t.Header + 3;
+        var top = stripTop + stripH / 2;
+        var snow = PosterCanvas.Hex("#FFFDF7");
+        cv.FillRoundRect(t.M + 4, stripTop, t.W - 2 * t.M - 8, stripH - 6, 5, PosterCanvas.Hex("#F0F7EF"));
+        cv.Line(t.M + 10, stripTop + stripH - 8, t.W - t.M - 10, stripTop + stripH - 8, 1.4f, gold);
+
+        var santaX = t.W * .19f;
+        cv.FillCircle(santaX, top + 4*s, 9*s, snow); // 白胡子
+        cv.FillCircle(santaX, top - 1*s, 7*s, PosterCanvas.Hex("#FFE2C2"));
+        cv.FillPolygon(new[] { (santaX-11*s,top-7*s), (santaX+7*s,top-7*s), (santaX+2*s,top-17*s) }, red);
+        cv.FillRoundRect(santaX-11*s, top-8*s, 20*s, 3*s, 1.5f*s, snow);
+        cv.FillCircle(santaX+3*s, top-17*s, 2.5f*s, snow);
+        cv.FillCircle(santaX-3*s, top-1*s, .8f*s, PosterCanvas.Hex("#181818"));
+        cv.FillCircle(santaX+3*s, top-1*s, .8f*s, PosterCanvas.Hex("#181818"));
+        cv.FillCircle(santaX, top+4*s, 1.3f*s, red);
+
+        var trainX = t.W * .50f;
+        var trainY = top + 4*s;
+        cv.FillRoundRect(trainX-23*s, trainY-8*s, 27*s, 11*s, 2*s, red);
+        cv.FillRect(trainX+4*s, trainY-13*s, 14*s, 16*s, green); // 驾驶室
+        cv.FillRect(trainX+7*s, trainY-10*s, 7*s, 6*s, snow);
+        cv.FillRect(trainX-15*s, trainY-14*s, 3*s, 6*s, green); // 烟囱
+        cv.FillCircle(trainX-14*s, trainY-19*s, 2.5f*s, snow);
+        cv.FillCircle(trainX-19*s, trainY+5*s, 3.7f*s, gold);
+        cv.FillCircle(trainX-2*s, trainY+5*s, 3.7f*s, gold);
+        cv.FillCircle(trainX+13*s, trainY+5*s, 3.7f*s, gold);
+        cv.Line(trainX-24*s, trainY+9*s, trainX+21*s, trainY+9*s, 1.4f*s, gold);
+
+        var treeX = t.W * .81f;
+        cv.FillPolygon(new[] { (treeX,top-18*s), (treeX-11*s,top+4*s), (treeX+11*s,top+4*s) }, green);
+        cv.FillPolygon(new[] { (treeX,top-10*s), (treeX-14*s,top+10*s), (treeX+14*s,top+10*s) }, green);
+        cv.FillRect(treeX-2*s, top+10*s, 4*s, 4*s, red);
+        cv.FillCircle(treeX, top-18*s, 2.8f*s, gold);
+        cv.FillCircle(treeX-5*s, top+3*s, 1.6f*s, red);
+        cv.FillCircle(treeX+6*s, top+5*s, 1.6f*s, gold);
     }
 
     private static void HalloweenDecoration(PosterCanvas cv, Tokens t, BaseColor orange, BaseColor ink, BaseColor paper)
     {
-        var s = t.Short ? .52f : t.M / 23;
-        // 南瓜在左边框；叶柄和面孔均为矢量，不遮挡货号或 Logo。
-        var cx=t.M/2+2; var cy=t.H*.72f;
-        cv.FillCircle(cx-5*s,cy,8*s,orange); cv.FillCircle(cx+5*s,cy,8*s,orange); cv.FillCircle(cx,cy,9*s,orange);
-        cv.Line(cx,cy-8*s,cx+2*s,cy-14*s,3*s,ink);
-        cv.FillPolygon(new[] { (cx-6*s,cy-2*s),(cx-2*s,cy-2*s),(cx-4*s,cy-5*s) },ink);
-        cv.FillPolygon(new[] { (cx+2*s,cy-2*s),(cx+6*s,cy-2*s),(cx+4*s,cy-5*s) },ink);
-        cv.Line(cx-4*s,cy+4*s,cx+4*s,cy+4*s,2*s,ink);
-        // 顶部蝙蝠，A7 保留较小轮廓；蛛网只在较大纸张的右上角出现。
-        var bx=t.W*.72f; var by=t.M/2+3;
-        cv.FillPolygon(new[] { (bx-20*s,by-3*s),(bx-12*s,by+7*s),(bx-8*s,by+2*s),(bx-3*s,by+6*s),(bx,by+3*s),(bx+3*s,by+6*s),(bx+8*s,by+2*s),(bx+12*s,by+7*s),(bx+20*s,by-3*s),(bx+8*s,by),(bx+3*s,by-4*s),(bx,by-1*s),(bx-3*s,by-4*s),(bx-8*s,by) },ink);
-        if (t.Short) return;
-        var rx=t.W-t.M/2; var ry=t.M/2; var r=t.M*.8f;
-        cv.FillRect(rx-r-2, ry-2, r+4, r+4, paper);
-        for (var i=0;i<3;i++)
+        var stripTop = t.M + 10 + t.Header + 3;
+        var stripH = SeasonalStripHeight(t);
+        var s = (stripH - 8f) / 42f;
+        cv.FillRoundRect(t.M + 4, stripTop, t.W - 2 * t.M - 8, stripH - 6, 5, PosterCanvas.Hex("#FFE8CA"));
+        cv.Line(t.M + 10, stripTop + stripH - 8, t.W - t.M - 10, stripTop + stripH - 8, 1.5f, orange);
+        // 图案中心均在内框里，南瓜两侧和蛛网不会再被裁掉。
+        var cx = t.W * .16f;
+        var cy = stripTop + stripH/2;
+        cv.FillCircle(cx-7*s, cy, 10*s, orange);
+        cv.FillCircle(cx+7*s, cy, 10*s, orange);
+        cv.FillCircle(cx, cy, 12*s, orange);
+        cv.Line(cx, cy-10*s, cx+3*s, cy-17*s, 3*s, ink);
+        cv.FillPolygon(new[] { (cx+2*s,cy-15*s),(cx+9*s,cy-15*s),(cx+5*s,cy-19*s) }, orange);
+        cv.FillPolygon(new[] { (cx-8*s,cy-2*s),(cx-2*s,cy-2*s),(cx-5*s,cy-7*s) },ink);
+        cv.FillPolygon(new[] { (cx+2*s,cy-2*s),(cx+8*s,cy-2*s),(cx+5*s,cy-7*s) },ink);
+        cv.FillPolygon(new[] { (cx-7*s,cy+5*s),(cx,cy+3*s),(cx+7*s,cy+5*s),(cx,cy+8*s) },ink);
+        // 顶部蝙蝠完整置于标题栏右角，中心区域留给主标题。
+        var bx = t.W * .84f;
+        var by = cy;
+        cv.FillPolygon(new[] { (bx-22*s,by-3*s),(bx-14*s,by+8*s),(bx-8*s,by+3*s),(bx-3*s,by+7*s),(bx,by+4*s),(bx+3*s,by+7*s),(bx+8*s,by+3*s),(bx+14*s,by+8*s),(bx+22*s,by-3*s),(bx+9*s,by),(bx+3*s,by-5*s),(bx,by-2*s),(bx-3*s,by-5*s),(bx-9*s,by) },ink);
+        // 蝙蝠下方的骷髅徽章放在右侧内框，眼窝和下颌让轮廓在小尺寸也可辨识。
+        var skullX = t.W * .61f;
+        var skullY = stripTop + stripH/2;
+        cv.FillCircle(skullX, skullY, 10*s, ink);
+        cv.FillRect(skullX-7*s, skullY+4*s, 14*s, 8*s, ink);
+        cv.FillCircle(skullX-4*s, skullY-2*s, 2.5f*s, paper);
+        cv.FillCircle(skullX+4*s, skullY-2*s, 2.5f*s, paper);
+        cv.FillPolygon(new[] { (skullX-2*s,skullY+4*s),(skullX+2*s,skullY+4*s),(skullX,skullY+1*s) }, paper);
+        for (var tooth = -4; tooth <= 4; tooth += 4)
+            cv.Line(skullX + tooth*s, skullY+5*s, skullX + tooth*s, skullY+10*s, 1.5f*s, paper);
+        // 节日条保留蜘蛛主体，蛛网则转移到内容区作为背景。
+        var rx=t.W * .36f; var ry=cy;
+        cv.FillCircle(rx, ry, 3*s, ink);
+        for (var i = 0; i < 4; i++)
         {
-            var a=i*MathF.PI/4;
-            cv.Line(rx,ry,rx-r*MathF.Cos(a),ry+r*MathF.Sin(a),.7f,ink);
-        }
-        for (var ring=1;ring<=3;ring++)
-        {
-            var rr=r*ring/3;
-            cv.Line(rx-rr,ry,rx-rr*.707f,ry+rr*.707f,.6f,ink);
-            cv.Line(rx-rr*.707f,ry+rr*.707f,rx,ry+rr,.6f,ink);
+            var dy = (i - 1.5f) * 3.8f * s;
+            cv.Line(rx - 2*s, ry + dy*.35f, rx - (8+i)*s, ry + dy, 1*s, ink);
+            cv.Line(rx + 2*s, ry + dy*.35f, rx + (8+i)*s, ry + dy, 1*s, ink);
         }
     }
+
 }
