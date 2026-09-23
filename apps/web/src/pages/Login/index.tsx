@@ -13,6 +13,7 @@ import LanguageSwitch from '../../components/LanguageSwitch'
 import { useAuthStore } from '../../store/auth'
 import type { LoginRequest } from '../../types/auth'
 import type { RequestError } from '../../utils/request'
+import { resolveStaticReportRedirect } from '../../utils/staticReportRedirect'
 import { getDefaultWebPath, resolveAuthorizedWebTarget } from '../../utils/webPortalAccess'
 
 const REMEMBERED_USERNAME_KEY = 'remembered_username'
@@ -51,6 +52,13 @@ export default function LoginPage() {
       }
       message.success(t('login.success'))
       const redirect = searchParams.get('redirect')
+      // /reports/<名称>/ 是 nginx 提供的静态报告页，不在 SPA 路由里，需整页跳转；
+      // 访问权限由 nginx auth_request 调后端判定，这里不重复校验。
+      const staticReportTarget = resolveStaticReportRedirect(redirect)
+      if (staticReportTarget) {
+        window.location.assign(staticReportTarget)
+        return
+      }
       const target = (location.state as { from?: { pathname?: string } } | undefined)?.from?.pathname
       const access = useAuthStore.getState().access
       const defaultPage = getDefaultWebPath(access)

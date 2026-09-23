@@ -757,66 +757,123 @@ class HbPrinterModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeripheralDe
     let retailPrice = dictDouble(payload, "retailPrice") ?? 0
     let discountRate = dictDouble(payload, "discountRate") ?? 0
     let discountValue = discountRate * 100
-    let nowPrice = retailPrice * (1 - discountRate)
+    // 先按分舍入，避免 12.34 × 75% 的浮点尾差在 iOS 上被格式化成 9.25。
+    let nowPrice = (retailPrice * (1 - discountRate) * 100 + 1e-8).rounded() / 100
+    let showOriginalPrice = retailPrice.isFinite && nowPrice.isFinite && retailPrice > nowPrice && nowPrice >= 0
 
-    // 折扣标签对齐 Android：折扣数字、Now 价、二维码和日期全部使用位图绘制。
-    let nowLabelBitmap = textToBitmap("Now", fontSize: fontSizeToPixels(8), isBold: true, fontFamily: "sans-serif-black", isInverse: true, padding: 2)
-    let nowPriceBitmap = textToBitmap("$\(formatMoney(nowPrice))", fontSize: fontSizeToPixels(8), isBold: true, fontFamily: "sans-serif-black", isInverse: true, padding: 2)
-    let discountBitmap = textToBitmap(String(format: "%02d", Int(discountValue.rounded())), fontSize: fontSizeToPixels(44), isBold: false, fontFamily: "sans-serif-black")
-    let offBitmap = textToBitmap("OFF", fontSize: fontSizeToPixels(16), isBold: true, fontFamily: "sans-serif-black")
-    let percentBitmap = textToBitmap("%", fontSize: fontSizeToPixels(20), isBold: true, fontFamily: "sans-serif-black")
-    let dateBitmap = textToBitmap(todayString(), fontSize: fontSizeToPixels(8), isBold: false, fontFamily: "Arial", isInverse: true, padding: 2)
-    let itemBitmap = itemNumber.isEmpty ? nil : textToBitmap(itemNumber, fontSize: fontSizeToPixels(8), isBold: true, fontFamily: "sans-serif-black")
+    // 此模板按真实墨迹裁掉 UIKit 行高留白，再测宽缩字；不截断金额。
+    func fittedText(_ value: String, size: CGFloat, maxWidth: Int, maxHeight: Int = 64, inverse: Bool = false, padding: Int = 0) -> (bitmap: PrinterBitmap, fontSize: CGFloat, inkTop: Int) {
+      var fittedSize = size
+      while true {
+        let raw = textToBitmap(value, fontSize: fontSizeToPixels(fittedSize), isBold: true, fontFamily: "sans-serif-black", isInverse: inverse, padding: padding)
+        let bitmap = inverse ? raw : PrinterBitmap(
+          width: raw.width,
+          height: raw.inkHeight,
+          hex: String(raw.hex.dropFirst(raw.inkMinY * raw.widthBytes * 2).prefix(raw.inkHeight * raw.widthBytes * 2)),
+          inkMinY: 0,
+          inkMaxY: raw.inkHeight - 1
+        )
+        if (bitmap.width <= maxWidth && bitmap.height <= maxHeight) || fittedSize <= 1 {
+          return (bitmap, fittedSize, inverse ? 0 : raw.inkMinY)
+        }
+        fittedSize -= 0.5
+      }
+    }
 
-    let startY = 20
-    let startX = width - discountBitmap.width - percentBitmap.width - offBitmap.width + 20
-    let rightMargin = 12
     let columnGap = 10
+    let infoX = 84
+    let infoWidth = isSmall ? 100 : 124
+    let wasX = infoX + infoWidth + columnGap
+    let wasWidth = isSmall ? 76 : 96
+    let nowX = showOriginalPrice ? wasX + wasWidth + columnGap : wasX
+    let nowWidth = width - 12 - nowX
+    let nowPadding = 6
     let nowGroupGap = 6
+    let nowLabel = fittedText("NOW", size: 6, maxWidth: nowWidth)
+    let nowPriceText = "$\(formatMoney(nowPrice))"
+    let nowPriceTextBitmap = fittedText(nowPriceText, size: 16, maxWidth: nowWidth - nowLabel.bitmap.width - nowGroupGap - nowPadding * 2, maxHeight: 52)
+    let nowHeight = max(nowLabel.bitmap.height, nowPriceTextBitmap.bitmap.height) + nowPadding * 2
+    let nowBitmap = renderPrinterBitmap(width: nowWidth, height: nowHeight, isInverse: true) {
+      ("NOW" as NSString).draw(
+        at: CGPoint(x: nowPadding, y: (nowHeight - nowLabel.bitmap.height) / 2 - nowLabel.inkTop),
+        withAttributes: [.font: printerFont(fontFamily: "sans-serif-black", fontSize: fontSizeToPixels(nowLabel.fontSize), isBold: true), .foregroundColor: UIColor.white]
+      )
+      (nowPriceText as NSString).draw(
+        at: CGPoint(x: nowWidth - nowPadding - nowPriceTextBitmap.bitmap.width, y: (nowHeight - nowPriceTextBitmap.bitmap.height) / 2 - nowPriceTextBitmap.inkTop),
+        withAttributes: [.font: printerFont(fontFamily: "sans-serif-black", fontSize: fontSizeToPixels(nowPriceTextBitmap.fontSize), isBold: true), .foregroundColor: UIColor.white]
+      )
+    }
+    let wasLabelBitmap = fittedText("WAS", size: 6, maxWidth: wasWidth).bitmap
+    let wasPriceBitmap = fittedText("$\(formatMoney(retailPrice))", size: 8, maxWidth: wasWidth, maxHeight: 30).bitmap
+    let dateBitmap = fittedText(todayString(), size: 6, maxWidth: infoWidth, maxHeight: 24, inverse: true, padding: 2).bitmap
+    // 超长货号明确显示省略号；二维码继续编码完整条码/货号。
+    let itemDisplay = itemNumber.count > 24 ? String(itemNumber.prefix(21)) + "..." : itemNumber
+    let itemBitmap = itemDisplay.isEmpty ? nil : fittedText(itemDisplay, size: 7, maxWidth: infoWidth, maxHeight: 28).bitmap
+    let discountBitmap = fittedText(String(format: "%02d", Int(discountValue.rounded())), size: 44, maxWidth: width / 2, maxHeight: 108).bitmap
+    let offBitmap = fittedText("OFF", size: 16, maxWidth: 110).bitmap
+    let percentBitmap = fittedText("%", size: 20, maxWidth: 70).bitmap
+    let startY = 20
+    let headerGap = 8 // EG 每行按 8 点补齐，留出字节尾部空白，避免相邻位图覆盖。
+    let startX = width - 12 - discountBitmap.width - headerGap - max(percentBitmap.width, percentBitmap.width / 2 + offBitmap.width)
     let qrBitmap = barcode.isEmpty ? nil : createQrCodeBitmap(barcode, size: 64)
-    let qrVisualWidth = qrBitmap?.width ?? 64
-    let effectiveLabelBottom = 204
-    let bottomMargin = 10
-    let infoBandBottom = effectiveLabelBottom - bottomMargin
+    // 两种纸宽都遵守现有 204 点有效打印区，底部保留 10 点。
+    let infoBandBottom = 194
     let qrX = 10
     let qrY = infoBandBottom - (qrBitmap?.height ?? 64)
-    let nowPriceX = width - rightMargin - nowPriceBitmap.width
-    let nowLabelX = nowPriceX - nowGroupGap - nowLabelBitmap.width
-    let nowLabelY = infoBandBottom - nowLabelBitmap.height
-    let nowPriceY = infoBandBottom - nowPriceBitmap.height
-    let dateX = qrX + qrVisualWidth + columnGap
     let dateY = infoBandBottom - dateBitmap.height
-    let itemX = dateX
     let itemY = dateY - (itemBitmap?.height ?? 0) - 6
-    // iOS 位图高度包含 UIKit 行高；OFF 按真实墨迹底部和折扣数字对齐，避免压住 Now 价。
-    let discountOffY = startY + discountBitmap.inkMaxY - offBitmap.inkMaxY
-    let nameMaxWidth = max(1, width - discountBitmap.width - percentBitmap.width - offBitmap.width + 10)
-    let nameBitmap = longTextToBitmap(productName, fontSize: fontSizeToPixels(10), isBold: false, fontFamily: "Arial", maxLines: 2, maxWidth: nameMaxWidth)
+    let wasPriceY = infoBandBottom - wasPriceBitmap.height
+    let discountOffY = startY + discountBitmap.height - offBitmap.height
+    let nameMaxWidth = max(1, startX - 15)
+    let nameFont = printerFont(fontFamily: "Arial", fontSize: fontSizeToPixels(10), isBold: false)
+    var nameLines = wrapText(cpclText(productName), font: nameFont, maxWidth: nameMaxWidth, maxLines: 2)
+    // 英文优先在词间换行；只有单词本身太长时才沿用逐字换行。
+    if nameLines.count == 2 && !nameLines[0].hasSuffix(" ") && !nameLines[1].hasPrefix(" "),
+       let split = nameLines[0].lastIndex(of: " "), split != nameLines[0].startIndex {
+      nameLines[1] = String(nameLines[0][split...]).trimmingCharacters(in: .whitespaces) + nameLines[1]
+      nameLines[0] = String(nameLines[0][..<split])
+    }
+    let nameLineHeight = Int(ceil(nameFont.lineHeight))
+    let nameBitmap = renderPrinterBitmap(width: nameMaxWidth, height: nameLineHeight * nameLines.count, isInverse: false) {
+      for (index, value) in nameLines.enumerated() {
+        var display = value.trimmingCharacters(in: .whitespaces)
+        if measureText(display, font: nameFont) > CGFloat(nameMaxWidth) {
+          while !display.isEmpty && measureText(display + "...", font: nameFont) > CGFloat(nameMaxWidth) { display.removeLast() }
+          display += "..."
+        }
+        (display as NSString).draw(at: CGPoint(x: 0, y: index * nameLineHeight), withAttributes: [.font: nameFont, .foregroundColor: UIColor.black])
+      }
+    }
 
     var commands = [
       "! 0 200 200 \(height) 1",
       "PAGE-WIDTH \(width)",
       bitmapCommand(5, 5, nameBitmap),
       bitmapCommand(startX, startY, discountBitmap),
-      bitmapCommand(startX + discountBitmap.width, startY, percentBitmap),
+      bitmapCommand(startX + discountBitmap.width + headerGap, startY, percentBitmap),
       bitmapCommand(
-        startX + discountBitmap.width + percentBitmap.width / 2,
+        startX + discountBitmap.width + headerGap + percentBitmap.width / 2,
         discountOffY,
         offBitmap
       ),
     ]
 
     if let itemBitmap {
-      commands.append(bitmapCommand(itemX, itemY, itemBitmap))
+      commands.append(bitmapCommand(infoX, itemY, itemBitmap))
     }
 
     if let qrBitmap {
       commands.append(bitmapCommand(qrX, qrY, qrBitmap))
     }
 
-    commands.append(bitmapCommand(dateX, dateY, dateBitmap))
-    commands.append(bitmapCommand(nowLabelX, nowLabelY, nowLabelBitmap))
-    commands.append(bitmapCommand(nowPriceX, nowPriceY, nowPriceBitmap))
+    commands.append(bitmapCommand(infoX, dateY, dateBitmap))
+    if showOriginalPrice {
+      commands.append(bitmapCommand(wasX, wasPriceY - wasLabelBitmap.height - 4, wasLabelBitmap))
+      commands.append(bitmapCommand(wasX, wasPriceY, wasPriceBitmap))
+      let strikeY = wasPriceY + wasPriceBitmap.height / 2
+      commands.append("LINE \(wasX) \(strikeY) \(wasX + wasPriceBitmap.width - 1) \(strikeY) 2")
+    }
+    commands.append(bitmapCommand(nowX, infoBandBottom - nowBitmap.height, nowBitmap))
     commands.append("PRINT")
     return commands.joined(separator: "\r\n") + "\r\n"
   }

@@ -116,6 +116,7 @@ export function useMobileOtaUpdate(options: UseMobileOtaUpdateOptions) {
     const port = portRef.current;
     if (!enabledRef.current || !context || !port || !port.isReady(decision)) return;
     patchSnapshot({ applying: true, lastError: null });
+    let reloadAttempted = false;
     try {
       if (!await passNativeBarrier()) {
         throw new Error("native update barrier changed");
@@ -133,14 +134,22 @@ export function useMobileOtaUpdate(options: UseMobileOtaUpdateOptions) {
       const lease = appUpdateMutualExclusion.tryStartOperation("ota");
       if (!lease) throw new Error("another app update operation is active");
       try {
+        reloadAttempted = true;
         await port.reload();
       } finally {
         lease.finish();
       }
     } catch (error) {
       console.warn("[updates] apply controlled Mobile OTA failed", error);
+      // reload 失败后保留当前可选目标的去重身份。释放 prompt 锁会同步通知
+      // 订阅者；清空 ref 会让同一个已下载目标在失败后立即再次弹窗。
       appUpdateMutualExclusion.releasePrompt("ota");
-      optionalPromptTargetRef.current = null;
+      if (reloadAttempted && decision.state === "optional") {
+        Alert.alert(
+          i18n.t("settings:dialogs.mobileOtaRestartFailedTitle"),
+          i18n.t("settings:dialogs.mobileOtaRestartFailedMessage"),
+        );
+      }
       const downloadedStillReady = port.isReady(decision);
       patchSnapshot({
         applying: false,

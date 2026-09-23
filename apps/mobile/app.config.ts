@@ -25,6 +25,13 @@ export default {
   expo: {
     ...baseExpoConfig,
     runtimeVersion: nativeRuntimeVersion,
+    android: {
+      ...baseExpoConfig.android,
+      // 无构建 profile 时也使用 Android 独立运行时；显式 OTA 参数仍可选择目标运行时。
+      runtimeVersion: process.env.EXPO_PUBLIC_RUNTIME_VERSION?.trim()
+        || baseExpoConfig.android.runtimeVersion
+        || nativeRuntimeVersion,
+    },
     updates: {
       ...baseUpdatesConfig,
       // 原生层只负责承载更新，自动检查统一交给 JS，方便测试包按 profile 禁用。

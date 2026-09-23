@@ -1,10 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  classifyOfflineCatalogRefreshError,
   OfflineCatalogRefreshCoordinator,
   type OfflineCatalogRefreshState,
 } from "./offline-catalog-refresh-coordinator";
 import type { OfflineCatalogRefreshResult } from "./offline-catalog-sync-service";
+import { OfflineCatalogError } from "./types";
+
+test("目录准备超时映射到可操作的错误提示", () => {
+  assert.equal(
+    classifyOfflineCatalogRefreshError(
+      new OfflineCatalogError("preparation timed out", "OFFLINE_CATALOG_PREPARATION_TIMEOUT"),
+    ),
+    "preparationTimeout",
+  );
+});
 
 function buildResult(storeCode: string, itemCount: number): OfflineCatalogRefreshResult {
   return {

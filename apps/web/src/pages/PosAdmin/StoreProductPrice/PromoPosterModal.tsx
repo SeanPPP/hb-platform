@@ -515,6 +515,8 @@ export default function PromoPosterModal({ storeCode, products, onClose }: Promo
   const styleOptions: { value: PromoPosterStyle; label: string }[] = [
     { value: 'classic', label: t(`${I18N}.styleClassic`, '经典') },
     { value: 'modern', label: t(`${I18N}.styleModern`, '现代') },
+    { value: 'christmas', label: t(`${I18N}.styleChristmas`, '圣诞') },
+    { value: 'halloween', label: t(`${I18N}.styleHalloween`, '万圣节') },
   ]
 
   const editingFooter = (

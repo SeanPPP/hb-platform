@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>正在验证登录 · Checking sign-in</title>
+<style>
+  :root { --bg: #F5F4EF; --ink: #1B1E22; --soft: #5B6169; --accent: #0E6B63; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #14171A; --ink: #ECEAE3; --soft: #A3A9AE; --accent: #3FCFC0; } }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', 'Segoe UI', sans-serif;
+    display: flex; align-items: center; justify-content: center; padding: 0 16px;
+  }
+  .box { text-align: center; max-width: 360px; }
+  .spinner {
+    width: 28px; height: 28px; margin: 0 auto 14px; border-radius: 50%;
+    border: 3px solid rgba(14,107,99,.2); border-top-color: var(--accent);
+    animation: spin .8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+  p { margin: 4px 0; font-size: 14px; }
+  .en { color: var(--soft); font-size: 12.5px; }
+</style>
+</head>
+<body>
+<div class="box">
+  <div class="spinner" aria-hidden="true"></div>
+  <p>正在验证登录…</p>
+  <p class="en">Checking your sign-in…</p>
+</div>
+<script>
+(function () {
+  "use strict";
+  // nginx 在报告页返回 401（未登录或 15 分钟的访问令牌已过期）时把用户转到这里。
+  // 先用 7 天的刷新令牌续期，成功就回到报告；失败才去主站登录页，登录后再跳回报告。
+  var params = new URLSearchParams(window.location.search);
+  var requested = params.get("to") || "";
+  // 只接受 /reports/<名称>/ 前缀，截掉子路径，防止被利用成开放重定向
+  var match = /^\/reports\/[a-z0-9][a-z0-9-]{0,63}(?:\/|$)/.exec(requested);
+  var target = match ? match[0].replace(/\/?$/, "/") : "";
+
+  function goLogin() {
+    if (!target) { window.location.replace("/"); return; }
+    window.location.replace("/login?redirect=" + encodeURIComponent(target));
+  }
+  if (!target) { goLogin(); return; }
+
+  // 防循环：30 秒内刚续期成功又被打回来，说明 Cookie 仍不可用，直接去登录
+  var loopKey = "hb-report-gate:" + target;
+  var last = 0;
+  try { last = Number(window.sessionStorage.getItem(loopKey) || 0); } catch (e) { /* 忽略 */ }
+  if (last && Date.now() - last < 30000) {
+    try { window.sessionStorage.removeItem(loopKey); } catch (e) { /* 忽略 */ }
+    goLogin();
+    return;
+  }
+
+  fetch("/api/Auth/session/refresh", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: "{}"
+  })
+    .then(function (res) { return res.ok ? res.json() : null; })
+    .then(function (payload) {
+      if (payload && (payload.success || payload.data)) {
+        try { window.sessionStorage.setItem(loopKey, String(Date.now())); } catch (e) { /* 忽略 */ }
+        window.location.replace(target);
+      } else {
+        goLogin();
+      }
+    })
+    .catch(goLogin);
+})();
+</script>
+</body>
+</html>

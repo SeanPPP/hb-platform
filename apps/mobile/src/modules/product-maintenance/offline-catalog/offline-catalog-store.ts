@@ -12,7 +12,6 @@ import { createOfflineCatalogTransport } from "@/modules/product-maintenance/api
 import type { ProductDetail, ProductLookupItem } from "@/modules/product-maintenance/types";
 import { ExpoSqliteDriver } from "@/shared/db/expo-sqlite-driver";
 import type { SqliteConnectionPort } from "@/shared/db/types";
-import { AppAsyncStorage } from "@/shared/storage/async-storage";
 import { buildOfflineLookupItems, buildOfflineProductDetail } from "./offline-catalog-detail";
 import { applyOfflineCatalogMigrations, OFFLINE_CATALOG_DATABASE_NAME } from "./offline-catalog-migrations";
 import {
@@ -39,15 +38,6 @@ interface OfflineCatalogState {
   dbError: string | null;
   activeMeta: Record<string, ActiveOfflineCatalogMetadata | null>;
   refresh: OfflineCatalogRefreshState;
-  /** 最近一次刷新失败的时刻，按店记录：A 店失败不该挡住 B 店的首次下载。 */
-  lastFailedAtMs: Record<string, number>;
-  /** 用户主动取消下载的时刻，按店记录：取消后一段时间内不得自动重启。 */
-  lastCancelledAtMs: Record<string, number>;
-  /** 本进程内最近一次成功刷新（含 noChange）的时刻，按店记录。 */
-  lastRefreshedAtMs: Record<string, number>;
-  /** 设置页「自动更新」开关；关闭后商品查询页不再后台自动下载，只响应手动更新。 */
-  autoRefreshEnabled: boolean;
-  setAutoRefreshEnabled: (enabled: boolean) => Promise<void>;
   open: () => Promise<boolean>;
   close: () => Promise<void>;
   loadActiveMeta: (storeCode: string) => Promise<ActiveOfflineCatalogMetadata | null>;
@@ -59,21 +49,7 @@ interface OfflineCatalogState {
 
 let runtime: OfflineCatalogRuntime | null = null;
 let openInFlight: Promise<boolean> | null = null;
-/** 用户是否已在本进程内显式拨过「自动更新」开关。 */
-let autoRefreshPreferenceTouched = false;
 const coordinator = new OfflineCatalogRefreshCoordinator();
-
-function omitStoreKey(source: Record<string, number>, storeCode: string): Record<string, number> {
-  if (!(storeCode in source)) {
-    return source;
-  }
-  const next = { ...source };
-  delete next[storeCode];
-  return next;
-}
-
-/** 「自动更新」偏好的持久化键；值为 "on" / "off"，缺省视为开启。 */
-export const OFFLINE_CATALOG_AUTO_REFRESH_PREFERENCE_KEY = "@offline-catalog/auto-refresh/v1";
 
 function createSnapshotId(): string {
   return `snap-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
@@ -94,20 +70,6 @@ export const useOfflineCatalogStore = create<OfflineCatalogState>((set, get) => 
     dbError: null,
     activeMeta: {},
     refresh: { kind: "idle" },
-    lastFailedAtMs: {},
-    lastCancelledAtMs: {},
-    lastRefreshedAtMs: {},
-    autoRefreshEnabled: true,
-
-    async setAutoRefreshEnabled(enabled) {
-      // 标记用户已显式表态：open() 里那次落盘读取可能早于这次写入完成，
-      // 若无条件覆盖就会把刚拨的开关弹回去，内存与磁盘长期相反。
-      autoRefreshPreferenceTouched = true;
-      set({ autoRefreshEnabled: enabled });
-      await AppAsyncStorage
-        .setString(OFFLINE_CATALOG_AUTO_REFRESH_PREFERENCE_KEY, enabled ? "on" : "off")
-        .catch(() => undefined);
-    },
 
     async open() {
       if (isIosReviewSessionActive()) {
@@ -123,16 +85,7 @@ export const useOfflineCatalogStore = create<OfflineCatalogState>((set, get) => 
       openInFlight = (async () => {
         try {
           runtime = await createRuntime();
-          // 偏好与数据库一起就绪，商品查询页的自动刷新门禁以 dbReady 为准，避免读到默认值就先下载。
-          const storedPreference = await AppAsyncStorage
-            .getString(OFFLINE_CATALOG_AUTO_REFRESH_PREFERENCE_KEY)
-            .catch(() => null);
-          set({
-            dbReady: true,
-            dbError: null,
-            // 开库期间用户若已拨过开关，以用户的意图为准：这次读到的很可能是写入前的旧值。
-            ...(autoRefreshPreferenceTouched ? {} : { autoRefreshEnabled: storedPreference !== "off" }),
-          });
+          set({ dbReady: true, dbError: null });
           return true;
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
@@ -158,9 +111,6 @@ export const useOfflineCatalogStore = create<OfflineCatalogState>((set, get) => 
         dbReady: false,
         dbError: null,
         activeMeta: {},
-        lastFailedAtMs: {},
-        lastCancelledAtMs: {},
-        lastRefreshedAtMs: {},
       });
       // 若关闭恰好撞上开库进行中，先等它结束，否则那次 IIFE 会把 runtime 重新赋值、
       // 让数据库在登出之后被「复活」。
@@ -200,29 +150,21 @@ export const useOfflineCatalogStore = create<OfflineCatalogState>((set, get) => 
       const activeRuntime = runtime;
       try {
         const result = await coordinator.start(normalized, ({ signal, onProgress }) =>
-          activeRuntime.syncService.refresh({ storeCode: normalized, signal, onProgress }),
+          activeRuntime.syncService.refresh({
+            storeCode: normalized,
+            signal,
+            onProgress,
+            retrySyncPlanGatewayTimeout: true,
+          }),
         );
         set((state) => ({
           activeMeta: { ...state.activeMeta, [normalized]: result.metadata },
-          lastFailedAtMs: omitStoreKey(state.lastFailedAtMs, normalized),
-          lastCancelledAtMs: omitStoreKey(state.lastCancelledAtMs, normalized),
-          lastRefreshedAtMs: { ...state.lastRefreshedAtMs, [normalized]: Date.now() },
         }));
         return result;
       } catch (error) {
         if (isOfflineCatalogCancellation(error)) {
-          // 用户主动取消：记账以抑制自动刷新，否则焦点副作用会立刻把它重新拉起来。
-          set((state) => ({
-            lastCancelledAtMs: { ...state.lastCancelledAtMs, [normalized]: Date.now() },
-          }));
           return null;
         }
-        // 非取消失败一律记账，不看协调器状态：切店抢占等情况会把 refresh.kind
-        // 覆盖成别的值，此时漏记退避时刻，焦点副作用就会在同一帧把下载重新拉起来，
-        // 形成每秒数次的紧密重试（实测断网时 9 秒内打了 71 次）。
-        set((state) => ({
-          lastFailedAtMs: { ...state.lastFailedAtMs, [normalized]: Date.now() },
-        }));
         console.warn("[offline-catalog] refresh failed", {
           storeCode: normalized,
           message: error instanceof Error ? error.message : String(error),

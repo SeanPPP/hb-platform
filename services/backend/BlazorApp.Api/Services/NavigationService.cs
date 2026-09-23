@@ -289,6 +289,15 @@ namespace BlazorApp.Api.Services
             },
             new()
             {
+                RouteName = "seasonal-product-insights",
+                TitleKey = "tabs.seasonalProductInsights",
+                Icon = "calendar-star",
+                // 独立权限：会展示其他分店库存，不借用商品查询的 StoreProducts.View。
+                Permission = Permissions.SeasonalProductInsights.View,
+                Order = 50,
+            },
+            new()
+            {
                 RouteName = "installment-orders",
                 TitleKey = "tabs.installmentOrders",
                 Icon = "cash-clock",
@@ -357,6 +366,19 @@ namespace BlazorApp.Api.Services
                 TitleKey = "tabs.userAdmin",
                 Icon = "account-cog-outline",
                 Permission = Permissions.Users.View,
+                Order = 57,
+            },
+            new()
+            {
+                RouteName = "cash-register-users",
+                TitleKey = "tabs.cashRegisterUsers",
+                Icon = "barcode",
+                // 移动端独立权限：管理或打印任一即可进入，不借用 Web 的 Store.ManageOperations。
+                AnyPermissions = new[]
+                {
+                    Permissions.CashRegisterUsers.MobileManage,
+                    Permissions.CashRegisterUsers.MobilePrint,
+                },
                 Order = 57,
             },
             new()

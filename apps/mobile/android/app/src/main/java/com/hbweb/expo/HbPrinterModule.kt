@@ -17,6 +17,8 @@ import android.graphics.Typeface
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
+import android.util.Log
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
@@ -50,6 +52,7 @@ class HbPrinterModule(
   }
   private val handler = Handler(Looper.getMainLooper())
   private val connectionLock = Any()
+  private val pairingLock = Any()
   private val printerUuid: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
   private val labelWidth = 570
   private val labelHeight = 400
@@ -67,6 +70,9 @@ class HbPrinterModule(
   private var listenerCount = 0
   private var pendingAclDisconnect: Runnable? = null
   private var pendingAclDisconnectAddress: String? = null
+  private var pendingPairingAddress: String? = null
+  private var pendingPairingPromise: Promise? = null
+  private var pendingPairingTimeout: Runnable? = null
 
   private val statusReceiver = object : BroadcastReceiver() {
     @SuppressLint("MissingPermission")
@@ -111,9 +117,39 @@ class HbPrinterModule(
             pendingAclDisconnectAddress = null
           }
         }
+        BluetoothDevice.ACTION_BOND_STATE_CHANGED -> {
+          val device = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+          } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+          }
+          val address = device?.address
+          if (address != null) {
+            val bondState = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR)
+            val previousBondState = intent.getIntExtra(
+              BluetoothDevice.EXTRA_PREVIOUS_BOND_STATE,
+              BluetoothDevice.ERROR,
+            )
+            when {
+              bondState == BluetoothDevice.BOND_BONDED -> completePendingPairing(address)
+              bondState == BluetoothDevice.BOND_NONE && previousBondState == BluetoothDevice.BOND_BONDING -> {
+                failPendingPairing(
+                  "PRINTER_PAIRING_REJECTED",
+                  "Bluetooth printer pairing was cancelled, rejected, or failed.",
+                  expectedAddress = address,
+                )
+              }
+            }
+          }
+        }
         BluetoothAdapter.ACTION_STATE_CHANGED -> {
           val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
           if (state == BluetoothAdapter.STATE_OFF || state == BluetoothAdapter.STATE_TURNING_OFF) {
+            failPendingPairing(
+              "BLUETOOTH_DISABLED",
+              "Bluetooth was turned off while pairing the printer.",
+            )
             invalidateConnectionAttempt()
             clearConnection()
           }
@@ -132,10 +168,87 @@ class HbPrinterModule(
   }
 
   override fun invalidate() {
+    failPendingPairing(
+      "PRINTER_PAIRING_CANCELLED",
+      "Bluetooth printer pairing was cancelled because the app is closing.",
+    )
     unregisterStatusReceiver()
     invalidateConnectionAttempt()
     clearConnection()
     super.invalidate()
+  }
+
+  @SuppressLint("MissingPermission")
+  @ReactMethod
+  fun pair(address: String, promise: Promise) {
+    val adapter = bluetoothAdapter
+    if (adapter == null) {
+      promise.reject("BLUETOOTH_UNSUPPORTED", "Bluetooth is not supported on this device.")
+      return
+    }
+
+    if (!adapter.isEnabled) {
+      promise.reject("BLUETOOTH_DISABLED", "Bluetooth is turned off.")
+      return
+    }
+
+    val device = try {
+      adapter.getRemoteDevice(address)
+    } catch (error: IllegalArgumentException) {
+      promise.reject("PRINTER_INVALID_ADDRESS", "The Bluetooth printer address is invalid.", error)
+      return
+    }
+
+    // BLE-only 地址没有 RFCOMM/SPP 通道，必须在 createBond 前结束，避免系统配对后仍然超时。
+    if (rejectBleOnlyDevice(device, promise)) {
+      return
+    }
+
+    if (device.bondState == BluetoothDevice.BOND_BONDED) {
+      promise.resolve(true)
+      return
+    }
+
+    val timeoutTask = Runnable {
+      failPendingPairing(
+        "PRINTER_PAIRING_TIMEOUT",
+        "Timed out while waiting for the Android pairing confirmation.",
+        expectedAddress = address,
+      )
+    }
+    val accepted = synchronized(pairingLock) {
+      if (pendingPairingPromise != null) {
+        false
+      } else {
+        pendingPairingAddress = address
+        pendingPairingPromise = promise
+        pendingPairingTimeout = timeoutTask
+        true
+      }
+    }
+    if (!accepted) {
+      promise.reject("PRINTER_PAIRING_IN_PROGRESS", "Another Bluetooth printer pairing is already in progress.")
+      return
+    }
+
+    handler.postDelayed(timeoutTask, PAIRING_TIMEOUT_MS)
+    try {
+      // 已由系统开始配对时只等待广播；BOND_NONE 才主动打开 Android 配对流程。
+      if (device.bondState != BluetoothDevice.BOND_BONDING && !device.createBond()) {
+        failPendingPairing(
+          "PRINTER_PAIRING_START_FAILED",
+          "Android could not start Bluetooth printer pairing.",
+          expectedAddress = address,
+        )
+      }
+    } catch (error: Exception) {
+      failPendingPairing(
+        "PRINTER_PAIRING_START_FAILED",
+        error.message ?: "Android could not start Bluetooth printer pairing.",
+        error,
+        expectedAddress = address,
+      )
+    }
   }
 
   @ReactMethod
@@ -186,7 +299,9 @@ class HbPrinterModule(
         name = device.name,
         address = device.address,
         bonded = true,
-        connected = device.address == connectedAddress && socket?.isConnected == true
+        connected = device.address == connectedAddress && socket?.isConnected == true,
+        transport = bluetoothTransport(device),
+        deviceClass = device.bluetoothClass?.deviceClass,
       )
     }
 
@@ -219,6 +334,12 @@ class HbPrinterModule(
         map.putString("address", printer.address)
         map.putBoolean("bonded", printer.bonded)
         map.putBoolean("connected", printer.connected)
+        map.putString("transport", printer.transport)
+        if (printer.deviceClass == null) {
+          map.putNull("deviceClass")
+        } else {
+          map.putInt("deviceClass", printer.deviceClass)
+        }
         array.pushMap(map)
       }
       promise.resolve(array)
@@ -240,7 +361,9 @@ class HbPrinterModule(
                 name = device.name,
                 address = device.address,
                 bonded = device.bondState == BluetoothDevice.BOND_BONDED,
-                connected = device.address == connectedAddress && socket?.isConnected == true
+                connected = device.address == connectedAddress && socket?.isConnected == true,
+                transport = bluetoothTransport(device),
+                deviceClass = device.bluetoothClass?.deviceClass,
               )
             }
           }
@@ -291,6 +414,27 @@ class HbPrinterModule(
       return
     }
 
+    val device = try {
+      adapter.getRemoteDevice(address)
+    } catch (error: IllegalArgumentException) {
+      promise.reject("PRINTER_INVALID_ADDRESS", "The Bluetooth printer address is invalid.", error)
+      return
+    }
+
+    // 在 beginConnectionAttempt 清理旧 socket 前拒绝 BLE，后台重连旧地址也不会打断当前连接。
+    if (rejectBleOnlyDevice(device, promise)) {
+      return
+    }
+
+    // RFCOMM connect() 会隐式触发配对并一直阻塞到 socket 超时；必须由手动选择流程先完成配对。
+    if (device.bondState != BluetoothDevice.BOND_BONDED) {
+      promise.reject(
+        "PRINTER_PAIRING_REQUIRED",
+        "Pair the Bluetooth printer before starting the RFCOMM connection.",
+      )
+      return
+    }
+
     Thread {
       var nextSocket: BluetoothSocket? = null
       try {
@@ -299,7 +443,6 @@ class HbPrinterModule(
           adapter.cancelDiscovery()
         }
 
-        val device = adapter.getRemoteDevice(address)
         nextSocket = device.createRfcommSocketToServiceRecord(printerUuid)
         nextSocket.connect()
         val installed = synchronized(connectionLock) {
@@ -356,8 +499,12 @@ class HbPrinterModule(
   fun printProductLabel(payload: ReadableMap, printType: String?, promise: Promise) {
     Thread {
       try {
+        val startedAt = SystemClock.elapsedRealtime()
         val command = buildProductLabelCommand(payload, printType?.trim().orEmpty())
+        val builtAt = SystemClock.elapsedRealtime()
         writePrinterCommand(command, "GB18030")
+        val sentAt = SystemClock.elapsedRealtime()
+        Log.i("HbPrinterPerf", "productLabel buildMs=${builtAt - startedAt} writeMs=${sentAt - builtAt} totalMs=${sentAt - startedAt}")
         promise.resolve(true)
       } catch (error: Exception) {
         promise.reject("PRINT_PRODUCT_LABEL_ERROR", error.message, error)
@@ -369,8 +516,12 @@ class HbPrinterModule(
   fun printDiscountLabel(payload: ReadableMap, printType: String?, promise: Promise) {
     Thread {
       try {
+        val startedAt = SystemClock.elapsedRealtime()
         val command = buildDiscountLabelCommand(payload, printType?.trim().orEmpty())
+        val builtAt = SystemClock.elapsedRealtime()
         writePrinterCommand(command, "GB18030")
+        val sentAt = SystemClock.elapsedRealtime()
+        Log.i("HbPrinterPerf", "discountLabel buildMs=${builtAt - startedAt} writeMs=${sentAt - builtAt} totalMs=${sentAt - startedAt}")
         promise.resolve(true)
       } catch (error: Exception) {
         promise.reject("PRINT_DISCOUNT_LABEL_ERROR", error.message, error)
@@ -550,65 +701,117 @@ class HbPrinterModule(
     val retailPrice = payload.getNullableDouble("retailPrice") ?: 0.0
     val discountRate = payload.getNullableDouble("discountRate") ?: 0.0
     val discountValue = discountRate * 100.0
-    val nowPrice = retailPrice * (1.0 - discountRate)
+    // 先按分舍入，避免 12.34 × 75% 的浮点尾差在两端显示成不同价格。
+    val nowPrice = kotlin.math.round((retailPrice * (1.0 - discountRate)) * 100.0 + 1e-8) / 100.0
+    val showOriginalPrice = retailPrice.isFinite() && nowPrice.isFinite() && retailPrice > nowPrice && nowPrice >= 0
 
-    val nowLabelBitmap = textToBitmap("Now", fontSizeToPixels(8f), true, "sans-serif-black", true, 2)
-    val nowPriceBitmap = textToBitmap("$${formatMoney(nowPrice)}", fontSizeToPixels(16f), true, "sans-serif-black", true, 2)
-    val discountBitmap = textToBitmap(discountValue.roundToInt().toString().padStart(2, '0'), fontSizeToPixels(44f), false, "sans-serif-black")
-    val offBitmap = textToBitmap("OFF", fontSizeToPixels(16f), true, "sans-serif-black")
-    val percentBitmap = textToBitmap("%", fontSizeToPixels(20f), true, "sans-serif-black")
-    val dateBitmap = textToBitmap(todayString(), fontSizeToPixels(8f), false, "Arial", true, 2)
-    val itemBitmap = itemNumber.takeIf { it.isNotBlank() }?.let {
-      textToBitmap(it, fontSizeToPixels(8f), true, "sans-serif-black")
+    // 按实际位图宽度缩小文字，金额始终完整保留，不截断高位或小数。
+    fun fittedText(value: String, size: Float, maxWidth: Int, maxHeight: Int = 64, inverse: Boolean = false, padding: Int = 0): Bitmap {
+      var fittedSize = size
+      var bitmap = textToBitmap(value, fontSizeToPixels(fittedSize), true, "sans-serif-black", inverse, padding)
+      while ((bitmap.width > maxWidth || bitmap.height > maxHeight) && fittedSize > 1f) {
+        fittedSize -= 0.5f
+        bitmap = textToBitmap(value, fontSizeToPixels(fittedSize), true, "sans-serif-black", inverse, padding)
+      }
+      return bitmap
     }
 
-    val startY = 20
-    val startX = w - discountBitmap.width - percentBitmap.width - offBitmap.width + 20
-    val rightMargin = 12
     val columnGap = 10
+    val infoX = 84
+    val infoWidth = if (isSmall) 100 else 124
+    val wasX = infoX + infoWidth + columnGap
+    val wasWidth = if (isSmall) 76 else 96
+    val nowX = if (showOriginalPrice) wasX + wasWidth + columnGap else wasX
+    val nowWidth = w - 12 - nowX
+    val nowPadding = 6
     val nowGroupGap = 6
+    val nowLabelBitmap = fittedText("NOW", 6f, nowWidth, inverse = true)
+    val nowPriceBitmap = fittedText("$${formatMoney(nowPrice)}", 16f, nowWidth - nowLabelBitmap.width - nowGroupGap - nowPadding * 2, 52, inverse = true)
+    val nowHeight = max(nowLabelBitmap.height, nowPriceBitmap.height) + nowPadding * 2
+    val nowBitmap = Bitmap.createBitmap(nowWidth, nowHeight, Bitmap.Config.ARGB_8888)
+    Canvas(nowBitmap).apply {
+      drawColor(Color.BLACK)
+      drawBitmap(nowLabelBitmap, nowPadding.toFloat(), ((nowHeight - nowLabelBitmap.height) / 2).toFloat(), null)
+      drawBitmap(nowPriceBitmap, (nowWidth - nowPadding - nowPriceBitmap.width).toFloat(), ((nowHeight - nowPriceBitmap.height) / 2).toFloat(), null)
+    }
+    val wasLabelBitmap = fittedText("WAS", 6f, wasWidth)
+    val wasPriceBitmap = fittedText("$${formatMoney(retailPrice)}", 8f, wasWidth, 30)
+    val dateBitmap = fittedText(todayString(), 6f, infoWidth, 24, inverse = true, padding = 2)
+    // 超长货号明确显示省略号；二维码继续编码完整条码/货号。
+    val itemDisplay = if (itemNumber.length > 24) itemNumber.take(21) + "..." else itemNumber
+    val itemBitmap = itemDisplay.takeIf { it.isNotBlank() }?.let { fittedText(it, 7f, infoWidth, 28) }
+    val discountBitmap = fittedText(discountValue.roundToInt().toString().padStart(2, '0'), 44f, w / 2, 108)
+    val offBitmap = fittedText("OFF", 16f, 110)
+    val percentBitmap = fittedText("%", 20f, 70)
+    val startY = 20
+    val headerGap = 8 // EG 每行按 8 点补齐，留出字节尾部空白，避免相邻位图覆盖。
+    val startX = w - 12 - discountBitmap.width - headerGap - max(percentBitmap.width, percentBitmap.width / 2 + offBitmap.width)
     val qrBitmap = barcode.takeIf { it.isNotBlank() }?.let { createQrCodeBitmap(it, 64) }
-    val qrVisualWidth = qrBitmap?.width ?: 64
-    val effectiveLabelBottom = 204
-    val bottomMargin = 10
-    val infoBandBottom = effectiveLabelBottom - bottomMargin
+    // 两种纸宽都遵守现有 204 点有效打印区，底部保留 10 点。
+    val infoBandBottom = 194
     val qrX = 10
     val qrY = infoBandBottom - (qrBitmap?.height ?: 64)
-    val nowPriceX = w - rightMargin - nowPriceBitmap.width
-    val nowLabelX = nowPriceX - nowGroupGap - nowLabelBitmap.width
-    val nowLabelY = infoBandBottom - nowLabelBitmap.height
-    val nowPriceY = infoBandBottom - nowPriceBitmap.height
-    val dateX = qrX + qrVisualWidth + columnGap
     val dateY = infoBandBottom - dateBitmap.height
-    val itemX = dateX
     val itemY = dateY - (itemBitmap?.height ?: 0) - 6
-    val nameMaxWidth = max(1, w - discountBitmap.width - percentBitmap.width - offBitmap.width + 10)
-    val nameBitmap = longTextToBitmap(productName, fontSizeToPixels(10f), false, "Arial", 2, nameMaxWidth)
+    val wasPriceY = infoBandBottom - wasPriceBitmap.height
+    val nameMaxWidth = max(1, startX - 15)
+    val namePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+      color = Color.BLACK
+      textSize = fontSizeToPixels(10f)
+      typeface = Typeface.create("Arial", Typeface.NORMAL)
+    }
+    val nameLines = wrapText(cpclText(productName), namePaint, nameMaxWidth, 2).toMutableList()
+    // 英文优先在词间换行；只有单词本身太长时才沿用逐字换行。
+    if (nameLines.size == 2 && !nameLines[0].endsWith(" ") && !nameLines[1].startsWith(" ")) {
+      val split = nameLines[0].lastIndexOf(' ')
+      if (split > 0) {
+        nameLines[1] = nameLines[0].substring(split).trim() + nameLines[1]
+        nameLines[0] = nameLines[0].substring(0, split)
+      }
+    }
+    val nameLineHeight = ceil(namePaint.fontMetrics.descent - namePaint.fontMetrics.ascent).toInt()
+    val nameBitmap = Bitmap.createBitmap(nameMaxWidth, nameLineHeight * nameLines.size, Bitmap.Config.ARGB_8888)
+    Canvas(nameBitmap).apply {
+      drawColor(Color.WHITE)
+      nameLines.forEachIndexed { index, value ->
+        var display = value.trim()
+        if (namePaint.measureText(display) > nameMaxWidth) {
+          while (display.isNotEmpty() && namePaint.measureText(display + "...") > nameMaxWidth) display = display.dropLast(1)
+          display += "..."
+        }
+        drawText(display, 0f, index * nameLineHeight - namePaint.fontMetrics.ascent, namePaint)
+      }
+    }
 
     val commands = mutableListOf(
       "! 0 200 200 $h 1",
       "PAGE-WIDTH $w",
       bitmapCommand(5, 5, nameBitmap),
       bitmapCommand(startX, startY, discountBitmap),
-      bitmapCommand(startX + discountBitmap.width, startY, percentBitmap),
+      bitmapCommand(startX + discountBitmap.width + headerGap, startY, percentBitmap),
       bitmapCommand(
-        startX + discountBitmap.width + percentBitmap.width / 2,
+        startX + discountBitmap.width + headerGap + percentBitmap.width / 2,
         startY + discountBitmap.height - offBitmap.height,
         offBitmap,
       ),
     )
 
     if (itemBitmap != null) {
-      commands += bitmapCommand(itemX, itemY, itemBitmap)
+      commands += bitmapCommand(infoX, itemY, itemBitmap)
     }
 
     if (qrBitmap != null) {
       commands += bitmapCommand(qrX, qrY, qrBitmap)
     }
 
-    commands += bitmapCommand(dateX, dateY, dateBitmap)
-    commands += bitmapCommand(nowLabelX, nowLabelY, nowLabelBitmap)
-    commands += bitmapCommand(nowPriceX, nowPriceY, nowPriceBitmap)
+    commands += bitmapCommand(infoX, dateY, dateBitmap)
+    if (showOriginalPrice) {
+      commands += bitmapCommand(wasX, wasPriceY - wasLabelBitmap.height - 4, wasLabelBitmap)
+      commands += bitmapCommand(wasX, wasPriceY, wasPriceBitmap)
+      val strikeY = wasPriceY + wasPriceBitmap.height / 2
+      commands += "LINE $wasX $strikeY ${wasX + wasPriceBitmap.width - 1} $strikeY 2"
+    }
+    commands += bitmapCommand(nowX, infoBandBottom - nowBitmap.height, nowBitmap)
     commands += "PRINT"
 
     return commands.joinToString("\r\n", postfix = "\r\n")
@@ -1180,6 +1383,71 @@ class HbPrinterModule(
   }
 
   @SuppressLint("MissingPermission")
+  private fun bluetoothTransport(device: BluetoothDevice): String = when (device.type) {
+    BluetoothDevice.DEVICE_TYPE_CLASSIC -> "classic"
+    BluetoothDevice.DEVICE_TYPE_LE -> "ble"
+    BluetoothDevice.DEVICE_TYPE_DUAL -> "dual"
+    else -> "unknown"
+  }
+
+  @SuppressLint("MissingPermission")
+  private fun rejectBleOnlyDevice(device: BluetoothDevice, promise: Promise): Boolean {
+    if (device.type != BluetoothDevice.DEVICE_TYPE_LE) {
+      return false
+    }
+    promise.reject(
+      "PRINTER_BLE_UNSUPPORTED",
+      "This address only supports Bluetooth Low Energy. Select the classic Bluetooth address for this printer.",
+    )
+    return true
+  }
+
+  private fun completePendingPairing(address: String) {
+    val pending = synchronized(pairingLock) {
+      if (pendingPairingAddress?.equals(address, ignoreCase = true) != true) {
+        null
+      } else {
+        takePendingPairingLocked()
+      }
+    } ?: return
+    pending.timeout?.let(handler::removeCallbacks)
+    pending.promise.resolve(true)
+  }
+
+  private fun failPendingPairing(
+    code: String,
+    message: String,
+    error: Throwable? = null,
+    expectedAddress: String? = null,
+  ) {
+    val pending = synchronized(pairingLock) {
+      if (
+        expectedAddress != null &&
+        pendingPairingAddress?.equals(expectedAddress, ignoreCase = true) != true
+      ) {
+        null
+      } else {
+        takePendingPairingLocked()
+      }
+    } ?: return
+    pending.timeout?.let(handler::removeCallbacks)
+    if (error == null) {
+      pending.promise.reject(code, message)
+    } else {
+      pending.promise.reject(code, message, error)
+    }
+  }
+
+  private fun takePendingPairingLocked(): PendingPairing? {
+    val promise = pendingPairingPromise ?: return null
+    val pending = PendingPairing(promise, pendingPairingTimeout)
+    pendingPairingAddress = null
+    pendingPairingPromise = null
+    pendingPairingTimeout = null
+    return pending
+  }
+
+  @SuppressLint("MissingPermission")
   private fun registerStatusReceiver() {
     if (statusReceiverRegistered) {
       return
@@ -1187,6 +1455,7 @@ class HbPrinterModule(
     val filter = IntentFilter().apply {
       addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
       addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
+      addAction(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
       addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
     }
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -1226,13 +1495,21 @@ class HbPrinterModule(
   companion object {
     private const val STATUS_EVENT = "HbPrinterStatusChanged"
     private const val ACL_DISCONNECT_SETTLE_MS = 250L
+    private const val PAIRING_TIMEOUT_MS = 45_000L
   }
+
+  data class PendingPairing(
+    val promise: Promise,
+    val timeout: Runnable?,
+  )
 
   data class WritablePrinterDevice(
     val name: String?,
     val address: String,
     val bonded: Boolean,
     val connected: Boolean,
+    val transport: String,
+    val deviceClass: Int?,
   )
 
   data class PriceParts(

@@ -5,6 +5,7 @@ import {
   InteractionManager,
   Pressable,
   RefreshControl,
+  ScrollView,
   StyleSheet,
   View,
   type StyleProp,
@@ -72,7 +73,7 @@ import {
   isRevenuePeriodAvailable,
   refreshRevenueDateSelection,
 } from "@/modules/reports/periods";
-import { formatMoney } from "@/modules/reports/format";
+import { formatMoney, formatWholeMoney } from "@/modules/reports/format";
 import { GROWTH_COLORS, formatGrowthRate, getGrowthTone } from "@/modules/reports/growth-rate";
 import { REPORT_QUERY_OPTIONS } from "@/modules/reports/report-config";
 import {
@@ -177,12 +178,8 @@ function formatCount(value: number) {
   return Math.round(value).toLocaleString("en-AU");
 }
 
-function formatWholeMoney(value: number | null | undefined) {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return "—";
-  }
-  // 营业额表空间有限，只在营业额列取整；客单价仍保留两位小数。
-  return `$${Math.round(value).toLocaleString("en-AU")}`;
+function formatOptionalWholeMoney(value: number | null | undefined) {
+  return value == null ? "—" : formatWholeMoney(value);
 }
 
 function buildRevenueSummary(rows: BranchRevenueRow[]): RevenueSummary | null {
@@ -217,15 +214,17 @@ function TableText({
   children,
   style,
   numeric,
+  noTruncate = false,
 }: {
   children: string;
   style?: object;
   numeric?: boolean;
+  noTruncate?: boolean;
 }) {
   return (
     <Text
       variant="bodySmall"
-      numberOfLines={1}
+      numberOfLines={noTruncate || numeric ? undefined : 1}
       selectable
       style={[styles.tableCellText, numeric ? styles.numericText : null, style]}
     >
@@ -277,7 +276,7 @@ function RevenueSummaryCard({
       label: t("reports.metrics.revenue"),
       current: summary?.revenue,
       compare: summary?.compareRevenue,
-      format: formatWholeMoney,
+      format: formatOptionalWholeMoney,
     },
     {
       key: "transactions",
@@ -310,7 +309,12 @@ function RevenueSummaryCard({
           </Text>
         ) : null}
       </View>
-      <View style={styles.summaryGrid}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator
+        contentContainerStyle={styles.summaryGridContent}
+      >
+        <View style={styles.summaryGrid}>
         <View style={styles.summaryRow}>
           <View style={styles.summaryLabelColumn} />
           {metrics.map((metric) => (
@@ -361,7 +365,8 @@ function RevenueSummaryCard({
             );
           })}
         </View>
-      </View>
+        </View>
+      </ScrollView>
     </View>
   );
 }
@@ -1197,7 +1202,7 @@ export function RevenueReportScreen({
         <TableText numeric style={styles.strongText}>{formatCount(item.transactions)}</TableText>
         <TableText numeric style={styles.muted}>{formatCount(item.compareTransactions)}</TableText>
       </View>
-      <View style={styles.amountColumn}>
+      <View style={styles.averageColumn}>
         <TableText numeric style={styles.strongText}>{formatMoney(item.averageTransaction)}</TableText>
         <TableText numeric style={styles.muted}>{formatMoney(item.compareAverageTransaction)}</TableText>
       </View>
@@ -1219,7 +1224,7 @@ export function RevenueReportScreen({
       <View style={styles.countColumn}>
         <TableText numeric style={styles.headerText}>{t("reports.metrics.transactions")}</TableText>
       </View>
-      <View style={styles.amountColumn}>
+      <View style={styles.averageColumn}>
         <TableText numeric style={styles.headerText}>{t("reports.metrics.averageTransaction")}</TableText>
       </View>
       <View style={styles.chevronColumn} />
@@ -1572,6 +1577,12 @@ export function RevenueReportScreen({
           </View>
 
           {/* 汇总、累计曲线、口径切换与表头放进列表头部，整张抽屉一起滚动；业务行仍是列表条目以保留首行可见计时。 */}
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator
+            style={styles.detailHorizontalScroll}
+            contentContainerStyle={styles.detailHorizontalContent}
+          >
           <FlatList
             data={detailListRows}
             keyExtractor={(item) => item.id}
@@ -1599,7 +1610,7 @@ export function RevenueReportScreen({
                       <Text variant="titleSmall" style={styles.sectionTitle}>
                         {t("reports.cumulative.title")}
                       </Text>
-                      <Text variant="bodySmall" style={[styles.muted, styles.detailChartCaption]} numberOfLines={1}>
+                      <Text variant="bodySmall" style={[styles.muted, styles.detailChartCaption]}>
                         {`${cumulativeCutoff?.live
                           ? t("reports.cumulative.liveAt", { time: liveTimeLabel ?? "" })
                           : t("reports.cumulative.dayTotal")} ${formatWholeMoney(getCumulativeTotals(detailSeries, FULL_DAY_CUTOFF_HOUR).revenue)}`}
@@ -1706,6 +1717,7 @@ export function RevenueReportScreen({
               </Text>
             ) : null}
           />
+          </ScrollView>
         </Modal>
 
         <Modal
@@ -1946,6 +1958,12 @@ const styles = StyleSheet.create({
   },
   summaryGrid: {
     paddingTop: 2,
+    minWidth: 346,
+    flexGrow: 1,
+  },
+  summaryGridContent: {
+    minWidth: 346,
+    flexGrow: 1,
   },
   summaryRow: {
     minHeight: 21,
@@ -1965,7 +1983,8 @@ const styles = StyleSheet.create({
   },
   summaryMetricColumn: {
     flex: 1,
-    minWidth: 0,
+    minWidth: 96,
+    flexShrink: 0,
     paddingHorizontal: 3,
   },
   summaryValue: {
@@ -2060,11 +2079,18 @@ const styles = StyleSheet.create({
   },
   amountColumn: {
     flex: 0.9,
-    minWidth: 0,
+    minWidth: 96,
+    flexShrink: 0,
   },
   countColumn: {
     flex: 0.62,
-    minWidth: 0,
+    minWidth: 44,
+    flexShrink: 0,
+  },
+  averageColumn: {
+    flex: 0.9,
+    minWidth: 64,
+    flexShrink: 0,
   },
   chevronColumn: {
     width: 12,
@@ -2102,7 +2128,8 @@ const styles = StyleSheet.create({
   },
   detailAmountColumn: {
     flex: 0.9,
-    minWidth: 0,
+    minWidth: 96,
+    flexShrink: 0,
   },
   detailGrowthColumn: {
     width: 54,
@@ -2171,6 +2198,15 @@ const styles = StyleSheet.create({
     backgroundColor: "#CBD5E1",
   },
   modalList: {
+    flex: 1,
+    minHeight: 0,
+    minWidth: 500,
+  },
+  detailHorizontalContent: {
+    minWidth: 500,
+    flexGrow: 1,
+  },
+  detailHorizontalScroll: {
     flex: 1,
     minHeight: 0,
   },
@@ -2286,6 +2322,7 @@ const styles = StyleSheet.create({
   },
   detailChartTitleRow: {
     flexDirection: "row",
+    flexWrap: "wrap",
     alignItems: "baseline",
     justifyContent: "space-between",
     gap: 8,
