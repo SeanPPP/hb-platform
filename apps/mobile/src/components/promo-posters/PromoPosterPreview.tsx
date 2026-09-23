@@ -1,5 +1,6 @@
 import { memo, type ReactNode } from "react";
 import { Platform, StyleSheet, Text, View, type TextStyle } from "react-native";
+import Svg, { Circle, G, Line, Path, Polygon, Rect } from "react-native-svg";
 import {
   computePosterSaving,
   formatPosterDay,
@@ -10,7 +11,7 @@ import {
 import type { PromoPosterKind, PromoPosterSize, PromoPosterStyle } from "@/modules/promo-posters/types";
 
 /**
- * 海报实时预览：用 RN View/Text 近似还原后端 PDF 的三种风格。
+ * 海报实时预览：用 RN View/Text 近似还原后端 PDF 的五种风格。
  * 做法：按设计稿的像素尺寸（A4 = 794 × 1123）排版，再整体 scale 到目标宽度，
  * 这样各尺寸的字号比例与设计稿一致；字体用系统自带的窄体/粗体近似，最终以 PDF 为准。
  */
@@ -75,6 +76,15 @@ const LOW_INK_SIZES = {
 type ClassicSize = (typeof CLASSIC_SIZES)[PromoPosterSize];
 type ModernSize = (typeof MODERN_SIZES)[PromoPosterSize];
 type LowInkSize = (typeof LOW_INK_SIZES)[PromoPosterSize];
+
+// 节日款沿用后端 A4-A7 比例和页脚高度；独立参数便于后端微调时同步，不复用旧风格的颜色布局。
+const SEASONAL_SIZES = {
+  A4: { w: 794, h: 1123, m: 23, pad: 36, band: 146, n: 60, P: 430, wz: 34, f: 17, fpy: 12, gap: 18, lg: 50, short: false },
+  A5: { w: 559, h: 794, m: 19, pad: 24, band: 100, n: 40, P: 290, wz: 25, f: 13, fpy: 9, gap: 12, lg: 36, short: false },
+  A6: { w: 397, h: 559, m: 19, pad: 16, band: 70, n: 27, P: 200, wz: 18, f: 12, fpy: 7, gap: 8, lg: 28, short: false },
+  A7: { w: 280, h: 397, m: 15, pad: 12, band: 50, n: 18, P: 138, wz: 14, f: 12, fpy: 6, gap: 5, lg: 22, short: true },
+} as const;
+type SeasonalSize = (typeof SEASONAL_SIZES)[PromoPosterSize];
 
 const LOW_INK_THEME: Record<PromoPosterKind, { label: string; color: string }> = {
   special: { label: "SPECIAL", color: "#C6222A" },
@@ -166,6 +176,7 @@ function DealPrice({
   forText,
   forColor,
   forStyle,
+  underlineCents = false,
 }: {
   quantity: number | null;
   value: number | null;
@@ -174,6 +185,7 @@ function DealPrice({
   forText: string;
   forColor: string;
   forStyle: TextStyle;
+  underlineCents?: boolean;
 }) {
   const { dollars, cents } = value === null ? { dollars: "--", cents: "00" } : splitPosterPrice(value);
   const dollarSize = size * 0.36;
@@ -194,7 +206,12 @@ function DealPrice({
       </Text>
       <Text style={[FONT_CONDENSED, priceTextStyle(dollarSize), { color, marginTop: topOffset(dollarSize), marginRight: round(size * 0.02) }]}>$</Text>
       <Text style={[FONT_CONDENSED, priceTextStyle(size), { color, letterSpacing: -size * 0.02 }]}>{dollars}</Text>
-      {cents !== "00" ? (
+      {cents !== "00" && underlineCents ? (
+        <View style={{ marginTop: topOffset(centSize), marginLeft: round(size * 0.035) }}>
+          <Text style={[FONT_CONDENSED, priceTextStyle(centSize), { color }]}>{cents}</Text>
+          <View style={{ height: Math.max(2, round(size * 0.028)), backgroundColor: color, marginTop: round(size * 0.01) }} />
+        </View>
+      ) : cents !== "00" ? (
         <Text style={[FONT_CONDENSED, priceTextStyle(centSize), { color, marginTop: topOffset(centSize), marginLeft: round(size * 0.035) }]}>
           {cents}
         </Text>
@@ -225,7 +242,7 @@ function priceWidthDigits(value: number | null) {
 }
 
 /** 页脚文字：完整版两行右对齐，A7 合成一行。 */
-function footerLines(data: PromoPosterPreviewData, short: boolean): string[] {
+function footerLines(data: PromoPosterPreviewData, short: boolean, joinShort = true): string[] {
   const item = data.itemNumber ? (short ? `#${data.itemNumber}` : `Item ${data.itemNumber}`) : "";
   let left = "";
   let right = item;
@@ -242,7 +259,7 @@ function footerLines(data: PromoPosterPreviewData, short: boolean): string[] {
       : "";
   }
   const lines = [left, right].filter(Boolean);
-  return short && lines.length > 1 ? [lines.join(" · ")] : lines;
+  return short && joinShort && lines.length > 1 ? [lines.join(" · ")] : lines;
 }
 
 function savingOf(data: PromoPosterPreviewData) {
@@ -625,17 +642,128 @@ function LowInkPoster({ data, z }: { data: PromoPosterPreviewData; z: LowInkSize
   );
 }
 
+/** 与 SeasonalPosterLayout 共用边角位置；A7 只保留精简装饰。 */
+function SeasonalDecor({ halloween, size: t }: { halloween: boolean; size: SeasonalSize }) {
+  const s = t.short ? (halloween ? 0.52 : 0.55) : t.m / (halloween ? 23 : 22);
+  const red = "#C6222A";
+  const green = "#176447";
+  const ink = "#181818";
+  const gold = "#D7A928";
+  const holly = (cx: number, cy: number, scale: number) => (
+    <G key={`${cx}-${cy}`}>
+      <Polygon points={`${cx - 20 * scale},${cy} ${cx - 13 * scale},${cy - 5 * scale} ${cx - 13 * scale},${cy - 10 * scale} ${cx - 6 * scale},${cy - 6 * scale} ${cx},${cy} ${cx - 7 * scale},${cy + 5 * scale} ${cx - 14 * scale},${cy + 4 * scale}`} fill={green} />
+      <Polygon points={`${cx},${cy} ${cx + 7 * scale},${cy - 13 * scale} ${cx + 11 * scale},${cy - 10 * scale} ${cx + 18 * scale},${cy - 12 * scale} ${cx + 14 * scale},${cy - 5 * scale} ${cx + 16 * scale},${cy} ${cx + 7 * scale},${cy + 3 * scale}`} fill={green} />
+      <Circle cx={cx - 3 * scale} cy={cy} r={3.5 * scale} fill={red} />
+      <Circle cx={cx + 3 * scale} cy={cy + 2 * scale} r={3.5 * scale} fill={red} />
+      <Circle cx={cx} cy={cy - 4 * scale} r={3.5 * scale} fill={red} />
+    </G>
+  );
+  const cx = t.m / 2 + 2;
+  const cy = t.h * 0.72;
+  const bx = t.w * 0.72;
+  const by = t.m / 2 + 3;
+  const rx = t.w - t.m / 2;
+  const ry = t.m / 2;
+  const r = t.m * 0.8;
+  const batPoints = [[-20, -3], [-12, 7], [-8, 2], [-3, 6], [0, 3], [3, 6], [8, 2], [12, 7], [20, -3], [8, 0], [3, -4], [0, -1], [-3, -4], [-8, 0]];
+  return (
+    <Svg pointerEvents="none" width={t.w} height={t.h} style={StyleSheet.absoluteFill}>
+      {halloween ? <>
+        <Circle cx={cx - 5 * s} cy={cy} r={8 * s} fill="#F57616" />
+        <Circle cx={cx + 5 * s} cy={cy} r={8 * s} fill="#F57616" />
+        <Circle cx={cx} cy={cy} r={9 * s} fill="#F57616" />
+        <Line x1={cx} y1={cy - 8 * s} x2={cx + 2 * s} y2={cy - 14 * s} stroke={ink} strokeWidth={3 * s} />
+        <Polygon points={`${cx - 6 * s},${cy - 2 * s} ${cx - 2 * s},${cy - 2 * s} ${cx - 4 * s},${cy - 5 * s}`} fill={ink} />
+        <Polygon points={`${cx + 2 * s},${cy - 2 * s} ${cx + 6 * s},${cy - 2 * s} ${cx + 4 * s},${cy - 5 * s}`} fill={ink} />
+        <Line x1={cx - 4 * s} y1={cy + 4 * s} x2={cx + 4 * s} y2={cy + 4 * s} stroke={ink} strokeWidth={2 * s} />
+        <Polygon points={batPoints.map(([x, y]) => `${bx + x * s},${by + y * s}`).join(" ")} fill={ink} />
+        {!t.short ? <>
+          <Rect x={rx - r - 2} y={ry - 2} width={r + 4} height={r + 4} fill="#FFF9EE" />
+          {[0, 1, 2].map((i) => <Line key={i} x1={rx} y1={ry} x2={rx - r * Math.cos(i * Math.PI / 4)} y2={ry + r * Math.sin(i * Math.PI / 4)} stroke={ink} strokeWidth={0.7} />)}
+          {[1, 2, 3].map((ring) => <Path key={ring} d={`M ${rx - r * ring / 3} ${ry} L ${rx - r * ring / 3 * 0.707} ${ry + r * ring / 3 * 0.707} L ${rx} ${ry + r * ring / 3}`} fill="none" stroke={ink} strokeWidth={0.6} />)}
+        </> : null}
+      </> : <>
+        {holly(t.m + 6, t.m / 2 + 3, s)}
+        {holly(t.w - t.m - 8, t.h - t.m / 2, s)}
+        <Line x1={t.m + 30 * s} y1={t.m / 2} x2={t.w - t.m - 6} y2={t.m / 2} stroke={gold} strokeWidth={1} />
+        {!t.short ? <>{holly(t.m / 2 + 3, t.h * 0.68, 0.65 * s)}<Circle cx={t.w - t.m / 2} cy={t.h * 0.35} r={3 * s} fill={gold} /></> : null}
+      </>}
+    </Svg>
+  );
+}
+
+function SeasonalPoster({ data, z }: { data: PromoPosterPreviewData; z: SeasonalSize }) {
+  const halloween = data.style === "halloween";
+  const red = "#C6222A";
+  const green = "#176447";
+  const ink = "#181818";
+  const accent = halloween ? "#F57616" : red;
+  const bandBg = halloween ? (data.kind === "clearance" ? ink : accent) : data.kind === "new" ? green : red;
+  const bandFg = halloween ? (data.kind === "clearance" ? accent : ink) : "#FFFFFF";
+  const priceColor = halloween ? ink : bandBg;
+  const word = data.kind === "new" ? "NEW ARRIVAL" : data.kind === "multibuy" ? "MULTI-BUY" : data.kind === "clearance" ? "CLEARANCE" : "SPECIAL";
+  const left = z.m + z.pad;
+  const inner = z.w - 2 * left;
+  const headerTop = z.m + 10;
+  const titleTop = headerTop + z.band + z.pad;
+  const mixTop = titleTop + 2 * 1.1 * z.n + z.gap;
+  const hasMix = data.kind === "multibuy" && data.mixAndMatch;
+  const contentTop = mixTop + (hasMix ? 1.2 * z.wz + z.gap : 0);
+  const lineH = 1.25 * z.f + 2;
+  const footerContentH = Math.max(z.lg, 2 * lineH);
+  const footerTop = z.h - z.m - footerContentH - 2 * z.fpy;
+  const infoTop = footerTop - z.pad - 1.25 * z.wz;
+  const priceBottom = infoTop - z.gap;
+  const cap = Math.min(z.P, Math.max(12, (priceBottom - contentTop) / 0.95));
+  const saving = savingOf(data);
+  const info = data.kind === "multibuy"
+    ? `${data.unitPrice ? `${formatPosterMoney(data.unitPrice)} EACH` : "EACH"}${saving ? `   SAVE ${formatPosterMoney(saving.amount)}` : ""}`
+    : saving && data.wasPrice
+      ? `WAS ${formatPosterMoney(data.wasPrice)}   ${data.kind === "clearance" ? `${saving.percent}% OFF` : `SAVE ${formatPosterMoney(saving.amount)}`}`
+      : "EACH";
+  // 两位件数与角分同时计入宽度；字体仍沿用现有 iOS 防裁切处理。
+  const dealSize = Math.min(cap, Math.floor(inner * 0.97 / (1.1 + CONDENSED_EM * (priceWidthDigits(data.price) + String(data.quantity ?? "-").length))));
+  const priceSize = data.kind === "multibuy" ? dealSize : fitPriceSize(data.price, inner, cap);
+  const lines = footerLines(data, z.short, false);
+  const footerWidth = inner - 3.5 * z.lg - z.gap;
+  const footerTextTop = footerTop + z.fpy + (footerContentH - lines.length * lineH) / 2;
+  return (
+    <View style={{ width: z.w, height: z.h, backgroundColor: halloween ? "#FFF9EE" : "#FFFDF7" }}>
+      <View style={{ position: "absolute", left: z.m / 2, top: z.m / 2, width: z.w - z.m, height: z.h - z.m, borderWidth: Math.max(2, z.m / 7), borderColor: accent }} />
+      <View style={{ position: "absolute", left: z.m, top: headerTop, width: z.w - 2 * z.m, height: z.band, paddingHorizontal: z.pad, backgroundColor: bandBg, justifyContent: "center" }}>
+        <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.5} style={[FONT_CONDENSED, { fontSize: Math.min(z.band * 0.88, inner * 0.96 / (word.length * CONDENSED_EM)), color: bandFg, textAlign: "center", includeFontPadding: false }]}>{word}</Text>
+      </View>
+      <Text numberOfLines={2} style={[FONT_BOLD, textStyle(z.n, 1.1), { position: "absolute", left, top: titleTop, width: inner, color: data.title.trim() ? ink : LINE }]}>{displayTitle(data)}</Text>
+      {hasMix ? <Text numberOfLines={1} style={[FONT_BOLD, textStyle(z.wz, 1.2), { position: "absolute", left, top: mixTop, color: ink }]}>{`Mix & match any ${data.quantity ?? "-"}`}</Text> : null}
+      <View style={{ position: "absolute", left, bottom: z.h - priceBottom, width: inner }}>
+        {data.kind === "multibuy"
+          ? <DealPrice quantity={data.quantity ?? null} value={data.price} size={priceSize} color={priceColor} forText="FOR" forColor={priceColor} forStyle={FONT_CONDENSED} underlineCents />
+          : <BigPrice value={data.price} size={priceSize} color={priceColor} underlineCents />}
+      </View>
+      <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.1} style={[FONT_BOLD, textStyle(z.wz, 1.25), { position: "absolute", left, top: infoTop, width: inner, color: ink }]}>{info}</Text>
+      <View style={{ position: "absolute", left, top: footerTop, width: inner, height: 1, backgroundColor: halloween ? "#E9D8BF" : "#D7A928" }} />
+      <View style={{ position: "absolute", left, top: footerTop + z.fpy + (footerContentH - z.lg) / 2, width: 3.5 * z.lg, height: z.lg }}>
+        {data.showLogo !== false ? <Wordmark height={z.lg} /> : null}
+      </View>
+      {lines.map((line, i) => <Text key={`${i}-${line}`} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.1} style={[FONT_BOLD, textStyle(z.f, 1.25), { position: "absolute", right: left, top: footerTextTop + i * lineH, width: footerWidth, textAlign: "right", color: ink }]}>{line}</Text>)}
+      <SeasonalDecor halloween={halloween} size={z} />
+    </View>
+  );
+}
+
 // ---------------------------------------------------------------- 入口
 
 function PromoPosterPreviewComponent({ data, width }: PromoPosterPreviewProps) {
-  const base = data.style === "low-ink" ? LOW_INK_SIZES[data.size] : data.style === "modern" ? MODERN_SIZES[data.size] : CLASSIC_SIZES[data.size];
+  const base = data.style === "christmas" || data.style === "halloween" ? SEASONAL_SIZES[data.size] : data.style === "low-ink" ? LOW_INK_SIZES[data.size] : data.style === "modern" ? MODERN_SIZES[data.size] : CLASSIC_SIZES[data.size];
   const scale = width / base.w;
   const height = round(base.h * scale);
   return (
     <View style={[styles.frame, { width, height }]} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
       {/* 按设计稿像素排版后整体缩放；transformOrigin 左上角，外框裁掉多余的布局尺寸 */}
       <View style={{ width: base.w, height: base.h, transform: [{ scale }], transformOrigin: "top left" }}>
-        {data.style === "low-ink" ? (
+        {data.style === "christmas" || data.style === "halloween" ? (
+          <SeasonalPoster data={data} z={SEASONAL_SIZES[data.size]} />
+        ) : data.style === "low-ink" ? (
           <LowInkPoster data={data} z={LOW_INK_SIZES[data.size]} />
         ) : data.style === "modern" ? (
           <ModernPoster data={data} z={MODERN_SIZES[data.size]} />
@@ -651,7 +779,7 @@ export const PromoPosterPreview = memo(PromoPosterPreviewComponent);
 
 /** 纸张宽高比（所有 A 系列一致，按设计稿像素取）。 */
 export function promoPosterAspectRatio(style: PromoPosterStyle, size: PromoPosterSize) {
-  const base = style === "low-ink" ? LOW_INK_SIZES[size] : style === "modern" ? MODERN_SIZES[size] : CLASSIC_SIZES[size];
+  const base = style === "christmas" || style === "halloween" ? SEASONAL_SIZES[size] : style === "low-ink" ? LOW_INK_SIZES[size] : style === "modern" ? MODERN_SIZES[size] : CLASSIC_SIZES[size];
   return base.h / base.w;
 }
 

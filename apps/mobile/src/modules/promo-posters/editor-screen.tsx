@@ -332,6 +332,7 @@ function PosterEditorForm({ defaults, storeCode, requestedKind, onBack }: Poster
               label={t("poster.editor.styleLabel")}
               value={draft.style}
               options={PROMO_POSTER_STYLES.map((style) => ({ value: style, label: t(`poster.styles.${style}`) }))}
+              wrap
               onChange={handleStyle}
             />
             {draft.style === "low-ink" ? <Text style={styles.fieldLabel}>{t("poster.lowInkHint")}</Text> : null}

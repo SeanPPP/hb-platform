@@ -13,16 +13,18 @@ interface PosterSegmentedProps<T extends string> {
   value: T;
   options: readonly PosterSegmentOption<T>[];
   onChange: (value: T) => void;
+  /** 仅用于风格选择：选项较多时换行，不改变其它分段控件。 */
+  wrap?: boolean;
 }
 
 /** 带左侧标题的分段选择（设计稿 seg）：选中蓝底描边，不可用项置灰加删除线。 */
-export function PosterSegmented<T extends string>({ label, value, options, onChange }: PosterSegmentedProps<T>) {
+export function PosterSegmented<T extends string>({ label, value, options, onChange, wrap = false }: PosterSegmentedProps<T>) {
   return (
     <View style={styles.row}>
       <Text style={styles.label} numberOfLines={1}>
         {label}
       </Text>
-      <View style={styles.track} accessibilityRole="radiogroup" accessibilityLabel={label}>
+      <View style={[styles.track, wrap ? styles.trackWrap : null]} accessibilityRole="radiogroup" accessibilityLabel={label}>
         {options.map((option) => {
           const selected = option.value === value;
           return (
@@ -32,7 +34,7 @@ export function PosterSegmented<T extends string>({ label, value, options, onCha
               accessibilityState={{ selected, disabled: Boolean(option.disabled) }}
               disabled={option.disabled}
               onPress={() => onChange(option.value)}
-              style={[styles.item, selected ? styles.itemSelected : null]}
+              style={[styles.item, wrap ? styles.itemWrap : null, selected ? styles.itemSelected : null]}
             >
               <Text
                 numberOfLines={1}
@@ -72,6 +74,9 @@ const styles = StyleSheet.create({
     borderRadius: 9,
     backgroundColor: HB_COLORS.surfaceMuted,
   },
+  trackWrap: {
+    flexWrap: "wrap",
+  },
   item: {
     flex: 1,
     minWidth: 0,
@@ -80,6 +85,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: HB_SPACING.xxs / 2,
+  },
+  itemWrap: {
+    flexBasis: "49%",
+    flexGrow: 0,
+    flexShrink: 0,
   },
   itemSelected: {
     backgroundColor: "#EAF2FF",

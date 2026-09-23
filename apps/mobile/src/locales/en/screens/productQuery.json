@@ -326,6 +326,7 @@
     "refreshCancelled": "Offline data download cancelled."
   },
   "print": {
+    "inProgress": "Printing…",
     "title": "Label printing",
     "quick": "Print",
     "product": "Regular label",
@@ -389,7 +390,9 @@
     "styles": {
       "classic": "Classic",
       "modern": "Modern",
-      "low-ink": "Low ink"
+      "low-ink": "Low ink",
+      "christmas": "Christmas",
+      "halloween": "Halloween"
     },
     "lowInkHint": "White paper, black text, with colour only in the heading and short rule. Turn off the logo if preferred.",
     "unavailable": {
