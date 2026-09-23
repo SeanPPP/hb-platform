@@ -385,6 +385,33 @@ namespace BlazorApp.Api.Features.LocalSupplierInvoices
                             }
                         );
 
+                    // 仅按当前页批量聚合有效明细；至少一条明细且所有 ExistingProductCount 非空才算已检测。
+                    // 0 是合法的“已检测但未匹配”，因此这里只统计 NULL，不把 0 当作未检测。
+                    var productCheckAggregates = await db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                        .Where(d =>
+                            d.IsDeleted == false
+                            && d.InvoiceGUID != null
+                            && invoiceGuids.Contains(d.InvoiceGUID)
+                        )
+                        .GroupBy(d => d.InvoiceGUID)
+                        .Select(d => new
+                        {
+                            InvoiceGUID = d.InvoiceGUID,
+                            DetailCount = SqlFunc.AggregateCount(d.DetailGUID),
+                            NullProductCount = SqlFunc.AggregateSum(
+                                SqlFunc.IIF(d.ExistingProductCount == null, 1, 0)
+                            ),
+                        })
+                        .ToListAsync();
+                    var checkedInvoices = productCheckAggregates
+                        .Where(item =>
+                            !string.IsNullOrWhiteSpace(item.InvoiceGUID)
+                            && item.DetailCount > 0
+                            && item.NullProductCount == 0
+                        )
+                        .Select(item => item.InvoiceGUID!)
+                        .ToHashSet(StringComparer.Ordinal);
+
                     foreach (var item in list)
                     {
                         if (priceChangeCountsByInvoice.TryGetValue(item.InvoiceGUID, out var counts))
@@ -392,6 +419,7 @@ namespace BlazorApp.Api.Features.LocalSupplierInvoices
                             item.PriceIncreaseItemCount = counts.Increase;
                             item.PriceDecreaseItemCount = counts.Decrease;
                         }
+                        item.IsProductChecked = checkedInvoices.Contains(item.InvoiceGUID);
                     }
                 }
 
