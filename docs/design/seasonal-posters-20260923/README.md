@@ -1,6 +1,6 @@
 # 圣诞与万圣节 Poster
 
-2026-09-23 · 分支 `codex/seasonal-posters` · 基于 `ab46f0a21509b097890a4a0638b7fc5efc8e3be6`
+2026-09-23 · 初版由 PR #305 合入；当前重设计沿用原有业务和打印接口。
 
 ## 实现范围
 
@@ -15,10 +15,12 @@
 
 以下设计图直接由本次后端 PDF 渲染生成，商品与价格为验证样例。
 
+重设计将圣诞老人、火车、圣诞树和南瓜、蜘蛛、骷髅、蝙蝠完整收在标题下方的装饰带；圣诞内容区增加浅绿色雪花底纹，万圣节增加浅棕色蛛网底纹。底纹先于品名、价格绘制，仍是 PDF 矢量路径；App 预览用 SVG 绘制同样位置和色彩。Logo 开关不改变图形或正文坐标。
+
 | 文件 | 内容 |
 | --- | --- |
-| `christmas-four-designs.png` | 圣诞四款，A6、Logo 开 |
-| `halloween-four-designs.png` | 万圣节四款，A6、Logo 开 |
+| `christmas-four-designs.png` | 重设计圣诞四款，A6、Logo 开 |
+| `halloween-four-designs.png` | 重设计万圣节四款，A6、Logo 开 |
 | `logo-on-off-comparison.png` | 两主题 A7 Logo 开关对照 |
 | `christmas-16-combinations.png` / `christmas-logo-off-16-combinations.png` | 圣诞四类型 × 四尺寸 × Logo 开关 |
 | `halloween-16-combinations.png` / `halloween-logo-off-16-combinations.png` | 万圣节四类型 × 四尺寸 × Logo 开关 |
@@ -45,10 +47,8 @@
 - 回归原有经典/现代/省彩墨、字体嵌入、业务校验、默认值、A4–A7 混合拼版等现有测试。
 - App、Web 相关逻辑测试、TypeScript 检查、改动文件 ESLint 通过；`git diff --check` 通过。
 - 队列测试覆盖节日风格和 Logo 的读取恢复、真实保存快照、部分打印、切换风格、清空、整批完成与跨店替换。
-- iOS：独立 Expo harness 导入本工作树真实 `PromoPosterPreview` 和 `PosterSegmented`，在 iPhone 15 Pro 模拟器上验证 320dp 海报，特价、新品、清仓、多买，Logo 开/关及两列选择器。截图 `ios-*.png`。
-- Android：Pixel 5 API 30 模拟器，临时 360dp 屏宽、320dp 海报，Expo Go SDK 54；验证圣诞 A7 99 件大金额及万圣节 A7 清仓，截图 `android-*.png`。
-- Web：独立 harness 使用真实 `PromoPosterModal`；defaults 请求由固定数据模拟，PDF 响应使用本次后端生成的节日 PDF。验证整批风格和 Logo 请求参数、实际 PDF 预览，截图 `web-*.png`。此项不代表连接生产服务的端到端验收。
-- 独立代码审查完成；发现的 A5/A6 预览高度和多买角分下划线差异已修正。
+- `ios-*.png`、`android-*.png`、`web-*.png` 为 PR #305 首版界面验收截图；重设计以本目录更新后的 PDF 样张为准，客户端运行时验证另行记录。
+- 独立代码审查指出 A4/A5 装饰越出标题下方窄条、App 与 PDF 主图几何不同；已将缩放按装饰带高度限制，并逐项同步两端的圣诞老人、火车、树、南瓜、蜘蛛、骷髅和蝙蝠。
 
 代码路径通过 codebase-memory 与源码调用点核对；GitNexus 当前不可用，采用精确源码、实际 diff 和相关测试完成影响核验。
 

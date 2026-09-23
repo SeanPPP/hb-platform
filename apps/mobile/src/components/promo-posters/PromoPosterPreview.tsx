@@ -1,6 +1,6 @@
 import { memo, type ReactNode } from "react";
 import { Platform, StyleSheet, Text, View, type TextStyle } from "react-native";
-import Svg, { Circle, G, Line, Path, Polygon, Rect } from "react-native-svg";
+import Svg, { Circle, G, Line, Polygon, Rect } from "react-native-svg";
 import {
   computePosterSaving,
   formatPosterDay,
@@ -642,51 +642,164 @@ function LowInkPoster({ data, z }: { data: PromoPosterPreviewData; z: LowInkSize
   );
 }
 
-/** 与 SeasonalPosterLayout 共用边角位置；A7 只保留精简装饰。 */
+function seasonalStripHeight(t: SeasonalSize) {
+  return t.w >= 700 ? 92 : t.w >= 500 ? 76 : t.w >= 390 ? 60 : 42;
+}
+
+/** 浅色节日底纹先于文字绘制，与后端 PDF 使用相同的定位和尺寸。 */
+function SeasonalBackground({ halloween, size: t, footerTop }: { halloween: boolean; size: SeasonalSize; footerTop: number }) {
+  const titleTop = t.m + 10 + t.band + seasonalStripHeight(t) + t.pad;
+  const webColor = "#E8D4B9";
+  const snowColor = "#C9E0D1";
+  const web = (originX: number, originY: number, radius: number, lowerLeft: boolean, key: string) => {
+    const point = (angle: number, r: number) => ({
+      x: originX + (lowerLeft ? 1 : -1) * r * Math.cos(angle),
+      y: originY + (lowerLeft ? -1 : 1) * r * Math.sin(angle),
+    });
+    return <G key={key}>
+      {Array.from({ length: 7 }, (_, i) => {
+        const end = point(i * Math.PI / 12, radius);
+        return <Line key={`s-${i}`} x1={originX} y1={originY} x2={end.x} y2={end.y} stroke={webColor} strokeWidth={Math.max(.65, t.w / 397)} />;
+      })}
+      {Array.from({ length: 5 }, (_, ring) => Array.from({ length: 6 }, (_, spoke) => {
+        const r = radius * (ring + 1) / 5;
+        const a = point(spoke * Math.PI / 12, r);
+        const b = point((spoke + 1) * Math.PI / 12, r);
+        return <Line key={`r-${ring}-${spoke}`} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={webColor} strokeWidth={Math.max(.65, t.w / 397)} />;
+      }))}
+    </G>;
+  };
+  const snowflake = (cx: number, cy: number, r: number, key: string) => <G key={key}>
+    {Array.from({ length: 6 }, (_, arm) => {
+      const angle = arm * Math.PI / 3;
+      const dx = Math.cos(angle), dy = Math.sin(angle), px = -dy, py = dx;
+      const bx = cx + r * .68 * dx, by = cy + r * .68 * dy;
+      return <G key={arm}>
+        <Line x1={cx} y1={cy} x2={cx + r * dx} y2={cy + r * dy} stroke={snowColor} strokeWidth={Math.max(.8, t.w / 397)} />
+        <Line x1={bx} y1={by} x2={bx - r * .2 * dx + r * .15 * px} y2={by - r * .2 * dy + r * .15 * py} stroke={snowColor} strokeWidth={Math.max(.8, t.w / 397)} />
+        <Line x1={bx} y1={by} x2={bx - r * .2 * dx - r * .15 * px} y2={by - r * .2 * dy - r * .15 * py} stroke={snowColor} strokeWidth={Math.max(.8, t.w / 397)} />
+      </G>;
+    })}
+  </G>;
+  return <Svg pointerEvents="none" width={t.w} height={t.h} style={StyleSheet.absoluteFill}>
+    {halloween ? <>
+      {web(t.w - t.m - 10, titleTop + t.n * .65, Math.min(t.w * .58, (footerTop - titleTop) * .68), false, "upper")}
+      {web(t.m + 12, footerTop - t.pad * .4, Math.min(t.w * .27, t.h * .13), true, "lower")}
+    </> : <>
+      {snowflake(t.w * .78, titleTop + (footerTop - titleTop) * .20, t.w * .075, "upper")}
+      {snowflake(t.w * .83, titleTop + (footerTop - titleTop) * .67, t.w * .11, "lower")}
+      {snowflake(t.w * .22, titleTop + (footerTop - titleTop) * .56, t.w * .052, "left")}
+    </>}
+  </Svg>;
+}
+
+/** 主节日图形完整收在标题与品名之间的独立装饰带。 */
 function SeasonalDecor({ halloween, size: t }: { halloween: boolean; size: SeasonalSize }) {
-  const s = t.short ? (halloween ? 0.52 : 0.55) : t.m / (halloween ? 23 : 22);
+  const stripH = seasonalStripHeight(t);
+  // 与后端 SeasonalPosterLayout 共用装饰带缩放比例，所有图形均落在底色内。
+  const s = (stripH - 8) / 42;
   const red = "#C6222A";
   const green = "#176447";
   const ink = "#181818";
   const gold = "#D7A928";
-  const holly = (cx: number, cy: number, scale: number) => (
-    <G key={`${cx}-${cy}`}>
-      <Polygon points={`${cx - 20 * scale},${cy} ${cx - 13 * scale},${cy - 5 * scale} ${cx - 13 * scale},${cy - 10 * scale} ${cx - 6 * scale},${cy - 6 * scale} ${cx},${cy} ${cx - 7 * scale},${cy + 5 * scale} ${cx - 14 * scale},${cy + 4 * scale}`} fill={green} />
-      <Polygon points={`${cx},${cy} ${cx + 7 * scale},${cy - 13 * scale} ${cx + 11 * scale},${cy - 10 * scale} ${cx + 18 * scale},${cy - 12 * scale} ${cx + 14 * scale},${cy - 5 * scale} ${cx + 16 * scale},${cy} ${cx + 7 * scale},${cy + 3 * scale}`} fill={green} />
-      <Circle cx={cx - 3 * scale} cy={cy} r={3.5 * scale} fill={red} />
-      <Circle cx={cx + 3 * scale} cy={cy + 2 * scale} r={3.5 * scale} fill={red} />
-      <Circle cx={cx} cy={cy - 4 * scale} r={3.5 * scale} fill={red} />
+  const snow = "#FFFDF7";
+  const paper = "#FFF9EE";
+  const orange = "#F57616";
+  const headerTop = t.m + 10;
+  const stripTop = headerTop + t.band + 3;
+  const headerMid = stripTop + stripH * 0.5;
+
+  const pumpkin = (px: number, py: number) => (
+    <G>
+      <Circle cx={px - 7 * s} cy={py} r={10 * s} fill={orange} />
+      <Circle cx={px + 7 * s} cy={py} r={10 * s} fill={orange} />
+      <Circle cx={px} cy={py} r={12 * s} fill={orange} />
+      <Line x1={px} y1={py - 10 * s} x2={px + 3 * s} y2={py - 17 * s} stroke={ink} strokeWidth={3 * s} />
+      <Polygon points={`${px + 2 * s},${py - 15 * s} ${px + 9 * s},${py - 15 * s} ${px + 5 * s},${py - 19 * s}`} fill={orange} />
+      <Polygon points={`${px - 8 * s},${py - 2 * s} ${px - 2 * s},${py - 2 * s} ${px - 5 * s},${py - 7 * s}`} fill={ink} />
+      <Polygon points={`${px + 2 * s},${py - 2 * s} ${px + 8 * s},${py - 2 * s} ${px + 5 * s},${py - 7 * s}`} fill={ink} />
+      <Polygon points={`${px - 7 * s},${py + 5 * s} ${px},${py + 3 * s} ${px + 7 * s},${py + 5 * s} ${px},${py + 8 * s}`} fill={ink} />
     </G>
   );
-  const cx = t.m / 2 + 2;
-  const cy = t.h * 0.72;
-  const bx = t.w * 0.72;
-  const by = t.m / 2 + 3;
-  const rx = t.w - t.m / 2;
-  const ry = t.m / 2;
-  const r = t.m * 0.8;
-  const batPoints = [[-20, -3], [-12, 7], [-8, 2], [-3, 6], [0, 3], [3, 6], [8, 2], [12, 7], [20, -3], [8, 0], [3, -4], [0, -1], [-3, -4], [-8, 0]];
+
+  const tree = (px: number, py: number) => (
+    <G>
+      <Polygon points={`${px},${py - 18 * s} ${px - 11 * s},${py + 4 * s} ${px + 11 * s},${py + 4 * s}`} fill={green} />
+      <Polygon points={`${px},${py - 10 * s} ${px - 14 * s},${py + 10 * s} ${px + 14 * s},${py + 10 * s}`} fill={green} />
+      <Rect x={px - 2 * s} y={py + 10 * s} width={4 * s} height={4 * s} fill={red} />
+      <Circle cx={px} cy={py - 18 * s} r={2.8 * s} fill={gold} />
+      <Circle cx={px - 5 * s} cy={py + 3 * s} r={1.6 * s} fill={red} />
+      <Circle cx={px + 6 * s} cy={py + 5 * s} r={1.6 * s} fill={gold} />
+    </G>
+  );
+
+  const santa = (px: number, py: number) => (
+    <G>
+      <Circle cx={px} cy={py + 4 * s} r={9 * s} fill={snow} />
+      <Circle cx={px} cy={py - s} r={7 * s} fill="#FFE2C2" />
+      <Polygon points={`${px - 11 * s},${py - 7 * s} ${px + 7 * s},${py - 7 * s} ${px + 2 * s},${py - 17 * s}`} fill={red} />
+      <Rect x={px - 11 * s} y={py - 8 * s} width={20 * s} height={3 * s} rx={1.5 * s} fill={snow} />
+      <Circle cx={px + 3 * s} cy={py - 17 * s} r={2.5 * s} fill={snow} />
+      <Circle cx={px - 3 * s} cy={py - s} r={0.8 * s} fill={ink} />
+      <Circle cx={px + 3 * s} cy={py - s} r={0.8 * s} fill={ink} />
+      <Circle cx={px} cy={py + 4 * s} r={1.3 * s} fill={red} />
+    </G>
+  );
+
+  const train = (px: number, py: number) => (
+    <G>
+      <Rect x={px - 23 * s} y={py - 8 * s} width={27 * s} height={11 * s} rx={2 * s} fill={red} />
+      <Rect x={px + 4 * s} y={py - 13 * s} width={14 * s} height={16 * s} fill={green} />
+      <Rect x={px + 7 * s} y={py - 10 * s} width={7 * s} height={6 * s} fill={snow} />
+      <Rect x={px - 15 * s} y={py - 14 * s} width={3 * s} height={6 * s} fill={green} />
+      <Circle cx={px - 14 * s} cy={py - 19 * s} r={2.5 * s} fill={snow} />
+      <Circle cx={px - 19 * s} cy={py + 5 * s} r={3.7 * s} fill={gold} />
+      <Circle cx={px - 2 * s} cy={py + 5 * s} r={3.7 * s} fill={gold} />
+      <Circle cx={px + 13 * s} cy={py + 5 * s} r={3.7 * s} fill={gold} />
+      <Line x1={px - 24 * s} y1={py + 9 * s} x2={px + 21 * s} y2={py + 9 * s} stroke={gold} strokeWidth={1.4 * s} />
+    </G>
+  );
+
+  const skull = (px: number, py: number) => (
+    <G>
+      <Circle cx={px} cy={py} r={10 * s} fill={ink} />
+      <Rect x={px - 7 * s} y={py + 4 * s} width={14 * s} height={8 * s} fill={ink} />
+      <Circle cx={px - 4 * s} cy={py - 2 * s} r={2.5 * s} fill={paper} />
+      <Circle cx={px + 4 * s} cy={py - 2 * s} r={2.5 * s} fill={paper} />
+      <Polygon points={`${px - 2 * s},${py + 4 * s} ${px + 2 * s},${py + 4 * s} ${px},${py + s}`} fill={paper} />
+      {[-4, 0, 4].map((tooth) => (
+        <Line key={tooth} x1={px + tooth * s} y1={py + 5 * s} x2={px + tooth * s} y2={py + 10 * s} stroke={paper} strokeWidth={1.5 * s} />
+      ))}
+    </G>
+  );
+
+  const spider = (px: number, py: number) => (
+    <G>
+      <Circle cx={px} cy={py} r={3 * s} fill={ink} />
+      {Array.from({ length: 4 }, (_, i) => {
+        const dy = (i - 1.5) * 3.8 * s;
+        return <G key={i}>
+          <Line x1={px - 2 * s} y1={py + dy * 0.35} x2={px - (8 + i) * s} y2={py + dy} stroke={ink} strokeWidth={s} />
+          <Line x1={px + 2 * s} y1={py + dy * 0.35} x2={px + (8 + i) * s} y2={py + dy} stroke={ink} strokeWidth={s} />
+        </G>;
+      })}
+    </G>
+  );
+  const batPoints = [[-22, -3], [-14, 8], [-8, 3], [-3, 7], [0, 4], [3, 7], [8, 3], [14, 8], [22, -3], [9, 0], [3, -5], [0, -2], [-3, -5], [-9, 0]];
+
   return (
     <Svg pointerEvents="none" width={t.w} height={t.h} style={StyleSheet.absoluteFill}>
+      <Rect x={t.m + 4} y={stripTop} width={t.w - 2 * t.m - 8} height={stripH - 6} rx={5} fill={halloween ? "#FFE8CA" : "#F0F7EF"} />
+      <Line x1={t.m + 10} y1={stripTop + stripH - 8} x2={t.w - t.m - 10} y2={stripTop + stripH - 8} stroke={halloween ? orange : gold} strokeWidth={halloween ? 1.5 : 1.4} />
       {halloween ? <>
-        <Circle cx={cx - 5 * s} cy={cy} r={8 * s} fill="#F57616" />
-        <Circle cx={cx + 5 * s} cy={cy} r={8 * s} fill="#F57616" />
-        <Circle cx={cx} cy={cy} r={9 * s} fill="#F57616" />
-        <Line x1={cx} y1={cy - 8 * s} x2={cx + 2 * s} y2={cy - 14 * s} stroke={ink} strokeWidth={3 * s} />
-        <Polygon points={`${cx - 6 * s},${cy - 2 * s} ${cx - 2 * s},${cy - 2 * s} ${cx - 4 * s},${cy - 5 * s}`} fill={ink} />
-        <Polygon points={`${cx + 2 * s},${cy - 2 * s} ${cx + 6 * s},${cy - 2 * s} ${cx + 4 * s},${cy - 5 * s}`} fill={ink} />
-        <Line x1={cx - 4 * s} y1={cy + 4 * s} x2={cx + 4 * s} y2={cy + 4 * s} stroke={ink} strokeWidth={2 * s} />
-        <Polygon points={batPoints.map(([x, y]) => `${bx + x * s},${by + y * s}`).join(" ")} fill={ink} />
-        {!t.short ? <>
-          <Rect x={rx - r - 2} y={ry - 2} width={r + 4} height={r + 4} fill="#FFF9EE" />
-          {[0, 1, 2].map((i) => <Line key={i} x1={rx} y1={ry} x2={rx - r * Math.cos(i * Math.PI / 4)} y2={ry + r * Math.sin(i * Math.PI / 4)} stroke={ink} strokeWidth={0.7} />)}
-          {[1, 2, 3].map((ring) => <Path key={ring} d={`M ${rx - r * ring / 3} ${ry} L ${rx - r * ring / 3 * 0.707} ${ry + r * ring / 3 * 0.707} L ${rx} ${ry + r * ring / 3}`} fill="none" stroke={ink} strokeWidth={0.6} />)}
-        </> : null}
+        {pumpkin(t.w * 0.16, headerMid)}
+        {spider(t.w * 0.36, headerMid)}
+        {skull(t.w * 0.61, headerMid)}
+        <Polygon points={batPoints.map(([x, y]) => `${t.w * 0.84 + x * s},${headerMid + y * s}`).join(" ")} fill={ink} />
       </> : <>
-        {holly(t.m + 6, t.m / 2 + 3, s)}
-        {holly(t.w - t.m - 8, t.h - t.m / 2, s)}
-        <Line x1={t.m + 30 * s} y1={t.m / 2} x2={t.w - t.m - 6} y2={t.m / 2} stroke={gold} strokeWidth={1} />
-        {!t.short ? <>{holly(t.m / 2 + 3, t.h * 0.68, 0.65 * s)}<Circle cx={t.w - t.m / 2} cy={t.h * 0.35} r={3 * s} fill={gold} /></> : null}
+        {santa(t.w * 0.19, headerMid)}
+        {train(t.w * 0.5, headerMid + 4 * s)}
+        {tree(t.w * 0.81, headerMid)}
       </>}
     </Svg>
   );
@@ -705,7 +818,8 @@ function SeasonalPoster({ data, z }: { data: PromoPosterPreviewData; z: Seasonal
   const left = z.m + z.pad;
   const inner = z.w - 2 * left;
   const headerTop = z.m + 10;
-  const titleTop = headerTop + z.band + z.pad;
+  const seasonalStripH = seasonalStripHeight(z);
+  const titleTop = headerTop + z.band + seasonalStripH + z.pad;
   const mixTop = titleTop + 2 * 1.1 * z.n + z.gap;
   const hasMix = data.kind === "multibuy" && data.mixAndMatch;
   const contentTop = mixTop + (hasMix ? 1.2 * z.wz + z.gap : 0);
@@ -731,8 +845,9 @@ function SeasonalPoster({ data, z }: { data: PromoPosterPreviewData; z: Seasonal
     <View style={{ width: z.w, height: z.h, backgroundColor: halloween ? "#FFF9EE" : "#FFFDF7" }}>
       <View style={{ position: "absolute", left: z.m / 2, top: z.m / 2, width: z.w - z.m, height: z.h - z.m, borderWidth: Math.max(2, z.m / 7), borderColor: accent }} />
       <View style={{ position: "absolute", left: z.m, top: headerTop, width: z.w - 2 * z.m, height: z.band, paddingHorizontal: z.pad, backgroundColor: bandBg, justifyContent: "center" }}>
-        <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.5} style={[FONT_CONDENSED, { fontSize: Math.min(z.band * 0.88, inner * 0.96 / (word.length * CONDENSED_EM)), color: bandFg, textAlign: "center", includeFontPadding: false }]}>{word}</Text>
+      <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.5} style={[FONT_CONDENSED, { fontSize: Math.min(z.band * 0.88, inner * 0.96 / (word.length * CONDENSED_EM)), color: bandFg, textAlign: "center", includeFontPadding: false }]}>{word}</Text>
       </View>
+      <SeasonalBackground halloween={halloween} size={z} footerTop={footerTop} />
       <Text numberOfLines={2} style={[FONT_BOLD, textStyle(z.n, 1.1), { position: "absolute", left, top: titleTop, width: inner, color: data.title.trim() ? ink : LINE }]}>{displayTitle(data)}</Text>
       {hasMix ? <Text numberOfLines={1} style={[FONT_BOLD, textStyle(z.wz, 1.2), { position: "absolute", left, top: mixTop, color: ink }]}>{`Mix & match any ${data.quantity ?? "-"}`}</Text> : null}
       <View style={{ position: "absolute", left, bottom: z.h - priceBottom, width: inner }}>
