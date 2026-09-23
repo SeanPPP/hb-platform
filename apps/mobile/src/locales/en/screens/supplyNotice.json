@@ -1,0 +1,63 @@
+{
+  "plan": {
+    "WillRestock": "Will restock",
+    "Undecided": "Undecided",
+    "Seasonal": "Seasonal",
+    "Discontinued": "Discontinued"
+  },
+  "storeTitle": {
+    "WillRestock": "Out of stock · Restock planned",
+    "Undecided": "Supply paused · Plan to be confirmed",
+    "Seasonal": "Season ended",
+    "Discontinued": "Discontinued"
+  },
+  "restocked": "Back in stock",
+  "expectedLabel": "Expected back",
+  "expectedUnknown": "Date to be confirmed",
+  "expectedOverdue": "Previous estimate has passed; new date to be confirmed",
+  "expectedMonth": "Month {{month}}",
+  "expectedMonthWithYear": "{{month}}/{{year}}",
+  "expectedRange": "{{from}} – {{to}}",
+  "noteLabel": "Warehouse note",
+  "updatedAt": "Updated {{date}}",
+  "pausedHeading": "Supply is paused for this product",
+  "pausedHint": "Watch it and we will remind you on the ordering page once it is back.",
+  "scanPaused": "Supply paused; see the restock plan",
+  "watch": "Notify me when back",
+  "watching": "Watching · Cancel",
+  "watchDone": "Watching; we will remind you when it is back",
+  "unwatchDone": "Stopped watching",
+  "acknowledge": "Got it",
+  "acknowledgeAll": "Dismiss all",
+  "goOrder": "Order now",
+  "actionFailed": "Action failed, please try again",
+  "watchesTitle": "Watched products",
+  "watchesEntry": "Watched",
+  "watchesEmpty": "Nothing watched yet. When a search or scan hits a paused product, tap “Notify me when back”.",
+  "restockedSection": "Back in stock",
+  "waitingSection": "Waiting",
+  "restockedBanner": "{{count}} watched product(s) are back in stock",
+  "restockedBannerAction": "View",
+  "cartPausedTag": "Paused",
+  "submitBlocked": "{{count}} product(s) in the cart are paused; remove them before submitting",
+  "form": {
+    "title": "Supply pause notice",
+    "planLabel": "Plan",
+    "planRequired": "Please choose a plan",
+    "expectedLabel": "Expected back",
+    "precision": {
+      "Unknown": "To be confirmed",
+      "Day": "Specific date",
+      "Month": "Month"
+    },
+    "dayPlaceholder": "YYYY-MM-DD",
+    "monthPlaceholder": "YYYY-MM",
+    "dateInvalid": "Invalid date format",
+    "storeNoteLabel": "Note for stores",
+    "storeNotePlaceholder": "Stores see this on the ordering page",
+    "internalNoteLabel": "Internal note (warehouse only)",
+    "confirmDelist": "Confirm delist",
+    "cancel": "Cancel"
+  },
+  "scanPausedNamed": "Supply paused · {{name}}"
+}

@@ -22,6 +22,11 @@ import { exportDomesticProductsToExcel, type ExportResult } from '../../../servi
 import { getActiveLocalSuppliers as getActiveAustralianSuppliers } from '../../../services/localSupplierService';
 import { batchCreateSetCodes, batchDelete as batchDeleteSetCodes, batchUpdateBarcodes as batchUpdateSetBarcodes, batchUpdatePrices as batchUpdateSetPrices, batchUpdateStatus as batchUpdateSetStatus, getGridData as getSetCodeGridData, } from '../../../services/multiCodeSetService';
 import { getPushToHqStoreOptions, pushProductsToHq } from '../../../services/posProductService';
+import dayjs from 'dayjs';
+import SupplyNoticeModal from '../../../components/SupplyNotice/SupplyNoticeModal';
+import { formatSupplyExpected } from '../../../components/SupplyNotice/formatSupplyExpected';
+import { queryWarehouseSupplyNotices, upsertWarehouseSupplyNotices } from '../../../services/supplyNoticeService';
+import type { SupplyNoticeInput, WarehouseSupplyNotice } from '../../../types/supplyNotice';
 import { HqProductSyncPollingCancelledError, HqProductSyncPollingTimeoutError, batchToggleWarehouseProductsActive, createWarehouseProductBatchUpdateJob, createWarehouseProductBatchUpdateJobPoller, createWarehouseProductHqSyncJob, createWarehouseProductHqSyncJobPoller, getWarehouseProductBatchUpdateJob, getWarehouseProductHqSyncJob, getWarehouseProductsTable, patchWarehouseProduct, updateWarehouseProductFull, type PatchWarehouseProductPayload, type WarehouseProductBatchUpdateItem, type WarehouseProductBatchUpdateJobResult, type WarehouseProductBatchUpdateJobStatus, type WarehouseProductHqSyncJobResult, type WarehouseProductHqSyncJobStatus, type WarehouseProductListItem, type WarehouseProductsTableQuery, } from '../../../services/warehouseProductService';
 import { batchAssignProducts, getCategoryTree, type WarehouseCategoryNode, } from '../../../services/warehouseCategoryService';
 import { useAuthStore } from '../../../store/auth';
@@ -481,6 +486,9 @@ const WAREHOUSE_PRODUCT_DEFAULT_COLUMN_ORDER = [
     'importPrice',
     'labelPrice',
     'isActive',
+    'supplyPlan',
+    'supplyExpected',
+    'supplyUpdatedAt',
     'productType',
     'barcode',
     'locationCodes',
@@ -913,6 +921,11 @@ export default function WarehouseProductsPage() {
     const [pushToHqStoreOptionsError, setPushToHqStoreOptionsError] = useState<string | null>(null);
     const [pushToHqConfirmLoading, setPushToHqConfirmLoading] = useState(false);
     const [togglingProductCodes, setTogglingProductCodes] = useState<string[]>([]);
+    // 供货说明按当前页商品批量查询，键为商品编码；下架成功、修改成功后就地更新。
+    const [supplyNotices, setSupplyNotices] = useState<Record<string, WarehouseSupplyNotice>>({});
+    // 下架 / 修改说明弹窗：target 为空即关闭。单个开关、批量下架、修改说明三条路径共用。
+    const [supplyNoticeTarget, setSupplyNoticeTarget] = useState<{ mode: 'delist' | 'edit'; productCodes: string[]; initial?: WarehouseSupplyNotice | null } | null>(null);
+    const [supplyNoticeSaving, setSupplyNoticeSaving] = useState(false);
     const [exportFailDetailOpen, setExportFailDetailOpen] = useState(false);
     const [exportFailDetail, setExportFailDetail] = useState<ExportResult['failedProductImages']>([]);
     const [syncingFromHq, setSyncingFromHq] = useState(false);
@@ -1132,6 +1145,7 @@ export default function WarehouseProductsPage() {
             onStart: () => setLoading(true),
             onSuccess: (result) => {
                 setData(result.items);
+                void loadSupplyNotices(result.items);
                 setTotal(result.total);
                 setPage(result.page);
                 setPageSize(result.pageSize);
@@ -1148,6 +1162,24 @@ export default function WarehouseProductsPage() {
     useLayoutEffect(() => {
         loadDataRef.current = loadData;
     });
+    // 只查下架商品的说明；在架商品不会有未关闭说明。查询失败不影响列表本身。
+    const loadSupplyNotices = async (items: WarehouseProductListItem[]) => {
+        const codes = items.filter((item) => !item.isActive).map((item) => item.productCode);
+        if (!codes.length) {
+            setSupplyNotices({});
+            return;
+        }
+        try {
+            const notices = await queryWarehouseSupplyNotices(codes);
+            if (!isMountedRef.current) {
+                return;
+            }
+            setSupplyNotices(Object.fromEntries(notices.map((notice) => [notice.productCode, notice])));
+        }
+        catch (error) {
+            console.error(error);
+        }
+    };
     const refreshCurrentList = useCallback((overrides: Partial<WarehouseProductsTableQuery> = {}) => {
         if (!isMountedRef.current) {
             return Promise.resolve();
@@ -2005,8 +2037,13 @@ export default function WarehouseProductsPage() {
             setPushToHqLoading(false);
         }
     };
-    const handleBatchToggleActive = async (nextIsActive: boolean) => {
+    const handleBatchToggleActive = async (nextIsActive: boolean, supplyNotice?: SupplyNoticeInput) => {
         if (!selectedRowKeys.length) {
+            return;
+        }
+        // 下架必须先登记供货说明（后续计划必选），说明随下架同一请求提交。
+        if (!nextIsActive && !supplyNotice) {
+            setSupplyNoticeTarget({ mode: 'delist', productCodes: selectedRowKeys.map(String) });
             return;
         }
         try {
@@ -2014,6 +2051,7 @@ export default function WarehouseProductsPage() {
             const result = await batchToggleWarehouseProductsActive({
                 productCodes: selectedRowKeys.map(String),
                 isActive: nextIsActive,
+                supplyNotice,
             });
             if (!result.success) {
                 message.error(result.message || t('warehouse.batchStatusUpdateFailed'));
@@ -2273,18 +2311,30 @@ export default function WarehouseProductsPage() {
                 : submitBatchSuggestedDiscountOnly(suggestedDiscount!),
         });
     };
-    const handleToggleSingleActive = async (record: WarehouseProductListItem, nextIsActive: boolean) => {
+    const handleToggleSingleActive = async (record: WarehouseProductListItem, nextIsActive: boolean, supplyNotice?: SupplyNoticeInput) => {
+        if (!nextIsActive && !supplyNotice) {
+            setSupplyNoticeTarget({ mode: 'delist', productCodes: [record.productCode] });
+            return;
+        }
         try {
             setTogglingProductCodes((current) => [...current, record.productCode]);
             const result = await batchToggleWarehouseProductsActive({
                 productCodes: [record.productCode],
                 isActive: nextIsActive,
+                supplyNotice,
             });
             if (!result.success) {
                 message.error(result.message || t('warehouse.toggleStatusFailed'));
                 return;
             }
             setData((current) => current.map((item) => (item.productCode === record.productCode ? { ...item, isActive: nextIsActive } : item)));
+            // 上架后说明已被后端关闭；下架后重新拉一次拿到服务端归一化后的说明。
+            if (nextIsActive) {
+                setSupplyNotices((current) => { const next = { ...current }; delete next[record.productCode]; return next; });
+            }
+            else {
+                void loadSupplyNotices([{ ...record, isActive: false }]).then(() => undefined);
+            }
             message.success(result.message || t('warehouse.statusToggled', { status: getShelfStatusLabel(nextIsActive, t) }));
         }
         catch (error) {
@@ -2293,6 +2343,43 @@ export default function WarehouseProductsPage() {
         }
         finally {
             setTogglingProductCodes((current) => current.filter((code) => code !== record.productCode));
+        }
+    };
+    // 说明弹窗提交：下架路径转交上下架处理器；修改路径直接写说明接口。
+    const handleSupplyNoticeSubmit = async (notice: SupplyNoticeInput) => {
+        if (!supplyNoticeTarget) {
+            return;
+        }
+        const { mode, productCodes } = supplyNoticeTarget;
+        setSupplyNoticeSaving(true);
+        try {
+            if (mode === 'delist') {
+                if (productCodes.length === 1 && selectedRowKeys.length !== 1) {
+                    const record = data.find((item) => item.productCode === productCodes[0]);
+                    if (record) {
+                        await handleToggleSingleActive(record, false, notice);
+                    }
+                }
+                else {
+                    await handleBatchToggleActive(false, notice);
+                }
+            }
+            else {
+                const result = await upsertWarehouseSupplyNotices(productCodes, notice);
+                if (!result.success) {
+                    message.error(result.message || t('warehouse.toggleStatusFailed'));
+                    return;
+                }
+                message.success(result.message);
+                if (result.skippedProductCodes.length) {
+                    message.warning(t('supplyNotice.form.skippedHint', { count: result.skippedProductCodes.length }));
+                }
+                void loadSupplyNotices(data.filter((item) => productCodes.includes(item.productCode)));
+            }
+            setSupplyNoticeTarget(null);
+        }
+        finally {
+            setSupplyNoticeSaving(false);
         }
     };
     const handleOpenSetItems = async (record: WarehouseProductListItem) => {
@@ -2607,6 +2694,49 @@ export default function WarehouseProductsPage() {
                 { text: getShelfStatusLabel(false, t), value: 'false' },
             ]),
             render: (value: boolean, record) => (<Switch checked={value} checkedChildren={getShelfStatusLabel(true, t)} unCheckedChildren={getShelfStatusLabel(false, t)} disabled={!access.canWriteProduct || togglingProductCodes.includes(record.productCode)} loading={togglingProductCodes.includes(record.productCode)} onChange={(nextChecked) => void handleToggleSingleActive(record, nextChecked)}/>),
+        },
+        {
+            key: 'supplyPlan',
+            title: t('supplyNotice.column.plan'),
+            width: 120,
+            render: (_value, record) => {
+                if (record.isActive) {
+                    return null;
+                }
+                const notice = supplyNotices[record.productCode];
+                const label = notice ? t(`supplyNotice.plan.${notice.supplyPlan}`) : t('supplyNotice.column.none');
+                const content = (<Space size={4}>
+                    <Tag color={notice ? (notice.supplyPlan === 'Discontinued' ? 'default' : notice.supplyPlan === 'WillRestock' ? 'processing' : 'warning') : undefined}>{label}</Tag>
+                    {notice?.isOverdue ? <Tag color="error">{t('supplyNotice.overdueTag')}</Tag> : null}
+                  </Space>);
+                if (!access.canWriteProduct) {
+                    return content;
+                }
+                return (<Tooltip title={notice?.watchingStoreCount ? t('supplyNotice.column.watchers', { count: notice.watchingStoreCount }) : t('supplyNotice.column.edit')}>
+                    <a onClick={() => setSupplyNoticeTarget({ mode: 'edit', productCodes: [record.productCode], initial: notice ?? null })}>{content}</a>
+                  </Tooltip>);
+            },
+        },
+        {
+            key: 'supplyExpected',
+            title: t('supplyNotice.column.expected'),
+            width: 150,
+            render: (_value, record) => {
+                const notice = supplyNotices[record.productCode];
+                if (record.isActive || !notice || notice.supplyPlan === 'Discontinued') {
+                    return null;
+                }
+                return formatSupplyExpected(notice, t);
+            },
+        },
+        {
+            key: 'supplyUpdatedAt',
+            title: t('supplyNotice.column.updatedAt'),
+            width: 110,
+            render: (_value, record) => {
+                const notice = supplyNotices[record.productCode];
+                return record.isActive || !notice ? null : dayjs(notice.updatedAtUtc).format('YYYY-MM-DD');
+            },
         },
         {
             key: 'productType',
@@ -3063,6 +3193,7 @@ export default function WarehouseProductsPage() {
             }))} onClearAll={handleResetFilters} extra={<Button size="small" type={isUncategorizedOnly ? 'primary' : 'default'} ghost={isUncategorizedOnly} aria-pressed={isUncategorizedOnly} onClick={handleToggleUncategorizedOnly}>
                 {t('warehouse.onlyUncategorized', '只看未分类')}
               </Button>}/>
+          <SupplyNoticeModal open={Boolean(supplyNoticeTarget)} mode={supplyNoticeTarget?.mode ?? 'delist'} productCount={supplyNoticeTarget?.productCodes.length ?? 0} initialNotice={supplyNoticeTarget?.initial} confirmLoading={supplyNoticeSaving} onCancel={() => setSupplyNoticeTarget(null)} onSubmit={handleSupplyNoticeSubmit}/>
           {/* 勾选后操作条：只对选中行生效的批量操作，未勾选时整条隐藏。 */}
           <SelectionActionBar selectedCount={selectedRowKeys.length} onClearSelection={() => setSelectedRowKeys([])}>
             {access.canWriteProduct ? (<Popconfirm title={t('warehouse.confirmBatchActivate')} okText={getShelfStatusLabel(true, t)} cancelText={t('common.cancel')} disabled={!selectedRowKeys.length} onConfirm={() => void handleBatchToggleActive(true)}>
@@ -3070,11 +3201,9 @@ export default function WarehouseProductsPage() {
                   {t('warehouse.batchActivate')}
                 </Button>
               </Popconfirm>) : null}
-            {access.canWriteProduct ? (<Popconfirm title={t('warehouse.confirmBatchDeactivate')} okText={getShelfStatusLabel(false, t)} cancelText={t('common.cancel')} disabled={!selectedRowKeys.length} onConfirm={() => void handleBatchToggleActive(false)}>
-                <Button size="small" loading={batchActionLoading} disabled={!selectedRowKeys.length || batchActionLoading}>
-                  {t('warehouse.batchDeactivate')}
-                </Button>
-              </Popconfirm>) : null}
+            {access.canWriteProduct ? (<Button size="small" loading={batchActionLoading} disabled={!selectedRowKeys.length || batchActionLoading} onClick={() => void handleBatchToggleActive(false)}>
+                {t('warehouse.batchDeactivate')}
+              </Button>) : null}
             {access.canWriteProduct ? (<Button size="small" loading={batchEditSaving || Boolean(activeBatchUpdateJob)} disabled={!selectedRowKeys.length || batchEditSaving} onClick={openBatchEdit}>
                 {t('warehouse.batchEdit', '批量修改')}
               </Button>) : null}

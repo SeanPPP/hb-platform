@@ -85,7 +85,8 @@
     "syncing": "正在同步数量…",
     "preorderBlocked": "完成 Preorder 前不能提交普通订单",
     "preorderFirst": "先完成 Preorder",
-    "submitting": "提交中"
+    "submitting": "提交中",
+    "pausedLines": "有商品暂停供货，提交前请移除"
   },
   "actions": {
     "submit": "提交",

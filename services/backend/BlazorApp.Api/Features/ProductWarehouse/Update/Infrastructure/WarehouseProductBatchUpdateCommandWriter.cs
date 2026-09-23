@@ -7,6 +7,7 @@ using System.Linq.Expressions;
 using System.Threading.Tasks;
 using AutoMapper;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Features.SupplyNotices;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
@@ -427,6 +428,13 @@ internal sealed class WarehouseProductBatchUpdateCommandWriter : ProductWarehous
                         w.UpdatedBy,
                     })
                     .ExecuteCommandAsync();
+                // 批量编辑把商品改回上架时，关闭其供货说明（按当前状态判断，幂等）。
+                await WarehouseProductSupplyNoticeWriter.CloseNoticesForActiveProductsAsync(
+                    _context.Db,
+                    toUpdateWp.Where(w => w.IsActive).Select(w => w.ProductCode).ToList(),
+                    toUpdateWp[0].UpdatedBy ?? "System",
+                    DateTime.UtcNow
+                );
                 WarehouseProductBatchUpdateResultAssembler.AddSuccesses(
                     result,
                     toUpdateWp.Count

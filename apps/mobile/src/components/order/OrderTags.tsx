@@ -21,12 +21,12 @@ export function GradeTag({ grade }: { grade?: string | null }) {
 type OrderTagTone = "solidDark" | "solidAction" | "danger";
 
 const TAG_TONES: Record<OrderTagTone, { background: string; text: string }> = {
-  solidDark: { background: ORDER_COLORS.delisted, text: HB_COLORS.white },
+  solidDark: { background: ORDER_COLORS.paused, text: HB_COLORS.white },
   solidAction: { background: HB_COLORS.action, text: HB_COLORS.white },
   danger: { background: ORDER_COLORS.dangerBackground, text: ORDER_COLORS.danger },
 };
 
-/** 行内状态标签：已下架（深色实心）、刚扫入（蓝色实心）、进价为 0（红色浅底）。 */
+/** 行内状态标签：暂停供货（深色实心）、刚扫入（蓝色实心）、进价为 0（红色浅底）。 */
 export function OrderStatusTag({ label, tone }: { label: string; tone: OrderTagTone }) {
   const colors = TAG_TONES[tone];
   return (

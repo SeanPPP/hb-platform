@@ -78,9 +78,7 @@
   },
   "scanResult": {
     "title": "Scan result · {{count}}",
-    "clear": "Clear",
-    "delistedTitle": "Scan result · Delisted",
-    "delistedHint": "This barcode belongs to a delisted product and cannot be added to the cart. Scanning again replaces this result."
+    "clear": "Clear"
   },
   "listMeta": {
     "total": "{{count}} products",

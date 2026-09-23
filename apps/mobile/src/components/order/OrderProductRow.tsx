@@ -6,8 +6,9 @@ import type { StoreOrderProductItem } from "@/modules/shop/types";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { HB_COLORS } from "@/shared/theme/tokens";
 import { OrderStepper } from "./OrderStepper";
-import { GradeTag, OrderStatusTag, OrderThumbnail } from "./OrderTags";
-import { ORDER_COLORS, ORDER_MONO_FONT, formatOrderMoney, resolveOrderStep } from "./order-ui";
+import { GradeTag, OrderThumbnail } from "./OrderTags";
+import { ORDER_MONO_FONT } from "./order-fonts";
+import { ORDER_COLORS, formatOrderMoney, resolveOrderStep } from "./order-ui";
 
 interface OrderProductRowProps {
   product: StoreOrderProductItem;
@@ -115,47 +116,6 @@ export const OrderProductRow = memo(function OrderProductRow({
   );
 });
 
-interface DelistedProductRowProps {
-  product: StoreOrderProductItem;
-  compact?: boolean;
-}
-
-/** 扫到已下架商品时的只读行：显示商品，但右侧是「不可订货」而不是加购按钮。 */
-export function DelistedProductRow({ product, compact = false }: DelistedProductRowProps) {
-  const { t } = useAppTranslation("common");
-
-  return (
-    <View style={[styles.row, styles.rowMuted]}>
-      <OrderThumbnail uri={product.productImage} size={compact ? 48 : 56} muted />
-      <View style={styles.body}>
-        <Text numberOfLines={2} style={[styles.name, styles.nameMuted]}>
-          {product.productName || product.productCode}
-        </Text>
-        <View style={styles.bottomRow}>
-          <View style={styles.info}>
-            <View style={styles.metaRow}>
-              <OrderStatusTag label={t("orderRow.delisted")} tone="solidDark" />
-              <GradeTag grade={product.grade} />
-              <Text numberOfLines={1} style={styles.itemNumber}>
-                {product.itemNumber || product.productCode}
-              </Text>
-            </View>
-            <Text numberOfLines={1} style={styles.priceLine}>
-              <Text style={styles.priceLabel}>{t("orderRow.importPrice")} </Text>
-              <Text style={[styles.priceMain, styles.priceMuted]}>{formatOrderMoney(product.importPrice)}</Text>
-              <Text style={styles.priceLabel}>{"  "}{t("orderRow.retailPrice")} </Text>
-              <Text style={[styles.priceSub, styles.priceMuted]}>{formatOrderMoney(product.oemPrice)}</Text>
-            </Text>
-          </View>
-          <View style={[styles.notOrderable, compact ? styles.addButtonCompact : null]}>
-            <Text style={styles.notOrderableText}>{t("orderRow.notOrderable")}</Text>
-          </View>
-        </View>
-      </View>
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
   row: {
     flex: 1,
@@ -170,9 +130,6 @@ const styles = StyleSheet.create({
   rowInCart: {
     backgroundColor: ORDER_COLORS.inCartRow,
   },
-  rowMuted: {
-    backgroundColor: ORDER_COLORS.mutedRow,
-  },
   body: {
     flex: 1,
     minWidth: 0,
@@ -183,9 +140,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 18,
     fontWeight: "600",
-  },
-  nameMuted: {
-    color: HB_COLORS.textSecondary,
   },
   bottomRow: {
     flexDirection: "row",
@@ -231,9 +185,6 @@ const styles = StyleSheet.create({
     color: HB_COLORS.textSecondary,
     fontSize: 12,
   },
-  priceMuted: {
-    color: ORDER_COLORS.subtleText,
-  },
   addButton: {
     width: 132,
     height: 44,
@@ -263,21 +214,5 @@ const styles = StyleSheet.create({
   },
   addTextDisabled: {
     color: ORDER_COLORS.placeholderIcon,
-  },
-  notOrderable: {
-    width: 132,
-    height: 44,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: 8,
-    borderWidth: 1,
-    borderStyle: "dashed",
-    borderColor: ORDER_COLORS.placeholderIcon,
-    backgroundColor: ORDER_COLORS.mutedRow,
-  },
-  notOrderableText: {
-    color: HB_COLORS.textSecondary,
-    fontSize: 13,
-    fontWeight: "600",
   },
 });

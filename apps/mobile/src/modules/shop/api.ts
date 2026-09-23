@@ -207,13 +207,6 @@ function transformCartItem(raw: ApiItem) {
           ? Number(raw.MinOrderQuantity)
           : 1,
     isActive: raw.isActive != null ? Boolean(raw.isActive) : raw.IsActive != null ? Boolean(raw.IsActive) : true,
-    // 只认后端显式返回的仓库上下架；旧后端没有该字段时保持 undefined，前端按在售处理。
-    warehouseIsActive:
-      typeof raw.warehouseIsActive === "boolean"
-        ? raw.warehouseIsActive
-        : typeof raw.WarehouseIsActive === "boolean"
-          ? raw.WarehouseIsActive
-          : undefined,
     locationCode:
       raw.locationCode != null ? String(raw.locationCode) : raw.LocationCode != null ? String(raw.LocationCode) : undefined,
     rrp: raw.rrp != null ? Number(raw.rrp) : raw.RRP != null ? Number(raw.RRP) : undefined,
@@ -331,13 +324,6 @@ function normalizeScanLookupItems(data: ApiItem | null | undefined) {
     : [];
 }
 
-function normalizeScanLookupDelistedItems(data: ApiItem | null | undefined) {
-  const items = data?.delistedItems ?? data?.DelistedItems;
-  return Array.isArray(items)
-    ? items.map((item) => transformProductItem(item as unknown as ApiItem))
-    : [];
-}
-
 export function normalizeStoreOrderScanLookupResult(
   data: unknown,
   fallbackBarcode: string,
@@ -349,8 +335,6 @@ export function normalizeStoreOrderScanLookupResult(
     // 兼容旧版 barcode/fallback 与新版商品/货位细分 matchType，原值不改写。
     matchType: getStringValue(payload.matchType, payload.MatchType) as StoreOrderScanMatchType | undefined,
     items: normalizeScanLookupItems(payload),
-    // 旧版后端没有该字段时按空数组处理，前端回落为「未找到」。
-    delistedItems: normalizeScanLookupDelistedItems(payload),
   };
 }
 

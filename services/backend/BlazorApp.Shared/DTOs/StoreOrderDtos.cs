@@ -1256,6 +1256,9 @@ public class UpdateProductStatusDto
 
   [Required]
   public bool IsActive { get; set; }
+
+  /// <summary>下架时随请求登记的供货说明；上架时忽略。旧客户端不传，分店端按“后续计划待确认”展示。</summary>
+  public BlazorApp.Shared.DTOs.WarehouseProductSupplyNoticeInputDto? SupplyNotice { get; set; }
 }
 
 /// <summary>
@@ -1268,6 +1271,9 @@ public class BatchUpdateProductStatusDto
 
   [Required]
   public bool IsActive { get; set; }
+
+  /// <summary>下架时随请求登记的供货说明；上架时忽略。旧客户端不传，分店端按“后续计划待确认”展示。</summary>
+  public BlazorApp.Shared.DTOs.WarehouseProductSupplyNoticeInputDto? SupplyNotice { get; set; }
 }
 
 /// <summary>

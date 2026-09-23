@@ -5,6 +5,8 @@ import { i18n } from "@/shared/i18n/i18n";
 import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { resolveMinimumOrderQuantity } from "@/modules/shop/use-add-to-cart";
 import { lookupProductsByBarcode } from "@/modules/scanner/api";
+import { lookupStoreSupplyStatus } from "@/modules/supply-notice/api";
+import type { StoreSupplyStatus } from "@/modules/supply-notice/types";
 import { addToCart } from "@/modules/shop/api";
 import { playScanFeedbackSound, preloadScanFeedbackSounds } from "@/modules/scanner/scan-sound";
 import {
@@ -132,14 +134,6 @@ interface UseScanResultOptions {
     scanTraceId?: string,
     storeCode?: string | null
   ) => void | Promise<void>;
-  /** 条码只命中已下架商品时回调，页面据此展示「已下架 · 不可订货」而不是「未找到」。 */
-  onDelistedProduct?: (
-    product: StoreOrderProductItem,
-    barcode: string,
-    source: ScanSource,
-    scanTraceId?: string,
-    storeCode?: string | null
-  ) => void | Promise<void>;
   storeCode?: string | null;
 }
 
@@ -156,7 +150,6 @@ export function useScanResult({
   mode = "add-to-cart",
   onAddedToCart,
   onProductFound,
-  onDelistedProduct,
   storeCode,
 }: UseScanResultOptions) {
   const queryClient = useQueryClient();
@@ -857,35 +850,6 @@ export function useScanResult({
           return;
         }
 
-        const delistedItems = result.delistedItems ?? [];
-        if (items.length === 0 && delistedItems.length > 0) {
-          // 已下架命中不写入扫码缓存：商品重新上架后下一次扫码必须重新查询。
-          const delistedProduct = delistedItems[0];
-          logScanPerformance("scan.delisted", {
-            scanTraceId,
-            barcode: result.barcode,
-            source,
-            storeCode: activeStoreCode,
-            productCode: delistedProduct.productCode,
-            itemCount: delistedItems.length,
-            totalElapsedMs: getScanPerformanceTimestamp() - scanStartedAt,
-          });
-          applyScanFeedback(
-            {
-              status: "delisted",
-              message: i18n.t("common:scanner.delisted", {
-                name: delistedProduct.productName || delistedProduct.itemNumber || delistedProduct.productCode,
-              }),
-              barcode: result.barcode,
-              productName: delistedProduct.productName || delistedProduct.productCode,
-              itemNumber: delistedProduct.itemNumber || delistedProduct.productCode,
-            },
-            { isAddMode, scanTraceId }
-          );
-          await onDelistedProduct?.(delistedProduct, result.barcode, source, scanTraceId, activeStoreCode);
-          return;
-        }
-
         if (items.length === 0) {
           logScanPerformance("scan.not-found", {
             scanTraceId,
@@ -894,11 +858,39 @@ export function useScanResult({
             storeCode: activeStoreCode,
             totalElapsedMs: getScanPerformanceTimestamp() - scanStartedAt,
           });
+          // 扫到的是仓库暂停供货的商品，而不是扫错码：提示区分开，并在首页零结果处展示恢复计划。
+          let supplyStatus: StoreSupplyStatus | undefined;
+          try {
+            supplyStatus = (await lookupStoreSupplyStatus(activeStoreCode, result.barcode))[0];
+          } catch {
+            supplyStatus = undefined;
+          }
+          if (!isCurrentStoreJob(job)) {
+            logStaleStoreJob("after-supply-lookup", job);
+            return;
+          }
+          if (supplyStatus) {
+            // 暂停供货用独立状态：提示文案、图标和提示音都与「未找到」区分，店员不看屏幕也能听出来。
+            applyScanFeedback(
+              {
+                status: "supply_paused",
+                message: i18n.t("supplyNotice:scanPaused"),
+                barcode: result.barcode,
+                productName: supplyStatus.productName || supplyStatus.productCode,
+                itemNumber: supplyStatus.itemNumber || supplyStatus.productCode,
+                pausedSupply: true,
+                supplyStatus,
+              },
+              { isAddMode, scanTraceId }
+            );
+            return;
+          }
           applyScanFeedback(
             {
               status: "not_found",
               message: i18n.t("common:scanner.notFound"),
               barcode: result.barcode,
+              pausedSupply: false,
             },
             { isAddMode, scanTraceId }
           );
@@ -1052,7 +1044,6 @@ export function useScanResult({
       isCurrentStoreJob,
       logStaleStoreJob,
       mode,
-      onDelistedProduct,
       onProductFound,
       queryClient,
       updateFeedback,

@@ -33,7 +33,7 @@ import {
   OrderBarPrimaryButton,
   OrderBottomBar,
 } from "@/components/order/OrderBottomBar";
-import { DelistedProductRow, OrderProductRow } from "@/components/order/OrderProductRow";
+import { OrderProductRow } from "@/components/order/OrderProductRow";
 import { GradeTag, OrderThumbnail } from "@/components/order/OrderTags";
 import { QuantityPresetRow } from "@/components/order/QuantityPresetRow";
 import {
@@ -44,9 +44,9 @@ import {
 import {
   formatOrderMoney,
   ORDER_COLORS,
-  ORDER_MONO_FONT,
   resolveTotalPages,
 } from "@/components/order/order-ui";
+import { ORDER_MONO_FONT } from "@/components/order/order-fonts";
 import { getCategoryTree } from "@/modules/shop/api";
 import {
   canSubmitCartQuantityEdit,
@@ -94,6 +94,11 @@ import { useCartStore } from "@/store/cart-store";
 import { isPreorderRequiredError } from "@/modules/preorder/api";
 import { canBypassPreorderGate } from "@/modules/preorder/gate";
 import { PreorderGateBanner } from "@/modules/preorder/preorder-gate-banner";
+import { SupplyRestockedBanner } from "@/modules/supply-notice/supply-restocked-banner";
+import { SupplyStatusCard } from "@/modules/supply-notice/supply-status-card";
+import { SupplyWatchesSheet } from "@/modules/supply-notice/supply-watches-sheet";
+import type { StoreSupplyStatus } from "@/modules/supply-notice/types";
+import { useSupplyStatusLookup, useSupplyWatchSummary } from "@/modules/supply-notice/use-supply-status";
 import { usePreorderGate } from "@/modules/preorder/use-preorder-gate";
 import { useAuthStore } from "@/store/auth-store";
 import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
@@ -178,7 +183,7 @@ function AutoAddToggle({ label, value, accessibilityLabel, onToggle }: AutoAddTo
 
 export default function Home() {
   const isFocused = useIsFocused();
-  const { t, language } = useAppTranslation(["home", "common"]);
+  const { t, language } = useAppTranslation(["home", "common", "supplyNotice"]);
   const { width: windowWidth } = useWindowDimensions();
   const productColumns = resolveHomeProductColumns(windowWidth);
   const router = useRouter();
@@ -240,10 +245,6 @@ export default function Home() {
   const searchReturnPageRef = useRef<number | null>(null);
   const [notice, setNotice] = useState<OrderNotice | null>(null);
   const [scanBarcode, setScanBarcode] = useState<string | null>(null);
-  const [delistedScan, setDelistedScan] = useState<{
-    product: StoreOrderProductItem;
-    barcode: string;
-  } | null>(null);
   const [activeCartMutationProductCode, setActiveCartMutationProductCode] =
     useState<string | null>(null);
   const [quantityEditorProduct, setQuantityEditorProduct] =
@@ -354,7 +355,6 @@ export default function Home() {
 
       setSearchInput("");
       clearAppliedSearchForScan();
-      setDelistedScan(null);
       setScanBarcode(barcode || product.productCode);
       setScannedProducts([product]);
       setScannedProductTraceIds(
@@ -424,7 +424,6 @@ export default function Home() {
     ) => {
       setSearchInput("");
       clearAppliedSearchForScan();
-      setDelistedScan(null);
       setScanBarcode(barcode || product.productCode);
       setScannedProducts([product]);
       setScannedProductTraceIds(
@@ -438,38 +437,10 @@ export default function Home() {
     },
     [clearAppliedSearchForScan],
   );
-  const handleScanDelistedProduct = useCallback(
-    (
-      product: StoreOrderProductItem,
-      barcode: string,
-      _source?: unknown,
-      _scanTraceId?: string,
-      scanStoreCode?: string | null,
-    ) => {
-      const expectedStoreCode = normalizeStoreCode(
-        scanStoreCode ?? selectedStoreCodeRef.current,
-      );
-      if (selectedStoreCodeRef.current !== expectedStoreCode) {
-        return;
-      }
-
-      // 已下架商品只读展示，不进入扫码结果列表，也不会被加购。
-      setSearchInput("");
-      clearAppliedSearchForScan();
-      setScannedProducts(null);
-      setScannedProductTraceIds({});
-      setScanBarcode(null);
-      setDelistedScan({ product, barcode: barcode || product.productCode });
-      setSelectedCategoryGUID(undefined);
-      setSelectedGrade(undefined);
-    },
-    [clearAppliedSearchForScan],
-  );
   const scanResult = useScanResult({
     autoAddWhenSingle,
     mode: autoAddWhenSingle ? "add-to-cart" : "lookup",
     onAddedToCart: handleScanAddedProduct,
-    onDelistedProduct: handleScanDelistedProduct,
     onProductFound: handleScanLookupProduct,
     storeCode: selectedStoreCode,
   });
@@ -673,7 +644,6 @@ export default function Home() {
     // 门店切换后清空旧门店扫码结果，避免迟到的加购反馈落到新门店界面。
     setScannedProducts(null);
     setScannedProductTraceIds({});
-    setDelistedScan(null);
   }, [selectedStoreCode]);
 
   useEffect(() => {
@@ -758,6 +728,27 @@ export default function Home() {
 
     return productsQuery.data?.items ?? [];
   }, [productsQuery.data?.items, scannedProducts, selectedGrade]);
+  // 关注恢复订货：汇总用于横幅与入口角标；搜索零结果时补查暂停供货商品，让分店知道是暂停供货而不是搜错。
+  const supplyWatchSummary = useSupplyWatchSummary(selectedStoreCode ?? null);
+  const [supplyWatchesVisible, setSupplyWatchesVisible] = useState(false);
+  const supplyLookupEnabled =
+    Boolean(selectedStoreCode) &&
+    Boolean(keyword.trim()) &&
+    !scannedProducts?.length &&
+    productsQuery.isSuccess &&
+    (productsQuery.data?.items.length ?? 0) === 0;
+  const supplyLookup = useSupplyStatusLookup(selectedStoreCode ?? null, keyword, supplyLookupEnabled);
+  const handleSupplyWatchToggle = useCallback(
+    async (status: StoreSupplyStatus, watch: boolean) => {
+      const ok = await supplyLookup.toggleWatch(status, watch);
+      setNotice(
+        ok
+          ? { tone: "success", title: t(watch ? "supplyNotice:watchDone" : "supplyNotice:unwatchDone") }
+          : { tone: "error", title: t("supplyNotice:actionFailed") },
+      );
+    },
+    [supplyLookup, t],
+  );
   const displayDynamicDataMap = useMemo(() => {
     const mergedMap = { ...productsQuery.dynamicDataMap };
 
@@ -801,7 +792,6 @@ export default function Home() {
   );
   const handleApplySearch = useCallback(() => {
     setScannedProducts(null);
-    setDelistedScan(null);
     // 搜索框可能接收到同一扫码枪输入，保留商品 trace 让同商品数量调整继续走 scan-update。
     if (!searchInput.trim()) {
       setSearchInput("");
@@ -812,13 +802,32 @@ export default function Home() {
     (value: string) => {
       setSearchInput(value);
       setScannedProducts(null);
-      setDelistedScan(null);
       if (!value.trim()) {
         applySearchPageAction({ type: "clear" });
       }
     },
     [applySearchPageAction],
   );
+  const handleSupplyOrder = useCallback(
+    (status: StoreSupplyStatus) => {
+      // 商品已恢复订货：按货号搜索即可在正常列表里命中。
+      const code = status.itemNumber || status.productCode;
+      setScannedProducts(null);
+      setSearchInput(code);
+      applySearchPageAction({ type: "apply", input: code });
+    },
+    [applySearchPageAction],
+  );
+  // 扫到暂停供货的商品：把条码转成搜索词，零结果处展示后续计划与关注按钮。
+  const scanFeedback = scanResult.feedback;
+  useEffect(() => {
+    if (scanFeedback.status !== "supply_paused" || !scanFeedback.barcode) {
+      return;
+    }
+    setScannedProducts(null);
+    setSearchInput(scanFeedback.barcode);
+    applySearchPageAction({ type: "apply", input: scanFeedback.barcode });
+  }, [applySearchPageAction, scanFeedback]);
   const handleVisibleSearchScan = useCallback(
     (barcode: string) => {
       // 扫码不作为文字关键字：清空搜索框（原生文本由 hook 清空），避免与旧关键字拼接。
@@ -843,7 +852,6 @@ export default function Home() {
   const handleClearSearchAndScan = useCallback(() => {
     setScannedProducts(null);
     setScannedProductTraceIds({});
-    setDelistedScan(null);
     setScanBarcode(null);
     setSearchInput("");
     setKeyword("");
@@ -1132,7 +1140,7 @@ export default function Home() {
   const compactRows = windowWidth <= 390;
   const selectedStoreName =
     selectedStore?.storeName || t("common:labels.selectStore");
-  const showScanResultHeader = Boolean(scannedProducts?.length) && !delistedScan;
+  const showScanResultHeader = Boolean(scannedProducts?.length);
   const gradeChipValue = selectedGrade
     ? t("gradeMenu.gradeValue", { grade: selectedGradeLabel })
     : t("filters.all");
@@ -1140,41 +1148,15 @@ export default function Home() {
   const cartQuantityTotal = cartSummary?.totalQuantity ?? 0;
   const cartImportTotal = Number(cartSummary?.totalImportAmount ?? 0);
 
+  const restockedCount = supplyWatchSummary.data?.restockedCount ?? 0;
+
   const handleOpenCameraSheet = () => {
     cameraResultGenerationRef.current = null;
     setCameraScanHandling(false);
     updateCameraSheetSession({ type: "open" }, cameraScanModeRef.current);
   };
 
-  const listHeader = delistedScan ? (
-    <View>
-      <View style={[styles.resultHeader, styles.resultHeaderDelisted]}>
-        <MaterialCommunityIcons
-          name="package-variant-remove"
-          size={20}
-          color={ORDER_COLORS.delisted}
-        />
-        <View style={styles.resultHeaderCopy}>
-          <Text style={[styles.resultHeaderTitle, styles.resultHeaderTitleDelisted]}>
-            {t("scanResult.delistedTitle")}
-          </Text>
-          <Text numberOfLines={1} style={styles.resultHeaderBarcode}>
-            {delistedScan.barcode}
-          </Text>
-        </View>
-        <Button
-          compact
-          icon="close"
-          onPress={handleClearSearchAndScan}
-          contentStyle={styles.resultHeaderButton}
-        >
-          {t("scanResult.clear")}
-        </Button>
-      </View>
-      <DelistedProductRow product={delistedScan.product} compact={compactRows} />
-      <Text style={styles.resultHint}>{t("scanResult.delistedHint")}</Text>
-    </View>
-  ) : showScanResultHeader ? (
+  const listHeader = showScanResultHeader ? (
     <View style={styles.resultHeader}>
       <MaterialCommunityIcons name="barcode-scan" size={20} color={HB_COLORS.action} />
       <View style={styles.resultHeaderCopy}>
@@ -1231,6 +1213,27 @@ export default function Home() {
                 <MaterialCommunityIcons name="chevron-down" size={18} color={HB_COLORS.textPrimary} />
               </View>
             </View>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={
+              restockedCount
+                ? `${t("supplyNotice:watchesTitle")} ${t("supplyNotice:restockedBanner", { count: restockedCount })}`
+                : t("supplyNotice:watchesTitle")
+            }
+            onPress={() => setSupplyWatchesVisible(true)}
+            style={({ pressed }) => [styles.watchButton, pressed ? styles.pressed : null]}
+          >
+            <MaterialCommunityIcons
+              name={restockedCount ? "bell-ring-outline" : "bell-outline"}
+              size={22}
+              color={restockedCount ? HB_COLORS.success : HB_COLORS.textSecondary}
+            />
+            {restockedCount ? (
+              <View style={styles.watchBadge}>
+                <Text style={styles.watchBadgeText}>{restockedCount > 99 ? "99+" : restockedCount}</Text>
+              </View>
+            ) : null}
           </Pressable>
           {hidScanner.mode === "textInput" ? (
             <Button
@@ -1327,9 +1330,21 @@ export default function Home() {
         </View>
       </View>
       <PreorderGateBanner gate={preorderGate} onOpen={openPreorder} />
+      <SupplyRestockedBanner
+        restockedCount={restockedCount}
+        onOpen={() => setSupplyWatchesVisible(true)}
+      />
+      <SupplyWatchesSheet
+        visible={supplyWatchesVisible}
+        storeCode={selectedStoreCode ?? null}
+        onDismiss={() => setSupplyWatchesVisible(false)}
+        onOrder={handleSupplyOrder}
+        onChanged={() => void supplyWatchSummary.refetch()}
+        onError={(message) => setNotice({ tone: "error", title: message })}
+      />
       <FlatList
         style={styles.content}
-        data={delistedScan ? [] : displayProducts}
+        data={displayProducts}
         key={`product-grid-${productColumns}`}
         keyExtractor={(item) => item.productCode}
         numColumns={productColumns}
@@ -1338,7 +1353,36 @@ export default function Home() {
         keyboardShouldPersistTaps="handled"
         ListHeaderComponent={listHeader}
         ListEmptyComponent={
-          delistedScan ? null : (
+          supplyLookup.items.length ? (
+            <View testID="home-supply-status-list">
+              <View style={styles.pausedHeader}>
+                <MaterialCommunityIcons name="package-variant-remove" size={20} color={ORDER_COLORS.paused} />
+                <View style={styles.resultHeaderCopy}>
+                  <Text style={styles.pausedHeaderTitle}>{t("supplyNotice:pausedHeading")}</Text>
+                  <Text numberOfLines={2} style={styles.pausedHeaderHint}>{t("supplyNotice:pausedHint")}</Text>
+                </View>
+                <Button
+                  compact
+                  icon="close"
+                  onPress={() => handleSearchInputChange("")}
+                  contentStyle={styles.resultHeaderButton}
+                >
+                  {t("scanResult.clear")}
+                </Button>
+              </View>
+              <View style={styles.supplyStatusList}>
+                {supplyLookup.items.map((status) => (
+                  <SupplyStatusCard
+                    key={status.productCode}
+                    status={status}
+                    busy={supplyLookup.busyCode === status.productCode}
+                    onWatch={(item) => void handleSupplyWatchToggle(item, true)}
+                    onUnwatch={(item) => void handleSupplyWatchToggle(item, false)}
+                  />
+                ))}
+              </View>
+            </View>
+          ) : (
             <View style={styles.homeEmptyState}>
               <AnimatedEmptyStateGraphic />
               <EmptyState
@@ -1375,7 +1419,7 @@ export default function Home() {
         ListFooterComponent={
           showScanResultHeader ? (
             <Text style={styles.resultHint}>{t("scanResultHint")}</Text>
-          ) : !delistedScan && displayProducts.length ? (
+          ) : displayProducts.length ? (
             <View style={styles.paginationRow}>
               <Button
                 mode="outlined"
@@ -1722,13 +1766,13 @@ export default function Home() {
       >
         {lastCameraBarcode &&
         scanResult.feedback.barcode === lastCameraBarcode &&
-        ["not_found", "blocked", "error", "delisted"].includes(
+        ["not_found", "blocked", "error", "supply_paused"].includes(
           scanResult.feedback.status,
         ) ? (
           <View
             style={[
               styles.cameraFeedbackBar,
-              scanResult.feedback.status === "delisted" ? styles.cameraFeedbackBarDelisted : null,
+              scanResult.feedback.status === "supply_paused" ? styles.cameraFeedbackBarPaused : null,
             ]}
           >
             <View style={styles.cameraHitCopy}>
@@ -1907,6 +1951,29 @@ const styles = StyleSheet.create({
     lineHeight: 22,
     fontWeight: "700",
   },
+  watchButton: {
+    width: 44,
+    height: 44,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  watchBadge: {
+    position: "absolute",
+    top: 4,
+    right: 2,
+    minWidth: 18,
+    height: 18,
+    paddingHorizontal: 4,
+    borderRadius: 9,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: HB_COLORS.success,
+  },
+  watchBadgeText: {
+    color: HB_COLORS.white,
+    fontSize: 11,
+    fontWeight: "700",
+  },
   focusButtonContent: {
     minHeight: 44,
   },
@@ -2044,10 +2111,6 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: ORDER_COLORS.stepperBorder,
   },
-  resultHeaderDelisted: {
-    backgroundColor: HB_COLORS.surfaceMuted,
-    borderBottomColor: HB_COLORS.outline,
-  },
   resultHeaderCopy: {
     flex: 1,
     minWidth: 0,
@@ -2058,9 +2121,6 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     fontWeight: "700",
   },
-  resultHeaderTitleDelisted: {
-    color: ORDER_COLORS.delisted,
-  },
   resultHeaderBarcode: {
     color: HB_COLORS.textSecondary,
     fontSize: 12,
@@ -2069,6 +2129,33 @@ const styles = StyleSheet.create({
   },
   resultHeaderButton: {
     minHeight: 44,
+  },
+  pausedHeader: {
+    minHeight: 56,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingLeft: 12,
+    paddingRight: 4,
+    paddingVertical: 6,
+    backgroundColor: HB_COLORS.surfaceMuted,
+    borderBottomWidth: 1,
+    borderBottomColor: HB_COLORS.outline,
+  },
+  pausedHeaderTitle: {
+    color: ORDER_COLORS.paused,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "700",
+  },
+  pausedHeaderHint: {
+    color: HB_COLORS.textSecondary,
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  supplyStatusList: {
+    padding: 12,
+    gap: 10,
   },
   resultHint: {
     paddingHorizontal: 24,
@@ -2345,7 +2432,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
   },
-  cameraFeedbackBarDelisted: {
+  cameraFeedbackBarPaused: {
     backgroundColor: HB_COLORS.surfaceMuted,
   },
   cameraHitBar: {

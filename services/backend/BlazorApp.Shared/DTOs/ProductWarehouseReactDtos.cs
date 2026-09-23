@@ -367,6 +367,8 @@ namespace BlazorApp.Shared.DTOs
         public decimal? OEMPrice { get; set; }
         public decimal? ImportPrice { get; set; }
         public bool IsActive { get; set; } = true;
+        /// <summary>下架时随请求登记的供货说明；上架时忽略。旧客户端不传，分店端按“后续计划待确认”展示。</summary>
+        public WarehouseProductSupplyNoticeInputDto? SupplyNotice { get; set; }
         public string? ProductImage { get; set; }
         public int ProductType { get; set; } = 0;
         public int? MiddlePackQuantity { get; set; }
@@ -454,6 +456,8 @@ namespace BlazorApp.Shared.DTOs
     {
         public List<string> ProductCodes { get; set; } = new List<string>();
         public bool IsActive { get; set; }
+        /// <summary>下架时随请求登记的供货说明；上架时忽略。旧客户端不传，分店端按“后续计划待确认”展示。</summary>
+        public WarehouseProductSupplyNoticeInputDto? SupplyNotice { get; set; }
     }
 
     /// <summary>
@@ -577,6 +581,8 @@ namespace BlazorApp.Shared.DTOs
         /// 仓库商品上下架状态，移动端新字段。
         /// </summary>
         public bool? WarehouseIsActive { get; set; }
+        /// <summary>下架时随请求登记的供货说明；上架时忽略。旧客户端不传，分店端按“后续计划待确认”展示。</summary>
+        public WarehouseProductSupplyNoticeInputDto? SupplyNotice { get; set; }
         /// <summary>
         /// 兼容旧移动端字段，服务层会回退读取该值。
         /// </summary>

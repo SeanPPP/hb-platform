@@ -7,6 +7,7 @@ import {
   findNodeHandle,
   InteractionManager,
   Modal as NativeModal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -25,6 +26,8 @@ import {
   TextInput,
 } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { PrinterDeviceDetails } from "@/components/printer/PrinterDeviceDetails";
+import { PrinterTransportFilterControls } from "@/components/printer/PrinterTransportFilterControls";
 import {
   clearSavedReceiptPrinter,
   clearSavedPrinter,
@@ -38,6 +41,12 @@ import {
   testReceiptPrinterConnection,
   testPrinterConnection,
 } from "@/modules/printer/api";
+import {
+  DEFAULT_PRINTER_TRANSPORT_FILTERS,
+  filterPrinterDevices,
+  isUnsupportedPrinterTransport,
+  orderPrinterDevices,
+} from "@/modules/printer/device-list";
 import { usePrinterStore, useReceiptPrinterStore, type PrinterConnectionState } from "@/modules/printer/state";
 import type { PrinterDevice } from "@/modules/printer/types";
 import { i18n, setAppLanguage } from "@/shared/i18n/i18n";
@@ -326,7 +335,6 @@ function CompactRow({
 interface PrinterDeviceListProps {
   devices: PrinterDevice[];
   selectedAddress?: string | null;
-  bondedLabel: string;
   actionLabel: string;
   disabled: boolean;
   onSelect: (printer: PrinterDevice) => void;
@@ -335,7 +343,6 @@ interface PrinterDeviceListProps {
 function PrinterDeviceList({
   devices,
   selectedAddress,
-  bondedLabel,
   actionLabel,
   disabled,
   onSelect,
@@ -344,26 +351,15 @@ function PrinterDeviceList({
     <View style={styles.printerList}>
       {devices.map((printer) => {
         const selected = selectedAddress === printer.address;
+        const unsupported = isUnsupportedPrinterTransport(printer, Platform.OS);
         return (
           <View key={printer.address} style={styles.printerRow}>
-            <View style={styles.printerMeta}>
-              <Text variant="bodyMedium" style={styles.printerName} numberOfLines={1}>
-                {printer.name || printer.address}
-              </Text>
-              <Text variant="bodySmall" style={styles.meta} numberOfLines={1}>
-                {printer.address}
-              </Text>
-              {printer.bonded ? (
-                <Text variant="bodySmall" style={styles.meta}>
-                  {bondedLabel}
-                </Text>
-              ) : null}
-            </View>
+            <PrinterDeviceDetails device={printer} />
             <Button
               compact
               mode={selected ? "contained-tonal" : "outlined"}
               onPress={() => onSelect(printer)}
-              disabled={disabled}
+              disabled={disabled || unsupported}
             >
               {actionLabel}
             </Button>
@@ -400,6 +396,9 @@ export default function Settings() {
   const [printerBusy, setPrinterBusy] = useState(false);
   const [printerScanCompleted, setPrinterScanCompleted] = useState(false);
   const [filterXPOnly, setFilterXPOnly] = useState(true);
+  const [transportFilters, setTransportFilters] = useState({
+    ...DEFAULT_PRINTER_TRANSPORT_FILTERS,
+  });
   const [receiptRawPrinters, setReceiptRawPrinters] = useState<PrinterDevice[]>([]);
   const [receiptPrinterBusy, setReceiptPrinterBusy] = useState(false);
   const [receiptPrinterScanCompleted, setReceiptPrinterScanCompleted] = useState(false);
@@ -523,18 +522,29 @@ export default function Settings() {
     [t, updateInfo]
   );
 
-  const visiblePrinters = useMemo(() => {
-    if (!filterXPOnly) {
-      return rawPrinters;
+  const hasSelectedTransport =
+    Platform.OS !== "android" || transportFilters.showClassic || transportFilters.showBle;
+  const visiblePrinters = useMemo(
+    () =>
+      filterPrinterDevices(rawPrinters, {
+        ...transportFilters,
+        xpOnly: filterXPOnly,
+        platform: Platform.OS,
+      }),
+    [filterXPOnly, rawPrinters, transportFilters]
+  );
+
+  const visibleReceiptPrinters = useMemo(
+    () => orderPrinterDevices(receiptRawPrinters),
+    [receiptRawPrinters]
+  );
+
+  useEffect(() => {
+    if (printerSettingsVisible) {
+      // 筛选不持久化；每次打开详情均优先展示当前 Android 打印通道支持的经典蓝牙。
+      setTransportFilters({ ...DEFAULT_PRINTER_TRANSPORT_FILTERS });
     }
-
-    return rawPrinters.filter((printer) => {
-      const name = printer.name?.trim();
-      return typeof name === "string" && name.toUpperCase().startsWith("XP");
-    });
-  }, [filterXPOnly, rawPrinters]);
-
-  const visibleReceiptPrinters = useMemo(() => receiptRawPrinters, [receiptRawPrinters]);
+  }, [printerSettingsVisible]);
 
   useEffect(() => {
     let cancelled = false;
@@ -595,6 +605,14 @@ export default function Settings() {
       language,
       t,
       fallbackKey,
+    });
+
+  const getPrinterErrorMessage = (error: unknown) =>
+    resolveLocalizedErrorMessage(error, {
+      language,
+      t,
+      fallbackKey: "dialogs.printerConnectFailedMessage",
+      allowRawMessageInChinese: false,
     });
 
   function resolvePrinterStatusText(
@@ -892,22 +910,48 @@ export default function Settings() {
     }
   };
 
-  const handleConnectPrinter = async (device: PrinterDevice) => {
+  const connectPrinterDevice = async (device: PrinterDevice) => {
     setPrinterBusy(true);
     try {
       await selectPrinter(device);
       Alert.alert(
-        t("dialogs.printerSavedTitle"),
-        t("dialogs.printerSavedMessage", { printer: device.name || device.address })
+        t("dialogs.printerConnectedTitle"),
+        t("dialogs.printerConnectedMessage", { printer: device.name || device.address })
       );
     } catch (error) {
       Alert.alert(
         t("dialogs.printerConnectFailedTitle"),
-        getErrorMessage(error, "dialogs.refreshFailedMessage")
+        getPrinterErrorMessage(error)
       );
     } finally {
       setPrinterBusy(false);
     }
+  };
+
+  const handleConnectPrinter = (device: PrinterDevice) => {
+    if (isUnsupportedPrinterTransport(device, Platform.OS)) {
+      return;
+    }
+
+    if (Platform.OS !== "android" || device.bonded) {
+      void connectPrinterDevice(device);
+      return;
+    }
+
+    Alert.alert(
+      t("dialogs.printerPairingTitle"),
+      t("dialogs.printerPairingMessage", {
+        printer: device.name || device.address,
+        address: device.address,
+      }),
+      [
+        { text: t("common:actions.cancel"), style: "cancel" },
+        {
+          text: t("dialogs.printerPairingAction"),
+          onPress: () => void connectPrinterDevice(device),
+        },
+      ]
+    );
   };
 
   const handleTestPrinter = async () => {
@@ -984,6 +1028,33 @@ export default function Settings() {
     } finally {
       setReceiptPrinterBusy(false);
     }
+  };
+
+  const handleConnectReceiptPrinter = (device: PrinterDevice) => {
+    if (isUnsupportedPrinterTransport(device, Platform.OS)) {
+      return;
+    }
+
+    if (Platform.OS !== "android" || device.bonded) {
+      void handleSaveReceiptPrinter(device);
+      return;
+    }
+
+    // 小票打印机复用标签打印机的系统配对确认，避免用户点击保存后才看到原生失败。
+    Alert.alert(
+      t("dialogs.printerPairingTitle"),
+      t("dialogs.printerPairingMessage", {
+        printer: device.name || device.address,
+        address: device.address,
+      }),
+      [
+        { text: t("common:actions.cancel"), style: "cancel" },
+        {
+          text: t("dialogs.printerPairingAction"),
+          onPress: () => void handleSaveReceiptPrinter(device),
+        },
+      ]
+    );
   };
 
   const handleTestReceiptPrinter = async () => {
@@ -1443,7 +1514,7 @@ export default function Settings() {
                     icon="magnify"
                     onPress={handleScanPrinters}
                     loading={printerBusy && !isPrinterConnecting}
-                    disabled={printerNativeBusy}
+                    disabled={printerNativeBusy || !hasSelectedTransport}
                     style={styles.primaryActionButton}
                   >
                     {printerBusy && !isPrinterConnecting
@@ -1489,7 +1560,13 @@ export default function Settings() {
                   />
                 </View>
 
-                {printerScanCompleted ? (
+                <PrinterTransportFilterControls
+                  value={transportFilters}
+                  onChange={setTransportFilters}
+                  disabled={printerNativeBusy}
+                />
+
+                {printerScanCompleted && hasSelectedTransport ? (
                   visiblePrinters.length ? (
                     <>
                       <Text variant="labelMedium" style={styles.listLabel}>
@@ -1498,7 +1575,6 @@ export default function Settings() {
                       <PrinterDeviceList
                         devices={visiblePrinters}
                         selectedAddress={savedPrinter?.address}
-                        bondedLabel={t("printer.bonded")}
                         actionLabel={t("printer.connect")}
                         disabled={printerNativeBusy}
                         onSelect={(printer) => void handleConnectPrinter(printer)}
@@ -1506,9 +1582,13 @@ export default function Settings() {
                     </>
                   ) : (
                     <HelperText type="info" visible>
-                      {rawPrinters.length && filterXPOnly
-                        ? t("printer.emptyFiltered")
-                        : t("printer.empty")}
+                      {Platform.OS === "android"
+                        ? rawPrinters.length
+                          ? t("printer.emptyTransportFiltered")
+                          : t("printer.empty")
+                        : rawPrinters.length && filterXPOnly
+                          ? t("printer.emptyFiltered")
+                          : t("printer.empty")}
                     </HelperText>
                   )
                 ) : null}
@@ -1596,10 +1676,9 @@ export default function Settings() {
                       <PrinterDeviceList
                         devices={visibleReceiptPrinters}
                         selectedAddress={savedReceiptPrinter?.address}
-                        bondedLabel={t("printer.bonded")}
                         actionLabel={t("receiptPrinter.save")}
                         disabled={printerNativeBusy}
-                        onSelect={(printer) => void handleSaveReceiptPrinter(printer)}
+                        onSelect={handleConnectReceiptPrinter}
                       />
                     </>
                   ) : (
@@ -1959,6 +2038,10 @@ const styles = StyleSheet.create({
   meta: {
     color: HB_COLORS.textSecondary,
   },
+  unbondedMeta: {
+    color: HB_COLORS.warning,
+    fontWeight: "700",
+  },
   updateInfoCompactList: {
     gap: HB_SPACING.xs,
   },
@@ -2049,15 +2132,6 @@ const styles = StyleSheet.create({
     backgroundColor: HB_COLORS.surfaceMuted,
     paddingHorizontal: HB_SPACING.sm,
     paddingVertical: HB_SPACING.xs,
-  },
-  printerMeta: {
-    flex: 1,
-    minWidth: 0,
-    gap: 2,
-  },
-  printerName: {
-    color: HB_COLORS.textPrimary,
-    fontWeight: "600",
   },
   printerActions: {
     flexDirection: "row",

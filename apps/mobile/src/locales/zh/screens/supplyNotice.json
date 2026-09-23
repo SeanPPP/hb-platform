@@ -1,0 +1,63 @@
+{
+  "plan": {
+    "WillRestock": "会补货",
+    "Undecided": "尚未确定",
+    "Seasonal": "季节性商品",
+    "Discontinued": "不再供应"
+  },
+  "storeTitle": {
+    "WillRestock": "暂时缺货 · 计划补货",
+    "Undecided": "暂停供货 · 后续计划待确认",
+    "Seasonal": "本季供应结束",
+    "Discontinued": "已停止供应"
+  },
+  "restocked": "已恢复订货",
+  "expectedLabel": "预计恢复订货",
+  "expectedUnknown": "时间待定",
+  "expectedOverdue": "原预计时间已过，新时间待确认",
+  "expectedMonth": "{{month}} 月",
+  "expectedMonthWithYear": "{{year}} 年 {{month}} 月",
+  "expectedRange": "{{from}} – {{to}}",
+  "noteLabel": "仓库说明",
+  "updatedAt": "最近更新 {{date}}",
+  "pausedHeading": "这个商品暂停供货",
+  "pausedHint": "可以关注它，恢复订货时会在订货页提醒你。",
+  "scanPaused": "该商品暂停供货，查看恢复计划",
+  "watch": "关注恢复订货",
+  "watching": "已关注 · 取消",
+  "watchDone": "已关注，恢复订货时会提醒你",
+  "unwatchDone": "已取消关注",
+  "acknowledge": "知道了",
+  "acknowledgeAll": "全部知道了",
+  "goOrder": "去订货",
+  "actionFailed": "操作失败，请稍后重试",
+  "watchesTitle": "我关注的商品",
+  "watchesEntry": "关注的商品",
+  "watchesEmpty": "还没有关注的商品。搜索或扫码遇到暂停供货的商品时，可以点“关注恢复订货”。",
+  "restockedSection": "已恢复订货",
+  "waitingSection": "等待恢复",
+  "restockedBanner": "你关注的 {{count}} 个商品已恢复订货",
+  "restockedBannerAction": "查看",
+  "cartPausedTag": "暂停供货",
+  "submitBlocked": "购物车里有 {{count}} 个商品已暂停供货，请移除后再提交",
+  "form": {
+    "title": "暂停供货说明",
+    "planLabel": "后续计划",
+    "planRequired": "请选择后续计划",
+    "expectedLabel": "预计恢复订货",
+    "precision": {
+      "Unknown": "时间待定",
+      "Day": "具体日期",
+      "Month": "某个月"
+    },
+    "dayPlaceholder": "YYYY-MM-DD",
+    "monthPlaceholder": "YYYY-MM",
+    "dateInvalid": "日期格式不正确",
+    "storeNoteLabel": "对门店说明",
+    "storeNotePlaceholder": "门店在订货页会看到这句话",
+    "internalNoteLabel": "内部备注（仅仓库可见）",
+    "confirmDelist": "确认下架",
+    "cancel": "取消"
+  },
+  "scanPausedNamed": "暂停供货 · {{name}}"
+}

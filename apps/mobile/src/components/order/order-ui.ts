@@ -1,4 +1,3 @@
-import { Platform } from "react-native";
 import { HB_COLORS } from "@/shared/theme/tokens";
 
 /** 订货页与购物车共用的视觉常量；只服务这两个业务页，不改全局主题。 */
@@ -12,7 +11,7 @@ export const ORDER_COLORS = {
   placeholderIcon: "#98A2B3",
   danger: HB_COLORS.danger,
   dangerBackground: "#FEE4E2",
-  delisted: "#344054",
+  paused: "#344054",
   barBackground: "#101828",
   barButton: "#1D2939",
   barText: "#FFFFFF",
@@ -36,9 +35,6 @@ export function normalizeGrade(value: string | null | undefined) {
 export function resolveGradeColors(grade: string | null | undefined) {
   return GRADE_COLORS[normalizeGrade(grade)] ?? FALLBACK_GRADE_COLORS;
 }
-
-/** 货号、条码用等宽字体，便于逐位核对。 */
-export const ORDER_MONO_FONT = Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" });
 
 export function formatOrderMoney(value: number | null | undefined) {
   if (typeof value !== "number" || !Number.isFinite(value)) {

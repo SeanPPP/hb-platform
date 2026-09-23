@@ -13,8 +13,8 @@ const NOTICE_ICONS: Record<OrderNoticeTone, { icon: IconName; background: string
   info: { icon: "information-variant", background: HB_COLORS.action, color: HB_COLORS.white },
   warning: { icon: "exclamation-thick", background: "#DC6803", color: HB_COLORS.white },
   error: { icon: "close-thick", background: "#D92D20", color: HB_COLORS.white },
-  // 已下架用深灰：与「未找到」的琥珀色、失败的红色一眼可分。
-  delisted: { icon: "package-variant-remove", background: ORDER_COLORS.barSubtext, color: ORDER_COLORS.barBackground },
+  // 暂停供货用深灰：与「未找到」的琥珀色、失败的红色一眼可分。
+  paused: { icon: "package-variant-remove", background: ORDER_COLORS.barSubtext, color: ORDER_COLORS.barBackground },
 };
 
 interface OrderBottomBarProps {

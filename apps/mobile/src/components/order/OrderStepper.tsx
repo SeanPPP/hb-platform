@@ -10,6 +10,8 @@ interface OrderStepperProps {
   disabled?: boolean;
   busy?: boolean;
   compact?: boolean;
+  /** 只禁止加量（如暂停供货）：服务端仍允许减量与移除。 */
+  increaseDisabled?: boolean;
   /** 中间数量按钮的可访问标签；点数量打开数量编辑。 */
   accessibilityLabel: string;
   decreaseLabel: string;
@@ -26,6 +28,7 @@ export function OrderStepper({
   disabled = false,
   busy = false,
   compact = false,
+  increaseDisabled = false,
   accessibilityLabel,
   decreaseLabel,
   increaseLabel,
@@ -37,7 +40,7 @@ export function OrderStepper({
   const locked = disabled || busy;
   // 再减一个起订量就归零时，「−」换成删除图标：归零即移出购物车，提前把后果画出来。
   const decreaseRemoves = quantity - step <= 0;
-  const sideColor = locked ? HB_COLORS.outline : HB_COLORS.action;
+  const increaseLocked = locked || increaseDisabled;
 
   return (
     <View style={[styles.stepper, compact ? styles.stepperCompact : null, locked ? styles.stepperLocked : null]}>
@@ -76,12 +79,12 @@ export function OrderStepper({
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={increaseLabel}
-        disabled={locked}
+        disabled={increaseLocked}
         hitSlop={4}
         onPress={onIncrease}
         style={({ pressed }) => [styles.side, compact ? styles.sideCompact : null, pressed ? styles.sidePressed : null]}
       >
-        <MaterialCommunityIcons name="plus" size={20} color={sideColor} />
+        <MaterialCommunityIcons name="plus" size={20} color={increaseLocked ? HB_COLORS.outline : HB_COLORS.action} />
       </Pressable>
     </View>
   );

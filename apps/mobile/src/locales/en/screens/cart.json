@@ -85,7 +85,8 @@
     "syncing": "Syncing quantities…",
     "preorderBlocked": "Finish the preorder before submitting a normal order",
     "preorderFirst": "Finish preorder",
-    "submitting": "Submitting"
+    "submitting": "Submitting",
+    "pausedLines": "Some items have paused supply. Remove them before submitting."
   },
   "actions": {
     "submit": "Submit",

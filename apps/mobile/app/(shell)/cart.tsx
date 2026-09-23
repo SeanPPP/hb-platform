@@ -39,10 +39,10 @@ import {
 import {
   formatOrderMoney,
   ORDER_COLORS,
-  ORDER_MONO_FONT,
   resolveOrderStep,
   resolveTotalPages,
 } from "@/components/order/order-ui";
+import { ORDER_MONO_FONT } from "@/components/order/order-fonts";
 import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { HB_COLORS } from "@/shared/theme/tokens";
@@ -114,8 +114,8 @@ function CartListItemCard({
   const importPrice = Number(item.importPrice ?? 0);
   const importAmount = Number(item.importAmount ?? importPrice * item.quantity);
   const hasZeroImportPrice = importPrice <= 0;
-  // 只有后端明确返回「仓库已下架」才按下架处理；旧后端不返回该字段时保持可编辑。
-  const isDelisted = item.warehouseIsActive === false;
+  // 加购后被仓库暂停供货：服务端会拦截加量和提交，只放行减量与移除，这里提前标出来。
+  const isPaused = item.isActive === false;
   const skuValue = item.itemNumber || item.productCode || "--";
 
   const animateTo = useCallback(
@@ -214,19 +214,19 @@ function CartListItemCard({
         style={[
           styles.itemRow,
           isPriority ? styles.itemRowPriority : null,
-          isDelisted ? styles.itemRowDelisted : null,
+          isPaused ? styles.itemRowPaused : null,
           { transform: [{ translateX }] },
         ]}
         {...panResponder.panHandlers}
       >
-        <OrderThumbnail uri={item.productImage} size={compact ? 48 : 56} muted={isDelisted} />
+        <OrderThumbnail uri={item.productImage} size={compact ? 48 : 56} muted={isPaused} />
         <View style={styles.itemBody}>
-          <Text numberOfLines={2} style={[styles.itemTitle, isDelisted ? styles.itemTitleMuted : null]}>
+          <Text numberOfLines={2} style={[styles.itemTitle, isPaused ? styles.itemTitleMuted : null]}>
             {item.productName || item.productCode}
           </Text>
           <View style={styles.itemMetaRow}>
             {isPriority ? <OrderStatusTag label={t("common:orderRow.justScanned")} tone="solidAction" /> : null}
-            {isDelisted ? <OrderStatusTag label={t("common:orderRow.delisted")} tone="solidDark" /> : null}
+            {isPaused ? <OrderStatusTag label={t("supplyNotice:cartPausedTag")} tone="solidDark" /> : null}
             <GradeTag grade={item.grade} />
             <Text numberOfLines={1} style={styles.itemNumberText}>
               {skuValue}
@@ -249,43 +249,27 @@ function CartListItemCard({
                   style={[
                     styles.itemSubtotalValue,
                     hasZeroImportPrice ? styles.zeroImportText : null,
-                    isDelisted ? styles.itemTitleMuted : null,
+                    isPaused ? styles.itemTitleMuted : null,
                   ]}
                 >
                   {formatOrderMoney(importAmount)}
                 </Text>
               </Text>
             </View>
-            {isDelisted ? (
-              <View style={[styles.delistedStepper, compact ? styles.delistedStepperCompact : null]}>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={t("common:orderRow.remove")}
-                  disabled={isBusy}
-                  onPress={() => void onDelete(item)}
-                  style={styles.delistedRemove}
-                >
-                  <MaterialCommunityIcons name="trash-can-outline" size={20} color={ORDER_COLORS.danger} />
-                </Pressable>
-                <Text style={styles.delistedQuantity}>
-                  {t("common:orderRow.quantityLocked", { quantity: item.quantity })}
-                </Text>
-              </View>
-            ) : (
-              <OrderStepper
-                quantity={item.quantity}
-                step={step}
-                compact={compact}
-                busy={isBusy}
-                accessibilityLabel={t("common:labels.editCartQuantity", { quantity: item.quantity })}
-                decreaseLabel={t("common:orderRow.decrease")}
-                increaseLabel={t("common:orderRow.increase")}
-                removeLabel={t("common:orderRow.remove")}
-                onDecrease={() => void onUpdateQuantity(item, Math.max(0, item.quantity - step))}
-                onIncrease={() => void onUpdateQuantity(item, item.quantity + step)}
-                onEdit={() => onEditQuantity(item)}
-              />
-            )}
+            <OrderStepper
+              quantity={item.quantity}
+              step={step}
+              compact={compact}
+              busy={isBusy}
+              increaseDisabled={isPaused}
+              accessibilityLabel={t("common:labels.editCartQuantity", { quantity: item.quantity })}
+              decreaseLabel={t("common:orderRow.decrease")}
+              increaseLabel={t("common:orderRow.increase")}
+              removeLabel={t("common:orderRow.remove")}
+              onDecrease={() => void onUpdateQuantity(item, Math.max(0, item.quantity - step))}
+              onIncrease={() => void onUpdateQuantity(item, item.quantity + step)}
+              onEdit={() => onEditQuantity(item)}
+            />
           </View>
         </View>
       </Animated.View>
@@ -297,7 +281,7 @@ export default function Cart() {
   const isFocused = useIsFocused();
   const router = useRouter();
   const viewport = useWindowDimensions();
-  const { t, language } = useAppTranslation(["cart", "common"]);
+  const { t, language } = useAppTranslation(["cart", "common", "supplyNotice"]);
   const queryClient = useQueryClient();
   const { selectedStore, selectedStoreCode } = useStores();
   const access = useAuthStore((state) => state.access);
@@ -737,6 +721,8 @@ export default function Cart() {
   const storeName = selectedStore?.storeName || t("common:labels.selectStore");
   // 购物车为空时结算栏隐藏；但扫码提示仍需要一个固定位置显示。
   const showCheckoutBar = Boolean(cartQuery.total) || Boolean(notice);
+  // 当前页有暂停供货商品时在结算栏提前提示；服务端仍是提交时的最终拦截方。
+  const hasPausedLines = cartQuery.items.some((item) => item.isActive === false);
   const submitDisabled =
     !selectedStoreCode || !cartQuery.total || (cartMutationPending && !submitPending);
 
@@ -929,6 +915,8 @@ export default function Cart() {
               ? t("checkout.preorderBlocked")
               : cartMutationPending && !submitPending
                 ? t("checkout.syncing")
+                : hasPausedLines
+                  ? t("checkout.pausedLines")
                 : t("checkout.summaryLine", {
                     sku: cartQuery.stats.skuCount,
                     quantity: cartQuery.stats.totalQuantity,
@@ -1318,7 +1306,7 @@ const styles = StyleSheet.create({
   itemRowPriority: {
     backgroundColor: ORDER_COLORS.inCartRow,
   },
-  itemRowDelisted: {
+  itemRowPaused: {
     backgroundColor: ORDER_COLORS.mutedRow,
   },
   itemBody: {
@@ -1383,37 +1371,6 @@ const styles = StyleSheet.create({
   },
   zeroImportText: {
     color: ORDER_COLORS.danger,
-  },
-  delistedStepper: {
-    width: 132,
-    height: 44,
-    flexDirection: "row",
-    alignItems: "stretch",
-    borderRadius: 8,
-    borderWidth: 1,
-    borderStyle: "dashed",
-    borderColor: ORDER_COLORS.placeholderIcon,
-    backgroundColor: HB_COLORS.white,
-    overflow: "hidden",
-  },
-  delistedStepperCompact: {
-    width: 124,
-  },
-  delistedRemove: {
-    width: 42,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRightWidth: StyleSheet.hairlineWidth,
-    borderRightColor: HB_COLORS.outline,
-  },
-  delistedQuantity: {
-    flex: 1,
-    alignSelf: "center",
-    textAlign: "center",
-    color: HB_COLORS.textSecondary,
-    fontSize: 13,
-    fontWeight: "600",
-    fontVariant: ["tabular-nums"],
   },
   paginationRow: {
     flexDirection: "row",

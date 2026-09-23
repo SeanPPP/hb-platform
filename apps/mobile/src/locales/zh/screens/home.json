@@ -78,9 +78,7 @@
   },
   "scanResult": {
     "title": "扫码结果 · {{count}} 件",
-    "clear": "清除",
-    "delistedTitle": "扫码结果 · 已下架",
-    "delistedHint": "这个条码对应的商品已下架，不能加入购物车。继续扫码会替换当前结果"
+    "clear": "清除"
   },
   "listMeta": {
     "total": "共 {{count}} 件商品",
