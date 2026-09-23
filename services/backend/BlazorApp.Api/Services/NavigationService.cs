@@ -289,6 +289,15 @@ namespace BlazorApp.Api.Services
             },
             new()
             {
+                RouteName = "seasonal-product-insights",
+                TitleKey = "tabs.seasonalProductInsights",
+                Icon = "calendar-star",
+                // 独立权限：会展示其他分店库存，不借用商品查询的 StoreProducts.View。
+                Permission = Permissions.SeasonalProductInsights.View,
+                Order = 50,
+            },
+            new()
+            {
                 RouteName = "installment-orders",
                 TitleKey = "tabs.installmentOrders",
                 Icon = "cash-clock",

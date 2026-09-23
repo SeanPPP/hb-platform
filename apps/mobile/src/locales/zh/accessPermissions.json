@@ -601,6 +601,10 @@
       "name": "移动端打印收银用户条码",
       "description": "移动端「收银用户条码」- 查看可管理分店的老收银系统员工条码，用蓝牙标签机打印并累计打印次数"
     },
+    "SeasonalProductInsights.View": {
+      "name": "查看季节商品查询",
+      "description": "移动端「季节商品查询」- 按货号/条码查看本店与其他分店的累计进货、累计销量和理论存货"
+    },
     "StoreProducts.Create": {
       "name": "创建分店商品",
       "description": "Web 页面 /pos-admin/store-product-price - 创建分店商品价格"

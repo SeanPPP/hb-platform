@@ -379,6 +379,12 @@ namespace BlazorApp.Shared.Constants
             public const string MobilePrint = "CashRegisterUsers.MobilePrint";
         }
 
+        /// <summary>移动端「季节商品查询」：查看本店及其他分店的累计进货、累计销量与理论存货。</summary>
+        public static class SeasonalProductInsights
+        {
+            public const string View = "SeasonalProductInsights.View";
+        }
+
         public static class Attendance
         {
             public static class Schedule

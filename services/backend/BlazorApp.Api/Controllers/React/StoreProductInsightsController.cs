@@ -180,7 +180,7 @@ public sealed class StoreProductInsightsController(
             : StoreAccessContext.Denied("设备未启用或未绑定分店");
     }
 
-    private static bool HasElevatedStoreAccess(IEnumerable<string>? roleNames)
+    internal static bool HasElevatedStoreAccess(IEnumerable<string>? roleNames)
     {
         return (roleNames ?? Array.Empty<string>()).Any(role =>
             Permissions.SuperAdminRoleNames.Contains(role, StringComparer.OrdinalIgnoreCase)

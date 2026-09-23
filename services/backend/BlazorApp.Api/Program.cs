@@ -1031,6 +1031,7 @@ builder.Services.AddScoped<
 builder.Services.AddStoreOrderFeatures();
 // 商品进销查询作为独立只读模块注册，复用门店权限与日销售数据。
 builder.Services.AddScoped<BlazorApp.Api.Features.ProductInsights.StoreProductInsightQueryService>();
+builder.Services.AddScoped<BlazorApp.Api.Features.ProductInsights.SeasonalProductInsightQueryService>();
 builder.Services.AddScoped<BlazorApp.Api.Features.ProductInsights.IProductBranchSalesService,
     BlazorApp.Api.Features.ProductInsights.ProductBranchSalesService>();
 builder.Services.AddSingleton(TimeProvider.System);
