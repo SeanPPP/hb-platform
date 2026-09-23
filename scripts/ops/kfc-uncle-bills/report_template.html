@@ -1813,12 +1813,20 @@
     el.textContent = msg;
     el.classList.toggle("error", !!isError);
   }
-  function fetchJson(url) {
-    return fetch(url, { credentials: "include", cache: "no-cache", headers: { Accept: "application/json" } }).then(function (res) {
-      if (res.status === 401) {
-        // 登录令牌过期：走续期中转页，续上后回到报告
-        window.location.replace("/reports/_gate/?to=" + encodeURIComponent(REPORT_ROOT));
-        var gone = new Error("unauthorized"); gone.status = 401; throw gone;
+  function goGate() {
+    window.location.replace("/reports/_gate/?to=" + encodeURIComponent(REPORT_ROOT));
+    var gone = new Error("unauthorized"); gone.status = 401; throw gone;
+  }
+  // 登录令牌 15 分钟过期。接口直接返回 401；报告数据文件则由 nginx 302 到续期中转页，
+  // 所以不跟随跳转（redirect: manual），把跳转也当作过期。过期时先静默续期再重试一次，
+  // 续期失败才整页转去中转页（中转页会再试续期，失败才去登录）。
+  function fetchJson(url, retried) {
+    return fetch(url, { credentials: "include", cache: "no-cache", redirect: "manual", headers: { Accept: "application/json" } }).then(function (res) {
+      var expired = res.status === 401 || res.type === "opaqueredirect" ||
+        (res.redirected && res.url.indexOf("/reports/_gate/") >= 0);
+      if (expired) {
+        if (retried) return goGate();
+        return refreshSession().then(function (ok) { return ok ? fetchJson(url, true) : goGate(); });
       }
       if (!res.ok) { var err = new Error("HTTP " + res.status); err.status = res.status; throw err; }
       return res.json();
