@@ -891,6 +891,9 @@ export default function Home() {
     setSelectedCategoryGUID((currentValue) =>
       currentValue === categoryGUID ? undefined : categoryGUID,
     );
+    // 与分类同一次更新里回到第一页：等 effect 再重置会先按旧页码多发一次商品请求。
+    searchReturnPageRef.current = null;
+    setPageNumber(1);
     // 分类选择完成后回到商品列表；展开箭头不走这个回调，保持只展开分类树。
     setFiltersVisible(false);
   }, []);
@@ -1290,6 +1293,8 @@ export default function Home() {
               title={t("filters.allGrades")}
               trailingIcon={!selectedGrade ? "check" : undefined}
               onPress={() => {
+                searchReturnPageRef.current = null;
+                setPageNumber(1);
                 setSelectedGrade(undefined);
                 setGradeFilterVisible(false);
               }}
@@ -1304,6 +1309,9 @@ export default function Home() {
                   title={t("gradeMenu.gradeValue", { grade: option.label })}
                   trailingIcon={isSelected ? "check" : undefined}
                   onPress={() => {
+                    // 与等级同一次更新里回到第一页，避免按旧页码多发一次请求。
+                    searchReturnPageRef.current = null;
+                    setPageNumber(1);
                     setSelectedGrade(isSelected ? undefined : grade);
                     setGradeFilterVisible(false);
                   }}
@@ -1652,6 +1660,8 @@ export default function Home() {
                   accessibilityRole="radio"
                   accessibilityState={{ checked: selected }}
                   onPress={() => {
+                    searchReturnPageRef.current = null;
+                    setPageNumber(1);
                     void selectStore(item);
                     setStorePickerVisible(false);
                   }}
