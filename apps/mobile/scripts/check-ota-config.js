@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const { execFileSync } = require("child_process");
 
 const PROJECT_ROOT = path.resolve(__dirname, "..");
 const APP_JSON_PATH = path.join(PROJECT_ROOT, "app.json");
@@ -45,6 +46,25 @@ function main() {
     /<string name="expo_runtime_version">([^<]+)<\/string>/,
     "Android expo_runtime_version"
   );
+
+  if (appConfig.android?.runtimeVersion !== androidRuntimeVersion) {
+    failures.push(`app.json Android runtimeVersion=${appConfig.android?.runtimeVersion} 与原生 expo_runtime_version=${androidRuntimeVersion} 不一致`);
+  }
+
+  // 用 Expo 实际解析验证无 profile 的 prebuild 与显式 OTA runtime，避免仅比对静态 JSON。
+  for (const explicitRuntime of [undefined, "1.0.6"]) {
+    const env = { ...process.env };
+    delete env.EXPO_PUBLIC_RUNTIME_VERSION;
+    if (explicitRuntime) env.EXPO_PUBLIC_RUNTIME_VERSION = explicitRuntime;
+    const resolved = JSON.parse(execFileSync(process.execPath, [
+      path.join(PROJECT_ROOT, "node_modules/expo/bin/cli"), "config", "--type", "public", "--json",
+    ], { cwd: PROJECT_ROOT, env, encoding: "utf8" }));
+    const resolvedAndroidRuntime = resolved.android?.runtimeVersion ?? resolved.runtimeVersion;
+    if (resolvedAndroidRuntime !== (explicitRuntime ?? androidRuntimeVersion)
+        || resolved.runtimeVersion !== (explicitRuntime ?? expectedIosRuntimeVersion)) {
+      failures.push(`Expo 实际运行时解析不一致：override=${explicitRuntime ?? "none"}`);
+    }
+  }
 
   for (const profileName of ["development", "preview", "production"]) {
     const profile = easBuildProfiles[profileName];

@@ -165,6 +165,7 @@
       }
     },
     "android": {
+      "runtimeVersion": "1.0.8",
       "package": "com.hbweb.expo",
       "versionCode": 17,
       "adaptiveIcon": {
