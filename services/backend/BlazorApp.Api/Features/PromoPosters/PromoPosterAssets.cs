@@ -46,7 +46,7 @@ public static class PromoPosterAssets
         if (char.IsControl(ch) || char.IsSurrogate(ch)) return false;
         var font = style switch
         {
-            PromoPosterStyle.Classic or PromoPosterStyle.LowInk => ArchivoBold,
+            PromoPosterStyle.Classic or PromoPosterStyle.LowInk or PromoPosterStyle.Christmas or PromoPosterStyle.Halloween => ArchivoBold,
             _ => BricolageBold,
         };
         return font.CharExists(ch);

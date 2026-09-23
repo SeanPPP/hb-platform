@@ -10,6 +10,7 @@ export interface LocalSupplierInvoiceListDto {
   inboundDate?: string
   totalAmount?: number
   receivedTotalAmount?: number
+  isProductChecked?: boolean
   flowStatus?: number
   inboundStatus?: number
   createdAt: string
