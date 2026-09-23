@@ -1040,6 +1040,59 @@ namespace BlazorApp.Shared.DTOs
     }
 
     /// <summary>
+    /// 单个分店的中国货（全部中国供应商）销售合计。
+    /// 与中国供应商排行同源同口径；同期覆盖同期期间的全部中国供应商，不只限本期上榜的供应商。
+    /// 不含客单数：同一张小票会同时买多个中国供应商的商品，跨供应商相加会重复计数。
+    /// </summary>
+    public class ChinaSupplierBranchTotalDto
+    {
+        /// <summary>统计开始日期</summary>
+        public DateTime StartDate { get; set; }
+
+        /// <summary>统计结束日期</summary>
+        public DateTime EndDate { get; set; }
+
+        /// <summary>分店代码</summary>
+        public string BranchCode { get; set; } = string.Empty;
+
+        /// <summary>分店名称</summary>
+        public string BranchName { get; set; } = string.Empty;
+
+        /// <summary>本期中国货销售额</summary>
+        public decimal TotalAmount { get; set; }
+
+        /// <summary>本期中国货销售数量</summary>
+        public int TotalQuantity { get; set; }
+
+        /// <summary>本期在该分店有销售的中国供应商数</summary>
+        public int SupplierCount { get; set; }
+
+        /// <summary>本期毛利；任一参与统计行缺少成本时为 null</summary>
+        public decimal? GrossProfit { get; set; }
+
+        /// <summary>本期毛利率；任一参与统计行缺少成本时为 null</summary>
+        public decimal? GrossMarginRate { get; set; }
+
+        /// <summary>当前期成本状态：Complete、Missing 或 NoActivity。</summary>
+        public string CostStatus { get; set; } = "NoActivity";
+
+        /// <summary>同期中国货销售额；未传同期日期时为 null</summary>
+        public decimal? CompareTotalAmount { get; set; }
+
+        /// <summary>同期中国货销售数量；未传同期日期时为 null</summary>
+        public int? CompareTotalQuantity { get; set; }
+
+        /// <summary>同期毛利；任一参与统计行缺少成本时为 null</summary>
+        public decimal? CompareGrossProfit { get; set; }
+
+        /// <summary>同期毛利率；任一参与统计行缺少成本时为 null</summary>
+        public decimal? CompareGrossMarginRate { get; set; }
+
+        /// <summary>同期成本状态：Complete、Missing 或 NoActivity。</summary>
+        public string CompareCostStatus { get; set; } = "NoActivity";
+    }
+
+    /// <summary>
     /// 分页的带折扣信息销售商品明细 DTO
     /// </summary>
     public class PagedSalesProductDetailWithDiscountDto

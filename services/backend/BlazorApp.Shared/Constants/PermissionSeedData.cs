@@ -65,6 +65,8 @@ namespace BlazorApp.Shared.Constants
                 new(Permissions.SalesDashboard.LocalProductAnalysisView, "查看澳洲本地商品分析", "销售看板", "Web 页面 /executive-sales-intelligence/local-product-sales-analysis - 查看澳洲本地商品的进货与销售表现"),
                 new(Permissions.SalesDashboard.PurchaseAmountView, "查看进货金额看板", "销售看板", "Web 页面 /executive-sales-intelligence/purchase-amount-dashboard - 查看各分店仓库订单、本地供应商进货金额及营业额"),
                 new(Permissions.SalesDashboard.LocalSupplierPurchaseSalesView, "查看分店进货销量分析", "销售看板", "Web 页面 /executive-sales-intelligence/purchase-sales-analysis「分店进货销量分析」标签 - 按分店和供应商查看最近进货、逐日销量图与售出比"),
+                new(Permissions.SalesDashboard.KfcRestockSignalView, "查看 KFC 补货信号", "销售看板", "报告页面 /reports/kfc-uncle-bills/ - 查看 Uncle Bills (KFC) 的畅销、预测、库存缺口与进销累计，只能看自己关联的门店"),
+                new(Permissions.SalesDashboard.KfcRestockSignalAllStores, "查看 KFC 补货信号全部门店", "销售看板", "报告页面 /reports/kfc-uncle-bills/ - 在「查看 KFC 补货信号」基础上查看全部门店的数据与全链汇总"),
             };
 
         private static IReadOnlyList<string> AttendanceSelfServicePermissionCodes { get; } =
@@ -262,6 +264,7 @@ namespace BlazorApp.Shared.Constants
                 // 显示名与 SalesDashboard.ProductMovement.View 区分开，避免角色配置页出现两个同名权限。
                 new(Permissions.Reports.ProductMovementView, "查看供应商与分店销售明细", "报表", "Web 页面 /warehouse/products/:code/records 销售分析、移动端「报表」与销售看板供应商/分店销售明细接口 - 查看跨分店供应商与商品销售明细"),
                 new(Permissions.StoreProducts.View, "查看分店商品", "分店商品管理", "Web 页面 /pos-admin/store-product-price 与移动端「商品查询」「商品洞察」- 查看分店商品价格"),
+                new(Permissions.SeasonalProductInsights.View, "查看季节商品查询", "分店商品管理", "移动端「季节商品查询」- 按货号/条码查看本店与其他分店的累计进货、累计销量和理论存货"),
                 new(Permissions.StoreProducts.Create, "创建分店商品", "分店商品管理", "Web 页面 /pos-admin/store-product-price - 创建分店商品价格"),
                 new(Permissions.StoreProducts.Edit, "编辑分店商品", "分店商品管理", "Web 页面 /pos-admin/store-product-price - 编辑分店商品价格"),
                 new(Permissions.StoreProducts.PriceUpdates, "处理价格更新通知", "分店商品管理", "移动端「价格更新」- 查看本店价格更新与换标签通知，按仓库价更新本店零售价/折扣，打印或标记标签"),
@@ -347,6 +350,8 @@ namespace BlazorApp.Shared.Constants
                 new(Permissions.AustralianSuppliers.View, "查看澳洲供应商", "澳洲供应商", "Web 页面 /pos-admin/suppliers - 查看澳洲供应商分页列表"),
                 new(Permissions.AustralianSuppliers.Edit, "编辑澳洲供应商", "澳洲供应商", "Web 页面 /pos-admin/suppliers - 新增、编辑、启停澳洲供应商并与 HQ 同步"),
                 new(Permissions.Store.ManageOperations, "管理分店运营", "分店运营", "Web 页面 /pos-admin/cash-register-users - 管理收银用户条码"),
+                new(Permissions.CashRegisterUsers.MobileManage, "移动端管理收银用户条码", "分店运营", "移动端「收银用户条码」- 查看、创建、更新和启停可管理分店的老收银系统员工条码"),
+                new(Permissions.CashRegisterUsers.MobilePrint, "移动端打印收银用户条码", "分店运营", "移动端「收银用户条码」- 查看可管理分店的老收银系统员工条码，用蓝牙标签机打印并累计打印次数"),
                 new(Permissions.System.ViewLogs, "查看日志", "系统管理", "Web 页面 /system/center-logs - 查看系统中心日志"),
                 new(Permissions.System.ManageScheduledTasks, "管理定时任务", "系统管理", "Web 页面 /system/scheduled-statistics - 切换定时任务调度实例和运行开关"),
                 new(Permissions.System.ManageSettings, "管理设置", "系统管理", "Web 页面 /system/invoice-email-settings、/system/payment-terminal-settings、/system/emergency-login-keys - 管理发票邮箱、支付终端与紧急登录密钥"),

@@ -6,6 +6,7 @@ using System.Net;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using BlazorApp.Shared.Constants;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -13,7 +14,7 @@ namespace BlazorApp.Api.Controllers.React
 {
     [ApiController]
     [Route("api/react/v1/image-proxy")]
-    [Authorize(Roles = "Admin,WarehouseManager,WarehouseStaff")]
+    [Authorize]
     public class ReactImageProxyController : ControllerBase
     {
         private const int MaxImageBytes = 8 * 1024 * 1024;
@@ -63,6 +64,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpGet]
+        [Authorize(Roles = "Admin,WarehouseManager,WarehouseStaff")]
         public async Task<IActionResult> Get([FromQuery] string url)
         {
             if (string.IsNullOrWhiteSpace(url))
@@ -93,7 +95,9 @@ namespace BlazorApp.Api.Controllers.React
 
             try
             {
-                using var timeoutCts = new CancellationTokenSource(ProxyTimeout);
+                // 浏览器取消导出时立即停止上游下载；代理自身仍有独立的超时上限。
+                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(HttpContext.RequestAborted);
+                timeoutCts.CancelAfter(ProxyTimeout);
                 using var resp = await _proxyClient.SendAsync(
                     req,
                     HttpCompletionOption.ResponseHeadersRead,
@@ -122,6 +126,10 @@ namespace BlazorApp.Api.Controllers.React
                 Response.Headers["X-Content-Type-Options"] = "nosniff";
                 return File(bytes, contentType);
             }
+            catch (OperationCanceledException) when (HttpContext.RequestAborted.IsCancellationRequested)
+            {
+                return new EmptyResult();
+            }
             catch (OperationCanceledException)
             {
                 return StatusCode(504, "image proxy timeout");
@@ -135,6 +143,11 @@ namespace BlazorApp.Api.Controllers.React
                 return BadRequest("image too large");
             }
         }
+
+        // 销售明细仅需读取相同白名单和图片校验下的商品缩略图。
+        [HttpGet("sales-detail")]
+        [Authorize(Policy = Permissions.SalesDashboard.SalesDetailView)]
+        public Task<IActionResult> GetSalesDetail([FromQuery] string url) => Get(url);
 
         private static bool IsAllowedImageHost(Uri uri)
         {

@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { StyleSheet, View } from "react-native";
 import { ActivityIndicator, Button, Text } from "react-native-paper";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
@@ -18,7 +19,7 @@ interface OfflineCatalogStatusRowProps {
  * 离线数据状态行：一行灰字告诉员工本地快照的更新时间与件数，
  * 同步中显示步骤与进度，失败显示原因并可重试。只在离线资格会话下渲染。
  */
-export function OfflineCatalogStatusRow({
+export const OfflineCatalogStatusRow = memo(function OfflineCatalogStatusRow({
   storeCode,
   activeMeta,
   refresh,
@@ -73,7 +74,7 @@ export function OfflineCatalogStatusRow({
       )}
     </View>
   );
-}
+});
 
 const styles = StyleSheet.create({
   container: {

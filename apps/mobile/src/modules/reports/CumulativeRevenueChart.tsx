@@ -29,20 +29,12 @@ function getNiceScale(maxValue: number) {
 }
 
 function formatAxisMoney(value: number) {
-  if (value === 0) return "$0";
-  if (value >= 1_000) {
-    const thousands = value / 1_000;
-    return `$${Number.isInteger(thousands) ? thousands : thousands.toFixed(1)}k`;
-  }
-  return `$${value}`;
+  return `$${Math.round(value).toLocaleString("en-AU")}`;
 }
 
 /** 粗估 SVG 文本宽度：全角字符按字号，其余按 0.56 倍字号，用来给标签垫白底。 */
 function estimateTextWidth(text: string, fontSize: number) {
-  return [...text].reduce(
-    (width, char) => width + (/[　-鿿＀-￯]/.test(char) ? fontSize : fontSize * 0.56),
-    0,
-  );
+  return [...text].reduce((width, char) => width + (/[　-鿿＀-￯]/.test(char) ? fontSize : fontSize * 0.56), 0);
 }
 
 function getHourLabelStep(span: number) {
@@ -74,19 +66,23 @@ export function CumulativeRevenueChart({
     if (next !== width) setWidth(next);
   };
 
-  const plotLeft = MARGIN.left;
-  const plotRight = Math.max(plotLeft + 1, width - MARGIN.right);
   const plotTop = MARGIN.top;
   const plotBottom = CHART_HEIGHT - MARGIN.bottom;
   const span = Math.max(1, model.endHour - model.startHour);
   const scale = getNiceScale(model.maxValue);
+  const gridValues: number[] = [];
+  for (let value = 0; value <= scale.max; value += scale.step) gridValues.push(value);
+  const axisLabelWidth = Math.max(...gridValues.map((value) => estimateTextWidth(formatAxisMoney(value), 10)));
+  // 轴标签显示完整千位金额，左边距随最长标签增加，避免金额被图表裁掉。
+  const plotLeft = Math.max(MARGIN.left, Math.ceil(axisLabelWidth) + 10);
+  const plotRight = Math.max(plotLeft + 1, width - MARGIN.right);
   const x = (hour: number) => plotLeft + ((hour - model.startHour) / span) * (plotRight - plotLeft);
   const y = (value: number) => plotBottom - (value / scale.max) * (plotBottom - plotTop);
   const toPath = (points: readonly CumulativePoint[]) =>
-    points.map((point, index) => `${index === 0 ? "M" : "L"}${x(point.hour).toFixed(1)},${y(point.value).toFixed(1)}`).join(" ");
+    points
+      .map((point, index) => `${index === 0 ? "M" : "L"}${x(point.hour).toFixed(1)},${y(point.value).toFixed(1)}`)
+      .join(" ");
 
-  const gridValues: number[] = [];
-  for (let value = 0; value <= scale.max; value += scale.step) gridValues.push(value);
   const labelStep = getHourLabelStep(span);
   const hourLabels: number[] = [];
   for (let hour = model.startHour; hour <= model.endHour; hour += labelStep) hourLabels.push(hour);
@@ -100,7 +96,9 @@ export function CumulativeRevenueChart({
   // 当期曲线高过去年终点时（全天领先），标签放到终点下方，避免盖住当期曲线。
   const currentPeak = Math.max(model.liveTail?.value ?? 0, lastCurrent?.value ?? 0);
   const endLabelY = compareEnd
-    ? (currentPeak > compareEnd.value ? y(compareEnd.value) + 16 : y(compareEnd.value) - 8)
+    ? currentPeak > compareEnd.value
+      ? y(compareEnd.value) + 16
+      : y(compareEnd.value) - 8
     : 0;
 
   return (
@@ -142,14 +140,24 @@ export function CumulativeRevenueChart({
               key={`gap-${index}`}
               points={[
                 ...region.points.map((point) => `${x(point.hour).toFixed(1)},${y(point.current).toFixed(1)}`),
-                ...[...region.points].reverse().map((point) => `${x(point.hour).toFixed(1)},${y(point.compare).toFixed(1)}`),
+                ...[...region.points]
+                  .reverse()
+                  .map((point) => `${x(point.hour).toFixed(1)},${y(point.compare).toFixed(1)}`),
               ].join(" ")}
               fill={region.tone === "ahead" ? COLORS.ahead : COLORS.behind}
             />
           ))}
 
           {showCutoffMarker ? (
-            <Line x1={cutoffX} x2={cutoffX} y1={plotTop - 4} y2={plotBottom} stroke={COLORS.cutoff} strokeWidth={1} opacity={0.45} />
+            <Line
+              x1={cutoffX}
+              x2={cutoffX}
+              y1={plotTop - 4}
+              y2={plotBottom}
+              stroke={COLORS.cutoff}
+              strokeWidth={1}
+              opacity={0.45}
+            />
           ) : null}
 
           <Path
@@ -191,10 +199,24 @@ export function CumulativeRevenueChart({
           ) : null}
 
           {markerCurrent && markerCompare ? (
-            <Circle cx={cutoffX} cy={y(markerCompare.value)} r={3.4} fill="#FFFFFF" stroke={COLORS.compare} strokeWidth={1.6} />
+            <Circle
+              cx={cutoffX}
+              cy={y(markerCompare.value)}
+              r={3.4}
+              fill="#FFFFFF"
+              stroke={COLORS.compare}
+              strokeWidth={1.6}
+            />
           ) : null}
           {markerCurrent ? (
-            <Circle cx={cutoffX} cy={y(markerCurrent.value)} r={4.2} fill={COLORS.current} stroke="#FFFFFF" strokeWidth={2} />
+            <Circle
+              cx={cutoffX}
+              cy={y(markerCurrent.value)}
+              r={4.2}
+              fill={COLORS.current}
+              stroke="#FFFFFF"
+              strokeWidth={2}
+            />
           ) : null}
 
           {compareEnd ? (
@@ -210,13 +232,7 @@ export function CumulativeRevenueChart({
                 fill="#FFFFFF"
                 opacity={0.92}
               />
-              <SvgText
-                x={plotRight}
-                y={endLabelY}
-                fontSize={10}
-                fill={COLORS.endLabel}
-                textAnchor="end"
-              >
+              <SvgText x={plotRight} y={endLabelY} fontSize={10} fill={COLORS.endLabel} textAnchor="end">
                 {compareFullDayLabel}
               </SvgText>
             </>

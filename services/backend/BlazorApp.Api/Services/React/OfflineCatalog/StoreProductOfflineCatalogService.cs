@@ -72,44 +72,68 @@ namespace BlazorApp.Api.Services.React.OfflineCatalog
             CancellationToken cancellationToken)
         {
             var normalizedStoreCode = storeCode.Trim();
-            var target = await _cache.GetOrBuildCurrentAsync(
-                normalizedStoreCode,
-                token => BuildIndexInOwnScopeAsync(normalizedStoreCode, token),
-                cancellationToken);
-            if (target is null)
-            {
-                return null;
-            }
-
             var normalizedBase = string.IsNullOrWhiteSpace(baseCatalogVersion) ? null : baseCatalogVersion.Trim();
-            if (normalizedBase is null)
+            for (var attempt = 0; attempt < 3; attempt++)
             {
-                var lease = _cache.CreateFullLease(target);
-                return BuildPlan(target, OfflineCatalogSyncModes.Full, null, lease.LeaseId, null);
+                var target = await _cache.GetOrBuildCurrentAsync(
+                    normalizedStoreCode,
+                    token => BuildIndexInOwnScopeAsync(normalizedStoreCode, token),
+                    cancellationToken);
+                if (target is null)
+                {
+                    return null;
+                }
+
+                if (normalizedBase is null)
+                {
+                    var lease = _cache.TryCreateFullLease(target);
+                    if (lease is not null)
+                    {
+                        return BuildPlan(target, OfflineCatalogSyncModes.Full, null, lease.LeaseId, null);
+                    }
+
+                    continue;
+                }
+
+                if (string.Equals(normalizedBase, target.CatalogVersion, StringComparison.Ordinal))
+                {
+                    return BuildPlan(target, OfflineCatalogSyncModes.NoChange, normalizedBase, null, null);
+                }
+
+                var baseline = _cache.GetByVersion(normalizedStoreCode, normalizedBase);
+                if (baseline is null)
+                {
+                    // 基线不在保留窗口内时不能猜测删除项，明确要求客户端回退全量。
+                    var lease = _cache.TryCreateFullLease(target);
+                    if (lease is not null)
+                    {
+                        return BuildPlan(target, OfflineCatalogSyncModes.Full, normalizedBase, lease.LeaseId, null);
+                    }
+
+                    continue;
+                }
+
+                var operations = target.GetDeltaOperations(baseline);
+                if (operations.Count > DeltaMaxOperations)
+                {
+                    var lease = _cache.TryCreateFullLease(target);
+                    if (lease is not null)
+                    {
+                        return BuildPlan(target, OfflineCatalogSyncModes.Full, normalizedBase, lease.LeaseId, operations.Count);
+                    }
+
+                    continue;
+                }
+
+                var deltaLease = _cache.TryCreateDeltaLease(baseline, target, operations);
+                if (deltaLease is not null)
+                {
+                    return BuildPlan(target, OfflineCatalogSyncModes.Delta, normalizedBase, deltaLease.LeaseId, operations.Count);
+                }
             }
 
-            if (string.Equals(normalizedBase, target.CatalogVersion, StringComparison.Ordinal))
-            {
-                return BuildPlan(target, OfflineCatalogSyncModes.NoChange, normalizedBase, null, null);
-            }
-
-            var baseline = _cache.GetByVersion(normalizedStoreCode, normalizedBase);
-            if (baseline is null)
-            {
-                // 基线不在保留窗口内时不能猜测删除项，明确要求客户端回退全量。
-                var lease = _cache.CreateFullLease(target);
-                return BuildPlan(target, OfflineCatalogSyncModes.Full, normalizedBase, lease.LeaseId, null);
-            }
-
-            var operations = target.GetDeltaOperations(baseline);
-            if (operations.Count > DeltaMaxOperations)
-            {
-                var lease = _cache.CreateFullLease(target);
-                return BuildPlan(target, OfflineCatalogSyncModes.Full, normalizedBase, lease.LeaseId, operations.Count);
-            }
-
-            var deltaLease = _cache.CreateDeltaLease(baseline, target, operations);
-            return BuildPlan(target, OfflineCatalogSyncModes.Delta, normalizedBase, deltaLease.LeaseId, operations.Count);
+            // 构建与计划计算期间版本反复被淘汰；让客户端稍后重试，不能下发失效租约。
+            throw new OfflineCatalogCapacityBusyException();
         }
 
         public async Task<OfflineCatalogPageDto?> GetPageAsync(

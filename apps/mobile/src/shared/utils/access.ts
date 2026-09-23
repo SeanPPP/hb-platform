@@ -29,6 +29,15 @@ export const PERMISSIONS = {
     ManagePos: "Users.ManagePosTerminalPermissions",
     ManagePosTerminalPermissions: "Users.ManagePosTerminalPermissions",
   },
+  CashRegisterUsers: {
+    // 移动端「收银用户条码」独立权限：管理（查看/创建/更新/启停）与打印（查看/打印计数）分开授予。
+    MobileManage: "CashRegisterUsers.MobileManage",
+    MobilePrint: "CashRegisterUsers.MobilePrint",
+  },
+  SeasonalProductInsights: {
+    // 移动端「季节商品查询」独立权限：会展示其他分店库存，不借用商品查询的 StoreProducts.View。
+    View: "SeasonalProductInsights.View",
+  },
   LocalPurchase: {
     View: "LocalPurchase.View",
     Edit: "LocalPurchase.Edit",

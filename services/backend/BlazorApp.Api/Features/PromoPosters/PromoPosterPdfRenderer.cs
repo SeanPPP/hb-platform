@@ -131,6 +131,8 @@ public static class PromoPosterPdfRenderer
         {
             PromoPosterStyle.Classic => (ClassicPosterPainter.For(spec.Size).W, ClassicPosterPainter.For(spec.Size).H),
             PromoPosterStyle.Modern => (ModernPosterPainter.For(spec.Size).W, ModernPosterPainter.For(spec.Size).H),
+            PromoPosterStyle.Christmas => (ChristmasPosterPainter.For(spec.Size).W, ChristmasPosterPainter.For(spec.Size).H),
+            PromoPosterStyle.Halloween => (HalloweenPosterPainter.For(spec.Size).W, HalloweenPosterPainter.For(spec.Size).H),
             _ => (LowInkPosterPainter.For(spec.Size).W, LowInkPosterPainter.For(spec.Size).H),
         };
         var scale = Math.Min(w / designW, h / designH);
@@ -143,6 +145,8 @@ public static class PromoPosterPdfRenderer
         {
             case PromoPosterStyle.Classic: ClassicPosterPainter.Paint(canvas, spec); break;
             case PromoPosterStyle.Modern: ModernPosterPainter.Paint(canvas, spec); break;
+            case PromoPosterStyle.Christmas: ChristmasPosterPainter.Paint(canvas, spec); break;
+            case PromoPosterStyle.Halloween: HalloweenPosterPainter.Paint(canvas, spec); break;
             default: LowInkPosterPainter.Paint(canvas, spec); break;
         }
         cb.RestoreState();

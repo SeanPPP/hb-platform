@@ -12,6 +12,7 @@ import {
 } from "../seasonal-cards/api";
 import { normalizeDeviceManagementListResponse } from "../device-management/api";
 import {
+  normalizeChinaSupplierBranchTotalsSnapshot,
   normalizeProductBranchRows,
   normalizeProductBranchReportSnapshot,
   normalizeProductPage,
@@ -1691,6 +1692,33 @@ async function run() {
     true,
     "每个审核供应商都必须覆盖真实的 28 家分店",
   );
+
+  // 分店中国货合计与真实接口同形逐店返回；全店、单店范围下逐店之和都必须等于中国供应商排行合计。
+  const assertChinaBranchTotalsConserved = async (label: string, query: Record<string, unknown>) => {
+    const rankPayload = await request("GET", "/react/v1/dashboard/china-supplier-sales-rank", undefined, query);
+    const branchPayload = await request("GET", "/react/v1/dashboard/china-supplier-branch-totals", undefined, query);
+    const branchSnapshot = normalizeChinaSupplierBranchTotalsSnapshot(branchPayload);
+    assert.equal(branchSnapshot.isComplete, true, `${label}：必须声明 Fresh 统计批次`);
+    assert.equal(
+      branchSnapshot.cacheVersion,
+      normalizeSupplierReportSnapshot(rankPayload).cacheVersion,
+      `${label}：必须与供应商排行属于同一统计批次`,
+    );
+    const rankTotal = normalizeSupplierRows(rankPayload).reduce((sum, row) => sum + row.revenue, 0);
+    const branchTotal = branchSnapshot.data.reduce((sum, row) => sum + row.revenue, 0);
+    assert.equal(Math.round(branchTotal * 100), Math.round(rankTotal * 100), `${label}：逐店之和必须等于排行合计`);
+    return branchSnapshot.data;
+  };
+  const allChinaBranches = await assertChinaBranchTotalsConserved("全店中国货合计守恒", {});
+  assert.equal(allChinaBranches.length, IOS_REVIEW_STORES.length, "全店范围必须逐店返回 28 行");
+  assert.ok(
+    allChinaBranches.every((row) => row.costStatus === "Complete" && row.grossProfit !== null),
+    "审核分店中国货合计必须带完整成本，顶部毛利率才能验收",
+  );
+  const singleChinaBranches = await assertChinaBranchTotalsConserved("单店中国货合计守恒", {
+    branchCodes: ["REV002"],
+  });
+  assert.deepEqual(singleChinaBranches.map((row) => row.branchCode), ["REV002"], "单店范围只能返回该店");
   assert.equal(
     supplierPayload.items.every((item: Record<string, unknown>) =>
       [

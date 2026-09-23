@@ -43,6 +43,7 @@ import {
 import { useCartSummary } from "@/modules/shop/use-cart-summary";
 import { useProductGrades } from "@/modules/shop/use-product-grades";
 import { isLocationLookupEnabled } from "@/modules/shop/location-lookup";
+import { resolveHomeProductColumns } from "@/modules/shop/home-layout";
 import { useProducts } from "@/modules/shop/use-products";
 import { useStores } from "@/modules/shop/use-stores";
 import { useUpdateCartQuantity } from "@/modules/shop/use-update-cart-quantity";
@@ -65,6 +66,7 @@ import {
 } from "@/modules/scanner/camera-sheet-session";
 import { useHidBarcodeScanner } from "@/modules/scanner/use-hid-barcode-scanner";
 import { useScanResult } from "@/modules/scanner/use-scan-result";
+import { useVisibleSearchScannerInput } from "@/modules/scanner/use-visible-search-scanner-input";
 import { ScanResultPicker } from "@/components/ui/ScanResultPicker";
 import type {
   StoreOrderCategoryNode,
@@ -103,7 +105,8 @@ function normalizeStoreCode(value: string | null | undefined) {
 export default function Home() {
   const isFocused = useIsFocused();
   const { t, language } = useAppTranslation(["home", "common", "supplyNotice"]);
-  const { height: windowHeight } = useWindowDimensions();
+  const { height: windowHeight, width: windowWidth } = useWindowDimensions();
+  const productColumns = resolveHomeProductColumns(windowWidth);
   const router = useRouter();
   const {
     stores,
@@ -420,11 +423,26 @@ export default function Home() {
       }
     },
   });
+  const handleScanBarcode = scanResult.handleBarcode;
+  const lastHidScanRef = useRef<{ barcode: string; time: number } | null>(
+    null,
+  );
+  const handleHidScan = useCallback(
+    async (barcode: string) => {
+      const now = Date.now();
+      const lastScan = lastHidScanRef.current;
+      // 同一次扫码可能同时被原生按键监听和可见搜索框收到；加购模式无去重，必须在此拦截避免重复加购。
+      if (lastScan?.barcode === barcode && now - lastScan.time < 100) {
+        return;
+      }
+      lastHidScanRef.current = { barcode, time: now };
+      await handleScanBarcode(barcode, "hid");
+    },
+    [handleScanBarcode],
+  );
   const hidScanner = useHidBarcodeScanner({
     enabled: isFocused,
-    onScan: async (barcode) => {
-      await scanResult.handleBarcode(barcode, "hid");
-    },
+    onScan: handleHidScan,
   });
   const pauseHiddenScannerFocus = useCallback(() => {
     if (resumeHiddenScannerFocusTimerRef.current) {
@@ -737,6 +755,27 @@ export default function Home() {
     setSearchInput(scanFeedback.barcode);
     applySearchPageAction({ type: "apply", input: scanFeedback.barcode });
   }, [applySearchPageAction, scanFeedback]);
+  const handleVisibleSearchScan = useCallback(
+    (barcode: string) => {
+      // 扫码不作为文字关键字：清空搜索框（原生文本由 hook 清空），避免与旧关键字拼接。
+      setSearchInput("");
+      void handleHidScan(barcode);
+    },
+    [handleHidScan],
+  );
+  const visibleSearchScanner = useVisibleSearchScannerInput<
+    React.ElementRef<typeof Searchbar>
+  >({
+    value: searchInput,
+    onChangeText: handleSearchInputChange,
+    onScannerInput: handleVisibleSearchScan,
+  });
+  const { blurSearchInput } = visibleSearchScanner;
+  const handleSearchSubmit = useCallback(() => {
+    // 提交后释放焦点，让隐藏扫码输入框恢复接收下一次扫码。
+    blurSearchInput();
+    handleApplySearch();
+  }, [blurSearchInput, handleApplySearch]);
   const handleClearSearchAndScan = useCallback(() => {
     setScannedProducts(null);
     setScannedProductTraceIds({});
@@ -1036,15 +1075,16 @@ export default function Home() {
       >
         <View style={styles.searchInputWrap}>
           <Searchbar
+            ref={visibleSearchScanner.searchInputRef}
             placeholder={t(
               locationLookupEnabled
                 ? "locationSearchPlaceholder"
                 : "searchPlaceholder",
             )}
             value={searchInput}
-            onChangeText={handleSearchInputChange}
-            onSubmitEditing={handleApplySearch}
-            onIconPress={handleApplySearch}
+            onChangeText={visibleSearchScanner.handleChangeText}
+            onSubmitEditing={handleSearchSubmit}
+            onIconPress={handleSearchSubmit}
             onFocus={handleSearchFocus}
             onBlur={handleSearchBlur}
             style={styles.searchInput}
@@ -1226,8 +1266,9 @@ export default function Home() {
       <FlatList
         style={styles.content}
         data={displayProducts}
+        key={`product-grid-${productColumns}`}
         keyExtractor={(item) => item.productCode}
-        numColumns={3}
+        numColumns={productColumns}
         columnWrapperStyle={styles.columnWrapper}
         contentContainerStyle={productListContentStyle}
         keyboardShouldPersistTaps="handled"

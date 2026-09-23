@@ -64,6 +64,8 @@ public sealed class LinklyCloudTerminalClient(
     ILinklyPaymentAttemptContextAccessor? linklyPaymentAttemptContextAccessor = null) : ILinklyCloudTerminalClient
 {
     private static readonly TimeSpan DefaultPollInterval = TimeSpan.FromSeconds(2);
+    // 取消后仍需等待原交易结果时的让出间隔；此时不能再用已取消的令牌等待，否则会同步返回而空转。
+    private static readonly TimeSpan CancelledResultWaitInterval = TimeSpan.FromMilliseconds(50);
     private const string ProcessorName = "ANZ";
     private readonly TimeSpan _pollInterval = pollInterval.GetValueOrDefault(DefaultPollInterval);
 
@@ -695,7 +697,13 @@ public sealed class LinklyCloudTerminalClient(
             }
 
             var delay = _pollInterval > TimeSpan.Zero ? _pollInterval : TimeSpan.FromMilliseconds(50);
-            var completed = await Task.WhenAny(transactionTask, Task.Delay(delay, cancellationToken));
+            // 关键：令牌取消后 Task.Delay(delay, cancellationToken) 与 Task.WhenAny 都会同步返回；未注入对话框服务时
+            // PresentDirectStatusAsync 也同步返回 null，循环便成了不让出线程的空转，还会把排在同一同步上下文里的
+            // POST 续体饿死而活锁。取消后改用不可取消的短等待让出线程；有对话框时下一轮仍由它立即抛出取消。
+            var wait = cancellationToken.IsCancellationRequested
+                ? Task.Delay(CancelledResultWaitInterval)
+                : Task.Delay(delay, cancellationToken);
+            var completed = await Task.WhenAny(transactionTask, wait);
             if (completed == transactionTask)
             {
                 return await transactionTask;

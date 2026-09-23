@@ -557,6 +557,14 @@
       "name": "查看分店进货销量分析",
       "description": "Web 页面 /executive-sales-intelligence/purchase-sales-analysis「分店进货销量分析」标签 - 按分店和供应商查看最近进货、逐日销量图与售出比"
     },
+    "SalesDashboard.KfcRestockSignal.View": {
+      "name": "查看 KFC 补货信号",
+      "description": "报告页面 /reports/kfc-uncle-bills/ - 查看 Uncle Bills (KFC) 的畅销、预测、库存缺口与进销累计，只能看自己关联的门店"
+    },
+    "SalesDashboard.KfcRestockSignal.AllStores": {
+      "name": "查看 KFC 补货信号全部门店",
+      "description": "报告页面 /reports/kfc-uncle-bills/ - 在「查看 KFC 补货信号」基础上查看全部门店的数据与全链汇总"
+    },
     "SalesDashboard.PurchaseAmount.View": {
       "name": "查看进货金额看板",
       "description": "Web 页面 /executive-sales-intelligence/purchase-amount-dashboard - 查看各分店仓库订单、本地供应商进货金额及营业额"
@@ -584,6 +592,18 @@
     "Store.ManageOperations": {
       "name": "管理分店运营",
       "description": "Web 页面 /pos-admin/cash-register-users - 管理收银用户条码"
+    },
+    "CashRegisterUsers.MobileManage": {
+      "name": "移动端管理收银用户条码",
+      "description": "移动端「收银用户条码」- 查看、创建、更新和启停可管理分店的老收银系统员工条码"
+    },
+    "CashRegisterUsers.MobilePrint": {
+      "name": "移动端打印收银用户条码",
+      "description": "移动端「收银用户条码」- 查看可管理分店的老收银系统员工条码，用蓝牙标签机打印并累计打印次数"
+    },
+    "SeasonalProductInsights.View": {
+      "name": "查看季节商品查询",
+      "description": "移动端「季节商品查询」- 按货号/条码查看本店与其他分店的累计进货、累计销量和理论存货"
     },
     "StoreProducts.Create": {
       "name": "创建分店商品",

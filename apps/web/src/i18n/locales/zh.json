@@ -715,6 +715,7 @@
     "exponential": "指数",
     "step": "阶梯",
     "refreshCurrentTab": "刷新当前页签",
+    "reorderTab": "拖动调整页签顺序：{{title}}",
     "pinTabsBar": "页签栏：已固定",
     "unpinTabsBar": "页签栏：未固定",
     "closeOtherTabs": "关闭其他页签",
@@ -3531,6 +3532,7 @@
         "dragCancel": "已取消移动{{column}}列。"
       },
       "receivedTotal": "已收总金额",
+      "isProductChecked": "是否检测商品",
       "flowStatus": "流程状态",
       "inboundStatus": "入库状态",
       "productKeyword": "商品关键词",
