@@ -7,6 +7,8 @@
         "style": "Style",
         "styleClassic": "Classic",
         "styleModern": "Modern",
+        "styleChristmas": "Christmas",
+        "styleHalloween": "Halloween",
         "size": "Size",
         "impose": "Fit smaller sizes onto A4 (with cut lines)",
         "imposeA4Hint": "A4 posters print one per page; no imposition needed",

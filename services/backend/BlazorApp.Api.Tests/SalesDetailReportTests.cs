@@ -46,6 +46,39 @@ public sealed class SalesDetailReportTests : IDisposable
     }
 
     [Fact]
+    public async Task 商品分页支持二百和五百条且保持总数及页边界()
+    {
+        var day = new DateTime(2026, 9, 23);
+        var codes = Enumerable.Range(1, 501).Select(index => $"P-{index:D3}").ToArray();
+        await _localDb.Insertable(codes.Select(code => new Product
+        {
+            UUID = $"uuid-{code}", ProductCode = code, ProductName = code, ItemNumber = $"item-{code}",
+        }).ToList()).ExecuteCommandAsync();
+        await _localDb.Insertable(codes.Select(code => new ProductStoreDailySalesStatistic
+        {
+            Date = day, BranchCode = "S1", SupplierCode = "A1", ProductCode = code, ProductName = code,
+            TotalQuantity = 1, TotalAmount = 10m, OrderCount = 1, CostSource = "Test", UpdateTime = DateTime.UtcNow,
+        }).ToList()).ExecuteCommandAsync();
+        await SeedStateAsync(day);
+
+        var service = CreateService();
+        var first = await service.GetSalesDetailReportAsync(Range(day, day), SalesDetailKind.Australia,
+            new() { "S1" }, pageSize: 200, sections: new[] { SalesDetailSection.Products });
+        var last = await service.GetSalesDetailReportAsync(Range(day, day), SalesDetailKind.Australia,
+            new() { "S1" }, pageIndex: 3, pageSize: 200, sections: new[] { SalesDetailSection.Products });
+        var large = await service.GetSalesDetailReportAsync(Range(day, day), SalesDetailKind.Australia,
+            new() { "S1" }, pageSize: 500, sections: new[] { SalesDetailSection.Products });
+        var largeLast = await service.GetSalesDetailReportAsync(Range(day, day), SalesDetailKind.Australia,
+            new() { "S1" }, pageIndex: 2, pageSize: 500, sections: new[] { SalesDetailSection.Products });
+
+        Assert.Equal(501, first.Data!.Products!.Total);
+        Assert.Equal(200, first.Data.Products.Rows.Count);
+        Assert.Equal(101, last.Data!.Products!.Rows.Count);
+        Assert.Equal(500, large.Data!.Products!.Rows.Count);
+        Assert.Single(largeLast.Data!.Products!.Rows);
+    }
+
+    [Fact]
     public async Task 同一天本期同期仍各保留一份并按数量分页排序()
     {
         var day = new DateTime(2026, 7, 1);

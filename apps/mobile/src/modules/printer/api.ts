@@ -1,5 +1,6 @@
 import type { ProductDetail } from "@/modules/product-maintenance/types";
 import {
+  buildCashRegisterUserBarcodeLabelCommand,
   buildEmployeeCashierBarcodeLabelCommand,
 } from "@/modules/printer/cpcl-labels";
 import {
@@ -19,6 +20,7 @@ import { buildReceiptPrinterTestCommand } from "@/modules/printer/receipt";
 import { PrinterStorage } from "@/modules/printer/storage";
 import { usePrinterStore, useReceiptPrinterStore } from "@/modules/printer/state";
 import type {
+  CashRegisterUserBarcodeLabelPrintPayload,
   EmployeeCashierBarcodeLabelPrintPayload,
   PrinterDevice,
   ProductLabelPrintPayload,
@@ -636,4 +638,18 @@ export async function printEmployeeCashierBarcodeLabel(
   }
   // 员工条码复用标签打印机、蓝牙权限、GB18030 编码和现有单连接链路。
   return runLabelPrint(() => printRawCommand(buildEmployeeCashierBarcodeLabelCommand(payload)));
+}
+
+export async function printCashRegisterUserBarcodeLabel(
+  payload: CashRegisterUserBarcodeLabelPrintPayload
+) {
+  if (isIosReviewSessionActive()) {
+    return true;
+  }
+  const status = await getPrinterStatus();
+  if (status.supported && !status.enabled) {
+    throw new Error("Bluetooth is disabled.");
+  }
+  // 老收银系统员工条码与个人码共用标签打印机链路；CPCL 在 JS 生成，走已有原生 print，无需重建原生包。
+  return runLabelPrint(() => printRawCommand(buildCashRegisterUserBarcodeLabelCommand(payload)));
 }

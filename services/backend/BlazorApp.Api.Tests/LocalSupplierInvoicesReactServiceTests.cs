@@ -503,6 +503,153 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task GetGridDataAsync_商品检测状态按有效明细聚合并隔离订单()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-empty", "INV-EMPTY", new DateTime(2026, 1, 1));
+            await InsertInvoiceAsync("invoice-unchecked", "INV-UNCHECKED", new DateTime(2026, 1, 2));
+            await InsertInvoiceAsync("invoice-partial", "INV-PARTIAL", new DateTime(2026, 1, 3));
+            await InsertInvoiceAsync("invoice-complete", "INV-COMPLETE", new DateTime(2026, 1, 4));
+            await InsertInvoiceAsync("invoice-zero", "INV-ZERO", new DateTime(2026, 1, 5));
+            await InsertInvoiceAsync("invoice-deleted-only", "INV-DELETED", new DateTime(2026, 1, 6));
+            await InsertInvoiceAsync("invoice-mixed-deleted", "INV-MIXED", new DateTime(2026, 1, 7));
+            await InsertInvoiceAsync("invoice-isolated", "INV-ISOLATED", new DateTime(2026, 1, 8));
+
+            await _db.Insertable(new[]
+            {
+                new StoreLocalSupplierInvoiceDetails { DetailGUID = "detail-unchecked", InvoiceGUID = "invoice-unchecked", ExistingProductCount = null, IsDeleted = false },
+                new StoreLocalSupplierInvoiceDetails { DetailGUID = "detail-partial-checked", InvoiceGUID = "invoice-partial", ExistingProductCount = 1, IsDeleted = false },
+                new StoreLocalSupplierInvoiceDetails { DetailGUID = "detail-partial-unchecked", InvoiceGUID = "invoice-partial", ExistingProductCount = null, IsDeleted = false },
+                new StoreLocalSupplierInvoiceDetails { DetailGUID = "detail-complete-1", InvoiceGUID = "invoice-complete", ExistingProductCount = 1, IsDeleted = false },
+                new StoreLocalSupplierInvoiceDetails { DetailGUID = "detail-complete-2", InvoiceGUID = "invoice-complete", ExistingProductCount = 2, IsDeleted = false },
+                new StoreLocalSupplierInvoiceDetails { DetailGUID = "detail-zero", InvoiceGUID = "invoice-zero", ExistingProductCount = 0, IsDeleted = false },
+                new StoreLocalSupplierInvoiceDetails { DetailGUID = "detail-deleted-only", InvoiceGUID = "invoice-deleted-only", ExistingProductCount = 1, IsDeleted = true },
+                new StoreLocalSupplierInvoiceDetails { DetailGUID = "detail-mixed-deleted-valid", InvoiceGUID = "invoice-mixed-deleted", ExistingProductCount = 1, IsDeleted = false },
+                new StoreLocalSupplierInvoiceDetails { DetailGUID = "detail-mixed-deleted-null", InvoiceGUID = "invoice-mixed-deleted", ExistingProductCount = null, IsDeleted = true },
+                new StoreLocalSupplierInvoiceDetails { DetailGUID = "detail-isolated", InvoiceGUID = "invoice-isolated", ExistingProductCount = null, IsDeleted = false },
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().GetGridDataAsync(new GridRequestDto { StartRow = 0, PageSize = 20 });
+
+            Assert.True(result.Success, result.Message);
+            var checkedByInvoice = result.Items!.ToDictionary(item => item.InvoiceGUID, item => item.IsProductChecked);
+            Assert.False(checkedByInvoice["invoice-empty"]);
+            Assert.False(checkedByInvoice["invoice-unchecked"]);
+            Assert.False(checkedByInvoice["invoice-partial"]);
+            Assert.True(checkedByInvoice["invoice-complete"]);
+            Assert.True(checkedByInvoice["invoice-zero"]);
+            Assert.False(checkedByInvoice["invoice-deleted-only"]);
+            Assert.True(checkedByInvoice["invoice-mixed-deleted"]);
+            Assert.False(checkedByInvoice["invoice-isolated"]);
+        }
+
+        [Fact]
+        public async Task GetGridDataAsync_商品关键词不缩小检测聚合且遵守分页门店范围()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-keyword", "INV-KEYWORD", new DateTime(2026, 1, 10));
+            await InsertInvoiceAsync("invoice-page-first", "INV-PAGE-FIRST", new DateTime(2026, 1, 11));
+            await InsertInvoiceAsync("invoice-page-second", "INV-PAGE-SECOND", new DateTime(2026, 1, 12));
+            for (var index = 1; index <= 21; index++)
+            {
+                var invoiceGuid = $"invoice-page-extra-{index:00}";
+                await InsertInvoiceAsync(invoiceGuid, $"INV-PAGE-EXTRA-{index:00}", new DateTime(2026, 1, 20).AddDays(index));
+                await _db.Insertable(new StoreLocalSupplierInvoiceDetails
+                {
+                    DetailGUID = $"detail-page-extra-{index:00}",
+                    InvoiceGUID = invoiceGuid,
+                    ExistingProductCount = 1,
+                    IsDeleted = false,
+                }).ExecuteCommandAsync();
+            }
+            await _db.Insertable(new Store { StoreGUID = "store-guid-2", StoreCode = "S02", StoreName = "Melbourne Store", IsActive = true, IsDeleted = false }).ExecuteCommandAsync();
+            await _db.Insertable(new StoreLocalSupplierInvoice
+            {
+                InvoiceGUID = "invoice-other-store", StoreCode = "S02", SupplierCode = "SUP01", InvoiceNo = "INV-OTHER-STORE",
+                OrderDate = new DateTime(2026, 1, 13), CreatedAt = DateTime.UtcNow, IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new[]
+            {
+                new StoreLocalSupplierInvoiceDetails { DetailGUID = "detail-keyword-checked", InvoiceGUID = "invoice-keyword", ProductName = "MATCH-KEY", LastPurchasePrice = 1m, PurchasePrice = 2m, ExistingProductCount = 1, IsDeleted = false },
+                new StoreLocalSupplierInvoiceDetails { DetailGUID = "detail-keyword-unchecked", InvoiceGUID = "invoice-keyword", ProductName = "OTHER-NAME", LastPurchasePrice = 3m, PurchasePrice = 3m, ExistingProductCount = null, IsDeleted = false },
+                new StoreLocalSupplierInvoiceDetails { DetailGUID = "detail-page-first", InvoiceGUID = "invoice-page-first", ExistingProductCount = 1, IsDeleted = false },
+                new StoreLocalSupplierInvoiceDetails { DetailGUID = "detail-page-second", InvoiceGUID = "invoice-page-second", ExistingProductCount = 1, IsDeleted = false },
+                new StoreLocalSupplierInvoiceDetails { DetailGUID = "detail-other-store", InvoiceGUID = "invoice-other-store", ExistingProductCount = 1, IsDeleted = false },
+            }).ExecuteCommandAsync();
+
+            var keywordResult = await CreateService().GetGridDataAsync(new GridRequestDto
+            {
+                StartRow = 0, PageSize = 20,
+                FilterModel = new Dictionary<string, FilterModelDto> { ["productKeyword"] = new() { FilterType = "text", Filter = "MATCH-KEY" } },
+            });
+            var keywordInvoice = Assert.Single(keywordResult.Items!, item => item.InvoiceGUID == "invoice-keyword");
+            Assert.False(keywordInvoice.IsProductChecked);
+
+            // PageSize=20 是服务允许的最小页长；跳过前一整页，验证当前页各订单的聚合结果。
+            var pagedResult = await CreateService().GetGridDataAsync(new GridRequestDto { StartRow = 20, PageSize = 20 }, new List<string> { "S01" });
+            Assert.True(pagedResult.Success, pagedResult.Message);
+            Assert.Equal(4, pagedResult.Items!.Count);
+            Assert.DoesNotContain(pagedResult.Items!, item => item.InvoiceGUID == "invoice-other-store");
+            Assert.Equal(24, pagedResult.Total);
+            Assert.All(pagedResult.Items!, item =>
+                Assert.Equal(item.InvoiceGUID != "invoice-keyword", item.IsProductChecked)
+            );
+        }
+
+        [Fact]
+        public async Task GetGridDataAsync_新增明细未检测且完成检测后更新为已检测()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-recheck", "INV-RECHECK", new DateTime(2026, 1, 14));
+            await _db.Insertable(new StoreLocalSupplierInvoiceDetails
+            {
+                DetailGUID = "detail-recheck-existing",
+                InvoiceGUID = "invoice-recheck",
+                StoreCode = "S01",
+                SupplierCode = "SUP01",
+                ItemNumber = "EXISTING",
+                Barcode = "BAR-EXISTING",
+                ExistingProductCount = 1,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var initial = await CreateService().GetGridDataAsync(new GridRequestDto { PageSize = 20 });
+            Assert.True(Assert.Single(initial.Items!, item => item.InvoiceGUID == "invoice-recheck").IsProductChecked);
+
+            // 实际批量 Upsert 同时编辑既有货号/条码并新增未检测明细；既有检测结果应保留。
+            var upsertResult = await CreateService().BatchUpsertDetailsAsync(
+                "invoice-recheck",
+                new List<InvoiceDetailUpsertItemDto>
+                {
+                    new() { DetailGUID = "detail-recheck-existing", ItemNumber = "EXISTING-EDITED", Barcode = "BAR-EXISTING-EDITED" },
+                    new() { DetailGUID = null, ItemNumber = "MISSING", Barcode = "BAR-MISSING" },
+                },
+                "tester"
+            );
+            Assert.True(upsertResult.Success, upsertResult.Message);
+
+            var afterUpsert = await CreateService().GetGridDataAsync(new GridRequestDto { PageSize = 20 });
+            Assert.False(Assert.Single(afterUpsert.Items!, item => item.InvoiceGUID == "invoice-recheck").IsProductChecked);
+            var editedDetail = await _db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .FirstAsync(item => item.DetailGUID == "detail-recheck-existing");
+            Assert.Equal("EXISTING-EDITED", editedDetail.ItemNumber);
+            Assert.Equal("BAR-EXISTING-EDITED", editedDetail.Barcode);
+            Assert.Equal(1, editedDetail.ExistingProductCount);
+
+            var newDetailGuid = await _db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .Where(item => item.InvoiceGUID == "invoice-recheck" && item.ItemNumber == "MISSING")
+                .Select(item => item.DetailGUID)
+                .FirstAsync();
+            var checkResult = await CreateService().CheckProductsAsync(new CheckProductsRequest
+            {
+                InvoiceGuid = "invoice-recheck", DetailGuids = new List<string> { newDetailGuid },
+            });
+            Assert.True(checkResult.Success, checkResult.Message);
+            var after = await CreateService().GetGridDataAsync(new GridRequestDto { PageSize = 20 });
+            Assert.True(Assert.Single(after.Items!, item => item.InvoiceGUID == "invoice-recheck").IsProductChecked);
+        }
+
+        [Fact]
         public async Task GetDetailsGridAsync_ReturnsPagedDetailsAndClampsPageSizeTo50()
         {
             await SeedStoreAndSupplierAsync();
@@ -1522,6 +1669,9 @@ namespace BlazorApp.Api.Tests
             Assert.Equal("ITEM-NEW-1", firstProduct.ItemNumber);
             Assert.Equal("ITEM-NEW-2", secondProduct.ItemNumber);
             Assert.All(completedDetails, detail => Assert.Equal(99, detail.ActivityType));
+
+            var grid = await CreateService().GetGridDataAsync(new GridRequestDto { PageSize = 20 });
+            Assert.True(Assert.Single(grid.Items!, item => item.InvoiceGUID == "invoice-item-update").IsProductChecked);
         }
 
         [Fact]

@@ -248,7 +248,7 @@ function appendImageExportCacheBust(url: URL) {
   return cacheBustedUrl.toString()
 }
 
-export function getImageDownloadCandidates(url: string) {
+export function getImageDownloadCandidates(url: string, proxyPath = '/api/react/v1/image-proxy') {
   const normalizedUrl = normalizeImageDownloadUrl(url)
   if (!normalizedUrl) return []
 
@@ -267,7 +267,7 @@ export function getImageDownloadCandidates(url: string) {
     }
 
     return [
-      `/api/react/v1/image-proxy?url=${encodeURIComponent(parsedUrl.toString())}`,
+      `${proxyPath}?url=${encodeURIComponent(parsedUrl.toString())}`,
       appendImageExportCacheBust(parsedUrl),
     ]
   } catch {}
