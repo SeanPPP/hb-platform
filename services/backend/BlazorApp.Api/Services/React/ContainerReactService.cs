@@ -2,6 +2,7 @@ using AutoMapper;
 using System.Text.Json;
 using Microsoft.AspNetCore.DataProtection;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Features.SupplyNotices;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
@@ -4959,6 +4960,22 @@ namespace BlazorApp.Api.Services.React
                     + $"WHERE ProductCode IN ({string.Join(", ", productCodeParameters)}) "
                     + "AND (IsDeleted = 0 OR IsDeleted IS NULL)";
                 await _context.Db.Ado.ExecuteCommandAsync(sql, parameters);
+
+                // 货柜到货后在这里重新上架是最常见的恢复供货路径：关闭已在架商品的供货说明，
+                // 否则下次无说明下架时旧说明会重新浮现。按商品当前状态判断，幂等。
+                var reactivatedCodes = batch
+                    .Where(plan => plan.IsActive == true)
+                    .Select(plan => plan.ProductCode)
+                    .ToList();
+                if (reactivatedCodes.Count > 0)
+                {
+                    await WarehouseProductSupplyNoticeWriter.CloseNoticesForActiveProductsAsync(
+                        _context.Db,
+                        reactivatedCodes,
+                        updatedBy ?? "System",
+                        DateTime.UtcNow
+                    );
+                }
             }
         }
 
@@ -5582,7 +5599,8 @@ namespace BlazorApp.Api.Services.React
             ContainerDetailBatchScopeDto request,
             Func<Container?, List<ContainerDetail>, List<UpdateContainerDetailDto>> buildUpdates,
             string operation,
-            string parameters
+            string parameters,
+            Func<List<ContainerDetail>, Task>? afterUpdate = null
         )
         {
             var deadlockRetryCount = 0;
@@ -5682,6 +5700,10 @@ namespace BlazorApp.Api.Services.React
                         mutationLock: mutationLock,
                         preAcquiredSetChildPurchasePriceLock: scopedImportLock
                     );
+                    if (afterUpdate != null)
+                    {
+                        await afterUpdate(details);
+                    }
 
                     await _context.Db.Ado.CommitTranAsync();
                     return updateResult.TotalUpdated;
@@ -5850,6 +5872,20 @@ namespace BlazorApp.Api.Services.React
                 return 0;
             }
 
+            // 供货说明只在下架时有意义；录入有误在开事务前拒绝，避免“已下架但说明没记上”。
+            NormalizedSupplyNotice? supplyNotice = null;
+            if (!request.IsActive.Value && request.SupplyNotice != null)
+            {
+                var (normalizedNotice, noticeError) = WarehouseProductSupplyNoticeRules.Normalize(
+                    request.SupplyNotice
+                );
+                if (noticeError != null)
+                {
+                    throw new ArgumentException(noticeError);
+                }
+                supplyNotice = normalizedNotice;
+            }
+
             return await ExecuteScopedBatchUpdateUnderContainerLockAsync(
                 containerGuid,
                 request,
@@ -5861,7 +5897,18 @@ namespace BlazorApp.Api.Services.React
                     })
                     .ToList(),
                 "set-status",
-                request.IsActive.Value ? "isActive=true" : "isActive=false"
+                request.IsActive.Value ? "isActive=true" : "isActive=false",
+                // 与状态写入同一事务登记说明；上架时的说明关闭已由明细回写的裸 SQL 之后统一处理。
+                afterUpdate: supplyNotice == null
+                    ? null
+                    : details => WarehouseProductSupplyNoticeWriter.UpsertOpenNoticesAsync(
+                        _context.Db,
+                        GetNormalizedProductCodes(details),
+                        supplyNotice,
+                        _currentUserService.GetCurrentUsername() ?? "System",
+                        source: "ContainerDetail",
+                        DateTime.UtcNow
+                    )
             );
         }
 

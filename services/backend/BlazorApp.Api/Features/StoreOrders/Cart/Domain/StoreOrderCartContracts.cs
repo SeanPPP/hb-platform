@@ -37,6 +37,9 @@ internal sealed record StoreOrderCartMutationOutcome(
     internal static StoreOrderCartMutationOutcome ProductMissing() =>
         new(false, "商品不存在", null);
 
+    internal static StoreOrderCartMutationOutcome SupplyPaused() =>
+        new(false, StoreOrderSupplyGuard.PausedMessage, null);
+
     internal static StoreOrderCartMutationOutcome Completed(
         StoreOrderCartMutationWrite write
     ) => new(true, null, write);

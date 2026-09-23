@@ -1,3 +1,4 @@
+using BlazorApp.Api.Features.SupplyNotices;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Features.StoreOrders.Common;
 using BlazorApp.Api.Features.StoreOrders.OrderManagement.Domain;
@@ -45,6 +46,17 @@ internal sealed class SqlSugarStoreOrderProductStatusCommandStore(
             {
                 return StoreOrderManagementResult<bool>.Fail("Product not found");
             }
+
+            // 同一事务：下架登记供货说明，上架关闭说明。
+            await WarehouseProductSupplyNoticeWriter.ApplyStatusChangeAsync(
+                _db,
+                new[] { input.ProductCode },
+                input.IsActive,
+                input.SupplyNotice,
+                actorContext.ActorName,
+                source: "StoreOrderProductStatus",
+                now
+            );
 
             var afterSnapshots = await changeHistoryService.CaptureSnapshotsAsync(
                 new[] { input.ProductCode }
@@ -97,6 +109,15 @@ internal sealed class SqlSugarStoreOrderProductStatusCommandStore(
                     && !warehouseProduct.IsDeleted
                 )
                 .ExecuteCommandAsync();
+            await WarehouseProductSupplyNoticeWriter.ApplyStatusChangeAsync(
+                _db,
+                productCodes,
+                input.IsActive,
+                input.SupplyNotice,
+                actorContext.ActorName,
+                source: "StoreOrderProductStatus",
+                now
+            );
             var afterSnapshots = await changeHistoryService.CaptureSnapshotsAsync(
                 productCodes
             );

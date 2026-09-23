@@ -2,6 +2,7 @@ using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Helper;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Features.SupplyNotices;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services.React;
 using SqlSugar;
@@ -427,6 +428,13 @@ namespace BlazorApp.Api.Services
                         await _db.Updateable(warehousesToUpdate)
                             .UpdateColumns(w => new { w.DomesticPrice, w.ImportPrice, w.OEMPrice, w.Volume, w.IsActive, w.UpdatedAt, w.UpdatedBy })
                             .ExecuteCommandAsync();
+                        // 请求带状态把商品重新上架时，关闭其供货说明（按当前状态判断，幂等）。
+                        await WarehouseProductSupplyNoticeWriter.CloseNoticesForActiveProductsAsync(
+                            _db,
+                            warehousesToUpdate.Where(w => w.IsActive).Select(w => w.ProductCode).ToList(),
+                            actorName ?? "System",
+                            DateTime.UtcNow
+                        );
                     }
 
                     if (productPurchasePrices.Count > 0)

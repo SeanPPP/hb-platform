@@ -469,6 +469,19 @@ public sealed class StoreOrderCartController : StoreOrderControllerBase
             {
                 return atomicGateError;
             }
+            if (result.ErrorCode == StoreOrderSupplyGuard.PausedErrorCode)
+            {
+                // 带上错误码与受影响货号，前端据此标出具体是购物车里的哪几行。
+                return BadRequest(
+                    new
+                    {
+                        success = false,
+                        message = result.Message,
+                        errorCode = result.ErrorCode,
+                        details = result.Details,
+                    }
+                );
+            }
             return BadRequest(new { success = false, message = result.Message });
         }
         catch (Exception ex)

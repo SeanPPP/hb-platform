@@ -7,6 +7,7 @@ using System.Linq.Expressions;
 using System.Threading.Tasks;
 using AutoMapper;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Features.SupplyNotices;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
@@ -267,6 +268,19 @@ internal sealed class ProductWarehouseMobileSlice
         var shouldUpdateProductGrade = false;
         // 仅更新仓库商品状态；优先新字段，旧字段仅作兼容回退。
         var warehouseIsActive = dto.WarehouseIsActive ?? dto.IsActive;
+        // 供货说明只在下架时有意义；录入有误直接拒绝，此时尚未开事务。
+        NormalizedSupplyNotice? supplyNotice = null;
+        if (warehouseIsActive == false && dto.SupplyNotice != null)
+        {
+            var (normalizedNotice, noticeError) = WarehouseProductSupplyNoticeRules.Normalize(
+                dto.SupplyNotice
+            );
+            if (noticeError != null)
+            {
+                throw new ArgumentException(noticeError);
+            }
+            supplyNotice = normalizedNotice;
+        }
         if (warehouseIsActive.HasValue)
         {
             warehouseProduct.IsActive = warehouseIsActive.Value;
@@ -524,6 +538,20 @@ internal sealed class ProductWarehouseMobileSlice
                     warehouseUpdate = warehouseUpdate.SetColumns(w => w.Volume == dto.Volume.Value);
                 }
                 await warehouseUpdate.ExecuteCommandAsync();
+
+                if (warehouseIsActive.HasValue)
+                {
+                    // 同一事务：下架登记供货说明，上架关闭说明。
+                    await WarehouseProductSupplyNoticeWriter.ApplyStatusChangeAsync(
+                        _context.Db,
+                        new[] { productCode },
+                        warehouseIsActive.Value,
+                        supplyNotice,
+                        effectiveUpdatedBy,
+                        source: "MobileWarehouse",
+                        DateTime.UtcNow
+                    );
+                }
             }
             if (domesticProduct != null && shouldUpdateDomesticProduct)
             {
