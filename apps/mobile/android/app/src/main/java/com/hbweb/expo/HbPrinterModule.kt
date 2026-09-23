@@ -52,6 +52,7 @@ class HbPrinterModule(
   }
   private val handler = Handler(Looper.getMainLooper())
   private val connectionLock = Any()
+  private val pairingLock = Any()
   private val printerUuid: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
   private val labelWidth = 570
   private val labelHeight = 400
@@ -69,6 +70,9 @@ class HbPrinterModule(
   private var listenerCount = 0
   private var pendingAclDisconnect: Runnable? = null
   private var pendingAclDisconnectAddress: String? = null
+  private var pendingPairingAddress: String? = null
+  private var pendingPairingPromise: Promise? = null
+  private var pendingPairingTimeout: Runnable? = null
 
   private val statusReceiver = object : BroadcastReceiver() {
     @SuppressLint("MissingPermission")
@@ -113,9 +117,39 @@ class HbPrinterModule(
             pendingAclDisconnectAddress = null
           }
         }
+        BluetoothDevice.ACTION_BOND_STATE_CHANGED -> {
+          val device = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+          } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+          }
+          val address = device?.address
+          if (address != null) {
+            val bondState = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR)
+            val previousBondState = intent.getIntExtra(
+              BluetoothDevice.EXTRA_PREVIOUS_BOND_STATE,
+              BluetoothDevice.ERROR,
+            )
+            when {
+              bondState == BluetoothDevice.BOND_BONDED -> completePendingPairing(address)
+              bondState == BluetoothDevice.BOND_NONE && previousBondState == BluetoothDevice.BOND_BONDING -> {
+                failPendingPairing(
+                  "PRINTER_PAIRING_REJECTED",
+                  "Bluetooth printer pairing was cancelled, rejected, or failed.",
+                  expectedAddress = address,
+                )
+              }
+            }
+          }
+        }
         BluetoothAdapter.ACTION_STATE_CHANGED -> {
           val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
           if (state == BluetoothAdapter.STATE_OFF || state == BluetoothAdapter.STATE_TURNING_OFF) {
+            failPendingPairing(
+              "BLUETOOTH_DISABLED",
+              "Bluetooth was turned off while pairing the printer.",
+            )
             invalidateConnectionAttempt()
             clearConnection()
           }
@@ -134,10 +168,87 @@ class HbPrinterModule(
   }
 
   override fun invalidate() {
+    failPendingPairing(
+      "PRINTER_PAIRING_CANCELLED",
+      "Bluetooth printer pairing was cancelled because the app is closing.",
+    )
     unregisterStatusReceiver()
     invalidateConnectionAttempt()
     clearConnection()
     super.invalidate()
+  }
+
+  @SuppressLint("MissingPermission")
+  @ReactMethod
+  fun pair(address: String, promise: Promise) {
+    val adapter = bluetoothAdapter
+    if (adapter == null) {
+      promise.reject("BLUETOOTH_UNSUPPORTED", "Bluetooth is not supported on this device.")
+      return
+    }
+
+    if (!adapter.isEnabled) {
+      promise.reject("BLUETOOTH_DISABLED", "Bluetooth is turned off.")
+      return
+    }
+
+    val device = try {
+      adapter.getRemoteDevice(address)
+    } catch (error: IllegalArgumentException) {
+      promise.reject("PRINTER_INVALID_ADDRESS", "The Bluetooth printer address is invalid.", error)
+      return
+    }
+
+    // BLE-only 地址没有 RFCOMM/SPP 通道，必须在 createBond 前结束，避免系统配对后仍然超时。
+    if (rejectBleOnlyDevice(device, promise)) {
+      return
+    }
+
+    if (device.bondState == BluetoothDevice.BOND_BONDED) {
+      promise.resolve(true)
+      return
+    }
+
+    val timeoutTask = Runnable {
+      failPendingPairing(
+        "PRINTER_PAIRING_TIMEOUT",
+        "Timed out while waiting for the Android pairing confirmation.",
+        expectedAddress = address,
+      )
+    }
+    val accepted = synchronized(pairingLock) {
+      if (pendingPairingPromise != null) {
+        false
+      } else {
+        pendingPairingAddress = address
+        pendingPairingPromise = promise
+        pendingPairingTimeout = timeoutTask
+        true
+      }
+    }
+    if (!accepted) {
+      promise.reject("PRINTER_PAIRING_IN_PROGRESS", "Another Bluetooth printer pairing is already in progress.")
+      return
+    }
+
+    handler.postDelayed(timeoutTask, PAIRING_TIMEOUT_MS)
+    try {
+      // 已由系统开始配对时只等待广播；BOND_NONE 才主动打开 Android 配对流程。
+      if (device.bondState != BluetoothDevice.BOND_BONDING && !device.createBond()) {
+        failPendingPairing(
+          "PRINTER_PAIRING_START_FAILED",
+          "Android could not start Bluetooth printer pairing.",
+          expectedAddress = address,
+        )
+      }
+    } catch (error: Exception) {
+      failPendingPairing(
+        "PRINTER_PAIRING_START_FAILED",
+        error.message ?: "Android could not start Bluetooth printer pairing.",
+        error,
+        expectedAddress = address,
+      )
+    }
   }
 
   @ReactMethod
@@ -188,7 +299,9 @@ class HbPrinterModule(
         name = device.name,
         address = device.address,
         bonded = true,
-        connected = device.address == connectedAddress && socket?.isConnected == true
+        connected = device.address == connectedAddress && socket?.isConnected == true,
+        transport = bluetoothTransport(device),
+        deviceClass = device.bluetoothClass?.deviceClass,
       )
     }
 
@@ -221,6 +334,12 @@ class HbPrinterModule(
         map.putString("address", printer.address)
         map.putBoolean("bonded", printer.bonded)
         map.putBoolean("connected", printer.connected)
+        map.putString("transport", printer.transport)
+        if (printer.deviceClass == null) {
+          map.putNull("deviceClass")
+        } else {
+          map.putInt("deviceClass", printer.deviceClass)
+        }
         array.pushMap(map)
       }
       promise.resolve(array)
@@ -242,7 +361,9 @@ class HbPrinterModule(
                 name = device.name,
                 address = device.address,
                 bonded = device.bondState == BluetoothDevice.BOND_BONDED,
-                connected = device.address == connectedAddress && socket?.isConnected == true
+                connected = device.address == connectedAddress && socket?.isConnected == true,
+                transport = bluetoothTransport(device),
+                deviceClass = device.bluetoothClass?.deviceClass,
               )
             }
           }
@@ -293,6 +414,27 @@ class HbPrinterModule(
       return
     }
 
+    val device = try {
+      adapter.getRemoteDevice(address)
+    } catch (error: IllegalArgumentException) {
+      promise.reject("PRINTER_INVALID_ADDRESS", "The Bluetooth printer address is invalid.", error)
+      return
+    }
+
+    // 在 beginConnectionAttempt 清理旧 socket 前拒绝 BLE，后台重连旧地址也不会打断当前连接。
+    if (rejectBleOnlyDevice(device, promise)) {
+      return
+    }
+
+    // RFCOMM connect() 会隐式触发配对并一直阻塞到 socket 超时；必须由手动选择流程先完成配对。
+    if (device.bondState != BluetoothDevice.BOND_BONDED) {
+      promise.reject(
+        "PRINTER_PAIRING_REQUIRED",
+        "Pair the Bluetooth printer before starting the RFCOMM connection.",
+      )
+      return
+    }
+
     Thread {
       var nextSocket: BluetoothSocket? = null
       try {
@@ -301,7 +443,6 @@ class HbPrinterModule(
           adapter.cancelDiscovery()
         }
 
-        val device = adapter.getRemoteDevice(address)
         nextSocket = device.createRfcommSocketToServiceRecord(printerUuid)
         nextSocket.connect()
         val installed = synchronized(connectionLock) {
@@ -1242,6 +1383,71 @@ class HbPrinterModule(
   }
 
   @SuppressLint("MissingPermission")
+  private fun bluetoothTransport(device: BluetoothDevice): String = when (device.type) {
+    BluetoothDevice.DEVICE_TYPE_CLASSIC -> "classic"
+    BluetoothDevice.DEVICE_TYPE_LE -> "ble"
+    BluetoothDevice.DEVICE_TYPE_DUAL -> "dual"
+    else -> "unknown"
+  }
+
+  @SuppressLint("MissingPermission")
+  private fun rejectBleOnlyDevice(device: BluetoothDevice, promise: Promise): Boolean {
+    if (device.type != BluetoothDevice.DEVICE_TYPE_LE) {
+      return false
+    }
+    promise.reject(
+      "PRINTER_BLE_UNSUPPORTED",
+      "This address only supports Bluetooth Low Energy. Select the classic Bluetooth address for this printer.",
+    )
+    return true
+  }
+
+  private fun completePendingPairing(address: String) {
+    val pending = synchronized(pairingLock) {
+      if (pendingPairingAddress?.equals(address, ignoreCase = true) != true) {
+        null
+      } else {
+        takePendingPairingLocked()
+      }
+    } ?: return
+    pending.timeout?.let(handler::removeCallbacks)
+    pending.promise.resolve(true)
+  }
+
+  private fun failPendingPairing(
+    code: String,
+    message: String,
+    error: Throwable? = null,
+    expectedAddress: String? = null,
+  ) {
+    val pending = synchronized(pairingLock) {
+      if (
+        expectedAddress != null &&
+        pendingPairingAddress?.equals(expectedAddress, ignoreCase = true) != true
+      ) {
+        null
+      } else {
+        takePendingPairingLocked()
+      }
+    } ?: return
+    pending.timeout?.let(handler::removeCallbacks)
+    if (error == null) {
+      pending.promise.reject(code, message)
+    } else {
+      pending.promise.reject(code, message, error)
+    }
+  }
+
+  private fun takePendingPairingLocked(): PendingPairing? {
+    val promise = pendingPairingPromise ?: return null
+    val pending = PendingPairing(promise, pendingPairingTimeout)
+    pendingPairingAddress = null
+    pendingPairingPromise = null
+    pendingPairingTimeout = null
+    return pending
+  }
+
+  @SuppressLint("MissingPermission")
   private fun registerStatusReceiver() {
     if (statusReceiverRegistered) {
       return
@@ -1249,6 +1455,7 @@ class HbPrinterModule(
     val filter = IntentFilter().apply {
       addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
       addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
+      addAction(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
       addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
     }
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -1288,13 +1495,21 @@ class HbPrinterModule(
   companion object {
     private const val STATUS_EVENT = "HbPrinterStatusChanged"
     private const val ACL_DISCONNECT_SETTLE_MS = 250L
+    private const val PAIRING_TIMEOUT_MS = 45_000L
   }
+
+  data class PendingPairing(
+    val promise: Promise,
+    val timeout: Runnable?,
+  )
 
   data class WritablePrinterDevice(
     val name: String?,
     val address: String,
     val bonded: Boolean,
     val connected: Boolean,
+    val transport: String,
+    val deviceClass: Int?,
   )
 
   data class PriceParts(

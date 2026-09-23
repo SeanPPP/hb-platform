@@ -10,6 +10,8 @@ export interface PrinterDevice {
   address: string;
   bonded: boolean;
   connected: boolean;
+  transport?: "classic" | "ble" | "dual" | "unknown";
+  deviceClass?: number | null;
 }
 
 export interface PrinterStatus {
