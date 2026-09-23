@@ -528,6 +528,34 @@ public sealed class ProductStoreDailyStatisticQueueServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task DrainOnceAsync_Sqlsess1遗留租约且无法取得会话锁_不接管并退回Queued()
+    {
+        // SQLite 没有 Session applock，无法证明原 owner 已退出，必须保守跳过而不是越过 9999 标记。
+        var date = new DateTime(2026, 4, 3);
+        var executor = new RecordingExecutor((_, _, _, _) =>
+            throw new InvalidOperationException("无法证明 owner 退出时不应执行")
+        );
+        var queue = CreateQueue(executor, instanceId: "queue-worker");
+        var submit = await queue.EnqueueAsync(new[] { date }, "admin");
+        await SeedSessionGuardedLeaseAsync(date);
+        var seededLease = await _db.Queryable<ScheduledTaskLease>()
+            .SingleAsync(x => x.ScopeKey == "2026-04-03");
+
+        var processed = await queue.DrainOnceAsync();
+
+        Assert.Equal(0, processed);
+        Assert.Equal(0, executor.CallCount);
+        var state = await _db.Queryable<SalesStatisticRefreshState>()
+            .SingleAsync(x => x.Date == date && x.StatisticType == SalesStatisticType.ProductStoreDaily);
+        Assert.Equal(SalesStatisticRefreshStatus.Queued, state.Status);
+        Assert.Equal(submit.JobId, state.JobId);
+        var lease = await _db.Queryable<ScheduledTaskLease>()
+            .SingleAsync(x => x.ScopeKey == "2026-04-03");
+        Assert.Equal(ScheduledTaskLeaseStatus.Running, lease.Status);
+        Assert.Equal(seededLease.LeaseToken, lease.LeaseToken);
+    }
+
+    [Fact]
     public async Task RecoverExpiredRunningClaimsAsync_超过两小时且无租约_保留JobId退回Queued()
     {
         var date = new DateTime(2026, 5, 1);

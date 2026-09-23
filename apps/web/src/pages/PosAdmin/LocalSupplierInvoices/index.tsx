@@ -385,6 +385,7 @@ export default function LocalSupplierInvoicesPage() {
       inboundDate: t('posAdmin.invoices.inboundDate'),
       totalAmount: t('column.totalAmount'),
       receivedTotalAmount: t('posAdmin.invoices.receivedTotal', '已收总金额'),
+      isProductChecked: t('posAdmin.invoices.isProductChecked'),
       flowStatus: t('posAdmin.invoices.flowStatus', '流程状态'),
       inboundStatus: t('posAdmin.invoices.inboundStatus', '入库状态'),
       remarks: t('column.remarks'),
@@ -914,6 +915,18 @@ export default function LocalSupplierInvoicesPage() {
       render: (v: number) => formatAmount(v),
     },
     {
+      title: t('posAdmin.invoices.isProductChecked'),
+      dataIndex: 'isProductChecked',
+      key: 'isProductChecked',
+      width: 120,
+      align: 'center',
+      render: (value?: boolean) => {
+        // 兼容尚未返回汇总字段的后端，缺失值不能误报为未检测。
+        if (typeof value !== 'boolean') return '--'
+        return <Tag color={value ? 'green' : 'default'}>{t(value ? 'common.yes' : 'common.no')}</Tag>
+      },
+    },
+    {
       title: t('posAdmin.invoices.flowStatus', '流程状态'),
       dataIndex: 'flowStatus',
       key: 'flowStatus',
@@ -1181,7 +1194,7 @@ export default function LocalSupplierInvoicesPage() {
                 components={{ header: { cell: DraggableHeaderCell } }}
                 columns={columns}
                 pagination={false}
-                scroll={{ x: 2200, y: tableScrollY }}
+                scroll={{ x: 2320, y: tableScrollY }}
                 rowSelection={
                   isAdmin
                     ? {

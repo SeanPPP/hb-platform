@@ -2,12 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, StyleSheet, View, type LayoutChangeEvent } from "react-native";
 import { ActivityIndicator, Button, Icon, Text } from "react-native-paper";
 import { CumulativeRevenueChart } from "@/modules/reports/CumulativeRevenueChart";
-import {
-  formatMoney,
-  formatSignedWholeDollars,
-  formatWholeCount,
-  formatWholeDollars,
-} from "@/modules/reports/format";
+import { formatMoney, formatSignedWholeDollars, formatWholeCount, formatWholeMoney } from "@/modules/reports/format";
 import { formatGrowthRate, getGrowthTone, type GrowthTone } from "@/modules/reports/growth-rate";
 import {
   FULL_DAY_CUTOFF_HOUR,
@@ -22,7 +17,7 @@ import {
 } from "@/modules/reports/hourly-cumulative";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 
-const STRIP_CELL_WIDTH = 46;
+const STRIP_CELL_WIDTH = 96;
 const STRIP_CELL_GAP = 4;
 const STRIP_BAR_HALF = 19;
 
@@ -183,24 +178,25 @@ function CumulativeRevenueContent({
   const difference = totals.revenue - totals.compareRevenue;
   // 曲线画到最近完整整点（或整天），用户点选的整点只移动标记。
   const chartModel = useMemo(
-    () => buildCumulativeChartModel(series, {
-      cutoffHour: cutoff.cutoffHour,
-      live: cutoff.live,
-      liveHourFraction: cutoff.liveHourFraction,
-    }),
+    () =>
+      buildCumulativeChartModel(series, {
+        cutoffHour: cutoff.cutoffHour,
+        live: cutoff.live,
+        liveHourFraction: cutoff.liveHourFraction,
+      }),
     [cutoff.cutoffHour, cutoff.live, cutoff.liveHourFraction, series],
   );
 
-  const growthTone = totals.compareRevenue === 0 && totals.revenue > 0 ? "new" : getGrowthTone(totals.revenue, totals.compareRevenue);
+  const growthTone =
+    totals.compareRevenue === 0 && totals.revenue > 0 ? "new" : getGrowthTone(totals.revenue, totals.compareRevenue);
   const pillColors = lowBase ? PILL_COLORS.flat : PILL_COLORS[growthTone];
   const pillText = lowBase
     ? formatSignedWholeDollars(difference)
     : formatGrowthRate(totals.revenue, totals.compareRevenue, newLabel);
   const differenceKey = difference < 0 ? "behind" : difference > 0 ? "ahead" : "level";
-  const differenceText = t(
-    `reports.cumulative.${differenceKey}${coversFullDay ? "FullDay" : ""}`,
-    { amount: formatWholeDollars(Math.abs(difference)) },
-  );
+  const differenceText = t(`reports.cumulative.${differenceKey}${coversFullDay ? "FullDay" : ""}`, {
+    amount: formatWholeMoney(Math.abs(difference)),
+  });
 
   const stats: MiniStatItem[] = coversFullDay
     ? [
@@ -218,25 +214,50 @@ function CumulativeRevenueContent({
             totals.compareTransactions > 0 ? totals.compareRevenue / totals.compareTransactions : 0,
           )}`,
         },
-        { key: "compareFullDay", label: t("reports.cumulative.lyFullDay"), value: formatWholeDollars(fullDay.compareRevenue), muted: true },
+        {
+          key: "compareFullDay",
+          label: t("reports.cumulative.lyFullDay"),
+          value: formatWholeMoney(fullDay.compareRevenue),
+          muted: true,
+        },
       ]
     : [
-        { key: "compareSameTime", label: t("reports.cumulative.lySameTime"), value: formatWholeDollars(totals.compareRevenue) },
+        {
+          key: "compareSameTime",
+          label: t("reports.cumulative.lySameTime"),
+          value: formatWholeMoney(totals.compareRevenue),
+        },
         cutoff.live
           ? {
               key: "live",
-              label: t("reports.cumulative.liveAt", { time: liveTimeLabel ?? formatHourLabel(cutoff.cutoffHour) }),
-              value: formatWholeDollars(fullDay.revenue),
+              label: t("reports.cumulative.liveAt", {
+                time: liveTimeLabel ?? formatHourLabel(cutoff.cutoffHour),
+              }),
+              value: formatWholeMoney(fullDay.revenue),
             }
-          : { key: "dayTotal", label: t("reports.cumulative.dayTotal"), value: formatWholeDollars(fullDay.revenue) },
-        { key: "compareFullDay", label: t("reports.cumulative.lyFullDay"), value: formatWholeDollars(fullDay.compareRevenue), muted: true },
+          : {
+              key: "dayTotal",
+              label: t("reports.cumulative.dayTotal"),
+              value: formatWholeMoney(fullDay.revenue),
+            },
+        {
+          key: "compareFullDay",
+          label: t("reports.cumulative.lyFullDay"),
+          value: formatWholeMoney(fullDay.compareRevenue),
+          muted: true,
+        },
       ];
 
   const asOfLabel = noCompleteHour
-    ? t("reports.cumulative.noCompleteHour", { time: formatHourLabel(series.firstHour === null ? 0 : series.firstHour + 1) })
+    ? t("reports.cumulative.noCompleteHour", {
+        time: formatHourLabel(series.firstHour === null ? 0 : series.firstHour + 1),
+      })
     : coversFullDay
       ? t("reports.cumulative.fullDay", { scope: scopeLabel })
-      : t("reports.cumulative.asOf", { time: formatHourLabel(displayCutoff), scope: scopeLabel });
+      : t("reports.cumulative.asOf", {
+          time: formatHourLabel(displayCutoff),
+          scope: scopeLabel,
+        });
 
   return (
     <View style={styles.card}>
@@ -250,7 +271,7 @@ function CumulativeRevenueContent({
         </View>
         <View style={styles.amountRow}>
           <Text style={styles.amount} selectable>
-            {formatWholeDollars(noCompleteHour ? fullDay.revenue : totals.revenue)}
+            {formatWholeMoney(noCompleteHour ? fullDay.revenue : totals.revenue)}
           </Text>
           {!noCompleteHour ? (
             <View style={[styles.pill, { backgroundColor: pillColors.background }]}>
@@ -266,17 +287,17 @@ function CumulativeRevenueContent({
       </View>
 
       {!noCompleteHour ? (
-        <View style={styles.stats}>
-          {stats.map((stat) => (
-            <View key={stat.key} style={styles.stat}>
-              <Text style={styles.statLabel} numberOfLines={1}>{stat.label}</Text>
-              <Text style={[styles.statValue, stat.muted ? styles.statValueMuted : null]} numberOfLines={1}>
-                {stat.value}
-              </Text>
-              {stat.note ? <Text style={styles.statNote} numberOfLines={1}>{stat.note}</Text> : null}
-            </View>
-          ))}
-        </View>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.statsScrollContent}>
+          <View style={styles.stats}>
+            {stats.map((stat) => (
+              <View key={stat.key} style={styles.stat}>
+                <Text style={styles.statLabel}>{stat.label}</Text>
+                <Text style={[styles.statValue, stat.muted ? styles.statValueMuted : null]}>{stat.value}</Text>
+                {stat.note ? <Text style={styles.statNote}>{stat.note}</Text> : null}
+              </View>
+            ))}
+          </View>
+        </ScrollView>
       ) : null}
 
       {chartModel ? (
@@ -284,12 +305,12 @@ function CumulativeRevenueContent({
           <CumulativeRevenueChart
             model={chartModel}
             markerHour={displayCutoff}
-            compareFullDayLabel={`${t("reports.cumulative.lyFullDay")} ${formatWholeDollars(fullDay.compareRevenue)}`}
+            compareFullDayLabel={`${t("reports.cumulative.lyFullDay")} ${formatWholeMoney(fullDay.compareRevenue)}`}
             accessibilityLabel={t("reports.cumulative.chartLabel", {
               scope: scopeLabel,
               time: formatHourLabel(displayCutoff),
-              current: formatWholeDollars(totals.revenue),
-              compare: formatWholeDollars(totals.compareRevenue),
+              current: formatWholeMoney(totals.revenue),
+              compare: formatWholeMoney(totals.compareRevenue),
             })}
           />
           <View style={styles.legend}>
@@ -353,21 +374,26 @@ function HourChangeStrip({
   const { t } = useAppTranslation("common");
   const scrollRef = useRef<ScrollView>(null);
   const [viewportWidth, setViewportWidth] = useState(0);
-  const cells = useMemo(() => options.map((hour) => {
-    const totals = getCumulativeTotals(series, hour);
-    const lowBase = isLowBase(totals.compareRevenue, compareFullDay);
-    const rate = totals.compareRevenue > 0 ? (totals.revenue - totals.compareRevenue) / totals.compareRevenue : null;
-    const tone = getGrowthTone(totals.revenue, totals.compareRevenue);
-    return {
-      hour,
-      lowBase,
-      rate,
-      tone,
-      label: lowBase
-        ? formatSignedWholeDollars(totals.revenue - totals.compareRevenue)
-        : formatGrowthRate(totals.revenue, totals.compareRevenue, newLabel),
-    };
-  }), [compareFullDay, newLabel, options, series]);
+  const cells = useMemo(
+    () =>
+      options.map((hour) => {
+        const totals = getCumulativeTotals(series, hour);
+        const lowBase = isLowBase(totals.compareRevenue, compareFullDay);
+        const rate =
+          totals.compareRevenue > 0 ? (totals.revenue - totals.compareRevenue) / totals.compareRevenue : null;
+        const tone = getGrowthTone(totals.revenue, totals.compareRevenue);
+        return {
+          hour,
+          lowBase,
+          rate,
+          tone,
+          label: lowBase
+            ? formatSignedWholeDollars(totals.revenue - totals.compareRevenue)
+            : formatGrowthRate(totals.revenue, totals.compareRevenue, newLabel),
+        };
+      }),
+    [compareFullDay, newLabel, options, series],
+  );
   // 柱高按非小基数格子里的最大涨跌幅归一，小基数格子不参与，避免把其他柱子压扁。
   const maxAbsRate = Math.max(
     0.001,
@@ -379,7 +405,10 @@ function HourChangeStrip({
     if (!viewportWidth || selectedIndex < 0) return;
     // 默认截止在最右侧；保证选中的格子始终在可视范围内。
     const cellEnd = (selectedIndex + 1) * (STRIP_CELL_WIDTH + STRIP_CELL_GAP);
-    scrollRef.current?.scrollTo({ x: Math.max(0, cellEnd - viewportWidth), animated: false });
+    scrollRef.current?.scrollTo({
+      x: Math.max(0, cellEnd - viewportWidth),
+      animated: false,
+    });
   }, [selectedIndex, viewportWidth]);
 
   return (
@@ -392,30 +421,33 @@ function HourChangeStrip({
     >
       {cells.map((cell) => {
         const selected = cell.hour === selectedHour;
-        const barHeight = cell.rate === null || cell.lowBase
-          ? 0
-          : Math.max(3, (Math.abs(cell.rate) / maxAbsRate) * STRIP_BAR_HALF);
+        const barHeight =
+          cell.rate === null || cell.lowBase ? 0 : Math.max(3, (Math.abs(cell.rate) / maxAbsRate) * STRIP_BAR_HALF);
         return (
           <Pressable
             key={cell.hour}
             accessibilityRole="button"
             accessibilityState={{ selected }}
-            accessibilityLabel={t("reports.cumulative.compareAsOf", { time: formatHourLabel(cell.hour), change: cell.label })}
+            accessibilityLabel={t("reports.cumulative.compareAsOf", {
+              time: formatHourLabel(cell.hour),
+              change: cell.label,
+            })}
             onPress={() => onSelect(cell.hour)}
             style={[styles.stripCell, selected ? styles.stripCellSelected : null]}
           >
             <Text
-              style={[styles.stripValue, { color: cell.lowBase ? "#6B7280" : STRIP_TEXT_COLORS[cell.tone] }]}
-              numberOfLines={1}
-              adjustsFontSizeToFit
+              style={[
+                styles.stripValue,
+                {
+                  color: cell.lowBase ? "#6B7280" : STRIP_TEXT_COLORS[cell.tone],
+                },
+              ]}
             >
               {cell.label}
             </Text>
             <View style={styles.stripBarArea}>
               {cell.lowBase ? (
-                <Text style={styles.stripLowBase} numberOfLines={1} adjustsFontSizeToFit>
-                  {t("reports.cumulative.lowBase")}
-                </Text>
+                <Text style={styles.stripLowBase}>{t("reports.cumulative.lowBase")}</Text>
               ) : (
                 <>
                   <View style={styles.stripZeroLine} />
@@ -423,9 +455,14 @@ function HourChangeStrip({
                     <View
                       style={[
                         styles.stripBar,
-                        { backgroundColor: STRIP_BAR_COLORS[cell.tone], height: barHeight },
+                        {
+                          backgroundColor: STRIP_BAR_COLORS[cell.tone],
+                          height: barHeight,
+                        },
                         // 零线在 STRIP_BAR_HALF 处：领先向上长，落后向下长。
-                        { top: cell.tone === "up" ? STRIP_BAR_HALF - barHeight : STRIP_BAR_HALF + 1 },
+                        {
+                          top: cell.tone === "up" ? STRIP_BAR_HALF - barHeight : STRIP_BAR_HALF + 1,
+                        },
                       ]}
                     />
                   ) : null}
@@ -526,8 +563,11 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   stats: {
+    minWidth: "100%",
     flexDirection: "row",
     gap: 8,
+  },
+  statsScrollContent: {
     marginTop: 12,
     paddingVertical: 10,
     borderTopWidth: 1,
@@ -536,7 +576,8 @@ const styles = StyleSheet.create({
   },
   stat: {
     flex: 1,
-    minWidth: 0,
+    flexBasis: 124,
+    minWidth: 124,
     gap: 2,
   },
   statLabel: {
@@ -644,7 +685,7 @@ const styles = StyleSheet.create({
   },
   stripCell: {
     width: STRIP_CELL_WIDTH,
-    height: 88,
+    minHeight: 88,
     alignItems: "center",
     gap: 4,
     paddingTop: 7,

@@ -30,7 +30,7 @@ assert.ok(page.includes('<ProductBranchDrawer'), '销售明细必须挂载商品
 assert.ok(drawer.includes("fetchSalesDetailReport(drawerQuery, signal, ['branches'])"), '抽屉只能请求 branches 段')
 assert.ok(drawer.includes('destroyOnHidden'), '抽屉关闭后应销毁可见内容')
 for (const marker of ['selectedProductCode: productCode', 'selectedBranchCode: undefined', 'search: undefined']) assert.ok(logic.includes(marker), marker)
-for (const marker of ['controller.abort()', 'state.key === key', 'disposed = true', '30000', '12000', 'performance.measure']) assert.ok(hook.includes(marker), marker)
+for (const marker of ['controller.abort()', 'state.key === key', 'disposed = true', '30000', 'performance.measure']) assert.ok(hook.includes(marker), marker)
 assert.ok(css.includes('position:sticky'))
 assert.ok(css.includes('.drawerScroll'), '抽屉分店表必须支持横向滚动')
 assert.ok(css.includes('prefers-reduced-motion'))

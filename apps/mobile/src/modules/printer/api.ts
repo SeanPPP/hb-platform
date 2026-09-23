@@ -1,11 +1,15 @@
+import { Platform } from "react-native";
 import type { ProductDetail } from "@/modules/product-maintenance/types";
+import { isUnsupportedPrinterTransport } from "@/modules/printer/device-list";
 import {
+  buildCashRegisterUserBarcodeLabelCommand,
   buildEmployeeCashierBarcodeLabelCommand,
 } from "@/modules/printer/cpcl-labels";
 import {
   connectPrinter,
   disconnectPrinter,
   getPrinterStatus as getNativePrinterStatus,
+  pairPrinter,
   printNativeBigDiscountLabel,
   printNativeClearanceLabel,
   printNativeDiscountLabel,
@@ -19,6 +23,7 @@ import { buildReceiptPrinterTestCommand } from "@/modules/printer/receipt";
 import { PrinterStorage } from "@/modules/printer/storage";
 import { usePrinterStore, useReceiptPrinterStore } from "@/modules/printer/state";
 import type {
+  CashRegisterUserBarcodeLabelPrintPayload,
   EmployeeCashierBarcodeLabelPrintPayload,
   PrinterDevice,
   ProductLabelPrintPayload,
@@ -65,7 +70,7 @@ function isPrinterConnectionError(error: unknown) {
 
 async function runLabelPrint(print: () => Promise<boolean>) {
   return runPrinterOperation(async () => {
-    await ensureConnectedPrinter();
+    await ensureConnectedPrinter({ preferHotWrite: true });
     try {
       return await print();
     } catch (error) {
@@ -164,18 +169,29 @@ function normalizeWarehouseLocationLabelPayload(
   };
 }
 
-async function ensureConnectedPrinter(options?: { status?: "connecting" | "reconnecting"; force?: boolean }) {
+async function ensureConnectedPrinter(options?: { status?: "connecting" | "reconnecting"; force?: boolean; preferHotWrite?: boolean }) {
   if (isIosReviewSessionActive()) {
     // 审核模式只展示打印成功结果，不能读取蓝牙状态或连接真实设备。
     return;
   }
-  const status = await getNativePrinterStatus();
-  const savedPrinter = await PrinterStorage.getPrinter();
   const store = usePrinterStore.getState();
   if (store.autoReconnectPaused) {
     store.setStatus("paused");
     throw new Error("Printer auto-connect is paused. Reconnect it in Settings first.");
   }
+
+  if (options?.preferHotWrite && !options.force && !labelConnectionInvalidated && store.hydrated &&
+      store.status === "connected" && store.savedPrinter?.address) {
+    // 热连接直接交给原生写入检查 socket，扫码打印只需一次原生调用。
+    // 若状态事件漏报断线，写入会失败并清理旧会话；不能自动重印。
+    return;
+  }
+
+  // 已完成 hydration 时复用内存中的打印机地址，避免每张标签读取一次存储。
+  // 冷连接和重连仍读取原生状态，以识别当前 socket 是否属于小票打印机。
+  const statusPromise = getNativePrinterStatus();
+  const savedPrinterPromise = store.hydrated ? Promise.resolve(store.savedPrinter) : PrinterStorage.getPrinter();
+  const [status, savedPrinter] = await Promise.all([statusPromise, savedPrinterPromise]);
 
   if (!savedPrinter?.address) {
     store.setStatus("disconnected");
@@ -183,7 +199,9 @@ async function ensureConnectedPrinter(options?: { status?: "connecting" | "recon
   }
 
   store.setSavedPrinter(savedPrinter);
-  if (!options?.force && !labelConnectionInvalidated && status.connected && status.address === savedPrinter.address) {
+  if (!options?.force && !labelConnectionInvalidated && store.hydrated &&
+      store.status === "connected" && status.connected && status.address === savedPrinter.address &&
+      store.savedPrinter?.address === savedPrinter.address) {
     store.setStatus("connected");
     store.setLastError(null);
     return;
@@ -240,6 +258,12 @@ export async function getPrinterStatus() {
 }
 
 export async function selectPrinter(device: PrinterDevice) {
+  // 明确不支持的设备必须在恢复自动重连或修改保存/连接状态前拒绝。
+  if (isUnsupportedPrinterTransport(device, Platform.OS)) {
+    throw Object.assign(new Error("Android printing does not support BLE-only devices. Select the classic Bluetooth device with the same name."), {
+      code: "PRINTER_BLE_UNSUPPORTED",
+    });
+  }
   if (isIosReviewSessionActive()) {
     const store = usePrinterStore.getState();
     store.setSavedPrinter(toSavedPrinter(device));
@@ -248,10 +272,65 @@ export async function selectPrinter(device: PrinterDevice) {
     return true;
   }
   resumePrinterAutoReconnect();
+  const selectionIntent = autoReconnectIntent;
   return runPrinterOperation(async () => {
-    await PrinterStorage.setPrinter(toSavedPrinter(device));
-    await ensureConnectedPrinter({ force: true });
-    return true;
+    const store = usePrinterStore.getState();
+    const previousPrinter = store.hydrated ? store.savedPrinter : await PrinterStorage.getPrinter();
+    const selectedPrinter = toSavedPrinter(device);
+    store.setStatus("connecting");
+    store.setLastError(null);
+
+    try {
+      // 只允许手动点选未配对设备时唤起 Android 系统配对；后台重连仍只连接已保存设备。
+      if (!device.bonded) {
+        await pairPrinter(selectedPrinter.address);
+      }
+
+      if (autoReconnectIntent !== selectionIntent || usePrinterStore.getState().autoReconnectPaused) {
+        throw new Error("Printer connection was cancelled.");
+      }
+
+      const currentStatus = await getNativePrinterStatus();
+      if (currentStatus.connected && currentStatus.address !== selectedPrinter.address) {
+        await disconnectPrinter();
+      }
+      const connected = currentStatus.connected && currentStatus.address === selectedPrinter.address
+        ? true
+        : await connectPrinter(selectedPrinter.address);
+      if (!connected) {
+        throw new Error("Unable to connect to the selected label printer.");
+      }
+      if (autoReconnectIntent !== selectionIntent || usePrinterStore.getState().autoReconnectPaused) {
+        await disconnectPrinter();
+        throw new Error("Printer connection was cancelled.");
+      }
+
+      // 配对与连接都成功后才保存，避免取消配对的同名地址进入自动重连。
+      await PrinterStorage.setPrinter(selectedPrinter);
+      store.setSavedPrinter(selectedPrinter);
+      labelConnectionInvalidated = false;
+      store.setLastError(null);
+      store.setStatus("connected");
+      return true;
+    } catch (error) {
+      store.setSavedPrinter(previousPrinter);
+      store.setLastError(error instanceof Error ? error.message : String(error));
+      if (usePrinterStore.getState().autoReconnectPaused) {
+        store.setStatus("paused");
+        throw error;
+      }
+      try {
+        const currentStatus = await getNativePrinterStatus();
+        store.setStatus(
+          currentStatus.connected && currentStatus.address === previousPrinter?.address
+            ? "connected"
+            : "error"
+        );
+      } catch {
+        store.setStatus("error");
+      }
+      throw error;
+    }
   });
 }
 
@@ -259,7 +338,8 @@ export async function getSavedPrinter() {
   if (isIosReviewSessionActive()) {
     return IOS_REVIEW_LABEL_PRINTER;
   }
-  return PrinterStorage.getPrinter();
+  const store = usePrinterStore.getState();
+  return store.hydrated ? store.savedPrinter : PrinterStorage.getPrinter();
 }
 
 export async function getSavedReceiptPrinter() {
@@ -422,6 +502,12 @@ export async function testPrinterConnection() {
 }
 
 export async function selectReceiptPrinter(device: PrinterDevice) {
+  // Android 只支持经典蓝牙小票机；必须在读取状态、断开连接或写入存储前拒绝 BLE-only 设备。
+  if (isUnsupportedPrinterTransport(device, Platform.OS)) {
+    throw Object.assign(new Error("Android printing does not support BLE-only devices. Select the classic Bluetooth device with the same name."), {
+      code: "PRINTER_BLE_UNSUPPORTED",
+    });
+  }
   if (isIosReviewSessionActive()) {
     const store = useReceiptPrinterStore.getState();
     store.setSavedPrinter(toSavedPrinter(device));
@@ -430,6 +516,37 @@ export async function selectReceiptPrinter(device: PrinterDevice) {
     return true;
   }
   const nextPrinter = toSavedPrinter(device);
+  if (Platform.OS === "android" && !device.bonded) {
+    return runPrinterOperation(async () => {
+      const store = useReceiptPrinterStore.getState();
+      const previousPrinter = store.hydrated
+        ? store.savedPrinter
+        : await PrinterStorage.getReceiptPrinter();
+      store.setStatus("connecting");
+      store.setLastError(null);
+
+      try {
+        // 未配对设备只先交给系统完成配对；小票选择沿用原有“仅保存”逻辑，不抢占标签 socket。
+        const paired = await pairPrinter(nextPrinter.address);
+        if (!paired) {
+          throw new Error("Unable to pair with the selected receipt printer.");
+        }
+        await PrinterStorage.setReceiptPrinter(nextPrinter);
+        store.setSavedPrinter(nextPrinter);
+        store.setAutoReconnectPaused(false);
+        store.setLastError(null);
+        store.setStatus("idle");
+        return true;
+      } catch (error) {
+        store.setSavedPrinter(previousPrinter);
+        store.setLastError(error instanceof Error ? error.message : String(error));
+        store.setStatus("error");
+        throw error;
+      }
+    });
+  }
+
+  // Android 已配对设备和 iOS 保持原有行为：选择只写入小票机配置，不连接原生 socket。
   await PrinterStorage.setReceiptPrinter(nextPrinter);
   const store = useReceiptPrinterStore.getState();
   store.setSavedPrinter(nextPrinter);
@@ -619,4 +736,18 @@ export async function printEmployeeCashierBarcodeLabel(
   }
   // 员工条码复用标签打印机、蓝牙权限、GB18030 编码和现有单连接链路。
   return runLabelPrint(() => printRawCommand(buildEmployeeCashierBarcodeLabelCommand(payload)));
+}
+
+export async function printCashRegisterUserBarcodeLabel(
+  payload: CashRegisterUserBarcodeLabelPrintPayload
+) {
+  if (isIosReviewSessionActive()) {
+    return true;
+  }
+  const status = await getPrinterStatus();
+  if (status.supported && !status.enabled) {
+    throw new Error("Bluetooth is disabled.");
+  }
+  // 老收银系统员工条码与个人码共用标签打印机链路；CPCL 在 JS 生成，走已有原生 print，无需重建原生包。
+  return runLabelPrint(() => printRawCommand(buildCashRegisterUserBarcodeLabelCommand(payload)));
 }

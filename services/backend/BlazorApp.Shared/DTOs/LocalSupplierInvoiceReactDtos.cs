@@ -73,6 +73,8 @@ namespace BlazorApp.Shared.DTOs
         public int? InboundStatus { get; set; }
         public int PriceIncreaseItemCount { get; set; }
         public int PriceDecreaseItemCount { get; set; }
+        /// <summary>当前进货单有效明细均已完成商品检测时为 true。</summary>
+        public bool IsProductChecked { get; set; }
         public string? Remarks { get; set; }
         [JsonConverter(typeof(LocalSupplierInvoiceAuditUtcDateTimeJsonConverter))]
         public DateTime CreatedAt { get; set; }

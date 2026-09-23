@@ -54,7 +54,7 @@ public sealed class SalesDetailReportController : ControllerBase
             cancellationToken.ThrowIfCancellationRequested();
             if (!Enum.IsDefined(kind) || !Enum.IsDefined(compareMode))
                 return BadRequest(new { success = false, message = "kind 或 compareMode 无效" });
-            if (pageIndex < 1 || pageSize < 1 || pageSize > 100)
+            if (pageIndex < 1 || pageSize < 1 || pageSize > 500)
                 return BadRequest(new { success = false, message = "分页参数无效" });
             ValidateDateRange(startDate, endDate, compareStartDate, compareEndDate);
 
@@ -137,14 +137,17 @@ public sealed class SalesDetailReportController : ControllerBase
         .Distinct(StringComparer.OrdinalIgnoreCase)
         .ToList() ?? new List<string>();
 
+    /// <summary>与前端日期控件一致：最长两年（含闰日）。</summary>
+    internal const int MaxReportDays = 731;
+
     private static void ValidateDateRange(DateTime startDate, DateTime endDate, DateTime? compareStartDate, DateTime? compareEndDate)
     {
         static void Period(DateTime start, DateTime end, string label)
         {
             if (start == default || end == default || start.Date > end.Date)
                 throw new ArgumentException($"{label}日期范围无效");
-            if ((end.Date - start.Date).TotalDays + 1 > 366)
-                throw new ArgumentException($"{label}日期范围不能超过366天");
+            if ((end.Date - start.Date).TotalDays + 1 > MaxReportDays)
+                throw new ArgumentException($"{label}日期范围不能超过 {MaxReportDays} 天");
         }
         Period(startDate, endDate, "当前");
         if (compareStartDate.HasValue != compareEndDate.HasValue)

@@ -11,6 +11,8 @@ import type {
   ProductDetail,
   ProductCodePage,
   ProductLookupItem,
+  ScanLabelResult,
+  ScanLabelPrintTarget,
   ProductHqSyncOperation,
   ProductSetCodeItem,
   StoreClearancePriceItem,
@@ -257,6 +259,48 @@ export async function lookupProducts(
     timeout: PRODUCT_QUERY_REQUEST_TIMEOUT_MS,
   });
   return Array.isArray(response.data) ? response.data.map(normalizeLookupItem) : [];
+}
+
+function normalizeScanLabelPrintTarget(payload: unknown): ScanLabelPrintTarget | null {
+  if (!payload || typeof payload !== "object") return null;
+  const data = payload as Record<string, unknown>;
+  const kind = String(data.kind ?? data.Kind ?? "").toLowerCase();
+  const barcode = String(data.barcode ?? data.Barcode ?? "").trim();
+  if (!(["product", "set", "multi", "clearance"] as string[]).includes(kind) || !barcode) {
+    return null;
+  }
+  return {
+    kind: kind as ScanLabelPrintTarget["kind"],
+    barcode,
+    retailPrice: toNumber(data.retailPrice ?? data.RetailPrice),
+    discountRate: normalizeDiscountRate(data.discountRate ?? data.DiscountRate),
+    codeId: (data.codeId ?? data.CodeId ?? null) as string | null,
+    productCode: String(data.productCode ?? data.ProductCode ?? ""),
+    storeCode: String(data.storeCode ?? data.StoreCode ?? ""),
+  };
+}
+
+/** 在线扫码一次取得候选、当前门店价及精确打印目标；不写入或缓存商品价格。 */
+export async function scanProductLabel(
+  payload: StoreProductLookupRequest,
+): Promise<ScanLabelResult> {
+  const response = await apiClient.post(`${BASE_PATH}/scan-label`, payload, {
+    ...buildRequestConfig(),
+    timeout: PRODUCT_QUERY_REQUEST_TIMEOUT_MS,
+  });
+  const data = (response.data && typeof response.data === "object"
+    ? response.data : {}) as Record<string, unknown>;
+  const candidates = data.candidates ?? data.Candidates ?? data.items ?? data.Items;
+  if (!Array.isArray(candidates)) {
+    throw new Error("INVALID_SCAN_LABEL_RESPONSE");
+  }
+  const detail = data.detail ?? data.Detail;
+  const printTarget = data.printTarget ?? data.PrintTarget;
+  return {
+    candidates: candidates.map(normalizeLookupItem),
+    detail: detail && typeof detail === "object" ? normalizeDetail(detail) : null,
+    printTarget: normalizeScanLabelPrintTarget(printTarget),
+  };
 }
 
 /**

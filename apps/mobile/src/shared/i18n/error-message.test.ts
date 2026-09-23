@@ -74,6 +74,30 @@ async function main() {
     "超时错误应映射到通用超时提示"
   );
 
+  for (const [code, expectedKey] of [
+    ["PRINTER_BLE_UNSUPPORTED", "common:errors.printerBleUnsupported"],
+    ["PRINTER_PAIRING_REQUIRED", "common:errors.printerPairingRequired"],
+    ["PRINTER_PAIRING_START_FAILED", "common:errors.printerPairingStartFailed"],
+    ["PRINTER_PAIRING_REJECTED", "common:errors.printerPairingRejected"],
+    ["PRINTER_PAIRING_TIMEOUT", "common:errors.printerPairingTimeout"],
+    ["PRINTER_PAIRING_UNAVAILABLE", "common:errors.printerPairingUnavailable"],
+  ] as const) {
+    assertEqual(
+      resolveLocalizedErrorMessage({ code, message: "Bluetooth operation timed out" }, { language: "zh", t }),
+      expectedKey,
+      `${code} 应优先显示打印机配对提示，而不是通用超时`
+    );
+  }
+
+  assertEqual(
+    resolveLocalizedErrorMessage({ code: "CONNECT_ERROR", message: "read failed, socket might closed or timeout" }, {
+      language: "zh",
+      t,
+    }),
+    "common:errors.printerConnectTimeout",
+    "打印机 RFCOMM 连接超时应给出打印机检查建议"
+  );
+
   assertEqual(
     resolveLocalizedErrorMessage({ message: "Network Error" }, {
       language: "en",

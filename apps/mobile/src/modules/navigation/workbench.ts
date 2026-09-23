@@ -21,6 +21,7 @@ const WORKBENCH_SECTIONS: WorkbenchNavigationSection[] = [
     items: [
       { routeName: "product-query", labelKey: "routes.productQuery", icon: "barcode-scan" },
       { routeName: "product-insights", labelKey: "routes.productInsights", icon: "chart-timeline-variant" },
+      { routeName: "seasonal-product-insights", labelKey: "routes.seasonalProductInsights", icon: "calendar-star" },
       { routeName: "price-updates", labelKey: "routes.priceUpdates", icon: "tag-arrow-up-outline" },
       { routeName: "home", labelKey: "routes.storeOrdering", icon: "storefront-outline" },
       { routeName: "cart", labelKey: "routes.cart", icon: "cart-outline" },
@@ -59,6 +60,7 @@ const WORKBENCH_SECTIONS: WorkbenchNavigationSection[] = [
       { routeName: "attendance-management", labelKey: "routes.attendanceManagement", icon: "calendar-edit" },
       { routeName: "users", labelKey: "routes.users", icon: "account-group-outline" },
       { routeName: "user-admin", labelKey: "routes.userAdmin", icon: "account-cog-outline" },
+      { routeName: "cash-register-users", labelKey: "routes.cashRegisterUsers", icon: "barcode" },
       { routeName: "roles", labelKey: "routes.roles", icon: "shield-account-outline" },
       { routeName: "permissions", labelKey: "routes.permissions", icon: "key-outline" },
       { routeName: "employee-profile", labelKey: "routes.employeeProfile", icon: "card-account-details-outline" },

@@ -10,6 +10,8 @@ export interface PrinterDevice {
   address: string;
   bonded: boolean;
   connected: boolean;
+  transport?: "classic" | "ble" | "dual" | "unknown";
+  deviceClass?: number | null;
 }
 
 export interface PrinterStatus {
@@ -60,6 +62,12 @@ export interface WarehouseLocationLabelPrintPayload {
   productName?: string | null;
   middlePackageQuantity?: number | null;
   productCount: number;
+}
+
+export interface CashRegisterUserBarcodeLabelPrintPayload {
+  operatorName: string;
+  storeName?: string | null;
+  barcode: string;
 }
 
 export interface EmployeeCashierBarcodeLabelPrintPayload {

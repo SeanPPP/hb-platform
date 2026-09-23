@@ -187,6 +187,12 @@
   min-width: 850px;
 }
 
+/* auto 布局会把表格的富余宽度按各列内容宽度等比分配，层级列内容最宽因而独吞近四成。
+   给它一个首选宽度，富余宽度改由右侧指标列分担；列内容超过此宽度时仍会自动撑开，不会裁切。 */
+.weeklyTable th:first-child {
+  width: 260px;
+}
+
 .dataTable th,
 .dataTable td {
   height: 44px;

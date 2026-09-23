@@ -11,9 +11,9 @@ public partial class SalesDashboardReactService
         // ProvisionalFresh 批末升级 Fresh 会修改它，事实身份由版本、任务和 LastAggregatedAt 共同确定。
         return $"""
 -- 覆盖检查和后面的读取都在调用方的同一 SNAPSHOT 中；缺少任一天就整份回退。
--- 前端最多请求 366 天；更长的直接调用仍由原查询处理，不能截断覆盖检查后误放行。
-IF DATEDIFF(day,@sdrCurrentStart,@sdrCurrentEnd)>366
- OR (@sdrHasCompare=1 AND DATEDIFF(day,@sdrCompareStart,@sdrCompareEnd)>366)
+-- 前端最多请求 731 天（两年）；更长的直接调用仍由原查询处理，不能截断覆盖检查后误放行。
+IF DATEDIFF(day,@sdrCurrentStart,@sdrCurrentEnd)>731
+ OR (@sdrHasCompare=1 AND DATEDIFF(day,@sdrCompareStart,@sdrCompareEnd)>731)
  THROW 51012, N'销售明细查询投影日期范围超限。', 1;
 IF OBJECT_ID(N'dbo.SalesDetailQueryDaily', N'U') IS NULL
  OR OBJECT_ID(N'dbo.SalesDetailQueryProductAlias', N'U') IS NULL

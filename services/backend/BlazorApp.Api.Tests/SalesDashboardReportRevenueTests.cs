@@ -1504,14 +1504,21 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
             coverageReadCount += 1;
             throw new InvalidOperationException("模拟来源读取失败");
         };
+        // 本用例只关心覆盖缓存，重算桩化为立即完成，避免真实统计任务拖慢后台线程。
+        service.StoreStatisticsRefreshTestInterceptor = _ => Task.CompletedTask;
         var range = new DateRangeDto { StartDate = date, EndDate = date };
 
         var first = await service.GetBranchDailyPerformanceAsync(range, new List<string> { "S1" });
+        var readsAfterFirst = coverageReadCount;
         var second = await service.GetBranchDailyPerformanceAsync(range, new List<string> { "S1" });
+        var readsBySecond = coverageReadCount - readsAfterFirst;
 
         Assert.True(first.StatisticsPending);
         Assert.True(second.StatisticsPending);
-        Assert.Equal(4, coverageReadCount);
+        // 每次调用的读取次数取决于后台重算能否在 250ms 等待窗口内完成（1 或 2 次），
+        // 不断言精确值；只要求第二次调用仍真正读取来源，证明失败结果没有被短缓存复用。
+        Assert.True(readsAfterFirst >= 1, $"首次调用应读取来源覆盖，实际 {readsAfterFirst} 次");
+        Assert.True(readsBySecond >= 1, $"失败结果不应进入短缓存，第二次调用读取 {readsBySecond} 次");
     }
 
     [Fact]
@@ -2454,6 +2461,166 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         );
 
         Assert.Empty(result);
+    }
+
+    [Fact]
+    public async Task GetChinaSupplierBranchTotalsAsync_按分店汇总全部中国供应商且同期不限本期上榜()
+    {
+        await SeedStoreAsync("S1", "分店一");
+        await SeedStoreAsync("S2", "分店二");
+        await SeedChinaSupplierAsync("CN1", "直写供应商");
+        await SeedChinaSupplierAsync("CN2", "旧200供应商");
+        await SeedChinaSupplierAsync("CN-OLD", "去年供应商");
+        await SeedSupplierMappingAsync("P-200", "200", "CN2");
+        var current = new DateTime(2026, 7, 1);
+        var compare = new DateTime(2025, 7, 1);
+        // 本期：S1 有直写码与旧 200 两条通道；映射不到的 200 商品不属于中国货。
+        await SeedProductStoreDailySalesAsync(current, "S1", "CN1", "P-CN1", "直写商品", 100m, 10, 4, totalCost: 60m, grossProfit: 40m);
+        await SeedProductStoreDailySalesAsync(current, "S1", "200", "P-200", "旧200商品", 50m, 5, 2, totalCost: 30m, grossProfit: 20m);
+        await SeedProductStoreDailySalesAsync(current, "S1", "200", "P-UNMAPPED", "澳洲200商品", 999m, 9, 3, totalCost: 500m, grossProfit: 499m);
+        await SeedProductStoreDailySalesAsync(current, "S2", "CN1", "P-CN1", "直写商品", 30m, 3, 1, totalCost: 18m, grossProfit: 12m);
+        // 同期：CN-OLD 本期没有销售，排行不会带出它的同期，但分店中国货同期必须计入。
+        await SeedProductStoreDailySalesAsync(compare, "S1", "CN-OLD", "P-OLD", "去年商品", 70m, 7, 2, totalCost: 42m, grossProfit: 28m);
+        await SeedProductStoreDailySalesAsync(compare, "S2", "CN1", "P-CN1", "直写商品", 20m, 2, 1);
+        var service = CreateService();
+        var range = new DateRangeDto
+        {
+            StartDate = current,
+            EndDate = current,
+            CompareStartDate = compare,
+            CompareEndDate = compare,
+        };
+        var branches = new List<string> { "S1", "S2" };
+        var status = await service.GetProductReportStatisticStatusAsync(range);
+
+        var result = await service.GetChinaSupplierBranchTotalsAsync(range, branches, status);
+
+        Assert.Equal(new[] { "S1", "S2" }, result.Select(row => row.BranchCode));
+        var s1 = result[0];
+        Assert.Equal("分店一", s1.BranchName);
+        Assert.Equal(150m, s1.TotalAmount);
+        Assert.Equal(15, s1.TotalQuantity);
+        Assert.Equal(2, s1.SupplierCount);
+        Assert.Equal(60m, s1.GrossProfit);
+        Assert.Equal(0.4m, s1.GrossMarginRate);
+        Assert.Equal("Complete", s1.CostStatus);
+        Assert.Equal(70m, s1.CompareTotalAmount);
+        Assert.Equal(7, s1.CompareTotalQuantity);
+        Assert.Equal(28m, s1.CompareGrossProfit);
+        var s2 = result[1];
+        Assert.Equal(30m, s2.TotalAmount);
+        Assert.Equal(20m, s2.CompareTotalAmount);
+        Assert.Null(s2.CompareGrossProfit);
+        Assert.Equal("Missing", s2.CompareCostStatus);
+
+        // 本期与中国供应商排行同源同口径：分店合计之和等于排行合计。
+        var rank = await service.GetChinaSupplierSalesRankAsync(range, branches, 1000);
+        Assert.Equal(rank.Sum(row => row.TotalAmount), result.Sum(row => row.TotalAmount));
+        Assert.Empty(await service.GetChinaSupplierBranchTotalsAsync(range, new List<string>(), status));
+    }
+
+    [Fact]
+    public async Task GetChinaSupplierBranchTotalsAsync_只在同期有中国货的分店也返回且本期为零()
+    {
+        await SeedChinaSupplierAsync("CN1", "直写供应商");
+        var current = new DateTime(2026, 7, 1);
+        var compare = new DateTime(2025, 7, 1);
+        await SeedProductStoreDailySalesAsync(current, "S1", "CN1", "P-CN1", "直写商品", 10m, 1, 1, totalCost: 6m, grossProfit: 4m);
+        await SeedProductStoreDailySalesAsync(compare, "S3", "CN1", "P-CN1", "直写商品", 40m, 4, 2, totalCost: 24m, grossProfit: 16m);
+        var service = CreateService();
+        var range = new DateRangeDto
+        {
+            StartDate = current,
+            EndDate = current,
+            CompareStartDate = compare,
+            CompareEndDate = compare,
+        };
+        var status = await service.GetProductReportStatisticStatusAsync(range);
+
+        var result = await service.GetChinaSupplierBranchTotalsAsync(range, new List<string> { "S1", "S3" }, status);
+
+        var s3 = Assert.Single(result, row => row.BranchCode == "S3");
+        Assert.Equal("S3", s3.BranchName);
+        Assert.Equal(0m, s3.TotalAmount);
+        Assert.Equal("NoActivity", s3.CostStatus);
+        Assert.Equal(40m, s3.CompareTotalAmount);
+        Assert.Equal("Complete", s3.CompareCostStatus);
+    }
+
+    [Fact]
+    public async Task 移动端中国页签预热后三块默认视图均命中缓存且自动清理不清版本化条目()
+    {
+        // 预热按悉尼业务日取今天/昨天，同期按 ISO 周同星期几；四个日期的三类统计都要处于同一 Fresh 版本。
+        var today = SalesStatisticsBusinessDate.GetBusinessDate(DateTimeOffset.UtcNow);
+        var completedAt = DateTime.UtcNow;
+        var dates = new[] { today, today.AddDays(-1) }
+            .SelectMany(date => new[] { date, MobileProductReportRange.LastYearSameIsoWeekday(date) })
+            .Distinct()
+            .ToList();
+        var types = new[]
+        {
+            SalesStatisticType.ProductStoreDaily,
+            SalesStatisticType.AustralianSupplierStoreSales,
+            SalesStatisticType.ChinaSupplierStoreSales,
+        };
+        await _localDb.Insertable(dates.SelectMany(date => types.Select(type => new SalesStatisticRefreshState
+        {
+            StatisticType = type,
+            Date = date,
+            Status = SalesStatisticRefreshStatus.Fresh,
+            LastAggregatedAtUtc = completedAt,
+            CompletedAtUtc = completedAt,
+            SourceProductVersion = "warmup-version",
+        })).ToList()).ExecuteCommandAsync();
+        await SeedStoreAsync("S1", "分店一");
+        await SeedChinaSupplierAsync("CN1", "直写供应商");
+        await SeedProductStoreDailySalesAsync(today, "S1", "CN1", "P-CN1", "直写商品", 100m, 10, 3, totalCost: 60m, grossProfit: 40m);
+        await _localDb.Insertable(new ChinaSupplierStoreSalesDetail
+        {
+            Date = today, BranchCode = "S1", SupplierCode = "CN1", SupplierName = "直写供应商",
+            TotalAmount = 100m, TotalQuantity = 10, OrderCount = 3, GrossProfit = 40m, TotalCost = 60m,
+            StatisticRowCount = 1, CostedRowCount = 1, GrossProfitRowCount = 1, UpdateTime = DateTime.UtcNow,
+        }).ExecuteCommandAsync();
+
+        var rollupReads = 0;
+        var productReads = 0;
+        _localDb.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (sql.Contains("ChinaSupplierStoreSalesDetail", StringComparison.OrdinalIgnoreCase)) rollupReads++;
+            if (sql.Contains("ProductStoreDailySalesStatistic", StringComparison.OrdinalIgnoreCase)) productReads++;
+        };
+        var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = CreateService(useSupplierRollups: true, cache: cache);
+        var storeOptions = new Mock<IProductMovementReportService>();
+        storeOptions.Setup(x => x.GetStoreOptionsAsync(It.IsAny<IReadOnlyList<string>?>()))
+            .ReturnsAsync(new List<ProductMovementReportStoreOptionDto> { new() { Label = "分店一", Value = "S1" } });
+        var warmer = new SalesDashboardCacheWarmer(service, NullLogger<SalesDashboardCacheWarmer>.Instance, cache, storeOptions.Object);
+
+        await warmer.WarmUpMobileChinaTabAsync();
+        Assert.True(rollupReads > 0, "预热必须真正读取供应商汇总表");
+        Assert.True(productReads > 0, "预热必须真正读取商品日统计");
+        var warmedRollupReads = rollupReads;
+        var warmedProductReads = productReads;
+
+        // 与移动端控制器完全相同的参数：显式分店列表、排行 topN=1000、商品页 1/20、中国范围、数量降序。
+        var range = MobileProductReportRange.Day(today);
+        var branches = new List<string> { "S1" };
+        var status = await service.GetProductReportStatisticStatusAsync(range);
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh, status.StatisticStatus);
+        var rank = await service.GetChinaSupplierSalesRankAsync(range, branches, 1000, null, status);
+        var totals = await service.GetChinaSupplierBranchTotalsAsync(range, branches, status);
+        var page = await service.GetEnhancedSalesProductDetailsAsync(range, branches, null, null, 1, 20, null, status, true, "quantity", "desc");
+        Assert.Equal("CN1", Assert.Single(rank).SupplierCode);
+        Assert.Equal(100m, Assert.Single(totals).TotalAmount);
+        Assert.Equal("P-CN1", Assert.Single(page.Data).ProductCode);
+        Assert.Equal(warmedRollupReads, rollupReads);
+        Assert.Equal(warmedProductReads, productReads);
+
+        // 统计刷新后的自动清理不能把按版本缓存的排行与分店合计清掉。
+        await warmer.ClearCacheAsync();
+        await service.GetChinaSupplierSalesRankAsync(range, branches, 1000, null, status);
+        await service.GetChinaSupplierBranchTotalsAsync(range, branches, status);
+        Assert.Equal(warmedRollupReads, rollupReads);
     }
 
     [Fact]
@@ -3673,6 +3840,70 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
 
         var objectResult = Assert.IsType<ObjectResult>(response);
         Assert.Equal(500, objectResult.StatusCode);
+    }
+
+    [Fact]
+    public async Task GetChinaSupplierBranchTotals_主查询失败时返回服务器错误而非Fresh空结果()
+    {
+        var date = new DateTime(2026, 7, 1);
+        await EnsureProductStatisticRefreshStateAsync(date);
+        await _localDb.Ado.ExecuteCommandAsync("DROP TABLE ProductStoreDailySalesStatistic");
+        var controller = CreateController(CreateService(), CreateUserService(new[] { "S1" }));
+
+        var response = await controller.GetChinaSupplierBranchTotalsAsync(
+            date,
+            date,
+            branchCodes: new List<string> { "S1" }
+        );
+
+        var objectResult = Assert.IsType<ObjectResult>(response);
+        Assert.Equal(500, objectResult.StatusCode);
+    }
+
+    [Fact]
+    public async Task GetChinaSupplierBranchTotals_普通用户无分店时不调用服务层全量查询()
+    {
+        var serviceMock = new Mock<ISalesDashboardReactService>();
+        var controller = CreateController(serviceMock.Object, CreateUserService(Array.Empty<string>()));
+
+        var response = await controller.GetChinaSupplierBranchTotalsAsync(
+            new DateTime(2026, 7, 1),
+            new DateTime(2026, 7, 1)
+        );
+
+        var responseValue = AssertOk(response).Value;
+        Assert.Empty(ExtractAnonymousData<List<ChinaSupplierBranchTotalDto>>(responseValue));
+        Assert.Equal("no-access", GetStringProperty(responseValue!, "CacheVersion"));
+        serviceMock.Verify(
+            service => service.GetChinaSupplierBranchTotalsAsync(
+                It.IsAny<DateRangeDto>(),
+                It.IsAny<List<string>?>(),
+                It.IsAny<ProductReportStatisticStatusDto>()
+            ),
+            Times.Never
+        );
+    }
+
+    [Fact]
+    public async Task GetChinaSupplierBranchTotals_返回统一包络且透传授权分店()
+    {
+        await SeedChinaSupplierAsync("CN1", "直写供应商");
+        await SeedProductStoreDailySalesAsync(new DateTime(2026, 7, 1), "S1", "CN1", "P-CN1", "直写商品", 88m, 8, 2);
+        await SeedProductStoreDailySalesAsync(new DateTime(2026, 7, 1), "S2", "CN1", "P-CN1", "直写商品", 12m, 1, 1);
+        var controller = CreateController(CreateService(), CreateUserService(new[] { "S1" }));
+
+        var response = await controller.GetChinaSupplierBranchTotalsAsync(
+            new DateTime(2026, 7, 1),
+            new DateTime(2026, 7, 1),
+            branchCodes: new List<string> { "S1", "S2" }
+        );
+
+        var responseValue = AssertOk(response).Value;
+        var row = Assert.Single(ExtractAnonymousData<List<ChinaSupplierBranchTotalDto>>(responseValue));
+        Assert.Equal("S1", row.BranchCode);
+        Assert.Equal(88m, row.TotalAmount);
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh, GetStringProperty(responseValue!, "StatisticStatus"));
+        Assert.False(string.IsNullOrWhiteSpace(GetStringProperty(responseValue!, "CacheVersion")));
     }
 
     [Fact]
@@ -5632,7 +5863,7 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         return await task!;
     }
 
-    private SalesDashboardReactService CreateService(bool useSupplierRollups = false)
+    private SalesDashboardReactService CreateService(bool useSupplierRollups = false, IMemoryCache? cache = null)
     {
         var localContext = CreateSqlSugarContext(_localDb);
         var posmContext = CreatePosmSqlSugarContext(_posmDb);
@@ -5658,7 +5889,7 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
             posmContext,
             Mock.Of<IMapper>(),
             NullLogger<SalesDashboardReactService>.Instance,
-            new MemoryCache(new MemoryCacheOptions()),
+            cache ?? new MemoryCache(new MemoryCacheOptions()),
             services.GetRequiredService<IServiceScopeFactory>(),
             configuration
         );
