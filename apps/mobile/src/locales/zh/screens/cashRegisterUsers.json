@@ -1,0 +1,91 @@
+{
+  "title": "收银用户条码",
+  "subtitle": "老收银系统员工登录条码，共 {{count}} 条",
+  "subtitleLoading": "老收银系统员工登录条码",
+  "filters": {
+    "allStores": "全部分店",
+    "pickStore": "选择分店",
+    "searchPlaceholder": "搜索操作员、条码或备注",
+    "statusAll": "全部"
+  },
+  "status": {
+    "active": "启用",
+    "disabled": "停用"
+  },
+  "roles": {
+    "admin": "管理员",
+    "cashier": "收银员"
+  },
+  "printer": {
+    "notConfigured": "未设置标签机",
+    "connected": "标签机已连接",
+    "connecting": "标签机连接中",
+    "disconnected": "标签机未连接",
+    "openSettingsHint": "打开标签打印机设置"
+  },
+  "card": {
+    "noLinkedUser": "未关联后台用户",
+    "noStore": "未关联分店",
+    "printCount": "已打印 {{count}} 次"
+  },
+  "actions": {
+    "create": "新建",
+    "edit": "编辑",
+    "save": "保存",
+    "enable": "启用",
+    "disable": "停用",
+    "print": "打印",
+    "generate": "生成",
+    "recheckAccess": "重新检查权限",
+    "regenerate": "换码"
+  },
+  "fields": {
+    "storePlaceholder": "选择分店",
+    "userPlaceholder": "选择关联后台用户",
+    "operatorUser": "操作员",
+    "userBarcode": "条码（13 位）",
+    "loginRole": "登录角色",
+    "remark": "备注",
+    "enabled": "启用",
+    "singleActiveHint": "同一后台用户只保留一条启用条码，启用后会停用其旧条码和个人条码。"
+  },
+  "dialogs": {
+    "createTitle": "新建收银用户条码",
+    "editTitle": "编辑收银用户条码",
+    "pickUserTitle": "选择后台用户",
+    "pickUserSearch": "搜索用户名或姓名",
+    "pickUserEmpty": "没有可关联的启用用户",
+    "enableTitle": "启用条码",
+    "enableDescription": "确认启用 {{name}} 的收银条码？",
+    "disableTitle": "停用条码",
+    "disableDescription": "停用后 {{name}} 不能再用该条码登录老收银系统，确认停用？"
+  },
+  "validation": {
+    "storeRequired": "请选择分店",
+    "userRequired": "请选择关联后台用户",
+    "barcodeRequired": "请输入条码",
+    "barcodeLength": "条码必须是 13 位",
+    "operatorTooLong": "操作员不能超过 100 个字符",
+    "remarkTooLong": "备注不能超过 500 个字符",
+    "storeNotManageable": "当前分店仅可查看，不能保存"
+  },
+  "messages": {
+    "noManageableStore": "当前账号没有可管理的主分店，只显示本人的收银条码；新建需要主分店",
+    "noAccessTitle": "没有访问权限",
+    "noAccessDescription": "需要「移动端管理收银用户条码」或「移动端打印收银用户条码」权限",
+    "loadFailedTitle": "加载失败",
+    "loadFailedDescription": "收银用户条码加载失败，请稍后重试",
+    "emptyTitle": "暂无收银用户条码",
+    "emptyDescription": "可调整分店、状态或搜索条件后再试",
+    "userOptionsFailed": "可关联用户加载失败",
+    "created": "已创建",
+    "updated": "已保存",
+    "enabled": "已启用",
+    "disabled": "已停用",
+    "saveFailed": "保存失败，请稍后重试",
+    "printed": "已打印并记录打印次数",
+    "printBusy": "正在打印，请稍候",
+    "printFailed": "打印失败，请检查标签机后重试",
+    "printCountFailed": "标签已打印，但打印次数未记录：{{reason}}"
+  }
+}

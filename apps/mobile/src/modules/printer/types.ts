@@ -64,6 +64,12 @@ export interface WarehouseLocationLabelPrintPayload {
   productCount: number;
 }
 
+export interface CashRegisterUserBarcodeLabelPrintPayload {
+  operatorName: string;
+  storeName?: string | null;
+  barcode: string;
+}
+
 export interface EmployeeCashierBarcodeLabelPrintPayload {
   employeeName: string;
   username: string;

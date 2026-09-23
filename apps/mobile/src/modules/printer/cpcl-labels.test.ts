@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   buildBigDiscountLabelCommand,
+  buildCashRegisterUserBarcodeLabelCommand,
   buildClearanceLabelCommand,
   buildEmployeeCashierBarcodeLabelCommand,
   buildDiscountLabelCommand,
@@ -455,3 +456,48 @@ assert.ok(emptyWarehouseLocationCommand.includes("TEXT 7 0 0 21 --"), "货位标
 assert.equal(emptyWarehouseLocationCommand.includes("BARCODE 128"), false, "货位标识全空时不打印空条码");
 
 console.log("cpcl-labels.test.ts: ok");
+
+const cashRegisterUserCommand = buildCashRegisterUserBarcodeLabelCommand({
+  operatorName: "VALINDA",
+  storeName: "Campbelltown",
+  barcode: "6755419997376",
+});
+assert.ok(cashRegisterUserCommand.startsWith("! 0 200 200 400 1\r\n"), "收银用户条码标签使用标准标签高度");
+assert.ok(cashRegisterUserCommand.includes("TEXT 7 0 20 8 VALINDA"), "收银用户条码标签包含操作员名");
+assert.ok(cashRegisterUserCommand.includes("TEXT 4 0 20 44 Campbelltown"), "收银用户条码标签包含分店名");
+assert.ok(
+  cashRegisterUserCommand.includes("BARCODE EAN13 2 2 80 20 96 6755419997376"),
+  "合法 EAN13 收银码输出一维 EAN13 条码，供老收银扫码枪识别"
+);
+assert.ok(cashRegisterUserCommand.includes("TEXT 4 0 330 120 6755419997376"), "条码右侧保留可读编号");
+assert.equal(cashRegisterUserCommand.includes("BARCODE QR"), false, "老收银员工码不使用二维码");
+const cashRegisterUserTextYs = cashRegisterUserCommand
+  .split("\r\n")
+  .filter((line) => line.startsWith("TEXT ") || line.startsWith("BARCODE "))
+  .map((line) => (line.startsWith("TEXT ") ? Number(line.split(" ")[4]) : Number(line.split(" ")[6]) + Number(line.split(" ")[4])));
+assert.ok(
+  cashRegisterUserTextYs.every((y) => y <= 180),
+  "收银用户条码标签所有元素都必须落在普通价格标签的单张安全高度内"
+);
+assert.ok(cashRegisterUserCommand.endsWith("PRINT\r\n"), "收银用户条码标签必须发送 PRINT");
+
+const cashRegisterUserCode128Command = buildCashRegisterUserBarcodeLabelCommand({
+  operatorName: "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+  storeName: null,
+  // 生产 HQ 同步来的历史条码（如截图中的 6755419997372）不一定满足 EAN13 校验位。
+  barcode: "6755419997372",
+});
+assert.ok(
+  cashRegisterUserCode128Command.includes("BARCODE 128 1 2 80 20 96 6755419997372"),
+  "校验位不合法的历史条码按 Web 规则退回 Code128"
+);
+assert.ok(
+  cashRegisterUserCode128Command.includes("TEXT 7 0 20 8 ABCDEFGHIJKLMNOPQR\r\n"),
+  "操作员名按 530 点实际文字宽度截断"
+);
+assert.ok(cashRegisterUserCode128Command.includes("TEXT 4 0 20 44 --"), "缺少分店名时显示占位符");
+assert.throws(
+  () => buildCashRegisterUserBarcodeLabelCommand({ operatorName: "A", barcode: " " }),
+  /barcode is required/,
+  "空条码不能生成打印指令"
+);
