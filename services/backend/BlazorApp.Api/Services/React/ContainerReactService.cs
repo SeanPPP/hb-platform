@@ -5599,7 +5599,8 @@ namespace BlazorApp.Api.Services.React
             ContainerDetailBatchScopeDto request,
             Func<Container?, List<ContainerDetail>, List<UpdateContainerDetailDto>> buildUpdates,
             string operation,
-            string parameters
+            string parameters,
+            Func<List<ContainerDetail>, Task>? afterUpdate = null
         )
         {
             var deadlockRetryCount = 0;
@@ -5699,6 +5700,10 @@ namespace BlazorApp.Api.Services.React
                         mutationLock: mutationLock,
                         preAcquiredSetChildPurchasePriceLock: scopedImportLock
                     );
+                    if (afterUpdate != null)
+                    {
+                        await afterUpdate(details);
+                    }
 
                     await _context.Db.Ado.CommitTranAsync();
                     return updateResult.TotalUpdated;
@@ -5867,6 +5872,20 @@ namespace BlazorApp.Api.Services.React
                 return 0;
             }
 
+            // 供货说明只在下架时有意义；录入有误在开事务前拒绝，避免“已下架但说明没记上”。
+            NormalizedSupplyNotice? supplyNotice = null;
+            if (!request.IsActive.Value && request.SupplyNotice != null)
+            {
+                var (normalizedNotice, noticeError) = WarehouseProductSupplyNoticeRules.Normalize(
+                    request.SupplyNotice
+                );
+                if (noticeError != null)
+                {
+                    throw new ArgumentException(noticeError);
+                }
+                supplyNotice = normalizedNotice;
+            }
+
             return await ExecuteScopedBatchUpdateUnderContainerLockAsync(
                 containerGuid,
                 request,
@@ -5878,7 +5897,18 @@ namespace BlazorApp.Api.Services.React
                     })
                     .ToList(),
                 "set-status",
-                request.IsActive.Value ? "isActive=true" : "isActive=false"
+                request.IsActive.Value ? "isActive=true" : "isActive=false",
+                // 与状态写入同一事务登记说明；上架时的说明关闭已由明细回写的裸 SQL 之后统一处理。
+                afterUpdate: supplyNotice == null
+                    ? null
+                    : details => WarehouseProductSupplyNoticeWriter.UpsertOpenNoticesAsync(
+                        _context.Db,
+                        GetNormalizedProductCodes(details),
+                        supplyNotice,
+                        _currentUserService.GetCurrentUsername() ?? "System",
+                        source: "ContainerDetail",
+                        DateTime.UtcNow
+                    )
             );
         }
 
