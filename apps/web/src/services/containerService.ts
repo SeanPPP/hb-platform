@@ -1,3 +1,4 @@
+import type { SupplyNoticeInput } from '../types/supplyNotice'
 import type { ApiResponse } from '../types/api'
 import type {
   AlignDomesticProductCodeRequest,
@@ -391,8 +392,15 @@ export async function setContainerDetailStatusByScope(
   scope: ContainerDetailBatchScope,
   isActive: boolean,
   previewToken: string,
+  supplyNotice?: SupplyNoticeInput,
 ): Promise<ContainerDetailBatchActionResult> {
-  return postContainerDetailAction(containerGuid, 'set-status', { ...scope, isActive, previewToken }, '批量上下架失败')
+  // 下架时随请求登记供货说明；上架不传，也不进入预览指纹。
+  return postContainerDetailAction(
+    containerGuid,
+    'set-status',
+    { ...scope, isActive, previewToken, ...(supplyNotice ? { supplyNotice } : {}) },
+    '批量上下架失败',
+  )
 }
 
 export async function assignContainerDetailCategoryByScope(

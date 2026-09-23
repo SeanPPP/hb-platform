@@ -1,4 +1,5 @@
 import type { ApiResponse } from '../types/api'
+import type { SupplyNoticeInput } from '../types/supplyNotice'
 import type { SyncResult } from '../types/container'
 import request from '../utils/request'
 import { normalizePriceNotificationSummary, type PriceNotificationSummary } from '../utils/priceNotification'
@@ -311,6 +312,8 @@ export type PatchWarehouseProductPayload =
 export interface BatchToggleWarehouseProductsActivePayload {
   productCodes: string[]
   isActive: boolean
+  /** 下架时随请求登记的供货说明；上架时不传。 */
+  supplyNotice?: SupplyNoticeInput
 }
 
 export interface DetectionItem {

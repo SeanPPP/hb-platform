@@ -36,6 +36,14 @@ assertEqual(shopNavMessages.en.shop.purchaseSalesAnalysis, 'Purchase & Sales', '
 assertEqual(shopNavMessages.zh.shop.purchaseSalesAnalysis, '进货销量分析', '中文进货销量分析导航文案应随布局懒注册')
 assertEqual((zh.shop as Record<string, unknown>).purchaseSalesAnalysis, undefined, '导航增量文案不得进入首屏主文案包')
 
+// 我关注的商品：入口文案随布局懒注册，横幅用专属标题与副标题。
+const supplyWatchesCopy = resolveShopBannerCopy('/shop/supply-watches')
+assertEqual(supplyWatchesCopy.titleKey, 'shop.supplyWatches', '我关注的商品页标题应使用专属文案')
+assertEqual(supplyWatchesCopy.subtitleKey, 'shop.supplyWatchesSubtitle', '我关注的商品页副标题不应复用历史订单文案')
+assertEqual(shopNavMessages.zh.shop.supplyWatches, '我关注的商品', '中文关注导航文案应随布局懒注册')
+assertEqual(shopNavMessages.en.shop.supplyWatches, 'Watched', '英文关注导航文案应随布局懒注册')
+assertEqual((zh.shop as Record<string, unknown>).supplyWatches, undefined, '关注导航文案不得进入首屏主文案包')
+
 const ordersCopy = resolveShopBannerCopy('/shop/orders')
 assertEqual(ordersCopy.titleKey, 'shop.orderHistory', '历史订单页标题应保持历史订单文案')
 assertEqual(ordersCopy.subtitleKey, 'shop.ordersBannerSubtitle', '历史订单页副标题应保持订单汇总文案')
