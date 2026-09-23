@@ -3531,6 +3531,7 @@
         "dragCancel": "已取消移动{{column}}列。"
       },
       "receivedTotal": "已收总金额",
+      "isProductChecked": "是否检测商品",
       "flowStatus": "流程状态",
       "inboundStatus": "入库状态",
       "productKeyword": "商品关键词",

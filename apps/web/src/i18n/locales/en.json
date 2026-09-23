@@ -3531,6 +3531,7 @@
         "dragCancel": "Cancelled moving the {{column}} column."
       },
       "receivedTotal": "Received Total",
+      "isProductChecked": "Products Checked",
       "flowStatus": "Flow Status",
       "inboundStatus": "Inbound Status",
       "productKeyword": "Product Keyword",
