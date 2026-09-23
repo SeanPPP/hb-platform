@@ -1,0 +1,1877 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Uncle Bills 补货信号</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Libre+Franklin:wght@500;600;700;800&family=Work+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap">
+<style>
+  :root {
+    --bg: #F5F4EF;
+    --surface: #FFFFFF;
+    --surface-2: #EDEBE3;
+    --ink: #1B1E22;
+    --ink-soft: #5B6169;
+    --border: #DDD9CE;
+    --accent: #0E6B63;
+    --accent-ink: #FFFFFF;
+    --accent-soft: #E3F0EE;
+    --warn: #9A5A0A;
+    --warn-bg: #FBEEDD;
+    --crit: #A6342F;
+    --crit-bg: #FBEAEA;
+    --good: #276B43;
+    --good-bg: #E8F3EC;
+    --series-purchased: #2a78d6;
+    --series-sold: #eb6834;
+    --shadow: 0 1px 2px rgba(27,30,34,.06), 0 4px 12px rgba(27,30,34,.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14171A;
+      --surface: #1C2024;
+      --surface-2: #23282D;
+      --ink: #ECEAE3;
+      --ink-soft: #A3A9AE;
+      --border: #33393F;
+      --accent: #3FCFC0;
+      --accent-ink: #0B1210;
+      --accent-soft: #163430;
+      --warn: #E8A94B;
+      --warn-bg: #3A2C15;
+      --crit: #E8827E;
+      --crit-bg: #3A1E1E;
+      --good: #6ED39C;
+      --good-bg: #17301F;
+      --series-purchased: #3987e5;
+      --series-sold: #d95926;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 4px 16px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #14171A;
+    --surface: #1C2024;
+    --surface-2: #23282D;
+    --ink: #ECEAE3;
+    --ink-soft: #A3A9AE;
+    --border: #33393F;
+    --accent: #3FCFC0;
+    --accent-ink: #0B1210;
+    --accent-soft: #163430;
+    --warn: #E8A94B;
+    --warn-bg: #3A2C15;
+    --crit: #E8827E;
+    --crit-bg: #3A1E1E;
+    --good: #6ED39C;
+    --good-bg: #17301F;
+    --series-purchased: #3987e5;
+    --series-sold: #d95926;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 4px 16px rgba(0,0,0,.35);
+  }
+
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: 'Work Sans', 'PingFang SC', 'Microsoft YaHei', 'Hiragino Sans GB', system-ui, sans-serif;
+    padding-inline: 16px;
+    padding-block: 20px 48px;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  h1, h2, h3 {
+    font-family: 'Libre Franklin', 'PingFang SC', 'Microsoft YaHei', 'Hiragino Sans GB', system-ui, sans-serif;
+    font-weight: 700;
+    letter-spacing: -.01em;
+    text-wrap: balance;
+  }
+  .num, td.num, .kpi-value, .kpi-sub {
+    font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+  button { font-family: inherit; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .wrap { max-width: 1180px; margin: 0 auto; }
+
+  /* ---------- 头部 ---------- */
+  header.top {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px;
+    margin-bottom: 4px;
+  }
+  header.top h1 { font-size: 22px; margin: 0; }
+  header.top .subtitle { color: var(--ink-soft); font-size: 13px; }
+  .trend-badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
+    background: var(--accent-soft); color: var(--accent);
+  }
+  .top-tools { margin-left: auto; display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+  .view-picker { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-soft); }
+  .view-picker select {
+    font-family: inherit; font-size: 12.5px; padding: 5px 8px; border-radius: 7px;
+    border: 1px solid var(--border); background: var(--surface); color: var(--ink); max-width: 240px;
+  }
+  .loader { margin: 48px auto; max-width: 520px; text-align: center; color: var(--ink-soft); font-size: 13.5px; }
+  .loader.error { color: var(--crit); }
+  .lang-toggle {
+    display: inline-flex; border: 1px solid var(--border);
+    border-radius: 8px; overflow: hidden; background: var(--surface);
+  }
+  .lang-toggle button {
+    appearance: none; border: none; background: transparent; color: var(--ink-soft);
+    font-size: 12px; font-weight: 600; padding: 5px 11px; cursor: pointer;
+  }
+  .lang-toggle button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+
+  /* ---------- KPI 卡片 ---------- */
+  .kpi-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 10px; margin: 16px 0 12px;
+  }
+  .kpi {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 12px 14px; box-shadow: var(--shadow);
+  }
+  .kpi-label { font-size: 11.5px; color: var(--ink-soft); margin-bottom: 4px; }
+  .kpi-value { font-size: 20px; font-weight: 600; }
+  .kpi-sub { font-size: 11.5px; color: var(--ink-soft); margin-top: 2px; }
+  .kpi.crit .kpi-value { color: var(--crit); }
+  .kpi.warn .kpi-value { color: var(--warn); }
+  .kpi.good .kpi-value { color: var(--good); }
+
+  .callout {
+    border-radius: 10px; padding: 10px 14px; font-size: 12.5px; margin: 4px 0 12px;
+    border: 1px solid var(--border);
+  }
+  .callout.note { background: var(--surface-2); color: var(--ink-soft); }
+  .callout.warn { background: var(--warn-bg); color: var(--warn); border-color: transparent; }
+  .callout ul { margin: 4px 0 0; padding-left: 18px; }
+
+  /* ---------- Tabs ---------- */
+  .tabbar {
+    display: flex; gap: 2px; overflow-x: auto; border-bottom: 1px solid var(--border);
+    margin: 8px 0 12px; position: sticky; top: env(safe-area-inset-top, 0px); background: var(--bg);
+    z-index: 6; padding-top: 2px;
+  }
+  .tabbtn {
+    appearance: none; border: none; background: transparent; color: var(--ink-soft);
+    font-size: 13px; font-weight: 600; padding: 9px 14px;
+    cursor: pointer; white-space: nowrap; border-bottom: 2px solid transparent;
+  }
+  .tabbtn:hover { color: var(--ink); }
+  .tabbtn[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); }
+  .tabbtn .count {
+    display: inline-block; margin-left: 5px; font-size: 10.5px; padding: 1px 5px;
+    border-radius: 999px; background: var(--surface-2); color: var(--ink-soft);
+  }
+  .tabbtn[aria-selected="true"] .count { background: var(--accent-soft); color: var(--accent); }
+
+  /* ---------- 工具条 ---------- */
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+  .toolbar input[type="search"], .toolbar select {
+    font-family: inherit; font-size: 12.5px; padding: 6px 10px; border-radius: 7px;
+    border: 1px solid var(--border); background: var(--surface); color: var(--ink);
+    min-width: 0; width: 200px; max-width: 100%;
+  }
+  .toolbar label.chk {
+    display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--ink-soft);
+    cursor: pointer; user-select: none;
+  }
+  .toolbar .hint { font-size: 11.5px; color: var(--ink-soft); margin-left: auto; }
+
+  /* ---------- 表格 ---------- */
+  /* 表头吸顶：父容器一旦 overflow-x:auto 就成了滚动容器，sticky 只相对它生效；
+     所以给容器限高、让长表格在容器内纵向滚动，列头与左侧三列才能同时固定。
+     短表格内容不足限高时不会出现内部滚动条。 */
+  .tblwrap {
+    overflow: auto; max-height: max(320px, calc(100vh - 150px));
+    border: 1px solid var(--border); border-radius: 10px; background: var(--surface);
+  }
+  @supports (height: 100dvh) { .tblwrap { max-height: max(320px, calc(100dvh - 150px)); } }
+  table.data { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 12.5px; }
+  table.data th, table.data td {
+    padding: 7px 10px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap;
+    vertical-align: middle;
+  }
+  table.data td.wrap-name { white-space: normal; min-width: 150px; max-width: 220px; }
+  table.data thead th {
+    position: sticky; top: 0; background: var(--surface-2); color: var(--ink-soft);
+    font-weight: 600; font-size: 11px; letter-spacing: .02em; z-index: 2;
+  }
+  table.data thead th.sortable { cursor: pointer; }
+  table.data thead th.sorted { color: var(--accent); }
+  table.data td.num, table.data th.num { text-align: right; }
+  table.data tbody tr:hover > td { background: var(--accent-soft); }
+  .sticky1, .sticky2, .sticky3 { position: sticky; background: var(--surface); z-index: 1; }
+  thead .sticky1, thead .sticky2, thead .sticky3 { z-index: 3; background: var(--surface-2); }
+  .sticky1 { left: 0; width: 48px; min-width: 48px; }
+  .sticky2 { left: 48px; width: 96px; min-width: 96px; }
+  .sticky3 { left: 144px; }
+
+  /* ---------- 分页条 ---------- */
+  .pager {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
+    margin: 8px 0 2px; font-size: 12px; color: var(--ink-soft);
+  }
+  .pager[hidden] { display: none; }
+  .pager .pg-range { font-variant-numeric: tabular-nums; }
+  .pager .pg-pages { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+  .pager .pg-pages button {
+    min-width: 32px; height: 32px; padding: 0 8px; border-radius: 7px;
+    border: 1px solid var(--border); background: var(--surface); color: var(--ink);
+    font: inherit; font-variant-numeric: tabular-nums; cursor: pointer;
+  }
+  .pager .pg-pages button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .pager .pg-pages button[aria-current="page"] {
+    background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600;
+  }
+  .pager .pg-pages button:disabled { opacity: .4; cursor: default; }
+  .pager .pg-pages button:focus-visible, .pager select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .pager .pg-gap { padding: 0 2px; }
+  .pager label { display: inline-flex; align-items: center; gap: 6px; }
+  .pager select {
+    font: inherit; padding: 5px 6px; border-radius: 7px;
+    border: 1px solid var(--border); background: var(--surface); color: var(--ink);
+  }
+
+  tr.expandable { cursor: pointer; }
+  tr.expanded > td { background: var(--accent-soft); }
+  tr.detail-row > td { background: var(--surface-2); padding: 0; }
+  tr.detail-row:hover > td { background: var(--surface-2); }
+  .detail-box {
+    position: sticky; left: 0; width: min(920px, calc(100vw - 64px));
+    padding: 10px 12px 14px;
+  }
+  .detail-box h4 { margin: 0 0 6px; font-size: 12px; color: var(--ink-soft); font-weight: 600; }
+  table.mini { border-collapse: collapse; width: 100%; font-size: 12px; background: var(--surface); border-radius: 8px; overflow: hidden; }
+  table.mini th, table.mini td { padding: 5px 9px; border-bottom: 1px solid var(--border); white-space: nowrap; text-align: left; }
+  table.mini th { font-size: 10.5px; color: var(--ink-soft); font-weight: 600; background: var(--surface); }
+  table.mini td.num, table.mini th.num { text-align: right; }
+  table.mini tr:last-child td { border-bottom: none; }
+  .sharebar {
+    position: relative; display: inline-block; vertical-align: middle;
+    width: 56px; height: 6px; border-radius: 3px; background: var(--border); margin-right: 6px;
+  }
+  .sharebar > span { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; background: var(--accent); }
+
+  .caret {
+    display: inline-block; width: 10px; color: var(--accent); font-size: 10px;
+    transition: transform .15s ease;
+  }
+  tr.expanded .caret { transform: rotate(90deg); }
+  @media (prefers-reduced-motion: reduce) { .caret { transition: none; } }
+
+  /* 货号点击复制 */
+  .copy-item {
+    appearance: none; border: none; background: none; cursor: copy;
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 5px; margin: -2px -5px; border-radius: 5px;
+    font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11.5px; color: var(--ink-soft);
+  }
+  .copy-item:hover { background: var(--accent-soft); color: var(--accent); }
+  .copy-item svg { width: 12px; height: 12px; opacity: 0; transition: opacity .15s ease; }
+  .copy-item:hover svg, .copy-item:focus-visible svg { opacity: 1; }
+  @media (hover: none) { .copy-item svg { opacity: .55; } }
+  .toast {
+    position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%);
+    z-index: 60; background: var(--ink); color: var(--bg); padding: 8px 14px; border-radius: 8px;
+    font-size: 13px; box-shadow: var(--shadow); max-width: calc(100vw - 32px);
+  }
+
+  /* 手风琴：展开时高度从 0 过渡到内容高度（grid 行 0fr→1fr）；
+     裁剪用 overflow: clip 而不是 hidden，hidden 会生成滚动容器，让明细框的横向吸附失效 */
+  .acc { display: grid; grid-template-rows: 1fr; }
+  .acc > .acc-inner { min-height: 0; overflow: clip; }
+  tr.detail-row.opening .acc { animation: acc-open .26s cubic-bezier(.2, .7, .2, 1); }
+  @keyframes acc-open { from { grid-template-rows: 0fr; opacity: 0; } to { grid-template-rows: 1fr; opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { tr.detail-row.opening .acc { animation: none; } }
+
+  .thumb-btn {
+    appearance: none; border: none; background: none; padding: 0; margin: 0;
+    display: block; border-radius: 6px; cursor: zoom-in;
+  }
+  .thumb {
+    width: 34px; height: 34px; border-radius: 6px; object-fit: cover;
+    background: var(--surface-2); border: 1px solid var(--border); display: block;
+  }
+  .thumb-btn:hover .thumb { border-color: var(--accent); }
+  .itemnum { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11.5px; color: var(--ink-soft); }
+  .pname { font-weight: 500; }
+
+  .badge { display: inline-block; padding: 2px 7px; border-radius: 999px; font-size: 10.5px; font-weight: 600; white-space: nowrap; }
+  .badge.high { background: var(--good-bg); color: var(--good); }
+  .badge.mid { background: var(--warn-bg); color: var(--warn); }
+  .badge.low { background: var(--surface-2); color: var(--ink-soft); }
+  .badge.urgent { background: var(--crit-bg); color: var(--crit); }
+  .badge.flag { background: var(--accent-soft); color: var(--accent); }
+  .badge.flag.stale { background: var(--warn-bg); color: var(--warn); }
+
+  .chip {
+    display: inline-block; font-size: 11px; padding: 1px 7px; margin: 1px 3px 1px 0;
+    border-radius: 6px; background: var(--surface-2); color: var(--ink);
+  }
+  .chip b { font-family: 'IBM Plex Mono', monospace; font-weight: 600; }
+  .chip.transfer { background: var(--accent-soft); color: var(--accent); }
+  .chip.priority { background: var(--good-bg); color: var(--good); }
+  .chip.short { background: var(--warn-bg); color: var(--warn); }
+  .more { font-size: 11px; color: var(--accent); font-weight: 600; }
+  .muted { color: var(--ink-soft); }
+
+  .store-section { margin-bottom: 18px; }
+  .store-section h3 { font-size: 14px; margin: 0 0 6px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+  .store-section h3 .store-meta { font-size: 11.5px; color: var(--ink-soft); font-weight: 400; }
+
+  .empty { padding: 30px; text-align: center; color: var(--ink-soft); font-size: 13px; }
+
+  .notes-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+  .notes-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px; box-shadow: var(--shadow);
+  }
+  .notes-card h3 { font-size: 13px; margin: 0 0 8px; }
+  .notes-card p, .notes-card li { font-size: 12.5px; color: var(--ink-soft); }
+  .notes-card ul { padding-left: 18px; margin: 0; }
+  .notes-card table { width: 100%; font-size: 12px; border-collapse: collapse; }
+  .notes-card table td { padding: 3px 0; border: none; vertical-align: top; }
+  .notes-card table td:first-child { color: var(--ink-soft); width: 52%; padding-right: 8px; }
+
+  footer.pagefoot { margin-top: 28px; font-size: 11.5px; color: var(--ink-soft); text-align: center; }
+
+  /* ---------- 图片放大（灯箱）：固定深色遮罩，两种主题下都一致 ---------- */
+  .lightbox {
+    position: fixed; inset: 0; z-index: 50; background: rgba(12,14,16,.84);
+    display: flex; align-items: center; justify-content: center;
+    padding: calc(24px + env(safe-area-inset-top, 0px)) 16px calc(24px + env(safe-area-inset-bottom, 0px));
+  }
+  .lb-figure { margin: 0; display: flex; flex-direction: column; align-items: center; gap: 10px; max-width: 100%; }
+  .lb-figure img {
+    display: block; width: min(92vw, 480px); height: auto; max-height: 74vh; object-fit: contain;
+    background: #FFFFFF; border-radius: 10px; box-shadow: 0 12px 48px rgba(0,0,0,.45);
+    transition: filter .2s ease;
+  }
+  .lb-figure img.is-loading { filter: blur(3px); }
+  @media (prefers-reduced-motion: reduce) { .lb-figure img { transition: none; } }
+  .lb-figure figcaption { color: #F2F0EA; font-size: 13.5px; text-align: center; max-width: 760px; }
+  .lb-figure figcaption .lb-item { font-family: 'IBM Plex Mono', monospace; color: #C9C6BE; margin-right: 8px; }
+  .lb-figure figcaption .lb-hint { display: block; margin-top: 4px; font-size: 11.5px; color: #A9A69E; }
+  .lb-close {
+    position: fixed; top: calc(12px + env(safe-area-inset-top, 0px)); right: 14px;
+    width: 40px; height: 40px; border-radius: 999px; border: none;
+    background: rgba(255,255,255,.16); color: #FFFFFF; font-size: 22px; line-height: 1; cursor: pointer;
+  }
+  .lb-close:focus-visible { outline: 2px solid #FFFFFF; }
+
+  /* ---------- 进销累计页签 ---------- */
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--surface); }
+  .seg button {
+    appearance: none; border: none; border-right: 1px solid var(--border); background: transparent;
+    color: var(--ink-soft); font-size: 12px; font-weight: 600; padding: 6px 11px; cursor: pointer;
+  }
+  .seg button:last-child { border-right: none; }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+  .seg button .n { font-family: 'IBM Plex Mono', monospace; font-weight: 500; margin-left: 5px; opacity: .8; }
+  .st-summary { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 12.5px; color: var(--ink-soft); margin: 0 0 8px; }
+  .st-summary b { color: var(--ink); font-family: 'IBM Plex Mono', monospace; font-weight: 600; }
+  .ratecell { display: inline-flex; align-items: center; gap: 6px; }
+  .ratebar { position: relative; display: inline-block; width: 56px; height: 6px; border-radius: 3px; background: var(--border); }
+  .ratebar > span { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; background: var(--series-sold); }
+  .flag-over { font-size: 10.5px; font-weight: 600; color: var(--warn); }
+  .st-detail { display: flex; flex-direction: column; gap: 10px; }
+  .st-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }
+  .st-scope { font-size: 13px; font-weight: 600; color: var(--ink); }
+  .st-back {
+    appearance: none; border: 1px solid var(--border); background: var(--surface); color: var(--accent);
+    border-radius: 7px; font-size: 12px; font-weight: 600; padding: 3px 9px; cursor: pointer;
+  }
+  .st-kpis { font-size: 12px; color: var(--ink-soft); }
+  .st-kpis b { color: var(--ink); font-family: 'IBM Plex Mono', monospace; font-weight: 600; }
+  .st-charts { display: grid; grid-template-columns: 1fr; gap: 10px; }
+  @media (min-width: 900px) { .st-charts { grid-template-columns: 1fr 1fr; } }
+  .st-chart { position: relative; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px 6px; }
+  .st-chart h5 { margin: 0 0 4px; font-size: 11.5px; font-weight: 600; color: var(--ink-soft); }
+  .st-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11.5px; color: var(--ink-soft); margin-bottom: 2px; }
+  .st-legend i { display: inline-block; width: 14px; height: 2px; border-radius: 1px; vertical-align: middle; margin-right: 5px; }
+  .st-svg svg { display: block; width: 100%; height: auto; overflow: visible; touch-action: pan-y; }
+  .st-svg text { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10px; fill: var(--ink-soft); }
+  .st-svg text.endlabel { font-size: 11px; fill: var(--ink); }
+  .st-empty { font-size: 12px; color: var(--ink-soft); padding: 18px 0; text-align: center; }
+  .st-tip {
+    position: absolute; z-index: 4; pointer-events: none; white-space: nowrap;
+    background: var(--ink); color: var(--bg); font-size: 11.5px; line-height: 1.5;
+    padding: 6px 9px; border-radius: 6px; box-shadow: var(--shadow);
+  }
+  .st-tip b { font-family: 'IBM Plex Mono', monospace; }
+  .st-tip i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
+  .st-stores tr[data-store] { cursor: pointer; }
+  .st-stores tr[data-store]:hover td { background: var(--accent-soft); }
+  .st-stores tr.selected td { background: var(--accent-soft); font-weight: 600; }
+
+  @media (max-width: 560px) {
+    header.top h1 { font-size: 19px; }
+    .lang-toggle { margin-left: 0; }
+    .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+    table.data th, table.data td { padding: 6px 8px; }
+    .toolbar .hint { margin-left: 0; width: 100%; }
+    .pager .pg-pages { order: 3; width: 100%; justify-content: center; margin-left: 0; }
+    .pager .pg-pages button { min-width: 36px; height: 36px; }
+    .pager label { margin-left: auto; }
+    .toolbar input[type="search"], .toolbar select { width: 100%; }
+  }
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <h1 id="page-title">Uncle Bills 补货信号</h1>
+    <span class="subtitle" id="page-subtitle"></span>
+    <span class="trend-badge" id="trend-badge"></span>
+    <div class="top-tools">
+      <label class="view-picker" for="view-select" hidden><span id="view-label">查看范围</span><select id="view-select"></select></label>
+      <div class="lang-toggle" role="group" aria-label="Language">
+        <button type="button" id="lang-zh" data-lang="zh">中文</button>
+        <button type="button" id="lang-en" data-lang="en">EN</button>
+      </div>
+    </div>
+  </header>
+
+  <div class="loader" id="loader" role="status">正在加载报告…</div>
+  <div id="report-body" hidden>
+  <div class="kpi-grid" id="kpi-grid"></div>
+  <div id="callouts"></div>
+
+  <nav class="tabbar" id="tabbar" role="tablist"></nav>
+
+  <section class="panel" id="panel-bestsellers" role="tabpanel"></section>
+  <section class="panel" id="panel-sell_through" role="tabpanel" hidden></section>
+  <section class="panel" id="panel-high_value" role="tabpanel" hidden></section>
+  <section class="panel" id="panel-forecast" role="tabpanel" hidden></section>
+  <section class="panel" id="panel-store_gaps" role="tabpanel" hidden></section>
+  <section class="panel" id="panel-no_purchase" role="tabpanel" hidden></section>
+  <section class="panel" id="panel-notes" role="tabpanel" hidden></section>
+
+  <footer class="pagefoot" id="pagefoot"></footer>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<div class="lightbox" id="lightbox" role="dialog" aria-modal="true" aria-labelledby="lb-cap" hidden>
+  <figure class="lb-figure">
+    <img id="lb-img" alt="">
+    <figcaption id="lb-cap"></figcaption>
+  </figure>
+  <button type="button" class="lb-close" id="lb-close" aria-label="Close">×</button>
+</div>
+
+<script id="report-data" type="application/json">__REPORT_DATA_JSON__</script>
+<script>
+(function () {
+  "use strict";
+  // 页面外壳只带启动信息（门店名单、生成时间）；业务数据按门店权限从 data/ 下按需加载
+  var BOOT = JSON.parse(document.getElementById("report-data").textContent);
+  var DATA = null, META = null;
+
+  // ============================================================
+  // 语言：默认中文；选择记在本浏览器（读写失败不影响页面）
+  // ============================================================
+  var LANG = "zh";
+  try {
+    var saved = window.localStorage.getItem("ub-restock-lang");
+    if (saved === "zh" || saved === "en") LANG = saved;
+  } catch (e) { /* 隐私模式等场景忽略 */ }
+
+  // 脚本产出的枚举值是中文，这里按语言映射显示文字。
+  var VALUE_MAP = {
+    trend: { "上行": "Rising", "峰值": "Peak", "下行": "Declining", "淡季": "Off-season" },
+    conf: { "高": "High", "中": "Medium", "低": "Unknown" },
+    flag: { "新品": "New", "疑似停售": "Possibly discontinued" },
+    anchor: {
+      zh: { weekday_364: "按周对齐（364 天前）", easter: "复活节对齐", halloween: "万圣节对齐", christmas: "圣诞节对齐" },
+      en: { weekday_364: "same weekday, 364 days back", easter: "aligned to Easter", halloween: "aligned to Halloween", christmas: "aligned to Christmas" }
+    }
+  };
+  function v(kind, value) {
+    if (LANG === "zh" || value === null || value === undefined) return value;
+    return (VALUE_MAP[kind] && VALUE_MAP[kind][value]) || value;
+  }
+
+  var T = {
+    zh: {
+      h1: "Uncle Bills 补货信号",
+      subtitle: function (m) {
+        return m.supplier_name + "（" + m.supplier_code + "）· 运行日 " + m.as_of + " · 数据截止 " + m.data_cutoff +
+          (m.cutoff_downgraded ? "（已回退一天）" : "");
+      },
+      trend: function (p, r) { return "走势：" + p + "（季节比 " + r + "×）"; },
+      kpiSales: "近 28 天全链销量", kpiSalesStore: "近 28 天本店销量",
+      viewLabel: "查看范围", viewAll: "全部门店", loading: "正在加载报告…",
+      loadFailed: "报告数据加载失败，请刷新页面重试。", noStoreAccess: "没有这家门店的查看权限。",
+      noScopeStores: "你的账号没有关联门店，也没有「查看 KFC 补货信号全部门店」权限，请联系管理员开通。",
+      kpiYoy: "同比（近 28 天 / 去年同期）", kpiYoyStore: "本店同比（近 28 天 / 去年同期）",
+      kpiYoySub: function (n) { return "去年同期 14 天 " + n + " 件"; },
+      kpiCand: "候选商品数", kpiCandSub: function (c) { return "Top 30% 并集，上限 " + c; },
+      kpiShort: "缺货门店", kpiShortSub: function (n) { return n + " 个商品有缺口"; },
+      kpiShortStore: "本店缺货商品", kpiShortStoreSub: "预测 14 天 × 1.2 > 到货后余量",
+      kpiUrgent: "紧急调拨项", kpiUrgentSub: "预测 7 天 > 到货后余量",
+      kpiHq: "HQ 账面库存", hqYes: "可用", hqNo: "不可用",
+      missing: function (d, list) { return "数据截止日（" + d + "）里以下门店没有销量记录，可能是当天确实无销售，也可能是数据未同步：" + list + "。"; },
+      warnTitle: "运行警告：",
+      caveat: "口径提醒：「到货后余量」按最近一次进货单起算，含在途、不含上一批剩货，不是货架库存；「未知店目标量」来自没有可用进货单据的门店，只是建议保持量，不能当作确定要订的数量。系统没有调拨功能，「调拨来源」仅为建议，以现场核对为准。点商品图片可放大，点商品行可展开分店销量。",
+      tabs: { bestsellers: "畅销榜", sell_through: "进销累计", high_value: "高价大件", forecast: "7/14 天预测", store_gaps: "分店缺口与调拨", no_purchase: "无进货记录", notes: "附注" },
+      search: "搜索货号或名称…", count: function (n) { return "共 " + n + " 项"; },
+      hintBest: "近 28 天销量 Top 30% 并集金额 Top 30%",
+      hintHigh: function (p) { return "近 28 天均价 ≥ $" + p + "，按金额排序"; },
+      hintFc: "按预测 14 天需求量排序",
+      noMatch: "没有匹配的商品",
+      pgRange: function (a, b, n) { return a + "–" + b + "，共 " + n + " 项"; },
+      pgPrev: "上一页", pgNext: "下一页", pgSize: "每页", pgPage: function (p) { return "第 " + p + " 页"; },
+      col: {
+        item: "货号", name: "名称", qty28: "28天销量", amt28: "28天金额", avg: "均价", ly7: "去年同期7天",
+        ly14: "去年同期14天", f7: "预测7天", f14: "预测14天", target: "建议保持库存", remTrusted: "可信余量",
+        gapTrusted: "可信缺口", gapUnknown: "未知店目标量", stores: "分店销量", topShort: "主要缺货店",
+        lastIn: "最近到货", soldSince: "到货后销量", remaining: "到货后余量", est180: "180天估算", hq: "HQ账面",
+        targetStock: "目标库存", gap: "缺口", urgent: "紧急", conf: "可信度", transfer: "调拨来源", delta: "较上次",
+        store: "分店", qty7: "近7天", share: "占比"
+      },
+      storesCell: function (n) { return n + " 店"; },
+      expand: "展开", collapse: "收起",
+      detailTitle: function (name, n) { return name + " · " + n + " 家门店有销量或需求"; },
+      noStores: "近 28 天没有门店销量记录",
+      pcs: function (n) { return "（" + n + "件）"; },
+      shortChip: function (s, n) { return s + " 缺" + n; },
+      firstRun: "首次",
+      allStores: function (n) { return "全部门店（" + n + "）"; },
+      urgentOnly: "只看紧急",
+      gapItems: function (n) { return n + " 个缺口商品"; },
+      noGaps: "本次运行没有门店触发缺货阈值。",
+      noPurchaseNote: "以下门店对这些商品有明显需求，但近期查不到对应的进货单据，可能是漏录，也可能走了其它渠道补货；建议核对后再决定是否订货。",
+      noPurchaseEmpty: "没有「有需求但查不到进货记录」的门店/商品组合。",
+      items: function (n) { return n + " 个商品"; },
+      warehouseTip: "仓库，优先来源",
+      zoomHint: "点击空白处或按 Esc 关闭",
+      zoomLoading: "正在加载大图…",
+      zoomUnavailable: "大图暂不可用，当前显示缩略图",
+      zoomAlt: "放大查看",
+      copyTip: "点击复制货号", copied: function (v) { return "已复制 " + v; }, copyFailed: "复制失败，请手动选中货号",
+      st: {
+        summary: function (since, cutoff, days, p, s, rate, n) {
+          return "<span>" + since + " 至 " + cutoff + "（" + days + " 天）</span><span>进货 <b>" + p + "</b> 件</span>" +
+            "<span>累计已售 <b>" + s + "</b> 件</span><span>整体售出率 <b>" + rate + "</b></span><span><b>" + n + "</b> 个商品</span>";
+        },
+        caveat: function (u) {
+          return "口径：进货按进货单日期、已售按每日净销量（含退货）从起始日开始累计，只统计起始日以来有进货记录的商品。" +
+            "起始日之前的期初库存不计入进货，所以售出率可能超过 100%。另有 " + u + " 件进货明细没有商品编码、归不到具体商品，相关商品的进货量会偏低、售出率会偏高。";
+        },
+        all: "全部", filterLabel: "按售出率筛选",
+        hint: "点商品行查看全链与分店的日销量和累计走势",
+        purchased: "进货量", sold: "累计已售", rate: "售出率", firstPurchase: "首次进货", lastPurchase: "最近进货",
+        lastSale: "最近销售", stores: "分店", avgPurchase: "进货均价", avgSale: "销售均价",
+        over: "超进货", overTip: "已售超过起始日以来的进货量，说明有起始日之前的库存",
+        chain: "全链", scope: function (name) { return "当前查看：" + name; }, backToChain: "返回全链",
+        kpis: function (p, s, r) { return "进货 <b>" + p + "</b> · 已售 <b>" + s + "</b> · 售出率 <b>" + r + "</b>"; },
+        dailyTitle: "日销量（只显示有销售的日期）", cumTitle: "累计进货与累计已售",
+        cumPurchased: "累计进货", cumSold: "累计已售", endPurchased: "进货", endSold: "已售",
+        dayPurchase: "当日进货", daySold: "当日销量", dayRate: "售出率",
+        noSales: "起始日以来没有销售记录",
+        storesTitle: function (n) { return "分店数据（" + n + " 家，点分店查看该店图表，再点一次回到全链）"; },
+        storesTitleStore: "本店数据",
+        empty: "起始日以来没有进货记录。",
+        aria: function (name) { return name + " 的日销量与累计进销走势"; }
+      },
+      footer: function (g) { return "生成时间 " + g + " · 每周一 / 周五自动更新，仅供内部参考，不构成订货或调拨指令"; },
+      notes: function (p, m, bt) {
+        return {
+          formulaTitle: "公式与口径",
+          formula: [
+            "<strong>预测</strong>：有去年基线时按「去年同期同店销量 × 同比系数」与「近 28 天日均 × 季节比」加权融合，权重随去年同期样本量升到 1；新品或去年未在售，退化为近期外推 × 季节比。<strong>建议保持库存</strong> = 预测 14 天 × " + p.safety_factor + "。",
+            "<strong>到货后余量</strong> = 最近一次进货单当日进货量之和 − 到货后至今销量（不含更早批次的剩货）。<strong>缺口</strong> = 目标库存 − max(余量, 0)。判定「缺货」需同时满足：有可信余量数据、预测 14 天 ≥ " + p.min_forecast_for_shortage + "、缺口 > 0。",
+            "<strong>调拨来源</strong>：来源店需「高」可信度且（余量 − 预测 28 天）> 0，按盈余从高到低最多取 3 家，同一批余量在多个目标店之间贪心分配，不会重复推荐。" + p.warehouse_store + " 仓库店只作来源，不计入需求。",
+            "<strong>分店销量</strong>：只统计需求侧门店（不含仓库与测试店），占比按这些门店合计计算。",
+            "<strong>进销累计</strong>：起始日（默认最近一个 8 月 1 日）以来的进货量与累计已售，售出率 = 累计已售 ÷ 进货量。起始日之前的库存不计入，所以售出率可能超过 100%。进货均价 = 进货单金额 ÷ 进货量，销售均价 = 销售额 ÷ 已售，两者的含税口径可能不同。"
+          ],
+          paramsTitle: "运行参数",
+          params: [
+            ["供应商编码", p.supplier_code],
+            ["候选榜单占比", Math.round(p.top_share * 100) + "%"],
+            ["候选商品上限", p.candidate_cap],
+            ["高价大件阈值", "$" + p.high_value_unit_price],
+            ["安全系数", "×" + p.safety_factor],
+            ["同比夹紧区间", p.yoy_clamp.join(" – ") + "×"],
+            ["季节比夹紧区间", p.season_ratio_clamp.join(" – ") + "×"],
+            ["去年同期锚点", m.ly_anchor_date + "（" + (VALUE_MAP.anchor.zh[m.ly_anchor_kind] || m.ly_anchor_kind) + "）"],
+            ["无法匹配商品的进货明细", m.unmatched_purchase_lines + " 行"]
+          ],
+          limitsTitle: "数据口径限制",
+          limits: [
+            "系统没有分店真实库存表，「到货后余量」「180天估算」都是进销差值估算，不是货架库存。",
+            "进货单没有真实入库确认（InboundDate 基本为空），「到货」按下单日期近似。",
+            "HQ 账面库存对本供应商约 96% 为空，且与本地估算常对不上，仅作参考，不参与计算。",
+            "约 " + m.unmatched_purchase_lines + " 行进货明细缺商品编码且无法回查，对应商品的到货记录会不完整。",
+            "系统没有店间调拨功能，「调拨来源」纯粹是本报告的建议，需人工核实库存与运输成本。"
+          ],
+          btTitle: "历史回测",
+          btIntro: "用去年三个节点复盘预测 14 天全链总量与实际值：",
+          btHead: ["节点", "预测总量", "实际总量", "预测/实际"],
+          btOutro: function (r) {
+            return "平均预测/实际 ≈ " + r + "，历史上预测持续偏低，尤其在 9–12 月旺季爬坡阶段。<strong>预测与目标库存数字应当作下限参考，不是精确值</strong>，实际备货可在此基础上适当加量。";
+          }
+        };
+      }
+    },
+    en: {
+      h1: "Uncle Bills Restock Signals",
+      subtitle: function (m) {
+        return m.supplier_name + " (" + m.supplier_code + ") · run " + m.as_of + " · data to " + m.data_cutoff +
+          (m.cutoff_downgraded ? " (moved back one day)" : "");
+      },
+      trend: function (p, r) { return "Trend: " + p + " (seasonal ratio " + r + "×)"; },
+      kpiSales: "Chain sales, last 28 days", kpiSalesStore: "Store sales, last 28 days",
+      viewLabel: "Viewing", viewAll: "All stores", loading: "Loading report…",
+      loadFailed: "Could not load report data. Refresh the page to try again.", noStoreAccess: "You do not have access to this store.",
+      noScopeStores: "Your account has no linked stores and no all-stores permission for KFC restock signals. Ask an administrator.",
+      kpiYoy: "Year on year (28 days)", kpiYoyStore: "Store year on year (28 days)",
+      kpiYoySub: function (n) { return "Same 14 days last year: " + n + " units"; },
+      kpiCand: "Products tracked", kpiCandSub: function (c) { return "Union of top 30% lists, cap " + c; },
+      kpiShort: "Stores short", kpiShortSub: function (n) { return n + " products with a gap"; },
+      kpiShortStore: "Products short here", kpiShortStoreSub: "14-day forecast × 1.2 > stock since delivery",
+      kpiUrgent: "Urgent transfers", kpiUrgentSub: "7-day forecast > stock since delivery",
+      kpiHq: "HQ book stock", hqYes: "Available", hqNo: "Unavailable",
+      missing: function (d, list) { return "These stores have no sales rows on the cutoff date (" + d + "). They may simply have had no sales, or the data has not synced yet: " + list + "."; },
+      warnTitle: "Run warnings:",
+      caveat: "How to read this: “stock since delivery” counts from the latest invoice, includes stock in transit and ignores older leftover stock, so it is not shelf stock. “Unknown-store target” comes from stores with no usable invoices and is a suggested level, not a confirmed order. The system has no transfer feature, so transfer sources are suggestions to check on site. Tap a product image to enlarge it, and tap a product row to see sales by store.",
+      tabs: { bestsellers: "Best sellers", sell_through: "Sell-through", high_value: "High-value items", forecast: "7/14-day forecast", store_gaps: "Store gaps & transfers", no_purchase: "No invoice record", notes: "Notes" },
+      search: "Search item no. or name…", count: function (n) { return n + " items"; },
+      hintBest: "Top 30% by 28-day units, merged with top 30% by sales value",
+      hintHigh: function (p) { return "Average price ≥ $" + p + " over 28 days, sorted by sales value"; },
+      hintFc: "Sorted by 14-day forecast",
+      noMatch: "No matching products",
+      pgRange: function (a, b, n) { return a + "–" + b + " of " + n; },
+      pgPrev: "Previous page", pgNext: "Next page", pgSize: "Per page", pgPage: function (p) { return "Page " + p; },
+      col: {
+        item: "Item no.", name: "Name", qty28: "Units 28d", amt28: "Sales 28d", avg: "Avg price", ly7: "LY 7d",
+        ly14: "LY 14d", f7: "Fcst 7d", f14: "Fcst 14d", target: "Target stock", remTrusted: "Known stock",
+        gapTrusted: "Known gap", gapUnknown: "Unknown-store target", stores: "Sales by store", topShort: "Stores short",
+        lastIn: "Last delivery", soldSince: "Sold since", remaining: "Stock since delivery", est180: "180d estimate", hq: "HQ book",
+        targetStock: "Target", gap: "Gap", urgent: "Urgent", conf: "Confidence", transfer: "Transfer from", delta: "vs last run",
+        store: "Store", qty7: "Units 7d", share: "Share"
+      },
+      storesCell: function (n) { return n + (n === 1 ? " store" : " stores"); },
+      expand: "Show", collapse: "Hide",
+      detailTitle: function (name, n) { return name + " · " + n + (n === 1 ? " store" : " stores") + " with sales or demand"; },
+      noStores: "No store sales in the last 28 days",
+      pcs: function (n) { return " (" + n + " pcs)"; },
+      shortChip: function (s, n) { return s + " short " + n; },
+      firstRun: "First run",
+      allStores: function (n) { return "All stores (" + n + ")"; },
+      urgentOnly: "Urgent only",
+      gapItems: function (n) { return n + (n === 1 ? " product short" : " products short"); },
+      noGaps: "No store crossed the shortage threshold in this run.",
+      noPurchaseNote: "These stores show clear demand for these products but have no recent invoices for them. The invoices may be missing, or stock may have come through another channel. Check before ordering.",
+      noPurchaseEmpty: "No store and product pairs with demand but no invoice record.",
+      items: function (n) { return n + (n === 1 ? " product" : " products"); },
+      warehouseTip: "Warehouse, preferred source",
+      zoomHint: "Click outside the image or press Esc to close",
+      zoomLoading: "Loading full image…",
+      zoomUnavailable: "Full image unavailable, showing the thumbnail",
+      zoomAlt: "Enlarge image",
+      copyTip: "Click to copy the item number", copied: function (v) { return "Copied " + v; }, copyFailed: "Copy failed, select the item number manually",
+      st: {
+        summary: function (since, cutoff, days, p, s, rate, n) {
+          return "<span>" + since + " to " + cutoff + " (" + days + " days)</span><span>Purchased <b>" + p + "</b> units</span>" +
+            "<span>Sold <b>" + s + "</b> units</span><span>Overall sell-through <b>" + rate + "</b></span><span><b>" + n + "</b> products</span>";
+        },
+        caveat: function (u) {
+          return "Purchases count by invoice date and sales by daily net sales (returns included), both from the start date. Only products with an invoice since the start date are listed. " +
+            "Stock held before the start date is not counted as purchased, so sell-through can exceed 100%. Another " + u + " invoice units have no product code and cannot be matched, so purchases for those products are understated and their sell-through overstated.";
+        },
+        all: "All", filterLabel: "Filter by sell-through",
+        hint: "Tap a product to see daily sales and cumulative trends for the chain and each store",
+        purchased: "Purchased", sold: "Sold", rate: "Sell-through", firstPurchase: "First invoice", lastPurchase: "Last invoice",
+        lastSale: "Last sale", stores: "Stores", avgPurchase: "Avg cost", avgSale: "Avg sell price",
+        over: "Over", overTip: "Sold more than purchased since the start date, so there was stock from before it",
+        chain: "Whole chain", scope: function (name) { return "Showing: " + name; }, backToChain: "Back to chain",
+        kpis: function (p, s, r) { return "Purchased <b>" + p + "</b> · Sold <b>" + s + "</b> · Sell-through <b>" + r + "</b>"; },
+        dailyTitle: "Daily sales (days with sales only)", cumTitle: "Cumulative purchased vs sold",
+        cumPurchased: "Cumulative purchased", cumSold: "Cumulative sold", endPurchased: "Purchased", endSold: "Sold",
+        dayPurchase: "Received", daySold: "Sold that day", dayRate: "Sell-through",
+        noSales: "No sales since the start date",
+        storesTitle: function (n) { return "By store (" + n + ". Tap a store for its charts, tap again to return to the chain)"; },
+        storesTitleStore: "This store",
+        empty: "No invoices since the start date.",
+        aria: function (name) { return "Daily sales and cumulative trend for " + name; }
+      },
+      footer: function (g) { return "Generated " + g + " · Updated every Monday and Friday · Internal reference only, not an order or transfer instruction"; },
+      notes: function (p, m, bt) {
+        return {
+          formulaTitle: "Formulas",
+          formula: [
+            "<strong>Forecast</strong>: when last year has history, it blends “same store, same period last year × year-on-year factor” with “28-day daily rate × seasonal ratio”. The weight moves fully to last year as its sample grows. New items or items not sold last year use the recent rate × seasonal ratio only. <strong>Target stock</strong> = 14-day forecast × " + p.safety_factor + ".",
+            "<strong>Stock since delivery</strong> = units on the latest invoice date − units sold since then (older leftover stock is not counted). <strong>Gap</strong> = target − max(stock, 0). A store is <em>short</em> when it has usable stock data, a 14-day forecast ≥ " + p.min_forecast_for_shortage + ", and a gap > 0.",
+            "<strong>Transfer sources</strong>: a source needs High confidence and (stock − 28-day forecast) > 0. Up to 3 sources are picked by surplus, and one surplus is shared out greedily so it is never offered twice. Store " + p.warehouse_store + " (warehouse) is a source only and is not counted as demand.",
+            "<strong>Sales by store</strong>: retail stores only (warehouse and test store excluded). Share is against the total of those stores.",
+            "<strong>Sell-through</strong>: units purchased and sold since the start date (by default the most recent 1 August). Sell-through = sold ÷ purchased. Stock from before the start date is not counted, so it can exceed 100%. Avg cost = invoice amount ÷ units purchased; avg sell price = sales ÷ units sold. The two may differ in GST treatment."
+          ],
+          paramsTitle: "Run parameters",
+          params: [
+            ["Supplier code", p.supplier_code],
+            ["Top-list share", Math.round(p.top_share * 100) + "%"],
+            ["Product cap", p.candidate_cap],
+            ["High-value threshold", "$" + p.high_value_unit_price],
+            ["Safety factor", "×" + p.safety_factor],
+            ["Year-on-year clamp", p.yoy_clamp.join(" – ") + "×"],
+            ["Seasonal ratio clamp", p.season_ratio_clamp.join(" – ") + "×"],
+            ["Last-year anchor", m.ly_anchor_date + " (" + (VALUE_MAP.anchor.en[m.ly_anchor_kind] || m.ly_anchor_kind) + ")"],
+            ["Invoice lines with no product match", m.unmatched_purchase_lines + " lines"]
+          ],
+          limitsTitle: "Data limits",
+          limits: [
+            "There is no store stock table. “Stock since delivery” and the 180-day estimate are both sales-vs-purchase estimates, not shelf stock.",
+            "Invoices have no real receiving confirmation (InboundDate is almost always empty), so delivery is approximated by the order date.",
+            "About 96% of HQ book stock is empty for this supplier and often disagrees with the local estimate. It is shown for reference only.",
+            "About " + m.unmatched_purchase_lines + " invoice lines have no product code and cannot be matched, so deliveries for those products are incomplete.",
+            "There is no store-to-store transfer feature. Transfer sources are suggestions only; confirm stock and freight cost first."
+          ],
+          btTitle: "Backtest",
+          btIntro: "14-day chain forecast vs actual sales at three points last year:",
+          btHead: ["Run date", "Forecast", "Actual", "Fcst / actual"],
+          btOutro: function (r) {
+            return "On average the forecast reached about " + r + " of actual sales. It has run consistently low, especially during the September–December ramp-up. <strong>Treat the forecast and target stock as a floor, not an exact figure</strong>, and add stock on top where needed.";
+          }
+        };
+      }
+    }
+  };
+  function L() { return T[LANG]; }
+
+  var PLACEHOLDER_IMG =
+    "data:image/svg+xml;utf8," + encodeURIComponent(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="34" height="34">' +
+      '<rect width="34" height="34" rx="6" fill="#DDD9CE"/>' +
+      '<path d="M7 26l6-8 4 4 5-7 6 11z" fill="#B8B3A6"/>' +
+      '<circle cx="12" cy="12" r="2.6" fill="#B8B3A6"/></svg>'
+    );
+
+  // ============================================================
+  // 格式化
+  // ============================================================
+  function esc(s) {
+    if (s === null || s === undefined) return "";
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  function fmtNum(x) {
+    if (x === null || x === undefined || x === "") return "—";
+    return Math.round(Number(x)).toLocaleString("en-AU");
+  }
+  function fmtMoney(x) {
+    if (x === null || x === undefined) return "—";
+    return "$" + Number(x).toLocaleString("en-AU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+  function fmtPct(x) {
+    if (x === null || x === undefined) return "—";
+    var d = Math.round((x - 1) * 100);
+    return (d >= 0 ? "+" : "") + d + "%";
+  }
+  function fmtShare(x) { return Math.round((x || 0) * 100) + "%"; }
+
+  // 每张图一个 WebP 文件：缩略图 img/t/，放大图 img/l/；缩略图懒加载，放大图点开才下载
+  function thumbUrl(key) { return "img/t/" + key + ".webp"; }
+  function largeUrl(key) { return "img/l/" + key + ".webp"; }
+
+  // 访问令牌 15 分钟过期：页面开久了新请求的图会被判未登录。续期一次后重试，
+  // 60 秒内多张图同时失败共用同一次续期请求；续期失败才换成占位图
+  var sessionRefresh = null, sessionRefreshAt = 0;
+  function refreshSession() {
+    if (!sessionRefresh || Date.now() - sessionRefreshAt > 60000) {
+      sessionRefreshAt = Date.now();
+      sessionRefresh = fetch("/api/Auth/session/refresh", {
+        method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: "{}"
+      }).then(function (res) { return res.ok; }, function () { return false; });
+    }
+    return sessionRefresh;
+  }
+  function withRetryToken(url) { return url + (url.indexOf("?") >= 0 ? "&" : "?") + "r=" + Date.now(); }
+  // 图片 error 事件不冒泡，用捕获阶段统一处理所有缩略图
+  document.addEventListener("error", function (ev) {
+    var img = ev.target;
+    if (!img || img.tagName !== "IMG" || !img.classList.contains("thumb")) return;
+    if (img.getAttribute("data-retried")) { img.src = PLACEHOLDER_IMG; return; }
+    img.setAttribute("data-retried", "1");
+    var src = img.getAttribute("src");
+    refreshSession().then(function (ok) { img.src = ok ? withRetryToken(src) : PLACEHOLDER_IMG; });
+  }, true);
+  var COPY_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="9" height="9" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/>' +
+    '<path d="M11 3.5V3a1 1 0 0 0-1-1H3a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h.5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>';
+  function itemCell(itemNumber) {
+    if (!itemNumber) return '<span class="itemnum">—</span>';
+    return '<button type="button" class="copy-item" data-copy="' + esc(itemNumber) + '" title="' + esc(L().copyTip) + '" aria-label="' +
+      esc(L().copyTip + " " + itemNumber) + '">' + esc(itemNumber) + COPY_ICON + "</button>";
+  }
+  function copyViaTextarea(text) {
+    return new Promise(function (resolve, reject) {
+      var ta = document.createElement("textarea");
+      ta.value = text; ta.setAttribute("readonly", ""); ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      try { if (document.execCommand("copy")) resolve(); else reject(new Error("copy")); } catch (e) { reject(e); }
+      document.body.removeChild(ta);
+    });
+  }
+  // 先用剪贴板接口；被拒绝（非安全上下文、页面未获焦、嵌在限制权限的框架里）时退回 execCommand
+  function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      return navigator.clipboard.writeText(text).catch(function () { return copyViaTextarea(text); });
+    }
+    return copyViaTextarea(text);
+  }
+  var toastTimer = null;
+  function showToast(msg) {
+    var t = document.getElementById("toast");
+    t.textContent = msg; t.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.hidden = true; }, 1600);
+  }
+  // 事件委托：表格每次重绘都会重建按钮，挂在 document 上只绑定一次
+  document.addEventListener("click", function (ev) {
+    var btn = ev.target.closest(".copy-item");
+    if (!btn) return;
+    ev.preventDefault();
+    var v = btn.getAttribute("data-copy");
+    copyText(v).then(function () { showToast(L().copied(v)); }, function () { showToast(L().copyFailed); });
+  });
+
+  function imgCell(r) {
+    if (!r.img) return '<img class="thumb" src="' + PLACEHOLDER_IMG + '" alt="">';
+    return '<button type="button" class="thumb-btn" aria-label="' + esc(L().zoomAlt + " " + (r.name || "")) + '"' +
+      ' data-img="' + esc(r.img) + '" data-item="' + esc(r.item_number || "") + '" data-name="' + esc(r.name || "") + '">' +
+      '<img class="thumb" loading="lazy" decoding="async" width="34" height="34" src="' + esc(thumbUrl(r.img)) + '" alt=""></button>';
+  }
+  function confBadge(c) {
+    if (!c) return "";
+    var cls = c === "高" ? "high" : (c === "中" ? "mid" : "low");
+    return '<span class="badge ' + cls + '">' + esc(v("conf", c)) + "</span>";
+  }
+  function flagBadge(f) {
+    if (!f) return "";
+    return '<span class="badge flag' + (f === "疑似停售" ? " stale" : "") + '">' + esc(v("flag", f)) + "</span>";
+  }
+  function transferCell(list) {
+    if (!list || !list.length) return '<span class="muted">—</span>';
+    return list.map(function (t) {
+      return '<span class="chip ' + (t.priority ? "priority" : "transfer") + '"' +
+        (t.priority ? ' title="' + esc(L().warehouseTip) + '"' : "") + ">" +
+        esc(t.store_name) + " ×<b>" + fmtNum(t.qty) + "</b></span>";
+    }).join("");
+  }
+  function storeSalesCell(r) {
+    var list = (r.by_store || []).filter(function (s) { return s.qty28 > 0; });
+    if (!list.length) return '<span class="muted">—</span> <span class="more"><span class="caret">▶</span></span>';
+    var chips = list.slice(0, 3).map(function (s) {
+      return '<span class="chip">' + esc(s.store_name) + " <b>" + fmtNum(s.qty28) + "</b></span>";
+    }).join("");
+    return chips + ' <span class="more"><span class="caret">▶</span> ' + esc(L().storesCell(list.length)) + "</span>";
+  }
+  function storeDetail(r) {
+    var c = L().col;
+    var list = r.by_store || [];
+    if (!list.length) return '<div class="detail-box"><h4>' + esc(L().noStores) + "</h4></div>";
+    var rows = list.map(function (s) {
+      var w = Math.max(0, Math.min(100, Math.round((s.share || 0) * 100)));
+      return "<tr><td>" + esc(s.store_name) + ' <span class="itemnum">' + esc(s.store_code) + "</span></td>" +
+        '<td class="num">' + fmtNum(s.qty7) + "</td>" +
+        '<td class="num">' + fmtNum(s.qty28) + "</td>" +
+        '<td class="num">' + fmtMoney(s.amt28) + "</td>" +
+        '<td><span class="sharebar"><span style="width:' + w + '%"></span></span><span class="num">' + fmtShare(s.share) + "</span></td>" +
+        '<td class="num">' + fmtNum(s.forecast14) + "</td>" +
+        '<td class="num">' + fmtNum(s.remaining) + "</td>" +
+        '<td class="num">' + (s.gap > 0 ? fmtNum(s.gap) : "—") + "</td>" +
+        "<td>" + confBadge(s.confidence) + "</td></tr>";
+    }).join("");
+    return '<div class="detail-box"><h4>' + esc(L().detailTitle(r.name, list.length)) + "</h4>" +
+      '<div style="overflow-x:auto"><table class="mini"><thead><tr>' +
+      "<th>" + esc(c.store) + '</th><th class="num">' + esc(c.qty7) + '</th><th class="num">' + esc(c.qty28) +
+      '</th><th class="num">' + esc(c.amt28) + "</th><th>" + esc(c.share) + '</th><th class="num">' + esc(c.f14) +
+      '</th><th class="num">' + esc(c.remaining) + '</th><th class="num">' + esc(c.gap) + "</th><th>" + esc(c.conf) +
+      "</th></tr></thead><tbody>" + rows + "</tbody></table></div></div>";
+  }
+
+  // ============================================================
+  // 分页：每页行数所有表格共用、记在本机（50 / 100 / 200，默认 50）
+  // 手机上一次渲染几千行会卡，分页后每张表最多渲染 200 行
+  // ============================================================
+  var PAGE_SIZES = [50, 100, 200];
+  var PAGE_SIZE = (function () {
+    try {
+      var saved = +window.localStorage.getItem("ub-page-size");
+      if (PAGE_SIZES.indexOf(saved) >= 0) return saved;
+    } catch (e) { /* 忽略 */ }
+    return PAGE_SIZES[0];
+  })();
+  var liveTables = [];
+  function setPageSize(n) {
+    PAGE_SIZE = n;
+    try { window.localStorage.setItem("ub-page-size", String(n)); } catch (e) { /* 忽略 */ }
+    // 已被整块替换掉的旧表格从登记表剔除，其余表格按新行数重画
+    liveTables = liveTables.filter(function (t) { return document.body.contains(t.el); });
+    liveTables.forEach(function (t) { t.onPageSize(); });
+  }
+  // 页码列表：首页、末页、当前页前后各一页，中间用省略号；只差一页时直接显示那一页
+  function pageItems(cur, n) {
+    var picked = [0, n - 1, cur - 1, cur, cur + 1].filter(function (p) { return p >= 0 && p < n; });
+    picked = picked.filter(function (p, i) { return picked.indexOf(p) === i; }).sort(function (a, b) { return a - b; });
+    var out = [];
+    picked.forEach(function (p, i) {
+      var prev = i ? picked[i - 1] : null;
+      if (prev !== null && p - prev === 2) out.push(prev + 1);
+      else if (prev !== null && p - prev > 2) out.push(null);
+      out.push(p);
+    });
+    return out;
+  }
+
+  // ============================================================
+  // 通用表格：排序、搜索、额外过滤、可展开行、分页
+  // ============================================================
+  function buildTable(tableEl, columns, rows, opts) {
+    opts = opts || {};
+    var state = {
+      sortKey: opts.defaultSortKey || null, sortDir: "desc", query: "", filter: null,
+      expanded: {}, lastCount: rows.length, justOpened: null, page: 0, pageSize: PAGE_SIZE
+    };
+    var wrapEl = tableEl.closest(".tblwrap") || tableEl;
+    var pagerEl = document.createElement("div");
+    pagerEl.className = "pager";
+    pagerEl.hidden = true;
+    wrapEl.insertAdjacentElement("afterend", pagerEl);
+    function stickyClass(i) { return i === 0 ? "sticky1" : i === 1 ? "sticky2" : i === 2 ? "sticky3" : ""; }
+
+    function filtered() {
+      var q = state.query.trim().toLowerCase();
+      var list = rows.filter(function (r) {
+        if (state.filter && !state.filter(r)) return false;
+        if (!q) return true;
+        return (r.item_number && String(r.item_number).toLowerCase().indexOf(q) >= 0) ||
+          (r.name && String(r.name).toLowerCase().indexOf(q) >= 0);
+      });
+      if (state.sortKey) {
+        var k = state.sortKey, dir = state.sortDir === "asc" ? 1 : -1;
+        list.sort(function (a, b) {
+          var av = a[k], bv = b[k];
+          // 空值（没有日期、没有余量等）无论升降序都排在最后
+          var aNull = av === null || av === undefined, bNull = bv === null || bv === undefined;
+          if (aNull || bNull) return aNull === bNull ? 0 : (aNull ? 1 : -1);
+          if (typeof av === "string" && typeof bv === "string") return dir * av.localeCompare(bv);
+          return dir * (av - bv);
+        });
+      }
+      return list;
+    }
+
+    function render() {
+      var list = filtered();
+      state.lastCount = list.length;
+      var pages = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
+      if (state.page >= pages) state.page = pages - 1;
+      var start = state.page * PAGE_SIZE;
+      var all = list;
+      list = list.slice(start, start + PAGE_SIZE);
+      var thead = "<tr>" + columns.map(function (c, i) {
+        var cls = [c.numeric ? "num" : "", stickyClass(i), c.key ? "sortable" : "", state.sortKey === c.key && c.key ? "sorted" : ""]
+          .filter(Boolean).join(" ");
+        var arrow = state.sortKey === c.key && c.key ? (state.sortDir === "asc" ? " ▲" : " ▼") : "";
+        return '<th class="' + cls + '"' + (c.key ? ' data-key="' + esc(c.key) + '"' : "") + ">" + esc(c.label) + arrow + "</th>";
+      }).join("") + "</tr>";
+
+      var body = "";
+      if (!all.length) {
+        body = '<tr><td colspan="' + columns.length + '" class="empty">' + esc(L().noMatch) + "</td></tr>";
+      }
+      list.forEach(function (r) {
+        var key = r.product_code;
+        var isOpen = !!(opts.expand && state.expanded[key]);
+        body += "<tr" + (opts.expand ? ' class="expandable' + (isOpen ? " expanded" : "") + '" data-key="' + esc(key) + '" aria-expanded="' + isOpen + '"' : "") + ">" +
+          columns.map(function (c, i) {
+            var cls = [c.numeric ? "num" : "", stickyClass(i), c.wrap ? "wrap-name" : ""].filter(Boolean).join(" ");
+            return '<td class="' + cls + '">' + c.render(r) + "</td>";
+          }).join("") + "</tr>";
+        if (isOpen) {
+          body += '<tr class="detail-row' + (state.justOpened === key ? " opening" : "") + '" data-key="' + esc(key) + '"><td colspan="' + columns.length + '">' +
+            '<div class="acc"><div class="acc-inner">' + opts.expand(r) + "</div></div></td></tr>";
+        }
+      });
+
+      tableEl.querySelector("thead").innerHTML = thead;
+      var tbody = tableEl.querySelector("tbody");
+      tbody.innerHTML = body;
+      // 展开行里需要画图或绑定事件的内容，在 DOM 就位后回调
+      if (opts.afterExpand) {
+        list.forEach(function (r) {
+          if (!state.expanded[r.product_code]) return;
+          tbody.querySelectorAll("tr.detail-row").forEach(function (tr) {
+            if (tr.getAttribute("data-key") === r.product_code) opts.afterExpand(r, tr.querySelector(".detail-box"));
+          });
+        });
+      }
+
+      tableEl.querySelectorAll("thead th[data-key]").forEach(function (th) {
+        th.addEventListener("click", function () {
+          var k = th.getAttribute("data-key");
+          if (state.sortKey === k) state.sortDir = state.sortDir === "asc" ? "desc" : "asc";
+          else { state.sortKey = k; state.sortDir = "desc"; }
+          state.page = 0;
+          render();
+        });
+      });
+      if (opts.expand) {
+        tbody.onclick = function (ev) {
+          if (ev.target.closest(".thumb-btn, a, button, input, select")) return;
+          var tr = ev.target.closest("tr.expandable");
+          if (!tr) return;
+          var k = tr.getAttribute("data-key");
+          var opening = !state.expanded[k];
+          // 手风琴：同一张表同时只展开一行，展开新行时收起其它行
+          state.expanded = {};
+          if (opening) { state.expanded[k] = true; state.justOpened = k; }
+          render();
+          state.justOpened = null;
+          // 上方的展开行收起后，点中的行可能被顶出可视区，滚回来贴住表头下沿
+          var wrap = tableEl.closest(".tblwrap");
+          var row = null;
+          tbody.querySelectorAll("tr.expandable").forEach(function (x) { if (x.getAttribute("data-key") === k) row = x; });
+          if (wrap && row) {
+            var headH = tableEl.tHead ? tableEl.tHead.getBoundingClientRect().height : 0;
+            var over = wrap.getBoundingClientRect().top + headH - row.getBoundingClientRect().top;
+            if (over > 0) wrap.scrollTop -= over;
+          }
+        };
+      }
+      renderPager(all.length, pages, start, list.length);
+      return all.length;
+    }
+
+    // 分页条：总数不超过最小每页行数（50）时整条隐藏
+    function renderPager(total, pages, start, shown) {
+      var l = L();
+      pagerEl.hidden = total <= PAGE_SIZES[0];
+      if (pagerEl.hidden) { pagerEl.innerHTML = ""; return; }
+      var cur = state.page;
+      var btns = '<button type="button" data-page="' + (cur - 1) + '" data-role="prev" aria-label="' + esc(l.pgPrev) + '"' + (cur === 0 ? " disabled" : "") + ">‹</button>";
+      pageItems(cur, pages).forEach(function (p) {
+        btns += p === null
+          ? '<span class="pg-gap" aria-hidden="true">…</span>'
+          : '<button type="button" data-page="' + p + '" aria-label="' + esc(l.pgPage(p + 1)) + '"' + (p === cur ? ' aria-current="page"' : "") + ">" + (p + 1) + "</button>";
+      });
+      btns += '<button type="button" data-page="' + (cur + 1) + '" data-role="next" aria-label="' + esc(l.pgNext) + '"' + (cur >= pages - 1 ? " disabled" : "") + ">›</button>";
+      pagerEl.innerHTML =
+        '<span class="pg-range">' + esc(l.pgRange(fmtNum(start + 1), fmtNum(start + shown), fmtNum(total))) + "</span>" +
+        (pages > 1 ? '<nav class="pg-pages" aria-label="' + esc(l.pgSize) + '">' + btns + "</nav>" : "") +
+        '<label>' + esc(l.pgSize) + ' <select aria-label="' + esc(l.pgSize) + '">' + PAGE_SIZES.map(function (n) {
+          return '<option value="' + n + '"' + (n === PAGE_SIZE ? " selected" : "") + ">" + n + "</option>";
+        }).join("") + "</select></label>";
+    }
+
+    function goPage(p, role) {
+      state.page = p;
+      render();
+      // 换页后回到表格顶部；表格顶部已滚出屏幕时把它滚回可视区
+      wrapEl.scrollTop = 0;
+      if (wrapEl.getBoundingClientRect().top < 0) wrapEl.scrollIntoView({ block: "start" });
+      // 分页条整块重画会丢焦点，键盘用户把焦点还给同一个按钮
+      var again = pagerEl.querySelector(role ? '[data-role="' + role + '"]' : '[aria-current="page"]');
+      if (again && !again.disabled) again.focus({ preventScroll: true });
+      else { var cur = pagerEl.querySelector('[aria-current="page"]'); if (cur) cur.focus({ preventScroll: true }); }
+    }
+    pagerEl.addEventListener("click", function (ev) {
+      var b = ev.target.closest("button[data-page]");
+      if (!b || b.disabled) return;
+      goPage(+b.getAttribute("data-page"), b.getAttribute("data-role"));
+    });
+    pagerEl.addEventListener("change", function (ev) {
+      if (ev.target.tagName === "SELECT") setPageSize(+ev.target.value);
+    });
+
+    var handle = {
+      el: tableEl,
+      render: render,
+      setQuery: function (q) { state.query = q; state.page = 0; return render(); },
+      setFilter: function (fn) { state.filter = fn; state.page = 0; return render(); },
+      count: function () { return state.lastCount; },
+      // 每页行数变化时尽量保持当前看到的第一行仍在页内
+      onPageSize: function () {
+        state.page = Math.floor(state.page * state.pageSize / PAGE_SIZE);
+        state.pageSize = PAGE_SIZE;
+        render();
+      }
+    };
+    liveTables.push(handle);
+    return handle;
+  }
+
+  function productColumns(extra) {
+    var c = L().col;
+    return [
+      { key: null, label: "", render: imgCell },
+      { key: "item_number", label: c.item, render: function (r) { return itemCell(r.item_number); } },
+      { key: "name", label: c.name, wrap: true, render: function (r) { return '<span class="pname">' + esc(r.name) + "</span>" + (r.flag ? " " + flagBadge(r.flag) : ""); } }
+    ].concat(extra);
+  }
+
+  function leaderboard(panelId, rows, hint, extra, defaultSortKey, expandable) {
+    var panel = document.getElementById(panelId);
+    var inputId = panelId + "-search";
+    panel.innerHTML =
+      '<div class="toolbar"><input type="search" id="' + inputId + '" placeholder="' + esc(L().search) + '" aria-label="' + esc(L().search) + '">' +
+      '<span class="hint">' + esc(hint) + " · " + esc(L().count(rows.length)) + "</span></div>" +
+      '<div class="tblwrap"><table class="data"><thead></thead><tbody></tbody></table></div>';
+    var t = buildTable(panel.querySelector("table"), productColumns(extra), rows,
+      { defaultSortKey: defaultSortKey, expand: expandable ? storeDetail : null });
+    t.render();
+    document.getElementById(inputId).addEventListener("input", function (e) { t.setQuery(e.target.value); });
+  }
+
+  // ============================================================
+  // 各面板
+  // ============================================================
+  function renderHeader() {
+    document.documentElement.setAttribute("lang", LANG === "zh" ? "zh-CN" : "en");
+    document.getElementById("page-title").textContent = L().h1;
+    var headMeta = META || { supplier_name: BOOT.supplier_name, supplier_code: BOOT.supplier_code, as_of: BOOT.as_of, data_cutoff: BOOT.data_cutoff };
+    document.getElementById("page-subtitle").textContent = L().subtitle(headMeta);
+    var trendBadge = document.getElementById("trend-badge");
+    trendBadge.hidden = !META;
+    if (META) trendBadge.textContent = L().trend(v("trend", META.trend_phase), META.season_ratio);
+    renderViewPicker();
+    ["zh", "en"].forEach(function (k) {
+      document.getElementById("lang-" + k).setAttribute("aria-pressed", String(LANG === k));
+    });
+  }
+
+  // 当前数据是否为单店视图（按关联门店授权的用户只会看到单店视图）
+  function isStoreView() { return !!(META && META.scope && META.scope.kind === "store"); }
+
+  function renderKPI() {
+    var l = L();
+    var hqNote = LANG === "en" ? (META.hq_note_en || META.hq_note) : META.hq_note;
+    var items = [
+      { label: isStoreView() ? l.kpiSalesStore : l.kpiSales, value: fmtNum(META.recent28_qty), sub: fmtMoney(META.recent28_amt) },
+      { label: isStoreView() ? l.kpiYoyStore : l.kpiYoy, value: fmtPct(META.yoy_supplier), sub: l.kpiYoySub(fmtNum(META.ly14_qty_supplier)) },
+      { label: l.kpiCand, value: fmtNum(META.candidate_count), sub: l.kpiCandSub(META.params.candidate_cap) },
+      isStoreView()
+        ? { label: l.kpiShortStore, value: fmtNum(META.shortage_product_count), sub: l.kpiShortStoreSub, cls: META.shortage_product_count > 0 ? "warn" : "good" }
+        : { label: l.kpiShort, value: fmtNum(META.shortage_store_count), sub: l.kpiShortSub(fmtNum(META.shortage_product_count)), cls: META.shortage_store_count > 0 ? "warn" : "good" },
+      { label: l.kpiUrgent, value: fmtNum(META.urgent_count), sub: l.kpiUrgentSub, cls: META.urgent_count > 0 ? "crit" : "good" },
+      { label: l.kpiHq, value: META.hq_available ? l.hqYes : l.hqNo, sub: hqNote, cls: META.hq_available ? "good" : "warn" }
+    ];
+    document.getElementById("kpi-grid").innerHTML = items.map(function (it) {
+      return '<div class="kpi' + (it.cls ? " " + it.cls : "") + '"><div class="kpi-label">' + esc(it.label) +
+        '</div><div class="kpi-value">' + esc(it.value) + '</div><div class="kpi-sub">' + esc(it.sub) + "</div></div>";
+    }).join("");
+  }
+
+  function renderCallouts() {
+    var l = L(), html = "";
+    if (!isStoreView() && META.missing_stores && META.missing_stores.length) {
+      html += '<div class="callout note">' + esc(l.missing(META.data_cutoff, META.missing_stores.join(LANG === "zh" ? "、" : ", "))) + "</div>";
+    }
+    var warns = LANG === "en" && META.warnings_en && META.warnings_en.length === (META.warnings || []).length
+      ? META.warnings_en : (META.warnings || []);
+    if (warns.length) {
+      html += '<div class="callout warn"><strong>' + esc(l.warnTitle) + "</strong><ul>" +
+        warns.map(function (w) { return "<li>" + esc(w) + "</li>"; }).join("") + "</ul></div>";
+    }
+    html += '<div class="callout note">' + esc(l.caveat) + "</div>";
+    document.getElementById("callouts").innerHTML = html;
+  }
+
+  function renderBestsellers() {
+    var c = L().col;
+    leaderboard("panel-bestsellers", DATA.bestsellers, L().hintBest, [
+      { key: "qty28", label: c.qty28, numeric: true, render: function (r) { return fmtNum(r.qty28); } },
+      { key: "amt28", label: c.amt28, numeric: true, render: function (r) { return fmtMoney(r.amt28); } },
+      { key: "store_count", label: c.stores, render: storeSalesCell },
+      { key: "avg_price", label: c.avg, numeric: true, render: function (r) { return fmtMoney(r.avg_price); } },
+      { key: "ly14_qty", label: c.ly14, numeric: true, render: function (r) { return fmtNum(r.ly14_qty); } },
+      { key: "forecast7", label: c.f7, numeric: true, render: function (r) { return fmtNum(r.forecast7); } },
+      { key: "forecast14", label: c.f14, numeric: true, render: function (r) { return fmtNum(r.forecast14); } },
+      { key: "target14", label: c.target, numeric: true, render: function (r) { return fmtNum(r.target14); } },
+      { key: "remaining_trusted", label: c.remTrusted, numeric: true, render: function (r) { return fmtNum(r.remaining_trusted); } },
+      { key: "gap_trusted", label: c.gapTrusted, numeric: true, render: function (r) { return fmtNum(r.gap_trusted); } },
+      { key: "gap_unknown_target", label: c.gapUnknown, numeric: true, render: function (r) { return fmtNum(r.gap_unknown_target); } }
+    ], "qty28", true);
+  }
+
+  function renderHighValue() {
+    var c = L().col;
+    leaderboard("panel-high_value", DATA.high_value, L().hintHigh(META.params.high_value_unit_price), [
+      { key: "avg_price", label: c.avg, numeric: true, render: function (r) { return fmtMoney(r.avg_price); } },
+      { key: "qty28", label: c.qty28, numeric: true, render: function (r) { return fmtNum(r.qty28); } },
+      { key: "amt28", label: c.amt28, numeric: true, render: function (r) { return fmtMoney(r.amt28); } },
+      { key: "store_count", label: c.stores, render: storeSalesCell },
+      { key: "forecast14", label: c.f14, numeric: true, render: function (r) { return fmtNum(r.forecast14); } },
+      { key: "target14", label: c.target, numeric: true, render: function (r) { return fmtNum(r.target14); } },
+      { key: "gap_trusted", label: c.gapTrusted, numeric: true, render: function (r) { return fmtNum(r.gap_trusted); } }
+    ], "amt28", true);
+  }
+
+  function renderForecast() {
+    var c = L().col;
+    leaderboard("panel-forecast", DATA.forecast, L().hintFc, [
+      { key: "ly7_qty", label: c.ly7, numeric: true, render: function (r) { return fmtNum(r.ly7_qty); } },
+      { key: "ly14_qty", label: c.ly14, numeric: true, render: function (r) { return fmtNum(r.ly14_qty); } },
+      { key: "forecast7", label: c.f7, numeric: true, render: function (r) { return fmtNum(r.forecast7); } },
+      { key: "forecast14", label: c.f14, numeric: true, render: function (r) { return fmtNum(r.forecast14); } },
+      { key: "target14", label: c.target, numeric: true, render: function (r) { return fmtNum(r.target14); } },
+      { key: "gap_trusted", label: c.gapTrusted, numeric: true, render: function (r) { return fmtNum(r.gap_trusted); } },
+      { key: "store_count", label: c.stores, render: storeSalesCell },
+      {
+        key: null, label: c.topShort, render: function (r) {
+          if (!r.top_shortage_stores || !r.top_shortage_stores.length) return '<span class="muted">—</span>';
+          return r.top_shortage_stores.map(function (s) {
+            return '<span class="chip short">' + esc(L().shortChip(s.store_name, fmtNum(s.gap))) + "</span>";
+          }).join("");
+        }
+      }
+    ], "forecast14", true);
+  }
+
+  function renderStoreGaps() {
+    var l = L(), c = l.col;
+    var panel = document.getElementById("panel-store_gaps");
+    if (!DATA.store_gaps.length) { panel.innerHTML = '<div class="empty">' + esc(l.noGaps) + "</div>"; return; }
+    var opts = DATA.store_gaps.map(function (sg) {
+      return '<option value="' + esc(sg.store_code) + '">' + esc(sg.store_name) + " (" + esc(sg.store_code) + ")</option>";
+    }).join("");
+    panel.innerHTML =
+      '<div class="toolbar">' +
+      '<input type="search" id="sg-search" placeholder="' + esc(l.search) + '" aria-label="' + esc(l.search) + '">' +
+      '<select id="sg-store" aria-label="' + esc(c.store) + '"><option value="">' + esc(l.allStores(DATA.store_gaps.length)) + "</option>" + opts + "</select>" +
+      '<label class="chk" for="sg-urgent"><input type="checkbox" id="sg-urgent"> ' + esc(l.urgentOnly) + "</label>" +
+      '</div><div id="sg-sections"></div>';
+
+    var sections = document.getElementById("sg-sections");
+    sections.innerHTML = DATA.store_gaps.map(function (sg) {
+      return '<div class="store-section" data-store="' + esc(sg.store_code) + '"><h3>' + esc(sg.store_name) +
+        ' <span class="itemnum">' + esc(sg.store_code) + '</span><span class="store-meta">' + esc(sg.brand_name || "") +
+        " · " + esc(l.gapItems(sg.rows.length)) + '</span></h3><div class="tblwrap"><table class="data"><thead></thead><tbody></tbody></table></div></div>';
+    }).join("");
+
+    var columns = productColumns([
+      { key: "last_purchase_date", label: c.lastIn, render: function (r) { return esc(r.last_purchase_date || "—") + (r.last_purchase_qty !== null && r.last_purchase_qty !== undefined ? esc(l.pcs(fmtNum(r.last_purchase_qty))) : ""); } },
+      { key: "sales_since_purchase", label: c.soldSince, numeric: true, render: function (r) { return fmtNum(r.sales_since_purchase); } },
+      { key: "remaining", label: c.remaining, numeric: true, render: function (r) { return fmtNum(r.remaining); } },
+      { key: "est180", label: c.est180, numeric: true, render: function (r) { return fmtNum(r.est180); } },
+      { key: "hq_stock", label: c.hq, numeric: true, render: function (r) { return fmtNum(r.hq_stock); } },
+      { key: "forecast7", label: c.f7, numeric: true, render: function (r) { return fmtNum(r.forecast7); } },
+      { key: "forecast14", label: c.f14, numeric: true, render: function (r) { return fmtNum(r.forecast14); } },
+      { key: "target14", label: c.targetStock, numeric: true, render: function (r) { return fmtNum(r.target14); } },
+      { key: "gap", label: c.gap, numeric: true, render: function (r) { return fmtNum(r.gap); } },
+      { key: null, label: c.urgent, render: function (r) { return r.urgent ? '<span class="badge urgent">' + esc(c.urgent) + "</span>" : ""; } },
+      { key: null, label: c.conf, render: function (r) { return confBadge(r.confidence); } },
+      { key: null, label: c.transfer, render: function (r) { return transferCell(r.transfer_from); } },
+      {
+        key: "change_vs_prev", label: c.delta, numeric: true, render: function (r) {
+          if (r.change_vs_prev === null || r.change_vs_prev === undefined) return '<span class="muted">' + esc(l.firstRun) + "</span>";
+          return (r.change_vs_prev > 0 ? "+" : "") + fmtNum(r.change_vs_prev);
+        }
+      }
+    ]);
+
+    var tables = DATA.store_gaps.map(function (sg) {
+      var sec = sections.querySelector('.store-section[data-store="' + sg.store_code + '"]');
+      var t = buildTable(sec.querySelector("table"), columns, sg.rows, { defaultSortKey: "gap" });
+      t.render();
+      return { sec: sec, code: sg.store_code, t: t };
+    });
+
+    function apply() {
+      var sel = document.getElementById("sg-store").value;
+      var q = document.getElementById("sg-search").value;
+      var urgentOnly = document.getElementById("sg-urgent").checked;
+      tables.forEach(function (x) {
+        x.t.setFilter(urgentOnly ? function (r) { return r.urgent; } : null);
+        var n = x.t.setQuery(q);
+        // 筛选后没有行的门店整段隐藏，避免满屏空表
+        x.sec.hidden = (sel && sel !== x.code) || (n === 0 && (q || urgentOnly));
+      });
+    }
+    document.getElementById("sg-search").addEventListener("input", apply);
+    document.getElementById("sg-store").addEventListener("change", apply);
+    document.getElementById("sg-urgent").addEventListener("change", apply);
+  }
+
+  function renderNoPurchase() {
+    var l = L(), c = l.col;
+    var panel = document.getElementById("panel-no_purchase");
+    if (!DATA.no_purchase.length) { panel.innerHTML = '<div class="empty">' + esc(l.noPurchaseEmpty) + "</div>"; return; }
+    panel.innerHTML = '<div class="callout note">' + esc(l.noPurchaseNote) + "</div>" +
+      DATA.no_purchase.map(function (g) {
+        return '<div class="store-section" data-store="' + esc(g.store_code) + '"><h3>' + esc(g.store_name) + ' <span class="itemnum">' + esc(g.store_code) +
+          '</span><span class="store-meta">' + esc(l.items(g.rows.length)) + '</span></h3><div class="tblwrap"><table class="data"><thead></thead><tbody></tbody></table></div></div>';
+      }).join("");
+    var columns = productColumns([
+      { key: "target14", label: c.target, numeric: true, render: function (r) { return fmtNum(r.target14); } }
+    ]);
+    DATA.no_purchase.forEach(function (g) {
+      var sec = panel.querySelector('.store-section[data-store="' + g.store_code + '"]');
+      buildTable(sec.querySelector("table"), columns, g.rows, { defaultSortKey: "target14" }).render();
+    });
+  }
+
+  function renderNotes() {
+    var p = META.params, bt = META.backtest;
+    var n = L().notes(p, META, bt);
+    var html = '<div class="notes-grid">' +
+      '<div class="notes-card"><h3>' + esc(n.formulaTitle) + "</h3>" + n.formula.map(function (x) { return "<p>" + x + "</p>"; }).join("") + "</div>" +
+      '<div class="notes-card"><h3>' + esc(n.paramsTitle) + "</h3><table>" +
+      n.params.map(function (row) { return "<tr><td>" + esc(row[0]) + '</td><td class="num">' + esc(row[1]) + "</td></tr>"; }).join("") +
+      "</table></div>" +
+      '<div class="notes-card"><h3>' + esc(n.limitsTitle) + "</h3><ul>" + n.limits.map(function (x) { return "<li>" + esc(x) + "</li>"; }).join("") + "</ul></div>";
+    if (bt && bt.entries && bt.entries.length) {
+      var ratioText = bt.avg_forecast_actual_ratio !== null && bt.avg_forecast_actual_ratio !== undefined
+        ? Math.round(bt.avg_forecast_actual_ratio * 100) + "%" : "—";
+      html += '<div class="notes-card"><h3>' + esc(n.btTitle) + "</h3><p>" + esc(n.btIntro) + "</p><table>" +
+        "<tr>" + n.btHead.map(function (h) { return '<td class="muted">' + esc(h) + "</td>"; }).join("") + "</tr>" +
+        bt.entries.map(function (e) {
+          var r = e.total_actual14 ? Math.round(e.total_forecast14 / e.total_actual14 * 100) + "%" : "—";
+          return "<tr><td>" + esc(e.as_of) + '</td><td class="num">' + fmtNum(e.total_forecast14) + '</td><td class="num">' +
+            fmtNum(e.total_actual14) + '</td><td class="num">' + r + "</td></tr>";
+        }).join("") + '</table><p style="margin-top:8px">' + n.btOutro(ratioText) + "</p></div>";
+    }
+    html += "</div>";
+    document.getElementById("panel-notes").innerHTML = html;
+  }
+
+  // ============================================================
+  // 进销累计：起始日以来进货量 vs 累计已售。图表为手写 SVG：两张图量纲不同，
+  // 不做双纵轴——日销量柱图只放有销售的日期；累计图用连续日期、同一单位同一纵轴。
+  // ============================================================
+  var ST = { rows: [], store_names: {}, since: null, cutoff: null, days: 0 };
+  var stSelectedStore = {};   // product_code -> store_code；null 表示全链
+  var stOpen = {};            // product_code -> {el, row}：已展开的明细，窗口变化时重画
+  var stThreshold = null;     // 当前售出率筛选阈值；null = 全部
+
+  function stDate(offset) {
+    var p = ST.since.split("-");
+    var d = new Date(Date.UTC(+p[0], +p[1] - 1, +p[2] + offset));
+    return String(d.getUTCMonth() + 1).padStart(2, "0") + "-" + String(d.getUTCDate()).padStart(2, "0");
+  }
+  function stPct(rate) { return rate === null || rate === undefined ? "—" : Math.round(rate * 100) + "%"; }
+  function stNiceStep(raw) {
+    if (raw <= 1) return 1;
+    var p = Math.pow(10, Math.floor(Math.log10(raw))), n = raw / p;
+    return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * p;
+  }
+  function stTicks(minV, maxV) {
+    var step = stNiceStep(Math.max(maxV - minV, 1) / 4);
+    var lo = Math.floor(minV / step) * step, hi = Math.ceil(maxV / step) * step;
+    if (hi === lo) hi = lo + step;
+    var out = [];
+    for (var t = lo; t <= hi + 1e-9; t += step) out.push(Math.round(t * 1000) / 1000);
+    return out;
+  }
+  // 柱子只圆数据端（4px），基线端保持方角
+  function stBarPath(x, w, yVal, yBase) {
+    var h = Math.abs(yBase - yVal);
+    var r = Math.min(4, w / 2, h);
+    if (h < 0.5) return "";
+    if (yVal <= yBase) {
+      return "M" + x + "," + yBase + "V" + (yVal + r) + "Q" + x + "," + yVal + " " + (x + r) + "," + yVal +
+        "H" + (x + w - r) + "Q" + (x + w) + "," + yVal + " " + (x + w) + "," + (yVal + r) + "V" + yBase + "Z";
+    }
+    return "M" + x + "," + yBase + "V" + (yVal - r) + "Q" + x + "," + yVal + " " + (x + r) + "," + yVal +
+      "H" + (x + w - r) + "Q" + (x + w) + "," + yVal + " " + (x + w) + "," + (yVal - r) + "V" + yBase + "Z";
+  }
+  // 提示框定位在图表卡片内：先放指针右侧，放不下改到左侧
+  function stShowTip(tip, html, px, py) {
+    tip.innerHTML = html;
+    tip.hidden = false;
+    var cw = tip.parentNode.clientWidth;
+    var left = px + 14, top = Math.max(4, py - 10);
+    if (left + tip.offsetWidth > cw - 4) left = Math.max(4, px - tip.offsetWidth - 14);
+    tip.style.left = left + "px";
+    tip.style.top = top + "px";
+  }
+  // 指针位置换算：x 为 viewBox 坐标；cx/cy 为相对图表卡片的像素坐标
+  function stPointer(svg, ev, W) {
+    var rect = svg.getBoundingClientRect();
+    var card = svg.closest(".st-chart").getBoundingClientRect();
+    return { x: (ev.clientX - rect.left) * (W / rect.width), cx: ev.clientX - card.left, cy: ev.clientY - card.top, scale: rect.width / W, left: rect.left - card.left };
+  }
+
+  function stDrawDaily(host, tip, sales, label) {
+    var l = L().st;
+    if (!sales.length) { host.innerHTML = '<div class="st-empty">' + esc(l.noSales) + "</div>"; return; }
+    var W = Math.max(260, host.clientWidth), H = 150, ml = 34, mr = 8, mt = 8, mb = 22;
+    var pw = W - ml - mr, ph = H - mt - mb;
+    var vals = sales.map(function (s) { return s[1]; });
+    var ticks = stTicks(Math.min(0, Math.min.apply(null, vals)), Math.max(0, Math.max.apply(null, vals)));
+    var y0 = ticks[0], y1 = ticks[ticks.length - 1];
+    function y(v) { return mt + ph - (v - y0) / (y1 - y0) * ph; }
+    var n = sales.length, band = pw / n, bw = Math.max(2, Math.min(24, band - 2));
+    var parts = [];
+    ticks.forEach(function (t) {
+      parts.push('<line x1="' + ml + '" x2="' + (W - mr) + '" y1="' + y(t) + '" y2="' + y(t) + '" stroke="var(--border)" stroke-width="1"/>');
+      parts.push('<text x="' + (ml - 6) + '" y="' + (y(t) + 3) + '" text-anchor="end">' + fmtNum(t) + "</text>");
+    });
+    // 横轴只放有销售的日期；标签过密时隔几个显示一个
+    var every = Math.max(1, Math.ceil(n / Math.max(1, Math.floor(pw / 46))));
+    sales.forEach(function (s, i) {
+      var x = ml + band * i + (band - bw) / 2;
+      parts.push('<path d="' + stBarPath(x, bw, y(s[1]), y(0)) + '" fill="var(--series-sold)"/>');
+      if (i % every === 0) parts.push('<text x="' + (ml + band * (i + 0.5)) + '" y="' + (H - 6) + '" text-anchor="middle">' + stDate(s[0]) + "</text>");
+      parts.push('<rect class="hit" data-i="' + i + '" x="' + (ml + band * i) + '" y="' + mt + '" width="' + band + '" height="' + ph + '" fill="transparent"/>');
+    });
+    host.innerHTML = '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="' + esc(l.aria(label)) + '">' + parts.join("") + "</svg>";
+    var svg = host.querySelector("svg");
+    svg.addEventListener("pointermove", function (ev) {
+      var hit = ev.target.closest("rect.hit");
+      if (!hit) { tip.hidden = true; return; }
+      var s = sales[+hit.getAttribute("data-i")];
+      var pt = stPointer(svg, ev, W);
+      stShowTip(tip, stDate(s[0]) + '<br><i style="background:var(--series-sold)"></i>' + esc(l.daySold) + " <b>" + fmtNum(s[1]) + "</b>", pt.cx, pt.cy);
+    });
+    svg.addEventListener("pointerleave", function () { tip.hidden = true; });
+  }
+
+  function stDrawCumulative(host, tip, purchases, sales, label) {
+    var l = L().st, days = Math.max(1, ST.days);
+    var dp = {}, ds = {};
+    purchases.forEach(function (p) { dp[p[0]] = (dp[p[0]] || 0) + p[1]; });
+    sales.forEach(function (s) { ds[s[0]] = (ds[s[0]] || 0) + s[1]; });
+    var cp = [], cs = [], a = 0, b = 0;
+    for (var d = 0; d <= days; d++) { a += dp[d] || 0; b += ds[d] || 0; cp.push(a); cs.push(b); }
+    var W = Math.max(260, host.clientWidth), H = 170, ml = 40, mr = 96, mt = 10, mb = 22;
+    var pw = W - ml - mr, ph = H - mt - mb;
+    var ticks = stTicks(Math.min(0, Math.min.apply(null, cs)), Math.max(1, cp[days], Math.max.apply(null, cs)));
+    var y0 = ticks[0], y1 = ticks[ticks.length - 1];
+    function x(dd) { return ml + dd / days * pw; }
+    function y(v) { return mt + ph - (v - y0) / (y1 - y0) * ph; }
+    // 阶梯线：当天的进货/销量在当天跳变
+    function stepPath(c) {
+      var path = "M" + x(0) + "," + y(c[0]);
+      for (var i = 1; i <= days; i++) {
+        if (c[i] !== c[i - 1]) path += "H" + x(i) + "V" + y(c[i]);
+      }
+      return path + "H" + x(days);
+    }
+    var parts = [];
+    ticks.forEach(function (t) {
+      parts.push('<line x1="' + ml + '" x2="' + (x(days)) + '" y1="' + y(t) + '" y2="' + y(t) + '" stroke="var(--border)" stroke-width="1"/>');
+      parts.push('<text x="' + (ml - 6) + '" y="' + (y(t) + 3) + '" text-anchor="end">' + fmtNum(t) + "</text>");
+    });
+    [0, 0.25, 0.5, 0.75, 1].forEach(function (f) {
+      var dd = Math.round(days * f);
+      parts.push('<text x="' + x(dd) + '" y="' + (H - 6) + '" text-anchor="' + (f === 0 ? "start" : f === 1 ? "end" : "middle") + '">' + stDate(dd) + "</text>");
+    });
+    parts.push('<line class="xhair" x1="0" x2="0" y1="' + mt + '" y2="' + (mt + ph) + '" stroke="var(--ink-soft)" stroke-width="1" visibility="hidden"/>');
+    parts.push('<path d="' + stepPath(cp) + '" fill="none" stroke="var(--series-purchased)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>');
+    parts.push('<path d="' + stepPath(cs) + '" fill="none" stroke="var(--series-sold)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>');
+    // 每次进货在阶梯上打点（8px，带 2px 底色环）
+    Object.keys(dp).forEach(function (k) {
+      var dd = +k;
+      if (dd < 0 || dd > days) return;
+      parts.push('<circle cx="' + x(dd) + '" cy="' + y(cp[dd]) + '" r="4" fill="var(--series-purchased)" stroke="var(--surface)" stroke-width="2"/>');
+    });
+    // 末端直接标注；两条线太近时上下错开
+    var ep = y(cp[days]), es = y(cs[days]);
+    if (Math.abs(ep - es) < 13) { if (ep <= es) { ep -= 7; es += 7; } else { ep += 7; es -= 7; } }
+    [[ep, "var(--series-purchased)", l.endPurchased + " " + fmtNum(cp[days])], [es, "var(--series-sold)", l.endSold + " " + fmtNum(cs[days])]].forEach(function (e) {
+      parts.push('<line x1="' + (x(days) + 6) + '" x2="' + (x(days) + 16) + '" y1="' + e[0] + '" y2="' + e[0] + '" stroke="' + e[1] + '" stroke-width="2"/>');
+      parts.push('<text class="endlabel" x="' + (x(days) + 20) + '" y="' + (e[0] + 4) + '">' + esc(e[2]) + "</text>");
+    });
+    parts.push('<rect class="hit" x="' + ml + '" y="' + mt + '" width="' + pw + '" height="' + ph + '" fill="transparent"/>');
+    host.innerHTML = '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="' + esc(l.aria(label)) + '">' + parts.join("") + "</svg>";
+    var svg = host.querySelector("svg"), xhair = svg.querySelector(".xhair");
+    svg.addEventListener("pointermove", function (ev) {
+      var pt = stPointer(svg, ev, W);
+      if (pt.x < ml || pt.x > ml + pw) { tip.hidden = true; xhair.setAttribute("visibility", "hidden"); return; }
+      var dd = Math.max(0, Math.min(days, Math.round((pt.x - ml) / pw * days)));
+      xhair.setAttribute("x1", x(dd)); xhair.setAttribute("x2", x(dd)); xhair.setAttribute("visibility", "visible");
+      var html = stDate(dd) +
+        '<br><i style="background:var(--series-purchased)"></i>' + esc(l.cumPurchased) + " <b>" + fmtNum(cp[dd]) + "</b>" +
+        '<br><i style="background:var(--series-sold)"></i>' + esc(l.cumSold) + " <b>" + fmtNum(cs[dd]) + "</b>" +
+        (cp[dd] > 0 ? "<br>" + esc(l.dayRate) + " <b>" + stPct(cs[dd] / cp[dd]) + "</b>" : "") +
+        (dp[dd] ? "<br>" + esc(l.dayPurchase) + " <b>+" + fmtNum(dp[dd]) + "</b>" : "") +
+        (ds[dd] ? "<br>" + esc(l.daySold) + " <b>" + fmtNum(ds[dd]) + "</b>" : "");
+      stShowTip(tip, html, pt.left + x(dd) * pt.scale, pt.cy);
+    });
+    svg.addEventListener("pointerleave", function () { tip.hidden = true; xhair.setAttribute("visibility", "hidden"); });
+  }
+
+  function stRateCell(rate) {
+    if (rate === null || rate === undefined) return '<span class="muted">—</span>';
+    var w = Math.max(0, Math.min(100, Math.round(rate * 100)));
+    return '<span class="ratecell"><span class="ratebar"><span style="width:' + w + '%"></span></span><span class="num">' + stPct(rate) + "</span>" +
+      (rate > 1 ? '<span class="flag-over" title="' + esc(L().st.overTip) + '">' + esc(L().st.over) + "</span>" : "") + "</span>";
+  }
+
+  function stRenderDetail(el, r) {
+    var l = L().st, c = L().col;
+    var sel = stSelectedStore[r.product_code] || null;
+    var scope = null;
+    (r.stores || []).forEach(function (s) { if (s.store_code === sel) scope = s; });
+    if (!scope) sel = null;
+    var src = scope || r;
+    var viewName = META.scope && META.scope.kind === "store" ? META.scope.store_name + " " + META.scope.store_code : l.chain;
+    var scopeName = scope ? (ST.store_names[sel] || sel) + " " + sel : viewName;
+    el.innerHTML = '<div class="st-detail">' +
+      '<div class="st-head"><span class="st-scope">' + esc(l.scope(scopeName)) + "</span>" +
+      (scope ? '<button type="button" class="st-back">' + esc(l.backToChain) + "</button>" : "") +
+      '<span class="st-kpis">' + l.kpis(fmtNum(src.purchased), fmtNum(src.sold), stPct(src.rate)) + "</span></div>" +
+      '<div class="st-charts">' +
+      '<div class="st-chart"><h5>' + esc(l.dailyTitle) + '</h5><div class="st-svg" data-chart="daily"></div><div class="st-tip" hidden></div></div>' +
+      '<div class="st-chart"><h5>' + esc(l.cumTitle) + '</h5><div class="st-legend">' +
+      '<span><i style="background:var(--series-purchased)"></i>' + esc(l.cumPurchased) + "</span>" +
+      '<span><i style="background:var(--series-sold)"></i>' + esc(l.cumSold) + "</span></div>" +
+      '<div class="st-svg" data-chart="cum"></div><div class="st-tip" hidden></div></div>' +
+      "</div>" +
+      "<h4>" + esc(isStoreView() ? l.storesTitleStore : l.storesTitle((r.stores || []).length)) + "</h4>" +
+      '<div style="overflow-x:auto"><table class="mini st-stores"><thead><tr><th>' + esc(c.store) + '</th><th class="num">' + esc(l.purchased) +
+      '</th><th class="num">' + esc(l.sold) + "</th><th>" + esc(l.rate) + '</th><th class="num">' + esc(l.avgPurchase) + '</th><th class="num">' + esc(l.avgSale) +
+      "</th><th>" + esc(l.lastPurchase) + "</th><th>" + esc(l.lastSale) +
+      "</th></tr></thead><tbody>" +
+      (r.stores || []).map(function (s) {
+        return '<tr data-store="' + esc(s.store_code) + '" tabindex="0"' + (s.store_code === sel ? ' class="selected" aria-current="true"' : "") + ">" +
+          "<td>" + esc(ST.store_names[s.store_code] || s.store_code) + ' <span class="itemnum">' + esc(s.store_code) + "</span></td>" +
+          '<td class="num">' + fmtNum(s.purchased) + '</td><td class="num">' + fmtNum(s.sold) + "</td><td>" + stRateCell(s.rate) + "</td>" +
+          '<td class="num">' + fmtMoney(s.avg_purchase_price) + '</td><td class="num">' + fmtMoney(s.avg_sale_price) + "</td>" +
+          "<td>" + esc(s.last_purchase || "—") + "</td><td>" + esc(s.last_sale || "—") + "</td></tr>";
+      }).join("") + "</tbody></table></div></div>";
+    var tips = el.querySelectorAll(".st-tip");
+    var label = (r.name || "") + " · " + scopeName;
+    stDrawDaily(el.querySelector('[data-chart="daily"]'), tips[0], src.sales || [], label);
+    stDrawCumulative(el.querySelector('[data-chart="cum"]'), tips[1], src.purchases || [], src.sales || [], label);
+    el.querySelectorAll("tr[data-store]").forEach(function (tr) {
+      function pick() {
+        var code = tr.getAttribute("data-store");
+        stSelectedStore[r.product_code] = stSelectedStore[r.product_code] === code ? null : code;
+        stRenderDetail(el, r);
+      }
+      tr.addEventListener("click", pick);
+      tr.addEventListener("keydown", function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } });
+    });
+    var back = el.querySelector(".st-back");
+    if (back) back.addEventListener("click", function () { stSelectedStore[r.product_code] = null; stRenderDetail(el, r); });
+  }
+
+  function renderSellThrough() {
+    var l = L().st;
+    var panel = document.getElementById("panel-sell_through");
+    stOpen = {};
+    if (!ST.rows.length) { panel.innerHTML = '<div class="empty">' + esc(l.empty) + "</div>"; return; }
+    var thresholds = [null, 0.9, 0.6, 0.3];
+    function countAt(t) { return t === null ? ST.rows.length : ST.rows.filter(function (r) { return r.rate >= t; }).length; }
+    var overall = ST.total_purchased > 0 ? ST.total_sold / ST.total_purchased : null;
+    panel.innerHTML =
+      '<div class="st-summary">' + l.summary(esc(ST.since), esc(ST.cutoff), ST.days + 1, fmtNum(ST.total_purchased), fmtNum(ST.total_sold), stPct(overall), ST.rows.length) + "</div>" +
+      '<div class="callout note">' + esc(l.caveat(fmtNum(ST.unmatched_qty))) + "</div>" +
+      '<div class="toolbar"><input type="search" id="st-search" placeholder="' + esc(L().search) + '" aria-label="' + esc(L().search) + '">' +
+      '<div class="seg" role="group" aria-label="' + esc(l.filterLabel) + '">' +
+      thresholds.map(function (t) {
+        return '<button type="button" data-t="' + (t === null ? "" : t) + '" aria-pressed="' + String(t === stThreshold) + '">' +
+          (t === null ? esc(l.all) : "≥" + Math.round(t * 100) + "%") + '<span class="n">' + countAt(t) + "</span></button>";
+      }).join("") + "</div>" +
+      '<span class="hint">' + esc(l.hint) + "</span></div>" +
+      '<div class="tblwrap"><table class="data"><thead></thead><tbody></tbody></table></div>';
+    var columns = productColumns([
+      { key: "purchased", label: l.purchased, numeric: true, render: function (r) { return fmtNum(r.purchased); } },
+      { key: "sold", label: l.sold, numeric: true, render: function (r) { return fmtNum(r.sold); } },
+      { key: "rate", label: l.rate, render: function (r) { return stRateCell(r.rate); } },
+      { key: "avg_purchase_price", label: l.avgPurchase, numeric: true, render: function (r) { return fmtMoney(r.avg_purchase_price); } },
+      { key: "avg_sale_price", label: l.avgSale, numeric: true, render: function (r) { return fmtMoney(r.avg_sale_price); } },
+      { key: "first_purchase", label: l.firstPurchase, render: function (r) { return esc(r.first_purchase || "—"); } },
+      { key: "last_purchase", label: l.lastPurchase, render: function (r) { return esc(r.last_purchase || "—"); } },
+      { key: "last_sale", label: l.lastSale, render: function (r) { return esc(r.last_sale || "—"); } },
+      { key: "store_count", label: l.stores, render: function (r) { return '<span class="more"><span class="caret">▶</span> ' + esc(L().storesCell(r.store_count)) + "</span>"; } }
+    ]);
+    var t = buildTable(panel.querySelector("table"), columns, ST.rows, {
+      defaultSortKey: "sold",
+      expand: function () { return '<div class="detail-box"></div>'; },
+      afterExpand: function (r, box) { stOpen[r.product_code] = { el: box, row: r }; stRenderDetail(box, r); }
+    });
+    t.setFilter(stThreshold === null ? null : function (r) { return r.rate >= stThreshold; });
+    document.getElementById("st-search").addEventListener("input", function (e) { t.setQuery(e.target.value); });
+    panel.querySelectorAll(".seg button").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var v = btn.getAttribute("data-t");
+        stThreshold = v === "" ? null : +v;
+        panel.querySelectorAll(".seg button").forEach(function (b) { b.setAttribute("aria-pressed", String(b === btn)); });
+        t.setFilter(stThreshold === null ? null : function (r) { return r.rate >= stThreshold; });
+      });
+    });
+  }
+
+  // 窗口尺寸变化时重画已展开明细里的图（图宽按容器实际像素绘制，保证文字清晰）
+  var stResizeTimer = null;
+  window.addEventListener("resize", function () {
+    clearTimeout(stResizeTimer);
+    stResizeTimer = setTimeout(function () {
+      Object.keys(stOpen).forEach(function (k) {
+        var o = stOpen[k];
+        if (document.body.contains(o.el)) stRenderDetail(o.el, o.row); else delete stOpen[k];
+      });
+    }, 150);
+  });
+
+  // ============================================================
+  // 页签
+  // ============================================================
+  var TAB_IDS = ["bestsellers", "sell_through", "high_value", "forecast", "store_gaps", "no_purchase", "notes"];
+  var activeTab = "bestsellers";
+  try {
+    var savedTab = window.localStorage.getItem("ub-restock-tab");
+    if (TAB_IDS.indexOf(savedTab) >= 0) activeTab = savedTab;
+  } catch (e) { /* 忽略 */ }
+
+  function tabCount(id) {
+    if (id === "bestsellers") return DATA.bestsellers.length;
+    if (id === "sell_through") return ST.rows.length;
+    if (id === "high_value") return DATA.high_value.length;
+    if (id === "forecast") return DATA.forecast.length;
+    if (id === "store_gaps") return DATA.store_gaps.reduce(function (s, g) { return s + g.rows.length; }, 0);
+    if (id === "no_purchase") return DATA.no_purchase.reduce(function (s, g) { return s + g.rows.length; }, 0);
+    return null;
+  }
+
+  var PANEL_RENDERERS = {
+    bestsellers: renderBestsellers, sell_through: renderSellThrough, high_value: renderHighValue,
+    forecast: renderForecast, store_gaps: renderStoreGaps, no_purchase: renderNoPurchase, notes: renderNotes
+  };
+  var renderedPanels = {};
+
+  function showTab(id) {
+    activeTab = id;
+    if (!renderedPanels[id]) { renderedPanels[id] = true; PANEL_RENDERERS[id](); }
+    try { window.localStorage.setItem("ub-restock-tab", id); } catch (e) { /* 忽略 */ }
+    document.querySelectorAll(".tabbtn").forEach(function (b) {
+      b.setAttribute("aria-selected", String(b.getAttribute("data-tab") === id));
+    });
+    TAB_IDS.forEach(function (t) { document.getElementById("panel-" + t).hidden = t !== id; });
+  }
+
+  function renderTabs() {
+    var bar = document.getElementById("tabbar");
+    bar.innerHTML = TAB_IDS.map(function (id) {
+      var n = tabCount(id);
+      return '<button type="button" role="tab" class="tabbtn" data-tab="' + id + '" aria-controls="panel-' + id + '">' +
+        esc(L().tabs[id]) + (n !== null ? '<span class="count">' + n + "</span>" : "") + "</button>";
+    }).join("");
+    bar.querySelectorAll(".tabbtn").forEach(function (b) {
+      b.addEventListener("click", function () { showTab(b.getAttribute("data-tab")); });
+    });
+    showTab(activeTab);
+  }
+
+  function renderFooter() {
+    document.getElementById("pagefoot").textContent = L().footer(META.generated_at);
+  }
+
+  function renderAll() {
+    renderHeader();
+    if (!DATA) return;
+    renderKPI();
+    renderCallouts();
+    // 换门店或换语言：清空所有面板，只重画当前页签（手机上一次画全部页签要几千行，很卡）
+    renderedPanels = {};
+    TAB_IDS.forEach(function (id) { document.getElementById("panel-" + id).innerHTML = ""; });
+    liveTables = [];
+    renderTabs();
+    renderFooter();
+  }
+
+  // ============================================================
+  // 语言切换
+  // ============================================================
+  ["zh", "en"].forEach(function (k) {
+    document.getElementById("lang-" + k).addEventListener("click", function () {
+      if (LANG === k) return;
+      LANG = k;
+      try { window.localStorage.setItem("ub-restock-lang", k); } catch (e) { /* 忽略 */ }
+      renderAll();
+    });
+  });
+
+  // ============================================================
+  // 图片放大（灯箱）
+  // ============================================================
+  var lb = document.getElementById("lightbox");
+  var lbImg = document.getElementById("lb-img");
+  var lbCap = document.getElementById("lb-cap");
+  var lbClose = document.getElementById("lb-close");
+  var lastOpener = null;
+  var currentKey = null;
+  var largeLoaded = {};
+
+  // 预加载放大图；失败时续期登录再试一次
+  function loadLarge(key) {
+    function attempt(url) {
+      return new Promise(function (resolve) {
+        var im = new Image();
+        im.onload = function () { resolve(url); };
+        im.onerror = function () { resolve(null); };
+        im.src = url;
+      });
+    }
+    return attempt(largeUrl(key)).then(function (url) {
+      if (url) return url;
+      return refreshSession().then(function (ok) { return ok ? attempt(withRetryToken(largeUrl(key))) : null; });
+    });
+  }
+  function setCaption(item, name, hint) {
+    lbCap.innerHTML = '<span class="lb-item">' + esc(item) + "</span>" + esc(name) +
+      '<span class="lb-hint">' + esc(hint) + "</span>";
+  }
+
+  function openLightbox(btn) {
+    lastOpener = btn;
+    var key = btn.getAttribute("data-img");
+    var item = btn.getAttribute("data-item");
+    var name = btn.getAttribute("data-name");
+    currentKey = key;
+    var large = largeLoaded[key];
+    // 先用已加载的缩略图占位（模糊），大图下载完再替换
+    lbImg.src = large || thumbUrl(key);
+    lbImg.alt = name || "";
+    lbImg.classList.toggle("is-loading", !large);
+    setCaption(item, name, large ? L().zoomHint : L().zoomLoading);
+    lbClose.setAttribute("aria-label", LANG === "zh" ? "关闭" : "Close");
+    lb.hidden = false;
+    document.body.style.overflow = "hidden";
+    lbClose.focus();
+    if (!large) {
+      loadLarge(key).then(function (big) {
+        if (big) largeLoaded[key] = big;
+        if (currentKey !== key) return;
+        if (big) lbImg.src = big;
+        lbImg.classList.remove("is-loading");
+        setCaption(item, name, big ? L().zoomHint : L().zoomUnavailable);
+      });
+    }
+  }
+  function closeLightbox() {
+    if (lb.hidden) return;
+    lb.hidden = true;
+    currentKey = null;
+    lbImg.removeAttribute("src");
+    lbImg.classList.remove("is-loading");
+    document.body.style.overflow = "";
+    if (lastOpener && document.body.contains(lastOpener)) lastOpener.focus();
+    lastOpener = null;
+  }
+
+  document.addEventListener("click", function (ev) {
+    var btn = ev.target.closest(".thumb-btn");
+    if (btn) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      openLightbox(btn);
+    }
+  }, true);
+  lb.addEventListener("click", function (ev) {
+    if (ev.target === lb || ev.target === lbClose || ev.target.closest(".lb-figure") === null) closeLightbox();
+  });
+  lbClose.addEventListener("click", closeLightbox);
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key === "Escape") closeLightbox();
+  });
+
+  // ============================================================
+  // 数据加载：先问后端能看哪些门店，再按需加载对应的数据文件（每个文件由 nginx 单独鉴权）
+  // ============================================================
+  var REPORT_ROOT = "/reports/kfc-uncle-bills/";
+  var SCOPE = null;          // { allStores, storeCodes }
+  var viewCache = {};
+  var currentViewId = null;
+
+  function viewOptions() {
+    var byCode = {}, opts = [];
+    (BOOT.stores || []).forEach(function (s) { byCode[s.store_code] = s; });
+    if (SCOPE.allStores) {
+      opts.push({ id: "all", label: L().viewAll });
+      (BOOT.stores || []).forEach(function (s) { opts.push({ id: "store-" + s.store_code, label: s.store_name + " " + s.store_code }); });
+    } else {
+      (SCOPE.storeCodes || []).forEach(function (code) {
+        if (byCode[code]) opts.push({ id: "store-" + code, label: byCode[code].store_name + " " + code });
+      });
+    }
+    return opts;
+  }
+  function renderViewPicker() {
+    var sel = document.getElementById("view-select");
+    var opts = SCOPE ? viewOptions() : [];
+    document.getElementById("view-label").textContent = L().viewLabel;
+    sel.innerHTML = opts.map(function (o) {
+      return '<option value="' + esc(o.id) + '"' + (o.id === currentViewId ? " selected" : "") + ">" + esc(o.label) + "</option>";
+    }).join("");
+    sel.disabled = opts.length <= 1;
+    sel.parentNode.hidden = !opts.length;
+  }
+  function showLoader(msg, isError) {
+    var el = document.getElementById("loader");
+    el.hidden = false;
+    el.textContent = msg;
+    el.classList.toggle("error", !!isError);
+  }
+  function fetchJson(url) {
+    return fetch(url, { credentials: "include", cache: "no-cache", headers: { Accept: "application/json" } }).then(function (res) {
+      if (res.status === 401) {
+        // 登录令牌过期：走续期中转页，续上后回到报告
+        window.location.replace("/reports/_gate/?to=" + encodeURIComponent(REPORT_ROOT));
+        var gone = new Error("unauthorized"); gone.status = 401; throw gone;
+      }
+      if (!res.ok) { var err = new Error("HTTP " + res.status); err.status = res.status; throw err; }
+      return res.json();
+    });
+  }
+  function loadScope() {
+    return fetchJson("/api/react/v1/static-report-access/kfc-uncle-bills/scope").then(function (j) {
+      return (j && j.data) || { allStores: false, storeCodes: [] };
+    }, function (err) {
+      // 过渡期旧后端没有范围接口（404）：旧后端只放行能看全部门店的角色，按全部门店处理
+      if (err.status === 404) return { allStores: true, storeCodes: [] };
+      throw err;
+    });
+  }
+  function loadView(id) {
+    if (viewCache[id]) return Promise.resolve(viewCache[id]);
+    return fetchJson("data/" + id + ".json").then(function (d) { viewCache[id] = d; return d; });
+  }
+  function applyView(id, data) {
+    currentViewId = id;
+    try { window.localStorage.setItem("ub-restock-view", id); } catch (e) { /* 忽略 */ }
+    DATA = data;
+    META = data.meta;
+    ST = DATA.sell_through || { rows: [], store_names: {}, since: null, cutoff: null, days: 0 };
+    stSelectedStore = {};
+    stOpen = {};
+    document.getElementById("loader").hidden = true;
+    document.getElementById("report-body").hidden = false;
+    renderAll();
+  }
+  function explainError(err) {
+    if (err && err.status === 401) return;
+    showLoader(err && err.status === 403 ? L().noStoreAccess : L().loadFailed, true);
+  }
+  document.getElementById("view-select").addEventListener("change", function (e) {
+    var id = e.target.value;
+    showLoader(L().loading, false);
+    loadView(id).then(function (d) { applyView(id, d); }, function (err) {
+      document.getElementById("report-body").hidden = true;
+      explainError(err);
+    });
+  });
+
+  renderHeader();
+  showLoader(L().loading, false);
+  loadScope().then(function (scope) {
+    SCOPE = scope;
+    var opts = viewOptions();
+    if (!opts.length) { renderViewPicker(); showLoader(L().noScopeStores, true); return null; }
+    var saved = null;
+    try { saved = window.localStorage.getItem("ub-restock-view"); } catch (e) { /* 忽略 */ }
+    var first = opts.some(function (o) { return o.id === saved; }) ? saved : opts[0].id;
+    return loadView(first).then(function (d) { applyView(first, d); });
+  }).catch(explainError);
+})();
+</script>
