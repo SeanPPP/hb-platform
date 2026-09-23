@@ -264,6 +264,7 @@ namespace BlazorApp.Shared.Constants
                 // 显示名与 SalesDashboard.ProductMovement.View 区分开，避免角色配置页出现两个同名权限。
                 new(Permissions.Reports.ProductMovementView, "查看供应商与分店销售明细", "报表", "Web 页面 /warehouse/products/:code/records 销售分析、移动端「报表」与销售看板供应商/分店销售明细接口 - 查看跨分店供应商与商品销售明细"),
                 new(Permissions.StoreProducts.View, "查看分店商品", "分店商品管理", "Web 页面 /pos-admin/store-product-price 与移动端「商品查询」「商品洞察」- 查看分店商品价格"),
+                new(Permissions.SeasonalProductInsights.View, "查看季节商品查询", "分店商品管理", "移动端「季节商品查询」- 按货号/条码查看本店与其他分店的累计进货、累计销量和理论存货"),
                 new(Permissions.StoreProducts.Create, "创建分店商品", "分店商品管理", "Web 页面 /pos-admin/store-product-price - 创建分店商品价格"),
                 new(Permissions.StoreProducts.Edit, "编辑分店商品", "分店商品管理", "Web 页面 /pos-admin/store-product-price - 编辑分店商品价格"),
                 new(Permissions.StoreProducts.PriceUpdates, "处理价格更新通知", "分店商品管理", "移动端「价格更新」- 查看本店价格更新与换标签通知，按仓库价更新本店零售价/折扣，打印或标记标签"),

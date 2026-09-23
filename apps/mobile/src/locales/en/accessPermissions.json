@@ -601,6 +601,10 @@
       "name": "Print cashier barcodes (mobile)",
       "description": "Mobile Cashier barcodes - view legacy POS staff barcodes for managed stores, print them on a Bluetooth label printer and count prints."
     },
+    "SeasonalProductInsights.View": {
+      "name": "View seasonal products",
+      "description": "Mobile Seasonal products - look up by item number or barcode to see cumulative inbound, cumulative sales and theoretical stock for this store and other stores."
+    },
     "StoreProducts.Create": {
       "name": "Store Products Create",
       "description": "Allows access to Store Products Create."

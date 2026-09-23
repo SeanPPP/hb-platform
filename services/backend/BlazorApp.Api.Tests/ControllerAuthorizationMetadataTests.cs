@@ -765,6 +765,14 @@ public class ControllerAuthorizationMetadataTests
             nameof(SeasonalCardRemainingController.GetSubmission),
             Permissions.SeasonalCards.Remaining.ViewManagedStore
         );
+        yield return Policy<SeasonalProductInsightsController>(
+            nameof(SeasonalProductInsightsController.Lookup),
+            Permissions.SeasonalProductInsights.View
+        );
+        yield return Policy<SeasonalProductInsightsController>(
+            nameof(SeasonalProductInsightsController.GetStoreInsight),
+            Permissions.SeasonalProductInsights.View
+        );
         yield return Policy<ReactAttendanceController>(
             nameof(ReactAttendanceController.GetAttendanceRecords),
             Permissions.Attendance.Punch.ViewManagedStore
