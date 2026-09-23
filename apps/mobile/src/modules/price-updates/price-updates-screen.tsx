@@ -27,7 +27,7 @@ import {
 import { usePrinterStore, type PrinterConnectionState } from "@/modules/printer/state";
 import { getProductFastDetail, retryProductHqSyncOperation } from "@/modules/product-maintenance/api";
 import type { ProductDetail } from "@/modules/product-maintenance/types";
-import { getManageableStoresForSession, isStoreManageable } from "@/modules/shop/store-scope";
+import { getAssignedStoresForSession } from "@/modules/shop/store-scope";
 import type { Store } from "@/modules/shop/types";
 import { useStores } from "@/modules/shop/use-stores";
 import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
@@ -118,13 +118,14 @@ export function PriceUpdatesScreen() {
   const [now, setNow] = useState(() => new Date());
 
   const storeCode = selectedStoreCode;
-  const manageableStores = useMemo(
-    () => getManageableStoresForSession({ stores, isDeviceMode, deviceBoundStore, isAdmin: access.isAdmin }),
-    [access.isAdmin, deviceBoundStore, isDeviceMode, stores]
+  const sessionStores = useMemo(
+    () => getAssignedStoresForSession({ stores, isDeviceMode, deviceBoundStore }),
+    [deviceBoundStore, isDeviceMode, stores]
   );
-  // 设备会话没有账号权限码，按绑定分店放行；账号会话需要专用权限 StoreProducts.PriceUpdates。最终授权仍由后端执行。
+  // 非管理分店也可处理；账号仍需专用权限，且只能选择当前会话提供的门店。
+  // 设备会话没有账号权限码，仅能处理绑定分店；最终范围由后端校验。
   const canOperate =
-    isStoreManageable(storeCode, manageableStores) &&
+    sessionStores.some((store) => store.storeCode === storeCode) &&
     (isDeviceMode || access.hasPermission(PERMISSIONS.StoreProducts.PriceUpdates));
   const canSwitchStore = !isDeviceMode && stores.length > 1;
 

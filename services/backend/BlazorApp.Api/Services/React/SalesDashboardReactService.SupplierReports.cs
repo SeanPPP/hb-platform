@@ -179,6 +179,9 @@ public partial class SalesDashboardReactService
             return empty();
         // 通过既有缓存键管理器登记实际键，让手动清缓存仍能覆盖这条读取路径。
         var key = queryKey($"complete:{before.CacheVersion}");
+        // 键里已含统计批次版本：批次一变键就变，条目本身不会过期成旧数据。
+        // 因此不随统计刷新后的自动清理一起被清，只受下面的空闲/绝对时长约束。
+        SalesDashboardCacheKeys.MarkVersioned(key);
         if (_cache.TryGetValue<T>(key, out var cached) && cached != null)
             return cached;
 
@@ -197,7 +200,11 @@ public partial class SalesDashboardReactService
                 return data;
             });
             // 完整快照读取成功并结束事务后，才允许其他请求复用结果。
-            _cache.Set(key, value, DETAIL_CACHE_DURATION);
+            // 生产实测（2026-09-22）：3 分钟过期加上每半小时刷新后的全量清理，让移动端几乎每次都冷加载 2–6 秒；
+            // 版本化条目可以长期保留，仅用空闲 30 分钟 / 绝对 6 小时限制内存与非版本化字段（门店名、商品图）的陈旧度。
+            _cache.Set(key, value, new MemoryCacheEntryOptions()
+                .SetSlidingExpiration(VERSIONED_REPORT_CACHE_SLIDING)
+                .SetAbsoluteExpiration(VERSIONED_REPORT_CACHE_ABSOLUTE));
             return value;
         }, LazyThreadSafetyMode.ExecutionAndPublication));
         try

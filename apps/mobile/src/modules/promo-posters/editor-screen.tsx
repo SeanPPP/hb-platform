@@ -332,8 +332,10 @@ function PosterEditorForm({ defaults, storeCode, requestedKind, onBack }: Poster
               label={t("poster.editor.styleLabel")}
               value={draft.style}
               options={PROMO_POSTER_STYLES.map((style) => ({ value: style, label: t(`poster.styles.${style}`) }))}
+              wrap
               onChange={handleStyle}
             />
+            {draft.style === "low-ink" ? <Text style={styles.fieldLabel}>{t("poster.lowInkHint")}</Text> : null}
             <PosterSegmented
               label={t("poster.editor.sizeLabel")}
               value={draft.size}
@@ -434,6 +436,8 @@ function PosterEditorForm({ defaults, storeCode, requestedKind, onBack }: Poster
                 draft={draft}
                 errors={{ offer: visible(errors.offer), quantity: visible(errors.quantity), unitPrice: visible(errors.unitPrice), price: visible(errors.price) }}
                 onSelectOffer={(offerId) => setDraft((current) => applyMultiBuyOffer(current, defaults, offerId))}
+                onChange={setField}
+                validityError={visible(errors.validity)}
               />
             ) : null}
 
@@ -611,22 +615,28 @@ function MultiBuySection({
   draft,
   errors,
   onSelectOffer,
+  onChange,
+  validityError,
 }: {
   defaults: PromoPosterDefaults;
   draft: PromoPosterDraft;
   errors: { offer?: PosterFieldErrorCode; quantity?: PosterFieldErrorCode; unitPrice?: PosterFieldErrorCode; price?: PosterFieldErrorCode };
   onSelectOffer: (offerId: string) => void;
+  onChange: (patch: Partial<PromoPosterDraft>) => void;
+  validityError?: PosterFieldErrorCode;
 }) {
   const { t } = useAppTranslation(["productQuery"]);
   const offer = defaults.multiBuyOffers.find((item) => item.promotionId === draft.offerId);
   const unitPrice = parsePosterPrice(draft.unitPrice);
-  const errorKey = errors.offer
-    ? "poster.errors.offerRequired"
-    : errors.unitPrice
-      ? "poster.errors.unitPriceMissing"
-      : errors.quantity || errors.price
-        ? "poster.errors.offerInvalid"
-        : null;
+  const errorKey = offer
+    ? errors.offer
+      ? "poster.errors.offerRequired"
+      : errors.unitPrice
+        ? "poster.errors.unitPriceMissing"
+        : errors.quantity || errors.price
+          ? "poster.errors.offerInvalid"
+          : null
+    : null;
   return (
     <View style={styles.multiBuy}>
       {defaults.multiBuyOffers.length > 1 ? (
@@ -668,7 +678,59 @@ function MultiBuySection({
           ) : null}
           <Text style={styles.offerNote}>{t("poster.editor.offerReadonly")}</Text>
         </View>
-      ) : null}
+      ) : (
+        <View style={styles.offerBox}>
+          <View style={styles.fieldRow}>
+            <View style={styles.flex}>
+              <TextInput
+                mode="outlined"
+                dense
+                label={t("poster.editor.quantityLabel")}
+                value={draft.quantity}
+                onChangeText={(quantity) => onChange({ quantity })}
+                keyboardType="number-pad"
+                error={Boolean(errors.quantity)}
+              />
+              {errors.quantity ? <HelperText type="error" visible>{t("poster.errors.quantityInvalid")}</HelperText> : null}
+            </View>
+            <PriceField
+              label={t("poster.editor.comboPriceLabel")}
+              value={draft.price}
+              onChange={(price) => onChange({ price })}
+              error={errors.price}
+            />
+          </View>
+          <PriceField
+            label={t("poster.editor.unitPriceLabel")}
+            value={draft.unitPrice}
+            onChange={(unitPrice) => onChange({ unitPrice })}
+            hint={defaults.retailPrice !== null ? t("poster.editor.hintRetail", { price: formatPosterMoney(defaults.retailPrice) }) : undefined}
+            error={errors.unitPrice}
+          />
+          <View style={styles.validityHeader}>
+            <MaterialCommunityIcons name="calendar-range" size={18} color={HB_COLORS.textSecondary} />
+            <Text style={styles.validityTitle}>{t("poster.editor.validity")}</Text>
+            <Switch
+              value={Boolean(draft.validFrom || draft.validTo)}
+              onValueChange={(enabled) => onChange(enabled
+                ? { validFrom: formatDateOnly(new Date()), validTo: addDaysToDateOnly(formatDateOnly(new Date()), DEFAULT_VALIDITY_DAYS) }
+                : { validFrom: "", validTo: "" })}
+              accessibilityLabel={t("poster.editor.validity")}
+            />
+          </View>
+          {draft.validFrom || draft.validTo ? (
+            <View style={styles.fieldRow}>
+              <View style={styles.flex}>
+                <MonthDatePickerField compact label={t("poster.editor.validFrom")} value={draft.validFrom || formatDateOnly(new Date())} onChange={(validFrom) => onChange({ validFrom })} />
+              </View>
+              <View style={styles.flex}>
+                <MonthDatePickerField compact label={t("poster.editor.validTo")} value={draft.validTo || formatDateOnly(new Date())} onChange={(validTo) => onChange({ validTo })} />
+              </View>
+            </View>
+          ) : null}
+          {validityError ? <HelperText type="error" visible>{t(`poster.errors.validity.${validityError}`)}</HelperText> : null}
+        </View>
+      )}
       {errorKey ? (
         <HelperText type="error" visible>
           {t(errorKey)}

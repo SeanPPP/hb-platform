@@ -319,6 +319,190 @@ public sealed class CashRegisterUserReactServiceTests : IDisposable
         Assert.DoesNotContain(result.Data!, option => option.UserGUID == "user-inactive");
     }
 
+    [Fact]
+    public async Task GetGridDataAsync_StoreManager_显示所管分店员工和本人条码()
+    {
+        await SeedActiveUserAsync("manager-1", "Manager");
+        await SeedActiveUserAsync("user-allowed", "Allowed");
+        await SeedActiveUserAsync("user-blocked", "Blocked");
+        await SeedStoreAsync("store-allowed", "S1");
+        await SeedStoreAsync("store-blocked", "S2");
+        // 店长本人只挂在非主分店上：本人条码仍需可见，但该分店其他员工不可见。
+        await SeedUserStoreAsync("manager-1", "store-allowed");
+        await SeedUserStoreAsync("manager-1", "store-blocked", isPrimary: false);
+        await SeedUserStoreAsync("user-allowed", "store-allowed");
+        await SeedUserStoreAsync("user-blocked", "store-blocked");
+        await SeedCashierAsync("cashier-self", "manager-1", "SELF-CODE", status: true);
+        await SeedCashierAsync("cashier-allowed", "user-allowed", "ALLOWED-CODE", status: true);
+        await SeedCashierAsync("cashier-blocked", "user-blocked", "BLOCKED-CODE", status: true);
+
+        var result = await CreateService("StoreManager", "manager-1")
+            .GetGridDataAsync(new GridRequestDto { StartRow = 0, PageSize = 20 });
+
+        Assert.NotNull(result.Items);
+        Assert.Equal(
+            new[] { "cashier-allowed", "cashier-self" },
+            result.Items.Select(item => item.HGUID).OrderBy(id => id).ToArray()
+        );
+    }
+
+    [Fact]
+    public async Task GetGridDataAsync_没有主分店的店长_只显示本人条码()
+    {
+        await SeedActiveUserAsync("manager-1", "Manager");
+        await SeedActiveUserAsync("user-other", "Other");
+        await SeedStoreAsync("store-1", "S1");
+        await SeedUserStoreAsync("manager-1", "store-1", isPrimary: false);
+        await SeedUserStoreAsync("user-other", "store-1");
+        await SeedCashierAsync("cashier-self", "manager-1", "SELF-CODE", status: true);
+        await SeedCashierAsync("cashier-other", "user-other", "OTHER-CODE", status: true);
+
+        var service = CreateService("StoreManager", "manager-1");
+        var grid = await service.GetGridDataAsync(new GridRequestDto { StartRow = 0, PageSize = 20 });
+        var print = await service.ConfirmPrintAsync(
+            "cashier-self", new ConfirmCashRegisterUserPrintDto { UserBarcode = "SELF-CODE" }, "manager");
+
+        Assert.Equal("cashier-self", Assert.Single(grid.Items!).HGUID);
+        Assert.True(print.Success, "店长可以打印本人条码");
+    }
+
+    [Fact]
+    public async Task GetGridDataAsync_StoreManager_未关联用户的历史条码按旧StoreCode归属主分店()
+    {
+        await SeedActiveUserAsync("manager-1", "Manager");
+        await SeedStoreAsync("store-allowed", "S1");
+        await SeedStoreAsync("store-blocked", "S2");
+        await SeedUserStoreAsync("manager-1", "store-allowed");
+        // HQ 同步来的历史条码全部没有关联后台用户，只能按旧 StoreCode 判断归属。
+        await SeedCashierAsync("legacy-allowed", null, "LEGACY-1", status: true, storeCode: "S1");
+        await SeedCashierAsync("legacy-blocked", null, "LEGACY-2", status: true, storeCode: "S2");
+
+        var result = await CreateService("StoreManager", "manager-1")
+            .GetGridDataAsync(new GridRequestDto { StartRow = 0, PageSize = 20 });
+
+        var item = Assert.Single(result.Items!);
+        Assert.Equal("legacy-allowed", item.HGUID);
+        Assert.Equal("S1", item.StoreCode);
+        Assert.Equal("S1", item.StoreName);
+    }
+
+    [Fact]
+    public async Task GetGridDataAsync_分店筛选同时命中关联用户和未关联历史条码()
+    {
+        await SeedActiveUserAsync("user-1", "Alice");
+        await SeedStoreAsync("store-1", "S1");
+        await SeedStoreAsync("store-2", "S2");
+        await SeedUserStoreAsync("user-1", "store-1");
+        await SeedCashierAsync("linked-s1", "user-1", "CODE-1", status: true, storeCode: "S2");
+        await SeedCashierAsync("legacy-s1", null, "CODE-2", status: true, storeCode: "S1");
+        await SeedCashierAsync("legacy-s2", null, "CODE-3", status: true, storeCode: "S2");
+
+        var result = await CreateService().GetGridDataAsync(new GridRequestDto
+        {
+            StartRow = 0,
+            PageSize = 20,
+            FilterModel = new Dictionary<string, FilterModelDto>
+            {
+                ["storeCode"] = new FilterModelDto { FilterType = "text", Type = "equals", Filter = "S1" },
+            },
+        });
+
+        Assert.Equal(
+            new[] { "legacy-s1", "linked-s1" },
+            result.Items!.Select(item => item.HGUID).OrderBy(id => id).ToArray()
+        );
+    }
+
+    [Fact]
+    public async Task GetScopeAsync_按后端判定返回可管理分店()
+    {
+        await SeedActiveUserAsync("manager-1", "Manager");
+        await SeedActiveUserAsync("staff-1", "Staff");
+        await SeedStoreAsync("store-1", "S1");
+        await SeedStoreAsync("store-2", "S2");
+        await SeedUserStoreAsync("manager-1", "store-1");
+        await SeedUserStoreAsync("manager-1", "store-2", isPrimary: false);
+        await SeedUserStoreAsync("staff-1", "store-2", isPrimary: false);
+
+        var manager = await CreateService("StoreManager", "manager-1").GetScopeAsync();
+        var staff = await CreateService("StoreStaff", "staff-1").GetScopeAsync();
+        var admin = await CreateService().GetScopeAsync();
+
+        Assert.False(manager.Data!.IsAdmin);
+        Assert.Equal(new[] { "S1" }, manager.Data.ManageableStores.Select(s => s.StoreCode).ToArray());
+        Assert.Empty(staff.Data!.ManageableStores);
+        Assert.True(admin.Data!.IsAdmin);
+        Assert.Equal(new[] { "S1", "S2" }, admin.Data.ManageableStores.Select(s => s.StoreCode).ToArray());
+    }
+
+    [Fact]
+    public async Task ConfirmPrintAsync_条码与状态匹配时原子累加打印次数()
+    {
+        await SeedActiveUserAsync("user-1", "Alice");
+        await SeedCashierAsync("cashier-1", "user-1", "CODE-1", status: true);
+
+        var service = CreateService();
+        var first = await service.ConfirmPrintAsync(
+            "cashier-1", new ConfirmCashRegisterUserPrintDto { UserBarcode = " CODE-1 " }, "printer");
+        var second = await service.ConfirmPrintAsync(
+            "cashier-1", new ConfirmCashRegisterUserPrintDto { UserBarcode = "CODE-1" }, "printer");
+
+        Assert.True(first.Success);
+        Assert.Equal(1, first.Data!.PrintCount);
+        Assert.True(second.Success);
+        Assert.Equal(2, second.Data!.PrintCount);
+        var entity = await _db.Queryable<CashRegisterUser>().FirstAsync(item => item.HGUID == "cashier-1");
+        Assert.Equal(2, entity.PrintCount);
+        Assert.Equal("printer", entity.LastModifier);
+    }
+
+    [Fact]
+    public async Task ConfirmPrintAsync_换码后旧码确认不计数()
+    {
+        await SeedActiveUserAsync("user-1", "Alice");
+        await SeedCashierAsync("cashier-1", "user-1", "NEW-CODE", status: true);
+
+        var result = await CreateService().ConfirmPrintAsync(
+            "cashier-1", new ConfirmCashRegisterUserPrintDto { UserBarcode = "OLD-CODE" }, "printer");
+
+        Assert.False(result.Success);
+        Assert.Equal(0, (await _db.Queryable<CashRegisterUser>()
+            .FirstAsync(item => item.HGUID == "cashier-1")).PrintCount);
+    }
+
+    [Fact]
+    public async Task ConfirmPrintAsync_已停用条码不计数()
+    {
+        await SeedActiveUserAsync("user-1", "Alice");
+        await SeedCashierAsync("cashier-1", "user-1", "CODE-1", status: false);
+
+        var result = await CreateService().ConfirmPrintAsync(
+            "cashier-1", new ConfirmCashRegisterUserPrintDto { UserBarcode = "CODE-1" }, "printer");
+
+        Assert.False(result.Success);
+        Assert.Equal(0, (await _db.Queryable<CashRegisterUser>()
+            .FirstAsync(item => item.HGUID == "cashier-1")).PrintCount);
+    }
+
+    [Fact]
+    public async Task ConfirmPrintAsync_非管理员不能确认无权管理分店的条码()
+    {
+        await SeedActiveUserAsync("manager-1", "Manager");
+        await SeedActiveUserAsync("user-blocked", "Blocked");
+        await SeedStoreAsync("store-allowed", "S1");
+        await SeedStoreAsync("store-blocked", "S2");
+        await SeedUserStoreAsync("manager-1", "store-allowed");
+        await SeedUserStoreAsync("user-blocked", "store-blocked");
+        await SeedCashierAsync("cashier-blocked", "user-blocked", "BLOCKED-CODE", status: true, storeCode: "S1");
+
+        var result = await CreateService("StoreManager", "manager-1").ConfirmPrintAsync(
+            "cashier-blocked", new ConfirmCashRegisterUserPrintDto { UserBarcode = "BLOCKED-CODE" }, "printer");
+
+        Assert.False(result.Success);
+        Assert.Equal(0, (await _db.Queryable<CashRegisterUser>()
+            .FirstAsync(item => item.HGUID == "cashier-blocked")).PrintCount);
+    }
+
     public void Dispose()
     {
         _db.Dispose();
@@ -366,7 +550,7 @@ public sealed class CashRegisterUserReactServiceTests : IDisposable
 
     private async Task SeedCashierAsync(
         string hGuid,
-        string userGuid,
+        string? userGuid,
         string barcode,
         bool status,
         string storeCode = "LEGACY")
@@ -376,7 +560,7 @@ public sealed class CashRegisterUserReactServiceTests : IDisposable
             HGUID = hGuid,
             StoreCode = storeCode,
             UserGUID = userGuid,
-            OperatorUser = userGuid,
+            OperatorUser = userGuid ?? hGuid,
             UserBarcode = barcode,
             LoginRole = "2",
             Remark = string.Empty,

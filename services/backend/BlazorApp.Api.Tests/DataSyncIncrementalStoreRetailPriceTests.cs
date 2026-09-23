@@ -35,64 +35,232 @@ public sealed class DataSyncIncrementalStoreRetailPriceTests : IDisposable
     }
 
     [Fact]
-    public async Task SyncStoreRetailPricesFromHqIncrementalAsync_未指定起始日期时_传入最近成功任务开始时间()
+    public async Task SyncStoreRetailPricesFromHqIncrementalAsync_全分店未指定日期时_从上次全分店水位回退十分钟续跑()
     {
-        var lastSuccessStartedAt = new DateTime(2026, 6, 1, 10, 0, 0, DateTimeKind.Utc);
-        await SeedTaskLogAsync(lastSuccessStartedAt, HbTaskStatus.Success);
+        var watermarkStartedAt = new DateTime(2026, 6, 1, 10, 0, 0, DateTimeKind.Utc);
+        await SeedTaskLogAsync(
+            watermarkStartedAt,
+            HbTaskStatus.Success,
+            StoreRetailPriceIncrementalTaskScope.BuildWatermarkParameters(watermarkStartedAt.AddDays(-1))
+        );
         for (var i = 1; i <= 11; i++)
         {
             await SeedTaskLogAsync(
-                lastSuccessStartedAt.AddHours(i),
-                HbTaskStatus.Failed
+                watermarkStartedAt.AddHours(i),
+                HbTaskStatus.Failed,
+                StoreRetailPriceIncrementalTaskScope.BuildWatermarkParameters(watermarkStartedAt)
             );
         }
-        var selectedStoreCodes = new List<string> { "S01" };
-        DateTime? capturedStartDate = null;
-        var hqSyncService = new Mock<IStoreRetailPriceHqSyncService>();
-        hqSyncService
-            .Setup(service => service.SyncIncrementalAsync(
-                It.Is<List<string>?>(codes => codes != null && codes.SequenceEqual(selectedStoreCodes)),
-                It.IsAny<DateTime?>(),
-                It.IsAny<DateTime?>()
-            ))
-            .Callback<List<string>?, DateTime?, DateTime?>((_, startDate, _) =>
-            {
-                capturedStartDate = startDate;
-            })
-            .ReturnsAsync(new SyncResult { IsSuccess = true });
+        var (hqSyncService, captured) = CreateCapturingHqSyncService();
         var service = CreateService(hqSyncService.Object);
 
-        var result = await service.SyncStoreRetailPricesFromHqIncrementalAsync(selectedStoreCodes);
+        var result = await service.SyncStoreRetailPricesFromHqIncrementalAsync();
 
         Assert.True(result.IsSuccess);
-        Assert.Equal(lastSuccessStartedAt, capturedStartDate);
-        hqSyncService.VerifyAll();
+        Assert.Equal("Watermark", captured.Entry);
+        Assert.Equal(watermarkStartedAt.AddMinutes(-10), captured.StartDate);
+    }
+
+    [Fact]
+    public async Task SyncStoreRetailPricesFromHqIncrementalAsync_页面局部同步和指定分店的成功记录_不污染全分店水位()
+    {
+        var watermarkStartedAt = new DateTime(2026, 6, 1, 10, 0, 0, DateTimeKind.Utc);
+        await SeedTaskLogAsync(
+            watermarkStartedAt,
+            HbTaskStatus.Success,
+            StoreRetailPriceIncrementalTaskScope.BuildWatermarkParameters(null)
+        );
+        // 页面对 S01 同步了一段历史日期；旧接口又单独跑过 S02；还有一次全分店但指定起始日期的运行。
+        await SeedTaskLogAsync(
+            watermarkStartedAt.AddDays(3),
+            HbTaskStatus.Success,
+            StoreRetailPriceIncrementalTaskScope.BuildScopedParameters(
+                new List<string> { "S01" },
+                new DateTime(2026, 5, 1),
+                new DateTime(2026, 5, 2)
+            )
+        );
+        await SeedTaskLogAsync(
+            watermarkStartedAt.AddDays(4),
+            HbTaskStatus.Success,
+            StoreRetailPriceIncrementalTaskScope.BuildScopedParameters(
+                new List<string> { "S02" },
+                watermarkStartedAt,
+                null
+            )
+        );
+        await SeedTaskLogAsync(
+            watermarkStartedAt.AddDays(5),
+            HbTaskStatus.Success,
+            StoreRetailPriceIncrementalTaskScope.BuildScopedParameters(
+                null,
+                watermarkStartedAt.AddDays(4),
+                null
+            )
+        );
+        var (hqSyncService, captured) = CreateCapturingHqSyncService();
+        var service = CreateService(hqSyncService.Object);
+
+        var result = await service.SyncStoreRetailPricesFromHqIncrementalAsync();
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("Watermark", captured.Entry);
+        Assert.Equal(watermarkStartedAt.AddMinutes(-10), captured.StartDate);
+    }
+
+    [Fact]
+    public async Task SyncStoreRetailPricesFromHqIncrementalAsync_指定分店时_从全分店水位起步但走局部入口()
+    {
+        var watermarkStartedAt = new DateTime(2026, 6, 1, 10, 0, 0, DateTimeKind.Utc);
+        await SeedTaskLogAsync(
+            watermarkStartedAt,
+            HbTaskStatus.Success,
+            StoreRetailPriceIncrementalTaskScope.BuildWatermarkParameters(null)
+        );
+        var (hqSyncService, captured) = CreateCapturingHqSyncService();
+        var service = CreateService(hqSyncService.Object);
+
+        var result = await service.SyncStoreRetailPricesFromHqIncrementalAsync(
+            new List<string> { "S01" }
+        );
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("Scoped", captured.Entry);
+        Assert.Equal(new List<string> { "S01" }, captured.StoreCodes);
+        Assert.Equal(watermarkStartedAt.AddMinutes(-10), captured.StartDate);
+    }
+
+    [Fact]
+    public async Task SyncStoreRetailPricesFromHqIncrementalAsync_全分店但指定起始日期_走局部入口不推进水位()
+    {
+        var requestedStart = new DateTime(2026, 6, 10, 0, 0, 0, DateTimeKind.Utc);
+        var (hqSyncService, captured) = CreateCapturingHqSyncService();
+        var service = CreateService(hqSyncService.Object);
+
+        // 空白分店编码等同于未选择分店。
+        var result = await service.SyncStoreRetailPricesFromHqIncrementalAsync(
+            new List<string> { " " },
+            requestedStart
+        );
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("Scoped", captured.Entry);
+        Assert.Equal(requestedStart, captured.StartDate);
     }
 
     [Fact]
     public async Task SyncStoreRetailPricesFromHqIncrementalAsync_没有历史成功任务时_保留统一服务默认窗口()
     {
         await SeedTaskLogAsync(DateTime.UtcNow.AddHours(-1), HbTaskStatus.Failed);
-        DateTime? capturedStartDate = new DateTime(2026, 1, 1);
-        var hqSyncService = new Mock<IStoreRetailPriceHqSyncService>();
-        hqSyncService
-            .Setup(service => service.SyncIncrementalAsync(
-                It.IsAny<List<string>?>(),
-                It.IsAny<DateTime?>(),
-                It.IsAny<DateTime?>()
-            ))
-            .Callback<List<string>?, DateTime?, DateTime?>((_, startDate, _) =>
-            {
-                capturedStartDate = startDate;
-            })
-            .ReturnsAsync(new SyncResult { IsSuccess = true });
+        var (hqSyncService, captured) = CreateCapturingHqSyncService();
+        captured.StartDate = new DateTime(2026, 1, 1);
         var service = CreateService(hqSyncService.Object);
 
         var result = await service.SyncStoreRetailPricesFromHqIncrementalAsync();
 
         Assert.True(result.IsSuccess);
-        Assert.Null(capturedStartDate);
-        hqSyncService.VerifyAll();
+        Assert.Equal("Watermark", captured.Entry);
+        Assert.Null(captured.StartDate);
+    }
+
+    [Fact]
+    public async Task SyncStoreRetailPricesFromHqIncrementalAsync_只有默认窗口内的旧格式成功记录_不信任它而用默认窗口()
+    {
+        // 旧格式日志分不清全分店还是页面局部同步，三天前这条不能当水位。
+        await SeedTaskLogAsync(DateTime.UtcNow.AddDays(-3), HbTaskStatus.Success);
+        var (hqSyncService, captured) = CreateCapturingHqSyncService();
+        captured.StartDate = new DateTime(2026, 1, 1);
+        var service = CreateService(hqSyncService.Object);
+
+        var result = await service.SyncStoreRetailPricesFromHqIncrementalAsync();
+
+        Assert.True(result.IsSuccess);
+        Assert.Null(captured.StartDate);
+    }
+
+    [Fact]
+    public async Task SyncStoreRetailPricesFromHqIncrementalAsync_旧格式成功记录早于默认窗口_向更早方向扩展窗口()
+    {
+        var legacyStartedAt = DateTime.UtcNow.AddDays(-60);
+        await SeedTaskLogAsync(legacyStartedAt, HbTaskStatus.Success);
+        // 之后的页面局部同步再多也不能把旧记录挤掉。
+        for (var i = 1; i <= 8; i++)
+        {
+            await SeedTaskLogAsync(
+                DateTime.UtcNow.AddDays(-i),
+                HbTaskStatus.Success,
+                StoreRetailPriceIncrementalTaskScope.BuildScopedParameters(
+                    new List<string> { "S01" },
+                    new DateTime(2026, 5, 1),
+                    new DateTime(2026, 5, 2)
+                )
+            );
+        }
+        var (hqSyncService, captured) = CreateCapturingHqSyncService();
+        var service = CreateService(hqSyncService.Object);
+
+        var result = await service.SyncStoreRetailPricesFromHqIncrementalAsync();
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(captured.StartDate);
+        Assert.True(
+            Math.Abs((captured.StartDate!.Value - legacyStartedAt.AddMinutes(-10)).TotalSeconds) < 1
+        );
+    }
+
+    [Fact]
+    public async Task SyncStoreRetailPricesFromHqIncrementalAsync_新水位记录优先于更新的旧格式记录()
+    {
+        var watermarkStartedAt = DateTime.UtcNow.AddDays(-90);
+        await SeedTaskLogAsync(
+            watermarkStartedAt,
+            HbTaskStatus.Success,
+            StoreRetailPriceIncrementalTaskScope.BuildWatermarkParameters(null)
+        );
+        await SeedTaskLogAsync(DateTime.UtcNow.AddDays(-80), HbTaskStatus.Success);
+        var (hqSyncService, captured) = CreateCapturingHqSyncService();
+        var service = CreateService(hqSyncService.Object);
+
+        await service.SyncStoreRetailPricesFromHqIncrementalAsync();
+
+        // 不设回溯上限：90 天前的水位原样生效。
+        Assert.NotNull(captured.StartDate);
+        Assert.True(
+            Math.Abs((captured.StartDate!.Value - watermarkStartedAt.AddMinutes(-10)).TotalSeconds) < 1
+        );
+    }
+
+    [Fact]
+    public void StoreRetailPriceIncrementalTaskScope_标记与参数矛盾或缺失时_不可作为水位()
+    {
+        static ScheduledTaskLog Log(TaskParameters? parameters) =>
+            new()
+            {
+                TaskParameters = parameters == null
+                    ? null
+                    : System.Text.Json.JsonSerializer.Serialize(parameters),
+            };
+
+        var eligible = StoreRetailPriceIncrementalTaskScope.BuildWatermarkParameters(DateTime.UtcNow);
+        var contradictory = StoreRetailPriceIncrementalTaskScope.BuildWatermarkParameters(null);
+        contradictory.BranchCodes = new List<string> { "S01" };
+
+        Assert.True(StoreRetailPriceIncrementalTaskScope.IsWatermarkEligible(Log(eligible)));
+        Assert.Contains(
+            StoreRetailPriceIncrementalTaskScope.WatermarkEligibleJsonFragment,
+            Log(eligible).TaskParameters
+        );
+        Assert.False(StoreRetailPriceIncrementalTaskScope.IsWatermarkEligible(Log(contradictory)));
+        Assert.False(StoreRetailPriceIncrementalTaskScope.IsWatermarkEligible(Log(new TaskParameters())));
+        Assert.False(StoreRetailPriceIncrementalTaskScope.IsWatermarkEligible(Log(null)));
+        Assert.False(
+            StoreRetailPriceIncrementalTaskScope.IsWatermarkEligible(
+                Log(StoreRetailPriceIncrementalTaskScope.BuildScopedParameters(null, null, null))
+            )
+        );
+        Assert.True(StoreRetailPriceIncrementalTaskScope.IsLegacyUnscoped(Log(new TaskParameters())));
+        Assert.True(StoreRetailPriceIncrementalTaskScope.IsLegacyUnscoped(Log(null)));
+        Assert.False(StoreRetailPriceIncrementalTaskScope.IsLegacyUnscoped(Log(eligible)));
     }
 
     [Fact]
@@ -144,12 +312,54 @@ public sealed class DataSyncIncrementalStoreRetailPriceTests : IDisposable
         _connection.Dispose();
     }
 
-    private async Task SeedTaskLogAsync(DateTime startedAt, string status)
+    private sealed class CapturedSyncCall
+    {
+        public string? Entry { get; set; }
+        public List<string>? StoreCodes { get; set; }
+        public DateTime? StartDate { get; set; }
+    }
+
+    private static (Mock<IStoreRetailPriceHqSyncService>, CapturedSyncCall) CreateCapturingHqSyncService()
+    {
+        var captured = new CapturedSyncCall();
+        var hqSyncService = new Mock<IStoreRetailPriceHqSyncService>(MockBehavior.Strict);
+        hqSyncService
+            .Setup(service => service.SyncAllStoresFromWatermarkAsync(It.IsAny<DateTime?>()))
+            .Callback<DateTime?>(startDate =>
+            {
+                captured.Entry = "Watermark";
+                captured.StoreCodes = null;
+                captured.StartDate = startDate;
+            })
+            .ReturnsAsync(new SyncResult { IsSuccess = true });
+        hqSyncService
+            .Setup(service => service.SyncIncrementalAsync(
+                It.IsAny<List<string>?>(),
+                It.IsAny<DateTime?>(),
+                It.IsAny<DateTime?>()
+            ))
+            .Callback<List<string>?, DateTime?, DateTime?>((storeCodes, startDate, _) =>
+            {
+                captured.Entry = "Scoped";
+                captured.StoreCodes = storeCodes;
+                captured.StartDate = startDate;
+            })
+            .ReturnsAsync(new SyncResult { IsSuccess = true });
+        return (hqSyncService, captured);
+    }
+
+    private async Task SeedTaskLogAsync(
+        DateTime startedAt,
+        string status,
+        TaskParameters? parameters = null
+    )
     {
         await _db.Insertable(new ScheduledTaskLog
         {
             Id = Guid.NewGuid(),
             TaskType = StoreRetailPricesIncrementalTaskType,
+            // 不传参数时模拟旧格式日志：全空参数的序列化结果。
+            TaskParameters = System.Text.Json.JsonSerializer.Serialize(parameters ?? new TaskParameters()),
             Status = status,
             StartedAt = startedAt,
             CompletedAt = status == HbTaskStatus.Success ? startedAt.AddMinutes(5) : startedAt.AddMinutes(1),

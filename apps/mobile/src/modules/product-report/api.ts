@@ -92,9 +92,18 @@ export interface ProductReportStoreOption {
   value: string;
 }
 
+/** 分店营业额，作为中国供应商页签「分店中国货占比」的分母。 */
+export interface ProductReportBranchRevenue {
+  branchCode: string;
+  branchName: string;
+  revenue: number;
+  compareRevenue: number;
+}
+
 export interface ProductReportTotalRevenue {
   revenue: number;
   compareRevenue: number;
+  branches: ProductReportBranchRevenue[];
   isComplete: boolean;
   statisticsPending: boolean;
   statisticsExpectedBranchCount: number | null;
@@ -179,6 +188,22 @@ export interface SupplierBranchBreakdownRow {
   compareOrderCount: number;
   averageTransaction: number;
   compareAverageTransaction: number;
+  costStatus: ProductReportCostStatus;
+  compareCostStatus: ProductReportCostStatus;
+}
+
+/** 单个分店的中国货（全部中国供应商）合计；同期覆盖同期期间的全部中国供应商。 */
+export interface ChinaSupplierBranchTotalRow {
+  id: string;
+  branchCode: string;
+  branchName: string;
+  revenue: number;
+  compareRevenue: number;
+  totalQuantity: number;
+  compareTotalQuantity: number | null;
+  supplierCount: number;
+  grossProfit: number | null;
+  compareGrossProfit: number | null;
   costStatus: ProductReportCostStatus;
   compareCostStatus: ProductReportCostStatus;
 }
@@ -587,20 +612,29 @@ export function normalizeProductPage(payload: unknown): ProductReportProductPage
 }
 
 export function normalizeTotalRevenue(payload: unknown): ProductReportTotalRevenue {
-  const totals = getRows(payload).reduce<Pick<ProductReportTotalRevenue, "revenue" | "compareRevenue">>(
-    (sum, raw) => {
-      const item = asRecord(raw) ?? {};
-      return {
-        revenue: sum.revenue + asNumber(pick(item, "revenue", "Revenue", "totalAmount", "TotalAmount")),
-        compareRevenue:
-          sum.compareRevenue +
-          asNumber(pick(item, "revenueLY", "RevenueLY", "compareRevenue", "CompareRevenue", "totalAmountLY", "TotalAmountLY")),
-      };
-    },
+  // 逐店明细保留下来给分店中国货占比做分母；总额仍由同一批行求和，两者天然一致。
+  const branches = getRows(payload).map<ProductReportBranchRevenue>((raw, index) => {
+    const item = asRecord(raw) ?? {};
+    const branchCode = asString(pick(item, "branchCode", "BranchCode", "storeCode", "StoreCode"), `branch-${index}`);
+    return {
+      branchCode,
+      branchName: asString(pick(item, "branchName", "BranchName", "storeName", "StoreName"), branchCode),
+      revenue: asNumber(pick(item, "revenue", "Revenue", "totalAmount", "TotalAmount")),
+      compareRevenue: asNumber(
+        pick(item, "revenueLY", "RevenueLY", "compareRevenue", "CompareRevenue", "totalAmountLY", "TotalAmountLY"),
+      ),
+    };
+  });
+  const totals = branches.reduce<Pick<ProductReportTotalRevenue, "revenue" | "compareRevenue">>(
+    (sum, branch) => ({
+      revenue: sum.revenue + branch.revenue,
+      compareRevenue: sum.compareRevenue + branch.compareRevenue,
+    }),
     { revenue: 0, compareRevenue: 0 }
   );
   return {
     ...totals,
+    branches,
     isComplete: true,
     statisticsPending: false,
     statisticsExpectedBranchCount: null,
@@ -667,6 +701,38 @@ export function normalizeSupplierBranchReportSnapshot(payload: unknown) {
 
 export function normalizeProductBranchReportSnapshot(payload: unknown) {
   return normalizeProductReportSnapshot(payload, normalizeProductBranchRows);
+}
+
+export function normalizeChinaSupplierBranchTotalsSnapshot(payload: unknown) {
+  return normalizeProductReportSnapshot(payload, normalizeChinaSupplierBranchTotalRows);
+}
+
+export function normalizeChinaSupplierBranchTotalRows(payload: unknown): ChinaSupplierBranchTotalRow[] {
+  return getRows(payload).map((raw, index) => {
+    const item = asRecord(raw) ?? {};
+    const branchCode = asString(pick(item, "branchCode", "BranchCode"), `branch-${index}`);
+    const revenue = asNumber(pick(item, "totalAmount", "TotalAmount", "revenue", "Revenue"));
+    const compareRevenue = asNumber(pick(item, "compareTotalAmount", "CompareTotalAmount", "revenueLY", "RevenueLY"));
+    const totalQuantity = asNumber(pick(item, "totalQuantity", "TotalQuantity"));
+    const compareTotalQuantity = asNullableNumber(pick(item, "compareTotalQuantity", "CompareTotalQuantity"));
+    return {
+      id: branchCode || String(index),
+      branchCode,
+      branchName: asString(pick(item, "branchName", "BranchName", "storeName", "StoreName"), branchCode),
+      revenue,
+      compareRevenue,
+      totalQuantity,
+      compareTotalQuantity,
+      supplierCount: asNumber(pick(item, "supplierCount", "SupplierCount")),
+      grossProfit: asNullableNumber(pick(item, "grossProfit", "GrossProfit")),
+      compareGrossProfit: asNullableNumber(pick(item, "compareGrossProfit", "CompareGrossProfit")),
+      costStatus: normalizeCostStatus(pick(item, "costStatus", "CostStatus"), revenue !== 0 || totalQuantity !== 0),
+      compareCostStatus: normalizeCostStatus(
+        pick(item, "compareCostStatus", "CompareCostStatus"),
+        compareRevenue !== 0 || (compareTotalQuantity ?? 0) !== 0,
+      ),
+    };
+  });
 }
 
 export function normalizeSupplierBranchRows(payload: unknown): SupplierBranchBreakdownRow[] {
@@ -841,6 +907,22 @@ export async function fetchSupplierReportRows(
   return pollProductReportSnapshot(async (signal) => {
     const response = await apiClient.get(endpoint, { params, ...getProductReportRequestConfig(signal) });
     return normalizeSupplierReportSnapshot(response.data);
+  }, options);
+}
+
+/** 中国供应商页签「分店中国货占比」的分子；与供应商排行、商品明细共用同一统计批次版本。 */
+export async function fetchChinaSupplierBranchTotals(
+  query: ProductReportDateQuery,
+  options: ProductReportPollingOptions = {},
+) {
+  const apiClient = await getApiClient();
+  const params = buildBaseParams(query);
+  return pollProductReportSnapshot(async (signal) => {
+    const response = await apiClient.get("/react/v1/dashboard/china-supplier-branch-totals", {
+      params,
+      ...getProductReportRequestConfig(signal),
+    });
+    return normalizeChinaSupplierBranchTotalsSnapshot(response.data);
   }, options);
 }
 

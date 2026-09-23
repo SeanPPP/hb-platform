@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import { Image, Pressable, StyleSheet, View } from "react-native";
 import { Card, Icon, IconButton, Text } from "react-native-paper";
 import { ProductBarcodeImage } from "@/components/product-maintenance/ProductBarcodeImage";
@@ -32,7 +32,7 @@ interface ProductHeroCardProps {
   insightsDisabled?: boolean;
 }
 
-export function ProductHeroCard({
+export const ProductHeroCard = memo(function ProductHeroCard({
   imageUrl,
   productName,
   itemNumber,
@@ -175,7 +175,7 @@ export function ProductHeroCard({
       </View>
     </Card>
   );
-}
+});
 
 const styles = StyleSheet.create({
   card: {

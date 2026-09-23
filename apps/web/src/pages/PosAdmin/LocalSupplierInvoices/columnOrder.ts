@@ -6,6 +6,7 @@ export const DEFAULT_LOCAL_SUPPLIER_INVOICE_COLUMN_ORDER = [
   'inboundDate',
   'totalAmount',
   'receivedTotalAmount',
+  'isProductChecked',
   'flowStatus',
   'inboundStatus',
   'remarks',

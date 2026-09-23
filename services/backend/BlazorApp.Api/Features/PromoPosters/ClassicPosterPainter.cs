@@ -305,7 +305,7 @@ internal static class ClassicPosterPainter
     }
 
     /// <summary>大价格：$ 与角分缩小并与整数顶端对齐，角分下划线。bottom 为价格行盒（行高 0.8）底边。</summary>
-    private static void Price(PosterCanvas cv, decimal value, float p, float left, float bottom, BaseColor color)
+    internal static void Price(PosterCanvas cv, decimal value, float p, float left, float bottom, BaseColor color)
     {
         var (dollars, cents) = PromoPosterText.SplitPrice(value);
         var baseline = PosterCanvas.Baseline(Black, p, 0.8f, bottom - 0.8f * p);
@@ -325,7 +325,7 @@ internal static class ClassicPosterPainter
     }
 
     /// <summary>多件价「3 FOR $10」：件数与金额同为大字，FOR 小字垂直居中；整数金额不显示角分。</summary>
-    private static void Deal(PosterCanvas cv, int quantity, decimal value, float cap, float left, float availableWidth, float bottom, BaseColor color)
+    internal static void Deal(PosterCanvas cv, int quantity, decimal value, float cap, float left, float availableWidth, float bottom, BaseColor color)
     {
         var (dollars, cents) = PromoPosterText.SplitPrice(value);
         var qty = quantity.ToString();

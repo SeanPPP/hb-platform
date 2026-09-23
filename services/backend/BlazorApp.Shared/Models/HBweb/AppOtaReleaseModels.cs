@@ -103,6 +103,9 @@ public sealed class MobileOtaPolicy : BaseEntity
     [SugarColumn(Length = 1000, IsNullable = true)]
     public string? ReleaseMessage { get; set; }
 
+    [SugarColumn(IsNullable = true, SqlParameterDbType = System.Data.DbType.String)]
+    public string? AdditionalTargetsJson { get; set; }
+
     [SugarColumn(IsNullable = false)]
     public long PolicyVersion { get; set; }
 }

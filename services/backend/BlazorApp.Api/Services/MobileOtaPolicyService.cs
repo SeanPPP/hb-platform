@@ -13,6 +13,7 @@ public sealed class MobileOtaPolicyService(
     ILogger<MobileOtaPolicyService> logger
 ) : IMobileOtaPolicyService
 {
+    private sealed record AdditionalTarget(Guid TargetReleaseId, string TargetRuntimeVersion);
     private static readonly JsonSerializerOptions SnapshotJsonOptions =
         new(JsonSerializerDefaults.Web);
 
@@ -44,6 +45,11 @@ public sealed class MobileOtaPolicyService(
                 policy.TargetReleaseId.Value
             )
             : null;
+        _ = ParseAdditionalTargets(policy.AdditionalTargetsJson, out var additionalTargetsValid);
+        if (!additionalTargetsValid)
+        {
+            return Error("Mobile OTA 策略附加目标数据损坏", MobileOtaPolicyErrorCodes.AdditionalTargetsInvalid);
+        }
         return ApiResponse<MobileOtaPolicyDto>.OK(MapPolicy(policy, release));
     }
 
@@ -104,6 +110,16 @@ public sealed class MobileOtaPolicyService(
                 }
 
                 AppOtaRelease? release = null;
+                var existingAdditional = ParseAdditionalTargets(existing?.AdditionalTargetsJson, out var existingAdditionalValid);
+                if (request.Enabled && request.AdditionalTargetReleaseIds is null && !existingAdditionalValid)
+                {
+                    mutationError = Error("现有附加 OTA 目标数据无效，请先修复策略", MobileOtaPolicyErrorCodes.AdditionalTargetsInvalid);
+                    return;
+                }
+                if (!existingAdditionalValid)
+                {
+                    existingAdditional = [];
+                }
                 if (request.Enabled)
                 {
                     if (!request.TargetReleaseId.HasValue)
@@ -120,7 +136,15 @@ public sealed class MobileOtaPolicyService(
                         platform,
                         request.TargetReleaseId.Value
                     );
-                    if (release is null || release.Legacy)
+                    if (
+                        release is null
+                        || GetInvalidTargetIdentityReason(
+                            release,
+                            environment,
+                            platform,
+                            release.RuntimeVersion
+                        ) is not null
+                    )
                     {
                         mutationError = Error(
                             "目标发布不存在、身份不匹配或属于只读 legacy 历史",
@@ -130,13 +154,44 @@ public sealed class MobileOtaPolicyService(
                     }
                 }
 
+                var preservedOrRequestedIds = request.AdditionalTargetReleaseIds
+                    ?? existingAdditional.Select(item => item.TargetReleaseId).ToList();
+                var additionalValidation = !request.Enabled
+                    ? (new List<AdditionalTarget>(), (string?)null)
+                    : await ValidateAdditionalTargetsAsync(
+                        environment,
+                        platform,
+                        request.TargetReleaseId,
+                        release,
+                        preservedOrRequestedIds
+                    );
+                var additional = additionalValidation.Item1;
+                if (additionalValidation.Item2 is not null)
+                {
+                    mutationError = Error(
+                        additionalValidation.Item2,
+                        MobileOtaPolicyErrorCodes.AdditionalTargetsInvalid
+                    );
+                    return;
+                }
+
                 var enabled = request.Enabled;
                 var required = enabled && request.Required;
                 var targetReleaseId = enabled ? request.TargetReleaseId : null;
                 var targetRuntimeVersion = enabled ? release!.RuntimeVersion : null;
                 var releaseMessage = enabled ? normalizedMessage : null;
+                var additionalJson = enabled
+                    ? additional.Count == 0
+                        ? null
+                        : JsonSerializer.Serialize(additional, SnapshotJsonOptions)
+                    : null;
+                var existingAdditionalJson = existingAdditional.Count == 0
+                    ? null
+                    : JsonSerializer.Serialize(existingAdditional, SnapshotJsonOptions);
                 if (
                     existing is not null
+                    // 损坏的 JSON 不能被当作空集合 no-op，显式修复必须落库并写审计。
+                    && existingAdditionalValid
                     && existing.Enabled == enabled
                     && existing.Required == required
                     && existing.TargetReleaseId == targetReleaseId
@@ -145,6 +200,7 @@ public sealed class MobileOtaPolicyService(
                         targetRuntimeVersion,
                         StringComparison.Ordinal
                     )
+                    && string.Equals(existingAdditionalJson, additionalJson, StringComparison.Ordinal)
                     && string.Equals(
                         existing.ReleaseMessage,
                         releaseMessage,
@@ -172,6 +228,7 @@ public sealed class MobileOtaPolicyService(
                 entity.TargetReleaseId = targetReleaseId;
                 entity.TargetRuntimeVersion = targetRuntimeVersion;
                 entity.ReleaseMessage = releaseMessage;
+                entity.AdditionalTargetsJson = additionalJson;
                 entity.PolicyVersion = actualVersion + 1;
                 entity.UpdatedAt = now;
                 entity.UpdatedBy = user;
@@ -333,18 +390,61 @@ public sealed class MobileOtaPolicyService(
             );
         }
 
-        var release = policy.TargetReleaseId.HasValue
-            ? await FindReleaseAsync(
+        var additionalTargets = ParseAdditionalTargets(policy.AdditionalTargetsJson, out var additionalValid);
+        if (
+            !additionalValid
+            || policy.TargetReleaseId is null
+            || policy.TargetRuntimeVersion is null
+            || additionalTargets.Any(item =>
+                item.TargetReleaseId == policy.TargetReleaseId.Value
+                || string.Equals(item.TargetRuntimeVersion, policy.TargetRuntimeVersion, StringComparison.Ordinal)
+            )
+        )
+        {
+            logger.LogWarning(
+                "Mobile OTA target list invalid environment={Environment} platform={Platform} policyVersion={PolicyVersion} required={Required}",
                 environment,
                 platform,
-                policy.TargetReleaseId.Value
-            )
-            : null;
+                policy.PolicyVersion,
+                policy.Required
+            );
+            return policy.Required
+                ? null
+                : NoneDecision(
+                    policyVersion,
+                    platformDisplay,
+                    environment,
+                    runtimeVersion
+                );
+        }
+
+        var targetReleases = await FindReleasesAsync(
+            environment,
+            platform,
+            new[] { policy.TargetReleaseId.Value }
+                .Concat(additionalTargets.Select(item => item.TargetReleaseId))
+                .Distinct()
+                .ToList()
+        );
+        var release = targetReleases.FirstOrDefault(item => item.Id == policy.TargetReleaseId.Value);
+        var allCandidates = new[]
+        {
+            new AdditionalTarget(policy.TargetReleaseId.Value, policy.TargetRuntimeVersion),
+        }.Concat(additionalTargets).ToList();
+        var selected = allCandidates.FirstOrDefault(item =>
+            string.Equals(item.TargetRuntimeVersion, runtimeVersion, StringComparison.Ordinal)
+        );
+        if (selected is null)
+        {
+            return NoneDecision(policyVersion, platformDisplay, environment, runtimeVersion);
+        }
+
+        release = targetReleases.FirstOrDefault(item => item.Id == selected.TargetReleaseId);
         var invalidIdentityReason = GetInvalidTargetIdentityReason(
             release,
             environment,
             platform,
-            policy.TargetRuntimeVersion
+            selected.TargetRuntimeVersion
         );
         if (invalidIdentityReason is not null)
         {
@@ -358,23 +458,7 @@ public sealed class MobileOtaPolicyService(
             );
             return policy.Required
                 ? null
-                : NoneDecision(
-                    policyVersion,
-                    platformDisplay,
-                    environment,
-                    runtimeVersion
-                );
-        }
-
-        // Runtime 不兼容代表该策略不覆盖当前构建，不应将客户端误判为策略损坏。
-        if (!string.Equals(runtimeVersion, release!.RuntimeVersion, StringComparison.Ordinal))
-        {
-            return NoneDecision(
-                policyVersion,
-                platformDisplay,
-                environment,
-                runtimeVersion
-            );
+                : NoneDecision(policyVersion, platformDisplay, environment, runtimeVersion);
         }
 
         var currentUpdateId = Normalize(request.CurrentUpdateId);
@@ -472,6 +556,72 @@ public sealed class MobileOtaPolicyService(
             && item.Platform == platform
         );
 
+    private async Task<List<AppOtaRelease>> FindReleasesAsync(string environment, string platform, IReadOnlyCollection<Guid> ids)
+    {
+        if (ids.Count == 0) return [];
+        return await db.Queryable<AppOtaRelease>().Where(item =>
+            ids.Contains(item.Id)
+            && !item.IsDeleted
+            && item.AppKey == MobileAppKeys.Mobile
+            && item.Environment == environment
+            && item.Platform == platform
+        ).ToListAsync();
+    }
+
+    private async Task<(List<AdditionalTarget>, string?)> ValidateAdditionalTargetsAsync(
+        string environment,
+        string platform,
+        Guid? primaryReleaseId,
+        AppOtaRelease? primaryRelease,
+        IReadOnlyList<Guid> requestedIds
+    )
+    {
+        if (requestedIds.Count > 8) return ([], "附加 OTA 目标最多 8 个");
+        if (requestedIds.Distinct().Count() != requestedIds.Count) return ([], "附加 OTA 目标不能重复");
+        var releases = await FindReleasesAsync(environment, platform, requestedIds);
+        if (releases.Count != requestedIds.Count) return ([], "附加 OTA 目标不存在、身份不匹配或属于 legacy");
+        var targets = new List<AdditionalTarget>();
+        foreach (var id in requestedIds)
+        {
+            var release = releases.First(item => item.Id == id);
+            if (GetInvalidTargetIdentityReason(release, environment, platform, release.RuntimeVersion) is not null || release.Legacy)
+                return ([], "附加 OTA 目标不存在、身份不匹配或属于 legacy");
+            if (primaryReleaseId == id || (primaryRelease is not null && string.Equals(primaryRelease.RuntimeVersion, release.RuntimeVersion, StringComparison.Ordinal)))
+                return ([], "附加 OTA 目标不能与主目标使用相同 runtime");
+            targets.Add(new AdditionalTarget(id, release.RuntimeVersion));
+        }
+        if (targets.Select(item => item.TargetRuntimeVersion).Distinct(StringComparer.Ordinal).Count() != targets.Count)
+            return ([], "附加 OTA 目标不能重复 runtime");
+        return (targets.OrderBy(item => item.TargetRuntimeVersion, StringComparer.Ordinal).ToList(), null);
+    }
+
+    private static List<AdditionalTarget> ParseAdditionalTargets(string? json, out bool valid)
+    {
+        valid = true;
+        if (string.IsNullOrWhiteSpace(json)) return [];
+        if (json.Length > 16384) return InvalidTargets(out valid);
+        try
+        {
+            var targets = JsonSerializer.Deserialize<List<AdditionalTarget?>>(json, SnapshotJsonOptions);
+            if (targets is null || targets.Count > 8 || targets.Any(item => item is null || item.TargetReleaseId == Guid.Empty || string.IsNullOrWhiteSpace(item.TargetRuntimeVersion)))
+                return InvalidTargets(out valid);
+            var nonNullTargets = targets.Cast<AdditionalTarget>().ToList();
+            if (nonNullTargets.Select(item => item.TargetReleaseId).Distinct().Count() != nonNullTargets.Count || nonNullTargets.Select(item => item.TargetRuntimeVersion).Distinct(StringComparer.Ordinal).Count() != nonNullTargets.Count)
+                return InvalidTargets(out valid);
+            return nonNullTargets.OrderBy(item => item.TargetRuntimeVersion, StringComparer.Ordinal).ToList();
+        }
+        catch (JsonException)
+        {
+            return InvalidTargets(out valid);
+        }
+    }
+
+    private static List<AdditionalTarget> InvalidTargets(out bool valid)
+    {
+        valid = false;
+        return [];
+    }
+
     private static string? GetInvalidTargetIdentityReason(
         AppOtaRelease? release,
         string environment,
@@ -566,6 +716,13 @@ public sealed class MobileOtaPolicyService(
             TargetRuntimeVersion = item.TargetRuntimeVersion,
             ReleaseMessage = item.ReleaseMessage,
             TargetRelease = release is null ? null : AppOtaReleaseService.Map(release),
+            AdditionalTargets = ParseAdditionalTargets(item.AdditionalTargetsJson, out _)
+                .Select(target => new MobileOtaAdditionalTargetDto
+                {
+                    TargetReleaseId = target.TargetReleaseId,
+                    TargetRuntimeVersion = target.TargetRuntimeVersion,
+                })
+                .ToList(),
             UpdatedAt = item.UpdatedAt,
             UpdatedBy = item.UpdatedBy,
         };

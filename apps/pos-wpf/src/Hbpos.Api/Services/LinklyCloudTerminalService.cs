@@ -1386,13 +1386,14 @@ public sealed class SqlSugarLinklyCloudTerminalRepository(
         SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
         BEGIN TRANSACTION;
         -- 先覆盖全部设备和终端会话；后续阶段不得回头取会话锁。
+        -- SupervisorResolved 只由主管结案的 ack 写入，与 Linkly 终态一样视为已结束；本文件各闸门同此口径。
         IF EXISTS (SELECT 1 FROM [dbo].[POSM_LinklyCloudBackendSession] WITH (UPDLOCK, HOLDLOCK)
                    WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode
                      AND ([DeviceCode] = @SourceDeviceCode OR [DeviceCode] = @ExpectedSourceAssignedDeviceCode
                           OR [DeviceCode] = @TargetDeviceCode OR [TerminalId] = @SourceTerminalId
                           OR [TerminalId] = @ExpectedTargetTerminalId)
                      AND ([IsActive] = 1 OR [Status] IS NULL
-                          OR [Status] NOT IN (N'Completed', N'Cancelled', N'Failed', N'NotSubmitted')
+                          OR [Status] NOT IN (N'Completed', N'Cancelled', N'Failed', N'NotSubmitted', N'SupervisorResolved')
                           OR [ClientAcknowledgedAt] IS NULL))
             THROW 51002, 'POS or terminal has an active, unknown or unacknowledged operation.', 1;
 
@@ -1511,7 +1512,7 @@ public sealed class SqlSugarLinklyCloudTerminalRepository(
                    WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode
                      -- 未分配线路仍以调用 POS 发起供应商请求，因此会话隔离必须使用实际操作设备。
                      AND ([TerminalId] = @TerminalId OR [DeviceCode] = @OperationDeviceCode)
-                     AND ([IsActive] = 1 OR [Status] IS NULL OR [Status] NOT IN (N'Completed', N'Cancelled', N'Failed', N'NotSubmitted') OR [ClientAcknowledgedAt] IS NULL))
+                     AND ([IsActive] = 1 OR [Status] IS NULL OR [Status] NOT IN (N'Completed', N'Cancelled', N'Failed', N'NotSubmitted', N'SupervisorResolved') OR [ClientAcknowledgedAt] IS NULL))
             THROW 51002, 'Terminal has a blocking operation.', 1;
         DECLARE @Acquired bit = 1;
         UPDATE [dbo].[POSM_LinklyCloudTerminal] WITH (UPDLOCK, HOLDLOCK)
@@ -1555,7 +1556,7 @@ public sealed class SqlSugarLinklyCloudTerminalRepository(
             WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode
               AND ([DeviceCode] = @DeviceCode OR [TerminalId] = @TerminalId OR [TerminalId] = @ExpectedOldTerminalId)
               AND ([IsActive] = 1 OR [Status] IS NULL
-                   OR [Status] NOT IN (N'Completed', N'Cancelled', N'Failed', N'NotSubmitted')
+                   OR [Status] NOT IN (N'Completed', N'Cancelled', N'Failed', N'NotSubmitted', N'SupervisorResolved')
                    OR [ClientAcknowledgedAt] IS NULL))
             THROW 51002, 'Current POS or terminal has an operation that must be recovered or acknowledged.', 1;
 
@@ -1653,7 +1654,7 @@ public sealed class SqlSugarLinklyCloudTerminalRepository(
         WHERE [Environment] = @Environment
           AND [StoreCode] = @StoreCode
           AND [TerminalId] = @TerminalId
-          AND ([IsActive] = 1 OR [Status] IS NULL OR [Status] NOT IN (N'Completed', N'Cancelled', N'Failed', N'NotSubmitted') OR [ClientAcknowledgedAt] IS NULL);
+          AND ([IsActive] = 1 OR [Status] IS NULL OR [Status] NOT IN (N'Completed', N'Cancelled', N'Failed', N'NotSubmitted', N'SupervisorResolved') OR [ClientAcknowledgedAt] IS NULL);
 
         IF @HasBlockingSession = 0
         BEGIN
@@ -1700,7 +1701,7 @@ public sealed class SqlSugarLinklyCloudTerminalRepository(
         WHERE [Environment] = @Environment
           AND [StoreCode] = @StoreCode
           AND [DeviceCode] = @DeviceCode
-          AND ([IsActive] = 1 OR [Status] IS NULL OR [Status] NOT IN (N'Completed', N'Cancelled', N'Failed', N'NotSubmitted') OR [ClientAcknowledgedAt] IS NULL);
+          AND ([IsActive] = 1 OR [Status] IS NULL OR [Status] NOT IN (N'Completed', N'Cancelled', N'Failed', N'NotSubmitted', N'SupervisorResolved') OR [ClientAcknowledgedAt] IS NULL);
 
         IF @HasBlockingSession = 0
         BEGIN
@@ -1709,7 +1710,7 @@ public sealed class SqlSugarLinklyCloudTerminalRepository(
             WHERE [Environment] = @Environment
               AND [StoreCode] = @StoreCode
               AND [TerminalId] = @TerminalId
-              AND ([IsActive] = 1 OR [Status] IS NULL OR [Status] NOT IN (N'Completed', N'Cancelled', N'Failed', N'NotSubmitted') OR [ClientAcknowledgedAt] IS NULL);
+              AND ([IsActive] = 1 OR [Status] IS NULL OR [Status] NOT IN (N'Completed', N'Cancelled', N'Failed', N'NotSubmitted', N'SupervisorResolved') OR [ClientAcknowledgedAt] IS NULL);
         END;
 
         SELECT @StoredTerminalId = [TerminalId]

@@ -12,6 +12,7 @@ import {
 } from "../seasonal-cards/api";
 import { normalizeDeviceManagementListResponse } from "../device-management/api";
 import {
+  normalizeChinaSupplierBranchTotalsSnapshot,
   normalizeProductBranchRows,
   normalizeProductBranchReportSnapshot,
   normalizeProductPage,
@@ -23,6 +24,7 @@ import {
   normalizeSupplierRows,
 } from "../product-report/api";
 import {
+  normalizeBranchHourlyRevenueSnapshot,
   normalizeDailyRevenueSnapshot,
   normalizeExecutiveBranchPerformance,
   normalizeHourlyRevenueSnapshot,
@@ -1325,7 +1327,8 @@ async function run() {
     undefined,
     { startDate: "2026-07-16", endDate: "2026-07-16" },
   );
-  const reviewHourlySnapshot = normalizeHourlyRevenueSnapshot(
+  // 与真实接口一致：多店分时按「店×小时」返回，日报累计对比才能按店对齐排行。
+  const reviewHourlySnapshot = normalizeBranchHourlyRevenueSnapshot(
     reviewHourlyPayload,
   );
   assert.equal(
@@ -1335,15 +1338,36 @@ async function run() {
   );
   assert.equal(
     reviewHourlySnapshot.rows.length,
-    14,
-    "单日分时表必须覆盖 08:00 至 21:00 的 14 个营业时段",
+    IOS_REVIEW_STORES.length * 14,
+    "单日分时表必须逐店覆盖 08:00 至 21:00 的 14 个营业时段",
   );
   assert.deepEqual(
-    reviewHourlySnapshot.rows.map((row) => row.hour),
+    [...new Set(reviewHourlySnapshot.rows.map((row) => row.hour))],
     Array.from({ length: 14 }, (_, index) => index + 8),
   );
-  assert.equal(reviewHourlyPayload.statisticsExpectedItemCount, 14);
-  assert.equal(reviewHourlyPayload.statisticsSnapshotItemCount, 14);
+  assert.equal(
+    new Set(reviewHourlySnapshot.rows.map((row) => row.branchCode)).size,
+    IOS_REVIEW_STORES.length,
+    "多店分时每行都必须带分店代码",
+  );
+  assert.equal(reviewHourlyPayload.statisticsExpectedItemCount, IOS_REVIEW_STORES.length * 14);
+  assert.equal(reviewHourlyPayload.statisticsSnapshotItemCount, IOS_REVIEW_STORES.length * 14);
+  const reviewDayExecutiveRows = normalizeExecutiveBranchPerformance(
+    await request(
+      "GET",
+      "/react/v1/dashboard/executive-branch-performance",
+      undefined,
+      { startDate: "2026-07-16", endDate: "2026-07-16" },
+    ),
+  ).rows;
+  for (const branchRow of reviewDayExecutiveRows) {
+    const branchHours = reviewHourlySnapshot.rows.filter((row) => row.branchCode === branchRow.branchCode);
+    const sum = (pick: (row: (typeof branchHours)[number]) => number) =>
+      Math.round(branchHours.reduce((total, row) => total + pick(row), 0) * 100) / 100;
+    assert.equal(sum((row) => row.revenue), branchRow.revenue, `${branchRow.branchCode} 分时营业额必须与排行守恒`);
+    assert.equal(sum((row) => row.compareRevenue), branchRow.compareRevenue, `${branchRow.branchCode} 分时同期必须与排行守恒`);
+    assert.equal(sum((row) => row.transactions), branchRow.transactions, `${branchRow.branchCode} 分时交易数必须与排行守恒`);
+  }
 
   const selectedStoreHourlyPayload = await request(
     "GET",
@@ -1630,7 +1654,11 @@ async function run() {
       undefined,
       params,
     );
-    assert.equal(hourlyPayload.items.length, 14, `${label}：必须保留 14 个营业时段`);
+    assert.equal(
+      hourlyPayload.items.length,
+      14 * executivePayload.items.length,
+      `${label}：必须逐店保留 14 个营业时段`,
+    );
     assertReviewRevenueMetricsConserved(
       sumReviewRevenueMetrics(hourlyPayload.items),
       sumReviewRevenueMetrics(executivePayload.items),
@@ -1664,6 +1692,33 @@ async function run() {
     true,
     "每个审核供应商都必须覆盖真实的 28 家分店",
   );
+
+  // 分店中国货合计与真实接口同形逐店返回；全店、单店范围下逐店之和都必须等于中国供应商排行合计。
+  const assertChinaBranchTotalsConserved = async (label: string, query: Record<string, unknown>) => {
+    const rankPayload = await request("GET", "/react/v1/dashboard/china-supplier-sales-rank", undefined, query);
+    const branchPayload = await request("GET", "/react/v1/dashboard/china-supplier-branch-totals", undefined, query);
+    const branchSnapshot = normalizeChinaSupplierBranchTotalsSnapshot(branchPayload);
+    assert.equal(branchSnapshot.isComplete, true, `${label}：必须声明 Fresh 统计批次`);
+    assert.equal(
+      branchSnapshot.cacheVersion,
+      normalizeSupplierReportSnapshot(rankPayload).cacheVersion,
+      `${label}：必须与供应商排行属于同一统计批次`,
+    );
+    const rankTotal = normalizeSupplierRows(rankPayload).reduce((sum, row) => sum + row.revenue, 0);
+    const branchTotal = branchSnapshot.data.reduce((sum, row) => sum + row.revenue, 0);
+    assert.equal(Math.round(branchTotal * 100), Math.round(rankTotal * 100), `${label}：逐店之和必须等于排行合计`);
+    return branchSnapshot.data;
+  };
+  const allChinaBranches = await assertChinaBranchTotalsConserved("全店中国货合计守恒", {});
+  assert.equal(allChinaBranches.length, IOS_REVIEW_STORES.length, "全店范围必须逐店返回 28 行");
+  assert.ok(
+    allChinaBranches.every((row) => row.costStatus === "Complete" && row.grossProfit !== null),
+    "审核分店中国货合计必须带完整成本，顶部毛利率才能验收",
+  );
+  const singleChinaBranches = await assertChinaBranchTotalsConserved("单店中国货合计守恒", {
+    branchCodes: ["REV002"],
+  });
+  assert.deepEqual(singleChinaBranches.map((row) => row.branchCode), ["REV002"], "单店范围只能返回该店");
   assert.equal(
     supplierPayload.items.every((item: Record<string, unknown>) =>
       [

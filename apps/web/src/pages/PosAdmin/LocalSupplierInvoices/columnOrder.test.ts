@@ -37,6 +37,7 @@ assertDeepEqual(
     'inboundDate',
     'totalAmount',
     'receivedTotalAmount',
+    'isProductChecked',
     'flowStatus',
     'inboundStatus',
     'remarks',
@@ -58,6 +59,20 @@ assertEqual(
   '操作列不应进入可拖动列序',
 )
 
+const legacyColumnOrder = DEFAULT_LOCAL_SUPPLIER_INVOICE_COLUMN_ORDER
+  .filter((key) => key !== 'isProductChecked')
+  .reverse()
+assertDeepEqual(
+  parseLocalSupplierInvoiceColumnOrder(JSON.stringify(legacyColumnOrder)),
+  [...legacyColumnOrder, 'isProductChecked'],
+  '旧版自定义列序应保持原顺序，并补入商品检测列',
+)
+assertDeepEqual(
+  parseLocalSupplierInvoiceColumnOrder(null),
+  DEFAULT_LOCAL_SUPPLIER_INVOICE_COLUMN_ORDER,
+  '重置列序后商品检测列应恢复到流程状态之前',
+)
+
 assertDeepEqual(
   mergeLocalSupplierInvoiceColumnOrder(
     ['updatedBy', 'unknown', 'updatedBy', 'storeCode'],
@@ -72,6 +87,7 @@ assertDeepEqual(
     'inboundDate',
     'totalAmount',
     'receivedTotalAmount',
+    'isProductChecked',
     'flowStatus',
     'inboundStatus',
     'remarks',
@@ -101,6 +117,7 @@ assertDeepEqual(
     'inboundDate',
     'totalAmount',
     'receivedTotalAmount',
+    'isProductChecked',
     'flowStatus',
     'inboundStatus',
     'remarks',

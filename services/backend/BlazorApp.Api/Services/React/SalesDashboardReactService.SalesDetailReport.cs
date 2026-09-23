@@ -78,7 +78,7 @@ public partial class SalesDashboardReactService
         ValidateDateRange(dateRange);
         if (!Enum.IsDefined(kind)) throw new ArgumentException("kind 无效", nameof(kind));
         if (pageIndex < 1) throw new ArgumentException("pageIndex 必须大于 0", nameof(pageIndex));
-        pageSize = Math.Clamp(pageSize, 1, 100);
+        pageSize = Math.Clamp(pageSize, 1, 500);
         var wanted = sections is null || sections.Count == 0
             ? Enum.GetValues<SalesDetailSection>().ToHashSet()
             : sections.ToHashSet();
@@ -149,6 +149,22 @@ public partial class SalesDashboardReactService
         int pageIndex, int pageSize, IReadOnlySet<SalesDetailSection> wanted, CancellationToken cancellationToken)
     {
         var sqlServer = _context.Db.CurrentConnectionConfig.DbType == SqlSugar.DbType.SqlServer;
+        if (sqlServer && _context.Db.Ado.Transaction == null && UsesMonthlyProjection(search, branches, selectedBranchCode, wanted)
+            && !MonthlyProjectionRecentlyMissing() && TryGetSameServerPosmDatabase(out _))
+        {
+            try
+            {
+                return await ReadSalesDetailReportSqlCoreAsync(
+                    range, kind, branches, selectedBranchCode, selectedSupplierCode, selectedProductCode, search,
+                    pageIndex, pageSize, wanted, cancellationToken, useMonthly: true);
+            }
+            catch (SqlException ex) when (ex.Number == SalesDetailQueryMonthlyProjection.MissingSchemaErrorNumber)
+            {
+                // 月投影表尚未部署时回退原查询；5 分钟内不再尝试，避免每次请求多一次往返。
+                RememberMonthlyProjectionMissing();
+                _logger.LogInformation("销售明细按月投影尚未建立，改用原查询：{Reason}", ex.Number);
+            }
+        }
         if (sqlServer && !string.IsNullOrWhiteSpace(search) && _context.Db.Ado.Transaction == null
             && (wanted.Contains(SalesDetailSection.Summary) || wanted.Contains(SalesDetailSection.Products))
             && TryGetSameServerPosmDatabase(out _))
@@ -179,7 +195,7 @@ public partial class SalesDashboardReactService
         DateRangeDto range, SalesDetailKind kind, List<string>? branches, string? selectedBranchCode,
         string? selectedSupplierCode, string? selectedProductCode, string? search,
         int pageIndex, int pageSize, IReadOnlySet<SalesDetailSection> wanted, CancellationToken cancellationToken,
-        bool useProjection = false)
+        bool useProjection = false, bool useMonthly = false)
     {
         var sqlServer = _context.Db.CurrentConnectionConfig.DbType == SqlSugar.DbType.SqlServer;
         var direct = TryGetSameServerPosmDatabase(out var posmDatabase);
@@ -207,7 +223,10 @@ public partial class SalesDashboardReactService
                 useProjection = Convert.ToInt32(await capability.ExecuteScalarAsync(cancellationToken)) == 1;
             }
             await using var command = connection.CreateCommand();
-            command.CommandText = useProjection
+            command.CommandText = useMonthly
+                ? BuildSalesDetailReportSqlMonthly(
+                    posmDatabase, range, kind, selectedSupplierCode, selectedProductCode, pageIndex, pageSize, wanted)
+                : useProjection
                 ? BuildSalesDetailReportSqlServerCore(
                     posmDatabase, range, kind, branches, selectedBranchCode, selectedSupplierCode,
                     selectedProductCode, search, pageIndex, pageSize, wanted, fallbackMap, useProjection: true, compressOutput: true)
@@ -309,8 +328,8 @@ public partial class SalesDashboardReactService
                 while (await reader.ReadAsync(cancellationToken)) { }
             failed = false;
             _logger.LogInformation(
-                "销售明细统计批次读取完成：连接 {OpenMs}ms，首结果 {FirstResultMs}ms，读取结果 {ReadMs}ms，共 {TotalMs}ms，日投影 {Projection}",
-                openedAt, firstResultAt - openedAt, elapsed.ElapsedMilliseconds - firstResultAt, elapsed.ElapsedMilliseconds, useProjection);
+                "销售明细统计批次读取完成：连接 {OpenMs}ms，首结果 {FirstResultMs}ms，读取结果 {ReadMs}ms，共 {TotalMs}ms，日投影 {Projection}，月投影 {Monthly}",
+                openedAt, firstResultAt - openedAt, elapsed.ElapsedMilliseconds - firstResultAt, elapsed.ElapsedMilliseconds, useProjection, useMonthly);
             return read;
 
             async Task NextResult()
@@ -495,6 +514,8 @@ INTO #SalesDetailFacts
 FROM NarrowFacts{projectionQueryHint};
 """;
         // 首屏没有关键词时先压缩商品事实，再解析供应商归属；映射连接因此只面对聚合后的键。
+        // 内层只按事实表原始列分组、不在分组键上套函数，扫描能走列存索引的批处理聚合；
+        // 去空格与空值归一化放在外层，只对聚合后的几十万行做，结果与直接按去空格键分组完全一致。
         var rawMapping = joinMapping.Replace("s.[ProductCode]", "r.[ProductCode]", StringComparison.Ordinal);
         var rawFacts = $"""
 WITH Periods AS
@@ -502,20 +523,28 @@ WITH Periods AS
  SELECT 0 [Period], @sdrCurrentStart [StartDate], @sdrCurrentEnd [EndDate]
  UNION ALL
  SELECT 1 [Period], @sdrCompareStart [StartDate], @sdrCompareEnd [EndDate] WHERE @sdrHasCompare=1
-), RawFacts AS
+), SourceFacts AS
 (
- SELECT periods.[Period],
-        LTRIM(RTRIM(COALESCE(s.[SupplierCode],''))) [RawSupplierCode],
-        LTRIM(RTRIM(COALESCE(s.[BranchCode],''))) [BranchCode],
-        LTRIM(RTRIM(COALESCE(s.[ProductCode],''))) [ProductCode],
+ SELECT periods.[Period], s.[SupplierCode] [RawSupplierCode], s.[BranchCode], s.[ProductCode],
         SUM(s.[TotalAmount]) [Revenue], SUM(s.[TotalQuantity]) [Quantity], SUM(s.[OrderCount]) [OrderCount],
         SUM(s.[GrossProfit]) [GrossProfit], COUNT(*) [StatisticRowCount], COUNT(s.[TotalCost]) [CostedRowCount],
         COUNT(s.[GrossProfit]) [GrossProfitRowCount]
  FROM [ProductStoreDailySalesStatistic] s
  CROSS JOIN Periods periods
  WHERE s.[Date]>=periods.[StartDate] AND s.[Date]<periods.[EndDate]{sourceBranch}{sourceProduct}
- GROUP BY periods.[Period], LTRIM(RTRIM(COALESCE(s.[SupplierCode],''))),
-          LTRIM(RTRIM(COALESCE(s.[BranchCode],''))), LTRIM(RTRIM(COALESCE(s.[ProductCode],'')))
+ GROUP BY periods.[Period], s.[SupplierCode], s.[BranchCode], s.[ProductCode]
+), RawFacts AS
+(
+ SELECT [Period],
+        LTRIM(RTRIM(COALESCE([RawSupplierCode],''))) [RawSupplierCode],
+        LTRIM(RTRIM(COALESCE([BranchCode],''))) [BranchCode],
+        LTRIM(RTRIM(COALESCE([ProductCode],''))) [ProductCode],
+        SUM([Revenue]) [Revenue], SUM([Quantity]) [Quantity], SUM([OrderCount]) [OrderCount],
+        SUM([GrossProfit]) [GrossProfit], SUM([StatisticRowCount]) [StatisticRowCount], SUM([CostedRowCount]) [CostedRowCount],
+        SUM([GrossProfitRowCount]) [GrossProfitRowCount]
+ FROM SourceFacts
+ GROUP BY [Period], LTRIM(RTRIM(COALESCE([RawSupplierCode],''))),
+          LTRIM(RTRIM(COALESCE([BranchCode],''))), LTRIM(RTRIM(COALESCE([ProductCode],'')))
 ), ResolvedFacts AS
 (
  SELECT r.[Period], r.[RawSupplierCode],
@@ -733,7 +762,9 @@ WITH FactSource AS
     FROM FactSource
     GROUP BY GROUPING SETS (([Period],[SupplierCode]), ([Period],[BranchCode]), ([Period],[ProductCode]), ([Period]))
 )
-SELECT * INTO #SalesDetailAggregates FROM Grouped;
+-- 供应商与分店两组只有几百个键，优化器却会为它们排序几十万行事实再流式聚合；生产实测 8 个月双期要 8 秒。
+-- 强制哈希聚合后四组各扫一遍窄事实、不再排序。
+SELECT * INTO #SalesDetailAggregates FROM Grouped OPTION (HASH GROUP);
 """;
         string aggregateRowSelect(int groupType, string code, string name, string groupBy, string order) => $"""
 SELECT {code} [Code], {name} [Name], CAST(NULL AS nvarchar(50)) [ItemNumber], CAST(NULL AS nvarchar(200)) [ProductImage],
@@ -961,20 +992,40 @@ FROM (SELECT {factProjection} FROM {table}) f {whereClause}
         var source = string.Join("|", states.OrderBy(row => row.Date).ThenBy(row => row.Type).Select(row => $"{row.Type}:{row.Date:yyyyMMdd}:{row.Status}:{row.LastAggregatedAtUtc?.Ticks}:{row.CompletedAtUtc?.Ticks}:{row.SourceProductVersion}"));
         var result = new ProductReportStatisticStatusDto { CacheVersion = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(source))), StatisticUpdatedAt = useSupplierRollups ? states.Select(row => row.CompletedAtUtc ?? row.LastAggregatedAtUtc).DefaultIfEmpty().Min() : states.Select(row => row.CompletedAtUtc ?? row.LastAggregatedAtUtc).DefaultIfEmpty().Max(), StatisticStatus = SalesStatisticRefreshStatus.Pending, StatisticMessage = "商品统计尚未准备完成。" };
         if (states.Count == 0) return result;
-        if (states.Any(row => row.Status.Equals(SalesStatisticRefreshStatus.Failed, StringComparison.OrdinalIgnoreCase))) { result.StatisticStatus = SalesStatisticRefreshStatus.Failed; result.StatisticMessage = "统计更新失败，等待后台恢复。"; return result; }
+        // 业务对账失败（如单店金额与营业额差百余元）但已完成聚合的日期仍是完整的一天商品事实；
+        // 长区间不能因为个别历史日期对账未通过而整段不可读，只在响应里标注这些日期。
+        bool IsFailedButAggregated(SalesDetailReportStatusSqlRow row) =>
+            row.Status.Equals(SalesStatisticRefreshStatus.Failed, StringComparison.OrdinalIgnoreCase)
+            && row.LastAggregatedAtUtc.HasValue
+            && row.Type.Equals(SalesStatisticType.ProductStoreDaily, StringComparison.OrdinalIgnoreCase);
+        if (states.Any(row => row.Status.Equals(SalesStatisticRefreshStatus.Failed, StringComparison.OrdinalIgnoreCase) && !IsFailedButAggregated(row))) { result.StatisticStatus = SalesStatisticRefreshStatus.Failed; result.StatisticMessage = "统计更新失败，等待后台恢复。"; return result; }
         if (states.Any(row => row.Status.Equals(SalesStatisticRefreshStatus.Stale, StringComparison.OrdinalIgnoreCase))) { result.StatisticStatus = SalesStatisticRefreshStatus.Stale; result.StatisticMessage = "商品统计等待更新。"; return result; }
+        var reconciliationFailedDates = new List<DateTime>();
+        // 生产上 2025-05-04～05-31 从未生成商品日统计（事实表无行、无状态行），早于最新状态的这类历史缺口
+        // 只提示、不阻断；排在最新状态之后又没有状态的日期（尚未排队的今天）仍按未发布处理。
+        var latestTrackedDate = states
+            .Where(row => row.Type.Equals(SalesStatisticType.ProductStoreDaily, StringComparison.OrdinalIgnoreCase))
+            .Select(row => (DateTime?)row.Date.Date).DefaultIfEmpty().Max();
+        var missingHistoryDates = new List<DateTime>();
         foreach (var date in dates)
         {
             var product = states.SingleOrDefault(row => row.Date.Date == date && row.Type.Equals(SalesStatisticType.ProductStoreDaily, StringComparison.OrdinalIgnoreCase));
+            if (product == null && !useSupplierRollups && latestTrackedDate.HasValue && date < latestTrackedDate.Value)
+            {
+                missingHistoryDates.Add(date);
+                continue;
+            }
             if (product == null || !product.LastAggregatedAtUtc.HasValue) return result;
             if (!useSupplierRollups)
             {
+                if (IsFailedButAggregated(product)) { reconciliationFailedDates.Add(date); continue; }
                 // 日统计在一个事务内整体替换；刷新排队或运行期间仍可读到上一版已发布快照。
                 if (product.Status is not (SalesStatisticRefreshStatus.Fresh or SalesStatisticRefreshStatus.Queued or SalesStatisticRefreshStatus.Running)) return result;
                 // 业务校验失败也会留下 LastAggregatedAtUtc；只有成功发布的版本号才能证明旧事实可用。
                 if (product.Status != SalesStatisticRefreshStatus.Fresh && string.IsNullOrWhiteSpace(product.SourceProductVersion)) return result;
                 continue;
             }
+            if (IsFailedButAggregated(product)) { result.StatisticStatus = SalesStatisticRefreshStatus.Failed; result.StatisticMessage = "统计更新失败，等待后台恢复。"; return result; }
             if (product.Status is not (SalesStatisticRefreshStatus.Fresh or SalesStatisticRefreshStatus.Queued or SalesStatisticRefreshStatus.Running) || string.IsNullOrWhiteSpace(product.SourceProductVersion)) return result;
             foreach (var type in new[] { SalesStatisticType.AustralianSupplierStoreSales, SalesStatisticType.ChinaSupplierStoreSales })
             {
@@ -982,7 +1033,39 @@ FROM (SELECT {factProjection} FROM {table}) f {whereClause}
                 if (supplier == null || !supplier.Status.Equals(SalesStatisticRefreshStatus.Fresh, StringComparison.OrdinalIgnoreCase) || !supplier.CompletedAtUtc.HasValue || !supplier.LastAggregatedAtUtc.HasValue || supplier.SourceProductVersion != product.SourceProductVersion) return result;
             }
         }
-        result.StatisticStatus = SalesStatisticRefreshStatus.Fresh; result.StatisticMessage = null; return result;
+        result.StatisticStatus = SalesStatisticRefreshStatus.Fresh;
+        result.StatisticMessage = string.Join(" ", new[] { DescribeReconciliationFailedDates(reconciliationFailedDates), DescribeMissingHistoryDates(missingHistoryDates) }
+            .Where(message => !string.IsNullOrWhiteSpace(message))) is { Length: > 0 } message ? message : null;
+        return result;
+    }
+
+    /// <summary>从未生成商品日统计的历史日期：按连续区间合并后列出，提醒该段金额缺失、需另行回填统计。</summary>
+    internal static string? DescribeMissingHistoryDates(IReadOnlyCollection<DateTime> dates)
+    {
+        if (dates.Count == 0) return null;
+        var ordered = dates.Select(date => date.Date).Distinct().OrderBy(date => date).ToList();
+        var ranges = new List<string>();
+        var start = ordered[0]; var end = ordered[0];
+        foreach (var date in ordered.Skip(1))
+        {
+            if (date == end.AddDays(1)) { end = date; continue; }
+            ranges.Add(start == end ? start.ToString("yyyy-MM-dd") : $"{start:yyyy-MM-dd}～{end:yyyy-MM-dd}");
+            start = end = date;
+        }
+        ranges.Add(start == end ? start.ToString("yyyy-MM-dd") : $"{start:yyyy-MM-dd}～{end:yyyy-MM-dd}");
+        var shown = string.Join("、", ranges.Take(3));
+        var suffix = ranges.Count > 3 ? $" 等 {ranges.Count} 段" : string.Empty;
+        return $"{shown}{suffix}共 {ordered.Count} 天没有商品日统计，该段金额未计入，需另行回填统计。";
+    }
+
+    /// <summary>已聚合但对账未通过的日期只提示、不阻断；日期去重后按时间列出，过多时只列前几天。</summary>
+    internal static string? DescribeReconciliationFailedDates(IReadOnlyCollection<DateTime> dates)
+    {
+        if (dates.Count == 0) return null;
+        var ordered = dates.Select(date => date.Date).Distinct().OrderBy(date => date).ToList();
+        var shown = string.Join("、", ordered.Take(5).Select(date => date.ToString("yyyy-MM-dd")));
+        var suffix = ordered.Count > 5 ? $" 等 {ordered.Count} 天" : string.Empty;
+        return $"{shown}{suffix}的商品统计与分店营业额对账未通过，该日金额可能与收银记录有细微出入。";
     }
 
     private static IEnumerable<DateTime> EnumerateSalesDetailDates(DateRangeDto range)

@@ -56,6 +56,8 @@ public partial class SalesDashboardReactService
         public bool Refreshing { get; init; }
         public DateTime? UpdatedAt { get; init; }
         public string Version { get; init; } = string.Empty;
+        /// <summary>快照完整但个别日期对账未通过时的提示；页面照常显示数据。</summary>
+        public string? Warning { get; init; }
     }
 
     private sealed class RevenueSnapshotMetric
@@ -269,7 +271,7 @@ public partial class SalesDashboardReactService
                 StatisticStatus = status.Complete
                     ? SalesStatisticRefreshStatus.Fresh
                     : SalesStatisticRefreshStatus.Pending,
-                StatisticMessage = status.Complete ? null : "统计快照尚未完成。",
+                StatisticMessage = status.Complete ? status.Warning : "统计快照尚未完成。",
                 StatisticUpdatedAt = status.UpdatedAt,
                 CacheVersion = status.Version,
                 StatisticsExpectedBranchCount = displayBranchCodes.Count,
@@ -362,12 +364,37 @@ public partial class SalesDashboardReactService
         var lookup = rows
             .GroupBy(row => (row.StatisticType, Date: row.Date.Date))
             .ToDictionary(group => group.Key, group => group.OrderByDescending(row => row.LastAggregatedAtUtc).First());
+        // 状态表晚于历史统计引入：2025 年仍有百余天只有 StoreSalesStatistic 行而没有状态行。
+        // 早于最新状态日期的缺口视为历史已发布；只有排在最新状态之后的日期（如尚未排队的今天）才算未发布。
+        var latestTrackedStoreDate = rows
+            .Where(row => string.Equals(row.StatisticType, SalesStatisticType.StoreSales, StringComparison.OrdinalIgnoreCase))
+            .Select(row => (DateTime?)row.Date.Date)
+            .DefaultIfEmpty()
+            .Max();
+        var storeDatesWithRows = storeRows?
+            .Select(row => row.Date.Date)
+            .ToHashSet()
+            ?? new HashSet<DateTime>();
+        var reconciliationFailedDates = new List<DateTime>();
         bool IsStoreComplete(DateTime date)
         {
-            return lookup.TryGetValue((SalesStatisticType.StoreSales, date.Date), out var storeState)
-                && string.Equals(storeState.Status, SalesStatisticRefreshStatus.Fresh, StringComparison.OrdinalIgnoreCase)
-                && storeState.LastAggregatedAtUtc.HasValue
-                && storeState.CompletedAtUtc.HasValue;
+            if (!lookup.TryGetValue((SalesStatisticType.StoreSales, date.Date), out var storeState))
+                return storeDatesWithRows.Contains(date.Date)
+                    || (latestTrackedStoreDate.HasValue && date.Date < latestTrackedStoreDate.Value);
+            if (!storeState.LastAggregatedAtUtc.HasValue)
+                return false;
+            if (string.Equals(storeState.Status, SalesStatisticRefreshStatus.Fresh, StringComparison.OrdinalIgnoreCase))
+                return storeState.CompletedAtUtc.HasValue;
+            // 对账失败但已完成聚合的日期仍是整天的分店营业额；只标注日期，不让整段不可读。
+            if (string.Equals(storeState.Status, SalesStatisticRefreshStatus.Failed, StringComparison.OrdinalIgnoreCase))
+            {
+                reconciliationFailedDates.Add(date.Date);
+                return true;
+            }
+            // 排队或运行中的日期在 SNAPSHOT 事务里读到的是上一版完整发布；版本哈希含状态，发布后自动失效缓存。
+            return string.Equals(storeState.Status, SalesStatisticRefreshStatus.Queued, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(storeState.Status, SalesStatisticRefreshStatus.Running, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(storeState.Status, SalesStatisticRefreshStatus.ProvisionalFresh, StringComparison.OrdinalIgnoreCase);
         }
 
         bool IsHourlyComplete(DateTime date)
@@ -387,8 +414,10 @@ public partial class SalesDashboardReactService
                 || string.Equals(hourlyState.Status, SalesStatisticRefreshStatus.Queued, StringComparison.OrdinalIgnoreCase)
                 || string.Equals(hourlyState.Status, SalesStatisticRefreshStatus.Pending, StringComparison.OrdinalIgnoreCase)
                 || string.Equals(hourlyState.Status, SalesStatisticRefreshStatus.Failed, StringComparison.OrdinalIgnoreCase));
+            // 分时表只有产生过销售的小时才有行：没有销售的门店日（含节假日全店休业）不应被要求有分时覆盖。
             var expectedHourlyBranches = storeRows?
                 .Where(row => row.Date.Date == date.Date
+                    && (row.TotalAmount != 0m || row.OrderCount > 0)
                     && (hourlyBranchCodes == null || hourlyBranchCodes.Contains(row.BranchCode)))
                 .Select(row => row.BranchCode)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase)
@@ -398,21 +427,23 @@ public partial class SalesDashboardReactService
                 .Select(row => row.BranchCode.Trim())
                 .ToHashSet(StringComparer.OrdinalIgnoreCase)
                 ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var hourlyCoverageComplete = expectedHourlyBranches.SetEquals(actualHourlyBranches)
-                && (expectedHourlyBranches.Count > 0 || actualHourlyBranches.Count == 0);
+            var hourlyCoverageComplete = expectedHourlyBranches.SetEquals(actualHourlyBranches);
             if (hourlyBusy)
                 return false;
             if (hourlyStateComplete)
                 return hourlyCoverageComplete;
-            // 历史 hourly 状态表缺失时，仅接受与 StoreSales 同日同分店集合完全一致的旧行。
-            return hourlyCoverageComplete && actualHourlyBranches.Count > 0;
+            // 历史 hourly 状态表缺失时，仅接受与 StoreSales 同日有销售分店集合完全一致的旧行；
+            // 当天完全没有销售时两边同为空集，同样视为已覆盖。
+            return hourlyCoverageComplete;
         }
 
         var currentStoreComplete = currentDates.All(IsStoreComplete);
         var currentHourlyComplete = currentDates.All(IsHourlyComplete);
         var compareStoreComplete = compareDates.Count == 0 || compareDates.All(IsStoreComplete);
         var compareHourlyComplete = compareDates.Count == 0 || compareDates.All(IsHourlyComplete);
-        var complete = currentStoreComplete && currentHourlyComplete && compareStoreComplete;
+        // 分时缺口（新 POS 测试店某些日子没有分时行、分时刷新进行中）只影响时段面板，
+        // 由 HourlyCurrentPending/HourlyComparePending 提示，不再把整页营业额降级为 Pending。
+        var complete = currentStoreComplete && compareStoreComplete;
         var refreshing = rows.Any(row =>
             string.Equals(row.Status, SalesStatisticRefreshStatus.Queued, StringComparison.OrdinalIgnoreCase)
             || string.Equals(row.Status, SalesStatisticRefreshStatus.Running, StringComparison.OrdinalIgnoreCase));
@@ -436,11 +467,14 @@ public partial class SalesDashboardReactService
             CurrentHourlyComplete = currentHourlyComplete,
             CompareHourlyComplete = compareHourlyComplete,
             CompareStoreComplete = compareStoreComplete,
-            Refreshing = refreshing || !complete || !compareHourlyComplete,
+            Refreshing = refreshing || !complete || !currentHourlyComplete || !compareHourlyComplete,
             UpdatedAt = rows.Any(row => row.CompletedAtUtc.HasValue || row.LastAggregatedAtUtc.HasValue)
                 ? DateTime.SpecifyKind(updatedAt, DateTimeKind.Utc)
                 : null,
             Version = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(versionSource))),
+            Warning = DescribeReconciliationFailedDates(reconciliationFailedDates) is { } failed
+                ? failed.Replace("商品统计与分店营业额对账未通过", "分店营业额统计对账未通过", StringComparison.Ordinal)
+                : null,
         };
     }
 

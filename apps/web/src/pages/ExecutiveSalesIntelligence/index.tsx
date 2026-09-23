@@ -220,6 +220,10 @@ export default function ExecutiveSalesIntelligence() {
         <Alert className={styles.scopeAlert} type="info" showIcon
           message={text('同期门店统计尚未齐全；本期业绩正常显示，同比暂显示 —。', 'Branch comparison statistics are incomplete. Current performance remains visible and comparisons show —.')} />
       )}
+      {reportQuery.data && reportQuery.snapshot?.statisticMessage && (
+        // 快照完整但个别日期对账未通过：数据照常显示，只提示日期。
+        <Alert className={styles.scopeAlert} type="warning" showIcon message={reportQuery.snapshot.statisticMessage} />
+      )}
 
       <section className={styles.summaryGrid} aria-label={text('核心业绩', 'Key metrics')}>
         <MetricCard label={text('销售额', 'Revenue')} value={formatAud(hasBranchMetrics ? summary.revenue : null)}

@@ -258,7 +258,7 @@ public sealed class ProductStoreDailyStatisticQueueService
             {
                 continue;
             }
-            if (await HasActiveDateLeaseAsync(state.Date, nowUtc))
+            if (await HasActiveDateLeaseAsync(state.Date))
             {
                 continue;
             }
@@ -307,7 +307,7 @@ public sealed class ProductStoreDailyStatisticQueueService
             }
 
             // Fresh 状态可能先于计算租约 completion 落库；任一 manifest 日期仍有有效租约时不得抢先终结日志。
-            if (await HasAnyActiveDateLeaseAsync(manifestDates, DateTime.UtcNow))
+            if (await HasAnyActiveDateLeaseAsync(manifestDates))
             {
                 continue;
             }
@@ -742,6 +742,10 @@ public sealed class ProductStoreDailyStatisticQueueService
             );
             if (!lease.Acquired)
             {
+                lease = await TryTakeOverOrphanSessionLeaseAsync(date, dateKey, lease.Lease) ?? lease;
+            }
+            if (!lease.Acquired)
+            {
                 await ReturnClaimToQueueAsync(context, jobId, date);
                 return false;
             }
@@ -1008,38 +1012,108 @@ public sealed class ProductStoreDailyStatisticQueueService
         return progress;
     }
 
-    private Task<bool> HasActiveDateLeaseAsync(DateTime date, DateTime nowUtc)
+    /// <summary>
+    /// 完整刷新崩溃后遗留的 sqlsess1/9999 标记，普通 TTL 抢占永远越不过去。这里在独立 scope
+    /// 里取同一日期的 Session applock：取不到说明原 owner 仍在执行，保持跳过；取到即证明原
+    /// owner 的 SQL Session 已退出，持锁期间按观测 token CAS 转为本 worker 的 TTL 租约。
+    /// 非 SQL Server 无法证明 owner 已退出，任何探测/接管异常也都保守视为未接管。
+    /// </summary>
+    private async Task<ScheduledTaskLeaseAcquireResult?> TryTakeOverOrphanSessionLeaseAsync(
+        DateTime date,
+        string dateKey,
+        ScheduledTaskLease? observedLease
+    )
     {
-        var scopeKey = date.Date.ToString("yyyy-MM-dd");
-        return _context.Db.Queryable<ScheduledTaskLease>()
-            .Where(lease =>
-                lease.TaskType == SalesStatisticsAlignmentService.DailyFullRefreshLeaseTaskType
-                && lease.ScopeKey == scopeKey
-                && lease.Status == ScheduledTaskLeaseStatus.Running
-                && lease.LeaseUntilUtc != null
-                && lease.LeaseUntilUtc > nowUtc
+        var observedToken = observedLease?.LeaseToken;
+        if (
+            observedLease?.Status != ScheduledTaskLeaseStatus.Running
+            || observedToken == null
+            || !observedToken.StartsWith(
+                SalesStatisticsDateExecutionGuard.SessionLeaseTokenPrefix,
+                StringComparison.Ordinal
             )
-            .AnyAsync();
+        )
+        {
+            return null;
+        }
+
+        try
+        {
+            // guard 会把所在 context 固定到一条不入池的连接并挂 fail-closed 钩子，
+            // 必须使用独立 scope，不能污染执行统计的 context。
+            using var takeoverScope = _scopeFactory.CreateScope();
+            var takeoverContext = takeoverScope.ServiceProvider.GetRequiredService<SqlSugarContext>();
+            var takeoverLeaseService = takeoverScope.ServiceProvider
+                .GetRequiredService<ScheduledTaskLeaseService>();
+            await using var guard = await SalesStatisticsDateExecutionGuard.TryAcquireAsync(
+                takeoverContext,
+                date,
+                _logger
+            );
+            if (!guard.Acquired || !guard.IsSqlServerSessionGuarded)
+            {
+                return null;
+            }
+
+            var result = await takeoverLeaseService.TryTakeOverOrphanSessionLeaseAsync(
+                SalesStatisticsAlignmentService.DailyFullRefreshLeaseTaskType,
+                dateKey,
+                observedToken,
+                ExecutionLeaseDuration,
+                guard
+            );
+            if (result.Acquired)
+            {
+                _logger.LogWarning(
+                    "商品统计接管了完整刷新崩溃遗留的日期租约: Date={Date}, PreviousOwner={PreviousOwner}",
+                    dateKey,
+                    observedLease.OwnerInstanceId
+                );
+            }
+            return result;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "接管遗留 sqlsess1 日期租约失败，保守跳过: Date={Date}", dateKey);
+            return null;
+        }
     }
 
-    private async Task<bool> HasAnyActiveDateLeaseAsync(
-        IReadOnlyCollection<DateTime> dates,
-        DateTime nowUtc
-    )
+    private async Task<bool> HasActiveDateLeaseAsync(DateTime date)
+    {
+        return (await QueryActiveDateLeaseScopesAsync(date.Date, date.Date)).Count > 0;
+    }
+
+    private async Task<bool> HasAnyActiveDateLeaseAsync(IReadOnlyCollection<DateTime> dates)
     {
         var manifestScopes = dates
             .Select(date => date.Date.ToString("yyyy-MM-dd"))
             .ToHashSet(StringComparer.Ordinal);
-        var activeScopes = await _context.Db.Queryable<ScheduledTaskLease>()
-            .Where(lease =>
-                lease.TaskType == SalesStatisticsAlignmentService.DailyFullRefreshLeaseTaskType
-                && lease.Status == ScheduledTaskLeaseStatus.Running
-                && lease.LeaseUntilUtc != null
-                && lease.LeaseUntilUtc > nowUtc
-            )
-            .Select(lease => lease.ScopeKey)
-            .ToListAsync();
+        var activeScopes = await QueryActiveDateLeaseScopesAsync(
+            dates.Min().Date,
+            dates.Max().Date
+        );
         return activeScopes.Any(manifestScopes.Contains);
+    }
+
+    /// <summary>
+    /// 日期执行者判定统一走租约服务：完整刷新的 sqlsess1 租约恒为 9999 标记，进程崩溃后
+    /// 会一直停在 Running，只能用 session applock 探测其 owner 是否仍存活；旧 TTL 租约保持
+    /// 原到期语义，探测失败时租约服务保守保留，避免把仍在执行的日期误退回队列。
+    /// </summary>
+    private async Task<List<string>> QueryActiveDateLeaseScopesAsync(
+        DateTime startDate,
+        DateTime endDate
+    )
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var leaseService = scope.ServiceProvider.GetRequiredService<ScheduledTaskLeaseService>();
+        var leases = await leaseService.GetRunningLeasesAsync(
+            SalesStatisticsAlignmentService.DailyFullRefreshLeaseTaskType,
+            startDate,
+            endDate
+        );
+        return leases.Select(lease => lease.ScopeKey).ToList();
     }
 
     private async Task<bool> FailMalformedManifestAsync(Guid jobId, string manifestError)

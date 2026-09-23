@@ -35,6 +35,8 @@ export interface OfflineCatalogRefreshRequest {
   storeCode: string;
   onProgress?: (event: OfflineCatalogRefreshProgressEvent) => void;
   signal?: AbortSignal;
+  /** 仅用户主动更新时允许重试冷目录构建造成的网关超时。 */
+  retrySyncPlanGatewayTimeout?: boolean;
 }
 
 export interface OfflineCatalogRefreshResult {
@@ -63,17 +65,21 @@ export interface OfflineCatalogSyncServiceOptions {
   /** 本地落库批大小；每批后让出事件循环，避免长时间阻塞 UI。 */
   localBatchSize?: number;
   yieldControl?: () => Promise<void>;
+  /** 首次冷构建可能超过网关 60 秒；重试仍复用后端同店构建任务。 */
+  syncPlanRetryDelaysMs?: readonly number[];
 }
 
 export const OFFLINE_CATALOG_PAGE_SIZE = 5_000;
 export const OFFLINE_CATALOG_DELTA_MAX_OPERATIONS = 5_000;
 const OFFLINE_CATALOG_DELTA_BATCH_SIZE = 500;
+const DEFAULT_SYNC_PLAN_RETRY_DELAYS_MS = [1_000, 2_000] as const;
 
 export class OfflineCatalogSyncService {
   private readonly nowIso: () => string;
   private readonly pageSize: number;
   private readonly localBatchSize: number;
   private readonly yieldControl: () => Promise<void>;
+  private readonly syncPlanRetryDelaysMs: readonly number[];
   private serial: Promise<unknown> = Promise.resolve();
 
   public constructor(
@@ -85,6 +91,7 @@ export class OfflineCatalogSyncService {
     this.pageSize = options.pageSize ?? OFFLINE_CATALOG_PAGE_SIZE;
     this.localBatchSize = options.localBatchSize ?? 500;
     this.yieldControl = options.yieldControl ?? yieldToEventLoop;
+    this.syncPlanRetryDelaysMs = options.syncPlanRetryDelaysMs ?? DEFAULT_SYNC_PLAN_RETRY_DELAYS_MS;
   }
 
   /** 串行执行；失败只影响本次请求，后续刷新仍排队而不能并发切换 active。 */
@@ -128,11 +135,7 @@ export class OfflineCatalogSyncService {
     throwIfAborted(input.signal);
 
     const active = await this.storage.getActiveMetadata(storeCode);
-    const plan = await this.remote.getSyncPlan({
-      storeCode,
-      baseCatalogVersion: active?.catalogVersion ?? null,
-      signal: input.signal,
-    });
+    const plan = await this.getSyncPlan(input, storeCode, active?.catalogVersion ?? null);
     throwIfAborted(input.signal);
     assertSyncPlan(plan, active?.catalogVersion ?? null);
 
@@ -161,13 +164,40 @@ export class OfflineCatalogSyncService {
 
   private async runFullWithFreshPlan(input: OfflineCatalogRefreshRequest, storeCode: string): Promise<OfflineCatalogRefreshResult> {
     throwIfAborted(input.signal);
-    const plan = await this.remote.getSyncPlan({ storeCode, baseCatalogVersion: null, signal: input.signal });
+    const plan = await this.getSyncPlan(input, storeCode, null);
     throwIfAborted(input.signal);
     assertSyncPlan(plan, null);
     if (plan.mode !== "full") {
       throw verification("Offline catalog fallback plan without a base must be full.", "OFFLINE_CATALOG_SYNC_PLAN_INVALID");
     }
     return this.runFull(input, storeCode, plan);
+  }
+
+  private async getSyncPlan(
+    input: OfflineCatalogRefreshRequest,
+    storeCode: string,
+    baseCatalogVersion: string | null,
+  ): Promise<OfflineCatalogSyncPlan> {
+    const retryDelays = input.retrySyncPlanGatewayTimeout ? this.syncPlanRetryDelaysMs : [];
+    for (let attempt = 0; ; attempt += 1) {
+      throwIfAborted(input.signal);
+      try {
+        return await this.remote.getSyncPlan({ storeCode, baseCatalogVersion, signal: input.signal });
+      } catch (error) {
+        throwIfAborted(input.signal);
+        if (!isGatewayTimeout(error) || !input.retrySyncPlanGatewayTimeout) {
+          throw error;
+        }
+        if (attempt >= retryDelays.length) {
+          throw new OfflineCatalogError(
+            "Offline catalog preparation timed out. Please retry manually later.",
+            "OFFLINE_CATALOG_PREPARATION_TIMEOUT",
+          );
+        }
+        // 服务端会继续构建并合并同店请求；等待后再次取 plan，不重启整次下载。
+        await waitForRetry(retryDelays[attempt], input.signal);
+      }
+    }
   }
 
   private async runFull(
@@ -559,6 +589,28 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) {
     throw new OfflineCatalogError("Offline catalog refresh was cancelled.", "OFFLINE_CATALOG_CANCELLED");
   }
+}
+
+function isGatewayTimeout(error: unknown): boolean {
+  const candidate = error as { status?: unknown; response?: { status?: unknown } } | null;
+  return candidate?.status === 504 || candidate?.response?.status === 504;
+}
+
+function waitForRetry(delayMs: number, signal: AbortSignal | undefined): Promise<void> {
+  throwIfAborted(signal);
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      reject(new OfflineCatalogError("Offline catalog refresh was cancelled.", "OFFLINE_CATALOG_CANCELLED"));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+  });
 }
 
 function report(

@@ -1,10 +1,13 @@
 import CoreBluetooth
 import CoreImage
 import Foundation
+// RN 0.81 预编译核心（React-Core-prebuilt）下，桥接头里的 #import <React/RCTEventEmitter.h>
+// 不能让 Swift 看到 RCTEventEmitter，EAS 构建会报 cannot find type；必须显式导入 React 模块。
+import React
 import UIKit
 
 @objc(HbPrinterModule)
-class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
+class HbPrinterModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeripheralDelegate {
   private struct PriceParts {
     let integer: String
     let decimal: String
@@ -39,6 +42,9 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
   private var connectResolve: RCTPromiseResolveBlock?
   private var connectReject: RCTPromiseRejectBlock?
   private var connectTimeoutWorkItem: DispatchWorkItem?
+  private var connectionGeneration = 0
+  private var activeConnectGeneration: Int?
+  private var retiringPeripheralIDs: Set<ObjectIdentifier> = []
   private var pendingCharacteristicServiceCount = 0
   private var printResolve: RCTPromiseResolveBlock?
   private var printReject: RCTPromiseRejectBlock?
@@ -46,10 +52,23 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
   private var pendingWriteType: CBCharacteristicWriteType?
   private var pendingWriteCharacteristic: CBCharacteristic?
   private var printTimeoutWorkItem: DispatchWorkItem?
+  private var hasStatusListeners = false
 
   override init() {
     super.init()
     centralManager = CBCentralManager(delegate: self, queue: bluetoothQueue)
+  }
+
+  override func supportedEvents() -> [String]! {
+    [Self.statusEvent]
+  }
+
+  override func startObserving() {
+    hasStatusListeners = true
+  }
+
+  override func stopObserving() {
+    hasStatusListeners = false
   }
 
   @objc(getStatus:rejecter:)
@@ -129,7 +148,30 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
         return
       }
 
+      // 手动选择或自动恢复可能再次连接同一台健康打印机；直接成功，避免无意义取消后短暂报错。
+      if peripheral === self.connectedPeripheral,
+         self.connectedAddress == address,
+         peripheral.state == .connected,
+         self.writeCharacteristic != nil {
+        self.resolve(resolve, true)
+        return
+      }
+
+      // 同一 CBPeripheral 在取消完成前可能继续回送上一轮委托；等终止回调后再允许复用。
+      guard !self.retiringPeripheralIDs.contains(ObjectIdentifier(peripheral)) else {
+        self.reject(reject, "CONNECT_ERROR", "Previous Bluetooth printer connection is still disconnecting. Please retry.")
+        return
+      }
+
       self.disconnectInternal()
+      guard !self.retiringPeripheralIDs.contains(ObjectIdentifier(peripheral)) else {
+        self.emitStatusChanged()
+        self.reject(reject, "CONNECT_ERROR", "Previous Bluetooth printer connection is still disconnecting. Please retry.")
+        return
+      }
+      self.connectionGeneration += 1
+      let attemptGeneration = self.connectionGeneration
+      self.activeConnectGeneration = attemptGeneration
       self.connectResolve = resolve
       self.connectReject = reject
       peripheral.delegate = self
@@ -142,7 +184,12 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
         guard let self else {
           return
         }
-        self.failPendingConnect("CONNECT_TIMEOUT", "Bluetooth printer connection timed out.")
+        self.failPendingConnect(
+          "CONNECT_TIMEOUT",
+          "Bluetooth printer connection timed out.",
+          expectedPeripheral: peripheral,
+          expectedGeneration: attemptGeneration
+        )
       }
       self.connectTimeoutWorkItem = workItem
       self.bluetoothQueue.asyncAfter(deadline: .now() + .seconds(12), execute: workItem)
@@ -153,6 +200,7 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
   func disconnect(_ resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
     bluetoothQueue.async {
       self.disconnectInternal()
+      self.emitStatusChanged()
       self.resolve(resolve, true)
     }
   }
@@ -246,8 +294,14 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
       failPendingScan("BLUETOOTH_DISABLED", "Bluetooth is turned off.")
       if connectResolve != nil {
         failPendingConnect("BLUETOOTH_DISABLED", "Bluetooth is turned off.")
+      } else {
+        disconnectInternal()
       }
+      // 无线电关闭后 CoreBluetooth 不一定再补发每个 peripheral 的终止回调；恢复时允许重新取回实例。
+      retiringPeripheralIDs.removeAll()
     }
+    // poweredOn 同样通知 JS，让系统蓝牙恢复后可以立刻重新读取状态并重连。
+    emitStatusChanged()
   }
 
   func centralManager(
@@ -270,25 +324,55 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
   }
 
   func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+    guard peripheral === connectedPeripheral, connectResolve != nil else {
+      return
+    }
     peripheral.discoverServices(nil)
   }
 
   func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
-    failPendingConnect("CONNECT_ERROR", error?.localizedDescription ?? "Failed to connect Bluetooth printer.")
+    let peripheralID = ObjectIdentifier(peripheral)
+    let wasCurrent = peripheral === connectedPeripheral
+    if wasCurrent {
+      failPendingConnect("CONNECT_ERROR", error?.localizedDescription ?? "Failed to connect Bluetooth printer.")
+    }
+    // didFailToConnect 是该次取消/连接的终止回调，到这里才允许同一实例开始下一轮连接。
+    let finishedRetiring = retiringPeripheralIDs.remove(peripheralID) != nil
+    if wasCurrent || finishedRetiring {
+      emitStatusChanged()
+    }
   }
 
   func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
-    if peripheral.identifier.uuidString == connectedAddress {
-      if printResolve != nil {
+    // 同时核对当前 peripheral 实例，降低旧连接回调误清后续连接的风险。
+    let peripheralID = ObjectIdentifier(peripheral)
+    let wasCurrent = peripheral === connectedPeripheral
+    if wasCurrent {
+      if connectResolve != nil || connectReject != nil {
+        // 发现服务期间断开也必须立即结算连接 Promise，不能让超时门禁留下永久 pending。
+        failPendingConnect(
+          "CONNECT_ERROR",
+          error?.localizedDescription ?? "Bluetooth printer disconnected while connecting."
+        )
+      } else if printResolve != nil {
         failPendingPrint("PRINT_ERROR", error?.localizedDescription ?? "Bluetooth printer disconnected while printing.")
       }
       writeCharacteristic = nil
       connectedPeripheral = nil
       connectedAddress = nil
+      emitStatusChanged()
+    }
+    // 所有蓝牙委托都在 bluetoothQueue 串行执行，以终止回调作为允许复用该实例的边界。
+    let finishedRetiring = retiringPeripheralIDs.remove(peripheralID) != nil
+    if !wasCurrent && finishedRetiring {
+      emitStatusChanged()
     }
   }
 
   func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+    guard peripheral === connectedPeripheral, connectResolve != nil else {
+      return
+    }
     if let error {
       failPendingConnect("CONNECT_ERROR", error.localizedDescription)
       return
@@ -307,6 +391,9 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
   }
 
   func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
+    guard peripheral === connectedPeripheral, service.peripheral === connectedPeripheral, connectResolve != nil else {
+      return
+    }
     defer {
       pendingCharacteristicServiceCount = max(0, pendingCharacteristicServiceCount - 1)
       if writeCharacteristic == nil && pendingCharacteristicServiceCount == 0 && connectResolve != nil {
@@ -331,12 +418,17 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
     let resolve = connectResolve
     connectResolve = nil
     connectReject = nil
+    activeConnectGeneration = nil
+    emitStatusChanged()
     self.resolve(resolve, true)
   }
 
   func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
+    guard peripheral === connectedPeripheral, characteristic === pendingWriteCharacteristic else {
+      return
+    }
     if let error {
-      failPendingPrint("PRINT_ERROR", error.localizedDescription)
+      failPendingWrite("PRINT_ERROR", error.localizedDescription)
       return
     }
 
@@ -344,6 +436,9 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
   }
 
   func peripheralIsReady(toSendWriteWithoutResponse peripheral: CBPeripheral) {
+    guard peripheral === connectedPeripheral else {
+      return
+    }
     flushPendingWrites()
   }
 
@@ -389,7 +484,7 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
         guard let self else {
           return
         }
-        self.failPendingPrint("PRINT_TIMEOUT", "Bluetooth printer write timed out.")
+        self.failPendingWrite("PRINT_TIMEOUT", "Bluetooth printer write timed out.")
       }
       printTimeoutWorkItem = workItem
       bluetoothQueue.asyncAfter(deadline: .now() + .seconds(timeoutSeconds), execute: workItem)
@@ -448,18 +543,22 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
     self.reject(reject, code, message)
   }
 
-  private func failPendingConnect(_ code: String, _ message: String) {
+  private func failPendingConnect(
+    _ code: String,
+    _ message: String,
+    expectedPeripheral: CBPeripheral? = nil,
+    expectedGeneration: Int? = nil
+  ) {
+    if let expectedPeripheral, expectedPeripheral !== connectedPeripheral {
+      return
+    }
+    if let expectedGeneration, expectedGeneration != activeConnectGeneration {
+      return
+    }
     guard connectResolve != nil || connectReject != nil else {
       return
     }
-
-    let reject = connectReject
-    connectTimeoutWorkItem?.cancel()
-    connectTimeoutWorkItem = nil
-    connectResolve = nil
-    connectReject = nil
-    disconnectInternal()
-    self.reject(reject, code, message)
+    disconnectInternal(pendingConnectCode: code, pendingConnectMessage: message)
   }
 
   private func flushPendingWrites() {
@@ -467,7 +566,7 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
           peripheral.state == .connected,
           let characteristic = pendingWriteCharacteristic,
           let writeType = pendingWriteType else {
-      failPendingPrint("PRINT_ERROR", "No Bluetooth printer is connected.")
+      failPendingWrite("PRINT_ERROR", "No Bluetooth printer is connected.")
       return
     }
 
@@ -498,6 +597,16 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
     self.resolve(resolve, true)
   }
 
+  private func failPendingWrite(_ code: String, _ message: String) {
+    guard printResolve != nil || printReject != nil else {
+      return
+    }
+    // 写失败后旧 ACK 仍可能到达；先结算本次打印并退出会话，禁止旧回调推进下一张标签。
+    failPendingPrint(code, message)
+    disconnectInternal()
+    emitStatusChanged()
+  }
+
   private func failPendingPrint(_ code: String, _ message: String) {
     guard printResolve != nil || printReject != nil else {
       return
@@ -514,17 +623,50 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
     self.reject(reject, code, message)
   }
 
-  private func disconnectInternal() {
+  private func disconnectInternal(
+    pendingConnectCode: String = "CONNECT_CANCELLED",
+    pendingConnectMessage: String = "Bluetooth printer connection was cancelled."
+  ) {
+    let pendingConnectReject = connectReject
+    connectTimeoutWorkItem?.cancel()
+    connectTimeoutWorkItem = nil
+    connectResolve = nil
+    connectReject = nil
+    connectionGeneration += 1
+    activeConnectGeneration = nil
+    pendingCharacteristicServiceCount = 0
     if printResolve != nil {
       failPendingPrint("PRINT_ERROR", "Bluetooth printer disconnected while printing.")
     }
-    if let peripheral = connectedPeripheral {
+    if let peripheral = connectedPeripheral, peripheral.state != .disconnected {
+      // cancelPeripheralConnection 异步完成；终止回调前隔离该实例，避免旧回调污染快速重连。
+      retiringPeripheralIDs.insert(ObjectIdentifier(peripheral))
       centralManager.cancelPeripheralConnection(peripheral)
     }
     writeCharacteristic = nil
     connectedPeripheral = nil
     connectedAddress = nil
+    self.reject(pendingConnectReject, pendingConnectCode, pendingConnectMessage)
   }
+
+  private func emitStatusChanged() {
+    let state = centralManager.state
+    let status: [String: Any] = [
+      "supported": state != .unsupported,
+      "enabled": state == .poweredOn,
+      "connected": connectedPeripheral?.state == .connected && writeCharacteristic != nil,
+      "address": connectedAddress ?? NSNull(),
+    ]
+    // RN 事件必须回到主线程；无订阅者时不调用 sendEvent，避免 RCTEventEmitter 警告。
+    DispatchQueue.main.async { [weak self] in
+      guard let self, self.hasStatusListeners else {
+        return
+      }
+      self.sendEvent(withName: Self.statusEvent, body: status)
+    }
+  }
+
+  private static let statusEvent = "HbPrinterStatusChanged"
 
   private func buildProductLabelCommand(_ payload: NSDictionary, printType: String?) -> String {
     let isSmall = printType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "small"
@@ -615,66 +757,123 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
     let retailPrice = dictDouble(payload, "retailPrice") ?? 0
     let discountRate = dictDouble(payload, "discountRate") ?? 0
     let discountValue = discountRate * 100
-    let nowPrice = retailPrice * (1 - discountRate)
+    // 先按分舍入，避免 12.34 × 75% 的浮点尾差在 iOS 上被格式化成 9.25。
+    let nowPrice = (retailPrice * (1 - discountRate) * 100 + 1e-8).rounded() / 100
+    let showOriginalPrice = retailPrice.isFinite && nowPrice.isFinite && retailPrice > nowPrice && nowPrice >= 0
 
-    // 折扣标签对齐 Android：折扣数字、Now 价、二维码和日期全部使用位图绘制。
-    let nowLabelBitmap = textToBitmap("Now", fontSize: fontSizeToPixels(8), isBold: true, fontFamily: "sans-serif-black", isInverse: true, padding: 2)
-    let nowPriceBitmap = textToBitmap("$\(formatMoney(nowPrice))", fontSize: fontSizeToPixels(8), isBold: true, fontFamily: "sans-serif-black", isInverse: true, padding: 2)
-    let discountBitmap = textToBitmap(String(format: "%02d", Int(discountValue.rounded())), fontSize: fontSizeToPixels(44), isBold: false, fontFamily: "sans-serif-black")
-    let offBitmap = textToBitmap("OFF", fontSize: fontSizeToPixels(16), isBold: true, fontFamily: "sans-serif-black")
-    let percentBitmap = textToBitmap("%", fontSize: fontSizeToPixels(20), isBold: true, fontFamily: "sans-serif-black")
-    let dateBitmap = textToBitmap(todayString(), fontSize: fontSizeToPixels(8), isBold: false, fontFamily: "Arial", isInverse: true, padding: 2)
-    let itemBitmap = itemNumber.isEmpty ? nil : textToBitmap(itemNumber, fontSize: fontSizeToPixels(8), isBold: true, fontFamily: "sans-serif-black")
+    // 此模板按真实墨迹裁掉 UIKit 行高留白，再测宽缩字；不截断金额。
+    func fittedText(_ value: String, size: CGFloat, maxWidth: Int, maxHeight: Int = 64, inverse: Bool = false, padding: Int = 0) -> (bitmap: PrinterBitmap, fontSize: CGFloat, inkTop: Int) {
+      var fittedSize = size
+      while true {
+        let raw = textToBitmap(value, fontSize: fontSizeToPixels(fittedSize), isBold: true, fontFamily: "sans-serif-black", isInverse: inverse, padding: padding)
+        let bitmap = inverse ? raw : PrinterBitmap(
+          width: raw.width,
+          height: raw.inkHeight,
+          hex: String(raw.hex.dropFirst(raw.inkMinY * raw.widthBytes * 2).prefix(raw.inkHeight * raw.widthBytes * 2)),
+          inkMinY: 0,
+          inkMaxY: raw.inkHeight - 1
+        )
+        if (bitmap.width <= maxWidth && bitmap.height <= maxHeight) || fittedSize <= 1 {
+          return (bitmap, fittedSize, inverse ? 0 : raw.inkMinY)
+        }
+        fittedSize -= 0.5
+      }
+    }
 
-    let startY = 20
-    let startX = width - discountBitmap.width - percentBitmap.width - offBitmap.width + 20
-    let rightMargin = 12
     let columnGap = 10
+    let infoX = 84
+    let infoWidth = isSmall ? 100 : 124
+    let wasX = infoX + infoWidth + columnGap
+    let wasWidth = isSmall ? 76 : 96
+    let nowX = showOriginalPrice ? wasX + wasWidth + columnGap : wasX
+    let nowWidth = width - 12 - nowX
+    let nowPadding = 6
     let nowGroupGap = 6
+    let nowLabel = fittedText("NOW", size: 6, maxWidth: nowWidth)
+    let nowPriceText = "$\(formatMoney(nowPrice))"
+    let nowPriceTextBitmap = fittedText(nowPriceText, size: 16, maxWidth: nowWidth - nowLabel.bitmap.width - nowGroupGap - nowPadding * 2, maxHeight: 52)
+    let nowHeight = max(nowLabel.bitmap.height, nowPriceTextBitmap.bitmap.height) + nowPadding * 2
+    let nowBitmap = renderPrinterBitmap(width: nowWidth, height: nowHeight, isInverse: true) {
+      ("NOW" as NSString).draw(
+        at: CGPoint(x: nowPadding, y: (nowHeight - nowLabel.bitmap.height) / 2 - nowLabel.inkTop),
+        withAttributes: [.font: printerFont(fontFamily: "sans-serif-black", fontSize: fontSizeToPixels(nowLabel.fontSize), isBold: true), .foregroundColor: UIColor.white]
+      )
+      (nowPriceText as NSString).draw(
+        at: CGPoint(x: nowWidth - nowPadding - nowPriceTextBitmap.bitmap.width, y: (nowHeight - nowPriceTextBitmap.bitmap.height) / 2 - nowPriceTextBitmap.inkTop),
+        withAttributes: [.font: printerFont(fontFamily: "sans-serif-black", fontSize: fontSizeToPixels(nowPriceTextBitmap.fontSize), isBold: true), .foregroundColor: UIColor.white]
+      )
+    }
+    let wasLabelBitmap = fittedText("WAS", size: 6, maxWidth: wasWidth).bitmap
+    let wasPriceBitmap = fittedText("$\(formatMoney(retailPrice))", size: 8, maxWidth: wasWidth, maxHeight: 30).bitmap
+    let dateBitmap = fittedText(todayString(), size: 6, maxWidth: infoWidth, maxHeight: 24, inverse: true, padding: 2).bitmap
+    // 超长货号明确显示省略号；二维码继续编码完整条码/货号。
+    let itemDisplay = itemNumber.count > 24 ? String(itemNumber.prefix(21)) + "..." : itemNumber
+    let itemBitmap = itemDisplay.isEmpty ? nil : fittedText(itemDisplay, size: 7, maxWidth: infoWidth, maxHeight: 28).bitmap
+    let discountBitmap = fittedText(String(format: "%02d", Int(discountValue.rounded())), size: 44, maxWidth: width / 2, maxHeight: 108).bitmap
+    let offBitmap = fittedText("OFF", size: 16, maxWidth: 110).bitmap
+    let percentBitmap = fittedText("%", size: 20, maxWidth: 70).bitmap
+    let startY = 20
+    let headerGap = 8 // EG 每行按 8 点补齐，留出字节尾部空白，避免相邻位图覆盖。
+    let startX = width - 12 - discountBitmap.width - headerGap - max(percentBitmap.width, percentBitmap.width / 2 + offBitmap.width)
     let qrBitmap = barcode.isEmpty ? nil : createQrCodeBitmap(barcode, size: 64)
-    let qrVisualWidth = qrBitmap?.width ?? 64
-    let effectiveLabelBottom = 204
-    let bottomMargin = 10
-    let infoBandBottom = effectiveLabelBottom - bottomMargin
+    // 两种纸宽都遵守现有 204 点有效打印区，底部保留 10 点。
+    let infoBandBottom = 194
     let qrX = 10
     let qrY = infoBandBottom - (qrBitmap?.height ?? 64)
-    let nowPriceX = width - rightMargin - nowPriceBitmap.width
-    let nowLabelX = nowPriceX - nowGroupGap - nowLabelBitmap.width
-    let nowLabelY = infoBandBottom - nowLabelBitmap.height
-    let nowPriceY = infoBandBottom - nowPriceBitmap.height
-    let dateX = qrX + qrVisualWidth + columnGap
     let dateY = infoBandBottom - dateBitmap.height
-    let itemX = dateX
     let itemY = dateY - (itemBitmap?.height ?? 0) - 6
-    // iOS 位图高度包含 UIKit 行高；OFF 按真实墨迹底部和折扣数字对齐，避免压住 Now 价。
-    let discountOffY = startY + discountBitmap.inkMaxY - offBitmap.inkMaxY
-    let nameMaxWidth = max(1, width - discountBitmap.width - percentBitmap.width - offBitmap.width + 10)
-    let nameBitmap = longTextToBitmap(productName, fontSize: fontSizeToPixels(10), isBold: false, fontFamily: "Arial", maxLines: 2, maxWidth: nameMaxWidth)
+    let wasPriceY = infoBandBottom - wasPriceBitmap.height
+    let discountOffY = startY + discountBitmap.height - offBitmap.height
+    let nameMaxWidth = max(1, startX - 15)
+    let nameFont = printerFont(fontFamily: "Arial", fontSize: fontSizeToPixels(10), isBold: false)
+    var nameLines = wrapText(cpclText(productName), font: nameFont, maxWidth: nameMaxWidth, maxLines: 2)
+    // 英文优先在词间换行；只有单词本身太长时才沿用逐字换行。
+    if nameLines.count == 2 && !nameLines[0].hasSuffix(" ") && !nameLines[1].hasPrefix(" "),
+       let split = nameLines[0].lastIndex(of: " "), split != nameLines[0].startIndex {
+      nameLines[1] = String(nameLines[0][split...]).trimmingCharacters(in: .whitespaces) + nameLines[1]
+      nameLines[0] = String(nameLines[0][..<split])
+    }
+    let nameLineHeight = Int(ceil(nameFont.lineHeight))
+    let nameBitmap = renderPrinterBitmap(width: nameMaxWidth, height: nameLineHeight * nameLines.count, isInverse: false) {
+      for (index, value) in nameLines.enumerated() {
+        var display = value.trimmingCharacters(in: .whitespaces)
+        if measureText(display, font: nameFont) > CGFloat(nameMaxWidth) {
+          while !display.isEmpty && measureText(display + "...", font: nameFont) > CGFloat(nameMaxWidth) { display.removeLast() }
+          display += "..."
+        }
+        (display as NSString).draw(at: CGPoint(x: 0, y: index * nameLineHeight), withAttributes: [.font: nameFont, .foregroundColor: UIColor.black])
+      }
+    }
 
     var commands = [
       "! 0 200 200 \(height) 1",
       "PAGE-WIDTH \(width)",
       bitmapCommand(5, 5, nameBitmap),
       bitmapCommand(startX, startY, discountBitmap),
-      bitmapCommand(startX + discountBitmap.width, startY, percentBitmap),
+      bitmapCommand(startX + discountBitmap.width + headerGap, startY, percentBitmap),
       bitmapCommand(
-        startX + discountBitmap.width + percentBitmap.width / 2,
+        startX + discountBitmap.width + headerGap + percentBitmap.width / 2,
         discountOffY,
         offBitmap
       ),
     ]
 
     if let itemBitmap {
-      commands.append(bitmapCommand(itemX, itemY, itemBitmap))
+      commands.append(bitmapCommand(infoX, itemY, itemBitmap))
     }
 
     if let qrBitmap {
       commands.append(bitmapCommand(qrX, qrY, qrBitmap))
     }
 
-    commands.append(bitmapCommand(dateX, dateY, dateBitmap))
-    commands.append(bitmapCommand(nowLabelX, nowLabelY, nowLabelBitmap))
-    commands.append(bitmapCommand(nowPriceX, nowPriceY, nowPriceBitmap))
+    commands.append(bitmapCommand(infoX, dateY, dateBitmap))
+    if showOriginalPrice {
+      commands.append(bitmapCommand(wasX, wasPriceY - wasLabelBitmap.height - 4, wasLabelBitmap))
+      commands.append(bitmapCommand(wasX, wasPriceY, wasPriceBitmap))
+      let strikeY = wasPriceY + wasPriceBitmap.height / 2
+      commands.append("LINE \(wasX) \(strikeY) \(wasX + wasPriceBitmap.width - 1) \(strikeY) 2")
+    }
+    commands.append(bitmapCommand(nowX, infoBandBottom - nowBitmap.height, nowBitmap))
     commands.append("PRINT")
     return commands.joined(separator: "\r\n") + "\r\n"
   }

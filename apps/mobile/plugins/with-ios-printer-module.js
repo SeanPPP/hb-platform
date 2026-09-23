@@ -12,8 +12,9 @@ const {
 const MODULE_SWIFT = fs.readFileSync(path.join(__dirname, "ios", "HbPrinterModule.swift"), "utf8");
 
 const MODULE_EXPORTS = `#import <React/RCTBridgeModule.h>
+#import <React/RCTEventEmitter.h>
 
-@interface RCT_EXTERN_MODULE(HbPrinterModule, NSObject)
+@interface RCT_EXTERN_MODULE(HbPrinterModule, RCTEventEmitter)
 
 RCT_EXTERN_METHOD(getStatus:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
@@ -70,7 +71,10 @@ RCT_EXTERN_METHOD(printWarehouseLocationLabel:(NSDictionary *)payload
 `;
 
 const BLUETOOTH_USAGE = "Used to scan and connect Bluetooth receipt and label printers";
-const BRIDGE_IMPORT = "#import <React/RCTBridgeModule.h>";
+const BRIDGE_IMPORTS = [
+  "#import <React/RCTBridgeModule.h>",
+  "#import <React/RCTEventEmitter.h>",
+];
 
 function addSourceFile(project, projectName, fileName) {
   const relativePath = `${projectName}/${fileName}`;
@@ -115,10 +119,11 @@ function withIosPrinterModule(config) {
       const bridgingHeader = fs.existsSync(bridgingHeaderPath)
         ? fs.readFileSync(bridgingHeaderPath, "utf8")
         : "";
-      if (!bridgingHeader.includes(BRIDGE_IMPORT)) {
+      const missingBridgeImports = BRIDGE_IMPORTS.filter((item) => !bridgingHeader.includes(item));
+      if (missingBridgeImports.length > 0) {
         fs.writeFileSync(
           bridgingHeaderPath,
-          `${bridgingHeader.trimEnd()}\n${BRIDGE_IMPORT}\n`
+          `${bridgingHeader.trimEnd()}\n${missingBridgeImports.join("\n")}\n`
         );
       }
       return config;

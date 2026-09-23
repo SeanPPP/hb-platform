@@ -38,7 +38,9 @@ public sealed class ContainerAllocationSalesReportServiceTests : IDisposable
             typeof(SalesStatisticRefreshState),
             typeof(Store),
             typeof(Product),
-            typeof(ContainerDetail)
+            typeof(ContainerDetail),
+            // 销量读取按「200 加全部国内供应商编码」过滤，需要国内供应商目录。
+            typeof(ChinaSupplier)
         );
     }
 
@@ -222,6 +224,39 @@ public sealed class ContainerAllocationSalesReportServiceTests : IDisposable
         Assert.Null(product.GrossMarginRate);
         Assert.NotEmpty(salesSql);
         Assert.All(salesSql, sql => Assert.Contains("GROUP BY", sql, StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task QueryAsync_直写国内供应商编码的销售计入且澳洲供应商销售仍排除()
+    {
+        var arrival = DateTime.Today.AddDays(-2);
+        var service = CreateService(new ContainerMainDto { HGUID = "C-DIRECT-CODE", 实际到货日期 = arrival },
+            Detail("P-1", 1, "A-1", "商品一"));
+        await SeedFreshStatesAsync(arrival, arrival.AddDays(1));
+        await _db.Insertable(new[]
+        {
+            new ChinaSupplier { Guid = "cn-container", SupplierCode = "CN-BOX", SupplierName = "柜货供应商" },
+            // 软删除的国内供应商仍属于国内编码族，历史直写销售不能因此丢失。
+            new ChinaSupplier { Guid = "cn-container-soft", SupplierCode = "CN-BOX-SOFT", SupplierName = "已删除供应商", IsDeleted = true },
+        }).ExecuteCommandAsync();
+        // 切换前是旧 200 行，切换后是直写行，三行都属于这个柜货商品。
+        await SeedSaleAsync(arrival, "S1", "P-1", 2, 20, 12, 8, "ProductSnapshot");
+        await SeedSaleAsync(arrival.AddDays(1), "S1", "P-1", 3, 30, 18, 12, "ProductSnapshot", "CN-BOX");
+        await SeedSaleAsync(arrival.AddDays(1), "S2", "P-1", 1, 10, 6, 4, "ProductSnapshot", "CN-BOX-SOFT");
+        // 同一商品编码挂在澳洲供应商下的销售不属于柜货。
+        await SeedSaleAsync(arrival, "S1", "P-1", 100, 999, 1, 998, "ProductSnapshot", "999");
+
+        var result = await service.QueryAsync("C-DIRECT-CODE", new ContainerAllocationSalesQueryRequest
+        {
+            StartDate = arrival,
+            EndDate = arrival.AddDays(1),
+        });
+
+        var product = Assert.Single(result.Items);
+        Assert.Equal(6, product.SalesQuantity);
+        Assert.Equal(60, product.SalesAmount);
+        Assert.Equal(24, product.GrossProfit);
+        Assert.True(product.IsGrossMarginComplete);
     }
 
     [Fact]
@@ -684,6 +719,39 @@ public sealed class ContainerAllocationSalesReportServiceTests : IDisposable
         Assert.Null(branch.GrossProfit);
         Assert.Null(branch.GrossMarginRate);
         Assert.Null(branch.IsGrossMarginComplete);
+    }
+
+    [Fact]
+    public async Task QueryBranchesAsync_统计Pending时直写行的历史分店同样可见()
+    {
+        var arrival = DateTime.Today.AddDays(-1);
+        var service = CreateService(new ContainerMainDto { HGUID = "C-PENDING-DIRECT", 实际到货日期 = arrival },
+            Detail("P-1", 1, "A-1", "商品一"));
+        await _db.Insertable(new Store
+        {
+            StoreGUID = "G-INACTIVE-DIRECT",
+            StoreCode = "S-INACTIVE-DIRECT",
+            StoreName = "停用直写分店",
+            IsActive = false,
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new ChinaSupplier { Guid = "cn-pending", SupplierCode = "CN-PENDING", SupplierName = "柜货供应商" })
+            .ExecuteCommandAsync();
+        await SeedSaleAsync(arrival, "S-INACTIVE-DIRECT", "P-1", 5, 50, 30, 20, "ProductSnapshot", "CN-PENDING");
+
+        var result = await service.QueryBranchesAsync(
+            "C-PENDING-DIRECT",
+            new ContainerAllocationSalesBranchesQueryRequest
+            {
+                ProductCode = "P-1",
+                StartDate = arrival,
+                EndDate = arrival,
+            }
+        );
+
+        Assert.Equal(SalesStatisticRefreshStatus.Pending, result.StatisticStatus);
+        var branch = Assert.Single(result.Items);
+        Assert.Equal("S-INACTIVE-DIRECT", branch.BranchCode);
+        Assert.Null(branch.SalesQuantity);
     }
 
     [Fact]

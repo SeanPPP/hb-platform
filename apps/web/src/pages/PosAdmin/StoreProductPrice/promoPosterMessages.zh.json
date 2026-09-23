@@ -7,6 +7,8 @@
         "style": "风格",
         "styleClassic": "经典",
         "styleModern": "现代",
+        "styleChristmas": "圣诞",
+        "styleHalloween": "万圣节",
         "size": "尺寸",
         "impose": "小尺寸拼到 A4 纸（带裁切线）",
         "imposeA4Hint": "A4 海报每页一张，无需拼版",

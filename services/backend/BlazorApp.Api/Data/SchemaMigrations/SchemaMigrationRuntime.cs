@@ -60,6 +60,14 @@ internal interface ISchemaMigrationRuntime
 
     Task VerifySalesDetailQueryProjectionAsync(CancellationToken cancellationToken);
 
+    Task ApplyMobileOtaRuntimeTargetsAsync(CancellationToken cancellationToken);
+
+    Task VerifyMobileOtaRuntimeTargetsAsync(CancellationToken cancellationToken);
+
+    Task ApplySalesDetailQueryMonthlyAsync(CancellationToken cancellationToken);
+
+    Task VerifySalesDetailQueryMonthlyAsync(CancellationToken cancellationToken);
+
     Task ApplyPosmBaselineAsync(CancellationToken cancellationToken);
 
     Task ApplyMobileDeviceActivationAsync(CancellationToken cancellationToken);
@@ -97,6 +105,8 @@ internal sealed class PricingCurveSchemaMismatchException : Exception;
 internal sealed class SalesDetailQueryProjectionSchemaMismatchException : Exception;
 
 internal sealed class LinklyMultiTerminalSchemaMismatchException : Exception;
+
+internal sealed class MobileOtaRuntimeTargetsSchemaMismatchException : Exception;
 
 internal sealed class SchemaBaselineSqlFailureException(string stepId) : Exception
 {
@@ -337,6 +347,56 @@ internal sealed class SqlServerSchemaMigrationRuntime : ISchemaMigrationRuntime
         catch (SqlException exception) when (exception.Number is >= 51800 and <= 51802)
         {
             throw new SalesDetailQueryProjectionSchemaMismatchException();
+        }
+    }
+
+    public async Task ApplySalesDetailQueryMonthlyAsync(CancellationToken cancellationToken)
+    {
+        await SqlServerSchemaMigrationStore.ExecuteBatchAsync(
+            _mainDatabase.ConnectionString,
+            SalesDetailQueryMonthlySchema.ApplySql,
+            _commandTimeoutSeconds,
+            cancellationToken
+        );
+        await VerifySalesDetailQueryMonthlyAsync(cancellationToken);
+    }
+
+    public async Task VerifySalesDetailQueryMonthlyAsync(CancellationToken cancellationToken)
+    {
+        await SqlServerSchemaMigrationStore.ExecuteReadOnlyBatchAsync(
+            _mainDatabase.ConnectionString,
+            SalesDetailQueryMonthlySchema.VerifySql,
+            _commandTimeoutSeconds,
+            cancellationToken
+        );
+    }
+
+    public async Task ApplyMobileOtaRuntimeTargetsAsync(CancellationToken cancellationToken)
+    {
+        await SqlServerSchemaMigrationStore.ExecuteBatchAsync(
+            _mainDatabase.ConnectionString,
+            MobileOtaRuntimeTargetsSchema.ApplySql,
+            _commandTimeoutSeconds,
+            cancellationToken
+        );
+        // 先通过精确签名检查，再由协调器登记 migration ledger。
+        await VerifyMobileOtaRuntimeTargetsAsync(cancellationToken);
+    }
+
+    public async Task VerifyMobileOtaRuntimeTargetsAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await SqlServerSchemaMigrationStore.ExecuteReadOnlyBatchAsync(
+                _mainDatabase.ConnectionString,
+                MobileOtaRuntimeTargetsSchema.VerifySql,
+                _commandTimeoutSeconds,
+                cancellationToken
+            );
+        }
+        catch (SqlException exception) when (exception.Number is >= 51910 and <= 51912)
+        {
+            throw new MobileOtaRuntimeTargetsSchemaMismatchException();
         }
     }
 

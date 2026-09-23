@@ -33,6 +33,40 @@ internal static class SalesCostBackfillRules
         && before.TotalAmount == Math.Round(after.TotalAmount, 4, MidpointRounding.AwayFromZero)
         && before.OrderCount == after.OrderCount;
 
+    /// <summary>
+    /// 为库内缺口行找到对应的重建行。库内行的 SupplierCode 可能是直写的国内供应商编码，
+    /// 而成本回填重建的行不解析归属（国内货仍是 200），反过来也可能；行键里的 SupplierCode 对不上，
+    /// 提案就会因「来源缺失」或「来源事实不一致」丢掉。国内编码族内改按「日期 + 分店 + 商品」配对，
+    /// 并把重建行的编码对齐到库内行：重建行只用于取成本，回填只改成本列，不改归属。
+    /// 族内同一商品有多条重建行时无法确定对应关系，不配对。
+    /// </summary>
+    internal static Func<ProductStoreDailySalesStatistic, ProductStoreDailySalesStatistic?> BuildRebuiltLookup(
+        IEnumerable<ProductStoreDailySalesStatistic> rebuilt,
+        IReadOnlySet<string>? chinaSupplierCodes)
+    {
+        var rebuiltRows = rebuilt.ToList();
+        var byKey = rebuiltRows.ToDictionary(Key);
+        var familyRows = chinaSupplierCodes == null
+            ? new Dictionary<(DateTime, string, string), ProductStoreDailySalesStatistic>()
+            : rebuiltRows
+                .Where(row => ChinaSupplierCodeFamily.IsFamilyCode(row.SupplierCode, chinaSupplierCodes))
+                .GroupBy(row => (row.Date.Date, row.BranchCode, row.ProductCode))
+                .Where(group => group.Count() == 1)
+                .ToDictionary(group => group.Key, group => group.Single());
+
+        return stored =>
+        {
+            if (byKey.TryGetValue(Key(stored), out var exact))
+                return exact;
+            if (chinaSupplierCodes == null
+                || !ChinaSupplierCodeFamily.IsFamilyCode(stored.SupplierCode, chinaSupplierCodes)
+                || !familyRows.TryGetValue((stored.Date.Date, stored.BranchCode, stored.ProductCode), out var family))
+                return null;
+            family.SupplierCode = stored.SupplierCode;
+            return family;
+        };
+    }
+
     internal static (CostImage? Cost, string Reason) Propose(ProductStoreDailySalesStatistic old,
         ProductStoreDailySalesStatistic? rebuilt)
     {

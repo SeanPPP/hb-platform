@@ -31,6 +31,9 @@ public sealed partial class BatchProductSalesAnalysisSqlServerIntegrationTests :
         {
             foreach (var name in DatabaseNames)
                 await master.Ado.ExecuteCommandAsync($"CREATE DATABASE {Quote(name)}");
+            // 与生产一致：HBweb、POSM 允许快照隔离（日统计已提交读依赖它），HOT_POS_CLOUD 不开。
+            foreach (var name in new[] { CatalogName, PosmName })
+                await master.Ado.ExecuteCommandAsync($"ALTER DATABASE {Quote(name)} SET ALLOW_SNAPSHOT_ISOLATION ON");
             _catalog = Client(WithDatabase(_master, CatalogName));
             _posm = Client(WithDatabase(_master, PosmName));
             _hbs = Client(WithDatabase(_master, HbsName));
