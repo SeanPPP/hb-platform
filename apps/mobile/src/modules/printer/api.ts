@@ -500,6 +500,12 @@ export async function testPrinterConnection() {
 }
 
 export async function selectReceiptPrinter(device: PrinterDevice) {
+  // Android 只支持经典蓝牙小票机；必须在读取状态、断开连接或写入存储前拒绝 BLE-only 设备。
+  if (isUnsupportedPrinterTransport(device, Platform.OS)) {
+    throw Object.assign(new Error("Android printing does not support BLE-only devices. Select the classic Bluetooth device with the same name."), {
+      code: "PRINTER_BLE_UNSUPPORTED",
+    });
+  }
   if (isIosReviewSessionActive()) {
     const store = useReceiptPrinterStore.getState();
     store.setSavedPrinter(toSavedPrinter(device));
@@ -508,6 +514,37 @@ export async function selectReceiptPrinter(device: PrinterDevice) {
     return true;
   }
   const nextPrinter = toSavedPrinter(device);
+  if (Platform.OS === "android" && !device.bonded) {
+    return runPrinterOperation(async () => {
+      const store = useReceiptPrinterStore.getState();
+      const previousPrinter = store.hydrated
+        ? store.savedPrinter
+        : await PrinterStorage.getReceiptPrinter();
+      store.setStatus("connecting");
+      store.setLastError(null);
+
+      try {
+        // 未配对设备只先交给系统完成配对；小票选择沿用原有“仅保存”逻辑，不抢占标签 socket。
+        const paired = await pairPrinter(nextPrinter.address);
+        if (!paired) {
+          throw new Error("Unable to pair with the selected receipt printer.");
+        }
+        await PrinterStorage.setReceiptPrinter(nextPrinter);
+        store.setSavedPrinter(nextPrinter);
+        store.setAutoReconnectPaused(false);
+        store.setLastError(null);
+        store.setStatus("idle");
+        return true;
+      } catch (error) {
+        store.setSavedPrinter(previousPrinter);
+        store.setLastError(error instanceof Error ? error.message : String(error));
+        store.setStatus("error");
+        throw error;
+      }
+    });
+  }
+
+  // Android 已配对设备和 iOS 保持原有行为：选择只写入小票机配置，不连接原生 socket。
   await PrinterStorage.setReceiptPrinter(nextPrinter);
   const store = useReceiptPrinterStore.getState();
   store.setSavedPrinter(nextPrinter);

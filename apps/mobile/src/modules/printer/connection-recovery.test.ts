@@ -20,6 +20,7 @@ function deferred() {
 
 async function run() {
   let saved: SavedPrinter | null;
+  let receiptSaved: SavedPrinter | null;
   let nativeStatus: PrinterStatus;
   let events: string[];
   let writeError: Error | null;
@@ -76,7 +77,8 @@ async function run() {
       getPrinter: async () => { storageReads += 1; return saved; },
       setPrinter: async (printer: SavedPrinter) => { saved = printer; },
       clearPrinter: async () => { saved = null; },
-      getReceiptPrinter: async () => receipt,
+      getReceiptPrinter: async () => receiptSaved,
+      setReceiptPrinter: async (printer: SavedPrinter) => { receiptSaved = printer; },
     },
   });
   mockModule("../ios-review/session", { isIosReviewSessionActive: () => reviewMode });
@@ -86,6 +88,7 @@ async function run() {
 
   beforeEach(() => {
     saved = { name: "XP label", address: "label" };
+    receiptSaved = receipt;
     nativeStatus = { supported: true, enabled: true, connected: true, address: "label" };
     events = [];
     writeError = null;
@@ -121,6 +124,57 @@ async function run() {
     await api.selectPrinter({ name: "XP BLE", address: "ble", bonded: true, connected: false, transport: "ble" });
     assert.deepEqual(events, ["disconnect", "connect:ble"]);
     assert.equal(saved?.address, "ble");
+  });
+
+  test("Android BLE-only 小票打印机选择在任何配对、断连、状态或存储变更前拒绝", async () => {
+    useReceiptPrinterStore.setState({ status: "connected" });
+    const before = useReceiptPrinterStore.getState();
+    await assert.rejects(
+      api.selectReceiptPrinter({ name: "XP BLE receipt", address: "ble-receipt", bonded: false, connected: false, transport: "ble" }),
+      { code: "PRINTER_BLE_UNSUPPORTED" }
+    );
+    assert.deepEqual(events, []);
+    assert.equal(statusReads, 0);
+    assert.equal(storageReads, 0);
+    assert.deepEqual(useReceiptPrinterStore.getState(), before);
+    assert.equal(receiptSaved?.address, "receipt");
+  });
+
+  test("未配对经典小票打印机先完成系统配对，成功后才保存", async () => {
+    await api.selectReceiptPrinter({ name: "New receipt", address: "unpaired-receipt", bonded: false, connected: false, transport: "classic" });
+    assert.deepEqual(events, ["pair:unpaired-receipt"]);
+    assert.equal(receiptSaved?.address, "unpaired-receipt");
+    assert.equal(useReceiptPrinterStore.getState().savedPrinter?.address, "unpaired-receipt");
+    assert.equal(useReceiptPrinterStore.getState().status, "idle");
+    assert.equal(nativeStatus.address, "label");
+  });
+
+  test("已配对小票打印机选择只保存，不连接或断开现有标签 socket", async () => {
+    await api.selectReceiptPrinter({ name: "Bonded receipt", address: "bonded-receipt", bonded: true, connected: false, transport: "classic" });
+    assert.deepEqual(events, []);
+    assert.equal(receiptSaved?.address, "bonded-receipt");
+    assert.equal(nativeStatus.address, "label");
+    assert.equal(useReceiptPrinterStore.getState().status, "idle");
+  });
+
+  test("iOS 小票打印机选择保持仅保存行为", async () => {
+    platform.OS = "ios";
+    await api.selectReceiptPrinter({ name: "iOS receipt", address: "ios-receipt", bonded: false, connected: false, transport: "ble" });
+    assert.deepEqual(events, []);
+    assert.equal(receiptSaved?.address, "ios-receipt");
+    assert.equal(nativeStatus.address, "label");
+  });
+
+  test("小票打印机配对失败保留旧选择", async () => {
+    pairError = Object.assign(new Error("Pairing was cancelled."), { code: "PRINTER_PAIRING_REJECTED" });
+    await assert.rejects(
+      api.selectReceiptPrinter({ name: "New receipt", address: "unpaired-receipt", bonded: false, connected: false, transport: "classic" }),
+      /Pairing was cancelled/
+    );
+    assert.deepEqual(events, ["pair:unpaired-receipt"]);
+    assert.equal(receiptSaved?.address, "receipt");
+    assert.equal(useReceiptPrinterStore.getState().savedPrinter?.address, "receipt");
+    assert.equal(useReceiptPrinterStore.getState().status, "error");
   });
 
   test("broken pipe 清除假连接，保留原始失败且不自动重印，下一次打印恢复", async () => {

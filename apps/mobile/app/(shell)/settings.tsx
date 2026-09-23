@@ -1030,6 +1030,33 @@ export default function Settings() {
     }
   };
 
+  const handleConnectReceiptPrinter = (device: PrinterDevice) => {
+    if (isUnsupportedPrinterTransport(device, Platform.OS)) {
+      return;
+    }
+
+    if (Platform.OS !== "android" || device.bonded) {
+      void handleSaveReceiptPrinter(device);
+      return;
+    }
+
+    // 小票打印机复用标签打印机的系统配对确认，避免用户点击保存后才看到原生失败。
+    Alert.alert(
+      t("dialogs.printerPairingTitle"),
+      t("dialogs.printerPairingMessage", {
+        printer: device.name || device.address,
+        address: device.address,
+      }),
+      [
+        { text: t("common:actions.cancel"), style: "cancel" },
+        {
+          text: t("dialogs.printerPairingAction"),
+          onPress: () => void handleSaveReceiptPrinter(device),
+        },
+      ]
+    );
+  };
+
   const handleTestReceiptPrinter = async () => {
     setReceiptPrinterBusy(true);
     try {
@@ -1651,7 +1678,7 @@ export default function Settings() {
                         selectedAddress={savedReceiptPrinter?.address}
                         actionLabel={t("receiptPrinter.save")}
                         disabled={printerNativeBusy}
-                        onSelect={(printer) => void handleSaveReceiptPrinter(printer)}
+                        onSelect={handleConnectReceiptPrinter}
                       />
                     </>
                   ) : (

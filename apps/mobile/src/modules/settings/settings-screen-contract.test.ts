@@ -57,12 +57,16 @@ test("诊断、设备与双打印机详情入口可操作且共享原生打印�
     "handleClearPrinter",
     "handleScanReceiptPrinters",
     "handleSaveReceiptPrinter",
+    "handleConnectReceiptPrinter",
     "handleTestReceiptPrinter",
     "handleClearReceiptPrinter",
     "handleLogout",
   ]) {
     assert.match(renderSource, new RegExp(handler), `${handler} 必须仍有可点击入口`);
   }
+  assert.match(source, /const handleConnectReceiptPrinter\s*=\s*\(device: PrinterDevice\)/);
+  assert.match(source, /onSelect=\{handleConnectReceiptPrinter\}/);
+  assert.match(source, /handleConnectReceiptPrinter[\s\S]{0,900}dialogs\.printerPairingTitle/);
 });
 
 test("详情弹窗使用原生可访问模态并管理进入与返回焦点", () => {
