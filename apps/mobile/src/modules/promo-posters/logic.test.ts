@@ -303,6 +303,42 @@ assert.deepEqual(multiResult.ok && multiResult.spec, {
 const noOffer = buildPosterSpec({ ...multi, offerId: "missing" }, defaults);
 assert.equal(noOffer.ok, true, "预设促销不存在时仍可按手填多件价提交");
 
+// 两种节日风格都必须贯穿四种业务类型并进入 PDF 请求，避免只接通了编辑器选择器。
+const seasonalStyles = ["christmas", "halloween"] as const;
+assert.ok(specialResult.ok);
+assert.ok(multiResult.ok);
+assert.ok(freshResult.ok);
+const seasonalSpecs: PromoPosterSpec[] = [
+  specialResult.spec,
+  multiResult.spec,
+  freshResult.spec,
+  { kind: "clearance", style: "classic", size: "A6", productCode: "P1", itemNumber: "K1048", title: "Clearance Flask", price: 5, wasPrice: 14.99 },
+];
+for (const style of seasonalStyles) {
+  for (const spec of seasonalSpecs) {
+    const request = buildPromoPosterPdfRequest("S1", true, [{ ...spec, style }], false);
+    assert.equal(request.showLogo, false);
+    assert.equal(request.posters[0].style, style);
+    assert.equal(request.posters[0].kind, spec.kind);
+  }
+}
+const seasonalSnapshot = normalizeStoredQueueSnapshot({
+  style: "halloween",
+  size: "A7",
+  impose: true,
+  showLogo: false,
+  items: seasonalStyles.map((style) => ({
+    id: `seasonal-${style}`,
+    storeCode: "S1",
+    productName: "Paper",
+    addedAt: TODAY,
+    poster: { ...seasonalSpecs[0], style, size: "A7" },
+  })),
+});
+assert.equal(seasonalSnapshot.style, "halloween", "读取保存快照时保留万圣节批次风格");
+assert.equal(seasonalSnapshot.showLogo, false, "读取保存快照时保留关闭 Logo");
+assert.deepEqual(seasonalSnapshot.items.map((item) => item.poster.style), ["christmas", "halloween"]);
+
 // ---------------------------------------------------------------- 收银价不一致提示
 
 assert.equal(resolvePriceMismatch(special, defaults), null);
