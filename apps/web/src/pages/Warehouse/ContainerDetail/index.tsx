@@ -83,6 +83,8 @@ import {
   translateHqProductNamesByContainerNumber,
   updateContainer,
 } from '../../../services/containerService'
+import SupplyNoticeModal from '../../../components/SupplyNotice/SupplyNoticeModal'
+import type { SupplyNoticeInput } from '../../../types/supplyNotice'
 import {
   buildContainerCreateProductsOperationId,
   buildContainerSubmitOperationId,
@@ -831,6 +833,10 @@ export default function ContainerDetailPage() {
   const savingHeaderRef = useRef(false)
   const [container, setContainer] = useState<ContainerMain | null>(null)
   const [rows, setRows] = useState<ContainerDetail[]>([])
+  // 下架前的供货说明弹窗：以 Promise 形式等用户填完（或取消），单行开关与批量下架共用。
+  const [supplyNoticeRequest, setSupplyNoticeRequest] = useState<{ productCount: number; resolve: (notice: SupplyNoticeInput | null) => void } | null>(null)
+  const requestSupplyNotice = (productCount: number) =>
+    new Promise<SupplyNoticeInput | null>((resolve) => setSupplyNoticeRequest({ productCount, resolve }))
   const [changeHistoryProduct, setChangeHistoryProduct] = useState<{
     productCode: string
     itemNumber?: string
@@ -4281,6 +4287,9 @@ export default function ContainerDetailPage() {
       )
       return
     }
+    // 下架必须先登记供货说明（后续计划必选）；取消弹窗即放弃本次下架。
+    const supplyNotice = isActive ? undefined : await requestSupplyNotice(productCodes.length)
+    if (!isActive && !supplyNotice) return
     if (!await drainAutoSavesBeforeAction()) return
     const statusRows = eligibleRows.filter((row) => productCodes.includes(getContainerDetailProductCode(row) ?? ''))
     const scope = buildDetailBatchScope(statusRows)
@@ -4290,7 +4299,7 @@ export default function ContainerDetailPage() {
         'set-status', scope, parameters, t(isActive ? 'containers.actions.batchActivate' : 'containers.actions.batchDeactivate'),
       )
       if (!previewToken) return
-      await setContainerDetailStatusByScope(containerGuid, scope, isActive, previewToken)
+      await setContainerDetailStatusByScope(containerGuid, scope, isActive, previewToken, supplyNotice)
       setRows((items) => applyContainerDetailWarehouseStatusByProductCodes(items, productCodes, isActive))
       setSelectedRowKeys([])
       message.success(t(isActive ? 'containers.messages.productsActivated' : 'containers.messages.productsDeactivated', { count: productCodes.length }))
@@ -5555,6 +5564,8 @@ export default function ContainerDetailPage() {
       message.warning(t('containers.messages.selectedProductsMissingCode'))
       return
     }
+    const supplyNotice = isActive ? undefined : await requestSupplyNotice(1)
+    if (!isActive && !supplyNotice) return
     if (!await drainAutoSavesBeforeAction()) return
 
     const statusRows = rows
@@ -5571,7 +5582,7 @@ export default function ContainerDetailPage() {
       if (!previewToken) return
       setPendingWarehouseStatusCodes((codes) => new Set(codes).add(productCode))
       setRows((items) => applyContainerDetailWarehouseStatusByProductCodes(items, [productCode], isActive))
-      await setContainerDetailStatusByScope(containerGuid, scope, isActive, previewToken)
+      await setContainerDetailStatusByScope(containerGuid, scope, isActive, previewToken, supplyNotice)
       message.success(t(isActive ? 'containers.messages.productsActivated' : 'containers.messages.productsDeactivated', { count: 1 }))
     } catch (error) {
       setRows((items) => rollbackContainerDetailWarehouseStatuses(items, previousStatuses, rowKey))
@@ -6571,6 +6582,13 @@ export default function ContainerDetailPage() {
           />
         </Space>
       </Modal>
+      <SupplyNoticeModal
+        open={Boolean(supplyNoticeRequest)}
+        mode="delist"
+        productCount={supplyNoticeRequest?.productCount ?? 0}
+        onCancel={() => { supplyNoticeRequest?.resolve(null); setSupplyNoticeRequest(null) }}
+        onSubmit={(notice) => { supplyNoticeRequest?.resolve(notice); setSupplyNoticeRequest(null) }}
+      />
       {access.canManageWarehouseCategories ? (
         <ContainerCategoryManageModal
           open={categoryManageOpen}

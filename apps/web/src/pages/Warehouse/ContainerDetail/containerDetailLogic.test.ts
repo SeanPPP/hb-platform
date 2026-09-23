@@ -4887,7 +4887,7 @@ assertEqual(
   '页面应通过统一 helper 解析商品编码，避免空白编码绕过兜底',
 )
 assertEqual(
-  pageSource.includes('setContainerDetailStatusByScope(containerGuid, scope, isActive, previewToken)') &&
+  pageSource.includes('setContainerDetailStatusByScope(containerGuid, scope, isActive, previewToken, supplyNotice)') &&
     pageSource.includes("'set-status', scope, parameters"),
   true,
   '仓库状态更新应走预览令牌保护的货柜范围动作，不能绕过并发守卫',
