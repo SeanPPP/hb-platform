@@ -21,8 +21,18 @@ assert.match(
 );
 assert.match(
   homeSource,
-  /onChangeText=\{handleSearchInputChange\}/,
-  "Searchbar 必须使用统一的关键词输入处理器",
+  /useVisibleSearchScannerInput<[\s\S]*?>\(\{[\s\S]*?onChangeText: handleSearchInputChange,[\s\S]*?onScannerInput: handleVisibleSearchScan,/,
+  "扫码识别之外的输入必须回落到统一的关键词输入处理器",
+);
+assert.match(
+  homeSource,
+  /onChangeText=\{visibleSearchScanner\.handleChangeText\}/,
+  "Searchbar 必须先经过可见框扫码识别，Zebra 聚焦搜索框时扫码才能自动查询",
+);
+assert.match(
+  homeSource,
+  /lastScan\?\.barcode === barcode && now - lastScan\.time < 100/,
+  "原生按键监听与可见搜索框可能收到同一次扫码，必须去重以免重复加购",
 );
 assert.doesNotMatch(
   homeSource,
