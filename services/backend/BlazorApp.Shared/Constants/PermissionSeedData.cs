@@ -65,6 +65,8 @@ namespace BlazorApp.Shared.Constants
                 new(Permissions.SalesDashboard.LocalProductAnalysisView, "查看澳洲本地商品分析", "销售看板", "Web 页面 /executive-sales-intelligence/local-product-sales-analysis - 查看澳洲本地商品的进货与销售表现"),
                 new(Permissions.SalesDashboard.PurchaseAmountView, "查看进货金额看板", "销售看板", "Web 页面 /executive-sales-intelligence/purchase-amount-dashboard - 查看各分店仓库订单、本地供应商进货金额及营业额"),
                 new(Permissions.SalesDashboard.LocalSupplierPurchaseSalesView, "查看分店进货销量分析", "销售看板", "Web 页面 /executive-sales-intelligence/purchase-sales-analysis「分店进货销量分析」标签 - 按分店和供应商查看最近进货、逐日销量图与售出比"),
+                new(Permissions.SalesDashboard.KfcRestockSignalView, "查看 KFC 补货信号", "销售看板", "报告页面 /reports/kfc-uncle-bills/ - 查看 Uncle Bills (KFC) 的畅销、预测、库存缺口与进销累计，只能看自己关联的门店"),
+                new(Permissions.SalesDashboard.KfcRestockSignalAllStores, "查看 KFC 补货信号全部门店", "销售看板", "报告页面 /reports/kfc-uncle-bills/ - 在「查看 KFC 补货信号」基础上查看全部门店的数据与全链汇总"),
             };
 
         private static IReadOnlyList<string> AttendanceSelfServicePermissionCodes { get; } =

@@ -557,6 +557,14 @@
       "name": "View local purchase sales analysis",
       "description": "Web page /executive-sales-intelligence/purchase-sales-analysis, Local purchase analysis tab - Review latest purchases, daily sales charts and sell-through by store and supplier."
     },
+    "SalesDashboard.KfcRestockSignal.View": {
+      "name": "View KFC restock signals",
+      "description": "Report page /reports/kfc-uncle-bills/ - view best sellers, forecasts, stock gaps and sell-through for Uncle Bills (KFC), limited to the user's own stores"
+    },
+    "SalesDashboard.KfcRestockSignal.AllStores": {
+      "name": "View KFC restock signals for all stores",
+      "description": "Report page /reports/kfc-uncle-bills/ - on top of View KFC restock signals, view data for every store and the chain summary"
+    },
     "SalesDashboard.PurchaseAmount.View": {
       "name": "View purchase amount dashboard",
       "description": "View warehouse orders, local supplier purchase amounts and revenue by store."

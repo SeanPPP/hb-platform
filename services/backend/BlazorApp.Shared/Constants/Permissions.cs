@@ -280,6 +280,11 @@ namespace BlazorApp.Shared.Constants
             // 销售看板「分店进货销量分析」页面的逐页权限码。
             public const string LocalSupplierPurchaseSalesView =
                 "SalesDashboard.LocalSupplierPurchaseSales.View";
+
+            // 静态报告「KFC 补货信号」（/reports/kfc-uncle-bills/）：查看权限只能看自己关联的门店；
+            // 全部门店权限额外放行全链汇总与其它门店的数据文件。
+            public const string KfcRestockSignalView = "SalesDashboard.KfcRestockSignal.View";
+            public const string KfcRestockSignalAllStores = "SalesDashboard.KfcRestockSignal.AllStores";
         }
 
         public static class StoreProducts
