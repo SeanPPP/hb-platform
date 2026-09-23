@@ -4288,7 +4288,7 @@ export default function ContainerDetailPage() {
       return
     }
     // 下架必须先登记供货说明（后续计划必选）；取消弹窗即放弃本次下架。
-    const supplyNotice = isActive ? undefined : await requestSupplyNotice(productCodes.length)
+    const supplyNotice = isActive ? undefined : (await requestSupplyNotice(productCodes.length)) ?? undefined
     if (!isActive && !supplyNotice) return
     if (!await drainAutoSavesBeforeAction()) return
     const statusRows = eligibleRows.filter((row) => productCodes.includes(getContainerDetailProductCode(row) ?? ''))
@@ -5564,7 +5564,7 @@ export default function ContainerDetailPage() {
       message.warning(t('containers.messages.selectedProductsMissingCode'))
       return
     }
-    const supplyNotice = isActive ? undefined : await requestSupplyNotice(1)
+    const supplyNotice = isActive ? undefined : (await requestSupplyNotice(1)) ?? undefined
     if (!isActive && !supplyNotice) return
     if (!await drainAutoSavesBeforeAction()) return
 

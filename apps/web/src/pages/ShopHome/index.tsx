@@ -85,8 +85,6 @@ const SHOP_PRODUCT_QUANTITY_UPDATE_DEBOUNCE_MS = 300
 export default function ShopHomePage() {
   const { t, i18n } = useTranslation()
   const navigate = useNavigate()
-  // 搜索 / 扫码零结果时补查“暂停供货”的商品，让分店知道是下架了而不是扫错码。
-  const supplyLookup = useSupplyStatusLookup(selectedStore?.storeCode ?? null)
   const [searchParams] = useSearchParams()
   const categoryId = searchParams.get('category')
   const keyword = searchParams.get('keyword')
@@ -135,6 +133,8 @@ export default function ShopHomePage() {
   const pickerOpenRef = useRef(false)
   const pickerLoadingRef = useRef(false)
   const selectedStore = useShopStore((state) => state.selectedStore)
+  // 搜索 / 扫码零结果时补查“暂停供货”的商品，让分店知道是下架了而不是扫错码。
+  const supplyLookup = useSupplyStatusLookup(selectedStore?.storeCode ?? null)
   const selectedStoreCodeRef = useRef<string | null>(null)
   const previousSelectedStoreCodeRef = useRef(selectedStore?.storeCode ?? null)
   const cart = useShopStore((state) => state.cart)
