@@ -113,6 +113,39 @@ public sealed class RevenueReportSnapshotSqlServerIntegrationTests
     }
 
     [RevenueReportSnapshotSqlServerFact]
+    public async Task 管理员全店视图的周层级与分时排除停用门店与排行同口径()
+    {
+        await using var fixture = await RevenueSnapshotSqlServerFixture.CreateAsync();
+        // 停用门店去年仍有日统计与小时统计：只能进排行口径之外，不能单独进周层级和分时。
+        await fixture.ExecuteAsync("""
+            INSERT INTO [dbo].[Store] ([StoreCode], [StoreName], [IsActive], [IsDeleted]) VALUES (N'CLOSED', N'已关店', 0, 0);
+            INSERT INTO [dbo].[StoreSalesStatistic] ([Date], [BranchCode], [BranchName], [TotalAmount], [OrderCount]) VALUES
+                ('2026-09-07', N'CLOSED', N'已关店', 777.77, 7);
+            INSERT INTO [dbo].[HourlySalesStatistic] ([Date], [Hour], [BranchCode], [BranchName], [TotalAmount], [OrderCount]) VALUES
+                ('2026-09-07', 9, N'CLOSED', N'已关店', 777.77, 7);
+            """);
+
+        var result = await fixture.CreateService().GetRevenueReportSnapshotAsync(
+            new DateRangeDto { StartDate = SeedDate, EndDate = SeedDate },
+            null,
+            null);
+
+        Assert.DoesNotContain(result.Branches, row => row.BranchCode == "CLOSED");
+        Assert.DoesNotContain(result.Hourly, row => row.BranchCode == "CLOSED");
+        var week = Assert.Single(result.Weekly);
+        Assert.DoesNotContain(week.Children!, child => child.Key.EndsWith("-CLOSED", StringComparison.Ordinal));
+        Assert.Equal(result.Branches.Sum(row => row.Revenue), week.Revenue);
+        Assert.Equal(result.Branches.Sum(row => row.Revenue), result.Hourly.Sum(row => row.Revenue));
+
+        // 显式请求停用门店时按请求返回，不被目录收窄。
+        var explicitScope = await fixture.CreateService().GetRevenueReportSnapshotAsync(
+            new DateRangeDto { StartDate = SeedDate, EndDate = SeedDate },
+            null,
+            new List<string> { "CLOSED" });
+        Assert.Equal(777.77m, Assert.Single(explicitScope.Hourly).Revenue);
+    }
+
+    [RevenueReportSnapshotSqlServerFact]
     public async Task 多日区间最后一天是今天时批次单独返回今天与同期对应日()
     {
         await using var fixture = await RevenueSnapshotSqlServerFixture.CreateAsync();
