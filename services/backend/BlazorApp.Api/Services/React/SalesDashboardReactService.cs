@@ -7443,6 +7443,13 @@ namespace BlazorApp.Api.Services.React
             if (status.StatisticStatus != SalesStatisticRefreshStatus.Fresh || branchScope is { Count: 0 })
                 return board;
 
+            // SQL Server：在数据库里算完四栏只回几百行（API↔数据库带宽很窄）；其他数据库走下面的内存立方体。
+            if (UsesCompactBoardServerAggregation(out var posmDatabase))
+            {
+                return await GetCompactSalesBoardOnServerAsync(
+                    board, posmDatabase, boardRange, status.CacheVersion, branchScope, query, pageIndex, pageSize, expectedGeneration);
+            }
+
             // 立方体缓存键不含授权范围与筛选：所有用户、所有点选共享同一份聚合，授权过滤在下方内存中完成。
             var cacheKey = SalesDashboardCacheKeys.CompactSalesBoardCube(boardRange, status.CacheVersion);
             CompactSalesBoardCube cube;

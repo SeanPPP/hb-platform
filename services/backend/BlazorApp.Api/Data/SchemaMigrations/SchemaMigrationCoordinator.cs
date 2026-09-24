@@ -29,6 +29,8 @@ internal sealed class SchemaMigrationCoordinator
         "20260922.001-sales-detail-query-monthly";
     internal const string LocalSupplierCategoryMigrationId =
         "20260923.001-local-supplier-category";
+    internal const string CompactBoardMonthlyMigrationId =
+        "20260924.001-compact-board-monthly";
     internal const string PosmMigrationId = "20260827.001-hbweb-posm-baseline";
     internal const string MobileDeviceActivationMigrationId =
         "20260831.001-mobile-device-activation";
@@ -90,6 +92,11 @@ internal sealed class SchemaMigrationCoordinator
             LocalSupplierCategoryMigrationId,
             static (runtime, cancellationToken) =>
                 runtime.ApplyLocalSupplierCategoryAsync(cancellationToken)
+        ),
+        new(
+            CompactBoardMonthlyMigrationId,
+            static (runtime, cancellationToken) =>
+                runtime.ApplyCompactBoardMonthlyAsync(cancellationToken)
         ),
     ];
 
