@@ -11,6 +11,7 @@ interface RevenueEnvelope<T> {
   statisticStatus?: string
   statisticMessage?: string | null
   statisticUpdatedAt?: string | null
+  statisticsLastSuccessfulAtUtc?: string | null
   cacheVersion?: string | null
 }
 
@@ -23,6 +24,8 @@ export interface RevenueReportSnapshot {
   hourlyCurrentPending?: boolean
   hourlyComparePending?: boolean
   weeklyComparePending?: boolean
+  /** 查询含今天时，今天最近一次营业额发布时间（UTC）；决定可与去年同一时刻比较的完整整点。 */
+  statisticsLastSuccessfulAtUtc?: string | null
 }
 
 function unwrapRevenueSnapshot(payload: RevenueEnvelope<RevenueReportSnapshot>): ReportSnapshot<RevenueReportSnapshot> {
@@ -32,7 +35,7 @@ function unwrapRevenueSnapshot(payload: RevenueEnvelope<RevenueReportSnapshot>):
     throw new Error('营业额快照响应不完整')
   }
   return {
-    data,
+    data: { ...data, statisticsLastSuccessfulAtUtc: payload.statisticsLastSuccessfulAtUtc ?? null },
     statisticStatus: payload.statisticStatus || (payload.statisticsPending ? 'Pending' : 'Fresh'),
     statisticMessage: payload.statisticMessage ?? payload.message,
     statisticUpdatedAt: payload.statisticUpdatedAt,

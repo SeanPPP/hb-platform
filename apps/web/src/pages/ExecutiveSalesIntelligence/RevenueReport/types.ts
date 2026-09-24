@@ -18,6 +18,9 @@ export interface RevenueHourly {
   isPeak: boolean
   branchCode?: string
   branchName?: string
+  /** 后端整页快照按分店逐小时返回单数；旧接口缺字段时按 0。 */
+  orderCount?: number
+  orderCountLY?: number
 }
 
 export interface RevenueWeeklyNode {
