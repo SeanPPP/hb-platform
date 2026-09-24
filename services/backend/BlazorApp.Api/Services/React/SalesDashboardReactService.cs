@@ -7431,11 +7431,8 @@ namespace BlazorApp.Api.Services.React
             var expectedGeneration = SalesDashboardCacheKeys.CaptureProductSalesAnalysisGeneration();
             // 看板只含当前区间，不带同期；完整性判定与销售明细同一套规则（BuildSalesDetailReportStatus）。
             var boardRange = new DateRangeDto { StartDate = dateRange.StartDate.Date, EndDate = dateRange.EndDate.Date };
-            var status = BuildSalesDetailReportStatus(
-                await ReadCompactSalesBoardStatusRowsAsync(boardRange),
-                boardRange,
-                false
-            );
+            var stateRows = await ReadCompactSalesBoardStatusRowsAsync(boardRange);
+            var status = BuildSalesDetailReportStatus(stateRows, boardRange, false);
             var board = new CompactSalesBoardDto
             {
                 ProductDetails = new PagedCompactSalesBoardProductDto { PageIndex = pageIndex, PageSize = pageSize },
@@ -7458,7 +7455,7 @@ namespace BlazorApp.Api.Services.React
             }
             else
             {
-                var read = await GetOrBuildCompactSalesBoardCubeAsync(cacheKey, boardRange, expectedGeneration);
+                var read = await GetOrBuildCompactSalesBoardCubeAsync(cacheKey, boardRange, stateRows, query.ForceRefresh, expectedGeneration);
                 // 构建时在统计快照内重读了状态：期间若有新版本发布，数据与水位都以快照为准。
                 ApplyCompactSalesBoardStatus(board, read.Status);
                 if (read.Status.StatisticStatus != SalesStatisticRefreshStatus.Fresh)
@@ -7516,20 +7513,24 @@ namespace BlazorApp.Api.Services.React
         private async Task<CompactSalesBoardCubeRead> GetOrBuildCompactSalesBoardCubeAsync(
             string cacheKey,
             DateRangeDto dateRange,
+            List<SalesDetailReportStatusSqlRow> precheckStates,
+            bool forceRefresh,
             long expectedGeneration
         )
         {
+            // 强制刷新要绕过分片缓存，不能搭上同区间普通请求的构建结果。
+            var buildKey = forceRefresh ? cacheKey + ":force" : cacheKey;
             // 同一 IMemoryCache 代表同一应用实例；快速连续点选时共享同一次构建，避免并发重复扫描统计表。
             var builds = COMPACT_SALES_BOARD_CUBE_BUILDS.GetValue(
                 _cache,
                 _ => new ConcurrentDictionary<string, Lazy<Task<CompactSalesBoardCubeRead>>>(StringComparer.Ordinal)
             );
             var lazyBuild = builds.GetOrAdd(
-                cacheKey,
+                buildKey,
                 _ => new Lazy<Task<CompactSalesBoardCubeRead>>(
                     async () =>
                     {
-                        var read = await BuildCompactSalesBoardCubeAsync(dateRange);
+                        var read = await BuildCompactSalesBoardCubeAsync(dateRange, precheckStates, forceRefresh, expectedGeneration);
                         // 按快照自身的水位写缓存；快照未完成（发布期间状态变为失败等）的结果不缓存。
                         if (read.Status.StatisticStatus == SalesStatisticRefreshStatus.Fresh)
                         {
@@ -7553,18 +7554,23 @@ namespace BlazorApp.Api.Services.React
             {
                 // 只移除本次等待的那一项；失败的构建不会留在字典里，下一个请求会重新尝试。
                 ((ICollection<KeyValuePair<string, Lazy<Task<CompactSalesBoardCubeRead>>>>)builds).Remove(
-                    new KeyValuePair<string, Lazy<Task<CompactSalesBoardCubeRead>>>(cacheKey, lazyBuild)
+                    new KeyValuePair<string, Lazy<Task<CompactSalesBoardCubeRead>>>(buildKey, lazyBuild)
                 );
             }
         }
 
         /// <summary>
-        /// 构建「门店×商品」聚合立方体。日统计的状态与聚合在同一个 SNAPSHOT 事务里读取：
-        /// 允许统计排队/重算期间出数后，必须读到上一版已提交的完整事实，而不是 NOLOCK 下删了一半的当天数据。
+        /// 构建「门店×商品」聚合立方体。原始聚合按自然月分片缓存（见 CompactBoardSegments），缺的分片与其状态
+        /// 在同一个 SNAPSHOT 事务里读取：统计排队/重算期间读到上一版已提交的完整事实，而不是 NOLOCK 下删了一半的当天数据。
         /// 生产实测（2026-09-24）：聚合语句曾按 1 天区间编译的计划被 6 个月复用（行存储，19 秒），
         /// 商品资料用相关子查询回探统计表（774 万逻辑读，30 秒）；现分别改为 RECOMPILE 与按编码点查。
         /// </summary>
-        private async Task<CompactSalesBoardCubeRead> BuildCompactSalesBoardCubeAsync(DateRangeDto dateRange)
+        private async Task<CompactSalesBoardCubeRead> BuildCompactSalesBoardCubeAsync(
+            DateRangeDto dateRange,
+            List<SalesDetailReportStatusSqlRow> precheckStates,
+            bool forceRefresh,
+            long expectedGeneration
+        )
         {
             var startDate = dateRange.StartDate.Date;
             var endExclusive = dateRange.EndDate.Date.AddDays(1);
@@ -7588,11 +7594,13 @@ namespace BlazorApp.Api.Services.React
             // 旧 200 行靠 POSM 映射还原国内供应商；直写行自带编码，不依赖映射，所以映射为空也不能直接返回空看板。
             var productSupplierMap = await GetChinaSupplierProductMapAsync();
 
-            // 状态与聚合同一快照：水位（缓存键）与数据一一对应；SQL Server 上事务内 SqlSugar 不再附加 NOLOCK。
-            var (stateRows, statisticRows) = await ReadReportSnapshotAsync(async () => (
-                await ReadCompactSalesBoardStatusRowsAsync(dateRange),
-                await ReadCompactSalesBoardStatisticRowsAsync(startDate, endExclusive, chinaFamilyCodes)
-            ));
+            var (stateRows, statisticRows) = await ReadCompactSalesBoardSegmentedRowsAsync(
+                dateRange,
+                precheckStates,
+                chinaFamilyCodes,
+                forceRefresh,
+                expectedGeneration
+            );
             var status = BuildSalesDetailReportStatus(stateRows, dateRange, false);
             if (status.StatisticStatus != SalesStatisticRefreshStatus.Fresh)
                 return new CompactSalesBoardCubeRead(CompactSalesBoardCube.Empty, status);

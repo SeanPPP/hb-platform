@@ -225,6 +225,161 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
     }
 
     [Fact]
+    public void SplitCompactSalesBoardSegments_按自然月切片且首尾不满月单独成片()
+    {
+        var segments = SalesDashboardReactService.SplitCompactSalesBoardSegments(new DateTime(2026, 3, 25), new DateTime(2026, 5, 10));
+
+        Assert.Equal(new[]
+        {
+            (new DateTime(2026, 3, 25), new DateTime(2026, 4, 1), false),
+            (new DateTime(2026, 4, 1), new DateTime(2026, 5, 1), true),
+            (new DateTime(2026, 5, 1), new DateTime(2026, 5, 11), false),
+        }, segments.Select(segment => (segment.Start, segment.EndExclusive, segment.IsWholeMonth)));
+        var singleDay = Assert.Single(SalesDashboardReactService.SplitCompactSalesBoardSegments(new DateTime(2026, 9, 24), new DateTime(2026, 9, 24)));
+        Assert.Equal((new DateTime(2026, 9, 24), new DateTime(2026, 9, 25)), (singleDay.Start, singleDay.EndExclusive));
+    }
+
+    [Fact]
+    public async Task GetCompactSalesBoardAsync_按月分片缓存_跨区间只补读缺的月份且结果与整段一致()
+    {
+        await SeedCompactMonthsFixtureAsync();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = CreateService(cache);
+        var statements = CaptureStatisticStatements();
+
+        var julyAugust = await service.GetCompactSalesBoardAsync(RangeQuery(new DateTime(2026, 7, 1), new DateTime(2026, 8, 31)));
+        var firstReads = statements.Count;
+        var augustSeptember = await service.GetCompactSalesBoardAsync(RangeQuery(new DateTime(2026, 8, 1), new DateTime(2026, 9, 10)));
+        var secondReads = statements.Count - firstReads;
+        _localDb.Aop.OnLogExecuting = null;
+        // 不共享缓存的新实例按整段读取，作为等价性基准。
+        var baseline = await CreateService().GetCompactSalesBoardAsync(RangeQuery(new DateTime(2026, 8, 1), new DateTime(2026, 9, 10)));
+
+        Assert.Equal(2, firstReads);
+        // 8 月整月分片已缓存，只补读 9 月 1–10 日这一片。
+        Assert.Equal(1, secondReads);
+        Assert.Equal(30m, julyAugust.Summary.TotalAmount);
+        Assert.Equal(50m, augustSeptember.Summary.TotalAmount);
+        Assert.Equal(
+            baseline.ProductDetails.Data.Select(row => (row.ProductCode, row.TotalAmount, row.TotalQuantity, row.ChinaSupplierCode)),
+            augustSeptember.ProductDetails.Data.Select(row => (row.ProductCode, row.TotalAmount, row.TotalQuantity, row.ChinaSupplierCode)));
+        Assert.Equal(baseline.Stores.Select(row => (row.BranchCode, row.TotalAmount, row.ProductCount)),
+            augustSeptember.Stores.Select(row => (row.BranchCode, row.TotalAmount, row.ProductCount)));
+    }
+
+    [Fact]
+    public async Task GetCompactSalesBoardAsync_某日重新发布只重建所在月份_仅状态变化不重建()
+    {
+        await SeedCompactMonthsFixtureAsync();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = CreateService(cache);
+        var julyAugust = RangeQuery(new DateTime(2026, 7, 1), new DateTime(2026, 8, 31));
+        await service.GetCompactSalesBoardAsync(julyAugust);
+        var statements = CaptureStatisticStatements();
+
+        // 8-10 重新发布：事实改为 $25，聚合时间前进。
+        await _localDb.Updateable<ProductStoreDailySalesStatistic>()
+            .SetColumns(row => row.TotalAmount == 25m)
+            .Where(row => row.Date == new DateTime(2026, 8, 10))
+            .ExecuteCommandAsync();
+        await _localDb.Updateable<SalesStatisticRefreshState>()
+            .SetColumns(row => row.LastAggregatedAtUtc == DateTime.UtcNow.AddMinutes(5))
+            .Where(row => row.Date == new DateTime(2026, 8, 10))
+            .ExecuteCommandAsync();
+        var republished = await service.GetCompactSalesBoardAsync(julyAugust);
+        var republishReads = statements.Count;
+
+        // 8-10 进入重算排队：状态变了但聚合时间与来源版本未变，快照读到的仍是同一版事实。
+        await _localDb.Updateable<SalesStatisticRefreshState>()
+            .SetColumns(row => row.Status == SalesStatisticRefreshStatus.Queued)
+            .SetColumns(row => row.SourceProductVersion == "published-v1")
+            .Where(row => row.Date == new DateTime(2026, 8, 10))
+            .ExecuteCommandAsync();
+        var queuedIdentityChanged = await service.GetCompactSalesBoardAsync(julyAugust);
+        var queuedIdentityReads = statements.Count - republishReads;
+        await _localDb.Updateable<SalesStatisticRefreshState>()
+            .SetColumns(row => row.CompletedAtUtc == DateTime.UtcNow.AddMinutes(9))
+            .Where(row => row.Date == new DateTime(2026, 8, 10))
+            .ExecuteCommandAsync();
+        var queued = await service.GetCompactSalesBoardAsync(julyAugust);
+        var queuedReads = statements.Count - republishReads - queuedIdentityReads;
+        _localDb.Aop.OnLogExecuting = null;
+
+        // 只有 8 月重读，7 月沿用分片缓存。
+        Assert.Equal(1, republishReads);
+        Assert.Equal(35m, republished.Summary.TotalAmount);
+        // 写入来源版本改变了 8 月身份，重建一次；之后仅状态、完成时间变化不再重读统计表。
+        Assert.Equal(1, queuedIdentityReads);
+        Assert.Equal(0, queuedReads);
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh, queued.StatisticStatus);
+        Assert.Equal(35m, queued.Summary.TotalAmount);
+        Assert.Equal(35m, queuedIdentityChanged.Summary.TotalAmount);
+    }
+
+    [Fact]
+    public async Task GetCompactSalesBoardAsync_强制刷新连分片缓存一起绕过()
+    {
+        await SeedCompactMonthsFixtureAsync();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var service = CreateService(cache);
+        var query = RangeQuery(new DateTime(2026, 7, 1), new DateTime(2026, 9, 10));
+        await service.GetCompactSalesBoardAsync(query);
+        // 手工修正统计而不改状态：只有强制刷新能读到。
+        await _localDb.Updateable<ProductStoreDailySalesStatistic>()
+            .SetColumns(row => row.TotalAmount == 11m)
+            .Where(row => row.Date == new DateTime(2026, 7, 10))
+            .ExecuteCommandAsync();
+        var statements = CaptureStatisticStatements();
+
+        var cached = await service.GetCompactSalesBoardAsync(RangeQuery(new DateTime(2026, 7, 1), new DateTime(2026, 9, 10)));
+        var cachedReads = statements.Count;
+        query.ForceRefresh = true;
+        var refreshed = await service.GetCompactSalesBoardAsync(query);
+        _localDb.Aop.OnLogExecuting = null;
+
+        Assert.Equal(0, cachedReads);
+        Assert.Equal(60m, cached.Summary.TotalAmount);
+        Assert.Equal(3, statements.Count);
+        Assert.Equal(61m, refreshed.Summary.TotalAmount);
+    }
+
+    [Fact]
+    public async Task GetCompactSalesBoardAsync_跨月合并同一门店商品只有一格且归属取最近销售日()
+    {
+        var july = new DateTime(2026, 7, 20);
+        var august = new DateTime(2026, 8, 5);
+        await SeedStatisticStateAsync(july, SalesStatisticRefreshStatus.Fresh);
+        await SeedStatisticStateAsync(august, SalesStatisticRefreshStatus.Fresh);
+        await SeedStoreAsync("S-XM", "跨月分店");
+        await _localDb.Insertable(new List<ChinaSupplier>
+        {
+            new() { Guid = "xm-old", SupplierCode = "CN-XM-OLD", SupplierName = "旧归属" },
+            new() { Guid = "xm-new", SupplierCode = "CN-XM-NEW", SupplierName = "新归属" },
+        }).ExecuteCommandAsync();
+        await _posmDb.Insertable(new List<PosmProductSupplierMapping>
+        {
+            new() { ProductCode = "P-XM-SAME", LocalSupplierCode = "200", ChinaSupplierCode = "CN-XM-OLD" },
+            new() { ProductCode = "P-XM-MOVED", LocalSupplierCode = "200", ChinaSupplierCode = "CN-XM-OLD" },
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new List<ProductStoreDailySalesStatistic>
+        {
+            // 同一门店×商品×原始编码在两个月各有一行：合并后只算一格。
+            new() { Date = july, BranchCode = "S-XM", SupplierCode = "200", ProductCode = "P-XM-SAME", TotalQuantity = 2, TotalAmount = 20m, OrderCount = 1 },
+            new() { Date = august, BranchCode = "S-XM", SupplierCode = "200", ProductCode = "P-XM-SAME", TotalQuantity = 3, TotalAmount = 30m, OrderCount = 1 },
+            // 7 月走映射归 CN-XM-OLD，8 月直写 CN-XM-NEW：整段归最近的 CN-XM-NEW。
+            new() { Date = july, BranchCode = "S-XM", SupplierCode = "200", ProductCode = "P-XM-MOVED", TotalQuantity = 1, TotalAmount = 10m, OrderCount = 1 },
+            new() { Date = august, BranchCode = "S-XM", SupplierCode = "CN-XM-NEW", ProductCode = "P-XM-MOVED", TotalQuantity = 4, TotalAmount = 40m, OrderCount = 1 },
+        }).ExecuteCommandAsync();
+
+        var result = await CreateService().GetCompactSalesBoardAsync(RangeQuery(july, august));
+
+        var store = Assert.Single(result.Stores);
+        Assert.Equal((100m, 2), (store.TotalAmount, store.ProductCount));
+        Assert.Equal((50m, "CN-XM-OLD"), result.ProductDetails.Data.Where(row => row.ProductCode == "P-XM-SAME").Select(row => (row.TotalAmount, row.ChinaSupplierCode!)).Single());
+        Assert.Equal((50m, "CN-XM-NEW"), result.ProductDetails.Data.Where(row => row.ProductCode == "P-XM-MOVED").Select(row => (row.TotalAmount, row.ChinaSupplierCode!)).Single());
+    }
+
+    [Fact]
     public async Task GetCompactSalesBoardAsync_对账失败但已聚合的日期照常出数并提示()
     {
         var firstDay = new DateTime(2026, 4, 8);
@@ -733,6 +888,52 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
         var query = new CompactSalesBoardQuery { DateRange = new DateRangeDto { StartDate = date, EndDate = date } };
         configure?.Invoke(query);
         return query;
+    }
+
+    private static CompactSalesBoardQuery RangeQuery(DateTime start, DateTime end) =>
+        new() { DateRange = new DateRangeDto { StartDate = start, EndDate = end } };
+
+    /// <summary>记录此后对统计表的聚合查询（状态与商品资料不读统计表，造数的 UPDATE 不计），用于断言分片是否被复用。</summary>
+    private List<string> CaptureStatisticStatements()
+    {
+        var statements = new List<string>();
+        _localDb.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (sql.Contains("ProductStoreDailySalesStatistic", StringComparison.OrdinalIgnoreCase)
+                && sql.Contains("GROUP BY", StringComparison.OrdinalIgnoreCase))
+                statements.Add(sql);
+        };
+        return statements;
+    }
+
+    /// <summary>
+    /// 跨三个月的分片夹具：2026-07-01～09-10 每天都有 Fresh 状态；
+    /// 7-10 P-M1 $10、8-10 P-M1 $20、9-05 P-M2 $30，都映射到 CN-M。
+    /// </summary>
+    private async Task SeedCompactMonthsFixtureAsync()
+    {
+        for (var date = new DateTime(2026, 7, 1); date <= new DateTime(2026, 9, 10); date = date.AddDays(1))
+            await SeedStatisticStateAsync(date, SalesStatisticRefreshStatus.Fresh);
+        await SeedStoreAsync("S-M", "分片分店");
+        await _localDb.Insertable(new ChinaSupplier { Guid = "cn-m", SupplierCode = "CN-M", SupplierName = "分片供应商" }).ExecuteCommandAsync();
+        await _posmDb.Insertable(new List<PosmProductSupplierMapping>
+        {
+            new() { ProductCode = "P-M1", LocalSupplierCode = "200", ChinaSupplierCode = "CN-M" },
+            new() { ProductCode = "P-M2", LocalSupplierCode = "200", ChinaSupplierCode = "CN-M" },
+        }).ExecuteCommandAsync();
+        foreach (var (date, product, amount) in new[]
+        {
+            (new DateTime(2026, 7, 10), "P-M1", 10m),
+            (new DateTime(2026, 8, 10), "P-M1", 20m),
+            (new DateTime(2026, 9, 5), "P-M2", 30m),
+        })
+        {
+            await _localDb.Insertable(new ProductStoreDailySalesStatistic
+            {
+                Date = date, BranchCode = "S-M", SupplierCode = "200", ProductCode = product,
+                ProductName = product, TotalQuantity = 1, TotalAmount = amount, OrderCount = 1,
+            }).ExecuteCommandAsync();
+        }
     }
 
     /// <summary>每个日期写一条已映射的 200 行（1 件 $15），用于只关心完整性判定的用例；状态行由调用方自行准备。</summary>

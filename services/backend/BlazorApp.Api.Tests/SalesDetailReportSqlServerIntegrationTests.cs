@@ -764,6 +764,46 @@ public sealed class SalesDetailReportSqlServerIntegrationTests
         Assert.Equal(("IT-DIRECT", "直写商品", "C2"), (direct.ItemNumber, direct.ProductName, direct.ChinaSupplierCode));
     }
 
+    [SalesDetailReportSqlServerFact]
+    public async Task 紧凑看板按月分桶一次补读缺失分片_跨区间复用且与强制刷新结果一致()
+    {
+        await using var fixture = await SalesDetailSqlServerFixture.CreateAsync();
+        var days = new[] { new DateTime(2026, 7, 30), new DateTime(2026, 7, 31), new DateTime(2026, 8, 1), new DateTime(2026, 8, 15), new DateTime(2026, 9, 1) };
+        // 区间内每天都要有状态，否则最新状态之后的日期按未发布处理。
+        for (var day = days[0]; day <= days[^1]; day = day.AddDays(1))
+            await fixture.SeedFreshStateAsync(day);
+        await fixture.SeedStoreAsync("B1", "分店一");
+        await fixture.SeedChinaSupplierAsync("C1", "国内供应商一");
+        await fixture.SeedChinaSupplierAsync("C2", "国内供应商二");
+        await fixture.SeedProductAsync("P-MAP", "映射商品", itemNumber: "IT-MAP");
+        await fixture.SeedProductAsync("P-DIRECT", "直写商品", itemNumber: "IT-DIRECT");
+        await fixture.SeedMappingAsync("P-MAP", "C1");
+        await fixture.SeedFactAsync(days[0], "B1", "200", "P-MAP", 1, 10m);
+        await fixture.SeedFactAsync(days[1], "B1", "200", "P-MAP", 1, 10m);
+        await fixture.SeedFactAsync(days[2], "B1", "200", "P-MAP", 2, 20m);
+        await fixture.SeedFactAsync(days[3], "B1", "C2", "P-DIRECT", 3, 30m);
+        await fixture.SeedFactAsync(days[4], "B1", "200", "P-MAP", 1, 5m);
+        var service = fixture.CreateService();
+        CompactSalesBoardQuery Query(DateTime start, DateTime end, bool force = false) =>
+            new() { DateRange = new DateRangeDto { StartDate = start, EndDate = end }, ForceRefresh = force };
+
+        // 7-30～8-31：7 月不满月分片 + 8 月整月分片，一条按月分桶的语句读回。
+        var julyAugust = await service.GetCompactSalesBoardAsync(Query(days[0], new DateTime(2026, 8, 31)));
+        // 8-01～9-01：8 月分片复用，只补读 9 月 1 日。
+        var augustSeptember = await service.GetCompactSalesBoardAsync(Query(days[2], days[4]));
+        var forced = await service.GetCompactSalesBoardAsync(Query(days[2], days[4], force: true));
+
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh, julyAugust.StatisticStatus);
+        Assert.Equal((70m, 7), (julyAugust.Summary.TotalAmount, julyAugust.Summary.TotalQuantity));
+        Assert.Equal((55m, 6), (augustSeptember.Summary.TotalAmount, augustSeptember.Summary.TotalQuantity));
+        Assert.Equal(
+            forced.ProductDetails.Data.Select(row => (row.ProductCode, row.TotalAmount, row.TotalQuantity, row.ChinaSupplierCode)),
+            augustSeptember.ProductDetails.Data.Select(row => (row.ProductCode, row.TotalAmount, row.TotalQuantity, row.ChinaSupplierCode)));
+        Assert.Equal(("C1", 25m), augustSeptember.ChinaSuppliers.Where(row => row.SupplierCode == "C1").Select(row => (row.SupplierCode, row.TotalAmount)).Single());
+        // 同一门店×商品跨两个月合并为一格。
+        Assert.Equal(2, Assert.Single(augustSeptember.Stores).ProductCount);
+    }
+
     private sealed class SalesDetailSqlServerFixture : IAsyncDisposable
     {
         private readonly string _masterConnectionString;
