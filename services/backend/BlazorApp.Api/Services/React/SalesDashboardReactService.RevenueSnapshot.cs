@@ -172,6 +172,12 @@ public partial class SalesDashboardReactService
             var displayBranchCodes = normalizedBranches.Count > 0
                 ? normalizedBranches.ToHashSet(StringComparer.OrdinalIgnoreCase)
                 : activeStoreNames.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            // 全店角色未指定范围时，排行以启用门店目录为准；周层级与分时也必须同口径，
+            // 否则已停用门店去年的营业额只进周层级和分时的同期，与 KPI、排行对不上。
+            // 目录为空（SQLite 路径不读目录）时排行本身按数据中的门店展示，这里同样不收窄。
+            var defaultDetailScope = branchCodes == null && focusBranchCodes == null && displayBranchCodes.Count > 0
+                ? displayBranchCodes
+                : null;
 
             if (!useSqlServerBatch)
             {
@@ -234,6 +240,13 @@ public partial class SalesDashboardReactService
                 compareEndDate,
                 topN
             );
+            if (defaultDetailScope != null)
+            {
+                // 完整性状态已按原始覆盖行算完，这里只收窄展示用的分时行（含最后一天）。
+                hourlyRows = hourlyRows
+                    .Where(row => !string.IsNullOrWhiteSpace(row.BranchCode) && defaultDetailScope.Contains(row.BranchCode.Trim()))
+                    .ToList();
+            }
             var hourly = BuildRevenueHourly(hourlyRows, startDate, endDate, compareStartDate, compareEndDate);
             var lastDay = includeLastDay
                 ? BuildRevenueLastDay(storeRows, hourlyRows, displayBranchCodes, activeStoreNames, endDate, compareEndDate)
@@ -242,7 +255,7 @@ public partial class SalesDashboardReactService
                 ? normalizedFocusBranches.ToHashSet(StringComparer.OrdinalIgnoreCase)
                 : branchCodes != null
                     ? normalizedBranches.ToHashSet(StringComparer.OrdinalIgnoreCase)
-                    : null;
+                    : defaultDetailScope;
             var weekly = BuildRevenueWeekly(
                 storeRows
                     .Where(row => weeklyScope == null || weeklyScope.Contains(row.BranchCode))

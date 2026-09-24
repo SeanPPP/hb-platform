@@ -3946,6 +3946,11 @@ namespace BlazorApp.Api.Services.React
 
                     var startDate = dateRange.StartDate.Date;
                     var endDate = dateRange.EndDate.Date;
+                    // 管理员的「全部分店」与分店排行同口径：以启用门店目录为准，已停用门店去年的分时不进同期。
+                    // 目录为空（未初始化的库）时保持原行为，不按门店收窄；完整性核验仍用原请求范围。
+                    var queryBranchCodes = normalizedBranchCodes.Count > 0
+                        ? normalizedBranchCodes
+                        : (await GetActiveStoreNameMapAsync()).Keys.ToList();
 
                     var query = _context
                         .Db.Queryable<HourlySalesStatistic>()
@@ -3956,10 +3961,10 @@ namespace BlazorApp.Api.Services.React
                             && s.BranchCode != "ALL"
                         );
 
-                    if (normalizedBranchCodes.Count > 0)
+                    if (queryBranchCodes.Count > 0)
                     {
                         query = query.Where(s =>
-                            s.BranchCode != null && normalizedBranchCodes.Contains(s.BranchCode)
+                            s.BranchCode != null && queryBranchCodes.Contains(s.BranchCode)
                         );
                     }
 
@@ -3997,10 +4002,10 @@ namespace BlazorApp.Api.Services.React
                                 && s.BranchCode != "ALL"
                             );
 
-                        if (normalizedBranchCodes.Count > 0)
+                        if (queryBranchCodes.Count > 0)
                         {
                             lyQuery = lyQuery.Where(s =>
-                                s.BranchCode != null && normalizedBranchCodes.Contains(s.BranchCode)
+                                s.BranchCode != null && queryBranchCodes.Contains(s.BranchCode)
                             );
                         }
 
