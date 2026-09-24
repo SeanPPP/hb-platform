@@ -8,6 +8,8 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace Hbpos.Client.Tests;
 
+// 会修改进程级 HBPOS_WPF_APP_VERSION / HBPOS_APP_UPDATE_CHANNEL；并行时其他走完整 DI 的用例会读到被改写的值。
+[Collection(EnvironmentVariableTestCollection.Name)]
 public sealed class AppUpdateCoordinatorTests
 {
     [Fact]
