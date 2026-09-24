@@ -1,4 +1,5 @@
 import {
+  ApartmentOutlined,
   CloudDownloadOutlined,
   CloudSyncOutlined,
   CloudUploadOutlined,
@@ -6,6 +7,7 @@ import {
   DeleteOutlined,
   EditOutlined,
   FileImageOutlined,
+  InfoCircleOutlined,
   PlusOutlined,
   ReloadOutlined,
   SafetyCertificateOutlined,
@@ -166,6 +168,39 @@ import {
 } from './activeFilterChips'
 import { createLatestRequestGuard, runLatestGuardedRequest } from '../../../utils/latestRequestGuard'
 import ProductListImage from '../../../components/ProductListImage'
+import { registerPageMessages } from '../../../i18n/registerPageMessages'
+import { readRequestErrorCode } from '../../../services/localSupplierCategoryService'
+import { SUPPLIER_CATEGORY_MISMATCH_ERROR_CODE, type SupplierCategoryUpdatePayload } from '../../../types/localSupplierCategory'
+import SupplierCategoryCascader from './SupplierCategoryCascader'
+import SupplierCategoryCell from './SupplierCategoryCell'
+import SupplierCategoryFormField from './SupplierCategoryFormField'
+import SupplierCategoryManagerModal from './SupplierCategoryManagerModal'
+import {
+  applySupplierCategoryCascaderChange,
+  applySupplierSelectChange,
+  applyWarehouseCategoryFilterChange,
+  clearSupplierCategoryFilter,
+  resolveBatchSupplierCategoryUpdate,
+  resolveSupplierCategoryUpdate,
+  toSupplierCategoryCascaderValue,
+  toSupplierCategoryQueryParams,
+  type SupplierCategoryFilterState,
+  type SupplierCategorySelection,
+} from './supplierCategoryFilter'
+import {
+  buildSupplierCategoryCascaderOptions,
+  findSupplierCategoryGuidPath,
+  findSupplierCategoryNamePath,
+  findWarehouseCategoryGuidPath,
+  resolveBatchSupplierCategoryScope,
+  type BatchSupplierCategoryScopeStatus,
+} from './supplierCategoryOptions'
+import { useSupplierCategoryTrees } from './useSupplierCategoryTrees'
+import messagesEn from './messages.en.json'
+import messagesZh from './messages.zh.json'
+
+// 供应商分类等本页新增文案随页面代码块懒注册，不进入首屏 i18n 包。
+registerPageMessages({ zh: messagesZh, en: messagesEn })
 
 type ProductRow = (PosProductDto & {
   warehouseCategoryGuid?: string
@@ -531,6 +566,11 @@ export default function ProductManagementPage() {
   const [categoryGuidInput, setCategoryGuidInput] = useState<string | undefined>(undefined)
   const [warehouseCategoryGuid, setWarehouseCategoryGuid] = useState<string | undefined>(undefined)
   const [warehouseCategoryGuidInput, setWarehouseCategoryGuidInput] = useState<string | undefined>(undefined)
+  // 供应商分类筛选：非 200 供应商的分类 GUID 与「仅未归类」，和供应商、仓库分类共用一份状态（见 supplierCategoryFilter.ts）。
+  const [supplierCategoryGuid, setSupplierCategoryGuid] = useState<string | undefined>(undefined)
+  const [supplierCategoryGuidInput, setSupplierCategoryGuidInput] = useState<string | undefined>(undefined)
+  const [supplierCategoryUnassignedOnly, setSupplierCategoryUnassignedOnly] = useState(false)
+  const [supplierCategoryUnassignedOnlyInput, setSupplierCategoryUnassignedOnlyInput] = useState(false)
   const [isActiveFilter, setIsActiveFilter] = useState<boolean | undefined>(undefined)
   const [isActiveFilterInput, setIsActiveFilterInput] = useState<boolean | undefined>(undefined)
   const [isSetFilter, setIsSetFilter] = useState<boolean | undefined>(undefined)
@@ -600,6 +640,8 @@ export default function ProductManagementPage() {
   const productTypeWatch = Form.useWatch('productType', editForm)
   const imageBatchSupplierCode = Form.useWatch('localSupplierCode', imageBatchForm)
   const imageBatchTemplate = Form.useWatch('urlTemplate', imageBatchForm)
+  const editSupplierCodeWatch = Form.useWatch('localSupplierCode', editForm)
+  const batchSupplierCodeWatch = Form.useWatch('localSupplierCode', batchEditForm)
   const [editSetCodes, setEditSetCodes] = useState<SetCodeDraftRow[]>([])
   const [editSetCodesLoading, setEditSetCodesLoading] = useState(false)
   const [editSetCodesReady, setEditSetCodesReady] = useState(false)
@@ -627,6 +669,8 @@ export default function ProductManagementPage() {
   const storeRecordsRequestSeqRef = useRef(0)
 
   const [categoryModalVisible, setCategoryModalVisible] = useState(false)
+  const [supplierCategoryManagerOpen, setSupplierCategoryManagerOpen] = useState(false)
+  const supplierCategoryTrees = useSupplierCategoryTrees()
   const [categoryEditForm] = Form.useForm()
   const [editingCategory, setEditingCategory] = useState<ProductCategoryDto | null>(null)
 
@@ -694,6 +738,43 @@ export default function ProductManagementPage() {
   // 分类单元格需要按 GUID 反查叶级名和完整路径，树加载完成后构建一次索引。
   const categoryPathMaps = useMemo(() => buildCategoryPathMaps(categoryTree), [categoryTree])
   const warehouseCategoryPathMaps = useMemo(() => buildWarehouseCategoryPathMaps(warehouseCategoryTree), [warehouseCategoryTree])
+  // 顶部供应商分类级联框：200 挂仓库分类树，其他供应商的网站分类树按需懒加载（version 变化即重建选项）。
+  const supplierCategoryCascaderOptions = useMemo(() => buildSupplierCategoryCascaderOptions({
+    suppliers: supplierOptions,
+    warehouseTree: warehouseCategoryTree,
+    getTree: supplierCategoryTrees.get,
+    labels: {
+      unassigned: t('posAdmin.products.supplierCategory.unassigned', '未归类'),
+      empty: t('posAdmin.products.supplierCategory.emptyTree', '暂无网站分类'),
+      retry: t('posAdmin.products.supplierCategory.loadFailedRetry', '加载失败，点击重试'),
+    },
+  }), [supplierOptions, warehouseCategoryTree, supplierCategoryTrees, t])
+  const supplierCategoryCellLabels = useMemo(() => ({
+    unassigned: t('posAdmin.products.supplierCategory.unassigned', '未归类'),
+    manual: t('posAdmin.products.supplierCategory.manualMark', '人工指定，采集不会覆盖'),
+  }), [t])
+  const batchSupplierCategoryScope = useMemo(() => resolveBatchSupplierCategoryScope({
+    selectedKeys: selectedRowKeys.map(String),
+    rows: data,
+    nextSupplierCode: batchSupplierCodeWatch,
+  }), [batchSupplierCodeWatch, data, selectedRowKeys])
+  const batchSupplierCategoryUnavailableReasons: Record<Exclude<BatchSupplierCategoryScopeStatus, 'enabled'>, string> = {
+    mixedSuppliers: t('posAdmin.products.supplierCategory.batchMixedSuppliers', '所选商品属于多个澳洲供应商，无法统一设置供应商分类'),
+    hotBargain: t('posAdmin.products.supplierCategory.batchHotBargain', 'Hot Bargain（200）的供应商分类随仓库分类，无需设置'),
+    noSupplier: t('posAdmin.products.supplierCategory.batchNoSupplier', '所选商品未设置澳洲供应商'),
+    unknownRows: t('posAdmin.products.supplierCategory.batchUnknownRows', '所选商品不全在当前页，无法判断供应商'),
+    supplierChanging: t('posAdmin.products.supplierCategory.batchSupplierChanging', '修改澳洲供应商时不能同时设置供应商分类'),
+  }
+  const loadSupplierCategoryTree = (supplierCode: string) => {
+    supplierCategoryTrees.ensure(supplierCode).catch(() => {
+      message.error(t('posAdmin.products.supplierCategory.loadFailed', '供应商分类加载失败'))
+    })
+  }
+  const reloadSupplierCategoryTree = (supplierCode: string) => {
+    supplierCategoryTrees.reload(supplierCode).catch(() => {
+      message.error(t('posAdmin.products.supplierCategory.loadFailed', '供应商分类加载失败'))
+    })
+  }
   const getProductTypeLabel = useCallback((productType: unknown) => {
     const normalizedType = normalizeProductType(productType)
     if (normalizedType === 1) return t('posAdmin.products.setProduct', '套装')
@@ -951,6 +1032,7 @@ export default function ProductManagementPage() {
       supplierCode: supplierCode || undefined,
       categoryGuid: categoryGuid || undefined,
       warehouseCategoryGuid: warehouseCategoryGuid || undefined,
+      ...toSupplierCategoryQueryParams({ supplierCode, warehouseCategoryGuid, supplierCategoryGuid, supplierCategoryUnassignedOnly }),
       isActive: isActiveFilter,
       isSet: isSetFilter,
       storeRecordCountMin: storeRecordCountMin,
@@ -981,7 +1063,7 @@ export default function ProductManagementPage() {
         onSettled: () => setLoading(false),
       },
     )
-  }, [page, pageSize, keyword, supplierCode, categoryGuid, warehouseCategoryGuid, isActiveFilter, isSetFilter, storeRecordCountMin, storeRecordCountMax, sortBy, sortOrder, columnFilters, queryVersion])
+  }, [page, pageSize, keyword, supplierCode, categoryGuid, warehouseCategoryGuid, supplierCategoryGuid, supplierCategoryUnassignedOnly, isActiveFilter, isSetFilter, storeRecordCountMin, storeRecordCountMax, sortBy, sortOrder, columnFilters, queryVersion])
 
   const stopHqSyncJobPolling = useCallback(() => {
     stopHqSyncPollingRef.current?.()
@@ -1670,6 +1752,8 @@ export default function ProductManagementPage() {
     setSupplierCode(supplierCodeInput)
     setCategoryGuid(categoryGuidInput)
     setWarehouseCategoryGuid(warehouseCategoryGuidInput)
+    setSupplierCategoryGuid(supplierCategoryGuidInput)
+    setSupplierCategoryUnassignedOnly(supplierCategoryUnassignedOnlyInput)
     setIsActiveFilter(isActiveFilterInput)
     setIsSetFilter(isSetFilterInput)
     setStoreRecordCountMode(nextStoreRecordCountMode)
@@ -1690,6 +1774,10 @@ export default function ProductManagementPage() {
     setCategoryGuid(undefined)
     setWarehouseCategoryGuidInput(undefined)
     setWarehouseCategoryGuid(undefined)
+    setSupplierCategoryGuidInput(undefined)
+    setSupplierCategoryGuid(undefined)
+    setSupplierCategoryUnassignedOnlyInput(false)
+    setSupplierCategoryUnassignedOnly(false)
     setIsActiveFilterInput(undefined)
     setIsActiveFilter(undefined)
     setIsSetFilterInput(undefined)
@@ -1766,9 +1854,41 @@ export default function ProductManagementPage() {
     setSelectedRowKeys([])
   }
 
+  // 供应商、供应商分类、仓库分类「一份状态、两个视图」：当前值以输入态为准（下拉类筛选总是同时写输入态和生效态）。
+  const supplierCategoryFilterInputState: SupplierCategoryFilterState = {
+    supplierCode: supplierCodeInput,
+    warehouseCategoryGuid: warehouseCategoryGuidInput,
+    supplierCategoryGuid: supplierCategoryGuidInput,
+    supplierCategoryUnassignedOnly: supplierCategoryUnassignedOnlyInput,
+  }
+  const supplierCategoryCascaderValue = toSupplierCategoryCascaderValue(supplierCategoryFilterInputState, {
+    findWarehouseGuidPath: (guid) => findWarehouseCategoryGuidPath(warehouseCategoryTree, guid),
+    findSupplierGuidPath: (code, guid) => findSupplierCategoryGuidPath(supplierCategoryTrees.get(code)?.nodes ?? [], guid),
+  })
+
+  const commitSupplierCategorySelection = (next: SupplierCategorySelection) => {
+    setSupplierCategoryGuidInput(next.supplierCategoryGuid)
+    setSupplierCategoryGuid(next.supplierCategoryGuid)
+    setSupplierCategoryUnassignedOnlyInput(next.supplierCategoryUnassignedOnly)
+    setSupplierCategoryUnassignedOnly(next.supplierCategoryUnassignedOnly)
+  }
+
   const handleSupplierFilterChange = (value: string | undefined) => {
     setSupplierCodeInput(value)
     setSupplierCode(value)
+    // 换供应商时连带清掉只属于旧供应商的供应商分类条件；仓库分类是独立筛选保持不变。
+    commitSupplierCategorySelection(applySupplierSelectChange(supplierCategoryFilterInputState, value))
+    applyToolbarFilterChange()
+  }
+
+  const handleSupplierCategoryFilterChange = (value: string[] | undefined) => {
+    const next = applySupplierCategoryCascaderChange(supplierCategoryFilterInputState, value)
+    setSupplierCodeInput(next.supplierCode)
+    setSupplierCode(next.supplierCode)
+    // 200 下级联框第二层就是仓库分类，因此级联框变更可能同时改写仓库分类。
+    setWarehouseCategoryGuidInput(next.warehouseCategoryGuid)
+    setWarehouseCategoryGuid(next.warehouseCategoryGuid)
+    commitSupplierCategorySelection(next)
     applyToolbarFilterChange()
   }
 
@@ -1783,6 +1903,8 @@ export default function ProductManagementPage() {
     const guid = resolveCascaderLeafValue(value)
     setWarehouseCategoryGuidInput(guid)
     setWarehouseCategoryGuid(guid)
+    // 200 下「未归类」与具体仓库分类互斥，以最后一次选择为准。
+    commitSupplierCategorySelection(applyWarehouseCategoryFilterChange(supplierCategoryFilterInputState, guid))
     applyToolbarFilterChange()
   }
 
@@ -1817,6 +1939,10 @@ export default function ProductManagementPage() {
     } else if (key === 'supplierCode') {
       setSupplierCodeInput(undefined)
       setSupplierCode(undefined)
+      // 供应商分类依附于供应商，移除供应商时一并清掉。
+      commitSupplierCategorySelection(applySupplierSelectChange(supplierCategoryFilterInputState, undefined))
+    } else if (key === 'supplierCategory') {
+      commitSupplierCategorySelection(clearSupplierCategoryFilter(supplierCategoryFilterInputState))
     } else if (key === 'categoryGuid') {
       setCategoryGuidInput(undefined)
       setCategoryGuid(undefined)
@@ -1875,6 +2001,8 @@ export default function ProductManagementPage() {
       {
         keyword,
         supplierCode,
+        supplierCategoryGuid,
+        supplierCategoryUnassignedOnly,
         categoryGuid,
         warehouseCategoryGuid,
         isActive: isActiveFilter,
@@ -1887,10 +2015,13 @@ export default function ProductManagementPage() {
         supplierName: (code) => supplierNameMap.get(code),
         categoryPath: (guid) => categoryPathMaps.pathByGuid.get(guid),
         warehouseCategoryPath: (guid) => warehouseCategoryPathMaps.pathByGuid.get(guid),
+        supplierCategoryPath: (code, guid) => findSupplierCategoryNamePath(supplierCategoryTrees.get(code)?.nodes ?? [], guid),
       },
       {
         keyword: t('posAdmin.products.activeFilterKeyword', '关键词'),
         supplier: t('posAdmin.products.supplierPlaceholder', '澳洲供应商'),
+        supplierCategory: t('posAdmin.products.supplierCategory.column', '供应商分类'),
+        supplierCategoryUnassigned: t('posAdmin.products.supplierCategory.unassigned', '未归类'),
         category: t('posAdmin.products.categoryPlaceholder', '商品分类'),
         warehouseCategory: t('posAdmin.products.warehouseCategoryPlaceholder', '仓库分类'),
         status: t('posAdmin.products.statusPlaceholder', '状态'),
@@ -2093,6 +2224,16 @@ export default function ProductManagementPage() {
     return false
   }
 
+  // 换了澳洲供应商后旧分类不属于新供应商：清空让用户在新供应商的树里重选，保存时按「换供应商」恢复自动归类。
+  const handleEditFormValuesChange = (changedValues: Record<string, unknown>) => {
+    if ('localSupplierCode' in changedValues) editForm.setFieldValue('supplierCategoryGuid', undefined)
+  }
+
+  // 批量改供应商时不能同时设置供应商分类，清掉已选值避免误提交。
+  const handleBatchEditFormValuesChange = (changedValues: Record<string, unknown>) => {
+    if ('localSupplierCode' in changedValues) batchEditForm.setFieldValue('supplierCategoryGuid', undefined)
+  }
+
   const openEdit = (record: PosProductDto) => {
     if (!ensureCanManagePosProducts()) return
     resetEditSetCodeState()
@@ -2114,6 +2255,7 @@ export default function ProductManagementPage() {
       isSpecialProduct: record.isSpecialProduct ?? false,
       isActive: record.isActive,
       categoryGuid: getCategoryValueFromGuid(record.categoryGuid, categoryTree),
+      supplierCategoryGuid: record.supplierCategoryGuid,
     })
     setEditVisible(true)
   }
@@ -2276,7 +2418,14 @@ export default function ProductManagementPage() {
       ) as SetCodeDraftEdits
       const pendingDeletesSnapshot = { ...editPendingDeletes }
       const resolvedCategoryGuid = resolveCascaderLeafValue(values.categoryGuid)
-      const updateData: Partial<PosProductDto> = {
+      // 供应商分类三态：未改动不传；改选则人工锁定；清空或换供应商则恢复自动归类；200 由服务端随仓库分类。
+      const supplierCategoryUpdate = resolveSupplierCategoryUpdate({
+        originalSupplierCode: editingProduct.localSupplierCode,
+        nextSupplierCode: values.localSupplierCode,
+        originalGuid: editingProduct.supplierCategoryGuid,
+        nextGuid: values.supplierCategoryGuid,
+      })
+      const updateData: Partial<PosProductDto> & SupplierCategoryUpdatePayload = {
         productName: values.productName,
         itemNumber: values.itemNumber,
         barcode: values.barcode,
@@ -2293,6 +2442,7 @@ export default function ProductManagementPage() {
         warehouseCategoryGuid: editingProduct.warehouseCategoryGuid,
         // 后端商品更新可能是覆盖式 PUT，保存多码前必须带回原图片字段。
         productImage: values.productImage ?? editingProduct.productImage ?? '',
+        ...supplierCategoryUpdate,
       }
       await updateProduct(editingProduct.productCode, updateData)
 
@@ -2340,8 +2490,10 @@ export default function ProductManagementPage() {
       setEditingProduct(null)
       resetEditSetCodeState()
       await loadData()
-    } catch {
-      message.error(t('message.saveFailed', '保存失败'))
+    } catch (error) {
+      message.error(readRequestErrorCode(error) === SUPPLIER_CATEGORY_MISMATCH_ERROR_CODE
+        ? t('posAdmin.products.supplierCategory.mismatch', '所选供应商分类不属于该商品的澳洲供应商，请重新选择')
+        : t('message.saveFailed', '保存失败'))
     } finally {
       editSaveInFlightRef.current = false
       setEditSaving(false)
@@ -2542,6 +2694,10 @@ export default function ProductManagementPage() {
     try {
       const values = await batchEditForm.validateFields()
       const resolvedCategoryGuid = resolveCascaderLeafValue(values.categoryGuid)
+      // 供应商分类只有所选商品同属一个非 200 供应商、且本次不改供应商时才提交。
+      const supplierCategoryUpdate = batchSupplierCategoryScope.status === 'enabled'
+        ? resolveBatchSupplierCategoryUpdate(values.supplierCategoryGuid)
+        : {}
       const items: BatchUpdatePosProductDto[] = selectedRowKeys.map((code) => ({
         productCode: String(code),
         retailPrice: values.retailPrice ?? undefined,
@@ -2552,6 +2708,7 @@ export default function ProductManagementPage() {
         isActive: values.isActive,
         categoryGuid: resolvedCategoryGuid ?? undefined,
         localSupplierCode: values.localSupplierCode ?? undefined,
+        ...supplierCategoryUpdate,
       }))
       const result = await batchUpdateProducts(items)
       message.success(t('posAdmin.products.batchUpdateSuccess', '成功更新 {{count}} 个商品', { count: result.successCount }))
@@ -3453,6 +3610,29 @@ export default function ProductManagementPage() {
       },
     },
     {
+      // 供应商分类列：各供应商的树独立且懒加载，不做列头筛选；首版不支持按供应商分类排序。
+      title: (
+        <span>
+          {t('posAdmin.products.supplierCategory.column', '供应商分类')}
+          <Tooltip title={t('posAdmin.products.supplierCategory.columnHint', '商品在供应商网站上的分类。Hot Bargain（200）的商品等同仓库分类；商品分类用于 POS，仓库分类来自 HQ。')}>
+            <InfoCircleOutlined className="pos-products-source-mark" />
+          </Tooltip>
+        </span>
+      ),
+      key: 'supplierCategory',
+      width: 120,
+      sorter: false,
+      render: (_: unknown, record: ProductRow) => (
+        <SupplierCategoryCell
+          hasSupplier={Boolean(record.localSupplierCode)}
+          name={record.supplierCategoryName}
+          path={record.supplierCategoryPath}
+          source={record.supplierCategorySource}
+          labels={supplierCategoryCellLabels}
+        />
+      ),
+    },
+    {
       title: t('posAdmin.products.domesticSupplier', '国内供应商'),
       dataIndex: 'domesticSupplierCode',
       key: 'domesticSupplierCode',
@@ -3714,6 +3894,13 @@ export default function ProductManagementPage() {
                 visible: canManagePosProducts,
                 onClick: handleOpenCategoryModal,
               },
+              {
+                // 查看沿用页面的 POS 商品查看权限；切换促销、重新解析在弹窗内按商品管理权限控制。
+                key: 'supplierCategoryManagement',
+                icon: <ApartmentOutlined />,
+                label: t('posAdmin.products.supplierCategory.manage', '供应商分类管理'),
+                onClick: () => setSupplierCategoryManagerOpen(true),
+              },
             ]}
           />
           {canCreateStoreProducts && (
@@ -3754,6 +3941,15 @@ export default function ProductManagementPage() {
               value={supplierCodeInput}
               onChange={handleSupplierFilterChange}
               options={supplierOptions}
+            />
+            <SupplierCategoryCascader
+              placeholder={t('posAdmin.products.supplierCategory.filterPlaceholder', '供应商分类')}
+              style={{ width: 220 }}
+              options={supplierCategoryCascaderOptions}
+              value={supplierCategoryCascaderValue}
+              onChange={handleSupplierCategoryFilterChange}
+              onLoadSupplier={loadSupplierCategoryTree}
+              onRetrySupplier={reloadSupplierCategoryTree}
             />
             <Cascader
               allowClear
@@ -4096,7 +4292,7 @@ export default function ProductManagementPage() {
         width={900}
         destroyOnHidden
       >
-        <Form form={editForm} disabled={editSaving} labelCol={{ span: 6 }} wrapperCol={{ span: 18 }}>
+        <Form form={editForm} disabled={editSaving} labelCol={{ span: 6 }} wrapperCol={{ span: 18 }} onValuesChange={handleEditFormValuesChange}>
           <Form.Item name="productName" label={t('posAdmin.products.productName', '商品名称')} rules={[{ required: true, message: t('posAdmin.products.inputProductName', '请输入商品名称') }]}>
             <Input />
           </Form.Item>
@@ -4236,6 +4432,19 @@ export default function ProductManagementPage() {
               </Form.Item>
             </Col>
           </Row>
+          <Form.Item name="supplierCategoryGuid" label={t('posAdmin.products.supplierCategory.column', '供应商分类')}>
+            <SupplierCategoryFormField
+              supplierCode={editSupplierCodeWatch}
+              treeEntry={supplierCategoryTrees.get(editSupplierCodeWatch)}
+              onEnsureTree={loadSupplierCategoryTree}
+              onRetryTree={reloadSupplierCategoryTree}
+              warehousePath={editingProduct?.warehouseCategoryGuid
+                ? warehouseCategoryPathMaps.pathByGuid.get(editingProduct.warehouseCategoryGuid)?.join(' / ')
+                : undefined}
+              originalGuid={editingProduct?.supplierCategoryGuid}
+              originalSource={editingProduct?.supplierCategorySource}
+            />
+          </Form.Item>
         </Form>
         {productTypeWatch === 1 && (
           <div style={{ marginTop: 12 }}>
@@ -4485,7 +4694,7 @@ export default function ProductManagementPage() {
         width={600}
         destroyOnHidden
       >
-        <Form form={batchEditForm} labelCol={{ span: 6 }} wrapperCol={{ span: 18 }}>
+        <Form form={batchEditForm} labelCol={{ span: 6 }} wrapperCol={{ span: 18 }} onValuesChange={handleBatchEditFormValuesChange}>
           <Form.Item name="categoryGuid" label={t('posAdmin.products.productCategoryLabel', '商品分类')}>
             <Cascader
               allowClear
@@ -4499,6 +4708,18 @@ export default function ProductManagementPage() {
           </Form.Item>
           <Form.Item name="localSupplierCode" label={t('posAdmin.products.supplier', '澳洲供应商')}>
             <Select allowClear showSearch optionFilterProp="label" options={supplierOptions} placeholder={t('posAdmin.products.leaveEmpty', '留空不修改')} />
+          </Form.Item>
+          <Form.Item name="supplierCategoryGuid" label={t('posAdmin.products.supplierCategory.column', '供应商分类')}>
+            <SupplierCategoryFormField
+              mode="batch"
+              supplierCode={batchSupplierCategoryScope.supplierCode}
+              treeEntry={supplierCategoryTrees.get(batchSupplierCategoryScope.supplierCode)}
+              onEnsureTree={loadSupplierCategoryTree}
+              onRetryTree={reloadSupplierCategoryTree}
+              unavailableReason={batchSupplierCategoryScope.status === 'enabled'
+                ? undefined
+                : batchSupplierCategoryUnavailableReasons[batchSupplierCategoryScope.status]}
+            />
           </Form.Item>
           <Form.Item name="purchasePrice" label={t('posAdmin.products.purchasePrice', '采购价')}>
             <InputNumber min={0} precision={2} prefix="$" style={{ width: '100%' }} placeholder={t('posAdmin.products.leaveEmpty', '留空不修改')} />
@@ -5023,6 +5244,17 @@ export default function ProductManagementPage() {
           </div>
         </div>
       </Modal>
+
+      <SupplierCategoryManagerModal
+        open={supplierCategoryManagerOpen}
+        canManage={canManagePosProducts}
+        trees={supplierCategoryTrees}
+        onClose={(changed) => {
+          setSupplierCategoryManagerOpen(false)
+          // 弹窗内切换促销或重新解析会改动商品归类，关闭后刷新列表。
+          if (changed) void loadData()
+        }}
+      />
 
       <Modal
         open={integrityVisible}
