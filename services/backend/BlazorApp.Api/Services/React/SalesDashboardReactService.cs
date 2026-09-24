@@ -430,6 +430,8 @@ namespace BlazorApp.Api.Services.React
         private static readonly TimeSpan COMPACT_SALES_BOARD_CUBE_CACHE_DURATION = TimeSpan.FromMinutes(10);
         /// <summary>看板最长区间：两年（含闰日），与销售明细 SalesDetailReportController.MaxReportDays 一致。</summary>
         internal const int CompactSalesBoardMaxDays = 731;
+        // 商品明细每页上限与带图导出上限一致（500 行），导出全部结果也按 500 行一页分批读取。
+        internal const int CompactSalesBoardMaxPageSize = 500;
 
         private enum StatisticsRefreshState
         {
@@ -7423,7 +7425,7 @@ namespace BlazorApp.Api.Services.React
                 throw new ArgumentException($"紧凑销售看板日期范围不能超过 {CompactSalesBoardMaxDays} 天。");
 
             var pageIndex = Math.Max(1, query.PageIndex);
-            var pageSize = Math.Clamp(query.PageSize, 20, 200);
+            var pageSize = Math.Clamp(query.PageSize, 20, CompactSalesBoardMaxPageSize);
             var branchScope = query.BranchCodes == null
                 ? null
                 : NormalizeCodes(query.BranchCodes).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -7471,6 +7473,7 @@ namespace BlazorApp.Api.Services.React
             }
 
             FillCompactSalesBoard(board, cube, branchScope, query, pageIndex, pageSize);
+            await FillCompactSalesBoardBranchTotalsAsync(board.Stores, boardRange);
             return board;
         }
 
