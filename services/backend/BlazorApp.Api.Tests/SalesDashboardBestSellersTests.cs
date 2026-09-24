@@ -211,13 +211,137 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
     }
 
     [Fact]
-    public async Task GetCompactSalesBoardAsync_超过366天拒绝请求()
+    public async Task GetCompactSalesBoardAsync_区间上限与销售明细一致为731天()
     {
         var start = new DateTime(2025, 1, 1);
         var exception = await Assert.ThrowsAsync<ArgumentException>(() => CreateService().GetCompactSalesBoardAsync(
-            new CompactSalesBoardQuery { DateRange = new DateRangeDto { StartDate = start, EndDate = start.AddDays(366) } }));
+            new CompactSalesBoardQuery { DateRange = new DateRangeDto { StartDate = start, EndDate = start.AddDays(731) } }));
 
-        Assert.Contains("366", exception.Message);
+        Assert.Contains("731", exception.Message);
+        // 恰好 731 天（含闰日的两年）可以查询；没有统计状态时按未发布返回，不抛异常。
+        var twoYears = await CreateService().GetCompactSalesBoardAsync(
+            new CompactSalesBoardQuery { DateRange = new DateRangeDto { StartDate = start, EndDate = start.AddDays(730) } });
+        Assert.NotEqual(SalesStatisticRefreshStatus.Fresh, twoYears.StatisticStatus);
+    }
+
+    [Fact]
+    public async Task GetCompactSalesBoardAsync_对账失败但已聚合的日期照常出数并提示()
+    {
+        var firstDay = new DateTime(2026, 4, 8);
+        var failedDay = firstDay.AddDays(1);
+        await SeedStatisticStateAsync(firstDay, SalesStatisticRefreshStatus.Fresh);
+        // 与生产 2026-04-09 相同：对账未通过，但当天商品事实已经聚合发布。
+        await SeedStatisticStateAsync(failedDay, SalesStatisticRefreshStatus.Failed, "商品统计与分店营业额统计不一致");
+        await SeedCompactDailyRowsAsync(firstDay, failedDay);
+
+        var result = await CreateService().GetCompactSalesBoardAsync(new CompactSalesBoardQuery
+        {
+            DateRange = new DateRangeDto { StartDate = firstDay, EndDate = failedDay },
+        });
+
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh, result.StatisticStatus);
+        Assert.Equal(30m, result.Summary.TotalAmount);
+        Assert.Contains("2026-04-09", result.StatisticMessage);
+    }
+
+    [Fact]
+    public async Task GetCompactSalesBoardAsync_失败且从未聚合的日期仍阻断()
+    {
+        var date = new DateTime(2026, 4, 10);
+        await _localDb.Insertable(new SalesStatisticRefreshState
+        {
+            StatisticType = SalesStatisticType.ProductStoreDaily,
+            Date = date,
+            Status = SalesStatisticRefreshStatus.Failed,
+            SourceTimeZone = "POSM_LOCAL",
+            ErrorMessage = "首次聚合失败",
+        }).ExecuteCommandAsync();
+        await SeedCompactDailyRowsAsync(date);
+
+        var result = await CreateService().GetCompactSalesBoardAsync(BoardQuery(date));
+
+        Assert.Equal(SalesStatisticRefreshStatus.Failed, result.StatisticStatus);
+        Assert.Empty(result.Stores);
+        Assert.Equal(0m, result.Summary.TotalAmount);
+    }
+
+    [Theory]
+    [InlineData("Queued")]
+    [InlineData("Running")]
+    public async Task GetCompactSalesBoardAsync_重算排队或运行中读取上一版已发布快照(string refreshingStatus)
+    {
+        var date = new DateTime(2026, 8, 20);
+        await _localDb.Insertable(new SalesStatisticRefreshState
+        {
+            StatisticType = SalesStatisticType.ProductStoreDaily,
+            Date = date,
+            Status = refreshingStatus,
+            SourceTimeZone = "POSM_LOCAL",
+            SourceProductVersion = "published-v1",
+            LastAggregatedAtUtc = DateTime.UtcNow.AddHours(-1),
+        }).ExecuteCommandAsync();
+        await SeedCompactDailyRowsAsync(date);
+
+        var result = await CreateService().GetCompactSalesBoardAsync(BoardQuery(date));
+
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh, result.StatisticStatus);
+        Assert.Equal(15m, result.Summary.TotalAmount);
+    }
+
+    [Fact]
+    public async Task GetCompactSalesBoardAsync_历史缺口只提示而最新状态之后的日期按未发布处理()
+    {
+        var gapDay = new DateTime(2025, 5, 4);
+        var trackedDay = gapDay.AddDays(1);
+        await SeedStatisticStateAsync(trackedDay, SalesStatisticRefreshStatus.Fresh);
+        await SeedCompactDailyRowsAsync(trackedDay);
+        var service = CreateService();
+
+        // 早于最新状态、从未生成商品日统计的历史日期（生产 2025-05-04～05-31）不阻断长区间。
+        var withGap = await service.GetCompactSalesBoardAsync(new CompactSalesBoardQuery
+        {
+            DateRange = new DateRangeDto { StartDate = gapDay, EndDate = trackedDay },
+        });
+        // 排在最新状态之后又没有状态的日期（尚未排队的今天）仍按未发布处理，与销售明细一致。
+        var withUntracked = await service.GetCompactSalesBoardAsync(new CompactSalesBoardQuery
+        {
+            DateRange = new DateRangeDto { StartDate = trackedDay, EndDate = trackedDay.AddDays(1) },
+        });
+
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh, withGap.StatisticStatus);
+        Assert.Equal(15m, withGap.Summary.TotalAmount);
+        Assert.Contains("2025-05-04", withGap.StatisticMessage);
+        Assert.Equal(SalesStatisticRefreshStatus.Pending, withUntracked.StatisticStatus);
+        Assert.Empty(withUntracked.Stores);
+    }
+
+    [Fact]
+    public async Task GetCompactSalesBoardAsync_统计时间按UTC标注且取区间内最近一次发布()
+    {
+        var firstDay = new DateTime(2026, 8, 21);
+        var secondDay = firstDay.AddDays(1);
+        var earlier = new DateTime(2026, 8, 22, 1, 0, 0, DateTimeKind.Utc);
+        var latest = new DateTime(2026, 8, 23, 2, 0, 39, DateTimeKind.Utc);
+        await _localDb.Insertable(new SalesStatisticRefreshState
+        {
+            StatisticType = SalesStatisticType.ProductStoreDaily, Date = firstDay, Status = SalesStatisticRefreshStatus.Fresh,
+            SourceTimeZone = "POSM_LOCAL", LastAggregatedAtUtc = earlier, CompletedAtUtc = earlier,
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new SalesStatisticRefreshState
+        {
+            StatisticType = SalesStatisticType.ProductStoreDaily, Date = secondDay, Status = SalesStatisticRefreshStatus.Fresh,
+            SourceTimeZone = "POSM_LOCAL", LastAggregatedAtUtc = latest, CompletedAtUtc = latest,
+        }).ExecuteCommandAsync();
+
+        var result = await CreateService().GetCompactSalesBoardAsync(new CompactSalesBoardQuery
+        {
+            DateRange = new DateRangeDto { StartDate = firstDay, EndDate = secondDay },
+        });
+
+        // 数据库读回的时间不带时区；未标注 UTC 时 JSON 不带 Z，浏览器会把 02:00 UTC 显示成本地 02:00。
+        Assert.Equal(DateTimeKind.Utc, result.StatisticUpdatedAt!.Value.Kind);
+        Assert.Equal(latest, result.StatisticUpdatedAt.Value);
+        Assert.EndsWith("Z\"", System.Text.Json.JsonSerializer.Serialize(result.StatisticUpdatedAt));
     }
 
     [Fact]
@@ -393,9 +517,9 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
         Assert.Equal(count, result.ProductDetails.Total);
         Assert.Equal(count, result.ChinaSuppliers.Count);
         Assert.Equal(1m, Assert.Single(result.Stores).TotalAmount / count);
-        // 立方体聚合 + 商品资料 EXISTS 半连接各 1 条；不再随商品数量分批，也不带商品编码 IN 列表。
-        Assert.Equal(2, statisticStatements.Count);
-        Assert.All(statisticStatements, sql => Assert.DoesNotContain("P-UNFILTERED-", sql, StringComparison.Ordinal));
+        // 只有立方体聚合 1 条读统计表：商品资料改为按立方体里的编码点查，不再回探统计表；聚合不带商品编码 IN 列表。
+        var statisticStatement = Assert.Single(statisticStatements);
+        Assert.DoesNotContain("P-UNFILTERED-", statisticStatement, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -590,7 +714,7 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
         var productStatements = new List<string>();
         _localDb.Aop.OnLogExecuting = (sql, _) =>
         {
-            if (sql.Contains("EXISTS", StringComparison.OrdinalIgnoreCase))
+            if (sql.Contains("ProductImage", StringComparison.OrdinalIgnoreCase))
                 productStatements.Add(sql);
         };
 
@@ -600,6 +724,8 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
         var sql = Assert.Single(productStatements);
         Assert.Contains("[IsDeleted] = 0", sql, StringComparison.Ordinal);
         Assert.DoesNotContain("@IsDeleted", sql, StringComparison.Ordinal);
+        // 商品资料按立方体编码点查，不再对统计表做相关子查询。
+        Assert.DoesNotContain("ProductStoreDailySalesStatistic", sql, StringComparison.OrdinalIgnoreCase);
     }
 
     private static CompactSalesBoardQuery BoardQuery(DateTime date, Action<CompactSalesBoardQuery>? configure = null)
@@ -607,6 +733,25 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
         var query = new CompactSalesBoardQuery { DateRange = new DateRangeDto { StartDate = date, EndDate = date } };
         configure?.Invoke(query);
         return query;
+    }
+
+    /// <summary>每个日期写一条已映射的 200 行（1 件 $15），用于只关心完整性判定的用例；状态行由调用方自行准备。</summary>
+    private async Task SeedCompactDailyRowsAsync(params DateTime[] dates)
+    {
+        await SeedStoreAsync("S-DAY", "日期分店");
+        await _localDb.Insertable(new ChinaSupplier { Guid = "cn-day", SupplierCode = "CN-DAY", SupplierName = "日期供应商" }).ExecuteCommandAsync();
+        await _posmDb.Insertable(new PosmProductSupplierMapping
+        {
+            ProductCode = "P-DAY", LocalSupplierCode = "200", ChinaSupplierCode = "CN-DAY",
+        }).ExecuteCommandAsync();
+        foreach (var date in dates)
+        {
+            await _localDb.Insertable(new ProductStoreDailySalesStatistic
+            {
+                Date = date, BranchCode = "S-DAY", SupplierCode = "200", ProductCode = "P-DAY",
+                ProductName = "日期商品", TotalQuantity = 1, TotalAmount = 15m, OrderCount = 1,
+            }).ExecuteCommandAsync();
+        }
     }
 
     /// <summary>

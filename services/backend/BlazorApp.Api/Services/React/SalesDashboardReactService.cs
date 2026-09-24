@@ -261,6 +261,18 @@ namespace BlazorApp.Api.Services.React
         );
     }
 
+    /// <summary>一次立方体构建的结果：数据与读取它的同一统计快照的状态（水位、缓存版本）。</summary>
+    internal sealed record CompactSalesBoardCubeRead(CompactSalesBoardCube Cube, ProductReportStatisticStatusDto Status);
+
+    internal sealed class CompactSalesBoardStateRow
+    {
+        public DateTime Date { get; set; }
+        public string? Status { get; set; }
+        public DateTime? LastAggregatedAtUtc { get; set; }
+        public DateTime? CompletedAtUtc { get; set; }
+        public string? SourceProductVersion { get; set; }
+    }
+
     internal class StatisticDateBranchRow
     {
         public DateTime Date { get; set; }
@@ -412,10 +424,12 @@ namespace BlazorApp.Api.Services.React
         > SALES_SOURCE_COVERAGE_READS = new();
         private static readonly ConditionalWeakTable<
             IMemoryCache,
-            ConcurrentDictionary<string, Lazy<Task<CompactSalesBoardCube>>>
+            ConcurrentDictionary<string, Lazy<Task<CompactSalesBoardCubeRead>>>
         > COMPACT_SALES_BOARD_CUBE_BUILDS = new();
         // 立方体按统计水位分代：统计刷新会换缓存键，因此 Fresh 状态下可以放心缓存较长时间。
         private static readonly TimeSpan COMPACT_SALES_BOARD_CUBE_CACHE_DURATION = TimeSpan.FromMinutes(10);
+        /// <summary>看板最长区间：两年（含闰日），与销售明细 SalesDetailReportController.MaxReportDays 一致。</summary>
+        internal const int CompactSalesBoardMaxDays = 731;
 
         private enum StatisticsRefreshState
         {
@@ -7405,8 +7419,8 @@ namespace BlazorApp.Api.Services.React
             ArgumentNullException.ThrowIfNull(query);
             var dateRange = query.DateRange;
             ValidateDateRange(dateRange);
-            if ((dateRange.EndDate.Date - dateRange.StartDate.Date).TotalDays > 365)
-                throw new ArgumentException("紧凑销售看板日期范围不能超过 366 天。");
+            if ((dateRange.EndDate.Date - dateRange.StartDate.Date).TotalDays + 1 > CompactSalesBoardMaxDays)
+                throw new ArgumentException($"紧凑销售看板日期范围不能超过 {CompactSalesBoardMaxDays} 天。");
 
             var pageIndex = Math.Max(1, query.PageIndex);
             var pageSize = Math.Clamp(query.PageSize, 20, 200);
@@ -7415,21 +7429,25 @@ namespace BlazorApp.Api.Services.React
                 : NormalizeCodes(query.BranchCodes).ToHashSet(StringComparer.OrdinalIgnoreCase);
             // 与商品销量分析共用 generation lease：Clear 发生在查询期间时，结果仍返回但不得写回旧代缓存。
             var expectedGeneration = SalesDashboardCacheKeys.CaptureProductSalesAnalysisGeneration();
-            var status = await GetProductStatisticStatusAsync(dateRange.StartDate.Date, dateRange.EndDate.Date);
+            // 看板只含当前区间，不带同期；完整性判定与销售明细同一套规则（BuildSalesDetailReportStatus）。
+            var boardRange = new DateRangeDto { StartDate = dateRange.StartDate.Date, EndDate = dateRange.EndDate.Date };
+            var status = BuildSalesDetailReportStatus(
+                await ReadCompactSalesBoardStatusRowsAsync(boardRange),
+                boardRange,
+                false
+            );
             var board = new CompactSalesBoardDto
             {
-                StatisticStatus = status.Status,
-                StatisticMessage = status.Message,
-                StatisticUpdatedAt = status.UpdatedAt,
                 ProductDetails = new PagedCompactSalesBoardProductDto { PageIndex = pageIndex, PageSize = pageSize },
             };
+            ApplyCompactSalesBoardStatus(board, status);
 
             // 统计未完成或 fail-closed 的空授权范围绝不读取数据，避免把旧统计误展示为当前结果。
-            if (status.Status != SalesStatisticRefreshStatus.Fresh || branchScope is { Count: 0 })
+            if (status.StatisticStatus != SalesStatisticRefreshStatus.Fresh || branchScope is { Count: 0 })
                 return board;
 
             // 立方体缓存键不含授权范围与筛选：所有用户、所有点选共享同一份聚合，授权过滤在下方内存中完成。
-            var cacheKey = SalesDashboardCacheKeys.CompactSalesBoardCube(dateRange, status.CacheVersion);
+            var cacheKey = SalesDashboardCacheKeys.CompactSalesBoardCube(boardRange, status.CacheVersion);
             CompactSalesBoardCube cube;
             if (!query.ForceRefresh
                 && _cache.TryGetValue<CompactSalesBoardCube>(cacheKey, out var cachedCube)
@@ -7440,14 +7458,62 @@ namespace BlazorApp.Api.Services.React
             }
             else
             {
-                cube = await GetOrBuildCompactSalesBoardCubeAsync(cacheKey, dateRange, expectedGeneration);
+                var read = await GetOrBuildCompactSalesBoardCubeAsync(cacheKey, boardRange, expectedGeneration);
+                // 构建时在统计快照内重读了状态：期间若有新版本发布，数据与水位都以快照为准。
+                ApplyCompactSalesBoardStatus(board, read.Status);
+                if (read.Status.StatisticStatus != SalesStatisticRefreshStatus.Fresh)
+                    return board;
+                cube = read.Cube;
             }
 
             FillCompactSalesBoard(board, cube, branchScope, query, pageIndex, pageSize);
             return board;
         }
 
-        private async Task<CompactSalesBoardCube> GetOrBuildCompactSalesBoardCubeAsync(
+        private static void ApplyCompactSalesBoardStatus(CompactSalesBoardDto board, ProductReportStatisticStatusDto status)
+        {
+            board.StatisticStatus = status.StatisticStatus;
+            board.StatisticMessage = status.StatisticMessage;
+            board.StatisticUpdatedAt = status.StatisticUpdatedAt;
+        }
+
+        /// <summary>
+        /// 读取看板区间内的商品日统计状态行。时间列按 UTC 标注，响应序列化带 Z，
+        /// 前端才能换算成本地时间（曾因未标注被当成本地时间，截至时间比销售明细早 10 小时）。
+        /// </summary>
+        private async Task<List<SalesDetailReportStatusSqlRow>> ReadCompactSalesBoardStatusRowsAsync(DateRangeDto range)
+        {
+            var startDate = range.StartDate.Date;
+            var endExclusive = range.EndDate.Date.AddDays(1);
+            var states = await _context.Db.Queryable<SalesStatisticRefreshState>()
+                .Where(s => s.StatisticType == SalesStatisticType.ProductStoreDaily && s.Date >= startDate && s.Date < endExclusive)
+                .Select(s => new CompactSalesBoardStateRow
+                {
+                    Date = s.Date,
+                    Status = s.Status,
+                    LastAggregatedAtUtc = s.LastAggregatedAtUtc,
+                    CompletedAtUtc = s.CompletedAtUtc,
+                    SourceProductVersion = s.SourceProductVersion,
+                })
+                .ToListAsync();
+            return states
+                .Select(s => new SalesDetailReportStatusSqlRow
+                {
+                    Type = SalesStatisticType.ProductStoreDaily,
+                    Date = s.Date,
+                    Status = s.Status ?? string.Empty,
+                    LastAggregatedAtUtc = s.LastAggregatedAtUtc is DateTime aggregated
+                        ? DateTime.SpecifyKind(aggregated, DateTimeKind.Utc)
+                        : null,
+                    CompletedAtUtc = s.CompletedAtUtc is DateTime completed
+                        ? DateTime.SpecifyKind(completed, DateTimeKind.Utc)
+                        : null,
+                    SourceProductVersion = s.SourceProductVersion,
+                })
+                .ToList();
+        }
+
+        private async Task<CompactSalesBoardCubeRead> GetOrBuildCompactSalesBoardCubeAsync(
             string cacheKey,
             DateRangeDto dateRange,
             long expectedGeneration
@@ -7456,16 +7522,24 @@ namespace BlazorApp.Api.Services.React
             // 同一 IMemoryCache 代表同一应用实例；快速连续点选时共享同一次构建，避免并发重复扫描统计表。
             var builds = COMPACT_SALES_BOARD_CUBE_BUILDS.GetValue(
                 _cache,
-                _ => new ConcurrentDictionary<string, Lazy<Task<CompactSalesBoardCube>>>(StringComparer.Ordinal)
+                _ => new ConcurrentDictionary<string, Lazy<Task<CompactSalesBoardCubeRead>>>(StringComparer.Ordinal)
             );
             var lazyBuild = builds.GetOrAdd(
                 cacheKey,
-                _ => new Lazy<Task<CompactSalesBoardCube>>(
+                _ => new Lazy<Task<CompactSalesBoardCubeRead>>(
                     async () =>
                     {
-                        var cube = await BuildCompactSalesBoardCubeAsync(dateRange);
-                        CacheCompactSalesBoardCube(cacheKey, cube, expectedGeneration);
-                        return cube;
+                        var read = await BuildCompactSalesBoardCubeAsync(dateRange);
+                        // 按快照自身的水位写缓存；快照未完成（发布期间状态变为失败等）的结果不缓存。
+                        if (read.Status.StatisticStatus == SalesStatisticRefreshStatus.Fresh)
+                        {
+                            CacheCompactSalesBoardCube(
+                                SalesDashboardCacheKeys.CompactSalesBoardCube(dateRange, read.Status.CacheVersion),
+                                read.Cube,
+                                expectedGeneration
+                            );
+                        }
+                        return read;
                     },
                     LazyThreadSafetyMode.ExecutionAndPublication
                 )
@@ -7478,17 +7552,19 @@ namespace BlazorApp.Api.Services.React
             finally
             {
                 // 只移除本次等待的那一项；失败的构建不会留在字典里，下一个请求会重新尝试。
-                ((ICollection<KeyValuePair<string, Lazy<Task<CompactSalesBoardCube>>>>)builds).Remove(
-                    new KeyValuePair<string, Lazy<Task<CompactSalesBoardCube>>>(cacheKey, lazyBuild)
+                ((ICollection<KeyValuePair<string, Lazy<Task<CompactSalesBoardCubeRead>>>>)builds).Remove(
+                    new KeyValuePair<string, Lazy<Task<CompactSalesBoardCubeRead>>>(cacheKey, lazyBuild)
                 );
             }
         }
 
         /// <summary>
-        /// 构建「门店×商品」聚合立方体：6 条 SQL（统计状态之外），不带随商品集合变化的 IN 列表。
-        /// 日统计的两条查询内联了国内供应商编码族，它只随供应商目录变化，同一份目录下 SQL 文本不变。
+        /// 构建「门店×商品」聚合立方体。日统计的状态与聚合在同一个 SNAPSHOT 事务里读取：
+        /// 允许统计排队/重算期间出数后，必须读到上一版已提交的完整事实，而不是 NOLOCK 下删了一半的当天数据。
+        /// 生产实测（2026-09-24）：聚合语句曾按 1 天区间编译的计划被 6 个月复用（行存储，19 秒），
+        /// 商品资料用相关子查询回探统计表（774 万逻辑读，30 秒）；现分别改为 RECOMPILE 与按编码点查。
         /// </summary>
-        private async Task<CompactSalesBoardCube> BuildCompactSalesBoardCubeAsync(DateRangeDto dateRange)
+        private async Task<CompactSalesBoardCubeRead> BuildCompactSalesBoardCubeAsync(DateRangeDto dateRange)
         {
             var startDate = dateRange.StartDate.Date;
             var endExclusive = dateRange.EndDate.Date.AddDays(1);
@@ -7512,19 +7588,14 @@ namespace BlazorApp.Api.Services.React
             // 旧 200 行靠 POSM 映射还原国内供应商；直写行自带编码，不依赖映射，所以映射为空也不能直接返回空看板。
             var productSupplierMap = await GetChinaSupplierProductMapAsync();
 
-            var statisticRows = await _context.Db.Queryable<ProductStoreDailySalesStatistic>()
-                .Where(s => s.Date >= startDate && s.Date < endExclusive && chinaFamilyCodes.Contains(s.SupplierCode))
-                .GroupBy(s => new { s.BranchCode, s.ProductCode, s.SupplierCode })
-                .Select(s => new CompactSalesBoardCubeRow
-                {
-                    BranchCode = s.BranchCode,
-                    ProductCode = s.ProductCode,
-                    SupplierCode = s.SupplierCode,
-                    TotalQuantity = SqlFunc.AggregateSum(s.TotalQuantity),
-                    TotalAmount = SqlFunc.AggregateSum(s.TotalAmount),
-                    LastDate = SqlFunc.AggregateMax(s.Date),
-                })
-                .ToListAsync();
+            // 状态与聚合同一快照：水位（缓存键）与数据一一对应；SQL Server 上事务内 SqlSugar 不再附加 NOLOCK。
+            var (stateRows, statisticRows) = await ReadReportSnapshotAsync(async () => (
+                await ReadCompactSalesBoardStatusRowsAsync(dateRange),
+                await ReadCompactSalesBoardStatisticRowsAsync(startDate, endExclusive, chinaFamilyCodes)
+            ));
+            var status = BuildSalesDetailReportStatus(stateRows, dateRange, false);
+            if (status.StatisticStatus != SalesStatisticRefreshStatus.Fresh)
+                return new CompactSalesBoardCubeRead(CompactSalesBoardCube.Empty, status);
 
             // 逐行还原国内供应商：直写行用行上的编码，旧 200 行查映射。
             // 未映射的 200 商品仍不计入看板（约占国内货金额 14%），与其他国内供应商报表的口径一致。
@@ -7543,7 +7614,7 @@ namespace BlazorApp.Api.Services.React
                 .Where(item => !string.IsNullOrWhiteSpace(item.ChinaSupplierCode))
                 .ToList();
             if (resolvedRows.Count == 0)
-                return CompactSalesBoardCube.Empty;
+                return new CompactSalesBoardCubeRead(CompactSalesBoardCube.Empty, status);
 
             // 立方体里每个商品只挂一个国内供应商。同一商品在区间内解析出多个编码（归属中途变更，极少见）时，
             // 取最近销售日那一条；日期相同时直写行优先于映射，再按编码排序，保证结果稳定。
@@ -7575,25 +7646,10 @@ namespace BlazorApp.Api.Services.React
                 })
                 .ToList();
 
-            // EXISTS 半连接一次取回区间内全部国内货商品资料；IsDeleted 写成字面量才能命中
-            // 过滤索引 IX_Product_ProductCode_Active（lambda 常量会被参数化）。
-            var productInfoRows = await _context.Db.Queryable<Product>()
-                .Where("[IsDeleted] = 0")
-                .Where(p => p.ProductCode != null
-                    && SqlFunc.Subqueryable<ProductStoreDailySalesStatistic>()
-                        .Where(s => s.ProductCode == p.ProductCode
-                            && s.Date >= startDate
-                            && s.Date < endExclusive
-                            && chinaFamilyCodes.Contains(s.SupplierCode))
-                        .Any())
-                .Select(p => new CompactSalesBoardProductInfoRow
-                {
-                    ProductCode = p.ProductCode ?? string.Empty,
-                    ItemNumber = p.ItemNumber,
-                    ProductName = p.ProductName,
-                    ProductImage = p.ProductImage,
-                })
-                .ToListAsync();
+            // 只取立方体里实际出现的商品资料（约 1 万个编码），不再回探统计表。
+            var productInfoRows = await ReadCompactSalesBoardProductInfoRowsAsync(
+                cubeRows.Select(row => row.ProductCode).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
+            );
             var productInfoMap = productInfoRows
                 .Where(row => !string.IsNullOrWhiteSpace(row.ProductCode))
                 .GroupBy(row => row.ProductCode, StringComparer.OrdinalIgnoreCase)
@@ -7663,14 +7719,103 @@ namespace BlazorApp.Api.Services.React
                 cells[i] = new CompactSalesBoardCubeCell(b, p, row.TotalQuantity, row.TotalAmount);
             }
 
-            return new CompactSalesBoardCube(
-                branches.ToArray(),
-                suppliers.ToArray(),
-                products.ToArray(),
-                cells,
-                branchIndex,
-                supplierIndex,
-                productIndex);
+            return new CompactSalesBoardCubeRead(
+                new CompactSalesBoardCube(
+                    branches.ToArray(),
+                    suppliers.ToArray(),
+                    products.ToArray(),
+                    cells,
+                    branchIndex,
+                    supplierIndex,
+                    productIndex),
+                status);
+        }
+
+        /// <summary>
+        /// 区间内国内编码族的「门店×商品×原始供应商编码」聚合，调用方负责放进统计快照事务。
+        /// SQL Server 走原生语句：OPTION (RECOMPILE) 按本次区间编译，避免 1 天计划被长区间复用；
+        /// 编码族用 OPENJSON 参数传入，SQL 文本不随供应商目录变化。其他数据库（测试用 SQLite）沿用 SqlSugar 查询。
+        /// </summary>
+        private async Task<List<CompactSalesBoardCubeRow>> ReadCompactSalesBoardStatisticRowsAsync(
+            DateTime startDate,
+            DateTime endExclusive,
+            List<string> chinaFamilyCodes
+        )
+        {
+            if (_context.Db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+            {
+                return await _context.Db.Ado.SqlQueryAsync<CompactSalesBoardCubeRow>(
+                    """
+                    SELECT s.[BranchCode], s.[ProductCode], s.[SupplierCode],
+                           SUM(s.[TotalQuantity]) AS [TotalQuantity], SUM(s.[TotalAmount]) AS [TotalAmount], MAX(s.[Date]) AS [LastDate]
+                    FROM [dbo].[ProductStoreDailySalesStatistic] s
+                    WHERE s.[Date] >= @startDate AND s.[Date] < @endExclusive
+                      AND s.[SupplierCode] IN (SELECT CONVERT(nvarchar(50), c.[value]) FROM OPENJSON(@supplierCodes) c)
+                    GROUP BY s.[BranchCode], s.[ProductCode], s.[SupplierCode]
+                    OPTION (RECOMPILE);
+                    """,
+                    new SugarParameter("@startDate", startDate, System.Data.DbType.DateTime),
+                    new SugarParameter("@endExclusive", endExclusive, System.Data.DbType.DateTime),
+                    new SugarParameter("@supplierCodes", System.Text.Json.JsonSerializer.Serialize(chinaFamilyCodes)) { Size = -1 }
+                );
+            }
+
+            return await _context.Db.Queryable<ProductStoreDailySalesStatistic>()
+                .Where(s => s.Date >= startDate && s.Date < endExclusive && chinaFamilyCodes.Contains(s.SupplierCode))
+                .GroupBy(s => new { s.BranchCode, s.ProductCode, s.SupplierCode })
+                .Select(s => new CompactSalesBoardCubeRow
+                {
+                    BranchCode = s.BranchCode,
+                    ProductCode = s.ProductCode,
+                    SupplierCode = s.SupplierCode,
+                    TotalQuantity = SqlFunc.AggregateSum(s.TotalQuantity),
+                    TotalAmount = SqlFunc.AggregateSum(s.TotalAmount),
+                    LastDate = SqlFunc.AggregateMax(s.Date),
+                })
+                .ToListAsync();
+        }
+
+        /// <summary>
+        /// 按商品编码点查商品资料。SQL Server 用一条 OPENJSON 连接走过滤索引 IX_Product_ProductCode_Active
+        /// （生产 1.4 万编码服务端 0.3 秒、6 万逻辑读）；显式 NOLOCK 保持原查询行为，HQ 同步重建 Product 时不被阻塞。
+        /// 其他数据库按 500 个一批 Contains；两条路径的 IsDeleted 都写成字面量，参数化会让过滤索引失效。
+        /// </summary>
+        private async Task<List<CompactSalesBoardProductInfoRow>> ReadCompactSalesBoardProductInfoRowsAsync(
+            IReadOnlyCollection<string> productCodes
+        )
+        {
+            if (productCodes.Count == 0)
+                return new List<CompactSalesBoardProductInfoRow>();
+
+            if (_context.Db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+            {
+                return await _context.Db.Ado.SqlQueryAsync<CompactSalesBoardProductInfoRow>(
+                    """
+                    SELECT p.[ProductCode], p.[ItemNumber], p.[ProductName], p.[ProductImage]
+                    FROM [dbo].[Product] p WITH (NOLOCK)
+                    INNER JOIN OPENJSON(@productCodes) c ON CONVERT(nvarchar(50), c.[value]) = p.[ProductCode]
+                    WHERE p.[IsDeleted] = 0;
+                    """,
+                    new SugarParameter("@productCodes", System.Text.Json.JsonSerializer.Serialize(productCodes)) { Size = -1 }
+                );
+            }
+
+            var rows = new List<CompactSalesBoardProductInfoRow>();
+            foreach (var chunk in productCodes.Chunk(500))
+            {
+                rows.AddRange(await _context.Db.Queryable<Product>()
+                    .Where("[IsDeleted] = 0")
+                    .Where(p => chunk.Contains(p.ProductCode))
+                    .Select(p => new CompactSalesBoardProductInfoRow
+                    {
+                        ProductCode = p.ProductCode ?? string.Empty,
+                        ItemNumber = p.ItemNumber,
+                        ProductName = p.ProductName,
+                        ProductImage = p.ProductImage,
+                    })
+                    .ToListAsync());
+            }
+            return rows;
         }
 
         private void CacheCompactSalesBoardCube(string cacheKey, CompactSalesBoardCube cube, long expectedGeneration)
