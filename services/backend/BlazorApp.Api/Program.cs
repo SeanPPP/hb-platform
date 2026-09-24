@@ -20,6 +20,7 @@ using BlazorApp.Api.Services; // 业务服务层
 using BlazorApp.Api.Services.Attendance;
 using BlazorApp.Api.Services.Background; // 后台定时服务
 using BlazorApp.Api.Services.Logging;
+using BlazorApp.Api.Services.LocalSupplierCategories;
 using BlazorApp.Api.Services.MobileDeviceActivation;
 using BlazorApp.Api.Services.OperationAudits;
 using BlazorApp.Api.Services.Performance;
@@ -433,6 +434,7 @@ builder.Services.AddRateLimiter(MobileDeviceActivationRateLimits.Configure);
 // 浏览器扩展一次性授权按父会话限流，匿名兑换按可信客户端 IP 限流。
 builder.Services.AddRateLimiter(BrowserExtensionSessionGrantRateLimits.Configure);
 builder.Services.AddRateLimiter(RustDeskLoginRateLimits.Configure);
+builder.Services.AddRateLimiter(BrowserExtensionCaptureRateLimits.Configure);
 
 // --------------------- JWT认证配置 ---------------------
 // 🔐 配置JSON Web Token（JWT）身份验证
@@ -1047,6 +1049,8 @@ builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddStoreOrderReactFacade();
 builder.Services.AddScoped<IBrowserExtensionAccessService, BrowserExtensionAccessService>();
 builder.Services.AddScoped<IBrowserExtensionService, BrowserExtensionService>();
+builder.Services.AddScoped<ILocalSupplierCategoryCaptureService, LocalSupplierCategoryCaptureService>();
+builder.Services.AddScoped<ILocalSupplierCategoryReactService, LocalSupplierCategoryReactService>();
 builder.Services.AddScoped<PreorderReactService>();
 builder.Services.AddScoped<IPreorderReactService>(provider =>
     provider.GetRequiredService<PreorderReactService>()
