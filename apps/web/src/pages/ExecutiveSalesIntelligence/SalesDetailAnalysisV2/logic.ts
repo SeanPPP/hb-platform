@@ -32,19 +32,48 @@ export function applyKeyword(state: DetailSelection, keyword: string): DetailSel
   return normalized === state.keyword ? state : { ...state, keyword: normalized, product: undefined, page: 1 }
 }
 
-export function sumProductPage(rows: SalesDetailRow[]) {
+/** 合计行只使用这些字段，服务端汇总行与前端本页汇总都满足该形状。 */
+export type DetailTotals = Pick<SalesDetailRow, 'revenue' | 'compareRevenue' | 'quantity' | 'compareQuantity'
+  | 'averageUnitPrice' | 'compareAverageUnitPrice' | 'grossProfit' | 'compareGrossProfit' | 'grossMarginRate' | 'compareGrossMarginRate'>
+
+// 均价口径与页面说明一致：营业额 ÷ 商品数量，数量 ≤ 0 时不给均价。
+function unitPrice(revenue: number | null, quantity: number | null) {
+  return revenue == null || quantity == null || quantity <= 0 ? null : revenue / quantity
+}
+
+export function sumProductPage(rows: SalesDetailRow[]): DetailTotals {
   const revenue = rows.reduce((sum, row) => sum + row.revenue, 0)
   const compareRevenue = completeSum(rows.map(row => row.compareRevenue))
+  const quantity = rows.reduce((sum, row) => sum + row.quantity, 0)
+  const compareQuantity = completeSum(rows.map(row => row.compareQuantity))
   const grossProfit = completeSum(rows.map(row => row.grossProfit))
   const compareGrossProfit = completeSum(rows.map(row => row.compareGrossProfit))
-  return { revenue, compareRevenue, grossProfit, compareGrossProfit, grossMarginRate: margin(grossProfit, revenue),
+  return { revenue, compareRevenue, quantity, compareQuantity,
+    averageUnitPrice: unitPrice(revenue, quantity), compareAverageUnitPrice: unitPrice(compareRevenue, compareQuantity),
+    grossProfit, compareGrossProfit, grossMarginRate: margin(grossProfit, revenue),
     compareGrossMarginRate: compareRevenue == null ? null : margin(compareGrossProfit, compareRevenue) }
 }
 
-export function resizeColumns(widths: number[], divider: number, delta: number): number[] {
-  const result = [...widths]
-  const adjusted = Math.max(18 - result[divider], Math.min(result[divider + 1] - 18, delta))
-  result[divider] += adjusted
-  result[divider + 1] -= adjusted
-  return result
+/** 左栏（供应商 + 分店）占工作区的百分比；拖到两端时仍给商品明细留出主视图宽度。 */
+export const RAIL_DEFAULT_WIDTH = 28
+export function clampRailWidth(width: number): number {
+  return Math.min(46, Math.max(20, width))
+}
+
+/** 商品表的同期展示方式：上下两行、仅本期单行、本期同期左右并排。 */
+export type CompareView = 'stack' | 'current' | 'side'
+export interface DetailViewPreference { compareView: CompareView; railCollapsed: boolean }
+export const defaultDetailView: DetailViewPreference = { compareView: 'stack', railCollapsed: false }
+
+/** 读取本机保存的展示偏好；存储被清空、损坏或来自旧版本时回到默认值。 */
+export function parseDetailView(raw: string | null): DetailViewPreference {
+  try {
+    const value = raw ? JSON.parse(raw) as Partial<DetailViewPreference> : {}
+    return {
+      compareView: value.compareView === 'current' || value.compareView === 'side' ? value.compareView : 'stack',
+      railCollapsed: value.railCollapsed === true,
+    }
+  } catch {
+    return defaultDetailView
+  }
 }
