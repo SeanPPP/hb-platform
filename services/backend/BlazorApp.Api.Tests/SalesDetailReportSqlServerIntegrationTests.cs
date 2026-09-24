@@ -717,6 +717,93 @@ public sealed class SalesDetailReportSqlServerIntegrationTests
             CompareStartDate = compareDate, CompareEndDate = compareDate,
         };
 
+    [SalesDetailReportSqlServerFact]
+    public async Task 紧凑看板在统计快照内聚合_重算中的日期读上一版且不被写锁阻塞()
+    {
+        await using var fixture = await SalesDetailSqlServerFixture.CreateAsync();
+        var firstDay = SeedDate;
+        var secondDay = SeedDate.AddDays(1);
+        await fixture.SeedFreshStateAsync(firstDay);
+        await fixture.SeedFreshStateAsync(secondDay);
+        await fixture.SeedStoreAsync("B1", "分店一");
+        await fixture.SeedChinaSupplierAsync("C1", "国内供应商一");
+        await fixture.SeedChinaSupplierAsync("C2", "国内供应商二");
+        await fixture.SeedProductAsync("P-MAP", "映射商品", itemNumber: "IT-MAP");
+        await fixture.SeedProductAsync("P-DIRECT", "直写商品", itemNumber: "IT-DIRECT");
+        // 同编码的软删除旧资料不能覆盖在用资料。
+        await fixture.SeedProductAsync("P-DIRECT", "已删除的旧资料", itemNumber: "IT-OLD", uuid: "deleted-direct");
+        await fixture.MarkProductDeletedAsync("deleted-direct");
+        await fixture.SeedMappingAsync("P-MAP", "C1");
+        await fixture.SeedFactAsync(firstDay, "B1", "200", "P-MAP", 2, 20m);
+        await fixture.SeedFactAsync(secondDay, "B1", "200", "P-MAP", 1, 10m);
+        await fixture.SeedFactAsync(secondDay, "B1", "C2", "P-DIRECT", 3, 30m);
+        // 澳洲供应商行不属于国内编码族。
+        await fixture.SeedFactAsync(firstDay, "B1", "105", "P-MAP", 9, 90m);
+
+        // 第二天开始重算：状态置为 Running，另一个连接删掉当天事实但尚未提交（与日统计整日替换相同）。
+        await fixture.BeginNextPublishAsync(secondDay, SalesStatisticRefreshStatus.Running);
+        await using var pendingRewrite = await fixture.BeginUncommittedFactDeleteAsync(secondDay);
+        var boardTask = fixture.CreateService().GetCompactSalesBoardAsync(new CompactSalesBoardQuery
+        {
+            DateRange = new DateRangeDto { StartDate = firstDay, EndDate = secondDay },
+        });
+        // 快照读取不取共享锁：若退回已提交读会被写锁挡住，这里用超时把阻塞变成明确失败。
+        Assert.Same(boardTask, await Task.WhenAny(boardTask, Task.Delay(TimeSpan.FromSeconds(15))));
+        var result = await boardTask;
+
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh, result.StatisticStatus);
+        Assert.Equal(DateTimeKind.Utc, result.StatisticUpdatedAt!.Value.Kind);
+        // 未提交的删除不可见：读到的是上一版已发布的完整事实。
+        Assert.Equal(60m, result.Summary.TotalAmount);
+        Assert.Equal(6, result.Summary.TotalQuantity);
+        Assert.Equal(new[] { ("C1", 30m), ("C2", 30m) },
+            result.ChinaSuppliers.Select(row => (row.SupplierCode, row.TotalAmount)).OrderBy(row => row.SupplierCode));
+        var mapped = result.ProductDetails.Data.Single(row => row.ProductCode == "P-MAP");
+        Assert.Equal(("IT-MAP", "映射商品", "C1"), (mapped.ItemNumber, mapped.ProductName, mapped.ChinaSupplierCode));
+        var direct = result.ProductDetails.Data.Single(row => row.ProductCode == "P-DIRECT");
+        Assert.Equal(("IT-DIRECT", "直写商品", "C2"), (direct.ItemNumber, direct.ProductName, direct.ChinaSupplierCode));
+    }
+
+    [SalesDetailReportSqlServerFact]
+    public async Task 紧凑看板按月分桶一次补读缺失分片_跨区间复用且与强制刷新结果一致()
+    {
+        await using var fixture = await SalesDetailSqlServerFixture.CreateAsync();
+        var days = new[] { new DateTime(2026, 7, 30), new DateTime(2026, 7, 31), new DateTime(2026, 8, 1), new DateTime(2026, 8, 15), new DateTime(2026, 9, 1) };
+        // 区间内每天都要有状态，否则最新状态之后的日期按未发布处理。
+        for (var day = days[0]; day <= days[^1]; day = day.AddDays(1))
+            await fixture.SeedFreshStateAsync(day);
+        await fixture.SeedStoreAsync("B1", "分店一");
+        await fixture.SeedChinaSupplierAsync("C1", "国内供应商一");
+        await fixture.SeedChinaSupplierAsync("C2", "国内供应商二");
+        await fixture.SeedProductAsync("P-MAP", "映射商品", itemNumber: "IT-MAP");
+        await fixture.SeedProductAsync("P-DIRECT", "直写商品", itemNumber: "IT-DIRECT");
+        await fixture.SeedMappingAsync("P-MAP", "C1");
+        await fixture.SeedFactAsync(days[0], "B1", "200", "P-MAP", 1, 10m);
+        await fixture.SeedFactAsync(days[1], "B1", "200", "P-MAP", 1, 10m);
+        await fixture.SeedFactAsync(days[2], "B1", "200", "P-MAP", 2, 20m);
+        await fixture.SeedFactAsync(days[3], "B1", "C2", "P-DIRECT", 3, 30m);
+        await fixture.SeedFactAsync(days[4], "B1", "200", "P-MAP", 1, 5m);
+        var service = fixture.CreateService();
+        CompactSalesBoardQuery Query(DateTime start, DateTime end, bool force = false) =>
+            new() { DateRange = new DateRangeDto { StartDate = start, EndDate = end }, ForceRefresh = force };
+
+        // 7-30～8-31：7 月不满月分片 + 8 月整月分片，一条按月分桶的语句读回。
+        var julyAugust = await service.GetCompactSalesBoardAsync(Query(days[0], new DateTime(2026, 8, 31)));
+        // 8-01～9-01：8 月分片复用，只补读 9 月 1 日。
+        var augustSeptember = await service.GetCompactSalesBoardAsync(Query(days[2], days[4]));
+        var forced = await service.GetCompactSalesBoardAsync(Query(days[2], days[4], force: true));
+
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh, julyAugust.StatisticStatus);
+        Assert.Equal((70m, 7), (julyAugust.Summary.TotalAmount, julyAugust.Summary.TotalQuantity));
+        Assert.Equal((55m, 6), (augustSeptember.Summary.TotalAmount, augustSeptember.Summary.TotalQuantity));
+        Assert.Equal(
+            forced.ProductDetails.Data.Select(row => (row.ProductCode, row.TotalAmount, row.TotalQuantity, row.ChinaSupplierCode)),
+            augustSeptember.ProductDetails.Data.Select(row => (row.ProductCode, row.TotalAmount, row.TotalQuantity, row.ChinaSupplierCode)));
+        Assert.Equal(("C1", 25m), augustSeptember.ChinaSuppliers.Where(row => row.SupplierCode == "C1").Select(row => (row.SupplierCode, row.TotalAmount)).Single());
+        // 同一门店×商品跨两个月合并为一格。
+        Assert.Equal(2, Assert.Single(augustSeptember.Stores).ProductCount);
+    }
+
     private sealed class SalesDetailSqlServerFixture : IAsyncDisposable
     {
         private readonly string _masterConnectionString;
@@ -973,6 +1060,33 @@ public sealed class SalesDetailReportSqlServerIntegrationTests
                 """, ("@uuid", uuid ?? $"product-{Guid.NewGuid():N}"), ("@code", code), ("@name", name),
                 ("@englishName", englishName), ("@itemNumber", itemNumber));
 
+        public Task MarkProductDeletedAsync(string uuid) => ExecuteNonQueryAsync(_databaseConnectionString,
+            "UPDATE [dbo].[Product] SET [IsDeleted] = 1 WHERE [UUID] = @uuid;", ("@uuid", uuid));
+
+        /// <summary>在独立连接上删除某日事实但不提交，模拟日统计整日替换进行中；释放时回滚。</summary>
+        public async Task<IAsyncDisposable> BeginUncommittedFactDeleteAsync(DateTime date)
+        {
+            var connection = new SqlConnection(_databaseConnectionString);
+            await connection.OpenAsync();
+            var transaction = (SqlTransaction)await connection.BeginTransactionAsync();
+            await using (var command = new SqlCommand("DELETE FROM [dbo].[ProductStoreDailySalesStatistic] WHERE [Date] = @date;", connection, transaction))
+            {
+                command.Parameters.AddWithValue("@date", date);
+                await command.ExecuteNonQueryAsync();
+            }
+            return new PendingWrite(connection, transaction);
+        }
+
+        private sealed class PendingWrite(SqlConnection connection, SqlTransaction transaction) : IAsyncDisposable
+        {
+            public async ValueTask DisposeAsync()
+            {
+                await transaction.RollbackAsync();
+                await transaction.DisposeAsync();
+                await connection.DisposeAsync();
+            }
+        }
+
         public Task SeedMappingAsync(string productCode, string chinaSupplierCode) => ExecuteNonQueryAsync(_databaseConnectionString,
             "INSERT INTO [dbo].[posm_product_supplier_mapping] ([ProductCode], [LocalSupplierCode], [ChinaSupplierCode], [IsDeleted]) VALUES (@product, N'200', @china, 0);",
             ("@product", productCode), ("@china", chinaSupplierCode));
@@ -1011,7 +1125,8 @@ public sealed class SalesDetailReportSqlServerIntegrationTests
             );
             CREATE TABLE [dbo].[ChinaSupplier] (
                 [SupplierCode] nvarchar(50) NULL,
-                [SupplierName] nvarchar(200) NULL
+                [SupplierName] nvarchar(200) NULL,
+                [IsDeleted] bit NOT NULL CONSTRAINT [DF_ChinaSupplier_IsDeleted] DEFAULT (0)
             );
             CREATE TABLE [dbo].[Product] (
                 [UUID] nvarchar(50) NOT NULL PRIMARY KEY,
@@ -1021,7 +1136,8 @@ public sealed class SalesDetailReportSqlServerIntegrationTests
                 [ItemNumber] nvarchar(50) NULL,
                 [Barcode] nvarchar(50) NULL,
                 [LocalSupplierCode] nvarchar(50) NULL,
-                [ProductImage] nvarchar(200) NULL
+                [ProductImage] nvarchar(200) NULL,
+                [IsDeleted] bit NOT NULL CONSTRAINT [DF_Product_IsDeleted] DEFAULT (0)
             );
             CREATE TABLE [dbo].[posm_product_supplier_mapping] (
                 [ProductCode] nvarchar(50) NOT NULL,

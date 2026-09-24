@@ -15,6 +15,11 @@ assert(source.includes('onKeyDown'), '可点击表格行必须支持键盘操作
 assert(source.includes("aria-label=\"清除筛选\""), '清除筛选按钮必须有可访问标签')
 assert(source.includes("aria-label=\"强制刷新销售看板\""), '刷新图标按钮必须有可访问标签')
 assert(source.includes('maxSalesDateRangeDays'), '日期范围必须有显式上限')
+// 数据口径与销售明细对齐：快捷区间同一套规则（ISO 周、截止今天），上限共用 731 天，不能选未来日期。
+assert(source.includes('quickDateSelection(range)'), '快捷区间必须复用销售明细的 quickDateSelection')
+assert(source.includes('const maxSalesDateRangeDays = MAX_REPORT_DAYS'), '区间上限必须与销售明细共用 MAX_REPORT_DAYS')
+assert(source.includes('disabledDate={isDisabledDate}'), '日期面板必须禁用未来日期与超长区间')
+assert(source.includes('· 含提示'), '统计可读但带提示（对账未通过、历史缺口）时必须提示用户')
 assert(source.includes('loadError'), '页面必须显示加载错误状态')
 assert(source.includes('forceRefresh'), '页面必须向服务传递强制刷新状态')
 assert(source.includes('alt={record.productName ?? record.itemNumber ?? record.productCode}'), '商品图片必须提供描述性替代文本')

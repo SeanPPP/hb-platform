@@ -16,6 +16,7 @@ import {
   type DateRange,
 } from '../../../services/salesDashboardService'
 import styles from './styles.module.css'
+import { MAX_REPORT_DAYS, quickDateSelection, type QuickRange as ReportQuickRange } from '../ReportWorkbench/logic'
 import { readCompactBoardCache, writeCompactBoardCache, type CompactBoardCacheEntry } from './cache'
 import {
   buildPanelKeys,
@@ -39,21 +40,24 @@ import {
 
 const { RangePicker } = DatePicker
 
-type QuickRange = 'today' | 'yesterday' | 'thisWeek' | 'thisMonth'
+type QuickRange = Exclude<ReportQuickRange, 'custom'>
 type CacheState = 'cached' | 'fresh' | 'refreshing' | 'error'
 
 const quickRangeOptions: { label: string; value: QuickRange }[] = [
   { label: '今天', value: 'today' },
   { label: '昨天', value: 'yesterday' },
   { label: '本周', value: 'thisWeek' },
+  { label: '上周', value: 'lastWeek' },
   { label: '本月', value: 'thisMonth' },
+  { label: '上月', value: 'lastMonth' },
 ]
 
 const compactCurrencyFormatter = new Intl.NumberFormat('en-AU', { style: 'currency', currency: 'AUD', maximumFractionDigits: 0 })
 const priceFormatter = new Intl.NumberFormat('en-AU', { style: 'currency', currency: 'AUD', minimumFractionDigits: 2, maximumFractionDigits: 2 })
 const integerFormatter = new Intl.NumberFormat('en-AU')
 const compactBoardClientCacheMs = 30_000
-const maxSalesDateRangeDays = 366
+// 中文注释：区间上限与销售明细共用（两年含闰日），后端同样按 731 天校验。
+const maxSalesDateRangeDays = MAX_REPORT_DAYS
 const keywordDebounceMs = 300
 const pageSizeOptions = [50, 80, 120, 200]
 // 中文注释：后台外壳（顶栏 + 标签页）约 160px，与其他全高页面一致；
@@ -71,14 +75,15 @@ const emptyBoard: CompactSalesBoard = {
   fromCache: false,
 }
 
+// 中文注释：快捷区间与销售明细同一套规则（ISO 周、截止到今天）。
+// 旧写法「本周/本月」包含未来日期，未来日期没有统计状态，服务端会判为未发布，看板整页不出数。
 function resolveQuickRange(range: QuickRange): [Dayjs, Dayjs] {
-  if (range === 'yesterday') {
-    const date = dayjs().subtract(1, 'day')
-    return [date.startOf('day'), date.endOf('day')]
-  }
-  if (range === 'thisWeek') return [dayjs().startOf('week'), dayjs().endOf('week')]
-  if (range === 'thisMonth') return [dayjs().startOf('month'), dayjs().endOf('month')]
-  return [dayjs().startOf('day'), dayjs().endOf('day')]
+  const selection = quickDateSelection(range)
+  return [dayjs(selection.startDate), dayjs(selection.endDate)]
+}
+
+function isDisabledDate(date: Dayjs, info: { from?: Dayjs }) {
+  return date.isAfter(dayjs(), 'day') || Boolean(info.from && Math.abs(date.diff(info.from, 'day')) >= maxSalesDateRangeDays)
 }
 
 function toDateRange(dateRange: [Dayjs, Dayjs]): DateRange {
@@ -441,7 +446,7 @@ const CompactSalesBoardPage: React.FC = () => {
           </div>
           <div className={styles.toolbarControls}>
             <Segmented size="small" value={quickRange ?? undefined} options={quickRangeOptions} onChange={(value) => { const nextRange = value as QuickRange; setQuickRange(nextRange); setDateRange(resolveQuickRange(nextRange)); setPageIndex(1) }} />
-            <RangePicker size="small" value={dateRange} allowClear={false} onChange={handleRangeChange} />
+            <RangePicker size="small" value={dateRange} allowClear={false} disabledDate={isDisabledDate} onChange={handleRangeChange} />
             <Tooltip title="强制刷新（绕过缓存）">
               <Button size="small" type="primary" icon={<ReloadOutlined />} aria-label="强制刷新销售看板" loading={loading && cacheState === 'refreshing'} onClick={forceRefresh} />
             </Tooltip>
@@ -462,7 +467,10 @@ const CompactSalesBoardPage: React.FC = () => {
               : isFirstLoad
                 ? <span className={styles.statusMuted}>加载中…</span>
                 : statisticFresh
-                ? <span className={styles.statusOk}><i />统计已更新{statisticTime ? ` · 截至 ${statisticTime}` : ''}</span>
+                ? board.statisticMessage
+                  // 中文注释：对账未通过、历史缺口等只提示不阻断（与销售明细一致）；全文放在提示框里，不挤占三栏高度。
+                  ? <Tooltip title={board.statisticMessage}><span className={styles.statusWarn} tabIndex={0}><i />统计已更新{statisticTime ? ` · 截至 ${statisticTime}` : ''} · 含提示</span></Tooltip>
+                  : <span className={styles.statusOk}><i />统计已更新{statisticTime ? ` · 截至 ${statisticTime}` : ''}</span>
                 : <span className={styles.statusWarn}><i />{board.statisticMessage || board.statisticStatus}</span>}
             {!loadError && (
               <small>
