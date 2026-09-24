@@ -1,10 +1,15 @@
 import { readFileSync } from 'node:fs'
 import {
   PRODUCT_MOVEMENT_ACTION_HINTS,
+  PRODUCT_MOVEMENT_SUGGESTION_CARDS,
   formatAud,
   formatPercent,
+  getCoverDaysRatio,
   getCredibilityTagColor,
+  getListOrderDescription,
+  getSalesSortQuery,
   getSuggestionTagColor,
+  isCoverDaysTight,
 } from './logic'
 
 function assertEqual<T>(actual: T, expected: T, message: string) {
@@ -51,5 +56,55 @@ assertEqual(
   true,
   '商品经营分析服务应提供同权限的分店选项请求',
 )
+
+// 可卖天数进度条：30 天满格，14 天及以下判定紧张；无销量时按满格，避免空条被误读成缺货。
+assertEqual(getCoverDaysRatio(15), 0.5, '可卖 15 天应占进度条一半')
+assertEqual(getCoverDaysRatio(45), 1, '超过 30 天的可卖天数按满格封顶')
+assertEqual(getCoverDaysRatio(-3), 0, '估算剩余为负时进度条应为空')
+assertEqual(getCoverDaysRatio(null), 1, '近 30 天无销量时进度条按满格处理')
+assertEqual(isCoverDaysTight(14), true, '可卖 14 天应判定为紧张')
+assertEqual(isCoverDaysTight(14.1), false, '可卖超过 14 天不应判定为紧张')
+assertEqual(isCoverDaysTight(null), false, '无销量不应判定为紧张')
+
+// 建议卡片即筛选入口：第一张为「全部」，其余每张都要有对应的完整动作说明作为提示。
+assertEqual(PRODUCT_MOVEMENT_SUGGESTION_CARDS[0].key, '', '第一张卡片应为不筛选的全部商品')
+assertEqual(
+  PRODUCT_MOVEMENT_SUGGESTION_CARDS.some((card) => card.key === '好卖'),
+  true,
+  '去掉建议下拉后，好卖必须仍能通过卡片单独筛选',
+)
+
+// 店长动作列已取消，页面不应再渲染该字段。
+assertEqual(pageSource.includes('storeManagerAction'), false, '商品经营分析页面不应再展示店长动作列')
+assertEqual(pageSource.includes('imageUrl'), true, '商品经营分析页面应展示商品图片')
+assertEqual(serviceSource.includes('record.imageUrl ?? record.ImageUrl'), true, '服务层应兼容大小写的图片字段')
+
+assertEqual(
+  serviceSource.includes('record.snapshotGeneratedAtUtc ?? record.SnapshotGeneratedAtUtc'),
+  true,
+  '服务层应透传快照生成时间',
+)
+assertEqual(pageSource.includes('数据生成于'), true, '走快照时页面应提示数据生成时间，避免误读为实时数据')
+
+// 销量排序交给后端：服务端分页下前端只能排当前页。未排序时不传参数，后端按建议紧急程度排序。
+assertEqual(JSON.stringify(getSalesSortQuery('descend')), '{"sortBy":"salesQty30","sortDirection":"desc"}', '销量降序应传 desc')
+assertEqual(JSON.stringify(getSalesSortQuery('ascend')), '{"sortBy":"salesQty30","sortDirection":"asc"}', '销量升序应传 asc')
+assertEqual(JSON.stringify(getSalesSortQuery(null)), '{}', '取消排序时不应传排序参数')
+assertEqual(getListOrderDescription('ascend', true), '按近30天销量从低到高排列', '排序说明应跟随用户选择的销量排序')
+assertEqual(getListOrderDescription(null, false), '按建议紧急程度排列，订货和备货在前', '未排序时说明默认的建议紧急程度排序')
+assertEqual(pageSource.includes("extra.action === 'sort'"), true, '换排序应单独处理并回到第一页')
+
+// 关键词覆盖货号、条码、名称；货号取自商品档案，列表优先显示货号而不是内部商品编码。
+assertEqual(pageSource.includes('placeholder="货号 / 条码 / 名称"'), true, '搜索框应提示可按货号、条码、名称查询')
+assertEqual(pageSource.includes('record.itemNumber || record.productCode'), true, '商品行应优先显示货号')
+assertEqual(serviceSource.includes('record.itemNumber ?? record.ItemNumber'), true, '服务层应透传货号')
+
+// 展开行为手风琴：展开新行时只保留这一行。
+assertEqual(
+  pageSource.includes('setExpandedKeys(expanded ? [getRowKey(record)] : [])'),
+  true,
+  '同一时间只应展开一行',
+)
+assertEqual(pageSource.includes('onExpandedRowsChange'), false, '不应再允许多行同时展开')
 
 console.log('productMovementReport.logic.test: ok')

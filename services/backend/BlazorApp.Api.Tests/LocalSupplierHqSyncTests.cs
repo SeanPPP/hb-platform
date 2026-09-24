@@ -4,6 +4,7 @@ using BlazorApp.Api.Controllers.React;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services.React;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HqEntities;
@@ -131,7 +132,7 @@ public sealed class LocalSupplierHqSyncTests : IDisposable
     }
 
     [Fact]
-    public async Task SyncToHq_控制器只转发所选代码并要求管理角色()
+    public async Task SyncToHq_控制器只转发所选代码并要求供应商编辑权限()
     {
         var method = typeof(LocalSuppliersController).GetMethod(
             nameof(LocalSuppliersController.SyncToHq)
@@ -140,10 +141,10 @@ public sealed class LocalSupplierHqSyncTests : IDisposable
             "sync-to-hq",
             method.GetCustomAttribute<HttpPostAttribute>()?.Template
         );
-        Assert.Equal(
-            "Admin,WarehouseManager",
-            method.GetCustomAttribute<AuthorizeAttribute>()?.Roles
-        );
+        // 写接口已从角色硬编码改为 AustralianSuppliers.Edit 策略，WarehouseManager 通过角色模板保留能力。
+        var authorize = method.GetCustomAttribute<AuthorizeAttribute>();
+        Assert.Equal(Permissions.AustralianSuppliers.Edit, authorize?.Policy);
+        Assert.Null(authorize?.Roles);
 
         var service = new Mock<ILocalSuppliersReactService>(MockBehavior.Strict);
         service

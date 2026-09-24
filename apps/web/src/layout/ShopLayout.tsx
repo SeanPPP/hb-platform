@@ -1,5 +1,7 @@
 import {
   AppstoreOutlined,
+  BarChartOutlined,
+  BellOutlined,
   DashboardOutlined,
   DownOutlined,
   FileTextOutlined,
@@ -36,12 +38,17 @@ import {
 import { useAuthStore } from '../store/auth'
 import { useShopStore } from '../store/shop'
 import { resolveShopBannerCopy } from './shopBannerCopy'
+import { shopNavMessages } from './shopNavMessages'
+import { registerPageMessages } from '../i18n/registerPageMessages'
 import {
   resolvePreorderPromptPresentation,
   resolveShopPreorderNavigation,
 } from '../pages/ShopPreorder/preorderNavigation'
 import { getPreorderDateDisplay } from '../pages/ShopPreorder/preorderDate'
 import { changeStoreAfterDurableLeave, runAfterDurableLeave, usePreorderLeave } from '../pages/ShopPreorder/preorderLeaveContext'
+
+// 导航增量文案在布局代码块加载时注册，早于首次渲染。
+registerPageMessages(shopNavMessages)
 
 const { Search } = Input
 const PREORDER_GATE_TIMEOUT_MS = 8_000
@@ -130,7 +137,9 @@ export default function ShopLayout() {
   const isComingSoonPage = location.pathname.startsWith('/shop/coming-soon')
   const isOrdersPage = location.pathname.startsWith('/shop/orders')
   const isLocalSupplierInvoicesPage = location.pathname.startsWith('/shop/local-supplier-invoices')
-  const isMorePage = isPreorderPage || isBestSellersPage || isComingSoonPage || isLocalSupplierInvoicesPage
+  const isPurchaseSalesAnalysisPage = location.pathname.startsWith('/shop/purchase-sales-analysis')
+  const isSupplyWatchesPage = location.pathname.startsWith('/shop/supply-watches')
+  const isMorePage = isPreorderPage || isBestSellersPage || isComingSoonPage || isLocalSupplierInvoicesPage || isPurchaseSalesAnalysisPage || isSupplyWatchesPage
   const shopBannerCopy = useMemo(() => resolveShopBannerCopy(location.pathname), [location.pathname])
   const preorderDateTimeFormatter = useMemo(
     () => new Intl.DateTimeFormat(i18n.resolvedLanguage || i18n.language, { dateStyle: 'medium', timeStyle: 'short' }),
@@ -144,6 +153,13 @@ export default function ShopLayout() {
   const setSelectedStore = useShopStore((state) => state.setSelectedStore)
   const setCart = useShopStore((state) => state.setCart)
   const preorderActivations = useShopStore((state) => state.preorderActivations)
+  const supplyWatchSummary = useShopStore((state) => state.supplyWatchSummary)
+  const refreshSupplyWatchSummary = useShopStore((state) => state.refreshSupplyWatchSummary)
+  // 进入商城、切换分店、切换页面时刷新关注汇总；商品恢复订货靠这次刷新露出提示。
+  useEffect(() => {
+    void refreshSupplyWatchSummary()
+  }, [selectedStore?.storeCode, location.pathname, refreshSupplyWatchSummary])
+  const showSupplyRestockedAlert = supplyWatchSummary.restockedCount > 0 && !isSupplyWatchesPage
   const preorderBlocked = useShopStore((state) => state.preorderBlocked)
   const preorderGateLoading = useShopStore((state) => state.preorderGateLoading)
   const preorderGateError = useShopStore((state) => state.preorderGateError)
@@ -467,7 +483,9 @@ export default function ShopLayout() {
   }
 
   return (
-    <div className={`shop-layout${isComingSoonPage || isLocalSupplierInvoicesPage ? ' shop-workspace-layout' : ''}`}>
+    <div
+      className={`shop-layout${isComingSoonPage || isOrdersPage || isLocalSupplierInvoicesPage || isPurchaseSalesAnalysisPage ? ' shop-workspace-layout' : ''}`}
+    >
       <header className="shop-main-header">
         <div className="shop-shell">
           <button
@@ -526,6 +544,21 @@ export default function ShopLayout() {
               aria-current={isLocalSupplierInvoicesPage ? 'page' : undefined}
             >
               {t('shop.localSupplierInvoices', 'Local Invoices')}
+            </Link>
+            <Link
+              to="/shop/purchase-sales-analysis"
+              className={`shop-primary-nav__item${isPurchaseSalesAnalysisPage ? ' active' : ''}`}
+              aria-current={isPurchaseSalesAnalysisPage ? 'page' : undefined}
+            >
+              {t('shop.purchaseSalesAnalysis', 'Purchase & Sales')}
+            </Link>
+            <Link
+              to="/shop/supply-watches"
+              className={`shop-primary-nav__item${isSupplyWatchesPage ? ' active' : ''}`}
+              aria-current={isSupplyWatchesPage ? 'page' : undefined}
+            >
+              {t('shop.supplyWatches', 'Watched')}
+              {supplyWatchSummary.restockedCount > 0 ? <Badge count={supplyWatchSummary.restockedCount} size="small" offset={[6, -2]} /> : null}
             </Link>
           </nav>
 
@@ -771,6 +804,15 @@ export default function ShopLayout() {
             action={<Space>{preorderActivations[0] ? <Button size="small" type="primary" onClick={() => navigate(`/shop/preorders/${preorderActivations[0].activationGuid}`)}>{t('shop.preorder.enterPreorder')}</Button> : null}</Space>}
           />
         ) : null}
+        {showSupplyRestockedAlert ? (
+          <Alert
+            className="shop-supply-restocked-alert"
+            type="success"
+            showIcon
+            message={t('shop.supplyRestockedBanner', { count: supplyWatchSummary.restockedCount })}
+            action={<Button size="small" type="primary" onClick={() => navigate('/shop/supply-watches')}>{t('shop.supplyRestockedBannerAction', 'View')}</Button>}
+          />
+        ) : null}
         <RouteLoadBoundary resetKey={location.pathname}>
           <Outlet />
         </RouteLoadBoundary>
@@ -890,6 +932,23 @@ export default function ShopLayout() {
             aria-current={isLocalSupplierInvoicesPage ? 'page' : undefined}
           >
             <FileTextOutlined /><span>{t('shop.localSupplierInvoices', 'Local Invoices')}</span>
+          </Link>
+          <Link
+            to="/shop/purchase-sales-analysis"
+            className={isPurchaseSalesAnalysisPage ? 'active' : ''}
+            onClick={() => setMobileMoreVisible(false)}
+            aria-current={isPurchaseSalesAnalysisPage ? 'page' : undefined}
+          >
+            <BarChartOutlined /><span>{t('shop.purchaseSalesAnalysis', 'Purchase & Sales')}</span>
+          </Link>
+          <Link
+            to="/shop/supply-watches"
+            className={isSupplyWatchesPage ? 'active' : ''}
+            onClick={() => setMobileMoreVisible(false)}
+            aria-current={isSupplyWatchesPage ? 'page' : undefined}
+          >
+            <BellOutlined /><span>{t('shop.supplyWatches', 'Watched')}</span>
+            {supplyWatchSummary.restockedCount > 0 ? <Badge count={supplyWatchSummary.restockedCount} size="small" /> : null}
           </Link>
           <div className="shop-mobile-more-menu__separator" />
           {isShopHomePage && isMobileShopLayout

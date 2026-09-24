@@ -7,7 +7,17 @@ export const IOS_REVIEW_EXCLUDED_ROUTE_NAMES = [
   "employee-profile-review",
   "user-admin",
   "roles",
+  "permissions",
   "product-insights",
+  "warehouse-product-insights",
+  // 季节商品查询依赖真实进销与其他分店库存，审核模式没有离线演示数据。
+  "seasonal-product-insights",
+  "sales-orders",
+  "pos-operation-logs",
+  // 价格更新依赖真实分店任务与改价接口，审核模式没有对应的离线演示数据。
+  "price-updates",
+  // 收银用户条码是真实员工登录凭据，审核模式不展示。
+  "cash-register-users",
   "workbench",
 ] as const;
 

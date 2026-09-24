@@ -101,6 +101,8 @@ import {
   isContainerDetailSortField,
   matchesContainerDetailSelectedTags,
   matchesContainerDetailTagFilter,
+  isContainerDetailContainerNewProduct,
+  isContainerDetailCreatedContainerNewProduct,
   normalizeContainerDetailPushToHqPayload,
   normalizeContainerDetailEnglishNameForSave,
   resolveContainerDetailPendingPriceOnBlur,
@@ -1813,6 +1815,19 @@ assertEqual(matchesContainerDetailSelectedTags(tagRows[0], ['new', 'inactive']),
 assertEqual(matchesContainerDetailSelectedTags(tagRows[2], ['new', 'existing']), true, '新商品和已有商品同组多选应按 OR 匹配')
 assertEqual(matchesContainerDetailSelectedTags(tagRows[2], ['set', 'multi']), true, '商品类型统计 tag 同组多选应按 OR 匹配')
 assertEqual(matchesContainerDetailSelectedTags(tagRows[1], ['multi', 'inactive']), false, '商品类型未命中时即使上下架命中也应被过滤')
+
+// 本柜建档后的新品：是否新商品 已为 false，展示与筛选仍按本柜新品归入新商品。
+const createdContainerNewRow: ContainerDetail = { id: 41, hguid: 'tag-41', 是否新商品: false, isContainerNewProduct: true, 贴牌价格: 0, 进口价格: 1 }
+const repeatedExistingRow: ContainerDetail = { id: 42, hguid: 'tag-42', 是否新商品: false, isContainerNewProduct: false, 贴牌价格: 3, 进口价格: 1 }
+assertEqual(isContainerDetailContainerNewProduct(createdContainerNewRow), true, '本柜建档商品应仍是本柜新品')
+assertEqual(isContainerDetailCreatedContainerNewProduct(createdContainerNewRow), true, '本柜建档商品应识别为已建档新品')
+assertEqual(isContainerDetailCreatedContainerNewProduct(tagRows[0]), false, '未建档新品不应标记为已建档')
+assertEqual(isContainerDetailContainerNewProduct(tagRows[0]), true, '缺少本柜新品字段时应回退到是否新商品')
+assertEqual(matchesContainerDetailTagFilter(createdContainerNewRow, 'new'), true, '新商品 tag 应匹配本柜建档商品')
+assertEqual(matchesContainerDetailTagFilter(createdContainerNewRow, 'existing'), false, '本柜建档商品不应进入已有商品 tag')
+assertEqual(matchesContainerDetailTagFilter(repeatedExistingRow, 'existing'), true, '非本柜建档的已有商品应进入已有商品 tag')
+assertEqual(matchesContainerDetailTagFilter(createdContainerNewRow, 'noOemPrice'), false, '缺零售价只提醒未建档商品，本柜已建档商品不进入')
+assertEqual(buildContainerDetailExportRow(createdContainerNewRow).newProduct, '新商品', '导出新商品列应按本柜新品口径')
 assertEqual(matchesContainerDetailSelectedTags(tagRows[3], ['noOemPrice', 'abnormalImport']), true, '异常类 tag 同组多选应按 OR 匹配')
 assertEqual(matchesContainerDetailSelectedTags(tagRows[1], ['noOemPrice', 'abnormalImport', 'inactive']), true, '异常类 OR 后应继续与上下架分组 AND')
 assertEqual(matchesContainerDetailSelectedTags(tagRows[0], ['noOemPrice', 'abnormalImport', 'inactive']), false, '命中异常类但未命中下架时应被过滤')
@@ -4872,7 +4887,7 @@ assertEqual(
   '页面应通过统一 helper 解析商品编码，避免空白编码绕过兜底',
 )
 assertEqual(
-  pageSource.includes('setContainerDetailStatusByScope(containerGuid, scope, isActive, previewToken)') &&
+  pageSource.includes('setContainerDetailStatusByScope(containerGuid, scope, isActive, previewToken, supplyNotice)') &&
     pageSource.includes("'set-status', scope, parameters"),
   true,
   '仓库状态更新应走预览令牌保护的货柜范围动作，不能绕过并发守卫',

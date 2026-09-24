@@ -57,14 +57,25 @@ const ATTENDANCE_CONTEXT_ROUTE_NAMES = new Set([
   "attendance-management",
 ]);
 const ME_CONTEXT_ROUTE_NAMES = new Set(["employee-profile", "settings"]);
+// 促销海报编辑 / 待打印都从扫码查询页进入，属于扫码子页，继续高亮「扫码查询」。
+const SCAN_CONTEXT_ROUTE_NAMES = new Set([
+  "product-query",
+  "promo-poster-editor",
+  "promo-poster-queue",
+]);
 
 function resolveActivePrimaryKey(routeName: string | undefined): PrimaryNavigationKey {
-  if (routeName === "product-query") {
+  if (routeName && SCAN_CONTEXT_ROUTE_NAMES.has(routeName)) {
     return "scan";
   }
 
-  // 商品进销查询从工作台进入，是商品查询详情的子页，不额外占用一级导航。
-  if (routeName === "product-insights") {
+  // 商品进销、仓库商品进销、销售订单查询与员工操作日志都从工作台进入，是子页，不额外占用一级导航。
+  if (
+    routeName === "product-insights" ||
+    routeName === "warehouse-product-insights" ||
+    routeName === "sales-orders" ||
+    routeName === "pos-operation-logs"
+  ) {
     return "workbench";
   }
 
@@ -155,4 +166,28 @@ export function buildPrimaryNavigation({
   });
 
   return items;
+}
+
+interface ResolveMeTabLabelOptions {
+  fullName?: string | null;
+  username?: string | null;
+  isDeviceMode?: boolean;
+  fallbackLabel: string;
+}
+
+/**
+ * 底栏「我的」直接显示当前登录人，方便在共用设备上一眼确认账号。
+ * 优先姓名，其次用户名；设备模式没有个人账号，或两者都为空时回落到「我的」。
+ */
+export function resolveMeTabLabel({
+  fullName,
+  username,
+  isDeviceMode = false,
+  fallbackLabel,
+}: ResolveMeTabLabelOptions): string {
+  if (isDeviceMode) {
+    return fallbackLabel;
+  }
+
+  return fullName?.trim() || username?.trim() || fallbackLabel;
 }

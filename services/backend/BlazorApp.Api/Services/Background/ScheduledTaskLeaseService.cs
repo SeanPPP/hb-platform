@@ -209,6 +209,59 @@ namespace BlazorApp.Api.Services.Background
             return ScheduledTaskLeaseAcquireResult.CreateRunning(runningLease);
         }
 
+        /// <summary>
+        /// 把崩溃遗留的 sqlsess1 标记行转换为调用方的普通 TTL 租约。调用方必须持有同一日期的
+        /// Session applock（证明原 owner 的 SQL Session 已退出），并以观测到的旧 token 做 CAS；
+        /// 期间 token 若已被其他执行者换掉则不接管。转换后按旧 TTL 语义运行，完整刷新的
+        /// session CAS 不会越过未过期的 TTL 租约。
+        /// </summary>
+        internal async Task<ScheduledTaskLeaseAcquireResult> TryTakeOverOrphanSessionLeaseAsync(
+            string taskType,
+            string scopeKey,
+            string observedSessionLeaseToken,
+            TimeSpan leaseDuration,
+            SalesStatisticsDateExecutionGuard guard
+        )
+        {
+            if (!guard.IsSqlServerSessionGuarded)
+                throw new InvalidOperationException("接管 sqlsess1 租约必须持有全日统计 Session guard");
+            if (!guard.IsBoundTo(_context.Db, scopeKey))
+                throw new InvalidOperationException("接管 sqlsess1 租约的 guard 与当前数据库或日期范围不匹配");
+            if (!observedSessionLeaseToken.StartsWith(
+                    SalesStatisticsDateExecutionGuard.SessionLeaseTokenPrefix,
+                    StringComparison.Ordinal))
+                throw new InvalidOperationException("只允许接管 sqlsess1 标记租约");
+            await guard.EnsureActiveAsync("接管遗留日期租约");
+
+            var normalizedTaskType = NormalizeKey(taskType);
+            var normalizedScopeKey = NormalizeKey(scopeKey);
+            var ownerInstanceId = ResolveInstanceId();
+            var now = DateTime.UtcNow;
+            var leaseUntil = now.Add(leaseDuration);
+            var leaseToken = Guid.NewGuid().ToString("N");
+
+            var updatedRows = await _context.Db.Updateable<ScheduledTaskLease>()
+                .SetColumns(x => x.Status == ScheduledTaskLeaseStatus.Running)
+                .SetColumns(x => x.OwnerInstanceId == ownerInstanceId)
+                .SetColumns(x => x.LeaseToken == leaseToken)
+                .SetColumns(x => x.LeaseUntilUtc == leaseUntil)
+                .SetColumns(x => x.StartedAtUtc == now)
+                .SetColumns(x => x.CompletedAtUtc == null)
+                .SetColumns(x => x.LastError == null)
+                .SetColumns(x => x.UpdatedAtUtc == now)
+                .Where(x =>
+                    x.TaskType == normalizedTaskType
+                    && x.ScopeKey == normalizedScopeKey
+                    && x.Status == ScheduledTaskLeaseStatus.Running
+                    && x.LeaseToken == observedSessionLeaseToken
+                )
+                .ExecuteCommandAsync();
+            var lease = await QueryLeaseAsync(normalizedTaskType, normalizedScopeKey);
+            return updatedRows > 0
+                ? ScheduledTaskLeaseAcquireResult.CreateAcquired(lease!)
+                : ScheduledTaskLeaseAcquireResult.CreateRunning(lease);
+        }
+
         public async Task<bool> CompleteAsync(
             string taskType,
             string scopeKey,
@@ -459,42 +512,27 @@ namespace BlazorApp.Api.Services.Background
                     SalesStatisticsDateExecutionGuard.SessionLeaseTokenPrefix,
                     StringComparison.Ordinal) == true)
                 .ToList();
-            if (sessionLeases.Count == 0
-                || _context.Db.CurrentConnectionConfig.DbType != DbType.SqlServer)
+            if (sessionLeases.Count == 0)
             {
                 return leases;
             }
 
-            var activeScopeKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            HashSet<string>? activeScopeKeys;
             try
             {
-                await using var connection = new SqlConnection(
-                    _context.Db.CurrentConnectionConfig.ConnectionString
+                activeScopeKeys = await ProbeHeldSessionScopeKeysAsync(
+                    sessionLeases.Select(lease => lease.ScopeKey)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList()
                 );
-                await connection.OpenAsync();
-                foreach (var scopeKey in sessionLeases.Select(lease => lease.ScopeKey).Distinct(StringComparer.OrdinalIgnoreCase))
-                {
-                    await using var command = connection.CreateCommand();
-                    command.CommandText = """
-                        SELECT CASE
-                            WHEN APPLOCK_MODE(N'public', @resource, N'Session') = N'Exclusive' THEN 1
-                            WHEN APPLOCK_TEST(N'public', @resource, N'Exclusive', N'Session') = 0 THEN 1
-                            ELSE 0
-                        END;
-                        """;
-                    command.Parameters.AddWithValue(
-                        "@resource",
-                        SalesStatisticsDateExecutionGuard.GetLockResource(scopeKey)
-                    );
-                    if (Convert.ToInt32(await command.ExecuteScalarAsync()) == 1)
-                    {
-                        activeScopeKeys.Add(scopeKey);
-                    }
-                }
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "探测 SQL session 日期锁失败，保守保留运行中 sqlsess1 租约");
+                return leases;
+            }
+            if (activeScopeKeys == null)
+            {
                 return leases;
             }
 
@@ -502,6 +540,47 @@ namespace BlazorApp.Api.Services.Background
                 !sessionLeases.Contains(lease)
                 || activeScopeKeys.Contains(lease.ScopeKey)
             ).ToList();
+        }
+
+        /// <summary>
+        /// 以独立连接探测哪些日期的 session applock 仍被持有；返回 null 表示当前数据库不支持
+        /// 探测（非 SQL Server），调用方须保留原租约语义。异常由调用方按"保守视为活跃"处理。
+        /// </summary>
+        internal virtual async Task<HashSet<string>?> ProbeHeldSessionScopeKeysAsync(
+            IReadOnlyCollection<string> scopeKeys
+        )
+        {
+            if (_context.Db.CurrentConnectionConfig.DbType != DbType.SqlServer)
+            {
+                return null;
+            }
+
+            var activeScopeKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            await using var connection = new SqlConnection(
+                _context.Db.CurrentConnectionConfig.ConnectionString
+            );
+            await connection.OpenAsync();
+            foreach (var scopeKey in scopeKeys)
+            {
+                await using var command = connection.CreateCommand();
+                command.CommandText = """
+                    SELECT CASE
+                        WHEN APPLOCK_MODE(N'public', @resource, N'Session') = N'Exclusive' THEN 1
+                        WHEN APPLOCK_TEST(N'public', @resource, N'Exclusive', N'Session') = 0 THEN 1
+                        ELSE 0
+                    END;
+                    """;
+                command.Parameters.AddWithValue(
+                    "@resource",
+                    SalesStatisticsDateExecutionGuard.GetLockResource(scopeKey)
+                );
+                if (Convert.ToInt32(await command.ExecuteScalarAsync()) == 1)
+                {
+                    activeScopeKeys.Add(scopeKey);
+                }
+            }
+
+            return activeScopeKeys;
         }
 
         private async Task<ScheduledTaskLease?> QueryLeaseAsync(string taskType, string scopeKey)

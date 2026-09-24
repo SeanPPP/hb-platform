@@ -2,6 +2,7 @@ using System.Text;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.DTOs;
+using BlazorApp.Shared.Models;
 using SqlSugar;
 
 namespace BlazorApp.Api.Services.React
@@ -102,7 +103,8 @@ namespace BlazorApp.Api.Services.React
 
                 var sql = LocalSupplierInvoiceSalesAnalysisSqlBuilder.BuildPurchaseSalesAnalysis(
                     normalized,
-                    scopedStoreCodes
+                    scopedStoreCodes,
+                    GetBrisbaneToday()
                 );
 
                 _logger.LogInformation(
@@ -116,25 +118,57 @@ namespace BlazorApp.Api.Services.React
                     normalized.PageSize
                 );
 
-                var summaryRows =
-                    await _db.Ado.SqlQueryAsync<LocalSupplierPurchaseSalesAnalysisSummaryRow>(
-                        sql.SummarySql,
-                        sql.Parameters.ToArray()
-                    );
-                var summary = summaryRows.FirstOrDefault();
+                // 进货销量分析是重查询，分段计时以便定位慢在主查询还是逐日补充。
+                var pagedStopwatch = System.Diagnostics.Stopwatch.StartNew();
                 var rows = await _db.Ado.SqlQueryAsync<LocalSupplierPurchaseSalesAnalysisSqlRow>(
                     sql.PagedSql,
                     sql.Parameters.ToArray()
+                );
+                pagedStopwatch.Stop();
+
+                // 分页结果本身已带总数与统计更新时间；只有当前页为空（无数据或页码越界）才需要单独汇总。
+                var totalCount = rows.Count > 0 ? rows[0].TotalCount : 0;
+                var salesStatisticLastUpdate = rows.Count > 0
+                    ? rows[0].OverallSalesStatisticLastUpdate
+                    : null;
+                if (rows.Count == 0)
+                {
+                    var summaryRows =
+                        await _db.Ado.SqlQueryAsync<LocalSupplierPurchaseSalesAnalysisSummaryRow>(
+                            sql.SummarySql,
+                            sql.Parameters.ToArray()
+                        );
+                    var summary = summaryRows.FirstOrDefault();
+                    totalCount = summary?.TotalCount ?? 0;
+                    salesStatisticLastUpdate = summary?.SalesStatisticLastUpdate;
+                }
+
+                // 逐日序列只为当前页补充，不改分页 SQL 与排序；失败时降级为空序列，不影响主查询。
+                var items = rows.Select(row => row.ToDto()).ToList();
+                var dailyStopwatch = System.Diagnostics.Stopwatch.StartNew();
+                if (normalized.IncludeDailySales)
+                {
+                    await AttachDailySeriesAsync(items);
+                }
+                dailyStopwatch.Stop();
+
+                _logger.LogInformation(
+                    "分店供应商进货销量分析耗时 PagedMs={PagedMs} DailyMs={DailyMs} IncludeDaily={IncludeDaily} Rows={Rows} Total={Total}",
+                    pagedStopwatch.ElapsedMilliseconds,
+                    dailyStopwatch.ElapsedMilliseconds,
+                    normalized.IncludeDailySales,
+                    items.Count,
+                    totalCount
                 );
 
                 return ApiResponse<LocalSupplierPurchaseSalesAnalysisResponseDto>.OK(
                     new LocalSupplierPurchaseSalesAnalysisResponseDto
                     {
-                        Items = rows.Cast<LocalSupplierPurchaseSalesAnalysisRowDto>().ToList(),
-                        Total = summary?.TotalCount ?? 0,
+                        Items = items,
+                        Total = totalCount,
                         Page = normalized.Page,
                         PageSize = normalized.PageSize,
-                        SalesStatisticLastUpdate = summary?.SalesStatisticLastUpdate,
+                        SalesStatisticLastUpdate = salesStatisticLastUpdate,
                     }
                 );
             }
@@ -179,6 +213,160 @@ namespace BlazorApp.Api.Services.React
             );
         }
 
+        /// <summary>
+        /// 为当前页每行填充进货事件与逐日销量序列。
+        /// 窗口：上次进货日（没有则最近进货日前 30 天）到布里斯班业务日期今天。
+        /// </summary>
+        /// <remarks>internal 且允许注入 today，仅为了让测试固定业务日期；生产调用不传。</remarks>
+        internal async Task AttachDailySeriesAsync(
+            List<LocalSupplierPurchaseSalesAnalysisRowDto> items,
+            DateTime? referenceToday = null
+        )
+        {
+            var today = (referenceToday ?? GetBrisbaneToday()).Date;
+            var windows =
+                new List<(LocalSupplierPurchaseSalesAnalysisRowDto Row, DateTime Start, DateTime End)>();
+
+            foreach (var item in items)
+            {
+                // 没有最近进货日期就无法确定窗口，两个列表保持为空。
+                if (!item.LatestPurchaseDate.HasValue)
+                {
+                    continue;
+                }
+
+                // 进货事件只依赖分页行本身，不受逐日查询成败影响。
+                item.Purchases = LocalSupplierPurchaseSalesDailySeriesBuilder.BuildPurchaseEvents(
+                    item.PreviousPurchaseDate,
+                    item.PreviousPurchaseQty,
+                    item.LatestPurchaseDate,
+                    item.LatestPurchaseQty
+                );
+
+                var (start, end) = LocalSupplierPurchaseSalesDailySeriesBuilder.ResolveWindow(
+                    item.PreviousPurchaseDate,
+                    item.LatestPurchaseDate.Value,
+                    today
+                );
+                windows.Add((item, start, end));
+            }
+
+            if (windows.Count == 0)
+            {
+                return;
+            }
+
+            try
+            {
+                // 同一页正常只有一个门店；仍按行的 StoreCode 分组，每个门店只发一条 SQL，绝不逐行查询。
+                foreach (
+                    var storeGroup in windows.GroupBy(
+                        window => window.Row.StoreCode,
+                        StringComparer.OrdinalIgnoreCase
+                    )
+                )
+                {
+                    var storeCode = storeGroup.Key;
+                    var productCodes = storeGroup
+                        .Select(window => window.Row.ProductCode)
+                        .Where(code => !string.IsNullOrWhiteSpace(code))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                    if (string.IsNullOrWhiteSpace(storeCode) || productCodes.Count == 0)
+                    {
+                        continue;
+                    }
+
+                    var minStart = storeGroup.Min(window => window.Start);
+                    // 结束日用半开区间（< 次日零点）表达「包含 end 当天」，不依赖 Date 列是否带时间部分或数据库的日期精度。
+                    var endExclusive = storeGroup.Max(window => window.End).AddDays(1);
+
+                    var statistics = await _db.Queryable<ProductStoreDailySalesStatistic>()
+                        .Where(stat =>
+                            stat.BranchCode == storeCode
+                            && productCodes.Contains(stat.ProductCode)
+                            && stat.Date >= minStart
+                            && stat.Date < endExclusive
+                        )
+                        .Select(stat => new DailyQuantityRow
+                        {
+                            ProductCode = stat.ProductCode,
+                            Date = stat.Date,
+                            TotalQuantity = stat.TotalQuantity,
+                        })
+                        .ToListAsync();
+
+                    // 同一商品同一天可能有多条不同 SupplierCode 的统计记录，必须按 商品+日期 求和；退货负数原样保留。
+                    var quantitiesByProduct = statistics
+                        .GroupBy(stat => stat.ProductCode, StringComparer.OrdinalIgnoreCase)
+                        .ToDictionary(
+                            productGroup => productGroup.Key,
+                            productGroup =>
+                                (IReadOnlyDictionary<DateTime, int>)productGroup
+                                    .GroupBy(stat => stat.Date.Date)
+                                    .ToDictionary(
+                                        dayGroup => dayGroup.Key,
+                                        dayGroup => dayGroup.Sum(stat => stat.TotalQuantity)
+                                    ),
+                            StringComparer.OrdinalIgnoreCase
+                        );
+
+                    foreach (var window in storeGroup)
+                    {
+                        var quantities = quantitiesByProduct.TryGetValue(
+                            window.Row.ProductCode,
+                            out var found
+                        )
+                            ? found
+                            : EmptyDailyQuantities;
+                        window.Row.DailySales =
+                            LocalSupplierPurchaseSalesDailySeriesBuilder.BuildDailySeries(
+                                window.Start,
+                                window.End,
+                                quantities
+                            );
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                // 逐日序列只是图表增强数据：失败时整页统一回退为空列表，避免出现半页有图半页无图，也不让主查询失败。
+                _logger.LogError(ex, "分店供应商进货销量分析逐日销量序列查询失败");
+                foreach (var window in windows)
+                {
+                    window.Row.DailySales = new List<LocalSupplierPurchaseSalesDailyPointDto>();
+                }
+            }
+        }
+
+        private static readonly IReadOnlyDictionary<DateTime, int> EmptyDailyQuantities =
+            new Dictionary<DateTime, int>();
+
+        /// <summary>布里斯班业务日期今天；与批量货号销量分析保持同一口径。</summary>
+        private static DateTime GetBrisbaneToday()
+        {
+            try
+            {
+                return TimeZoneInfo
+                    .ConvertTimeFromUtc(
+                        DateTime.UtcNow,
+                        TimeZoneInfo.FindSystemTimeZoneById("Australia/Brisbane")
+                    )
+                    .Date;
+            }
+            catch (TimeZoneNotFoundException)
+            {
+                return DateTime.UtcNow.Date;
+            }
+        }
+
+        private sealed class DailyQuantityRow
+        {
+            public string ProductCode { get; set; } = string.Empty;
+            public DateTime Date { get; set; }
+            public int TotalQuantity { get; set; }
+        }
+
         private sealed class LocalSupplierInvoiceSalesAnalysisHeaderRow
         {
             public string InvoiceGUID { get; set; } = string.Empty;
@@ -199,6 +387,33 @@ namespace BlazorApp.Api.Services.React
             : LocalSupplierPurchaseSalesAnalysisRowDto
         {
             public int TotalCount { get; set; }
+            public DateTime? OverallSalesStatisticLastUpdate { get; set; }
+
+            // 窗口列只服务于分页响应头，不能随行数据一起序列化给前端。
+            public LocalSupplierPurchaseSalesAnalysisRowDto ToDto() =>
+                new()
+                {
+                    StoreCode = StoreCode,
+                    StoreName = StoreName,
+                    ProductCode = ProductCode,
+                    ItemNumber = ItemNumber,
+                    Barcode = Barcode,
+                    ProductName = ProductName,
+                    ProductImage = ProductImage,
+                    SupplierCode = SupplierCode,
+                    SupplierName = SupplierName,
+                    LatestPurchaseDate = LatestPurchaseDate,
+                    LatestPurchaseQty = LatestPurchaseQty,
+                    PreviousPurchaseDate = PreviousPurchaseDate,
+                    PreviousPurchaseQty = PreviousPurchaseQty,
+                    PurchaseIntervalDays = PurchaseIntervalDays,
+                    SalesBetweenPurchases = SalesBetweenPurchases,
+                    SalesQty30 = SalesQty30,
+                    SalesQty60 = SalesQty60,
+                    SalesQty90 = SalesQty90,
+                    TotalSalesSinceLatestPurchase = TotalSalesSinceLatestPurchase,
+                    SalesStatisticLastUpdate = SalesStatisticLastUpdate,
+                };
         }
 
         private sealed class LocalSupplierPurchaseSalesAnalysisSummaryRow
@@ -227,6 +442,8 @@ namespace BlazorApp.Api.Services.React
                 ["salesQty30"] = "SalesQty30",
                 ["salesQty60"] = "SalesQty60",
                 ["salesQty90"] = "SalesQty90",
+                // 总销量 = 最近进货当天起至今的累计净销量，与页面图表、售出比同一口径。
+                ["totalSalesSinceLatestPurchase"] = "TotalSalesSinceLatestPurchase",
             };
 
         public static LocalSupplierInvoiceSalesAnalysisSqlBuildResult BuildHeader(string invoiceGuid)
@@ -246,13 +463,13 @@ namespace BlazorApp.Api.Services.React
                 + "FROM [StoreLocalSupplierInvoice] h\n"
                 + "LEFT JOIN [Store] st\n"
                 + "    ON st.StoreCode = h.StoreCode\n"
-                + "    AND COALESCE(st.IsDeleted, 0) = 0\n"
+                + "    AND st.IsDeleted = 0\n"
                 + "LEFT JOIN [LocalSupplier] sup\n"
                 + "    ON sup.LocalSupplierCode = h.SupplierCode\n"
-                + "    AND COALESCE(sup.IsDeleted, 0) = 0\n"
+                + "    AND sup.IsDeleted = 0\n"
                 + "WHERE\n"
                 + "    h.InvoiceGUID = @InvoiceGuid\n"
-                + "    AND COALESCE(h.IsDeleted, 0) = 0";
+                + "    AND h.IsDeleted = 0";
 
             return new LocalSupplierInvoiceSalesAnalysisSqlBuildResult
             {
@@ -287,16 +504,17 @@ namespace BlazorApp.Api.Services.React
                 + "    FROM [StoreLocalSupplierInvoiceDetails] d\n"
                 + "    INNER JOIN [StoreLocalSupplierInvoice] h\n"
                 + "        ON h.InvoiceGUID = d.InvoiceGUID\n"
-                + "        AND COALESCE(h.IsDeleted, 0) = 0\n"
+                + "        AND h.IsDeleted = 0\n"
                 + "    LEFT JOIN [StoreRetailPrice] srp\n"
                 + "        ON srp.UUID = d.StoreProductCode\n"
-                + "        AND COALESCE(srp.IsDeleted, 0) = 0\n"
+                + "        AND srp.IsDeleted = 0\n"
                 + "    LEFT JOIN [Product] p\n"
                 + "        ON p.ProductCode = COALESCE(NULLIF(d.ProductCode, N''), NULLIF(srp.ProductCode, N''))\n"
-                + "        AND COALESCE(p.IsDeleted, 0) = 0\n"
+                + "        AND p.IsDeleted = 0\n"
+                + "    -- 删除标记统一写成 IsDeleted = 0，才能命中明细表 InvoiceGUID 过滤索引，避免 65 万行全表扫描。\n"
                 + "    WHERE\n"
                 + "        d.InvoiceGUID = @InvoiceGuid\n"
-                + "        AND COALESCE(d.IsDeleted, 0) = 0\n"
+                + "        AND d.IsDeleted = 0\n"
                 + "),\n"
                 + "CurrentProducts AS (\n"
                 + "    SELECT\n"
@@ -317,17 +535,19 @@ namespace BlazorApp.Api.Services.React
                 + "        cp.ProductCode,\n"
                 + "        MAX(COALESCE(pi.InboundDate, pi.OrderDate)) AS PreviousPurchaseDate\n"
                 + "    FROM CurrentProducts cp\n"
+                + "    -- 历史明细已有商品编码，直接按商品命中 (ProductCode, InvoiceGUID) 过滤索引，再回连单据校验门店与日期；\n"
+                + "    -- 列上不能包 NULLIF，且要显式写 ProductCode <> N'' 才能匹配过滤索引定义，否则会按门店枚举全部单据逐张回表。\n"
+                + "    INNER JOIN [StoreLocalSupplierInvoiceDetails] pd\n"
+                + "        ON pd.ProductCode = cp.ProductCode\n"
+                + "        AND pd.ProductCode <> N''\n"
+                + "        AND pd.IsDeleted = 0\n"
                 + "    INNER JOIN [StoreLocalSupplierInvoice] pi\n"
-                + "        ON pi.StoreCode = cp.StoreCode\n"
-                + "        AND COALESCE(pi.IsDeleted, 0) = 0\n"
+                + "        ON pi.InvoiceGUID = pd.InvoiceGUID\n"
+                + "        AND pi.StoreCode = cp.StoreCode\n"
+                + "        AND pi.IsDeleted = 0\n"
                 + "        AND COALESCE(pi.InboundDate, pi.OrderDate) IS NOT NULL\n"
                 + "        AND CAST(COALESCE(pi.InboundDate, pi.OrderDate) AS date) < cp.AnalysisDate\n"
                 + "        AND pi.InvoiceGUID <> @InvoiceGuid\n"
-                + "    INNER JOIN [StoreLocalSupplierInvoiceDetails] pd\n"
-                + "        ON pd.InvoiceGUID = pi.InvoiceGUID\n"
-                + "        AND COALESCE(pd.IsDeleted, 0) = 0\n"
-                + "        -- 历史明细已有商品编码，直接匹配可避开 400 万级分店价格表回填。\n"
-                + "        AND NULLIF(pd.ProductCode, N'') = cp.ProductCode\n"
                 + "    GROUP BY\n"
                 + "        cp.StoreCode,\n"
                 + "        cp.ProductCode\n"
@@ -412,7 +632,7 @@ namespace BlazorApp.Api.Services.React
                 || !PurchaseSalesSortColumns.ContainsKey(normalizedSortBy)
             )
             {
-                normalizedSortBy = "latestPurchaseDate";
+                normalizedSortBy = "totalSalesSinceLatestPurchase";
             }
 
             var normalizedSortOrder = string.Equals(
@@ -440,6 +660,7 @@ namespace BlazorApp.Api.Services.React
                 SortOrder = normalizedSortOrder,
                 Page = query.Page <= 0 ? 1 : query.Page,
                 PageSize = pageSize,
+                IncludeDailySales = query.IncludeDailySales,
             };
         }
 
@@ -481,7 +702,8 @@ namespace BlazorApp.Api.Services.React
 
         public static LocalSupplierPurchaseSalesAnalysisSqlBuildResult BuildPurchaseSalesAnalysis(
             LocalSupplierPurchaseSalesAnalysisQueryDto query,
-            IReadOnlyList<string>? scopedStoreCodes
+            IReadOnlyList<string>? scopedStoreCodes,
+            DateTime? referenceToday = null
         )
         {
             var normalized = NormalizePurchaseSalesAnalysisQuery(query);
@@ -495,6 +717,8 @@ namespace BlazorApp.Api.Services.React
             {
                 new("@Offset", (normalized.Page - 1) * normalized.PageSize),
                 new("@PageSize", normalized.PageSize),
+                // 总销量要统计到"今天"，用半开区间（< 次日零点）表达包含当天，不依赖 Date 列的时间部分。
+                new("@SalesWindowEndExclusive", (referenceToday ?? DateTime.UtcNow).Date.AddDays(1)),
             };
 
             if (normalized.OrderDateStart.HasValue)
@@ -540,54 +764,72 @@ WITH FilteredInvoices AS (
         h.OrderDate,
         CAST(COALESCE(h.InboundDate, h.OrderDate, h.CreatedAt) AS date) AS PurchaseDate
     FROM [StoreLocalSupplierInvoice] h
+    -- 删除标记统一写成 IsDeleted = 0：实体层该列不可空且库内没有 NULL，
+    -- 而 COALESCE(IsDeleted, 0) = 0 会让优化器放弃所有 WHERE IsDeleted = 0 的过滤索引，退化成 65 万行明细全表扫描。
     WHERE
-        COALESCE(h.IsDeleted, 0) = 0
+        h.IsDeleted = 0
         AND CAST(COALESCE(h.InboundDate, h.OrderDate, h.CreatedAt) AS date) IS NOT NULL{{invoiceStoreFilter}}{{invoiceDateFilter}}
 ),
-PurchaseDailyAggregation AS (
+DetailResolved AS (
+    -- 先把明细与分店零售价关联、确定最终 ProductCode，再去 JOIN Product。
+    -- 原先 JOIN Product 的条件是跨 d/srp 两表的 COALESCE 表达式，优化器无法用 ProductCode 索引，
+    -- 只能整表扫描后哈希；拆开后条件变成单列等值，执行计划更稳定（实测耗时波动从 1.4~6.6s 收敛到 2.6~2.7s）。
     SELECT
-        fi.StoreCode AS StoreCode,
-        COALESCE(NULLIF(st.StoreName, N''), fi.StoreCode) AS StoreName,
-        COALESCE(NULLIF(d.ProductCode, N''), NULLIF(srp.ProductCode, N'')) AS ProductCode,
-        COALESCE(NULLIF(d.ItemNumber, N''), NULLIF(p.ItemNumber, N'')) AS ItemNumber,
-        COALESCE(NULLIF(d.Barcode, N''), NULLIF(p.Barcode, N'')) AS Barcode,
-        COALESCE(NULLIF(d.ProductName, N''), NULLIF(p.ProductName, N'')) AS ProductName,
-        NULLIF(p.ProductImage, N'') AS ProductImage,
-        COALESCE(NULLIF(p.LocalSupplierCode, N''), NULLIF(srp.SupplierCode, N'')) AS SupplierCode,
-        NULLIF(sup.Name, N'') AS SupplierName,
-        fi.PurchaseDate AS PurchaseDate,
-        SUM(COALESCE(d.Quantity, 0)) AS PurchaseQty
+        fi.StoreCode,
+        fi.PurchaseDate,
+        d.Quantity,
+        d.ItemNumber AS DetailItemNumber,
+        d.Barcode AS DetailBarcode,
+        d.ProductName AS DetailProductName,
+        srp.SupplierCode AS RetailSupplierCode,
+        COALESCE(NULLIF(d.ProductCode, N''), NULLIF(srp.ProductCode, N'')) AS ProductCode
     FROM FilteredInvoices fi
     INNER JOIN [StoreLocalSupplierInvoiceDetails] d
         ON d.InvoiceGUID = fi.InvoiceGUID
-        AND COALESCE(d.IsDeleted, 0) = 0
+        AND d.IsDeleted = 0
     LEFT JOIN [StoreRetailPrice] srp
         ON srp.UUID = d.StoreProductCode
-        AND COALESCE(srp.IsDeleted, 0) = 0
+        AND srp.IsDeleted = 0
+    WHERE NULLIF(fi.StoreCode, N'') IS NOT NULL
+),
+PurchaseDailyAggregation AS (
+    SELECT
+        dr.StoreCode AS StoreCode,
+        COALESCE(NULLIF(st.StoreName, N''), dr.StoreCode) AS StoreName,
+        dr.ProductCode AS ProductCode,
+        COALESCE(NULLIF(dr.DetailItemNumber, N''), NULLIF(p.ItemNumber, N'')) AS ItemNumber,
+        COALESCE(NULLIF(dr.DetailBarcode, N''), NULLIF(p.Barcode, N'')) AS Barcode,
+        COALESCE(NULLIF(dr.DetailProductName, N''), NULLIF(p.ProductName, N'')) AS ProductName,
+        NULLIF(p.ProductImage, N'') AS ProductImage,
+        COALESCE(NULLIF(p.LocalSupplierCode, N''), NULLIF(dr.RetailSupplierCode, N'')) AS SupplierCode,
+        NULLIF(sup.Name, N'') AS SupplierName,
+        dr.PurchaseDate AS PurchaseDate,
+        SUM(COALESCE(dr.Quantity, 0)) AS PurchaseQty
+    FROM DetailResolved dr
     LEFT JOIN [Product] p
-        ON p.ProductCode = COALESCE(NULLIF(d.ProductCode, N''), NULLIF(srp.ProductCode, N''))
-        AND COALESCE(p.IsDeleted, 0) = 0
+        ON p.ProductCode = dr.ProductCode
+        AND p.IsDeleted = 0
     LEFT JOIN [Store] st
-        ON st.StoreCode = fi.StoreCode
-        AND COALESCE(st.IsDeleted, 0) = 0
+        ON st.StoreCode = dr.StoreCode
+        AND st.IsDeleted = 0
     LEFT JOIN [LocalSupplier] sup
-        ON sup.LocalSupplierCode = COALESCE(NULLIF(p.LocalSupplierCode, N''), NULLIF(srp.SupplierCode, N''))
-        AND COALESCE(sup.IsDeleted, 0) = 0
+        ON sup.LocalSupplierCode = COALESCE(NULLIF(p.LocalSupplierCode, N''), NULLIF(dr.RetailSupplierCode, N''))
+        AND sup.IsDeleted = 0
     WHERE
-        NULLIF(fi.StoreCode, N'') IS NOT NULL
-        AND NULLIF(COALESCE(NULLIF(d.ProductCode, N''), NULLIF(srp.ProductCode, N'')), N'') IS NOT NULL{{productFilter}}
-        AND NULLIF(COALESCE(NULLIF(p.LocalSupplierCode, N''), NULLIF(srp.SupplierCode, N'')), N'') IS NOT NULL
+        NULLIF(dr.ProductCode, N'') IS NOT NULL
+        AND COALESCE(NULLIF(p.LocalSupplierCode, N''), NULLIF(dr.RetailSupplierCode, N'')) = @SupplierCode
+        AND NULLIF(COALESCE(NULLIF(p.LocalSupplierCode, N''), NULLIF(dr.RetailSupplierCode, N'')), N'') IS NOT NULL
     GROUP BY
-        fi.StoreCode,
-        COALESCE(NULLIF(st.StoreName, N''), fi.StoreCode),
-        COALESCE(NULLIF(d.ProductCode, N''), NULLIF(srp.ProductCode, N'')),
-        COALESCE(NULLIF(d.ItemNumber, N''), NULLIF(p.ItemNumber, N'')),
-        COALESCE(NULLIF(d.Barcode, N''), NULLIF(p.Barcode, N'')),
-        COALESCE(NULLIF(d.ProductName, N''), NULLIF(p.ProductName, N'')),
+        dr.StoreCode,
+        COALESCE(NULLIF(st.StoreName, N''), dr.StoreCode),
+        dr.ProductCode,
+        COALESCE(NULLIF(dr.DetailItemNumber, N''), NULLIF(p.ItemNumber, N'')),
+        COALESCE(NULLIF(dr.DetailBarcode, N''), NULLIF(p.Barcode, N'')),
+        COALESCE(NULLIF(dr.DetailProductName, N''), NULLIF(p.ProductName, N'')),
         NULLIF(p.ProductImage, N''),
-        COALESCE(NULLIF(p.LocalSupplierCode, N''), NULLIF(srp.SupplierCode, N'')),
+        COALESCE(NULLIF(p.LocalSupplierCode, N''), NULLIF(dr.RetailSupplierCode, N'')),
         NULLIF(sup.Name, N''),
-        fi.PurchaseDate
+        dr.PurchaseDate
 ),
 RankedPurchases AS (
     SELECT
@@ -661,6 +903,7 @@ FinalRows AS (
         COALESCE(sm.SalesQty30, 0) AS SalesQty30,
         COALESCE(sm.SalesQty60, 0) AS SalesQty60,
         COALESCE(sm.SalesQty90, 0) AS SalesQty90,
+        COALESCE(sm.TotalSalesSinceLatestPurchase, 0) AS TotalSalesSinceLatestPurchase,
         sm.SalesStatisticLastUpdate AS SalesStatisticLastUpdate
     FROM LatestPurchases lp
     -- 上次到最近、最近到 90 天是连续区间；保留各销量窗口的半开边界与退货负数。
@@ -668,6 +911,7 @@ FinalRows AS (
         SELECT SUM(daily.SalesQty30) AS SalesQty30,
                SUM(daily.SalesQty60) AS SalesQty60,
                SUM(daily.SalesQty90) AS SalesQty90,
+               SUM(daily.TotalSalesSinceLatestPurchase) AS TotalSalesSinceLatestPurchase,
                SUM(daily.SalesBetweenPurchases) AS SalesBetweenPurchases,
                MAX(daily.UpdateTime) AS SalesStatisticLastUpdate
         -- 先投影再聚合，避免 SQL Server 将外部日期引用与销量列视为非法混合聚合。
@@ -677,12 +921,18 @@ FinalRows AS (
                 CASE WHEN s.Date >= lp.LatestPurchaseDate AND s.Date < DATEADD(day, 60, lp.LatestPurchaseDate) THEN COALESCE(s.TotalQuantity, 0) ELSE 0 END AS SalesQty60,
                 CASE WHEN s.Date >= lp.LatestPurchaseDate AND s.Date < DATEADD(day, 90, lp.LatestPurchaseDate) THEN COALESCE(s.TotalQuantity, 0) ELSE 0 END AS SalesQty90,
                 CASE WHEN lp.PreviousPurchaseDate IS NOT NULL AND s.Date >= lp.PreviousPurchaseDate AND s.Date < lp.LatestPurchaseDate THEN COALESCE(s.TotalQuantity, 0) ELSE 0 END AS SalesBetweenPurchases,
+                -- 总销量不设上界；实际上界由下面 WHERE 的窗口末端（90 天窗口与今天取较晚者）决定。
+                CASE WHEN s.Date >= lp.LatestPurchaseDate THEN COALESCE(s.TotalQuantity, 0) ELSE 0 END AS TotalSalesSinceLatestPurchase,
                 s.UpdateTime
             FROM [ProductStoreDailySalesStatistic] s
             WHERE s.BranchCode = lp.StoreCode
               AND s.ProductCode = lp.ProductCode
               AND s.Date >= COALESCE(lp.PreviousPurchaseDate, lp.LatestPurchaseDate)
-              AND s.Date < DATEADD(day, 90, lp.LatestPurchaseDate)
+              AND s.Date < CASE
+                              WHEN DATEADD(day, 90, lp.LatestPurchaseDate) > @SalesWindowEndExclusive
+                                  THEN DATEADD(day, 90, lp.LatestPurchaseDate)
+                              ELSE @SalesWindowEndExclusive
+                          END
         ) daily
     ) sm
 )
@@ -710,7 +960,11 @@ SELECT
     SalesQty30,
     SalesQty60,
     SalesQty90,
-    SalesStatisticLastUpdate
+    TotalSalesSinceLatestPurchase,
+    SalesStatisticLastUpdate,
+    -- 总数与统计更新时间随分页一起带出，避免同一套 CTE 为汇总再完整执行一遍。
+    COUNT(1) OVER () AS TotalCount,
+    MAX(SalesStatisticLastUpdate) OVER () AS OverallSalesStatisticLastUpdate
 FROM FinalRows
 ORDER BY
     {{orderBy}}
@@ -753,12 +1007,12 @@ FROM (
         h.StoreCode
     FROM [StoreLocalSupplierInvoice] h
     WHERE
-        COALESCE(h.IsDeleted, 0) = 0
+        h.IsDeleted = 0
         AND NULLIF(h.StoreCode, N'') IS NOT NULL{{storeFilter}}
 ) source
 LEFT JOIN [Store] st
     ON st.StoreCode = source.StoreCode
-    AND COALESCE(st.IsDeleted, 0) = 0
+    AND st.IsDeleted = 0
 ORDER BY
     source.StoreCode
 """;
@@ -781,33 +1035,48 @@ ORDER BY
             var storeFilter = BuildStoreFilter("h.StoreCode", storeParameterNames);
 
             // 供应商候选和主查询保持同一口径：商品主供应商优先，分店价格表供应商兜底。
+            // 先把门店全部历史明细收敛成不重复的 (商品编码, 分店价格 UUID) 对，再回填价格表与商品表，
+            // 避免对几万行明细逐行查 470 万行的分店价格表。
             var sql =
                 $$"""
+WITH StorePairs AS (
+    SELECT DISTINCT
+        NULLIF(d.ProductCode, N'') AS ProductCode,
+        d.StoreProductCode
+    FROM [StoreLocalSupplierInvoice] h
+    INNER JOIN [StoreLocalSupplierInvoiceDetails] d
+        ON d.InvoiceGUID = h.InvoiceGUID
+        AND d.IsDeleted = 0
+    WHERE
+        h.IsDeleted = 0
+        AND NULLIF(h.StoreCode, N'') IS NOT NULL{{storeFilter}}
+),
+ResolvedPairs AS (
+    SELECT
+        COALESCE(sp.ProductCode, NULLIF(srp.ProductCode, N'')) AS ProductCode,
+        NULLIF(srp.SupplierCode, N'') AS PriceSupplierCode
+    FROM StorePairs sp
+    LEFT JOIN [StoreRetailPrice] srp
+        ON srp.UUID = sp.StoreProductCode
+        AND srp.IsDeleted = 0
+)
 SELECT
     COALESCE(NULLIF(sup.Name, N''), source.SupplierCode) AS Label,
     source.SupplierCode AS Value
 FROM (
     SELECT DISTINCT
-        COALESCE(NULLIF(p.LocalSupplierCode, N''), NULLIF(srp.SupplierCode, N'')) AS SupplierCode
-    FROM [StoreLocalSupplierInvoice] h
-    INNER JOIN [StoreLocalSupplierInvoiceDetails] d
-        ON d.InvoiceGUID = h.InvoiceGUID
-        AND COALESCE(d.IsDeleted, 0) = 0
-    LEFT JOIN [StoreRetailPrice] srp
-        ON srp.UUID = d.StoreProductCode
-        AND COALESCE(srp.IsDeleted, 0) = 0
+        COALESCE(NULLIF(p.LocalSupplierCode, N''), rp.PriceSupplierCode) AS SupplierCode
+    FROM ResolvedPairs rp
     LEFT JOIN [Product] p
-        ON p.ProductCode = COALESCE(NULLIF(d.ProductCode, N''), NULLIF(srp.ProductCode, N''))
-        AND COALESCE(p.IsDeleted, 0) = 0
+        ON p.ProductCode = rp.ProductCode
+        AND p.IsDeleted = 0
     WHERE
-        COALESCE(h.IsDeleted, 0) = 0
-        AND NULLIF(h.StoreCode, N'') IS NOT NULL{{storeFilter}}
-        AND NULLIF(COALESCE(NULLIF(d.ProductCode, N''), NULLIF(srp.ProductCode, N'')), N'') IS NOT NULL
-        AND NULLIF(COALESCE(NULLIF(p.LocalSupplierCode, N''), NULLIF(srp.SupplierCode, N'')), N'') IS NOT NULL
+        rp.ProductCode IS NOT NULL
+        AND COALESCE(NULLIF(p.LocalSupplierCode, N''), rp.PriceSupplierCode) IS NOT NULL
 ) source
 LEFT JOIN [LocalSupplier] sup
     ON sup.LocalSupplierCode = source.SupplierCode
-    AND COALESCE(sup.IsDeleted, 0) = 0
+    AND sup.IsDeleted = 0
 ORDER BY
     Label,
     Value
@@ -993,7 +1262,7 @@ ORDER BY
                 || !PurchaseSalesSortColumns.TryGetValue(sortBy, out var column)
             )
             {
-                column = PurchaseSalesSortColumns["latestPurchaseDate"];
+                column = PurchaseSalesSortColumns["totalSalesSinceLatestPurchase"];
             }
 
             var direction = string.Equals(query.SortOrder, "asc", StringComparison.OrdinalIgnoreCase)
@@ -1025,6 +1294,116 @@ ORDER BY
         private static string? NormalizeText(string? value)
         {
             return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        }
+    }
+
+    /// <summary>
+    /// 进货销量分析图表的逐日序列与进货事件构造器；纯静态、无数据库依赖，便于单测。
+    /// </summary>
+    public static class LocalSupplierPurchaseSalesDailySeriesBuilder
+    {
+        /// <summary>没有上次进货时，窗口从最近进货日往前回看的天数。</summary>
+        public const int FallbackLookbackDays = 30;
+
+        /// <summary>
+        /// 计算单行的图表窗口：start 为上次进货日，没有则取最近进货日前 30 天；end 为业务日期今天，但不得早于 start。
+        /// </summary>
+        public static (DateTime Start, DateTime End) ResolveWindow(
+            DateTime? previousPurchaseDate,
+            DateTime latestPurchaseDate,
+            DateTime today
+        )
+        {
+            var start = (
+                previousPurchaseDate ?? latestPurchaseDate.AddDays(-FallbackLookbackDays)
+            ).Date;
+            var end = today.Date;
+
+            // 进货日期被录成未来日期时 end 会早于 start，此时收敛为 start 当天的单点窗口。
+            if (end < start)
+            {
+                end = start;
+            }
+
+            return (start, end);
+        }
+
+        /// <summary>
+        /// 生成 start 到 end（首尾都包含）的逐日列表，缺失日期补 0，负数（退货）原样保留。
+        /// 约定：start 晚于 end 时返回空列表，调用方应先用 ResolveWindow 保证窗口有效。
+        /// </summary>
+        public static List<LocalSupplierPurchaseSalesDailyPointDto> BuildDailySeries(
+            DateTime start,
+            DateTime end,
+            IReadOnlyDictionary<DateTime, int> quantitiesByDate
+        )
+        {
+            var startDate = start.Date;
+            var endDate = end.Date;
+            var series = new List<LocalSupplierPurchaseSalesDailyPointDto>();
+            if (startDate > endDate)
+            {
+                return series;
+            }
+
+            for (var date = startDate; date <= endDate; date = date.AddDays(1))
+            {
+                series.Add(
+                    new LocalSupplierPurchaseSalesDailyPointDto
+                    {
+                        Date = date,
+                        Quantity = quantitiesByDate.TryGetValue(date, out var quantity)
+                            ? quantity
+                            : 0,
+                    }
+                );
+            }
+
+            return series;
+        }
+
+        /// <summary>
+        /// 生成窗口内的进货事件：上次进货的日期与数量都有值才加入，随后加入最近进货；数量四舍五入取整（远离零）。
+        /// </summary>
+        public static List<LocalSupplierPurchaseSalesPurchaseEventDto> BuildPurchaseEvents(
+            DateTime? previousPurchaseDate,
+            decimal? previousPurchaseQty,
+            DateTime? latestPurchaseDate,
+            decimal? latestPurchaseQty
+        )
+        {
+            var events = new List<LocalSupplierPurchaseSalesPurchaseEventDto>();
+            if (!latestPurchaseDate.HasValue)
+            {
+                return events;
+            }
+
+            if (previousPurchaseDate.HasValue && previousPurchaseQty.HasValue)
+            {
+                events.Add(
+                    new LocalSupplierPurchaseSalesPurchaseEventDto
+                    {
+                        Date = previousPurchaseDate.Value.Date,
+                        Quantity = RoundQuantity(previousPurchaseQty.Value),
+                    }
+                );
+            }
+
+            events.Add(
+                new LocalSupplierPurchaseSalesPurchaseEventDto
+                {
+                    Date = latestPurchaseDate.Value.Date,
+                    // 最近进货数量理论上不为空；为空时按 0 处理，保证图表仍能标出进货日。
+                    Quantity = RoundQuantity(latestPurchaseQty ?? 0m),
+                }
+            );
+
+            return events;
+        }
+
+        private static int RoundQuantity(decimal quantity)
+        {
+            return (int)Math.Round(quantity, MidpointRounding.AwayFromZero);
         }
     }
 

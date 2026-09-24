@@ -12,6 +12,7 @@ export interface DiscountChartSegment {
 }
 
 export interface DiscountChartPoint {
+  unavailable: boolean
   pending: boolean
   discountPending: boolean
   date: string
@@ -25,7 +26,16 @@ export interface DiscountChartPoint {
   discountPriceMin: number | null
   discountPriceMax: number | null
   x: number
+  /** 整个日期槽均可交互，缺失日期没有柱形时仍能显示提示。 */
+  hitX: number
+  hitWidth: number
   segments: DiscountChartSegment[]
+}
+
+/** 缺失统计日占据日期轴，但没有指标，避免把未知数据伪装为零。 */
+export interface DiscountChartDaily {
+  date: string
+  metrics: BatchSalesDaily['metrics'] | null
 }
 
 export interface DiscountChartModel {
@@ -83,31 +93,34 @@ function naturalWeekKey(date: string): string | null {
 }
 
 /** 生成有符号堆叠柱。各分类各自在零线两侧累计，因此退货不会被正销量抵消。 */
-export function buildDiscountDailyChartModel(data: BatchSalesDaily[], width = 720, height = 248, classificationUnavailable = false): DiscountChartModel {
+export function buildDiscountDailyChartModel(data: DiscountChartDaily[], width = 720, height = 248, classificationUnavailable = false): DiscountChartModel {
   const plotLeft = 42
   const plotRight = width - 12
   const plotTop = 18
   const plotBottom = height - 32
   const normalized = data.map((item) => {
-    const pending = item.metrics.discountStatus === 'pending' || classificationUnavailable
-    const regularQuantity = finite(item.metrics.regularQuantity)
-    const discountQuantity = finite(item.metrics.discountQuantity)
-    const unknownQuantity = finite(item.metrics.unknownQuantity)
+    const unavailable = item.metrics === null
+    const metrics = item.metrics
+    const pending = metrics !== null && (metrics.discountStatus === 'pending' || classificationUnavailable)
+    const regularQuantity = finite(metrics?.regularQuantity)
+    const discountQuantity = finite(metrics?.discountQuantity)
+    const unknownQuantity = finite(metrics?.unknownQuantity)
     return {
       pending,
-      discountPending: item.metrics.discountStatus === 'pending',
+      discountPending: metrics?.discountStatus === 'pending',
       date: item.date,
-      quantity: finite(item.metrics.quantity),
-      salesAmount: finite(item.metrics.salesAmount),
+      unavailable,
+      quantity: finite(metrics?.quantity),
+      salesAmount: finite(metrics?.salesAmount),
       regularQuantity,
       discountQuantity,
       unknownQuantity,
-      originalPriceMin: item.metrics.originalPriceMin,
-      originalPriceMax: item.metrics.originalPriceMax,
-      discountPriceMin: item.metrics.discountPriceMin,
-      discountPriceMax: item.metrics.discountPriceMax,
-      positive: (pending ? [finite(item.metrics.quantity)] : [regularQuantity, discountQuantity, unknownQuantity]).filter((value) => value > 0).reduce((sum, value) => sum + value, 0),
-      negative: (pending ? [finite(item.metrics.quantity)] : [regularQuantity, discountQuantity, unknownQuantity]).filter((value) => value < 0).reduce((sum, value) => sum + value, 0),
+      originalPriceMin: metrics?.originalPriceMin ?? null,
+      originalPriceMax: metrics?.originalPriceMax ?? null,
+      discountPriceMin: metrics?.discountPriceMin ?? null,
+      discountPriceMax: metrics?.discountPriceMax ?? null,
+      positive: metrics === null ? 0 : (pending ? [finite(metrics.quantity)] : [regularQuantity, discountQuantity, unknownQuantity]).filter((value) => value > 0).reduce((sum, value) => sum + value, 0),
+      negative: metrics === null ? 0 : (pending ? [finite(metrics.quantity)] : [regularQuantity, discountQuantity, unknownQuantity]).filter((value) => value < 0).reduce((sum, value) => sum + value, 0),
     }
   })
   const minValue = Math.min(0, ...normalized.map((point) => point.negative))
@@ -125,7 +138,7 @@ export function buildDiscountDailyChartModel(data: BatchSalesDaily[], width = 72
     const x = plotLeft + slotWidth * index + (slotWidth - barWidth) / 2
     let positiveBase = 0
     let negativeBase = 0
-    const series: Array<{ kind: DiscountChartKind; key: 'quantity' | 'regularQuantity' | 'discountQuantity' | 'unknownQuantity' }> = point.pending ? [{ kind: 'total', key: 'quantity' }] : SERIES
+    const series: Array<{ kind: DiscountChartKind; key: 'quantity' | 'regularQuantity' | 'discountQuantity' | 'unknownQuantity' }> = point.unavailable ? [] : point.pending ? [{ kind: 'total', key: 'quantity' }] : SERIES
     const segments = series.map(({ kind, key }) => {
       const value = point[key]
       if (!value) return { kind, value, x, y: zeroY, width: barWidth, height: 0 }
@@ -140,7 +153,7 @@ export function buildDiscountDailyChartModel(data: BatchSalesDaily[], width = 72
       negativeBase = next
       return segment
     })
-    return { ...point, x: x + barWidth / 2, segments }
+    return { ...point, x: x + barWidth / 2, hitX: plotLeft + slotWidth * index, hitWidth: slotWidth, segments }
   })
 
   return {

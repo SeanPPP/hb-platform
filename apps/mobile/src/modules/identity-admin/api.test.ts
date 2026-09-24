@@ -211,6 +211,24 @@ async function run() {
     if (url === "/Roles/guid/role%2F1/permissions/state") {
       return { data: { RoleGuid: "role/1", RoleName: "Supervisor", IsSuperAdmin: false, ImplicitAllPermissions: false, ExplicitPermissionCodes: ["Users.View"], EffectivePermissionCodes: ["Users.View"] } };
     }
+    if (url === "/Roles/sys-permissions") {
+      return { data: { success: true, data: [
+        { Id: "p-1", Code: "Users.View", Name: "查看用户", Category: "Users" },
+        { id: "p-2", code: "StoreEvents.View", name: "查看门店活动", category: "StoreEvents", description: "自定义" },
+      ] } };
+    }
+    if (url === "/Roles/permissions/role-counts") {
+      return { data: { success: true, data: { "Users.View": 3, "StoreEvents.View": "1", "Bad.Count": -1, "": 9 } } };
+    }
+    if (url === "/Roles/permissions/Store.Events%2FView/roles") {
+      return { data: { success: true, data: [{ RoleGUID: "role-1", RoleName: "Manager", IsActive: true, CreatedAt: "", UpdatedAt: "" }] } };
+    }
+    if (url === "/Roles/permissions/Store.Events%2FView/users") {
+      return { data: { success: true, data: [{ UserGUID: "user-9", Username: "zoe", Email: "zoe@example.test", FullName: "Zoe", IsActive: false, AssignedAt: "2026-09-01T00:00:00" }] } };
+    }
+    if (url === "/Roles/permissions/Empty.Code/users") {
+      return { data: { success: true, data: null } };
+    }
     if (url === "/Roles/guid/role%2F1/users") {
       return { data: { items: [{ userGUID: "user-1", username: "alice", email: "alice@example.test", isActive: true, assignedAt: "2026-01-01" }], total: 1, page: 1, pageSize: 10_000 } };
     }
@@ -224,6 +242,9 @@ async function run() {
     }
     if (url === "/Roles") {
       return { data: { RoleGUID: "role-2", RoleName: "Buyer", IsActive: true, CreatedAt: "", UpdatedAt: "", UserCount: 0 } };
+    }
+    if (url === "/Roles/permissions") {
+      return { data: { success: true, data: [{ Id: "p-3", Code: "StoreEvents.Create", Name: "门店活动 - 创建", Category: "StoreEvents" }] } };
     }
     return { data: { success: true, data: true } };
   }) as typeof apiClient.post;
@@ -314,6 +335,43 @@ async function run() {
       permissions: ["Users.View", "Roles.View"],
     });
     assert.ok(requests.some((item) => item.url === "/Roles/guid/role%2F1/users/user%2F2"));
+
+    // ---- 权限管理接口契约 ----
+    const sysPermissions = await api.fetchIdentitySysPermissions("actor-1");
+    assert.deepEqual(sysPermissions, [
+      { id: "p-1", code: "Users.View", name: "查看用户", category: "Users" },
+      { id: "p-2", code: "StoreEvents.View", name: "查看门店活动", category: "StoreEvents", description: "自定义" },
+    ]);
+    assert.deepEqual(api.normalizeIdentitySysPermissions({ success: true, data: null }), [], "data 为 null 视为空表");
+    assert.throws(() => api.normalizeIdentitySysPermissions({ success: true, data: { code: "x" } }), /IDENTITY_ADMIN_RESPONSE_INVALID/);
+    const roleCounts = await api.fetchIdentityPermissionRoleCounts("actor-1");
+    assert.deepEqual(roleCounts, { "Users.View": 3, "StoreEvents.View": 1 }, "负数、空键与非数字计数一律丢弃");
+    const permissionRoles = await api.fetchIdentityPermissionRoles(" Store.Events/View ", "actor-1");
+    assert.equal(permissionRoles[0]?.roleGUID, "role-1");
+    assert.equal(permissionRoles[0]?.userCount, 0);
+    await api.assignIdentityPermissionRoles("Store.Events/View", [" role-1 ", "role-1", "", "role-2"], "actor-1");
+    assert.deepEqual(requests.find((item) => item.method === "post" && item.url === "/Roles/permissions/Store.Events%2FView/roles")?.body, ["role-1", "role-2"], "权限代码须 URL 编码，角色 GUID 去重去空");
+    const permissionUsers = await api.fetchIdentityPermissionUsers(" Store.Events/View ", "actor-1");
+    assert.deepEqual(permissionUsers, [{ userGUID: "user-9", username: "zoe", email: "zoe@example.test", fullName: "Zoe", isActive: false, assignedAt: "2026-09-01T00:00:00" }]);
+    assert.deepEqual(await api.fetchIdentityPermissionUsers("Empty.Code", "actor-1"), [], "data 为 null 视为无直接授权用户");
+    await api.assignIdentityPermissionUsers("Store.Events/View", { addUserGuids: [" user-1 ", "user-1", ""], removeUserGuids: ["user-9"] }, "actor-1");
+    assert.deepEqual(
+      requests.find((item) => item.method === "post" && item.url === "/Roles/permissions/Store.Events%2FView/users")?.body,
+      { addUserGuids: ["user-1"], removeUserGuids: ["user-9"] },
+      "用户授权按增量提交，GUID 去重去空且权限代码 URL 编码",
+    );
+    await assert.rejects(api.assignIdentityPermissionUsers(" ", { addUserGuids: ["user-1"], removeUserGuids: [] }, "actor-1"), /Permission code is required/);
+    await api.createIdentitySysPermission({ code: " StoreEvents ", name: " 门店活动 ", category: "StoreEvents", description: "  ", actions: ["Create", " Create ", ""] }, "actor-1");
+    assert.deepEqual(requests.find((item) => item.method === "post" && item.url === "/Roles/permissions")?.body, {
+      code: "StoreEvents", name: "门店活动", category: "StoreEvents", description: null, actions: ["Create"],
+    });
+    await api.createIdentitySysPermission({ code: "StoreEvents.Export", name: "导出", category: "StoreEvents", actions: [] }, "actor-1");
+    assert.deepEqual(requests.filter((item) => item.method === "post" && item.url === "/Roles/permissions").at(-1)?.body, {
+      code: "StoreEvents.Export", name: "导出", category: "StoreEvents", description: null,
+    }, "未勾选动作时不得发送空 actions，否则服务端会走单个创建以外的分支");
+    await api.deleteIdentitySysPermission("Store.Events/View", "actor-1");
+    assert.ok(requests.some((item) => item.method === "delete" && item.url === "/Roles/permissions/Store.Events%2FView"));
+    await assert.rejects(api.deleteIdentitySysPermission("   ", "actor-1"), /Permission code is required/);
 
     assert.throws(
       () => api.normalizeIdentityUsers({ Success: false, Message: "denied", ErrorCode: "FORBIDDEN" }),

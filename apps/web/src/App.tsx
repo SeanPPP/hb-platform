@@ -26,12 +26,14 @@ const HbSupplierOrderSupportPage = lazy(() => import('./pages/HbSupplierOrderSup
 const MobilePrivacyPage = lazy(() => import('./pages/MobilePrivacy'))
 const ShopBestSellersPage = lazy(() => import('./pages/ShopBestSellers'))
 const ShopComingSoonPage = lazy(() => import('./pages/ShopComingSoon'))
+const ShopSupplyWatchesPage = lazy(() => import('./pages/ShopSupplyWatches'))
 const ShopHomePage = lazy(() => import('./pages/ShopHome'))
 const ShopLocalSupplierInvoiceDetailPage = lazy(() => import('./pages/ShopLocalSupplierInvoiceDetail'))
 const ShopLocalSupplierInvoicesPage = lazy(() => import('./pages/ShopLocalSupplierInvoices'))
 const ShopOrderDetailPage = lazy(() => import('./pages/ShopOrderDetail'))
 const ShopOrdersPage = lazy(() => import('./pages/ShopOrders'))
 const ShopPreorderPage = lazy(() => import('./pages/ShopPreorder'))
+const ShopPurchaseSalesAnalysisPage = lazy(() => import('./pages/ShopPurchaseSalesAnalysis'))
 
 function AppBootstrap() {
   const { t } = useTranslation()
@@ -118,11 +120,15 @@ function AppBootstrap() {
       >
         <Route index element={<ShopHomePage />} />
         <Route path="best-sellers" element={<ShopBestSellersPage />} />
+        {/* 货号销量已并入进货销量分析的「粘贴数据查看」标签；旧地址重定向过去，未授权时页面自动回落到「选择分店查看」。 */}
+        <Route path="batch-product-sales" element={<Navigate replace to="/shop/purchase-sales-analysis?tab=paste" />} />
         <Route path="coming-soon" element={<ShopComingSoonPage />} />
+        <Route path="supply-watches" element={<ShopSupplyWatchesPage />} />
         <Route path="orders" element={<ShopOrdersPage />} />
         <Route path="orders/:id" element={<ShopOrderDetailPage />} />
         <Route path="local-supplier-invoices" element={<ShopLocalSupplierInvoicesPage />} />
         <Route path="local-supplier-invoices/:invoiceGuid" element={<ShopLocalSupplierInvoiceDetailPage />} />
+        <Route path="purchase-sales-analysis" element={<ShopPurchaseSalesAnalysisPage />} />
         <Route path="preorders/:activationGuid" element={<ShopPreorderPage />} />
       </Route>
       <Route

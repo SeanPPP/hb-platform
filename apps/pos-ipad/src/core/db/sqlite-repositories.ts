@@ -1454,6 +1454,16 @@ class SqlitePaymentAttemptRepository implements PaymentAttemptRepositoryPort {
     const row = await database.getFirst<PaymentRow>(
       `SELECT p.* FROM payment_attempts p
        WHERE p.order_guid = ?
+         AND NOT EXISTS (
+           SELECT 1 FROM payment_recovery_cases resolved
+           WHERE resolved.attempt_id = p.attempt_id
+             AND resolved.order_guid = p.order_guid
+             AND resolved.state = 'manual-unpaid'
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM manual_payment_tender_bindings manual
+           WHERE manual.attempt_id = p.attempt_id
+         )
          AND (
            p.state IN ('Created', 'Submitted', 'Pending', 'Unknown')
            OR (p.state = 'Approved' AND NOT EXISTS (
@@ -1464,7 +1474,7 @@ class SqlitePaymentAttemptRepository implements PaymentAttemptRepositoryPort {
              HAVING COUNT(*) = 1
                 AND MAX(CASE WHEN t.order_guid = p.order_guid
                                   AND t.amount_cents = p.amount_cents
-                                  AND ((p.provider IN ('square', 'linkly-cloud') AND t.method = 'card')
+                                  AND ((p.provider IN ('square', 'linkly-cloud', 'manual-card') AND t.method = 'card')
                                     OR (p.provider = 'voucher' AND t.method = 'voucher'))
                              THEN 1 ELSE 0 END) = 1
            ))

@@ -7,7 +7,8 @@ type MenuRow = [string, string, string, string[], Partial<MenuSource>?];
 const WEB_MENU: MenuSource[] = ([
   ["/dashboard", "Dashboard", "数据看板", ["Dashboard"]],
   ["/system/stores", "Stores", "分店管理", ["Stores.View"]],
-  ["/system/users", "Users", "用户管理", ["Users.View"]],
+  // 与 NavigationService 一致：Web 用户管理菜单只认 Users.ViewWebConsole，移动端 users / user-admin 仍用 Users.View。
+  ["/system/users", "Users", "用户管理", ["Users.ViewWebConsole"]],
   ["/system/employee-profiles", "Employee profiles", "员工档案", ["EmployeeProfiles.View"]],
   ["/system/roles", "Roles", "角色管理", ["Roles.View"]],
   ["/system/permissions", "Permissions", "权限管理", ["Roles.View"]],
@@ -36,6 +37,8 @@ const WEB_MENU: MenuSource[] = ([
   ["/executive-sales-intelligence/product-movement-report", "Product movement", "商品流动", ["SalesDashboard.ProductMovement.View"]],
   ["/executive-sales-intelligence/warehouse-product-flow-analysis", "Warehouse product flow", "仓库商品流向", ["SalesDashboard.WarehouseFlow.View"]],
   ["/executive-sales-intelligence/local-product-sales-analysis", "Local product sales", "本地商品销售", ["SalesDashboard.LocalProductAnalysis.View"]],
+  // 批量货号销量与分店进货销量分析已合并为「进货销量分析」双标签页，任一标签权限即显示入口。
+  ["/executive-sales-intelligence/purchase-sales-analysis", "Purchase & sales analysis", "进货销量分析", ["SalesDashboard.BatchProductSales.View", "SalesDashboard.LocalSupplierPurchaseSales.View"]],
   ["/executive-sales-intelligence/purchase-amount-dashboard", "Purchase amount", "采购金额", ["SalesDashboard.PurchaseAmount.View"]],
   ["/pos-admin/suppliers", "Suppliers", "供应商", ["AustralianSuppliers.View"]],
   ["/pos-admin/products", "Product management", "商品管理", ["PosProducts.View"]],
@@ -49,12 +52,12 @@ const WEB_MENU: MenuSource[] = ([
   ["/pos-admin/schedule-attendance", "Schedule and attendance", "排班考勤", ["Attendance.Schedule.ViewStore"]],
   ["/pos-admin/sales-orders", "Sales orders", "销售订单", ["Orders.View"]],
   ["/pos-admin/local-supplier-invoices", "Local supplier invoices", "本地供应商发票", ["LocalPurchase.View"]],
-  ["/pos-admin/local-supplier-purchase-sales-analysis", "Local purchase analysis", "本地采购销售分析", ["LocalPurchase.View"]],
 ] as MenuRow[]).map(toSource("web"));
 
 const MOBILE_MENU: MenuSource[] = ([
   ["home", "Home", "首页", ["Orders.Create"]],
   ["orders", "Orders", "订单", ["OrderFront", "Orders.View", "Warehouse.ManageOrders", "Warehouse.Manage"]],
+  ["sales-orders", "Sales records", "销售订单", ["SalesOrders.View"]],
   ["cart", "Cart", "购物车", ["Orders.Create"]],
   ["warehouse", "Warehouse", "仓库", ["Warehouse.ManageProducts", "Container.View"]],
   ["domestic-purchase", "Domestic purchase", "国内采购", ["DomesticPurchase.ManageProducts"]],
@@ -62,6 +65,7 @@ const MOBILE_MENU: MenuSource[] = ([
   ["advertisements", "Advertisements", "广告", ["Advertisements.View"]],
   ["promotions", "Promotions", "促销", ["Promotions.View"]],
   ["product-query", "Product query", "商品查询", ["StoreProducts.View"]],
+  ["seasonal-product-insights", "Seasonal products", "季节商品查询", ["SeasonalProductInsights.View"]],
   ["installment-orders", "Installment orders", "分期订单", ["InstallmentOrders.View"]],
   ["store-vouchers", "Store vouchers", "门店代金券", ["StoreVouchers.View"]],
   ["attendance-personal", "My attendance", "我的考勤", ["Attendance.Schedule.ViewSelf"]],
@@ -74,11 +78,14 @@ const MOBILE_MENU: MenuSource[] = ([
   ["seasonal-cards", "Seasonal cards", "节庆卡", ["SeasonalCards.Remaining.ViewManagedStore", "SeasonalCards.Remaining.SubmitManagedStore"]],
   ["users", "Users", "用户", ["Users.View"]],
   ["user-admin", "User management", "用户管理", ["Users.View"]],
+  ["cash-register-users", "Cash register barcodes", "收银用户条码", ["CashRegisterUsers.MobileManage", "CashRegisterUsers.MobilePrint"]],
   ["roles", "Role management", "角色管理", ["Roles.View"]],
+  ["permissions", "Permission management", "权限管理", ["Roles.View"]],
   ["employee-profile", "Employee profile", "员工档案", ["EmployeeProfiles.View"]],
   ["employee-profile-review", "Profile review", "档案审核", ["EmployeeProfiles.ReviewSensitiveManagedStore"]],
   ["device-management", "Device management", "设备管理", ["DeviceRegistration.View"]],
   ["reports", "Reports", "报表", ["Reports.ProductMovement.View"]],
+  ["pos-operation-logs", "POS operation logs", "员工操作日志", ["Permissions.PosTerminal.Audit.View"]],
   ["app-downloads", "App downloads", "应用下载", ["System.ViewAppDownloads"], { requireAdmin: true }],
   ["wpf-versions", "WPF versions", "WPF 版本", ["System.ViewAppDownloads"], { requireAdmin: true }],
   ["settings", "Settings", "我的", [], { fixed: true }],

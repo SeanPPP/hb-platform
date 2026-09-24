@@ -1222,6 +1222,9 @@
   <data name="shell.sync.retryFailed" xml:space="preserve">
     <value>上传重试失败：{0}</value>
   </data>
+  <data name="shell.sync.retryInterrupted" xml:space="preserve">
+    <value>服务器地址切换中，上传已暂停：成功 {0}，未完成 {1}。其余上传会在切换完成后继续。</value>
+  </data>
   <data name="shell.sync.caption" xml:space="preserve">
     <value>查看并重传订单、Linkly 结算或操作审计日志。</value>
   </data>
@@ -3059,4 +3062,30 @@
   <data name="cardRecovery.workspace.manualHint" xml:space="preserve"><value>根据终端凭证核实，操作需授权。</value></data>
   <data name="cardRecovery.workspace.refreshed" xml:space="preserve"><value>最近刷新</value></data>
   <data name="cardRecovery.workspace.historyScope" xml:space="preserve"><value>历史显示本机每个渠道最近 200 笔记录；未结交易全部保留。</value></data>
+  <data name="payment.manualCard.title" xml:space="preserve"><value>手动刷卡</value></data>
+  <data name="payment.manualCard.instructions" xml:space="preserve"><value>请在独立刷卡机上输入以下金额，并核对刷卡结果后再确认。</value></data>
+  <data name="payment.manualCard.amount" xml:space="preserve"><value>本次刷卡金额</value></data>
+  <data name="payment.manualCard.checked" xml:space="preserve"><value>我已核对刷卡机：付款成功，且金额一致。</value></data>
+  <data name="payment.manualCard.uncertain" xml:space="preserve"><value>结果不确定时，请先查询刷卡机交易流水，不要重复收款。</value></data>
+  <data name="payment.manualCard.cancel" xml:space="preserve"><value>未付款，返回</value></data>
+  <data name="payment.manualCard.confirm" xml:space="preserve"><value>已确认刷卡成功</value></data>
+  <data name="payment.manualCard.finalAmountRequired" xml:space="preserve"><value>手动刷卡须结清全部余款，请清空输入金额或输入剩余应收金额。</value></data>
+  <data name="payment.manualCard.orderChanged" xml:space="preserve"><value>订单或收银员已变化，本次确认不能继续使用。请核对刷卡机付款记录并返回对应订单处理。</value></data>
+  <data name="payment.manualCard.savingTitle" xml:space="preserve"><value>已人工确认刷卡成功</value></data>
+  <data name="payment.manualCard.saveHint" xml:space="preserve"><value>订单保存完成后才能离开。保存失败时请在此重试，不要再次刷卡或关闭收银软件。</value></data>
+  <data name="payment.manualCard.saveFailed" xml:space="preserve"><value>已确认的付款未能安全保存，请重试保存同一订单。</value></data>
+  <data name="payment.manualCard.retrySave" xml:space="preserve"><value>重试保存订单</value></data>
+  <data name="payment.manualCard.refundUnavailable" xml:space="preserve"><value>手动刷卡付款不能通过联机终端自动退款。</value></data>
+  <data name="settings.payment.methods.title" xml:space="preserve"><value>付款方式</value></data>
+  <data name="settings.payment.methods.description" xml:space="preserve"><value>选择本机付款页提供的付款方式，保存后生效。</value></data>
+  <data name="settings.payment.methods.manualCard" xml:space="preserve"><value>使用手动刷卡</value></data>
+  <data name="settings.payment.methods.manualCard.help" xml:space="preserve"><value>默认关闭，使用信用卡 / 借记卡。开启后，手动刷卡将替换该入口，由收银员确认独立刷卡机已付款成功。</value></data>
+  <data name="settings.payment.methods.voucher" xml:space="preserve"><value>启用代金券</value></data>
+  <data name="settings.payment.methods.voucher.help" xml:space="preserve"><value>默认关闭，开启后付款页显示代金券入口。</value></data>
+  <data name="settings.payment.methods.save" xml:space="preserve"><value>保存付款方式</value></data>
+  <data name="settings.payment.methods.saved" xml:space="preserve"><value>付款方式已保存。</value></data>
+  <data name="payment.settings.loadFailed" xml:space="preserve"><value>支付方式设置读取失败，请重试进入付款页。</value></data>
+  <data name="payment.settings.methodDisabled" xml:space="preserve"><value>此付款方式已在支付设置中关闭。</value></data>
+  <data name="settings.payment.activeProvider.manual" xml:space="preserve"><value>当前使用手动刷卡。</value></data>
+  <data name="settings.payment.activeProvider.manual.detail" xml:space="preserve"><value>由收银员确认独立刷卡机已付款成功。保存下方终端配置不会切换手动刷卡模式；如需使用信用卡 / 借记卡，请关闭“使用手动刷卡”并保存付款方式。</value></data>
 </root>

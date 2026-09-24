@@ -21,6 +21,7 @@ public interface IOrderReturnService
 public sealed class OrderReturnService(
     IOrderHistoryRepository orderHistoryRepository,
     IOrderReturnRepository returnRepository,
+    IStoreTimeZoneResolver storeTimeZoneResolver,
     ILogger<OrderReturnService>? logger = null) : IOrderReturnService
 {
     public async Task<OrderReturnContextDto?> GetReturnContextAsync(
@@ -59,9 +60,10 @@ public sealed class OrderReturnService(
             recordsElapsedMs,
             paymentsElapsedMs,
             totalStopwatch.ElapsedMilliseconds);
+        var storeTimeZone = await storeTimeZoneResolver.ResolveAsync(order.StoreCode, cancellationToken);
         return new OrderReturnContextDto(
             order,
-            records.Select(MapRecord).ToList(),
+            records.Select(record => MapRecord(record, storeTimeZone)).ToList(),
             lineCapacities,
             paymentCapacities);
     }
@@ -75,7 +77,9 @@ public sealed class OrderReturnService(
             throw new InvalidOperationException("Return records cannot be empty.");
         }
 
-        var now = DateTime.UtcNow;
+        // 退货记录的时间同样写门店本地墙钟时间，与 sales_order 的口径保持一致。
+        var storeTimeZone = await storeTimeZoneResolver.ResolveAsync(request.StoreCode, cancellationToken);
+        var now = StoreWallClock.ToWallClock(DateTimeOffset.UtcNow, storeTimeZone);
         var records = request.Lines.Select(line => new SalesReturnRecord
         {
             ReturnDetailGuid = Guid.NewGuid().ToString("D"),
@@ -94,7 +98,9 @@ public sealed class OrderReturnService(
         }).ToList();
 
         var persistedRecords = await returnRepository.InsertValidatedAsync(records, cancellationToken);
-        return new OrderReturnRecordCreateResponse(request.ReturnOrderGuid, persistedRecords.Select(MapRecord).ToList());
+        return new OrderReturnRecordCreateResponse(
+            request.ReturnOrderGuid,
+            persistedRecords.Select(record => MapRecord(record, storeTimeZone)).ToList());
     }
 
     private static IReadOnlyList<OrderReturnLineCapacityDto> BuildLineCapacities(
@@ -366,7 +372,7 @@ public sealed class OrderReturnService(
         return allocations;
     }
 
-    private static OrderReturnRecordDto MapRecord(SalesReturnRecord record)
+    private static OrderReturnRecordDto MapRecord(SalesReturnRecord record, TimeZoneInfo storeTimeZone)
     {
         return new OrderReturnRecordDto(
             TryParseGuid(record.ReturnDetailGuid) ?? Guid.Empty,
@@ -378,7 +384,7 @@ public sealed class OrderReturnService(
             record.ReturnQuantity ?? 0m,
             record.ReturnAmount ?? 0m,
             record.StaffCode ?? string.Empty,
-            ToDateTimeOffset(record.CreatedTime));
+            ToDateTimeOffset(record.CreatedTime, storeTimeZone));
     }
 
     private static Guid? TryParseGuid(string? value)
@@ -386,9 +392,11 @@ public sealed class OrderReturnService(
         return Guid.TryParse(value, out var guid) ? guid : null;
     }
 
-    private static DateTimeOffset ToDateTimeOffset(DateTime? value)
+    private static DateTimeOffset ToDateTimeOffset(DateTime? value, TimeZoneInfo storeTimeZone)
     {
-        return new DateTimeOffset(DateTime.SpecifyKind(value ?? DateTime.MinValue, DateTimeKind.Utc));
+        return value is null
+            ? new DateTimeOffset(DateTime.SpecifyKind(DateTime.MinValue, DateTimeKind.Utc))
+            : StoreWallClock.ToDateTimeOffset(value.Value, storeTimeZone);
     }
 
     private static string? NormalizeReference(string? reference)
@@ -670,7 +678,12 @@ internal static class SalesReturnRecordPersistence
         var existingRecords = new List<SalesReturnRecord>();
         foreach (var returnOrderGuid in returnOrderGuids)
         {
+            // 关键逻辑：连接级 IsWithNoLockQuery 会给这条读加 WITH(NOLOCK)，表提示会覆盖
+            // 会话隔离级别，使外层 Serializable 事务失效。退货幂等判断脏读到未提交的记录
+            // 会把新退货误判为重复提交；UPDLOCK 串行化同一退货单的并发判断，
+            // HOLDLOCK 补范围锁防止判断与插入之间插入同一 ReturnOrderGuid 的行。
             var records = await db.Queryable<SalesReturnRecord>()
+                .With("WITH(UPDLOCK, HOLDLOCK)")
                 .Where(record => record.ReturnOrderGuid == returnOrderGuid)
                 .ToListAsync(cancellationToken);
             existingRecords.AddRange(records);
@@ -685,7 +698,9 @@ internal static class SalesReturnRecordPersistence
         CancellationToken cancellationToken)
     {
         var orderGuidText = orderGuid.ToString("D");
+        // 原单是只读参考，但仍不能脏读——读到别的事务尚未提交的订单会允许对可能回滚的单退货。
         var orderExists = await db.Queryable<SalesOrder>()
+            .With("WITH(READCOMMITTED)")
             .AnyAsync(order => order.OrderGuid == orderGuidText, cancellationToken);
         if (!orderExists)
         {
@@ -693,6 +708,7 @@ internal static class SalesReturnRecordPersistence
         }
 
         var lines = await db.Queryable<SalesOrderDetail>()
+            .With("WITH(READCOMMITTED)")
             .Where(line => line.OrderGuid == orderGuidText)
             .ToListAsync(cancellationToken);
 
@@ -719,7 +735,12 @@ internal static class SalesReturnRecordPersistence
         CancellationToken cancellationToken)
     {
         var orderGuidText = orderGuid.ToString("D");
+        // 关键逻辑：这是剩余可退额度的计算依据。NOLOCK 让两笔并发退款各自读到相同的
+        // “已退数量/金额”且互不阻塞，双方都能通过额度校验，导致同一商品行被退两次；
+        // sales_return_record 上只有非唯一索引，没有约束兜底。
+        // HOLDLOCK 的范围锁是必需的——要挡住的正是另一事务插入新的退款行。
         return await db.Queryable<SalesReturnRecord>()
+            .With("WITH(UPDLOCK, HOLDLOCK)")
             .Where(record => record.OriginalOrderGuid == orderGuidText)
             .ToListAsync(cancellationToken);
     }
@@ -778,6 +799,7 @@ internal static class SalesReturnRecordPersistence
         {
             var orderGuidText = originalOrderGuid.ToString("D");
             var originalPayments = await db.Queryable<PaymentDetail>()
+                .With("WITH(UPDLOCK, HOLDLOCK)")
                 .Where(payment => payment.OrderGuid == orderGuidText)
                 .Where(payment => payment.Amount != null && payment.Amount > 0m)
                 .Where(payment => payment.PaymentMethod == cardPaymentMethod)
@@ -824,6 +846,7 @@ internal static class SalesReturnRecordPersistence
                     .Distinct()
                     .ToList();
                 var existingRefundPayments = await db.Queryable<PaymentDetail>()
+                    .With("WITH(UPDLOCK, HOLDLOCK)")
                     .Where(payment => payment.OrderGuid == returnOrderGuid)
                     .Where(payment => payment.Amount != null && payment.Amount < 0m)
                     .Where(payment => payment.PaymentMethod == cardPaymentMethod)

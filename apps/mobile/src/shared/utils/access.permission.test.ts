@@ -23,8 +23,36 @@ function createUser(
   };
 }
 
+const auditViewerAccess = buildAccess(createUser([PERMISSIONS.PosTerminal.AuditView]));
+assertEqual(
+  auditViewerAccess.canViewPosOperationLogs,
+  true,
+  "Permissions.PosTerminal.Audit.View enables POS operation logs entrance"
+);
+assertEqual(
+  buildAccess(createUser(["PosTerminal.Audit.View"])).canViewPosOperationLogs,
+  true,
+  "legacy PosTerminal.Audit.View without prefix is treated as the same permission"
+);
+assertEqual(
+  buildAccess(createUser(["Users.View"])).canViewPosOperationLogs,
+  false,
+  "Users.View alone does not enable POS operation logs"
+);
+
 const purchaseLegacyAccess = buildAccess(
   createUser(["LocalInvocie.View", "LocalInvocie.Edit"])
+);
+
+assertEqual(
+  buildAccess(createUser(["EmployeeProfiles.Edit"])).hasPermission(PERMISSIONS.EmployeeProfiles.EditPositionType),
+  false,
+  "普通资料编辑权限不隐式授予职位类型修改权限"
+);
+assertEqual(
+  buildAccess(createUser([PERMISSIONS.EmployeeProfiles.EditPositionType])).hasPermission(PERMISSIONS.EmployeeProfiles.EditPositionType),
+  true,
+  "显式职位类型权限允许修改该字段"
 );
 
 assertEqual(

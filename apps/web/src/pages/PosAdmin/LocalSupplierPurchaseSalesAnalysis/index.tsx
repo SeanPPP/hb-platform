@@ -58,14 +58,14 @@ import type {
 } from '../../../types/localSupplierInvoice'
 import { buildStoreOptionsFromUserStores } from '../../../utils/managedStoreScope'
 import {
-  buildPurchaseSalesAnalysisImageSourceChain,
   DEFAULT_PURCHASE_SALES_ANALYSIS_PAGE_SIZE,
   getDefaultPurchaseSalesAnalysisDateRange,
   normalizePurchaseSalesAnalysisPageSize,
   PURCHASE_SALES_ANALYSIS_DEFAULT_SORT_BY,
   PURCHASE_SALES_ANALYSIS_DEFAULT_SORT_ORDER,
+  PURCHASE_SALES_ANALYSIS_MIN_TABLE_BODY_HEIGHT,
   PURCHASE_SALES_ANALYSIS_PAGE_SIZE_OPTIONS,
-  TRANSPARENT_IMAGE_FALLBACK,
+  resolvePurchaseSalesAnalysisTableBodyHeight,
   toPurchaseSalesAnalysisSort,
 } from './helpers'
 import {
@@ -76,16 +76,25 @@ import {
   type LocalSupplierPurchaseSalesAnalysisColumnKey,
 } from './columnOrder'
 import { MeasuredTable } from '../../../components/MeasuredTable'
+import ProductImageCell from './ProductImageCell'
+import {
+  PurchaseSalesDailyChart,
+  PurchaseSalesSparkline,
+  buildPurchaseSalesTrendMetrics,
+  resolveAccordionExpandedKeys,
+  resolveDefaultExpandedKeys,
+  toWholeQuantity,
+} from '../../../components/PurchaseSalesTrend'
 
 const { RangePicker } = DatePicker
 const { Text, Title } = Typography
 const LOCAL_SUPPLIER_PURCHASE_SALES_ANALYSIS_COLUMN_ORDER_STORAGE_KEY =
-  'hbweb_rv.localSupplierPurchaseSalesAnalysis.columnOrder.v1'
+  'hbweb_rv.localSupplierPurchaseSalesAnalysis.columnOrder.v2'
 const STATIC_PURCHASE_SALES_ANALYSIS_COLUMN_KEYS = new Set(['image', 'itemNumber'])
 
 type DateRangeValue = [Dayjs, Dayjs]
 type SortOrderState = 'asc' | 'desc'
-type MetricTone = 'interval' | 'between' | 'sales30' | 'sales60' | 'sales90'
+type MetricTone = 'interval' | 'between'
 type PurchaseTone = 'latest' | 'previous'
 
 interface SearchFilters {
@@ -145,21 +154,6 @@ const metricToneStyles: Record<MetricTone, { color: string; background: string; 
     background: '#f6ffed',
     borderColor: '#b7eb8f',
   },
-  sales30: {
-    color: '#0958d9',
-    background: '#e6f4ff',
-    borderColor: '#91caff',
-  },
-  sales60: {
-    color: '#08979c',
-    background: '#e6fffb',
-    borderColor: '#87e8de',
-  },
-  sales90: {
-    color: '#c41d7f',
-    background: '#fff0f6',
-    borderColor: '#ffadd2',
-  },
 }
 
 function MetricBadge(props: { value?: number | null; tone: MetricTone; digits?: number }) {
@@ -204,55 +198,9 @@ function formatPurchase(date?: string | null, quantity?: number | null, tone: Pu
           fontVariantNumeric: 'tabular-nums',
         }}
       >
-        {formatNumber(quantity, 2)}
+        {formatNumber(toWholeQuantity(quantity))}
       </Text>
     </Space>
-  )
-}
-
-function ProductImageCell(props: {
-  productImage?: string | null
-  itemNumber?: string | null
-  productCode?: string | null
-  alt: string
-}) {
-  const sourceChain = useMemo(
-    () =>
-      buildPurchaseSalesAnalysisImageSourceChain(
-        props.productImage,
-        props.itemNumber,
-        props.productCode,
-      ),
-    [props.itemNumber, props.productCode, props.productImage],
-  )
-  const [sourceIndex, setSourceIndex] = useState(0)
-
-  useEffect(() => {
-    setSourceIndex(0)
-  }, [sourceChain])
-
-  const currentSource =
-    sourceChain[Math.min(sourceIndex, Math.max(sourceChain.length - 1, 0))] || TRANSPARENT_IMAGE_FALLBACK
-
-  return (
-    <img
-      src={currentSource}
-      alt={props.alt}
-      loading="lazy"
-      width={48}
-      height={48}
-      style={{
-        width: 48,
-        height: 48,
-        objectFit: 'contain',
-        borderRadius: 4,
-        border: '1px solid #f0f0f0',
-        background: '#fff',
-      }}
-      onError={() => {
-        setSourceIndex((current) => (current < sourceChain.length - 1 ? current + 1 : current))
-      }}
-    />
   )
 }
 
@@ -303,7 +251,17 @@ function buildInitialFilters(): SearchFilters {
   }
 }
 
-export default function LocalSupplierPurchaseSalesAnalysisPage() {
+// 展开状态与表格共用同一行键，保证默认展开和手风琴切换命中同一行。
+function getAnalysisRowKey(record: LocalSupplierPurchaseSalesAnalysisRowDto) {
+  return `${record.storeCode}-${record.supplierCode}-${record.productCode}-${record.itemNumber || ''}`
+}
+
+interface LocalSupplierPurchaseSalesAnalysisPageProps {
+  /** 嵌入「进货销量分析」标签页时由外层页面提供标题，这里不再渲染自带的页头。 */
+  embedded?: boolean
+}
+
+export default function LocalSupplierPurchaseSalesAnalysisPage({ embedded = false }: LocalSupplierPurchaseSalesAnalysisPageProps = {}) {
   const { t } = useTranslation()
   const currentUser = useAuthStore((state) => state.currentUser)
   const access = useAuthStore((state) => state.access)
@@ -331,8 +289,9 @@ export default function LocalSupplierPurchaseSalesAnalysisPage() {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<LocalSupplierPurchaseSalesAnalysisResponseDto | null>(null)
   const [hasSearched, setHasSearched] = useState(false)
+  const [expandedKeys, setExpandedKeys] = useState<string[]>([])
   const [queryVersion, setQueryVersion] = useState(0)
-  const [tableScrollY, setTableScrollY] = useState<number>(520)
+  const [tableScrollY, setTableScrollY] = useState<number>(PURCHASE_SALES_ANALYSIS_MIN_TABLE_BODY_HEIGHT)
   const [columnOrder, setColumnOrder] = useState<LocalSupplierPurchaseSalesAnalysisColumnKey[]>([])
 
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -353,23 +312,27 @@ export default function LocalSupplierPurchaseSalesAnalysisPage() {
     () => buildStoreOptionsFromUserStores(currentUser?.stores, { manageableOnly: true }),
     [currentUser?.stores],
   )
-  const requiresStoreSelectionBeforeSupplierOptions =
-    Array.isArray(scopedStoreCodes) && scopedStoreCodes.length > 1 && !draftFilters.storeCode
+  // 查询本身必须同时选定分店和供应商，未选分店时预拉全部门店的供应商候选要在库里扫几十万行进货明细、
+  // 耗时接近 10 秒且对结果没有帮助，所以所有角色都等分店选定后再加载供应商。
+  const requiresStoreSelectionBeforeSupplierOptions = !draftFilters.storeCode
   const hasRequiredDraftFilters = Boolean(draftFilters.storeCode && draftFilters.supplierCode)
   const hasRequiredCommittedFilters = Boolean(filters.storeCode && filters.supplierCode)
 
   useLayoutEffect(() => {
     const calc = () => {
-      const containerHeight = wrapRef.current?.clientHeight || window.innerHeight
+      // 嵌入标签页时外层没有固定高度，clientHeight 只是内容高度；改按视口剩余空间估算表格可用高度。
+      const containerHeight = embedded
+        ? window.innerHeight - (wrapRef.current?.getBoundingClientRect().top ?? 0)
+        : wrapRef.current?.clientHeight || window.innerHeight
       const toolbarHeight = toolbarRef.current?.getBoundingClientRect().height || 0
       const available = containerHeight - toolbarHeight - 250
-      setTableScrollY(available > 320 ? available : 320)
+      setTableScrollY(resolvePurchaseSalesAnalysisTableBodyHeight(available))
     }
 
     calc()
     window.addEventListener('resize', calc)
     return () => window.removeEventListener('resize', calc)
-  }, [result?.items.length])
+  }, [embedded, result?.items.length])
 
   useEffect(() => {
     let cancelled = false
@@ -482,6 +445,8 @@ export default function LocalSupplierPurchaseSalesAnalysisPage() {
       try {
         const data = await getLocalSupplierPurchaseSalesAnalysis(query, signal)
         setResult(data)
+        // 每次新结果默认只展开第一行，与订货前台保持一致。
+        setExpandedKeys(resolveDefaultExpandedKeys(data.items, getAnalysisRowKey))
       } catch (error) {
         if (!signal?.aborted) {
           message.error(
@@ -533,7 +498,7 @@ export default function LocalSupplierPurchaseSalesAnalysisPage() {
         title: t('posAdmin.localSupplierPurchaseSalesAnalysis.columns.product', '货号 / 名称'),
         key: 'itemNumber',
         dataIndex: 'itemNumber',
-        width: 260,
+        width: 236,
         fixed: 'left',
         sorter: true,
         sortOrder: sortBy === 'itemNumber' ? (sortOrder === 'asc' ? 'ascend' : 'descend') : null,
@@ -549,7 +514,7 @@ export default function LocalSupplierPurchaseSalesAnalysisPage() {
         title: t('posAdmin.localSupplierPurchaseSalesAnalysis.columns.supplier', '供应商'),
         dataIndex: 'supplierCode',
         key: 'supplierName',
-        width: 180,
+        width: 140,
         render: (_value, record) => (
           <Tag color="purple" style={{ marginInlineEnd: 0 }}>
             {record.supplierName || record.supplierCode}
@@ -576,21 +541,10 @@ export default function LocalSupplierPurchaseSalesAnalysisPage() {
         render: (_value, record) => formatPurchase(record.latestPurchaseDate, record.latestPurchaseQty, 'latest'),
       },
       {
-        title: t('posAdmin.localSupplierPurchaseSalesAnalysis.columns.intervalDays', '间隔天数'),
-        dataIndex: 'purchaseIntervalDays',
-        key: 'purchaseIntervalDays',
-        width: 110,
-        align: 'right',
-        sorter: true,
-        sortOrder:
-          sortBy === 'purchaseIntervalDays' ? (sortOrder === 'asc' ? 'ascend' : 'descend') : null,
-        render: (value: number | null | undefined) => <MetricBadge value={value} tone="interval" />,
-      },
-      {
         title: t('posAdmin.localSupplierPurchaseSalesAnalysis.columns.intervalSales', '间隔销量'),
         dataIndex: 'salesBetweenPurchases',
         key: 'salesBetweenPurchases',
-        width: 110,
+        width: 100,
         align: 'right',
         sorter: true,
         sortOrder:
@@ -598,34 +552,52 @@ export default function LocalSupplierPurchaseSalesAnalysisPage() {
         render: (value: number | null | undefined) => <MetricBadge value={value} tone="between" />,
       },
       {
-        title: t('posAdmin.localSupplierPurchaseSalesAnalysis.columns.salesQty30', '30 天销量'),
-        dataIndex: 'salesQty30',
-        key: 'salesQty30',
-        width: 110,
-        align: 'right',
+        // 逐日销量与进货事件直接画在行内，取代原来的 30/60/90 天汇总列；该列不参与后端排序。
+        title: t('purchaseSalesTrend.columns.dailyTrend', '日销量与进货'),
+        key: 'dailyTrend',
+        // 排序按后端聚合的总销量（最近进货后累计销量）执行；销量类字段点击先看最高，故降序优先。
+        dataIndex: 'totalSalesSinceLatestPurchase',
         sorter: true,
-        sortOrder: sortBy === 'salesQty30' ? (sortOrder === 'asc' ? 'ascend' : 'descend') : null,
-        render: (value: number) => <MetricBadge value={value} tone="sales30" />,
+        sortDirections: ['descend', 'ascend'],
+        sortOrder: sortBy === 'totalSalesSinceLatestPurchase' ? (sortOrder === 'asc' ? 'ascend' : 'descend') : null,
+        width: 340,
+        render: (_value, record) => {
+          if (!record.dailySales.length) {
+            return <Text type="secondary">{t('purchaseSalesTrend.chart.noDaily', '该商品尚无逐日销量统计。')}</Text>
+          }
+          const metrics = buildPurchaseSalesTrendMetrics(record)
+          return (
+            <div>
+              <PurchaseSalesSparkline row={record} />
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {t('purchaseSalesTrend.columns.trendCaption', '最近进货 {{purchased}} 件 · 其后 {{days}} 天售出 {{total}} 件 · 日均 {{average}}', {
+                  purchased: formatNumber(metrics.purchasedQuantity),
+                  days: metrics.sinceLatest.length,
+                  total: formatNumber(metrics.totalSinceLatest),
+                  average: metrics.averagePerDay.toFixed(1),
+                })}
+              </Text>
+            </div>
+          )
+        },
       },
       {
-        title: t('posAdmin.localSupplierPurchaseSalesAnalysis.columns.salesQty60', '60 天销量'),
-        dataIndex: 'salesQty60',
-        key: 'salesQty60',
-        width: 110,
+        title: t('purchaseSalesTrend.columns.sellThrough', '售出比'),
+        key: 'sellThrough',
+        width: 100,
         align: 'right',
-        sorter: true,
-        sortOrder: sortBy === 'salesQty60' ? (sortOrder === 'asc' ? 'ascend' : 'descend') : null,
-        render: (value: number) => <MetricBadge value={value} tone="sales60" />,
-      },
-      {
-        title: t('posAdmin.localSupplierPurchaseSalesAnalysis.columns.salesQty90', '90 天销量'),
-        dataIndex: 'salesQty90',
-        key: 'salesQty90',
-        width: 110,
-        align: 'right',
-        sorter: true,
-        sortOrder: sortBy === 'salesQty90' ? (sortOrder === 'asc' ? 'ascend' : 'descend') : null,
-        render: (value: number) => <MetricBadge value={value} tone="sales90" />,
+        render: (_value, record) => {
+          const ratio = buildPurchaseSalesTrendMetrics(record).sellThrough
+          if (ratio === null) {
+            return '--'
+          }
+          // 售出比超过 100% 说明按进货量估算已卖完，用红色提示优先补货。
+          return (
+            <Text strong style={{ color: ratio >= 1 ? '#cf1322' : ratio >= 0.7 ? '#d46b08' : undefined, fontVariantNumeric: 'tabular-nums' }}>
+              {Math.round(ratio * 100)}%
+            </Text>
+          )
+        },
       },
       {
         title: t('posAdmin.localSupplierPurchaseSalesAnalysis.columns.updatedAt', '统计更新时间'),
@@ -796,17 +768,19 @@ export default function LocalSupplierPurchaseSalesAnalysisPage() {
   return (
     <div ref={wrapRef} style={{ height: '100%' }}>
       <Space direction="vertical" size={12} style={{ width: '100%' }}>
-        <Space direction="vertical" size={4}>
-          <Title level={4} style={{ margin: 0 }}>
-            {t('posAdmin.localSupplierPurchaseSalesAnalysis.title', '分店供应商进货销量分析')}
-          </Title>
-          <Text type="secondary">
-            {t(
-              'posAdmin.localSupplierPurchaseSalesAnalysis.subtitle',
-              '按分店、供应商和订单日期范围查看商品最近进货与后续销量表现。',
-            )}
-          </Text>
-        </Space>
+        {embedded ? null : (
+          <Space direction="vertical" size={4}>
+            <Title level={4} style={{ margin: 0 }}>
+              {t('posAdmin.localSupplierPurchaseSalesAnalysis.title', '分店供应商进货销量分析')}
+            </Title>
+            <Text type="secondary">
+              {t(
+                'posAdmin.localSupplierPurchaseSalesAnalysis.subtitle',
+                '按分店、供应商和订单日期范围查看商品最近进货与后续销量表现。',
+              )}
+            </Text>
+          </Space>
+        )}
 
         <div ref={toolbarRef}>
           <Card size="small">
@@ -842,7 +816,9 @@ export default function LocalSupplierPurchaseSalesAnalysisPage() {
                 notFoundContent={
                   supplierOptionsLoading
                     ? t('common.loading', '加载中')
-                    : t('posAdmin.localSupplierPurchaseSalesAnalysis.filters.noSuppliers', '暂无可选供应商')
+                    : requiresStoreSelectionBeforeSupplierOptions
+                      ? t('posAdmin.localSupplierPurchaseSalesAnalysis.filters.selectStoreFirst', '请先选择分店')
+                      : t('posAdmin.localSupplierPurchaseSalesAnalysis.filters.noSuppliers', '暂无可选供应商')
                 }
                 options={supplierOptions}
                 onChange={(value) => {
@@ -909,7 +885,7 @@ export default function LocalSupplierPurchaseSalesAnalysisPage() {
           <Space direction="vertical" size={8} style={{ width: '100%' }}>
             {hasSearched && result ? (
               <Space wrap>
-                <Text type="secondary">{result.calculationNote}</Text>
+                <Text type="secondary">{t('purchaseSalesTrend.calculationNote', '进货按订单日期范围过滤、按进货发生日期汇总；日销量从上次进货起逐日展示，售出比与累计销量从最近进货当天起统计。')}</Text>
                 <Text type="secondary">
                   {t('posAdmin.localSupplierPurchaseSalesAnalysis.summary.updatedAt', '统计更新时间')}：
                   {formatDateTime(result.salesStatisticLastUpdate)}
@@ -930,9 +906,7 @@ export default function LocalSupplierPurchaseSalesAnalysisPage() {
               >
                 <MeasuredTable<LocalSupplierPurchaseSalesAnalysisRowDto> metricId="pos-admin.local-supplier-purchase-sales-analysis.table-1"
                   size="small"
-                  rowKey={(record) =>
-                    `${record.storeCode}-${record.supplierCode}-${record.productCode}-${record.itemNumber || ''}`
-                  }
+                  rowKey={getAnalysisRowKey}
                   loading={loading}
                   components={{ header: { cell: DraggableHeaderCell } }}
                   columns={orderedColumns}
@@ -954,8 +928,25 @@ export default function LocalSupplierPurchaseSalesAnalysisPage() {
                       />
                     ),
                   }}
-                  scroll={{ x: 1560, y: tableScrollY }}
+                  scroll={{ x: 1440, y: tableScrollY }}
                   virtual
+                  expandable={{
+                    // 点击行展开大图：日销量柱、进货事件标记与进货后累计销量线。
+                    expandRowByClick: true,
+                    // 手风琴展开：展开一个商品时收起其它商品，页面只保留一张大图。
+                    expandedRowKeys: expandedKeys,
+                    onExpand: (expanded, record) =>
+                      setExpandedKeys(resolveAccordionExpandedKeys(expanded, getAnalysisRowKey(record))),
+                    rowExpandable: (record) => record.dailySales.length > 0,
+                    expandedRowRender: (record) => (
+                      <div style={{ padding: '4px 8px 8px' }}>
+                        <PurchaseSalesDailyChart
+                          row={record}
+                          title={`${record.itemNumber || record.productCode} · ${record.productName || ''}`.trim()}
+                        />
+                      </div>
+                    ),
+                  }}
                   pagination={{
                     current: page,
                     pageSize,

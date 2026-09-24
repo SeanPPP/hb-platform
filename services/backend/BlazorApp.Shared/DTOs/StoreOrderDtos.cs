@@ -889,6 +889,12 @@ namespace BlazorApp.Shared.DTOs
   public class StoreOrderListFilterDto
   {
     public string? Keyword { get; set; }
+
+    /// <summary>
+    /// 商品维度关键字：按货号、条码或商品名筛选包含该商品的订单。
+    /// 与 Keyword 相互独立，两者同时传入时取交集。
+    /// </summary>
+    public string? ProductKeyword { get; set; }
     public string? StoreCode { get; set; }
     public List<string>? StoreCodes { get; set; }
     public DateTime? StartDate { get; set;}
@@ -1250,6 +1256,9 @@ public class UpdateProductStatusDto
 
   [Required]
   public bool IsActive { get; set; }
+
+  /// <summary>下架时随请求登记的供货说明；上架时忽略。旧客户端不传，分店端按“后续计划待确认”展示。</summary>
+  public BlazorApp.Shared.DTOs.WarehouseProductSupplyNoticeInputDto? SupplyNotice { get; set; }
 }
 
 /// <summary>
@@ -1262,6 +1271,9 @@ public class BatchUpdateProductStatusDto
 
   [Required]
   public bool IsActive { get; set; }
+
+  /// <summary>下架时随请求登记的供货说明；上架时忽略。旧客户端不传，分店端按“后续计划待确认”展示。</summary>
+  public BlazorApp.Shared.DTOs.WarehouseProductSupplyNoticeInputDto? SupplyNotice { get; set; }
 }
 
 /// <summary>

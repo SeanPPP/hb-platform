@@ -432,11 +432,37 @@ public sealed class ReactLocalSupplierInvoiceAuthorizationTests : IDisposable
         Assert.DoesNotContain(mobileView, Permissions.GetEquivalentPermissionCodes(Permissions.LocalPurchase.View));
         Assert.DoesNotContain(mobileView, Permissions.GetEquivalentPermissionCodes(Permissions.LocalPurchase.Edit));
         Assert.DoesNotContain(mobileView, Permissions.GetEquivalentPermissionCodes(Permissions.LocalPurchase.PushToHq));
-        var analysisAuthorize = Assert.Single(
-            typeof(ReactLocalSupplierInvoiceSalesAnalysisController)
+        // 分析控制器类级只要求登录；按单据分析的 action 仍声明 LocalPurchase.View，MobileView 不能成为它的别名。
+        var analysisController = typeof(ReactLocalSupplierInvoiceSalesAnalysisController);
+        var analysisClassAuthorize = Assert.Single(
+            analysisController.GetCustomAttributes<AuthorizeAttribute>(inherit: false)
+        );
+        Assert.True(string.IsNullOrWhiteSpace(analysisClassAuthorize.Policy));
+        var invoiceAnalysisAuthorize = Assert.Single(
+            analysisController
+                .GetMethod(nameof(ReactLocalSupplierInvoiceSalesAnalysisController.GetSalesAnalysis))!
                 .GetCustomAttributes<AuthorizeAttribute>(inherit: false)
         );
-        Assert.Equal(Permissions.LocalPurchase.View, analysisAuthorize.Policy);
+        Assert.Equal(Permissions.LocalPurchase.View, invoiceAnalysisAuthorize.Policy);
+
+        // 后台进货销量分析三个 action 改为方法内校验（销售看板新权限码或 LocalPurchase.View），
+        // 特性上不再挂策略；可接受的权限码里同样不包含 MobileView（行为由分析控制器测试覆盖）。
+        foreach (
+            var actionName in new[]
+            {
+                nameof(ReactLocalSupplierInvoiceSalesAnalysisController.GetPurchaseSalesAnalysis),
+                nameof(ReactLocalSupplierInvoiceSalesAnalysisController.GetPurchaseSalesAnalysisStoreOptions),
+                nameof(ReactLocalSupplierInvoiceSalesAnalysisController.GetPurchaseSalesAnalysisSupplierOptions),
+            }
+        )
+        {
+            Assert.DoesNotContain(
+                analysisController
+                    .GetMethod(actionName)!
+                    .GetCustomAttributes<AuthorizeAttribute>(inherit: false),
+                attribute => !string.IsNullOrWhiteSpace(attribute.Policy)
+            );
+        }
     }
 
     [Theory]

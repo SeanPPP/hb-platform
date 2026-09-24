@@ -127,6 +127,23 @@ export interface StoreProductLookupRequest {
   storeCode?: string | null;
 }
 
+/** 扫码的一次在线查询结果。价格和可打印目标必须来自同一次服务器响应。 */
+export interface ScanLabelPrintTarget {
+  kind: "product" | "set" | "multi" | "clearance";
+  barcode: string;
+  retailPrice: number | null;
+  discountRate: number | null;
+  codeId: string | null;
+  productCode: string;
+  storeCode: string;
+}
+
+export interface ScanLabelResult {
+  candidates: ProductLookupItem[];
+  detail: ProductDetail | null;
+  printTarget: ScanLabelPrintTarget | null;
+}
+
 export interface LocalSupplierOption {
   supplierCode: string;
   supplierName: string;

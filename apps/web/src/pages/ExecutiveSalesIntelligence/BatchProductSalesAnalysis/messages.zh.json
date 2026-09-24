@@ -17,11 +17,20 @@
     "querying": "正在查询",
     "pendingQuery": "筛选条件已变更，当前结果仍对应上次查询。请重新查询。",
     "appliedScope": "当前结果：{{startDate}} 至 {{endDate}} · {{stores}}",
+    "coverage": "已统计 {{ready}} / {{total}} 天；其余日期未统计。",
+    "coveragePending": "所选日期尚无已完成统计；商品保留匹配结果，销量暂不可用。",
+    "coverageDetails": "未统计日期（{{count}}）",
+    "coverageScopeNotice": "销量、销售额和分店排行仅统计已完成日期。",
+    "coverageReasons": { "missing": "缺少统计", "queued": "已加入统计队列", "active": "已在统计队列中", "running": "正在统计", "queueFailed": "统计排队失败", "changed": "统计已更新，等待下次刷新" },
+    "refreshResults": "刷新结果",
     "dateRange": "日期范围",
     "stores": "分店",
     "allStores": "全部可见分店",
+    "allProducts": "全部商品",
+    "allProductsHint": "已选商品汇总",
     "productList": "商品列表（{{count}}）",
     "totalQuantity": "总销量 {{value}} 件",
+    "readyDatesTotalQuantity": "已统计日期合计 {{value}} 件",
     "total": "合计",
     "noImportedItems": "先粘贴或导入至少一个有效货号，再查询销量。",
     "noQueryResult": "尚未查询销量",
@@ -29,6 +38,14 @@
     "currentProduct": "当前商品",
     "dailyTrend": "总销量趋势",
     "dailyDetail": "每日明细",
+    "branchRanking": "分店总量排行",
+    "branchProductContribution": "分店商品贡献",
+    "searchBranches": "搜索分店",
+    "topN": "前 {{count}} 名",
+    "onlyBranchesWithSales": "仅有销量",
+    "clearFilters": "清除筛选",
+    "detailLoadingProgress": "正在加载商品明细（{{completed}} / {{total}}）",
+    "partialDetailFailure": "{{count}} 个商品明细未能加载；当前汇总只包含成功返回的商品。",
     "branchSales": "分店销量",
     "selectBranch": "选择分店查看每日销量",
     "branchTrend": "{{branch}} · 每日销量",
@@ -53,8 +70,14 @@
       "daily": "每日明细",
       "branches": "分店汇总",
       "branchDaily": "分店每日明细"
+      ,"readyDates": "已统计日期"
+      ,"pendingDates": "未统计日期"
+      ,"notComputed": "未统计"
+      ,"computed": "已统计"
+      ,"readyOnlyNotice": "仅包含已统计日期"
     },
     "loading": "正在加载…",
+    "discountLoadFailed": "折扣明细加载失败，已保留销量和金额；请刷新结果重试。",
     "retry": "重试",
     "errors": {
       "title": "请求失败",
@@ -62,7 +85,7 @@
       "timeout": "请求超时，请重试。",
       "forbidden": "您没有查询这些分店销量的权限。",
       "date": "日期范围无效。",
-      "statistics": "商品日统计正在刷新，暂不能显示销量，请重新查询。"
+      "statistics": "统计版本已变化，已保留当前结果，请刷新结果。"
     },
     "metrics": {
       "quantity": "销量",
@@ -72,6 +95,7 @@
       "amount": "销售额"
     },
     "columns": {
+      "rank": "排名",
       "date": "日期",
       "product": "商品",
       "itemNumber": "货号",
@@ -82,7 +106,8 @@
       "status": "状态",
       "branch": "分店",
       "amount": "销售额",
-      "rate": "占比",
+      "rate": "折扣占比",
+      "contributingProducts": "贡献商品",
       "productShare": "商品占比"
     },
     "chart": {
@@ -95,6 +120,8 @@
       "unavailableDescription": "每日净销量；折扣拆分当前不可用，因此仅显示可靠的总销量。",
       "totalPointAria": "{{date}}，净销量 {{quantity}}，销售额 {{amount}}，折扣待统计",
       "unavailablePointAria": "{{date}}，净销量 {{quantity}}，销售额 {{amount}}，折扣拆分不可用"
+      ,"uncomputed": "尚无已完成统计"
+      ,"uncomputedPointAria": "{{date}}：尚无已完成统计"
     },
     "statisticsPending": "所选日期的销量统计尚未就绪，请稍后重新查询。",
     "dataNotes": "数据说明",

@@ -51,6 +51,7 @@
   .uploadZone > :first-child { display: none; }
 }
 .productRow { display: grid; grid-template-columns: 36px minmax(0, 1fr) auto; align-items: center; gap: 7px; width: 100%; min-height: 50px; padding: 5px 4px; border: 0; border-bottom: 1px solid #f0f2f5; border-left: 3px solid transparent; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.allProductsIcon { display: inline-flex; width: 36px; height: 36px; align-items: center; justify-content: center; border: 1px solid #c9dbf2; border-radius: 6px; background: #eef6ff; color: #1677ff; font-size: 20px; font-weight: 700; }
 .productRow:hover { background: #f7faff; }
 .productCurrent { border-left-color: #1677ff; background: #edf5ff; }
 .productInfo { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
@@ -75,6 +76,11 @@
 .state { min-height: 180px; padding: 18px 6px; }
 .tableWrap { width: 100%; overflow: auto; }
 .tableWrap :global(.ant-table) { min-width: 550px; }
+.tableFilters { display: flex; align-items: center; gap: 8px; margin: -2px 0 10px; }
+.tableFilters :global(.ant-input-affix-wrapper) { flex: 1 1 160px; }
+.tableFilters :global(.ant-select) { width: 92px; }
+.tableFilters label { display: inline-flex; align-items: center; gap: 4px; color: #5d6d83; font-size: 12px; white-space: nowrap; }
+.tableWrap :global(.ant-table-tbody > tr.branchCurrent > td) { background: #f3f8ff; }
 .tableWrap :global(.ant-table-thead > tr > th), .tableWrap :global(.ant-table-tbody > tr > td), .branchTable :global(.ant-table-thead > tr > th), .branchTable :global(.ant-table-tbody > tr > td) { padding: 7px 7px; font-size: 12px; }
 .branchGrid { font-size: 12px; font-variant-numeric: tabular-nums; }
 .branchGridHead, .branchGridRow, .branchGridTotal { display: grid; grid-template-columns: minmax(62px, 1fr) 38px 34px 34px 68px 40px; gap: 3px; align-items: center; min-width: 0; }
@@ -88,6 +94,12 @@
 .branchTotals { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 5px; color: #53667e; font-size: 12px; font-variant-numeric: tabular-nums; }
 .branchTotals b { margin-left: 3px; color: #263a56; }
 .warning { margin-bottom: 8px; }
+.coverageDetails { margin-top: 6px; font-size: 12px; }
+.coverageDetails summary { cursor: pointer; color: #3c6fae; }
+.coverageDetails > div { display: flex; gap: 10px; padding: 4px 0; border-bottom: 1px solid #f0f2f5; }
+.coverageDetails > div:last-child { border-bottom: 0; }
+.coverageDetails b { font-variant-numeric: tabular-nums; }
+.coverageDetails span { color: #65758b; }
 
 :global(.batch-product-sales-chart) { display: block; width: 100%; height: auto; overflow: visible; }
 :global(.batch-product-sales-chart g[role="graphics-symbol"]) { cursor: crosshair; outline: none; }
@@ -96,10 +108,9 @@
 :global(.batch-product-sales-chart-legend span) { display: inline-flex; align-items: center; gap: 5px; }
 :global(.batch-product-sales-chart-legend i) { width: 8px; height: 8px; border-radius: 50%; }
 
-/* 桌面端在商品列表之外均分两个分析区，确保总销量与分店趋势同宽。 */
+/* 桌面端在商品列表之外始终均分两个分析区，确保总销量与分店趋势各占 50%。 */
 @media (max-width: 1439px) and (min-width: 1344px) { .metrics { gap: 6px 9px; } }
-@media (max-width: 1343px) { .layout { grid-template-areas: "products total" "products daily" ". branch-trend" ". branch-sales"; grid-template-columns: 292px minmax(0, 1fr); } }
-@media (max-width: 899px) { .toolbar { align-items: stretch; flex-direction: column; } .field, .storeSelect { width: 100%; } .layout { grid-template-areas: "products" "total" "daily" "branch-trend" "branch-sales"; grid-template-columns: 1fr; } .metrics { margin-left: 0; } }
+@media (max-width: 899px) { .toolbar { align-items: stretch; flex-direction: column; } .field, .storeSelect { width: 100%; } .layout { grid-template-areas: "products" "total" "daily" "branch-trend" "branch-sales"; grid-template-columns: 1fr; } .metrics { margin-left: 0; } .tableFilters { align-items: stretch; flex-wrap: wrap; } }
 @media (max-width: 520px) { .panel { padding: 10px; } .currentProduct { align-items: flex-start; flex-wrap: wrap; } .metrics { width: 100%; grid-template-columns: repeat(2, 1fr); } .metrics > div { align-items: flex-start; } :global(.batch-product-sales-chart-legend) { gap: 8px; font-size: 11px; } }
 @media (prefers-reduced-motion: reduce) { .productRow { transition: none; } }
 

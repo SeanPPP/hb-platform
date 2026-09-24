@@ -611,6 +611,42 @@ public class LocalSupplierProductSalesAnalysisServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task GetCandidatesAsync_关键词筛选使用字面量判别谓词以命中过滤索引()
+    {
+        await InsertStoreAsync("B1", "Branch One");
+        await InsertSupplierAsync("SUP", "Supplier One");
+        await InsertProductAsync("P001", "KI116996", "9328644116996", "Eco Napkin 40x40cm Pk50");
+        await InsertProductAsync("P002", "KI200000", "9328644200000", "Paper Straws");
+
+        var sql = new List<string>();
+        _db.Aop.OnLogExecuting = (statement, _) => sql.Add(statement);
+        var request = CreateRequest();
+        request.Filter.Keyword = "ki116996";
+
+        var result = await CreateService().GetCandidatesAsync(
+            request,
+            new List<string> { "B1" }
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { "P001" }, result.Data!.Items.Select(item => item.ProductCode));
+        var productStatements = sql
+            .Where(statement => statement.Contains("Product", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        Assert.NotEmpty(productStatements);
+        // 过滤索引只有在判别列为字面量时才会被 SQL Server 选中；参数化即退化为宽表全扫描。
+        Assert.All(
+            productStatements,
+            statement =>
+            {
+                Assert.Contains("[IsDeleted] = 0 AND [IsActive] = 1", statement);
+                Assert.DoesNotContain("@IsDeleted", statement, StringComparison.OrdinalIgnoreCase);
+                Assert.DoesNotContain("@IsActive", statement, StringComparison.OrdinalIgnoreCase);
+            }
+        );
+    }
+
+    [Fact]
     public async Task GetCandidatesAsync_默认查询在数据库分页且不访问进货表()
     {
         await InsertStoreAsync("B1", "Branch One");

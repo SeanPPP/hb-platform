@@ -83,6 +83,7 @@ export type PaymentDraftCancelledCloseResult = Readonly<{
 }>;
 
 export type RecoveredPaymentBoundAction = Readonly<{
+  manualConfirmed?: boolean;
   actionId: string;
   attemptId: string;
   provider: PaymentProvider;
@@ -122,6 +123,13 @@ export type BlockingPaymentAttemptRecovery = RecoveryBase &
 export type PaymentDraftRecovery =
   | PreparedPaymentDraftRecovery
   | BlockingPaymentAttemptRecovery;
+
+export type PaymentRecoveryCartMaterial = Readonly<{
+  checkoutIntentId: string;
+  cart: CartSnapshot;
+  pricingState: PricingCartStateSnapshot;
+  recallBinding: RecallActiveBinding | null;
+}>;
 
 export type PaymentDraftPersistenceIds = Readonly<{
   createOrderGuid(): string;
@@ -464,6 +472,33 @@ implements PersistedOrderDraftPort {
     );
   }
 
+  /** 恢复中心按精确订单重建购物车，不依赖全局 blocking 查询。 */
+  public readRecoveryCart(
+    orderGuidInput: string,
+    scopeInput: PaymentRecoveryScope,
+  ): Promise<PaymentRecoveryCartMaterial | null> {
+    const orderGuid = strictId(orderGuidInput, "payment recovery order guid");
+    const scope = normalizeScope(scopeInput);
+    return this.connection.withExclusiveTransaction(async (transaction) => {
+      const order = await requireRecoveryOrder(transaction, orderGuid);
+      if (
+        text(order.store_code, "recovery store code") !== scope.storeCode ||
+        text(order.device_code, "recovery device code") !== scope.deviceCode ||
+        !["Draft", "Completing"].includes(text(order.state, "recovery order state"))
+      ) {
+        return null;
+      }
+      const base = await recoveryBase(transaction, order);
+      if (!base.draftId) return null;
+      return {
+        checkoutIntentId: base.draftId,
+        cart: base.cart,
+        pricingState: base.pricingState,
+        recallBinding: base.recallBinding,
+      };
+    });
+  }
+
   /**
    * 终端明确返回 Cancelled 且当前没有活动正 tender 时，追加审计并关闭 M11
    * binding。该操作只改变 binding 的 CAS 状态；订单、行、attempt 和 action
@@ -602,7 +637,7 @@ implements PersistedOrderDraftPort {
                    AND consumed.order_guid = candidate.order_guid
                    AND consumed.amount_cents = candidate.amount_cents
                    AND (
-                     (candidate.provider IN ('square', 'linkly-cloud')
+                     (candidate.provider IN ('square', 'linkly-cloud', 'manual-card')
                        AND consumed.method = 'card')
                      OR (candidate.provider = 'voucher'
                        AND consumed.method = 'voucher')
@@ -859,10 +894,18 @@ implements PersistedOrderDraftPort {
       const tenderCount = integer(usage?.tender_count, "draft tender count");
       const attemptCount = integer(usage?.attempt_count, "draft attempt count");
       const actionCount = integer(usage?.action_count, "draft action count");
+      // 单个 binding 尚无 attempt 时，Abandoned 与 attempt INSERT 在同一排他事务序列化；
+      // 旧异步流程之后会被 abandoned-draft 触发器拒绝，无法越过首次 provider 调用门。
+      // 手动刷卡的 binding 表示外部卡机已确认付款，即使本地 attempt 尚未落库也不能放弃。
+      const untouchedBoundAction =
+        attemptCount === 0 &&
+        actionCount === 1 &&
+        unresolvedBoundAction !== null &&
+        unresolvedBoundAction.provider !== "manual-card";
+      const resolvedHistory = attemptCount === actionCount && unresolvedBoundAction === null;
       if (
         tenderCount !== 0 ||
-        attemptCount !== actionCount ||
-        unresolvedBoundAction !== null
+        !(resolvedHistory || untouchedBoundAction)
       ) {
         throw new Error(
           "Payment draft with tender or unresolved payment history cannot be abandoned.",
@@ -1505,6 +1548,11 @@ async function findBlockingRecoveryInTransaction(
      INNER JOIN local_orders o ON o.order_guid = d.order_guid
      WHERE d.store_code = ? AND d.device_code = ? AND d.state = 'Active'
        AND o.state IN ('Draft', 'Completing')
+       AND NOT EXISTS (
+         SELECT 1 FROM payment_recovery_cases parked
+         WHERE parked.order_guid = o.order_guid
+           AND parked.is_parked = 1
+       )
      ORDER BY o.local_sequence DESC
      LIMIT 3`,
     [scope.storeCode, scope.deviceCode],
@@ -1515,6 +1563,22 @@ async function findBlockingRecoveryInTransaction(
      FROM payment_attempts p
      INNER JOIN local_orders o ON o.order_guid = p.order_guid
      WHERE o.store_code = ? AND o.device_code = ?
+       AND NOT EXISTS (
+         SELECT 1 FROM payment_recovery_cases parked
+         WHERE parked.attempt_id = p.attempt_id
+           AND parked.order_guid = p.order_guid
+           AND parked.is_parked = 1
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM manual_payment_tender_bindings manual
+         WHERE manual.attempt_id = p.attempt_id
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM payment_recovery_cases resolved
+         WHERE resolved.attempt_id = p.attempt_id
+           AND resolved.order_guid = p.order_guid
+           AND resolved.state = 'manual-unpaid'
+       )
        AND (
          p.state IN ('Created', 'Submitted', 'Pending', 'Unknown')
          OR (
@@ -1525,7 +1589,7 @@ async function findBlockingRecoveryInTransaction(
                AND t.order_guid = p.order_guid
                AND t.amount_cents = p.amount_cents
                AND (
-                 (p.provider IN ('square', 'linkly-cloud') AND t.method = 'card')
+                 (p.provider IN ('square', 'linkly-cloud', 'manual-card') AND t.method = 'card')
                  OR (p.provider = 'voucher' AND t.method = 'voucher')
                )
            )
@@ -1746,7 +1810,7 @@ async function readBoundAction(
            AND tender.order_guid = attempt.order_guid
            AND tender.amount_cents = attempt.amount_cents
            AND (
-             (attempt.provider IN ('square', 'linkly-cloud') AND tender.method = 'card')
+             (attempt.provider IN ('square', 'linkly-cloud', 'manual-card') AND tender.method = 'card')
              OR (attempt.provider = 'voucher' AND tender.method = 'voucher')
            )
        ) AS matching_tender_count
@@ -1859,7 +1923,7 @@ function parseBoundActionSignature(
   value: string,
 ): Pick<
   RecoveredPaymentBoundAction,
-  "provider" | "operation" | "amount"
+  "provider" | "operation" | "amount" | "manualConfirmed"
 > {
   let decoded: unknown;
   try {
@@ -1867,12 +1931,15 @@ function parseBoundActionSignature(
   } catch {
     throw new Error("Payment action request signature is invalid JSON.");
   }
-  if (!Array.isArray(decoded) || decoded.length !== 4) {
+  if (!Array.isArray(decoded) || (decoded.length !== 4 && decoded.length !== 5)) {
     throw new Error("Payment action request signature shape is invalid.");
   }
   const [providerValue, operationValue, currency, amountValue] = decoded;
   const provider = paymentProvider(providerValue);
   const operation = paymentOperation(operationValue);
+  if (provider === "manual-card" ? decoded.length !== 5 || decoded[4] !== "confirmed" || operation !== "purchase" : decoded.length !== 4) {
+    throw new Error("Payment manual confirmation signature is invalid.");
+  }
   if (
     currency !== "AUD" ||
     !Number.isSafeInteger(amountValue) ||
@@ -1887,6 +1954,7 @@ function parseBoundActionSignature(
     provider,
     operation,
     amount: createAud(Number(amountValue)),
+    ...(provider === "manual-card" ? { manualConfirmed: true } : {}),
   };
 }
 
@@ -2142,7 +2210,7 @@ function paymentProvider(value: unknown): PaymentProvider {
   if (
     provider === "square" ||
     provider === "linkly-cloud" ||
-    provider === "voucher"
+    (provider === "voucher" || provider === "manual-card")
   ) {
     return provider;
   }

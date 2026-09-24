@@ -16,6 +16,29 @@ public sealed class BatchProductSalesQueryRequestDto : BatchProductSalesScopeDto
 public sealed class BatchProductSalesDetailRequestDto : BatchProductSalesScopeDto
 {
     public string? ProductCode { get; set; }
+    /// <summary>默认保留旧客户端的折扣分类读取；false 时只读取已完成日销量统计。</summary>
+    public bool IncludeDiscounts { get; set; } = true;
+    /// <summary>摘要返回的可用日期版本；与 readyDates 一起传入可锁定明细读取边界。</summary>
+    public string? CoverageVersion { get; set; }
+    public List<string>? ReadyDates { get; set; }
+}
+
+public sealed class BatchProductSalesPendingDateDto
+{
+    /// <summary>ISO 8601 日期（yyyy-MM-dd）。</summary>
+    public string Date { get; set; } = string.Empty;
+    /// <summary>真实刷新状态，或 queued / active / queueFailed / missing。</summary>
+    public string Reason { get; set; } = string.Empty;
+}
+
+public sealed class BatchProductSalesCoverageDto
+{
+    /// <summary>complete / partial / pending。</summary>
+    public string Status { get; set; } = "pending";
+    public List<string> ReadyDates { get; set; } = [];
+    public List<BatchProductSalesPendingDateDto> PendingDates { get; set; } = [];
+    /// <summary>仅由 readyDates 及其逐日统计版本生成，用于详情锁定。</summary>
+    public string Version { get; set; } = string.Empty;
 }
 
 public sealed class BatchProductSalesStoreDto
@@ -51,7 +74,9 @@ public class BatchProductSalesProductDto
 
 public sealed class BatchProductSalesProductSummaryDto : BatchProductSalesProductDto
 {
-    public decimal Quantity { get; set; }
+    /// <summary>无可用日期时为 null；0 表示全部可用日期的真实零销量。</summary>
+    public decimal? Quantity { get; set; }
+    public decimal? SalesAmount { get; set; }
 }
 
 /// <summary>
@@ -79,7 +104,7 @@ public sealed class BatchProductSalesDailyDto
     public BatchProductSalesMetricsDto Metrics { get; set; } = new();
 }
 
-public sealed class BatchProductSalesBranchDto
+public class BatchProductSalesBranchDto
 {
     public string BranchCode { get; set; } = string.Empty;
     public string BranchName { get; set; } = string.Empty;
@@ -94,6 +119,8 @@ public sealed class BatchProductSalesQueryResultDto : BatchProductSalesScopeDto
     public List<string> Warnings { get; set; } = [];
     public string? StatisticStatus { get; set; }
     public DateTime? StatisticUpdatedAt { get; set; }
+    public BatchProductSalesCoverageDto Coverage { get; set; } = new();
+    public BatchProductSalesOverviewDto Overview { get; set; } = new();
 }
 
 public sealed class BatchProductSalesDetailDto : BatchProductSalesScopeDto
@@ -102,9 +129,61 @@ public sealed class BatchProductSalesDetailDto : BatchProductSalesScopeDto
     public DateTime? StatisticUpdatedAt { get; set; }
     public string DiscountStatisticStatus { get; set; } = "Fresh";
     public DateTime? DiscountUpdatedAt { get; set; }
+    public BatchProductSalesCoverageDto Coverage { get; set; } = new();
+    public List<string> ProductCodes { get; set; } = [];
     public BatchProductSalesProductDto Product { get; set; } = new();
     public BatchProductSalesMetricsDto Metrics { get; set; } = new();
     public List<BatchProductSalesDailyDto> Daily { get; set; } = [];
     public List<BatchProductSalesBranchDto> Branches { get; set; } = [];
+    public List<string> Warnings { get; set; } = [];
+}
+
+public sealed class BatchProductSalesOverviewBranchDto : BatchProductSalesBranchDto
+{
+    public int ContributingProductCount { get; set; }
+    public int SelectedProductCount { get; set; }
+}
+
+public sealed class BatchProductSalesOverviewDto
+{
+    public BatchProductSalesMetricsDto? Metrics { get; set; }
+    public List<BatchProductSalesDailyDto> Daily { get; set; } = [];
+    public List<BatchProductSalesOverviewBranchDto> Branches { get; set; } = [];
+}
+
+public class BatchProductSalesFollowupRequestDto : BatchProductSalesScopeDto
+{
+    public List<string>? ProductCodes { get; set; }
+    public string? CoverageVersion { get; set; }
+    public List<string>? ReadyDates { get; set; }
+}
+
+public sealed class BatchProductSalesBranchOverviewRequestDto : BatchProductSalesFollowupRequestDto
+{
+    public string? BranchCode { get; set; }
+}
+
+public sealed class BatchProductSalesBranchProductDto : BatchProductSalesProductDto
+{
+    public BatchProductSalesMetricsDto Metrics { get; set; } = new();
+}
+
+public sealed class BatchProductSalesBranchOverviewDto : BatchProductSalesScopeDto
+{
+    public List<string> ProductCodes { get; set; } = [];
+    public BatchProductSalesCoverageDto Coverage { get; set; } = new();
+    public BatchProductSalesBranchDto Branch { get; set; } = new();
+    public List<BatchProductSalesBranchProductDto> Products { get; set; } = [];
+}
+
+public sealed class BatchProductSalesDiscountOverviewDto : BatchProductSalesScopeDto
+{
+    public List<string> ProductCodes { get; set; } = [];
+    public BatchProductSalesCoverageDto Coverage { get; set; } = new();
+    public BatchProductSalesOverviewDto Overview { get; set; } = new();
+    public BatchProductSalesBranchDto? Branch { get; set; }
+    public List<BatchProductSalesBranchProductDto> Products { get; set; } = [];
+    public string DiscountStatisticStatus { get; set; } = "Pending";
+    public DateTime? DiscountUpdatedAt { get; set; }
     public List<string> Warnings { get; set; } = [];
 }

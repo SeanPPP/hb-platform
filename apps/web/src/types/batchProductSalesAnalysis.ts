@@ -31,7 +31,17 @@ export interface BatchSalesProduct {
 }
 
 export interface BatchSalesProductSummary extends BatchSalesProduct {
-  quantity: number
+  /** 所有日期尚未发布时没有可靠的销量，不能用 0 代替。 */
+  quantity: number | null
+  salesAmount: number | null
+}
+
+export interface BatchSalesCoverage {
+  status: 'complete' | 'partial' | 'pending'
+  readyDates: string[]
+  pendingDates: Array<{ date: string; reason: string }>
+  /** 服务端为当前可读日期集合生成的不可变快照版本。 */
+  version: string
 }
 
 export interface BatchSalesMatch {
@@ -50,6 +60,11 @@ export interface BatchSalesQueryResult extends BatchSalesScope {
   warnings: string[]
   statisticStatus?: string
   statisticUpdatedAt?: string
+  /** 折扣分类后台状态与销量统计状态分开，不能互相覆盖。 */
+  discountStatisticStatus?: string
+  discountUpdatedAt?: string
+  coverage: BatchSalesCoverage
+  overview: BatchSalesOverview
 }
 
 export interface BatchSalesDaily {
@@ -64,11 +79,55 @@ export interface BatchSalesBranch {
   daily: BatchSalesDaily[]
 }
 
+export interface BatchSalesOverviewBranch extends BatchSalesBranch {
+  contributingProductCount: number
+}
+
+export interface BatchSalesOverview {
+  /** 全 pending 时没有可靠聚合量。 */
+  metrics: BatchSalesMetrics | null
+  daily: BatchSalesDaily[]
+  branches: BatchSalesOverviewBranch[]
+}
+
+export interface BatchSalesLockedScope extends BatchSalesScope {
+  productCodes: string[]
+  coverageVersion: string
+  readyDates: string[]
+}
+
+export interface BatchSalesBranchOverviewRequest extends BatchSalesLockedScope {
+  branchCode: string
+}
+
+export interface BatchSalesBranchOverview extends BatchSalesScope {
+  productCodes: string[]
+  coverage: BatchSalesCoverage
+  branch: BatchSalesBranch
+  products: Array<BatchSalesProduct & { metrics: BatchSalesMetrics }>
+}
+
+export interface BatchSalesDiscountOverview extends BatchSalesScope {
+  productCodes: string[]
+  coverage: BatchSalesCoverage
+  overview: BatchSalesOverview
+  branch?: BatchSalesBranch
+  products?: Array<BatchSalesProduct & { metrics: BatchSalesMetrics }>
+  discountStatisticStatus?: string
+  discountUpdatedAt?: string
+  warnings: string[]
+}
+
 export interface BatchSalesDetailRequest extends BatchSalesScope {
   productCode: string
+  /** 单品钻取先读取可靠销量；折扣分类由独立锁定请求异步补齐。 */
+  includeDiscounts?: boolean
+  coverageVersion?: string
+  readyDates?: string[]
 }
 
 export interface BatchSalesDetail extends BatchSalesScope {
+  productCodes: string[]
   statisticStatus?: string
   statisticUpdatedAt?: string
   discountStatisticStatus?: string
@@ -78,6 +137,7 @@ export interface BatchSalesDetail extends BatchSalesScope {
   daily: BatchSalesDaily[]
   branches: BatchSalesBranch[]
   warnings: string[]
+  coverage: BatchSalesCoverage
 }
 
 export interface BatchSalesOptions {
@@ -90,4 +150,7 @@ export interface BatchProductSalesApi {
   getOptions(signal?: AbortSignal): Promise<BatchSalesOptions>
   query(input: BatchSalesQuery, signal?: AbortSignal): Promise<BatchSalesQueryResult>
   getDetail(input: BatchSalesDetailRequest, signal?: AbortSignal): Promise<BatchSalesDetail>
+  getBranchOverview(input: BatchSalesBranchOverviewRequest, signal?: AbortSignal): Promise<BatchSalesBranchOverview>
+  getDiscounts(input: BatchSalesLockedScope & { branchCode?: string }, signal?: AbortSignal): Promise<BatchSalesDiscountOverview>
+  exportDetail(input: BatchSalesLockedScope, signal?: AbortSignal): Promise<string>
 }

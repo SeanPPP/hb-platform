@@ -1,4 +1,5 @@
 import type {
+  CashRegisterUserBarcodeLabelPrintPayload,
   EmployeeCashierBarcodeLabelPrintPayload,
   ProductLabelPrintPayload,
   WarehouseLocationLabelPrintPayload,
@@ -283,22 +284,128 @@ export function buildEmployeeCashierBarcodeLabelCommand(
   return command(lines);
 }
 
+export function buildCashRegisterUserBarcodeLabelCommand(
+  payload: CashRegisterUserBarcodeLabelPrintPayload
+) {
+  const barcodeValue = cpclText(payload.barcode, 50);
+  if (!barcodeValue) {
+    throw new Error("Cash register user barcode is required.");
+  }
+  const operatorName = truncateTextByWidth(cpclText(payload.operatorName) || "--", 530, 7);
+  const storeName = truncateTextByWidth(cpclText(payload.storeName) || "--", 530, 4);
+  // 老收银扫码枪读一维码：合法 EAN13 用 EAN13（窄条 2 点，约 24mm 宽），否则按 Web 规则退回 Code128。
+  const kind = barcodeKind(barcodeValue);
+  const narrowBarWidth = kind === "EAN13" ? 2 : 1;
+  // 实体价格标签单张安全高度约 220 点：条码 96-176，可读编号放右侧，所有元素都不越过 180。
+  const lines = [
+    `! 0 200 200 ${STANDARD_HEIGHT} 1`,
+    `PAGE-WIDTH ${STANDARD_WIDTH}`,
+    text(7, 20, 8, operatorName),
+    text(4, 20, 44, storeName),
+    `BARCODE ${kind} ${narrowBarWidth} 2 80 20 96 ${barcodeValue}`,
+    text(4, 330, 120, truncateTextByWidth(barcodeValue, 220, 4)),
+    "PRINT",
+  ];
+  return command(lines);
+}
+
 export function buildDiscountLabelCommand(payload: ProductLabelPrintPayload, printType?: string | null) {
   const small = isSmallLabel(printType);
   const width = small ? SMALL_WIDTH : STANDARD_WIDTH;
   const height = small ? SMALL_HEIGHT : STANDARD_HEIGHT;
-  const rightX = small ? 330 : 420;
-  const barcodeValue = cpclText(payload.barcode) || cpclText(payload.itemNumber);
-  const lines = [
-    `! 0 200 200 ${height} 1`,
-    `PAGE-WIDTH ${width}`,
-    text(4, 20, 20, payload.productName),
-    text(7, rightX, 35, `${discountPercent(payload.discountRate)}% OFF`),
-    text(7, rightX, 92, `NOW $${formatMoney(discountedPrice(payload))}`),
-    text(4, 20, 190, payload.itemNumber || "--"),
-    text(4, 20, 230, formatDate()),
-  ];
-  addBarcode(lines, "128", 20, 132, barcodeValue, 56);
+  const barcodeValue = cpclText(payload.barcode, Number.MAX_SAFE_INTEGER)
+    || cpclText(payload.itemNumber, Number.MAX_SAFE_INTEGER);
+  // Hermes 的旧版本没有 TextEncoder；按 Unicode 码点计算 UTF-8 长度。
+  const barcodeBytes = Array.from(barcodeValue).reduce((total, char) => {
+    const point = char.codePointAt(0) ?? 0;
+    return total + (point <= 0x7f ? 1 : point <= 0x7ff ? 2 : point <= 0xffff ? 3 : 4);
+  }, 0);
+  if (barcodeBytes > 251) {
+    throw new Error("Discount label QR content is too long for the left QR area.");
+  }
+  // M 纠错的 byte 模式按容量上界选倍率，二维码始终在 64×64 点内，内容不截断。
+  const qrUnit = barcodeBytes <= 14 ? 3 : barcodeBytes <= 42 ? 2 : 1;
+  const nowPrice = Math.round(discountedPrice(payload) * 100 + 1e-8) / 100;
+  const hasWasPrice = Number.isFinite(payload.retailPrice)
+    && Number.isFinite(nowPrice)
+    && Number(payload.retailPrice) > nowPrice
+    && nowPrice >= 0;
+  const wasText = `$${formatMoney(payload.retailPrice)}`;
+  const nowText = `$${formatMoney(nowPrice)}`;
+  // CPCL 固定字体：font 0 为 8×9 点，font 7 为 12×24 点；非 ASCII 保守按双宽。
+  const textWidth = (value: string, font: 0 | 7) => Array.from(value).reduce(
+    (total, char) => total + ((char.codePointAt(0) ?? 0) > 127 ? 2 : 1) * (font === 0 ? 8 : 12),
+    0
+  );
+  const fitDisplay = (value: string, maxWidth: number, font: 0 | 7) => {
+    const chars = Array.from(value.trim());
+    if (textWidth(chars.join(""), font) <= maxWidth) return chars.join("");
+    while (chars.length && textWidth(chars.join("") + "...", font) > maxWidth) chars.pop();
+    return chars.join("").trimEnd() + "...";
+  };
+  const infoX = 84;
+  const infoWidth = small ? 100 : 124;
+  const wasX = infoX + infoWidth + 10;
+  const baseWasWidth = small ? 76 : 96;
+  const wasFont: 0 | 7 = textWidth(wasText, 7) <= baseWasWidth ? 7 : 0;
+  const wasWidth = Math.max(baseWasWidth, textWidth(wasText, wasFont));
+  const nowX = hasWasPrice ? wasX + wasWidth + 10 : wasX;
+  const nowRight = width - 12;
+  const nowLabelWidth = textWidth("NOW", 7);
+  const nowAmountMaxWidth = nowRight - nowX - nowLabelWidth - 18;
+  const nowFont: 0 | 7 = textWidth(nowText, 7) <= nowAmountMaxWidth ? 7 : 0;
+  const nowBaseWidth = textWidth(nowText, nowFont);
+  if (nowBaseWidth > nowAmountMaxWidth) {
+    throw new Error("Discount label price is too long for its price area.");
+  }
+  const nowScaleX = Math.min(2, Math.floor(nowAmountMaxWidth / nowBaseWidth));
+  const nowScaleY = nowFont === 7 ? nowScaleX : 2;
+  const nowPriceHeight = (nowFont === 7 ? 24 : 9) * nowScaleY;
+  const nowHeight = Math.max(24, nowPriceHeight) + 12;
+  const nowTop = 194 - nowHeight;
+  const discountText = String(discountPercent(payload.discountRate)).padStart(2, "0");
+  const discountWidth = textWidth(discountText, 7) * 4;
+  const discountX = width - 12 - discountWidth - 8 - 48;
+  const nameMaxWidth = Math.max(36, discountX - 15);
+  const nameChars = Array.from(cpclText(payload.productName));
+  let firstLineLength = 0;
+  while (firstLineLength < nameChars.length
+    && textWidth(nameChars.slice(0, firstLineLength + 1).join(""), 7) <= nameMaxWidth) firstLineLength++;
+  // 第一行若切在单词中间，回退到词边界；第二行超长时明确显示省略号。
+  if (firstLineLength < nameChars.length && nameChars[firstLineLength] !== " ") {
+    const wordBoundary = nameChars.slice(0, firstLineLength).lastIndexOf(" ");
+    if (wordBoundary > 0) firstLineLength = wordBoundary;
+  }
+  const nameLines = [nameChars.slice(0, firstLineLength).join("").trim() || " "];
+  if (firstLineLength < nameChars.length) {
+    nameLines.push(fitDisplay(nameChars.slice(firstLineLength).join(""), nameMaxWidth, 7));
+  }
+  const rawItem = cpclText(payload.itemNumber) || "--";
+  const itemFont: 0 | 7 = textWidth(rawItem, 7) <= infoWidth ? 7 : 0;
+  const item = fitDisplay(rawItem, infoWidth, itemFont);
+  const lines = [`! 0 200 200 ${height} 1`, `PAGE-WIDTH ${width}`, "LEFT", "SETBOLD 0"];
+  const addText = (font: 0 | 7, x: number, y: number, value: string, scaleX = 1, scaleY = 1) => {
+    lines.push(`SETMAG ${scaleX} ${scaleY}`, text(font, x, y, value));
+  };
+  nameLines.forEach((value, index) => addText(7, 5, 5 + index * 30, value));
+  addText(7, discountX, 20, discountText, 4, 4);
+  addText(7, discountX + discountWidth + 8, 20, "%", 2, 2);
+  addText(7, discountX + discountWidth + 20, 92, "OFF");
+  addText(itemFont, infoX, 142, item, 1, itemFont === 0 ? 2 : 1);
+  addText(0, infoX + 2, 174, formatDate(), 1, 2);
+  lines.push(`INVERSE-LINE ${infoX} 172 ${infoX + 84} 172 22`);
+  if (hasWasPrice) {
+    const wasPriceHeight = wasFont === 7 ? 24 : 18;
+    const wasPriceY = 194 - wasPriceHeight;
+    addText(0, wasX, wasPriceY - 13, "WAS");
+    addText(wasFont, wasX, wasPriceY, wasText, 1, wasFont === 0 ? 2 : 1);
+    lines.push(line(wasX, wasPriceY + wasPriceHeight / 2, wasX + textWidth(wasText, wasFont) - 1, wasPriceY + wasPriceHeight / 2, 2));
+  }
+  addText(7, nowX + 6, nowTop + (nowHeight - 24) / 2, "NOW");
+  addText(nowFont, nowRight - 6 - nowBaseWidth * nowScaleX, nowTop + (nowHeight - nowPriceHeight) / 2, nowText, nowScaleX, nowScaleY);
+  // 在同一矩形内反显 NOW 和完整金额，右侧留 6 点空白。
+  lines.push(`INVERSE-LINE ${nowX} ${nowTop} ${nowRight} ${nowTop} ${nowHeight}`, "SETMAG 0 0");
+  if (barcodeValue) lines.push(`BARCODE QR 10 130 M 2 U ${qrUnit}`, `MA,${barcodeValue}`, "ENDQR");
   lines.push("PRINT");
   return command(lines);
 }

@@ -29,6 +29,7 @@ export function normalizeEmployeeProfile(payload: unknown): EmployeeProfile {
     username: asString(data.username ?? data.userName ?? data.UserName),
     displayName: asString(data.displayName ?? data.DisplayName ?? data.fullName ?? data.FullName) || undefined,
     phone: asString(data.phone ?? data.Phone),
+    email: asString(data.email ?? data.Email),
     bankBsb: asString(data.bankBsb ?? data.BankBsb),
     bankAccountNumber: asString(data.bankAccountNumber ?? data.BankAccountNumber),
     superannuationCompanyName: asString(data.superannuationCompanyName ?? data.SuperannuationCompanyName),

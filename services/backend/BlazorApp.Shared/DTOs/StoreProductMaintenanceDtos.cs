@@ -6,6 +6,28 @@ namespace BlazorApp.Shared.DTOs
         public string? StoreCode { get; set; }
     }
 
+    /// <summary>
+    /// 扫码价签一次请求结果。在线扫码使用此合同，避免客户端先查候选再查详情。
+    /// </summary>
+    public class StoreProductScanLabelResultDto
+    {
+        public List<StoreProductLookupItemDto> Candidates { get; set; } = new();
+        public StoreProductDetailDto? Detail { get; set; }
+        public StoreProductPrintTargetDto? PrintTarget { get; set; }
+    }
+
+    public class StoreProductPrintTargetDto
+    {
+        /// <summary>product、set、multi 或 clearance。</summary>
+        public string Kind { get; set; } = string.Empty;
+        public string Barcode { get; set; } = string.Empty;
+        public decimal RetailPrice { get; set; }
+        public decimal? DiscountRate { get; set; }
+        public string ProductCode { get; set; } = string.Empty;
+        public string? CodeId { get; set; }
+        public string? StoreCode { get; set; }
+    }
+
     public class StoreProductLookupItemDto
     {
         public string ProductCode { get; set; } = string.Empty;

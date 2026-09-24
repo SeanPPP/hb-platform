@@ -244,6 +244,30 @@ namespace BlazorApp.Api.Interfaces
         Task<ApiResponse<bool>> AssignRolesToPermissionAsync(string permissionCode, List<string> roleGuids);
 
         /// <summary>
+        /// 获取被直接授予指定权限的用户列表（不含通过角色继承的用户）
+        /// </summary>
+        /// <param name="permissionCode">权限代码</param>
+        /// <returns>用户列表，AssignedAt 为直接授权时间</returns>
+        Task<ApiResponse<List<RoleUserDto>>> GetPermissionUsersAsync(string permissionCode);
+
+        /// <summary>
+        /// 按增量调整指定权限的直接授权用户
+        /// </summary>
+        /// <param name="permissionCode">权限代码</param>
+        /// <param name="dto">新增与移除的用户GUID</param>
+        /// <returns>操作结果</returns>
+        Task<ApiResponse<bool>> AssignUsersToPermissionAsync(
+            string permissionCode,
+            PermissionUserAssignmentDto dto
+        );
+
+        /// <summary>
+        /// 获取每个权限被显式分配的角色数量（仅统计未删除的角色-权限关联；超级管理员的隐式全权限不计入）
+        /// </summary>
+        /// <returns>权限代码 → 角色数量</returns>
+        Task<ApiResponse<Dictionary<string, int>>> GetPermissionRoleCountsAsync();
+
+        /// <summary>
         /// 获取所有权限（扁平列表，用于管理表格）
         /// </summary>
         /// <returns>权限列表</returns>

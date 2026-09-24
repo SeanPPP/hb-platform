@@ -11,6 +11,8 @@ import type {
   ProductDetail,
   ProductCodePage,
   ProductLookupItem,
+  ScanLabelResult,
+  ScanLabelPrintTarget,
   ProductHqSyncOperation,
   ProductSetCodeItem,
   StoreClearancePriceItem,
@@ -38,6 +40,11 @@ import { normalizeHqSyncOperation } from "@/modules/product-maintenance/hq-sync"
 const BASE_PATH = "/react/v1/store-product-maintenance";
 const PRODUCTS_PATH = "/react/v1/products";
 const ACTIVE_LOCAL_SUPPLIERS_PATH = "/react/v1/local-suppliers/active";
+/**
+ * 查询类请求的专用超时：默认 30s 在「Wi-Fi 已连接但无外网」时会让每次扫码等 30s 才能降级离线；
+ * 这三个接口后端本就期望毫秒级响应，10s 足够覆盖慢网络。
+ */
+export const PRODUCT_QUERY_REQUEST_TIMEOUT_MS = 10_000;
 
 function buildRequestConfig(): AxiosRequestConfig {
   const session = useDeviceStore.getState().session;
@@ -83,7 +90,7 @@ function normalizeDiscountRate(value: unknown): number | null {
   return null;
 }
 
-function normalizeLookupItem(payload: unknown): ProductLookupItem {
+export function normalizeLookupItem(payload: unknown): ProductLookupItem {
   const data = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
   return {
     productCode: String(data.productCode ?? data.ProductCode ?? ""),
@@ -247,8 +254,75 @@ function normalizeProductTypeUpdate(payload: unknown): UpdateProductTypeResult {
 export async function lookupProducts(
   payload: StoreProductLookupRequest
 ): Promise<ProductLookupItem[]> {
-  const response = await apiClient.post(BASE_PATH + "/lookup", payload, buildRequestConfig());
+  const response = await apiClient.post(BASE_PATH + "/lookup", payload, {
+    ...buildRequestConfig(),
+    timeout: PRODUCT_QUERY_REQUEST_TIMEOUT_MS,
+  });
   return Array.isArray(response.data) ? response.data.map(normalizeLookupItem) : [];
+}
+
+function normalizeScanLabelPrintTarget(payload: unknown): ScanLabelPrintTarget | null {
+  if (!payload || typeof payload !== "object") return null;
+  const data = payload as Record<string, unknown>;
+  const kind = String(data.kind ?? data.Kind ?? "").toLowerCase();
+  const barcode = String(data.barcode ?? data.Barcode ?? "").trim();
+  if (!(["product", "set", "multi", "clearance"] as string[]).includes(kind) || !barcode) {
+    return null;
+  }
+  return {
+    kind: kind as ScanLabelPrintTarget["kind"],
+    barcode,
+    retailPrice: toNumber(data.retailPrice ?? data.RetailPrice),
+    discountRate: normalizeDiscountRate(data.discountRate ?? data.DiscountRate),
+    codeId: (data.codeId ?? data.CodeId ?? null) as string | null,
+    productCode: String(data.productCode ?? data.ProductCode ?? ""),
+    storeCode: String(data.storeCode ?? data.StoreCode ?? ""),
+  };
+}
+
+/** 在线扫码一次取得候选、当前门店价及精确打印目标；不写入或缓存商品价格。 */
+export async function scanProductLabel(
+  payload: StoreProductLookupRequest,
+): Promise<ScanLabelResult> {
+  const response = await apiClient.post(`${BASE_PATH}/scan-label`, payload, {
+    ...buildRequestConfig(),
+    timeout: PRODUCT_QUERY_REQUEST_TIMEOUT_MS,
+  });
+  const data = (response.data && typeof response.data === "object"
+    ? response.data : {}) as Record<string, unknown>;
+  const candidates = data.candidates ?? data.Candidates ?? data.items ?? data.Items;
+  if (!Array.isArray(candidates)) {
+    throw new Error("INVALID_SCAN_LABEL_RESPONSE");
+  }
+  const detail = data.detail ?? data.Detail;
+  const printTarget = data.printTarget ?? data.PrintTarget;
+  return {
+    candidates: candidates.map(normalizeLookupItem),
+    detail: detail && typeof detail === "object" ? normalizeDetail(detail) : null,
+    printTarget: normalizeScanLabelPrintTarget(printTarget),
+  };
+}
+
+/**
+ * 离线目录同步接口的传输层：复用 apiClient 的设备头/鉴权与信封解包，
+ * 不设固定超时（整页下载可能很慢），由 AbortSignal 负责取消。
+ */
+export function createOfflineCatalogTransport() {
+  return {
+    async get<T>(
+      path: string,
+      params: Record<string, string | number | undefined>,
+      signal?: AbortSignal
+    ): Promise<T> {
+      const response = await apiClient.get(path, {
+        ...buildRequestConfig(),
+        params,
+        signal,
+        timeout: 0,
+      });
+      return response.data as T;
+    },
+  };
 }
 
 export async function fetchActiveLocalSuppliers(): Promise<LocalSupplierOption[]> {
@@ -306,12 +380,36 @@ export async function getProductFastDetail(
     `${BASE_PATH}/${encodeURIComponent(productCode)}/fast-detail`,
     {
       ...buildRequestConfig(),
+      timeout: PRODUCT_QUERY_REQUEST_TIMEOUT_MS,
       params: {
         ...(storeCode ? { storeCode } : {}),
       },
     }
   );
   return normalizeDetail(response.data);
+}
+
+export async function ensureStorePrice(
+  productCode: string,
+  storeCode: string,
+): Promise<StorePriceEditable> {
+  const response = await apiClient.post(
+    `${BASE_PATH}/${encodeURIComponent(productCode)}/ensure-store-price`,
+    null,
+    {
+      ...buildRequestConfig(),
+      params: { storeCode },
+    },
+  );
+  const storePrice = normalizeStorePrice(response.data);
+  if (
+    !storePrice?.uuid.trim() ||
+    storePrice.productCode !== productCode ||
+    storePrice.storeCode !== storeCode
+  ) {
+    throw new Error("INVALID_STORE_PRICE_RESPONSE");
+  }
+  return storePrice;
 }
 
 function normalizeCodePage<T>(
@@ -360,6 +458,7 @@ export async function getProductCodes(
     `${BASE_PATH}/${encodeURIComponent(productCode)}/codes`,
     {
       ...buildRequestConfig(),
+      timeout: PRODUCT_QUERY_REQUEST_TIMEOUT_MS,
       params: {
         ...(storeCode ? { storeCode } : {}),
         type,

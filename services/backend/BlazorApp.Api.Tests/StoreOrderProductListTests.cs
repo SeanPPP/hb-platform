@@ -2632,6 +2632,119 @@ public sealed class StoreOrderProductListTests : IDisposable
         Assert.Equal(0, staffBCart.FlowStatus);
     }
 
+    [Fact]
+    public async Task 暂停供货商品_分店不能加购或加量_但可以减量移除()
+    {
+        await SeedProductAsync("P-PAUSE", "ITEM-PAUSE");
+        await SeedWarehouseProductAsync("P-PAUSE", oemPrice: 3m, importPrice: 2m);
+        var store = CreateService("store-user");
+        await store.AddToCartMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S001",
+            ProductCode = "P-PAUSE",
+            Quantity = 4,
+        });
+        await SetWarehouseProductActiveAsync("P-PAUSE", false);
+
+        var addAgain = await store.AddToCartMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S001",
+            ProductCode = "P-PAUSE",
+            Quantity = 1,
+        });
+        var increase = await store.UpdateCartItemMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S001",
+            ProductCode = "P-PAUSE",
+            Quantity = 9,
+        });
+        var decrease = await store.UpdateCartItemMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S001",
+            ProductCode = "P-PAUSE",
+            Quantity = 1,
+        });
+
+        Assert.False(addAgain.Success);
+        Assert.Equal("该商品已暂停供货，暂时不能订货", addAgain.Message);
+        Assert.False(increase.Success);
+        Assert.Equal("该商品已暂停供货，暂时不能订货", increase.Message);
+        // 减量和移除必须放行，否则分店没法把这行清掉。
+        Assert.True(decrease.Success, decrease.Message);
+        Assert.Equal(1m, decrease.Data!.ChangedItem!.Quantity);
+        // 购物车明细要带出真实的供货状态，前端据此标明“已暂停供货”。
+        Assert.False(decrease.Data.ChangedItem.IsActive);
+    }
+
+    [Fact]
+    public async Task 暂停供货商品_仓库侧代下单不受限()
+    {
+        await SeedProductAsync("P-PAUSE-WH", "ITEM-PAUSE-WH");
+        await SeedWarehouseProductAsync("P-PAUSE-WH", oemPrice: 3m, importPrice: 2m);
+        await SetWarehouseProductActiveAsync("P-PAUSE-WH", false);
+
+        var result = await CreateService("warehouse-a", "WarehouseStaff")
+            .AddToCartMutationAsync(new AddToCartRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = "P-PAUSE-WH",
+                Quantity = 2,
+            });
+
+        Assert.True(result.Success, result.Message);
+    }
+
+    [Fact]
+    public async Task SubmitOrderAsync_购物车含加购后才下架的商品_分店提交被拦截并指出货号()
+    {
+        await SeedProductAsync("P-OK", "ITEM-OK");
+        await SeedProductAsync("P-GONE", "ITEM-GONE");
+        await SeedWarehouseProductAsync("P-OK", oemPrice: 3m, importPrice: 2m);
+        await SeedWarehouseProductAsync("P-GONE", oemPrice: 3m, importPrice: 2m);
+        var store = CreateService("store-user");
+        foreach (var code in new[] { "P-OK", "P-GONE" })
+        {
+            await store.AddToCartMutationAsync(new AddToCartRequestDto
+            {
+                StoreCode = "S001",
+                ProductCode = code,
+                Quantity = 1,
+            });
+        }
+        await SetWarehouseProductActiveAsync("P-GONE", false);
+
+        var blocked = await store.SubmitOrderAsync(new SubmitStoreOrderRequestDto { StoreCode = "S001" });
+
+        Assert.False(blocked.Success);
+        Assert.Equal("SUPPLY_PAUSED", blocked.ErrorCode);
+        Assert.Contains("ITEM-GONE", blocked.Message);
+        Assert.DoesNotContain("ITEM-OK", blocked.Message);
+        // 系统不悄悄删除：被拦截后购物车原样保留，由分店自己移除。
+        var cart = await _db.Queryable<WareHouseOrder>()
+            .SingleAsync(item => item.StoreCode == "S001" && !item.IsDeleted);
+        Assert.Equal(0, cart.FlowStatus);
+        Assert.Equal(
+            2,
+            await _db.Queryable<WareHouseOrderDetails>()
+                .CountAsync(item => item.OrderGUID == cart.OrderGUID && !item.IsDeleted)
+        );
+
+        await store.UpdateCartItemMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S001",
+            ProductCode = "P-GONE",
+            Quantity = 0,
+        });
+        var submitted = await store.SubmitOrderAsync(new SubmitStoreOrderRequestDto { StoreCode = "S001" });
+        Assert.True(submitted.Success, submitted.Message);
+    }
+
+    private Task SetWarehouseProductActiveAsync(string productCode, bool isActive) =>
+        _db.Updateable<WarehouseProduct>()
+            .SetColumns(item => item.IsActive == isActive)
+            .Where(item => item.ProductCode == productCode)
+            .ExecuteCommandAsync();
+
     [Theory]
     [InlineData("Submit")]
     [InlineData("Create")]
@@ -7468,6 +7581,12 @@ public sealed class StoreOrderProductListTests : IDisposable
             IsActive = true,
             IsDeleted = false,
         }).ExecuteCommandAsync();
+        await _db.Insertable(new WarehouseProduct
+        {
+            ProductCode = "P-STATUS-1",
+            IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
         var history = CreateStatusHistoryMock();
         WarehouseProductChangeHistoryContextDto? recordedContext = null;
         history
@@ -7496,10 +7615,15 @@ public sealed class StoreOrderProductListTests : IDisposable
             });
 
         Assert.True(result.Success, result.Message);
+        // 订货页的上下架开关表达“仓库是否继续向分店供货”，与页面展示同源（WarehouseProduct），
+        // 不得改动决定门店 POS 能否销售的商品主档状态。
+        var warehouseProduct = await _db.Queryable<WarehouseProduct>()
+            .SingleAsync(x => x.ProductCode == "P-STATUS-1");
         var product = await _db.Queryable<Product>()
             .SingleAsync(x => x.ProductCode == "P-STATUS-1");
-        Assert.False(product.IsActive);
-        Assert.Equal("status-user", product.UpdatedBy);
+        Assert.False(warehouseProduct.IsActive);
+        Assert.Equal("status-user", warehouseProduct.UpdatedBy);
+        Assert.True(product.IsActive);
         Assert.Equal("Update", recordedContext?.Action);
         Assert.Equal("StoreOrderProductStatus", recordedContext?.Source);
         Assert.Equal("P-STATUS-1", recordedContext?.SourceReference);
@@ -7529,6 +7653,11 @@ public sealed class StoreOrderProductListTests : IDisposable
                 IsDeleted = false,
             },
         }).ExecuteCommandAsync();
+        await _db.Insertable(new[]
+        {
+            new WarehouseProduct { ProductCode = "P-STATUS-2", IsActive = true, IsDeleted = false },
+            new WarehouseProduct { ProductCode = "P-STATUS-3", IsActive = true, IsDeleted = false },
+        }).ExecuteCommandAsync();
         var history = CreateStatusHistoryMock();
         history
             .Setup(x =>
@@ -7550,10 +7679,11 @@ public sealed class StoreOrderProductListTests : IDisposable
             });
 
         Assert.False(result.Success);
-        var products = await _db.Queryable<Product>()
+        var warehouseProducts = await _db.Queryable<WarehouseProduct>()
             .Where(x => new[] { "P-STATUS-2", "P-STATUS-3" }.Contains(x.ProductCode))
             .ToListAsync();
-        Assert.All(products, product => Assert.True(product.IsActive));
+        Assert.Equal(2, warehouseProducts.Count);
+        Assert.All(warehouseProducts, item => Assert.True(item.IsActive));
     }
 
     private static Mock<IWarehouseProductChangeHistoryService> CreateStatusHistoryMock()

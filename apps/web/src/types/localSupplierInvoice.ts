@@ -10,6 +10,7 @@ export interface LocalSupplierInvoiceListDto {
   inboundDate?: string
   totalAmount?: number
   receivedTotalAmount?: number
+  isProductChecked?: boolean
   flowStatus?: number
   inboundStatus?: number
   createdAt: string
@@ -149,7 +150,23 @@ export interface LocalSupplierPurchaseSalesAnalysisRowDto {
   salesQty30: number
   salesQty60: number
   salesQty90: number
+  /** 最近进货当天起至今的累计净销量；由后端聚合，用于服务端排序。 */
+  totalSalesSinceLatestPurchase: number
   salesStatisticLastUpdate?: string | null
+  /** 上次进货（无则最近进货前 30 天）起至今的逐日净销量，缺失日期已补 0。 */
+  dailySales: LocalSupplierPurchaseSalesDailyPointDto[]
+  /** 图表窗口内的进货事件（上次 + 最近），数量为整数。 */
+  purchases: LocalSupplierPurchaseSalesPurchaseEventDto[]
+}
+
+export interface LocalSupplierPurchaseSalesDailyPointDto {
+  date: string
+  quantity: number
+}
+
+export interface LocalSupplierPurchaseSalesPurchaseEventDto {
+  date: string
+  quantity: number
 }
 
 export interface LocalSupplierPurchaseSalesAnalysisResponseDto {

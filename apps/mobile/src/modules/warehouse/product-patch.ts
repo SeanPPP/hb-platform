@@ -1,3 +1,4 @@
+import type { SupplyNoticeInput } from "@/modules/supply-notice/types";
 import type { WarehouseProductPatchRequest } from "@/modules/warehouse/types";
 
 export interface WarehouseProductFormSnapshot {
@@ -27,6 +28,7 @@ interface WarehouseProductPatchOptions {
   field?: WarehouseProductPatchField;
   statusOnly?: boolean;
   syncStoreRetailPrices?: boolean;
+  supplyNotice?: SupplyNoticeInput;
 }
 
 export function buildWarehouseProductPatchRequest(
@@ -35,7 +37,10 @@ export function buildWarehouseProductPatchRequest(
   options?: WarehouseProductPatchOptions
 ): WarehouseProductPatchRequest {
   if (options?.statusOnly || options?.field === "warehouseIsActive") {
-    return { warehouseIsActive: form.warehouseIsActive };
+    // 供货说明只在下架时有意义；上架不传。
+    return form.warehouseIsActive || !options?.supplyNotice
+      ? { warehouseIsActive: form.warehouseIsActive }
+      : { warehouseIsActive: false, supplyNotice: options.supplyNotice };
   }
 
   if (options?.field) {

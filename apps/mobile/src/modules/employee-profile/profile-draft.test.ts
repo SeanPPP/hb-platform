@@ -4,6 +4,7 @@ import { syncEmployeeProfileDraft } from "./profile-draft";
 const profile = {
   username: "admin",
   phone: "",
+  email: "",
   bankBsb: "server-bsb",
   bankAccountNumber: "server-account",
   superannuationCompanyName: "",
@@ -21,6 +22,7 @@ const profile = {
 };
 const draft = {
   phone: "draft-phone",
+  email: "",
   birthday: "",
   gender: "",
   employmentType: "",

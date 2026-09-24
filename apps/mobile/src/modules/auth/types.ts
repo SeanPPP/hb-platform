@@ -89,10 +89,8 @@ export interface AccessControl {
   canDeleteContainer: boolean;
   canManageStore: boolean;
   canViewReports: boolean;
-  canExportData: boolean;
-  canModifyPrice: boolean;
-  canDeletePrice: boolean;
   canViewDeviceRegistration: boolean;
+  canViewPosOperationLogs: boolean;
   canManageDeviceRegistration: boolean;
   canManageDeviceActivationCodes: boolean;
   canManageMobileDeviceActivationCodes: boolean;

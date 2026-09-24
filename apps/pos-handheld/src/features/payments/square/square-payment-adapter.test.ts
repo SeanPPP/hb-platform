@@ -1011,6 +1011,37 @@ test("refund 零、正数和 MIN_SAFE 金额均在 Square 请求前 fail closed"
   }
 });
 
+for (const operation of ["submit", "recover"] as const) {
+  test(`${operation} 取得交易标识后 payment 查询失败仍保留标识，后续仅查询原交易`, async () => {
+    const checkout = { checkoutId: "checkout-recovered", environment: "Sandbox", status: "COMPLETED", paymentIds: ["payment-recovered"] };
+    const transport = new ScriptedTransport([
+      ok(checkout),
+      new Error("payment response timeout"),
+      ok(checkout),
+      ok({ paymentId: "payment-recovered", status: "COMPLETED", approvedMoney: { amount: 1_250, currency: "AUD" } }),
+    ]);
+    const adapter = createAdapter(transport);
+    const original = attempt({ state: "Unknown" });
+    const failed = await adapter[operation](original);
+
+    assert.equal(failed.state, "Unknown");
+    assert.equal(failed.responseCode, "SQUARE_TRANSPORT_ERROR");
+    assert.equal(failed.references.checkoutId, "checkout-recovered");
+    assert.equal(failed.references.paymentId, "payment-recovered");
+    assert.equal(original.references.checkoutId, null);
+    assert.equal(failed.protectedSyncEvidence, undefined);
+
+    const recovered = await adapter.getStatus({ ...original, references: failed.references });
+    assert.equal(recovered.state, "Approved");
+    assert.deepEqual(transport.calls.map(({ method, url }) => ({ method, url })), [
+      { method: "POST", url: "/api/v1/square/checkouts" },
+      { method: "GET", url: "/api/v1/square/payments/payment-recovered" },
+      { method: "GET", url: "/api/v1/square/checkouts/checkout-recovered" },
+      { method: "GET", url: "/api/v1/square/payments/payment-recovered" },
+    ]);
+  });
+}
+
 class ScriptedTransport implements HbposTransport {
   public readonly calls: HbposTransportRequest[] = [];
 

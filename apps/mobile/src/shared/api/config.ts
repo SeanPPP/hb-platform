@@ -3,7 +3,8 @@ import { AppAsyncStorage } from "@/shared/storage/async-storage";
 const API_HOST_STORAGE_KEY = "hbweb_api_host";
 export const DEFAULT_API_HOST = normalizeApiHost(process.env.EXPO_PUBLIC_API_BASE_URL) || "hotbargain.vip";
 export const API_PROTOCOL = "http";
-export const API_PORT = "5002";
+// 本机常同时跑多个 worktree 的后端（5002/5003/...），开发时可用 EXPO_PUBLIC_API_PORT 指向其中一个；未设置时仍是发布端口。
+export const API_PORT = process.env.EXPO_PUBLIC_API_PORT?.trim() || "5002";
 export const API_PATH = "/api";
 const PRODUCTION_API_HOST = "hotbargain.vip";
 export const DEFAULT_API_BASE_URL = buildApiBaseUrl(DEFAULT_API_HOST);
@@ -14,6 +15,9 @@ export const API_HOST_PRESETS = [
 ] as const;
 
 let cachedApiHost = DEFAULT_API_HOST;
+let hasLoadedStoredApiHost = false;
+let storedApiHostLoad: Promise<string> | null = null;
+let apiHostRevision = 0;
 
 export function normalizeApiHost(input?: string | null) {
   const raw = input?.trim();
@@ -47,14 +51,52 @@ export function getCurrentApiHost() {
 }
 
 export async function getStoredApiHost() {
-  const storedHost = normalizeApiHost(await AppAsyncStorage.getString(API_HOST_STORAGE_KEY));
-  cachedApiHost = storedHost || DEFAULT_API_HOST;
-  return cachedApiHost;
+  if (hasLoadedStoredApiHost) {
+    return cachedApiHost;
+  }
+
+  if (storedApiHostLoad) {
+    return storedApiHostLoad;
+  }
+
+  const revisionAtStart = apiHostRevision;
+  const load = AppAsyncStorage.getString(API_HOST_STORAGE_KEY)
+    .then((value) => {
+      const storedHost = normalizeApiHost(value);
+      const loadedHost = storedHost || DEFAULT_API_HOST;
+      // setStoredApiHost() 可能在桥接读取期间完成；旧读取不能覆盖新主机。
+      if (revisionAtStart === apiHostRevision) {
+        cachedApiHost = loadedHost;
+        hasLoadedStoredApiHost = true;
+      }
+      return cachedApiHost;
+    })
+    .catch((error) => {
+      // 读取失败不能污染后续请求；下一次调用应重新读取。
+      if (revisionAtStart === apiHostRevision) {
+        hasLoadedStoredApiHost = false;
+      }
+      throw error;
+    });
+
+  storedApiHostLoad = load;
+  void load.then(
+    () => {
+      if (storedApiHostLoad === load) storedApiHostLoad = null;
+    },
+    () => {
+      if (storedApiHostLoad === load) storedApiHostLoad = null;
+    },
+  );
+  return load;
 }
 
 export async function setStoredApiHost(input: string) {
   const host = normalizeApiHost(input) || DEFAULT_API_HOST;
-  cachedApiHost = host;
+  // 保存成功后才发布新地址，避免并发请求使用最终未能保存的服务器。
   await AppAsyncStorage.setString(API_HOST_STORAGE_KEY, host);
+  apiHostRevision += 1;
+  cachedApiHost = host;
+  hasLoadedStoredApiHost = true;
   return host;
 }

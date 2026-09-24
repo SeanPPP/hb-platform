@@ -7,6 +7,7 @@ import {
   validateDeviceAuthApi,
 } from "@/modules/device/api";
 import { stopAttendanceLocationTracking } from "@/modules/attendance/location-tracking-control";
+import { closeOfflineCatalogRuntime } from "@/modules/product-maintenance/offline-catalog/offline-catalog-teardown";
 import { collectLoginDeviceLocation } from "@/modules/attendance/required-location";
 import { DeviceStorage } from "@/modules/device/storage";
 import { DeviceAccountStorage } from "@/modules/device-activation/device-account-storage-runtime";
@@ -330,6 +331,8 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
       console.warn("[attendance-location] 清理设备时停止后台定位失败", error);
     });
     await DeviceStorage.clearSession();
+    // 解绑设备：离线快照含该分店的进价与售价，必须连同 SQLite 一起释放。
+    await closeOfflineCatalogRuntime();
     useAppNavigationStore.getState().reset();
     set({ session: null, isReady: true, isLoading: false });
   },

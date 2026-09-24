@@ -376,7 +376,7 @@ public sealed class OperationAuthorizationServiceTests
             "Pos",
             "change-price",
             CreateState(requester)));
-        await cashierContext.HasPermissionEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await cashierContext.HasPermissionEntered.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         service.RevokeAll();
         cashierContext.ReleaseHasPermission.TrySetResult();
@@ -533,17 +533,6 @@ public sealed class OperationAuthorizationServiceTests
             IsEmergencyOverride: false,
             AuthorizationToken: $"ticket-{cashierId}",
             AuthorizationExpiresAtUtc: Now.AddYears(1));
-
-    private static async Task WaitUntilAsync(Func<bool> predicate)
-    {
-        var timeout = DateTime.UtcNow.AddSeconds(2);
-        while (!predicate() && DateTime.UtcNow < timeout)
-        {
-            await Task.Delay(10);
-        }
-
-        Assert.True(predicate());
-    }
 
     private sealed class FakeCashierLoginService(params CashierLoginResult[] results) : ICashierLoginService
     {

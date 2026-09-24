@@ -34,6 +34,10 @@ import type {
 
 import { DeferredVoucherContextProvider } from "./deferred-voucher-context-provider";
 import {
+  DEFAULT_PAYMENT_METHOD_SETTINGS,
+  type PaymentMethodSettings,
+} from "@/features/settings/payment-method-settings";
+import {
   configuredCardProvider,
   configuredLinklyEnvironment,
   createPaymentConfigurationSources,
@@ -79,8 +83,13 @@ export async function createPaymentProviderRuntimeBootstrap(input: Readonly<{
   transport: HbposTransport;
   extra: PosPaymentPublicExtra | null | undefined;
   voucherProtectedTokens: VoucherProtectedTokenPort;
+  paymentMethods?: PaymentMethodSettings;
+  readPaymentMethods?: () => PaymentMethodSettings;
+  /** 分期沿用独立账本，不能开放手动刷卡。 */
+  allowManualCard?: boolean;
 }>): Promise<PaymentProviderRuntimeBootstrapWithVoucherRelease> {
   const sources = createPaymentConfigurationSources(input.extra);
+  const methods = () => input.readPaymentMethods?.() ?? input.paymentMethods ?? DEFAULT_PAYMENT_METHOD_SETTINGS;
   const voucherContext = new DeferredVoucherContextProvider();
   const linklyEnvironment = configuredLinklyEnvironment(input.extra);
   const linklyApiCandidate = linklyEnvironment
@@ -93,7 +102,9 @@ export async function createPaymentProviderRuntimeBootstrap(input: Readonly<{
     transport: input.transport,
     squareConfiguration: sources.square,
     linklyConfiguration: sources.linkly,
-    voucherConfiguration: sources.voucher,
+    // 关闭入口不销毁旧锁券的恢复能力；新核销由下方 availability 限制。
+    voucherConfiguration: { async load() { return { enabled: true }; } },
+    manualCardConfiguration: { async load() { return { enabled: true }; } },
     voucherProtectedTokens: input.voucherProtectedTokens,
     voucherContextProvider: voucherContext.provide,
     ...(linklySelectionCandidate
@@ -110,6 +121,8 @@ export async function createPaymentProviderRuntimeBootstrap(input: Readonly<{
   const runtimeProviders = new SelectedCardProviderRegistry(
     providers,
     configuredCardProvider(input.extra),
+    methods,
+    input.allowManualCard !== false,
   );
 
   return {
@@ -157,6 +170,8 @@ class SelectedCardProviderRegistry
   public constructor(
     private readonly configured: ConfiguredPaymentProviderRegistry,
     private readonly selected: "square" | "linkly-cloud" | null,
+    private readonly readMethods: () => PaymentMethodSettings,
+    private readonly allowManualCard: boolean,
   ) {}
 
   /**
@@ -172,9 +187,20 @@ class SelectedCardProviderRegistry
   ): PaymentProviderAvailability {
     const configured = this.configured.getAvailability(provider);
     if (!configured.available) return configured;
+    const methods = this.readMethods();
+    if (
+      (provider === "voucher" && !methods.giftCardEnabled) ||
+      (provider === "manual-card" && (!methods.useManualCard || !this.allowManualCard))
+    ) {
+      return Object.freeze({
+        provider,
+        available: false,
+        blocker: provider === "voucher" ? "VOUCHER_CONFIGURATION_DISABLED" : "MANUAL_CARD_CONFIGURATION_DISABLED",
+      });
+    }
     if (
       (provider === "square" || provider === "linkly-cloud") &&
-      provider !== this.selected
+      (methods.useManualCard || provider !== this.selected)
     ) {
       return Object.freeze({
         provider,

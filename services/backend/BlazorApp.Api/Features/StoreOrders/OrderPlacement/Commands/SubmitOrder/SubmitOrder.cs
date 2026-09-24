@@ -89,6 +89,25 @@ internal sealed class SubmitOrderHandler(
                             };
                         }
 
+                        // 加购后才被仓库下架的商品不能跟着进单；明确告诉分店是哪几行，
+                        // 由分店自己移除，系统不悄悄删除，也不替换成别的商品。
+                        var pausedLabels = await cartPort.GetSupplyPausedItemLabelsAsync(
+                            cart.OrderGuid
+                        );
+                        if (pausedLabels.Count > 0)
+                        {
+                            return new ApiResponse<bool>
+                            {
+                                Success = false,
+                                ErrorCode = StoreOrderSupplyGuard.PausedErrorCode,
+                                Message =
+                                    $"购物车里有 {pausedLabels.Count} 个商品已暂停供货，请移除后再提交："
+                                    + string.Join("、", pausedLabels.Take(10))
+                                    + (pausedLabels.Count > 10 ? " 等" : string.Empty),
+                                Details = pausedLabels,
+                            };
+                        }
+
                         var orderNo = await orderNumberGenerator.GetNextOrderNoAsync();
                         var affected = await cartPort.CompareExchangeSubmitAsync(
                             cart,

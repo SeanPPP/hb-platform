@@ -55,6 +55,8 @@ public sealed class WarehouseProductChangeHistoryService : IWarehouseProductChan
                 snapshot => snapshot?.DomesticSource?.RetailPrice
             )
         ),
+        // 建议折扣存于 ProductSuggestedDiscount 旁表，没有多张镜像表，直接比较有效值。
+        new("suggestedDiscountRate", "decimal", snapshot => snapshot?.SuggestedDiscountRate),
         new(
             "localSupplierCode",
             "string",
@@ -190,16 +192,27 @@ public sealed class WarehouseProductChangeHistoryService : IWarehouseProductChan
     private readonly SqlSugarContext _context;
     private readonly ILogger<WarehouseProductChangeHistoryService> _logger;
     private readonly ICurrentUserService _currentUserService;
+    private readonly IStorePriceUpdateTaskService? _priceTaskService;
+
+    // 会触发分店价格更新通知的字段。
+    private static readonly HashSet<string> PriceNotificationFieldKeys = new(StringComparer.Ordinal)
+    {
+        "retailPrice",
+        "suggestedDiscountRate",
+    };
 
     public WarehouseProductChangeHistoryService(
         SqlSugarContext context,
         ILogger<WarehouseProductChangeHistoryService> logger,
-        ICurrentUserService currentUserService
+        ICurrentUserService currentUserService,
+        // 可选：现有测试与工具直接 new 本服务，不应因新增通知功能而被迫改动。
+        IStorePriceUpdateTaskService? priceTaskService = null
     )
     {
         _context = context;
         _logger = logger;
         _currentUserService = currentUserService;
+        _priceTaskService = priceTaskService;
     }
 
     public async Task<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>> CaptureSnapshotsAsync(
@@ -278,6 +291,9 @@ public sealed class WarehouseProductChangeHistoryService : IWarehouseProductChan
                 StringComparer.OrdinalIgnoreCase
             );
         var snapshots = new Dictionary<string, WarehouseProductChangeSnapshotDto>(StringComparer.OrdinalIgnoreCase);
+        var suggestedDiscounts = _priceTaskService == null
+            ? null
+            : await _priceTaskService.GetSuggestedDiscountsAsync(codes, cancellationToken);
 
         foreach (var code in codes)
         {
@@ -293,12 +309,14 @@ public sealed class WarehouseProductChangeHistoryService : IWarehouseProductChan
                 ?? product?.ProductCode
                 ?? domestic?.ProductCode
                 ?? code;
+            decimal? suggestedDiscount = null;
+            suggestedDiscounts?.TryGetValue(canonicalCode, out suggestedDiscount);
             snapshots[canonicalCode] = CreateSnapshot(
                 canonicalCode,
                 warehouse,
                 product,
                 domestic
-            );
+            ) with { SuggestedDiscountRate = suggestedDiscount };
         }
 
         return snapshots;
@@ -353,6 +371,7 @@ public sealed class WarehouseProductChangeHistoryService : IWarehouseProductChan
         var actor = ResolveActor(context);
         var occurredAtUtc = ToUtc(context.OccurredAtUtc ?? DateTime.UtcNow);
         var changedCodes = new List<string>();
+        var priceChangedCodes = new List<string>();
         var unchangedWarehouseSnapshots = new List<WarehouseAuditRestoreSnapshot>();
         foreach (var code in codes)
         {
@@ -375,6 +394,11 @@ public sealed class WarehouseProductChangeHistoryService : IWarehouseProductChan
             }
 
             changedCodes.Add(code);
+            // 新建商品（before 为空）时各分店价格与仓库一致，不需要通知。
+            if (before != null && changes.Any(change => PriceNotificationFieldKeys.Contains(change.FieldKey)))
+            {
+                priceChangedCodes.Add(code);
+            }
             histories.Add(
                 new WarehouseProductChangeHistory
                 {
@@ -412,7 +436,48 @@ public sealed class WarehouseProductChangeHistoryService : IWarehouseProductChan
             .Insertable(histories)
             .PageSize(HistoryInsertPageSize)
             .ExecuteCommandAsync();
+        await NotifyStorePriceChangesAsync(priceChangedCodes, context, actor.Name, occurredAtUtc, cancellationToken);
         return histories.Count;
+    }
+
+    /// <summary>
+    /// 所有仓库改价入口的唯一收口：零售价或建议折扣变化后，同步生成/刷新/取消分店价格更新任务。
+    /// 通知失败绝不能打断改价本身，因此这里吞掉异常只记日志；移动端列表与定时对账会兜底修正任务状态。
+    /// </summary>
+    private async Task NotifyStorePriceChangesAsync(
+        IReadOnlyCollection<string> productCodes,
+        WarehouseProductChangeHistoryContextDto context,
+        string actorName,
+        DateTime occurredAtUtc,
+        CancellationToken cancellationToken
+    )
+    {
+        if (_priceTaskService == null || productCodes.Count == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            await _priceTaskService.OnWarehousePriceChangedAsync(
+                productCodes,
+                new PriceTaskInitiator(
+                    actorName,
+                    Normalize(context.Source, "Unknown", 80),
+                    NormalizeNullable(context.SourceReference, 200),
+                    occurredAtUtc
+                ),
+                cancellationToken
+            );
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "生成分店价格更新任务失败: ProductCount={ProductCount}", productCodes.Count);
+        }
     }
 
     private async Task AcquireBatchWriteLockAsync(Guid batchGuid)

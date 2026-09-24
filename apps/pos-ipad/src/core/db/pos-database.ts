@@ -43,6 +43,7 @@ import { applyMigrations } from "./migrations";
 import { PosIpadOtaUpdatePolicyRepository } from "./pos-ipad-ota-update-policy-repository";
 import { PosIpadUpdatePolicyRepository } from "./pos-ipad-update-policy-repository";
 import { PosSettingsRepository } from "./pos-settings-repository";
+import { PaymentMethodSettingsRepository } from "@/features/settings/payment-method-settings";
 import { ReceiptCompletionSettlementRepository } from "./receipt-completion-settlement-repository";
 import {
   SqliteAttendanceSecurityFacade,
@@ -78,11 +79,13 @@ import {
   type OperationAuditLocalScope,
 } from "@hb/pos-db/core/db/sqlite-operation-audit-read";
 import { SqliteOrderSyncMaterialResolver } from "./sqlite-order-sync-material";
+import { SqliteManualPaymentOrderCommitter } from "./sqlite-manual-payment-committer";
 import { SqlitePaymentActionBindingStore } from "./sqlite-payment-action-binding-store";
 import {
   SqlitePaymentDraftRecoveryStore,
   type PaymentDraftPersistenceIds,
 } from "./sqlite-payment-draft-recovery-store";
+import { SqlitePaymentRecoveryCenterStore } from "./sqlite-payment-recovery-center-store";
 import { SqlitePaymentProtectedMaterialReader } from "@hb/pos-db/core/db/sqlite-payment-protected-material";
 import { SqliteRefundVoucherPrintMaterial } from "./sqlite-refund-voucher-print-material";
 import {
@@ -225,6 +228,23 @@ export class PosDatabase implements DatabasePort {
     return new SqliteOrderSyncStatusRepository(this.connection);
   }
 
+  /** 异常刷卡订单独立于当前购物车保存；页面只能经窄恢复中心端口访问。 */
+  public paymentRecoveryCenter(
+    createAuditEventId: () => string,
+  ): SqlitePaymentRecoveryCenterStore {
+    return new SqlitePaymentRecoveryCenterStore(
+      this.connection,
+      createAuditEventId,
+      createAuditEventId,
+      this.nowIso,
+    );
+  }
+
+  /** 人工确认已收款只经专用事务写入 manual tender，不能伪造 provider Approved。 */
+  public manualPaymentOrderCommitter(): SqliteManualPaymentOrderCommitter {
+    return new SqliteManualPaymentOrderCommitter(this.connection, this.nowIso);
+  }
+
   /**
    * Hbpos 同步前即时恢复受保护支付引用；返回值不缓存、不落库，普通订单仓储保持脱敏。
    */
@@ -323,6 +343,10 @@ export class PosDatabase implements DatabasePort {
   /** 设置仅经受类型约束的 facade 访问，业务层不能读写任意 app_settings JSON。 */
   public settings(): PosSettingsRepository {
     return new PosSettingsRepository(this.connection, this.nowIso);
+  }
+
+  public paymentMethodSettings(): PaymentMethodSettingsRepository {
+    return new PaymentMethodSettingsRepository(this.connection, this.nowIso);
   }
 
   /** Settings 危险动作只读取一致风险计数，不取得订单、支付、队列或裸连接。 */
@@ -1008,7 +1032,7 @@ async function appendScopedAuditEvent(
 }
 
 function tenderMethodForProvider(provider: string): "card" | "voucher" {
-  if (provider === "square" || provider === "linkly-cloud") return "card";
+  if (provider === "square" || provider === "linkly-cloud" || provider === "manual-card") return "card";
   if (provider === "voucher") return "voucher";
   throw new Error("Approved payment provider is unsupported.");
 }

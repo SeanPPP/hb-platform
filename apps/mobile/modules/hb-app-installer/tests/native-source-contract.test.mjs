@@ -79,3 +79,15 @@ test("API 28 long version code is behind a direct runtime guard", () => {
   assert.match(moduleSource, /longVersionCode/);
   assert.match(moduleSource, /resolveLegacyPackageVersionCode/);
 });
+
+test("local file URIs with an empty authority are accepted", () => {
+  // Uri.fromFile 产出的 file:///path 经 Uri.parse 解析后 authority 是空字符串而不是 null。
+  // 用 `uri.authority != null` 判断会把所有合法的本地路径一律拒掉，自动更新因此
+  // 永远走不到下载（真机上表现为 APP_DOWNLOAD_PATH_REJECTED）。
+  assert.doesNotMatch(
+    moduleSource,
+    /uri\.authority != null/,
+    "空 authority 的 file:/// 必须被接受，否则本地下载目标一律被拒",
+  );
+  assert.match(moduleSource, /!uri\.authority\.isNullOrEmpty\(\)/);
+});

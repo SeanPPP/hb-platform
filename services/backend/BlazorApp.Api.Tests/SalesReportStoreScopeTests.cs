@@ -23,6 +23,25 @@ public sealed class SalesReportStoreScopeTests
     private const string UserGuid = "store-manager-1";
 
     [Theory]
+    [InlineData(200, true)]
+    [InlineData(500, true)]
+    [InlineData(501, false)]
+    public async Task 销售明细商品分页最多允许五百条(int pageSize, bool accepted)
+    {
+        var service = new Mock<ISalesDashboardReactService>(MockBehavior.Strict);
+        var userService = CreateUserService(new[] { "S1" });
+        if (accepted) SetupReportService(service, "sales-detail", (_, _) => { });
+
+        var response = await CreateSalesController(service.Object, userService.Object)
+            .GetSalesDetailReport(SalesDetailKind.Australia, StartDate, StartDate, pageSize: pageSize);
+
+        if (accepted) Assert.IsType<OkObjectResult>(response);
+        else Assert.IsType<BadRequestObjectResult>(response);
+        if (accepted) service.VerifyAll();
+        else service.VerifyNoOtherCalls();
+    }
+
+    [Theory]
     [InlineData("sales-detail")]
     [InlineData("revenue-snapshot")]
     public async Task 普通用户关联店包含非主店且管理scope拒绝时仍查询成功(string endpoint)

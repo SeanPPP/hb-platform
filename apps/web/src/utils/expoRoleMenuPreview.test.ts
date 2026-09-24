@@ -54,18 +54,23 @@ assertEqual(
 const completePreview = buildPreview([
   P.Orders.Create,
   P.Orders.View,
+  P.SalesOrders.View,
   P.Warehouse.ManageProducts,
   P.DomesticPurchase.ManageProducts,
   P.LocalPurchase.MobileView,
   P.Advertisements.View,
   P.Promotions.View,
   P.StoreProducts.View,
+  P.StoreProducts.Edit,
+  P.StoreProducts.PriceUpdates,
+  P.SeasonalProductInsights.View,
   P.InstallmentOrders.View,
   P.StoreVouchers.View,
   P.Attendance.ScheduleViewSelf,
   P.Attendance.ScheduleViewStore,
   'SeasonalCards.Remaining.ViewManagedStore',
   P.Users.View,
+  P.PosTerminal.AuditView,
   P.Roles.View,
   P.EmployeeProfiles.View,
   'EmployeeProfiles.ReviewSensitiveManagedStore',
@@ -78,6 +83,7 @@ assertArrayEqual(
   [
     'home',
     'orders',
+    'sales-orders',
     'cart',
     'warehouse',
     'domestic-purchase',
@@ -85,15 +91,21 @@ assertArrayEqual(
     'advertisements',
     'promotions',
     'product-query',
+    'price-updates',
     'product-insights',
+    'warehouse-product-insights',
+    'seasonal-product-insights',
     'installment-orders',
     'store-vouchers',
     'attendance-personal',
     'attendance-management',
     'seasonal-cards',
     'users',
+    'pos-operation-logs',
     'user-admin',
+    'cash-register-users',
     'roles',
+    'permissions',
     'employee-profile',
     'employee-profile-review',
     'device-management',
@@ -146,12 +158,34 @@ assertArrayEqual(
     'cart',
     'local-supplier-invoices',
     'product-query',
+    'price-updates',
     'product-insights',
+    'seasonal-product-insights',
     'installment-orders',
     'store-vouchers',
     'seasonal-cards',
   ],
   'Web 权限预览的门店业务分组应包含商品进销和节日贺卡',
+)
+
+// 季节商品查询使用独立权限：只有「查看分店商品」不应看到入口。
+assertEqual(
+  buildPreview([P.StoreProducts.View]).allRoutes.find((route) => route.routeName === 'seasonal-product-insights')?.visible,
+  false,
+  '只有查看分店商品权限时不应显示季节商品查询',
+)
+
+// 价格更新使用专用权限：只有「编辑分店商品」不应看到入口。
+const editOnlyPreview = buildPreview([P.StoreProducts.View, P.StoreProducts.Edit])
+assertEqual(
+  editOnlyPreview.allRoutes.find((route) => route.routeName === 'price-updates')?.visible,
+  false,
+  '仅有 StoreProducts.Edit 时不应显示价格更新入口',
+)
+assertEqual(
+  buildPreview([P.StoreProducts.PriceUpdates]).allRoutes.find((route) => route.routeName === 'price-updates')?.visible,
+  true,
+  '拥有 StoreProducts.PriceUpdates 时应显示价格更新入口',
 )
 
 const warehouseRoute = completePreview.allRoutes.find((route) => route.routeName === 'warehouse')

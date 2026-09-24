@@ -442,6 +442,7 @@
   <data name="shell.sync.retryingAll" xml:space="preserve"><value>Retrying uploads...</value></data>
   <data name="shell.sync.retryCompleted" xml:space="preserve"><value>Upload retry completed: {0} succeeded, {1} not completed.</value></data>
   <data name="shell.sync.retryFailed" xml:space="preserve"><value>Upload retry failed: {0}</value></data>
+  <data name="shell.sync.retryInterrupted" xml:space="preserve"><value>Upload paused while the server address was switching: {0} succeeded, {1} not completed. The rest will continue after the switch.</value></data>
   <data name="shell.sync.caption" xml:space="preserve"><value>Review and retry order uploads, Linkly settlements, or operation audit logs.</value></data>
   <data name="shell.sync.entity.order" xml:space="preserve"><value>Order</value></data>
   <data name="shell.sync.entity.linklySettlement" xml:space="preserve"><value>Linkly Settlement</value></data>
@@ -1315,4 +1316,30 @@
   <data name="cardRecovery.workspace.manualHint" xml:space="preserve"><value>Check terminal evidence. This action requires authorization.</value></data>
   <data name="cardRecovery.workspace.refreshed" xml:space="preserve"><value>Last refreshed</value></data>
   <data name="cardRecovery.workspace.historyScope" xml:space="preserve"><value>History covers the latest 200 records per channel on this register. All open transactions remain available.</value></data>
+  <data name="payment.manualCard.title" xml:space="preserve"><value>Manual card</value></data>
+  <data name="payment.manualCard.instructions" xml:space="preserve"><value>Enter this amount on your standalone terminal. Check its payment result before confirming.</value></data>
+  <data name="payment.manualCard.amount" xml:space="preserve"><value>Amount to charge</value></data>
+  <data name="payment.manualCard.checked" xml:space="preserve"><value>I checked the terminal: payment succeeded and the amount matches.</value></data>
+  <data name="payment.manualCard.uncertain" xml:space="preserve"><value>If the result is unclear, check the terminal transaction history first. Do not charge again.</value></data>
+  <data name="payment.manualCard.cancel" xml:space="preserve"><value>Not paid, go back</value></data>
+  <data name="payment.manualCard.confirm" xml:space="preserve"><value>Confirm paid</value></data>
+  <data name="payment.manualCard.finalAmountRequired" xml:space="preserve"><value>Manual card must settle the full remaining balance. Clear the entered amount or enter the remaining balance.</value></data>
+  <data name="payment.manualCard.orderChanged" xml:space="preserve"><value>The order or cashier changed. This confirmation cannot be used. Check the terminal payment and return to the correct order.</value></data>
+  <data name="payment.manualCard.savingTitle" xml:space="preserve"><value>Manual card payment confirmed</value></data>
+  <data name="payment.manualCard.saveHint" xml:space="preserve"><value>Save this order before leaving. If saving fails, retry here. Do not charge again or close POS.</value></data>
+  <data name="payment.manualCard.saveFailed" xml:space="preserve"><value>The confirmed payment could not be saved safely. Retry saving this same order.</value></data>
+  <data name="payment.manualCard.retrySave" xml:space="preserve"><value>Retry saving order</value></data>
+  <data name="payment.manualCard.refundUnavailable" xml:space="preserve"><value>Manual card payments cannot be refunded through a linked terminal.</value></data>
+  <data name="settings.payment.methods.title" xml:space="preserve"><value>Payment methods</value></data>
+  <data name="settings.payment.methods.description" xml:space="preserve"><value>Choose the payment methods available on this POS. Save to apply your changes.</value></data>
+  <data name="settings.payment.methods.manualCard" xml:space="preserve"><value>Use manual card payment</value></data>
+  <data name="settings.payment.methods.manualCard.help" xml:space="preserve"><value>Off by default: use Credit/Debit Card. When on, Manual card replaces it and the cashier confirms payment on the standalone terminal.</value></data>
+  <data name="settings.payment.methods.voucher" xml:space="preserve"><value>Enable vouchers</value></data>
+  <data name="settings.payment.methods.voucher.help" xml:space="preserve"><value>Off by default. When on, Voucher is available on the payment page.</value></data>
+  <data name="settings.payment.methods.save" xml:space="preserve"><value>Save payment methods</value></data>
+  <data name="settings.payment.methods.saved" xml:space="preserve"><value>Payment methods saved.</value></data>
+  <data name="payment.settings.loadFailed" xml:space="preserve"><value>Payment method settings could not be loaded. Return to the payment page to retry.</value></data>
+  <data name="payment.settings.methodDisabled" xml:space="preserve"><value>This payment method is disabled in payment settings.</value></data>
+  <data name="settings.payment.activeProvider.manual" xml:space="preserve"><value>Manual card payment is active.</value></data>
+  <data name="settings.payment.activeProvider.manual.detail" xml:space="preserve"><value>The cashier confirms payment on the standalone terminal. Saving the terminal settings below keeps manual card mode active. Turn off Use manual card payment and save payment methods to use Credit/Debit Card.</value></data>
 </root>

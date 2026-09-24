@@ -18,6 +18,11 @@ public interface IOrderUploadService
 public sealed class OrderUploadAuthorizationRequiredException(string message, Exception innerException)
     : Exception(message, innerException);
 
+// HttpClient 超时：服务器是否已收到未知，订单仍在队列等同一订单号重试。刻意不是取消异常，
+// 调用方据此把它当作"未完成"的上传失败，而不是端点切换或调用方取消。
+public sealed class OrderUploadTimeoutException(string message, Exception innerException)
+    : TimeoutException(message, innerException);
+
 public interface IOrderUploadExecutionService
 {
     Task<IReadOnlyList<Guid>> GetReuploadableOrderGuidsAsync(
@@ -55,6 +60,9 @@ public sealed class OrderUploadService(
     IOrderSyncApiClient apiClient,
     ILocalOrderUploadRepository uploadRepository) : IOrderUploadService
 {
+    internal const string UploadTimedOutMessage =
+        "Order upload timed out. The server may already have received it; the order stays queued and will be retried with the same order ID.";
+
     public async Task UploadOrderAsync(Guid orderGuid, CancellationToken cancellationToken = default)
     {
         var stopwatch = Stopwatch.StartNew();
@@ -77,7 +85,9 @@ public sealed class OrderUploadService(
             await uploadRepository.MarkSyncedAsync(orderGuid, cancellationToken);
             Log(
                 $"upload completed orderGuid={orderGuid:D} accepted={response.Accepted} alreadySynced={response.AlreadySynced} " +
+                $"heldOrderDisposition={response.HeldOrderDisposition} " +
                 $"message={response.Message ?? "<null>"} elapsedMs={stopwatch.ElapsedMilliseconds}");
+            WarnWhenHeldOrderUnmatched(orderGuid, order, response);
         }
         catch (CatalogApiException ex) when (
             ex.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
@@ -86,6 +96,16 @@ public sealed class OrderUploadService(
             await uploadRepository.MarkPendingAsync(orderGuid, cancellationToken);
             Log($"upload deferred orderGuid={orderGuid:D} reason=cashier-authorization-required");
             throw new OrderUploadAuthorizationRequiredException("需要有效收银员授权后再上传订单。", ex);
+        }
+        catch (TaskCanceledException ex) when (
+            !cancellationToken.IsCancellationRequested && ex.InnerException is TimeoutException)
+        {
+            // HttpClient 超时与端点代际取消都是 TaskCanceledException，只有超时带内层 TimeoutException。
+            // 超时后服务器是否已收到未知：订单留在队列并写明原因，同一订单号重试由服务端去重；
+            // 改抛非取消异常，让批量上传按"未完成"计数并继续下一笔，不再当作端点切换中断整批。
+            await uploadRepository.MarkPendingAsync(orderGuid, UploadTimedOutMessage, CancellationToken.None);
+            Log($"upload timed out orderGuid={orderGuid:D} elapsedMs={stopwatch.ElapsedMilliseconds}");
+            throw new OrderUploadTimeoutException(UploadTimedOutMessage, ex);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -172,6 +192,26 @@ public sealed class OrderUploadService(
     {
         ConsoleLog.Write("OrderSync", message);
     }
+
+    private static void WarnWhenHeldOrderUnmatched(
+        Guid orderGuid,
+        LocalOrder order,
+        OrderSyncResponse response)
+    {
+        if (response.HeldOrderDisposition != HeldOrderDisposition.Unmatched)
+        {
+            return;
+        }
+
+        // 关键逻辑：Unmatched 表示订单本身已落库，但服务端没能把它关联到对应的共享挂单。
+        // 典型成因是本机离线期间该挂单被主管强制释放、并被另一台收银机取走卖出，
+        // 此时同一批货会存在两张正式订单。订单不能因此不落库——钱已经收了——
+        // 但必须留下错误级别的可告警信号交人工对账，不能静默通过。
+        ConsoleLog.WriteError(
+            "OrderSync",
+            $"upload held-order unmatched orderGuid={orderGuid:D} store={order.StoreCode} device={order.DeviceCode} " +
+            $"actualAmount={order.ActualAmount} 挂单关联失败，可能与其他收银机重复销售，需人工对账。");
+    }
 }
 
 public sealed class OrderUploadExecutionService(
@@ -180,6 +220,10 @@ public sealed class OrderUploadExecutionService(
 {
     // ponytail: 单客户端全局串行足以消除状态覆盖；仅在实测吞吐不足时升级为按订单 GUID 加锁。
     private readonly SemaphoreSlim _executionGate = new(1, 1);
+
+    // 单笔超时只算这笔未完成，继续下一笔，避免一张慢单挡住整个队列；连续两笔超时说明服务端整体不可用，
+    // 停止本轮，免得每笔都等满超时（按日期重传一批可达 500 笔）。未尝试的订单留在原状态等下一轮。
+    private const int MaxConsecutiveUploadTimeouts = 2;
 
     public Task<IReadOnlyList<Guid>> GetReuploadableOrderGuidsAsync(
         DateTimeOffset soldFrom,
@@ -203,6 +247,7 @@ public sealed class OrderUploadExecutionService(
             var uploadedCount = 0;
             var failedCount = 0;
             var wasInterrupted = false;
+            var consecutiveTimeouts = 0;
             for (var index = 0; index < selected.Length; index++)
             {
                 var orderGuid = selected[index];
@@ -211,6 +256,7 @@ public sealed class OrderUploadExecutionService(
                 {
                     await uploadService.UploadOrderAsync(orderGuid, cancellationToken);
                     uploadedCount++;
+                    consecutiveTimeouts = 0;
                 }
                 catch (Exception ex) when (IsEndpointTransitionInterruption(ex, cancellationToken))
                 {
@@ -235,11 +281,28 @@ public sealed class OrderUploadExecutionService(
                 catch (OrderUploadAuthorizationRequiredException)
                 {
                     failedCount++;
+                    consecutiveTimeouts = 0;
                     Log($"execute selected item deferred orderGuid={orderGuid:D} reason=cashier-authorization-required");
+                }
+                catch (OrderUploadTimeoutException)
+                {
+                    failedCount++;
+                    if (++consecutiveTimeouts >= MaxConsecutiveUploadTimeouts)
+                    {
+                        var skipped = selected.Length - index - 1;
+                        failedCount += skipped;
+                        Log(
+                            $"execute selected stopped orderGuid={orderGuid:D} reason=consecutive-timeouts " +
+                            $"timeouts={consecutiveTimeouts} skipped={skipped}");
+                        break;
+                    }
+
+                    Log($"execute selected item timed out orderGuid={orderGuid:D} continue=true");
                 }
                 catch (Exception ex)
                 {
                     failedCount++;
+                    consecutiveTimeouts = 0;
                     Log($"execute selected item failed orderGuid={orderGuid:D} error={ex.GetType().Name} message={ex.Message}");
                 }
             }
@@ -306,14 +369,17 @@ public sealed class OrderUploadExecutionService(
             var uploadedCount = 0;
             var failedCount = 0;
             var wasInterrupted = false;
+            var consecutiveTimeouts = 0;
 
-            foreach (var orderGuid in orderGuids)
+            for (var index = 0; index < orderGuids.Count; index++)
             {
+                var orderGuid = orderGuids[index];
                 cancellationToken.ThrowIfCancellationRequested();
                 try
                 {
                     await uploadService.UploadOrderAsync(orderGuid, cancellationToken);
                     uploadedCount++;
+                    consecutiveTimeouts = 0;
                     Log($"execute pending item completed orderGuid={orderGuid:D} uploadedCount={uploadedCount} failedCount={failedCount}");
                 }
                 catch (Exception ex) when (IsEndpointTransitionInterruption(ex, cancellationToken))
@@ -333,11 +399,28 @@ public sealed class OrderUploadExecutionService(
                 }
                 catch (OrderUploadAuthorizationRequiredException)
                 {
+                    consecutiveTimeouts = 0;
                     Log($"execute pending item deferred orderGuid={orderGuid:D} reason=cashier-authorization-required");
+                }
+                catch (OrderUploadTimeoutException)
+                {
+                    failedCount++;
+                    if (++consecutiveTimeouts >= MaxConsecutiveUploadTimeouts)
+                    {
+                        var skipped = orderGuids.Count - index - 1;
+                        failedCount += skipped;
+                        Log(
+                            $"execute pending stopped orderGuid={orderGuid:D} reason=consecutive-timeouts " +
+                            $"timeouts={consecutiveTimeouts} skipped={skipped} elapsedMs={stopwatch.ElapsedMilliseconds}");
+                        break;
+                    }
+
+                    Log($"execute pending item timed out orderGuid={orderGuid:D} continue=true");
                 }
                 catch (Exception ex)
                 {
                     failedCount++;
+                    consecutiveTimeouts = 0;
                     Log(
                         $"execute pending item failed orderGuid={orderGuid:D} uploadedCount={uploadedCount} failedCount={failedCount} " +
                         $"error={ex.GetType().Name} message={ex.Message}");
@@ -478,6 +561,9 @@ public interface ILocalOrderUploadRepository
 
     Task MarkPendingAsync(Guid orderGuid, CancellationToken cancellationToken = default);
 
+    // 留在队列等重试，同时记下原因（如上传超时），供同步中心显示。
+    Task MarkPendingAsync(Guid orderGuid, string errorMessage, CancellationToken cancellationToken = default);
+
     Task MarkSyncedAsync(Guid orderGuid, CancellationToken cancellationToken = default);
 
     Task MarkFailedAsync(Guid orderGuid, string errorMessage, CancellationToken cancellationToken = default);
@@ -561,6 +647,11 @@ public sealed class LocalOrderUploadRepository(LocalSqliteStore store) : ILocalO
     public Task MarkPendingAsync(Guid orderGuid, CancellationToken cancellationToken = default)
     {
         return UpdateStatusAsync(orderGuid, "Pending", null, cancellationToken);
+    }
+
+    public Task MarkPendingAsync(Guid orderGuid, string errorMessage, CancellationToken cancellationToken = default)
+    {
+        return UpdateStatusAsync(orderGuid, "Pending", errorMessage, cancellationToken);
     }
 
     public Task MarkSyncedAsync(Guid orderGuid, CancellationToken cancellationToken = default)

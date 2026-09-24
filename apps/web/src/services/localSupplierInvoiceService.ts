@@ -50,11 +50,13 @@ import type {
   UpdateToStorePricesJobResult,
   UpdateToStorePricesResult,
   UpdateToStorePricesRequest,
+  LocalSupplierPurchaseSalesDailyPointDto,
 } from '../types/localSupplierInvoice'
 import request, { RequestError, unwrapApiData } from '../utils/request'
 
 const API_BASE = '/api/react/v1/local-supplier-invoices'
 const PURCHASE_SALES_ANALYSIS_API_BASE = `${API_BASE}/purchase-sales-analysis`
+const SHOP_PURCHASE_SALES_ANALYSIS_API_BASE = `${API_BASE}/shop/purchase-sales-analysis`
 const PURCHASE_SALES_ANALYSIS_ALLOWED_PAGE_SIZES = new Set([50, 100, 200])
 const SHOP_INVOICE_DETAILS_ALLOWED_PAGE_SIZES = new Set<ShopLocalSupplierInvoiceDetailsPageSize>([50, 100, 200])
 
@@ -213,9 +215,34 @@ function normalizePurchaseSalesAnalysisRow(raw: unknown): LocalSupplierPurchaseS
     salesQty30: readNumber(record.salesQty30 ?? record.SalesQty30),
     salesQty60: readNumber(record.salesQty60 ?? record.SalesQty60),
     salesQty90: readNumber(record.salesQty90 ?? record.SalesQty90),
+    totalSalesSinceLatestPurchase: readNumber(
+      record.totalSalesSinceLatestPurchase ?? record.TotalSalesSinceLatestPurchase,
+    ),
     salesStatisticLastUpdate:
       readString(record.salesStatisticLastUpdate ?? record.SalesStatisticLastUpdate) ?? null,
+    dailySales: normalizeDatedQuantities(record.dailySales ?? record.DailySales),
+    purchases: normalizeDatedQuantities(record.purchases ?? record.Purchases),
   }
+}
+
+/** 逐日销量与进货事件共用 {date, quantity} 结构；日期统一裁成 yyyy-MM-dd，非法项丢弃。 */
+function normalizeDatedQuantities(raw: unknown): LocalSupplierPurchaseSalesDailyPointDto[] {
+  if (!Array.isArray(raw)) {
+    return []
+  }
+  return raw
+    .map((item) => {
+      if (!item || typeof item !== 'object') {
+        return null
+      }
+      const record = item as Record<string, unknown>
+      const date = readString(record.date ?? record.Date)
+      if (!date) {
+        return null
+      }
+      return { date: date.slice(0, 10), quantity: readNumber(record.quantity ?? record.Quantity) }
+    })
+    .filter((item): item is LocalSupplierPurchaseSalesDailyPointDto => item !== null)
 }
 
 function normalizePurchaseSalesAnalysisResponse(raw: unknown): LocalSupplierPurchaseSalesAnalysisResponseDto {
@@ -235,7 +262,7 @@ function normalizePurchaseSalesAnalysisResponse(raw: unknown): LocalSupplierPurc
       readString(record.salesStatisticLastUpdate ?? record.SalesStatisticLastUpdate) ?? null,
     calculationNote:
       readString(record.calculationNote ?? record.CalculationNote) ??
-      '进货按订单日期范围过滤、按进货发生日期汇总；最近一次后的30/60/90天销量从最近进货当天开始统计。',
+      '进货按订单日期范围过滤、按进货发生日期汇总；日销量从上次进货起逐日展示，售出比与累计销量从最近进货当天起统计。',
   }
 }
 
@@ -529,6 +556,30 @@ export async function getLocalSupplierPurchaseSalesAnalysisSupplierOptions(
   >(`${PURCHASE_SALES_ANALYSIS_API_BASE}/supplier-options`, {
     params: storeCode ? { storeCode } : undefined,
   })
+  return normalizePurchaseSalesAnalysisSupplierOptions(unwrapApiData(response))
+}
+
+/** 订货前台只读接口：只认前台权限，门店限定为本人名下门店；响应结构与后台分析一致。 */
+export async function getShopLocalSupplierPurchaseSalesAnalysis(
+  query: LocalSupplierPurchaseSalesAnalysisQueryDto,
+  signal?: AbortSignal,
+): Promise<LocalSupplierPurchaseSalesAnalysisResponseDto> {
+  const response = await request.get<
+    ApiResponse<LocalSupplierPurchaseSalesAnalysisResponseDto> | LocalSupplierPurchaseSalesAnalysisResponseDto
+  >(SHOP_PURCHASE_SALES_ANALYSIS_API_BASE, {
+    params: buildPurchaseSalesAnalysisQuery(query) as Record<string, unknown>,
+    signal,
+  })
+  return normalizePurchaseSalesAnalysisResponse(unwrapApiData(response))
+}
+
+export async function getShopLocalSupplierPurchaseSalesAnalysisSupplierOptions(
+  storeCode: string,
+  signal?: AbortSignal,
+): Promise<LocalSupplierPurchaseSalesAnalysisSupplierOptionDto[]> {
+  const response = await request.get<
+    ApiResponse<LocalSupplierPurchaseSalesAnalysisSupplierOptionDto[]> | LocalSupplierPurchaseSalesAnalysisSupplierOptionDto[]
+  >(`${SHOP_PURCHASE_SALES_ANALYSIS_API_BASE}/supplier-options`, { params: { storeCode }, signal })
   return normalizePurchaseSalesAnalysisSupplierOptions(unwrapApiData(response))
 }
 

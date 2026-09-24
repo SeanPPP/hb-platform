@@ -15,6 +15,24 @@ public sealed class ConfiguredCardTerminalClientTests
     private const string RefreshedToken = "opaque-refreshed-square-token";
     private static readonly Uri HbposApiBaseAddress = new("http://localhost:5159/");
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task Manual_card_refund_never_routes_to_configured_terminal(bool square, bool wrapped)
+    {
+        var client = new ConfiguredCardTerminalClient(
+            new StaticCardTerminalSettingsProvider(square ? CreateSquareSettings() : CreateLinklySettings()),
+            CreateApiClient(new StubHttpMessageHandler((_, _) =>
+                Task.FromException<HttpResponseMessage>(new InvalidOperationException("HTTP must not be called.")))));
+        var reference = ManualCardPaymentReference.Format(Guid.NewGuid());
+        if (wrapped) reference = CardRefundReference.Format("", reference);
+        var result = await client.RefundAsync(10m, CreateSession(), reference);
+        Assert.False(result.Approved);
+        Assert.Equal("Manual card payments cannot be refunded through a linked terminal.", result.Message);
+    }
+
     [Fact]
     public async Task Linkly_authorization_holds_selection_gate_until_terminal_call_completes()
     {
@@ -32,7 +50,7 @@ public sealed class ConfiguredCardTerminalClientTests
             linklyTerminalSelectionTransitionGate: gate);
 
         var authorization = client.AuthorizeAsync(10m, CreateSession());
-        await terminal.PurchaseStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await terminal.PurchaseStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         Assert.Null(await gate.TryEnterAssignmentAsync());
         completion.SetResult(new PaymentAuthorizationResult(true, "approved"));

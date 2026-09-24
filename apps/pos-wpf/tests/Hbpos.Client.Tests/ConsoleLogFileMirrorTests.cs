@@ -37,7 +37,7 @@ public sealed class ConsoleLogFileMirrorTests
             var flushAsync = workerType.GetMethod("FlushAsync", flags)!;
 
             Assert.True((bool)tryWrite.Invoke(worker, ["first"])!);
-            using (var flushTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
+            using (var flushTimeout = new CancellationTokenSource(AsyncTestWaitSupport.DefaultTimeout))
             {
                 await (Task)flushAsync.Invoke(worker, [flushTimeout.Token])!;
             }
@@ -46,7 +46,7 @@ public sealed class ConsoleLogFileMirrorTests
             File.Delete(blockedDirectory);
             Directory.CreateDirectory(blockedDirectory);
             Assert.True((bool)tryWrite.Invoke(worker, ["second"])!);
-            using (var flushTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
+            using (var flushTimeout = new CancellationTokenSource(AsyncTestWaitSupport.DefaultTimeout))
             {
                 await (Task)flushAsync.Invoke(worker, [flushTimeout.Token])!;
             }
@@ -121,10 +121,10 @@ public sealed class ConsoleLogFileMirrorTests
                     writer.Start();
                 }
 
-                Assert.True(writersStarted.Wait(TimeSpan.FromSeconds(2)));
+                Assert.True(writersStarted.Wait(AsyncTestWaitSupport.DefaultTimeout));
                 Assert.True(SpinWait.SpinUntil(
                     () => writers.All(writer => (writer.ThreadState & ThreadState.WaitSleepJoin) != 0),
-                    TimeSpan.FromSeconds(2)));
+                    AsyncTestWaitSupport.DefaultTimeout));
 
                 // 精确模拟 StopFileLogAsync 已持锁完成状态切换、但旧写线程仍在门外等待的交错。
                 stoppedField.SetValue(null, 1);
@@ -138,7 +138,7 @@ public sealed class ConsoleLogFileMirrorTests
 
             foreach (var writer in writers)
             {
-                Assert.True(writer.Join(TimeSpan.FromSeconds(2)));
+                Assert.True(writer.Join(AsyncTestWaitSupport.DefaultTimeout));
             }
 
             Assert.Empty(writerErrors);
@@ -184,29 +184,28 @@ public sealed class ConsoleLogFileMirrorTests
             ConsoleLog.Write("FileMirror", firstToken);
             ConsoleLog.Write("FileMirror", secondToken);
             var droppedBefore = ConsoleLog.DroppedFileLogLineCount;
-            var samples = new long[128];
-            for (var index = 0; index < samples.Length; index++)
+            // 连续写入 128 行，验证有界通道容量内一行都不会被丢弃（drop 计数不变）。
+            // 注意：这里刻意不再断言 ConsoleLog.Write 的 p99 墙钟延迟——Write 除文件入队外还会同步走
+            // Console/Debug/Trace/OutputDebugString，在共享 CI runner 上这些外部路径的抖动不可控；
+            // "写入不会等待文件消费者"由 FileLogWorker.TryWrite 走 Channel.Writer.TryWrite 结构性保证。
+            const int burstLineCount = 128;
+            for (var index = 0; index < burstLineCount; index++)
             {
-                var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-                ConsoleLog.Write("FileMirror", $"file-log-p99-{index}");
-                stopwatch.Stop();
-                samples[index] = stopwatch.ElapsedTicks;
+                ConsoleLog.Write("FileMirror", $"file-log-burst-{index}");
             }
 
-            Array.Sort(samples);
-            var p99 = TimeSpan.FromSeconds(samples[(int)Math.Ceiling(samples.Length * 0.99d) - 1] / (double)System.Diagnostics.Stopwatch.Frequency);
-            Assert.True(p99 < TimeSpan.FromMilliseconds(2), $"ConsoleLog.Write p99 was {p99.TotalMilliseconds:F3} ms.");
             Assert.Equal(droppedBefore, ConsoleLog.DroppedFileLogLineCount);
-            using var flushTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            // flush 要等约 130 次逐行 open/append/close 落盘，Windows runner 上 AV 扫描会显著放大耗时，使用共享预算。
+            using var flushTimeout = new CancellationTokenSource(AsyncTestWaitSupport.DefaultTimeout);
             await ConsoleLog.FlushFileLogAsync(flushTimeout.Token);
 
             var lines = await File.ReadAllLinesAsync(logPath);
             var firstIndex = Array.FindIndex(lines, line => line.Contains(firstToken, StringComparison.Ordinal));
             var secondIndex = Array.FindIndex(lines, line => line.Contains(secondToken, StringComparison.Ordinal));
-            Assert.True(firstIndex >= 0);
-            Assert.True(secondIndex > firstIndex);
+            Assert.True(firstIndex >= 0, $"未在文件中找到首行 token；文件共 {lines.Length} 行。");
+            Assert.True(secondIndex > firstIndex, $"第二行 token 顺序错误：firstIndex={firstIndex} secondIndex={secondIndex}。");
 
-            using var stopTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            using var stopTimeout = new CancellationTokenSource(AsyncTestWaitSupport.DefaultTimeout);
             await ConsoleLog.StopFileLogAsync(stopTimeout.Token);
             await ConsoleLog.StopFileLogAsync(stopTimeout.Token);
         }

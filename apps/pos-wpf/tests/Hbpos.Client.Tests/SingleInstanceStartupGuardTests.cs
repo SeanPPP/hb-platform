@@ -149,12 +149,15 @@ public sealed class SingleInstanceStartupGuardTests
             var guard = new SingleInstanceStartupGuard(provider, options);
 
             var acquireTask = guard.TryAcquireAsync(previewMode: false);
-            await waitStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await waitStarted.Task.WaitUntilCompletedAsync(() => $"acquireTask={acquireTask.Status}");
 
-            Assert.False(acquireTask.IsCompleted);
+            // 退出 TCS 只有下面这行能完成，所以"仍未完成"是确定性的，不是时序窗口。
+            Assert.False(acquireTask.IsCompleted, $"进程未退出前 TryAcquireAsync 不应完成：status={acquireTask.Status}");
             exitCompleted.SetResult(true);
-            using var lease = (await acquireTask.WaitAsync(TimeSpan.FromSeconds(2))).Lease;
-            Assert.NotNull(lease);
+            // 续体要经 ThreadPool → Dispatcher 两跳调度才回到 STA 线程，CI 负载高时耗时不可控，使用共享预算。
+            var result = await acquireTask.WaitUntilCompletedAsync(() => $"killCalled={process.KillCalled}");
+            using var lease = result.Lease;
+            Assert.True(lease is not null, $"应成功获得租约，实际 status={result.Status}");
             Assert.False(process.KillCalled);
         });
     }
@@ -221,7 +224,7 @@ public sealed class SingleInstanceStartupGuardTests
         finally
         {
             releaseOwner.Set();
-            Assert.True(ownerThread.Join(TimeSpan.FromSeconds(5)), "Mutex owner thread did not shut down.");
+            Assert.True(ownerThread.Join(AsyncTestWaitSupport.DefaultTimeout), "Mutex owner thread did not shut down.");
         }
 
         Assert.Null(ownerFailure);
@@ -262,7 +265,7 @@ public sealed class SingleInstanceStartupGuardTests
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
 
-        var dispatcher = await dispatcherReady.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var dispatcher = await dispatcherReady.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         try
         {
             var operation = dispatcher.InvokeAsync(action, DispatcherPriority.Normal);
@@ -275,7 +278,7 @@ public sealed class SingleInstanceStartupGuardTests
                 dispatcher.BeginInvokeShutdown(DispatcherPriority.Send);
             }
 
-            Assert.True(thread.Join(TimeSpan.FromSeconds(5)), "WPF Dispatcher thread did not shut down.");
+            Assert.True(thread.Join(AsyncTestWaitSupport.DefaultTimeout), "WPF Dispatcher thread did not shut down.");
         }
     }
 

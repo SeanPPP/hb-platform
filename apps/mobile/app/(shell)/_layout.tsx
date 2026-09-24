@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ActivityIndicator, View } from "react-native";
+import { ActivityIndicator, AppState, View } from "react-native";
 import { Stack, usePathname, useRouter } from "expo-router";
 import { PrimaryTabBar } from "@/components/navigation";
 import { useAuthStore } from "@/store/auth-store";
@@ -22,12 +22,20 @@ import {
 } from "@/modules/employee-profile-review/access";
 import { getEmployeeProfileReviewRequestsApi } from "@/modules/employee-profile-review/api";
 import { AppNavigationAccessProvider } from "@/modules/navigation/access-context";
+import { getPriceUpdatePendingCount } from "@/modules/price-updates/api";
+import { priceUpdateCountQueryKey } from "@/modules/price-updates/query-keys";
+import { useCartStore } from "@/store/cart-store";
 import { canAccessVersionManagement, filterVersionManagementRoutes } from "@/modules/navigation/version-management-access";
 import { resolveIdentityAdminRouteNames } from "@/modules/navigation/identity-admin-access";
+import { isNetworkUnavailableError } from "@/shared/network/network-error";
 
 export const unstable_settings = {
   initialRouteName: "workbench",
 };
+
+/** 离线设备会话补校验的重试间隔：网络恢复前不断重试，恢复后立刻补上设备校验。 */
+const OFFLINE_DEVICE_REVALIDATE_INTERVAL_MS = 60_000;
+const PRICE_UPDATES_ROUTE = "price-updates";
 
 export default function ShellLayout() {
   const router = useRouter();
@@ -42,6 +50,7 @@ export default function ShellLayout() {
   const clearLocalAuthSession = useAuthStore((state) => state.clearLocalSession);
   const setSessionKind = useAuthStore((state) => state.setSessionKind);
   const deviceSession = useDeviceStore((state) => state.session);
+  const selectedStoreCode = useCartStore((state) => state.selectedStore?.storeCode);
   const accountBinding = useDeviceStore((state) => state.accountBinding);
   const deviceHydrated = useDeviceStore((state) => state.isReady);
   const validateDevice = useDeviceStore((state) => state.validate);
@@ -66,6 +75,8 @@ export default function ShellLayout() {
   const [heartbeatReady, setHeartbeatReady] = useState(false);
   const [heartbeatUsesDeviceSession, setHeartbeatUsesDeviceSession] = useState(false);
   const [boundAccountRestorePending, setBoundAccountRestorePending] = useState(false);
+  // 断网冷启动进入的、尚未通过服务器校验的设备会话。
+  const [offlineDeviceFallback, setOfflineDeviceFallback] = useState(false);
   const hasUserSession = Boolean(isAuthenticated && userGuid);
   const hasStoredDeviceSession = Boolean(
     deviceSession?.hardwareId && deviceSession.authCode && deviceSession.storeCode
@@ -197,7 +208,28 @@ export default function ShellLayout() {
               router.replace("/(auth)/login");
             }
           }
-        } catch {
+        } catch (error) {
+          if (
+            !cancelled &&
+            isNetworkUnavailableError(error) &&
+            currentDeviceSession.status === 1 &&
+            currentDeviceSession.storeCode
+          ) {
+            // 冷启动断网：本地已有启用且绑定分店的设备会话，允许离线进入（心跳保持关闭），
+            // 菜单走本地缓存。这里的设备会话尚未经服务器确认，必须标记为待补校验：
+            // 启动 effect 有 hasRestored 闸门不会重跑，只能靠下面那个重试 effect 在
+            // 网络恢复后补上校验并开启心跳，否则被远程停用的设备会一直可用。
+            console.warn("[startup-auth] device validation unreachable, entering offline device session", {
+              hardwareId: currentDeviceSession.hardwareId,
+              storeCode: currentDeviceSession.storeCode,
+            });
+            setSessionKind("device");
+            setHeartbeatUsesDeviceSession(false);
+            setHeartbeatReady(false);
+            setOfflineDeviceFallback(true);
+            await useAppNavigationStore.getState().fetchMenu();
+            return;
+          }
           if (!cancelled) {
             console.warn("[startup-auth] device validation failed, attempting account session restore");
             const restored = await restoreSession();
@@ -254,6 +286,68 @@ export default function ShellLayout() {
     setSessionKind,
     validateDevice,
   ]);
+
+  useEffect(() => {
+    // 离线冷启动进入的设备会话必须补上服务器校验：App 回到前台时立刻试一次，
+    // 之后按固定间隔重试，直到校验通过（开启心跳）或被服务端拒绝（回登录页）。
+    if (!offlineDeviceFallback) {
+      return;
+    }
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const scheduleRetry = () => {
+      if (cancelled || timer) {
+        return;
+      }
+      timer = setTimeout(() => {
+        timer = null;
+        void retryValidation();
+      }, OFFLINE_DEVICE_REVALIDATE_INTERVAL_MS);
+    };
+
+    async function retryValidation() {
+      if (cancelled) {
+        return;
+      }
+      try {
+        const isReady = await validateDevice();
+        if (cancelled) {
+          return;
+        }
+        setOfflineDeviceFallback(false);
+        if (isReady) {
+          setHeartbeatUsesDeviceSession(true);
+          setHeartbeatReady(true);
+          return;
+        }
+        // 校验明确被拒：设备已被停用或解绑，不能再继续使用离线数据。
+        console.warn("[startup-auth] offline device session rejected after reconnect, redirecting to login");
+        router.replace("/(auth)/login");
+        return;
+      } catch (error) {
+        if (!cancelled && !isNetworkUnavailableError(error)) {
+          console.warn("[startup-auth] offline device revalidation failed", error);
+        }
+      }
+      scheduleRetry();
+    }
+
+    const subscription = AppState.addEventListener("change", (next) => {
+      if (next === "active") {
+        void retryValidation();
+      }
+    });
+    scheduleRetry();
+
+    return () => {
+      cancelled = true;
+      if (timer) {
+        clearTimeout(timer);
+      }
+      subscription.remove();
+    };
+  }, [offlineDeviceFallback, router, validateDevice]);
 
   const isDeviceMode = Boolean(
     hasStoredDeviceSession && !hasStoredDeviceAccountBinding && !hasUserSession
@@ -317,6 +411,19 @@ export default function ShellLayout() {
       pageSize: 1,
       status: "Pending",
     }),
+    staleTime: 30_000,
+  });
+  // 角标跟随当前分店：设备模式固定为绑定分店，账号模式取全局选中的分店。
+  const priceUpdateStoreCode = isDeviceMode
+    ? deviceSession?.storeCode ?? null
+    : selectedStoreCode ?? null;
+  const pendingPriceUpdateQuery = useQuery({
+    queryKey: priceUpdateCountQueryKey(priceUpdateStoreCode),
+    enabled:
+      navigationReady
+      && Boolean(priceUpdateStoreCode)
+      && visibleRouteNames.has(PRICE_UPDATES_ROUTE),
+    queryFn: () => getPriceUpdatePendingCount(priceUpdateStoreCode!),
     staleTime: 30_000,
   });
   const shouldWaitForNavigation =
@@ -418,6 +525,7 @@ export default function ShellLayout() {
         navigationErrorMessage,
         navigationLoading,
         pendingProfileReviewCount: pendingReviewQuery.data?.total ?? 0,
+        pendingPriceUpdateCount: pendingPriceUpdateQuery.data ?? 0,
         isDeviceMode,
         isWarehouseStaffOnly,
       }}

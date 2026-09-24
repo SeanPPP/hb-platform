@@ -8,6 +8,7 @@ using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
+using BlazorApp.Api.Services.LocalSupplierCategories;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Helper;
 using BlazorApp.Shared.Models;
@@ -386,13 +387,35 @@ namespace BlazorApp.Api.Services.React
                 // 应用过滤条件
                 if (!string.IsNullOrWhiteSpace(query.Search))
                 {
-                    var keyword = query.Search.Trim().ToLower();
-                    q = q.Where(p =>
-                        (p.ProductName != null && p.ProductName.ToLower().Contains(keyword))
-                        || (p.ProductCode != null && p.ProductCode.ToLower().Contains(keyword))
-                        || (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(keyword))
-                        || (p.Barcode != null && p.Barcode.ToLower().Contains(keyword))
-                    );
+                    if (_db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+                    {
+                        // Product 约 17 万行，CI 排序规则下多列前导通配 LIKE 单次约 1.4 秒，
+                        // 且计数与取页各执行一次；UPPER + BIN2 逐字节比较约 0.2 秒。
+                        // 谓词与通配符转义复用本地商品销售分析已在生产验证过的实现，
+                        // 覆盖编码、货号、条码、中英文名称，与页面搜索框的提示文案一致。
+                        q = q.Where(
+                            LocalSupplierProductSalesAnalysisService.SqlServerKeywordPredicate,
+                            new
+                            {
+                                lspaKeywordPattern =
+                                    LocalSupplierProductSalesAnalysisService.BuildSqlServerLikePattern(
+                                        query.Search.Trim().ToUpperInvariant()
+                                    ),
+                            }
+                        );
+                    }
+                    else
+                    {
+                        // 非 SQL Server（测试用 SQLite）保留 lambda 写法，匹配列与上面保持一致。
+                        var keyword = query.Search.Trim().ToLower();
+                        q = q.Where(p =>
+                            (p.ProductName != null && p.ProductName.ToLower().Contains(keyword))
+                            || (p.EnglishName != null && p.EnglishName.ToLower().Contains(keyword))
+                            || (p.ProductCode != null && p.ProductCode.ToLower().Contains(keyword))
+                            || (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(keyword))
+                            || (p.Barcode != null && p.Barcode.ToLower().Contains(keyword))
+                        );
+                    }
                 }
 
                 if (!string.IsNullOrWhiteSpace(query.LocalSupplierCode))
@@ -459,6 +482,8 @@ namespace BlazorApp.Api.Services.React
                         && query.ProductCategoryGUIDs.Contains(p.ProductCategoryGUID)
                     );
                 }
+
+                q = await ApplySupplierCategoryFiltersAsync(q, query);
 
                 if (query.ProductType.HasValue)
                 {
@@ -532,6 +557,27 @@ namespace BlazorApp.Api.Services.React
 
                 #endregion
 
+                var domesticSupplierCodes = NormalizeColumnFilterValues(query.DomesticSupplierCodes)
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code.Trim())
+                    .ToList();
+
+                // 关键位置：分店记录数与国内供应商只有在参与筛选或排序时，才必须在分页前对全表预聚合。
+                // 其余请求（含无筛选打开页面）先在 Product 单表上计数、排序、取页，
+                // 再只为当前页的商品补这两项，避免每次请求都把 StoreRetailPrice 整表聚合两遍。
+                var sortFieldForRouting = query.SortBy?.ToLower();
+                var requiresPrePagingAggregates =
+                    domesticSupplierCodes.Count > 0
+                    || query.StoreRecordCountMin.HasValue
+                    || query.StoreRecordCountMax.HasValue
+                    || sortFieldForRouting == "domesticsuppliercode"
+                    || sortFieldForRouting == "storerecordcount"
+                    || query.PageSize > MaxPageSizeForPageScopedAggregates;
+                if (!requiresPrePagingAggregates)
+                {
+                    return await GetPagedListWithPageScopedAggregatesAsync(q, query);
+                }
+
                 var storeRecordCounts = _db.Queryable<StoreRetailPrice>()
                     .Where(record => record.IsDeleted == false && record.ProductCode != null)
                     .GroupBy(record => record.ProductCode)
@@ -595,10 +641,6 @@ namespace BlazorApp.Api.Services.React
                     })
                     .MergeTable();
 
-                var domesticSupplierCodes = NormalizeColumnFilterValues(query.DomesticSupplierCodes)
-                    .Where(code => !string.IsNullOrWhiteSpace(code))
-                    .Select(code => code.Trim())
-                    .ToList();
                 if (domesticSupplierCodes.Count > 0)
                 {
                     projectedQuery = projectedQuery.Where(item =>
@@ -765,6 +807,8 @@ namespace BlazorApp.Api.Services.React
                         StoreRecordCount = p.StoreRecordCount,
                     })
                     .ToListAsync();
+                // 供应商分类只为当前页回填，不参与分页前的计数与排序。
+                await ProductSupplierCategoryProjection.FillAsync(_db, items);
 
                 return new PagedListReactDto<ProductDto>
                 {
@@ -779,6 +823,263 @@ namespace BlazorApp.Api.Services.React
                 _logger.LogError(ex, "分页查询商品失败");
                 throw;
             }
+        }
+
+        /// <summary>
+        /// 当前页补聚合的页大小上限：超过后 IN 列表过长，退回分页前预聚合的原路径。
+        /// </summary>
+        private const int MaxPageSizeForPageScopedAggregates = 500;
+
+        /// <summary>
+        /// 商品列表快路径：计数、排序、取页都只在 Product 单表上完成，
+        /// 分店记录数与国内供应商映射只针对当前页的商品编码聚合。
+        /// 两个聚合的右侧键都按 ProductCode 分组后唯一，左连接不会改变商品行数，
+        /// 因此单表计数与原先对联接结果计数等价。
+        /// </summary>
+        private async Task<PagedListReactDto<ProductDto>> GetPagedListWithPageScopedAggregatesAsync(
+            ISugarQueryable<Product> filteredProducts,
+            ProductReactFilterDto query
+        )
+        {
+            var total = await filteredProducts.Clone().CountAsync();
+
+            var sortedProducts = ApplyProductListSort(filteredProducts, query.SortBy, query.SortOrder);
+            var sortField = (query.SortBy ?? string.Empty).ToLower();
+            if (
+                !string.IsNullOrWhiteSpace(query.Search)
+                && sortField != "productcode"
+                && sortField != "warehousecategoryguid"
+            )
+            {
+                // 关键位置：带关键词时追加商品编码作次级排序键。
+                // 否则优化器会为凑满一页沿更新时间等单列索引逐行回表检查关键词，
+                // 生产实测冷门或零命中关键词要 975 毫秒、70 万次逻辑读；
+                // 追加后索引给不出该顺序，改为一次扫描加排序，稳定在约 0.2 秒，也让同值行的分页顺序确定。
+                sortedProducts = sortedProducts.OrderBy(p => p.ProductCode, OrderByType.Asc);
+            }
+
+            var items = await sortedProducts
+                .Skip((query.PageNumber - 1) * query.PageSize)
+                .Take(query.PageSize)
+                .Select(p => new ProductDto
+                {
+                    ProductCode = p.ProductCode ?? string.Empty,
+                    ProductCategoryGUID = p.ProductCategoryGUID ?? string.Empty,
+                    LocalSupplierCode = p.LocalSupplierCode,
+                    ItemNumber = p.ItemNumber,
+                    Barcode = p.Barcode,
+                    ProductName = p.ProductName ?? string.Empty,
+                    ProductType = p.ProductType,
+                    MiddlePackageQuantity = p.MiddlePackageQuantity,
+                    PurchasePrice = p.PurchasePrice,
+                    RetailPrice = p.RetailPrice,
+                    IsAutoPricing = p.IsAutoPricing,
+                    ProductImage = p.ProductImage,
+                    IsActive = p.IsActive,
+                    IsSpecialProduct = p.IsSpecialProduct,
+                    WarehouseCategoryGUID = p.WarehouseCategoryGUID,
+                    CreatedAt = p.CreatedAt,
+                    UpdatedAt = p.UpdatedAt,
+                    UpdatedBy = p.UpdatedBy,
+                })
+                .ToListAsync();
+
+            var pageProductCodes = items
+                .Select(item => item.ProductCode)
+                .Where(code => !string.IsNullOrEmpty(code))
+                .Distinct()
+                .ToList();
+            if (pageProductCodes.Count > 0)
+            {
+                var storeRecordCounts = await _db.Queryable<StoreRetailPrice>()
+                    .Where(record =>
+                        record.IsDeleted == false
+                        && record.ProductCode != null
+                        && pageProductCodes.Contains(record.ProductCode)
+                    )
+                    .GroupBy(record => record.ProductCode)
+                    .Select(record => new ProductStoreRecordCountRow
+                    {
+                        ProductCode = record.ProductCode ?? string.Empty,
+                        StoreRecordCount = SqlFunc.AggregateCount(record.UUID),
+                    })
+                    .ToListAsync();
+
+                // 与原路径相同的有效映射口径：DomesticProduct 与 ChinaSupplier 都未软删。
+                var domesticMappings = await _db.Queryable<DomesticProduct>()
+                    .InnerJoin<ChinaSupplier>(
+                        (dp, cs) => dp.SupplierCode == cs.SupplierCode && cs.IsDeleted == false
+                    )
+                    .Where((dp, cs) => dp.IsDeleted == false && pageProductCodes.Contains(dp.ProductCode))
+                    .GroupBy(dp => dp.ProductCode)
+                    .Select(
+                        (dp, cs) =>
+                            new DomesticProductMappingRow
+                            {
+                                ProductCode = dp.ProductCode,
+                                DomesticSupplierCode = SqlFunc.AggregateMax(dp.SupplierCode),
+                                DomesticSupplierName = SqlFunc.AggregateMax(cs.SupplierName),
+                            }
+                    )
+                    .ToListAsync();
+
+                // 数据库联接按不区分大小写的排序规则匹配编码，内存回填保持同样口径；
+                // 用累加而非 ToDictionary，避免区分大小写的库把同一编码分成多组时抛重复键。
+                var countByCode = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                foreach (var row in storeRecordCounts)
+                {
+                    countByCode[row.ProductCode] =
+                        countByCode.GetValueOrDefault(row.ProductCode) + row.StoreRecordCount;
+                }
+
+                var domesticByCode = new Dictionary<string, DomesticProductMappingRow>(
+                    StringComparer.OrdinalIgnoreCase
+                );
+                foreach (var row in domesticMappings)
+                {
+                    domesticByCode.TryAdd(row.ProductCode, row);
+                }
+
+                foreach (var item in items)
+                {
+                    item.StoreRecordCount = countByCode.GetValueOrDefault(item.ProductCode);
+                    if (domesticByCode.TryGetValue(item.ProductCode, out var domestic))
+                    {
+                        item.DomesticSupplierCode = domestic.DomesticSupplierCode;
+                        item.DomesticSupplierName = domestic.DomesticSupplierName;
+                    }
+                }
+            }
+
+            await ProductSupplierCategoryProjection.FillAsync(_db, items);
+
+            return new PagedListReactDto<ProductDto>
+            {
+                Items = items,
+                Total = total,
+                PageNumber = query.PageNumber,
+                PageSize = query.PageSize,
+            };
+        }
+
+        /// <summary>
+        /// 快路径的排序：字段与方向口径和分页前预聚合路径一致，未识别字段落回更新时间倒序。
+        /// 国内供应商、分店记录数两项排序依赖聚合结果，不会进入这里。
+        /// </summary>
+        private static ISugarQueryable<Product> ApplyProductListSort(
+            ISugarQueryable<Product> products,
+            string? sortBy,
+            string? sortOrder
+        )
+        {
+            var direction = sortOrder?.ToLower() == "desc" ? OrderByType.Desc : OrderByType.Asc;
+            return (sortBy ?? string.Empty).ToLower() switch
+            {
+                "productcode" => products.OrderBy(p => p.ProductCode, direction),
+                "productname" => products.OrderBy(p => p.ProductName, direction),
+                "itemnumber" => products.OrderBy(p => p.ItemNumber, direction),
+                "barcode" => products.OrderBy(p => p.Barcode, direction),
+                "localsuppliercode" => products.OrderBy(p => p.LocalSupplierCode, direction),
+                "warehousecategoryguid" => products
+                    .OrderBy(p => p.WarehouseCategoryGUID, direction)
+                    .OrderBy(p => p.ProductCode, OrderByType.Asc),
+                "productcategoryguid" => products.OrderBy(p => p.ProductCategoryGUID, direction),
+                "retailprice" => products.OrderBy(p => p.RetailPrice, direction),
+                "purchaseprice" => products.OrderBy(p => p.PurchasePrice, direction),
+                "producttype" => products.OrderBy(p => p.ProductType, direction),
+                "isautopricing" => products.OrderBy(p => p.IsAutoPricing, direction),
+                "isactive" => products.OrderBy(p => p.IsActive, direction),
+                "createdat" => products.OrderBy(p => p.CreatedAt, direction),
+                "updatedat" => products.OrderBy(p => p.UpdatedAt, direction),
+                _ => products.OrderBy(p => p.UpdatedAt, OrderByType.Desc),
+            };
+        }
+
+        /// <summary>
+        /// 供应商分类筛选：200 商品按仓库分类，其他供应商按有效归属（归属登记的供应商须与商品当前供应商一致）。
+        /// 使用 EXISTS 子查询作用在 Product 单表查询上，不改变列表快/慢路径的判定。
+        /// </summary>
+        private async Task<ISugarQueryable<Product>> ApplySupplierCategoryFiltersAsync(
+            ISugarQueryable<Product> q,
+            ProductReactFilterDto query
+        )
+        {
+            var hotBargain = DefaultLocalSupplierCode;
+            var requestedGuids = NormalizeColumnFilterValues(query.SupplierCategoryGUIDs)
+                .Where(guid => !string.IsNullOrWhiteSpace(guid))
+                .Select(guid => guid.Trim())
+                .ToList();
+            if (requestedGuids.Count > 0)
+            {
+                var (supplierGuids, warehouseGuids) = await LocalSupplierCategoryFilter.ExpandAsync(
+                    _db,
+                    requestedGuids
+                );
+                if (supplierGuids.Count == 0 && warehouseGuids.Count == 0)
+                {
+                    // 所选分类均不存在：返回空结果而不是忽略条件。
+                    q = q.Where("1 = 0");
+                }
+                else if (warehouseGuids.Count == 0)
+                {
+                    q = q.Where(p =>
+                        SqlFunc.Subqueryable<LocalSupplierCategoryProductAssignment>()
+                            .Where(a =>
+                                a.ProductCode == p.ProductCode
+                                && a.LocalSupplierCode == p.LocalSupplierCode
+                                && supplierGuids.Contains(a.CategoryGUID)
+                            )
+                            .Any()
+                    );
+                }
+                else if (supplierGuids.Count == 0)
+                {
+                    q = q.Where(p =>
+                        (p.LocalSupplierCode == hotBargain || p.LocalSupplierCode == null || p.LocalSupplierCode == "")
+                        && p.WarehouseCategoryGUID != null
+                        && warehouseGuids.Contains(p.WarehouseCategoryGUID)
+                    );
+                }
+                else
+                {
+                    q = q.Where(p =>
+                        SqlFunc.Subqueryable<LocalSupplierCategoryProductAssignment>()
+                            .Where(a =>
+                                a.ProductCode == p.ProductCode
+                                && a.LocalSupplierCode == p.LocalSupplierCode
+                                && supplierGuids.Contains(a.CategoryGUID)
+                            )
+                            .Any()
+                        || (
+                            (p.LocalSupplierCode == hotBargain || p.LocalSupplierCode == null || p.LocalSupplierCode == "")
+                            && p.WarehouseCategoryGUID != null
+                            && warehouseGuids.Contains(p.WarehouseCategoryGUID)
+                        )
+                    );
+                }
+            }
+
+            if (query.SupplierCategoryUnassignedOnly == true)
+            {
+                q = q.Where(p =>
+                    (
+                        (p.LocalSupplierCode == hotBargain || p.LocalSupplierCode == null || p.LocalSupplierCode == "")
+                        && (p.WarehouseCategoryGUID == null || p.WarehouseCategoryGUID == "")
+                    )
+                    || (
+                        p.LocalSupplierCode != null
+                        && p.LocalSupplierCode != ""
+                        && p.LocalSupplierCode != hotBargain
+                        && SqlFunc.Subqueryable<LocalSupplierCategoryProductAssignment>()
+                            .Where(a =>
+                                a.ProductCode == p.ProductCode && a.LocalSupplierCode == p.LocalSupplierCode
+                            )
+                            .NotAny()
+                    )
+                );
+            }
+
+            return q;
         }
 
         /// <summary>
@@ -1038,6 +1339,7 @@ namespace BlazorApp.Api.Services.React
                     UpdatedAt = product.UpdatedAt,
                     UpdatedBy = product.UpdatedBy,
                 };
+                await ProductSupplierCategoryProjection.FillAsync(_db, new[] { dto });
 
                 return new ApiResponse<ProductDto> { Success = true, Data = dto };
             }
@@ -1137,6 +1439,21 @@ namespace BlazorApp.Api.Services.React
 
                     if (storePriceList.Count > 0)
                         await _db.Insertable(storePriceList).ExecuteCommandAsync();
+
+                    // 非 200 新商品若其货号已被扩展采集过，立即按网站分类自动归类。
+                    await new LocalSupplierCategoryAssignmentService(_db).ApplyProductEditAsync(
+                        new LocalSupplierCategoryAssignmentService.ProductEditContext(
+                            product.ProductCode ?? string.Empty,
+                            OldProductCode: null,
+                            OldSupplierCode: null,
+                            NewSupplierCode: product.LocalSupplierCode,
+                            OldItemNumber: null,
+                            NewItemNumber: product.ItemNumber,
+                            RequestedCategoryGuid: null,
+                            ClearRequested: false,
+                            Actor: currentUser
+                        )
+                    );
 
                     var afterSnapshots = await CaptureProductSnapshotsAsync(
                         new[] { product.ProductCode ?? string.Empty }
@@ -1270,6 +1587,8 @@ namespace BlazorApp.Api.Services.React
                     var beforeSnapshots = await CaptureProductSnapshotsAsync(
                         new[] { productCode }
                     );
+                    var oldSupplierCode = product.LocalSupplierCode;
+                    var oldItemNumber = product.ItemNumber;
 
                     // 未改码：仅更新 Product；StoreRetailPrice 只同步镜像字段，不进入统一商品快照。
                     product.ProductCategoryGUID = dto.ProductCategoryGUID;
@@ -1297,6 +1616,21 @@ namespace BlazorApp.Api.Services.React
                         .SetColumns(srp => srp.IsAutoPricing == product.IsAutoPricing)
                         .Where(srp => srp.ProductCode == product.ProductCode)
                         .ExecuteCommandAsync();
+
+                    // 供应商分类联动：人工指定锁定、清空恢复自动、换供应商或改货号重算；校验失败回滚整个编辑。
+                    await new LocalSupplierCategoryAssignmentService(_db).ApplyProductEditAsync(
+                        new LocalSupplierCategoryAssignmentService.ProductEditContext(
+                            productCode,
+                            OldProductCode: null,
+                            OldSupplierCode: oldSupplierCode,
+                            NewSupplierCode: product.LocalSupplierCode,
+                            OldItemNumber: oldItemNumber,
+                            NewItemNumber: product.ItemNumber,
+                            RequestedCategoryGuid: dto.SupplierCategoryGUID,
+                            ClearRequested: dto.ClearSupplierCategory,
+                            Actor: currentUser
+                        )
+                    );
 
                     var recalculation = await new SetChildPurchasePriceService(
                         _db
@@ -1341,6 +1675,10 @@ namespace BlazorApp.Api.Services.React
                     SetChildPurchasePriceMutationLock.BusyErrorCode
                 );
             }
+            catch (LocalSupplierCategoryValidationException ex)
+            {
+                return ApiResponse<ProductDto>.Error(ex.Message, ex.ErrorCode);
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "更新商品失败: {ProductCode}", productCode);
@@ -1359,6 +1697,8 @@ namespace BlazorApp.Api.Services.React
             string newProductCode
         )
         {
+            var oldSupplierCode = product.LocalSupplierCode;
+            var oldItemNumber = product.ItemNumber;
             product.ProductCode = newProductCode;
             product.ProductCategoryGUID = dto.ProductCategoryGUID;
             product.LocalSupplierCode = NormalizeLocalSupplierCode(dto.LocalSupplierCode);
@@ -1399,6 +1739,21 @@ namespace BlazorApp.Api.Services.React
                 .SetColumns(psc => psc.ProductCode == newProductCode)
                 .Where(psc => psc.ProductCode == oldProductCode)
                 .ExecuteCommandAsync();
+
+            // 供应商分类归属随商品编码迁移，再按本次编辑联动（人工指定/清空/换供应商/改货号）。
+            await new LocalSupplierCategoryAssignmentService(_db).ApplyProductEditAsync(
+                new LocalSupplierCategoryAssignmentService.ProductEditContext(
+                    newProductCode,
+                    OldProductCode: oldProductCode,
+                    OldSupplierCode: oldSupplierCode,
+                    NewSupplierCode: product.LocalSupplierCode,
+                    OldItemNumber: oldItemNumber,
+                    NewItemNumber: product.ItemNumber,
+                    RequestedCategoryGuid: dto.SupplierCategoryGUID,
+                    ClearRequested: dto.ClearSupplierCategory,
+                    Actor: currentUser
+                )
+            );
         }
 
         /// <summary>
@@ -1521,7 +1876,12 @@ namespace BlazorApp.Api.Services.React
                     .Where(s => s.ProductCode == productCode)
                     .ExecuteCommandAsync();
 
-                // 4. Product
+                // 4. 供应商分类归属（软删除保留，便于恢复商品时沿用）
+                await new LocalSupplierCategoryAssignmentService(_db).DeleteAssignmentsAsync(
+                    new[] { productCode }
+                );
+
+                // 5. Product
                 var productRows = await _db.Deleteable<Product>()
                     .Where(p => p.ProductCode == productCode)
                     .ExecuteCommandAsync();
@@ -1637,6 +1997,8 @@ namespace BlazorApp.Api.Services.React
                                 continue;
                             }
 
+                            var oldSupplierCode = product.LocalSupplierCode;
+
                             // 只更新提供的字段
                             if (item.ProductName != null)
                                 product.ProductName = item.ProductName;
@@ -1662,7 +2024,41 @@ namespace BlazorApp.Api.Services.React
                                 _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
                             product.UpdatedBy = currentUser;
 
+                            var categoryAssignments = new LocalSupplierCategoryAssignmentService(_db);
+                            var touchesSupplierCategory =
+                                item.LocalSupplierCode != null
+                                || !string.IsNullOrWhiteSpace(item.SupplierCategoryGUID)
+                                || item.ClearSupplierCategory == true;
+                            // 先校验人工指定的分类，失败时本商品不写入任何字段。
+                            if (
+                                !string.IsNullOrWhiteSpace(item.SupplierCategoryGUID)
+                                && !LocalSupplierCategoryConstants.IsHotBargain(product.LocalSupplierCode)
+                            )
+                            {
+                                await categoryAssignments.ValidateManualCategoryAsync(
+                                    product.LocalSupplierCode,
+                                    item.SupplierCategoryGUID
+                                );
+                            }
+
                             await _db.Updateable(product).ExecuteCommandAsync();
+
+                            if (touchesSupplierCategory)
+                            {
+                                await categoryAssignments.ApplyProductEditAsync(
+                                    new LocalSupplierCategoryAssignmentService.ProductEditContext(
+                                        product.ProductCode ?? item.ProductCode,
+                                        OldProductCode: null,
+                                        OldSupplierCode: oldSupplierCode,
+                                        NewSupplierCode: product.LocalSupplierCode,
+                                        OldItemNumber: product.ItemNumber,
+                                        NewItemNumber: product.ItemNumber,
+                                        RequestedCategoryGuid: item.SupplierCategoryGUID,
+                                        ClearRequested: item.ClearSupplierCategory == true,
+                                        Actor: currentUser
+                                    )
+                                );
+                            }
 
                             if (item.IsAutoPricing.HasValue)
                             {

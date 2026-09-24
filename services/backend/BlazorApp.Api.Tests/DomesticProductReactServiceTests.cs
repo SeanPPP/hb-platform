@@ -1241,6 +1241,179 @@ public sealed class DomesticProductReactServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task GetSetItemsAsync_历史空商品货号只返回真实子项()
+    {
+        await SeedSetProductAsync("DP-SET-LEGACY");
+        await _localDb.Insertable(new[]
+        {
+            new DomesticSetProduct
+            {
+                SetProductCode = "legacy-null-child",
+                ProductCode = "DP-SET-LEGACY",
+                ProductNo = null,
+                SetProductNo = "SET-LEGACY-01",
+                SetBarcode = "LEGACY-CHILD-BAR",
+                DomesticPrice = 3m,
+                IsDeleted = false,
+            },
+            new DomesticSetProduct
+            {
+                SetProductCode = "normal-child",
+                ProductCode = "DP-SET-LEGACY",
+                ProductNo = "SET-LEGACY",
+                SetProductNo = "SET-LEGACY-02",
+                SetBarcode = "NORMAL-CHILD-BAR",
+                DomesticPrice = 4m,
+                IsDeleted = false,
+            },
+            new DomesticSetProduct
+            {
+                SetProductCode = "legacy-null-parent",
+                ProductCode = "DP-SET-LEGACY",
+                ProductNo = null,
+                SetProductNo = "SET-LEGACY",
+                SetBarcode = "PARENT-BAR",
+                IsDeleted = false,
+            },
+            new DomesticSetProduct
+            {
+                SetProductCode = "deleted-child",
+                ProductCode = "DP-SET-LEGACY",
+                ProductNo = null,
+                SetProductNo = "SET-LEGACY-03",
+                SetBarcode = "DELETED-BAR",
+                IsDeleted = true,
+            },
+            new DomesticSetProduct
+            {
+                SetProductCode = "other-product-child",
+                ProductCode = "DP-SET-OTHER",
+                ProductNo = null,
+                SetProductNo = "SET-OTHER-01",
+                SetBarcode = "OTHER-BAR",
+                IsDeleted = false,
+            },
+        }).ExecuteCommandAsync();
+
+        var result = await CreateService().GetSetItemsAsync("DP-SET-LEGACY");
+
+        Assert.True(result.Success);
+        var items = Assert.IsType<List<DomesticSetProductDto>>(result.Data);
+        Assert.Equal(2, items.Count);
+        Assert.Contains(items, item => item.SetProductCode == "legacy-null-child");
+        Assert.Contains(items, item => item.SetProductCode == "normal-child");
+        Assert.DoesNotContain(items, item => item.SetProductCode == "legacy-null-parent");
+        Assert.DoesNotContain(items, item => item.SetProductCode == "deleted-child");
+        Assert.DoesNotContain(items, item => item.SetProductCode == "other-product-child");
+    }
+
+    [Fact]
+    public async Task UpdateSetItemsAsync_可更新历史空商品货号子项且保存后仍可读取()
+    {
+        await SeedSetProductAsync("DP-SET-LEGACY-SAVE");
+        await _localDb.Insertable(new[]
+        {
+            new DomesticSetProduct
+            {
+                SetProductCode = "legacy-save-child",
+                ProductCode = "DP-SET-LEGACY-SAVE",
+                ProductNo = null,
+                SetProductNo = "SET-LEGACY-SAVE-01",
+                SetBarcode = "LEGACY-SAVE-BAR",
+                DomesticPrice = 3m,
+                IsDeleted = false,
+            },
+            new DomesticSetProduct
+            {
+                SetProductCode = "normal-save-child",
+                ProductCode = "DP-SET-LEGACY-SAVE",
+                ProductNo = "SET-LEGACY-SAVE",
+                SetProductNo = "SET-LEGACY-SAVE-02",
+                SetBarcode = "NORMAL-SAVE-BAR",
+                DomesticPrice = 4m,
+                IsDeleted = false,
+            },
+            new DomesticSetProduct
+            {
+                SetProductCode = "legacy-save-parent",
+                ProductCode = "DP-SET-LEGACY-SAVE",
+                ProductNo = null,
+                SetProductNo = "SET-LEGACY-SAVE",
+                SetBarcode = "PARENT-SAVE-BAR",
+                DomesticPrice = 30m,
+                IsDeleted = false,
+            },
+            new DomesticSetProduct
+            {
+                SetProductCode = "deleted-save-child",
+                ProductCode = "DP-SET-LEGACY-SAVE",
+                ProductNo = null,
+                SetProductNo = "SET-LEGACY-SAVE-03",
+                SetBarcode = "DELETED-SAVE-BAR",
+                DomesticPrice = 40m,
+                IsDeleted = true,
+            },
+            new DomesticSetProduct
+            {
+                SetProductCode = "other-save-child",
+                ProductCode = "DP-SET-OTHER-SAVE",
+                ProductNo = null,
+                SetProductNo = "SET-OTHER-SAVE-01",
+                SetBarcode = "OTHER-SAVE-BAR",
+                DomesticPrice = 50m,
+                IsDeleted = false,
+            },
+        }).ExecuteCommandAsync();
+
+        var service = CreateService();
+        var updateResult = await service.UpdateSetItemsAsync(
+            "DP-SET-LEGACY-SAVE",
+            new List<SetItemUpdateDto>
+            {
+                new()
+                {
+                    SetProductCode = "legacy-save-child",
+                    SetProductNo = "SET-LEGACY-SAVE-01",
+                    SetBarcode = "LEGACY-SAVE-BAR",
+                    DomesticPrice = 13m,
+                },
+                new()
+                {
+                    SetProductCode = "normal-save-child",
+                    SetProductNo = "SET-LEGACY-SAVE-02",
+                    SetBarcode = "NORMAL-SAVE-BAR",
+                    DomesticPrice = 14m,
+                },
+            }
+        );
+
+        Assert.True(updateResult.Success);
+        var savedLegacyChild = await _localDb.Queryable<DomesticSetProduct>()
+            .FirstAsync(item => item.SetProductCode == "legacy-save-child");
+        Assert.Equal(13m, savedLegacyChild.DomesticPrice);
+
+        var readResult = await service.GetSetItemsAsync("DP-SET-LEGACY-SAVE");
+        Assert.True(readResult.Success);
+        Assert.Equal(2, readResult.Data!.Count);
+        Assert.Contains(readResult.Data, item =>
+            item.SetProductCode == "legacy-save-child" && item.DomesticPrice == 13m
+        );
+
+        var parent = await _localDb.Queryable<DomesticSetProduct>()
+            .FirstAsync(item => item.SetProductCode == "legacy-save-parent");
+        var deleted = await _localDb.Queryable<DomesticSetProduct>()
+            .FirstAsync(item => item.SetProductCode == "deleted-save-child");
+        var other = await _localDb.Queryable<DomesticSetProduct>()
+            .FirstAsync(item => item.SetProductCode == "other-save-child");
+        Assert.False(parent.IsDeleted);
+        Assert.Equal(30m, parent.DomesticPrice);
+        Assert.True(deleted.IsDeleted);
+        Assert.Equal(40m, deleted.DomesticPrice);
+        Assert.False(other.IsDeleted);
+        Assert.Equal(50m, other.DomesticPrice);
+    }
+
+    [Fact]
     public async Task SyncSelectedToHBSalesAsync_InsertsSetItemsForSetProduct()
     {
         await _localDb.Insertable(new DomesticProduct

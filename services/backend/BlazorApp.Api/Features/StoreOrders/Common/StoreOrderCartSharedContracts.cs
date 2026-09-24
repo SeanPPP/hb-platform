@@ -48,6 +48,12 @@ internal interface IStoreOrderCartPlacementPort
 
     Task<int> CountActiveItemsAsync(string orderGuid);
 
+    /// <summary>
+    /// 购物车里已暂停供货（仓库下架）的商品货号，用于提交前拦截并告知分店具体是哪几行。
+    /// 仓库侧代下单不受限，此时恒返回空。
+    /// </summary>
+    Task<IReadOnlyList<string>> GetSupplyPausedItemLabelsAsync(string orderGuid);
+
     Task<int> CompareExchangeSubmitAsync(
         StoreOrderCartSubmissionSnapshot snapshot,
         string orderNo,

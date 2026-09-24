@@ -622,6 +622,214 @@ public sealed class RoleServicePermissionTests : IDisposable
     }
 
     [Fact]
+    public async Task GetPermissionUsersAsync_ReturnsOnlyLiveDirectGrants()
+    {
+        await InsertPermissionAsync(Permissions.Users.View);
+        await InsertUserAsync("user-direct");
+        await InsertUserAsync("user-deleted", isDeleted: true);
+        await InsertUserAsync("user-soft-link");
+        await SeedUserWithRoleAsync("user-role-only", "role-viewer", "Viewer");
+        await InsertRolePermissionAsync("role-viewer", Permissions.Users.View);
+        await InsertUserPermissionAsync("user-direct", Permissions.Users.View);
+        await InsertUserPermissionAsync("user-deleted", Permissions.Users.View);
+        await _db.Insertable(new SysUserPermission
+        {
+            Id = "user-soft-link-deleted",
+            UserGuid = "user-soft-link",
+            PermissionCode = Permissions.Users.View,
+            IsDeleted = true,
+        }).ExecuteCommandAsync();
+
+        var result = await (await CreateAdminServiceAsync())
+            .GetPermissionUsersAsync($" {Permissions.Users.View} ");
+
+        Assert.True(result.Success);
+        // 角色继承、已删除用户与软删除授权都不属于「直接授权用户」。
+        var user = Assert.Single(result.Data!);
+        Assert.Equal("user-direct", user.UserGUID);
+        Assert.Equal("user-direct@example.test", user.Email);
+    }
+
+    [Fact]
+    public async Task AssignUsersToPermissionAsync_AppliesDeltaWithoutTouchingOtherGrants()
+    {
+        await InsertPermissionAsync(Permissions.Users.View);
+        await InsertPermissionAsync(Permissions.Reports.View);
+        await InsertUserAsync("user-keep");
+        await InsertUserAsync("user-add");
+        await InsertUserAsync("user-remove");
+        await InsertUserPermissionAsync("user-keep", Permissions.Users.View);
+        await InsertUserPermissionAsync("user-remove", Permissions.Users.View);
+        await InsertUserPermissionAsync("user-remove", Permissions.Reports.View);
+
+        var result = await (await CreateAdminServiceAsync())
+            .AssignUsersToPermissionAsync(
+                Permissions.Users.View,
+                new PermissionUserAssignmentDto
+                {
+                    AddUserGuids = new List<string> { " user-add ", "user-add", "user-keep", "" },
+                    RemoveUserGuids = new List<string> { "user-remove" },
+                }
+            );
+
+        Assert.True(result.Data);
+        var viewLinks = await _db.Queryable<SysUserPermission>()
+            .Where(item => item.PermissionCode == Permissions.Users.View)
+            .ToListAsync();
+        Assert.Equal(
+            new[] { "user-add", "user-keep" },
+            viewLinks.Select(item => item.UserGuid).OrderBy(item => item)
+        );
+        // 已有授权保持原记录（主键不变），不因重复提交被重建。
+        Assert.Contains(viewLinks, item => item.Id == $"user-keep-{Permissions.Users.View}");
+        // 增量移除只影响当前权限，目标用户的其他直接权限必须保留。
+        Assert.True(await _db.Queryable<SysUserPermission>().AnyAsync(item =>
+            item.UserGuid == "user-remove" && item.PermissionCode == Permissions.Reports.View
+        ));
+    }
+
+    [Fact]
+    public async Task AssignUsersToPermissionAsync_RejectsUnpersistedPermissionButAllowsCleanup()
+    {
+        await InsertUserAsync("user-1");
+        await InsertUserPermissionAsync("user-1", "Legacy.Removed");
+        var service = await CreateAdminServiceAsync();
+
+        var addResult = await service.AssignUsersToPermissionAsync(
+            "Missing.Permission",
+            new PermissionUserAssignmentDto { AddUserGuids = new List<string> { "user-1" } }
+        );
+        var cleanupResult = await service.AssignUsersToPermissionAsync(
+            "Legacy.Removed",
+            new PermissionUserAssignmentDto { RemoveUserGuids = new List<string> { "user-1" } }
+        );
+
+        Assert.Equal("PERMISSION_NOT_FOUND", addResult.ErrorCode);
+        Assert.True(cleanupResult.Data);
+        Assert.False(await _db.Queryable<SysUserPermission>().AnyAsync(item => item.UserGuid == "user-1"));
+    }
+
+    [Fact]
+    public async Task AssignUsersToPermissionAsync_AdminCanGrantBuiltInSalesDashboardPermissionWithoutSeedRow()
+    {
+        await InsertUserAsync("user-1");
+
+        var result = await (await CreateAdminServiceAsync()).AssignUsersToPermissionAsync(
+            SalesDashboardPermissionCodes[0].ToLowerInvariant(),
+            new PermissionUserAssignmentDto { AddUserGuids = new List<string> { "user-1" } }
+        );
+
+        Assert.True(result.Data);
+        var link = Assert.Single(await _db.Queryable<SysUserPermission>().ToListAsync());
+        // 写入时统一为内置权限的规范拼写，保证鉴权按原代码匹配。
+        Assert.Equal(SalesDashboardPermissionCodes[0], link.PermissionCode);
+    }
+
+    [Fact]
+    public async Task AssignUsersToPermissionAsync_RejectsInvalidTargetsAtomically()
+    {
+        await InsertPermissionAsync(Permissions.Users.View);
+        await InsertUserAsync("user-live");
+        await InsertUserAsync("user-deleted", isDeleted: true);
+        var service = await CreateAdminServiceAsync();
+
+        var missingResult = await service.AssignUsersToPermissionAsync(
+            Permissions.Users.View,
+            new PermissionUserAssignmentDto
+            {
+                AddUserGuids = new List<string> { "user-live", "user-deleted" },
+            }
+        );
+        var conflictResult = await service.AssignUsersToPermissionAsync(
+            Permissions.Users.View,
+            new PermissionUserAssignmentDto
+            {
+                AddUserGuids = new List<string> { "user-live" },
+                RemoveUserGuids = new List<string> { "USER-LIVE" },
+            }
+        );
+
+        Assert.Equal("USER_NOT_FOUND", missingResult.ErrorCode);
+        Assert.Equal("PERMISSION_USER_ASSIGNMENT_CONFLICT", conflictResult.ErrorCode);
+        Assert.False(await _db.Queryable<SysUserPermission>().AnyAsync());
+    }
+
+    [Fact]
+    public async Task PermissionUserEndpoints_NonAdminIsRejected()
+    {
+        await SeedUserWithRoleAsync("employee-1", "role-employee", "User");
+        await InsertPermissionAsync(Permissions.Users.View);
+        await InsertUserAsync("user-1");
+        var service = CreateService(
+            "employee-1",
+            new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
+            {
+                IsAllowed = true,
+                IsAuthenticated = true,
+                UserGuid = "employee-1",
+            })
+        );
+
+        var readResult = await service.GetPermissionUsersAsync(Permissions.Users.View);
+        var writeResult = await service.AssignUsersToPermissionAsync(
+            Permissions.Users.View,
+            new PermissionUserAssignmentDto { AddUserGuids = new List<string> { "user-1" } }
+        );
+
+        Assert.Equal("ADMIN_REQUIRED", readResult.ErrorCode);
+        Assert.Equal("ADMIN_REQUIRED", writeResult.ErrorCode);
+        Assert.False(await _db.Queryable<SysUserPermission>().AnyAsync());
+    }
+
+    [Fact]
+    public async Task GetPermissionRoleCountsAsync_CountsOnlyLiveExplicitRoleLinks()
+    {
+        await InsertRoleAsync("role-manager", "StoreManager");
+        await InsertRoleAsync("role-cashier", "Cashier");
+        await InsertRoleAsync("role-deleted", "Deleted", isDeleted: true);
+        await InsertRolePermissionAsync("role-manager", Permissions.Users.View);
+        await InsertRolePermissionAsync("role-cashier", Permissions.Users.View);
+        await InsertRolePermissionAsync("role-manager", Permissions.Roles.View);
+        // 已删除角色与已删除关联都不能计入引用数。
+        await InsertRolePermissionAsync("role-deleted", Permissions.Roles.View);
+        await _db.Insertable(new SysRolePermission
+        {
+            Id = "role-cashier-deleted-link",
+            RoleGuid = "role-cashier",
+            PermissionCode = Permissions.Roles.View,
+            IsDeleted = true,
+        }).ExecuteCommandAsync();
+
+        var result = await (await CreateAdminServiceAsync()).GetPermissionRoleCountsAsync();
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(2, result.Data[Permissions.Users.View]);
+        Assert.Equal(1, result.Data[Permissions.Roles.View]);
+        Assert.False(result.Data.ContainsKey(Permissions.Users.Create));
+    }
+
+    [Fact]
+    public async Task GetPermissionRoleCountsAsync_RequiresAdmin()
+    {
+        await SeedUserWithRoleAsync("user-manager", "role-manager", "StoreManager");
+
+        var result = await CreateService(
+            "user-manager",
+            new FakeManageableStoreScopeService(new CurrentUserManageableStoreScope
+            {
+                IsAllowed = true,
+                IsAuthenticated = true,
+                IsAdmin = false,
+                UserGuid = "user-manager",
+            })
+        ).GetPermissionRoleCountsAsync();
+
+        Assert.False(result.Success);
+        Assert.Null(result.Data);
+    }
+
+    [Fact]
     public async Task GetPermissionCatalogAsync_ReturnsAliasesTemplatesAndSuperAdminRoles()
     {
         var result = await (await CreateAdminServiceAsync()).GetPermissionCatalogAsync();
@@ -1825,6 +2033,19 @@ public sealed class RoleServicePermissionTests : IDisposable
             UserGUID = userGuid,
             RoleGUID = roleGuid,
             IsDeleted = false,
+        }).ExecuteCommandAsync();
+    }
+
+    private async Task InsertUserAsync(string userGuid, bool isDeleted = false)
+    {
+        await _db.Insertable(new User
+        {
+            UserGUID = userGuid,
+            Username = userGuid,
+            Email = $"{userGuid}@example.test",
+            PasswordHash = "hash",
+            IsActive = true,
+            IsDeleted = isDeleted,
         }).ExecuteCommandAsync();
     }
 

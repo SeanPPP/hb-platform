@@ -20,6 +20,7 @@ using BlazorApp.Api.Services; // 业务服务层
 using BlazorApp.Api.Services.Attendance;
 using BlazorApp.Api.Services.Background; // 后台定时服务
 using BlazorApp.Api.Services.Logging;
+using BlazorApp.Api.Services.LocalSupplierCategories;
 using BlazorApp.Api.Services.MobileDeviceActivation;
 using BlazorApp.Api.Services.OperationAudits;
 using BlazorApp.Api.Services.Performance;
@@ -126,7 +127,11 @@ if (schemaCommand.Mode != SchemaCommandMode.Server)
 // --------------------- 基础Web API服务 ---------------------
 // 注册MVC控制器服务，启用基于控制器的API端点
 builder
-    .Services.AddControllers()
+    .Services.AddControllers(options =>
+    {
+        // 仓库改价后把"已通知几家分店"的汇总写入响应头，供前端提示"已发送到通知列表"。
+        options.Filters.Add<BlazorApp.Api.Filters.PriceNotificationHeaderFilter>();
+    })
     .AddJsonOptions(options =>
     {
         // 使用 camelCase 命名策略（前端 JavaScript 标准）
@@ -375,6 +380,7 @@ builder.Services.Configure<ScheduledTaskOptions>(
     builder.Configuration.GetSection("ScheduledTasks")
 );
 builder.Services.AddHostedService<ProductStoreDailyStatisticRecoveryService>();
+builder.Services.AddHostedService<SalesStatisticsOrphanRunningStateRecoveryService>();
 builder.Services.AddHostedService<ReportReadConnectionWarmupService>();
 builder.Services.AddHostedService<ScheduledTaskService>();
 
@@ -413,6 +419,8 @@ builder.Services.AddCors(options =>
                 .WithOrigins(corsOrigins) // 📍 指定允许的源（域名列表）
                 .AllowAnyMethod() // 🔓 允许所有 HTTP 方法（GET, POST, PUT, DELETE 等）
                 .AllowAnyHeader() // 🔓 允许所有请求头
+                // 跨域场景下浏览器默认读不到自定义响应头，必须显式暴露。
+                .WithExposedHeaders(BlazorApp.Api.Filters.PriceNotificationHeaderFilter.HeaderName)
                 .AllowCredentials(); // 🍪 允许发送凭据（Cookie、Authorization 头等）
             // ⚠️ 这是 Cookie 认证的关键配置
             // ✅ 前端请求时必须设置 withCredentials: true 或 credentials: 'include'
@@ -426,6 +434,7 @@ builder.Services.AddRateLimiter(MobileDeviceActivationRateLimits.Configure);
 // 浏览器扩展一次性授权按父会话限流，匿名兑换按可信客户端 IP 限流。
 builder.Services.AddRateLimiter(BrowserExtensionSessionGrantRateLimits.Configure);
 builder.Services.AddRateLimiter(RustDeskLoginRateLimits.Configure);
+builder.Services.AddRateLimiter(BrowserExtensionCaptureRateLimits.Configure);
 
 // --------------------- JWT认证配置 ---------------------
 // 🔐 配置JSON Web Token（JWT）身份验证
@@ -545,33 +554,18 @@ authenticationBuilder.AddJwtBearer(options =>
                         MobileDeviceAccountTokenIssuer.TokenUse,
                         StringComparison.Ordinal))
                 {
-                    // 移动设备令牌保留原有 User、设备绑定和角色读取顺序；它不依赖 RefreshToken。
-                    var user = await dbContext.Db.Queryable<User>()
-                        .FirstAsync(item => item.UserGUID == userGuid && item.IsActive && !item.IsDeleted);
-
-                    if (user == null)
+                    var validation = await authSessionValidator.ValidateMobileDeviceAccessAsync(
+                        userGuid,
+                        principal,
+                        context.HttpContext.RequestAborted);
+                    if (!validation.IsValid)
                     {
-                        context.Fail("用户已失效");
+                        context.Fail("用户、设备绑定或登录会话已失效");
                         return;
                     }
-
-                    if (!await authSessionValidator.IsAccessSessionActiveAsync(userGuid, principal))
-                    {
-                        context.Fail("登录会话已失效");
-                        return;
-                    }
-
-                    activeRoleNames = await dbContext.Db.Queryable<UserRole>()
-                        .InnerJoin<Role>((userRole, role) => userRole.RoleGUID == role.RoleGUID)
-                        .Where((userRole, role) =>
-                            userRole.UserGUID == userGuid
-                            && !userRole.IsDeleted
-                            && role.IsActive
-                            && !role.IsDeleted
-                        )
-                        .Select((userRole, role) => role.RoleName)
-                        .Distinct()
-                        .ToListAsync();
+                    // 仅复用本次请求认证时的实时门店快照，避免认证后控制器重复查询且不形成跨请求缓存。
+                    context.HttpContext.Items[typeof(AuthMobileDeviceValidationResult)] = validation;
+                    activeRoleNames = validation.ActiveRoleNames;
                 }
                 else
                 {
@@ -905,6 +899,25 @@ builder.Services.AddScoped<
     BlazorApp.Api.Interfaces.React.IWarehouseProductChangeHistoryService,
     BlazorApp.Api.Services.React.WarehouseProductChangeHistoryService
 >();
+// 分店价格更新通知：汇总收集器按请求隔离；任务服务挂在上面的审计收口上，覆盖所有仓库改价入口。
+builder.Services.AddScoped<
+    BlazorApp.Api.Interfaces.React.IPriceNotificationSummaryAccessor,
+    BlazorApp.Api.Services.React.PriceNotificationSummaryAccessor
+>();
+builder.Services.AddScoped<
+    BlazorApp.Api.Interfaces.React.IStorePriceUpdateTaskService,
+    BlazorApp.Api.Services.React.StorePriceUpdateTaskService
+>();
+builder.Services.AddHostedService<BlazorApp.Api.Services.Background.StorePriceUpdateTaskReconcileWorker>();
+// 分店订货端：暂停供货商品的状态查询与“关注恢复订货”。
+builder.Services.AddScoped<
+    BlazorApp.Api.Features.SupplyNotices.IStoreProductSupplyService,
+    BlazorApp.Api.Features.SupplyNotices.StoreProductSupplyService
+>();
+builder.Services.AddScoped<
+    BlazorApp.Api.Features.SupplyNotices.IWarehouseProductSupplyNoticeService,
+    BlazorApp.Api.Features.SupplyNotices.WarehouseProductSupplyNoticeService
+>();
 builder.Services.AddScoped<
     BlazorApp.Api.Interfaces.React.IWarehouseRetailPriceChangeService,
     BlazorApp.Api.Services.React.WarehouseRetailPriceChangeService
@@ -1029,12 +1042,15 @@ builder.Services.AddScoped<
 builder.Services.AddStoreOrderFeatures();
 // 商品进销查询作为独立只读模块注册，复用门店权限与日销售数据。
 builder.Services.AddScoped<BlazorApp.Api.Features.ProductInsights.StoreProductInsightQueryService>();
+builder.Services.AddScoped<BlazorApp.Api.Features.ProductInsights.SeasonalProductInsightQueryService>();
 builder.Services.AddScoped<BlazorApp.Api.Features.ProductInsights.IProductBranchSalesService,
     BlazorApp.Api.Features.ProductInsights.ProductBranchSalesService>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddStoreOrderReactFacade();
 builder.Services.AddScoped<IBrowserExtensionAccessService, BrowserExtensionAccessService>();
 builder.Services.AddScoped<IBrowserExtensionService, BrowserExtensionService>();
+builder.Services.AddScoped<ILocalSupplierCategoryCaptureService, LocalSupplierCategoryCaptureService>();
+builder.Services.AddScoped<ILocalSupplierCategoryReactService, LocalSupplierCategoryReactService>();
 builder.Services.AddScoped<PreorderReactService>();
 builder.Services.AddScoped<IPreorderReactService>(provider =>
     provider.GetRequiredService<PreorderReactService>()
@@ -1043,6 +1059,22 @@ builder.Services.AddScoped<IPreorderGateService>(provider =>
     provider.GetRequiredService<PreorderReactService>()
 );
 builder.Services.AddScoped<IStoreProductMaintenanceReactService, StoreProductMaintenanceReactService>();
+// 移动端离线商品目录：索引缓存为进程级单例（每店保留多版本供 delta），服务按请求作用域。
+builder.Services.AddSingleton<
+    BlazorApp.Api.Services.React.OfflineCatalog.IOfflineCatalogIndexCache,
+    BlazorApp.Api.Services.React.OfflineCatalog.OfflineCatalogIndexCache
+>();
+builder.Services.AddScoped<BlazorApp.Api.Services.React.OfflineCatalog.StoreProductOfflineCatalogService>();
+builder.Services.AddScoped<IStoreProductOfflineCatalogService>(sp =>
+    sp.GetRequiredService<BlazorApp.Api.Services.React.OfflineCatalog.StoreProductOfflineCatalogService>()
+);
+// 索引构建在独立 scope 中解析，避免后台构建捕获已释放的 HTTP 请求 DbContext。
+builder.Services.AddScoped<IOfflineCatalogIndexBuilder>(sp =>
+    sp.GetRequiredService<BlazorApp.Api.Services.React.OfflineCatalog.StoreProductOfflineCatalogService>()
+);
+builder.Services.AddScoped<StoreAccessContextResolver>();
+// 促销海报：扫码查询页生成特价 / 多件价 / 新品 / 清仓海报 PDF（经典、现代两种风格）
+builder.Services.AddScoped<BlazorApp.Api.Features.PromoPosters.IPromoPosterService, BlazorApp.Api.Features.PromoPosters.PromoPosterService>();
 builder.Services.AddScoped<IAustralianPublicHolidayProvider, AustralianPublicHolidayProvider>();
 builder.Services.AddScoped<IAttendancePublicHolidaySyncService, AttendancePublicHolidaySyncService>();
 builder.Services.AddScoped<IAttendanceReactService, AttendanceReactService>();
@@ -1061,6 +1093,11 @@ builder.Services.AddScoped<ISalesDashboardCacheWarmer, SalesDashboardCacheWarmer
 builder.Services.AddScoped<IProductMovementReportService, ProductMovementReportService>();
 builder.Services.AddScoped<IBatchProductSalesAnalysisService, BatchProductSalesAnalysisService>();
 builder.Services.AddHostedService<BatchProductSalesDiscountWorker>();
+builder.Services.AddHostedService<ProductMovementReportSnapshotWorker>();
+// 移动端中国供应商页签默认视图预热：每个实例各自维护内存缓存，无需租约。
+builder.Services.AddHostedService<MobileChinaReportCacheWarmupWorker>();
+builder.Services.AddHostedService<ProductStoreDailyColumnstoreMaintenanceWorker>();
+builder.Services.AddHostedService<SalesDetailMonthlyProjectionWorker>();
 builder.Services.AddScoped<
     IWarehouseProductFlowAnalysisService,
     WarehouseProductFlowAnalysisService

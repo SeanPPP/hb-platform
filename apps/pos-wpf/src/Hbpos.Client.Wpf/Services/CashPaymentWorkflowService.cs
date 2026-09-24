@@ -40,6 +40,15 @@ public interface ICashPaymentWorkflowService
         return Task.FromResult(false);
     }
 
+    Task<PaymentTenderAttemptResult> AddManualCardTenderAsync(
+        PosSessionState session,
+        decimal actualAmount,
+        IReadOnlyList<PaymentTender> currentTenders,
+        string? amountText,
+        Guid confirmationId,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(PaymentTenderAttemptResult.Fail("payment.status.unsupportedMethod"));
+
     Task<CashPaymentWorkflowResult> CompleteAsync(
         PosCartService cart,
         PosSessionState session,
@@ -185,6 +194,44 @@ public sealed class CashPaymentWorkflowService(
         return _cashRoundingPolicy.CalculateChange(cashTotal, roundedCashDue);
     }
 
+    public Task<PaymentTenderAttemptResult> AddManualCardTenderAsync(
+        PosSessionState session,
+        decimal actualAmount,
+        IReadOnlyList<PaymentTender> currentTenders,
+        string? amountText,
+        Guid confirmationId,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (RoundCurrency(actualAmount) <= 0m || confirmationId == Guid.Empty ||
+            currentTenders.Any(tender => tender.Method == PaymentMethodKind.Card))
+        {
+            return Task.FromResult(PaymentTenderAttemptResult.Fail("payment.status.unsupportedMethod"));
+        }
+
+        if (!TryParseTenderedAmount(amountText, out var amount) || amount <= 0m || amount != RoundCurrency(amount))
+        {
+            return Task.FromResult(PaymentTenderAttemptResult.Fail("payment.status.invalidAmount"));
+        }
+
+        var remaining = CalculateExternalRemainingAmount(actualAmount, currentTenders);
+        if (remaining <= 0m || amount != remaining)
+        {
+            return Task.FromResult(PaymentTenderAttemptResult.Fail(
+                amount > remaining ? "payment.status.cardExceedsRemaining" : "payment.status.cardMustBeFinalTender"));
+        }
+
+        // 中文注释：调用方只能在人工核实成功后进入此方法；不读取终端设置、不发起任何扣款。
+        var reference = ManualCardPaymentReference.Format(confirmationId);
+        var transaction = new CardTransactionDto(
+            ManualCardPaymentReference.Processor, reference, null, null, null, null, null,
+            null, "Manually confirmed by cashier", null, null, amount, null);
+        return Task.FromResult(PaymentTenderAttemptResult.Success(
+            new PaymentTender(PaymentMethodKind.Card, amount, reference,
+                CardTransactions: [transaction], IdempotencyKey: reference),
+            "payment.status.cardTenderAdded"));
+    }
+
     public async Task<PaymentTenderAttemptResult> AddTenderAsync(
         PaymentMethodKind method,
         PosSessionState session,
@@ -217,6 +264,12 @@ public sealed class CashPaymentWorkflowService(
 
         if (isRefund)
         {
+            if (method == PaymentMethodKind.Card && ManualCardPaymentReference.IsManualRefundSource(referenceText))
+            {
+                return PaymentTenderAttemptResult.Fail("payment.status.cardDeclined",
+                    "This payment was confirmed manually. Refund it using an alternative method; do not send it to a linked terminal.");
+            }
+
             if (method == PaymentMethodKind.Card && string.IsNullOrWhiteSpace(referenceText))
             {
                 ConsoleLog.Write("CardRefund", "workflow blocked card refund reason=missing-original-reference");
@@ -375,6 +428,14 @@ public sealed class CashPaymentWorkflowService(
         var result = checkout.CreatePaymentOrder(cart, session, tenderSnapshot, cashTenderedAmount);
         // 退款代金券先以待发券状态落本地，确保崩溃后仍能沿用原始幂等键恢复。
         var orderForPersistence = PrepareOrderForVoucherRefundPersistence(result.Order);
+        var manualReference = tenderSnapshot.FirstOrDefault(tender =>
+            tender.Method == PaymentMethodKind.Card && ManualCardPaymentReference.IsManual(tender.Reference))?.Reference;
+        if (ManualCardPaymentReference.TryParse(manualReference, out var manualConfirmationId))
+        {
+            // 中文注释：连首次本地读取失败也必须报告固定订单身份，避免重试转为另一笔订单。
+            orderForPersistence = orderForPersistence with { OrderGuid = manualConfirmationId };
+        }
+
         var persistenceOrderGuid = orderForPersistence.OrderGuid;
         // 终端已批准后，订单 GUID 恢复和本地订单落盘不能被随后取消的 UI 操作打断。
         var persistenceCancellationToken = CancellationToken.None;
@@ -431,10 +492,7 @@ public sealed class CashPaymentWorkflowService(
         {
             order = await IssuePendingRefundVouchersAsync(order, session, cancellationToken);
         }
-        catch (Exception ex) when (
-            ex is not OperationCanceledException and
-            not OutOfMemoryException and
-            not StackOverflowException)
+        catch (Exception ex) when (IsRetryableFailureAfterOrderPersisted(ex, cancellationToken))
         {
             // 中文注释：退款券签发的致命异常必须原样传播，不能降级成可重试上传失败。
             throw new PaymentUploadFailedException(
@@ -461,10 +519,7 @@ public sealed class CashPaymentWorkflowService(
             {
                 await orderUploadService.UploadOrderAsync(result.Order.OrderGuid, cancellationToken);
             }
-            catch (Exception ex) when (
-                ex is not OperationCanceledException and
-                not OutOfMemoryException and
-                not StackOverflowException)
+            catch (Exception ex) when (IsRetryableFailureAfterOrderPersisted(ex, cancellationToken))
             {
                 // 中文注释：代金券订单上传的致命异常必须原样传播，不能包装成普通上传失败。
                 throw new PaymentUploadFailedException(
@@ -543,10 +598,7 @@ public sealed class CashPaymentWorkflowService(
         {
             order = await IssuePendingRefundVouchersAsync(order, session, cancellationToken);
         }
-        catch (Exception ex) when (
-            ex is not OperationCanceledException and
-            not OutOfMemoryException and
-            not StackOverflowException)
+        catch (Exception ex) when (IsRetryableFailureAfterOrderPersisted(ex, cancellationToken))
         {
             // 中文注释：重试退款券签发同样不拦截 OOM/StackOverflowException。
             throw new PaymentUploadFailedException(
@@ -571,10 +623,7 @@ public sealed class CashPaymentWorkflowService(
             {
                 await orderUploadService.UploadOrderAsync(orderGuid, cancellationToken);
             }
-            catch (Exception ex) when (
-                ex is not OperationCanceledException and
-                not OutOfMemoryException and
-                not StackOverflowException)
+            catch (Exception ex) when (IsRetryableFailureAfterOrderPersisted(ex, cancellationToken))
             {
                 // 中文注释：重试代金券上传的致命异常必须保持原实例传播。
                 throw new PaymentUploadFailedException(
@@ -638,6 +687,21 @@ public sealed class CashPaymentWorkflowService(
             pendingSyncCount,
             updatedSession,
             hasPostCommitWarning);
+    }
+
+    // 订单落库之后的联网步骤（签发退款券、上传代金券订单）失败时，能否折算成"可用同一订单重试"的上传失败。
+    // HttpClient 超时和 API 端点切换都表现为取消异常，而调用方并没有取消；此时订单已经存在、购物车未清，
+    // 若原样冒到支付页只会提示"支付未能完成"，收银员再点一次完成就会用新订单号重复落单：
+    // 正向代金券会复用同一个预占 token（两单必有一单永远传不上去），退款券会换新幂等键再发一张。
+    // 调用方自己发起的取消按惯例原样传播；OOM/StackOverflow 属致命异常，同样不拦截。
+    private static bool IsRetryableFailureAfterOrderPersisted(Exception exception, CancellationToken callerCancellationToken)
+    {
+        return exception switch
+        {
+            OutOfMemoryException or StackOverflowException => false,
+            OperationCanceledException => !callerCancellationToken.IsCancellationRequested,
+            _ => true
+        };
     }
 
     private async Task<(int PendingSyncCount, bool HasPostCommitWarning)> ReadPendingSyncCountAfterCommitAsync(
@@ -1062,12 +1126,16 @@ public sealed class CashPaymentWorkflowService(
             }
 
             // LocalIp 在 socket 写入前已持久化 TxnRef；没有 SessionId 也不能把其取消当作未提交。
+            // 后端异步模式的销售引用则在建 attempt 时就已派生落库（远早于发请求），它的存在不说明终端是否接单：
+            // 该模式由终端客户端掌握提交边界——POST 之前失败会返回可回退结果或抛 CardTerminalNotSubmittedException，
+            // POST 之后失败会返回未知结果；异常走到这里时以会话是否已绑定为准。退款在各模式下维持原有的保守判定。
+            var txnRefMarksDispatch = isRefund || !IsCloudBackendAsyncAttempt(linklyAttemptAfterException);
             var wasSubmitted = !definitelyNotSubmitted && (
                 linklySubmissionObserved ||
                 squareSubmissionObserved ||
                 refundDispatchBoundaryPersisted ||
                 !string.IsNullOrWhiteSpace(linklyAttemptAfterException?.SessionId) ||
-                !string.IsNullOrWhiteSpace(linklyAttemptAfterException?.TxnRef) ||
+                (txnRefMarksDispatch && !string.IsNullOrWhiteSpace(linklyAttemptAfterException?.TxnRef)) ||
                 !string.IsNullOrWhiteSpace(squareAttemptAfterException?.CheckoutId));
 
             if (wasSubmitted)
@@ -2082,13 +2150,13 @@ public sealed class CashPaymentWorkflowService(
             attemptGuid,
             null,
             // LocalIp 引用只绑定已落库 attempt 身份；Cloud 退款继续沿用既有原交易派生规则。
+            // 销售在三种模式下都必须在发请求前确定引用并随 attempt 落库：CloudBackendAsync 过去等服务端生成，
+            // 请求发出后一旦断电或响应丢失，这一行 SessionId 与 TxnRef 皆空，自动恢复和主管结案都无法认领它。
             isRefund
                 ? mode == LinklyConnectionMode.LocalIp
                     ? LinklyLocalTxnRef.Create('R', attemptGuid.ToString("D"))
                     : BuildRefundTxnRef(referenceText)
-                : mode is LinklyConnectionMode.LocalIp or LinklyConnectionMode.CloudDirectSync
-                    ? LinklyLocalTxnRef.Create('P', attemptGuid.ToString("D"))
-                    : null,
+                : LinklyLocalTxnRef.Create('P', attemptGuid.ToString("D")),
             settings.Processor.ToString(),
             settings.Environment.ToString(),
             CardTerminalSettings.FormatLinklyConnectionMode(mode),
@@ -2144,6 +2212,14 @@ public sealed class CashPaymentWorkflowService(
             persistedAttempt,
             persistedAttempt.AttemptGuid != attempt.AttemptGuid,
             isRefund && RequiresLinklyRefundRecoveryForCurrentMode(persistedAttempt, mode));
+    }
+
+    private static bool IsCloudBackendAsyncAttempt(LocalCardPaymentAttempt? attempt)
+    {
+        return string.Equals(
+            attempt?.ConnectionMode?.Trim(),
+            nameof(LinklyConnectionMode.CloudBackendAsync),
+            StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool RequiresLinklyRefundRecoveryForCurrentMode(
@@ -3134,18 +3210,27 @@ public sealed class CashPaymentWorkflowService(
             }
 
             var outcome = MapActiveSessionOutcome(finalStatus);
+            var isGenericActiveSession = string.Equals(activeAttempt.OperationKind, "ActiveSession", StringComparison.Ordinal);
+            // 旧销售/退款一旦记为 Approved，恢复会把它当作已持久化的金融事实、按草稿金额自动落单，
+            // 所以已到终态的批准在这里也必须核验金额；核验不过就不落 Approved、不确认会话，留给恢复流程判为未知。
+            // 无草稿的 generic 记录本来就降级为待复核、不会自动落单，仍照常确认以释放终端。
             if (outcome == LocalCardPaymentAttemptStatus.Approved &&
-                !LinklyBackendTerminalClient.HasPendingApprovalEvidenceMatchingAttempt(
-                    finalStatus,
-                    finalTxnRef,
-                    activeAttempt.Amount,
-                    activeAttempt.TxnType))
+                (!LinklyBackendTerminalClient.HasPendingApprovalEvidenceMatchingAttempt(
+                     finalStatus,
+                     finalTxnRef,
+                     activeAttempt.Amount,
+                     activeAttempt.TxnType) ||
+                 (!isGenericActiveSession &&
+                  !LinklyBackendTerminalClient.HasFinalApprovalEvidenceMatchingAttempt(
+                      finalStatus,
+                      finalTxnRef,
+                      activeAttempt.Amount))))
             {
                 return LinklyActiveSessionTakeoverResult.Failed(
                     "The previous Linkly approval evidence does not match the persisted transaction and was not acknowledged.");
             }
 
-            if (string.Equals(activeAttempt.OperationKind, "ActiveSession", StringComparison.Ordinal) &&
+            if (isGenericActiveSession &&
                 outcome == LocalCardPaymentAttemptStatus.Approved)
             {
                 // 无订单草稿的 generic 记录不能自动完成旧单；ack 后继续留在异常中心等待主管核实。
@@ -3758,6 +3843,43 @@ public sealed class CashPaymentWorkflowService(
         CardRecoveryAttemptKey? recoveryOwnerAttemptKey,
         CancellationToken cancellationToken)
     {
+        var manualTenders = tenders.Where(tender =>
+            ManualCardPaymentReference.IsManual(tender.Reference) ||
+            tender.CardTransactions?.Any(transaction => string.Equals(transaction.Processor,
+                ManualCardPaymentReference.Processor, StringComparison.OrdinalIgnoreCase)) == true).ToArray();
+        if (manualTenders.Length > 0)
+        {
+            var manual = manualTenders[0];
+            if (manualTenders.Length != 1 || manual.Method != PaymentMethodKind.Card ||
+                order.ActualAmount <= 0m || order.Lines.Any(line => line.Kind == OrderLineKind.Return) ||
+                recoveryOwnerAttemptGuid is not null || recoveryOwnerAttemptKey is not null ||
+                tenders.Count(tender => tender.Method == PaymentMethodKind.Card) != 1 ||
+                !ManualCardPaymentReference.TryParse(manual.Reference, out var confirmationId) ||
+                !string.Equals(manual.Reference, manual.IdempotencyKey, StringComparison.Ordinal) ||
+                manual.CardTransactions is not { Count: 1 } ||
+                manual.CardTransactions[0].Processor != ManualCardPaymentReference.Processor ||
+                manual.CardTransactions[0].Amount != manual.Amount ||
+                manual.CardTransactions[0].TxnRef != manual.Reference)
+            {
+                throw new InvalidOperationException("The manually confirmed payment identity is inconsistent.");
+            }
+
+            // 中文注释：同一次人工确认始终对应同一订单，保存返回未知时重试不会再新增订单或调用刷卡机。
+            var manualOrder = order with { OrderGuid = confirmationId };
+            var persistedOrder = await orderRepository.GetOrderAsync(confirmationId, cancellationToken);
+            if (persistedOrder is null)
+            {
+                return new RecoverableOrderPersistence(manualOrder, AlreadyPersisted: false);
+            }
+
+            if (!MatchesManualPaymentContinuation(manualOrder, persistedOrder))
+            {
+                throw new InvalidOperationException("The saved order does not match the manually confirmed payment.");
+            }
+
+            return new RecoverableOrderPersistence(persistedOrder, AlreadyPersisted: true);
+        }
+
         if (recoveryOwnerAttemptKey is CardRecoveryAttemptKey exactOwnerKey)
         {
             if (recoveryOwnerAttemptGuid != exactOwnerKey.AttemptGuid)
@@ -3932,6 +4054,43 @@ public sealed class CashPaymentWorkflowService(
         }
 
         return new RecoverableOrderPersistence(order, AlreadyPersisted: false);
+    }
+
+    private static bool MatchesManualPaymentContinuation(LocalOrder candidate, LocalOrder persisted)
+    {
+        if (candidate.OrderGuid != persisted.OrderGuid || candidate.StoreCode != persisted.StoreCode ||
+            candidate.DeviceCode != persisted.DeviceCode || candidate.CashierId != persisted.CashierId ||
+            candidate.CashierName != persisted.CashierName || candidate.TotalAmount != persisted.TotalAmount ||
+            candidate.DiscountAmount != persisted.DiscountAmount || candidate.ActualAmount != persisted.ActualAmount ||
+            candidate.TenderedAmount != persisted.TenderedAmount || candidate.ChangeAmount != persisted.ChangeAmount ||
+            candidate.Lines.Count != persisted.Lines.Count || candidate.Payments.Count != persisted.Payments.Count)
+        {
+            return false;
+        }
+
+        // 中文注释：重试的临时行/付款 GUID 和时间会重新生成；商品、付款及人工确认身份必须逐项相同。
+        for (var index = 0; index < candidate.Lines.Count; index++)
+        {
+            if (candidate.Lines[index] with { OrderLineGuid = Guid.Empty } !=
+                persisted.Lines[index] with { OrderLineGuid = Guid.Empty })
+            {
+                return false;
+            }
+        }
+
+        for (var index = 0; index < candidate.Payments.Count; index++)
+        {
+            var left = candidate.Payments[index];
+            var right = persisted.Payments[index];
+            if (left.Method != right.Method || left.Amount != right.Amount || left.Reference != right.Reference ||
+                left.IdempotencyKey != right.IdempotencyKey ||
+                !(left.CardTransactions ?? []).SequenceEqual(right.CardTransactions ?? []))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private async Task<RecoverableOrderPersistence> PrepareAlternativeSquareRefundPersistenceAsync(

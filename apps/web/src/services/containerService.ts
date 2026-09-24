@@ -1,3 +1,4 @@
+import type { SupplyNoticeInput } from '../types/supplyNotice'
 import type { ApiResponse } from '../types/api'
 import type {
   AlignDomesticProductCodeRequest,
@@ -93,7 +94,8 @@ function toComingSoonProduct(item: ContainerDetail): ComingSoonHomeProduct {
     productImage: item.商品信息?.商品图片,
     quantity: item.装柜数量,
     retailPrice: item.商品信息?.零售价格,
-    isNewProduct: item.是否新商品 ?? item.warehouseIsActive === false,
+    // 优先用「本柜新品」：新商品建档后 是否新商品 会变 false，即将上新仍需标为新品。
+    isNewProduct: item.isContainerNewProduct ?? item.是否新商品 ?? item.warehouseIsActive === false,
     warehouseIsActive: item.warehouseIsActive,
   }
 }
@@ -390,8 +392,15 @@ export async function setContainerDetailStatusByScope(
   scope: ContainerDetailBatchScope,
   isActive: boolean,
   previewToken: string,
+  supplyNotice?: SupplyNoticeInput,
 ): Promise<ContainerDetailBatchActionResult> {
-  return postContainerDetailAction(containerGuid, 'set-status', { ...scope, isActive, previewToken }, '批量上下架失败')
+  // 下架时随请求登记供货说明；上架不传，也不进入预览指纹。
+  return postContainerDetailAction(
+    containerGuid,
+    'set-status',
+    { ...scope, isActive, previewToken, ...(supplyNotice ? { supplyNotice } : {}) },
+    '批量上下架失败',
+  )
 }
 
 export async function assignContainerDetailCategoryByScope(

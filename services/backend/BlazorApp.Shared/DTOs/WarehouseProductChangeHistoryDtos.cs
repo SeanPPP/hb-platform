@@ -48,6 +48,9 @@ public sealed record WarehouseProductChangeSnapshotDto
     public decimal? DomesticPrice { get; init; }
     public decimal? ImportPrice { get; init; }
     public decimal? RetailPrice { get; init; }
+
+    /// <summary>仓库建议折扣（减免比例 0~1）。来自 ProductSuggestedDiscount 旁表，null 表示未设置。</summary>
+    public decimal? SuggestedDiscountRate { get; init; }
     public string? LocalSupplierCode { get; init; }
     public string? DomesticSupplierCode { get; init; }
     public string? ProductName { get; init; }

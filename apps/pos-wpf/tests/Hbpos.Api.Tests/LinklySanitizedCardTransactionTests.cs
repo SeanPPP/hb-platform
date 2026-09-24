@@ -93,7 +93,9 @@ public sealed class LinklySanitizedCardTransactionTests
             $$"""
             {
               "Response": {
+                "Success": true,
                 "TxnRef": "TXN-123",
+                "TxnType": "P",
                 "ResponseCode": "00",
                 "ResponseText": "APPROVED",
                 "AmtPurchase": 1008,
@@ -175,7 +177,9 @@ public sealed class LinklySanitizedCardTransactionTests
             """
             {
               "Response": {
+                "Success": true,
                 "TxnRef": "TXN-123",
+                "TxnType": "P",
                 "ResponseCode": "00",
                 "ResponseText": "APPROVED",
                 "AmtPurchase": 1008,
@@ -183,7 +187,21 @@ public sealed class LinklySanitizedCardTransactionTests
                 "PurchaseAnalysisData": { "RFN": "RFN-1" }
               }
             }
-            """);
+            """) with
+        {
+            CardTransaction = new LinklyCloudBackendCardTransactionDto(
+                "TXN-123",
+                "RFN-1",
+                null,
+                null,
+                null,
+                null,
+                "00",
+                "APPROVED",
+                null,
+                null,
+                1008)
+        };
         var controller = CreateController(new FixedResponseBackendService(backendResponse));
 
         var create = await controller.StartCloudBackendTransaction(
@@ -365,6 +383,7 @@ public sealed class LinklySanitizedCardTransactionTests
             string deviceCode,
             string environment,
             string sessionId,
+            bool supervisorResolved,
             CancellationToken cancellationToken) => throw new NotSupportedException();
 
         public Task ReceiveNotificationAsync(

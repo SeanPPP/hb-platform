@@ -103,7 +103,7 @@ public sealed class SpecialProductsViewModelTests
             "add" => viewModel.AddSpecialProductCommand.ExecuteAsync(item),
             _ => viewModel.RemoveSpecialProductCommand.ExecuteAsync(item)
         };
-        await operationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await operationStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         Task navigationExecution = Task.CompletedTask;
         if (navigation == "back")
@@ -118,9 +118,9 @@ public sealed class SpecialProductsViewModelTests
                 .ExecuteAsync(item);
         }
         await WaitUntilAsync(() => navigated);
-        await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await cancellationObserved.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         var wasCancellationRequested = receivedToken.IsCancellationRequested;
-        await Task.WhenAll(execution, navigationExecution).WaitAsync(TimeSpan.FromSeconds(5));
+        await Task.WhenAll(execution, navigationExecution).WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         operationCancellationRegistration.Dispose();
 
         Assert.True(navigated);
@@ -741,11 +741,11 @@ public sealed class SpecialProductsViewModelTests
         viewModel.ToggleEditModeCommand.Execute(null);
 
         Assert.True(viewModel.ProcessScannerBarcode("old", "scanner-device", "raw"));
-        await firstSearchStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await firstSearchStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         Assert.True(viewModel.ProcessScannerBarcode("new", "scanner-device", "raw"));
 
         await WaitUntilAsync(() => viewModel.SearchResults.Count == 1);
-        await firstCancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await firstCancellationObserved.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         Assert.Equal("new", workflow.LastSearchText);
         Assert.Equal(newItem.ProductCode, Assert.Single(viewModel.SearchResults).ProductCode);
@@ -1428,22 +1428,6 @@ public sealed class SpecialProductsViewModelTests
     private static bool HasLog(ConcurrentQueue<string> lines, string text)
     {
         return lines.Any(line => line.Contains(text, StringComparison.OrdinalIgnoreCase));
-    }
-
-    private static async Task WaitUntilAsync(Func<bool> condition)
-    {
-        var timeoutAt = DateTimeOffset.UtcNow.AddSeconds(3);
-        while (DateTimeOffset.UtcNow < timeoutAt)
-        {
-            if (condition())
-            {
-                return;
-            }
-
-            await Task.Delay(10);
-        }
-
-        Assert.True(condition());
     }
 
     private sealed class DisposableAction(Action dispose) : IDisposable

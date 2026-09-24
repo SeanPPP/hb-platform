@@ -3,6 +3,8 @@ import {
   buildProductReportProductParams,
   getProductReportCacheVersionState,
   getProductReportCacheVersionSyncDecision,
+  normalizeChinaSupplierBranchTotalRows,
+  normalizeChinaSupplierBranchTotalsSnapshot,
   normalizeProductBranchReportSnapshot,
   normalizeProductReportProductPageSnapshot,
   normalizeProductReportTotalRevenue,
@@ -99,6 +101,46 @@ assert.equal(
   false,
   "澳洲/全部商品请求必须保持现有默认范围",
 );
+assert.equal(australiaProductParams.has("sortField"), false, "默认金额降序不带排序参数，请求与旧版保持一致");
+assert.equal(australiaProductParams.has("sortOrder"), false);
+
+const quantityDescParams = buildProductReportProductParams(
+  "australia",
+  productQuery,
+  undefined,
+  1,
+  20,
+  undefined,
+  { field: "quantity", order: "desc" },
+);
+assert.equal(quantityDescParams.get("sortField"), "quantity", "商品明细服务端分页，数量排序必须交给后端");
+assert.equal(quantityDescParams.get("sortOrder"), "desc");
+
+const unitPriceAscParams = buildProductReportProductParams(
+  "china",
+  productQuery,
+  ["CN-1"],
+  2,
+  20,
+  " HB001 ",
+  { field: "unitPrice", order: "asc" },
+);
+assert.equal(unitPriceAscParams.get("sortField"), "unitPrice");
+assert.equal(unitPriceAscParams.get("sortOrder"), "asc");
+assert.equal(unitPriceAscParams.get("productSearch"), "HB001", "排序参数不能影响已有的搜索与分页参数");
+assert.equal(unitPriceAscParams.get("pageIndex"), "2");
+
+const amountAscParams = buildProductReportProductParams(
+  "australia",
+  productQuery,
+  undefined,
+  1,
+  20,
+  undefined,
+  { field: "amount", order: "asc" },
+);
+assert.equal(amountAscParams.get("sortField"), "amount", "金额升序不是默认排序，必须显式传给后端");
+assert.equal(amountAscParams.get("sortOrder"), "asc");
 
 for (const statisticStatus of ["Pending", "Stale", "Failed"] as const) {
   const snapshot = normalizeSupplierReportSnapshot({
@@ -323,6 +365,12 @@ const partialTotalRevenue = normalizeProductReportTotalRevenue({
 
 assert.equal(partialTotalRevenue.revenue, 300);
 assert.equal(partialTotalRevenue.compareRevenue, 240);
+assert.deepEqual(
+  partialTotalRevenue.branches.map((branch) => [branch.branchCode, branch.revenue, branch.compareRevenue]),
+  [["S01", 100, 80], ["S02", 200, 160]],
+  "商品页总营业额必须保留逐店明细，作为分店中国货占比的分母",
+);
+assert.equal(partialTotalRevenue.branches[0]?.branchName, "S01", "缺分店名时回退为分店代码");
 assert.equal(
   partialTotalRevenue.isComplete,
   false,
@@ -484,3 +532,47 @@ for (const normalize of [normalizeSupplierRows, normalizeSupplierBranchRows]) {
   const [quantityOnly] = normalize([{ CompareTotalQuantity: 2, CompareTotalAmount: 0, CompareOrderCount: 0 }]);
   assert.equal(quantityOnly.compareCostStatus, "Missing", "旧接口仅有同期数量时也存在业务活动，不能标记为无交易");
 }
+
+// 分店中国货合计：兼容 PascalCase，缺成本状态时按业务活动推断，缺同期数量保持 null。
+const chinaBranchTotalRows = normalizeChinaSupplierBranchTotalRows([
+  {
+    BranchCode: "S01",
+    BranchName: "Alpha",
+    TotalAmount: 150,
+    TotalQuantity: 15,
+    SupplierCount: 2,
+    GrossProfit: 60,
+    CostStatus: "Complete",
+    CompareTotalAmount: 70,
+    CompareTotalQuantity: 7,
+    CompareGrossProfit: null,
+    CompareCostStatus: "Missing",
+  },
+  { branchCode: "S02", totalAmount: 0, compareTotalAmount: 40 },
+]);
+assert.equal(chinaBranchTotalRows[0]?.branchName, "Alpha");
+assert.equal(chinaBranchTotalRows[0]?.revenue, 150);
+assert.equal(chinaBranchTotalRows[0]?.compareRevenue, 70);
+assert.equal(chinaBranchTotalRows[0]?.supplierCount, 2);
+assert.equal(chinaBranchTotalRows[0]?.grossProfit, 60);
+assert.equal(chinaBranchTotalRows[0]?.compareGrossProfit, null, "缺成本的同期毛利不能被当成 0");
+assert.equal(chinaBranchTotalRows[0]?.compareCostStatus, "Missing");
+assert.equal(chinaBranchTotalRows[1]?.branchName, "S02");
+assert.equal(chinaBranchTotalRows[1]?.costStatus, "NoActivity", "本期无销售的分店不能误报成本缺失");
+assert.equal(chinaBranchTotalRows[1]?.compareCostStatus, "Missing", "旧接口缺同期成本状态但有同期销售时视为缺成本");
+assert.equal(chinaBranchTotalRows[1]?.compareTotalQuantity, null);
+assert.equal(
+  normalizeChinaSupplierBranchTotalsSnapshot({ data: [{ BranchCode: "S01", TotalAmount: 1 }] }).isComplete,
+  false,
+  "分店中国货合计缺统计批次元数据时不能当成 Fresh 展示",
+);
+assert.equal(
+  normalizeChinaSupplierBranchTotalsSnapshot({
+    statisticStatus: "Fresh",
+    statisticUpdatedAt: "2026-09-22T00:00:00Z",
+    cacheVersion: "batch-42",
+    data: [{ BranchCode: "S01", TotalAmount: 1 }],
+  }).cacheVersion,
+  "batch-42",
+  "分店中国货合计必须带出 cacheVersion，参与主报表同批次对齐",
+);

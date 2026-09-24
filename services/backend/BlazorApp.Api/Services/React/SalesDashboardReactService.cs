@@ -196,11 +196,81 @@ namespace BlazorApp.Api.Services.React
         public int CompareGrossProfitRowCount { get; set; }
     }
 
-    internal sealed class CompactSalesBoardAggregateRow
+    internal sealed class CompactSalesBoardCubeRow
     {
-        public string Code { get; set; } = string.Empty;
+        public string BranchCode { get; set; } = string.Empty;
+        public string ProductCode { get; set; } = string.Empty;
+        /// <summary>日统计行上的供应商编码：旧写法为 200，新写法为直写的国内供应商编码。</summary>
+        public string SupplierCode { get; set; } = string.Empty;
         public int TotalQuantity { get; set; }
         public decimal TotalAmount { get; set; }
+        /// <summary>该分组最近的销售日，用于同一商品解析出多个国内供应商时取最新归属。</summary>
+        public DateTime LastDate { get; set; }
+    }
+
+    internal sealed class CompactSalesBoardChinaSupplierRow
+    {
+        public string SupplierCode { get; set; } = string.Empty;
+        public string? SupplierName { get; set; }
+        public bool IsDeleted { get; set; }
+    }
+
+    internal sealed class CompactSalesBoardProductInfoRow
+    {
+        public string ProductCode { get; set; } = string.Empty;
+        public string? ItemNumber { get; set; }
+        public string? ProductName { get; set; }
+        public string? ProductImage { get; set; }
+    }
+
+    internal sealed record CompactSalesBoardCubeEntity(string Code, string Name);
+
+    internal sealed record CompactSalesBoardCubeProduct(
+        string ProductCode,
+        string? ItemNumber,
+        string? ProductName,
+        string? ProductImage,
+        int SupplierIndex
+    );
+
+    /// <summary>立方体中的一格：一个门店×一个商品在日期范围内的合计，以数组下标引用维度以压缩内存。</summary>
+    internal readonly record struct CompactSalesBoardCubeCell(int BranchIndex, int ProductIndex, int Quantity, decimal Amount);
+
+    /// <summary>
+    /// 紧凑销售看板的「门店×商品」聚合立方体（仅能还原出国内供应商的国内货：直写行，或已映射的 200 行），按日期范围与统计水位缓存。
+    /// 本月约 5.2 万格；缓存后三栏联动、排序、分页都在内存中完成，不再逐次查库。
+    /// </summary>
+    internal sealed record CompactSalesBoardCube(
+        CompactSalesBoardCubeEntity[] Branches,
+        CompactSalesBoardCubeEntity[] Suppliers,
+        CompactSalesBoardCubeProduct[] Products,
+        CompactSalesBoardCubeCell[] Cells,
+        Dictionary<string, int> BranchIndex,
+        Dictionary<string, int> SupplierIndex,
+        Dictionary<string, int> ProductIndex
+    )
+    {
+        public static CompactSalesBoardCube Empty { get; } = new(
+            Array.Empty<CompactSalesBoardCubeEntity>(),
+            Array.Empty<CompactSalesBoardCubeEntity>(),
+            Array.Empty<CompactSalesBoardCubeProduct>(),
+            Array.Empty<CompactSalesBoardCubeCell>(),
+            new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase),
+            new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase),
+            new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+        );
+    }
+
+    /// <summary>一次立方体构建的结果：数据与读取它的同一统计快照的状态（水位、缓存版本）。</summary>
+    internal sealed record CompactSalesBoardCubeRead(CompactSalesBoardCube Cube, ProductReportStatisticStatusDto Status);
+
+    internal sealed class CompactSalesBoardStateRow
+    {
+        public DateTime Date { get; set; }
+        public string? Status { get; set; }
+        public DateTime? LastAggregatedAtUtc { get; set; }
+        public DateTime? CompletedAtUtc { get; set; }
+        public string? SourceProductVersion { get; set; }
     }
 
     internal class StatisticDateBranchRow
@@ -327,6 +397,9 @@ namespace BlazorApp.Api.Services.React
         private static readonly TimeSpan RANKING_CACHE_DURATION = TimeSpan.FromMinutes(10);
         private static readonly TimeSpan BEST_SELLERS_CACHE_DURATION = TimeSpan.FromMinutes(30);
         private static readonly TimeSpan DETAIL_CACHE_DURATION = TimeSpan.FromMinutes(3);
+        // 按统计批次版本做键的完整报表条目：见 ReadCompleteReportAsync。
+        private static readonly TimeSpan VERSIONED_REPORT_CACHE_SLIDING = TimeSpan.FromMinutes(30);
+        private static readonly TimeSpan VERSIONED_REPORT_CACHE_ABSOLUTE = TimeSpan.FromHours(6);
         private static readonly TimeSpan PRODUCT_SALES_ANALYSIS_CACHE_DURATION = TimeSpan.FromMinutes(5);
         private static readonly TimeSpan SALES_SOURCE_COVERAGE_CACHE_DURATION = TimeSpan.FromSeconds(20);
         // 缺口统计只短等 250ms；快速补算可随本次返回，慢任务转后台，给查询和渲染保留 2 秒预算。
@@ -349,6 +422,14 @@ namespace BlazorApp.Api.Services.React
                 Lazy<Task<Dictionary<DateTime, HashSet<string>>?>>
             >
         > SALES_SOURCE_COVERAGE_READS = new();
+        private static readonly ConditionalWeakTable<
+            IMemoryCache,
+            ConcurrentDictionary<string, Lazy<Task<CompactSalesBoardCubeRead>>>
+        > COMPACT_SALES_BOARD_CUBE_BUILDS = new();
+        // 立方体按统计水位分代：统计刷新会换缓存键，因此 Fresh 状态下可以放心缓存较长时间。
+        private static readonly TimeSpan COMPACT_SALES_BOARD_CUBE_CACHE_DURATION = TimeSpan.FromMinutes(10);
+        /// <summary>看板最长区间：两年（含闰日），与销售明细 SalesDetailReportController.MaxReportDays 一致。</summary>
+        internal const int CompactSalesBoardMaxDays = 731;
 
         private enum StatisticsRefreshState
         {
@@ -2271,6 +2352,8 @@ namespace BlazorApp.Api.Services.React
         /// <param name="pageSize">每页大小，默认 100</param>
         /// <param name="productSearch">商品货号/条码搜索词（可选）</param>
         /// <param name="chinaSupplierScope">是否限制为全部中国供应商商品</param>
+        /// <param name="sortField">排序字段 amount/quantity/unitPrice（可选，默认金额）</param>
+        /// <param name="sortOrder">排序方向 asc/desc（可选，默认降序）</param>
         /// <returns>分页的含折扣信息的产品销售明细</returns>
         public async Task<PagedSalesProductDetailWithDiscountDto> GetEnhancedSalesProductDetailsAsync(
             DateRangeDto dateRange,
@@ -2280,7 +2363,9 @@ namespace BlazorApp.Api.Services.React
             int pageIndex = 1,
             int pageSize = 100,
             string? productSearch = null,
-            bool chinaSupplierScope = false
+            bool chinaSupplierScope = false,
+            string? sortField = null,
+            string? sortOrder = null
         )
         {
             var statisticStatus = await GetProductReportStatisticStatusAsync(dateRange);
@@ -2293,7 +2378,9 @@ namespace BlazorApp.Api.Services.React
                 pageSize,
                 productSearch,
                 statisticStatus,
-                chinaSupplierScope
+                chinaSupplierScope,
+                sortField,
+                sortOrder
             );
         }
 
@@ -2306,7 +2393,9 @@ namespace BlazorApp.Api.Services.React
             int pageSize,
             string? productSearch,
             ProductReportStatisticStatusDto statisticStatus,
-            bool chinaSupplierScope = false
+            bool chinaSupplierScope = false,
+            string? sortField = null,
+            string? sortOrder = null
         )
         {
             try
@@ -2314,6 +2403,8 @@ namespace BlazorApp.Api.Services.React
                 ValidateDateRange(dateRange);
                 pageIndex = Math.Max(1, pageIndex);
                 pageSize = Math.Clamp(pageSize, 1, 100);
+                // 排序在分页之前完成；三条读取路径共用同一个归一化结果，未知参数一律回退为金额降序。
+                var sort = ProductReportSort.Parse(sortField, sortOrder);
                 if (!IsProductStatisticFresh(statisticStatus))
                 {
                     return new PagedSalesProductDetailWithDiscountDto
@@ -2338,10 +2429,11 @@ namespace BlazorApp.Api.Services.React
                         statisticStatus,
                         version => SalesDashboardCacheKeys.EnhancedProductDetail(
                             dateRange, branchCodes, localSupplierCodes, chinaSupplierCodes,
-                            pageIndex, pageSize, normalizedProductSearch, version, chinaSupplierScope),
+                            pageIndex, pageSize, normalizedProductSearch, version, chinaSupplierScope,
+                            sort.CacheToken),
                         service => service.GetEnhancedSalesProductDetailsSqlServerAsync(
                             dateRange, branchCodes, localSupplierCodes, chinaSupplierCodes,
-                            pageIndex, pageSize, normalizedProductSearch, chinaSupplierScope),
+                            pageIndex, pageSize, normalizedProductSearch, chinaSupplierScope, sort),
                         () => new PagedSalesProductDetailWithDiscountDto
                         {
                             Data = new(), Total = 0, PageIndex = pageIndex, PageSize = pageSize,
@@ -2349,7 +2441,7 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 _logger.LogInformation(
-                    "[GetEnhancedSalesProductDetailsAsync] Processing request: StartDate={StartDate}, EndDate={EndDate}, CompareStartDate={CompareStartDate}, CompareEndDate={CompareEndDate}, HasSupplierFilter={HasSupplierFilter}, HasProductSearch={HasProductSearch}, ChinaSupplierScope={ChinaSupplierScope}",
+                    "[GetEnhancedSalesProductDetailsAsync] Processing request: StartDate={StartDate}, EndDate={EndDate}, CompareStartDate={CompareStartDate}, CompareEndDate={CompareEndDate}, HasSupplierFilter={HasSupplierFilter}, HasProductSearch={HasProductSearch}, ChinaSupplierScope={ChinaSupplierScope}, Sort={Sort}",
                     dateRange.StartDate,
                     dateRange.EndDate,
                     dateRange.CompareStartDate,
@@ -2358,7 +2450,8 @@ namespace BlazorApp.Api.Services.React
                         || (localSupplierCodes != null && localSupplierCodes.Any())
                         || (chinaSupplierCodes != null && chinaSupplierCodes.Any()),
                     normalizedProductSearch != null,
-                    chinaSupplierScope
+                    chinaSupplierScope,
+                    sort.Token
                 );
 
                 var cacheKey = SalesDashboardCacheKeys.EnhancedProductDetail(
@@ -2370,7 +2463,8 @@ namespace BlazorApp.Api.Services.React
                     pageSize,
                     normalizedProductSearch,
                     statisticStatus.CacheVersion,
-                    chinaSupplierScope
+                    chinaSupplierScope,
+                    sort.CacheToken
                 );
 
                 if (
@@ -2411,7 +2505,8 @@ namespace BlazorApp.Api.Services.React
                         effectiveLocalSupplierCodes,
                         pageIndex,
                         pageSize,
-                        normalizedProductSearch
+                        normalizedProductSearch,
+                        sort
                     );
                     var fastPathCacheOptions = new MemoryCacheEntryOptions()
                         .SetAbsoluteExpiration(DETAIL_CACHE_DURATION)
@@ -2482,15 +2577,19 @@ namespace BlazorApp.Api.Services.React
                     .ToList();
                 var totalCount = productCodes.Count;
                 var skip = (pageIndex - 1) * pageSize;
-                var pageRows = productCodes
-                    .Select(code => new
-                    {
-                        ProductCode = code,
-                        Current = currentDataDict.GetValueOrDefault(code),
-                        Compare = compareDataDict.GetValueOrDefault(code),
-                    })
-                    .OrderByDescending(x => x.Current?.SalesAmount ?? 0)
-                    .ThenByDescending(x => x.Compare?.SalesAmount ?? 0)
+                var candidates = productCodes.Select(code => new
+                {
+                    ProductCode = code,
+                    Current = currentDataDict.GetValueOrDefault(code),
+                    Compare = compareDataDict.GetValueOrDefault(code),
+                });
+                // 与数据库分页同一口径：本期值 → 同期值 → 商品编码；某期无数据按 0 参与排序。
+                decimal SortValue(ProductReportProductAggregateRow? row) =>
+                    row is null ? 0m : sort.ValueOf(row.SalesAmount, row.Quantity);
+                var orderedCandidates = sort.Ascending
+                    ? candidates.OrderBy(x => SortValue(x.Current)).ThenBy(x => SortValue(x.Compare))
+                    : candidates.OrderByDescending(x => SortValue(x.Current)).ThenByDescending(x => SortValue(x.Compare));
+                var pageRows = orderedCandidates
                     .ThenBy(x => x.ProductCode)
                     .Skip(skip)
                     .Take(pageSize)
@@ -5218,14 +5317,16 @@ namespace BlazorApp.Api.Services.React
                     })
                     .ToListAsync();
 
-                var expectedSalesBranchesByDate = await GetPosmStoreSalesBranchCodesByDateAsync(
+                // 分时统计与分店日统计同源：HBSales 历史窗口内期望分店必须取 POSM 与 HBSales 并集，
+                // 否则只在旧系统有单据的分店会被当成“不该有数据”，缺口永远不会触发补算。
+                var expectedSalesBranchesByDate = await GetStoreSalesSourceBranchCodesByDateAsync(
                     startDate,
                     endDate,
                     branchCodes
                 );
                 if (expectedSalesBranchesByDate == null)
                 {
-                    // POSM 来源覆盖无法确认时，保守触发重算；不能把局部小时统计误认为完整。
+                    // 来源覆盖无法确认时，保守触发重算；不能把局部小时统计误认为完整。
                     return expectedDates;
                 }
 
@@ -5367,46 +5468,77 @@ namespace BlazorApp.Api.Services.React
                     using var scope = _serviceScopeFactory.CreateScope();
                     var hbSalesContext = scope.ServiceProvider.GetService<HBSalesRecordSqlSugarContext>()
                         ?? throw new InvalidOperationException("HBSales 来源覆盖查询缺少数据库上下文");
-                    var nextDate = endDate.Date.AddDays(1);
-                    var mainWindowStart = startDate.Date.AddDays(-7);
-                    var mainWindowEnd = nextDate.AddDays(7);
-                    var query = hbSalesContext.Db.Queryable<SalesOrderMain>()
-                        .LeftJoin<SalesOrderDetailRecord>((main, detail) =>
-                            main.B销售单号 == detail.B销售单号
-                        )
-                        .Where((main, detail) =>
-                            detail.B结账日期.HasValue
-                            && detail.B结账日期.Value >= startDate.Date
-                            && detail.B结账日期.Value < nextDate
-                            && main.B结账日期.HasValue
-                            && main.B结账日期.Value >= mainWindowStart
-                            && main.B结账日期.Value < mainWindowEnd
-                            && (main.B单据类型 == null || main.B单据类型.Trim() != "2")
-                            && detail.B分店代码 != null
-                            && detail.B分店代码.Trim() != ""
-                        );
-
-                    if (branchCodes.Count > 0)
+                    if (hbSalesContext.Db.CurrentConnectionConfig.DbType == DbType.SqlServer)
                     {
-                        query = query.Where((main, detail) =>
-                            branchCodes.Contains(detail.B分店代码!.Trim())
-                        );
+                        var sql = BuildHbSalesStoreSalesCoverageSql(hbSalesContext.Db, startDate, endDate, branchCodes);
+                        return await hbSalesContext.Db.Ado.SqlQueryAsync<StatisticDateBranchRow>(sql.Key, sql.Value.ToArray());
                     }
-
-                    return await query
-                        .GroupBy((main, detail) => new
-                        {
-                            Date = detail.B结账日期!.Value.Date,
-                            BranchCode = detail.B分店代码!.Trim(),
-                        })
-                        .Select((main, detail) => new StatisticDateBranchRow
-                        {
-                            Date = detail.B结账日期!.Value.Date,
-                            BranchCode = detail.B分店代码!.Trim(),
-                        })
+                    return await BuildHbSalesStoreSalesCoverageQuery(hbSalesContext.Db, startDate, endDate, branchCodes)
                         .ToListAsync();
                 }
             );
+        }
+
+        internal static ISugarQueryable<StatisticDateBranchRow> BuildHbSalesStoreSalesCoverageQuery(
+            ISqlSugarClient db,
+            DateTime startDate,
+            DateTime endDate,
+            List<string> branchCodes
+        )
+        {
+            var nextDate = endDate.Date.AddDays(1);
+            var mainWindowStart = startDate.Date.AddDays(-7);
+            var mainWindowEnd = nextDate.AddDays(7);
+            var query = db.Queryable<SalesOrderMain>()
+                .LeftJoin<SalesOrderDetailRecord>((main, detail) =>
+                    main.B销售单号 == detail.B销售单号
+                )
+                .Where((main, detail) =>
+                    detail.B结账日期.HasValue
+                    && detail.B结账日期.Value >= startDate.Date
+                    && detail.B结账日期.Value < nextDate
+                    && main.B结账日期.HasValue
+                    && main.B结账日期.Value >= mainWindowStart
+                    && main.B结账日期.Value < mainWindowEnd
+                    && (main.B单据类型 == null || main.B单据类型.Trim() != "2")
+                    && detail.B分店代码 != null
+                    && detail.B分店代码.Trim() != ""
+                );
+
+            if (branchCodes.Count > 0)
+            {
+                query = query.Where((main, detail) =>
+                    branchCodes.Contains(detail.B分店代码!.Trim())
+                );
+            }
+
+            return query
+                .GroupBy((main, detail) => new
+                {
+                    Date = detail.B结账日期!.Value.Date,
+                    BranchCode = detail.B分店代码!.Trim(),
+                })
+                .Select((main, detail) => new StatisticDateBranchRow
+                {
+                    Date = detail.B结账日期!.Value.Date,
+                    BranchCode = detail.B分店代码!.Trim(),
+                });
+        }
+
+        /// <summary>
+        /// HBSales 来源覆盖在 SQL Server 上按实际日期重编译。日期窗口随请求逐日变化，
+        /// 带参编译的计划会退化为约 40 万逻辑读的联表扫描：2026-09-21 生产实测原句 11.3 秒、
+        /// 加 OPTION (RECOMPILE) 后 0.1 秒。分时报表每次打开都要核验去年同日，这条语句决定首屏耗时。
+        /// </summary>
+        internal static KeyValuePair<string, List<SugarParameter>> BuildHbSalesStoreSalesCoverageSql(
+            ISqlSugarClient db,
+            DateTime startDate,
+            DateTime endDate,
+            List<string> branchCodes
+        )
+        {
+            var sql = BuildHbSalesStoreSalesCoverageQuery(db, startDate, endDate, branchCodes).ToSql();
+            return new KeyValuePair<string, List<SugarParameter>>(sql.Key + " OPTION (RECOMPILE)", sql.Value);
         }
 
         private async Task<Dictionary<DateTime, HashSet<string>>?> GetCachedSalesSourceCoverageAsync(
@@ -5966,24 +6098,16 @@ namespace BlazorApp.Api.Services.React
         )
         {
             var codes = NormalizeCodes(seedCodes).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var suppliers = await _context
-                .Db.Queryable<ChinaSupplier>()
-                .Where(s => !s.IsDeleted && s.SupplierCode != null && s.SupplierCode != "")
-                .Select(s => s.SupplierCode ?? string.Empty)
-                .ToListAsync();
-
-            foreach (var supplierCode in suppliers)
-            {
-                if (!string.IsNullOrWhiteSpace(supplierCode))
-                    codes.Add(supplierCode.Trim());
-            }
-
+            // 集合包含停用和软删除的国内供应商：直写行只能靠编码是否属于该集合来识别，
+            // 供应商被删除后，它的历史销售在澳洲侧仍要归 200，不能变成一个普通澳洲供应商。
+            // 旧 200 行不受影响：它们的国内编码来自调用方传入的映射种子，本来就不看删除标记。
+            codes.UnionWith(await ChinaSupplierCodeFamily.LoadChinaSupplierCodesAsync(_context.Db));
             return codes;
         }
 
         /// <summary>
         /// 商品销量分析专用国内供应商目录：包含停用/软删除记录，保证期间直写历史代码
-        /// 仍能按国内供应商口径识别并保留历史名称；不影响旧报表 active-only 共享 helper。
+        /// 仍能按国内供应商口径识别并保留历史名称。
         /// </summary>
         private async Task<ProductSalesChinaCatalog> GetProductSalesChinaCatalogAsync()
         {
@@ -6301,7 +6425,8 @@ namespace BlazorApp.Api.Services.React
             List<string>? localSupplierCodes,
             int pageIndex,
             int pageSize,
-            string? productSearch
+            string? productSearch,
+            ProductReportSort sort
         )
         {
             var currentStatisticQuery = await BuildProductReportStatisticQueryAsync(
@@ -6404,9 +6529,21 @@ namespace BlazorApp.Api.Services.React
                 };
             }
 
-            var pageRows = await combinedQuery
-                .OrderBy(row => row.CurrentSalesAmount, OrderByType.Desc)
-                .OrderBy(row => row.CompareSalesAmount, OrderByType.Desc)
+            // 排序在 CountAsync 之后追加（queryable 会被就地修改）；本期值 → 同期值 → 商品编码，保证翻页无重复无遗漏。
+            var direction = sort.Ascending ? OrderByType.Asc : OrderByType.Desc;
+            var orderedQuery = sort.Field switch
+            {
+                ProductReportSortField.Quantity => combinedQuery
+                    .OrderBy(row => row.CurrentQuantity, direction)
+                    .OrderBy(row => row.CompareQuantity, direction),
+                // 均价用固定常量片段排序，避免 SQLite 把 decimal 常量参数按 TEXT 比较以及整数除法截断。
+                ProductReportSortField.UnitPrice => combinedQuery
+                    .OrderBy(BuildFastPathUnitPriceOrderBy(sort.Ascending)),
+                _ => combinedQuery
+                    .OrderBy(row => row.CurrentSalesAmount, direction)
+                    .OrderBy(row => row.CompareSalesAmount, direction),
+            };
+            var pageRows = await orderedQuery
                 .OrderBy(row => row.ProductCode, OrderByType.Asc)
                 .Skip((int)skip)
                 .Take(pageSize)
@@ -7272,232 +7409,442 @@ namespace BlazorApp.Api.Services.React
         }
 
         /// <summary>
-        /// 获取紧凑销售看板。统计表只按门店和商品两层聚合，避免把门店×商品组合先拉到应用内存。
+        /// 获取紧凑销售看板。
+        /// 按日期范围只查询一次「门店×商品」聚合并缓存为立方体，之后分店、国内供应商、商品三栏的交叉筛选、
+        /// 关键词、排序和分页都在内存完成。旧实现按 500 个商品编码分批 IN 查询，每批 SQL 文本不同都要重新编译，
+        /// 未筛选供应商时一次请求串行 52 条语句、约 3.9 秒。
         /// </summary>
-        public async Task<CompactSalesBoardDto> GetCompactSalesBoardAsync(
-            DateRangeDto dateRange,
-            List<string>? branchCodes = null,
-            List<string>? chinaSupplierCodes = null,
-            string? productCode = null,
-            int pageIndex = 1,
-            int pageSize = 80,
-            bool forceRefresh = false
-        )
+        public async Task<CompactSalesBoardDto> GetCompactSalesBoardAsync(CompactSalesBoardQuery query)
         {
+            ArgumentNullException.ThrowIfNull(query);
+            var dateRange = query.DateRange;
             ValidateDateRange(dateRange);
-            if ((dateRange.EndDate.Date - dateRange.StartDate.Date).TotalDays > 365)
-                throw new ArgumentException("紧凑销售看板日期范围不能超过 366 天。");
+            if ((dateRange.EndDate.Date - dateRange.StartDate.Date).TotalDays + 1 > CompactSalesBoardMaxDays)
+                throw new ArgumentException($"紧凑销售看板日期范围不能超过 {CompactSalesBoardMaxDays} 天。");
 
-            pageIndex = Math.Max(1, pageIndex);
-            pageSize = Math.Clamp(pageSize, 20, 200);
-            var normalizedBranchCodes = branchCodes == null
+            var pageIndex = Math.Max(1, query.PageIndex);
+            var pageSize = Math.Clamp(query.PageSize, 20, 200);
+            var branchScope = query.BranchCodes == null
                 ? null
-                : NormalizeCodes(branchCodes).OrderBy(code => code, StringComparer.OrdinalIgnoreCase).ToList();
-            var normalizedChinaSupplierCodes = NormalizeCodes(chinaSupplierCodes)
-                .OrderBy(code => code, StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            var normalizedProductCode = string.IsNullOrWhiteSpace(productCode) ? null : productCode.Trim();
-            var statisticEndExclusive = dateRange.EndDate.Date.AddDays(1);
+                : NormalizeCodes(query.BranchCodes).ToHashSet(StringComparer.OrdinalIgnoreCase);
             // 与商品销量分析共用 generation lease：Clear 发生在查询期间时，结果仍返回但不得写回旧代缓存。
             var expectedGeneration = SalesDashboardCacheKeys.CaptureProductSalesAnalysisGeneration();
-            var status = await GetProductStatisticStatusAsync(dateRange.StartDate.Date, dateRange.EndDate.Date);
-            var cacheKey = SalesDashboardCacheKeys.CompactSalesBoard(
-                dateRange,
-                normalizedBranchCodes,
-                normalizedChinaSupplierCodes,
-                normalizedProductCode,
-                pageIndex,
-                pageSize,
-                status.CacheVersion
-            );
-
-            if (!forceRefresh && _cache.TryGetValue<CompactSalesBoardDto>(cacheKey, out var cached) && cached != null)
-                return cached;
-
-            CompactSalesBoardDto Empty() => new()
+            // 看板只含当前区间，不带同期；完整性判定与销售明细同一套规则（BuildSalesDetailReportStatus）。
+            var boardRange = new DateRangeDto { StartDate = dateRange.StartDate.Date, EndDate = dateRange.EndDate.Date };
+            var stateRows = await ReadCompactSalesBoardStatusRowsAsync(boardRange);
+            var status = BuildSalesDetailReportStatus(stateRows, boardRange, false);
+            var board = new CompactSalesBoardDto
             {
-                StatisticStatus = status.Status,
-                StatisticMessage = status.Message,
-                ProductDetails = new PagedCompactSalesBoardProductDto
-                {
-                    PageIndex = pageIndex,
-                    PageSize = pageSize,
-                },
+                ProductDetails = new PagedCompactSalesBoardProductDto { PageIndex = pageIndex, PageSize = pageSize },
             };
+            ApplyCompactSalesBoardStatus(board, status);
 
             // 统计未完成或 fail-closed 的空授权范围绝不读取数据，避免把旧统计误展示为当前结果。
-            if (status.Status != SalesStatisticRefreshStatus.Fresh || normalizedBranchCodes is { Count: 0 })
-                return CacheCompactSalesBoard(cacheKey, Empty(), status.Status, expectedGeneration);
+            if (status.StatisticStatus != SalesStatisticRefreshStatus.Fresh || branchScope is { Count: 0 })
+                return board;
 
-            // 先取得有效 POSM 映射，再让统计表只扫描可展示的商品；未传供应商时也不可回退为全量统计扫描。
-            var productSupplierMap = await GetChinaSupplierProductMapAsync(
-                normalizedChinaSupplierCodes.Count > 0 ? normalizedChinaSupplierCodes : null
-            );
-            if (normalizedProductCode != null)
+            // 立方体缓存键不含授权范围与筛选：所有用户、所有点选共享同一份聚合，授权过滤在下方内存中完成。
+            var cacheKey = SalesDashboardCacheKeys.CompactSalesBoardCube(boardRange, status.CacheVersion);
+            CompactSalesBoardCube cube;
+            if (!query.ForceRefresh
+                && _cache.TryGetValue<CompactSalesBoardCube>(cacheKey, out var cachedCube)
+                && cachedCube != null)
             {
-                productSupplierMap = productSupplierMap
-                    .Where(pair => string.Equals(pair.Key, normalizedProductCode, StringComparison.OrdinalIgnoreCase))
-                    .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
+                cube = cachedCube;
+                board.FromCache = true;
             }
-            if (productSupplierMap.Count == 0)
-                return CacheCompactSalesBoard(cacheKey, Empty(), status.Status, expectedGeneration);
-
-            var candidateProductCodes = productSupplierMap.Keys.ToList();
-            var branchCodeBatches = normalizedBranchCodes == null
-                ? new List<List<string>?> { null }
-                : BatchProductSalesCodes(normalizedBranchCodes).Select(batch => (List<string>?)batch).ToList();
-            var productCodeBatches = BatchProductSalesCodes(candidateProductCodes)
-                .Select(batch => (List<string>?)batch)
-                .ToList();
-
-            var storeAggregates = new Dictionary<string, CompactSalesBoardAggregateRow>(StringComparer.OrdinalIgnoreCase);
-            var productAggregates = new Dictionary<string, CompactSalesBoardAggregateRow>(StringComparer.OrdinalIgnoreCase);
-            foreach (var branchCodeBatch in branchCodeBatches)
+            else
             {
-                foreach (var productCodeBatch in productCodeBatches)
-                {
-                    var baseQuery = _context.Db.Queryable<ProductStoreDailySalesStatistic>()
-                        .Where(s => s.Date >= dateRange.StartDate.Date && s.Date < statisticEndExclusive)
-                        .Where(s => s.SupplierCode == CHINA_LOCAL_SUPPLIER_CODE)
-                        .Where(s => productCodeBatch!.Contains(s.ProductCode));
-                    if (branchCodeBatch != null)
-                        baseQuery = baseQuery.Where(s => branchCodeBatch.Contains(s.BranchCode));
-
-                    // 两类聚合分别在 SQL 完成；内存只合并跨 500 条 IN 批次的少量聚合行。
-                    var storeRows = await baseQuery
-                        .GroupBy(s => s.BranchCode)
-                        .Select(s => new CompactSalesBoardAggregateRow
-                        {
-                            Code = s.BranchCode,
-                            TotalQuantity = SqlFunc.AggregateSum(s.TotalQuantity),
-                            TotalAmount = SqlFunc.AggregateSum(s.TotalAmount),
-                        })
-                        .ToListAsync();
-                    var productRows = await baseQuery
-                        .GroupBy(s => s.ProductCode)
-                        .Select(s => new CompactSalesBoardAggregateRow
-                        {
-                            Code = s.ProductCode,
-                            TotalQuantity = SqlFunc.AggregateSum(s.TotalQuantity),
-                            TotalAmount = SqlFunc.AggregateSum(s.TotalAmount),
-                        })
-                        .ToListAsync();
-                    MergeCompactSalesBoardAggregates(storeAggregates, storeRows);
-                    MergeCompactSalesBoardAggregates(productAggregates, productRows);
-                }
+                var read = await GetOrBuildCompactSalesBoardCubeAsync(cacheKey, boardRange, stateRows, query.ForceRefresh, expectedGeneration);
+                // 构建时在统计快照内重读了状态：期间若有新版本发布，数据与水位都以快照为准。
+                ApplyCompactSalesBoardStatus(board, read.Status);
+                if (read.Status.StatisticStatus != SalesStatisticRefreshStatus.Fresh)
+                    return board;
+                cube = read.Cube;
             }
 
-            if (productAggregates.Count == 0)
-                return CacheCompactSalesBoard(cacheKey, Empty(), status.Status, expectedGeneration);
-
-            var storeCodes = storeAggregates.Keys.Where(code => !string.IsNullOrWhiteSpace(code)).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var storeNameMap = await GetStoreNameMapAsync(storeCodes);
-            var supplierCodes = productAggregates.Keys
-                .Select(productCode => productSupplierMap[productCode])
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            var supplierNameMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var batch in BatchProductSalesCodes(supplierCodes))
-            {
-                var batchNameMap = await GetChinaSupplierNameMapAsync(batch);
-                foreach (var (supplierCode, supplierName) in batchNameMap)
-                    supplierNameMap.TryAdd(supplierCode, supplierName);
-            }
-
-            var stores = storeAggregates.Values
-                .Select(row => new CompactSalesBoardStoreDto
-                {
-                    BranchCode = row.Code,
-                    BranchName = storeNameMap.GetValueOrDefault(row.Code, row.Code),
-                    TotalAmount = row.TotalAmount,
-                    TotalQuantity = row.TotalQuantity,
-                    DomesticSupplierAmount = row.TotalAmount,
-                })
-                .OrderByDescending(row => row.TotalAmount)
-                .ThenBy(row => row.BranchCode, StringComparer.OrdinalIgnoreCase)
-                .ToList();
-
-            var suppliers = productAggregates.Values.GroupBy(row => productSupplierMap[row.Code], StringComparer.OrdinalIgnoreCase)
-                .Select(group => new CompactSalesBoardChinaSupplierDto
-                {
-                    SupplierCode = group.Key,
-                    SupplierName = supplierNameMap.GetValueOrDefault(group.Key, group.Key),
-                    TotalAmount = group.Sum(row => row.TotalAmount),
-                    TotalQuantity = group.Sum(row => row.TotalQuantity),
-                })
-                .OrderByDescending(row => row.TotalAmount)
-                .ThenBy(row => row.SupplierCode, StringComparer.OrdinalIgnoreCase)
-                .ToList();
-
-            var products = productAggregates.Values
-                .Select(row => new CompactSalesBoardProductDto
-                {
-                    ProductCode = row.Code,
-                    TotalQuantity = row.TotalQuantity,
-                    TotalAmount = row.TotalAmount,
-                    ChinaSupplierCode = productSupplierMap[row.Code],
-                    ChinaSupplierName = supplierNameMap.GetValueOrDefault(productSupplierMap[row.Code], productSupplierMap[row.Code]),
-                })
-                .OrderByDescending(row => row.TotalAmount)
-                .ThenBy(row => row.ProductCode, StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            var total = products.Count;
-            var safeOffset = (long)(pageIndex - 1) * pageSize;
-            var page = safeOffset >= total
-                ? new List<CompactSalesBoardProductDto>()
-                : products.Skip((int)safeOffset).Take(pageSize).ToList();
-            var productInfoMap = await GetBestSellerProductInfoMapAsync(page.Select(row => row.ProductCode).ToList());
-            foreach (var product in page)
-            {
-                if (productInfoMap.TryGetValue(product.ProductCode, out var productInfo))
-                {
-                    product.ItemNumber = productInfo.ItemNumber;
-                    product.ProductImage = productInfo.ProductImage;
-                    product.ProductName = productInfo.ProductName ?? product.ProductName;
-                }
-
-                product.UnitPrice = product.TotalQuantity > 0 ? Math.Round(product.TotalAmount / product.TotalQuantity, 4) : 0m;
-            }
-
-            return CacheCompactSalesBoard(cacheKey, new CompactSalesBoardDto
-            {
-                Stores = stores,
-                ChinaSuppliers = suppliers,
-                ProductDetails = new PagedCompactSalesBoardProductDto { Data = page, Total = total, PageIndex = pageIndex, PageSize = pageSize },
-                StatisticStatus = status.Status,
-                StatisticMessage = status.Message,
-            }, status.Status, expectedGeneration);
+            FillCompactSalesBoard(board, cube, branchScope, query, pageIndex, pageSize);
+            return board;
         }
 
-        private static void MergeCompactSalesBoardAggregates(
-            Dictionary<string, CompactSalesBoardAggregateRow> target,
-            IEnumerable<CompactSalesBoardAggregateRow> source
-        )
+        private static void ApplyCompactSalesBoardStatus(CompactSalesBoardDto board, ProductReportStatisticStatusDto status)
         {
-            foreach (var row in source.Where(row => !string.IsNullOrWhiteSpace(row.Code)))
-            {
-                if (target.TryGetValue(row.Code, out var existing))
-                {
-                    existing.TotalQuantity += row.TotalQuantity;
-                    existing.TotalAmount += row.TotalAmount;
-                    continue;
-                }
-
-                target[row.Code] = row;
-            }
+            board.StatisticStatus = status.StatisticStatus;
+            board.StatisticMessage = status.StatisticMessage;
+            board.StatisticUpdatedAt = status.StatisticUpdatedAt;
         }
 
-        private CompactSalesBoardDto CacheCompactSalesBoard(
+        /// <summary>
+        /// 读取看板区间内的商品日统计状态行。时间列按 UTC 标注，响应序列化带 Z，
+        /// 前端才能换算成本地时间（曾因未标注被当成本地时间，截至时间比销售明细早 10 小时）。
+        /// </summary>
+        private async Task<List<SalesDetailReportStatusSqlRow>> ReadCompactSalesBoardStatusRowsAsync(DateRangeDto range)
+        {
+            var startDate = range.StartDate.Date;
+            var endExclusive = range.EndDate.Date.AddDays(1);
+            var states = await _context.Db.Queryable<SalesStatisticRefreshState>()
+                .Where(s => s.StatisticType == SalesStatisticType.ProductStoreDaily && s.Date >= startDate && s.Date < endExclusive)
+                .Select(s => new CompactSalesBoardStateRow
+                {
+                    Date = s.Date,
+                    Status = s.Status,
+                    LastAggregatedAtUtc = s.LastAggregatedAtUtc,
+                    CompletedAtUtc = s.CompletedAtUtc,
+                    SourceProductVersion = s.SourceProductVersion,
+                })
+                .ToListAsync();
+            return states
+                .Select(s => new SalesDetailReportStatusSqlRow
+                {
+                    Type = SalesStatisticType.ProductStoreDaily,
+                    Date = s.Date,
+                    Status = s.Status ?? string.Empty,
+                    LastAggregatedAtUtc = s.LastAggregatedAtUtc is DateTime aggregated
+                        ? DateTime.SpecifyKind(aggregated, DateTimeKind.Utc)
+                        : null,
+                    CompletedAtUtc = s.CompletedAtUtc is DateTime completed
+                        ? DateTime.SpecifyKind(completed, DateTimeKind.Utc)
+                        : null,
+                    SourceProductVersion = s.SourceProductVersion,
+                })
+                .ToList();
+        }
+
+        private async Task<CompactSalesBoardCubeRead> GetOrBuildCompactSalesBoardCubeAsync(
             string cacheKey,
-            CompactSalesBoardDto board,
-            string status,
+            DateRangeDto dateRange,
+            List<SalesDetailReportStatusSqlRow> precheckStates,
+            bool forceRefresh,
             long expectedGeneration
         )
         {
+            // 强制刷新要绕过分片缓存，不能搭上同区间普通请求的构建结果。
+            var buildKey = forceRefresh ? cacheKey + ":force" : cacheKey;
+            // 同一 IMemoryCache 代表同一应用实例；快速连续点选时共享同一次构建，避免并发重复扫描统计表。
+            var builds = COMPACT_SALES_BOARD_CUBE_BUILDS.GetValue(
+                _cache,
+                _ => new ConcurrentDictionary<string, Lazy<Task<CompactSalesBoardCubeRead>>>(StringComparer.Ordinal)
+            );
+            var lazyBuild = builds.GetOrAdd(
+                buildKey,
+                _ => new Lazy<Task<CompactSalesBoardCubeRead>>(
+                    async () =>
+                    {
+                        var read = await BuildCompactSalesBoardCubeAsync(dateRange, precheckStates, forceRefresh, expectedGeneration);
+                        // 按快照自身的水位写缓存；快照未完成（发布期间状态变为失败等）的结果不缓存。
+                        if (read.Status.StatisticStatus == SalesStatisticRefreshStatus.Fresh)
+                        {
+                            CacheCompactSalesBoardCube(
+                                SalesDashboardCacheKeys.CompactSalesBoardCube(dateRange, read.Status.CacheVersion),
+                                read.Cube,
+                                expectedGeneration
+                            );
+                        }
+                        return read;
+                    },
+                    LazyThreadSafetyMode.ExecutionAndPublication
+                )
+            );
+
+            try
+            {
+                return await lazyBuild.Value;
+            }
+            finally
+            {
+                // 只移除本次等待的那一项；失败的构建不会留在字典里，下一个请求会重新尝试。
+                ((ICollection<KeyValuePair<string, Lazy<Task<CompactSalesBoardCubeRead>>>>)builds).Remove(
+                    new KeyValuePair<string, Lazy<Task<CompactSalesBoardCubeRead>>>(buildKey, lazyBuild)
+                );
+            }
+        }
+
+        /// <summary>
+        /// 构建「门店×商品」聚合立方体。原始聚合按自然月分片缓存（见 CompactBoardSegments），缺的分片与其状态
+        /// 在同一个 SNAPSHOT 事务里读取：统计排队/重算期间读到上一版已提交的完整事实，而不是 NOLOCK 下删了一半的当天数据。
+        /// 生产实测（2026-09-24）：聚合语句曾按 1 天区间编译的计划被 6 个月复用（行存储，19 秒），
+        /// 商品资料用相关子查询回探统计表（774 万逻辑读，30 秒）；现分别改为 RECOMPILE 与按编码点查。
+        /// </summary>
+        private async Task<CompactSalesBoardCubeRead> BuildCompactSalesBoardCubeAsync(
+            DateRangeDto dateRange,
+            List<SalesDetailReportStatusSqlRow> precheckStates,
+            bool forceRefresh,
+            long expectedGeneration
+        )
+        {
+            var startDate = dateRange.StartDate.Date;
+            var endExclusive = dateRange.EndDate.Date.AddDays(1);
+
+            // 国内供应商目录只读一次：名称用于展示，编码集合用于识别直写行（含停用和软删除，见 ChinaSupplierCodeFamily）。
+            var chinaSupplierRows = await _context.Db.Queryable<ChinaSupplier>()
+                .Where(s => s.SupplierCode != null && s.SupplierCode != "")
+                .Select(s => new CompactSalesBoardChinaSupplierRow
+                {
+                    SupplierCode = s.SupplierCode ?? string.Empty,
+                    SupplierName = s.SupplierName,
+                    IsDeleted = s.IsDeleted,
+                })
+                .ToListAsync();
+            var chinaSupplierCodes = chinaSupplierRows
+                .Where(s => !string.IsNullOrWhiteSpace(s.SupplierCode))
+                .Select(s => s.SupplierCode.Trim())
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var chinaFamilyCodes = ChinaSupplierCodeFamily.BuildStatisticFilterCodes(chinaSupplierCodes);
+
+            // 旧 200 行靠 POSM 映射还原国内供应商；直写行自带编码，不依赖映射，所以映射为空也不能直接返回空看板。
+            var productSupplierMap = await GetChinaSupplierProductMapAsync();
+
+            var (stateRows, statisticRows) = await ReadCompactSalesBoardSegmentedRowsAsync(
+                dateRange,
+                precheckStates,
+                chinaFamilyCodes,
+                forceRefresh,
+                expectedGeneration
+            );
+            var status = BuildSalesDetailReportStatus(stateRows, dateRange, false);
+            if (status.StatisticStatus != SalesStatisticRefreshStatus.Fresh)
+                return new CompactSalesBoardCubeRead(CompactSalesBoardCube.Empty, status);
+
+            // 逐行还原国内供应商：直写行用行上的编码，旧 200 行查映射。
+            // 未映射的 200 商品仍不计入看板（约占国内货金额 14%），与其他国内供应商报表的口径一致。
+            var resolvedRows = statisticRows
+                .Where(row => !string.IsNullOrWhiteSpace(row.BranchCode) && !string.IsNullOrWhiteSpace(row.ProductCode))
+                .Select(row => new
+                {
+                    Row = row,
+                    ChinaSupplierCode = ResolveChinaSupplierCodeFromStatistic(
+                        row.SupplierCode,
+                        row.ProductCode,
+                        productSupplierMap,
+                        chinaSupplierCodes
+                    )?.Trim(),
+                })
+                .Where(item => !string.IsNullOrWhiteSpace(item.ChinaSupplierCode))
+                .ToList();
+            if (resolvedRows.Count == 0)
+                return new CompactSalesBoardCubeRead(CompactSalesBoardCube.Empty, status);
+
+            // 立方体里每个商品只挂一个国内供应商。同一商品在区间内解析出多个编码（归属中途变更，极少见）时，
+            // 取最近销售日那一条；日期相同时直写行优先于映射，再按编码排序，保证结果稳定。
+            var productSupplierCodes = resolvedRows
+                .GroupBy(item => item.Row.ProductCode, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group
+                        .OrderByDescending(item => item.Row.LastDate)
+                        .ThenBy(item => ChinaSupplierCodeFamily.IsLocalSupplierCode(item.Row.SupplierCode))
+                        .ThenBy(item => item.ChinaSupplierCode, StringComparer.Ordinal)
+                        .First()
+                        .ChinaSupplierCode!,
+                    StringComparer.OrdinalIgnoreCase
+                );
+
+            // 新旧两种写法的行在这里合并回「每个门店×商品一格」，下游按格计数门店动销款数依赖这个不变量。
+            var cubeRows = resolvedRows
+                .GroupBy(item => (
+                    BranchCode: item.Row.BranchCode.Trim().ToUpperInvariant(),
+                    ProductCode: item.Row.ProductCode.ToUpperInvariant()
+                ))
+                .Select(group => new CompactSalesBoardCubeRow
+                {
+                    BranchCode = group.First().Row.BranchCode,
+                    ProductCode = group.First().Row.ProductCode,
+                    TotalQuantity = group.Sum(item => item.Row.TotalQuantity),
+                    TotalAmount = group.Sum(item => item.Row.TotalAmount),
+                })
+                .ToList();
+
+            // 只取立方体里实际出现的商品资料（约 1 万个编码），不再回探统计表。
+            var productInfoRows = await ReadCompactSalesBoardProductInfoRowsAsync(
+                cubeRows.Select(row => row.ProductCode).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
+            );
+            var productInfoMap = productInfoRows
+                .Where(row => !string.IsNullOrWhiteSpace(row.ProductCode))
+                .GroupBy(row => row.ProductCode, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+
+            // 同一编码有多条目录记录时优先用未删除那条的名称；只剩软删除记录时保留历史名称。
+            var supplierNameMap = chinaSupplierRows
+                .Where(s => !string.IsNullOrWhiteSpace(s.SupplierCode))
+                .GroupBy(s => s.SupplierCode.Trim(), StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group
+                        .OrderBy(s => s.IsDeleted)
+                        .Select(s => s.SupplierName)
+                        .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name)) ?? group.Key,
+                    StringComparer.OrdinalIgnoreCase
+                );
+            var storeNameMap = await GetStoreNameMapAsync(
+                cubeRows.Select(row => row.BranchCode).ToHashSet(StringComparer.OrdinalIgnoreCase)
+            );
+
+            var branchIndex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var supplierIndex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var productIndex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var branches = new List<CompactSalesBoardCubeEntity>();
+            var suppliers = new List<CompactSalesBoardCubeEntity>();
+            var products = new List<CompactSalesBoardCubeProduct>();
+            var cells = new CompactSalesBoardCubeCell[cubeRows.Count];
+            for (var i = 0; i < cubeRows.Count; i++)
+            {
+                var row = cubeRows[i];
+                var branchCode = row.BranchCode.Trim();
+                if (!branchIndex.TryGetValue(branchCode, out var b))
+                {
+                    b = branches.Count;
+                    branchIndex[branchCode] = b;
+                    var branchName = storeNameMap.GetValueOrDefault(branchCode);
+                    branches.Add(new CompactSalesBoardCubeEntity(
+                        branchCode,
+                        string.IsNullOrWhiteSpace(branchName) ? branchCode : branchName));
+                }
+
+                if (!productIndex.TryGetValue(row.ProductCode, out var p))
+                {
+                    var supplierCode = productSupplierCodes[row.ProductCode];
+                    if (!supplierIndex.TryGetValue(supplierCode, out var s))
+                    {
+                        s = suppliers.Count;
+                        supplierIndex[supplierCode] = s;
+                        suppliers.Add(new CompactSalesBoardCubeEntity(
+                            supplierCode,
+                            supplierNameMap.GetValueOrDefault(supplierCode, supplierCode)));
+                    }
+
+                    p = products.Count;
+                    productIndex[row.ProductCode] = p;
+                    productInfoMap.TryGetValue(row.ProductCode, out var info);
+                    products.Add(new CompactSalesBoardCubeProduct(
+                        row.ProductCode,
+                        info?.ItemNumber,
+                        info?.ProductName,
+                        info?.ProductImage,
+                        s));
+                }
+
+                // 统计行在 (Date, BranchCode, SupplierCode, ProductCode) 上唯一，GROUP BY 后每个门店×商品只有一格。
+                cells[i] = new CompactSalesBoardCubeCell(b, p, row.TotalQuantity, row.TotalAmount);
+            }
+
+            return new CompactSalesBoardCubeRead(
+                new CompactSalesBoardCube(
+                    branches.ToArray(),
+                    suppliers.ToArray(),
+                    products.ToArray(),
+                    cells,
+                    branchIndex,
+                    supplierIndex,
+                    productIndex),
+                status);
+        }
+
+        /// <summary>
+        /// 区间内国内编码族的「门店×商品×原始供应商编码」聚合，调用方负责放进统计快照事务。
+        /// SQL Server 走原生语句：OPTION (RECOMPILE) 按本次区间编译，避免 1 天计划被长区间复用；
+        /// 编码族用 OPENJSON 参数传入，SQL 文本不随供应商目录变化。其他数据库（测试用 SQLite）沿用 SqlSugar 查询。
+        /// </summary>
+        private async Task<List<CompactSalesBoardCubeRow>> ReadCompactSalesBoardStatisticRowsAsync(
+            DateTime startDate,
+            DateTime endExclusive,
+            List<string> chinaFamilyCodes
+        )
+        {
+            if (_context.Db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+            {
+                return await _context.Db.Ado.SqlQueryAsync<CompactSalesBoardCubeRow>(
+                    """
+                    SELECT s.[BranchCode], s.[ProductCode], s.[SupplierCode],
+                           SUM(s.[TotalQuantity]) AS [TotalQuantity], SUM(s.[TotalAmount]) AS [TotalAmount], MAX(s.[Date]) AS [LastDate]
+                    FROM [dbo].[ProductStoreDailySalesStatistic] s
+                    WHERE s.[Date] >= @startDate AND s.[Date] < @endExclusive
+                      AND s.[SupplierCode] IN (SELECT CONVERT(nvarchar(50), c.[value]) FROM OPENJSON(@supplierCodes) c)
+                    GROUP BY s.[BranchCode], s.[ProductCode], s.[SupplierCode]
+                    OPTION (RECOMPILE);
+                    """,
+                    new SugarParameter("@startDate", startDate, System.Data.DbType.DateTime),
+                    new SugarParameter("@endExclusive", endExclusive, System.Data.DbType.DateTime),
+                    new SugarParameter("@supplierCodes", System.Text.Json.JsonSerializer.Serialize(chinaFamilyCodes)) { Size = -1 }
+                );
+            }
+
+            return await _context.Db.Queryable<ProductStoreDailySalesStatistic>()
+                .Where(s => s.Date >= startDate && s.Date < endExclusive && chinaFamilyCodes.Contains(s.SupplierCode))
+                .GroupBy(s => new { s.BranchCode, s.ProductCode, s.SupplierCode })
+                .Select(s => new CompactSalesBoardCubeRow
+                {
+                    BranchCode = s.BranchCode,
+                    ProductCode = s.ProductCode,
+                    SupplierCode = s.SupplierCode,
+                    TotalQuantity = SqlFunc.AggregateSum(s.TotalQuantity),
+                    TotalAmount = SqlFunc.AggregateSum(s.TotalAmount),
+                    LastDate = SqlFunc.AggregateMax(s.Date),
+                })
+                .ToListAsync();
+        }
+
+        /// <summary>
+        /// 按商品编码点查商品资料。SQL Server 在独立非 MARS 连接上用一条 OPENJSON 连接走过滤索引 IX_Product_ProductCode_Active
+        /// （生产 1.4 万编码服务端 0.3 秒、6 万逻辑读）；显式 NOLOCK 保持原查询行为，HQ 同步重建 Product 时不被阻塞。
+        /// 其他数据库按 500 个一批 Contains；两条路径的 IsDeleted 都写成字面量，参数化会让过滤索引失效。
+        /// </summary>
+        private async Task<List<CompactSalesBoardProductInfoRow>> ReadCompactSalesBoardProductInfoRowsAsync(
+            IReadOnlyCollection<string> productCodes
+        )
+        {
+            if (productCodes.Count == 0)
+                return new List<CompactSalesBoardProductInfoRow>();
+
+            if (UsesCompactBoardDedicatedConnection())
+            {
+                // 独立非 MARS 连接：生产 MARS 连接读 8.8 千行也要约 1 秒（服务端 CPU 0.14 秒）。
+                await using var connection = await OpenCompactBoardDedicatedConnectionAsync();
+                await using var command = connection.CreateCommand();
+                command.CommandTimeout = Math.Max(1, _context.Db.Ado.CommandTimeOut);
+                command.CommandText = """
+                    SELECT p.[ProductCode], p.[ItemNumber], p.[ProductName], p.[ProductImage]
+                    FROM [dbo].[Product] p WITH (NOLOCK)
+                    INNER JOIN OPENJSON(@productCodes) c ON CONVERT(nvarchar(50), c.[value]) = p.[ProductCode]
+                    WHERE p.[IsDeleted] = 0;
+                    """;
+                command.Parameters.Add("@productCodes", System.Data.SqlDbType.NVarChar, -1).Value =
+                    System.Text.Json.JsonSerializer.Serialize(productCodes);
+                var infoRows = new List<CompactSalesBoardProductInfoRow>(productCodes.Count);
+                await using var reader = await command.ExecuteReaderAsync();
+                while (await reader.ReadAsync())
+                {
+                    infoRows.Add(new CompactSalesBoardProductInfoRow
+                    {
+                        ProductCode = reader.IsDBNull(0) ? string.Empty : reader.GetString(0),
+                        ItemNumber = reader.IsDBNull(1) ? null : reader.GetString(1),
+                        ProductName = reader.IsDBNull(2) ? null : reader.GetString(2),
+                        ProductImage = reader.IsDBNull(3) ? null : reader.GetString(3),
+                    });
+                }
+                return infoRows;
+            }
+
+            var rows = new List<CompactSalesBoardProductInfoRow>();
+            foreach (var chunk in productCodes.Chunk(500))
+            {
+                rows.AddRange(await _context.Db.Queryable<Product>()
+                    .Where("[IsDeleted] = 0")
+                    .Where(p => chunk.Contains(p.ProductCode))
+                    .Select(p => new CompactSalesBoardProductInfoRow
+                    {
+                        ProductCode = p.ProductCode ?? string.Empty,
+                        ItemNumber = p.ItemNumber,
+                        ProductName = p.ProductName,
+                        ProductImage = p.ProductImage,
+                    })
+                    .ToListAsync());
+            }
+            return rows;
+        }
+
+        private void CacheCompactSalesBoardCube(string cacheKey, CompactSalesBoardCube cube, long expectedGeneration)
+        {
             ProductSalesAnalysisCacheWriteInterceptor?.Invoke();
-            var duration = string.Equals(status, SalesStatisticRefreshStatus.Fresh, StringComparison.OrdinalIgnoreCase)
-                ? TimeSpan.FromMinutes(2)
-                : TimeSpan.FromSeconds(10);
             SalesDashboardCacheKeys.TryExecuteProductSalesAnalysisCacheWrite(
                 cacheKey,
                 expectedGeneration,
@@ -7505,17 +7852,259 @@ namespace BlazorApp.Api.Services.React
                 {
                     _cache.Set(
                         cacheKey,
-                        board,
+                        cube,
                         BuildProductSalesAnalysisCacheOptions(
                             cacheKey,
-                            duration,
+                            COMPACT_SALES_BOARD_CUBE_CACHE_DURATION,
                             registrationToken,
                             expirationToken
                         )
                     );
                 }
             );
-            return board;
+        }
+
+        private const int CompactSelectionNone = -1;
+        private const int CompactSelectionMissing = -2;
+
+        private static int ResolveCompactSelection(string? code, Dictionary<string, int> index)
+        {
+            if (string.IsNullOrWhiteSpace(code))
+                return CompactSelectionNone;
+            // 选中项在立方体里不存在（例如切换日期后已无销售）时匹配不到任何行，而不是被当作「全部」。
+            return index.TryGetValue(code.Trim(), out var position) ? position : CompactSelectionMissing;
+        }
+
+        private static bool MatchesCompactSelection(int selection, int position) =>
+            selection == CompactSelectionNone || selection == position;
+
+        /// <summary>
+        /// 交叉筛选：每栏只受「其他栏」选中项约束，选中行不会把自身所在栏收窄成 1 行；KPI 同时受三者约束。
+        /// </summary>
+        internal static void FillCompactSalesBoard(
+            CompactSalesBoardDto board,
+            CompactSalesBoardCube cube,
+            HashSet<string>? branchScope,
+            CompactSalesBoardQuery query,
+            int pageIndex,
+            int pageSize
+        )
+        {
+            var selectedBranch = ResolveCompactSelection(query.SelectedBranchCode, cube.BranchIndex);
+            var selectedSupplier = ResolveCompactSelection(query.SelectedChinaSupplierCode, cube.SupplierIndex);
+            var selectedProduct = ResolveCompactSelection(query.SelectedProductCode, cube.ProductIndex);
+            var branchCount = cube.Branches.Length;
+            var supplierCount = cube.Suppliers.Length;
+            var productCount = cube.Products.Length;
+
+            var allowedBranches = new bool[branchCount];
+            for (var b = 0; b < branchCount; b++)
+                allowedBranches[b] = branchScope == null || branchScope.Contains(cube.Branches[b].Code);
+
+            var storeAmounts = new decimal[branchCount];
+            var storeQuantities = new int[branchCount];
+            var storeProductCounts = new int[branchCount];
+            var storeHits = new bool[branchCount];
+            var supplierAmounts = new decimal[supplierCount];
+            var supplierQuantities = new int[supplierCount];
+            var supplierProductCounts = new int[supplierCount];
+            var supplierHits = new bool[supplierCount];
+            var supplierPanelProductSeen = new bool[productCount];
+            var productAmounts = new decimal[productCount];
+            var productQuantities = new int[productCount];
+            var productHits = new bool[productCount];
+            var summaryStoreSeen = new bool[branchCount];
+            var summarySupplierSeen = new bool[supplierCount];
+            var summaryProductSeen = new bool[productCount];
+            var summary = new CompactSalesBoardSummaryDto();
+
+            foreach (var cell in cube.Cells)
+            {
+                if (!allowedBranches[cell.BranchIndex])
+                    continue;
+
+                var supplier = cube.Products[cell.ProductIndex].SupplierIndex;
+                var branchMatch = MatchesCompactSelection(selectedBranch, cell.BranchIndex);
+                var supplierMatch = MatchesCompactSelection(selectedSupplier, supplier);
+                var productMatch = MatchesCompactSelection(selectedProduct, cell.ProductIndex);
+                summary.OverallAmount += cell.Amount;
+                summary.OverallQuantity += cell.Quantity;
+
+                if (supplierMatch && productMatch)
+                {
+                    storeAmounts[cell.BranchIndex] += cell.Amount;
+                    storeQuantities[cell.BranchIndex] += cell.Quantity;
+                    // 每个门店×商品在立方体中只有一格，按格计数即门店动销款数。
+                    storeProductCounts[cell.BranchIndex]++;
+                    storeHits[cell.BranchIndex] = true;
+                }
+
+                if (branchMatch && productMatch)
+                {
+                    supplierAmounts[supplier] += cell.Amount;
+                    supplierQuantities[supplier] += cell.Quantity;
+                    supplierHits[supplier] = true;
+                    if (!supplierPanelProductSeen[cell.ProductIndex])
+                    {
+                        supplierPanelProductSeen[cell.ProductIndex] = true;
+                        supplierProductCounts[supplier]++;
+                    }
+                }
+
+                if (branchMatch && supplierMatch)
+                {
+                    productAmounts[cell.ProductIndex] += cell.Amount;
+                    productQuantities[cell.ProductIndex] += cell.Quantity;
+                    productHits[cell.ProductIndex] = true;
+                }
+
+                if (branchMatch && supplierMatch && productMatch)
+                {
+                    summary.TotalAmount += cell.Amount;
+                    summary.TotalQuantity += cell.Quantity;
+                    if (!summaryStoreSeen[cell.BranchIndex])
+                    {
+                        summaryStoreSeen[cell.BranchIndex] = true;
+                        summary.StoreCount++;
+                    }
+                    if (!summarySupplierSeen[supplier])
+                    {
+                        summarySupplierSeen[supplier] = true;
+                        summary.SupplierCount++;
+                    }
+                    if (!summaryProductSeen[cell.ProductIndex])
+                    {
+                        summaryProductSeen[cell.ProductIndex] = true;
+                        summary.ProductCount++;
+                    }
+                }
+            }
+
+            board.Summary = summary;
+            board.Stores = Enumerable.Range(0, branchCount)
+                .Where(b => storeHits[b])
+                .Select(b => new CompactSalesBoardStoreDto
+                {
+                    BranchCode = cube.Branches[b].Code,
+                    BranchName = cube.Branches[b].Name,
+                    TotalAmount = storeAmounts[b],
+                    TotalQuantity = storeQuantities[b],
+                    DomesticSupplierAmount = storeAmounts[b],
+                    ProductCount = storeProductCounts[b],
+                })
+                .OrderByDescending(row => row.TotalAmount)
+                .ThenBy(row => row.BranchCode, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            board.ChinaSuppliers = Enumerable.Range(0, supplierCount)
+                .Where(s => supplierHits[s])
+                .Select(s => new CompactSalesBoardChinaSupplierDto
+                {
+                    SupplierCode = cube.Suppliers[s].Code,
+                    SupplierName = cube.Suppliers[s].Name,
+                    TotalAmount = supplierAmounts[s],
+                    TotalQuantity = supplierQuantities[s],
+                    ProductCount = supplierProductCounts[s],
+                })
+                .OrderByDescending(row => row.TotalAmount)
+                .ThenBy(row => row.SupplierCode, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            // 关键词只过滤商品栏：空格分隔的每个词都必须命中货号、名称或商品编码之一（不区分大小写）。
+            var keywordTerms = (query.Keyword ?? string.Empty)
+                .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Take(8)
+                .ToArray();
+            var productPositions = Enumerable.Range(0, productCount)
+                .Where(p => productHits[p])
+                .Where(p => keywordTerms.Length == 0 || keywordTerms.All(term =>
+                {
+                    var product = cube.Products[p];
+                    return (product.ItemNumber?.Contains(term, StringComparison.OrdinalIgnoreCase) ?? false)
+                        || (product.ProductName?.Contains(term, StringComparison.OrdinalIgnoreCase) ?? false)
+                        || product.ProductCode.Contains(term, StringComparison.OrdinalIgnoreCase);
+                }))
+                .ToList();
+
+            var sortField = NormalizeCompactSortField(query.SortField);
+            var descending = string.IsNullOrWhiteSpace(query.SortOrder)
+                ? sortField != CompactSalesBoardQuery.SortByItemNumber
+                : !string.Equals(query.SortOrder.Trim(), "asc", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(query.SortOrder.Trim(), "ascend", StringComparison.OrdinalIgnoreCase);
+            decimal UnitPrice(int p) => productQuantities[p] > 0 ? productAmounts[p] / productQuantities[p] : 0m;
+            int CompareByField(int left, int right) => sortField switch
+            {
+                CompactSalesBoardQuery.SortByQuantity => productQuantities[left].CompareTo(productQuantities[right]),
+                CompactSalesBoardQuery.SortByUnitPrice => UnitPrice(left).CompareTo(UnitPrice(right)),
+                CompactSalesBoardQuery.SortByItemNumber => StringComparer.OrdinalIgnoreCase.Compare(
+                    cube.Products[left].ItemNumber ?? cube.Products[left].ProductCode,
+                    cube.Products[right].ItemNumber ?? cube.Products[right].ProductCode),
+                _ => productAmounts[left].CompareTo(productAmounts[right]),
+            };
+            // 服务端对全部结果排序后再分页；同值按商品编码升序，保证翻页无重复、无遗漏。
+            productPositions.Sort((left, right) =>
+            {
+                var compared = CompareByField(left, right);
+                if (compared != 0)
+                    return descending ? -compared : compared;
+                return StringComparer.OrdinalIgnoreCase.Compare(cube.Products[left].ProductCode, cube.Products[right].ProductCode);
+            });
+
+            var total = productPositions.Count;
+            var offset = (long)(pageIndex - 1) * pageSize;
+            var scopeAmount = 0m;
+            for (var p = 0; p < productCount; p++)
+            {
+                if (productHits[p])
+                    scopeAmount += productAmounts[p];
+            }
+            board.ProductDetails = new PagedCompactSalesBoardProductDto
+            {
+                Total = total,
+                PageIndex = pageIndex,
+                PageSize = pageSize,
+                ScopeAmount = scopeAmount,
+                Data = offset >= total
+                    ? new List<CompactSalesBoardProductDto>()
+                    : productPositions
+                        .Skip((int)offset)
+                        .Take(pageSize)
+                        .Select(p =>
+                        {
+                            var product = cube.Products[p];
+                            var supplier = cube.Suppliers[product.SupplierIndex];
+                            return new CompactSalesBoardProductDto
+                            {
+                                ProductCode = product.ProductCode,
+                                ItemNumber = product.ItemNumber,
+                                ProductName = product.ProductName,
+                                ProductImage = product.ProductImage,
+                                ChinaSupplierCode = supplier.Code,
+                                ChinaSupplierName = supplier.Name,
+                                TotalQuantity = productQuantities[p],
+                                TotalAmount = productAmounts[p],
+                                UnitPrice = Math.Round(UnitPrice(p), 4),
+                            };
+                        })
+                        .ToList(),
+            };
+        }
+
+        private static string NormalizeCompactSortField(string? sortField)
+        {
+            var normalized = sortField?.Trim();
+            foreach (var candidate in new[]
+            {
+                CompactSalesBoardQuery.SortByAmount,
+                CompactSalesBoardQuery.SortByQuantity,
+                CompactSalesBoardQuery.SortByUnitPrice,
+                CompactSalesBoardQuery.SortByItemNumber,
+            })
+            {
+                if (string.Equals(normalized, candidate, StringComparison.OrdinalIgnoreCase))
+                    return candidate;
+            }
+
+            return CompactSalesBoardQuery.SortByAmount;
         }
 
         public async Task<BestSellerResponseDto> GetBestSellersAsync(
@@ -7677,11 +8266,16 @@ namespace BlazorApp.Api.Services.React
                 );
             }
 
+            // 热销榜只看国内货。日统计里国内货既可能是旧写法的 200，也可能是直写的国内供应商编码，
+            // 只认 200 会让直写行整行掉出榜单；主查询和下面两个补充查询必须用同一份编码族。
+            var chinaFamilyCodes = ChinaSupplierCodeFamily.BuildStatisticFilterCodes(
+                await ChinaSupplierCodeFamily.LoadChinaSupplierCodesAsync(_context.Db)
+            );
             var query = _context.Db.Queryable<ProductStoreDailySalesStatistic>()
                 .Where(s =>
                     s.Date >= startDate
                     && s.Date <= endDate
-                    && s.SupplierCode == "200"
+                    && chinaFamilyCodes.Contains(s.SupplierCode)
                 );
 
             if (branchCodes != null && branchCodes.Any())
@@ -7734,8 +8328,8 @@ namespace BlazorApp.Api.Services.React
                 pageSize,
                 statisticStatus.Status,
                 statisticStatus.Message,
-                productCodes => GetBranchSalesFromStatisticsAsync(startDate, endDate, branchCodes, productCodes),
-                productCodes => GetBestSellerInfoFromStatisticsAsync(startDate, endDate, branchCodes, productCodes)
+                productCodes => GetBranchSalesFromStatisticsAsync(startDate, endDate, branchCodes, productCodes, chinaFamilyCodes),
+                productCodes => GetBestSellerInfoFromStatisticsAsync(startDate, endDate, branchCodes, productCodes, chinaFamilyCodes)
             );
         }
 
@@ -7881,7 +8475,8 @@ namespace BlazorApp.Api.Services.React
             DateTime startDate,
             DateTime endDate,
             List<string>? branchCodes,
-            List<string> productCodes
+            List<string> productCodes,
+            List<string> chinaFamilyCodes
         )
         {
             if (!productCodes.Any())
@@ -7891,7 +8486,7 @@ namespace BlazorApp.Api.Services.React
                 .Where(s =>
                     s.Date >= startDate
                     && s.Date <= endDate
-                    && s.SupplierCode == "200"
+                    && chinaFamilyCodes.Contains(s.SupplierCode)
                     && productCodes.Contains(s.ProductCode)
                 );
             if (branchCodes != null && branchCodes.Any())
@@ -7933,7 +8528,8 @@ namespace BlazorApp.Api.Services.React
             DateTime startDate,
             DateTime endDate,
             List<string>? branchCodes,
-            List<string> productCodes
+            List<string> productCodes,
+            List<string> chinaFamilyCodes
         )
         {
             if (!productCodes.Any())
@@ -7943,7 +8539,7 @@ namespace BlazorApp.Api.Services.React
                 .Where(s =>
                     s.Date >= startDate
                     && s.Date <= endDate
-                    && s.SupplierCode == "200"
+                    && chinaFamilyCodes.Contains(s.SupplierCode)
                     && productCodes.Contains(s.ProductCode)
                 );
             if (branchCodes != null && branchCodes.Any())

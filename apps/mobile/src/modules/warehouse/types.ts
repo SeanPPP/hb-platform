@@ -32,6 +32,8 @@ export interface WarehouseProduct {
 
 export interface WarehouseProductPatchRequest {
   warehouseIsActive?: boolean;
+  /** 下架时随请求登记的供货说明；上架时不传。 */
+  supplyNotice?: import("@/modules/supply-notice/types").SupplyNoticeInput;
   isActive?: boolean;
   purchasePrice?: number | null;
   retailPrice?: number | null;

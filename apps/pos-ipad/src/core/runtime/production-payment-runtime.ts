@@ -23,6 +23,7 @@ import type {
   Money,
   OrderTender,
   PaymentAttempt,
+  PaymentProviderResult,
 } from "@/core/contracts";
 import type { PosDatabase } from "@/core/db/pos-database";
 import type {
@@ -30,6 +31,10 @@ import type {
   PaymentRecoveryScope,
   SqlitePaymentDraftRecoveryStore,
 } from "@/core/db/sqlite-payment-draft-recovery-store";
+import type {
+  ManualPaymentRecoveryFindingInput,
+  PaymentRecoveryCenterRecord,
+} from "@/core/db/sqlite-payment-recovery-center-store";
 import type {
   PosRepositoryBundle,
   SensitivePayloadEncryptor,
@@ -54,7 +59,9 @@ import {
 } from "@/features/payments/mixed/voucher-tender-reversal-service";
 import {
   PaymentAttemptService,
+  PaymentAttemptOfflineError,
   type PaymentConnectivityPort,
+  type PaymentProviderRegistryPort,
   type PaymentRecoveryControl,
 } from "@hb/pos-payments-core/features/payments/payment-attempt-service";
 import {
@@ -80,6 +87,7 @@ import {
 import type {
   VoucherApprovedPurchaseReleasePort,
 } from "@/features/payments/runtime/payment-provider-registry";
+import type { PaymentStatusQueryResult } from "@/features/payments/runtime/payment-status-query-result";
 import { DurableVoucherPreparationService } from "@/features/payments/runtime/voucher-preparation";
 import {
   PaymentPresenter,
@@ -105,11 +113,32 @@ export type PosPaymentRuntimeService =
       ): PaymentPresenter;
       /** 仅返回脱敏布尔值，供登录后的路由把崩溃恢复导向支付页。 */
       hasRecoveryRequired(): Promise<boolean>;
+      recoveryCenter?: ProductionPaymentRecoveryCenterService;
     }>
   | Readonly<{
       status: "unavailable";
       blockers: readonly string[];
+      recoveryCenter?: ProductionPaymentRecoveryCenterService;
     }>;
+
+export type PaymentRecoveryAuthorizationAction =
+  | "payment-recovery-paid"
+  | "payment-recovery-unpaid"
+  | "payment-recovery-uncertain";
+
+export type PaymentRecoveryAuthorization = Readonly<{
+  authorizationId: string;
+  authorizingActor: AuditActorSnapshot;
+}>;
+
+export type ProductionPaymentRecoveryCenterService = Readonly<{
+  list(): Promise<readonly PaymentRecoveryCenterRecord[]>;
+  parkCurrent(): Promise<void>;
+  recoverOriginalPayment(recordId: string): Promise<void | "completed">;
+  submitManualVerification(input: Omit<ManualPaymentRecoveryFindingInput,
+    "storeCode" | "deviceCode" | "actionId" | "authorizationId" |
+    "supervisorActor" | "requestingActor" | "reconciliationId">): Promise<void>;
+}>;
 
 export type ProductionPaymentRuntime = Readonly<{
   service: PosPaymentRuntimeService;
@@ -142,6 +171,16 @@ export type ProductionPaymentRuntimeDependencies = Readonly<{
   /** 退货存在活动恢复时封锁新的付款/退款金融操作。 */
   hasReturnRecoveryRequired?: (() => Promise<boolean>) | undefined;
   drainFulfilment(): Promise<unknown>;
+  /** 人工支付结论必须在回调内完成；UI checkbox 永远不能作为主管身份。 */
+  authorizeRecovery?<T>(
+    request: Readonly<{
+      action: PaymentRecoveryAuthorizationAction;
+      screen: "payment-recovery";
+      orderGuid: string;
+      attemptId: string;
+    }>,
+    run: (authorization: PaymentRecoveryAuthorization) => Promise<T>,
+  ): Promise<T>;
 }>;
 
 /**
@@ -156,6 +195,189 @@ export function createProductionPaymentRuntime(
     createOrderGuid: input.createId,
     createOrderLineGuid: input.createId,
     createAuditEventId: input.createId,
+  });
+  const recoveryCenterStore = input.database.paymentRecoveryCenter(input.createId);
+  const manualPaymentCommitter = input.database.manualPaymentOrderCommitter();
+  const completeManualPaid = async (completion: Readonly<{
+    record: PaymentRecoveryCenterRecord;
+    actionId: string;
+    authorizationId: string;
+    supervisorActor: AuditActorSnapshot;
+    tenderGuid?: string | null;
+  }>) => {
+    const occurredAtIso = input.clock.nowIso();
+    const tenderGuid = completion.tenderGuid ?? input.createId();
+    return manualPaymentCommitter.completeManualPaymentOrder({
+      recordId: completion.record.recordId,
+      actionId: completion.actionId,
+      orderGuid: completion.record.orderGuid,
+      attemptId: completion.record.attemptId,
+      ...terminalScope,
+      authorizationId: completion.authorizationId,
+      tenderGuid,
+      completionAuditEvent: {
+        eventId: input.createId(), eventType: "PAYMENT_COMPLETE", occurredAtIso,
+        orderGuid: completion.record.orderGuid, correlationId: completion.actionId,
+        payload: {
+          source: "manual-card-verification",
+          attemptId: completion.record.attemptId,
+          tenderGuid,
+          amountCents: completion.record.amountCents,
+          authorizationId: completion.authorizationId,
+          cashierId: completion.supervisorActor.cashierId,
+          cashierName: completion.supervisorActor.cashierName,
+          userGuid: completion.supervisorActor.userGuid,
+        },
+      },
+      outbox: {
+        messageId: input.createId(), aggregateId: completion.record.orderGuid,
+        kind: "order-sync",
+        payloadJson: JSON.stringify({ orderGuid: completion.record.orderGuid }),
+        nextAttemptAtIso: occurredAtIso,
+      },
+    });
+  };
+  const cartLease = new ActivePricingCartPaymentLeaseCoordinator(
+    input.activeCart,
+    paymentCartRecovery(drafts, terminalScope),
+    input.createId,
+  );
+  let recoveryInitialized = false;
+  let recoverParkedPayment: ((recordId: string) => Promise<void | "completed">) | null = null;
+  recoverParkedPayment = async (recordId) => {
+    if (!recoveryInitialized) throw new Error("PAYMENT_RUNTIME_NOT_INITIALIZED");
+    const recoveryLease = input.currentCashier.createLease();
+    const assertRecoveryLease = () => requireScopedLease(recoveryLease, input.terminal);
+    assertRecoveryLease();
+    let record = await recoveryCenterStore.getExact(terminalScope, recordId);
+    assertRecoveryLease();
+    if (!record) throw new Error("PAYMENT_RECOVERY_RECORD_NOT_FOUND");
+    if (record.status === "review-required") return "completed";
+    let manualPaidRecovery = false;
+    if (record.status === "charged-order-incomplete") {
+      const manual = await recoveryCenterStore.getManualPaidCommitContext(terminalScope, record.recordId);
+      assertRecoveryLease();
+      if (manual) {
+        if (record.attemptState === "Approved") {
+          throw new Error("PAYMENT_RECOVERY_PROVIDER_UNAVAILABLE");
+        }
+        manualPaidRecovery = true;
+        if (!manual.tenderGuid) {
+          await completeManualPaid(manual);
+          assertRecoveryLease();
+        }
+        record = (await recoveryCenterStore.getExact(terminalScope, record.recordId)) ?? record;
+        assertRecoveryLease();
+        if (!["Draft", "Completing"].includes(record.orderState)) return "completed";
+      }
+    }
+    if (record.status !== "manual-unpaid" && record.status !== "payment-failed" && !manualPaidRecovery) {
+      throw new Error("PAYMENT_RECOVERY_PROVIDER_UNAVAILABLE");
+    }
+    const recovery = await drafts.readRecoveryCart(record.orderGuid, terminalScope);
+    assertRecoveryLease();
+    if (!recovery) throw new Error("PAYMENT_RECOVERY_EXACT_ORDER_MISMATCH");
+    await cartLease.prepareParkedRecovery(recovery, assertRecoveryLease);
+    assertRecoveryLease();
+    await recoveryCenterStore.resumeExact(terminalScope, record.recordId);
+    assertRecoveryLease();
+  };
+  const recoveryCenter: ProductionPaymentRecoveryCenterService = Object.freeze({
+    async list() {
+      requireScopedCurrentCashier(input);
+      return recoveryCenterStore.list(terminalScope);
+    },
+    async parkCurrent() {
+      requireScopedCurrentCashier(input);
+      const candidate = await recoveryCenterStore.findCurrentCandidate(terminalScope);
+      if (!candidate) {
+        const heldIntent = cartLease.heldCheckoutIntentId();
+        if (!heldIntent) return;
+        const parked = (await recoveryCenterStore.list(terminalScope))
+          .find((record) => record.checkoutIntentId === heldIntent);
+        if (!parked) throw new Error("PAYMENT_RECOVERY_PARKED_LEASE_MISMATCH");
+        await cartLease.clearAfterRecoveryParked(parked.checkoutIntentId, parked.orderGuid);
+        return;
+      }
+      const actor = paymentAuditActor(requireScopedCurrentCashier(input));
+      await recoveryCenterStore.parkExact({
+        ...terminalScope,
+        orderGuid: candidate.orderGuid,
+        attemptId: candidate.attemptId,
+        actionId: input.createId(),
+        actor,
+      });
+      await cartLease.clearAfterRecoveryParked(candidate.checkoutIntentId, candidate.orderGuid);
+    },
+    async recoverOriginalPayment(recordId) {
+      if (!recoverParkedPayment) throw new Error("PAYMENT_RECOVERY_PROVIDER_UNAVAILABLE");
+      return recoverParkedPayment(recordId);
+    },
+    async submitManualVerification(command) {
+      const commandSnapshot = Object.freeze({ ...command });
+      requireScopedCurrentCashier(input);
+      const current = await recoveryCenterStore.getExact(terminalScope, commandSnapshot.recordId);
+      if (!current) throw new Error("PAYMENT_RECOVERY_RECORD_NOT_FOUND");
+      const authorize = input.authorizeRecovery;
+      if (!authorize) throw new Error("PAYMENT_RECOVERY_SUPERVISOR_REQUIRED");
+      const action = `payment-recovery-${commandSnapshot.finding}` as PaymentRecoveryAuthorizationAction;
+      await authorize({ action, screen: "payment-recovery", orderGuid: current.orderGuid, attemptId: current.attemptId }, async (authorization) => {
+        requireScopedCurrentCashier(input);
+        let reconciliationId: string | undefined;
+        if (commandSnapshot.finding === "paid") {
+          if (!input.bootstrap) throw new Error("PAYMENT_RECOVERY_PROVIDER_UNAVAILABLE");
+          const attempt = await input.repositories.payments.get(current.attemptId);
+          requireScopedCurrentCashier(input);
+          if (!attempt || attempt.orderGuid !== current.orderGuid || attempt.provider !== current.provider) {
+            throw new Error("PAYMENT_RECOVERY_EXACT_ORDER_MISMATCH");
+          }
+          // Created 尚未向支付方提交，不能借只读适配器的提交异常伪造 Unknown。
+          if (!["Submitted", "Pending", "Unknown"].includes(attempt.state)) {
+            throw new Error("PAYMENT_RECOVERY_RECONCILIATION_NOT_UNRESOLVED");
+          }
+          if (attempt.operation !== "purchase" || !attempt.providerEnvironment?.trim() ||
+              !(attempt.provider === "square" ? attempt.references.checkoutId?.trim()
+                : attempt.provider === "linkly-cloud" ? attempt.references.sessionId?.trim() : false)) {
+            throw new Error("PAYMENT_RECOVERY_QUERY_ONLY_IDENTITY_REQUIRED");
+          }
+          let queryCompleted = false;
+          let queryUnresolved = false;
+          // 主管确认已扣款前先只读查询原 attempt；provider 终态会先进入账本并阻断人工 tender。
+          await createQueryOnlyAttempts((result) => {
+            queryCompleted = true;
+            queryUnresolved = result.state === "Unknown" || result.state === "Pending";
+          }).recoverAttempt(current.attemptId);
+          requireScopedCurrentCashier(input);
+          // 通用状态机可能把本地异常写为 Unknown；这不构成已查询支付方的证据。
+          if (!queryCompleted) throw new Error("PAYMENT_RECOVERY_RECONCILIATION_REQUIRED");
+          if (!queryUnresolved) throw new Error("PAYMENT_RECOVERY_RECONCILIATION_NOT_UNRESOLVED");
+          reconciliationId = await recoveryCenterStore.recordProviderReconciliation({
+            ...terminalScope,
+            recordId: current.recordId,
+            reconciliationId: input.createId(),
+          });
+          requireScopedCurrentCashier(input);
+        }
+        const findingResult = await recoveryCenterStore.recordManualFinding({
+          ...commandSnapshot,
+          ...terminalScope,
+          actionId: input.createId(),
+          authorizationId: authorization.authorizationId,
+          supervisorActor: authorization.authorizingActor,
+          requestingActor: paymentAuditActor(requireScopedCurrentCashier(input)),
+          ...(reconciliationId ? { reconciliationId } : {}),
+        });
+        if (commandSnapshot.finding === "paid") {
+          await completeManualPaid({
+            record: current,
+            actionId: findingResult.actionId,
+            authorizationId: findingResult.authorizationId,
+            supervisorActor: authorization.authorizingActor,
+          });
+        }
+        // “未扣款”只形成独立人工结论；provider attempt 保持原状态，迟到 Approved 才能被识别为冲突。
+      });
+    },
   });
   const voucherReversalStore = voucherTenderReversalStore(input);
   // legacy 发现只在冷启动/显式恢复时执行一次；普通 read 不应触发 provider 查询。
@@ -175,12 +397,15 @@ export function createProductionPaymentRuntime(
 
   if (!input.bootstrap) {
     return {
-      initializeRecovery: async () => undefined,
+      initializeRecovery: async () => {
+        recoveryInitialized = true;
+      },
       recoveryProbe,
       returnRefund: null,
       acknowledgements: null,
       service: {
         status: "unavailable",
+        recoveryCenter,
         blockers: [
           "SQUARE_TERMINAL_CONFIGURATION_MISSING",
           "LINKLY_ENVIRONMENT_MISSING",
@@ -196,12 +421,6 @@ export function createProductionPaymentRuntime(
       input.database.settings().getReceiptPrinterSettings(),
   };
   const voucherRelease = availableVoucherRelease(input.bootstrap);
-  const cartLease = new ActivePricingCartPaymentLeaseCoordinator(
-    input.activeCart,
-    paymentCartRecovery(drafts, terminalScope),
-    input.createId,
-  );
-  let recoveryInitialized = false;
   let returnRefund: ProductionReturnRefundAdapter | null = null;
   const linklyAcknowledger = input.bootstrap.linklyTerminals
     ? requireLinklyAcknowledger(input.bootstrap.providers)
@@ -228,6 +447,21 @@ export function createProductionPaymentRuntime(
       return returnRefund.trustedRefundReferenceSeed(request);
     },
   });
+  const recoveryProviders = input.bootstrap.providers;
+  const createQueryOnlyAttempts = (onQueryCompleted?: (result: PaymentStatusQueryResult) => void) => new PaymentAttemptService({
+    ledger: input.repositories.payments,
+    actionBindings: input.database.paymentActionBindings(),
+    drafts,
+    providers: queryOnlyPaymentProviders(recoveryProviders, onQueryCompleted),
+    connectivity: input.connectivity,
+    createAttemptId: input.createId,
+    createIdempotencyKey: input.createId,
+    nowIso: input.clock.nowIso,
+    trustedRefundReferenceSeed: () => {
+      throw new Error("PAYMENT_RECOVERY_QUERY_ONLY_REFUND_FORBIDDEN");
+    },
+  });
+  const queryOnlyAttempts = createQueryOnlyAttempts();
   const acknowledgements = linklyAcknowledger
     ? new PaymentAcknowledgementService({
         ledger: input.repositories.payments,
@@ -539,6 +773,104 @@ export function createProductionPaymentRuntime(
     };
   };
 
+  recoverParkedPayment = async (recordId: string): Promise<void | "completed"> => {
+    if (!recoveryInitialized) throw new Error("PAYMENT_RUNTIME_NOT_INITIALIZED");
+    const recoveryLease = input.currentCashier.createLease();
+    const assertRecoveryLease = () => requireScopedLease(recoveryLease, input.terminal);
+    assertRecoveryLease();
+    let record = await recoveryCenterStore.getExact(terminalScope, recordId);
+    assertRecoveryLease();
+    if (!record) throw new Error("PAYMENT_RECOVERY_RECORD_NOT_FOUND");
+    if (record.status === "review-required") return "completed";
+    // 人工“未扣款”不得调用通用 recover：Created 会触发 submit，Linkly recover 也可能执行 POST。
+    // 若 provider 结果已由既有会话/ACK 通道写回，下面的动态状态会保持 review-required。
+    if ((record.status === "manual-unpaid" || record.status === "manual-uncertain") &&
+        record.attemptState !== "Created") {
+      try {
+        await queryOnlyAttempts.recoverAttempt(record.attemptId);
+      } catch (error) {
+        // 明确离线发生在 provider 边界前，可按主管结论恢复现金；其余持久化/状态错误必须失败关闭。
+        if (!(error instanceof PaymentAttemptOfflineError)) throw error;
+      }
+      assertRecoveryLease();
+      record = (await recoveryCenterStore.getExact(terminalScope, record.recordId)) ?? record;
+      assertRecoveryLease();
+    }
+    // “仍未知”只允许查询既有交易；没有最终 provider 事实时继续 parked，避免支付页
+    // 将 Created/Unknown 交给通用恢复并意外发起扣款或终端 recover。
+    if (record.status === "manual-uncertain") return "completed";
+    if (record.status === "review-required") return "completed";
+    if (!["Draft", "Completing"].includes(record.orderState)) {
+      if (record.attemptState !== "Created" &&
+          !["Approved", "Declined", "Cancelled"].includes(record.attemptState)) {
+        await queryOnlyAttempts.recoverAttempt(record.attemptId);
+        assertRecoveryLease();
+        record = (await recoveryCenterStore.getExact(terminalScope, record.recordId)) ?? record;
+        assertRecoveryLease();
+      }
+      if (record.status === "review-required") return "completed";
+      if (record.provider === "linkly-cloud" && record.attemptState === "Approved" && acknowledgements) {
+        assertRecoveryLease();
+        const acknowledgement = await acknowledgements.acknowledge(record.attemptId);
+        assertRecoveryLease();
+        // 已完成订单仍可能占用 Linkly 终端；ACK 未耐久前必须留在恢复中心重试。
+        if (!acknowledgement.acknowledged || acknowledgement.pending) {
+          throw new Error(
+            acknowledgement.errorCode ?? "LINKLY_ACKNOWLEDGEMENT_PENDING",
+          );
+        }
+      }
+      return "completed";
+    }
+    let manualPaidRecovery = false;
+    const manual = await recoveryCenterStore.getManualPaidCommitContext(
+      terminalScope,
+      record.recordId,
+    );
+    if (manual) {
+      if (record.status === "charged-order-incomplete" && record.attemptState !== "Approved") {
+        manualPaidRecovery = true;
+        if (!manual.tenderGuid) {
+          await completeManualPaid(manual);
+          assertRecoveryLease();
+        }
+        record = (await recoveryCenterStore.getExact(terminalScope, record.recordId)) ?? record;
+        if (!["Draft", "Completing"].includes(record.orderState)) return "completed";
+      }
+    }
+    const recovery = await drafts.readRecoveryCart(record.orderGuid, terminalScope);
+    assertRecoveryLease();
+    if (!recovery) {
+      throw new Error("PAYMENT_RECOVERY_EXACT_ORDER_MISMATCH");
+    }
+    // 先验证当前销售车为空并取得原购物车 lease，再解除 parked；失败时不会重新污染全局阻断。
+    await cartLease.prepareParkedRecovery({
+      checkoutIntentId: recovery.checkoutIntentId,
+      cart: recovery.cart,
+      pricingState: recovery.pricingState,
+      recallBinding: recovery.recallBinding,
+    }, assertRecoveryLease);
+    assertRecoveryLease();
+    await recoveryCenterStore.resumeExact(terminalScope, record.recordId);
+    assertRecoveryLease();
+    // 明确失败及人工结论只恢复原订单继续付款；绝不重试原失败/人工确认的 provider attempt。
+    if (record.status === "manual-unpaid" || record.status === "manual-uncertain" ||
+        record.status === "payment-failed" || manualPaidRecovery) {
+      return;
+    }
+    const blocking = await drafts.findBlockingRecovery(terminalScope);
+    if (blocking?.kind !== "AttemptBlocking" || blocking.orderGuid !== record.orderGuid ||
+        blocking.attemptId !== record.attemptId) {
+      throw new Error("PAYMENT_RECOVERY_EXACT_ATTEMPT_MISMATCH");
+    }
+    assertRecoveryLease();
+    const context = createContext();
+    await context.runtime.recover({
+      orderGuid: record.orderGuid,
+      attemptId: record.attemptId,
+    });
+  };
+
   return {
     returnRefund,
     acknowledgements,
@@ -550,6 +882,7 @@ export function createProductionPaymentRuntime(
     },
     service: {
       status: "available",
+      recoveryCenter,
       createPresenter(entry) {
         const context = createContext();
         return instrumentPaymentPresenter(new PaymentPresenter({
@@ -784,6 +1117,7 @@ async function toCheckoutRecovery(
           provider: action.provider,
           operation: "purchase",
           amount: copyMoney(action.amount),
+          ...(action.manualConfirmed === undefined ? {} : { manualConfirmed: action.manualConfirmed }),
         }
       : null,
   };
@@ -1353,6 +1687,40 @@ function normalizeEntry(
 
 function copyMoney(value: Money): Money {
   return { currency: value.currency, cents: value.cents };
+}
+
+function queryOnlyPaymentProviders(
+  providers: PaymentProviderRuntimeBootstrap["providers"],
+  onQueryCompleted?: (result: PaymentStatusQueryResult) => void,
+): PaymentProviderRegistryPort {
+  return {
+    get(providerName) {
+      const provider = providers.get(providerName) as ReturnType<typeof providers.get> & Readonly<{
+        queryExistingPayment?: (
+          attempt: PaymentAttempt,
+          control?: PaymentRecoveryControl,
+        ) => Promise<PaymentStatusQueryResult>;
+      }>;
+      const query = provider.queryExistingPayment;
+      const forbidden = async (): Promise<PaymentProviderResult> => {
+        throw new Error("PAYMENT_RECOVERY_QUERY_ONLY_FINANCIAL_ACTION_FORBIDDEN");
+      };
+      const queryExisting = async (attempt: PaymentAttempt, control?: PaymentRecoveryControl) => {
+        if (!query) throw new Error("PAYMENT_RECOVERY_QUERY_ONLY_UNAVAILABLE");
+        const result = await query.call(provider, attempt, control);
+        if (result.queryVerified) onQueryCompleted?.(result);
+        return result;
+      };
+      return {
+        provider: provider.provider,
+        submit: forbidden,
+        refund: forbidden,
+        cancel: forbidden,
+        recover: queryExisting,
+        recoverWithControl: queryExisting,
+      };
+    },
+  };
 }
 
 function requiredText(value: string): string {

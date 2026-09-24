@@ -292,9 +292,11 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         IOperationAuthorizationService? operationAuthorizationService = null,
         PosSessionState? session = null,
         IRemoteMaintenanceService? remoteMaintenanceService = null,
-        Func<string, Task<bool>>? confirmLinklyTerminalAssignmentAsync = null)
+        Func<string, Task<bool>>? confirmLinklyTerminalAssignmentAsync = null,
+        IPaymentMethodSettingsService? paymentMethodSettingsService = null)
     {
         _setupService = setupService;
+        _paymentMethodSettingsService = paymentMethodSettingsService;
         _localization = localization;
         _apiServerSettings = apiServerSettings;
         _downloadCatalogAsync = downloadCatalogAsync;
@@ -376,6 +378,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         SelectDeviceRegistrationCommand = new AsyncRelayCommand(() => SelectCategoryAsync(SettingsCategory.DeviceRegistration, Permissions.PosTerminal.Settings.DeviceRegistration));
         SelectRemoteMaintenanceCommand = new AsyncRelayCommand(SelectRemoteMaintenanceAsync);
         LoadCommand = new AsyncRelayCommand(LoadAsync);
+        SavePaymentMethodsCommand = new AsyncRelayCommand(SavePaymentMethodsAsync, CanSavePaymentMethods);
         LoadLocationsCommand = new AsyncRelayCommand(LoadLocationsAsync, CanLoadLocations);
         LoadDevicesCommand = new AsyncRelayCommand(LoadDevicesAsync, CanLoadDevices);
         SaveSquareCommand = new AsyncRelayCommand(SaveSquareAsync, CanSaveSquare);
@@ -575,11 +578,15 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     public string LinklyTitleText => T("settings.linkly.title");
 
-    public string ActivePaymentProviderText => _loadedConfiguration.Processor == CardProcessorKind.Linkly
+    public string ActivePaymentProviderText => _paymentMethodSettingsService?.Current.UseManualCard == true
+        ? T("settings.payment.activeProvider.manual")
+        : _loadedConfiguration.Processor == CardProcessorKind.Linkly
         ? T("settings.payment.activeProvider.linkly")
         : T("settings.payment.activeProvider.square");
 
-    public string ActivePaymentProviderDetailText => _loadedConfiguration.Processor == CardProcessorKind.Linkly
+    public string ActivePaymentProviderDetailText => _paymentMethodSettingsService?.Current.UseManualCard == true
+        ? T("settings.payment.activeProvider.manual.detail")
+        : _loadedConfiguration.Processor == CardProcessorKind.Linkly
         ? Format(
             "settings.payment.activeProvider.linkly.detail",
             T(GetLinklyModeLocalizationKey(ToSettingsMode(_loadedConfiguration.LinklyConnectionMode))))
@@ -751,6 +758,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         _apiServerSettings?.Load();
         await RunBusyAsync(async () =>
         {
+            await LoadPaymentMethodsAsync();
             _loadedConfiguration = await _setupService.LoadConfigurationAsync();
             await LoadReceiptPrinterSettingsAsync();
             IsSquareSandbox = _loadedConfiguration.Environment == CardTerminalEnvironment.Sandbox;
@@ -2951,6 +2959,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     private void RaiseCommandStates()
     {
+        SavePaymentMethodsCommand.NotifyCanExecuteChanged();
         LoadLocationsCommand.NotifyCanExecuteChanged();
         LoadDevicesCommand.NotifyCanExecuteChanged();
         SaveSquareCommand.NotifyCanExecuteChanged();

@@ -33,7 +33,24 @@ public sealed class LinklyCloudBackendSessionParameterTests
         Assert.Null(parameter.Value);
     }
 
-    private static SugarParameter GetParameter(LinklyCloudBackendSessionRecord session)
+    [Fact]
+    public void ToSessionParameters_binds_transaction_request_evidence()
+    {
+        var session = new LinklyCloudBackendSessionRecord
+        {
+            RequestTxnType = "R",
+            RequestAmountCents = 250,
+            RequestRfn = "ORIGINAL-RFN-250"
+        };
+
+        Assert.Equal("R", GetParameter(session, "@RequestTxnType").Value);
+        Assert.Equal(250L, GetParameter(session, "@RequestAmountCents").Value);
+        Assert.Equal("ORIGINAL-RFN-250", GetParameter(session, "@RequestRfn").Value);
+    }
+
+    private static SugarParameter GetParameter(
+        LinklyCloudBackendSessionRecord session,
+        string parameterName = "@TerminalUpdatedAt")
     {
         var method = typeof(SqlSugarLinklyCloudBackendAsyncRepository).GetMethod(
             "ToSessionParameters",
@@ -41,6 +58,6 @@ public sealed class LinklyCloudBackendSessionParameterTests
         Assert.NotNull(method);
 
         var parameters = Assert.IsType<SugarParameter[]>(method!.Invoke(null, [session]));
-        return Assert.Single(parameters, parameter => parameter.ParameterName == "@TerminalUpdatedAt");
+        return Assert.Single(parameters, parameter => parameter.ParameterName == parameterName);
     }
 }

@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useRef, useState } from "react";
+import { memo, forwardRef, useEffect, useRef, useState } from "react";
 import {
   Keyboard,
   Platform,
@@ -32,7 +32,7 @@ interface Props {
   onSubmit: () => void;
 }
 
-export function CreateProductDialog(props: Props) {
+export const CreateProductDialog = memo(function CreateProductDialog(props: Props) {
   const { t } = useAppTranslation(["productQuery", "common"]);
   const { height, width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
@@ -122,6 +122,14 @@ export function CreateProductDialog(props: Props) {
         keyboardDismissMode="on-drag"
         showsVerticalScrollIndicator
       >
+        <View style={styles.accuracyNotice}>
+          <Text style={styles.accuracyNoticeText}>
+            {t("createProduct.accuracyHint")}
+          </Text>
+          <Text style={[styles.accuracyNoticeText, styles.accuracyConsequence]}>
+            {t("createProduct.permissionWarning")}
+          </Text>
+        </View>
         <View style={styles.field}>
           <Text style={styles.label}>{t("createProduct.fields.supplier")}</Text>
           <Button
@@ -298,7 +306,11 @@ export function CreateProductDialog(props: Props) {
       </View>
     </Modal>
   );
-}
+}, (previous, next) => {
+  // 隐藏期间不重复生成整张表单；打开或关闭时仍渲染，保留弹窗动画和键盘清理。
+  // 打开后始终接收最新表单值与回调，不比较或缓存可见状态下的业务数据。
+  return !previous.visible && !next.visible;
+});
 
 const Field = forwardRef<
   TextInput,
@@ -351,6 +363,16 @@ const styles = StyleSheet.create({
   close: { margin: -6, marginLeft: 8 },
   scroll: { flexShrink: 1, minHeight: 0 },
   body: { padding: 20, paddingTop: 16, gap: 14 },
+  accuracyNotice: {
+    backgroundColor: "#FFFAEB",
+    borderWidth: 1,
+    borderColor: "#FEE4B5",
+    borderRadius: 8,
+    padding: 12,
+    gap: 4,
+  },
+  accuracyNoticeText: { color: C.warning, fontSize: 13, lineHeight: 20 },
+  accuracyConsequence: { fontWeight: "600" },
   field: { gap: 6, flexShrink: 1, flexGrow: 1, minWidth: 0 },
   label: { color: C.textSecondary, fontSize: 12, fontWeight: "600" },
   supplier: {

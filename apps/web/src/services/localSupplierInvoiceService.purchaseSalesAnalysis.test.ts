@@ -3,6 +3,8 @@ import {
   __localSupplierInvoiceServiceTestOnly,
   getLocalSupplierPurchaseSalesAnalysis,
   getLocalSupplierPurchaseSalesAnalysisSupplierOptions,
+  getShopLocalSupplierPurchaseSalesAnalysis,
+  getShopLocalSupplierPurchaseSalesAnalysisSupplierOptions,
 } from './localSupplierInvoiceService'
 import {
   buildPurchaseSalesAnalysisImageSourceChain,
@@ -10,6 +12,10 @@ import {
   DEFAULT_PURCHASE_SALES_ANALYSIS_PAGE_SIZE,
   getDefaultPurchaseSalesAnalysisDateRange,
   normalizePurchaseSalesAnalysisPageSize,
+  PURCHASE_SALES_ANALYSIS_DEFAULT_SORT_BY,
+  PURCHASE_SALES_ANALYSIS_DEFAULT_SORT_ORDER,
+  PURCHASE_SALES_ANALYSIS_MIN_TABLE_BODY_HEIGHT,
+  resolvePurchaseSalesAnalysisTableBodyHeight,
   TRANSPARENT_IMAGE_FALLBACK,
   toPurchaseSalesAnalysisSort,
 } from '../pages/PosAdmin/LocalSupplierPurchaseSalesAnalysis/helpers'
@@ -32,6 +38,8 @@ const originalFetch = globalThis.fetch
 let requestUrl = ''
 let requestMethod = ''
 let supplierOptionsRequestUrl = ''
+let shopRequestUrl = ''
+let shopSupplierOptionsRequestUrl = ''
 let refreshRequestCount = 0
 
 globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -47,6 +55,22 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   if (url.endsWith('/api/Auth/session/refresh')) {
     refreshRequestCount += 1
     return new Response(JSON.stringify({ success: true, data: {} }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
+  if (url.includes('/api/react/v1/local-supplier-invoices/shop/purchase-sales-analysis/supplier-options')) {
+    shopSupplierOptionsRequestUrl = url
+    return new Response(JSON.stringify({ success: true, data: [{ label: 'Brazco', value: 'BRZ' }] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
+  if (url.includes('/api/react/v1/local-supplier-invoices/shop/purchase-sales-analysis')) {
+    shopRequestUrl = url
+    return new Response(JSON.stringify({ success: true, data: { Items: [], Total: 0, Page: 1, PageSize: 100 } }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     })
@@ -92,7 +116,18 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
             SalesQty30: 20,
             SalesQty60: 30,
             SalesQty90: 40,
+            TotalSalesSinceLatestPurchase: 137,
             SalesStatisticLastUpdate: '2026-06-25T08:00:00',
+            DailySales: [
+              { Date: '2026-06-01T00:00:00', Quantity: 3 },
+              { date: '2026-06-02', quantity: -1 },
+              { Quantity: 9 },
+              'broken',
+            ],
+            Purchases: [
+              { Date: '2026-05-12T00:00:00', Quantity: 9 },
+              { Date: '2026-06-01T00:00:00', Quantity: 13 },
+            ],
           },
           {
             ProductCode: 'BROKEN',
@@ -131,16 +166,41 @@ try {
     DEFAULT_PURCHASE_SALES_ANALYSIS_PAGE_SIZE,
     '不允许的分页值应回退到 100',
   )
+  assertEqual(
+    PURCHASE_SALES_ANALYSIS_MIN_TABLE_BODY_HEIGHT,
+    520,
+    '明细表格应保留足够高度展示多行趋势数据',
+  )
+  assertEqual(
+    resolvePurchaseSalesAnalysisTableBodyHeight(180),
+    520,
+    '较矮视口也不能把明细表体压缩回只能显示少量数据行',
+  )
+  assertEqual(
+    resolvePurchaseSalesAnalysisTableBodyHeight(680.8),
+    680,
+    '较高视口应继续使用全部可用高度',
+  )
 
   assertDeepEqual(
-    toPurchaseSalesAnalysisSort('salesQty90', 'descend'),
-    { sortBy: 'salesQty90', sortOrder: 'desc' },
+    toPurchaseSalesAnalysisSort('salesBetweenPurchases', 'descend'),
+    { sortBy: 'salesBetweenPurchases', sortOrder: 'desc' },
     '排序器应转换为后端需要的 sortBy 和 sortOrder',
   )
   assertDeepEqual(
+    toPurchaseSalesAnalysisSort('totalSalesSinceLatestPurchase', 'descend'),
+    { sortBy: 'totalSalesSinceLatestPurchase', sortOrder: 'desc' },
+    '总销量应在排序白名单内',
+  )
+  assertDeepEqual(
+    toPurchaseSalesAnalysisSort('purchaseIntervalDays', 'descend'),
+    { sortBy: PURCHASE_SALES_ANALYSIS_DEFAULT_SORT_BY, sortOrder: PURCHASE_SALES_ANALYSIS_DEFAULT_SORT_ORDER },
+    '已下线的间隔天数列不应再作为排序字段',
+  )
+  assertDeepEqual(
     toPurchaseSalesAnalysisSort('supplierName', 'ascend'),
-    { sortBy: 'latestPurchaseDate', sortOrder: 'desc' },
-    '不在后端白名单内的排序字段应回退默认排序',
+    { sortBy: PURCHASE_SALES_ANALYSIS_DEFAULT_SORT_BY, sortOrder: PURCHASE_SALES_ANALYSIS_DEFAULT_SORT_ORDER },
+    '不在后端白名单内的排序字段应回退默认排序（当前默认是总销量降序）',
   )
 
   const normalized = __localSupplierInvoiceServiceTestOnly.normalizePurchaseSalesAnalysisResponse({
@@ -193,7 +253,7 @@ try {
     orderDateStart: '2026-01-01',
     orderDateEnd: '2026-06-25',
     keyword: '苹果',
-    sortBy: 'salesQty60',
+    sortBy: 'totalSalesSinceLatestPurchase',
     sortOrder: 'desc',
     page: 2,
     pageSize: 200,
@@ -201,11 +261,33 @@ try {
 
   const parsedUrl = new URL(requestUrl, 'https://example.test')
   assertEqual(requestMethod, 'GET', '查询接口应使用 GET')
-  assertEqual(parsedUrl.searchParams.get('sortBy'), 'salesQty60', '排序字段应透传到后端')
+  assertEqual(parsedUrl.searchParams.get('sortBy'), 'totalSalesSinceLatestPurchase', '总销量排序字段应透传到后端')
   assertEqual(parsedUrl.searchParams.get('sortOrder'), 'desc', '排序方向应透传到后端')
   assertEqual(parsedUrl.searchParams.get('pageSize'), '200', '合法 pageSize 应透传到后端')
   assertEqual(result.items.length, 1, '接口 normalizer 应过滤无效行')
   assertEqual(result.pageSize, 100, '接口响应中的非法 pageSize 应回退到 100')
+  assertEqual(result.items[0].totalSalesSinceLatestPurchase, 137, '总销量应从后端响应归一化')
+  assertDeepEqual(
+    result.items[0].dailySales,
+    [{ date: '2026-06-01', quantity: 3 }, { date: '2026-06-02', quantity: -1 }],
+    '逐日销量应裁剪为 yyyy-MM-dd、保留退货负数并丢弃缺日期或非法项',
+  )
+  assertDeepEqual(
+    result.items[0].purchases,
+    [{ date: '2026-05-12', quantity: 9 }, { date: '2026-06-01', quantity: 13 }],
+    '进货事件应归一化为日期与数量',
+  )
+
+  const shopSupplierOptions = await getShopLocalSupplierPurchaseSalesAnalysisSupplierOptions('S001')
+  assertDeepEqual(shopSupplierOptions, [{ label: 'Brazco', value: 'BRZ' }], '前台供应商选项应走前台只读接口并归一化')
+  assertEqual(
+    new URL(shopSupplierOptionsRequestUrl, 'https://example.test').searchParams.get('storeCode'),
+    'S001',
+    '前台供应商选项必须携带当前分店',
+  )
+  const shopResult = await getShopLocalSupplierPurchaseSalesAnalysis({ storeCode: 'S001', supplierCode: 'BRZ', page: 1, pageSize: 100 })
+  assertEqual(shopRequestUrl.includes('/local-supplier-invoices/shop/purchase-sales-analysis'), true, '前台分析必须请求 shop 前缀接口')
+  assertDeepEqual(shopResult.items, [], '前台分析空结果应归一化为空数组')
 
   const imageChainWithFallback = buildPurchaseSalesAnalysisImageSourceChain(
     'https://img.example.com/a.jpg',

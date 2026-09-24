@@ -163,6 +163,10 @@ function mapFailure(error: unknown): AdapterFailure {
       // 限流不是业务拒绝：保留本地事件并交给分钟级 durable retry。
       if (error.status === 429) return { kind: "retry", failure: "server" };
       if ((error.status ?? 0) >= 500) return { kind: "retry", failure: "server" };
+      // 历史已收款订单可能仍有 POSM int 列不支持的小数数量，等待人工核对和数据迁移后重传。
+      if (error.status === 400 && error.code === "ORDER_SYNC_QUANTITY_UNSUPPORTED") {
+        return { kind: "retry", failure: "server", code: error.code };
+      }
       return { kind: "rejected", code: error.code ?? `HTTP_${error.status ?? "UNKNOWN"}` };
     }
     return { kind: "rejected", code: error.code ?? "API_ENVELOPE_REJECTED" };
@@ -422,6 +426,10 @@ export class HbposOrderSyncAdapter implements OrderSyncPort {
         heldOrderSource = resolved.heldOrderSource ?? null;
       } catch (error) {
         if (error instanceof OrderSyncMaterialError) {
+          if (error.code === "ORDER_SYNC_MANUAL_PROVIDER_CONFLICT") {
+            // 人工结案与 provider 终态冲突时禁止发 HTTP，也不能永久丢弃订单 outbox。
+            return { kind: "retry", failure: "server" };
+          }
           return { kind: "rejected", failure: "business-rejection", code: error.code };
         }
         // 非确定性的数据库或 IO 故障必须交回 outbox 重试，不能伪装成稳定业务拒绝。

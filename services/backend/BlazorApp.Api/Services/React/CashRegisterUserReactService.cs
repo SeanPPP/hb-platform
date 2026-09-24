@@ -216,10 +216,7 @@ namespace BlazorApp.Api.Services.React
                 .ToList();
         }
 
-        private async Task<List<string>> GetUserGuidsForStoreCodeFilterAsync(
-            string filterValue,
-            string op
-        )
+        private async Task<List<string>> GetStoreCodesForFilterAsync(string filterValue, string op)
         {
             var keyword = filterValue.Trim();
             if (keyword.Length == 0)
@@ -227,17 +224,33 @@ namespace BlazorApp.Api.Services.React
                 return new List<string>();
             }
 
-            var query = _db.Queryable<UserStore>()
-                .InnerJoin<Store>((us, s) => us.StoreGUID == s.StoreGUID)
-                .Where((us, s) => !us.IsDeleted && s.IsActive && !s.IsDeleted);
+            var query = _db.Queryable<Store>().Where(s => s.IsActive && !s.IsDeleted);
             query = op == "equals"
-                ? query.Where((us, s) => s.StoreCode == keyword)
-                : query.Where((us, s) => s.StoreCode != null && s.StoreCode.Contains(keyword));
+                ? query.Where(s => s.StoreCode == keyword)
+                : query.Where(s => s.StoreCode != null && s.StoreCode.Contains(keyword));
 
-            return (await query.Select((us, s) => us.UserGUID).ToListAsync())
-                .Where(userGuid => !string.IsNullOrWhiteSpace(userGuid))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
+            return NormalizeStoreCodes(await query.Select(s => s.StoreCode).ToListAsync());
+        }
+
+        /// <summary>
+        /// 非管理员的收银条码管理范围：可管理（主）分店关联的后台用户，再加当前账号本人。
+        /// 关键逻辑：店长即使没有主分店，也必须能看到并打印自己的收银条码。
+        /// </summary>
+        private async Task<List<string>> GetManagerScopedUserGuidsAsync(
+            IReadOnlyCollection<string> managerStoreCodes
+        )
+        {
+            var userGuids = await GetUserGuidsForStoreCodesAsync(managerStoreCodes);
+            var currentUserGuid = GetCurrentUserGuid()?.Trim();
+            if (
+                !string.IsNullOrWhiteSpace(currentUserGuid)
+                && !userGuids.Contains(currentUserGuid, StringComparer.OrdinalIgnoreCase)
+            )
+            {
+                userGuids.Add(currentUserGuid);
+            }
+
+            return userGuids;
         }
 
         public async Task<ApiResponse<List<CashRegisterUserUserOptionDto>>> GetUserOptionsAsync()
@@ -253,7 +266,7 @@ namespace BlazorApp.Api.Services.React
                 if (!isAdmin)
                 {
                     // 关键逻辑：收银条码页不能借用 Users.View，候选用户必须沿用本页的可管理门店范围。
-                    var scopedUserGuids = await GetUserGuidsForStoreCodesAsync(managerStoreCodes);
+                    var scopedUserGuids = await GetManagerScopedUserGuidsAsync(managerStoreCodes);
                     if (!scopedUserGuids.Any())
                     {
                         return ApiResponse<List<CashRegisterUserUserOptionDto>>.OK(
@@ -283,18 +296,35 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
-        private static ISugarQueryable<CashRegisterUser> ApplyLinkedUserScope(
+        private static ISugarQueryable<CashRegisterUser> ApplyStoreScope(
             ISugarQueryable<CashRegisterUser> query,
-            IReadOnlyCollection<string> userGuids
+            IReadOnlyCollection<string> userGuids,
+            IReadOnlyCollection<string> legacyStoreCodes
         )
         {
-            if (!userGuids.Any())
+            var scopedUserGuids = userGuids.ToList();
+            var scopedStoreCodes = legacyStoreCodes.ToList();
+            if (!scopedUserGuids.Any() && !scopedStoreCodes.Any())
             {
                 return query.Where(_ => false);
             }
 
-            // 关键逻辑：收银条码旧 StoreCode 只做兼容显示，管理授权按条码关联后台用户的分店关系判断。
-            return query.Where(u => u.UserGUID != null && userGuids.Contains(u.UserGUID));
+            // 关键逻辑：已关联后台用户的条码按该用户的分店关系判断（旧 StoreCode 只做兼容显示）；
+            // 未关联用户的条码（HQ 同步来的历史数据全部如此）没有其它分店依据，回退按旧 StoreCode 判断。
+            if (!scopedStoreCodes.Any())
+            {
+                return query.Where(u => u.UserGUID != null && scopedUserGuids.Contains(u.UserGUID));
+            }
+
+            if (!scopedUserGuids.Any())
+            {
+                return query.Where(u => u.UserGUID == null && scopedStoreCodes.Contains(u.StoreCode));
+            }
+
+            return query.Where(u =>
+                (u.UserGUID != null && scopedUserGuids.Contains(u.UserGUID))
+                || (u.UserGUID == null && scopedStoreCodes.Contains(u.StoreCode))
+            );
         }
 
         private async Task<ISugarQueryable<CashRegisterUser>> ApplyManagerScopeAsync(
@@ -308,7 +338,11 @@ namespace BlazorApp.Api.Services.React
                 return query;
             }
 
-            return ApplyLinkedUserScope(query, await GetUserGuidsForStoreCodesAsync(managerStoreCodes));
+            return ApplyStoreScope(
+                query,
+                await GetManagerScopedUserGuidsAsync(managerStoreCodes),
+                managerStoreCodes
+            );
         }
 
         private async Task<bool> IsUserInManagerScopeAsync(
@@ -322,7 +356,7 @@ namespace BlazorApp.Api.Services.React
                 return true;
             }
 
-            var scopedUserGuids = await GetUserGuidsForStoreCodesAsync(managerStoreCodes);
+            var scopedUserGuids = await GetManagerScopedUserGuidsAsync(managerStoreCodes);
             return scopedUserGuids.Contains(userGuid, StringComparer.OrdinalIgnoreCase);
         }
 
@@ -360,9 +394,12 @@ namespace BlazorApp.Api.Services.React
                             switch (col)
                             {
                                 case "storeCode":
-                                    var storeFilteredUserGuids =
-                                        await GetUserGuidsForStoreCodeFilterAsync(v, op);
-                                    baseQuery = ApplyLinkedUserScope(baseQuery, storeFilteredUserGuids);
+                                    var filteredStoreCodes = await GetStoreCodesForFilterAsync(v, op);
+                                    baseQuery = ApplyStoreScope(
+                                        baseQuery,
+                                        await GetUserGuidsForStoreCodesAsync(filteredStoreCodes),
+                                        filteredStoreCodes
+                                    );
                                     break;
                                 case "operatorUser":
                                     if (op == "equals")
@@ -533,12 +570,87 @@ namespace BlazorApp.Api.Services.React
                     }
                 }
 
+                await FillLegacyStoreDisplayAsync(resultList);
+
                 return GridResponseDto<CashRegisterUserListDto>.OK(resultList, totalCount);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "获取收银用户网格数据失败");
                 return GridResponseDto<CashRegisterUserListDto>.Error(ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// 未关联后台用户的条码没有用户分店可展示，回退显示旧 StoreCode 对应的分店名称。
+        /// </summary>
+        private async Task FillLegacyStoreDisplayAsync(IReadOnlyCollection<CashRegisterUserListDto> items)
+        {
+            var pending = items
+                .Where(item => string.IsNullOrWhiteSpace(item.StoreCode) && !string.IsNullOrWhiteSpace(item.LegacyStoreCode))
+                .ToList();
+            if (!pending.Any())
+            {
+                return;
+            }
+
+            var legacyCodes = NormalizeStoreCodes(pending.Select(item => item.LegacyStoreCode));
+            var storeNames = (await _db.Queryable<Store>()
+                    .Where(s => legacyCodes.Contains(s.StoreCode) && !s.IsDeleted)
+                    .Select(s => new { s.StoreCode, s.StoreName })
+                    .ToListAsync())
+                .Where(s => !string.IsNullOrWhiteSpace(s.StoreCode))
+                .GroupBy(s => s.StoreCode!.Trim(), StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.First().StoreName, StringComparer.OrdinalIgnoreCase);
+
+            foreach (var item in pending)
+            {
+                var code = item.LegacyStoreCode!.Trim();
+                item.StoreCode = code;
+                item.StoreName = storeNames.TryGetValue(code, out var name) && !string.IsNullOrWhiteSpace(name)
+                    ? name
+                    : code;
+            }
+        }
+
+        public async Task<ApiResponse<CashRegisterUserScopeDto>> GetScopeAsync()
+        {
+            try
+            {
+                var isAdmin = IsAdmin();
+                // 管理员可管理全部启用分店；其余账号只认主分店，与列表、新建、打印的后端判定同源。
+                var storeQuery = _db.Queryable<Store>().Where(s => s.IsActive && !s.IsDeleted);
+                if (!isAdmin)
+                {
+                    var managerStoreCodes = await GetCurrentUserStoreCodesAsync();
+                    if (!managerStoreCodes.Any())
+                    {
+                        return ApiResponse<CashRegisterUserScopeDto>.OK(
+                            new CashRegisterUserScopeDto { IsAdmin = false },
+                            "获取成功"
+                        );
+                    }
+
+                    storeQuery = storeQuery.Where(s => managerStoreCodes.Contains(s.StoreCode));
+                }
+
+                var stores = await storeQuery
+                    .OrderBy(s => s.StoreCode)
+                    .Select(s => new CashRegisterUserScopeStoreDto
+                    {
+                        StoreCode = s.StoreCode,
+                        StoreName = s.StoreName,
+                    })
+                    .ToListAsync();
+                return ApiResponse<CashRegisterUserScopeDto>.OK(
+                    new CashRegisterUserScopeDto { IsAdmin = isAdmin, ManageableStores = stores },
+                    "获取成功"
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "获取收银条码管理范围失败");
+                return ApiResponse<CashRegisterUserScopeDto>.Error("获取管理范围失败");
             }
         }
 
@@ -599,6 +711,68 @@ namespace BlazorApp.Api.Services.React
             {
                 _logger.LogError(ex, "获取收银用户详情失败，HGUID: {HGUID}", hGuid);
                 return ApiResponse<CashRegisterUserDetailDto>.Error("获取详情失败");
+            }
+        }
+
+        public async Task<ApiResponse<CashRegisterUserPrintConfirmationDto>> ConfirmPrintAsync(
+            string hGuid,
+            ConfirmCashRegisterUserPrintDto dto,
+            string updatedBy
+        )
+        {
+            try
+            {
+                var normalizedHGuid = hGuid?.Trim() ?? string.Empty;
+                var barcode = dto?.UserBarcode?.Trim() ?? string.Empty;
+                if (normalizedHGuid.Length == 0 || barcode.Length == 0)
+                {
+                    return ApiResponse<CashRegisterUserPrintConfirmationDto>.Error("打印确认参数不完整");
+                }
+
+                var userStoreCodes = await GetCurrentUserStoreCodesAsync();
+                var isAdmin = IsAdmin();
+                var scopedQuery = await ApplyManagerScopeAsync(
+                    _db.Queryable<CashRegisterUser>().Where(u => u.HGUID == normalizedHGuid),
+                    isAdmin,
+                    userStoreCodes
+                );
+                if (await scopedQuery.FirstAsync() == null)
+                {
+                    return ApiResponse<CashRegisterUserPrintConfirmationDto>.Error("收银用户不存在");
+                }
+
+                // 关键逻辑：原子自增并同时匹配条码与启用状态；打印期间被换码或停用时影响 0 行，拒绝计数。
+                var affected = await _db.Updateable<CashRegisterUser>()
+                    .SetColumns(u => new CashRegisterUser
+                    {
+                        PrintCount = u.PrintCount + 1,
+                        LastModifier = updatedBy,
+                        LastModifyDate = DateTime.UtcNow,
+                    })
+                    .Where(u => u.HGUID == normalizedHGuid && u.UserBarcode == barcode && u.Status)
+                    .ExecuteCommandAsync();
+                if (affected == 0)
+                {
+                    return ApiResponse<CashRegisterUserPrintConfirmationDto>.Error("条码已变更或已停用，请刷新后重试");
+                }
+
+                var printCount = await _db.Queryable<CashRegisterUser>()
+                    .Where(u => u.HGUID == normalizedHGuid)
+                    .Select(u => u.PrintCount)
+                    .FirstAsync();
+                return ApiResponse<CashRegisterUserPrintConfirmationDto>.OK(
+                    new CashRegisterUserPrintConfirmationDto
+                    {
+                        HGUID = normalizedHGuid,
+                        PrintCount = printCount,
+                    },
+                    "打印已记录"
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "确认收银条码打印失败，HGUID: {HGUID}", hGuid);
+                return ApiResponse<CashRegisterUserPrintConfirmationDto>.Error("记录打印次数失败");
             }
         }
 

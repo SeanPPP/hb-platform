@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Http;
 using System.Text.Json;
@@ -939,6 +940,49 @@ public sealed class LinklyCloudTerminalClientTests
     }
 
     [Fact]
+    public async Task PurchaseAsync_yields_instead_of_hot_spinning_while_waiting_for_result_after_caller_cancel()
+    {
+        var apiClient = new FakeLinklyCloudApiClient
+        {
+            // 不观察取消：取消后原 POST 仍在途，结果晚到。
+            PendingTransactionCompletion = new TaskCompletionSource<LinklyCloudTransactionResult>(
+                TaskCreationOptions.RunContinuationsAsynchronously)
+        };
+        var dialog = new PendingUpdateCountingDialogService();
+        var client = new LinklyCloudTerminalClient(
+            apiClient,
+            new FakeLinklyCloudSecretStore(),
+            TimeSpan.Zero,
+            localization: null,
+            dialogService: dialog);
+        using var cancellation = new CancellationTokenSource();
+
+        // 放到线程池上运行：旧实现取消后会同步空转，若占住测试同步上下文会把用例本身卡死，而不是明确失败。
+        var purchaseTask = Task.Run(() => client.PurchaseAsync(10m, CreateSession(), CreateSettings(), cancellation.Token));
+        try
+        {
+            await WaitUntilAsync(() => apiClient.SendTransactionCallCount == 1);
+            cancellation.Cancel();
+            var updatesAtCancel = dialog.PendingUpdateCount;
+            var window = Stopwatch.StartNew();
+            await Task.Delay(300);
+            var updatesWhileWaiting = dialog.PendingUpdateCount - updatesAtCancel;
+            var windowMilliseconds = window.Elapsed.TotalMilliseconds;
+
+            // 取消后仍在等原交易结果时应按约 50ms 的节奏让出线程；按频率而不是绝对次数断言，CI 变慢也不会误报。
+            // 同步空转每毫秒可轮询成千上万次，平均每 10ms 最多一次的上限足以区分两者。
+            Assert.True(
+                updatesWhileWaiting <= windowMilliseconds / 10 + 5,
+                $"取消后等待循环在 {windowMilliseconds:F0}ms 内轮询了 {updatesWhileWaiting} 次，疑似同步空转");
+        }
+        finally
+        {
+            apiClient.PendingTransactionCompletion.TrySetResult(Approved(apiClient.LastTransactionSessionId!, "TXN-LATE"));
+            await purchaseTask.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
+        }
+    }
+
+    [Fact]
     [Trait("Category", "Timing")]
     public async Task PurchaseAsync_does_not_use_short_configured_timeout_before_linkly_business_wait()
     {
@@ -961,14 +1005,14 @@ public sealed class LinklyCloudTerminalClientTests
             Assert.False(purchaseTask.IsCompleted);
 
             apiClient.PendingTransactionCompletion.SetResult(Approved(apiClient.LastTransactionSessionId!, "TXN-5"));
-            var result = await purchaseTask.WaitAsync(TimeSpan.FromSeconds(5));
+            var result = await purchaseTask.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
             Assert.True(result.Approved);
         }
         finally
         {
             // 断言失败也结束待响应交易，不能把后台任务带到后续测试。
             cancellation.Cancel();
-            await purchaseTask.WaitAsync(TimeSpan.FromSeconds(5));
+            await purchaseTask.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         }
     }
 
@@ -1073,15 +1117,6 @@ public sealed class LinklyCloudTerminalClientTests
             "42",
             10.08m,
             "RFN-SIG");
-    }
-
-    private static async Task WaitUntilAsync(Func<bool> predicate)
-    {
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        while (!predicate())
-        {
-            await Task.Delay(10, cts.Token);
-        }
     }
 
     private sealed class FakeLinklyCloudSecretStore : ILinklyCloudSecretStore
@@ -1337,6 +1372,33 @@ public sealed class LinklyCloudTerminalClientTests
 
             return Task.CompletedTask;
         }
+    }
+
+    /// <summary>
+    /// 只统计非终态更新次数、不保存状态对象的对话框：用于度量等待循环的轮询频率。
+    /// 故意不观察取消令牌，模拟不抛取消异常的对话框实现——等待循环必须自己让出线程。
+    /// </summary>
+    private sealed class PendingUpdateCountingDialogService : ILinklyTerminalDialogService
+    {
+        private int _pendingUpdateCount;
+
+        public int PendingUpdateCount => Volatile.Read(ref _pendingUpdateCount);
+
+        public CancellationToken LocalCancelToken => CancellationToken.None;
+
+        public Task<LinklyTerminalDialogAction?> UpdateAsync(
+            LinklyTerminalDialogState state,
+            CancellationToken cancellationToken)
+        {
+            if (!state.IsFinal)
+            {
+                Interlocked.Increment(ref _pendingUpdateCount);
+            }
+
+            return Task.FromResult<LinklyTerminalDialogAction?>(null);
+        }
+
+        public Task CloseAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     }
 
     private sealed class FakeLinklyTerminalDialogService : ILinklyTerminalDialogService

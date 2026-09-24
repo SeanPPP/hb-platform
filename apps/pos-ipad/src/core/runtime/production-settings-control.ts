@@ -27,8 +27,10 @@ import {
   type SettingsSnapshot,
 } from "../../features/settings/settings-presenter";
 import type { ReceiptPrinterSettings } from "../db/pos-settings-repository";
+import type { PaymentMethodSettings } from "@/features/settings/payment-method-settings";
 
 export type ProductionSettingsControlDependencies = Readonly<{
+  paymentMethods?: Readonly<{ save(input: PaymentMethodSettings): Promise<void> }>;
   readSnapshot(signal: AbortSignal): Promise<SettingsSnapshot>;
   catalog: Readonly<{
     getRefreshState(): CatalogRefreshState;
@@ -150,6 +152,32 @@ export class ProductionSettingsControl implements SettingsControlPort {
 
   public loadSnapshot(signal: AbortSignal): Promise<SettingsSnapshot> {
     return abortChecked(signal, () => this.input.readSnapshot(signal));
+  }
+
+  public async savePaymentMethods(
+    settings: PaymentMethodSettings,
+    signal: AbortSignal,
+    assertActive: () => void = () => undefined,
+  ): Promise<void> {
+    if (!this.input.paymentMethods) throw new Error("PAYMENT_METHOD_SETTINGS_UNAVAILABLE");
+    // 与既有支付配置共享全局封门；等待期间换班或开始付款均不得穿过保存检查。
+    await this.input.paymentConfigurationTransition.run(async () => {
+      throwIfAborted(signal);
+      assertActive();
+      if (this.catalogRefreshBlocks()) throw new Error("PAYMENT_METHOD_SETTINGS_BLOCKED");
+      const pending = await abortChecked(signal, () => this.input.pendingData.read(signal));
+      const blockers = derivePendingWorkBlockers(pending).filter((blocker) =>
+        blocker.code === "active-cart" || blocker.code === "fulfilment-in-flight" ||
+        blocker.code === "sync-or-audit-in-flight" ||
+        blocker.code === "payment-configuration-sensitive-orders" ||
+        blocker.code === "unresolved-payments",
+      );
+      throwIfAborted(signal);
+      assertActive();
+      if (blockers.length || this.catalogRefreshBlocks()) throw new Error("PAYMENT_METHOD_SETTINGS_BLOCKED");
+      await this.input.paymentMethods!.save(settings);
+      // 保存端口在提交成功时同步发布内存快照；提交后不因页面取消而伪报失败。
+    });
   }
 
   public getCatalogRefreshState(): CatalogRefreshState {

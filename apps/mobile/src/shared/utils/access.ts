@@ -10,8 +10,14 @@ export const PERMISSIONS = {
   System: {
     ManageSettings: "System.ManageSettings",
   },
+  PosTerminal: {
+    // 后端常量本身带 Permissions. 前缀，与 PosTerminal.* 其余收银权限同一命名空间。
+    AuditView: "Permissions.PosTerminal.Audit.View",
+  },
   EmployeeProfiles: {
     View: "EmployeeProfiles.View",
+    Edit: "EmployeeProfiles.Edit",
+    EditPositionType: "EmployeeProfiles.EditPositionType",
   },
   Users: {
     View: "Users.View",
@@ -22,6 +28,15 @@ export const PERMISSIONS = {
     ManageStores: "Users.ManageStores",
     ManagePos: "Users.ManagePosTerminalPermissions",
     ManagePosTerminalPermissions: "Users.ManagePosTerminalPermissions",
+  },
+  CashRegisterUsers: {
+    // 移动端「收银用户条码」独立权限：管理（查看/创建/更新/启停）与打印（查看/打印计数）分开授予。
+    MobileManage: "CashRegisterUsers.MobileManage",
+    MobilePrint: "CashRegisterUsers.MobilePrint",
+  },
+  SeasonalProductInsights: {
+    // 移动端「季节商品查询」独立权限：会展示其他分店库存，不借用商品查询的 StoreProducts.View。
+    View: "SeasonalProductInsights.View",
   },
   LocalPurchase: {
     View: "LocalPurchase.View",
@@ -42,6 +57,8 @@ export const PERMISSIONS = {
     View: "StoreProducts.View",
     Create: "StoreProducts.Create",
     Edit: "StoreProducts.Edit",
+    SyncToOtherStores: "StoreProducts.SyncToOtherStores",
+    PriceUpdates: "StoreProducts.PriceUpdates",
   },
   Container: {
     View: "Container.View",
@@ -83,6 +100,11 @@ const PERMISSION_ALIAS_GROUPS = [
   {
     canonicalCode: PERMISSIONS.LocalPurchase.Edit,
     aliasCodes: ["LocalInvocie.Edit"],
+  },
+  {
+    // 历史授权数据可能只存了无前缀写法，两种写法都视为同一权限。
+    canonicalCode: PERMISSIONS.PosTerminal.AuditView,
+    aliasCodes: ["PosTerminal.Audit.View"],
   },
   {
     canonicalCode: PERMISSIONS.StoreProducts.Create,
@@ -175,10 +197,8 @@ function createEmptyAccess(): AccessControl {
     canDeleteContainer: false,
     canManageStore: false,
     canViewReports: false,
-    canExportData: false,
-    canModifyPrice: false,
-    canDeletePrice: false,
     canViewDeviceRegistration: false,
+    canViewPosOperationLogs: false,
     canManageDeviceRegistration: false,
     canManageDeviceActivationCodes: false,
     canManageMobileDeviceActivationCodes: false,
@@ -313,9 +333,6 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canDeleteProduct = hasPermission("Products.Delete");
 
   const canViewReports = hasPermission("Reports.View");
-  const canExportData = hasPermission("Reports.Export");
-  const canModifyPrice = hasPermission("Prices.Modify");
-  const canDeletePrice = hasPermission("Prices.Delete");
   const canManageDeviceRegistration = hasPermission(PERMISSIONS.DeviceRegistration.Manage);
   const canManageDeviceActivationCodes = hasPermission(
     PERMISSIONS.DeviceRegistration.ActivationCodesManage
@@ -323,6 +340,8 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canManageMobileDeviceActivationCodes = hasPermission(
     PERMISSIONS.DeviceRegistration.MobileActivationCodesManage
   );
+  // 员工操作日志：后端还会按管理员/店长角色二次收窄门店范围，这里只判断入口权限。
+  const canViewPosOperationLogs = hasPermission(PERMISSIONS.PosTerminal.AuditView);
   const canViewDeviceRegistration =
     canManageDeviceRegistration ||
     hasPermission(PERMISSIONS.DeviceRegistration.View) ||
@@ -403,10 +422,8 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     canDeleteContainer,
     canManageStore,
     canViewReports,
-    canExportData,
-    canModifyPrice,
-    canDeletePrice,
     canViewDeviceRegistration,
+    canViewPosOperationLogs,
     canManageDeviceRegistration,
     canManageDeviceActivationCodes,
     canManageMobileDeviceActivationCodes,

@@ -1,5 +1,7 @@
 using BlazorApp.Api.Services;
+using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.Models;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace BlazorApp.Api.Tests;
@@ -7,6 +9,272 @@ namespace BlazorApp.Api.Tests;
 /// <summary>商品分店每日统计 writer 的纯回归测试，不依赖数据库或外部来源。</summary>
 public sealed class SalesStatisticsProductStoreDailyCommandWriterTests
 {
+    private static readonly DateTime RetryTargetDate = new(2026, 9, 20);
+
+    [Fact]
+    public async Task 成本锁重试_首次成功不等待也不重试()
+    {
+        var attempts = 0;
+        var delays = new List<TimeSpan>();
+        var expected = SuccessfulPersistResult();
+
+        var actual = await SalesStatisticsProductStoreDailyCommandWriter.PersistWithLockRetryAsync(
+            persistOnceAsync: () =>
+            {
+                attempts++;
+                return Task.FromResult(expected);
+            },
+            canRetryAfterRollback: () => true,
+            targetDate: RetryTargetDate,
+            logger: NullLogger.Instance,
+            delayAsync: delay =>
+            {
+                delays.Add(delay);
+                return Task.CompletedTask;
+            });
+
+        Assert.Same(expected, actual);
+        Assert.Equal(1, attempts);
+        Assert.Empty(delays);
+    }
+
+    [Fact]
+    public async Task 成本锁重试_短暂冲突后成功且仅退避一秒三秒()
+    {
+        var attempts = 0;
+        var delays = new List<TimeSpan>();
+        var expected = SuccessfulPersistResult();
+
+        var actual = await SalesStatisticsProductStoreDailyCommandWriter.PersistWithLockRetryAsync(
+            persistOnceAsync: () =>
+            {
+                attempts++;
+                if (attempts < 3)
+                    throw LockException(-1);
+                return Task.FromResult(expected);
+            },
+            canRetryAfterRollback: () => true,
+            targetDate: RetryTargetDate,
+            logger: NullLogger.Instance,
+            delayAsync: delay =>
+            {
+                delays.Add(delay);
+                return Task.CompletedTask;
+            });
+
+        Assert.Same(expected, actual);
+        Assert.Equal(3, attempts);
+        Assert.Equal(new[] { TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(3) }, delays);
+    }
+
+    [Fact]
+    public async Task 成本锁重试_三次仍冲突时原样抛出最后异常()
+    {
+        var attempts = 0;
+        var delays = new List<TimeSpan>();
+        var finalError = LockException(-1);
+
+        var actual = await Assert.ThrowsAsync<SetChildPurchasePriceLockException>(() =>
+            SalesStatisticsProductStoreDailyCommandWriter.PersistWithLockRetryAsync(
+                persistOnceAsync: () =>
+                {
+                    attempts++;
+                    throw attempts == 3 ? finalError : LockException(-1);
+                },
+                canRetryAfterRollback: () => true,
+                targetDate: RetryTargetDate,
+                logger: NullLogger.Instance,
+                delayAsync: delay =>
+                {
+                    delays.Add(delay);
+                    return Task.CompletedTask;
+                }));
+
+        Assert.Same(finalError, actual);
+        Assert.Equal(3, attempts);
+        Assert.Equal(new[] { TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(3) }, delays);
+    }
+
+    [Theory]
+    [InlineData(-2)]
+    [InlineData(-3)]
+    [InlineData(-999)]
+    public async Task 成本锁重试_非等待超时结果码不重试(int resultCode)
+    {
+        var attempts = 0;
+        var expected = LockException(resultCode);
+
+        var actual = await Assert.ThrowsAsync<SetChildPurchasePriceLockException>(() =>
+            SalesStatisticsProductStoreDailyCommandWriter.PersistWithLockRetryAsync(
+                persistOnceAsync: () =>
+                {
+                    attempts++;
+                    throw expected;
+                },
+                canRetryAfterRollback: () => true,
+                targetDate: RetryTargetDate,
+                logger: NullLogger.Instance,
+                delayAsync: _ => throw new Xunit.Sdk.XunitException("非等待超时不可退避")));
+
+        Assert.Same(expected, actual);
+        Assert.Equal(1, attempts);
+    }
+
+    [Fact]
+    public async Task 成本锁重试_一般异常和回滚未确认均不重试()
+    {
+        var ordinary = new InvalidOperationException("write failed");
+        var ordinaryAttempts = 0;
+        var ordinaryActual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            SalesStatisticsProductStoreDailyCommandWriter.PersistWithLockRetryAsync(
+                persistOnceAsync: () =>
+                {
+                    ordinaryAttempts++;
+                    throw ordinary;
+                },
+                canRetryAfterRollback: () => true,
+                targetDate: RetryTargetDate,
+                logger: NullLogger.Instance,
+                delayAsync: _ => throw new Xunit.Sdk.XunitException("一般异常不可退避")));
+        Assert.Same(ordinary, ordinaryActual);
+        Assert.Equal(1, ordinaryAttempts);
+
+        var lockError = LockException(-1);
+        var lockAttempts = 0;
+        var lockActual = await Assert.ThrowsAsync<SetChildPurchasePriceLockException>(() =>
+            SalesStatisticsProductStoreDailyCommandWriter.PersistWithLockRetryAsync(
+                persistOnceAsync: () =>
+                {
+                    lockAttempts++;
+                    throw lockError;
+                },
+                canRetryAfterRollback: () => false,
+                targetDate: RetryTargetDate,
+                logger: NullLogger.Instance,
+                delayAsync: _ => throw new Xunit.Sdk.XunitException("回滚未确认不可退避")));
+        Assert.Same(lockError, lockActual);
+        Assert.Equal(1, lockAttempts);
+    }
+
+    [Fact]
+    public async Task 成本锁重试_真实事务执行器先回滚再开始第二次尝试()
+    {
+        var steps = new List<string>();
+        var attempts = 0;
+        var transactionOpen = false;
+        var rollbackConfirmed = false;
+        var expected = SuccessfulPersistResult();
+
+        var actual = await SalesStatisticsProductStoreDailyCommandWriter.PersistWithLockRetryAsync(
+            persistOnceAsync: async () =>
+            {
+                attempts++;
+                var currentAttempt = attempts;
+                await SalesStatisticsTransactionExecutor.ExecuteAsync(
+                    beginAsync: () =>
+                    {
+                        Assert.False(transactionOpen);
+                        transactionOpen = true;
+                        rollbackConfirmed = false;
+                        steps.Add($"begin-{currentAttempt}");
+                        return Task.CompletedTask;
+                    },
+                    workAsync: () =>
+                    {
+                        steps.Add($"work-{currentAttempt}");
+                        if (currentAttempt == 1)
+                            throw LockException(-1);
+                        return Task.CompletedTask;
+                    },
+                    commitAsync: () =>
+                    {
+                        steps.Add($"commit-{currentAttempt}");
+                        transactionOpen = false;
+                        return Task.CompletedTask;
+                    },
+                    rollbackAsync: () =>
+                    {
+                        steps.Add($"rollback-{currentAttempt}");
+                        transactionOpen = false;
+                        rollbackConfirmed = true;
+                        return Task.CompletedTask;
+                    },
+                    logger: NullLogger.Instance,
+                    operationName: "测试成本锁事务");
+                return expected;
+            },
+            canRetryAfterRollback: () => rollbackConfirmed && !transactionOpen,
+            targetDate: RetryTargetDate,
+            logger: NullLogger.Instance,
+            delayAsync: delay =>
+            {
+                steps.Add($"delay-{delay.TotalSeconds:0}");
+                return Task.CompletedTask;
+            });
+
+        Assert.Same(expected, actual);
+        Assert.Equal(new[] { "begin-1", "work-1", "rollback-1", "delay-1", "begin-2", "work-2", "commit-2" }, steps);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task 成本锁重试_事务回滚失败无论连接事务是否清空都不重试(bool transactionStaysOpen)
+    {
+        var steps = new List<string>();
+        var transactionOpen = false;
+        var rollbackConfirmed = false;
+        var canRetryCalls = 0;
+        var original = LockException(-1);
+        var actual = await Assert.ThrowsAsync<SetChildPurchasePriceLockException>(() =>
+            SalesStatisticsProductStoreDailyCommandWriter.PersistWithLockRetryAsync(
+                persistOnceAsync: async () =>
+                {
+                    await SalesStatisticsTransactionExecutor.ExecuteAsync(
+                        beginAsync: () =>
+                        {
+                            transactionOpen = true;
+                            steps.Add("begin");
+                            return Task.CompletedTask;
+                        },
+                        workAsync: () =>
+                        {
+                            steps.Add("work");
+                            throw original;
+                        },
+                        commitAsync: () => throw new Xunit.Sdk.XunitException("失败事务不可提交"),
+                        rollbackAsync: () =>
+                        {
+                            steps.Add("rollback-failed");
+                            transactionOpen = transactionStaysOpen;
+                            throw new InvalidOperationException("rollback failed");
+                        },
+                        logger: NullLogger.Instance,
+                        operationName: "测试回滚失败");
+                    return SuccessfulPersistResult();
+                },
+                canRetryAfterRollback: () =>
+                {
+                    canRetryCalls++;
+                    return rollbackConfirmed && !transactionOpen;
+                },
+                targetDate: RetryTargetDate,
+                logger: NullLogger.Instance,
+                delayAsync: _ => throw new Xunit.Sdk.XunitException("回滚失败不可退避")));
+
+        Assert.Same(original, actual);
+        Assert.False(rollbackConfirmed);
+        Assert.Equal(transactionStaysOpen, transactionOpen);
+        Assert.Equal(1, canRetryCalls);
+        Assert.Equal(new[] { "begin", "work", "rollback-failed" }, steps);
+    }
+
+    private static SetChildPurchasePriceLockException LockException(int resultCode) =>
+        new("HB:SetChildPurchasePrice:Product:TEST", resultCode);
+
+    private static SalesStatisticsProductStoreDailyCommandWriter.PersistResult SuccessfulPersistResult() =>
+        new(new SalesStatisticsProductStoreDailyStateSlice.ProductStatisticStatusResult("Fresh", null), null);
+
     [Fact]
     public void 历史快照已完整或可按旧单价派生时不锁当前商品成本()
     {
@@ -59,6 +327,99 @@ public sealed class SalesStatisticsProductStoreDailyCommandWriterTests
             old[0].Date, rebuilt.Select(row => row.ProductCode).ToList(), rebuilt, old);
 
         Assert.Equal(new[] { "CHANGED", "MISSING", "MIXED", "NEW", "OPENITEM", "SHARED" }, codes);
+    }
+
+    [Fact]
+    public void 国内货的行键编码在国内编码族内变化时仍沿用旧成本快照()
+    {
+        var chinaCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "CN-A", "CN-B" };
+        var old = new[]
+        {
+            // 旧写法的 200 行 -> 本次直写 CN-A。
+            Statistic("TO-DIRECT", 2, 20m, 3m, 6m, "StoreRetailPrice", "200"),
+            // 归属中途变更：旧行直写 CN-A -> 本次直写 CN-B。
+            Statistic("MOVED", 2, 20m, 4m, 8m, "StoreRetailPrice", "CN-A"),
+            // 开关关闭后的回退：旧行直写 CN-A -> 本次写回 200。
+            Statistic("BACK-TO-200", 2, 20m, 5m, 10m, "StoreRetailPrice", "CN-A"),
+            // 销售事实变了：只能沿用旧单价，不能沿用旧总成本。
+            Statistic("FACTS-CHANGED", 2, 20m, 6m, 12m, "StoreRetailPrice", "200"),
+        };
+        var rebuilt = new[]
+        {
+            Statistic("TO-DIRECT", 2, 20m, 99m, 198m, "StoreRetailPrice", "CN-A"),
+            Statistic("MOVED", 2, 20m, 99m, 198m, "StoreRetailPrice", "CN-B"),
+            Statistic("BACK-TO-200", 2, 20m, 99m, 198m, "StoreRetailPrice", "200"),
+            Statistic("FACTS-CHANGED", 3, 30m, 99m, 297m, "StoreRetailPrice", "CN-A"),
+        };
+
+        // 旧快照都找得到，这些商品不依赖当前进价，不需要再取成本业务锁。
+        var codes = SalesStatisticsProductStoreDailyCommandWriter.ResolveCurrentCostProductCodes(
+            old[0].Date, rebuilt.Select(row => row.ProductCode).ToList(), rebuilt, old, chinaCodes);
+        Assert.Empty(codes);
+
+        SalesStatisticsProductStoreDailyCommandWriter.PreserveHistoricalCostSnapshots(rebuilt, old, chinaCodes);
+
+        // 99 是「当前进价」。键对不上时它会覆盖历史成本，且无法恢复。
+        Assert.Equal(new decimal?[] { 6m, 8m, 10m, 18m }, rebuilt.Select(row => row.TotalCost));
+        Assert.Equal(new decimal?[] { 3m, 4m, 5m, 6m }, rebuilt.Select(row => row.UnitCostSnapshot));
+        // 只沿用成本，本次写出的归属不变。
+        Assert.Equal(new[] { "CN-A", "CN-B", "200", "CN-A" }, rebuilt.Select(row => row.SupplierCode));
+    }
+
+    [Fact]
+    public void 国内编码族之外的供应商行键变化不做折叠匹配()
+    {
+        var chinaCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "CN-A" };
+        var old = new[]
+        {
+            Statistic("AU-TO-CHINA", 2, 20m, 3m, 6m, "StoreRetailPrice", "105"),
+            Statistic("CHINA-TO-AU", 2, 20m, 4m, 8m, "StoreRetailPrice", "200"),
+        };
+        var rebuilt = new[]
+        {
+            // 同一商品编码换了澳洲供应商，分店成本身份不同，不能沿用对方的成本快照。
+            Statistic("AU-TO-CHINA", 2, 20m, 9m, 18m, "StoreRetailPrice", "CN-A"),
+            Statistic("CHINA-TO-AU", 2, 20m, 9m, 18m, "StoreRetailPrice", "105"),
+        };
+
+        var codes = SalesStatisticsProductStoreDailyCommandWriter.ResolveCurrentCostProductCodes(
+            old[0].Date, rebuilt.Select(row => row.ProductCode).ToList(), rebuilt, old, chinaCodes);
+        SalesStatisticsProductStoreDailyCommandWriter.PreserveHistoricalCostSnapshots(rebuilt, old, chinaCodes);
+
+        Assert.Equal(new[] { "AU-TO-CHINA", "CHINA-TO-AU" }, codes);
+        Assert.Equal(new decimal?[] { 18m, 18m }, rebuilt.Select(row => row.TotalCost));
+    }
+
+    [Fact]
+    public void 未提供国内编码目录时行键仍按精确匹配()
+    {
+        var old = new[] { Statistic("P1", 2, 20m, 3m, 6m, "StoreRetailPrice", "200") };
+        var rebuilt = new[] { Statistic("P1", 2, 20m, 9m, 18m, "StoreRetailPrice", "CN-A") };
+
+        var codes = SalesStatisticsProductStoreDailyCommandWriter.ResolveCurrentCostProductCodes(
+            old[0].Date, ["P1"], rebuilt, old);
+        SalesStatisticsProductStoreDailyCommandWriter.PreserveHistoricalCostSnapshots(rebuilt, old);
+
+        Assert.Equal(new[] { "P1" }, codes);
+        Assert.Equal(18m, rebuilt[0].TotalCost);
+    }
+
+    [Fact]
+    public void 同一商品在国内编码族内有多条旧行时优先取200那行()
+    {
+        var chinaCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "CN-A", "CN-B" };
+        var old = new[]
+        {
+            Statistic("P1", 1, 10m, 7m, 7m, "StoreRetailPrice", "CN-B"),
+            Statistic("P1", 1, 10m, 3m, 3m, "StoreRetailPrice", "200"),
+        };
+        var rebuilt = new[] { Statistic("P1", 2, 20m, 9m, 18m, "StoreRetailPrice", "CN-A") };
+
+        SalesStatisticsProductStoreDailyCommandWriter.PreserveHistoricalCostSnapshots(rebuilt, old, chinaCodes);
+
+        // 事实已变（两行合成一行），沿用选中旧行的历史单价 3，而不是当前进价 9。
+        Assert.Equal(3m, rebuilt[0].UnitCostSnapshot);
+        Assert.Equal(6m, rebuilt[0].TotalCost);
     }
 
     [Fact]
@@ -307,11 +668,12 @@ public sealed class SalesStatisticsProductStoreDailyCommandWriterTests
         decimal amount,
         decimal? unitCost,
         decimal? totalCost,
-        string source) => new()
+        string source,
+        string supplierCode = "S") => new()
         {
             Date = new DateTime(2025, 1, 2),
             BranchCode = "A",
-            SupplierCode = "S",
+            SupplierCode = supplierCode,
             ProductCode = productCode,
             TotalQuantity = quantity,
             TotalAmount = amount,

@@ -13,6 +13,111 @@ public sealed class SettingsViewModelTests
 {
     private const string CachedToken = "opaque-settings-square-token";
 
+    [Theory]
+    [InlineData("en-US")]
+    [InlineData("zh-CN")]
+    public async Task Active_payment_provider_uses_saved_manual_mode_and_preserves_it_while_editing(string culture)
+    {
+        var localization = new LocalizationService();
+        localization.SetCulture(culture);
+        var methods = new FakePaymentMethodSettingsService();
+        using var viewModel = new SettingsViewModel(new FakeCardTerminalSetupService(), localization,
+            paymentMethodSettingsService: methods);
+        try
+        {
+            await viewModel.LoadAsync();
+            var automaticTitle = viewModel.ActivePaymentProviderText;
+            var automaticDetail = viewModel.ActivePaymentProviderDetailText;
+            viewModel.UseManualCard = true;
+            Assert.Equal(automaticTitle, viewModel.ActivePaymentProviderText);
+            Assert.Equal(automaticDetail, viewModel.ActivePaymentProviderDetailText);
+
+            var notifications = new List<string?>();
+            viewModel.PropertyChanged += (_, e) => notifications.Add(e.PropertyName);
+            await viewModel.SavePaymentMethodsCommand.ExecuteAsync(null);
+            Assert.Equal(localization.T("settings.payment.activeProvider.manual"), viewModel.ActivePaymentProviderText);
+            Assert.Equal(localization.T("settings.payment.activeProvider.manual.detail"), viewModel.ActivePaymentProviderDetailText);
+            Assert.DoesNotContain("[[", viewModel.ActivePaymentProviderText);
+            Assert.DoesNotContain("[[", viewModel.ActivePaymentProviderDetailText);
+            Assert.Contains(nameof(viewModel.ActivePaymentProviderText), notifications);
+            Assert.Contains(nameof(viewModel.ActivePaymentProviderDetailText), notifications);
+
+            viewModel.UseManualCard = false;
+            Assert.Equal(localization.T("settings.payment.activeProvider.manual"), viewModel.ActivePaymentProviderText);
+            await viewModel.SavePaymentMethodsCommand.ExecuteAsync(null);
+            Assert.Equal(automaticTitle, viewModel.ActivePaymentProviderText);
+            Assert.Equal(automaticDetail, viewModel.ActivePaymentProviderDetailText);
+        }
+        finally
+        {
+            localization.SetCulture("en-US");
+        }
+    }
+
+    [Fact]
+    public async Task Payment_method_settings_load_and_save_without_terminal_test()
+    {
+        var setup = new FakeCardTerminalSetupService();
+        var methods = new FakePaymentMethodSettingsService { Current = new(true, false) };
+        using var viewModel = new SettingsViewModel(setup, paymentMethodSettingsService: methods);
+        await viewModel.LoadAsync();
+        Assert.True(viewModel.UseManualCard);
+        Assert.False(viewModel.VoucherEnabled);
+        viewModel.UseManualCard = false;
+        viewModel.VoucherEnabled = true;
+        Assert.True(viewModel.SavePaymentMethodsCommand.CanExecute(null));
+
+        await viewModel.SavePaymentMethodsCommand.ExecuteAsync(null);
+
+        Assert.Equal(new PaymentMethodSettings(false, true), methods.Current);
+        Assert.Equal(1, methods.SaveCalls);
+        Assert.Equal(0, setup.LinklyTestCallCount);
+        Assert.Null(setup.SavedConfiguration);
+    }
+
+    [Fact]
+    public async Task Payment_method_save_failure_keeps_draft_for_retry()
+    {
+        var methods = new FakePaymentMethodSettingsService { FailSave = true };
+        using var viewModel = new SettingsViewModel(new FakeCardTerminalSetupService(), paymentMethodSettingsService: methods)
+        { UseManualCard = true, VoucherEnabled = true };
+        await viewModel.SavePaymentMethodsCommand.ExecuteAsync(null);
+        Assert.True(viewModel.UseManualCard);
+        Assert.True(viewModel.VoucherEnabled);
+        Assert.Equal(new PaymentMethodSettings(), methods.Current);
+        Assert.Contains("save failed", viewModel.StatusMessage);
+        Assert.True(viewModel.SavePaymentMethodsCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task Payment_method_save_requires_payment_settings_permission()
+    {
+        var methods = new FakePaymentMethodSettingsService();
+        using var viewModel = new SettingsViewModel(new FakeCardTerminalSetupService(),
+            enforcePermissionsWhenNoCashier: true, paymentMethodSettingsService: methods)
+        { UseManualCard = true, VoucherEnabled = true };
+        await viewModel.SavePaymentMethodsCommand.ExecuteAsync(null);
+        Assert.Equal(0, methods.SaveCalls);
+        Assert.Equal(new PaymentMethodSettings(), methods.Current);
+    }
+
+    private sealed class FakePaymentMethodSettingsService : IPaymentMethodSettingsService
+    {
+        public PaymentMethodSettings Current { get; set; } = new();
+        public event EventHandler? Changed;
+        public bool FailSave { get; set; }
+        public int SaveCalls { get; private set; }
+        public Task<PaymentMethodSettings> LoadAsync(CancellationToken cancellationToken = default) => Task.FromResult(Current);
+        public Task SaveAsync(PaymentMethodSettings settings, CancellationToken cancellationToken = default)
+        {
+            SaveCalls++;
+            if (FailSave) throw new IOException("save failed");
+            Current = settings;
+            Changed?.Invoke(this, EventArgs.Empty);
+            return Task.CompletedTask;
+        }
+    }
+
     [Fact]
     public void LoadLocationsCommand_allows_backend_token_fetch()
     {
@@ -474,13 +579,13 @@ public sealed class SettingsViewModelTests
             : viewModel.DownloadCatalogCommand;
 
         var execution = catalogCommand.ExecuteAsync(null);
-        await operationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await operationStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         Assert.True(viewModel.BackCommand.CanExecute(null));
         viewModel.BackCommand.Execute(null);
-        await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await cancellationObserved.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         var wasCancellationRequested = receivedToken.IsCancellationRequested;
-        await execution.WaitAsync(TimeSpan.FromSeconds(5));
+        await execution.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         operationCancellationRegistration.Dispose();
 
         Assert.True(returnedToPos);
@@ -3246,21 +3351,6 @@ public sealed class SettingsViewModelTests
         Assert.False(viewModel.HasSavedLinklyCloudSecret);
     }
 
-    private static async Task WaitUntilAsync(Func<bool> condition)
-    {
-        for (var attempt = 0; attempt < 20; attempt++)
-        {
-            if (condition())
-            {
-                return;
-            }
-
-            await Task.Delay(10);
-        }
-
-        Assert.True(condition());
-    }
-
     [Fact]
     public async Task LoadAsync_loads_receipt_printer_settings_and_save_persists_changes()
     {
@@ -3493,7 +3583,7 @@ public sealed class SettingsViewModelTests
         completion.SetResult(new RemoteMaintenanceProvisionResult(false,
             "settings.remoteMaintenance.result.installationFailed", remoteService.Status));
         context.RunQueued();
-        await installTask.WaitAsync(TimeSpan.FromSeconds(5));
+        await installTask.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         Assert.False(viewModel.IsRemoteMaintenanceInstalling);
         Assert.Contains("但安装未完成", viewModel.RemoteMaintenanceProgressText);
 

@@ -50,6 +50,7 @@ function createEmptyAccess(): AccessControl {
     canWriteProduct: false,
     canDeleteProduct: false,
     canReadUser: false,
+    canReadUserConsole: false,
     canWriteUser: false,
     canDeleteUser: false,
     canReadRole: false,
@@ -67,13 +68,13 @@ function createEmptyAccess(): AccessControl {
     canViewCompactSalesBoard: false,
     canViewProductMovementReport: false,
     canViewBatchProductSalesAnalysis: false,
+    canViewShopBatchProductSales: false,
     canViewWarehouseProductFlowAnalysis: false,
     canViewLocalProductSalesAnalysis: false,
     canViewPurchaseAmountDashboard: false,
+    canViewLocalSupplierPurchaseSalesAnalysis: false,
+    canViewPurchaseSalesAnalysis: false,
     canViewProductSalesAnalysis: false,
-    canExportData: false,
-    canModifyPrice: false,
-    canDeletePrice: false,
     // 新细粒度权限
     canManageWarehouseProducts: false,
     canManageWarehouseOrders: false,
@@ -218,6 +219,8 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
 
   // --- 旧权限（保留兼容）---
   const canReadUser = isAdmin || hasPermission(P.Users.View)
+  // Web 后台 /system/users 菜单与页面只认 Users.ViewWebConsole；Users.View 保留给移动端员工列表/用户管理与接口。
+  const canReadUserConsole = isAdmin || hasPermission(P.Users.ViewWebConsole)
   const canWriteUser = isAdmin || hasPermission(P.Users.Create) || hasPermission(P.Users.Edit)
   const canDeleteUser = isAdmin || hasPermission(P.Users.Delete)
   const canReadRole = isAdmin || hasPermission(P.Roles.View)
@@ -243,9 +246,15 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canViewCompactSalesBoard = hasPermission(P.SalesDashboard.CompactBoardView)
   const canViewProductMovementReport = hasPermission(P.SalesDashboard.ProductMovementView)
   const canViewBatchProductSalesAnalysis = hasPermission(P.SalesDashboard.BatchProductSalesView)
+  // 订货前台货号销量页只认前台权限码，不与后台销售看板权限互相放行，避免订货员被判定为拥有后台入口。
+  const canViewShopBatchProductSales = hasPermission(P.OrderFront.BatchProductSalesView)
   const canViewWarehouseProductFlowAnalysis = hasPermission(P.SalesDashboard.WarehouseFlowView)
   const canViewLocalProductSalesAnalysis = hasPermission(P.SalesDashboard.LocalProductAnalysisView)
   const canViewPurchaseAmountDashboard = hasPermission(P.SalesDashboard.PurchaseAmountView)
+  // 分店进货销量分析挪到销售看板后只认本页权限；LocalPurchase.View 不再连带放开它，也不点亮销售看板父菜单。
+  const canViewLocalSupplierPurchaseSalesAnalysis = hasPermission(P.SalesDashboard.LocalSupplierPurchaseSalesView)
+  // 两页合并为「进货销量分析」双标签页：入口取两者之一，标签仍各自按本页权限显示。
+  const canViewPurchaseSalesAnalysis = canViewBatchProductSalesAnalysis || canViewLocalSupplierPurchaseSalesAnalysis
   // 商品销量分析是精确权限契约节点：只读 exactPermissions，不做 Reports.View 别名展开，
   // 字段缺失时非管理员拒绝，超级管理员别名由 isAdmin 兼容放行。
   const canViewProductSalesAnalysis =
@@ -254,11 +263,8 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canViewSalesIntelligence =
     canViewSalesData || canViewSalesDetail || canViewCompactSalesBoard ||
     canViewProductMovementReport || canViewWarehouseProductFlowAnalysis ||
-    canViewLocalProductSalesAnalysis || canViewPurchaseAmountDashboard || canViewBatchProductSalesAnalysis
-  const canExportData = isAdmin || hasPermission(P.Reports.Export)
-  const canModifyPrice = isAdmin || hasPermission(P.Prices.Modify)
-  const canDeletePrice = isAdmin || hasPermission(P.Prices.Delete)
-
+    canViewLocalProductSalesAnalysis || canViewPurchaseAmountDashboard || canViewBatchProductSalesAnalysis ||
+    canViewLocalSupplierPurchaseSalesAnalysis
   // --- 新细粒度权限 ---
   // 仓库
   const canManageWarehouseProducts =
@@ -407,6 +413,7 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     canWriteProduct,
     canDeleteProduct,
     canReadUser,
+    canReadUserConsole,
     canWriteUser,
     canDeleteUser,
     canReadRole,
@@ -424,13 +431,13 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     canViewCompactSalesBoard,
     canViewProductMovementReport,
     canViewBatchProductSalesAnalysis,
+    canViewShopBatchProductSales,
     canViewWarehouseProductFlowAnalysis,
     canViewLocalProductSalesAnalysis,
     canViewPurchaseAmountDashboard,
+    canViewLocalSupplierPurchaseSalesAnalysis,
+    canViewPurchaseSalesAnalysis,
     canViewProductSalesAnalysis,
-    canExportData,
-    canModifyPrice,
-    canDeletePrice,
     // 新细粒度
     canManageWarehouseProducts,
     canManageWarehouseOrders,

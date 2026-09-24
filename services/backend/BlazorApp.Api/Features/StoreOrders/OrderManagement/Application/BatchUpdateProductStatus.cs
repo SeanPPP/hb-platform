@@ -1,3 +1,4 @@
+using BlazorApp.Api.Features.SupplyNotices;
 using BlazorApp.Api.Features.StoreOrders.OrderManagement.Domain;
 using BlazorApp.Api.Features.StoreOrders.OrderManagement.Infrastructure;
 using BlazorApp.Shared.DTOs;
@@ -24,10 +25,27 @@ internal sealed class BatchUpdateProductStatusValidator
             .Select(code => code.Trim())
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
+        // 供货说明只在下架时有意义；录入有误在进入事务前拒绝。
+        NormalizedSupplyNotice? supplyNotice = null;
+        if (!command.Request.IsActive && command.Request.SupplyNotice != null)
+        {
+            var (normalizedNotice, noticeError) = WarehouseProductSupplyNoticeRules.Normalize(
+                command.Request.SupplyNotice
+            );
+            if (noticeError != null)
+            {
+                return StoreOrderManagementValidationResult<BatchUpdateProductStatusInput>.Invalid(
+                    noticeError
+                );
+            }
+            supplyNotice = normalizedNotice;
+        }
+
         return StoreOrderManagementValidationResult<BatchUpdateProductStatusInput>.Valid(
             new BatchUpdateProductStatusInput(
                 productCodes,
-                command.Request.IsActive
+                command.Request.IsActive,
+                supplyNotice
             )
         );
     }

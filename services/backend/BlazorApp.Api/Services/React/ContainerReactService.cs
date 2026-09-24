@@ -2,6 +2,7 @@ using AutoMapper;
 using System.Text.Json;
 using Microsoft.AspNetCore.DataProtection;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Features.SupplyNotices;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
@@ -266,9 +267,33 @@ namespace BlazorApp.Api.Services.React
             if (HasAny(request.NewProductStates))
             {
                 var states = request.NewProductStates;
+                // 新商品/已有商品按「本柜新品」口径筛选：本柜建档后的商品仍归入新商品。
+                // SqlSugar 表达式内不能调用 C# helper，子查询需与 ProjectContainerDetailDtos 保持一致。
                 query = query.Where((cd, wp, dp, lp) =>
-                    (states.Contains("new") && lp.ProductCode == null)
-                    || (states.Contains("existing") && lp.ProductCode != null)
+                    (
+                        states.Contains("new")
+                        && (
+                            lp.ProductCode == null
+                            || SqlFunc.Subqueryable<WarehouseProductChangeHistory>()
+                                .Where(h =>
+                                    h.ProductCode == cd.ProductCode
+                                    && h.Action == ContainerNewProductHistoryAction
+                                    && h.SourceReference == cd.ContainerCode
+                                )
+                                .Any()
+                        )
+                    )
+                    || (
+                        states.Contains("existing")
+                        && lp.ProductCode != null
+                        && !SqlFunc.Subqueryable<WarehouseProductChangeHistory>()
+                            .Where(h =>
+                                h.ProductCode == cd.ProductCode
+                                && h.Action == ContainerNewProductHistoryAction
+                                && h.SourceReference == cd.ContainerCode
+                            )
+                            .Any()
+                    )
                 );
             }
             if (HasAny(request.WarehouseStatus))
@@ -285,9 +310,32 @@ namespace BlazorApp.Api.Services.React
                 if (tags.Contains("new") || tags.Contains("existing"))
                 {
                     // 标签筛选同组取并集，不同组取交集，保持与前端旧本地筛选语义一致。
+                    // 新商品标签同样按「本柜新品」口径，与 NewProductStates 筛选一致。
                     query = query.Where((cd, wp, dp, lp) =>
-                        (tags.Contains("new") && lp.ProductCode == null)
-                        || (tags.Contains("existing") && lp.ProductCode != null)
+                        (
+                            tags.Contains("new")
+                            && (
+                                lp.ProductCode == null
+                                || SqlFunc.Subqueryable<WarehouseProductChangeHistory>()
+                                    .Where(h =>
+                                        h.ProductCode == cd.ProductCode
+                                        && h.Action == ContainerNewProductHistoryAction
+                                        && h.SourceReference == cd.ContainerCode
+                                    )
+                                    .Any()
+                            )
+                        )
+                        || (
+                            tags.Contains("existing")
+                            && lp.ProductCode != null
+                            && !SqlFunc.Subqueryable<WarehouseProductChangeHistory>()
+                                .Where(h =>
+                                    h.ProductCode == cd.ProductCode
+                                    && h.Action == ContainerNewProductHistoryAction
+                                    && h.SourceReference == cd.ContainerCode
+                                )
+                                .Any()
+                        )
                     );
                 }
                 if (
@@ -455,7 +503,22 @@ namespace BlazorApp.Api.Services.React
                                     : 0,
                     orderType
                 ).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
-                "newProduct" => query.OrderBy((cd, wp, dp, lp) => lp.ProductCode == null, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
+                // ORDER BY 同样不能直接使用布尔表达式，按 1/0 排序。
+                "newProduct" => query.OrderBy(
+                    (cd, wp, dp, lp) => SqlFunc.IIF(
+                        lp.ProductCode == null
+                            || SqlFunc.Subqueryable<WarehouseProductChangeHistory>()
+                                .Where(h =>
+                                    h.ProductCode == cd.ProductCode
+                                    && h.Action == ContainerNewProductHistoryAction
+                                    && h.SourceReference == cd.ContainerCode
+                                )
+                                .Any(),
+                        1,
+                        0
+                    ),
+                    orderType
+                ).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
                 "containerPieces" => query.OrderBy((cd, wp, dp, lp) => cd.LoadingPieces, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
                 "middlePackQuantity" => query.OrderBy((cd, wp, dp, lp) => wp.MinOrderQuantity ?? dp.MiddlePackQuantity, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
                 "containerQuantity" => query.OrderBy((cd, wp, dp, lp) => cd.LoadingQuantity, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
@@ -482,6 +545,10 @@ namespace BlazorApp.Api.Services.React
             "国内商品编码与本地主档商品编码不一致";
         private const int ContainerDetailMatchCandidateBatchSize = 400;
 
+        // 货柜「创建新商品/提交货柜」建档时，商品修改历史写入 Action=Create 且 SourceReference=货柜 GUID；
+        // 该表只追加，HQ 同步覆盖明细也不会抹掉，因此用它还原「本柜新品」身份。
+        private const string ContainerNewProductHistoryAction = "Create";
+
         private sealed class ContainerDetailMatchSeed
         {
             public string DetailCode { get; set; } = string.Empty;
@@ -492,6 +559,7 @@ namespace BlazorApp.Api.Services.React
             public string? DirectDomesticProductCode { get; set; }
             public bool DirectDomesticIsDeleted { get; set; }
             public bool IsNew { get; set; }
+            public bool IsContainerNew { get; set; }
             public int? DomesticProductType { get; set; }
             public string? DetailProductType { get; set; }
             public decimal? DetailOemPrice { get; set; }
@@ -564,6 +632,18 @@ namespace BlazorApp.Api.Services.React
                     DirectDomesticProductCode = dp.ProductCode,
                     DirectDomesticIsDeleted = dp.IsDeleted,
                     IsNew = lp.ProductCode == null,
+                    IsContainerNew = SqlFunc.IIF(
+                        lp.ProductCode == null
+                            || SqlFunc.Subqueryable<WarehouseProductChangeHistory>()
+                                .Where(h =>
+                                    h.ProductCode == cd.ProductCode
+                                    && h.Action == ContainerNewProductHistoryAction
+                                    && h.SourceReference == cd.ContainerCode
+                                )
+                                .Any(),
+                        true,
+                        false
+                    ),
                     DomesticProductType = dp.ProductType,
                     DetailProductType = cd.ProductType,
                     DetailOemPrice = cd.OEMPrice,
@@ -786,8 +866,8 @@ namespace BlazorApp.Api.Services.React
             var productTypeKey = ResolveContainerDetailProductTypeKey(seed);
             var matchesNewState =
                 !(tags.Contains("new") || tags.Contains("existing"))
-                || (tags.Contains("new") && seed.IsNew)
-                || (tags.Contains("existing") && !seed.IsNew);
+                || (tags.Contains("new") && seed.IsContainerNew)
+                || (tags.Contains("existing") && !seed.IsContainerNew);
             var matchesProductType =
                 !(
                     tags.Contains("normal")
@@ -821,8 +901,9 @@ namespace BlazorApp.Api.Services.React
             return new ContainerDetailTagStatsDto
             {
                 All = seeds.Count,
-                New = seeds.Count(seed => seed.IsNew),
-                Existing = seeds.Count(seed => !seed.IsNew),
+                // 新商品/已有商品统计按「本柜新品」口径；缺零售价仍只看未建档商品。
+                New = seeds.Count(seed => seed.IsContainerNew),
+                Existing = seeds.Count(seed => !seed.IsContainerNew),
                 Normal = seeds.Count(seed => ResolveContainerDetailProductTypeKey(seed) == "normal"),
                 Set = seeds.Count(seed => ResolveContainerDetailProductTypeKey(seed) == "set"),
                 Multi = seeds.Count(seed => ResolveContainerDetailProductTypeKey(seed) == "multi"),
@@ -1271,6 +1352,20 @@ namespace BlazorApp.Api.Services.React
                                 备注 = cd.Remarks,
                                 // 判断是否新商品：本地商品表中不存在该商品编码
                                 是否新商品 = lp.ProductCode == null,
+                                // 本柜新品：未建档，或主档由本货柜建档（建档后仍需区分新品）
+                                // SQL Server 不允许在 SELECT 列表直接输出布尔表达式，需用 IIF 包成 CASE WHEN。
+                                IsContainerNewProduct = SqlFunc.IIF(
+                                    lp.ProductCode == null
+                                        || SqlFunc.Subqueryable<WarehouseProductChangeHistory>()
+                                            .Where(h =>
+                                                h.ProductCode == cd.ProductCode
+                                                && h.Action == ContainerNewProductHistoryAction
+                                                && h.SourceReference == cd.ContainerCode
+                                            )
+                                            .Any(),
+                                    true,
+                                    false
+                                ),
                                 商品信息 = new ContainerProductInfoDto
                                 {
                                     商品编码 = dp.ProductCode,
@@ -1671,6 +1766,19 @@ namespace BlazorApp.Api.Services.React
                         运输成本 = cd.TransportCost,
                         备注 = cd.Remarks,
                         是否新商品 = lp.ProductCode == null,
+                        // SQL Server 不允许在 SELECT 列表直接输出布尔表达式，需用 IIF 包成 CASE WHEN。
+                        IsContainerNewProduct = SqlFunc.IIF(
+                            lp.ProductCode == null
+                                || SqlFunc.Subqueryable<WarehouseProductChangeHistory>()
+                                    .Where(h =>
+                                        h.ProductCode == cd.ProductCode
+                                        && h.Action == ContainerNewProductHistoryAction
+                                        && h.SourceReference == cd.ContainerCode
+                                    )
+                                    .Any(),
+                            true,
+                            false
+                        ),
                         LastImportPrice = cd.LastImportPrice,
                         LastOEMPrice = cd.LastOEMPrice,
                         WarehouseImportPrice = wp.ImportPrice,
@@ -1715,8 +1823,31 @@ namespace BlazorApp.Api.Services.React
                 .Select((cd, wp, dp, lp) => new
                 {
                     All = SqlFunc.AggregateCount(cd.DetailCode),
-                    New = SqlFunc.AggregateCount(SqlFunc.IIF(lp.ProductCode == null, cd.DetailCode, null)),
-                    Existing = SqlFunc.AggregateCount(SqlFunc.IIF(lp.ProductCode != null, cd.DetailCode, null)),
+                    // 新商品/已有商品统计按「本柜新品」口径，与筛选、列表字段一致。
+                    New = SqlFunc.AggregateCount(SqlFunc.IIF(
+                        lp.ProductCode == null
+                            || SqlFunc.Subqueryable<WarehouseProductChangeHistory>()
+                                .Where(h =>
+                                    h.ProductCode == cd.ProductCode
+                                    && h.Action == ContainerNewProductHistoryAction
+                                    && h.SourceReference == cd.ContainerCode
+                                )
+                                .Any(),
+                        cd.DetailCode,
+                        null
+                    )),
+                    Existing = SqlFunc.AggregateCount(SqlFunc.IIF(
+                        lp.ProductCode != null
+                            && !SqlFunc.Subqueryable<WarehouseProductChangeHistory>()
+                                .Where(h =>
+                                    h.ProductCode == cd.ProductCode
+                                    && h.Action == ContainerNewProductHistoryAction
+                                    && h.SourceReference == cd.ContainerCode
+                                )
+                                .Any(),
+                        cd.DetailCode,
+                        null
+                    )),
                     Normal = SqlFunc.AggregateCount(SqlFunc.IIF((cd.ProductType == null || cd.ProductType != "套装子商品") && dp.ProductType == 0, cd.DetailCode, null)),
                     Set = SqlFunc.AggregateCount(SqlFunc.IIF((cd.ProductType == null || cd.ProductType != "套装子商品") && dp.ProductType == 1, cd.DetailCode, null)),
                     Multi = SqlFunc.AggregateCount(SqlFunc.IIF((cd.ProductType == null || cd.ProductType != "套装子商品") && dp.ProductType == 2, cd.DetailCode, null)),
@@ -4829,6 +4960,22 @@ namespace BlazorApp.Api.Services.React
                     + $"WHERE ProductCode IN ({string.Join(", ", productCodeParameters)}) "
                     + "AND (IsDeleted = 0 OR IsDeleted IS NULL)";
                 await _context.Db.Ado.ExecuteCommandAsync(sql, parameters);
+
+                // 货柜到货后在这里重新上架是最常见的恢复供货路径：关闭已在架商品的供货说明，
+                // 否则下次无说明下架时旧说明会重新浮现。按商品当前状态判断，幂等。
+                var reactivatedCodes = batch
+                    .Where(plan => plan.IsActive == true)
+                    .Select(plan => plan.ProductCode)
+                    .ToList();
+                if (reactivatedCodes.Count > 0)
+                {
+                    await WarehouseProductSupplyNoticeWriter.CloseNoticesForActiveProductsAsync(
+                        _context.Db,
+                        reactivatedCodes,
+                        updatedBy ?? "System",
+                        DateTime.UtcNow
+                    );
+                }
             }
         }
 
@@ -5452,7 +5599,8 @@ namespace BlazorApp.Api.Services.React
             ContainerDetailBatchScopeDto request,
             Func<Container?, List<ContainerDetail>, List<UpdateContainerDetailDto>> buildUpdates,
             string operation,
-            string parameters
+            string parameters,
+            Func<List<ContainerDetail>, Task>? afterUpdate = null
         )
         {
             var deadlockRetryCount = 0;
@@ -5552,6 +5700,10 @@ namespace BlazorApp.Api.Services.React
                         mutationLock: mutationLock,
                         preAcquiredSetChildPurchasePriceLock: scopedImportLock
                     );
+                    if (afterUpdate != null)
+                    {
+                        await afterUpdate(details);
+                    }
 
                     await _context.Db.Ado.CommitTranAsync();
                     return updateResult.TotalUpdated;
@@ -5720,6 +5872,20 @@ namespace BlazorApp.Api.Services.React
                 return 0;
             }
 
+            // 供货说明只在下架时有意义；录入有误在开事务前拒绝，避免“已下架但说明没记上”。
+            NormalizedSupplyNotice? supplyNotice = null;
+            if (!request.IsActive.Value && request.SupplyNotice != null)
+            {
+                var (normalizedNotice, noticeError) = WarehouseProductSupplyNoticeRules.Normalize(
+                    request.SupplyNotice
+                );
+                if (noticeError != null)
+                {
+                    throw new ArgumentException(noticeError);
+                }
+                supplyNotice = normalizedNotice;
+            }
+
             return await ExecuteScopedBatchUpdateUnderContainerLockAsync(
                 containerGuid,
                 request,
@@ -5731,7 +5897,18 @@ namespace BlazorApp.Api.Services.React
                     })
                     .ToList(),
                 "set-status",
-                request.IsActive.Value ? "isActive=true" : "isActive=false"
+                request.IsActive.Value ? "isActive=true" : "isActive=false",
+                // 与状态写入同一事务登记说明；上架时的说明关闭已由明细回写的裸 SQL 之后统一处理。
+                afterUpdate: supplyNotice == null
+                    ? null
+                    : details => WarehouseProductSupplyNoticeWriter.UpsertOpenNoticesAsync(
+                        _context.Db,
+                        GetNormalizedProductCodes(details),
+                        supplyNotice,
+                        _currentUserService.GetCurrentUsername() ?? "System",
+                        source: "ContainerDetail",
+                        DateTime.UtcNow
+                    )
             );
         }
 

@@ -10,6 +10,8 @@ assert.equal(reportPeriod(quickDateSelection('today', '2021-01-01')).compareStar
 assert.equal(reportPeriod({ ...quickDateSelection('today', '2026-09-01'), compare: false }).compareStartDate, undefined)
 assert.equal(validPeriod('2026-02-30', '2026-03-01'), false)
 assert.equal(validPeriod('2026-09-06', '2026-09-01'), false)
+assert.equal(validPeriod('2024-09-22', '2026-09-22'), true, '两年区间可查')
+assert.equal(validPeriod('2024-09-21', '2026-09-22'), false, '超过两年拒绝')
 assert.equal(growth(0, 0), 0)
 assert.equal(growth(10, 0), 'new')
 assert.equal(growth(10, null), null)

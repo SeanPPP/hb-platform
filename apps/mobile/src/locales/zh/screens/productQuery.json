@@ -3,7 +3,8 @@
   "currentStore": "当前分店：{{store}}",
   "search": {
     "placeholder": "条码 / 货号 / 编码",
-    "lastHit": "最近命中：{{value}}"
+    "lastHit": "最近命中：{{value}}",
+    "scan": "扫码查询"
   },
   "actions": {
     "returnToInvoiceDetails": "返回发票明细",
@@ -12,7 +13,9 @@
     "unsavedTitle": "有未保存的价格修改",
     "unsavedDescription": "离开页面会放弃当前分店价格修改。已单独保存的商品类型、清货价、套码或多码不会受影响。",
     "continueEditing": "继续编辑",
-    "discardAndReturn": "放弃并离开"
+    "discardAndReturn": "放弃并离开",
+    "saveAndPrint": "保存并打印",
+    "reset": "重置"
   },
   "createProduct": {
     "action": "创建商品",
@@ -49,6 +52,8 @@
     "generateBarcode": "自动生成条码",
     "barcodeHint": "条码格式：9529 + 日期 YYMMDD + 两位序号 + 校验位；每天最多预留 100 个。",
     "formHint": "填写商品资料与售价，完成后即可创建",
+    "accuracyHint": "请正确填写供应商、货号、条码、商品名称、进货价和零售价。",
+    "permissionWarning": "随意填写将被取消商品创建权限。",
     "namePlaceholder": "输入商品名称",
     "itemPlaceholder": "至少 5 个字符",
     "barcodePlaceholder": "输入条码或自动生成",
@@ -146,12 +151,18 @@
   "sections": {
     "moreInfo": "更多信息",
     "priceAndLabels": "价格与标签",
-    "codes": "套码 / 多码"
+    "codes": "套码 / 多码",
+    "priceTab": "价格",
+    "codesTab": "编码 {{count}}",
+    "unsaved": "有未保存修改"
   },
   "promotion": {
     "title": "满减活动",
     "unnamed": "未命名活动",
-    "rule": "满 {{count}} 件 ${{price}}"
+    "rule": "满 {{count}} 件 ${{price}}",
+    "active": "促销中",
+    "until": "至 {{date}}",
+    "more": "等 {{count}} 个活动"
   },
   "hero": {
     "unnamedProduct": "未命名商品",
@@ -173,7 +184,11 @@
       "normal": "普通商品，使用主条码自己的分店价格。",
       "set": "套装零售价可自定义，进货价按主条码零售价和进货价比例换算。",
       "multi": "多码零售价和进货价都与主条码当前分店价格一致。"
-    }
+    },
+    "showBarcode": "显示条码",
+    "hideBarcode": "收起",
+    "mainBarcode": "主条码 {{value}}",
+    "noBarcode": "无条码"
   },
   "storePrice": {
     "fallbackTitle": "分店商品信息",
@@ -184,7 +199,26 @@
     "rate": "Rate {{value}}",
     "calculating": "计算中...",
     "auto": "自动",
-    "special": "特殊"
+    "special": "特殊",
+    "original": "{{label}} · 原 {{value}}",
+    "on": "开",
+    "off": "关",
+    "autoPricing": "自动定价",
+    "specialProduct": "特殊商品",
+    "rateLabel": "倍率",
+    "gp": "毛利",
+    "discountedGp": "折后毛利",
+    "strategy": "策略",
+    "warehouseNotice": {
+      "label": "仓库零售价有差异",
+      "value": "仓库参考价：{{value}}"
+    },
+    "grid": {
+      "purchase": "进价",
+      "retail": "零售价",
+      "discountPercent": "折扣 %",
+      "discountedRetail": "折后价"
+    }
   },
   "clearancePrice": {
     "title": "分店清货价",
@@ -192,7 +226,9 @@
     "barcode": "清货条码",
     "price": "清货价",
     "save": "保存清货",
-    "pendingBarcode": "保存后自动生成"
+    "pendingBarcode": "保存后自动生成",
+    "rowTitle": "清货",
+    "setAction": "设置清货价"
   },
   "setCode": {
     "title": "套装条码",
@@ -235,6 +271,7 @@
     "confirm": "更新价格并更新标签"
   },
   "warehousePriceSync": {
+    "currentPriceUnavailable": "当前门店售价无法确认，请重新扫码后再打印。",
     "title": "仓库零售价有变化",
     "product": "{{name}}（{{code}}）",
     "currentRetail": "当前零售价",
@@ -252,7 +289,44 @@
     "confirmFailed": "仓库零售价更新失败，请重试",
     "conflict": "价格已发生变化，已刷新为最新内容，请重新确认"
   },
+  "offline": {
+    "bannerTitle": "离线模式 · 数据更新于 {{time}}",
+    "bannerMeta": "{{count}} 件 · 下载于 {{time}}",
+    "bannerNoData": "离线模式 · 当前分店没有离线数据",
+    "bannerNoDataHint": "恢复网络后会自动下载离线数据",
+    "retryConnection": "重试连接",
+    "backOnline": "已恢复在线，数据已切回实时",
+    "statusReady": "离线数据 · 更新于 {{time}} · {{count}} 件",
+    "statusSyncing": "正在下载离线数据 · {{step}} {{percent}}% · {{completed}} / {{total}}",
+    "statusFailed": "离线数据更新失败：{{reason}}",
+    "statusMissing": "尚未下载离线数据",
+    "steps": {
+      "prepare": "准备",
+      "products": "商品",
+      "activate": "激活"
+    },
+    "errors": {
+      "network": "网络不可用",
+      "capacityBusy": "服务器繁忙，请稍后再试",
+      "preparationTimeout": "服务器准备离线数据超时，请稍后手动重试",
+      "expired": "服务端快照已过期，将重新下载",
+      "verification": "数据校验失败",
+      "api": "服务器返回错误",
+      "failed": "未知错误"
+    },
+    "download": "下载",
+    "update": "更新",
+    "retry": "重试",
+    "editingUnavailable": "离线模式下不能修改价格、条码或商品信息",
+    "insightsUnavailable": "离线模式下无法查看商品洞察",
+    "catalogMissing": "当前分店尚未下载离线数据，恢复网络后会自动下载",
+    "notInCatalog": "离线数据中没有该商品",
+    "refreshCompleted": "离线数据已更新（{{count}} 件）",
+    "refreshNoChange": "离线数据已是最新",
+    "refreshCancelled": "已取消离线数据下载"
+  },
   "print": {
+    "inProgress": "正在打印…",
     "title": "标签打印",
     "quick": "打",
     "product": "普通标签",
@@ -269,6 +343,178 @@
     "continuousPrint": "自动打印",
     "smallLabel": "小标签 (60mm)",
     "quantity": "打印数量",
-    "quantitySingleUse": "单次有效"
+    "quantitySingleUse": "单次有效",
+    "printerStatus": {
+      "unselected": "未选择打印机",
+      "idle": "待连接",
+      "connecting": "连接中",
+      "connected": "已连接",
+      "reconnecting": "正在重新连接",
+      "disconnected": "已断开",
+      "paused": "连接已暂停",
+      "error": "连接异常",
+      "errorHint": "请打开设置检查连接",
+      "openSettingsHint": "打开打印机设置"
+    },
+    "label": "标签"
+  },
+  "codes": {
+    "loaded": "已加载 {{loaded}} / {{total}}",
+    "barcodeColumn": "条码",
+    "retailColumn": "零售价",
+    "setPriceColumn": "套装价",
+    "actionsColumn": "操作",
+    "follow": "跟随",
+    "loadMore": "加载更多（还有 {{count}} 个）",
+    "saveRow": "保存该行",
+    "printRow": "打印该行标签"
+  },
+  "codeAdd": {
+    "submit": "添加到列表",
+    "barcodePlaceholder": "扫描或输入条码",
+    "setRetail": "套装零售价",
+    "unitPrice": "单件 ${{price}} × ?",
+    "equivalent": "相当于约 {{count}} 件的价",
+    "scan": "扫码填入条码"
+  },
+  "poster": {
+    "rowTitle": "海报",
+    "entryAccessibility": "制作{{kind}}海报",
+    "back": "返回",
+    "kinds": {
+      "special": "特价",
+      "multibuy": "多件价",
+      "new": "新品",
+      "clearance": "清仓"
+    },
+    "styles": {
+      "classic": "经典",
+      "modern": "现代",
+      "low-ink": "省彩墨",
+      "christmas": "圣诞",
+      "halloween": "万圣节"
+    },
+    "lowInkHint": "白底黑字，仅标题与短线用彩色；Logo 可按需关闭。",
+    "unavailable": {
+      "multibuy": "没有进行中的多件促销",
+      "clearance": "未设清货价"
+    },
+    "unavailableItem": "{{kind}}：{{reason}}",
+    "unavailableSeparator": "；",
+    "showLogo": "显示 Logo",
+    "showLogoHint": "应用于整批海报",
+    "queueBar": {
+      "title": "待打印海报 {{count}} 张",
+      "go": "去打印"
+    },
+    "summary": {
+      "sizeCount": "{{size}} × {{count}}",
+      "imposedPages": "拼版后 {{count}} 页 A4",
+      "pages": "共 {{count}} 页"
+    },
+    "editor": {
+      "title": "促销海报",
+      "itemNumber": "货号 {{value}}",
+      "kindLabel": "类型",
+      "styleLabel": "风格",
+      "sizeLabel": "尺寸",
+      "previewSize": "{{size}} 实际尺寸",
+      "previewMm": "{{width}} × {{height}} mm",
+      "previewImpose": "拼版时 {{count}} 张 / A4",
+      "previewImposeA4": "每张一页 A4",
+      "previewHint": "实时预览，改下面的内容即更新；以生成的 PDF 为准",
+      "titleLabel": "英文品名（印在海报上）",
+      "titlePlaceholder": "例如 Stainless Steel Vacuum Flask",
+      "titleEmptyHint": "该商品没有可打印的英文名，请手动填写（海报只能印英文）",
+      "priceNow": "现价",
+      "clearancePrice": "清仓价",
+      "priceWas": "原价（划线）",
+      "priceWasOptional": "原价（可选）",
+      "salePrice": "售价",
+      "hintDiscounted": "本店折后价 {{price}}",
+      "hintClearance": "已设清货价 {{price}}",
+      "hintRetail": "零售价 {{price}}",
+      "inStoreSince": "上架日期",
+      "offerLabel": "多件促销",
+      "offerSummary": "{{quantity}} 件 {{price}}",
+      "quantityLabel": "件数（2–99）",
+      "comboPriceLabel": "组合价",
+      "unitPriceLabel": "单价（零售价）",
+      "offerValidityLabel": "促销期",
+      "offerValidity": "{{from}} 至 {{to}}",
+      "mixAndMatch": "促销含 {{count}} 个商品，海报显示「任选 {{quantity}} 件」",
+      "offerReadonly": "多件价按收银促销自动填写，如需修改请先改促销",
+      "validity": "有效期（可选）",
+      "validFrom": "开始",
+      "validTo": "结束",
+      "addToQueue": "加入待打印",
+      "printNow": "直接打印",
+      "loading": "正在读取商品信息…",
+      "loadFailed": "读取商品信息失败",
+      "retry": "重试",
+      "missingParams": "缺少商品或分店信息，请返回扫码页重试",
+      "reviewUnavailable": "演示模式不支持促销海报"
+    },
+    "errors": {
+      "titleRequired": "请填写英文品名",
+      "titleTooLong": "英文品名最多 {{max}} 个字符",
+      "titleUnprintable": "含有无法打印的字符：{{chars}}（海报只能印英文）",
+      "priceRequired": "请填写价格",
+      "priceInvalid": "价格格式不正确（大于 0，最多两位小数）",
+      "wasNotHigher": "原价要高于现价",
+      "validity": {
+        "required": "请同时选择开始和结束日期",
+        "invalid": "日期格式不正确",
+        "rangeInvalid": "开始日期不能晚于结束日期"
+      },
+      "offerRequired": "请选择多件促销",
+      "quantityInvalid": "件数必须是 2 到 99 的整数",
+      "unitPriceMissing": "商品没有零售价，无法计算单价",
+      "offerInvalid": "促销件数或组合价无效，请检查促销设置",
+      "fixBeforeSubmit": "请先修正标红的内容"
+    },
+    "mismatch": {
+      "special": "现价与本店折后价 {{price}} 不一致，收银仍按折后价结算",
+      "clearance": "清仓价与已设清货价 {{price}} 不一致，收银仍按清货价结算"
+    },
+    "messages": {
+      "queueFull": "待打印最多 {{max}} 张，请先生成 PDF",
+      "storeConflictTitle": "更换分店",
+      "storeConflictBody": "待打印里有其它分店的 {{count}} 张海报，一次只能打印同一分店。加入这张会清空原队列，继续吗？",
+      "storeConflictConfirm": "清空并加入",
+      "pdfFailed": "生成 PDF 失败",
+      "openFailed": "打开 PDF 失败",
+      "shareUnavailable": "当前设备不支持分享",
+      "scaleTip": "打印时缩放选「实际大小 / 100%」，选「适合页面」会让裁出来的海报变小。"
+    },
+    "queue": {
+      "title": "待打印海报",
+      "subtitle": "{{count}} 张 · {{pages}}",
+      "clear": "清空",
+      "imposeTitle": "小尺寸拼到 A4 纸打印",
+      "imposeDescription": "A5 2 张 / A6 4 张 / A7 8 张一页，带裁切线",
+      "groupTitle": "{{size}} · {{count}} 张",
+      "groupImposed": "拼成 {{count}} 页 A4",
+      "groupPages": "{{count}} 页",
+      "itemNumber": "货号 {{value}}",
+      "remove": "移除",
+      "removed": "已移除 1 张海报",
+      "undo": "撤销",
+      "empty": "还没有待打印的海报",
+      "emptyHint": "在扫码查询页扫到商品后，点「海报」行的类型制作并加入",
+      "continueScan": "继续扫码",
+      "generate": "生成 PDF",
+      "generating": "正在生成…",
+      "clearConfirmTitle": "清空待打印？",
+      "clearConfirmBody": "将移除全部 {{count}} 张海报。",
+      "clearConfirm": "清空",
+      "resultTitle": "PDF 已生成",
+      "resultBody": "{{fileName}} · 共 {{pages}} 页",
+      "preview": "预览 / 打印",
+      "share": "分享 / 保存",
+      "keep": "保留队列",
+      "clearAfter": "清空已打印",
+      "resultQuestion": "打印好后可以清空这批海报，继续扫下一批。"
+    }
   }
 }

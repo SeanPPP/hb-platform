@@ -9,6 +9,32 @@ import {
 import { PricingCart } from "@/features/sales/domain";
 import { ActivePricingCartSession } from "@/features/sales/runtime";
 
+test("小数数量拒绝取得支付独占锁后，原购物车仍可修改", async () => {
+  const source = cartWithDiscount().stateSnapshot();
+  const active = session(PricingCart.restore({
+    ...source,
+    lines: [{ ...source.lines[0]!, quantity: 1.25 }],
+  }));
+  const coordinator = createCoordinator(active, null);
+
+  await assert.rejects(
+    () => coordinator.acquireExact({
+      checkoutIntentId: "checkout-fractional",
+      expectedRevision: active.read().cart.revision,
+    }),
+    hasCode("PAYMENT_QUANTITY_UNSUPPORTED"),
+  );
+  assert.equal(active.hasPendingExclusiveOperation(), false);
+  assert.equal(active.setLineQuantity("line-1", 2), true);
+  assert.equal(active.read().cart.lines[0]?.quantity, "2");
+
+  const lease = await coordinator.acquireExact({
+    checkoutIntentId: "checkout-integer",
+    expectedRevision: active.read().cart.revision,
+  });
+  await coordinator.releaseAfterSafeCancel(lease, "order-integer");
+});
+
 test("支付 lease 跨异步生命周期独占购物车，安全取消后保留原定价车", async () => {
   const cart = cartWithDiscount();
   const active = session(cart);
@@ -83,6 +109,48 @@ test("订单确认后才清空购物车并释放支付 lease", async () => {
     syncProvenance: { referenceCode: null, priceSource: 0 },
   });
   assert.equal(active.read().cart.lines.length, 1);
+});
+
+test("异常支付耐久移交后清空当前车，并可按原材料精确恢复", async () => {
+  const original = cartWithDiscount();
+  const active = session(original);
+  const coordinator = createCoordinator(active, null);
+  await coordinator.acquireExact({
+    checkoutIntentId: "checkout-parked",
+    expectedRevision: active.read().cart.revision,
+  });
+
+  await coordinator.clearAfterRecoveryParked("checkout-parked", "order-parked");
+  assert.equal(active.read().cart.lines.length, 0);
+  active.addItem({
+    lineId: "next-sale",
+    productCode: "NEXT",
+    itemNumber: null,
+    lookupCode: "NEXT",
+    displayName: "Next sale",
+    unitPrice: { currency: "AUD", cents: 100 },
+    syncProvenance: { referenceCode: null, priceSource: 0 },
+  });
+  await assert.rejects(
+    () => coordinator.prepareParkedRecovery({
+      checkoutIntentId: "checkout-parked",
+      cart: original.snapshot(),
+      pricingState: original.stateSnapshot(),
+      recallBinding: null,
+    }),
+    hasCode("ACTIVE_PRICING_CART_BUSY"),
+  );
+  active.clearManually();
+  const restored = await coordinator.prepareParkedRecovery({
+    checkoutIntentId: "checkout-parked",
+    cart: original.snapshot(),
+    pricingState: original.stateSnapshot(),
+    recallBinding: null,
+  });
+  assert.equal(restored.checkoutIntentId, "checkout-parked");
+  assert.deepEqual(active.read().cart, original.snapshot());
+  await coordinator.clearAfterCompleted(restored, "order-parked");
+  assert.equal(active.read().cart.lines.length, 0);
 });
 
 test("设备 scope 失效后已耐久完成订单仍由原支付 lease 清车并释放", async () => {

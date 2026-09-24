@@ -8,6 +8,8 @@
 export const P = {
   Users: {
     View: 'Users.View',
+    // Web 后台 /system/users 菜单与页面的独立授权，与移动端复用的 Users.View 分开。
+    ViewWebConsole: 'Users.ViewWebConsole',
     Create: 'Users.Create',
     Edit: 'Users.Edit',
     Delete: 'Users.Delete',
@@ -44,7 +46,6 @@ export const P = {
     Delete: 'Orders.Delete',
   },
   Warehouse: {
-    View: 'Warehouse.View',
     Manage: 'Warehouse.Manage',
     ManageProducts: 'Warehouse.ManageProducts',
     ManageCategories: 'Warehouse.ManageCategories',
@@ -57,6 +58,9 @@ export const P = {
     Edit: 'Container.Edit',
     Delete: 'Container.Delete',
   },
+  SalesOrders: {
+    View: 'SalesOrders.View',
+  },
   InstallmentOrders: {
     View: 'InstallmentOrders.View',
   },
@@ -64,19 +68,12 @@ export const P = {
     View: 'StoreVouchers.View',
   },
   DomesticPurchase: {
-    View: 'DomesticPurchase.View',
     ManageSuppliers: 'DomesticPurchase.ManageSuppliers',
     ManageProducts: 'DomesticPurchase.ManageProducts',
     ManagePrefixCodes: 'DomesticPurchase.ManagePrefixCodes',
   },
-  Prices: {
-    View: 'Prices.View',
-    Modify: 'Prices.Modify',
-    Delete: 'Prices.Delete',
-  },
   Reports: {
     View: 'Reports.View',
-    Export: 'Reports.Export',
     ProductMovementView: 'Reports.ProductMovement.View',
   },
   SalesDashboard: {
@@ -88,6 +85,8 @@ export const P = {
     WarehouseFlowView: 'SalesDashboard.WarehouseFlow.View',
     LocalProductAnalysisView: 'SalesDashboard.LocalProductAnalysis.View',
     PurchaseAmountView: 'SalesDashboard.PurchaseAmount.View',
+    // 分店进货销量分析已挪到销售看板，按该菜单的逐页授权模式使用独立权限码。
+    LocalSupplierPurchaseSalesView: 'SalesDashboard.LocalSupplierPurchaseSales.View',
   },
   System: {
     ViewLogs: 'System.ViewLogs',
@@ -107,11 +106,15 @@ export const P = {
   EmployeeProfiles: {
     View: 'EmployeeProfiles.View',
     Edit: 'EmployeeProfiles.Edit',
+    EditPositionType: 'EmployeeProfiles.EditPositionType',
   },
   StoreProducts: {
     View: 'StoreProducts.View',
     Create: 'StoreProducts.Create',
     Edit: 'StoreProducts.Edit',
+    // 移动端「商品维护」把本店零售价/折扣同步到其它可管理分店；名称与说明由后端权限种子提供。
+    SyncToOtherStores: 'StoreProducts.SyncToOtherStores',
+    PriceUpdates: 'StoreProducts.PriceUpdates',
   },
   Promotions: {
     View: 'Promotions.View',
@@ -137,7 +140,15 @@ export const P = {
   },
   Store: {
     ManageOperations: 'Store.ManageOperations',
-    ManageInfo: 'Store.ManageInfo',
+  },
+  // 移动端「收银用户条码」独立权限；Web 页面仍只认 Store.ManageOperations。
+  CashRegisterUsers: {
+    MobileManage: 'CashRegisterUsers.MobileManage',
+    MobilePrint: 'CashRegisterUsers.MobilePrint',
+  },
+  // 移动端「季节商品查询」独立权限，Web 端暂无对应页面。
+  SeasonalProductInsights: {
+    View: 'SeasonalProductInsights.View',
   },
   PosProducts: {
     View: 'PosProducts.View',
@@ -151,6 +162,8 @@ export const P = {
   },
   OrderFront: {
     View: 'OrderFront',
+    // 订货前台「货号销量」页面，独立于后台销售看板权限。
+    BatchProductSalesView: 'OrderFront.BatchProductSales.View',
   },
   Attendance: {
     ScheduleViewSelf: 'Attendance.Schedule.ViewSelf',

@@ -3,6 +3,8 @@ import * as sensitiveProfileModule from "./sensitive-profile";
 import {
   buildNonSensitiveProfilePayload,
   getChangedSensitiveFields,
+  hasEmailChanged,
+  isEmailChangeValid,
   getSensitiveAccountSummary,
   getSensitiveStatusView,
   isSensitiveVersionConflict,
@@ -21,6 +23,7 @@ const formal: EmployeeProfile = {
   username: "employee-a",
   sensitiveRevision: 3,
   phone: "0400000000",
+  email: "employee@example.com",
   bankBsb: "123-456",
   bankAccountNumber: "111122223333",
   superannuationCompanyName: "Future Super",
@@ -90,6 +93,14 @@ assert.equal(
   3,
   "规范化敏感表单时必须保留打开表单时的 revision"
 );
+assert.equal(hasEmailChanged(" old@example.com ", "old@example.com"), false);
+assert.equal(hasEmailChanged("old@example.com", "new@example.com"), true);
+assert.equal(isEmailChangeValid("old@example.com", ""), false, "已有邮箱清空时必须阻止提交");
+assert.equal(isEmailChangeValid("", ""), true, "初始为空邮箱且未修改时允许保存其他资料");
+assert.equal(isEmailChangeValid("old@example.com", " new@example.com "), true);
+assert.equal(isEmailChangeValid("legacy-invalid", "legacy-invalid"), true, "未修改历史邮箱时允许保存其他资料");
+assert.equal(isEmailChangeValid("old@example.com", "invalid"), false);
+assert.equal(sensitiveProfileModule.isValidEmail("a".repeat(249) + "@x.com"), false);
 assert.ok(
   getChangedSensitiveFields(formal, sameLastFourDraft).includes("bankAccountNumber"),
   "末四位相同但完整账号不同仍必须识别为变更"
@@ -102,6 +113,7 @@ assert.equal(
 
 const nonSensitivePayload = buildNonSensitiveProfilePayload({
   phone: " 0400000000 ",
+  email: " test@example.com ",
   birthday: " 1990-01-02 ",
   gender: " female ",
   employmentType: " fullTime ",
@@ -109,11 +121,28 @@ const nonSensitivePayload = buildNonSensitiveProfilePayload({
 });
 assert.deepEqual(nonSensitivePayload, {
   phone: "0400000000",
+  email: "test@example.com",
   birthday: "1990-01-02",
   gender: "female",
   employmentType: "fullTime",
   address: "1 Queen Street",
 });
+assert.equal(
+  "email" in buildNonSensitiveProfilePayload(nonSensitivePayload, { initialEmail: " test@example.com " }),
+  false,
+  "邮箱未变化时不得回传，以免覆盖并发更新"
+);
+assert.equal(
+  buildNonSensitiveProfilePayload({ ...nonSensitivePayload, email: " new@example.com " }, { initialEmail: "test@example.com" }).email,
+  "new@example.com"
+);
+assert.equal(
+  "employmentType" in buildNonSensitiveProfilePayload({
+    phone: "", email: "", birthday: "", gender: "", employmentType: "casual", address: "",
+  }, { canEditPositionType: false }),
+  false,
+  "没有职位类型权限时保存 payload 不得携带 employmentType"
+);
 for (const sensitiveKey of [
   "bankBsb",
   "bankAccountNumber",

@@ -82,7 +82,9 @@ namespace BlazorApp.Api.Interfaces.React
             int pageIndex = 1,
             int pageSize = 100,
             string? productSearch = null,
-            bool chinaSupplierScope = false
+            bool chinaSupplierScope = false,
+            string? sortField = null,
+            string? sortOrder = null
         );
 
         Task<PagedSalesProductDetailWithDiscountDto> GetEnhancedSalesProductDetailsAsync(
@@ -94,7 +96,9 @@ namespace BlazorApp.Api.Interfaces.React
             int pageSize,
             string? productSearch,
             ProductReportStatisticStatusDto statisticStatus,
-            bool chinaSupplierScope = false
+            bool chinaSupplierScope = false,
+            string? sortField = null,
+            string? sortOrder = null
         );
 
         Task<List<ProductBranchSalesDto>> GetProductSalesByAllBranchesAsync(
@@ -119,6 +123,16 @@ namespace BlazorApp.Api.Interfaces.React
         Task<List<ChinaSupplierStoreSalesDto>> GetChinaSupplierStoreSalesAsync(
             DateRangeDto dateRange,
             List<string> supplierCodes,
+            List<string>? branchCodes,
+            ProductReportStatisticStatusDto statisticStatus
+        );
+
+        /// <summary>
+        /// 按分店汇总全部中国供应商的销售额（移动端「分店中国货占比」的分子）。
+        /// branchCodes 为 null 表示不限分店；显式空列表表示无授权分店，返回空结果。
+        /// </summary>
+        Task<List<ChinaSupplierBranchTotalDto>> GetChinaSupplierBranchTotalsAsync(
+            DateRangeDto dateRange,
             List<string>? branchCodes,
             ProductReportStatisticStatusDto statisticStatus
         );
@@ -262,17 +276,9 @@ namespace BlazorApp.Api.Interfaces.React
         );
 
         /// <summary>
-        /// 获取紧凑销售看板；调用方传入的分店范围必须已经过授权解析。
+        /// 获取紧凑销售看板；调用方传入的 query.BranchCodes 必须已经过授权解析。
         /// </summary>
-        Task<CompactSalesBoardDto> GetCompactSalesBoardAsync(
-            DateRangeDto dateRange,
-            List<string>? branchCodes = null,
-            List<string>? chinaSupplierCodes = null,
-            string? productCode = null,
-            int pageIndex = 1,
-            int pageSize = 80,
-            bool forceRefresh = false
-        );
+        Task<CompactSalesBoardDto> GetCompactSalesBoardAsync(CompactSalesBoardQuery query);
 
         /// <summary>
         /// 获取 Best Sellers 商品列表（销量排名）

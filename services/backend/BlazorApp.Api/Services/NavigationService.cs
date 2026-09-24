@@ -75,7 +75,8 @@ namespace BlazorApp.Api.Services
                 Children = new List<NavigationMenuDto>
                 {
                     new() { Path = "/system/stores",   TitleKey = "menu.systemStores",      Icon = "ShopOutlined",    Permission = Permissions.Stores.View },
-                    new() { Path = "/system/users",    TitleKey = "menu.systemUsers",       Icon = "UserOutlined",     Permission = Permissions.Users.View },
+                    // Web 用户管理菜单只认 Users.ViewWebConsole；Users.View 继续点亮移动端「员工列表」「用户管理」。
+                    new() { Path = "/system/users",    TitleKey = "menu.systemUsers",       Icon = "UserOutlined",     Permission = Permissions.Users.ViewWebConsole },
                     new() { Path = "/system/employee-profiles", TitleKey = "menu.employeeProfiles", Icon = "IdcardOutlined", Permission = Permissions.EmployeeProfiles.View },
                     new() { Path = "/system/roles",    TitleKey = "menu.systemRoles",       Icon = "TeamOutlined",     Permission = Permissions.Roles.View },
                     new() { Path = "/system/permissions", TitleKey = "menu.systemPermissions", Icon = "KeyOutlined", Permission = Permissions.Roles.View },
@@ -129,7 +130,8 @@ namespace BlazorApp.Api.Services
                     new() { Path = "/executive-sales-intelligence/sales-detail-v2", TitleKey = "menu.salesDetail", Icon = "FileTextOutlined",  Permission = Permissions.SalesDashboard.SalesDetailView },
                     new() { Path = "/executive-sales-intelligence/compact-sales-board", TitleKey = "menu.compactSalesBoard", Icon = "BarChartOutlined", Permission = Permissions.SalesDashboard.CompactBoardView },
                     new() { Path = "/executive-sales-intelligence/product-movement-report", TitleKey = "menu.productMovementReport", Icon = "ReconciliationOutlined", Permission = Permissions.SalesDashboard.ProductMovementView },
-                    new() { Path = "/executive-sales-intelligence/batch-product-sales-analysis", TitleKey = "menu.batchProductSalesAnalysis", Icon = "BarChartOutlined", Permission = Permissions.SalesDashboard.BatchProductSalesView },
+                    // 进货销量分析：批量货号销量与分店进货销量分析合为一页两个标签，任一页权限即显示入口，标签再按各自权限显示。
+                    new() { Path = "/executive-sales-intelligence/purchase-sales-analysis", TitleKey = "menu.purchaseSalesAnalysis", Icon = "BarChartOutlined", AnyPermissions = new List<string> { Permissions.SalesDashboard.BatchProductSalesView, Permissions.SalesDashboard.LocalSupplierPurchaseSalesView } },
                     new() { Path = "/executive-sales-intelligence/warehouse-product-flow-analysis", TitleKey = "menu.warehouseProductFlowAnalysis", Icon = "BarChartOutlined", Permission = Permissions.SalesDashboard.WarehouseFlowView },
                     new() { Path = "/executive-sales-intelligence/local-product-sales-analysis", TitleKey = "menu.localProductSalesAnalysis", Icon = "BarChartOutlined", Permission = Permissions.SalesDashboard.LocalProductAnalysisView },
                     new() { Path = "/executive-sales-intelligence/purchase-amount-dashboard", TitleKey = "menu.purchaseAmountDashboard", Icon = "DollarOutlined", Permission = Permissions.SalesDashboard.PurchaseAmountView },
@@ -154,7 +156,6 @@ namespace BlazorApp.Api.Services
                     new() { Path = "/pos-admin/schedule-attendance",   TitleKey = "menu.scheduleAttendance",     Icon = "CalendarOutlined",           Permission = Permissions.Attendance.Schedule.ViewStore },
                     new() { Path = "/pos-admin/sales-orders",          TitleKey = "menu.salesOrders",            Icon = "FileDoneOutlined",           Permission = Permissions.Orders.View },
                     new() { Path = "/pos-admin/local-supplier-invoices", TitleKey = "menu.localSupplierInvoices", Icon = "ReconciliationOutlined",     Permission = Permissions.LocalPurchase.View },
-                    new() { Path = "/pos-admin/local-supplier-purchase-sales-analysis", TitleKey = "menu.localSupplierPurchaseSalesAnalysis", Icon = "BarChartOutlined", Permission = Permissions.LocalPurchase.View },
                 },
             },
         };
@@ -183,6 +184,15 @@ namespace BlazorApp.Api.Services
                     Permissions.Warehouse.Manage,
                 },
                 Order = 20,
+            },
+            new()
+            {
+                RouteName = "sales-orders",
+                TitleKey = "tabs.salesOrders",
+                Icon = "receipt-text-outline",
+                // 移动端销售订单查询使用独立权限，由管理员显式授予；不随 Web 收银记录页的 Orders.View 放行。
+                Permission = Permissions.SalesOrders.View,
+                Order = 21,
             },
             new()
             {
@@ -252,11 +262,38 @@ namespace BlazorApp.Api.Services
             },
             new()
             {
+                RouteName = "price-updates",
+                TitleKey = "tabs.priceUpdates",
+                Icon = "tag-arrow-up-outline",
+                // 专用权限：持有者只能按仓库目标价改本店价格，与"编辑分店商品"解耦。
+                Permission = Permissions.StoreProducts.PriceUpdates,
+                Order = 50,
+            },
+            new()
+            {
                 RouteName = "product-insights",
                 TitleKey = "tabs.productInsights",
                 Icon = "chart-timeline-variant",
                 // 与商品查询共用查看授权，避免客户端入口与设备菜单出现范围偏差。
                 Permission = Permissions.StoreProducts.View,
+                Order = 50,
+            },
+            new()
+            {
+                RouteName = "warehouse-product-insights",
+                TitleKey = "tabs.warehouseProductInsights",
+                Icon = "warehouse",
+                // 与 Web 仓库商品流转分析共用授权，避免同一份数据在两端出现不同的可见范围。
+                Permission = Permissions.SalesDashboard.WarehouseFlowView,
+                Order = 50,
+            },
+            new()
+            {
+                RouteName = "seasonal-product-insights",
+                TitleKey = "tabs.seasonalProductInsights",
+                Icon = "calendar-star",
+                // 独立权限：会展示其他分店库存，不借用商品查询的 StoreProducts.View。
+                Permission = Permissions.SeasonalProductInsights.View,
                 Order = 50,
             },
             new()
@@ -315,6 +352,16 @@ namespace BlazorApp.Api.Services
             },
             new()
             {
+                RouteName = "pos-operation-logs",
+                TitleKey = "tabs.posOperationLogs",
+                Icon = "clipboard-text-clock-outline",
+                // 与 Web 后台 /pos-admin/operation-logs 共用审计查看权限，两端可见范围保持一致。
+                // 设备模式菜单（BuildDeviceAppMenu）按 DeviceBaseRouteNames 白名单挑选，不会包含此项。
+                Permission = Permissions.PosTerminal.Audit.View,
+                Order = 57,
+            },
+            new()
+            {
                 RouteName = "user-admin",
                 TitleKey = "tabs.userAdmin",
                 Icon = "account-cog-outline",
@@ -323,9 +370,31 @@ namespace BlazorApp.Api.Services
             },
             new()
             {
+                RouteName = "cash-register-users",
+                TitleKey = "tabs.cashRegisterUsers",
+                Icon = "barcode",
+                // 移动端独立权限：管理或打印任一即可进入，不借用 Web 的 Store.ManageOperations。
+                AnyPermissions = new[]
+                {
+                    Permissions.CashRegisterUsers.MobileManage,
+                    Permissions.CashRegisterUsers.MobilePrint,
+                },
+                Order = 57,
+            },
+            new()
+            {
                 RouteName = "roles",
                 TitleKey = "tabs.roles",
                 Icon = "shield-account-outline",
+                Permission = Permissions.Roles.View,
+                Order = 58,
+            },
+            new()
+            {
+                RouteName = "permissions",
+                TitleKey = "tabs.permissions",
+                Icon = "key-outline",
+                // 与 Web 后台 /system/permissions 一致：读取只需 Roles.View，写操作由页面内按 Roles.ManagePermissions 控制。
                 Permission = Permissions.Roles.View,
                 Order = 58,
             },
@@ -390,7 +459,8 @@ namespace BlazorApp.Api.Services
         };
 
         private static readonly HashSet<string> DeviceBaseRouteNames = new(
-            new[] { "home", "orders", "cart", "product-query", "product-insights", "settings" },
+            // price-updates：绑定分店的设备同样要处理本店的价格更新与换标签通知。
+            new[] { "home", "orders", "cart", "product-query", "price-updates", "product-insights", "settings" },
             StringComparer.OrdinalIgnoreCase
         );
 
@@ -531,6 +601,7 @@ namespace BlazorApp.Api.Services
                             Permission = node.Permission,
                             RequireAdmin = node.RequireAdmin,
                             RequireExactPermission = node.RequireExactPermission,
+                            AnyPermissions = node.AnyPermissions,
                             Children = filteredChildren,
                         });
                     }
@@ -547,6 +618,7 @@ namespace BlazorApp.Api.Services
                             Permission = node.Permission,
                             RequireAdmin = node.RequireAdmin,
                             RequireExactPermission = node.RequireExactPermission,
+                            AnyPermissions = node.AnyPermissions,
                             Children = null,
                         });
                     }
@@ -565,6 +637,13 @@ namespace BlazorApp.Api.Services
 
             if (string.IsNullOrEmpty(node.Permission))
             {
+                // 多权限入口：任一权限可见；未配置 AnyPermissions 的节点保持原有「无权限即公开」语义。
+                if (node.AnyPermissions is { Count: > 0 })
+                {
+                    return context.IsAdmin
+                        || node.AnyPermissions.Any(permission => HasPermission(context, permission));
+                }
+
                 return true;
             }
 
@@ -599,6 +678,7 @@ namespace BlazorApp.Api.Services
                 Permissions.SalesDashboard.WarehouseFlowView,
                 Permissions.SalesDashboard.LocalProductAnalysisView,
                 Permissions.SalesDashboard.PurchaseAmountView,
+                Permissions.SalesDashboard.LocalSupplierPurchaseSalesView,
                 Permissions.System.ManageSettings,
                 Permissions.System.ViewAppDownloads,
                 Permissions.System.ManageAppDownloads,

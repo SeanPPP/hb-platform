@@ -17,10 +17,10 @@ public sealed class ShellCatalogServiceTests
         var service = new ShellCatalogService(priceIndex, repository, sync, new PosCartService());
 
         var regularTask = service.SyncCatalogAndReloadAsync("S01", forceFullDownload: false);
-        await sync.RegularStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await sync.RegularStarted.Task.WaitUntilCompletedAsync(() => sync.Describe(regularTask));
 
         var resetTask = service.SyncCatalogAndReloadAsync("S01", forceFullDownload: true);
-        await sync.ResetStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await sync.ResetStarted.Task.WaitUntilCompletedAsync(() => sync.Describe(regularTask, resetTask));
 
         sync.ReleaseRegularIfNotCanceled();
         var regularException = await Record.ExceptionAsync(() => regularTask);
@@ -43,14 +43,17 @@ public sealed class ShellCatalogServiceTests
         var service = new ShellCatalogService(priceIndex, repository, sync, new PosCartService());
 
         var regularTask = service.SyncCatalogAndReloadAsync("S01", forceFullDownload: false);
-        await sync.RegularStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        // 后台同步经 Task.Run 进入线程池后才会触发 RegularStarted，CI 线程池饥饿时这一跳耗时不可控，使用共享预算。
+        await sync.RegularStarted.Task.WaitUntilCompletedAsync(() => sync.Describe(regularTask));
 
-        Assert.True(service.IsCatalogSyncActive);
+        // 假同步服务在 RegularStarted 之后会一直卡住直到 ReleaseRegularIfNotCanceled，
+        // 所以"同步进行中"这个状态是被测试自己持有的，不是瞬时窗口。
+        Assert.True(service.IsCatalogSyncActive, $"后台同步进行中应为 active：{sync.Describe(regularTask)}");
 
         sync.ReleaseRegularIfNotCanceled();
-        await regularTask.WaitAsync(TimeSpan.FromSeconds(3));
+        await regularTask.WaitUntilCompletedAsync(() => sync.Describe(regularTask));
 
-        Assert.False(service.IsCatalogSyncActive);
+        Assert.False(service.IsCatalogSyncActive, $"后台同步结束后应回到 inactive：{sync.Describe(regularTask)}");
     }
 
     [Fact]
@@ -67,7 +70,7 @@ public sealed class ShellCatalogServiceTests
         var reports = new ConcurrentQueue<CatalogSyncProgress>();
 
         var firstSync = service.SyncCatalogAndReloadAsync("S01", forceFullDownload: false);
-        await sync.RegularStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await sync.RegularStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         var secondSync = service.SyncCatalogAndReloadAsync(
             "S01",
             forceFullDownload: false,
@@ -76,8 +79,8 @@ public sealed class ShellCatalogServiceTests
         Assert.False(sync.SecondRegularStarted.Task.IsCompleted);
 
         sync.ReleaseRegularIfNotCanceled();
-        await sync.SecondRegularStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
-        await Task.WhenAll(firstSync, secondSync).WaitAsync(TimeSpan.FromSeconds(3));
+        await sync.SecondRegularStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
+        await Task.WhenAll(firstSync, secondSync).WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         var comparing = Assert.Single(reports.Where(report =>
             report.Stage == CatalogSyncProgressStage.Comparing));
@@ -141,8 +144,8 @@ public sealed class ShellCatalogServiceTests
         });
 
         thread.Start();
-        var loadedItems = await completion.Task.WaitAsync(TimeSpan.FromSeconds(3));
-        thread.Join(TimeSpan.FromSeconds(3));
+        var loadedItems = await completion.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
+        thread.Join(AsyncTestWaitSupport.DefaultTimeout);
 
         Assert.Single(loadedItems);
         Assert.Equal("RESET-ITEM", loadedItems[0].ProductCode);
@@ -284,6 +287,14 @@ public sealed class ShellCatalogServiceTests
         public void ReleaseRegularIfNotCanceled()
         {
             _releaseRegular.TrySetResult();
+        }
+
+        /// <summary>等待超时或断言失败时输出假同步服务与相关任务的状态，便于从 CI 日志判断卡在哪一步。</summary>
+        public string Describe(params Task[] tasks)
+        {
+            var taskStates = string.Join(", ", tasks.Select(task => task.Status));
+            return $"calls=[{string.Join(", ", Calls)}] regularStarted={RegularStarted.Task.IsCompleted} " +
+                   $"resetStarted={ResetStarted.Task.IsCompleted} regularCanceled={RegularCanceled} tasks=[{taskStates}]";
         }
     }
 

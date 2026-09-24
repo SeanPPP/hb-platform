@@ -199,6 +199,15 @@ async function chooseDate(
 }
 
 describe("SyncHistoryScreen", () => {
+  it("历史小数数量待同步时显示人工核对和勿重复收款提示", async () => {
+    const pending = order({
+      outbox: { attemptCount: 1, lastErrorCode: "ORDER_SYNC_QUANTITY_UNSUPPORTED", nextAttemptAtIso: null, state: "pending" },
+    });
+    const screen = await render(<SyncHistoryScreen onExport={jest.fn<(serializedJson: string) => void>()} presenter={screenPresenter(new ScreenHistoryPort([pending]))} />);
+    await screen.findByTestId("sync-history-row-order-100");
+    expect(screen.getByText(/quantity review.*Do not charge again/)).toBeTruthy();
+  });
+
   it("筛选与恢复操作提供短高度滚动回退，列表工作区允许收缩", async () => {
     const presenter = screenPresenter(new ScreenHistoryPort([order()]));
     const screen = await render(

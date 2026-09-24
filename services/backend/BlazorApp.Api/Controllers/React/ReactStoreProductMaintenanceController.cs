@@ -4,6 +4,7 @@ using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
@@ -17,7 +18,7 @@ namespace BlazorApp.Api.Controllers.React
     [ApiController]
     [Route("api/react/v1/store-product-maintenance")]
     [AllowAnonymous]
-    public class ReactStoreProductMaintenanceController : ControllerBase
+    public partial class ReactStoreProductMaintenanceController : ControllerBase
     {
         private readonly IStoreProductMaintenanceReactService _service;
         private readonly IDeviceRegistrationService _deviceRegistrationService;
@@ -25,6 +26,9 @@ namespace BlazorApp.Api.Controllers.React
         private readonly ISqlSugarClient _db;
         private readonly ILogger<ReactStoreProductMaintenanceController> _logger;
         private readonly IAuthorizationService _authorizationService;
+        private readonly IStorePriceUpdateTaskService? _priceTaskService;
+        private readonly IStoreProductPriceReactService? _storePriceService;
+        private readonly Features.PromoPosters.IPromoPosterService? _promoPosterService;
 
         public ReactStoreProductMaintenanceController(
             IStoreProductMaintenanceReactService service,
@@ -32,7 +36,11 @@ namespace BlazorApp.Api.Controllers.React
             IMapper mapper,
             SqlSugarContext context,
             ILogger<ReactStoreProductMaintenanceController> logger,
-            IAuthorizationService authorizationService
+            IAuthorizationService authorizationService,
+            // 价格更新通知、促销海报相关依赖为可选：既有测试直接构造本控制器，不应因新增功能被迫改动。
+            IStorePriceUpdateTaskService? priceTaskService = null,
+            IStoreProductPriceReactService? storePriceService = null,
+            Features.PromoPosters.IPromoPosterService? promoPosterService = null
         )
         {
             _service = service;
@@ -41,6 +49,9 @@ namespace BlazorApp.Api.Controllers.React
             _db = context.Db;
             _logger = logger;
             _authorizationService = authorizationService;
+            _priceTaskService = priceTaskService;
+            _storePriceService = storePriceService;
+            _promoPosterService = promoPosterService;
         }
 
         [HttpPost("lookup")]
@@ -78,6 +89,30 @@ namespace BlazorApp.Api.Controllers.React
                 request.Keyword,
                 request.StoreCode,
                 true,
+                totalSw.ElapsedMilliseconds
+            );
+            return Ok(result);
+        }
+
+        [HttpPost("scan-label")]
+        public async Task<IActionResult> ScanLabel([FromBody] StoreProductLookupRequestDto request)
+        {
+            var totalSw = Stopwatch.StartNew();
+            var access = await ResolveAccessContextAsync(reuseValidatedDeviceScope: true);
+            if (!access.IsAllowed)
+            {
+                _logger.LogWarning(
+                    "StoreProductMaintenance scan-label unauthorized message={Message} total_ms={TotalMs}",
+                    access.Message,
+                    totalSw.ElapsedMilliseconds
+                );
+                return Unauthorized(ApiResponse<StoreProductScanLabelResultDto>.Error(access.Message));
+            }
+
+            var result = await _service.ScanLabelAsync(request, access.StoreCodes);
+            _logger.LogInformation(
+                "StoreProductMaintenance scan-label request completed requestedStore={RequestedStore} total_ms={TotalMs}",
+                request.StoreCode,
                 totalSw.ElapsedMilliseconds
             );
             return Ok(result);
@@ -233,6 +268,26 @@ namespace BlazorApp.Api.Controllers.React
 
             var result = await _service.EvaluateAutoPricingAsync(request, access.StoreCodes);
             return Ok(result);
+        }
+
+        [HttpPost("{productCode}/ensure-store-price")]
+        public async Task<IActionResult> EnsureStorePrice(
+            string productCode,
+            [FromQuery] string? storeCode = null
+        )
+        {
+            var access = await ResolveAccessContextAsync();
+            if (!access.IsAllowed)
+            {
+                return Unauthorized(ApiResponse<StoreProductStorePriceDto>.Error(access.Message));
+            }
+            var permissionFailure = await RequireEditPermissionAsync();
+            if (permissionFailure != null) return permissionFailure;
+
+            var result = await _service.EnsureStorePriceAsync(
+                productCode, storeCode, access.ActorLabel, access.StoreCodes
+            );
+            return BuildMutationResult(result);
         }
 
         [HttpPut("store-prices/{uuid}")]
@@ -444,7 +499,7 @@ namespace BlazorApp.Api.Controllers.React
             return Ok(result);
         }
 
-        private async Task<StoreAccessContext> ResolveAccessContextAsync()
+        private async Task<StoreAccessContext> ResolveAccessContextAsync(bool reuseValidatedDeviceScope = false)
         {
             var sw = Stopwatch.StartNew();
             if (User?.Identity?.IsAuthenticated == true)
@@ -480,6 +535,23 @@ namespace BlazorApp.Api.Controllers.React
                         {
                             IsAllowed = false,
                             Message = "未找到当前用户信息",
+                            AccessResolveMs = sw.ElapsedMilliseconds,
+                            UserLookupMs = userLookupSw.ElapsedMilliseconds,
+                        };
+                    }
+
+                    // 仅扫码只读入口复用本次认证实时读取的门店范围；按用户核对，不跨请求缓存。
+                    if (reuseValidatedDeviceScope
+                        && HttpContext.Items.TryGetValue(typeof(AuthMobileDeviceValidationResult), out var snapshot)
+                        && snapshot is AuthMobileDeviceValidationResult { IsValid: true } validated
+                        && string.Equals(validated.UserGuid, userGuid, StringComparison.Ordinal)
+                        && validated.AccessibleStoreCodes != null)
+                    {
+                        return new StoreAccessContext
+                        {
+                            IsAllowed = true,
+                            ActorLabel = actorLabel,
+                            StoreCodes = validated.AccessibleStoreCodes.ToList(),
                             AccessResolveMs = sw.ElapsedMilliseconds,
                             UserLookupMs = userLookupSw.ElapsedMilliseconds,
                         };

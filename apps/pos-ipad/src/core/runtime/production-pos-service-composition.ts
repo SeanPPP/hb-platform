@@ -513,6 +513,7 @@ export type ProductionSettingsRuntimeConfiguration = Pick<
   | "linklySetup"
   | "readDevicePresentation"
   | "paymentConfiguration"
+  | "paymentMethods"
   | "apiConfiguration"
   | "runtimeReload"
   | "device"
@@ -1386,6 +1387,23 @@ export function createProductionPosRuntimeServices(
     hasReturnRecoveryRequired: () =>
       returnRecoveryProbe.hasRecoveryRequired(),
     drainFulfilment: postCommitWork,
+    authorizeRecovery: async (request, run) => {
+      const requesting = currentCashier.require();
+      assertTrustedCashierScope(requesting, input.auditMetadata);
+      if (!operationAuthorization) throw new Error("PAYMENT_RECOVERY_SUPERVISOR_REQUIRED");
+      const authorizationId = input.createId();
+      const result = await operationAuthorization.authorizeAndRun(
+        { actionId: authorizationId, permissionCode: "Permissions.PosTerminal.Payment.Confirm", screen: request.screen, action: request.action, forceSupervisor: true },
+        async (context) => {
+          const active = currentCashier.require();
+          assertTrustedCashierScope(active, input.auditMetadata);
+          if (active !== requesting || !context.authorizingActor) throw new Error("PAYMENT_RECOVERY_AUTHORIZATION_REVOKED");
+          return run({ authorizationId, authorizingActor: context.authorizingActor });
+        },
+      );
+      if (!result.authorized) throw new Error(`PAYMENT_RECOVERY_AUTHORIZATION_${result.reason}`);
+      return result.value;
+    },
   });
   const payments = paymentRuntime.service;
   const installmentConfiguration = input.installments;

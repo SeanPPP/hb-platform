@@ -3,6 +3,7 @@ import { apiClient } from "@/shared/api/client";
 import { reportExternalFetchFailure } from "@/shared/logging/external-fetch-log";
 import { useDeviceStore } from "@/store/device-store";
 import { normalizeWarehouseProduct } from "@/modules/warehouse/api-normalization";
+import { parsePriceNotificationHeader } from "@/modules/price-updates/price-notification";
 import { isIosReviewSessionActive } from "@/modules/ios-review/session";
 import { reviewAwareFetch } from "@/modules/ios-review/network";
 import type {
@@ -105,6 +106,15 @@ export async function getWarehouseProduct(productCode: string) {
 export async function patchWarehouseProduct(productCode: string, payload: WarehouseProductPatchRequest) {
   const response = await apiClient.patch(`${PRODUCT_BASE_PATH}/mobile/${encodeURIComponent(productCode)}`, payload);
   return normalizeWarehouseProduct(response.data);
+}
+
+/** 同 patchWarehouseProduct，另外带回 X-Price-Notification 头，供保存后提示分店通知情况。 */
+export async function patchWarehouseProductWithNotification(productCode: string, payload: WarehouseProductPatchRequest) {
+  const response = await apiClient.patch(`${PRODUCT_BASE_PATH}/mobile/${encodeURIComponent(productCode)}`, payload);
+  return {
+    product: normalizeWarehouseProduct(response.data),
+    notification: parsePriceNotificationHeader(response.headers),
+  };
 }
 
 export async function setWarehouseProductLocation(productCode: string, locationGuid?: string | null) {

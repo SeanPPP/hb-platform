@@ -199,6 +199,17 @@ async function chooseDate(
 }
 
 describe("SyncHistoryScreen", () => {
+  it("历史小数数量待同步时在列表与详情显示人工核对提示", async () => {
+    const pending = order({
+      outbox: { attemptCount: 1, lastErrorCode: "ORDER_SYNC_QUANTITY_UNSUPPORTED", nextAttemptAtIso: null, state: "pending" },
+    });
+    const screen = await render(<SyncHistoryScreen onExport={jest.fn<(serializedJson: string) => void>()} presenter={screenPresenter(new ScreenHistoryPort([pending]))} />);
+    const row = await screen.findByTestId("sync-history-row-order-100");
+    expect(screen.getByText(/quantity review.*Do not charge again/)).toBeTruthy();
+    await fireEvent.press(row);
+    expect(screen.getByText(/quantity review.*Do not charge again/)).toBeTruthy();
+  });
+
   it("同步列表进入单列详情，详情保留原因与 48px 补传操作", async () => {
     const port = new ScreenHistoryPort([order()]);
     const presenter = screenPresenter(port);

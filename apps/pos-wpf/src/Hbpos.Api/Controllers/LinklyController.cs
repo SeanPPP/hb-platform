@@ -1249,6 +1249,7 @@ public sealed class LinklyController(
                 scope.DeviceCode!,
                 request?.Environment ?? environment ?? string.Empty,
                 sessionId,
+                request?.SupervisorResolved == true,
                 cancellationToken);
             return Ok(ApiResult<LinklyCloudBackendSessionResponse>.Ok(response));
         }
@@ -1778,7 +1779,35 @@ internal static class LinklyCardTransactionSanitizer
         LinklyCloudBackendSessionResponse response)
     {
         ArgumentNullException.ThrowIfNull(response);
-        return response with { CardTransaction = Sanitize(response) };
+        var persistedEvidence = response.CardTransaction;
+        if (persistedEvidence is null)
+        {
+            // 服务层没有通过请求证据与官方结果校验时，控制器不得从历史通知自行推断成功凭据。
+            return response with { CardTransaction = null };
+        }
+
+        var notificationEvidence = Sanitize(response);
+        if (notificationEvidence is null)
+        {
+            return response;
+        }
+
+        // 完整交易引用、RFN 和金额来自发送前持久化证据；通知只补充经过白名单清洗的卡片字段。
+        return response with
+        {
+            CardTransaction = new LinklyCloudBackendCardTransactionDto(
+                persistedEvidence.TxnRef,
+                persistedEvidence.Rfn,
+                notificationEvidence.AuthCode,
+                notificationEvidence.CardType,
+                notificationEvidence.MaskedCardNumber,
+                notificationEvidence.MerchantId,
+                persistedEvidence.ResponseCode,
+                persistedEvidence.ResponseText,
+                notificationEvidence.Stan,
+                notificationEvidence.BankDateTime,
+                persistedEvidence.AmountCents)
+        };
     }
 
     internal static LinklyCloudBackendCardTransactionDto? Sanitize(
@@ -1799,7 +1828,7 @@ internal static class LinklyCardTransactionSanitizer
                 using var document = JsonDocument.Parse(notification.PayloadJson);
                 var root = document.RootElement;
                 var providerResponse = ReadResponse(root);
-                if (!MatchesProtectedResult(response, providerResponse))
+                if (!MatchesProtectedResult(response, root, providerResponse))
                 {
                     continue;
                 }
@@ -1835,8 +1864,28 @@ internal static class LinklyCardTransactionSanitizer
 
     private static bool MatchesProtectedResult(
         LinklyCloudBackendSessionResponse response,
+        JsonElement root,
         JsonElement providerResponse)
     {
+        if (response.CardTransaction is { } persistedEvidence &&
+            (ReadBool(providerResponse, "Success") != true ||
+             !MatchesPersistedReference(
+                persistedEvidence.TxnRef,
+                ReadScalar(providerResponse, "TxnRef")) ||
+             ReadAbsoluteAmountCents(providerResponse) != persistedEvidence.AmountCents ||
+             !MatchesPersistedRefundReference(
+                persistedEvidence.Rfn,
+                root,
+                providerResponse) ||
+             NormalizeForComparison(response.ResponseText) is { } persistedResponseText &&
+             !string.Equals(
+                 persistedResponseText,
+                 NormalizeForComparison(ReadScalar(providerResponse, "ResponseText")),
+                 StringComparison.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
         var protectedCode = NormalizeForComparison(response.ResponseCode);
         if (protectedCode is not null &&
             !string.Equals(
@@ -1852,6 +1901,38 @@ internal static class LinklyCardTransactionSanitizer
             string.Equals(
                 protectedText,
                 NormalizeForComparison(ReadScalar(providerResponse, "ResponseText")),
+                StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool MatchesPersistedReference(string? expected, string? candidate)
+    {
+        var normalizedExpected = NormalizeForComparison(expected);
+        var normalizedCandidate = NormalizeForComparison(candidate);
+        if (normalizedExpected is null || normalizedCandidate is null)
+        {
+            return false;
+        }
+
+        if (string.Equals(normalizedExpected, normalizedCandidate, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return string.Equals(normalizedExpected, normalizedCandidate, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool MatchesPersistedRefundReference(
+        string? expected,
+        JsonElement root,
+        JsonElement providerResponse)
+    {
+        var providerRfn = NormalizeForComparison(ReadRfn(root, providerResponse));
+        return expected is null
+            ? providerRfn is null
+            : providerRfn is null ||
+              string.Equals(
+                NormalizeForComparison(expected),
+                providerRfn,
                 StringComparison.OrdinalIgnoreCase);
     }
 
@@ -1928,6 +2009,23 @@ internal static class LinklyCardTransactionSanitizer
                 out numeric)
                     ? numeric
                     : null;
+    }
+
+    private static bool? ReadBool(JsonElement element, string propertyName)
+    {
+        if (!TryGetProperty(element, propertyName, out var value))
+        {
+            return null;
+        }
+
+        return value.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.String when bool.TryParse(value.GetString(), out var parsed) => parsed,
+            JsonValueKind.Number when value.TryGetInt32(out var parsed) => parsed != 0,
+            _ => null
+        };
     }
 
     private static string? MaskPan(string? pan)

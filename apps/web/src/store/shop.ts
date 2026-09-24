@@ -1,6 +1,8 @@
 import { create } from 'zustand'
 import type { StoreOrderCart } from '../types/storeOrder'
 import type { PreorderActivationSummary } from '../types/preorder'
+import { getStoreSupplyWatchSummary } from '../services/supplyNoticeService'
+import type { StoreSupplyWatchSummary } from '../types/supplyNotice'
 import type { UserStoreDto } from '../types/user'
 
 interface ShopState {
@@ -12,6 +14,9 @@ interface ShopState {
   preorderGateLoading: boolean
   preorderGateError: boolean
   preorderGateRequestVersion: number
+  /** 关注恢复订货的汇总：提示条与入口角标共用；切店后重新拉取。 */
+  supplyWatchSummary: StoreSupplyWatchSummary
+  refreshSupplyWatchSummary: () => Promise<void>
   setUserStores: (stores: UserStoreDto[]) => void
   setSelectedStore: (store: UserStoreDto | null) => void
   setCart: (cart: StoreOrderCart | null) => void
@@ -30,6 +35,23 @@ export const useShopStore = create<ShopState>((set, get) => ({
   preorderGateLoading: true,
   preorderGateError: false,
   preorderGateRequestVersion: 0,
+  supplyWatchSummary: { watchingCount: 0, restockedCount: 0 },
+  refreshSupplyWatchSummary: async () => {
+    const storeCode = get().selectedStore?.storeCode
+    if (!storeCode) {
+      set({ supplyWatchSummary: { watchingCount: 0, restockedCount: 0 } })
+      return
+    }
+    try {
+      const summary = await getStoreSupplyWatchSummary(storeCode)
+      // 只接受当前分店的结果，切店过程中旧请求返回直接丢弃。
+      if (get().selectedStore?.storeCode === storeCode) {
+        set({ supplyWatchSummary: summary })
+      }
+    } catch {
+      // 汇总只是提示，失败保持上一次的值即可。
+    }
+  },
   setUserStores: (stores) =>
     set((state) => {
       const selectedStore = state.selectedStore
@@ -63,6 +85,7 @@ export const useShopStore = create<ShopState>((set, get) => ({
     preorderBlocked: false,
     preorderGateLoading: true,
     preorderGateError: false,
+    supplyWatchSummary: { watchingCount: 0, restockedCount: 0 },
   })),
   setCart: (cart) => set({ cart }),
   setPreorderGate: (state) => set(state),
@@ -84,6 +107,7 @@ export const useShopStore = create<ShopState>((set, get) => ({
       preorderBlocked: false,
       preorderGateLoading: false,
       preorderGateError: false,
+      supplyWatchSummary: { watchingCount: 0, restockedCount: 0 },
       // reset 也只递增不归零，避免旧 token 与后续新请求发生碰撞。
       preorderGateRequestVersion: state.preorderGateRequestVersion + 1,
     })),

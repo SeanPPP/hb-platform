@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { createEmployeeProfileApi } from "./api-contract";
+import { createEmployeeProfileApi, normalizeEmployeeProfile } from "./api-contract";
 
 const calls: Array<{ method: string; path: string; payload?: unknown }> = [];
+assert.equal(normalizeEmployeeProfile({ UserName: "legacy" }).email, "", "旧 API 缺少 Email 时必须兼容为空字符串");
 
 async function main() {
   const api = createEmployeeProfileApi({
@@ -28,7 +29,7 @@ async function main() {
         },
       };
     }
-    return { data: { UserName: "employee-a", Phone: "0400000000", IdentityType: "passport", SensitiveRevision: 3 } };
+    return { data: { UserName: "employee-a", Phone: "0400000000", Email: " EMPLOYEE@EXAMPLE.COM ", IdentityType: "passport", SensitiveRevision: 3 } };
   },
 
   put: async (path: string, payload: unknown) => {
@@ -49,6 +50,7 @@ async function main() {
 
   const formal = await api.getMyEmployeeProfile();
   assert.equal(formal.phone, "0400000000", "正式资料响应必须映射 phone");
+  assert.equal(formal.email, "EMPLOYEE@EXAMPLE.COM", "Email/Email 大小写字段必须 trim 映射");
   assert.equal(formal.identityType, "passport", "正式资料响应必须映射 identityType");
   assert.equal(formal.sensitiveRevision, 3, "正式资料响应必须映射敏感 revision");
 

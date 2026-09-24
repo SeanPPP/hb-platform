@@ -16,6 +16,8 @@ namespace BlazorApp.Api.Data
             {
                 await ProductHqSyncOutboxSchemaMigrator.EnsureAsync(db, logger);
                 await EnsureWarehouseProductChangeHistorySqliteSchemaAsync(db, logger);
+                await StorePriceUpdateTaskSchemaMigrator.EnsureAsync(db, logger);
+                await WarehouseProductSupplyNoticeSchemaMigrator.EnsureAsync(db, logger);
                 return;
             }
             if (db.CurrentConnectionConfig.DbType != DbType.SqlServer)
@@ -44,6 +46,72 @@ namespace BlazorApp.Api.Data
             await EnsureUserStorePosPermissionSchemaAsync(db, logger);
             await EnsurePreorderSchemaAsync(db, logger);
             await EnsureWarehouseProductChangeHistoryIndexesAsync(db, logger);
+            await StorePriceUpdateTaskSchemaMigrator.EnsureAsync(db, logger);
+            await WarehouseProductSupplyNoticeSchemaMigrator.EnsureAsync(db, logger);
+            await EnsureCashRegisterUserMobilePermissionsAsync(db, logger);
+            await EnsureSeasonalProductInsightPermissionAsync(db, logger);
+        }
+
+        /// <summary>
+        /// 启动流程不跑权限种子：移动端「季节商品查询」的独立权限码必须幂等入库，
+        /// 否则角色管理里无法授权（保存时会被静默丢弃）。已存在（含已软删除）则不动。
+        /// </summary>
+        private static async Task EnsureSeasonalProductInsightPermissionAsync(
+            ISqlSugarClient db,
+            ILogger logger
+        )
+        {
+            const string sql = """
+IF OBJECT_ID(N'[dbo].[HbwebSysPermissions]', N'U') IS NOT NULL
+BEGIN
+    INSERT INTO [dbo].[HbwebSysPermissions]
+        ([Id], [Code], [Name], [Category], [Description], [CreatedAt], [CreatedBy], [UpdatedAt], [UpdatedBy], [IsDeleted])
+    SELECT LOWER(CONVERT(nvarchar(36), NEWID())), [seed].[Code], [seed].[Name], N'分店商品管理', [seed].[Description],
+           SYSUTCDATETIME(), N'StartupSchemaMigrator', SYSUTCDATETIME(), N'StartupSchemaMigrator', 0
+    FROM (VALUES
+        (N'SeasonalProductInsights.View', N'查看季节商品查询',
+         N'移动端「季节商品查询」- 按货号/条码查看本店与其他分店的累计进货、累计销量和理论存货')
+    ) AS [seed]([Code], [Name], [Description])
+    WHERE NOT EXISTS (
+        SELECT 1 FROM [dbo].[HbwebSysPermissions] AS [existing] WHERE [existing].[Code] = [seed].[Code]
+    );
+END;
+""";
+            // 不吞异常：入库失败必须让 --schema=migrate 显式失败，避免权限静默缺失。
+            await db.Ado.ExecuteCommandAsync(sql);
+            logger.LogInformation("移动端季节商品查询权限码已确保入库");
+        }
+
+        /// <summary>
+        /// 启动流程不跑权限种子：移动端收银用户条码的两个独立权限码必须幂等入库，
+        /// 否则角色管理里无法授权（保存时会被静默丢弃）。已存在（含已软删除）则不动。
+        /// </summary>
+        private static async Task EnsureCashRegisterUserMobilePermissionsAsync(
+            ISqlSugarClient db,
+            ILogger logger
+        )
+        {
+            const string sql = """
+IF OBJECT_ID(N'[dbo].[HbwebSysPermissions]', N'U') IS NOT NULL
+BEGIN
+    INSERT INTO [dbo].[HbwebSysPermissions]
+        ([Id], [Code], [Name], [Category], [Description], [CreatedAt], [CreatedBy], [UpdatedAt], [UpdatedBy], [IsDeleted])
+    SELECT LOWER(CONVERT(nvarchar(36), NEWID())), [seed].[Code], [seed].[Name], N'分店运营', [seed].[Description],
+           SYSUTCDATETIME(), N'StartupSchemaMigrator', SYSUTCDATETIME(), N'StartupSchemaMigrator', 0
+    FROM (VALUES
+        (N'CashRegisterUsers.MobileManage', N'移动端管理收银用户条码',
+         N'移动端「收银用户条码」- 查看、创建、更新和启停可管理分店的老收银系统员工条码'),
+        (N'CashRegisterUsers.MobilePrint', N'移动端打印收银用户条码',
+         N'移动端「收银用户条码」- 查看可管理分店的老收银系统员工条码，用蓝牙标签机打印并累计打印次数')
+    ) AS [seed]([Code], [Name], [Description])
+    WHERE NOT EXISTS (
+        SELECT 1 FROM [dbo].[HbwebSysPermissions] AS [existing] WHERE [existing].[Code] = [seed].[Code]
+    );
+END;
+""";
+            // 不吞异常：入库失败必须让 --schema=migrate 显式失败，避免权限静默缺失。
+            await db.Ado.ExecuteCommandAsync(sql);
+            logger.LogInformation("移动端收银用户条码权限码已确保入库");
         }
 
         private static async Task EnsureWarehouseProductChangeHistoryIndexesAsync(

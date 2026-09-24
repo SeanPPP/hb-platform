@@ -15,6 +15,7 @@ import {
 import type { LocalOrder, OrderTender } from "@hb/pos-domain/core/contracts/order";
 import type { CardSyncEvidenceV1 } from "@hb/pos-domain/core/contracts/payment";
 
+import { readManualPaymentSyncEvidence } from "./sqlite-manual-payment-sync";
 import type { SqliteReturnCapacityVault } from "./sqlite-return-capacity-vault";
 import type { SqliteVoucherProtectedTokenStore } from "./sqlite-voucher-protected-token-store";
 
@@ -214,6 +215,14 @@ export class SqliteOrderSyncMaterialResolver {
       );
       const tender = cardTenders.get(tenderGuid);
       if (!tender) throw materialError("ORDER_SYNC_TENDER_MISMATCH");
+      const manualEvidence = await readManualPaymentSyncEvidence(this.connection, {
+        tenderGuid, orderGuid: wireOrder.orderGuid, storeCode: wireOrder.storeCode,
+        deviceCode: wireOrder.deviceCode, amountCents: tender.amount.cents,
+      });
+      if (manualEvidence) {
+        cardSyncEvidenceByTenderGuid.set(tenderGuid, manualEvidence);
+        continue;
+      }
       const attempt = readApprovedAttempt(row, wireOrder, tender);
       const provider = attempt.provider;
       if (provider === "voucher") {
@@ -467,6 +476,13 @@ export class SqliteOrderSyncMaterialResolver {
       return tender;
     }
 
+    if (method === "card") {
+      const manualEvidence = await readManualPaymentSyncEvidence(this.connection, {
+        tenderGuid: tender.tenderGuid, orderGuid: order.orderGuid, storeCode: order.storeCode,
+        deviceCode: order.deviceCode, amountCents: tender.amount.cents,
+      });
+      if (manualEvidence) return Object.freeze({ ...tender, reference: `MANUAL_CARD:${String(row.payment_attempt_id)}` });
+    }
     const attempt = readApprovedAttempt(row, order, tender);
     const bindings = await this.readReturnBindings(tender.tenderGuid);
     if (attempt.operation === "purchase") {
@@ -493,6 +509,10 @@ export class SqliteOrderSyncMaterialResolver {
         order,
         linklyEnvironmentInput,
       );
+    }
+    if (attempt.provider === "manual-card") {
+      if (attempt.operation !== "purchase" || attempt.txnRef !== `MANUAL:${attempt.attemptId}` || attempt.paymentId !== null || attempt.sessionId !== null || attempt.rfn !== null || attempt.checkoutId !== null) throw materialError("ORDER_SYNC_ATTEMPT_MISMATCH");
+      return frozenTender(tender, attempt.txnRef, null);
     }
     return this.resolveVoucher(
       tender,
@@ -1219,7 +1239,7 @@ type ReturnBindingRow = Readonly<{
 type ApprovedAttempt = Readonly<{
   attemptId: string;
   idempotencyKey: string;
-  provider: "square" | "linkly-cloud" | "voucher";
+  provider: "square" | "linkly-cloud" | "voucher" | "manual-card";
   operation: "purchase" | "refund";
   checkoutId: string | null;
   paymentId: string | null;
@@ -1262,7 +1282,7 @@ function readApprovedAttempt(
     (operation === "refund" && tender.amount.cents >= 0) ||
     (tender.method === "card" &&
       provider !== "square" &&
-      provider !== "linkly-cloud") ||
+      provider !== "linkly-cloud" && provider !== "manual-card") ||
     (tender.method === "voucher" && provider !== "voucher")
   ) {
     throw materialError("ORDER_SYNC_ATTEMPT_MISMATCH");
@@ -1766,7 +1786,7 @@ function paymentProvider(
   if (
     value === "square" ||
     value === "linkly-cloud" ||
-    value === "voucher"
+    (value === "voucher" || value === "manual-card")
   ) {
     return value;
   }

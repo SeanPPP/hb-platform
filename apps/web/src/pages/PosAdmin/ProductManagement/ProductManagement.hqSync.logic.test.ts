@@ -911,8 +911,13 @@ async function main() {
         pageSource.includes('width: 92') &&
         pageSource.includes("title: t('posAdmin.products.productTypeLabel', '商品类型')") &&
         pageSource.includes('width: 88') &&
-        pageSource.includes('scroll={{ x: 1880, y: tableScrollY }}'),
+        pageSource.includes('scroll={{ x: 1920, y: tableScrollY }}'),
       '接入筛选/排序后的窄列表头应放宽列宽，并同步表格横向滚动宽度',
+    )
+    assert(
+      pageSource.includes('render: (v: string) => <BarcodeTextCell value={v} />') &&
+        !pageSource.includes('className="pos-products-barcode-preview"'),
+      '主表条码列应只显示条码文本、悬停时才绘制条形码，不得每行常驻一个条码 canvas',
     )
     assert(
       pageSource.includes('setColumnFilters({})') &&
@@ -1485,10 +1490,14 @@ async function main() {
         pageSource.includes('hqSyncSubmittingRef.current = false'),
       '同步处理函数应在连续点击时直接返回，并在结束后释放锁',
     )
+    // 页头改版后 HQ 同步收进「同步」菜单，菜单项以 disabled: hqSyncSubmitting 绑定提交中状态。
+    const syncMenuStart = pageSource.indexOf("label={t('common.listToolbar.sync', '同步')}")
+    const syncMenuSource = pageSource.slice(syncMenuStart, pageSource.indexOf('/>\n', pageSource.indexOf("key: 'syncToStore'", syncMenuStart)))
     assert(
       pageSource.includes('confirmLoading={hqSyncSubmitting}') &&
-        pageSource.includes('disabled={hqSyncSubmitting}'),
-      '同步按钮和弹窗确认应绑定 submitting 状态',
+        syncMenuStart >= 0 &&
+        syncMenuSource.match(/disabled: hqSyncSubmitting,/g)?.length === 2,
+      '同步菜单里的增量/全量同步和弹窗确认应绑定 submitting 状态',
     )
   })
   if (duplicateClickGuardFailure) failures.push(duplicateClickGuardFailure)
@@ -1726,6 +1735,20 @@ async function main() {
       'loadOptions 应独立加载商品分类树、仓库分类树和国内供应商选项',
     )
     assert(
+      loadOptionsSource.includes('await Promise.all([') &&
+        !loadOptionsSource.includes('await refreshSupplierOptions()'),
+      'loadOptions 的五类下拉选项互不依赖，应并行加载而不是逐个 await 串行',
+    )
+    const loadDataStart = pageSource.indexOf('const loadData = useCallback')
+    const loadDataSource = pageSource.slice(loadDataStart, pageSource.indexOf('const stopHqSyncJobPolling', loadDataStart))
+    assert(
+      loadDataSource.includes('productListAbortRef.current?.abort()') &&
+        loadDataSource.includes('runLatestGuardedRequest(') &&
+        loadDataSource.includes('getProducts(params, { signal: controller.signal })') &&
+        pageSource.includes('productListRequestGuardRef.current.invalidate()'),
+      '商品列表请求应取消上一个在途请求，并只允许最后一次请求写入列表，卸载时让守卫失效',
+    )
+    assert(
       pageSource.includes('warehouseCategoryGuid: warehouseCategoryGuid || undefined') &&
         pageSource.includes('setWarehouseCategoryGuid(warehouseCategoryGuidInput)') &&
         pageSource.includes('setWarehouseCategoryGuidInput(undefined)') &&
@@ -1741,8 +1764,9 @@ async function main() {
       pageSource.match(/text: fullPath\.join\(' \/ '\)/g)?.length === 2,
       '商品分类和仓库分类列头筛选应显示完整分类路径，避免同名叶级分类混淆',
     )
-    const toolbarStart = pageSource.indexOf('<Space wrap>')
+    const toolbarStart = pageSource.indexOf('<div className="list-toolbar-filter-row">')
     const toolbarEnd = pageSource.indexOf('onClick={handleSearch}', toolbarStart)
+    assert(toolbarStart >= 0 && toolbarEnd > toolbarStart, '顶部筛选应使用共用筛选行，并以查询按钮收尾')
     const toolbarSource = pageSource.slice(toolbarStart, toolbarEnd)
     assertSourceOrder(
       toolbarSource,
@@ -1762,17 +1786,33 @@ async function main() {
       'options={buildWarehouseCategoryCascaderOptions(warehouseCategoryTree)}',
       '顶部筛选商品分类应排在仓库分类前',
     )
+    // 改版后仓库分类、套装、分店记录收进「更多筛选」，主筛选行保留搜索、澳洲供应商、商品分类、状态。
     assertSourceOrder(
       toolbarSource,
-      'options={buildWarehouseCategoryCascaderOptions(warehouseCategoryTree)}',
       'value={isActiveFilterInput}',
-      '顶部筛选仓库分类应排在状态前',
+      '<MoreFiltersButton activeCount={moreFiltersActiveCount}>',
+      '顶部筛选状态应排在「更多筛选」前',
+    )
+    const moreFiltersSource = toolbarSource.slice(
+      toolbarSource.indexOf('<MoreFiltersButton activeCount={moreFiltersActiveCount}>'),
+      toolbarSource.indexOf('</MoreFiltersButton>'),
     )
     assertSourceOrder(
-      toolbarSource,
-      'value={isActiveFilterInput}',
+      moreFiltersSource,
+      'options={buildWarehouseCategoryCascaderOptions(warehouseCategoryTree)}',
       'value={isSetFilterInput}',
-      '顶部筛选状态应排在套装前',
+      '更多筛选内仓库分类应排在套装前',
+    )
+    assertSourceOrder(
+      moreFiltersSource,
+      'value={isSetFilterInput}',
+      'value={storeRecordCountModeInput}',
+      '更多筛选内套装应排在分店记录前',
+    )
+    assert(
+      moreFiltersSource.includes('value={storeRecordCountMinInput}') &&
+        moreFiltersSource.includes('value={storeRecordCountMaxInput}'),
+      '分店记录自定义范围输入应放在「更多筛选」内',
     )
     assert(
       !toolbarSource.includes('domesticSupplierColumnFilterOptions') &&
@@ -1844,7 +1884,7 @@ async function main() {
       '编辑商品分类应显式保留启用状态，顶部筛选应明确标注商品分类',
     )
     assert(
-      pageSource.includes('scroll={{ x: 1880, y: tableScrollY }}'),
+      pageSource.includes('scroll={{ x: 1920, y: tableScrollY }}'),
       '新增两列后表格横向滚动宽度应同步放宽',
     )
     assert(
@@ -1889,6 +1929,213 @@ async function main() {
     assertEqual(enProductMessages.searchPlaceholder, 'Search product name / item no. / barcode / English name / Australian supplier', '英文搜索提示应明确 supplier 字段为 Australian supplier')
   })
   if (supplierCategoryColumnsFailure) failures.push(supplierCategoryColumnsFailure)
+
+  const toolbarLayoutFailure = await runTest('商品管理页头应按菜单分组，批量操作只出现在勾选后操作条', () => {
+    const headerStart = pageSource.indexOf('<PageContainer\n      compact')
+    const headerEnd = pageSource.indexOf('<div\n        ref={wrapRef}', headerStart)
+    const headerSource = pageSource.slice(headerStart, headerEnd)
+    assert(headerStart >= 0 && headerEnd > headerStart, '商品管理应使用紧凑页头 PageContainer compact')
+    assert(
+      headerSource.includes("subtitle={t('posAdmin.products.subtitle', { count: total })}"),
+      '紧凑页头应保留「共 N 条记录」副标题',
+    )
+    const syncMenuSource = headerSource.slice(
+      headerSource.indexOf("label={t('common.listToolbar.sync', '同步')}"),
+      headerSource.indexOf("label={t('common.listToolbar.tools', '工具')}"),
+    )
+    assert(
+      syncMenuSource.includes("key: 'incrementalHqSync'") &&
+        syncMenuSource.includes("onClick: () => openHqSyncModal('incremental')") &&
+        syncMenuSource.includes("key: 'fullHqSync'") &&
+        syncMenuSource.includes("onClick: () => openHqSyncModal('full')") &&
+        syncMenuSource.match(/visible: isAdmin,/g)?.length === 2 &&
+        syncMenuSource.match(/activeHqSyncJob \? t\('posAdmin\.products\.hqSyncInProgress', '同步中'\)/g)?.length === 2 &&
+        syncMenuSource.includes("key: 'syncToStore'") &&
+        syncMenuSource.includes('visible: canManagePosProducts,') &&
+        syncMenuSource.includes('onClick: openSyncToStoreModal'),
+      '「同步」菜单应包含 Admin 可见的增量/全量同步（仍经确认弹窗）和商品管理权限可见的同步到分店',
+    )
+    assert(
+      syncMenuSource.includes('<SyncOutlined spin={Boolean(activeHqSyncJob) || hqSyncSubmitting} />'),
+      'HQ 同步进行中时「同步」菜单按钮应有进行中提示',
+    )
+    const toolsMenuSource = headerSource.slice(headerSource.indexOf("label={t('common.listToolbar.tools', '工具')}"))
+    assert(
+      toolsMenuSource.includes("key: 'integrityCheck'") &&
+        toolsMenuSource.includes('onClick: () => { setIntegrityVisible(true); setIntegrityResult(null) }') &&
+        toolsMenuSource.includes("key: 'batchImageUpdate'") &&
+        toolsMenuSource.includes('onClick: openImageBatch') &&
+        toolsMenuSource.includes("key: 'categoryManagement'") &&
+        toolsMenuSource.includes('onClick: handleOpenCategoryModal') &&
+        toolsMenuSource.match(/visible: canManagePosProducts,/g)?.length === 2,
+      '「工具」菜单应包含一致性检查，以及受商品管理权限控制的图片批量修改和商品分类管理',
+    )
+    assert(
+      headerSource.match(/type="primary"/g)?.length === 1 &&
+        headerSource.includes('{canCreateStoreProducts && (\n            <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>'),
+      '页头唯一的主按钮应为受创建权限控制的「创建商品」',
+    )
+
+    const toolbarStart = pageSource.indexOf('<div ref={toolbarRef} className="pos-products-toolbar">')
+    const tableStart = pageSource.indexOf('<MeasuredTable metricId="pos-admin.product-management.table-1"')
+    const toolbarSource = pageSource.slice(toolbarStart, tableStart)
+    const filterRowSource = toolbarSource.slice(0, toolbarSource.indexOf('<ActiveFilterBar'))
+    const selectionStart = toolbarSource.indexOf('<SelectionActionBar selectedCount={selectedRowKeys.length} onClearSelection={() => setSelectedRowKeys([])}>')
+    const selectionSource = toolbarSource.slice(selectionStart, toolbarSource.indexOf('</SelectionActionBar>'))
+    assert(toolbarStart >= 0 && tableStart > toolbarStart && selectionStart > 0, '勾选后操作条应位于 toolbarRef 内、表格之前，以便参与表格高度计算')
+    for (const handler of ['onClick={openBatchEdit}', 'handleBatchEnable(true)', 'handleBatchEnable(false)', 'onClick={handleBatchTranslate}', 'onClick={handleSyncSelectedFromHq}', 'onClick={handlePushToHq}']) {
+      assertEqual(pageSource.split(handler).length - 1, 1, `${handler} 应只出现一次`)
+      assert(selectionSource.includes(handler), `${handler} 应位于勾选后操作条内`)
+      assert(!filterRowSource.includes(handler), `${handler} 不应留在筛选行`)
+    }
+    assert(
+      selectionSource.includes('disabled={!selectedRowKeys.length || categoryLoadFailed}') &&
+        selectionSource.includes("<Popconfirm title={t('posAdmin.products.confirmBatchEnable', '确认启用选中的商品？')} onConfirm={() => handleBatchEnable(true)}>") &&
+        selectionSource.includes("<Popconfirm title={t('posAdmin.products.confirmBatchDisable', '确认禁用选中的商品？')} onConfirm={() => handleBatchEnable(false)}>") &&
+        selectionSource.includes('<Button size="small" danger disabled={!selectedRowKeys.length}>') &&
+        selectionSource.includes('disabled={!selectedRowKeys.length || translating}') &&
+        selectionSource.includes('disabled={!selectedRowKeys.length || selectedFromHqLoading}') &&
+        selectionSource.includes('disabled={!selectedRowKeys.length || pushToHqLoading || pushToHqModalOpen}'),
+      '勾选后操作条应保留批量编辑、批量启用/禁用确认、批量翻译、从 HQ 同步选中和发送到 HQ 原有的 loading 与禁用条件',
+    )
+    assertSourceOrder(selectionSource, '{isAdmin && (', 'onClick={handleSyncSelectedFromHq}', '从 HQ 同步选中应只对 Admin 显示')
+    assert(
+      selectionSource.lastIndexOf('{canManagePosProducts && (') < selectionSource.indexOf('onClick={handlePushToHq}') &&
+        selectionSource.indexOf('{canManagePosProducts && (') < selectionSource.indexOf('onClick={openBatchEdit}'),
+      '批量编辑类操作和发送到 HQ 应受商品管理权限控制',
+    )
+  })
+  if (toolbarLayoutFailure) failures.push(toolbarLayoutFailure)
+
+  const instantFilterFailure = await runTest('下拉筛选应选完即查，已生效条件应以标签展示并可逐个移除', () => {
+    const applySource = pageSource.slice(
+      pageSource.indexOf('const applyToolbarFilterChange = () => {'),
+      pageSource.indexOf('const handleSupplierFilterChange'),
+    )
+    assert(
+      applySource.includes('resetProductTableScroll()') &&
+        applySource.includes('setPage(1)') &&
+        applySource.includes('setSelectedRowKeys([])') &&
+        !applySource.includes('setQueryVersion'),
+      '选完即查应回到第一页、清空选择并归零滚动，且不再 bump queryVersion（生效态变化已会触发 loadData）',
+    )
+    const handlerPairs: Array<[string, string, string]> = [
+      ['const handleSupplierFilterChange', 'setSupplierCodeInput(value)', 'setSupplierCode(value)'],
+      ['const handleCategoryFilterChange', 'setCategoryGuidInput(guid)', 'setCategoryGuid(guid)'],
+      ['const handleWarehouseCategoryFilterChange', 'setWarehouseCategoryGuidInput(guid)', 'setWarehouseCategoryGuid(guid)'],
+      ['const handleActiveFilterChange', 'setIsActiveFilterInput(value)', 'setIsActiveFilter(value)'],
+      ['const handleSetFilterChange', 'setIsSetFilterInput(value)', 'setIsSetFilter(value)'],
+    ]
+    for (const [handler, inputSetter, appliedSetter] of handlerPairs) {
+      const start = pageSource.indexOf(handler)
+      const handlerSource = pageSource.slice(start, pageSource.indexOf('\n  }\n', start))
+      assert(
+        start >= 0 &&
+          handlerSource.includes(inputSetter) &&
+          handlerSource.includes(appliedSetter) &&
+          handlerSource.includes('applyToolbarFilterChange()'),
+        `${handler} 应同时写输入态和生效态并立即生效`,
+      )
+    }
+    for (const binding of [
+      'onChange={handleSupplierFilterChange}',
+      'onChange={handleCategoryFilterChange}',
+      'onChange={handleWarehouseCategoryFilterChange}',
+      'onChange={handleActiveFilterChange}',
+      'onChange={handleSetFilterChange}',
+      'onChange={handleStoreRecordCountModeChange}',
+    ]) {
+      assert(pageSource.includes(binding), `筛选下拉应绑定 ${binding}`)
+    }
+    const storeModeStart = pageSource.indexOf('const handleStoreRecordCountModeChange')
+    const storeModeSource = pageSource.slice(storeModeStart, pageSource.indexOf('\n  }\n', storeModeStart))
+    assertSourceOrder(storeModeSource, 'setStoreRecordCountModeInput(value)', "if (value === 'custom') return", '分店记录应先写输入态')
+    assertSourceOrder(storeModeSource, "if (value === 'custom') return", 'setStoreRecordCountMode(value)', '选择自定义范围不应立即生效或请求')
+    assert(
+      storeModeSource.includes('getPresetStoreRecordCountRange(value)') &&
+        storeModeSource.includes('setStoreRecordCountMin(presetRange.min)') &&
+        storeModeSource.includes('setStoreRecordCountMax(presetRange.max)') &&
+        storeModeSource.includes('applyToolbarFilterChange()'),
+      '全部/有记录/无记录应按预设范围立即生效',
+    )
+    assert(
+      pageSource.match(/onPressEnter=\{handleSearch\}/g)?.length === 3,
+      '关键词与自定义范围的最小/最大值输入应在回车时按查询生效（沿用 handleSearch 校验）',
+    )
+
+    assert(
+      pageSource.includes('<ActiveFilterBar items={activeFilterItems} onClearAll={handleReset} />') &&
+        pageSource.includes('...buildToolbarFilterChips(') &&
+        pageSource.includes('...buildColumnFilterChips(columnFilters, productColumnFilterMeta, {') &&
+        pageSource.includes("source: 'toolbar',\n      onRemove: () => removeToolbarFilter(chip.key),") &&
+        pageSource.includes("source: 'column',\n      onRemove: () => removeColumnFilter(chip.filterKey),"),
+      '已生效筛选条应汇总生效态顶部筛选与列头筛选，清空全部复用 handleReset',
+    )
+    const chipInputStart = pageSource.indexOf('...buildToolbarFilterChips(')
+    const chipInputSource = pageSource.slice(chipInputStart, pageSource.indexOf('supplierName:', chipInputStart))
+    assert(
+      chipInputSource.includes('keyword,') &&
+        chipInputSource.includes('isActive: isActiveFilter,') &&
+        chipInputSource.includes('storeRecordCountMode,') &&
+        !chipInputSource.includes('Input'),
+      '已生效筛选条只能读取生效态，不能读取尚未查询的输入态',
+    )
+    const removeSource = pageSource.slice(
+      pageSource.indexOf('const removeToolbarFilter = (key: ToolbarFilterKey) => {'),
+      pageSource.indexOf('const removeColumnFilter'),
+    )
+    for (const [inputSetter, appliedSetter] of [
+      ["setKeywordInput('')", "setKeyword('')"],
+      ['setSupplierCodeInput(undefined)', 'setSupplierCode(undefined)'],
+      ['setCategoryGuidInput(undefined)', 'setCategoryGuid(undefined)'],
+      ['setWarehouseCategoryGuidInput(undefined)', 'setWarehouseCategoryGuid(undefined)'],
+      ['setIsActiveFilterInput(undefined)', 'setIsActiveFilter(undefined)'],
+      ['setIsSetFilterInput(undefined)', 'setIsSetFilter(undefined)'],
+      ["setStoreRecordCountModeInput('all')", "setStoreRecordCountMode('all')"],
+    ]) {
+      assert(removeSource.includes(inputSetter) && removeSource.includes(appliedSetter), `移除标签应同时清空 ${inputSetter} 与 ${appliedSetter}`)
+    }
+    assert(removeSource.includes('applyToolbarFilterChange()'), '移除标签后应立即重新查询')
+    const removeColumnSource = pageSource.slice(
+      pageSource.indexOf('const removeColumnFilter'),
+      pageSource.indexOf('const productColumnFilterMeta'),
+    )
+    assert(
+      removeColumnSource.includes('delete next[filterKey]') && removeColumnSource.includes('applyToolbarFilterChange()'),
+      '移除列头筛选标签应只删掉对应列条件并重新查询',
+    )
+  })
+  if (instantFilterFailure) failures.push(instantFilterFailure)
+
+  const toolbarHeightFailure = await runTest('工具栏高度变化时应重算表格高度', () => {
+    const layoutStart = pageSource.indexOf('const tbarH = toolbarRef.current?.getBoundingClientRect().height || 0')
+    const layoutSource = pageSource.slice(layoutStart, pageSource.indexOf('}, [pageSize, total])', layoutStart))
+    assert(
+      layoutSource.includes('new ResizeObserver(() => calc())') &&
+        layoutSource.includes('resizeObserver?.observe(toolbarRef.current)') &&
+        layoutSource.includes('resizeObserver?.observe(pagerRef.current)') &&
+        layoutSource.includes('resizeObserver?.disconnect()'),
+      '已生效筛选条、勾选后操作条出现或消失时应通过 ResizeObserver 重算表格高度，并在卸载时断开',
+    )
+    const calcStart = pageSource.indexOf('const calc = () => {')
+    const calcSource = pageSource.slice(calcStart, pageSource.indexOf('calc()', calcStart + 20))
+    assert(
+      calcSource.includes('wrapRef.current?.getBoundingClientRect().top') &&
+        calcSource.includes('window.innerHeight - wrapTop - PRODUCT_LIST_BOTTOM_GAP') &&
+        calcSource.includes('setProductListHeight(containerH)') &&
+        pageSource.includes("height: productListHeight ?? 'calc(100vh - 200px)'"),
+      '列表容器高度应按其在视口中的实际起点计算，不能只靠写死的 100vh 减估算值',
+    )
+    const pagerStart = pageSource.indexOf('ref={pagerRef}')
+    const pagerSource = pageSource.slice(pagerStart, pageSource.indexOf('<Pagination', pagerStart))
+    assert(
+      !pagerSource.includes("t('posAdmin.products.selectedCount'") &&
+        !pagerSource.includes("t('posAdmin.products.clearSelection'") &&
+        pagerSource.includes("justifyContent: 'flex-end'"),
+      '选中数量与取消选择已由勾选后操作条展示，分页栏不应重复显示',
+    )
+  })
+  if (toolbarHeightFailure) failures.push(toolbarHeightFailure)
 
   const existingJobFailure = await runTest('已有 active job 时 HQ 同步按钮只展示状态不新建任务', () => {
     assert(

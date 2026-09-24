@@ -30,6 +30,15 @@ namespace BlazorApp.Api.Services.React
         private readonly IWarehouseProductChangeHistoryService _changeHistoryService;
         private readonly ICurrentUserService _currentUserService;
         private const string StoreRetailPricesIncrementalTaskType = "SyncStoreRetailPricesIncremental";
+        private static readonly TimeSpan StoreRetailPriceIncrementalOverlap = TimeSpan.FromMinutes(10);
+
+        // 映射增量起点在上次成功任务开始时间之前多重叠的余量：兜住 UpdatedAt 已打点、
+        // 但事务晚于上次源快照才提交的写入，以及多实例之间的少量时钟偏差。
+        // 重叠区内的商品会重新计算出相同映射，比较后不会产生多余写入。
+        internal static readonly TimeSpan PosmMappingIncrementalOverlap = TimeSpan.FromMinutes(10);
+
+        // 没有成功记录、或上次成功距今过久时的最大回溯范围，沿用原实现的 30 天上限。
+        internal static readonly TimeSpan PosmMappingIncrementalMaxLookback = TimeSpan.FromDays(30);
 
         public DataSyncIncrementalService(
             SqlSugarContext localContext,
@@ -91,31 +100,39 @@ namespace BlazorApp.Api.Services.React
                         t.Status == BlazorApp.Shared.Models.HBweb.TaskStatus.Success
                     );
 
-                    DateTime? syncStartTime = lastSuccessTask?.StartedAt;
-                    var daysRange = 30;
+                    var utcNow = DateTime.UtcNow;
+                    effectiveStart = ResolvePosmMappingIncrementalStart(
+                        lastSuccessTask?.StartedAt,
+                        utcNow
+                    );
 
-                    if (syncStartTime.HasValue)
+                    if (lastSuccessTask == null)
                     {
-                        daysRange = Math.Min(
-                            daysRange,
-                            (int)(DateTime.UtcNow - syncStartTime.Value).TotalDays
-                        );
                         _logger.LogInformation(
-                            "[ReactSync] 商品-供应商映射增量：上次成功同步时间: {Time}, 范围: {Days} 天",
-                            syncStartTime,
-                            daysRange
+                            "[ReactSync] 商品-供应商映射增量：最近任务日志中没有成功记录，回溯最近 {Days} 天，起点 {Start}（UTC）",
+                            PosmMappingIncrementalMaxLookback.TotalDays,
+                            effectiveStart
+                        );
+                    }
+                    else if (lastSuccessTask.StartedAt < utcNow - PosmMappingIncrementalMaxLookback)
+                    {
+                        // 超过回溯上限时更早的变更不会再被增量捕获，只能靠手动全量同步补齐。
+                        _logger.LogWarning(
+                            "[ReactSync] 商品-供应商映射增量：上次成功同步开始于 {LastSuccess}（UTC），已超过 {Days} 天，本次只回溯到 {Start}（UTC），更早的变更需手动执行全量同步",
+                            lastSuccessTask.StartedAt,
+                            PosmMappingIncrementalMaxLookback.TotalDays,
+                            effectiveStart
                         );
                     }
                     else
                     {
                         _logger.LogInformation(
-                            "[ReactSync] 商品-供应商映射增量：未找到历史记录，同步最近 {Days} 天的数据",
-                            daysRange
+                            "[ReactSync] 商品-供应商映射增量：上次成功同步开始于 {LastSuccess}（UTC），本次起点 {Start}（UTC，向前重叠 {OverlapMinutes} 分钟）",
+                            lastSuccessTask.StartedAt,
+                            effectiveStart,
+                            PosmMappingIncrementalOverlap.TotalMinutes
                         );
                     }
-
-                    var startDate = DateTime.UtcNow.AddDays(-daysRange);
-                    effectiveStart = startDate;
                 }
 
                 taskLog = await StartPosmIncrementalTaskLogAsync(taskType);
@@ -383,6 +400,30 @@ namespace BlazorApp.Api.Services.React
             );
         }
 
+        /// <summary>
+        /// 计算商品-供应商映射增量同步的候选起点（UTC）。
+        /// 任务日志 StartedAt 与 Product/WarehouseProduct/DomesticProduct 的 UpdatedAt 都按
+        /// DateTime.UtcNow 写入，从 SQL Server 读回时 Kind 为 Unspecified，这里统一按 UTC 解释。
+        /// </summary>
+        internal static DateTime ResolvePosmMappingIncrementalStart(
+            DateTime? lastSuccessStartedAtUtc,
+            DateTime utcNow
+        )
+        {
+            var earliestStart = utcNow - PosmMappingIncrementalMaxLookback;
+            if (!lastSuccessStartedAtUtc.HasValue)
+            {
+                return earliestStart;
+            }
+
+            // 以上次成功任务的开始时间为水位（它早于该次读取源快照的时刻），再向前重叠一小段。
+            // 不能按整天截断：调度每 20 分钟一次，整天截断会得到 0 天，起点等于当前时间而漏掉全部变更。
+            var start =
+                DateTime.SpecifyKind(lastSuccessStartedAtUtc.Value, DateTimeKind.Utc)
+                - PosmMappingIncrementalOverlap;
+            return start < earliestStart ? earliestStart : start;
+        }
+
         public async Task<SyncResult> SyncStoreLocalSupplierInvoicesFromHqIncrementalAsync(
             DateTime? startDateFromRequest = null
         )
@@ -409,39 +450,12 @@ namespace BlazorApp.Api.Services.React
                 }
                 else
                 {
-                    var recentTasks = await _taskLogService.GetRecentTasksAsync(
-                        1,
-                        "SyncStoreLocalSupplierInvoicesIncremental"
+                    effectiveStart = ResolveHqBusinessDateIncrementalStart(DateTime.UtcNow);
+                    _logger.LogInformation(
+                        "[ReactSync] 进货单增量：未指定起始日期，按业务日期 H订单日期 回溯最近 {Days} 天，起点 {Start}",
+                        HqIncrementalLookback.TotalDays,
+                        effectiveStart
                     );
-                    var lastSuccessTask = recentTasks.FirstOrDefault(t =>
-                        t.Status == BlazorApp.Shared.Models.HBweb.TaskStatus.Success
-                    );
-
-                    DateTime? syncStartTime = lastSuccessTask?.StartedAt;
-                    var daysRange = 30;
-
-                    if (syncStartTime.HasValue)
-                    {
-                        daysRange = Math.Min(
-                            daysRange,
-                            (int)(DateTime.UtcNow - syncStartTime.Value).TotalDays
-                        );
-                        _logger.LogInformation(
-                            "[ReactSync] 增量同步：上次成功同步时间: {Time}, 范围: {Days} 天",
-                            syncStartTime,
-                            daysRange
-                        );
-                    }
-                    else
-                    {
-                        _logger.LogInformation(
-                            "[ReactSync] 增量同步：未找到历史记录，同步最近 {Days} 天的数据",
-                            daysRange
-                        );
-                    }
-
-                    var startDate = DateTime.UtcNow.AddDays(-daysRange);
-                    effectiveStart = syncStartTime ?? startDate;
                 }
 
                 var hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
@@ -598,46 +612,12 @@ namespace BlazorApp.Api.Services.React
                 }
                 else
                 {
-                    var recentTasks = await _taskLogService.GetRecentTasksAsync(
-                        1,
-                        "SyncContainersIncremental"
+                    effectiveStartDate = ResolveHqBusinessDateIncrementalStart(DateTime.UtcNow);
+                    _logger.LogInformation(
+                        "[ReactSync] 货柜增量：未指定起始日期，按业务日期 装柜日期 回溯最近 {Days} 天，起点 {Start}",
+                        HqIncrementalLookback.TotalDays,
+                        effectiveStartDate
                     );
-                    var lastSuccessTask = recentTasks.FirstOrDefault(t =>
-                        t.Status == BlazorApp.Shared.Models.HBweb.TaskStatus.Success
-                    );
-
-                    DateTime? syncStartTime = lastSuccessTask?.StartedAt;
-                    var daysRange = 30;
-
-                    if (syncStartTime.HasValue)
-                    {
-                        daysRange = Math.Min(
-                            daysRange,
-                            (int)(DateTime.UtcNow - syncStartTime.Value).TotalDays
-                        );
-                        _logger.LogInformation(
-                            "[ReactSync] 货柜增量：上次成功同步时间: {Time}, 范围: {Days} 天",
-                            syncStartTime,
-                            daysRange
-                        );
-                    }
-                    else
-                    {
-                        _logger.LogInformation(
-                            "[ReactSync] 货柜增量：未找到历史记录，同步最近 {Days} 天的数据",
-                            daysRange
-                        );
-                    }
-
-                    var startDate = DateTime.UtcNow.AddDays(-daysRange);
-                    const int overlapDays = 7;
-                    effectiveStartDate = syncStartTime.HasValue
-                        ? (
-                            syncStartTime.Value.AddDays(-overlapDays) < startDate
-                                ? syncStartTime.Value.AddDays(-overlapDays)
-                                : startDate
-                        )
-                        : startDate;
                 }
 
                 var hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
@@ -827,50 +807,13 @@ namespace BlazorApp.Api.Services.React
             {
                 _logger.LogInformation("[ReactSync] 货柜详情增量同步：开始");
 
-                DateTime effectiveStart;
+                // 货柜详情按主表 GUID（未传时为全部明细）同步，查询不按时间过滤，起始日期只作记录。
                 if (startDateFromRequest.HasValue)
                 {
-                    effectiveStart = startDateFromRequest.Value;
                     _logger.LogInformation(
-                        "[ReactSync] 货柜详情增量：使用请求指定起始日期: {Time}",
-                        effectiveStart
+                        "[ReactSync] 货柜详情增量：使用请求指定起始日期: {Time}（本同步不按时间过滤，日期仅作记录）",
+                        startDateFromRequest.Value
                     );
-                }
-                else
-                {
-                    var recentTasks = await _taskLogService.GetRecentTasksAsync(
-                        1,
-                        "SyncContainerDetailsIncremental"
-                    );
-                    var lastSuccessTask = recentTasks.FirstOrDefault(t =>
-                        t.Status == BlazorApp.Shared.Models.HBweb.TaskStatus.Success
-                    );
-
-                    DateTime? syncStartTime = lastSuccessTask?.StartedAt;
-                    var daysRange = 30;
-
-                    if (syncStartTime.HasValue)
-                    {
-                        daysRange = Math.Min(
-                            daysRange,
-                            (int)(DateTime.UtcNow - syncStartTime.Value).TotalDays
-                        );
-                        _logger.LogInformation(
-                            "[ReactSync] 货柜详情增量：上次成功同步时间: {Time}, 范围: {Days} 天",
-                            syncStartTime,
-                            daysRange
-                        );
-                    }
-                    else
-                    {
-                        _logger.LogInformation(
-                            "[ReactSync] 货柜详情增量：未找到历史记录，同步最近 {Days} 天的数据",
-                            daysRange
-                        );
-                    }
-
-                    var startDate = DateTime.UtcNow.AddDays(-daysRange);
-                    effectiveStart = startDate;
                 }
 
                 var hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
@@ -1112,39 +1055,12 @@ namespace BlazorApp.Api.Services.React
                 }
                 else
                 {
-                    var recentTasks = await _taskLogService.GetRecentTasksAsync(
-                        1,
-                        "SyncWareHouseOrdersIncremental"
+                    effectiveStart = ResolveHqBusinessDateIncrementalStart(DateTime.UtcNow);
+                    _logger.LogInformation(
+                        "[ReactSync] 仓库订单增量：未指定起始日期，按业务日期 订单日期 回溯最近 {Days} 天，起点 {Start}",
+                        HqIncrementalLookback.TotalDays,
+                        effectiveStart
                     );
-                    var lastSuccessTask = recentTasks.FirstOrDefault(t =>
-                        t.Status == BlazorApp.Shared.Models.HBweb.TaskStatus.Success
-                    );
-
-                    DateTime? syncStartTime = lastSuccessTask?.StartedAt;
-                    var daysRange = 30;
-
-                    if (syncStartTime.HasValue)
-                    {
-                        daysRange = Math.Min(
-                            daysRange,
-                            (int)(DateTime.UtcNow - syncStartTime.Value).TotalDays
-                        );
-                        _logger.LogInformation(
-                            "[ReactSync] 仓库订单增量：上次成功同步时间: {Time}, 范围: {Days} 天",
-                            syncStartTime,
-                            daysRange
-                        );
-                    }
-                    else
-                    {
-                        _logger.LogInformation(
-                            "[ReactSync] 仓库订单增量：未找到历史记录，同步最近 {Days} 天的数据",
-                            daysRange
-                        );
-                    }
-
-                    var startDate = DateTime.UtcNow.AddDays(-daysRange);
-                    effectiveStart = syncStartTime ?? startDate;
                 }
 
                 var hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
@@ -1278,7 +1194,7 @@ namespace BlazorApp.Api.Services.React
 
         /// <summary>
         /// 增量同步商品信息：DIC_商品信息字典表 → Product
-        /// 基于最近一次成功同步的时间点，默认100天内进行增量同步
+        /// 未指定起始日期时固定回溯最近 30 天，不按上次成功时间推进水位
         /// </summary>
         public async Task<SyncResult> SyncProductsFromHqIncrementalAsync(
             DateTime? startDateFromRequest = null
@@ -1307,39 +1223,12 @@ namespace BlazorApp.Api.Services.React
                 }
                 else
                 {
-                    var recentTasks = await _taskLogService.GetRecentTasksAsync(
-                        1,
-                        "SyncProductsIncremental"
+                    effectiveStart = ResolveHqModifiedTimeIncrementalStart(DateTime.UtcNow);
+                    _logger.LogInformation(
+                        "[ReactSync] 商品增量：未指定起始日期，回溯最近 {Days} 天，起点 {Start}（UTC）",
+                        HqIncrementalLookback.TotalDays,
+                        effectiveStart
                     );
-                    var lastSuccessTask = recentTasks.FirstOrDefault(t =>
-                        t.Status == BlazorApp.Shared.Models.HBweb.TaskStatus.Success
-                    );
-
-                    DateTime? syncStartTime = lastSuccessTask?.StartedAt;
-                    var daysRange = 30;
-
-                    if (syncStartTime.HasValue)
-                    {
-                        daysRange = Math.Min(
-                            daysRange,
-                            (int)(DateTime.UtcNow - syncStartTime.Value).TotalDays
-                        );
-                        _logger.LogInformation(
-                            "[ReactSync] 商品增量：上次成功同步时间: {Time}, 范围: {Days} 天",
-                            syncStartTime,
-                            daysRange
-                        );
-                    }
-                    else
-                    {
-                        _logger.LogInformation(
-                            "[ReactSync] 商品增量：未找到历史记录，同步最近 {Days} 天的数据",
-                            daysRange
-                        );
-                    }
-
-                    var startDate = DateTime.UtcNow.AddDays(-daysRange);
-                    effectiveStart = startDate;
                 }
 
                 var hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
@@ -1569,26 +1458,37 @@ namespace BlazorApp.Api.Services.React
 
         /// <summary>
         /// 增量同步分店零售价：DIC_商品零售价表 → StoreRetailPrice
-        /// 基于最近一次成功同步时间点或请求指定起始时间，
-        /// 找不到历史成功记录时由统一服务的 DefaultIncrementalDays 配置决定，支持分店筛选。
+        /// 未指定起始日期时从最近一次“全分店、未指定起止日期”的成功运行续跑（回退 10 分钟重叠）；
+        /// 页面同步和指定分店/日期的运行与它共用任务类型，但不会被当作水位。
         /// </summary>
         public async Task<SyncResult> SyncStoreRetailPricesFromHqIncrementalAsync(
             List<string>? selectedStoreCodes = null,
             DateTime? startDateFromRequest = null
         )
         {
-            if (_storeRetailPriceHqSyncService != null)
+            if (_storeRetailPriceHqSyncService == null)
             {
-                var effectiveStart = await ResolveStoreRetailPriceIncrementalStartAsync(
-                    startDateFromRequest
-                );
-                return await _storeRetailPriceHqSyncService.SyncIncrementalAsync(
-                    selectedStoreCodes,
+                throw new InvalidOperationException("分店零售价 HQ 统一同步服务未注册");
+            }
+
+            var effectiveStart = await ResolveStoreRetailPriceIncrementalStartAsync(
+                startDateFromRequest
+            );
+            var isAllStores =
+                StoreRetailPriceIncrementalTaskScope.NormalizeStoreCodes(selectedStoreCodes).Count == 0;
+            if (isAllStores && !startDateFromRequest.HasValue)
+            {
+                // 只有全分店且未指定起始日期的运行才能推进水位。
+                return await _storeRetailPriceHqSyncService.SyncAllStoresFromWatermarkAsync(
                     effectiveStart
                 );
             }
 
-            throw new InvalidOperationException("分店零售价 HQ 统一同步服务未注册");
+            // 指定分店时仍可从全分店水位起步（水位之前这些分店已同步过），但本次运行不推进水位。
+            return await _storeRetailPriceHqSyncService.SyncIncrementalAsync(
+                selectedStoreCodes,
+                effectiveStart
+            );
         }
 
         private async Task<DateTime?> ResolveStoreRetailPriceIncrementalStartAsync(
@@ -1604,33 +1504,79 @@ namespace BlazorApp.Api.Services.React
                 return startDateFromRequest.Value;
             }
 
-            var lastSuccessTask = await _localContext.Db.Queryable<ScheduledTaskLog>()
+            // 先用 JSON 片段在库里预筛选，再在内存里按参数复核，避免页面同步很频繁时水位记录被挤出前几条。
+            var eligibleFragment = StoreRetailPriceIncrementalTaskScope.WatermarkEligibleJsonFragment;
+            var watermarkCandidates = await _localContext.Db.Queryable<ScheduledTaskLog>()
                 .Where(t =>
                     t.TaskType == StoreRetailPricesIncrementalTaskType
                     && t.Status == BlazorApp.Shared.Models.HBweb.TaskStatus.Success
+                    && t.TaskParameters != null
+                    && t.TaskParameters.Contains(eligibleFragment)
                 )
                 .OrderByDescending(t => t.StartedAt)
-                .FirstAsync();
+                .Take(5)
+                .ToListAsync();
+            var watermarkTask = watermarkCandidates.FirstOrDefault(
+                StoreRetailPriceIncrementalTaskScope.IsWatermarkEligible
+            );
 
-            if (lastSuccessTask?.StartedAt is DateTime syncStartTime)
+            if (watermarkTask != null)
             {
-                // 旧增量入口按最近成功任务的开始时间恢复窗口，避免委托统一服务后扩大同步范围。
+                // 回退少量重叠：HBweb 回写 HQ 的修改时间取自事务内的 UTC 时刻，
+                // 提交晚于上次运行开始的写入会落在 StartedAt 之前。HQ 旧程序写悉尼墙钟，按 UTC 比较只会多取。
+                // 不设回溯上限：HQ 修改时间有索引且统一服务按 (FGC_LastModifyDate, ID) 键集分页，
+                // 长时间未运行时截断起点只会漏数据。
+                var watermarkStart = watermarkTask.StartedAt - StoreRetailPriceIncrementalOverlap;
                 _logger.LogInformation(
-                    "[ReactSync] 分店零售价增量：上次成功同步时间: {Time}",
-                    syncStartTime
+                    "[ReactSync] 分店零售价增量：上次全分店成功同步开始于 {LastStartedAt}，本次起点 {Start}",
+                    watermarkTask.StartedAt,
+                    watermarkStart
                 );
-                return syncStartTime;
+                return watermarkStart;
+            }
+
+            // 没有带范围标记的全分店记录。旧格式日志分不清是全分店还是页面局部同步，
+            // 不能当作精确水位，只用来把默认窗口向更早方向扩展：取“旧日志起点”和“默认窗口起点”中更早的一个。
+            var scopeKey = StoreRetailPriceIncrementalTaskScope.ScopeParameterKey;
+            var legacyCandidates = await _localContext.Db.Queryable<ScheduledTaskLog>()
+                .Where(t =>
+                    t.TaskType == StoreRetailPricesIncrementalTaskType
+                    && t.Status == BlazorApp.Shared.Models.HBweb.TaskStatus.Success
+                    && (t.TaskParameters == null || !t.TaskParameters.Contains(scopeKey))
+                )
+                .OrderByDescending(t => t.StartedAt)
+                .Take(5)
+                .ToListAsync();
+            var legacyTask = legacyCandidates.FirstOrDefault(
+                StoreRetailPriceIncrementalTaskScope.IsLegacyUnscoped
+            );
+            if (legacyTask != null)
+            {
+                var defaultDays = (
+                    _configuration.GetSection("StoreRetailPriceHqSync").Get<StoreRetailPriceHqSyncOptions>()
+                    ?? new StoreRetailPriceHqSyncOptions()
+                ).DefaultIncrementalDays;
+                var defaultStart = DateTime.UtcNow.AddDays(-defaultDays);
+                var legacyStart = legacyTask.StartedAt - StoreRetailPriceIncrementalOverlap;
+                if (legacyStart < defaultStart)
+                {
+                    _logger.LogInformation(
+                        "[ReactSync] 分店零售价增量：仅有旧格式成功记录且早于默认窗口，从 {Start} 开始",
+                        legacyStart
+                    );
+                    return legacyStart;
+                }
             }
 
             _logger.LogInformation(
-                "[ReactSync] 分店零售价增量：未找到历史成功记录，使用统一服务默认窗口"
+                "[ReactSync] 分店零售价增量：未找到可用的全分店水位，使用统一服务默认窗口"
             );
             return null;
         }
 
         /// <summary>
         /// 增量同步国货商品：CPT_DIC_商品信息字典表 → DomesticProduct
-        /// 基于最近一次成功同步的时间点，默认100天内进行增量同步
+        /// 未指定起始日期时固定回溯最近 30 天，不按上次成功时间推进水位
         /// </summary>
         public async Task<SyncResult> SyncDomesticProductsFromHqIncrementalAsync(
             DateTime? startDateFromRequest = null
@@ -1658,39 +1604,12 @@ namespace BlazorApp.Api.Services.React
                 }
                 else
                 {
-                    var recentTasks = await _taskLogService.GetRecentTasksAsync(
-                        1,
-                        "SyncDomesticProductsIncremental"
+                    effectiveStart = ResolveHqModifiedTimeIncrementalStart(DateTime.UtcNow);
+                    _logger.LogInformation(
+                        "[ReactSync] 国货商品增量：未指定起始日期，回溯最近 {Days} 天，起点 {Start}（UTC）",
+                        HqIncrementalLookback.TotalDays,
+                        effectiveStart
                     );
-                    var lastSuccessTask = recentTasks.FirstOrDefault(t =>
-                        t.Status == BlazorApp.Shared.Models.HBweb.TaskStatus.Success
-                    );
-
-                    DateTime? syncStartTime = lastSuccessTask?.StartedAt;
-                    var daysRange = 30;
-
-                    if (syncStartTime.HasValue)
-                    {
-                        daysRange = Math.Min(
-                            daysRange,
-                            (int)(DateTime.UtcNow - syncStartTime.Value).TotalDays
-                        );
-                        _logger.LogInformation(
-                            "[ReactSync] 国货商品增量：上次成功同步时间: {Time}, 范围: {Days} 天",
-                            syncStartTime,
-                            daysRange
-                        );
-                    }
-                    else
-                    {
-                        _logger.LogInformation(
-                            "[ReactSync] 国货商品增量：未找到历史记录，同步最近 {Days} 天的数据",
-                            daysRange
-                        );
-                    }
-
-                    var startDate = DateTime.UtcNow.AddDays(-daysRange);
-                    effectiveStart = startDate;
                 }
 
                 if (!(await _hbSalesContext.TestConnectionAsync()))
@@ -1879,7 +1798,7 @@ namespace BlazorApp.Api.Services.React
 
         /// <summary>
         /// 增量同步国内供应商：CBP_DIC_国内供应商信息表 → ChinaSupplier
-        /// 基于最近一次成功同步的时间点，默认100天内进行增量同步
+        /// 未指定起始日期时固定回溯最近 30 天，不按上次成功时间推进水位
         /// </summary>
         public async Task<SyncResult> SyncChinaSuppliersFromHqIncrementalAsync(
             DateTime? startDateFromRequest = null
@@ -1907,39 +1826,12 @@ namespace BlazorApp.Api.Services.React
                 }
                 else
                 {
-                    var recentTasks = await _taskLogService.GetRecentTasksAsync(
-                        1,
-                        "SyncChinaSuppliersIncremental"
+                    effectiveStart = ResolveHqModifiedTimeIncrementalStart(DateTime.UtcNow);
+                    _logger.LogInformation(
+                        "[ReactSync] 供应商增量：未指定起始日期，回溯最近 {Days} 天，起点 {Start}（UTC）",
+                        HqIncrementalLookback.TotalDays,
+                        effectiveStart
                     );
-                    var lastSuccessTask = recentTasks.FirstOrDefault(t =>
-                        t.Status == BlazorApp.Shared.Models.HBweb.TaskStatus.Success
-                    );
-
-                    DateTime? syncStartTime = lastSuccessTask?.StartedAt;
-                    var daysRange = 30;
-
-                    if (syncStartTime.HasValue)
-                    {
-                        daysRange = Math.Min(
-                            daysRange,
-                            (int)(DateTime.UtcNow - syncStartTime.Value).TotalDays
-                        );
-                        _logger.LogInformation(
-                            "[ReactSync] 供应商增量：上次成功同步时间: {Time}, 范围: {Days} 天",
-                            syncStartTime,
-                            daysRange
-                        );
-                    }
-                    else
-                    {
-                        _logger.LogInformation(
-                            "[ReactSync] 供应商增量：未找到历史记录，同步最近 {Days} 天的数据",
-                            daysRange
-                        );
-                    }
-
-                    var startDate = DateTime.UtcNow.AddDays(-daysRange);
-                    effectiveStart = startDate;
                 }
 
                 if (!(await _hbSalesContext.TestConnectionAsync()))
@@ -2074,7 +1966,7 @@ namespace BlazorApp.Api.Services.React
 
         /// <summary>
         /// 增量同步仓库分类：CBP_DIC_商品分类码表 → WarehouseCategory
-        /// 基于最近一次成功同步的时间点，默认100天内进行增量同步
+        /// 未指定起始日期时固定回溯最近 30 天，不按上次成功时间推进水位
         /// </summary>
         public async Task<SyncResult> SyncWarehouseCategoriesFromHqIncrementalAsync(
             DateTime? startDateFromRequest = null
@@ -2102,39 +1994,12 @@ namespace BlazorApp.Api.Services.React
                 }
                 else
                 {
-                    var recentTasks = await _taskLogService.GetRecentTasksAsync(
-                        1,
-                        "SyncWarehouseCategoriesIncremental"
+                    effectiveStart = ResolveHqModifiedTimeIncrementalStart(DateTime.UtcNow);
+                    _logger.LogInformation(
+                        "[ReactSync] 仓库分类增量：未指定起始日期，回溯最近 {Days} 天，起点 {Start}（UTC）",
+                        HqIncrementalLookback.TotalDays,
+                        effectiveStart
                     );
-                    var lastSuccessTask = recentTasks.FirstOrDefault(t =>
-                        t.Status == BlazorApp.Shared.Models.HBweb.TaskStatus.Success
-                    );
-
-                    DateTime? syncStartTime = lastSuccessTask?.StartedAt;
-                    var daysRange = 30;
-
-                    if (syncStartTime.HasValue)
-                    {
-                        daysRange = Math.Min(
-                            daysRange,
-                            (int)(DateTime.UtcNow - syncStartTime.Value).TotalDays
-                        );
-                        _logger.LogInformation(
-                            "[ReactSync] 仓库分类增量：上次成功同步时间: {Time}, 范围: {Days} 天",
-                            syncStartTime,
-                            daysRange
-                        );
-                    }
-                    else
-                    {
-                        _logger.LogInformation(
-                            "[ReactSync] 仓库分类增量：未找到历史记录，同步最近 {Days} 天的数据",
-                            daysRange
-                        );
-                    }
-
-                    var startDate = DateTime.UtcNow.AddDays(-daysRange);
-                    effectiveStart = startDate;
                 }
 
                 var hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
@@ -2267,7 +2132,7 @@ namespace BlazorApp.Api.Services.React
 
         /// <summary>
         /// 增量同步仓库商品：CBP_DIC_商品库存表 → WarehouseProduct
-        /// 基于最近一次成功同步的时间点，默认100天内进行增量同步
+        /// 未指定起始日期时固定回溯最近 30 天，不按上次成功时间推进水位
         /// </summary>
         public async Task<SyncResult> SyncWarehouseProductsFromHqIncrementalAsync(
             DateTime? startDateFromRequest = null
@@ -2295,39 +2160,12 @@ namespace BlazorApp.Api.Services.React
                 }
                 else
                 {
-                    var recentTasks = await _taskLogService.GetRecentTasksAsync(
-                        1,
-                        "SyncWarehouseProductsIncremental"
+                    effectiveStart = ResolveHqModifiedTimeIncrementalStart(DateTime.UtcNow);
+                    _logger.LogInformation(
+                        "[ReactSync] 仓库商品增量：未指定起始日期，回溯最近 {Days} 天，起点 {Start}（UTC）",
+                        HqIncrementalLookback.TotalDays,
+                        effectiveStart
                     );
-                    var lastSuccessTask = recentTasks.FirstOrDefault(t =>
-                        t.Status == BlazorApp.Shared.Models.HBweb.TaskStatus.Success
-                    );
-
-                    DateTime? syncStartTime = lastSuccessTask?.StartedAt;
-                    var daysRange = 30;
-
-                    if (syncStartTime.HasValue)
-                    {
-                        daysRange = Math.Min(
-                            daysRange,
-                            (int)(DateTime.UtcNow - syncStartTime.Value).TotalDays
-                        );
-                        _logger.LogInformation(
-                            "[ReactSync] 仓库商品增量：上次成功同步时间: {Time}, 范围: {Days} 天",
-                            syncStartTime,
-                            daysRange
-                        );
-                    }
-                    else
-                    {
-                        _logger.LogInformation(
-                            "[ReactSync] 仓库商品增量：未找到历史记录，同步最近 {Days} 天的数据",
-                            daysRange
-                        );
-                    }
-
-                    var startDate = DateTime.UtcNow.AddDays(-daysRange);
-                    effectiveStart = startDate;
                 }
 
                 var hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
@@ -2544,7 +2382,7 @@ namespace BlazorApp.Api.Services.React
 
         /// <summary>
         /// 增量同步库位：CPT_DIC_货位编码信息表 → Location
-        /// 基于最近一次成功同步的时间点，默认100天内进行增量同步
+        /// 未指定起始日期时固定回溯最近 30 天，不按上次成功时间推进水位
         /// </summary>
         public async Task<SyncResult> SyncLocationsFromHqIncrementalAsync(
             DateTime? startDateFromRequest = null
@@ -2572,39 +2410,12 @@ namespace BlazorApp.Api.Services.React
                 }
                 else
                 {
-                    var recentTasks = await _taskLogService.GetRecentTasksAsync(
-                        1,
-                        "SyncLocationsIncremental"
+                    effectiveStart = ResolveHqModifiedTimeIncrementalStart(DateTime.UtcNow);
+                    _logger.LogInformation(
+                        "[ReactSync] 库位增量：未指定起始日期，回溯最近 {Days} 天，起点 {Start}（UTC）",
+                        HqIncrementalLookback.TotalDays,
+                        effectiveStart
                     );
-                    var lastSuccessTask = recentTasks.FirstOrDefault(t =>
-                        t.Status == BlazorApp.Shared.Models.HBweb.TaskStatus.Success
-                    );
-
-                    DateTime? syncStartTime = lastSuccessTask?.StartedAt;
-                    var daysRange = 30;
-
-                    if (syncStartTime.HasValue)
-                    {
-                        daysRange = Math.Min(
-                            daysRange,
-                            (int)(DateTime.UtcNow - syncStartTime.Value).TotalDays
-                        );
-                        _logger.LogInformation(
-                            "[ReactSync] 库位增量：上次成功同步时间: {Time}, 范围: {Days} 天",
-                            syncStartTime,
-                            daysRange
-                        );
-                    }
-                    else
-                    {
-                        _logger.LogInformation(
-                            "[ReactSync] 库位增量：未找到历史记录，同步最近 {Days} 天的数据",
-                            daysRange
-                        );
-                    }
-
-                    var startDate = DateTime.UtcNow.AddDays(-daysRange);
-                    effectiveStart = startDate;
                 }
 
                 var hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
@@ -2738,7 +2549,7 @@ namespace BlazorApp.Api.Services.React
 
         /// <summary>
         /// 增量同步商品库位：CPT_RED_货位存货信息表 → ProductLocation
-        /// 基于最近一次成功同步的时间点，默认100天内进行增量同步
+        /// 未指定起始日期时固定回溯最近 30 天，不按上次成功时间推进水位
         /// </summary>
         public async Task<SyncResult> SyncProductLocationsFromHqIncrementalAsync(
             DateTime? startDateFromRequest = null
@@ -2766,39 +2577,12 @@ namespace BlazorApp.Api.Services.React
                 }
                 else
                 {
-                    var recentTasks = await _taskLogService.GetRecentTasksAsync(
-                        1,
-                        "SyncProductLocationsIncremental"
+                    effectiveStart = ResolveHqModifiedTimeIncrementalStart(DateTime.UtcNow);
+                    _logger.LogInformation(
+                        "[ReactSync] 商品库位增量：未指定起始日期，回溯最近 {Days} 天，起点 {Start}（UTC）",
+                        HqIncrementalLookback.TotalDays,
+                        effectiveStart
                     );
-                    var lastSuccessTask = recentTasks.FirstOrDefault(t =>
-                        t.Status == BlazorApp.Shared.Models.HBweb.TaskStatus.Success
-                    );
-
-                    DateTime? syncStartTime = lastSuccessTask?.StartedAt;
-                    var daysRange = 30;
-
-                    if (syncStartTime.HasValue)
-                    {
-                        daysRange = Math.Min(
-                            daysRange,
-                            (int)(DateTime.UtcNow - syncStartTime.Value).TotalDays
-                        );
-                        _logger.LogInformation(
-                            "[ReactSync] 商品库位增量：上次成功同步时间: {Time}, 范围: {Days} 天",
-                            syncStartTime,
-                            daysRange
-                        );
-                    }
-                    else
-                    {
-                        _logger.LogInformation(
-                            "[ReactSync] 商品库位增量：未找到历史记录，同步最近 {Days} 天的数据",
-                            daysRange
-                        );
-                    }
-
-                    var startDate = DateTime.UtcNow.AddDays(-daysRange);
-                    effectiveStart = startDate;
                 }
                 var hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
 
@@ -2932,7 +2716,7 @@ namespace BlazorApp.Api.Services.React
 
         /// <summary>
         /// 增量同步收银用户：DIC_收银用户信息表 → CashRegisterUser
-        /// 基于最近一次成功同步的时间点，默认100天内进行增量同步
+        /// 未指定起始日期时固定回溯最近 30 天，不按上次成功时间推进水位
         /// </summary>
         public async Task<SyncResult> SyncCashRegisterUsersFromHqIncrementalAsync(
             DateTime? startDateFromRequest = null
@@ -2960,39 +2744,12 @@ namespace BlazorApp.Api.Services.React
                 }
                 else
                 {
-                    var recentTasks = await _taskLogService.GetRecentTasksAsync(
-                        1,
-                        "SyncCashRegisterUsersIncremental"
+                    effectiveStart = ResolveHqModifiedTimeIncrementalStart(DateTime.UtcNow);
+                    _logger.LogInformation(
+                        "[ReactSync] 收银用户增量：未指定起始日期，回溯最近 {Days} 天，起点 {Start}（UTC）",
+                        HqIncrementalLookback.TotalDays,
+                        effectiveStart
                     );
-                    var lastSuccessTask = recentTasks.FirstOrDefault(t =>
-                        t.Status == BlazorApp.Shared.Models.HBweb.TaskStatus.Success
-                    );
-
-                    DateTime? syncStartTime = lastSuccessTask?.StartedAt;
-                    var daysRange = 30;
-
-                    if (syncStartTime.HasValue)
-                    {
-                        daysRange = Math.Min(
-                            daysRange,
-                            (int)(DateTime.UtcNow - syncStartTime.Value).TotalDays
-                        );
-                        _logger.LogInformation(
-                            "[ReactSync] 收银用户增量：上次成功同步时间: {Time}, 范围: {Days} 天",
-                            syncStartTime,
-                            daysRange
-                        );
-                    }
-                    else
-                    {
-                        _logger.LogInformation(
-                            "[ReactSync] 收银用户增量：未找到历史记录，同步最近 {Days} 天的数据",
-                            daysRange
-                        );
-                    }
-
-                    var startDate = DateTime.UtcNow.AddDays(-daysRange);
-                    effectiveStart = startDate;
                 }
                 var hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
 
@@ -3116,7 +2873,7 @@ namespace BlazorApp.Api.Services.React
 
         /// <summary>
         /// 增量同步分店一品多码：DIC_分店一品多码表 → StoreMultiCodeProduct
-        /// 基于最近一次成功同步的时间点，默认100天内进行增量同步，支持分店筛选
+        /// 未指定起始日期时固定回溯最近 30 天，不按上次成功时间推进水位，支持分店筛选
         /// </summary>
         public async Task<SyncResult> SyncStoreMultiCodeProductsFromHqIncrementalAsync(
             List<string>? selectedStoreCodes = null,
@@ -3145,39 +2902,12 @@ namespace BlazorApp.Api.Services.React
                 }
                 else
                 {
-                    var recentTasks = await _taskLogService.GetRecentTasksAsync(
-                        1,
-                        "SyncStoreMultiCodeProductsIncremental"
+                    effectiveStart = ResolveHqModifiedTimeIncrementalStart(DateTime.UtcNow);
+                    _logger.LogInformation(
+                        "[ReactSync] 一品多码增量：未指定起始日期，回溯最近 {Days} 天，起点 {Start}（UTC）",
+                        HqIncrementalLookback.TotalDays,
+                        effectiveStart
                     );
-                    var lastSuccessTask = recentTasks.FirstOrDefault(t =>
-                        t.Status == BlazorApp.Shared.Models.HBweb.TaskStatus.Success
-                    );
-
-                    DateTime? syncStartTime = lastSuccessTask?.StartedAt;
-                    var daysRange = 30;
-
-                    if (syncStartTime.HasValue)
-                    {
-                        daysRange = Math.Min(
-                            daysRange,
-                            (int)(DateTime.UtcNow - syncStartTime.Value).TotalDays
-                        );
-                        _logger.LogInformation(
-                            "[ReactSync] 一品多码增量：上次成功同步时间: {Time}, 范围: {Days} 天",
-                            syncStartTime,
-                            daysRange
-                        );
-                    }
-                    else
-                    {
-                        _logger.LogInformation(
-                            "[ReactSync] 一品多码增量：未找到历史记录，同步最近 {Days} 天的数据",
-                            daysRange
-                        );
-                    }
-
-                    var startDate = DateTime.UtcNow.AddDays(-daysRange);
-                    effectiveStart = startDate;
                 }
                 var hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
 
@@ -3445,7 +3175,7 @@ namespace BlazorApp.Api.Services.React
 
         /// <summary>
         /// 增量同步套装多码：DIC_一品多码表 → ProductSetCode
-        /// 基于最近一次成功同步的时间点，默认100天内进行增量同步
+        /// 未指定起始日期时固定回溯最近 30 天，不按上次成功时间推进水位
         /// </summary>
         public async Task<SyncResult> SyncProductSetCodesFromHqIncrementalAsync(
             DateTime? startDateFromRequest = null
@@ -3473,39 +3203,12 @@ namespace BlazorApp.Api.Services.React
                 }
                 else
                 {
-                    var recentTasks = await _taskLogService.GetRecentTasksAsync(
-                        1,
-                        "SyncProductSetCodesIncremental"
+                    effectiveStart = ResolveHqModifiedTimeIncrementalStart(DateTime.UtcNow);
+                    _logger.LogInformation(
+                        "[ReactSync] 套装多码增量：未指定起始日期，回溯最近 {Days} 天，起点 {Start}（UTC）",
+                        HqIncrementalLookback.TotalDays,
+                        effectiveStart
                     );
-                    var lastSuccessTask = recentTasks.FirstOrDefault(t =>
-                        t.Status == BlazorApp.Shared.Models.HBweb.TaskStatus.Success
-                    );
-
-                    DateTime? syncStartTime = lastSuccessTask?.StartedAt;
-                    var daysRange = 30;
-
-                    if (syncStartTime.HasValue)
-                    {
-                        daysRange = Math.Min(
-                            daysRange,
-                            (int)(DateTime.UtcNow - syncStartTime.Value).TotalDays
-                        );
-                        _logger.LogInformation(
-                            "[ReactSync] 套装多码增量：上次成功同步时间: {Time}, 范围: {Days} 天",
-                            syncStartTime,
-                            daysRange
-                        );
-                    }
-                    else
-                    {
-                        _logger.LogInformation(
-                            "[ReactSync] 套装多码增量：未找到历史记录，同步最近 {Days} 天的数据",
-                            daysRange
-                        );
-                    }
-
-                    var startDate = DateTime.UtcNow.AddDays(-daysRange);
-                    effectiveStart = startDate;
                 }
                 var hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
 
@@ -4208,7 +3911,7 @@ namespace BlazorApp.Api.Services.React
 
         /// <summary>
         /// 增量同步分店清货价：DIC_商品清货价表 → StoreClearancePrice
-        /// 基于最近一次成功同步的时间点，默认100天内进行增量同步，支持分店筛选
+        /// 未指定起始日期时固定回溯最近 30 天，不按上次成功时间推进水位，支持分店筛选
         /// </summary>
         public async Task<SyncResult> SyncStoreClearancePricesFromHqIncrementalAsync(
             List<string>? selectedStoreCodes = null,
@@ -4237,39 +3940,12 @@ namespace BlazorApp.Api.Services.React
                 }
                 else
                 {
-                    var recentTasks = await _taskLogService.GetRecentTasksAsync(
-                        1,
-                        "SyncStoreClearancePricesIncremental"
+                    effectiveStart = ResolveHqModifiedTimeIncrementalStart(DateTime.UtcNow);
+                    _logger.LogInformation(
+                        "[ReactSync] 清货价增量：未指定起始日期，回溯最近 {Days} 天，起点 {Start}（UTC）",
+                        HqIncrementalLookback.TotalDays,
+                        effectiveStart
                     );
-                    var lastSuccessTask = recentTasks.FirstOrDefault(t =>
-                        t.Status == BlazorApp.Shared.Models.HBweb.TaskStatus.Success
-                    );
-
-                    DateTime? syncStartTime = lastSuccessTask?.StartedAt;
-                    var daysRange = 30;
-
-                    if (syncStartTime.HasValue)
-                    {
-                        daysRange = Math.Min(
-                            daysRange,
-                            (int)(DateTime.UtcNow - syncStartTime.Value).TotalDays
-                        );
-                        _logger.LogInformation(
-                            "[ReactSync] 清货价增量：上次成功同步时间: {Time}, 范围: {Days} 天",
-                            syncStartTime,
-                            daysRange
-                        );
-                    }
-                    else
-                    {
-                        _logger.LogInformation(
-                            "[ReactSync] 清货价增量：未找到历史记录，同步最近 {Days} 天的数据",
-                            daysRange
-                        );
-                    }
-
-                    var startDate = DateTime.UtcNow.AddDays(-daysRange);
-                    effectiveStart = startDate;
                 }
                 var hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
 
@@ -4412,7 +4088,7 @@ namespace BlazorApp.Api.Services.React
 
         /// <summary>
         /// 增量同步国货套装：CPT_DIC_商品套装信息表 → DomesticSetProduct
-        /// 基于最近一次成功同步的时间点，默认100天内进行增量同步
+        /// 实体未映射修改时间列，每次按全量同步，请求的起始日期只作记录
         /// </summary>
         public async Task<SyncResult> SyncDomesticSetProductsFromHqIncrementalAsync(
             DateTime? startDateFromRequest = null
@@ -4435,39 +4111,6 @@ namespace BlazorApp.Api.Services.React
                         "[ReactSync] 国货套装增量：使用请求指定起始日期: {Time}（本同步为全量，日期仅作记录）",
                         startDateFromRequest.Value
                     );
-                }
-                else
-                {
-                    var recentTasks = await _taskLogService.GetRecentTasksAsync(
-                        1,
-                        "SyncDomesticSetProductsIncremental"
-                    );
-                    var lastSuccessTask = recentTasks.FirstOrDefault(t =>
-                        t.Status == BlazorApp.Shared.Models.HBweb.TaskStatus.Success
-                    );
-
-                    DateTime? syncStartTime = lastSuccessTask?.StartedAt;
-                    var daysRange = 30;
-
-                    if (syncStartTime.HasValue)
-                    {
-                        daysRange = Math.Min(
-                            daysRange,
-                            (int)(DateTime.UtcNow - syncStartTime.Value).TotalDays
-                        );
-                        _logger.LogInformation(
-                            "[ReactSync] 国货套装增量：上次成功同步时间: {Time}, 范围: {Days} 天",
-                            syncStartTime,
-                            daysRange
-                        );
-                    }
-                    else
-                    {
-                        _logger.LogInformation(
-                            "[ReactSync] 国货套装增量：未找到历史记录，同步最近 {Days} 天的数据",
-                            daysRange
-                        );
-                    }
                 }
 
                 if (!(await _hbSalesContext.TestConnectionAsync()))
@@ -4594,7 +4237,7 @@ namespace BlazorApp.Api.Services.React
 
         /// <summary>
         /// 增量同步商品前缀码：CPT_DIC_货号前缀信息表 → ProductPrefixCode
-        /// 基于最近一次成功同步的时间点，默认100天内进行增量同步
+        /// 未指定起始日期时固定回溯最近 30 天，不按上次成功时间推进水位
         /// </summary>
         public async Task<SyncResult> SyncProductPrefixCodesFromHqIncrementalAsync(
             DateTime? startDateFromRequest = null
@@ -4622,39 +4265,12 @@ namespace BlazorApp.Api.Services.React
                 }
                 else
                 {
-                    var recentTasks = await _taskLogService.GetRecentTasksAsync(
-                        1,
-                        "SyncProductPrefixCodesIncremental"
+                    effectiveStart = ResolveHqModifiedTimeIncrementalStart(DateTime.UtcNow);
+                    _logger.LogInformation(
+                        "[ReactSync] 前缀码增量：未指定起始日期，回溯最近 {Days} 天，起点 {Start}（UTC）",
+                        HqIncrementalLookback.TotalDays,
+                        effectiveStart
                     );
-                    var lastSuccessTask = recentTasks.FirstOrDefault(t =>
-                        t.Status == BlazorApp.Shared.Models.HBweb.TaskStatus.Success
-                    );
-
-                    DateTime? syncStartTime = lastSuccessTask?.StartedAt;
-                    var daysRange = 30;
-
-                    if (syncStartTime.HasValue)
-                    {
-                        daysRange = Math.Min(
-                            daysRange,
-                            (int)(DateTime.UtcNow - syncStartTime.Value).TotalDays
-                        );
-                        _logger.LogInformation(
-                            "[ReactSync] 前缀码增量：上次成功同步时间: {Time}, 范围: {Days} 天",
-                            syncStartTime,
-                            daysRange
-                        );
-                    }
-                    else
-                    {
-                        _logger.LogInformation(
-                            "[ReactSync] 前缀码增量：未找到历史记录，同步最近 {Days} 天的数据",
-                            daysRange
-                        );
-                    }
-
-                    var startDate = DateTime.UtcNow.AddDays(-daysRange);
-                    effectiveStart = startDate;
                 }
                 var hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
 
@@ -4780,7 +4396,7 @@ namespace BlazorApp.Api.Services.React
 
         /// <summary>
         /// 增量同步进货单详情：RED_进货单详情表Store → StoreLocalSupplierInvoiceDetails
-        /// 基于最近一次成功同步的时间点，默认100天内进行增量同步
+        /// 未指定起始日期时固定回溯最近 30 天，不按上次成功时间推进水位
         /// </summary>
         public async Task<SyncResult> SyncStoreLocalSupplierInvoiceDetailsFromHqIncrementalAsync(
             DateTime? startDateFromRequest = null
@@ -4808,39 +4424,12 @@ namespace BlazorApp.Api.Services.React
                 }
                 else
                 {
-                    var recentTasks = await _taskLogService.GetRecentTasksAsync(
-                        1,
-                        "SyncStoreLocalSupplierInvoiceDetailsIncremental"
+                    effectiveStart = ResolveHqModifiedTimeIncrementalStart(DateTime.UtcNow);
+                    _logger.LogInformation(
+                        "[ReactSync] 进货单详情增量：未指定起始日期，回溯最近 {Days} 天，起点 {Start}（UTC）",
+                        HqIncrementalLookback.TotalDays,
+                        effectiveStart
                     );
-                    var lastSuccessTask = recentTasks.FirstOrDefault(t =>
-                        t.Status == BlazorApp.Shared.Models.HBweb.TaskStatus.Success
-                    );
-
-                    DateTime? syncStartTime = lastSuccessTask?.StartedAt;
-                    var daysRange = 30;
-
-                    if (syncStartTime.HasValue)
-                    {
-                        daysRange = Math.Min(
-                            daysRange,
-                            (int)(DateTime.UtcNow - syncStartTime.Value).TotalDays
-                        );
-                        _logger.LogInformation(
-                            "[ReactSync] 进货单详情增量：上次成功同步时间: {Time}, 范围: {Days} 天",
-                            syncStartTime,
-                            daysRange
-                        );
-                    }
-                    else
-                    {
-                        _logger.LogInformation(
-                            "[ReactSync] 进货单详情增量：未找到历史记录，同步最近 {Days} 天的数据",
-                            daysRange
-                        );
-                    }
-
-                    var startDate = DateTime.UtcNow.AddDays(-daysRange);
-                    effectiveStart = startDate;
                 }
 
                 var hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
@@ -4965,7 +4554,7 @@ namespace BlazorApp.Api.Services.React
 
         /// <summary>
         /// 增量同步仓库订单详情：CBP_RED_分店订单详情表Store → WareHouseOrderDetails
-        /// 基于最近一次成功同步的时间点，默认100天内进行增量同步
+        /// 未指定起始日期时固定回溯最近 30 天，不按上次成功时间推进水位
         /// </summary>
         public async Task<SyncResult> SyncWareHouseOrderDetailsFromHqIncrementalAsync(
             DateTime? startDateFromRequest = null
@@ -4993,39 +4582,12 @@ namespace BlazorApp.Api.Services.React
                 }
                 else
                 {
-                    var recentTasks = await _taskLogService.GetRecentTasksAsync(
-                        1,
-                        "SyncWareHouseOrderDetailsIncremental"
+                    effectiveStart = ResolveHqModifiedTimeIncrementalStart(DateTime.UtcNow);
+                    _logger.LogInformation(
+                        "[ReactSync] 仓库订单详情增量：未指定起始日期，回溯最近 {Days} 天，起点 {Start}（UTC）",
+                        HqIncrementalLookback.TotalDays,
+                        effectiveStart
                     );
-                    var lastSuccessTask = recentTasks.FirstOrDefault(t =>
-                        t.Status == BlazorApp.Shared.Models.HBweb.TaskStatus.Success
-                    );
-
-                    DateTime? syncStartTime = lastSuccessTask?.StartedAt;
-                    var daysRange = 30;
-
-                    if (syncStartTime.HasValue)
-                    {
-                        daysRange = Math.Min(
-                            daysRange,
-                            (int)(DateTime.UtcNow - syncStartTime.Value).TotalDays
-                        );
-                        _logger.LogInformation(
-                            "[ReactSync] 仓库订单详情增量：上次成功同步时间: {Time}, 范围: {Days} 天",
-                            syncStartTime,
-                            daysRange
-                        );
-                    }
-                    else
-                    {
-                        _logger.LogInformation(
-                            "[ReactSync] 仓库订单详情增量：未找到历史记录，同步最近 {Days} 天的数据",
-                            daysRange
-                        );
-                    }
-
-                    var startDate = DateTime.UtcNow.AddDays(-daysRange);
-                    effectiveStart = startDate;
                 }
 
                 var hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
@@ -5178,39 +4740,12 @@ namespace BlazorApp.Api.Services.React
                 }
                 else
                 {
-                    var recentTasks = await _taskLogService.GetRecentTasksAsync(
-                        1,
-                        "SyncProductCategoriesIncremental"
+                    effectiveStart = ResolveHqModifiedTimeIncrementalStart(DateTime.UtcNow);
+                    _logger.LogInformation(
+                        "[ReactSync] 商品分类增量：未指定起始日期，回溯最近 {Days} 天，起点 {Start}（UTC）",
+                        HqIncrementalLookback.TotalDays,
+                        effectiveStart
                     );
-                    var lastSuccessTask = recentTasks.FirstOrDefault(t =>
-                        t.Status == BlazorApp.Shared.Models.HBweb.TaskStatus.Success
-                    );
-
-                    DateTime? syncStartTime = lastSuccessTask?.StartedAt;
-                    var daysRange = 30;
-
-                    if (syncStartTime.HasValue)
-                    {
-                        daysRange = Math.Min(
-                            daysRange,
-                            (int)(DateTime.UtcNow - syncStartTime.Value).TotalDays
-                        );
-                        _logger.LogInformation(
-                            "[ReactSync] 商品分类增量：上次成功同步时间: {Time}, 范围: {Days} 天",
-                            syncStartTime,
-                            daysRange
-                        );
-                    }
-                    else
-                    {
-                        _logger.LogInformation(
-                            "[ReactSync] 商品分类增量：未找到历史记录，同步最近 {Days} 天的数据",
-                            daysRange
-                        );
-                    }
-
-                    var startDate = DateTime.UtcNow.AddDays(-daysRange);
-                    effectiveStart = startDate;
                 }
 
                 var hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
@@ -5330,6 +4865,30 @@ namespace BlazorApp.Api.Services.React
                 return result;
             }
         }
+
+        // HQ 增量同步未指定起始日期时的固定回溯范围，与这些入口在线上一直实际生效的窗口一致。
+        internal static readonly TimeSpan HqIncrementalLookback = TimeSpan.FromDays(30);
+
+        /// <summary>
+        /// HQ 增量同步按源表修改时间（FGC_LastModifyDate）过滤、且请求未指定起始日期时的起点（UTC）：
+        /// 固定回溯 <see cref="HqIncrementalLookback"/>。
+        /// 刻意不按任务日志里的上次成功时间推进水位：这些入口只由管理员手动触发，查询按修改时间 OFFSET 分页，
+        /// 按分店筛选或指定起始日期的运行又与常规运行共用任务类型；精确水位会把分页途中被挤过的行、
+        /// 未选分店的变更永久漏掉，固定窗口每次重扫，下次运行即可补上。
+        /// FGC_LastModifyDate 混有 HBweb 回写的 UTC 时间与 HQ 旧程序写入的悉尼墙钟（快 10–11 小时），
+        /// 用 UTC 时刻比较只会多取墙钟行，不会漏取。
+        /// </summary>
+        internal static DateTime ResolveHqModifiedTimeIncrementalStart(DateTime utcNow) =>
+            utcNow - HqIncrementalLookback;
+
+        /// <summary>
+        /// HQ 增量同步按业务日期（进货单 H订单日期、分店订货单 订单日期、货柜 装柜日期，均为 SQL date）过滤、
+        /// 且请求未指定起始日期时的起点：UTC 当天零点再回溯 <see cref="HqIncrementalLookback"/>。
+        /// 业务日期可以补录、倒签，与单据写入或修改的时刻无关，任何“上次成功时间”都不能当作它的水位。
+        /// 悉尼日期要么与 UTC 日期相同、要么晚一天，按 UTC 日期回溯至少覆盖悉尼今天及之前 30 天。
+        /// </summary>
+        internal static DateTime ResolveHqBusinessDateIncrementalStart(DateTime utcNow) =>
+            utcNow.Date - HqIncrementalLookback;
 
         private async Task<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>
             CaptureChangeSnapshotsAsync(IEnumerable<string> productCodes)

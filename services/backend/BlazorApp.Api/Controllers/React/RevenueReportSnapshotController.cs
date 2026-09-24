@@ -184,8 +184,8 @@ public sealed class RevenueReportSnapshotController : ControllerBase
         {
             if (start == default || end == default || start.Date > end.Date)
                 throw new ArgumentException($"{label}日期范围无效");
-            if ((end.Date - start.Date).TotalDays + 1 > 366)
-                throw new ArgumentException($"{label}日期范围不能超过366天");
+            if ((end.Date - start.Date).TotalDays + 1 > SalesDetailReportController.MaxReportDays)
+                throw new ArgumentException($"{label}日期范围不能超过 {SalesDetailReportController.MaxReportDays} 天");
         }
 
         ValidatePeriod(startDate, endDate, "当前");

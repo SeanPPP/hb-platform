@@ -71,7 +71,7 @@ export class SqliteSettingsSafetyRepository {
                  AND tenders.amount_cents = attempts.amount_cents
                  AND (
                    (
-                     attempts.provider IN ('square', 'linkly-cloud')
+                     attempts.provider IN ('square', 'linkly-cloud', 'manual-card')
                      AND tenders.method = 'card'
                    )
                    OR (

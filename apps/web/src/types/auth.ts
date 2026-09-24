@@ -42,6 +42,7 @@ export interface AccessControl {
   canWriteProduct: boolean
   canDeleteProduct: boolean
   canReadUser: boolean
+  canReadUserConsole: boolean
   canWriteUser: boolean
   canDeleteUser: boolean
   canReadRole: boolean
@@ -60,13 +61,15 @@ export interface AccessControl {
   canViewCompactSalesBoard: boolean
   canViewProductMovementReport: boolean
   canViewBatchProductSalesAnalysis: boolean
+  // 订货前台「货号销量」页面，独立于后台销售看板权限。
+  canViewShopBatchProductSales: boolean
   canViewWarehouseProductFlowAnalysis: boolean
   canViewLocalProductSalesAnalysis: boolean
   canViewPurchaseAmountDashboard: boolean
+  canViewLocalSupplierPurchaseSalesAnalysis: boolean
+  // 「进货销量分析」合并页入口：批量货号销量或分店进货销量分析任一权限即可进入。
+  canViewPurchaseSalesAnalysis: boolean
   canViewProductSalesAnalysis: boolean
-  canExportData: boolean
-  canModifyPrice: boolean
-  canDeletePrice: boolean
   // 新细粒度权限
   canManageWarehouseProducts: boolean
   canManageWarehouseOrders: boolean

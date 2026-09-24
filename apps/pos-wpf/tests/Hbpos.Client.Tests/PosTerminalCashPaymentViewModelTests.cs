@@ -14,6 +14,7 @@ using Hbpos.Contracts.Installments;
 using Hbpos.Contracts.Orders;
 using Hbpos.Contracts.Promotions;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Time.Testing;
 
 namespace Hbpos.Client.Tests;
 
@@ -487,7 +488,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
 
         var stopwatch = Stopwatch.StartNew();
         viewModel.ScanText = "slow";
-        await searchStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await searchStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         var maxHeartbeatGap = TimeSpan.Zero;
         var previousHeartbeat = stopwatch.Elapsed;
@@ -534,7 +535,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         try
         {
             viewModel.NumberInputCommand.Execute("Enter");
-            await firstSearchStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await firstSearchStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
             var stopwatch = Stopwatch.StartNew();
             var previousHeartbeat = stopwatch.Elapsed;
@@ -600,7 +601,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         try
         {
             viewModel.ScanText = "old";
-            await oldSearchStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            await oldSearchStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
             var oldCancellation = Assert.IsType<CancellationTokenSource>(typeof(PosTerminalViewModel)
                 .GetField("_matchesRefreshCts", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
                 .GetValue(viewModel));
@@ -642,10 +643,10 @@ public sealed class PosTerminalCashPaymentViewModelTests
         };
 
         viewModel.ScanText = "dispose";
-        await searchStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await searchStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         viewModel.Dispose();
 
-        await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await cancellationObserved.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         Assert.Empty(viewModel.Matches);
     }
 
@@ -2399,17 +2400,27 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var index = new LocalSellableItemIndex();
         var item = CreateItem("SKU-128", "Timeout Tea", "930128", PriceSourceKind.StoreRetailPrice, 5.5m);
         var logs = new ConcurrentQueue<string>();
+        var timeProvider = new FakeTimeProvider();
+        var remoteLookupStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         index.ReplaceAll([item]);
+        // 显式构造 workflow service 以注入 FakeTimeProvider；ViewModel 其余行为与默认构造一致。
+        var workflowService = new PosTerminalWorkflowService(
+            index,
+            cart,
+            remoteLookupRefreshAsync: async (_, _, cancellationToken) =>
+            {
+                remoteLookupStarted.TrySetResult();
+                // 只有超时令牌能结束这次等待：证明购物车不会被"成功结果"改写。
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                return new RemoteLookupRefreshResult("S001", "930128", Found: false, Item: null, DeletedCount: 1);
+            },
+            timeProvider: timeProvider);
         var viewModel = new PosTerminalViewModel(
             index,
             cart,
             Session,
             onOpenPayment: null,
-            remoteLookupRefreshAsync: async (_, _, cancellationToken) =>
-            {
-                await Task.Delay(TimeSpan.FromSeconds(10), cancellationToken);
-                return new RemoteLookupRefreshResult("S001", "930128", Found: false, Item: null, DeletedCount: 1);
-            });
+            workflowService: workflowService);
 
         using var logCapture = CaptureClientLog(logs);
 
@@ -2419,7 +2430,11 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var line = Assert.Single(viewModel.CartLines);
         Assert.Equal("Timeout Tea", line.DisplayName);
 
-        await WaitUntilAsync(() => HasLog(logs, "remote lookup timeout"));
+        // 远程查询回调被调用时，超时 CTS 已在 FakeTimeProvider 上注册，此时推进虚拟时间必然触发超时。
+        await WaitUntilAsync(() => remoteLookupStarted.Task.IsCompleted, diagnostics: () => DescribeCapturedLogs(logs));
+        timeProvider.Advance(PosTerminalWorkflowService.RemoteLookupTimeout);
+
+        await WaitUntilAsync(() => HasLog(logs, "remote lookup timeout"), diagnostics: () => DescribeCapturedLogs(logs));
 
         line = Assert.Single(viewModel.CartLines);
         Assert.Equal("Timeout Tea", line.DisplayName);
@@ -2520,12 +2535,12 @@ public sealed class PosTerminalCashPaymentViewModelTests
             });
 
         var execution = viewModel.SyncCommand.ExecuteAsync(null);
-        await downloadStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await downloadStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         viewModel.SyncCommand.Cancel();
         var wasCancellationRequested = receivedToken.IsCancellationRequested;
         releaseDownload.TrySetResult();
-        await execution.WaitAsync(TimeSpan.FromSeconds(5));
+        await execution.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         Assert.True(receivedToken.CanBeCanceled);
         Assert.True(wasCancellationRequested);
@@ -2561,12 +2576,12 @@ public sealed class PosTerminalCashPaymentViewModelTests
             });
 
         var execution = viewModel.SyncCommand.ExecuteAsync(null);
-        await refreshStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await refreshStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         viewModel.SyncCommand.Cancel();
         var wasCancellationRequested = receivedToken.IsCancellationRequested;
         releaseRefresh.TrySetResult();
-        await execution.WaitAsync(TimeSpan.FromSeconds(5));
+        await execution.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         Assert.True(receivedToken.CanBeCanceled);
         Assert.True(wasCancellationRequested);
@@ -2590,7 +2605,31 @@ public sealed class PosTerminalCashPaymentViewModelTests
         await viewModel.SelectCashCommand.ExecuteAsync(null);
 
         Assert.Equal(2.2m, viewModel.ChangeDue);
+        // 澳币现金最小面额 0.05，顾客给整钞后超收是常态。超收时剩余应收必须是 0：
+        // 若同屏在找零 2.20 旁边再显示"还差 2.20"，收银员可能据此重复收款。
+        Assert.Equal(0m, viewModel.RemainingAmount);
         Assert.True(viewModel.ConfirmPaymentCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task Payment_page_keeps_positive_remaining_amount_when_cash_is_insufficient()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-112", "Partial Cash Juice", "930112", PriceSourceKind.ProductBase, 7.8m));
+        var viewModel = new PaymentViewModel(
+            cart,
+            new CashCheckoutService(),
+            new InMemoryOrderRepository(),
+            new InMemorySyncQueueRepository(),
+            Session);
+
+        viewModel.TenderAmountText = "5";
+        await viewModel.SelectCashCommand.ExecuteAsync(null);
+
+        // 未收够时剩余应收仍要显示真实差额，且不产生找零。
+        Assert.Equal(2.8m, viewModel.RemainingAmount);
+        Assert.Equal(0m, viewModel.ChangeDue);
+        Assert.False(viewModel.ConfirmPaymentCommand.CanExecute(null));
     }
 
     [Fact]
@@ -2762,7 +2801,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
                 new CashCheckoutService(),
                 new InMemoryOrderRepository(),
                 new InMemorySyncQueueRepository()),
-            Session);
+            Session, paymentMethodSettingsService: new MutablePaymentMethodSettingsService(new(VoucherEnabled: true)));
 
         viewModel.PrepareForEntry(Session);
 
@@ -2807,7 +2846,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
                 "SQ:original-card-refund")
         ]);
         var workflow = new FakeCashPaymentWorkflowService();
-        var viewModel = new PaymentViewModel(cart, workflow, Session);
+        var viewModel = new PaymentViewModel(cart, workflow, Session, paymentMethodSettingsService: new MutablePaymentMethodSettingsService(new(VoucherEnabled: true)));
         viewModel.PrepareForEntry(Session);
         Assert.True(viewModel.SelectCardCommand.CanExecute(null));
         var cardCanExecuteChanged = 0;
@@ -2874,7 +2913,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         {
             TenderToAdd = new PaymentTender(PaymentMethodKind.Voucher, -8.5m, "VOUCHER_REFUND_PENDING")
         };
-        var viewModel = new PaymentViewModel(cart, workflow, OfflineSession);
+        var viewModel = new PaymentViewModel(cart, workflow, OfflineSession, paymentMethodSettingsService: new MutablePaymentMethodSettingsService(new(VoucherEnabled: true)));
 
         viewModel.PrepareForEntry(OfflineSession);
 
@@ -2897,7 +2936,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
             TenderToAdd = new PaymentTender(PaymentMethodKind.Voucher, -8.5m, "VOUCHER_REFUND_PENDING")
         };
         var returnedToPos = false;
-        var viewModel = new PaymentViewModel(cart, workflow, Session, onBackToPos: () => returnedToPos = true);
+        var viewModel = new PaymentViewModel(cart, workflow, Session, onBackToPos: () => returnedToPos = true, paymentMethodSettingsService: new MutablePaymentMethodSettingsService(new(VoucherEnabled: true)));
 
         viewModel.PrepareForEntry(Session);
         await viewModel.SelectVoucherCommand.ExecuteAsync(null);
@@ -2918,7 +2957,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         {
             TenderToAdd = new PaymentTender(PaymentMethodKind.Voucher, -8.5m, "VOUCHER_REFUND_PENDING")
         };
-        var viewModel = new PaymentViewModel(cart, workflow, Session);
+        var viewModel = new PaymentViewModel(cart, workflow, Session, paymentMethodSettingsService: new MutablePaymentMethodSettingsService(new(VoucherEnabled: true)));
 
         viewModel.PrepareForEntry(Session);
         await viewModel.SelectVoucherCommand.ExecuteAsync(null);
@@ -2943,7 +2982,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         {
             TenderToAdd = new PaymentTender(PaymentMethodKind.Voucher, -8.5m, "VOUCHER_REFUND_PENDING")
         };
-        var viewModel = new PaymentViewModel(cart, workflow, Session);
+        var viewModel = new PaymentViewModel(cart, workflow, Session, paymentMethodSettingsService: new MutablePaymentMethodSettingsService(new(VoucherEnabled: true)));
         var selectVoucherCanExecuteChanged = 0;
         var confirmCanExecuteChanged = 0;
         viewModel.SelectVoucherCommand.CanExecuteChanged += (_, _) => selectVoucherCanExecuteChanged++;
@@ -3390,7 +3429,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         viewModel.PaymentCompleted += (_, args) => completed = args;
 
         var payment = viewModel.SelectCardCommand.ExecuteAsync(null);
-        await workflow.AddTenderStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await workflow.AddTenderStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         authorization.RevokeAll();
         workflow.AddTenderResult.SetResult(PaymentTenderAttemptResult.Success(
             new PaymentTender(PaymentMethodKind.Card, 10m, "CARD-REAUTHORIZED"),
@@ -3425,7 +3464,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var viewModel = new PaymentViewModel(cart, workflow, Session);
 
         var automaticCompletion = viewModel.SelectCardCommand.ExecuteAsync(null);
-        await workflow.CompletePaymentStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await workflow.CompletePaymentStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         Assert.True(viewModel.IsPaymentInteractionLocked);
         await viewModel.ConfirmPaymentCommand.ExecuteAsync(null);
@@ -3650,7 +3689,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
             cart,
             workflow,
             Session,
-            openCardRecoveryCenter: () => openRecoveryCenterCalls++);
+            openCardRecoveryCenter: () => openRecoveryCenterCalls++, paymentMethodSettingsService: new MutablePaymentMethodSettingsService(new(VoucherEnabled: true)));
         PaymentCompletedEventArgs? completed = null;
         viewModel.PaymentCompleted += (_, args) => completed = args;
 
@@ -3925,7 +3964,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         {
             TenderToAdd = new PaymentTender(PaymentMethodKind.Cash, 0m)
         };
-        var viewModel = new PaymentViewModel(cart, workflow, Session);
+        var viewModel = new PaymentViewModel(cart, workflow, Session, paymentMethodSettingsService: new MutablePaymentMethodSettingsService(new(VoucherEnabled: true)));
 
         viewModel.TenderAmountText = "5";
         await viewModel.SelectCashCommand.ExecuteAsync(null);
@@ -3949,7 +3988,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         {
             CompletePaymentResult = new CashPaymentWorkflowResult(completedOrder, 20m, 0m, 0, Session)
         };
-        var viewModel = new PaymentViewModel(cart, workflow, Session);
+        var viewModel = new PaymentViewModel(cart, workflow, Session, paymentMethodSettingsService: new MutablePaymentMethodSettingsService(new(VoucherEnabled: true)));
         PaymentCompletedEventArgs? completed = null;
         viewModel.PaymentCompleted += (_, args) => completed = args;
 
@@ -3975,7 +4014,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var cart = new PosCartService();
         cart.AddItem(CreateItem("SKU-153B", "Declined Ordered Tender Tea", "930153B", PriceSourceKind.StoreRetailPrice, 20m));
         var workflow = new FakeCashPaymentWorkflowService();
-        var viewModel = new PaymentViewModel(cart, workflow, Session);
+        var viewModel = new PaymentViewModel(cart, workflow, Session, paymentMethodSettingsService: new MutablePaymentMethodSettingsService(new(VoucherEnabled: true)));
 
         viewModel.TenderAmountText = "5";
         viewModel.VoucherCodeText = "VOUCHER-153B";
@@ -4000,7 +4039,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var cart = new PosCartService();
         cart.AddItem(CreateItem("SKU-153E", "Removed Voucher Tea", "930153E", PriceSourceKind.StoreRetailPrice, 20m));
         var workflow = new FakeCashPaymentWorkflowService();
-        var viewModel = new PaymentViewModel(cart, workflow, Session);
+        var viewModel = new PaymentViewModel(cart, workflow, Session, paymentMethodSettingsService: new MutablePaymentMethodSettingsService(new(VoucherEnabled: true)));
 
         viewModel.TenderAmountText = "5";
         viewModel.VoucherCodeText = "VOUCHER-153E";
@@ -4023,7 +4062,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         {
             ReleaseVoucherTenderResult = false
         };
-        var viewModel = new PaymentViewModel(cart, workflow, Session);
+        var viewModel = new PaymentViewModel(cart, workflow, Session, paymentMethodSettingsService: new MutablePaymentMethodSettingsService(new(VoucherEnabled: true)));
 
         viewModel.TenderAmountText = "5";
         viewModel.VoucherCodeText = "VOUCHER-153F";
@@ -4048,7 +4087,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var cart = new PosCartService();
         cart.AddItem(CreateItem("SKU-153F-FATAL", "Fatal Voucher Remove Tea", "930153FFATAL", PriceSourceKind.StoreRetailPrice, 20m));
         var workflow = new FakeCashPaymentWorkflowService();
-        var viewModel = new PaymentViewModel(cart, workflow, Session);
+        var viewModel = new PaymentViewModel(cart, workflow, Session, paymentMethodSettingsService: new MutablePaymentMethodSettingsService(new(VoucherEnabled: true)));
 
         viewModel.TenderAmountText = "5";
         viewModel.VoucherCodeText = "VOUCHER-153F-FATAL";
@@ -4072,7 +4111,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         {
             ReleaseVoucherTenderResult = false
         };
-        var viewModel = new PaymentViewModel(cart, workflow, Session);
+        var viewModel = new PaymentViewModel(cart, workflow, Session, paymentMethodSettingsService: new MutablePaymentMethodSettingsService(new(VoucherEnabled: true)));
 
         viewModel.TenderAmountText = "5";
         viewModel.VoucherCodeText = "VOUCHER-153D";
@@ -4100,7 +4139,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var cart = new PosCartService();
         cart.AddItem(CreateItem("SKU-153D-FATAL", "Fatal Decline Release Tea", "930153DFATAL", PriceSourceKind.StoreRetailPrice, 20m));
         var workflow = new FakeCashPaymentWorkflowService();
-        var viewModel = new PaymentViewModel(cart, workflow, Session);
+        var viewModel = new PaymentViewModel(cart, workflow, Session, paymentMethodSettingsService: new MutablePaymentMethodSettingsService(new(VoucherEnabled: true)));
 
         viewModel.TenderAmountText = "5";
         viewModel.VoucherCodeText = "VOUCHER-153D-FATAL";
@@ -4126,7 +4165,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var cart = new PosCartService();
         cart.AddItem(CreateItem("SKU-153C", "Unknown Ordered Tender Tea", "930153C", PriceSourceKind.StoreRetailPrice, 20m));
         var workflow = new FakeCashPaymentWorkflowService();
-        var viewModel = new PaymentViewModel(cart, workflow, Session);
+        var viewModel = new PaymentViewModel(cart, workflow, Session, paymentMethodSettingsService: new MutablePaymentMethodSettingsService(new(VoucherEnabled: true)));
 
         viewModel.TenderAmountText = "5";
         viewModel.VoucherCodeText = "VOUCHER-153C";
@@ -4168,7 +4207,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
                 CardPaymentTerminalOutcome.ResultUnknown,
                 CardPaymentErrorKind.ActiveSessionRequiresRecovery,
                 PreserveStatus: true)));
-        var viewModel = new PaymentViewModel(cart, workflow, Session);
+        var viewModel = new PaymentViewModel(cart, workflow, Session, paymentMethodSettingsService: new MutablePaymentMethodSettingsService(new(VoucherEnabled: true)));
 
         await viewModel.SelectCardCommand.ExecuteAsync(null);
         Assert.True(viewModel.IsPaymentInteractionLocked);
@@ -4204,7 +4243,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
             "RETURN-ALT-OLD",
             Guid.NewGuid(),
             Guid.NewGuid()));
-        var viewModel = new PaymentViewModel(cart, new FakeCashPaymentWorkflowService(), Session);
+        var viewModel = new PaymentViewModel(cart, new FakeCashPaymentWorkflowService(), Session, paymentMethodSettingsService: new MutablePaymentMethodSettingsService(new(VoucherEnabled: true)));
         viewModel.SetAlternativeRefundMethodRequired(true);
         Assert.False(viewModel.SelectCardCommand.CanExecute(null));
 
@@ -4252,7 +4291,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
             AddTenderStarted = new(TaskCreationOptions.RunContinuationsAsynchronously),
             AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously)
         };
-        var viewModel = new PaymentViewModel(cart, workflow, Session);
+        var viewModel = new PaymentViewModel(cart, workflow, Session, paymentMethodSettingsService: new MutablePaymentMethodSettingsService(new(VoucherEnabled: true)));
 
         var paymentTask = viewModel.SelectCardCommand.ExecuteAsync(null);
         await workflow.AddTenderStarted.Task;
@@ -4339,14 +4378,14 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var beginStartedAt = Stopwatch.GetTimestamp();
         _ = viewModel.BeginShutdown();
         Assert.True(Stopwatch.GetElapsedTime(beginStartedAt) < TimeSpan.FromSeconds(1));
-        await callbackStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await callbackStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         var disposeStartedAt = Stopwatch.GetTimestamp();
         viewModel.Dispose();
         Assert.True(Stopwatch.GetElapsedTime(disposeStartedAt) < TimeSpan.FromSeconds(1));
         Assert.True(viewModel.IsPaymentInteractionLocked);
 
-        await callbackCompleted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await callbackCompleted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         await paymentTask;
     }
 
@@ -4371,7 +4410,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         using var registration = workflow.LastAddTenderCancellationToken.Register(() => throw fatal);
         var shutdownCancellationTask = viewModel.BeginShutdown();
         var thrown = await Assert.ThrowsAnyAsync<Exception>(
-            () => shutdownCancellationTask.WaitAsync(TimeSpan.FromSeconds(1)));
+            () => shutdownCancellationTask.WaitAsync(AsyncTestWaitSupport.DefaultTimeout));
 
         Assert.Same(fatal, thrown);
         Assert.True(workflow.LastAddTenderCancellationToken.IsCancellationRequested);
@@ -4413,7 +4452,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
             cardSession.GetType()
                 .GetField("_shutdownCancellationTask", BindingFlags.Instance | BindingFlags.NonPublic)!
                 .GetValue(cardSession));
-        await shutdownCancellationTask.WaitAsync(TimeSpan.FromSeconds(1));
+        await shutdownCancellationTask.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         Assert.True(activeCancellation.IsCancellationRequested);
         Assert.False(paymentTask.IsCompleted);
 
@@ -4599,7 +4638,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
     {
         var cart = new PosCartService();
         cart.AddItem(CreateItem("SKU-RECOVERY-LOCK", "Recovery Lock Tea", "930RECOVERYLOCK", PriceSourceKind.StoreRetailPrice, 10m));
-        var viewModel = new PaymentViewModel(cart, new FakeCashPaymentWorkflowService(), Session);
+        var viewModel = new PaymentViewModel(cart, new FakeCashPaymentWorkflowService(), Session, paymentMethodSettingsService: new MutablePaymentMethodSettingsService(new(VoucherEnabled: true)));
 
         viewModel.SetCurrentCardRecoveryRequired(true, "Previous card result is unknown.");
         viewModel.PrepareForEntry(Session);
@@ -4734,7 +4773,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
             AddTenderResult = staleCardResult,
             IgnoreCancellation = true
         };
-        var viewModel = new PaymentViewModel(cart, workflow, Session);
+        var viewModel = new PaymentViewModel(cart, workflow, Session, paymentMethodSettingsService: new MutablePaymentMethodSettingsService(new(VoucherEnabled: true)));
         var paymentTask = viewModel.SelectCardCommand.ExecuteAsync(null);
         await workflow.AddTenderStarted.Task;
 
@@ -5203,7 +5242,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
                 recoverCallCount++;
                 return Task.FromResult(true);
             },
-            openCardRecoveryCenter: () => openCenterCalls++);
+            openCardRecoveryCenter: () => openCenterCalls++, paymentMethodSettingsService: new MutablePaymentMethodSettingsService(new(VoucherEnabled: true)));
 
         await viewModel.SelectCardCommand.ExecuteAsync(null);
 
@@ -5975,7 +6014,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
 
         qualification.TrySetResult(candidate);
         handoff.TrySetResult(true);
-        await opening.WaitAsync(TimeSpan.FromSeconds(5));
+        await opening.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         Assert.Equal(2, prepareCalls);
         Assert.Equal(1, handoffCalls);
@@ -6025,7 +6064,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
             {
                 handedOffCandidate = value;
                 return Task.FromResult(true);
-            });
+            }, paymentMethodSettingsService: new MutablePaymentMethodSettingsService(new(VoucherEnabled: true)));
         await viewModel.SelectCardCommand.ExecuteAsync(null);
         Assert.NotNull(viewModel.CardPaymentErrorOverlay);
         Assert.True(viewModel.CardPaymentErrorPrimaryActionCommand.CanExecute(null));
@@ -6076,7 +6115,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
             Session,
             onBackToPos: () => returnedToPos = true,
             prepareCardPaymentHandoffAsync: _ => Task.FromResult<CardPaymentHandoffCandidate?>(candidate),
-            handoffCardPaymentAsync: (_, _) => Task.FromResult(true));
+            handoffCardPaymentAsync: (_, _) => Task.FromResult(true), paymentMethodSettingsService: new MutablePaymentMethodSettingsService(new(VoucherEnabled: true)));
         await viewModel.SelectCardCommand.ExecuteAsync(null);
         viewModel.PaymentTenders.Add(new PaymentTender(PaymentMethodKind.Cash, 2m));
         var throwOnce = true;
@@ -6664,7 +6703,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
             new CashCheckoutService(),
             new InMemoryOrderRepository(),
             new InMemorySyncQueueRepository(),
-            Session);
+            Session, paymentMethodSettingsService: new MutablePaymentMethodSettingsService(new(VoucherEnabled: true)));
 
         viewModel.TenderAmountText = "5";
         viewModel.SelectedPaymentMethod = PaymentMethodKind.Voucher;
@@ -6688,7 +6727,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         {
             TenderToAdd = new PaymentTender(PaymentMethodKind.Cash, 0m)
         };
-        var viewModel = new PaymentViewModel(cart, workflow, Session);
+        var viewModel = new PaymentViewModel(cart, workflow, Session, paymentMethodSettingsService: new MutablePaymentMethodSettingsService(new(VoucherEnabled: true)));
 
         viewModel.TenderAmountText = "5";
         viewModel.OpenVoucherEntryCommand.Execute(null);
@@ -6716,7 +6755,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var cart = new PosCartService();
         cart.AddItem(CreateItem("SKU-144C", "Voucher Dialog Required Tea", "930144C", PriceSourceKind.StoreRetailPrice, 5m));
         var workflow = new FakeCashPaymentWorkflowService();
-        var viewModel = new PaymentViewModel(cart, workflow, Session);
+        var viewModel = new PaymentViewModel(cart, workflow, Session, paymentMethodSettingsService: new MutablePaymentMethodSettingsService(new(VoucherEnabled: true)));
 
         viewModel.TenderAmountText = "5";
         viewModel.OpenVoucherEntryCommand.Execute(null);
@@ -6734,7 +6773,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var cart = new PosCartService();
         cart.AddItem(CreateItem("SKU-145", "Retry Voucher Tea", "930145", PriceSourceKind.StoreRetailPrice, 5m));
         var workflow = new FakeCashPaymentWorkflowService();
-        var viewModel = new PaymentViewModel(cart, workflow, Session);
+        var viewModel = new PaymentViewModel(cart, workflow, Session, paymentMethodSettingsService: new MutablePaymentMethodSettingsService(new(VoucherEnabled: true)));
 
         viewModel.TenderAmountText = "5";
         viewModel.VoucherCodeText = "ABC123";
@@ -6774,7 +6813,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         {
             ThrowOnComplete = new PaymentUploadFailedException(orderGuid, 5m, 0m, "upload failed")
         };
-        var viewModel = new PaymentViewModel(cart, workflow, Session);
+        var viewModel = new PaymentViewModel(cart, workflow, Session, paymentMethodSettingsService: new MutablePaymentMethodSettingsService(new(VoucherEnabled: true)));
         viewModel.TenderAmountText = "5";
         viewModel.VoucherCodeText = "ABC123";
         await viewModel.SelectVoucherCommand.ExecuteAsync(null);
@@ -7170,7 +7209,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
             cart,
             workflow,
             Session,
-            installmentOrderService: installmentService)
+            installmentOrderService: installmentService, paymentMethodSettingsService: new MutablePaymentMethodSettingsService(new(VoucherEnabled: true)))
         {
             IsInstallmentPaymentEnabled = true,
             InstallmentCustomerName = "Alice",
@@ -7185,6 +7224,35 @@ public sealed class PosTerminalCashPaymentViewModelTests
         Assert.NotNull(installmentService.LastCreateRequest);
         Assert.Equal("VIP001", installmentService.LastCreateRequest!.DownPayment.Reference);
         Assert.Equal("LOCK-001", installmentService.LastCreateRequest.DownPayment.ReservationToken);
+    }
+
+    [Fact]
+    public async Task Payment_page_disabled_card_cannot_use_another_installment_draft_to_bypass_settings()
+    {
+        var workflow = new FakeCashPaymentWorkflowService();
+        var installmentService = new FakeInstallmentOrderService { ThrowOnAddRepayment = new IOException("submission unavailable") };
+        var settings = new MutablePaymentMethodSettingsService();
+        using var viewModel = new PaymentViewModel(new PosCartService(), workflow, Session,
+            installmentOrderService: installmentService, paymentMethodSettingsService: settings);
+        var previousOrder = CreateInstallmentOrder("IO-PREVIOUS-DRAFT", "Bob", "0400222333", paidAmount: 30m, outstandingAmount: 90m);
+        viewModel.PrepareForInstallmentRepayment(Session, previousOrder);
+        viewModel.TenderAmountText = "30";
+        await viewModel.SelectCashCommand.ExecuteAsync(null);
+        await Assert.ThrowsAsync<IOException>(() => viewModel.ConfirmPaymentCommand.ExecuteAsync(null));
+        var previousRequest = Assert.IsType<InstallmentOrderRepaymentRequest>(installmentService.LastRepaymentRequest);
+
+        // 上一笔保留的幂等身份，不能让另一张订单的新卡付款绕过关闭开关。
+        var nextOrder = CreateInstallmentOrder("IO-NEXT-DRAFT", "Alice", "0400111222", paidAmount: 40m, outstandingAmount: 80m);
+        viewModel.PrepareForInstallmentRepayment(Session, nextOrder);
+        viewModel.TenderAmountText = "20";
+        await viewModel.SelectCardCommand.ExecuteAsync(null);
+        Assert.Equal(PaymentMethodKind.Card, Assert.Single(viewModel.PaymentTenders).Method);
+        await settings.SaveAsync(new(UseManualCard: true));
+
+        await viewModel.ConfirmPaymentCommand.ExecuteAsync(null);
+
+        Assert.Same(previousRequest, installmentService.LastRepaymentRequest);
+        Assert.Equal(0, workflow.AddTenderCallCount);
     }
 
     [Fact]
@@ -7276,7 +7344,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
             new PosCartService(),
             workflow,
             Session,
-            installmentOrderService: installmentService);
+            installmentOrderService: installmentService, paymentMethodSettingsService: new MutablePaymentMethodSettingsService(new(VoucherEnabled: true)));
 
         viewModel.PrepareForInstallmentRepayment(Session, order);
         viewModel.TenderAmountText = "30";
@@ -7422,22 +7490,6 @@ public sealed class PosTerminalCashPaymentViewModelTests
     private static Task ExecuteManualScanAsync(PosTerminalViewModel viewModel)
     {
         return viewModel.ScanCommand.ExecuteAsync(null);
-    }
-
-    private static async Task WaitUntilAsync(Func<bool> condition)
-    {
-        var timeoutAt = DateTimeOffset.UtcNow.AddSeconds(3);
-        while (DateTimeOffset.UtcNow < timeoutAt)
-        {
-            if (condition())
-            {
-                return;
-            }
-
-            await Task.Delay(10);
-        }
-
-        Assert.True(condition());
     }
 
     private static PromotionRuleDto CreatePromotionRule(

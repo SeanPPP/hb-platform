@@ -17,6 +17,9 @@ services:
       - ScheduledTasks__DiscountSnapshotHistoricalYears=1
       # 完成供应商历史回填并核对版本后再开启，关闭即可切回既有统计读取路径。
       - Reports__UseSupplierRollups=${REPORTS_USE_SUPPLIER_ROLLUPS:-false}
+      # 日统计直写国内供应商编码：读取侧与写入侧都上线、且季度任务跑完后再开启。
+      # 关闭后新重算的日期写回 200；已经直写的日期不用处理，读取侧两种行都认。
+      - SalesStatistics__WriteDirectChinaSupplierCode=${SALES_STATISTICS_WRITE_DIRECT_CHINA_SUPPLIER_CODE:-false}
       # 生产连接字符串只从服务器 .env 注入，避免把敏感值写入 compose。
       - ConnectionStrings__DefaultConnection=${CONNECTION_STRING_DEFAULT}
       - ConnectionStrings__StoreHzgHQConnection=${CONNECTION_STRING_STORE_HQ}

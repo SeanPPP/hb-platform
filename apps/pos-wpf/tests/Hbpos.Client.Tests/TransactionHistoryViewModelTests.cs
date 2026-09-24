@@ -105,7 +105,7 @@ public sealed class TransactionHistoryViewModelTests
         viewModel.SearchText = "FIRST-001";
 
         var loadTask = viewModel.LoadAsync();
-        await queryStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await queryStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         var secondScanConsumed = viewModel.ProcessScannerBarcode("SECOND-002", "scanner-device", "raw");
         queryGate.SetResult([]);
@@ -546,7 +546,7 @@ public sealed class TransactionHistoryViewModelTests
         }
 
         var initialLoad = viewModel.LoadAsync();
-        await firstRequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await firstRequestStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         var secondRow = Assert.Single(viewModel.Orders, order => order.OrderGuid == secondOrderGuid);
         viewModel.SelectedOrder = secondRow;
@@ -1489,7 +1489,7 @@ public sealed class TransactionHistoryViewModelTests
         Assert.True(viewModel.ReprintCommand.CanExecute(null));
 
         viewModel.IsOnlineSourceSelected = true;
-        await queryStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await queryStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         Assert.Equal(orderGuid, viewModel.SelectedOrder?.OrderGuid);
         Assert.Equal(orderGuid, viewModel.SelectedReceipt?.OrderGuid);
@@ -1584,7 +1584,7 @@ public sealed class TransactionHistoryViewModelTests
 
         viewModel.IsOnlineSourceSelected = true;
         var initialLoad = viewModel.LoadAsync();
-        await firstRequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await firstRequestStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         viewModel.SelectedOrder = Assert.Single(
             viewModel.Orders,
@@ -1688,11 +1688,11 @@ public sealed class TransactionHistoryViewModelTests
             CreateSession());
 
         viewModel.SelectedOrder = firstOrder;
-        await firstRequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await firstRequestStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         viewModel.SelectedOrder = secondOrder;
-        await secondRequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await secondRequestStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         viewModel.SelectedOrder = firstOrder;
-        await currentRequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await currentRequestStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         firstRequestGate.SetResult(staleFirstReceipt);
         await Task.Delay(100);
@@ -1749,11 +1749,11 @@ public sealed class TransactionHistoryViewModelTests
 
         viewModel.IsOnlineSourceSelected = true;
         var loadTask = viewModel.LoadAsync();
-        await detailsStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await detailsStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         try
         {
-            var completed = await Task.WhenAny(loadTask, Task.Delay(500));
+            var completed = await Task.WhenAny(loadTask, Task.Delay(AsyncTestWaitSupport.DefaultTimeout));
 
             Assert.Same(loadTask, completed);
             Assert.Equal(orderGuid, Assert.Single(viewModel.Orders).OrderGuid);
@@ -2343,11 +2343,11 @@ public sealed class TransactionHistoryViewModelTests
 
         viewModel.IsInstallmentSourceSelected = true;
         var loadTask = viewModel.LoadAsync();
-        await detailsStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await detailsStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         try
         {
-            var completed = await Task.WhenAny(loadTask, Task.Delay(500));
+            var completed = await Task.WhenAny(loadTask, Task.Delay(AsyncTestWaitSupport.DefaultTimeout));
 
             Assert.Same(loadTask, completed);
             Assert.Equal(order.OrderId, Assert.Single(viewModel.Orders).OrderGuid);
@@ -4218,20 +4218,6 @@ public sealed class TransactionHistoryViewModelTests
         bool isOnline = true)
     {
         return new PosSessionState("HB POS", storeCode, storeName, deviceCode, "C001", "Alice", isOnline, 0);
-    }
-
-    private static async Task WaitUntilAsync(Func<bool> condition, int timeoutMilliseconds = 5000)
-    {
-        var deadline = Environment.TickCount64 + timeoutMilliseconds;
-        while (!condition())
-        {
-            if (Environment.TickCount64 > deadline)
-            {
-                Assert.Fail("condition was not met within the timeout.");
-            }
-
-            await Task.Delay(10);
-        }
     }
 
     private static InstallmentOrderSummary CreateInstallmentOrder(

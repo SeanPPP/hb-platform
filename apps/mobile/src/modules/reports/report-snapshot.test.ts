@@ -44,6 +44,14 @@ function run() {
     sameWithDifferentBranchOrder !== createReportSnapshotKey({ ...base, search: "different" }),
     "search must be part of the snapshot key",
   );
+  assert(
+    sameWithDifferentBranchOrder !== createReportSnapshotKey({ ...base, sort: "quantity:desc" }),
+    "server-side sort must be part of the snapshot key",
+  );
+  assert(
+    !createReportSnapshotKey(base).includes("\"sort\""),
+    "snapshot keys without a server-side sort must keep their previous shape",
+  );
   const accountAKey = createReportSnapshotKey(base);
   const accountBKey = createReportSnapshotKey({ ...base, accountIdentity: "account-B" });
   assert(accountAKey !== accountBKey, "equal branch permissions must not merge different account snapshots");

@@ -50,13 +50,22 @@ internal sealed class SalesStatisticsOrchestrationStore
         ILogger logger,
         DateTime targetDate,
         List<string>? branchCodes,
-        List<StoreSalesStatistic> statisticsList)
+        List<StoreSalesStatistic> statisticsList,
+        Guid? expectedProductStatisticJobId = null,
+        Func<Task>? validateExecutionOwnershipBeforeCommitAsync = null,
+        DateTime? sourceWatermark = null,
+        Func<Task>? validateSourceWatermarkBeforeCommitAsync = null)
     {
         var targetBranchCodes = SalesStatisticsCodeRules.NormalizeBranchCodes(branchCodes);
         await SalesStatisticsTransactionExecutor.ExecuteAsync(
             beginAsync: () => context.Db.Ado.BeginTranAsync(),
             workAsync: async () =>
             {
+                // 前置分店写入复用商品队列的 JobId fencing，避免过期 worker 在商品提交前先替换营业额。
+                await SalesStatisticsProductStoreDailyStateSlice.FenceProductStatisticExecutionOwnerAsync(
+                    context,
+                    targetDate,
+                    expectedProductStatisticJobId);
                 var deleteable = context.Db.Deleteable<StoreSalesStatistic>()
                     .Where(row => row.Date == targetDate);
                 if (targetBranchCodes.Any())
@@ -73,6 +82,30 @@ internal sealed class SalesStatisticsOrchestrationStore
                         .PageSize(BatchSize)
                         .BulkCopy(statisticsList);
                 }
+
+                // 队列前置路径必须先确认 POSM 仍是构建时的同一版本，再将行和 StoreSales
+                // Fresh/watermark 一起提交；报表完整性和缓存指纹依赖这个状态行。
+                if (validateSourceWatermarkBeforeCommitAsync != null)
+                    await validateSourceWatermarkBeforeCommitAsync();
+                if (expectedProductStatisticJobId.HasValue)
+                {
+                    await SalesStatisticsProductStoreDailyStateSlice.UpsertStatisticStateAsync(
+                        context,
+                        SalesStatisticType.StoreSales,
+                        targetDate,
+                        SalesStatisticRefreshStatus.Fresh,
+                        sourceWatermark,
+                        null,
+                        overwriteLastSourceUploadTime: true);
+                }
+
+                // 提交前在同一事务内再围栏，防止 callback 与接管写入竞争；失败会回滚整次替换。
+                await SalesStatisticsProductStoreDailyStateSlice.FenceProductStatisticExecutionOwnerAsync(
+                    context,
+                    targetDate,
+                    expectedProductStatisticJobId);
+                if (validateExecutionOwnershipBeforeCommitAsync != null)
+                    await validateExecutionOwnershipBeforeCommitAsync();
             },
             commitAsync: () => context.Db.Ado.CommitTranAsync(),
             rollbackAsync: () => context.Db.Ado.RollbackTranAsync(),
@@ -81,295 +114,24 @@ internal sealed class SalesStatisticsOrchestrationStore
         );
     }
 
-    internal async Task UpdateHourlyStatisticsWithContext(
+    internal Task UpdateHourlyStatisticsWithContext(
             SqlSugarContext context,
             POSMSqlSugarContext posmContext,
+            HBSalesRecordSqlSugarContext? hbSalesContext,
             ILogger logger,
             DateTime date,
             int? hour
         )
         {
-            try
-            {
-                // 确定要更新的小时列表
-                var targetHours = hour.HasValue
-                    ? new[] { hour.Value }
-                    : Enumerable.Range(0, 24).ToArray();
-                var rangeStart = hour.HasValue ? date.Date.AddHours(hour.Value) : date.Date;
-                var rangeEnd = hour.HasValue ? rangeStart.AddHours(1) : date.Date.AddDays(1);
-
-                logger.LogInformation(
-                    "开始更新分时统计数据: {Date}, 小时: {Hours}",
-                    date,
-                    hour.HasValue ? hour.Value.ToString() : "0-23"
-                );
-
-                // 金额取支付明细、销量取销售明细、订单数取订单头，避免拆分支付放大非金额指标。
-                var hourlyRevenueRows = await posmContext
-                    .Db.Queryable<PaymentDetail, SalesOrder>(
-                        (pd, so) => pd.OrderGuid == so.OrderGuid
-                    )
-                    .Where(
-                        (pd, so) =>
-                            so.Status != null
-                            && (so.Status == 1 || so.Status == 4)
-                            && so.OrderTime != null
-                            && so.OrderTime >= rangeStart
-                            && so.OrderTime < rangeEnd
-                    )
-                    .GroupBy(
-                        (pd, so) =>
-                            new
-                            {
-                                Date = so.OrderTime!.Value.Date,
-                                Hour = so.OrderTime!.Value.Hour,
-                                so.BranchCode,
-                            }
-                    )
-                    .Select(
-                        (pd, so) =>
-                            new HourlyStatisticSourceRow
-                            {
-                                Date = so.OrderTime!.Value.Date,
-                                Hour = so.OrderTime!.Value.Hour,
-                                BranchCode = so.BranchCode,
-                                TotalAmount = SqlFunc.AggregateSum(pd.Amount) ?? 0m,
-                            }
-                    )
-                    .ToListAsync();
-
-                var hourlyQuantityRows = await posmContext
-                    .Db.Queryable<SalesOrderDetail, SalesOrder>(
-                        (detail, so) => detail.OrderGuid == so.OrderGuid
-                    )
-                    .Where(
-                        (detail, so) =>
-                            so.Status != null
-                            && (so.Status == 1 || so.Status == 4)
-                            && so.OrderTime != null
-                            && so.OrderTime >= rangeStart
-                            && so.OrderTime < rangeEnd
-                    )
-                    .GroupBy(
-                        (detail, so) =>
-                            new
-                            {
-                                Date = so.OrderTime!.Value.Date,
-                                Hour = so.OrderTime!.Value.Hour,
-                                so.BranchCode,
-                            }
-                    )
-                    .Select(
-                        (detail, so) =>
-                            new HourlyStatisticSourceRow
-                            {
-                                Date = so.OrderTime!.Value.Date,
-                                Hour = so.OrderTime!.Value.Hour,
-                                BranchCode = so.BranchCode,
-                                TotalQuantity = SqlFunc.AggregateSum(detail.Quantity) ?? 0,
-                            }
-                    )
-                    .ToListAsync();
-
-                var hourlyOrderRows = await posmContext
-                    .Db.Queryable<SalesOrder>()
-                    .Where(
-                        so =>
-                            so.Status != null
-                            && (so.Status == 1 || so.Status == 4)
-                            && so.OrderTime != null
-                            && so.OrderTime >= rangeStart
-                            && so.OrderTime < rangeEnd
-                    )
-                    .GroupBy(
-                        so =>
-                            new
-                            {
-                                Date = so.OrderTime!.Value.Date,
-                                Hour = so.OrderTime!.Value.Hour,
-                                so.BranchCode,
-                            }
-                    )
-                    .Select(
-                        so =>
-                            new HourlyStatisticSourceRow
-                            {
-                                Date = so.OrderTime!.Value.Date,
-                                Hour = so.OrderTime!.Value.Hour,
-                                BranchCode = so.BranchCode,
-                                OrderCount = SqlFunc.AggregateCount(so.OrderGuid),
-                                CustomerCount = SqlFunc.AggregateCount(so.OrderGuid),
-                            }
-                    )
-                    .ToListAsync();
-
-                var allHourlyData = hourlyRevenueRows
-                    .Concat(hourlyQuantityRows)
-                    .Concat(hourlyOrderRows)
-                    .GroupBy(row => new { row.Date, row.Hour, row.BranchCode })
-                    .Select(group => new HourlyStatisticSourceRow
-                    {
-                        Date = group.Key.Date,
-                        Hour = group.Key.Hour,
-                        BranchCode = group.Key.BranchCode,
-                        TotalAmount = group.Sum(row => row.TotalAmount),
-                        TotalQuantity = group.Sum(row => row.TotalQuantity),
-                        OrderCount = group.Sum(row => row.OrderCount),
-                        CustomerCount = group.Sum(row => row.CustomerCount),
-                    })
-                    .ToList();
-
-                if (!allHourlyData.Any())
-                {
-                    logger.LogInformation("没有找到销售数据: {Date}", date);
-                    return;
-                }
-
-                // 获取所有分店代码
-                var branchCodes = allHourlyData
-                    .Select(d => d.BranchCode)
-                    .Where(c => !string.IsNullOrEmpty(c))
-                    .Distinct()
-                    .ToList();
-
-                // 查询分店信息
-                var stores = await context
-                    .Db.Queryable<Store>()
-                    .Where(s => branchCodes.Contains(s.StoreCode))
-                    .ToListAsync();
-
-                var storeDict = stores.ToDictionary(s => s.StoreCode, s => s);
-
-                var statisticsList = new List<HourlySalesStatistic>();
-
-                // 为每个小时创建全店汇总记录
-                foreach (var h in targetHours)
-                {
-                    var hourlyDataForHour = allHourlyData.Where(d => d.Hour == h).ToList();
-
-                    if (hourlyDataForHour.Any())
-                    {
-                        var allStoreData = new HourlySalesStatistic
-                        {
-                            Date = date,
-                            Hour = h,
-                            BranchCode = "ALL",
-                            BranchName = "All Stores",
-                            TotalAmount = hourlyDataForHour.Sum(d => d.TotalAmount),
-                            TotalQuantity = (int)hourlyDataForHour.Sum(d => d.TotalQuantity),
-                            OrderCount = hourlyDataForHour.Sum(d => d.OrderCount),
-                            CustomerCount = hourlyDataForHour.Sum(d => d.CustomerCount),
-                            AverageOrderValue =
-                                hourlyDataForHour.Sum(d => d.OrderCount) > 0
-                                    ? hourlyDataForHour.Sum(d => d.TotalAmount)
-                                        / hourlyDataForHour.Sum(d => d.OrderCount)
-                                    : 0m,
-                            UpdateTime = DateTime.Now,
-                        };
-                        statisticsList.Add(allStoreData);
-                    }
-                }
-
-                LogSkippedBranchCodeRows(
-                    logger,
-                    "分时分店销售统计",
-                    allHourlyData,
-                    data => data.BranchCode,
-                    data => data.TotalAmount,
-                    data => data.TotalQuantity
-                );
-
-                // 为每个分店创建分时统计记录
-                foreach (var data in allHourlyData)
-                {
-                    // 分店维度统计必须有有效分店编码，避免把空编码写入统计表。
-                    if (string.IsNullOrWhiteSpace(data.BranchCode))
-                        continue;
-                    var branchCode = data.BranchCode;
-                    var store = storeDict.GetValueOrDefault(branchCode);
-
-                    var storeStatistic = new HourlySalesStatistic
-                    {
-                        Date = data.Date,
-                        Hour = data.Hour,
-                        BranchCode = branchCode,
-                        BranchName = store?.StoreName ?? branchCode,
-                        TotalAmount = data.TotalAmount,
-                        TotalQuantity = (int)data.TotalQuantity,
-                        OrderCount = data.OrderCount,
-                        CustomerCount = data.CustomerCount,
-                        AverageOrderValue =
-                            data.OrderCount > 0 ? data.TotalAmount / data.OrderCount : 0m,
-                        UpdateTime = DateTime.Now,
-                    };
-                    statisticsList.Add(storeStatistic);
-                }
-
-                // 查询数据库中已存在的记录
-                var existingRecords = await context
-                    .Db.Queryable<HourlySalesStatistic>()
-                    .Where(s => s.Date == date && targetHours.Contains(s.Hour))
-                    .ToListAsync();
-
-                // 构建已存在记录的字典，用于快速查找
-                var existingDict = existingRecords.ToDictionary(
-                    s => $"{s.Date}_{s.Hour}_{s.BranchCode}",
-                    s => s
-                );
-
-                var toInsert = new List<HourlySalesStatistic>();
-                var toUpdate = new List<HourlySalesStatistic>();
-
-                // 遍历统计数据，区分插入和更新操作
-                foreach (var stat in statisticsList)
-                {
-                    var key = $"{stat.Date}_{stat.Hour}_{stat.BranchCode}";
-
-                    if (existingDict.TryGetValue(key, out var existing))
-                    {
-                        stat.Date = existing.Date;
-                        stat.Hour = existing.Hour;
-                        stat.BranchCode = existing.BranchCode;
-                        toUpdate.Add(stat);
-                    }
-                    else
-                    {
-                        toInsert.Add(stat);
-                    }
-                }
-
-                // 批量插入新记录
-                if (toInsert.Any())
-                {
-                    context
-                        .Db.Fastest<HourlySalesStatistic>()
-                        .PageSize(BatchSize)
-                        .BulkCopy(toInsert);
-                    logger.LogInformation("批量插入 {Count} 条分时统计记录", toInsert.Count);
-                }
-
-                // 批量更新已存在记录
-                if (toUpdate.Any())
-                {
-                    context
-                        .Db.Fastest<HourlySalesStatistic>()
-                        .PageSize(BatchSize)
-                        .BulkUpdate(toUpdate);
-                    logger.LogInformation("批量更新 {Count} 条分时统计记录", toUpdate.Count);
-                }
-
-                logger.LogInformation(
-                    "分时统计数据更新完成: {Date}, 小时: {Hours}, 总记录: {Total}",
-                    date,
-                    hour.HasValue ? hour.Value.ToString() : "0-23",
-                    statisticsList.Count
-                );
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex, "更新分时统计数据失败: {Date} {Hour}", date, hour);
-                throw;
-            }
+            // 与业务切片共用同一实现：历史窗口内叠加 HBSales，并以删后重插保证消失的小时行被清掉。
+            return SalesStatisticsHourlyRefresher.RefreshAsync(
+                context,
+                posmContext,
+                hbSalesContext,
+                logger,
+                date,
+                hour
+            );
         }
 
     internal async Task UpdateStoreSupplierStatisticsWithContext(

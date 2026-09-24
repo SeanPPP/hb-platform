@@ -1,6 +1,8 @@
+import { memo, type ReactNode } from "react";
 import { StyleSheet, View } from "react-native";
-import { Button, Card, Text } from "react-native-paper";
+import { Button, Card, IconButton, Text } from "react-native-paper";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
+import { HB_COLORS, HB_RADIUS, HB_SPACING } from "@/shared/theme/tokens";
 
 interface LabelPrintCardProps {
   isPrintingProduct?: boolean;
@@ -12,9 +14,11 @@ interface LabelPrintCardProps {
   onPrintDiscount?: () => void;
   onPrintBigDiscount?: () => void;
   onOpenSettings?: () => void;
+  /** 与标签合并在同一张卡里的下一行（清货价行）。 */
+  footer?: ReactNode;
 }
 
-export function LabelPrintCard({
+export const LabelPrintCard = memo(function LabelPrintCard({
   isPrintingProduct = false,
   isPrintingDiscount = false,
   isPrintingBigDiscount = false,
@@ -24,88 +28,105 @@ export function LabelPrintCard({
   onPrintDiscount,
   onPrintBigDiscount,
   onOpenSettings,
+  footer,
 }: LabelPrintCardProps) {
   const { t } = useAppTranslation(["productQuery"]);
 
   return (
     <Card style={styles.card} mode="contained">
-      <Card.Content style={styles.content}>
-        <View style={styles.header}>
-          <Text variant="titleSmall" style={styles.title}>
-            {t("print.title")}
-          </Text>
-          {onOpenSettings ? (
-            <Button compact icon="cog-outline" mode="text" onPress={onOpenSettings}>
-              {t("print.settingsAction")}
-            </Button>
-          ) : null}
-        </View>
+      <View style={styles.row}>
+        <Text style={styles.rowTitle} numberOfLines={1}>{t("print.label")}</Text>
         <View style={styles.actions}>
           <Button
             compact
             mode="contained"
-            icon="printer-outline"
             onPress={onPrintProduct}
             loading={isPrintingProduct}
             disabled={!onPrintProduct || isPrintingProduct}
             style={styles.button}
+            labelStyle={styles.buttonLabel}
           >
             {t("print.productShort")}
           </Button>
           <Button
             compact
             mode="contained-tonal"
-            icon="sale-outline"
             onPress={onPrintDiscount}
             loading={isPrintingDiscount}
             disabled={!onPrintDiscount || !canPrintDiscount || isPrintingDiscount}
             style={styles.button}
+            labelStyle={styles.buttonLabel}
           >
             {t("print.discountShort")}
           </Button>
           <Button
             compact
             mode="outlined"
-            icon="post-outline"
             onPress={onPrintBigDiscount}
             loading={isPrintingBigDiscount}
             disabled={!onPrintBigDiscount || !canPrintBigDiscount || isPrintingBigDiscount}
             style={styles.button}
+            labelStyle={styles.buttonLabel}
           >
             {t("print.bigDiscountShort")}
           </Button>
         </View>
-      </Card.Content>
+        {onOpenSettings ? (
+          <IconButton
+            icon="cog-outline"
+            accessibilityLabel={t("print.settingsTitle")}
+            size={20}
+            onPress={onOpenSettings}
+            style={styles.settingsButton}
+          />
+        ) : null}
+      </View>
+      {footer ? <View style={styles.footer}>{footer}</View> : null}
     </Card>
   );
-}
+});
 
 const styles = StyleSheet.create({
   card: {
-    borderRadius: 12,
+    borderRadius: HB_RADIUS.surface,
     borderWidth: 1,
-    borderColor: "#E4E7EC",
-    backgroundColor: "#FFFFFF",
+    borderColor: HB_COLORS.outlineMuted,
+    backgroundColor: HB_COLORS.white,
+    overflow: "hidden",
   },
-  content: {
-    paddingVertical: 10,
-    gap: 8,
-  },
-  header: {
+  row: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    gap: 8,
+    gap: HB_SPACING.xs,
+    minHeight: 52,
+    paddingLeft: HB_SPACING.sm,
+    paddingRight: HB_SPACING.xxs,
   },
-  title: {
+  rowTitle: {
+    minWidth: 32,
+    flexShrink: 0,
+    fontSize: 13,
     fontWeight: "700",
-    color: "#111827",
+    color: HB_COLORS.textPrimary,
   },
   actions: {
+    flex: 1,
     flexDirection: "row",
     gap: 6,
   },
   button: {
     flex: 1,
+    borderRadius: HB_RADIUS.control,
+  },
+  buttonLabel: {
+    marginHorizontal: 6,
+    fontSize: 13,
+  },
+  settingsButton: {
+    margin: 0,
+  },
+  footer: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: HB_COLORS.outlineMuted,
   },
 });

@@ -11,6 +11,94 @@ namespace Hbpos.Client.Tests;
 
 public sealed class OrderUploadServiceTests
 {
+    [Theory]
+    [InlineData(HeldOrderDisposition.Unmatched, true)]
+    [InlineData(HeldOrderDisposition.Primary, false)]
+    [InlineData(HeldOrderDisposition.Duplicate, false)]
+    public async Task Held_order_unmatched_disposition_is_reported_for_manual_reconciliation(
+        HeldOrderDisposition disposition,
+        bool expectsError)
+    {
+        var databasePath = Path.Combine(
+            Path.GetTempPath(),
+            $"hbpos-order-upload-disposition-{Guid.NewGuid():N}.db");
+        var sink = new CapturingApplicationLogSink();
+        ConsoleLog.ConfigureCenterSink(sink);
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            await new LocalSchemaService(store).InitializeAsync();
+            var orders = new LocalOrderRepository(store);
+            var uploadRepository = new LocalOrderUploadRepository(store);
+            var order = CreateLocalOrder();
+            await orders.SavePendingOrderAsync(order);
+
+            await new OrderUploadService(
+                    orders,
+                    new StubOrderSyncApiClient(new OrderSyncResponse(
+                        order.OrderGuid,
+                        Accepted: true,
+                        AlreadySynced: false,
+                        Message: "Synced",
+                        HeldOrderDisposition: disposition)),
+                    uploadRepository)
+                .UploadOrderAsync(order.OrderGuid);
+
+            // 无论 disposition 是什么，订单都必须落库——钱已经收了，
+            // 不能因为挂单关联失败就把这笔销售丢掉。
+            Assert.Single(await orders.GetRecentOrdersAsync());
+
+            var unmatchedErrors = sink.Entries
+                .Where(entry =>
+                    string.Equals(entry.Level, "Error", StringComparison.OrdinalIgnoreCase) &&
+                    entry.Message.Contains("held-order unmatched", StringComparison.Ordinal))
+                .ToList();
+
+            if (expectsError)
+            {
+                // Unmatched 说明订单没能关联到对应的共享挂单，可能与其他收银机重复销售，
+                // 必须留下错误级别的可告警信号交人工对账。
+                var error = Assert.Single(unmatchedErrors);
+                Assert.Contains(order.StoreCode, error.Message, StringComparison.Ordinal);
+                Assert.Contains(order.DeviceCode, error.Message, StringComparison.Ordinal);
+            }
+            else
+            {
+                Assert.Empty(unmatchedErrors);
+            }
+        }
+        finally
+        {
+            ConsoleLog.ConfigureCenterSink(null);
+            await SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(databasePath);
+        }
+    }
+
+    private sealed class CapturingApplicationLogSink : IApplicationLogSink
+    {
+        private readonly List<ApplicationLogEntry> _entries = [];
+
+        public IReadOnlyList<ApplicationLogEntry> Entries
+        {
+            get
+            {
+                lock (_entries)
+                {
+                    return _entries.ToArray();
+                }
+            }
+        }
+
+        public void Enqueue(ApplicationLogEntry entry)
+        {
+            lock (_entries)
+            {
+                _entries.Add(entry);
+            }
+        }
+    }
+
     [Fact]
     public async Task ExecuteSelectedAsync_preserves_order_deduplicates_and_summarizes_failures()
     {
@@ -121,11 +209,7 @@ public sealed class OrderUploadServiceTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-            if (File.Exists(databasePath))
-            {
-                File.Delete(databasePath);
-            }
+            await SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -162,9 +246,11 @@ public sealed class OrderUploadServiceTests
                 uploadRepository);
 
             var execution = executor.ExecuteSelectedAsync([first.OrderGuid, alreadySynced.OrderGuid]);
-            await handler.FirstRequestStarted.WaitAsync(TimeSpan.FromSeconds(2));
+            await handler.FirstRequestStarted.WaitUntilCompletedAsync();
             var transition = await endpointState.BeginTransitionAsync(newAddress, CancellationToken.None);
-            var interrupted = await execution.WaitAsync(TimeSpan.FromSeconds(2));
+            // 中断后仍要回写 SQLite 状态，CI 慢盘上 2 秒预算不够，使用共享预算。
+            var interrupted = await execution.WaitUntilCompletedAsync(
+                () => $"requestUris=[{string.Join(", ", handler.RequestUris)}]");
 
             Assert.Equal(new OrderUploadExecutionResult(2, 0, 2, WasInterrupted: true), interrupted);
             Assert.Equal([new Uri($"{oldAddress}api/v1/orders/sync")], handler.RequestUris);
@@ -189,11 +275,7 @@ public sealed class OrderUploadServiceTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-            if (File.Exists(databasePath))
-            {
-                File.Delete(databasePath);
-            }
+            await SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -237,11 +319,7 @@ public sealed class OrderUploadServiceTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-            if (File.Exists(databasePath))
-            {
-                File.Delete(databasePath);
-            }
+            await SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -293,6 +371,91 @@ public sealed class OrderUploadServiceTests
     }
 
     [Fact]
+    public async Task UploadOrderAsync_http_timeout_keeps_order_queued_with_error_instead_of_endpoint_switch()
+    {
+        await using var harness = await TimeoutUploadHarness.CreateAsync(slowOrderCount: 1, fastOrderCount: 0);
+        var order = harness.SlowOrders[0];
+
+        // 3-20：HttpClient 15 秒超时与端点切换同为 TaskCanceledException，超时不能再被当作端点切换。
+        var exception = await Assert.ThrowsAsync<OrderUploadTimeoutException>(() =>
+            harness.UploadService.UploadOrderAsync(order));
+
+        Assert.IsType<TimeoutException>(exception.InnerException?.InnerException);
+        var summary = await harness.GetOrderAsync(order);
+        Assert.Equal("Pending", summary.SyncStatus);
+        var queued = Assert.Single(await harness.SyncQueue.GetActiveItemsAsync());
+        Assert.Equal("Pending", queued.Status);
+        Assert.Contains("timed out", queued.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("timed out", (await harness.SyncQueue.GetOverviewAsync()).LastError, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ExecuteOneAsync_reports_http_timeout_as_not_completed_not_interrupted()
+    {
+        await using var harness = await TimeoutUploadHarness.CreateAsync(slowOrderCount: 1, fastOrderCount: 0);
+
+        var result = await harness.Executor.ExecuteOneAsync(harness.SlowOrders[0]);
+
+        Assert.Equal(new OrderUploadExecutionResult(1, 0, 1), result);
+    }
+
+    [Fact]
+    public async Task ExecutePendingAsync_http_timeout_counts_not_completed_and_continues_with_next_order()
+    {
+        await using var harness = await TimeoutUploadHarness.CreateAsync(slowOrderCount: 1, fastOrderCount: 1);
+
+        var result = await harness.Executor.ExecutePendingAsync();
+
+        // 超时的订单不能再"占住队首"让后面的订单一笔都不试，计数也不能是"成功 0、失败 0"。
+        Assert.Equal(new OrderUploadExecutionResult(2, 1, 1), result);
+        Assert.Equal(2, harness.Handler.RequestCount);
+        Assert.Equal("Synced", (await harness.GetOrderAsync(harness.FastOrders[0])).SyncStatus);
+        Assert.Equal("Pending", (await harness.GetOrderAsync(harness.SlowOrders[0])).SyncStatus);
+    }
+
+    [Fact]
+    public async Task ExecutePendingAsync_stops_round_after_two_consecutive_timeouts()
+    {
+        await using var harness = await TimeoutUploadHarness.CreateAsync(slowOrderCount: 3, fastOrderCount: 0);
+
+        var result = await harness.Executor.ExecutePendingAsync();
+
+        // 连续两笔超时说明服务端整体不可用：本轮停下，第三笔不再等满超时，留在队列等下一轮。
+        Assert.Equal(new OrderUploadExecutionResult(3, 0, 3), result);
+        Assert.Equal(2, harness.Handler.RequestCount);
+        Assert.All(
+            await harness.Orders.GetRecentOrdersAsync(),
+            order => Assert.Equal("Pending", order.SyncStatus));
+    }
+
+    [Fact]
+    public async Task ExecuteSelectedAsync_http_timeout_is_not_reported_as_endpoint_switch()
+    {
+        await using var harness = await TimeoutUploadHarness.CreateAsync(slowOrderCount: 1, fastOrderCount: 1);
+
+        var result = await harness.Executor.ExecuteSelectedAsync([harness.SlowOrders[0], harness.FastOrders[0]]);
+
+        Assert.Equal(new OrderUploadExecutionResult(2, 1, 1), result);
+        Assert.Equal(2, harness.Handler.RequestCount);
+        Assert.Equal("Synced", (await harness.GetOrderAsync(harness.FastOrders[0])).SyncStatus);
+    }
+
+    [Fact]
+    public async Task ExecuteSelectedAsync_stops_after_two_consecutive_timeouts_without_touching_remaining_orders()
+    {
+        await using var harness = await TimeoutUploadHarness.CreateAsync(slowOrderCount: 2, fastOrderCount: 1);
+        await harness.UploadRepository.MarkSyncedAsync(harness.FastOrders[0]);
+
+        var result = await harness.Executor.ExecuteSelectedAsync(
+            [harness.SlowOrders[0], harness.SlowOrders[1], harness.FastOrders[0]]);
+
+        // 按日期重传一批 500 笔；网络整体不通时不能每笔都等满超时。未尝试的订单保持原状态。
+        Assert.Equal(new OrderUploadExecutionResult(3, 0, 3), result);
+        Assert.Equal(2, harness.Handler.RequestCount);
+        Assert.Equal("Synced", (await harness.GetOrderAsync(harness.FastOrders[0])).SyncStatus);
+    }
+
+    [Fact]
     public async Task ExecuteSelectedAsync_stops_immediately_when_caller_cancels()
     {
         var first = Guid.NewGuid();
@@ -302,11 +465,11 @@ public sealed class OrderUploadServiceTests
         using var cancellation = new CancellationTokenSource();
 
         var execution = executor.ExecuteSelectedAsync([first, second], cancellation.Token);
-        await uploader.FirstRequestStarted.WaitAsync(TimeSpan.FromSeconds(2));
+        await uploader.FirstRequestStarted.WaitUntilCompletedAsync();
         await cancellation.CancelAsync();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            execution.WaitAsync(TimeSpan.FromSeconds(2)));
+            execution.WaitAsync(AsyncTestWaitSupport.DefaultTimeout));
         Assert.Equal([first], uploader.Attempts);
     }
 
@@ -318,7 +481,7 @@ public sealed class OrderUploadServiceTests
         var executor = new OrderUploadExecutionService(uploader, new StubOrderUploadRepository());
 
         var automatic = executor.ExecuteOneAsync(orderGuid);
-        await uploader.FirstRequestStarted.WaitAsync(TimeSpan.FromSeconds(2));
+        await uploader.FirstRequestStarted.WaitUntilCompletedAsync();
         var manual = executor.ExecuteSelectedAsync([orderGuid]);
         await Task.Yield();
 
@@ -326,7 +489,7 @@ public sealed class OrderUploadServiceTests
         Assert.Equal(1, uploader.MaximumConcurrency);
 
         uploader.ReleaseFirstRequest();
-        await Task.WhenAll(automatic, manual).WaitAsync(TimeSpan.FromSeconds(2));
+        await Task.WhenAll(automatic, manual).WaitUntilCompletedAsync();
 
         Assert.Equal([orderGuid, orderGuid], uploader.Attempts);
         Assert.Equal(1, uploader.MaximumConcurrency);
@@ -367,11 +530,7 @@ public sealed class OrderUploadServiceTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-            if (File.Exists(databasePath))
-            {
-                File.Delete(databasePath);
-            }
+            await SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -411,11 +570,7 @@ public sealed class OrderUploadServiceTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-            if (File.Exists(databasePath))
-            {
-                File.Delete(databasePath);
-            }
+            await SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -454,11 +609,7 @@ public sealed class OrderUploadServiceTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-            if (File.Exists(databasePath))
-            {
-                File.Delete(databasePath);
-            }
+            await SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -498,11 +649,7 @@ public sealed class OrderUploadServiceTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-            if (File.Exists(databasePath))
-            {
-                File.Delete(databasePath);
-            }
+            await SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -532,11 +679,7 @@ public sealed class OrderUploadServiceTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-            if (File.Exists(databasePath))
-            {
-                File.Delete(databasePath);
-            }
+            await SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -570,11 +713,7 @@ public sealed class OrderUploadServiceTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-            if (File.Exists(databasePath))
-            {
-                File.Delete(databasePath);
-            }
+            await SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -690,11 +829,7 @@ public sealed class OrderUploadServiceTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-            if (File.Exists(databasePath))
-            {
-                File.Delete(databasePath);
-            }
+            await SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -735,11 +870,7 @@ public sealed class OrderUploadServiceTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-            if (File.Exists(databasePath))
-            {
-                File.Delete(databasePath);
-            }
+            await SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -767,11 +898,7 @@ public sealed class OrderUploadServiceTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-            if (File.Exists(databasePath))
-            {
-                File.Delete(databasePath);
-            }
+            await SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -803,11 +930,7 @@ public sealed class OrderUploadServiceTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-            if (File.Exists(databasePath))
-            {
-                File.Delete(databasePath);
-            }
+            await SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -848,11 +971,7 @@ public sealed class OrderUploadServiceTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-            if (File.Exists(databasePath))
-            {
-                File.Delete(databasePath);
-            }
+            await SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(databasePath);
         }
     }
 
@@ -1096,6 +1215,118 @@ public sealed class OrderUploadServiceTests
         }
     }
 
+    // 真实 HttpClient（经过与生产一致的 ApiRuntimeEndpointHandler）+ 真实上传服务与 SQLite 仓储。
+    // "慢单"让服务端一直不响应，由 HttpClient 自身的超时打断，得到与生产完全相同的异常形状。
+    private sealed class TimeoutUploadHarness : IAsyncDisposable
+    {
+        private const string ApiAddress = "https://api.example.test/pos-api/";
+        private readonly string _databasePath;
+        private readonly HttpClient _httpClient;
+
+        private TimeoutUploadHarness(
+            string databasePath,
+            LocalSqliteStore store,
+            SlowOrderSyncHandler handler,
+            IReadOnlyList<Guid> slowOrders,
+            IReadOnlyList<Guid> fastOrders)
+        {
+            _databasePath = databasePath;
+            Handler = handler;
+            SlowOrders = slowOrders;
+            FastOrders = fastOrders;
+            Orders = new LocalOrderRepository(store);
+            UploadRepository = new LocalOrderUploadRepository(store);
+            SyncQueue = new SyncQueueRepository(store);
+            _httpClient = new HttpClient(new ApiRuntimeEndpointHandler(new ApiRuntimeEndpointState(ApiAddress))
+            {
+                InnerHandler = handler
+            })
+            {
+                BaseAddress = new Uri(ApiAddress),
+                // 生产是 15 秒；这里缩短但留足余量，避免慢 CI 上正常请求也被判超时。
+                Timeout = TimeSpan.FromSeconds(1)
+            };
+            UploadService = new OrderUploadService(Orders, new OrderSyncApiClient(_httpClient), UploadRepository);
+            Executor = new OrderUploadExecutionService(UploadService, UploadRepository);
+        }
+
+        public SlowOrderSyncHandler Handler { get; }
+
+        public IReadOnlyList<Guid> SlowOrders { get; }
+
+        public IReadOnlyList<Guid> FastOrders { get; }
+
+        public LocalOrderRepository Orders { get; }
+
+        public LocalOrderUploadRepository UploadRepository { get; }
+
+        public SyncQueueRepository SyncQueue { get; }
+
+        public OrderUploadService UploadService { get; }
+
+        public OrderUploadExecutionService Executor { get; }
+
+        public static async Task<TimeoutUploadHarness> CreateAsync(int slowOrderCount, int fastOrderCount)
+        {
+            var databasePath = Path.Combine(Path.GetTempPath(), $"hbpos-order-upload-timeout-{Guid.NewGuid():N}.db");
+            var store = new LocalSqliteStore(databasePath);
+            await new LocalSchemaService(store).InitializeAsync();
+            var orders = new LocalOrderRepository(store);
+            var slowOrders = new List<Guid>();
+            var fastOrders = new List<Guid>();
+            // 先存慢单再存快单，上传队列按创建时间排序，慢单排在前面。
+            for (var index = 0; index < slowOrderCount + fastOrderCount; index++)
+            {
+                var order = CreateLocalOrder();
+                await orders.SavePendingOrderAsync(order);
+                (index < slowOrderCount ? slowOrders : fastOrders).Add(order.OrderGuid);
+            }
+
+            return new TimeoutUploadHarness(
+                databasePath,
+                store,
+                new SlowOrderSyncHandler(slowOrders),
+                slowOrders,
+                fastOrders);
+        }
+
+        public async Task<LocalOrderSummary> GetOrderAsync(Guid orderGuid) =>
+            (await Orders.GetRecentOrdersAsync()).Single(order => order.OrderGuid == orderGuid);
+
+        public async ValueTask DisposeAsync()
+        {
+            _httpClient.Dispose();
+            await SqliteTestDatabaseCleanup.DeleteDatabaseFilesAsync(_databasePath);
+        }
+    }
+
+    private sealed class SlowOrderSyncHandler(IReadOnlyCollection<Guid> slowOrders) : HttpMessageHandler
+    {
+        private int _requestCount;
+
+        public int RequestCount => Volatile.Read(ref _requestCount);
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _requestCount);
+            var syncRequest = await request.Content!.ReadFromJsonAsync<OrderSyncRequest>(
+                cancellationToken: cancellationToken);
+            if (slowOrders.Contains(syncRequest!.OrderGuid))
+            {
+                // 服务端迟迟不响应，直到 HttpClient 的超时取消本次请求。
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = JsonContent.Create(ApiResult<OrderSyncResponse>.Ok(
+                    new OrderSyncResponse(syncRequest.OrderGuid, true, false, "Synced")))
+            };
+        }
+    }
+
     private sealed class EndpointSwitchOrderSyncHandler : HttpMessageHandler
     {
         private readonly TaskCompletionSource _firstRequestStarted =
@@ -1156,6 +1387,8 @@ public sealed class OrderUploadServiceTests
             MarkedPendingOrderGuids.Add(orderGuid);
             return Task.CompletedTask;
         }
+        public Task MarkPendingAsync(Guid orderGuid, string errorMessage, CancellationToken cancellationToken = default) =>
+            MarkPendingAsync(orderGuid, cancellationToken);
         public Task MarkSyncedAsync(Guid orderGuid, CancellationToken cancellationToken = default) => Task.CompletedTask;
         public Task MarkFailedAsync(Guid orderGuid, string errorMessage, CancellationToken cancellationToken = default) => Task.CompletedTask;
     }

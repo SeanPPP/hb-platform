@@ -49,3 +49,7 @@ logs/
 .understand-anything/
 .worktrees/
 .collaborator
+
+# 本地产物与临时目录：部署报告、业务导出文件等，不纳入版本库
+outputs/
+tmp/

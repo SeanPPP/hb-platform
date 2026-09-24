@@ -524,7 +524,15 @@ namespace BlazorApp.Api.Services
                     await RunStep(
                         SalesStatisticType.HourlySales,
                         "分时统计",
-                        () => UpdateHourlyStatisticsWithContext(context, posmContext, logger, date, null)
+                        () => UpdateHourlyStatisticsWithContext(
+                            context,
+                            posmContext,
+                            // 分时统计与分店统计同源：历史窗口内必须带 HBSales 上下文。
+                            SalesStatisticsHBSalesHistoryWindow.Includes(date) ? hbSalesContext : null,
+                            logger,
+                            date,
+                            null
+                        )
                     );
                     // 当天与 HBSales 历史窗口日期都由商品入口原子发布分店表，不能提前独立替换。
                     if (!SalesStatisticsHBSalesHistoryWindow.Includes(date)
@@ -737,18 +745,20 @@ internal async Task UpdateDailyStatisticsWithContext(
     /// </summary>
     /// <param name="context">数据库上下文</param>
     /// <param name="posmContext">POSM数据库上下文</param>
+    /// <param name="hbSalesContext">HBSalesRecord 数据库上下文；仅 HBSales 历史窗口内需要</param>
     /// <param name="logger">日志记录器</param>
     /// <param name="date">目标日期</param>
     /// <param name="hour">指定小时，为空则更新所有小时</param>
 internal Task UpdateHourlyStatisticsWithContext(
     SqlSugarContext context,
     POSMSqlSugarContext posmContext,
+    HBSalesRecordSqlSugarContext? hbSalesContext,
     ILogger logger,
     DateTime date,
     int? hour
 )
 {
-    return _store.UpdateHourlyStatisticsWithContext(context, posmContext, logger, date, hour);
+    return _store.UpdateHourlyStatisticsWithContext(context, posmContext, hbSalesContext, logger, date, hour);
 }
 
     /// <summary>
@@ -760,13 +770,21 @@ internal Task UpdateHourlyStatisticsWithContext(
     /// <param name="logger">日志记录器</param>
     /// <param name="date">目标日期</param>
     /// <param name="branchCodes">分店代码列表，为空则更新所有分店</param>
+    /// <param name="expectedProductStatisticJobId">队列商品统计任务标识；提供时在分店事务中围栏执行权</param>
+    /// <param name="validateExecutionOwnershipBeforeCommitAsync">队列租约在分店事务提交前的附加校验</param>
+    /// <param name="sourceWatermark">队列分店行所对应的 POSM 来源水位</param>
+    /// <param name="validateSourceWatermarkBeforeCommitAsync">分店事务提交前核对来源仍为构建水位</param>
 internal async Task UpdateStoreStatisticsWithContext(
     SqlSugarContext context,
     POSMSqlSugarContext posmContext,
     HBSalesRecordSqlSugarContext? hbSalesContext,
     ILogger logger,
     DateTime date,
-    List<string>? branchCodes
+    List<string>? branchCodes,
+    Guid? expectedProductStatisticJobId = null,
+    Func<Task>? validateExecutionOwnershipBeforeCommitAsync = null,
+    DateTime? sourceWatermark = null,
+    Func<Task>? validateSourceWatermarkBeforeCommitAsync = null
 )
 {
     try
@@ -789,7 +807,15 @@ internal async Task UpdateStoreStatisticsWithContext(
             branchCodes
         );
         await _store.ReplaceStoreStatisticsAsync(
-            context, logger, targetDate, branchCodes, statisticsList);
+            context,
+            logger,
+            targetDate,
+            branchCodes,
+            statisticsList,
+            expectedProductStatisticJobId,
+            validateExecutionOwnershipBeforeCommitAsync,
+            sourceWatermark,
+            validateSourceWatermarkBeforeCommitAsync);
 
         logger.LogInformation(
             "指定分店统计数据更新完成: {Date}, 总记录: {Total}",

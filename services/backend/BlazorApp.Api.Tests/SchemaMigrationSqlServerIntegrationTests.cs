@@ -765,6 +765,130 @@ IF COL_LENGTH(N'dbo.PricingStrategyDetail', N'StartRetailPrice') IS NOT NULL
         }
     }
 
+    [SchemaMigrationSqlServerFact]
+    public async Task 移动OTA并行目标列_保留旧策略行且可重复执行()
+    {
+        await using var databases = await IsolatedSchemaDatabases.CreateAsync();
+        await ExecuteNonQueryAsync(databases.MainConnectionString, """
+            CREATE TABLE dbo.MobileOtaPolicy (
+                Id uniqueidentifier NOT NULL,
+                Environment nvarchar(32) NOT NULL,
+                Platform nvarchar(32) NOT NULL,
+                PolicyVersion int NOT NULL,
+                TargetRuntimeVersion nvarchar(64) NULL
+            );
+            INSERT dbo.MobileOtaPolicy (Id, Environment, Platform, PolicyVersion, TargetRuntimeVersion)
+            VALUES ('11111111-1111-1111-1111-111111111111', N'production', N'Android', 29, N'1.0.5');
+            """);
+
+        await ExecuteNonQueryAsync(
+            databases.MainConnectionString,
+            MobileOtaRuntimeTargetsSchema.ApplySql
+        );
+        await ExecuteNonQueryAsync(
+            databases.MainConnectionString,
+            MobileOtaRuntimeTargetsSchema.VerifySql
+        );
+        await ExecuteNonQueryAsync(
+            databases.MainConnectionString,
+            MobileOtaRuntimeTargetsSchema.ApplySql
+        );
+
+        await ExecuteNonQueryAsync(databases.MainConnectionString, """
+            IF (SELECT COUNT(*) FROM dbo.MobileOtaPolicy
+                WHERE Id = '11111111-1111-1111-1111-111111111111'
+                  AND Environment = N'production'
+                  AND Platform = N'Android'
+                  AND PolicyVersion = 29
+                  AND TargetRuntimeVersion = N'1.0.5'
+                  AND AdditionalTargetsJson IS NULL) <> 1
+                THROW 51913, 'Existing MobileOtaPolicy row was changed.', 1;
+            IF (SELECT COUNT(*) FROM sys.columns
+                WHERE object_id = OBJECT_ID(N'dbo.MobileOtaPolicy')
+                  AND name = N'AdditionalTargetsJson'
+                  AND system_type_id = TYPE_ID(N'nvarchar')
+                  AND max_length = -1
+                  AND is_nullable = 1) <> 1
+                THROW 51914, 'AdditionalTargetsJson signature is invalid.', 1;
+            """);
+    }
+
+    [SchemaMigrationSqlServerFact]
+    public async Task 移动OTA并行目标列_已有错误签名时拒绝且不修正()
+    {
+        await using var databases = await IsolatedSchemaDatabases.CreateAsync();
+        await ExecuteNonQueryAsync(databases.MainConnectionString, """
+            CREATE TABLE dbo.MobileOtaPolicy (
+                Id uniqueidentifier NOT NULL,
+                AdditionalTargetsJson nvarchar(4000) NULL
+            );
+            """);
+
+        var mismatch = await Assert.ThrowsAsync<SqlException>(() =>
+            ExecuteNonQueryAsync(
+                databases.MainConnectionString,
+                MobileOtaRuntimeTargetsSchema.ApplySql
+            )
+        );
+
+        Assert.Equal(51911, mismatch.Number);
+        await ExecuteNonQueryAsync(databases.MainConnectionString, """
+            IF (SELECT max_length FROM sys.columns
+                WHERE object_id = OBJECT_ID(N'dbo.MobileOtaPolicy')
+                  AND name = N'AdditionalTargetsJson') <> 8000
+                THROW 51915, 'Migration changed the incompatible column.', 1;
+            """);
+    }
+
+    [SchemaMigrationSqlServerFact]
+    public async Task 供应商分类三表_可重复执行且签名门禁识别漂移()
+    {
+        await using var databases = await IsolatedSchemaDatabases.CreateAsync();
+
+        await ExecuteNonQueryAsync(databases.MainConnectionString, LocalSupplierCategorySchema.ApplySql);
+        await ExecuteNonQueryAsync(databases.MainConnectionString, LocalSupplierCategorySchema.VerifySql);
+        await ExecuteNonQueryAsync(databases.MainConnectionString, LocalSupplierCategorySchema.ApplySql);
+        await ExecuteNonQueryAsync(databases.MainConnectionString, LocalSupplierCategorySchema.VerifySql);
+
+        // 唯一索引保证同一供应商同一站点键只有一行，重复插入必须被数据库拒绝。
+        var duplicate = await Assert.ThrowsAsync<SqlException>(() =>
+            ExecuteNonQueryAsync(databases.MainConnectionString, """
+                INSERT dbo.LocalSupplierCategory
+                    (CategoryGUID, LocalSupplierCode, CategoryName, ExternalKey, FullPath, Depth,
+                     IsPromotional, PromotionalSource, IsActive, FirstSeenAt, LastSeenAt, CreatedAt)
+                VALUES
+                    (N'a', N'240', N'Office', N'/office', N'Office', 0, 0, N'pattern', 1, SYSUTCDATETIME(), SYSUTCDATETIME(), SYSUTCDATETIME()),
+                    (N'b', N'240', N'Office', N'/office', N'Office', 0, 0, N'pattern', 1, SYSUTCDATETIME(), SYSUTCDATETIME(), SYSUTCDATETIME());
+                """));
+        Assert.Contains(duplicate.Number, new[] { 2601, 2627 });
+
+        await ExecuteNonQueryAsync(databases.MainConnectionString,
+            "DROP INDEX [UX_LocalSupplierCategory_Supplier_ExternalKey] ON dbo.LocalSupplierCategory;");
+        var missingIndex = await Assert.ThrowsAsync<SqlException>(() =>
+            ExecuteNonQueryAsync(databases.MainConnectionString, LocalSupplierCategorySchema.VerifySql));
+        Assert.Equal(51933, missingIndex.Number);
+
+        await ExecuteNonQueryAsync(databases.MainConnectionString, LocalSupplierCategorySchema.ApplySql);
+        await ExecuteNonQueryAsync(databases.MainConnectionString, LocalSupplierCategorySchema.VerifySql);
+
+        await ExecuteNonQueryAsync(databases.MainConnectionString,
+            "ALTER TABLE dbo.LocalSupplierCategoryProductAssignment ALTER COLUMN Source nvarchar(64) NOT NULL;");
+        var driftedColumn = await Assert.ThrowsAsync<SqlException>(() =>
+            ExecuteNonQueryAsync(databases.MainConnectionString, LocalSupplierCategorySchema.VerifySql));
+        Assert.Equal(51931, driftedColumn.Number);
+    }
+
+    [SchemaMigrationSqlServerFact]
+    public async Task 供应商分类签名门禁_缺表时报缺失()
+    {
+        await using var databases = await IsolatedSchemaDatabases.CreateAsync();
+
+        var missing = await Assert.ThrowsAsync<SqlException>(() =>
+            ExecuteNonQueryAsync(databases.MainConnectionString, LocalSupplierCategorySchema.VerifySql));
+
+        Assert.Equal(51930, missing.Number);
+    }
+
     private static async Task<string> RunApiUntilListeningAsync(
         IsolatedSchemaDatabases databases
     )

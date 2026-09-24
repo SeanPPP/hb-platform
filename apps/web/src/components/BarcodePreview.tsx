@@ -33,6 +33,9 @@ export default function BarcodePreview({
 }: BarcodePreviewProps) {
   const { t } = useTranslation()
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  // 调用方普遍以内联对象字面量传 options，引用每次渲染都会变。
+  // 用序列化后的内容作依赖，保证只有条码值或绘制参数真正变化时才重新编码与绘制。
+  const optionsKey = JSON.stringify(options ?? null)
 
   useEffect(() => {
     if (!canvasRef.current || !value) {
@@ -52,7 +55,9 @@ export default function BarcodePreview({
     } catch (error) {
       console.error('渲染条码失败', error)
     }
-  }, [options, value])
+    // options 的内容变化已由 optionsKey 表达，这里刻意不依赖 options 的引用。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [optionsKey, value])
 
   if (!value) {
     return <>--</>

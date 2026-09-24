@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, TextInput, View } from "react-native";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { AppState, Pressable, ScrollView, StyleSheet, TextInput, View } from "react-native";
 import { CameraView } from "expo-camera";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import {
@@ -19,23 +19,32 @@ import {
   Text,
 } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { HB_COLORS, HB_RADIUS } from "@/shared/theme/tokens";
 import { CreateSupplierSheet } from "@/components/product-maintenance/CreateSupplierSheet";
 import { CreateBarcodeScanner } from "@/components/product-maintenance/CreateBarcodeScanner";
 import { CreateProductDialog } from "@/components/product-maintenance/CreateProductDialog";
+import { CodeAddSheet } from "@/components/product-maintenance/CodeAddSheet";
 import { LookupResultSheet } from "@/components/product-maintenance/LookupResultSheet";
 import { LabelPrintCard } from "@/components/product-maintenance/LabelPrintCard";
 import { PrintSettingsModal } from "@/components/product-maintenance/PrintSettingsModal";
+import { PrinterConnectionStatus } from "@/components/product-maintenance/PrinterConnectionStatus";
 import { MultiCodeCompactList } from "@/components/product-maintenance/MultiCodeCompactList";
 import { NumericInputModal } from "@/components/product-maintenance/NumericInputModal";
+import { OfflineCatalogStatusRow } from "@/components/product-maintenance/OfflineCatalogStatusRow";
+import { OfflineModeBanner } from "@/components/product-maintenance/OfflineModeBanner";
 import { ProductHeroCard } from "@/components/product-maintenance/ProductHeroCard";
 import { ProductPromotionCard } from "@/components/product-maintenance/ProductPromotionCard";
-import { QueryHeader } from "@/components/product-maintenance/QueryHeader";
 import { SearchPanel } from "@/components/product-maintenance/SearchPanel";
 import { SetCodeCompactSection } from "@/components/product-maintenance/SetCodeCompactSection";
 import { StickyActionBar } from "@/components/product-maintenance/StickyActionBar";
 import { StoreClearancePriceCard } from "@/components/product-maintenance/StoreClearancePriceCard";
-import { StorePriceStrategyCard } from "@/components/product-maintenance/StorePriceStrategyCard";
-import { WarehousePriceSyncModal } from "@/components/product-maintenance/WarehousePriceSyncModal";
+import { PosterEntryRow } from "@/components/product-maintenance/PosterEntryRow";
+import { PosterQueueBar } from "@/components/promo-posters/PosterQueueBar";
+import {
+  StorePriceStrategyCard,
+  StoreSwitchButton,
+} from "@/components/product-maintenance/StorePriceStrategyCard";
+import { SyncToOtherStoresSection } from "@/components/product-maintenance/SyncToOtherStoresSheet";
 import { CameraScanSheet } from "@/components/ui/CameraScanSheet";
 import { StorePickerModal } from "@/components/ui/StorePickerModal";
 import {
@@ -57,9 +66,10 @@ import {
   getProductHqSyncOperation,
   getProductCodes,
   getProductFastDetail,
+  ensureStorePrice,
   lookupProducts,
+  scanProductLabel,
   retryProductHqSyncOperation,
-  syncWarehousePrice,
   updateMultiCode,
   updateSetCode,
   updateProductType,
@@ -68,6 +78,26 @@ import {
 } from "@/modules/product-maintenance/api";
 import { resolveExternalQueryStore } from "@/modules/product-maintenance/external-query-store";
 import { validateCreateProductForm } from "@/modules/product-maintenance/create-product-validation";
+import {
+  hasStoredDeviceSession,
+  isOfflineProductQueryEligible,
+} from "@/modules/product-maintenance/offline-eligibility";
+import {
+  INITIAL_PRODUCT_QUERY_CONNECTIVITY,
+  reduceProductQueryConnectivity,
+  shouldAutoRelookupAfterRecovery,
+} from "@/modules/product-maintenance/offline-mode";
+import { useOfflineReconnectProbe } from "@/modules/product-maintenance/use-offline-reconnect-probe";
+import { useOfflineCatalogStore } from "@/modules/product-maintenance/offline-catalog/offline-catalog-store";
+import { useNetworkRecovery } from "@/shared/network";
+import { isNetworkUnavailableError } from "@/shared/network/network-error";
+import {
+  calcGrossMarginPercent,
+  getDirtyCodeIds,
+  getMarginTrend,
+  resolveCodeSections,
+  resolveOriginalDisplay,
+} from "@/modules/product-maintenance/product-query-presentation";
 import type {
   EvaluateAutoPricingResult,
   LocalSupplierOption,
@@ -75,7 +105,10 @@ import type {
   ProductDetail,
   ProductHqSyncOperation,
   ProductLookupItem,
+  ScanLabelPrintTarget,
+  ScanLabelResult,
 } from "@/modules/product-maintenance/types";
+import { getVerifiedScanPrintTarget } from "@/modules/product-maintenance/scan-label";
 import {
   createProductDetailRequestCoordinator,
   createProductHqSyncMutationCoordinator,
@@ -88,18 +121,7 @@ import {
   type ProductHqSyncMutationToken,
 } from "@/modules/product-maintenance/hq-sync";
 import {
-  buildWarehousePriceSyncRequest,
-  createWarehousePriceSyncState,
-  extractWarehousePriceSyncConflict,
-  getWarehousePriceSyncApplicability,
   isProductQueryInteractionBlocked,
-  isWarehousePriceConflictSnapshotComplete,
-  isWarehousePriceInteractionLocked,
-  reduceWarehousePriceSyncState,
-  resolveWarehousePriceConfirmationFeedback,
-  shouldAutoPrintWarehousePrice,
-  type WarehousePriceLookupOrigin,
-  type WarehousePriceSyncState,
 } from "@/modules/product-maintenance/warehouse-price-sync";
 import {
   useCameraScan,
@@ -118,8 +140,10 @@ import {
   preloadScanFeedbackSounds,
 } from "@/modules/scanner/scan-sound";
 import type { ScanSource } from "@/modules/scanner/types";
+import { getManageableStoresForSession, isStoreManageable } from "@/modules/shop/store-scope";
 import { useStores } from "@/modules/shop/use-stores";
 import type { Store } from "@/modules/shop/types";
+import { PERMISSIONS } from "@/shared/utils/access";
 import { useAuthStore } from "@/store/auth-store";
 import { useDeviceStore } from "@/store/device-store";
 import {
@@ -135,6 +159,8 @@ import { fetchValidPromotionsByProduct } from "@/modules/promotions/api";
 import type { PromotionListItem } from "@/modules/promotions/types";
 import { isIosReviewSessionActive } from "@/modules/ios-review/session";
 import { IOS_REVIEW_SAMPLE_BARCODE } from "@/modules/ios-review/helpers";
+import { resolveScanPosterAvailability } from "@/modules/promo-posters/logic";
+import type { PromoPosterKind } from "@/modules/promo-posters/types";
 
 type LookupTrigger = "manual" | "scan" | "refresh" | "deep-link";
 
@@ -317,21 +343,10 @@ interface AutoPricingDialogResolution {
 }
 
 interface DetailPostLoadOptions {
-  lookupOrigin: WarehousePriceLookupOrigin;
-  storeCodeOverride?: string;
   scanSource?: ScanSource | null;
   scanKeyword?: string;
   autoPrintEnabled?: boolean;
-}
-
-interface WarehousePriceSyncContext {
-  detail: ProductDetail;
-  lookupOrigin: WarehousePriceLookupOrigin;
-  storeCodeOverride?: string;
-  scanSource: ScanSource | null;
-  scanKeyword: string;
-  autoPrintEnabled: boolean;
-  alreadyPrinted: boolean;
+  printTarget?: ScanLabelPrintTarget | null;
 }
 
 interface NumericInputModalState {
@@ -372,6 +387,14 @@ function getMultiCodeItemId(item: MultiCodeEditableItem): string {
 }
 
 const PRODUCT_TYPE_OPTIONS = [0, 1, 2] as const;
+/** 离线态下本店根本没有快照：与「读快照失败」区分开，两者的提示文案不同。 */
+class OfflineCatalogUnavailableError extends Error {
+  public constructor() {
+    super("Offline catalog snapshot is unavailable for this store.");
+    this.name = "OfflineCatalogUnavailableError";
+  }
+}
+
 const CODE_PAGE_SIZE = 50;
 const EMPTY_CREATE_PRODUCT_DRAFT: CreateProductDraft = {
   localSupplierCode: "",
@@ -472,14 +495,52 @@ function ProductQueryContent() {
     hasInvoiceReturnContext: Boolean(invoiceReturnState),
   });
   const selectedStoreCode = editorStoreScope.storeCode;
+  const selectedStoreCodeRef = useRef(selectedStoreCode);
+  selectedStoreCodeRef.current = selectedStoreCode;
   const selectedStore = editorStoreScope.locked
     ? stores.find((store) => store.storeCode === selectedStoreCode)
     : globalSelectedStore;
   const access = useAuthStore((state) => state.access);
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
+  const sessionKind = useAuthStore((state) => state.sessionKind);
+  const deviceSession = useDeviceStore((state) => state.session);
+  // 离线功能只对设备注册绑定会话开放；普通账号登录与审核态保持既有在线行为。
+  const offlineEligible = isOfflineProductQueryEligible({
+    sessionKind,
+    hasStoredDeviceSession: hasStoredDeviceSession(deviceSession),
+  });
+  const { state: recoveryState, triggerRecovery } = useNetworkRecovery();
+  const [connectivity, dispatchConnectivity] = useReducer(
+    reduceProductQueryConnectivity,
+    INITIAL_PRODUCT_QUERY_CONNECTIVITY,
+  );
+  const offlineMode = offlineEligible && connectivity.offline;
+  const offlineModeRef = useRef(offlineMode);
+  offlineModeRef.current = offlineMode;
+  const offlineEligibleRef = useRef(offlineEligible);
+  offlineEligibleRef.current = offlineEligible;
+  const offlineCatalogActiveMeta = useOfflineCatalogStore((state) =>
+    selectedStoreCode ? (state.activeMeta[selectedStoreCode] ?? null) : null,
+  );
+  const offlineCatalogRefresh = useOfflineCatalogStore((state) => state.refresh);
+  const [appActive, setAppActive] = useState(
+    AppState.currentState === "active" || AppState.currentState === "unknown",
+  );
+  // 同步其它分店：仅登录账号（非设备模式）+ 权限码 + 当前分店可管理（isPrimary 或管理员）时开放，后端同样校验。
+  const canSyncToOtherStores =
+    !isDeviceMode &&
+    isAuthenticated &&
+    access.hasPermission(PERMISSIONS.StoreProducts.SyncToOtherStores) &&
+    isStoreManageable(
+      selectedStoreCode,
+      getManageableStoresForSession({ stores, isDeviceMode, isAdmin: access.isAdmin }),
+    );
   const printerAutoReconnectPaused = usePrinterStore(
     (state) => state.autoReconnectPaused,
   );
+  const savedPrinter = usePrinterStore((state) => state.savedPrinter);
+  const printerConnectionStatus = usePrinterStore((state) => state.status);
+  const printerLastError = usePrinterStore((state) => state.lastError);
   const [keyword, setKeyword] = useState("");
   const [lookupItems, setLookupItems] = useState<ProductLookupItem[]>([]);
   const [selectedLookupProductCode, setSelectedLookupProductCode] =
@@ -514,6 +575,9 @@ function ProductQueryContent() {
   isFocusedRef.current = isFocused;
   cameraScanModeRef.current = cameraScanMode;
   const [loading, setLoading] = useState(false);
+  const [pendingScanPresentation, setPendingScanPresentation] = useState<{
+    keyword: string; productName: string;
+  } | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [savingItemId, setSavingItemId] = useState<string | null>(null);
@@ -530,10 +594,6 @@ function ProductQueryContent() {
   const [autoPricingDialog, setAutoPricingDialog] =
     useState<AutoPricingDialogState | null>(null);
   const [autoPricingDialogSaving, setAutoPricingDialogSaving] = useState(false);
-  const [warehousePriceSyncState, setWarehousePriceSyncState] =
-    useState<WarehousePriceSyncState>(createWarehousePriceSyncState);
-  const [warehousePriceSyncContext, setWarehousePriceSyncContext] =
-    useState<WarehousePriceSyncContext | null>(null);
   const [createProductVisible, setCreateProductVisible] = useState(false);
   const [createSupplierPickerVisible, setCreateSupplierPickerVisible] =
     useState(false);
@@ -576,6 +636,9 @@ function ProductQueryContent() {
   >(null);
   const invoiceExitSavingRef = useRef(false);
   const [editorTab, setEditorTab] = useState<"price" | "codes">("price");
+  const [savingAndPrinting, setSavingAndPrinting] = useState(false);
+  // 新增编码面板里的相机扫码：打开时临时隐藏面板，避免两个原生 Modal 叠加。
+  const [codeAddScannerVisible, setCodeAddScannerVisible] = useState(false);
   const getErrorMessage = useCallback(
     (error: unknown, fallbackKey: string) =>
       resolveLocalizedErrorMessage(error, {
@@ -591,8 +654,8 @@ function ProductQueryContent() {
   const numericInputConfirmRef = useRef<((value: string) => void) | null>(null);
   const lookupSelectionOpenRef = useRef(false);
   const lookupRequestInFlightRef = useRef(false);
+  const scanLabelUnsupportedUntilRef = useRef(0);
   const storeSelectionInFlightRef = useRef(false);
-  const warehousePriceRequestInFlightRef = useRef(false);
   const resumeHiddenScannerFocusTimerRef = useRef<ReturnType<
     typeof setTimeout
   > | null>(null);
@@ -628,9 +691,6 @@ function ProductQueryContent() {
   const handledExternalQueryRef = useRef<string | null>(null);
   const [numericInputModal, setNumericInputModal] =
     useState<NumericInputModalState | null>(null);
-  const warehousePriceInteractionLocked = isWarehousePriceInteractionLocked(
-    warehousePriceSyncState,
-  );
   const activePromotionCoordinatorRef = useRef<ReturnType<
     typeof createActivePromotionRequestCoordinator
   > | null>(null);
@@ -863,10 +923,8 @@ function ProductQueryContent() {
         lookupSelectionOpen: lookupSelectionOpenRef.current,
         autoPricingVisible: Boolean(autoPricingDialog),
         autoPricingSaving: autoPricingDialogSaving,
-        warehouseLocked: warehousePriceInteractionLocked,
-        requestInFlight:
-          lookupRequestInFlightRef.current ||
-          warehousePriceRequestInFlightRef.current,
+        warehouseLocked: false,
+        requestInFlight: lookupRequestInFlightRef.current,
         storeSelectionInFlight: storeSelectionInFlightRef.current,
       }) ||
       saving ||
@@ -886,7 +944,6 @@ function ProductQueryContent() {
       saving,
       savingClearance,
       savingItemId,
-      warehousePriceInteractionLocked,
     ],
   );
   useEffect(() => {
@@ -913,6 +970,84 @@ function ProductQueryContent() {
   useEffect(() => {
     preloadScanFeedbackSounds();
   }, []);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (next) => {
+      setAppActive(next === "active");
+    });
+    return () => subscription.remove();
+  }, []);
+
+  useEffect(() => {
+    // 离线资格会话进页或切店时后台读取本店快照摘要（懒打开 SQLite）。
+    if (!offlineEligible || !selectedStoreCode) {
+      return;
+    }
+    void useOfflineCatalogStore.getState().loadActiveMeta(selectedStoreCode);
+  }, [offlineEligible, selectedStoreCode]);
+
+  useEffect(() => {
+    // 全局恢复控制器的探测结果也喂给连通性状态机（双保险）；早于离线时刻的结果会被忽略。
+    if (!recoveryState.lastCheckedAtIso) {
+      return;
+    }
+    const checkedAtMs = Date.parse(recoveryState.lastCheckedAtIso);
+    if (!Number.isFinite(checkedAtMs)) {
+      return;
+    }
+    dispatchConnectivity({
+      type: "backend_check",
+      reachable: recoveryState.isBackendReachable,
+      checkedAtMs,
+    });
+  }, [recoveryState.isBackendReachable, recoveryState.lastCheckedAtIso]);
+
+  const { probeNow: probeReconnectNow } = useOfflineReconnectProbe({
+    enabled: offlineMode && isFocused && appActive,
+    onReachable: (checkedAtMs) => {
+      dispatchConnectivity({ type: "backend_check", reachable: true, checkedAtMs });
+      void triggerRecovery();
+    },
+  });
+
+  const enterOfflineMode = useCallback(
+    (keyword?: string | null) => {
+      if (!offlineEligibleRef.current) {
+        return;
+      }
+      dispatchConnectivity({ type: "network_failure", atMs: Date.now(), keyword });
+      void triggerRecovery();
+    },
+    [triggerRecovery],
+  );
+
+  const notifyOfflineEditing = useCallback(() => {
+    setSnackbarMessage(t("offline.editingUnavailable"));
+  }, [t]);
+
+  // 扫码忙碌状态变化时保留状态行回调，避免重复格式化未变的目录时间和件数。
+  const handleCancelOfflineCatalog = useCallback(() => {
+    useOfflineCatalogStore.getState().cancelRefresh();
+  }, []);
+
+  const handleRefreshOfflineCatalog = useCallback(() => {
+    if (!selectedStoreCode || offlineModeRef.current) {
+      return;
+    }
+    void useOfflineCatalogStore
+      .getState()
+      .refreshCatalog(selectedStoreCode)
+      .then((result) => {
+        if (!result) {
+          return;
+        }
+        setSnackbarMessage(
+          result.mode === "noChange"
+            ? t("offline.refreshNoChange")
+            : t("offline.refreshCompleted", { count: result.metadata.itemCount }),
+        );
+      });
+  }, [selectedStoreCode, t]);
 
   const playQueryFeedback = useCallback(
     (
@@ -1037,6 +1172,38 @@ function ProductQueryContent() {
         if (!detailRequestCoordinatorRef.current?.isCurrent(request)) {
           return;
         }
+        if (offlineEligibleRef.current && isNetworkUnavailableError(error)) {
+          // 商品详情已经拿到、只有分页码表这一步断网：直接降级到本地快照补齐套码/多码，
+          // 而不是丢给用户一条红色错误——否则详情会停在缺码表的半成品状态。
+          enterOfflineMode();
+          const offlineDetail = await useOfflineCatalogStore
+            .getState()
+            .getDetail(storeCode, sourceDetail.productCode);
+          if (!detailRequestCoordinatorRef.current?.isCurrent(request)) {
+            return;
+          }
+          if (offlineDetail) {
+            // 只补码表。商品级字段与分店价必须保留刚拿到的实时值，否则屏幕显示实时价、
+            // 自动打印却用快照价，两个数据源会被缝在同一个 detail 对象上。
+            const merged: ProductDetail = {
+              ...sourceDetail,
+              setCodes: offlineDetail.setCodes,
+              setCodeCount: offlineDetail.setCodeCount,
+              multiCodes: offlineDetail.multiCodes,
+              multiCodeCount: offlineDetail.multiCodeCount,
+              codesIncluded: true,
+            };
+            // 成功分支会 setDetail，降级分支同样要写屏，否则列表停在「(0/N)」空表
+            // 且没有「加载更多」，用户无从恢复。
+            const applyOffline = (current: ProductDetail | null) =>
+              current?.productCode === sourceDetail.productCode ? merged : current;
+            setDetail(applyOffline);
+            setInitialDetail((current) => cloneDetail(applyOffline(current)));
+            setCodePage(1);
+            setCodesHasMore(false);
+            return merged;
+          }
+        }
         const fallback = t("messages.codesLoadFailed");
         let detail = "";
         if (isAxiosError(error) && !error.response) {
@@ -1056,7 +1223,7 @@ function ProductQueryContent() {
         }
       }
     },
-    [playQueryFeedback, selectedStoreCode, t],
+    [enterOfflineMode, playQueryFeedback, selectedStoreCode, t],
   );
 
   const loadDetail = useCallback(
@@ -1078,14 +1245,64 @@ function ProductQueryContent() {
       });
       console.log("[product-query] load detail", {
         selectedStoreCode: targetStoreCode,
+        offline: offlineModeRef.current,
       });
+      if (offlineModeRef.current) {
+        // 离线态：详情来自本地快照，已含全部套码/多码，不再请求分页码表与促销。
+        const offlineDetail = await useOfflineCatalogStore
+          .getState()
+          .getDetail(targetStoreCode, productCode);
+        if (!detailRequestCoordinatorRef.current?.isCurrent(request)) {
+          return null;
+        }
+        if (!offlineDetail) {
+          setSnackbarMessage(t("offline.notInCatalog"));
+          return null;
+        }
+        setActivePromotions([]);
+        setDetail(offlineDetail);
+        setInitialDetail(cloneDetail(offlineDetail));
+        setSelectedLookupProductCode(productCode);
+        setLastHitLabel(
+          `${offlineDetail.itemNumber || offlineDetail.productCode} / ${offlineDetail.barcode || "--"}`,
+        );
+        setQueryFeedback({ type: "idle" });
+        setCodePage(1);
+        setCodesHasMore(false);
+        return offlineDetail;
+      }
       const payload = await getProductFastDetail(productCode, targetStoreCode);
       if (!detailRequestCoordinatorRef.current?.isCurrent(request)) {
         return null;
       }
+      dispatchConnectivity({ type: "request_succeeded" });
+      let detailWithStorePrice = payload;
+      if (
+        !payload.storePrice &&
+        detailRequestCoordinatorRef.current.isCurrent(request)
+      ) {
+        const mutation = beginHqSyncMutation(productCode, targetStoreCode);
+        try {
+          const storePrice = await ensureStorePrice(productCode, targetStoreCode);
+          if (!detailRequestCoordinatorRef.current?.isCurrent(request)) {
+            return null;
+          }
+          presentHqSyncOperation(mutation, storePrice.hqSync);
+          detailWithStorePrice = { ...payload, storePrice };
+        } catch (error) {
+          hqSyncMutationCoordinatorRef.current?.fail(mutation);
+          if (!detailRequestCoordinatorRef.current?.isCurrent(request)) {
+            return null;
+          }
+          // 只读用户仍可查询商品；其他补建失败交由既有查询错误流程处理。
+          if (!(isAxiosError(error) && error.response?.status === 403)) {
+            throw error;
+          }
+        }
+      }
       loadActivePromotions(payload.productCode, targetStoreCode);
-      setDetail(payload);
-      setInitialDetail(cloneDetail(payload));
+      setDetail(detailWithStorePrice);
+      setInitialDetail(cloneDetail(detailWithStorePrice));
       setSelectedLookupProductCode(productCode);
       setLastHitLabel(
         `${payload.itemNumber || payload.productCode} / ${payload.barcode || "--"}`,
@@ -1094,7 +1311,7 @@ function ProductQueryContent() {
       setCodePage(1);
       setCodesHasMore(false);
       const detailWithCodes = await loadProductCodes(
-        payload,
+        detailWithStorePrice,
         1,
         false,
         targetStoreCode,
@@ -1107,13 +1324,15 @@ function ProductQueryContent() {
       ) {
         return null;
       }
-      return detailWithCodes ?? payload;
+      return detailWithCodes ?? detailWithStorePrice;
     },
     [
       activateHqSyncScope,
+      beginHqSyncMutation,
       invalidateActivePromotions,
       loadActivePromotions,
       loadProductCodes,
+      presentHqSyncOperation,
       selectedStoreCode,
       t,
     ],
@@ -1209,8 +1428,6 @@ function ProductQueryContent() {
           );
           if (nextDetail) {
             await processLoadedDetailRef.current?.(nextDetail, {
-              lookupOrigin: "refresh",
-              storeCodeOverride: store.storeCode,
             });
           }
         }
@@ -1556,6 +1773,7 @@ function ProductQueryContent() {
       options?: {
         barcode?: string | null;
         retailPrice?: number | null;
+        discountRate?: number | null;
         action?: PrintAction;
         printType?: string | null;
       },
@@ -1575,6 +1793,7 @@ function ProductQueryContent() {
 
       const action = options?.action ?? "product";
       setPrintingAction(action);
+      const printStartedAt = Date.now();
       try {
         console.log("[product-query] sendProductLabel", {
           action,
@@ -1585,6 +1804,7 @@ function ProductQueryContent() {
           {
             barcode: options?.barcode,
             retailPrice: options?.retailPrice,
+            discountRate: options?.discountRate,
           },
           options?.printType,
         );
@@ -1595,6 +1815,7 @@ function ProductQueryContent() {
             {
               barcode: options?.barcode,
               retailPrice: options?.retailPrice,
+              discountRate: options?.discountRate,
             },
             options?.printType,
           );
@@ -1602,6 +1823,7 @@ function ProductQueryContent() {
         console.log("[product-query] sendProductLabel success", {
           action,
           quantity: qty,
+          elapsedMs: Date.now() - printStartedAt,
         });
         setSnackbarMessage(t("messages.printSuccess"));
         if (quantitySingleUse && qty > 1) {
@@ -1633,10 +1855,26 @@ function ProductQueryContent() {
   );
 
   const smartAutoPrint = useCallback(
-    async (scanKeyword: string, targetDetail: ProductDetail) => {
+    async (
+      scanKeyword: string,
+      targetDetail: ProductDetail,
+      printTarget?: ScanLabelPrintTarget | null,
+    ) => {
       const kw = scanKeyword.trim();
 
-      const setMatch = targetDetail.setCodes.find(
+      if (printTarget && printTarget.kind !== "clearance") {
+        return sendProductLabel(targetDetail, {
+          barcode: printTarget.barcode,
+          retailPrice: printTarget.retailPrice,
+          discountRate: printTarget.discountRate ?? 0,
+          action: printTarget.kind === "product"
+            ? "product"
+            : `${printTarget.kind}:${printTarget.codeId}` as PrintAction,
+          printType: printTarget.kind === "product" ? null : smallLabel ? "small" : null,
+        });
+      }
+
+      const setMatch = printTarget ? undefined : targetDetail.setCodes.find(
         (item) => item.setBarcode?.trim() === kw,
       );
       if (setMatch?.setBarcode?.trim()) {
@@ -1648,7 +1886,7 @@ function ProductQueryContent() {
         });
       }
 
-      const multiMatch = targetDetail.multiCodes.find(
+      const multiMatch = printTarget ? undefined : targetDetail.multiCodes.find(
         (item) => item.barcode?.trim() === kw,
       );
       if (multiMatch?.barcode?.trim()) {
@@ -1796,11 +2034,20 @@ function ProductQueryContent() {
       ) {
         return DEFAULT_LOOKUP_FLOW_RESULT;
       }
-      const applicability = getWarehousePriceSyncApplicability(
-        targetDetail.localSupplierCode,
-        targetDetail.storePrice?.uuid,
-      );
-      if (applicability === "not_supplier") {
+      if (offlineModeRef.current) {
+        // 离线态不做自动价评估，只反馈命中并按需自动打印。
+        playQueryFeedback("found");
+        if (options.autoPrintEnabled) {
+          const labelPrinted = await smartAutoPrint(
+            options.scanKeyword ?? "",
+            targetDetail,
+            options.printTarget,
+          );
+          return { ...DEFAULT_LOOKUP_FLOW_RESULT, labelPrinted };
+        }
+        return DEFAULT_LOOKUP_FLOW_RESULT;
+      }
+      if (targetDetail.localSupplierCode?.trim() !== "200") {
         const autoPricingResult = await maybeHandleAutoPricing(targetDetail, {
           scanSource: options.scanSource,
         });
@@ -1810,6 +2057,7 @@ function ProductQueryContent() {
             const labelPrinted = await smartAutoPrint(
               options.scanKeyword ?? "",
               targetDetail,
+              options.printTarget,
             );
             return { ...autoPricingResult, labelPrinted };
           }
@@ -1817,158 +2065,204 @@ function ProductQueryContent() {
         return autoPricingResult;
       }
 
-      // 供应商 200 本轮只走仓库权威价对账，明确跳过现有自动定价评估。
+      // 供应商 200 跳过自动定价评估，直接使用刚从服务器取得的当前门店价。
       const currentStorePrice = targetDetail.storePrice;
-      if (applicability === "missing_store_price" || !currentStorePrice?.uuid) {
-        playQueryFeedback("found");
-        // 缺少目标分店价时无法证明标签价格来自仓库，禁止自动打印旧标签。
+      playQueryFeedback("found");
+      if (!options.autoPrintEnabled) {
         return DEFAULT_LOOKUP_FLOW_RESULT;
       }
-
-      if (warehousePriceRequestInFlightRef.current) {
+      if (
+        options.printTarget?.kind !== "clearance" && (
+          !currentStorePrice?.uuid ||
+          currentStorePrice.retailPrice == null ||
+          !Number.isFinite(currentStorePrice.retailPrice) ||
+          currentStorePrice.retailPrice < 0
+        )
+      ) {
+        // 缺少有效门店价时，不能退回打印商品主价或旧标签。
+        setSnackbarMessage(t("warehousePriceSync.currentPriceUnavailable"));
         return DEFAULT_LOOKUP_FLOW_RESULT;
       }
-      warehousePriceRequestInFlightRef.current = true;
-      const mutation = beginHqSyncMutation(
+      const scannedCode = options.scanKeyword?.trim();
+      // 条码分页未加载到本次扫码项时，不回退打印主商品的条码和价格。
+      const knownCodes = [
+        targetDetail.barcode,
         targetDetail.productCode,
-        options.storeCodeOverride ?? selectedStoreCode,
-      );
-
-      setWarehousePriceSyncState((current) =>
-        reduceWarehousePriceSyncState(current, { type: "preview_started" }),
-      );
+        targetDetail.itemNumber,
+        currentStorePrice?.storeProductCode,
+        targetDetail.clearancePrice?.clearanceBarcode,
+        options.printTarget?.barcode,
+        ...targetDetail.setCodes.map((item) => item.setBarcode),
+        ...targetDetail.multiCodes.map((item) => item.barcode),
+      ];
+      if (!scannedCode || !knownCodes.some((code) => code?.trim() === scannedCode)) {
+        setSnackbarMessage(t("messages.codesLoadFailed"));
+        return DEFAULT_LOOKUP_FLOW_RESULT;
+      }
       try {
-        const snapshot = await syncWarehousePrice(currentStorePrice.uuid, {
-          confirmRetailPrice: false,
-          expectedWarehousePurchasePrice: null,
-          expectedWarehouseRetailPrice: null,
-          expectedStorePurchasePrice: currentStorePrice.purchasePrice ?? null,
-          expectedStoreRetailPrice: currentStorePrice.retailPrice ?? null,
-          expectedDiscountRate: normalizeDiscountRateValue(
-            currentStorePrice.discountRate,
-          ),
-        });
-        // 本地 mutation 此时已经提交，必须先保留 operation，再执行任何刷新或打印副作用。
-        presentHqSyncOperation(mutation, snapshot.hqSync);
-
-        let latestDetail = snapshot.storePrice
-          ? replaceStorePriceDetail(targetDetail, snapshot.storePrice)
-          : targetDetail;
-
-        if (snapshot.purchaseUpdated) {
-          // 后端同时更新派生条码价格；重新读取一次，确保主价和条码列表都使用同一新快照。
-          try {
-            latestDetail =
-              (await loadDetail(
-                targetDetail.productCode,
-                options.storeCodeOverride,
-              )) ?? latestDetail;
-          } catch (error) {
-            console.warn(
-              "[product-query] refresh after warehouse price sync failed",
-              {
-                message: isAxiosError(error) ? error.message : String(error),
-              },
-            );
-            setDetail(latestDetail);
-            setInitialDetail(cloneDetail(latestDetail));
-          }
-          setSnackbarMessage(t("warehousePriceSync.purchaseUpdated"));
-        } else if (snapshot.storePrice) {
-          setDetail(latestDetail);
-          setInitialDetail(cloneDetail(latestDetail));
-        }
-
-        setWarehousePriceSyncState((current) =>
-          reduceWarehousePriceSyncState(current, {
-            type: "preview_succeeded",
-            snapshot,
-          }),
-        );
-        if (snapshot.retailConfirmationRequired) {
-          setWarehousePriceSyncContext({
-            detail: latestDetail,
-            lookupOrigin: options.lookupOrigin,
-            storeCodeOverride: options.storeCodeOverride,
-            scanSource: options.scanSource ?? null,
-            scanKeyword: options.scanKeyword ?? "",
-            autoPrintEnabled: options.autoPrintEnabled === true,
-            alreadyPrinted: false,
-          });
-          playQueryFeedback("price_update_required");
-          return { ...DEFAULT_LOOKUP_FLOW_RESULT, foregroundPending: true };
-        }
-
-        setWarehousePriceSyncContext(null);
-        playQueryFeedback("found");
-        const shouldPrint =
-          options.autoPrintEnabled === true &&
-          shouldAutoPrintWarehousePrice({
-            lookupOrigin: options.lookupOrigin,
-            stage: "preview_succeeded",
-            snapshot,
-            alreadyPrinted: false,
-          });
-        let labelPrinted = false;
-        if (shouldPrint) {
-          try {
-            labelPrinted = await smartAutoPrint(
-              options.scanKeyword ?? "",
-              latestDetail,
-            );
-          } catch (error) {
-            console.warn(
-              "[product-query] print after warehouse price sync failed",
-              {
-                message: isAxiosError(error) ? error.message : String(error),
-              },
-            );
-          }
-        }
-
-        return {
-          keepCameraOpen: false,
-          labelPrinted,
-          autoPricingStatus: "no_action",
-        };
+        const labelPrinted = await smartAutoPrint(scannedCode, targetDetail, options.printTarget);
+        return { ...DEFAULT_LOOKUP_FLOW_RESULT, labelPrinted };
       } catch (error) {
-        hqSyncMutationCoordinatorRef.current?.fail(mutation);
-        const message = getErrorMessage(
-          error,
-          "warehousePriceSync.previewFailed",
-        );
-        setWarehousePriceSyncState((current) =>
-          reduceWarehousePriceSyncState(current, {
-            type: "preview_failed",
-            message,
-          }),
-        );
-        setWarehousePriceSyncContext(null);
-        setSnackbarMessage(message);
-        playQueryFeedback("error");
-        return {
-          keepCameraOpen: false,
-          labelPrinted: false,
-          autoPricingStatus: "failed",
-        };
-      } finally {
-        warehousePriceRequestInFlightRef.current = false;
+        setSnackbarMessage(getErrorMessage(error, "messages.printFailed"));
+        return DEFAULT_LOOKUP_FLOW_RESULT;
       }
     },
     [
-      beginHqSyncMutation,
       ensureCurrentDetailStoreScope,
       getErrorMessage,
-      loadDetail,
       maybeHandleAutoPricing,
       playQueryFeedback,
-      presentHqSyncOperation,
-      selectedStoreCode,
       smartAutoPrint,
       t,
     ],
   );
   processLoadedDetailRef.current = processLoadedDetail;
+
+  /** 在线/离线两种数据源共用的候选处理：0 条提示、1 条直接加载详情、多条弹候选表。 */
+  const applyLookupItems = useCallback(
+    async (
+      items: ProductLookupItem[],
+      nextKeyword: string,
+      trigger: LookupTrigger,
+      scanSource: ScanSource | undefined,
+      scanResult?: ScanLabelResult,
+    ): Promise<LookupFlowResult> => {
+        if (!selectedStoreCode) return DEFAULT_LOOKUP_FLOW_RESULT;
+        console.log("[product-query] lookup success", {
+          count: items.length,
+          trigger,
+          offline: offlineModeRef.current,
+        });
+        setLookupItems(items);
+        if (!items.length) {
+          setDetail(null);
+          setInitialDetail(null);
+          activateHqSyncScope();
+          setSelectedLookupProductCode(undefined);
+          setLookupSelectionSource(null);
+          lookupSelectionOpenRef.current = false;
+          setLookupVisible(false);
+          setQueryFeedback({ type: "empty", query: nextKeyword });
+          setSnackbarMessage(t("messages.notFound"));
+          playQueryFeedback("not_found");
+          return DEFAULT_LOOKUP_FLOW_RESULT;
+        }
+
+        if (items.length === 1) {
+          lookupSelectionOpenRef.current = false;
+          setLookupVisible(false);
+          setLookupSelectionSource(null);
+          const detailStartedAt = Date.now();
+          const fastResult = scanResult?.detail ? scanResult : undefined;
+          let nextDetail: ProductDetail | null;
+          let presentFastDetail: (() => void) | undefined;
+          let isFastDetailCurrent: (() => boolean) | undefined;
+          if (fastResult?.detail) {
+            if (fastResult.detail.productCode !== items[0].productCode) {
+              throw new Error("INVALID_SCAN_LABEL_RESPONSE");
+            }
+            // 单次在线响应已带当前门店详情，先完成打印；码表分页只负责后续编辑展示。
+            nextDetail = fastResult.detail;
+            activateHqSyncScope(nextDetail.productCode, selectedStoreCode);
+            invalidateActivePromotions();
+            activeDetailProductCodeRef.current = nextDetail.productCode;
+            loadedDetailStoreCodeRef.current = selectedStoreCode;
+            const fastDetailRequest = detailRequestCoordinatorRef.current!.begin({
+              productCode: nextDetail.productCode,
+              storeCode: selectedStoreCode,
+            });
+            const scannedDetail = nextDetail;
+            const isCurrent = () => selectedStoreCodeRef.current === selectedStoreCode &&
+              Boolean(detailRequestCoordinatorRef.current?.isCurrent(fastDetailRequest));
+            isFastDetailCurrent = isCurrent;
+            presentFastDetail = () => {
+              // 打印等待期间切店或换商品后，不把旧响应重新写回编辑区。
+              if (!isCurrent()) return;
+              loadActivePromotions(scannedDetail.productCode, selectedStoreCode);
+              setDetail(scannedDetail);
+              setInitialDetail(cloneDetail(scannedDetail));
+              setSelectedLookupProductCode(scannedDetail.productCode);
+              setLastHitLabel(
+                `${scannedDetail.itemNumber || scannedDetail.productCode} / ${scannedDetail.barcode || "--"}`,
+              );
+              setQueryFeedback({ type: "idle" });
+              setCodePage(1);
+              setCodesHasMore(false);
+            };
+          } else {
+            nextDetail = await loadDetail(items[0].productCode);
+          }
+          if (trigger === "scan") {
+            console.log("[product-query] scan detail ready", { elapsedMs: Date.now() - detailStartedAt });
+          }
+          if (nextDetail) {
+            const printTarget = fastResult
+              ? getVerifiedScanPrintTarget(fastResult, nextKeyword, selectedStoreCode)
+              : null;
+            if (fastResult && continuousPrintEnabled && !printTarget) {
+              setSnackbarMessage(t(nextDetail.storePrice
+                ? "messages.codesLoadFailed"
+                : "warehousePriceSync.currentPriceUnavailable"));
+            }
+            const autoPrintEnabled = trigger === "scan" && continuousPrintEnabled && (!fastResult || !!printTarget);
+            // 无定价确认的在线扫码先完成打印，再提交详情，避免详情渲染阻塞原生 Promise 回调。
+            // 需要自动定价的商品仍先展示详情；打印失败也在 finally 展示本次商品。
+            const presentAfterPrint = Boolean(
+              presentFastDetail && autoPrintEnabled && printTarget &&
+              (nextDetail.localSupplierCode?.trim() === "200" || !nextDetail.storePrice?.isAutoPricing),
+            );
+            if (presentAfterPrint) {
+              setPendingScanPresentation({ keyword: nextKeyword, productName: nextDetail.productName || nextDetail.productCode });
+            } else {
+              presentFastDetail?.();
+            }
+            let flow: LookupFlowResult;
+            try {
+              flow = await processLoadedDetail(nextDetail, {
+                scanSource,
+                scanKeyword: nextKeyword,
+                autoPrintEnabled,
+                printTarget,
+              });
+            } finally {
+              if (presentAfterPrint) {
+                presentFastDetail?.();
+                setPendingScanPresentation(null);
+              }
+            }
+            // 过期打印结果不能启动旧店码表请求，否则 begin 会使新店的详情请求失效。
+            if (fastResult && isFastDetailCurrent?.() && flow.autoPricingStatus === "no_action") {
+              // 套码和多码的编辑页仍分页加载，但不占用扫码到打印的关键路径。
+              void loadProductCodes(nextDetail, 1, false, selectedStoreCode);
+            }
+            return flow;
+          }
+          return DEFAULT_LOOKUP_FLOW_RESULT;
+        }
+
+        setSelectedLookupProductCode(items[0].productCode);
+        setAutoPrintOnLookupConfirm(
+          trigger === "scan" && continuousPrintEnabled,
+        );
+        setLookupSelectionSource(scanSource ?? null);
+        lookupSelectionOpenRef.current = true;
+        setLookupVisible(true);
+        playQueryFeedback("multiple");
+        return { ...DEFAULT_LOOKUP_FLOW_RESULT, foregroundPending: true };
+    },
+    [
+      activateHqSyncScope,
+      continuousPrintEnabled,
+      invalidateActivePromotions,
+      loadActivePromotions,
+      loadDetail,
+      loadProductCodes,
+      playQueryFeedback,
+      processLoadedDetail,
+      selectedStoreCode,
+      t,
+    ],
+  );
 
   const handleLookup = useCallback(
     async (
@@ -1993,64 +2287,95 @@ function ProductQueryContent() {
 
       lookupRequestInFlightRef.current = true;
       invalidateActivePromotions();
+      const lookupStartedAt = Date.now();
 
       console.log("[product-query] lookup start", {
         selectedStoreCode,
         trigger,
+        offline: offlineModeRef.current,
       });
       setLoading(true);
       setAutoPrintOnLookupConfirm(false);
       setQueryFeedback({ type: "idle" });
       try {
-        const items = await lookupProducts({
-          keyword: nextKeyword,
-          storeCode: selectedStoreCode,
-        });
-        console.log("[product-query] lookup success", {
-          count: items.length,
-          trigger,
-        });
-        setLookupItems(items);
-        if (!items.length) {
-          setDetail(null);
-          setInitialDetail(null);
-          activateHqSyncScope();
-          setSelectedLookupProductCode(undefined);
-          setLookupSelectionSource(null);
-          lookupSelectionOpenRef.current = false;
-          setLookupVisible(false);
-          setQueryFeedback({ type: "empty", query: nextKeyword });
-          setSnackbarMessage(t("messages.notFound"));
-          playQueryFeedback("not_found");
-          return DEFAULT_LOOKUP_FLOW_RESULT;
-        }
-
-        if (items.length === 1) {
-          lookupSelectionOpenRef.current = false;
-          setLookupVisible(false);
-          setLookupSelectionSource(null);
-          const nextDetail = await loadDetail(items[0].productCode);
-          if (nextDetail) {
-            return processLoadedDetail(nextDetail, {
-              lookupOrigin: trigger,
-              scanSource,
-              scanKeyword: nextKeyword,
-              autoPrintEnabled: trigger === "scan" && continuousPrintEnabled,
-            });
+        if (offlineModeRef.current) {
+          // 离线态：直接查本地快照，命中后走与在线相同的候选/详情流程。
+          void probeReconnectNow();
+          // 先确认本店确实有快照：没有快照时的空结果不是「查无此货」，
+          // 否则员工会听到未找到提示音、以为商品不存在。
+          const activeMeta = await useOfflineCatalogStore
+            .getState()
+            .loadActiveMeta(selectedStoreCode);
+          if (!activeMeta) {
+            throw new OfflineCatalogUnavailableError();
           }
-          return DEFAULT_LOOKUP_FLOW_RESULT;
+          if (trigger === "scan") {
+            console.log("[product-query] scan snapshot check", { elapsedMs: Date.now() - lookupStartedAt });
+          }
+          const offlineItems = await useOfflineCatalogStore
+            .getState()
+            .lookup(selectedStoreCode, nextKeyword);
+          if (trigger === "scan") {
+            console.log("[product-query] scan candidates ready", { elapsedMs: Date.now() - lookupStartedAt, offline: true });
+          }
+          dispatchConnectivity({ type: "offline_lookup", keyword: nextKeyword });
+          return await applyLookupItems(offlineItems, nextKeyword, trigger, scanSource);
         }
-
-        setSelectedLookupProductCode(items[0].productCode);
-        setAutoPrintOnLookupConfirm(
-          trigger === "scan" && continuousPrintEnabled,
-        );
-        setLookupSelectionSource(scanSource ?? null);
-        lookupSelectionOpenRef.current = true;
-        setLookupVisible(true);
-        playQueryFeedback("multiple");
-        return { ...DEFAULT_LOOKUP_FLOW_RESULT, foregroundPending: true };
+        const lookupRequest = { keyword: nextKeyword, storeCode: selectedStoreCode };
+        let scanResult: ScanLabelResult | undefined;
+        let items: ProductLookupItem[];
+        if (
+          trigger === "scan" &&
+          !isIosReviewSessionActive() &&
+          Date.now() >= scanLabelUnsupportedUntilRef.current
+        ) {
+          try {
+            scanResult = await scanProductLabel(lookupRequest);
+            items = scanResult.candidates;
+          } catch (error) {
+            // 客户端可先于后端升级；旧服务没有新路由时仍保留原扫码查询。
+            if (!isAxiosError(error) || ![404, 405].includes(error.response?.status ?? 0)) {
+              throw error;
+            }
+            scanLabelUnsupportedUntilRef.current = Date.now() + 60_000;
+            console.log("[product-query] scan-label unavailable, using existing lookup");
+            items = await lookupProducts(lookupRequest);
+          }
+        } else {
+          items = await lookupProducts(lookupRequest);
+        }
+        if (trigger === "scan") {
+          console.log("[product-query] scan candidates ready", { elapsedMs: Date.now() - lookupStartedAt, offline: false });
+        }
+        dispatchConnectivity({ type: "request_succeeded" });
+        return await applyLookupItems(items, nextKeyword, trigger, scanSource, scanResult);
       } catch (error) {
+        if (
+          !offlineModeRef.current &&
+          offlineEligibleRef.current &&
+          isNetworkUnavailableError(error)
+        ) {
+          // 服务器不可达：进入离线模式；本店有快照时用同一关键字立即改走离线查询。
+          enterOfflineMode(nextKeyword);
+          const activeMeta = await useOfflineCatalogStore
+            .getState()
+            .loadActiveMeta(selectedStoreCode);
+          if (activeMeta) {
+            try {
+              const offlineItems = await useOfflineCatalogStore
+                .getState()
+                .lookup(selectedStoreCode, nextKeyword);
+              return await applyLookupItems(offlineItems, nextKeyword, trigger, scanSource);
+            } catch (offlineError) {
+              console.warn("[product-query] offline lookup failed", {
+                message:
+                  offlineError instanceof Error
+                    ? offlineError.message
+                    : String(offlineError),
+              });
+            }
+          }
+        }
         let message: string;
         if (isAxiosError(error)) {
           if (!error.response) {
@@ -2068,6 +2393,11 @@ function ProductQueryContent() {
         } else {
           message = getErrorMessage(error, "messages.lookupFailed");
         }
+        if (error instanceof OfflineCatalogUnavailableError) {
+          // 只有「本店确实没有快照」才改写成这条；读快照失败、快照损坏等
+          // 必须保留真实原因，否则日志和提示都会把人引向错误方向。
+          message = t("offline.catalogMissing");
+        }
         console.error("[product-query] lookup failed", {
           selectedStoreCode,
           trigger,
@@ -2084,23 +2414,57 @@ function ProductQueryContent() {
         playQueryFeedback("error");
         return DEFAULT_LOOKUP_FLOW_RESULT;
       } finally {
+        if (trigger === "scan") {
+          console.log("[product-query] scan flow complete", { elapsedMs: Date.now() - lookupStartedAt, offline: offlineModeRef.current });
+        }
         lookupRequestInFlightRef.current = false;
         setLoading(false);
       }
     },
     [
       activateHqSyncScope,
-      continuousPrintEnabled,
+      applyLookupItems,
+      enterOfflineMode,
+      getErrorMessage,
       invalidateActivePromotions,
       isProductQueryBusy,
       keyword,
-      loadDetail,
       playQueryFeedback,
-      processLoadedDetail,
+      probeReconnectNow,
       selectedStoreCode,
       t,
     ],
   );
+
+  const wasOfflineRef = useRef(false);
+  const lastAutoRelookupAtRef = useRef<number | null>(null);
+  useEffect(() => {
+    // 检测到在线：提示、触发全局补传，并把离线期间的最后一次查询自动重跑为实时结果。
+    const wasOffline = wasOfflineRef.current;
+    wasOfflineRef.current = offlineMode;
+    if (!wasOffline || offlineMode) {
+      return;
+    }
+    setSnackbarMessage(t("offline.backOnline"));
+    void triggerRecovery();
+    const pendingKeyword = connectivity.pendingKeyword;
+    dispatchConnectivity({ type: "reset" });
+    // 自动重跑设最小间隔：探测与业务请求若看到不同的后端，会「判定恢复→重跑失败
+    // →再判定恢复」地空转，这里兜底掐断；用户手动查询不受影响。
+    const recoveredAtMs = Date.now();
+    const canAutoRelookup = shouldAutoRelookupAfterRecovery({
+      lastAutoRelookupAtMs: lastAutoRelookupAtRef.current,
+      nowMs: recoveredAtMs,
+    });
+    if (pendingKeyword && selectedStoreCode && canAutoRelookup) {
+      lastAutoRelookupAtRef.current = recoveredAtMs;
+      setKeyword(pendingKeyword);
+      void handleLookup(pendingKeyword, "refresh");
+    }
+    if (selectedStoreCode) {
+      void useOfflineCatalogStore.getState().loadActiveMeta(selectedStoreCode);
+    }
+  }, [connectivity.pendingKeyword, handleLookup, offlineMode, selectedStoreCode, t, triggerRecovery]);
 
   useEffect(() => {
     const productCodeParam = firstParam(queryParams.productCode);
@@ -2165,7 +2529,6 @@ function ProductQueryContent() {
           const nextDetail = await loadDetail(productCodeParam);
           if (nextDetail) {
             await processLoadedDetail(nextDetail, {
-              lookupOrigin: "deep-link",
             });
           }
           return;
@@ -2206,6 +2569,8 @@ function ProductQueryContent() {
   ]);
 
   const scannerInputBlocked = isProductQueryBusy();
+  const isProductQueryBusyRef = useRef(isProductQueryBusy);
+  isProductQueryBusyRef.current = isProductQueryBusy;
   const handleOpenProductInsights = useCallback(() => {
     if (!detail?.productCode || !selectedStoreCode || isProductQueryBusy()) {
       return;
@@ -2220,6 +2585,36 @@ function ProductQueryContent() {
       },
     } as unknown as Parameters<typeof router.push>[0]);
   }, [detail?.productCode, isProductQueryBusy, router, selectedStoreCode]);
+  const handleOpenProductTypeDialog = useCallback(() => {
+    setProductTypeDialogVisible(true);
+  }, []);
+  const handleOfflineInsightsUnavailable = useCallback(() => {
+    setSnackbarMessage(t("offline.insightsUnavailable"));
+  }, [t]);
+  const handleOpenPromoPoster = useCallback(
+    (kind: PromoPosterKind) => {
+      if (!detail?.productCode || !selectedStoreCode || isProductQueryBusy()) {
+        return;
+      }
+
+      // 海报编辑页以后端已保存的价格为准；push 保留扫码页当前商品，加入待打印后返回继续扫码。
+      router.push({
+        pathname: "/(shell)/promo-poster-editor",
+        params: {
+          productCode: detail.productCode,
+          storeCode: selectedStoreCode,
+          kind,
+        },
+      } as unknown as Parameters<typeof router.push>[0]);
+    },
+    [detail?.productCode, isProductQueryBusy, router, selectedStoreCode],
+  );
+  const handleOpenPromoPosterQueue = useCallback(() => {
+    if (isProductQueryBusy()) {
+      return;
+    }
+    router.push("/(shell)/promo-poster-queue" as unknown as Parameters<typeof router.push>[0]);
+  }, [isProductQueryBusy, router]);
   const updateCameraSheetSession = useCallback(
     (
       event: Parameters<typeof reduceCameraSheetSession>[1],
@@ -2289,15 +2684,27 @@ function ProductQueryContent() {
       }
     },
   });
-  const hidScanner = useHidBarcodeScanner({
-    enabled: isFocused && !scannerInputBlocked,
-    onScan: async (barcode) => {
+  const lastHidScanRef = useRef<{ barcode: string; time: number } | null>(null);
+  const handleHidScan = useCallback(
+    async (barcode: string) => {
       if (!isFocused || isProductQueryBusy()) {
         return;
       }
+      const now = Date.now();
+      const lastScan = lastHidScanRef.current;
+      // 可见框失焦时，同一扫码可能交给两个输入框；避免重复发起查询。
+      if (lastScan?.barcode === barcode && now - lastScan.time < 100) {
+        return;
+      }
+      lastHidScanRef.current = { barcode, time: now };
       setKeyword(barcode);
       await handleLookup(barcode, "scan", "hid");
     },
+    [handleLookup, isFocused, isProductQueryBusy],
+  );
+  const hidScanner = useHidBarcodeScanner({
+    enabled: isFocused && !scannerInputBlocked,
+    onScan: handleHidScan,
   });
   useEffect(() => {
     if (!isFocused) {
@@ -2400,6 +2807,12 @@ function ProductQueryContent() {
       return;
     }
 
+    if (offlineModeRef.current) {
+      // 离线态刷新先即时探测一次，恢复在线时由连通性状态机自动重跑查询。
+      void probeReconnectNow();
+      void triggerRecovery();
+    }
+
     if (!detail?.productCode) {
       if (keyword.trim()) {
         setRefreshing(true);
@@ -2417,7 +2830,7 @@ function ProductQueryContent() {
     try {
       const nextDetail = await loadDetail(detail.productCode);
       if (nextDetail) {
-        await processLoadedDetail(nextDetail, { lookupOrigin: "refresh" });
+        await processLoadedDetail(nextDetail, {});
       }
     } catch (error) {
       setSnackbarMessage(getErrorMessage(error, "messages.refreshFailed"));
@@ -2431,7 +2844,9 @@ function ProductQueryContent() {
     isProductQueryBusy,
     keyword,
     loadDetail,
+    probeReconnectNow,
     processLoadedDetail,
+    triggerRecovery,
   ]);
 
   const handleClear = useCallback(() => {
@@ -2453,8 +2868,6 @@ function ProductQueryContent() {
     setLookupSelectionSource(null);
     setAutoPrintOnLookupConfirm(false);
     setQueryFeedback({ type: "idle" });
-    setWarehousePriceSyncContext(null);
-    setWarehousePriceSyncState(createWarehousePriceSyncState());
   }, [activateHqSyncScope, invalidateActivePromotions, isProductQueryBusy]);
 
   const handleConfirmLookup = useCallback(async () => {
@@ -2463,8 +2876,6 @@ function ProductQueryContent() {
       !lookupSelectionOpenRef.current ||
       lookupRequestInFlightRef.current ||
       storeSelectionInFlightRef.current ||
-      warehousePriceRequestInFlightRef.current ||
-      warehousePriceInteractionLocked ||
       autoPricingDialogSaving
     ) {
       return;
@@ -2480,7 +2891,6 @@ function ProductQueryContent() {
       const nextDetail = await loadDetail(selectedLookupProductCode);
       if (nextDetail) {
         flowResult = await processLoadedDetail(nextDetail, {
-          lookupOrigin: selectionSource ? "scan" : "manual",
           scanSource: selectionSource,
           scanKeyword: keyword,
           autoPrintEnabled: autoPrintOnLookupConfirm,
@@ -2519,272 +2929,6 @@ function ProductQueryContent() {
     restoreScanAbility,
     selectedLookupProductCode,
     t,
-    warehousePriceInteractionLocked,
-  ]);
-
-  const handleCancelWarehousePriceSync = useCallback(() => {
-    if (warehousePriceSyncState.phase === "confirming") {
-      return;
-    }
-
-    const scanSource = warehousePriceSyncContext?.scanSource;
-    setWarehousePriceSyncState((current) =>
-      reduceWarehousePriceSyncState(current, { type: "cancelled" }),
-    );
-    setWarehousePriceSyncContext(null);
-    // 取消只放弃零售价更新；首轮已同步的进货价继续保留。
-    restoreScanAbility(scanSource);
-  }, [
-    restoreScanAbility,
-    warehousePriceSyncContext?.scanSource,
-    warehousePriceSyncState.phase,
-  ]);
-
-  const handleConfirmWarehousePriceSync = useCallback(async () => {
-    const snapshot = warehousePriceSyncState.snapshot;
-    const context = warehousePriceSyncContext;
-    const storePriceUuid =
-      snapshot?.storePrice?.uuid || context?.detail.storePrice?.uuid;
-    if (
-      !snapshot ||
-      !context ||
-      !storePriceUuid ||
-      warehousePriceRequestInFlightRef.current
-    ) {
-      return;
-    }
-    if (
-      !ensureCurrentDetailStoreScope(
-        context.detail,
-        context.detail.storePrice?.storeCode,
-      )
-    ) {
-      return;
-    }
-    warehousePriceRequestInFlightRef.current = true;
-    const mutation = beginHqSyncMutation(
-      context.detail.productCode,
-      context.storeCodeOverride ?? selectedStoreCode,
-    );
-
-    setWarehousePriceSyncState((current) =>
-      reduceWarehousePriceSyncState(current, { type: "confirm_started" }),
-    );
-    try {
-      const confirmed = await syncWarehousePrice(
-        storePriceUuid,
-        buildWarehousePriceSyncRequest(snapshot, true),
-      );
-      // 确认 mutation 已完成；详情刷新或打印失败都不能丢失该持久同步任务。
-      presentHqSyncOperation(mutation, confirmed.hqSync);
-      let latestDetail = confirmed.storePrice
-        ? replaceStorePriceDetail(context.detail, confirmed.storePrice)
-        : context.detail;
-
-      // 零售价确认会同步派生条码，成功后统一读取最终详情再决定打印。
-      try {
-        latestDetail =
-          (await loadDetail(
-            context.detail.productCode,
-            context.storeCodeOverride,
-          )) ?? latestDetail;
-      } catch (error) {
-        console.warn(
-          "[product-query] refresh after warehouse price confirmation failed",
-          {
-            message: isAxiosError(error) ? error.message : String(error),
-          },
-        );
-        setDetail(latestDetail);
-        setInitialDetail(cloneDetail(latestDetail));
-      }
-      const shouldPrint =
-        context.autoPrintEnabled &&
-        shouldAutoPrintWarehousePrice({
-          lookupOrigin: context.lookupOrigin,
-          stage: "confirmation_succeeded",
-          snapshot: confirmed,
-          alreadyPrinted: context.alreadyPrinted,
-        });
-      let labelPrinted = false;
-      if (shouldPrint) {
-        try {
-          labelPrinted = await smartAutoPrint(
-            context.scanKeyword,
-            latestDetail,
-          );
-        } catch (error) {
-          console.warn(
-            "[product-query] print after warehouse price confirmation failed",
-            {
-              message: isAxiosError(error) ? error.message : String(error),
-            },
-          );
-        }
-      }
-
-      setWarehousePriceSyncState((current) =>
-        reduceWarehousePriceSyncState(current, {
-          type: "confirm_succeeded",
-          snapshot: confirmed,
-        }),
-      );
-      setWarehousePriceSyncContext(null);
-      const feedback = resolveWarehousePriceConfirmationFeedback({
-        retailUpdated: confirmed.retailUpdated,
-        printAttempted: shouldPrint,
-        labelPrinted,
-      });
-      if (feedback === "retail_updated_print_failed") {
-        setSnackbarMessage(t("warehousePriceSync.retailUpdatedPrintFailed"));
-      } else if (feedback === "retail_updated") {
-        setSnackbarMessage(t("warehousePriceSync.retailUpdated"));
-      }
-      restoreScanAbility(context.scanSource);
-    } catch (error) {
-      hqSyncMutationCoordinatorRef.current?.fail(mutation);
-      let latestSnapshot = extractWarehousePriceSyncConflict(error);
-      if (latestSnapshot) {
-        if (latestSnapshot.hqSync) {
-          const conflictMutation = beginHqSyncMutation(
-            context.detail.productCode,
-            context.storeCodeOverride ?? selectedStoreCode,
-          );
-          presentHqSyncOperation(conflictMutation, latestSnapshot.hqSync);
-        }
-        let latestDetail = latestSnapshot.storePrice
-          ? replaceStorePriceDetail(context.detail, latestSnapshot.storePrice)
-          : context.detail;
-
-        const snapshotComplete =
-          isWarehousePriceConflictSnapshotComplete(latestSnapshot);
-        if (!snapshotComplete) {
-          const latestStorePrice =
-            latestSnapshot.storePrice ?? latestDetail.storePrice;
-          if (latestStorePrice?.uuid) {
-            // 冲突响应缺字段时仅重新取一次预览，避免用户基于旧值确认。
-            const refreshMutation = beginHqSyncMutation(
-              context.detail.productCode,
-              context.storeCodeOverride ?? selectedStoreCode,
-            );
-            try {
-              latestSnapshot = await syncWarehousePrice(latestStorePrice.uuid, {
-                confirmRetailPrice: false,
-                expectedWarehousePurchasePrice: null,
-                expectedWarehouseRetailPrice: null,
-                expectedStorePurchasePrice:
-                  latestStorePrice.purchasePrice ?? null,
-                expectedStoreRetailPrice: latestStorePrice.retailPrice ?? null,
-                expectedDiscountRate: normalizeDiscountRateValue(
-                  latestStorePrice.discountRate,
-                ),
-              });
-              latestDetail = latestSnapshot.storePrice
-                ? replaceStorePriceDetail(
-                    latestDetail,
-                    latestSnapshot.storePrice,
-                  )
-                : latestDetail;
-              presentHqSyncOperation(refreshMutation, latestSnapshot.hqSync);
-            } catch (refreshError) {
-              hqSyncMutationCoordinatorRef.current?.fail(refreshMutation);
-              const message = getErrorMessage(
-                refreshError,
-                "warehousePriceSync.confirmFailed",
-              );
-              setWarehousePriceSyncState((current) =>
-                reduceWarehousePriceSyncState(current, {
-                  type: "confirm_failed",
-                  message,
-                }),
-              );
-              return;
-            }
-          } else {
-            const message = t("warehousePriceSync.confirmFailed");
-            setWarehousePriceSyncState((current) =>
-              reduceWarehousePriceSyncState(current, {
-                type: "confirm_failed",
-                message,
-              }),
-            );
-            return;
-          }
-        }
-
-        setDetail(latestDetail);
-        setInitialDetail(cloneDetail(latestDetail));
-        if (!latestSnapshot.retailConfirmationRequired) {
-          const shouldPrint =
-            context.autoPrintEnabled &&
-            shouldAutoPrintWarehousePrice({
-              lookupOrigin: context.lookupOrigin,
-              stage: "preview_succeeded",
-              snapshot: latestSnapshot,
-              alreadyPrinted: context.alreadyPrinted,
-            });
-          if (shouldPrint) {
-            try {
-              await smartAutoPrint(context.scanKeyword, latestDetail);
-            } catch (printError) {
-              console.warn(
-                "[product-query] print after warehouse conflict recovery failed",
-                {
-                  message: isAxiosError(printError)
-                    ? printError.message
-                    : String(printError),
-                },
-              );
-            }
-          }
-          setWarehousePriceSyncState((current) =>
-            reduceWarehousePriceSyncState(current, {
-              type: "confirm_succeeded",
-              snapshot: latestSnapshot!,
-            }),
-          );
-          setWarehousePriceSyncContext(null);
-          restoreScanAbility(context.scanSource);
-          return;
-        }
-
-        const message = t("warehousePriceSync.conflict");
-        setWarehousePriceSyncContext({ ...context, detail: latestDetail });
-        setWarehousePriceSyncState((current) =>
-          reduceWarehousePriceSyncState(current, {
-            type: "conflict_received",
-            snapshot: latestSnapshot!,
-            message,
-          }),
-        );
-        return;
-      }
-
-      const message = getErrorMessage(
-        error,
-        "warehousePriceSync.confirmFailed",
-      );
-      setWarehousePriceSyncState((current) =>
-        reduceWarehousePriceSyncState(current, {
-          type: "confirm_failed",
-          message,
-        }),
-      );
-    } finally {
-      warehousePriceRequestInFlightRef.current = false;
-    }
-  }, [
-    beginHqSyncMutation,
-    ensureCurrentDetailStoreScope,
-    getErrorMessage,
-    loadDetail,
-    presentHqSyncOperation,
-    restoreScanAbility,
-    smartAutoPrint,
-    t,
-    selectedStoreCode,
-    warehousePriceSyncContext,
-    warehousePriceSyncState.snapshot,
   ]);
 
   const handleChangeStorePrice = useCallback(
@@ -3520,14 +3664,18 @@ function ProductQueryContent() {
 
   saveClearanceRef.current = handleSaveClearancePrice;
 
-  const handleSaveAll = useCallback(async (): Promise<boolean> => {
+  /**
+   * 保存分店价格草稿：无改动时直接返回当前详情；保存成功返回服务端回读后的详情，失败返回 null。
+   * 「保存」与「保存并打印」共用同一保存流程。
+   */
+  const saveStorePriceDraft = useCallback(async (): Promise<ProductDetail | null> => {
     if (!detail?.storePrice || !isStorePriceDirty(detail, initialDetail)) {
-      return true;
+      return detail;
     }
 
     setSaving(true);
     try {
-      const savedDetail = await persistStorePrice(detail, {
+      return await persistStorePrice(detail, {
         purchasePrice: detail.storePrice.purchasePrice ?? null,
         retailPrice: detail.storePrice.retailPrice ?? null,
         discountRate: normalizeDiscountRateValue(
@@ -3537,14 +3685,20 @@ function ProductQueryContent() {
         isSpecialProduct: detail.storePrice.isSpecialProduct,
         isActive: detail.storePrice.isActive,
       });
-      return Boolean(savedDetail);
     } catch (error) {
       setSnackbarMessage(getErrorMessage(error, "messages.saveFailed"));
-      return false;
+      return null;
     } finally {
       setSaving(false);
     }
   }, [detail, getErrorMessage, initialDetail, persistStorePrice]);
+
+  const handleSaveAll = useCallback(async (): Promise<boolean> => {
+    if (!detail?.storePrice || !isStorePriceDirty(detail, initialDetail)) {
+      return true;
+    }
+    return Boolean(await saveStorePriceDraft());
+  }, [detail, initialDetail, saveStorePriceDraft]);
 
   const handleReset = useCallback(() => {
     setDetail(cloneDetail(initialDetail));
@@ -3608,20 +3762,25 @@ function ProductQueryContent() {
   );
 
   const handlePrint = useCallback(
-    async (kind: "product" | "discount" | "clearance" | "bigDiscount") => {
-      if (!detail) {
+    async (
+      kind: "product" | "discount" | "clearance" | "bigDiscount",
+      // 保存并打印需要用刚保存回读的详情，不能读闭包里尚未刷新的 detail。
+      targetDetail?: ProductDetail | null,
+    ) => {
+      const source = targetDetail ?? detail;
+      if (!source) {
         return;
       }
 
       if (
         (kind === "discount" || kind === "bigDiscount") &&
-        !(detail.storePrice?.discountRate && detail.storePrice.discountRate > 0)
+        !(source.storePrice?.discountRate && source.storePrice.discountRate > 0)
       ) {
         setSnackbarMessage(t("messages.discountPrintUnavailable"));
         return;
       }
 
-      if (kind === "clearance" && !detail.clearancePrice) {
+      if (kind === "clearance" && !source.clearancePrice) {
         setSnackbarMessage(t("messages.clearancePrintUnavailable"));
         return;
       }
@@ -3630,22 +3789,22 @@ function ProductQueryContent() {
       try {
         const printType = smallLabel ? "small" : null;
         if (kind === "product") {
-          await sendProductLabel(detail, { action: "product", printType });
+          await sendProductLabel(source, { action: "product", printType });
           return;
         } else if (kind === "discount") {
-          await printDiscountLabel(detail, printType);
+          await printDiscountLabel(source, printType);
           for (let i = 1; i < printQuantity; i++) {
-            await printDiscountLabel(detail, printType);
+            await printDiscountLabel(source, printType);
           }
         } else if (kind === "bigDiscount") {
-          await printBigDiscountLabel(detail);
+          await printBigDiscountLabel(source);
           for (let i = 1; i < printQuantity; i++) {
-            await printBigDiscountLabel(detail);
+            await printBigDiscountLabel(source);
           }
         } else {
-          await printClearanceLabel(detail);
+          await printClearanceLabel(source);
           for (let i = 1; i < printQuantity; i++) {
-            await printClearanceLabel(detail);
+            await printClearanceLabel(source);
           }
         }
         setSnackbarMessage(t("messages.printSuccess"));
@@ -3668,6 +3827,54 @@ function ProductQueryContent() {
       t,
     ],
   );
+  const handlePrintRef = useRef(handlePrint);
+  handlePrintRef.current = handlePrint;
+  const handleProductPrintPress = useCallback(() => {
+    void handlePrintRef.current("product");
+  }, []);
+  const handleDiscountPrintPress = useCallback(() => {
+    void handlePrintRef.current("discount");
+  }, []);
+  const handleBigDiscountPrintPress = useCallback(() => {
+    void handlePrintRef.current("bigDiscount");
+  }, []);
+  const handleOpenPrinterSettings = useCallback(() => {
+    router.navigate("/(shell)/settings");
+  }, [router]);
+  const handleOpenPrintSettings = useCallback(() => {
+    setPrintSettingsVisible(true);
+  }, []);
+
+  const handleSaveAndPrint = useCallback(async () => {
+    if (savingAndPrinting || saving || printingAction || !detail?.storePrice) {
+      return;
+    }
+    setSavingAndPrinting(true);
+    try {
+      // 保存失败时 persistStorePrice 已提示错误，不再打印。
+      const savedDetail = await saveStorePriceDraft();
+      if (!savedDetail?.storePrice) {
+        return;
+      }
+      // 按保存后的门店价格选择标签：有折扣打折扣标签，否则打普通标签；打印设置与打印机校验沿用 handlePrint。
+      const discountRate = normalizeDiscountRateValue(
+        savedDetail.storePrice.discountRate,
+      );
+      await handlePrint(
+        discountRate && discountRate > 0 ? "discount" : "product",
+        savedDetail,
+      );
+    } finally {
+      setSavingAndPrinting(false);
+    }
+  }, [
+    detail?.storePrice,
+    handlePrint,
+    printingAction,
+    saveStorePriceDraft,
+    saving,
+    savingAndPrinting,
+  ]);
 
   const isInvoiceEditorSessionActive = useCallback(() => {
     const auth = useAuthStore.getState();
@@ -3680,10 +3887,9 @@ function ProductQueryContent() {
   const isInvoiceExitBusy = useCallback(
     () => invoiceExitSavingRef.current || saving || Boolean(savingItemId) ||
       savingClearance || productTypeSaving || createProductBusy || hqSyncRetrying ||
-      autoPricingDialogSaving || warehousePriceSyncState.phase === "confirming" ||
-      Boolean(printingAction),
+      autoPricingDialogSaving || Boolean(printingAction),
     [autoPricingDialogSaving, createProductBusy, hqSyncRetrying, printingAction,
-      productTypeSaving, saving, savingClearance, savingItemId, warehousePriceSyncState.phase],
+      productTypeSaving, saving, savingClearance, savingItemId],
   );
 
   const performReturnToInvoices = useCallback(() => {
@@ -3777,6 +3983,14 @@ function ProductQueryContent() {
   const hasActiveDiscount = Boolean(
     normalizedStoreDiscountRate && normalizedStoreDiscountRate > 0,
   );
+  // 海报入口：审核演示会话离线不可用；无商品或无门店时不显示（启用规则与「折扣」标签按钮一致）。
+  const showPosterEntry =
+    !isIosReviewSessionActive() && Boolean(detail?.productCode && selectedStoreCode);
+  const posterAvailability = resolveScanPosterAvailability({
+    discountRate: normalizedStoreDiscountRate,
+    activePromotionCount: activePromotions.length,
+    clearancePrice: clearancePrice?.clearancePrice,
+  });
   const discountedRetailPrice = getDiscountedRetailPrice(
     storePrice?.retailPrice,
     normalizedStoreDiscountRate,
@@ -3789,13 +4003,123 @@ function ProductQueryContent() {
     discountedRetailPrice,
     storePrice?.purchasePrice,
   );
-  const hasCodeSection = Boolean(
-    detail &&
-      (detail.productType === 1 ||
-        detail.productType === 2 ||
-        detail.setCodeCount > 0 ||
-        detail.multiCodeCount > 0),
+  const codeSections = resolveCodeSections(detail);
+  const hasCodeSection = codeSections.hasCodeSection;
+  const dirtyCodeIds = useMemo(
+    () => getDirtyCodeIds(detail, initialDetail),
+    [detail, initialDetail],
   );
+  // 「原值」与毛利变化都以现有 baseline（initialDetail）为准，且仅在同一商品、价格有改动时显示。
+  const baselineStorePrice =
+    dirtyCount > 0 && initialDetail?.productCode === detail?.productCode
+      ? initialDetail?.storePrice
+      : null;
+  const baselineDiscountRate = normalizeDiscountRateValue(
+    baselineStorePrice?.discountRate,
+  );
+  const baselineDiscountedRetailPrice = getDiscountedRetailPrice(
+    baselineStorePrice?.retailPrice,
+    baselineDiscountRate,
+  );
+  const storePriceOriginals = useMemo(
+    () => baselineStorePrice
+      ? {
+        purchasePrice: resolveOriginalDisplay(
+          formatFixedDecimal(storePrice?.purchasePrice),
+          formatFixedDecimal(baselineStorePrice.purchasePrice),
+        ),
+        retailPrice: resolveOriginalDisplay(
+          formatFixedDecimal(storePrice?.retailPrice),
+          formatFixedDecimal(baselineStorePrice.retailPrice),
+        ),
+        discountPercent: resolveOriginalDisplay(
+          formatPercentValue(normalizedStoreDiscountRate),
+          formatPercentValue(baselineDiscountRate),
+        ),
+        discountedRetailPrice: resolveOriginalDisplay(
+          formatCurrency(discountedRetailPrice),
+          formatCurrency(baselineDiscountedRetailPrice),
+        ),
+        }
+      : undefined,
+    [
+      baselineDiscountRate,
+      baselineDiscountedRetailPrice,
+      baselineStorePrice,
+      discountedRetailPrice,
+      normalizedStoreDiscountRate,
+      storePrice?.purchasePrice,
+      storePrice?.retailPrice,
+    ],
+  );
+  const storePriceSyncFooter = useMemo(
+    () => canSyncToOtherStores && selectedStoreCode ? (
+      <SyncToOtherStoresSection
+        variant="inline"
+        productCode={detail?.productCode ?? ""}
+        storeCode={selectedStoreCode}
+        storeName={storePrice?.storeName ?? selectedStore?.storeName}
+        hasUnsavedChanges={isStorePriceDirty(detail, initialDetail)}
+        disabled={saving}
+        onSaveBeforeSync={handleSaveAll}
+        onMessage={setSnackbarMessage}
+      />
+    ) : null,
+    [
+      canSyncToOtherStores,
+      detail,
+      handleSaveAll,
+      initialDetail,
+      saving,
+      selectedStore?.storeName,
+      selectedStoreCode,
+      storePrice?.storeName,
+    ],
+  );
+  const handleStorePriceAutoPricingToggle = useCallback(
+    (value: boolean) => {
+      if (offlineMode) {
+        notifyOfflineEditing();
+      } else {
+        void handleToggleAutoPricing(value);
+      }
+    },
+    [handleToggleAutoPricing, notifyOfflineEditing, offlineMode],
+  );
+  const handleStorePriceSpecialToggle = useCallback(
+    (value: boolean) => {
+      if (offlineMode) {
+        notifyOfflineEditing();
+      } else {
+        handleChangeStorePrice({ isSpecialProduct: value });
+      }
+    },
+    [handleChangeStorePrice, notifyOfflineEditing, offlineMode],
+  );
+  const retailGpTrend = baselineStorePrice
+    ? getMarginTrend(
+        calcGrossMarginPercent(storePrice?.retailPrice, storePrice?.purchasePrice),
+        calcGrossMarginPercent(
+          baselineStorePrice.retailPrice,
+          baselineStorePrice.purchasePrice,
+        ),
+      )
+    : null;
+  const discountedRetailGpTrend = baselineStorePrice
+    ? getMarginTrend(
+        calcGrossMarginPercent(discountedRetailPrice, storePrice?.purchasePrice),
+        calcGrossMarginPercent(
+          baselineDiscountedRetailPrice,
+          baselineStorePrice.purchasePrice,
+        ),
+      )
+    : null;
+  const storeDisplayName = selectedStore?.storeName || selectedStoreCode;
+  const handleOpenStorePicker = useCallback(() => {
+    if (!isProductQueryBusyRef.current()) {
+      setStorePickerVisible(true);
+    }
+  }, []);
   const renderCameraScanner = () => {
     if (!isFocused) {
       return null;
@@ -3840,15 +4164,25 @@ function ProductQueryContent() {
       ]}
       edges={["top", "left", "right"]}
     >
-      <QueryHeader
-        storeName={selectedStore?.storeName || selectedStoreCode}
-        canSelectStore={canSelectStore}
-        storeLocked={editorStoreScope.locked}
-        onStorePress={() => {
-          if (!isProductQueryBusy()) {
-            setStorePickerVisible(true);
-          }
-        }}
+      {offlineMode ? (
+        <OfflineModeBanner
+          activeMeta={offlineCatalogActiveMeta}
+          onRetry={() => {
+            void probeReconnectNow();
+            void triggerRecovery();
+          }}
+        />
+      ) : null}
+
+      <SearchPanel
+        value={keyword}
+        loading={loading || storesLoading || scannerInputBlocked}
+        lastHitLabel={detail ? undefined : lastHitLabel}
+        refreshing={refreshing}
+        onChangeText={setKeyword}
+        onScannerInput={handleHidScan}
+        onFocus={pauseHiddenScannerFocus}
+        onBlur={resumeHiddenScannerFocusLater}
         onScanPress={() => {
           if (isProductQueryBusy()) {
             return;
@@ -3857,20 +4191,26 @@ function ProductQueryContent() {
           updateCameraSheetSession({ type: "open" }, cameraScanModeRef.current);
         }}
         onRefreshPress={() => void handleRefresh()}
-        refreshing={refreshing}
-      />
-
-      <SearchPanel
-        value={keyword}
-        loading={loading || storesLoading || scannerInputBlocked}
-        lastHitLabel={detail ? undefined : lastHitLabel}
-        onChangeText={setKeyword}
-        onFocus={pauseHiddenScannerFocus}
-        onBlur={resumeHiddenScannerFocusLater}
         onOpenPrintSettings={() => setPrintSettingsVisible(true)}
+        onCreateProduct={
+          access.canCreateStoreProducts && detail && !offlineMode
+            ? openCreateProductModal
+            : undefined
+        }
+        createProductDisabled={createProductBusy}
         onSubmit={() => void handleLookup()}
         onClear={handleClear}
       />
+      {offlineEligible && !offlineMode ? (
+        <OfflineCatalogStatusRow
+          storeCode={selectedStoreCode ?? null}
+          activeMeta={offlineCatalogActiveMeta}
+          refresh={offlineCatalogRefresh}
+          online={!offlineMode}
+          onRefresh={handleRefreshOfflineCatalog}
+          onCancel={handleCancelOfflineCatalog}
+        />
+      ) : null}
       {isIosReviewSessionActive() ? (
         <Button
           compact
@@ -3891,11 +4231,26 @@ function ProductQueryContent() {
         </Button>
       ) : null}
 
+      <View style={styles.queryBody}>
       <ScrollView
+        style={[styles.scrollArea, pendingScanPresentation ? styles.hiddenPreviousDetail : null]}
+        accessibilityElementsHidden={Boolean(pendingScanPresentation)}
+        importantForAccessibility={pendingScanPresentation ? "no-hide-descendants" : "auto"}
         contentContainerStyle={styles.content}
         pointerEvents={scannerInputBlocked ? "none" : "auto"}
       >
-        {access.canCreateStoreProducts ? (
+        {!storePrice ? (
+          // 门店名已移入价格卡页眉；未查到商品或当前分店无价格记录时在这里保留切换入口。
+          <View style={styles.storeRow}>
+            <StoreSwitchButton
+              storeName={storeDisplayName}
+              canSelectStore={canSelectStore}
+              storeLocked={editorStoreScope.locked}
+              onPress={handleOpenStorePicker}
+            />
+          </View>
+        ) : null}
+        {access.canCreateStoreProducts && !detail && !offlineMode ? (
           <View style={styles.createProductBar}>
             <Button
               icon="plus"
@@ -3938,7 +4293,7 @@ function ProductQueryContent() {
                   : ""}
               </Text>
             </View>
-            {hqSyncDisplay.canRetry ? (
+            {hqSyncDisplay.canRetry && !offlineMode ? (
               <Button
                 compact
                 mode="text"
@@ -3977,42 +4332,49 @@ function ProductQueryContent() {
               barcode={detail.barcode}
               productType={detail.productType}
               grade={detail.grade}
-              onPressProductType={() => setProductTypeDialogVisible(true)}
+              variant={hasCodeSection && editorTab === "codes" ? "compact" : "full"}
+              mainRetailPrice={formatFixedDecimal(storePrice?.retailPrice)}
+              onPressProductType={offlineMode ? undefined : handleOpenProductTypeDialog}
+              onOpenInsights={
+                isIosReviewSessionActive()
+                  ? undefined
+                  : offlineMode
+                    ? handleOfflineInsightsUnavailable
+                    : handleOpenProductInsights
+              }
+              insightsDisabled={scannerInputBlocked}
             />
-
-            {!isIosReviewSessionActive() ? (
-              <Button
-                icon="chart-timeline-variant"
-                mode="outlined"
-                onPress={handleOpenProductInsights}
-                disabled={scannerInputBlocked}
-              >
-                {t("common:tabs.productInsights")}
-              </Button>
-            ) : null}
 
             {hasCodeSection ? (
               <View accessibilityRole="tablist" style={styles.editorTabs}>
-                <Pressable
-                  accessibilityRole="tab"
-                  accessibilityState={{ selected: editorTab === "price" }}
-                  onPress={() => setEditorTab("price")}
-                  style={[styles.editorTab, editorTab === "price" ? styles.editorTabActive : null]}
-                >
-                  <Text style={[styles.editorTabText, editorTab === "price" ? styles.editorTabTextActive : null]}>
-                    {t("sections.priceAndLabels")}
-                  </Text>
-                </Pressable>
-                <Pressable
-                  accessibilityRole="tab"
-                  accessibilityState={{ selected: editorTab === "codes" }}
-                  onPress={() => setEditorTab("codes")}
-                  style={[styles.editorTab, editorTab === "codes" ? styles.editorTabActive : null]}
-                >
-                  <Text style={[styles.editorTabText, editorTab === "codes" ? styles.editorTabTextActive : null]}>
-                    {t("sections.codes")}
-                  </Text>
-                </Pressable>
+                {([
+                  ["price", t("sections.priceTab"), dirtyCount > 0],
+                  [
+                    "codes",
+                    t("sections.codesTab", { count: codeSections.count }),
+                    dirtyCodeIds.size > 0,
+                  ],
+                ] as const).map(([tab, label, tabDirty]) => {
+                  const selected = editorTab === tab;
+                  return (
+                    <Pressable
+                      key={tab}
+                      accessibilityRole="tab"
+                      accessibilityState={{ selected }}
+                      accessibilityHint={tabDirty ? t("sections.unsaved") : undefined}
+                      onPress={() => setEditorTab(tab)}
+                      style={[styles.editorTab, selected ? styles.editorTabActive : null]}
+                    >
+                      <Text
+                        style={[styles.editorTabText, selected ? styles.editorTabTextActive : null]}
+                        numberOfLines={1}
+                      >
+                        {label}
+                      </Text>
+                      {tabDirty ? <View style={styles.editorTabDot} /> : null}
+                    </Pressable>
+                  );
+                })}
               </View>
             ) : null}
 
@@ -4022,30 +4384,42 @@ function ProductQueryContent() {
 
               {storePrice ? (
                 <StorePriceStrategyCard
-                  storeName={storePrice.storeName}
+                  storeName={storePrice.storeName || storeDisplayName}
+                  canSelectStore={canSelectStore}
+                  storeLocked={editorStoreScope.locked}
+                  onStorePress={handleOpenStorePicker}
                   purchasePrice={storePurchaseInput}
                   retailPrice={storeRetailInput}
                   retailGp={retailGp}
+                  retailGpTrend={retailGpTrend}
                   discountPercent={formatPercentValue(
                     normalizedStoreDiscountRate,
                   )}
                   discountedRetailPrice={formatCurrency(discountedRetailPrice)}
                   discountedRetailGp={discountedRetailGp}
+                  discountedRetailGpTrend={discountedRetailGpTrend}
+                  originalValues={storePriceOriginals}
+                  footer={storePriceSyncFooter}
                   autoPricing={storePrice.isAutoPricing}
                   isSpecialProduct={storePrice.isSpecialProduct}
                   rate={formatFixedDecimal(storePrice.rate)}
                   strategySourceLabel={storePrice.strategySourceLabel}
                   strategyRuleLabel={storePrice.strategyRuleLabel}
-                  onEditPurchasePrice={openStorePurchasePriceEditor}
-                  onEditRetailPrice={openStoreRetailPriceEditor}
-                  onEditDiscountPercent={openStoreDiscountPercentEditor}
-                  onEditDiscountedRetailPrice={openStoreDiscountedRetailEditor}
-                  onToggleAutoPricing={(value) =>
-                    void handleToggleAutoPricing(value)
+                  readOnly={offlineMode}
+                  onEditPurchasePrice={
+                    offlineMode ? notifyOfflineEditing : openStorePurchasePriceEditor
                   }
-                  onToggleSpecial={(value) =>
-                    handleChangeStorePrice({ isSpecialProduct: value })
+                  onEditRetailPrice={
+                    offlineMode ? notifyOfflineEditing : openStoreRetailPriceEditor
                   }
+                  onEditDiscountPercent={
+                    offlineMode ? notifyOfflineEditing : openStoreDiscountPercentEditor
+                  }
+                  onEditDiscountedRetailPrice={
+                    offlineMode ? notifyOfflineEditing : openStoreDiscountedRetailEditor
+                  }
+                  onToggleAutoPricing={handleStorePriceAutoPricingToggle}
+                  onToggleSpecial={handleStorePriceSpecialToggle}
                 />
               ) : (
                 <View style={styles.emptyBlock}>
@@ -4055,62 +4429,41 @@ function ProductQueryContent() {
                 </View>
               )}
 
-              <LabelPrintCard
-                isPrintingProduct={printingAction === "product"}
-                isPrintingDiscount={printingAction === "discount"}
-                isPrintingBigDiscount={printingAction === "bigDiscount"}
-                canPrintDiscount={Boolean(
-                  normalizedStoreDiscountRate &&
-                  normalizedStoreDiscountRate > 0,
-                )}
-                canPrintBigDiscount={Boolean(
-                  normalizedStoreDiscountRate &&
-                  normalizedStoreDiscountRate > 0,
-                )}
-                onPrintProduct={
-                  printingAction && printingAction !== "product"
-                    ? undefined
-                    : () => void handlePrint("product")
-                }
-                onPrintDiscount={
-                  printingAction && printingAction !== "discount"
-                    ? undefined
-                    : () => void handlePrint("discount")
-                }
-                onPrintBigDiscount={
-                  printingAction && printingAction !== "bigDiscount"
-                    ? undefined
-                    : () => void handlePrint("bigDiscount")
-                }
-                onOpenSettings={() => setPrintSettingsVisible(true)}
-              />
-
-              <StoreClearancePriceCard
-                clearanceBarcode={clearancePrice?.clearanceBarcode}
-                clearancePrice={clearancePriceInput}
-                isPrintingClearance={printingAction === "clearance"}
-                onEditClearancePrice={openClearancePriceEditor}
-                onPrintClearance={
-                  printingAction && printingAction !== "clearance"
-                    ? undefined
-                    : () => void handlePrint("clearance")
-                }
-              />
+              <Card style={styles.printExtrasCard} mode="contained">
+                <StoreClearancePriceCard
+                  clearanceBarcode={clearancePrice?.clearanceBarcode}
+                  clearancePrice={clearancePriceInput}
+                  isPrintingClearance={printingAction === "clearance"}
+                  readOnly={offlineMode}
+                  onEditClearancePrice={
+                    offlineMode ? notifyOfflineEditing : openClearancePriceEditor
+                  }
+                  onPrintClearance={
+                    printingAction && printingAction !== "clearance"
+                      ? undefined
+                      : () => void handlePrint("clearance")
+                  }
+                />
+                {showPosterEntry ? (
+                  <View style={styles.posterFooterRow}>
+                    <PosterEntryRow
+                      availability={posterAvailability}
+                      disabled={scannerInputBlocked || offlineMode}
+                      onOpen={handleOpenPromoPoster}
+                    />
+                  </View>
+                ) : null}
+              </Card>
               </View>
             ) : null}
 
             {hasCodeSection && editorTab === "codes" ? (
               <View style={styles.secondarySection}>
-                <Text variant="titleSmall" style={styles.secondaryTitle}>
-                  {t("sections.codes")}
-                </Text>
-                {detail.productType === 1 ||
-                (detail.productType !== 2 &&
-                  detail.setCodeCount > 0 &&
-                  detail.multiCodeCount === 0) ? (
+                {codeSections.showSet ? (
                   <SetCodeCompactSection
                     items={detail.setCodes}
                     savingItemId={savingItemId}
+                    dirtyItemIds={dirtyCodeIds}
                     printingItemId={
                       printingAction?.startsWith("set:")
                         ? printingAction.slice(4)
@@ -4120,22 +4473,30 @@ function ProductQueryContent() {
                     loading={codesLoading}
                     loadingMore={codesLoadingMore}
                     hasMore={codesHasMore}
-                    onEditItemBarcode={openEditSetCodeBarcode}
-                    onEditItemRetailPrice={openEditSetCodeRetailPrice}
+                    readOnly={offlineMode}
+                    onEditItemBarcode={
+                      offlineMode ? notifyOfflineEditing : openEditSetCodeBarcode
+                    }
+                    onEditItemRetailPrice={
+                      offlineMode ? notifyOfflineEditing : openEditSetCodeRetailPrice
+                    }
                     onSaveItem={(setCodeId) =>
-                      void handleSaveSetCode(setCodeId)
+                      offlineMode
+                        ? notifyOfflineEditing()
+                        : void handleSaveSetCode(setCodeId)
                     }
                     onPrintItem={(setCodeId) =>
                       void handlePrintSetCodeProduct(setCodeId)
                     }
-                    onAddItem={openAddSetCode}
+                    onAddItem={offlineMode ? notifyOfflineEditing : openAddSetCode}
                     onLoadMore={handleLoadMoreCodes}
                   />
                 ) : null}
-                {detail.productType === 2 || detail.multiCodeCount > 0 ? (
+                {codeSections.showMulti ? (
                   <MultiCodeCompactList
                     items={detail.multiCodes}
                     savingItemId={savingItemId}
+                    dirtyItemIds={dirtyCodeIds}
                     printingItemId={
                       printingAction?.startsWith("multi:")
                         ? printingAction.slice(6)
@@ -4145,15 +4506,22 @@ function ProductQueryContent() {
                     loading={codesLoading}
                     loadingMore={codesLoadingMore}
                     hasMore={codesHasMore}
-                    onEditItemBarcode={openEditMultiCodeBarcode}
-                    onEditItemRetailPrice={openEditMultiCodeRetailPrice}
+                    readOnly={offlineMode}
+                    onEditItemBarcode={
+                      offlineMode ? notifyOfflineEditing : openEditMultiCodeBarcode
+                    }
+                    onEditItemRetailPrice={
+                      offlineMode ? notifyOfflineEditing : openEditMultiCodeRetailPrice
+                    }
                     onSaveItem={(setCodeId) =>
-                      void handleSaveMultiCode(setCodeId)
+                      offlineMode
+                        ? notifyOfflineEditing()
+                        : void handleSaveMultiCode(setCodeId)
                     }
                     onPrintItem={(setCodeId) =>
                       void handlePrintMultiCodeProduct(setCodeId)
                     }
-                    onAddItem={openAddMultiCode}
+                    onAddItem={offlineMode ? notifyOfflineEditing : openAddMultiCode}
                     onLoadMore={handleLoadMoreCodes}
                   />
                 ) : null}
@@ -4186,16 +4554,82 @@ function ProductQueryContent() {
           </View>
         )}
       </ScrollView>
+      {pendingScanPresentation ? (
+        <View style={styles.scanPrintProgress} accessibilityLiveRegion="polite">
+          <ActivityIndicator size="small" />
+          <Text variant="titleMedium">{t("print.inProgress")}</Text>
+          <Text variant="bodyMedium" numberOfLines={2}>{pendingScanPresentation.productName}</Text>
+          <Text variant="bodyMedium">{pendingScanPresentation.keyword}</Text>
+        </View>
+      ) : null}
+      </View>
+
+      {/* 固定区只放标签操作，清货价与海报仍可滚动，避免占满 Zebra 小屏。 */}
+      {detail && (editorTab === "price" || !hasCodeSection) ? (
+        <View
+          style={styles.printDock}
+          accessibilityElementsHidden={Boolean(pendingScanPresentation)}
+          importantForAccessibility={pendingScanPresentation ? "no-hide-descendants" : "auto"}
+          pointerEvents={scannerInputBlocked ? "none" : "auto"}
+        >
+          <PrinterConnectionStatus
+            savedPrinter={savedPrinter}
+            status={printerConnectionStatus}
+            lastError={printerLastError}
+            onPress={handleOpenPrinterSettings}
+          />
+          <LabelPrintCard
+            isPrintingProduct={printingAction === "product"}
+            isPrintingDiscount={printingAction === "discount"}
+            isPrintingBigDiscount={printingAction === "bigDiscount"}
+            canPrintDiscount={Boolean(
+              normalizedStoreDiscountRate &&
+              normalizedStoreDiscountRate > 0,
+            )}
+            canPrintBigDiscount={Boolean(
+              normalizedStoreDiscountRate &&
+              normalizedStoreDiscountRate > 0,
+            )}
+            onPrintProduct={
+              pendingScanPresentation || (printingAction && printingAction !== "product")
+                ? undefined
+                : handleProductPrintPress
+            }
+            onPrintDiscount={
+              pendingScanPresentation || (printingAction && printingAction !== "discount")
+                ? undefined
+                : handleDiscountPrintPress
+            }
+            onPrintBigDiscount={
+              pendingScanPresentation || (printingAction && printingAction !== "bigDiscount")
+                ? undefined
+                : handleBigDiscountPrintPress
+            }
+            onOpenSettings={pendingScanPresentation ? undefined : handleOpenPrintSettings}
+          />
+        </View>
+      ) : null}
+
+      {/* 待打印海报浮条：有未保存修改时让位给保存操作条，避免底部叠两层操作。 */}
+      {!isIosReviewSessionActive() && !(dirtyCount > 0 && !scannerInputBlocked) ? (
+        <PosterQueueBar onOpen={handleOpenPromoPosterQueue} />
+      ) : null}
 
       <StickyActionBar
-        visible={dirtyCount > 0 && !scannerInputBlocked}
+        visible={dirtyCount > 0 && !scannerInputBlocked && !offlineMode}
         dirtyCount={dirtyCount}
         saving={saving}
+        savingAndPrinting={savingAndPrinting}
         onReset={handleReset}
         onSaveAll={() => void handleSaveAll()}
         onSaveAndReturn={
           invoiceReturnState
             ? () => void handleSaveAndReturnToInvoices()
+            : undefined
+        }
+        onSaveAndPrint={
+          !invoiceReturnState && storePrice
+            ? () => void handleSaveAndPrint()
             : undefined
         }
       />
@@ -4213,24 +4647,6 @@ function ProductQueryContent() {
           restoreScanAbility(selectionSource);
         }}
         onConfirm={() => void handleConfirmLookup()}
-      />
-
-      <WarehousePriceSyncModal
-        visible={
-          isFocused &&
-          (warehousePriceSyncState.phase === "confirmation" ||
-            warehousePriceSyncState.phase === "confirming")
-        }
-        productName={warehousePriceSyncContext?.detail.productName}
-        productCode={
-          warehousePriceSyncContext?.detail.itemNumber ||
-          warehousePriceSyncContext?.detail.productCode
-        }
-        snapshot={warehousePriceSyncState.snapshot}
-        loading={warehousePriceSyncState.phase === "confirming"}
-        errorMessage={warehousePriceSyncState.errorMessage}
-        onCancel={handleCancelWarehousePriceSync}
-        onConfirm={() => void handleConfirmWarehousePriceSync()}
       />
 
       <Portal>
@@ -4500,55 +4916,38 @@ function ProductQueryContent() {
               </View>
             </Modal>
 
-            <Modal
-              visible={Boolean(codeAddModal)}
+            <CodeAddSheet
+              visible={Boolean(codeAddModal) && !codeAddScannerVisible}
+              codeType={codeAddModal?.codeType ?? "set"}
+              barcode={codeAddModal?.value ?? ""}
+              retailPrice={codeAddModal?.retailPrice ?? ""}
+              unitRetailPrice={detail?.storePrice?.retailPrice}
+              onChangeBarcode={(value) =>
+                setCodeAddModal((current) =>
+                  current ? { ...current, value } : current,
+                )
+              }
+              onChangeRetailPrice={(retailPrice) =>
+                setCodeAddModal((current) =>
+                  current ? { ...current, retailPrice } : current,
+                )
+              }
+              onScan={() => setCodeAddScannerVisible(true)}
               onDismiss={() => setCodeAddModal(null)}
-              contentContainerStyle={styles.textEditModal}
-            >
-              <View style={styles.textEditModalContent}>
-                <Text variant="titleMedium" style={styles.textEditModalTitle}>
-                  {codeAddModal?.codeType === "set"
-                    ? t("setCode.addTitle")
-                    : t("multiCode.addTitle")}
-                </Text>
-                <TextInput
-                  style={styles.textEditInput}
-                  value={codeAddModal?.value ?? ""}
-                  onChangeText={(value) =>
-                    setCodeAddModal((current) =>
-                      current ? { ...current, value } : current,
-                    )
-                  }
-                  placeholder={t("setCode.barcode")}
-                  autoFocus
-                  selectTextOnFocus
-                />
-                {codeAddModal?.codeType === "set" ? (
-                  <TextInput
-                    style={styles.textEditInput}
-                    value={codeAddModal.retailPrice}
-                    onChangeText={(retailPrice) =>
-                      setCodeAddModal((current) =>
-                        current ? { ...current, retailPrice } : current,
-                      )
-                    }
-                    placeholder={t("setCode.retail")}
-                    keyboardType="decimal-pad"
-                  />
-                ) : null}
-                <View style={styles.textEditModalFooter}>
-                  <Button mode="text" onPress={() => setCodeAddModal(null)}>
-                    {t("common:actions.cancel")}
-                  </Button>
-                  <Button
-                    mode="contained"
-                    onPress={() => void handleConfirmCodeAdd()}
-                  >
-                    {t("common:actions.apply")}
-                  </Button>
-                </View>
-              </View>
-            </Modal>
+              onSubmit={() => void handleConfirmCodeAdd()}
+            />
+            {codeAddModal && codeAddScannerVisible ? (
+              <CreateBarcodeScanner
+                onDismiss={() => setCodeAddScannerVisible(false)}
+                onScan={(barcode) => {
+                  // 只回填条码，不触发查询或保存；提交仍由面板按钮走原新增流程。
+                  setCodeAddModal((current) =>
+                    current ? { ...current, value: barcode } : current,
+                  );
+                  setCodeAddScannerVisible(false);
+                }}
+              />
+            ) : null}
 
             <Modal
               visible={productTypeDialogVisible}
@@ -4719,7 +5118,11 @@ function ProductQueryContent() {
         {snackbarMessage}
       </Snackbar>
 
-      {hidScanner.mode === "textInput" && hidScanner.textInputProps ? (
+      {/* 查询期间卸载扫码输入框，避免 Android 禁用后丢失原生焦点而 JS 仍认为已聚焦。 */}
+      {isFocused &&
+      !scannerInputBlocked &&
+      hidScanner.mode === "textInput" &&
+      hidScanner.textInputProps ? (
         <TextInput style={styles.hiddenInput} {...hidScanner.textInputProps} />
       ) : null}
     </SafeAreaView>
@@ -4738,11 +5141,42 @@ const styles = StyleSheet.create({
   discountedSafeArea: {
     backgroundColor: "#FFE0B2",
   },
+  queryBody: { flex: 1 },
+  scrollArea: {
+    flex: 1,
+  },
+  hiddenPreviousDetail: { opacity: 0 },
+  scanPrintProgress: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 24,
+    gap: 12,
+    backgroundColor: HB_COLORS.surfaceMuted,
+  },
+  printDock: {
+    flexShrink: 0,
+    gap: 6,
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 12,
+  },
+  printExtrasCard: {
+    borderRadius: HB_RADIUS.surface,
+    borderWidth: 1,
+    borderColor: HB_COLORS.outlineMuted,
+    backgroundColor: HB_COLORS.white,
+    overflow: "hidden",
+  },
   content: {
     paddingHorizontal: 16,
     paddingTop: 8,
     paddingBottom: 20,
     gap: 12,
+  },
+  posterFooterRow: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#E4E7EC",
   },
   cameraModeSelector: {
     marginHorizontal: 12,
@@ -4786,6 +5220,12 @@ const styles = StyleSheet.create({
   returnContextMeta: {
     color: "#475467",
   },
+  storeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    minHeight: 36,
+    paddingHorizontal: 4,
+  },
   createProductBar: {
     alignItems: "flex-start",
     paddingTop: 8,
@@ -4826,27 +5266,37 @@ const styles = StyleSheet.create({
   firstScreenSection: {
     gap: 8,
   },
+  // 紧凑分段：价格 / 编码 两个页签只占 34pt，把首屏高度留给内容。
   editorTabs: {
     flexDirection: "row",
-    minHeight: 44,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#D0D5DD",
+    minHeight: 34,
+    borderWidth: 1,
+    borderColor: "#D0D5DD",
+    borderRadius: 8,
+    overflow: "hidden",
     backgroundColor: "#FFFFFF",
   },
   editorTab: {
     flex: 1,
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    borderBottomWidth: 3,
-    borderBottomColor: "transparent",
+    paddingVertical: 6,
   },
   editorTabActive: {
-    borderBottomColor: "#1677FF",
+    backgroundColor: "#E8F1FF",
   },
   editorTabText: {
     color: "#475467",
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: "600",
+  },
+  editorTabDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    marginLeft: 6,
+    backgroundColor: "#F79009",
   },
   editorTabTextActive: {
     color: "#0958D9",
@@ -4855,11 +5305,6 @@ const styles = StyleSheet.create({
   secondarySection: {
     gap: 8,
     paddingTop: 4,
-  },
-  secondaryTitle: {
-    fontWeight: "700",
-    color: "#111827",
-    paddingHorizontal: 4,
   },
   emptyBlock: {
     borderRadius: 12,

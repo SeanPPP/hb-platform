@@ -401,6 +401,40 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task SupplierStoreSummary_软删除国内供应商的直写行仍归国内侧且澳洲侧归200()
+    {
+        await _localDb.Insertable(new[]
+        {
+            // 同一编码一条已软删除、一条在用时，名称取在用那条；只剩软删除记录时保留历史名称。
+            new ChinaSupplier { Guid = "CHINA-SOFT", SupplierCode = "CN-SOFT", SupplierName = "已删除国内供应商", IsDeleted = true },
+            new ChinaSupplier { Guid = "CHINA-DUP-DELETED", SupplierCode = "CN-DUP", SupplierName = "旧名称", IsDeleted = true },
+            new ChinaSupplier { Guid = "CHINA-DUP-ACTIVE", SupplierCode = "CN-DUP", SupplierName = "在用名称", IsDeleted = false },
+        }).ExecuteCommandAsync();
+
+        var date = new DateTime(2026, 1, 5);
+        ProductStoreDailySalesStatistic Row(string supplierCode, string productCode, decimal amount) => new()
+        {
+            Date = date, BranchCode = "1004", SupplierCode = supplierCode, ProductCode = productCode,
+            ProductName = productCode, TotalAmount = amount, TotalQuantity = 1, OrderCount = 1,
+        };
+
+        var result = await new SalesStatisticsSupplierStoreSummaryService()
+            .BuildFromProductStatisticsAsync(
+                CreateSqlSugarContext(_localDb),
+                CreatePosmSqlSugarContext(_posmDb),
+                new[] { Row("CN-SOFT", "P-SOFT", 10m), Row("CN-DUP", "P-DUP", 20m) },
+                date);
+
+        // 供应商被软删除后，它的历史直写销售不能在澳洲侧变成一个叫 CN-SOFT 的普通供应商。
+        var australian = Assert.Single(result.Australian);
+        Assert.Equal("200", australian.SupplierCode);
+        Assert.Equal(30m, australian.TotalAmount);
+        Assert.Equal(new[] { "CN-DUP", "CN-SOFT" }, result.China.Select(row => row.SupplierCode).OrderBy(code => code));
+        Assert.Equal("已删除国内供应商", result.China.Single(row => row.SupplierCode == "CN-SOFT").SupplierName);
+        Assert.Equal("在用名称", result.China.Single(row => row.SupplierCode == "CN-DUP").SupplierName);
+    }
+
+    [Fact]
     public async Task UpdateCurrentHourStatistics_重试应通过完成商品快照各派生一次供应商汇总()
     {
         var date = SalesStatisticsBusinessDate.Today();
@@ -445,7 +479,8 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
     [Fact]
     public async Task UpdateProductStoreDailyStatistics_失败诊断行替换旧商品时撤销旧发布版本()
     {
-        var date = new DateTime(2026, 1, 5);
+        // HBSales 历史窗口已后移到 2026-05-01；窗口外语义用 6 月日期表达。
+        var date = new DateTime(2026, 6, 5);
         await SeedCompletedProductSnapshotAsync(date, new ProductStoreDailySalesStatistic
         {
             Date = date, BranchCode = "1004", SupplierCode = "112", ProductCode = "P-OLD-COMPLETE",
@@ -538,7 +573,8 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
     [Fact]
     public async Task UpdateProductStoreDailyStatistics_中国供应商写入失败时澳洲表和四类发布应整体回滚()
     {
-        var date = new DateTime(2026, 1, 5);
+        // HBSales 历史窗口已后移到 2026-05-01；窗口外语义用 6 月日期表达。
+        var date = new DateTime(2026, 6, 5);
         await SeedSaleAsync("ROLLBACK-SUPPLIER", "ROLLBACK-SUPPLIER-DETAIL", "P-ROLLBACK", "1004", date.AddHours(9), 1, 10m, "CN-FAIL");
         await SeedStoreSalesStatisticAsync(date, "1004", 10m, 1);
         await _localDb.Insertable(new ChinaSupplier
@@ -663,7 +699,8 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
     [Fact]
     public async Task UpdateProductStoreDailyStatistics_有来源行但无有效主键时应Failed()
     {
-        var targetDate = new DateTime(2026, 1, 4);
+        // HBSales 历史窗口已后移到 2026-05-01；窗口外语义用 6 月日期表达。
+        var targetDate = new DateTime(2026, 6, 4);
         await SeedOrderAsync("ORDER-INVALID-KEY", string.Empty, targetDate.AddHours(10), 1);
         await SeedSaleDetailAsync(
             "ORDER-INVALID-KEY",
@@ -1660,7 +1697,8 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
     [Fact]
     public async Task UpdateStoreStatistics_2026仍只更新分店统计()
     {
-        var requestDate = new DateTime(2026, 4, 12, 19, 15, 0);
+        // HBSales 历史窗口已后移到 2026-05-01；窗口外语义用 6 月日期表达。
+        var requestDate = new DateTime(2026, 6, 12, 19, 15, 0);
         await SeedSaleAsync(
             "POSM-STORE-2026",
             "POSM-STORE-2026-DETAIL",
@@ -1786,6 +1824,10 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
                 new HBSalesRecordSqlSugarContext(_hbSalesDb),
                 NullLogger<SalesStatisticsJobService>.Instance,
                 targetDate,
+                null,
+                null,
+                null,
+                null,
                 null,
             }
         )!;
@@ -2142,9 +2184,10 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task UpdateProductStoreDailyStatistics_2026不应读取HBSales()
+    public async Task UpdateProductStoreDailyStatistics_HBSales历史窗口外不应读取HBSales()
     {
-        var targetDate = new DateTime(2026, 4, 5);
+        // HBSales 最后一笔结账为 2026-04-12，窗口终点为 2026-05-01；窗口外日期不得再读旧系统。
+        var targetDate = new DateTime(2026, 5, 5);
         await SeedStoreSalesStatisticAsync(targetDate, "1004", 10m, 1);
         await SeedSaleAsync("POSM-2026", "POSM-2026-DETAIL", "P-2026", "1004", targetDate.AddHours(9), 1, 10m, "200");
         await SeedHBSalesAsync(6, targetDate, "P-2026", "1004", "200", 9m, 99m, "1");
@@ -2309,6 +2352,81 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task UpdateHourlyStatistics_HBSales历史窗口内应叠加HBSales小时来源()
+    {
+        // 2025-09-18 处于 HBSales 历史窗口：同一分店同一小时 POSM 与 HBSales 都有真实交易，口径是相加。
+        var targetDate = new DateTime(2025, 9, 18);
+        await SeedStoreAsync("S1", "分店一");
+        await SeedOrderAsync("ORDER-POSM-DUAL", "S1", targetDate.AddHours(9), 1);
+        await SeedSaleDetailAsync("ORDER-POSM-DUAL", "DETAIL-POSM-DUAL", "P-1", 2, 40m, null);
+        await SeedPaymentAsync("PAY-POSM-DUAL", "ORDER-POSM-DUAL", 40m, targetDate.AddHours(9).AddMinutes(2));
+        await SeedHBSalesAsync(9101, targetDate, "P-HB-1", "S1", "SUP", 3, 60m, "1", checkoutTime: new TimeSpan(9, 20, 0));
+        await SeedHBSalesAsync(9102, targetDate, "P-HB-2", "S1", "SUP", 1, 25m, "1", checkoutTime: new TimeSpan(10, 5, 0));
+        // 退货单（类型 3）金额与数量取反；类型 2 单据整单排除。
+        await SeedHBSalesAsync(9103, targetDate, "P-HB-3", "S1", "SUP", 1, 5m, "3", checkoutTime: new TimeSpan(10, 30, 0));
+        await SeedHBSalesAsync(9104, targetDate, "P-HB-4", "S1", "SUP", 1, 99m, "2", checkoutTime: new TimeSpan(11, 0, 0));
+
+        await CreateService().UpdateHourlyStatistics(targetDate);
+
+        var rows = await _localDb.Queryable<HourlySalesStatistic>()
+            .Where(row => row.Date == targetDate)
+            .ToListAsync();
+        var hour9 = Assert.Single(rows, row => row.BranchCode == "S1" && row.Hour == 9);
+        Assert.Equal(100m, hour9.TotalAmount);
+        Assert.Equal(5, hour9.TotalQuantity);
+        Assert.Equal(2, hour9.OrderCount);
+        var hour10 = Assert.Single(rows, row => row.BranchCode == "S1" && row.Hour == 10);
+        Assert.Equal(20m, hour10.TotalAmount);
+        Assert.Equal(0, hour10.TotalQuantity);
+        Assert.Equal(2, hour10.OrderCount);
+        Assert.DoesNotContain(rows, row => row.Hour == 11);
+        var all9 = Assert.Single(rows, row => row.BranchCode == "ALL" && row.Hour == 9);
+        Assert.Equal(100m, all9.TotalAmount);
+        Assert.Equal(2, all9.OrderCount);
+    }
+
+    [Fact]
+    public async Task UpdateHourlyStatistics_HBSales历史窗口内按指定小时刷新时只写该小时()
+    {
+        var targetDate = new DateTime(2025, 9, 18);
+        await SeedStoreAsync("S1", "分店一");
+        await SeedHBSalesAsync(9111, targetDate, "P-HB-1", "S1", "SUP", 1, 60m, "1", checkoutTime: new TimeSpan(9, 20, 0));
+        await SeedHBSalesAsync(9112, targetDate, "P-HB-2", "S1", "SUP", 2, 25m, "1", checkoutTime: new TimeSpan(10, 5, 0));
+
+        await CreateService().UpdateHourlyStatistics(targetDate, 10);
+
+        var rows = await _localDb.Queryable<HourlySalesStatistic>()
+            .Where(row => row.Date == targetDate)
+            .ToListAsync();
+        Assert.DoesNotContain(rows, row => row.Hour == 9);
+        var hour10 = Assert.Single(rows, row => row.BranchCode == "S1" && row.Hour == 10);
+        Assert.Equal(25m, hour10.TotalAmount);
+        Assert.Equal(2, hour10.TotalQuantity);
+        Assert.Equal(1, hour10.OrderCount);
+    }
+
+    [Fact]
+    public async Task UpdateHourlyStatistics_HBSales历史窗口外不读取HBSales来源()
+    {
+        var targetDate = new DateTime(2026, 7, 4);
+        await SeedStoreAsync("S1", "分店一");
+        await SeedOrderAsync("ORDER-POSM-ONLY", "S1", targetDate.AddHours(9), 1);
+        await SeedSaleDetailAsync("ORDER-POSM-ONLY", "DETAIL-POSM-ONLY", "P-1", 1, 30m, null);
+        await SeedPaymentAsync("PAY-POSM-ONLY", "ORDER-POSM-ONLY", 30m, targetDate.AddHours(9).AddMinutes(1));
+        await SeedHBSalesAsync(9201, targetDate, "P-HB", "S1", "SUP", 1, 60m, "1", checkoutTime: new TimeSpan(9, 30, 0));
+        _hbSalesDb.Aop.OnLogExecuting = (_, _) => throw new InvalidOperationException("窗口外不得读取 HBSales 来源");
+
+        await CreateService().UpdateHourlyStatistics(targetDate, 9);
+
+        var row = await _localDb.Queryable<HourlySalesStatistic>()
+            .Where(statistic => statistic.Date == targetDate && statistic.Hour == 9 && statistic.BranchCode == "S1")
+            .FirstAsync();
+        Assert.NotNull(row);
+        Assert.Equal(30m, row!.TotalAmount);
+        Assert.Equal(1, row.OrderCount);
+    }
+
+    [Fact]
     public async Task UpdateProductStoreDailyStatistics_POSM明细供应商为空时应按商品映射回填()
     {
         var targetDate = new DateTime(2026, 7, 9);
@@ -2374,7 +2492,7 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task ExecuteQueuedDateAsync_非2025成功事务应锁定owner直到Fresh提交()
+    public async Task ExecuteQueuedDateAsync_非2025分店提交后接管应拒绝旧worker商品写入()
     {
         var targetDate = new DateTime(2026, 7, 11);
         var originalJobId = Guid.NewGuid();
@@ -2405,6 +2523,11 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
             20m,
             "112"
         );
+        var expectedWatermark = await SalesStatisticsProductStoreDailyStateSlice
+            .QueryDailySourceWatermarkAsync(
+            CreatePosmSqlSugarContext(_posmDb),
+            null,
+            targetDate);
 
         await AssertQueuedOwnerFenceAsync(
             targetDate,
@@ -2416,14 +2539,306 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
                 validateOwnerAsync,
                 CancellationToken.None
             ),
-            expectedExecutionErrorType: null
+            expectedExecutionErrorType: typeof(InvalidOperationException),
+            expectedGuardCallCount: 3,
+            guardCallToBlock: 3,
+            waitForTakeoverBeforeRelease: true,
+            expectTakeoverBlocked: false
         );
 
+        var store = await _localDb.Queryable<StoreSalesStatistic>()
+            .Where(row => row.Date == targetDate && row.BranchCode == "S1")
+            .FirstAsync();
         var newRow = await _localDb.Queryable<ProductStoreDailySalesStatistic>()
             .Where(row => row.Date == targetDate && row.ProductCode == "P-NEW-NON-2025")
             .FirstAsync();
-        Assert.NotNull(newRow);
-        Assert.Equal(20m, newRow!.TotalAmount);
+        var oldRow = await _localDb.Queryable<ProductStoreDailySalesStatistic>()
+            .Where(row => row.Date == targetDate && row.ProductCode == "P-OLD-NON-2025")
+            .FirstAsync();
+        var storeState = await _localDb.Queryable<SalesStatisticRefreshState>()
+            .Where(row => row.StatisticType == SalesStatisticType.StoreSales && row.Date == targetDate)
+            .FirstAsync();
+        Assert.NotNull(store);
+        Assert.Equal(20m, store!.TotalAmount);
+        Assert.Null(newRow);
+        Assert.NotNull(oldRow);
+        Assert.NotNull(storeState);
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh, storeState!.Status);
+        Assert.Equal(expectedWatermark, storeState.LastSourceUploadTime);
+    }
+
+    [Fact]
+    public async Task ExecuteQueuedDateAsync_非2025应先刷新分店再发布商品Fresh()
+    {
+        var targetDate = new DateTime(2026, 7, 16);
+        var jobId = Guid.NewGuid();
+        // 金额差必须超过 Product/Store 对账容差 100，才会暴露旧 Store 与新 Product 混用的问题。
+        await SeedStoreSalesStatisticAsync(targetDate, "S1", 761.80m, 9);
+        await _localDb.Insertable(new ProductStoreDailySalesStatistic
+        {
+            Date = targetDate,
+            BranchCode = "S1",
+            SupplierCode = "112",
+            ProductCode = "P-OLD-ORDER",
+            TotalQuantity = 9,
+            TotalAmount = 761.80m,
+            OrderCount = 1,
+        }).ExecuteCommandAsync();
+        await SeedRefreshStateAsync(targetDate, SalesStatisticRefreshStatus.Running, jobId: jobId);
+        await SeedSaleAsync(
+            "ORDER-STORE-FIRST",
+            "DETAIL-STORE-FIRST",
+            "P-STORE-FIRST",
+            "S1",
+            targetDate.AddHours(9),
+            23,
+            2323.11m,
+            "112");
+        var expectedWatermark = await SalesStatisticsProductStoreDailyStateSlice
+            .QueryDailySourceWatermarkAsync(
+            CreatePosmSqlSugarContext(_posmDb),
+            null,
+            targetDate);
+
+        await CreateService().ExecuteQueuedDateAsync(
+            targetDate,
+            jobId,
+            () => Task.CompletedTask,
+            CancellationToken.None);
+
+        var store = await _localDb.Queryable<StoreSalesStatistic>()
+            .Where(row => row.Date == targetDate && row.BranchCode == "S1")
+            .FirstAsync();
+        var product = await _localDb.Queryable<ProductStoreDailySalesStatistic>()
+            .Where(row => row.Date == targetDate && row.ProductCode == "P-STORE-FIRST")
+            .FirstAsync();
+        var state = await LoadRefreshStateAsync(targetDate);
+        var storeState = await _localDb.Queryable<SalesStatisticRefreshState>()
+            .Where(row => row.StatisticType == SalesStatisticType.StoreSales && row.Date == targetDate)
+            .FirstAsync();
+        Assert.NotNull(store);
+        Assert.NotNull(product);
+        Assert.Equal(2323.11m, store!.TotalAmount);
+        Assert.Equal(2323.11m, product!.TotalAmount);
+        Assert.NotNull(state);
+        Assert.Equal(jobId, state!.JobId);
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh, state!.Status);
+        Assert.NotNull(storeState);
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh, storeState!.Status);
+        Assert.Equal(expectedWatermark, storeState.LastSourceUploadTime);
+        Assert.NotNull(storeState.LastAggregatedAtUtc);
+        Assert.NotNull(storeState.CompletedAtUtc);
+    }
+
+    [Fact]
+    public async Task ExecuteQueuedDateAsync_当天应保留同一快照的双表Fresh发布()
+    {
+        var targetDate = SalesStatisticsBusinessDate.Today();
+        var jobId = Guid.NewGuid();
+        await SeedStoreSalesStatisticAsync(targetDate, "S1", 761.80m, 9);
+        await _localDb.Insertable(new ProductStoreDailySalesStatistic
+        {
+            Date = targetDate,
+            BranchCode = "S1",
+            SupplierCode = "112",
+            ProductCode = "P-OLD-TODAY-QUEUE",
+            TotalQuantity = 9,
+            TotalAmount = 761.80m,
+            OrderCount = 1,
+        }).ExecuteCommandAsync();
+        await SeedRefreshStateAsync(targetDate, SalesStatisticRefreshStatus.Running, jobId: jobId);
+        await SeedSaleAsync(
+            "ORDER-TODAY-QUEUE",
+            "DETAIL-TODAY-QUEUE",
+            "P-TODAY-QUEUE",
+            "S1",
+            targetDate.AddHours(9),
+            23,
+            2323.11m,
+            "112");
+
+        await CreateService().ExecuteQueuedDateAsync(
+            targetDate,
+            jobId,
+            () => Task.CompletedTask,
+            CancellationToken.None);
+
+        var store = await _localDb.Queryable<StoreSalesStatistic>()
+            .Where(row => row.Date == targetDate && row.BranchCode == "S1")
+            .FirstAsync();
+        var product = await _localDb.Queryable<ProductStoreDailySalesStatistic>()
+            .Where(row => row.Date == targetDate && row.ProductCode == "P-TODAY-QUEUE")
+            .FirstAsync();
+        var states = await _localDb.Queryable<SalesStatisticRefreshState>()
+            .Where(row => row.Date == targetDate
+                && (row.StatisticType == SalesStatisticType.StoreSales
+                    || row.StatisticType == SalesStatisticType.ProductStoreDaily))
+            .ToListAsync();
+        Assert.NotNull(store);
+        Assert.NotNull(product);
+        Assert.Equal(2323.11m, store!.TotalAmount);
+        Assert.Equal(store.TotalAmount, product!.TotalAmount);
+        Assert.Equal(2, states.Count);
+        Assert.All(states, state => Assert.Equal(SalesStatisticRefreshStatus.Fresh, state.Status));
+        Assert.Contains(states, state => state.StatisticType == SalesStatisticType.ProductStoreDaily
+            && state.JobId == jobId);
+    }
+
+    [Fact]
+    public async Task ExecuteQueuedDateAsync_非2025分店写入失败也应围栏owner直到Failed提交()
+    {
+        var targetDate = new DateTime(2026, 7, 17);
+        var originalJobId = Guid.NewGuid();
+        var replacementJobId = Guid.NewGuid();
+        await SeedStoreSalesStatisticAsync(targetDate, "S1", 761.80m, 9);
+        await _localDb.Insertable(new ProductStoreDailySalesStatistic
+        {
+            Date = targetDate,
+            BranchCode = "S1",
+            SupplierCode = "112",
+            ProductCode = "P-OLD-STORE-FAILURE",
+            TotalQuantity = 9,
+            TotalAmount = 761.80m,
+            OrderCount = 1,
+        }).ExecuteCommandAsync();
+        await SeedRefreshStateAsync(targetDate, SalesStatisticRefreshStatus.Running, jobId: originalJobId);
+        var originalStoreWatermark = targetDate.AddHours(1);
+        var originalStoreCheckedAtUtc = new DateTime(2026, 7, 17, 0, 0, 0, DateTimeKind.Utc);
+        await SeedRefreshStateAsync(
+            targetDate,
+            SalesStatisticRefreshStatus.Fresh,
+            lastCheckedAtUtc: originalStoreCheckedAtUtc,
+            lastSourceUploadTime: originalStoreWatermark,
+            statisticType: SalesStatisticType.StoreSales);
+        await SeedSaleAsync(
+            "ORDER-STORE-FAILURE",
+            "DETAIL-STORE-FAILURE",
+            "P-NEW-STORE-FAILURE",
+            "S1",
+            targetDate.AddHours(9),
+            23,
+            2323.11m,
+            "112");
+        _localDb.Ado.ExecuteCommand(
+            """
+            CREATE TRIGGER RejectQueuedStoreRefresh
+            BEFORE INSERT ON StoreSalesStatistic
+            BEGIN
+                SELECT RAISE(ABORT, 'queued-store-refresh-rejected');
+            END;
+            """
+        );
+
+        await AssertQueuedOwnerFenceAsync(
+            targetDate,
+            originalJobId,
+            replacementJobId,
+            validateOwnerAsync => CreateService().ExecuteQueuedDateAsync(
+                targetDate,
+                originalJobId,
+                validateOwnerAsync,
+                CancellationToken.None),
+            expectedExecutionErrorType: typeof(SqliteException));
+
+        var store = await _localDb.Queryable<StoreSalesStatistic>()
+            .Where(row => row.Date == targetDate && row.BranchCode == "S1")
+            .FirstAsync();
+        var oldProduct = await _localDb.Queryable<ProductStoreDailySalesStatistic>()
+            .Where(row => row.Date == targetDate && row.ProductCode == "P-OLD-STORE-FAILURE")
+            .FirstAsync();
+        var newProduct = await _localDb.Queryable<ProductStoreDailySalesStatistic>()
+            .Where(row => row.Date == targetDate && row.ProductCode == "P-NEW-STORE-FAILURE")
+            .FirstAsync();
+        var storeState = await _localDb.Queryable<SalesStatisticRefreshState>()
+            .Where(row => row.StatisticType == SalesStatisticType.StoreSales && row.Date == targetDate)
+            .FirstAsync();
+        Assert.NotNull(store);
+        Assert.Equal(761.80m, store!.TotalAmount);
+        Assert.NotNull(oldProduct);
+        Assert.Null(newProduct);
+        Assert.NotNull(storeState);
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh, storeState!.Status);
+        Assert.Equal(originalStoreWatermark, storeState.LastSourceUploadTime);
+        Assert.Equal(originalStoreCheckedAtUtc, storeState.LastCheckedAtUtc);
+    }
+
+    [Fact]
+    public async Task ExecuteQueuedDateAsync_非2025分店提交后来源漂移不得发布商品Fresh()
+    {
+        var targetDate = new DateTime(2026, 7, 18);
+        var jobId = Guid.NewGuid();
+        await SeedStoreSalesStatisticAsync(targetDate, "S1", 761.80m, 9);
+        await _localDb.Insertable(new ProductStoreDailySalesStatistic
+        {
+            Date = targetDate,
+            BranchCode = "S1",
+            SupplierCode = "112",
+            ProductCode = "P-OLD-WATERMARK",
+            TotalQuantity = 9,
+            TotalAmount = 761.80m,
+            OrderCount = 1,
+        }).ExecuteCommandAsync();
+        await SeedRefreshStateAsync(targetDate, SalesStatisticRefreshStatus.Running, jobId: jobId);
+        await SeedRefreshStateAsync(
+            targetDate,
+            SalesStatisticRefreshStatus.Fresh,
+            lastSourceUploadTime: targetDate.AddHours(1),
+            statisticType: SalesStatisticType.StoreSales);
+        await SeedSaleAsync(
+            "ORDER-WATERMARK-DRIFT",
+            "DETAIL-WATERMARK-DRIFT",
+            "P-NEW-WATERMARK",
+            "S1",
+            targetDate.AddHours(9),
+            23,
+            2323.11m,
+            "112");
+
+        var sourceAdvanced = false;
+        var refreshStateUpdateCount = 0;
+        _localDb.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (sourceAdvanced
+                || !sql.StartsWith("UPDATE", StringComparison.OrdinalIgnoreCase)
+                || !sql.Contains("SalesStatisticRefreshState", StringComparison.OrdinalIgnoreCase)
+                || Interlocked.Increment(ref refreshStateUpdateCount) != 2)
+                return;
+
+            sourceAdvanced = true;
+            _posmDb.Updateable<SalesOrder>()
+                .SetColumns(row => row.LastUploadTime == targetDate.AddHours(12))
+                .Where(row => row.OrderGuid == "ORDER-WATERMARK-DRIFT")
+                .ExecuteCommand();
+        };
+        try
+        {
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                CreateService().ExecuteQueuedDateAsync(
+                    targetDate,
+                    jobId,
+                    () => Task.CompletedTask,
+                    CancellationToken.None));
+            Assert.Contains("来源水位发生变化", error.Message);
+        }
+        finally
+        {
+            _localDb.Aop.OnLogExecuting = null;
+        }
+
+        Assert.True(sourceAdvanced);
+        var store = await _localDb.Queryable<StoreSalesStatistic>()
+            .Where(row => row.Date == targetDate && row.BranchCode == "S1")
+            .FirstAsync();
+        var newProduct = await _localDb.Queryable<ProductStoreDailySalesStatistic>()
+            .Where(row => row.Date == targetDate && row.ProductCode == "P-NEW-WATERMARK")
+            .FirstAsync();
+        var productState = await LoadRefreshStateAsync(targetDate);
+        Assert.NotNull(store);
+        Assert.Equal(2323.11m, store!.TotalAmount);
+        Assert.Null(newProduct);
+        Assert.NotNull(productState);
+        Assert.Equal(jobId, productState!.JobId);
+        Assert.Equal(SalesStatisticRefreshStatus.Failed, productState.Status);
     }
 
     [Fact]
@@ -2520,11 +2935,10 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task ExecuteQueuedDateAsync_非2025失败事务应锁定owner直到Failed提交()
+    public async Task ExecuteQueuedDateAsync_非2025分店失败应将同JobId商品置为Failed()
     {
         var targetDate = new DateTime(2026, 7, 13);
         var originalJobId = Guid.NewGuid();
-        var replacementJobId = Guid.NewGuid();
         await SeedRefreshStateAsync(
             targetDate,
             SalesStatisticRefreshStatus.Running,
@@ -2533,18 +2947,17 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
 
         // 当前测试实例使用独立临时库；缺失来源表可稳定触发主事务前的真实数据库异常。
         _posmDb.DbMaintenance.DropTable<SalesOrder>();
-        await AssertQueuedOwnerFenceAsync(
-            targetDate,
-            originalJobId,
-            replacementJobId,
-            validateOwnerAsync => CreateService().ExecuteQueuedDateAsync(
+        var error = await Assert.ThrowsAsync<SqliteException>(() => CreateService().ExecuteQueuedDateAsync(
                 targetDate,
                 originalJobId,
-                validateOwnerAsync,
-                CancellationToken.None
-            ),
-            expectedExecutionErrorType: typeof(SqliteException)
-        );
+                () => Task.CompletedTask,
+                CancellationToken.None));
+
+        Assert.Contains("no such table", error.Message, StringComparison.OrdinalIgnoreCase);
+        var state = await LoadRefreshStateAsync(targetDate);
+        Assert.NotNull(state);
+        Assert.Equal(originalJobId, state!.JobId);
+        Assert.Equal(SalesStatisticRefreshStatus.Failed, state.Status);
     }
 
     [Fact]
@@ -4190,7 +4603,11 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
         Guid originalJobId,
         Guid replacementJobId,
         Func<Func<Task>, Task> executeAsync,
-        Type? expectedExecutionErrorType
+        Type? expectedExecutionErrorType,
+        int expectedGuardCallCount = 2,
+        int guardCallToBlock = 2,
+        bool waitForTakeoverBeforeRelease = false,
+        bool expectTakeoverBlocked = true
     )
     {
         var guardEntered = new TaskCompletionSource(
@@ -4202,7 +4619,7 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
         var guardCallCount = 0;
         async Task ValidateOwnerAsync()
         {
-            if (Interlocked.Increment(ref guardCallCount) == 1)
+            if (Interlocked.Increment(ref guardCallCount) != guardCallToBlock)
                 return;
 
             guardEntered.TrySetResult();
@@ -4245,6 +4662,8 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
         }
         finally
         {
+            if (waitForTakeoverBeforeRelease)
+                await takeoverTask.WaitAsync(TimeSpan.FromSeconds(10));
             releaseGuard.TrySetResult();
         }
 
@@ -4266,11 +4685,8 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
         }
         else
             Assert.Null(executionError);
-        Assert.True(
-            takeoverWasBlocked,
-            "竞争 owner 写入必须等待旧 worker 的同一主库写事务释放状态行锁"
-        );
-        Assert.Equal(2, guardCallCount);
+        Assert.Equal(expectTakeoverBlocked, takeoverWasBlocked);
+        Assert.Equal(expectedGuardCallCount, guardCallCount);
 
         var finalState = await LoadRefreshStateAsync(targetDate);
         Assert.NotNull(finalState);
@@ -4391,7 +4807,8 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
         string? barcode = null,
         bool useDefaultBarcode = true,
         string? itemNumber = null,
-        DateTime? mainCheckoutDate = null
+        DateTime? mainCheckoutDate = null,
+        TimeSpan? checkoutTime = null
     )
     {
         var salesOrderNo = $"HB-ORDER-{id}";
@@ -4403,6 +4820,7 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
             B单据类型 = documentType,
             // 主表索引窗口以结账日期为入口；未特化的测试数据保持与明细日期一致。
             B结账日期 = mainCheckoutDate ?? date,
+            B结账时间 = checkoutTime,
             FGC_LastModifyDate = modifiedAt,
         }).ExecuteCommandAsync();
         await _hbSalesDb.Insertable(new SalesOrderDetailRecord
@@ -4411,6 +4829,7 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
             B销售单号 = salesOrderNo,
             B分店代码 = branchCode,
             B结账日期 = date.Date,
+            B结账时间 = checkoutTime,
             B产品编号 = productCode,
             B供应商ID = supplierCode,
             B货号 = itemNumber,

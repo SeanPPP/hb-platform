@@ -1,3 +1,4 @@
+using BlazorApp.Api.Features.SupplyNotices;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Features.StoreOrders.Common;
 using BlazorApp.Api.Features.StoreOrders.OrderManagement.Domain;
@@ -27,19 +28,35 @@ internal sealed class SqlSugarStoreOrderProductStatusCommandStore(
             var beforeSnapshots = await changeHistoryService.CaptureSnapshotsAsync(
                 new[] { input.ProductCode }
             );
-            var affectedRows = await _db.Updateable<Product>()
-                .SetColumns(product => new Product
+            // 订货页的上下架开关表达“仓库是否继续向分店供货”，与该页展示、筛选同源（WarehouseProduct）。
+            // 不写商品主档：Product.IsActive 决定门店 POS 能否销售，由 HQ 同步维护。
+            var affectedRows = await _db.Updateable<WarehouseProduct>()
+                .SetColumns(warehouseProduct => new WarehouseProduct
                 {
                     IsActive = input.IsActive,
                     UpdatedAt = now,
                     UpdatedBy = actorContext.ActorName,
                 })
-                .Where(product => product.ProductCode == input.ProductCode)
+                .Where(warehouseProduct =>
+                    warehouseProduct.ProductCode == input.ProductCode
+                    && !warehouseProduct.IsDeleted
+                )
                 .ExecuteCommandAsync();
             if (affectedRows == 0)
             {
                 return StoreOrderManagementResult<bool>.Fail("Product not found");
             }
+
+            // 同一事务：下架登记供货说明，上架关闭说明。
+            await WarehouseProductSupplyNoticeWriter.ApplyStatusChangeAsync(
+                _db,
+                new[] { input.ProductCode },
+                input.IsActive,
+                input.SupplyNotice,
+                actorContext.ActorName,
+                source: "StoreOrderProductStatus",
+                now
+            );
 
             var afterSnapshots = await changeHistoryService.CaptureSnapshotsAsync(
                 new[] { input.ProductCode }
@@ -79,18 +96,28 @@ internal sealed class SqlSugarStoreOrderProductStatusCommandStore(
             var beforeSnapshots = await changeHistoryService.CaptureSnapshotsAsync(
                 productCodes
             );
-            await _db.Updateable<Product>()
-                .SetColumns(product => new Product
+            // 与单个开关一致：只改仓库供货状态，不连带商品主档。
+            await _db.Updateable<WarehouseProduct>()
+                .SetColumns(warehouseProduct => new WarehouseProduct
                 {
                     IsActive = input.IsActive,
                     UpdatedAt = now,
                     UpdatedBy = actorContext.ActorName,
                 })
-                .Where(product =>
-                    product.ProductCode != null
-                    && productCodes.Contains(product.ProductCode)
+                .Where(warehouseProduct =>
+                    productCodes.Contains(warehouseProduct.ProductCode)
+                    && !warehouseProduct.IsDeleted
                 )
                 .ExecuteCommandAsync();
+            await WarehouseProductSupplyNoticeWriter.ApplyStatusChangeAsync(
+                _db,
+                productCodes,
+                input.IsActive,
+                input.SupplyNotice,
+                actorContext.ActorName,
+                source: "StoreOrderProductStatus",
+                now
+            );
             var afterSnapshots = await changeHistoryService.CaptureSnapshotsAsync(
                 productCodes
             );

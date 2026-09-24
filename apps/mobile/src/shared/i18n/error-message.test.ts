@@ -11,6 +11,59 @@ async function main() {
 
   const t: Translator = (key) => key;
 
+  for (const code of [
+    "PRINT_ERROR",
+    "PRINT_PRODUCT_LABEL_ERROR",
+    "PRINT_DISCOUNT_LABEL_ERROR",
+    "PRINT_CLEARANCE_LABEL_ERROR",
+    "PRINT_BIG_DISCOUNT_LABEL_ERROR",
+    "PRINT_WAREHOUSE_PRODUCT_LABEL_ERROR",
+    "PRINT_WAREHOUSE_LOCATION_LABEL_ERROR",
+  ]) {
+    for (const language of ["zh", "en"]) {
+      const error = Object.assign(new Error("java.io.IOException: Broken pipe"), { code });
+      assertEqual(
+        resolveLocalizedErrorMessage(error, { language, t, fallbackKey: "messages.printFailed" }),
+        "common:errors.printerDisconnected",
+        `${language} ${code} 应显示可操作的打印机断线提示`
+      );
+      assertEqual(error.message, "java.io.IOException: Broken pipe", "本地化不能改写原始错误供日志排查");
+    }
+  }
+
+  for (const message of [
+    "broken pipe",
+    "write failed: EPIPE",
+    "Socket closed",
+    "socket is closed",
+    "Connection reset by peer",
+    "No Bluetooth printer is connected.",
+  ]) {
+    assertEqual(
+      resolveLocalizedErrorMessage({ code: "PRINT_PRODUCT_LABEL_ERROR", message }, {
+        language: "zh",
+        t,
+      }),
+      "common:errors.printerDisconnected",
+      `原生错误对象应识别连接中断: ${message}`
+    );
+  }
+
+  assertEqual(
+    resolveLocalizedErrorMessage({ code: "EPIPE", message: "Broken pipe" }, { language: "zh", t }),
+    "Broken pipe",
+    "非打印错误不能误报为打印机断线"
+  );
+
+  assertEqual(
+    resolveLocalizedErrorMessage({ code: "PRINT_PRODUCT_LABEL_ERROR", message: "Invalid barcode" }, {
+      language: "zh",
+      t,
+    }),
+    "Invalid barcode",
+    "标签数据错误不能误报为打印机断线"
+  );
+
   assertEqual(
     resolveLocalizedErrorMessage(new Error("网络超时"), {
       language: "zh",
@@ -19,6 +72,30 @@ async function main() {
     }),
     "common:errors.timeout",
     "超时错误应映射到通用超时提示"
+  );
+
+  for (const [code, expectedKey] of [
+    ["PRINTER_BLE_UNSUPPORTED", "common:errors.printerBleUnsupported"],
+    ["PRINTER_PAIRING_REQUIRED", "common:errors.printerPairingRequired"],
+    ["PRINTER_PAIRING_START_FAILED", "common:errors.printerPairingStartFailed"],
+    ["PRINTER_PAIRING_REJECTED", "common:errors.printerPairingRejected"],
+    ["PRINTER_PAIRING_TIMEOUT", "common:errors.printerPairingTimeout"],
+    ["PRINTER_PAIRING_UNAVAILABLE", "common:errors.printerPairingUnavailable"],
+  ] as const) {
+    assertEqual(
+      resolveLocalizedErrorMessage({ code, message: "Bluetooth operation timed out" }, { language: "zh", t }),
+      expectedKey,
+      `${code} 应优先显示打印机配对提示，而不是通用超时`
+    );
+  }
+
+  assertEqual(
+    resolveLocalizedErrorMessage({ code: "CONNECT_ERROR", message: "read failed, socket might closed or timeout" }, {
+      language: "zh",
+      t,
+    }),
+    "common:errors.printerConnectTimeout",
+    "打印机 RFCOMM 连接超时应给出打印机检查建议"
   );
 
   assertEqual(

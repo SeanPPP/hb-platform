@@ -8,6 +8,15 @@ namespace BlazorApp.Api.Tests;
 public sealed class BatchProductSalesDiscountWorkerSchedulingTests
 {
     [Fact]
+    public void 日期处理预算短于租约并为来源核验后发布留出余量()
+    {
+        Assert.True(BatchProductSalesDiscountWorker.SourceReadLimit < BatchProductSalesDiscountWorker.DayExecutionLimit);
+        Assert.True(BatchProductSalesDiscountWorker.DayExecutionLimit - BatchProductSalesDiscountWorker.SourceReadLimit >= TimeSpan.FromMinutes(1));
+        Assert.True(BatchProductSalesDiscountWorker.DayExecutionLimit < BatchProductSalesDiscountDailyStore.ExecutionLeaseDuration);
+        Assert.True(BatchProductSalesDiscountDailyStore.ExecutionLeaseDuration < BatchProductSalesDiscountWorker.GlobalLeaseDuration);
+    }
+
+    [Fact]
     public void 默认回填窗口为一年且闰日按完整日历年覆盖()
     {
         var today = new DateTime(2028, 2, 29);
@@ -62,7 +71,7 @@ public sealed class BatchProductSalesDiscountWorkerSchedulingTests
     }
 
     [Fact]
-    public void OrderEligibleCandidates_非最近历史回填恢复优先于较新的Fresh巡检并按日期从近到远()
+    public void OrderEligibleCandidates_历史回填恢复优先于非最近Fresh巡检并按日期从远到近()
     {
         var now = new DateTime(2026, 9, 14, 8, 0, 0, DateTimeKind.Utc);
         var oldQueued = new BatchProductSalesDiscountRefreshState
@@ -77,12 +86,19 @@ public sealed class BatchProductSalesDiscountWorkerSchedulingTests
         {
             Date = now.Date.AddDays(-30), Status = "Queued", NextAttemptAtUtc = now,
         };
+        var preferredWaiting = new BatchProductSalesDiscountRefreshState
+        {
+            Date = now.Date, Status = BatchProductSalesDiscountDailyStore.WaitingForCanonicalStatus,
+            NextAttemptAtUtc = now,
+        };
 
         var ordered = BatchProductSalesDiscountDailyStore.OrderEligibleCandidates(
-            [newerFresh, oldQueued, newerQueued], now, new HashSet<DateTime>(), now.Date.AddYears(-2), now.Date,
+            [newerFresh, oldQueued, newerQueued, preferredWaiting], now, new HashSet<DateTime> { now.Date },
+            now.Date.AddYears(-2), now.Date,
             TimeSpan.FromMinutes(5));
 
-        Assert.Equal([newerQueued.Date, oldQueued.Date, newerFresh.Date], ordered.Select(state => state.Date));
+        Assert.Equal([oldQueued.Date, newerQueued.Date, preferredWaiting.Date, newerFresh.Date],
+            ordered.Select(state => state.Date));
     }
 
     [Fact]
@@ -129,11 +145,39 @@ public sealed class BatchProductSalesDiscountWorkerSchedulingTests
         Assert.Equal(2, BatchProductSalesDiscountDailyStore.AttemptsAfterCanonicalWait(3, "Failed"));
         Assert.Equal(2, BatchProductSalesDiscountDailyStore.AttemptsAfterCanonicalWait(
             2, BatchProductSalesDiscountDailyStore.WaitingForCanonicalStatus));
-        Assert.False(BatchProductSalesDiscountDailyStore.ShouldRequestCanonicalReconciliation(true, "Queued"));
-        Assert.True(BatchProductSalesDiscountDailyStore.ShouldRequestCanonicalReconciliation(true, "Failed"));
-        Assert.True(BatchProductSalesDiscountDailyStore.ShouldRequestCanonicalReconciliation(true, null));
+        Assert.False(BatchProductSalesDiscountDailyStore.DecideCanonicalReconciliation(true, "Queued", now, now).Request);
+        Assert.True(BatchProductSalesDiscountDailyStore.DecideCanonicalReconciliation(true, null, null, now).Request);
+        Assert.True(BatchProductSalesDiscountDailyStore.DecideCanonicalReconciliation(false, "Failed", now, now).Request);
         Assert.Single(eligible);
         Assert.Equal(inRange.Date, eligible[0].Date);
+    }
+
+    [Fact]
+    public void Canonical已请求后仍失败_按失败时间退避而不是每轮重新入队()
+    {
+        var now = new DateTime(2026, 9, 18, 8, 40, 0, DateTimeKind.Utc);
+        var delay = BatchProductSalesDiscountDailyStore.FailedCanonicalRetryDelay;
+        var shortWait = now.Add(BatchProductSalesDiscountDailyStore.CanonicalWaitDelay);
+
+        // 刚失败：不重新入队，下次检查推迟到失败时间 + 退避间隔，不再 30 秒轮询。
+        var justFailedAt = now.AddMinutes(-4);
+        var backoff = BatchProductSalesDiscountDailyStore.DecideCanonicalReconciliation(true, "Failed", justFailedAt, now);
+        Assert.False(backoff.Request);
+        Assert.Equal(justFailedAt.Add(delay), backoff.NextAttemptAtUtc);
+
+        // 退避到期：再请求一次，恢复常规短等待，让偶发死锁等临时失败仍能自愈。
+        var due = BatchProductSalesDiscountDailyStore.DecideCanonicalReconciliation(true, "failed", now.Add(-delay), now);
+        Assert.True(due.Request);
+        Assert.Equal(shortWait, due.NextAttemptAtUtc);
+
+        // 失败时间缺失时无法退避，保持旧行为立即请求。
+        Assert.True(BatchProductSalesDiscountDailyStore.DecideCanonicalReconciliation(true, "Failed", null, now).Request);
+        // 首次请求不受退避影响，即使 canonical 刚失败。
+        Assert.True(BatchProductSalesDiscountDailyStore.DecideCanonicalReconciliation(false, "Failed", justFailedAt, now).Request);
+        // 排队或运行中只短等待，不重复入队。
+        var running = BatchProductSalesDiscountDailyStore.DecideCanonicalReconciliation(true, "Running", justFailedAt, now);
+        Assert.False(running.Request);
+        Assert.Equal(shortWait, running.NextAttemptAtUtc);
     }
 
     [Fact]

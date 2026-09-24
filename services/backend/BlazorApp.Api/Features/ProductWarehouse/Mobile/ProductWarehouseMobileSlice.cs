@@ -7,6 +7,7 @@ using System.Linq.Expressions;
 using System.Threading.Tasks;
 using AutoMapper;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Features.SupplyNotices;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
@@ -37,8 +38,7 @@ internal sealed class ProductWarehouseMobileSlice
             return new List<WarehouseMobileProductDto>();
         }
 
-        var lowered = trimmed.ToLower();
-        var rows = await _context
+        var joined = _context
             .Db.Queryable<WarehouseProduct>()
             .LeftJoin<Product>((w, p) => p.ProductCode == w.ProductCode && !p.IsDeleted)
             .LeftJoin<DomesticProduct>((w, p, dp) => dp.ProductCode == w.ProductCode && !dp.IsDeleted)
@@ -46,20 +46,40 @@ internal sealed class ProductWarehouseMobileSlice
             .LeftJoin<ProductLocation>((w, p, dp, s, pl) => pl.ProductCode == w.ProductCode && !pl.IsDeleted)
             .LeftJoin<Location>((w, p, dp, s, pl, l) => l.LocationGuid == pl.LocationGuid && !l.IsDeleted)
             .LeftJoin<ProductGrade>((w, p, dp, s, pl, l, pg) => pg.ProductCode == w.ProductCode && !pg.IsDeleted)
-            .Where((w, p, dp, s, pl, l, pg) =>
-                !w.IsDeleted
-                && (
-                    (w.ProductCode != null && w.ProductCode.ToLower().Contains(lowered))
-                    || (p.ProductName != null && p.ProductName.ToLower().Contains(lowered))
-                    || (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(lowered))
-                    || (p.Barcode != null && p.Barcode.ToLower().Contains(lowered))
-                    || (p.LocalSupplierCode != null && p.LocalSupplierCode.ToLower().Contains(lowered))
-                    || (s.SupplierName != null && s.SupplierName.ToLower().Contains(lowered))
-                    || (s.SupplierCode != null && s.SupplierCode.ToLower().Contains(lowered))
-                    || (l.LocationCode != null && l.LocationCode.ToLower().Contains(lowered))
-                    || (l.LocationBarcode != null && l.LocationBarcode.ToLower().Contains(lowered))
-                )
-            )
+            .Where((w, p, dp, s, pl, l, pg) => !w.IsDeleted);
+
+        if (_context.Db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+        {
+            // 原宽 OR 横跨 7 表，叠加 ORDER BY 货号 + TOP 50 的行目标，优化器会沿货号逐行联接并求值 9 个
+            // CI 排序 LIKE，生产平均 2.2 秒、46 万逻辑读。改为先按来源表 UNION 候选编码、取货号前 50 个商品，
+            // 外层联接只落在这些商品上；同规模压测逻辑读 21 万 → 0.7~1.4 万，CPU 10 秒级 → 0.3~0.5 秒。
+            joined = joined.Where(
+                MobileLookupSqlServerFilter,
+                new
+                {
+                    mobileLookupPattern = BuildSqlServerContainsPattern(
+                        trimmed.ToUpperInvariant()
+                    ),
+                }
+            );
+        }
+        else
+        {
+            var lowered = trimmed.ToLower();
+            joined = joined.Where((w, p, dp, s, pl, l, pg) =>
+                (w.ProductCode != null && w.ProductCode.ToLower().Contains(lowered))
+                || (p.ProductName != null && p.ProductName.ToLower().Contains(lowered))
+                || (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(lowered))
+                || (p.Barcode != null && p.Barcode.ToLower().Contains(lowered))
+                || (p.LocalSupplierCode != null && p.LocalSupplierCode.ToLower().Contains(lowered))
+                || (s.SupplierName != null && s.SupplierName.ToLower().Contains(lowered))
+                || (s.SupplierCode != null && s.SupplierCode.ToLower().Contains(lowered))
+                || (l.LocationCode != null && l.LocationCode.ToLower().Contains(lowered))
+                || (l.LocationBarcode != null && l.LocationBarcode.ToLower().Contains(lowered))
+            );
+        }
+
+        var rows = await joined
             .OrderBy((w, p, dp, s, pl, l, pg) => p.ItemNumber)
             .Select((w, p, dp, s, pl, l, pg) => new
             {
@@ -127,6 +147,69 @@ internal sealed class ProductWarehouseMobileSlice
             .ToList();
     }
 
+    internal const string MobileLookupPatternParameter = "@mobileLookupPattern";
+
+    /// <summary>
+    /// SQL Server 移动端查询过滤，接在 7 表联接之后，依赖 lambda 别名 [w]/[p]/[s]/[l]。
+    /// 内层：四类来源（仓库编码、商品名称/货号/条码/本地供应商、国内供应商、货位）各自 UNION 出 varchar 候选编码，
+    /// 再按货号取前 50 个商品；TOP 50 行必然落在货号前 50 个命中商品内，所以结果与原宽 OR 一致。
+    /// 外层：保留 9 列谓词逐行复核，多货位商品仍只返回命中的那条货位行。
+    /// 判别列写成字面量 [IsDeleted] = 0，才能命中 IsDeleted=0 过滤索引（参数化会让过滤索引失效）。
+    /// </summary>
+    internal static readonly string MobileLookupSqlServerFilter =
+        "([w].[ProductCode] IN ("
+        + "SELECT TOP 50 [mc].[ProductCode] FROM ("
+        + "SELECT [mw].[ProductCode] FROM [WarehouseProduct] [mw]"
+        + " WHERE [mw].[IsDeleted] = 0 AND " + SqlServerContainsMatch("[mw].[ProductCode]")
+        + " UNION SELECT CAST([mp].[ProductCode] AS varchar(255)) FROM [Product] [mp]"
+        + " WHERE [mp].[IsDeleted] = 0 AND [mp].[ProductCode] IS NOT NULL AND ("
+        + SqlServerContainsMatch("[mp].[ProductName]")
+        + " OR " + SqlServerContainsMatch("[mp].[ItemNumber]")
+        + " OR " + SqlServerContainsMatch("[mp].[Barcode]")
+        + " OR " + SqlServerContainsMatch("[mp].[LocalSupplierCode]") + ")"
+        + " UNION SELECT CAST([mdp].[ProductCode] AS varchar(255)) FROM [DomesticProduct] [mdp]"
+        + " INNER JOIN [ChinaSupplier] [ms] ON [ms].[SupplierCode] = [mdp].[SupplierCode] AND [ms].[IsDeleted] = 0"
+        + " WHERE [mdp].[IsDeleted] = 0 AND ("
+        + SqlServerContainsMatch("[ms].[SupplierName]")
+        + " OR " + SqlServerContainsMatch("[ms].[SupplierCode]") + ")"
+        + " UNION SELECT [mpl].[ProductCode] FROM [ProductLocation] [mpl]"
+        + " INNER JOIN [Location] [ml] ON [ml].[LocationGuid] = [mpl].[LocationGuid] AND [ml].[IsDeleted] = 0"
+        + " WHERE [mpl].[IsDeleted] = 0 AND ("
+        + SqlServerContainsMatch("[ml].[LocationCode]")
+        + " OR " + SqlServerContainsMatch("[ml].[LocationBarcode]") + ")"
+        + ") [mc]([ProductCode])"
+        // 候选已统一为 varchar，与仓库编码直接比较不转换索引列；与 Product 比较时转换落在候选侧。
+        + " INNER JOIN [WarehouseProduct] [mcw] ON [mcw].[ProductCode] = [mc].[ProductCode] AND [mcw].[IsDeleted] = 0"
+        + " LEFT JOIN [Product] [mcp] ON [mcp].[ProductCode] = [mc].[ProductCode] AND [mcp].[IsDeleted] = 0"
+        + " ORDER BY [mcp].[ItemNumber])"
+        + " AND (" + SqlServerContainsMatch("[w].[ProductCode]")
+        + " OR " + SqlServerContainsMatch("[p].[ProductName]")
+        + " OR " + SqlServerContainsMatch("[p].[ItemNumber]")
+        + " OR " + SqlServerContainsMatch("[p].[Barcode]")
+        + " OR " + SqlServerContainsMatch("[p].[LocalSupplierCode]")
+        + " OR " + SqlServerContainsMatch("[s].[SupplierName]")
+        + " OR " + SqlServerContainsMatch("[s].[SupplierCode]")
+        + " OR " + SqlServerContainsMatch("[l].[LocationCode]")
+        + " OR " + SqlServerContainsMatch("[l].[LocationBarcode]") + "))";
+
+    /// <summary>
+    /// UPPER + BIN2 逐字节比较替代 CI 排序规则 LIKE，大小写不敏感由 UPPER 保证。
+    /// 先转 nvarchar 再 COLLATE：varchar 列直接 COLLATE 到 Latin1 会按 1252 代码页重解释，中文永远匹配不到。
+    /// </summary>
+    private static string SqlServerContainsMatch(string column) =>
+        "UPPER(CAST(" + column + " AS nvarchar(4000))) COLLATE Latin1_General_100_BIN2 LIKE "
+        + MobileLookupPatternParameter;
+
+    /// <summary>把用户输入里的 LIKE 通配符按方括号转义后包成包含匹配，输入须已转大写。</summary>
+    internal static string BuildSqlServerContainsPattern(string upperKeyword)
+    {
+        var escaped = upperKeyword
+            .Replace("[", "[[]", StringComparison.Ordinal)
+            .Replace("%", "[%]", StringComparison.Ordinal)
+            .Replace("_", "[_]", StringComparison.Ordinal);
+        return "%" + escaped + "%";
+    }
+
     public async Task<WarehouseMobileProductDto?> GetMobileProductAsync(string productCode)
     {
         var trimmed = productCode?.Trim();
@@ -185,6 +268,19 @@ internal sealed class ProductWarehouseMobileSlice
         var shouldUpdateProductGrade = false;
         // 仅更新仓库商品状态；优先新字段，旧字段仅作兼容回退。
         var warehouseIsActive = dto.WarehouseIsActive ?? dto.IsActive;
+        // 供货说明只在下架时有意义；录入有误直接拒绝，此时尚未开事务。
+        NormalizedSupplyNotice? supplyNotice = null;
+        if (warehouseIsActive == false && dto.SupplyNotice != null)
+        {
+            var (normalizedNotice, noticeError) = WarehouseProductSupplyNoticeRules.Normalize(
+                dto.SupplyNotice
+            );
+            if (noticeError != null)
+            {
+                throw new ArgumentException(noticeError);
+            }
+            supplyNotice = normalizedNotice;
+        }
         if (warehouseIsActive.HasValue)
         {
             warehouseProduct.IsActive = warehouseIsActive.Value;
@@ -442,6 +538,20 @@ internal sealed class ProductWarehouseMobileSlice
                     warehouseUpdate = warehouseUpdate.SetColumns(w => w.Volume == dto.Volume.Value);
                 }
                 await warehouseUpdate.ExecuteCommandAsync();
+
+                if (warehouseIsActive.HasValue)
+                {
+                    // 同一事务：下架登记供货说明，上架关闭说明。
+                    await WarehouseProductSupplyNoticeWriter.ApplyStatusChangeAsync(
+                        _context.Db,
+                        new[] { productCode },
+                        warehouseIsActive.Value,
+                        supplyNotice,
+                        effectiveUpdatedBy,
+                        source: "MobileWarehouse",
+                        DateTime.UtcNow
+                    );
+                }
             }
             if (domesticProduct != null && shouldUpdateDomesticProduct)
             {

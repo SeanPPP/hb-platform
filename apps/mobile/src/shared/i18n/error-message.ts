@@ -79,6 +79,47 @@ function resolveCommonErrorKey(error: unknown) {
   const code = getCode(error);
   const message = getMessage(error);
 
+  const printerPairingErrorKey = code ? {
+    PRINTER_BLE_UNSUPPORTED: "common:errors.printerBleUnsupported",
+    PRINTER_PAIRING_REQUIRED: "common:errors.printerPairingRequired",
+    PRINTER_PAIRING_START_FAILED: "common:errors.printerPairingStartFailed",
+    PRINTER_PAIRING_REJECTED: "common:errors.printerPairingRejected",
+    PRINTER_PAIRING_CANCELLED: "common:errors.printerPairingRejected",
+    PRINTER_PAIRING_TIMEOUT: "common:errors.printerPairingTimeout",
+    PRINTER_PAIRING_UNAVAILABLE: "common:errors.printerPairingUnavailable",
+  }[code] : undefined;
+  if (printerPairingErrorKey) {
+    return printerPairingErrorKey;
+  }
+
+  if (code === "CONNECT_ERROR" && includesAny(message, ["timeout", "timed out", "超时"])) {
+    return "common:errors.printerConnectTimeout";
+  }
+
+  // 只识别原生打印错误，避免把网络请求中的同类 socket 错误误报为打印机断线。
+  if (
+    code
+    && [
+      "PRINT_ERROR",
+      "PRINT_PRODUCT_LABEL_ERROR",
+      "PRINT_DISCOUNT_LABEL_ERROR",
+      "PRINT_CLEARANCE_LABEL_ERROR",
+      "PRINT_BIG_DISCOUNT_LABEL_ERROR",
+      "PRINT_WAREHOUSE_PRODUCT_LABEL_ERROR",
+      "PRINT_WAREHOUSE_LOCATION_LABEL_ERROR",
+    ].includes(code)
+    && includesAny(message, [
+      "broken pipe",
+      "EPIPE",
+      "socket closed",
+      "socket is closed",
+      "connection reset",
+      "No Bluetooth printer is connected",
+    ])
+  ) {
+    return "common:errors.printerDisconnected";
+  }
+
   if (code === "ECONNABORTED" || code === "ETIMEDOUT" || includesAny(message, ["timeout", "timed out", "超时"])) {
     return "common:errors.timeout";
   }

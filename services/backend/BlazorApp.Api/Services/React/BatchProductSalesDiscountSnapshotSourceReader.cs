@@ -1,4 +1,6 @@
 using System.Security.Cryptography;
+using System.Diagnostics;
+using System.Globalization;
 using BlazorApp.Api.Services;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HBSalesRecord;
@@ -14,7 +16,8 @@ namespace BlazorApp.Api.Services.React;
 internal sealed class BatchProductSalesDiscountSnapshotSourceReader(
     ISqlSugarClient catalogDb,
     ISqlSugarClient posmDb,
-    ISqlSugarClient hbSalesDb)
+    ISqlSugarClient hbSalesDb,
+    ILogger<BatchProductSalesDiscountSnapshotSourceReader>? logger = null)
 {
     private const string DiscountClassificationRuleVersion = "batch-product-sales-discount-v2";
     private readonly ISqlSugarClient _catalogDb = catalogDb;
@@ -36,40 +39,96 @@ internal sealed class BatchProductSalesDiscountSnapshotSourceReader(
     /// </summary>
     internal async Task<PreparedDay> CapturePreparedAsync(DateTime day, CancellationToken token)
     {
-        var snapshot = await CaptureAsync(day.Date, token);
-        return new PreparedDay(day.Date, snapshot,
-            BuildSourceVersion(snapshot.PosmSignature, snapshot.HBSalesSignature, snapshot.AliasVersion,
-                snapshot.DiscountSemanticVersion, snapshot.SupplierMappingVersion));
+        return await WithSourceCancellationAsync(token, async () =>
+        {
+            var elapsed = Stopwatch.StartNew();
+            DaySourceSnapshot snapshot;
+            try { snapshot = await CaptureAsync(day.Date, token); }
+            finally
+            {
+                // 保留取消样本的耗时，避免将整段来源预算误认成最后一条 SQL 的执行时间。
+                logger?.LogInformation("折扣来源阶段耗时: {Date}, Stage=来源签名, ElapsedMs={ElapsedMs}, Canceled={Canceled}",
+                    day.Date, elapsed.ElapsedMilliseconds, token.IsCancellationRequested);
+            }
+            return new PreparedDay(day.Date, snapshot,
+                BuildSourceVersion(snapshot.PosmSignature, snapshot.HBSalesSignature, snapshot.AliasVersion,
+                    snapshot.DiscountSemanticVersion, snapshot.SupplierMappingVersion));
+        });
     }
 
     /// <summary>使用已经固定的范围执行事实聚合，并以前后完整来源版本相等作为结果可发布的前提。</summary>
     internal async Task<PreparedDayReadResult> ReadPreparedDayAsync(PreparedDay prepared, CancellationToken token)
     {
-        ArgumentNullException.ThrowIfNull(prepared);
-        var before = prepared.Snapshot;
-        if (before.ProductCodes.Count == 0 || before.StoreCodes.Count == 0)
+        return await WithSourceCancellationAsync(token, async () =>
         {
-            var emptyAfter = await CapturePreparedAsync(prepared.Day, token);
-            if (!string.Equals(prepared.SourceVersion, emptyAfter.SourceVersion, StringComparison.Ordinal))
+            ArgumentNullException.ThrowIfNull(prepared);
+            var before = prepared.Snapshot;
+            if (before.ProductCodes.Count == 0 || before.StoreCodes.Count == 0)
+            {
+                var emptyAfter = await CapturePreparedAsync(prepared.Day, token);
+                if (!string.Equals(prepared.SourceVersion, emptyAfter.SourceVersion, StringComparison.Ordinal))
+                    throw SourceChangedDuringRead(prepared.Day);
+                return new PreparedDayReadResult([], emptyAfter.SourceVersion);
+            }
+
+            // 聚合器的 products/stores 是单日来源一次性收集的全集，只作为 SQL OPENJSON 范围；
+            // 不会形成“商品数 × 日期”或“商品数 × 分店”的查询循环。
+            var elapsed = Stopwatch.StartNew();
+            List<BatchProductSalesAggregateRow> facts;
+            try
+            {
+                facts = await new BatchProductSalesAnalysisFactReader(_catalogDb, _posmDb, _hbSalesDb)
+                    .ReadAsync(before.ProductCodes, prepared.Day, prepared.Day, before.StoreCodes, token, before.HBSalesAliases);
+            }
+            finally
+            {
+                logger?.LogInformation("折扣来源阶段耗时: {Date}, Stage=事实聚合, ElapsedMs={ElapsedMs}, Canceled={Canceled}",
+                    prepared.Day, elapsed.ElapsedMilliseconds, token.IsCancellationRequested);
+            }
+
+            var after = await CapturePreparedAsync(prepared.Day, token);
+            if (!string.Equals(prepared.SourceVersion, after.SourceVersion, StringComparison.Ordinal))
                 throw SourceChangedDuringRead(prepared.Day);
-            return new PreparedDayReadResult([], emptyAfter.SourceVersion);
-        }
 
-        // 聚合器的 products/stores 是单日来源一次性收集的全集，只作为 SQL OPENJSON 范围；
-        // 不会形成“商品数 × 日期”或“商品数 × 分店”的查询循环。
-        var facts = await new BatchProductSalesAnalysisFactReader(_catalogDb, _posmDb, _hbSalesDb)
-            .ReadAsync(before.ProductCodes, prepared.Day, prepared.Day, before.StoreCodes, token, before.HBSalesAliases);
-
-        var after = await CapturePreparedAsync(prepared.Day, token);
-        if (!string.Equals(prepared.SourceVersion, after.SourceVersion, StringComparison.Ordinal))
-            throw SourceChangedDuringRead(prepared.Day);
-
-        return new PreparedDayReadResult(facts, after.SourceVersion);
+            return new PreparedDayReadResult(facts, after.SourceVersion);
+        });
     }
 
     internal async Task<string> GetSourceVersionAsync(DateTime day, CancellationToken token)
     {
         return (await CapturePreparedAsync(day, token)).SourceVersion;
+    }
+
+    /// <summary>
+    /// SqlSugar 的带 token 查询会把 token 留在 client 级别的 ADO 上，后续无 token 的写入仍会继承它。
+    /// 三个来源都可能在嵌套读取中复用，所以必须恢复调用前状态，而非无条件清空。
+    /// </summary>
+    private async Task<T> WithSourceCancellationAsync<T>(CancellationToken token, Func<Task<T>> action)
+    {
+        var catalogToken = _catalogDb.Ado.CancellationToken;
+        var posmToken = _posmDb.Ado.CancellationToken;
+        var hbSalesToken = _hbSalesDb.Ado.CancellationToken;
+        _catalogDb.Ado.CancellationToken = token;
+        _posmDb.Ado.CancellationToken = token;
+        _hbSalesDb.Ado.CancellationToken = token;
+        try
+        {
+            return await action();
+        }
+        finally
+        {
+            RestoreAdoCancellationToken(_hbSalesDb, hbSalesToken);
+            RestoreAdoCancellationToken(_posmDb, posmToken);
+            RestoreAdoCancellationToken(_catalogDb, catalogToken);
+        }
+    }
+
+    private static void RestoreAdoCancellationToken(ISqlSugarClient db, CancellationToken? token)
+    {
+        if (token.HasValue)
+            db.Ado.CancellationToken = token.Value;
+        else
+            db.Ado.RemoveCancellationToken();
     }
 
     private static InvalidOperationException SourceChangedDuringRead(DateTime day) => new(
@@ -203,7 +262,7 @@ internal sealed class BatchProductSalesDiscountSnapshotSourceReader(
         var hbRows = SalesStatisticsHBSalesHistoryWindow.Includes(day) ? await LoadHBSalesRowsAsync(day, nextDay, token) : [];
         var returnDiscountRows = await LoadReturnDiscountSemanticRowsAsync(day, nextDay, detailGuids, token);
         var hbDiscountRows = SalesStatisticsHBSalesHistoryWindow.Includes(day)
-            ? await LoadHBSalesDiscountSemanticRowsAsync(day, nextDay, hbRows, token)
+            ? await LoadHBSalesDiscountSemanticRowsAsync(hbRows, token)
             : [];
         var aliasResult = await BuildScopeAndAliasVersionAsync(details, supplementalReturns, hbRows, orders, token);
         var supplierMappingVersion = await CreatePosmSupplierMappingVersionAsync(details, supplementalReturns, token);
@@ -318,7 +377,30 @@ internal sealed class BatchProductSalesDiscountSnapshotSourceReader(
 
     private async Task<List<ProductStoreDailySourceRow>> LoadHBSalesRowsAsync(DateTime day, DateTime nextDay, CancellationToken token)
     {
-        var rows = await _hbSalesDb.Queryable<SalesOrderMain>()
+        // CaptureAsync 已要求 HBSales 为 SQL Server，这里总是按实际日期重编译，原因见 BuildHBSalesRowsSql。
+        var sql = BuildHBSalesRowsSql(_hbSalesDb, day, nextDay);
+        var rows = await _hbSalesDb.Ado.SqlQueryAsync<ProductStoreDailySourceRow>(sql.Key, sql.Value.ToArray(), token);
+        token.ThrowIfCancellationRequested();
+        foreach (var row in rows.Where(row => row.DocumentType?.Trim() is "3" or "4"))
+        {
+            row.Quantity = -row.Quantity;
+            row.ActualAmount = -row.ActualAmount;
+        }
+        foreach (var row in rows)
+            row.DetailGuid = row.HBSalesDetailId.ToString(CultureInfo.InvariantCulture);
+        return rows;
+    }
+
+    /// <summary>
+    /// 来源签名每天要巡检 HBSales 窗口内的全部历史日期（生产约 220 次/天）。结账日期是 date 列，
+    /// SqlSugar 却把日期变量下发为 datetime 参数，带参缓存的计划用不上 IX_B销售清单详情表副本_折扣日日期单号
+    /// 覆盖索引，每次聚集扫描明细表约 40 万页、平均 12.9 秒：2026-09-21 生产原句 sp_executesql 复现 13.8 秒，
+    /// 加 OPTION (RECOMPILE) 后 CPU 约 0.15 秒、明细表逻辑读 418 次，结果逐行一致。
+    /// </summary>
+    internal static KeyValuePair<string, List<SugarParameter>> BuildHBSalesRowsSql(
+        ISqlSugarClient db, DateTime day, DateTime nextDay)
+    {
+        var sql = db.Queryable<SalesOrderMain>()
             .LeftJoin<SalesOrderDetailRecord>((main, detail) => main.B销售单号 == detail.B销售单号)
             .Where((main, detail) => detail.B结账日期.HasValue && detail.B结账日期.Value >= day && detail.B结账日期.Value < nextDay
                 && main.B结账日期.HasValue && main.B结账日期.Value >= day.AddDays(-7) && main.B结账日期.Value < nextDay.AddDays(7)
@@ -330,7 +412,9 @@ internal sealed class BatchProductSalesDiscountSnapshotSourceReader(
                 // 此读取器不以 HBSales 的显示键参与聚合；直接保留源单号，避免 SQL Server 的 + 把字符串前缀强制转为整数。
                 OrderGuid = main.B销售单号,
                 HBSalesOrderNumber = main.B销售单号,
-                DetailGuid = detail.ID.ToString(),
+                // 不能在 SQL 投影中调用 ToString：SqlSugar 会生成 CAST(... AS nvarchar(max))，
+                // 大量行流式传输会显著拖慢来源围栏。保留数值 ID，物化后再生成相同的十进制签名键。
+                HBSalesDetailId = detail.ID,
                 BranchCode = detail.B分店代码,
                 ProductCode = detail.B产品编号,
                 ItemNumber = detail.B货号,
@@ -339,6 +423,8 @@ internal sealed class BatchProductSalesDiscountSnapshotSourceReader(
                 Barcode = detail.B条形码,
                 HBSalesUnitPrice = detail.B单价,
                 HBSalesOriginalAmount = detail.B原价合计金额,
+                HBSalesSaleAmount = detail.B合计金额,
+                HBSalesDiscountRate = detail.B折扣率,
                 OriginalUnitPrice = detail.B单价,
                 OriginalSubtotal = detail.B原价合计金额,
                 PricingUnit = detail.B单位,
@@ -355,32 +441,23 @@ internal sealed class BatchProductSalesDiscountSnapshotSourceReader(
                 OrderLastUploadTime = main.FGC_LastModifyDate ?? main.FGC_CreateDate,
                 DetailLastUploadTime = detail.FGC_LastModifyDate ?? detail.FGC_CreateDate,
                 DocumentType = main.B单据类型,
-            }).ToListAsync(token);
-        token.ThrowIfCancellationRequested();
-        foreach (var row in rows.Where(row => row.DocumentType?.Trim() is "3" or "4"))
-        {
-            row.Quantity = -row.Quantity;
-            row.ActualAmount = -row.ActualAmount;
-        }
-        return rows;
+            }).ToSql();
+        return new KeyValuePair<string, List<SugarParameter>>(sql.Key + " OPTION (RECOMPILE)", sql.Value);
     }
 
     private async Task<List<DiscountSemanticRow>> LoadHBSalesDiscountSemanticRowsAsync(
-        DateTime day, DateTime nextDay, IReadOnlyList<ProductStoreDailySourceRow> dayRows, CancellationToken token)
+        IReadOnlyList<ProductStoreDailySourceRow> dayRows, CancellationToken token)
     {
-        var rows = await _hbSalesDb.Queryable<SalesOrderMain>()
-            .InnerJoin<SalesOrderDetailRecord>((main, detail) => main.B销售单号 == detail.B销售单号)
-            .Where((main, detail) => detail.B结账日期.HasValue && detail.B结账日期.Value >= day && detail.B结账日期.Value < nextDay
-                && main.B结账日期.HasValue && main.B结账日期.Value >= day.AddDays(-7) && main.B结账日期.Value < nextDay.AddDays(7)
-                && (main.B单据类型 == null || main.B单据类型.Trim() != "2"))
-            .Select((main, detail) => new DiscountSemanticRow
+        // LoadHBSalesRowsAsync 已按相同 join/filter 固定当天行；直接复用，避免每个 Capture 重扫一次 HBSales 日明细。
+        // 退货行的 Quantity/ActualAmount 已归一化，因此签名必须使用保留的原始字段，与原查询逐字段等价。
+        var rows = dayRows.Select(row => new DiscountSemanticRow
             {
-                Scope = "hbs-detail", Key = detail.ID.ToString(), RelatedKey = main.B销售单号,
-                Value1 = main.B单据类型, Value2 = main.B原销售单号, Value3 = detail.B产品编号,
-                Value4 = detail.B退货码, Value5 = detail.B条形码, Value6 = detail.B数量,
-                Value7 = detail.B合计金额, Value8 = detail.B单价, Value9 = detail.B原价合计金额,
-                Value10 = detail.B折扣率,
-            }).ToListAsync(token);
+                Scope = "hbs-detail", Key = row.DetailGuid, RelatedKey = row.HBSalesOrderNumber,
+                Value1 = row.DocumentType, Value2 = row.OriginalHBSalesOrderNumber, Value3 = row.ProductCode,
+                Value4 = row.HBSalesReturnCode, Value5 = row.Barcode, Value6 = row.OriginalSaleQuantity,
+                Value7 = row.HBSalesSaleAmount, Value8 = row.HBSalesUnitPrice, Value9 = row.HBSalesOriginalAmount,
+                Value10 = row.HBSalesDiscountRate,
+            }).ToList();
         var originalOrderNumbers = dayRows.Where(row => row.DocumentType?.Trim() is "3" or "4")
             .Select(row => row.OriginalHBSalesOrderNumber).Where(value => !string.IsNullOrWhiteSpace(value))
             .Select(value => value!.Trim()).Distinct(StringComparer.Ordinal).ToList();

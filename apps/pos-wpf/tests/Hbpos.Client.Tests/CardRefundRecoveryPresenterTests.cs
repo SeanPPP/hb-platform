@@ -1130,7 +1130,7 @@ public sealed class CardRefundRecoveryPresenterTests
 
         await presenter.ResolveCardPaymentCommand.ExecuteAsync(CardPaymentSupervisorDecision.ConfirmPaid);
 
-        Assert.False(await recoveryTask.WaitAsync(TimeSpan.FromSeconds(1)));
+        Assert.False(await recoveryTask.WaitAsync(AsyncTestWaitSupport.DefaultTimeout));
         Assert.False(presenter.IsCardRecoveryResultDialogOpen);
     }
 
@@ -1170,7 +1170,7 @@ public sealed class CardRefundRecoveryPresenterTests
         await WaitUntilAsync(() => presenter.IsCardRecoveryResultDialogOpen);
         presenter.CloseCardRecoveryResultDialogCommand.Execute(null);
 
-        Assert.False(await recoveryTask.WaitAsync(TimeSpan.FromSeconds(1)));
+        Assert.False(await recoveryTask.WaitAsync(AsyncTestWaitSupport.DefaultTimeout));
     }
 
     private static CardRecoveryPresenter CreatePresenter(
@@ -1233,20 +1233,6 @@ public sealed class CardRefundRecoveryPresenterTests
                 OperationGuid,
                 LocalCardPaymentAttemptStatus.RequiresReview,
                 DateTimeOffset.UtcNow));
-
-    private static async Task WaitUntilAsync(Func<bool> predicate)
-    {
-        var timeoutAt = DateTimeOffset.UtcNow.AddSeconds(2);
-        while (!predicate())
-        {
-            if (DateTimeOffset.UtcNow >= timeoutAt)
-            {
-                throw new TimeoutException("Timed out waiting for the presenter state.");
-            }
-
-            await Task.Delay(10);
-        }
-    }
 
     private static void PublishRecoveryOwner(PosCartService cart)
     {

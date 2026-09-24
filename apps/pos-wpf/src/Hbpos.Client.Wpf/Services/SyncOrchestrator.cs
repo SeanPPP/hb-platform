@@ -433,9 +433,10 @@ internal sealed class SyncOrchestrator
         {
             var result = await executeAsync();
             await RefreshPendingSyncAsync();
+            // 端点切换中断时剩余上传已排队到切换后继续，提示要与普通的"部分失败"区分开。
             _setStatusMessage?.Invoke(string.Format(
                 _localization.CurrentCulture,
-                _localization.T("shell.sync.retryCompleted"),
+                _localization.T(result.WasInterrupted ? "shell.sync.retryInterrupted" : "shell.sync.retryCompleted"),
                 result.UploadedCount,
                 result.FailedCount));
         }
@@ -653,28 +654,45 @@ internal sealed class SyncOrchestrator
             Amount: null);
     }
 
+    // 被端点切换中断的批次里，未尝试的订单不一定计入失败数；此时"未完成"按尝试数减成功数计。
     private static UploadRetrySummary ToSummary(OrderUploadExecutionResult result) =>
-        new(result.AttemptedCount, result.UploadedCount, result.FailedCount);
+        new(
+            result.AttemptedCount,
+            result.UploadedCount,
+            result.WasInterrupted
+                ? Math.Max(result.FailedCount, result.AttemptedCount - result.UploadedCount)
+                : result.FailedCount,
+            result.WasInterrupted);
 
     private static UploadRetrySummary ToSummary(LinklySettlementUploadExecutionResult result) =>
-        new(result.AttemptedCount, result.UploadedCount, result.FailedCount + result.DeferredCount);
+        new(
+            result.AttemptedCount,
+            result.UploadedCount,
+            result.FailedCount + result.DeferredCount,
+            result.WasInterrupted);
 
     private static UploadRetrySummary CombineRetryResults(IEnumerable<UploadRetrySummary> results)
     {
         var attempted = 0;
         var uploaded = 0;
         var failed = 0;
+        var interrupted = false;
         foreach (var result in results)
         {
             attempted += result.AttemptedCount;
             uploaded += result.UploadedCount;
             failed += result.FailedCount;
+            interrupted |= result.WasInterrupted;
         }
 
-        return new UploadRetrySummary(attempted, uploaded, failed);
+        return new UploadRetrySummary(attempted, uploaded, failed, interrupted);
     }
 
-    private sealed record UploadRetrySummary(int AttemptedCount, int UploadedCount, int FailedCount)
+    private sealed record UploadRetrySummary(
+        int AttemptedCount,
+        int UploadedCount,
+        int FailedCount,
+        bool WasInterrupted = false)
     {
         public static UploadRetrySummary Empty { get; } = new(0, 0, 0);
     }

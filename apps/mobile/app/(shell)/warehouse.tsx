@@ -9,6 +9,11 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingOverlay } from "@/components/ui/LoadingOverlay";
 import { CameraScanSheet } from "@/components/ui/CameraScanSheet";
 import { NumericInputModal } from "@/components/product-maintenance/NumericInputModal";
+import {
+  RetailPriceNotificationPreview,
+  WarehouseSuggestedDiscountField,
+} from "@/components/price-updates/WarehousePriceNotificationFields";
+import { buildPriceNotificationSaveMessage } from "@/modules/price-updates/price-notification";
 import { hasVisibleTabRoute } from "@/modules/navigation/default-route";
 import { useAppNavigationStore } from "@/modules/navigation/store";
 import { useCameraScan, type CameraScanMode } from "@/modules/scanner/use-camera-scan";
@@ -38,6 +43,7 @@ import {
   lookupLocations,
   lookupWarehouseProducts,
   patchWarehouseProduct,
+  patchWarehouseProductWithNotification,
   setWarehouseProductLocation,
   unbindProductFromLocation,
   updateLocation,
@@ -66,6 +72,9 @@ import {
   type WarehouseProductSummaryField,
 } from "@/modules/warehouse/pda-layout";
 import { toggleWarehouseProductGradeSelection } from "@/modules/warehouse/product-grade";
+import { EMPTY_SUPPLY_NOTICE_DRAFT, buildSupplyNoticeInput, type SupplyNoticeDraft } from "@/modules/supply-notice/supply-notice-draft";
+import { SupplyNoticeForm } from "@/modules/supply-notice/supply-notice-form";
+import type { SupplyNoticeInput } from "@/modules/supply-notice/types";
 import { buildWarehouseProductPatchRequest, isWarehouseStatusOnlyPatch, type WarehouseProductPatchField } from "@/modules/warehouse/product-patch";
 import { printWarehouseLocationLabel, printWarehouseProductLabel } from "@/modules/printer/api";
 import { isIosReviewSessionActive } from "@/modules/ios-review/session";
@@ -332,7 +341,8 @@ function LocationPartMenu({
 export default function WarehouseScreen() {
   const isFocused = useIsFocused();
   const router = useRouter();
-  const { t, language } = useAppTranslation(["warehouse", "common"]);
+  const { t, language } = useAppTranslation(["warehouse", "common", "supplyNotice"]);
+  const { t: tPriceUpdates } = useAppTranslation("priceUpdates");
   const { width: windowWidth } = useWindowDimensions();
   const access = useAuthStore((state) => state.access);
   const deviceSession = useDeviceStore((state) => state.session);
@@ -362,6 +372,8 @@ export default function WarehouseScreen() {
   const [hasProductLookup, setHasProductLookup] = useState(false);
   const [productChoiceModal, setProductChoiceModal] = useState<ProductChoiceModalState>(null);
   const [productChoiceDraft, setProductChoiceDraft] = useState({ grade: "", warehouseIsActive: true });
+  // 下架时随状态一起登记的供货说明；每次打开上下架弹窗重置。
+  const [supplyNoticeDraft, setSupplyNoticeDraft] = useState<SupplyNoticeDraft>(EMPTY_SUPPLY_NOTICE_DRAFT);
   const [productLocationModalVisible, setProductLocationModalVisible] = useState(false);
   const [unbindLocationConfirmVisible, setUnbindLocationConfirmVisible] = useState(false);
   const [pendingProductLocationUnbind, setPendingProductLocationUnbind] = useState<PendingProductLocationUnbindState | null>(null);
@@ -681,6 +693,7 @@ export default function WarehouseScreen() {
       grade: productForm.grade.trim().toUpperCase(),
       warehouseIsActive: productForm.warehouseIsActive,
     });
+    setSupplyNoticeDraft(EMPTY_SUPPLY_NOTICE_DRAFT);
     setProductChoiceModal(choice);
   }, [productForm.grade, productForm.warehouseIsActive]);
 
@@ -816,7 +829,7 @@ export default function WarehouseScreen() {
 
   const handleSaveProductPatch = useCallback(async (
     patch: Partial<typeof productForm>,
-    options?: { field?: WarehouseProductPatchField; syncStoreRetailPrices?: boolean }
+    options?: { field?: WarehouseProductPatchField; syncStoreRetailPrices?: boolean; supplyNotice?: SupplyNoticeInput }
   ) => {
     if (!product) {
       return;
@@ -826,16 +839,18 @@ export default function WarehouseScreen() {
     const patchField = options?.field ?? (isWarehouseStatusOnlyPatch(patch) ? "warehouseIsActive" : undefined);
     setBusy(true);
     try {
-      const saved = await patchWarehouseProduct(
+      const { product: saved, notification } = await patchWarehouseProductWithNotification(
         product.productCode,
         buildWarehouseProductPatchRequest(nextForm, parseNullableNumber, {
           field: patchField,
           syncStoreRetailPrices: options?.syncStoreRetailPrices,
+          supplyNotice: options?.supplyNotice,
         })
       );
       applyProduct(saved);
       setProductChoiceModal(null);
-      setSnackbar(t("messages.saved"));
+      // 响应带 X-Price-Notification 头时说明本次保存涉及分店价格通知，改用通知结果文案。
+      setSnackbar(buildPriceNotificationSaveMessage(notification, tPriceUpdates) ?? t("messages.saved"));
     } catch (error) {
       reportWarehouseFailure("保存商品字段", error, {
         productCode: product.productCode,
@@ -846,7 +861,7 @@ export default function WarehouseScreen() {
     } finally {
       setBusy(false);
     }
-  }, [applyProduct, parseNullableNumber, product, productForm, syncFormFromProduct, t]);
+  }, [applyProduct, parseNullableNumber, product, productForm, syncFormFromProduct, t, tPriceUpdates]);
 
   const handleConfirmNumericInputModal = useCallback(() => {
     if (!numericInputModal) {
@@ -2076,6 +2091,13 @@ export default function WarehouseScreen() {
                         })}
                       </View>
                     ))}
+                    <WarehouseSuggestedDiscountField
+                      productCode={product.productCode}
+                      retailPrice={product.retailPrice ?? product.oemPrice ?? null}
+                      editable={access.isAdmin || access.isWarehouseManager || access.isWarehouseStaff}
+                      dense={isPdaProductLayout}
+                      onMessage={setSnackbar}
+                    />
                   </Card.Content>
                 </Card>
 
@@ -2381,23 +2403,39 @@ export default function WarehouseScreen() {
           contentContainerStyle={styles.modal}
         >
           <Text variant="titleMedium" style={styles.modalTitle}>{t("product.fields.warehouseStatus")}</Text>
-          <View style={[styles.switchRow, styles.modalSwitchRow]}>
-            <Text variant="bodyMedium">{productChoiceDraft.warehouseIsActive ? t("product.onShelf") : t("product.offShelf")}</Text>
-            <Switch
-              value={productChoiceDraft.warehouseIsActive}
-              onValueChange={(value) => setProductChoiceDraft((current) => ({ ...current, warehouseIsActive: value }))}
-            />
-          </View>
+          <ScrollView style={styles.modalScroll} keyboardShouldPersistTaps="handled">
+            <View style={[styles.switchRow, styles.modalSwitchRow]}>
+              <Text variant="bodyMedium">{productChoiceDraft.warehouseIsActive ? t("product.onShelf") : t("product.offShelf")}</Text>
+              <Switch
+                value={productChoiceDraft.warehouseIsActive}
+                onValueChange={(value) => setProductChoiceDraft((current) => ({ ...current, warehouseIsActive: value }))}
+              />
+            </View>
+            {/* 从在架改为下架时登记供货说明：后续计划必选，让门店知道以后还会不会有、什么时候恢复。 */}
+            {!productChoiceDraft.warehouseIsActive && productForm.warehouseIsActive ? (
+              <SupplyNoticeForm draft={supplyNoticeDraft} onChange={setSupplyNoticeDraft} disabled={busy} />
+            ) : null}
+          </ScrollView>
           <View style={styles.modalActionRow}>
             <Button onPress={() => setProductChoiceModal(null)}>{t("common:actions.cancel")}</Button>
             <Button
               mode="contained"
-              onPress={() =>
+              onPress={() => {
+                const delisting = !productChoiceDraft.warehouseIsActive && productForm.warehouseIsActive;
+                let supplyNotice: SupplyNoticeInput | undefined;
+                if (delisting) {
+                  const built = buildSupplyNoticeInput(supplyNoticeDraft);
+                  if ("errorKey" in built) {
+                    setSnackbar(t(`supplyNotice:${built.errorKey}`));
+                    return;
+                  }
+                  supplyNotice = built.input;
+                }
                 void handleSaveProductPatch(
                   { warehouseIsActive: productChoiceDraft.warehouseIsActive },
-                  { field: "warehouseIsActive" }
-                )
-              }
+                  { field: "warehouseIsActive", supplyNotice }
+                );
+              }}
             >
               {t("common:actions.save")}
             </Button>
@@ -2413,6 +2451,12 @@ export default function WarehouseScreen() {
           <Text variant="bodyMedium" style={styles.secondaryText}>
             {t("product.retailSyncConfirmDescription")}
           </Text>
+          {product && pendingRetailPriceSync ? (
+            <RetailPriceNotificationPreview
+              productCode={product.productCode}
+              retailPrice={pendingRetailPriceSync.retailPrice}
+            />
+          ) : null}
           <View style={styles.sheetFooter}>
             <Button onPress={() => void handleConfirmRetailPriceSync(false)} disabled={busy}>
               {t("product.retailSyncProductOnly")}
@@ -3158,6 +3202,9 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     padding: 16,
     gap: 12,
+  },
+  modalScroll: {
+    maxHeight: 460,
   },
   modalTitle: {
     marginBottom: 8,

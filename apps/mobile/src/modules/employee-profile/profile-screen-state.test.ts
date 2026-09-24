@@ -17,6 +17,7 @@ import {
 const profile: EmployeeProfile = {
   username: "employee",
   phone: " 0400 000 000 ",
+  email: "employee@example.com",
   bankBsb: "062000",
   bankAccountNumber: "12345678",
   superannuationCompanyName: "Example Super",
@@ -36,6 +37,7 @@ const profile: EmployeeProfile = {
 test("基本资料仅在规范化后的草稿变化时阻止离页", () => {
   const sameDraft = {
     phone: "0400 000 000",
+    email: "employee@example.com",
     birthday: "1990-01-02",
     gender: "female",
     employmentType: "fullTime",
@@ -48,6 +50,9 @@ test("基本资料仅在规范化后的草稿变化时阻止离页", () => {
   assert.equal(hasBasicProfileChanges(changedDraft, profile), true);
   assert.equal(getBackAction({ view: "basic", hasUnsavedChanges: true }), "confirm-discard");
   assert.equal(getBackAction({ view: "overview", hasUnsavedChanges: false }), "navigate");
+  assert.equal(hasBasicProfileChanges({ ...sameDraft, email: " employee@example.com " }, profile), false);
+  assert.equal(hasBasicProfileChanges({ ...sameDraft, email: "other@example.com" }, profile), true);
+  assert.equal(hasBasicProfileChanges({ ...sameDraft, employmentType: "casual" }, profile, { canEditPositionType: false }), false);
 });
 
 test("敏感资料保留完整 Pending 草稿并带进入编辑时的 revision 提交", () => {
