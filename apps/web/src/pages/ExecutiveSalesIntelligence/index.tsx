@@ -13,6 +13,9 @@ import RevenueWeeklyHierarchy from './RevenueReport/RevenueWeeklyHierarchy'
 import {
   FULL_DAY_CUTOFF_HOUR,
   alignBranchesToCutoff,
+  alignRangeBranchesToCutoff,
+  alignRangeHourlyRows,
+  alignRangeWeeklyToCutoff,
   alignWeeklyNodesToCutoff,
   buildHourlySeries,
   filterHourlyRowsByBranch,
@@ -20,6 +23,8 @@ import {
   formatLocalClockTime,
   getDisplayCutoffHour,
   groupHourlySeriesByBranch,
+  parseHourKey,
+  referenceClockHour,
   resolveDefaultCutoff,
   resolveEffectiveCutoff,
   scopeWeeklyToBranch,
@@ -94,7 +99,6 @@ export default function ExecutiveSalesIntelligence() {
     [allHourlyRows, selectedBranchCode],
   )
   const branchQuery = { ...reportQuery, data: reportQuery.data?.branches }
-  const hourlyQuery = { ...reportQuery, data: scopedHourlyRows }
 
   useEffect(() => {
     if (!active) return
@@ -144,22 +148,56 @@ export default function ExecutiveSalesIntelligence() {
     : ''
   const rankingCompareAvailable = alignToCutoff ? hourlyCompareAvailable : coreCompareAvailable
   const weeklyCompareAvailable = alignToCutoff ? hourlyCompareAvailable : selection.compare && !weeklyComparePending
-  const branches = useMemo(
-    () => alignToCutoff ? alignBranchesToCutoff(rawBranches, seriesByBranch, effectiveCutoffHour) : rawBranches,
-    [alignToCutoff, effectiveCutoffHour, rawBranches, seriesByBranch],
+
+  // 本周、本月等最后一天是今天的多日区间：今天换成截至最近完整整点的累计，其余日期仍按全天比较。
+  const lastDay = reportQuery.data?.lastDay ?? null
+  const lastDayDate = lastDay?.date?.slice(0, 10) ?? null
+  const rangeEndsToday = !selectedDate && selection.endDate === todayKey && selection.compare
+  const rangeCutoff = useMemo(
+    () => rangeEndsToday
+      ? resolveDefaultCutoff({ selectedDate: todayKey, todayKey, statisticsCompletedAtUtc: statisticsLastSuccessfulAtUtc })
+      : null,
+    [rangeEndsToday, todayKey, statisticsLastSuccessfulAtUtc],
   )
+  // 与单日一样 fail-closed：缺统计时间、旧后端没有最后一天数据、分时未齐时都不对齐。
+  const rangeAlignActive = Boolean(rangeCutoff?.live) && lastDay !== null && lastDayDate === selection.endDate
+    && hourlyCompareAvailable && !hourlyCurrentPending && !reportQuery.error
+  const rangeCutoffHour = rangeAlignActive && rangeCutoff ? rangeCutoff.cutoffHour : FULL_DAY_CUTOFF_HOUR
+  const rangeCutoffLabel = formatHourLabel(rangeCutoffHour)
+  const rangeDayCount = Math.round((Date.parse(selection.endDate) - Date.parse(selection.startDate)) / 86_400_000) + 1
+  const lastDaySeriesByBranch = useMemo(() => groupHourlySeriesByBranch(lastDay?.hourly ?? []), [lastDay])
+  const alignedHourlyRows = useMemo(() => {
+    if (!scopedHourlyRows || !rangeAlignActive || !lastDay) return scopedHourlyRows
+    return alignRangeHourlyRows(scopedHourlyRows, filterHourlyRowsByBranch(lastDay.hourly, selectedBranchCode), rangeCutoffHour)
+  }, [lastDay, rangeAlignActive, rangeCutoffHour, scopedHourlyRows, selectedBranchCode])
+  const hourlyQuery = { ...reportQuery, data: alignedHourlyRows }
+
+  const branches = useMemo(() => {
+    if (alignToCutoff) return alignBranchesToCutoff(rawBranches, seriesByBranch, effectiveCutoffHour)
+    if (rangeAlignActive && lastDay) return alignRangeBranchesToCutoff(rawBranches, lastDay.branches, lastDaySeriesByBranch, rangeCutoffHour)
+    return rawBranches
+  }, [alignToCutoff, effectiveCutoffHour, lastDay, lastDaySeriesByBranch, rangeAlignActive, rangeCutoffHour, rawBranches, seriesByBranch])
   const rawWeekly = reportQuery.data?.weekly
   const weeklyData = useMemo(() => {
     if (!rawWeekly) return undefined
-    const aligned = alignToCutoff ? alignWeeklyNodesToCutoff(rawWeekly, seriesByBranch, effectiveCutoffHour) : rawWeekly
+    const aligned = alignToCutoff
+      ? alignWeeklyNodesToCutoff(rawWeekly, seriesByBranch, effectiveCutoffHour)
+      : rangeAlignActive && lastDayDate
+        ? alignRangeWeeklyToCutoff(rawWeekly, lastDayDate, lastDaySeriesByBranch, rangeCutoffHour)
+        : rawWeekly
     return scopeWeeklyToBranch(aligned, selectedBranchCode)
-  }, [alignToCutoff, effectiveCutoffHour, rawWeekly, selectedBranchCode, seriesByBranch])
+  }, [alignToCutoff, effectiveCutoffHour, lastDayDate, lastDaySeriesByBranch, rangeAlignActive, rangeCutoffHour, rawWeekly, selectedBranchCode, seriesByBranch])
   const weeklyQuery = { ...reportQuery, data: weeklyData }
-  const alignmentUnavailableReason = selectedDate === todayKey && selection.compare && reportQuery.data && !cumulativeActive
-    ? defaultCutoff === null
+  const alignmentUnavailableReason = (selectedDate === todayKey || rangeEndsToday) && selection.compare && reportQuery.data
+    && !cumulativeActive && !rangeAlignActive
+    ? (selectedDate ? defaultCutoff : rangeCutoff) === null
       ? text('尚未取得今天的统计发布时间', 'today’s statistics time is not available yet')
-      : text('今天的分时统计尚未齐全', 'today’s hourly statistics are incomplete')
+      : !selectedDate && lastDayDate !== selection.endDate
+        ? text('后端尚未提供今天的分时数据', 'today’s hourly data is not available from the server yet')
+        : text('今天的分时统计尚未齐全', 'today’s hourly statistics are incomplete')
     : null
+  // 拿不到截止整点时，单日今天的旧时段表按 UTC+10 墙钟推断：之后的小时未到、当前小时进行中。
+  const fallbackClockHour = selectedDate === todayKey && !cumulativeActive ? referenceClockHour() : null
 
   useEffect(() => {
     // 换日期后回到默认截止整点，避免沿用上一天点选的时刻。
@@ -180,12 +218,25 @@ export default function ExecutiveSalesIntelligence() {
     () => aggregateHourlyRows(hourlyQuery.data ?? [], hourlyCompareAvailable),
     [hourlyQuery.data, hourlyCompareAvailable],
   )
+  // 回退态：最后一个有本期数据的小时。之后到当前整点之间本期为 0，多半是统计还没跑到，不能当成 −100%。
+  const fallbackLastDataHour = useMemo(() => {
+    if (fallbackClockHour === null) return null
+    let last: number | null = null
+    for (const row of hourlyRows) {
+      const hour = parseHourKey(row.hour)
+      if (hour !== null && row.revenue > 0 && (last === null || hour > last)) last = hour
+    }
+    return last
+  }, [fallbackClockHour, hourlyRows])
   const visibleBranches = showAllBranches ? branches : branches.slice(0, INITIAL_BRANCH_COUNT)
   const hasBranchMetrics = branchQuery.data !== undefined && branches.length > 0 && !branchQuery.error
     && (!selectedBranch || branches.some(branch => normalizeCode(branch.branchCode) === normalizeCode(selectedBranch.branchCode)))
   const allLoading = reportQuery.loading
   const anySlow = reportQuery.slow
   const scopeLabel = selectedBranch?.branchName || text('全部门店', 'All branches')
+  const kpiCaption = rangeAlignActive
+    ? text(`${scopeLabel} · 今天截至 ${rangeCutoffLabel}`, `${scopeLabel} · today to ${rangeCutoffLabel}`)
+    : scopeLabel
   const localizeTrend = (trend: ReturnType<typeof getRevenueTrend>) => ({
     ...trend,
     text: trend.text === 'new' ? text('新增', 'New') : trend.text,
@@ -329,10 +380,10 @@ export default function ExecutiveSalesIntelligence() {
       <section className={styles.summaryGrid} aria-label={text('核心业绩', 'Key metrics')}>
         <MetricCard label={text('销售额', 'Revenue')} value={formatAud(hasBranchMetrics ? summary.revenue : null)}
           previous={coreCompareAvailable && hasBranchMetrics ? `${text('同期', 'Previous')} ${formatAud(summary.revenueLY)}` : '—'}
-          trend={revenueTrend} caption={scopeLabel} loading={branchQuery.loading && !branchQuery.data} />
+          trend={revenueTrend} caption={kpiCaption} loading={branchQuery.loading && !branchQuery.data} />
         <MetricCard label={text('订单数', 'Orders')} value={formatInteger(hasBranchMetrics ? summary.orders : null)}
           previous={coreCompareAvailable && hasBranchMetrics ? `${text('同期', 'Previous')} ${formatInteger(summary.ordersLY)}` : '—'}
-          trend={orderTrend} caption={scopeLabel} loading={branchQuery.loading && !branchQuery.data} />
+          trend={orderTrend} caption={kpiCaption} loading={branchQuery.loading && !branchQuery.data} />
         <MetricCard label={text('客单价', 'AOV')} value={formatAud(hasBranchMetrics ? summary.aov : null, 2)}
           previous={coreCompareAvailable && hasBranchMetrics ? `${text('同期', 'Previous')} ${formatAud(summary.aovLY, 2)}` : '—'}
           trend={aovTrend} caption={text('销售额 ÷ 订单数', 'Revenue ÷ orders')} loading={branchQuery.loading && !branchQuery.data} />
@@ -371,6 +422,13 @@ export default function ExecutiveSalesIntelligence() {
               <span className={cumulativeStyles.alignPill}><ClockCircleOutlined aria-hidden="true" />
                 {text(`截至 ${cutoffLabel} · 对比去年同时刻`, `To ${cutoffLabel} · vs same time LY`)}</span>
               <span>{text('排名与同比按同一整点计算，不再拿今天半天比去年全天', 'Ranks and YoY use the same cutoff hour for both years')}</span>
+            </div>
+          )}
+          {rangeAlignActive && (
+            <div className={cumulativeStyles.alignBar}>
+              <span className={cumulativeStyles.alignPill}><ClockCircleOutlined aria-hidden="true" />
+                {text(`今天截至 ${rangeCutoffLabel} · 其余 ${rangeDayCount - 1} 天全天`, `Today to ${rangeCutoffLabel} · other ${rangeDayCount - 1} days in full`)}</span>
+              <span>{text('今天与去年对应日按同一整点比较，其余日期按全天比较', 'Today and its matching day last year use the same cutoff hour; other days compare in full')}</span>
             </div>
           )}
           {branchQuery.error ? (
@@ -427,7 +485,9 @@ export default function ExecutiveSalesIntelligence() {
             <span>{text(`显示 ${visibleBranches.length} / ${branches.length} 家门店`, `Showing ${visibleBranches.length} of ${branches.length} branches`)}</span>
             <span>{alignToCutoff
               ? text(`按截至 ${cutoffLabel} 销售额从高到低`, `Sorted by revenue to ${cutoffLabel}`)
-              : text('按销售额从高到低', 'Sorted by revenue')}</span>
+              : rangeAlignActive
+                ? text(`按销售额（今天截至 ${rangeCutoffLabel}）从高到低`, `Sorted by revenue (today to ${rangeCutoffLabel})`)
+                : text('按销售额从高到低', 'Sorted by revenue')}</span>
           </footer>
         </article>
 
@@ -470,15 +530,40 @@ export default function ExecutiveSalesIntelligence() {
                   <th scope="col">{text('时段', 'Hour')}</th><th scope="col">{text('本期', 'Current')}</th>
                   <th scope="col">{text('同期', 'Previous')}</th><th scope="col">{text('同比', 'YoY')}</th><th scope="col">{text('销售密度', 'Density')}</th>
                 </tr></thead>
-                <tbody>{hourlyRows.map(row => (
-                  <tr key={row.hour} className={row.isPeak ? styles.peakRow : undefined}>
-                    <th scope="row">{row.hour}</th><td className={styles.numeric}>{formatAud(row.revenue)}</td>
-                    <td className={`${styles.numeric} ${styles.mutedValue}`}>{formatAud(hourlyCompareAvailable ? row.revenueLY : null)}</td>
-                    <td>{renderTrend(row.revenue, hourlyCompareAvailable ? row.revenueLY : null)}</td>
-                    <td><div className={styles.progressCell}><progress value={row.percentage} max={100}>{row.percentage}%</progress><span>{row.percentage}%</span></div></td>
-                  </tr>
-                ))}</tbody>
+                <tbody>{hourlyRows.map(row => {
+                  const hour = parseHourKey(row.hour)
+                  const upcoming = fallbackClockHour !== null && hour !== null && hour > fallbackClockHour
+                  const inProgress = fallbackClockHour !== null && hour === fallbackClockHour
+                  const awaitingStats = fallbackClockHour !== null && hour !== null && hour < fallbackClockHour
+                    && row.revenue === 0 && (fallbackLastDataHour === null || hour > fallbackLastDataHour)
+                  // 没有统计时间就无法证明最后一个有数据的小时是完整的，早于当前整点时不算同比。
+                  const maybePartial = fallbackClockHour !== null && hour !== null && hour === fallbackLastDataHour && hour < fallbackClockHour
+                  return (
+                    <tr key={row.hour} className={upcoming ? cumulativeStyles.upcomingRow : row.isPeak ? styles.peakRow : undefined}>
+                      <th scope="row">{row.hour}</th>
+                      <td className={styles.numeric}>{upcoming || awaitingStats
+                        ? <span className={cumulativeStyles.cellWithTag}><span className={styles.mutedValue}>—</span><span className={cumulativeStyles.mutedTag}>{upcoming ? text('未到', 'Not yet') : text('待统计', 'Pending')}</span></span>
+                        : inProgress || maybePartial
+                          ? <span className={cumulativeStyles.cellWithTag}>
+                            <span className={cumulativeStyles.liveValue}>{row.revenue > 0 ? formatAud(row.revenue) : '—'}</span>
+                            <span className={cumulativeStyles.liveTag}>{inProgress ? text('进行中', 'In progress') : text('可能未统计完', 'May be incomplete')}</span>
+                          </span>
+                          : formatAud(row.revenue)}</td>
+                      <td className={`${styles.numeric} ${styles.mutedValue}`}>{formatAud(hourlyCompareAvailable ? row.revenueLY : null)}</td>
+                      <td>{upcoming || inProgress || awaitingStats || maybePartial
+                        ? <span className={styles.mutedValue}>—</span>
+                        : renderTrend(row.revenue, hourlyCompareAvailable ? row.revenueLY : null)}</td>
+                      <td>{upcoming || awaitingStats ? null : <div className={styles.progressCell}><progress value={row.percentage} max={100}>{row.percentage}%</progress><span>{row.percentage}%</span></div>}</td>
+                    </tr>
+                  )
+                })}</tbody>
               </table>
+              {rangeAlignActive && (
+                <footer className={styles.panelFooter}>
+                  <span>{text(`今天 ${rangeCutoffLabel} 起的时段两期都不含今天与去年对应日，只比前 ${rangeDayCount - 1} 天。`,
+                    `From ${rangeCutoffLabel}, both periods exclude today and its matching day, comparing the other ${rangeDayCount - 1} days.`)}</span>
+                </footer>
+              )}
             </div>
           )}
         </article>
@@ -488,7 +573,9 @@ export default function ExecutiveSalesIntelligence() {
         <div className={styles.panelHeader}>
           <div><h2 id="weekly-revenue-title">{text('周业绩层级', 'Weekly performance hierarchy')}</h2>
             <p>{text('展开周与分店，再选择周、分店或日期联动上方分析。', 'Expand weeks and branches, then select a week, branch or date to update the analysis above.')}</p></div>
-          <span className={styles.panelStatus}>{selection.startDate} — {selection.endDate} · {scopeLabel}</span>
+          <span className={styles.panelStatus}>{selection.startDate} — {selection.endDate} · {scopeLabel}{alignToCutoff
+            ? text(` · 截至 ${cutoffLabel}`, ` · to ${cutoffLabel}`)
+            : rangeAlignActive ? text(` · 今天截至 ${rangeCutoffLabel}`, ` · today to ${rangeCutoffLabel}`) : ''}</span>
         </div>
         {weeklyComparePending && (
           <Alert className={styles.sectionAlert} type="info" showIcon

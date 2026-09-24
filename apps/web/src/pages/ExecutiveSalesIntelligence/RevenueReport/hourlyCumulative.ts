@@ -439,6 +439,118 @@ export function alignWeeklyNodesToCutoff(
   return nodes.map(alignNode)
 }
 
+const ZERO_TOTALS: CumulativeTotals = { revenue: 0, compareRevenue: 0, orders: 0, compareOrders: 0 }
+
+/** 小时金额相减会留下浮点尾差，统一取到分，并且不出现负数。 */
+function nonNegativeCents(value: number) {
+  return Math.max(0, Math.round(value * 100) / 100)
+}
+
+function sumChildTotals(children: readonly RevenueWeeklyNode[]): CumulativeTotals {
+  return children.reduce<CumulativeTotals>((sum, child) => ({
+    revenue: sum.revenue + child.revenue,
+    compareRevenue: sum.compareRevenue + child.revenueLY,
+    orders: sum.orders + child.orders,
+    compareOrders: sum.compareOrders + child.ordersLY,
+  }), { ...ZERO_TOTALS })
+}
+
+/**
+ * 多日区间含今天：分店值 = 区间合计 − 今天全天日统计 + 今天截至截止整点的小时累计；
+ * 同期同样把对应日换成截至同一整点。其余日期仍是全天日统计，与原口径一致。
+ */
+export function alignRangeBranchesToCutoff(
+  branches: readonly RevenueBranch[],
+  lastDayBranches: readonly RevenueBranch[],
+  lastDaySeriesByBranch: ReadonlyMap<string, HourlySeries>,
+  cutoffHour: number,
+): RevenueBranch[] {
+  const dayByBranch = new Map(lastDayBranches.map(branch => [normalizeBranchKey(branch.branchCode), branch]))
+  return branches
+    .map((branch, index) => {
+      const key = normalizeBranchKey(branch.branchCode)
+      const day = dayByBranch.get(key)
+      const series = lastDaySeriesByBranch.get(key)
+      const totals = series ? getCumulativeTotals(series, cutoffHour) : ZERO_TOTALS
+      const revenue = nonNegativeCents(branch.revenue - (day?.revenue ?? 0) + totals.revenue)
+      const revenueLY = nonNegativeCents(branch.revenueLY - (day?.revenueLY ?? 0) + totals.compareRevenue)
+      const orderCount = Math.max(0, branch.orderCount - (day?.orderCount ?? 0) + totals.orders)
+      const orderCountLY = Math.max(0, branch.orderCountLY - (day?.orderCountLY ?? 0) + totals.compareOrders)
+      const aligned: RevenueBranch = {
+        ...branch,
+        revenue,
+        revenueLY,
+        orderCount,
+        orderCountLY,
+        aov: orderCount > 0 ? revenue / orderCount : 0,
+        aovLY: orderCountLY > 0 ? revenueLY / orderCountLY : 0,
+      }
+      return { aligned, index }
+    })
+    .sort((left, right) => right.aligned.revenue - left.aligned.revenue || left.index - right.index)
+    .map(({ aligned }, index) => ({ ...aligned, rank: index + 1 }))
+}
+
+/**
+ * 多日区间的时段合计：截止整点及之后的小时，两期都去掉最后一天（今天 / 同期对应日），
+ * 这样每个小时比较的都是相同天数的完整小时；截止之前的小时两期都含最后一天。
+ */
+export function alignRangeHourlyRows(
+  rangeRows: readonly RevenueHourly[],
+  lastDayRows: readonly RevenueHourly[],
+  cutoffHour: number,
+): RevenueHourly[] {
+  const dayRows = new Map<string, RevenueHourly>()
+  for (const row of lastDayRows) {
+    const hour = parseHourKey(row.hour)
+    if (hour !== null) dayRows.set(`${normalizeBranchKey(row.branchCode)}|${hour}`, row)
+  }
+  return rangeRows.map(row => {
+    const hour = parseHourKey(row.hour)
+    if (hour === null || hour < cutoffHour) return row
+    const day = dayRows.get(`${normalizeBranchKey(row.branchCode)}|${hour}`)
+    if (!day) return row
+    return {
+      ...row,
+      revenue: nonNegativeCents(finiteOrZero(row.revenue) - finiteOrZero(day.revenue)),
+      revenueLY: nonNegativeCents(finiteOrZero(row.revenueLY) - finiteOrZero(day.revenueLY)),
+      orderCount: Math.max(0, finiteOrZero(row.orderCount) - finiteOrZero(day.orderCount)),
+      orderCountLY: Math.max(0, finiteOrZero(row.orderCountLY) - finiteOrZero(day.orderCountLY)),
+    }
+  })
+}
+
+/**
+ * 多日区间的周层级：只把最后一天的日期节点换成该店截至整点的累计，再向上重算分店与周节点。
+ * 不含最后一天的周原样返回。
+ */
+export function alignRangeWeeklyToCutoff(
+  nodes: readonly RevenueWeeklyNode[],
+  lastDate: string,
+  lastDaySeriesByBranch: ReadonlyMap<string, HourlySeries>,
+  cutoffHour: number,
+): RevenueWeeklyNode[] {
+  return nodes.map(week => {
+    let changed = false
+    const children = (week.children ?? []).map(branch => {
+      const dayIndex = branch.children?.findIndex(child => child.level === 'date' && child.hierarchy === lastDate) ?? -1
+      if (!branch.children || dayIndex < 0) return branch
+      const day = branch.children[dayIndex]!
+      const series = lastDaySeriesByBranch.get(normalizeBranchKey(getHierarchyBranchCode(day)))
+      const nextChildren = [...branch.children]
+      nextChildren[dayIndex] = { ...day, ...alignedMetrics(series ? getCumulativeTotals(series, cutoffHour) : ZERO_TOTALS) }
+      changed = true
+      return { ...branch, ...alignedMetrics(sumChildTotals(nextChildren)), children: nextChildren }
+    })
+    return changed ? { ...week, ...alignedMetrics(sumChildTotals(children)), children } : week
+  })
+}
+
+/** 固定 UTC+10 的当前整点（与截止整点同一参考时区），用于拿不到统计时间时推断哪些小时还没到。 */
+export function referenceClockHour(now: number = Date.now(), utcOffsetMinutes = CUTOFF_REFERENCE_UTC_OFFSET_MINUTES) {
+  return new Date(now + utcOffsetMinutes * 60_000).getUTCHours()
+}
+
 /**
  * 周层级收窄到单个分店：周节点换成该店分店节点的值，子节点只保留该店。
  * 与后端 focusBranchCodes=[分店] 的结果一致；该店当周无销售时整周不显示。
