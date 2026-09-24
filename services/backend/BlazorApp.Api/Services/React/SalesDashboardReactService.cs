@@ -7784,7 +7784,7 @@ namespace BlazorApp.Api.Services.React
         }
 
         /// <summary>
-        /// 按商品编码点查商品资料。SQL Server 用一条 OPENJSON 连接走过滤索引 IX_Product_ProductCode_Active
+        /// 按商品编码点查商品资料。SQL Server 在独立非 MARS 连接上用一条 OPENJSON 连接走过滤索引 IX_Product_ProductCode_Active
         /// （生产 1.4 万编码服务端 0.3 秒、6 万逻辑读）；显式 NOLOCK 保持原查询行为，HQ 同步重建 Product 时不被阻塞。
         /// 其他数据库按 500 个一批 Contains；两条路径的 IsDeleted 都写成字面量，参数化会让过滤索引失效。
         /// </summary>
@@ -7795,17 +7795,33 @@ namespace BlazorApp.Api.Services.React
             if (productCodes.Count == 0)
                 return new List<CompactSalesBoardProductInfoRow>();
 
-            if (_context.Db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+            if (UsesCompactBoardDedicatedConnection())
             {
-                return await _context.Db.Ado.SqlQueryAsync<CompactSalesBoardProductInfoRow>(
-                    """
+                // 独立非 MARS 连接：生产 MARS 连接读 8.8 千行也要约 1 秒（服务端 CPU 0.14 秒）。
+                await using var connection = await OpenCompactBoardDedicatedConnectionAsync();
+                await using var command = connection.CreateCommand();
+                command.CommandTimeout = Math.Max(1, _context.Db.Ado.CommandTimeOut);
+                command.CommandText = """
                     SELECT p.[ProductCode], p.[ItemNumber], p.[ProductName], p.[ProductImage]
                     FROM [dbo].[Product] p WITH (NOLOCK)
                     INNER JOIN OPENJSON(@productCodes) c ON CONVERT(nvarchar(50), c.[value]) = p.[ProductCode]
                     WHERE p.[IsDeleted] = 0;
-                    """,
-                    new SugarParameter("@productCodes", System.Text.Json.JsonSerializer.Serialize(productCodes)) { Size = -1 }
-                );
+                    """;
+                command.Parameters.Add("@productCodes", System.Data.SqlDbType.NVarChar, -1).Value =
+                    System.Text.Json.JsonSerializer.Serialize(productCodes);
+                var infoRows = new List<CompactSalesBoardProductInfoRow>(productCodes.Count);
+                await using var reader = await command.ExecuteReaderAsync();
+                while (await reader.ReadAsync())
+                {
+                    infoRows.Add(new CompactSalesBoardProductInfoRow
+                    {
+                        ProductCode = reader.IsDBNull(0) ? string.Empty : reader.GetString(0),
+                        ItemNumber = reader.IsDBNull(1) ? null : reader.GetString(1),
+                        ProductName = reader.IsDBNull(2) ? null : reader.GetString(2),
+                        ProductImage = reader.IsDBNull(3) ? null : reader.GetString(3),
+                    });
+                }
+                return infoRows;
             }
 
             var rows = new List<CompactSalesBoardProductInfoRow>();

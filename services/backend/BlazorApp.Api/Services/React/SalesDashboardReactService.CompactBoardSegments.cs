@@ -1,9 +1,10 @@
 using System.Data;
-using System.Data.Common;
 using System.Security.Cryptography;
 using System.Text;
 using BlazorApp.Api.Cache;
 using BlazorApp.Shared.DTOs;
+using BlazorApp.Shared.Models;
+using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Caching.Memory;
 
 namespace BlazorApp.Api.Services.React;
@@ -161,11 +162,14 @@ public partial class SalesDashboardReactService
                 StartDate = missingRanges[0].Start,
                 EndDate = missingRanges[^1].EndExclusive.AddDays(-1),
             };
-            // 状态与聚合同一快照：分片身份与数据一一对应；SQL Server 上事务内 SqlSugar 不再附加 NOLOCK。
-            var (snapshotStates, built) = await ReadReportSnapshotAsync(async () => (
-                await ReadCompactSalesBoardStatusRowsAsync(readRange),
-                await ReadCompactSalesBoardSegmentFactsAsync(missingRanges, chinaFamilyCodes)
-            ));
+            // 状态与聚合同一快照：分片身份与数据一一对应。SQL Server 走独立非 MARS 连接一次读回；
+            // 其他数据库或已有外部事务时沿用 SqlSugar 快照读取（事务内不附加 NOLOCK）。
+            var (snapshotStates, built) = UsesCompactBoardDedicatedConnection()
+                ? await ReadCompactSalesBoardSegmentsOnDedicatedConnectionAsync(readRange, missingRanges, chinaFamilyCodes)
+                : await ReadReportSnapshotAsync(async () => (
+                    await ReadCompactSalesBoardStatusRowsAsync(readRange),
+                    await ReadCompactSalesBoardSegmentFactsAsync(missingRanges, chinaFamilyCodes)
+                ));
 
             bool InMissing(DateTime date) => missingRanges.Any(range => range.Contains(date.Date));
             states = precheckStates
@@ -203,42 +207,51 @@ public partial class SalesDashboardReactService
         return (states, MergeCompactSalesBoardSegments(segments.Select(segment => segment!).ToList()));
     }
 
+    private bool UsesCompactBoardDedicatedConnection() =>
+        _context.Db.CurrentConnectionConfig.DbType == SqlSugar.DbType.SqlServer && _context.Db.Ado.Transaction == null;
+
     /// <summary>
-    /// 读回若干分片的原始聚合，结果与 ranges 一一对应。SQL Server 用一条语句按月分桶聚合，
-    /// 首尾分片被区间边界截断，正好等于不满月的分片；其他数据库（测试用 SQLite）逐片沿用 SqlSugar 查询。
+    /// 看板大结果集读取用的独立连接：关闭 MARS。生产连接串开了 MARS，Linux 上 SqlClient 托管网络层读大结果集
+    /// 只有每秒约 3 万行（2026-09-24 Query Store：分桶语句 CPU 5.2 秒、时长 28.6 秒，其余都在等 API 读走 65 万行；
+    /// API 到库往返仅 1 毫秒）。与销售明细相同的连接串改法，共用同一个连接池。
     /// </summary>
-    private async Task<List<CompactSalesBoardSegment>> ReadCompactSalesBoardSegmentFactsAsync(
+    private async Task<SqlConnection> OpenCompactBoardDedicatedConnectionAsync()
+    {
+        var connection = new SqlConnection(new SqlConnectionStringBuilder(_context.Db.CurrentConnectionConfig.ConnectionString)
+        {
+            MultipleActiveResultSets = false,
+            MinPoolSize = 1,
+        }.ConnectionString);
+        await connection.OpenAsync();
+        return connection;
+    }
+
+    /// <summary>
+    /// SQL Server：在独立连接上用一个批次读状态与缺失分片，数据库启用快照隔离时两者在同一快照里。
+    /// 事实用一条语句按月分桶聚合，首尾分片被区间边界截断，正好等于不满月的分片；读取器直接装片，不经 ORM 实体化。
+    /// </summary>
+    private async Task<(List<SalesDetailReportStatusSqlRow> States, List<CompactSalesBoardSegment> Segments)> ReadCompactSalesBoardSegmentsOnDedicatedConnectionAsync(
+        DateRangeDto readRange,
         List<CompactSalesBoardSegmentRange> ranges,
         List<string> chinaFamilyCodes
     )
     {
-        if (_context.Db.CurrentConnectionConfig.DbType != SqlSugar.DbType.SqlServer)
-        {
-            var result = new List<CompactSalesBoardSegment>();
-            foreach (var range in ranges)
-            {
-                var builder = new CompactSalesBoardSegmentBuilder();
-                foreach (var row in await ReadCompactSalesBoardStatisticRowsAsync(range.Start, range.EndExclusive, chinaFamilyCodes))
-                    builder.Add(row.BranchCode, row.ProductCode, row.SupplierCode, row.TotalQuantity, row.TotalAmount, row.LastDate);
-                result.Add(builder.Build());
-            }
-            return result;
-        }
+        await using var connection = await OpenCompactBoardDedicatedConnectionAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandTimeout = Math.Max(1, _context.Db.Ado.CommandTimeOut);
+        // 按本次区间编译（RECOMPILE），编码族与月份用 OPENJSON 参数，SQL 文本不随目录或区间变化。
+        command.CommandText = """
+            SET NOCOUNT ON;
+            IF EXISTS (SELECT 1 FROM sys.databases WHERE database_id = DB_ID() AND snapshot_isolation_state = 1)
+            BEGIN
+                SET TRANSACTION ISOLATION LEVEL SNAPSHOT;
+                BEGIN TRANSACTION;
+            END;
+            BEGIN TRY
+                SELECT r.[Date], r.[Status], r.[LastAggregatedAtUtc], r.[CompletedAtUtc], r.[SourceProductVersion]
+                FROM [dbo].[SalesStatisticRefreshState] r
+                WHERE r.[StatisticType] = N'ProductStoreDaily' AND r.[Date] >= @stateStart AND r.[Date] < @stateEndExclusive;
 
-        var builders = ranges.ToDictionary(range => range.Month, _ => new CompactSalesBoardSegmentBuilder());
-        var connection = (DbConnection)_context.Db.Ado.Connection;
-        var close = connection.State != ConnectionState.Open;
-        if (close)
-            await connection.OpenAsync();
-        try
-        {
-            await using var command = connection.CreateCommand();
-            if (_context.Db.Ado.Transaction is DbTransaction transaction)
-                command.Transaction = transaction;
-            command.CommandTimeout = Math.Max(1, _context.Db.Ado.CommandTimeOut);
-            // 按本次区间编译（RECOMPILE），编码族与月份用 OPENJSON 参数，SQL 文本不随目录或区间变化。
-            // 直接用读取器装进分片：两年全冷时约 120 万行，不经 ORM 实体化，避免上百 MB 的临时对象。
-            command.CommandText = """
                 SELECT DATEADD(month, DATEDIFF(month, 0, s.[Date]), 0) AS [Month],
                        s.[BranchCode], s.[ProductCode], s.[SupplierCode],
                        SUM(s.[TotalQuantity]) AS [TotalQuantity], SUM(s.[TotalAmount]) AS [TotalAmount], MAX(s.[Date]) AS [LastDate]
@@ -248,27 +261,46 @@ public partial class SalesDashboardReactService
                   AND DATEADD(month, DATEDIFF(month, 0, s.[Date]), 0) IN (SELECT CONVERT(datetime, m.[value], 112) FROM OPENJSON(@months) m)
                 GROUP BY DATEADD(month, DATEDIFF(month, 0, s.[Date]), 0), s.[BranchCode], s.[ProductCode], s.[SupplierCode]
                 OPTION (RECOMPILE);
-                """;
-            void Add(string name, object value, System.Data.DbType type, int size = 0)
-            {
-                var parameter = command.CreateParameter();
-                parameter.ParameterName = name;
-                parameter.Value = value;
-                parameter.DbType = type;
-                if (size != 0)
-                    parameter.Size = size;
-                command.Parameters.Add(parameter);
-            }
-            Add("@startDate", ranges[0].Start, System.Data.DbType.DateTime);
-            Add("@endExclusive", ranges[^1].EndExclusive, System.Data.DbType.DateTime);
-            Add("@supplierCodes", System.Text.Json.JsonSerializer.Serialize(chinaFamilyCodes), System.Data.DbType.String, -1);
-            Add("@months", System.Text.Json.JsonSerializer.Serialize(ranges.Select(range => range.Month.ToString("yyyyMMdd"))), System.Data.DbType.String, -1);
 
-            await using var reader = await command.ExecuteReaderAsync();
+                IF @@TRANCOUNT > 0 COMMIT TRANSACTION;
+                SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
+            END TRY
+            BEGIN CATCH
+                IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+                SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
+                THROW;
+            END CATCH;
+            """;
+        command.Parameters.Add("@stateStart", SqlDbType.DateTime).Value = readRange.StartDate.Date;
+        command.Parameters.Add("@stateEndExclusive", SqlDbType.DateTime).Value = readRange.EndDate.Date.AddDays(1);
+        command.Parameters.Add("@startDate", SqlDbType.DateTime).Value = ranges[0].Start;
+        command.Parameters.Add("@endExclusive", SqlDbType.DateTime).Value = ranges[^1].EndExclusive;
+        command.Parameters.Add("@supplierCodes", SqlDbType.NVarChar, -1).Value = System.Text.Json.JsonSerializer.Serialize(chinaFamilyCodes);
+        command.Parameters.Add("@months", SqlDbType.NVarChar, -1).Value =
+            System.Text.Json.JsonSerializer.Serialize(ranges.Select(range => range.Month.ToString("yyyyMMdd")));
+
+        var states = new List<SalesDetailReportStatusSqlRow>();
+        var builders = ranges.ToDictionary(range => range.Month, _ => new CompactSalesBoardSegmentBuilder());
+        await using (var reader = await command.ExecuteReaderAsync())
+        {
             while (await reader.ReadAsync())
             {
-                var month = reader.GetDateTime(0);
-                if (!builders.TryGetValue(month, out var builder))
+                states.Add(new SalesDetailReportStatusSqlRow
+                {
+                    Type = SalesStatisticType.ProductStoreDaily,
+                    Date = D(reader, 0),
+                    Status = S(reader, 1),
+                    // 数据库时间不带时区，明确按 UTC 标注，与预检读取一致。
+                    LastAggregatedAtUtc = ND(reader, 2),
+                    CompletedAtUtc = ND(reader, 3),
+                    SourceProductVersion = NS(reader, 4),
+                });
+            }
+            if (!await reader.NextResultAsync())
+                throw new InvalidOperationException("看板分片读取缺少事实结果集。");
+            while (await reader.ReadAsync())
+            {
+                if (!builders.TryGetValue(reader.GetDateTime(0), out var builder))
                     continue;
                 builder.Add(
                     reader.IsDBNull(1) ? string.Empty : reader.GetString(1),
@@ -279,14 +311,28 @@ public partial class SalesDashboardReactService
                     reader.GetDateTime(6)
                 );
             }
-        }
-        finally
-        {
-            if (close)
-                await connection.CloseAsync();
+            // 消费完剩余结果，让批次里的 COMMIT 执行完毕、错误能抛出来。
+            while (await reader.NextResultAsync()) { }
         }
 
-        return ranges.Select(range => builders[range.Month].Build()).ToList();
+        return (states, ranges.Select(range => builders[range.Month].Build()).ToList());
+    }
+
+    /// <summary>其他数据库（测试用 SQLite）或已有外部事务：逐片沿用 SqlSugar 聚合查询，结果与 ranges 一一对应。</summary>
+    private async Task<List<CompactSalesBoardSegment>> ReadCompactSalesBoardSegmentFactsAsync(
+        List<CompactSalesBoardSegmentRange> ranges,
+        List<string> chinaFamilyCodes
+    )
+    {
+        var result = new List<CompactSalesBoardSegment>();
+        foreach (var range in ranges)
+        {
+            var builder = new CompactSalesBoardSegmentBuilder();
+            foreach (var row in await ReadCompactSalesBoardStatisticRowsAsync(range.Start, range.EndExclusive, chinaFamilyCodes))
+                builder.Add(row.BranchCode, row.ProductCode, row.SupplierCode, row.TotalQuantity, row.TotalAmount, row.LastDate);
+            result.Add(builder.Build());
+        }
+        return result;
     }
 
     /// <summary>
