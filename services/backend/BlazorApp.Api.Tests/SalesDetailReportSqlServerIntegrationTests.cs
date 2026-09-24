@@ -804,6 +804,157 @@ public sealed class SalesDetailReportSqlServerIntegrationTests
         Assert.Equal(2, Assert.Single(augustSeptember.Stores).ProductCount);
     }
 
+    [SalesDetailReportSqlServerFact]
+    public async Task 紧凑看板数据库端聚合与内存立方体逐项一致_含月表可用与身份失效()
+    {
+        await using var fixture = await SalesDetailSqlServerFixture.CreateAsync();
+        await SeedCompactBoardEquivalenceAsync(fixture);
+        var server = fixture.CreateService();
+        var memory = fixture.CreateService();
+        memory.ForceCompactBoardInMemory = true;
+        var start = new DateTime(2026, 6, 10);
+        var end = new DateTime(2026, 8, 20);
+        var july = new DateTime(2026, 7, 1);
+
+        async Task AssertAllEquivalentAsync(string stage)
+        {
+            foreach (var (name, query) in CompactBoardQueryMatrix(start, end))
+            {
+                query.ForceRefresh = true;
+                var expected = CompactBoardSnapshot(await memory.GetCompactSalesBoardAsync(query));
+                var actual = CompactBoardSnapshot(await server.GetCompactSalesBoardAsync(query));
+                Assert.True(expected == actual, $"{stage} / {name}\nexpected: {expected}\nactual:   {actual}");
+            }
+        }
+
+        // 月表未部署：整段读日事实。
+        await AssertAllEquivalentAsync("无月表");
+
+        // 月表部署后 7 月整月可用（6 月、8 月是不满月，仍读日事实）。
+        await fixture.EnableCompactBoardMonthlyAsync();
+        var stale = await fixture.ReadCompactBoardStaleMonthsAsync();
+        // 待办从最早状态所在月列到当前月、最近的在前。
+        Assert.Equal(new[] { new DateTime(2026, 8, 1), july, new DateTime(2026, 6, 1) }, stale.Where(month => month <= new DateTime(2026, 8, 1)));
+        foreach (var month in stale)
+            await fixture.RefreshCompactBoardMonthAsync(month);
+        Assert.Empty(await fixture.ReadCompactBoardStaleMonthsAsync());
+        await AssertAllEquivalentAsync("月表可用");
+
+        // 篡改 7 月月表：只有真的读了月表，整月区间的结果才会随之变化。
+        var julyQuery = new CompactSalesBoardQuery { DateRange = new DateRangeDto { StartDate = july, EndDate = new DateTime(2026, 7, 31) }, ForceRefresh = true };
+        var julyBaseline = (await server.GetCompactSalesBoardAsync(julyQuery)).Summary.OverallAmount;
+        await fixture.TamperCompactBoardMonthAsync(july, 1000m);
+        var tampered = (await server.GetCompactSalesBoardAsync(julyQuery)).Summary.OverallAmount;
+        Assert.True(tampered > julyBaseline, $"7 月整月应读月表：{julyBaseline} → {tampered}");
+
+        // 7 月某日重新发布（身份变化）：该月不再可用，退回日事实，结果回到与内存立方体一致。
+        await fixture.TouchPublishAsync(new DateTime(2026, 7, 15));
+        Assert.Equal(julyBaseline, (await server.GetCompactSalesBoardAsync(julyQuery)).Summary.OverallAmount);
+        Assert.Contains(july, await fixture.ReadCompactBoardStaleMonthsAsync());
+        await AssertAllEquivalentAsync("月表身份失效");
+
+        // worker 追上后再次可用，结果仍一致。
+        await fixture.RefreshCompactBoardMonthAsync(july);
+        await AssertAllEquivalentAsync("月表重建后");
+    }
+
+    private static IEnumerable<(string Name, CompactSalesBoardQuery Query)> CompactBoardQueryMatrix(DateTime start, DateTime end)
+    {
+        CompactSalesBoardQuery Q(Action<CompactSalesBoardQuery>? configure = null, DateTime? from = null, DateTime? to = null)
+        {
+            var query = new CompactSalesBoardQuery { DateRange = new DateRangeDto { StartDate = from ?? start, EndDate = to ?? end }, PageSize = 20 };
+            configure?.Invoke(query);
+            return query;
+        }
+        yield return ("默认", Q());
+        yield return ("第 2 页", Q(q => q.PageIndex = 2));
+        yield return ("数量降序", Q(q => { q.SortField = "quantity"; q.SortOrder = "desc"; }));
+        yield return ("单价升序", Q(q => { q.SortField = "unitPrice"; q.SortOrder = "asc"; }));
+        yield return ("货号默认", Q(q => q.SortField = "itemNumber"));
+        yield return ("货号降序", Q(q => { q.SortField = "itemNumber"; q.SortOrder = "desc"; }));
+        yield return ("选中分店", Q(q => q.SelectedBranchCode = "B2"));
+        yield return ("选中供应商", Q(q => q.SelectedChinaSupplierCode = "C1"));
+        yield return ("选中已删供应商", Q(q => q.SelectedChinaSupplierCode = "C3"));
+        yield return ("选中商品", Q(q => q.SelectedProductCode = "P20"));
+        yield return ("分店加供应商", Q(q => { q.SelectedBranchCode = "B1"; q.SelectedChinaSupplierCode = "C2"; }));
+        yield return ("三者全选", Q(q => { q.SelectedBranchCode = "B1"; q.SelectedChinaSupplierCode = "C1"; q.SelectedProductCode = "P03"; }));
+        yield return ("关键词", Q(q => q.Keyword = " widget  1 "));
+        yield return ("关键词无命中", Q(q => q.Keyword = "no-such-product"));
+        yield return ("授权范围", Q(q => q.BranchCodes = new List<string> { "B1", "B3" }));
+        yield return ("授权范围外选中", Q(q => { q.BranchCodes = new List<string> { "B1" }; q.SelectedBranchCode = "B2"; }));
+        yield return ("不存在的选中项", Q(q => q.SelectedBranchCode = "B9"));
+        yield return ("整月", Q(from: new DateTime(2026, 7, 1), to: new DateTime(2026, 7, 31)));
+        yield return ("单日", Q(from: new DateTime(2026, 7, 5), to: new DateTime(2026, 7, 5)));
+    }
+
+    /// <summary>把看板结果规整成可比较的文本：金额统一到 4 位小数，避免 decimal 尾零差异。</summary>
+    private static string CompactBoardSnapshot(CompactSalesBoardDto board)
+    {
+        static string M(decimal value) => decimal.Round(value, 4).ToString("0.####", System.Globalization.CultureInfo.InvariantCulture);
+        return JsonSerializer.Serialize(new
+        {
+            board.StatisticStatus,
+            Summary = new { A = M(board.Summary.TotalAmount), board.Summary.TotalQuantity, board.Summary.ProductCount, board.Summary.StoreCount, board.Summary.SupplierCount, O = M(board.Summary.OverallAmount), board.Summary.OverallQuantity },
+            Stores = board.Stores.Select(s => new { s.BranchCode, s.BranchName, A = M(s.TotalAmount), s.TotalQuantity, s.ProductCount }),
+            Suppliers = board.ChinaSuppliers.Select(s => new { s.SupplierCode, s.SupplierName, A = M(s.TotalAmount), s.TotalQuantity, s.ProductCount }),
+            board.ProductDetails.Total,
+            Scope = M(board.ProductDetails.ScopeAmount),
+            Products = board.ProductDetails.Data.Select(p => new { p.ProductCode, p.ItemNumber, p.ProductName, p.ChinaSupplierCode, p.ChinaSupplierName, p.TotalQuantity, A = M(p.TotalAmount), U = M(p.UnitPrice) }),
+        });
+    }
+
+    /// <summary>
+    /// 等价性夹具：2026-06-01～08-31 每天 Fresh；三家分店（B3 无分店资料）、三个国内供应商（C3 已软删除）、24 个商品。
+    /// 覆盖映射行、直写行、未映射 200 行与澳洲行（不计入）、归属中途变更、同日直写优先、无商品资料、同额并列。
+    /// </summary>
+    private static async Task SeedCompactBoardEquivalenceAsync(SalesDetailSqlServerFixture fixture)
+    {
+        for (var day = new DateTime(2026, 6, 1); day <= new DateTime(2026, 8, 31); day = day.AddDays(1))
+            await fixture.SeedFreshStateAsync(day);
+        await fixture.SeedStoreAsync("B1", "分店一");
+        await fixture.SeedStoreAsync("B2", "分店二");
+        await fixture.SeedChinaSupplierAsync("C1", "供应商一");
+        await fixture.SeedChinaSupplierAsync("C2", "供应商二");
+        await fixture.SeedChinaSupplierAsync("C3", "已删供应商", isDeleted: true);
+        for (var i = 1; i <= 24; i++)
+        {
+            var code = $"P{i:D2}";
+            // P24 没有商品资料：名称、货号为空，货号排序退回商品编码。
+            if (i != 24)
+                await fixture.SeedProductAsync(code, $"Widget {i:D2}", itemNumber: $"IT-{25 - i:D2}");
+            if (i <= 12 || i is 20 or 21 or 23 or 24)
+                await fixture.SeedMappingAsync(code, i is 23 or 24 ? "C2" : "C1");
+        }
+        await fixture.SeedProductAsync("P03", "已删除的旧资料", itemNumber: "IT-OLD", uuid: "p03-deleted");
+        await fixture.MarkProductDeletedAsync("p03-deleted");
+
+        var branches = new[] { "B1", "B2", "B3" };
+        var dates = new[] { new DateTime(2026, 6, 5), new DateTime(2026, 6, 12), new DateTime(2026, 7, 3), new DateTime(2026, 7, 20), new DateTime(2026, 8, 8), new DateTime(2026, 8, 18) };
+        for (var i = 1; i <= 18; i++)
+        {
+            var code = $"P{i:D2}";
+            var supplier = i <= 12 ? "200" : "C2";
+            for (var d = 0; d < dates.Length; d++)
+            {
+                var branch = branches[(i + d) % 3];
+                // 金额制造并列：每 5 个商品一档，同档靠商品编码定序。
+                await fixture.SeedFactAsync(dates[d], branch, supplier, code, 1 + (i + d) % 4, 10m * (1 + i / 5) + d);
+            }
+        }
+        // P19：未映射的 200 行，不计入。P22：澳洲供应商行，不计入。
+        await fixture.SeedFactAsync(dates[2], "B1", "200", "P19", 5, 500m);
+        await fixture.SeedFactAsync(dates[2], "B1", "105", "P22", 5, 500m);
+        // P20：6 月走映射归 C1，8 月直写 C2；整段归最近的 C2，区间只含 6 月时仍归 C1。
+        await fixture.SeedFactAsync(dates[1], "B1", "200", "P20", 2, 40m);
+        await fixture.SeedFactAsync(dates[4], "B2", "C2", "P20", 3, 60m);
+        // P21：同一天既有映射（C1）又有直写（C3，已软删除）：直写优先。
+        await fixture.SeedFactAsync(dates[3], "B1", "200", "P21", 1, 25m);
+        await fixture.SeedFactAsync(dates[3], "B3", "C3", "P21", 2, 35m);
+        // P23、P24：映射到 C2；P24 无商品资料。
+        await fixture.SeedFactAsync(dates[3], "B2", "200", "P23", 4, 44m);
+        await fixture.SeedFactAsync(dates[5], "B3", "200", "P24", 3, 33m);
+    }
+
     private sealed class SalesDetailSqlServerFixture : IAsyncDisposable
     {
         private readonly string _masterConnectionString;
@@ -1044,9 +1195,36 @@ public sealed class SalesDetailReportSqlServerIntegrationTests
             "INSERT INTO [dbo].[Store] ([StoreCode], [StoreName], [IsActive], [IsDeleted]) VALUES (@code, @name, 1, 0);",
             ("@code", code), ("@name", name));
 
-        public Task SeedChinaSupplierAsync(string code, string name) => ExecuteNonQueryAsync(_databaseConnectionString,
-            "INSERT INTO [dbo].[ChinaSupplier] ([SupplierCode], [SupplierName]) VALUES (@code, @name);",
-            ("@code", code), ("@name", name));
+        public Task SeedChinaSupplierAsync(string code, string name, bool isDeleted = false) => ExecuteNonQueryAsync(_databaseConnectionString,
+            "INSERT INTO [dbo].[ChinaSupplier] ([SupplierCode], [SupplierName], [IsDeleted]) VALUES (@code, @name, @deleted);",
+            ("@code", code), ("@name", name), ("@deleted", isDeleted));
+
+        public Task EnableCompactBoardMonthlyAsync() =>
+            ExecuteNonQueryAsync(_databaseConnectionString, BlazorApp.Api.Data.SchemaMigrations.CompactBoardMonthlySchema.ApplySql);
+
+        public async Task RefreshCompactBoardMonthAsync(DateTime month)
+        {
+            await using var connection = new SqlConnection(_databaseConnectionString);
+            await connection.OpenAsync();
+            await CompactBoardMonthlyProjectionWorker.RefreshMonthAsync(connection, month, CancellationToken.None);
+        }
+
+        public async Task<List<DateTime>> ReadCompactBoardStaleMonthsAsync()
+        {
+            await using var connection = new SqlConnection(_databaseConnectionString);
+            await connection.OpenAsync();
+            return await CompactBoardMonthlyProjectionWorker.ReadStaleMonthsAsync(connection, 100, CancellationToken.None);
+        }
+
+        /// <summary>直接改月表金额，用来证明查询确实读了月表（事实表不变）。</summary>
+        public Task TamperCompactBoardMonthAsync(DateTime month, decimal delta) => ExecuteNonQueryAsync(_databaseConnectionString,
+            "UPDATE [dbo].[CompactBoardMonthlyCell] SET [Amount] = [Amount] + @delta WHERE [Month] = @month;",
+            ("@delta", delta), ("@month", month));
+
+        /// <summary>只推进某日的聚合时间（事实不变），让该月身份失效。</summary>
+        public Task TouchPublishAsync(DateTime date) => ExecuteNonQueryAsync(_databaseConnectionString,
+            "UPDATE dbo.SalesStatisticRefreshState SET LastAggregatedAtUtc = DATEADD(second, 7, LastAggregatedAtUtc) WHERE [Date] = @date AND StatisticType = 'ProductStoreDaily';",
+            ("@date", date));
 
         public Task SeedLocalSupplierAsync(string code, string name) => ExecuteNonQueryAsync(_databaseConnectionString,
             "INSERT INTO [dbo].[LocalSupplier] ([LocalSupplierCode], [Name], [IsDeleted]) VALUES (@code, @name, 0);",

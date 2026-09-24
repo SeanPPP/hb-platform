@@ -72,6 +72,10 @@ internal interface ISchemaMigrationRuntime
 
     Task VerifyLocalSupplierCategoryAsync(CancellationToken cancellationToken);
 
+    Task ApplyCompactBoardMonthlyAsync(CancellationToken cancellationToken);
+
+    Task VerifyCompactBoardMonthlyAsync(CancellationToken cancellationToken);
+
     Task ApplyPosmBaselineAsync(CancellationToken cancellationToken);
 
     Task ApplyMobileDeviceActivationAsync(CancellationToken cancellationToken);
@@ -372,6 +376,27 @@ internal sealed class SqlServerSchemaMigrationRuntime : ISchemaMigrationRuntime
         await SqlServerSchemaMigrationStore.ExecuteReadOnlyBatchAsync(
             _mainDatabase.ConnectionString,
             SalesDetailQueryMonthlySchema.VerifySql,
+            _commandTimeoutSeconds,
+            cancellationToken
+        );
+    }
+
+    public async Task ApplyCompactBoardMonthlyAsync(CancellationToken cancellationToken)
+    {
+        await SqlServerSchemaMigrationStore.ExecuteBatchAsync(
+            _mainDatabase.ConnectionString,
+            CompactBoardMonthlySchema.ApplySql,
+            _commandTimeoutSeconds,
+            cancellationToken
+        );
+        await VerifyCompactBoardMonthlyAsync(cancellationToken);
+    }
+
+    public async Task VerifyCompactBoardMonthlyAsync(CancellationToken cancellationToken)
+    {
+        await SqlServerSchemaMigrationStore.ExecuteReadOnlyBatchAsync(
+            _mainDatabase.ConnectionString,
+            CompactBoardMonthlySchema.VerifySql,
             _commandTimeoutSeconds,
             cancellationToken
         );
