@@ -1,7 +1,7 @@
 import request from '../../../utils/request'
 import type { ReportPeriod } from '../ReportWorkbench/logic'
 import type { ReportSnapshot } from '../ReportWorkbench/useReportQuery'
-import type { RevenueBranch, RevenueHourly, RevenueWeeklyNode } from './types'
+import type { RevenueBranch, RevenueHourly, RevenueLastDay, RevenueWeeklyNode } from './types'
 
 interface RevenueEnvelope<T> {
   success?: boolean
@@ -19,6 +19,8 @@ export interface RevenueReportSnapshot {
   branches: RevenueBranch[]
   hourly: RevenueHourly[]
   weekly: RevenueWeeklyNode[]
+  /** 多日区间且最后一天是今天时才有；旧后端缺字段为 undefined。 */
+  lastDay?: RevenueLastDay | null
   currentPeriodPending?: boolean
   comparePeriodPending?: boolean
   hourlyCurrentPending?: boolean
