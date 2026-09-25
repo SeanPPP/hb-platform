@@ -349,10 +349,12 @@ test('托管 runner 隔离 WPF 分片，并避免原生多架构与 Android 内�
   const wpfProject = readFileSync(wpfClientTestsProjectPath, 'utf8')
   const xunitRunnerConfig = JSON.parse(readFileSync(xunitRunnerConfigPath, 'utf8'))
 
+  // conservative：已启动的用例真正结束后才启动新用例，避免阻塞写法占满 4 个调度线程后续延排队、超时误报。
   assert.deepEqual(xunitRunnerConfig, {
     parallelizeAssembly: true,
     parallelizeTestCollections: true,
     maxParallelThreads: 4,
+    parallelAlgorithm: 'conservative',
   })
   assert.match(wpfProject, /<None Update="xunit\.runner\.json" CopyToOutputDirectory="PreserveNewest" \/>/)
   assert.match(windows, /\$\{\{ matrix\.shard \|\| 'noop' \}\}/)
