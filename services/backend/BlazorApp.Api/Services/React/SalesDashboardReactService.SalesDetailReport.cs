@@ -3,6 +3,7 @@ using System.Data.Common;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
+using BlazorApp.Api.Services.LocalSupplierCategories;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.Data.SqlClient;
@@ -12,6 +13,11 @@ namespace BlazorApp.Api.Services.React;
 
 public partial class SalesDashboardReactService
 {
+    // 分类选择会在服务端展开到子分类；这些上限同时保护 SQL Server 参数总数和分类接口查询次数。
+    internal const int MaxSelectedSupplierCodes = 200;
+    internal const int MaxRequestedCategoryGuids = 500;
+    internal const int MaxExpandedCategoryGuids = 1500;
+    internal const int MaxSqlParameterBudget = 2000;
     private sealed class SalesDetailReportSqlRow
     {
         public string Code { get; init; } = string.Empty;
@@ -62,7 +68,15 @@ public partial class SalesDashboardReactService
         public int Total { get; init; }
     }
 
-    public async Task<ProductReportResponseDto<SalesDetailReportDto>> GetSalesDetailReportAsync(
+    public Task<ProductReportResponseDto<SalesDetailReportDto>> GetSalesDetailReportAsync(
+        DateRangeDto dateRange, SalesDetailKind kind, List<string>? branchCodes = null,
+        string? selectedBranchCode = null, string? selectedSupplierCode = null, string? selectedProductCode = null,
+        string? search = null, int pageIndex = 1, int pageSize = 20,
+        IReadOnlyCollection<SalesDetailSection>? sections = null, CancellationToken cancellationToken = default)
+        => GetSalesDetailReportFilteredAsync(dateRange, kind, branchCodes, selectedBranchCode, selectedSupplierCode,
+            selectedProductCode, search, pageIndex, pageSize, sections, cancellationToken);
+
+    public async Task<ProductReportResponseDto<SalesDetailReportDto>> GetSalesDetailReportFilteredAsync(
         DateRangeDto dateRange,
         SalesDetailKind kind,
         List<string>? branchCodes = null,
@@ -73,7 +87,10 @@ public partial class SalesDashboardReactService
         int pageIndex = 1,
         int pageSize = 20,
         IReadOnlyCollection<SalesDetailSection>? sections = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        List<string>? selectedSupplierCodes = null,
+        List<string>? supplierCategoryGuids = null,
+        List<string>? warehouseCategoryGuids = null)
     {
         ValidateDateRange(dateRange);
         if (!Enum.IsDefined(kind)) throw new ArgumentException("kind 无效", nameof(kind));
@@ -87,10 +104,44 @@ public partial class SalesDashboardReactService
         var branches = branchCodes?.Where(code => !string.IsNullOrWhiteSpace(code)).Select(code => code.Trim())
             .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         if (branches is { Count: 0 }) return EmptySalesDetailReport("当前账号没有可访问的分店范围");
+        var suppliers = selectedSupplierCodes?.Where(code => !string.IsNullOrWhiteSpace(code)).Select(code => code.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList() ?? new List<string>();
+        if (!string.IsNullOrWhiteSpace(selectedSupplierCode) && !suppliers.Contains(selectedSupplierCode.Trim(), StringComparer.OrdinalIgnoreCase))
+            suppliers.Add(selectedSupplierCode.Trim());
+        if (suppliers.Count > MaxSelectedSupplierCodes)
+            throw new ArgumentException($"供应商筛选最多选择 {MaxSelectedSupplierCodes} 项，当前为 {suppliers.Count} 项", nameof(selectedSupplierCodes));
+        var requestedCategoryGuids = (supplierCategoryGuids ?? Enumerable.Empty<string>())
+            .Concat(warehouseCategoryGuids ?? Enumerable.Empty<string>())
+            .Where(guid => !string.IsNullOrWhiteSpace(guid)).Select(guid => guid.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (requestedCategoryGuids.Count > MaxRequestedCategoryGuids)
+            throw new ArgumentException($"分类筛选最多选择 {MaxRequestedCategoryGuids} 项，当前为 {requestedCategoryGuids.Count} 项", nameof(supplierCategoryGuids));
+        var expandedCategories = requestedCategoryGuids.Count == 0
+            ? (new List<string>(), new List<string>())
+            : await LocalSupplierCategoryFilter.ExpandAsync(_context.Db, requestedCategoryGuids);
+        var effectiveSupplierCategories = expandedCategories.Item1;
+        var effectiveWarehouseCategories = expandedCategories.Item2;
+        var expandedCategoryCount = effectiveSupplierCategories.Count + effectiveWarehouseCategories.Count;
+        if (expandedCategoryCount > MaxExpandedCategoryGuids)
+            throw new ArgumentException($"分类筛选展开后超过 {MaxExpandedCategoryGuids} 项，请缩小选择范围");
+        var searchTokenCount = search?.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Distinct(StringComparer.OrdinalIgnoreCase).Count() ?? 0;
+        var estimatedParameterCount = 20 + suppliers.Count + expandedCategoryCount
+            + (branches?.Count ?? 0) * 2 + searchTokenCount;
+        if (estimatedParameterCount > MaxSqlParameterBudget)
+            throw new ArgumentException("筛选条件过多，请减少供应商、分类、分店或关键词后重试");
+        // 当前 tab 传入了分类但全部无效/已删除时必须返回空结果，不能退化成无分类的全量查询。
+        // 使用参数化哨兵值保持 SQL 结构不变，避免拼接用户输入。
+        var requestedCategoriesForKind = kind == SalesDetailKind.China ? warehouseCategoryGuids : supplierCategoryGuids;
+        var effectiveCategoriesForKind = kind == SalesDetailKind.China ? effectiveWarehouseCategories : effectiveSupplierCategories;
+        if (requestedCategoriesForKind is { Count: > 0 } && effectiveCategoriesForKind.Count == 0
+            && (kind == SalesDetailKind.China || effectiveWarehouseCategories.Count == 0))
+            effectiveCategoriesForKind.Add("__sales_detail_no_matching_category__");
         cancellationToken.ThrowIfCancellationRequested();
 
         var read = await ReadSalesDetailReportSqlAsync(
-            dateRange, kind, branches, selectedBranchCode, selectedSupplierCode, selectedProductCode,
+            dateRange, kind, branches, selectedBranchCode, suppliers.FirstOrDefault(), suppliers,
+            effectiveSupplierCategories, effectiveWarehouseCategories, selectedProductCode,
             search, pageIndex, pageSize, wanted, cancellationToken);
         // 四栏全部来自同一份商品日统计，不依赖供应商汇总的完成时间或另一次发布的归属映射。
         var status = BuildSalesDetailReportStatus(read.Status, dateRange, false);
@@ -122,7 +173,7 @@ public partial class SalesDashboardReactService
         if (wanted.Contains(SalesDetailSection.Branches))
         {
             var rows = read.Branches.Select(row => ToRow(row, SalesDetailSection.Branches, kind, null, HasCompare(dateRange))).ToList();
-            var unscoped = string.IsNullOrWhiteSpace(selectedSupplierCode) && string.IsNullOrWhiteSpace(selectedProductCode);
+            var unscoped = suppliers.Count == 0 && string.IsNullOrWhiteSpace(selectedProductCode);
             response.Data!.Branches = BuildRowsSection(rows, "当前筛选汇总",
                 unscoped ? "跨供应商商品订单未做收据去重，客单数返回 null。" : null);
             // 每家分店的单商品客单由 ToRow 判断；只对未缩小范围的跨分店汇总保留未知。
@@ -145,17 +196,20 @@ public partial class SalesDashboardReactService
 
     private async Task<SalesDetailReportRead> ReadSalesDetailReportSqlAsync(
         DateRangeDto range, SalesDetailKind kind, List<string>? branches, string? selectedBranchCode,
-        string? selectedSupplierCode, string? selectedProductCode, string? search,
+        string? selectedSupplierCode, IReadOnlyCollection<string> selectedSupplierCodes,
+        IReadOnlyCollection<string> supplierCategoryGuids, IReadOnlyCollection<string> warehouseCategoryGuids,
+        string? selectedProductCode, string? search,
         int pageIndex, int pageSize, IReadOnlySet<SalesDetailSection> wanted, CancellationToken cancellationToken)
     {
         var sqlServer = _context.Db.CurrentConnectionConfig.DbType == SqlSugar.DbType.SqlServer;
-        if (sqlServer && _context.Db.Ado.Transaction == null && UsesMonthlyProjection(search, branches, selectedBranchCode, wanted)
+        var hasClassificationFilter = supplierCategoryGuids.Count > 0 || warehouseCategoryGuids.Count > 0;
+        if (sqlServer && !hasClassificationFilter && selectedSupplierCodes.Count <= 1 && _context.Db.Ado.Transaction == null && UsesMonthlyProjection(search, branches, selectedBranchCode, wanted)
             && !MonthlyProjectionRecentlyMissing() && TryGetSameServerPosmDatabase(out _))
         {
             try
             {
                 return await ReadSalesDetailReportSqlCoreAsync(
-                    range, kind, branches, selectedBranchCode, selectedSupplierCode, selectedProductCode, search,
+                    range, kind, branches, selectedBranchCode, selectedSupplierCode, selectedSupplierCodes, supplierCategoryGuids, warehouseCategoryGuids, selectedProductCode, search,
                     pageIndex, pageSize, wanted, cancellationToken, useMonthly: true);
             }
             catch (SqlException ex) when (ex.Number == SalesDetailQueryMonthlyProjection.MissingSchemaErrorNumber)
@@ -165,14 +219,14 @@ public partial class SalesDashboardReactService
                 _logger.LogInformation("销售明细按月投影尚未建立，改用原查询：{Reason}", ex.Number);
             }
         }
-        if (sqlServer && !string.IsNullOrWhiteSpace(search) && _context.Db.Ado.Transaction == null
+        if (sqlServer && !hasClassificationFilter && selectedSupplierCodes.Count <= 1 && !string.IsNullOrWhiteSpace(search) && _context.Db.Ado.Transaction == null
             && (wanted.Contains(SalesDetailSection.Summary) || wanted.Contains(SalesDetailSection.Products))
             && TryGetSameServerPosmDatabase(out _))
         {
             try
             {
                 return await ReadSalesDetailReportSqlCoreAsync(
-                    range, kind, branches, selectedBranchCode, selectedSupplierCode, selectedProductCode, search,
+                    range, kind, branches, selectedBranchCode, selectedSupplierCode, selectedSupplierCodes, supplierCategoryGuids, warehouseCategoryGuids, selectedProductCode, search,
                     pageIndex, pageSize, wanted, cancellationToken, useProjection: true);
             }
             catch (SqlException ex) when (ex.Number == 51012
@@ -184,16 +238,18 @@ public partial class SalesDashboardReactService
         }
         return sqlServer
             ? await ReadSalesDetailReportSqlCoreAsync(
-                range, kind, branches, selectedBranchCode, selectedSupplierCode, selectedProductCode, search,
+                range, kind, branches, selectedBranchCode, selectedSupplierCode, selectedSupplierCodes, supplierCategoryGuids, warehouseCategoryGuids, selectedProductCode, search,
                 pageIndex, pageSize, wanted, cancellationToken)
             : await ReadReportSnapshotAsync(() => ReadSalesDetailReportSqlCoreAsync(
-                range, kind, branches, selectedBranchCode, selectedSupplierCode, selectedProductCode, search,
+                range, kind, branches, selectedBranchCode, selectedSupplierCode, selectedSupplierCodes, supplierCategoryGuids, warehouseCategoryGuids, selectedProductCode, search,
                 pageIndex, pageSize, wanted, cancellationToken));
     }
 
     private async Task<SalesDetailReportRead> ReadSalesDetailReportSqlCoreAsync(
         DateRangeDto range, SalesDetailKind kind, List<string>? branches, string? selectedBranchCode,
-        string? selectedSupplierCode, string? selectedProductCode, string? search,
+        string? selectedSupplierCode, IReadOnlyCollection<string> selectedSupplierCodes,
+        IReadOnlyCollection<string> supplierCategoryGuids, IReadOnlyCollection<string> warehouseCategoryGuids,
+        string? selectedProductCode, string? search,
         int pageIndex, int pageSize, IReadOnlySet<SalesDetailSection> wanted, CancellationToken cancellationToken,
         bool useProjection = false, bool useMonthly = false)
     {
@@ -230,9 +286,9 @@ public partial class SalesDashboardReactService
                 ? BuildSalesDetailReportSqlServerCore(
                     posmDatabase, range, kind, branches, selectedBranchCode, selectedSupplierCode,
                     selectedProductCode, search, pageIndex, pageSize, wanted, fallbackMap, useProjection: true, compressOutput: true)
-                : BuildSalesDetailReportSql(
+                : BuildSalesDetailReportSqlWithFilters(
                     sqlServer, direct ? posmDatabase : null, range, kind, branches, selectedBranchCode,
-                    selectedSupplierCode, selectedProductCode, search, pageIndex, pageSize, wanted, fallbackMap);
+                    selectedSupplierCode, selectedProductCode, search, pageIndex, pageSize, wanted, fallbackMap, selectedSupplierCodes, supplierCategoryGuids, warehouseCategoryGuids);
             if (ownsTransaction)
             {
                 // 能力检查、事务和全部栏位共用一次往返；不修改数据库的快照配置。
@@ -269,6 +325,12 @@ public partial class SalesDashboardReactService
             Add("@sdrKind", kind == SalesDetailKind.China ? 1 : 0, DbType.Int32);
             if (!string.IsNullOrWhiteSpace(selectedBranchCode)) Add("@sdrSelectedBranch", selectedBranchCode.Trim(), DbType.String);
             if (!string.IsNullOrWhiteSpace(selectedSupplierCode)) Add("@sdrSelectedSupplier", selectedSupplierCode.Trim(), DbType.String);
+            var normalizedSuppliers = selectedSupplierCodes.Where(code => !string.IsNullOrWhiteSpace(code)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            if (!string.IsNullOrWhiteSpace(selectedSupplierCode) && !normalizedSuppliers.Contains(selectedSupplierCode.Trim(), StringComparer.OrdinalIgnoreCase)) normalizedSuppliers.Add(selectedSupplierCode.Trim());
+            if (normalizedSuppliers.Count > 1)
+                for (var i = 0; i < normalizedSuppliers.Count; i++) Add($"@sdrSelectedSupplier{i}", normalizedSuppliers[i], DbType.String);
+            for (var i = 0; i < supplierCategoryGuids.Count; i++) Add($"@sdrCategorySupplier{i}", supplierCategoryGuids.ElementAt(i), DbType.String);
+            for (var i = 0; i < warehouseCategoryGuids.Count; i++) Add($"@sdrCategoryWarehouse{i}", warehouseCategoryGuids.ElementAt(i), DbType.String);
             if (!string.IsNullOrWhiteSpace(selectedProductCode)) Add("@sdrSelectedProduct", selectedProductCode.Trim(), DbType.String);
             var tokens = search?.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct(StringComparer.OrdinalIgnoreCase).ToArray() ?? Array.Empty<string>();
             for (var i = 0; i < tokens.Length; i++) Add($"@sdrSearch{i}", $"%{tokens[i]}%", DbType.String);
@@ -416,29 +478,59 @@ public partial class SalesDashboardReactService
     private static string BuildSalesDetailReportSql(bool sqlServer, string? posmDatabase, DateRangeDto range, SalesDetailKind kind,
         IReadOnlyCollection<string>? branches, string? selectedBranch, string? selectedSupplier, string? selectedProduct,
         string? search, int pageIndex, int pageSize, IReadOnlySet<SalesDetailSection> wanted, IReadOnlyDictionary<string, string>? fallbackMap)
+        => BuildSalesDetailReportSqlWithFilters(sqlServer, posmDatabase, range, kind, branches, selectedBranch, selectedSupplier,
+            selectedProduct, search, pageIndex, pageSize, wanted, fallbackMap, null, null, null);
+
+    private static string BuildSalesDetailReportSqlWithFilters(bool sqlServer, string? posmDatabase, DateRangeDto range, SalesDetailKind kind,
+        IReadOnlyCollection<string>? branches, string? selectedBranch, string? selectedSupplier, string? selectedProduct,
+        string? search, int pageIndex, int pageSize, IReadOnlySet<SalesDetailSection> wanted, IReadOnlyDictionary<string, string>? fallbackMap,
+        IReadOnlyCollection<string>? selectedSuppliers = null, IReadOnlyCollection<string>? supplierCategoryGuids = null,
+        IReadOnlyCollection<string>? warehouseCategoryGuids = null)
         => sqlServer
-            ? BuildSalesDetailReportSqlServer(
+            ? BuildSalesDetailReportSqlServerWithFilters(
                 posmDatabase, range, kind, branches, selectedBranch, selectedSupplier, selectedProduct,
-                search, pageIndex, pageSize, wanted, fallbackMap)
-            : BuildSalesDetailReportSqlLegacy(
+                search, pageIndex, pageSize, wanted, fallbackMap, selectedSuppliers, supplierCategoryGuids, warehouseCategoryGuids)
+            : BuildSalesDetailReportSqlLegacyWithFilters(
                 false, posmDatabase, range, kind, branches, selectedBranch, selectedSupplier, selectedProduct,
-                search, pageIndex, pageSize, wanted, fallbackMap);
+                search, pageIndex, pageSize, wanted, fallbackMap, selectedSuppliers, supplierCategoryGuids, warehouseCategoryGuids);
 
     private static string BuildSalesDetailReportSqlServer(
         string? posmDatabase, DateRangeDto range, SalesDetailKind kind,
         IReadOnlyCollection<string>? branches, string? selectedBranch, string? selectedSupplier, string? selectedProduct,
         string? search, int pageIndex, int pageSize, IReadOnlySet<SalesDetailSection> wanted,
         IReadOnlyDictionary<string, string>? fallbackMap)
-        => BuildSalesDetailReportSqlServerCore(posmDatabase, range, kind, branches, selectedBranch,
-            selectedSupplier, selectedProduct, search, pageIndex, pageSize, wanted, fallbackMap, useProjection: false);
+        => BuildSalesDetailReportSqlServerWithFilters(posmDatabase, range, kind, branches, selectedBranch, selectedSupplier,
+            selectedProduct, search, pageIndex, pageSize, wanted, fallbackMap, null, null, null);
+
+    private static string BuildSalesDetailReportSqlServerWithFilters(
+        string? posmDatabase, DateRangeDto range, SalesDetailKind kind,
+        IReadOnlyCollection<string>? branches, string? selectedBranch, string? selectedSupplier, string? selectedProduct,
+        string? search, int pageIndex, int pageSize, IReadOnlySet<SalesDetailSection> wanted,
+        IReadOnlyDictionary<string, string>? fallbackMap, IReadOnlyCollection<string>? selectedSuppliers,
+        IReadOnlyCollection<string>? supplierCategoryGuids, IReadOnlyCollection<string>? warehouseCategoryGuids)
+        => BuildSalesDetailReportSqlServerCoreWithFilters(posmDatabase, range, kind, branches, selectedBranch,
+            selectedSupplier, selectedProduct, search, pageIndex, pageSize, wanted, fallbackMap, useProjection: false,
+            selectedSuppliers: selectedSuppliers, supplierCategoryGuids: supplierCategoryGuids, warehouseCategoryGuids: warehouseCategoryGuids);
 
     private static string BuildSalesDetailReportSqlServerCore(
         string? posmDatabase, DateRangeDto range, SalesDetailKind kind,
         IReadOnlyCollection<string>? branches, string? selectedBranch, string? selectedSupplier, string? selectedProduct,
         string? search, int pageIndex, int pageSize, IReadOnlySet<SalesDetailSection> wanted,
         IReadOnlyDictionary<string, string>? fallbackMap, bool useProjection, bool compressOutput = false)
+        => BuildSalesDetailReportSqlServerCoreWithFilters(posmDatabase, range, kind, branches, selectedBranch,
+            selectedSupplier, selectedProduct, search, pageIndex, pageSize, wanted, fallbackMap, useProjection,
+            compressOutput);
+
+    private static string BuildSalesDetailReportSqlServerCoreWithFilters(
+        string? posmDatabase, DateRangeDto range, SalesDetailKind kind,
+        IReadOnlyCollection<string>? branches, string? selectedBranch, string? selectedSupplier, string? selectedProduct,
+        string? search, int pageIndex, int pageSize, IReadOnlySet<SalesDetailSection> wanted,
+        IReadOnlyDictionary<string, string>? fallbackMap, bool useProjection, bool compressOutput = false,
+        IReadOnlyCollection<string>? selectedSuppliers = null, IReadOnlyCollection<string>? supplierCategoryGuids = null,
+        IReadOnlyCollection<string>? warehouseCategoryGuids = null)
     {
         var hasCompare = HasCompare(range);
+        var categorySourceFilter = BuildSalesDetailCategoryFilter(kind, supplierCategoryGuids, warehouseCategoryGuids, "s.[ProductCode]");
         var sourceBranch = branches is { Count: > 0 }
             ? $" AND s.[BranchCode] IN ({string.Join(",", branches.Select((_, i) => $"@sdrBranch{i}"))})"
             : string.Empty;
@@ -461,7 +553,7 @@ public partial class SalesDashboardReactService
             : fallbackRows.Length > 0
                 ? $"LEFT JOIN ({fallbackRows}) m ON m.[ProductCode] = LTRIM(RTRIM(s.[ProductCode]))"
                 : string.Empty;
-        var supplierFilter = string.IsNullOrWhiteSpace(selectedSupplier) ? string.Empty : " AND [SupplierCode] = @sdrSelectedSupplier";
+        var supplierFilter = BuildSalesDetailSupplierFilter(selectedSupplier, selectedSuppliers);
         var productFilter = string.IsNullOrWhiteSpace(selectedProduct) ? string.Empty : " AND [ProductCode] = @sdrSelectedProduct";
         var selectedBranchFilter = string.IsNullOrWhiteSpace(selectedBranch)
             ? (branches is { Count: > 0 } ? $" AND [BranchCode] IN ({string.Join(",", branches.Select((_, i) => $"@sdrSelectedBranch{i}"))})" : string.Empty)
@@ -496,7 +588,7 @@ WITH Periods AS
  {joinMapping}
  LEFT JOIN (SELECT [SupplierCode] FROM [ChinaSupplier] WHERE [SupplierCode] IS NOT NULL AND [SupplierCode]<>'' GROUP BY [SupplierCode]) cs
    ON cs.[SupplierCode]=LTRIM(RTRIM(s.[SupplierCode]))
- WHERE s.[Date]>=periods.[StartDate] AND s.[Date]<periods.[EndDate]{sourceBranch}{sourceProduct}
+ WHERE s.[Date]>=periods.[StartDate] AND s.[Date]<periods.[EndDate]{sourceBranch}{sourceProduct}{categorySourceFilter}
 ), NarrowFacts AS
 (
  SELECT [Period], [RawSupplierCode], [ChinaSupplierCode], [AustralianSupplierCode], [BranchCode], [ProductCode],
@@ -531,7 +623,7 @@ WITH Periods AS
         COUNT(s.[GrossProfit]) [GrossProfitRowCount]
  FROM [ProductStoreDailySalesStatistic] s
  CROSS JOIN Periods periods
- WHERE s.[Date]>=periods.[StartDate] AND s.[Date]<periods.[EndDate]{sourceBranch}{sourceProduct}
+ WHERE s.[Date]>=periods.[StartDate] AND s.[Date]<periods.[EndDate]{sourceBranch}{sourceProduct}{categorySourceFilter}
  GROUP BY periods.[Period], s.[SupplierCode], s.[BranchCode], s.[ProductCode]
 ), RawFacts AS
 (
@@ -859,8 +951,17 @@ ORDER BY a.[Quantity] DESC, a.[CompareQuantity] DESC, a.[ProductCode] ASC;
     private static string BuildSalesDetailReportSqlLegacy(bool sqlServer, string? posmDatabase, DateRangeDto range, SalesDetailKind kind,
         IReadOnlyCollection<string>? branches, string? selectedBranch, string? selectedSupplier, string? selectedProduct,
         string? search, int pageIndex, int pageSize, IReadOnlySet<SalesDetailSection> wanted, IReadOnlyDictionary<string, string>? fallbackMap)
+        => BuildSalesDetailReportSqlLegacyWithFilters(sqlServer, posmDatabase, range, kind, branches, selectedBranch, selectedSupplier,
+            selectedProduct, search, pageIndex, pageSize, wanted, fallbackMap, null, null, null);
+
+    private static string BuildSalesDetailReportSqlLegacyWithFilters(bool sqlServer, string? posmDatabase, DateRangeDto range, SalesDetailKind kind,
+        IReadOnlyCollection<string>? branches, string? selectedBranch, string? selectedSupplier, string? selectedProduct,
+        string? search, int pageIndex, int pageSize, IReadOnlySet<SalesDetailSection> wanted, IReadOnlyDictionary<string, string>? fallbackMap,
+        IReadOnlyCollection<string>? selectedSuppliers, IReadOnlyCollection<string>? supplierCategoryGuids,
+        IReadOnlyCollection<string>? warehouseCategoryGuids)
     {
         var hasCompare = HasCompare(range);
+        var categorySourceFilter = BuildSalesDetailCategoryFilter(kind, supplierCategoryGuids, warehouseCategoryGuids, "s.[ProductCode]");
         var sourceBranch = branches is { Count: > 0 } ? $" AND s.[BranchCode] IN ({string.Join(",", branches.Select((_, i) => $"@sdrBranch{i}"))})" : "";
         // SQLite 不支持 SQL Server 的 VALUES 派生表列定义语法；用 UNION ALL 的 SELECT
         // 同时覆盖 SQLite fallback 与异服务器 SQL Server fallback，避免把 POSM 映射搬回全量事实。
@@ -874,7 +975,7 @@ ORDER BY a.[Quantity] DESC, a.[CompareQuantity] DESC, a.[ProductCode] ASC;
             : fallbackRows.Length > 0
                 ? $"LEFT JOIN ({fallbackRows}) m ON m.[ProductCode] = LTRIM(RTRIM(s.[ProductCode]))"
                 : "";
-        var supplierFilter = string.IsNullOrWhiteSpace(selectedSupplier) ? "" : " AND [SupplierCode] = @sdrSelectedSupplier";
+        var supplierFilter = BuildSalesDetailSupplierFilter(selectedSupplier, selectedSuppliers);
         var productFilter = string.IsNullOrWhiteSpace(selectedProduct) ? "" : " AND [ProductCode] = @sdrSelectedProduct";
         var selectedBranchFilter = string.IsNullOrWhiteSpace(selectedBranch)
             ? (branches is { Count: > 0 } ? $" AND [BranchCode] IN ({string.Join(",", branches.Select((_, i) => $"@sdrSelectedBranch{i}"))})" : "")
@@ -918,7 +1019,7 @@ WITH Periods AS
  LEFT JOIN [LocalSupplier] local ON local.[LocalSupplierCode]=CASE WHEN @sdrKind=0 AND (LTRIM(RTRIM(COALESCE(s.[SupplierCode],'')))='200' OR cs.[SupplierCode] IS NOT NULL) THEN '200' ELSE LTRIM(RTRIM(s.[SupplierCode])) END AND local.[IsDeleted]=0
  LEFT JOIN [Store] store ON store.[StoreCode]=LTRIM(RTRIM(s.[BranchCode]))
  LEFT JOIN [Product] p ON p.[ProductCode]=LTRIM(RTRIM(s.[ProductCode]))
- WHERE s.[Date]>=periods.[StartDate] AND s.[Date]<periods.[EndDate]{sourceBranch}
+ WHERE s.[Date]>=periods.[StartDate] AND s.[Date]<periods.[EndDate]{sourceBranch}{categorySourceFilter}
 ), ResolvedRows AS
 (
  SELECT *, COALESCE([ProductName],[StatisticProductName]) [ResolvedProductName]
@@ -965,6 +1066,41 @@ FROM (SELECT {factProjection} FROM {table}) f {whereClause}
         if (!wanted.Contains(SalesDetailSection.Suppliers)) denominator = emptyDenominator;
         var status = "SELECT [StatisticType],[Date],[Status],[LastAggregatedAtUtc],[CompletedAtUtc],[SourceProductVersion] FROM [SalesStatisticRefreshState] WHERE ([Date]>=@sdrCurrentStart AND [Date]<@sdrCurrentEnd) OR (@sdrHasCompare=1 AND [Date]>=@sdrCompareStart AND [Date]<@sdrCompareEnd) ORDER BY [Date],[StatisticType];";
         return materializePrefix + cte + status + summary + suppliers + branchesSql + products + productCount + denominator + (sqlServer ? "DROP TABLE #SalesDetailFacts;" : "DROP TABLE [SalesDetailFacts];");
+    }
+
+    private static string BuildSalesDetailSupplierFilter(string? legacySupplier, IReadOnlyCollection<string>? selectedSuppliers)
+    {
+        var codes = (selectedSuppliers ?? Array.Empty<string>()).Where(code => !string.IsNullOrWhiteSpace(code)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (!string.IsNullOrWhiteSpace(legacySupplier) && !codes.Contains(legacySupplier.Trim(), StringComparer.OrdinalIgnoreCase)) codes.Add(legacySupplier.Trim());
+        return codes.Count switch
+        {
+            0 => string.Empty,
+            1 => " AND [SupplierCode] = @sdrSelectedSupplier",
+            _ => $" AND [SupplierCode] IN ({string.Join(",", codes.Select((_, index) => $"@sdrSelectedSupplier{index}"))})",
+        };
+    }
+
+    private static string BuildSalesDetailCategoryFilter(
+        SalesDetailKind kind,
+        IReadOnlyCollection<string>? supplierCategoryGuids,
+        IReadOnlyCollection<string>? warehouseCategoryGuids,
+        string productExpression)
+    {
+        var supplierParameters = supplierCategoryGuids is { Count: > 0 }
+            ? string.Join(",", supplierCategoryGuids.Select((_, index) => $"@sdrCategorySupplier{index}")) : string.Empty;
+        var warehouseParameters = warehouseCategoryGuids is { Count: > 0 }
+            ? string.Join(",", warehouseCategoryGuids.Select((_, index) => $"@sdrCategoryWarehouse{index}")) : string.Empty;
+        if (kind == SalesDetailKind.China)
+            return warehouseParameters.Length == 0 ? string.Empty
+                : $" AND EXISTS (SELECT 1 FROM [Product] categoryProduct WHERE categoryProduct.[ProductCode]=LTRIM(RTRIM({productExpression})) AND categoryProduct.[IsDeleted]=0 AND (categoryProduct.[LocalSupplierCode]='200' OR categoryProduct.[LocalSupplierCode] IS NULL OR categoryProduct.[LocalSupplierCode]='') AND categoryProduct.[WarehouseCategoryGUID] IN ({warehouseParameters}))";
+
+        // 澳洲标签中的 200 使用仓库分类树；其他供应商按商品当前归属匹配各自的网站分类。
+        var filters = new List<string>();
+        if (supplierParameters.Length > 0)
+            filters.Add($"EXISTS (SELECT 1 FROM [Product] categoryProduct INNER JOIN [LocalSupplierCategoryProductAssignment] categoryAssignment ON categoryAssignment.[ProductCode]=categoryProduct.[ProductCode] AND categoryAssignment.[LocalSupplierCode]=categoryProduct.[LocalSupplierCode] WHERE categoryProduct.[ProductCode]=LTRIM(RTRIM({productExpression})) AND categoryProduct.[IsDeleted]=0 AND categoryAssignment.[LocalSupplierCode]=LTRIM(RTRIM(s.[SupplierCode])) AND categoryAssignment.[CategoryGUID] IN ({supplierParameters}))");
+        if (warehouseParameters.Length > 0)
+            filters.Add($"((LTRIM(RTRIM(s.[SupplierCode]))='200' OR EXISTS (SELECT 1 FROM [ChinaSupplier] categoryChina WHERE categoryChina.[SupplierCode]=LTRIM(RTRIM(s.[SupplierCode])))) AND EXISTS (SELECT 1 FROM [Product] categoryProduct WHERE categoryProduct.[ProductCode]=LTRIM(RTRIM({productExpression})) AND categoryProduct.[IsDeleted]=0 AND (categoryProduct.[LocalSupplierCode]='200' OR categoryProduct.[LocalSupplierCode] IS NULL OR categoryProduct.[LocalSupplierCode]='') AND categoryProduct.[WarehouseCategoryGUID] IN ({warehouseParameters})))");
+        return filters.Count == 0 ? string.Empty : " AND (" + string.Join(" OR ", filters) + ")";
     }
 
     private bool TryGetSameServerPosmDatabase(out string database)

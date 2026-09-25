@@ -3,9 +3,16 @@ import type { SalesDetailQuery, SalesDetailRow, SupplierKind } from './reportSer
 
 // 带图工作簿在浏览器中生成，限制单次行数以控制图片请求和 ExcelJS 内存占用。
 export const MAX_PRODUCT_IMAGE_EXPORT_ROWS = 500
+// 分类接口按供应商最多接受 100 个编码；分类多选也沿用后端可承载的 500 项上限。
+export const MAX_SUPPLIER_SELECTIONS = 100
+export const MAX_CATEGORY_SELECTIONS = 500
 
-export interface DetailSelection { supplier?: string; branch?: string; product?: string; keyword: string; page: number; pageSize: number }
-export const emptySelection: DetailSelection = { keyword: '', page: 1, pageSize: 20 }
+export function exceedsSalesDetailSelectionLimit(values: readonly string[], limit: number): boolean {
+  return values.length > limit
+}
+
+export interface DetailSelection { supplier?: string; supplierCodes: string[]; supplierCategoryGuids: string[]; warehouseCategoryGuids: string[]; branch?: string; product?: string; keyword: string; page: number; pageSize: number }
+export const emptySelection: DetailSelection = { supplierCodes: [], supplierCategoryGuids: [], warehouseCategoryGuids: [], keyword: '', page: 1, pageSize: 20 }
 
 export function initialDetailState(search: string): { dates: DateSelection; kind: SupplierKind; selection: DetailSelection } {
   const params = new URLSearchParams(search)
@@ -14,11 +21,19 @@ export function initialDetailState(search: string): { dates: DateSelection; kind
   if (start && end && validPeriod(start, end)) dates = { ...dates, startDate: start, endDate: end, quick: 'custom' }
   if (['false', '0'].includes(params.get('compare') ?? '')) dates.compare = false
   if (params.get('compareMode') === 'ByDate') dates.compareMode = 'ByDate'
+  const supplierCodes = params.getAll('supplier').map(value => value.trim()).filter(Boolean)
   return { dates, kind: params.get('kind') === 'china' ? 'china' : 'australia',
-    selection: { ...emptySelection, branch: params.get('branch')?.trim() || undefined } }
+    selection: { ...emptySelection, branch: params.get('branch')?.trim() || undefined,
+      supplier: supplierCodes[0], supplierCodes,
+      supplierCategoryGuids: params.getAll('supplierCategory').map(value => value.trim()).filter(Boolean),
+      warehouseCategoryGuids: params.getAll('warehouseCategory').map(value => value.trim()).filter(Boolean) } }
 }
 
 export function selectDimension(state: DetailSelection, dimension: 'supplier' | 'branch' | 'product', code: string): DetailSelection {
+  if (dimension === 'supplier') {
+    const supplierCodes = state.supplierCodes.includes(code) ? state.supplierCodes.filter(value => value !== code) : [...state.supplierCodes, code]
+    return { ...state, supplier: supplierCodes[0], supplierCodes, supplierCategoryGuids: [], page: 1 }
+  }
   return { ...state, [dimension]: state[dimension] === code ? undefined : code, page: dimension === 'product' ? state.page : 1 }
 }
 

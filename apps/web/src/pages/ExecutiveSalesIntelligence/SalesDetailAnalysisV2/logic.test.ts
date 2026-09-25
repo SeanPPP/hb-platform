@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
-import { applyKeyword, clampRailWidth, defaultDetailView, emptySelection, initialDetailState, parseDetailView, productBranchDrawerQuery, RAIL_DEFAULT_WIDTH, selectDimension, sumProductPage } from './logic'
+import { applyKeyword, clampRailWidth, defaultDetailView, emptySelection, exceedsSalesDetailSelectionLimit, initialDetailState, MAX_CATEGORY_SELECTIONS, MAX_SUPPLIER_SELECTIONS, parseDetailView, productBranchDrawerQuery, RAIL_DEFAULT_WIDTH, selectDimension, sumProductPage } from './logic'
 import { normalizeSalesDetailRow, sectionQuery, type SalesDetailQuery } from './reportService'
 
-const selected = { ...emptySelection, branch: 'OR', supplier: 'HB215', product: 'P1', page: 3 }
-assert.deepEqual(selectDimension(selected, 'supplier', 'HB246'), { ...selected, supplier: 'HB246', page: 1 })
+const selected = { ...emptySelection, branch: 'OR', supplier: 'HB215', supplierCodes: ['HB215'], supplierCategoryGuids: ['CAT1'], product: 'P1', page: 3 }
+assert.deepEqual(selectDimension(selected, 'supplier', 'HB246'), { ...selected, supplierCodes: ['HB215', 'HB246'], supplierCategoryGuids: [], page: 1 })
+assert.deepEqual(selectDimension(selected, 'supplier', 'HB215').supplierCodes, [], '再次点击供应商应取消选择')
 assert.equal(selectDimension(selected, 'branch', 'OR').branch, undefined)
 assert.equal(selectDimension(selected, 'product', 'P2').page, 3)
 assert.equal(applyKeyword(selected, ' 玛索   pen ').product, undefined)
@@ -54,6 +55,16 @@ assert.deepEqual(parseDetailView('{"compareView":"side","railCollapsed":true}'),
 assert.deepEqual(parseDetailView('{"compareView":"wide","railCollapsed":"yes"}'), defaultDetailView, '未知取值回到默认展示')
 assert.deepEqual(parseDetailView('{broken'), defaultDetailView, '损坏的本地偏好不能阻断页面')
 assert.equal(initialDetailState('?kind=china&branch=OR&startDate=2026-09-01&endDate=2026-09-06').selection.branch, 'OR')
+const restored = initialDetailState('?kind=australia&supplier=HB215&supplier=HB246&supplierCategory=CAT1&supplierCategory=CAT2')
+assert.deepEqual(restored.selection.supplierCodes, ['HB215', 'HB246'], 'URL 应恢复全部供应商多选值')
+assert.equal(restored.selection.supplier, 'HB215', '兼容单值供应商字段应与首个多选值同步')
+assert.deepEqual(restored.selection.supplierCategoryGuids, ['CAT1', 'CAT2'], 'URL 应恢复供应商分类多选值')
 assert.equal(initialDetailState('?startDate=2026-02-30&endDate=2026-03-01').dates.quick, 'today')
 assert.equal(initialDetailState('?kind=china&compare=0').dates.compare, false)
+assert.equal(MAX_SUPPLIER_SELECTIONS, 100)
+assert.equal(MAX_CATEGORY_SELECTIONS, 500)
+assert.equal(exceedsSalesDetailSelectionLimit(Array.from({ length: 100 }, (_, index) => String(index)), MAX_SUPPLIER_SELECTIONS), false)
+assert.equal(exceedsSalesDetailSelectionLimit(Array.from({ length: 101 }, (_, index) => String(index)), MAX_SUPPLIER_SELECTIONS), true)
+assert.equal(exceedsSalesDetailSelectionLimit(Array.from({ length: 500 }, (_, index) => String(index)), MAX_CATEGORY_SELECTIONS), false)
+assert.equal(exceedsSalesDetailSelectionLimit(Array.from({ length: 501 }, (_, index) => String(index)), MAX_CATEGORY_SELECTIONS), true)
 console.log('销售明细双向筛选、全量查询参数、本页合计、左栏宽度与展示偏好：通过')

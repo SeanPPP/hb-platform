@@ -1,5 +1,5 @@
 import { ClearOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
-import { Alert, Button, Card, Checkbox, DatePicker, Empty, Input, Pagination, Segmented, Select, Skeleton, Space } from 'antd'
+import { Alert, Button, Card, Checkbox, DatePicker, Empty, Input, Pagination, Segmented, Select, Skeleton, Space, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import dayjs, { type Dayjs } from 'dayjs'
 import type { TFunction } from 'i18next'
@@ -9,6 +9,7 @@ import PageContainer from '../../../components/PageContainer'
 import ProductImage from '../ProductFlowShared/ProductImage'
 import {
   getLocalSupplierProductSalesAnalysisOptions,
+  getLocalSupplierProductSalesAnalysisSupplierCategoryOptions,
   queryLocalSupplierProductSalesAnalysisBootstrap,
   queryLocalSupplierProductSalesAnalysisBranchDaily,
   queryLocalSupplierProductSalesAnalysisBranches,
@@ -26,6 +27,7 @@ import type {
   LocalSupplierProductSalesAnalysisRequest,
   LocalSupplierProductSalesAnalysisSelection,
   LocalSupplierProductSalesAnalysisSummary,
+  LocalSupplierProductSalesAnalysisSupplierCategoryOption,
 } from '../../../types/localSupplierProductSalesAnalysis'
 import {
   applyCandidateSelection,
@@ -86,8 +88,15 @@ function localErrorDescription(error: string, t: TFunction, language?: string) {
   return error
 }
 function aborted(error: unknown) { return error instanceof Error && error.name === 'AbortError' }
-function requestFilter(range: [Dayjs, Dayjs], keyword: string, categoryGuid?: string, supplierCode?: string, documentKeyword?: string): LocalSupplierProductSalesAnalysisFilter {
-  return { startDate: range[0].format('YYYY-MM-DD'), endDate: range[1].format('YYYY-MM-DD'), keyword: keyword.trim() || undefined, categoryGuid, supplierCode, documentKeyword: documentKeyword?.trim() || undefined }
+function requestFilter(range: [Dayjs, Dayjs], keyword: string, warehouseCategoryGuids: string[] = [], supplierCodes: string[] = [], supplierCategoryGuids: string[] = [], documentKeyword?: string): LocalSupplierProductSalesAnalysisFilter {
+  return {
+    startDate: range[0].format('YYYY-MM-DD'), endDate: range[1].format('YYYY-MM-DD'),
+    keyword: keyword.trim() || undefined,
+    warehouseCategoryGuids: warehouseCategoryGuids.length ? [...warehouseCategoryGuids].sort() : undefined,
+    supplierCodes: supplierCodes.length ? [...supplierCodes].sort() : undefined,
+    supplierCategoryGuids: supplierCategoryGuids.length ? [...supplierCategoryGuids].sort() : undefined,
+    documentKeyword: documentKeyword?.trim() || undefined,
+  }
 }
 function hasSelection(selection: LocalSupplierProductSalesAnalysisSelection) { return selection.mode === 'allFiltered' || selection.includedProductCodes.length > 0 }
 
@@ -160,8 +169,14 @@ export default function LocalProductSalesAnalysisPage() {
   }, [])
   const [draftRange, setDraftRange] = useState<[Dayjs, Dayjs]>(defaultRange)
   const [draftKeyword, setDraftKeyword] = useState('')
-  const [draftCategoryGuid, setDraftCategoryGuid] = useState<string>()
-  const [draftSupplierCode, setDraftSupplierCode] = useState<string>()
+  const [draftWarehouseCategoryGuids, setDraftWarehouseCategoryGuids] = useState<string[]>([])
+  const [draftSupplierCodes, setDraftSupplierCodes] = useState<string[]>([])
+  const [draftSupplierCategoryGuids, setDraftSupplierCategoryGuids] = useState<string[]>([])
+  const [supplierCategoryOptions, setSupplierCategoryOptions] = useState<LocalSupplierProductSalesAnalysisSupplierCategoryOption[]>([])
+  const [supplierCategoryOpen, setSupplierCategoryOpen] = useState(false)
+  const [supplierCategorySearch, setSupplierCategorySearch] = useState('')
+  const [supplierCategoryLoading, setSupplierCategoryLoading] = useState(false)
+  const [supplierCategoryError, setSupplierCategoryError] = useState<string>()
   const [draftDocumentKeyword, setDraftDocumentKeyword] = useState('')
   const [quickDays, setQuickDays] = useState<number | null>(30)
   const [candidatePage, setCandidatePage] = useState(1)
@@ -205,6 +220,26 @@ export default function LocalProductSalesAnalysisPage() {
     branches: useRef(createLatestRequestGuard()).current,
   }
   const brisbaneYesterday = dayjs(buildBrisbaneDefaultRange(1).endDate)
+
+  useEffect(() => {
+    if (!supplierCategoryOpen) return
+    const controller = new AbortController()
+    setSupplierCategoryLoading(true)
+    setSupplierCategoryError(undefined)
+    getLocalSupplierProductSalesAnalysisSupplierCategoryOptions(draftSupplierCodes, controller.signal)
+      .then((response) => {
+        if (controller.signal.aborted) return
+        setSupplierCategoryOptions(response.data)
+        const valid = new Set(response.data.map((item) => item.guid))
+        setDraftSupplierCategoryGuids((previous) => previous.filter((guid) => valid.has(guid)))
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) return
+        setSupplierCategoryError(errorText(error, '供应商分类加载失败'))
+      })
+      .finally(() => { if (!controller.signal.aborted) setSupplierCategoryLoading(false) })
+    return () => controller.abort()
+  }, [supplierCategoryOpen, draftSupplierCodes])
 
   // 统一 bootstrap：挂载/查询/重置 autoSelectFirst；刷新携带原选择/当前商品且 forceRefresh；
   // 新请求先作废旧请求与旧超时，竞态旧响应由 guard 丢弃，成功后一次状态提交原子替换。
@@ -411,7 +446,7 @@ export default function LocalProductSalesAnalysisPage() {
   const applyFilters = () => {
     const rangeError = getDateRangeError(draftRange[0].format('YYYY-MM-DD'), draftRange[1].format('YYYY-MM-DD'), brisbaneYesterday.format('YYYY-MM-DD'))
     if (rangeError) { setLoadPhase('idle'); setBootstrapError(rangeError); return }
-    const nextFilter = requestFilter(draftRange, draftKeyword, draftCategoryGuid, draftSupplierCode, draftDocumentKeyword)
+    const nextFilter = requestFilter(draftRange, draftKeyword, draftWarehouseCategoryGuids, draftSupplierCodes, draftSupplierCategoryGuids, draftDocumentKeyword)
     filterRef.current = nextFilter
     selectionRef.current = createIncludedSelection()
     currentProductRef.current = null
@@ -426,7 +461,7 @@ export default function LocalProductSalesAnalysisPage() {
 
   const resetFilters = () => {
     const range = (() => { const result = buildBrisbaneDefaultRange(30); return [dayjs(result.startDate), dayjs(result.endDate)] as [Dayjs, Dayjs] })()
-    setDraftRange(range); setDraftKeyword(''); setDraftCategoryGuid(undefined); setDraftSupplierCode(undefined); setDraftDocumentKeyword(''); setQuickDays(30)
+    setDraftRange(range); setDraftKeyword(''); setDraftWarehouseCategoryGuids([]); setDraftSupplierCodes([]); setDraftSupplierCategoryGuids([]); setDraftDocumentKeyword(''); setQuickDays(30)
     const nextFilter = requestFilter(range, '')
     filterRef.current = nextFilter
     selectionRef.current = createIncludedSelection()
@@ -610,6 +645,28 @@ export default function LocalProductSalesAnalysisPage() {
       .sort((a, b) => (a.name || a.code).localeCompare(b.name || b.code, 'en-AU', { sensitivity: 'base', numeric: true }))
       .map((item) => ({ value: item.code, label: item.name ? `${item.name} (${item.code})` : item.code }))
   }, [analysis.options.suppliers])
+  const supplierNameByCode = useMemo(() => new Map(analysis.options.suppliers.map((item) => [item.code, item.name || item.code])), [analysis.options.suppliers])
+  const supplierCategoryGroups = useMemo(() => {
+    const groups = new Map<string, { label: string; options: { value: string; label: string }[] }>()
+    supplierCategoryOptions.forEach((item) => {
+      const existing = groups.get(item.supplierCode)
+      const group = existing || { label: `${supplierNameByCode.get(item.supplierCode) || item.supplierCode} (${item.supplierCode})`, options: [] }
+      group.options.push({ value: item.guid, label: item.name })
+      groups.set(item.supplierCode, group)
+    })
+    return [...groups.values()]
+  }, [supplierCategoryOptions, supplierNameByCode])
+  const categoryText = (zh: string, en: string) => i18n.resolvedLanguage?.startsWith('en') ? en : zh
+  const visibleSupplierCategoryGuids = supplierCategoryOptions
+    .filter(item => item.name.toLocaleLowerCase().includes(supplierCategorySearch.trim().toLocaleLowerCase()))
+    .map(item => item.guid)
+  const limitSelection = (values: string[], limit: number, label: string) => {
+    if (values.length > limit) message.warning(categoryText(`${label}最多选择 ${limit} 项`, `${label}: select up to ${limit}`))
+    return values.slice(0, limit)
+  }
+  const selectVisibleSupplierCategories = () => {
+    setDraftSupplierCategoryGuids(previous => limitSelection([...new Set([...previous, ...visibleSupplierCategoryGuids])], 100, categoryText('供应商分类', 'Supplier categories')))
+  }
   const selectionLabel = analysis.effectiveSelection.mode === 'included' ? t('localProductSalesAnalysis.selectedCount', { count: analysis.effectiveSelection.includedProductCodes.length }) : t('localProductSalesAnalysis.allFilteredSelected')
 
   return <PageContainer title={t('localProductSalesAnalysis.title')}>
@@ -619,8 +676,9 @@ export default function LocalProductSalesAnalysisPage() {
         <RangePicker value={draftRange} disabledDate={(date) => date.isAfter(brisbaneYesterday, 'day')} onChange={(value) => value?.[0] && value?.[1] && (setDraftRange([value[0], value[1]]), setQuickDays(null))} allowClear={false} />
         <Segmented value={quickDays ?? ''} options={[7, 30, 90].map((days) => ({ value: days, label: t('localProductSalesAnalysis.quickDays', { count: days }) }))} onChange={(value) => setRangeDays(Number(value))} />
         <Input className={styles.filterKeyword} value={draftKeyword} onChange={(event) => setDraftKeyword(event.target.value)} onPressEnter={applyFilters} placeholder={t('localProductSalesAnalysis.filters.keyword')} allowClear />
-        <Select className={styles.filterSelect} value={draftCategoryGuid} onChange={setDraftCategoryGuid} placeholder={t('localProductSalesAnalysis.filters.category')} allowClear options={analysis.options.warehouseCategories.map((item) => ({ value: item.guid, label: item.name || item.guid }))} notFoundContent={t('localProductSalesAnalysis.noCategories')} />
-        <Select className={styles.filterSelect} value={draftSupplierCode} onChange={setDraftSupplierCode} placeholder={t('localProductSalesAnalysis.filters.supplier')} allowClear showSearch optionFilterProp="label" options={supplierOptions} notFoundContent={t('localProductSalesAnalysis.noSuppliers')} />
+        <Select className={styles.filterSelect} mode="multiple" maxTagCount={0} maxTagPlaceholder={() => categoryText(`已选 ${draftSupplierCodes.length} 家`, `${draftSupplierCodes.length} selected`)} value={draftSupplierCodes} onChange={(codes) => { setDraftSupplierCodes(limitSelection(codes, 100, categoryText('供应商', 'Suppliers'))); setDraftSupplierCategoryGuids([]) }} placeholder={t('localProductSalesAnalysis.filters.supplier')} allowClear showSearch optionFilterProp="label" options={supplierOptions} notFoundContent={t('localProductSalesAnalysis.noSuppliers')} aria-label={t('localProductSalesAnalysis.filters.supplier')} />
+        <Select className={styles.filterSelect} mode="multiple" maxTagCount={0} maxTagPlaceholder={() => categoryText(`已选 ${draftSupplierCategoryGuids.length} 项`, `${draftSupplierCategoryGuids.length} selected`)} value={draftSupplierCategoryGuids} onChange={values => setDraftSupplierCategoryGuids(limitSelection(values, 100, categoryText('供应商分类', 'Supplier categories')))} placeholder={categoryText('供应商分类（多选）', 'Supplier categories (multiple)')} allowClear showSearch optionFilterProp="label" options={supplierCategoryGroups} open={supplierCategoryOpen} onOpenChange={open => { setSupplierCategoryOpen(open); if (!open) setSupplierCategorySearch('') }} onSearch={setSupplierCategorySearch} loading={supplierCategoryLoading} notFoundContent={supplierCategoryError || (supplierCategoryLoading ? categoryText('加载中…', 'Loading…') : categoryText('暂无供应商分类', 'No supplier categories'))} aria-label={categoryText('供应商分类', 'Supplier categories')} popupRender={(menu) => <><div className={styles.categoryHint}>{categoryText('按供应商分组；分类与仓库分类共同筛选商品。最多选 100 项。', 'Grouped by supplier; this filter combines with warehouse categories. Select up to 100.')}</div><div className={styles.categoryActions}><Button size="small" type="link" onClick={selectVisibleSupplierCategories}>{categoryText('全选当前分类', 'Select visible categories')}</Button><span>{categoryText(`已选 ${draftSupplierCategoryGuids.length} 项`, `${draftSupplierCategoryGuids.length} selected`)}</span></div>{menu}<div className={styles.categoryFooter}><Button size="small" onClick={() => setDraftSupplierCategoryGuids([])}>{categoryText('清空', 'Clear')}</Button><Button size="small" type="primary" onClick={() => { setSupplierCategoryOpen(false); applyFilters() }}>{categoryText('应用筛选', 'Apply filters')}</Button></div></>} />
+        <Select className={styles.filterSelect} mode="multiple" maxTagCount={0} maxTagPlaceholder={() => categoryText(`已选 ${draftWarehouseCategoryGuids.length} 项`, `${draftWarehouseCategoryGuids.length} selected`)} value={draftWarehouseCategoryGuids} onChange={values => setDraftWarehouseCategoryGuids(limitSelection(values, 100, categoryText('仓库分类', 'Warehouse categories')))} placeholder={t('localProductSalesAnalysis.filters.category')} allowClear showSearch optionFilterProp="label" options={analysis.options.warehouseCategories.map((item) => ({ value: item.guid, label: item.name || item.guid }))} notFoundContent={t('localProductSalesAnalysis.noCategories')} aria-label={t('localProductSalesAnalysis.filters.category')} />
         <Input className={styles.filterSelect} value={draftDocumentKeyword} onChange={(event) => setDraftDocumentKeyword(event.target.value)} onPressEnter={applyFilters} placeholder={t('localProductSalesAnalysis.filters.invoiceNo')} allowClear />
         <Space>
           <Button icon={<SearchOutlined />} type="primary" loading={loadPhase === 'bootstrap'} onClick={applyFilters}>{t('common.query')}</Button>
