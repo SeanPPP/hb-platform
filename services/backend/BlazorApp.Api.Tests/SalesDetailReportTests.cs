@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Controllers.React;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
@@ -41,6 +42,7 @@ public sealed class SalesDetailReportTests : IDisposable
         {
             typeof(Store), typeof(HBLocalSupplier), typeof(ChinaSupplier), typeof(Product),
             typeof(ProductStoreDailySalesStatistic), typeof(SalesStatisticRefreshState),
+            typeof(LocalSupplierCategory), typeof(LocalSupplierCategoryProductAssignment), typeof(WarehouseCategory),
         });
         _posmDb.CodeFirst.InitTables(new[] { typeof(PosmProductSupplierMapping) });
     }
@@ -195,6 +197,98 @@ public sealed class SalesDetailReportTests : IDisposable
 
         Assert.Equal(DateTimeKind.Utc, response.StatisticUpdatedAt!.Value.Kind);
         Assert.Contains("2026-09-07T03:32:59Z", JsonSerializer.Serialize(response));
+    }
+
+    [Fact]
+    public void 无效分类哨兵仍生成零匹配分类过滤条件()
+    {
+        var method = typeof(SalesDashboardReactService).GetMethod(
+            "BuildSalesDetailCategoryFilter", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var sql = Assert.IsType<string>(method.Invoke(null, new object?[]
+        {
+            SalesDetailKind.Australia,
+            new[] { "__sales_detail_no_matching_category__" },
+            Array.Empty<string>(),
+            "s.[ProductCode]",
+        }));
+
+        Assert.Contains("LocalSupplierCategoryProductAssignment", sql);
+        Assert.Contains("@sdrCategorySupplier0", sql);
+    }
+
+    [Fact]
+    public void 澳洲供应商可见范围将国内供应商事实归并为200()
+    {
+        var visible = SalesDetailCategoryOptionsController.MapVisibleSupplierCodes(
+            new (string? Code, string? ChinaCode)[] { ("CN-01", "CN-01"), ("A1", null), ("200", null) });
+
+        Assert.Contains("200", visible);
+        Assert.Contains("A1", visible);
+        Assert.DoesNotContain("CN-01", visible);
+    }
+
+    [Fact]
+    public async Task 多选筛选超过服务端上限时明确拒绝而不执行查询()
+    {
+        var day = new DateTime(2026, 9, 22);
+        var service = CreateService();
+        var tooManySuppliers = Enumerable.Range(0, 201).Select(index => $"S-{index}").ToList();
+        var tooManyCategories = Enumerable.Range(0, 501).Select(index => $"C-{index}").ToList();
+
+        var supplierError = await Assert.ThrowsAsync<ArgumentException>(() => service.GetSalesDetailReportFilteredAsync(
+            Range(day, day), SalesDetailKind.Australia, new() { "S1" }, selectedSupplierCodes: tooManySuppliers));
+        Assert.Contains("最多选择 200", supplierError.Message);
+
+        var legacySupplierError = await Assert.ThrowsAsync<ArgumentException>(() => service.GetSalesDetailReportFilteredAsync(
+            Range(day, day), SalesDetailKind.Australia, new() { "S1" }, selectedSupplierCode: "S-extra",
+            selectedSupplierCodes: tooManySuppliers.Take(200).ToList()));
+        Assert.Contains("最多选择 200", legacySupplierError.Message);
+
+        var categoryError = await Assert.ThrowsAsync<ArgumentException>(() => service.GetSalesDetailReportFilteredAsync(
+            Range(day, day), SalesDetailKind.Australia, new() { "S1" }, supplierCategoryGuids: tooManyCategories));
+        Assert.Contains("最多选择 500", categoryError.Message);
+    }
+
+    [Fact]
+    public async Task 澳洲供应商分类多选包含自营仓库分类且不串到其他供应商()
+    {
+        var day = new DateTime(2026, 9, 22);
+        await _localDb.Insertable(new[]
+        {
+            new Product { UUID = "uuid-a", ProductCode = "P-A", ProductName = "A", LocalSupplierCode = "A1" },
+            new Product { UUID = "uuid-b", ProductCode = "P-B", ProductName = "B", LocalSupplierCode = "A2" },
+            new Product { UUID = "uuid-hb", ProductCode = "P-HB", ProductName = "HB", LocalSupplierCode = "200", WarehouseCategoryGUID = "WC-HB" },
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new[]
+        {
+            new LocalSupplierCategory { CategoryGUID = "CAT-A", LocalSupplierCode = "A1", CategoryName = "A分类" },
+            new LocalSupplierCategory { CategoryGUID = "CAT-B", LocalSupplierCode = "A2", CategoryName = "B分类" },
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new[]
+        {
+            new LocalSupplierCategoryProductAssignment { ProductCode = "P-A", LocalSupplierCode = "A1", CategoryGUID = "CAT-A" },
+            new LocalSupplierCategoryProductAssignment { ProductCode = "P-B", LocalSupplierCode = "A2", CategoryGUID = "CAT-B" },
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new WarehouseCategory { CategoryGUID = "WC-HB", CategoryName = "自营分类" }).ExecuteCommandAsync();
+        await SeedStatisticAsync(day, "S1", "A1", "P-A", 1, 10m);
+        await SeedStatisticAsync(day, "S1", "A2", "P-A", 5, 50m); // 同码历史销售不可借用 A1 分类。
+        await SeedStatisticAsync(day, "S1", "A2", "P-B", 2, 20m);
+        await SeedStatisticAsync(day, "S1", "200", "P-HB", 3, 30m);
+
+        var service = CreateService();
+        var selected = await service.GetSalesDetailReportFilteredAsync(Range(day, day), SalesDetailKind.Australia,
+            new() { "S1" }, selectedSupplierCodes: new() { "A1", "A2", "200" },
+            supplierCategoryGuids: new() { "CAT-A", "WC-HB" });
+        Assert.Equal(40m, selected.Data!.Summary!.Summary!.Revenue);
+        Assert.Equal(new[] { "P-A", "P-HB" }, selected.Data.Products!.Rows.Select(row => row.Code).OrderBy(code => code));
+
+        var onlyWarehouse = await service.GetSalesDetailReportFilteredAsync(Range(day, day), SalesDetailKind.Australia,
+            new() { "S1" }, selectedSupplierCodes: new() { "200" }, supplierCategoryGuids: new() { "WC-HB" });
+        Assert.Equal(30m, onlyWarehouse.Data!.Summary!.Summary!.Revenue);
+
+        var onlySupplierCodes = await service.GetSalesDetailReportFilteredAsync(Range(day, day), SalesDetailKind.Australia,
+            new() { "S1" }, selectedSupplierCodes: new() { "A1" });
+        Assert.Equal(10m, onlySupplierCodes.Data!.Summary!.Summary!.Revenue);
     }
 
     [Fact]
