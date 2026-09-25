@@ -74,6 +74,9 @@ namespace BlazorApp.Shared.DTOs
         /// <summary>供应商编码列表，与 SupplierCode 合并使用。</summary>
         public List<string>? SupplierCodes { get; set; }
 
+        /// <summary>供应商网站分类 GUID 列表；供应商 200 使用仓库分类，和仓库分类条件取交集。</summary>
+        public List<string>? SupplierCategoryGuids { get; set; }
+
         /// <summary>进货单据号/备注关键字。</summary>
         public string? DocumentKeyword { get; set; }
     }
@@ -107,6 +110,14 @@ namespace BlazorApp.Shared.DTOs
     {
         public string Code { get; set; } = string.Empty;
         public string? Name { get; set; }
+    }
+
+    /// <summary>按供应商分组的可选供应商分类叶节点。</summary>
+    public class LocalSupplierProductSalesSupplierCategoryOptionDto
+    {
+        public string SupplierCode { get; set; } = string.Empty;
+        public string Guid { get; set; } = string.Empty;
+        public string Name { get; set; } = string.Empty;
     }
 
     /// <summary>options 接口响应。</summary>

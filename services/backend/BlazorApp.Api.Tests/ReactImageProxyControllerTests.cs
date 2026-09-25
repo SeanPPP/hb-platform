@@ -24,10 +24,14 @@ public sealed class ReactImageProxyControllerTests
         var salesAuthorize = typeof(ReactImageProxyController)
             .GetMethod(nameof(ReactImageProxyController.GetSalesDetail))!
             .GetCustomAttribute<AuthorizeAttribute>();
+        var compactBoardAuthorize = typeof(ReactImageProxyController)
+            .GetMethod(nameof(ReactImageProxyController.GetCompactSalesBoard))!
+            .GetCustomAttribute<AuthorizeAttribute>();
 
         Assert.NotNull(controllerAuthorize);
         Assert.Equal("Admin,WarehouseManager,WarehouseStaff", warehouseAuthorize?.Roles);
         Assert.Equal(Permissions.SalesDashboard.SalesDetailView, salesAuthorize?.Policy);
+        Assert.Equal(Permissions.SalesDashboard.CompactBoardView, compactBoardAuthorize?.Policy);
     }
 
     [Theory]
