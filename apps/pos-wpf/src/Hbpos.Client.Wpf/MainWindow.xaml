@@ -17,8 +17,8 @@
         Title="HB POS"
         Width="1366"
         Height="768"
-        MinWidth="1080"
-        MinHeight="720"
+        MinWidth="960"
+        MinHeight="540"
         Icon="pack://application:,,,/Resources/AppIcon.ico"
         WindowStyle="None"
         ResizeMode="CanResize"
@@ -209,7 +209,9 @@
         <KeyBinding Key="Escape" Command="{Binding ConfirmationDialog.CancelCommand}" />
     </Window.InputBindings>
 
-    <Grid Background="{StaticResource PosScreenBackgroundBrush}">
+    <!-- 窗口小于 1280×720（如 1024×768 屏）时整体等比缩小，页面仍按设计基准排版；窗口最小尺寸 = 基准 × 0.75。 -->
+    <Grid services:AdaptiveUiScale.IsEnabled="True"
+          Background="{StaticResource PosScreenBackgroundBrush}">
         <Grid.Style>
             <Style TargetType="Grid">
                 <Setter Property="IsEnabled" Value="True" />
@@ -232,7 +234,7 @@
                 BorderBrush="#FFE7E8EB"
                 BorderThickness="0,0,0,1"
                 MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
-            <Grid Margin="16,0,8,0">
+            <controls:TitleBarLayoutPanel Margin="16,0,8,0">
                 <StackPanel HorizontalAlignment="Left" Orientation="Horizontal" VerticalAlignment="Center" Panel.ZIndex="2">
                     <Image Width="32"
                            Height="32"
@@ -258,6 +260,7 @@
                            Foreground="{StaticResource PosTextBrush}"
                            HorizontalAlignment="Center"
                            VerticalAlignment="Center"
+                           TextTrimming="CharacterEllipsis"
                            Panel.ZIndex="1" />
 
                 <StackPanel HorizontalAlignment="Right" Orientation="Horizontal" VerticalAlignment="Center" Panel.ZIndex="2">
@@ -328,7 +331,7 @@
                         <materialDesign:PackIcon Kind="Close" Width="18" Height="18" />
                     </Button>
                 </StackPanel>
-            </Grid>
+            </controls:TitleBarLayoutPanel>
         </Border>
 
         <Grid Grid.Row="1">

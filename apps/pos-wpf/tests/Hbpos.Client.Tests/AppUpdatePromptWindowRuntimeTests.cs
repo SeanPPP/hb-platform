@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Markup;
 using System.Xml.Linq;
@@ -63,9 +64,13 @@ public sealed class AppUpdatePromptWindowRuntimeTests(PaymentViewRuntimeStaTestH
             click.Remove();
         }
 
-        root.Attribute(XNamespace.Xmlns + "loc")!.Value =
-            "clr-namespace:Hbpos.Client.Wpf.Localization;assembly=Hbpos.Client.Wpf";
-        return Assert.IsType<Window>(XamlReader.Parse(document.ToString()));
+        // 松散 XAML 解析时本项目的 clr-namespace 必须带程序集名（loc、services 等）；
+        // 附加属性名也在该命名空间下，只能在序列化后的文本上替换声明。
+        var xaml = Regex.Replace(
+            document.ToString(),
+            "\"clr-namespace:(Hbpos\\.Client\\.Wpf[^\";]*)\"",
+            "\"clr-namespace:$1;assembly=Hbpos.Client.Wpf\"");
+        return Assert.IsType<Window>(XamlReader.Parse(xaml));
     }
 
     private static FrameworkElement FindNamed(Window window, string name)
