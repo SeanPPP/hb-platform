@@ -1098,6 +1098,7 @@ builder.Services.AddHostedService<ProductMovementReportSnapshotWorker>();
 builder.Services.AddHostedService<MobileChinaReportCacheWarmupWorker>();
 builder.Services.AddHostedService<ProductStoreDailyColumnstoreMaintenanceWorker>();
 builder.Services.AddHostedService<SalesDetailMonthlyProjectionWorker>();
+builder.Services.AddHostedService<CompactBoardMonthlyProjectionWorker>();
 builder.Services.AddScoped<
     IWarehouseProductFlowAnalysisService,
     WarehouseProductFlowAnalysisService
