@@ -262,11 +262,14 @@
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
 
+                        <!-- 中文注释：窄窗口下提示列会被按钮挤到接近 0 宽并逐字换行；限高后按钮行不会被撑出卡片。 -->
                         <TextBlock MaxWidth="360"
+                                   MaxHeight="48"
                                    VerticalAlignment="Center"
                                    Text="{loc:Loc appUpdate.optional.prompt.settingsHint}"
                                    FontSize="12"
                                    Foreground="{StaticResource PosMutedForegroundBrush}"
+                                   TextTrimming="CharacterEllipsis"
                                    TextWrapping="Wrap" />
 
                         <StackPanel Grid.Column="1"
