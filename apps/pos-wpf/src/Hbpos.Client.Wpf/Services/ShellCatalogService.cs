@@ -28,7 +28,8 @@ public sealed class ShellCatalogService(
     ILocalCatalogRepository catalogRepository,
     ILocalCatalogSyncService catalogSync,
     PosCartService cart,
-    IUiPriorityCoordinator? uiPriorityCoordinator = null) : IShellCatalogService
+    IUiPriorityCoordinator? uiPriorityCoordinator = null,
+    ICatalogSyncStatusService? catalogSyncStatus = null) : IShellCatalogService
 {
     public ShellCatalogService(
         LocalSellableItemIndex priceIndex,
@@ -178,23 +179,41 @@ public sealed class ShellCatalogService(
         var syncProgress = progress is null
             ? null
             : new CatalogSyncProgressSink(progress, priceIndex.Count);
-        var result = await Task.Run(async () =>
+        // 启动、手动下载和数据重置都经过这里，统一记录设置页展示的同步时间。
+        catalogSyncStatus?.MarkStarted(storeCode);
+        LocalCatalogReloadResult result;
+        try
         {
-            Interlocked.Increment(ref _activeSyncCount);
-            try
+            result = await Task.Run(async () =>
             {
-                await catalogSync.FullSyncAsync(storeCode, cancellationToken, syncProgress, forceFullDownload)
-                    .ConfigureAwait(false);
-                return await LoadAndReplaceLocalCatalogAsync(storeCode, cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            finally
-            {
-                Interlocked.Decrement(ref _activeSyncCount);
-            }
-        }, cancellationToken);
+                Interlocked.Increment(ref _activeSyncCount);
+                try
+                {
+                    await catalogSync.FullSyncAsync(storeCode, cancellationToken, syncProgress, forceFullDownload)
+                        .ConfigureAwait(false);
+                    return await LoadAndReplaceLocalCatalogAsync(storeCode, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                finally
+                {
+                    Interlocked.Decrement(ref _activeSyncCount);
+                }
+            }, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            catalogSyncStatus?.MarkCanceled(storeCode);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            catalogSyncStatus?.MarkFailed(storeCode, ex.Message);
+            throw;
+        }
 
+        var markSucceeded = catalogSyncStatus?.MarkSucceededAsync(storeCode) ?? Task.CompletedTask;
         ApplyPromotionRules(result.PromotionRules);
+        await markSucceeded;
         return result.Items;
     }
 

@@ -176,6 +176,50 @@ public sealed class ShellCatalogServiceTests
         Assert.Equal(15m, cart.ActualAmount);
     }
 
+    [Fact]
+    public async Task SyncCatalogAndReloadAsync_RecordsSyncStatusForSuccessFailureAndReset()
+    {
+        var succeededAt = new DateTimeOffset(2026, 9, 26, 4, 32, 0, TimeSpan.Zero);
+        var clock = new CatalogSyncStatusServiceTests.MutableTimeProvider(succeededAt);
+        var syncStatus = new CatalogSyncStatusService(
+            new CatalogSyncStatusServiceTests.InMemoryAppSettingsRepository(),
+            clock);
+        var sync = new CoordinatedCatalogSyncService();
+        var service = new ShellCatalogService(
+            new LocalSellableItemIndex(),
+            new FakeLocalCatalogRepository(),
+            sync,
+            new PosCartService(),
+            catalogSyncStatus: syncStatus);
+
+        var regularTask = service.SyncCatalogAndReloadAsync("S01", forceFullDownload: false);
+        await sync.RegularStarted.Task.WaitUntilCompletedAsync(() => sync.Describe(regularTask));
+        Assert.True(syncStatus.GetStatus("S01").IsSyncing);
+
+        // 数据重置取消的常规同步不算失败，重置完成后记为最新成功时间。
+        var resetTask = service.SyncCatalogAndReloadAsync("S01", forceFullDownload: true);
+        sync.ReleaseRegularIfNotCanceled();
+        await Record.ExceptionAsync(() => regularTask);
+        await resetTask.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
+        Assert.Equal(new CatalogSyncStatus(succeededAt, false, null, null), syncStatus.GetStatus("S01"));
+
+        var failedAt = succeededAt.AddHours(1);
+        clock.UtcNow = failedAt;
+        var failingService = new ShellCatalogService(
+            new LocalSellableItemIndex(),
+            new FakeLocalCatalogRepository(),
+            new FailingCatalogSyncService(),
+            new PosCartService(),
+            catalogSyncStatus: syncStatus);
+
+        var failure = await Assert.ThrowsAsync<HttpRequestException>(
+            () => failingService.SyncCatalogAndReloadAsync("S01", forceFullDownload: false));
+
+        Assert.Equal(
+            new CatalogSyncStatus(succeededAt, false, failedAt, failure.Message),
+            syncStatus.GetStatus("S01"));
+    }
+
     private static SellableItemDto CreateItem(string productCode, decimal price = 1m)
     {
         return new SellableItemDto(
@@ -295,6 +339,18 @@ public sealed class ShellCatalogServiceTests
             var taskStates = string.Join(", ", tasks.Select(task => task.Status));
             return $"calls=[{string.Join(", ", Calls)}] regularStarted={RegularStarted.Task.IsCompleted} " +
                    $"resetStarted={ResetStarted.Task.IsCompleted} regularCanceled={RegularCanceled} tasks=[{taskStates}]";
+        }
+    }
+
+    private sealed class FailingCatalogSyncService : ILocalCatalogSyncService
+    {
+        public Task<LocalCatalogSyncResult> FullSyncAsync(
+            string storeCode,
+            CancellationToken cancellationToken = default,
+            IProgress<CatalogSyncProgress>? progress = null,
+            bool forceFullDownload = false)
+        {
+            throw new HttpRequestException("network timeout");
         }
     }
 

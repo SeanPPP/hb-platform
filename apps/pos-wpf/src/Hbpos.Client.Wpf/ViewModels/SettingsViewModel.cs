@@ -293,10 +293,12 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         PosSessionState? session = null,
         IRemoteMaintenanceService? remoteMaintenanceService = null,
         Func<string, Task<bool>>? confirmLinklyTerminalAssignmentAsync = null,
-        IPaymentMethodSettingsService? paymentMethodSettingsService = null)
+        IPaymentMethodSettingsService? paymentMethodSettingsService = null,
+        ICatalogSyncStatusService? catalogSyncStatusService = null)
     {
         _setupService = setupService;
         _paymentMethodSettingsService = paymentMethodSettingsService;
+        _catalogSyncStatusService = catalogSyncStatusService;
         _localization = localization;
         _apiServerSettings = apiServerSettings;
         _downloadCatalogAsync = downloadCatalogAsync;
@@ -372,6 +374,8 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             _localization.CultureChanged += OnCultureChanged;
         }
 
+        InitializeCatalogSyncStatus();
+
         SelectDataMaintenanceCommand = new RelayCommand(() => SelectedCategory = SettingsCategory.DataMaintenance);
         SelectPaymentTerminalCommand = new AsyncRelayCommand(() => SelectCategoryAsync(SettingsCategory.PaymentTerminal, Permissions.PosTerminal.Settings.PaymentTerminal));
         SelectReceiptPrinterCommand = new AsyncRelayCommand(() => SelectCategoryAsync(SettingsCategory.ReceiptPrinter, Permissions.PosTerminal.Settings.ReceiptPrinter));
@@ -432,6 +436,8 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         {
             _localization.CultureChanged -= OnCultureChanged;
         }
+
+        ReleaseCatalogSyncStatus();
     }
 
     public ObservableCollection<SquareLocationOption> SquareLocations { get; } = [];
@@ -801,6 +807,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             RaiseActivePaymentProviderProperties();
             SetStatus("settings.status.loaded");
         }, operationName: "load settings");
+        await LoadCatalogSyncStatusAsync();
     }
 
     private async Task LoadLocationsAsync()
@@ -2552,6 +2559,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(RemoteMaintenanceProgressText));
         OnPropertyChanged(nameof(LinklyTitleText));
         RaiseActivePaymentProviderProperties();
+        RaiseCatalogSyncStatusProperties();
         OnPropertyChanged(nameof(LinklyCloudSecretStatusText));
         OnPropertyChanged(nameof(LinklyCloudCredentialStatusText));
         OnPropertyChanged(nameof(LinklyTestActionText));
