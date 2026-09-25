@@ -124,16 +124,21 @@ public sealed class AdaptiveUiScaleTests
                 AssertScale(content, 0.8d);
                 Assert.Equal(TextRenderingMode.Grayscale, TextOptions.GetTextRenderingMode(content));
 
-                window.Width = 1366d;
-                window.Height = 768d;
-                PumpDispatcher();
-                Assert.True(content.LayoutTransform.Value.IsIdentity);
-                Assert.Equal(DependencyProperty.UnsetValue, content.ReadLocalValue(TextOptions.TextRenderingModeProperty));
-
                 window.Width = 960d;
                 window.Height = 540d;
                 PumpDispatcher();
                 AssertScale(content, 0.75d);
+
+                // CI 运行器屏幕只有 1024×768，系统会把更大的窗口压回屏幕尺寸；恢复 1:1 的计算已由纯函数用例覆盖，
+                // 这里只在屏幕放得下 1366×768 时验证真实窗口会撤销缩放与灰度文字。
+                if (SystemParameters.VirtualScreenWidth >= 1366d && SystemParameters.VirtualScreenHeight >= 768d)
+                {
+                    window.Width = 1366d;
+                    window.Height = 768d;
+                    PumpDispatcher();
+                    Assert.True(content.LayoutTransform.Value.IsIdentity);
+                    Assert.Equal(DependencyProperty.UnsetValue, content.ReadLocalValue(TextOptions.TextRenderingModeProperty));
+                }
 
                 AdaptiveUiScale.SetIsEnabled(content, false);
                 PumpDispatcher();
