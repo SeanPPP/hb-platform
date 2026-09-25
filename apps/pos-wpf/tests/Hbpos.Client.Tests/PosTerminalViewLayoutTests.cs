@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Xml.Linq;
+using Hbpos.Client.Wpf.Services;
 
 namespace Hbpos.Client.Tests;
 
@@ -458,6 +459,9 @@ public sealed class PosTerminalViewLayoutTests
     }
 
     [Theory]
+    [InlineData(960, 540)]
+    [InlineData(1024, 720)]
+    [InlineData(1024, 728)]
     [InlineData(1080, 720)]
     [InlineData(1366, 768)]
     [InlineData(1920, 1080)]
@@ -468,6 +472,11 @@ public sealed class PosTerminalViewLayoutTests
         Assert.True(width >= (double)mainWindow.Root!.Attribute("MinWidth")!);
         Assert.True(height >= (double)mainWindow.Root.Attribute("MinHeight")!);
 
+        // 小屏整体等比缩小后，页面按缩放前的逻辑尺寸排版。
+        var scale = AdaptiveUiScale.Calculate(width, height);
+        var logicalWidth = width / scale;
+        var logicalHeight = height / scale;
+
         var view = XDocument.Load(Path.Combine(repoRoot, "apps", "pos-wpf", "src", "Hbpos.Client.Wpf", "Views", "Screens", "PosTerminalView.xaml"));
         XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
         XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
@@ -476,7 +485,7 @@ public sealed class PosTerminalViewLayoutTests
             .Elements(presentation + "ColumnDefinition")
             .ToArray();
         Assert.Equal(3, rootColumns.Length);
-        Assert.True(rootColumns.Sum(column => (double)column.Attribute("MinWidth")!) <= (double)mainWindow.Root.Attribute("MinWidth")!);
+        Assert.True(rootColumns.Sum(column => (double)column.Attribute("MinWidth")!) <= logicalWidth);
 
         var actionStyle = FindStyle(view, x, "PosSidebarActionButtonStyle");
         AssertSetter(actionStyle, "MinHeight", "62");
@@ -496,7 +505,7 @@ public sealed class PosTerminalViewLayoutTests
             + ParseVerticalMargin((string?)status.Attribute("Margin"))
             + (double)launcher.Attribute("Height")!
             + ParseVerticalMargin((string?)launcher.Attribute("Margin"));
-        Assert.True(requiredHeight <= 720 - 54 - 42);
+        Assert.True(requiredHeight <= logicalHeight - 54 - 42);
     }
 
     private static double ParseVerticalMargin(string? value)

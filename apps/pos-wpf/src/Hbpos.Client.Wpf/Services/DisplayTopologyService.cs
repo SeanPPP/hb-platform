@@ -15,6 +15,12 @@ public sealed record DisplayBounds(
     int WorkAreaWidth,
     int WorkAreaHeight);
 
+internal readonly record struct WindowSizeLimits(
+    double MinWidth,
+    double MinHeight,
+    double MaxWidth,
+    double MaxHeight);
+
 public interface IDisplayTopologyService
 {
     IReadOnlyList<DisplayBounds> GetDisplays();
@@ -160,20 +166,44 @@ public sealed class DisplayTopologyService : IDisplayTopologyService
         var workArea = monitorInfo.WorkArea;
         var topLeft = FromDevice(window, workArea.Left, workArea.Top);
         var bottomRight = FromDevice(window, workArea.Right, workArea.Bottom);
-        var maxWidth = Math.Max(window.MinWidth, bottomRight.X - topLeft.X);
-        var maxHeight = Math.Max(window.MinHeight, bottomRight.Y - topLeft.Y);
+        var limits = ResolveSizeLimits(
+            window.MinWidth,
+            window.MinHeight,
+            bottomRight.X - topLeft.X,
+            bottomRight.Y - topLeft.Y);
 
-        window.MaxWidth = maxWidth;
-        window.MaxHeight = maxHeight;
-        if (window.Width > maxWidth)
+        ApplySizeLimits(window, limits);
+        if (window.Width > limits.MaxWidth)
         {
-            window.Width = maxWidth;
+            window.Width = limits.MaxWidth;
         }
 
-        if (window.Height > maxHeight)
+        if (window.Height > limits.MaxHeight)
         {
-            window.Height = maxHeight;
+            window.Height = limits.MaxHeight;
         }
+    }
+
+    internal static WindowSizeLimits ResolveSizeLimits(
+        double minWidth,
+        double minHeight,
+        double availableWidth,
+        double availableHeight)
+    {
+        // 关键逻辑：屏幕优先。最小尺寸超过所在屏幕时下调最小尺寸，而不是把窗口撑出屏幕（如 1024×768 屏）。
+        return new WindowSizeLimits(
+            Math.Min(minWidth, availableWidth),
+            Math.Min(minHeight, availableHeight),
+            availableWidth,
+            availableHeight);
+    }
+
+    private static void ApplySizeLimits(Window window, WindowSizeLimits limits)
+    {
+        window.MinWidth = limits.MinWidth;
+        window.MinHeight = limits.MinHeight;
+        window.MaxWidth = limits.MaxWidth;
+        window.MaxHeight = limits.MaxHeight;
     }
 
     private static Point FromDevice(Window source, int x, int y)
@@ -186,13 +216,17 @@ public sealed class DisplayTopologyService : IDisplayTopologyService
     {
         var topLeft = FromDevice(window, left, top);
         var bottomRight = FromDevice(window, left + width, top + height);
+        var limits = ResolveSizeLimits(
+            window.MinWidth,
+            window.MinHeight,
+            bottomRight.X - topLeft.X,
+            bottomRight.Y - topLeft.Y);
 
         window.Left = topLeft.X;
         window.Top = topLeft.Y;
-        window.Width = Math.Max(window.MinWidth, bottomRight.X - topLeft.X);
-        window.Height = Math.Max(window.MinHeight, bottomRight.Y - topLeft.Y);
-        window.MaxWidth = window.Width;
-        window.MaxHeight = window.Height;
+        ApplySizeLimits(window, limits);
+        window.Width = limits.MaxWidth;
+        window.Height = limits.MaxHeight;
     }
 
     private delegate bool MonitorEnumProc(IntPtr monitor, IntPtr hdc, IntPtr rect, IntPtr data);

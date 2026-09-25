@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
         xmlns:loc="clr-namespace:Hbpos.Client.Wpf.Localization"
+        xmlns:services="clr-namespace:Hbpos.Client.Wpf.Services"
         Title="{loc:Loc appUpdate.prompt.title}"
         Width="1200"
         Height="760"
@@ -40,7 +41,9 @@
         </DataTemplate>
     </Window.Resources>
 
+    <!-- 与主窗口同尺寸，缩放规则也与主窗口一致，小屏上弹窗卡片与收银界面等比缩小。 -->
     <Grid x:Name="ModalOverlay"
+          services:AdaptiveUiScale.IsEnabled="True"
           Background="#6B0F172A">
         <Border x:Name="AppUpdateDialogCard"
                 MaxWidth="900"
