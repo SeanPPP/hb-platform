@@ -214,10 +214,10 @@ public sealed class ReactImageProxyControllerTests
         controller.HttpContext.RequestAborted = browserAbort.Token;
 
         var request = controller.GetSalesDetail(AllowedImageUrl);
-        var upstreamToken = await upstreamStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var upstreamToken = await upstreamStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         browserAbort.Cancel();
 
-        Assert.IsType<EmptyResult>(await request.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.IsType<EmptyResult>(await request.WaitAsync(AsyncTestWaitSupport.DefaultTimeout));
         Assert.True(upstreamToken.IsCancellationRequested);
     }
 

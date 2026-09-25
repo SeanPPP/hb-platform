@@ -340,7 +340,13 @@
     <Compile Include="WarehouseProductChangeHistoryServiceTests.cs" />
     <Compile Include="WarehouseProductChangeHistoryTestDouble.cs" />
     <Compile Include="SqliteTempFileCleanup.cs" />
+    <Compile Include="AsyncTestWaitSupport.cs" />
     <Compile Include="OfflineCatalogIndexTests.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 共享等待预算与 WaitUntilAsync：见 AsyncTestWaitSupport.cs，各测试文件不要再复制私有副本。 -->
+    <Using Include="BlazorApp.Api.Tests.AsyncTestWaitSupport" Static="true" />
   </ItemGroup>
 
   <ItemGroup>
