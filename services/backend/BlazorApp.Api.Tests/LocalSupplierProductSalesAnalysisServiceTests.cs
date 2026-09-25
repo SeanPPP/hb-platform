@@ -6,6 +6,7 @@ using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using SqlSugar;
 using Xunit;
@@ -46,6 +47,8 @@ public class LocalSupplierProductSalesAnalysisServiceTests : IDisposable
             typeof(StoreMultiCodeProduct),
             typeof(ProductSetCode),
             typeof(WarehouseCategory),
+            typeof(LocalSupplierCategory),
+            typeof(LocalSupplierCategoryProductAssignment),
             typeof(StoreLocalSupplierInvoice),
             typeof(StoreLocalSupplierInvoiceDetails),
             typeof(ProductStoreDailySalesStatistic)
@@ -176,6 +179,47 @@ public class LocalSupplierProductSalesAnalysisServiceTests : IDisposable
 
         Assert.Single(allStores.Data!.Items);
         Assert.Empty(noStores.Data!.Items);
+    }
+
+    [Fact]
+    public async Task GetCandidatesAsync_多选供应商超过100项返回参数校验错误()
+    {
+        var request = CreateRequest();
+        request.Filter.SupplierCodes = Enumerable.Range(1, 101).Select(index => $"SUP-{index}").ToList();
+
+        var result = await CreateService().GetCandidatesAsync(request, new[] { "B1" });
+
+        Assert.False(result.Success);
+        Assert.Equal("VALIDATION_ERROR", result.ErrorCode);
+        Assert.Contains("供应商不能超过 100 项", result.Message);
+    }
+
+    [Fact]
+    public async Task GetCandidatesAsync_多选仓库分类超过100项返回参数校验错误()
+    {
+        var request = CreateRequest();
+        request.Filter.WarehouseCategoryGuids = Enumerable.Range(1, 101).Select(index => $"CAT-{index}").ToList();
+
+        var result = await CreateService().GetCandidatesAsync(request, new[] { "B1" });
+
+        Assert.False(result.Success);
+        Assert.Equal("VALIDATION_ERROR", result.ErrorCode);
+        Assert.Contains("仓库分类不能超过 100 项", result.Message);
+    }
+
+    [Fact]
+    public void ValidateFilterCodeBudget_分类展开后超过SQL参数预算返回参数校验错误()
+    {
+        var filter = new LocalSupplierProductSalesAnalysisFilterDto
+        {
+            SupplierCodes = Enumerable.Range(1, 100).Select(index => $"SUP-{index}").ToList(),
+        };
+
+        var exception = Assert.Throws<LocalSupplierProductSalesAnalysisValidationException>(() =>
+            LocalSupplierProductSalesAnalysisLogic.ValidateFilterCodeBudget(filter, 1701)
+        );
+
+        Assert.Contains("分类和供应商筛选条件过多", exception.Message);
     }
 
     [Fact]
@@ -397,6 +441,154 @@ public class LocalSupplierProductSalesAnalysisServiceTests : IDisposable
 
         Assert.True(result.Success);
         Assert.Contains(result.Data!.Items, row => row.ProductCode == "P1");
+    }
+
+    [Fact]
+    public async Task GetSupplierCategoryOptionsAsync_按供应商返回叶分类且供应商200使用仓库分类()
+    {
+        await _db.Insertable(
+            new[]
+            {
+                new LocalSupplierCategory
+                {
+                    CategoryGUID = "sup-root",
+                    LocalSupplierCode = "SUP",
+                    CategoryName = "Supplier Root",
+                    ExternalKey = "/root",
+                    FullPath = "Supplier Root",
+                    IsDeleted = false,
+                    IsActive = true,
+                },
+                new LocalSupplierCategory
+                {
+                    CategoryGUID = "sup-leaf",
+                    LocalSupplierCode = "SUP",
+                    ParentGUID = "sup-root",
+                    CategoryName = "Supplier Leaf",
+                    ExternalKey = "/root/leaf",
+                    FullPath = "Supplier Root > Supplier Leaf",
+                    IsDeleted = false,
+                    IsActive = true,
+                },
+                new LocalSupplierCategory
+                {
+                    CategoryGUID = "other-leaf",
+                    LocalSupplierCode = "OTHER",
+                    CategoryName = "Other Leaf",
+                    ExternalKey = "/other",
+                    FullPath = "Other Leaf",
+                    IsDeleted = false,
+                    IsActive = true,
+                },
+            }
+        ).ExecuteCommandAsync();
+        await _db.Insertable(
+            new[]
+            {
+                new WarehouseCategory
+                {
+                    CategoryGUID = "warehouse-root",
+                    CategoryName = "Warehouse Root",
+                    IsDeleted = false,
+                    IsActive = true,
+                },
+                new WarehouseCategory
+                {
+                    CategoryGUID = "warehouse-leaf",
+                    ParentGUID = "warehouse-root",
+                    CategoryName = "Warehouse Leaf",
+                    ChineseName = "仓库叶分类",
+                    IsDeleted = false,
+                    IsActive = true,
+                },
+            }
+        ).ExecuteCommandAsync();
+
+        var result = await CreateService().GetSupplierCategoryOptionsAsync(
+            new[] { "SUP", "200" },
+            new[] { "B1" }
+        );
+
+        Assert.True(result.Success);
+        Assert.Collection(
+            result.Data!,
+            item =>
+            {
+                Assert.Equal("200", item.SupplierCode);
+                Assert.Equal("warehouse-leaf", item.Guid);
+                Assert.Equal("仓库叶分类", item.Name);
+            },
+            item =>
+            {
+                Assert.Equal("SUP", item.SupplierCode);
+                Assert.Equal("sup-leaf", item.Guid);
+                Assert.Equal("Supplier Root > Supplier Leaf", item.Name);
+            }
+        );
+        Assert.DoesNotContain(result.Data!, item => item.Guid is "sup-root" or "warehouse-root" or "other-leaf");
+    }
+
+    [Fact]
+    public async Task GetCandidatesAsync_供应商分类多选同时支持网站分类和供应商200仓库分类()
+    {
+        await InsertProductAsync("P-SUP", "ITM-SUP", "BC-SUP", "Supplier Product", localSupplierCode: "SUP");
+        await InsertProductAsync("P-STALE", "ITM-STALE", "BC-STALE", "Stale Assignment", localSupplierCode: "OTHER");
+        await InsertProductAsync("P-200", "ITM-200", "BC-200", "Warehouse Product", "warehouse-leaf", "200");
+        await _db.Insertable(
+            new[]
+            {
+                new WarehouseCategory
+                {
+                    CategoryGUID = "warehouse-root",
+                    CategoryName = "Warehouse Root",
+                    IsDeleted = false,
+                    IsActive = true,
+                },
+                new WarehouseCategory
+                {
+                    CategoryGUID = "warehouse-leaf",
+                    ParentGUID = "warehouse-root",
+                    CategoryName = "Warehouse Leaf",
+                    IsDeleted = false,
+                    IsActive = true,
+                },
+            }
+        ).ExecuteCommandAsync();
+        await _db.Insertable(
+            new[]
+            {
+                new LocalSupplierCategoryProductAssignment
+                {
+                    ProductCode = "P-SUP",
+                    LocalSupplierCode = "SUP",
+                    CategoryGUID = "sup-leaf",
+                },
+                // 商品供应商已变更时，旧归属不得误命中。
+                new LocalSupplierCategoryProductAssignment
+                {
+                    ProductCode = "P-STALE",
+                    LocalSupplierCode = "SUP",
+                    CategoryGUID = "sup-leaf",
+                },
+            }
+        ).ExecuteCommandAsync();
+
+        var request = CreateRequest();
+        request.Filter.SupplierCodes = new List<string> { "SUP", "OTHER", "200" };
+        request.Filter.SupplierCategoryGuids = new List<string> { "sup-leaf", "warehouse-root" };
+        string? failedSql = null;
+        _db.Aop.OnLogExecuting = (sql, _) => failedSql = sql;
+        var logger = new RecordingLogger<LocalSupplierProductSalesAnalysisService>();
+        var result = await CreateService(logger: logger).GetCandidatesAsync(request, new[] { "B1" });
+
+        Assert.True(
+            result.Success,
+            $"{logger.LastException?.ToString() ?? result.Message}\nSQL:\n{failedSql}"
+        );
+        Assert.Equal(
+            new[] { "P-200", "P-SUP" },
+            result.Data!.Items.Select(item => item.ProductCode).OrderBy(code => code).ToArray()
+        );
     }
 
     [Fact]
@@ -1188,13 +1380,39 @@ public class LocalSupplierProductSalesAnalysisServiceTests : IDisposable
         }
     }
 
-    private LocalSupplierProductSalesAnalysisService CreateService(IMemoryCache? cache = null)
+    private LocalSupplierProductSalesAnalysisService CreateService(
+        IMemoryCache? cache = null,
+        ILogger<LocalSupplierProductSalesAnalysisService>? logger = null
+    )
     {
         return new LocalSupplierProductSalesAnalysisService(
             CreateSqlSugarContext(_db),
             cache ?? new MemoryCache(new MemoryCacheOptions()),
-            NullLogger<LocalSupplierProductSalesAnalysisService>.Instance
+            logger ?? NullLogger<LocalSupplierProductSalesAnalysisService>.Instance
         );
+    }
+
+    private sealed class RecordingLogger<T> : ILogger<T>
+    {
+        public Exception? LastException { get; private set; }
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter
+        )
+        {
+            if (exception is not null)
+            {
+                LastException = exception;
+            }
+        }
     }
 
     private LocalSupplierProductSalesAnalysisRequest CreateRequest()

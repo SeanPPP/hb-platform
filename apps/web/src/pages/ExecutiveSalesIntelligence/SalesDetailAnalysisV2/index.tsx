@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import { Alert, Button, Input, message, Pagination, Segmented, Skeleton, Tag, Tooltip } from 'antd'
+import { Alert, Button, Input, message, Pagination, Segmented, Select, Skeleton, Tag, Tooltip } from 'antd'
 import { CloseOutlined, DownloadOutlined, FullscreenExitOutlined, FullscreenOutlined, InfoCircleOutlined, MenuFoldOutlined, MenuUnfoldOutlined, SearchOutlined, ShopOutlined } from '@ant-design/icons'
 import { useKeepAliveContext } from 'keepalive-for-react'
 import { useLocation, useNavigate } from 'react-router-dom'
@@ -8,9 +8,10 @@ import { useAuthStore } from '../../../store/auth'
 import { MetricPair, ReportControls, useReportText } from '../ReportWorkbench/ReportControls'
 import { growth, normalizeKeyword, reportPeriod } from '../ReportWorkbench/logic'
 import { useReportQuery, type ReportQueryState } from '../ReportWorkbench/useReportQuery'
-import { applyKeyword, clampRailWidth, defaultDetailView, emptySelection, initialDetailState, MAX_PRODUCT_IMAGE_EXPORT_ROWS, parseDetailView, RAIL_DEFAULT_WIDTH, selectDimension, sumProductPage, type CompareView, type DetailTotals, type DetailViewPreference } from './logic'
+import { applyKeyword, clampRailWidth, defaultDetailView, emptySelection, exceedsSalesDetailSelectionLimit, initialDetailState, MAX_CATEGORY_SELECTIONS, MAX_PRODUCT_IMAGE_EXPORT_ROWS, MAX_SUPPLIER_SELECTIONS, parseDetailView, RAIL_DEFAULT_WIDTH, selectDimension, sumProductPage, type CompareView, type DetailTotals, type DetailViewPreference } from './logic'
 import ProductBranchDrawer from './ProductBranchDrawer'
 import { fetchSalesDetailReport, type ReportSection, type SalesDetailPage, type SalesDetailQuery, type SalesDetailReport, type SalesDetailRow } from './reportService'
+import { fetchSalesDetailCategoryOptions, type SalesDetailCategoryGroup } from './categoryOptionsService'
 import styles from './styles.module.css'
 
 type MetricKey = 'revenue' | 'grossProfit' | 'grossMarginRate' | 'quantity' | 'averageUnitPrice' | 'share' | 'chinaShare'
@@ -94,6 +95,9 @@ export default function SalesDetailAnalysisV2() {
   const [keywordDraft, setKeywordDraft] = useState('')
   const [composing, setComposing] = useState(false)
   const [supplierSearch, setSupplierSearch] = useState('')
+  const [categoryGroups, setCategoryGroups] = useState<SalesDetailCategoryGroup[]>()
+  const [categoryLoading, setCategoryLoading] = useState(false)
+  const [categoryError, setCategoryError] = useState<string>()
   const [expanded, setExpanded] = useState<PanelKey | null>(null)
   const [view, setView] = useState<DetailViewPreference>(readViewPreference)
   const [railWidth, setRailWidth] = useState(RAIL_DEFAULT_WIDTH)
@@ -157,8 +161,46 @@ export default function SalesDetailAnalysisV2() {
   const allowed = !!currentUser && (branches === undefined || branches.length > 0)
   const period = useMemo(() => reportPeriod(dates), [dates])
   const query: SalesDetailQuery = { ...period, kind, branchCodes: branches, selectedBranchCode: selection.branch,
-    selectedSupplierCode: selection.supplier, selectedProductCode: selection.product, search: selection.keyword || undefined,
+    selectedSupplierCode: selection.supplier, selectedSupplierCodes: selection.supplierCodes.length ? selection.supplierCodes : undefined,
+    supplierCategoryGuids: selection.supplierCategoryGuids.length ? selection.supplierCategoryGuids : undefined,
+    warehouseCategoryGuids: selection.warehouseCategoryGuids.length ? selection.warehouseCategoryGuids : undefined,
+    selectedProductCode: selection.product, search: selection.keyword || undefined,
     pageIndex: selection.page, pageSize: selection.pageSize }
+  useEffect(() => {
+    const controller = new AbortController()
+    setCategoryGroups(undefined)
+    setCategoryLoading(true); setCategoryError(undefined)
+    const selectedCategoryGuids = kind === 'australia' ? selection.supplierCategoryGuids : selection.warehouseCategoryGuids
+    if (exceedsSalesDetailSelectionLimit(selectedCategoryGuids, MAX_CATEGORY_SELECTIONS)) {
+      setCategoryError(text(`已选择 ${selectedCategoryGuids.length} 个分类，超过 ${MAX_CATEGORY_SELECTIONS} 项上限，请减少选择后重试`, `You selected ${selectedCategoryGuids.length} categories, exceeding the ${MAX_CATEGORY_SELECTIONS}-item limit. Reduce the selection and try again.`))
+    }
+    if (exceedsSalesDetailSelectionLimit(selection.supplierCodes, MAX_SUPPLIER_SELECTIONS)) {
+      setCategoryGroups([])
+      setCategoryLoading(false)
+      setCategoryError(text(`供应商分类最多支持 ${MAX_SUPPLIER_SELECTIONS} 个供应商，请减少选择后重试`, `Supplier categories support up to ${MAX_SUPPLIER_SELECTIONS} suppliers. Reduce the selection and try again.`))
+      return () => controller.abort()
+    }
+    fetchSalesDetailCategoryOptions(kind, selection.supplierCodes, controller.signal)
+      .then(groups => {
+        if (controller.signal.aborted) return
+        const count = groups.reduce((total, group) => total + group.options.length, 0)
+        setCategoryGroups(groups)
+        if (count > MAX_CATEGORY_SELECTIONS) setCategoryError(text(`分类选项共 ${count} 项，超过 ${MAX_CATEGORY_SELECTIONS} 项上限，请缩小供应商范围`, `There are ${count} category options, exceeding the ${MAX_CATEGORY_SELECTIONS}-item limit. Reduce the supplier scope.`))
+      })
+      .catch(error => { if (!controller.signal.aborted) { setCategoryError(error instanceof Error ? error.message : '分类选项加载失败 / Failed to load categories') } })
+      .finally(() => { if (!controller.signal.aborted) setCategoryLoading(false) })
+    return () => controller.abort()
+  }, [kind, selection.supplierCodes])
+  useEffect(() => {
+    if (!categoryGroups) return
+    const valid = new Set(categoryGroups.flatMap(group => group.options.map(option => option.guid)))
+    setSelection(value => {
+      const supplierCategoryGuids = value.supplierCategoryGuids.filter(guid => valid.has(guid))
+      const warehouseCategoryGuids = value.warehouseCategoryGuids.filter(guid => valid.has(guid))
+      return supplierCategoryGuids.length === value.supplierCategoryGuids.length && warehouseCategoryGuids.length === value.warehouseCategoryGuids.length
+        ? value : { ...value, supplierCategoryGuids, warehouseCategoryGuids, page: 1 }
+    })
+  }, [categoryGroups])
   // 分页也读取四栏同一次快照，避免供应商归属变更后将新商品页拼到旧汇总上。
   const bundleKey = JSON.stringify([currentUser?.userGUID, branches, query])
   const bundle = useReportQuery<SalesDetailReport>(
@@ -212,6 +254,11 @@ export default function SalesDetailAnalysisV2() {
     setSelection(value => selectDimension(value, dimension, row.code))
   }
   const selectedName = (dimension: 'supplier' | 'branch' | 'product') => {
+    if (dimension === 'supplier') {
+      const codes = selection.supplierCodes
+      if (!codes.length) return undefined
+      return codes.map(code => selectedNames.current[`supplier:${code}`] || code).join('、')
+    }
     const code = selection[dimension]
     return code ? selectedNames.current[`${dimension}:${code}`] || code : undefined
   }
@@ -233,6 +280,12 @@ export default function SalesDetailAnalysisV2() {
     return (a[key]! - b[key]!) * (ascending ? 1 : -1) || a.code.localeCompare(b.code)
   })
   const supplierRows = sortedRows('suppliers', (suppliers.data?.rows ?? []).filter(row => `${row.name} ${row.code}`.toLowerCase().includes(supplierSearch.trim().toLowerCase())))
+  const supplierOptions = (suppliers.data?.rows ?? []).map(row => ({ value: row.code, label: `${row.name || row.code} · ${row.code}` }))
+  const categoryOptions = (categoryGroups ?? []).map(group => ({
+    label: kind === 'china' ? text('仓库分类', 'Warehouse categories')
+      : group.supplierName || supplierOptions.find(option => option.value === group.supplierCode)?.label || group.supplierCode || text('供应商分类', 'Supplier categories'),
+    options: group.options.map(option => ({ value: option.guid, label: option.name })),
+  }))
   const storeRows = sortedRows('branches', stores.data?.rows ?? [])
   // 后端保证全量分页顺序；前端再排序当前页，兼容缓存或旧接口返回的非确定顺序。
   const productRows = [...(products.data?.rows ?? [])].sort((left, right) => right.quantity - left.quantity
@@ -270,11 +323,15 @@ export default function SalesDetailAnalysisV2() {
   const toggleSort = (panel: RailPanel, field: MetricKey) => setSorts(value => ({ ...value, [panel]: { key: field, ascending: value[panel].key === field ? !value[panel].ascending : false } }))
   const sortMark = (panel: RailPanel, field: MetricKey) => sorts[panel].key === field ? sorts[panel].ascending ? '↑' : '↓' : '↕'
   const ariaSort = (panel: RailPanel, field: MetricKey) => sorts[panel].key === field ? sorts[panel].ascending ? 'ascending' as const : 'descending' as const : undefined
+  const isDimensionSelected = (dimension: 'supplier' | 'branch', code: string) => dimension === 'supplier'
+    ? selection.supplierCodes.includes(code)
+    : selection.branch === code
   const shareTip = (field: MetricKey) => field === 'share' ? text(kind === 'china' ? '分母：所选分店的国内供应商全量营业额，不受商品选择影响' : '分母：所选分店的全部营业额，不受商品选择影响', 'Denominator: all revenue in the selected store scope; not narrowed by product selection')
     : field === 'chinaShare' ? text('分母：所选分店的全部营业额', 'Denominator: all revenue in the selected store scope') : undefined
   const railNameButton = (panel: RailPanel, row: SalesDetailRow, index: number) => {
     const dimension = dimensionOf(panel)
-    return <button data-code={row.code} aria-pressed={selection[dimension] === row.code} className={styles.nameButton}
+    const selected = isDimensionSelected(dimension, row.code)
+    return <button data-code={row.code} aria-pressed={selected} className={styles.nameButton}
       onClick={() => pick(dimension, row)} title={`${row.name} · ${row.code}`}>
       <span className={styles.rank}>{String(index + 1).padStart(2, '0')}</span>
       <span className={styles.railName}><strong>{row.name || row.code}</strong>{panel === 'suppliers' && <small>{row.code}</small>}</span>
@@ -288,7 +345,7 @@ export default function SalesDetailAnalysisV2() {
       <colgroup><col /><col className={styles.railMoneyCol} /><col className={styles.railGrowthCol} /><col className={styles.railQuantityCol} /></colgroup>
       <thead><tr><th>{panel === 'suppliers' ? text('供应商 / 编码', 'Supplier / Code') : text('分店名称', 'Store')}</th>
         {sortable('revenue', labels.revenue)}<th>{text('增长率', 'Growth')}</th>{sortable('quantity', labels.quantity, metricLabel(panel, 'quantity'))}</tr></thead>
-      <tbody>{rows.map((row, index) => <tr key={row.code} className={selection[dimension] === row.code ? styles.selected : ''}>
+      <tbody>{rows.map((row, index) => <tr key={row.code} className={isDimensionSelected(dimension, row.code) ? styles.selected : ''}>
         <td>{railNameButton(panel, row, index)}</td>
         <td data-metric="revenue">{metric(row, 'revenue')}</td>
         <td data-metric="growth"><GrowthCell current={row.revenue} previous={row.compareRevenue} compare={dates.compare} /></td>
@@ -301,7 +358,7 @@ export default function SalesDetailAnalysisV2() {
       <thead><tr><th>{panel === 'suppliers' ? text('供应商 / 编码', 'Supplier / Code') : text('分店名称', 'Store')}</th>
         {metrics(panel).map(field => field === 'growth' ? <th key={field}>{text('增长率', 'Growth')}</th> : <th key={field} aria-sort={ariaSort(panel, field)}>
           <Tooltip title={shareTip(field)}><button type="button" onClick={() => toggleSort(panel, field)}>{metricLabel(panel, field)} {sortMark(panel, field)}</button></Tooltip></th>)}</tr></thead>
-      <tbody>{rows.map((row, index) => <tr key={row.code} className={selection[dimension] === row.code ? styles.selected : ''}>
+      <tbody>{rows.map((row, index) => <tr key={row.code} className={isDimensionSelected(dimension, row.code) ? styles.selected : ''}>
         <td>{railNameButton(panel, row, index)}</td>{metrics(panel).map(field => <td key={field} data-metric={field}>{field === 'growth'
           ? <GrowthCell current={row.revenue} previous={row.compareRevenue} compare={dates.compare} />
           : metric(row, field)}</td>)}
@@ -324,7 +381,7 @@ export default function SalesDetailAnalysisV2() {
         : <td key={field} data-metric={field} className={field === 'grossProfit' ? styles.groupStart : undefined}>{metric(row, field)}</td>)
     const totalRow = (key: 'page' | 'all', label: string, note: string, totals: MetricRow) => <tr key={key} className={key === 'all' ? styles.allTotal : undefined}>
       <td><span className={styles.totalLabel}><strong>{label}</strong><small>{note}</small></span></td>{cells(totals)}</tr>
-    const listFiltered = !!(selection.supplier || selection.branch || selection.keyword)
+    const listFiltered = !!(selection.supplierCodes.length || selection.branch || selection.keyword)
     return <table className={`${styles.table} ${styles.productTable}`} data-view={compareView}>
       <colgroup><col />{productFields.map(field => field === 'growth' ? <col key={field} style={{ width: side ? GROWTH_WIDTH.side : GROWTH_WIDTH.stack }} />
         : side ? <Fragment key={field}><col style={{ width: SIDE_WIDTHS[field][0] }} /><col style={{ width: SIDE_WIDTHS[field][1] }} /></Fragment>
@@ -361,7 +418,7 @@ export default function SalesDetailAnalysisV2() {
     </table>
   }
 
-  const hasFilters = !!(selection.supplier || selection.branch || selection.product || selection.keyword)
+  const hasFilters = !!(selection.supplierCodes.length || selection.supplierCategoryGuids.length || selection.warehouseCategoryGuids.length || selection.branch || selection.product || selection.keyword)
   const railScope = [selectedName('supplier'), selectedName('product')].filter(Boolean).join(' · ')
   const scopeLine = [dates.startDate === dates.endDate ? dates.startDate : `${dates.startDate} — ${dates.endDate}`,
     kind === 'china' ? text('国内供应商', 'China suppliers') : text('澳洲供应商', 'Australian suppliers'),
@@ -392,10 +449,34 @@ export default function SalesDetailAnalysisV2() {
         </div>
       </div>
       <div className={styles.headerControls}>
+        <Select mode="multiple" allowClear showSearch optionFilterProp="label" maxTagCount="responsive" size="small"
+          aria-label={text('选择供应商', 'Select suppliers')} placeholder={text('供应商（可多选）', 'Suppliers (multiple)')}
+          style={{ minWidth: 210, maxWidth: 340 }} value={selection.supplierCodes} options={supplierOptions}
+          onChange={values => {
+            if (exceedsSalesDetailSelectionLimit(values, MAX_SUPPLIER_SELECTIONS)) {
+              message.warning(text(`最多选择 ${MAX_SUPPLIER_SELECTIONS} 个供应商`, `Select up to ${MAX_SUPPLIER_SELECTIONS} suppliers.`))
+              return
+            }
+            setSelection(value => ({ ...value, supplier: values[0], supplierCodes: values, supplierCategoryGuids: [], page: 1 }))
+          }} />
+        <Select mode="multiple" allowClear showSearch optionFilterProp="label" maxTagCount="responsive" size="small"
+          aria-label={text(kind === 'australia' ? '选择供应商分类' : '选择仓库分类', kind === 'australia' ? 'Select supplier categories' : 'Select warehouse categories')}
+          placeholder={text(kind === 'australia' ? '供应商分类（可多选）' : '仓库分类（可多选）', kind === 'australia' ? 'Supplier categories (multiple)' : 'Warehouse categories (multiple)')}
+          style={{ minWidth: 220, maxWidth: 360 }} loading={categoryLoading} disabled={kind === 'australia' && !selection.supplierCodes.length}
+          value={kind === 'australia' ? selection.supplierCategoryGuids : selection.warehouseCategoryGuids} options={categoryOptions}
+          notFoundContent={categoryError || text('暂无分类', 'No categories')}
+          onChange={values => {
+            if (exceedsSalesDetailSelectionLimit(values, MAX_CATEGORY_SELECTIONS)) {
+              message.warning(text(`最多选择 ${MAX_CATEGORY_SELECTIONS} 个分类`, `Select up to ${MAX_CATEGORY_SELECTIONS} categories.`))
+              return
+            }
+            setSelection(value => kind === 'australia' ? ({ ...value, supplierCategoryGuids: values, page: 1 }) : ({ ...value, warehouseCategoryGuids: values, page: 1 }))
+          }} />
         <ReportControls value={dates} onChange={value => { setDates(value); setSelection(current => ({ ...current, page: 1 })) }} onRefresh={refreshAll} loading={loading} />
         {access.canViewSalesData && <Button onClick={() => navigate(`/executive-sales-intelligence/overview?branch=${encodeURIComponent(selection.branch ?? '')}&startDate=${dates.startDate}&endDate=${dates.endDate}&compare=${dates.compare}&compareMode=${dates.compareMode}`)}>{text('营业额报告', 'Revenue report')}</Button>}
       </div>
     </div>
+    {categoryError && <Alert type="warning" showIcon message={categoryError} />}
     {!allowed && <Alert type="warning" message={text('当前账号没有可查询的分店范围', 'No stores are available for this account')} />}
     {summary.error && <Alert type="warning" message={summary.error} action={<Button onClick={() => retrySection('summary')}>{text('重试汇总', 'Retry totals')}</Button>} />}
     {bundle.data && bundle.snapshot?.statisticMessage && <Alert type="warning" showIcon message={bundle.snapshot.statisticMessage} />}
@@ -414,8 +495,11 @@ export default function SalesDetailAnalysisV2() {
       })}
       <div className={styles.scopeBlock}>
         <div className={styles.chips}><span>{text('筛选', 'Filters')}</span>
-          {(['supplier', 'branch', 'product'] as const).map(dimension => selection[dimension] && <Tag closable key={dimension} onClose={() => setSelection(value => ({ ...value, [dimension]: undefined, page: dimension === 'product' ? value.page : 1 }))}>
-            {text(dimension === 'supplier' ? '供应商' : dimension === 'branch' ? '分店' : '商品', dimension)}: {selectedName(dimension)}</Tag>)}
+          {selection.supplierCodes.length > 0 && <Tag closable onClose={() => setSelection(value => ({ ...value, supplier: undefined, supplierCodes: [], supplierCategoryGuids: [], page: 1 }))}>{text('供应商', 'Suppliers')}: {selection.supplierCodes.length}</Tag>}
+          {selection.supplierCategoryGuids.length > 0 && <Tag closable onClose={() => setSelection(value => ({ ...value, supplierCategoryGuids: [], page: 1 }))}>{text('澳洲分类', 'AU categories')}: {selection.supplierCategoryGuids.length}</Tag>}
+          {selection.warehouseCategoryGuids.length > 0 && <Tag closable onClose={() => setSelection(value => ({ ...value, warehouseCategoryGuids: [], page: 1 }))}>{text('仓库分类', 'Warehouse categories')}: {selection.warehouseCategoryGuids.length}</Tag>}
+          {(['branch', 'product'] as const).map(dimension => selection[dimension] && <Tag closable key={dimension} onClose={() => setSelection(value => ({ ...value, [dimension]: undefined, page: dimension === 'product' ? value.page : 1 }))}>
+            {text(dimension === 'branch' ? '分店' : '商品', dimension)}: {selectedName(dimension)}</Tag>)}
           {selection.keyword && <Tag closable onClose={() => { searchClear.current = true; setKeywordDraft(''); setSelection(value => ({ ...value, keyword: '', page: 1 })) }}>{text('关键字', 'Keyword')}: {selection.keyword}</Tag>}
           {hasFilters ? <Button type="link" size="small" onClick={clear}>{text('清除全部', 'Clear all')}</Button> : <span className={styles.chipsAll}>{text('全部供应商 · 全部分店 · 全部商品', 'All suppliers · stores · products')}</span>}
         </div>

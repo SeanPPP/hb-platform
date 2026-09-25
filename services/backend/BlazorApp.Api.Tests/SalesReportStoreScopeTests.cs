@@ -190,7 +190,7 @@ public sealed class SalesReportStoreScopeTests
     {
         var service = new Mock<ISalesDashboardReactService>(MockBehavior.Strict);
         List<string>? capturedBranches = new();
-        service.Setup(x => x.GetSalesDetailReportAsync(
+        service.Setup(x => x.GetSalesDetailReportFilteredAsync(
                 It.IsAny<DateRangeDto>(),
                 SalesDetailKind.Australia,
                 It.IsAny<List<string>?>(),
@@ -201,9 +201,12 @@ public sealed class SalesReportStoreScopeTests
                 It.IsAny<int>(),
                 It.IsAny<int>(),
                 It.IsAny<IReadOnlyCollection<SalesDetailSection>?>(),
-                It.IsAny<CancellationToken>()))
-            .Callback<DateRangeDto, SalesDetailKind, List<string>?, string?, string?, string?, string?, int, int, IReadOnlyCollection<SalesDetailSection>?, CancellationToken>(
-                (_, _, branches, _, _, _, _, _, _, _, _) => capturedBranches = branches)
+                It.IsAny<CancellationToken>(),
+                It.IsAny<List<string>?>(),
+                It.IsAny<List<string>?>(),
+                It.IsAny<List<string>?>()))
+            .Callback<DateRangeDto, SalesDetailKind, List<string>?, string?, string?, string?, string?, int, int, IReadOnlyCollection<SalesDetailSection>?, CancellationToken, List<string>?, List<string>?, List<string>?>(
+                (_, _, branches, _, _, _, _, _, _, _, _, _, _, _) => capturedBranches = branches)
             .ReturnsAsync(new ProductReportResponseDto<SalesDetailReportDto> { Data = new() });
         var userService = new Mock<IUserService>(MockBehavior.Strict);
 
@@ -401,7 +404,7 @@ public sealed class SalesReportStoreScopeTests
     {
         if (endpoint == "sales-detail")
         {
-            service.Setup(x => x.GetSalesDetailReportAsync(
+            service.Setup(x => x.GetSalesDetailReportFilteredAsync(
                     It.IsAny<DateRangeDto>(),
                     SalesDetailKind.Australia,
                     It.IsAny<List<string>?>(),
@@ -412,9 +415,12 @@ public sealed class SalesReportStoreScopeTests
                     It.IsAny<int>(),
                     It.IsAny<int>(),
                     It.IsAny<IReadOnlyCollection<SalesDetailSection>?>(),
-                    It.IsAny<CancellationToken>()))
-                .Callback<DateRangeDto, SalesDetailKind, List<string>?, string?, string?, string?, string?, int, int, IReadOnlyCollection<SalesDetailSection>?, CancellationToken>(
-                    (_, _, branches, _, _, _, _, _, _, _, _) => capture(branches, null))
+                    It.IsAny<CancellationToken>(),
+                    It.IsAny<List<string>?>(),
+                    It.IsAny<List<string>?>(),
+                    It.IsAny<List<string>?>()))
+                .Callback<DateRangeDto, SalesDetailKind, List<string>?, string?, string?, string?, string?, int, int, IReadOnlyCollection<SalesDetailSection>?, CancellationToken, List<string>?, List<string>?, List<string>?>(
+                    (_, _, branches, _, _, _, _, _, _, _, _, _, _, _) => capture(branches, null))
                 .ReturnsAsync(new ProductReportResponseDto<SalesDetailReportDto> { Data = new() });
             return;
         }

@@ -225,6 +225,69 @@ namespace BlazorApp.Api.Services.React
             );
         }
 
+        public async Task<ApiResponse<List<LocalSupplierProductSalesSupplierCategoryOptionDto>>> GetSupplierCategoryOptionsAsync(
+            IReadOnlyList<string>? supplierCodes,
+            IReadOnlyList<string>? scopedStoreCodes
+        )
+        {
+            if (IsEmptyScope(scopedStoreCodes))
+            {
+                return ApiResponse<List<LocalSupplierProductSalesSupplierCategoryOptionDto>>.OK(new());
+            }
+
+            var selected = LocalSupplierProductSalesAnalysisLogic.NormalizeCodes(supplierCodes);
+            if (selected.Count > LocalSupplierProductSalesAnalysisLogic.MaxFilterListCount)
+            {
+                return ApiResponse<List<LocalSupplierProductSalesSupplierCategoryOptionDto>>.Error("供应商数量不能超过 100 个", "VALIDATION_ERROR");
+            }
+
+            // 只返回可选的叶分类；商品分类归属本身写在叶节点，避免父节点选择语义不明确。
+            var categoriesQuery = _db.Queryable<LocalSupplierCategory>()
+                .Where(category => category.IsDeleted == false && category.IsActive == true);
+            if (selected.Count > 0)
+            {
+                categoriesQuery = categoriesQuery.Where(category => selected.Contains(category.LocalSupplierCode));
+            }
+            var categories = await categoriesQuery.ToListAsync();
+            var parentGuids = categories
+                .Where(category => !string.IsNullOrWhiteSpace(category.ParentGUID))
+                .Select(category => category.ParentGUID!)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var result = categories
+                .Where(category => !parentGuids.Contains(category.CategoryGUID))
+                .Select(category => new LocalSupplierProductSalesSupplierCategoryOptionDto
+                {
+                    SupplierCode = category.LocalSupplierCode,
+                    Guid = category.CategoryGUID,
+                    Name = string.IsNullOrWhiteSpace(category.FullPath) ? category.CategoryName : category.FullPath,
+                })
+                .ToList();
+
+            if (selected.Count == 0 || selected.Contains("200", StringComparer.OrdinalIgnoreCase))
+            {
+                var warehouseCategories = await _db.Queryable<WarehouseCategory>()
+                    .Where(category => category.IsDeleted == false && category.IsActive == true)
+                    .ToListAsync();
+                var warehouseParents = warehouseCategories
+                    .Where(category => !string.IsNullOrWhiteSpace(category.ParentGUID))
+                    .Select(category => category.ParentGUID!)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                result.AddRange(warehouseCategories
+                    .Where(category => !warehouseParents.Contains(category.CategoryGUID))
+                    .Select(category => new LocalSupplierProductSalesSupplierCategoryOptionDto
+                    {
+                        SupplierCode = "200",
+                        Guid = category.CategoryGUID,
+                        Name = category.ChineseName ?? category.CategoryName ?? category.CategoryGUID,
+                    }));
+            }
+
+            return ApiResponse<List<LocalSupplierProductSalesSupplierCategoryOptionDto>>.OK(
+                result.OrderBy(item => item.SupplierCode, StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase).ToList()
+            );
+        }
+
         public async Task<
             ApiResponse<
                 LocalSupplierProductSalesPagedDto<LocalSupplierProductSalesCandidateDto>
@@ -2563,7 +2626,47 @@ ORDER BY [NetSalesQuantity] DESC, [BranchCode] ASC;";
             + " AND [LocalSupplierCode] IS NOT NULL AND [LocalSupplierCode] <> ''"
             + " AND [ProductCode] IS NOT NULL AND [ProductCode] <> ''";
 
-        private ISugarQueryable<Product> BuildCanonicalLocalProductQuery()
+        private static ISugarQueryable<Product> ApplySupplierCategoryToRawProducts(
+            ISugarQueryable<Product> query,
+            List<string> supplierCategoryGuids,
+            List<string> warehouseCategoryGuids)
+        {
+            if (supplierCategoryGuids.Count == 0) return query;
+
+            // 必须在 MergeTable 前关联原始 Product 别名；否则 SqlSugar 生成的相关子查询
+            // 仍引用 product，而外层已经改名为 MergeTable。
+            if (warehouseCategoryGuids.Count == 0)
+            {
+                return query.Where(product =>
+                    product.LocalSupplierCode != null
+                    && product.LocalSupplierCode != "200"
+                    && SqlFunc.Subqueryable<LocalSupplierCategoryProductAssignment>()
+                        .Where(assignment =>
+                            assignment.ProductCode == product.ProductCode
+                            && assignment.LocalSupplierCode == product.LocalSupplierCode
+                            && supplierCategoryGuids.Contains(assignment.CategoryGUID)
+                        ).Any()
+                );
+            }
+
+            return query.Where(product =>
+                (product.LocalSupplierCode == "200"
+                    && product.WarehouseCategoryGUID != null
+                    && warehouseCategoryGuids.Contains(product.WarehouseCategoryGUID))
+                || (product.LocalSupplierCode != null
+                    && product.LocalSupplierCode != "200"
+                    && SqlFunc.Subqueryable<LocalSupplierCategoryProductAssignment>()
+                        .Where(assignment =>
+                            assignment.ProductCode == product.ProductCode
+                            && assignment.LocalSupplierCode == product.LocalSupplierCode
+                            && supplierCategoryGuids.Contains(assignment.CategoryGUID)
+                        ).Any())
+            );
+        }
+
+        private ISugarQueryable<Product> BuildCanonicalLocalProductQuery(
+            List<string> supplierCategoryGuids,
+            List<string> warehouseCategoryGuids)
         {
             // ProductCode 不是数据库主键；按 Trim + 不区分大小写编码固定最小 UUID，
             // 让过滤、计数、分页、选择和汇总使用完全一致的去重语义。
@@ -2583,7 +2686,9 @@ ORDER BY [NetSalesQuantity] DESC, [BranchCode] ASC;";
                 && _useDirectUniqueProductPath
             )
             {
-                return eligibleProducts.MergeTable();
+                return ApplySupplierCategoryToRawProducts(
+                    eligibleProducts, supplierCategoryGuids, warehouseCategoryGuids
+                ).MergeTable();
             }
 
             // 生产 SQL Server 的编码列使用 CI 排序规则，且导入数据已保证无首尾空格。
@@ -2599,8 +2704,9 @@ ORDER BY [NetSalesQuantity] DESC, [BranchCode] ASC;";
                     })
                     .MergeTable();
 
-                return _db
-                    .Queryable<Product>()
+                return ApplySupplierCategoryToRawProducts(
+                        _db.Queryable<Product>(), supplierCategoryGuids, warehouseCategoryGuids
+                    )
                     .InnerJoin(
                         canonicalSqlServerIds,
                         (product, canonical) =>
@@ -2620,8 +2726,9 @@ ORDER BY [NetSalesQuantity] DESC, [BranchCode] ASC;";
                 })
                 .MergeTable();
 
-            return _db
-                .Queryable<Product>()
+            return ApplySupplierCategoryToRawProducts(
+                    _db.Queryable<Product>(), supplierCategoryGuids, warehouseCategoryGuids
+                )
                 .InnerJoin(
                     canonicalIds,
                     (product, canonical) =>
@@ -2638,7 +2745,23 @@ ORDER BY [NetSalesQuantity] DESC, [BranchCode] ASC;";
             IReadOnlyList<string>? scopedStoreCodes
         )
         {
-            var query = BuildCanonicalLocalProductQuery();
+            var supplierCategoryGuids = LocalSupplierProductSalesAnalysisLogic.NormalizeCodes(
+                filter.SupplierCategoryGuids
+            );
+            var warehouseSupplierCategoryGuids = LocalSupplierProductSalesAnalysisLogic
+                .ExpandCategoryGuids(context.Categories, supplierCategoryGuids).ToList();
+            var expandedWarehouseCategoryGuids = LocalSupplierProductSalesAnalysisLogic
+                .ExpandCategoryGuids(
+                    context.Categories,
+                    LocalSupplierProductSalesAnalysisLogic.ResolveCategoryGuids(filter)
+                );
+            LocalSupplierProductSalesAnalysisLogic.ValidateFilterCodeBudget(
+                filter,
+                warehouseSupplierCategoryGuids.Count + expandedWarehouseCategoryGuids.Count
+            );
+            var query = BuildCanonicalLocalProductQuery(
+                supplierCategoryGuids, warehouseSupplierCategoryGuids
+            );
 
             var keyword = LocalSupplierProductSalesAnalysisLogic.NormalizeText(filter.Keyword);
             if (!string.IsNullOrWhiteSpace(keyword))
@@ -3602,6 +3725,8 @@ WHERE [product].[IsDeleted] = 0
                     filter.WarehouseCategoryGuids
                 ).Count == 0
                 && LocalSupplierProductSalesAnalysisLogic.NormalizeCodes(filter.SupplierCodes)
+                    .Count == 0
+                && LocalSupplierProductSalesAnalysisLogic.NormalizeCodes(filter.SupplierCategoryGuids)
                     .Count == 0;
         }
 
@@ -3692,6 +3817,7 @@ WHERE [product].[IsDeleted] = 0
                 CodeListPart(request.Filter.WarehouseCategoryGuids),
                 TextPart(request.Filter.SupplierCode),
                 CodeListPart(request.Filter.SupplierCodes),
+                CodeListPart(request.Filter.SupplierCategoryGuids),
                 TextPart(request.Filter.DocumentKeyword),
                 TextPart(request.Selection.Mode),
                 CodeListPart(request.Selection.IncludedProductCodes),
@@ -3757,6 +3883,37 @@ WHERE [product].[IsDeleted] = 0
     public static class LocalSupplierProductSalesAnalysisLogic
     {
         public const int CodeBatchSize = 500;
+        public const int MaxFilterListCount = 100;
+        // SQL Server 上限为 2100；为日期、关键字、分页和连接条件预留参数空间。
+        public const int MaxFilterParameterCount = 1800;
+
+        public static void ValidateFilterCodeBudget(
+            LocalSupplierProductSalesAnalysisFilterDto filter,
+            int expandedWarehouseCategoryCount
+        )
+        {
+            var supplierCategoryCount = NormalizeCodes(filter.SupplierCategoryGuids).Count;
+            var warehouseCategoryCount = NormalizeCodes(filter.WarehouseCategoryGuids).Count;
+            var supplierCount = NormalizeCodes(filter.SupplierCodes).Count;
+            if (supplierCategoryCount > MaxFilterListCount)
+            {
+                throw new LocalSupplierProductSalesAnalysisValidationException("供应商分类不能超过 100 项");
+            }
+            if (warehouseCategoryCount > MaxFilterListCount)
+            {
+                throw new LocalSupplierProductSalesAnalysisValidationException("仓库分类不能超过 100 项");
+            }
+            if (supplierCount > MaxFilterListCount)
+            {
+                throw new LocalSupplierProductSalesAnalysisValidationException("供应商不能超过 100 项");
+            }
+
+            var parameterCount = supplierCategoryCount + expandedWarehouseCategoryCount + supplierCount;
+            if (parameterCount > MaxFilterParameterCount)
+            {
+                throw new LocalSupplierProductSalesAnalysisValidationException("分类和供应商筛选条件过多，请减少选择项");
+            }
+        }
         public const int MaxDateRangeDays = 366;
 
         public static (DateTime StartDate, DateTime EndDate) ValidateDateRange(
