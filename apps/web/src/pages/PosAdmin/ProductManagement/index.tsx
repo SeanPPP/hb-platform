@@ -3953,6 +3953,7 @@ export default function ProductManagementPage() {
             />
             <Cascader
               allowClear
+              showSearch
               placeholder={t('posAdmin.products.categoryPlaceholder', '商品分类')}
               style={{ width: 200 }}
               value={getCategoryValueFromGuid(categoryGuidInput, categoryTree)}

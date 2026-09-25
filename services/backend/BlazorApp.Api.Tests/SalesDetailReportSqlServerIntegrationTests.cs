@@ -830,6 +830,13 @@ public sealed class SalesDetailReportSqlServerIntegrationTests
         // 月表未部署：整段读日事实。
         await AssertAllEquivalentAsync("无月表");
 
+        // 分店栏占比分母：区间内分店总营业额；选中供应商只收窄分子；尾随空格的代码合并；无统计的分店为 0。
+        var totals = (await server.GetCompactSalesBoardAsync(new CompactSalesBoardQuery { DateRange = new DateRangeDto { StartDate = start, EndDate = end }, SelectedChinaSupplierCode = "C1", ForceRefresh = true }))
+            .Stores.ToDictionary(row => row.BranchCode, row => row.BranchTotalAmount);
+        Assert.Equal(3000m, totals["B1"]);
+        Assert.Equal(750m, totals["B2"]);
+        Assert.Equal(0m, totals["B3"]);
+
         // 月表部署后 7 月整月可用（6 月、8 月是不满月，仍读日事实）。
         await fixture.EnableCompactBoardMonthlyAsync();
         var stale = await fixture.ReadCompactBoardStaleMonthsAsync();
@@ -895,7 +902,7 @@ public sealed class SalesDetailReportSqlServerIntegrationTests
         {
             board.StatisticStatus,
             Summary = new { A = M(board.Summary.TotalAmount), board.Summary.TotalQuantity, board.Summary.ProductCount, board.Summary.StoreCount, board.Summary.SupplierCount, O = M(board.Summary.OverallAmount), board.Summary.OverallQuantity },
-            Stores = board.Stores.Select(s => new { s.BranchCode, s.BranchName, A = M(s.TotalAmount), s.TotalQuantity, s.ProductCount }),
+            Stores = board.Stores.Select(s => new { s.BranchCode, s.BranchName, A = M(s.TotalAmount), T = M(s.BranchTotalAmount), s.TotalQuantity, s.ProductCount }),
             Suppliers = board.ChinaSuppliers.Select(s => new { s.SupplierCode, s.SupplierName, A = M(s.TotalAmount), s.TotalQuantity, s.ProductCount }),
             board.ProductDetails.Total,
             Scope = M(board.ProductDetails.ScopeAmount),
@@ -953,6 +960,12 @@ public sealed class SalesDetailReportSqlServerIntegrationTests
         // P23、P24：映射到 C2；P24 无商品资料。
         await fixture.SeedFactAsync(dates[3], "B2", "200", "P23", 4, 44m);
         await fixture.SeedFactAsync(dates[5], "B3", "200", "P24", 3, 33m);
+        // 分店总营业额（占比分母）：6-05 在默认区间（6-10 起）之外；B2 的代码带尾随空格，应与 B2 合并。
+        await fixture.SeedStoreRevenueAsync(new DateTime(2026, 6, 5), "B1", 700m);
+        await fixture.SeedStoreRevenueAsync(new DateTime(2026, 6, 12), "B1", 1000m);
+        await fixture.SeedStoreRevenueAsync(new DateTime(2026, 7, 20), "B1", 2000m);
+        await fixture.SeedStoreRevenueAsync(new DateTime(2026, 7, 3), "B2", 500m);
+        await fixture.SeedStoreRevenueAsync(new DateTime(2026, 8, 8), "B2 ", 250m);
     }
 
     private sealed class SalesDetailSqlServerFixture : IAsyncDisposable
@@ -1195,6 +1208,10 @@ public sealed class SalesDetailReportSqlServerIntegrationTests
             "INSERT INTO [dbo].[Store] ([StoreCode], [StoreName], [IsActive], [IsDeleted]) VALUES (@code, @name, 1, 0);",
             ("@code", code), ("@name", name));
 
+        public Task SeedStoreRevenueAsync(DateTime date, string branchCode, decimal amount) => ExecuteNonQueryAsync(_databaseConnectionString,
+            "INSERT INTO [dbo].[StoreSalesStatistic] ([Date], [BranchCode], [BranchName], [TotalAmount]) VALUES (@date, @code, @code, @amount);",
+            ("@date", date), ("@code", branchCode), ("@amount", amount));
+
         public Task SeedChinaSupplierAsync(string code, string name, bool isDeleted = false) => ExecuteNonQueryAsync(_databaseConnectionString,
             "INSERT INTO [dbo].[ChinaSupplier] ([SupplierCode], [SupplierName], [IsDeleted]) VALUES (@code, @name, @deleted);",
             ("@code", code), ("@name", name), ("@deleted", isDeleted));
@@ -1338,6 +1355,13 @@ public sealed class SalesDetailReportSqlServerIntegrationTests
                 [CostSource] nvarchar(50) NOT NULL,
                 [UpdateTime] datetime2(7) NOT NULL,
                 CONSTRAINT [PK_ProductStoreDailySalesStatistic] PRIMARY KEY ([Date], [BranchCode], [SupplierCode], [ProductCode])
+            );
+            CREATE TABLE [dbo].[StoreSalesStatistic] (
+                [Date] datetime2(7) NOT NULL,
+                [BranchCode] nvarchar(50) NOT NULL,
+                [BranchName] nvarchar(100) NOT NULL,
+                [TotalAmount] decimal(18,2) NOT NULL,
+                CONSTRAINT [PK_StoreSalesStatistic] PRIMARY KEY ([Date], [BranchCode])
             );
             CREATE TABLE [dbo].[SalesStatisticRefreshState] (
                 [StatisticType] nvarchar(80) NOT NULL,
