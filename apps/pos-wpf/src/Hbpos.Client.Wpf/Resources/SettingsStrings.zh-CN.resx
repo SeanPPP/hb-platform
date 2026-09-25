@@ -18,6 +18,13 @@
   <data name="settings.section.dataDownload.title" xml:space="preserve"><value>&#x6570;&#x636E;&#x4E0B;&#x8F7D;</value></data>
   <data name="settings.section.dataDownload.description" xml:space="preserve"><value>&#x4ECE;&#x670D;&#x52A1;&#x5668;&#x540C;&#x6B65;&#x5F53;&#x524D;&#x95E8;&#x5E97;&#x7684;&#x5546;&#x54C1;&#x76EE;&#x5F55;&#xFF0C;&#x5E76;&#x5237;&#x65B0;&#x672C;&#x5730;&#x6536;&#x94F6;&#x5546;&#x54C1;&#x7D22;&#x5F15;&#x3002;</value></data>
   <data name="settings.section.dataDownload.action" xml:space="preserve"><value>&#x6570;&#x636E;&#x4E0B;&#x8F7D;</value></data>
+  <data name="settings.section.dataDownload.lastSync" xml:space="preserve"><value>上次同步</value></data>
+  <data name="settings.section.dataDownload.lastSuccessfulSync" xml:space="preserve"><value>上次成功同步</value></data>
+  <data name="settings.section.dataDownload.neverSynced" xml:space="preserve"><value>尚未同步</value></data>
+  <data name="settings.section.dataDownload.state.synced" xml:space="preserve"><value>已同步</value></data>
+  <data name="settings.section.dataDownload.state.syncing" xml:space="preserve"><value>同步中</value></data>
+  <data name="settings.section.dataDownload.state.failed" xml:space="preserve"><value>同步失败</value></data>
+  <data name="settings.section.dataDownload.failedDetail" xml:space="preserve"><value>{0} 同步失败：{1}</value></data>
   <data name="settings.section.dataReset.title" xml:space="preserve"><value>&#x6570;&#x636E;&#x91CD;&#x7F6E;</value></data>
   <data name="settings.section.dataReset.description" xml:space="preserve"><value>&#x5F3A;&#x5236;&#x91CD;&#x65B0;&#x6784;&#x5EFA;&#x672C;&#x5730;&#x5546;&#x54C1;&#x76EE;&#x5F55;&#x3002;&#x9002;&#x7528;&#x4E8E;&#x6570;&#x636E;&#x8FC7;&#x65E7;&#x3001;&#x4EF7;&#x683C;&#x672A;&#x5237;&#x65B0;&#x6216;&#x5546;&#x54C1;&#x7D22;&#x5F15;&#x9700;&#x8981;&#x5F7B;&#x5E95;&#x91CD;&#x5EFA;&#x65F6;&#x3002;</value></data>
   <data name="settings.section.dataReset.action" xml:space="preserve"><value>&#x6570;&#x636E;&#x91CD;&#x7F6E;</value></data>
