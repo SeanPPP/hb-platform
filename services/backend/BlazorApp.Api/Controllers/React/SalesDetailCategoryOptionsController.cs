@@ -7,6 +7,7 @@ using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using SqlSugar;
 
 namespace BlazorApp.Api.Controllers.React;
 
@@ -125,6 +126,20 @@ public sealed class SalesDetailCategoryOptionsController : ControllerBase
         }
 
         cancellationToken.ThrowIfCancellationRequested();
+        var visibleRaw = await BuildVisibleSupplierQuery(_context.Db, requestedSupplierCodes, storeCodes)
+            .Select((sales, china) => new VisibleSupplierRow { Code = sales.SupplierCode, ChinaCode = china.SupplierCode })
+            .Distinct()
+            .ToListAsync();
+        cancellationToken.ThrowIfCancellationRequested();
+        var visible = MapVisibleSupplierCodes(visibleRaw.Select(row => (row.Code, row.ChinaCode)));
+        return (true, visible, string.Empty);
+    }
+
+    internal static ISugarQueryable<ProductStoreDailySalesStatistic, ChinaSupplier> BuildVisibleSupplierQuery(
+        ISqlSugarClient db,
+        IReadOnlyCollection<string> requestedSupplierCodes,
+        IReadOnlyCollection<string>? storeCodes)
+    {
         // 销售明细 AU 口径会把 ChinaSupplier 中的原始销售供应商归并为 200。
         // 用数据库 JOIN 判断映射，避免把全量 ChinaSupplier 编码展开成 SQL IN 参数。
         var includeChinaSupplier = requestedSupplierCodes.Contains("200", StringComparer.OrdinalIgnoreCase);
@@ -132,20 +147,29 @@ public sealed class SalesDetailCategoryOptionsController : ControllerBase
             .Where(code => !string.Equals(code, "200", StringComparison.OrdinalIgnoreCase))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
-        var query = _context.Db.Queryable<ProductStoreDailySalesStatistic>()
-            .LeftJoin<ChinaSupplier>((sales, china) => sales.SupplierCode == china.SupplierCode)
-            .Where((sales, china) => rawSupplierCodes.Contains(sales.SupplierCode)
-                || (includeChinaSupplier && (sales.SupplierCode == "200"
-                    || (china.SupplierCode != null && china.SupplierCode != ""))));
+        var query = db.Queryable<ProductStoreDailySalesStatistic>()
+            .LeftJoin<ChinaSupplier>((sales, china) => sales.SupplierCode == china.SupplierCode);
+        // SqlSugar 会把闭包中的 bool 翻译成 SQL bit 参数，不能直接放在 AND 条件位置。
+        // 按所选供应商在 C# 侧分支，保证生成的 WHERE 只包含 SQL 谓词。
+        if (includeChinaSupplier)
+        {
+            query = rawSupplierCodes.Count > 0
+                ? query.Where((sales, china) => rawSupplierCodes.Contains(sales.SupplierCode)
+                    || sales.SupplierCode == "200"
+                    || (china.SupplierCode != null && china.SupplierCode != ""))
+                : query.Where((sales, china) => sales.SupplierCode == "200"
+                    || (china.SupplierCode != null && china.SupplierCode != ""));
+        }
+        else
+        {
+            query = query.Where((sales, china) => rawSupplierCodes.Contains(sales.SupplierCode));
+        }
         if (storeCodes != null)
-            query = query.Where((sales, china) => storeCodes.Contains(sales.BranchCode));
-        var visibleRaw = await query
-            .Select((sales, china) => new VisibleSupplierRow { Code = sales.SupplierCode, ChinaCode = china.SupplierCode })
-            .Distinct()
-            .ToListAsync();
-        cancellationToken.ThrowIfCancellationRequested();
-        var visible = MapVisibleSupplierCodes(visibleRaw.Select(row => (row.Code, row.ChinaCode)));
-        return (true, visible, string.Empty);
+        {
+            var allowedStoreCodes = storeCodes.ToList();
+            query = query.Where((sales, china) => allowedStoreCodes.Contains(sales.BranchCode));
+        }
+        return query;
     }
 
     internal static List<string> MapVisibleSupplierCodes(

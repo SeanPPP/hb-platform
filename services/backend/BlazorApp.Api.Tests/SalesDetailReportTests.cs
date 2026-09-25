@@ -227,6 +227,50 @@ public sealed class SalesDetailReportTests : IDisposable
         Assert.DoesNotContain("CN-01", visible);
     }
 
+    [Theory]
+    [InlineData("200", null, "200", null)]
+    [InlineData("200,A1", null, "200,A1", null)]
+    [InlineData("A1,A2", null, "A1,A2", "200")]
+    [InlineData("200,A1", "S1,S2", "200,A1,S1,S2", null)]
+    public void 澳洲供应商可见范围_SQLServer查询不生成裸布尔参数谓词(
+        string supplierCodes,
+        string? storeCodes,
+        string expectedParameterValues,
+        string? unexpectedParameterValue)
+    {
+        using var sqlServerDb = new SqlSugarClient(new ConnectionConfig
+        {
+            // ToSql 只生成 SQL，不会连接数据库；方言必须固定为 SQL Server 才能覆盖 4145 回归。
+            ConnectionString = "Server=127.0.0.1;Database=SalesDetailCategoryOptionsSqlTests;User Id=unused;Password=unused;TrustServerCertificate=True",
+            DbType = DbType.SqlServer,
+            IsAutoCloseConnection = true,
+            InitKeyType = InitKeyType.Attribute,
+        });
+        var suppliers = supplierCodes.Split(',', StringSplitOptions.RemoveEmptyEntries);
+        var stores = storeCodes?.Split(',', StringSplitOptions.RemoveEmptyEntries);
+
+        var command = SalesDetailCategoryOptionsController.BuildVisibleSupplierQuery(
+                sqlServerDb,
+                suppliers,
+                stores)
+            .ToSql();
+        var generatedCommand = string.Join('\n',
+            command.Key,
+            string.Join(' ', command.Value.Select(parameter => parameter.Value?.ToString())));
+
+        Assert.Contains("[ProductStoreDailySalesStatistic]", command.Key);
+        Assert.Contains("LEFT JOIN [ChinaSupplier]", command.Key, StringComparison.OrdinalIgnoreCase);
+        // SQL Server 4145 的根因是 SqlSugar 把 C# bool 闭包生成成 bit 参数后直接放进 AND。
+        // 参数清单中不能再出现 bool；其余供应商/门店值可能被 SqlSugar 内联到 IN，所以检查完整生成命令。
+        Assert.DoesNotContain(command.Value, parameter => parameter.Value is bool);
+        foreach (var expected in expectedParameterValues.Split(','))
+            Assert.Contains(expected, generatedCommand, StringComparison.Ordinal);
+        if (unexpectedParameterValue != null)
+            Assert.DoesNotContain(unexpectedParameterValue, generatedCommand, StringComparison.Ordinal);
+        if (stores != null)
+            Assert.Contains("[sales].[BranchCode]", command.Key, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public async Task 多选筛选超过服务端上限时明确拒绝而不执行查询()
     {
