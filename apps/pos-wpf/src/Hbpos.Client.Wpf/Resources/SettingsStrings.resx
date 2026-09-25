@@ -18,6 +18,13 @@
   <data name="settings.section.dataDownload.title" xml:space="preserve"><value>Data Download</value></data>
   <data name="settings.section.dataDownload.description" xml:space="preserve"><value>Sync the current store catalog from the server and refresh the local checkout item index.</value></data>
   <data name="settings.section.dataDownload.action" xml:space="preserve"><value>Data Download</value></data>
+  <data name="settings.section.dataDownload.lastSync" xml:space="preserve"><value>Last sync</value></data>
+  <data name="settings.section.dataDownload.lastSuccessfulSync" xml:space="preserve"><value>Last successful sync</value></data>
+  <data name="settings.section.dataDownload.neverSynced" xml:space="preserve"><value>Not synced yet</value></data>
+  <data name="settings.section.dataDownload.state.synced" xml:space="preserve"><value>Synced</value></data>
+  <data name="settings.section.dataDownload.state.syncing" xml:space="preserve"><value>Syncing</value></data>
+  <data name="settings.section.dataDownload.state.failed" xml:space="preserve"><value>Sync failed</value></data>
+  <data name="settings.section.dataDownload.failedDetail" xml:space="preserve"><value>Sync failed at {0}: {1}</value></data>
   <data name="settings.section.dataReset.title" xml:space="preserve"><value>Data Reset</value></data>
   <data name="settings.section.dataReset.description" xml:space="preserve"><value>Force a fresh local catalog rebuild when data looks stale, prices do not refresh, or the product index needs a clean reset.</value></data>
   <data name="settings.section.dataReset.action" xml:space="preserve"><value>Data Reset</value></data>
