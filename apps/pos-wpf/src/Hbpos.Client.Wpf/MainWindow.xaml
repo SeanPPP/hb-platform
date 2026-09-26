@@ -2355,24 +2355,6 @@
                                Margin="0,0,0,18" />
 
                     <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right">
-                        <StackPanel Width="170"
-                                    Margin="0,0,14,0"
-                                    VerticalAlignment="Center"
-                                    Visibility="{Binding AppUpdate.IsDownloading, Converter={StaticResource BoolToVis}}">
-                            <TextBlock Text="{Binding AppUpdate.DownloadProgressText}"
-                                       FontSize="10"
-                                       Foreground="{StaticResource PosMutedForegroundBrush}"
-                                       TextAlignment="Right"
-                                       TextTrimming="CharacterEllipsis"
-                                       Margin="0,0,0,5" />
-                            <ProgressBar Height="6"
-                                         Minimum="0"
-                                         Maximum="100"
-                                         Value="{Binding AppUpdate.DownloadProgressPercent}"
-                                         Foreground="{StaticResource PosPrimaryBrush}"
-                                         Background="#FFE8F0FE"
-                                         BorderThickness="0" />
-                        </StackPanel>
                         <Button Command="{Binding AppUpdate.DismissForceUpdateForDebugCommand}"
                                 MinWidth="148"
                                 Height="44"
