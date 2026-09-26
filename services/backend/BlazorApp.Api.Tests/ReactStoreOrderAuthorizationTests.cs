@@ -510,9 +510,10 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
         );
 
         var firstWarmUpTask = warmer.WarmUpHomePageAsync();
-        await firstCallEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await firstCallEntered.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
-        await warmer.WarmUpHomePageAsync().WaitAsync(TimeSpan.FromMilliseconds(200));
+        // 第一次预热的闸门到下方才放开；第二次若错误地等待它，会一直等到预算耗尽而失败。
+        await warmer.WarmUpHomePageAsync().WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         Assert.Equal(1, Volatile.Read(ref invocationCount));
         Assert.Contains(
@@ -523,7 +524,7 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
         );
 
         releaseFirstCall.TrySetResult();
-        await firstWarmUpTask.WaitAsync(TimeSpan.FromSeconds(2));
+        await firstWarmUpTask.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         Assert.Equal(4, Volatile.Read(ref invocationCount));
     }
 
@@ -4295,7 +4296,7 @@ public class StoreOrderSyncJobServiceTests
             }
         );
 
-        await invoked.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await invoked.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         Assert.Equal(StoreOrderHqSyncConflictStrategy.LatestWins, job.ConflictStrategy);
         Assert.Equal(new List<string> { "S001", "S002" }, job.StoreCodes);
@@ -4359,7 +4360,7 @@ public class StoreOrderSyncJobServiceTests
                 ConflictStrategy = StoreOrderHqSyncConflictStrategy.HqWins,
             }
         );
-        await invoked.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await invoked.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             jobService.StartHqSyncJobAsync(
@@ -4415,7 +4416,7 @@ public class StoreOrderSyncJobServiceTests
         };
 
         var firstJob = await jobService.StartJobAsync("user-1", firstRequest);
-        await invoked.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await invoked.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         var secondJob = await jobService.StartJobAsync("user-1", secondRequest);
 
         Assert.Equal(firstJob.JobId, secondJob.JobId);
@@ -4557,7 +4558,7 @@ public class StoreOrderSyncJobServiceTests
         var request = new SyncMissingOrdersRequestDto { StoreCodes = new List<string> { "S001" } };
 
         var firstJob = await jobService.StartJobAsync("user-1", request);
-        await firstInvoked.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await firstInvoked.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             jobService.StartJobAsync("user-2", request)
         );
@@ -4630,18 +4631,13 @@ public class StoreOrderSyncJobServiceTests
         string expectedStatus
     )
     {
-        for (var index = 0; index < 50; index++)
-        {
-            var job = await jobService.GetJobAsync(jobId);
-            if (job?.Status == expectedStatus)
-            {
-                return job;
-            }
-
-            await Task.Delay(20);
-        }
-
-        throw new Xunit.Sdk.XunitException($"任务 {jobId} 未在预期时间内进入 {expectedStatus} 状态");
+        var job = await WaitForValueAsync(
+            () => jobService.GetJobAsync(jobId),
+            current => current?.Status == expectedStatus,
+            describeLast: current =>
+                $"任务 {jobId} 当前状态 {current?.Status ?? "未找到"}，期望 {expectedStatus}"
+        );
+        return job!;
     }
 
     private sealed class ManualTimeProvider : TimeProvider

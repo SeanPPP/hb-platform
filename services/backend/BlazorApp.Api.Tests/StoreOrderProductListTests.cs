@@ -2430,7 +2430,7 @@ public sealed class StoreOrderProductListTests : IDisposable
             StoreCode = "S001",
             ProductCode = "P-FALLBACK",
             Quantity = 2,
-        }).WaitAsync(TimeSpan.FromSeconds(5));
+        }).WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         Assert.True(result.Success, result.Message);
         Assert.Equal(2, result.Data?.Summary.TotalQuantity);
