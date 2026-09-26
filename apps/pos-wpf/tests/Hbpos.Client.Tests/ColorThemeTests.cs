@@ -28,7 +28,6 @@ public sealed class ColorThemeTests(PaymentViewRuntimeStaTestHost host)
         Path.Combine("Views", "Screens", "DeviceRegistrationView.xaml"),
         Path.Combine("Views", "Screens", "InstallmentCenterView.xaml"),
         Path.Combine("Views", "Screens", "InstallmentCreateView.xaml"),
-        Path.Combine("Views", "Screens", "PaymentSuccessView.xaml"),
         Path.Combine("Views", "Screens", "PaymentView.xaml"),
         Path.Combine("Views", "Screens", "PosTerminalView.xaml"),
         Path.Combine("Views", "Screens", "ReceiptReturnsView.xaml"),

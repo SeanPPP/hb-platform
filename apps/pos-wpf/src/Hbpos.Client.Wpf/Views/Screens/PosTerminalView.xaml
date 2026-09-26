@@ -72,7 +72,7 @@
                                                              HorizontalAlignment="Center" />
                                     <TextBlock Margin="0,4,0,0"
                                                Text="{loc:Loc Remove}"
-                                               FontSize="11"
+                                               FontSize="13"
                                                FontWeight="SemiBold"
                                                TextAlignment="Center" />
                                 </StackPanel>
@@ -271,6 +271,9 @@
         </Style>
 
         <Style x:Key="CashierFlatButtonBaseStyle" TargetType="Button">
+            <Style.Resources>
+                <Style TargetType="TextBlock" BasedOn="{StaticResource PosButtonContentTextStyle}" />
+            </Style.Resources>
             <Setter Property="Padding" Value="8,4" />
             <Setter Property="Background" Value="{DynamicResource PosSurfaceBrush}" />
             <Setter Property="BorderBrush" Value="{DynamicResource PosBorderBrush}" />
@@ -293,7 +296,11 @@
                                               HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
                                               VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
                                               RecognizesAccessKey="True"
-                                              TextBlock.Foreground="{TemplateBinding Foreground}" />
+                                              TextBlock.Foreground="{TemplateBinding Foreground}">
+                                <ContentPresenter.Resources>
+                                    <Style TargetType="TextBlock" BasedOn="{StaticResource PosButtonContentTextStyle}" />
+                                </ContentPresenter.Resources>
+                            </ContentPresenter>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
@@ -325,23 +332,30 @@
         <Style x:Key="CashierClearKeyStyle" TargetType="Button" BasedOn="{StaticResource CashierNumberKeyStyle}">
             <Setter Property="Foreground" Value="{DynamicResource PosDangerTextBrush}" />
             <Setter Property="BorderBrush" Value="{DynamicResource PosDangerBorderBrush}" />
-            <Setter Property="FontSize" Value="14" />
+            <Setter Property="FontSize" Value="18" />
             <Setter Property="FontWeight" Value="Medium" />
         </Style>
 
         <Style x:Key="CashierQuickKeyStyle" TargetType="Button" BasedOn="{StaticResource CashierNumberKeyStyle}">
-            <Setter Property="FontSize" Value="14" />
+            <Setter Property="FontSize" Value="18" />
             <Setter Property="FontWeight" Value="SemiBold" />
         </Style>
 
         <Style x:Key="CashierWholeOrderToggleStyle" TargetType="ToggleButton">
+            <Style.Resources>
+                <!-- 英文 “Whole Order” 在 1080 宽时单行放不下，放大后允许换成两行。 -->
+                <Style TargetType="TextBlock" BasedOn="{StaticResource PosButtonContentTextStyle}">
+                    <Setter Property="TextWrapping" Value="Wrap" />
+                    <Setter Property="TextAlignment" Value="Center" />
+                </Style>
+            </Style.Resources>
             <Setter Property="MinHeight" Value="44" />
             <Setter Property="Margin" Value="2" />
             <Setter Property="Padding" Value="6,4" />
             <Setter Property="Background" Value="{DynamicResource PosSurfaceBrush}" />
             <Setter Property="BorderBrush" Value="{DynamicResource PosBorderBrush}" />
             <Setter Property="Foreground" Value="{DynamicResource PosTextBrush}" />
-            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontSize" Value="16" />
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="Template">
@@ -356,7 +370,14 @@
                             <ContentPresenter Margin="{TemplateBinding Padding}"
                                               HorizontalAlignment="Center"
                                               VerticalAlignment="Center"
-                                              TextBlock.Foreground="{TemplateBinding Foreground}" />
+                                              TextBlock.Foreground="{TemplateBinding Foreground}">
+                                <ContentPresenter.Resources>
+                                    <Style TargetType="TextBlock" BasedOn="{StaticResource PosButtonContentTextStyle}">
+                                        <Setter Property="TextWrapping" Value="Wrap" />
+                                        <Setter Property="TextAlignment" Value="Center" />
+                                    </Style>
+                                </ContentPresenter.Resources>
+                            </ContentPresenter>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
@@ -380,17 +401,20 @@
             <Setter Property="Height" Value="54" />
             <Setter Property="Margin" Value="3" />
             <Setter Property="Padding" Value="8,5" />
-            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontSize" Value="16" />
             <Setter Property="HorizontalContentAlignment" Value="Stretch" />
             <Setter Property="VerticalContentAlignment" Value="Center" />
         </Style>
 
         <Style x:Key="CashierNoBarcodeButtonStyle" TargetType="Button" BasedOn="{StaticResource CashierFlatButtonBaseStyle}">
+            <Style.Resources>
+                <Style TargetType="TextBlock" BasedOn="{StaticResource PosButtonContentTextStyle}" />
+            </Style.Resources>
             <Setter Property="Height" Value="50" />
             <Setter Property="Background" Value="{DynamicResource PosPrimaryBrush}" />
             <Setter Property="BorderBrush" Value="{DynamicResource PosPrimaryBrush}" />
             <Setter Property="Foreground" Value="White" />
-            <Setter Property="FontSize" Value="13" />
+            <Setter Property="FontSize" Value="18" />
             <Setter Property="FontWeight" Value="Black" />
             <Setter Property="HorizontalContentAlignment" Value="Center" />
             <Setter Property="VerticalContentAlignment" Value="Center" />
@@ -407,7 +431,11 @@
                                               HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
                                               VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
                                               RecognizesAccessKey="True"
-                                              TextBlock.Foreground="{TemplateBinding Foreground}" />
+                                              TextBlock.Foreground="{TemplateBinding Foreground}">
+                                <ContentPresenter.Resources>
+                                    <Style TargetType="TextBlock" BasedOn="{StaticResource PosButtonContentTextStyle}" />
+                                </ContentPresenter.Resources>
+                            </ContentPresenter>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
@@ -442,7 +470,7 @@
             <Setter Property="Padding" Value="4" />
             <Setter Property="Background" Value="Transparent" />
             <Setter Property="BorderThickness" Value="0,0,1,0" />
-            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontSize" Value="18" />
             <Setter Property="HorizontalContentAlignment" Value="Center" />
             <Setter Property="VerticalContentAlignment" Value="Center" />
         </Style>
@@ -479,10 +507,10 @@
                TargetType="TextBlock"
                BasedOn="{StaticResource PosStitchTileLabelStyle}">
             <Setter Property="MaxWidth" Value="88" />
-            <Setter Property="MaxHeight" Value="30" />
+            <Setter Property="MaxHeight" Value="32" />
             <Setter Property="Margin" Value="0,4,0,0" />
-            <Setter Property="FontSize" Value="11" />
-            <Setter Property="LineHeight" Value="14" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="LineHeight" Value="16" />
             <Setter Property="HorizontalAlignment" Value="Center" />
             <Setter Property="TextAlignment" Value="Center" />
             <Setter Property="TextWrapping" Value="Wrap" />
@@ -581,7 +609,7 @@
                                 VerticalContentAlignment="Center">
                             <StackPanel Orientation="Horizontal">
                                 <materialDesign:PackIcon Kind="BarcodeScan" Width="17" Height="17" Foreground="White" Margin="0,0,6,0" />
-                                <TextBlock Text="{Binding SearchButtonText}" Foreground="White" FontSize="14" FontWeight="Bold" />
+                                <TextBlock Text="{Binding SearchButtonText}" Foreground="White" FontSize="16" FontWeight="Bold" />
                             </StackPanel>
                         </Button>
                     </Border>
@@ -945,7 +973,7 @@
                                                 CornerRadius="4">
                                             <TextBlock AutomationProperties.AutomationId="CartLineQuantity"
                                                        Text="{Binding SignedQuantity, StringFormat={}{0:0.##}}"
-                                                       FontSize="14"
+                                                       FontSize="16"
                                                        FontWeight="SemiBold"
                                                        TextAlignment="Center"
                                                        HorizontalAlignment="Stretch"
@@ -981,6 +1009,168 @@
                         </DataGridTemplateColumn>
                     </DataGrid.Columns>
                 </DataGrid>
+            </Border>
+
+            <!-- 结账完成后在购物车区域显示上一单结果；扫码或加入商品后由 VM 收起。与购物车同行叠放，不包裹购物车 DataGrid。 -->
+            <Border x:Name="PaymentSuccessCard"
+                    Grid.Row="1"
+                    Panel.ZIndex="3"
+                    MaxWidth="540"
+                    Margin="37,44,30,30"
+                    Padding="20,16"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Background="{DynamicResource PosSurfaceBrush}"
+                    BorderBrush="{DynamicResource PosSuccessBrush}"
+                    BorderThickness="2"
+                    CornerRadius="12"
+                    AutomationProperties.AutomationId="PaymentSuccessCard"
+                    Visibility="{Binding IsLastSaleVisible, Converter={StaticResource BoolToVis}}">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="18" ShadowDepth="3" Opacity="0.16" />
+                </Border.Effect>
+                <Grid DataContext="{Binding LastSale}">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <Grid Grid.Row="0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Border Width="40"
+                                Height="40"
+                                CornerRadius="20"
+                                Background="{DynamicResource PosSuccessSoftBrush}"
+                                VerticalAlignment="Center">
+                            <materialDesign:PackIcon Kind="Check"
+                                                     Width="24"
+                                                     Height="24"
+                                                     HorizontalAlignment="Center"
+                                                     VerticalAlignment="Center"
+                                                     Foreground="{DynamicResource PosSuccessTextBrush}" />
+                        </Border>
+                        <StackPanel Grid.Column="1" Margin="12,0,8,0" VerticalAlignment="Center">
+                            <TextBlock Text="{loc:Loc PaymentSuccessful}"
+                                       FontSize="20"
+                                       FontWeight="Black"
+                                       Foreground="{DynamicResource PosSuccessTextBrush}" />
+                            <StackPanel Margin="0,2,0,0" Orientation="Horizontal">
+                                <TextBlock Text="{Binding TransactionIdDisplay}"
+                                           AutomationProperties.AutomationId="CompletedTransactionId"
+                                           FontSize="12"
+                                           Foreground="{DynamicResource PosMutedForegroundBrush}" />
+                                <TextBlock Text="  ·  " FontSize="12" Foreground="{DynamicResource PosMutedForegroundBrush}" />
+                                <TextBlock Text="{Binding SoldAtDisplay}" FontSize="12" Foreground="{DynamicResource PosMutedForegroundBrush}" />
+                            </StackPanel>
+                        </StackPanel>
+                        <Button Grid.Column="2"
+                                Width="40"
+                                Height="40"
+                                VerticalAlignment="Top"
+                                Command="{Binding DataContext.DismissLastSaleCommand, ElementName=PaymentSuccessCard}"
+                                Style="{StaticResource PosSearchSegmentButtonStyle}"
+                                AutomationProperties.AutomationId="PaymentSuccessCardCloseButton"
+                                AutomationProperties.Name="{loc:Loc success.card.close}"
+                                ToolTip="{loc:Loc success.card.close}">
+                            <materialDesign:PackIcon Kind="Close" Width="20" Height="20" Foreground="{DynamicResource PosMutedForegroundBrush}" />
+                        </Button>
+                    </Grid>
+
+                    <!-- 现金单并排显示实付、实收与找零；非现金单只显示实付。UniformGrid 不为折叠的子项留位。 -->
+                    <UniformGrid Grid.Row="1" Margin="0,14,0,0" Rows="1">
+                        <Border Margin="0,0,8,0" Padding="12,8" Background="{DynamicResource PosSurfaceAltBrush}" CornerRadius="8">
+                            <StackPanel>
+                                <TextBlock Text="{loc:Loc success.totalPaid}" FontSize="12" Foreground="{DynamicResource PosMutedForegroundBrush}" />
+                                <TextBlock Text="{Binding TotalAmountPaidDisplay}"
+                                           AutomationProperties.AutomationId="CompletedSaleTotalPaid"
+                                           Margin="0,2,0,0"
+                                           FontSize="22"
+                                           FontWeight="Black" />
+                            </StackPanel>
+                        </Border>
+                        <Border Margin="0,0,8,0"
+                                Padding="12,8"
+                                Background="{DynamicResource PosSurfaceAltBrush}"
+                                CornerRadius="8"
+                                Visibility="{Binding IsCashChangeVisible, Converter={StaticResource BoolToVis}}">
+                            <StackPanel>
+                                <TextBlock Text="{loc:Loc payment.cash.amountTendered}" FontSize="12" Foreground="{DynamicResource PosMutedForegroundBrush}" />
+                                <TextBlock Text="{Binding TenderedAmountDisplay}" Margin="0,2,0,0" FontSize="22" FontWeight="Black" />
+                            </StackPanel>
+                        </Border>
+                        <Border Padding="12,8"
+                                Background="{DynamicResource PosWarningSoftBrush}"
+                                CornerRadius="8"
+                                Visibility="{Binding IsCashChangeVisible, Converter={StaticResource BoolToVis}}">
+                            <StackPanel>
+                                <TextBlock Text="{loc:Loc payment.cash.changeDue}" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource PosAccentBrush}" />
+                                <TextBlock Text="{Binding ChangeAmountDisplay}"
+                                           AutomationProperties.AutomationId="CompletedSaleChangeDue"
+                                           FontSize="30"
+                                           FontWeight="Black"
+                                           Foreground="{DynamicResource PosAccentBrush}" />
+                            </StackPanel>
+                        </Border>
+                    </UniformGrid>
+
+                    <TextBlock Grid.Row="2"
+                               Margin="0,10,0,0"
+                               FontSize="13"
+                               TextWrapping="Wrap"
+                               Foreground="{DynamicResource PosTextBrush}"
+                               Visibility="{Binding IsCardPaymentSummaryVisible, Converter={StaticResource BoolToVis}}">
+                        <Run Text="{loc:Loc success.cardDetails}" Foreground="{DynamicResource PosMutedForegroundBrush}" />
+                        <Run Text=" " />
+                        <Run Text="{Binding CardPaymentSummary, Mode=OneWay}" />
+                    </TextBlock>
+
+                    <Border Grid.Row="3"
+                            Margin="0,10,0,0"
+                            Padding="10,8"
+                            Background="{DynamicResource PosDangerSoftBrush}"
+                            CornerRadius="8"
+                            AutomationProperties.AutomationId="PaymentCompletedWarning"
+                            Visibility="{Binding HasPostCommitWarning, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="{loc:Loc payment.status.completedWarning}"
+                                   FontSize="12"
+                                   FontWeight="SemiBold"
+                                   TextWrapping="Wrap"
+                                   Foreground="{DynamicResource PosDangerTextBrush}" />
+                    </Border>
+
+                    <Grid Grid.Row="4" Margin="0,14,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,12,0">
+                            <materialDesign:PackIcon Kind="BarcodeScan" Width="18" Height="18" Margin="0,0,6,0" VerticalAlignment="Center" Foreground="{DynamicResource PosMutedForegroundBrush}" />
+                            <TextBlock Text="{loc:Loc success.card.scanToContinue}"
+                                       VerticalAlignment="Center"
+                                       FontSize="13"
+                                       TextWrapping="Wrap"
+                                       Foreground="{DynamicResource PosMutedForegroundBrush}" />
+                        </StackPanel>
+                        <Button Grid.Column="1"
+                                MinHeight="40"
+                                Padding="14,4"
+                                Command="{Binding PrintReceiptCommand}"
+                                Style="{StaticResource PosSecondaryButtonStyle}"
+                                AutomationProperties.AutomationId="PaymentSuccessCardPrintButton">
+                            <StackPanel Orientation="Horizontal">
+                                <materialDesign:PackIcon Kind="PrinterOutline" Width="18" Height="18" Margin="0,0,6,0" VerticalAlignment="Center" />
+                                <TextBlock Text="{loc:Loc success.printReceipt}" VerticalAlignment="Center" FontWeight="Bold" />
+                            </StackPanel>
+                        </Button>
+                    </Grid>
+                </Grid>
             </Border>
 
             <Border Grid.Row="2" Padding="17,0,12,18" Background="{DynamicResource PosSurfaceAltBrush}">
@@ -1076,7 +1266,7 @@
                              Style="{StaticResource CashierPayButtonStyle}">
                         <StackPanel Orientation="Horizontal">
                             <materialDesign:PackIcon Kind="Cash" Width="26" Height="26" Foreground="White" Margin="0,0,16,0" />
-                            <TextBlock Text="{Binding PayNowText}" Foreground="White" FontSize="18" FontWeight="Black" />
+                            <TextBlock Text="{Binding PayNowText}" Foreground="White" FontSize="22" FontWeight="Black" />
                         </StackPanel>
                     </Button>
                 </Grid>
@@ -1196,7 +1386,7 @@
                     Command="{Binding AddOpenItemCommand}"
                     Margin="13,0,13,8"
                     Style="{StaticResource CashierNoBarcodeButtonStyle}">
-                <TextBlock Text="{loc:Loc pos.terminal.actions.noBarcode}" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center" />
+                <TextBlock Text="{loc:Loc pos.terminal.actions.noBarcode}" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center" />
             </Button>
 
             <Grid Grid.Row="3" Margin="9,0,9,0" VerticalAlignment="Top">
@@ -1208,19 +1398,19 @@
                 <UniformGrid Grid.Row="0" Columns="2">
                     <Button Command="{Binding ModifySelectedLineQuantityCommand}"
                             Style="{StaticResource CashierFunctionButtonStyle}">
-                        <TextBlock Text="{loc:Loc pos.terminal.actions.modifyQty}" FontSize="12" FontWeight="SemiBold" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" HorizontalAlignment="Center" />
+                        <TextBlock Text="{loc:Loc pos.terminal.actions.modifyQty}" FontSize="16" FontWeight="SemiBold" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" />
                     </Button>
                     <Button Command="{Binding ModifySelectedLinePriceCommand}"
                             Style="{StaticResource CashierFunctionButtonStyle}">
-                        <TextBlock Text="{loc:Loc Price}" FontSize="12" FontWeight="SemiBold" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" HorizontalAlignment="Center" />
+                        <TextBlock Text="{loc:Loc Price}" FontSize="16" FontWeight="SemiBold" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" />
                     </Button>
                     <Button Command="{Binding ApplySelectedLineDiscountAmountCommand}"
                             Style="{StaticResource CashierFunctionButtonStyle}">
-                        <TextBlock Text="{loc:Loc pos.terminal.actions.discountAmount}" FontSize="12" FontWeight="SemiBold" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" HorizontalAlignment="Center" />
+                        <TextBlock Text="{loc:Loc pos.terminal.actions.discountAmount}" FontSize="16" FontWeight="SemiBold" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" />
                     </Button>
                     <Button Command="{Binding ApplySelectedLineDiscountPercentCommand}"
                             Style="{StaticResource CashierFunctionButtonStyle}">
-                        <TextBlock Text="{loc:Loc pos.terminal.actions.discountPercent}" FontSize="12" FontWeight="SemiBold" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" HorizontalAlignment="Center" />
+                        <TextBlock Text="{loc:Loc pos.terminal.actions.discountPercent}" FontSize="16" FontWeight="SemiBold" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" />
                     </Button>
                 </UniformGrid>
 

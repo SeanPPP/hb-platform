@@ -26,6 +26,7 @@
 
     <FontFamily x:Key="PosFontFamily">Segoe UI</FontFamily>
     <sys:Double x:Key="PosFontSizeBody">14</sys:Double>
+    <sys:Double x:Key="PosFontSizeButton">16</sys:Double>
     <sys:Double x:Key="PosFontSizeSmall">12</sys:Double>
     <sys:Double x:Key="PosFontSizeTitle">22</sys:Double>
     <sys:Double x:Key="PosFontSizeAmount">32</sys:Double>
@@ -119,6 +120,14 @@
         <Setter Property="Foreground" Value="{DynamicResource PosTextBrush}" />
     </Style>
 
+    <!-- 上面的全局 TextBlock 样式会把按钮里的文字也固定成 14，按钮样式里的 FontSize 传不到文字。
+         按钮样式在 Style.Resources（显式 TextBlock 子元素）和模板 ContentPresenter.Resources（字符串内容）里
+         基于本样式声明隐式 TextBlock 样式，让按钮文字跟随所在按钮的字号；按钮外的正文仍是 14。 -->
+    <Style x:Key="PosButtonContentTextStyle" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+        <Setter Property="FontSize"
+                Value="{Binding FontSize, RelativeSource={RelativeSource AncestorType=ButtonBase}, FallbackValue={StaticResource PosFontSizeBody}}" />
+    </Style>
+
     <Style x:Key="PosTitleTextBlock" TargetType="TextBlock">
         <Setter Property="FontFamily" Value="{StaticResource PosFontFamily}" />
         <Setter Property="Foreground" Value="{DynamicResource PosTextBrush}" />
@@ -154,10 +163,13 @@
     </Style>
 
     <Style x:Key="PosButtonBaseStyle" TargetType="Button">
+        <Style.Resources>
+            <Style TargetType="TextBlock" BasedOn="{StaticResource PosButtonContentTextStyle}" />
+        </Style.Resources>
         <Setter Property="MinHeight" Value="40" />
         <Setter Property="Padding" Value="14,8" />
         <Setter Property="FontFamily" Value="{StaticResource PosFontFamily}" />
-        <Setter Property="FontSize" Value="{StaticResource PosFontSizeBody}" />
+        <Setter Property="FontSize" Value="{StaticResource PosFontSizeButton}" />
         <Setter Property="FontWeight" Value="SemiBold" />
         <Setter Property="Cursor" Value="Hand" />
         <Setter Property="BorderThickness" Value="1" />
@@ -179,8 +191,8 @@
                                           Margin="{TemplateBinding Padding}"
                                           RecognizesAccessKey="True">
                             <ContentPresenter.Resources>
-                                <!-- 纯文字按钮会生成 TextBlock 并套用全局正文色；这里改为跟随按钮前景色（主按钮白字）。 -->
-                                <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                <!-- 纯文字按钮会生成 TextBlock 并套用全局正文色；这里跟随按钮字号，文字色改为跟随按钮前景色（主按钮白字）。 -->
+                                <Style TargetType="TextBlock" BasedOn="{StaticResource PosButtonContentTextStyle}">
                                     <Setter Property="Foreground" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
                                 </Style>
                             </ContentPresenter.Resources>
@@ -607,7 +619,7 @@
         <Setter Property="Background" Value="{DynamicResource PosWarningSoftBrush}" />
         <Setter Property="BorderBrush" Value="{DynamicResource PosWarningBorderBrush}" />
         <Setter Property="Foreground" Value="#FF2E1500" />
-        <Setter Property="FontSize" Value="11" />
+        <Setter Property="FontSize" Value="16" />
     </Style>
 
     <Style x:Key="PosMainNumberButtonStyle" TargetType="Button" BasedOn="{StaticResource PosStitchNumberButtonStyle}">

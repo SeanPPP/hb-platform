@@ -825,6 +825,12 @@
   <data name="success.newTransaction" xml:space="preserve">
     <value>新交易</value>
   </data>
+  <data name="success.card.scanToContinue" xml:space="preserve">
+    <value>扫描下一件商品即开始新交易</value>
+  </data>
+  <data name="success.card.close" xml:space="preserve">
+    <value>关闭</value>
+  </data>
   <data name="success.receiptPreview" xml:space="preserve">
     <value>小票预览</value>
   </data>
@@ -1693,9 +1699,6 @@
   </data>
   <data name="shell.page.returns" xml:space="preserve">
     <value>退货</value>
-  </data>
-  <data name="shell.page.paymentSuccess" xml:space="preserve">
-    <value>支付成功</value>
   </data>
   <data name="shell.page.history" xml:space="preserve">
     <value>历史</value>

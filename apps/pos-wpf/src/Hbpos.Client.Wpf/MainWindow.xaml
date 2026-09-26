@@ -243,9 +243,6 @@
         <DataTemplate DataType="{x:Type vm:InstallmentCreateViewModel}">
             <views:InstallmentCreateView />
         </DataTemplate>
-        <DataTemplate DataType="{x:Type vm:PaymentSuccessViewModel}">
-            <views:PaymentSuccessView />
-        </DataTemplate>
         <DataTemplate DataType="{x:Type vm:TransactionHistoryViewModel}">
             <views:TransactionHistoryView />
         </DataTemplate>
