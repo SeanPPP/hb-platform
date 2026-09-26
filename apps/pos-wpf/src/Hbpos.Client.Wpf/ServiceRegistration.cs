@@ -524,6 +524,8 @@ public static class ServiceRegistration
                 sp.GetRequiredService<IUiPriorityCoordinator>(),
                 () => sp.GetRequiredService<IShellCatalogService>().IsCatalogSyncActive));
         services.AddSingleton<IDisplayTopologyService, DisplayTopologyService>();
+        services.AddSingleton<IColorThemeService, ColorThemeService>();
+        services.AddSingleton<ColorThemeSwitcherViewModel>();
         services.AddSingleton<IWindowOwnerProvider, WpfWindowOwnerProvider>();
         services.AddSingleton<ICustomerDisplayWindowService, CustomerDisplayWindowService>();
         services.AddSingleton<RawScannerInputProcessor>();
