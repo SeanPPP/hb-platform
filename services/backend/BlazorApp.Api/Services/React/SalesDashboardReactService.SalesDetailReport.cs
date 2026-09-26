@@ -144,7 +144,7 @@ public partial class SalesDashboardReactService
             effectiveSupplierCategories, effectiveWarehouseCategories, selectedProductCode,
             search, pageIndex, pageSize, wanted, cancellationToken);
         // 四栏全部来自同一份商品日统计，不依赖供应商汇总的完成时间或另一次发布的归属映射。
-        var status = BuildSalesDetailReportStatus(read.Status, dateRange, false);
+        var status = BuildSalesDetailReportStatus(read.Status, dateRange, false, skipFailedDates: true);
         var response = new ProductReportResponseDto<SalesDetailReportDto>
         {
             StatisticStatus = status.StatisticStatus, StatisticMessage = status.StatisticMessage,
@@ -232,8 +232,9 @@ public partial class SalesDashboardReactService
             catch (SqlException ex) when (ex.Number == 51012
                 || (ex.Number == 208 && ex.Message.Contains("SalesDetailQuery", StringComparison.Ordinal)))
             {
-                // 派生数据尚未覆盖或版本已变化时，关闭旧快照后重新走原查询，绝不混用两版统计。
-                _logger.LogInformation("销售明细查询投影尚未就绪，改用完整事实快照：{Reason}", ex.Number);
+                // 投影覆盖异常不能退回整段事实：失败日已由投影 SQL 跳过，其他覆盖异常应明确失败，避免再次全表扫描。
+                _logger.LogWarning(ex, "销售明细查询投影不可用，拒绝回退完整事实快照：{Reason}", ex.Number);
+                throw;
             }
         }
         return sqlServer
@@ -276,7 +277,8 @@ public partial class SalesDashboardReactService
                 // 显式迁移前不让 SQL Server 编译不存在的派生表；实际覆盖仍在下方同一统计快照内核验。
                 await using var capability = connection.CreateCommand();
                 capability.CommandText = "SELECT CASE WHEN OBJECT_ID(N'dbo.SalesDetailQueryDaily',N'U') IS NOT NULL AND OBJECT_ID(N'dbo.SalesDetailQueryProductAlias',N'U') IS NOT NULL AND OBJECT_ID(N'dbo.SalesDetailQueryProjectionState',N'U') IS NOT NULL AND OBJECT_ID(N'dbo.SalesDetailQueryMappingUse',N'U') IS NOT NULL THEN 1 ELSE 0 END;";
-                useProjection = Convert.ToInt32(await capability.ExecuteScalarAsync(cancellationToken)) == 1;
+                if (Convert.ToInt32(await capability.ExecuteScalarAsync(cancellationToken)) != 1)
+                    throw new InvalidOperationException("销售明细关键词查询投影尚未建立，已拒绝整段事实回退。");
             }
             await using var command = connection.CreateCommand();
             command.CommandText = useMonthly
@@ -534,6 +536,8 @@ public partial class SalesDashboardReactService
         var sourceBranch = branches is { Count: > 0 }
             ? $" AND s.[BranchCode] IN ({string.Join(",", branches.Select((_, i) => $"@sdrBranch{i}"))})"
             : string.Empty;
+        // 统计失败日只在状态结果集中保留提示；事实读取必须跳过，避免筛选失败时退回整段原始数据。
+        var failedDateFilter = " AND NOT EXISTS (SELECT 1 FROM [SalesStatisticRefreshState] failedState WHERE failedState.[StatisticType]='ProductStoreDaily' AND failedState.[Status]='Failed' AND failedState.[Date]=s.[Date])";
         // 商品抽屉只请求分店栏，可在聚合前缩小事实范围；全量报表仍保留其他商品候选和供应商分母。
         var sourceProduct = wanted.Count == 1 && wanted.Contains(SalesDetailSection.Branches)
             && !string.IsNullOrWhiteSpace(selectedProduct)
@@ -588,7 +592,7 @@ WITH Periods AS
  {joinMapping}
  LEFT JOIN (SELECT [SupplierCode] FROM [ChinaSupplier] WHERE [SupplierCode] IS NOT NULL AND [SupplierCode]<>'' GROUP BY [SupplierCode]) cs
    ON cs.[SupplierCode]=LTRIM(RTRIM(s.[SupplierCode]))
- WHERE s.[Date]>=periods.[StartDate] AND s.[Date]<periods.[EndDate]{sourceBranch}{sourceProduct}{categorySourceFilter}
+ WHERE s.[Date]>=periods.[StartDate] AND s.[Date]<periods.[EndDate]{failedDateFilter}{sourceBranch}{sourceProduct}{categorySourceFilter}
 ), NarrowFacts AS
 (
  SELECT [Period], [RawSupplierCode], [ChinaSupplierCode], [AustralianSupplierCode], [BranchCode], [ProductCode],
@@ -623,7 +627,7 @@ WITH Periods AS
         COUNT(s.[GrossProfit]) [GrossProfitRowCount]
  FROM [ProductStoreDailySalesStatistic] s
  CROSS JOIN Periods periods
- WHERE s.[Date]>=periods.[StartDate] AND s.[Date]<periods.[EndDate]{sourceBranch}{sourceProduct}{categorySourceFilter}
+ WHERE s.[Date]>=periods.[StartDate] AND s.[Date]<periods.[EndDate]{failedDateFilter}{sourceBranch}{sourceProduct}{categorySourceFilter}
  GROUP BY periods.[Period], s.[SupplierCode], s.[BranchCode], s.[ProductCode]
 ), RawFacts AS
 (
@@ -963,6 +967,7 @@ ORDER BY a.[Quantity] DESC, a.[CompareQuantity] DESC, a.[ProductCode] ASC;
         var hasCompare = HasCompare(range);
         var categorySourceFilter = BuildSalesDetailCategoryFilter(kind, supplierCategoryGuids, warehouseCategoryGuids, "s.[ProductCode]");
         var sourceBranch = branches is { Count: > 0 } ? $" AND s.[BranchCode] IN ({string.Join(",", branches.Select((_, i) => $"@sdrBranch{i}"))})" : "";
+        var failedDateFilter = " AND NOT EXISTS (SELECT 1 FROM [SalesStatisticRefreshState] failedState WHERE failedState.[StatisticType]='ProductStoreDaily' AND failedState.[Status]='Failed' AND failedState.[Date]=s.[Date])";
         // SQLite 不支持 SQL Server 的 VALUES 派生表列定义语法；用 UNION ALL 的 SELECT
         // 同时覆盖 SQLite fallback 与异服务器 SQL Server fallback，避免把 POSM 映射搬回全量事实。
         var fallbackRows = fallbackMap is { Count: > 0 }
@@ -1019,7 +1024,7 @@ WITH Periods AS
  LEFT JOIN [LocalSupplier] local ON local.[LocalSupplierCode]=CASE WHEN @sdrKind=0 AND (LTRIM(RTRIM(COALESCE(s.[SupplierCode],'')))='200' OR cs.[SupplierCode] IS NOT NULL) THEN '200' ELSE LTRIM(RTRIM(s.[SupplierCode])) END AND local.[IsDeleted]=0
  LEFT JOIN [Store] store ON store.[StoreCode]=LTRIM(RTRIM(s.[BranchCode]))
  LEFT JOIN [Product] p ON p.[ProductCode]=LTRIM(RTRIM(s.[ProductCode]))
- WHERE s.[Date]>=periods.[StartDate] AND s.[Date]<periods.[EndDate]{sourceBranch}{categorySourceFilter}
+ WHERE s.[Date]>=periods.[StartDate] AND s.[Date]<periods.[EndDate]{failedDateFilter}{sourceBranch}{categorySourceFilter}
 ), ResolvedRows AS
 (
  SELECT *, COALESCE([ProductName],[StatisticProductName]) [ResolvedProductName]
@@ -1120,7 +1125,7 @@ FROM (SELECT {factProjection} FROM {table}) f {whereClause}
     private static string QuoteIdentifier(string value) => "[" + value.Replace("]", "]]", StringComparison.Ordinal) + "]";
     private static string SqlLiteral(string value, bool sqlServer) => value.Replace("'", "''", StringComparison.Ordinal);
 
-    private static ProductReportStatisticStatusDto BuildSalesDetailReportStatus(IEnumerable<SalesDetailReportStatusSqlRow> rows, DateRangeDto range, bool useSupplierRollups)
+    private static ProductReportStatisticStatusDto BuildSalesDetailReportStatus(IEnumerable<SalesDetailReportStatusSqlRow> rows, DateRangeDto range, bool useSupplierRollups, bool skipFailedDates = false)
     {
         var dates = EnumerateSalesDetailDates(range).ToList();
         var required = useSupplierRollups ? new[] { SalesStatisticType.ProductStoreDaily, SalesStatisticType.AustralianSupplierStoreSales, SalesStatisticType.ChinaSupplierStoreSales } : new[] { SalesStatisticType.ProductStoreDaily };
@@ -1128,13 +1133,13 @@ FROM (SELECT {factProjection} FROM {table}) f {whereClause}
         var source = string.Join("|", states.OrderBy(row => row.Date).ThenBy(row => row.Type).Select(row => $"{row.Type}:{row.Date:yyyyMMdd}:{row.Status}:{row.LastAggregatedAtUtc?.Ticks}:{row.CompletedAtUtc?.Ticks}:{row.SourceProductVersion}"));
         var result = new ProductReportStatisticStatusDto { CacheVersion = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(source))), StatisticUpdatedAt = useSupplierRollups ? states.Select(row => row.CompletedAtUtc ?? row.LastAggregatedAtUtc).DefaultIfEmpty().Min() : states.Select(row => row.CompletedAtUtc ?? row.LastAggregatedAtUtc).DefaultIfEmpty().Max(), StatisticStatus = SalesStatisticRefreshStatus.Pending, StatisticMessage = "商品统计尚未准备完成。" };
         if (states.Count == 0) return result;
-        // 业务对账失败（如单店金额与营业额差百余元）但已完成聚合的日期仍是完整的一天商品事实；
-        // 长区间不能因为个别历史日期对账未通过而整段不可读，只在响应里标注这些日期。
+        // 其他调用方保留原有已聚合失败日口径；销售明细通过 skipFailedDates 单独排除失败日。
         bool IsFailedButAggregated(SalesDetailReportStatusSqlRow row) =>
             row.Status.Equals(SalesStatisticRefreshStatus.Failed, StringComparison.OrdinalIgnoreCase)
             && row.LastAggregatedAtUtc.HasValue
             && row.Type.Equals(SalesStatisticType.ProductStoreDaily, StringComparison.OrdinalIgnoreCase);
-        if (states.Any(row => row.Status.Equals(SalesStatisticRefreshStatus.Failed, StringComparison.OrdinalIgnoreCase) && !IsFailedButAggregated(row))) { result.StatisticStatus = SalesStatisticRefreshStatus.Failed; result.StatisticMessage = "统计更新失败，等待后台恢复。"; return result; }
+        var skippedFailedDates = new List<DateTime>();
+        if (!skipFailedDates && states.Any(row => row.Status.Equals(SalesStatisticRefreshStatus.Failed, StringComparison.OrdinalIgnoreCase) && !IsFailedButAggregated(row))) { result.StatisticStatus = SalesStatisticRefreshStatus.Failed; result.StatisticMessage = "统计更新失败，等待后台恢复。"; return result; }
         if (states.Any(row => row.Status.Equals(SalesStatisticRefreshStatus.Stale, StringComparison.OrdinalIgnoreCase))) { result.StatisticStatus = SalesStatisticRefreshStatus.Stale; result.StatisticMessage = "商品统计等待更新。"; return result; }
         var reconciliationFailedDates = new List<DateTime>();
         // 生产上 2025-05-04～05-31 从未生成商品日统计（事实表无行、无状态行），早于最新状态的这类历史缺口
@@ -1146,6 +1151,11 @@ FROM (SELECT {factProjection} FROM {table}) f {whereClause}
         foreach (var date in dates)
         {
             var product = states.SingleOrDefault(row => row.Date.Date == date && row.Type.Equals(SalesStatisticType.ProductStoreDaily, StringComparison.OrdinalIgnoreCase));
+            if (skipFailedDates && product?.Status.Equals(SalesStatisticRefreshStatus.Failed, StringComparison.OrdinalIgnoreCase) == true)
+            {
+                skippedFailedDates.Add(date);
+                continue;
+            }
             if (product == null && !useSupplierRollups && latestTrackedDate.HasValue && date < latestTrackedDate.Value)
             {
                 missingHistoryDates.Add(date);
@@ -1170,9 +1180,19 @@ FROM (SELECT {factProjection} FROM {table}) f {whereClause}
             }
         }
         result.StatisticStatus = SalesStatisticRefreshStatus.Fresh;
-        result.StatisticMessage = string.Join(" ", new[] { DescribeReconciliationFailedDates(reconciliationFailedDates), DescribeMissingHistoryDates(missingHistoryDates) }
+        result.StatisticMessage = string.Join(" ", new[] { DescribeSkippedFailedDates(skippedFailedDates), DescribeReconciliationFailedDates(reconciliationFailedDates), DescribeMissingHistoryDates(missingHistoryDates) }
             .Where(message => !string.IsNullOrWhiteSpace(message))) is { Length: > 0 } message ? message : null;
         return result;
+    }
+
+    /// <summary>销售明细跳过统计失败日，并明确提示该日金额未计入结果。</summary>
+    internal static string? DescribeSkippedFailedDates(IReadOnlyCollection<DateTime> dates)
+    {
+        if (dates.Count == 0) return null;
+        var ordered = dates.Select(date => date.Date).Distinct().OrderBy(date => date).ToList();
+        var shown = string.Join("、", ordered.Take(5).Select(date => date.ToString("yyyy-MM-dd")));
+        var suffix = ordered.Count > 5 ? $" 等 {ordered.Count} 天" : string.Empty;
+        return $"{shown}{suffix}的商品统计失败，已跳过，该日金额未计入当前结果。";
     }
 
     /// <summary>从未生成商品日统计的历史日期：按连续区间合并后列出，提醒该段金额缺失、需另行回填统计。</summary>
