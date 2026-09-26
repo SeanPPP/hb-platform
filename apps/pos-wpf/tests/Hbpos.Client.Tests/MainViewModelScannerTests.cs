@@ -295,6 +295,40 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
+    public async Task Active_page_title_shows_card_recovery_center_instead_of_loading()
+    {
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cardPaymentRecoveryService: new FakeCardPaymentRecoveryService { OpenItems = [] },
+            cashierSessionContext: new CashierSessionContext(),
+            cashierLoginService: new FakeCashierLoginService(
+                CreateCashierSession(Permissions.PosTerminal.Payment.View)),
+            operationAuthorizationService: new GrantingOperationAuthorizationService());
+        var startupOptions = new AppStartupOptions([], false, null, null);
+        await viewModel.InitializeAsync(startupOptions);
+        await viewModel.ContinueStartupAfterShownAsync(startupOptions);
+        viewModel.CashierBarcodeInput = "CARD-RECOVERY-TITLE-CASHIER";
+        await viewModel.LoginCashierCommand.ExecuteAsync(null);
+        var changedProperties = new List<string?>();
+        viewModel.PropertyChanged += (_, e) => changedProperties.Add(e.PropertyName);
+
+        await viewModel.PosTerminal!.OpenCardRecoveryCenterCommand.ExecuteAsync(null);
+
+        var center = Assert.IsType<CardRecoveryCenterViewModel>(viewModel.CurrentScreen);
+        Assert.Contains(nameof(MainViewModel.ActivePageTitleText), changedProperties);
+        Assert.Equal("Card transaction recovery", viewModel.ActivePageTitleText);
+
+        await viewModel.ToggleCultureCommand.ExecuteAsync(null);
+
+        Assert.Equal("\u5361\u4EA4\u6613\u5F02\u5E38\u4E2D\u5FC3", viewModel.ActivePageTitleText);
+
+        center.BackCommand.Execute(null);
+
+        Assert.Same(viewModel.PosTerminal, viewModel.CurrentScreen);
+        Assert.Equal("\u6536\u94F6\u4E3B\u9875", viewModel.ActivePageTitleText);
+    }
+
+    [Fact]
     public async Task Language_save_failure_keeps_runtime_culture_and_reports_restart_warning()
     {
         var settings = new FakeSettingsRepository { SetException = new InvalidOperationException("settings unavailable") };
