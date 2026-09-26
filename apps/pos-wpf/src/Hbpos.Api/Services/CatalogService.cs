@@ -637,9 +637,9 @@ public sealed class CatalogService(
                     CreatedAt = x.CreatedAt,
                     UpdatedAt = x.UpdatedAt
                 });
+            // 商品停用只影响采购订货，门店仍可销售；收银目录只排除已删除商品。
             var productQuery = dbContext.MainDb.Queryable<Product>()
                 .Where(x =>
-                    x.IsActive &&
                     !x.IsDeleted &&
                     ((x.Barcode != null && lookupCandidates.Contains(x.Barcode)) ||
                      (x.ItemNumber != null && lookupCandidates.Contains(x.ItemNumber))))
@@ -690,7 +690,6 @@ public sealed class CatalogService(
             ? []
             : await dbContext.MainDb.Queryable<Product>()
                 .Where(x =>
-                    x.IsActive &&
                     !x.IsDeleted &&
                     x.ProductCode != null &&
                     relatedProductCodes.Contains(x.ProductCode))
@@ -839,14 +838,14 @@ public sealed class CatalogService(
 
         var productStopwatch = Stopwatch.StartNew();
         var product = await dbContext.MainDb.Queryable<Product>()
-            .FirstAsync(x => x.ProductCode == normalizedProductCode && x.IsActive && !x.IsDeleted, cancellationToken);
+            .FirstAsync(x => x.ProductCode == normalizedProductCode && !x.IsDeleted, cancellationToken);
         productStopwatch.Stop();
         Log($"mark special product product query store={normalizedStoreCode} product={normalizedProductCode} found={product is not null} elapsedMs={productStopwatch.ElapsedMilliseconds}");
         if (product is null)
         {
             totalStopwatch.Stop();
             Log($"mark special product failed store={normalizedStoreCode} product={normalizedProductCode} reason=product-not-found totalElapsedMs={totalStopwatch.ElapsedMilliseconds}");
-            return CatalogSpecialProductMarkServiceResult.Fail("PRODUCT_NOT_FOUND", "product was not found or inactive");
+            return CatalogSpecialProductMarkServiceResult.Fail("PRODUCT_NOT_FOUND", "product was not found or deleted");
         }
 
         var now = DateTime.UtcNow;
@@ -1003,7 +1002,6 @@ public sealed class CatalogService(
             .With(SqlWith.Null)
             .FirstAsync(x =>
                 x.ProductCode == normalizedProductCode &&
-                x.IsActive &&
                 !x.IsDeleted,
                 cancellationToken);
         if (product is null)
@@ -1370,9 +1368,10 @@ public sealed class CatalogService(
         {
             cancellationToken.ThrowIfCancellationRequested();
             var batchStopwatch = Stopwatch.StartNew();
+            // 停用商品门店仍可销售，全量目录与扫码查询口径一致，只排除已删除商品。
             var productQuery = dbContext.MainDb.Queryable<Product>()
                 .With(SqlWith.Null)
-                .Where(x => x.IsActive && !x.IsDeleted && x.ProductCode != null && x.UUID != null);
+                .Where(x => !x.IsDeleted && x.ProductCode != null && x.UUID != null);
 
             if (lastProductCode is not null && lastProductUuid is not null)
             {
