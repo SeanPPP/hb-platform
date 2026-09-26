@@ -122,7 +122,7 @@ public sealed class PosTerminalWorkflowServiceTests
             service.AddSelectedItem(Session, chosen, clearScanText: true, closeMatchesPopup: true, operation: "manual-select-match");
         }
 
-        // ????????????????????????????????
+        // 依次选 Fly、flower、Fly：Fly 两次并成一行，flower 单独一行，合计 8.99×2 + 2.99。
         Assert.Equal(
             [("P-FLY", "EXTENSION Fly Swatter", 8.99m, 2m), ("P-FLOWER", "flower", 2.99m, 1m)],
             cart.Lines.Select(line => (line.ProductCode, line.DisplayName, line.UnitPrice, line.Quantity)));
