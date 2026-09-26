@@ -23,7 +23,7 @@ public sealed class PosCartServiceTests
     [Fact]
     public void AddItem_keeps_separate_lines_for_different_products_sharing_a_lookup_code()
     {
-        // ???????????????????????????????????
+        // 条码 6405090401470 同时是 Fly Swatter 套装码与 flower 主条码：选不同商品必须分行、各按各的价。
         var cart = new PosCartService();
 
         var fly = cart.AddItem(CreateItem(productCode: "P-FLY", lookupCode: "6405090401470", displayName: "EXTENSION Fly Swatter", price: 8.99m));
