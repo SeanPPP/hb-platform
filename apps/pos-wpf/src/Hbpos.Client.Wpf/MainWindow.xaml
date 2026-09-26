@@ -25,7 +25,9 @@
         WindowState="Maximized"
         WindowStartupLocation="CenterScreen"
         FontFamily="{StaticResource PosFontFamily}"
+        Foreground="{DynamicResource PosTextBrush}"
         Background="{DynamicResource PosScreenBackgroundBrush}">
+    <!-- 窗口前景色跟随色板：未单独着色的图标继承它，否则深色主题下会落回系统黑色。 -->
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
         <converters:LocalizationKeyConverter x:Key="LocalizationKeyConverter" />
