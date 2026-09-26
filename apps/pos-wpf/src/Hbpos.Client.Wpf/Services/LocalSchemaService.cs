@@ -1505,6 +1505,16 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
         );
         """,
         """
+        -- 本地商品目录对应的服务端目录版本（sync-plan 协议的增量基准）。与目录数据在同一事务里写入，
+        -- 没有记录表示本地数据不对应任何已知版本，下次同步走全量。
+        CREATE TABLE IF NOT EXISTS LocalCatalogSyncState (
+            StoreCode TEXT NOT NULL PRIMARY KEY,
+            CatalogVersion TEXT NOT NULL,
+            ItemCount INTEGER NOT NULL,
+            UpdatedAt TEXT NOT NULL
+        );
+        """,
+        """
         -- 同一查询码对应多个不同商品的全部候选（服务端 code-conflicts 下发，按门店整体替换）。
         -- 主目录表对查询码唯一，备选商品只能放这里；列与 LocalSellableItemIndex 一致以复用读写映射。
         CREATE TABLE IF NOT EXISTS LocalSellableItemCodeConflict (
