@@ -1044,6 +1044,33 @@
   <data name="shell.customerDisplayWindow" xml:space="preserve">
     <value>客显窗口</value>
   </data>
+  <data name="shell.colorTheme" xml:space="preserve">
+    <value>界面配色</value>
+  </data>
+  <data name="shell.colorTheme.default" xml:space="preserve">
+    <value>默认</value>
+  </data>
+  <data name="shell.colorTheme.default.hint" xml:space="preserve">
+    <value>原有配色</value>
+  </data>
+  <data name="shell.colorTheme.paper" xml:space="preserve">
+    <value>暖纸</value>
+  </data>
+  <data name="shell.colorTheme.paper.hint" xml:space="preserve">
+    <value>白天明亮门店</value>
+  </data>
+  <data name="shell.colorTheme.graphite" xml:space="preserve">
+    <value>石墨夜</value>
+  </data>
+  <data name="shell.colorTheme.graphite.hint" xml:space="preserve">
+    <value>夜班、灯光偏暗</value>
+  </data>
+  <data name="shell.colorTheme.celadon" xml:space="preserve">
+    <value>青瓷</value>
+  </data>
+  <data name="shell.colorTheme.celadon.hint" xml:space="preserve">
+    <value>全天候柔和护眼</value>
+  </data>
   <data name="shell.languageToggle" xml:space="preserve">
     <value>中 / EN</value>
   </data>
