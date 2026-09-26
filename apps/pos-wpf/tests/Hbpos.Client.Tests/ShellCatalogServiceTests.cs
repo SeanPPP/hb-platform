@@ -220,6 +220,29 @@ public sealed class ShellCatalogServiceTests
             syncStatus.GetStatus("S01"));
     }
 
+    [Fact]
+    public async Task LoadLocalCatalogAsync_adds_code_conflict_products_to_price_index_only()
+    {
+        const string conflictCode = "6405090401470";
+        var priceIndex = new LocalSellableItemIndex();
+        var fly = CreateItem("P-FLY") with { LookupCode = conflictCode, DisplayName = "EXTENSION Fly Swatter" };
+        var flower = CreateItem("P-FLOWER") with { LookupCode = conflictCode, DisplayName = "flower" };
+        var repository = new FakeLocalCatalogRepository
+        {
+            Items = [fly],
+            CodeConflictItems = [fly, flower]
+        };
+        var service = new ShellCatalogService(priceIndex, repository, new CoordinatedCatalogSyncService(), new PosCartService());
+
+        var items = await service.LoadLocalCatalogAsync("S01");
+
+        // 返回值仍是目录本身（商品数等统计口径不变），扫码索引额外带上冲突码的其它商品。
+        Assert.Equal([fly], items);
+        Assert.Equal(
+            ["P-FLOWER", "P-FLY"],
+            priceIndex.FindExactMatches("S01", conflictCode).Select(item => item.ProductCode).Order());
+    }
+
     private static SellableItemDto CreateItem(string productCode, decimal price = 1m)
     {
         return new SellableItemDto(
@@ -367,6 +390,15 @@ public sealed class ShellCatalogServiceTests
         public IReadOnlyList<CatalogPromotionRuleDto> PromotionRules { get; set; } = [];
 
         public IReadOnlyList<SellableItemDto> Items { get; set; } = [CreateItem("RESET-ITEM")];
+
+        public IReadOnlyList<SellableItemDto> CodeConflictItems { get; set; } = [];
+
+        public Task<IReadOnlyList<SellableItemDto>> LoadCodeConflictItemsAsync(
+            string storeCode,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(CodeConflictItems);
+        }
 
         public Task<ILocalCatalogStoreReplaceSession> BeginStoreReplaceSessionAsync(
             string storeCode,

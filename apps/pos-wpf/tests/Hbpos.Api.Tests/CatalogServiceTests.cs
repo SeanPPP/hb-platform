@@ -1060,6 +1060,92 @@ public sealed class CatalogServiceTests
     }
 
     [Fact]
+    public async Task GetCodeConflictsAsync_returns_every_product_for_code_while_catalog_keeps_single_winner()
+    {
+        // 生产案例：flower（已停用但仍可销售）的主条码被另一个商品登记成了套装条码。
+        await using var fixture = await CatalogSqliteFixture.CreateAsync();
+        await fixture.SeedStoreAsync("S01");
+        await fixture.SeedProductAsync(new Product
+        {
+            UUID = "PRODUCT-FLOWER-UUID",
+            ProductCode = "P-FLOWER",
+            ProductName = "flower",
+            ItemNumber = "9040147",
+            Barcode = "6405090401470",
+            RetailPrice = 2.99m,
+            IsActive = false,
+            IsDeleted = false
+        });
+        await fixture.SeedProductAsync(new Product
+        {
+            UUID = "PRODUCT-FLY-UUID",
+            ProductCode = "P-FLY",
+            ProductName = "EXTENSION Fly Swatter",
+            ItemNumber = "HB294-002",
+            Barcode = "9300000000001",
+            RetailPrice = 3m,
+            IsActive = true,
+            IsDeleted = false
+        });
+        await fixture.SeedProductSetCodeAsync("P-FLY", "HB294-002-5363DA", "6405090401470", 8.99m, "SET-FLY-UUID");
+        var service = new CatalogService(fixture.DbContext, new PriceIndexBuilder(), new CatalogIndexCache());
+
+        var response = await service.GetCodeConflictsAsync("S01", CancellationToken.None);
+
+        Assert.NotNull(response);
+        Assert.True(response!.Available);
+        Assert.Collection(
+            response.Items,
+            first =>
+            {
+                Assert.Equal("P-FLY", first.ProductCode);
+                Assert.Equal("6405090401470", first.LookupCodeNormalized);
+                Assert.Equal(PriceSourceKind.ProductSetCode, first.PriceSource);
+                Assert.Equal(8.99m, first.RetailPrice);
+            },
+            second =>
+            {
+                Assert.Equal("P-FLOWER", second.ProductCode);
+                Assert.Equal("flower", second.DisplayName);
+                Assert.Equal(PriceSourceKind.ProductBase, second.PriceSource);
+                Assert.Equal(2.99m, second.RetailPrice);
+            });
+
+        // 目录分页口径不变：同一码仍只下发套装码胜出项，旧客户端与 iPad 行为不受影响。
+        var fullCatalog = await service.GetSellableItemsAsync("S01", since: null, CancellationToken.None);
+        var winner = Assert.Single(fullCatalog!.Items, item => item.LookupCode == "6405090401470");
+        Assert.Equal("P-FLY", winner.ProductCode);
+    }
+
+    [Fact]
+    public async Task GetCodeConflictsAsync_returns_available_empty_list_when_codes_do_not_collide()
+    {
+        await using var fixture = await CatalogSqliteFixture.CreateAsync();
+        await fixture.SeedStoreAsync("S01");
+        await fixture.SeedProductAsync(new Product
+        {
+            UUID = "PRODUCT-SOLO-UUID",
+            ProductCode = "P-SOLO",
+            ProductName = "Solo",
+            ItemNumber = "SOLO-ITEM",
+            Barcode = "SOLO-BARCODE",
+            RetailPrice = 5m,
+            IsActive = true,
+            IsDeleted = false
+        });
+        await fixture.SeedStoreClearancePriceAsync("S01", "P-SOLO", "SOLO-BARCODE", 3m, "SOLO-CLEARANCE-UUID");
+        var service = new CatalogService(fixture.DbContext, new PriceIndexBuilder(), new CatalogIndexCache());
+
+        var response = await service.GetCodeConflictsAsync("S01", CancellationToken.None);
+        var missingStore = await service.GetCodeConflictsAsync("S99", CancellationToken.None);
+
+        Assert.NotNull(response);
+        Assert.True(response!.Available);
+        Assert.Empty(response.Items);
+        Assert.Null(missingStore);
+    }
+
+    [Fact]
     public async Task MarkSpecialProductAsync_marks_inactive_product()
     {
         await using var fixture = await CatalogSqliteFixture.CreateAsync();
@@ -1542,6 +1628,12 @@ public sealed class CatalogServiceTests
         {
             Inputs.Add(input);
             return inner.Build(storeCode, input);
+        }
+
+        public PriceIndexBuildOutput BuildWithCodeConflicts(string storeCode, PriceIndexInput input)
+        {
+            Inputs.Add(input);
+            return inner.BuildWithCodeConflicts(storeCode, input);
         }
     }
 
