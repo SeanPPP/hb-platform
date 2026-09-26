@@ -98,7 +98,7 @@ public sealed class PosCartService
             throw new InvalidOperationException("Cart item quantity must be a positive integer.");
         }
 
-        var existing = FindLineByLookupCode(item.StoreCode, item.LookupCode);
+        var existing = FindSaleLineForProduct(item);
 
         if (existing is not null)
         {
@@ -135,7 +135,8 @@ public sealed class PosCartService
             !lastLine.IsReturnLine &&
             !lastLine.IsOpenItem &&
             string.Equals(lastLine.StoreCode, item.StoreCode, StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(lastLine.LookupCodeNormalized, normalizedLookupCode, StringComparison.Ordinal))
+            string.Equals(lastLine.LookupCodeNormalized, normalizedLookupCode, StringComparison.Ordinal) &&
+            IsSameProduct(lastLine, item))
         {
             if (!IsPositiveIntegerQuantity(lastLine.Quantity))
             {
@@ -253,6 +254,27 @@ public sealed class PosCartService
             !line.IsOpenItem &&
             string.Equals(line.StoreCode, storeCode, StringComparison.OrdinalIgnoreCase) &&
             line.LookupCodeNormalized == normalizedLookupCode);
+    }
+
+    private CartLine? FindSaleLineForProduct(SellableItemDto item)
+    {
+        var normalizedLookupCode = CartLine.NormalizeLookupCode(item.LookupCode);
+        return _lines.FirstOrDefault(line =>
+            !line.IsReturnLine &&
+            !line.IsOpenItem &&
+            string.Equals(line.StoreCode, item.StoreCode, StringComparison.OrdinalIgnoreCase) &&
+            line.LookupCodeNormalized == normalizedLookupCode &&
+            IsSameProduct(line, item));
+    }
+
+    // ?????????????????????????????????????
+    // ????????????????????????????
+    private static bool IsSameProduct(CartLine line, SellableItemDto item)
+    {
+        return string.Equals(
+            NormalizeProductCode(line.ProductCode),
+            NormalizeProductCode(item.ProductCode),
+            StringComparison.OrdinalIgnoreCase);
     }
 
     public CartLine? FindReturnLineBySourceKey(string returnSourceKey)
