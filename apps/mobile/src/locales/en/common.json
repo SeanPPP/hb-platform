@@ -354,5 +354,29 @@
       "supplierHint": "Tap supplier to filter · tap amount for stores · swipe for share, growth and LY",
       "productHint": "Tap item for stores · swipe for avg, margin and growth"
     }
+  },
+  "orderRow": {
+    "minOrder": "MOQ {{quantity}}",
+    "importPrice": "Import",
+    "retailPrice": "Retail",
+    "unitPrice": "{{amount}} / pc",
+    "subtotal": "Subtotal",
+    "add": "Add",
+    "addWithStep": "Add ×{{step}}",
+    "addAccessibility": "Add {{name}}, quantity {{quantity}}",
+    "decrease": "Decrease by one MOQ",
+    "increase": "Increase by one MOQ",
+    "remove": "Remove from cart",
+    "justScanned": "Just scanned",
+    "zeroImportPrice": "Import price 0"
+  },
+  "orderNotice": {
+    "addedNamed": "Added {{name}}",
+    "addedQuantity": "×{{quantity}}"
+  },
+  "quantityPresets": {
+    "caption": "Quick quantities (multiples of MOQ {{step}})",
+    "clear": "Clear",
+    "set": "Set to {{quantity}}"
   }
 }
