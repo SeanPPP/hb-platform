@@ -9,7 +9,7 @@
              AutomationProperties.AutomationId="PaymentSuccessScreen"
              d:DesignHeight="688"
              d:DesignWidth="1366"
-             Background="{StaticResource PosSurfaceAltBrush}">
+             Background="{DynamicResource PosSurfaceAltBrush}">
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
     </UserControl.Resources>
@@ -20,12 +20,12 @@
             <ColumnDefinition Width="30*" MinWidth="0" />
         </Grid.ColumnDefinitions>
 
-        <Grid Grid.Column="0" Background="{StaticResource PosSurfaceAltBrush}">
+        <Grid Grid.Column="0" Background="{DynamicResource PosSurfaceAltBrush}">
             <ScrollViewer Style="{StaticResource PosVerticalTouchScrollViewerStyle}"
                           VerticalScrollBarVisibility="Auto">
                 <StackPanel Margin="48,40,48,24">
                     <StackPanel HorizontalAlignment="Center">
-                        <Border Width="100" Height="100" Background="{StaticResource PosAccentBrush}" CornerRadius="50">
+                        <Border Width="100" Height="100" Background="{DynamicResource PosAccentBrush}" CornerRadius="50">
                             <materialDesign:PackIcon Kind="CheckCircle"
                                                      Width="58"
                                                      Height="58"
@@ -33,11 +33,11 @@
                                                      HorizontalAlignment="Center"
                                                      VerticalAlignment="Center" />
                         </Border>
-                        <TextBlock Text="{loc:Loc PaymentSuccessful}" Margin="0,20,0,4" HorizontalAlignment="Center" FontSize="32" FontWeight="Black" Foreground="{StaticResource PosPrimaryBrush}" />
-                        <TextBlock Text="{loc:Loc success.subtitle}" HorizontalAlignment="Center" FontSize="14" Foreground="{StaticResource PosMutedForegroundBrush}" />
+                        <TextBlock Text="{loc:Loc PaymentSuccessful}" Margin="0,20,0,4" HorizontalAlignment="Center" FontSize="32" FontWeight="Black" Foreground="{DynamicResource PosPrimaryTextBrush}" />
+                        <TextBlock Text="{loc:Loc success.subtitle}" HorizontalAlignment="Center" FontSize="14" Foreground="{DynamicResource PosMutedForegroundBrush}" />
                     </StackPanel>
 
-                    <Border Margin="0,24,0,0" Padding="24" Background="White" CornerRadius="12">
+                    <Border Margin="0,24,0,0" Padding="24" Background="{DynamicResource PosSurfaceBrush}" CornerRadius="12">
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="50*" />
@@ -46,34 +46,34 @@
                             </Grid.ColumnDefinitions>
 
                             <StackPanel Grid.Column="0">
-                                <TextBlock Text="{loc:Loc success.totalPaid}" FontSize="9" FontWeight="Black" Foreground="{StaticResource PosMutedForegroundBrush}" />
+                                <TextBlock Text="{loc:Loc success.totalPaid}" FontSize="9" FontWeight="Black" Foreground="{DynamicResource PosMutedForegroundBrush}" />
                                 <TextBlock Text="{Binding TotalAmountPaid, StringFormat={}{0:C2}}" Margin="0,4,0,0" FontSize="40" FontWeight="Black" />
                             </StackPanel>
 
-                            <Border Grid.Column="1" Width="1" Margin="24,0" Background="{StaticResource PosBorderBrush}" />
+                            <Border Grid.Column="1" Width="1" Margin="24,0" Background="{DynamicResource PosBorderBrush}" />
 
                             <StackPanel Grid.Column="2">
-                                <TextBlock Text="{loc:Loc success.transactionId}" FontSize="9" FontWeight="Black" Foreground="{StaticResource PosMutedForegroundBrush}" />
-                                <TextBlock Text="{Binding TransactionIdDisplay}" AutomationProperties.AutomationId="CompletedTransactionId" Margin="0,4,0,0" FontSize="16" FontWeight="Black" Foreground="{StaticResource PosTextBrush}" />
-                                <TextBlock Text="{loc:Loc Time}" Margin="0,8,0,0" FontSize="9" FontWeight="Black" Foreground="{StaticResource PosMutedForegroundBrush}" />
-                                <TextBlock Text="{Binding SoldAtDisplay}" Margin="0,2,0,0" FontSize="12" Foreground="{StaticResource PosTextBrush}" />
-                                <TextBlock Text="{loc:Loc Terminal}" Margin="0,8,0,0" FontSize="9" FontWeight="Black" Foreground="{StaticResource PosMutedForegroundBrush}" />
-                                <TextBlock AutomationProperties.AutomationId="CompletedTransactionContext" FontSize="12" Foreground="{StaticResource PosTextBrush}">
+                                <TextBlock Text="{loc:Loc success.transactionId}" FontSize="9" FontWeight="Black" Foreground="{DynamicResource PosMutedForegroundBrush}" />
+                                <TextBlock Text="{Binding TransactionIdDisplay}" AutomationProperties.AutomationId="CompletedTransactionId" Margin="0,4,0,0" FontSize="16" FontWeight="Black" Foreground="{DynamicResource PosTextBrush}" />
+                                <TextBlock Text="{loc:Loc Time}" Margin="0,8,0,0" FontSize="9" FontWeight="Black" Foreground="{DynamicResource PosMutedForegroundBrush}" />
+                                <TextBlock Text="{Binding SoldAtDisplay}" Margin="0,2,0,0" FontSize="12" Foreground="{DynamicResource PosTextBrush}" />
+                                <TextBlock Text="{loc:Loc Terminal}" Margin="0,8,0,0" FontSize="9" FontWeight="Black" Foreground="{DynamicResource PosMutedForegroundBrush}" />
+                                <TextBlock AutomationProperties.AutomationId="CompletedTransactionContext" FontSize="12" Foreground="{DynamicResource PosTextBrush}">
                                     <Run Text="{Binding StoreCode, Mode=OneWay}" />
                                     <Run Text=" / " />
                                     <Run Text="{Binding DeviceCode, Mode=OneWay}" />
                                     <Run Text=" / " />
                                     <Run Text="{Binding CashierName, Mode=OneWay}" />
                                 </TextBlock>
-                                <TextBlock Text="{loc:Loc success.cardDetails}" Margin="0,8,0,0" FontSize="9" FontWeight="Black" Foreground="{StaticResource PosMutedForegroundBrush}" Visibility="{Binding IsCardPaymentSummaryVisible, Converter={StaticResource BoolToVis}}" />
-                                <TextBlock Text="{Binding CardPaymentSummary}" Margin="0,2,0,0" FontSize="12" Foreground="{StaticResource PosTextBrush}" TextWrapping="Wrap" Visibility="{Binding IsCardPaymentSummaryVisible, Converter={StaticResource BoolToVis}}" />
+                                <TextBlock Text="{loc:Loc success.cardDetails}" Margin="0,8,0,0" FontSize="9" FontWeight="Black" Foreground="{DynamicResource PosMutedForegroundBrush}" Visibility="{Binding IsCardPaymentSummaryVisible, Converter={StaticResource BoolToVis}}" />
+                                <TextBlock Text="{Binding CardPaymentSummary}" Margin="0,2,0,0" FontSize="12" Foreground="{DynamicResource PosTextBrush}" TextWrapping="Wrap" Visibility="{Binding IsCardPaymentSummaryVisible, Converter={StaticResource BoolToVis}}" />
                             </StackPanel>
                         </Grid>
                     </Border>
 
                     <Border Margin="0,16,0,0"
                             Padding="16,12"
-                            Background="{StaticResource PosWarningBrush}"
+                            Background="{DynamicResource PosWarningBrush}"
                             CornerRadius="12"
                             AutomationProperties.AutomationId="PaymentCompletedWarning"
                             Visibility="{Binding HasPostCommitWarning, Converter={StaticResource BoolToVis}}">
@@ -81,20 +81,20 @@
                             <materialDesign:PackIcon Kind="AlertCircleOutline"
                                                      Width="20"
                                                      Height="20"
-                                                     Foreground="{StaticResource PosPrimaryDarkBrush}"
+                                                     Foreground="{DynamicResource PosPrimaryDarkBrush}"
                                                      Margin="0,0,10,0" />
                             <TextBlock Text="{loc:Loc payment.status.completedWarning}"
                                        VerticalAlignment="Center"
                                        FontSize="13"
                                        FontWeight="SemiBold"
-                                       Foreground="{StaticResource PosPrimaryDarkBrush}"
+                                       Foreground="{DynamicResource PosPrimaryDarkBrush}"
                                        TextWrapping="Wrap" />
                         </StackPanel>
                     </Border>
 
                     <Border Margin="0,16,0,0"
                             Padding="24"
-                            Background="{StaticResource PosWarningBrush}"
+                            Background="{DynamicResource PosWarningBrush}"
                             CornerRadius="12"
                             Visibility="{Binding IsCashChangeVisible, Converter={StaticResource BoolToVis}}">
                         <Grid>
@@ -104,19 +104,19 @@
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
 
-                            <Border Width="64" Height="64" Background="White" CornerRadius="32">
+                            <Border Width="64" Height="64" Background="{DynamicResource PosSurfaceBrush}" CornerRadius="32">
                                 <materialDesign:PackIcon Kind="CashRefund"
                                                          Width="34"
                                                          Height="34"
-                                                         Foreground="{StaticResource PosPrimaryDarkBrush}"
+                                                         Foreground="{DynamicResource PosPrimaryDarkBrush}"
                                                          HorizontalAlignment="Center"
                                                          VerticalAlignment="Center" />
                             </Border>
 
                             <StackPanel Grid.Column="1" Margin="18,0,18,0" VerticalAlignment="Center">
-                                <TextBlock Text="{loc:Loc payment.cash.changeDue}" FontSize="15" FontWeight="Black" Foreground="{StaticResource PosPrimaryDarkBrush}" />
-                                <TextBlock Text="{loc:Loc payment.cash.amountTendered}" Margin="0,6,0,0" FontSize="11" FontWeight="SemiBold" Foreground="{StaticResource PosPrimaryDarkBrush}" />
-                                <TextBlock Text="{Binding TenderedAmountDisplay}" FontSize="18" FontWeight="Black" Foreground="{StaticResource PosPrimaryDarkBrush}" />
+                                <TextBlock Text="{loc:Loc payment.cash.changeDue}" FontSize="15" FontWeight="Black" Foreground="{DynamicResource PosPrimaryDarkBrush}" />
+                                <TextBlock Text="{loc:Loc payment.cash.amountTendered}" Margin="0,6,0,0" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource PosPrimaryDarkBrush}" />
+                                <TextBlock Text="{Binding TenderedAmountDisplay}" FontSize="18" FontWeight="Black" Foreground="{DynamicResource PosPrimaryDarkBrush}" />
                             </StackPanel>
 
                             <TextBlock Grid.Column="2"
@@ -126,21 +126,21 @@
                                        TextAlignment="Right"
                                        FontSize="46"
                                        FontWeight="Black"
-                                       Foreground="{StaticResource PosPrimaryDarkBrush}" />
+                                       Foreground="{DynamicResource PosPrimaryDarkBrush}" />
                         </Grid>
                     </Border>
 
-                    <Border Margin="0,16,0,0" Padding="16,12" Background="{StaticResource PosScreenBackgroundBrush}" BorderBrush="{StaticResource PosBorderBrush}" BorderThickness="1" CornerRadius="12">
+                    <Border Margin="0,16,0,0" Padding="16,12" Background="{DynamicResource PosScreenBackgroundBrush}" BorderBrush="{DynamicResource PosBorderBrush}" BorderThickness="1" CornerRadius="12">
                         <StackPanel Orientation="Horizontal">
-                            <materialDesign:PackIcon Kind="CloudUpload" Width="18" Height="18" Foreground="{StaticResource PosPrimaryBrush}" Margin="0,0,8,0" />
-                            <TextBlock Text="{loc:Loc success.syncQueued}" VerticalAlignment="Center" FontSize="12" FontWeight="SemiBold" Foreground="{StaticResource PosTextBrush}" />
+                            <materialDesign:PackIcon Kind="CloudUpload" Width="18" Height="18" Foreground="{DynamicResource PosPrimaryTextBrush}" Margin="0,0,8,0" />
+                            <TextBlock Text="{loc:Loc success.syncQueued}" VerticalAlignment="Center" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource PosTextBrush}" />
                         </StackPanel>
                     </Border>
 
                     <StackPanel Margin="0,24,0,0">
                         <StackPanel Margin="0,0,0,12" Orientation="Horizontal">
-                            <materialDesign:PackIcon Kind="Cellphone" Width="18" Height="18" Foreground="{StaticResource PosPrimaryBrush}" Margin="0,0,6,0" />
-                            <TextBlock Text="{loc:Loc success.digitalReceipt}" VerticalAlignment="Center" FontSize="14" FontWeight="Black" Foreground="{StaticResource PosTextBrush}" />
+                            <materialDesign:PackIcon Kind="Cellphone" Width="18" Height="18" Foreground="{DynamicResource PosPrimaryTextBrush}" Margin="0,0,6,0" />
+                            <TextBlock Text="{loc:Loc success.digitalReceipt}" VerticalAlignment="Center" FontSize="14" FontWeight="Black" Foreground="{DynamicResource PosTextBrush}" />
                         </StackPanel>
 
                         <Grid>
@@ -149,16 +149,16 @@
                                 <ColumnDefinition Width="50*" />
                             </Grid.ColumnDefinitions>
 
-                            <Border Grid.Column="0" Margin="0,0,6,0" Padding="16" Background="{StaticResource PosScreenBackgroundBrush}" BorderBrush="{StaticResource PosBorderBrush}" BorderThickness="1" CornerRadius="12">
+                            <Border Grid.Column="0" Margin="0,0,6,0" Padding="16" Background="{DynamicResource PosScreenBackgroundBrush}" BorderBrush="{DynamicResource PosBorderBrush}" BorderThickness="1" CornerRadius="12">
                                 <StackPanel>
-                                    <TextBlock Text="{loc:Loc success.email}" FontSize="9" FontWeight="Black" Foreground="{StaticResource PosMutedForegroundBrush}" Margin="0,0,0,8" />
+                                    <TextBlock Text="{loc:Loc success.email}" FontSize="9" FontWeight="Black" Foreground="{DynamicResource PosMutedForegroundBrush}" Margin="0,0,0,8" />
                                     <TextBox Text="{loc:Loc success.emailPlaceholder}" Height="38" IsReadOnly="True" Style="{StaticResource PosSearchTextBoxStyle}" />
                                 </StackPanel>
                             </Border>
 
-                            <Border Grid.Column="1" Margin="6,0,0,0" Padding="16" Background="{StaticResource PosScreenBackgroundBrush}" BorderBrush="{StaticResource PosBorderBrush}" BorderThickness="1" CornerRadius="12">
+                            <Border Grid.Column="1" Margin="6,0,0,0" Padding="16" Background="{DynamicResource PosScreenBackgroundBrush}" BorderBrush="{DynamicResource PosBorderBrush}" BorderThickness="1" CornerRadius="12">
                                 <StackPanel>
-                                    <TextBlock Text="{loc:Loc success.sms}" FontSize="9" FontWeight="Black" Foreground="{StaticResource PosMutedForegroundBrush}" Margin="0,0,0,8" />
+                                    <TextBlock Text="{loc:Loc success.sms}" FontSize="9" FontWeight="Black" Foreground="{DynamicResource PosMutedForegroundBrush}" Margin="0,0,0,8" />
                                     <TextBox Text="{loc:Loc success.smsPlaceholder}" Height="38" IsReadOnly="True" Style="{StaticResource PosSearchTextBoxStyle}" />
                                 </StackPanel>
                             </Border>
@@ -168,20 +168,20 @@
             </ScrollViewer>
         </Grid>
 
-        <Grid Grid.Column="1" Background="#FFE7E8EB">
+        <Grid Grid.Column="1" Background="{DynamicResource PosSurfaceStrongBrush}">
             <Grid.RowDefinitions>
                 <RowDefinition Height="*" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
-            <Border Grid.Row="0" Margin="16,16,16,8" Padding="20" Background="White" CornerRadius="12">
+            <Border Grid.Row="0" Margin="16,16,16,8" Padding="20" Background="{DynamicResource PosSurfaceBrush}" CornerRadius="12">
                 <ScrollViewer Style="{StaticResource PosVerticalTouchScrollViewerStyle}"
                               VerticalScrollBarVisibility="Auto">
                     <StackPanel>
                         <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
-                            <materialDesign:PackIcon Kind="Receipt" Width="18" Height="18" Foreground="{StaticResource PosPrimaryBrush}" Margin="0,0,6,0" />
-                            <TextBlock Text="{loc:Loc success.receiptPreview}" FontSize="14" FontWeight="Black" Foreground="{StaticResource PosTextBrush}" />
+                            <materialDesign:PackIcon Kind="Receipt" Width="18" Height="18" Foreground="{DynamicResource PosPrimaryTextBrush}" Margin="0,0,6,0" />
+                            <TextBlock Text="{loc:Loc success.receiptPreview}" FontSize="14" FontWeight="Black" Foreground="{DynamicResource PosTextBrush}" />
                         </StackPanel>
 
                         <ItemsControl ItemsSource="{Binding ReceiptPreviewRows}"
@@ -192,7 +192,7 @@
 
             <Button Grid.Row="1" Height="48" Margin="16,4,16,8" Command="{Binding PrintReceiptCommand}" Style="{StaticResource PosSecondaryButtonStyle}">
                 <StackPanel Orientation="Horizontal">
-                    <materialDesign:PackIcon Kind="Printer" Width="20" Height="20" Margin="0,0,8,0" Foreground="{StaticResource PosPrimaryBrush}" />
+                    <materialDesign:PackIcon Kind="Printer" Width="20" Height="20" Margin="0,0,8,0" Foreground="{DynamicResource PosPrimaryTextBrush}" />
                     <TextBlock Text="{loc:Loc success.printReceipt}" FontSize="14" FontWeight="SemiBold" />
                 </StackPanel>
             </Button>

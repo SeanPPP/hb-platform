@@ -368,6 +368,15 @@
   <data name="customerDisplay.window.closed" xml:space="preserve"><value>Customer display closed.</value></data>
   <data name="customerDisplay.window.noSecondDisplay" xml:space="preserve"><value>No second display detected. Customer display was not opened.</value></data>
   <data name="shell.customerDisplayWindow" xml:space="preserve"><value>Customer display window</value></data>
+  <data name="shell.colorTheme" xml:space="preserve"><value>Color theme</value></data>
+  <data name="shell.colorTheme.default" xml:space="preserve"><value>Default</value></data>
+  <data name="shell.colorTheme.default.hint" xml:space="preserve"><value>Original colors</value></data>
+  <data name="shell.colorTheme.paper" xml:space="preserve"><value>Paper</value></data>
+  <data name="shell.colorTheme.paper.hint" xml:space="preserve"><value>Bright daytime stores</value></data>
+  <data name="shell.colorTheme.graphite" xml:space="preserve"><value>Graphite</value></data>
+  <data name="shell.colorTheme.graphite.hint" xml:space="preserve"><value>Evening shifts and dim light</value></data>
+  <data name="shell.colorTheme.celadon" xml:space="preserve"><value>Celadon</value></data>
+  <data name="shell.colorTheme.celadon.hint" xml:space="preserve"><value>Soft all-day comfort</value></data>
   <data name="shell.languageToggle" xml:space="preserve"><value>中 / EN</value></data>
   <data name="shell.language.saveFailedRestartMayRevert" xml:space="preserve"><value>Language changed for this session, but saving failed. It may revert after restart.</value></data>
   <data name="shell.cashierLogin.overlayTitle" xml:space="preserve"><value>Cashier login required</value></data>

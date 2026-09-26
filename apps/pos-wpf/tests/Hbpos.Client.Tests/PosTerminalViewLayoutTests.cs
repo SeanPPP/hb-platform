@@ -78,9 +78,9 @@ public sealed class PosTerminalViewLayoutTests
         var wholeOrderStyle = FindStyle(view, x, "CashierWholeOrderToggleStyle");
         var checkedTrigger = Assert.Single(wholeOrderStyle.Descendants(presentation + "Trigger").Where(trigger =>
             (string?)trigger.Attribute("Property") == "IsChecked" && (string?)trigger.Attribute("Value") == "True"));
-        AssertTriggerSetter(checkedTrigger, "Background", "#FFEAF2FF");
-        AssertTriggerSetter(checkedTrigger, "BorderBrush", "{StaticResource PosPrimaryBrush}");
-        AssertTriggerSetter(checkedTrigger, "Foreground", "{StaticResource PosPrimaryBrush}");
+        AssertTriggerSetter(checkedTrigger, "Background", "{DynamicResource PosPrimarySoftBrush}");
+        AssertTriggerSetter(checkedTrigger, "BorderBrush", "{DynamicResource PosPrimaryBrush}");
+        AssertTriggerSetter(checkedTrigger, "Foreground", "{DynamicResource PosPrimaryTextBrush}");
 
         var functionStyle = FindStyle(view, x, "CashierFunctionButtonStyle");
         AssertSetter(functionStyle, "Height", "54");
@@ -110,7 +110,7 @@ public sealed class PosTerminalViewLayoutTests
         Assert.Equal("3,4,3,0", (string?)discountSegment.Attribute("Margin"));
         Assert.Equal("5", (string?)discountSegment.Attribute("CornerRadius"));
         Assert.Null(discountSegment.Attribute("ClipToBounds"));
-        Assert.Equal("{StaticResource PosBorderBrush}", (string?)discountSegment.Attribute("BorderBrush"));
+        Assert.Equal("{DynamicResource PosBorderBrush}", (string?)discountSegment.Attribute("BorderBrush"));
         Assert.Equal("1", (string?)discountSegment.Attribute("BorderThickness"));
         var opacityMask = Assert.Single(discountSegment.Elements(presentation + "Border.OpacityMask"));
         var visualBrush = Assert.Single(opacityMask.Elements(presentation + "VisualBrush"));
@@ -127,8 +127,8 @@ public sealed class PosTerminalViewLayoutTests
         Assert.Equal(ancestorForeground, (string?)Assert.Single(noBarcodeButton.Descendants(presentation + "TextBlock")).Attribute("Foreground"));
         Assert.Equal("{StaticResource CashierNoBarcodeButtonStyle}", (string?)noBarcodeButton.Attribute("Style"));
         var noBarcodeStyle = FindStyle(view, x, "CashierNoBarcodeButtonStyle");
-        AssertSetter(noBarcodeStyle, "Background", "{StaticResource PosPrimaryBrush}");
-        AssertSetter(noBarcodeStyle, "BorderBrush", "{StaticResource PosPrimaryBrush}");
+        AssertSetter(noBarcodeStyle, "Background", "{DynamicResource PosPrimaryBrush}");
+        AssertSetter(noBarcodeStyle, "BorderBrush", "{DynamicResource PosPrimaryBrush}");
         AssertSetter(noBarcodeStyle, "Foreground", "White");
 
         var functionCommands = new[]
@@ -200,8 +200,8 @@ public sealed class PosTerminalViewLayoutTests
 
         var searchHost = Assert.Single(view.Descendants(presentation + "Border").Where(element =>
             (string?)element.Attribute(x + "Name") == "SearchBoxHost"));
-        Assert.Equal("White", (string?)searchHost.Attribute("Background"));
-        Assert.Equal("{StaticResource PosBorderBrush}", (string?)searchHost.Attribute("BorderBrush"));
+        Assert.Equal("{DynamicResource PosSurfaceBrush}", (string?)searchHost.Attribute("Background"));
+        Assert.Equal("{DynamicResource PosBorderBrush}", (string?)searchHost.Attribute("BorderBrush"));
         Assert.Equal("1", (string?)searchHost.Attribute("BorderThickness"));
 
         var itemColumn = Assert.Single(view.Descendants(presentation + "DataGridTemplateColumn").Where(column =>
@@ -279,7 +279,7 @@ public sealed class PosTerminalViewLayoutTests
         var finalAmount = Assert.Single(view.Descendants(presentation + "TextBlock").Where(text =>
             ((string?)text.Attribute("Text"))?.Contains("{Binding ActualAmount", StringComparison.Ordinal) == true &&
             (string?)text.Attribute("FontSize") == "24"));
-        Assert.Equal("{StaticResource PosAccentBrush}", (string?)finalAmount.Attribute("Foreground"));
+        Assert.Equal("{DynamicResource PosAccentBrush}", (string?)finalAmount.Attribute("Foreground"));
         var summaryPanel = Assert.Single(view.Descendants(presentation + "Border").Where(element =>
             (string?)element.Attribute(x + "Name") == "CartSummaryPanel"));
         var summaryRows = Assert.Single(summaryPanel.Elements(presentation + "Grid"))
@@ -349,7 +349,7 @@ public sealed class PosTerminalViewLayoutTests
         var actionStyle = FindStyle(view, x, "PosSidebarActionButtonStyle");
         AssertSetter(actionStyle, "MinHeight", "62");
         AssertSetter(actionStyle, "Margin", "3");
-        AssertSetter(actionStyle, "BorderBrush", "{StaticResource PosBorderBrush}");
+        AssertSetter(actionStyle, "BorderBrush", "{DynamicResource PosBorderBrush}");
         var labelStyle = FindStyle(view, x, "PosSidebarActionLabelStyle");
         AssertSetter(labelStyle, "TextAlignment", "Center");
         AssertSetter(labelStyle, "TextWrapping", "Wrap");
@@ -405,9 +405,9 @@ public sealed class PosTerminalViewLayoutTests
 
         var buttonStyle = Assert.Single(entry.Elements(presentation + "Button.Style"))
             .Element(presentation + "Style")!;
-        AssertSetter(buttonStyle, "Background", "White");
-        AssertSetter(buttonStyle, "BorderBrush", "{StaticResource PosBorderBrush}");
-        AssertSetter(buttonStyle, "Foreground", "{StaticResource PosTextBrush}");
+        AssertSetter(buttonStyle, "Background", "{DynamicResource PosSurfaceBrush}");
+        AssertSetter(buttonStyle, "BorderBrush", "{DynamicResource PosBorderBrush}");
+        AssertSetter(buttonStyle, "Foreground", "{DynamicResource PosTextBrush}");
         Assert.DoesNotContain(buttonStyle.Elements(presentation + "Setter"), setter =>
             (string?)setter.Attribute("Property") == "FocusVisualStyle"
             && (string?)setter.Attribute("Value") == "{x:Null}");
@@ -415,7 +415,7 @@ public sealed class PosTerminalViewLayoutTests
         var keyboardFocusTrigger = Assert.Single(buttonTemplate.Descendants(presentation + "Trigger").Where(trigger =>
             (string?)trigger.Attribute("Property") == "IsKeyboardFocused"
             && (string?)trigger.Attribute("Value") == "True"));
-        AssertTriggerSetter(keyboardFocusTrigger, "BorderBrush", "{StaticResource PosPrimaryBrush}");
+        AssertTriggerSetter(keyboardFocusTrigger, "BorderBrush", "{DynamicResource PosPrimaryBrush}");
         AssertTriggerSetter(keyboardFocusTrigger, "BorderThickness", "2");
         var warningTrigger = Assert.Single(
             buttonStyle.Element(presentation + "Style.Triggers")!
@@ -423,9 +423,9 @@ public sealed class PosTerminalViewLayoutTests
                 .Where(trigger =>
                     (string?)trigger.Attribute("Binding") == "{Binding HasOpenCardRecoveryAttempts}"
                     && (string?)trigger.Attribute("Value") == "True"));
-        AssertTriggerSetter(warningTrigger, "Background", "#FFFFF4E5");
-        AssertTriggerSetter(warningTrigger, "BorderBrush", "#FFF59E0B");
-        AssertTriggerSetter(warningTrigger, "Foreground", "#FF7C2D12");
+        AssertTriggerSetter(warningTrigger, "Background", "{DynamicResource PosWarningSoftBrush}");
+        AssertTriggerSetter(warningTrigger, "BorderBrush", "{DynamicResource PosWarningBrush}");
+        AssertTriggerSetter(warningTrigger, "Foreground", "{DynamicResource PosWarningTextBrush}");
 
         var title = Assert.Single(entry.Descendants(presentation + "TextBlock").Where(text =>
             (string?)text.Attribute(x + "Name") == "CardRecoveryCenterTitle"));
@@ -437,12 +437,12 @@ public sealed class PosTerminalViewLayoutTests
         var leadingIconStyle = Assert.Single(leadingIcon.Elements().Where(element =>
             element.Name.LocalName == "PackIcon.Style")).Element(presentation + "Style")!;
         AssertSetter(leadingIconStyle, "Kind", "CreditCardSearchOutline");
-        AssertSetter(leadingIconStyle, "Foreground", "{StaticResource PosMutedForegroundBrush}");
+        AssertSetter(leadingIconStyle, "Foreground", "{DynamicResource PosMutedForegroundBrush}");
         var warningIconTrigger = Assert.Single(leadingIconStyle.Descendants(presentation + "DataTrigger").Where(trigger =>
             (string?)trigger.Attribute("Binding") == "{Binding HasOpenCardRecoveryAttempts}"
             && (string?)trigger.Attribute("Value") == "True"));
         AssertTriggerSetter(warningIconTrigger, "Kind", "AlertCircleOutline");
-        AssertTriggerSetter(warningIconTrigger, "Foreground", "#FFB45309");
+        AssertTriggerSetter(warningIconTrigger, "Foreground", "{DynamicResource PosWarningTextBrush}");
 
         var badge = Assert.Single(entry.Descendants(presentation + "Border").Where(border =>
             (string?)border.Attribute(x + "Name") == "CardRecoveryOpenCountBadge"));
@@ -453,7 +453,7 @@ public sealed class PosTerminalViewLayoutTests
             (string?)trigger.Attribute("Binding") == "{Binding HasOpenCardRecoveryAttempts}"
             && (string?)trigger.Attribute("Value") == "True"));
         AssertTriggerSetter(badgeTrigger, "Visibility", "Visible");
-        AssertTriggerSetter(badgeTrigger, "Background", "#FFB45309");
+        AssertTriggerSetter(badgeTrigger, "Background", "{DynamicResource PosWarningStrongBrush}");
         var badgeText = Assert.Single(badge.Descendants(presentation + "TextBlock"));
         Assert.Equal("{Binding CardRecoveryOpenCount}", (string?)badgeText.Attribute("Text"));
     }
@@ -561,7 +561,7 @@ public sealed class PosTerminalViewLayoutTests
         Assert.Equal("88", (string?)deleteButton.Attribute("Width"));
         Assert.Equal("Right", (string?)deleteButton.Attribute("HorizontalAlignment"));
         Assert.Equal("Stretch", (string?)deleteButton.Attribute("VerticalAlignment"));
-        Assert.Equal("{StaticResource PosDangerBrush}", (string?)deleteButton.Attribute("Background"));
+        Assert.Equal("{DynamicResource PosDangerBrush}", (string?)deleteButton.Attribute("Background"));
         Assert.Equal(
             "{Binding DataContext.RemoveLineCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}",
             (string?)deleteButton.Attribute("Command"));

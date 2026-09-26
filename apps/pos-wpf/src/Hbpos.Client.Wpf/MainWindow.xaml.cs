@@ -35,6 +35,7 @@ public partial class MainWindow : Window
     private readonly IAppUpdateCoordinator _appUpdateCoordinator;
     private readonly ILocalAppSettingsRepository _localAppSettingsRepository;
     private readonly IAppShutdownCoordinator _appShutdownCoordinator;
+    private readonly IColorThemeService? _colorThemeService;
     private HwndSource? _hwndSource;
     private Task? _startupInitializationTask;
     private Task _windowModeSaveTask = Task.CompletedTask;
@@ -59,7 +60,9 @@ public partial class MainWindow : Window
         IUiPriorityCoordinator uiPriorityCoordinator,
         IAppUpdateCoordinator appUpdateCoordinator,
         ILocalAppSettingsRepository localAppSettingsRepository,
-        IAppShutdownCoordinator? appShutdownCoordinator = null)
+        IAppShutdownCoordinator? appShutdownCoordinator = null,
+        IColorThemeService? colorThemeService = null,
+        ColorThemeSwitcherViewModel? colorThemeSwitcher = null)
     {
         _viewModel = viewModel;
         _startupOptions = startupOptions;
@@ -69,11 +72,20 @@ public partial class MainWindow : Window
         _appUpdateCoordinator = appUpdateCoordinator;
         _localAppSettingsRepository = localAppSettingsRepository;
         _appShutdownCoordinator = appShutdownCoordinator ?? new AppShutdownCoordinator();
+        _colorThemeService = colorThemeService;
 #if DEBUG
         _viewModel.AppUpdate.ConfigureDebugForceUpdateDismissed(ResumeStartupAfterDebugUpdateDismissalAsync);
 #endif
         DataContext = _viewModel;
         InitializeComponent();
+        if (colorThemeSwitcher is null)
+        {
+            ColorThemeSwitcher.Visibility = Visibility.Collapsed;
+        }
+        else
+        {
+            ColorThemeSwitcher.DataContext = colorThemeSwitcher;
+        }
         SourceInitialized += MainWindowSourceInitialized;
         Loaded += MainWindowLoaded;
         PreviewKeyDown += MainWindowPreviewKeyDown;
@@ -246,6 +258,11 @@ public partial class MainWindow : Window
     private async Task InitializeForStartupCoreAsync()
     {
         await RestoreWindowModeAsync();
+        if (_colorThemeService is not null)
+        {
+            // 在主窗口显示前应用本机保存的配色，避免先闪一下默认配色。
+            await _colorThemeService.InitializeAsync();
+        }
 
         var updateResult = await RunStartupAppUpdateCheckAsync();
         IsStartupBlockedByAppUpdate = !ShouldContinueStartupAfterAppUpdateCheck(updateResult);
