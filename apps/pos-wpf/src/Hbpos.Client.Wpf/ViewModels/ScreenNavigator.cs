@@ -178,6 +178,13 @@ internal sealed class ScreenNavigator
         SetCurrentScreen(PosTerminal);
     }
 
+    // 中文注释：结账完成后留在收银主页，在购物车区域显示成功卡片，扫码或加入商品后自动收起。
+    public void ShowCompletedSaleOnPos()
+    {
+        ShowPos();
+        PosTerminal?.ShowLastSale(PaymentSuccess);
+    }
+
     public async Task ShowCardRecoveryCenterAsync()
     {
         if (_cardPaymentRecoveryService is null)
@@ -320,7 +327,7 @@ internal sealed class ScreenNavigator
             await PaymentSuccess.LoadLatestAsync();
         }
 
-        SetCurrentScreen(PaymentSuccess);
+        ShowCompletedSaleOnPos();
     }
 
     public async Task ShowHistoryAsync()
@@ -427,12 +434,13 @@ internal sealed class ScreenNavigator
                 ShowCashPayment();
                 break;
             case "success":
-                SetCurrentScreen(PaymentSuccess);
                 var lastCompletedOrder = _getLastCompletedOrder();
                 if (lastCompletedOrder is not null)
                 {
                     PaymentSuccess.LoadFromOrder(lastCompletedOrder);
                 }
+
+                ShowCompletedSaleOnPos();
                 break;
             case "history":
                 _ = ShowHistoryAsync();
@@ -644,11 +652,6 @@ internal sealed class ScreenNavigator
         if (ReferenceEquals(_currentScreen, ReceiptReturns))
         {
             return "shell.page.returns";
-        }
-
-        if (ReferenceEquals(_currentScreen, PaymentSuccess))
-        {
-            return "shell.page.paymentSuccess";
         }
 
         if (ReferenceEquals(_currentScreen, TransactionHistory))
