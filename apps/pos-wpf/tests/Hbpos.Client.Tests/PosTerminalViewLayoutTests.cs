@@ -176,6 +176,50 @@ public sealed class PosTerminalViewLayoutTests
     }
 
     [Fact]
+    public void Scan_match_candidate_cards_show_thumbnail_and_item_number()
+    {
+        var repoRoot = FindRepoRoot();
+        var view = XDocument.Load(Path.Combine(
+            repoRoot,
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "Views",
+            "Screens",
+            "PosTerminalView.xaml"));
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
+
+        var matchesPopup = Assert.Single(view.Descendants(presentation + "Popup").Where(popup =>
+            (string?)popup.Attribute(x + "Name") == "MatchesPopup"));
+        var card = Assert.Single(matchesPopup.Descendants(presentation + "Button").Where(button =>
+            (string?)button.Attribute(x + "Name") == "MatchCandidateCard"));
+        Assert.Contains("SelectMatchCommand", (string?)card.Attribute("Command"));
+
+        // 码冲突时各候选的码相同，必须靠商品图与货号区分；图片走异步缩略图路径，不能同步加载阻塞扫码。
+        var thumbnail = Assert.Single(card.Descendants(presentation + "ImageBrush"));
+        Assert.Contains(thumbnail.Attributes(), attribute =>
+            attribute.Name.LocalName.EndsWith(".AsyncSourceText", StringComparison.Ordinal) &&
+            attribute.Value == "{Binding ProductImage}");
+        Assert.Null(thumbnail.Attribute("ImageSource"));
+        Assert.Contains(card.Descendants(presentation + "TextBlock"), text =>
+            (string?)text.Attribute("Text") == "{loc:Loc ItemNumber}");
+        var itemNumberValue = Assert.Single(card.Descendants(presentation + "TextBlock").Where(text =>
+            (string?)text.Attribute("Text") == "{Binding ItemNumber}"));
+        Assert.Equal(
+            "{Binding ItemNumber, Converter={StaticResource StringHasValueToVis}}",
+            (string?)itemNumberValue.Attribute("Visibility"));
+        Assert.Contains(card.Descendants(presentation + "TextBlock"), text =>
+            (string?)text.Attribute("Text") == "-" &&
+            (string?)text.Attribute("Visibility") == "{Binding ItemNumber, Converter={StaticResource StringIsEmptyToVis}}");
+        Assert.Contains(card.Descendants(presentation + "TextBlock"), text =>
+            (string?)text.Attribute("Text") == "{Binding LookupCode}");
+        Assert.Contains(card.Descendants(presentation + "TextBlock"), text =>
+            (string?)text.Attribute("Text") == "{Binding RetailPrice, StringFormat={}{0:C2}}");
+    }
+
+    [Fact]
     public void Pos_terminal_prioritizes_cart_and_preserves_compact_sidebar_actions()
     {
         var repoRoot = FindRepoRoot();

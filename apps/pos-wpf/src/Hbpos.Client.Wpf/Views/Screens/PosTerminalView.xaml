@@ -649,8 +649,10 @@
                             </ItemsControl.ItemsPanel>
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
-                                    <Button Width="222"
-                                            Height="74"
+                                    <!-- 码冲突时多个候选的码相同，靠商品图与货号区分；图片走与购物车行相同的异步缩略图缓存，不阻塞扫码。 -->
+                                    <Button x:Name="MatchCandidateCard"
+                                            Width="264"
+                                            Height="80"
                                             Margin="0,0,10,10"
                                             Padding="0"
                                             Background="Transparent"
@@ -665,21 +667,78 @@
                                                 Padding="10">
                                             <Grid>
                                                 <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="*" />
                                                     <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="*" />
                                                 </Grid.ColumnDefinitions>
-                                                <StackPanel>
+                                                <Border Width="56"
+                                                        Height="56"
+                                                        Background="#FFE8F0FE"
+                                                        CornerRadius="6"
+                                                        Margin="0,0,10,0"
+                                                        VerticalAlignment="Center"
+                                                        SnapsToDevicePixels="True"
+                                                        UseLayoutRounding="True"
+                                                        ClipToBounds="True">
+                                                    <Grid>
+                                                        <Rectangle RadiusX="5"
+                                                                   RadiusY="5"
+                                                                   Margin="2"
+                                                                   SnapsToDevicePixels="True"
+                                                                   RenderOptions.BitmapScalingMode="HighQuality"
+                                                                   Panel.ZIndex="1">
+                                                            <Rectangle.Fill>
+                                                                <ImageBrush converters:ProductThumbnailImageSourceConverter.AsyncSourceText="{Binding ProductImage}"
+                                                                            converters:ProductThumbnailImageSourceConverter.AsyncDecodePixelWidth="80"
+                                                                            Stretch="Uniform" />
+                                                            </Rectangle.Fill>
+                                                        </Rectangle>
+                                                        <materialDesign:PackIcon Kind="Shopping"
+                                                                                 Width="22"
+                                                                                 Height="22"
+                                                                                 Foreground="{StaticResource PosPrimaryBrush}"
+                                                                                 HorizontalAlignment="Center"
+                                                                                 VerticalAlignment="Center"
+                                                                                 Panel.ZIndex="0" />
+                                                    </Grid>
+                                                </Border>
+                                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
                                                     <TextBlock Text="{Binding DisplayName}" FontSize="12" FontWeight="Black" TextTrimming="CharacterEllipsis" />
-                                                    <TextBlock Text="{Binding LookupCode}" FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}" Margin="0,4,0,0" />
-                                                    <TextBlock Text="{Binding PriceSourceLabel}" FontSize="9" Foreground="{StaticResource PosPrimaryBrush}" Margin="0,4,0,0" TextTrimming="CharacterEllipsis" />
+                                                    <DockPanel Margin="0,3,0,0" LastChildFill="True">
+                                                        <TextBlock DockPanel.Dock="Left" Text="{loc:Loc ItemNumber}" FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}" />
+                                                        <TextBlock DockPanel.Dock="Left" Text=":" FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}" />
+                                                        <Grid Margin="4,0,0,0">
+                                                            <TextBlock Text="{Binding ItemNumber}"
+                                                                       Visibility="{Binding ItemNumber, Converter={StaticResource StringHasValueToVis}}"
+                                                                       FontSize="10"
+                                                                       Foreground="{StaticResource PosMutedForegroundBrush}"
+                                                                       TextTrimming="CharacterEllipsis" />
+                                                            <TextBlock Text="-"
+                                                                       Visibility="{Binding ItemNumber, Converter={StaticResource StringIsEmptyToVis}}"
+                                                                       FontSize="10"
+                                                                       Foreground="{StaticResource PosMutedForegroundBrush}" />
+                                                        </Grid>
+                                                    </DockPanel>
+                                                    <DockPanel Margin="0,3,0,0" LastChildFill="True">
+                                                        <TextBlock DockPanel.Dock="Right"
+                                                                   Text="{Binding RetailPrice, StringFormat={}{0:C2}}"
+                                                                   FontSize="15"
+                                                                   FontWeight="Black"
+                                                                   Foreground="{StaticResource PosAccentBrush}"
+                                                                   VerticalAlignment="Bottom"
+                                                                   Margin="8,0,0,0" />
+                                                        <TextBlock DockPanel.Dock="Left"
+                                                                   Text="{Binding LookupCode}"
+                                                                   FontSize="10"
+                                                                   Foreground="{StaticResource PosMutedForegroundBrush}"
+                                                                   VerticalAlignment="Center" />
+                                                        <TextBlock Text="{Binding PriceSourceLabel}"
+                                                                   FontSize="9"
+                                                                   Foreground="{StaticResource PosPrimaryBrush}"
+                                                                   VerticalAlignment="Center"
+                                                                   Margin="6,0,0,0"
+                                                                   TextTrimming="CharacterEllipsis" />
+                                                    </DockPanel>
                                                 </StackPanel>
-                                                <TextBlock Grid.Column="1"
-                                                           Text="{Binding RetailPrice, StringFormat={}{0:C2}}"
-                                                           FontSize="15"
-                                                           FontWeight="Black"
-                                                           Foreground="{StaticResource PosAccentBrush}"
-                                                           VerticalAlignment="Center"
-                                                           Margin="10,0,0,0" />
                                             </Grid>
                                         </Border>
                                     </Button>
