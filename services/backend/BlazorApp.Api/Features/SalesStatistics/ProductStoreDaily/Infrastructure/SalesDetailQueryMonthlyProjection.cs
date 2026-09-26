@@ -8,7 +8,7 @@ namespace BlazorApp.Api.Services;
 /// 列存批处理扫描虽快，但行组跨 100–300 天，首尾不满月的"边缘日"仍要解压百万行并落 40 万行临时表（2–4 秒）。
 /// 所以改为两级投影：日表（商品粒度约 8.5 千行/日，分店粒度约 2 千行/日）由 worker 逐日从日事实生成，
 /// 月表由日表汇总；查询端整月读月表、边缘日读日表，只有日表还没追上的日期才读日事实。
-/// 日身份 = 该日商品日统计状态行的（报表来源身份、聚合时间）；月身份 = 该月全部状态行（日身份）的哈希。
+/// 日身份 = 该日商品日统计状态行的（来源版本、聚合时间）；月身份 = 该月全部状态行（日期、版本、聚合时间）的哈希。
 /// </summary>
 internal static class SalesDetailQueryMonthlyProjection
 {
@@ -29,22 +29,13 @@ SELECT CASE WHEN OBJECT_ID(N'dbo.SalesDetailQueryDailyProduct', N'U') IS NOT NUL
 """;
 
     /// <summary>
-    /// 某个月的发布身份：该月全部 ProductStoreDaily 状态行按日期排序的（日期、报表来源身份、聚合时间）JSON 的 SHA-256。
-    /// 排队/运行中的日期在 SNAPSHOT 事务里读到的仍是上一版完整事实，有来源版本时继续沿用上一版身份；
-    /// 无版本的排队/运行状态使用带 Status 的不可读标记，避免沿用旧 Failed 投影。
-    /// 对账 Failed 但已聚合的日期用任务与最后检查时间组成身份，重复失败重算也会使旧投影失效。
+    /// 某个月的发布身份：该月全部 ProductStoreDaily 状态行按日期排序的（日期、来源版本、聚合时间）JSON 的 SHA-256。
+    /// 刻意不含 Status：排队/运行中的日期在 SNAPSHOT 事务里读到的仍是上一版完整事实，
+    /// 只有发布后 LastAggregatedAtUtc 变化才需要重算；对账 Failed 但已聚合的日期同样计入。
     /// </summary>
-    internal static string BuildMonthIdentitySql(string monthExpression)
-    {
-        var readable = BuildReadableSourceSql(
-            "r.[Status]", "r.[SourceProductVersion]", "r.[LastAggregatedAtUtc]", "r.[LastCheckedAtUtc]");
-        var sourceIdentity = BuildSourceIdentitySql("r");
-        return $$"""
+    internal static string BuildMonthIdentitySql(string monthExpression) => $$"""
 CONVERT(varchar(64), HASHBYTES('SHA2_256', CONVERT(varbinary(max), ISNULL((
-    SELECT CONVERT(char(8), r.[Date], 112) [d],
-           CASE WHEN {{readable}} THEN {{sourceIdentity}}
-                ELSE CONCAT(N'Invalid:', COALESCE(r.[Status], N'none'), N':',
-                            CONVERT(nvarchar(33), r.[LastCheckedAtUtc], 126)) END [v],
+    SELECT CONVERT(char(8), r.[Date], 112) [d], r.[SourceProductVersion] [v],
            CONVERT(varchar(27), r.[LastAggregatedAtUtc], 126) [t]
     FROM [dbo].[SalesStatisticRefreshState] r
     WHERE r.[StatisticType] = N'ProductStoreDaily'
@@ -54,34 +45,12 @@ CONVERT(varchar(64), HASHBYTES('SHA2_256', CONVERT(varbinary(max), ISNULL((
     FOR JSON PATH, INCLUDE_NULL_VALUES
 ), N'[]'))), 2)
 """;
-    }
 
-    /// <summary>当前状态可供报表读取，且日表状态行与当前来源身份、聚合时间和 schema 版本一致。</summary>
+    /// <summary>日表状态行与当前统计状态行身份一致（版本、聚合时间按 NULL 相等比较）且 schema 版本匹配。</summary>
     internal static string BuildDayIdentityMatchesSql(string dailyStateAlias, string refreshStateAlias)
-        => $"{BuildReadableSourceSql(refreshStateAlias)}"
-           + $" AND {dailyStateAlias}.[ProjectionSchemaVersion] = {SchemaVersion}"
+        => $"{dailyStateAlias}.[ProjectionSchemaVersion] = {SchemaVersion}"
            + $" AND NOT EXISTS (SELECT {dailyStateAlias}.[SourceProductVersion], {dailyStateAlias}.[SourceLastAggregatedAtUtc]"
-           + $" EXCEPT SELECT {BuildSourceIdentitySql(refreshStateAlias)}, {refreshStateAlias}.[LastAggregatedAtUtc])";
-
-    private static string BuildSourceIdentitySql(string refreshStateAlias)
-        => SalesDetailQueryProjection.BuildSourceIdentitySql(
-            $"{refreshStateAlias}.[Status]", $"{refreshStateAlias}.[SourceProductVersion]",
-            $"{refreshStateAlias}.[JobId]", $"{refreshStateAlias}.[LastCheckedAtUtc]");
-
-    /// <summary>
-    /// Fresh/ProvisionalFresh 及有上一版身份的排队状态可读；Failed 必须已有聚合事实和本次检查时间。
-    /// Queued/Running 若来源版本为空则拒绝，避免旧 writer 已替换事实但未刷新投影后错误复用旧 Failed 投影。
-    /// </summary>
-    internal static string BuildReadableSourceSql(string refreshStateAlias)
-        => BuildReadableSourceSql(
-            $"{refreshStateAlias}.[Status]", $"{refreshStateAlias}.[SourceProductVersion]",
-            $"{refreshStateAlias}.[LastAggregatedAtUtc]", $"{refreshStateAlias}.[LastCheckedAtUtc]");
-
-    private static string BuildReadableSourceSql(
-        string status, string productVersion, string lastAggregatedAtUtc, string lastCheckedAtUtc)
-        => $"({lastAggregatedAtUtc} IS NOT NULL AND (({status} IN (N'Fresh', N'ProvisionalFresh', N'Queued', N'Running')"
-           + $" AND NULLIF(LTRIM(RTRIM({productVersion})), N'') IS NOT NULL)"
-           + $" OR ({status} = N'Failed' AND {lastCheckedAtUtc} IS NOT NULL)))";
+           + $" EXCEPT SELECT {refreshStateAlias}.[SourceProductVersion], {refreshStateAlias}.[LastAggregatedAtUtc])";
 
     /// <summary>LEFT JOIN 日状态后判断该日需要重算：无状态、身份不同或映射签名不同。</summary>
     private static string BuildDayStaleSql(string dailyStateAlias, string refreshStateAlias)
@@ -109,7 +78,6 @@ SELECT TOP (@sdmMaxDays) CONVERT(date, r.[Date]) [Day]
 FROM [dbo].[SalesStatisticRefreshState] r
 LEFT JOIN [dbo].[SalesDetailQueryDailyState] ds ON ds.[Date] = CONVERT(date, r.[Date])
 WHERE r.[StatisticType] = N'ProductStoreDaily' AND {BuildDayStaleSql("ds", "r")}
-  AND {BuildReadableSourceSql("r")}
 ORDER BY r.[Date] DESC;
 """;
 
@@ -131,16 +99,11 @@ DROP TABLE IF EXISTS #sdmDayFacts;
 
 DECLARE @sdmDayStart datetime = CONVERT(datetime, @sdmDay), @sdmDayEnd datetime = CONVERT(datetime, DATEADD(day, 1, @sdmDay));
 DECLARE @sdmStartedAt datetime2 = SYSUTCDATETIME();
-DECLARE @sdmHasState bit = 0, @sdmStatus nvarchar(20), @sdmVersion nvarchar(128),
-        @sdmProductVersion nvarchar(128), @sdmAggregatedAt datetime2,
-        @sdmLastCheckedAtUtc datetime2, @sdmJobId uniqueidentifier;
-SELECT TOP (1) @sdmHasState = 1, @sdmStatus = r.[Status], @sdmProductVersion = r.[SourceProductVersion],
-       @sdmAggregatedAt = r.[LastAggregatedAtUtc], @sdmLastCheckedAtUtc = r.[LastCheckedAtUtc], @sdmJobId = r.[JobId]
+DECLARE @sdmHasState bit = 0, @sdmVersion nvarchar(128), @sdmAggregatedAt datetime2;
+SELECT TOP (1) @sdmHasState = 1, @sdmVersion = r.[SourceProductVersion], @sdmAggregatedAt = r.[LastAggregatedAtUtc]
 FROM [dbo].[SalesStatisticRefreshState] r
 WHERE r.[StatisticType] = N'ProductStoreDaily' AND r.[Date] = @sdmDayStart;
 IF @sdmHasState = 0 RETURN;
-IF NOT ({{BuildReadableSourceSql("@sdmStatus", "@sdmProductVersion", "@sdmAggregatedAt", "@sdmLastCheckedAtUtc")}}) RETURN;
-SET @sdmVersion = {{SalesDetailQueryProjection.BuildSourceIdentitySql("@sdmStatus", "@sdmProductVersion", "@sdmJobId", "@sdmLastCheckedAtUtc")}};
 
 SELECT m.[ProductCode], m.[ChinaSupplierCode]
 INTO #sdmMapping

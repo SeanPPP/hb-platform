@@ -9,35 +9,26 @@ namespace BlazorApp.Api.Tests;
 public sealed class SalesDetailMonthlyProjectionTests
 {
     [Fact]
-    public void 月身份对失败日使用重算身份且让不可读状态失效()
+    public void 月身份只含日期版本与聚合时间且按日期排序()
     {
         var sql = SalesDetailQueryMonthlyProjection.BuildMonthIdentitySql("@m");
         Assert.Contains("HASHBYTES('SHA2_256'", sql);
-        Assert.Contains("CASE WHEN r.[Status] = N'Failed'", sql);
-        Assert.Contains("r.[JobId]", sql);
-        Assert.Contains("r.[LastCheckedAtUtc]", sql);
-        Assert.Contains("N'Invalid:'", sql);
-        Assert.DoesNotContain("r.[SourceProductVersion] [v]", sql);
+        Assert.Contains("r.[SourceProductVersion] [v]", sql);
         Assert.Contains("CONVERT(varchar(27), r.[LastAggregatedAtUtc], 126) [t]", sql);
         Assert.Contains("ORDER BY r.[Date]", sql);
+        Assert.DoesNotContain("[Status]", sql);
+        Assert.DoesNotContain("[JobId]", sql);
     }
 
     [Fact]
-    public void 日身份按可读状态与来源身份比较且待办日期最近优先()
+    public void 日身份按版本与聚合时间空值相等比较且待办日期最近优先()
     {
         var matches = SalesDetailQueryMonthlyProjection.BuildDayIdentityMatchesSql("ds", "r");
-        Assert.Contains("ds.[ProjectionSchemaVersion] = 2", matches);
-        Assert.Contains("r.[Status] IN (N'Fresh', N'ProvisionalFresh', N'Queued', N'Running')", matches);
-        Assert.Contains("r.[Status] = N'Failed'", matches);
-        Assert.Contains("r.[LastCheckedAtUtc] IS NOT NULL", matches);
-        Assert.Contains("CASE WHEN r.[Status] = N'Failed'", matches);
-        Assert.Contains("EXCEPT SELECT", matches);
+        Assert.Equal("ds.[ProjectionSchemaVersion] = 2 AND NOT EXISTS (SELECT ds.[SourceProductVersion], ds.[SourceLastAggregatedAtUtc] EXCEPT SELECT r.[SourceProductVersion], r.[LastAggregatedAtUtc])", matches);
         var stale = SalesDetailQueryMonthlyProjection.BuildStaleDaysSql("POSM");
         Assert.Contains("SELECT TOP (@sdmMaxDays) CONVERT(date, r.[Date]) [Day]", stale);
         Assert.Contains("ds.[MappingVersion] <> @sdmMappingVersion", stale);
         Assert.Contains("OR NOT (" + matches + ")", stale);
-        const string readableStatusSql = "r.[Status] IN (N'Fresh', N'ProvisionalFresh', N'Queued', N'Running')";
-        Assert.Equal(2, stale.Split(readableStatusSql, StringSplitOptions.None).Length - 1);
         Assert.Contains("ORDER BY r.[Date] DESC", stale);
     }
 
@@ -47,11 +38,6 @@ public sealed class SalesDetailMonthlyProjectionTests
         var sql = SalesDetailQueryMonthlyProjection.BuildRefreshDaySql("POSM");
         Assert.Contains("[POSM].[dbo].[posm_product_supplier_mapping]", sql);
         Assert.Contains("IF @sdmHasState = 0 RETURN;", sql);
-        Assert.Contains("@sdmStatus nvarchar(20)", sql);
-        Assert.Contains("@sdmLastCheckedAtUtc datetime2", sql);
-        Assert.Contains("@sdmJobId uniqueidentifier", sql);
-        Assert.Contains("IF NOT (", sql);
-        Assert.Contains("SET @sdmVersion = CASE WHEN @sdmStatus = N'Failed'", sql);
         Assert.Contains("WHERE s.[Date] >= @sdmDayStart AND s.[Date] < @sdmDayEnd", sql);
         Assert.Contains("GROUP BY s.[SupplierCode], s.[BranchCode], s.[ProductCode]", sql);
         Assert.DoesNotContain("WITH (INDEX(", sql);
@@ -70,8 +56,6 @@ public sealed class SalesDetailMonthlyProjectionTests
     {
         var sql = SalesDetailQueryMonthlyProjection.BuildRefreshMonthSql("POSM");
         Assert.Contains("THROW 51015,", sql);
-        Assert.Contains("r.[Status] IN (N'Fresh', N'ProvisionalFresh', N'Queued', N'Running')", sql);
-        Assert.Contains("r.[Status] = N'Failed' AND r.[LastCheckedAtUtc] IS NOT NULL", sql);
         Assert.Contains("FROM [dbo].[SalesDetailQueryDailyProduct]\nWHERE [Date] >= @sdmMonthStart AND [Date] < @sdmMonthEnd\nGROUP BY [RawSupplierCode], [ProductCode];", sql);
         Assert.Contains("FROM [dbo].[SalesDetailQueryDailyBranch]", sql);
         Assert.Contains("MIN([MinProductCode]), MAX([MaxProductCode])", sql);
@@ -87,8 +71,6 @@ public sealed class SalesDetailMonthlyProjectionTests
         Assert.Contains("st.[DayIdentity] <> ident.[Identity]", stale);
         Assert.Contains("st.[MappingVersion] <> @sdmMappingVersion", stale);
         Assert.Contains("AND NOT EXISTS (SELECT 1 FROM [dbo].[SalesStatisticRefreshState] r", stale);
-        Assert.Contains("r.[Status] IN (N'Fresh', N'ProvisionalFresh', N'Queued', N'Running')", stale);
-        Assert.Contains("r.[Status] = N'Failed' AND r.[LastCheckedAtUtc] IS NOT NULL", stale);
         Assert.Contains("ORDER BY m.[Month] DESC", stale);
     }
 
@@ -120,8 +102,6 @@ public sealed class SalesDetailMonthlyProjectionTests
         Assert.Contains("THROW 51014,", sql);
         Assert.Contains("INTO #sdmMonths", sql);
         Assert.Contains("st.[ProjectionSchemaVersion]=2", sql);
-        Assert.Contains("CASE WHEN r.[Status] = N'Failed'", sql);
-        Assert.Contains("N'Invalid:'", sql);
         Assert.Contains("st.[MappingVersion]=@sdmMappingVersion THEN 1 ELSE 0 END AS bit) [BranchValid]", sql);
         Assert.Contains("INTO #sdmDays", sql);
         Assert.Contains("WHEN dv.[DayValid]=1 THEN 1 ELSE 2 END AS tinyint) [ProductSource]", sql);

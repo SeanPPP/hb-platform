@@ -346,8 +346,7 @@ OUTER APPLY (SELECT TOP (1) pr.[ItemNumber], pr.[ProductName], pr.[ProductImage]
                         AND r.[Date] < CONVERT(datetime, DATEADD(month, 1, m.[Month])))
       AND st.[ProjectionSchemaVersion] = {{CompactBoardMonthlyProjection.SchemaVersion}}
       AND st.[DayIdentity] = ident.[Identity]
-      AND st.[CodeFamilySignature] = @cbFamilySignature
-      AND {{CompactBoardMonthlyProjection.BuildMonthReadableSql("m.[Month]")}};
+      AND st.[CodeFamilySignature] = @cbFamilySignature;
 """
             : string.Empty;
         var monthlyCells = monthlyTables

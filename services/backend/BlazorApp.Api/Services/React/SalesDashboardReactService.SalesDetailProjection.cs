@@ -9,10 +9,9 @@ public partial class SalesDashboardReactService
         // 澳洲栏位不展示中国分母且无中国目录词命中时，只需证明相关 raw 分类及映射行数未变。
         // CompletedAt 仅用于审计；
         // ProvisionalFresh 批末升级 Fresh 会修改它，事实身份由版本、任务和 LastAggregatedAt 共同确定。
-        // Failed 且无对账版本时以 JobId + LastCheckedAt 识别失败重算写入的商品事实。
         return $"""
--- 覆盖检查和后面的读取都在调用方的同一 SNAPSHOT 中；缺少任一天就整份回退。
--- 前端最多请求 731 天（两年）；更长的直接调用仍由原查询处理，不能截断覆盖检查后误放行。
+-- 覆盖检查和后面的读取都在调用方的同一 SNAPSHOT 中；非失败日缺少覆盖时明确报错。
+-- 前端最多请求 731 天（两年）；更长的关键词请求明确报错，不能截断覆盖检查后误放行。
 IF DATEDIFF(day,@sdrCurrentStart,@sdrCurrentEnd)>731
  OR (@sdrHasCompare=1 AND DATEDIFF(day,@sdrCompareStart,@sdrCompareEnd)>731)
  THROW 51012, N'销售明细查询投影日期范围超限。', 1;
@@ -30,6 +29,13 @@ RequiredDates AS
  SELECT DATEADD(day,n,@sdrCompareStart) FROM DayOffsets WHERE @sdrHasCompare=1 AND n<DATEDIFF(day,@sdrCompareStart,@sdrCompareEnd)
 )
 SELECT [Date] INTO #SalesDetailRequiredDates FROM RequiredDates;
+-- 对账失败日不参与投影计算；状态结果仍单独返回给前端提示，避免失败日触发整段事实回退。
+DELETE d
+FROM #SalesDetailRequiredDates d
+INNER JOIN dbo.SalesStatisticRefreshState r
+  ON r.[Date]=d.[Date]
+ AND r.[StatisticType]='ProductStoreDaily'
+ AND r.[Status]='Failed';
 DECLARE @sdrMappingVersion varchar(64) = {SalesDetailQueryProjection.BuildMappingSignatureSql(posmDatabase)};
 IF EXISTS
 (
@@ -38,13 +44,12 @@ IF EXISTS
  LEFT JOIN dbo.SalesDetailQueryProjectionState p ON p.[Date]=d.[Date]
  WHERE p.[Date] IS NULL OR r.[Date] IS NULL
    OR p.[ProjectionSchemaVersion]<>{SalesDetailQueryProjection.SchemaVersion}
-   OR r.[Status] NOT IN ('Fresh','ProvisionalFresh','Queued','Running','Failed')
-   OR (r.[Status]<>'Failed' AND NULLIF(r.[SourceProductVersion],'') IS NULL)
-   OR (r.[Status]='Failed' AND r.[LastCheckedAtUtc] IS NULL)
+   OR r.[Status] NOT IN ('Fresh','ProvisionalFresh','Queued','Running')
+   OR NULLIF(r.[SourceProductVersion],'') IS NULL
    OR r.[LastAggregatedAtUtc] IS NULL
    OR EXISTS
       (SELECT p.[SourceProductVersion],p.[SourceLastAggregatedAtUtc]
-       EXCEPT SELECT {SalesDetailQueryProjection.BuildSourceIdentitySql("r.[Status]", "r.[SourceProductVersion]", "r.[JobId]", "r.[LastCheckedAtUtc]")},r.[LastAggregatedAtUtc])
+       EXCEPT SELECT r.[SourceProductVersion],r.[LastAggregatedAtUtc])
    -- 排队会更换下一次任务的 JobId，但旧事实仍完整发布；成功提交时再严格核对新任务身份。
    OR (r.[Status] IN ('Fresh','ProvisionalFresh')
        AND EXISTS (SELECT p.[SourceJobId] EXCEPT SELECT r.[JobId]))
@@ -118,7 +123,9 @@ SELECT periods.[Period],s.[RawSupplierCode],s.[ChinaSupplierCode],s.[AustralianS
  SUM(s.[Revenue]) [Revenue],SUM(s.[Quantity]) [Quantity],SUM(s.[OrderCount]) [OrderCount],SUM(s.[GrossProfit]) [GrossProfit],
  SUM(s.[StatisticRowCount]) [StatisticRowCount],SUM(s.[CostedRowCount]) [CostedRowCount],SUM(s.[GrossProfitRowCount]) [GrossProfitRowCount]
 INTO #SalesDetailProjectionTotals
-FROM dbo.SalesDetailQueryDaily s CROSS JOIN Periods periods
+FROM dbo.SalesDetailQueryDaily s
+JOIN #SalesDetailRequiredDates d ON d.[Date]=s.[Date]
+CROSS JOIN Periods periods
 WHERE s.[Date]>=periods.[StartDate] AND s.[Date]<periods.[EndDate]{projectionBranch}
 GROUP BY periods.[Period],s.[RawSupplierCode],s.[ChinaSupplierCode],s.[AustralianSupplierCode],s.[BranchCode]{queryHint};
 
@@ -198,16 +205,19 @@ IF (SELECT COUNT_BIG(*) FROM #SalesDetailCandidateProducts)<=2048
  INSERT INTO #SalesDetailCandidateSource
  SELECT {sourceColumns} FROM #SalesDetailCandidateProducts p
  INNER LOOP JOIN dbo.ProductStoreDailySalesStatistic s ON s.[ProductCode]=p.[ProductCode]
+ INNER JOIN #SalesDetailRequiredDates d ON d.[Date]=s.[Date]
  WHERE {dates}{sourceBranch};
 ELSE
  INSERT INTO #SalesDetailCandidateSource
  SELECT {sourceColumns} FROM dbo.ProductStoreDailySalesStatistic s
  JOIN #SalesDetailCandidateProducts p ON p.[ProductCode]=s.[ProductCode]
+ JOIN #SalesDetailRequiredDates d ON d.[Date]=s.[Date]
  WHERE {dates}{sourceBranch};
 IF EXISTS (SELECT 1 FROM #SalesDetailCandidateSuppliers)
  INSERT INTO #SalesDetailCandidateSource
  SELECT {sourceColumns} FROM dbo.ProductStoreDailySalesStatistic s
  JOIN #SalesDetailCandidateSuppliers c ON c.[RawSupplierCode]=LTRIM(RTRIM(COALESCE(s.[SupplierCode],'')))
+ JOIN #SalesDetailRequiredDates d ON d.[Date]=s.[Date]
  WHERE {dates}{sourceBranch}
    AND NOT EXISTS (SELECT 1 FROM #SalesDetailCandidateProducts p WHERE p.[ProductCode]=s.[ProductCode]);
 """;

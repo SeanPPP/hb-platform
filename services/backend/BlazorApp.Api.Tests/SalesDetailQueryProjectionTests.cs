@@ -19,8 +19,6 @@ public sealed class SalesDetailQueryProjectionTests
         Assert.Contains("[SourceBranchCode]", sql);
         Assert.Contains("FOR JSON PATH, INCLUDE_NULL_VALUES", sql);
         Assert.Contains("[SourceProductVersion]", sql);
-        Assert.Contains("[LastCheckedAtUtc]", sql);
-        Assert.Contains("N'Failed:'", sql);
         Assert.Contains("[SourceLastAggregatedAtUtc]", sql);
         Assert.Contains("[SourceCompletedAtUtc]", sql);
         Assert.Contains("[SourceJobId]", sql);
@@ -146,7 +144,7 @@ CREATE TABLE dbo.SalesStatisticRefreshState
 (
  StatisticType nvarchar(80) NOT NULL, [Date] datetime2 NOT NULL, [Status] nvarchar(20) NOT NULL,
  SourceProductVersion nvarchar(128) NULL, LastAggregatedAtUtc datetime2 NULL,
- CompletedAtUtc datetime2 NULL, JobId uniqueidentifier NULL, LastCheckedAtUtc datetime2 NULL
+ CompletedAtUtc datetime2 NULL, JobId uniqueidentifier NULL
 );
 CREATE TABLE dbo.ProductStoreDailySalesStatistic
 (
@@ -177,8 +175,8 @@ INSERT dbo.{SqlServerSchemaMigrationRuntime.MainHistoryTable}
             await ExecuteAsync(main, $"""
 INSERT dbo.ChinaSupplier VALUES (N'C2'), (N'C2');
 INSERT dbo.SalesStatisticRefreshState VALUES
- (N'ProductStoreDaily', '2026-09-08', N'Fresh', N'v1', '2026-09-09T01:00:00', '2026-09-09T01:01:00', '{jobId}', '2026-09-09T01:01:00'),
- (N'ProductStoreDaily', '2026-09-07', N'Fresh', N'v0', '2026-09-08T01:00:00', '2026-09-08T01:01:00', NULL, '2026-09-08T01:01:00');
+ (N'ProductStoreDaily', '2026-09-08', N'Fresh', N'v1', '2026-09-09T01:00:00', '2026-09-09T01:01:00', '{jobId}'),
+ (N'ProductStoreDaily', '2026-09-07', N'Fresh', N'v0', '2026-09-08T01:00:00', '2026-09-08T01:01:00', NULL);
 INSERT dbo.ProductStoreDailySalesStatistic VALUES
  ('2026-09-08', N' B1', N'200', N' P1 ', N'旧名;:', N'01', 2, 10, 1, 4, 6),
  ('2026-09-08', N'B1', N'C2', N'P2', NULL, NULL, 3, 15, 2, NULL, NULL);
@@ -302,30 +300,11 @@ WHERE [Date]='2026-09-08' AND ProductCode=N'P3' AND ChinaSupplierCode IS NULL;
             Assert.Equal(SchemaDiagnosticCodes.SalesDetailProjectionCoverageMissing, gap.DiagnosticCode);
             Assert.True((await runner.RunAsync(checkOnly: false, CancellationToken.None)).Success);
 
-            var failedJobId = Guid.Parse("12345678-1234-1234-1234-1234567890ab");
-            await ExecuteAsync(main, $"""
-UPDATE dbo.SalesStatisticRefreshState
-SET [Status]=N'Failed', SourceProductVersion=NULL, JobId='{failedJobId}',
-    LastCheckedAtUtc='2026-09-08T02:03:04.1234567'
-WHERE [Date]='2026-09-07';
-""");
+            await ExecuteAsync(main,
+                "UPDATE dbo.SalesStatisticRefreshState SET [Status]=N'Failed' WHERE [Date]='2026-09-07';");
             Assert.Equal(
                 SchemaDiagnosticCodes.SalesDetailProjectionCoverageMissing,
                 (await runner.RunAsync(checkOnly: true, CancellationToken.None)).DiagnosticCode);
-            Assert.True((await runner.RunAsync(checkOnly: false, CancellationToken.None)).Success);
-            Assert.Equal(
-                $"Failed:{failedJobId.ToString("D").ToUpperInvariant()}:2026-09-08T02:03:04.1234567",
-                await ScalarStringAsync(main,
-                    "SELECT SourceProductVersion FROM dbo.SalesDetailQueryProjectionState WHERE [Date]='2026-09-07';"));
-            await ExecuteAsync(main, """
-UPDATE dbo.SalesStatisticRefreshState
-SET LastCheckedAtUtc='2026-09-08T02:03:05.1234567'
-WHERE [Date]='2026-09-07';
-""");
-            Assert.Equal(
-                SchemaDiagnosticCodes.SalesDetailProjectionCoverageMissing,
-                (await runner.RunAsync(checkOnly: true, CancellationToken.None)).DiagnosticCode);
-            Assert.True((await runner.RunAsync(checkOnly: false, CancellationToken.None)).Success);
             await ExecuteAsync(main,
                 "UPDATE dbo.SalesStatisticRefreshState SET [Status]=N'Fresh', SourceProductVersion=NULL WHERE [Date]='2026-09-07';");
             Assert.Equal(
@@ -347,7 +326,7 @@ WHERE [Date]='2026-09-07';
                 (await runner.RunAsync(checkOnly: true, CancellationToken.None)).DiagnosticCode);
             await ExecuteAsync(main, """
 INSERT dbo.SalesStatisticRefreshState VALUES
- (N'ProductStoreDaily', '2026-09-07', N'Fresh', N'v0', '2026-09-08T01:00:00', '2026-09-08T01:01:00', NULL, '2026-09-08T01:01:00');
+ (N'ProductStoreDaily', '2026-09-07', N'Fresh', N'v0', '2026-09-08T01:00:00', '2026-09-08T01:01:00', NULL);
 """);
             Assert.True((await runner.RunAsync(checkOnly: false, CancellationToken.None)).Success);
 
@@ -362,25 +341,7 @@ INSERT dbo.SalesStatisticRefreshState VALUES
                 SchemaDiagnosticCodes.SalesDetailProjectionCoverageMissing,
                 (await emptyRangeRunner.RunAsync(checkOnly: true, CancellationToken.None)).DiagnosticCode);
 
-            await ExecuteAsync(main, """
-UPDATE dbo.SalesStatisticRefreshState
-SET [Status]=N'Failed', SourceProductVersion=NULL,
-    JobId='aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', LastCheckedAtUtc='2026-09-09T03:04:05.1234567'
-WHERE [Date]='2026-09-08';
-""");
-            await RefreshAsync(main, posmDatabase, new DateTime(2026, 9, 8));
-            Assert.Equal(
-                "Failed:AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE:2026-09-09T03:04:05.1234567",
-                await ScalarStringAsync(main,
-                    "SELECT SourceProductVersion FROM dbo.SalesDetailQueryProjectionState WHERE [Date]='2026-09-08';"));
-            Assert.True(await ScalarIntAsync(main,
-                "SELECT COUNT(*) FROM dbo.SalesDetailQueryDaily WHERE [Date]='2026-09-08';") > 0);
-            Assert.True(await ScalarIntAsync(main,
-                "SELECT COUNT(*) FROM dbo.SalesDetailQueryMappingUse WHERE [Date]='2026-09-08';") > 0);
-
-            // 从未成功聚合的 Failed 日没有可读事实，必须撤销旧覆盖。
-            await ExecuteAsync(main,
-                "UPDATE dbo.SalesStatisticRefreshState SET LastAggregatedAtUtc=NULL WHERE [Date]='2026-09-08';");
+            await ExecuteAsync(main, "UPDATE dbo.SalesStatisticRefreshState SET [Status]=N'Failed' WHERE [Date]='2026-09-08';");
             await RefreshAsync(main, posmDatabase, new DateTime(2026, 9, 8));
             Assert.Equal(0, await ScalarIntAsync(main,
                 "SELECT COUNT(*) FROM dbo.SalesDetailQueryProjectionState WHERE [Date]='2026-09-08';"));
@@ -436,7 +397,7 @@ CREATE TABLE dbo.SalesStatisticRefreshState
 (
  StatisticType nvarchar(80) NOT NULL, [Date] datetime NOT NULL, [Status] nvarchar(20) NOT NULL,
  SourceProductVersion nvarchar(128) NULL, LastAggregatedAtUtc datetime2 NULL,
- CompletedAtUtc datetime2 NULL, JobId uniqueidentifier NULL, LastCheckedAtUtc datetime2 NULL,
+ CompletedAtUtc datetime2 NULL, JobId uniqueidentifier NULL,
  CONSTRAINT PK_SalesStatisticRefreshState_StatisticType_Date PRIMARY KEY CLUSTERED (StatisticType, [Date])
 );
 CREATE TABLE dbo.ProductStoreDailySalesStatistic
@@ -447,8 +408,8 @@ CREATE TABLE dbo.ProductStoreDailySalesStatistic
  GrossProfit decimal(18,4) NULL, TotalCost decimal(18,4) NULL
 );
 INSERT dbo.SalesStatisticRefreshState VALUES
- (N'ProductStoreDaily', '2026-09-08', N'Fresh', N'v1', '2026-09-09T01:00:00', '2026-09-09T01:01:00', NULL, '2026-09-09T01:01:00'),
- (N'ProductStoreDaily', '2026-09-09', N'Fresh', N'v2', '2026-09-10T01:00:00', '2026-09-10T01:01:00', NULL, '2026-09-10T01:01:00');
+ (N'ProductStoreDaily', '2026-09-08', N'Fresh', N'v1', '2026-09-09T01:00:00', '2026-09-09T01:01:00', NULL),
+ (N'ProductStoreDaily', '2026-09-09', N'Fresh', N'v2', '2026-09-10T01:00:00', '2026-09-10T01:01:00', NULL);
 INSERT dbo.ProductStoreDailySalesStatistic VALUES
  ('2026-09-08', N'B1', N'A1', N'P1', N'商品', N'01', 2, 10, 1, 4, 6);
 """);

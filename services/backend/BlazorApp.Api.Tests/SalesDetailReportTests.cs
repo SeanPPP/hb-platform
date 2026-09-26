@@ -580,8 +580,8 @@ public sealed class SalesDetailReportTests : IDisposable
     [InlineData(SalesStatisticRefreshStatus.Running, false, null, SalesStatisticRefreshStatus.Pending)]
     [InlineData(SalesStatisticRefreshStatus.Failed, true, "published", SalesStatisticRefreshStatus.Fresh)]
     [InlineData(SalesStatisticRefreshStatus.Failed, true, null, SalesStatisticRefreshStatus.Fresh)]
-    [InlineData(SalesStatisticRefreshStatus.Failed, false, null, SalesStatisticRefreshStatus.Failed)]
-    public async Task 单一商品快照按已发布状态读取且不受供应商汇总失败影响(string state, bool published, string? version, string expected)
+    [InlineData(SalesStatisticRefreshStatus.Failed, false, null, SalesStatisticRefreshStatus.Fresh)]
+    public async Task 单一商品快照按已发布状态读取并跳过失败日(string state, bool published, string? version, string expected)
     {
         var day = new DateTime(2026, 7, 7);
         await SeedProductAsync("P-PUBLISHED");
@@ -604,9 +604,14 @@ public sealed class SalesDetailReportTests : IDisposable
         var response = await CreateService().GetSalesDetailReportAsync(
             Range(day, day), SalesDetailKind.Australia, new() { "S1" });
         Assert.Equal(expected, response.StatisticStatus);
-        // 对账失败但已聚合的日期照常可读，只在提示里列出日期；从未聚合成功的失败日期仍不可读。
-        if (state == SalesStatisticRefreshStatus.Failed && published)
+        // 商品统计失败日期即使保留旧聚合事实，也不能计入明细；提示必须说明金额已跳过。
+        if (state == SalesStatisticRefreshStatus.Failed)
+        {
             Assert.Contains("2026-07-07", response.StatisticMessage);
+            Assert.Contains("已跳过", response.StatisticMessage);
+            Assert.Empty(response.Data!.Products!.Rows);
+            return;
+        }
         else if (expected == SalesStatisticRefreshStatus.Fresh)
             Assert.Null(response.StatisticMessage);
         if (expected == SalesStatisticRefreshStatus.Fresh)
@@ -619,6 +624,31 @@ public sealed class SalesDetailReportTests : IDisposable
             Assert.Equal(response.CacheVersion, page.CacheVersion);
         }
         else Assert.Null(response.Data!.Products);
+    }
+
+    [Fact]
+    public async Task 明细范围内失败日不计入四栏且提示日期()
+    {
+        var failed = new DateTime(2026, 7, 7);
+        var fresh = failed.AddDays(1);
+        await SeedProductAsync("P-PARTIAL");
+        await SeedStatisticAsync(failed, "S1", "A1", "P-PARTIAL", 3, 30m);
+        await SeedStatisticAsync(fresh, "S1", "A1", "P-PARTIAL", 2, 20m);
+        await _localDb.Updateable<SalesStatisticRefreshState>()
+            .SetColumns(row => new SalesStatisticRefreshState { Status = SalesStatisticRefreshStatus.Failed })
+            .Where(row => row.Date == failed && row.StatisticType == SalesStatisticType.ProductStoreDaily)
+            .ExecuteCommandAsync();
+
+        var response = await CreateService().GetSalesDetailReportAsync(
+            Range(failed, fresh), SalesDetailKind.Australia, new() { "S1" });
+
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh, response.StatisticStatus);
+        Assert.Contains("2026-07-07", response.StatisticMessage);
+        Assert.Contains("已跳过", response.StatisticMessage);
+        Assert.Equal(20m, response.Data!.Summary!.Summary!.Revenue);
+        Assert.Equal(20m, Assert.Single(response.Data.Suppliers!.Rows).Revenue);
+        Assert.Equal(20m, Assert.Single(response.Data.Branches!.Rows).Revenue);
+        Assert.Equal(20m, Assert.Single(response.Data.Products!.Rows).Revenue);
     }
 
     [Fact]

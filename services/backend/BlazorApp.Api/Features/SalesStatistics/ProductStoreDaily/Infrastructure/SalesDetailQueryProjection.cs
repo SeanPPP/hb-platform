@@ -11,16 +11,6 @@ internal static class SalesDetailQueryProjection
     internal const int SchemaVersion = 1;
     internal const string CreateSchemaSql = SalesDetailQueryProjectionSchema.ApplySql;
 
-    // Failed 日仍可保留已聚合商品事实，但它没有供应商对账版本。用最后一次状态写入时间
-    // 和任务 ID 绑定日投影，避免再次失败重算替换事实后误用旧投影。
-    internal static string BuildSourceIdentitySql(
-        string status, string productVersion, string jobId, string lastCheckedAtUtc) => $$"""
-CASE WHEN {{status}} = N'Failed' AND NULLIF(LTRIM(RTRIM({{productVersion}})), N'') IS NULL
-     THEN CONCAT(N'Failed:', COALESCE(CONVERT(nvarchar(36), {{jobId}}), N'none'),
-                 N':', CONVERT(nvarchar(33), {{lastCheckedAtUtc}}, 126))
-     ELSE {{productVersion}} END
-""";
-
     /// <summary>构造当前映射全集的稳定 SHA256 表达式，供查询端按需核验。</summary>
     internal static string BuildMappingSignatureSql(string posmDatabase)
     {
@@ -63,22 +53,18 @@ DECLARE @sdpDay date = CONVERT(date, @sdpDate);
 -- 变量类型必须与列一致为 datetime，否则列侧隐式转换会退回范围查找。
 DECLARE @sdpStateDate datetime = CONVERT(datetime, @sdpDay);
 DECLARE @sdpStatus nvarchar(20), @sdpProductVersion nvarchar(128),
-        @sdpLastAggregatedAtUtc datetime2, @sdpLastCheckedAtUtc datetime2,
-        @sdpCompletedAtUtc datetime2,
+        @sdpLastAggregatedAtUtc datetime2, @sdpCompletedAtUtc datetime2,
         @sdpJobId uniqueidentifier, @sdpMappingVersion varchar(64), @sdpMappingHasFanout bit = 0;
 
 SELECT @sdpStatus = [Status], @sdpProductVersion = [SourceProductVersion],
-       @sdpLastAggregatedAtUtc = [LastAggregatedAtUtc], @sdpLastCheckedAtUtc = [LastCheckedAtUtc],
-       @sdpCompletedAtUtc = [CompletedAtUtc],
+       @sdpLastAggregatedAtUtc = [LastAggregatedAtUtc], @sdpCompletedAtUtc = [CompletedAtUtc],
        @sdpJobId = [JobId]
 FROM [dbo].[SalesStatisticRefreshState] WITH (UPDLOCK, HOLDLOCK)
 WHERE [StatisticType] = N'ProductStoreDaily' AND [Date] = @sdpStateDate;
 
--- 失败但已聚合的商品事实仍会被原报表读取；它也必须有同版本的日投影。
--- 无聚合事实的失败日及未发布日继续撤销覆盖。
-IF @sdpStatus NOT IN (N'Fresh', N'ProvisionalFresh', N'Failed')
-   OR (@sdpStatus <> N'Failed' AND NULLIF(LTRIM(RTRIM(@sdpProductVersion)), N'') IS NULL)
-   OR (@sdpStatus = N'Failed' AND @sdpLastCheckedAtUtc IS NULL)
+-- 状态未发布或版本为空时撤销旧覆盖，查询端会自动回退到原事实流程。
+IF @sdpStatus NOT IN (N'Fresh', N'ProvisionalFresh')
+   OR NULLIF(LTRIM(RTRIM(@sdpProductVersion)), N'') IS NULL
    OR @sdpLastAggregatedAtUtc IS NULL
 BEGIN
     DELETE FROM [dbo].[SalesDetailQueryDaily] WHERE [Date] = @sdpDay;
@@ -188,7 +174,7 @@ DELETE FROM [dbo].[SalesDetailQueryProjectionState] WHERE [Date] = @sdpDay;
 INSERT INTO [dbo].[SalesDetailQueryProjectionState]
     ([Date], [ProjectionSchemaVersion], [SourceProductVersion], [SourceLastAggregatedAtUtc],
      [SourceCompletedAtUtc], [SourceJobId], [MappingVersion], [MappingHasFanout])
-VALUES (@sdpDay, {{SchemaVersion}}, {{BuildSourceIdentitySql("@sdpStatus", "@sdpProductVersion", "@sdpJobId", "@sdpLastCheckedAtUtc")}}, @sdpLastAggregatedAtUtc,
+VALUES (@sdpDay, {{SchemaVersion}}, @sdpProductVersion, @sdpLastAggregatedAtUtc,
         @sdpCompletedAtUtc, @sdpJobId, @sdpMappingVersion, @sdpMappingHasFanout);
 
 DROP TABLE #SalesDetailProjectionRows;

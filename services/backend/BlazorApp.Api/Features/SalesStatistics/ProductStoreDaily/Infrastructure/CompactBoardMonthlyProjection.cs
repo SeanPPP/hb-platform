@@ -11,15 +11,6 @@ internal static class CompactBoardMonthlyProjection
 {
     internal const int SchemaVersion = 1;
 
-    /// <summary>该月不存在报表不可读的日状态；状态口径与销售明细日/月投影完全一致。</summary>
-    internal static string BuildMonthReadableSql(string monthExpression) => $"""
-NOT EXISTS (SELECT 1 FROM [dbo].[SalesStatisticRefreshState] r
-            WHERE r.[StatisticType] = N'ProductStoreDaily'
-              AND r.[Date] >= CONVERT(datetime, {monthExpression})
-              AND r.[Date] < CONVERT(datetime, DATEADD(month, 1, {monthExpression}))
-              AND NOT ({SalesDetailQueryMonthlyProjection.BuildReadableSourceSql("r")}))
-""";
-
     internal const string TablesExistSql = """
 SELECT CASE WHEN OBJECT_ID(N'dbo.CompactBoardMonthlyCell', N'U') IS NOT NULL
  AND OBJECT_ID(N'dbo.CompactBoardMonthlyState', N'U') IS NOT NULL THEN 1 ELSE 0 END;
@@ -61,11 +52,10 @@ BEGIN
     FROM Months m
     LEFT JOIN [dbo].[CompactBoardMonthlyState] st ON st.[Month] = m.[Month]
     CROSS APPLY (SELECT {{SalesDetailQueryMonthlyProjection.BuildMonthIdentitySql("m.[Month]")}} [Identity]) ident
-    WHERE {{BuildMonthReadableSql("m.[Month]")}}
-      AND (st.[Month] IS NULL
+    WHERE st.[Month] IS NULL
        OR st.[ProjectionSchemaVersion] <> {{SchemaVersion}}
        OR st.[DayIdentity] <> ident.[Identity]
-       OR st.[CodeFamilySignature] <> @cbFamilySignature)
+       OR st.[CodeFamilySignature] <> @cbFamilySignature
     ORDER BY m.[Month] DESC;
 END;
 DROP TABLE #cbFamily;
@@ -81,7 +71,6 @@ SET XACT_ABORT ON;
 DECLARE @cbMonthStart date = DATEFROMPARTS(YEAR(@cbMonth), MONTH(@cbMonth), 1);
 DECLARE @cbMonthEnd date = DATEADD(month, 1, @cbMonthStart);
 DECLARE @cbStartedAt datetime2 = SYSUTCDATETIME();
-IF NOT ({{BuildMonthReadableSql("@cbMonthStart")}}) RETURN;
 {{CodeFamilySql}}
 DECLARE @cbDayIdentity varchar(64) = {{SalesDetailQueryMonthlyProjection.BuildMonthIdentitySql("@cbMonthStart")}};
 
