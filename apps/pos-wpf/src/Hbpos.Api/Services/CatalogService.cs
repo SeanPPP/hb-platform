@@ -97,6 +97,10 @@ public interface ICatalogService
         int pageSize,
         CancellationToken cancellationToken);
 
+    Task<CatalogCodeConflictsResponse?> GetCodeConflictsAsync(
+        string storeCode,
+        CancellationToken cancellationToken);
+
     Task<CatalogSpecialProductMarkServiceResult> MarkSpecialProductAsync(
         CatalogSpecialProductMarkRequest request,
         string updatedBy,
@@ -801,6 +805,27 @@ public sealed class CatalogService(
         return index?.CatalogIndex.GetSpecialProductsPage(cursor, pageSize);
     }
 
+    public async Task<CatalogCodeConflictsResponse?> GetCodeConflictsAsync(
+        string storeCode,
+        CancellationToken cancellationToken)
+    {
+        // 与特殊商品分页一样读取共享缓存的完整工件，不单独查库；门店不存在时返回 null。
+        var index = await BuildSellableIndexAsync(storeCode, since: null, cancellationToken);
+        if (index is null)
+        {
+            return null;
+        }
+
+        var codeConflicts = index.CodeConflicts;
+        return new CatalogCodeConflictsResponse(
+            index.StoreCode,
+            index.GeneratedAt,
+            codeConflicts is not null,
+            codeConflicts is null
+                ? []
+                : codeConflicts.Select(CatalogSellableIndex.ToLookupItem).ToArray());
+    }
+
     public async Task<CatalogSpecialProductMarkServiceResult> MarkSpecialProductAsync(
         CatalogSpecialProductMarkRequest request,
         string updatedBy,
@@ -1336,10 +1361,23 @@ public sealed class CatalogService(
 
         var generatedAt = DateTimeOffset.UtcNow;
         stepStopwatch.Restart();
-        var items = priceIndexBuilder.Build(store.StoreCode, input);
+        IReadOnlyList<SellableItemDto> items;
+        IReadOnlyList<SellableItemDto>? codeConflicts = null;
+        if (since is null)
+        {
+            // 完整目录在同一次遍历中收集码冲突候选，供新版收银端在扫码时让收银员选择。
+            var buildOutput = priceIndexBuilder.BuildWithCodeConflicts(store.StoreCode, input);
+            items = buildOutput.Items;
+            codeConflicts = buildOutput.CodeConflicts;
+        }
+        else
+        {
+            items = priceIndexBuilder.Build(store.StoreCode, input);
+        }
+
         stepStopwatch.Stop();
         totalStopwatch.Stop();
-        Log($"build index completed store={store.StoreCode} items={items.Count} buildElapsedMs={stepStopwatch.ElapsedMilliseconds} totalElapsedMs={totalStopwatch.ElapsedMilliseconds}");
+        Log($"build index completed store={store.StoreCode} items={items.Count} codeConflictItems={codeConflicts?.Count.ToString(CultureInfo.InvariantCulture) ?? "<null>"} buildElapsedMs={stepStopwatch.ElapsedMilliseconds} totalElapsedMs={totalStopwatch.ElapsedMilliseconds}");
         return new CatalogIndexBuildResult(
             store.StoreCode,
             generatedAt,
@@ -1347,7 +1385,8 @@ public sealed class CatalogService(
             new CatalogSellableIndex(store.StoreCode, generatedAt, items),
             baseData.ValidUntil,
             // 完整工件保留只读候选，供 legacy since 在内存中重新投影；不会二次读数据库。
-            input);
+            input,
+            codeConflicts);
     }
 
     private Task<CatalogBaseData> BuildCatalogBaseDataAsync(
@@ -2333,7 +2372,7 @@ public sealed class CatalogSellableIndex
         }
     }
 
-    private static CatalogLookupItemDto ToLookupItem(SellableItemDto item)
+    internal static CatalogLookupItemDto ToLookupItem(SellableItemDto item)
     {
         var storeCode = NormalizeStoreCode(item.StoreCode);
         var lookupCode = (item.LookupCode ?? string.Empty).Trim();

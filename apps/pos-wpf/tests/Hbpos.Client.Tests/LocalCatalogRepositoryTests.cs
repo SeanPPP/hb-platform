@@ -35,6 +35,39 @@ public sealed class LocalCatalogRepositoryTests
     }
 
     [Fact]
+    public async Task ReplaceCodeConflictItemsAsync_replaces_per_store_and_preserves_server_order()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var repository = await CreateRepositoryAsync(databasePath);
+            var fly = CreateItem("S001", "P-FLY", "6405090401470", "EXTENSION Fly Swatter", 8.99m);
+            var flower = CreateItem("S001", "P-FLOWER", "6405090401470", "flower", 2.99m);
+            var stale = CreateItem("S001", "P-STALE", "STALE-CODE", "Stale", 1m);
+            var otherStore = CreateItem("S002", "P-OTHER", "6405090401470", "Other store", 5m);
+
+            await repository.ReplaceCodeConflictItemsAsync("S001", [stale]);
+            await repository.ReplaceCodeConflictItemsAsync("S002", [otherStore]);
+            // 服务端顺序：首条是目录胜出项；不属于该门店的行被忽略，旧数据整体替换。
+            await repository.ReplaceCodeConflictItemsAsync("S001", [fly, flower, otherStore]);
+
+            var s001 = await repository.LoadCodeConflictItemsAsync("S001");
+            Assert.Equal(["P-FLY", "P-FLOWER"], s001.Select(item => item.ProductCode));
+            Assert.Equal(8.99m, s001[0].RetailPrice);
+            Assert.Equal("flower", s001[1].DisplayName);
+            Assert.Equal("6405090401470", s001[1].LookupCode);
+            Assert.Equal(["P-OTHER"], (await repository.LoadCodeConflictItemsAsync("S002")).Select(item => item.ProductCode));
+            // 冲突候选单独存放，不会写进对查询码唯一的主目录表。
+            Assert.Empty(await repository.LoadSellableItemsAsync("S001"));
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
     public async Task UpsertSellableItemsAsync_inserts_and_updates_discount_rate()
     {
         var databasePath = CreateTempDatabasePath();

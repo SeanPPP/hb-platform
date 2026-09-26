@@ -234,9 +234,12 @@ public sealed class ShellCatalogService(
             .ConfigureAwait(false);
         var cachedItems = await catalogRepository.LoadSellableItemsAsync(storeCode, cancellationToken)
             .ConfigureAwait(false);
+        var codeConflictItems = await catalogRepository.LoadCodeConflictItemsAsync(storeCode, cancellationToken)
+            .ConfigureAwait(false);
         await _uiPriorityCoordinator.WaitForUiIdleAsync(cancellationToken)
             .ConfigureAwait(false);
-        priceIndex.ReplaceAll(cachedItems);
+        // 内存索引额外带上码冲突的其它商品，扫码命中多条时弹窗选择；返回值仍是目录本身，不影响商品数等统计。
+        priceIndex.ReplaceAll(CatalogCodeConflictMerger.Merge(cachedItems, codeConflictItems));
         var promotionRules = await catalogRepository.LoadPromotionRulesAsync(storeCode, cancellationToken)
             .ConfigureAwait(false);
         return new LocalCatalogReloadResult(cachedItems, promotionRules);

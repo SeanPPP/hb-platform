@@ -49,6 +49,62 @@ public sealed class PosTerminalWorkflowServiceTests
     }
 
     [Fact]
+    public async Task Conflicting_code_scan_offers_every_product_and_remote_refresh_keeps_the_choice()
+    {
+        // 生产案例：flower 的主条码被 Fly Swatter 登记成套装条码，目录只保留套装码胜出项。
+        const string conflictCode = "6405090401470";
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        var fly = CreateItem("P-FLY", "EXTENSION Fly Swatter", conflictCode, PriceSourceKind.ProductSetCode, 8.99m);
+        var flower = CreateItem("P-FLOWER", "flower", conflictCode, PriceSourceKind.ProductBase, 2.99m);
+        index.ReplaceAll(CatalogCodeConflictMerger.Merge([fly], [fly, flower]));
+        var lookupCalls = 0;
+        var refreshApplied = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var service = new PosTerminalWorkflowService(
+            index,
+            cart,
+            remoteLookupRefreshAsync: (storeCode, lookupCode, _) =>
+            {
+                Interlocked.Increment(ref lookupCalls);
+                // 服务端回查只会返回目录胜出项。
+                return Task.FromResult(new RemoteLookupRefreshResult(
+                    storeCode,
+                    lookupCode,
+                    Found: true,
+                    Item: fly with { RetailPrice = 9.49m },
+                    DeletedCount: 0));
+            });
+        service.CatalogReloaded += (_, _) => refreshApplied.TrySetResult();
+
+        var firstScan = await service.ProcessScanAsync(Session, conflictCode, preferExactLookup: true, source: "raw");
+
+        Assert.Equal("pos.status.multipleMatches", firstScan.StatusKey);
+        Assert.True(firstScan.MatchesPopupOpen);
+        Assert.Equal(
+            ["P-FLOWER", "P-FLY"],
+            Assert.IsAssignableFrom<IReadOnlyList<SellableItemDto>>(firstScan.Matches).Select(item => item.ProductCode).Order());
+        Assert.Empty(cart.Lines);
+
+        service.AddSelectedItem(Session, flower, clearScanText: true, closeMatchesPopup: true, operation: "manual-select-match");
+        await WaitUntilAsync(() => refreshApplied.Task.IsCompleted);
+
+        // 回查结果是另一个商品，不能改写收银员选中的 flower，也不能把 flower 从候选里冲掉。
+        var line = Assert.Single(cart.Lines);
+        Assert.Equal("flower", line.DisplayName);
+        Assert.Equal(2.99m, line.UnitPrice);
+        Assert.Equal(1, Volatile.Read(ref lookupCalls));
+
+        var secondScan = await service.ProcessScanAsync(Session, conflictCode, preferExactLookup: true, source: "raw");
+
+        Assert.Equal("pos.status.multipleMatches", secondScan.StatusKey);
+        Assert.True(secondScan.MatchesPopupOpen);
+        Assert.Equal(
+            ["P-FLOWER", "P-FLY"],
+            Assert.IsAssignableFrom<IReadOnlyList<SellableItemDto>>(secondScan.Matches).Select(item => item.ProductCode).Order());
+        Assert.Single(cart.Lines);
+    }
+
+    [Fact]
     public async Task Process_scan_async_remote_match_adds_cart_line_after_local_miss()
     {
         var cart = new PosCartService();
