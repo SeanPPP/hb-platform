@@ -258,6 +258,102 @@ public sealed class CatalogServiceTests
     }
 
     [Fact]
+    public async Task LookupSellableItemAsync_finds_inactive_product_by_barcode_and_item_number()
+    {
+        await using var fixture = await CatalogSqliteFixture.CreateAsync();
+        await fixture.SeedStoreAsync("S01");
+        await fixture.SeedProductAsync(new Product
+        {
+            UUID = "PRODUCT-UUID-STOPPED",
+            ProductCode = "P-STOPPED",
+            ProductName = "Stopped Purchasing Bag",
+            ItemNumber = "HB238-283",
+            Barcode = "9525812380350",
+            RetailPrice = 1m,
+            IsActive = false,
+            IsDeleted = false
+        });
+        await fixture.SeedStoreRetailPriceAsync("S01", "P-STOPPED", 1.5m, "PRICE-STOPPED");
+        var service = new CatalogService(fixture.DbContext, new PriceIndexBuilder(), new CatalogIndexCache());
+
+        var byBarcode = await service.LookupSellableItemAsync("S01", "9525812380350", null, CancellationToken.None);
+        var byItemNumber = await service.LookupSellableItemAsync("S01", "hb238-283", null, CancellationToken.None);
+
+        Assert.True(byBarcode?.Found);
+        Assert.Equal("P-STOPPED", byBarcode!.Item!.ProductCode);
+        Assert.Equal(1.5m, byBarcode.Item.RetailPrice);
+        Assert.Equal(PriceSourceKind.StoreRetailPrice, byBarcode.Item.PriceSource);
+        Assert.True(byItemNumber?.Found);
+        Assert.Equal("P-STOPPED", byItemNumber!.Item!.ProductCode);
+        Assert.Equal("HB238-283", byItemNumber.Item.LookupCode);
+    }
+
+    [Fact]
+    public async Task LookupSellableItemAsync_skips_deleted_product()
+    {
+        await using var fixture = await CatalogSqliteFixture.CreateAsync();
+        await fixture.SeedStoreAsync("S01");
+        await fixture.SeedProductAsync(new Product
+        {
+            UUID = "PRODUCT-UUID-DELETED",
+            ProductCode = "P-DELETED",
+            ProductName = "Deleted Product",
+            ItemNumber = "ITEM-DELETED",
+            Barcode = "BAR-DELETED",
+            RetailPrice = 3m,
+            IsActive = false,
+            IsDeleted = true
+        });
+        await fixture.SeedStoreRetailPriceAsync("S01", "P-DELETED", 2m, "PRICE-DELETED");
+        var service = new CatalogService(fixture.DbContext, new PriceIndexBuilder(), new CatalogIndexCache());
+
+        var byBarcode = await service.LookupSellableItemAsync("S01", "BAR-DELETED", null, CancellationToken.None);
+        var byItemNumber = await service.LookupSellableItemAsync("S01", "ITEM-DELETED", null, CancellationToken.None);
+
+        Assert.False(byBarcode?.Found);
+        Assert.False(byItemNumber?.Found);
+    }
+
+    [Fact]
+    public async Task GetSellableItemsAsync_includes_inactive_products_and_excludes_deleted_products()
+    {
+        await using var fixture = await CatalogSqliteFixture.CreateAsync();
+        await fixture.SeedStoreAsync("S01");
+        await fixture.SeedProductAsync(new Product
+        {
+            UUID = "PRODUCT-UUID-STOPPED-FULL",
+            ProductCode = "P-STOPPED-FULL",
+            ProductName = "Stopped Purchasing Full Catalog",
+            ItemNumber = "ITEM-STOPPED-FULL",
+            Barcode = "BAR-STOPPED-FULL",
+            RetailPrice = 4m,
+            IsActive = false,
+            IsDeleted = false
+        });
+        await fixture.SeedProductAsync(new Product
+        {
+            UUID = "PRODUCT-UUID-DELETED-FULL",
+            ProductCode = "P-DELETED-FULL",
+            ProductName = "Deleted Full Catalog",
+            ItemNumber = "ITEM-DELETED-FULL",
+            Barcode = "BAR-DELETED-FULL",
+            RetailPrice = 5m,
+            IsActive = false,
+            IsDeleted = true
+        });
+        var service = new CatalogService(fixture.DbContext, new PriceIndexBuilder(), new CatalogIndexCache());
+
+        var fullCatalog = await service.GetSellableItemsAsync("S01", since: null, CancellationToken.None);
+
+        Assert.NotNull(fullCatalog);
+        var lookupCodes = fullCatalog!.Items.Select(item => item.LookupCode).ToArray();
+        Assert.Contains("BAR-STOPPED-FULL", lookupCodes);
+        Assert.Contains("ITEM-STOPPED-FULL", lookupCodes);
+        Assert.DoesNotContain("BAR-DELETED-FULL", lookupCodes);
+        Assert.DoesNotContain("ITEM-DELETED-FULL", lookupCodes);
+    }
+
+    [Fact]
     public async Task LookupSellableItemAsync_multi_barcode_returns_store_multi_code_price()
     {
         await using var fixture = await CatalogSqliteFixture.CreateAsync();
@@ -961,6 +1057,35 @@ public sealed class CatalogServiceTests
         Assert.Equal(fullTargetItem.PriceSource, returnedTargetItem.PriceSource);
         Assert.Equal(fullTargetItem.RetailPrice, returnedTargetItem.RetailPrice);
         Assert.Equal(fullTargetItem.ReferenceCode, returnedTargetItem.ReferenceCode);
+    }
+
+    [Fact]
+    public async Task MarkSpecialProductAsync_marks_inactive_product()
+    {
+        await using var fixture = await CatalogSqliteFixture.CreateAsync();
+        await fixture.SeedStoreAsync("S01");
+        await fixture.SeedProductAsync(new Product
+        {
+            UUID = "PRODUCT-STOPPED-MARK-UUID",
+            ProductCode = "P-STOPPED-MARK",
+            ProductName = "Stopped purchasing special product",
+            Barcode = "STOPPED-MARK-BARCODE",
+            RetailPrice = 6m,
+            IsActive = false,
+            IsDeleted = false
+        });
+        await fixture.SeedStoreRetailPriceAsync("S01", "P-STOPPED-MARK", 5m, "STOPPED-MARK-PRICE-UUID");
+        var service = new CatalogService(fixture.DbContext, new PriceIndexBuilder(), new CatalogIndexCache());
+
+        var result = await service.MarkSpecialProductAsync(
+            new CatalogSpecialProductMarkRequest("S01", "P-STOPPED-MARK", true),
+            "test-user",
+            CancellationToken.None);
+
+        Assert.True(result.Success);
+        var item = Assert.Single(result.Response!.Items);
+        Assert.Equal("STOPPED-MARK-BARCODE", item.LookupCode);
+        Assert.True(item.IsSpecialProduct);
     }
 
     [Fact]
