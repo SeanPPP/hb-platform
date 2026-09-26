@@ -395,13 +395,13 @@ public sealed class CatalogApiClient : ICatalogApiClient
                 {
                     using var response = await _httpClient.GetAsync(requestUri, token);
                     var result = await ReadApiResultAsync<CatalogSyncPageResponse>(response, token);
-                    return (Result: result, response.StatusCode, ContentEncoding: string.Join(",", response.Content.Headers.ContentEncoding));
+                    return (Result: result, response.StatusCode);
                 },
                 cancellationToken);
             var page = responseResult.Result;
             VerifyPinnedPage(page, storeCode, catalogVersion, downloadLeaseId);
             stopwatch.Stop();
-            Log($"GET {requestUri} completed status={(int)responseResult.StatusCode} items={page.Items.Count} total={page.TotalCount} hasMore={page.HasMore} encoding={(responseResult.ContentEncoding.Length == 0 ? "<none>" : responseResult.ContentEncoding)} elapsedMs={stopwatch.ElapsedMilliseconds}");
+            Log($"GET {requestUri} completed status={(int)responseResult.StatusCode} items={page.Items.Count} total={page.TotalCount} hasMore={page.HasMore} elapsedMs={stopwatch.ElapsedMilliseconds}");
             return page;
         }
         catch (Exception ex)
