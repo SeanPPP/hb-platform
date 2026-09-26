@@ -377,6 +377,10 @@ public static class ServiceRegistration
         services.AddSingleton<IAppUpdateDownloadDirectoryProvider, AppUpdateDownloadDirectoryProvider>();
         services.AddSingleton<IProcessLauncher, ProcessLauncher>();
         services.AddSingleton<IAppUpdateInstallSafetyGuard, ShellAppUpdateInstallSafetyGuard>();
+        services.AddSingleton<IAppUpdateProgressWindowLauncher>(sp => new AppUpdateProgressWindowLauncher(
+            sp.GetRequiredService<IProcessLauncher>(),
+            sp.GetRequiredService<IAppVersionProvider>(),
+            AppUpdateProgressWindowOptions.CreateDefault()));
         services.AddSingleton<IAppUpdateInstallerLauncher, AppUpdateInstallerLauncher>();
         services.AddSingleton<IAppUpdatePromptService, WpfAppUpdatePromptService>();
         services.AddSingleton<IAppUpdateCoordinator, AppUpdateCoordinator>();
