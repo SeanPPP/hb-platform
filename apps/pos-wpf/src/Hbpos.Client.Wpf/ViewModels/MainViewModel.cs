@@ -611,6 +611,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _cart.CartChanged += OnCartChanged;
         _localization.CultureChanged += OnCultureChanged;
         _customerDisplayOrchestrator.Closed += OnCustomerDisplayClosed;
+        _customerDisplayOrchestrator.FullscreenRequested += OnCustomerDisplayFullscreenRequested;
         _clockTimer.Tick += OnClockTimerTick;
         _connectivityTimer.Tick += OnConnectivityTimerTick;
         _catalogDownloadHideTimer.Tick += OnCatalogDownloadHideTimerTick;
@@ -702,8 +703,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             onCardRecoveryOrderCompleted: order =>
             {
                 _lastCompletedOrder = order;
+                // 中文注释：恢复完成的是另一单，不能沿用上一单的收尾告警。
+                PaymentSuccess.HasPostCommitWarning = false;
                 PaymentSuccess.LoadFromOrder(order);
-                CurrentScreen = PaymentSuccess;
+                _screenNavigator.ShowCompletedSaleOnPos();
                 // 真实恢复订单完成后仅在首次进入成功页时播放一次结账成功音。
                 _userFeedbackService.Play(UserFeedbackCue.Checkout);
                 PosTerminal?.RefreshCart();
@@ -1059,6 +1062,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _cart.CartChanged -= OnCartChanged;
         _localization.CultureChanged -= OnCultureChanged;
         _customerDisplayOrchestrator.Closed -= OnCustomerDisplayClosed;
+        _customerDisplayOrchestrator.FullscreenRequested -= OnCustomerDisplayFullscreenRequested;
         if (_operationAuthorizationService is not null)
         {
             _operationAuthorizationService.RevokeAll();
@@ -2117,11 +2121,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             return "shell.page.returns";
         }
 
-        if (ReferenceEquals(CurrentScreen, PaymentSuccess))
-        {
-            return "shell.page.paymentSuccess";
-        }
-
         if (ReferenceEquals(CurrentScreen, TransactionHistory))
         {
             return "shell.page.history";
@@ -2951,6 +2950,15 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         CustomerDisplayWindowMode = CustomerDisplayWindowMode.Closed;
     }
 
+    private void OnCustomerDisplayFullscreenRequested(object? sender, EventArgs e)
+    {
+        // 与主窗口客显按钮同一条命令：先过客显管理权限，再切模式并同步按钮状态。
+        if (ShowCustomerDisplayFullscreenCommand.CanExecute(null))
+        {
+            ShowCustomerDisplayFullscreenCommand.Execute(null);
+        }
+    }
+
     private void OnClockTimerTick(object? sender, EventArgs e)
     {
         RefreshClock();
@@ -3288,7 +3296,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private async Task HandlePaymentCompletedCoreAsync(PaymentCompletedEventArgs e)
     {
-        // 支付成功页必须优先呈现；其余设备、同步与打印都是不可反向影响收款的后续处理。
+        // 支付成功卡片必须优先呈现；其余设备、同步与打印都是不可反向影响收款的后续处理。
         await ExecutePaymentCompletionFollowUpAsync(
             "success-page-load-sync",
             () =>
@@ -3306,7 +3314,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             "success-page-navigate",
             () =>
             {
-                CurrentScreen = PaymentSuccess;
+                // 中文注释：成功结果以卡片显示在收银主页购物车区域，收银员可直接扫下一单。
+                _screenNavigator.ShowCompletedSaleOnPos();
                 ShowCashPaymentCommand.NotifyCanExecuteChanged();
                 return Task.CompletedTask;
             });
@@ -3400,7 +3409,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private void SetPaymentCompletedWarning()
     {
-        // 中文注释：收款已落地后的任何收尾失败都必须在成功页留下可见提示，阻止收银员重复收款。
+        // 中文注释：收款已落地后的任何收尾失败都必须在成功卡片留下可见提示，阻止收银员重复收款。
         PaymentSuccess.HasPostCommitWarning = true;
         StatusMessage = _localization.T("payment.status.completedWarning");
     }

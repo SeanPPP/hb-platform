@@ -1590,7 +1590,7 @@ public sealed class MainViewModelScannerTests
 
         InvokePaymentCompleted(viewModel, order);
 
-        await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen));
+        await WaitUntilAsync(() => IsShowingCompletedSale(viewModel));
         await Task.Delay(50);
         Assert.Empty(printService.Calls);
         Assert.Equal(0, cashDrawerService.OpenCallCount);
@@ -1622,7 +1622,7 @@ public sealed class MainViewModelScannerTests
 
         InvokePaymentCompleted(viewModel, order);
 
-        await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen) && printService.Calls.Count == 1);
+        await WaitUntilAsync(() => IsShowingCompletedSale(viewModel) && printService.Calls.Count == 1);
         var call = Assert.Single(printService.Calls);
         Assert.Equal(order.OrderGuid, call.OrderGuid);
         Assert.Equal(ReceiptPrintReason.CardAuto, call.Reason);
@@ -1650,7 +1650,7 @@ public sealed class MainViewModelScannerTests
 
         InvokePaymentCompleted(viewModel, order);
 
-        await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen) && printService.Calls.Count == 1);
+        await WaitUntilAsync(() => IsShowingCompletedSale(viewModel) && printService.Calls.Count == 1);
         var call = Assert.Single(printService.Calls);
         Assert.Equal(ReceiptPrintReason.CardAuto, call.Reason);
         Assert.Null(call.Receipt!.RefundVoucher);
@@ -1687,7 +1687,7 @@ public sealed class MainViewModelScannerTests
 
         InvokePaymentCompleted(viewModel, order);
 
-        await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen) && printService.Calls.Count == 1);
+        await WaitUntilAsync(() => IsShowingCompletedSale(viewModel) && printService.Calls.Count == 1);
         var call = Assert.Single(printService.Calls);
         Assert.Equal(order.OrderGuid, call.OrderGuid);
         Assert.Equal("VoucherRefundAuto", call.Reason.ToString());
@@ -1720,7 +1720,7 @@ public sealed class MainViewModelScannerTests
 
         InvokePaymentCompleted(viewModel, order);
 
-        await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen));
+        await WaitUntilAsync(() => IsShowingCompletedSale(viewModel));
         await Task.Delay(50);
         Assert.Empty(printService.Calls);
     }
@@ -1798,7 +1798,7 @@ public sealed class MainViewModelScannerTests
 
             InvokePaymentCompleted(viewModel, order);
 
-            await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen));
+            await WaitUntilAsync(() => IsShowingCompletedSale(viewModel));
             await Task.Delay(30);
             Assert.Empty(printService.Calls);
         }
@@ -1844,7 +1844,7 @@ public sealed class MainViewModelScannerTests
 
         InvokePaymentCompleted(viewModel, order);
 
-        await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen));
+        await WaitUntilAsync(() => IsShowingCompletedSale(viewModel));
         await Task.Delay(50);
         Assert.Empty(printService.Calls);
         Assert.False(cashierContext.RequirePermission(Permissions.PosTerminal.Receipt.PrintLast, out _));
@@ -1864,7 +1864,7 @@ public sealed class MainViewModelScannerTests
 
         InvokePaymentCompleted(viewModel, order);
 
-        await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen) && cashDrawerService.OpenCallCount == 1);
+        await WaitUntilAsync(() => IsShowingCompletedSale(viewModel) && cashDrawerService.OpenCallCount == 1);
         await Task.Delay(50);
         Assert.Empty(printService.Calls);
         Assert.Equal(1, cashDrawerService.OpenCallCount);
@@ -2094,7 +2094,7 @@ public sealed class MainViewModelScannerTests
         InvokePaymentCompleted(viewModel, order);
 
         await WaitUntilAsync(() =>
-            ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen) &&
+            IsShowingCompletedSale(viewModel) &&
             cashDrawerService.OpenCallCount == 1);
 
         await Task.Delay(50);
@@ -2140,22 +2140,56 @@ public sealed class MainViewModelScannerTests
         var viewModel = CreateAuthorizedMainViewModel(
             new FakeCustomerDisplayWindowService(),
             userFeedbackService: feedback);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
         var order = CreateReceiptPrintOrder(PaymentMethodKind.Card);
 
         InvokePaymentCompleted(viewModel, order);
-        await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen));
+        await WaitUntilAsync(() => IsShowingCompletedSale(viewModel));
 
         Assert.Equal([UserFeedbackCue.Checkout], feedback.Cues);
+    }
+
+    [Fact]
+    public async Task Payment_completion_keeps_pos_active_and_next_scan_or_cart_add_dismisses_success_card()
+    {
+        var scanner = new FakeRawScannerService();
+        var cart = new PosCartService();
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cart: cart,
+            rawScannerService: scanner);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        var pos = Assert.IsType<PosTerminalViewModel>(viewModel.PosTerminal);
+
+        InvokePaymentCompleted(viewModel, CreateReceiptPrintOrder(PaymentMethodKind.Cash));
+        await WaitUntilAsync(() => IsShowingCompletedSale(viewModel));
+
+        // 成功卡片留在收银主页时扫码枪仍由收银页接收，扫任意码即收起卡片、开始下一单。
+        Assert.Equal(PosTerminalViewModel.PageId, scanner.ActivePageId);
+        scanner.Emit("930999");
+        await WaitUntilAsync(() => !pos.IsLastSaleVisible);
+        Assert.Same(pos, viewModel.CurrentScreen);
+
+        // 无码商品、取单等其它方式把商品加入购物车同样收起卡片。
+        pos.ShowLastSale(viewModel.PaymentSuccess);
+        cart.AddItem(CreateItem("1042", "SKU-001", "930110"));
+        Assert.False(pos.IsLastSaleVisible);
+
+        cart.Clear();
+        pos.ShowLastSale(viewModel.PaymentSuccess);
+        pos.DismissLastSaleCommand.Execute(null);
+        Assert.False(pos.IsLastSaleVisible);
     }
 
     [Fact]
     public async Task Payment_completion_post_commit_warning_is_visible_on_the_success_screen()
     {
         var viewModel = CreateAuthorizedMainViewModel(new FakeCustomerDisplayWindowService());
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
         var order = CreateReceiptPrintOrder(PaymentMethodKind.Card);
 
         InvokePaymentCompleted(viewModel, order, hasPostCommitWarning: true);
-        await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen));
+        await WaitUntilAsync(() => IsShowingCompletedSale(viewModel));
 
         Assert.True(viewModel.PaymentSuccess.HasPostCommitWarning);
         Assert.Equal("Payment completed. Do not take payment again; a follow-up action needs attention.", viewModel.StatusMessage);
@@ -2211,7 +2245,7 @@ public sealed class MainViewModelScannerTests
 
         await viewModel.CashPayment!.SelectCardCommand.ExecuteAsync(null);
 
-        await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen));
+        await WaitUntilAsync(() => IsShowingCompletedSale(viewModel));
         Assert.Empty(cart.Lines);
         Assert.Empty(viewModel.CashPayment.PaymentTenders);
     }
@@ -2249,7 +2283,7 @@ public sealed class MainViewModelScannerTests
             await syncQueue.OverviewReadStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
             await WaitUntilAsync(() => completedOrder is not null);
 
-            Assert.Same(viewModel.PaymentSuccess, viewModel.CurrentScreen);
+            Assert.True(IsShowingCompletedSale(viewModel));
             Assert.NotNull(completedOrder);
             Assert.Equal(completedOrder!.OrderGuid, viewModel.PaymentSuccess.TransactionId);
             Assert.NotSame(payment, viewModel.CurrentScreen);
@@ -2319,7 +2353,7 @@ public sealed class MainViewModelScannerTests
 
         InvokePaymentCompleted(viewModel, order);
 
-        await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen) && cashDrawerService.OpenCallCount == 1);
+        await WaitUntilAsync(() => IsShowingCompletedSale(viewModel) && cashDrawerService.OpenCallCount == 1);
 
         Assert.Equal(1, cashDrawerService.OpenCallCount);
         var auditEvent = Assert.Single(auditLogger.Events);
@@ -2344,7 +2378,7 @@ public sealed class MainViewModelScannerTests
 
         InvokePaymentCompleted(viewModel, order);
 
-        await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen));
+        await WaitUntilAsync(() => IsShowingCompletedSale(viewModel));
         await Task.Delay(50);
         Assert.Equal(0, cashDrawerService.OpenCallCount);
         Assert.False(cashierContext.RequirePermission(Permissions.PosTerminal.CashDrawer.Open, out _));
@@ -2367,7 +2401,7 @@ public sealed class MainViewModelScannerTests
 
         InvokePaymentCompleted(viewModel, order);
 
-        await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen) && cashDrawerService.OpenCallCount == 1);
+        await WaitUntilAsync(() => IsShowingCompletedSale(viewModel) && cashDrawerService.OpenCallCount == 1);
 
         Assert.Equal(1, cashDrawerService.OpenCallCount);
         Assert.Equal("Payment completed. Do not take payment again; a follow-up action needs attention.", viewModel.StatusMessage);
@@ -3834,8 +3868,9 @@ public sealed class MainViewModelScannerTests
 
         await viewModel.ShowPaymentSuccessCommand.ExecuteAsync(null);
 
-        Assert.Same(viewModel.PaymentSuccess, viewModel.CurrentScreen);
-        Assert.Null(scanner.ActivePageId);
+        // 成功结果以卡片留在收银主页，扫码枪仍交给收银页处理，可直接扫下一单。
+        Assert.True(IsShowingCompletedSale(viewModel));
+        Assert.Equal(PosTerminalViewModel.PageId, scanner.ActivePageId);
 
         await viewModel.ShowHistoryCommand.ExecuteAsync(null);
 
@@ -4591,6 +4626,43 @@ public sealed class MainViewModelScannerTests
         Assert.Equal(CustomerDisplayWindowMode.Closed, viewModel.CustomerDisplayWindowMode);
         Assert.False(viewModel.IsCustomerDisplayOpen);
         Assert.Equal("No second display detected. Customer display was not opened.", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task CustomerDisplayFullscreenRequest_switches_normal_window_to_fullscreen_through_command()
+    {
+        var customerDisplayWindow = new FakeCustomerDisplayWindowService();
+        var viewModel = CreateAuthorizedMainViewModel(customerDisplayWindow);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        viewModel.SetCustomerDisplayWindowMode(CustomerDisplayWindowMode.Normal, owner: null);
+
+        customerDisplayWindow.RaiseFullscreenRequested();
+        await (viewModel.ShowCustomerDisplayFullscreenCommand.ExecutionTask ?? Task.CompletedTask);
+
+        Assert.Equal(CustomerDisplayWindowMode.Fullscreen, customerDisplayWindow.LastSetMode);
+        Assert.Equal(CustomerDisplayWindowMode.Fullscreen, viewModel.CustomerDisplayWindowMode);
+        Assert.Equal("Customer display opened full screen on the second display.", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task CustomerDisplayFullscreenRequest_requires_customer_display_permission()
+    {
+        var customerDisplayWindow = new FakeCustomerDisplayWindowService();
+        var cashierContext = new CashierSessionContext();
+        cashierContext.SetCurrent(CreateCashierSession(Permissions.PosTerminal.Sales.AddItem));
+        var viewModel = CreateAuthorizedMainViewModel(
+            customerDisplayWindow,
+            cashierSessionContext: cashierContext,
+            enforceCashierPermissions: true);
+        viewModel.SetCustomerDisplayWindowMode(CustomerDisplayWindowMode.Normal, owner: null);
+
+        customerDisplayWindow.RaiseFullscreenRequested();
+        await (viewModel.ShowCustomerDisplayFullscreenCommand.ExecutionTask ?? Task.CompletedTask);
+
+        Assert.Equal(1, customerDisplayWindow.SetModeCallCount);
+        Assert.Equal(CustomerDisplayWindowMode.Normal, viewModel.CustomerDisplayWindowMode);
+        Assert.False(cashierContext.RequirePermission(Permissions.PosTerminal.CustomerDisplay.Manage, out var deniedMessage));
+        Assert.Equal(deniedMessage, viewModel.StatusMessage);
     }
 
     [Fact]
@@ -6244,7 +6316,7 @@ public sealed class MainViewModelScannerTests
         var recovered = await InvokeRecoverCardPaymentAttemptAsync(viewModel, navigateToPaymentOnDraft: false);
 
         Assert.True(recovered);
-        Assert.Same(viewModel.PaymentSuccess, viewModel.CurrentScreen);
+        Assert.True(IsShowingCompletedSale(viewModel));
         var call = Assert.Single(printService.Calls);
         Assert.Equal(order.OrderGuid, call.OrderGuid);
         Assert.Equal(ReceiptPrintReason.CardAuto, call.Reason);
@@ -7346,6 +7418,12 @@ public sealed class MainViewModelScannerTests
                         : null))
                 .ToArray());
     }
+
+    private static bool IsShowingCompletedSale(MainViewModel viewModel) =>
+        viewModel.PosTerminal is { } pos &&
+        ReferenceEquals(viewModel.CurrentScreen, pos) &&
+        pos.IsLastSaleVisible &&
+        ReferenceEquals(pos.LastSale, viewModel.PaymentSuccess);
 
     private static void InvokePaymentCompleted(MainViewModel viewModel, LocalOrder order, bool hasPostCommitWarning = false)
     {
@@ -9357,6 +9435,10 @@ public sealed class MainViewModelScannerTests
         public CustomerDisplayWindowMode LastSetMode { get; private set; } = CustomerDisplayWindowMode.Closed;
 
         public event EventHandler? Closed;
+
+        public event EventHandler? FullscreenRequested;
+
+        public void RaiseFullscreenRequested() => FullscreenRequested?.Invoke(this, EventArgs.Empty);
 
         public void Prewarm(CustomerDisplayViewModel viewModel)
         {

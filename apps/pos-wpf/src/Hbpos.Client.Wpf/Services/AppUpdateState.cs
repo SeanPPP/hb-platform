@@ -126,6 +126,7 @@ public sealed partial class AppUpdateState : ObservableObject
         ClearVersionCheckResult();
     }
 
+    // 中文注释：底部「最新版本/目标版本」也是更新提示，只能在安装包下载完成后调用。
     public void ApplyVersionCheck(AppUpdateCheckResponse update)
     {
         var targetVersion = AppVersionProvider.NormalizeVersionText(update.TargetVersion);
@@ -163,6 +164,8 @@ public sealed partial class AppUpdateState : ObservableObject
         _installAsync = null;
         _retryAsync = null;
         _exitApplication = null;
+        // 中文注释：新安装包下载完成前底部不能出现目标版本号。
+        ClearVersionCheckResult();
         ClearDownloadProgress();
         SetStatus("appUpdate.force.downloading");
         NotifyCommandStates();
@@ -235,35 +238,9 @@ public sealed partial class AppUpdateState : ObservableObject
         NotifyCommandStates();
     }
 
-    public void ShowStartupUpdateError(
-        string message,
-        Func<Task> retryAsync,
-        Action exitApplication)
+    public void ClearForceUpdateDownload()
     {
-        IsForceUpdateRequired = true;
-        IsForceUpdatePendingInstall = false;
-        IsForceUpdateError = true;
-        IsOptionalUpdateReady = false;
-        IsDownloading = false;
-        InstallerPath = null;
-        TargetVersion = null;
-        ReleaseNotes = null;
-        _installAsync = null;
-        _retryAsync = retryAsync;
-        _exitApplication = exitApplication;
-        ClearDownloadProgress();
-        // 启动阶段检查失败必须复用全局阻断遮罩，但文案不能误导成安装包下载失败。
-        SetStatus("appUpdate.startup.checkFailed", message);
-        NotifyCommandStates();
-    }
-
-    public void ClearStartupUpdateError()
-    {
-        if (!string.Equals(StatusKey, "appUpdate.startup.checkFailed", StringComparison.Ordinal))
-        {
-            return;
-        }
-
+        // 中文注释：强更安装包没下载成功时回到无提示状态，不能留下阻断遮罩或底部新版本号。
         IsForceUpdateRequired = false;
         IsForceUpdatePendingInstall = false;
         IsForceUpdateError = false;
@@ -275,6 +252,7 @@ public sealed partial class AppUpdateState : ObservableObject
         _installAsync = null;
         _retryAsync = null;
         _exitApplication = null;
+        ClearVersionCheckResult();
         ClearDownloadProgress();
         StatusKey = string.Empty;
         StatusArgs = [];
