@@ -1513,7 +1513,7 @@
                 <Button Command="{Binding OpenSpecialProductsCommand}" Style="{StaticResource PosSidebarActionButtonStyle}">
                     <StackPanel>
                         <Border Style="{StaticResource PosSidebarActionIconHostStyle}">
-                            <materialDesign:PackIcon Kind="StarOutline" Width="24" Height="24" Foreground="{DynamicResource PosPrimaryTextBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            <materialDesign:PackIcon Kind="StarOutline" Width="24" Height="24" Foreground="{DynamicResource PosSidebarIconBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
                         <TextBlock Text="{loc:Loc pos.terminal.actions.specialItems}" Style="{StaticResource PosSidebarActionLabelStyle}" />
                     </StackPanel>
@@ -1521,7 +1521,7 @@
                 <Button Command="{Binding OpenReturnsCommand}" Style="{StaticResource PosSidebarActionButtonStyle}">
                     <StackPanel>
                         <Border Style="{StaticResource PosSidebarActionIconHostStyle}">
-                            <materialDesign:PackIcon Kind="CashRefund" Width="24" Height="24" Foreground="{DynamicResource PosDangerTextBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            <materialDesign:PackIcon Kind="CashRefund" Width="24" Height="24" Foreground="{DynamicResource PosSidebarRefundIconBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
                         <TextBlock Text="{loc:Loc Refund}" Style="{StaticResource PosSidebarActionLabelStyle}" />
                     </StackPanel>
@@ -1529,7 +1529,7 @@
                 <Button Command="{Binding HoldOrderCommand}" Style="{StaticResource PosSidebarActionButtonStyle}">
                     <StackPanel>
                         <Border Style="{StaticResource PosSidebarActionIconHostStyle}">
-                            <materialDesign:PackIcon Kind="ClipboardTextOutline" Width="24" Height="24" Foreground="{DynamicResource PosAccentBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            <materialDesign:PackIcon Kind="ClipboardTextOutline" Width="24" Height="24" Foreground="{DynamicResource PosSidebarHoldIconBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
                         <TextBlock Text="{Binding HoldOrderText}" Style="{StaticResource PosSidebarActionLabelStyle}" />
                     </StackPanel>
@@ -1537,7 +1537,7 @@
                 <Button Command="{Binding RecallOrderCommand}" Style="{StaticResource PosSidebarActionButtonStyle}">
                     <StackPanel>
                         <Border Style="{StaticResource PosSidebarActionIconHostStyle}">
-                            <materialDesign:PackIcon Kind="FileDocumentOutline" Width="24" Height="24" Foreground="{DynamicResource PosPrimaryTextBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            <materialDesign:PackIcon Kind="FileDocumentOutline" Width="24" Height="24" Foreground="{DynamicResource PosSidebarIconBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
                         <TextBlock Text="{Binding RecallOrderText}" Style="{StaticResource PosSidebarActionLabelStyle}" />
                     </StackPanel>
@@ -1545,7 +1545,7 @@
                 <Button Command="{Binding OpenCashDrawerCommand}" services:ButtonFeedback.Cue="CashDrawer" Style="{StaticResource PosSidebarActionButtonStyle}">
                     <StackPanel>
                         <Border Style="{StaticResource PosSidebarActionIconHostStyle}">
-                            <materialDesign:PackIcon Kind="CashRegister" Width="24" Height="24" Foreground="{DynamicResource PosPrimaryTextBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            <materialDesign:PackIcon Kind="CashRegister" Width="24" Height="24" Foreground="{DynamicResource PosSidebarIconBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
                         <TextBlock Text="{Binding OpenCashDrawerText}" Style="{StaticResource PosSidebarActionLabelStyle}" />
                     </StackPanel>
@@ -1553,7 +1553,7 @@
                 <Button Command="{Binding PrintLastReceiptCommand}" Style="{StaticResource PosSidebarActionButtonStyle}">
                     <StackPanel>
                         <Border Style="{StaticResource PosSidebarActionIconHostStyle}">
-                            <materialDesign:PackIcon Kind="ReceiptTextOutline" Width="24" Height="24" Foreground="{DynamicResource PosPrimaryTextBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            <materialDesign:PackIcon Kind="ReceiptTextOutline" Width="24" Height="24" Foreground="{DynamicResource PosSidebarIconBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
                         <TextBlock Text="{Binding PrintLastReceiptText}" Style="{StaticResource PosSidebarActionLabelStyle}" />
                     </StackPanel>
@@ -1561,7 +1561,7 @@
                 <Button Command="{Binding LockCashierCommand}" Style="{StaticResource PosSidebarActionButtonStyle}">
                     <StackPanel>
                         <Border Style="{StaticResource PosSidebarActionIconHostStyle}">
-                            <materialDesign:PackIcon Kind="LogoutVariant" Width="24" Height="24" Foreground="{DynamicResource PosPrimaryTextBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            <materialDesign:PackIcon Kind="LogoutVariant" Width="24" Height="24" Foreground="{DynamicResource PosSidebarIconBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
                         <TextBlock Text="{Binding LockCashierText}" Style="{StaticResource PosSidebarActionLabelStyle}" />
                     </StackPanel>
@@ -1569,7 +1569,7 @@
                 <Button Command="{Binding OpenDailyCloseCommand}" Style="{StaticResource PosSidebarActionButtonStyle}">
                     <StackPanel>
                         <Border Style="{StaticResource PosSidebarActionIconHostStyle}">
-                            <materialDesign:PackIcon Kind="CalendarCheckOutline" Width="24" Height="24" Foreground="{DynamicResource PosPrimaryTextBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            <materialDesign:PackIcon Kind="CalendarCheckOutline" Width="24" Height="24" Foreground="{DynamicResource PosSidebarIconBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
                         <TextBlock Text="{Binding DailyCloseText}" Style="{StaticResource PosSidebarActionLabelStyle}" />
                     </StackPanel>
@@ -1577,7 +1577,7 @@
                 <Button Command="{Binding OpenSettingsCommand}" Style="{StaticResource PosSidebarActionButtonStyle}">
                     <StackPanel>
                         <Border Style="{StaticResource PosSidebarActionIconHostStyle}">
-                            <materialDesign:PackIcon Kind="CogOutline" Width="24" Height="24" Foreground="{DynamicResource PosPrimaryTextBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            <materialDesign:PackIcon Kind="CogOutline" Width="24" Height="24" Foreground="{DynamicResource PosSidebarIconBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
                         <TextBlock Text="{Binding SettingsText}" Style="{StaticResource PosSidebarActionLabelStyle}" />
                     </StackPanel>

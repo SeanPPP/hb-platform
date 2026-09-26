@@ -34,6 +34,12 @@
     <SolidColorBrush x:Key="PosSubtleForegroundBrush" Color="#FF849189" />
     <!-- 功能图标 -->
     <SolidColorBrush x:Key="PosIconBrush" Color="#FF3D5A66" />
+    <!-- 侧栏功能图标 -->
+    <SolidColorBrush x:Key="PosSidebarIconBrush" Color="#FF3D5A66" />
+    <!-- 侧栏退款图标 -->
+    <SolidColorBrush x:Key="PosSidebarRefundIconBrush" Color="#FF3D5A66" />
+    <!-- 侧栏挂单图标 -->
+    <SolidColorBrush x:Key="PosSidebarHoldIconBrush" Color="#FF3D5A66" />
     <!-- 主色填充/描边（配白字） -->
     <SolidColorBrush x:Key="PosPrimaryBrush" Color="#FF245A74" />
     <!-- 主色按下 -->

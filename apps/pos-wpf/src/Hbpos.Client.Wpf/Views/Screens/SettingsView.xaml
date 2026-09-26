@@ -35,15 +35,20 @@
             <Setter Property="Height" Value="42" />
             <Setter Property="FontSize" Value="13" />
             <Setter Property="Padding" Value="12,0" />
+            <Setter Property="Foreground" Value="{DynamicResource PosTextBrush}" />
+            <Setter Property="CaretBrush" Value="{DynamicResource PosTextBrush}" />
             <Setter Property="Background" Value="{DynamicResource PosSurfaceBrush}" />
             <Setter Property="BorderBrush" Value="{DynamicResource PosBorderBrush}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="ScrollViewer.PanningMode" Value="None" />
         </Style>
 
-        <Style x:Key="SettingsComboBoxStyle" TargetType="ComboBox">
+        <!-- 系统默认下拉框模板的底色写死为浅灰渐变，深色主题下会变成浅字压浅底；
+             改为继承 MaterialDesign 下拉框（与历史、卡交易异常中心一致），底色与弹出层随主题切换。 -->
+        <Style x:Key="SettingsComboBoxStyle" TargetType="ComboBox" BasedOn="{StaticResource {x:Type ComboBox}}">
             <Setter Property="Height" Value="42" />
             <Setter Property="Padding" Value="10,0" />
+            <Setter Property="Foreground" Value="{DynamicResource PosTextBrush}" />
             <Setter Property="Background" Value="{DynamicResource PosSurfaceBrush}" />
             <Setter Property="BorderBrush" Value="{DynamicResource PosBorderBrush}" />
             <Setter Property="BorderThickness" Value="1" />
