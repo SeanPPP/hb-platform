@@ -367,7 +367,10 @@
         <Setter Property="Margin" Value="0,0,0,12" />
     </Style>
 
+    <!-- 本样式不继承 MaterialDesign，系统默认模板会把文字和光标设成黑色；深色主题下必须显式跟随色板。 -->
     <Style x:Key="PosSearchTextBoxStyle" TargetType="TextBox">
+        <Setter Property="Foreground" Value="{DynamicResource PosTextBrush}" />
+        <Setter Property="CaretBrush" Value="{DynamicResource PosTextBrush}" />
         <Setter Property="Background" Value="{DynamicResource PosSurfaceBrush}" />
         <Setter Property="BorderBrush" Value="{DynamicResource PosBorderBrush}" />
         <Setter Property="BorderThickness" Value="1" />

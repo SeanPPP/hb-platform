@@ -102,8 +102,11 @@ public sealed class SalesDetailMonthlyProjectionTests
         Assert.Contains("THROW 51014,", sql);
         Assert.Contains("INTO #sdmMonths", sql);
         Assert.Contains("st.[ProjectionSchemaVersion]=2", sql);
-        Assert.Contains("st.[MappingVersion]=@sdmMappingVersion THEN 1 ELSE 0 END AS bit) [BranchValid]", sql);
+        Assert.Contains("st.[MappingVersion]=@sdmMappingVersion", sql);
+        Assert.Contains("failed.[Status]=N'Failed'", sql);
+        Assert.Contains("failed.[Date] >= CONVERT(datetime, m.[Month])", sql);
         Assert.Contains("INTO #sdmDays", sql);
+        Assert.Contains("failed.[Date]=CONVERT(datetime, d.[Day])", sql);
         Assert.Contains("WHEN dv.[DayValid]=1 THEN 1 ELSE 2 END AS tinyint) [ProductSource]", sql);
         Assert.Contains("WHEN dv.[DayValid]=1 AND dv.[MappingValid]=1 THEN 1 ELSE 2 END AS tinyint) [BranchSource]", sql);
         Assert.Contains("INNER JOIN [ProductStoreDailySalesStatistic] s ON s.[Date]>=d.[DayStart] AND s.[Date]<d.[DayEnd]", sql);
