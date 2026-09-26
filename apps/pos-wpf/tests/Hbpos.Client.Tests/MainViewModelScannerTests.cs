@@ -254,6 +254,27 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
+    public async Task Active_page_title_shows_device_registration_for_unregistered_device()
+    {
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            mainShellStartupService: new MainShellStartupService(
+                new FakeLocalDeviceRepository(),
+                new FakeDeviceFingerprintService(),
+                new DeviceAuthorizationState()),
+            deviceRegistrationWorkflowService: new DeviceRegistrationWorkflowService(
+                new FakeDeviceApiClient(),
+                new FakeLocalDeviceRepository(),
+                new FakeDeviceFingerprintService()));
+
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+
+        Assert.NotNull(viewModel.DeviceRegistration);
+        Assert.Same(viewModel.DeviceRegistration, viewModel.CurrentScreen);
+        Assert.Equal("Device Registration", viewModel.ActivePageTitleText);
+    }
+
+    [Fact]
     public async Task Active_page_title_tracks_navigation_and_culture()
     {
         var viewModel = CreateAuthorizedMainViewModel(new FakeCustomerDisplayWindowService());

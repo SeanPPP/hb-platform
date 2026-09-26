@@ -47,7 +47,6 @@ public sealed class ScreenNavigatorTests : IDisposable
         Assert.Equal(new object?[] { pos }, _screens);
         Assert.True(navigator.IsPosTerminalScreenActive);
         Assert.False(navigator.IsFallbackScreenActive);
-        Assert.Equal("shell.page.pos", navigator.ActivePageTitleText);
     }
 
     [Fact]
