@@ -35,6 +35,51 @@ public sealed class ShellCatalogServiceTests
     }
 
     [Fact]
+    public async Task SyncCatalogAndReloadAsync_reuses_the_loaded_index_when_catalog_and_conflicts_are_unchanged()
+    {
+        var priceIndex = new LocalSellableItemIndex();
+        var repository = new CountingCatalogRepository { Items = [CreateItem("SKU-001")] };
+        var sync = new FixedResultCatalogSyncService();
+        var service = new ShellCatalogService(priceIndex, repository, sync, new PosCartService());
+
+        sync.Result = new LocalCatalogSyncResult("S01", 0, 1, 1, 0, LocalCatalogSyncModes.Full);
+        var first = await service.SyncCatalogAndReloadAsync("S01", forceFullDownload: false);
+
+        // 无变化：不重读目录（库里即使被别处改动，也等下次真正变化时再整体重载）。
+        repository.Items = [CreateItem("SKU-RELOADED")];
+        sync.Result = new LocalCatalogSyncResult("S01", 0, 0, 0, 0, LocalCatalogSyncModes.NoChange, CatalogChanged: false, CodeConflictsChanged: false);
+        var second = await service.SyncCatalogAndReloadAsync("S01", forceFullDownload: false);
+
+        Assert.Same(first, second);
+        Assert.Equal(1, repository.LoadCount);
+        Assert.Equal("SKU-001", Assert.Single(priceIndex.Items).ProductCode);
+
+        // 只有冲突候选变化也要重建扫码索引，才能把新的备选商品并进来。
+        sync.Result = new LocalCatalogSyncResult("S01", 0, 0, 0, 0, LocalCatalogSyncModes.NoChange, CatalogChanged: false, CodeConflictsChanged: true);
+        await service.SyncCatalogAndReloadAsync("S01", forceFullDownload: false);
+
+        Assert.Equal(2, repository.LoadCount);
+        Assert.Equal("SKU-RELOADED", Assert.Single(priceIndex.Items).ProductCode);
+    }
+
+    [Fact]
+    public async Task SyncCatalogAndReloadAsync_reloads_when_the_unchanged_result_is_for_a_store_never_loaded()
+    {
+        var priceIndex = new LocalSellableItemIndex();
+        var repository = new CountingCatalogRepository { Items = [CreateItem("SKU-001")] };
+        var sync = new FixedResultCatalogSyncService
+        {
+            Result = new LocalCatalogSyncResult("S01", 0, 0, 0, 0, LocalCatalogSyncModes.NoChange, CatalogChanged: false, CodeConflictsChanged: false)
+        };
+        var service = new ShellCatalogService(priceIndex, repository, sync, new PosCartService());
+
+        var items = await service.SyncCatalogAndReloadAsync("S01", forceFullDownload: false);
+
+        Assert.Equal(1, repository.LoadCount);
+        Assert.Equal("SKU-001", Assert.Single(items).ProductCode);
+    }
+
+    [Fact]
     public async Task IsCatalogSyncActive_IsTrueWhileBackgroundSyncIsRunning()
     {
         var priceIndex = new LocalSellableItemIndex();
@@ -362,6 +407,33 @@ public sealed class ShellCatalogServiceTests
             var taskStates = string.Join(", ", tasks.Select(task => task.Status));
             return $"calls=[{string.Join(", ", Calls)}] regularStarted={RegularStarted.Task.IsCompleted} " +
                    $"resetStarted={ResetStarted.Task.IsCompleted} regularCanceled={RegularCanceled} tasks=[{taskStates}]";
+        }
+    }
+
+    private sealed class FixedResultCatalogSyncService : ILocalCatalogSyncService
+    {
+        public LocalCatalogSyncResult Result { get; set; } = new("S01", 0, 0, 0, 0);
+
+        public Task<LocalCatalogSyncResult> FullSyncAsync(
+            string storeCode,
+            CancellationToken cancellationToken = default,
+            IProgress<CatalogSyncProgress>? progress = null,
+            bool forceFullDownload = false)
+        {
+            return Task.FromResult(Result);
+        }
+    }
+
+    private sealed class CountingCatalogRepository : FakeLocalCatalogRepository
+    {
+        public int LoadCount { get; private set; }
+
+        public override Task<IReadOnlyList<SellableItemDto>> LoadSellableItemsAsync(
+            string storeCode,
+            CancellationToken cancellationToken = default)
+        {
+            LoadCount++;
+            return base.LoadSellableItemsAsync(storeCode, cancellationToken);
         }
     }
 

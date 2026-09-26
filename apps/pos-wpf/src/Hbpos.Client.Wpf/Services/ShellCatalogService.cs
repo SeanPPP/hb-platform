@@ -45,6 +45,8 @@ public sealed class ShellCatalogService(
     private readonly IUiPriorityCoordinator _uiPriorityCoordinator = uiPriorityCoordinator ?? UiPriorityCoordinator.Noop;
     private int _resetRequestCount;
     private int _activeSyncCount;
+    // 上一次整表加载进扫码索引的目录；同步结果无变化时直接复用，避免重读几十万行。
+    private LoadedCatalog? _loadedCatalog;
 
     public bool IsCatalogSyncActive => Volatile.Read(ref _activeSyncCount) > 0;
 
@@ -57,6 +59,7 @@ public sealed class ShellCatalogService(
         var itemList = items as IReadOnlyList<SellableItemDto> ?? items.ToArray();
         await catalogRepository.ReplaceSellableItemsAsync(itemList, cancellationToken);
         priceIndex.ReplaceAll(itemList);
+        SetLoadedCatalog(storeCode: null, items: null);
     }
 
     public async Task<IReadOnlyList<SellableItemDto>> LoadLocalCatalogAsync(
@@ -189,8 +192,17 @@ public sealed class ShellCatalogService(
                 Interlocked.Increment(ref _activeSyncCount);
                 try
                 {
-                    await catalogSync.FullSyncAsync(storeCode, cancellationToken, syncProgress, forceFullDownload)
+                    var syncResult = await catalogSync.FullSyncAsync(storeCode, cancellationToken, syncProgress, forceFullDownload)
                         .ConfigureAwait(false);
+                    if (syncResult is { CatalogChanged: false, CodeConflictsChanged: false } &&
+                        TryGetLoadedCatalog(storeCode, out var loadedItems))
+                    {
+                        // 中文注释：目录与冲突候选都没写库时沿用内存扫码索引，省掉整表重读与排序；促销规则仍按库里最新的应用。
+                        var promotionRules = await catalogRepository.LoadPromotionRulesAsync(storeCode, cancellationToken)
+                            .ConfigureAwait(false);
+                        return new LocalCatalogReloadResult(loadedItems, promotionRules);
+                    }
+
                     return await LoadAndReplaceLocalCatalogAsync(storeCode, cancellationToken)
                         .ConfigureAwait(false);
                 }
@@ -240,9 +252,36 @@ public sealed class ShellCatalogService(
             .ConfigureAwait(false);
         // 内存索引额外带上码冲突的其它商品，扫码命中多条时弹窗选择；返回值仍是目录本身，不影响商品数等统计。
         priceIndex.ReplaceAll(CatalogCodeConflictMerger.Merge(cachedItems, codeConflictItems));
+        SetLoadedCatalog(storeCode, cachedItems);
         var promotionRules = await catalogRepository.LoadPromotionRulesAsync(storeCode, cancellationToken)
             .ConfigureAwait(false);
         return new LocalCatalogReloadResult(cachedItems, promotionRules);
+    }
+
+    private void SetLoadedCatalog(string? storeCode, IReadOnlyList<SellableItemDto>? items)
+    {
+        lock (_syncStateGate)
+        {
+            _loadedCatalog = storeCode is null || items is null
+                ? null
+                : new LoadedCatalog(storeCode.Trim(), items);
+        }
+    }
+
+    private bool TryGetLoadedCatalog(string storeCode, out IReadOnlyList<SellableItemDto> items)
+    {
+        lock (_syncStateGate)
+        {
+            if (_loadedCatalog is { } loaded &&
+                string.Equals(loaded.StoreCode, storeCode.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                items = loaded.Items;
+                return true;
+            }
+        }
+
+        items = [];
+        return false;
     }
 
     private void ApplyPromotionRules(IReadOnlyList<CatalogPromotionRuleDto> promotionRules)
@@ -266,4 +305,8 @@ public sealed class ShellCatalogService(
     private sealed record LocalCatalogReloadResult(
         IReadOnlyList<SellableItemDto> Items,
         IReadOnlyList<CatalogPromotionRuleDto> PromotionRules);
+
+    private sealed record LoadedCatalog(
+        string StoreCode,
+        IReadOnlyList<SellableItemDto> Items);
 }
