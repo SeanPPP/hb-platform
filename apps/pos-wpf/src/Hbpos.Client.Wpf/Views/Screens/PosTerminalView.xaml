@@ -990,6 +990,168 @@
                 </DataGrid>
             </Border>
 
+            <!-- 结账完成后在购物车区域显示上一单结果；扫码或加入商品后由 VM 收起。与购物车同行叠放，不包裹购物车 DataGrid。 -->
+            <Border x:Name="PaymentSuccessCard"
+                    Grid.Row="1"
+                    Panel.ZIndex="3"
+                    MaxWidth="540"
+                    Margin="37,44,30,30"
+                    Padding="20,16"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Background="{StaticResource PosSurfaceBrush}"
+                    BorderBrush="{StaticResource PosSuccessBrush}"
+                    BorderThickness="2"
+                    CornerRadius="12"
+                    AutomationProperties.AutomationId="PaymentSuccessCard"
+                    Visibility="{Binding IsLastSaleVisible, Converter={StaticResource BoolToVis}}">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="18" ShadowDepth="3" Opacity="0.16" />
+                </Border.Effect>
+                <Grid DataContext="{Binding LastSale}">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <Grid Grid.Row="0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Border Width="40"
+                                Height="40"
+                                CornerRadius="20"
+                                Background="#FFE3F5EA"
+                                VerticalAlignment="Center">
+                            <materialDesign:PackIcon Kind="Check"
+                                                     Width="24"
+                                                     Height="24"
+                                                     HorizontalAlignment="Center"
+                                                     VerticalAlignment="Center"
+                                                     Foreground="{StaticResource PosSuccessBrush}" />
+                        </Border>
+                        <StackPanel Grid.Column="1" Margin="12,0,8,0" VerticalAlignment="Center">
+                            <TextBlock Text="{loc:Loc PaymentSuccessful}"
+                                       FontSize="20"
+                                       FontWeight="Black"
+                                       Foreground="{StaticResource PosSuccessBrush}" />
+                            <StackPanel Margin="0,2,0,0" Orientation="Horizontal">
+                                <TextBlock Text="{Binding TransactionIdDisplay}"
+                                           AutomationProperties.AutomationId="CompletedTransactionId"
+                                           FontSize="12"
+                                           Foreground="{StaticResource PosMutedForegroundBrush}" />
+                                <TextBlock Text="  ·  " FontSize="12" Foreground="{StaticResource PosMutedForegroundBrush}" />
+                                <TextBlock Text="{Binding SoldAtDisplay}" FontSize="12" Foreground="{StaticResource PosMutedForegroundBrush}" />
+                            </StackPanel>
+                        </StackPanel>
+                        <Button Grid.Column="2"
+                                Width="40"
+                                Height="40"
+                                VerticalAlignment="Top"
+                                Command="{Binding DataContext.DismissLastSaleCommand, ElementName=PaymentSuccessCard}"
+                                Style="{StaticResource PosSearchSegmentButtonStyle}"
+                                AutomationProperties.AutomationId="PaymentSuccessCardCloseButton"
+                                AutomationProperties.Name="{loc:Loc success.card.close}"
+                                ToolTip="{loc:Loc success.card.close}">
+                            <materialDesign:PackIcon Kind="Close" Width="20" Height="20" Foreground="{StaticResource PosMutedForegroundBrush}" />
+                        </Button>
+                    </Grid>
+
+                    <!-- 现金单并排显示实付、实收与找零；非现金单只显示实付。UniformGrid 不为折叠的子项留位。 -->
+                    <UniformGrid Grid.Row="1" Margin="0,14,0,0" Rows="1">
+                        <Border Margin="0,0,8,0" Padding="12,8" Background="{StaticResource PosSurfaceAltBrush}" CornerRadius="8">
+                            <StackPanel>
+                                <TextBlock Text="{loc:Loc success.totalPaid}" FontSize="12" Foreground="{StaticResource PosMutedForegroundBrush}" />
+                                <TextBlock Text="{Binding TotalAmountPaidDisplay}"
+                                           AutomationProperties.AutomationId="CompletedSaleTotalPaid"
+                                           Margin="0,2,0,0"
+                                           FontSize="22"
+                                           FontWeight="Black" />
+                            </StackPanel>
+                        </Border>
+                        <Border Margin="0,0,8,0"
+                                Padding="12,8"
+                                Background="{StaticResource PosSurfaceAltBrush}"
+                                CornerRadius="8"
+                                Visibility="{Binding IsCashChangeVisible, Converter={StaticResource BoolToVis}}">
+                            <StackPanel>
+                                <TextBlock Text="{loc:Loc payment.cash.amountTendered}" FontSize="12" Foreground="{StaticResource PosMutedForegroundBrush}" />
+                                <TextBlock Text="{Binding TenderedAmountDisplay}" Margin="0,2,0,0" FontSize="22" FontWeight="Black" />
+                            </StackPanel>
+                        </Border>
+                        <Border Padding="12,8"
+                                Background="#FFFFF3E0"
+                                CornerRadius="8"
+                                Visibility="{Binding IsCashChangeVisible, Converter={StaticResource BoolToVis}}">
+                            <StackPanel>
+                                <TextBlock Text="{loc:Loc payment.cash.changeDue}" FontSize="12" FontWeight="SemiBold" Foreground="{StaticResource PosAccentBrush}" />
+                                <TextBlock Text="{Binding ChangeAmountDisplay}"
+                                           AutomationProperties.AutomationId="CompletedSaleChangeDue"
+                                           FontSize="30"
+                                           FontWeight="Black"
+                                           Foreground="{StaticResource PosAccentBrush}" />
+                            </StackPanel>
+                        </Border>
+                    </UniformGrid>
+
+                    <TextBlock Grid.Row="2"
+                               Margin="0,10,0,0"
+                               FontSize="13"
+                               TextWrapping="Wrap"
+                               Foreground="{StaticResource PosTextBrush}"
+                               Visibility="{Binding IsCardPaymentSummaryVisible, Converter={StaticResource BoolToVis}}">
+                        <Run Text="{loc:Loc success.cardDetails}" Foreground="{StaticResource PosMutedForegroundBrush}" />
+                        <Run Text=" " />
+                        <Run Text="{Binding CardPaymentSummary, Mode=OneWay}" />
+                    </TextBlock>
+
+                    <Border Grid.Row="3"
+                            Margin="0,10,0,0"
+                            Padding="10,8"
+                            Background="#FFFFEDEA"
+                            CornerRadius="8"
+                            AutomationProperties.AutomationId="PaymentCompletedWarning"
+                            Visibility="{Binding HasPostCommitWarning, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="{loc:Loc payment.status.completedWarning}"
+                                   FontSize="12"
+                                   FontWeight="SemiBold"
+                                   TextWrapping="Wrap"
+                                   Foreground="{StaticResource PosDangerBrush}" />
+                    </Border>
+
+                    <Grid Grid.Row="4" Margin="0,14,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,12,0">
+                            <materialDesign:PackIcon Kind="BarcodeScan" Width="18" Height="18" Margin="0,0,6,0" VerticalAlignment="Center" Foreground="{StaticResource PosMutedForegroundBrush}" />
+                            <TextBlock Text="{loc:Loc success.card.scanToContinue}"
+                                       VerticalAlignment="Center"
+                                       FontSize="13"
+                                       TextWrapping="Wrap"
+                                       Foreground="{StaticResource PosMutedForegroundBrush}" />
+                        </StackPanel>
+                        <Button Grid.Column="1"
+                                MinHeight="40"
+                                Padding="14,4"
+                                Command="{Binding PrintReceiptCommand}"
+                                Style="{StaticResource PosSecondaryButtonStyle}"
+                                AutomationProperties.AutomationId="PaymentSuccessCardPrintButton">
+                            <StackPanel Orientation="Horizontal">
+                                <materialDesign:PackIcon Kind="PrinterOutline" Width="18" Height="18" Margin="0,0,6,0" VerticalAlignment="Center" />
+                                <TextBlock Text="{loc:Loc success.printReceipt}" VerticalAlignment="Center" FontWeight="Bold" />
+                            </StackPanel>
+                        </Button>
+                    </Grid>
+                </Grid>
+            </Border>
+
             <Border Grid.Row="2" Padding="17,0,12,18" Background="#FFF7F8FA">
                 <Grid>
                     <Grid.RowDefinitions>
