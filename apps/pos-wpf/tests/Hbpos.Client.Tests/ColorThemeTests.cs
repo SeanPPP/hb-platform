@@ -247,6 +247,55 @@ public sealed class ColorThemeTests(PaymentViewRuntimeStaTestHost host)
         Assert.Equal(["Default", "Paper", "Graphite", "Celadon"], switcher.Options.Select(option => option.Name));
     }
 
+    [Theory]
+    [InlineData("Default")]
+    [InlineData("Paper")]
+    [InlineData("Graphite")]
+    [InlineData("Celadon")]
+    public void Sidebar_icons_keep_function_colors_in_default_and_share_one_ink_color_in_new_themes(string name)
+    {
+        var colors = SolidColors(LoadPalette(name));
+        var icon = colors["PosSidebarIconBrush"];
+        var refund = colors["PosSidebarRefundIconBrush"];
+        var hold = colors["PosSidebarHoldIconBrush"];
+
+        if (name == "Default")
+        {
+            // 默认主题与改造前一致：功能图标主色、退款红色、挂单橙色。
+            Assert.Equal(colors["PosPrimaryTextBrush"], icon);
+            Assert.Equal(colors["PosDangerTextBrush"], refund);
+            Assert.Equal(colors["PosAccentBrush"], hold);
+        }
+        else
+        {
+            Assert.Equal(icon, refund);
+            Assert.Equal(icon, hold);
+            Assert.True(Contrast(icon, colors["PosSurfaceBrush"]) >= 4.5, "侧栏图标对比度应达到 AA。");
+        }
+    }
+
+    [Fact]
+    public void Pos_sidebar_icons_use_sidebar_colors_and_exit_stays_danger()
+    {
+        var view = XDocument.Load(Path.Combine(WpfRoot(), "Views", "Screens", "PosTerminalView.xaml"));
+        XNamespace materialDesign = "http://materialdesigninxaml.net/winfx/xaml/themes";
+        var sidebarButtons = view.Descendants(Presentation + "Button")
+            .Where(button => ((string?)button.Attribute("Style"))?.Contains("PosSidebar", StringComparison.Ordinal) == true)
+            .ToArray();
+        Assert.Equal(10, sidebarButtons.Length);
+
+        var iconColors = sidebarButtons.ToDictionary(
+            button => (string)button.Attribute("Command")!,
+            button => (string?)button.Descendants(materialDesign + "PackIcon").Single().Attribute("Foreground"));
+
+        Assert.Equal("{DynamicResource PosSidebarRefundIconBrush}", iconColors["{Binding OpenReturnsCommand}"]);
+        Assert.Equal("{DynamicResource PosSidebarHoldIconBrush}", iconColors["{Binding HoldOrderCommand}"]);
+        Assert.Equal("{DynamicResource PosDangerTextBrush}", iconColors["{Binding ExitApplicationCommand}"]);
+        Assert.All(
+            iconColors.Where(pair => pair.Key is not ("{Binding OpenReturnsCommand}" or "{Binding HoldOrderCommand}" or "{Binding ExitApplicationCommand}")),
+            pair => Assert.Equal("{DynamicResource PosSidebarIconBrush}", pair.Value));
+    }
+
     [Fact]
     public void Title_bar_places_the_color_theme_switcher_next_to_the_customer_display_button()
     {
@@ -262,6 +311,38 @@ public sealed class ColorThemeTests(PaymentViewRuntimeStaTestHost host)
         var popup = Assert.Single(switcher.Elements(Presentation + "Popup"));
         Assert.Equal("False", (string?)popup.Attribute("StaysOpen"));
     }
+
+    [Fact]
+    public void Window_foreground_and_plain_text_inputs_follow_the_palette_text_color()
+    {
+        // 真机巡检：石墨夜下未着色图标、系统模板输入框都落回黑色，压在深色底上看不见。
+        var window = XDocument.Load(Path.Combine(WpfRoot(), "MainWindow.xaml"));
+        Assert.Equal("{DynamicResource PosTextBrush}", (string?)window.Root!.Attribute("Foreground"));
+
+        var theme = XDocument.Load(Path.Combine(WpfRoot(), "Themes", "PosTheme.xaml"));
+        var settings = XDocument.Load(Path.Combine(WpfRoot(), "Views", "Screens", "SettingsView.xaml"));
+        foreach (var (document, key) in new[]
+                 {
+                     (theme, "PosSearchTextBoxStyle"),
+                     (settings, "SettingsFieldPasswordBoxStyle")
+                 })
+        {
+            var setters = StyleSetters(document, key);
+            Assert.Equal("{DynamicResource PosTextBrush}", setters["Foreground"]);
+            Assert.Equal("{DynamicResource PosTextBrush}", setters["CaretBrush"]);
+        }
+
+        var comboStyle = settings.Descendants(Presentation + "Style")
+            .Single(style => (string?)style.Attribute(Xaml + "Key") == "SettingsComboBoxStyle");
+        Assert.Equal("{StaticResource {x:Type ComboBox}}", (string?)comboStyle.Attribute("BasedOn"));
+        Assert.Equal("{DynamicResource PosTextBrush}", StyleSetters(settings, "SettingsComboBoxStyle")["Foreground"]);
+    }
+
+    private static Dictionary<string, string> StyleSetters(XDocument document, string key) =>
+        document.Descendants(Presentation + "Style")
+            .Single(style => (string?)style.Attribute(Xaml + "Key") == key)
+            .Elements(Presentation + "Setter")
+            .ToDictionary(setter => (string)setter.Attribute("Property")!, setter => (string)setter.Attribute("Value")!);
 
     private static XDocument LoadPalette(string name) =>
         XDocument.Load(Path.Combine(WpfRoot(), "Themes", "Palettes", name + ".xaml"));
