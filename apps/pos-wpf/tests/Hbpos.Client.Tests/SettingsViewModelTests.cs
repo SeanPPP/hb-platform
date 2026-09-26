@@ -4455,6 +4455,7 @@ public sealed class SettingsViewModelTests
         while (current is not null)
         {
             if (Directory.Exists(Path.Combine(current.FullName, ".git")) ||
+                File.Exists(Path.Combine(current.FullName, ".git")) ||
                 File.Exists(Path.Combine(current.FullName, "hb-platform.sln")))
             {
                 return current.FullName;

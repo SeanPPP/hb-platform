@@ -973,6 +973,7 @@ public sealed class AppUpdateCoordinatorTests
         while (current is not null)
         {
             if (Directory.Exists(Path.Combine(current.FullName, ".git")) ||
+                File.Exists(Path.Combine(current.FullName, ".git")) ||
                 File.Exists(Path.Combine(current.FullName, "hb-platform.sln")))
             {
                 return current.FullName;
