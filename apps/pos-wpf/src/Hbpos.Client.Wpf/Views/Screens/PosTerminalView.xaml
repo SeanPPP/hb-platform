@@ -72,7 +72,7 @@
                                                              HorizontalAlignment="Center" />
                                     <TextBlock Margin="0,4,0,0"
                                                Text="{loc:Loc Remove}"
-                                               FontSize="11"
+                                               FontSize="13"
                                                FontWeight="SemiBold"
                                                TextAlignment="Center" />
                                 </StackPanel>
@@ -271,6 +271,9 @@
         </Style>
 
         <Style x:Key="CashierFlatButtonBaseStyle" TargetType="Button">
+            <Style.Resources>
+                <Style TargetType="TextBlock" BasedOn="{StaticResource PosButtonContentTextStyle}" />
+            </Style.Resources>
             <Setter Property="Padding" Value="8,4" />
             <Setter Property="Background" Value="White" />
             <Setter Property="BorderBrush" Value="{StaticResource PosBorderBrush}" />
@@ -293,7 +296,11 @@
                                               HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
                                               VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
                                               RecognizesAccessKey="True"
-                                              TextBlock.Foreground="{TemplateBinding Foreground}" />
+                                              TextBlock.Foreground="{TemplateBinding Foreground}">
+                                <ContentPresenter.Resources>
+                                    <Style TargetType="TextBlock" BasedOn="{StaticResource PosButtonContentTextStyle}" />
+                                </ContentPresenter.Resources>
+                            </ContentPresenter>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
@@ -325,23 +332,30 @@
         <Style x:Key="CashierClearKeyStyle" TargetType="Button" BasedOn="{StaticResource CashierNumberKeyStyle}">
             <Setter Property="Foreground" Value="{StaticResource PosDangerBrush}" />
             <Setter Property="BorderBrush" Value="#FFFFB4AB" />
-            <Setter Property="FontSize" Value="14" />
+            <Setter Property="FontSize" Value="18" />
             <Setter Property="FontWeight" Value="Medium" />
         </Style>
 
         <Style x:Key="CashierQuickKeyStyle" TargetType="Button" BasedOn="{StaticResource CashierNumberKeyStyle}">
-            <Setter Property="FontSize" Value="14" />
+            <Setter Property="FontSize" Value="18" />
             <Setter Property="FontWeight" Value="SemiBold" />
         </Style>
 
         <Style x:Key="CashierWholeOrderToggleStyle" TargetType="ToggleButton">
+            <Style.Resources>
+                <!-- 英文 “Whole Order” 在 1080 宽时单行放不下，放大后允许换成两行。 -->
+                <Style TargetType="TextBlock" BasedOn="{StaticResource PosButtonContentTextStyle}">
+                    <Setter Property="TextWrapping" Value="Wrap" />
+                    <Setter Property="TextAlignment" Value="Center" />
+                </Style>
+            </Style.Resources>
             <Setter Property="MinHeight" Value="44" />
             <Setter Property="Margin" Value="2" />
             <Setter Property="Padding" Value="6,4" />
             <Setter Property="Background" Value="White" />
             <Setter Property="BorderBrush" Value="{StaticResource PosBorderBrush}" />
             <Setter Property="Foreground" Value="{StaticResource PosTextBrush}" />
-            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontSize" Value="16" />
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="Template">
@@ -356,7 +370,14 @@
                             <ContentPresenter Margin="{TemplateBinding Padding}"
                                               HorizontalAlignment="Center"
                                               VerticalAlignment="Center"
-                                              TextBlock.Foreground="{TemplateBinding Foreground}" />
+                                              TextBlock.Foreground="{TemplateBinding Foreground}">
+                                <ContentPresenter.Resources>
+                                    <Style TargetType="TextBlock" BasedOn="{StaticResource PosButtonContentTextStyle}">
+                                        <Setter Property="TextWrapping" Value="Wrap" />
+                                        <Setter Property="TextAlignment" Value="Center" />
+                                    </Style>
+                                </ContentPresenter.Resources>
+                            </ContentPresenter>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
@@ -380,17 +401,20 @@
             <Setter Property="Height" Value="54" />
             <Setter Property="Margin" Value="3" />
             <Setter Property="Padding" Value="8,5" />
-            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontSize" Value="16" />
             <Setter Property="HorizontalContentAlignment" Value="Stretch" />
             <Setter Property="VerticalContentAlignment" Value="Center" />
         </Style>
 
         <Style x:Key="CashierNoBarcodeButtonStyle" TargetType="Button" BasedOn="{StaticResource CashierFlatButtonBaseStyle}">
+            <Style.Resources>
+                <Style TargetType="TextBlock" BasedOn="{StaticResource PosButtonContentTextStyle}" />
+            </Style.Resources>
             <Setter Property="Height" Value="50" />
             <Setter Property="Background" Value="{StaticResource PosPrimaryBrush}" />
             <Setter Property="BorderBrush" Value="{StaticResource PosPrimaryBrush}" />
             <Setter Property="Foreground" Value="White" />
-            <Setter Property="FontSize" Value="13" />
+            <Setter Property="FontSize" Value="18" />
             <Setter Property="FontWeight" Value="Black" />
             <Setter Property="HorizontalContentAlignment" Value="Center" />
             <Setter Property="VerticalContentAlignment" Value="Center" />
@@ -407,7 +431,11 @@
                                               HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
                                               VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
                                               RecognizesAccessKey="True"
-                                              TextBlock.Foreground="{TemplateBinding Foreground}" />
+                                              TextBlock.Foreground="{TemplateBinding Foreground}">
+                                <ContentPresenter.Resources>
+                                    <Style TargetType="TextBlock" BasedOn="{StaticResource PosButtonContentTextStyle}" />
+                                </ContentPresenter.Resources>
+                            </ContentPresenter>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
@@ -449,7 +477,7 @@
             <Setter Property="Padding" Value="4" />
             <Setter Property="Background" Value="Transparent" />
             <Setter Property="BorderThickness" Value="0,0,1,0" />
-            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontSize" Value="18" />
             <Setter Property="HorizontalContentAlignment" Value="Center" />
             <Setter Property="VerticalContentAlignment" Value="Center" />
         </Style>
@@ -486,10 +514,10 @@
                TargetType="TextBlock"
                BasedOn="{StaticResource PosStitchTileLabelStyle}">
             <Setter Property="MaxWidth" Value="88" />
-            <Setter Property="MaxHeight" Value="30" />
+            <Setter Property="MaxHeight" Value="32" />
             <Setter Property="Margin" Value="0,4,0,0" />
-            <Setter Property="FontSize" Value="11" />
-            <Setter Property="LineHeight" Value="14" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="LineHeight" Value="16" />
             <Setter Property="HorizontalAlignment" Value="Center" />
             <Setter Property="TextAlignment" Value="Center" />
             <Setter Property="TextWrapping" Value="Wrap" />
@@ -588,7 +616,7 @@
                                 VerticalContentAlignment="Center">
                             <StackPanel Orientation="Horizontal">
                                 <materialDesign:PackIcon Kind="BarcodeScan" Width="17" Height="17" Foreground="White" Margin="0,0,6,0" />
-                                <TextBlock Text="{Binding SearchButtonText}" Foreground="White" FontSize="14" FontWeight="Bold" />
+                                <TextBlock Text="{Binding SearchButtonText}" Foreground="White" FontSize="16" FontWeight="Bold" />
                             </StackPanel>
                         </Button>
                     </Border>
@@ -952,7 +980,7 @@
                                                 CornerRadius="4">
                                             <TextBlock AutomationProperties.AutomationId="CartLineQuantity"
                                                        Text="{Binding SignedQuantity, StringFormat={}{0:0.##}}"
-                                                       FontSize="14"
+                                                       FontSize="16"
                                                        FontWeight="SemiBold"
                                                        TextAlignment="Center"
                                                        HorizontalAlignment="Stretch"
@@ -1075,7 +1103,7 @@
                              Style="{StaticResource CashierPayButtonStyle}">
                         <StackPanel Orientation="Horizontal">
                             <materialDesign:PackIcon Kind="Cash" Width="26" Height="26" Foreground="White" Margin="0,0,16,0" />
-                            <TextBlock Text="{Binding PayNowText}" Foreground="White" FontSize="18" FontWeight="Black" />
+                            <TextBlock Text="{Binding PayNowText}" Foreground="White" FontSize="22" FontWeight="Black" />
                         </StackPanel>
                     </Button>
                 </Grid>
@@ -1195,7 +1223,7 @@
                     Command="{Binding AddOpenItemCommand}"
                     Margin="13,0,13,8"
                     Style="{StaticResource CashierNoBarcodeButtonStyle}">
-                <TextBlock Text="{loc:Loc pos.terminal.actions.noBarcode}" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center" />
+                <TextBlock Text="{loc:Loc pos.terminal.actions.noBarcode}" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center" />
             </Button>
 
             <Grid Grid.Row="3" Margin="9,0,9,0" VerticalAlignment="Top">
@@ -1207,19 +1235,19 @@
                 <UniformGrid Grid.Row="0" Columns="2">
                     <Button Command="{Binding ModifySelectedLineQuantityCommand}"
                             Style="{StaticResource CashierFunctionButtonStyle}">
-                        <TextBlock Text="{loc:Loc pos.terminal.actions.modifyQty}" FontSize="12" FontWeight="SemiBold" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" HorizontalAlignment="Center" />
+                        <TextBlock Text="{loc:Loc pos.terminal.actions.modifyQty}" FontSize="16" FontWeight="SemiBold" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" />
                     </Button>
                     <Button Command="{Binding ModifySelectedLinePriceCommand}"
                             Style="{StaticResource CashierFunctionButtonStyle}">
-                        <TextBlock Text="{loc:Loc Price}" FontSize="12" FontWeight="SemiBold" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" HorizontalAlignment="Center" />
+                        <TextBlock Text="{loc:Loc Price}" FontSize="16" FontWeight="SemiBold" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" />
                     </Button>
                     <Button Command="{Binding ApplySelectedLineDiscountAmountCommand}"
                             Style="{StaticResource CashierFunctionButtonStyle}">
-                        <TextBlock Text="{loc:Loc pos.terminal.actions.discountAmount}" FontSize="12" FontWeight="SemiBold" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" HorizontalAlignment="Center" />
+                        <TextBlock Text="{loc:Loc pos.terminal.actions.discountAmount}" FontSize="16" FontWeight="SemiBold" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" />
                     </Button>
                     <Button Command="{Binding ApplySelectedLineDiscountPercentCommand}"
                             Style="{StaticResource CashierFunctionButtonStyle}">
-                        <TextBlock Text="{loc:Loc pos.terminal.actions.discountPercent}" FontSize="12" FontWeight="SemiBold" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" HorizontalAlignment="Center" />
+                        <TextBlock Text="{loc:Loc pos.terminal.actions.discountPercent}" FontSize="16" FontWeight="SemiBold" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" />
                     </Button>
                 </UniformGrid>
 

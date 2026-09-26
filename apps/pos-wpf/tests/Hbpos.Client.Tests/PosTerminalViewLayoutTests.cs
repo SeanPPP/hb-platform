@@ -63,10 +63,10 @@ public sealed class PosTerminalViewLayoutTests
         AssertSetter(numberStyle, "FontSize", "28");
         AssertSetter(numberStyle, "FontWeight", "Black");
         var clearStyle = FindStyle(view, x, "CashierClearKeyStyle");
-        AssertSetter(clearStyle, "FontSize", "14");
+        AssertSetter(clearStyle, "FontSize", "18");
         AssertSetter(clearStyle, "FontWeight", "Medium");
         var quickStyle = FindStyle(view, x, "CashierQuickKeyStyle");
-        AssertSetter(quickStyle, "FontSize", "14");
+        AssertSetter(quickStyle, "FontSize", "18");
         AssertSetter(quickStyle, "FontWeight", "SemiBold");
 
         var middleActionGrid = Assert.Single(view.Descendants(presentation + "Grid").Where(
