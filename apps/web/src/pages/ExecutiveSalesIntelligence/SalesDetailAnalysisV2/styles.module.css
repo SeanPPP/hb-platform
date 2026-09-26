@@ -83,7 +83,16 @@
 .nameText { display:block; flex:1 1 auto; min-width:0; }
 .nameText strong { display:block; font-size:12.5px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#23476c; }
 .nameText small { display:block; color:var(--muted); font-size:10.5px; margin-bottom:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.nameButton img,.imagePlaceholder { width:30px; height:30px; object-fit:contain; flex:none; border-radius:4px; }
+.thumbButton img,.imagePlaceholder { width:30px; height:30px; object-fit:contain; flex:none; border-radius:4px; }
+/* 缩略图独立成按钮：放大镜光标提示可看大图，悬停加细描边，键盘聚焦显示焦点框 */
+.thumbButton { flex:none; display:block; padding:0; border:0; border-radius:4px; background:transparent; line-height:0; cursor:zoom-in; }
+.thumbButton img { display:block; transition:box-shadow .15s; }
+.thumbButton:hover img { box-shadow:0 0 0 1px #9fb9d6; }
+.thumbButton:focus-visible { outline:2px solid #1b6ec3; outline-offset:1px; }
+/* 大图预览页脚：序号、货号、商品名一行显示，商品名过长省略 */
+.previewCaption { display:flex; align-items:baseline; justify-content:center; gap:10px; max-width:min(720px, 86vw); font-size:13px; color:rgba(255,255,255,.9); }
+.previewCaption > span,.previewCaption small { flex:none; font-size:12px; color:rgba(255,255,255,.65); font-variant-numeric:tabular-nums; }
+.previewCaption strong { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
 .imagePlaceholder { display:grid; place-items:center; background:#f2f5f8; color:#8799ab; font-size:20px; }
 .positive { color:#147451; }
 .negative { color:#b7393d; }
@@ -118,8 +127,10 @@
 .sortedHead { color:var(--navy); font-weight:650; cursor:help; }
 .productName { display:flex; align-items:center; gap:2px; min-width:0; }
 .productName .nameButton { flex:1 1 auto; gap:8px; }
+/* 序号与缩略图移出名称按钮后，用右边距保持原来 8px 的间隔 */
+.productName .rank,.productName .thumbButton,.productName .imagePlaceholder { margin-right:6px; }
 .productTable .rank { min-width:26px; font-size:10.5px; }
-.productTable[data-view=current] .nameButton img,.productTable[data-view=side] .nameButton img,
+.productTable[data-view=current] .thumbButton img,.productTable[data-view=side] .thumbButton img,
 .productTable[data-view=current] .imagePlaceholder,.productTable[data-view=side] .imagePlaceholder { width:22px; height:22px; font-size:15px; }
 .productTable[data-view=current] .nameText,.productTable[data-view=side] .nameText { display:flex; align-items:baseline; gap:8px; }
 .productTable[data-view=current] .nameText small,.productTable[data-view=side] .nameText small { flex:none; width:72px; margin:0; font-size:11px; }

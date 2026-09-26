@@ -1,10 +1,11 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import { Alert, Button, Input, message, Pagination, Segmented, Select, Skeleton, Tag, Tooltip } from 'antd'
+import { Alert, Button, Image, Input, message, Pagination, Segmented, Select, Skeleton, Tag, Tooltip } from 'antd'
 import { CloseOutlined, DownloadOutlined, FullscreenExitOutlined, FullscreenOutlined, InfoCircleOutlined, MenuFoldOutlined, MenuUnfoldOutlined, SearchOutlined, ShopOutlined } from '@ant-design/icons'
 import { useKeepAliveContext } from 'keepalive-for-react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useIsMobile } from '../../../hooks/useIsMobile'
 import { useAuthStore } from '../../../store/auth'
+import { toProductThumbnailUrl } from '../../../utils/productImageThumbnail'
 import { MetricPair, ReportControls, useReportText } from '../ReportWorkbench/ReportControls'
 import { growth, normalizeKeyword, reportPeriod } from '../ReportWorkbench/logic'
 import { useReportQuery, type ReportQueryState } from '../ReportWorkbench/useReportQuery'
@@ -103,6 +104,9 @@ export default function SalesDetailAnalysisV2() {
   const [railWidth, setRailWidth] = useState(RAIL_DEFAULT_WIDTH)
   const [bundleRefresh, setBundleRefresh] = useState(0)
   const [drawerProduct, setDrawerProduct] = useState<SalesDetailRow | null>(null)
+  // 大图预览按商品编码记录：翻页、筛选后该商品不在本页时预览自动关闭，不会错位到别的商品。
+  const [previewCode, setPreviewCode] = useState<string | null>(null)
+  const [brokenImages, setBrokenImages] = useState<ReadonlySet<string>>(() => new Set())
   const [exporting, setExporting] = useState(false)
   const [exportFinalizing, setExportFinalizing] = useState(false)
   const [exportProgress, setExportProgress] = useState('')
@@ -117,8 +121,9 @@ export default function SalesDetailAnalysisV2() {
   const appliedSearch = useRef(location.search)
 
   useEffect(() => {
-    // 抽屉挂载在 body；页面切换或账号变化时关闭，避免覆盖其他保活页面。
+    // 抽屉与大图预览都挂载在 body；页面切换或账号变化时关闭，避免覆盖其他保活页面。
     setDrawerProduct(null)
+    setPreviewCode(null)
   }, [active, currentUser?.userGUID])
   useEffect(() => () => exportAbort.current?.abort(), [])
   useLayoutEffect(() => {
@@ -152,10 +157,11 @@ export default function SalesDetailAnalysisV2() {
     return () => window.clearTimeout(timer)
   }, [keywordDraft, composing])
   useEffect(() => {
-    const handle = (event: KeyboardEvent) => { if (event.key === 'Escape') setExpanded(null) }
+    // 大图预览打开时 Esc 只关闭预览，不连带收起已展开的商品表。
+    const handle = (event: KeyboardEvent) => { if (event.key === 'Escape' && previewCode === null) setExpanded(null) }
     window.addEventListener('keydown', handle)
     return () => window.removeEventListener('keydown', handle)
-  }, [])
+  }, [previewCode])
   // 销售明细和商品搜索共用全部关联分店范围。
   const branches = useMemo(() => access.visibleStoreCodes() ?? undefined, [access])
   const allowed = !!currentUser && (branches === undefined || branches.length > 0)
@@ -291,6 +297,19 @@ export default function SalesDetailAnalysisV2() {
   const productRows = [...(products.data?.rows ?? [])].sort((left, right) => right.quantity - left.quantity
     || (right.compareQuantity ?? 0) - (left.compareQuantity ?? 0)
     || left.code.localeCompare(right.code))
+  // 预览组只收本页能正常显示的图片，按表格顺序排列，预览中左右键即可逐个翻看本页商品。
+  const previewRows = productRows.filter(row => row.productImage && !brokenImages.has(row.productImage))
+  const previewIndex = previewCode === null ? -1 : previewRows.findIndex(row => row.code === previewCode)
+  const markImageBroken = (url: string) => setBrokenImages(value => value.has(url) ? value : new Set(value).add(url))
+  // 缩略图处理失败（桶未开通图片处理、格式不支持等）时退回原图再试一次，原图也失败才换成占位符。
+  const handleThumbnailError = (image: HTMLImageElement, original: string) => {
+    if (image.dataset.fallback !== 'original' && image.getAttribute('src') !== original) {
+      image.dataset.fallback = 'original'
+      image.src = original
+      return
+    }
+    markImageBroken(original)
+  }
   const exportUnavailable = !allowed || products.loading || !products.data?.rows.length || exporting
     || composing || normalizeKeyword(keywordDraft) !== selection.keyword
   const runExport = async () => {
@@ -396,11 +415,18 @@ export default function SalesDetailAnalysisV2() {
         {field === 'growth' ? text('增长率', 'Growth') : productHead(field)}</th>)}</tr>}</thead>
       <tbody>{rows.map((row, index) => <tr key={row.code} className={selection.product === row.code ? styles.selected : ''}>
         <td><div className={styles.productName}>
+          <span className={styles.rank}>{rowStart + index + 1}</span>
+          {/* 缩略图是独立按钮：点击看大图，不触发商品联动筛选；读取失败的图片退回占位符且不可预览。
+              表格里只加载 COS 缩略图（单张约 2KB），点开大图才加载原图；key 随原图地址变化，重置退回原图的标记。 */}
+          {row.productImage && !brokenImages.has(row.productImage)
+            ? <button type="button" className={styles.thumbButton} onClick={() => setPreviewCode(row.code)}
+              title={text('查看大图', 'View larger image')} aria-label={text(`查看${row.name || row.code}的大图`, `View larger image of ${row.name || row.code}`)}>
+              <img key={row.productImage} src={toProductThumbnailUrl(row.productImage)} alt="" loading="lazy" decoding="async"
+                onError={event => handleThumbnailError(event.currentTarget, row.productImage!)} /></button>
+            : <span className={styles.imagePlaceholder}>▦</span>}
           {/* 点击商品与供应商、分店一样作为联动筛选；分店分布抽屉改由行尾图标打开。 */}
           <button data-code={row.code} aria-pressed={selection.product === row.code} className={styles.nameButton}
             onClick={() => pick('product', row)} title={`${row.name} · ${row.code}`}>
-            <span className={styles.rank}>{rowStart + index + 1}</span>
-            {row.productImage ? <img src={row.productImage} alt="" loading="lazy" onError={event => { event.currentTarget.style.visibility = 'hidden' }} /> : <span className={styles.imagePlaceholder}>▦</span>}
             <span className={styles.nameText}><small>{row.itemNumber || row.code}</small><strong>{row.name || row.code}</strong></span>
           </button>
           <Tooltip title={text('查看分店分布', 'Store breakdown')}>
@@ -562,5 +588,15 @@ export default function SalesDetailAnalysisV2() {
     </div>
     <ProductBranchDrawer key={currentUser?.userGUID ?? 'anonymous'} open={active && allowed && !!drawerProduct}
       product={drawerProduct} baseQuery={query} onClose={() => setDrawerProduct(null)} />
+    {/* 受控预览组：不渲染子元素，只由缩略图按钮打开；页脚显示序号、货号与商品名，方便翻看时对照。 */}
+    <Image.PreviewGroup items={previewRows.map(row => ({ src: row.productImage!, alt: row.name || row.code }))}
+      preview={{ visible: active && previewIndex >= 0, current: Math.max(previewIndex, 0),
+        onVisibleChange: visible => { if (!visible) setPreviewCode(null) },
+        onChange: current => setPreviewCode(previewRows[current]?.code ?? null),
+        countRender: (current, total) => {
+          const row = previewRows[current - 1]
+          return <span className={styles.previewCaption}><span>{current} / {total}</span>
+            {row && <><small>{row.itemNumber || row.code}</small><strong>{row.name || row.code}</strong></>}</span>
+        } }} />
   </main>
 }

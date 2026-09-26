@@ -2136,7 +2136,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             return "shell.page.settings";
         }
 
-        // 标题栏绑定的是 MainViewModel 这份映射；新增页面时不能只改 ScreenNavigator 的同名方法。
         if (ReferenceEquals(CurrentScreen, _screenNavigator.CardRecoveryCenter))
         {
             return "shell.page.cardRecovery";
