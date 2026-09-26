@@ -714,10 +714,10 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
 
         var range = new DateRangeDto { StartDate = date, EndDate = date };
         var partial = await service.GetExecutiveBranchPerformanceAsync(range);
-        await refreshStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await refreshStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         releaseRefresh.TrySetResult(true);
-        await refreshFinished.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        await refreshCoordinatorFinished.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await refreshFinished.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
+        await refreshCoordinatorFinished.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         var partialRow = Assert.Single(partial.Items, row => row.BranchCode == "S1");
         Assert.Equal("S1", partialRow.BranchCode);
@@ -781,12 +781,12 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         };
 
         var pending = await service.GetExecutiveBranchPerformanceAsync(range);
-        await refreshStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await refreshStarted.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
         Assert.True(pending.StatisticsPending);
         Assert.Contains(pending.Items, row => row.BranchCode == "S2" && row.Revenue == 0m);
 
         releaseRefresh.TrySetResult(true);
-        await refreshCoordinatorFinished.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await refreshCoordinatorFinished.Task.WaitAsync(AsyncTestWaitSupport.DefaultTimeout);
 
         var refreshed = await service.GetExecutiveBranchPerformanceAsync(range);
 
