@@ -104,6 +104,42 @@ public sealed class PosTerminalWorkflowServiceTests
         Assert.Single(cart.Lines);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Manually_entered_conflicting_code_lists_each_product_once_without_search_cap(bool useAsyncPath)
+    {
+        // 实测案例：条码 9503009941 被 15 个气球商品共用，每个商品在目录里还有自己货号的一行（条码字段同为该码）。
+        // 手动输入回车若走关键词搜索，同一商品会按两个码各列一次，且只取前 20 条，排在后面的商品选不到。
+        const string sharedCode = "9503009941";
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        var ownRows = Enumerable.Range(1, 15)
+            .Select(number => CreateItem(
+                $"P-{number:00}",
+                $"Balloon {number:00}",
+                $"ITEM-{number:00}",
+                PriceSourceKind.StoreRetailPrice,
+                4.5m,
+                productBarcode: sharedCode))
+            .ToArray();
+        var catalog = ownRows.Prepend(ownRows[0] with { LookupCode = sharedCode }).ToArray();
+        var conflictCandidates = ownRows.Select(row => row with { LookupCode = sharedCode }).ToArray();
+        index.ReplaceAll(CatalogCodeConflictMerger.Merge(catalog, conflictCandidates));
+        var service = new PosTerminalWorkflowService(index, cart);
+
+        var result = useAsyncPath
+            ? await service.ProcessScanAsync(Session, sharedCode, preferExactLookup: false, source: "manual")
+            : service.ProcessScan(Session, sharedCode, preferExactLookup: false, source: "manual");
+
+        Assert.Equal("pos.status.multipleMatches", result.StatusKey);
+        Assert.True(result.MatchesPopupOpen);
+        var matches = Assert.IsAssignableFrom<IReadOnlyList<SellableItemDto>>(result.Matches);
+        Assert.Equal(ownRows.Select(row => row.ProductCode), matches.Select(item => item.ProductCode).Order());
+        Assert.All(matches, item => Assert.Equal(sharedCode, item.LookupCode));
+        Assert.Empty(cart.Lines);
+    }
+
     [Fact]
     public async Task Process_scan_async_remote_match_adds_cart_line_after_local_miss()
     {
