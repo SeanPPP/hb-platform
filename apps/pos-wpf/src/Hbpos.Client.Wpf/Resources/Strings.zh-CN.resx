@@ -2807,11 +2807,10 @@
   <data name="settings.status.appUpdateOptionalDeclined" xml:space="preserve"><value>已跳过本次软件更新。</value></data>
   <data name="settings.status.appUpdateReady" xml:space="preserve"><value>软件更新已准备好，可安装。</value></data>
   <data name="settings.status.appUpdateForceReady" xml:space="preserve"><value>必须安装的软件更新已准备好。</value></data>
-  <data name="settings.status.appUpdateDownloadFailed" xml:space="preserve"><value>软件更新下载失败。{0}</value></data>
+  <data name="settings.status.appUpdateDownloadFailed" xml:space="preserve"><value>暂时无法完成更新检查，请稍后重试。</value></data>
   <data name="settings.status.appUpdateInstallFailed" xml:space="preserve"><value>软件更新安装器启动失败。{0}</value></data>
   <data name="settings.status.appUpdateInstalling" xml:space="preserve"><value>正在启动软件更新安装器...</value></data>
   <data name="appUpdate.prompt.title" xml:space="preserve"><value>软件更新</value></data>
-  <data name="appUpdate.optional.prompt.message" xml:space="preserve"><value>发现版本 {0}，是否现在下载并安装？</value></data>
   <data name="appUpdate.optional.prompt.description" xml:space="preserve"><value>新版本已准备好安装。</value></data>
   <data name="appUpdate.optional.prompt.readyStatus" xml:space="preserve"><value>已准备安装</value></data>
   <data name="appUpdate.optional.prompt.currentVersion" xml:space="preserve"><value>当前版本</value></data>
@@ -2834,7 +2833,6 @@
   <data name="appUpdate.force.rollbackReady" xml:space="preserve"><value>必须回退到版本 {0} 后才能继续收银。</value></data>
   <data name="appUpdate.force.downloadFailed" xml:space="preserve"><value>必须更新失败：{0}</value></data>
   <data name="appUpdate.force.downloadFailedDefault" xml:space="preserve"><value>更新下载失败，请联系管理员。</value></data>
-  <data name="appUpdate.startup.checkFailed" xml:space="preserve"><value>启动时检查软件更新失败：{0}</value></data>
   <data name="appUpdate.force.retry" xml:space="preserve"><value>重试</value></data>
   <data name="appUpdate.force.exit" xml:space="preserve"><value>退出</value></data>
   <data name="appUpdate.install.activeTransaction" xml:space="preserve"><value>请先完成或清空当前交易，再重试安装更新。</value></data>

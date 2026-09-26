@@ -4629,6 +4629,43 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
+    public async Task CustomerDisplayFullscreenRequest_switches_normal_window_to_fullscreen_through_command()
+    {
+        var customerDisplayWindow = new FakeCustomerDisplayWindowService();
+        var viewModel = CreateAuthorizedMainViewModel(customerDisplayWindow);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        viewModel.SetCustomerDisplayWindowMode(CustomerDisplayWindowMode.Normal, owner: null);
+
+        customerDisplayWindow.RaiseFullscreenRequested();
+        await (viewModel.ShowCustomerDisplayFullscreenCommand.ExecutionTask ?? Task.CompletedTask);
+
+        Assert.Equal(CustomerDisplayWindowMode.Fullscreen, customerDisplayWindow.LastSetMode);
+        Assert.Equal(CustomerDisplayWindowMode.Fullscreen, viewModel.CustomerDisplayWindowMode);
+        Assert.Equal("Customer display opened full screen on the second display.", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task CustomerDisplayFullscreenRequest_requires_customer_display_permission()
+    {
+        var customerDisplayWindow = new FakeCustomerDisplayWindowService();
+        var cashierContext = new CashierSessionContext();
+        cashierContext.SetCurrent(CreateCashierSession(Permissions.PosTerminal.Sales.AddItem));
+        var viewModel = CreateAuthorizedMainViewModel(
+            customerDisplayWindow,
+            cashierSessionContext: cashierContext,
+            enforceCashierPermissions: true);
+        viewModel.SetCustomerDisplayWindowMode(CustomerDisplayWindowMode.Normal, owner: null);
+
+        customerDisplayWindow.RaiseFullscreenRequested();
+        await (viewModel.ShowCustomerDisplayFullscreenCommand.ExecutionTask ?? Task.CompletedTask);
+
+        Assert.Equal(1, customerDisplayWindow.SetModeCallCount);
+        Assert.Equal(CustomerDisplayWindowMode.Normal, viewModel.CustomerDisplayWindowMode);
+        Assert.False(cashierContext.RequirePermission(Permissions.PosTerminal.CustomerDisplay.Manage, out var deniedMessage));
+        Assert.Equal(deniedMessage, viewModel.StatusMessage);
+    }
+
+    [Fact]
     public void ToggleCustomerDisplayWindowCommand_requires_customer_display_permission()
     {
         var customerDisplayWindow = new FakeCustomerDisplayWindowService();
@@ -9398,6 +9435,10 @@ public sealed class MainViewModelScannerTests
         public CustomerDisplayWindowMode LastSetMode { get; private set; } = CustomerDisplayWindowMode.Closed;
 
         public event EventHandler? Closed;
+
+        public event EventHandler? FullscreenRequested;
+
+        public void RaiseFullscreenRequested() => FullscreenRequested?.Invoke(this, EventArgs.Empty);
 
         public void Prewarm(CustomerDisplayViewModel viewModel)
         {

@@ -274,7 +274,7 @@
             <Setter Property="Height" Value="34" />
             <Setter Property="MinWidth" Value="0" />
             <Setter Property="Padding" Value="8,0" />
-            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontSize" Value="14" />
             <Setter Property="Foreground" Value="{StaticResource PosPrimaryBrush}" />
             <Setter Property="BorderBrush" Value="#FFE2E8F0" />
         </Style>
@@ -353,7 +353,7 @@
                             Height="46"
                             Padding="12,0"
                             Margin="0,0,12,0"
-                            FontSize="12"
+                            FontSize="14"
                             Style="{StaticResource PosSecondaryButtonStyle}">
                         <StackPanel Orientation="Horizontal">
                             <materialDesign:PackIcon Kind="ArrowLeft" Width="16" Height="16" Margin="0,0,6,0" />
@@ -583,7 +583,7 @@
                                 Padding="16,0"
                                 Margin="12,0,0,0"
                                 VerticalAlignment="Bottom"
-                                FontSize="12"
+                                FontSize="14"
                                 AutomationProperties.Name="{loc:Loc common.load}"
                                 Style="{StaticResource PosPrimaryButtonStyle}">
                             <StackPanel Orientation="Horizontal">

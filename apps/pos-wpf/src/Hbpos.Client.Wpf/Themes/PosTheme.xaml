@@ -57,6 +57,7 @@
 
     <FontFamily x:Key="PosFontFamily">Segoe UI</FontFamily>
     <sys:Double x:Key="PosFontSizeBody">14</sys:Double>
+    <sys:Double x:Key="PosFontSizeButton">16</sys:Double>
     <sys:Double x:Key="PosFontSizeSmall">12</sys:Double>
     <sys:Double x:Key="PosFontSizeTitle">22</sys:Double>
     <sys:Double x:Key="PosFontSizeAmount">32</sys:Double>
@@ -145,6 +146,14 @@
         <Setter Property="FontSize" Value="{StaticResource PosFontSizeBody}" />
     </Style>
 
+    <!-- 上面的全局 TextBlock 样式会把按钮里的文字也固定成 14，按钮样式里的 FontSize 传不到文字。
+         按钮样式在 Style.Resources（显式 TextBlock 子元素）和模板 ContentPresenter.Resources（字符串内容）里
+         基于本样式声明隐式 TextBlock 样式，让按钮文字跟随所在按钮的字号；按钮外的正文仍是 14。 -->
+    <Style x:Key="PosButtonContentTextStyle" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+        <Setter Property="FontSize"
+                Value="{Binding FontSize, RelativeSource={RelativeSource AncestorType=ButtonBase}, FallbackValue={StaticResource PosFontSizeBody}}" />
+    </Style>
+
     <Style x:Key="PosTitleTextBlock" TargetType="TextBlock">
         <Setter Property="FontFamily" Value="{StaticResource PosFontFamily}" />
         <Setter Property="Foreground" Value="{StaticResource PosTextBrush}" />
@@ -180,10 +189,13 @@
     </Style>
 
     <Style x:Key="PosButtonBaseStyle" TargetType="Button">
+        <Style.Resources>
+            <Style TargetType="TextBlock" BasedOn="{StaticResource PosButtonContentTextStyle}" />
+        </Style.Resources>
         <Setter Property="MinHeight" Value="40" />
         <Setter Property="Padding" Value="14,8" />
         <Setter Property="FontFamily" Value="{StaticResource PosFontFamily}" />
-        <Setter Property="FontSize" Value="{StaticResource PosFontSizeBody}" />
+        <Setter Property="FontSize" Value="{StaticResource PosFontSizeButton}" />
         <Setter Property="FontWeight" Value="SemiBold" />
         <Setter Property="Cursor" Value="Hand" />
         <Setter Property="BorderThickness" Value="1" />
@@ -203,7 +215,11 @@
                         <ContentPresenter HorizontalAlignment="Center"
                                           VerticalAlignment="Center"
                                           Margin="{TemplateBinding Padding}"
-                                          RecognizesAccessKey="True" />
+                                          RecognizesAccessKey="True">
+                            <ContentPresenter.Resources>
+                                <Style TargetType="TextBlock" BasedOn="{StaticResource PosButtonContentTextStyle}" />
+                            </ContentPresenter.Resources>
+                        </ContentPresenter>
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
@@ -634,7 +650,7 @@
         <Setter Property="Background" Value="#FFFFDCC2" />
         <Setter Property="BorderBrush" Value="#FFFFDCC2" />
         <Setter Property="Foreground" Value="#FF2E1500" />
-        <Setter Property="FontSize" Value="11" />
+        <Setter Property="FontSize" Value="16" />
     </Style>
 
     <Style x:Key="PosMainNumberButtonStyle" TargetType="Button" BasedOn="{StaticResource PosStitchNumberButtonStyle}">

@@ -1059,11 +1059,10 @@
   <data name="settings.status.appUpdateOptionalDeclined" xml:space="preserve"><value>Software update was skipped.</value></data>
   <data name="settings.status.appUpdateReady" xml:space="preserve"><value>Software update is ready to install.</value></data>
   <data name="settings.status.appUpdateForceReady" xml:space="preserve"><value>Required software update is ready.</value></data>
-  <data name="settings.status.appUpdateDownloadFailed" xml:space="preserve"><value>Software update download failed. {0}</value></data>
+  <data name="settings.status.appUpdateDownloadFailed" xml:space="preserve"><value>Couldn't complete the update check. Try again later.</value></data>
   <data name="settings.status.appUpdateInstallFailed" xml:space="preserve"><value>Software update installer failed to start. {0}</value></data>
   <data name="settings.status.appUpdateInstalling" xml:space="preserve"><value>Starting software update installer...</value></data>
   <data name="appUpdate.prompt.title" xml:space="preserve"><value>Software update</value></data>
-  <data name="appUpdate.optional.prompt.message" xml:space="preserve"><value>Version {0} is available. Download and install now?</value></data>
   <data name="appUpdate.optional.prompt.description" xml:space="preserve"><value>A newer version is ready to install.</value></data>
   <data name="appUpdate.optional.prompt.readyStatus" xml:space="preserve"><value>Ready to install</value></data>
   <data name="appUpdate.optional.prompt.currentVersion" xml:space="preserve"><value>Current version</value></data>
@@ -1086,7 +1085,6 @@
   <data name="appUpdate.force.rollbackReady" xml:space="preserve"><value>Roll back to version {0} before continuing checkout.</value></data>
   <data name="appUpdate.force.downloadFailed" xml:space="preserve"><value>Required update failed: {0}</value></data>
   <data name="appUpdate.force.downloadFailedDefault" xml:space="preserve"><value>Update download failed. Contact an administrator.</value></data>
-  <data name="appUpdate.startup.checkFailed" xml:space="preserve"><value>Software update check failed during startup: {0}</value></data>
   <data name="appUpdate.force.retry" xml:space="preserve"><value>Retry</value></data>
   <data name="appUpdate.force.exit" xml:space="preserve"><value>Exit</value></data>
   <data name="appUpdate.install.activeTransaction" xml:space="preserve"><value>Complete or clear the current transaction before installing the update.</value></data>

@@ -39,6 +39,13 @@ public sealed class DisplayTopologyService : IDisplayTopologyService
     private const uint MonitorDefaultToNearest = 2;
     private const int WmGetMinMaxInfo = 0x0024;
 
+    // 按整块显示器放置的窗口（客显全屏）：拖拽/定位上限放宽到显示器边界，否则会被截到工作区、露出任务栏。
+    private static readonly DependencyProperty UsesFullMonitorBoundsProperty = DependencyProperty.RegisterAttached(
+        "UsesFullMonitorBounds",
+        typeof(bool),
+        typeof(DisplayTopologyService),
+        new PropertyMetadata(false));
+
     public IReadOnlyList<DisplayBounds> GetDisplays()
     {
         return EnumerateDisplays();
@@ -72,12 +79,30 @@ public sealed class DisplayTopologyService : IDisplayTopologyService
 
     public void FitToDisplayWorkArea(Window window, DisplayBounds display)
     {
+        window.ClearValue(UsesFullMonitorBoundsProperty);
         ApplyBounds(window, display.WorkAreaLeft, display.WorkAreaTop, display.WorkAreaWidth, display.WorkAreaHeight);
     }
 
     public void FitToDisplayBounds(Window window, DisplayBounds display)
     {
+        // 先标记再定尺寸：定尺寸时系统会查询 WM_GETMINMAXINFO。
+        window.SetValue(UsesFullMonitorBoundsProperty, true);
         ApplyBounds(window, display.MonitorLeft, display.MonitorTop, display.MonitorWidth, display.MonitorHeight);
+    }
+
+    internal static bool UsesFullMonitorBounds(Window window) => (bool)window.GetValue(UsesFullMonitorBoundsProperty);
+
+    internal static (int Width, int Height) ResolveMaxTrackSize(
+        int monitorWidth,
+        int monitorHeight,
+        int workAreaWidth,
+        int workAreaHeight,
+        bool usesFullMonitorBounds)
+    {
+        // 最大化尺寸始终是工作区；只有整屏放置的窗口允许拖拽/定位到显示器边界（盖住任务栏）。
+        return usesFullMonitorBounds
+            ? (monitorWidth, monitorHeight)
+            : (workAreaWidth, workAreaHeight);
     }
 
     private static IReadOnlyList<DisplayBounds> EnumerateDisplays()
@@ -145,8 +170,16 @@ public sealed class DisplayTopologyService : IDisplayTopologyService
         minMaxInfo.MaxPosition.Y = workArea.Top - monitorArea.Top;
         minMaxInfo.MaxSize.X = workArea.Right - workArea.Left;
         minMaxInfo.MaxSize.Y = workArea.Bottom - workArea.Top;
-        minMaxInfo.MaxTrackSize.X = minMaxInfo.MaxSize.X;
-        minMaxInfo.MaxTrackSize.Y = minMaxInfo.MaxSize.Y;
+        var usesFullMonitorBounds = HwndSource.FromHwnd(hwnd)?.RootVisual is Window window
+            && UsesFullMonitorBounds(window);
+        var maxTrackSize = ResolveMaxTrackSize(
+            monitorArea.Right - monitorArea.Left,
+            monitorArea.Bottom - monitorArea.Top,
+            minMaxInfo.MaxSize.X,
+            minMaxInfo.MaxSize.Y,
+            usesFullMonitorBounds);
+        minMaxInfo.MaxTrackSize.X = maxTrackSize.Width;
+        minMaxInfo.MaxTrackSize.Y = maxTrackSize.Height;
 
         Marshal.StructureToPtr(minMaxInfo, lParam, false);
         handled = true;

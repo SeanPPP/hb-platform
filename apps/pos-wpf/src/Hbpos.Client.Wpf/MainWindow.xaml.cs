@@ -382,7 +382,9 @@ public partial class MainWindow : Window
                 or AppUpdateCoordinatorStatus.OptionalReady
                 or AppUpdateCoordinatorStatus.InstallFailed
                 or AppUpdateCoordinatorStatus.CheckFailed
-                or AppUpdateCoordinatorStatus.PolicyFailed => true,
+                or AppUpdateCoordinatorStatus.PolicyFailed
+                // 安装包没下载成功时不显示任何更新提示，也不能卡住启动；下次启动再下载。
+                or AppUpdateCoordinatorStatus.DownloadFailed => true,
             _ => false
         };
     }

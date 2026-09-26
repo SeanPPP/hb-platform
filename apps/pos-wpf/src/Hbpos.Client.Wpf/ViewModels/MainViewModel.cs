@@ -611,6 +611,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _cart.CartChanged += OnCartChanged;
         _localization.CultureChanged += OnCultureChanged;
         _customerDisplayOrchestrator.Closed += OnCustomerDisplayClosed;
+        _customerDisplayOrchestrator.FullscreenRequested += OnCustomerDisplayFullscreenRequested;
         _clockTimer.Tick += OnClockTimerTick;
         _connectivityTimer.Tick += OnConnectivityTimerTick;
         _catalogDownloadHideTimer.Tick += OnCatalogDownloadHideTimerTick;
@@ -1061,6 +1062,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _cart.CartChanged -= OnCartChanged;
         _localization.CultureChanged -= OnCultureChanged;
         _customerDisplayOrchestrator.Closed -= OnCustomerDisplayClosed;
+        _customerDisplayOrchestrator.FullscreenRequested -= OnCustomerDisplayFullscreenRequested;
         if (_operationAuthorizationService is not null)
         {
             _operationAuthorizationService.RevokeAll();
@@ -2946,6 +2948,15 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private void OnCustomerDisplayClosed(object? sender, EventArgs e)
     {
         CustomerDisplayWindowMode = CustomerDisplayWindowMode.Closed;
+    }
+
+    private void OnCustomerDisplayFullscreenRequested(object? sender, EventArgs e)
+    {
+        // 与主窗口客显按钮同一条命令：先过客显管理权限，再切模式并同步按钮状态。
+        if (ShowCustomerDisplayFullscreenCommand.CanExecute(null))
+        {
+            ShowCustomerDisplayFullscreenCommand.Execute(null);
+        }
     }
 
     private void OnClockTimerTick(object? sender, EventArgs e)
