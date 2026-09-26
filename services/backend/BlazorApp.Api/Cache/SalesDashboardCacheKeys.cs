@@ -236,6 +236,16 @@ namespace BlazorApp.Api.Cache
         }
 
         /// <summary>
+        /// 紧凑销售看板数据库端聚合结果（四栏只有几百行）的缓存键：区间、统计水位、授权范围与全部交互参数。
+        /// </summary>
+        public static string CompactSalesBoardView(DateRangeDto dateRange, string cacheVersion, string scopeKey, string interactionKey)
+        {
+            var key = $"{PREFIX}:CompactSalesBoardView:{Hash(dateRange.StartDate.Date.ToString("yyyyMMdd"), dateRange.EndDate.Date.ToString("yyyyMMdd"), cacheVersion, scopeKey, interactionKey)}";
+            LogKeyGenerated("CompactSalesBoardView", key, dateRange, cacheVersion);
+            return key;
+        }
+
+        /// <summary>
         /// 生成增强产品销售明细（含折扣信息）缓存键
         /// </summary>
         public static string EnhancedProductDetail(

@@ -8,6 +8,8 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace Hbpos.Client.Tests;
 
+// 会修改进程级 HBPOS_WPF_APP_VERSION / HBPOS_APP_UPDATE_CHANNEL；并行时其他走完整 DI 的用例会读到被改写的值。
+[Collection(EnvironmentVariableTestCollection.Name)]
 public sealed class AppUpdateCoordinatorTests
 {
     [Fact]
@@ -352,95 +354,105 @@ public sealed class AppUpdateCoordinatorTests
         Assert.Equal(1, installer.LaunchCallCount);
     }
 
-    [Fact]
-    public async Task CheckForUpdatesAsync_force_update_download_failure_reports_error_even_when_install_not_safe()
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    public async Task CheckForUpdatesAsync_download_failure_shows_no_update_prompt(bool force, bool manual)
     {
-        var release = CreateRelease(force: true);
         var state = new AppUpdateState();
+        var prompt = new CapturingPromptService(confirm: true);
+        var exitService = new CapturingApplicationExitService();
         var download = new StaticDownloadService(AppUpdateDownloadResult.Fail(null, "network failed"));
-        var guard = new ToggleInstallSafetyGuard(canInstall: false);
         var coordinator = CreateCoordinator(
-            release,
+            CreateRelease(force),
+            download,
+            new CapturingInstallerLauncher(),
+            prompt,
+            state,
+            exitService,
+            guard: new ToggleInstallSafetyGuard(canInstall: false));
+
+        var result = await coordinator.CheckForUpdatesAsync(manual);
+
+        // 中文注释：没有安装包就不能出现任何更新提示：无阻断遮罩、无待安装横幅、无确认弹窗、底部无新版本号。
+        Assert.Equal(AppUpdateCoordinatorStatus.DownloadFailed, result.Status);
+        Assert.Equal("settings.status.appUpdateDownloadFailed", result.StatusKey);
+        Assert.Equal(1, download.CallCount);
+        Assert.False(prompt.OptionalPromptShown);
+        Assert.False(state.IsForceUpdateRequired);
+        Assert.False(state.IsForceUpdateBlocking);
+        Assert.False(state.IsForceUpdateError);
+        Assert.False(state.IsForceUpdatePendingInstall);
+        Assert.False(state.IsOptionalUpdateReady);
+        Assert.False(state.IsInstallerReady);
+        Assert.False(state.IsDownloading);
+        Assert.False(state.HasDifferentTargetVersion);
+        Assert.False(state.InstallUpdateCommand.CanExecute(null));
+        Assert.False(state.RetryForceUpdateCommand.CanExecute(null));
+        Assert.False(state.ExitApplicationCommand.CanExecute(null));
+        Assert.Equal(manual ? "settings.status.appUpdateDownloadFailed" : string.Empty, state.StatusKey);
+        Assert.Equal(0, exitService.ExitCallCount);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task CheckForUpdatesAsync_shows_target_version_only_after_package_downloaded(bool force)
+    {
+        var state = new AppUpdateState();
+        var download = new BlockingDownloadService();
+        var prompt = new CapturingPromptService(confirm: false);
+        var coordinator = CreateCoordinator(
+            CreateRelease(force),
+            download,
+            new CapturingInstallerLauncher(),
+            prompt,
+            state);
+
+        var checkTask = coordinator.CheckForUpdatesAsync(manual: true);
+        await download.WaitUntilStartedAsync();
+
+        Assert.False(state.HasDifferentTargetVersion);
+        Assert.False(state.IsForceUpdateBlocking);
+        Assert.False(prompt.OptionalPromptShown);
+
+        download.Complete(AppUpdateDownloadResult.Succeeded(@"C:\Temp\hbpos.exe"));
+        await checkTask;
+
+        Assert.True(state.HasDifferentTargetVersion);
+        Assert.Equal("1.1.0", state.TargetVersion);
+        Assert.Equal(!force, prompt.OptionalPromptShown);
+        Assert.Equal(force, state.IsForceUpdateBlocking);
+    }
+
+    [Fact]
+    public async Task CheckForUpdatesAsync_force_redownload_hides_previous_target_until_new_package_ready()
+    {
+        var state = new AppUpdateState();
+        var download = new BlockingDownloadService();
+        var coordinator = CreateCoordinator(
+            CreateRelease(force: true) with { TargetVersion = "1.2.0" },
             download,
             new CapturingInstallerLauncher(),
             new CapturingPromptService(),
-            state,
-            guard: guard);
+            state);
+        state.ApplyVersionCheck(CreateRelease(force: false));
+        Assert.True(state.HasDifferentTargetVersion);
 
-        var result = await coordinator.CheckForUpdatesAsync(manual: false);
+        var checkTask = coordinator.CheckForUpdatesAsync(manual: false);
+        await download.WaitUntilStartedAsync();
 
-        Assert.Equal(AppUpdateCoordinatorStatus.DownloadFailed, result.Status);
-        Assert.True(state.IsForceUpdateError);
-        Assert.Equal("appUpdate.force.downloadFailed", state.StatusKey);
-        Assert.False(state.IsForceUpdatePendingInstall);
-        Assert.False(state.IsInstallerReady);
-        Assert.Equal(1, download.CallCount);
-    }
+        // 中文注释：下载期间既不能沿用旧目标版本，也不能提前显示新目标版本。
+        Assert.False(state.HasDifferentTargetVersion);
 
-    [Fact]
-    public async Task CheckForUpdatesAsync_force_download_failure_allows_retry_and_exit_only()
-    {
-        var release = CreateRelease(force: true);
-        var state = new AppUpdateState();
-        var exitService = new CapturingApplicationExitService();
-        var coordinator = CreateCoordinator(
-            release,
-            new StaticDownloadService(AppUpdateDownloadResult.Fail(null, "network failed")),
-            new CapturingInstallerLauncher(),
-            new CapturingPromptService(),
-            state,
-            exitService);
-
-        var result = await coordinator.CheckForUpdatesAsync(manual: true);
+        download.Complete(AppUpdateDownloadResult.Fail(null, "network failed"));
+        var result = await checkTask;
 
         Assert.Equal(AppUpdateCoordinatorStatus.DownloadFailed, result.Status);
-        Assert.True(state.IsForceUpdateBlocking);
-        Assert.True(state.IsForceUpdateError);
-        Assert.False(state.InstallUpdateCommand.CanExecute(null));
-        Assert.True(state.RetryForceUpdateCommand.CanExecute(null));
-        Assert.True(state.ExitApplicationCommand.CanExecute(null));
-
-        state.ExitApplicationCommand.Execute(null);
-        Assert.Equal(1, exitService.ExitCallCount);
-    }
-
-    [Fact]
-    public async Task ShowStartupUpdateError_blocks_startup_with_retry_and_exit_actions()
-    {
-        var state = new AppUpdateState();
-        var retryCallCount = 0;
-        var exitCallCount = 0;
-
-        state.ShowStartupUpdateError(
-            "center unavailable",
-            () =>
-            {
-                retryCallCount++;
-                return Task.CompletedTask;
-            },
-            () => exitCallCount++);
-
-        Assert.True(state.IsForceUpdateBlocking);
-        Assert.True(state.IsForceUpdateError);
-        Assert.False(state.IsDownloading);
-        Assert.False(state.InstallUpdateCommand.CanExecute(null));
-        Assert.True(state.RetryForceUpdateCommand.CanExecute(null));
-        Assert.True(state.ExitApplicationCommand.CanExecute(null));
-        Assert.Equal("appUpdate.startup.checkFailed", state.StatusKey);
-        Assert.Equal(["center unavailable"], state.StatusArgs);
-
-        await state.RetryForceUpdateCommand.ExecuteAsync(null);
-        state.ExitApplicationCommand.Execute(null);
-
-        Assert.Equal(1, retryCallCount);
-        Assert.Equal(1, exitCallCount);
-
-        state.ClearStartupUpdateError();
-
+        Assert.False(state.HasDifferentTargetVersion);
         Assert.False(state.IsForceUpdateBlocking);
-        Assert.False(state.IsForceUpdateError);
-        Assert.False(state.RetryForceUpdateCommand.CanExecute(null));
-        Assert.False(state.ExitApplicationCommand.CanExecute(null));
     }
 
     [Fact]
@@ -496,31 +508,37 @@ public sealed class AppUpdateCoordinatorTests
     }
 
     [Fact]
-    public async Task CheckForUpdatesAsync_force_download_retry_runs_new_check_and_download()
+    public async Task CheckForUpdatesAsync_force_download_failure_is_retried_by_next_check()
     {
         var release = CreateRelease(force: true);
         var state = new AppUpdateState();
-        var apiClient = new StaticUpdateApiClient(release);
-        var download = new StaticDownloadService(AppUpdateDownloadResult.Fail(null, "network failed"));
-        var coordinator = CreateCoordinator(
-            apiClient,
+        var failedCheck = CreateCoordinator(
+            release,
+            new StaticDownloadService(AppUpdateDownloadResult.Fail(null, "network failed")),
+            new CapturingInstallerLauncher(),
+            new CapturingPromptService(),
+            state);
+
+        await failedCheck.CheckForUpdatesAsync(manual: false);
+
+        Assert.False(state.IsForceUpdateBlocking);
+
+        // 中文注释：下次启动或设置页手动检查重新下载，下载完成后才进入强更就绪遮罩。
+        var download = new StaticDownloadService(AppUpdateDownloadResult.Succeeded(@"C:\Temp\hbpos.exe"));
+        var nextCheck = CreateCoordinator(
+            release,
             download,
             new CapturingInstallerLauncher(),
             new CapturingPromptService(),
             state);
 
-        await coordinator.CheckForUpdatesAsync(manual: false);
+        var result = await nextCheck.CheckForUpdatesAsync(manual: true);
 
-        Assert.True(state.RetryForceUpdateCommand.CanExecute(null));
-        Assert.Equal(1, apiClient.CallCount);
+        Assert.Equal(AppUpdateCoordinatorStatus.ForceReady, result.Status);
+        Assert.True(state.IsForceUpdateBlocking);
+        Assert.True(state.IsInstallerReady);
+        Assert.True(state.HasDifferentTargetVersion);
         Assert.Equal(1, download.CallCount);
-
-        await state.RetryForceUpdateCommand.ExecuteAsync(null);
-
-        Assert.True(state.IsForceUpdateError);
-        Assert.Equal("appUpdate.force.downloadFailed", state.StatusKey);
-        Assert.Equal(2, apiClient.CallCount);
-        Assert.Equal(2, download.CallCount);
     }
 
     [Fact]
@@ -973,6 +991,7 @@ public sealed class AppUpdateCoordinatorTests
         while (current is not null)
         {
             if (Directory.Exists(Path.Combine(current.FullName, ".git")) ||
+                File.Exists(Path.Combine(current.FullName, ".git")) ||
                 File.Exists(Path.Combine(current.FullName, "hb-platform.sln")))
             {
                 return current.FullName;

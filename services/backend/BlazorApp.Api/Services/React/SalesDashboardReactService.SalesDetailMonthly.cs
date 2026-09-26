@@ -80,9 +80,19 @@ Months AS
 )
 SELECT m.[Period], m.[Month], DATEADD(month, 1, m.[Month]) [NextMonth],
        CAST(CASE WHEN st.[Month] IS NOT NULL AND st.[ProjectionSchemaVersion]={SalesDetailQueryMonthlyProjection.SchemaVersion}
-                  AND st.[DayIdentity]=ident.[Identity] THEN 1 ELSE 0 END AS bit) [ProductValid],
+                  AND st.[DayIdentity]=ident.[Identity]
+                  AND NOT EXISTS (SELECT 1 FROM [dbo].[SalesStatisticRefreshState] failed
+                                  WHERE failed.[StatisticType]=N'ProductStoreDaily'
+                                    AND failed.[Status]=N'Failed'
+                                    AND failed.[Date] >= CONVERT(datetime, m.[Month])
+                                    AND failed.[Date] < CONVERT(datetime, DATEADD(month, 1, m.[Month]))) THEN 1 ELSE 0 END AS bit) [ProductValid],
        CAST(CASE WHEN st.[Month] IS NOT NULL AND st.[ProjectionSchemaVersion]={SalesDetailQueryMonthlyProjection.SchemaVersion}
-                  AND st.[DayIdentity]=ident.[Identity] AND st.[MappingVersion]=@sdmMappingVersion THEN 1 ELSE 0 END AS bit) [BranchValid]
+                  AND st.[DayIdentity]=ident.[Identity] AND st.[MappingVersion]=@sdmMappingVersion
+                  AND NOT EXISTS (SELECT 1 FROM [dbo].[SalesStatisticRefreshState] failed
+                                  WHERE failed.[StatisticType]=N'ProductStoreDaily'
+                                    AND failed.[Status]=N'Failed'
+                                    AND failed.[Date] >= CONVERT(datetime, m.[Month])
+                                    AND failed.[Date] < CONVERT(datetime, DATEADD(month, 1, m.[Month]))) THEN 1 ELSE 0 END AS bit) [BranchValid]
 INTO #sdmMonths
 FROM Months m
 LEFT JOIN [dbo].[SalesDetailQueryMonthlyState] st ON st.[Month]=m.[Month]
@@ -111,7 +121,11 @@ CROSS APPLY (SELECT
                    WHERE r.[StatisticType]=N'ProductStoreDaily' AND r.[Date]=CONVERT(datetime, d.[Day])
                      AND {SalesDetailQueryMonthlyProjection.BuildDayIdentityMatchesSql("ds", "r")}) THEN 1 ELSE 0 END [DayValid],
  CASE WHEN EXISTS (SELECT 1 FROM [dbo].[SalesDetailQueryDailyState] ds WHERE ds.[Date]=d.[Day] AND ds.[MappingVersion]=@sdmMappingVersion) THEN 1 ELSE 0 END [MappingValid]) dv
-WHERE pm.[Month] IS NULL OR bm.[Month] IS NULL;
+WHERE (pm.[Month] IS NULL OR bm.[Month] IS NULL)
+  AND NOT EXISTS (SELECT 1 FROM [dbo].[SalesStatisticRefreshState] failed
+                  WHERE failed.[StatisticType]=N'ProductStoreDaily'
+                    AND failed.[Status]=N'Failed'
+                    AND failed.[Date]=CONVERT(datetime, d.[Day]));
 """;
         // 3. 日表没覆盖的日期读日事实：临时表里的日期逐日走聚集主键 seek（每天约 1.2 万行），正常只有当日或回填中的日期。
         var baseFacts = $"""
@@ -195,6 +209,10 @@ WITH {periods}, RawFacts AS
  SELECT p.[Period], s.[SupplierCode] [RawSupplierCode], s.[BranchCode], s.[ProductCode], {factMeasures}
  FROM [ProductStoreDailySalesStatistic] s CROSS JOIN Periods p
  WHERE s.[Date]>=p.[StartDate] AND s.[Date]<p.[EndDate] AND s.[ProductCode]=@sdrSelectedProduct
+   AND NOT EXISTS (SELECT 1 FROM [dbo].[SalesStatisticRefreshState] failed
+                   WHERE failed.[StatisticType]=N'ProductStoreDaily'
+                     AND failed.[Status]=N'Failed'
+                     AND failed.[Date]=CONVERT(datetime, CONVERT(date, s.[Date])))
  GROUP BY p.[Period], s.[SupplierCode], s.[BranchCode], s.[ProductCode]
 ), Trimmed AS
 (

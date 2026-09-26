@@ -3,6 +3,7 @@ using System.Data.Common;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
+using BlazorApp.Api.Services.LocalSupplierCategories;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.Data.SqlClient;
@@ -12,6 +13,11 @@ namespace BlazorApp.Api.Services.React;
 
 public partial class SalesDashboardReactService
 {
+    // 分类选择会在服务端展开到子分类；这些上限同时保护 SQL Server 参数总数和分类接口查询次数。
+    internal const int MaxSelectedSupplierCodes = 200;
+    internal const int MaxRequestedCategoryGuids = 500;
+    internal const int MaxExpandedCategoryGuids = 1500;
+    internal const int MaxSqlParameterBudget = 2000;
     private sealed class SalesDetailReportSqlRow
     {
         public string Code { get; init; } = string.Empty;
@@ -62,7 +68,15 @@ public partial class SalesDashboardReactService
         public int Total { get; init; }
     }
 
-    public async Task<ProductReportResponseDto<SalesDetailReportDto>> GetSalesDetailReportAsync(
+    public Task<ProductReportResponseDto<SalesDetailReportDto>> GetSalesDetailReportAsync(
+        DateRangeDto dateRange, SalesDetailKind kind, List<string>? branchCodes = null,
+        string? selectedBranchCode = null, string? selectedSupplierCode = null, string? selectedProductCode = null,
+        string? search = null, int pageIndex = 1, int pageSize = 20,
+        IReadOnlyCollection<SalesDetailSection>? sections = null, CancellationToken cancellationToken = default)
+        => GetSalesDetailReportFilteredAsync(dateRange, kind, branchCodes, selectedBranchCode, selectedSupplierCode,
+            selectedProductCode, search, pageIndex, pageSize, sections, cancellationToken);
+
+    public async Task<ProductReportResponseDto<SalesDetailReportDto>> GetSalesDetailReportFilteredAsync(
         DateRangeDto dateRange,
         SalesDetailKind kind,
         List<string>? branchCodes = null,
@@ -73,7 +87,10 @@ public partial class SalesDashboardReactService
         int pageIndex = 1,
         int pageSize = 20,
         IReadOnlyCollection<SalesDetailSection>? sections = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        List<string>? selectedSupplierCodes = null,
+        List<string>? supplierCategoryGuids = null,
+        List<string>? warehouseCategoryGuids = null)
     {
         ValidateDateRange(dateRange);
         if (!Enum.IsDefined(kind)) throw new ArgumentException("kind 无效", nameof(kind));
@@ -87,13 +104,47 @@ public partial class SalesDashboardReactService
         var branches = branchCodes?.Where(code => !string.IsNullOrWhiteSpace(code)).Select(code => code.Trim())
             .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         if (branches is { Count: 0 }) return EmptySalesDetailReport("当前账号没有可访问的分店范围");
+        var suppliers = selectedSupplierCodes?.Where(code => !string.IsNullOrWhiteSpace(code)).Select(code => code.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList() ?? new List<string>();
+        if (!string.IsNullOrWhiteSpace(selectedSupplierCode) && !suppliers.Contains(selectedSupplierCode.Trim(), StringComparer.OrdinalIgnoreCase))
+            suppliers.Add(selectedSupplierCode.Trim());
+        if (suppliers.Count > MaxSelectedSupplierCodes)
+            throw new ArgumentException($"供应商筛选最多选择 {MaxSelectedSupplierCodes} 项，当前为 {suppliers.Count} 项", nameof(selectedSupplierCodes));
+        var requestedCategoryGuids = (supplierCategoryGuids ?? Enumerable.Empty<string>())
+            .Concat(warehouseCategoryGuids ?? Enumerable.Empty<string>())
+            .Where(guid => !string.IsNullOrWhiteSpace(guid)).Select(guid => guid.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (requestedCategoryGuids.Count > MaxRequestedCategoryGuids)
+            throw new ArgumentException($"分类筛选最多选择 {MaxRequestedCategoryGuids} 项，当前为 {requestedCategoryGuids.Count} 项", nameof(supplierCategoryGuids));
+        var expandedCategories = requestedCategoryGuids.Count == 0
+            ? (new List<string>(), new List<string>())
+            : await LocalSupplierCategoryFilter.ExpandAsync(_context.Db, requestedCategoryGuids);
+        var effectiveSupplierCategories = expandedCategories.Item1;
+        var effectiveWarehouseCategories = expandedCategories.Item2;
+        var expandedCategoryCount = effectiveSupplierCategories.Count + effectiveWarehouseCategories.Count;
+        if (expandedCategoryCount > MaxExpandedCategoryGuids)
+            throw new ArgumentException($"分类筛选展开后超过 {MaxExpandedCategoryGuids} 项，请缩小选择范围");
+        var searchTokenCount = search?.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Distinct(StringComparer.OrdinalIgnoreCase).Count() ?? 0;
+        var estimatedParameterCount = 20 + suppliers.Count + expandedCategoryCount
+            + (branches?.Count ?? 0) * 2 + searchTokenCount;
+        if (estimatedParameterCount > MaxSqlParameterBudget)
+            throw new ArgumentException("筛选条件过多，请减少供应商、分类、分店或关键词后重试");
+        // 当前 tab 传入了分类但全部无效/已删除时必须返回空结果，不能退化成无分类的全量查询。
+        // 使用参数化哨兵值保持 SQL 结构不变，避免拼接用户输入。
+        var requestedCategoriesForKind = kind == SalesDetailKind.China ? warehouseCategoryGuids : supplierCategoryGuids;
+        var effectiveCategoriesForKind = kind == SalesDetailKind.China ? effectiveWarehouseCategories : effectiveSupplierCategories;
+        if (requestedCategoriesForKind is { Count: > 0 } && effectiveCategoriesForKind.Count == 0
+            && (kind == SalesDetailKind.China || effectiveWarehouseCategories.Count == 0))
+            effectiveCategoriesForKind.Add("__sales_detail_no_matching_category__");
         cancellationToken.ThrowIfCancellationRequested();
 
         var read = await ReadSalesDetailReportSqlAsync(
-            dateRange, kind, branches, selectedBranchCode, selectedSupplierCode, selectedProductCode,
+            dateRange, kind, branches, selectedBranchCode, suppliers.FirstOrDefault(), suppliers,
+            effectiveSupplierCategories, effectiveWarehouseCategories, selectedProductCode,
             search, pageIndex, pageSize, wanted, cancellationToken);
         // 四栏全部来自同一份商品日统计，不依赖供应商汇总的完成时间或另一次发布的归属映射。
-        var status = BuildSalesDetailReportStatus(read.Status, dateRange, false);
+        var status = BuildSalesDetailReportStatus(read.Status, dateRange, false, skipFailedDates: true);
         var response = new ProductReportResponseDto<SalesDetailReportDto>
         {
             StatisticStatus = status.StatisticStatus, StatisticMessage = status.StatisticMessage,
@@ -122,7 +173,7 @@ public partial class SalesDashboardReactService
         if (wanted.Contains(SalesDetailSection.Branches))
         {
             var rows = read.Branches.Select(row => ToRow(row, SalesDetailSection.Branches, kind, null, HasCompare(dateRange))).ToList();
-            var unscoped = string.IsNullOrWhiteSpace(selectedSupplierCode) && string.IsNullOrWhiteSpace(selectedProductCode);
+            var unscoped = suppliers.Count == 0 && string.IsNullOrWhiteSpace(selectedProductCode);
             response.Data!.Branches = BuildRowsSection(rows, "当前筛选汇总",
                 unscoped ? "跨供应商商品订单未做收据去重，客单数返回 null。" : null);
             // 每家分店的单商品客单由 ToRow 判断；只对未缩小范围的跨分店汇总保留未知。
@@ -145,17 +196,20 @@ public partial class SalesDashboardReactService
 
     private async Task<SalesDetailReportRead> ReadSalesDetailReportSqlAsync(
         DateRangeDto range, SalesDetailKind kind, List<string>? branches, string? selectedBranchCode,
-        string? selectedSupplierCode, string? selectedProductCode, string? search,
+        string? selectedSupplierCode, IReadOnlyCollection<string> selectedSupplierCodes,
+        IReadOnlyCollection<string> supplierCategoryGuids, IReadOnlyCollection<string> warehouseCategoryGuids,
+        string? selectedProductCode, string? search,
         int pageIndex, int pageSize, IReadOnlySet<SalesDetailSection> wanted, CancellationToken cancellationToken)
     {
         var sqlServer = _context.Db.CurrentConnectionConfig.DbType == SqlSugar.DbType.SqlServer;
-        if (sqlServer && _context.Db.Ado.Transaction == null && UsesMonthlyProjection(search, branches, selectedBranchCode, wanted)
+        var hasClassificationFilter = supplierCategoryGuids.Count > 0 || warehouseCategoryGuids.Count > 0;
+        if (sqlServer && !hasClassificationFilter && selectedSupplierCodes.Count <= 1 && _context.Db.Ado.Transaction == null && UsesMonthlyProjection(search, branches, selectedBranchCode, wanted)
             && !MonthlyProjectionRecentlyMissing() && TryGetSameServerPosmDatabase(out _))
         {
             try
             {
                 return await ReadSalesDetailReportSqlCoreAsync(
-                    range, kind, branches, selectedBranchCode, selectedSupplierCode, selectedProductCode, search,
+                    range, kind, branches, selectedBranchCode, selectedSupplierCode, selectedSupplierCodes, supplierCategoryGuids, warehouseCategoryGuids, selectedProductCode, search,
                     pageIndex, pageSize, wanted, cancellationToken, useMonthly: true);
             }
             catch (SqlException ex) when (ex.Number == SalesDetailQueryMonthlyProjection.MissingSchemaErrorNumber)
@@ -165,35 +219,38 @@ public partial class SalesDashboardReactService
                 _logger.LogInformation("销售明细按月投影尚未建立，改用原查询：{Reason}", ex.Number);
             }
         }
-        if (sqlServer && !string.IsNullOrWhiteSpace(search) && _context.Db.Ado.Transaction == null
+        if (sqlServer && !hasClassificationFilter && selectedSupplierCodes.Count <= 1 && !string.IsNullOrWhiteSpace(search) && _context.Db.Ado.Transaction == null
             && (wanted.Contains(SalesDetailSection.Summary) || wanted.Contains(SalesDetailSection.Products))
             && TryGetSameServerPosmDatabase(out _))
         {
             try
             {
                 return await ReadSalesDetailReportSqlCoreAsync(
-                    range, kind, branches, selectedBranchCode, selectedSupplierCode, selectedProductCode, search,
+                    range, kind, branches, selectedBranchCode, selectedSupplierCode, selectedSupplierCodes, supplierCategoryGuids, warehouseCategoryGuids, selectedProductCode, search,
                     pageIndex, pageSize, wanted, cancellationToken, useProjection: true);
             }
             catch (SqlException ex) when (ex.Number == 51012
                 || (ex.Number == 208 && ex.Message.Contains("SalesDetailQuery", StringComparison.Ordinal)))
             {
-                // 派生数据尚未覆盖或版本已变化时，关闭旧快照后重新走原查询，绝不混用两版统计。
-                _logger.LogInformation("销售明细查询投影尚未就绪，改用完整事实快照：{Reason}", ex.Number);
+                // 投影覆盖异常不能退回整段事实：失败日已由投影 SQL 跳过，其他覆盖异常应明确失败，避免再次全表扫描。
+                _logger.LogWarning(ex, "销售明细查询投影不可用，拒绝回退完整事实快照：{Reason}", ex.Number);
+                throw;
             }
         }
         return sqlServer
             ? await ReadSalesDetailReportSqlCoreAsync(
-                range, kind, branches, selectedBranchCode, selectedSupplierCode, selectedProductCode, search,
+                range, kind, branches, selectedBranchCode, selectedSupplierCode, selectedSupplierCodes, supplierCategoryGuids, warehouseCategoryGuids, selectedProductCode, search,
                 pageIndex, pageSize, wanted, cancellationToken)
             : await ReadReportSnapshotAsync(() => ReadSalesDetailReportSqlCoreAsync(
-                range, kind, branches, selectedBranchCode, selectedSupplierCode, selectedProductCode, search,
+                range, kind, branches, selectedBranchCode, selectedSupplierCode, selectedSupplierCodes, supplierCategoryGuids, warehouseCategoryGuids, selectedProductCode, search,
                 pageIndex, pageSize, wanted, cancellationToken));
     }
 
     private async Task<SalesDetailReportRead> ReadSalesDetailReportSqlCoreAsync(
         DateRangeDto range, SalesDetailKind kind, List<string>? branches, string? selectedBranchCode,
-        string? selectedSupplierCode, string? selectedProductCode, string? search,
+        string? selectedSupplierCode, IReadOnlyCollection<string> selectedSupplierCodes,
+        IReadOnlyCollection<string> supplierCategoryGuids, IReadOnlyCollection<string> warehouseCategoryGuids,
+        string? selectedProductCode, string? search,
         int pageIndex, int pageSize, IReadOnlySet<SalesDetailSection> wanted, CancellationToken cancellationToken,
         bool useProjection = false, bool useMonthly = false)
     {
@@ -220,7 +277,8 @@ public partial class SalesDashboardReactService
                 // 显式迁移前不让 SQL Server 编译不存在的派生表；实际覆盖仍在下方同一统计快照内核验。
                 await using var capability = connection.CreateCommand();
                 capability.CommandText = "SELECT CASE WHEN OBJECT_ID(N'dbo.SalesDetailQueryDaily',N'U') IS NOT NULL AND OBJECT_ID(N'dbo.SalesDetailQueryProductAlias',N'U') IS NOT NULL AND OBJECT_ID(N'dbo.SalesDetailQueryProjectionState',N'U') IS NOT NULL AND OBJECT_ID(N'dbo.SalesDetailQueryMappingUse',N'U') IS NOT NULL THEN 1 ELSE 0 END;";
-                useProjection = Convert.ToInt32(await capability.ExecuteScalarAsync(cancellationToken)) == 1;
+                if (Convert.ToInt32(await capability.ExecuteScalarAsync(cancellationToken)) != 1)
+                    throw new InvalidOperationException("销售明细关键词查询投影尚未建立，已拒绝整段事实回退。");
             }
             await using var command = connection.CreateCommand();
             command.CommandText = useMonthly
@@ -230,9 +288,9 @@ public partial class SalesDashboardReactService
                 ? BuildSalesDetailReportSqlServerCore(
                     posmDatabase, range, kind, branches, selectedBranchCode, selectedSupplierCode,
                     selectedProductCode, search, pageIndex, pageSize, wanted, fallbackMap, useProjection: true, compressOutput: true)
-                : BuildSalesDetailReportSql(
+                : BuildSalesDetailReportSqlWithFilters(
                     sqlServer, direct ? posmDatabase : null, range, kind, branches, selectedBranchCode,
-                    selectedSupplierCode, selectedProductCode, search, pageIndex, pageSize, wanted, fallbackMap);
+                    selectedSupplierCode, selectedProductCode, search, pageIndex, pageSize, wanted, fallbackMap, selectedSupplierCodes, supplierCategoryGuids, warehouseCategoryGuids);
             if (ownsTransaction)
             {
                 // 能力检查、事务和全部栏位共用一次往返；不修改数据库的快照配置。
@@ -269,6 +327,12 @@ public partial class SalesDashboardReactService
             Add("@sdrKind", kind == SalesDetailKind.China ? 1 : 0, DbType.Int32);
             if (!string.IsNullOrWhiteSpace(selectedBranchCode)) Add("@sdrSelectedBranch", selectedBranchCode.Trim(), DbType.String);
             if (!string.IsNullOrWhiteSpace(selectedSupplierCode)) Add("@sdrSelectedSupplier", selectedSupplierCode.Trim(), DbType.String);
+            var normalizedSuppliers = selectedSupplierCodes.Where(code => !string.IsNullOrWhiteSpace(code)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            if (!string.IsNullOrWhiteSpace(selectedSupplierCode) && !normalizedSuppliers.Contains(selectedSupplierCode.Trim(), StringComparer.OrdinalIgnoreCase)) normalizedSuppliers.Add(selectedSupplierCode.Trim());
+            if (normalizedSuppliers.Count > 1)
+                for (var i = 0; i < normalizedSuppliers.Count; i++) Add($"@sdrSelectedSupplier{i}", normalizedSuppliers[i], DbType.String);
+            for (var i = 0; i < supplierCategoryGuids.Count; i++) Add($"@sdrCategorySupplier{i}", supplierCategoryGuids.ElementAt(i), DbType.String);
+            for (var i = 0; i < warehouseCategoryGuids.Count; i++) Add($"@sdrCategoryWarehouse{i}", warehouseCategoryGuids.ElementAt(i), DbType.String);
             if (!string.IsNullOrWhiteSpace(selectedProductCode)) Add("@sdrSelectedProduct", selectedProductCode.Trim(), DbType.String);
             var tokens = search?.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct(StringComparer.OrdinalIgnoreCase).ToArray() ?? Array.Empty<string>();
             for (var i = 0; i < tokens.Length; i++) Add($"@sdrSearch{i}", $"%{tokens[i]}%", DbType.String);
@@ -416,32 +480,64 @@ public partial class SalesDashboardReactService
     private static string BuildSalesDetailReportSql(bool sqlServer, string? posmDatabase, DateRangeDto range, SalesDetailKind kind,
         IReadOnlyCollection<string>? branches, string? selectedBranch, string? selectedSupplier, string? selectedProduct,
         string? search, int pageIndex, int pageSize, IReadOnlySet<SalesDetailSection> wanted, IReadOnlyDictionary<string, string>? fallbackMap)
+        => BuildSalesDetailReportSqlWithFilters(sqlServer, posmDatabase, range, kind, branches, selectedBranch, selectedSupplier,
+            selectedProduct, search, pageIndex, pageSize, wanted, fallbackMap, null, null, null);
+
+    private static string BuildSalesDetailReportSqlWithFilters(bool sqlServer, string? posmDatabase, DateRangeDto range, SalesDetailKind kind,
+        IReadOnlyCollection<string>? branches, string? selectedBranch, string? selectedSupplier, string? selectedProduct,
+        string? search, int pageIndex, int pageSize, IReadOnlySet<SalesDetailSection> wanted, IReadOnlyDictionary<string, string>? fallbackMap,
+        IReadOnlyCollection<string>? selectedSuppliers = null, IReadOnlyCollection<string>? supplierCategoryGuids = null,
+        IReadOnlyCollection<string>? warehouseCategoryGuids = null)
         => sqlServer
-            ? BuildSalesDetailReportSqlServer(
+            ? BuildSalesDetailReportSqlServerWithFilters(
                 posmDatabase, range, kind, branches, selectedBranch, selectedSupplier, selectedProduct,
-                search, pageIndex, pageSize, wanted, fallbackMap)
-            : BuildSalesDetailReportSqlLegacy(
+                search, pageIndex, pageSize, wanted, fallbackMap, selectedSuppliers, supplierCategoryGuids, warehouseCategoryGuids)
+            : BuildSalesDetailReportSqlLegacyWithFilters(
                 false, posmDatabase, range, kind, branches, selectedBranch, selectedSupplier, selectedProduct,
-                search, pageIndex, pageSize, wanted, fallbackMap);
+                search, pageIndex, pageSize, wanted, fallbackMap, selectedSuppliers, supplierCategoryGuids, warehouseCategoryGuids);
 
     private static string BuildSalesDetailReportSqlServer(
         string? posmDatabase, DateRangeDto range, SalesDetailKind kind,
         IReadOnlyCollection<string>? branches, string? selectedBranch, string? selectedSupplier, string? selectedProduct,
         string? search, int pageIndex, int pageSize, IReadOnlySet<SalesDetailSection> wanted,
         IReadOnlyDictionary<string, string>? fallbackMap)
-        => BuildSalesDetailReportSqlServerCore(posmDatabase, range, kind, branches, selectedBranch,
-            selectedSupplier, selectedProduct, search, pageIndex, pageSize, wanted, fallbackMap, useProjection: false);
+        => BuildSalesDetailReportSqlServerWithFilters(posmDatabase, range, kind, branches, selectedBranch, selectedSupplier,
+            selectedProduct, search, pageIndex, pageSize, wanted, fallbackMap, null, null, null);
+
+    private static string BuildSalesDetailReportSqlServerWithFilters(
+        string? posmDatabase, DateRangeDto range, SalesDetailKind kind,
+        IReadOnlyCollection<string>? branches, string? selectedBranch, string? selectedSupplier, string? selectedProduct,
+        string? search, int pageIndex, int pageSize, IReadOnlySet<SalesDetailSection> wanted,
+        IReadOnlyDictionary<string, string>? fallbackMap, IReadOnlyCollection<string>? selectedSuppliers,
+        IReadOnlyCollection<string>? supplierCategoryGuids, IReadOnlyCollection<string>? warehouseCategoryGuids)
+        => BuildSalesDetailReportSqlServerCoreWithFilters(posmDatabase, range, kind, branches, selectedBranch,
+            selectedSupplier, selectedProduct, search, pageIndex, pageSize, wanted, fallbackMap, useProjection: false,
+            selectedSuppliers: selectedSuppliers, supplierCategoryGuids: supplierCategoryGuids, warehouseCategoryGuids: warehouseCategoryGuids);
 
     private static string BuildSalesDetailReportSqlServerCore(
         string? posmDatabase, DateRangeDto range, SalesDetailKind kind,
         IReadOnlyCollection<string>? branches, string? selectedBranch, string? selectedSupplier, string? selectedProduct,
         string? search, int pageIndex, int pageSize, IReadOnlySet<SalesDetailSection> wanted,
         IReadOnlyDictionary<string, string>? fallbackMap, bool useProjection, bool compressOutput = false)
+        => BuildSalesDetailReportSqlServerCoreWithFilters(posmDatabase, range, kind, branches, selectedBranch,
+            selectedSupplier, selectedProduct, search, pageIndex, pageSize, wanted, fallbackMap, useProjection,
+            compressOutput);
+
+    private static string BuildSalesDetailReportSqlServerCoreWithFilters(
+        string? posmDatabase, DateRangeDto range, SalesDetailKind kind,
+        IReadOnlyCollection<string>? branches, string? selectedBranch, string? selectedSupplier, string? selectedProduct,
+        string? search, int pageIndex, int pageSize, IReadOnlySet<SalesDetailSection> wanted,
+        IReadOnlyDictionary<string, string>? fallbackMap, bool useProjection, bool compressOutput = false,
+        IReadOnlyCollection<string>? selectedSuppliers = null, IReadOnlyCollection<string>? supplierCategoryGuids = null,
+        IReadOnlyCollection<string>? warehouseCategoryGuids = null)
     {
         var hasCompare = HasCompare(range);
+        var categorySourceFilter = BuildSalesDetailCategoryFilter(kind, supplierCategoryGuids, warehouseCategoryGuids, "s.[ProductCode]");
         var sourceBranch = branches is { Count: > 0 }
             ? $" AND s.[BranchCode] IN ({string.Join(",", branches.Select((_, i) => $"@sdrBranch{i}"))})"
             : string.Empty;
+        // 统计失败日只在状态结果集中保留提示；事实读取必须跳过，避免筛选失败时退回整段原始数据。
+        var failedDateFilter = " AND NOT EXISTS (SELECT 1 FROM [SalesStatisticRefreshState] failedState WHERE failedState.[StatisticType]='ProductStoreDaily' AND failedState.[Status]='Failed' AND failedState.[Date]=s.[Date])";
         // 商品抽屉只请求分店栏，可在聚合前缩小事实范围；全量报表仍保留其他商品候选和供应商分母。
         var sourceProduct = wanted.Count == 1 && wanted.Contains(SalesDetailSection.Branches)
             && !string.IsNullOrWhiteSpace(selectedProduct)
@@ -461,7 +557,7 @@ public partial class SalesDashboardReactService
             : fallbackRows.Length > 0
                 ? $"LEFT JOIN ({fallbackRows}) m ON m.[ProductCode] = LTRIM(RTRIM(s.[ProductCode]))"
                 : string.Empty;
-        var supplierFilter = string.IsNullOrWhiteSpace(selectedSupplier) ? string.Empty : " AND [SupplierCode] = @sdrSelectedSupplier";
+        var supplierFilter = BuildSalesDetailSupplierFilter(selectedSupplier, selectedSuppliers);
         var productFilter = string.IsNullOrWhiteSpace(selectedProduct) ? string.Empty : " AND [ProductCode] = @sdrSelectedProduct";
         var selectedBranchFilter = string.IsNullOrWhiteSpace(selectedBranch)
             ? (branches is { Count: > 0 } ? $" AND [BranchCode] IN ({string.Join(",", branches.Select((_, i) => $"@sdrSelectedBranch{i}"))})" : string.Empty)
@@ -496,7 +592,7 @@ WITH Periods AS
  {joinMapping}
  LEFT JOIN (SELECT [SupplierCode] FROM [ChinaSupplier] WHERE [SupplierCode] IS NOT NULL AND [SupplierCode]<>'' GROUP BY [SupplierCode]) cs
    ON cs.[SupplierCode]=LTRIM(RTRIM(s.[SupplierCode]))
- WHERE s.[Date]>=periods.[StartDate] AND s.[Date]<periods.[EndDate]{sourceBranch}{sourceProduct}
+ WHERE s.[Date]>=periods.[StartDate] AND s.[Date]<periods.[EndDate]{failedDateFilter}{sourceBranch}{sourceProduct}{categorySourceFilter}
 ), NarrowFacts AS
 (
  SELECT [Period], [RawSupplierCode], [ChinaSupplierCode], [AustralianSupplierCode], [BranchCode], [ProductCode],
@@ -531,7 +627,7 @@ WITH Periods AS
         COUNT(s.[GrossProfit]) [GrossProfitRowCount]
  FROM [ProductStoreDailySalesStatistic] s
  CROSS JOIN Periods periods
- WHERE s.[Date]>=periods.[StartDate] AND s.[Date]<periods.[EndDate]{sourceBranch}{sourceProduct}
+ WHERE s.[Date]>=periods.[StartDate] AND s.[Date]<periods.[EndDate]{failedDateFilter}{sourceBranch}{sourceProduct}{categorySourceFilter}
  GROUP BY periods.[Period], s.[SupplierCode], s.[BranchCode], s.[ProductCode]
 ), RawFacts AS
 (
@@ -859,9 +955,19 @@ ORDER BY a.[Quantity] DESC, a.[CompareQuantity] DESC, a.[ProductCode] ASC;
     private static string BuildSalesDetailReportSqlLegacy(bool sqlServer, string? posmDatabase, DateRangeDto range, SalesDetailKind kind,
         IReadOnlyCollection<string>? branches, string? selectedBranch, string? selectedSupplier, string? selectedProduct,
         string? search, int pageIndex, int pageSize, IReadOnlySet<SalesDetailSection> wanted, IReadOnlyDictionary<string, string>? fallbackMap)
+        => BuildSalesDetailReportSqlLegacyWithFilters(sqlServer, posmDatabase, range, kind, branches, selectedBranch, selectedSupplier,
+            selectedProduct, search, pageIndex, pageSize, wanted, fallbackMap, null, null, null);
+
+    private static string BuildSalesDetailReportSqlLegacyWithFilters(bool sqlServer, string? posmDatabase, DateRangeDto range, SalesDetailKind kind,
+        IReadOnlyCollection<string>? branches, string? selectedBranch, string? selectedSupplier, string? selectedProduct,
+        string? search, int pageIndex, int pageSize, IReadOnlySet<SalesDetailSection> wanted, IReadOnlyDictionary<string, string>? fallbackMap,
+        IReadOnlyCollection<string>? selectedSuppliers, IReadOnlyCollection<string>? supplierCategoryGuids,
+        IReadOnlyCollection<string>? warehouseCategoryGuids)
     {
         var hasCompare = HasCompare(range);
+        var categorySourceFilter = BuildSalesDetailCategoryFilter(kind, supplierCategoryGuids, warehouseCategoryGuids, "s.[ProductCode]");
         var sourceBranch = branches is { Count: > 0 } ? $" AND s.[BranchCode] IN ({string.Join(",", branches.Select((_, i) => $"@sdrBranch{i}"))})" : "";
+        var failedDateFilter = " AND NOT EXISTS (SELECT 1 FROM [SalesStatisticRefreshState] failedState WHERE failedState.[StatisticType]='ProductStoreDaily' AND failedState.[Status]='Failed' AND failedState.[Date]=s.[Date])";
         // SQLite 不支持 SQL Server 的 VALUES 派生表列定义语法；用 UNION ALL 的 SELECT
         // 同时覆盖 SQLite fallback 与异服务器 SQL Server fallback，避免把 POSM 映射搬回全量事实。
         var fallbackRows = fallbackMap is { Count: > 0 }
@@ -874,7 +980,7 @@ ORDER BY a.[Quantity] DESC, a.[CompareQuantity] DESC, a.[ProductCode] ASC;
             : fallbackRows.Length > 0
                 ? $"LEFT JOIN ({fallbackRows}) m ON m.[ProductCode] = LTRIM(RTRIM(s.[ProductCode]))"
                 : "";
-        var supplierFilter = string.IsNullOrWhiteSpace(selectedSupplier) ? "" : " AND [SupplierCode] = @sdrSelectedSupplier";
+        var supplierFilter = BuildSalesDetailSupplierFilter(selectedSupplier, selectedSuppliers);
         var productFilter = string.IsNullOrWhiteSpace(selectedProduct) ? "" : " AND [ProductCode] = @sdrSelectedProduct";
         var selectedBranchFilter = string.IsNullOrWhiteSpace(selectedBranch)
             ? (branches is { Count: > 0 } ? $" AND [BranchCode] IN ({string.Join(",", branches.Select((_, i) => $"@sdrSelectedBranch{i}"))})" : "")
@@ -918,7 +1024,7 @@ WITH Periods AS
  LEFT JOIN [LocalSupplier] local ON local.[LocalSupplierCode]=CASE WHEN @sdrKind=0 AND (LTRIM(RTRIM(COALESCE(s.[SupplierCode],'')))='200' OR cs.[SupplierCode] IS NOT NULL) THEN '200' ELSE LTRIM(RTRIM(s.[SupplierCode])) END AND local.[IsDeleted]=0
  LEFT JOIN [Store] store ON store.[StoreCode]=LTRIM(RTRIM(s.[BranchCode]))
  LEFT JOIN [Product] p ON p.[ProductCode]=LTRIM(RTRIM(s.[ProductCode]))
- WHERE s.[Date]>=periods.[StartDate] AND s.[Date]<periods.[EndDate]{sourceBranch}
+ WHERE s.[Date]>=periods.[StartDate] AND s.[Date]<periods.[EndDate]{failedDateFilter}{sourceBranch}{categorySourceFilter}
 ), ResolvedRows AS
 (
  SELECT *, COALESCE([ProductName],[StatisticProductName]) [ResolvedProductName]
@@ -967,6 +1073,41 @@ FROM (SELECT {factProjection} FROM {table}) f {whereClause}
         return materializePrefix + cte + status + summary + suppliers + branchesSql + products + productCount + denominator + (sqlServer ? "DROP TABLE #SalesDetailFacts;" : "DROP TABLE [SalesDetailFacts];");
     }
 
+    private static string BuildSalesDetailSupplierFilter(string? legacySupplier, IReadOnlyCollection<string>? selectedSuppliers)
+    {
+        var codes = (selectedSuppliers ?? Array.Empty<string>()).Where(code => !string.IsNullOrWhiteSpace(code)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (!string.IsNullOrWhiteSpace(legacySupplier) && !codes.Contains(legacySupplier.Trim(), StringComparer.OrdinalIgnoreCase)) codes.Add(legacySupplier.Trim());
+        return codes.Count switch
+        {
+            0 => string.Empty,
+            1 => " AND [SupplierCode] = @sdrSelectedSupplier",
+            _ => $" AND [SupplierCode] IN ({string.Join(",", codes.Select((_, index) => $"@sdrSelectedSupplier{index}"))})",
+        };
+    }
+
+    private static string BuildSalesDetailCategoryFilter(
+        SalesDetailKind kind,
+        IReadOnlyCollection<string>? supplierCategoryGuids,
+        IReadOnlyCollection<string>? warehouseCategoryGuids,
+        string productExpression)
+    {
+        var supplierParameters = supplierCategoryGuids is { Count: > 0 }
+            ? string.Join(",", supplierCategoryGuids.Select((_, index) => $"@sdrCategorySupplier{index}")) : string.Empty;
+        var warehouseParameters = warehouseCategoryGuids is { Count: > 0 }
+            ? string.Join(",", warehouseCategoryGuids.Select((_, index) => $"@sdrCategoryWarehouse{index}")) : string.Empty;
+        if (kind == SalesDetailKind.China)
+            return warehouseParameters.Length == 0 ? string.Empty
+                : $" AND EXISTS (SELECT 1 FROM [Product] categoryProduct WHERE categoryProduct.[ProductCode]=LTRIM(RTRIM({productExpression})) AND categoryProduct.[IsDeleted]=0 AND (categoryProduct.[LocalSupplierCode]='200' OR categoryProduct.[LocalSupplierCode] IS NULL OR categoryProduct.[LocalSupplierCode]='') AND categoryProduct.[WarehouseCategoryGUID] IN ({warehouseParameters}))";
+
+        // 澳洲标签中的 200 使用仓库分类树；其他供应商按商品当前归属匹配各自的网站分类。
+        var filters = new List<string>();
+        if (supplierParameters.Length > 0)
+            filters.Add($"EXISTS (SELECT 1 FROM [Product] categoryProduct INNER JOIN [LocalSupplierCategoryProductAssignment] categoryAssignment ON categoryAssignment.[ProductCode]=categoryProduct.[ProductCode] AND categoryAssignment.[LocalSupplierCode]=categoryProduct.[LocalSupplierCode] WHERE categoryProduct.[ProductCode]=LTRIM(RTRIM({productExpression})) AND categoryProduct.[IsDeleted]=0 AND categoryAssignment.[LocalSupplierCode]=LTRIM(RTRIM(s.[SupplierCode])) AND categoryAssignment.[CategoryGUID] IN ({supplierParameters}))");
+        if (warehouseParameters.Length > 0)
+            filters.Add($"((LTRIM(RTRIM(s.[SupplierCode]))='200' OR EXISTS (SELECT 1 FROM [ChinaSupplier] categoryChina WHERE categoryChina.[SupplierCode]=LTRIM(RTRIM(s.[SupplierCode])))) AND EXISTS (SELECT 1 FROM [Product] categoryProduct WHERE categoryProduct.[ProductCode]=LTRIM(RTRIM({productExpression})) AND categoryProduct.[IsDeleted]=0 AND (categoryProduct.[LocalSupplierCode]='200' OR categoryProduct.[LocalSupplierCode] IS NULL OR categoryProduct.[LocalSupplierCode]='') AND categoryProduct.[WarehouseCategoryGUID] IN ({warehouseParameters})))");
+        return filters.Count == 0 ? string.Empty : " AND (" + string.Join(" OR ", filters) + ")";
+    }
+
     private bool TryGetSameServerPosmDatabase(out string database)
     {
         database = string.Empty;
@@ -984,7 +1125,7 @@ FROM (SELECT {factProjection} FROM {table}) f {whereClause}
     private static string QuoteIdentifier(string value) => "[" + value.Replace("]", "]]", StringComparison.Ordinal) + "]";
     private static string SqlLiteral(string value, bool sqlServer) => value.Replace("'", "''", StringComparison.Ordinal);
 
-    private static ProductReportStatisticStatusDto BuildSalesDetailReportStatus(IEnumerable<SalesDetailReportStatusSqlRow> rows, DateRangeDto range, bool useSupplierRollups)
+    private static ProductReportStatisticStatusDto BuildSalesDetailReportStatus(IEnumerable<SalesDetailReportStatusSqlRow> rows, DateRangeDto range, bool useSupplierRollups, bool skipFailedDates = false)
     {
         var dates = EnumerateSalesDetailDates(range).ToList();
         var required = useSupplierRollups ? new[] { SalesStatisticType.ProductStoreDaily, SalesStatisticType.AustralianSupplierStoreSales, SalesStatisticType.ChinaSupplierStoreSales } : new[] { SalesStatisticType.ProductStoreDaily };
@@ -992,13 +1133,13 @@ FROM (SELECT {factProjection} FROM {table}) f {whereClause}
         var source = string.Join("|", states.OrderBy(row => row.Date).ThenBy(row => row.Type).Select(row => $"{row.Type}:{row.Date:yyyyMMdd}:{row.Status}:{row.LastAggregatedAtUtc?.Ticks}:{row.CompletedAtUtc?.Ticks}:{row.SourceProductVersion}"));
         var result = new ProductReportStatisticStatusDto { CacheVersion = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(source))), StatisticUpdatedAt = useSupplierRollups ? states.Select(row => row.CompletedAtUtc ?? row.LastAggregatedAtUtc).DefaultIfEmpty().Min() : states.Select(row => row.CompletedAtUtc ?? row.LastAggregatedAtUtc).DefaultIfEmpty().Max(), StatisticStatus = SalesStatisticRefreshStatus.Pending, StatisticMessage = "商品统计尚未准备完成。" };
         if (states.Count == 0) return result;
-        // 业务对账失败（如单店金额与营业额差百余元）但已完成聚合的日期仍是完整的一天商品事实；
-        // 长区间不能因为个别历史日期对账未通过而整段不可读，只在响应里标注这些日期。
+        // 其他调用方保留原有已聚合失败日口径；销售明细通过 skipFailedDates 单独排除失败日。
         bool IsFailedButAggregated(SalesDetailReportStatusSqlRow row) =>
             row.Status.Equals(SalesStatisticRefreshStatus.Failed, StringComparison.OrdinalIgnoreCase)
             && row.LastAggregatedAtUtc.HasValue
             && row.Type.Equals(SalesStatisticType.ProductStoreDaily, StringComparison.OrdinalIgnoreCase);
-        if (states.Any(row => row.Status.Equals(SalesStatisticRefreshStatus.Failed, StringComparison.OrdinalIgnoreCase) && !IsFailedButAggregated(row))) { result.StatisticStatus = SalesStatisticRefreshStatus.Failed; result.StatisticMessage = "统计更新失败，等待后台恢复。"; return result; }
+        var skippedFailedDates = new List<DateTime>();
+        if (!skipFailedDates && states.Any(row => row.Status.Equals(SalesStatisticRefreshStatus.Failed, StringComparison.OrdinalIgnoreCase) && !IsFailedButAggregated(row))) { result.StatisticStatus = SalesStatisticRefreshStatus.Failed; result.StatisticMessage = "统计更新失败，等待后台恢复。"; return result; }
         if (states.Any(row => row.Status.Equals(SalesStatisticRefreshStatus.Stale, StringComparison.OrdinalIgnoreCase))) { result.StatisticStatus = SalesStatisticRefreshStatus.Stale; result.StatisticMessage = "商品统计等待更新。"; return result; }
         var reconciliationFailedDates = new List<DateTime>();
         // 生产上 2025-05-04～05-31 从未生成商品日统计（事实表无行、无状态行），早于最新状态的这类历史缺口
@@ -1010,6 +1151,11 @@ FROM (SELECT {factProjection} FROM {table}) f {whereClause}
         foreach (var date in dates)
         {
             var product = states.SingleOrDefault(row => row.Date.Date == date && row.Type.Equals(SalesStatisticType.ProductStoreDaily, StringComparison.OrdinalIgnoreCase));
+            if (skipFailedDates && product?.Status.Equals(SalesStatisticRefreshStatus.Failed, StringComparison.OrdinalIgnoreCase) == true)
+            {
+                skippedFailedDates.Add(date);
+                continue;
+            }
             if (product == null && !useSupplierRollups && latestTrackedDate.HasValue && date < latestTrackedDate.Value)
             {
                 missingHistoryDates.Add(date);
@@ -1034,9 +1180,19 @@ FROM (SELECT {factProjection} FROM {table}) f {whereClause}
             }
         }
         result.StatisticStatus = SalesStatisticRefreshStatus.Fresh;
-        result.StatisticMessage = string.Join(" ", new[] { DescribeReconciliationFailedDates(reconciliationFailedDates), DescribeMissingHistoryDates(missingHistoryDates) }
+        result.StatisticMessage = string.Join(" ", new[] { DescribeSkippedFailedDates(skippedFailedDates), DescribeReconciliationFailedDates(reconciliationFailedDates), DescribeMissingHistoryDates(missingHistoryDates) }
             .Where(message => !string.IsNullOrWhiteSpace(message))) is { Length: > 0 } message ? message : null;
         return result;
+    }
+
+    /// <summary>销售明细跳过统计失败日，并明确提示该日金额未计入结果。</summary>
+    internal static string? DescribeSkippedFailedDates(IReadOnlyCollection<DateTime> dates)
+    {
+        if (dates.Count == 0) return null;
+        var ordered = dates.Select(date => date.Date).Distinct().OrderBy(date => date).ToList();
+        var shown = string.Join("、", ordered.Take(5).Select(date => date.ToString("yyyy-MM-dd")));
+        var suffix = ordered.Count > 5 ? $" 等 {ordered.Count} 天" : string.Empty;
+        return $"{shown}{suffix}的商品统计失败，已跳过，该日金额未计入当前结果。";
     }
 
     /// <summary>从未生成商品日统计的历史日期：按连续区间合并后列出，提醒该段金额缺失、需另行回填统计。</summary>

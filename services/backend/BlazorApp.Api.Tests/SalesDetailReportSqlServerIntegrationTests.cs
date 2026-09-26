@@ -102,6 +102,7 @@ public sealed class SalesDetailReportSqlServerIntegrationTests
         await fixture.SeedChinaSupplierAsync("C2", "Beta 国内供应商重复记录");
         await fixture.SeedProductAsync("P-MULTI", "普通商品", englishName: "Alpha 英文名", itemNumber: "货号");
         await fixture.SeedFactAsync(SeedDate, "B1", "C2", "P-MULTI", 4, 40m, "统计名称", "统计条码");
+        await fixture.EnableProjectionAsync(SeedDate);
 
         var result = await fixture.CreateService().GetSalesDetailReportAsync(
             Range(), SalesDetailKind.China, branchCodes: new() { "B1" }, search: "Alpha Beta",
@@ -123,6 +124,7 @@ public sealed class SalesDetailReportSqlServerIntegrationTests
         await fixture.SeedProductAsync("P-DUP", "商品主记录 Alpha", uuid: "product-dup-a");
         await fixture.SeedProductAsync("P-DUP", "商品重复记录 Alpha", uuid: "product-dup-b");
         await fixture.SeedFactAsync(SeedDate, "B1", "AUS1", "P-DUP", 2, 100m, "统计商品");
+        await fixture.EnableProjectionAsync(SeedDate);
 
         var result = await fixture.CreateService().GetSalesDetailReportAsync(
             Range(), SalesDetailKind.Australia, branchCodes: new() { "B1" },
@@ -135,6 +137,20 @@ public sealed class SalesDetailReportSqlServerIntegrationTests
         Assert.Equal(1, result.Data.Products.Total);
         Assert.Equal(100m, result.Data.Summary!.Summary!.Revenue);
         Assert.Equal(2, result.Data.Summary.Summary.Quantity);
+    }
+
+    [SalesDetailReportSqlServerFact]
+    public async Task 关键词投影表缺失时接口拒绝整段事实回退()
+    {
+        await using var fixture = await SalesDetailSqlServerFixture.CreateAsync();
+        await fixture.SeedFreshStateAsync(SeedDate);
+        await fixture.SeedStoreAsync("B1", "测试店");
+        await fixture.SeedFactAsync(SeedDate, "B1", "AUS1", "P-ONE", 2, 20m, "Alpha 商品");
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            fixture.CreateService().GetSalesDetailReportAsync(
+                Range(), SalesDetailKind.Australia, branchCodes: new() { "B1" }, search: "Alpha"));
+        Assert.Contains("已拒绝整段事实回退", error.Message);
     }
 
     [SalesDetailReportSqlServerFact]
@@ -377,7 +393,7 @@ public sealed class SalesDetailReportSqlServerIntegrationTests
     }
 
     [SalesDetailReportSqlServerFact]
-    public async Task 名称发布标识或映射变化时投影拒绝旧覆盖并由接口回退原查询()
+    public async Task 名称发布标识或映射变化时投影拒绝旧覆盖且接口不回退原查询()
     {
         await using var fixture = await SalesDetailSqlServerFixture.CreateAsync();
         await fixture.SeedFreshStateAsync(SeedDate);
@@ -390,9 +406,9 @@ public sealed class SalesDetailReportSqlServerIntegrationTests
         await fixture.ChangeStatisticNameAsync(SeedDate, "Zulu 新名称");
         var stale = await Assert.ThrowsAsync<SqlException>(() => fixture.ReadRawReportAsync(Range(), SalesDetailKind.China, "Zulu", null, projected: true));
         Assert.Equal(51012, stale.Number);
-        var result = await fixture.CreateService().GetSalesDetailReportAsync(Range(), SalesDetailKind.China,
-            branchCodes: new() { "B1" }, search: "Zulu");
-        Assert.Equal(20m, Assert.Single(result.Data!.Products!.Rows).Revenue);
+        var result = await Assert.ThrowsAsync<SqlException>(() => fixture.CreateService().GetSalesDetailReportAsync(
+            Range(), SalesDetailKind.China, branchCodes: new() { "B1" }, search: "Zulu"));
+        Assert.Equal(51012, result.Number);
 
         await fixture.RefreshProjectionAsync(SeedDate);
         await fixture.SeedMappingAsync("P-ONE", "C1"); // 旧 SQL 会放大重复映射，签名必须也能识别重复项。
@@ -486,6 +502,53 @@ public sealed class SalesDetailReportSqlServerIntegrationTests
     }
 
     [SalesDetailReportSqlServerFact]
+    public async Task 关键词查询跳过失败日且旧投影不会触发整段事实回退()
+    {
+        await using var fixture = await SalesDetailSqlServerFixture.CreateAsync();
+        await fixture.SeedFreshStateAsync(SeedDate);
+        await fixture.SeedFreshStateAsync(CompareDate);
+        await fixture.SeedStoreAsync("B1", "授权店");
+        await fixture.SeedLocalSupplierAsync("AUS1", "澳洲供应商");
+        await fixture.SeedProductAsync("P-ONE", "Alpha 商品");
+        await fixture.SeedFactAsync(SeedDate, "B1", "AUS1", "P-ONE", 3, 30m, "Alpha 商品");
+        await fixture.SeedFactAsync(CompareDate, "B1", "AUS1", "P-ONE", 2, 20m, "Alpha 商品");
+        var failedJobId = Guid.Parse("12345678-1234-1234-1234-1234567890ab");
+        var firstCheck = new DateTime(2026, 9, 10, 1, 2, 3, 120, DateTimeKind.Utc);
+        await fixture.EnableProjectionAsync(SeedDate, CompareDate);
+        await fixture.SetFailedPublishedStateAsync(CompareDate, failedJobId, firstCheck);
+
+        var range = Range(SeedDate, CompareDate);
+        async Task AssertSkippedAsync()
+        {
+            Assert.Equal(
+                await fixture.ReadRawReportAsync(range, SalesDetailKind.Australia, "Alpha", null, projected: false),
+                await fixture.ReadRawReportAsync(range, SalesDetailKind.Australia, "Alpha", null, projected: true));
+            var response = await fixture.CreateService().GetSalesDetailReportAsync(
+                range, SalesDetailKind.Australia, branchCodes: new() { "B1" }, search: "Alpha");
+            Assert.Equal(SalesStatisticRefreshStatus.Fresh, response.StatisticStatus);
+            Assert.Contains("2026-09-08", response.StatisticMessage);
+            Assert.Contains("已跳过", response.StatisticMessage);
+            Assert.Equal(30m, response.Data!.Summary!.Summary!.Revenue);
+            Assert.Equal(0m, response.Data.Summary.Summary.CompareRevenue);
+            Assert.Equal(30m, Assert.Single(response.Data.Suppliers!.Rows).Revenue);
+            Assert.Equal(30m, Assert.Single(response.Data.Branches!.Rows).Revenue);
+            Assert.Equal(30m, Assert.Single(response.Data.Products!.Rows).Revenue);
+        }
+
+        // 已有的失败日日投影不能将其旧金额带回报表。
+        await AssertSkippedAsync();
+        // 即使失败日缺投影行，也只跳过该日，不触发覆盖异常和整段事实回退。
+        await fixture.DeleteProjectionStateAsync(CompareDate);
+        await AssertSkippedAsync();
+
+        await fixture.AdvanceFailedLastCheckedAsync(CompareDate);
+        await AssertSkippedAsync();
+
+        await fixture.RemoveLastAggregationAsync(CompareDate);
+        await AssertSkippedAsync();
+    }
+
+    [SalesDetailReportSqlServerFact]
     public async Task 投影范围超过731天拒绝执行且缺少发布时间不能发布但无任务标识仍可使用()
     {
         await using var fixture = await SalesDetailSqlServerFixture.CreateAsync();
@@ -496,7 +559,7 @@ public sealed class SalesDetailReportSqlServerIntegrationTests
         await fixture.EnableProjectionAsync(SeedDate);
         Assert.Equal(await fixture.ReadRawReportAsync(Range(), SalesDetailKind.Australia, "Alpha", null, projected: false),
             await fixture.ReadRawReportAsync(Range(), SalesDetailKind.Australia, "Alpha", null, projected: true));
-        // 页面上限是两年（731 天）；731 天以内必须能走投影，732 天起整份回退原查询。
+        // 页面上限是两年（731 天）；更长的关键词请求明确报错，不读取整段原始事实。
         foreach (var days in new[] { 732, 1001 })
         foreach (var compare in new[] { false, true })
         {
@@ -600,6 +663,59 @@ public sealed class SalesDetailReportSqlServerIntegrationTests
         Assert.Equal(JsonValueKind.Null, summary[11].ValueKind);
     }
 
+
+    [SalesDetailReportSqlServerFact]
+    public async Task 月查询跳过失败日且整月投影不再读入失败金额()
+    {
+        await using var fixture = await SalesDetailSqlServerFixture.CreateAsync();
+        var month = new DateTime(2026, 7, 1);
+        var day = new DateTime(2026, 7, 15);
+        var freshDay = day.AddDays(1);
+        var range = new DateRangeDto { StartDate = month, EndDate = month.AddMonths(1).AddDays(-1) };
+        await fixture.SeedFreshStateAsync(day);
+        await fixture.SeedFreshStateAsync(freshDay);
+        await fixture.SeedStoreAsync("B1", "一店");
+        await fixture.SeedLocalSupplierAsync("AUS1", "澳洲供应商");
+        await fixture.SeedProductAsync("P-ONE", "商品一");
+        await fixture.SeedFactAsync(day, "B1", "AUS1", "P-ONE", 2, 20m, "商品一");
+        await fixture.SeedFactAsync(freshDay, "B1", "AUS1", "P-ONE", 3, 30m, "商品一");
+        await fixture.EnableMonthlyProjectionAsync();
+        await fixture.RefreshDailyAsync(day);
+        await fixture.RefreshDailyAsync(freshDay);
+        Assert.Contains(month, await fixture.ReadStaleMonthsAsync());
+        await fixture.RefreshMonthlyAsync(month);
+        await fixture.SetFailedPublishedStateAsync(
+            day,
+            Guid.Parse("12345678-1234-1234-1234-1234567890ab"),
+            new DateTime(2026, 7, 16, 1, 2, 3, 120, DateTimeKind.Utc));
+
+        var raw = await fixture.ReadUnscopedReportAsync(
+            range, SalesDetailKind.Australia, null, null, monthly: false);
+        Assert.Equal(raw, await fixture.ReadUnscopedReportAsync(
+            range, SalesDetailKind.Australia, null, null, monthly: true));
+
+        // 月表已包含失败日金额，销售明细必须避开整个月表。
+        await fixture.TamperSalesDetailMonthAsync(month, 1000m);
+        Assert.Equal(raw, await fixture.ReadUnscopedReportAsync(
+            range, SalesDetailKind.Australia, null, null, monthly: true));
+        var response = await fixture.CreateService().GetSalesDetailReportAsync(
+            new DateRangeDto { StartDate = day, EndDate = freshDay }, SalesDetailKind.Australia);
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh, response.StatisticStatus);
+        Assert.Contains("2026-07-15", response.StatisticMessage);
+        Assert.Contains("已跳过", response.StatisticMessage);
+        Assert.Equal(30m, response.Data!.Summary!.Summary!.Revenue);
+
+        await fixture.AdvanceFailedLastCheckedAsync(day);
+        Assert.Equal(raw, await fixture.ReadUnscopedReportAsync(
+            range, SalesDetailKind.Australia, null, null, monthly: true));
+
+        // 失败日失去已发布聚合时间后仍需跳过。
+        await fixture.RemoveLastAggregationAsync(day);
+        Assert.Equal(await fixture.ReadUnscopedReportAsync(
+                range, SalesDetailKind.Australia, null, null, monthly: false),
+            await fixture.ReadUnscopedReportAsync(
+            range, SalesDetailKind.Australia, null, null, monthly: true));
+    }
 
     [SalesDetailReportSqlServerFact]
     public async Task 月投影与原查询七结果集一致并在月身份或映射变化时自动退回日事实()
@@ -804,6 +920,170 @@ public sealed class SalesDetailReportSqlServerIntegrationTests
         Assert.Equal(2, Assert.Single(augustSeptember.Stores).ProductCount);
     }
 
+    [SalesDetailReportSqlServerFact]
+    public async Task 紧凑看板数据库端聚合与内存立方体逐项一致_含月表可用与身份失效()
+    {
+        await using var fixture = await SalesDetailSqlServerFixture.CreateAsync();
+        await SeedCompactBoardEquivalenceAsync(fixture);
+        var server = fixture.CreateService();
+        var memory = fixture.CreateService();
+        memory.ForceCompactBoardInMemory = true;
+        var start = new DateTime(2026, 6, 10);
+        var end = new DateTime(2026, 8, 20);
+        var july = new DateTime(2026, 7, 1);
+
+        async Task AssertAllEquivalentAsync(string stage)
+        {
+            foreach (var (name, query) in CompactBoardQueryMatrix(start, end))
+            {
+                query.ForceRefresh = true;
+                var expected = CompactBoardSnapshot(await memory.GetCompactSalesBoardAsync(query));
+                var actual = CompactBoardSnapshot(await server.GetCompactSalesBoardAsync(query));
+                Assert.True(expected == actual, $"{stage} / {name}\nexpected: {expected}\nactual:   {actual}");
+            }
+        }
+
+        // 月表未部署：整段读日事实。
+        await AssertAllEquivalentAsync("无月表");
+
+        // 分店栏占比分母：区间内分店总营业额；选中供应商只收窄分子；尾随空格的代码合并；无统计的分店为 0。
+        var totals = (await server.GetCompactSalesBoardAsync(new CompactSalesBoardQuery { DateRange = new DateRangeDto { StartDate = start, EndDate = end }, SelectedChinaSupplierCode = "C1", ForceRefresh = true }))
+            .Stores.ToDictionary(row => row.BranchCode, row => row.BranchTotalAmount);
+        Assert.Equal(3000m, totals["B1"]);
+        Assert.Equal(750m, totals["B2"]);
+        Assert.Equal(0m, totals["B3"]);
+
+        // 月表部署后 7 月整月可用（6 月、8 月是不满月，仍读日事实）。
+        await fixture.EnableCompactBoardMonthlyAsync();
+        var stale = await fixture.ReadCompactBoardStaleMonthsAsync();
+        // 待办从最早状态所在月列到当前月、最近的在前。
+        Assert.Equal(new[] { new DateTime(2026, 8, 1), july, new DateTime(2026, 6, 1) }, stale.Where(month => month <= new DateTime(2026, 8, 1)));
+        foreach (var month in stale)
+            await fixture.RefreshCompactBoardMonthAsync(month);
+        Assert.Empty(await fixture.ReadCompactBoardStaleMonthsAsync());
+        await AssertAllEquivalentAsync("月表可用");
+
+        // 篡改 7 月月表：只有真的读了月表，整月区间的结果才会随之变化。
+        var julyQuery = new CompactSalesBoardQuery { DateRange = new DateRangeDto { StartDate = july, EndDate = new DateTime(2026, 7, 31) }, ForceRefresh = true };
+        var julyBaseline = (await server.GetCompactSalesBoardAsync(julyQuery)).Summary.OverallAmount;
+        await fixture.TamperCompactBoardMonthAsync(july, 1000m);
+        var tampered = (await server.GetCompactSalesBoardAsync(julyQuery)).Summary.OverallAmount;
+        Assert.True(tampered > julyBaseline, $"7 月整月应读月表：{julyBaseline} → {tampered}");
+
+        // 7 月某日重新发布（身份变化）：该月不再可用，退回日事实，结果回到与内存立方体一致。
+        await fixture.TouchPublishAsync(new DateTime(2026, 7, 15));
+        Assert.Equal(julyBaseline, (await server.GetCompactSalesBoardAsync(julyQuery)).Summary.OverallAmount);
+        Assert.Contains(july, await fixture.ReadCompactBoardStaleMonthsAsync());
+        await AssertAllEquivalentAsync("月表身份失效");
+
+        // worker 追上后再次可用，结果仍一致。
+        await fixture.RefreshCompactBoardMonthAsync(july);
+        await AssertAllEquivalentAsync("月表重建后");
+    }
+
+    private static IEnumerable<(string Name, CompactSalesBoardQuery Query)> CompactBoardQueryMatrix(DateTime start, DateTime end)
+    {
+        CompactSalesBoardQuery Q(Action<CompactSalesBoardQuery>? configure = null, DateTime? from = null, DateTime? to = null)
+        {
+            var query = new CompactSalesBoardQuery { DateRange = new DateRangeDto { StartDate = from ?? start, EndDate = to ?? end }, PageSize = 20 };
+            configure?.Invoke(query);
+            return query;
+        }
+        yield return ("默认", Q());
+        yield return ("第 2 页", Q(q => q.PageIndex = 2));
+        yield return ("数量降序", Q(q => { q.SortField = "quantity"; q.SortOrder = "desc"; }));
+        yield return ("单价升序", Q(q => { q.SortField = "unitPrice"; q.SortOrder = "asc"; }));
+        yield return ("货号默认", Q(q => q.SortField = "itemNumber"));
+        yield return ("货号降序", Q(q => { q.SortField = "itemNumber"; q.SortOrder = "desc"; }));
+        yield return ("选中分店", Q(q => q.SelectedBranchCode = "B2"));
+        yield return ("选中供应商", Q(q => q.SelectedChinaSupplierCode = "C1"));
+        yield return ("选中已删供应商", Q(q => q.SelectedChinaSupplierCode = "C3"));
+        yield return ("选中商品", Q(q => q.SelectedProductCode = "P20"));
+        yield return ("分店加供应商", Q(q => { q.SelectedBranchCode = "B1"; q.SelectedChinaSupplierCode = "C2"; }));
+        yield return ("三者全选", Q(q => { q.SelectedBranchCode = "B1"; q.SelectedChinaSupplierCode = "C1"; q.SelectedProductCode = "P03"; }));
+        yield return ("关键词", Q(q => q.Keyword = " widget  1 "));
+        yield return ("关键词无命中", Q(q => q.Keyword = "no-such-product"));
+        yield return ("授权范围", Q(q => q.BranchCodes = new List<string> { "B1", "B3" }));
+        yield return ("授权范围外选中", Q(q => { q.BranchCodes = new List<string> { "B1" }; q.SelectedBranchCode = "B2"; }));
+        yield return ("不存在的选中项", Q(q => q.SelectedBranchCode = "B9"));
+        yield return ("整月", Q(from: new DateTime(2026, 7, 1), to: new DateTime(2026, 7, 31)));
+        yield return ("单日", Q(from: new DateTime(2026, 7, 5), to: new DateTime(2026, 7, 5)));
+    }
+
+    /// <summary>把看板结果规整成可比较的文本：金额统一到 4 位小数，避免 decimal 尾零差异。</summary>
+    private static string CompactBoardSnapshot(CompactSalesBoardDto board)
+    {
+        static string M(decimal value) => decimal.Round(value, 4).ToString("0.####", System.Globalization.CultureInfo.InvariantCulture);
+        return JsonSerializer.Serialize(new
+        {
+            board.StatisticStatus,
+            Summary = new { A = M(board.Summary.TotalAmount), board.Summary.TotalQuantity, board.Summary.ProductCount, board.Summary.StoreCount, board.Summary.SupplierCount, O = M(board.Summary.OverallAmount), board.Summary.OverallQuantity },
+            Stores = board.Stores.Select(s => new { s.BranchCode, s.BranchName, A = M(s.TotalAmount), T = M(s.BranchTotalAmount), s.TotalQuantity, s.ProductCount }),
+            Suppliers = board.ChinaSuppliers.Select(s => new { s.SupplierCode, s.SupplierName, A = M(s.TotalAmount), s.TotalQuantity, s.ProductCount }),
+            board.ProductDetails.Total,
+            Scope = M(board.ProductDetails.ScopeAmount),
+            Products = board.ProductDetails.Data.Select(p => new { p.ProductCode, p.ItemNumber, p.ProductName, p.ChinaSupplierCode, p.ChinaSupplierName, p.TotalQuantity, A = M(p.TotalAmount), U = M(p.UnitPrice) }),
+        });
+    }
+
+    /// <summary>
+    /// 等价性夹具：2026-06-01～08-31 每天 Fresh；三家分店（B3 无分店资料）、三个国内供应商（C3 已软删除）、24 个商品。
+    /// 覆盖映射行、直写行、未映射 200 行与澳洲行（不计入）、归属中途变更、同日直写优先、无商品资料、同额并列。
+    /// </summary>
+    private static async Task SeedCompactBoardEquivalenceAsync(SalesDetailSqlServerFixture fixture)
+    {
+        for (var day = new DateTime(2026, 6, 1); day <= new DateTime(2026, 8, 31); day = day.AddDays(1))
+            await fixture.SeedFreshStateAsync(day);
+        await fixture.SeedStoreAsync("B1", "分店一");
+        await fixture.SeedStoreAsync("B2", "分店二");
+        await fixture.SeedChinaSupplierAsync("C1", "供应商一");
+        await fixture.SeedChinaSupplierAsync("C2", "供应商二");
+        await fixture.SeedChinaSupplierAsync("C3", "已删供应商", isDeleted: true);
+        for (var i = 1; i <= 24; i++)
+        {
+            var code = $"P{i:D2}";
+            // P24 没有商品资料：名称、货号为空，货号排序退回商品编码。
+            if (i != 24)
+                await fixture.SeedProductAsync(code, $"Widget {i:D2}", itemNumber: $"IT-{25 - i:D2}");
+            if (i <= 12 || i is 20 or 21 or 23 or 24)
+                await fixture.SeedMappingAsync(code, i is 23 or 24 ? "C2" : "C1");
+        }
+        await fixture.SeedProductAsync("P03", "已删除的旧资料", itemNumber: "IT-OLD", uuid: "p03-deleted");
+        await fixture.MarkProductDeletedAsync("p03-deleted");
+
+        var branches = new[] { "B1", "B2", "B3" };
+        var dates = new[] { new DateTime(2026, 6, 5), new DateTime(2026, 6, 12), new DateTime(2026, 7, 3), new DateTime(2026, 7, 20), new DateTime(2026, 8, 8), new DateTime(2026, 8, 18) };
+        for (var i = 1; i <= 18; i++)
+        {
+            var code = $"P{i:D2}";
+            var supplier = i <= 12 ? "200" : "C2";
+            for (var d = 0; d < dates.Length; d++)
+            {
+                var branch = branches[(i + d) % 3];
+                // 金额制造并列：每 5 个商品一档，同档靠商品编码定序。
+                await fixture.SeedFactAsync(dates[d], branch, supplier, code, 1 + (i + d) % 4, 10m * (1 + i / 5) + d);
+            }
+        }
+        // P19：未映射的 200 行，不计入。P22：澳洲供应商行，不计入。
+        await fixture.SeedFactAsync(dates[2], "B1", "200", "P19", 5, 500m);
+        await fixture.SeedFactAsync(dates[2], "B1", "105", "P22", 5, 500m);
+        // P20：6 月走映射归 C1，8 月直写 C2；整段归最近的 C2，区间只含 6 月时仍归 C1。
+        await fixture.SeedFactAsync(dates[1], "B1", "200", "P20", 2, 40m);
+        await fixture.SeedFactAsync(dates[4], "B2", "C2", "P20", 3, 60m);
+        // P21：同一天既有映射（C1）又有直写（C3，已软删除）：直写优先。
+        await fixture.SeedFactAsync(dates[3], "B1", "200", "P21", 1, 25m);
+        await fixture.SeedFactAsync(dates[3], "B3", "C3", "P21", 2, 35m);
+        // P23、P24：映射到 C2；P24 无商品资料。
+        await fixture.SeedFactAsync(dates[3], "B2", "200", "P23", 4, 44m);
+        await fixture.SeedFactAsync(dates[5], "B3", "200", "P24", 3, 33m);
+        // 分店总营业额（占比分母）：6-05 在默认区间（6-10 起）之外；B2 的代码带尾随空格，应与 B2 合并。
+        await fixture.SeedStoreRevenueAsync(new DateTime(2026, 6, 5), "B1", 700m);
+        await fixture.SeedStoreRevenueAsync(new DateTime(2026, 6, 12), "B1", 1000m);
+        await fixture.SeedStoreRevenueAsync(new DateTime(2026, 7, 20), "B1", 2000m);
+        await fixture.SeedStoreRevenueAsync(new DateTime(2026, 7, 3), "B2", 500m);
+        await fixture.SeedStoreRevenueAsync(new DateTime(2026, 8, 8), "B2 ", 250m);
+    }
+
     private sealed class SalesDetailSqlServerFixture : IAsyncDisposable
     {
         private readonly string _masterConnectionString;
@@ -896,6 +1176,29 @@ public sealed class SalesDetailReportSqlServerIntegrationTests
         public Task BeginNextPublishAsync(DateTime date, string status) => ExecuteNonQueryAsync(_databaseConnectionString,
             "UPDATE dbo.SalesStatisticRefreshState SET JobId=NEWID(),Status=@status WHERE [Date]=@date AND StatisticType='ProductStoreDaily';",
             ("@date", date), ("@status", status));
+
+        public Task SetFailedPublishedStateAsync(DateTime date, Guid jobId, DateTime lastCheckedAtUtc) =>
+            ExecuteNonQueryAsync(_databaseConnectionString, """
+                UPDATE dbo.SalesStatisticRefreshState
+                SET Status=N'Failed', SourceProductVersion=NULL, JobId=@jobId, LastCheckedAtUtc=@lastCheckedAtUtc
+                WHERE [Date]=@date AND StatisticType=N'ProductStoreDaily';
+                """, ("@date", date), ("@jobId", jobId), ("@lastCheckedAtUtc", lastCheckedAtUtc));
+
+        public Task AdvanceFailedLastCheckedAsync(DateTime date) => ExecuteNonQueryAsync(_databaseConnectionString, """
+            UPDATE dbo.SalesStatisticRefreshState
+            SET LastCheckedAtUtc=DATEADD(second, 1, LastCheckedAtUtc)
+            WHERE [Date]=@date AND StatisticType=N'ProductStoreDaily';
+            """, ("@date", date));
+
+        public Task RemoveLastAggregationAsync(DateTime date) => ExecuteNonQueryAsync(_databaseConnectionString, """
+            UPDATE dbo.SalesStatisticRefreshState
+            SET LastAggregatedAtUtc=NULL
+            WHERE [Date]=@date AND StatisticType=N'ProductStoreDaily';
+            """, ("@date", date));
+
+        public Task DeleteProjectionStateAsync(DateTime date) => ExecuteNonQueryAsync(_databaseConnectionString,
+            "DELETE FROM dbo.SalesDetailQueryProjectionState WHERE [Date]=@date;",
+            ("@date", date));
 
         public Task ChangeMappingAsync(string product, string supplier) => ExecuteNonQueryAsync(_databaseConnectionString,
             "UPDATE dbo.posm_product_supplier_mapping SET ChinaSupplierCode=@supplier WHERE ProductCode=@product AND LocalSupplierCode='200';",
@@ -1044,13 +1347,54 @@ public sealed class SalesDetailReportSqlServerIntegrationTests
             "INSERT INTO [dbo].[Store] ([StoreCode], [StoreName], [IsActive], [IsDeleted]) VALUES (@code, @name, 1, 0);",
             ("@code", code), ("@name", name));
 
-        public Task SeedChinaSupplierAsync(string code, string name) => ExecuteNonQueryAsync(_databaseConnectionString,
-            "INSERT INTO [dbo].[ChinaSupplier] ([SupplierCode], [SupplierName]) VALUES (@code, @name);",
-            ("@code", code), ("@name", name));
+        public Task SeedStoreRevenueAsync(DateTime date, string branchCode, decimal amount) => ExecuteNonQueryAsync(_databaseConnectionString,
+            "INSERT INTO [dbo].[StoreSalesStatistic] ([Date], [BranchCode], [BranchName], [TotalAmount]) VALUES (@date, @code, @code, @amount);",
+            ("@date", date), ("@code", branchCode), ("@amount", amount));
+
+        public Task SeedChinaSupplierAsync(string code, string name, bool isDeleted = false) => ExecuteNonQueryAsync(_databaseConnectionString,
+            "INSERT INTO [dbo].[ChinaSupplier] ([SupplierCode], [SupplierName], [IsDeleted]) VALUES (@code, @name, @deleted);",
+            ("@code", code), ("@name", name), ("@deleted", isDeleted));
+
+        public Task EnableCompactBoardMonthlyAsync() =>
+            ExecuteNonQueryAsync(_databaseConnectionString, BlazorApp.Api.Data.SchemaMigrations.CompactBoardMonthlySchema.ApplySql);
+
+        public async Task RefreshCompactBoardMonthAsync(DateTime month)
+        {
+            await using var connection = new SqlConnection(_databaseConnectionString);
+            await connection.OpenAsync();
+            await CompactBoardMonthlyProjectionWorker.RefreshMonthAsync(connection, month, CancellationToken.None);
+        }
+
+        public async Task<List<DateTime>> ReadCompactBoardStaleMonthsAsync()
+        {
+            await using var connection = new SqlConnection(_databaseConnectionString);
+            await connection.OpenAsync();
+            return await CompactBoardMonthlyProjectionWorker.ReadStaleMonthsAsync(connection, 100, CancellationToken.None);
+        }
+
+        /// <summary>直接改月表金额，用来证明查询确实读了月表（事实表不变）。</summary>
+        public Task TamperCompactBoardMonthAsync(DateTime month, decimal delta) => ExecuteNonQueryAsync(_databaseConnectionString,
+            "UPDATE [dbo].[CompactBoardMonthlyCell] SET [Amount] = [Amount] + @delta WHERE [Month] = @month;",
+            ("@delta", delta), ("@month", month));
+
+        /// <summary>只推进某日的聚合时间（事实不变），让该月身份失效。</summary>
+        public Task TouchPublishAsync(DateTime date) => ExecuteNonQueryAsync(_databaseConnectionString,
+            "UPDATE dbo.SalesStatisticRefreshState SET LastAggregatedAtUtc = DATEADD(second, 7, LastAggregatedAtUtc) WHERE [Date] = @date AND StatisticType = 'ProductStoreDaily';",
+            ("@date", date));
 
         public Task SeedLocalSupplierAsync(string code, string name) => ExecuteNonQueryAsync(_databaseConnectionString,
             "INSERT INTO [dbo].[LocalSupplier] ([LocalSupplierCode], [Name], [IsDeleted]) VALUES (@code, @name, 0);",
             ("@code", code), ("@name", name));
+
+        /// <summary>污染销售明细月投影金额，用来证明查询是否仍读取旧月表。</summary>
+        public Task TamperSalesDetailMonthAsync(DateTime month, decimal delta) => ExecuteNonQueryAsync(_databaseConnectionString, """
+            UPDATE [dbo].[SalesDetailQueryMonthlyProduct]
+            SET [Revenue] = [Revenue] + @delta
+            WHERE [Month] = @month;
+            UPDATE [dbo].[SalesDetailQueryMonthlyBranch]
+            SET [Revenue] = [Revenue] + @delta
+            WHERE [Month] = @month;
+            """, ("@month", month), ("@delta", delta));
 
         public Task SeedProductAsync(string code, string name, string? englishName = null, string? itemNumber = null, string? uuid = null)
             => ExecuteNonQueryAsync(_databaseConnectionString, """
@@ -1161,6 +1505,13 @@ public sealed class SalesDetailReportSqlServerIntegrationTests
                 [UpdateTime] datetime2(7) NOT NULL,
                 CONSTRAINT [PK_ProductStoreDailySalesStatistic] PRIMARY KEY ([Date], [BranchCode], [SupplierCode], [ProductCode])
             );
+            CREATE TABLE [dbo].[StoreSalesStatistic] (
+                [Date] datetime2(7) NOT NULL,
+                [BranchCode] nvarchar(50) NOT NULL,
+                [BranchName] nvarchar(100) NOT NULL,
+                [TotalAmount] decimal(18,2) NOT NULL,
+                CONSTRAINT [PK_StoreSalesStatistic] PRIMARY KEY ([Date], [BranchCode])
+            );
             CREATE TABLE [dbo].[SalesStatisticRefreshState] (
                 [StatisticType] nvarchar(80) NOT NULL,
                 [Date] datetime2(7) NOT NULL,
@@ -1169,6 +1520,7 @@ public sealed class SalesDetailReportSqlServerIntegrationTests
                 [CompletedAtUtc] datetime2(7) NULL,
                 [SourceProductVersion] nvarchar(64) NULL,
                 [JobId] uniqueidentifier NULL,
+                [LastCheckedAtUtc] datetime2(7) NULL,
                 CONSTRAINT [PK_SalesStatisticRefreshState] PRIMARY KEY ([StatisticType], [Date])
             );
             """;

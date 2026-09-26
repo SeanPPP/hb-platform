@@ -28,7 +28,8 @@ public sealed class ShellCatalogService(
     ILocalCatalogRepository catalogRepository,
     ILocalCatalogSyncService catalogSync,
     PosCartService cart,
-    IUiPriorityCoordinator? uiPriorityCoordinator = null) : IShellCatalogService
+    IUiPriorityCoordinator? uiPriorityCoordinator = null,
+    ICatalogSyncStatusService? catalogSyncStatus = null) : IShellCatalogService
 {
     public ShellCatalogService(
         LocalSellableItemIndex priceIndex,
@@ -178,23 +179,41 @@ public sealed class ShellCatalogService(
         var syncProgress = progress is null
             ? null
             : new CatalogSyncProgressSink(progress, priceIndex.Count);
-        var result = await Task.Run(async () =>
+        // 启动、手动下载和数据重置都经过这里，统一记录设置页展示的同步时间。
+        catalogSyncStatus?.MarkStarted(storeCode);
+        LocalCatalogReloadResult result;
+        try
         {
-            Interlocked.Increment(ref _activeSyncCount);
-            try
+            result = await Task.Run(async () =>
             {
-                await catalogSync.FullSyncAsync(storeCode, cancellationToken, syncProgress, forceFullDownload)
-                    .ConfigureAwait(false);
-                return await LoadAndReplaceLocalCatalogAsync(storeCode, cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            finally
-            {
-                Interlocked.Decrement(ref _activeSyncCount);
-            }
-        }, cancellationToken);
+                Interlocked.Increment(ref _activeSyncCount);
+                try
+                {
+                    await catalogSync.FullSyncAsync(storeCode, cancellationToken, syncProgress, forceFullDownload)
+                        .ConfigureAwait(false);
+                    return await LoadAndReplaceLocalCatalogAsync(storeCode, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                finally
+                {
+                    Interlocked.Decrement(ref _activeSyncCount);
+                }
+            }, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            catalogSyncStatus?.MarkCanceled(storeCode);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            catalogSyncStatus?.MarkFailed(storeCode, ex.Message);
+            throw;
+        }
 
+        var markSucceeded = catalogSyncStatus?.MarkSucceededAsync(storeCode) ?? Task.CompletedTask;
         ApplyPromotionRules(result.PromotionRules);
+        await markSucceeded;
         return result.Items;
     }
 
@@ -215,9 +234,12 @@ public sealed class ShellCatalogService(
             .ConfigureAwait(false);
         var cachedItems = await catalogRepository.LoadSellableItemsAsync(storeCode, cancellationToken)
             .ConfigureAwait(false);
+        var codeConflictItems = await catalogRepository.LoadCodeConflictItemsAsync(storeCode, cancellationToken)
+            .ConfigureAwait(false);
         await _uiPriorityCoordinator.WaitForUiIdleAsync(cancellationToken)
             .ConfigureAwait(false);
-        priceIndex.ReplaceAll(cachedItems);
+        // 内存索引额外带上码冲突的其它商品，扫码命中多条时弹窗选择；返回值仍是目录本身，不影响商品数等统计。
+        priceIndex.ReplaceAll(CatalogCodeConflictMerger.Merge(cachedItems, codeConflictItems));
         var promotionRules = await catalogRepository.LoadPromotionRulesAsync(storeCode, cancellationToken)
             .ConfigureAwait(false);
         return new LocalCatalogReloadResult(cachedItems, promotionRules);

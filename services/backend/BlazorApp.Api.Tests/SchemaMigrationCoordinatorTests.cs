@@ -421,6 +421,10 @@ public sealed class SchemaMigrationCoordinatorTests
             SchemaDatabase.Main,
             SchemaMigrationCoordinator.LocalSupplierCategoryMigrationId
         );
+        runtime.MarkApplied(
+            SchemaDatabase.Main,
+            SchemaMigrationCoordinator.CompactBoardMonthlyMigrationId
+        );
         runtime.MarkApplied(SchemaDatabase.Posm, SchemaMigrationCoordinator.PosmMigrationId);
         runtime.MarkApplied(
             SchemaDatabase.Posm,
@@ -844,6 +848,7 @@ public sealed class SchemaMigrationCoordinatorTests
                 "Check:Main:20260921.001-mobile-ota-runtime-targets",
                 "Check:Main:20260922.001-sales-detail-query-monthly",
                 "Check:Main:20260923.001-local-supplier-category",
+                "Check:Main:20260924.001-compact-board-monthly",
                 "Check:Posm:20260827.001-hbweb-posm-baseline",
                 "Check:Posm:20260831.001-mobile-device-activation",
                 "Check:Posm:20260903.001-linkly-multi-terminal",
@@ -1057,19 +1062,31 @@ public sealed class SchemaMigrationCoordinatorTests
     }
 
     [Fact]
-    public async Task MigrateAsync_供应商分类是末尾迁移且成功后才登记()
+    public async Task MigrateAsync_供应商分类与看板月投影按日期追加在末尾且成功后才登记()
     {
         var runtime = new FakeSchemaMigrationRuntime();
         var coordinator = CreateCoordinator(runtime);
 
+        // 新迁移按日期追加：供应商分类（09-23）之后是看板月投影（09-24）。
         Assert.Equal(
             SchemaMigrationCoordinator.LocalSupplierCategoryMigrationId,
+            SchemaMigrationCoordinator.MainMigrationSteps[^2].MigrationId
+        );
+        Assert.Equal(
+            SchemaMigrationCoordinator.CompactBoardMonthlyMigrationId,
             SchemaMigrationCoordinator.MainMigrationSteps[^1].MigrationId
         );
         Assert.True((await coordinator.MigrateAsync(CancellationToken.None)).Success);
-        var apply = $"Apply:Main:{SchemaMigrationCoordinator.LocalSupplierCategoryMigrationId}";
-        var record = $"Record:Main:{SchemaMigrationCoordinator.LocalSupplierCategoryMigrationId}";
-        Assert.True(runtime.Events.IndexOf(apply) < runtime.Events.IndexOf(record));
+        foreach (var migrationId in new[]
+        {
+            SchemaMigrationCoordinator.LocalSupplierCategoryMigrationId,
+            SchemaMigrationCoordinator.CompactBoardMonthlyMigrationId,
+        })
+        {
+            var apply = $"Apply:Main:{migrationId}";
+            var record = $"Record:Main:{migrationId}";
+            Assert.True(runtime.Events.IndexOf(apply) < runtime.Events.IndexOf(record));
+        }
         Assert.Contains("VerifyLocalSupplierCategory", runtime.Events);
     }
 
@@ -1236,6 +1253,20 @@ public sealed class SchemaMigrationCoordinatorTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             Events.Add("VerifySalesDetailQueryMonthly");
+            return Task.CompletedTask;
+        }
+
+        public Task ApplyCompactBoardMonthlyAsync(CancellationToken cancellationToken) =>
+            ApplyAsync(
+                SchemaDatabase.Main,
+                SchemaMigrationCoordinator.CompactBoardMonthlyMigrationId,
+                cancellationToken
+            );
+
+        public Task VerifyCompactBoardMonthlyAsync(CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Events.Add("VerifyCompactBoardMonthly");
             return Task.CompletedTask;
         }
 

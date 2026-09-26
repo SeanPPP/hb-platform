@@ -345,6 +345,7 @@ public static class ServiceRegistration
         services.AddSingleton<IRemoteLookupRefreshService, RemoteLookupRefreshService>();
         services.AddSingleton<ISpecialProductService, SpecialProductService>();
         services.AddSingleton<IShellCultureService, ShellCultureService>();
+        services.AddSingleton<ICatalogSyncStatusService, CatalogSyncStatusService>();
         services.AddSingleton<IShellCatalogService, ShellCatalogService>();
         services.AddSingleton<IMainShellStartupService, MainShellStartupService>();
         services.AddSingleton<IShellSyncCenterService, ShellSyncCenterService>();
@@ -523,6 +524,8 @@ public static class ServiceRegistration
                 sp.GetRequiredService<IUiPriorityCoordinator>(),
                 () => sp.GetRequiredService<IShellCatalogService>().IsCatalogSyncActive));
         services.AddSingleton<IDisplayTopologyService, DisplayTopologyService>();
+        services.AddSingleton<IColorThemeService, ColorThemeService>();
+        services.AddSingleton<ColorThemeSwitcherViewModel>();
         services.AddSingleton<IWindowOwnerProvider, WpfWindowOwnerProvider>();
         services.AddSingleton<ICustomerDisplayWindowService, CustomerDisplayWindowService>();
         services.AddSingleton<RawScannerInputProcessor>();
@@ -612,7 +615,8 @@ public static class ServiceRegistration
                 storeReceiptProfileApiClient: sp.GetRequiredService<IStoreReceiptProfileApiClient>(),
                 cashierSessionRefreshService: sp.GetRequiredService<CashierSessionRefreshService>(),
                 remoteMaintenanceService: sp.GetRequiredService<IRemoteMaintenanceService>(),
-                paymentMethodSettingsService: sp.GetRequiredService<IPaymentMethodSettingsService>());
+                paymentMethodSettingsService: sp.GetRequiredService<IPaymentMethodSettingsService>(),
+                catalogSyncStatusService: sp.GetRequiredService<ICatalogSyncStatusService>());
             viewModel.ConfigureAuditSyncCenter(
                 sp.GetRequiredService<ClientLogOutboxStore>(),
                 sp.GetRequiredService<OperationAuditUploadService>(),
