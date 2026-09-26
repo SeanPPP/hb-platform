@@ -9,6 +9,7 @@ public partial class SalesDashboardReactService
         // 澳洲栏位不展示中国分母且无中国目录词命中时，只需证明相关 raw 分类及映射行数未变。
         // CompletedAt 仅用于审计；
         // ProvisionalFresh 批末升级 Fresh 会修改它，事实身份由版本、任务和 LastAggregatedAt 共同确定。
+        // Failed 且无对账版本时以 JobId + LastCheckedAt 识别失败重算写入的商品事实。
         return $"""
 -- 覆盖检查和后面的读取都在调用方的同一 SNAPSHOT 中；缺少任一天就整份回退。
 -- 前端最多请求 731 天（两年）；更长的直接调用仍由原查询处理，不能截断覆盖检查后误放行。
@@ -37,12 +38,13 @@ IF EXISTS
  LEFT JOIN dbo.SalesDetailQueryProjectionState p ON p.[Date]=d.[Date]
  WHERE p.[Date] IS NULL OR r.[Date] IS NULL
    OR p.[ProjectionSchemaVersion]<>{SalesDetailQueryProjection.SchemaVersion}
-   OR r.[Status] NOT IN ('Fresh','ProvisionalFresh','Queued','Running')
-   OR NULLIF(r.[SourceProductVersion],'') IS NULL
+   OR r.[Status] NOT IN ('Fresh','ProvisionalFresh','Queued','Running','Failed')
+   OR (r.[Status]<>'Failed' AND NULLIF(r.[SourceProductVersion],'') IS NULL)
+   OR (r.[Status]='Failed' AND r.[LastCheckedAtUtc] IS NULL)
    OR r.[LastAggregatedAtUtc] IS NULL
    OR EXISTS
       (SELECT p.[SourceProductVersion],p.[SourceLastAggregatedAtUtc]
-       EXCEPT SELECT r.[SourceProductVersion],r.[LastAggregatedAtUtc])
+       EXCEPT SELECT {SalesDetailQueryProjection.BuildSourceIdentitySql("r.[Status]", "r.[SourceProductVersion]", "r.[JobId]", "r.[LastCheckedAtUtc]")},r.[LastAggregatedAtUtc])
    -- 排队会更换下一次任务的 JobId，但旧事实仍完整发布；成功提交时再严格核对新任务身份。
    OR (r.[Status] IN ('Fresh','ProvisionalFresh')
        AND EXISTS (SELECT p.[SourceJobId] EXCEPT SELECT r.[JobId]))

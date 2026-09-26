@@ -237,8 +237,9 @@ SELECT DISTINCT CONVERT(date, [Date])
 FROM [dbo].[SalesStatisticRefreshState]
 WHERE [StatisticType] = N'ProductStoreDaily'
   AND [Date] >= @StartDate AND [Date] < DATEADD(day, 1, @EndDate)
-  AND [Status] IN (N'Fresh', N'ProvisionalFresh')
-  AND NULLIF(LTRIM(RTRIM([SourceProductVersion])), N'') IS NOT NULL
+  AND [Status] IN (N'Fresh', N'ProvisionalFresh', N'Failed')
+  AND ([Status] = N'Failed' AND [LastCheckedAtUtc] IS NOT NULL
+       OR [Status] <> N'Failed' AND NULLIF(LTRIM(RTRIM([SourceProductVersion])), N'') IS NOT NULL)
   AND [LastAggregatedAtUtc] IS NOT NULL
 ORDER BY CONVERT(date, [Date]);
 """;
@@ -361,16 +362,19 @@ SELECT COUNT(*)
 FROM [dbo].[SalesStatisticRefreshState] r
 JOIN [dbo].[SalesDetailQueryProjectionState] p ON p.[Date] = CONVERT(date, r.[Date])
 WHERE r.[StatisticType] = N'ProductStoreDaily' AND r.[Date] >= @Date AND r.[Date] < DATEADD(day, 1, @Date)
-  AND r.[Status] IN (N'Fresh', N'ProvisionalFresh')
-  AND NULLIF(LTRIM(RTRIM(r.[SourceProductVersion])), N'') IS NOT NULL
+  AND r.[Status] IN (N'Fresh', N'ProvisionalFresh', N'Failed')
+  AND (r.[Status] = N'Failed' AND r.[LastCheckedAtUtc] IS NOT NULL
+       OR r.[Status] <> N'Failed' AND NULLIF(LTRIM(RTRIM(r.[SourceProductVersion])), N'') IS NOT NULL)
   AND r.[LastAggregatedAtUtc] IS NOT NULL
   AND p.[ProjectionSchemaVersion] = {{SalesDetailQueryProjection.SchemaVersion}}
   AND p.[MappingVersion] = @MappingVersion
   AND NOT EXISTS (
-      SELECT p.[SourceProductVersion], p.[SourceLastAggregatedAtUtc], p.[SourceJobId]
+      SELECT p.[SourceProductVersion], p.[SourceLastAggregatedAtUtc]
       EXCEPT
-      SELECT r.[SourceProductVersion], r.[LastAggregatedAtUtc], r.[JobId]
-  );
+      SELECT {{SalesDetailQueryProjection.BuildSourceIdentitySql("r.[Status]", "r.[SourceProductVersion]", "r.[JobId]", "r.[LastCheckedAtUtc]")}}, r.[LastAggregatedAtUtc]
+  )
+  AND (r.[Status] = N'Failed' OR NOT EXISTS
+      (SELECT p.[SourceJobId] EXCEPT SELECT r.[JobId]));
 """;
         command.Parameters.AddWithValue("@Date", date);
         command.CommandTimeout = settings.CommandTimeoutSeconds;
