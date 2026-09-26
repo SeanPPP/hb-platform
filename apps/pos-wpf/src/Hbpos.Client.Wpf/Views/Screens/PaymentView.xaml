@@ -226,7 +226,7 @@
                             Padding="6,0">
                         <StackPanel Orientation="Horizontal">
                             <materialDesign:PackIcon Kind="ArrowLeft" Width="16" Height="16" Margin="0,0,6,0" />
-                            <TextBlock Text="{loc:Loc shell.backToPos}" FontWeight="Bold" FontSize="12" />
+                            <TextBlock Text="{loc:Loc shell.backToPos}" FontWeight="Bold" FontSize="15" />
                         </StackPanel>
                     </Button>
                     <ToggleButton Grid.Row="0"
@@ -261,7 +261,7 @@
                             <TextBlock Grid.Column="0"
                                        Text="{Binding InstallmentMethodText}"
                                        VerticalAlignment="Center"
-                                       FontSize="11"
+                                       FontSize="13"
                                        TextWrapping="Wrap"
                                        FontWeight="SemiBold"
                                        Foreground="{StaticResource PosTextBrush}" />
@@ -1012,7 +1012,7 @@
                             </Style.Triggers>
                         </Style>
                     </Button.Style>
-                    <TextBlock Text="{Binding CancelText}" FontWeight="Bold" FontSize="12" TextWrapping="Wrap" TextAlignment="Center" HorizontalAlignment="Center" />
+                    <TextBlock Text="{Binding CancelText}" FontWeight="Bold" FontSize="15" TextWrapping="Wrap" TextAlignment="Center" HorizontalAlignment="Center" />
                 </Button>
                 <Button Command="{Binding ConfirmPaymentCommand}"
                         AutomationProperties.AutomationId="ConfirmPaymentButton"

@@ -326,7 +326,9 @@
                                                       Background="Transparent" />
                                         </Border>
 
+                                        <!-- 工具栏与标签页同处一行，1080 宽时放不下全局 16 号按钮字，这里保持 14。 -->
                                         <Button x:Name="DailyCloseRefreshHistoryButton"
+                                                FontSize="14"
                                                 Grid.Column="2"
                                                 Command="{Binding LoadHistoryCommand}"
                                                 Height="36"
@@ -349,6 +351,7 @@
                                         </Button>
 
                                         <Button x:Name="DailyCloseCreateDraftButton"
+                                                FontSize="14"
                                                 Grid.Column="3"
                                                 Command="{Binding CreateOrResumeDailyCloseCommand}"
                                                 Height="36"
@@ -374,6 +377,7 @@
                                         </Button>
 
                                         <Button x:Name="DailyCloseContinueDraftButton"
+                                                FontSize="14"
                                                 Grid.Column="3"
                                                 Command="{Binding CreateOrResumeDailyCloseCommand}"
                                                 Height="36"
