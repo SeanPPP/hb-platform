@@ -104,6 +104,31 @@ public sealed class PosTerminalWorkflowServiceTests
         Assert.Single(cart.Lines);
     }
 
+    [Fact]
+    public async Task Choosing_different_products_for_a_conflicting_code_adds_separate_cart_lines()
+    {
+        const string conflictCode = "6405090401470";
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        var fly = CreateItem("P-FLY", "EXTENSION Fly Swatter", conflictCode, PriceSourceKind.ProductSetCode, 8.99m);
+        var flower = CreateItem("P-FLOWER", "flower", conflictCode, PriceSourceKind.ProductBase, 2.99m);
+        index.ReplaceAll(CatalogCodeConflictMerger.Merge([fly], [fly, flower]));
+        var service = new PosTerminalWorkflowService(index, cart);
+
+        foreach (var chosen in new[] { fly, flower, fly })
+        {
+            var scan = await service.ProcessScanAsync(Session, conflictCode, preferExactLookup: true, source: "raw");
+            Assert.True(scan.MatchesPopupOpen);
+            service.AddSelectedItem(Session, chosen, clearScanText: true, closeMatchesPopup: true, operation: "manual-select-match");
+        }
+
+        // ????????????????????????????????
+        Assert.Equal(
+            [("P-FLY", "EXTENSION Fly Swatter", 8.99m, 2m), ("P-FLOWER", "flower", 2.99m, 1m)],
+            cart.Lines.Select(line => (line.ProductCode, line.DisplayName, line.UnitPrice, line.Quantity)));
+        Assert.Equal(20.97m, cart.TotalAmount);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
