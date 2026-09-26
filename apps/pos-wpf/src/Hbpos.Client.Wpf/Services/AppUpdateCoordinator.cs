@@ -179,10 +179,9 @@ public sealed class AppUpdateCoordinator(
             return AppUpdateCoordinatorResult.CheckFailed(update.ErrorCode, update.ErrorMessage);
         }
 
-        state.ApplyVersionCheck(update);
-
         if (!update.UpdateAvailable)
         {
+            state.ClearVersionCheckResult();
             if (manual)
             {
                 state.SetStatus("settings.status.appUpdateLatest");
@@ -196,7 +195,7 @@ public sealed class AppUpdateCoordinator(
             return await HandleOptionalUpdateAsync(update, manual, cancellationToken);
         }
 
-        return await HandleForceUpdateAsync(update, cancellationToken);
+        return await HandleForceUpdateAsync(update, manual, cancellationToken);
     }
 
     private async Task<AppUpdateCoordinatorResult> HandleOptionalUpdateAsync(
@@ -208,6 +207,7 @@ public sealed class AppUpdateCoordinator(
         var download = await downloadService.DownloadAsync(update, progress, cancellationToken);
         if (!download.Success || string.IsNullOrWhiteSpace(download.FilePath))
         {
+            state.ClearVersionCheckResult();
             if (manual)
             {
                 state.SetStatus("settings.status.appUpdateDownloadFailed", download.ErrorMessage ?? string.Empty);
@@ -218,7 +218,8 @@ public sealed class AppUpdateCoordinator(
                 download.ErrorMessage ?? string.Empty);
         }
 
-        // 中文注释：可选更新先后台下载，确认弹窗只负责决定是否立即拉起已下载的安装器。
+        // 中文注释：所有更新提示（含底部新版本号）只在安装包下载完成后出现；确认弹窗只负责决定是否立即拉起已下载的安装器。
+        state.ApplyVersionCheck(update);
         if (!await promptService.ConfirmOptionalDownloadAndInstallAsync(update, cancellationToken))
         {
             if (manual)
@@ -248,14 +249,16 @@ public sealed class AppUpdateCoordinator(
 
     private async Task<AppUpdateCoordinatorResult> HandleForceUpdateAsync(
         AppUpdateCheckResponse update,
+        bool manual,
         CancellationToken cancellationToken)
     {
         // 中文注释：强制更新也先后台下载，只有安装包就绪后才进入阻断或待安装状态。
-        return await DownloadForceUpdateAsync(update, cancellationToken);
+        return await DownloadForceUpdateAsync(update, manual, cancellationToken);
     }
 
     private async Task<AppUpdateCoordinatorResult> DownloadForceUpdateAsync(
         AppUpdateCheckResponse update,
+        bool manual,
         CancellationToken cancellationToken)
     {
         // 中文注释：下载阶段保持非阻断，让用户能继续完成或取消当前交易。
@@ -264,15 +267,19 @@ public sealed class AppUpdateCoordinator(
         var download = await downloadService.DownloadAsync(update, progress, cancellationToken);
         if (!download.Success || string.IsNullOrWhiteSpace(download.FilePath))
         {
-            state.ShowForceUpdateError(
-                update,
-                download.ErrorMessage ?? LocalizationResourceProvider.Instance["appUpdate.force.downloadFailedDefault"],
-                () => CheckForUpdatesAsync(manual: true, CancellationToken.None),
-                exitService.Exit);
+            // 中文注释：没有安装包就不能出现任何更新提示；收银照常，下次启动或设置页手动检查时再下载。
+            state.ClearForceUpdateDownload();
+            if (manual)
+            {
+                state.SetStatus("settings.status.appUpdateDownloadFailed", download.ErrorMessage ?? string.Empty);
+            }
+
             return AppUpdateCoordinatorResult.FromStatus(
                 AppUpdateCoordinatorStatus.DownloadFailed,
                 download.ErrorMessage ?? string.Empty);
         }
+
+        state.ApplyVersionCheck(update);
 
         async Task<ProcessLaunchResult> LaunchInstallerAsync()
         {

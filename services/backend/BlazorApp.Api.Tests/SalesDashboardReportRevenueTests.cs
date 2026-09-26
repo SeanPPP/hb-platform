@@ -984,6 +984,44 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
     }
 
     [Fact]
+    public async Task GetExecutiveHourlyTrafficAsync_全分店按启用门店目录排除停用门店_显式范围仍按请求()
+    {
+        await SeedStoreAsync("S1", "Store A");
+        await _localDb.Insertable(new Store
+        {
+            StoreGUID = "store-S9",
+            StoreCode = "S9",
+            StoreName = "Closed Store",
+            IsActive = false,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await SeedHourlySalesStatisticAsync(new DateTime(2026, 7, 4), 10, "S1", "Store A", 120m, 4);
+        await SeedHourlySalesStatisticAsync(new DateTime(2025, 7, 5), 10, "S1", "Store A", 80m, 2);
+        // 停用门店今年已无销售，去年同期仍有分时：全分店视图不能把它算进同期。
+        await SeedHourlySalesStatisticAsync(new DateTime(2025, 7, 5), 10, "S9", "Closed Store", 55m, 3);
+        await SeedSalesOrderAsync("hourly-active-current", new DateTime(2026, 7, 4, 10, 0, 0), "S1");
+        await SeedSalesOrderAsync("hourly-active-compare", new DateTime(2025, 7, 5, 10, 0, 0), "S1");
+        await SeedSalesOrderAsync("hourly-closed-compare", new DateTime(2025, 7, 5, 10, 5, 0), "S9");
+        var service = CreateService();
+        var range = new DateRangeDto
+        {
+            StartDate = new DateTime(2026, 7, 4),
+            EndDate = new DateTime(2026, 7, 4),
+            CompareStartDate = new DateTime(2025, 7, 5),
+            CompareEndDate = new DateTime(2025, 7, 5),
+        };
+
+        var allStores = await service.GetExecutiveHourlyTrafficAsync(range);
+
+        var row = Assert.Single(allStores);
+        Assert.Equal("S1", row.BranchCode);
+        Assert.Equal(80m, row.RevenueLY);
+
+        var explicitScope = await service.GetExecutiveHourlyTrafficAsync(range, new List<string> { "S1", "S9" });
+        Assert.Equal(55m, Assert.Single(explicitScope, item => item.BranchCode == "S9").RevenueLY);
+    }
+
+    [Fact]
     public async Task GetExecutiveHourlyTrafficAsync_历史统计缺失时重算并返回去年客单数()
     {
         await SeedStoreAsync("S1", "Store A");

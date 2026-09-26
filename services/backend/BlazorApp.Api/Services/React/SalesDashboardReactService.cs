@@ -430,6 +430,8 @@ namespace BlazorApp.Api.Services.React
         private static readonly TimeSpan COMPACT_SALES_BOARD_CUBE_CACHE_DURATION = TimeSpan.FromMinutes(10);
         /// <summary>看板最长区间：两年（含闰日），与销售明细 SalesDetailReportController.MaxReportDays 一致。</summary>
         internal const int CompactSalesBoardMaxDays = 731;
+        // 商品明细每页上限与带图导出上限一致（500 行），导出全部结果也按 500 行一页分批读取。
+        internal const int CompactSalesBoardMaxPageSize = 500;
 
         private enum StatisticsRefreshState
         {
@@ -3944,6 +3946,11 @@ namespace BlazorApp.Api.Services.React
 
                     var startDate = dateRange.StartDate.Date;
                     var endDate = dateRange.EndDate.Date;
+                    // 管理员的「全部分店」与分店排行同口径：以启用门店目录为准，已停用门店去年的分时不进同期。
+                    // 目录为空（未初始化的库）时保持原行为，不按门店收窄；完整性核验仍用原请求范围。
+                    var queryBranchCodes = normalizedBranchCodes.Count > 0
+                        ? normalizedBranchCodes
+                        : (await GetActiveStoreNameMapAsync()).Keys.ToList();
 
                     var query = _context
                         .Db.Queryable<HourlySalesStatistic>()
@@ -3954,10 +3961,10 @@ namespace BlazorApp.Api.Services.React
                             && s.BranchCode != "ALL"
                         );
 
-                    if (normalizedBranchCodes.Count > 0)
+                    if (queryBranchCodes.Count > 0)
                     {
                         query = query.Where(s =>
-                            s.BranchCode != null && normalizedBranchCodes.Contains(s.BranchCode)
+                            s.BranchCode != null && queryBranchCodes.Contains(s.BranchCode)
                         );
                     }
 
@@ -3995,10 +4002,10 @@ namespace BlazorApp.Api.Services.React
                                 && s.BranchCode != "ALL"
                             );
 
-                        if (normalizedBranchCodes.Count > 0)
+                        if (queryBranchCodes.Count > 0)
                         {
                             lyQuery = lyQuery.Where(s =>
-                                s.BranchCode != null && normalizedBranchCodes.Contains(s.BranchCode)
+                                s.BranchCode != null && queryBranchCodes.Contains(s.BranchCode)
                             );
                         }
 
@@ -7423,7 +7430,7 @@ namespace BlazorApp.Api.Services.React
                 throw new ArgumentException($"紧凑销售看板日期范围不能超过 {CompactSalesBoardMaxDays} 天。");
 
             var pageIndex = Math.Max(1, query.PageIndex);
-            var pageSize = Math.Clamp(query.PageSize, 20, 200);
+            var pageSize = Math.Clamp(query.PageSize, 20, CompactSalesBoardMaxPageSize);
             var branchScope = query.BranchCodes == null
                 ? null
                 : NormalizeCodes(query.BranchCodes).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -7442,6 +7449,13 @@ namespace BlazorApp.Api.Services.React
             // 统计未完成或 fail-closed 的空授权范围绝不读取数据，避免把旧统计误展示为当前结果。
             if (status.StatisticStatus != SalesStatisticRefreshStatus.Fresh || branchScope is { Count: 0 })
                 return board;
+
+            // SQL Server：在数据库里算完四栏只回几百行（API↔数据库带宽很窄）；其他数据库走下面的内存立方体。
+            if (UsesCompactBoardServerAggregation(out var posmDatabase))
+            {
+                return await GetCompactSalesBoardOnServerAsync(
+                    board, posmDatabase, boardRange, status.CacheVersion, branchScope, query, pageIndex, pageSize, expectedGeneration);
+            }
 
             // 立方体缓存键不含授权范围与筛选：所有用户、所有点选共享同一份聚合，授权过滤在下方内存中完成。
             var cacheKey = SalesDashboardCacheKeys.CompactSalesBoardCube(boardRange, status.CacheVersion);
@@ -7464,6 +7478,7 @@ namespace BlazorApp.Api.Services.React
             }
 
             FillCompactSalesBoard(board, cube, branchScope, query, pageIndex, pageSize);
+            await FillCompactSalesBoardBranchTotalsAsync(board.Stores, boardRange);
             return board;
         }
 

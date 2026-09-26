@@ -79,6 +79,21 @@ public interface ILocalCatalogRepository
     {
         throw new NotSupportedException("Store replace sessions are not supported by this repository.");
     }
+
+    Task ReplaceCodeConflictItemsAsync(
+        string storeCode,
+        IEnumerable<SellableItemDto> items,
+        CancellationToken cancellationToken = default)
+    {
+        throw new NotSupportedException("Code conflict caching is not supported by this repository.");
+    }
+
+    Task<IReadOnlyList<SellableItemDto>> LoadCodeConflictItemsAsync(
+        string storeCode,
+        CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult<IReadOnlyList<SellableItemDto>>([]);
+    }
 }
 
 public sealed class LocalCatalogRepository(LocalSqliteStore store) : ILocalCatalogRepository
@@ -507,6 +522,93 @@ public sealed class LocalCatalogRepository(LocalSqliteStore store) : ILocalCatal
         return items;
     }
 
+    public async Task ReplaceCodeConflictItemsAsync(
+        string storeCode,
+        IEnumerable<SellableItemDto> items,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedStoreCode = NormalizeStoreCode(storeCode);
+        if (string.IsNullOrEmpty(normalizedStoreCode))
+        {
+            throw new ArgumentException("Store code is required.", nameof(storeCode));
+        }
+
+        var materializedItems = items.ToList();
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        using var transaction = connection.BeginTransaction();
+
+        // 冲突候选按门店全量替换：服务端数据已修复的码必须随之消失，不能残留旧的备选商品。
+        await using (var deleteCommand = connection.CreateCommand())
+        {
+            deleteCommand.Transaction = transaction;
+            deleteCommand.CommandText = """
+                DELETE FROM LocalSellableItemCodeConflict
+                WHERE StoreCode = $StoreCode;
+                """;
+            deleteCommand.Parameters.AddWithValue("$StoreCode", normalizedStoreCode);
+            await deleteCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        var syncedAt = DateTimeOffset.UtcNow;
+        await using (var insertCommand = connection.CreateCommand())
+        {
+            insertCommand.Transaction = transaction;
+            insertCommand.CommandText = InsertCodeConflictItemSql;
+            AddUpsertParameters(insertCommand);
+            insertCommand.Parameters.AddWithValue("$SortOrder", 0);
+            insertCommand.Prepare();
+
+            for (var index = 0; index < materializedItems.Count; index++)
+            {
+                var item = materializedItems[index];
+                var lookupCodeNormalized = NormalizeLookupCode(item.LookupCode);
+                if (!string.Equals(NormalizeStoreCode(item.StoreCode), normalizedStoreCode, StringComparison.OrdinalIgnoreCase) ||
+                    string.IsNullOrEmpty(lookupCodeNormalized))
+                {
+                    continue;
+                }
+
+                var contentHash = CreateContentHash(item, normalizedStoreCode, lookupCodeNormalized);
+                SetItemParameters(insertCommand, item, normalizedStoreCode, lookupCodeNormalized, contentHash, syncedAt);
+                // 保留服务端决胜顺序，读取时按它排序。
+                insertCommand.Parameters["$SortOrder"].Value = index;
+                await insertCommand.ExecuteNonQueryAsync(cancellationToken);
+            }
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<SellableItemDto>> LoadCodeConflictItemsAsync(
+        string storeCode,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedStoreCode = NormalizeStoreCode(storeCode);
+        if (string.IsNullOrWhiteSpace(normalizedStoreCode))
+        {
+            return [];
+        }
+
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT StoreCode, ProductCode, ReferenceCode, DisplayName, LookupCode, ItemNumber, Barcode, ProductImage, DiscountRate, IsSpecialProduct, RetailPrice, PriceSource, PriceSourceLabel, QuantityFactor, UpdatedAt
+            FROM LocalSellableItemCodeConflict
+            WHERE StoreCode = $StoreCode
+            ORDER BY LookupCodeNormalized, SortOrder;
+            """;
+        command.Parameters.AddWithValue("$StoreCode", normalizedStoreCode);
+
+        var items = new List<SellableItemDto>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            items.Add(ReadSellableItem(reader));
+        }
+
+        return items;
+    }
+
     public async Task ReplacePromotionRulesAsync(
         string storeCode,
         IEnumerable<CatalogPromotionRuleDto> rules,
@@ -806,6 +908,54 @@ public sealed class LocalCatalogRepository(LocalSqliteStore store) : ILocalCatal
             UpdatedAt = excluded.UpdatedAt,
             ContentHash = excluded.ContentHash,
             SyncedAt = excluded.SyncedAt;
+        """;
+
+    private const string InsertCodeConflictItemSql = """
+        INSERT INTO LocalSellableItemCodeConflict
+        (
+            StoreCode,
+            ProductCode,
+            ReferenceCode,
+            DisplayName,
+            LookupCode,
+            LookupCodeNormalized,
+            ItemNumber,
+            Barcode,
+            ProductImage,
+            DiscountRate,
+            IsSpecialProduct,
+            RetailPrice,
+            PriceSource,
+            PriceSourceLabel,
+            QuantityFactor,
+            UpdatedAt,
+            ContentHash,
+            SyncedAt,
+            SortOrder
+        )
+        VALUES
+        (
+            $StoreCode,
+            $ProductCode,
+            $ReferenceCode,
+            $DisplayName,
+            $LookupCode,
+            $LookupCodeNormalized,
+            $ItemNumber,
+            $Barcode,
+            $ProductImage,
+            $DiscountRate,
+            $IsSpecialProduct,
+            $RetailPrice,
+            $PriceSource,
+            $PriceSourceLabel,
+            $QuantityFactor,
+            $UpdatedAt,
+            $ContentHash,
+            $SyncedAt,
+            $SortOrder
+        )
+        ON CONFLICT(StoreCode, LookupCodeNormalized, ProductCode) DO NOTHING;
         """;
 
     private const string StageSellableItemSql = """

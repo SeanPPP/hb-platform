@@ -392,6 +392,29 @@ public sealed class LocalCatalogSyncService(
                 Log($"promotion sync failed store={storeCode} error={ex.Message}");
             }
 
+            try
+            {
+                // 中文注释：码冲突候选只在商品同步成功后刷新；失败（含旧版服务端没有该接口）时保留本地旧数据，不阻断商品同步。
+                await _uiPriorityCoordinator.WaitForUiIdleAsync(cancellationToken);
+                var conflictStopwatch = Stopwatch.StartNew();
+                var conflictResponse = await catalogApiClient.GetCodeConflictsAsync(storeCode, cancellationToken);
+                if (conflictResponse.Available)
+                {
+                    await _uiPriorityCoordinator.WaitForUiIdleAsync(cancellationToken);
+                    await localCatalogRepository.ReplaceCodeConflictItemsAsync(
+                        storeCode,
+                        conflictResponse.Items.Select(item => item.ToSellableItemDto()).ToArray(),
+                        cancellationToken);
+                }
+
+                conflictStopwatch.Stop();
+                Log($"code conflicts synced store={storeCode} available={conflictResponse.Available} items={conflictResponse.Items.Count} elapsedMs={conflictStopwatch.ElapsedMilliseconds}");
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                Log($"code conflict sync failed store={storeCode} error={ex.Message}");
+            }
+
             if (localPromotionRepository is not null && promotionApiClient is not null)
             {
                 try
