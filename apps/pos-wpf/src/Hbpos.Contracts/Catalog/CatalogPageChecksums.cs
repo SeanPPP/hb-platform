@@ -65,7 +65,7 @@ public static class CatalogPageChecksums
         ArgumentNullException.ThrowIfNull(deletedLookups);
 
         var operations = upsertedItems
-            .Select(item => (Key: item.LookupCodeNormalized, Item: item, Deleted: (DeletedLookupDto?)null))
+            .Select(item => (Key: item.LookupCodeNormalized, Item: (CatalogLookupItemDto?)item, Deleted: (DeletedLookupDto?)null))
             .Concat(deletedLookups.Select(deleted => (Key: deleted.LookupCodeNormalized, Item: (CatalogLookupItemDto?)null, Deleted: (DeletedLookupDto?)deleted)))
             .OrderBy(operation => operation.Key, StringComparer.Ordinal)
             .ToArray();
